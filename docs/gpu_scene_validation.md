@@ -191,3 +191,73 @@ For GPU parity run with `TOURMALINE_GPU_SCENE_VALIDATE=1` and inspect
 `[GpuSceneWork]` count/record mismatches. Headless unit coverage lives in
 `GpuSceneValidationTests`. HLSL compilation and Vulkan-device verification
 must pass before enabling a production consumer.
+
+## GPU Scene v9 — double-source contract and indirect work consumption
+
+This milestone establishes **two interfaces** needed before switching the
+production renderer away from CPU draw preparation.
+
+### Double-precision source authority
+
+`SceneRegistry::SourceRecord::globalModel` now stores `glm::dmat4` and
+`SceneRegistry::SetTransform` splits a **double** world translation into
+the existing 32-byte high/low `DoubleFloat3` GPU instance record. The
+rotational/scale basis remains float32. `UpdateGlobal` accepts an
+authoritative `glm::dmat4` and an explicitly isolated `glm::mat4`
+adapter for existing scene journals. At 1e12-unit world origins, 0.125-unit
+updates are preserved and covered by CPU-only tests.
+
+`AuthoritativeRelativeFrustum(projection, worldToViewRotation, cameraWorld)`
+builds the six cull half-spaces from a **translation-free** double matrix:
+`projection * worldToViewRotation`. The double render origin travels
+separately and is split into high/low just before GPU upload. This avoids
+constructing a huge absolute-world view-projection matrix, which would
+otherwise risk cancellation. The origin and relative planes are in exactly
+the coordinate frame consumed by `gpu_scene_instance_cull`.
+
+**Integration limit:** World::scene still calculates float32 global
+transforms, and CameraPositioner_FirstPerson still owns float32 position.
+The new dmat4 path is an authoritative *input contract*, not a claim that
+these producers have already migrated. The current GPU parity pass retains
+its raster-consistent legacy-view adapter until that coordinated migration
+is complete. Do not switch production culling to an unrelated double
+camera position.
+
+### GPU-generated indirect compute commands
+
+After stable submesh expansion the GPU can now produce and consume its own
+dispatch count, without a CPU readback:
+
+1. `gpu_scene_indirect_args.cs.hlsl` reads
+   `workOffsets[candidateCount]` and writes a 12-byte
+   `VkDispatchIndirectCommand`-compatible `uint3`, with
+   `groupCountX = ceil(workCount / 64)`, y=z=1.
+2. A global memory barrier makes the arguments visible to the indirect
+   command fetch.
+3. `CommandBuffer::DispatchIndirect` launches
+   `gpu_scene_indirect_verify.cs.hlsl`, which consumes exactly the
+   populated work rows and copies them into a separately owned per-flight
+   parity buffer.
+4. At the flight-reuse fence, the CPU validator reads back the GPU-produced
+   command and every consumed record and compares both against the
+   CPU work oracle. Zero output dispatches zero groups; invalid counts
+   suppress dispatch rather than exceeding the allocated work buffer.
+
+This is a *real GPU-driven indirect compute dispatch* in the validation
+frame. It is **not yet VkDrawIndexedIndirectCommand generation** and does
+not submit geometry. The current `geometryId` is a transient meshlet
+registration, not an indexed-draw descriptor with index count/offset,
+base vertex, material/pipeline layout or per-instance transform. Treating
+it as a draw command now would be incorrect.
+
+All new work remains behind `TOURMALINE_GPU_SCENE_VALIDATE=1`, with the
+32,768-candidate bound and independent per-flight buffer lifetimes.
+Production indexed draws require: double-authoritative hierarchy and
+camera producers; consistent camera-relative raster matrices; a GPU-
+addressable geometry draw-argument table; scalable parallel prefix
+algorithms; shader/pipeline grouping; and Vulkan-device parity/perf tests.
+
+Regression coverage: `GpuSceneValidationTests` for the double view and
+indirect arguments; `GpuSceneWorldTests` for preserved double source
+transforms. Shader compilation and real GPU readback parity are required
+before the indirect stage can become authoritative.

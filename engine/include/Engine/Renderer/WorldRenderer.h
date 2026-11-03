@@ -2147,6 +2147,10 @@ protected:
 	// stable per-submesh expansion. Still validation-only.
 	std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneWorkModules{};
 	std::array<smvk::ShaderProgram, 3> m_gpuSceneWorkPrograms{};
+	// GPU-produced compute dispatch arguments plus an indirect work consumer.
+	// No indexed graphics draws are changed by this validation-only chain.
+	std::array<smvk::Holder<smvk::ShaderModuleHandle>, 2> m_gpuSceneIndirectModules{};
+	std::array<smvk::ShaderProgram, 2> m_gpuSceneIndirectPrograms{};
 	bool m_gpuSceneDatabaseReady = false;
 	// Transient gfx registration indices are reassigned on each rebuild.
 	// Republish all mesh links when the source registration changes.

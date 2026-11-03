@@ -95,6 +95,48 @@ void CheckMalformedDoubleFrusta() {
     CHECK(PackInstanceCullView(infinite, packed));
 }
 
+void CheckIndirectAndAuthoritativeView() {
+    CHECK(sizeof(SceneIndirectDispatch) == 12);
+    CHECK(sizeof(SceneIndirectArgsPush) == 24);
+    CHECK(sizeof(SceneIndirectVerifyPush) == 32);
+
+    const auto zero = ReferenceIndirectDispatch(0u, 524288u);
+    CHECK(zero.x == 0u && zero.y == 1u && zero.z == 1u);
+    CHECK(ReferenceIndirectDispatch(1u, 524288u).x == 1u);
+    CHECK(ReferenceIndirectDispatch(64u, 524288u).x == 1u);
+    CHECK(ReferenceIndirectDispatch(65u, 524288u).x == 2u);
+    CHECK(ReferenceIndirectDispatch(524288u, 524288u).x == 8192u);
+    CHECK(ReferenceIndirectDispatch(524289u, 524288u).x == 0u);
+
+    // Projection and rotation are relative, not a huge absolute-world VP.
+    // The origin remains full double throughout plane construction.
+    const glm::dvec3 origin(1.0e12, -1.0e12, 1.0e12);
+    glm::dmat4 projection(1.0);
+    const auto frustum = AuthoritativeRelativeFrustum(
+        projection, glm::dmat4(1.0), origin);
+    CHECK(frustum.Valid());
+    InstanceCullGpuView packed{};
+    CHECK(PackInstanceCullView(frustum, packed));
+    CHECK(glm::length(tour::math::JoinDoubleFloat(packed.origin)-origin) < 0.01);
+    CHECK(std::abs(frustum.planes[0].w - 1.0) < 1e-12);
+
+    RenderDatabase db{};
+    const auto mesh = db.meshes.Insert(
+        Mesh{0u, 1u, 1u, MeshFlagCompleteBounds});
+    CHECK(mesh);
+    Instance instance{};
+    instance.refs=glm::uvec4(mesh.slot,mesh.generation,0u,0u);
+    instance.worldPosition=tour::math::SplitDoubleFloat(
+        origin+glm::dvec3(0.25,0.0,0.5));
+    instance.localSphere=glm::vec4(0,0,0,0.01f);
+    auto handle=db.instances.Insert(instance);
+    CHECK(ReferenceInstanceVisible(db,handle,frustum));
+    instance.worldPosition=tour::math::SplitDoubleFloat(
+        origin+glm::dvec3(10.0,0.0,0.5));
+    CHECK(db.instances.Update(handle,instance));
+    CHECK(!ReferenceInstanceVisible(db,handle,frustum));
+}
+
 void CheckStableCompaction() {
     CHECK(sizeof(CompactCountPush) == 24);
     CHECK(sizeof(CompactPrefixPush) == 24);
@@ -251,6 +293,7 @@ int main() {
     CheckDoubleView();
     CheckMalformedDoubleFrusta();
     CheckStableCompaction();
+    CheckIndirectAndAuthoritativeView();
     CheckSubmeshWorkExpansion();
     CheckLegacyRebasing();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);

@@ -11584,6 +11584,35 @@ namespace engine {
 					}
 				}
 			}
+			static constexpr const char* indirectPaths[2] = {
+				"content/shaders/gpu_scene_indirect_args.cs.hlsl.spv",
+				"content/shaders/gpu_scene_indirect_verify.cs.hlsl.spv"
+			};
+			for (uint32_t i=0; i<2u; ++i) {
+				if (m_gpuSceneIndirectPrograms[i].shaderCount != 0) continue;
+				try {
+					auto bytes=smvk::shaders::Read(indirectPaths[i]);
+					m_gpuSceneIndirectModules[i]=m_context->CreateShaderModule(
+						std::move(bytes), "gpuSceneIndirectCS");
+					if (!m_gpuSceneIndirectModules[i].empty()) {
+						smvk::Shader cs{
+							.module=m_gpuSceneIndirectModules[i],
+							.entryPoint="mainCS",
+							.stage=smvk::ShaderStage::Compute
+						};
+						m_gpuSceneIndirectPrograms[i]={
+							.shaders={cs},.shaderCount=1
+						};
+					}
+				} catch (...) {
+					static bool logged=false;
+					if (!logged) {
+						std::fprintf(stderr,
+							"[GpuSceneIndirect] shader unavailable; skipped\n");
+						logged=true;
+					}
+				}
+			}
 			if (m_gpuSceneCullProgram.shaderCount == 1) {
 				// This is a validation bridge, NOT true large-world camera
 				// authority. The source VP remains float32; we only change
@@ -11623,15 +11652,26 @@ namespace engine {
 							m_gpuSceneDatabase,
 							m_gpuSceneUploader.DeviceAddresses(*m_context,fb.frameIndex),
 							selected.candidateCount, workSelect, workPrefix, workScatter);
+					tour::gpu_scene::SceneIndirectArgsPush indirectArgs{};
+					tour::gpu_scene::SceneIndirectVerifyPush indirectVerify{};
+					smvk::BufferHandle indirectBuffer{};
+					const bool indirectReady = workReady &&
+						m_gpuSceneIndirectPrograms[0].shaderCount == 1 &&
+						m_gpuSceneIndirectPrograms[1].shaderCount == 1 &&
+						m_gpuSceneValidator.PrepareIndirect(*m_context, fb.frameIndex,
+							selected.candidateCount, indirectArgs, indirectVerify,
+							indirectBuffer);
 					auto& pass = m_rendergraph->AddComputePass("GpuSceneValidate");
 					// ShaderProgram copies must be mutable for BindComputePipeline.
 					auto program = m_gpuSceneCullProgram;
 					auto compactPrograms = m_gpuSceneCompactPrograms;
 					auto workPrograms = m_gpuSceneWorkPrograms;
+					auto indirectPrograms = m_gpuSceneIndirectPrograms;
 					const uint32_t groups = (selected.candidateCount+63u)/64u;
-					pass.SetRecordingFunc([program, compactPrograms, workPrograms, gpuPush,
-						countPush, prefixPush, scatterPush, workSelect, workPrefix,
-						workScatter, groups, compactReady, workReady](
+					pass.SetRecordingFunc([program, compactPrograms, workPrograms,
+						indirectPrograms, gpuPush, countPush, prefixPush, scatterPush,
+						workSelect, workPrefix, workScatter, indirectArgs, indirectVerify,
+						indirectBuffer, groups, compactReady, workReady, indirectReady](
 						smvk::CommandBuffer& cmd) mutable {
 						cmd.BindComputePipeline(program);
 						cmd.PushConstants(0, sizeof(gpuPush), &gpuPush,
@@ -11671,6 +11711,19 @@ namespace engine {
 						cmd.PushConstants(0, sizeof(workScatter), &workScatter,
 							smvk::ShaderStage::Compute);
 						cmd.Dispatch(groups,1,1);
+						if (!indirectReady) return;
+						cmd.EmitGlobalMemoryBarrier();
+						cmd.BindComputePipeline(indirectPrograms[0]);
+						cmd.PushConstants(0,sizeof(indirectArgs),&indirectArgs,
+							smvk::ShaderStage::Compute);
+						cmd.Dispatch(1,1,1);
+						cmd.EmitGlobalMemoryBarrier();
+						cmd.BindComputePipeline(indirectPrograms[1]);
+						cmd.PushConstants(0,sizeof(indirectVerify),&indirectVerify,
+							smvk::ShaderStage::Compute);
+						// A GPU-computed command launches exactly the work-record
+						// consumers needed: no CPU count/readback on the hot path.
+						cmd.DispatchIndirect(indirectBuffer,0);
 					});
 					m_gpuSceneValidator.MarkDispatched(fb.frameIndex);
 				} else if (selected.status != tour::gpu_scene::CandidateStatus::Ok) {

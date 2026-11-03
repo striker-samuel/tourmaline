@@ -83,6 +83,23 @@ namespace tour::gpu_scene {
     return out;
 }
 
+// The future authoritative camera contract: projection and rotation are
+// evaluated in double, with no large absolute translation in the matrix.
+// The view origin is carried separately as dvec3 and split for the GPU.
+// This avoids large-world cancellation in a conventional double VP too.
+[[nodiscard]] inline RelativeFrustum AuthoritativeRelativeFrustum(
+    const glm::dmat4& projection,
+    const glm::dmat4& worldToViewRotation,
+    const glm::dvec3& cameraWorld) {
+    // Projection * rotation acts on (worldPosition - cameraWorld).
+    // Pass a zero origin to the plane extractor because the matrix is
+    // ALREADY relative. Only then attach the actual absolute origin.
+    RelativeFrustum view = DoubleRelativeFrustum(
+        projection * worldToViewRotation, glm::dvec3(0.0));
+    view.originWorld = cameraWorld;
+    return view;
+}
+
 [[nodiscard]] inline bool PackInstanceCullView(
     const RelativeFrustum& view, InstanceCullGpuView& out) {
     if (!view.Valid()) return false;
@@ -240,6 +257,29 @@ static_assert(offsetof(WorkScatterPush, limits) == 32);
     return result;
 }
 
+// VkDispatchIndirectCommand is three consecutive uint32 words.
+struct SceneIndirectDispatch {
+    uint32_t x=0u, y=1u, z=1u;
+};
+struct SceneIndirectArgsPush {
+    uint64_t offsets=0, args=0;
+    uint32_t candidateCount=0, workCapacity=0;
+};
+struct SceneIndirectVerifyPush {
+    uint64_t offsets=0, work=0, verified=0;
+    uint32_t candidateCount=0, workCapacity=0;
+};
+static_assert(sizeof(SceneIndirectDispatch)==12);
+static_assert(sizeof(SceneIndirectArgsPush)==24);
+static_assert(sizeof(SceneIndirectVerifyPush)==32);
+
+[[nodiscard]] inline SceneIndirectDispatch ReferenceIndirectDispatch(
+    uint32_t workCount, uint32_t capacity) {
+    if (workCount>capacity || capacity>524288u)
+        return {0u,1u,1u};
+    return {(workCount+63u)/64u,1u,1u};
+}
+
 class CandidateValidator {
 public:
     static constexpr uint32_t Flights=smvk::limits::MaxFramesInFlight;
@@ -262,6 +302,7 @@ public:
             f.expectedWork.clear();
             f.compactPrepared = false;
             f.workPrepared = false;
+            f.indirectPrepared = false;
             return;
         }
         uint64_t wrong=0;
@@ -360,8 +401,53 @@ public:
                     "[GpuSceneWork] expected=%u mismatches=%llu\n",
                     expectedWork,
                     (unsigned long long)workMismatches_);
-                f.expectedWork.clear();
             }
+            if (f.indirectPrepared) {
+                f.indirectPrepared=false;
+                SceneIndirectDispatch gpuArgs{};
+                if (!ctx.DownloadDataFromBuffer(f.indirectArgs, &gpuArgs,
+                        sizeof(gpuArgs))) {
+                    ++indirectMismatches_;
+                    std::fprintf(stderr,
+                        "[GpuSceneIndirect] args readback failed\n");
+                } else {
+                    const auto expected=ReferenceIndirectDispatch(
+                        uint32_t(f.expectedWork.size()),f.indirectCapacity);
+                    if (gpuArgs.x!=expected.x || gpuArgs.y!=expected.y ||
+                        gpuArgs.z!=expected.z) {
+                        ++indirectMismatches_;
+                        std::fprintf(stderr,
+                            "[GpuSceneIndirect] groups gpu=(%u,%u,%u) cpu=(%u,%u,%u)\n",
+                            gpuArgs.x,gpuArgs.y,gpuArgs.z,
+                            expected.x,expected.y,expected.z);
+                    }
+                    if (gpuArgs.x==expected.x && gpuArgs.x>0u) {
+                        std::vector<SceneSubmeshWork> verify(f.expectedWork.size());
+                        if (!ctx.DownloadDataFromBuffer(f.indirectVerified,
+                                verify.data(),
+                                verify.size()*sizeof(SceneSubmeshWork))) {
+                            ++indirectMismatches_;
+                        } else {
+                            for (size_t i=0;i<verify.size();++i) {
+                                if (!glm::all(glm::equal(verify[i].identity,
+                                        f.expectedWork[i].identity)) ||
+                                    !glm::all(glm::equal(verify[i].detail,
+                                        f.expectedWork[i].detail))) {
+                                    ++indirectMismatches_;
+                                    if (indirectMismatches_<=4)
+                                        std::fprintf(stderr,
+                                            "[GpuSceneIndirect] record mismatch %zu\n",i);
+                                }
+                            }
+                        }
+                    }
+                }
+                std::fprintf(stderr,
+                    "[GpuSceneIndirect] expected=%zu errors=%llu\n",
+                    f.expectedWork.size(),
+                    (unsigned long long)indirectMismatches_);
+            }
+            f.expectedWork.clear();
             f.expectedCompact.clear();
         }
         f.expected.clear();
@@ -540,6 +626,42 @@ public:
         return true;
     }
 
+    // Prepare two fully GPU-driven passes: arg generation (one thread)
+    // and an indirect compute consumer of the expanded work records.
+    // The ResourceManager creates Storage buffers with INDIRECT usage too
+    // (the same convention used by GfxFilter's indirect buffers).
+    [[nodiscard]] bool PrepareIndirect(smvk::ResourceManager& ctx,
+        uint32_t flight, uint32_t candidateCount,
+        SceneIndirectArgsPush& args, SceneIndirectVerifyPush& verify,
+        smvk::BufferHandle& indirect) {
+        if (flight>=Flights || candidateCount==0u ||
+            candidateCount>32768u) return false;
+        auto& f=flight_[flight];
+        if (!f.workPrepared || f.workCandidates!=candidateCount)
+            return false;
+        const size_t maxWork=size_t(candidateCount)*16u;
+        if (f.indirectArgs.empty()) {
+            f.indirectArgs=ctx.CreateBuffer(
+                sizeof(SceneIndirectDispatch),smvk::BufferType_Storage,
+                "scene indirect compute arguments");
+            if (f.indirectArgs.empty()) return false;
+        }
+        if (!Ensure(ctx,f.indirectVerified,f.indirectVerifiedSize,
+                maxWork*sizeof(SceneSubmeshWork),"scene indirect verification"))
+            return false;
+        const uint64_t offsets=ctx.GetBufferDeviceAddress(f.workOffsets);
+        const uint64_t work=ctx.GetBufferDeviceAddress(f.workOutput);
+        const uint64_t argAddress=ctx.GetBufferDeviceAddress(f.indirectArgs);
+        const uint64_t checked=ctx.GetBufferDeviceAddress(f.indirectVerified);
+        if (!offsets || !work || !argAddress || !checked) return false;
+        args={offsets,argAddress,candidateCount,uint32_t(maxWork)};
+        verify={offsets,work,checked,candidateCount,uint32_t(maxWork)};
+        indirect=f.indirectArgs;
+        f.indirectCapacity=uint32_t(maxWork);
+        f.indirectPrepared=true;
+        return true;
+    }
+
     void MarkDispatched(uint32_t flight) {
         if (flight>=Flights) return;
         auto& f=flight_[flight];
@@ -550,6 +672,7 @@ public:
     [[nodiscard]] uint64_t Mismatches() const { return mismatches_; }
     [[nodiscard]] uint64_t CompactMismatches() const { return compactMismatches_; }
     [[nodiscard]] uint64_t WorkMismatches() const { return workMismatches_; }
+    [[nodiscard]] uint64_t IndirectMismatches() const { return indirectMismatches_; }
 
 private:
     struct Flight {
@@ -566,6 +689,10 @@ private:
         std::vector<SceneSubmeshWork> expectedWork{};
         uint32_t workCandidates=0;
         bool workPrepared=false;
+        smvk::Holder<smvk::BufferHandle> indirectArgs{},indirectVerified{};
+        size_t indirectVerifiedSize=0;
+        uint32_t indirectCapacity=0;
+        bool indirectPrepared=false;
         size_t rangesSize=0,verdictSize=0;
         std::vector<InstanceCullVerdict> expected{};
         bool pending=false,prepared=false;
@@ -586,7 +713,7 @@ private:
         return true;
     }
     std::array<Flight,Flights> flight_{};
-    uint64_t tested_=0,mismatches_=0,compactMismatches_=0,workMismatches_=0;
+    uint64_t tested_=0,mismatches_=0,compactMismatches_=0,workMismatches_=0,indirectMismatches_=0;
 };
 
 } // namespace tour::gpu_scene
