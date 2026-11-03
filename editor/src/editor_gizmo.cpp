@@ -564,21 +564,24 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				? glm::vec4(1.0f, 0.9f, 0.3f, 1.0f)
 				: glm::vec4(0.9f, 0.3f, 1.0f, 1.0f);
 			AddDiamond(b, p, s);
-			// Only the selected probe shows its influence. Three great
-			// circles represent a world-space sphere rather than the old
-			// misleading always-on horizontal ring. The line batch is
-			// depth-tested so geometry hides the far side of the guide.
-			if (node == m_selected && def.radius > 0.0f) {
-				b.depthTest = true;
-				AddCircle(b, p, glm::vec3(1, 0, 0), glm::vec3(0, 0, 1),
-					def.radius, 48);
-				AddCircle(b, p, glm::vec3(1, 0, 0), glm::vec3(0, 1, 0),
-					def.radius, 48);
-				AddCircle(b, p, glm::vec3(0, 1, 0), glm::vec3(0, 0, 1),
-					def.radius, 48);
-			}
+			// The location marker stays visible for picking (X-ray).
 			if (!b.verts.empty())
 				batches.push_back(std::move(b));
+			// Selected influence only: 3 intersecting great circles form a
+			// world-space spherical guide; depth testing hides occluded arcs.
+			// Keep the guide in a separate batch so the marker remains X-ray.
+			if (node == m_selected && def.radius > 0.0f) {
+				LineBatch influence;
+				influence.depthTest = true;
+				influence.color = glm::vec4(1.0f, 0.9f, 0.3f, 0.75f);
+				AddCircle(influence, p, glm::vec3(1, 0, 0), glm::vec3(0, 0, 1),
+					def.radius, 48);
+				AddCircle(influence, p, glm::vec3(1, 0, 0), glm::vec3(0, 1, 0),
+					def.radius, 48);
+				AddCircle(influence, p, glm::vec3(0, 1, 0), glm::vec3(0, 0, 1),
+					def.radius, 48);
+				batches.push_back(std::move(influence));
+			}
 		}
 	}
 	// Camera frustum markers: one X-ray eye diamond + near/far box per
