@@ -8,6 +8,8 @@
 #include "editor_placement.h"
 
 #include <chrono>
+#include <cmath>
+#include <unordered_map>
 #include <cstdio>
 #include <sstream>
 
@@ -73,6 +75,101 @@ bool EditorApp::ExtractPlacementMesh(uint32_t worldNode,
 	}
 	BuildMeshAliasTable(out);
 	return out.triangleCount() > 0;
+}
+
+// Resolve parented brush strokes into the same placement domain consumed
+// by the GPU float4 upload path. This is a live source: every matrix is
+// read at preview time, not captured when the brush was used.
+bool EditorApp::BuildPlacementPointCloud(int strokeIndex,
+    smvk::placement::PlacementPointCloudData& out,
+    std::string& error) const {
+    out = {};
+    error.clear();
+    if (!m_world) { error = "No scene to resolve painted points"; return false; }
+    if (strokeIndex < -1 || (strokeIndex >= 0 &&
+            size_t(strokeIndex) >= m_surfaceStrokes.size())) {
+        error = "PointCloud: source stroke index is out of range";
+        return false;
+    }
+    const Scene& scene = m_world->scene;
+    std::unordered_map<std::string, uint32_t> byUuid;
+    for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
+        if (!IsNodeAlive(scene, node) || m_deletedNodes.contains(node))
+            continue;
+        const std::string& uuid = GetNodeUuid(scene, node);
+        if (!uuid.empty()) byUuid[uuid] = node;
+    }
+    for (size_t i = 0; i < m_surfaceStrokes.size(); ++i) {
+        if (strokeIndex >= 0 && size_t(strokeIndex) != i)
+            continue;
+        const surface::Stroke& stroke = m_surfaceStrokes[i];
+        const auto it = byUuid.find(stroke.parentUuid);
+        if (it == byUuid.end() || it->second >= scene.globalTransform.size()) {
+            error = "PointCloud: stroke " + std::to_string(i) +
+                " has a missing or deleted parent; rebind its object";
+            return false; // no silent world-space drift on reimport
+        }
+        const glm::mat4& parent = scene.globalTransform[it->second];
+        if (out.positions.size() + stroke.points.size() >
+                smvk::placement::kPlacementMaxTileInstances) {
+            error = "PointCloud exceeds 65,536 GPU candidates; split the graph/source";
+            return false;
+        }
+        for (const glm::vec3& local : stroke.points) {
+            const glm::vec3 world = glm::vec3(parent * glm::vec4(local, 1.0f));
+            if (!std::isfinite(world.x) || !std::isfinite(world.y) ||
+                !std::isfinite(world.z)) {
+                error = "PointCloud has invalid transformed coordinates";
+                return false;
+            }
+            out.positions.push_back(world);
+        }
+    }
+    if (out.positions.empty()) {
+        error = "PointCloud has no painted points. Draw a Surface Brush stroke first.";
+        return false;
+    }
+    return true;
+}
+
+// A cheap O(strokes * matrix-size) invalidation check. It regenerates
+// instance previews when an object is moved/rotated/scaled or a stroke
+// changes, without rescanning every painted point on each editor frame.
+void EditorApp::CheckSurfaceBrushPlacementChanges() {
+    const placement::GraphDoc* graph = m_placement.current();
+    if (!graph) return;
+    bool usesCloud = false;
+    for (const auto& [id, node] : graph->nodes)
+        usesCloud |= node.kind == placement::NodeKind::PointCloud;
+    if (!usesCloud || !m_world) return;
+    uint64_t hash = 14695981039346656037ull;
+    const auto mix = [&](uint8_t b) mutable {
+        hash ^= b;
+        hash *= 1099511628211ull;
+    };
+    const Scene& scene = m_world->scene;
+    for (const auto& s : m_surfaceStrokes) {
+        for (char ch : s.parentUuid) mix(uint8_t(ch));
+        for (size_t value = s.points.size(); value != 0; value >>= 8)
+            mix(uint8_t(value));
+        uint32_t parent = UINT32_MAX;
+        for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {
+            if (IsNodeAlive(scene, i) && !m_deletedNodes.contains(i) &&
+                GetNodeUuid(scene, i) == s.parentUuid) {
+                parent = i; break;
+            }
+        }
+        mix(uint8_t(parent == UINT32_MAX ? 0 : 1));
+        if (parent == UINT32_MAX || parent >= scene.globalTransform.size())
+            continue;
+        const glm::mat4& pose = scene.globalTransform[parent];
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&pose);
+        for (size_t i = 0; i < sizeof(pose); ++i) mix(bytes[i]);
+    }
+    if (hash != m_surfacePoseSignature) {
+        m_surfacePoseSignature = hash;
+        MarkPlacementDirty();
+    }
 }
 
 void EditorApp::MarkPlacementDirty() {
