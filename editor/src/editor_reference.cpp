@@ -50,6 +50,7 @@ void EditorApp::StartReferenceRender() {
 	opts.includeDynamicLights = true;
 	opts.staticLights = true;
 	opts.retainVertexNormals = true;
+	opts.referenceMaterialSampling = true;
 	// All visible meshes, not just GI-shadow-casting surfaces.
 	opts.excludeDecalOverlays = false;
 	opts.traceBackendEmbree = true;
