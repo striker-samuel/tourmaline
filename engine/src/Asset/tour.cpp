@@ -6015,7 +6015,12 @@ bool ResolveDeleteTarget(const Scene& scene, const std::string& uuid,
 		}
 		return false;
 	}
-	// 4. Legacy nameless form: the recorded id.
+	// A UUID is a hard identity key. If it is stale and no name/path
+	// resolved above, do not use an unverified numeric id: a re-import
+	// may have assigned that id to a different node.
+	if (!uuid.empty())
+		return false;
+	// 4. Legacy keyless form: the recorded id.
 	if (idFallback != UINT32_MAX && idFallback < scene.hierarchy.size()) {
 		out = idFallback;
 		return true;

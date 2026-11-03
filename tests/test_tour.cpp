@@ -2033,6 +2033,26 @@ void TestDeleteAddressing() {
 		Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr,
 			"name delete unlinks");
 	}
+	// A stale UUID with no name must never fall back to a valid numeric
+	// id: after a re-import that slot could belong to another node.
+	{
+		SetMesh(cluster->scene, uint32_t(meshB), 0);
+		smvk::tour::Doc doc6;
+		smvk::tour::Command d6{};
+		d6.verb = smvk::tour::Verb::Delete;
+		d6.node = uint32_t(meshB);
+		d6.uuid = "ffffffffffffffffffffffffffffffff";
+		doc6.commands.push_back(d6);
+		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc6, &warns, &err),
+			"stale uuid-only delete fails strict");
+		Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
+			"stale uuid-only delete preserves numeric target");
+		std::vector<std::string> refWarns;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc6, &refWarns,
+			&err, /*strict=*/false), "stale uuid-only delete skips in reference");
+		Check(!refWarns.empty() && FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
+			"stale uuid-only delete warns and preserves target");
+	}
 	// Legacy nameless delete still resolves by id.
 	{
 		SetMesh(cluster->scene, uint32_t(meshB), 0);
