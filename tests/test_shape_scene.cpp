@@ -78,9 +78,17 @@ int main() {
     assert(scene.Get(loaded)->geometry.vertices.size() == 4);
     std::filesystem::remove(temp);
     assert(scene.Get(loaded)); // source is owned after load
+    const auto textLoaded = scene.LoadText(
+        asset::SerializeShapeAsset(asset::DefaultShapeAsset(
+            asset::ShapeKind::Spline)), transform, {1,1,1}, error);
+    assert(textLoaded && scene.Get(textLoaded));
+    assert(scene.Size() == 2);
+    const auto bad = scene.LoadText("shape 1\\nkind bogus\\n",
+        transform, {1,1,1}, error);
+    assert(!bad && !error.empty() && scene.Size() == 2);
     const auto absent = scene.LoadFile(temp, transform, {1,1,1}, error);
     assert(!absent && !error.empty());
-    assert(scene.Size() == 1);
+    assert(scene.Size() == 2);
     scene.Clear();
 
     // Admission is not partial: a dataset that exceeds the per-pass budget
