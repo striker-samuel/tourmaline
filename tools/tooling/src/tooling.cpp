@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <filesystem>
 #include <iomanip>
 #include <limits>
@@ -113,7 +114,13 @@ bool ReadPackageSnapshot(const fs::path& source, PackageSnapshot& out,
         const auto* ids = reader->Find(tour::asset::PakAssetKind::Identity,
                                         tour::asset::kPakAssetIdsPath);
         if (ids) {
-            const auto blob = reader->Payload(*ids);
+            std::span<const uint8_t> blob;
+            try {
+                blob = reader->Payload(*ids);
+            } catch (const std::exception& exc) {
+                error = path.generic_string() + ": #ids read failed: " + exc.what();
+                return false;
+            }
             if (blob.empty()) {
                 error = path.generic_string() + ": cannot read or verify #ids page";
                 return false;
@@ -284,9 +291,10 @@ bool BuildCapturePlan(const CaptureOptions& options,
             return false;
         }
     }
-    plan.environment = options.environment;
     plan.environment["TOURMALINE_AA"] = "off";
     plan.environment["TOURMALINE_AUTO_EXPOSURE"] = "0";
+    for (const auto& [name, value] : options.environment)
+        plan.environment[name] = value;
     plan.environment["TOURMALINE_CAPTURE"] = std::to_string(options.captureFrame);
     if (!options.cameraPosition.empty()) {
         plan.environment["TOURMALINE_CAM_POS"] = options.cameraPosition;
@@ -304,9 +312,9 @@ bool CompareRgb8(std::span<const uint8_t> before, std::span<const uint8_t> after
         error = "invalid dimensions, stride, or threshold";
         return false;
     }
-    const uint64_t expected = uint64_t(width) * height * 3;
-    if (expected > std::numeric_limits<std::size_t>::max() ||
-        before.size() != expected || after.size() != expected) {
+    const uint64_t pixels = uint64_t(width) * height;
+    if (pixels > std::numeric_limits<std::size_t>::max() / 3 ||
+        before.size() != pixels * 3 || after.size() != pixels * 3) {
         error = "expected identical RGB8 images of width*height*3 bytes";
         return false;
     }
