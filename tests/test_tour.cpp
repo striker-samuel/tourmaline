@@ -4266,7 +4266,45 @@ void TestTextureAssetForceImport() {
 	fs::remove_all(dir, ec);
 }
 
+void TestPhysicsAuthoring() {
+	using namespace smvk::tour;
+	Doc doc{};
+	std::string err;
+	Check(LoadTourFromString(
+		"attachPhysicsBody -n 0;\n"
+		"setPhysicsBodyAttr -n 0 -at motion -v 1;\n"
+		"setPhysicsBodyAttr -n 0 -at shape -v 2;\n"
+		"setPhysicsBodyAttr -n 0 -at radius -v 0.75;\n"
+		"setPhysicsBodyAttr -n 0 -at mass -v 12.5;\n"
+		"setPhysicsBodyAttr -n 0 -at sensor -type \"bool\" -v on;\n",
+		doc, err), "physics: parse authored commands");
+	Check(doc.commands.size() == 6, "physics: parsed command count");
+	Check(SaveTour(TempTour(), doc, err), "physics: tour save");
+	Doc loaded{};
+	Check(LoadTour(TempTour(), loaded, err), "physics: tour reload");
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetOfflineMode(true);
+	addNode(cluster->scene, -1, 0);
+	Check(ApplyTourToCluster(*cluster, loaded, nullptr, &err),
+		"physics: cook replay");
+	const auto* row = tour::scene::FindPhysicsBody(cluster->scene, 0);
+	Check(row && row->body.motion == 1 && row->body.shape == 2
+		&& row->body.sensor && row->body.mass == 12.5f
+		&& row->body.radius == 0.75f,
+		"physics: replay body properties");
+	Doc bad{};
+	Check(!LoadTourFromString(
+		"setPhysicsBodyAttr -n 0 -at mass -v -3;\n", bad, err),
+		"physics: negative mass rejected");
+	Check(!LoadTourFromString(
+		"setPhysicsBodyAttr -n 0 -at shape -v 3;\n", bad, err),
+		"physics: invalid collider rejected");
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
 int main() {
+	TestPhysicsAuthoring();
 	TestRoundTrip();
 	TestFileNodes();
 	TestCamera();

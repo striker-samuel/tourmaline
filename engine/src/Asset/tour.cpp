@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cmath>
+#include <iterator>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -185,6 +187,8 @@ static bool IsGenericNodeVerb(Verb v) {
 static bool IsAttrNodeVerb(Verb v) {
 	return v == Verb::AttachTriggerVolume || v == Verb::RemoveTriggerVolume
 		|| v == Verb::SetTriggerVolumeAttr
+		|| v == Verb::AttachPhysicsBody || v == Verb::RemovePhysicsBody
+		|| v == Verb::SetPhysicsBodyAttr
 		|| v == Verb::AttachGiVolume || v == Verb::RemoveGiVolume
 		|| v == Verb::SetLightAttr || v == Verb::SetGiVolumeAttr
 		|| v == Verb::SetCubemapAttr || v == Verb::SetCamAttr
@@ -566,6 +570,23 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		f << " -name " << Quote(c.text)
 			<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
 			<< " -s " << c.svec.x << " " << c.svec.y << " " << c.svec.z;
+		break;
+	}
+	case Verb::AttachPhysicsBody:
+	case Verb::RemovePhysicsBody: {
+		f << (c.verb == Verb::AttachPhysicsBody
+			? "attachPhysicsBody " : "removePhysicsBody ");
+		WriteRoomTarget(f, c);
+		break;
+	}
+	case Verb::SetPhysicsBodyAttr: {
+		f << "setPhysicsBodyAttr ";
+		WriteRoomTarget(f, c);
+		f << " -at " << c.text;
+		if (c.text == "sensor")
+			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
+		else
+			f << " -v " << c.number;
 		break;
 	}
 	case Verb::AttachTriggerVolume:
@@ -2854,6 +2875,57 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
 		c.svec = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
 	}
+	else if (effVerb == "attachPhysicsBody" || effVerb == "removePhysicsBody"
+			|| effVerb == "setPhysicsBodyAttr") {
+		if (!(fl.hasN || fl.hasRef || fl.hasUuid)
+				|| (fl.hasRef && (!fl.hasOwner || (fl.owner != "transform"
+					&& fl.owner != "givolume" && fl.owner != "audioRoom")))) {
+			err = "line " + std::to_string(lineNo) + ": invalid physics target";
+			return false;
+		}
+		c.verb = effVerb == "attachPhysicsBody" ? Verb::AttachPhysicsBody
+			: effVerb == "removePhysicsBody" ? Verb::RemovePhysicsBody
+			: Verb::SetPhysicsBodyAttr;
+		c.node = fl.hasRef
+			? ((fl.owner == "transform" ? kCreateTransformRefBase
+				: fl.owner == "audioRoom" ? kCreateAudioRoomRefBase
+				: kCreateGiVolumeRefBase) | fl.ref)
+			: fl.n;
+		if (c.verb == Verb::SetPhysicsBodyAttr) {
+			static constexpr const char* attrs[] = {
+				"motion", "shape", "mass", "friction", "restitution",
+				"halfX", "halfY", "halfZ", "radius", "height", "sensor"
+			};
+			if (!fl.hasAt || !fl.hasV
+				|| std::find_if(std::begin(attrs), std::end(attrs),
+					[&](const char* a) { return fl.at == a; }) == std::end(attrs)) {
+				err = "line " + std::to_string(lineNo) + ": invalid physics property";
+				return false;
+			}
+			c.text = fl.at;
+			if (fl.at == "sensor") {
+				if (!ParseFlagWord(fl.v, c.flag)) {
+					err = "line " + std::to_string(lineNo) + ": invalid sensor flag";
+					return false;
+				}
+			} else {
+				if (!ParseDouble(fl.v, c.number) || !std::isfinite(c.number)
+					|| (fl.at == "motion" && (c.number < 0 || c.number > 2
+						|| std::floor(c.number) != c.number))
+					|| (fl.at == "shape" && (c.number < 0 || c.number > 2
+						|| std::floor(c.number) != c.number))
+					|| ((fl.at == "mass" || fl.at == "halfX"
+							|| fl.at == "halfY" || fl.at == "halfZ"
+							|| fl.at == "radius" || fl.at == "height")
+						&& c.number <= 0)
+					|| ((fl.at == "friction" || fl.at == "restitution")
+						&& (c.number < 0 || c.number > 1))) {
+					err = "line " + std::to_string(lineNo) + ": invalid physics value";
+					return false;
+				}
+			}
+		}
+	}
 	else if (effVerb == "attachTriggerVolume" || effVerb == "removeTriggerVolume") {
 		if (!(fl.hasN || fl.hasRef || fl.hasUuid)
 				|| fl.hasRef != fl.hasOwner) {
@@ -4320,6 +4392,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		createdAudioRooms.push_back(uint32_t(newId));
 		break;
 	}
+	case Verb::AttachPhysicsBody:
+	case Verb::RemovePhysicsBody:
+	case Verb::SetPhysicsBodyAttr:
 	case Verb::AttachTriggerVolume:
 	case Verb::RemoveTriggerVolume:
 	case Verb::SetTriggerVolumeAttr:
@@ -4344,7 +4419,31 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			if (!failCmd(c)) return false;
 			break;
 		}
-		if (c.verb == Verb::AttachGiVolume)
+		if (c.verb == Verb::AttachPhysicsBody)
+			tour::scene::SetPhysicsBody(scene, target, tour::scene::ScenePhysicsBody{});
+		else if (c.verb == Verb::RemovePhysicsBody)
+			tour::scene::RemovePhysicsBody(scene, target);
+		else if (c.verb == Verb::SetPhysicsBodyAttr) {
+			auto* row = tour::scene::FindPhysicsBody(scene, target);
+			if (!row) {
+				if (err) *err = "tour: physics attr on node without physics body";
+				if (!failCmd(c)) return false;
+				break;
+			}
+			auto& b = row->body;
+			if (c.text == "motion") b.motion = uint32_t(c.number);
+			else if (c.text == "shape") b.shape = uint32_t(c.number);
+			else if (c.text == "mass") b.mass = float(c.number);
+			else if (c.text == "friction") b.friction = float(c.number);
+			else if (c.text == "restitution") b.restitution = float(c.number);
+			else if (c.text == "halfX") b.halfExtents.x = float(c.number);
+			else if (c.text == "halfY") b.halfExtents.y = float(c.number);
+			else if (c.text == "halfZ") b.halfExtents.z = float(c.number);
+			else if (c.text == "radius") b.radius = float(c.number);
+			else if (c.text == "height") b.height = float(c.number);
+			else if (c.text == "sensor") b.sensor = c.flag;
+		}
+		else if (c.verb == Verb::AttachGiVolume)
 			SetGiVolume(scene, target, SceneGiVolume{});
 		else if (c.verb == Verb::RemoveGiVolume)
 			RemoveGiVolume(scene, target);

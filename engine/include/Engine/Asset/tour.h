@@ -257,6 +257,9 @@ enum class Verb : uint8_t {
  	AttachTriggerVolume, // attach a spatial trigger row to an existing node
   RemoveTriggerVolume, // detach trigger without deleting node
   SetTriggerVolumeAttr, // enabled, once or tag
+  AttachPhysicsBody, // add body + collider properties to a node
+  RemovePhysicsBody, // detach without deleting the node
+  SetPhysicsBodyAttr, // motion/shape/mass/material/geometry/sensor
   AttachGiVolume,  // add a default GI component to an existing node
   RemoveGiVolume,  // remove only GI on a node
   SetGiVolumeAttr,    // node = target cluster id, or a created-volume ref

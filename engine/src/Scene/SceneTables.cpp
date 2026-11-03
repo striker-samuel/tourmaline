@@ -179,6 +179,16 @@ void RebuildNodeRows(Scene& scene)
 		++i;
 	}
 
+	for (size_t i = 0; i < scene.tables.physicsBodies.size();) {
+		PhysicsBodyRow& row = scene.tables.physicsBodies[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = std::move(scene.tables.physicsBodies.back());
+			scene.tables.physicsBodies.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].body = RowId(i);
+		++i;
+	}
 	for (size_t i = 0; i < scene.tables.triggerVolumes.size();) {
 		TriggerVolumeRow& row = scene.tables.triggerVolumes[i];
 		if (!NodeInRange(scene, row.node)) {
@@ -898,6 +908,40 @@ bool RemoveAudioRoom(Scene& scene, NodeId node)
 	return true;
 }
 
+// ---- physics authoring association ----
+PhysicsBodyRow* FindPhysicsBody(Scene& scene, NodeId node) {
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size()) return nullptr;
+	const RowId id = scene.rowsForNode[node].body;
+	return id == InvalidRow ? nullptr : &scene.tables.physicsBodies[id];
+}
+const PhysicsBodyRow* FindPhysicsBody(const Scene& scene, NodeId node) {
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size()) return nullptr;
+	const RowId id = scene.rowsForNode[node].body;
+	return id == InvalidRow ? nullptr : &scene.tables.physicsBodies[id];
+}
+bool SetPhysicsBody(Scene& scene, NodeId node, const ScenePhysicsBody& body) {
+	if (!NodeInRange(scene, node)) return false;
+	EnsureNodeRows(scene);
+	if (auto* row = FindPhysicsBody(scene, node)) {
+		row->body = body;
+		return true;
+	}
+	scene.tables.physicsBodies.push_back(PhysicsBodyRow{node, body});
+	scene.rowsForNode[node].body = RowId(scene.tables.physicsBodies.size() - 1);
+	return true;
+}
+bool RemovePhysicsBody(Scene& scene, NodeId node) {
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size()) return false;
+	const RowId id = scene.rowsForNode[node].body;
+	if (id == InvalidRow) return false;
+	scene.tables.physicsBodies[id] = std::move(scene.tables.physicsBodies.back());
+	scene.tables.physicsBodies.pop_back();
+	if (size_t(id) < scene.tables.physicsBodies.size())
+		scene.rowsForNode[scene.tables.physicsBodies[id].node].body = id;
+	scene.rowsForNode[node].body = InvalidRow;
+	return true;
+}
+
 // ---- spatial trigger association ----
 TriggerVolumeRow* FindTriggerVolume(Scene& scene, NodeId node) {
 	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
@@ -1050,6 +1094,7 @@ bool RemoveNodeRows(Scene& scene, NodeId node)
 	removed |= RemoveAudioSource(scene, node);
 	removed |= RemoveAudioRoom(scene, node);
 	removed |= RemoveTriggerVolume(scene, node);
+	removed |= RemovePhysicsBody(scene, node);
 	return removed;
 }
 

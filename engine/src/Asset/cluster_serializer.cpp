@@ -4,6 +4,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1650,6 +1651,35 @@ bool SerializeClusters(
 				PutStr(blob, row->trigger.tag);
 			}
 		}
+		// Physics body authoring rows, sorted by cooked dense node ID.
+		{
+			std::vector<const tour::scene::PhysicsBodyRow*> rows;
+			for (const auto& row : cluster.scene.tables.physicsBodies) {
+				if (row.node >= slotToDense.size()
+					|| slotToDense[row.node] == UINT32_MAX)
+					return fail("scene physics body references retired node");
+				rows.push_back(&row);
+			}
+			std::sort(rows.begin(), rows.end(), [&](const auto* a, const auto* b) {
+				return slotToDense[a->node] < slotToDense[b->node];
+			});
+			PutU32(blob, uint32_t(rows.size()));
+			for (const auto* row : rows) {
+				const auto& b = row->body;
+				PutU32(blob, slotToDense[row->node]);
+				PutU32(blob, b.motion);
+				PutU32(blob, b.shape);
+				PutF32(blob, b.mass);
+				PutF32(blob, b.friction);
+				PutF32(blob, b.restitution);
+				PutF32(blob, b.halfExtents.x);
+				PutF32(blob, b.halfExtents.y);
+				PutF32(blob, b.halfExtents.z);
+				PutF32(blob, b.radius);
+				PutF32(blob, b.height);
+				PutU32(blob, b.sensor ? 1u : 0u);
+			}
+		}
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
 			return fail("scene blob rejected");
@@ -2322,6 +2352,39 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 				trigger.once = (flags & 2u) != 0;
 				trigger.tag = tag;
 				scene.tables.triggerVolumes.push_back({ node, std::move(trigger) });
+			}
+		}
+		// Physics records are mandatory in the current scene layout.
+		{
+			const uint32_t count = c.u32();
+			if (!c.ok || count > nodeCount)
+				return fail("bad scene physics body section");
+			for (uint32_t i = 0; i < count; ++i) {
+				const uint32_t node = c.u32();
+				tour::scene::ScenePhysicsBody b{};
+				b.motion = c.u32();
+				b.shape = c.u32();
+				b.mass = c.f32();
+				b.friction = c.f32();
+				b.restitution = c.f32();
+				b.halfExtents.x = c.f32();
+				b.halfExtents.y = c.f32();
+				b.halfExtents.z = c.f32();
+				b.radius = c.f32();
+				b.height = c.f32();
+				const uint32_t sensor = c.u32();
+				if (!c.ok || node >= nodeCount || b.motion > 2 || b.shape > 2
+					|| !(std::isfinite(b.mass) && b.mass > 0)
+					|| !(std::isfinite(b.friction) && b.friction >= 0 && b.friction <= 1)
+					|| !(std::isfinite(b.restitution) && b.restitution >= 0 && b.restitution <= 1)
+					|| !(std::isfinite(b.halfExtents.x) && b.halfExtents.x > 0)
+					|| !(std::isfinite(b.halfExtents.y) && b.halfExtents.y > 0)
+					|| !(std::isfinite(b.halfExtents.z) && b.halfExtents.z > 0)
+					|| !(std::isfinite(b.radius) && b.radius > 0)
+					|| !(std::isfinite(b.height) && b.height > 0) || sensor > 1)
+					return fail("bad scene physics body record");
+				b.sensor = sensor != 0;
+				scene.tables.physicsBodies.push_back({node, b});
 			}
 		}
 		if (c.off != c.img.size())

@@ -60,6 +60,36 @@ Scene MakeScene(uint32_t count) {
 
 int main() {
 	{
+		Scene s = MakeScene(4);
+		tour::scene::ScenePhysicsBody dynamic{};
+		dynamic.motion = 1;
+		dynamic.shape = 2;
+		dynamic.mass = 12.5f;
+		dynamic.radius = 0.35f;
+		Check(tour::scene::SetPhysicsBody(s, 1, dynamic), "physics: attach");
+		Check(tour::scene::FindPhysicsBody(s, 1)
+			&& tour::scene::FindPhysicsBody(s, 1)->body.mass == 12.5f,
+			"physics: authored data stored");
+		Check(tour::scene::SetPhysicsBody(s, 2, {}),
+			"physics: second body attaches");
+		Check(tour::scene::RemovePhysicsBody(s, 1),
+			"physics: detach");
+		Check(tour::scene::FindPhysicsBody(s, 2)
+			&& tour::scene::FindPhysicsBody(s, 2)->node == 2,
+			"physics: swap-and-pop fixes node lookup");
+		Check(tour::scene::SetPhysicsBody(s, 2, dynamic)
+			&& s.tables.physicsBodies.size() == 1,
+			"physics: repeated attach replaces");
+		RebuildNodeRows(s);
+		Check(tour::scene::FindPhysicsBody(s, 2)
+			&& Near(tour::scene::FindPhysicsBody(s, 2)->body.radius, 0.35f),
+			"physics: index rebuild preserves body");
+		Check(RemoveNodeRows(s, 2) && !tour::scene::FindPhysicsBody(s, 2),
+			"physics: node deletion detaches body");
+		Check(!tour::scene::SetPhysicsBody(s, 999, {}),
+			"physics: cannot attach to invalid node");
+	}
+	{
 		// ---- insertion + lookup ----
 		Scene s = MakeScene(4);
 		Check(SetMesh(s, 1, 10), "SetMesh valid node returns true");

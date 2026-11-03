@@ -2067,6 +2067,70 @@ namespace editor {
 		}
 	}
 
+	void EditorApp::DrawPhysicsBodySection(uint32_t node) {
+		const attr::ScopedID componentId("physics_body");
+		if (!m_world || node >= m_world->scene.hierarchy.size()) return;
+		auto* row = tour::scene::FindPhysicsBody(m_world->scene, node);
+		ImGui::Separator();
+		if (!row) {
+			ImGui::TextDisabled("Physics body: not attached");
+			if (ImGui::Button("Add Physics Body")) {
+				EditCmd cmd{};
+				cmd.verb = EditVerb::AttachPhysicsBody;
+				cmd.node = node;
+				Do(cmd);
+			}
+			return;
+		}
+		ImGui::TextUnformatted("Physics Body / Collider");
+		ImGui::TextDisabled("Authored definition (simulation preview not yet available).");
+		auto commit = [&](const char* key, double value, bool flag = false) {
+			EditCmd cmd{};
+			cmd.verb = EditVerb::SetPhysicsBodyAttr;
+			cmd.node = node;
+			cmd.physicsAttr = key;
+			ReadNodePhysicsBodyAttr(node, key, cmd.beforeNum, cmd.beforeFlag);
+			cmd.number = value;
+			cmd.afterFlag = flag;
+			Do(cmd);
+		};
+		int motion = int(row->body.motion);
+		if (ImGui::Combo("Motion", &motion, "Static\0Dynamic\0Kinematic\0"))
+			commit("motion", motion);
+		int shape = int(row->body.shape);
+		if (ImGui::Combo("Collider shape", &shape, "Box\0Sphere\0Capsule\0"))
+			commit("shape", shape);
+		auto scalar = [&](const char* label, const char* key, float initial,
+				float lo, float hi) {
+			float value = initial;
+			if (ImGui::DragFloat(label, &value, 0.01f, lo, hi, "%.3f",
+					ImGuiSliderFlags_AlwaysClamp))
+				commit(key, std::clamp(value, lo, hi));
+		};
+		if (motion == 1)
+			scalar("Mass (kg)", "mass", row->body.mass, 0.001f, 1000000.f);
+		scalar("Friction", "friction", row->body.friction, 0.f, 1.f);
+		scalar("Restitution", "restitution", row->body.restitution, 0.f, 1.f);
+		if (shape == 0) {
+			scalar("Half extent X (m)", "halfX", row->body.halfExtents.x, 0.001f, 10000.f);
+			scalar("Half extent Y (m)", "halfY", row->body.halfExtents.y, 0.001f, 10000.f);
+			scalar("Half extent Z (m)", "halfZ", row->body.halfExtents.z, 0.001f, 10000.f);
+		} else {
+			scalar("Radius (m)", "radius", row->body.radius, 0.001f, 10000.f);
+			if (shape == 2)
+				scalar("Cylinder height (m)", "height", row->body.height, 0.001f, 10000.f);
+		}
+		bool sensor = row->body.sensor;
+		if (ImGui::Checkbox("Sensor (no contact response)", &sensor))
+			commit("sensor", 0, sensor);
+		if (ImGui::Button("Remove Physics Body")) {
+			EditCmd cmd{};
+			cmd.verb = EditVerb::RemovePhysicsBodyVerb;
+			cmd.node = node;
+			Do(cmd);
+		}
+	}
+
 	void EditorApp::DrawTriggerVolumeSection(uint32_t node) {
 		const attr::ScopedID componentId("trigger_volume");
 		if (!m_world || node >= m_world->scene.hierarchy.size())
@@ -3210,6 +3274,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// Authored GI volume on this node (GI volume inspector).
 		DrawGiVolumeSection(node);
 		DrawTriggerVolumeSection(node);
+		DrawPhysicsBodySection(node);
 		// Authored cubemap capture on this node (pinned probe inspector).
 		DrawCubemapSection(node);
 		// Authored camera on this node (lens inspector).

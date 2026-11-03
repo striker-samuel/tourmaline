@@ -241,6 +241,21 @@ struct SceneAudioRoom {
 	float transitionSeconds = 0.25f; // the listener-blend glide
 };
 
+// Physics authoring component. The owning node's world transform places
+// the collider; dimensions below are local, in metres. Runtime Jolt
+// instantiation is deliberately separate from authored data.
+struct ScenePhysicsBody {
+	uint32_t motion = 0; // 0 static, 1 dynamic, 2 kinematic
+	uint32_t shape = 0;  // 0 box, 1 sphere, 2 capsule
+	float mass = 1.0f;   // kg, dynamic bodies only
+	float friction = 0.5f;
+	float restitution = 0.0f;
+	glm::vec3 halfExtents{ 0.5f }; // box half-sizes in metres
+	float radius = 0.5f; // sphere and capsule radius
+	float height = 1.0f; // capsule cylindrical height
+	bool sensor = false;
+};
+
 // Trigger component: an oriented spatial box (from the owning node's
 // global transform). Runtime emits enter/exit on the boundary. "once"
 // suppresses further enter notifications per actor after the first entry.
