@@ -687,10 +687,22 @@ namespace editor {
 		// (one-frame resize latency, no second render pass or realloc).
 		ViewportRect area{ 0.0f, m_menuH, float(extent.width),
 			float(extent.height) - m_menuH };
-		if (m_uiMode)
+		if (m_uiMode) {
 			area = m_dockViewportVisible
 				? m_dockViewportRect
 				: ViewportRect{ 0.0f, m_menuH, 1.0f, 1.0f };
+			// Floating dock windows may extend beyond the main swapchain.
+			// Never wrap a negative position into a uint32 Vulkan offset or
+			// draw outside the attachment when a user drags one offscreen.
+			const float fbW = float(extent.width), fbH = float(extent.height);
+			const float x0 = std::clamp(area.x, 0.0f, fbW);
+			const float y0 = std::clamp(area.y, 0.0f, fbH);
+			const float x1 = std::clamp(area.x + area.w, 0.0f, fbW);
+			const float y1 = std::clamp(area.y + area.h, 0.0f, fbH);
+			area = x1 > x0 + 1.0f && y1 > y0 + 1.0f
+				? ViewportRect{ x0, y0, x1 - x0, y1 - y0 }
+				: ViewportRect{ 0.0f, m_menuH, 1.0f, 1.0f };
+		}
 		// A docked prefab world occupies the right portion of the
 		// CENTRAL editor stage, independently from the Inspector and
 		// asset browser. Keep the scene's native 4:3 aspect and camera
