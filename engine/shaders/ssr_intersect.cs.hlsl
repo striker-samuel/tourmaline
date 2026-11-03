@@ -41,7 +41,7 @@
 // miss-silence keeps the analytic sky IBL the sole sky contributor —
 // no envmap double-count).
 
-// Must match Engine/Rendergraph/ssr.h SsrIntersectPush (152 bytes).
+// Must match Engine/Rendergraph/ssr.h SsrIntersectPush (128 bytes).
 // uint64 BDAs lead (see ssr.h — scalars never precede a BDA).
 struct SsrIntersectPush
 {
@@ -50,8 +50,6 @@ struct SsrIntersectPush
     GPU_PTR_READ(SsrRayCounter) rayCounter; // [1] = the frozen count (early-out bound)
     GPU_PTR_WRITE(SsrRadiance) radiance;
     GPU_PTR_READ(HzbBuffer) ssrHzb;
-    GPU_PTR_READ(StaticSdfInstanceBuffer) staticSdfInstances;
-    GPU_PTR_READ(StaticSdfSampleWords) staticSdfSamples;
     uint hdrTextureIndex;
     uint depthTextureIndex;
     uint samplerIndex;
@@ -71,11 +69,8 @@ struct SsrIntersectPush
     uint minOccupancy;     // wave early-out (non-mirror only)
     uint ssrHzbMipCount;
     uint gbuffer2TextureIndex; // F0-chroma layer 2; 0xffffffff = flat F0
-    uint pad1;
-    uint staticSdfInstanceCount;
-    uint staticSdfMaxSteps;
-    float staticSdfEpsilon;
-    float staticSdfOriginBias;
+    uint staticSdfEnabled;
+    GPU_PTR_READ(StaticSdfSceneHeader) staticSdfScene;
 };
 
 GPU_PUSH(SsrIntersectPush, sp);
@@ -122,18 +117,21 @@ float4 SsrStaticSdfMiss(FrameUniforms frame, float3 viewPos,
     float3 Rview, float3 N, float3 V, SsrGb receiver,
     int2 receiverPx, float2 fullExtent)
 {
-    if (sp.staticSdfInstanceCount == 0u)
+    if (sp.staticSdfEnabled == 0u)
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    StaticSdfSceneHeader scene = sp.staticSdfScene.Get();
+    if (scene.instanceCount == 0u)
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     float3 worldOrigin = mul(frame.invView, float4(viewPos, 1.0f)).xyz;
     float3 worldDir = normalize(mul((float3x3)frame.invView, Rview));
-    float bias = max(sp.staticSdfOriginBias, 2.0f * sp.staticSdfEpsilon);
+    float bias = max(scene.originBias, 2.0f * scene.epsilon);
     float maxTrace = sp.maxDistance - bias;
     if (maxTrace <= 0.0f)
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     StaticSdfRayHit hit = StaticSdfTrace(worldOrigin + bias * worldDir,
-        worldDir, maxTrace, sp.staticSdfEpsilon,
-        sp.staticSdfMaxSteps, sp.staticSdfInstanceCount,
-        sp.staticSdfInstances, sp.staticSdfSamples);
+        worldDir, maxTrace, scene.epsilon,
+        scene.maxSteps, scene.instanceCount,
+        scene.instances, scene.samples);
     if (!hit.valid)
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
 

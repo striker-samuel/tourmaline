@@ -38,6 +38,20 @@ static_assert(sizeof(StaticSdfGpuInstance) == 96);
 static_assert(offsetof(StaticSdfGpuInstance, surface) == 64);
 static_assert(offsetof(StaticSdfGpuInstance, meta) == 80);
 
+// Matches StaticSdfSceneHeader in static_sdf_trace.hlsli (32 B).
+// Publishing the descriptor through one BDA keeps the SSR push
+// constants within Vulkan's guaranteed 128-byte minimum.
+struct StaticSdfSceneHeader {
+	uint64_t instancesAddress = 0;
+	uint64_t samplesAddress = 0;
+	uint32_t instanceCount = 0;
+	uint32_t maxSteps = 64;
+	float epsilon = 0.02f;
+	float originBias = 0.05f;
+};
+static_assert(sizeof(StaticSdfSceneHeader) == 32);
+static_assert(offsetof(StaticSdfSceneHeader, instanceCount) == 16);
+
 inline constexpr uint32_t kStaticSdfMaxInstances = 128;
 inline constexpr uint32_t kStaticSdfMaxSampleWords = 2u * 1024u * 1024u;
 
@@ -57,14 +71,14 @@ public:
 	void Clear();
 
 	uint32_t InstanceCount() const { return m_instanceCount; }
-	uint64_t InstancesAddress(ResourceManager& ctx) const;
-	uint64_t SamplesAddress(ResourceManager& ctx) const;
+	uint64_t SceneAddress(ResourceManager& ctx) const;
 	bool Ready() const {
 		return m_instanceCount != 0 &&
-			!m_instances.empty() && !m_samples.empty();
+			!m_header.empty() && !m_instances.empty() && !m_samples.empty();
 	}
 
 private:
+	Holder<BufferHandle> m_header;
 	Holder<BufferHandle> m_instances;
 	Holder<BufferHandle> m_samples;
 	uint32_t m_instanceCount = 0;

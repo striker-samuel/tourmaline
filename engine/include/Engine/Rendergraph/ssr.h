@@ -178,12 +178,7 @@ struct SsrDesc {
 	// Optional STATIC SDF geometry fallback when screen-space rays miss.
 	// Both BDAs must be nonzero and count > 0; default OFF, byte-for-byte
 	// legacy SSR otherwise. The SDF uploader owns the frozen buffers.
-	uint64_t staticSdfInstancesAddr = 0;
-	uint64_t staticSdfSamplesAddr = 0;
-	uint32_t staticSdfInstanceCount = 0;
-	uint32_t staticSdfMaxSteps = 64;
-	float staticSdfEpsilon = 0.02f;
-	float staticSdfOriginBias = 0.05f;
+	uint64_t staticSdfSceneAddr = 0; // BDA of 32-byte static-scene header
 	bool debugContrib = false;
 	const char* name = "ssr";
 	const char* viewName = "ssrView";
@@ -220,7 +215,7 @@ struct SsrIndirectPush {
 };
 static_assert(sizeof(SsrIndirectPush) == 16);
 
-// Must match ssr_intersect.cs.hlsl SsrIntersectPush (152 bytes) — the
+// Must match ssr_intersect.cs.hlsl SsrIntersectPush (128 bytes) — the
 // SSSR intersect (GGX VNDF + the classic Hi-Z traversal), indirect
 // compute dispatch driven by the classify's ray count. uint64s first
 // (see SsrClassifyPush).
@@ -230,8 +225,6 @@ struct SsrIntersectPush {
 	uint64_t rayCounterAddr = 0; // [1] = the frozen count (early-out bound)
 	uint64_t radianceAddr = 0;
 	uint64_t ssrHzbAddr = 0; // BDA of the MAX-reduce trace Hi-Z; 0 = no skip
-	uint64_t staticSdfInstancesAddr = 0; // optional static volume descriptor BDA
-	uint64_t staticSdfSamplesAddr = 0;   // packed R16_SNORM sample words
 	uint32_t hdrTextureIndex = UINT32_MAX;
 	uint32_t depthTextureIndex = UINT32_MAX;
 	uint32_t samplerIndex = 0;
@@ -254,13 +247,11 @@ struct SsrIntersectPush {
 	// tinted-Fresnel source. UINT32_MAX = the flat-F0 fallback (the
 	// layer absent / the G-buffer leg off) — today's behavior.
 	uint32_t gbuffer2TextureIndex = UINT32_MAX;
-	uint32_t pad1 = 0;
-	uint32_t staticSdfInstanceCount = 0;
-	uint32_t staticSdfMaxSteps = 64;
-	float staticSdfEpsilon = 0.02f;
-	float staticSdfOriginBias = 0.05f;
+	uint32_t staticSdfEnabled = 0; // 0 = no SDF scene pointer
+	uint64_t staticSdfSceneAddr = 0; // offset 120, 8-aligned, push totals 128 B
 };
-static_assert(sizeof(SsrIntersectPush) == 152);
+static_assert(sizeof(SsrIntersectPush) == 128);
+static_assert(offsetof(SsrIntersectPush, staticSdfSceneAddr) == 120);
 
 // Must match ssr_copy.frag.hlsl SsrCopyPush (24 bytes) — the
 // radiance-buffer -> raw blit.
@@ -1627,12 +1618,8 @@ ShaderProgram progCopy = indirectProgram;
 		push.rayCounterAddr = rayCounterAddr;
 		push.radianceAddr = radianceAddr;
 		push.ssrHzbAddr = hzbOn ? hzbAddr : 0;
-		push.staticSdfInstancesAddr = overrideDesc.staticSdfInstancesAddr;
-		push.staticSdfSamplesAddr = overrideDesc.staticSdfSamplesAddr;
-		push.staticSdfInstanceCount = overrideDesc.staticSdfInstanceCount;
-		push.staticSdfMaxSteps = std::clamp(overrideDesc.staticSdfMaxSteps, 1u, 128u);
-		push.staticSdfEpsilon = std::clamp(overrideDesc.staticSdfEpsilon, 0.001f, 0.2f);
-		push.staticSdfOriginBias = std::clamp(overrideDesc.staticSdfOriginBias, 0.0f, 0.5f);
+		push.staticSdfEnabled = overrideDesc.staticSdfSceneAddr != 0 ? 1u : 0u;
+		push.staticSdfSceneAddr = overrideDesc.staticSdfSceneAddr;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.depthTextureIndex = depthBindlessIndex;
  		push.samplerIndex = linearSamplerIndex;
@@ -1997,12 +1984,8 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 		push.rayCounterAddr = rayCounterAddr;
 		push.radianceAddr = radianceAddr;
 		push.ssrHzbAddr = hzbOn ? hzbAddr : 0;
-		push.staticSdfInstancesAddr = overrideDesc.staticSdfInstancesAddr;
-		push.staticSdfSamplesAddr = overrideDesc.staticSdfSamplesAddr;
-		push.staticSdfInstanceCount = overrideDesc.staticSdfInstanceCount;
-		push.staticSdfMaxSteps = std::clamp(overrideDesc.staticSdfMaxSteps, 1u, 128u);
-		push.staticSdfEpsilon = std::clamp(overrideDesc.staticSdfEpsilon, 0.001f, 0.2f);
-		push.staticSdfOriginBias = std::clamp(overrideDesc.staticSdfOriginBias, 0.0f, 0.5f);
+		push.staticSdfEnabled = overrideDesc.staticSdfSceneAddr != 0 ? 1u : 0u;
+		push.staticSdfSceneAddr = overrideDesc.staticSdfSceneAddr;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.depthTextureIndex = depthBindlessIndex;
  		push.samplerIndex = linearSamplerIndex;

@@ -15378,15 +15378,9 @@ namespace engine {
 				if (m_staticSdfReflectionsEnabled && m_world &&
 					m_staticSdfGpu.Update(*m_context, *m_world,
 						glm::vec3(m_cameraPositioner.cameraPosition_))) {
-					const uint64_t instances =
-						m_staticSdfGpu.InstancesAddress(*m_context);
-					const uint64_t samples =
-						m_staticSdfGpu.SamplesAddress(*m_context);
-					if (instances != 0 && samples != 0) {
-						ssrDesc.staticSdfInstancesAddr = instances;
-						ssrDesc.staticSdfSamplesAddr = samples;
-						ssrDesc.staticSdfInstanceCount = m_staticSdfGpu.InstanceCount();
-					}
+					// One scene-header BDA, keeping the SSR push at 128 B.
+					ssrDesc.staticSdfSceneAddr =
+						m_staticSdfGpu.SceneAddress(*m_context);
 				}
 				// Receiver-material layer availability: the thin G-buffer
 				// (oct normal + roughness + metal) is written by the Forward+

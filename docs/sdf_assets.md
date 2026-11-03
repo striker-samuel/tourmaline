@@ -85,6 +85,8 @@ draw items, maps the cooked mesh URI's family and fragment to a
   rows, voxel origin/size, base-color factor/roughness and grid metadata
 - One shared sample-word buffer: two signed R16 values packed in each
   uint32, deduplicated across instances of the same mesh URI
+- One 32-byte scene descriptor (BDA pointers + trace tuning), allowing
+  the SSR compute push constants to fit Vulkan's 128-byte minimum
 - A hard cap of 128 resident instances and 2,097,152 sample words
   (4,194,304 voxels); excess candidates are skipped (the nearest candidates to the camera
   are selected, republished after an 8 m camera move) so GPU memory and

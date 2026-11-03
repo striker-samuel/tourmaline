@@ -57,6 +57,7 @@ std::vector<uint32_t> PackStaticSdfWords(std::span<const int16_t> samples) {
 }
 
 void StaticSdfGpuScene::Clear() {
+	m_header = {};
 	m_instances = {};
 	m_samples = {};
 	m_instanceCount = 0;
@@ -65,12 +66,8 @@ void StaticSdfGpuScene::Clear() {
 	m_cachedEyeValid = false;
 }
 
-uint64_t StaticSdfGpuScene::InstancesAddress(ResourceManager& ctx) const {
-	return Ready() ? ctx.GetBufferDeviceAddress(m_instances) : 0;
-}
-
-uint64_t StaticSdfGpuScene::SamplesAddress(ResourceManager& ctx) const {
-	return Ready() ? ctx.GetBufferDeviceAddress(m_samples) : 0;
+uint64_t StaticSdfGpuScene::SceneAddress(ResourceManager& ctx) const {
+	return Ready() ? ctx.GetBufferDeviceAddress(m_header) : 0;
 }
 
 bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
@@ -205,7 +202,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
 	}
 
 	// A failed build must not leave stale buffers from a previous world.
-	Holder<BufferHandle> instanceBuffer, sampleBuffer;
+	Holder<BufferHandle> headerBuffer, instanceBuffer, sampleBuffer;
 	if (!instances.empty()) {
 		instanceBuffer = ctx.CreateBuffer(
 			instances.size() * sizeof(StaticSdfGpuInstance),
@@ -213,7 +210,10 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
 		sampleBuffer = ctx.CreateBuffer(
 			words.size() * sizeof(uint32_t),
 			BufferType_Storage, "Static SDF reflection samples");
-		if (instanceBuffer.empty() || sampleBuffer.empty()) {
+		headerBuffer = ctx.CreateBuffer(sizeof(StaticSdfSceneHeader),
+			BufferType_Storage, "Static SDF reflection descriptor");
+		if (instanceBuffer.empty() || sampleBuffer.empty() ||
+			headerBuffer.empty()) {
 			Clear();
 			m_world = &world;
 			m_worldRevision = world.gpuSceneTopologyRevision;
@@ -227,8 +227,14 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
 		ctx.UploadDataToBuffer(sampleBuffer,
 			words.data(), words.size() * sizeof(uint32_t),
 			PipelineStageBit_Compute, AccessFlags::ShaderRead);
+		StaticSdfSceneHeader gpuHeader{};
+		gpuHeader.instancesAddress = ctx.GetBufferDeviceAddress(instanceBuffer);
+		gpuHeader.samplesAddress = ctx.GetBufferDeviceAddress(sampleBuffer);
+		gpuHeader.instanceCount = uint32_t(instances.size());
+		ctx.UploadDataToBuffer(headerBuffer, &gpuHeader, sizeof(gpuHeader),
+			PipelineStageBit_Compute, AccessFlags::ShaderRead);
 	}
-
+	m_header = std::move(headerBuffer);
 	m_instances = std::move(instanceBuffer);
 	m_samples = std::move(sampleBuffer);
 	m_instanceCount = uint32_t(instances.size());
