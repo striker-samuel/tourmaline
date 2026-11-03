@@ -11328,11 +11328,16 @@ namespace engine {
 			if (!rt.hfield && m_terrain.valid)
 				rt.hfield = &m_terrain.hfield;
 			if (rt.layer && rt.hfield && rt.masks) {
-				if (!rt.Valid())
+				if (!rt.Valid()) {
+					// Scratch belongs to a frame-in-flight, not a camera alone.
+					if (rt.viewBudget < m_swapchain->framesInFlight())
+						rt.viewBudget = m_swapchain->framesInFlight();
 					(void)rt.Create(*m_context, *m_rendergraph);
+				}
 				if (rt.Valid() && !m_gpuPlacementDraw)
 					m_gpuPlacementDraw = new tour::placement::PlacementDrawPrograms();
-				if (rt.Valid() && m_gpuPlacementDraw
+				if (rt.Valid() && rt.viewBudget >= m_swapchain->framesInFlight()
+					&& m_gpuPlacementDraw
 					&& m_gpuPlacementDraw->Ensure(*m_context)) {
 					if (m_gpuPlacementViewLogical.empty())
 						m_gpuPlacementViewLogical = m_rendergraph->AddExternalBuffer(
@@ -11347,14 +11352,14 @@ namespace engine {
 							std::min(meta.originX + meta.worldSize, eye.x + r),
 							std::min(meta.originZ + meta.worldSize, eye.z + r));
 						if (interest.z > interest.x && interest.w > interest.y
-							&& rt.SeedIndirect(*m_context, 0,
+							&& rt.SeedIndirect(*m_context, fb.frameIndex,
 								m_gpuPlacementSeeds, m_gpuPlacementSeedCount)) {
 							tour::placement::DependencyVersions deps{};
 							deps.terrain = m_gpuPlacementTerrainRevision;
 							rt.BeginFrame(*m_context, *m_rendergraph,
 								&interest, 1, deps);
 							rt.RecordCullChain(*m_context, *m_rendergraph,
-								0, m_gpuPlacementViewLogical, renderViewsAddress,
+								fb.frameIndex, m_gpuPlacementViewLogical, renderViewsAddress,
 								mainRenderView, eye,
 								tour::placement::kPlacementCullFrustum |
 								tour::placement::kPlacementCullDistance);
@@ -13334,14 +13339,14 @@ namespace engine {
 			mainPass.AddBufferHint(m_gpuPlacementViewLogical, vertRead);
 			const auto& rt = *m_gpuPlacementRuntime;
 			for (size_t s = 0; s < rt.active.size(); ++s) {
-				const auto* vs = rt.VisSet(int32_t(s));
+				const auto* vs = rt.VisSet(int32_t(s), fb.frameIndex);
 				if (!vs) continue;
 				mainPass.AddBufferHint(rt.pass.instanceLogicals[s], vertRead);
 				mainPass.AddBufferHint(vs->visibleL, vertRead);
 				mainPass.AddBufferHint(vs->indirectL, indirectRead);
 			}
 		}
-		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, selectionLineVerts, frameViewProj, transparentCullView, meshActiveForFrame, mainSkinBda, mainSkinBase, mainSkinValid](smvk::CommandBuffer& cmd)
+		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, selectionLineVerts, frameViewProj, transparentCullView, meshActiveForFrame, mainSkinBda, mainSkinBase, mainSkinValid, placementFlight = fb.frameIndex](smvk::CommandBuffer& cmd)
 		{
 			// 1x: depth was filled by the Forward+ prepass, main is read-only.
 			// 2x: transient depth is cleared above, main writes it
@@ -14392,7 +14397,7 @@ namespace engine {
 				cmd.PushConstants(0, sizeof(IRenderer::PushConstants),
 					&pc, smvk::ShaderStage::All);
 				for (size_t s = 0; s < rt.active.size(); ++s) {
-					const auto* vs = rt.VisSet(int32_t(s));
+					const auto* vs = rt.VisSet(int32_t(s), placementFlight);
 					if (!vs) continue;
 					const tour::placement::PlacementVsPush tail{
 						vs->VisibleAddress(*m_context),
