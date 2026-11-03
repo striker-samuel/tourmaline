@@ -210,3 +210,136 @@ def descriptor_for_image(path, doc, view="+Z", size=None):
     return {"source": str(path), "geometry_guid": "", "bounds": {"size": size} if size else None,
             "features": {view: desc}}
 
+def visual_scores(query, candidate, grid):
+    intersections, unions = 0.0, 0.0
+    sums = {key: 0.0 for key in ("color", "normal", "roughness", "metallic", "occlusion", "emissive")}
+    weights = {key: 0.0 for key in sums}
+    for name, encoded in query["features"].items():
+        if name not in candidate["features"]:
+            continue
+        q = decoded_view(encoded, grid)
+        c = decoded_view(candidate["features"][name], grid)
+        for i, (a8, b8) in enumerate(zip(q["coverage"], c["coverage"])):
+            a, b = a8 / 255, b8 / 255
+            intersections += min(a, b)
+            unions += max(a, b)
+            overlap = min(a, b)
+            if overlap == 0:
+                continue
+            for channel, kind, indices in (
+                    ("albedo", "color", (0, 1, 2)),
+                    ("orm", "occlusion", (0,)),
+                    ("orm", "roughness", (1,)),
+                    ("orm", "metallic", (2,)),
+                    ("emissive", "emissive", (0, 1, 2))):
+                if channel not in q or channel not in c:
+                    continue
+                pos = i * 3
+                diff = sum(abs(q[channel][pos + k] - c[channel][pos + k])
+                           for k in indices) / (255 * len(indices))
+                sums[kind] += overlap * (1 - diff)
+                weights[kind] += overlap
+            if "normal" in q and "normal" in c:
+                pos = i * 3
+                va = tuple((q["normal"][pos + k] / 255) * 2 - 1 for k in range(3))
+                vb = tuple((c["normal"][pos + k] / 255) * 2 - 1 for k in range(3))
+                na, nb = math.sqrt(sum(v * v for v in va)), math.sqrt(sum(v * v for v in vb))
+                cosine = sum(x * y for x, y in zip(va, vb)) / max(1e-8, na * nb)
+                sums["normal"] += overlap * clamp((cosine + 1) / 2)
+                weights["normal"] += overlap
+    result = {"shape": intersections / unions if unions else 0.0}
+    for kind in sums:
+        channel = {"color": "albedo", "normal": "normal", "roughness": "orm",
+                   "metallic": "orm", "occlusion": "orm", "emissive": "emissive"}[kind]
+        available = any(channel in encoded and channel in candidate["features"].get(view, {})
+                        for view, encoded in query["features"].items())
+        result[kind] = (clamp(sums[kind] / weights[kind]) if weights[kind] > 0
+                        else 0.0 if available else None)
+    return result
+
+
+def relative_sizes(a, b):
+    if a is None or b is None:
+        return None
+    if len(a) != 3 or len(b) != 3:
+        raise SearchError("bounds.size must contain three dimensions")
+    if any(not math.isfinite(float(x)) or float(x) < 0 for x in (*a, *b)):
+        raise SearchError("bounds.size must be nonnegative finite dimensions")
+    scale = max((*a, *b, 1e-3))
+    floor = scale * 0.001  # flat meshes compare meaningfully without divide-by-zero
+    return [max(float(x), floor) / max(float(y), floor) for x, y in zip(a, b)]
+
+
+def size_score(query, candidate):
+    qa = (query.get("bounds") or {}).get("size")
+    cb = (candidate.get("bounds") or {}).get("size")
+    ratios = relative_sizes(qa, cb)
+    if ratios is None:
+        return None, None
+    factors = [max(r, 1 / r) for r in ratios]
+    return clamp(2 ** (-mean([math.log2(r) for r in factors]))), max(factors)
+
+
+def weights_from_string(spec):
+    weights = dict(DEFAULT_WEIGHTS)
+    if spec:
+        for token in spec.split(","):
+            if "=" not in token:
+                raise SearchError("weights must be comma-separated dimension=nonnegative-value")
+            key, val = token.strip().split("=", 1)
+            if key not in DIMENSIONS:
+                raise SearchError(f"unknown weight dimension {key!r}; use {', '.join(DIMENSIONS)}")
+            try:
+                number = float(val)
+            except ValueError as exc:
+                raise SearchError(f"invalid weight for {key}") from exc
+            if not math.isfinite(number) or number < 0:
+                raise SearchError("weights must be finite and nonnegative")
+            weights[key] = number
+    if not any(weights.values()):
+        raise SearchError("at least one dimension weight must be positive")
+    return weights
+
+
+def search(doc, query, limit=10, weights=None, size_ratio=2.0, exclude_source=None):
+    """Exact linear ranking; scores are relative likeness, not probabilities."""
+    if limit < 1 or size_ratio < 0 or (0 < size_ratio < 1):
+        raise SearchError("limit must be positive and size ratio must be 0 or >= 1")
+    weights = dict(DEFAULT_WEIGHTS) if weights is None else weights
+    found = []
+    for candidate in doc["assets"]:
+        if exclude_source is not None and candidate["source"] == exclude_source:
+            continue
+        size, largest_ratio = size_score(query, candidate)
+        if size_ratio and largest_ratio is not None and largest_ratio > size_ratio + 1e-9:
+            continue
+        parts = visual_scores(query, candidate, doc["grid"])
+        parts["size"] = size
+        active = [(name, w) for name, w in weights.items() if w > 0 and parts.get(name) is not None]
+        if not active:
+            raise SearchError("no weighted similarity dimensions exist for this query")
+        total_weight = sum(w for _, w in active)
+        score = 100 * sum(w * parts[name] for name, w in active) / total_weight
+        found.append({"source": candidate["source"], "geometry_guid": candidate.get("geometry_guid", ""),
+                      "sha256": candidate.get("sha256", ""),
+                      "score": round(score, 2),
+                      "dimensions": {name: None if parts.get(name) is None else round(100 * parts[name], 2)
+                                     for name in DIMENSIONS},
+                      "bounds": candidate.get("bounds"), "materials": candidate.get("materials", [])})
+    found.sort(key=lambda item: (-item["score"], item["source"]))
+    return [dict(rank=i + 1, **item) for i, item in enumerate(found[:limit])]
+
+
+def match_asset(doc, needle):
+    rows = [asset for asset in doc["assets"]
+            if needle in (asset["source"], asset.get("geometry_guid"), asset.get("sha256"))]
+    if not rows:
+        # Exact path matching without depending on CWD of index creation.
+        rows = [asset for asset in doc["assets"] if Path(asset["source"]).name == needle]
+    if not rows:
+        raise SearchError(f"no indexed asset matching {needle!r}")
+    if len(rows) > 1:
+        raise SearchError(f"ambiguous asset {needle!r}; use the full source path or unique GUID")
+    return rows[0]
+
+
