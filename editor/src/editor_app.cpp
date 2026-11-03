@@ -539,6 +539,7 @@ bool EditorApp::OpenCacheDb() {
 }
 
 void EditorApp::CloseScene() {
+	RestoreIsolation();
 	StopGamePlay();
 	if (!m_world)
 		return;
@@ -691,6 +692,7 @@ void EditorApp::CloseScene() {
 	// Drop temporary per-node preview ownership BEFORE node indices die;
 	// the prefab boundary applies unsaved source poses to the new world.
 	RestorePrefabPreview();
+	RestoreIsolation(); // node ids and saved flags belong to the old scene
 	m_world = tour::mem::MakeProcess<tour::World>();
 	tour::Cluster& cluster = m_world->LoadCluster(*m_context);
 	// CPU geometry mirror (the editor's picking/UV/placement source):

@@ -27,6 +27,8 @@
 // field takes the REST of the row (-1 width: no hardcoded trailing
 // gap; callers that need a trailing button size it themselves).
 #include <imgui.h>
+#include "editor_numeric.h"
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -138,11 +140,15 @@ inline bool Float(const char* name, float* v, float speed, float mn,
 	float mx, const char* fmt, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f); // the rest of the row - no dead gap
-	const bool edited = ImGui::DragFloat(Id(name).c_str(), v, speed, mn,
+	float candidate = numeric::Display(*v, mn < mx ? mn : 0.0f);
+	const bool edited = ImGui::DragFloat(Id(name).c_str(), &candidate, speed, mn,
 		mx, fmt ? fmt : "%.3f");
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
-	return edited;
+	if (!edited || !numeric::Finite(candidate))
+		return false;
+	*v = candidate;
+	return true;
 }
 
 // ---- SLIDER float (bounded look knobs) ------------------------------------
@@ -150,11 +156,15 @@ inline bool Slider(const char* name, float* v, float mn, float mx,
 	const char* fmt, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
-	const bool edited = ImGui::SliderFloat(Id(name).c_str(), v, mn, mx,
+	float candidate = numeric::Display(*v, mn);
+	const bool edited = ImGui::SliderFloat(Id(name).c_str(), &candidate, mn, mx,
 		fmt ? fmt : "%.2f");
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
-	return edited;
+	if (!edited || !numeric::Finite(candidate))
+		return false;
+	*v = candidate;
+	return true;
 }
 
 // ---- INT (drag; speed 1 = the arrow-key step) ------------------------------
@@ -206,11 +216,14 @@ inline Vec3Result Vec3(const char* name, float v[3], float speed,
 			                  // the SAME id - the scale/translate XYZ
 			                  // misbehavior)
 			ImGui::Indent(colW); // align under the value column
-			ImGui::SetNextItemWidth(
-				ImGui::GetContentRegionAvail().x - 16.0f);
-			if (ImGui::DragFloat("##axis", &v[i], speed, 0.0f, 0.0f,
-					"%.3f"))
+			ImGui::SetNextItemWidth(std::max(1.0f,
+				ImGui::GetContentRegionAvail().x - 16.0f));
+			float candidate = numeric::Display(v[i]);
+			if (ImGui::DragFloat("##axis", &candidate, speed, 0.0f, 0.0f,
+					"%.3f") && numeric::Finite(candidate)) {
+				v[i] = candidate;
 				r.edited = true;
+			}
 			if (ImGui::IsItemActivated())
 				r.activated = true;
 			if (ImGui::IsItemDeactivatedAfterEdit())
@@ -230,11 +243,16 @@ inline bool Vec2(const char* name, float v[2], float speed, float mn,
 	float mx, const char* fmt, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
-	const bool edited = ImGui::DragFloat2(Id(name).c_str(), v, speed, mn,
+	float candidate[2] = { numeric::Display(v[0]), numeric::Display(v[1]) };
+	const bool edited = ImGui::DragFloat2(Id(name).c_str(), candidate, speed, mn,
 		mx, fmt ? fmt : "%.3f");
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
-	return edited;
+	if (!edited || !numeric::AllFinite(candidate, 2))
+		return false;
+	v[0] = candidate[0];
+	v[1] = candidate[1];
+	return true;
 }
 
 // ---- INT BOX (typed integer input with steppers — ids/indices where a
@@ -256,20 +274,32 @@ inline bool Vec3Compact(const char* name, float v[3], float speed,
 	const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
-	const bool edited = ImGui::DragFloat3(Id(name).c_str(), v, speed);
+	float candidate[3] = { numeric::Display(v[0]), numeric::Display(v[1]),
+		numeric::Display(v[2]) };
+	const bool edited = ImGui::DragFloat3(Id(name).c_str(), candidate, speed);
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
-	return edited;
+	if (!edited || !numeric::AllFinite(candidate, 3))
+		return false;
+	for (int i = 0; i < 3; ++i)
+		v[i] = candidate[i];
+	return true;
 }
 
 // ---- COLOR -----------------------------------------------------------------
 inline bool Color(const char* name, float v[4], const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
-	const bool edited = ImGui::ColorEdit4(Id(name).c_str(), v);
+	float candidate[4] = { numeric::Display(v[0]), numeric::Display(v[1]),
+		numeric::Display(v[2]), numeric::Display(v[3], 1.0f) };
+	const bool edited = ImGui::ColorEdit4(Id(name).c_str(), candidate);
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
-	return edited;
+	if (!edited || !numeric::AllFinite(candidate, 4))
+		return false;
+	for (int i = 0; i < 4; ++i)
+		v[i] = candidate[i];
+	return true;
 }
 
 // ---- ENUM (the combo; items = a "A\0B\0\0" list) ----------------------------

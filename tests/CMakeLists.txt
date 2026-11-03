@@ -3,6 +3,16 @@
 
 project(AssetTests)
 
+# CPU-only regression for inspector numeric inputs and singular TRS reads.
+add_executable(EditorNumericTests test_editor_numeric.cpp)
+target_include_directories(EditorNumericTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/editor/src
+    ${CMAKE_SOURCE_DIR}/external/glm
+)
+set_target_properties(EditorNumericTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME editor_numeric_tests COMMAND EditorNumericTests)
+
 # CPU-only, graphics-free immediate-mode debug primitive regression.
 add_executable(DebugDrawTests test_debug_draw.cpp)
 target_include_directories(DebugDrawTests PRIVATE

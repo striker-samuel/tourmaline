@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include "editor_isolate_visibility.h"
 // GltfEditor: inspect + cook glTF scenes with a .tour overlay.
 //
 // Loads a glTF straight into a GPU World (same importer as App/PakCooker),
@@ -600,6 +601,9 @@ private:
 	// m_selMode switches Mesh/Face/Vertex HIGHLIGHT (selection only, never
 	// edits): Face stores (node, triangle), Vertex stores (node, vert).
 	std::vector<uint32_t> m_selection;
+	// Transient Isolate Select visibility; never serialized or undoable.
+	IsolateVisibility m_isolateVisibility;
+	void RestoreIsolation();
 	SelMode m_selMode = SelMode::Mesh;
 	uint32_t m_selFaceNode = UINT32_MAX;
 	uint32_t m_selFaceTri = UINT32_MAX; // triangle index within the primitive
@@ -743,6 +747,7 @@ private:
 	                     // its canvas Del removes graph nodes instead)
 	void ModalDuplicate(); // Ctrl+D: DuplicateSelection() (same
 	                       // placement-graph keyboard guard as Del)
+	void ModalIsolateSelect(); // Ctrl+1: Maya-style isolate/toggle/clear
 	void ModalToggleVisibility(); // Ctrl+H: hide/unhide the selection
 	                               // (all nodes follow the primary's inverse)
 	void ModalGizmoTranslate();
