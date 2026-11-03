@@ -168,8 +168,13 @@ struct WorldMaskGrid {
 	uint32_t tilesPerAxis = 0;
 	uint32_t tileRes = 0;
 	[[nodiscard]] bool Valid() const {
-		return tiles && tilesPerAxis > 0 && tileRes > 0
-			&& tiles->size() >= size_t(tilesPerAxis) * size_t(tilesPerAxis);
+		if (!tiles || tilesPerAxis == 0 || tileRes == 0) return false;
+		const size_t count = size_t(tilesPerAxis) * size_t(tilesPerAxis);
+		const size_t bytes = size_t(tileRes) * size_t(tileRes) * 4;
+		if (tiles->size() < count) return false;
+		for (size_t i = 0; i < count; ++i)
+			if ((*tiles)[i].size() != bytes) return false;
+		return true;
 	}
 };
 
