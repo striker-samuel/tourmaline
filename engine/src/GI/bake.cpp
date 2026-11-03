@@ -1196,7 +1196,7 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 	// metallic slots and materials dropped from the soup — never copy).
 	bool anyTextured = false;
 	for (const GiTraceMaterial& m : out.materials) {
-		const uint32_t ids[2] = { m.baseTexId, m.transTexId };
+		const uint32_t ids[3] = { m.baseTexId, m.transTexId, m.mrTexId };
 		for (uint32_t id : ids) {
 			if (id == 0xFFFFFFFFu)
 				continue;
