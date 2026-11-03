@@ -311,6 +311,8 @@ struct PlacementPass {
 		// noiseAmpRetired/noiseFreqRetired stay 0 (the program subsumes).
 		out.minScale = layer.config.minScale;
 		out.maxScale = layer.config.maxScale;
+		out.slopeToRock = layer.config.slopeToRock ? 1u : 0u;
+		out.slopeThresholdDeg = layer.config.slopeThresholdDeg;
 		// Weighted prototype shares, clamped to the kernel's 8 slots.
 		const size_t n = layer.prototypes.size() > 8 ? 8 : layer.prototypes.size();
 		out.protoCount = (uint32_t)n;
@@ -1200,6 +1202,8 @@ inline bool FillScatterParams(const PlacementSystem::LayerBinding& layer,
 	out.ecoSX = eco.sx; out.ecoSZ = eco.sz;
 	out.minScale = layer.config.minScale;
 	out.maxScale = layer.config.maxScale;
+	out.slopeToRock = layer.config.slopeToRock ? 1u : 0u;
+	out.slopeThresholdDeg = layer.config.slopeThresholdDeg;
 	const size_t n = layer.prototypes.size() > 8 ? 8 : layer.prototypes.size();
 	out.protoCount = (uint32_t)(n == 0 ? 1 : n);
 	for (size_t i = 0; i < n; ++i) out.weights[i] = layer.prototypes.at(i).weight;
