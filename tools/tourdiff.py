@@ -99,7 +99,7 @@ def compare(old, new, scope="all", show_unchanged=False):
     result = []
     if scope in ("all", "assets"):
         result += _changes(old["assets"], new["assets"], "asset", show_unchanged)
-        if old["entry"] != new["entry"] and old["entry"] is not None and new["entry"] is not None:
+        if old["entry"] != new["entry"]:
             result.append({"record_type": "entry", "status": "modified", "path": "",
                            "kind": "scene", "before": old["entry"], "after": new["entry"]})
     if scope in ("all", "pages"):
