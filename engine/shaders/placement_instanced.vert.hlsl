@@ -156,7 +156,9 @@ VSOut mainVS(VSIn IN)
         pcPV.renderViews.Get().views[pcPV.renderViewIndex].m_viewProjectionMatrix;
     OUT.pos = mul(viewProj, world);
 
-    OUT.color = float3(1.0f, 1.0f, 1.0f);
+    // Per-vertex authored tint (grass dark-root / bright-tip gradient,
+    // flowers, stones); the previous hardcoded white discarded it.
+    OUT.color = IN.color.rgb;
     OUT.uv = IN.uv;
     OUT.lightmapUv = float2(0.0f, 0.0f);
     OUT.lmChunk = 0xFFFFFFFFu;
