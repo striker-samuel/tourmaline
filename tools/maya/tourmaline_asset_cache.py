@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import hashlib
+from http.client import HTTPConnection, HTTPSConnection
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -197,6 +198,49 @@ class AssetClient:
         item["local_path"] = self.fetch(
             item["sha256"], path, item["size"], pin=pin)
         return item
+
+    def publish_product(self, source_asset_id, source_revision, representation,
+                        file, variant=""):
+        """Stream a built representation to the NAS, without reading it all into RAM.
+
+        This publishes an immutable product *representation*, never an editor
+        source file and never a cooked Tourmaline catalog/content-ID entry.
+        """
+        path = Path(file).expanduser().resolve()
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("publish input must be a local regular file")
+        size = path.stat().st_size
+        if size > 8 * 1024**3:
+            raise ValueError("publish input exceeds 8 GiB maximum")
+        parts = urlsplit(self.url)
+        conn_type = HTTPSConnection if parts.scheme == "https" else HTTPConnection
+        conn = conn_type(parts.hostname, port=parts.port, timeout=180)
+        try:
+            conn.putrequest("PUT", "/v2/publish")
+            for key, value in (
+                ("Authorization", "Bearer " + self.token),
+                ("Content-Type", "application/octet-stream"),
+                ("Content-Length", str(size)),
+                ("X-Source-Asset-ID", str(source_asset_id)),
+                ("X-Source-Revision", str(int(source_revision))),
+                ("X-Representation", representation),
+                ("X-Variant", variant),
+                ("X-Filename", path.name),
+            ):
+                conn.putheader(key, value)
+            conn.endheaders()
+            with path.open("rb") as fd:
+                for chunk in iter(lambda: fd.read(1024 * 1024), b""):
+                    conn.send(chunk)
+            response = conn.getresponse()
+            data = response.read()
+            if response.status != 201:
+                raise RuntimeError(
+                    "product publish failed (HTTP %s): %s" %
+                    (response.status, data.decode("utf-8", errors="replace")[:500]))
+            return json.loads(data)
+        finally:
+            conn.close()
 
     def resolve_product(self, product_id, version=None, pin=True):
         entries = [x for x in self.products() if x["product_id"] == product_id]
