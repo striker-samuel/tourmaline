@@ -1239,7 +1239,8 @@ private:
 	glm::vec2 m_scatterPaintLast{-1e9f, -1e9f};
 	bool PaintScatterAt(const glm::vec3& origin, const glm::vec3& dir);
 	void EnsureScatterMaskGraph();
-	char m_brushPresetName[64] = "Custom";
+	char m_terrainPresetName[64] = "Custom Terrain";
+	char m_scatterPresetName[64] = "Custom Scatter";
 	// Shared .brushpreset asset picker for sculpting and PlacementGraph.
 	void DrawBrushPresetControls(bool scatter);
 	glm::vec2 m_paintLast{ -1e9f, -1e9f }; // world XZ of last drag stamp
