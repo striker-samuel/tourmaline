@@ -116,17 +116,6 @@ namespace editor {
 	void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 		(void)targetExtent;
 		if (ImGui::BeginMainMenuBar()) {
-			// Tourmaline crystal mark + name (branding; the PNG raster
-			// lives as the window icon).
-			{
-				const float h = ImGui::GetTextLineHeight() + 2.0f;
-				ImDrawList* dl = ImGui::GetWindowDrawList();
-				const ImVec2 p = ImGui::GetCursorScreenPos();
-				const float markW = DrawTourmalineGem(dl, p, h);
-				ImGui::Dummy(ImVec2(markW + 6.0f, h));
-				ImGui::TextUnformatted("Tourmaline Editor");
-				ImGui::Separator();
-			}
 			DrawMenuBar();
 			ImGui::EndMainMenuBar();
 		}
@@ -202,7 +191,7 @@ namespace editor {
 				ImGui::DockBuilderDockWindow("Console", left);
 				ImGui::DockBuilderDockWindow("Overrides", left);
 				ImGui::DockBuilderDockWindow("Inspector", right);
-				ImGui::DockBuilderDockWindow("Render", right);
+				ImGui::DockBuilderDockWindow("Render Settings", right);
 				ImGui::DockBuilderDockWindow("Material", right);
 				ImGui::DockBuilderFinish(dockId);
 				m_dockResetRequested = false;
@@ -266,9 +255,11 @@ namespace editor {
 			if (ImGui::Begin("Inspector"))
 				DrawInspector();
 			ImGui::End();
-			if (ImGui::Begin("Render"))
-				DrawRenderSettingsPanel();
-			ImGui::End();
+			if (m_showRenderSettingsPanel) {
+				if (ImGui::Begin("Render Settings", &m_showRenderSettingsPanel))
+					DrawRenderSettingsPanel();
+				ImGui::End();
+			}
 			if (ImGui::Begin("Material"))
 				DrawMaterialEditor();
 			ImGui::End();
@@ -925,32 +916,11 @@ namespace editor {
 			ImGui::EndMenu();
 		}
 
-		// Update GI (top-bar bake entry, right-aligned): the click twin of the
-		// cook dialog's "Bake GI now" — rebakes stay one click away instead
-		// of hiding in a dialog. While a task runs the button reopens its
-		// progress window (backgrounded or finished-unacknowledged). Guards
-		// + logs live inside BakeGI.
-		{
-			const bool taskLive = m_bakeRunning || m_cookRunning;
-			const char* label = m_bakeRunning ? "Baking GI..."
-				: m_cookRunning ? "Cooking..." : "Update GI";
-			const float w = ImGui::CalcTextSize(label).x
-				+ ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
-			ImGui::SameLine(ImGui::GetWindowWidth() - w
-				- ImGui::GetStyle().WindowPadding.x);
-			ImGui::BeginDisabled(!taskLive && SceneEmpty());
-			if (ImGui::SmallButton(label)) {
-				if (taskLive)
-					ReopenTaskWindow();
-				else
-					BakeGI();
-			}
-			ImGui::EndDisabled();
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip(taskLive
-					? "A task is running — click to reopen its progress."
-					: "Rebake GI (world field + convex volumes)\n"
-					"over the current definition — same as Bake GI now.");
+
+		if (ImGui::BeginMenu("Options")) {
+			ImGui::MenuItem("Render Settings", nullptr,
+				&m_showRenderSettingsPanel);
+			ImGui::EndMenu();
 		}
 
 		if (m_showSaveDialog) {
@@ -980,11 +950,11 @@ namespace editor {
 	// Compact, icon-led authoring toolbar. Tool actions reuse the editor's
 	// existing selection/gizmo/mode commands, preserving keyboard shortcuts.
 	float EditorApp::DrawToolTabs(float top) {
-		const float h = 64.0f;
+		constexpr float h = 58.0f;
 		ImGui::SetNextWindowPos(ImVec2(0.0f, top), ImGuiCond_Always);
 		ImGui::SetNextWindowSize(
 			ImVec2(float(ImGui::GetIO().DisplaySize.x), h), ImGuiCond_Always);
-		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(9.0f, 5.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(9.0f, 4.0f));
 		if (!ImGui::Begin("##toptoolbar", nullptr,
 			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
 			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
@@ -994,10 +964,12 @@ namespace editor {
 			ImGui::PopStyleVar();
 			return 0.0f;
 		}
+		// Each caption belongs to its own button hitbox, not a detached
+		// keyboard-legend row. This also keeps tooltips on the whole tool.
 		const auto tool = [&](const char* id, IconType icon,
-			bool active, const char* tooltip) {
+			bool active, const char* caption, const char* tooltip) {
 			ImGui::PushID(id);
-			const ImVec2 size(31.0f, 31.0f);
+			const ImVec2 size(49.0f, 46.0f);
 			const bool pressed = ImGui::InvisibleButton("##tool", size);
 			const bool hover = ImGui::IsItemHovered();
 			const ImVec2 p = ImGui::GetItemRectMin();
@@ -1010,8 +982,8 @@ namespace editor {
 					active ? IM_COL32(237, 157, 73, 255)
 					       : IM_COL32(100, 104, 106, 255), 3.0f);
 			}
-			const ImVec2 a(p.x + 4.0f, p.y + 4.0f);
-			const ImVec2 b(p.x + size.x - 4.0f, p.y + size.y - 4.0f);
+			const ImVec2 a(p.x + 12.0f, p.y + 2.0f);
+			const ImVec2 b(a.x + 25.0f, a.y + 25.0f);
 			const IconTex& image = m_icons[size_t(icon)];
 			if (image.imgui != 0)
 				dl->AddImage(image.imgui, a, b,
@@ -1019,19 +991,26 @@ namespace editor {
 					active ? IM_COL32(255, 220, 171, 255)
 					       : IM_COL32(214, 218, 219, 255));
 			else
-				DrawAssetIconFallback(dl, a, 23.0f, icon);
+				DrawAssetIconFallback(dl, a, 25.0f, icon);
+			const ImVec2 labelSize = ImGui::CalcTextSize(caption);
+			dl->AddText(ImVec2(p.x + (size.x - labelSize.x) * 0.5f,
+				p.y + 30.0f), IM_COL32(210, 213, 217, 255), caption);
 			if (hover)
 				ImGui::SetTooltip("%s", tooltip);
 			ImGui::PopID();
 			return pressed;
 		};
-		const auto next = []() { ImGui::SameLine(0.0f, 4.0f); };
+		const auto next = []() { ImGui::SameLine(0.0f, 3.0f); };
 		const auto split = []() {
-			ImGui::SameLine(0.0f, 11.0f);
-			ImGui::TextDisabled("|");
-			ImGui::SameLine(0.0f, 11.0f);
+			ImGui::SameLine(0.0f, 8.0f);
+			const ImVec2 pos = ImGui::GetCursorScreenPos();
+			ImGui::GetWindowDrawList()->AddLine(
+				ImVec2(pos.x + 2.0f, pos.y + 2.0f),
+				ImVec2(pos.x + 2.0f, pos.y + 44.0f),
+				ImGui::GetColorU32(ImGuiCol_Separator));
+			ImGui::Dummy(ImVec2(5.0f, 46.0f));
+			ImGui::SameLine(0.0f, 8.0f);
 		};
-
 		ImGui::PushID("select");
 		const IconType selectionIcons[3] = {
 			IconType::ToolObject, IconType::ToolFace, IconType::ToolVertex };
@@ -1039,49 +1018,57 @@ namespace editor {
 		for (int i = 0; i < 3; ++i) {
 			if (i) next();
 			if (tool(selectionLabels[i], selectionIcons[i],
-				int(m_selMode) == i, selectionLabels[i])
+				int(m_selMode) == i, selectionLabels[i], selectionLabels[i])
 				&& int(m_selMode) != i) {
 				m_selMode = SelMode(i);
 				ClearSubSelection();
 			}
 		}
 		next();
-		if (tool("frame", IconType::ToolFrame, false, "Frame selection (F)"))
-			FrameSelection();
+		if (tool("frame", IconType::ToolFrame, false, "Frame",
+			"Frame selection (F)")) FrameSelection();
 		next();
-		if (tool("clear", IconType::ToolClear, false, "Clear selection"))
-			ClearSelection();
+		if (tool("clear", IconType::ToolClear, false, "Clear",
+			"Clear selection")) ClearSelection();
 		ImGui::PopID();
-
 		split();
 		ImGui::PushID("transform");
 		const IconType transformIcons[3] = {
 			IconType::ToolMove, IconType::ToolRotate, IconType::ToolScale };
 		const char* transformNames[3] = { "Move (W)", "Rotate (E)", "Scale (R)" };
+		const char* transformCaptions[3] = { "Move", "Rotate", "Scale" };
 		for (int i = 0; i < 3; ++i) {
 			if (i) next();
 			if (tool(transformNames[i], transformIcons[i],
-				int(m_gizmoMode) == i, transformNames[i]))
+				int(m_gizmoMode) == i, transformCaptions[i], transformNames[i]))
 				m_gizmoMode = GizmoMode(i);
 		}
 		ImGui::PopID();
-
 		split();
 		ImGui::PushID("workspace");
 		const IconType modeIcons[4] = { IconType::ToolLayout,
 			IconType::ToolLighting, IconType::ToolTest, IconType::ToolProfile };
 		const char* modeNames[4] = {
 			"Layout (1)", "Lighting (2)", "Test (3)", "Profile (4)" };
+		const char* modeCaptions[4] = {
+			"Layout", "Light", "Test", "Profile" };
 		for (int i = 0; i < 4; ++i) {
 			if (i) next();
 			if (tool(modeNames[i], modeIcons[i], int(m_mode) == i,
-				modeNames[i]) && int(m_mode) != i)
+				modeCaptions[i], modeNames[i]) && int(m_mode) != i)
 				SetMode(EditorMode(i));
 		}
 		ImGui::PopID();
-		// Second line is a quiet navigation legend, not more buttons.
-		ImGui::SetCursorPosY(43.0f);
-		ImGui::TextDisabled("SELECT  M / F / V       TRANSFORM  W / E / R       WORKSPACE  1 - 4");
+		split();
+		const bool taskLive = m_bakeRunning || m_cookRunning;
+		ImGui::BeginDisabled(!taskLive && SceneEmpty());
+		if (tool("update_gi", IconType::GI, taskLive, "GI",
+			taskLive ? "Reopen cook / GI bake progress"
+				: "Update GI — rebake the current world and convex GI volumes")) {
+			if (taskLive) ReopenTaskWindow();
+			else BakeGI();
+		}
+		ImGui::EndDisabled();
 		ImGui::End();
 		ImGui::PopStyleVar();
 		return h;
