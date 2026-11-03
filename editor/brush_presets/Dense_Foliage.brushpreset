@@ -1,0 +1,12 @@
+# Dense GPU-scatter placement recipe
+version=1
+kind=scatter
+name=Dense Foliage
+radius=10
+strength=0.8
+spacing=0.25
+operation=0
+density=0.85
+minScale=0.7
+maxScale=1.35
+minDistance=0.6
