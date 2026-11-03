@@ -67,8 +67,8 @@ inline constexpr std::string_view Name = "GameProject";
 // paks, entry scene) - a texture repixel keeps it; the EOF
 // metadata at the bottom of this file carries the new file
 // hash instead.
-inline constexpr std::uint64_t Generation = 2ULL;
-inline constexpr std::uint64_t GeneratedAt = 1793663639ULL;
+inline constexpr std::uint64_t Generation = 3ULL;
+inline constexpr std::uint64_t GeneratedAt = 1793664348ULL;
 inline constexpr std::string_view ContentHash = "34699166b0b10260";
 
 namespace scenes {
@@ -281,7 +281,7 @@ struct project_pipeline::query::AssetTraits<project::AudioGraphKey> {
 // only what mtime+size say moved. An unknown version reads
 // as absent (a fresh scan, never a stale-cache reuse).
 //
-// generator generation=2 timestamp=1793663639
+// generator generation=3 timestamp=1793664348
 // catalog hash=34699166b0b10260
 //
 // [assets]

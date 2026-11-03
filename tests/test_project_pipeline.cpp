@@ -1632,6 +1632,39 @@ std::vector<char> ReadAllBytes(const fs::path& p) {
 // classification (.spv), the catalog bucket + ShaderKey emission, the
 // content-set packing (validated SPIR-V only) and the manifest's
 // shader kind rows.
+
+// The generated header's columns are WIDTH-ALIGNED (the catalog emitter
+// pads every cell to the longest entry in its column): an enumerator
+// line is "Name<padding> = value" and an audio-cue constant is
+// "name<padding>{...}". These matchers tolerate the padding instead of
+// pinning single-space literals (the pre-alignment checks broke the
+// moment the emitter started aligning).
+bool FindNameValue(const std::string& text, const std::string& name,
+		const std::string& value) {
+	size_t at = text.find(name);
+	while (at != std::string::npos) {
+		size_t i = at + name.size();
+		while (i < text.size() && text[i] == ' ')
+			++i;
+		if (text.compare(i, value.size(), value) == 0)
+			return true;
+		at = text.find(name, at + 1);
+	}
+	return false;
+}
+bool FindNameBrace(const std::string& text, const std::string& name) {
+	size_t at = text.find(name);
+	while (at != std::string::npos) {
+		size_t i = at + name.size();
+		while (i < text.size() && text[i] == ' ')
+			++i;
+		if (i < text.size() && text[i] == '{')
+			return true;
+		at = text.find(name, at + 1);
+	}
+	return false;
+}
+
 void TestShaderAssets() {
 	const fs::path tmp = fs::temp_directory_path()
 		/ "tourmaline_pp_shaders";
@@ -1740,7 +1773,7 @@ void TestShaderAssets() {
 			smvk::project::EmitProjectHeader(catalog, stamp, {}, {});
 		Check(header.find("namespace shaders") != std::string::npos
 			&& header.find("struct ShaderKey") != std::string::npos
-			&& header.find("Shader = 4") != std::string::npos
+			&& FindNameValue(header, "Shader", "= 4")
 			&& header.find("AssetKind::Shader") != std::string::npos
 			&& header.find("shaders::"
 				+ catalog.shaders[0].symbol) != std::string::npos,
@@ -1948,7 +1981,7 @@ void TestAudioGraphAssets() {
 			&& header.find("struct AudioGraphKey")
 				!= std::string::npos
 			&& header.find("struct AudioCueKey") != std::string::npos
-			&& header.find("AudioGraph = 6") != std::string::npos
+			&& FindNameValue(header, "AudioGraph", "= 6")
 			&& header.find("AssetKind::AudioGraph")
 				!= std::string::npos
 			&& header.find("audiographs::"
@@ -1956,10 +1989,10 @@ void TestAudioGraphAssets() {
 				!= std::string::npos,
 			"audiograph.header-emits-key");
 		Check(header.find("namespace audiocues") != std::string::npos
-			&& header.find(catalog.audiographs[0].symbol + "_calm{")
-				!= std::string::npos
-			&& header.find(catalog.audiographs[0].symbol + "_storm{")
-				!= std::string::npos,
+			&& FindNameBrace(header,
+				catalog.audiographs[0].symbol + "_calm")
+			&& FindNameBrace(header,
+				catalog.audiographs[0].symbol + "_storm"),
 			"audiograph.header-emits-cues");
 	}
 	// The packer: the content-set embeds the authored text VERBATIM as
@@ -3433,10 +3466,29 @@ void TestProjectCatalog() {
 		Check(!cueA.empty() && !cueB.empty()
 			&& cueA.find("{0x") == cueB.find("{0x"),
 			"catalog.aligned-audiocues");
+		// The retired declarations: scope the search to the RETIRED
+		// namespace - the active textures namespace emits the same
+		// "inline constexpr TextureKey " prefix EARLIER in the header,
+		// and the unscoped first-match comparison collides with the
+		// active constant's (unaligned) column.
+		const size_t retiredSection =
+			printed.find("namespace retired {");
+		const auto retiredLineFor = [&](const std::string& needle) {
+			const size_t at = printed.find(needle, retiredSection);
+			if (at == std::string::npos
+					|| retiredSection == std::string::npos)
+				return std::string();
+			const size_t start = printed.rfind('\n', at);
+			const size_t first = start == std::string::npos
+				? 0 : start + 1;
+			const size_t end = printed.find('\n', at);
+			return printed.substr(first, end == std::string::npos
+				? std::string::npos : end - first);
+		};
 		const std::string retiredA =
-			lineFor("inline constexpr SoundKey ");
+			retiredLineFor("inline constexpr SoundKey ");
 		const std::string retiredB =
-			lineFor("inline constexpr TextureKey ");
+			retiredLineFor("inline constexpr TextureKey ");
 		Check(!retiredA.empty() && !retiredB.empty()
 			&& retiredA.find("{0x") == retiredB.find("{0x")
 			&& retiredA.find(" s ") != std::string::npos,
