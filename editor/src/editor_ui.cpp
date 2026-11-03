@@ -12,6 +12,7 @@
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
 #include "editor_asset_browser_nav.h" // collection folders belong at root
 #include "editor_asset_inspect.h" // generic file/directory inspector
+#include "editor_asset_creation.h"
 #include "editor_asset_dcc.h" // DCC source link + export build stage
 
 #include <cstring>
@@ -26,6 +27,7 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include <Engine/Asset/shape_asset.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Profile/profile.h>
@@ -5893,6 +5895,41 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
             if (ImGui::MenuItem("New Folder"))
                 CreateAssetFolder(m_assetsDir);
             ImGui::Separator();
+			// Authoring-only .shape documents. The importer/runtime draw
+			// paths are intentionally separate from this source creation.
+			if (ImGui::BeginMenu("New Procedural Shape")) {
+				for (tour::asset::ShapeKind kind : {
+					tour::asset::ShapeKind::Spline,
+					tour::asset::ShapeKind::PointCloud,
+					tour::asset::ShapeKind::Plane,
+					tour::asset::ShapeKind::Box,
+					tour::asset::ShapeKind::Sphere,
+					tour::asset::ShapeKind::Cylinder,
+					tour::asset::ShapeKind::Cone}) {
+					const char* name = tour::asset::ShapeKindName(kind);
+					if (!ImGui::MenuItem(name)) continue;
+					const fs::path dir = AssetCreateDirectory(m_projectRoot,
+						m_assetsDir, "shapes");
+					const fs::path target = UniqueAssetCreatePath(dir,
+						name, ".shape");
+					std::error_code ec;
+					fs::create_directories(dir, ec);
+					if (ec || target.empty()) {
+						Log("Could not create shape asset directory");
+						continue;
+					}
+					std::ofstream output(target, std::ios::binary);
+					output << tour::asset::SerializeShapeAsset(
+						tour::asset::DefaultShapeAsset(kind));
+					output.close();
+					if (!output) {
+						Log("Could not write shape asset: " + target.generic_string());
+						continue;
+					}
+					Log("Created shape source: " + target.generic_string());
+				}
+				ImGui::EndMenu();
+			}
 			if (ImGui::MenuItem("New GI Volume Asset (.givolume)"))
 				CreateGivolumeAsset(m_assetsDir);
 			if (ImGui::MenuItem("New Texture (from image)...")) {
