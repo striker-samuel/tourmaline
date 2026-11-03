@@ -2413,6 +2413,7 @@ namespace smvk::placement {
 	using ::tour::placement::PlacementGpuTileSlot;
 	using ::tour::placement::PlacementHeightfieldGpu;
 	using ::tour::placement::PlacementMeshGpu;
+	using ::tour::placement::PlacementPointCloudGpu;
 	using ::tour::placement::PlacementParamsGpu;
 	using ::tour::placement::PlacementPass;
 	using ::tour::placement::PlacementPassDesc;
