@@ -651,6 +651,14 @@ void EditorApp::DrawPrefabWindow() {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(.96f,.73f,.3f,1),"UNSAVED");
         }
+        if (ImGui::Button("Edit in main editor")) {
+            RequestFullPrefabEdit(m_prefab.path);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Use the full outliner, inspector, gizmos and scene tools. "
+                "The current scene is snapshotted; File > Save prefab & return "
+                "restores it without losing pending changes.");
+        ImGui::SameLine();
         if (ImGui::Button("Save prefab")) SavePrefab();
         ImGui::SameLine();
         if (ImGui::Button("Undo")) PrefabUndo();
@@ -689,15 +697,63 @@ void EditorApp::DrawPrefabWindow() {
         ImGui::BeginChild("##prefabInspector",ImVec2(-1,panelH),true);
         ImGui::TextDisabled("Prefab nodes (not parent instances)");
         const Scene& source=m_prefab.world->scene;
-        if (ImGui::BeginChild("##prefabTree",ImVec2(-1,170),true)) {
-            for (uint32_t i=1;i<source.hierarchy.size();++i) {
-                if (!IsLiveSlot(source,i)) continue;
+        static char filter[128] = {};
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##prefabFilter", "Filter prefab nodes...",
+            filter, sizeof(filter));
+        if (ImGui::BeginChild("##prefabTree",ImVec2(-1,190),true)) {
+            // Match the main Outliner's parent/child structure, expand
+            // arrows, selection highlighting and filtered flat results.
+            // Nodes keep their own prefab-local selection identity.
+            const auto drawNode = [&](auto&& self, uint32_t i) -> void {
+                if (i >= source.hierarchy.size() || !IsLiveSlot(source,i))
+                    return;
                 ImGui::PushID(int(i));
-                const std::string name=getNodeName(source,int(i));
-                if (ImGui::Selectable(name.c_str(),
-                    m_prefab.selected==i))
-                    m_prefab.selected=i;
+                std::string name = getNodeName(source,int(i));
+                if (name.empty()) name = "(node)";
+                bool hasChildren = false;
+                for (int child = source.hierarchy[i].firstChild;
+                    child >= 0; child = source.hierarchy[child].nextSibling) {
+                    if (IsLiveSlot(source,uint32_t(child))) {
+                        hasChildren = true;
+                        break;
+                    }
+                }
+                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                    ImGuiTreeNodeFlags_OpenOnDoubleClick;
+                if (m_prefab.selected == i)
+                    flags |= ImGuiTreeNodeFlags_Selected;
+                if (!hasChildren)
+                    flags |= ImGuiTreeNodeFlags_Leaf;
+                const bool opened = ImGui::TreeNodeEx(
+                    (name + "###prefabNode").c_str(),flags);
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+                    m_prefab.selected = i;
+                if (opened) {
+                    for (int child = source.hierarchy[i].firstChild;
+                        child >= 0; child = source.hierarchy[child].nextSibling)
+                        self(self,uint32_t(child));
+                    ImGui::TreePop();
+                }
                 ImGui::PopID();
+            };
+            if (filter[0]) {
+                for (uint32_t i=1;i<source.hierarchy.size();++i) {
+                    if (!IsLiveSlot(source,i)) continue;
+                    std::string name = getNodeName(source,int(i));
+                    if (name.find(filter)==std::string::npos) continue;
+                    ImGui::PushID(int(i));
+                    if (ImGui::Selectable(
+                        (name.empty() ? "(node)" : name).c_str(),
+                        m_prefab.selected==i))
+                        m_prefab.selected=i;
+                    ImGui::PopID();
+                }
+            }
+            else {
+                for (int child = source.hierarchy[0].firstChild;
+                    child >= 0; child = source.hierarchy[child].nextSibling)
+                    drawNode(drawNode,uint32_t(child));
             }
         }
         ImGui::EndChild();
