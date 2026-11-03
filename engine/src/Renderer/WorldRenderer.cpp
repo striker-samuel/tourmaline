@@ -17072,20 +17072,16 @@ namespace engine {
 							const char* tiers[3] = {
 								"Off", "Analytic (exp2, fallback)", "Volumetric (raymarched GI-lit)"
 							};
-							// The scene's resolved env is the all-infinite tile
-							// base zone. A mode edit updates that zone's authored
-							// values; UpdateEnvTiles rebakes on the next frame.
-							if (ImGui::Combo("Fog mode", &se.fogQuality, tiers, 3)) {
-								authored();
-								if (se.fogQuality == 2 && se.volumetrics <= 0.0f)
-									se.volumetrics = std::max(m_volumetricIntensity, 1.0f);
-								if (se.fogQuality == 2)
-									m_volumetricIntensity = se.volumetrics;
-								// A validated headless pin still takes precedence over
-								// the authored tier. Invalid spellings do not pin it.
-								if (!m_headlessPins.volumetric.has_value())
-									m_volumetricEnabled = se.fogQuality == 2;
-							}
+							// Headless override wins (TOURMALINE_VOLUMETRIC): the
+						// AGENTS.md contract is "scene fog settings lose".
+						static const bool sVolumetricEnvPinned =
+								std::getenv("TOURMALINE_VOLUMETRIC") != nullptr;
+						if (ImGui::Combo("Fog mode", &se.fogQuality, tiers, 3)) {
+							authored();
+							if (!sVolumetricEnvPinned)
+								m_volumetricEnabled =
+									se.fogQuality == 2 && se.volumetrics > 0.0f;
+						}
 							if (se.fogQuality == 1) {
 								if (ImGui::ColorEdit3("Fog color", &se.fogColor.x)) authored();
 								if (ImGui::SliderFloat("Fog density", &se.fogDensity, 0.0f, 1.0f)) authored();
@@ -17095,12 +17091,6 @@ namespace engine {
 							m_volumetricEnabled = false;
 						}
 						if (m_world && m_world->scene.environment.fogQuality == 2) {
-							// Re-declared for this block: the se/authored pair above
-							// lives inside the earlier `if (m_world)` scope, which
-							// MSVC leaks but GCC (correctly) does not - the Linux CI
-							// build failed with "'se' was not declared in this scope".
-							tour::scene::SceneEnv& se = m_world->scene.environment;
-							auto authored = [&]() { m_world->scene.envAuthored = true; };
 							static const char* const kVolNames[5] = {
 								"Low (8 steps)", "Medium (16 steps)", "High (32 steps)",
 								"Ultra (64 steps)", "Custom"
@@ -17117,21 +17107,19 @@ namespace engine {
 							if (ImGui::SliderInt("March steps", &m_volumetricSteps, 4, 128))
 								m_volumetricQuality = smvk::VolumetricQuality::Custom;
 							ImGui::SliderFloat("Fog max distance (m)", &m_volumetricMaxDistance, 5.0f, 200.0f);
-							// The base world's infinite +/- zone owns the
-							// extinction value. The tile bake replaces the pass
-							// density with this record; never edit only the pass.
-							if (ImGui::SliderFloat("Volumetric density", &se.volumetricDensity,
-								0.0f, 0.1f, "%.4f")) {
-								authored();
-								m_volumetricDensity = se.volumetricDensity;
-							}
-							if (ImGui::SliderFloat("Scattering intensity", &se.volumetrics,
-								0.0f, 4.0f)) {
-								authored();
-								m_volumetricIntensity = se.volumetrics;
-								if (!m_headlessPins.volumetric.has_value())
-									m_volumetricEnabled = se.volumetrics > 0.0f;
-							}
+							// NO density slider on purpose: with a
+							// published env-tile bake the zone system's
+							// BASE record (the scene env's authored
+							// volumetricDensity) REPLACES the pass
+							// density at weight 1 everywhere outside
+							// node zones (EnvZoneVolumetrics), so the
+							// control was dead — verified headlessly
+							// (pass density 0.01 vs 0.09 = zero image
+							// difference). Authored content owns the
+							// fog density (the editor's env panel /
+							// volDensity); node-zone records still
+							// carry their own absolute values.
+							ImGui::SliderFloat("Scattering intensity", &m_volumetricIntensity, 0.0f, 4.0f);
 							ImGui::SliderFloat("Anisotropy g", &m_volumetricAnisotropy, -0.9f, 0.9f);
 							ImGui::SliderFloat("Sun strength", &m_volumetricSun, 0.0f, 4.0f);
 							ImGui::SliderFloat("GI strength", &m_volumetricGi, 0.0f, 4.0f);

@@ -37,6 +37,32 @@ Coordinates are the primitive's local positions, not the .tour node's
 world transform; transformed consumers must account for nonuniform
 scales.
 
+## Static SDF reflection ray queries (CPU reference)
+
+`Engine/Asset/sdf_reflections.h` exposes `TraceStaticSdfRay` and
+`TraceStaticSdfReflection`. Pass a fixed collection of
+`StaticSdfInstance` entries pairing an already-parsed mesh-local
+`SdfVolume` with its affine mesh-to-world transform. Only **static
+scene geometry** belongs in this list: do not insert animated,
+skinned, or dynamically moved nodes. The functions return the nearest
+geometric hit (world-space distance, position and facing normal), or
+a miss. Reflection rays take the receiver's incident direction and
+world normal, reflect the direction and apply an origin bias to avoid
+self-intersections. Misses leave the output unchanged.
+
+The tracer intersects each volume's transformed grid bounds, samples
+the existing X-fastest R16_SNORM distance values with trilinear
+interpolation, and sphere-traces conservatively within the narrow band.
+It handles signed and unsigned (open) surfaces and nonuniformly scaled
+affine instances. It is intentionally a **CPU reference/query**:
+there is no GPU sidecar upload, material/radiance hit evaluation,
+integration with the SSSR/SSR composite, or animated geometry updates.
+It does **not** make visible in-game reflections yet. A production
+SDF reflection feature still needs static instance collection, GPU
+residency/acceleration, shader tracing, and lighting/compositing.
+The distance-field resolution and narrow-band saturation can miss thin
+features; do not treat these queries as exact collision predicates.
+
 ## meshoptimizer 1.3
 
 Tourmaline already pins a meshoptimizer revision with the experimental
@@ -51,7 +77,7 @@ The recipe bake intentionally uses the unmodified imported mesh.
 - Bake is CPU-only, brute-force per grid voxel over all triangles:
   suitable for bounded/static props, not unlimited high-poly meshes.
   Add a BVH/triangle bins and job scheduling before production scale.
-- No GPU upload, sampling API, collision/occlusion integration, sparse
+- No GPU upload, collision/occlusion integration, sparse
   brick compression, or automatic LOD selection in this first increment.
 - Add shape, winding, seam, thin-feature, and asset-package regression
   tests and benchmark varied mesh complexity before enabling by default.
