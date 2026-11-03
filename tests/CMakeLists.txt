@@ -1363,3 +1363,9 @@ target_compile_features(InputTapeTests PRIVATE cxx_std_20)
 set_target_properties(InputTapeTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME input_tape_tests COMMAND InputTapeTests)
+
+# CPU-only SDF artifact and pak representation regression.
+add_executable(SdfTests test_sdf.cpp)
+target_link_libraries(SdfTests PRIVATE engine)
+set_target_properties(SdfTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME sdf_tests COMMAND SdfTests)
