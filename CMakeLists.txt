@@ -521,11 +521,6 @@ add_subdirectory(tools/project)            # Project.exe: the project-pipeline C
   add_subdirectory(tools/tourinit)            # tourinit: thin native project scaffold CLI
   add_subdirectory(tools/artifact_cache)
   add_subdirectory(tools/cook)
-  # The public C++ tooling core + the thin native tourinit adapter
-  # (PR #65): tourinit links tourmaline::tooling, so this must come
-  # AFTER tools/project_pipeline (the tooling lib links it).
-  add_subdirectory(tools/tooling)
-  add_subdirectory(tools/tourinit)
   # pak_cooker BEFORE the hosts: it owns the ENGINE SHADER PACKAGE
   # target (EngineScene_shaderpak over the declared compiled-output
   # list — see tools/pak_cooker/CMakeLists.txt), and HostSetup's
