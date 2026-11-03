@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "tm_project_shader_space.hlsli"
 
 // Stable, PROJECT-FACING lit-fragment compile-time helpers.
 //
@@ -56,3 +57,14 @@ bool TM_LmIsValidLobeCount(uint lobeCount)
         || lobeCount == 9u || lobeCount == 12u;
 }
 #define TM_LM_VALID_LOBE_COUNT(n) TM_LmIsValidLobeCount((n))
+
+// PASS HINT: a custom shadow wrapper sets TM_SHADOW_CASTER_PASS BEFORE
+// including this header. Engine shadow.vert / shadow.frag and GPU shadow
+// seed VSs set it automatically. Reversed-Z main depth/prepass shaders
+// do NOT set it. Shader stages compile independently: both VS and FS
+// wrappers must opt in when both use the flag.
+#if defined(TM_SHADOW_CASTER_PASS)
+#define TM_PASS_SHADOW_CASTER 1
+#else
+#define TM_PASS_SHADOW_CASTER 0
+#endif

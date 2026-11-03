@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
+#define TM_SHADOW_CASTER_PASS 1
 #define SHADOW_DIRECT_PASS
 #include "common.hlsli"
 #include "gfxfilter.hlsli"
