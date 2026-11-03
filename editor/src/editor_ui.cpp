@@ -29,6 +29,7 @@
 
 #include <Engine/Asset/spriteset.h>
 #include <imgui.h>
+#include <SDL3/SDL_misc.h> // SDL_OpenURL: launch the local asset history UI
 #include <imgui_impl_vulkan.h> // ImGui_ImplVulkan_AddTexture (TextureThumb)
 #include <stb_image.h>         // stbi_load (AssetSidecarThumb; impl in editor_branding)
 
@@ -427,6 +428,17 @@ namespace editor {
 			// Single entry point: native dialog (.gltf/.glb/.tour, in C:/),
 			// dispatched by extension (tours replay into the stack; paks are
 			// refused — they run in the App).
+			// The source history agent is optional and entirely local. This
+			// command only opens its browser UI; the editor remains usable
+			// if the offline service is not installed or running.
+			if (ImGui::MenuItem("Browse source asset history...")) {
+				constexpr const char* kHistoryUrl = "http://127.0.0.1:8765/";
+				if (!SDL_OpenURL(kHistoryUrl)) {
+					ImGui::SetClipboardText(kHistoryUrl);
+					Log("Asset history: could not open browser; URL copied to clipboard.");
+				}
+			}
+			ImGui::Separator();
 			if (ImGui::MenuItem("Open file...")) {
 				std::string picked;
 				if (NativeOpenFile(picked) && !picked.empty())
