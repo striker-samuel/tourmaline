@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "frames": 64,
+    "capture_frame": 48,
+    "threshold": 6,
+    "stride": 1,
+    "max_difference_fraction": 0
+  },
+  "views": [
+    "lit",
+    "health",
+    "base",
+    "roughness",
+    "metalness",
+    "f0"
+  ],
+  "materials": {
+    "dielectric_rough": {
+      "camera": {
+        "position": [
+          -2.15,
+          4.7,
+          2.7
+        ],
+        "forward": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    "dielectric_smooth": {
+      "camera": {
+        "position": [
+          0,
+          4.7,
+          2.7
+        ],
+        "forward": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    "black_plastic": {
+      "camera": {
+        "position": [
+          2.15,
+          4.7,
+          2.7
+        ],
+        "forward": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    "metal_rough": {
+      "camera": {
+        "position": [
+          -2.15,
+          2.9,
+          2.7
+        ],
+        "forward": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    "metal_smooth": {
+      "camera": {
+        "position": [
+          0,
+          2.9,
+          2.7
+        ],
+        "forward": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    "copper_brushed": {
+      "camera": {
+        "position": [
+          2.15,
+          2.9,
+          2.7
+        ],
+        "forward": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    "mixed_metal": {
+      "camera": {
+        "position": [
+          -2.15,
+          1.1,
+          2.7
+        ],
+        "forward": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    "roughness_clamp": {
+      "camera": {
+        "position": [
+          0,
+          1.1,
+          2.7
+        ],
+        "forward": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    "white_warning": {
+      "camera": {
+        "position": [
+          2.15,
+          1.1,
+          2.7
+        ],
+        "forward": [
+          0,
+          0,
+          -1
+        ]
+      }
+    }
+  },
+  "environments": {
+    "studio": {
+      "description": "Neutral analytic-sky studio; not baked HDR IBL",
+      "source": {
+        "pak": "content/paks/material_lab_studio.pak",
+        "scene": "studio"
+      },
+      "pins": {
+        "TOURMALINE_AMBIENT": "skyibl",
+        "TOURMALINE_CUBEMAP": "0"
+      }
+    },
+    "cornell": {
+      "description": "Cornell-style red/green enclosure with authored point light, not a path-traced reference",
+      "source": {
+        "pak": "content/paks/material_lab_cornell.pak",
+        "scene": "cornell"
+      },
+      "pins": {
+        "TOURMALINE_AMBIENT": "skyibl",
+        "TOURMALINE_CUBEMAP": "0"
+      }
+    },
+    "outdoor": {
+      "description": "Outdoor analytic sky with a fixed sun and ground",
+      "source": {
+        "pak": "content/paks/material_lab_outdoor.pak",
+        "scene": "outdoor"
+      },
+      "pins": {
+        "TOURMALINE_AMBIENT": "skyibl",
+        "TOURMALINE_CUBEMAP": "0"
+      }
+    },
+    "ibl_softbox": {
+      "description": "Requires separately authored and cooked real softbox probe IBL",
+      "external": true,
+      "source": {
+        "pak": "content/paks/material_lab_ibl_softbox.pak",
+        "scene": "ibl_softbox"
+      },
+      "pins": {
+        "TOURMALINE_AMBIENT": "skyibl",
+        "TOURMALINE_CUBEMAP": "1"
+      }
+    },
+    "ibl_overcast": {
+      "description": "Requires separately authored and cooked real overcast probe IBL",
+      "external": true,
+      "source": {
+        "pak": "content/paks/material_lab_ibl_overcast.pak",
+        "scene": "ibl_overcast"
+      },
+      "pins": {
+        "TOURMALINE_AMBIENT": "skyibl",
+        "TOURMALINE_CUBEMAP": "1"
+      }
+    },
+    "ibl_warm_indoor": {
+      "description": "Requires separately authored and cooked real warm interior probe IBL",
+      "external": true,
+      "source": {
+        "pak": "content/paks/material_lab_ibl_warm_indoor.pak",
+        "scene": "ibl_warm_indoor"
+      },
+      "pins": {
+        "TOURMALINE_AMBIENT": "skyibl",
+        "TOURMALINE_CUBEMAP": "1"
+      }
+    }
+  }
+}
