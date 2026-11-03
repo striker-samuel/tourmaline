@@ -6,6 +6,7 @@
 // rendering, a single bindless instanced draw, nested CPU-only layout.
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/GameUiLayout.h>
+#include <Engine/Asset/spriteset.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Rendergraph/rendergraph.h>
 
@@ -15,6 +16,7 @@
 #include <cstdio>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <string>
 #include <utility>
 #include <vector>
@@ -82,6 +84,23 @@ public:
 		}
 		m_rects.push_back(rect);
 	}
+
+	// Draw an authored sprite region from an already loaded host-owned atlas.
+	// Returns false for an unknown sprite, invalid geometry, or insufficient
+	// rectangle capacity. Trimmed regions draw their visible crop into bounds.
+	[[nodiscard]] bool DrawSprite(const asset::SpriteSet& set,
+		std::string_view name, UiRect2D bounds, smvk::TextureHandle texture,
+		glm::vec4 tint = glm::vec4(1.0f),
+		std::optional<UiRect2D> clip = std::nullopt);
+
+	// Split a SpriteSet region into up to nine rectangles with fixed-size
+	// corners and stretched edges/center. Tiny targets proportionally shrink
+	// the destination borders; the source UV borders remain unchanged.
+	// With zero borders this is equivalent to DrawSprite.
+	[[nodiscard]] bool DrawNineSlice(const asset::SpriteSet& set,
+		std::string_view name, UiRect2D bounds, smvk::TextureHandle texture,
+		glm::vec4 tint = glm::vec4(1.0f),
+		std::optional<UiRect2D> clip = std::nullopt);
 
 	// Called on the render thread. Shaders are packed automatically by
 	// the existing engine shaders build. Textures are owned by the host.
