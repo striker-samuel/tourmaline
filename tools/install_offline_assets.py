@@ -42,6 +42,10 @@ def install_maya_script(scripts_dir: Path | None = None) -> Path:
     source = ROOT / "tools" / "maya" / "tourmaline_asset_versions.py"
     target = scripts_dir / source.name
     shutil.copy2(source, target)
+    # Both offline and NAS pickers use the same importable cache client.
+    # Without this dependency the Maya picker would fail at import time.
+    cache_source = ROOT / "tools" / "maya" / "tourmaline_asset_cache.py"
+    shutil.copy2(cache_source, scripts_dir / cache_source.name)
     return target
 
 

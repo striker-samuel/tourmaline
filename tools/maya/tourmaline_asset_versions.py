@@ -14,13 +14,16 @@ import os
 from pathlib import Path
 import re
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import urlopen
+
+from tourmaline_asset_cache import AssetClient, load_client_settings
 
 DEFAULT_SERVER = "http://127.0.0.1:8765"
 WINDOW = "tourmalineAssetVersionsWindow"
 ATTRS = {
     "asset_path": "tourmalineAssetPath",
+    "source_id": "tourmalineSourceAssetId",
     "revision": "tourmalineRevision",
     "digest": "tourmalineSha256",
     "cache_path": "tourmalineCachePath",
@@ -38,17 +41,34 @@ def _maya():
 
 
 def _server():
-    # Restrict to localhost: this tool is intentionally offline and local.
-    value = os.environ.get("TOURMALINE_ASSET_URL", DEFAULT_SERVER).rstrip("/")
-    if value not in ("http://127.0.0.1:8765", "http://localhost:8765"):
-        # Multiple localhost ports can be supported without allowing arbitrary servers.
-        match = re.fullmatch(r"http://(127\.0\.0\.1|localhost):([0-9]{2,5})", value)
-        if not match or not (1024 <= int(match.group(2)) <= 65535):
-            raise ValueError("TOURMALINE_ASSET_URL must be http://127.0.0.1:<port>")
+    """Local archive by default, or a configured authenticated NAS endpoint."""
+    settings = load_client_settings()
+    value = (os.environ.get("TOURMALINE_ASSET_URL") or
+             settings.get("url") or DEFAULT_SERVER).rstrip("/")
+    parts = urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("invalid TOURMALINE_ASSET_URL")
     return value
 
 
+def _client():
+    """None in legacy localhost mode; NAS mode requires a bearer token."""
+    url = _server()
+    settings = load_client_settings()
+    token = os.environ.get("TOURMALINE_ASSET_TOKEN") or settings.get("token", "")
+    host = urlsplit(url).hostname
+    if not token and host not in ("127.0.0.1", "localhost"):
+        raise ValueError("set TOURMALINE_ASSET_TOKEN for the shared repository")
+    if not token:
+        return None
+    cache = os.environ.get("TOURMALINE_ASSET_CACHE_DIR") or settings.get("cache")
+    return AssetClient(url, token, cache=cache)
+
+
 def _api(endpoint, **params):
+    client = _client()
+    if client is not None:
+        return client.get(endpoint, **{k: v for k, v in params.items() if v is not None})
     url = _server() + endpoint
     if params:
         url += "?" + urlencode({key: value for key, value in params.items()
@@ -63,18 +83,33 @@ def _api(endpoint, **params):
 
 
 def available_assets(search=""):
-    """List archived paths. A missing file on G: is still available in history."""
-    assets = _api("/v1/assets")["assets"]
+    """Source identities are separate from the cooked build catalog."""
+    client = _client()
+    if client is None:
+        assets = _api("/v1/assets")["assets"]
+    else:
+        assets = [
+            {"path": row["current_path"], "source_id": row["asset_id"],
+             "missing": row["missing"], "revision": row["revision"]}
+            for row in client.sources()]
     needle = search.casefold().strip()
     return [a for a in assets if needle in a["path"].casefold()]
 
 
-def versions(path):
+def versions(path, source_id=None):
+    client = _client()
+    if client is not None and source_id:
+        return client.revisions(source_id)
     return _api("/v1/versions", path=path)["versions"]
 
 
-def resolve(path, revision=None, pin=True):
-    """Resolve to a local file. Never mutates the shared project folder."""
+def resolve(path, revision=None, pin=True, source_id=None):
+    """Resolve immutable bytes into this workstation's cache, not on the NAS."""
+    client = _client()
+    if client is not None:
+        if source_id:
+            return client.resolve_source(source_id, revision, pin=pin)
+        return client.resolve_path(path, revision, pin=pin)
     item = _api("/v1/resolve", path=path, revision=revision, pin=int(bool(pin)))
     local = Path(item["local_path"])
     if not local.is_file():
@@ -94,6 +129,7 @@ def _record(cmds, item, source_path, mode, reference_node=""):
     node = cmds.createNode("network", name="tourmalineAssetVersion#")
     data = {
         "asset_path": source_path,
+        "source_id": item.get("asset_id", ""),
         "revision": str(item["revision"]),
         "digest": item["sha256"],
         "cache_path": item["local_path"],
@@ -107,14 +143,14 @@ def _record(cmds, item, source_path, mode, reference_node=""):
     return node
 
 
-def import_version(path, revision, reference=False):
+def import_version(path, revision, reference=False, source_id=None):
     """Bring an archived OBJ/FBX/Maya source into the current Maya scene.
 
     References are supported for .ma/.mb; imports for .obj/.fbx/.ma/.mb.
     Other types (e.g. textures) can still be resolved for texture nodes.
     """
     cmds = _maya()
-    item = resolve(path, revision, pin=True)
+    item = resolve(path, revision, pin=True, source_id=source_id)
     local = item["local_path"]
     suffix = Path(local).suffix.lower()
     if suffix not in (".obj", ".fbx", ".ma", ".mb"):
@@ -155,7 +191,8 @@ def version_records():
             continue
         row = {"node": node}
         for label, attr in ATTRS.items():
-            row[label] = cmds.getAttr(node + "." + attr) or ""
+            row[label] = (cmds.getAttr(node + "." + attr) or "") if cmds.attributeQuery(
+                attr, node=node, exists=True) else ""
         records.append(row)
     return records
 
@@ -170,7 +207,9 @@ def switch_reference_version(record_node, revision):
     ref_node = cmds.getAttr(record_node + "." + ATTRS["reference_node"])
     if mode != "reference" or not ref_node or not cmds.objExists(ref_node):
         raise ValueError("Only Maya file references can be switched in place")
-    item = resolve(path, revision, pin=True)
+    source_id = (cmds.getAttr(record_node + "." + ATTRS["source_id"]) or "") if (
+        cmds.attributeQuery(ATTRS["source_id"], node=record_node, exists=True)) else ""
+    item = resolve(path, revision, pin=True, **({"source_id": source_id} if source_id else {}))
     if Path(item["local_path"]).suffix.lower() not in (".ma", ".mb"):
         raise ValueError("Cannot reference this format")
     cmds.file(item["local_path"], loadReference=ref_node)
@@ -230,11 +269,11 @@ def show_picker():
     def refresh_versions(*_):
         cmds.textScrollList(rev_list, edit=True, removeAll=True)
         version_map.clear()
-        path = selected_asset()
-        if not path:
+        asset = selected_asset()
+        if not asset:
             return
         try:
-            rows = versions(path)
+            rows = versions(asset["path"], asset.get("source_id"))
         except Exception as exc:
             cmds.warning(str(exc))
             return
@@ -256,7 +295,7 @@ def show_picker():
         for asset in rows:
             path = asset["path"]
             label = path + ("  [REMOVED FROM SHARE]" if asset["missing"] else "")
-            available[label] = path
+            available[label] = asset
             cmds.textScrollList(asset_list, edit=True, append=label)
 
     def do_rehydrate(*_):
@@ -268,13 +307,14 @@ def show_picker():
             cmds.warning("%s: %s" % (error["node"], error["error"]))
 
     def do_import(*_):
-        path, rev = selected_asset(), selected_revision()
-        if path is None or rev is None:
+        asset, rev = selected_asset(), selected_revision()
+        if asset is None or rev is None:
             cmds.warning("Select a source asset and a revision")
             return
         try:
-            node = import_version(path, rev,
-                                  reference=cmds.checkBox(reference, query=True, value=True))
+            node = import_version(asset["path"], rev,
+                                  reference=cmds.checkBox(reference, query=True, value=True),
+                                  source_id=asset.get("source_id"))
         except Exception as exc:
             cmds.warning("Import failed: %s" % exc)
             return
@@ -282,12 +322,13 @@ def show_picker():
                            pos="midCenterTop", fade=True)
 
     def do_resolve(*_):
-        path, rev = selected_asset(), selected_revision()
-        if path is None or rev is None:
+        asset, rev = selected_asset(), selected_revision()
+        if asset is None or rev is None:
             cmds.warning("Select a source asset and a revision")
             return
         try:
-            data = resolve(path, rev, pin=True)
+            data = resolve(asset["path"], rev, pin=True,
+                           source_id=asset.get("source_id"))
             cmds.promptDialog(title="Pinned local file", message="Use this path for texture nodes:",
                               text=data["local_path"], button=["OK"], defaultButton="OK")
         except Exception as exc:
