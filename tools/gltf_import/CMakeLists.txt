@@ -49,3 +49,20 @@ target_link_libraries(gltf_import
 )
 
 target_compile_definitions(gltf_import PRIVATE ENGINE_VULKAN)
+
+# OpenUSD is an optional authoring-time dependency, never a runtime USD
+# backend. Enabling it converts composed USD stages through the existing
+# source model -> .geometry/.material/.meta derivation path.
+option(TOURMALINE_WITH_USD "Enable native OpenUSD source importing" OFF)
+if(TOURMALINE_WITH_USD)
+    find_package(pxr CONFIG REQUIRED)
+    target_sources(gltf_import PRIVATE src/usd_import.cpp)
+    target_compile_definitions(gltf_import PUBLIC TOURMALINE_WITH_USD=1)
+    if(TARGET usdGeom AND TARGET usdShade AND TARGET usd)
+        target_link_libraries(gltf_import PRIVATE usdGeom usdShade usd)
+    elseif(TARGET pxr::usdGeom AND TARGET pxr::usdShade AND TARGET pxr::usd)
+        target_link_libraries(gltf_import PRIVATE pxr::usdGeom pxr::usdShade pxr::usd)
+    else()
+        message(FATAL_ERROR "OpenUSD CMake package lacks supported usd/usdGeom/usdShade targets")
+    endif()
+endif()
