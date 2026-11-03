@@ -1347,12 +1347,20 @@ void EditorApp::DrawPanelSplitters() {
 	// strip; the columns now run to the status bar).
 	const float colH = ds.y - menuH - BottomDockH() - kEditorStatusH;
 	bool committed = false;
+	// Keep at least 240 px of central viewport when dragging either
+	// column, even on small windows. The saved pixel sizes remain
+	// independent; resizing the window does not destroy the preference.
+	constexpr float kMinViewportW = 240.0f;
+	const float maxLeft = std::max(200.0f,
+		std::min(720.0f, ds.x - m_inspectorW - kMinViewportW));
+	const float maxRight = std::max(200.0f,
+		std::min(720.0f, ds.x - m_outlinerW - kMinViewportW));
 	committed |= SplitterHandle("##splitL",
 		ImVec2(m_outlinerW - 3.0f, menuH),
-		ImVec2(6.0f, colH), false, &m_outlinerW, 200.0f, 720.0f, false);
+		ImVec2(6.0f, colH), false, &m_outlinerW, 200.0f, maxLeft, false);
 	committed |= SplitterHandle("##splitR",
 		ImVec2(ds.x - m_inspectorW - 3.0f, menuH),
-		ImVec2(6.0f, colH), false, &m_inspectorW, 200.0f, 720.0f, true);
+		ImVec2(6.0f, colH), false, &m_inspectorW, 200.0f, maxRight, true);
 	// The stacked LEFT column's split (Outliner above / the tabbed
 	// browser below): a horizontal handle spanning the column at the
 	// boundary. The clamp mirrors the draw-time one (the browser keeps
