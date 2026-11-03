@@ -55,36 +55,41 @@ struct TerrainHField {
 	return DecodeH01(px[o], px[o + 1]);
 }
 
-// Normalized height at world XZ: tile select + bilinear over texel centers,
-// world-edge clamped. Returns h01; use HeightToWorld(meta-less baseY/range)
-// via the overload below for meters.
+// Height at a GLOBAL integer texel. Unlike tile-local sampling, this reads
+// the neighbour across an H-tile boundary (matching the contiguous R16
+// GPU atlas and the placement heightfield harvest).
+[[nodiscard]] inline float GlobalH01At(
+    const TerrainHField& f, int32_t ix, int32_t iz) noexcept {
+    const int32_t n = int32_t(f.tilesPerAxis());
+    const int32_t res = int32_t(f.meta.hRes);
+    const int32_t end = n * res - 1;
+    ix = std::clamp(ix, 0, end);
+    iz = std::clamp(iz, 0, end);
+    const int32_t tx = ix / res, tz = iz / res;
+    const auto& px = f.tiles[size_t(tz) * size_t(n) + size_t(tx)];
+    return TileH01At(px, f.meta.hRes, ix % res, iz % res);
+}
+
+// Normalized height at world XZ: GLOBAL bilinear over texel centers,
+// world-edge clamped. Sampling across tile boundaries is continuous and
+// agrees with the GPU atlas and the placement-world harvest.
 [[nodiscard]] inline float SampleH01(
 	const TerrainHField& f, float x, float z) noexcept {
-	const uint32_t n = f.tilesPerAxis();
-	const float tile = f.meta.hTileSize;
-	const float texel = tile / float(f.meta.hRes);
+	const float texel = f.meta.hTileSize / float(f.meta.hRes);
 	// Float tile coords; clamp the sample point into the world first.
 	float lx = std::clamp(x - f.meta.originX, 0.0f, f.meta.worldSize - 1e-4f);
 	float lz = std::clamp(z - f.meta.originZ, 0.0f, f.meta.worldSize - 1e-4f);
-	uint32_t tx = std::min(uint32_t(lx / tile), n - 1);
-	uint32_t tz = std::min(uint32_t(lz / tile), n - 1);
-	const auto& px = f.tiles[size_t(tz) * size_t(n) + size_t(tx)];
-	const uint32_t res = f.meta.hRes;
-	// Position within the tile in texel units, relative to texel centers:
-	// center of texel i sits at (i+0.5)*texel, so u = local/texel - 0.5.
-	const float u = (lx - float(tx) * tile) / texel - 0.5f;
-	const float v = (lz - float(tz) * tile) / texel - 0.5f;
+	// Global grid texels have centers at (i+0.5)*texel.
+	const float u = lx / texel - 0.5f;
+	const float v = lz / texel - 0.5f;
 	int32_t x0 = static_cast<int32_t>(floorf(u));
 	int32_t y0 = static_cast<int32_t>(floorf(v));
 	const float fx = u - float(x0);
 	const float fz = v - float(y0);
-	// NOTE: bilinear stays tile-local (1-texel seam step at H-borders is
-	// below the 1m texel and hidden by the shared-edge G-block skirts in
-	// T2; cross-tile filtering arrives with the atlas in phase 4).
-	const float h00 = TileH01At(px, res, x0, y0);
-	const float h10 = TileH01At(px, res, x0 + 1, y0);
-	const float h01 = TileH01At(px, res, x0, y0 + 1);
-	const float h11 = TileH01At(px, res, x0 + 1, y0 + 1);
+	const float h00 = GlobalH01At(f, x0, y0);
+	const float h10 = GlobalH01At(f, x0 + 1, y0);
+	const float h01 = GlobalH01At(f, x0, y0 + 1);
+	const float h11 = GlobalH01At(f, x0 + 1, y0 + 1);
 	const float hx0 = h00 + (h10 - h00) * fx;
 	const float hx1 = h01 + (h11 - h01) * fx;
 	return hx0 + (hx1 - hx0) * fz;
