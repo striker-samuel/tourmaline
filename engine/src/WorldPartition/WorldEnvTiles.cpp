@@ -134,14 +134,14 @@ bool WorldEnvTiles::Build(const Scene& scene, glm::vec2 gridMin,
 	dimZ_ = dimZ;
 
 	// ---- Records: [0] = the base (the default environment block derived
-	// against ITSELF — the old zone-zero, always present, weight-1
-	// fallback), then the authored node zones derived against the
-	// RESOLVED base (scene.environment). ----
+	// against ITSELF — the all-infinite zone-zero, always present
+	// at weight 1), then node zones derived against that same ACTIVE
+	// resolved look. Runtime edits must not read the stale source default. ----
 	records_.clear();
 	records_.resize(kEnvTileMaxRecords);
 	{
 		const smvk::envzones::EnvZone baseLook = smvk::envzones::DeriveZoneLook(
-			scene.defaultEnvironment, scene.defaultEnvironment);
+			scene.environment, scene.environment);
 		records_[0].sky = glm::vec4(baseLook.skyTint, baseLook.ambientI);
 		records_[0].fog = glm::vec4(baseLook.fogColor, baseLook.fogDensity);
 		records_[0].vol = glm::vec4(baseLook.volumetrics,
@@ -158,12 +158,12 @@ bool WorldEnvTiles::Build(const Scene& scene, glm::vec2 gridMin,
 		// block (usually 0 — node zones win inside their volumes).
 		Candidate base{};
 		(void)smvk::envzones::MakeEnvZoneGpu(glm::mat4(1.0f), 63u,
-			smvk::envzones::EnvZone{}, scene.defaultEnvironment.zonePriority,
+			smvk::envzones::EnvZone{}, scene.environment.zonePriority,
 			1.0f, 0.0f, base.zone);
 		base.record = 0;
 		base.boundedVolume = std::numeric_limits<double>::infinity();
 		base.nodeId = UINT32_MAX;
-		base.priority = scene.defaultEnvironment.zonePriority;
+		base.priority = scene.environment.zonePriority;
 		candidates_.push_back(base);
 
 		struct NodeZone

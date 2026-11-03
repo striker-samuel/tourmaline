@@ -323,6 +323,31 @@ int main() {
 			return 0xFFFFFFFFu;
 		};
 
+		// Runtime fog settings live in the RESOLVED environment; the
+		// base tile record is an unbounded +/- XYZ zone at weight 1,
+		// even outside the grid. The source default can differ after
+		// an active look edit and must not overwrite that active look.
+		{
+			::Scene s;
+			s.defaultEnvironment.volumetrics = 0.0f;
+			s.defaultEnvironment.volumetricDensity = 0.01f;
+			s.environment.volumetrics = 1.5f;
+			s.environment.volumetricDensity = 0.075f;
+			s.environment.fogDensity = 0.2f;
+			WorldEnvTiles t;
+			Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
+				"envtile.active-base-build");
+			Check(std::abs(t.Records()[0].vol.x - 1.0f) < 1e-6f
+				&& std::abs(t.Records()[0].vol.y - 0.075f) < 1e-6f
+				&& std::abs(t.Records()[0].fog.w - 0.2f) < 1e-6f,
+				"envtile.active-base-settings");
+			const auto inside = t.At(glm::vec3(32, 20, 32));
+			const auto outside = t.At(glm::vec3(-1000, -1000, 1000));
+			Check(inside.valid && inside.record == 0 && inside.weight == 1.0f
+				&& outside.valid && outside.record == 0 && outside.weight == 1.0f,
+				"envtile.active-base-infinite-all-axes");
+		}
+
 		// THE ROOM: one bounded interior (Y 15..25 over a 0..40 range) —
 		// base below, the interior inside, base above.
 		{
@@ -445,6 +470,7 @@ int main() {
 			{
 				::Scene s;
 				s.defaultEnvironment.volumetricDensity = 0.0f;
+				s.environment.volumetricDensity = 0.0f;
 				const uint32_t z = makeTileZone(s, glm::vec3(32, 5, 32),
 					glm::vec3(32, 20, 32), glm::vec3(1, 0, 0), 5.0f);
 				if (EnvRow* row = FindEnv(s, z))
@@ -461,6 +487,7 @@ int main() {
 			{
 				::Scene s;
 				s.defaultEnvironment.volumetricDensity = 0.0f;
+				s.environment.volumetricDensity = 0.0f;
 				const uint32_t z = makeTileZone(s, glm::vec3(32, 5, 32),
 					glm::vec3(32, 20, 32), glm::vec3(1, 0, 0), 5.0f);
 				if (EnvRow* row = FindEnv(s, z))
