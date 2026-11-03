@@ -43,3 +43,25 @@ run real-ROM smoke tests. None of those are claimed complete.
 Design lesson: expose native host lifecycle, guest memory, input/audio
 and storage, GPU external image import and pre/post-composition hooks,
 not Tourmaline WorldRenderer's internal push constants or .tour scenes.
+
+
+## C ABI and native diagnostic host
+
+- recomp_abi.h is a C17-compatible versioned ABI with separate boot, step, RGBA frame capture, shutdown and optional audio/rumble/log callbacks.
+- BridgeRunner tests the adapter with synthetic bytes. The SM64 Session wrapper additionally validates the 8 MiB USA ROM and SHA-1 before starting it.
+- host/diagnostic_host.cpp optionally runs a synthetic frame producer through Tourmaline's own SDL3 App, Vulkan ResourceManager, RenderGraph and GameUiRenderer. **This shows only synthetic color patterns, never SM64 gameplay.**
+
+Configure the full Tourmaline source using the usual KTX, Embree and Vulkan dependencies, with:
+
+    cmake -S . -B out/build/recomp -G Ninja -DCMAKE_BUILD_TYPE=Release -DTOURMALINE_RECOMP_DIAGNOSTIC=ON
+    cmake --build out/build/recomp --target RecompDiagnostic
+    cd out/build/recomp
+    ./RecompDiagnostic --synthetic
+
+On Windows use RecompDiagnostic.exe instead. Controls: WASD/left stick = stick, Space/South = A, Left Shift/East = B, Enter/Start = Start. The optional target defaults OFF. Hosted CI compiles it on the experiment branch, but GPU runtime smoke tests require a Vulkan-capable desktop session.
+
+The diagnostic's UpdateTexture path recreates images every simulation tick: intentionally slow. A real RT64 integration needs explicit synchronized external Vulkan image interop or a persistent image upload API. The C frame fallback cannot preserve all RDP framebuffer effects or faithfully match the original timings.
+
+## Verified upstream integration boundary
+
+The candidate upstream n64hub/super-mario-64-recomp has SDL2/RT64 graphics startup in src/main/main.cpp, game-specific recomp replacement functions in src/game/recomp_api.cpp, static RecompiledFuncs/PatchesLib libraries in CMakeLists.txt, and tools/recompile.sh for generating native game code from a user's ROM. These are not portable adapter callbacks. Its N64ModernRuntime thread scheduler, RSP/RDP execution and RT64 Vulkan ownership must be integrated separately with Tourmaline. All upstream GPL-3.0 and game-asset rights remain separate obligations.
