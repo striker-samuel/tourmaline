@@ -1123,8 +1123,6 @@ using namespace ::smvk;
 			Cluster& cluster = *clusterPtr.get();
 			Scene& cs = cluster.scene;
 
-			const uint32_t nameOffset = static_cast<uint32_t>(scene.nodeNames.size());
-
 			// Slot-association map (Epoch 6b): cluster slot -> world
 			// NodeId, UINT32_MAX for holes. The dense-era +nodeOffset
 			// arithmetic became this explicit map — numerically
@@ -1224,6 +1222,13 @@ using namespace ::smvk;
 
 			// Remap node metadata (names index into nodeNames after the
 			// bulk pool append; uuids ride unchanged) per live slot.
+			// The offset is the pool size AT THE APPEND: pass 1's addNode
+			// calls above append auto-names to the pool (addNode names
+			// every node from allocation), so the pre-pass-1 offset left
+			// every merged name pointing into the auto-name block
+			// (world_entity_tests: resolve/schemafold name-at-row-node).
+			const uint32_t clusterNameOffset =
+				static_cast<uint32_t>(scene.nodeNames.size());
 			scene.nodeNames.insert(
 				scene.nodeNames.end(),
 				cs.nodeNames.begin(),
@@ -1234,7 +1239,7 @@ using namespace ::smvk;
 					continue;
 				if (cs.metadata[s].name != 0xFFFFFFFFu)
 					SetNodeNameIndex(scene, nodeMap[s],
-						cs.metadata[s].name + nameOffset);
+						cs.metadata[s].name + clusterNameOffset);
 				SetNodeUuidRaw(scene, nodeMap[s], cs.metadata[s].uuid);
 			}
 

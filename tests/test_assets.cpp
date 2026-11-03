@@ -2950,6 +2950,10 @@ void TestClusterSerializeCook() {
 			// form; see TestTriggerVolume in test_trigger_volume.cpp
 			// for the populated encoding).
 			putU32(0);
+			// The v22 physics-body section trails the triggers (u32
+			// rowCount — no authored bodies in this scene, uniform
+			// zero-row form).
+			putU32(0);
 			const size_t at = p.size() - expect.size();
 			bool tailOk = p.size() >= expect.size();
 			for (size_t i = 0; tailOk && i < expect.size(); ++i)
@@ -3704,6 +3708,9 @@ void TestAudioSceneSection() {
 				// The v21 trigger section trails the audio rooms (the
 				// uniform zero-row form — no triggers in this scene).
 				putU32(0);
+				// The v22 physics-body section trails the triggers
+				// (the uniform zero-row form — no authored bodies).
+				putU32(0);
 				const size_t at = p.size() - expect.size();
 				bool tailOk = p.size() >= expect.size();
 				for (size_t i = 0; tailOk && i < expect.size(); ++i)
@@ -3839,6 +3846,9 @@ void TestAudioRoomSection() {
 				putF32(0.5f);   // transitionSeconds
 				// The v21 trigger section (u32 rowCount — zero-row
 				// form: this scene carries no trigger components).
+				putU32(0);
+				// The v22 physics-body section (u32 rowCount — zero-row
+				// form: this scene carries no authored bodies).
 				putU32(0);
 				const size_t at = p.size() - expect.size();
 				bool tailOk = p.size() >= expect.size();

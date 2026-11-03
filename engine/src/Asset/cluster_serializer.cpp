@@ -2354,8 +2354,13 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 				scene.tables.triggerVolumes.push_back({ node, std::move(trigger) });
 			}
 		}
-		// Physics records are mandatory in the current scene layout.
-		{
+		// Physics body rows (v22). The WRITER always emits the section;
+		// the READER tolerates its absence exactly like the v20/v21
+		// siblings (pre-physics blobs parse with zero bodies) - the
+		// unconditional read broke every older blob AND the repo's own
+		// hand-built test blobs (pscenes cascade + TestProjectScenes
+		// segfault on master).
+		if (c.off < c.img.size()) {
 			const uint32_t count = c.u32();
 			if (!c.ok || count > nodeCount)
 				return fail("bad scene physics body section");

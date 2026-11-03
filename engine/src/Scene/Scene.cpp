@@ -1200,7 +1200,6 @@ void mergeScenes(
     return;
 
   int meshOffs    = 0;
-  int nameOffs    = (int)scene.nodeNames.size();
   int materialOfs = 0;
   auto meshCount  = meshCounts.begin();
 
@@ -1268,7 +1267,13 @@ void mergeScenes(
       h.lastSibling = mapLink(sh.lastSibling);
     }
 
-    // Name pool first (metadata offsets into it below).
+    // Name pool first (metadata offsets into it below). The offset is
+    // the pool size AT THIS MOMENT: pass 1's addNode calls above append
+    // auto-names to the pool (addNode names every node from allocation),
+    // so a pre-pass-1 offset leaves every merged name pointing into the
+    // auto-name block instead of the source's own names
+    // (world_entity_tests: resolve/schemafold name-at-row-node).
+    const int srcNameOffs = (int)scene.nodeNames.size();
     mergeVectors(scene.nodeNames, s->nodeNames);
     if (mergeMaterials)
       mergeVectors(scene.materialNames, s->materialNames);
@@ -1303,7 +1308,7 @@ void mergeScenes(
       if (src < s->metadata.size()) {
         if (s->metadata[src].name != 0xFFFFFFFFu)
           SetNodeNameIndex(scene, nodeMap[src],
-            s->metadata[src].name + uint32_t(nameOffs));
+            s->metadata[src].name + uint32_t(srcNameOffs));
         SetNodeUuidRaw(scene, nodeMap[src], s->metadata[src].uuid);
       }
     }
@@ -1330,7 +1335,6 @@ void mergeScenes(
     }
 
     materialOfs += (int)s->materialNames.size();
-    nameOffs += (int)s->nodeNames.size();
 
     if (mergeMeshes) {
       meshOffs += *meshCount;
