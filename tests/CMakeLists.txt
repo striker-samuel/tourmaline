@@ -1044,6 +1044,17 @@ set_target_properties(ShaderLibraryTests PROPERTIES
 
 add_test(NAME shader_library_tests COMMAND ShaderLibraryTests)
 
+# The editor's project-scoped content server: watcher lifecycle,
+# event classification, coalescing, and source hot-reload delivery.
+# Pure CPU test (no GPU or EditorApp dependencies).
+add_executable(EditorContentServerTests test_editor_content_server.cpp)
+target_include_directories(EditorContentServerTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/editor/src)
+target_link_libraries(EditorContentServerTests PRIVATE engine gltf_import)
+set_target_properties(EditorContentServerTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME editor_content_server_tests COMMAND EditorContentServerTests)
+
 # The watched shader hot-reload service (Engine/Utils/
 # shader_hot_reload.h): the in-process DXC recompile (includes +
 # variant twins), SPIR-V validation, the byte-identical no-op, the
