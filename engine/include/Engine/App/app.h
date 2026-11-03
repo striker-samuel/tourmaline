@@ -13,6 +13,7 @@
 #include <Engine/RHI/swapchain.h>
 #include <Engine/App/Element.h>
 #include <Engine/Audio/audio.h>
+#include <Engine/Core/Random.h>
 #include <Engine/Memory/memory.h>
 
 #include "input.h"
@@ -54,6 +55,9 @@ public:
 	// Owned here so handles close while SDL is alive; hosts never see it.
 	std::unique_ptr<SdlInputBackend> m_sdlInput;
 	audio::AudioEngine m_audio{};
+	// Session-owned gameplay RNG; reseed before attaching game elements.
+	[[nodiscard]] RandomService& Random() noexcept { return m_random; }
+	[[nodiscard]] const RandomService& Random() const noexcept { return m_random; }
 	App();
 	// The pasted-pattern contract: Shutdown detaches + destroys the
 	// element stack while the graphics members are alive — an assert
@@ -134,6 +138,7 @@ public:
 
 protected:
 #pragma region ===[ App / Core State ]===
+	RandomService m_random{};
 	float delta_time_s = .0f;
 	float time_since_start_s = .0f;
 	// REAL wall delta (pre-bench-pin): the perf accounting averages THIS

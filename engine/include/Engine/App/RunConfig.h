@@ -44,6 +44,8 @@ enum class AaPin { Off, Msaa2x, Smaa1x, SmaaT2x };
 enum class AoPin { None, Ssao, Sao };
 
 struct RunConfig {
+	// Optional repeatable gameplay seed, from TOURMALINE_RNG_SEED.
+	std::optional<uint64_t> rngSeed;
 	// ---- camera (WorldRenderer.cpp Configure) ----
 	std::optional<std::string> camFwd; // "x,y,z", wins over yaw
 	std::optional<std::string> camPos; // "x,y,z"
