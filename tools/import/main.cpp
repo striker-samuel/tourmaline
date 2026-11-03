@@ -9,7 +9,7 @@
 //
 // Dispatch by extension (ONE raw-import place — the editor's open/drop
 // runs the same calls):
-//   .glb/.gltf/.obj
+//   .glb/.gltf/.obj/.usd (USD optional)
 //               parse + derive in ONE call (the MeshImporter:
 //               gltf_import's ImportMeshSource — glTF/GLB through
 //               tinygltf, OBJ through the tinyobjloader adapter, both
