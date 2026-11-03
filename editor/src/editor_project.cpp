@@ -733,7 +733,7 @@ void EditorApp::HandleDroppedFiles(const std::vector<std::string>& files) {
 // the SINGLE place a .gltf turns into a session: opens (direct or
 // tour-recorded), drops and the project import all land here.
 std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath,
-	bool* rederived) {
+	bool* rederived, bool force) {
 	namespace fs = std::filesystem;
 	if (rederived)
 		*rederived = false;
@@ -753,7 +753,7 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath,
 	// opt-in only; the ShaderLodPolicy default keeps vertex-lit off.
 	if (const char* e = std::getenv("TOURMALINE_EDITOR_SHADERLODS"))
 		cfg.shaderLods = std::atoi(e) != 0;
-	if (!smvk::assets::MeshArtifactStale(gltfPath, cfg)) {
+	if (!force && !smvk::assets::MeshArtifactStale(gltfPath, cfg)) {
 		Log("Import: artifact current — opening '" + geometry.generic_string()
 			+ "' (no re-import).");
 		return geometry.generic_string();
@@ -839,6 +839,66 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath,
 			+ " derived artifact(s) in the artifact DB.");
 	}
 	return geometry.generic_string();
+}
+
+void EditorApp::ReimportAsset(const std::string& path) {
+    namespace fs = std::filesystem;
+    if (m_cookRunning) {
+        Log("Reimport: finish the current cook first.");
+        return;
+    }
+    if (m_projectRoot.empty() || !InProjectDir(path)) {
+        Log("Reimport: select a source in this project's content tree.");
+        return;
+    }
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) {
+        Log("Reimport: selected source is not a regular file.");
+        return;
+    }
+    std::string ext = fs::path(path).extension().string();
+    for (char& c : ext)
+        c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (smvk::assets::IsMeshSourceExtension(ext)) {
+        // Explicit Reimport bypasses the timestamp/config stale gate.
+        // The importer keeps the existing source/subasset GUID ledger.
+        const std::string artifact = ImportMeshArtifactFor(path, nullptr, true);
+        if (artifact.empty())
+            return;
+        Log("Reimport: rebuilt mesh assets for '" + path + "'.");
+        bool bound = m_world && !m_gltfPath.empty()
+            && IsPublishedMeshBound(path, m_gltfPath);
+        if (m_world && !bound)
+            for (const std::string& ref : m_refResolved)
+                if (IsPublishedMeshBound(path, ref)) {
+                    bound = true;
+                    break;
+                }
+        if (bound) {
+            if (ReloadReferencesViaTemp())
+                Log("Reimport: refreshed the live scene with unsaved edits preserved.");
+            else
+                Log("Reimport: rebuilt source; live reload failed. Reopen the scene.");
+        }
+        return;
+    }
+    if (ext == ".texture") {
+        smvk::assets::TextureAsset texture;
+        std::string err;
+        if (!smvk::assets::LoadTextureAsset(fs::path(path), texture, err)) {
+            Log("Reimport: invalid texture asset: " + err);
+            return;
+        }
+        const fs::path source = fs::path(path).parent_path() / texture.source;
+        if (!fs::is_regular_file(source, ec)) {
+            Log("Reimport: missing texture source: " + source.generic_string());
+            return;
+        }
+        LiveRefreshTextureAsset(source.generic_string());
+        return;
+    }
+    Log("Reimport: only source models (.gltf/.glb/.obj) and .texture assets "
+        "support explicit reimport. Scenes use Open/Reload.");
 }
 
 bool EditorApp::ImportAsset(const std::string& srcPath) {
