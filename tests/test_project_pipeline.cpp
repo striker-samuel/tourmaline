@@ -3627,6 +3627,56 @@ void TestProjectCatalog() {
 // a new generation, fingerprint-only changes keep the content hash),
 // FingerprintFile's VERIFIED content hashes (metadata never proves
 // byte equality), and the pak cook-state rules.
+// The C companion is a pure projection of the SAME catalog. Verify
+// identity constants, row order, string escaping, cue names, tombstones,
+// and the *shared* deployed catalog fingerprint.
+void TestCProjectCatalog() {
+    smvk::project::ProjectCatalog c;
+    c.projectName = "C sample";
+    c.projectId = 0x1234;
+    c.entryScene = 0x1000;
+    c.scenes.push_back({0x1000, "entry", "content/scenes/entry.tour",
+        "world", "scene"});
+    c.textures.push_back({0x2000, "stone", "content/models/a\\b.png",
+        "shared", "texture"});
+    c.audiographs.push_back({0x7000, "forest",
+        "content/audio/forest.audiograph", "world", "audiograph"});
+    c.audiographCues.push_back({0x7000, "forest", {"calm", "storm-1"}});
+    c.retired.push_back({0x3000, "old_mesh", "old.mesh", "world", "mesh"});
+    c.paks.push_back({"world", "world.pak"});
+    smvk::project::GenerationStamp stamp;
+    stamp.generation = 3;
+    stamp.timestamp = 100;
+    const std::string header =
+        smvk::project::EmitProjectCHeader(c, stamp);
+    const auto contains = [&](const char* s) {
+        return header.find(s) != std::string::npos;
+    };
+    Check(contains("#include <Engine/Asset/catalog_c.h>"),
+        "catalog.c-no-cxx-include");
+    Check(contains("TOUR_PROJECT_SCENE_entry UINT64_C(0x1000)"),
+        "catalog.c-scene-id");
+    Check(contains("TOUR_PROJECT_TEXTURE_stone UINT64_C(0x2000)"),
+        "catalog.c-texture-id");
+    Check(contains("TOUR_PROJECT_ENTRY_SCENE UINT64_C(0x1000)"),
+        "catalog.c-entry-scene");
+    Check(contains("TOUR_PROJECT_RETIRED_old_mesh UINT64_C(0x3000)"),
+        "catalog.c-tombstones");
+    Check(contains("tour_project_cue_forest_storm_1"),
+        "catalog.c-cue-identifier");
+    Check(contains("content/models/a\\\\b.png"),
+        "catalog.c-path-escaping");
+    std::ostringstream fingerprint;
+    fingerprint << "TOUR_PROJECT_CATALOG_FINGERPRINT UINT64_C(0x"
+        << std::hex << smvk::project::CatalogFingerprintOf(c) << ")";
+    Check(header.find(fingerprint.str()) != std::string::npos,
+        "catalog.c-same-fingerprint-as-cpp");
+    Check(contains("    3u,") && contains("TOUR_C_KIND_AUDIOGRAPH"),
+        "catalog.c-row-count-and-kind");
+    Check(header == smvk::project::EmitProjectCHeader(c, stamp),
+        "catalog.c-byte-deterministic");
+}
+
 void TestProjectHeaderStamp() {
 	const fs::path tmp = fs::temp_directory_path()
 		/ "tourmaline_pp_stamp";
@@ -4454,6 +4504,7 @@ int main(int argc, char** argv) {
 	TestAppManifest();
 	TestProjectCatalog();
 	TestProjectHeaderStamp();
+	TestCProjectCatalog();
 	TestNodeSchemaCodegen();
 	TestPlansHeaderEmission();
 	TestBuildPlanExecutor();

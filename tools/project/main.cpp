@@ -571,6 +571,23 @@ int main(int argc, const char* argv[]) {
 			std::cerr << err << "\n";
 			return 1;
 		}
+		// C11 companion for native gameplay languages. Both headers use
+		// the SAME canonical catalog + generation stamp.
+		{
+			const std::filesystem::path cHeader =
+				std::filesystem::path(header).parent_path()
+				/ "project_c.h";
+			const std::string cText =
+				smvk::project::EmitProjectCHeader(catalog, stamp);
+			bool cWrote = false;
+			if (!smvk::project::WriteProjectHeaderIfChanged(
+					cHeader.generic_string(), cText, cWrote, err)) {
+				std::cerr << err << "\n";
+				return 1;
+			}
+			if (cWrote)
+				std::printf("[ids] project_c.h regenerated\n");
+		}
 		// THE COMPILED STATIC PLANS (the private header beside
 		// project.h): the slot-keyed mesh constants + the layout hash
 		// the runtime gate fails closed against. Same

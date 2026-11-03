@@ -24,6 +24,7 @@ add_library(project_pipeline STATIC
     src/build_plan.cpp
     src/recipe_resolver.cpp
     src/project_catalog.cpp
+    src/project_catalog_c.cpp
 )
 
 target_include_directories(project_pipeline

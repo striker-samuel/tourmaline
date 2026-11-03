@@ -3,6 +3,17 @@
 
 project(AssetTests)
 
+# The public C runtime header really compiles as C11 and links to
+# Tourmaline's existing C++ project session / catalog gate.
+add_executable(RuntimeCTests test_runtime_c.c)
+set_target_properties(RuntimeCTests PROPERTIES
+    LINKER_LANGUAGE CXX
+    C_STANDARD 11
+    C_STANDARD_REQUIRED YES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+target_link_libraries(RuntimeCTests PRIVATE tourmaline_apphost)
+add_test(NAME runtime_c_tests COMMAND RuntimeCTests)
+
 # Headless editor bake progress parser and live-file tee regression.
 add_executable(EditorBakeFeedbackTests test_editor_bake_feedback.cpp)
 set_target_properties(EditorBakeFeedbackTests PROPERTIES

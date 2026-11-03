@@ -126,10 +126,11 @@ function(tourmaline_attach_project TARGET NAME)
 	# IDE hint, not an OS read-only attribute: Visual Studio/CMake users
 	# should see a GENERATED header in its own group. Do not set the file
 	# read-only: Git checkout and the generator must be able to replace it.
-	set_source_files_properties("${header}" PROPERTIES
+	set(c_header "${include_dir}/project_c.h")
+	set_source_files_properties("${header}" "${c_header}" PROPERTIES
 		GENERATED TRUE HEADER_FILE_ONLY TRUE)
-	target_sources(${TARGET} PRIVATE "${header}")
-	source_group("Generated Catalogs" FILES "${header}")
+	target_sources(${TARGET} PRIVATE "${header}" "${c_header}")
+	source_group("Generated Catalogs" FILES "${header}" "${c_header}")
 	# Expose both include styles:
 	#   #include "project.h"          (legacy users of HEADER_DIR)
 	#   #include "project/project.h"  (source-tree-relative, IDE-friendly)
