@@ -52,6 +52,9 @@ bool CatalogKindToPakKind(uint8_t kind, smvk::PakAssetKind& out) {
 	case smvk::kCatalogKindShader:
 		out = smvk::PakAssetKind::Shader;
 		return true;
+	case smvk::kCatalogKindSpriteSet:
+		out = smvk::PakAssetKind::SpriteSet;
+		return true;
 	case smvk::kCatalogKindAudioGraph:
 		out = smvk::PakAssetKind::AudioGraph;
 		return true;

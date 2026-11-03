@@ -28,6 +28,7 @@
 
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/audiograph.h>
+#include <Engine/Asset/spriteset.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/pak_pager.h>
 #include <Engine/Asset/tour.h>
@@ -584,6 +585,30 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 						out.gi))
 					return false;
 			}
+			else if (asset.kind == PlanAssetKind::SpriteSet) {
+				if (!ensureAsset(asset.path, "spriteset", pak.id, {}, out.spritesets))
+					return false;
+				std::string text;
+				bool exists = false;
+				if (!ReadTextFile((fs::path(project.root) / asset.path).generic_string(), exists, text) || !exists) {
+					err = "spriteset read failed: " + asset.path;
+					return false;
+				}
+				::tour::asset::SpriteSet sheet;
+				std::string why;
+				if (!::tour::asset::ParseSpriteSetText(text, sheet, why)) {
+					err = "spriteset " + asset.path + ": " + why;
+					return false;
+				}
+				bool found = false;
+				for (const auto& other : plan.paks) {
+					if (other.id != pak.id &&
+						std::find(pak.depends.begin(), pak.depends.end(), other.id) == pak.depends.end()) continue;
+					for (const auto& a : other.assets)
+						if (a.path == sheet.texture && a.kind == PlanAssetKind::Texture) found = true;
+				}
+				if (!found) { err = "spriteset " + asset.path + " requires texture in its pak or a declared dependency: " + sheet.texture; return false; }
+			}
 			else if (asset.kind == PlanAssetKind::AudioGraph) {
 				// AUTHORED AUDIO GRAPHS (.audiograph — the audio
 				// system's node-graph + cue asset): the file's own
@@ -684,6 +709,7 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 	std::sort(out.shaders.begin(), out.shaders.end(), byId);
 	std::sort(out.gi.begin(), out.gi.end(), byId);
 	std::sort(out.audiographs.begin(), out.audiographs.end(), byId);
+	std::sort(out.spritesets.begin(), out.spritesets.end(), byId);
 	std::sort(out.audiographCues.begin(), out.audiographCues.end(),
 		[](const ProjectCatalog::AudioGraphCueTable& a,
 			const ProjectCatalog::AudioGraphCueTable& b) {
@@ -719,6 +745,7 @@ uint64_t CatalogFingerprintOf(const ProjectCatalog& c) {
 	push(c.shaders, smvk::kCatalogKindShader);
 	push(c.gi, smvk::kCatalogKindGi);
 	push(c.audiographs, smvk::kCatalogKindAudioGraph);
+	push(c.spritesets, smvk::kCatalogKindSpriteSet);
 	return smvk::ComputeCatalogFingerprint(ids.data(), kinds.data(),
 		paths.data(), ids.size());
 }
@@ -775,6 +802,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "// the audio system's node-graph + cue asset,\n"
 		<< "// docs/audio_graph.md - loadable through the audio facade\n"
 		<< "// into a runtime AudioInstance handle).\n"
+		<< "struct SpriteSetKey { Id id = 0; constexpr operator Id() const { return id; } };\n"
 		<< "struct AudioGraphKey { Id id = 0; constexpr operator Id()"
 		<< " const { return id; } };\n"
 		<< "// ONE CUE of an authored audio graph: the (graph id, cue\n"
@@ -839,6 +867,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitNamespace("shaders", c.shaders, "ShaderKey");
 	emitNamespace("gi", c.gi, "GiKey");
 	emitNamespace("audiographs", c.audiographs, "AudioGraphKey");
+	emitNamespace("spritesets", c.spritesets, "SpriteSetKey");
 
 	// ---- THE PER-CUE CONSTANTS (project::audiocues) --------------------
 	// Which CUE of WHICH authored graph: one constant per (graph,
@@ -1012,7 +1041,8 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		{ "Sound", "= 3," },
 		{ "Shader", "= 4," },
 		{ "Gi", "= 5," },
-		{ "AudioGraph", "= 6," }
+		{ "AudioGraph", "= 6," },
+		{ "SpriteSet", "= 7," }
 	});
 	os << "};\n\n"
 		<< "// The FLAT TYPED CATALOG: plain compile-time POD records -\n"
@@ -1049,6 +1079,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		addRows(c.shaders, "shaders", "Shader");
 		addRows(c.gi, "gi", "Gi");
 		addRows(c.audiographs, "audiographs", "AudioGraph");
+		addRows(c.spritesets, "spritesets", "SpriteSet");
 		EmitAlignedRows(os, rows);
 	}
 	os << "};\n\n"
@@ -1070,6 +1101,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitSymbols(c.shaders);
 	emitSymbols(c.gi);
 	emitSymbols(c.audiographs);
+	emitSymbols(c.spritesets);
 	os << "};\n\n"
 		<< "// The catalog identity fingerprint: FNV-1a64 over the rows'\n"
 		<< "// stable identity in emission order (appmanifest.h's\n"
@@ -1138,6 +1170,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 				return "SoundKey";
 			if (kind == "shader")
 				return "ShaderKey";
+			if (kind == "spriteset") return "SpriteSetKey";
 			return "Id"; // an unknown kind degrades to the raw id
 		};
 		os << "// RETIRED assets (tombstones): the historical identities,\n"
@@ -1245,6 +1278,12 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "};\n"
 		<< "\n";
 
+	os << "template<>\n"
+		<< "struct project_pipeline::query::AssetTraits<project::SpriteSetKey> {\n"
+		<< "    static constexpr bool Matches(project::AssetKind k)\n"
+		<< "        { return k == project::AssetKind::SpriteSet; }\n"
+		<< "};\n\n";
+
 	// The shader interface supplement is optional: projects that compile
 	// local HLSL can expose the reflection constants without modifying the
 	// stable assets.db catalog or its .tapp fingerprint.
@@ -1336,6 +1375,8 @@ std::string ComputeCatalogContentHash(const ProjectCatalog& c) {
 	addBucket("sound", c.sounds);
 	addBucket("shader", c.shaders);
 	addBucket("gi", c.gi);
+	addBucket("audiograph", c.audiographs);
+	addBucket("spriteset", c.spritesets);
 	// The node schemas are catalog SEMANTICS ("compile types; cook
 	// values"): a schema edit changes the generated TYPES — a
 	// generation event, never a silent re-emit.
@@ -1664,7 +1705,8 @@ bool CollectAssetFingerprints(const Project& project,
 	};
 	return add(catalog.scenes) && add(catalog.textures)
 		&& add(catalog.meshes) && add(catalog.sounds)
-		&& add(catalog.shaders) && add(catalog.audiographs);
+		&& add(catalog.shaders) && add(catalog.audiographs)
+		&& add(catalog.spritesets);
 }
 
 bool DiscoverPakFingerprints(const std::string& pakDir,

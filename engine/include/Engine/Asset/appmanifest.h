@@ -83,6 +83,7 @@ inline constexpr uint8_t kCatalogKindGi = 5;
 // cues — the generated header additionally emits per-cue constants
 // bundling (graph id, cue ordinal) in project::audiocues).
 inline constexpr uint8_t kCatalogKindAudioGraph = 6;
+inline constexpr uint8_t kCatalogKindSpriteSet = 7;
 // The kind string <-> byte mapping ("scene"/"texture"/"mesh"/"sound"/
 // "shader"/"gi"/"audiograph"; false for any other spelling).
 [[nodiscard]] bool CatalogKindFromString(const std::string& kind,
