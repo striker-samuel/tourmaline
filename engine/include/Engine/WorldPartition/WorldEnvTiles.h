@@ -27,9 +27,9 @@
 // column) are not representable: the bake keeps the largest vertical
 // mass and logs a diagnostic (the explicit reject — never a silently
 // wrong shape). Each record index is into the records array
-// where [0] is ALWAYS the base (the default environment block, the old
-// zone-zero semantic: outside every zone the base look applies at weight
-// 1; out-of-grid positions fall to it too).
+// where [0] is ALWAYS the base (the ACTIVE resolved scene environment,
+// represented by an all-infinite +/- XYZ zone: outside every bounded
+// zone the base look applies at weight 1, including out-of-grid points).
 //
 // FIDELITY CONTRACT vs the retired per-pixel walk: the winner selection
 // is the SAME resolution (priority desc -> innermost bounded volume ->
