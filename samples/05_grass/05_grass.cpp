@@ -87,7 +87,7 @@ private:
         m_runtime->tileSize = float(kTileSize);
         m_runtime->haloMeters = 2.0f;
         m_runtime->slotBudget = kSlotCount;
-        m_runtime->viewBudget = 1;
+        m_runtime->viewBudget = m_swapchain->framesInFlight();
         if (!m_runtime->Create(*m_context, *m_rendergraph)) return false;
         if (!m_draw.Ensure(*m_context)) return false;
         if (!m_runtime->SeedIndirect(*m_context, 0, &m_seed, 1)) return false;
@@ -278,7 +278,7 @@ private:
         m_runtime->BeginFrame(*m_context, *m_rendergraph,
             interests, 1, m_deps);
         m_runtime->RecordCullChain(*m_context, *m_rendergraph,
-            0, m_viewsLogical,
+            fb.frameIndex, m_viewsLogical,
             m_views.DeviceAddress(*m_context, fb.frameIndex),
             mainView, eye,
             tour::placement::kPlacementCullFrustum |
@@ -302,7 +302,7 @@ private:
         indirectRead.barrierMasks.stageMask =
             smvk::PipelineStageBit_DrawIndirect;
         for (uint32_t i = 0; i < kSlotCount; ++i) {
-            const auto* vis = m_runtime->VisSet(int32_t(i));
+            const auto* vis = m_runtime->VisSet(int32_t(i), fb.frameIndex);
             if (!vis) continue;
             pass.AddBufferHint(m_runtime->pass.instanceLogicals[i], vertexRead);
             pass.AddBufferHint(vis->visibleL, vertexRead);
@@ -320,7 +320,7 @@ private:
                 smvk::MSAASettings::Count1(),
                 smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
             for (uint32_t i = 0; i < kSlotCount; ++i) {
-                const auto* vis = m_runtime->VisSet(int32_t(i));
+                const auto* vis = m_runtime->VisSet(int32_t(i), frameIndex);
                 if (!vis) continue;
                 const tour::placement::PlacementVsPush push{
                     vis->VisibleAddress(*m_context),
