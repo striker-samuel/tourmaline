@@ -20,7 +20,13 @@ inline std::filesystem::path AssetCreateDirectory(
     const fs::path content = fs::weakly_canonical(project / "content", ec);
     if (ec || content.empty())
         return {};
-    const fs::path fallback = content / defaultSubdir;
+    // operator/ with an EMPTY right-hand side is library-divergent: MSVC
+    // appends a trailing separator (content/), libstdc++ returns the left
+    // side unchanged - the create.fallback asset_ops checks compare against
+    // the separator-less path, so guard the empty case explicitly.
+    const fs::path fallback = defaultSubdir.empty()
+        ? content
+        : content / defaultSubdir;
     if (browsed.empty())
         return fallback;
     ec.clear();
