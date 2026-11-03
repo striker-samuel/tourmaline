@@ -220,6 +220,28 @@ inline ShapePoint SampleSpline(const ShapeAsset& shape, size_t span, float t) {
 inline bool TessellateShape(const ShapeAsset& shape, ShapeGeometry& out,
                             std::string& error) {
     if (!ValidShape(shape, error)) return false;
+    // Bound CPU tessellation even for valid but extreme authoring input.
+    // The asset's point limit is intentionally larger than the preview /
+    // derived-geometry budget; reject instead of allocating huge buffers.
+    constexpr size_t kMaxGeneratedVertices = 250000;
+    size_t estimate = 8;
+    switch (shape.kind) {
+    case ShapeKind::Spline:
+        estimate = (shape.points.size() - (shape.closed ? 0u : 1u)) *
+            size_t(shape.segments) + (shape.closed ? 0u : 1u);
+        break;
+    case ShapeKind::PointCloud: estimate = shape.points.size(); break;
+    case ShapeKind::Sphere:
+        estimate = (size_t(shape.segments) / 2 + 2) * size_t(shape.segments);
+        break;
+    case ShapeKind::Cylinder:
+    case ShapeKind::Cone: estimate = size_t(shape.segments) * 2 + 2; break;
+    default: break;
+    }
+    if (estimate > kMaxGeneratedVertices) {
+        error = "shape exceeds the 250000-vertex tessellation limit";
+        return false;
+    }
     ShapeGeometry mesh;
     auto triangle = [&](uint32_t a, uint32_t b, uint32_t c) {
         mesh.indices.insert(mesh.indices.end(), {a,b,c});
