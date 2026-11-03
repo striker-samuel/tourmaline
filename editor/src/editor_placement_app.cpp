@@ -148,17 +148,20 @@ void EditorApp::CheckSurfaceBrushPlacementChanges() {
         hash *= 1099511628211ull;
     };
     const Scene& scene = m_world->scene;
+    std::unordered_map<std::string, uint32_t> byUuid;
+    byUuid.reserve(scene.hierarchy.size());
+    for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {
+        if (!IsNodeAlive(scene, i) || m_deletedNodes.contains(i))
+            continue;
+        const std::string& uuid = GetNodeUuid(scene, i);
+        if (!uuid.empty()) byUuid.emplace(uuid, i);
+    }
     for (const auto& s : m_surfaceStrokes) {
         for (char ch : s.parentUuid) mix(uint8_t(ch));
         for (size_t value = s.points.size(); value != 0; value >>= 8)
             mix(uint8_t(value));
-        uint32_t parent = UINT32_MAX;
-        for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {
-            if (IsNodeAlive(scene, i) && !m_deletedNodes.contains(i) &&
-                GetNodeUuid(scene, i) == s.parentUuid) {
-                parent = i; break;
-            }
-        }
+        const auto it = byUuid.find(s.parentUuid);
+        const uint32_t parent = it == byUuid.end() ? UINT32_MAX : it->second;
         mix(uint8_t(parent == UINT32_MAX ? 0 : 1));
         if (parent == UINT32_MAX || parent >= scene.globalTransform.size())
             continue;
