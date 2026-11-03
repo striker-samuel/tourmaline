@@ -2201,6 +2201,12 @@ private:
 		float size, IconType k) const;
 	// Windows explorer /select reveal (no-op + log on failure).
 	void RevealInExplorer(const std::string& absPath);
+	// External DCC source link and on-demand source -> glTF build.
+	void OpenAssetInDcc(const std::string& selected);
+	void LinkAssetToDcc(const std::string& selected);
+	void UnlinkAssetFromDcc(const std::string& selected);
+	void PublishAssetFromDcc(const std::string& selected);
+	bool m_dccPublishRunning = false;
 	// MATERIAL ASSET drop (browser -> viewport): loads the .material
 	// file, creates a cluster material (values + textures from its
 	// refs, loaded from the files beside it) and assigns it to the
