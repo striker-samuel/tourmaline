@@ -11,5 +11,8 @@
 
 #define ALPHA_TO_COVERAGE 1
 #include "lit_dependencies.hlsli"
+#if !TM_LIT_ALPHA_TO_COVERAGE
+#error "ProjectLit A2C wrapper must advertise TM_LIT_ALPHA_TO_COVERAGE"
+#endif
 #include "lit_hooks_project.hlsli"
 #include "default_lit_body.hlsli"

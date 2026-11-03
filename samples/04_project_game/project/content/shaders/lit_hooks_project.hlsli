@@ -30,6 +30,9 @@
 // library through lit_dependencies.hlsli. Prove that the wrapper's
 // compile-time path agrees with the public macro without adding runtime
 // branches or changing the wetness/damage examples.
+#if TM_PASS_SHADOW_CASTER
+#error "ProjectLit fragment wrapper is a lighting pass, not a shadow caster"
+#endif
 #if defined(GFXMESH_FS_PASS) && !TM_LIT_MESH_FRAGMENT
 #error "ProjectLit mesh fragment must advertise TM_LIT_MESH_FRAGMENT"
 #endif

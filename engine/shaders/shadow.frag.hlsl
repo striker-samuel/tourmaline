@@ -5,6 +5,7 @@
 // cascades, spot-shadow atlases and their temporal seeds (clear 1.0,
 // LessEqual). Conservative depth: SV_DepthGreaterEqual (never farther) so
 // the depth test may run before the alpha-test shader body.
+#define TM_SHADOW_CASTER_PASS 1
 #define SHADOW_NORMAL_Z 1
 #include "common.hlsli"
 #include "shadow_body.hlsli"

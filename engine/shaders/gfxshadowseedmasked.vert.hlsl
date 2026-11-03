@@ -4,6 +4,7 @@
 // Shadow-atlas seed VS, MASK cutout phase (pairs with shadow.frag
 // alpha-test). Same VSOut subset as shadow.vert so it links with
 // shadow.frag; z clamp parity with shadow.vert / gfxshadowseed.vert.
+#define TM_SHADOW_CASTER_PASS 1
 #define GFXSEED_PASS
 #include "common.hlsli"
 #include "gfxseed.hlsli"

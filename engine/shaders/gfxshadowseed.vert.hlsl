@@ -6,6 +6,7 @@
 // from the shadow tile's RenderView (cascade/spot slab index) and clamps
 // clip z like shadow.vert so casters behind the light's near plane squash
 // onto it instead of clipping (leak-free tiles; see shadow.vert.hlsl).
+#define TM_SHADOW_CASTER_PASS 1
 #define GFXSEED_PASS
 #include "common.hlsli"
 #include "gfxseed.hlsli"
