@@ -40,7 +40,7 @@ point 1 0 0
 API: `ParseShapeAsset(text, shape, error)`,
 `SerializeShapeAsset(shape)`, `DefaultShapeAsset(kind)`,
 `ValidShape(shape, error)`, `TessellateShape(shape, geometry, error)`.
-The generic asset inspector edits spline/point-cloud XYZ coordinates, spline closure, and primitive dimensions, with Save/Revert. Triangle primitives can also be exported as Wavefront `.obj` source meshes through **Export OBJ...** (save the `.shape` first); the existing OBJ importer can then process the exported file. Spline and point-cloud types deliberately do not use the triangle OBJ conversion path.
+The generic asset inspector shows an oblique CPU wireframe/point preview and edits spline/point-cloud XYZ coordinates, spline closure, and primitive dimensions, with Save/Revert. Tessellation rejects assets generating more than 250,000 vertices to cap memory use. Triangle primitives can also be exported as Wavefront `.obj` source meshes through **Export OBJ...** (save the `.shape` first); the existing OBJ importer can then process the exported file. Spline and point-cloud types deliberately do not use the triangle OBJ conversion path.
 
 The parser rejects unknown versions/fields, invalid dimensions and
 nonfinite point coordinates, preserving the previous output on failure.
