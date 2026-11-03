@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <tuple>
@@ -2374,7 +2375,12 @@ using namespace ::smvk;
 			for (const LodChain::Level& lv : lodChains[i].levels)
 				appendMesh(lv.mesh);
 		}
-		++lmChartVersion;
+		// A per-World counter restarts at 1 on every scene load. Reusing it
+		// as a GPU cache key can retain the previous world's chart transforms.
+		// Assign process-unique revisions on every rebuild instead.
+		static std::atomic<uint64_t> nextChartRevision{0};
+		lmChartVersion = nextChartRevision.fetch_add(1,
+			std::memory_order_relaxed) + 1;
 	}
 
 	uint32_t World::ChartOffsetFor(MeshLocation loc) const {
