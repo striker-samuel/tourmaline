@@ -623,16 +623,20 @@ void EditorApp::DrawPrefabWindow() {
     // Floating mode remains available (e.g. when editing on 2 monitors
     // or when the host is showing a quad world viewport).
     const ImVec2 screen=ImGui::GetIO().DisplaySize;
-    const float stageX=m_uiMode?m_outlinerW:0.0f;
-    const float stageW=screen.x-stageX-(m_uiMode?m_inspectorW:0.0f);
+    // Dock-era stage: the dock Viewport window's rect IS the free
+    // central stage between the docked panels (the manual
+    // m_outlinerW/m_inspectorW members died with the dockable rework;
+    // panels hidden simply leaves the dock viewport covering more).
+    const float stageX=m_dockViewportRect.x;
+    const float stageW=m_dockViewportRect.w;
     const bool dock=m_prefabDocked && m_vpLayout==0 && stageW>=800.0f;
     if (dock) {
         const float offset=stageW*.54f;
-        ImGui::SetNextWindowPos(ImVec2(stageX+offset,m_menuH),
+        ImGui::SetNextWindowPos(ImVec2(stageX+offset,
+            m_dockViewportRect.y),
             ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(stageW-offset,
-            screen.y-m_menuH-(m_uiMode?
-                BottomDockH()+kEditorStatusH:0.0f)),
+            m_dockViewportRect.h),
             ImGuiCond_Always);
     } else
         ImGui::SetNextWindowSize(ImVec2(960,575),ImGuiCond_FirstUseEver);

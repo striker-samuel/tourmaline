@@ -223,7 +223,7 @@ bool EditorApp::Initialize() {
 			m_prefsPath = "editor.prefs";
 		}
 	}
-	LoadPrefs(); // load editor prefs (window sizes, panel widths, etc.)
+	LoadPrefs(); // tool/project prefs; dock placement uses ImGui ini
 	SetRelativeMouseMode(false);
 
 	// THE BOOT PROJECT (the --project arg — REQUIRED since the
@@ -249,8 +249,23 @@ bool EditorApp::Initialize() {
 	if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
 		std::cerr << "[Editor] ImGui init failed, continuing without UI\n";
 		m_imgui.reset();
-	}
-	else {
+	} else {
+		// Only the editor opts into the project's pinned Dear ImGui docking
+		// branch. Never change ImGui defaults for standalone game hosts.
+		// Keep window placement next to the editor tool preferences.
+		m_dockIniPath = std::filesystem::path(m_prefsPath)
+			.replace_extension(".imgui.ini").string();
+		// ImGui writes its ini lazily; ensure fresh editor installations
+		// have a directory before the first automatic layout save.
+		const std::filesystem::path dockDir =
+			std::filesystem::path(m_dockIniPath).parent_path();
+		if (!dockDir.empty()) {
+			std::error_code ec;
+			std::filesystem::create_directories(dockDir, ec);
+		}
+		ImGuiIO& io = ImGui::GetIO();
+		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+		io.IniFilename = m_dockIniPath.c_str();
 		imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
 		// The app's theme (ApplyEditorStyle above: rounded, blue-accented
 		// dark palette). Its color set defines OPAQUE top-level surfaces
@@ -367,13 +382,8 @@ void EditorApp::Shutdown() {
 }
 
 void EditorApp::LoadPrefs() {
-	// Sectioned panel layout (px). No backward compat: anything
-	// unparseable (missing file, corrupt line, unknown key) keeps
-	// the in-code defaults below.
-	m_outlinerW = kEditorLeftW;
-	m_outlinerH = 380.0f;
-	m_inspectorW = kEditorRightW;
-	m_bottomDockH = kEditorBottomH;
+	// Tool/project prefs only: dock geometry lives in editor.imgui.ini
+	// (the old custom splitter widths and bottom-dock height are retired).
 	m_selMode = SelMode::Mesh;
 	m_gizmoMode = GizmoMode::Translate;
 	m_mode = EditorMode::Layout;
@@ -398,30 +408,15 @@ void EditorApp::LoadPrefs() {
 		const std::string key = line.substr(0, eq);
 		const std::string val = line.substr(eq + 1);
 		try {
-			// Same clamps as the panel splitters (a hand-edited
-			// prefs value must not degenerate the layout — a
-			// sub-tab-height dock, for instance, made the console
-			// tab look dead).
-			if (section == "outliner" && key == "width")
-				m_outlinerW = std::clamp(std::stof(val), 200.0f, 720.0f);
-			else if (section == "outliner" && key == "height")
-				// The stacked left column's split (Outliner above / the
-				// tabbed browser below): clamp to a sane band — the
-				// draw-time clamp handles the live column height.
-				m_outlinerH = std::clamp(std::stof(val), 160.0f, 900.0f);
 			// TOOLBAR MODES PERSIST: the select level, the gizmo mode and
 			// the editor mode restore across sessions (the toolbar's
 			// sections are the state's UI — same keys the letters show).
-			else if (section == "tools" && key == "sel")
+			if (section == "tools" && key == "sel")
 				m_selMode = SelMode(std::clamp(std::stoi(val), 0, 2));
 			else if (section == "tools" && key == "gizmo")
 				m_gizmoMode = GizmoMode(std::clamp(std::stoi(val), 0, 2));
 			else if (section == "tools" && key == "mode")
 				m_mode = EditorMode(std::clamp(std::stoi(val), 0, 3));
-			else if (section == "inspector" && key == "width")
-				m_inspectorW = std::clamp(std::stof(val), 200.0f, 720.0f);
-			else if (section == "bottomDock" && key == "height")
-				m_bottomDockH = std::clamp(std::stof(val), 120.0f, 600.0f);
 			// [scratch] dir retired: no scratch disk anymore (the cache
 			// is project-owned) — a stale entry is ignored.
 			else if (section == "project" && key == "dir")
@@ -454,12 +449,10 @@ void EditorApp::SavePrefs() {
 	std::filesystem::create_directories(std::filesystem::path(m_prefsPath).parent_path());
 	std::ofstream out(m_prefsPath);
 	if (!out) return;
-	out << "# Tourmaline Editor prefs (panel layout, px)\n";
-	out << "[outliner]\nwidth=" << m_outlinerW << "\nheight=" << m_outlinerH << "\n";
+	out << "# Tourmaline Editor prefs (dock layout: editor.imgui.ini)\n";
 	out << "[tools]\nsel=" << int(m_selMode) << "\ngizmo=" << int(m_gizmoMode)
 		<< "\nmode=" << int(m_mode) << "\n";
-	out << "[inspector]\nwidth=" << m_inspectorW << "\n";
-	out << "[bottomDock]\nheight=" << m_bottomDockH << "\n";
+
 	if (!m_projectRoot.empty())
 		out << "[project]\ndir=" << m_projectRoot << "\n";
 	if (!m_recentProjects.empty()) {
@@ -1641,7 +1634,12 @@ void EditorApp::UpdateCamera(float dt) {
 	const bool isOrtho = cam.type == EditorCam::Type::Orthographic;
 	const glm::vec3 fwd = glm::normalize(
 		EditorCamEye(cam) - cam.target);
-	const bool imguiEats = m_imgui && m_imgui->WantsCaptureMouse();
+	// Docked Viewport is an ImGui window, not a tool: orbit gestures
+	// still belong to the scene when its content is hovered.
+	const bool sceneHovered = m_viewports[m_activeVp].hovered;
+	const bool imguiEats = !sceneHovered ||
+		(m_imgui && m_imgui->WantsCaptureMouse() &&
+			!(m_uiMode && m_dockViewportHovered));
 	const bool alt = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
 		m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
 	if (!imguiEats && !m_gizmoDragging) {
@@ -1692,7 +1690,7 @@ void EditorApp::UpdateCamera(float dt) {
 	}
 	// Wheel zoom (perspective: distance; ortho: half-height).
 	const float wheel = float(m_input.getScrollDeltaY());
-	if (wheel != 0.0f && !(m_imgui && m_imgui->WantsCaptureMouse())) {
+	if (wheel != 0.0f && !imguiEats) {
 		if (cam.type == EditorCam::Type::Orthographic)
 			cam.orthoHalfH = std::clamp(
 				cam.orthoHalfH * (wheel > 0 ? 0.9f : 1.1f), 0.05f, 5000.0f);
