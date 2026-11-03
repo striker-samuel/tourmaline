@@ -1298,3 +1298,11 @@ target_link_libraries(GpuSceneValidationTests PRIVATE engine)
 set_target_properties(GpuSceneValidationTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_validation_tests COMMAND GpuSceneValidationTests)
+
+# Native agent-facing tooling library: no renderer/device required.
+add_executable(ToolingApiTests test_tooling_api.cpp)
+target_link_libraries(ToolingApiTests PRIVATE tourmaline::tooling)
+set_target_properties(ToolingApiTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+add_test(NAME tooling_api_tests COMMAND ToolingApiTests)
