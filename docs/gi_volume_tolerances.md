@@ -44,26 +44,26 @@ A probe on one side of a thin wall reaches ~50% to the other side
 (the ramp midpoint). This is inherent to a uniform dense grid —
 the octree solved it by relocating probes away from surfaces.
 
-### 1b. The rejection RAMP width — `max(0.5 * dist, 0.3)`
+### 1b. The rejection RAMP width — `max(0.5 * dist, 0.45)`
 
 **File:** same as 1a.
 
 ```
-ramp_width = max(0.5 * dist, 0.3)   // spacing units
+ramp_width = max(0.5 * dist, 0.45)  // spacing units
 ```
 
 What it controls: how gradually the visibility factor transitions
 from 1.0 to 0.0 past the reach boundary.
 
 - Proportional (0.5 × dist): open-space probes ramp smoothly.
-- Floor (0.3): near-surface probes always ramp over at least
-  0.3 units (0.15 m) — without the floor, the ramp is near-instant
-  and produces lattice-aligned cliffs (the dark-square grid).
+- Floor (0.45): near-surface probes ramp over at least 0.45
+  spacing units (0.225 m at 0.5 m spacing). Narrower ramps can
+  produce lattice-aligned dark cliffs when nearby corner weights
+  differ sharply.
 
-**Why 0.3:** at 0.5 m spacing, 0.3 units = 0.15 m. Below this, the
-rejection is effectively binary and the cell-boundary transition
-is visible as a grid. Above this, the rejection is too gradual to
-provide isolation.
+**Tradeoff:** the wider floor softens dark-square grid artifacts, but
+also extends partially-visible weights across thin walls. Validate
+thin-wall leakage before keeping it as the permanent default.
 
 ### 1c. The visibility distance CAP — `2.5 m`
 
@@ -259,7 +259,7 @@ If you need to adjust any of these:
 | Light leak through thin walls | 1a reach floor | lower (0.3–0.4) |
 | Black shadows near walls | 1a reach floor | higher (0.6–0.8) |
 | Splotchy / per-probe variation visible | 2c smoothing passes | more (4–5) |
-| Grid-aligned dark squares | 1b ramp floor | higher (0.4–0.5) |
+| Grid-aligned dark squares | 1b ramp floor | higher than old 0.3 (default 0.45; check thin walls) |
 | Too-dim overall | 2c smoothing lambda | lower (less averaging) |
 | Wall seams (hard transitions) | 2b same-side gate | widen the slack component |
 
@@ -269,7 +269,24 @@ runtime has no UI for them by design (changing them affects the
 bake's output semantics, not just the display).
 
 
-## 7. Volumetric GI filtering (2026-11-02)
+## 7. Visibility weight-sum debug view (2026-11-03)
+
+Use `TOURMALINE_GI_DEBUG=4` or select **Visibility weight sum
+(wSum)** in the GI debug combo (R/F8 cycle). For the first
+highest-priority A-set volume covering a surface pixel, the shader
+shows the *pre-normalization* sum of visibility-gated trilinear corner
+weights. Red = 0 (no contributing taps), yellow = 0.5, green = 1
+(clean cell / no visibility rejection). Magenta means no GI volume
+covers the pixel. The sampler's all-blocked black fallback uses
+`wSum <= 1e-4`, so red regions in this view are the primary places
+to inspect. The view uses the same 6-axis rejection rule as the
+surface sampler, but does not visualize final lighting or AO.
+
+This repurposes the retired octree mode 4; the mode count stays five.
+It is an A-set diagnostic (the same volume selection as probe-distance
+mode 3), not a combined A/B blend visualizer.
+
+## 8. Volumetric GI filtering (2026-11-02)
 
 The fog's precomputed isotropic RGB mean is now sampled with the same
 visibility rule as the surface SG coefficients. In clean cells it remains
