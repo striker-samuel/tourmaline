@@ -10,16 +10,17 @@ cd out/build/ci
 ./05_grass
 ```
 
-The executable creates its own 256 m × 256 m rolling heightfield and
-fully painted ecotope channel. No imported assets or packaged world
-are required. It demonstrates the **existing** placement compute
+The executable creates its own 256 m × 256 m rolling heightfield,
+a matching low-poly static ground surface, and a fully painted ecotope
+channel. No imported assets or packaged world are required. It demonstrates the **existing** placement compute
 path, not a million `World` nodes or per-frame CPU draw calls:
 
 1. Sixteen 64 m tiles: GPU placement-scatter into persistent buffers
 2. Per-camera GPU frustum and per-species-distance culling
 3. GPU prefix scan + visible-index compaction
 4. GPU-built indexed indirect draw command per resident tile
-5. A rotating camera and depth-tested grass blade quads
+5. A 128×128 static ground mesh from that *same* height sampler
+6. A rotating camera, depth-tested blades and per-vertex blade gradient
 
 The blade prototype is a two-triangle, double-sided, narrow vertical
 quad with random yaw and size. One candidate produces one blade.
@@ -54,7 +55,8 @@ revision on edits.
 
 The integration is intentionally feature-off until configured, and
 the stock GfxFilter and GPU-scene diagnostic paths are unchanged.
-The new Main renderer consumption is diagnostic-unlit only; complete
+The new Main renderer consumption is diagnostic-unlit only. Its visible scratch
+is separated by frame in flight. Complete
 lit-material binding, motion-vector/prepass/shadow submissions,
 authoritative double-world camera transforms, GPU-scene LOD
 transitions and streaming budgets remain future work.
