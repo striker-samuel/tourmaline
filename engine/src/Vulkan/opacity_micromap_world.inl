@@ -27,6 +27,11 @@ bool smvk::VulkanResourceManager::BuildOpacityMicromaps(
     if (!indexes || !shading || indexes->deviceAddress == 0 || shading->deviceAddress == 0)
         return false;
 
+    // This method runs only after BuildRayTracingWorld's device-idle
+    // synchronization. Bind the current material texture views into
+    // flight 0 (the OMM compute submit uses that set explicitly).
+    UpdateDescriptors(0);
+
     VkShaderModule shader = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     try {
