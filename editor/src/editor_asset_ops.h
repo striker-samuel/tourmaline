@@ -33,11 +33,11 @@
 
 namespace editor {
 
-// What a confirmed delete will remove (all absolute generic paths).
 // For a manifest-derived .geometry/.material/.anim/.mesh file, return
 // the source .gltf/.glb/.obj which owns it. Empty if not manifested.
 std::string FindOwningMeshSource(const std::string& derivedAssetPath);
 
+// What a confirmed delete will remove (all absolute generic paths).
 struct AssetDeletePlan {
 	std::string target;              // the selected path itself
 	bool isDir = false;              // target is a directory

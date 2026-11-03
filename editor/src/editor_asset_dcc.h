@@ -35,7 +35,7 @@ bool LinkDccSource(const std::string& selected,
 	const std::string& documentPath, std::string& err);
 bool UnlinkDccSource(const std::string& selected, std::string& err);
 bool IsDccPublishable(const std::string& published);
-	
+
 // Blocking export stage (invoke on the editor's worker pool): executes
 // staged tools/dcc/publish_gltf.py through Python, waits for exit code,
 // and leaves the previous publication intact on failure. Successful
