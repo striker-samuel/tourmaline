@@ -99,6 +99,75 @@ void CheckStableCompaction() {
     CHECK(totals == output.size());
 }
 
+void CheckSubmeshWorkExpansion() {
+    CHECK(sizeof(SceneSubmeshWork) == 32);
+    CHECK(sizeof(WorkSelectPush) == 96);
+    CHECK(sizeof(WorkPrefixPush) == 24);
+    CHECK(sizeof(WorkScatterPush) == 48);
+
+    RenderDatabase db{};
+    // LOD0 has two registered submeshes; LOD1 is a fallback.
+    std::array<Submesh, 3> submeshes{
+        Submesh{11u, 101u, 201u, 301u},
+        Submesh{12u, 102u, 202u, 302u},
+        Submesh{21u, 121u, 221u, 321u}
+    };
+    const auto subs = db.submeshes.InsertContiguous(submeshes);
+    CHECK(subs.size() == 3);
+    std::array<Lod, 2> levels{
+        Lod{subs[0].slot, 2u, 0.0f, LodFlagResident | LodFlagFilterable},
+        Lod{subs[2].slot, 1u, 1.0f, LodFlagResident | LodFlagFilterable}
+    };
+    const auto lods = db.lods.InsertContiguous(levels);
+    CHECK(lods.size() == 2);
+    const auto mesh = db.meshes.Insert(Mesh{
+        lods[0].slot, 2u, 3u, MeshFlagCompleteBounds
+    });
+    CHECK(mesh);
+    Instance instance{};
+    instance.refs = glm::uvec4(mesh.slot, mesh.generation, 0u, 0u);
+    const auto id = db.instances.Insert(instance);
+    CHECK(id);
+    const auto v = [&] (uint32_t visible) {
+        InstanceCullVerdict verdict{};
+        verdict.value = glm::uvec4(id.slot, id.generation, visible, 0u);
+        return verdict;
+    };
+    std::vector<InstanceCullVerdict> visible{v(1u)};
+    auto work = ReferenceExpandWork(db, visible);
+    CHECK(work.size() == 2u);
+    CHECK(work[0].identity.x == id.slot && work[0].identity.z == 11u);
+    CHECK(work[1].identity.z == 12u);
+    CHECK(work[0].detail.x == 0u);
+    CHECK(work[1].detail.y == subs[1].slot);
+    CHECK(work[1].detail.w == 302u);
+
+    // Unregistered submeshes are excluded without a hole in the output.
+    CHECK(db.submeshes.Update(subs[0], Submesh{}));
+    work = ReferenceExpandWork(db, visible);
+    CHECK(work.size() == 1u);
+    CHECK(work[0].identity.z == 12u);
+
+    // When LOD0 is evicted, LOD1 is the first eligible resident LOD.
+    CHECK(db.meshes.Update(mesh, Mesh{lods[0].slot, 2u, 2u,
+                                       MeshFlagCompleteBounds}));
+    work = ReferenceExpandWork(db, visible);
+    CHECK(work.size() == 1u);
+    CHECK(work[0].identity.z == 21u);
+    CHECK(work[0].detail.x == 1u);
+
+    // A stale generation and a visibility rejection produce no work.
+    auto stale = visible;
+    stale[0].value.y = id.generation + 1u;
+    CHECK(ReferenceExpandWork(db, stale).empty());
+    visible[0].value.z = 0u;
+    CHECK(ReferenceExpandWork(db, visible).empty());
+
+    visible[0].value.z = 1u;
+    CHECK(db.meshes.Erase(mesh));
+    CHECK(ReferenceExpandWork(db, visible).empty());
+}
+
 void CheckLegacyRebasing() {
     smvk::RenderView view{};
     // Absolute plane: world x <= 103, but origin is world x=100.
@@ -146,6 +215,7 @@ void CheckLegacyRebasing() {
 int main() {
     CheckDoubleView();
     CheckStableCompaction();
+    CheckSubmeshWorkExpansion();
     CheckLegacyRebasing();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
