@@ -274,10 +274,20 @@ bool BuildCapturePlan(const CaptureOptions& options,
         error = "camera vectors require three finite comma-separated numbers";
         return false;
     }
+    std::error_code ec;
+    const fs::path exe = fs::absolute(options.executable, ec).lexically_normal();
+    if (ec) {
+        error = "cannot resolve capture executable: " + ec.message();
+        return false;
+    }
     CapturePlan plan;
     plan.workingDirectory = options.workingDirectory.empty()
-        ? options.executable.parent_path() : options.workingDirectory;
-    plan.argv = {options.executable.generic_string(),
+        ? exe.parent_path() : fs::absolute(options.workingDirectory, ec).lexically_normal();
+    if (ec) {
+        error = "cannot resolve capture working directory: " + ec.message();
+        return false;
+    }
+    plan.argv = {exe.generic_string(),
                  source.extension() == ".pak" ? "--pak" : "--project",
                  options.source, "--disable_control",
                  "--bench", std::to_string(options.frames),
