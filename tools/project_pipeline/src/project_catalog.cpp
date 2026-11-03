@@ -862,6 +862,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "struct SpriteSetKey { Id id = 0; constexpr operator Id() const { return id; } };\n"
 		<< "struct StateMachineKey { Id id = 0; constexpr operator Id() const { return id; } };\n"
 		<< "struct NavMeshKey { Id id = 0; constexpr operator Id() const { return id; } };\n"
+		<< "struct ShapeKey { Id id = 0; constexpr operator Id() const { return id; } };\n"
 		<< "struct AudioGraphKey { Id id = 0; constexpr operator Id()"
 		<< " const { return id; } };\n"
 		<< "// ONE CUE of an authored audio graph: the (graph id, cue\n"
@@ -1245,6 +1246,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 			if (kind == "spriteset") return "SpriteSetKey";
 			if (kind == "statemachine") return "StateMachineKey";
 			if (kind == "navmesh") return "NavMeshKey";
+			if (kind == "shape") return "ShapeKey";
 			return "Id"; // an unknown kind degrades to the raw id
 		};
 		os << "// RETIRED assets (tombstones): the historical identities,\n"
@@ -1794,7 +1796,8 @@ bool CollectAssetFingerprints(const Project& project,
 		&& add(catalog.meshes) && add(catalog.sounds)
 		&& add(catalog.shaders) && add(catalog.audiographs)
 		&& add(catalog.spritesets)
-		&& add(catalog.statemachines) && add(catalog.navmeshes);
+		&& add(catalog.statemachines) && add(catalog.navmeshes)
+		&& add(catalog.shapes);
 }
 
 bool DiscoverPakFingerprints(const std::string& pakDir,
