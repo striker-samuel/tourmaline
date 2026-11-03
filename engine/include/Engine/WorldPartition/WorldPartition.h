@@ -319,6 +319,14 @@ public:
 	WorldPartition& operator=(const WorldPartition&) = delete;
 
 	void AddProvider(IWorldStreamProvider* provider);
+	// Providers are borrowed from the renderer. Release registrations before
+	// a renderer detaches so a later onAttach cannot register duplicates.
+	void ClearProviders() {
+		providers_.clear();
+		interests_.clear();
+		requestCount_ = 0;
+		requestDrops_ = 0;
+	}
 	size_t ProviderCount() const { return providers_.size(); }
 
 	// The frame's interest set (copied; render thread, before
