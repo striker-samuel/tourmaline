@@ -178,8 +178,11 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
         if (!StaticSdfRayAabb(origin, dir, boxMin, boxMax, beginT, endT))
             continue;
         endT = min(endT, best.t);
+        // Trilinear, int16-quantized fields need a 0.75-voxel
+        // convergence floor (matching the CPU reference); otherwise
+        // surface samples between voxel planes never hit.
         const float epsLocal = max(worldEpsilon * speed,
-            0.25f * v.originVoxel.w);
+            0.75f * v.originVoxel.w);
         float t = beginT;
         // The SDF is trilinear/quantized and distances saturate outside
         // its narrow band. Use a conservative factor and a voxel floor;

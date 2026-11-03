@@ -416,7 +416,20 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
     // the frustum reject below; safe as a bare return, the slot was
     // zeroed at the top).
     if (!isfinite(screenDir.x + screenDir.y) || length(screenDir.xy) <= 1e-9f)
+    {
+        // Projected screen direction is undefined or subpixel, but the
+        // WORLD-SPACE reflection direction is valid. This is exactly
+        // where an off-screen SDF trace can recover a real static hit.
+        // Store the same quad-owned result as SSR_MISS below.
+        float4 fallback = SsrStaticSdfMiss(
+            frame, viewPos, Rview, N, V, gbuf, fullPxC, fullExtent);
+        uint2 sibling = coords ^ 1u;
+        sp.radiance.Get().v[coords.y * sp.halfW + coords.x] = fallback;
+        if (copyH) sp.radiance.Get().v[coords.y * sp.halfW + sibling.x] = fallback;
+        if (copyV) sp.radiance.Get().v[sibling.y * sp.halfW + coords.x] = fallback;
+        if (copyD) sp.radiance.Get().v[sibling.y * sp.halfW + sibling.x] = fallback;
         return;
+    }
 
     // ---- The classic Hi-Z traversal (the SDK's
     // FFX_SSSR_HierarchicalRaymarch, adapted): cell-exit mip walk over
