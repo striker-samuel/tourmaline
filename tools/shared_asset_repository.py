@@ -400,7 +400,7 @@ def handler_for_shared(store, token):
 def serve_shared(store, token, bind="127.0.0.1", port=8765, poll=3.0):
     if not token or len(token) < 24:
         raise ValueError("access_token of at least 24 characters required")
-    if bind not in ("127.0.0.1", "0.0.0.0", "::1"):
+    if bind not in ("127.0.0.1", "0.0.0.0"):
         raise ValueError("bind must be 127.0.0.1 or 0.0.0.0")
     stop = threading.Event()
 
