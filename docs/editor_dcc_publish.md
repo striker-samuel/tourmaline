@@ -32,7 +32,8 @@ In the **Assets** panel header or an asset tile's context menu:
 - **Publish glTF** runs the DCC build adapter on the editor's background
   worker pool. The chosen source is saved in its DCC before publishing.
   The output is a validated **embedded glTF 2.0** published with one
-  atomic file replacement (same filesystem). Failures keep the last
+  atomic file replacement (same filesystem). The temporary glTF has
+  a `.tmp` filename so the content watcher ignores it. Failures keep the last
   working published file. The editor's content server then detects the
   published change; it does not watch or import `.ma` as geometry.
 - **Unlink DCC source** deletes the authoring-link sidecar only.
