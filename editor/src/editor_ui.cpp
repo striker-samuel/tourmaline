@@ -297,6 +297,7 @@ namespace editor {
 		// The WYSIWYG view is part of the dockable Viewport window.
 		if (m_placement.showGraph)
 			DrawPlacementGraph();
+		DrawSurfaceBrushPanel();
 		if (m_stateGraph.show) {
 			m_stateGraph.Draw();
 			m_imguiFocusInPlacementGraph |= m_stateGraph.Focused();
@@ -587,6 +588,16 @@ namespace editor {
 					UniqueTerrainName().c_str());
 				m_terrainMat = UINT32_MAX;
 				m_showTerrainDialog = true;
+			}
+			if (ImGui::MenuItem("Surface brush (points / spline)", nullptr,
+				m_surfaceBrushEnabled, canCreate)) {
+				if (m_surfaceBrushEnabled) SurfaceBrushFinish();
+				m_surfaceBrushEnabled = !m_surfaceBrushEnabled;
+				m_surfaceDrawing = false;
+				if (m_surfaceBrushEnabled) {
+					m_volumeBrushArmed = false;
+					m_paintTerrain = false;
+				}
 			}
 			if (ImGui::MenuItem("Placement graph", nullptr, false,
 					canCreate)) {
