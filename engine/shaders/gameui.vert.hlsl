@@ -11,6 +11,7 @@ struct UiVsOut {
 	float4 tint : COLOR0;
 	nointerpolation float4 clipRect : TEXCOORD1;
 	nointerpolation uint textureIndex : TEXCOORD2;
+	nointerpolation uint effect : TEXCOORD3;
 };
 static const float2 corners[6] = {
 	float2(0, 0), float2(1, 0), float2(1, 1),
@@ -28,5 +29,6 @@ UiVsOut mainVS(uint vertex : SV_VertexID, uint instance : SV_InstanceID) {
 	o.tint = rect.tint;
 	o.clipRect = float4(rect.clipMin, rect.clipMax);
 	o.textureIndex = rect.textureIndex;
+	o.effect = rect.pad;
 	return o;
 }

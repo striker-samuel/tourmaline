@@ -127,6 +127,8 @@ public:
 		(void)ctx;
 		(void)dt;
 	}
+	// While graphics members still exist: release game-owned GPU resources.
+	virtual void onStop(Context& ctx) { (void)ctx; }
 };
 
 // ---- THE GAME ELEMENT -----------------------------------------------------
@@ -144,7 +146,7 @@ public:
 	const char* ElementName() const override { return "Game"; }
 
 	bool onAttach() override;
-	void onDetach() override {}
+	void onDetach() override;
 	void onResize(smvk::Extent2D) override {}
 	void onUpdate(float dt) override;
 	void onUIMenu() override {}

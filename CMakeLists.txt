@@ -610,6 +610,7 @@ if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(samples/04_project_game) # the content-as-code sample (the generated project.h + the on-demand pak cook)
   add_subdirectory(samples/05_grass) # one-million-blade GPU instancing stress sample
   include(CTest)
+  add_subdirectory(samples/05_asteroids) # SpriteSet and native GameUI demo over Sponza
   if(BUILD_TESTING)
     add_subdirectory(tests)
   endif()
