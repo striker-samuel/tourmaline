@@ -28,7 +28,11 @@ git submodule update --init --recursive
 ```
 
 Install Tourmaline's pinned dependencies and toolchains using its README and
-`install_dependencies.sh` / Windows setup. This project intentionally uses
+`install_dependencies.sh` / Windows setup. On Windows,
+`install_dependencies.ps1` also fetches the official prebuilt Embree binary
+package into `external/embree-prebuilt`; the engine auto-prefers it (the
+prebuilt route skips Embree's ~400-TU source compile — the largest single
+dependency in the tree). This project intentionally uses
 the existing `Project` content pipeline, rather than copying raw glTF into
 the runtime renderer.
 
@@ -103,8 +107,9 @@ editor hot reload as shipped-game hot reload.
 
 ## Known limits
 
-- This is the source implementation. A complete native GPU build/cook and
-  screenshot smoke test has **not been run** in the authoring environment.
+- The standalone embedded build, the complete ids/import/cook/pak/publish
+  chain and a live GPU run of the cooked game are verified on the engine
+  author's machine; other GPU/driver combinations may differ.
 - Backend support is controlled by Tourmaline. This starter runs on the
   currently available engine backend and does not claim Metal/Direct3D
   are implemented.

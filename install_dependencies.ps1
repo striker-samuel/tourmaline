@@ -93,6 +93,18 @@ $Pins = @(
     @{ name='embree';     type='tar';  target='embree';
        url='https://codeload.github.com/embree/embree/tar.gz/3d9cb89b9ea099c630e6272d37767e7dd4e78e74';
        sha256='65a7d6014f546844a69201ff1ed0e892c49aa74171db8a7eeffa86f6ef0be78f' }
+    @{ name='embree-prebuilt'; type='zip'; target='embree-prebuilt'; windows=$true;
+       # The official 4.4.1 x64 Windows BINARY package (the same zip the
+       # CI caches at C:\embree) - the PREBUILT-FIRST route: the root
+       # CMakeLists auto-prefers external/embree-prebuilt and skips the
+       # ~400-TU vendored source build (ci.yml notes 2.5+ h on the
+       # AVX-512 kernels without sccache). bin/ carries embree4.dll + the
+       # bundled TBB runtime, lib/cmake/ the imported-target configs; the
+       # engine stages the runtime DLLs next to the exes. The source pin
+       # above stays installed as the fallback route.
+       url='https://github.com/embree/embree/releases/download/v4.4.1/embree-4.4.1.x64.windows.zip';
+       sha256='5aa1fa3161a720f9c610b06c652b80f421cb2b1fe8221fdf92b74157336fdf8f';
+       subset=@('bin','include','lib') }
     @{ name='optick';     type='tar';  target='optick';
        url='https://codeload.github.com/bombomby/optick/tar.gz/362d3952d35982f2037e4a74df4706486d590cfe';
        sha256='771582d71050630c76aecb1a759443eeb902cef3a16620b8167e5223cd892466' }
