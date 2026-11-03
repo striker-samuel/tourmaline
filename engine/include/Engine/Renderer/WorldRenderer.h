@@ -3128,6 +3128,9 @@ public:
 	// Temporary debug-line uploads are isolated by frame-in-flight.
 	std::vector<smvk::Holder<smvk::BufferHandle>> m_debugDrawGpuLines;
 	std::vector<uint32_t> m_debugDrawGpuCapacity;
+	// Last retained-shape revision uploaded to each flight's buffer;
+	// 0 is invalid/uninitialized. Transient game debug streams bypass cache.
+	std::vector<uint64_t> m_debugDrawGpuRevisions;
 
 	// The filtered main view is ALWAYS ON - the runtime A/B toggle (false =
 	// legacy direct draws) is gone. This latch is setup-time availability
