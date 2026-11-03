@@ -539,6 +539,7 @@ bool EditorApp::OpenCacheDb() {
 }
 
 void EditorApp::CloseScene() {
+	CancelReferenceRender();
 	StopGamePlay();
 	if (!m_world)
 		return;
