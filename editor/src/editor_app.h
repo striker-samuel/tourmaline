@@ -1488,8 +1488,8 @@ private:
 	bool m_showCameraGizmos = true;
 	// App-parity probe overlay (View menu): the LOADED
 	// probe rows (the bake manifest - see CubemapProbeRowsFromFile)
-	// drawn per viewport exactly like the App's probe-location
-	// overlay (dot + C<idx> + influence/fade rings, camera-distance
+	// drawn as compact locations in fallback views, and as real mirror
+	// spheres in the live Lit viewport (C<idx> labels, camera-distance
 	// colored). LIGHTING mode only, like the rest of the light set.
 	bool m_showProbeOverlay = true;
 	// Octahedra marker variant for the probe overlays: the same loaded
@@ -1500,9 +1500,8 @@ private:
 	// retired with the octree.)
 	bool m_showProbeOctahedra = false;
 	// Probe-overlay visualization controls (GI probe viz window, View
-	// menu): rings/labels declutter switches, marker radius in px, and
+	// menu): labels, marker radius in px, and
 	// the distance cutoff the overlay culls at.
-	bool m_probeRings = true;   // influence/fade circles per probe
 	bool m_probeLabels = true;  // C<idx> text per probe
 	float m_probeMarkerSize = 3.5f; // marker radius (px)
 	float m_probeOverlayMaxDist = 80.0f; // overlay distance cutoff (m)
