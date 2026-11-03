@@ -9,6 +9,12 @@ the SDL3 backend adapter and `Input::onEvent`.
 
 ## Usage
 
+For cross-agent snapshot recording, the supported front end is
+[`tools/toursnapshot.py`](../tools/toursnapshot.py); see the
+[agent CLI manual](agent_snapshot_cli.md). Input tapes extracted with
+`toursnapshot input-tape` use the format described here.
+
+
 Record in App against the chosen cooked source:
 
 ```sh
