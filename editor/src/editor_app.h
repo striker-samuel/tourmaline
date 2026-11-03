@@ -25,6 +25,7 @@
 // VIP: the editor never reimplements cooking or baking — the .tour command
 // log is the interchange, PakCooker replays it onto a fresh import.
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -736,6 +737,7 @@ private:
 	void ModalUiToggle();
 	void ModalUndo();
 	void ModalRedo();
+	void ModalExportProject(); // Ctrl+Shift+C: opens .tourrecipe configuration
 	void ModalSave(); // Ctrl+S: SaveTour (explicit save -> project file)
 	void ModalSaveIncremental();
 	void ModalDelete(); // Del: DeleteSelection() (skipped while the
@@ -1213,9 +1215,21 @@ private:
 	int m_terrainTilesZ = 1;
 	uint32_t m_terrainMat = UINT32_MAX; // world material index
 	void DrawCreateTerrainDialog();
-	// File > Export .pak: the destination comes from the native Windows
-	// save dialog, then the cook runs with that path.
-	void ExportPak();
+	// File > Export Project: edit and validate the canonical .tourrecipe,
+	// then invoke the multi-pak project pipeline (not the single-pak cook).
+	void OpenProjectExportWindow();
+	void DrawProjectExportWindow();
+	bool LoadProjectExportRecipe(const std::string& filename);
+	bool SaveProjectExportRecipe(std::string& path);
+	void StartProjectRecipeBuild(const std::string& recipePath,
+		const std::string& recipeText);
+	bool m_showProjectExportWindow = false;
+	std::string m_projectExportRecipeName = "game.tourrecipe";
+	char m_projectExportRecipeNameBuf[256] = "game.tourrecipe";
+	std::array<char, 65536> m_projectExportRecipeText{};
+	std::vector<std::string> m_projectExportRecipes;
+	std::string m_projectExportStatus;
+	bool m_projectExportDirty = false;
 	// Floating cook/bake tools window (View menu). NOT in the bottom
 	// dock: the export knobs live on the scene's exportSettings node,
 	// this window only hosts the tools + progress.

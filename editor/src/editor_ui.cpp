@@ -414,7 +414,8 @@ namespace editor {
 			// content/, paks/, gi/ and its own .tourmaline/ cache. Imports
 			// land in it and the editor shows them
 			// pipeline — no manual staging.
-			if (ImGui::MenuItem("New / Open Project...")) {
+			if (ImGui::MenuItem("New / Open Project...", nullptr, false,
+					!m_cookRunning && !m_bakeRunning)) {
 				std::string picked;
 				if (NativePickFolder(picked) && !picked.empty())
 					NewProjectOrOpen(picked);
@@ -447,13 +448,14 @@ namespace editor {
 				}
 			}
 			ImGui::Separator();
-			if (ImGui::MenuItem("Open file...")) {
+			if (ImGui::MenuItem("Open file...", nullptr, false,
+					!m_cookRunning && !m_bakeRunning)) {
 				std::string picked;
 				if (NativeOpenFile(picked) && !picked.empty())
 					OpenAnySceneFile(picked);
 			}
 			if (ImGui::MenuItem("Add scene reference...", nullptr, false,
-				!m_gltfPath.empty())) {
+				m_world != nullptr && !m_cookRunning && !m_bakeRunning)) {
 				// File browser pick (.gltf/.tour; the name defaults to the
 				// path stem, the reference binds into its own namespace).
 				std::string picked;
@@ -468,19 +470,21 @@ namespace editor {
                     RequestReturnFromPrefab(false);
                 ImGui::Separator();
             }
-            if (ImGui::MenuItem("Save tour...")) {
+            if (ImGui::MenuItem("Save tour...", nullptr, false,
+					m_world != nullptr && !m_cookRunning && !m_bakeRunning)) {
 				std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
 					"%s", TourTarget().c_str());
 				m_showSaveDialog = true;
 			}
-			if (ImGui::MenuItem("Save tour incremental", "Ctrl+Alt+S"))
-				SaveTourIncremental();
-			if (ImGui::MenuItem("Export .pak...", "Ctrl+Shift+C", false,
-					m_world != nullptr)) {
-				ExportPak();
-			}
+			if (ImGui::MenuItem("Save tour incremental", "Ctrl+Alt+S",
+					false, m_world != nullptr && !m_cookRunning && !m_bakeRunning))
+				ModalSaveIncremental();
+			if (ImGui::MenuItem("Export Project...", "Ctrl+Shift+C", false,
+					!m_projectRoot.empty() && !m_cookRunning && !m_bakeRunning))
+				ModalExportProject();
 			ImGui::Separator();
-			if (ImGui::MenuItem("Close"))
+			if (ImGui::MenuItem("Close scene", nullptr, false,
+					m_world != nullptr && !m_cookRunning && !m_bakeRunning))
 				CloseScene();
 			ImGui::Separator();
 			if (ImGui::MenuItem("Quit"))
@@ -579,16 +583,19 @@ namespace editor {
 			// stable — hide those instead).
 			if (ImGui::MenuItem("Delete selection", "Del", false,
 				m_world && (m_selected != UINT32_MAX
-					|| !m_selection.empty())))
-				DeleteSelection();
+					|| !m_selection.empty()) && !m_cookRunning))
+				ModalDelete();
 			// Ctrl+D twin (modal registry 'Ctrl+D'): fresh Creates seeded
 			// from the LIVE state of every selected duplicable node
 			// (lights/cameras/cubemaps/GI volumes/transforms under the same
 			// parent); imports/terrain are refused with a log.
 			if (ImGui::MenuItem("Duplicate selection", "Ctrl+D", false,
 				m_world && (m_selected != UINT32_MAX
-					|| !m_selection.empty())))
-				DuplicateSelection();
+					|| !m_selection.empty()) && !m_cookRunning))
+				ModalDuplicate();
+			if (ImGui::MenuItem("Hide / unhide selection", "Ctrl+H", false,
+					m_world && !m_selection.empty() && !m_cookRunning))
+				ModalToggleVisibility();
 			ImGui::Separator();
 			// Collapse the stack to the current state: superseded per-node /
 			// per-attr edits drop (their LAST occurrence already carries the
@@ -641,8 +648,8 @@ namespace editor {
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("View")) {
-			ImGui::TextDisabled("Debug views share the App's keys (F1..F6,"
-				"F9..F11, P) — same view, same key, live view.");
+			ImGui::TextDisabled("Debug views: F1..F6, F8..F12. P parents"
+				" the selection; Z toggles wireframe in Layout.");
 			// Shading: the GI tri-view (the bake workflow's three looks),
 			// ONE block — the old F1/F2 pair ("Unlit"/"Lit") duplicated
 			// these (same ViewMode targets; the tri-view adds the ambient
@@ -656,10 +663,8 @@ namespace editor {
 					ActiveViewMode() == ViewMode::Unlit))
 				ActiveViewMode() = ViewMode::Unlit;
 			if (ImGui::MenuItem("Fully Lit (with GI)", "F1",
-					ActiveViewMode() == ViewMode::Lit && m_litView == 0)) {
-				ActiveViewMode() = ViewMode::Lit;
-				m_litView = 0;
-			}
+					ActiveViewMode() == ViewMode::Lit && m_litView == 0))
+				ModalViewLit();
 			if (ImGui::MenuItem("Realtime Lit", nullptr,
 					ActiveViewMode() == ViewMode::Lit && m_litView == 1)) {
 				ActiveViewMode() = ViewMode::Lit;
@@ -667,12 +672,8 @@ namespace editor {
 			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Meshlets", "F3",
-				ActiveViewMode() == ViewMode::Meshlets)) {
-				ActiveViewMode() = ViewMode::Meshlets;
-				if (!m_meshletDebugHasData && !EnsureMeshletDebug())
-					Log("Meshlet view: no cooked meshlets in this scene "
-						"(cook with --meshlets); meshes show as flat fallbacks.");
-			}
+				ActiveViewMode() == ViewMode::Meshlets))
+				ModalViewMeshlets();
 			if (ImGui::MenuItem("Shadow cascade coverage", "F4",
 				ActiveViewMode() == ViewMode::Cascades))
 				ActiveViewMode() = ViewMode::Cascades;
@@ -695,7 +696,9 @@ namespace editor {
 					meshletModes, 2);
 			}
 			ImGui::Separator();
-			ImGui::MenuItem("Wireframe (hidden-line)", "P / Z", &m_wireframeAll);
+			if (ImGui::MenuItem("Wireframe (hidden-line)", "Z (Layout)",
+					m_wireframeAll))
+				ModalWireframeToggle();
 			ImGui::SetItemTooltip("Line polygon mode over the Fill depth"
 				"prepass — lines never draw over the objects in front.");
 			ImGui::Separator();
@@ -711,11 +714,12 @@ namespace editor {
 				" frames): a full-width horizontal bucket graph pinned to the"
 				" bottom of the viewport, with avg/p50/p95/p99/max.");
 			ImGui::Separator();
-			if (ImGui::MenuItem("Single viewport", "V", m_vpLayout == 0))
-				m_vpLayout = 0;
+			if (ImGui::MenuItem("Single viewport", "V", m_vpLayout == 0)
+					&& m_vpLayout != 0)
+				ModalVpLayoutToggle();
 			if (ImGui::MenuItem("Quad viewports (4 panels)", "V",
-				m_vpLayout == 1))
-				m_vpLayout = 1;
+					m_vpLayout == 1) && m_vpLayout != 1)
+				ModalVpLayoutToggle();
 			ImGui::Separator();
 			ImGui::MenuItem("Ground grid", nullptr, &m_showGrid);
 			{
@@ -749,8 +753,8 @@ namespace editor {
 			ImGui::Separator();
 			if (ImGui::MenuItem(
 				("UV inset: " + std::string(SecondViewName(m_secondView))).c_str(),
-				"F5 (LIGHTING)"))
-				m_secondView = SecondView((int(m_secondView) + 1) % 3);
+				"Shift+F5 (LIGHTING)"))
+				ModalUvInsetCycle();
 			ImGui::Separator();
 			if (ImGui::MenuItem("Translate gizmo", "W",
 				m_gizmoMode == GizmoMode::Translate))
@@ -859,8 +863,8 @@ namespace editor {
 					ImGui::EndCombo();
 				}
 			}
-			if (ImGui::MenuItem("Panels visible", nullptr, m_uiMode))
-				m_uiMode = !m_uiMode;
+			if (ImGui::MenuItem("Panels visible", "I", m_uiMode))
+				ModalUiToggle();
 			// UV editor window retired (see the DrawUvEditorWindow note).
 			//if (ImGui::MenuItem("UV editor window", nullptr, m_showUvEditor))
 			//	m_showUvEditor = !m_showUvEditor;
@@ -903,6 +907,7 @@ namespace editor {
 			m_showSaveDialog = false;
 		}
 		DrawSaveDialog();
+		DrawProjectExportWindow();
 		if (m_showRecoverDialog) {
 			ImGui::OpenPopup("Recover autosave");
 			m_showRecoverDialog = false;
@@ -3956,32 +3961,6 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGui::CloseCurrentPopup();
 		}
 		ImGui::EndPopup();
-	}
-
-	void EditorApp::ExportPak() {
-		if (!m_world) {
-			Log("Export: no scene open.");
-			return;
-		}
-		if (m_cookRunning || m_bakeRunning) {
-			Log("Export: a cook/bake is already running.");
-			return;
-		}
-		// The destination is chosen up front in the native Windows save
-		// dialog (suggesting <scene>.pak in content/paks). The bake/export
-		// knobs are NOT here: they live on the scene's exportSettings node
-		// and the cook replays the tour to read them.
-		std::string suggested =
-			std::filesystem::path(m_gltfPath).stem().string();
-		if (!suggested.empty())
-			suggested += ".pak";
-		std::string picked;
-		if (!NativeSaveFile(picked, suggested) || picked.empty())
-			return;
-		m_cook.outPak = picked;
-		std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
-			picked.c_str());
-		CookToPak();
 	}
 
 	void EditorApp::DrawCookWindow() {
