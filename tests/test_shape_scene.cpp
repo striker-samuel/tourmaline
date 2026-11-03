@@ -14,11 +14,14 @@ using namespace tour;
 int main() {
     renderer::ShapeScene scene;
     std::string error;
+    const auto emptyRevision = scene.Revision();
     auto spline = asset::DefaultShapeAsset(asset::ShapeKind::Spline);
     spline.segments = 4;
     const glm::mat4 transform = glm::translate(glm::mat4(1.0f), glm::vec3(1,2,3));
     const auto first = scene.Add(spline, transform, {1,0,0}, error);
     assert(first && scene.Size() == 1);
+    assert(scene.Revision() != emptyRevision);
+    const auto firstRevision = scene.Revision();
     assert(scene.Get(first));
     assert(scene.Get(first)->geometry.topology == asset::ShapeGeometry::Topology::Lines);
     DebugDrawList draw;
@@ -27,6 +30,7 @@ int main() {
     assert(draw.Lines().front().a == glm::vec3(0,2,3));
     assert(draw.Lines().back().b == glm::vec3(2,2,3));
     assert(scene.SetTransform(first, glm::mat4(1.0f)));
+    assert(scene.Revision() != firstRevision);
     draw.Clear();
     assert(scene.AppendDraws(draw) == 1);
     assert(draw.Lines().front().a == glm::vec3(-1,0,0));
@@ -49,7 +53,9 @@ int main() {
                                     transform, {1,1,1}, error);
     assert(!rejected && scene.Size() == 2);
     assert(!error.empty());
+    const auto beforeRemove = scene.Revision();
     assert(scene.Remove(first));
+    assert(scene.Revision() != beforeRemove);
     assert(!scene.Remove(first));
     assert(!scene.Get(first));
     const auto reuse = scene.Add(spline, glm::mat4(1.0f), {1,1,0}, error);
