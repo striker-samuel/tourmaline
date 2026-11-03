@@ -236,6 +236,7 @@ void EditorApp::SavePlacementToDoc(smvk::tour::Doc& doc) const {
 		for (const auto& [lid, l] : g.links)
 			put(base + ".link." + std::to_string(lid), SerializeLink(l));
 	}
+	SaveSurfaceBrushToDoc(doc);
 	put("place.ui.active", std::to_string(m_placement.active));
 	put("place.ui.open", m_placement.showGraph ? "1" : "0");
 }
@@ -320,6 +321,7 @@ void EditorApp::LoadPlacementFromDoc(const smvk::tour::Doc& doc) {
 	m_placement.selectedLink = -1;
 	m_placement.linkFrom = -1;
 	MarkPlacementDirty();
+	LoadSurfaceBrushFromDoc(doc);
 	m_placement.pushUndo(); // baseline for the session undo stack
 	if (!m_placement.graphs.empty())
 		Log("tour: restored " + std::to_string(m_placement.graphs.size()) +
