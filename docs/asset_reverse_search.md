@@ -1,11 +1,11 @@
 # Asset reverse search and image fabbing CLI
 
-This is a **stacked follow-up to PR #89** (\`geometry_capture_atlas.py\`).
-It uses that tool's \`index.json\` and mipmapped material-channel PNG
-atlases. It never mutates \`.geometry\`, \`.material\`, cooked paks, or asset
+This is a **stacked follow-up to PR #89** (`geometry_capture_atlas.py`).
+It uses that tool's `index.json` and mipmapped material-channel PNG
+atlases. It never mutates `.geometry`, `.material`, cooked paks, or asset
 catalog IDs. Only Pillow is needed for local operations:
 
-\`\`\`sh
+```sh
 python -m pip install pillow
 
 # 1. Bake six signed-axis material captures (from PR #89).
@@ -46,29 +46,29 @@ python tools/asset_reverse_search.py fab \
 OPENAI_API_KEY=... python tools/asset_reverse_search.py fab \
     --index out/capture/search.json --asset tree.geometry \
     --output out/fab/tree --execute --search-results 5
-\`\`\`
+```
 
 ## What is indexed?
 
-The \`index\` command reads **actual per-view pixel rectangles** at the chosen
+The `index` command reads **actual per-view pixel rectangles** at the chosen
 capture mip, extracts a small spatial grid from each axis view and channel,
-and writes a standalone \`search.json\`. Descriptors are base64-packed RGBA8
+and writes a standalone `search.json`. Descriptors are base64-packed RGBA8
 material-channel samples, together with geometry GUID, bounds/size,
 material GUIDs, hash and source path. No GPU, external database or remote API
 is needed to build or search the index. The default mip is the one closest to
-32 pixels per view; \`--mip N\` forces a particular capture level and
-\`--grid N\` chooses 2–32 spatial samples per axis.
+32 pixels per view; `--mip N` forces a particular capture level and
+`--grid N` chooses 2–32 spatial samples per axis.
 
-The \`search\` command accepts:
+The `search` command accepts:
 
-- \`--asset\` for indexed path, unique filename, geometry GUID or SHA-256;
-- \`--geometry\` (alias \`--mesh\`) for MESH v3 \`.geometry\` / binary \`.mesh\`
-  files, or an explicitly authored text \`.mesh\` shim of the form
-  \`geometry=relative/path.geometry\`. Other higher-level placeable
-  \`.mesh\` records have no known standalone binary contract and are **not**
+- `--asset` for indexed path, unique filename, geometry GUID or SHA-256;
+- `--geometry` (alias `--mesh`) for MESH v3 `.geometry` / binary `.mesh`
+  files, or an explicitly authored text `.mesh` shim of the form
+  `geometry=relative/path.geometry`. Other higher-level placeable
+  `.mesh` records have no known standalone binary contract and are **not**
   silently parsed as geometry; resolve their source first.
-- \`--image\` for a single-view image (ideally transparent PNG), with
-  \`--view +/-X|+/-Y|+/-Z\` and optional \`--dimensions X,Y,Z\`.
+- `--image` for a single-view image (ideally transparent PNG), with
+  `--view +/-X|+/-Y|+/-Z` and optional `--dimensions X,Y,Z`.
 
 ## Score dimensions (0–100, higher is closer)
 
@@ -86,35 +86,35 @@ The \`search\` command accepts:
 The overall score is the weighted mean of **available** dimension
 similarities, expressed on a 0–100 scale. It is a heuristic ranking,
 **not** a learned probability or a calibrated percent confidence.
-Weights are customizable via \`--weights dimension=value,...\`.
-A \`--size-ratio 1.5\` filter keeps only candidates whose X/Y/Z dimensions
-each differ by at most 1.5×; \`0\` disables this hard filter. The default is
+Weights are customizable via `--weights dimension=value,...`.
+A `--size-ratio 1.5` filter keeps only candidates whose X/Y/Z dimensions
+each differ by at most 1.5×; `0` disables this hard filter. The default is
 2.0. Flat meshes use a small scale-relative epsilon for size comparisons.
 
 For a single-image query there are no captured normal/ORM/emissive channels
-and no physical-size evidence unless \`--dimensions\` is provided. Unavailable
-dimensions are marked \`null\` and removed from the weighted denominator.
+and no physical-size evidence unless `--dimensions` is provided. Unavailable
+dimensions are marked `null` and removed from the weighted denominator.
 Opaque images are treated as covering the full frame, so transparent,
 centered prop renders produce more useful silhouettes. No generative model
 can infer actual 3D dimensions from an image alone here.
 
-By default a source is not returned as its own result. \`--include-self\`
+By default a source is not returned as its own result. `--include-self`
 overrides that for debugging. The matcher performs an **exact linear scan**
 of in-memory descriptors, not an approximate nearest-neighbor search.
 
 ## Image fabbing
 
-\`describe\` builds a reproducible description from the indexed asset's
+`describe` builds a reproducible description from the indexed asset's
 size, broad proportions, base-color average, roughness, metallicness, and
 material count. It does not invent a specific semantic class or pretend to
-recover details not represented in the capture. \`fab\` turns this description
-into a prompt. Without \`--execute\`, it only writes \`fab.json\` and costs
-nothing. With \`--execute\`, it calls the OpenAI Images generation API with
-\`OPENAI_API_KEY\`, writes \`fab_NNN.png\` and per-image SHA-256s, and
-optionally reverse-searches each generated image with \`--search-results N\`.
-It defaults to \`gpt-image-2.5-flare\`, medium quality, 1024×1024 PNG and a
-transparent background. Use \`--model\`, \`--quality\`, \`--size\`, \`--count\`
-and \`--background\` to change the request.
+recover details not represented in the capture. `fab` turns this description
+into a prompt. Without `--execute`, it only writes `fab.json` and costs
+nothing. With `--execute`, it calls the OpenAI Images generation API with
+`OPENAI_API_KEY`, writes `fab_NNN.png` and per-image SHA-256s, and
+optionally reverse-searches each generated image with `--search-results N`.
+It defaults to `gpt-image-2.5-flare`, medium quality, 1024×1024 PNG and a
+transparent background. Use `--model`, `--quality`, `--size`, `--count`
+and `--background` to change the request.
 
 These generated files are **2D concept images**, not reconstructed 3D
 geometry or ready-to-import mesh artifacts. Image generation requires network
@@ -122,6 +122,6 @@ access, provider credentials and may incur API charges. The offline
 description, index, and similarity ranking do not. Tests mock HTTP requests
 and never call a live image API.
 
-\`\`\`sh
+```sh
 python -m unittest discover -s tools/tests -p 'test_asset_reverse_search.py' -v
-\`\`\`
+```
