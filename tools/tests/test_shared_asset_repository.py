@@ -173,7 +173,7 @@ class SharedRepositoryTests(unittest.TestCase):
             local_path = Path(first["local_path"])
             self.assertTrue(local_path.is_file())
             self.assertEqual(local_path.read_bytes(), b"the-OBJ-source")
-            self.assertTrue(str(local_path).startswith(str(self.workstation_cache)))
+            self.assertTrue(local_path.is_relative_to(self.workstation_cache.resolve()))
             self.assertNotEqual(local_path, src)
             second = client.resolve_source(source_id, 1, pin=True)
             self.assertEqual(first["local_path"], second["local_path"])
