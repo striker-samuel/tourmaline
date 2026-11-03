@@ -4070,7 +4070,8 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		}
 		if (m_bakeRunning) {
 			ImGui::Text("Baking GI... (detail in the task window)");
-			ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Baking GI..."); // indeterminate
+			ImGui::ProgressBar(m_taskWindow.progress,
+				ImVec2(-1, 0), ""); // current bake phase
 		}
 		else if (ImGui::Button("Bake GI now")) {
 			BakeGI(); // guards + logs inside (needs a cook target)

@@ -3,6 +3,13 @@
 
 project(AssetTests)
 
+# Headless editor bake progress parser and live-file tee regression.
+add_executable(EditorBakeFeedbackTests test_editor_bake_feedback.cpp)
+set_target_properties(EditorBakeFeedbackTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+add_test(NAME editor_bake_feedback_tests COMMAND EditorBakeFeedbackTests)
+
 add_executable(AssetTests test_assets.cpp)
 
 target_link_libraries(AssetTests

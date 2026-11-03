@@ -6,6 +6,8 @@
 // fresh import — deterministic source + tour in, pak out).
 
 #include "editor_app.h"
+#include "editor_bake_log.h"
+#include "editor_bake_progress.h"
 
 #include <array>
 #include <chrono>
@@ -310,6 +312,11 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	}
  	auto feed = std::make_shared<CookFeed>();
  	m_cookFeed = feed;
+	auto bakeLog = std::make_shared<BakeLogFile>(m_projectRoot, "cook");
+	m_taskWindow.logPath = bakeLog->Path();
+	Log(m_taskWindow.logPath.empty()
+		? "Cook: WARNING: persistent log unavailable"
+		: "Cook live log: " + m_taskWindow.logPath);
 	// Cache acceleration (opt-in, never required): when the project
 	// artifact cache is online, the cooker consults + feeds the same
 	// registry — hit = hash-validated copy, miss = transcode + stage.
@@ -324,7 +331,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// PollCookProcess, which now only drains the feed).
  	auto result = std::make_shared<CookResult>();
  	m_fibers.Post(quickBakes ? "update-bakes" : "cook",
- 		[cook, feed, registryDir, pakStem, quickBakes, cubemapsOnly,
+ 		[cook, feed, bakeLog, registryDir, pakStem, quickBakes, cubemapsOnly,
  			projectRoot = m_projectRoot, projectRelTour, unifiedBuild,
  			bakeCubemapsFlag, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs), result]() {
 			CookResult r{};
@@ -336,7 +343,8 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
  			// tools' tool::err()) also land in the bounded errLines
  			// tail the completion handler folds into the failure
  			// message.
- 			auto push = [feed](const std::string& line, bool err = false) {
+ 			auto push = [feed, bakeLog](const std::string& line, bool err = false) {
+				bakeLog->Write(line, err);
  				std::lock_guard<std::mutex> lk(feed->mutex);
  				feed->lines.push_back(line);
  				if (err) {
@@ -856,6 +864,9 @@ void EditorApp::PollCookProcess() {
 	for (auto& line : ready) {
 		Log(line);
 		TaskWindowPush(line);
+		const BakeProgressUpdate bakeProgress = ParseBakeProgress(line);
+		if (bakeProgress.recognized)
+			TaskWindowStage(bakeProgress.stage, bakeProgress.fraction);
 		// Full-cook stage markers ("cook: " = the bake half, "pak: " =
 		// the assembly half — NOT "cook-gi: ...", NOT the
 		// quick-bakes "update-bakes: " marker).
@@ -955,15 +966,21 @@ void EditorApp::BakeGI() {
 		+ contentRoot + "/gi/ (minted random artifacts)");
  	auto feed = std::make_shared<CookFeed>();
  	m_bakeFeed = feed;
+	auto bakeLog = std::make_shared<BakeLogFile>(m_projectRoot, "bake-gi");
+	m_taskWindow.logPath = bakeLog->Path();
+	Log(m_taskWindow.logPath.empty()
+		? "Bake GI: WARNING: persistent log unavailable"
+		: "Bake GI live log: " + m_taskWindow.logPath);
 	// Fibers job (the editor's single off-main-thread lane): the old
 	// std::async worker verbatim, sharing a result slot with the
 	// completion callback that runs ON MAIN via m_fibers.Pump() (the old
 	// future.wait_for branch in PollBakeProcess).
 	auto result = std::make_shared<CookResult>();
 	m_fibers.Post("bake-gi",
-		[contentRoot, feed, tempTourPath = std::move(tempTourPath), result]() {
+		[contentRoot, feed, bakeLog, tempTourPath = std::move(tempTourPath), result]() {
 			CookResult r{};
-			auto push = [feed](const std::string& line, bool err = false) {
+			auto push = [feed, bakeLog](const std::string& line, bool err = false) {
+				bakeLog->Write(line, err);
 				std::lock_guard<std::mutex> lk(feed->mutex);
 				feed->lines.push_back(line);
 				if (err) {
@@ -1121,6 +1138,9 @@ void EditorApp::PollBakeProcess() {
 	for (auto& line : ready) {
 		Log(line);
 		TaskWindowPush(line);
+		const BakeProgressUpdate bakeProgress = ParseBakeProgress(line);
+		if (bakeProgress.recognized)
+			TaskWindowStage(bakeProgress.stage, bakeProgress.fraction);
 	}
 }
 
