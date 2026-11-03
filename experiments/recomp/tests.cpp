@@ -10,6 +10,62 @@ using namespace tour::recomp;
 void Check(bool ok,const char* name){
     if(!ok){std::cerr<<"FAILED "<<name<<"\n";std::abort();}
 }
+
+// A synthetic recomp verifies the *actual* callback table + lifecycle.
+// It does not contain original game code, symbols or assets.
+struct MockGame {
+    int boots=0,steps=0,shutdowns=0,logs=0,rumbles=0,audio=0;
+    TourRecompControllerV1 last{};
+    TourRecompHostV1 host{};
+    std::array<Byte,24> video{};
+};
+extern "C" int MockBoot(void* user,const Byte* source,std::size_t sourceBytes,
+                        Byte* memory,std::size_t memoryBytes,
+                        Byte* save,std::size_t saveBytes,
+                        const TourRecompHostV1* host){
+    auto& g=*static_cast<MockGame*>(user);
+    ++g.boots;
+    if(!source||sourceBytes!=16||!memory||memoryBytes!=RdramBytes ||
+       !save||saveBytes!=512 || !host || host->struct_bytes!=sizeof(*host))
+        return 0;
+    g.host=*host;
+    if(g.host.log)g.host.log(g.host.user,1,"synthetic game boot");
+    return 1;
+}
+extern "C" void MockStep(void* user,TourRecompControllerV1 input) {
+    auto& g=*static_cast<MockGame*>(user);
+    ++g.steps;g.last=input;
+    g.video.fill(static_cast<Byte>(g.steps));
+    if(g.host.rumble)g.host.rumble(g.host.user,0.25f,0.5f,100);
+    if(g.host.audio){
+        float samples[4]{0.2f,0.2f,-0.2f,-0.2f};
+        TourRecompAudioV1 chunk{samples,2,2,48000};
+        g.host.audio(g.host.user,&chunk);
+    }
+}
+extern "C" int MockCapture(void* user,TourRecompFrameV1* out) {
+    auto& g=*static_cast<MockGame*>(user);
+    if(!out||g.steps==0)return 0;
+    *out={g.video.data(),2,2,12};
+    return 1;
+}
+extern "C" void MockShutdown(void* user) {
+    ++static_cast<MockGame*>(user)->shutdowns;
+}
+void MockLog(void* user,std::uint32_t,const char* message) {
+    auto& g=*static_cast<MockGame*>(user);
+    if(message) ++g.logs;
+}
+void MockRumble(void* user,float low,float high,std::uint32_t ms) {
+    auto& g=*static_cast<MockGame*>(user);
+    if(low>0 && high>0 && ms>0)++g.rumbles;
+}
+void MockAudio(void* user,const TourRecompAudioV1* data) {
+    auto& g=*static_cast<MockGame*>(user);
+    if(data && data->interleaved && data->frames==2 &&
+       data->channels==2 && data->sample_rate==48000) ++g.audio;
+}
+
 int main(){
     std::string error;
     Check(Sha1({})=="da39a3ee5e6b4b0d3255bfef95601890afd80709","sha1 empty");
@@ -62,5 +118,54 @@ int main(){
     fs::remove(badRom);
     Session session;
     Check(!session.Boot(badRom,path,{},error),"must have an adapter");
+    // Exercise a complete adapter with synthetic content, zero ROMs.
+    MockGame mock;
+    std::array<Byte,16> dummy{};
+    GuestMemory guest;
+    Eeprom guestSave;
+    Bridge abi{};
+    abi.abi_version=BridgeAbi;
+    abi.struct_bytes=sizeof(abi);
+    abi.capabilities=TOUR_RECOMP_CAP_RGBA_FRAME |
+                     TOUR_RECOMP_CAP_AUDIO | TOUR_RECOMP_CAP_RUMBLE;
+    abi.user=&mock;
+    abi.boot=MockBoot;
+    abi.step=MockStep;
+    abi.frame_rgba=MockCapture;
+    abi.shutdown=MockShutdown;
+    const TourRecompHostV1 callbacks{sizeof(TourRecompHostV1),&mock,
+                                   MockLog,MockAudio,MockRumble};
+    BridgeRunner runner;
+    Check(runner.Start(abi,dummy,guest,guestSave,callbacks,error),
+          "boot synthetic adapter");
+    Check(mock.boots==1 && mock.logs==1,"boot and log callbacks");
+    Check(runner.Pump(1.0/60.0,{A,60,-25},error) && mock.steps==0,
+          "no extra 60Hz simulation step");
+    Check(runner.Pump(1.0/60.0,{A,60,-25},error) && mock.steps==1 &&
+          mock.last.buttons==A && mock.last.stick_x==60 &&
+          mock.last.stick_y==-25,"30Hz controller tick");
+    Check(mock.audio==1 && mock.rumbles==1,"callback audio and rumble");
+    Check(runner.Video().Pixels().size()==16 &&
+          runner.Video().Pixels()[0]==1,"frame from adapter");
+    Check(runner.Pump(1.0/30.0,{Start,-80,80},error) &&
+          mock.steps==2,"second game tick");
+    runner.Stop();
+    Check(mock.shutdowns==1 && !runner.Running(),"cleanup once");
+    runner.Stop();
+    Check(mock.shutdowns==1,"idempotent shutdown");
+    abi.struct_bytes=0;
+    Check(!runner.Start(abi,dummy,guest,guestSave,callbacks,error) &&
+          mock.boots==1,"incompatible ABI blocks execution");
+    abi.struct_bytes=sizeof(abi);
+    abi.capabilities=0;
+    Check(!runner.Start(abi,dummy,guest,guestSave,callbacks,error),
+          "required frame capability");
+    abi.capabilities=TOUR_RECOMP_CAP_RGBA_FRAME;
+    Check(!runner.Start(abi,{},guest,guestSave,callbacks,error),
+          "empty content rejected");
+    // Game-specific Session cannot bypass SM64 USA verification.
+    abi.capabilities=TOUR_RECOMP_CAP_RGBA_FRAME;
+    Check(!session.Boot(badRom,path,abi,error),"session ROM gate");
+    Check(mock.boots==1,"no original ROM => no adapter boot");
     std::cout<<"portkit: asset-free tests passed\n";
 }
