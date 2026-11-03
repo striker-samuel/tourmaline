@@ -2058,6 +2058,16 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					m_volumeBrushVp = m_activeVp;
 					m_volumeBrushDragging = true;
 					m_volumeBrushMouseY = lmy;
+					if (m_volumeBrushStage == 0) {
+						glm::vec3 snap;
+						if (SpatialVolumeBrushDepthPoint(m_volumeBrushVp, lmx, lmy, snap)) {
+							m_volumeBrushStart = snap;
+							m_volumeBrushEnd = snap;
+						} else {
+							// Construction-plane fallback is resolved by the ray below.
+							m_volumeBrushStart = glm::vec3(0.0f, ActiveCam().target.y, 0.0f);
+						}
+					}
 				}
 				if (m_volumeBrushDragging) {
 					const EditorViewport& brushVp = m_viewports[m_volumeBrushVp];
@@ -2069,14 +2079,31 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 						const glm::vec3 ray = MouseRay(x, y,
 							smvk::Extent2D{uint32_t(rect.w), uint32_t(rect.h)},
 							brushVp.viewProj, origin);
-						const float planeY = (m_volumeBrushStage == 0)
-							? ActiveCam().target.y : m_volumeBrushStart.y;
+						const float planeY = m_volumeBrushStart.y;
 						if (std::fabs(ray.y) > 1e-5f) {
 							const float t = (planeY - origin.y) / ray.y;
 							if (t >= 0.0f) {
-								const glm::vec3 hit = origin + t * ray;
+								glm::vec3 hit = origin + t * ray;
+								// Pull the active extent toward nearby foreground
+								// boundaries; preserve the anchor's working height.
+								glm::vec3 depthPoint;
+								if (SpatialVolumeBrushDepthPoint(m_volumeBrushVp,
+									x, y, depthPoint))
+									hit = depthPoint;
 								if (m_volumeBrushStage == 0) {
-									if (pressed) m_volumeBrushStart = hit;
+									if (pressed && glm::length(m_volumeBrushEnd - m_volumeBrushStart) < 1e-5f) {
+										// No geometry under the initial click: use the
+										// projected point on the construction plane.
+										glm::vec3 anchorOrigin;
+										const glm::vec3 anchorRay = MouseRay(x, y,
+											smvk::Extent2D{uint32_t(rect.w), uint32_t(rect.h)},
+											brushVp.viewProj, anchorOrigin);
+										if (std::fabs(anchorRay.y) > 1e-5f) {
+											const float anchorT = (planeY - anchorOrigin.y) / anchorRay.y;
+											if (anchorT >= 0.0f && !SpatialVolumeBrushDepthPoint(m_volumeBrushVp, x, y, depthPoint))
+												m_volumeBrushStart = anchorOrigin + anchorT * anchorRay;
+										}
+									}
 									m_volumeBrushEnd = m_volumeBrushStart;
 									m_volumeBrushEnd.x = hit.x;
 								} else {
