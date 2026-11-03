@@ -81,6 +81,49 @@ std::string DefaultRecipeText(const std::string& projectName,
         "[pak world]\noutput game.pak\nscene " + scene + "\n";
 }
 
+// Update one bake switch without regenerating the entire .tourrecipe:
+// other directives, package sections, blank lines and comments survive.
+std::string WithBakeFlag(const std::string& source,
+    const std::string& target, bool enabled) {
+    const std::string replacement = "bake " + target
+        + (enabled ? " on" : " off");
+    size_t start = 0;
+    while (start < source.size()) {
+        const size_t end = source.find('\n', start);
+        const size_t stop = end == std::string::npos ? source.size() : end;
+        const std::string line = source.substr(start, stop - start);
+        const size_t first = line.find_first_not_of(" \t");
+        if (first != std::string::npos
+            && line.compare(first, 5, "bake ") == 0) {
+            const size_t kind = first + 5;
+            if (line.compare(kind, target.size(), target) == 0
+                && (kind + target.size() == line.size()
+                    || line[kind + target.size()] == ' '
+                    || line[kind + target.size()] == '\t'
+                    || line[kind + target.size()] == '#')) {
+                const size_t comment = line.find('#', kind + target.size());
+                const std::string keepComment = comment == std::string::npos
+                    ? "" : " " + line.substr(comment);
+                return source.substr(0, start + first) + replacement
+                    + keepComment + source.substr(stop);
+            }
+        }
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    // No previous switch: create one in the header before the first pak.
+    const size_t pak = source.find("[pak ");
+    if (pak != std::string::npos) {
+        const size_t line = source.rfind('\n', pak);
+        const size_t at = line == std::string::npos ? 0 : line + 1;
+        return source.substr(0, at) + replacement + "\n"
+            + source.substr(at);
+    }
+    return source + (source.empty() || source.back() == '\n' ? "" : "\n")
+        + replacement + "\n";
+}
+
 } // namespace
 
 bool EditorApp::LoadProjectExportRecipe(const std::string& filename) {
@@ -242,6 +285,33 @@ void EditorApp::DrawProjectExportWindow() {
     if (ImGui::Button("Reload recipe")) {
         if (!LoadProjectExportRecipe(m_projectExportRecipeNameBuf))
             Log("Export Project: " + m_projectExportStatus);
+    }
+    // Keep the complete text as the source of truth; the quick bake
+    // controls patch only their directives and preserve other lines.
+    smvk::project::ProjectRecipe preview;
+    smvk::project::RecipeDiagnostic previewError;
+    if (smvk::project::ParseProjectRecipeText(
+            m_projectExportRecipeText.data(), preview, previewError)) {
+        ImGui::TextDisabled("Entry: %s | %zu package(s)",
+            preview.entry.c_str(), preview.paks.size());
+        auto bakeCheckbox = [&](const char* label,
+                const char* key, bool on) {
+            if (ImGui::Checkbox(label, &on)) {
+                const std::string next = WithBakeFlag(
+                    m_projectExportRecipeText.data(), key, on);
+                if (next.size() < m_projectExportRecipeText.size()) {
+                    m_projectExportRecipeText.fill('\0');
+                    std::memcpy(m_projectExportRecipeText.data(),
+                        next.data(), next.size());
+                    m_projectExportDirty = true;
+                }
+            }
+        };
+        bakeCheckbox("Bake GI", "gi", preview.bakeGi);
+        ImGui::SameLine();
+        bakeCheckbox("Bake cubemaps", "cubemaps", preview.bakeCubemaps);
+        ImGui::SameLine();
+        bakeCheckbox("Bake SDF", "sdf", preview.bakeSdf);
     }
     ImGui::TextDisabled("recipe 1 | project | entry | bake gi/cubemaps/sdf | "
         "[pak id]: output, scene, include, depends, dependencies transitive");
