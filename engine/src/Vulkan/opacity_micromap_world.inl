@@ -257,9 +257,11 @@ bool smvk::VulkanResourceManager::BuildOpacityMicromaps(
         vkCmdPushConstants(cmd, defaultPipeLayout,
             VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
         vkCmdDispatch(cmd, (push.triangleCount + 63u) / 64u, 1, 1);
+        // The compute writes become visible to the micromap builder's
+        // specialized read access, not merely to another shader load.
         barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT,
-            VK_ACCESS_2_SHADER_READ_BIT);
+            VK_ACCESS_2_MICROMAP_READ_BIT_EXT);
 
         VkMicromapBuildInfoEXT bi{ VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT };
         bi.type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT;
