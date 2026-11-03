@@ -248,6 +248,60 @@ int main()
 			"frame.requests-reuse-scratch");
 	}
 
+	// ---- Placement provider: same interest flow as WorldFields, with
+	// distinct layer filtering, half-open root request math and a single
+	// partition commit callback (no GPU dependency in this test). ----
+	{
+		wp::WorldPartition p;
+		tour::placement::PlacementStreamProvider placement;
+		placement.SetFrameSource(true,
+			glm::vec4(-256.0f, -256.0f, 256.0f, 256.0f));
+		int commits = 0;
+		size_t receivedRects = 0;
+		glm::vec4 lastRect(0.0f);
+		placement.SetCommitCallback([&](const glm::vec4* rects, size_t count,
+			uint64_t) {
+			++commits;
+			receivedRects = count;
+			lastRect = rects[0];
+			return true;
+		});
+		p.AddProvider(&placement);
+		wp::StreamingInterest fields{};
+		fields.radiusMeters = 30.0;
+		fields.layerMask = wp::StreamLayerBit(wp::StreamLayer::WorldField);
+		wp::StreamingInterest veg{};
+		veg.position = glm::dvec3(224.0, 0.0, 224.0);
+		veg.radiusMeters = 32.0;
+		veg.priority = 5.0f;
+		veg.layerMask = wp::StreamLayerBit(wp::StreamLayer::Placement);
+		const wp::StreamingInterest inputs[2] = { fields, veg };
+		p.SetInterests(inputs, 2);
+		p.UpdateFrame(11);
+		Check(commits == 1 && placement.CommittedThisFrame()
+			&& receivedRects == 1, "placement.partition-commit");
+		Check(lastRect == glm::vec4(192.0f, 192.0f, 256.0f, 256.0f),
+			"placement.partition-clipped-rect");
+		Check(p.RequestCount() == 1 &&
+			p.Requests()[0].layer == wp::StreamLayer::Placement &&
+			p.Requests()[0].cell == wp::WorldCellKey{ 0, 0 },
+			"placement.partition-half-open-root-request");
+		// Disabling a runtime must clear prior frame's pending views.
+		placement.SetFrameSource(false, glm::vec4(0.0f));
+		p.UpdateFrame(12);
+		Check(!placement.CommittedThisFrame() &&
+			placement.InterestRectCount() == 0 &&
+			p.RequestCount() == 0 && commits == 1,
+			"placement.partition-disable-clears-state");
+		// A masked-out interest never reaches the placement callback.
+		placement.SetFrameSource(true,
+			glm::vec4(-256.0f, -256.0f, 256.0f, 256.0f));
+		p.SetInterests(&fields, 1);
+		p.UpdateFrame(13);
+		Check(!placement.CommittedThisFrame() && commits == 1,
+			"placement.partition-layer-mask");
+	}
+
 	// ---- active-cell coverage ----
 	{
 		wp::WorldPartition p;
