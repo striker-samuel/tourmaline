@@ -28,7 +28,7 @@ void PrintUsage(const char* prog) {
 		<< "  " << (prog ? prog : "App")
 		<< " --project <path.tapp> (the generated appmanifest launch)\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
-		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--max-fps N] [--disable_control] [--no-dlss]\n"
+		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--vsync on|off] [--vrr] [--max-fps N] [--disable_control] [--no-dlss]\n"
 		<< "  [--capture] [--use_optick] [--use_optick_gpu] [--no-vfs]\n"
 		<< "  --pak runs cooked paks — REQUIRED (or --project), there is\n"
 		<< "  no default (no entry-point pak = the App refuses to run).\n"
@@ -230,11 +230,40 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 					"an FPS limit, 1..1000", exitCode);
 			opts.maxFps = int(n);
 		}
+		else if (std::strcmp(a, "--vrr") == 0) {
+			opts.vrr = true;
+		}
+		else if (std::strcmp(a, "--vsync") == 0 || std::strncmp(a, "--vsync=", 8) == 0) {
+			const char* v = std::strcmp(a, "--vsync") == 0
+				? (i + 1 < argc ? argv[++i] : nullptr) : a + 8;
+			if (!v || (std::strcmp(v, "on") != 0 && std::strcmp(v, "off") != 0)) {
+				std::cerr << "Bad --vsync value (expected on|off)\\n";
+				exitCode = EXIT_FAILURE;
+				return false;
+			}
+			if (opts.presentSet) {
+				std::cerr << "--vsync conflicts with --present or another --vsync\\n";
+				exitCode = EXIT_FAILURE;
+				return false;
+			}
+			opts.presentMode = std::strcmp(v, "on") == 0 ? "fifo" : "immediate";
+			opts.presentSet = true;
+		}
 		else if ((std::strcmp(a, "--present") == 0) && i + 1 < argc) {
+			if (opts.presentSet) {
+				std::cerr << "--present conflicts with --vsync or another --present\\n";
+				exitCode = EXIT_FAILURE;
+				return false;
+			}
 			opts.presentMode = argv[++i];
 			opts.presentSet = true;
 		}
 		else if (std::strncmp(a, "--present=", 10) == 0) {
+			if (opts.presentSet) {
+				std::cerr << "--present conflicts with --vsync or another --present\\n";
+				exitCode = EXIT_FAILURE;
+				return false;
+			}
 			opts.presentMode = a + 10;
 			opts.presentSet = true;
 		}
