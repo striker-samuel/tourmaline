@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory=$true)][string]$NativeBinDir,
     [string]$Iscc = 'ISCC.exe',
     [string]$Python = 'py',
-    [switch]$SkipPyInstallerInstall
+    [switch]$SkipPyInstallerInstall,
+    [string]$Version = '0.1'
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -51,7 +52,13 @@ try {
     }
     $output = Join-Path $root 'out/installers'
     New-Item -ItemType Directory -Force $output | Out-Null
-    & $Iscc "/DStageDir=$stage" "/DOutputDir=$output" (Join-Path $root 'packaging/tourmaline_setup.iss')
+    if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?
+    if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed' }
+    Write-Host "Installer created in $output"
+}
+finally { Pop-Location }
+) { throw 'Version must contain 3 or 4 numeric components' }
+    & $Iscc "/DStageDir=$stage" "/DOutputDir=$output" "/DAppVersion=$Version" (Join-Path $root 'packaging/tourmaline_setup.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed' }
     Write-Host "Installer created in $output"
 }
