@@ -3,6 +3,7 @@
 
 #pragma once
 #include <Engine/smvk.h>
+#include <Engine/RHI/gpu_memory_spill.h>
 // Windowing is SDL3 (see App/app.h). Forward-declared so RHI headers stay
 // light; .cpp files include <SDL3/SDL_video.h>.
 struct SDL_Window;
@@ -319,6 +320,9 @@ public:
     // call once per frame for the debug UI / console stats.
     std::vector<GpuMemoryHeap> GetGpuMemoryInfo() const;
 
+    // Low-rate advisory pressure/spill warning (no eviction claim or automatic action).
+    GpuMemoryWarningResult PollGpuMemoryWarning(double elapsedSeconds);
+
     // Allocation ledger (see the smvk.h block): EXACT per-category
     // committed-byte sums + per-item rows. Immediate-mode pool walks
     // (render thread, the ListTextureInfos contract); zero cost when not
@@ -358,6 +362,8 @@ public:
     void DestroyShaderModule(ShaderModuleHandle h);
 
 private:
+    GpuMemorySpillDetector gpuMemorySpillDetector_;
+
     std::unique_ptr<Impl> impl_;
 };
 
