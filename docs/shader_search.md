@@ -105,3 +105,55 @@ treat the environment metadata as part of the experimental identity. The
 reported DXC binary is only the detected/selected executable; verify that
 it matches your build configuration. Driver metadata is best effort, not an
 authoritative Vulkan physical-device identification.
+
+## Loop unrolling, branches and register pressure
+
+Optional targeted HLSL compilation hints can be applied to AI-generated
+candidate sources **without adding parameter hooks to production shaders**:
+
+```powershell
+# Append these to a shader_search.py invocation with its required arguments:
+--loop-mode unroll --loop-index 0 --branch-mode flatten --branch-index 1
+--register-pressure minimize
+```
+
+- `--loop-mode auto|loop|unroll` (default auto) controls a single **for**
+  statement via HLSL `[loop]` or `[unroll]`; `--loop-index` selects the
+  zero-based occurrence in the candidate source. Auto leaves loops unchanged.
+- `--branch-mode auto|branch|flatten` (default auto) controls a single
+  **if** statement with HLSL `[branch]` or `[flatten]`, selected with
+  `--branch-index`. Auto leaves branches unchanged.
+- `--register-pressure balanced|minimize` supplies the AI with an optimization
+  priority; this is **guidance**, not a compiler flag or a hardware register
+  allocation guarantee.
+- The source-hint scanner skips comments, strings and directive lines and
+  refuses a selected statement with an existing attribute. It is not a full
+  HLSL AST parser: prefer isolated target shaders; confirm the emitted source
+  and compiled SPIR-V before trusting a result. Loop positions may change
+  after model rewrites, so the indexed target should be reviewed.
+
+VGPRs are hardware-specific. Actual register allocation is determined by the
+GPU driver's compilation of the SPIR-V, not the source-level DXC hint alone.
+**Do not infer VGPR consumption from SPIR-V instruction counts.** To enforce
+register pressure, provide a command that extracts real per-thread register
+counts (e.g. using a device-specific compiler/profiler report) as JSON:
+
+```json
+{"vgpr": 32, "spill_bytes": 0}
+```
+
+`--register-report-cmd "python tools/local_register_report.py"` invokes your
+adapter after each build, with `SHADER_SEARCH_REGISTER_REPORT` set to the
+required output JSON destination. `registers_per_thread` can be used instead
+of `vgpr` for NVIDIA-style register reporting. A minimum positive, finite
+count is required; `spill_bytes` defaults to zero. The runner rejects a
+candidate if its register count exceeds the baseline by more than
+`--max-register-regression` percent (default zero), or measured spill bytes
+increase. Missing/malformed reports fail the experiment, never silently pass.
+This is optional; without it, the harness makes **no VGPR safety claim**.
+
+Optick remains Tourmaline's CPU/game trace format. Nsight Graphics remains
+the dedicated graphics capture/tracing path; you can extract GPU counters with
+an external adapter, but the harness does not itself parse Nsight reports or
+Optick `.opt` captures. Use the same GPU, driver, resolution and build profile
+for register comparisons.
