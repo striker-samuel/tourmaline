@@ -559,8 +559,9 @@ void EditorApp::UpdatePrefabBoundary(float dt) {
         eye,m_prefab.focus,glm::vec3(0,1,0));
     m_prefabRenderer->SetSceneFovY(45.0f);
     m_prefabRenderer->SetSelectedNode(m_prefab.selected);
-    if (m_prefabAnimationPreview && !m_prefab.world->clusters.empty()) {
-        auto& cluster = *m_prefab.world->clusters.front();
+    if (m_prefabAnimationPreview &&
+        m_prefabAnimationClusterIndex < m_prefab.world->clusters.size()) {
+        auto& cluster = *m_prefab.world->clusters[m_prefabAnimationClusterIndex];
         const float duration = float(std::max(0.0, m_prefabAnimationClip.duration));
         if (m_prefabAnimationPlaying && duration > 0.0f) {
             m_prefabAnimationTime += std::max(0.0f, dt)
@@ -742,7 +743,7 @@ void EditorApp::DrawPrefabWindow() {
             }
             ImGui::SameLine();
             if (ImGui::Button("Stop preview##anim")) {
-                if (!m_prefab.world->clusters.empty()) {
+                if (m_prefabAnimationClusterIndex < m_prefab.world->clusters.size()) {
                     auto& cluster = *m_prefab.world->clusters.front();
                     if (cluster.scene.localTransform.size() == m_prefabAnimationRest.size()) {
                         cluster.scene.localTransform = m_prefabAnimationRest;
