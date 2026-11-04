@@ -427,6 +427,26 @@ int main() {
 			"contract.framepass-presets-independent");
 	}
 
+	// All legacy frame-pass toggles retain explicit off defaults; toggling
+	// a local config cannot mutate a fresh preset (CPU-only policy test).
+	{
+		const auto minimal = engine::WorldRendererConfig::Minimal();
+		Check(!minimal.spotShadows && !minimal.forwardPlusCull &&
+			!minimal.gfxMesh && !minimal.filteredMotion && !minimal.dof &&
+			!minimal.ssr && !minimal.ssao && !minimal.ssgiDiffuse &&
+			!minimal.deferredShadows && !minimal.particles &&
+			!minimal.terrain && !minimal.ui,
+			"contract.framepass-minimal-optional-passes-off");
+		const auto filtered = engine::WorldRendererConfig::FilterOnly();
+		Check(filtered.forwardPlusPrepass && filtered.gfxFilter &&
+			!filtered.gfxMesh && !filtered.spotShadows &&
+			!filtered.particles && filtered.tonemap,
+			"contract.framepass-filteronly-stage-gates");
+		Check(engine::WorldRendererConfig::All().terrain == false &&
+			engine::WorldRendererConfig::All().gfxMesh == true,
+			"contract.framepass-default-optin-parity");
+	}
+
 	// 5. The sorter's self-edge contracts.
 	TestTopoSortSelfEdges();
 
