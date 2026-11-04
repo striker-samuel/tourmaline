@@ -19,6 +19,9 @@
 #include <Windows.h>
 #include <shobjidl.h> // IFileOpenDialog
 #include <shellapi.h> // ShellExecuteW (OS-associated DCC document)
+#include <SDL3/SDL_keyboard.h> // SDL_GetKeyboardFocus (the owner window)
+#include <SDL3/SDL_video.h>
+#include <SDL3/SDL_properties.h>
 #else
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +39,17 @@ extern char** environ;
 
 #ifdef _WIN32
 namespace editor {
+
+// Keep shell dialogs modal to the editor, rather than allowing an
+// unowned picker to disappear behind the main window.
+static HWND DialogOwner() {
+	SDL_Window* window = SDL_GetKeyboardFocus();
+	if (!window)
+		return nullptr;
+	return static_cast<HWND>(SDL_GetPointerProperty(
+		SDL_GetWindowProperties(window),
+		SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+}
 
 bool NativeOpenFile(std::string& outPath, bool images, bool allFiles) {
 	// COM for the shell dialog (the editor otherwise avoids COM).
@@ -81,7 +95,7 @@ bool NativeOpenFile(std::string& outPath, bool images, bool allFiles) {
 			dlg->SetFolder(startDir);
 			startDir->Release();
 		}
-		if (SUCCEEDED(dlg->Show(nullptr))) {
+		if (SUCCEEDED(dlg->Show(DialogOwner()))) {
 			IShellItem* item = nullptr;
 			if (SUCCEEDED(dlg->GetResult(&item))) {
 				PWSTR path = nullptr;
@@ -178,7 +192,7 @@ bool NativeSaveFile(std::string& outPath, const std::string& suggestedName) {
 			}
 		}
 		dlg->SetFileName(suggest.c_str());
-		if (SUCCEEDED(dlg->Show(nullptr))) {
+		if (SUCCEEDED(dlg->Show(DialogOwner()))) {
 			IShellItem* item = nullptr;
 			if (SUCCEEDED(dlg->GetResult(&item))) {
 				PWSTR path = nullptr;
@@ -189,6 +203,79 @@ bool NativeSaveFile(std::string& outPath, const std::string& suggestedName) {
 						std::string utf8(size_t(n) - 1, '\0');
 						WideCharToMultiByte(CP_UTF8, 0, path, -1,
 							utf8.data(), n, nullptr, nullptr);
+						outPath = std::move(utf8);
+						ok = true;
+					}
+					CoTaskMemFree(path);
+				}
+				item->Release();
+			}
+		}
+		dlg->Release();
+	}
+	if (coOwns)
+		CoUninitialize();
+	return ok;
+}
+
+// Save an authored .tour document via the Windows shell picker.
+// The full suggested path determines both the starting folder and name;
+// the shell handles existing-file confirmation and the default extension.
+bool NativeSaveTourFile(std::string& outPath, const std::string& suggestedPath) {
+	const HRESULT coInit = CoInitializeEx(nullptr,
+		COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+	const bool coOwns = SUCCEEDED(coInit);
+	if (FAILED(coInit) && coInit != RPC_E_CHANGED_MODE)
+		return false;
+	bool ok = false;
+	IFileSaveDialog* dlg = nullptr;
+	if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr,
+			CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+		static const COMDLG_FILTERSPEC filters[] = {
+			{ L"Tour scenes", L"*.tour" },
+			{ L"All files", L"*.*" },
+		};
+		dlg->SetFileTypes(ARRAYSIZE(filters), filters);
+		dlg->SetFileTypeIndex(1);
+		dlg->SetDefaultExtension(L"tour");
+		dlg->SetTitle(L"Save tour as");
+		if (suggestedPath.size() > 0) {
+			const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+				suggestedPath.c_str(), -1, nullptr, 0);
+			if (count > 1) {
+				std::wstring wide(size_t(count), L'\0');
+				if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+						suggestedPath.c_str(), -1, wide.data(), count)) {
+					wide.pop_back();
+					const size_t slash = wide.find_last_of(L"/\\");
+					const std::wstring name = slash == std::wstring::npos
+						? wide : wide.substr(slash + 1);
+					if (!name.empty())
+						dlg->SetFileName(name.c_str());
+					if (slash != std::wstring::npos) {
+						const std::wstring folder = wide.substr(0, slash + 1);
+						IShellItem* startDir = nullptr;
+						if (SUCCEEDED(SHCreateItemFromParsingName(
+								folder.c_str(), nullptr, IID_PPV_ARGS(&startDir)))) {
+							dlg->SetFolder(startDir);
+							startDir->Release();
+						}
+					}
+				}
+			}
+		}
+		if (SUCCEEDED(dlg->Show(DialogOwner()))) {
+			IShellItem* item = nullptr;
+			if (SUCCEEDED(dlg->GetResult(&item))) {
+				PWSTR path = nullptr;
+				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+					const int n = WideCharToMultiByte(CP_UTF8, 0, path, -1,
+						nullptr, 0, nullptr, nullptr);
+					if (n > 1) {
+						std::string utf8(size_t(n), '\0');
+						WideCharToMultiByte(CP_UTF8, 0, path, -1,
+							utf8.data(), n, nullptr, nullptr);
+						utf8.pop_back();
 						outPath = std::move(utf8);
 						ok = true;
 					}
@@ -228,7 +315,7 @@ bool NativePickFolder(std::string& outPath) {
 			dlg->SetFolder(startDir);
 			startDir->Release();
 		}
-		if (SUCCEEDED(dlg->Show(nullptr))) {
+		if (SUCCEEDED(dlg->Show(DialogOwner()))) {
 			IShellItem* item = nullptr;
 			if (SUCCEEDED(dlg->GetResult(&item))) {
 				PWSTR path = nullptr;
