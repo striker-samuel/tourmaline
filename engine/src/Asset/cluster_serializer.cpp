@@ -919,6 +919,10 @@ bool SerializeClusters(
 		// switches for farthest levels that stay on the lit program.
 		PutU32(blob, mat->shaderLod.farQuality.specular ? 1u : 0u);
 		PutU32(blob, mat->shaderLod.farQuality.normalMap ? 1u : 0u);
+        // Optional trailing cavity texture URI. Older cooked material
+        // blobs have no such trailer; the reader treats it as unbound.
+        // Never serialize a session-local RHI index as a portable slot.
+        PutStr(blob, texUriForRhi(mat->values.textures2[1]));
 
 		if (!writer.AddBlob(PakAssetKind::Material, uri, std::move(blob)))
 			return fail("invalid material uri: " + uri);
@@ -2749,6 +2753,12 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				"stale pak - recook the pak): " + e->path);
 		farQuality.specular = fqSpec != 0;
 		farQuality.normalMap = fqNorm != 0;
+        std::string cavityUri;
+        if (c.off < c.img.size()) {
+            cavityUri = c.str();
+            if (!c.ok)
+                return fail("truncated cavity texture URI in material blob: " + e->path);
+        }
 
 		// Exact MaterialValues round-trip: everything (factors, params,
 		// ambient) is preserved verbatim except the texture slots, which
@@ -2776,6 +2786,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		values.textures[2] = texSlot(texUris[2]);
 		values.textures[3] = texSlot(texUris[3]);
 		values.textures2[0] = texSlot(texUris[4]);
+        values.textures2[1] = texSlot(cavityUri);
 
 		const ClusterMaterialHandle h = cluster->CreateMaterialFromValues(
 			values,
