@@ -224,6 +224,20 @@ void RetireNodeSlot(Scene& scene, NodeId node)
 }
 
 
+bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::mat4& transform)
+{
+  if (!NodeHandleValid(scene, handle)) return false;
+  // Invalid transforms cannot be published safely to scene or GPU views.
+  for (int col = 0; col < 4; ++col)
+    for (int row = 0; row < 4; ++row)
+      if (!std::isfinite(transform[col][row])) return false;
+  const uint32_t slot = NodeHandleSlot(handle);
+  if (slot >= scene.localTransform.size()) return false;
+  scene.localTransform[slot] = transform;
+  markAsChanged(scene, int(slot));
+  return true;
+}
+
 void markAsChanged(Scene& scene, int node)
 {
   const int level = scene.hierarchy[node].level;
@@ -389,16 +403,17 @@ bool recalculateGlobalTransformsDynamic(Scene& scene)
     return recalculateGlobalTransforms(scene);
 
   bool wasUpdated = false;
-  if (!scene.changedAtThisFrame[0].empty()) {
-    const int c = scene.changedAtThisFrame[0][0];
+  // Dynamic scenes may have MULTIPLE level-zero roots. Processing only
+  // the first one silently dropped the other roots' GPU notifications.
+  for (int c : scene.changedAtThisFrame[0]) {
+    if (c < 0 || !IsLiveSlot(scene, uint32_t(c))) continue;
     const bool isStatic = (size_t)c < scene.staticNode.size() && scene.staticNode[(size_t)c] != 0;
-    if (!isStatic) {
-      scene.globalTransform[c] = scene.localTransform[c];
-      QueueGpuSceneGlobalChange(scene, uint32_t(c));
-      wasUpdated = true;
-    }
-    scene.changedAtThisFrame[0].clear();
+    if (isStatic) continue;
+    scene.globalTransform[c] = scene.localTransform[c];
+    QueueGpuSceneGlobalChange(scene, uint32_t(c));
+    wasUpdated = true;
   }
+  scene.changedAtThisFrame[0].clear();
 
   for (int i = 1; i < MAX_NODE_LEVEL; i++) {
     for (int c : scene.changedAtThisFrame[i]) {
@@ -408,7 +423,8 @@ bool recalculateGlobalTransformsDynamic(Scene& scene)
       if (isStatic)
         continue;
       const int p              = scene.hierarchy[c].parent;
-      scene.globalTransform[c] = scene.globalTransform[p] * scene.localTransform[c];
+      scene.globalTransform[c] = p < 0 ? scene.localTransform[c]
+        : scene.globalTransform[p] * scene.localTransform[c];
       QueueGpuSceneGlobalChange(scene, uint32_t(c));
       wasUpdated = true;
     }
