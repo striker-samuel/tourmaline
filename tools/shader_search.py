@@ -205,6 +205,7 @@ def run_search(args):
             trial = output / f"candidate-{index:03}"
             trial.mkdir(exist_ok=True)
             knobs = {"loop_mode": args.loop_mode, "loop_index": args.loop_index,
+                     "unroll_count": args.unroll_count,
                      "branch_mode": args.branch_mode, "branch_index": args.branch_index,
                      "register_pressure": args.register_pressure}
             feedback = json.dumps({
@@ -221,7 +222,7 @@ def run_search(args):
                     raise ValueError("candidate exceeds source size limit")
                 candidate, applied_hints = apply_hints(
                     candidate, args.loop_mode, args.loop_index,
-                    args.branch_mode, args.branch_index)
+                    args.branch_mode, args.branch_index, args.unroll_count)
                 if candidate == best_source:
                     raise ValueError("model returned unchanged source")
                 # Never allow another file or shell command from the model.
@@ -294,6 +295,8 @@ def main(argv=None):
                    help="Optional analytics export (requires extended dependencies)")
     p.add_argument("--loop-mode", choices=("auto", "loop", "unroll"), default="auto")
     p.add_argument("--loop-index", type=int, default=0, help="0-based for-loop index")
+    p.add_argument("--unroll-count", type=int,
+                   help="Optional explicit [unroll(N)] count (requires --loop-mode unroll)")
     p.add_argument("--branch-mode", choices=("auto", "branch", "flatten"), default="auto")
     p.add_argument("--branch-index", type=int, default=0, help="0-based if-statement index")
     p.add_argument("--register-pressure", choices=("balanced", "minimize"), default="balanced")
@@ -313,6 +316,8 @@ def main(argv=None):
     p.add_argument("--min-gain", type=float, default=0.5)
     p.add_argument("--max-source-bytes", type=int, default=200000)
     args = p.parse_args(argv)
+    if args.unroll_count is not None and (args.loop_mode != "unroll" or not 1 <= args.unroll_count <= 1024):
+        p.error("--unroll-count requires --loop-mode unroll and a count in 1..1024")
     if args.loop_index < 0 or args.branch_index < 0 or args.max_register_regression < 0:
         p.error("hint indices and max register regression must be nonnegative")
     if args.api_base is None:
