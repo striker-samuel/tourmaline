@@ -2677,6 +2677,15 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			: static_cast<engine::AmbientMode>(
 				std::clamp(m_renderQuality.giMode, 0, 5)));
 		m_wysiwyg->SetGiDebug(baked ? 1 : 0);
+#if defined(DS_DEBUG_VIZ)
+		// The DS visualizers are implemented inside the same lit shader as
+		// the runtime viewer. Drive the borrowed-world renderer directly,
+		// never fake tile counts in the editor's legacy preview path.
+		// A baked-irradiance view takes precedence over diagnostics.
+		m_wysiwyg->SetDsDebugVisualization(
+			baked ? engine::DsDebugViz::Off : m_dsTileVizMode,
+			m_dsTileVizOverlay, m_dsTileVizCountCeil, m_dsTileVizLight);
+#endif
 		// Selection bounds now belong to WorldRenderer's own render pass:
 		// the editor-only gizmo pass is skipped for the composited view.
 		m_wysiwyg->SetSelectedNode(m_selected);
