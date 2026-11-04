@@ -1281,6 +1281,7 @@ namespace smvk {
         }
         int RecordGpuPass(uint32_t flight, const char* name) {
             if (!stageTimersSupported_ || flight >= smvk::limits::MaxFramesInFlight
+                || timestampPools_[flight] == VK_NULL_HANDLE
                 || recordedGpuPasses_[flight].size() >= kMaxGpuPassTimers)
                 return -1;
             auto& entries = recordedGpuPasses_[flight];
