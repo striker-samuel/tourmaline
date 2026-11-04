@@ -2436,6 +2436,22 @@ void TestBuildPlanExecutor() {
 						.generic_string(),
 					"executor.addressed-manifest-committed");
 			}
+		// A concurrent publisher cannot commit while the final publish
+		// lock belongs to another build (no overwrite/cleanup race).
+		{
+			const fs::path held = tmp / "publish5" / ".publish.lock";
+			fs::create_directory(held, ec);
+			RecordingAdapter rec;
+			smvk::project::BuildPlanOptions lockOptions;
+			lockOptions.publishDir = (tmp / "publish5").generic_string();
+			smvk::project::BuildPlanReport rejected;
+			std::string reason;
+			Check(!smvk::project::ExecuteBuildPlan(project, p2, rec,
+					lockOptions, rejected, reason)
+				&& reason.find("publisher is active") != std::string::npos,
+				"executor.concurrent-publisher-rejected");
+			fs::remove(held, ec);
+		}
 		// Another manifest sharing this directory must retain its
 		// referenced generation after a different .tapp is rebuilt.
 		{
