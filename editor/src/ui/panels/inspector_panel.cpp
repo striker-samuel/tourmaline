@@ -98,6 +98,53 @@ namespace editor {
 		Scene& scene = m_world->scene;
 		const uint32_t node = m_selected;
 		const attr::ScopedID nodeId{int(node)};
+		// Highlight properties at their edit sites (local overrides win
+		// over regex-wide rules). Transform edits are per-axis in the UI;
+		// current history represents each transform gesture as one verb.
+		std::unordered_map<std::string, int> provenance;
+		auto mark = [&](const char* property, int kind) {
+			if (kind == 1 || provenance.find(property) == provenance.end())
+				provenance[property] = kind;
+		};
+		for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+			const EditCmd& cmd = m_history[i];
+			if (cmd.node != node)
+				continue;
+			switch (cmd.verb) {
+			case EditVerb::Translate:
+				for (const char* axis : { "Translate X", "Translate Y", "Translate Z" })
+					mark(axis, 1);
+				break;
+			case EditVerb::Rotate:
+				for (const char* axis : { "Rotate X", "Rotate Y", "Rotate Z" })
+					mark(axis, 1);
+				break;
+			case EditVerb::Scale:
+				for (const char* axis : { "Scale X", "Scale Y", "Scale Z" })
+					mark(axis, 1);
+				break;
+			case EditVerb::Rename: mark("Name", 1); break;
+			case EditVerb::SetStatic: mark("Static", 1); break;
+			case EditVerb::SetLightmap: mark("Bake lightmaps", 1); break;
+			case EditVerb::SetNoLightmap: mark("Exclude lightmaps", 1); break;
+			case EditVerb::SetDitherCloseup: mark("Dither closeup", 1); break;
+			case EditVerb::SetCastsVolumetricShadow: mark("Volumetric shadow", 1); break;
+			case EditVerb::SetVisibility: mark("Visibility", 1); break;
+			case EditVerb::AssignMaterial: mark("Material", 1); break;
+			default: break;
+			}
+		}
+		const std::string nodeName = getNodeName(scene, int(node));
+		for (const auto& entry : {
+				std::pair{ smvk::tour::OverrideAttr::Visibility, "Visibility" },
+				{ smvk::tour::OverrideAttr::Material, "Material" },
+				{ smvk::tour::OverrideAttr::Lightmap, "Bake lightmaps" },
+				{ smvk::tour::OverrideAttr::NoLightmap, "Exclude lightmaps" },
+				{ smvk::tour::OverrideAttr::DitherCloseup, "Dither closeup" } }) {
+			if (LastWideRuleFor(entry.first, nodeName))
+				mark(entry.second, 2);
+		}
+		const attr::ScopedOverrideLabels highlightedProperties(&provenance);
 		if (m_selection.size() > 1)
 			ImGui::TextDisabled("multi-select: %zu nodes (primary #%u)",
 				m_selection.size(), node);
@@ -655,9 +702,25 @@ namespace editor {
 			}
 		}
 
-		// Clarisse-style override summary for this node (visibility control +
-		// per-attr inherited/local/wide badges + wide-rule matches).
-		DrawInspectorOverrides(node);
+		// Visibility is an ordinary editable property, not a separate
+		// override-summary subsection.
+		{
+			bool visible = !IsHiddenNode(scene, int(node));
+			if (attr::Check("Visibility", &visible,
+					"Effective visibility is inherited from ancestors; "
+					"local values take precedence over wide rules")) {
+				EditCmd c{};
+				c.verb = EditVerb::SetVisibility;
+				c.node = node;
+				c.afterFlag = !visible;
+				c.beforeFlag = visible;
+				Do(c);
+			}
+			if (HasLocalOverride(node, smvk::tour::OverrideAttr::Visibility)) {
+				if (ImGui::SmallButton("Clear local visibility override"))
+					ClearLocalOverrides(node, smvk::tour::OverrideAttr::Visibility);
+			}
+		}
 
 		// Environment participation is a regular editor property like Static.
 		{
