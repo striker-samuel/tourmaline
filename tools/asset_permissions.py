@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import secrets
 import tempfile
+import uuid
 
 _IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 _NODE = re.compile(r"[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*(?:\.\*)?\Z")
@@ -85,6 +86,24 @@ class PermissionRegistry:
                 raise ValueError("group permissions must be an array")
             for rule in rules:
                 validate_rule(rule)
+        assets = data.get("assets", {})
+        if not isinstance(assets, dict):
+            raise ValueError("asset ACLs must be an object")
+        for asset_id, acl in assets.items():
+            if str(uuid.UUID(asset_id)) != asset_id:
+                raise ValueError("asset ACL key must be a canonical source UUID")
+            if not isinstance(acl, dict) or set(acl) != {"users", "groups"}:
+                raise ValueError("asset ACL must contain users and groups")
+            for kind in ("users", "groups"):
+                principals = acl[kind]
+                if not isinstance(principals, dict):
+                    raise ValueError("asset ACL principals must be objects")
+                for principal, rules in principals.items():
+                    validate_name(principal)
+                    if not isinstance(rules, list):
+                        raise ValueError("asset ACL rules must be arrays")
+                    for rule in rules:
+                        validate_rule(rule)
         hashes = set()
         for name, record in data["users"].items():
             validate_name(name)
@@ -120,7 +139,7 @@ class PermissionRegistry:
                 found = username
         return found
 
-    def allows(self, username, permission):
+    def allows(self, username, permission, asset_id=None):
         data = self.load()
         record = data["users"].get(username)
         if record is None:
@@ -140,7 +159,60 @@ class PermissionRegistry:
         if not options:
             return False
         highest = max((rank, origin) for rank, origin, _ in options)
-        return all(ok for rank, origin, ok in options if (rank, origin) == highest)
+        global_allowed = all(ok for rank, origin, ok in options if (rank, origin) == highest)
+        if not global_allowed or asset_id is None:
+            return global_allowed
+
+        # A resource ACL further restricts global permissions. Products inherit
+        # the source asset's ACL. Admins explicitly bypass per-asset restrictions.
+        if "admin" in record["groups"] and permitted(
+                data["groups"]["admin"], permission)[1]:
+            return True
+        acl = data.get("assets", {}).get(asset_id)
+        if acl is None:
+            return True
+        candidates = []
+        user_hit, user_allow, user_rank = permitted(
+            acl["users"].get(username, []), permission)
+        if user_hit:
+            candidates.append((user_rank, 1, user_allow))
+        group_rules = [rule for group in record["groups"]
+                       for rule in acl["groups"].get(group, [])]
+        group_hit, group_allow, group_rank = permitted(group_rules, permission)
+        if group_hit:
+            candidates.append((group_rank, 0, group_allow))
+        if not candidates:
+            return False  # Restricted asset: no matching grant.
+        best = max((rank, origin) for rank, origin, _ in candidates)
+        return all(allowed for rank, origin, allowed in candidates
+                   if (rank, origin) == best)
+
+    def asset_set(self, asset_id, principal_type, principal, rules):
+        """Replace one asset's user or group rule list (empty list denies)."""
+        try:
+            if str(uuid.UUID(asset_id)) != asset_id:
+                raise ValueError()
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("expected canonical source UUID") from exc
+        if principal_type not in ("users", "groups"):
+            raise ValueError("principal type must be users or groups")
+        validate_name(principal)
+        data = self.load()
+        if principal not in data[principal_type]:
+            raise ValueError("unknown user or group")
+        rules = [validate_rule(rule) for rule in rules]
+        acl = data.setdefault("assets", {}).setdefault(
+            asset_id, {"users": {}, "groups": {}})
+        acl[principal_type][principal] = rules
+        _atomic_replace(self.path, data)
+
+    def asset_clear(self, asset_id):
+        """Restore global permissions for this asset."""
+        data = self.load()
+        if asset_id not in data.get("assets", {}):
+            raise ValueError("asset ACL does not exist")
+        del data["assets"][asset_id]
+        _atomic_replace(self.path, data)
 
     @classmethod
     def initialize(cls, path):
