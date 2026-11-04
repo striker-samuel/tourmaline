@@ -4,6 +4,7 @@
 #include <Engine/Asset/sdf.h>
 #include <Engine/Asset/sdf_reflections.h>
 #include <Engine/Renderer/static_sdf_gpu.h>
+#include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/Asset/pak.h>
 
 #include <array>
@@ -71,6 +72,35 @@ int main() {
 	bytes=WriteSdfAsset(a);
 	bytes.pop_back();
 	Check(!ParseSdfAsset(bytes.data(),bytes.size(),decoded,err), "reject truncated samples");
+
+	// Hardware RT debug inspector is CPU-only and mirrors Vulkan's BLAS key.
+	{
+		std::array<smvk::RayTracingInstance, 5> candidates{};
+		for (auto& inst : candidates) {
+			inst.firstIndex = 12;
+			inst.indexCount = 12;
+			inst.baseVertex = 1;
+			inst.vertexCount = 8;
+		}
+		candidates[1].transform[3] = 5.0f; // Different placement shares BLAS.
+		candidates[2].firstIndex = 36; // Different geometry needs a new BLAS.
+		candidates[3].opacityMode = 1; // Masked material needs its own BLAS.
+		candidates[4].indexCount = 11; // Invalid triangle count is rejected.
+		const auto summary = smvk::SummarizeRayTracingCandidates(candidates);
+		Check(summary.instances.size() == 4 && summary.rejected == 1,
+			"RT debug filters invalid TLAS candidates");
+		Check(summary.blases.size() == 3 &&
+			summary.blases[0].references == 2 &&
+			summary.blases[1].references == 1 &&
+			summary.blases[2].alphaMasked,
+			"RT debug mirrors geometry/material BLAS dedup");
+		Check(summary.uniqueTriangles == 12 && summary.instancedTriangles == 16,
+			"RT debug triangle totals distinguish BLAS and TLAS");
+		Check(summary.instances[1].sourceIndex == 1 &&
+			summary.instances[1].blasIndex == 0 &&
+			summary.instances[3].sourceIndex == 3,
+			"RT debug preserves TLAS source indices");
+	}
 
 	// Static-only geometric reflection queries against baked TSDF data.
 	// No renderer/GPU state is involved. The nearest instance wins and
