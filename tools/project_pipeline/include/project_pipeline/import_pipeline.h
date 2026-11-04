@@ -65,6 +65,13 @@ struct ImportResult {
 	bool derived = false;             // false = current, nothing written
 };
 
+// Pure, testable material-policy transform. Importer applies it before
+// publication; cooker reads the resulting .material metadata.
+bool ApplyMaterialPackingRule(const MaterialPackingRule& rule,
+    smvk::assets::MaterialAsset& material);
+bool MaterialPackingRuleMatches(const MaterialPackingRule& rule,
+    const smvk::assets::MaterialAsset& material);
+
 // The canonical import. True on success (fresh derivation OR current
 // skip); false + err on failure (the previous generation stays live).
 bool ImportProjectAsset(const ImportRequest& request,
