@@ -60,6 +60,7 @@
 
 #include "ProjectRuntime.h"
 
+#include <Engine/Renderer/ShapeScene.h>
 #include <Engine/Asset/cluster_serializer.h> // ExternalTextureResolver
 
 #include <cstdint>
@@ -134,6 +135,13 @@ public:
 	// the session's registry, never the overlay.
 	// One pak failing leaves the layer unusable (the same every-pak-
 	// must-open contract LoadProjectWorld applies) — check Valid().
+	// Optional retained shape scene owned by the WorldRenderer. A scene
+	// load acquires authored shape instances; unload releases those handles.
+	// Attach before LoadScene/LoadSceneAdditive; the registry must outlive
+	// this ProjectScenes service.
+	void SetShapeScene(tour::renderer::ShapeScene* shapes) {
+		m_shapes = shapes;
+	}
 	[[nodiscard]] bool Valid() const { return m_openError.empty(); }
 	[[nodiscard]] const std::string& OpenError() const {
 		return m_openError;
@@ -246,6 +254,11 @@ private:
 		uint32_t sceneIndex = 0;
 		tour::Cluster* cluster = nullptr; // dead after RemoveScene
 		std::vector<uint64_t> ownedAssets;
+		struct ShapeAttachment {
+			tour::renderer::ShapeInstanceHandle handle;
+			glm::mat4 localTransform{1.0f};
+		};
+		std::vector<ShapeAttachment> shapes;
 		tour::World* owner = nullptr;
 		bool prefab = false;
 		uint32_t prefabRoot = UINT32_MAX;
@@ -263,6 +276,7 @@ private:
 		uint64_t sceneId, std::string& err,
 		const glm::mat4* prefabFrame = nullptr);
 
+	tour::renderer::ShapeScene* m_shapes = nullptr;
 	ProjectRuntime& m_runtime;
 	smvk::OverlayVfs& m_vfs;
 	std::string m_openError; // non-empty = the ctor's pak pass failed
