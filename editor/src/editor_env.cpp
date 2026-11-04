@@ -79,7 +79,31 @@ namespace editor {
 				m_envCurrent = UINT32_MAX;
 		}
 		m_world->scene.environment = *src;
-		m_world->scene.envAuthored = true;
+        // Preview only: never change the authored default/per-node environment.
+        // A cooked scene retains its base look until gameplay opts in to a clock.
+        if (m_dayNight.enabled) {
+            auto& env = m_world->scene.environment;
+            const auto sun = m_dayNight.physical
+                ? daynight::SolarPosition(m_dayNight)
+                : daynight::ArtisticPosition(m_dayNight.hour);
+            env.sunAzimuth = sun.azimuth;
+            // The existing renderer expects a sun above the horizon. Keep the
+            // signed altitude in the solar model and turn off direct light below it.
+            env.sunElevation = std::max(0.0f, sun.elevation);
+            const float daylight = daynight::Smooth(-6.0f, 8.0f, sun.elevation);
+            const float twilight = daynight::Smooth(-12.0f, 3.0f, sun.elevation)
+                * (1.0f - daynight::Smooth(3.0f, 23.0f, sun.elevation));
+            env.sunIntensity = src->sunIntensity * daylight
+                * daynight::Smooth(-1.0f, 2.0f, sun.elevation);
+            env.sunColor = glm::mix(src->sunColor,
+                glm::vec3(1.0f, 0.43f, 0.21f), twilight * 0.85f);
+            env.skyColor = glm::mix(glm::vec3(0.015f, 0.026f, 0.07f),
+                src->skyColor, daylight);
+            env.skyColor = glm::mix(env.skyColor,
+                glm::vec3(0.85f, 0.31f, 0.14f), twilight * 0.45f);
+            env.skyIntensity = src->skyIntensity * (0.01f + 0.99f * daylight);
+        }
+        m_world->scene.envAuthored = true;
 		// Persist the selection (default block = none): cluster resolve
 		// merges it first-valid-wins like defaultCameraNode, so the pick
 		// survives pak round-trips instead of living only in editor state.
@@ -207,7 +231,64 @@ namespace editor {
 				SetEnvVolume(scene, m_envCurrent, tmp);
 			}
 		}
-		// ---- sun: scene light (content — only when a directional node exists) ----
+        // Time-of-day authoring is scene-level (not a per-node light edit).
+        ImGui::SeparatorText("Time of day");
+        bool& enabled = m_dayNight.enabled;
+        if (ImGui::Checkbox("Enable day/night preview", &enabled))
+            ResolveSceneEnv();
+        if (enabled) {
+            int mode = m_dayNight.physical ? 1 : 0;
+            if (ImGui::Combo("Sun model", &mode,
+                    "Artistic (fixed 6/18 horizon)\0Physical (solar position)\0"))
+                m_dayNight.physical = (mode == 1);
+            ImGui::Checkbox("Play preview", &m_dayNight.playing);
+            ImGui::SameLine();
+            if (ImGui::Button("Reset clock"))
+                m_dayNight.hour = 12.0f;
+            ImGui::SliderFloat("Local time (hours)", &m_dayNight.hour,
+                0.0f, 23.999f, "%.2f");
+            ImGui::DragFloat("Full day (seconds)", &m_dayNight.daySeconds,
+                5.0f, 1.0f, 86400.0f, "%.0f");
+            if (m_dayNight.physical) {
+                ImGui::TextDisabled("North +Z, east +X. Longitude east-positive.");
+                ImGui::SliderFloat("Latitude (deg)", &m_dayNight.latitude,
+                    -90.0f, 90.0f, "%.4f");
+                ImGui::SliderFloat("Longitude (deg)", &m_dayNight.longitude,
+                    -180.0f, 180.0f, "%.4f");
+                ImGui::SliderFloat("UTC offset (hours)", &m_dayNight.utcOffset,
+                    -12.0f, 14.0f, "%.2f");
+                ImGui::InputInt("Year", &m_dayNight.year);
+                m_dayNight.year = std::clamp(m_dayNight.year, 1, 9999);
+                ImGui::SliderInt("Month", &m_dayNight.month, 1, 12);
+                ImGui::SliderInt("Day", &m_dayNight.day, 1,
+                    daynight::DaysInMonth(m_dayNight.year, m_dayNight.month));
+                if (ImGui::Button("March equinox")) {
+                    m_dayNight.month = 3; m_dayNight.day = 20;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("June solstice")) {
+                    m_dayNight.month = 6; m_dayNight.day = 21;
+                }
+                if (ImGui::Button("September equinox")) {
+                    m_dayNight.month = 9; m_dayNight.day = 22;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("December solstice")) {
+                    m_dayNight.month = 12; m_dayNight.day = 21;
+                }
+                ImGui::TextDisabled("Solar position is approximate (NOAA);");
+                ImGui::TextDisabled("timezone/DST is chosen explicitly.");
+            }
+            daynight::Advance(m_dayNight, ImGui::GetIO().DeltaTime);
+            const auto pos = m_dayNight.physical
+                ? daynight::SolarPosition(m_dayNight)
+                : daynight::ArtisticPosition(m_dayNight.hour);
+            ImGui::Text("Sun azimuth %.1f / altitude %.1f deg",
+                pos.azimuth, pos.elevation);
+            ImGui::TextDisabled("Preview changes do not overwrite authored lighting.");
+            ResolveSceneEnv();
+        }
+        // ---- sun: scene light (content — only when a directional node exists) ----
 		ImGui::Separator();
 		ImGui::Text("Sun (scene light)");
 		ImGui::PushID("scene_sun");
@@ -933,7 +1014,17 @@ namespace editor {
 		auto put = [&](const std::string& key, const std::string& val) {
 			doc.editorSettings.emplace_back(key, val);
 		};
-		auto saveEnv = [&](const std::string& prefix, uint32_t clusterNode,
+        put("daynight.enabled", m_dayNight.enabled ? "1" : "0");
+        put("daynight.physical", m_dayNight.physical ? "1" : "0");
+        put("daynight.hour", std::to_string(m_dayNight.hour));
+        put("daynight.daySeconds", std::to_string(m_dayNight.daySeconds));
+        put("daynight.latitude", std::to_string(m_dayNight.latitude));
+        put("daynight.longitude", std::to_string(m_dayNight.longitude));
+        put("daynight.utcOffset", std::to_string(m_dayNight.utcOffset));
+        put("daynight.year", std::to_string(m_dayNight.year));
+        put("daynight.month", std::to_string(m_dayNight.month));
+        put("daynight.day", std::to_string(m_dayNight.day));
+        auto saveEnv = [&](const std::string& prefix, uint32_t clusterNode,
 			const tour::scene::SceneEnv& e) {
 			if (clusterNode != UINT32_MAX)
 				put(prefix + ".node", std::to_string(clusterNode));
@@ -1082,7 +1173,8 @@ namespace editor {
 		if (!m_world)
 			return;
 		auto& scene = m_world->scene;
-		// Editor default for new/unauthored scene looks. Authored
+        m_dayNight = daynight::Settings{}; // avoid carrying settings into another scene
+        // Editor default for new/unauthored scene looks. Authored
 		// render.autoExposure from the tour is parsed below and wins.
 		// Do not change SceneRenderSettings' runtime/App default.
 		scene.defaultRenderSettings.autoExposure = false;
@@ -1184,7 +1276,20 @@ namespace editor {
 				(dot == std::string::npos) ? key : key.substr(dot + 1);
 			// Bake references (see SaveEnvToDoc): restored into the members
 			// so the next save carries them forward.
-			if (key == "bake.gicook.guid")
+            if (key.rfind("daynight.", 0) == 0) {
+                const std::string fieldName = key.substr(9);
+                if (fieldName == "enabled") m_dayNight.enabled = StrFloat(val, 0.0f) != 0.0f;
+                else if (fieldName == "physical") m_dayNight.physical = StrFloat(val, 0.0f) != 0.0f;
+                else if (fieldName == "hour") m_dayNight.hour = std::clamp(StrFloat(val, 12.0f), 0.0f, 23.999f);
+                else if (fieldName == "daySeconds") m_dayNight.daySeconds = std::clamp(StrFloat(val, 1200.0f), 1.0f, 86400.0f);
+                else if (fieldName == "latitude") m_dayNight.latitude = std::clamp(StrFloat(val, 0.0f), -90.0f, 90.0f);
+                else if (fieldName == "longitude") m_dayNight.longitude = std::clamp(StrFloat(val, 0.0f), -180.0f, 180.0f);
+                else if (fieldName == "utcOffset") m_dayNight.utcOffset = std::clamp(StrFloat(val, 0.0f), -12.0f, 14.0f);
+                else if (fieldName == "year") m_dayNight.year = std::clamp(int(StrFloat(val, 2026.0f)), 1, 9999);
+                else if (fieldName == "month") m_dayNight.month = std::clamp(int(StrFloat(val, 6.0f)), 1, 12);
+                else if (fieldName == "day") m_dayNight.day = std::clamp(int(StrFloat(val, 21.0f)), 1, 31);
+            }
+            else if (key == "bake.gicook.guid")
 				m_bakeGiCookGuid = val;
 			else if (key == "bake.cubemap.guid")
 				m_bakeCubemapGuid = val;

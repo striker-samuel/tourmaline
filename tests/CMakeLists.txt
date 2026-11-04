@@ -11,6 +11,12 @@ target_include_directories(BrushPrimitivesTests PRIVATE
     ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME brush_primitives_tests COMMAND BrushPrimitivesTests)
 
+# CPU-only day/night solar model smoke test (the editor preview core).
+add_executable(EditorDayNightTests test_editor_day_night.cpp)
+set_target_properties(EditorDayNightTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME editor_day_night_tests COMMAND EditorDayNightTests)
+
 
 # CPU-only regression for inspector numeric inputs and singular TRS reads.
 add_executable(EditorNumericTests test_editor_numeric.cpp)
