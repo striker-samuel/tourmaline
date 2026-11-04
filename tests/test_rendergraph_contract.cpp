@@ -405,6 +405,28 @@ int main() {
 	Check(offsetof(PC, prevModel) == kScratchStart, "contract.scratch-starts-192");
 	Check(sizeof(PC) == kScratchEnd, "contract.push-ends-256");
 
+	// Frame-pass presets remain GPU-independent and preserve their legacy
+	// combinations while configuration instances remain independent.
+	{
+		const auto all = engine::WorldRendererConfig::All();
+		const auto minimal = engine::WorldRendererConfig::Minimal();
+		const auto filtered = engine::WorldRendererConfig::FilterOnly();
+		Check(all.directionalShadows && all.bloom && all.tonemap && all.gfxFilter,
+			"contract.framepass-all-defaults");
+		Check(!minimal.directionalShadows && !minimal.gfxFilter &&
+			!minimal.bloom && minimal.tonemap,
+			"contract.framepass-minimal-tonemap");
+		Check(filtered.forwardPlusPrepass && filtered.gfxFilter &&
+			!filtered.forwardPlusCull && !filtered.motionVectors &&
+			!filtered.bloom && filtered.tonemap,
+			"contract.framepass-filteronly");
+		auto modified = engine::WorldRendererConfig::Minimal();
+		modified.bloom = true;
+		Check(!engine::WorldRendererConfig::Minimal().bloom &&
+			engine::WorldRendererConfig::All().bloom,
+			"contract.framepass-presets-independent");
+	}
+
 	// 5. The sorter's self-edge contracts.
 	TestTopoSortSelfEdges();
 
