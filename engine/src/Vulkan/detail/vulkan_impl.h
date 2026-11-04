@@ -5,6 +5,7 @@
 
 #include <Engine/smvk.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/RHI/swapchain.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Memory/linear_vector.h>
@@ -1272,6 +1273,23 @@ namespace smvk {
 		const double* GetLastStageGpuMs() const { return lastStageGpuMs_; }
 		const bool* GetStageTimingValid() const { return stageTimingValid_; }
 		bool StageTimersSupported() const { return stageTimersSupported_; }
+        static constexpr uint32_t kMaxGpuPassTimers = 192;
+        static constexpr uint32_t kPassTimerBase = 2 + 2 * kGpuStageCount;
+        void BeginGpuPassCapture(uint32_t flight) {
+            if (flight < smvk::limits::MaxFramesInFlight)
+                recordedGpuPasses_[flight].clear();
+        }
+        int RecordGpuPass(uint32_t flight, const char* name) {
+            if (!stageTimersSupported_ || flight >= smvk::limits::MaxFramesInFlight
+                || timestampPools_[flight] == VK_NULL_HANDLE
+                || recordedGpuPasses_[flight].size() >= kMaxGpuPassTimers)
+                return -1;
+            auto& entries = recordedGpuPasses_[flight];
+            entries.push_back({name ? name : "UnnamedRenderPass", 0.0, false});
+            return static_cast<int>(entries.size() - 1);
+        }
+        const std::vector<smvk::GpuPassTiming>& GetLastGpuPasses() const { return lastGpuPasses_; }
+
 		// Stage-timer query pool of a flight (the frame-timer pool: stage
 		// pairs ride queries 2+2s / 3+2s). NULL_HANDLE when unsupported.
 		VkQueryPool TimestampPool(uint32_t flight) const {
@@ -1386,6 +1404,9 @@ namespace smvk {
 		// stage-timer write (the raster stages too: one device without
 		// cross-queue timestamps would still poison the pool pulls).
 		bool stageTimersSupported_ = false;
+        std::vector<smvk::GpuPassTiming> recordedGpuPasses_[smvk::limits::MaxFramesInFlight];
+        std::vector<smvk::GpuPassTiming> lastGpuPasses_;
+
 		double lastPresentWaitMs_ = 0.0;
 		void CreateTimestampPools();
 		void DestroyTimestampPools();

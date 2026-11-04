@@ -5,11 +5,21 @@
 #include <Engine/smvk.h>
 #include <Engine/RHI/resource_manager.h>
 #include <memory>
+#include <string>
+#include <vector>
 
 // SDL3 windowing (forward-declared; .cpp includes <SDL3/SDL_video.h>).
 struct SDL_Window;
 
 namespace smvk {
+
+// The renderer pass names are the same labels used by Optick's per-pass scopes.
+// Durations come from independent Vulkan timestamps; they are not read out of Optick.
+struct GpuPassTiming {
+    std::string name;
+    double milliseconds = 0.0;
+    bool valid = false;
+};
 
 struct Framebuffer {
     uint32_t frameIndex = 0;
@@ -70,6 +80,9 @@ public:
     // GPU frame time (ms) of the last retired frame, for the CPU/GPU
     // split overlay. False until a full frame has retired.
     double GetGpuFrameMs() const;
+    // Last retired frame's individually timestamped rendergraph passes,
+    // in execution/Optick-scope order. Async work may overlap.
+    std::vector<GpuPassTiming> GetGpuPassTimings() const;
     bool HasGpuTiming() const;
     // GPU stage timings (ms) of the last retired frame — the shadow-path
     // instrumentation for BOTH shadow representations (see GpuStageTimer

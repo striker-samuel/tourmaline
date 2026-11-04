@@ -10453,7 +10453,7 @@ void smvk::detail::vulkan::VulkanSwapchain::CreateTimestampPools() {
 		&& (timestampPeriod_ > 0.0f);
 	VkQueryPoolCreateInfo info{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
 	info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-	info.queryCount = 2 + 2 * kGpuStageCount;
+	info.queryCount = VulkanSwapchain::kPassTimerBase + 2 * VulkanSwapchain::kMaxGpuPassTimers;
 	for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; ++i) {
 		if (vkCreateQueryPool(device_, &info, nullptr, &timestampPools_[i]) != VK_SUCCESS)
 			timestampPools_[i] = VK_NULL_HANDLE;
@@ -10461,6 +10461,8 @@ void smvk::detail::vulkan::VulkanSwapchain::CreateTimestampPools() {
 	}
 	gpuTimingValid_ = false;
 	lastGpuMs_ = 0.0;
+	lastGpuPasses_.clear();
+	for (auto& passes : recordedGpuPasses_) passes.clear();
 	for (uint32_t s = 0; s < kGpuStageCount; ++s) {
 		stageTimingValid_[s] = false;
 		lastStageGpuMs_[s] = 0.0;
@@ -10893,6 +10895,24 @@ smvk::VulkanFrameBuffer smvk::detail::vulkan::VulkanSwapchain::AcquireFramebuffe
 			lastGpuMs_ = double(ticks[1] - ticks[0]) * double(timestampPeriod_) / 1e6;
 			gpuTimingValid_ = true;
 		}
+        lastGpuPasses_ = recordedGpuPasses_[currentFrame_];
+        if (!lastGpuPasses_.empty() && stageTimersSupported_) {
+            // All allocated pass pairs are written on this flight. Read
+            // them in one non-blocking batch instead of N driver calls.
+            std::vector<uint64_t> ticks(2 * lastGpuPasses_.size(), 0);
+            const VkResult pr = vkGetQueryPoolResults(device_, timestampPools_[currentFrame_],
+                VulkanSwapchain::kPassTimerBase, static_cast<uint32_t>(ticks.size()),
+                ticks.size() * sizeof(uint64_t), ticks.data(),
+                sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+            if (pr == VK_SUCCESS && timestampPeriod_ > 0.0f) {
+                for (size_t i = 0; i < lastGpuPasses_.size(); ++i) {
+                    if (ticks[2 * i + 1] <= ticks[2 * i]) continue;
+                    lastGpuPasses_[i].milliseconds =
+                        double(ticks[2 * i + 1] - ticks[2 * i]) * double(timestampPeriod_) / 1e6;
+                    lastGpuPasses_[i].valid = true;
+                }
+            }
+        }
 		// Stage pairs (shadow-path instrumentation, see GpuStageTimer):
 		// per-pair pulls — a stage that never ran this frame leaves its
 		// pair unwritten (reset but never written = NOT_READY), and the
@@ -10982,7 +11002,7 @@ smvk::VulkanFrameBuffer smvk::detail::vulkan::VulkanSwapchain::AcquireFramebuffe
 	// GPU frame timer: whole command buffer (all rendergraph passes).
 	if (timestampPools_[currentFrame_] != VK_NULL_HANDLE) {
 		vkCmdResetQueryPool(commandBuffers[currentFrame_], timestampPools_[currentFrame_], 0,
-			2 + 2 * kGpuStageCount);
+            VulkanSwapchain::kPassTimerBase + 2 * VulkanSwapchain::kMaxGpuPassTimers);
 		vkCmdWriteTimestamp(commandBuffers[currentFrame_], VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 			timestampPools_[currentFrame_], 0);
 	}
@@ -13504,6 +13524,9 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	// permanently pointing at its own EngineGlobals slice).
 	const uint32_t flight = fb.frameIndex % smvk::limits::MaxFramesInFlight;
 	flightSlot_ = flight;
+    auto* passTimingSwap = fb.swapchain
+        ? static_cast<VulkanSwapchain*>(fb.swapchain->GetVulkanOpaque()) : nullptr;
+    if (passTimingSwap) passTimingSwap->BeginGpuPassCapture(flight);
 
 	// Optick: the graph's PREPARATION phases get their own scopes — the
 	// per-pass scopes below cover recording, so without these a
@@ -13822,6 +13845,14 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			passes_[sIdx].name_ ? passes_[sIdx].name_ : "UnnamedRenderPass",
 			__FILE__, __LINE__);
 #endif
+        const int passTimingIndex = passTimingSwap
+            ? passTimingSwap->RecordGpuPass(flight, passes_[sIdx].name_)
+            : -1;
+        if (passTimingIndex >= 0) {
+            vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                stageTimerCtx.pool, VulkanSwapchain::kPassTimerBase
+                + 2 * static_cast<uint32_t>(passTimingIndex));
+        }
 		const uint32_t passQFam = passIsAsync ? computeFam : graphicsFam;
 		// G1 -> C boundary: G1 is fully recorded here. Flush uploads first,
 		// then end + submit G1 signaling the G1->C timeline. C and G2 chain
@@ -14222,6 +14253,10 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 #if defined(TOURMALINE_NSIGHT_MARKERS)
 			if (nsightLabelActive) vkCmdEndDebugUtilsLabelEXT(dstCmd);
 #endif
+            if (passTimingIndex >= 0)
+                vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                    stageTimerCtx.pool, VulkanSwapchain::kPassTimerBase
+                    + 2 * static_cast<uint32_t>(passTimingIndex) + 1);
 			if (passIsAsync) {
 				// ---- Per-pass timeline-chained C submit ----
 				// Simple hard dependency for chained compute tasks (the
@@ -14323,6 +14358,10 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass, stageTimerCtxPtr };
 		if (pass.recordingFunction_) pass.recordingFunction_(cb);
 		vkCmdEndRendering(dstCmd);
+        if (passTimingIndex >= 0)
+            vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                stageTimerCtx.pool, VulkanSwapchain::kPassTimerBase
+                + 2 * static_cast<uint32_t>(passTimingIndex) + 1);
 #if defined(TOURMALINE_NSIGHT_MARKERS)
 		if (nsightLabelActive) vkCmdEndDebugUtilsLabelEXT(dstCmd);
 #endif

@@ -18079,28 +18079,100 @@ namespace engine {
 					ImGui::SeparatorText("GPU + frame");
 					{
 						ImGui::Text("GPU: %s", smvk::ActiveDeviceName());
-						// Shadow GPU stages (timestamp queries, ~1 frame lag);
-						// exactly one representation is live per run.
-						if (m_stageGpuTimingsSupported) {
-							ImGui::Text("PCF raster:    %s", m_stageGpuValid[smvk::kGpuStagePcfRaster]
-								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStagePcfRaster]) + " ms (smooth)").c_str() : "(off)");
-							ImGui::Text("EVSM casters:  %s", m_stageGpuValid[smvk::kGpuStageEvsmCasters]
-								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmCasters]) + " ms (smooth)").c_str() : "(off)");
-							ImGui::Text("EVSM resolve:  %s", m_stageGpuValid[smvk::kGpuStageEvsmResolve]
-								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmResolve]) + " ms (smooth)").c_str() : "(off)");
-							ImGui::Text("EVSM blur:     %s", m_stageGpuValid[smvk::kGpuStageEvsmBlur]
-								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmBlur]) + " ms (smooth)").c_str() : "(off)");
-							// Per-async-pass C-stream split (EVSM: 0 = the H
-							// blur leg, 1 = the V leg); the gap between the
-							// legs = the queue handoff/sync cost.
-							for (uint32_t i = 0; i < smvk::kGpuAsyncPassMaxTimers; ++i) {
-								const uint32_t s = smvk::kGpuStageAsyncPassBase + i;
-								ImGui::Text("Async pass %u:   %s", i, m_stageGpuValid[s]
-									? (std::to_string(m_stageGpuMsSmooth[s]) + " ms (smooth)").c_str() : "(off)");
+						// Optick scopes for rendergraph passes are dynamically named from
+						// RenderPass::name_. This overview uses those EXACT same names,
+						// with a separate retired-frame Vulkan timestamp pair per pass.
+						// Labels are append-only to avoid distracting row movement when
+						// the graph enables/disables passes between frames.
+						{
+							const auto currentPasses = m_swapchain
+								? m_swapchain->GetGpuPassTimings() : std::vector<smvk::GpuPassTiming>{};
+							static std::vector<std::string> knownPassNames;
+							for (const auto& pass : currentPasses) {
+								if (std::find(knownPassNames.begin(), knownPassNames.end(), pass.name)
+									== knownPassNames.end())
+									knownPassNames.push_back(pass.name);
 							}
-						}
-						else {
-							ImGui::TextDisabled("(stage timings unavailable: no cross-queue timestamps)");
+							ImGui::TextDisabled("Rendergraph GPU passes (Optick labels, retired frame)");
+							if (knownPassNames.empty()) {
+                                ImGui::TextDisabled(m_stageGpuTimingsSupported
+                                    ? "Waiting for GPU pass timestamps..."
+                                    : "GPU pass timestamps unavailable (cross-queue support required).");
+							} else {
+								struct PassRow { double ms = 0.0; bool valid = false; };
+								std::vector<PassRow> rows(knownPassNames.size());
+								for (const auto& pass : currentPasses) {
+									if (!pass.valid) continue;
+									auto it = std::find(knownPassNames.begin(), knownPassNames.end(), pass.name);
+									if (it == knownPassNames.end()) continue;
+									auto& row = rows[static_cast<size_t>(it - knownPassNames.begin())];
+									row.ms += pass.milliseconds; // repeated Optick names are grouped
+									row.valid = true;
+								}
+								double totalMs = 0.0;
+								for (const auto& row : rows)
+									if (row.valid) totalMs += std::max(0.0, row.ms);
+								// Fixed-height rows; the stacked column uses duration height,
+								// independent of label positions.
+								constexpr float rowHeight = 24.0f;
+								const float plotHeight = rowHeight * static_cast<float>(rows.size());
+								const float labelWidth = 230.0f;
+								const float plotWidth = 75.0f;
+								static constexpr ImU32 colors[] = {
+									IM_COL32(105, 140, 190, 230), IM_COL32(74, 157, 148, 230),
+									IM_COL32(146, 124, 190, 230), IM_COL32(193, 146, 95, 230),
+									IM_COL32(168, 124, 150, 230), IM_COL32(118, 156, 108, 230),
+									IM_COL32(100, 152, 170, 230), IM_COL32(177, 150, 105, 230)
+								};
+								ImGui::BeginChild("##gpu_pass_timeline_scroll",
+									ImVec2(0.0f, std::min(420.0f, plotHeight + 8.0f)), false);
+								const ImVec2 origin = ImGui::GetCursorScreenPos();
+								ImDrawList* draw = ImGui::GetWindowDrawList();
+								const ImVec2 plotTop(origin.x + labelWidth + 12.0f, origin.y);
+								draw->AddRectFilled(plotTop,
+									ImVec2(plotTop.x + plotWidth, plotTop.y + plotHeight),
+									IM_COL32(65, 67, 73, 65), 3.0f);
+								float cursorY = plotTop.y;
+								for (size_t i = 0; i < rows.size(); ++i) {
+									// Stable index, deterministic color. Neither changes on frame updates.
+									uint32_t hash = 2166136261u;
+									for (unsigned char c : knownPassNames[i])
+										hash = (hash ^ c) * 16777619u;
+									const ImU32 color = colors[hash % (sizeof(colors) / sizeof(colors[0]))];
+									const ImVec2 labelTop(origin.x, origin.y + rowHeight * static_cast<float>(i));
+									draw->AddCircleFilled(ImVec2(labelTop.x + 4.0f,
+										labelTop.y + 8.0f), 3.0f, color);
+                                    // Clip long pass names so they cannot paint
+                                    // over the independent timeline column.
+                                    draw->PushClipRect(labelTop,
+                                        ImVec2(labelTop.x + labelWidth - 4.0f,
+                                            labelTop.y + rowHeight), true);
+                                    draw->AddText(ImVec2(labelTop.x + 12.0f, labelTop.y),
+                                        ImGui::GetColorU32(ImGuiCol_Text), knownPassNames[i].c_str());
+                                    draw->PopClipRect();
+									char value[40];
+									if (rows[i].valid)
+										snprintf(value, sizeof(value), "%.2f ms", rows[i].ms);
+									else
+										snprintf(value, sizeof(value), "off");
+									draw->AddText(ImVec2(labelTop.x + 12.0f,
+										labelTop.y + ImGui::GetTextLineHeight()),
+										ImGui::GetColorU32(ImGuiCol_TextDisabled), value);
+									if (rows[i].valid && totalMs > 0.0) {
+										const float height = static_cast<float>(
+											std::max(0.0, rows[i].ms) / totalMs * plotHeight);
+										if (height > 0.0f) {
+											draw->AddRectFilled(ImVec2(plotTop.x, cursorY),
+												ImVec2(plotTop.x + plotWidth, cursorY + height), color);
+											cursorY += height;
+										}
+									}
+								}
+								ImGui::Dummy(ImVec2(labelWidth + plotWidth + 12.0f, plotHeight));
+								ImGui::EndChild();
+								ImGui::TextDisabled("Vertical stack = pass durations, not queue chronology.");
+								ImGui::TextDisabled("Async passes may overlap; repeated names are grouped.");
+							}
 						}
 						ImGui::Separator();
 						{
