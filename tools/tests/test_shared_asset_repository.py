@@ -268,6 +268,14 @@ class SharedRepositoryTests(unittest.TestCase):
             self.assertNotEqual(local_path, src)
             second = client.resolve_source(source_id, 1, pin=True)
             self.assertEqual(first["local_path"], second["local_path"])
+            # A reverse proxy may not share an authenticated blob between
+            # users, even though immutable content is otherwise cacheable.
+            digest = hashlib.sha256(src.read_bytes()).hexdigest()
+            with urlopen(Request(url + "/v2/blobs/" + digest,
+                         headers={"Authorization": "Bearer " + TOKEN})) as fd:
+                self.assertTrue(fd.headers["Cache-Control"].startswith("private"))
+                self.assertEqual(fd.headers["Vary"], "Authorization")
+                self.assertEqual(fd.read(), src.read_bytes())
 
             product_file = Path(self.temp.name) / "cooked.glb"
             product_file.write_bytes(b"immutable published representation")
