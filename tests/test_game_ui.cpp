@@ -156,7 +156,7 @@ sprite cropped 80 0 8 8 trim 16 16 4 2
 	CHECK(std::abs(small[11].bounds.size.x - 3.0f) < 0.0001f);
 	CHECK(std::abs(small[11].bounds.size.y - (35.0f / 12.0f)) < 0.0001f);
 	CHECK(small[12].bounds.origin.x == 3.0f);
-	CHECK(small[13].bounds.origin.y > 0.0f;
+	CHECK(small[13].bounds.origin.y > 0.0f);
 
 	CHECK(ui.DrawNineSlice(atlas, "icon", {{0, 0}, {16, 16}}, handle));
 	CHECK(!ui.DrawNineSlice(atlas, "panel", {{0, 0}, {0, 16}}, handle));

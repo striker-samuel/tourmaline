@@ -3822,7 +3822,7 @@ void TestAudioRoomSection() {
 		c->SetOfflineMode(true);
 		addNode(c->scene, -1, 0); // root (slot 0)
 		const int roomNode = addNode(c->scene, 0, 1); // slot 1
-		tour::scene::SceneAudioRoom room;
+		::tour::scene::SceneAudioRoom room;
 		room.enabled = true;
 		room.priority = 3;
 		room.insideFade = 0.5f;
@@ -3831,12 +3831,12 @@ void TestAudioRoomSection() {
 		room.rt60 = 2.5f;
 		room.damping = 0.7f;
 		room.transitionSeconds = 0.5f;
-		tour::scene::SetAudioRoom(c->scene, NodeId(roomNode), room);
+		::tour::scene::SetAudioRoom(c->scene, NodeId(roomNode), room);
 		// A second DISABLED room on the root exercises the flags bit.
-		tour::scene::SceneAudioRoom off;
+		::tour::scene::SceneAudioRoom off;
 		off.enabled = false;
 		off.priority = 9;
-		tour::scene::SetAudioRoom(c->scene, NodeId(0), off);
+		::tour::scene::SetAudioRoom(c->scene, NodeId(0), off);
 		return c;
 	};
 	{
@@ -3917,9 +3917,9 @@ void TestAudioRoomSection() {
 				std::string nameOut, perr;
 				Check(ParseSceneBlob(p, scene, nameOut, nullptr, perr)
 					&& perr.empty(), "room.parse.round-trips");
-				const tour::scene::AudioRoomRow* r1 =
-					tour::scene::FindAudioRoom(scene, NodeId(1));
-				const tour::scene::AudioRoomRow* r0 = tour::scene::FindAudioRoom(scene, NodeId(0));
+				const ::tour::scene::AudioRoomRow* r1 =
+					::tour::scene::FindAudioRoom(scene, NodeId(1));
+				const ::tour::scene::AudioRoomRow* r0 = ::tour::scene::FindAudioRoom(scene, NodeId(0));
 				Check(r1 && r1->room.enabled
 					&& r1->room.priority == 3
 					&& r1->room.insideFade == 0.5f
@@ -3940,7 +3940,7 @@ void TestAudioRoomSection() {
 	// this pins the serializer's independent backstop.
 	{
 		auto c = mkCluster();
-		tour::scene::AudioRoomRow orphan;
+		::tour::scene::AudioRoomRow orphan;
 		orphan.node = 99; // no such slot in the 2-node cluster
 		c->scene.tables.audioRooms.push_back(orphan);
 		PakWriter w;
