@@ -281,6 +281,17 @@ bool RenameBrowserAsset(const std::string& absPath,
         err = "destination already exists or cannot be checked";
         return false;
     }
+    // Check all destinations before moving anything, including orphaned
+    // sidecars that must never be overwritten.
+    if (isFile) {
+        for (const char* suffix : { ".meta", ".dccsource" }) {
+            const fs::path to(destination.generic_string() + suffix);
+            if (fs::exists(to, ec) || ec) {
+                err = "destination sidecar already exists";
+                return false;
+            }
+        }
+    }
     // Moving sidecars preserves the asset GUID. If a sidecar move fails,
     // restore all previously moved files rather than leave split identity.
     std::vector<std::pair<fs::path, fs::path>> moved;
