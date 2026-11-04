@@ -30,7 +30,9 @@ def create_project(name, destination, project_exe=None):
         raise RuntimeError("Project executable not found. Build Tourmaline or select Project.exe.")
     if project_init.main(args) != 0:
         raise RuntimeError("Native Project initialization failed. See error output.")
-    return Path(planned["root"])
+    project = Path(planned["root"])
+    (project / "content").mkdir(exist_ok=True)
+    return project
 
 
 def validate_remote(url, token, cache):
@@ -106,7 +108,7 @@ def gui():
 
     window = tk.Tk()
     window.title("Tourmaline - New Project Setup")
-    window.geometry("760x610")
+    window.geometry("760x650")
     window.columnconfigure(1, weight=1)
     fields = {}
     rows = [
@@ -119,6 +121,7 @@ def gui():
         ("token", "Repository access token", ""),
         ("cache", "Workstation cache", str(default_cache())),
         ("archive", "Local history folder (optional)", ""),
+        ("port", "Local API port", "8765"),
     ]
     tk.Label(window, text="Create a project and configure its asset repository",
              font=("Segoe UI", 13, "bold")).grid(row=0, column=0, columnspan=3,
@@ -136,18 +139,18 @@ def gui():
                        v.set(fn() or v.get())).grid(row=index, column=2, padx=10)
 
     mode = tk.StringVar(value="local")
-    tk.Label(window, text="Asset mode").grid(row=8, column=0, sticky="w", padx=16)
+    tk.Label(window, text="Asset mode").grid(row=9, column=0, sticky="w", padx=16)
     modes = ttk.Frame(window)
-    modes.grid(row=8, column=1, sticky="w")
+    modes.grid(row=9, column=1, sticky="w")
     for value, label in (("local", "Local (offline)"), ("remote", "Remote server"),
                          ("none", "Project only")):
         ttk.Radiobutton(modes, text=label, variable=mode, value=value).pack(side="left", padx=5)
     maya = tk.BooleanVar(value=False)
     ttk.Checkbutton(window, text="Install Maya picker scripts", variable=maya).grid(
-        row=9, column=1, sticky="w", pady=8)
+        row=10, column=1, sticky="w", pady=8)
     status = tk.StringVar(value="Local mode starts a localhost-only asset server.")
     ttk.Label(window, textvariable=status, wraplength=630).grid(
-        row=10, column=0, columnspan=3, padx=16, pady=12, sticky="w")
+        row=11, column=0, columnspan=3, padx=16, pady=12, sticky="w")
 
     def submit():
         try:
@@ -156,7 +159,8 @@ def gui():
                            project_exe=options["project_exe"] or None,
                            url=options["url"] or None, token=options["token"] or None,
                            cache=options["cache"] or None,
-                           archive=options["archive"] or None, maya=maya.get())
+                           archive=options["archive"] or None, maya=maya.get(),
+                           port=int(options["port"]))
         except Exception as exc:
             messagebox.showerror("Setup failed", str(exc))
             return
@@ -166,7 +170,7 @@ def gui():
         window.destroy()
 
     ttk.Button(window, text="Create project", command=submit).grid(
-        row=11, column=0, columnspan=3, pady=16)
+        row=12, column=0, columnspan=3, pady=16)
     window.mainloop()
 
 
