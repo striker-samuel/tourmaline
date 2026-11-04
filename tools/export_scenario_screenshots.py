@@ -63,12 +63,14 @@ def run_scenario(args, scenario):
         command.append("--pixels")
     if args.dry_run:
         command.append("--dry-run")
-    record_args = toursnapshot.build_parser().parse_args(command)
+    state_file = sequence.parent / "state.json"
+    if not args.dry_run and state_file.exists():
+        raise FileExistsError(f"refusing to overwrite state dump: {state_file}")
+    record_args = toursnapshot.parser_factory().parse_args(command)
     result = toursnapshot.run_record(record_args)
     if args.dry_run:
         return {"id": scenario_id, "status": "planned", "record": result,
                 "state_frame": state_frame, "state_file": str(sequence.parent / "state.json")}
-    state_file = sequence.parent / "state.json"
     # The recorder already reconstructed and validated all PNG state chunks.
     # Reconstruct again to extract canonical state without shelling out.
     frames_data = toursnapshot.codec.reconstruct(sequence, pixels=args.pixels)
