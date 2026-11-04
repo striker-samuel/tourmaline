@@ -2311,7 +2311,8 @@ private:
 		Animation, Timeline, Settings,
 		ToolObject, ToolFace, ToolVertex, ToolFrame, ToolClear,
 		ToolMove, ToolRotate, ToolScale, ToolLayout, ToolLighting,
-		ToolTest, ToolProfile, Count
+		ToolTest, ToolProfile,
+		Brush, BrushStroke, BrushPoints, BrushTrees, Count
 	};
 	struct IconTex {
 		smvk::Holder<smvk::TextureHandle> tex; // keeps the image alive

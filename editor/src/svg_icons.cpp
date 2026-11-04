@@ -61,6 +61,8 @@ EditorApp::IconType EditorApp::IconTypeFor(const std::string& name,
 		return IconType::Texture;
 	if (ext == ".pak")
 		return IconType::Pak;
+	if (ext == ".brushpreset")
+		return IconType::Brush;
 	// Cook assets (settings + blob manifests) read as GI content, and so
 	// do the bake payloads/manifests themselves (previously File).
 	if (ext == ".gicook" || ext == ".lmcook" || ext == ".sggi"
@@ -123,6 +125,10 @@ bool EditorApp::EnsureSvgIcons() {
 		{ IconType::ToolLighting, "tool_lighting.svg" },
 		{ IconType::ToolTest, "tool_test.svg" },
 		{ IconType::ToolProfile, "tool_profile.svg" },
+		{ IconType::Brush, "brush.svg" },
+		{ IconType::BrushStroke, "brush_stroke.svg" },
+		{ IconType::BrushPoints, "brush_points.svg" },
+		{ IconType::BrushTrees, "brush_trees.svg" },
 	};
 	// The user-texture sampler: linear + clamp-to-edge.
 	const uint32_t samplerIdx = m_context->GetOrCreateSampler(
