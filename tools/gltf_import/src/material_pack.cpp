@@ -68,6 +68,10 @@ bool ComposeMaterialImage(const std::filesystem::path& output,
         stbi_image_free(decoded);
     }
     if (width == 0) { width = 1; height = 1; }
+    if (width > std::numeric_limits<int>::max() / 4) {
+        err = "packed material image row is too wide";
+        return false;
+    }
     if (size_t(width) * size_t(height) > std::numeric_limits<size_t>::max() / 4u) {
         err = "packed material destination exceeds addressable image size";
         return false;
