@@ -2657,6 +2657,7 @@ public:
 	std::vector<smvk::MeshParticleEmitterGpu> m_externalMeshParticleEmitters;
 	tour::placement::PlacementDrawPrograms m_meshParticleDraw;
 	bool m_meshParticlesReady = false;
+	float m_meshParticleTailSeconds = 0.0f; // simulate until last emitted particle expires
 	// Transient one-shot burst emitters (SpawnParticleBurst): full rows
 	// with a TTL. UpdateParticles appends them after the demo rows,
 	// ages the TTL (drops expired) and trims overflow (oldest first) so
