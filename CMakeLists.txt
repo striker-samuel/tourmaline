@@ -348,15 +348,21 @@ add_subdirectory(external/volk)  # Vulkan loader (pinned git submodule)
 # per-Shadow-Tile light counts (see engine/shaders/deferredshadow.hlsli +
 # the "DS visualizers" ImGui block). Compiled in via DS_DEBUG_VIZ for the
 # App target (app/CMakeLists.txt) and for DXC (CompileShaders.cmake).
-#   unset/-D...="" -> auto: ON in Debug trees, OFF everywhere else
-#                     (x64-Release stays clean, zero cost)
+#   top-level editor builds (except shipping profile) -> always available
+#   embedded/game-only builds -> auto: Debug unless overridden
+#   runtime compute shaders use clean base variants when visualization is off
 #   -DTOURMALINE_DS_VIZ=ON  -> force ON at any optimization level
 #                     (the x64-Release-DSViz CMakeSettings preset: release
 #                      -O2 C++ / -O3 shaders WITH visualizers)
 #   -DTOURMALINE_DS_VIZ=OFF -> force OFF even in Debug trees
 set(TOURMALINE_DS_VIZ "" CACHE BOOL
     "Deferred-shadow debug visualizers (empty = auto: Debug builds only)")
-if(TOURMALINE_DS_VIZ)
+if(TOURMALINE_IS_TOP_LEVEL AND
+   NOT TOURMALINE_BUILD_PROFILE STREQUAL "shipping")
+  # The editor is built in top-level trees and always exposes diagnostics.
+  # Shipping profiles retain their explicit no-diagnostics contract.
+  set(DS_VIZ_ON ON)
+elseif(TOURMALINE_DS_VIZ)
   set(DS_VIZ_ON ON)
 elseif(TOURMALINE_DS_VIZ STREQUAL "" AND CMAKE_BUILD_TYPE MATCHES "Debug")
   set(DS_VIZ_ON ON)
