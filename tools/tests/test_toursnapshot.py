@@ -101,10 +101,26 @@ class SnapshotCliTests(unittest.TestCase):
         self.assertIn("--snapshot-count=123", report["argv"])
         self.assertIn("--snapshot-keyframe=60", report["argv"])
         self.assertIn("--snapshot-code-id=game-abc", report["argv"])
+        self.assertIn("--snapshot-capture=scoped", report["argv"])
         self.assertNotIn("--disable_control", report["argv"])
         self.assertNotIn("--bench", report["argv"])
         self.assertFalse(output.exists())
         self.assertEqual(err, "")
+
+    def test_legacy_capture_mode_is_explicit(self):
+        rc, out, err = call(
+            "record", "--app", str(self.app), "--pak", str(self.pak),
+            "--output", str(self.root / "legacy"), "--capture-mode", "legacy",
+            "--dry-run", "--json")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("--snapshot-capture=legacy", json.loads(out)["argv"])
+
+    def test_invalid_capture_mode(self):
+        rc, out, _ = call(
+            "record", "--app", str(self.app), "--pak", str(self.pak),
+            "--output", str(self.root / "invalid"), "--capture-mode", "unknown",
+            "--dry-run", "--json")
+        self.assertNotEqual(rc, 0)
 
     def test_reproducible_scenario_and_override_pin(self):
         catalog = self.root / "scenarios.json"
