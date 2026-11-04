@@ -15,6 +15,7 @@ import uuid
 _KINDS = frozenset(("maya", "editor", "agent", "worker", "tool", "other"))
 _RESOURCE_KINDS = frozenset(("source", "product"))
 _MAX_READS = 256
+_MODES = frozenset(("read", "edit", "publish", "review"))
 
 
 def canonical_uuid(raw):
@@ -52,6 +53,16 @@ class ConsumerPresence:
                 CREATE INDEX IF NOT EXISTS idx_consumer_reads_resource
                     ON consumer_reads(resource_kind, resource_id);
             """)
+        # Forward-compatible migration of persisted legacy presence sessions.
+        with archive.connect() as db:
+            session_cols = {row["name"] for row in db.execute("PRAGMA table_info(consumer_sessions)")}
+            read_cols = {row["name"] for row in db.execute("PRAGMA table_info(consumer_reads)")}
+            if "username" not in session_cols:
+                db.execute("ALTER TABLE consumer_sessions ADD COLUMN username TEXT")
+            if "workstation" not in session_cols:
+                db.execute("ALTER TABLE consumer_sessions ADD COLUMN workstation TEXT NOT NULL DEFAULT ''")
+            if "mode" not in read_cols:
+                db.execute("ALTER TABLE consumer_reads ADD COLUMN mode TEXT NOT NULL DEFAULT 'read'")
 
     def _purge(self, db, now):
         # SQLite foreign keys are not assumed to be enabled in legacy
@@ -76,23 +87,36 @@ class ConsumerPresence:
             version = item.get("version")
             if type(version) is not int or version < 1:
                 raise ValueError("read version must be a positive integer")
-            normalized.add((kind, ident, version))
+            mode = item.get("mode", "read")
+            if mode not in _MODES:
+                raise ValueError("asset open mode must be read, edit, publish or review")
+            normalized.add((kind, ident, version, mode))
         return sorted(normalized)
 
-    def heartbeat(self, session_id, label, kind, reads):
+    def heartbeat(self, session_id, label, kind, reads, *, username=None, workstation=""):
         session_id = canonical_uuid(session_id)
         if not isinstance(label, str) or not 1 <= len(label) <= 80 or any(
                 ord(c) < 32 for c in label):
             raise ValueError("consumer label must be 1-80 printable characters")
         if kind not in _KINDS:
             raise ValueError("unknown consumer kind")
+        if not isinstance(workstation, str) or len(workstation) > 120 or any(
+                ord(ch) < 32 for ch in workstation):
+            raise ValueError("workstation must be at most 120 printable characters")
+        if username is not None and (not isinstance(username, str) or not username):
+            raise ValueError("invalid authenticated user")
         normalized = self._normalize(reads)
         now = float(self.clock())
         with self.archive.connect() as db:
             self._purge(db, now)
+            current = db.execute(
+                "SELECT username FROM consumer_sessions WHERE session_id=?",
+                (session_id,)).fetchone()
+            if current is not None and current["username"] != username:
+                raise PermissionError("session is owned by a different user")
             # Reject unrecognized resource IDs/versions rather than presenting
             # invented activity. This is informational, not a read permission.
-            for res_kind, ident, version in normalized:
+            for res_kind, ident, version, mode in normalized:
                 if res_kind == "source":
                     found = db.execute(
                         "SELECT 1 FROM source_revisions WHERE asset_id=? AND revision=?",
@@ -105,23 +129,31 @@ class ConsumerPresence:
                     raise ValueError(
                         f"unknown {res_kind} version {ident} @ {version}")
             db.execute(
-                "INSERT INTO consumer_sessions(session_id,label,kind,last_seen,expires_at)"
-                " VALUES(?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET "
+                "INSERT INTO consumer_sessions"
+                "(session_id,label,kind,last_seen,expires_at,username,workstation)"
+                " VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET "
                 "label=excluded.label,kind=excluded.kind,"
-                "last_seen=excluded.last_seen,expires_at=excluded.expires_at",
-                (session_id, label, kind, now, now + self.ttl))
+                "last_seen=excluded.last_seen,expires_at=excluded.expires_at,"
+                "workstation=excluded.workstation",
+                (session_id, label, kind, now, now + self.ttl, username, workstation))
             db.execute("DELETE FROM consumer_reads WHERE session_id=?", (session_id,))
             db.executemany(
-                "INSERT INTO consumer_reads(session_id,resource_kind,resource_id,resource_version)"
-                " VALUES(?,?,?,?)",
-                ((session_id, key, ident, version)
-                 for key, ident, version in normalized))
+                "INSERT INTO consumer_reads"
+                "(session_id,resource_kind,resource_id,resource_version,mode)"
+                " VALUES(?,?,?,?,?)",
+                ((session_id, key, ident, version, mode)
+                 for key, ident, version, mode in normalized))
         return {"session_id": session_id, "last_seen": now,
                 "expires_at": now + self.ttl, "reads": len(normalized)}
 
-    def release(self, session_id):
+    def release(self, session_id, *, username=None):
         session_id = canonical_uuid(session_id)
         with self.archive.connect() as db:
+            current = db.execute(
+                "SELECT username FROM consumer_sessions WHERE session_id=?",
+                (session_id,)).fetchone()
+            if current is not None and current["username"] != username:
+                raise PermissionError("session is owned by a different user")
             db.execute("DELETE FROM consumer_reads WHERE session_id=?", (session_id,))
             db.execute("DELETE FROM consumer_sessions WHERE session_id=?", (session_id,))
         return {"released": True, "session_id": session_id}
@@ -137,10 +169,10 @@ class ConsumerPresence:
         with self.archive.connect() as db:
             self._purge(db, now)
             sessions = [dict(row) for row in db.execute(
-                "SELECT session_id,label,kind,last_seen,expires_at "
+                "SELECT session_id,label,kind,last_seen,expires_at,username,workstation "
                 "FROM consumer_sessions ORDER BY label,session_id")]
             records = [dict(row) for row in db.execute(
-                "SELECT session_id,resource_kind,resource_id,resource_version "
+                "SELECT session_id,resource_kind,resource_id,resource_version,mode "
                 "FROM consumer_reads ORDER BY resource_kind,resource_id,resource_version")]
             sources = {row["asset_id"]: row["current_path"] for row in db.execute(
                 "SELECT asset_id,current_path FROM source_assets")}
@@ -158,6 +190,7 @@ class ConsumerPresence:
                 "kind": kind,
                 "id": ident,
                 "version": record["resource_version"],
+                "mode": record["mode"],
                 "path": sources.get(ident) if kind == "source" else
                         sources.get(products.get(ident, {}).get("source_asset_id")),
             }
