@@ -276,16 +276,27 @@ void EditorApp::FinalizePending() {
 				ImGui::DockBuilderFinish(dockId);
 				m_dockResetRequested = false;
 			}
+			// Never paint an opaque dockspace background over the swapchain
+			// scene. Tool windows keep their normal opaque backgrounds.
+			ImGui::PushStyleColor(ImGuiCol_DockingEmptyBg,
+				ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
 			// Submitting KeepAliveOnly while panels are hidden preserves
 			// dock assignments, even if the user toggles fullscreen with I.
 			ImGui::DockSpace(dockId, ImVec2(0.0f, 0.0f),
 				m_uiMode ? ImGuiDockNodeFlags_PassthruCentralNode
 					: ImGuiDockNodeFlags_KeepAliveOnly);
+			ImGui::PopStyleColor();
 		}
 		ImGui::End();
 		ImGui::PopStyleVar();
 
 		m_dockViewportHovered = false;
+		// Drop mouse ownership at release, even if the pointer has left
+		// the window. Mouse-down inside the canvas starts a captured orbit.
+		if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)
+			&& !ImGui::IsMouseDown(ImGuiMouseButton_Middle)
+			&& !ImGui::IsMouseDown(ImGuiMouseButton_Right))
+			m_dockViewportDragCaptured = false;
 		// A hidden dock tab must not retain the previous live-view capture.
 		// DrawLiveViewStage may set this again only for a visible viewport.
 		m_wysiwygLiveRectFresh = false;
@@ -294,6 +305,7 @@ void EditorApp::FinalizePending() {
 			// its previous-frame rect under ImGui's tab chrome. No offscreen
 			// scene texture, no extra GPU copy and no scene serialization.
 			m_dockViewportVisible = false;
+			ImGui::SetNextWindowBgAlpha(0.0f);
 			ImGui::SetNextWindowSize(ImVec2(880, 620), ImGuiCond_FirstUseEver);
 			if (ImGui::Begin("Viewport", nullptr,
 					ImGuiWindowFlags_NoBackground |
@@ -310,6 +322,11 @@ void EditorApp::FinalizePending() {
 					m_dockViewportHovered = ImGui::IsWindowHovered()
 						&& mouse.x >= pos.x && mouse.x < pos.x + avail.x
 						&& mouse.y >= pos.y && mouse.y < pos.y + avail.y;
+					if (m_dockViewportHovered &&
+						(ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+							|| ImGui::IsMouseClicked(ImGuiMouseButton_Middle)
+							|| ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
+						m_dockViewportDragCaptured = true;
 					ImGui::Dummy(avail); // reserve canvas space, no ImGui pixels
 				}
 			}
@@ -1994,17 +2011,8 @@ void EditorApp::FinalizePending() {
 			return;
 		Scene& scene = m_world->scene;
 		auto it = FindGiVolume(scene, node);
-		if (!it) {
-			ImGui::Separator();
-			ImGui::TextDisabled("GI Volume component: not attached");
-			if (ImGui::Button("Add GI Volume component")) {
-				EditCmd c{};
-				c.verb = EditVerb::AttachGiVolume;
-				c.node = node;
-				Do(c);
-			}
+		if (!it)
 			return;
-		}
 		::SceneGiVolume& def = it->volume;
 		ImGui::Separator();
 		ImGui::Text("Convex volume: '%s'",
@@ -2152,16 +2160,8 @@ void EditorApp::FinalizePending() {
 		if (!m_world || node >= m_world->scene.hierarchy.size()) return;
 		auto* row = tour::scene::FindPhysicsBody(m_world->scene, node);
 		ImGui::Separator();
-		if (!row) {
-			ImGui::TextDisabled("Physics body: not attached");
-			if (ImGui::Button("Add Physics Body")) {
-				EditCmd cmd{};
-				cmd.verb = EditVerb::AttachPhysicsBody;
-				cmd.node = node;
-				Do(cmd);
-			}
+		if (!row)
 			return;
-		}
 		ImGui::TextUnformatted("Physics Body / Collider");
 		ImGui::TextDisabled("Authored definition (simulation preview not yet available).");
 		auto commit = [&](const char* key, double value, bool flag = false) {
@@ -2218,16 +2218,8 @@ void EditorApp::FinalizePending() {
 		Scene& scene = m_world->scene;
 		const auto* row = tour::scene::FindTriggerVolume(scene, node);
 		ImGui::Separator();
-		if (!row) {
-			ImGui::TextDisabled("Trigger component: not attached");
-			if (ImGui::Button("Add Trigger component")) {
-				EditCmd cmd{};
-				cmd.verb = EditVerb::AttachTriggerVolume;
-				cmd.node = node;
-				Do(cmd);
-			}
+		if (!row)
 			return;
-		}
 		ImGui::TextUnformatted("Trigger component");
 		ImGui::TextDisabled("Oriented box = this node's global transform.");
 		auto check = [&](const char* label, const char* attr, bool current) {
@@ -2276,19 +2268,8 @@ void EditorApp::FinalizePending() {
 	const tour::scene::AudioRoomRow* row =
 		tour::scene::FindAudioRoom(scene, node);
 	ImGui::Separator();
-	if (!row) {
-		// No association yet: offer the Enable button (ANY transform
-		// node can carry a room — the GI inspector's "Audio room:
-		// Enable" path is this same command).
-		ImGui::TextDisabled("Audio room: none (shape = node transform)");
-		if (ImGui::Button("Add Audio Room component")) {
-			EditCmd c{};
-			c.verb = EditVerb::AttachAudioRoom;
-			c.node = node;
-			Do(c);
-		}
+	if (!row)
 		return;
-	}
 	const tour::scene::SceneAudioRoom& def = row->room;
 	ImGui::Text("Audio room: '%s'",
 		getNodeName(scene, int(node)).c_str());
@@ -3362,6 +3343,45 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// — renders the Enable button when the node carries no room;
 		// ANY transform node can hold one).
 		DrawAudioRoomSection(node);
+		// Single discoverable add-component flow. Only list missing
+		// associations and reuse the existing undoable attach commands.
+		ImGui::Separator();
+		if (ImGui::Button("Add component..."))
+			ImGui::OpenPopup("##add_component_picker");
+		if (ImGui::BeginPopup("##add_component_picker")) {
+			ImGui::TextUnformatted("Add component");
+			ImGui::Separator();
+			static ImGuiTextFilter componentFilter;
+			componentFilter.Draw("Search##component", 230.0f);
+			struct ComponentChoice { const char* label; EditVerb verb; bool present; };
+			const ComponentChoice choices[] = {
+				{ "Physics Body", EditVerb::AttachPhysicsBody,
+					tour::scene::FindPhysicsBody(scene, node) != nullptr },
+				{ "Trigger Volume", EditVerb::AttachTriggerVolume,
+					tour::scene::FindTriggerVolume(scene, node) != nullptr },
+				{ "GI Volume", EditVerb::AttachGiVolume,
+					FindGiVolume(scene, node) != nullptr },
+				{ "Audio Room", EditVerb::AttachAudioRoom,
+					tour::scene::FindAudioRoom(scene, node) != nullptr },
+			};
+			bool any = false;
+			for (const ComponentChoice& choice : choices) {
+				if (choice.present || !componentFilter.PassFilter(choice.label))
+					continue;
+				any = true;
+				if (ImGui::Selectable(choice.label)) {
+					EditCmd cmd{};
+					cmd.verb = choice.verb;
+					cmd.node = node;
+					Do(cmd);
+					ImGui::CloseCurrentPopup();
+					break;
+				}
+			}
+			if (!any)
+				ImGui::TextDisabled("No available components");
+			ImGui::EndPopup();
+		}
 		// The scene's export config node (cook/export knobs).
 		DrawExportSettingsSection(node);
 
@@ -6403,24 +6423,25 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			if (ImGui::SmallButton("Reveal##sel"))
 				RevealInExplorer(m_assetsSel);
 			ImGui::EndDisabled();
-			SameLineIfFits("Open in DCC");
+			// DCC operations are always one click away, without four
+			// separate toolbar buttons squeezing the asset grid.
+			SameLineIfFits("DCC...");
 			ImGui::BeginDisabled(!selFile);
-			if (ImGui::SmallButton("Open in DCC##sel"))
-				OpenAssetInDcc(m_assetsSel);
+			if (ImGui::SmallButton("DCC...##sel"))
+				ImGui::OpenPopup("##selected_asset_dcc");
 			ImGui::EndDisabled();
-			SameLineIfFits("Link DCC...");
-			ImGui::BeginDisabled(!selFile);
-			if (ImGui::SmallButton("Link DCC...##sel"))
-				LinkAssetToDcc(m_assetsSel);
-			ImGui::EndDisabled();
-			SameLineIfFits("Publish glTF");
-			ImGui::BeginDisabled(!selFile || m_dccPublishRunning);
-			if (ImGui::SmallButton("Publish glTF##sel"))
-				PublishAssetFromDcc(m_assetsSel);
-			ImGui::EndDisabled();
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Build from linked .ma/.blend through a DCC runner, "
-					"then hot reload the exported glTF.");
+			if (ImGui::BeginPopup("##selected_asset_dcc")) {
+				if (ImGui::MenuItem("Open in DCC"))
+					OpenAssetInDcc(m_assetsSel);
+				if (ImGui::MenuItem("Link DCC source..."))
+					LinkAssetToDcc(m_assetsSel);
+				if (ImGui::MenuItem("Publish glTF", nullptr, false,
+						!m_dccPublishRunning))
+					PublishAssetFromDcc(m_assetsSel);
+				if (ImGui::MenuItem("Unlink DCC source"))
+					UnlinkAssetFromDcc(m_assetsSel);
+				ImGui::EndPopup();
+			}
 			// Add-to-scene (mesh/geometry selection): the click twin of the
 			// viewport drag-drop (AddSceneReference asset-bind). Imports
 			// land in-project first (ImportAsset), so this only ever adds
@@ -6931,13 +6952,12 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		int cols = std::max(1,
 			int(ImGui::GetContentRegionAvail().x / tileW));
 		int col = 0;
-		// THE PER-TILE UID (the id-conflict fix): every tile pushes a
-		// unique numeric seed before its abs id — a duplicate abs in one
-		// view (the same file listed twice through different views, or
-		// any future collision) can no longer collide ids (the red debug
-		// flash the filters showed).
-		// Tile identity uses stable asset data, not its changing sort position.
+		// Collection views can produce duplicate paths/names. A per-frame
+		// ordinal scopes EVERY tile uniquely, including filter/back tiles;
+		// the remaining path/name IDs still distinguish its child controls.
+		int tileOrdinal = 0;
 		auto tile = [&](const Entry& e) {
+			ImGui::PushID(tileOrdinal++);
 			ImGui::PushID(e.abs.data());
 			ImGui::PushID(e.name.data());
 			ImGui::PushID(e.back ? 1 : 0);
@@ -7265,6 +7285,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				}
 				ImGui::EndPopup();
 			}
+			ImGui::PopID();
 			ImGui::PopID();
 			ImGui::PopID();
 			ImGui::PopID();

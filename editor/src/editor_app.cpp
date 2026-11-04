@@ -246,6 +246,10 @@ bool EditorApp::Initialize() {
 
 	m_imgui = tour::mem::MakeProcess<smvk::ImGuiOverlay>();
 	smvk::ImGuiOverlayDesc imguiDesc{};
+	// Use the repository's existing polished medium-weight UI face,
+	// staged exe-relative for the editor only (game UI is unchanged).
+	imguiDesc.fontPath = "content/fonts/Roboto-Medium.ttf";
+	imguiDesc.fontBaseSize = 16.0f;
 	if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
 		std::cerr << "[Editor] ImGui init failed, continuing without UI\n";
 		m_imgui.reset();
@@ -265,6 +269,9 @@ bool EditorApp::Initialize() {
 		}
 		ImGuiIO& io = ImGui::GetIO();
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+		// Alt+LMB is viewport orbit. Never let ImGui interpret a drag
+		// starting in an editor panel's CONTENT as a window move.
+		io.ConfigWindowsMoveFromTitleBarOnly = true;
 		io.IniFilename = m_dockIniPath.c_str();
 		imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
 		// The app's theme (ApplyEditorStyle above: rounded, blue-accented
@@ -1640,10 +1647,11 @@ void EditorApp::UpdateCamera(float dt) {
 		EditorCamEye(cam) - cam.target);
 	// Docked Viewport is an ImGui window, not a tool: orbit gestures
 	// still belong to the scene when its content is hovered.
-	const bool sceneHovered = m_viewports[m_activeVp].hovered;
+	const bool sceneHovered = (!m_uiMode || m_dockViewportVisible)
+		&& (m_viewports[m_activeVp].hovered || m_dockViewportDragCaptured);
 	const bool imguiEats = !sceneHovered ||
 		(m_imgui && m_imgui->WantsCaptureMouse() &&
-			!(m_uiMode && m_dockViewportHovered));
+			!(m_uiMode && (m_dockViewportHovered || m_dockViewportDragCaptured)));
 	const bool alt = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
 		m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
 	if (!imguiEats && !m_gizmoDragging) {
