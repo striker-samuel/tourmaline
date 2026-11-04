@@ -12,11 +12,13 @@ from pathlib import Path
 import subprocess
 import sys
 
-ROOT = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)\n        else Path(__file__).resolve().parents[1])
+ROOT = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parents[1])
 sys.path.insert(0, str(ROOT))
 from tools import project_init
 from tools.configure_asset_client import configure as configure_client, install_maya
-from tools.install_shared_assets import (configure as configure_host,\n                                         run_detached, wait_for_health)
+from tools.install_shared_assets import (configure as configure_host,
+                                         run_detached, wait_for_health)
 from tools.maya.tourmaline_asset_cache import AssetClient, default_cache
 
 
