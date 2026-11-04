@@ -106,33 +106,42 @@ reported DXC binary is only the detected/selected executable; verify that
 it matches your build configuration. Driver metadata is best effort, not an
 authoritative Vulkan physical-device identification.
 
-## Loop unrolling, branches and register pressure
+## Hash-addressed loops, branches and register pressure
 
-Optional targeted HLSL compilation hints can be applied to AI-generated
-candidate sources **without adding parameter hooks to production shaders**:
+Every discovered loop receives an ID derived from its containing function,
+statement kind and normalized loop header. **Source line and ordinal index are
+not part of the hash.** Discover IDs first:
 
 ```powershell
-# Append these to a shader_search.py invocation with its required arguments:
---loop-mode unroll --loop-index 0 --unroll-count 4
---branch-mode flatten --branch-index 1
---register-pressure minimize
+python tools/shader_search.py --shader engine/shaders/forwardplus.cs.hlsl --list-regions
 ```
 
-- `--loop-mode auto|loop|unroll` (default auto) controls a single **for**
-  statement via HLSL `[loop]` or `[unroll]`; `--loop-index` selects the
-  zero-based occurrence in the candidate source. Optional `--unroll-count N`
-  applies `[unroll(N)]` (1–1024) in unroll mode. Auto leaves loops unchanged.
-- `--branch-mode auto|branch|flatten` (default auto) controls a single
-  **if** statement with HLSL `[branch]` or `[flatten]`, selected with
-  `--branch-index`. Auto leaves branches unchanged.
-- `--register-pressure balanced|minimize` supplies the AI with an optimization
-  priority; this is **guidance**, not a compiler flag or a hardware register
-  allocation guarantee.
-- The source-hint scanner skips comments, strings and directive lines and
-  refuses a selected statement with an existing attribute. It is not a full
-  HLSL AST parser: prefer isolated target shaders; confirm the emitted source
-  and compiled SPIR-V before trusting a result. Loop positions may change
-  after model rewrites, so the indexed target should be reviewed.
+Give each selected loop its own policy through `--region-knobs knobs.json`:
+
+```json
+{
+  "regions": {
+    "loop:mainCS:HASH_FOR_LOOP_A": "unroll(4)",
+    "loop:mainCS:HASH_FOR_LOOP_B": "loop",
+    "branch:mainCS:HASH_FOR_BRANCH": "flatten"
+  }
+}
+```
+
+Use the complete IDs from discovery. The example hashes above are placeholders.
+`unroll`, `unroll(N)` (N 1–1024), and `loop` target `for` loops;
+`branch` and `flatten` target `if` statements. The CLI no longer
+supports positional `--loop-index` or `--branch-index` options.
+`--register-pressure balanced|minimize` remains an optional AI optimization
+priority, **not** a hardware register-allocation guarantee.
+
+Inserting a different loop before a known loop does not change its hash.
+For edits to the loop itself, the runner also tracks identities through
+unchanged-line diff correspondence and unique content matches, retaining the
+baseline ID when matching is unambiguous. Duplicate identical loops are
+marked ambiguous rather than differentiated by a fragile ordinal. If the
+loop header changes so much that correspondence cannot be determined safely,
+that knob fails closed until the ID is refreshed.
 
 VGPRs are hardware-specific. Actual register allocation is determined by the
 GPU driver's compilation of the SPIR-V, not the source-level DXC hint alone.
@@ -170,7 +179,7 @@ starting a model or GPU benchmark:
 python tools/shader_search.py --shader engine/shaders/forwardplus.cs.hlsl --list-regions
 ```
 
-The discovery result contains `id`, `kind`, `function`, source `line`,
+The discovery result contains a content-hash `id`, `kind`, `function`, source `line`,
 and (for loops) `syntax` and a short statement header. IDs are anchored to
 the initial source and tracked across successive AI-generated candidates with
 a `difflib.SequenceMatcher` line-diff correspondence, similar in purpose
