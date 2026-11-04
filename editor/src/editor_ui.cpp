@@ -286,6 +286,9 @@ void EditorApp::FinalizePending() {
 		ImGui::PopStyleVar();
 
 		m_dockViewportHovered = false;
+		// A hidden dock tab must not retain the previous live-view capture.
+		// DrawLiveViewStage may set this again only for a visible viewport.
+		m_wysiwygLiveRectFresh = false;
 		if (m_uiMode) {
 			// A transparent, dockable viewport client: render directly into
 			// its previous-frame rect under ImGui's tab chrome. No offscreen
@@ -4048,6 +4051,10 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 	// composite to cover it — no LIVE badge, no toggle: a panel like the
 	// others).
 	void EditorApp::DrawLiveViewStage() {
+		// A docked Viewport is not necessarily the selected dock tab.
+		// Never composite stale content over whichever tool tab replaced it.
+		if (m_uiMode && !m_dockViewportVisible)
+			return;
 		const int liveVp = LiveViewViewport();
 		if (liveVp < 0)
 			return;
