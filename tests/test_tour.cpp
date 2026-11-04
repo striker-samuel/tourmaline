@@ -4401,10 +4401,10 @@ void TestShapePlacements() {
     std::string err;
     Doc doc;
     const std::string source =
-        "shapeInstance -name \\"Trail\\" -source \\"content/shapes/trail.shape\\" "
-        "-t 1 2 3 -color 0.2 0.8 1 -enabled on;\\n"
-        "shapeInstance -name \\"Cloud\\" -source \\"content/shapes/cloud.shape\\" "
-        "-t -2 0 4 -color 1 1 1 -enabled off;\\n";
+        "shapeInstance -name \"Trail\" -source \"content/shapes/trail.shape\" "
+        "-t 1 2 3 -color 0.2 0.8 1 -enabled on;\n"
+        "shapeInstance -name \"Cloud\" -source \"content/shapes/cloud.shape\" "
+        "-t -2 0 4 -color 1 1 1 -enabled off;\n";
     Check(LoadTourFromString(source, doc, err), "shape placements parse");
     Check(doc.shapePlacements.size() == 2, "both shape placements retained");
     if (doc.shapePlacements.size() == 2) {
@@ -4426,15 +4426,15 @@ void TestShapePlacements() {
     Check(loaded.shapePlacements.size() == 2,
         "shape placements survive .tour roundtrip");
     Check(!LoadTourFromString(
-        "shapeInstance -name \\"Bad\\" -source \\"../escape.shape\\";\\n",
+        "shapeInstance -name \"Bad\" -source \"../escape.shape\";\n",
         loaded, err), "shape placement rejects traversal");
     Check(!LoadTourFromString(
-        "shapeInstance -name \\"Same\\" -source \\"a.shape\\";\\n"
-        "shapeInstance -name \\"Same\\" -source \\"b.shape\\";\\n",
+        "shapeInstance -name \"Same\" -source \"a.shape\";\n"
+        "shapeInstance -name \"Same\" -source \"b.shape\";\n",
         loaded, err), "shape placement rejects duplicate names");
     Check(!LoadTourFromString(
-        "shapeInstance -name \\"Bad\\" -source \\"a.shape\\" "
-        "-t 1 NaN 2;\\n", loaded, err),
+        "shapeInstance -name \"Bad\" -source \"a.shape\" "
+        "-t 1 NaN 2;\n", loaded, err),
         "shape placement rejects nonfinite coordinates");
 }
 
