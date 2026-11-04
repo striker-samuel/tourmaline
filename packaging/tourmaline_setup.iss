@@ -1,5 +1,7 @@
 #define AppName "Tourmaline"
-#define AppVersion "0.1"
+#ifndef AppVersion
+  #define AppVersion "0.1"
+#endif
 #ifndef StageDir
   #error "StageDir must point to a built setup payload."
 #endif
