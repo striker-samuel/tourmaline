@@ -2244,12 +2244,11 @@ private:
 	// Cooking the product .pak is a separate explicit step
 	// (Ctrl+Shift+C) — as is Bake GI (on demand). False + log without
 	// an open project, while cooking, or for foreign extensions.
-	bool ImportAsset(const std::string& srcPath);
+	bool ImportAsset(const std::string& srcPath, bool openAfter = true);
 	// Persistent File > Import asset window; distinct from the source picker.
 	bool m_showImportWindow = false;
 	char m_importSourceBuf[1024]{};
 	bool m_importOpenAfter = true;
-	bool m_importDeriveMesh = true;
 	void DrawImportWindow();
 	// THE MESH IMPORTER drive (editor side; see ImportAsset +
 	// editor_project.cpp): glTF is IMPORT-ONLY — derive the .geometry
