@@ -10896,15 +10896,21 @@ smvk::VulkanFrameBuffer smvk::detail::vulkan::VulkanSwapchain::AcquireFramebuffe
 			gpuTimingValid_ = true;
 		}
         lastGpuPasses_ = recordedGpuPasses_[currentFrame_];
-        for (size_t i = 0; i < lastGpuPasses_.size(); ++i) {
-            uint64_t pt[2] = {};
+        if (!lastGpuPasses_.empty() && stageTimersSupported_) {
+            // All allocated pass pairs are written on this flight. Read
+            // them in one non-blocking batch instead of N driver calls.
+            std::vector<uint64_t> ticks(2 * lastGpuPasses_.size(), 0);
             const VkResult pr = vkGetQueryPoolResults(device_, timestampPools_[currentFrame_],
-                VulkanSwapchain::kPassTimerBase + 2 * static_cast<uint32_t>(i),
-                2, sizeof(pt), pt, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
-            auto& sample = lastGpuPasses_[i];
-            if (pr == VK_SUCCESS && pt[1] > pt[0] && timestampPeriod_ > 0.0f) {
-                sample.milliseconds = double(pt[1] - pt[0]) * double(timestampPeriod_) / 1e6;
-                sample.valid = true;
+                VulkanSwapchain::kPassTimerBase, static_cast<uint32_t>(ticks.size()),
+                ticks.size() * sizeof(uint64_t), ticks.data(),
+                sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+            if (pr == VK_SUCCESS && timestampPeriod_ > 0.0f) {
+                for (size_t i = 0; i < lastGpuPasses_.size(); ++i) {
+                    if (ticks[2 * i + 1] <= ticks[2 * i]) continue;
+                    lastGpuPasses_[i].milliseconds =
+                        double(ticks[2 * i + 1] - ticks[2 * i]) * double(timestampPeriod_) / 1e6;
+                    lastGpuPasses_[i].valid = true;
+                }
             }
         }
 		// Stage pairs (shadow-path instrumentation, see GpuStageTimer):
