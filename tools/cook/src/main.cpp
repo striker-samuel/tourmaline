@@ -134,7 +134,7 @@ namespace cooktool {
 
 	struct Args {
 		std::string contentDir = "content";
-		// POSITIONAL CLI (pak.exe <vfs_path> <artifact...> [--options]):
+		// POSITIONAL CLI (cook.exe <vfs_path> <artifact...> [--options]):
 		// argv[1] = the VFS content root (was --content-dir), argv[2..]
 		// until the first --option = the ALREADY-PROCESSED artifact list
 		// (.geometry files - import.exe/the editor's MeshImporter
@@ -730,7 +730,7 @@ namespace cooktool {
 	}
 
 	bool ParseArgs(int argc, char** argv, Args& out) {
-		// POSITIONAL grammar (pak.exe <vfs_path> <artifact...> [--options]):
+		// POSITIONAL grammar (cook.exe <vfs_path> <artifact...> [--options]):
 		// the first positional = the VFS content root (was --content-dir),
 		// every positional after it until the first flag = one
 		// ALREADY-PROCESSED .geometry artifact (was the single --in-vfs).
