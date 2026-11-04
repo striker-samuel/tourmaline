@@ -308,6 +308,11 @@ int main(int argc, char** argv) {
     std::vector<fs::path> files;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            std::cout << "usage: tourmaline_shader_header --output header"
+                         " --runtime-root exe-directory --shader file.spv [...]\n";
+            return 0;
+        }
         if (i + 1 >= argc) {
             std::cerr << "missing value for " << arg << '\n';
             return 2;
