@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MIT
+# Experiment-only, zero-ROM smoke tests for the standalone port-kit.
+name: Recomp Port-kit (experimental)
+on:
+  push:
+    branches:
+      - experiment/sm64-recomp-portkit-2026-11
+    paths:
+      - "experiments/recomp/**"
+      - ".github/workflows/recomp-portkit.yml"
+  pull_request:
+    paths:
+      - "experiments/recomp/**"
+      - ".github/workflows/recomp-portkit.yml"
+  workflow_dispatch:
+jobs:
+  standalone:
+    name: ${{ matrix.os }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (no assets, no Vulkan)
+        run: cmake -S experiments/recomp -B out/portkit -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+      - name: Build
+        run: cmake --build out/portkit --config ${{ matrix.build_type }}
+      - name: Run tests
+        run: ctest --test-dir out/portkit -C ${{ matrix.build_type }} --output-on-failure
+      - name: Check external project scaffold (no source assets)
+        run: python experiments/recomp/test_scaffold.py

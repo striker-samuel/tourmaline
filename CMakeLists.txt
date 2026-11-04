@@ -634,3 +634,11 @@ else()
     message(FATAL_ERROR "Unsupported rendering backend: ${ENGINE_BACKEND}")
 endif()
 
+
+# Isolated porting research; OFF by default and never part of normal builds.
+# Diagnostic only: generated pixels, no licensed game runtime/ROM.
+option(TOURMALINE_RECOMP_DIAGNOSTIC
+    "Build optional synthetic recomp/SDL3/Vulkan host experiment" OFF)
+if(TOURMALINE_RECOMP_DIAGNOSTIC AND TOURMALINE_IS_TOP_LEVEL)
+    add_subdirectory(experiments/recomp/host)
+endif()

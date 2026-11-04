@@ -1,0 +1,12 @@
+# Never commit a game ROM, extracted assets or save data.
+*.z64
+*.v64
+*.n64
+*.rom
+*.eep
+*.sav
+roms/
+assets/
+saves/
+build/
+out/
