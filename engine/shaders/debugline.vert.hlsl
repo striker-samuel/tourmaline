@@ -25,7 +25,7 @@ struct VSOut
     [[vk::location(0)]] float4 color : COLOR0;
     // Vulkan point rasterization requires an explicit size unless the
     // maintenance5 default-point-size feature is enabled.
-    [[vk::builtin("PointSize")]] float pointSize : SV_PointSize;
+    [[vk::builtin("PointSize")]] float pointSize : TEXCOORD1;
 };
 
 VSOut mainVS(VSIn IN)
