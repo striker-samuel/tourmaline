@@ -11956,6 +11956,73 @@ namespace engine {
 			}
 		}
 
+		// Mesh-particle visibility: the same frustum slab and prototype
+		// indexed geometry as GPU placement, with independent GPU bins.
+		if (meshEmitterCount > 0 &&
+			mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
+			if (m_gpuPlacementViewLogical.empty())
+				m_gpuPlacementViewLogical = m_rendergraph->AddExternalBuffer(
+					m_renderViews.Buffer(), "MeshParticlesRenderViews");
+			if (!m_gpuPlacementViewLogical.empty()) {
+				meshPs.ClearFrameChain(*m_context);
+				smvk::MeshParticlesCullPush cull{};
+				cull.particles = meshPs.ParticlesAddress(*m_context);
+				cull.mask = meshPs.MaskAddress(*m_context);
+				cull.bins = meshPs.BinsAddress(*m_context);
+				cull.renderViews = renderViewsAddress;
+				cull.renderViewIndex = mainRenderView;
+				cull.cullFlags = tour::placement::kPlacementCullFrustum;
+				cull.binCount = m_gpuPlacementSeedCount;
+				cull.maxParticles = meshPs.desc.maxParticles;
+				cull.camPos = m_cameraPositioner.cameraPosition_;
+				// Conservative fallback bounds until the renderer can bind
+				// prototype-specific cooked spheres.
+				for (uint32_t i = 0; i < cull.binCount; ++i)
+					cull.meshBounds[i] = glm::vec4(0.0f, 0.0f, 0.0f, 4.0f);
+				auto& cullPass = meshPs.AddCullPass(*m_rendergraph,
+					m_gpuPlacementViewLogical);
+				cullPass.SetRecordingFunc([this, cull](smvk::CommandBuffer& cmd) {
+					smvk::MeshParticles::PushAndDispatchCull(cmd,
+						m_viewportResources.meshParticles.cullProgram, cull);
+				});
+				smvk::MeshParticlesPrefixPush prefix{};
+				prefix.bins = cull.bins;
+				prefix.binCount = cull.binCount;
+				auto& prefixPass = meshPs.AddPrefixPass(*m_rendergraph);
+				prefixPass.SetRecordingFunc([this, prefix](smvk::CommandBuffer& cmd) {
+					smvk::MeshParticles::PushAndDispatchPrefix(cmd,
+						m_viewportResources.meshParticles.prefixProgram, prefix);
+				});
+				smvk::MeshParticlesScatterPush scatter{};
+				scatter.particles = cull.particles;
+				scatter.mask = cull.mask;
+				scatter.bins = cull.bins;
+				scatter.visible = meshPs.VisibleAddress(*m_context);
+				scatter.binCount = cull.binCount;
+				scatter.maxParticles = cull.maxParticles;
+				auto& scatterPass = meshPs.AddScatterPass(*m_rendergraph);
+				scatterPass.SetRecordingFunc([this, scatter](smvk::CommandBuffer& cmd) {
+					smvk::MeshParticles::PushAndDispatchScatter(cmd,
+						m_viewportResources.meshParticles.scatterProgram, scatter);
+				});
+				tour::placement::PlacementDrawBuildPush build{};
+				build.bins = cull.bins;
+				build.indirect = meshPs.IndirectAddress(*m_context);
+				build.protoCount = cull.binCount;
+				for (uint32_t i = 0; i < cull.binCount; ++i) {
+					build.indexCount[i] = meshPs.protoSeeds[i].indexCount;
+					build.firstIndex[i] = meshPs.protoSeeds[i].firstIndex;
+					build.vertexOffset[i] = meshPs.protoSeeds[i].vertexOffset;
+				}
+				auto& buildPass = meshPs.AddDrawBuildPass(*m_rendergraph);
+				buildPass.SetRecordingFunc([this, build](smvk::CommandBuffer& cmd) {
+					smvk::MeshParticles::PushAndDispatchDrawBuild(cmd,
+						m_viewportResources.meshParticles.buildProgram, build);
+				});
+				m_meshParticlesReady = true;
+			}
+		}
+
 		// Shared frame context for IFrameRenderers (filled incrementally;
 		// pc-dependent fields arrive once pc is built below).
 		AppFrameContext fc{};
