@@ -1794,7 +1794,7 @@ public:
 	// with keyframe/delta scene state, RNG stream state and input events.
 	bool ConfigureSnapshotSequence(const std::filesystem::path& directory,
 		uint32_t interval, uint32_t count, const std::string& sequenceId,
-		tour::snapshot::Json provenance, bool scopedCapture, std::string& error);
+		tour::snapshot::Json provenance, bool scopedCapture, bool rawOutput, std::string& error);
 	[[nodiscard]] const std::string& SnapshotSequenceError() const {
 		return m_snapshotError;
 	}
@@ -3973,6 +3973,7 @@ public:
 	std::vector<ScopedCaptureFrame> m_scopedFrames;
 	smvk::Extent2D m_scopedExtent{0, 0};
 	bool m_scopedCapture = true;
+	bool m_snapshotRawOutput = false;
 	bool m_scopedReady = false;
 	void ExportScopedSnapshotBatch();
 	std::function<tour::snapshot::Json()> m_snapshotStateExtension;
