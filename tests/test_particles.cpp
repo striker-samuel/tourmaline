@@ -40,7 +40,13 @@ void Check(bool cond, const char* name) {
 // sizes/offsets are the contract.
 // ---------------------------------------------------------------------------
 void TestStructAbi() {
-	Check(sizeof(smvk::ParticleGpu) == 64, "pt.abi.particle-size");
+	Check(sizeof(smvk::MeshParticleGpu) == 96, "pt.mesh.abi-particle");
+    Check(sizeof(smvk::MeshParticleEmitterGpu) == 128, "pt.mesh.abi-emitter");
+    Check(sizeof(smvk::MeshParticlesEmitPush) == 48, "pt.mesh.abi-emit-push");
+    Check(sizeof(smvk::MeshParticlesSimPush) == 48, "pt.mesh.abi-sim-push");
+    Check(sizeof(smvk::MeshParticlesCullPush) == 208, "pt.mesh.abi-cull-push");
+    Check(sizeof(smvk::MeshParticlesVsPush) == 32, "pt.mesh.abi-vs-push");
+    Check(sizeof(smvk::ParticleGpu) == 64, "pt.abi.particle-size");
 	Check(sizeof(smvk::ParticleGpu) % 16 == 0, "pt.abi.particle-align");
 	Check(sizeof(smvk::ParticleEmitterGpu) == 128, "pt.abi.emitter-size");
 	Check(sizeof(smvk::ParticleEmitterGpu) % 16 == 0, "pt.abi.emitter-align");
@@ -292,6 +298,10 @@ void TestMeshParticleSourceCompilation() {
         "pt.mesh.v2-roundtrip");
     graph.attrs[2].meshId = smvk::kMeshParticlesMaxBins;
     Check(!Evaluate(graph, source).ok, "pt.mesh.reject-unsupported-bin");
+    Attributes invalid = graph.attrs[2];
+    const std::string invalidValue = SerializeAttributes(kEmitter, invalid);
+    Check(!ParseAttributes(invalidValue, type, parsed),
+        "pt.mesh.reject-invalid-serialized-bin");
     graph.attrs[2].meshId = 0;
     graph.attrs[2].renderMode = kBillboardRender;
     result = Evaluate(graph, source);
@@ -301,6 +311,20 @@ void TestMeshParticleSourceCompilation() {
     Check(ParseAttributes(legacy, type, parsed) &&
         parsed.renderMode == kBillboardRender,
         "pt.mesh.legacy-v1-default");
+    graph.attrs[2].renderMode = kMeshRender;
+    graph.attrs[2].meshId = 1;
+    const uint32_t secondSink = 4;
+    graph.topology.nodes.emplace(secondSink, Graph::MakeNode(secondSink, kEmitter));
+    graph.attrs[secondSink] = {};
+    Check(graph.Connect(1, secondSink) != 0, "pt.mesh.second-sink-connect");
+    auto mixed = Evaluate(graph, source, 1);
+    Check(mixed.ok && mixed.meshEmitters.size() == 1 &&
+        mixed.emitters.empty() && !mixed.warning.empty(),
+        "pt.mesh.mixed-sinks-share-capacity");
+    mixed = Evaluate(graph, source, 2);
+    Check(mixed.ok && mixed.meshEmitters.size() == 1 &&
+        mixed.emitters.size() == 1,
+        "pt.mesh.mixed-sinks-independent-outputs");
 }
 
 void TestParticleSourceTopologyRegressions() {
