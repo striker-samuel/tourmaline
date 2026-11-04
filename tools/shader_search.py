@@ -223,6 +223,10 @@ def run_search(args):
                "best_file": str(output / "best.hlsl") if best_score < 0 else None,
                "history": history}
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    if args.export_parquet:
+        from export_experiments import export_records
+        count = export_records(output, args.export_parquet, "parquet")
+        summary["parquet_export"] = {"path": str(args.export_parquet), "records": count}
     return summary
 
 
@@ -236,6 +240,8 @@ def main(argv=None):
     p.add_argument("--output", type=Path, default=Path("out/shader-search"))
     p.add_argument("--build-cmd", required=True, help="Build command (argv, not shell)")
     p.add_argument("--validate-cmd", required=True, help="Mandatory correctness command (argv, not shell)")
+    p.add_argument("--export-parquet", type=Path,
+                   help="Optional analytics export (requires extended dependencies)")
     p.add_argument("--dxc", help="Explicit DXC executable path for version collection")
     p.add_argument("--provider", choices=("openai", "ollama"), default="openai")
     p.add_argument("--api-base", default=None, help="OpenAI-compatible /v1 base or Ollama server root")
