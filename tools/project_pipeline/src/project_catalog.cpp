@@ -1368,6 +1368,11 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "struct project_pipeline::query::AssetTraits<project::NavMeshKey> {\n"
 		<< "    static constexpr bool Matches(project::AssetKind k)\n"
 		<< "        { return k == project::AssetKind::NavMesh; }\n"
+		<< "};\n"
+		<< "template<>\n"
+		<< "struct project_pipeline::query::AssetTraits<project::ShapeKey> {\n"
+		<< "    static constexpr bool Matches(project::AssetKind k)\n"
+		<< "        { return k == project::AssetKind::Shape; }\n"
 		<< "};\n\n";
 
 	// The shader interface supplement is optional: projects that compile
