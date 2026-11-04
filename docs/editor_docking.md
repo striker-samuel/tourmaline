@@ -6,7 +6,8 @@ The application/game ImGui contexts are unchanged.
 ## Working with the layout
 
 - Drag a tool's **tab/title bar** to dock it to an edge, split a region,
-  tab it next to another tool, or float it *inside the editor window*.
+  tab it next to another tool, or detach it as an SDL3/Vulkan native OS
+  window (including onto a second monitor).
 - **Viewport**, **Outliner**, **Assets**, **Console**, **Overrides**,
   **Inspector**, **Render**, and **Material** are independent windows.
   Optional windows (GI probe viz, Cook & bake, References, Placement
@@ -40,11 +41,16 @@ Viewport dock tab parks the heavyweight live WYSIWYG renderer.
 The top tool strip, main menu and bottom status strip deliberately
 remain fixed. Docking means rearranging **tool windows**; individual
 fields/buttons inside a tool are not draggable by themselves.
-Dear ImGui supports cross-OS-window platform viewports with
-`ImGuiConfigFlags_ViewportsEnable`, but Tourmaline does *not* enable them:
-its renderer records to one swapchain and has no secondary-window
-render/present path. Turning on the flag alone cannot make panels render
-outside the main OS window. Floating within that window remains supported.
+The editor enables `ImGuiConfigFlags_ViewportsEnable` before initializing
+its SDL3/Vulkan ImGui backends, then uses the backends' built-in secondary
+swapchains via `UpdatePlatformWindows` / `RenderPlatformWindowsDefault`
+after presenting the primary swapchain. Standalone games do not opt in.
+
+**3D scene limitation:** The scene Viewport still composites directly into
+the main window's Vulkan swapchain. It is anchored to the main ImGui
+viewport; detachable tools (Inspector, Assets, Console, etc.) are regular
+ImGui draw data and render in their own OS windows. Rendering the 3D
+scene in a detached native window requires a separate scene render target.
 
 ## Visual smoke matrix (requires Editor + Vulkan)
 
@@ -66,7 +72,12 @@ outside the main OS window. Floating within that window remains supported.
    confirm the scene draws again, without stale mouse capture.
 8. **View > Reset dock layout**: the core windows return to their
    default dock positions, with the current project and selection intact.
-9. Lighting > GI volumes > Lattice (pre-bake): run with and without the
+9. Drag Inspector or Console outside the main application and onto a
+   second monitor. Verify content, mouse/keyboard input, native close,
+   and returning the window to a dock. Close a detached window without
+   shutting down the editor. Move the main OS window away from (0,0)
+   and verify the dock host/status remain positioned correctly.
+10. Lighting > GI volumes > Lattice (pre-bake): run with and without the
    separate lattice preview fix PR; the dockspace must not obstruct the
    editor-drawn probe spheres when its pass is correctly ordered.
 
