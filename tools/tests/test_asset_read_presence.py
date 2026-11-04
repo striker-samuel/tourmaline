@@ -169,6 +169,13 @@ class PresenceTests(unittest.TestCase):
             self.assertEqual(Path(item["local_path"]).read_bytes(), b"geometry")
             data = client.consumers(resource_kind="source", resource_id=x)
             self.assertEqual(data["consumers"][0]["label"], "Maya A")
+            self.assertEqual(data["consumers"][0]["reads"][0]["mode"], "read")
+            self.assertTrue(data["consumers"][0]["workstation"])
+            client.track_read("source", x, 1, mode="edit")
+            open_rows = client.get("/v2/open-assets")["open_assets"]
+            self.assertEqual(len(open_rows), 1)
+            self.assertEqual(open_rows[0]["mode"], "edit")
+            self.assertEqual(open_rows[0]["workstation"], client.workstation)
             client.clear_reads()
             self.assertEqual(client.consumers(resource_kind="source", resource_id=x)[
                 "consumers"], [])
