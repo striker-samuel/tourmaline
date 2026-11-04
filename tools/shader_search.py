@@ -142,6 +142,7 @@ def run_search(args):
     if args.iterations < 1 or args.repeat < 1 or args.timeout < 1:
         raise ValueError("iterations, repeat and timeout must be positive")
     from perf_harness import select_scenario
+    from experiment_environment import collect_environment
     for scenario in args.scenario:
         select_scenario(catalog, scenario)
 
@@ -154,6 +155,8 @@ def run_search(args):
     env = os.environ.copy()
     env["SHADER_SEARCH_SHADER"] = str(shader)
     env["SHADER_SEARCH_OUTPUT"] = str(output)
+    environment_metadata = collect_environment(exe, args.dxc)
+    (output / "environment.json").write_text(json.dumps(environment_metadata, indent=2) + "\n", encoding="utf-8")
     history = []
     best_source = source
     best_score = 0.0
@@ -216,7 +219,7 @@ def run_search(args):
             print(json.dumps(outcome), flush=True)
     finally:
         shader.write_bytes(original)
-    summary = {"baseline_ms": baseline, "best_gain_percent": (1 - math.exp(best_score)) * 100,
+    summary = {"environment": environment_metadata, "baseline_ms": baseline, "best_gain_percent": (1 - math.exp(best_score)) * 100,
                "best_file": str(output / "best.hlsl") if best_score < 0 else None,
                "history": history}
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -233,6 +236,7 @@ def main(argv=None):
     p.add_argument("--output", type=Path, default=Path("out/shader-search"))
     p.add_argument("--build-cmd", required=True, help="Build command (argv, not shell)")
     p.add_argument("--validate-cmd", required=True, help="Mandatory correctness command (argv, not shell)")
+    p.add_argument("--dxc", help="Explicit DXC executable path for version collection")
     p.add_argument("--provider", choices=("openai", "ollama"), default="openai")
     p.add_argument("--api-base", default=None, help="OpenAI-compatible /v1 base or Ollama server root")
     p.add_argument("--model", required=True)
