@@ -2456,6 +2456,30 @@ void TestBuildPlanExecutor() {
 				opts, rep, e), "executor.multi-manifest-build");
 			Check(fs::is_regular_file(priorWorld, ec),
 				"executor.multi-manifest-preserves-other-generation");
+			// Even a same-name addressed pak is untrusted until its bytes
+			// are checked. Simulate disk corruption, then restore the file.
+			if (!rep.paks.empty()) {
+				const fs::path latest = rep.paks.back().output;
+				const std::vector<char> clean = ReadAllBytes(latest);
+				if (!clean.empty()) {
+					std::vector<char> corrupt = clean;
+					corrupt[0] ^= 1;
+					{
+						std::ofstream f(latest, std::ios::binary | std::ios::trunc);
+						f.write(corrupt.data(), std::streamsize(corrupt.size()));
+					}
+					RecordingAdapter same;
+					same.payloadTag = "v3";
+					smvk::project::BuildPlanReport rejected;
+					std::string rejectErr;
+					Check(!smvk::project::ExecuteBuildPlan(project, p2,
+							same, opts, rejected, rejectErr)
+						&& rejectErr.find("corrupted bytes") != std::string::npos,
+						"executor.corrupted-addressed-pak-rejected");
+					std::ofstream restore(latest, std::ios::binary | std::ios::trunc);
+					restore.write(clean.data(), std::streamsize(clean.size()));
+				}
+			}
 			fs::remove(tmp / "publish5" / "pinned.tapp", ec);
 		}
 
