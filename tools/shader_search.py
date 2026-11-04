@@ -368,6 +368,11 @@ def run_search(args):
             print(json.dumps(outcome), flush=True)
     finally:
         shader.write_bytes(original)
+        # Restore the compiled benchmark as well, not just the source tree.
+        # Otherwise a successful search can leave stale experimental SPIR-V
+        # in the build output after the HLSL is put back.
+        env["SHADER_SEARCH_PHASE"] = "restore"
+        build()
     summary = {"environment": environment_metadata,
                "target_resolution": args.target_resolution,
                "visual_error_limits": {"difference_fraction": args.max_difference_fraction,
