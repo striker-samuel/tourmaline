@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <unordered_map>
 
 namespace editor::attr {
 
@@ -57,6 +58,17 @@ inline float LabelColumnWidth() {
 	return std::clamp(w * 0.42f, 90.0f, 220.0f);
 }
 
+// Attribute provenance scoped to the Inspector: 1=local, 2=wide rule.
+inline const std::unordered_map<std::string, int>* overrideLabels = nullptr;
+class ScopedOverrideLabels {
+public:
+	explicit ScopedOverrideLabels(const std::unordered_map<std::string, int>* labels)
+		: previous_(overrideLabels) { overrideLabels = labels; }
+	~ScopedOverrideLabels() { overrideLabels = previous_; }
+private:
+	const std::unordered_map<std::string, int>* previous_;
+};
+
 // One property row's label cell: the name CLIPPED to the column (a
 // long label never collides into the value field) with the full text
 // on the tooltip when it clipped; the hint tooltip wins when present.
@@ -66,6 +78,15 @@ inline void LabelCell(const char* name, const char* hint) {
 	const ImVec2 ts = ImGui::CalcTextSize(shown);
 	const float avail = colW - 10.0f;
 	const bool clipped = ts.x > avail;
+	int overrideKind = 0;
+	if (overrideLabels) {
+		const auto it = overrideLabels->find(shown);
+		if (it != overrideLabels->end()) overrideKind = it->second;
+	}
+	if (overrideKind)
+		ImGui::PushStyleColor(ImGuiCol_Text, overrideKind == 1
+			? ImVec4(1.0f, 0.69f, 0.23f, 1.0f)
+			: ImVec4(0.98f, 0.43f, 0.70f, 1.0f));
 	if (clipped) {
 		// Clip at the column edge (the visual cut IS the column rule);
 		// the tooltip carries the full name.
@@ -78,7 +99,13 @@ inline void LabelCell(const char* name, const char* hint) {
 	else {
 		ImGui::TextUnformatted(shown);
 	}
-	if (hint && ImGui::IsItemHovered())
+	if (overrideKind)
+		ImGui::PopStyleColor();
+	if (ImGui::IsItemHovered() && overrideKind)
+		ImGui::SetTooltip("%s (%s override)%s%s", shown,
+			overrideKind == 1 ? "local" : "wide",
+			hint ? "\\n" : "", hint ? hint : "");
+	else if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
 	else if (clipped && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", shown);
@@ -90,40 +117,25 @@ inline std::string Id(const char* name) {
 	return std::string("##") + name;
 }
 
-// ---- BOOL: the flag chip (on = the selected accent; the hint carries
-// the words). PushID(name): the chip text NEVER forms the id.
-inline bool Bool(const char* name, bool v, const char* hint) {
-	LabelCell(name, hint);
-	ImGui::PushID(name); // the chip's id IS the property name
-	if (v) {
-		ImGui::PushStyleColor(ImGuiCol_Button,
-			ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-			ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
-		ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-			ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-	}
-	const bool clicked = ImGui::Button(v ? "on###value" : "off###value",
-		ImVec2(52.0f, 0.0f));
-	if (v)
-		ImGui::PopStyleColor(3);
-	if (hint && ImGui::IsItemHovered())
-		ImGui::SetTooltip("%s", hint);
-	ImGui::PopID();
-	return clicked;
-}
-
-// ---- CHECK: a real checkbox in the VALUE column (the native
-// Checkbox draws the square LEFT of its label — the opposite of the
-// row convention). The hint rides the mouse-over like every row.
-inline bool Check(const char* name, bool* v, const char* hint) {
+// ---- BOOLEAN: one consistent Off/On value selector for every editor flag.
+// IDs are scoped to the property name, never the shared On/Off text.
+inline bool Check(const char* name, bool* value, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::PushID(name);
-	const bool toggled = ImGui::Checkbox("##check", v);
+	int selected = *value ? 1 : 0;
+	ImGui::SetNextItemWidth(-1.0f);
+	const bool edited = ImGui::Combo("##value", &selected, "Off\0On\0");
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
+	if (edited)
+		*value = selected != 0;
 	ImGui::PopID();
-	return toggled;
+	return edited;
+}
+
+// Existing callers drive the undo command when the selected value changes.
+inline bool Bool(const char* name, bool value, const char* hint) {
+	return Check(name, &value, hint);
 }
 
 // ---- READONLY: a read-only value row (name left, the value right,
