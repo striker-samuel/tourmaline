@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Export one fresh renderer screenshot for every saved performance scenario.
+"""Batch-export scenario PNG sequences with embedded state and a JSON state dump.
 
-Uses the existing App --bench / TOURMALINE_CAPTURE mechanism; no Nsight or
-Pillow dependency is needed. Run from the repository root.
+Delegates recording, fresh-output protection, and validation to toursnapshot.
+The scoped capture mode batches GPU readbacks (15 frames at a time).
 """
 
 import argparse
 import json
-import os
 from pathlib import Path
 import re
-import shutil
-import subprocess
 import sys
 
-from perf_harness import read_catalog, select_scenario
-
+import perf_harness
+import toursnapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
@@ -25,132 +22,95 @@ SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--catalog", type=Path, default=ROOT / "benchmarks/scenarios.json")
-    p.add_argument("--exe", type=Path, required=True, help="built App executable (not Benchmark)")
-    p.add_argument("--workdir", type=Path, help="App working directory; defaults to exe directory")
-    p.add_argument("--output", type=Path, default=Path("out/scenario-screenshots"))
-    p.add_argument("--scenario", action="append", help="capture only this ID (repeatable); default: all")
-    p.add_argument("--capture-frame", type=int, default=48,
-                   help="1-based capture frame (clamped below each scenario's frame budget)")
-    p.add_argument("--timeout", type=float, default=600, help="per-scenario timeout in seconds")
-    p.add_argument("--overwrite", action="store_true", help="replace existing per-scenario results")
-    p.add_argument("--dry-run", action="store_true", help="print planned commands without launching App")
+    p.add_argument("--app", "--exe", dest="app", type=Path, required=True,
+                   help="built App executable (not Benchmark)")
+    p.add_argument("--workdir", type=Path, help="App working directory (defaults to binary directory)")
+    p.add_argument("--output", type=Path, default=Path("out/scenario-snapshots"))
+    p.add_argument("--scenario", action="append", help="only this ID (repeatable); default: all")
+    p.add_argument("--frames", type=int, help="override scenario frame budgets")
+    p.add_argument("--state-frame", type=int, help="frame to extract (default: last frame)")
+    p.add_argument("--keyframe-interval", type=int, default=60)
+    p.add_argument("--code-id", default="unspecified", help="source/build identity for provenance")
+    p.add_argument("--seed", type=int, help="override scenario RNG seed")
+    p.add_argument("--capture-mode", choices=("scoped", "legacy"), default="scoped")
+    p.add_argument("--timeout", type=int, default=600)
+    p.add_argument("--pixels", action="store_true", help="also verify decoded pixels (Pillow)")
+    p.add_argument("--dry-run", action="store_true", help="plan each scenario with no writes/GPU")
     return p
 
 
-def screenshot_state(folder):
-    return {p.name: (p.stat().st_size, p.stat().st_mtime_ns)
-            for p in folder.glob("screenshot_*.png") if p.is_file()}
-
-
-def plan(scenario, exe, workdir, output, capture_frame):
+def run_scenario(args, scenario):
     scenario_id = scenario["id"]
     if not SAFE_ID.fullmatch(scenario_id):
-        raise ValueError(f"unsafe scenario ID: {scenario_id!r}")
-    source = scenario["source_args"]
-    for i in range(0, len(source), 2):
-        if source[i] in ("--pak", "--project"):
-            path = Path(source[i + 1])
-            resolved = path if path.is_absolute() else workdir / path
-            if not resolved.is_file():
-                raise FileNotFoundError(f"missing scene input: {resolved}")
-    frames = scenario["frames"]
-    if frames < 2:
-        raise ValueError("screenshot capture requires at least two frames")
-    frame = min(capture_frame, frames - 1)
-    pins = dict(scenario["environment"])
-    if "TOURMALINE_CAPTURE" in pins:
-        raise ValueError("scenario cannot override TOURMALINE_CAPTURE")
-    pins["TOURMALINE_CAPTURE"] = str(frame)
-    env = {k: v for k, v in os.environ.items() if not k.startswith("TOURMALINE_")}
-    env.update(pins)
-    command = [str(exe), *source, "--disable_control", "--bench", str(frames),
-               "--present", "immediate", *scenario.get("app_args", [])]
-    return {"id": scenario_id, "command": command, "cwd": str(workdir),
-            "frames": frames, "capture_frame": frame, "environment": pins,
-            "directory": str(output / scenario_id), "_env": env}
-
-
-def export_one(item, timeout, overwrite):
-    directory = Path(item["directory"])
-    if directory.exists() and not overwrite and any(directory.iterdir()):
-        raise FileExistsError(f"output exists: {directory} (use --overwrite)")
-    directory.mkdir(parents=True, exist_ok=True)
-    exports = Path(item["cwd"]) / "exports"
-    before = screenshot_state(exports)
-    with (directory / "app.log").open("w", encoding="utf-8") as log:
-        try:
-            completed = subprocess.run(item["command"], cwd=item["cwd"],
-                                       env=item["_env"], stdout=log,
-                                       stderr=subprocess.STDOUT, timeout=timeout,
-                                       check=False)
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"App timed out after {timeout:g}s") from exc
-    if completed.returncode:
-        raise RuntimeError(f"App exited with {completed.returncode}; see app.log")
-    after = screenshot_state(exports)
-    fresh = [exports / name for name, stat in after.items()
-             if before.get(name) != stat]
-    if not fresh:
-        raise RuntimeError("App did not produce a fresh screenshot_*.png")
-    latest = max(fresh, key=lambda p: (p.stat().st_mtime_ns, p.name))
-    with latest.open("rb") as image:
-        if image.read(8) != b"\x89PNG\r\n\x1a\n":
-            raise RuntimeError(f"invalid PNG from App: {latest}")
-    shutil.copy2(latest, directory / "capture.png")
-    return str(directory / "capture.png")
+        raise ValueError(f"unsafe scenario id: {scenario_id!r}")
+    frames = args.frames if args.frames is not None else scenario["frames"]
+    if frames < 1:
+        raise ValueError("frame count must be positive")
+    state_frame = args.state_frame if args.state_frame is not None else frames
+    if not 1 <= state_frame <= frames:
+        raise ValueError(f"state frame must be between 1 and {frames}")
+    sequence = args.output.resolve() / scenario_id / "frames"
+    command = ["record", "--app", str(args.app), "--scenario", scenario_id,
+               "--catalog", str(args.catalog), "--output", str(sequence),
+               "--frames", str(frames), "--keyframe-interval", str(args.keyframe_interval),
+               "--code-id", args.code_id, "--capture-mode", args.capture_mode,
+               "--timeout", str(args.timeout), "--json"]
+    if args.workdir:
+        command += ["--workdir", str(args.workdir)]
+    if args.seed is not None:
+        command += ["--seed", str(args.seed)]
+    if args.pixels:
+        command.append("--pixels")
+    if args.dry_run:
+        command.append("--dry-run")
+    record_args = toursnapshot.build_parser().parse_args(command)
+    result = toursnapshot.run_record(record_args)
+    if args.dry_run:
+        return {"id": scenario_id, "status": "planned", "record": result,
+                "state_frame": state_frame, "state_file": str(sequence.parent / "state.json")}
+    state_file = sequence.parent / "state.json"
+    # The recorder already reconstructed and validated all PNG state chunks.
+    # Reconstruct again to extract canonical state without shelling out.
+    frames_data = toursnapshot.codec.reconstruct(sequence, pixels=args.pixels)
+    state_file.write_bytes(toursnapshot.codec.canonical(frames_data[state_frame - 1][1]) + b"\n")
+    return {"id": scenario_id, "status": "captured", "record": result,
+            "state_frame": state_frame, "state_file": str(state_file)}
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    if args.capture_frame < 1 or args.timeout <= 0:
-        parser().error("--capture-frame and --timeout must be positive")
-    exe = args.exe.expanduser().resolve()
-    workdir = (args.workdir or exe.parent).expanduser().resolve()
-    output = args.output.expanduser().resolve()
-    if not args.dry_run and (not exe.is_file() or not workdir.is_dir()):
-        parser().error("App executable and working directory must exist")
+    if args.timeout <= 0 or args.keyframe_interval <= 0 or (
+            args.frames is not None and args.frames <= 0) or (
+            args.state_frame is not None and args.state_frame <= 0):
+        parser().error("timeout, frame counts and keyframe interval must be positive")
     try:
-        scenarios = read_catalog(args.catalog)
-        ids = [s["id"] for s in scenarios] if not args.scenario else list(dict.fromkeys(args.scenario))
-        scenarios = [select_scenario(args.catalog, scenario_id) for scenario_id in ids]
+        catalog = perf_harness.read_catalog(args.catalog)
+        ids = ([s["id"] for s in catalog] if not args.scenario
+               else list(dict.fromkeys(args.scenario)))
+        scenarios = [perf_harness.select_scenario(args.catalog, sid) for sid in ids]
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser().error(str(exc))
 
-    report = {"catalog": str(args.catalog.resolve()), "executable": str(exe),
-              "output": str(output), "dry_run": args.dry_run, "scenarios": []}
+    report = {"schema_version": 1, "catalog": str(args.catalog.resolve()),
+              "output": str(args.output.resolve()), "dry_run": args.dry_run,
+              "scenarios": []}
     failed = False
     for scenario in scenarios:
-        entry = {"id": scenario["id"]}
         try:
-            # Dry-run can inspect command construction before installing scene content.
-            if args.dry_run:
-                entry = {"id": scenario["id"], "command": [
-                    str(exe), *scenario["source_args"], "--disable_control", "--bench",
-                    str(scenario["frames"]), "--present", "immediate",
-                    *scenario.get("app_args", [])],
-                    "environment": {**scenario["environment"],
-                                    "TOURMALINE_CAPTURE": str(min(args.capture_frame, scenario["frames"] - 1))},
-                    "directory": str(output / scenario["id"]), "status": "planned"}
-                if not SAFE_ID.fullmatch(scenario["id"]) or scenario["frames"] < 2:
-                    raise ValueError("invalid scenario ID or insufficient frame budget")
-            else:
-                item = plan(scenario, exe, workdir, output, args.capture_frame)
-                entry["image"] = export_one(item, args.timeout, args.overwrite)
-                entry["capture_frame"] = item["capture_frame"]
-                entry["status"] = "captured"
-        except (OSError, ValueError, RuntimeError) as exc:
-            entry["status"] = "failed"
-            entry["error"] = str(exc)
+            entry = run_scenario(args, scenario)
+        except (OSError, ValueError, toursnapshot.CliError,
+                toursnapshot.codec.SnapshotError) as exc:
+            entry = {"id": scenario["id"], "status": "failed", "error": str(exc)}
             failed = True
         report["scenarios"].append(entry)
         print(f"{entry['id']}: {entry['status']}" +
               (f" ({entry['error']})" if "error" in entry else ""), file=sys.stderr)
-
-    if not args.dry_run:
-        output.mkdir(parents=True, exist_ok=True)
-        (output / "manifest.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    else:
+    if args.dry_run:
         print(json.dumps(report, indent=2))
+    else:
+        args.output.mkdir(parents=True, exist_ok=True)
+        (args.output / "manifest.json").write_text(json.dumps(report, indent=2) + "\n",
+                                                   encoding="utf-8")
     return 1 if failed else 0
 
 
