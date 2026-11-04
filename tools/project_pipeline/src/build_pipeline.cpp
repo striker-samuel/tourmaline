@@ -836,6 +836,29 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		reps.push_back(std::move(rep));
 	}
 
+	// Serialize the final immutable-name landings and manifest swap.
+	// Staging/cooking stays concurrent; a second publisher fails safely
+	// and may retry instead of racing the content-addressed rename.
+	struct PublishLock {
+		fs::path path;
+		~PublishLock() {
+			if (!path.empty()) {
+				std::error_code ignore;
+				fs::remove(path, ignore);
+			}
+		}
+	} publishLock;
+	{
+		const fs::path lockPath = publish / ".publish.lock";
+		std::error_code lockEc;
+		if (!fs::create_directory(lockPath, lockEc)) {
+			err = "a publisher is active (or a stale .publish.lock exists): "
+				+ lockPath.generic_string();
+			return false;
+		}
+		publishLock.path = lockPath;
+	}
+
 	// ---- the publish pass: every staged pak verified + policed, now
 	// the content-addressed landings. Each final name is <stem>-<digest>
 	// .pak (FNV-1a 64 over the pak bytes): IMMUTABLE by construction —
@@ -1033,6 +1056,16 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				referenced.insert(other.paks.begin(), other.paks.end());
 			}
 			if (manifestIterEc) sweepSafe = false;
+			// Another build may be cooking against this publish directory.
+			// Its forthcoming manifest is not visible yet: do not collect
+			// any immutable packages while its staging directory exists.
+			std::error_code activeEc;
+			for (const fs::directory_entry& pending :
+					fs::directory_iterator(stagingRoot, activeEc)) {
+				if (activeEc) { sweepSafe = false; break; }
+				if (pending.path() != stagingDir) { sweepSafe = false; break; }
+			}
+			if (activeEc) sweepSafe = false;
 			const auto isHex16 = [](const std::string& s) {
 				if (s.size() != 16)
 					return false;
