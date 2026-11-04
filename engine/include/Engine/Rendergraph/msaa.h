@@ -5,8 +5,9 @@
 // Transient MSAA 2x targets for the Main scene pass.
 //
 // The multisampled color image normally resolves (AVERAGE) into the single-sampled
-// HDR intermediate; an opt-in programmable resolve samples the retained color; the multisampled depth image is transient (Clear ->
-// DontCare, no resolve). Prepass/cull keep using the 1x swapchain depth.
+// HDR intermediate; the opt-in programmable path samples retained MSAA
+// color instead. Multisampled depth is transient (Clear -> DontCare).
+// Prepass/cull keep using the 1x swapchain depth.
 // Both images are recreated when the swap extent or formats drift, mirroring
 // HdrTarget::Ensure.
 //
@@ -19,7 +20,6 @@
 #include <Engine/RHI/resource_manager.h>
 
 #include <cstdint>
-#include <vector>
 
 namespace smvk {
 
