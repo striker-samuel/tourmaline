@@ -334,8 +334,13 @@ float SampleEvsmTileSoft(
     // Oriented bias purely as the receiver-threshold push (see
     // SampleEvsmTile); receiverDepth is the true depth so the blocker
     // comparison below is exact.
-    float biasAmt = -EvsmOrientedBias(
-        faceNormal, lightDirection, cb.Get().dir.cascades[cascadeIndex].bias);
+    // Match the directional PCF receiver-plane slope. EvsmVisibility
+    // multiplies the supplied push by EVSM_BIAS_SCALE, so undo that
+    // artistic boost here instead of quadrupling the texel-calibrated CSM
+    // depth bias (spots/points retain their existing EVSM behavior).
+    float biasAmt = -CascadeOrientedDepthBias(
+        faceNormal, lightDirection, cb.Get().dir.cascades[cascadeIndex].bias)
+        / EVSM_BIAS_SCALE;
     float receiverDepth = ndc.z;
     const float2 clampedUV = clamp(
         uvAtlas,

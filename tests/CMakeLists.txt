@@ -360,6 +360,13 @@ set_target_properties(BakeAssetTests PROPERTIES
 
 add_test(NAME bake_asset_tests COMMAND BakeAssetTests)
 
+# Directional cascade bias calibration (CPU-only; no Vulkan required).
+add_executable(CascadeShadowBiasTests test_cascade_shadow_bias.cpp)
+target_link_libraries(CascadeShadowBiasTests PRIVATE engine)
+set_target_properties(CascadeShadowBiasTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME cascade_shadow_bias_tests COMMAND CascadeShadowBiasTests)
+
 add_executable(DeferredShadowTests test_deferredshadow.cpp)
 
 target_link_libraries(DeferredShadowTests

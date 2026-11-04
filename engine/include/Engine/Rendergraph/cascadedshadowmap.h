@@ -95,6 +95,23 @@ inline std::vector<float> ComputeCascadeSplits(
 	return splits;
 }
 
+// Biases are expressed relative to the cascade's WORLD-SPACE texel size.
+// A fixed meter cap silently under-biases distant cascades; their projected
+// shadow texels grow even though the receiver's raster footprint does not.
+// Depth bias is converted to normal-Z [0,1] using the ACTUAL ortho Z range.
+struct CascadedReceiverBias {
+	float depthNdc = 0.0f;
+	float normalWorld = 0.0f;
+};
+
+inline CascadedReceiverBias ComputeCascadeReceiverBias(float texelWorld, float depthRange) {
+	const float texel = (std::max)(texelWorld, 0.0f);
+	return {
+		.depthNdc = depthRange > 1e-6f ? 0.5f * texel / depthRange : 0.0f,
+		.normalWorld = texel
+	};
+}
+
 // Default SPV for the depth-only cascade pass (single VS, no FS).
 inline constexpr const char* kCascadedShadowVsPath = "content/shaders/shadow.vert.hlsl.spv";
 inline constexpr const char* kFogShadowSpdCsPath = "content/shaders/volumetric_shadow_spd.cs.hlsl.spv";
@@ -582,22 +599,16 @@ struct CascadedShadowAtlas {
 		const glm::mat4 lvp = lp * lv;
 		std::memcpy(dir.cascades[i].lightVP, glm::value_ptr(lvp), sizeof(dir.cascades[i].lightVP));
 		dir.cascades[i].splitEnd = splits[i + 1];
-		// Per-cascade bake (Sec. 4.2): shadowmaps render with no HW bias.
-		//  - normalBias (world units): at most 0.75 cascade texels, without
-		//    a fixed minimum that would erase sub-texel near-field details.
-		//  - bias (NDC): worldBias/depthRange with the actual ortho depth
-		//    range, so the shader's slope-scaled offset has a uniform
-		//    world-space effect per cascade (far acne fix).
-		// Both biases scale with the actual shadow texel: no fixed minimum
-		// world displacement on near/high-resolution cascades.
-		const float orthoW = (lp[0][0] != 0.0f) ? 2.0f / lp[0][0] : 1.0f;
+		// One world-space texel per normal offset, half a texel for depth.
+		// Do not meter-cap either: the far cascade needs more bias as its
+		// world-space texels grow. The UI multipliers remain applied later.
+		const float orthoW = (lp[0][0] != 0.0f) ? 2.0f / std::abs(lp[0][0]) : 1.0f;
 		const float orthoH = (lp[1][1] != 0.0f) ? 2.0f / std::abs(lp[1][1]) : 1.0f;
 		const float texelWorld = (std::max)(orthoW, orthoH)
 			/ static_cast<float>(tileExtent.width);
-		const float normalBiasW = (std::min)(texelWorld * 0.75f, 0.03f);
-		const float depthWorld = (std::min)(texelWorld * 0.5f, 0.015f);
-		dir.cascades[i].bias = (depthRange > 1e-6f) ? depthWorld / depthRange : 0.0f;
-		dir.cascades[i].normalBias = normalBiasW;
+		const CascadedReceiverBias bias = ComputeCascadeReceiverBias(texelWorld, depthRange);
+		dir.cascades[i].bias = bias.depthNdc;
+		dir.cascades[i].normalBias = bias.normalWorld;
 		dir.cascades[i].pad_ = 0.0f;
 		dir.cascades[i].invShadowSize =
 			glm::vec2(1.0f / static_cast<float>(tileExtent.width),

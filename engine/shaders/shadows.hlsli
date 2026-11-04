@@ -184,15 +184,11 @@ float PCFShadowAtlas(
     return sum * (1.0f / 9.0f);
 }
 
-// Sec. 4.2 oriented depth bias (slope-scaled, per-cascade NDC).
-// Shadowmaps render with no HW bias. baseBiasNDC is the per-cascade NDC
-// bias baked on the CPU as worldBias / lightDepthRange (see
-// BuildDirectionalLight), so the world-space effect is uniform across
-// cascades instead of growing with the far ortho range. The NDotL slope
-// term gives grazing surfaces (~the far-wall acne case) more bias and
-// facing surfaces just a small constant – continuous, no +/-k step, so
-// no terminator line streak. lightDirection is the travel direction
-// (i.e. -L). isSSS parked for a future SSS/transmission path.
+// Legacy spot/point receiver depth bias (also used by the parked
+// single-map path). Directional cascades now use the texel-calibrated
+// CascadeOrientedDepthBias in shadow_bias.hlsli; do not re-use this
+// 1-NdotL approximation for CSM. Spot/point calibration is unchanged.
+// lightDirection is the direction of light travel (-L).
 float GetOrientedBias(float3 faceNormal,
 	float3 lightDirection,
 	float baseBiasNDC,
@@ -266,17 +262,13 @@ float SampleCascadeTile(
         uv * cb.Get().dir.cascades[cascadeIndex].uvScale +
         cb.Get().dir.cascades[cascadeIndex].uvBias;
 
-    // Sec. 4.2: slope-scaled NDC bias; c.bias is the per-cascade
-    // worldBias/depthRange baked on the CPU so far cascades don't
-    // over-bias (peter-panning) while near ones under-bias (acne).
+    // Directional receiver-plane slope, calibrated from half a world-
+    // space cascade texel / actual light-depth range. This must use the
+    // raster face normal (not the interpolated shading normal).
     float receiverDepth =
-        ndc.z +
-        GetOrientedBias(
-            faceNormal,
-            lightDirection,
-            cb.Get().dir.cascades[cascadeIndex].bias,
-            false);
-        // parked SSS variant: ndc.z + GetOrientedBias(faceNormal, lightDirection, c.bias, true);
+        ndc.z + CascadeOrientedDepthBias(
+            faceNormal, lightDirection,
+            cb.Get().dir.cascades[cascadeIndex].bias);
 
     valid = true;
     return PCFShadowAtlas(
