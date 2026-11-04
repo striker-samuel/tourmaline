@@ -113,13 +113,15 @@ candidate sources **without adding parameter hooks to production shaders**:
 
 ```powershell
 # Append these to a shader_search.py invocation with its required arguments:
---loop-mode unroll --loop-index 0 --branch-mode flatten --branch-index 1
+--loop-mode unroll --loop-index 0 --unroll-count 4
+--branch-mode flatten --branch-index 1
 --register-pressure minimize
 ```
 
 - `--loop-mode auto|loop|unroll` (default auto) controls a single **for**
   statement via HLSL `[loop]` or `[unroll]`; `--loop-index` selects the
-  zero-based occurrence in the candidate source. Auto leaves loops unchanged.
+  zero-based occurrence in the candidate source. Optional `--unroll-count N`
+  applies `[unroll(N)]` (1–1024) in unroll mode. Auto leaves loops unchanged.
 - `--branch-mode auto|branch|flatten` (default auto) controls a single
   **if** statement with HLSL `[branch]` or `[flatten]`, selected with
   `--branch-index`. Auto leaves branches unchanged.
