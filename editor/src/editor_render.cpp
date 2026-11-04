@@ -2043,7 +2043,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		const bool altNav = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
 			m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
 		const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse()
-			&& !(m_uiMode && m_dockViewportHovered && inVp);
+			&& !(m_uiMode && (m_dockViewportHovered || m_dockViewportDragCaptured)
+				&& (inVp || m_dockViewportDragCaptured));
 		const bool shiftHeld = m_input.isKeyHeld(TOUR_KEY_LEFT_SHIFT) ||
 			m_input.isKeyHeld(TOUR_KEY_RIGHT_SHIFT);
 		uint32_t insetXAbs = 0;
