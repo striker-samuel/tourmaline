@@ -38,25 +38,25 @@ class PermissionRegistryTests(unittest.TestCase):
         self.assertTrue(permitted(["source.*"], "source.revisions.read")[1])
 
     def test_users_groups_custom_rules_and_denials(self):
-        self.registry.group_set("VIP", ["source.*", "product.*"])
-        self.registry.group_set("normal", ["source.read", "artifact.*", "-product.publish"])
+        self.registry.group_set("publishers", ["source.*", "product.*"])
+        self.registry.group_set("readers", ["source.read", "artifact.*", "-product.publish"])
         token = self.registry.user_set(
-            "User1", ["VIP", "normal"], ["source.revisions.*"])
+            "artist_one", ["publishers", "readers"], ["source.revisions.*"])
         self.assertTrue(token and len(token) >= 24)
-        self.assertEqual(self.registry.identity(token), "User1")
-        self.assertTrue(self.registry.allows("User1", "source.revisions.read"))
-        self.assertTrue(self.registry.allows("User1", "product.versions.read"))
-        self.assertTrue(self.registry.allows("User1", "artifact.read"))
-        self.assertFalse(self.registry.allows("User1", "product.publish"))
-        self.assertFalse(self.registry.allows("User1", "source.write"))
-        self.registry.user_set("User1", ["VIP", "normal"],
+        self.assertEqual(self.registry.identity(token), "artist_one")
+        self.assertTrue(self.registry.allows("artist_one", "source.revisions.read"))
+        self.assertTrue(self.registry.allows("artist_one", "product.versions.read"))
+        self.assertTrue(self.registry.allows("artist_one", "artifact.read"))
+        self.assertFalse(self.registry.allows("artist_one", "product.publish"))
+        self.assertFalse(self.registry.allows("artist_one", "source.write"))
+        self.registry.user_set("artist_one", ["publishers", "readers"],
                                ["source.revisions.*", "product.publish"])
-        self.assertTrue(self.registry.allows("User1", "product.publish"))
-        self.registry.user_set("User1", ["normal"], ["-source.read"])
-        self.assertFalse(self.registry.allows("User1", "source.read"))
+        self.assertTrue(self.registry.allows("artist_one", "product.publish"))
+        self.registry.user_set("artist_one", ["readers"], ["-source.read"])
+        self.assertFalse(self.registry.allows("artist_one", "source.read"))
 
     def test_token_rotation_and_registry_does_not_store_plaintext(self):
-        token = self.registry.user_set("worker", ["normal"], [])
+        token = self.registry.user_set("worker", ["readers"], [])
         raw = self.path.read_text(encoding="utf-8")
         self.assertNotIn(token, raw)
         self.assertIn(hashlib.sha256(token.encode()).hexdigest(), raw)
@@ -68,14 +68,14 @@ class PermissionRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.registry.user_set("bad", ["unknown"], [])
         with self.assertRaises(ValueError):
-            self.registry.group_set("normal", ["../bad"])
+            self.registry.group_set("readers", ["../bad"])
         with self.assertRaises(FileExistsError):
             PermissionRegistry.initialize(self.path)
 
     def test_reloads_edits_without_server_restart(self):
-        self.registry.user_set("worker", ["normal"], [])
+        self.registry.user_set("worker", ["readers"], [])
         self.assertTrue(self.registry.allows("worker", "source.read"))
-        self.registry.group_set("normal", ["-source.read"])
+        self.registry.group_set("readers", ["-source.read"])
         self.assertFalse(self.registry.allows("worker", "source.read"))
 
     def test_per_asset_user_and_group_permissions(self):
@@ -84,7 +84,7 @@ class PermissionRegistryTests(unittest.TestCase):
         self.registry.group_set("artists", ["source.read", "product.publish",
                                             "artifact.read"])
         self.registry.user_set("artist", ["artists"], [])
-        self.registry.user_set("guest", ["normal"], [])
+        self.registry.user_set("guest", ["readers"], [])
         self.registry.asset_set(source_id, "groups", "artists",
                                 ["source.read", "product.publish", "artifact.read"])
         self.registry.asset_set(source_id, "users", "guest",
@@ -119,7 +119,7 @@ class PermissionRegistryTests(unittest.TestCase):
         bg = threading.Thread(target=httpd.serve_forever, daemon=True)
         bg.start()
         base = "http://127.0.0.1:%d" % httpd.server_port
-        token = self.registry.user_set("viewer", ["normal"], [])
+        token = self.registry.user_set("viewer", ["readers"], [])
         def get(path, auth=token):
             return urlopen(Request(base + path,
                 headers={"Authorization": "Bearer " + auth}), timeout=3)
@@ -164,8 +164,8 @@ class PermissionRegistryTests(unittest.TestCase):
         archive = SharedArchive(share, self.root / "archive", self.root / "cache", settle=0)
         archive.scan()
         asset_id = archive.sources()[0]["asset_id"]
-        token = self.registry.user_set("designer", ["normal"], [])
-        other = self.registry.user_set("other", ["normal"], [])
+        token = self.registry.user_set("designer", ["readers"], [])
+        other = self.registry.user_set("other", ["readers"], [])
         session = str(uuid.uuid4())
         httpd = ThreadingHTTPServer(
             ("127.0.0.1", 0),
@@ -218,8 +218,8 @@ class PermissionRegistryTests(unittest.TestCase):
         archive = SharedArchive(share, self.root / "archive", self.root / "cache", settle=0)
         archive.scan()
         admin = self.admin_token
-        viewer = self.registry.user_set("viewer", ["normal"], [])
-        publisher = self.registry.user_set("publisher", ["normal"],
+        viewer = self.registry.user_set("viewer", ["readers"], [])
+        publisher = self.registry.user_set("publisher", ["readers"],
                                            ["product.publish"])
         httpd = ThreadingHTTPServer(
             ("127.0.0.1", 0),
@@ -251,7 +251,7 @@ class PermissionRegistryTests(unittest.TestCase):
             expect_error(401, "/v2/consumers", "wrong-token")
             with request("/v2/products", admin) as response:
                 self.assertIn("products", json.load(response))
-            self.registry.group_set("normal", ["-source.read"])
+            self.registry.group_set("readers", ["-source.read"])
             expect_error(403, "/v2/sources", viewer)
         finally:
             httpd.shutdown()
