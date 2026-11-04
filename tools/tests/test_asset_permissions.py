@@ -168,7 +168,13 @@ class PermissionRegistryTests(unittest.TestCase):
         config_path.write_text(json.dumps(settings), encoding="utf-8")
         config_path, token = configure_host(*args, config=config)
         updated = json.loads(config_path.read_text(encoding="utf-8"))
-        self.assertEqual(updated["permissions_registry"], str(self.path))
+        # Compare resolved paths, not raw spellings: the GitHub Windows
+        # runners expose TEMP through the 8.3 short name (RUNNER~1), which
+        # configure_host normalizes to the long form - same file, different
+        # string. The contract is that the registry pointer SURVIVES a
+        # reconfigure, not that its casing is byte-preserved.
+        self.assertEqual(Path(updated["permissions_registry"]).resolve(),
+                         self.path.resolve())
         self.assertEqual(token, old_token)
 
     def test_live_open_asset_database_tracks_authenticated_user_and_station(self):
