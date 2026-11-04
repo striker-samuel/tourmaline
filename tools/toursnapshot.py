@@ -124,8 +124,8 @@ def parser_factory() -> Parser:
         sub = commands.add_parser(name, help=desc)
         sub.add_argument("sequence", type=Path, help="directory containing Frame_0001.png ...")
         sub.add_argument("--json", action="store_true", help="emit one JSON result on stdout")
-        if name in ("inspect", "verify", "extract", "compare", "compare-sequence", "input-tape"):
-            sub.add_argument("--pixels", action="store_true", help="verify decoded pixels (requires Pillow)")
+        sub.add_argument("--pixels", action="store_true",
+                         help="validate decoded pixels before the operation (requires Pillow)")
         if name in ("extract", "compare"):
             sub.add_argument("--frame", required=True, type=positive, help="1-based frame number")
         if name in ("compare", "compare-sequence"):
