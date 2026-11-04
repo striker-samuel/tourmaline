@@ -56,6 +56,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -896,7 +897,7 @@ int main(int argc, char** argv) {
 			const float pngDisplayExposure =
 				1.0f / std::max(args.skyIntensity, 1e-4f);
 
-			// Trace 6 HDR faces (one deterministic sample per texel).
+			// Trace 6 HDR faces with deterministic per-texel path batches.
 			std::vector<float> faces[smvk::kCubemapFaceCount];
 			for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f)
 				faces[f].assign(size_t(S) * S * 4, 0.0f);
@@ -952,10 +953,10 @@ int main(int argc, char** argv) {
 						}
 						L *= cubemapScale / float(args.spp);
 						float* px = &faces[f][(size_t(y) * S + x) * 4];
-							px[0] = L.x;
-							px[1] = L.y;
-							px[2] = L.z;
-							px[3] = 1.0f;
+						px[0] = L.x;
+						px[1] = L.y;
+						px[2] = L.z;
+						px[3] = 1.0f;
 						}
 					}
 				}));
