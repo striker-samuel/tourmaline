@@ -89,13 +89,26 @@ Mesh rows retain rate distribution, life, size envelope, tint, source point,
 and a stable per-row seed. Attribute serialization uses `v2` and reads
 existing `v1` documents as billboard emitters.
 
-**This is not yet an end-to-end mesh particle feature.** The live editor
-currently forwards only `Result::emitters` into `WorldRenderer`.
-Before exposing mesh mode in the editor, the renderer must own/create a
-`MeshParticles` instance, upload mesh emitter rows, register geometry/material
-draw-command prototypes for bins, and record its emit/sim/cull/prefix/scatter/
-drawbuild/draw passes. It must also preserve proper ordering and synchronization
-with the existing billboard path. No GPU rendering is claimed by this change.
+The editor exposes **Particle render type** (Billboard or Mesh instances)
+and a **Mesh prototype bin** selector on the emitter sink. Mesh emitter rows
+are forwarded to `WorldRenderer::SetExternalMeshParticleEmitters`, alongside
+the original billboard rows. The renderer creates its own `MeshParticles`
+pool, runs GPU emission and simulation, culls and bins particles against the
+main RenderView, builds indirect draws, and renders spinning instances with
+`meshparticles_draw.vert.hlsl` and the placement diagnostic unlit fragment
+shader. Main's GPU read hints synchronize compute outputs and indirect draws.
+
+**Geometry contract:** mesh IDs map to the indexed prototype bins registered
+via `AttachGpuPlacementRuntime` (up to eight). Invalid or unseeded bins are
+skipped; no arbitrary asset lookup is performed by the emitter. Meshes use
+placement's static vertex/index heap. A project without registered placement
+prototype geometry can still author mesh particle settings, but it will not
+produce mesh geometry until the host registers valid prototypes. Per-bin
+bounds currently use a conservative fallback sphere; cooked bounds and lit
+material selection remain follow-up improvements.
+
+The graph stores **editor settings**, not a cooked runtime graph asset. Runtime
+applications can call the external mesh emitter API with compiled rows.
 
 ## Current limitations / follow-up work
 
