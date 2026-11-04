@@ -44,9 +44,9 @@ class ShaderRegionsTests(unittest.TestCase):
         original = regions.discover(SHADER)
         target = next(r for r in original if r["kind"] == "loop"
                       and "int j" in r["header"])
-        new_loop = "    for (int k = 0; k < 2; ++k) { sum += 1; }\\n"
-        rewritten = SHADER.replace("    float sum = 0;\\n",
-                                   "    float sum = 0;\\n" + new_loop)
+        new_loop = "    for (int k = 0; k < 2; ++k) { sum += 1; }\n"
+        rewritten = SHADER.replace("    float sum = 0;\n",
+                                   "    float sum = 0;\n" + new_loop)
         discovered = regions.discover(rewritten)
         # The hash addresses the loop itself, not its ordinal in the file.
         same = [r for r in discovered if r["id"] == target["id"]]
