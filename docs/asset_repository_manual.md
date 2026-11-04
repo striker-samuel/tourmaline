@@ -172,6 +172,74 @@ preferably an HTTPS reverse proxy, restrict the firewall, and never expose
 port 8765 directly to the Internet. Back up the WHOLE archive, including
 history.sqlite3 and blobs. SQLite needs a consistent backup/snapshot.
 
+## Optional server-side users and permission groups
+
+The shared repository supports a protected JSON user registry, with
+Minecraft-style dotted permission nodes. This is **opt-in**: existing installs
+without `permissions_registry` continue to use their legacy shared token.
+There is no password login; every user receives a separate randomly generated
+bearer token. Only SHA-256 hashes of tokens are stored in the registry.
+
+Add an absolute path to the host config (`server.json`), **outside the
+artist-writable source tree**, for example:
+
+~~~json
+"permissions_registry": "/etc/tourmaline/asset-users.json"
+~~~
+
+After saving the config, bootstrap an administrator **before restarting**:
+
+~~~bash
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users init
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set VIP --permission 'craft.*' --permission 'product.publish'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set normal --permission 'source.read' --permission 'product.read' --permission 'artifact.read'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users set User1 --group VIP --group normal --permission 'craft.limestone.*'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users list
+~~~
+
+`users init` prints the admin token once; `users set` prints a new
+individual token only when adding a new account. Save the tokens securely
+and distribute each user's token directly to that user (never commit tokens
+to Git). A user may belong to multiple groups. Repeating `users set`
+updates memberships and direct rules without changing the token. Revoke
+and replace an individual token with:
+
+~~~bash
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users rotate-token User1
+~~~
+
+The rules `craft.*` and `craft.limestone.*` match their respective dotted
+namespaces, including descendants. A bare `*` grants everything.
+Rules prefixed `-` deny access. More-specific rules take precedence; a
+direct user rule wins a tie with an inherited group rule, and group denials
+win ties between groups. Unmatched permissions are **denied by default**.
+
+| Permission node | Current API operations |
+| --- | --- |
+| `source.read` | List/resolve source revisions, including legacy v1 reads |
+| `product.read` | List published products |
+| `artifact.read` | Download immutable source/product blob bytes |
+| `product.publish` | PUT /v2/publish |
+| `presence.read` | View active readers |
+| `presence.write` | Send heartbeat or release |
+| `source.write` | Reserved for a future source-write API (no write endpoint today) |
+
+A fresh registry provides `admin` with `*` and `normal` with read
+and presence permissions. `/health` and the static `/consumers` dashboard
+page remain publicly accessible; all asset data and API operations are
+authorized. A 401 means the token is absent/unknown; a 403 means the
+identity is recognized but lacks the requested permission.
+
+**Important migration behavior:** once `permissions_registry` is configured,
+the original shared `access_token` stops authorizing API requests. Configure
+the workstation with the newly issued **user token** instead (the existing
+client's token input remains the same). The registry is reread per request,
+so group changes, grants and token rotations take effect without restarting
+the server. The token is a credential, not a password; HTTPS is essential
+when using individual tokens over a network. Secure both the registry file
+and the host configuration with OS permissions. Registry file operations
+are intended for a single administrative writer, not concurrent editing.
+
 ## Configure a Windows or Linux workstation
 
 Windows: run **configure_asset_client.bat**.
@@ -334,6 +402,7 @@ only tracks cooperating clients, and stale sessions expire automatically.
 ## Validation
 
 ~~~bash
+python3 -m unittest discover -s tools/tests -p test_asset_permissions.py -v
 python3 -m unittest discover -s tools/tests -p test_shared_asset_repository.py -v
 python3 -m unittest discover -s tools/tests -p test_asset_read_presence.py -v
 python3 -m unittest discover -s tools/tests -p test_offline_asset_service.py -v
