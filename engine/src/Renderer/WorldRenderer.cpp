@@ -8726,6 +8726,10 @@ namespace engine {
 			auto& pass = ds.AddPhase2Pass(*m_rendergraph, depthView,
 				fpLightsLogical, frameIndex);
 			auto program = ds.phasePrograms[0];
+#if defined(DS_DEBUG_VIZ)
+			if (m_dsDebugMode != DsDebugViz::Off)
+				program = ds.phaseVizPrograms[0];
+#endif
 			const uint32_t gx = ds.groupCountX;
 			const uint32_t gy = ds.groupCountY;
 			pass.SetRecordingFunc([program, push, gx, gy](smvk::CommandBuffer& cmd) mutable {
@@ -8739,6 +8743,10 @@ namespace engine {
 			auto& pass = ds.AddPhase3Pass(*m_rendergraph, depthView,
 				fpLightsLogical, frameIndex);
 			auto program = ds.phasePrograms[1];
+#if defined(DS_DEBUG_VIZ)
+			if (m_dsDebugMode != DsDebugViz::Off)
+				program = ds.phaseVizPrograms[1];
+#endif
 			const uint32_t tx = ds.tileCountX;
 			const uint32_t ty = ds.tileCountY;
 			pass.SetRecordingFunc([program, push, tx, ty](smvk::CommandBuffer& cmd) mutable {
