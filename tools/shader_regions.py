@@ -128,14 +128,12 @@ def _mapped_lines(previous, current):
 def preserve_identity(previous_source, current_source, previous_regions):
     """Map prior IDs into rewritten HLSL; never guess ambiguous matches.
 
-    Exact matching uses unchanged diff lines and relative token position on
-    those lines; fallback uses unique identical headers within the same scope.
+    Exact matching uses unchanged diff lines; fallback uses unique
+    identical headers within the same scope.
     Inserted loops receive fresh identifiers from discover().
     """
     old_regions = discover(previous_source)
     current_regions = discover(current_source)
-    old_lines, old_starts = _line_positions(previous_source)
-    new_lines, new_starts = _line_positions(current_source)
     line_map = _mapped_lines(previous_source, current_source)
     assigned = set()
     resolved = []
@@ -183,14 +181,14 @@ def apply_identified_regions(source, choices, identified):
             raise ValueError(f"region identity cannot be resolved safely: {identifier}")
         region = matches[0]
         syntax = region.get("syntax")
-        if syntax == "for" and (mode == "loop" or re.fullmatch(r"unroll(?:\\(([1-9]\\d{0,3})\\))?", mode or "")):
+        if syntax == "for" and (mode == "loop" or re.fullmatch(r"unroll(?:\(([1-9]\d{0,3})\))?", mode or "")):
             if mode.startswith("unroll(") and int(mode[7:-1]) > 1024:
                 raise ValueError("unroll factor must not exceed 1024")
         elif syntax == "if" and mode in ("branch", "flatten"):
             pass
         else:
             raise ValueError(f"hint not supported for {syntax}: {mode}")
-        if re.search(r"\\[\\s*\\w+(?:\\s*\\([^\\]]*\\))?\\s*\\]\\s*$", mask[:region["start"]]):
+        if re.search(r"\[\s*\w+(?:\s*\([^\]]*\))?\s*\]\s*$", mask[:region["start"]]):
             raise ValueError(f"region already annotated: {identifier}")
         insertions.append((region["start"], f"[{mode}] "))
         changes.append({"id": identifier, "mode": mode, "line": region["line"]})
