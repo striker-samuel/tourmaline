@@ -175,7 +175,7 @@ history.sqlite3 and blobs. SQLite needs a consistent backup/snapshot.
 ## Optional server-side users and permission groups
 
 The shared repository supports a protected JSON user registry, with
-Minecraft-style dotted permission nodes. This is **opt-in**: existing installs
+configurable dotted permission nodes and namespace wildcards. This is **opt-in**: existing installs
 without `permissions_registry` continue to use their legacy shared token.
 There is no password login; every user receives a separate randomly generated
 bearer token. Only SHA-256 hashes of tokens are stored in the registry.
@@ -191,9 +191,9 @@ After saving the config, bootstrap an administrator **before restarting**:
 
 ~~~bash
 python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users init
-python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set VIP --permission 'craft.*' --permission 'product.publish'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set VIP --permission 'source.*' --permission 'product.publish'
 python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set normal --permission 'source.read' --permission 'product.read' --permission 'artifact.read'
-python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users set User1 --group VIP --group normal --permission 'craft.limestone.*'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users set User1 --group VIP --group normal --permission 'source.read'
 python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users list
 ~~~
 
@@ -208,7 +208,7 @@ and replace an individual token with:
 python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users rotate-token User1
 ~~~
 
-The rules `craft.*` and `craft.limestone.*` match their respective dotted
+The rules `source.*` and `product.*` match their respective dotted
 namespaces, including descendants. A bare `*` grants everything.
 Rules prefixed `-` deny access. More-specific rules take precedence; a
 direct user rule wins a tie with an inherited group rule, and group denials
