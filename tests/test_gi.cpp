@@ -202,7 +202,7 @@ void TestSgMeanMatchedCubeAmps() {
 	SgMatchMeanRadiance(zeros, constant);
 	bool allZero = true;
 	for (const glm::vec3& a : zeros)
-		allZero &= a == glm::vec3(0.0f);
+		allZero &= glm::all(glm::equal(a, glm::vec3(0.0f)));
 	Check(allZero, "sg cube amps zero field stays zero");
 }
 
