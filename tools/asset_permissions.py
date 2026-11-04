@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import tempfile
 import uuid
 
@@ -282,7 +283,15 @@ def _write_data(path, data, exclusive):
             out.flush()
             os.fsync(out.fileno())
         if os.name != "nt":
-            os.chmod(tmp, 0o600)
+            if not exclusive and path.exists():
+                # Preserve access for the dedicated NAS service account after
+                # a root-operated users/group edit. os.replace() alone would
+                # drop the previous owner/group and may lock out the service.
+                previous = path.stat()
+                os.chmod(tmp, stat.S_IMODE(previous.st_mode))
+                os.chown(tmp, previous.st_uid, previous.st_gid)
+            else:
+                os.chmod(tmp, 0o600)
         if exclusive:
             # Avoid replacing an existing registry during bootstrap.
             with path.open("xb") as output, open(tmp, "rb") as source:
