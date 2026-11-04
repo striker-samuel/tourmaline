@@ -1164,6 +1164,7 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 
 	MaterialValues values{};
 	values.diffuse = info.baseColorFactor;
+	values.ambient.w = std::clamp(info.translucency, 0.0f, 1.0f);
 	values.textures[0] = baseTex.empty() ? -1 : static_cast<int>(baseTex.index());
 	values.textures[1] = info.metallicRoughnessTexture.empty() ? -1 : static_cast<int>(info.metallicRoughnessTexture.index());
 	values.textures[2] = info.normalTexture.empty() ? -1 : static_cast<int>(info.normalTexture.index());
