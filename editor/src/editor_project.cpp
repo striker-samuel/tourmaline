@@ -916,7 +916,7 @@ void EditorApp::ReimportAsset(const std::string& path) {
         "support explicit reimport. Scenes use Open/Reload.");
 }
 
-bool EditorApp::ImportAsset(const std::string& srcPath) {
+bool EditorApp::ImportAsset(const std::string& srcPath, bool openAfter) {
 	if (m_cookRunning) {
 		Log("Import: a cook is already running — wait for it to finish.");
 		return false;
@@ -940,23 +940,23 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 			"(the copied glTF stays for a fixed re-import).");
 		return false;
 	}
-	if (!OpenScene(artifact)) {
+	if (openAfter && !OpenScene(artifact)) {
 		Log("Import: could not open the derived artifact.");
 		return false;
 	}
 	const std::string stem =
 		std::filesystem::path(dest).stem().string();
-	// Cook outputs follow the project (PrimeProjectCookDefaults also
-	// runs on open, but the import states it explicitly).
-	m_cook.outPak = ProjectCookOutPak(stem);
-	std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
-		m_cook.outPak.c_str());
-	// Importing ends here: the asset is open with its ENGINE
-	// representation ready (GPU world, streamed textures, transcode
-	// cache). Cooking the product .pak is the separate next step
-	// (Ctrl+Shift+C) — as is Bake GI (on demand).
-	Log("Import: '" + stem + "' ready in the editor (cook: Ctrl+Shift+C "
-		"-> " + m_cook.outPak + ").");
+	// Imported assets should not unexpectedly replace the working scene.
+	// Only an explicit "Open after import" updates the editor cook target.
+	if (openAfter) {
+		m_cook.outPak = ProjectCookOutPak(stem);
+		std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
+			m_cook.outPak.c_str());
+		Log("Import: '" + stem + "' opened in the editor.");
+	} else {
+		Log("Import: '" + stem + "' derived in project assets; current "
+			"scene remains loaded.");
+	}
 	return true;
 }
 
