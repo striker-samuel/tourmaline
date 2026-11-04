@@ -117,7 +117,15 @@ enum class EventType : uint8_t {
     GamepadButtonDown,
     GamepadButtonUp,
     FileDrop,
+    PenProximityIn, PenProximityOut, PenDown, PenUp, PenMotion,
+    PenAxis, PenButtonDown, PenButtonUp,
 };
+
+enum class PenAxis : uint8_t {
+    Pressure, XTilt, YTilt, Distance, Rotation, Slider, TangentialPressure, Count
+};
+using PenId = uint32_t;
+inline constexpr int PenAxisCount = static_cast<int>(PenAxis::Count);
 
 // One normalized event. Deliberately a flat POD-ish struct: the adapter
 // fills only the fields its EventType defines, Input consumes it, and
@@ -130,6 +138,11 @@ struct Event {
     GamepadButton gamepadButton = GamepadButton::South;
     GamepadAxis gamepadAxis = GamepadAxis::LeftX;
     GamepadId gamepadId = 0;
+    PenId penId = 0;
+    PenAxis penAxis = PenAxis::Pressure;
+    uint8_t penButton = 0;
+    bool penEraser = false;
+    float penValue = 0.0f;
     uint16_t mods = 0;
     float axis = 0.0f;
     float x = 0.0f;
@@ -298,6 +311,7 @@ public:
         scrollDeltaX = 0.0;
         scrollDeltaY = 0.0;
         textInput.clear();
+        penPressed_ = penReleased_ = false;
         // Gamepad edge states are per-frame.
         for (auto& gp : gamepads_)
             gp.beginFrame();
@@ -339,6 +353,54 @@ public:
         case input::EventType::MouseWheel:
             onScroll(static_cast<double>(e.x), static_cast<double>(e.y));
             return false;
+        case input::EventType::PenProximityIn:
+            pen_ = {};
+            pen_.id = e.penId;
+            pen_.inProximity = true;
+            return false;
+        case input::EventType::PenProximityOut:
+            if (pen_.inProximity && pen_.id == e.penId) {
+                penReleased_ |= pen_.down;
+                pen_ = {};
+            }
+            return false;
+        case input::EventType::PenDown:
+        case input::EventType::PenUp:
+        case input::EventType::PenMotion:
+        case input::EventType::PenAxis:
+        case input::EventType::PenButtonDown:
+        case input::EventType::PenButtonUp: {
+            if (!pen_.inProximity || pen_.id != e.penId) {
+                pen_ = {};
+                pen_.id = e.penId;
+                pen_.inProximity = true;
+            }
+            if (e.type != input::EventType::PenAxis) {
+                pen_.x = e.x;
+                pen_.y = e.y;
+            }
+            if (e.type == input::EventType::PenDown) {
+                penPressed_ |= !pen_.down;
+                pen_.down = true;
+                pen_.eraser = e.penEraser;
+            } else if (e.type == input::EventType::PenUp) {
+                penReleased_ |= pen_.down;
+                pen_.down = false;
+                pen_.eraser = e.penEraser;
+                pen_.axes[0] = 0.0f;
+            } else if (e.type == input::EventType::PenAxis) {
+                const int axisIndex = static_cast<int>(e.penAxis);
+                if (axisIndex >= 0 && axisIndex < input::PenAxisCount)
+                    pen_.axes[axisIndex] = e.penValue;
+            } else if ((e.type == input::EventType::PenButtonDown ||
+                        e.type == input::EventType::PenButtonUp) &&
+                       e.penButton >= 1 && e.penButton <= 8) {
+                const uint8_t mask = static_cast<uint8_t>(1u << (e.penButton - 1));
+                if (e.type == input::EventType::PenButtonDown) pen_.buttons |= mask;
+                else pen_.buttons &= static_cast<uint8_t>(~mask);
+            }
+            return false;
+        }
         case input::EventType::GamepadAdded:
             addGamepad(e.gamepadId, e.text);
             return false;
@@ -450,6 +512,24 @@ public:
     const std::string& getTextInput() const { return textInput; }
     bool isQuitRequested() const { return quitRequested; }
     void clearQuitRequested() { quitRequested = false; }
+
+    // --- Pen (one active stylus; no synthesized mouse clicks) ---
+    struct PenState {
+        input::PenId id = 0;
+        bool inProximity = false, down = false, eraser = false;
+        float x = 0.0f, y = 0.0f;
+        std::array<float, input::PenAxisCount> axes{};
+        uint8_t buttons = 0;
+        float pressure() const { return axes[0]; }
+        float tiltX() const { return axes[1]; }
+        float tiltY() const { return axes[2]; }
+        bool buttonHeld(unsigned index) const {
+            return index >= 1 && index <= 8 && (buttons & (1u << (index - 1))) != 0;
+        }
+    };
+    const PenState& pen() const { return pen_; }
+    bool isPenPressed() const { return penPressed_; }
+    bool isPenReleased() const { return penReleased_; }
 
     // --- Gamepad ---
     struct GamepadState {
@@ -691,6 +771,8 @@ private:
     std::string textInput;
     bool quitRequested = false;
 
+    PenState pen_{};
+    bool penPressed_ = false, penReleased_ = false;
     std::vector<GamepadState> gamepads_;
     float stickDeadzone_ = 0.12f;   // left stick (radial)
     float lookDeadzone_ = 0.20f;    // right stick (radial; drifty pads need it big)
