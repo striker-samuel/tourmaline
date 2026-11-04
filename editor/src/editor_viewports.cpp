@@ -473,12 +473,16 @@ void EditorApp::DrawViewportChrome() {
 	// edge spill hides beneath the abutting sibling panel, which is
 	// correct — panels are siblings, never covered by viewport chrome).
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
+	// Scene viewport rectangles are primary-window-local; ImGui draw lists
+	// and SetNextWindowPos use desktop/global screen coordinates.
+	const ImVec2 origin = ImGui::GetMainViewport()->Pos;
 	const int count = ViewportCount();
 	for (int i = 0; i < count; ++i) {
 		const EditorViewport& vp = m_viewports[i];
 		const bool active = (i == m_activeVp);
-		dl->AddRect(ImVec2(vp.rect.x, vp.rect.y),
-			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h),
+		dl->AddRect(ImVec2(origin.x + vp.rect.x, origin.y + vp.rect.y),
+			ImVec2(origin.x + vp.rect.x + vp.rect.w,
+				origin.y + vp.rect.y + vp.rect.h),
 			active ? IM_COL32(120, 200, 255, 220) : IM_COL32(70, 70, 76, 180),
 			0.0f, 0, active ? 2.0f : 1.0f);
 	}
@@ -495,7 +499,8 @@ void EditorApp::DrawViewportChrome() {
 			for (int i = 0; i < count; ++i) {
 				const EditorViewport& vp = m_viewports[i];
 				ImGui::SetNextWindowPos(
-					ImVec2(vp.rect.x, vp.rect.y), ImGuiCond_Always);
+					ImVec2(origin.x + vp.rect.x,
+						origin.y + vp.rect.y), ImGuiCond_Always);
 				ImGui::SetNextWindowSize(
 					ImVec2(vp.rect.w, vp.rect.h), ImGuiCond_Always);
 				ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
