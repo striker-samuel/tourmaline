@@ -53,6 +53,7 @@
 - [ ] **Single Import entry point.** Remove the Assets-browser `Import asset...` toolbar button. `File > Import asset...` should be the canonical entry.
 - [ ] **Dedicated Import window.** Selecting File > Import opens a persistent Import window (reopenable from Window), including a source picker, detected import type, relevant format-specific options, destination/behavior, and meaningful progress/results. Show supported formats accurately; do not offer unsupported conversions.
 - [ ] **Reimport uses task/cook modal.** `Reimport` currently lacks the existing cook progress modal. Show current reimport activity, messages, success/failure and progress as available; avoid a frozen UI or misleading determinate progress if importer is synchronous.
+- [ ] **Bake GI must not require an ExportSettings node, export configuration, output pak, or prior cook.** The editor already has a loaded scene, project context and minted/recorded asset identities; requiring a cook/export setup first is a false dependency for an editor-only bake. Currently `BakeGI()` gates the operation on `ExportCfg().giVolumes` and `m_cook.outPak`, then logs `enable GI volumes in the cook dialog first` or `no cook target — cook once first`. **Expected:** `Bake GI now` directly bakes GI volumes authored in the current scene using scene/project identity and project-local GI output paths; resolve/write GI artifact identity independently of exporting a pak. If the scene has no GI volumes, give an accurate no-volumes message, rather than asking for export configuration. The export settings remain optional *export/cook* controls and must not be a prerequisite for GI authoring/baking.
 - [ ] **Add to scene fails when a scene is loaded.** Observed log:
   ```text
   [Editor] References: cannot add asset — no source scene loaded.
@@ -130,6 +131,9 @@ This is an **exhaustive, explicit checklist of the requests made in this convers
 - [ ] **DCC actions must work only for exactly one selected asset**; disable for none or multi-selection.
 
 ### Import, reimport, references and progress
+
+- [ ] **Bake GI directly from the editor scene**, with no ExportSettings node, no export setup, no prior cook and no pak target requirement; reuse existing scene/project identity and record GI artifacts independently.
+- [ ] Remove the current BakeGI guards requiring `ExportCfg().giVolumes` and `m_cook.outPak`; report missing GI volumes as the actual reason when none exist.
 
 - [ ] Create a dedicated **Import Asset window** opened via File > Import.
 - [ ] Offer import options appropriate to the several **actually supported asset/file types**; explain what each does.
