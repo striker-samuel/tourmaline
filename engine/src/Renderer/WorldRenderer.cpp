@@ -32,6 +32,7 @@
 #include <time.h>    // localtime_r (screenshot timestamp)
 #endif
 
+#include <Engine/Memory/alloc_config.h>
 #include <Engine/core.h>
 #include <Engine/platform.h> // readFile (exe-relative SPV loads)
 #include <Engine/debug_log.h> // SMVK_TRACE_LOG ([exposure] dashboards)
