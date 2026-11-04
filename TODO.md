@@ -296,6 +296,46 @@ were fixed post-merge.
   STILL OPEN: a Vulkan validation-layer session and silhouette/coverage
   review on a real GPU (the PR's compare list).
 
+## #191 — [Audit 10] WorldRenderer decomposition (partial, config + descriptors)
+- Author STATUS: "frame-pass preset policy and pass-descriptor
+  configuration are extracted; **orchestration extraction, native
+  tests, and GPU parity remain integrator follow-ups.**"
+- Integrator validation done post-merge: full build + 107/107 ctest, and
+  a BIT-EXACT behavior-preservation proof — the MSAA A/B captures are
+  pixel-identical pre/post decomposition (0.000 delta both modes; the
+  custom-vs-hardware parity contract still holds at mean 0.001).
+- (Merge note: the earlier msaa_custom_resolve.h `program = {}` broke
+  the LINUX CI leg only — the documented GCC/ShaderProgram brace
+  landmine, MSVC accepts it; fixed in `84180b24` with the paren form +
+  the WSL g++ syntax sweep now part of the pre-push ritual for engine
+  headers.)
+- Still open: the orchestration-extraction stages, and the AGENTS.md
+  "god objects are INTENTIONAL" owner note stands — this lands as
+  narrow-collaborator extraction, not a file split.
+
+## #199 — GPU mesh-instance particles (merged with tests unrun)
+- Author's validation disclaimer: "Tests added but deliberately not
+  run... No local compile, GPU smoke test or performance benchmark."
+  Integrator checklist from the PR body: shader compilation, push
+  constant ABI, rendergraph synchronization, mesh bounds, scene
+  prototype registration, runtime rendering.
+- Integrator validation: full build + ctest (see below for results).
+- Known v1 limitations (author-declared): the mesh draw path is the
+  DIAGNOSTIC UNlit FS — material-aware PBR and a standalone
+  asset-picker/prototype registration UI are follow-ups; prototype
+  bins come from AttachGpuPlacementRuntime (max eight), with a
+  conservative fallback when bounds are unregistered.
+
+## #201 — local-first multi-machine scenario correctness records
+- CPU-only validation done: tools compile + the new
+  test_scenario_matrix.py suite passes locally.
+- GPU validation must run on actual machines with a built Benchmark and
+  cooked content (the matrix's `cull`/`snapshot`/`bench` verdicts need
+  real runs); this environment's GPU leg is dev-side.
+- Author follow-up: golden-sequence visual comparisons per
+  machine/setup and a cross-machine aggregation/report command after
+  the baseline policy is defined.
+
 ## Audit series still open (drafts)
 - #184 [Audit 03] double-precision transforms (docs-only, unstarted).
 - #191 [Audit 10] WorldRenderer decomposition (partial implementation

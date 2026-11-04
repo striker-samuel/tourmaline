@@ -240,6 +240,21 @@ void EditorApp::DrawSurfaceBrushPanel() {
                 edited |= ImGui::DragFloat("Minimum world Y", &a.minY, 0.1f);
                 edited |= ImGui::DragFloat("Maximum world Y", &a.maxY, 0.1f);
             } else if (type == tour::particles::kEmitter) {
+                int renderMode = int(a.renderMode);
+                if (ImGui::Combo("Particle render type", &renderMode,
+                    "Billboard\0Mesh instances\0")) {
+                    a.renderMode = uint32_t(renderMode);
+                    edited = true;
+                }
+                if (a.renderMode == tour::particles::kMeshRender) {
+                    int meshBin = int(a.meshId);
+                    if (ImGui::SliderInt("Mesh prototype bin", &meshBin, 0,
+                        int(smvk::kMeshParticlesMaxBins) - 1)) {
+                        a.meshId = uint32_t(meshBin);
+                        edited = true;
+                    }
+                    ImGui::TextDisabled("Uses indexed mesh prototypes registered with GPU Placement.");
+                }
                 edited |= ImGui::DragFloat("Total spawn rate (/s)", &a.rate, 0.1f, 0.0f, 500.0f);
                 edited |= ImGui::DragFloat("Start size (m)", &a.sizeStart, 0.01f, 0.001f, 5.0f);
                 edited |= ImGui::DragFloat("End size (m)", &a.sizeEnd, 0.01f, 0.001f, 8.0f);
@@ -328,6 +343,8 @@ void EditorApp::UpdateParticleSourcePreview() {
     m_particleSourceError = evaluated.ok ? evaluated.warning : evaluated.error;
     m_wysiwyg->SetExternalParticleEmitters(evaluated.ok
         ? evaluated.emitters : std::vector<smvk::ParticleEmitterGpu>{});
+    m_wysiwyg->SetExternalMeshParticleEmitters(evaluated.ok
+        ? evaluated.meshEmitters : std::vector<smvk::MeshParticleEmitterGpu>{});
 }
 
 void EditorApp::SaveSurfaceBrushToDoc(smvk::tour::Doc& doc) const {

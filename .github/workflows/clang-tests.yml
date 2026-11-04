@@ -1,0 +1,102 @@
+# Clang toolchain regression coverage, independent of GCC/MSVC tests.yml.
+# Use the same dependency versions and headless CTest exclusions as Linux Tests.
+name: Clang Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: clang-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang:
+    name: Linux (Ubuntu 24.04, Clang 18)
+    runs-on: ubuntu-24.04
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - name: Checkout (submodules recursive)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup compiler cache (sccache)
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 \
+            build-essential cmake ninja-build git curl unzip pkg-config \
+            glslang-tools libvulkan-dev zlib1g-dev mesa-vulkan-drivers \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxinerama-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libasound2-dev libpulse-dev \
+            libdbus-1-dev libudev-dev libunwind-dev libpipewire-0.3-dev \
+            libdecor-0-dev libgbm-dev libdrm-dev libv4l-dev libinput-dev gdb
+
+      - name: Cache KTX-Software install
+        id: ktx-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/ktx
+          key: ktx-4.4.2-${{ runner.os }}
+
+      - name: Build and install KTX-Software 4.4.2 (cache miss)
+        if: steps.ktx-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v4.4.2 \
+            https://github.com/KhronosGroup/KTX-Software /tmp/ktx-src
+          cmake -S /tmp/ktx-src -B /tmp/ktx-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKTX_FEATURE_TOOLS=OFF -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF \
+            -DCMAKE_INSTALL_PREFIX=$HOME/ktx
+          cmake --build /tmp/ktx-build
+          cmake --install /tmp/ktx-build
+
+      - name: Cache third-party downloads
+        uses: actions/cache@v4
+        with:
+          path: external/.downloads
+          key: deps-downloads-${{ runner.os }}-${{ hashFiles('install_dependencies.sh', 'install_dependencies.ps1') }}
+
+      - name: Fetch third-party deps (install_dependencies.sh)
+        run: ./install_dependencies.sh
+
+      - name: Configure (tests ON)
+        run: >
+          cmake -B out/build/clang-tests -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DKTX_ROOT=$HOME/ktx
+          -DBUILD_TESTING=ON .
+
+      - name: Build (all targets - the tests + their dependencies)
+        run: cmake --build out/build/clang-tests
+
+      - name: Compiler cache stats
+        run: sccache --show-stats
+
+      - name: Test
+        run: |
+          mkdir -p .ci-content
+          # retirement_fuzz + world_fields_gpu + placement_gpu +
+          # probepremix_gpu + rhi_upload_barriers excluded: real SDL
+          # window + offscreen Vulkan device - hosted runners have no
+          # display / ICD (see the header).
+          if ! ctest --test-dir out/build/clang-tests --output-on-failure \
+            -E "^(retirement_fuzz_tests|world_fields_gpu_tests|placement_gpu_tests|probepremix_gpu_tests|rhi_upload_barriers_gpu_tests)$"; then
+            # Capture a Linux-only stack trace instead of hiding the failure.
+            gdb --batch -ex "set pagination off" -ex run -ex "thread apply all bt 20" \
+              --args out/build/clang-tests/PakHostTests
+            exit 1
+          fi
+        env:
+          TOURMALINE_CONTENT_DIR: ${{ github.workspace }}/.ci-content
+
