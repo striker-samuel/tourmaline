@@ -3073,22 +3073,17 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		}
 		ImGui::Text("Node %u", node);
 		// Sub-object highlight state (selection only, never edited).
-		ImGui::TextDisabled("select mode: %s (Q radial)", SelModeName(m_selMode));
 		if (m_selMode == SelMode::Face) {
 			if (m_selFaceNode != UINT32_MAX && m_selFaceTri != UINT32_MAX)
 				ImGui::Text("face: node %u tri %u (%.2f,%.2f,%.2f)",
 					m_selFaceNode, m_selFaceTri,
 					m_selFacePos.x, m_selFacePos.y, m_selFacePos.z);
-			else
-				ImGui::TextDisabled("face: none (click a triangle, Q for mesh)");
 		}
 		else if (m_selMode == SelMode::Vertex) {
 			if (m_selVertNode != UINT32_MAX && m_selVertIdx != UINT32_MAX)
 				ImGui::Text("vertex: node %u vert %u (%.2f,%.2f,%.2f)",
 					m_selVertNode, m_selVertIdx,
 					m_selVertPos.x, m_selVertPos.y, m_selVertPos.z);
-			else
-				ImGui::Text("vertex: none (click near a vertex)");
 		}
 
 		// Name.
@@ -3128,7 +3123,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				m_pending.cmd.afterVec = glm::vec3(ts[0], ts[1], ts[2]);
 				FinishDrag();
 			}
-			const attr::Vec3Result rv = attr::Vec3("Rotate (deg)", rs, 0.5f,
+			const attr::Vec3Result rv = attr::Vec3("Rotate", rs, 0.5f,
 				"The node's local Euler rotation (degrees)");
 			const bool rOwn = TrackDrag(EditVerb::Rotate, node,
 				scene.localTransform[node], rv.activated);
@@ -3500,11 +3495,9 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// build (skip per-frame updates + BVH rebuilds) + mega-mesh collapse
 		// eligibility at cook.
 		{
-			ImGui::Separator();
-			const bool inherited = IsStaticNode(scene, int(node));
 			bool self = node < scene.staticRoot.size()
 				&& scene.staticRoot[node] != 0;
-			if (attr::Check("Static (whole subtree)", &self,
+			if (attr::Check("Static", &self,
 					"Transforms freeze after the initial build (skip "
 					"per-frame updates + BVH rebuilds); cook may collapse "
 					"the subtree into one block")) {
@@ -3515,16 +3508,13 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				c.beforeFlag = !self;
 				Do(c);
 			}
-			attr::Readonly("Effective", inherited ? "static" : "dynamic");
 		}
 
 		// Lightmap participation: opt-IN (default off) + legacy opt-out.
 		// A mesh charts only when opted in here AND not excluded below.
 		{
-			ImGui::Separator();
-			const bool optedIn = IsLightmapNode(scene, int(node));
 			bool self = node < scene.lightmap.size() && scene.lightmap[node] != 0;
-			if (attr::Check("Bake lightmaps (subtree, opt-in)", &self,
+			if (attr::Check("Bake lightmaps", &self,
 					"A mesh charts only when opted in here AND not "
 					"excluded below")) {
 				EditCmd c{};
@@ -3534,15 +3524,10 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				c.beforeFlag = !self;
 				Do(c);
 			}
-			attr::Readonly("Effective",
-				optedIn ? "opted in (cook --lightmap charts it)"
-				: "skipped");
 		}
 		{
-			ImGui::Separator();
-			const bool inherited = IsNoLightmapNode(scene, int(node));
 			bool self = node < scene.noLightmap.size() && scene.noLightmap[node] != 0;
-			if (attr::Check("Exclude from lightmaps (subtree)", &self,
+			if (attr::Check("Exclude lightmaps", &self,
 					"The legacy opt-out; the opt-in above is still "
 					"required")) {
 				EditCmd c{};
@@ -3552,18 +3537,14 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				c.beforeFlag = !self;
 				Do(c);
 			}
-			attr::Readonly("Effective",
-				inherited ? "excluded" : "not excluded");
 		}
 
 		// Dither on camera closeup (subtree flag; the GPU fade is LIVE — per
 		// frame, per draw, no rebake needed: the renderer re-resolves the flag
 		// every frame, so a checkbox toggle reflects on the next frame).
 		{
-			ImGui::Separator();
-			const bool inherited = IsDitherCloseupNode(scene, int(node));
 			bool self = node < scene.ditherCloseup.size() && scene.ditherCloseup[node] != 0;
-			if (attr::Check("Dither on camera closeup (subtree)", &self,
+			if (attr::Check("Dither closeup", &self,
 					"1 m fully hidden .. 8 m solid, screen-door fade from "
 					"the subtree anchor; LIVE per frame (no rebake)")) {
 				EditCmd c{};
@@ -3573,7 +3554,6 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				c.beforeFlag = !self;
 				Do(c);
 			}
-			attr::Readonly("Effective", inherited ? "dithered" : "off");
 		}
 
 		// Volumetric-shadow caster mark (SELF flag - the coarse fog tile):
@@ -3581,9 +3561,8 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// (large occluders). Live per frame (the renderer re-resolves the
 		// flag each frame via the CastVolumetricShadow iterator bit).
 		{
-			ImGui::Separator();
 			bool self = IsCastsVolumetricShadowNode(scene, int(node));
-			if (attr::Check("Casts volumetric shadow", &self,
+			if (attr::Check("Volumetric shadow", &self,
 					"Large occluders only (buildings, roofs, walls, "
 					"cliffs): the coarse fog-shadow tile; small props and "
 					"foliage belong to the surface CSM's detail. LIVE per "
@@ -3646,7 +3625,6 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGui::Separator();
 			ImGui::Text("Environment node");
 			if (IsEnvNode(node)) {
-				ImGui::TextDisabled("marked as Environment");
 				if (ImGui::Button("Use as current IBL source")) {
 					m_envCurrent = node;
 					ResolveSceneEnv();
@@ -3660,9 +3638,6 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				m_envCurrent = node;
 				ResolveSceneEnv();
 			}
-			ImGui::TextDisabled(
-				"position = node translate, size = node scale "
-				"(convex volume later; cooked with the resolved look)");
 		}
 
 		// Scene reference block (placeholder nodes).
