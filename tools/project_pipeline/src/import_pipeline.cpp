@@ -67,6 +67,34 @@ bool CopyFileTo(const std::filesystem::path& from,
 
 } // namespace
 
+bool ApplyMaterialPackingRule(const MaterialPackingRule& rule,
+    smvk::assets::MaterialAsset& material) {
+    if (rule.source.empty())
+        return false;
+    const auto source = rule.source == "metallicRoughness"
+        ? material.metallicRoughness : material.occlusion;
+    if (source.path.empty())
+        return false;
+    material.metallicRoughness = source;
+    material.occlusion = source;
+    material.cavity = source;
+    material.packingSource = rule.source;
+    material.channelSelectors = rule.PackedWord();
+    return true;
+}
+
+bool MaterialPackingRuleMatches(const MaterialPackingRule& rule,
+    const smvk::assets::MaterialAsset& material) {
+    if (rule.source.empty())
+        return material.packingSource.empty() && material.channelSelectors == -1;
+    if (!material.packingSource.empty())
+        return material.packingSource == rule.source &&
+            material.channelSelectors == rule.PackedWord();
+    const bool available = rule.source == "metallicRoughness"
+        ? !material.metallicRoughness.path.empty() : !material.occlusion.path.empty();
+    return !available && material.channelSelectors == -1;
+}
+
 bool ImportProjectAsset(const ImportRequest& request,
 	ImportResult& out, std::string& err) {
 	err.clear();
@@ -174,18 +202,7 @@ bool ImportProjectAsset(const ImportRequest& request,
         smvk::assets::MaterialAsset mat;
         if (!smvk::assets::LoadMaterialAsset(materialPath, mat, err))
             return false;
-        const auto& rule = request.materialPacking;
-        if (!rule.source.empty()) {
-            const auto source = rule.source == "metallicRoughness"
-                ? mat.metallicRoughness : mat.occlusion;
-            if (!source.path.empty()) {
-                mat.metallicRoughness = source;
-                mat.occlusion = source;
-                mat.cavity = source;
-                mat.packingSource = rule.source;
-                mat.channelSelectors = rule.PackedWord();
-            }
-        }
+        ApplyMaterialPackingRule(request.materialPacking, mat);
         if (!smvk::assets::SaveMaterialAsset(materialPath, mat, err))
             return false;
     }
