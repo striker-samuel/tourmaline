@@ -242,15 +242,6 @@ namespace editor {
 
 		// ---- header row 3: actions (responsive, not scrolling) ----------
 		ImGui::Separator();
-		if (ImGui::Button("Import asset...")) {
-			std::string picked;
-			if (NativeOpenFile(picked) && !picked.empty()
-				&& ImportAsset(picked)) {
-				// Navigate to where the import landed.
-				navigateAssetDirectory((fs::path(m_projectRoot) / "content"
-					/ "models").generic_string());
-			}
-		}
 		// The toolbar and grid context menu share the same creation
 		// actions; new assets are placed in the browsed directory.
 		const auto drawNewAssetMenu = [&]() {
