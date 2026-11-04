@@ -781,7 +781,8 @@ namespace app {
 				}
 				if (!renderer.ConfigureSnapshotSequence(directory,
 					cfg.cli.snapshotKeyframeInterval, cfg.cli.snapshotCount,
-					sequenceId, std::move(provenance), snapshotError))
+					sequenceId, std::move(provenance),
+					cfg.cli.snapshotCaptureMode == "scoped", snapshotError))
 					throw std::runtime_error("snapshot sequence: " + snapshotError);
 				app.SetRunFinalizer([&renderer]() {
 					return renderer.FinishSnapshotSequence();
