@@ -13,6 +13,19 @@
 
 namespace editor::prefab_sync {
 
+// Resolve exactly one node by a stable identity within an occurrence.
+// Never choose the first match when records are ambiguous or missing.
+template<typename Predicate>
+inline uint32_t ResolveUnique(uint32_t count, Predicate matches) {
+    uint32_t found = UINT32_MAX;
+    for (uint32_t n = 0; n < count; ++n) {
+        if (!matches(n)) continue;
+        if (found != UINT32_MAX) return UINT32_MAX;
+        found = n;
+    }
+    return found;
+}
+
 inline bool Near(const glm::mat4& a, const glm::mat4& b,
     float tolerance = 0.0005f) {
     for (int c = 0; c < 4; ++c)
