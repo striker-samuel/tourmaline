@@ -425,8 +425,12 @@ bool EditorApp::ResolveReferenceAssetEx(const std::string& input,
 
 bool EditorApp::AddSceneReference(const std::string& source,
 	const std::string& name, bool allowGeometryAsset) {
-	if (m_gltfPath.empty() || source.empty()) {
-		Log("References: no loaded source scene / empty reference path.");
+	if (m_gltfPath.empty()) {
+		Log("References: cannot add asset — no source scene loaded.");
+		return false;
+	}
+	if (source.empty()) {
+		Log("References: cannot add asset — empty reference path.");
 		return false;
 	}
 	if (m_cookRunning) {
