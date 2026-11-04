@@ -8,6 +8,7 @@
 #undef NDEBUG
 #include <cassert>
 #include <cmath>
+#include <limits>
 
 int main() {
     using namespace editor::daynight;
@@ -54,4 +55,39 @@ int main() {
     s.enabled = false;
     Advance(s, 5.0f);
     assert(std::fabs(s.hour - 1.0f) < 0.01f);
+
+    // Scrubbed values stay stable when playback is paused or time runs
+    // backwards; crossing midnight always wraps to [0, 24).
+    s.enabled = true;
+    s.hour = 6.0f;
+    s.playing = false;
+    Advance(s, 12.0f);
+    assert(s.hour == 6.0f);
+    s.playing = true;
+    Advance(s, -12.0f);
+    assert(s.hour == 6.0f);
+    Advance(s, 12.0f);
+    assert(std::fabs(s.hour - 18.0f) < 0.01f);
+    s.hour = 23.0f;
+    Advance(s, 2.0f);
+    assert(std::fabs(s.hour - 1.0f) < 0.01f);
+
+    // A UI-driven preview must not persist non-finite hours after corrupt
+    // input or a huge frame delta; finite large deltas still wrap.
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    s.hour = 10.0f;
+    Advance(s, inf);
+    assert(s.hour == 10.0f);
+    Advance(s, nan);
+    assert(s.hour == 10.0f);
+    s.daySeconds = inf;
+    Advance(s, 1.0f);
+    assert(s.hour == 10.0f);
+    s.daySeconds = 24.0f;
+    Advance(s, std::numeric_limits<float>::max());
+    assert(std::isfinite(s.hour) && s.hour >= 0.0f && s.hour < 24.0f);
+    s.hour = nan;
+    Advance(s, 1.0f);
+    assert(std::isnan(s.hour)); // invalid original state is not silently reset
 }
