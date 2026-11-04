@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <random>
 #include <set>
 #include <sstream>
 #include <system_error>
@@ -556,19 +557,38 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	// the staging name must stay clean); the destructor removes every
 	// un-committed staging file, so ANY early return below leaves the
 	// previous generation intact.
+	// Each build receives an isolated staging directory. Two builders for
+	// distinct manifests must never write the same temporary pak name.
 	struct StagedSet {
 		std::vector<fs::path> files;
+		fs::path directory;
 		bool committed = false;
 		~StagedSet() {
-			if (committed)
-				return;
-			std::error_code ec;
-			for (const fs::path& p : files)
-				fs::remove(p, ec);
+			std::error_code cleanupEc;
+			if (!committed)
+				for (const fs::path& p : files)
+					fs::remove(p, cleanupEc);
+			if (!directory.empty())
+				fs::remove_all(directory, cleanupEc);
 		}
 	} staged;
-	const fs::path stagingDir = publish / ".staging";
-	fs::create_directories(stagingDir, ec);
+	const fs::path stagingRoot = publish / ".staging";
+	fs::create_directories(stagingRoot, ec);
+	if (ec) { err = "cannot create staging root: " + ec.message(); return false; }
+	fs::path stagingDir;
+	std::random_device random;
+	for (int attempt = 0; attempt < 32; ++attempt) {
+		const uint64_t nonce = (uint64_t(random()) << 32) | uint64_t(random());
+		stagingDir = stagingRoot / ("build-" + std::to_string(nonce));
+		ec.clear();
+		if (fs::create_directory(stagingDir, ec)) break;
+		if (ec && ec != std::errc::file_exists) {
+			err = "cannot allocate staging directory: " + ec.message(); return false;
+		}
+		stagingDir.clear();
+	}
+	if (stagingDir.empty()) { err = "cannot allocate unique staging directory"; return false; }
+	staged.directory = stagingDir;
 
 	// The per-pak reports land in a LOCAL first: they describe PUBLISHED
 	// outputs, and a mid-set failure rolls the whole set back — the
@@ -855,8 +875,17 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				(publish / finalName).lexically_normal();
 			std::error_code renEc;
 			if (fs::exists(finalPath, renEc)) {
-				// Same content already published — dedup, never touch
-				// the live file.
+				// A pre-existing content-addressed name is NOT evidence that
+				// its bytes are intact: verify before trusting or deduping it.
+				std::ifstream prior(finalPath, std::ios::binary);
+				const std::vector<uint8_t> priorBytes(
+					(std::istreambuf_iterator<char>(prior)),
+					std::istreambuf_iterator<char>());
+				if (!prior || priorBytes != image) {
+					err = "published pak filename collision or corrupted bytes: "
+						+ finalPath.generic_string();
+					return false;
+				}
 				fs::remove(stagedPath, renEc);
 			}
 			else {
@@ -988,6 +1017,22 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		{
 			std::set<std::string> referenced(manifest.paks.begin(),
 				manifest.paks.end());
+			// Preserve content still referenced by OTHER published manifests
+			// in this directory. An invalid manifest disables garbage
+			// collection rather than risking deletion of a live pak.
+			bool sweepSafe = true;
+			std::error_code manifestIterEc;
+			for (const fs::directory_entry& entry :
+					fs::directory_iterator(publish, manifestIterEc)) {
+				if (manifestIterEc) { sweepSafe = false; break; }
+				if (entry.path().extension() != ".tapp") continue;
+				smvk::AppManifest other;
+				std::string loadError;
+				if (!smvk::LoadAppManifest(entry.path().generic_string(),
+						other, loadError)) { sweepSafe = false; break; }
+				referenced.insert(other.paks.begin(), other.paks.end());
+			}
+			if (manifestIterEc) sweepSafe = false;
 			const auto isHex16 = [](const std::string& s) {
 				if (s.size() != 16)
 					return false;
@@ -1015,7 +1060,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 						&& isHex16(name.substr(stem.size() + 1,
 							name.size() - stem.size() - 5));
 					if ((plain || addressed)
-							&& !referenced.count(name))
+							&& sweepSafe && !referenced.count(name))
 						stale.push_back(e.path());
 				}
 			}
