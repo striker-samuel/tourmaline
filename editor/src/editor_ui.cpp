@@ -694,32 +694,67 @@ void EditorApp::FinalizePending() {
 					"Test: the run preview. Profile: capture + stats.");
 			ImGui::SameLine(0.0f, 12.0f);
 		}
-		if (running) {
-			ImGui::TextUnformatted(m_taskWindow.stage.c_str());
-			ImGui::SameLine(vw - 260.0f);
-			if (m_taskWindow.progress >= 0.0f) {
-				ImGui::ProgressBar(m_taskWindow.progress,
-					ImVec2(200.0f, 0.0f), "");
+		// Reserve a right-side task/progress lane before drawing status text.
+		// Long errors are clipped with a tooltip rather than pushing
+		// interactive controls beyond the status bar window.
+		const bool hasTask = m_taskWindow.wantOpen;
+		const bool activeTask = running || m_dccPublishRunning;
+		const float available = ImGui::GetContentRegionAvail().x;
+		const float laneW = activeTask
+			? std::min(250.0f, std::max(90.0f, available * 0.45f))
+			: (hasTask ? std::min(54.0f, available * 0.25f) : 0.0f);
+		std::string status = activeTask
+			? (!m_taskWindow.stage.empty() ? m_taskWindow.stage
+				: "Working...")
+			: (m_taskWindow.done ? m_taskWindow.result : "Ready");
+		if (!m_verbToast.empty())
+			status += "  |  Last: " + m_verbToast;
+		const std::string fullStatus = status;
+		const float textW = std::max(0.0f, available - laneW - 8.0f);
+		if (ImGui::CalcTextSize(status.c_str()).x > textW) {
+			const std::string ellipsis = "...";
+			size_t lo = 0, hi = status.size();
+			while (lo < hi) {
+				const size_t mid = (lo + hi + 1) / 2;
+				const std::string trial = status.substr(0, mid) + ellipsis;
+				if (ImGui::CalcTextSize(trial.c_str()).x <= textW)
+					lo = mid;
+				else
+					hi = mid - 1;
 			}
-			else {
-				ImGui::ProgressBar(-1.0f, ImVec2(200.0f, 0.0f),
-					"working...");
-			}
-			ImGui::SameLine();
-			if (ImGui::SmallButton("Task")) {
-				ReopenTaskWindow();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Bring the task window back.");
+			status = lo ? status.substr(0, lo) + ellipsis : "";
 		}
-		else if (m_taskWindow.done) {
+		ImGui::BeginChild("##status_text", ImVec2(textW, ImGui::GetFrameHeight()),
+			false, ImGuiWindowFlags_NoScrollbar
+				| ImGuiWindowFlags_NoScrollWithMouse);
+		if (m_taskWindow.done && !activeTask)
 			ImGui::TextColored(m_taskWindow.ok
 				? ImVec4(0.4f, 1.0f, 0.5f, 1.0f)
 				: ImVec4(1.0f, 0.45f, 0.4f, 1.0f),
-				"%s", m_taskWindow.result.c_str());
-		}
-		else {
-			ImGui::TextDisabled("Ready");
+				"%s", status.c_str());
+		else
+			ImGui::TextUnformatted(status.c_str());
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", fullStatus.c_str());
+		ImGui::EndChild();
+		if (activeTask || hasTask) {
+			ImGui::SameLine();
+			if (activeTask) {
+				const float progressW = std::max(34.0f,
+					laneW - (hasTask ? 52.0f : 0.0f));
+				if (running && m_taskWindow.progress >= 0.0f)
+					ImGui::ProgressBar(m_taskWindow.progress,
+						ImVec2(progressW, 0), "");
+				else
+					ImGui::ProgressBar(-1.0f,
+						ImVec2(progressW, 0), "...");
+				if (hasTask)
+					ImGui::SameLine();
+			}
+			if (hasTask && ImGui::SmallButton("Task"))
+				ReopenTaskWindow();
+			if (hasTask && ImGui::IsItemHovered())
+				ImGui::SetTooltip("Reopen the operation log and result.");
 		}
 		ImGui::End();
 		ImGui::PopStyleVar();
