@@ -1,7 +1,7 @@
 # TODO — merged-as-draft follow-up work
 
-PRs #136–#142 and #145/#148/#151/#152/#153 were merged while still
-drafts (owner request, 2026-11-04).
+PRs #136–#142 and #145/#148/#151/#152/#153/#157 were merged while
+still drafts (owner request, 2026-11-04).
 Each entry records the work the PR author explicitly flagged as incomplete
 in its own description. Local gates (full all-targets build + ctest +
 Python tooling tests) verified compilation and existing regressions; the
@@ -102,6 +102,19 @@ items below are the remaining author-declared gaps.
 - First slice edits procedural TerrainGroupData only — the streamed
   world H/S atlas, material painting and streamed world tiles are
   declared follow-ups.
+
+## #157 — Modularize editor UI panels/widgets/actions
+- Author never compiled (no local toolchain); the merge gate built it
+  and its structural test runs, plus the conflict resolution note:
+  the branch's "Render Settings" PanelRegistry entry was dropped to
+  preserve #155's Options-window consolidation, and the #153 World
+  Map panel keeps a standalone Begin/End block until registry
+  migration.
+- Author's manual runtime regression checklist remains open: saved
+  dock layouts + View menu persistence, viewport hover/capture,
+  outliner/inspector selection sync, property undo/redo + drag
+  coalescing, asset navigation/import/DCC/thumbnails, modals and
+  keyboard focus.
 
 ## Legacy engineering backlog (migrated from `todo.txt`)
 
