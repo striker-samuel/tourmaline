@@ -950,6 +950,88 @@ void TestRecipeParsing() {
 	}
 }
 
+// Material packing is a project-recipe policy, not scene data.
+// Table-driven fixtures make new packed layouts/sources easy to add.
+void TestMaterialPackingPolicies() {
+    using namespace smvk::project;
+    struct Case { const char* source; const char* channels; int packed; };
+    const Case cases[] = {
+        { "metallicRoughness", "r a g b", 0 | (3 << 2) | (1 << 4) | (2 << 6) },
+        { "occlusion", "b g a r", 2 | (1 << 2) | (3 << 4) | (0 << 6) },
+    };
+    for (const auto& c : cases) {
+        const std::string text = std::string("recipe 1\n")
+            + "entry content/scenes/a.tour\n"
+            + "materialPacking " + c.source + " " + c.channels + "\n"
+            + "[pak world]\noutput world.pak\nscene content/scenes/a.tour\n";
+        ProjectRecipe recipe;
+        RecipeDiagnostic d;
+        const bool parsed = ParseProjectRecipeText(text, recipe, d);
+        Check(parsed && recipe.materialPacking.PackedWord() == c.packed,
+            "material-packing.recipe-parse-and-channel-word");
+        if (!parsed) continue;
+        smvk::assets::MaterialAsset mat{};
+        mat.guid = "packing-test-material";
+        mat.name = "Packed Material";
+        mat.metallicRoughness.path = "mr.png";
+        mat.occlusion.path = "ao.png";
+        const std::string sourcePath = std::string(c.source) == "occlusion"
+            ? "ao.png" : "mr.png";
+        Check(ApplyMaterialPackingRule(recipe.materialPacking, mat)
+                && mat.metallicRoughness.path == sourcePath
+                && mat.occlusion.path == sourcePath
+                && mat.cavity.path == sourcePath
+                && mat.channelSelectors == c.packed
+                && MaterialPackingRuleMatches(recipe.materialPacking, mat),
+            "material-packing.importer-applies-shared-source");
+        const fs::path temp = fs::temp_directory_path() /
+            (std::string("tourmaline_test_packing_") + c.source + ".material");
+        std::string err;
+        smvk::assets::MaterialAsset roundtrip{};
+        const bool saved = smvk::assets::SaveMaterialAsset(temp, mat, err);
+        const bool loaded = saved &&
+            smvk::assets::LoadMaterialAsset(temp, roundtrip, err);
+        Check(loaded && roundtrip.packingSource == c.source
+                && roundtrip.channelSelectors == c.packed
+                && roundtrip.metallicRoughness.path == sourcePath
+                && roundtrip.occlusion.path == sourcePath
+                && roundtrip.cavity.path == sourcePath,
+            "material-packing.metadata-roundtrip");
+        std::error_code ec;
+        fs::remove(temp, ec);
+        auto changed = recipe.materialPacking;
+        changed.cavity = (changed.cavity + 1) & 3;
+        Check(!MaterialPackingRuleMatches(changed, mat),
+            "material-packing.recipe-change-invalidates");
+    }
+    MaterialPackingRule rule;
+    smvk::assets::MaterialAsset native{};
+    Check(!ApplyMaterialPackingRule(rule, native)
+            && MaterialPackingRuleMatches(rule, native),
+        "material-packing.native-default-backcompat");
+    rule.source = "metallicRoughness";
+    Check(!ApplyMaterialPackingRule(rule, native)
+            && MaterialPackingRuleMatches(rule, native),
+        "material-packing.missing-texture-backcompat");
+
+    const char* invalid[] = {
+        "materialPacking metallicRoughness r g b x",
+        "materialPacking bogus r g b a",
+        "materialPacking occlusion r g",
+        "materialPacking metallicRoughness r g b a\nmaterialPacking occlusion r g b a",
+    };
+    for (const char* line : invalid) {
+        const std::string text = std::string("recipe 1\n") + line
+            + "\nentry content/scenes/a.tour\n[pak world]\n"
+              "output world.pak\nscene content/scenes/a.tour\n";
+        ProjectRecipe recipe;
+        RecipeDiagnostic diag;
+        Check(!ParseProjectRecipeText(text, recipe, diag)
+                && !diag.message.empty() && diag.line > 0,
+            "material-packing.invalid-recipe-rejected");
+    }
+}
+
 // Glob matcher unit checks ('**' crosses directories; '*'/'?' do not).
 void TestRecipeGlob() {
 	using smvk::project::RecipeGlobMatch;
@@ -4606,6 +4688,7 @@ int main(int argc, char** argv) {
 	TestShaderAssets();
 	TestAudioGraphAssets();
 	TestRecipeParsing();
+	TestMaterialPackingPolicies();
 	TestRecipeGlob();
 	TestRecipeResolution();
 	TestAppManifest();
