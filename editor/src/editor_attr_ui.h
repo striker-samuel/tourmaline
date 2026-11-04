@@ -178,61 +178,37 @@ inline bool Int(const char* name, int* v, int mn, int mx,
 	return edited;
 }
 
-// ---- VEC3 (the transform rows): EXPANDABLE per-axis drags. A
-// DragFloat3 crams three sub-fields into one row's remainder — at the
-// inspector's narrow widths each axis gets a sliver. The row shows the
-// compact "(x, y, z)" summary + a disclosure chip; expanded (the
-// default) draws three FULL-WIDTH axis drags aligned under the value
-// column. The item state the undo wiring needs (IsItemActivated /
-// IsItemDeactivatedAfterEdit) is AGGREGATED across the axis rows into
-// the result — a multi-item widget cannot leave "the item" on the last
-// axis drawn.
+// ---- VEC3: three compact, aligned property rows. Every axis uses the
+// same label/value columns as Name, floats, and inspector flags.
+// Aggregate per-axis drag lifecycle events for the existing undo contract.
 struct Vec3Result {
-	bool edited = false;     // any axis changed this frame
-	bool activated = false;  // any axis drag started this frame
-	bool finished = false;   // an edited axis released this frame
+	bool edited = false;
+	bool activated = false;
+	bool finished = false;
 };
 inline Vec3Result Vec3(const char* name, float v[3], float speed,
 	const char* hint) {
 	Vec3Result r;
-	LabelCell(name, hint);
 	ImGui::PushID(name);
-	// The disclosure state: the window's storage, keyed by the property
-	// id (survives frames; per-window like every ImGui open state).
-	const ImGuiID openId = ImGui::GetID("vec3open");
-	bool open = ImGui::GetStateStorage()->GetBool(openId, true);
-	if (ImGui::Button(open ? "-###vec3" : "+###vec3", ImVec2(18.0f, 0.0f))) {
-		open = !open;
-		ImGui::GetStateStorage()->SetBool(openId, open);
-	}
-	ImGui::SameLine();
-	ImGui::TextDisabled("%.2f, %.2f, %.2f", v[0], v[1], v[2]);
-	if (open) {
-		static const char* kAxes[3] = { "X", "Y", "Z" };
-		const float colW = LabelColumnWidth();
-		for (int i = 0; i < 3; ++i) {
-			ImGui::PushID(i); // the axis row's id: X/Y/Z must not
-			                  // collide (a bare "##axis" gave all three
-			                  // the SAME id - the scale/translate XYZ
-			                  // misbehavior)
-			ImGui::Indent(colW); // align under the value column
-			ImGui::SetNextItemWidth(std::max(1.0f,
-				ImGui::GetContentRegionAvail().x - 16.0f));
-			float candidate = numeric::Display(v[i]);
-			if (ImGui::DragFloat("##axis", &candidate, speed, 0.0f, 0.0f,
-					"%.3f") && numeric::Finite(candidate)) {
-				v[i] = candidate;
-				r.edited = true;
-			}
-			if (ImGui::IsItemActivated())
-				r.activated = true;
-			if (ImGui::IsItemDeactivatedAfterEdit())
-				r.finished = true;
-			ImGui::SameLine();
-			ImGui::TextDisabled("%s", kAxes[i]);
-			ImGui::Unindent(colW);
-			ImGui::PopID();
+	static const char* kAxes[3] = { "X", "Y", "Z" };
+	for (int i = 0; i < 3; ++i) {
+		ImGui::PushID(i);
+		const std::string label = std::string(name) + " " + kAxes[i];
+		LabelCell(label.c_str(), hint);
+		ImGui::SetNextItemWidth(-1.0f);
+		float candidate = numeric::Display(v[i]);
+		if (ImGui::DragFloat("##axis", &candidate, speed, 0.0f, 0.0f,
+				"%.3f") && numeric::Finite(candidate)) {
+			v[i] = candidate;
+			r.edited = true;
 		}
+		if (hint && ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", hint);
+		if (ImGui::IsItemActivated())
+			r.activated = true;
+		if (ImGui::IsItemDeactivatedAfterEdit())
+			r.finished = true;
+		ImGui::PopID();
 	}
 	ImGui::PopID();
 	return r;
