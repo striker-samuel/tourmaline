@@ -12,6 +12,8 @@ import sys
 import urllib.request
 import uuid
 
+from experiment_environment import collect_environment
+
 ROOT = Path(__file__).resolve().parents[1]
 IDENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MODES = ("cull", "snapshot", "bench")
@@ -41,6 +43,8 @@ def load_matrix(path):
             raise ValueError("invalid workdir")
         if s.get("mode", "cull") not in MODES:
             raise ValueError("invalid mode")
+        if "dxc" in s and (not isinstance(s["dxc"], str) or not s["dxc"]):
+            raise ValueError("dxc must be a nonempty executable path")
         pins = s.get("env", {})
         if not isinstance(pins, dict) or any(
             not isinstance(k, str) or not re.fullmatch(r"TOURMALINE_[A-Z0-9_]+", k)
@@ -50,7 +54,7 @@ def load_matrix(path):
     return data
 
 
-def make_record(machine, setup, scenario, mode, run_id, code_id, result, rc):
+def make_record(machine, setup, scenario, mode, run_id, code_id, result, rc, environment=None):
     status = "pass" if rc == 0 and result.get("ok") is True else (
         "mismatch" if mode == "cull" and rc == 2 else "error")
     if mode == "cull" and status == "pass" and result.get("cull_status") != "match":
@@ -59,7 +63,8 @@ def make_record(machine, setup, scenario, mode, run_id, code_id, result, rc):
             "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
             "machine": machine, "platform": platform.platform(),
             "setup": setup, "scenario": scenario, "mode": mode, "code_id": code_id,
-            "status": status, "exit_code": rc, "result": result}
+            "status": status, "exit_code": rc, "result": result,
+            "environment": environment}
 
 
 def upload(origin, token, record):
@@ -86,6 +91,8 @@ def run(args):
     failures = 0
     for setup in matrix["setups"]:
         mode = setup.get("mode", args.mode)
+        # Probe once per setup: a failed probe never turns a good benchmark red.
+        environment = collect_environment(Path(setup["exe"]).resolve(), setup.get("dxc"))
         for scenario in matrix["scenarios"]:
             run_id = str(uuid.uuid4())
             destination = args.output.resolve() / args.machine / setup["name"] / scenario / run_id
@@ -118,7 +125,7 @@ def run(args):
             except (OSError, ValueError):
                 result = {"ok": False, "error": "harness produced no valid result"}
             record = make_record(args.machine, setup["name"], scenario, mode, run_id,
-                                 args.code_id, result, rc)
+                                 args.code_id, result, rc, environment)
             (destination / "record.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
             if args.collector:
                 try:
