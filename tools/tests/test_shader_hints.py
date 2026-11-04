@@ -19,6 +19,17 @@ class ShaderHintTests(unittest.TestCase):
         rolled, _ = hints.apply_hints(src, loop_mode="loop")
         self.assertIn("[loop] for(int a", rolled)
 
+    def test_explicit_unroll_count(self):
+        source = "for(int i=0;i<16;i++) {}"
+        output, changes = hints.apply_hints(
+            source, loop_mode="unroll", unroll_count=4)
+        self.assertIn("[unroll(4)] for", output)
+        self.assertEqual(changes[0]["unroll_count"], 4)
+        with self.assertRaises(ValueError):
+            hints.apply_hints(source, loop_mode="loop", unroll_count=4)
+        with self.assertRaises(ValueError):
+            hints.apply_hints(source, loop_mode="unroll", unroll_count=2048)
+
     def test_branch_flatten(self):
         src = "if (a) {} if (b) {}"
         out, _ = hints.apply_hints(src, branch_mode="flatten", branch_index=1)
