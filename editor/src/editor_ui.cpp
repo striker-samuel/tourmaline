@@ -5123,6 +5123,29 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		if (m_assetGenericPath != m_assetsSel) {
 			m_assetGenericPath = m_assetsSel;
 			m_assetGenericPreview = ReadBrowserFilePreview(path);
+			m_animationInspectDoc.reset();
+			m_animationInspectError.clear();
+			m_animationInspectWarnings.clear();
+			m_animationInspectClip = 0;
+			m_animationInspectTrack = 0;
+		}
+		// Animation assets have their own multi-clip inspector, not just a
+		// truncated source preview. Parse once per asset selection.
+		if (m_assetGenericPath == m_assetsSel) {
+			const std::string ext = path.extension().string();
+			if (ext == ".tourAnim" || ext == ".touranim") {
+				if (!m_animationInspectDoc && m_animationInspectError.empty()) {
+					m_animationInspectDoc.emplace();
+					if (!tour::asset::LoadTourAnim(path.string(),
+						*m_animationInspectDoc, m_animationInspectError,
+						&m_animationInspectWarnings))
+						m_animationInspectDoc.reset();
+				}
+			} else {
+				m_animationInspectDoc.reset();
+				m_animationInspectError.clear();
+				m_animationInspectWarnings.clear();
+			}
 		}
 		const auto& preview = m_assetGenericPreview;
 		ImGui::TextWrapped("%s", path.filename().string().c_str());
@@ -5148,6 +5171,119 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		}
 		if (!preview.readOk)
 			return;
+		if (m_animationInspectDoc || !m_animationInspectError.empty()) {
+			ImGui::SeparatorText("Animation clips");
+			if (!m_animationInspectError.empty()) {
+				ImGui::TextWrapped("Cannot parse animation: %s",
+					m_animationInspectError.c_str());
+				if (ImGui::Button("Retry loading animation")) {
+					m_animationInspectError.clear();
+					m_animationInspectDoc.reset();
+				}
+				return;
+			}
+			const auto& doc = *m_animationInspectDoc;
+			ImGui::Text("Source skeleton: %s",
+				doc.source.empty() ? "(not specified)" : doc.source.c_str());
+			ImGui::Text("%zu clips", doc.clips.size());
+			for (const auto& warning : m_animationInspectWarnings)
+				ImGui::TextWrapped("Warning: %s", warning.c_str());
+			if (doc.clips.empty()) {
+				ImGui::TextDisabled("This animation file contains no clips.");
+				return;
+			}
+			m_animationInspectClip = std::clamp(m_animationInspectClip,
+				0, int(doc.clips.size()) - 1);
+			if (ImGui::BeginListBox("##animationClips",
+				ImVec2(-1, std::min(170.0f, 30.0f * doc.clips.size() + 8.0f)))) {
+				for (int i = 0; i < int(doc.clips.size()); ++i) {
+					const auto& clip = doc.clips[size_t(i)];
+					ImGui::PushID(i);
+					const std::string name = clip.name.empty()
+						? "Unnamed clip " + std::to_string(i + 1) : clip.name;
+					if (ImGui::Selectable(name.c_str(), i == m_animationInspectClip)) {
+						m_animationInspectClip = i;
+						m_animationInspectTrack = 0;
+					}
+					ImGui::PopID();
+				}
+				ImGui::EndListBox();
+			}
+			const auto& clip = doc.clips[size_t(m_animationInspectClip)];
+			ImGui::Text("Duration: %.3f s  |  %.1f FPS",
+				clip.duration, clip.fps);
+			ImGui::Text("%zu tracks", clip.tracks.size());
+			if (ImGui::Button("Preview clip in prefab world")) {
+				size_t previewCluster = 0;
+				bool hasSkeleton = false;
+				if (m_prefab.world) {
+					for (size_t i = 0; i < m_prefab.world->clusters.size(); ++i) {
+						if (m_prefab.world->clusters[i]->hasSkeleton) {
+							previewCluster = i;
+							hasSkeleton = true;
+							break;
+						}
+					}
+				}
+				if (hasSkeleton) {
+					// Never modify the parent scene. Keep the original
+					// prefab locals so switching and scrubbing remain pure.
+					if (!m_prefabAnimationPreview ||
+						m_prefabAnimationClusterIndex != previewCluster)
+						m_prefabAnimationRest =
+							m_prefab.world->clusters[previewCluster]->scene.localTransform;
+					m_prefabAnimationClusterIndex = previewCluster;
+					m_prefabAnimationClip = clip;
+					m_prefabAnimationSource = path.string();
+					m_prefabAnimationTime = 0.0f;
+					m_prefabAnimationPlaying = true;
+					m_prefabAnimationPreview = true;
+					m_prefab.world->clusters[previewCluster]->SetAnimClip(clip);
+					m_showPrefabWindow = true;
+				} else {
+					ImGui::OpenPopup("##animationPreviewHelp");
+				}
+			}
+			if (ImGui::BeginPopup("##animationPreviewHelp")) {
+				ImGui::TextWrapped("Open a .tour prefab with a skinned mesh "
+					"and skeleton first (select its .tour asset and choose "
+					"'Edit as prefab world...'). Then preview this clip. "
+					"The clip joint IDs must match the prefab source skeleton.");
+				ImGui::EndPopup();
+			}
+			ImGui::TextDisabled("Read-only tracks; select a clip to preview.");
+			if (ImGui::BeginTable("##animationTracks", 4,
+				ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+				ImGuiTableFlags_ScrollY, ImVec2(0, 175))) {
+				ImGui::TableSetupColumn("Joint");
+				ImGui::TableSetupColumn("Channel");
+				ImGui::TableSetupColumn("Keys");
+				ImGui::TableSetupColumn("Interpolation");
+				ImGui::TableHeadersRow();
+				for (size_t i = 0; i < clip.tracks.size(); ++i) {
+					const auto& track = clip.tracks[i];
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::Text("%u %s", track.joint, track.name.c_str());
+					ImGui::TableNextColumn();
+					ImGui::TextUnformatted(track.channel == tour::asset::Channel::Rotate
+						? "Rotate" : track.channel == tour::asset::Channel::Scale
+						? "Scale" : "Translate");
+					ImGui::TableNextColumn();
+					ImGui::Text("%zu", track.keys.size());
+					ImGui::TableNextColumn();
+					ImGui::TextUnformatted(track.spline == tour::asset::Spline::Step
+						? "Step" : track.spline == tour::asset::Spline::Linear
+						? "Linear" : "Catmull-Rom");
+				}
+				ImGui::EndTable();
+			}
+			if (m_prefabAnimationPreview &&
+				m_prefabAnimationSource == path.string()) {
+				ImGui::TextDisabled("Playback controls are in the Prefab World pane.");
+			}
+			return;
+		}
 		if (!preview.isText) {
 			ImGui::TextDisabled("Binary or non-UTF-8 file (metadata only).");
 			return;
