@@ -135,15 +135,17 @@ void EditorApp::DrawIntersectionToolsWindow() {
     }
 
     ImGui::SeparatorText("Baked source assets");
-    ImGui::InputText("Output OBJ path",output,sizeof(output));
+    ImGui::InputText("Output asset path (.gltf)",output,sizeof(output));
     ImGui::TextWrapped("Write .obj files under your project's content "
         "folder and import them as regular geometry. Curves use OBJ line "
         "primitives; ribbons/skirts use indexed triangles with UVs and normals.");
     if (!hasCurves) ImGui::BeginDisabled();
     if (ImGui::Button("Save curves (.obj lines)")) {
         std::string err;
-        if (geo::SaveCurvesObj(output,curves,err))
-            status = std::string("Saved curve source: ") + output;
+        std::filesystem::path p(output);
+        p.replace_extension(".curves.obj");
+        if (geo::SaveCurvesObj(p.string(),curves,err))
+            status = std::string("Saved curve source: ") + p.string();
         else status = err;
         Log("Intersection tools: " + status);
     }
@@ -151,8 +153,10 @@ void EditorApp::DrawIntersectionToolsWindow() {
     if (geometry.indices.empty()) ImGui::BeginDisabled();
     if (ImGui::Button("Save baked ribbon/skirt (.obj)")) {
         std::string err;
-        if (geo::SaveRibbonObj(output,geometry,err))
-            status = std::string("Saved baked geometry: ") + output;
+        std::filesystem::path p(output);
+        p.replace_extension(".obj");
+        if (geo::SaveRibbonObj(p.string(),geometry,err))
+            status = std::string("Saved baked geometry: ") + p.string();
         else status = err;
         Log("Intersection tools: " + status);
     }
