@@ -14,13 +14,15 @@ from tourmaline_asset_cache import (AssetClient, default_cache,
                                     default_client_config)
 
 
-def configure(url, token, cache=None, config=None):
+def configure(url, token, cache=None, config=None, *, allow_insecure_remote=False):
     # Validate the URL and token without requiring a network connection.
-    client = AssetClient(url, token, cache=cache or default_cache())
+    client = AssetClient(url, token, cache=cache or default_cache(),
+                         allow_insecure_remote=allow_insecure_remote)
     destination = Path(config or default_client_config()).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     settings = {"schema_version": 1, "url": client.url, "token": token,
-                "cache": str(client.cache)}
+                "cache": str(client.cache),
+                "allow_insecure_remote": bool(allow_insecure_remote)}
     pending = destination.with_suffix(".tmp")
     try:
         pending.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
@@ -52,7 +54,7 @@ def install_maya(scripts_dir=None):
 
 def terminal():
     print("Tourmaline NAS asset repository — workstation connection")
-    url = input("Server URL (e.g. http://nas.local:8765): ").strip()
+    url = input("Server URL (e.g. https://nas.local): ").strip()
     token = input("Access token from the NAS host: ").strip()
     cache = input(f"Local cache [{default_cache()}]: ").strip() or str(default_cache())
     path = configure(url, token, cache)
@@ -74,7 +76,7 @@ def gui():
                                                 padx=12,pady=15,sticky="w")
     fields = {}
     for n, (key,title,initial) in enumerate((
-            ("url","NAS API URL","http://nas.local:8765"),
+            ("url","NAS API URL","https://nas.local"),
             ("token","Access token",""),
             ("cache","Local verified cache",str(default_cache()))), 1):
         variable = tk.StringVar(value=initial)
@@ -117,15 +119,19 @@ def main(argv=None):
     p.add_argument("--config")
     p.add_argument("--install-maya", action="store_true")
     p.add_argument("--check", action="store_true")
+    p.add_argument("--allow-insecure-remote", action="store_true",
+                   help="Allow remote plaintext HTTP tokens on trusted LAN only")
     args = p.parse_args(argv)
     if args.url or args.token:
         if not (args.url and args.token):
             p.error("--url and --token are both required")
         if args.check:
             # A failed connection must not replace a working client config.
-            probe = AssetClient(args.url, args.token, cache=args.cache or default_cache())
+            probe = AssetClient(args.url, args.token, cache=args.cache or default_cache(),
+                                allow_insecure_remote=args.allow_insecure_remote)
             count = len(probe.sources())
-        path = configure(args.url, args.token, args.cache, args.config)
+        path = configure(args.url, args.token, args.cache, args.config,
+                         allow_insecure_remote=args.allow_insecure_remote)
         print("Client config:", path)
         if args.install_maya:
             print("Installed:", *install_maya(), sep="\n  ")

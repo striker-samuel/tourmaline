@@ -1,3 +1,9 @@
+> **Security default:** clients require HTTPS for remote bearer-token transport.
+> Loopback HTTP is allowed. A trusted development LAN may deliberately opt in
+> using `--allow-insecure-remote` in the workstation CLI. HTTPS must be
+> terminated by a verified TLS reverse proxy; the built-in server is HTTP.
+> Server user/group ACLs and token rotation remain enforced independently.
+
 # Tourmaline Asset Repository — Windows/Linux NAS manual
 
 This is the setup manual for a **single authoritative shared asset service** on a

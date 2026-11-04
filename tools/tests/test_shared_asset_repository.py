@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -23,7 +24,7 @@ from tools.offline_asset_service import Archive
 from tools.shared_asset_repository import SharedArchive, handler_for_shared
 from tools.install_shared_assets import configure as configure_host
 from tools.configure_asset_client import configure as configure_client
-from tourmaline_asset_cache import AssetClient, load_client_settings
+from tourmaline_asset_cache import AssetClient, load_client_settings, _NoAuthenticatedRedirect
 
 
 TOKEN = "test-only-long-random-access-token-123456789"
@@ -295,11 +296,34 @@ class SharedRepositoryTests(unittest.TestCase):
             httpd.server_close()
             bg.join(timeout=5)
 
+    def test_remote_http_requires_explicit_opt_in(self):
+        with self.assertRaisesRegex(ValueError, "require HTTPS"):
+            AssetClient("http://nas.example:8765", TOKEN,
+                        cache=self.workstation_cache)
+        with self.assertRaisesRegex(ValueError, "require HTTPS"):
+            configure_client("http://nas.example:8765", TOKEN,
+                             cache=self.workstation_cache)
+        secure = AssetClient("https://nas.example", TOKEN,
+                             cache=self.workstation_cache)
+        secure.close()
+        local = AssetClient("http://127.0.0.1:8765", TOKEN,
+                            cache=self.workstation_cache)
+        local.close()
+
+    def test_authenticated_redirects_fail_closed(self):
+        req = Request("https://nas.example/v2/sources",
+                      headers={"Authorization": "Bearer " + TOKEN})
+        with self.assertRaises(HTTPError):
+            _NoAuthenticatedRedirect().redirect_request(
+                req, None, 302, "redirect", {},
+                "https://attacker.example/collect")
+
     def test_client_config_stores_url_and_local_cache(self):
         root = Path(self.temp.name)
         config = configure_client("http://nas.example:8765", TOKEN,
                                   cache=root / "artist-cache",
-                                  config=root / "client.json")
+                                  config=root / "client.json",
+                                   allow_insecure_remote=True)
         raw = json.loads(config.read_text(encoding="utf-8"))
         self.assertEqual(raw["url"], "http://nas.example:8765")
         self.assertEqual(raw["token"], TOKEN)
