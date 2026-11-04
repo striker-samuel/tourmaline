@@ -1,6 +1,6 @@
 # Scene mutation journaling and topology revisions
 
-> **STATUS: IMPLEMENTATION NOT STARTED.** This is a draft PR scaffold containing an audit-derived scope specification only. Do not merge until actual implementation commits, tests, and review are complete.
+> **STATUS: IN PROGRESS.** Partial implementation committed: generation-checked transform setter, animation migration and dynamic-root journal fix. Complete caller migration and integration tests remain. This branch is not merge-ready until all acceptance tests and remaining scope are complete.
 
 **Finding:** L-02  
 **Priority:** P0
