@@ -2563,6 +2563,10 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// stop/relaunch owns the lifetime (DriveWysiwygLive's witnesses).
 		m_wysiwyg->SetBorrowedWorld(m_world.get());
 		m_wysiwyg->SetInlineOutput(true);
+		// Editor previews intentionally stay on the PCF shadow path.
+		// EVSM's MSAA depth/moment/blur atlases are not supported in this
+		// inline editor lifecycle; don't let an old session flag revive them.
+		m_renderQuality.evsmEnabled = false;
 		m_wysiwygValid = m_wysiwyg->onAttach();
 		m_wysiwygWorld = m_world.get();
 		m_wysiwygSceneId = SceneIdForHost();
