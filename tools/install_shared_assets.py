@@ -40,9 +40,9 @@ def configure(source, archive, cache, config=None, *, listen_lan=False,
     SharedArchive(source, archive, cache, settle, int(cache_gib * 1024**3))
     output = Path(config or default_config()).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    if token is None and output.exists():
-        old = json.loads(output.read_text(encoding="utf-8"))
-        token = old.get("access_token")
+    previous = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
+    if token is None:
+        token = previous.get("access_token")
     token = token or secrets.token_urlsafe(40)
     if len(token) < 24:
         raise ValueError("token must be at least 24 characters")
@@ -58,8 +58,15 @@ def configure(source, archive, cache, config=None, *, listen_lan=False,
         "poll_seconds": poll,
         "settle_seconds": settle,
         "cache_gib": cache_gib,
-        "consumer_ttl_seconds": 90
+        "consumer_ttl_seconds": previous.get("consumer_ttl_seconds", 90)
     }
+    # Preserve optional per-user registry configuration across re-installs.
+    # Silently dropping this setting would restore shared-token access.
+    if previous.get("permissions_registry"):
+        registry = Path(previous["permissions_registry"]).expanduser().resolve()
+        if registry == source_path or source_path in registry.parents:
+            raise ValueError("permissions registry must be outside source share")
+        config_data["permissions_registry"] = str(registry)
     temporary = output.with_suffix(".tmp")
     try:
         temporary.write_text(json.dumps(config_data, indent=2) + "\n", encoding="utf-8")
