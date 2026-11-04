@@ -10278,47 +10278,58 @@ namespace engine {
 	}
 
 	void WorldRenderer::ExportScopedSnapshotBatch() {
-		if (!m_snapshotError.empty()) return;
-		const size_t bytes = size_t(m_scopedExtent.width) * m_scopedExtent.height * 4u;
-		// One host-visible staging transfer, one submission and one wait for
-		// the WHOLE GPU-resident batch. All slot copies were recorded during
-		// their respective frame submissions, and the caller waited once
-		// for the last frame before invoking this method.
-		std::vector<uint8_t> allRgba(bytes * m_scopedFrames.size());
-		if (!m_context->DownloadDataFromBuffer(m_scopedCaptureBuffer,
-			allRgba.data(), allRgba.size(), 0)) {
-			m_snapshotError = "scoped batch GPU readback failed";
+		if (!m_snapshotError.empty() || m_scopedFrames.empty()) return;
+		const size_t bytes = m_scopedFrameBytes;
+		// The global staging allocator defaults to a 256 MiB ceiling.
+		// At 4K, fifteen frames exceed that; drain the same completed GPU
+		// batch in the largest possible contiguous staging transfers.
+		// At 1080p/1440p this is a single download/submission/wait.
+		const size_t cap = smvk::mem::config::Runtime().readbackStagingMax;
+		if (bytes == 0 || cap < bytes) {
+			m_snapshotError = "scoped capture frame exceeds GPU readback staging cap";
 			return;
 		}
-		for (size_t i = 0; i < m_scopedFrames.size(); ++i) {
-			std::span<const uint8_t> rgba(allRgba.data() + i * bytes, bytes);
-			auto& f = m_scopedFrames[i];
-			if (!m_snapshotSequence.Stage(f.tick, f.dtNs, f.state,
-				std::move(f.events), std::move(f.provenance), m_snapshotError)) return;
-			const auto dest = m_snapshotSequence.FramePath();
-			const std::filesystem::path tmp = dest.string() + ".pending.png";
-			if (std::filesystem::exists(dest) || std::filesystem::exists(tmp)) {
-				m_snapshotError = "snapshot PNG already exists: " + dest.string();
+		const size_t framesPerDownload = std::max<size_t>(
+			1, std::min(kScopedCaptureFrames, cap / bytes));
+		for (size_t base = 0; base < m_scopedFrames.size(); base += framesPerDownload) {
+			const size_t count = std::min(framesPerDownload, m_scopedFrames.size() - base);
+			std::vector<uint8_t> rgbaBatch(bytes * count);
+			if (!m_context->DownloadDataFromBuffer(m_scopedCaptureBuffer,
+				rgbaBatch.data(), rgbaBatch.size(), base * bytes)) {
+				m_snapshotError = "scoped batch GPU readback failed";
 				return;
 			}
-			if (!LutWritePng(tmp.string().c_str(), m_scopedExtent.width,
-				m_scopedExtent.height, rgba.data())) {
-				m_snapshotError = "scoped PNG encoding failed: " + dest.string();
-				return;
-			}
-			if (!m_snapshotSequence.Complete(tmp.string(), rgba, m_snapshotError)) {
+			for (size_t j = 0; j < count; ++j) {
+				std::span<const uint8_t> rgba(rgbaBatch.data() + j * bytes, bytes);
+				auto& frame = m_scopedFrames[base + j];
+				if (!m_snapshotSequence.Stage(frame.tick, frame.dtNs, frame.state,
+					std::move(frame.events), std::move(frame.provenance), m_snapshotError))
+					return;
+				const auto dest = m_snapshotSequence.FramePath();
+				const std::filesystem::path tmp = dest.string() + ".pending.png";
+				if (std::filesystem::exists(dest) || std::filesystem::exists(tmp)) {
+					m_snapshotError = "snapshot PNG already exists: " + dest.string();
+					return;
+				}
+				if (!LutWritePng(tmp.string().c_str(), m_scopedExtent.width,
+					m_scopedExtent.height, rgba.data())) {
+					m_snapshotError = "scoped PNG encoding failed: " + dest.string();
+					return;
+				}
+				if (!m_snapshotSequence.Complete(tmp.string(), rgba, m_snapshotError)) {
+					std::error_code ec;
+					std::filesystem::remove(tmp, ec);
+					return;
+				}
 				std::error_code ec;
-				std::filesystem::remove(tmp, ec);
-				return;
+				std::filesystem::rename(tmp, dest, ec);
+				if (ec) {
+					m_snapshotError = "cannot publish snapshot PNG: " + ec.message();
+					std::filesystem::remove(tmp, ec);
+					return;
+				}
+				std::cout << "[Snapshot] exported " << dest.string() << "\n";
 			}
-			std::error_code ec;
-			std::filesystem::rename(tmp, dest, ec);
-			if (ec) {
-				m_snapshotError = "cannot publish snapshot PNG: " + ec.message();
-				std::filesystem::remove(tmp, ec);
-				return;
-			}
-			std::cout << "[Snapshot] exported " << dest.string() << "\n";
 		}
 		m_scopedFrames.clear();
 	}
