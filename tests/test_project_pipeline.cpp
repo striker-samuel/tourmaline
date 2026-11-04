@@ -1003,7 +1003,17 @@ void TestMaterialPackingPolicies() {
         changed.cavity = (changed.cavity + 1) & 3;
         Check(!MaterialPackingRuleMatches(changed, mat),
             "material-packing.recipe-change-invalidates");
+        changed = recipe.materialPacking;
+        changed.source = changed.source == "occlusion"
+            ? "metallicRoughness" : "occlusion";
+        Check(!MaterialPackingRuleMatches(changed, mat),
+            "material-packing.source-change-invalidates");
     }
+    // Serialized GPU material rows retain the 128-byte contract; channel
+    // selectors travel in its reserved tex2.w lane.
+    Check(sizeof(smvk::MaterialValues) == 128 &&
+            smvk::MaterialValues{}.textures2.w == -1,
+        "material-packing.legacy-cooked-row-default");
     MaterialPackingRule rule;
     smvk::assets::MaterialAsset native{};
     Check(!ApplyMaterialPackingRule(rule, native)
