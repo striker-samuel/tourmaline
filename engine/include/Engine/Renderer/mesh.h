@@ -375,7 +375,7 @@ namespace tour {
 		glm::vec3 pos;         // @ 0  (12 B)
 		uint16_t normal[4];     // @ 12 (8 B)  half xyz (w pad)
 		uint16_t tangent[4];   // @ 20 (8 B)  half xyz + bitangent flip w
-		uint8_t color[4];      // @ 28 (4 B)  RGBA8_UNORM albedo tint
+		uint8_t color[4];      // @ 28 (4 B)  S-mask RGBA attributes (A=solid/hole)
 	};
 	static_assert(sizeof(TerrainVertex) == 32);
 	static_assert(offsetof(TerrainVertex, pos) == 0);
@@ -383,26 +383,27 @@ namespace tour {
 	static_assert(offsetof(TerrainVertex, tangent) == 20);
 	static_assert(offsetof(TerrainVertex, color) == 28);
 
-	// GPU TERRAIN FAR vertex (8 bytes, ONE interleaved binding — the
-	// article's Terrain IV R16G16B16A16_FLOAT layout): the far LOD's grid
-	// positions are NOT stored. p = half4(ix, iz, shade, flags) where
-	// (ix,iz) is the integer grid coordinate in the block (exact in
-	// half to 2048), shade is the baked mask/checker brightness, and
-	// flags is 0 (surface) or 1 (skirt — the VS drops y by skirtDepth).
-	// World XZ reconstructs as blockOrigin + grid * step (push tail);
-	// height samples the R16 height atlas in the VS.
+	// GPU TERRAIN FAR vertex (12 bytes): half4 grid + RGBA8 mask attributes.
+	// p = half4(ix, iz, unused, skirtFlag); the RGB attribute channels
+	// are available to terrain materials, alpha=0 marks a clipping hole.
+	// World XZ reconstructs in the VS; Y samples the R16 height atlas.
 	struct TerrainFarVertex {
 		uint16_t p[4];
+		uint8_t color[4];
 	};
-	static_assert(sizeof(TerrainFarVertex) == 8);
+	static_assert(sizeof(TerrainFarVertex) == 12);
 	static_assert(offsetof(TerrainFarVertex, p) == 0);
+	static_assert(offsetof(TerrainFarVertex, color) == 8);
 
-	inline void PackTerrainFarVertex(float ix, float iz, float shade,
+	inline void PackTerrainFarVertex(float ix, float iz, const glm::vec4& attributes,
 		bool skirt, TerrainFarVertex& out) noexcept {
 		out.p[0] = glm::packHalf1x16(ix);
 		out.p[1] = glm::packHalf1x16(iz);
-		out.p[2] = glm::packHalf1x16(glm::clamp(shade, 0.0f, 1.0f));
+		out.p[2] = 0;
 		out.p[3] = glm::packHalf1x16(skirt ? 1.0f : 0.0f);
+		for (int c = 0; c < 4; ++c)
+			out.color[c] = uint8_t(glm::clamp(
+				int(attributes[c] * 255.0f + 0.5f), 0, 255));
 	}
 
 	// CPU-side terrain vertex authoring form (floats in, packed at build
@@ -921,6 +922,12 @@ namespace smvk {
 						.location = 0,
 						.format = Format::RGBA16_Float,
 						.offset = offsetof(TerrainFarVertex, p)
+					},
+					{
+						.semantic = VertexSemantic::Color,
+						.location = 1,
+						.format = Format::RGBA8_UNorm,
+						.offset = offsetof(TerrainFarVertex, color)
 					}
 				}
 			}

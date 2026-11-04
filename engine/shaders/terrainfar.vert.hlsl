@@ -3,8 +3,8 @@
 
 // Tiled terrain FAR vertex shader (L3 blocks, TerrainFarLayout).
 //
-// VSIn location 0 = packed half4 grid (ix, iz, shade, skirtFlag) — the
-// article's Terrain IV 64-bit layout. World XZ reconstructs from the block
+// VSIn location 0 = packed half4 grid (ix, iz, unused, skirtFlag);
+// location 1 = RGBA8 terrain attributes (alpha=0 means hole). World XZ reconstructs from the block
 // id (firstInstance via SV_InstanceID — placement_instanced precedent) as
 // origin + grid * 16 m; height + normal sample the R16 height atlas (TRUE
 // 16-bit heights, so hardware linear filtering interpolates correctly).
@@ -21,6 +21,7 @@
 struct VSIn
 {
     [[vk::location(0)]] float4 packedGrid : POSITION;
+    [[vk::location(1)]] float4 attributes : COLOR0;
     // Block id via firstInstance (RecordBlocks far phase passes blockIdx;
     // SV_InstanceID already includes it — placement_instanced precedent).
     uint blockIdx : SV_InstanceID;
@@ -82,14 +83,7 @@ VSOut mainVS(VSIn IN)
         - (pcT.baseY + hD * pcT.range)) * 0.5f;
     float3 N = normalize(float3(-dx, 1.0f, -dz));
 
-    // Albedo: mask brightness (baked shade) + slope rock, same weights as
-    // the near bake.
-    float3 albedo = lerp(float3(0.16f, 0.20f, 0.11f),
-        float3(0.55f, 0.56f, 0.50f), IN.packedGrid.z);
-    float slope = 1.0f - N.y;
-    float rockT = saturate(slope * 3.2f);
-    albedo = albedo * (1.0f - rockT) + float3(0.36f, 0.33f, 0.30f) * rockT;
-
+    // The same authored channels reach the near and far material paths.
     OUT.worldPos = worldPos;
 
     float4x4 viewProj = frame.viewProj;
@@ -97,9 +91,11 @@ VSOut mainVS(VSIn IN)
         viewProj = pcT.renderViews.Get().views[pcT.mainRenderView]
             .m_viewProjectionMatrix;
     OUT.pos = mul(viewProj, float4(worldPos, 1.0));
+    if (IN.attributes.a < 0.5f)
+        OUT.pos = asfloat(uint4(0x7fc00000u, 0x7fc00000u, 0x7fc00000u, 0x7fc00000u));
 
     OUT.normal = N;
     OUT.tangentBFlip = float4(1.0f, 0.0f, 0.0f, -1.0f);
-    OUT.color = float4(albedo, 1.0f);
+    OUT.color = IN.attributes;
     return OUT;
 }
