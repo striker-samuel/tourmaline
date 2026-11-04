@@ -190,6 +190,10 @@ def run_search(args):
         raise ValueError("at least one --scenario required")
     target = parse_target_resolution(args.target_resolution)
     screenshot_pair = bool(args.reference_screenshot) or bool(args.candidate_screenshot)
+    if not args.list_regions and not screenshot_pair and not args.allow_no_image_check:
+        raise ValueError("saved screenshot comparison is required; use --allow-no-image-check for nonvisual workloads")
+    if not args.list_regions and screenshot_pair and not target:
+        raise ValueError("--target-resolution is required for screenshot correctness checks")
     if screenshot_pair and not (args.reference_screenshot and args.candidate_screenshot):
         raise ValueError("provide both --reference-screenshot and --candidate-screenshot")
     if args.reference_screenshot and not args.reference_screenshot.resolve().is_file():
@@ -408,6 +412,8 @@ def main(argv=None):
     p.add_argument("--validate-cmd", help="Mandatory correctness command (argv, not shell)")
     p.add_argument("--target-resolution",
                    help="Render extent: 720p/1080p/1440p/4k or 16:9 WxH")
+    p.add_argument("--allow-no-image-check", action="store_true",
+                   help="Explicitly opt out of numeric screenshot validation for nonvisual passes")
     p.add_argument("--reference-screenshot", type=Path,
                    help="Existing trusted PNG reference screenshot")
     p.add_argument("--candidate-screenshot", type=Path,
