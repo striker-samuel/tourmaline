@@ -1154,6 +1154,37 @@ void TestMaterialChannelComposition() {
             "material-compose.recipe-change-invalidates");
     }
 
+    // Explicitly missing texture sources must fail instead of silently
+    // sampling an unrelated slot or manufacturing data.
+    {
+        auto missing = material;
+        missing.guid = "missing-source";
+        missing.emissiveTex.path.clear();
+        std::string missingError;
+        Check(!ComposeMaterialFromRecipe(recipe.materialPacking,
+                missing, dir, missingError) &&
+                missingError.find("no source texture") != std::string::npos,
+            "material-compose.reject-missing-explicit-source");
+    }
+    // No implicit UV-space stretch between unrelated source resolutions.
+    {
+        const std::array<uint8_t, 4> smaller = { 1, 2, 3, 4 };
+        const bool written = stbi_write_png((dir / "normal.png").string().c_str(),
+            1, 1, 4, smaller.data(), 4) != 0;
+        auto mismatch = material;
+        mismatch.guid = "mismatched-dimensions";
+        mismatch.baseColor.path = "baseColor.png";
+        mismatch.normalTex.path = "normal.png";
+        mismatch.emissiveTex.path = "emissive.png";
+        mismatch.occlusion.path = "occlusion.png";
+        mismatch.metallicRoughness.path = "metallicRoughness.png";
+        std::string mismatchError;
+        Check(written && !ComposeMaterialFromRecipe(recipe.materialPacking,
+                mismatch, dir, mismatchError) &&
+                mismatchError.find("dimensions differ") != std::string::npos,
+            "material-compose.reject-mismatched-dimensions");
+    }
+
     const char* invalid[] = {
         "materialChannel roughness metallicRoughness x\n",
         "materialChannel baseColor.x baseColor r\n",
