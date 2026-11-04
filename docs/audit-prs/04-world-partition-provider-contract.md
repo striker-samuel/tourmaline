@@ -1,6 +1,6 @@
 # WorldPartition provider integration contracts
 
-> **STATUS: PARTIAL IMPLEMENTATION.** Provider registration and demand cancellation are hardened; full request-epoch and publication contracts are still outstanding. Do not merge until actual implementation commits, tests, and review are complete.
+ > **STATUS: IMPLEMENTATION COMMITTED — INTEGRATOR TODOs REMAIN.** Source and tests are committed; integration, runtime validation and outstanding contracts are assigned to the integrator.
 
 **Finding:** L-05  
 **Priority:** P1
@@ -35,4 +35,7 @@ No generic GPU memory or automatic lifetime manager; the caller remains responsi
 - Added headless tests for duplicate registration, cancellation, and commit/retire progression after cancellation.
 - **Not validated:** native build/CTest, GPU workload, provider async generation cancellation, frame epochs or stale completion filtering. Providers still own memory and eviction.
 
-**Keep this PR a draft. Do not merge as full Audit 04 completion.**
+**Integrator TODO:** Complete provider lifecycle integration and acceptance validation; implementation work is committed.
+
+## Integrator handoff
+The PR is ready for review with implementation committed. The outstanding acceptance items above are TODOs for the integrator, not a claim that tests have passed or that integration is complete.
