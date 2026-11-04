@@ -411,7 +411,7 @@ void TestParticleSourceTopologyRegressions() {
     std::string type;
     Attributes parsed;
     const std::string valid = SerializeAttributes(kEmitter, graph.attrs.at(2));
-    Check(!ParseAttributes("v2" + valid.substr(2), type, parsed),
+    Check(!ParseAttributes("v3" + valid.substr(2), type, parsed),
         "pt.source.reject-unknown-schema-version");
     Check(!ParseAttributes(valid + " trailing", type, parsed),
         "pt.source.reject-extra-tokens");
