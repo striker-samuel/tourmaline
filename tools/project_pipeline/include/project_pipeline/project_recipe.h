@@ -44,7 +44,8 @@
 //                              Example: materialPacking metallicRoughness r a g b
 //                              The selected existing source texture is
 //                              reused for all four scalar properties.
-//                              It does not synthesize new packed image bytes.
+//                              Legacy reuse mode does not synthesize new bytes;
+//                              prefer materialChannel for actual repacking.
 //                              Missing source slots retain glTF defaults.
 
 //
