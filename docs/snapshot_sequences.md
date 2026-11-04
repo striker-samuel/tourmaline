@@ -40,6 +40,18 @@ Use `--snapshot-capture=legacy` in App or `--capture-mode legacy`
 in `tools/toursnapshot.py record` for the original synchronous per-frame
 image download path. The default is `scoped`.
 
+**Lossless raw output:** `App --snapshot-format=raw` or
+`python tools/toursnapshot.py record --output-format raw` writes
+`Frame_0001.rgba` (tightly packed RGBA8, row-major, top-to-bottom) and
+`Frame_0001.json` instead of a PNG. The sidecar carries the same
+keyframe/delta, RNG, input, pixel hash and previous-payload hash as the
+PNG's `tsNp` chunk. `toursnapshot.py verify|inspect|extract|compare`
+recognizes either a homogeneous PNG sequence or a homogeneous raw sequence;
+raw verification checks exact byte length and pixel hash without Pillow.
+Raw capture avoids PNG compression entirely, but increases disk use.
+PNG remains the default, and its encoding happens only during each
+completed scoped batch's export, never during the individual 15 renders.
+
 Capture memory is roughly `15 * width * height * 4` bytes of device-local
 buffer storage, plus the host-visible staging allocation used during a
 batch drain. The default readback staging cap is 256 MiB; larger batches
