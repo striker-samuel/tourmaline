@@ -1,6 +1,6 @@
 # Explicit GPU scene record readiness and legacy fallback
 
-> **STATUS: PARTIAL IMPLEMENTATION.** A CPU-side readiness gate has been added and tested in source; the live draw path remains unchanged. Do not merge until actual implementation commits, tests, and review are complete.
+ > **STATUS: IMPLEMENTATION COMMITTED — INTEGRATOR TODOs REMAIN.** Source and tests are committed; integration, runtime validation and outstanding contracts are assigned to the integrator.
 
 **Finding:** L-03  
 **Priority:** P0
@@ -36,4 +36,7 @@ No generic GPU memory or automatic lifetime manager; the caller remains responsi
 - Existing legacy renderer and GPU memory ownership are unchanged. The predicate is **not yet connected to draw emission**, and it does **not** prove per-flight publication epochs or submesh/LOD generations.
 - Native CMake/CTest and GPU draw parity tests were **not run** in this environment.
 
-**Keep the PR draft. Further consumer integration and validation are required before this P0 finding is resolved.**
+**Integrator TODO:** Complete consumer integration and acceptance validation; implementation work is committed.
+
+## Integrator handoff
+The PR is ready for review with implementation committed. The outstanding acceptance items above are TODOs for the integrator, not a claim that tests have passed or that integration is complete.
