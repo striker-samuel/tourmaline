@@ -195,7 +195,7 @@ int main() {
 		// Shade varies with the checker, stays in [0,1].
 		float mnS = 1e30f, mxS = -1e30f;
 		for (size_t k = 0; k < surf; ++k) {
-			const float s = glm::unpackHalf1x16(far[k].p[2]);
+			const float s = far[k].color[0] / 255.0f;
 			mnS = std::min(mnS, s);
 			mxS = std::max(mxS, s);
 			if (!(s >= 0.0f && s <= 1.0f))
@@ -218,7 +218,7 @@ int main() {
 				== size_t(kFarQuads) * kFarQuads * 6 + 4 * kFarQuads * 6,
 			"blocks.far-index-counts");
 	}
-	// Mask color: checker produces both dark and light verts in a block;
+	// Mask attributes: checker produces both dark and light verts in a block;
 	// absent masks produce uniform dark.
 	{
 		TerrainHField f = FlatField(8, 0.5f);
@@ -245,6 +245,40 @@ int main() {
 			mx2 = std::max(mx2, r);
 		}
 		Check(mx2 - mn2 < 1e-5f, "blocks.nomask-uniform");
+		Check(b2.verts[0].color[3] == 255,
+			"blocks.no-mask-default-solid");
+
+		// RGBA remains intact in both near/far streams; alpha=0
+		// denotes a hole, even when the RGB attributes are nonzero.
+		std::vector<std::vector<uint8_t>> authored(256,
+			std::vector<uint8_t>(8 * 8 * 4, 0));
+		for (auto& tile : authored)
+			for (size_t p = 0; p < 8 * 8; ++p) {
+				tile[p * 4] = 64;
+				tile[p * 4 + 1] = 128;
+				tile[p * 4 + 2] = 192;
+				tile[p * 4 + 3] = 255;
+			}
+		// The first grid vertex of block (0,0) samples tile 0 texel 0.
+		authored[0][3] = 0;
+		MaskSet mask{ &authored, 16, 8 };
+		const auto rgba = SampleMaskRGBA(mask, f.meta, f.meta.worldSize,
+			f.meta.originX, f.meta.originZ);
+		Check(Near(rgba.r, 64.0f / 255.0f)
+			&& Near(rgba.g, 128.0f / 255.0f)
+			&& Near(rgba.b, 192.0f / 255.0f)
+			&& rgba.a == 0.0f, "blocks.sample-mask-rgba");
+		BakeGBlockVerts(f, mask, 0, 0, 4, kSkirtDepth, b);
+		Check(b.verts[0].color[0] == 64 && b.verts[0].color[1] == 128
+			&& b.verts[0].color[2] == 192 && b.verts[0].color[3] == 0,
+			"blocks.near-mask-hole");
+		Check(b.verts[1].color[3] == 255, "blocks.near-mask-solid");
+		std::vector<smvk::TerrainFarVertex> fv;
+		BakeFarBlockVerts(f, mask, 0, 0, fv);
+		Check(fv[0].color[0] == 64 && fv[0].color[1] == 128
+			&& fv[0].color[2] == 192 && fv[0].color[3] == 0,
+			"blocks.far-mask-hole");
+		Check(fv[1].color[3] == 255, "blocks.far-mask-solid");
 	}
 
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
