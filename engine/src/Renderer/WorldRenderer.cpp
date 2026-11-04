@@ -76,6 +76,7 @@
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <Engine/Utils/shader_hot_reload.h> // the frame-tick consume (the hot-reload seam)
 #include <imgui.h>
+#include <Engine/ImGui/crystal_fusion_style.h>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -3496,6 +3497,8 @@ namespace engine {
 		}
 		else {
 			m_uiDpiScale = m_imgui->AppliedDpiScale(); // auto = monitor content scale
+			// Match the editor's stone-gray and logo-accented render-settings UI.
+			tour::branding::ApplyCrystalFusionImGuiStyle();
 			// (Start-in-FPS + the ImGui event hook moved to the ELEMENT's
 			// onAttach — the mode switch is control; see
 			// WorldRendererElement::onAttach.)
