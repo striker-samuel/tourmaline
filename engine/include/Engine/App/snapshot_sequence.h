@@ -302,7 +302,7 @@ public:
             return false;
         }
         std::string payload = "TSNP1";
-        payload.push_back('\\0');
+        payload.push_back('\0');
         payload += serialized;
         previousPayloadHash_ = Fnv64(payload);
         pending_ = false;
