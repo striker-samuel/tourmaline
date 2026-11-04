@@ -988,6 +988,28 @@ void EditorApp::FinalizePending() {
 			ImGui::EndMenu();
 		}
 		// IDE-style panel management with persistent dock assignments.
+		// DCC commands operate on exactly one selected asset. Keeping them
+		// in the main menu prevents duplicate action bars in the browser.
+		if (ImGui::BeginMenu("DCC")) {
+			const bool oneAsset = m_assetsSelSet.size() == 1
+				&& !m_assetsSel.empty()
+				&& m_assetsSelSet.front() == m_assetsSel
+				&& std::filesystem::is_regular_file(m_assetsSel);
+			ImGui::MenuItem(oneAsset
+				? std::filesystem::path(m_assetsSel).filename().string().c_str()
+				: "Select one asset in Assets", nullptr, false, false);
+			ImGui::Separator();
+			if (ImGui::MenuItem("Open in DCC", nullptr, false, oneAsset))
+				OpenAssetInDcc(m_assetsSel);
+			if (ImGui::MenuItem("Link DCC source...", nullptr, false, oneAsset))
+				LinkAssetToDcc(m_assetsSel);
+			if (ImGui::MenuItem("Publish glTF", nullptr, false,
+					oneAsset && !m_dccPublishRunning))
+				PublishAssetFromDcc(m_assetsSel);
+			if (ImGui::MenuItem("Unlink DCC source", nullptr, false, oneAsset))
+				UnlinkAssetFromDcc(m_assetsSel);
+			ImGui::EndMenu();
+		}
 		if (ImGui::BeginMenu("Window")) {
 			ImGui::MenuItem("Viewport", nullptr, &m_showViewportPanel);
 			ImGui::MenuItem("World Map", nullptr, &m_showWorldMapPanel);
