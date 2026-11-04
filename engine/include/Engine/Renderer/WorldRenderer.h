@@ -2385,6 +2385,12 @@ public:
 	// cap; overflow drops the oldest burst. No-op when the particle pass
 	// cannot run (ParticlesActive gates the upload; queued bursts age
 	// out on the next active frame).
+	// External graph-produced emitter rows. Stable source node order is
+	// retained across frames; the renderer owns a copy (no borrowed editor data).
+	// The GPU cap is shared with demo rows and transient bursts.
+	void SetExternalParticleEmitters(std::vector<smvk::ParticleEmitterGpu> rows) {
+		m_externalParticleEmitters = std::move(rows);
+	}
 	void SpawnParticleBurst(const glm::vec3& pos, const glm::vec3& color,
 		float speed, float size, float life, uint32_t count);
 	// Lazy CPU pick scene (same triangle soup the GI baker sees): shared
@@ -2636,6 +2642,7 @@ public:
 	// loop when the tile lists are not fresh (deferred shadows own them).
 	bool m_particlesEnabled = true;
 	ParticleDemo m_particleDemo{};
+	std::vector<smvk::ParticleEmitterGpu> m_externalParticleEmitters;
 	// Transient one-shot burst emitters (SpawnParticleBurst): full rows
 	// with a TTL. UpdateParticles appends them after the demo rows,
 	// ages the TTL (drops expired) and trims overflow (oldest first) so

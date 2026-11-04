@@ -85,6 +85,7 @@
 #include <imgui.h> // menu-bar gem mark + inspector pages
 
 #include <Engine/Placement/placement_terrain.h>
+#include <Engine/Particles/source_graph.h>
 #include "editor_commands.h"
 
 #include "editor_placement.h"
@@ -2092,6 +2093,12 @@ private:
 	surface::Stroke m_surfaceActive;
 	std::vector<surface::Stroke> m_surfaceStrokes;
 	std::vector<surface::Stroke> m_surfaceRedo;
+	// Typed particle sources, filters and emitter sink. The model is shared
+	// with runtime consumers; source-point resolution remains editor-owned.
+	tour::particles::Graph m_particleSourceGraph = tour::particles::Graph::Default();
+	uint32_t m_particleSourceSelected = 1;
+	std::string m_particleSourceError;
+	void UpdateParticleSourcePreview();
 	void SurfaceBrushSample(int viewport, float x, float y);
 	void SurfaceBrushFinish();
 	void SurfaceBrushInput(int viewport, float x, float y,
