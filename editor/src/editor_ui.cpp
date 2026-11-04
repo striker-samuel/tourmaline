@@ -533,7 +533,11 @@ void EditorApp::FinalizePending() {
 			EditorContext uiContext{m_selected, uiActions};
 			PanelRegistry panels;
 			panels.Register("Outliner", m_showOutlinerPanel,
-				[this](EditorContext&) { DrawOutliner(); });
+				[this](EditorContext&) { DrawOutliner(); },
+				[this]() {
+					ImGui::MenuItem("Show Non-DAG", nullptr, &m_showNonDag);
+					ImGui::SetItemTooltip("Show image, material and editor camera rows.");
+				});
 			panels.Register("Reference", m_showReferencePanel,
 				[this](EditorContext&) { DrawReferencePanel(); });
 			panels.Register("Assets", m_showAssetsPanel,
@@ -985,6 +989,31 @@ void EditorApp::FinalizePending() {
 #else
 			ImGui::TextDisabled("Game entry: not statically linked");
 #endif
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("Window")) {
+			ImGui::MenuItem("Viewport", nullptr, &m_showViewportPanel);
+			ImGui::MenuItem("World Map", nullptr, &m_showWorldMapPanel);
+			ImGui::MenuItem("Outliner", nullptr, &m_showOutlinerPanel);
+			ImGui::MenuItem("Reference", nullptr, &m_showReferencePanel);
+			ImGui::MenuItem("Assets", nullptr, &m_showAssetsPanel);
+			ImGui::MenuItem("Console", nullptr, &m_showConsolePanel);
+			ImGui::MenuItem("Overrides", nullptr, &m_showOverridesPanel);
+			ImGui::MenuItem("Inspector", nullptr, &m_showInspectorPanel);
+			ImGui::MenuItem("Material", nullptr, &m_showMaterialPanel);
+			ImGui::Separator();
+			if (ImGui::MenuItem("Reset dock layout")) {
+				m_dockResetRequested = true;
+				m_showViewportPanel = true;
+				m_showWorldMapPanel = true;
+				m_showOutlinerPanel = true;
+				m_showReferencePanel = true;
+				m_showAssetsPanel = true;
+				m_showConsolePanel = true;
+				m_showOverridesPanel = true;
+				m_showInspectorPanel = true;
+				m_showMaterialPanel = true;
+			}
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("View")) {
