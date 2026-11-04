@@ -49,8 +49,8 @@ void PrintUsage(const char* prog) {
 		<< "  --bench_move flies forward at constant velocity (default 4 m/s) past warmup\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
 		<< "  --bench also forces vsync off (uncapped immediate present; --present wins)\n"
-		<< "  --max-fps N caps interactive CPU frames to 1..1000 FPS (omitted = uncapped; ignored by --bench)\n"
-		<< "  --input-record <path> writes an engine input tape at exit\n"
+		<< "  --max-fps N caps interactive CPU frames to 1..1000 FPS (overrides --vrr; ignored by --bench)\n"
+		<< "  --vrr enables a 2 FPS margin below the detected refresh rate (e.g. 142 at 144 Hz)\n"\n\t\t<< "  --vsync on|off selects FIFO (tear-free) or immediate (may tear)\n"\n\t\t<< "  VRR requires compatible monitor, OS and driver settings; pair --vrr with --vsync on\n"\n\t\t<< "  --input-record <path> writes an engine input tape at exit\n"
 		<< "  --input-replay <path> replays engine input + timestep by tick\n"
 		<< "  --snapshot-sequence <dir> exports Frame_0001.png ... with embedded state\n"
 		<< "  [--snapshot-count N] [--snapshot-keyframe N] [--snapshot-code-id HASH]\n"
@@ -237,12 +237,12 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 			const char* v = std::strcmp(a, "--vsync") == 0
 				? (i + 1 < argc ? argv[++i] : nullptr) : a + 8;
 			if (!v || (std::strcmp(v, "on") != 0 && std::strcmp(v, "off") != 0)) {
-				std::cerr << "Bad --vsync value (expected on|off)\\n";
+				std::cerr << "Bad --vsync value (expected on|off)\n";
 				exitCode = EXIT_FAILURE;
 				return false;
 			}
 			if (opts.presentSet) {
-				std::cerr << "--vsync conflicts with --present or another --vsync\\n";
+				std::cerr << "--vsync conflicts with --present or another --vsync\n";
 				exitCode = EXIT_FAILURE;
 				return false;
 			}
@@ -251,7 +251,7 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 		}
 		else if ((std::strcmp(a, "--present") == 0) && i + 1 < argc) {
 			if (opts.presentSet) {
-				std::cerr << "--present conflicts with --vsync or another --present\\n";
+				std::cerr << "--present conflicts with --vsync or another --present\n";
 				exitCode = EXIT_FAILURE;
 				return false;
 			}
@@ -260,7 +260,7 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 		}
 		else if (std::strncmp(a, "--present=", 10) == 0) {
 			if (opts.presentSet) {
-				std::cerr << "--present conflicts with --vsync or another --present\\n";
+				std::cerr << "--present conflicts with --vsync or another --present\n";
 				exitCode = EXIT_FAILURE;
 				return false;
 			}
@@ -288,7 +288,7 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 		else if (std::strcmp(a, "--snapshot-format") == 0 && i + 1 < argc) {
 			opts.snapshotOutputFormat = argv[++i];
 			if (opts.snapshotOutputFormat != "png" && opts.snapshotOutputFormat != "raw") {
-				std::cerr << "Bad --snapshot-format (expected png|raw)\\n";
+				std::cerr << "Bad --snapshot-format (expected png|raw)\n";
 				exitCode = EXIT_FAILURE;
 				return false;
 			}
@@ -296,7 +296,7 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 		else if (std::strncmp(a, "--snapshot-format=", 18) == 0) {
 			opts.snapshotOutputFormat = a + 18;
 			if (opts.snapshotOutputFormat != "png" && opts.snapshotOutputFormat != "raw") {
-				std::cerr << "Bad --snapshot-format (expected png|raw)\\n";
+				std::cerr << "Bad --snapshot-format (expected png|raw)\n";
 				exitCode = EXIT_FAILURE;
 				return false;
 			}
