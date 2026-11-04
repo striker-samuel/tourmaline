@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-"""Conservative source-level HLSL hints for controlled compilation experiments.
+"""Mask HLSL comments, strings and preprocessing for region discovery.
 
-Only explicit for/if statements are targeted. The scanner masks comments,
-strings and preprocessor lines so false positives are not rewritten. The
-DXC compiler ultimately decides whether a hint affects generated code.
+Hints are applied only by hashed region ID in shader_regions.py.
 """
-import re
-
-KEYWORDS = {"loop": "for", "branch": "if"}
-
 
 def _code_mask(source):
     chars = list(source)
@@ -59,42 +53,3 @@ def _code_mask(source):
     return "".join(chars)
 
 
-def inject_attribute(source, keyword, attribute, index):
-    """Insert one hint on the indexed control statement (0-based).
-
-    Reject already-attributed statements to avoid stacking conflicting hints.
-    """
-    if keyword not in ("for", "if"):
-        raise ValueError("only for/if statement hints are supported")
-    mask = _code_mask(source)
-    matches = list(re.finditer(r"\b" + keyword + r"\s*\(", mask))
-    if index < 0 or index >= len(matches):
-        raise ValueError(f"{keyword} index {index} not found ({len(matches)} statements)")
-    position = matches[index].start()
-    prefix = mask[:position]
-    # Check for a directly preceding HLSL attribute; replacing unknown
-    # attributes without understanding their semantics would be unsafe.
-    if re.search(r"\[\s*\w+(?:\s*\([^\]]*\))?\s*\]\s*$", prefix):
-        raise ValueError("target statement already has an attribute")
-    return source[:position] + f"[{attribute}] " + source[position:]
-
-
-def apply_hints(source, loop_mode="auto", loop_index=0,
-                branch_mode="auto", branch_index=0, unroll_count=None):
-    changes = []
-    if unroll_count is not None and loop_mode != "unroll":
-        raise ValueError("unroll count requires unroll loop mode")
-    if loop_mode != "auto":
-        if loop_mode not in ("loop", "unroll"):
-            raise ValueError("unsupported loop mode")
-        if unroll_count is not None and (not isinstance(unroll_count, int) or isinstance(unroll_count, bool) or not 1 <= unroll_count <= 1024):
-            raise ValueError("unroll count must be in 1..1024")
-        attr = f"unroll({unroll_count})" if unroll_count is not None else loop_mode
-        source = inject_attribute(source, "for", attr, loop_index)
-        changes.append({"kind": "loop", "mode": loop_mode, "index": loop_index, "unroll_count": unroll_count})
-    if branch_mode != "auto":
-        if branch_mode not in ("branch", "flatten"):
-            raise ValueError("unsupported branch mode")
-        source = inject_attribute(source, "if", branch_mode, branch_index)
-        changes.append({"kind": "branch", "mode": branch_mode, "index": branch_index})
-    return source, changes
