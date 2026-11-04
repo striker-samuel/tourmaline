@@ -143,6 +143,7 @@ def run_search(args):
         raise ValueError("iterations, repeat and timeout must be positive")
     from perf_harness import select_scenario
     from experiment_environment import collect_environment
+    from shader_hints import apply_hints
     for scenario in args.scenario:
         select_scenario(catalog, scenario)
 
@@ -160,11 +161,33 @@ def run_search(args):
     history = []
     best_source = source
     best_score = 0.0
+    baseline_registers = None
 
     def build():
         ok, log = run_command(args.build_cmd, repo, env, args.timeout)
         if not ok:
             raise RuntimeError("shader build failed:\n" + log)
+
+    def register_metrics(label):
+        if not args.register_report_cmd:
+            return None
+        report_path = output / label / "registers.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        env["SHADER_SEARCH_REGISTER_REPORT"] = str(report_path)
+        report_path.unlink(missing_ok=True)
+        ok, log = run_command(args.register_report_cmd, repo, env, args.timeout)
+        if not ok or not report_path.is_file():
+            raise RuntimeError("register report failed or missing: " + log)
+        metrics = json.loads(report_path.read_text(encoding="utf-8"))
+        if not isinstance(metrics, dict):
+            raise ValueError("register report must be a JSON object")
+        count = metrics.get("vgpr", metrics.get("registers_per_thread"))
+        spill = metrics.get("spill_bytes", 0)
+        if isinstance(count, bool) or not isinstance(count, (int, float)) or not math.isfinite(count) or count <= 0:
+            raise ValueError("register report requires positive finite vgpr or registers_per_thread")
+        if isinstance(spill, bool) or not isinstance(spill, (int, float)) or not math.isfinite(spill) or spill < 0:
+            raise ValueError("spill_bytes must be finite and nonnegative")
+        return {"registers_per_thread": count, "spill_bytes": spill, "original": metrics}
 
     def benchmarks(label):
         return {
@@ -175,18 +198,30 @@ def run_search(args):
 
     try:
         build()
+        baseline_registers = register_metrics("baseline")
         baseline = benchmarks("baseline")
         (output / "baseline.json").write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
         for index in range(1, args.iterations + 1):
             trial = output / f"candidate-{index:03}"
             trial.mkdir(exist_ok=True)
-            feedback = json.dumps(history[-6:], ensure_ascii=False)
+            knobs = {"loop_mode": args.loop_mode, "loop_index": args.loop_index,
+                     "branch_mode": args.branch_mode, "branch_index": args.branch_index,
+                     "register_pressure": args.register_pressure}
+            feedback = json.dumps({
+                "target_knobs": knobs, "baseline_register_metrics": baseline_registers,
+                "recent_experiments": history[-6:],
+                "guidance": ("Minimize live ranges, intermediates and spills. "
+                             "Unrolling can increase register pressure; don't assume faster."),
+            }, ensure_ascii=False)
             try:
                 candidate = request_candidate(
                     args.provider, args.api_base, args.model, api_key,
                     best_source, feedback, args.timeout)
                 if len(candidate.encode("utf-8")) > args.max_source_bytes:
                     raise ValueError("candidate exceeds source size limit")
+                candidate, applied_hints = apply_hints(
+                    candidate, args.loop_mode, args.loop_index,
+                    args.branch_mode, args.branch_index)
                 if candidate == best_source:
                     raise ValueError("model returned unchanged source")
                 # Never allow another file or shell command from the model.
@@ -197,19 +232,33 @@ def run_search(args):
                 ok, log = run_command(args.validate_cmd, repo, env, args.timeout)
                 if not ok:
                     raise RuntimeError("correctness gate failed: " + log)
+                candidate_registers = register_metrics(f"candidate-{index:03}")
                 measured = benchmarks(f"candidate-{index:03}")
                 candidate_score = score(measured, baseline, args.max_regression)
                 gain = (1 - math.exp(candidate_score)) * 100 if candidate_score is not None else None
-                accepted = (candidate_score is not None and
+                register_regression = (
+                    100 * (candidate_registers["registers_per_thread"] /
+                           baseline_registers["registers_per_thread"] - 1)
+                    if candidate_registers is not None else None)
+                registers_ok = (register_regression is None or
+                                register_regression <= args.max_register_regression)
+                spills_ok = (candidate_registers is None or
+                             candidate_registers["spill_bytes"] <= baseline_registers["spill_bytes"])
+                accepted = (registers_ok and spills_ok and candidate_score is not None and
                             candidate_score < best_score and (math.exp(best_score) - math.exp(candidate_score)) * 100 >= args.min_gain)
                 if accepted:
                     best_source, best_score = candidate, candidate_score
                     (output / "best.hlsl").write_text(candidate, encoding="utf-8")
                 outcome = {"iteration": index, "accepted": accepted,
                            "times_ms": measured, "gain_percent": gain,
+                           "knobs": knobs, "applied_hints": applied_hints,
+                           "register_metrics": candidate_registers,
+                           "register_regression_percent": register_regression,
+                           "registers_ok": registers_ok, "spills_ok": spills_ok,
                            "reason": "accepted" if accepted else "not improved or scenario regression"}
             except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
-                outcome = {"iteration": index, "accepted": False, "reason": str(exc)[-4000:]}
+                outcome = {"iteration": index, "accepted": False,
+                           "knobs": knobs, "reason": str(exc)[-4000:]}
             finally:
                 # Restore the baseline for the next trial's build unless we are
                 # using the accepted candidate as the next search starting point.
@@ -219,7 +268,8 @@ def run_search(args):
             print(json.dumps(outcome), flush=True)
     finally:
         shader.write_bytes(original)
-    summary = {"environment": environment_metadata, "baseline_ms": baseline, "best_gain_percent": (1 - math.exp(best_score)) * 100,
+    summary = {"environment": environment_metadata, "baseline_ms": baseline,
+               "baseline_registers": baseline_registers, "best_gain_percent": (1 - math.exp(best_score)) * 100,
                "best_file": str(output / "best.hlsl") if best_score < 0 else None,
                "history": history}
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -242,6 +292,15 @@ def main(argv=None):
     p.add_argument("--validate-cmd", required=True, help="Mandatory correctness command (argv, not shell)")
     p.add_argument("--export-parquet", type=Path,
                    help="Optional analytics export (requires extended dependencies)")
+    p.add_argument("--loop-mode", choices=("auto", "loop", "unroll"), default="auto")
+    p.add_argument("--loop-index", type=int, default=0, help="0-based for-loop index")
+    p.add_argument("--branch-mode", choices=("auto", "branch", "flatten"), default="auto")
+    p.add_argument("--branch-index", type=int, default=0, help="0-based if-statement index")
+    p.add_argument("--register-pressure", choices=("balanced", "minimize"), default="balanced")
+    p.add_argument("--register-report-cmd",
+                   help="External profiler command writing JSON to SHADER_SEARCH_REGISTER_REPORT")
+    p.add_argument("--max-register-regression", type=float, default=0,
+                   help="Max percent increase in VGPR/registers per thread versus baseline")
     p.add_argument("--dxc", help="Explicit DXC executable path for version collection")
     p.add_argument("--provider", choices=("openai", "ollama"), default="openai")
     p.add_argument("--api-base", default=None, help="OpenAI-compatible /v1 base or Ollama server root")
@@ -254,6 +313,8 @@ def main(argv=None):
     p.add_argument("--min-gain", type=float, default=0.5)
     p.add_argument("--max-source-bytes", type=int, default=200000)
     args = p.parse_args(argv)
+    if args.loop_index < 0 or args.branch_index < 0 or args.max_register_regression < 0:
+        p.error("hint indices and max register regression must be nonnegative")
     if args.api_base is None:
         args.api_base = ("http://localhost:11434" if args.provider == "ollama"
                          else "https://api.openai.com/v1")
