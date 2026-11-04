@@ -2025,6 +2025,7 @@ namespace engine {
 			};
 			armPreset("TOURMALINE_DUST", 2, 120.0f);
 			armPreset("TOURMALINE_RAIN", 3, 900.0f);
+			armPreset("TOURMALINE_GROUND_DUST", 4, 18.0f);
 		}
 
 		// VFS overlay: loose content/ for iteration, cooked paks mounted
@@ -8399,7 +8400,7 @@ namespace engine {
 	void WorldRenderer::SeedParticleEmitters() {
 		if (!m_particleDemo.emitters.empty())
 			return;
-		m_particleDemo.emitters.reserve(4);
+		m_particleDemo.emitters.reserve(5);
 
 		// Rising embers: additive orange sparks drifting up from a small
 		// cone at the origin (negative gravityScale = buoyant).
@@ -8464,6 +8465,21 @@ namespace engine {
 				(float)smvk::kParticleShape_Sphere);
 			rain.fade = glm::vec4(0.05f, 0.10f, 0.05f, 10.0f);
 			m_particleDemo.emitters.push_back(rain);
+		}
+		// Opt-in ground-hugging cloud emitter. tail.y selects the alpha
+		// dust draw pass without changing the 128-byte emitter ABI.
+		{
+			smvk::ParticleEmitterGpu ground{};
+			ground.position = glm::vec4(0.0f, 0.35f, 0.0f, 5.0f);
+			ground.direction = glm::vec4(1.0f, 0.0f, 0.0f, 0.5f);
+			ground.color = glm::vec4(0.58f, 0.49f, 0.36f, 0.0f);
+			ground.velocity = glm::vec4(0.15f, 0.65f, 0.7f, 0.0f);
+			ground.size = glm::vec4(0.35f, 1.8f, 0.12f, 412.0f);
+			ground.life = glm::vec4(5.0f, 9.0f, 0.0f,
+				(float)smvk::kParticleShape_Ground);
+			ground.fade = glm::vec4(0.25f, 0.45f, 0.10f, 0.0f);
+			ground.tail.y = smvk::kParticleRender_Dust;
+			m_particleDemo.emitters.push_back(ground);
 		}
 		m_particleDemo.selected = 0;
 	}
@@ -15264,6 +15280,32 @@ namespace engine {
 				// fully GPU-resident; the dead-slot VS cost is the trade).
 				cmd.Draw(6, PARTICLE_MAX, 0, 0);
 			});
+
+			// Same GPU pool, separate premultiplied-alpha blend state.
+			// Draw after additive sprites; both VS paths reject other-mode
+			// emitters, so no particle is composited twice.
+			auto& dustPass = ps.AddDrawPass(*m_rendergraph,
+				m_viewportResources.hdr.logicalView,
+				m_viewportResources.renderDepth.logicalView,
+				renderExtent, "GroundDustDraw");
+			smvk::ParticlesDrawPush dustPush = drawPush;
+			dustPush.renderMode = 1;
+			dustPass.SetRecordingFunc([this, dustPush](smvk::CommandBuffer& cmd) {
+				cmd.BindRenderPipeline(
+					m_viewportResources.particles.drawProgram,
+					smvk::VertexLayoutId::Empty,
+					smvk::DepthSettings{
+						.depthFunc = smvk::CompareOp::GreaterEqual,
+						.writeEnable = false,
+						.depthTestEnable = true,
+					},
+					smvk::StencilSettings{},
+					smvk::BlendSettings::Mixed(),
+					smvk::MSAASettings::Count1(),
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+				cmd.PushConstants(0, sizeof(dustPush), &dustPush, smvk::ShaderStage::All);
+				cmd.Draw(6, PARTICLE_MAX, 0, 0);
+			});
 		}
 
 		// ---------------------------------------------------------------------
@@ -17664,8 +17706,8 @@ namespace engine {
 							ImGui::SliderFloat("Speed max", &e.velocity.y, 0.0f, 10.0f);
 							ImGui::SliderFloat("Drag (1/s)", &e.velocity.z, 0.0f, 4.0f);
 							ImGui::SliderFloat("Gravity scale", &e.velocity.w, -2.0f, 2.0f);
-							ImGui::SliderFloat("Size start (m)", &e.size.x, 0.001f, 0.3f, "%.3f");
-							ImGui::SliderFloat("Size end (m)", &e.size.y, 0.001f, 0.5f, "%.3f");
+							ImGui::SliderFloat("Size start (m)", &e.size.x, 0.001f, 3.0f, "%.3f");
+							ImGui::SliderFloat("Size end (m)", &e.size.y, 0.001f, 5.0f, "%.3f");
 							ImGui::SliderFloat("Spin (rad/s)", &e.size.z, 0.0f, 8.0f);
 							ImGui::SliderFloat("Rate (/s)", &e.life.z, 0.0f, 500.0f);
 							ImGui::SliderFloat("Life min (s)", &e.life.x, 0.1f, 10.0f);
@@ -17673,11 +17715,14 @@ namespace engine {
 							ImGui::SliderFloat("Fade in", &e.fade.x, 0.0f, 0.5f);
 							ImGui::SliderFloat("Fade out", &e.fade.y, 0.0f, 0.9f);
 							ImGui::SliderFloat("Color jitter", &e.fade.z, 0.0f, 1.0f);
+							bool groundDust = e.tail.y > 0.5f;
+							if (ImGui::Checkbox("Alpha-blended dust cloud", &groundDust))
+								e.tail.y = groundDust ? smvk::kParticleRender_Dust : 0.0f;
 							ImGui::SliderFloat("Camera-box wrap (m)", &e.fade.w, 0.0f, 20.0f,
 								"%.1f  (0 = world emitter)");
-							const char* shapes[] = { "Cone", "Sphere", "Point" };
+							const char* shapes[] = { "Cone", "Sphere", "Point", "Ground XZ" };
 							int shape = (int)e.life.w;
-							if (ImGui::Combo("Shape", &shape, shapes, 3))
+							if (ImGui::Combo("Shape", &shape, shapes, 4))
 								e.life.w = (float)shape;
 						}
 						if (ImGui::Button("Add emitter") &&
@@ -17706,6 +17751,7 @@ namespace engine {
 							presetToggle("Camera dust", 2, 120.0f);
 							ImGui::SameLine();
 							presetToggle("World rain", 3, 900.0f);
+							presetToggle("Ground dust clouds", 4, 18.0f);
 						}
 						ImGui::Separator();
 						ImGui::Checkbox("Show decals", &m_decalsEnabled);

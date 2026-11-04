@@ -111,6 +111,21 @@ void mainCS(uint3 groupId : SV_GroupID)
             pos = em.position.xyz + em.position.w * ParticleRandInBall(rng);
             vel = ParticleRandUnit(rng) * speed;
         }
+        else if (shape == (uint)PARTICLE_SHAPE_GROUND)
+        {
+            // Uniform horizontal spawn disc; velocity follows the authored
+            // horizontal wind axis with a little randomized divergence.
+            float a = ParticleRand01(rng) * 6.2831853;
+            float r = em.position.w * sqrt(ParticleRand01(rng));
+            pos = em.position.xyz + float3(cos(a) * r, 0.0, sin(a) * r);
+            float2 wind = axis.xz;
+            wind = dot(wind, wind) > 1e-6 ? normalize(wind) : float2(1.0, 0.0);
+            float angle = (ParticleRand01(rng) * 2.0 - 1.0) * em.direction.w;
+            float sn, cs;
+            sincos(angle, sn, cs);
+            vel = float3(wind.x * cs - wind.y * sn, 0.0,
+                         wind.x * sn + wind.y * cs) * speed;
+        }
         else if (shape == (uint)PARTICLE_SHAPE_POINT)
         {
             SampleCone(em.position.xyz, axis, 0.0, em.direction.w,

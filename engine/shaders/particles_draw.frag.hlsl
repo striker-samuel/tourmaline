@@ -36,6 +36,21 @@ GPU_PUSH(ParticlesDrawPush, pcDraw);
 
 static const float PI = 3.14159265359f;
 
+float DustHash(float2 p)
+{
+    return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+float DustNoise(float2 p)
+{
+    float2 i = floor(p);
+    float2 f = frac(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return lerp(lerp(DustHash(i), DustHash(i + float2(1, 0)), f.x),
+                lerp(DustHash(i + float2(0, 1)), DustHash(i + 1.0), f.x), f.y);
+}
+
+
 struct ParticleVsOut
 {
     float4 clipPos : SV_Position;
@@ -107,6 +122,18 @@ float4 mainPS(ParticleVsOut IN) : SV_Target
         fade *= saturate(t / em.fade.x);
     if (em.fade.y > 0.0)
         fade *= saturate((1.0 - t) / em.fade.y);
+
+    if (pcDraw.renderMode == 1u)
+    {
+        // Large warm, irregular alpha-blended clouds rather than additive
+        // glowing discs. The fade and noise keep overlapped puffs soft.
+        float2 uv = IN.quad * 0.5 + 0.5;
+        float n = 0.65 * DustNoise(uv * 4.0 + float2(t * 0.4, 0.0))
+                + 0.35 * DustNoise(uv * 9.0 - float2(0.0, t * 0.25));
+        float opacity = saturate((n - 0.2) * 1.7);
+        float alpha = saturate(falloff * saturate(fade) * opacity * 0.25);
+        return float4(SanitizeHdr(IN.color.rgb * alpha), alpha);
+    }
 
     FrameUniforms frame = pcDraw.frameUniforms.Get();
     float3 N = normalize(frame.cameraPos - IN.worldPos);

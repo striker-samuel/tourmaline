@@ -87,6 +87,19 @@ ParticleVsOut mainVS(uint vertId : SV_VertexID, uint instance : SV_InstanceID)
     ParticleEmitterGpu em =
         pcDraw.emitters.Get().emitters[e];
 
+    // Two blend modes cannot share a pipeline. Reject instances belonging
+    // to the other pass; both passes use the same GPU-resident pool.
+    bool isDust = em.tail.y > 0.5f;
+    if (isDust != (pcDraw.renderMode == 1u))
+    {
+        o.clipPos = kDegenerate;
+        o.worldPos = 0.0f;
+        o.color = 0.0f;
+        o.quad = 0.0f;
+        o.params = 0.0f;
+        return o;
+    }
+
     float t =
         saturate(1.0f - posLife.w * pParams.x);
 
