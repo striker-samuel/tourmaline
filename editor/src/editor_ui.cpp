@@ -353,12 +353,12 @@ void EditorApp::FinalizePending() {
 					}
 					if (ImGui::BeginTabItem("Workspace")) {
 						ImGui::SeparatorText("Editor workspace");
-						ImGui::Checkbox("Ground grid", &m_showGrid);
-						ImGui::Checkbox("Selection wire overlay", &m_wireOverlay);
-						ImGui::Checkbox("Light gizmos", &m_showLightGizmos);
-						ImGui::Checkbox("Camera frustums", &m_showCameraGizmos);
-						ImGui::Checkbox("GI volume boxes", &m_showGiVolumeGizmos);
-						ImGui::Checkbox("Cubemap capture markers", &m_showCubemapGizmos);
+						attr::Check("Ground grid", &m_showGrid, "Show the viewport ground grid");
+						attr::Check("Selection wire overlay", &m_wireOverlay, "Show selected mesh outlines");
+						attr::Check("Light gizmos", &m_showLightGizmos, "Show light icons");
+						attr::Check("Camera frustums", &m_showCameraGizmos, "Show camera frustums");
+						attr::Check("GI volume boxes", &m_showGiVolumeGizmos, "Show GI volume bounds");
+						attr::Check("Cubemap capture markers", &m_showCubemapGizmos, "Show cubemap markers");
 						ImGui::EndTabItem();
 					}
 					ImGui::EndTabBar();
