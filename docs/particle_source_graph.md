@@ -93,7 +93,8 @@ The editor exposes **Particle render type** (Billboard or Mesh instances)
 and a **Mesh prototype bin** selector on the emitter sink. Mesh emitter rows
 are forwarded to `WorldRenderer::SetExternalMeshParticleEmitters`, alongside
 the original billboard rows. The renderer creates its own `MeshParticles`
-pool, runs GPU emission and simulation, culls and bins particles against the
+pool, runs GPU emission and simulation (including a lifetime tail after emitter removal),
+culls and bins particles against the
 main RenderView, builds indirect draws, and renders spinning instances with
 `meshparticles_draw.vert.hlsl` and the placement diagnostic unlit fragment
 shader. Main's GPU read hints synchronize compute outputs and indirect draws.
@@ -103,9 +104,10 @@ via `AttachGpuPlacementRuntime` (up to eight). Invalid or unseeded bins are
 skipped; no arbitrary asset lookup is performed by the emitter. Meshes use
 placement's static vertex/index heap. A project without registered placement
 prototype geometry can still author mesh particle settings, but it will not
-produce mesh geometry until the host registers valid prototypes. Per-bin
-bounds currently use a conservative fallback sphere; cooked bounds and lit
-material selection remain follow-up improvements.
+produce mesh geometry until the host registers valid prototypes. Per-bin bounds use placement prototype bounds when registered and a
+conservative fallback sphere otherwise. Lit material selection remains a
+follow-up improvement; the current mesh draw uses the placement diagnostic
+unlit shading path.
 
 The graph stores **editor settings**, not a cooked runtime graph asset. Runtime
 applications can call the external mesh emitter API with compiled rows.
