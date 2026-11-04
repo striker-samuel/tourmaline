@@ -387,17 +387,14 @@ void EditorApp::SyncPrefabPreview() {
             const std::string expected=ref.name+":"+sourceName;
             if (stableId.empty() && (sourceCounts[sourceName]!=1 ||
                 parentCounts[expected]!=1)) continue; // legacy unique-name compatibility
-            uint32_t target=UINT32_MAX;
-            for (uint32_t p=0;p<parent.hierarchy.size();++p) {
-                if (!IsLiveSlot(parent,p) || p>=parent.localTransform.size()
-                    || !DescendantOf(parent,p,placeholder)) continue;
-                const bool matches=stableId.empty()
-                    ? getNodeName(parent,int(p))==expected
-                    : GetNodeUuid(parent,p)==stableId;
-                if (!matches) continue;
-                if (target!=UINT32_MAX) { target=UINT32_MAX; break; }
-                target=p;
-            }
+            const uint32_t target=prefab_sync::ResolveUnique(
+                uint32_t(parent.hierarchy.size()), [&](uint32_t p) {
+                    if (!IsLiveSlot(parent,p) || p>=parent.localTransform.size()
+                        || !DescendantOf(parent,p,placeholder)) return false;
+                    return stableId.empty()
+                        ? getNodeName(parent,int(p))==expected
+                        : GetNodeUuid(parent,p)==stableId;
+                });
             if (target==UINT32_MAX) continue;
             const uint32_t p=target;
             {
