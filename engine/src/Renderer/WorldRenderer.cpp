@@ -18038,85 +18038,92 @@ namespace engine {
 					ImGui::SeparatorText("GPU + frame");
 					{
 						ImGui::Text("GPU: %s", smvk::ActiveDeviceName());
-						// Stable-label vertical breakdown of the available GPU shadow stages.
-						// These duration slices are not a GPU scheduling trace: async
-						// work can overlap, and the blur-leg timers are nested in blur.
-						if (m_stageGpuTimingsSupported) {
-							constexpr uint32_t stageIds[] = {
-								smvk::kGpuStagePcfRaster,
-								smvk::kGpuStageEvsmCasters,
-								smvk::kGpuStageEvsmResolve,
-								smvk::kGpuStageEvsmBlur
-							};
-							const char* stageLabels[] = {
-								"PCF raster", "EVSM casters", "EVSM resolve", "EVSM blur"
-							};
-							const ImU32 stageColors[] = {
-								IM_COL32(106, 139, 190, 230),
-								IM_COL32(76, 160, 150, 230),
-								IM_COL32(150, 124, 190, 230),
-								IM_COL32(194, 147, 92, 230)
-							};
-							constexpr float rowHeight = 40.0f;
-							constexpr float timelineHeight = rowHeight * 4.0f;
-							double totalMs = 0.0;
-							for (int i = 0; i < 4; ++i)
-								if (m_stageGpuValid[stageIds[i]])
-									totalMs += std::max(0.0, static_cast<double>(m_stageGpuMsSmooth[stageIds[i]]));
-
-							ImGui::TextDisabled("Shadow GPU stages (smoothed, retired frame)");
-							ImGui::BeginGroup();
-							const float labelsTop = ImGui::GetCursorPosY();
-							for (int i = 0; i < 4; ++i) {
-								ImGui::SetCursorPosY(labelsTop + i * rowHeight);
-								ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(stageColors[i]),
-									"%s", stageLabels[i]);
-								ImGui::SetCursorPosY(labelsTop + i * rowHeight + ImGui::GetTextLineHeightWithSpacing());
-								if (m_stageGpuValid[stageIds[i]])
-									ImGui::TextDisabled("%.2f ms", m_stageGpuMsSmooth[stageIds[i]]);
-								else
-									ImGui::TextDisabled("(off)");
+						// Optick scopes for rendergraph passes are dynamically named from
+						// RenderPass::name_. This overview uses those EXACT same names,
+						// with a separate retired-frame Vulkan timestamp pair per pass.
+						// Labels are append-only to avoid distracting row movement when
+						// the graph enables/disables passes between frames.
+						{
+							const auto currentPasses = m_swapchain
+								? m_swapchain->GetGpuPassTimings() : std::vector<smvk::GpuPassTiming>{};
+							static std::vector<std::string> knownPassNames;
+							for (const auto& pass : currentPasses) {
+								if (std::find(knownPassNames.begin(), knownPassNames.end(), pass.name)
+									== knownPassNames.end())
+									knownPassNames.push_back(pass.name);
 							}
-							ImGui::SetCursorPosY(labelsTop + timelineHeight);
-							ImGui::Dummy(ImVec2(0, 0));
-							ImGui::EndGroup();
-							ImGui::SameLine(0, 18.0f);
-							ImGui::BeginGroup();
-							const ImVec2 top = ImGui::GetCursorScreenPos();
-							const float width = std::max(48.0f, std::min(100.0f, ImGui::GetContentRegionAvail().x));
-							ImGui::InvisibleButton("##shadow_stage_vertical_timeline", ImVec2(width, timelineHeight));
-							ImDrawList* draw = ImGui::GetWindowDrawList();
-							draw->AddRectFilled(top, ImVec2(top.x + width, top.y + timelineHeight),
-								IM_COL32(70, 70, 75, 70), 3.0f);
-							if (totalMs > 0.0) {
-								float y = top.y;
-								for (int i = 0; i < 4; ++i) {
-									if (!m_stageGpuValid[stageIds[i]]) continue;
-									const double ms = std::max(0.0, static_cast<double>(m_stageGpuMsSmooth[stageIds[i]]));
-									const float h = static_cast<float>(ms / totalMs) * timelineHeight;
-									if (h <= 0.0f) continue;
-									draw->AddRectFilled(ImVec2(top.x, y), ImVec2(top.x + width, y + h),
-										stageColors[i]);
-									if (ImGui::IsItemHovered()) {
-										const float mouseY = ImGui::GetIO().MousePos.y;
-										if (mouseY >= y && mouseY < y + h)
-											ImGui::SetTooltip("%s: %.3f ms", stageLabels[i], ms);
-									}
-									y += h;
+							ImGui::TextDisabled("Rendergraph GPU passes (Optick labels, retired frame)");
+							if (knownPassNames.empty()) {
+								ImGui::TextDisabled("Waiting for GPU pass timestamps...");
+							} else {
+								struct PassRow { double ms = 0.0; bool valid = false; };
+								std::vector<PassRow> rows(knownPassNames.size());
+								for (const auto& pass : currentPasses) {
+									if (!pass.valid) continue;
+									auto it = std::find(knownPassNames.begin(), knownPassNames.end(), pass.name);
+									if (it == knownPassNames.end()) continue;
+									auto& row = rows[static_cast<size_t>(it - knownPassNames.begin())];
+									row.ms += pass.milliseconds; // repeated Optick names are grouped
+									row.valid = true;
 								}
+								double totalMs = 0.0;
+								for (const auto& row : rows)
+									if (row.valid) totalMs += std::max(0.0, row.ms);
+								// Fixed-height rows; the stacked column uses duration height,
+								// independent of label positions.
+								constexpr float rowHeight = 24.0f;
+								const float plotHeight = rowHeight * static_cast<float>(rows.size());
+								const float labelWidth = 230.0f;
+								const float plotWidth = 75.0f;
+								static constexpr ImU32 colors[] = {
+									IM_COL32(105, 140, 190, 230), IM_COL32(74, 157, 148, 230),
+									IM_COL32(146, 124, 190, 230), IM_COL32(193, 146, 95, 230),
+									IM_COL32(168, 124, 150, 230), IM_COL32(118, 156, 108, 230),
+									IM_COL32(100, 152, 170, 230), IM_COL32(177, 150, 105, 230)
+								};
+								ImGui::BeginChild("##gpu_pass_timeline_scroll",
+									ImVec2(0.0f, std::min(420.0f, plotHeight + 8.0f)), false);
+								const ImVec2 origin = ImGui::GetCursorScreenPos();
+								ImDrawList* draw = ImGui::GetWindowDrawList();
+								const ImVec2 plotTop(origin.x + labelWidth + 12.0f, origin.y);
+								draw->AddRectFilled(plotTop,
+									ImVec2(plotTop.x + plotWidth, plotTop.y + plotHeight),
+									IM_COL32(65, 67, 73, 65), 3.0f);
+								float cursorY = plotTop.y;
+								for (size_t i = 0; i < rows.size(); ++i) {
+									// Stable index, deterministic color. Neither changes on frame updates.
+									uint32_t hash = 2166136261u;
+									for (unsigned char c : knownPassNames[i])
+										hash = (hash ^ c) * 16777619u;
+									const ImU32 color = colors[hash % (sizeof(colors) / sizeof(colors[0]))];
+									const ImVec2 labelTop(origin.x, origin.y + rowHeight * static_cast<float>(i));
+									draw->AddCircleFilled(ImVec2(labelTop.x + 4.0f,
+										labelTop.y + 8.0f), 3.0f, color);
+									draw->AddText(ImVec2(labelTop.x + 12.0f, labelTop.y),
+										ImGui::GetColorU32(ImGuiCol_Text), knownPassNames[i].c_str());
+									char value[40];
+									if (rows[i].valid)
+										snprintf(value, sizeof(value), "%.2f ms", rows[i].ms);
+									else
+										snprintf(value, sizeof(value), "off");
+									draw->AddText(ImVec2(labelTop.x + 12.0f,
+										labelTop.y + ImGui::GetTextLineHeight()),
+										ImGui::GetColorU32(ImGuiCol_TextDisabled), value);
+									if (rows[i].valid && totalMs > 0.0) {
+										const float height = static_cast<float>(
+											std::max(0.0, rows[i].ms) / totalMs * plotHeight);
+										if (height > 0.0f) {
+											draw->AddRectFilled(ImVec2(plotTop.x, cursorY),
+												ImVec2(plotTop.x + plotWidth, cursorY + height), color);
+											cursorY += height;
+										}
+									}
+								}
+								ImGui::Dummy(ImVec2(labelWidth + plotWidth + 12.0f, plotHeight));
+								ImGui::EndChild();
+								ImGui::TextDisabled("Vertical stack = pass durations, not queue chronology.");
+								ImGui::TextDisabled("Async passes may overlap; repeated names are grouped.");
 							}
-							ImGui::TextDisabled("top -> bottom");
-							ImGui::EndGroup();
-							ImGui::TextDisabled("Duration composition, not execution order (async stages may overlap).");
-							ImGui::TextDisabled("Async blur legs (included in EVSM blur):");
-							for (uint32_t i = 0; i < smvk::kGpuAsyncPassMaxTimers; ++i) {
-								const uint32_t s = smvk::kGpuStageAsyncPassBase + i;
-								if (m_stageGpuValid[s])
-									ImGui::Text("  Pass %u: %.2f ms", i, m_stageGpuMsSmooth[s]);
-							}
-						}
-						else {
-							ImGui::TextDisabled("(stage timings unavailable: no cross-queue timestamps)");
 						}
 						ImGui::Separator();
 						{
