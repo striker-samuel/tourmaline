@@ -546,7 +546,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // ---------------------------------------------------------------
     // Decode material indices and factors
     // tex: x=baseColor, y=metallicRoughness, z=normal, w=occlusion
-    // tex2: x=emissive
+    // tex2: x=emissive, y=cavity texture, z=cavity strength (0..1000, -1=1)
     // params: x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
     // params2: x=occlusionStrength, y=normalScale, z=emissiveStrength
     // (Layered: factors blend below; indices are per-layer.)
@@ -556,6 +556,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     int normalIdx = mat.tex.z;
     int occIdx = mat.tex.w;
     int emissiveIdx = mat.tex2.x;
+    int cavityIdx = mat.tex2.y;
 
     float alphaCutoff = mat.params.x;
     float metallicFactor = layered
@@ -864,6 +865,44 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             occAcc += s * w;
         }
         occlusion = lerp(1.0f, occAcc, occlusionStrength);
+    }
+
+    // ---------------------------------------------------------------
+    // Cavity: small-scale indirect occlusion, independently authored
+    // from glTF AO. tex2.z is an optional fixed-point strength; -1
+    // preserves full strength for older 128-byte packed material rows.
+    // Keep direct lighting, emissive and screen-space AO untouched.
+    // ---------------------------------------------------------------
+    float cavity = 1.0f;
+    if (!layered && cavityIdx >= 0)
+    {
+        Texture2D cavityTex = textures[NonUniformResourceIndex((uint)cavityIdx)];
+        float sampleCavity = saturate(cavityTex.Sample(samplers[0], IN.uv).r);
+        float strength = mat.tex2.z < 0 ? 1.0f : saturate((float)mat.tex2.z * 0.001f);
+        cavity = lerp(1.0f, sampleCavity, strength);
+    }
+    if (layered)
+    {
+        float cavityAcc = 0.0f;
+        int4 cIdx = int4(ml0.tex2.y, ml1.tex2.y, ml2.tex2.y, ml3.tex2.y);
+        int4 cStrength = int4(ml0.tex2.z, ml1.tex2.z, ml2.tex2.z, ml3.tex2.z);
+        [unroll]
+        for (int li = 0; li < 4; ++li)
+        {
+            float w = (li == 0) ? layerW.x : (li == 1) ? layerW.y : (li == 2) ? layerW.z : layerW.w;
+            if (w < 0.004f)
+                continue;
+            int idx = cIdx[li];
+            float sampleCavity = 1.0f;
+            if (idx >= 0)
+            {
+                Texture2D cavityTex = textures[NonUniformResourceIndex((uint)idx)];
+                sampleCavity = saturate(cavityTex.Sample(samplers[0], IN.uv).r);
+            }
+            float strength = cStrength[li] < 0 ? 1.0f : saturate((float)cStrength[li] * 0.001f);
+            cavityAcc += lerp(1.0f, sampleCavity, strength) * w;
+        }
+        cavity = cavityAcc;
     }
 
     // ---------------------------------------------------------------
@@ -1595,7 +1634,7 @@ float envVis = 1.0f;
     // next to the skipped env fetch.)
     if (litSpecular == 0u)
         ambientSpec = float3(0.0f, 0.0f, 0.0f);
-    float3 aoTerm = (ambient + ambientSpec) * occlusion;
+    float3 aoTerm = (ambient + ambientSpec) * occlusion * cavity;
     float3 color = direct * occlusion + aoTerm;
 
     // Emissive additive
