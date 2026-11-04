@@ -958,6 +958,8 @@ namespace engine {
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.particles
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.meshParticles
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.motionVectors
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.motionBlur
@@ -3534,6 +3536,8 @@ namespace engine {
 			delete m_gpuPlacementDraw;
 			m_gpuPlacementDraw = nullptr;
 		}
+		m_meshParticleDraw.Destroy();
+		m_viewportResources.meshParticles.Destroy(*m_rendergraph);
 		if (!m_gpuPlacementViewLogical.empty())
 			m_rendergraph->FreeBuffer(m_gpuPlacementViewLogical);
 		m_gpuPlacementViewLogical = {};
@@ -11586,6 +11590,39 @@ namespace engine {
 		const uint32_t particleEmitterCount =
 			particlesOn ? UpdateParticles(fb.frameIndex) : 0u;
 
+		// Mesh particles share the placement prototype geometry table,
+		// but have their own persistent GPU pool and cull/indirect chain.
+		// Do not run without valid prototype draws (zero-index commands
+		// are not a substitute for registered geometry).
+		auto& meshPs = m_viewportResources.meshParticles;
+		m_meshParticlesReady = false;
+		uint32_t meshEmitterCount = 0;
+		if (m_particlesEnabled && m_passes.particles &&
+			!m_externalMeshParticleEmitters.empty() &&
+			m_gpuPlacementSeedCount > 0 &&
+			meshPs.Ensure(*m_context, *m_rendergraph, FrameFlights(fb)) &&
+			m_meshParticleDraw.Ensure(*m_context,
+				"content/shaders/meshparticles_draw.vert.hlsl.spv",
+				tour::placement::kPlacementUnlitPsPath)) {
+			std::vector<smvk::MeshParticleEmitterGpu> rows;
+			rows.reserve(std::min<size_t>(m_externalMeshParticleEmitters.size(),
+				meshPs.desc.maxEmitters));
+			for (const auto& emitter : m_externalMeshParticleEmitters) {
+				const uint32_t bin = uint32_t(std::max(0.0f, emitter.life.w));
+				if (bin >= m_gpuPlacementSeedCount ||
+					m_gpuPlacementSeeds[bin].indexCount == 0)
+					continue;
+				rows.push_back(emitter);
+				if (rows.size() == meshPs.desc.maxEmitters) break;
+			}
+			if (!rows.empty() && meshPs.SeedIndirect(*m_context,
+				m_gpuPlacementSeeds, m_gpuPlacementSeedCount)) {
+				meshEmitterCount = uint32_t(rows.size());
+				meshPs.UpdateEmitters(*m_context, fb.frameIndex,
+					rows.data(), meshEmitterCount);
+			}
+		}
+
 		// ---------------------------------------------------------------------
 		// RenderView allocation (see smvk::RenderViewSet):
 		//   main camera            -> 1 view,
@@ -13256,6 +13293,38 @@ namespace engine {
 				cmd.Dispatch(
 					smvk::Particles::SimGroupsFor(PARTICLE_MAX, PARTICLE_SIM_THREADS),
 					1, 1);
+			});
+		}
+
+		// Emit and simulate live mesh instances before the view-specific
+		// visibility chain. Particle transforms never round-trip via CPU.
+		if (meshEmitterCount > 0) {
+			const float dt = std::min(m_deltaTime, 1.0f / 30.0f);
+			smvk::MeshParticlesEmitPush emit{};
+			emit.emitters = meshPs.EmittersSliceAddress(*m_context, fb.frameIndex);
+			emit.emitterState = meshPs.EmitterStateAddress(*m_context);
+			emit.particles = meshPs.ParticlesAddress(*m_context);
+			emit.freeList = meshPs.FreeListAddress(*m_context);
+			emit.emitterCount = meshEmitterCount;
+			emit.maxParticles = meshPs.desc.maxParticles;
+			emit.dt = dt;
+			emit.frameSeed = uint32_t(m_frameCounter);
+			auto& emitPass = meshPs.AddEmitPass(*m_rendergraph);
+			emitPass.SetRecordingFunc([this, emit](smvk::CommandBuffer& cmd) {
+				smvk::MeshParticles::PushAndDispatchEmit(cmd,
+					m_viewportResources.meshParticles.emitProgram, emit);
+			});
+			smvk::MeshParticlesSimPush sim{};
+			sim.particles = emit.particles;
+			sim.freeList = emit.freeList;
+			sim.gravityY = m_particleDemo.gravityY;
+			sim.dt = dt;
+			sim.maxParticles = meshPs.desc.maxParticles;
+			auto& simPass = meshPs.AddSimPass(*m_rendergraph);
+			simPass.SetRecordingFunc([this, sim](smvk::CommandBuffer& cmd) {
+				smvk::MeshParticles::PushAndDispatchSim(cmd,
+					m_viewportResources.meshParticles.simProgram, sim,
+					m_viewportResources.meshParticles.SimGroupsFor(sim.maxParticles));
 			});
 		}
 
