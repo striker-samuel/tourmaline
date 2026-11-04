@@ -10,8 +10,10 @@ occurs in the per-frame capture path. The matching scene state, RNG and
 inputs are retained on the CPU at the original simulation tick.
 
 After 15 frames, or on a shorter final batch, the host waits for the
-capture submissions, downloads the used region of the GPU buffer with
-**one batched copy/submission to host-visible staging**, and then writes
+capture submissions, downloads the used region of the GPU buffer in **one staging transfer at
+resolutions that fit the readback staging cap**, or several contiguous
+transfers for larger batches (notably 4K with the default 256 MiB cap),
+and then writes
 the original per-frame PNGs with `tsNp` metadata, state deltas and hashes.
 The GPU batch buffer is reused for the next 15 frames. Export/PNG encoding
 still runs synchronously at the batch boundary.
@@ -22,7 +24,8 @@ image download path. The default is `scoped`.
 
 Capture memory is roughly `15 * width * height * 4` bytes of device-local
 buffer storage, plus the host-visible staging allocation used during a
-batch drain. A capture resolution change during a sequence fails instead
+batch drain. The default readback staging cap is 256 MiB; larger batches
+are transferred in chunks after the 15-frame capture, not read during capture. A capture resolution change during a sequence fails instead
 of producing mixed-size files. The PNG wire format and verification
 contract are unchanged.
 
