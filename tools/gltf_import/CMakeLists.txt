@@ -32,6 +32,7 @@ target_include_directories(gltf_import
     PRIVATE
         ${TOURMALINE_SOURCE_DIR}/external/tinyobjloader
         ${TOURMALINE_SOURCE_DIR}/external/xatlas/source/thirdparty
+        ${TOURMALINE_SOURCE_DIR}/external/stb # image-write header for packed-material PNGs
         ${TOURMALINE_SOURCE_DIR}/tools/common
 )
 
