@@ -1,7 +1,7 @@
 # TODO — merged-as-draft follow-up work
 
-PRs #136–#142 and #145/#148/#151 were merged while still drafts (owner
-request, 2026-11-04).
+PRs #136–#142 and #145/#148/#151/#152/#153 were merged while still
+drafts (owner request, 2026-11-04).
 Each entry records the work the PR author explicitly flagged as incomplete
 in its own description. Local gates (full all-targets build + ctest +
 Python tooling tests) verified compilation and existing regressions; the
@@ -83,6 +83,25 @@ items below are the remaining author-declared gaps.
   and Release Editor runs toggling Off → count heat → light-scoped →
   Off, shader hot-reload of both variant sets, and verifying the
   shipping profile still excludes diagnostics.
+
+## #152 — Terrain NaN-clipped holes + RGBA vertex attributes
+- Author never built or ran tests; the merge gate compiled the shaders
+  and runs `TerrainBlocksTests` (one far-grid expectation fixed in the
+  merge: the 16m far step keeps vertex 1 inside the 32m hole texel).
+- NaN clip-space vertex handling is DRIVER-DEPENDENT — the fragment
+  alpha `clip` fallback exists, but a near/far LOD visual pass on the
+  real GPU (NVIDIA + the Linux/AMD matrix if applicable) is open.
+- Holes affect visual terrain only; heightfield collision and
+  raymarch shadows unchanged — verify a holed tile still collides.
+
+## #153 — Dockable top-down terrain World Map pane
+- Author never compiled or GPU-tested; the merge gate built it clean.
+  Still open per the author's checklist: multi-tile terrain creation,
+  painting across seams, undo/redo, save/reload, pan/zoom/fit, dock
+  layout reset integration, and View > Panels wiring.
+- First slice edits procedural TerrainGroupData only — the streamed
+  world H/S atlas, material painting and streamed world tiles are
+  declared follow-ups.
 
 ## Legacy engineering backlog (migrated from `todo.txt`)
 
