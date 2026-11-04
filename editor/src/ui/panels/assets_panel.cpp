@@ -211,14 +211,6 @@ namespace editor {
 			}
 		}
 
-		// Own line, NEVER SameLine with the filter or actions.
-		const std::string currentPath = "Path: " + m_assetsDir;
-		const std::string pathLabel = FitLabel(currentPath,
-			ImGui::GetContentRegionAvail().x);
-		ImGui::TextDisabled("%s", pathLabel.c_str());
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("%s", m_assetsDir.c_str());
-
 		// ---- header row 2: collection filter and expanded views --------
 		// Internal cubemap / GI-cook artifacts are not browsable collections.
 		const char* filters[7] = { "All items", "Meshes", "Materials",
@@ -250,15 +242,6 @@ namespace editor {
 
 		// ---- header row 3: actions (responsive, not scrolling) ----------
 		ImGui::Separator();
-		if (ImGui::Button("Import asset...")) {
-			std::string picked;
-			if (NativeOpenFile(picked) && !picked.empty()
-				&& ImportAsset(picked)) {
-				// Navigate to where the import landed.
-				navigateAssetDirectory((fs::path(m_projectRoot) / "content"
-					/ "models").generic_string());
-			}
-		}
 		// The toolbar and grid context menu share the same creation
 		// actions; new assets are placed in the browsed directory.
 		const auto drawNewAssetMenu = [&]() {
@@ -319,8 +302,39 @@ namespace editor {
 			ImGui::EndPopup();
 		}
 		if (m_assetDb.IsOpen()) {
-			SameLineIfFits("Rescan");
-			if (ImGui::Button("Rescan")) {
+			SameLineIfFits("Refresh");
+			const float refreshSize = ImGui::GetFrameHeight();
+			const bool rescan = ImGui::Button("##rescan_assets",
+				ImVec2(refreshSize, refreshSize));
+			// Two curved arrows drawn in the current UI font-independent style.
+			{
+				ImDrawList* dl = ImGui::GetWindowDrawList();
+				const ImVec2 a = ImGui::GetItemRectMin();
+				const ImVec2 center(a.x + refreshSize * 0.5f,
+					a.y + refreshSize * 0.5f);
+				const float radius = refreshSize * 0.22f;
+				const ImU32 c = ImGui::GetColorU32(ImGuiCol_Text);
+				constexpr float pi = 3.14159265f;
+				for (int half = 0; half < 2; ++half) {
+					const float start = half * pi + 0.25f;
+					const float finish = start + pi - 0.50f;
+					dl->PathArcTo(center, radius, start, finish, 12);
+					dl->PathStroke(c, 0, 1.5f);
+					const ImVec2 end(center.x + radius * std::cos(finish),
+						center.y + radius * std::sin(finish));
+					const ImVec2 tangent(-std::sin(finish), std::cos(finish));
+					const ImVec2 normal(std::cos(finish), std::sin(finish));
+					const float head = refreshSize * 0.13f;
+					dl->AddTriangleFilled(end,
+						ImVec2(end.x - tangent.x * head + normal.x * head * 0.65f,
+							end.y - tangent.y * head + normal.y * head * 0.65f),
+						ImVec2(end.x - tangent.x * head - normal.x * head * 0.65f,
+							end.y - tangent.y * head - normal.y * head * 0.65f), c);
+				}
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Rescan project assets and refresh identity mappings");
+			if (rescan) {
 				smvk::cache::RescanStats stats;
 				std::string rerr;
 				if (m_assetDb.RescanProject(stats, rerr))
@@ -368,25 +382,6 @@ namespace editor {
 			if (ImGui::SmallButton("Reveal##sel"))
 				RevealInExplorer(m_assetsSel);
 			ImGui::EndDisabled();
-			// DCC operations are always one click away, without four
-			// separate toolbar buttons squeezing the asset grid.
-			SameLineIfFits("DCC...");
-			ImGui::BeginDisabled(!selFile);
-			if (ImGui::SmallButton("DCC...##sel"))
-				ImGui::OpenPopup("##selected_asset_dcc");
-			ImGui::EndDisabled();
-			if (ImGui::BeginPopup("##selected_asset_dcc")) {
-				if (ImGui::MenuItem("Open in DCC"))
-					OpenAssetInDcc(m_assetsSel);
-				if (ImGui::MenuItem("Link DCC source..."))
-					LinkAssetToDcc(m_assetsSel);
-				if (ImGui::MenuItem("Publish glTF", nullptr, false,
-						!m_dccPublishRunning))
-					PublishAssetFromDcc(m_assetsSel);
-				if (ImGui::MenuItem("Unlink DCC source"))
-					UnlinkAssetFromDcc(m_assetsSel);
-				ImGui::EndPopup();
-			}
 			// Add-to-scene (mesh/geometry selection): the click twin of the
 			// viewport drag-drop (AddSceneReference asset-bind). Imports
 			// land in-project first (ImportAsset), so this only ever adds
@@ -838,8 +833,14 @@ namespace editor {
 					std::string e = p.extension().string();
 					for (char& c : e)
 						c = char(std::tolower((unsigned char)c));
-					if (e == ".meta" || HideAssetBrowserFile(p))
-						continue; // sidecar or internal bake artifact
+					// The ordinary folder lists authored source files only.
+					// Derived geometry/material/animation files remain accessible
+					// as logical subassets through their source manifest, rather
+					// than appearing again as loose sibling files.
+					const bool generated = e == ".geometry" || e == ".mesh"
+						|| e == ".material" || e == ".anim";
+					if (e == ".meta" || generated || HideAssetBrowserFile(p))
+						continue; // generated output or internal bake artifact
 					if (smvk::assets::IsMeshSourceExtension(e)) {
 						// With a manifest the source presents as a FOLDER
 						// of its derived assets; without one it opens as
@@ -1257,6 +1258,13 @@ namespace editor {
 			ImGui::PopID();
 			ImGui::PopID();
 		};
+		// Folder/collection count reflects the visible entries, not hidden
+		// sidecars or generated artifacts. A virtual ".." tile is navigation.
+		const size_t visibleItems = dirs.size() + files.size()
+			- size_t(std::count_if(dirs.begin(), dirs.end(),
+				[](const Entry& e) { return e.back; }));
+		ImGui::TextDisabled("%zu item%s", visibleItems,
+			visibleItems == 1 ? "" : "s");
 		for (const Entry& e : dirs) {
 			if (col != 0)
 				ImGui::SameLine(0.0f, 4.0f);

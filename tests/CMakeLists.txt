@@ -860,6 +860,14 @@ set_target_properties(TerrainHFieldTests PROPERTIES
 
 add_test(NAME terrain_hfield_tests COMMAND TerrainHFieldTests)
 
+# CPU-only terrain/mesh seam ribbon bake primitive.
+add_executable(TerrainSeamRibbonTests test_terrain_seam_ribbon.cpp)
+target_link_libraries(TerrainSeamRibbonTests PRIVATE engine)
+set_target_properties(TerrainSeamRibbonTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+add_test(NAME terrain_seam_ribbon_tests COMMAND TerrainSeamRibbonTests)
+
 # G-block bake contract (counts, winding, skirts, AABB, mask color).
 add_executable(TerrainBlocksTests test_terrain_blocks.cpp)
 

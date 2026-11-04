@@ -518,9 +518,14 @@ namespace editor {
 		// THE SAME pixels → the same aspect → the identical camera. (The
 		// chrome border's stroke straddles the rect edge; the composite
 		// covers its inner half — the outer half still reads.)
-		m_wysiwygLiveRectMin = ImVec2(stage.x, stage.y);
-		m_wysiwygLiveRectMax =
-			ImVec2(stage.x + stage.w, stage.y + stage.h);
+		// ViewportRect is SDL-window-local, while the ImGui compositor
+		// uses desktop/global screen coordinates. Convert exactly once
+		// before recording the live composite destination.
+		const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+		m_wysiwygLiveRectMin = ImVec2(origin.x + stage.x,
+			origin.y + stage.y);
+		m_wysiwygLiveRectMax = ImVec2(origin.x + stage.x + stage.w,
+			origin.y + stage.y + stage.h);
 		m_wysiwygLiveRectFresh = true;
 		// The placeholder hint only reads while the renderer is
 		// unavailable (attach failed / no scene): the composite paints
@@ -528,7 +533,8 @@ namespace editor {
 		if (!(m_wysiwyg && m_wysiwygValid)) {
 			ImDrawList* dl = ImGui::GetBackgroundDrawList();
 			dl->AddText(
-				ImVec2(stage.x + 14.0f, stage.y + 14.0f),
+				ImVec2(origin.x + stage.x + 14.0f,
+					origin.y + stage.y + 14.0f),
 				IM_COL32(160, 160, 170, 255), "Lit: %s", m_world
 				? "renderer unavailable (attach failed - see the console)"
 				: "no scene loaded");
@@ -667,9 +673,8 @@ namespace editor {
 		ImGui::Text("GI (probes) - baked ON DEMAND, never with the cook");
 		ImGui::TextDisabled("%u GI volume node(s) authored in this scene",
 			m_world ? uint32_t(m_world->scene.tables.giVolumes.size()) : 0u);
-		ImGui::TextDisabled("bake selectors (giVolumes) live on the "
-			"ExportSettings node (the world-field selector is retired "
-			"with the octree)");
+		ImGui::TextDisabled("Bake GI uses the authored scene volumes; "
+			"no ExportSettings node or prior cook is required.");
 		if (!m_giBakedHash.empty()) {
 			const bool fresh = !m_cookDefHash.empty()
 				&& m_giBakedHash == m_cookDefHash;
@@ -682,7 +687,7 @@ namespace editor {
 				ImVec2(-1, 0), ""); // current bake phase
 		}
 		else if (ImGui::Button("Bake GI now")) {
-			BakeGI(); // guards + logs inside (needs a cook target)
+			BakeGI(); // only a loaded project scene with GI volumes is needed
 		}
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Run GiBaker over the current definition tour.\n"

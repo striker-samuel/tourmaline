@@ -628,7 +628,8 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // (layered: vertex color already consumed as weights, tint stays white).
     float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
     float3 baseColor = baseColorFactor * vcolTint * baseSample.rgb;
-    float baseAlpha = baseAlphaFactor * baseSample.a;
+    // glTF COLOR_0 alpha is part of vertex coverage (seam ribbons use it).
+    float baseAlpha = baseAlphaFactor * baseSample.a * (layered ? 1.0f : IN.color.a);
 
 #if defined(ALPHA_TO_COVERAGE)
     // A2C variant: NO discard anywhere in the module (OpKill disables the

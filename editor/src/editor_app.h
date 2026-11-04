@@ -792,6 +792,7 @@ private:
 	// ---- UI (editor_ui.cpp) ----
 	void DrawUI(smvk::Extent2D targetExtent);
 	void DrawMenuBar();
+	void DrawIntersectionToolsWindow();
 	// ---- tool topbar (tabbed toolbar below the menu bar) --------------
 	// Ribbon-lite: a tab strip of TOOL TYPES (Select / Transform /
 	// Terrain / Placement / Modes) with the active tab's controls in a
@@ -1228,6 +1229,11 @@ private:
 	void StartProjectRecipeBuild(const std::string& recipePath,
 		const std::string& recipeText);
 	bool m_showProjectExportWindow = false;
+	// Dedicated File > Import window (not the Assets grid).
+	bool m_showImportWindow = false;
+	char m_importSourceBuf[1024]{};
+	bool m_importOpenAfter = false;
+	void DrawImportWindow();
 	std::string m_projectExportRecipeName = "game.tourrecipe";
 	char m_projectExportRecipeNameBuf[256] = "game.tourrecipe";
 	std::array<char, 65536> m_projectExportRecipeText{};
@@ -2244,7 +2250,7 @@ private:
 	// Cooking the product .pak is a separate explicit step
 	// (Ctrl+Shift+C) — as is Bake GI (on demand). False + log without
 	// an open project, while cooking, or for foreign extensions.
-	bool ImportAsset(const std::string& srcPath);
+	bool ImportAsset(const std::string& srcPath, bool openAfter = true);
 	// THE MESH IMPORTER drive (editor side; see ImportAsset +
 	// editor_project.cpp): glTF is IMPORT-ONLY — derive the .geometry
 	// artifact family beside the source when stale (MeshArtifactStale),
@@ -2786,6 +2792,7 @@ private:
 	// Each dock tool has a close button; View > Panels can reopen it.
 	bool m_showViewportPanel = true;
 	bool m_showWorldMapPanel = true;
+	bool m_showIntersectionToolsPanel = false;
 	uint32_t m_worldMapGroup = UINT32_MAX;
 	glm::vec2 m_worldMapCenter{0.0f};
 	float m_worldMapScale = 0.0f; // world meters per screen pixel (0 = fit)

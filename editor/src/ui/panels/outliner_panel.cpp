@@ -282,11 +282,9 @@ namespace editor {
 				ImGui::PushID(int(n));
 				const bool sel = IsSelected(n);
 				char label[300];
-				std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s%s%s%s%s%s", n,
+				std::snprintf(label, sizeof(label), "   %u: %s%s%s%s%s%s%s%s%s", n,
 					name.empty() ? "(unnamed)" : name.c_str(),
-					FindMesh(m_world->scene, n) != nullptr ? " [mesh]" : "",
 					FindNodeLight(n) ? " [light]" : "",
-					(FindGiVolume(m_world->scene, n) != nullptr) ? " [giv]" : "",
 					(FindCubemap(m_world->scene, n) != nullptr) ? " [cube]" : "",
 					(FindCamera(m_world->scene, n) != nullptr) ? " [camera]" : "",
 					(FindExport(m_world->scene, n) != nullptr) ? " [export]" : "",
@@ -295,6 +293,10 @@ namespace editor {
 						? " [locator]" : "",
 					IsRefPlaceholder(n) ? " [ref]" : "",
 					!IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
+				const bool meshNode = FindMesh(m_world->scene, n) != nullptr;
+				const bool giNode = FindGiVolume(m_world->scene, n) != nullptr;
+				const IconType rowIcon = giNode ? IconType::GI
+					: (meshNode ? IconType::Model : IconType::File);
 				if (ImGui::Selectable((std::string(label) + "###outliner_node").c_str(), sel)) {
 					// Click = replace; ctrl-click = toggle one;
 					// shift-click = contiguous visible range.
@@ -306,6 +308,13 @@ namespace editor {
 						SetSelection(n);
 					m_revealNode = n;
 				}
+				// The node type lives before the label, not in a trailing [mesh]/[giv] tag.
+				const ImVec2 rowPos = ImGui::GetItemRectMin();
+				const float iconSide = ImGui::GetFontSize();
+				DrawAssetIconFallback(ImGui::GetWindowDrawList(),
+					ImVec2(rowPos.x + ImGui::GetStyle().FramePadding.x,
+						rowPos.y + (ImGui::GetItemRectSize().y - iconSide) * 0.5f),
+					iconSide, rowIcon);
 				if (sel && n == m_revealNode)
 					ImGui::SetScrollHereY(0.5f);
 				ImGui::PopID();
@@ -360,10 +369,9 @@ namespace editor {
 				nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 		}
 		char label[300];
-		std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+		std::snprintf(label, sizeof(label), "   %s%s%s%s%s%s%s%s%s%s%s%s%s",
 			name.empty() ? "(node)" : name.c_str(),
-			hasMesh ? " [mesh]" : "", lightTag,
-			(FindGiVolume(scene, node) != nullptr) ? " [giv]" : "",
+			lightTag,
 			(FindCubemap(scene, node) != nullptr) ? " [cube]" : "",
 			(FindCamera(scene, node) != nullptr) ? " [camera]" : "",
 			(FindExport(scene, node) != nullptr) ? " [export]" : "",
@@ -377,7 +385,18 @@ namespace editor {
 			IsRefPlaceholder(node) ? " [ref]" : "",
 			!IsVisibleNode(scene, int(node))
 			? (IsHiddenNode(scene, int(node)) ? " [hidden]" : " [hidden*]") : "");
+		const IconType rowIcon = FindGiVolume(scene, node) != nullptr
+			? IconType::GI : (hasMesh ? IconType::Model
+				: (nodeLight ? IconType::Light : IconType::File));
 		const bool open = ImGui::TreeNodeEx((std::string(label) + "###outliner_node").c_str(), flags);
+		// TreeNodeEx owns the entire row (selection, reparent and expansion).
+		// Paint the icon in its label padding without creating another widget.
+		const ImVec2 rowPos = ImGui::GetItemRectMin();
+		const float iconSide = ImGui::GetFontSize();
+		DrawAssetIconFallback(ImGui::GetWindowDrawList(),
+			ImVec2(rowPos.x + ImGui::GetTreeNodeToLabelSpacing(),
+				rowPos.y + (ImGui::GetItemRectSize().y - iconSide) * 0.5f),
+			iconSide, rowIcon);
 		// Drag source (reparent by drop).
 		if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
 			ImGui::SetDragDropPayload("EDITOR_NODE", &node, sizeof(node));

@@ -382,7 +382,8 @@ def parser():
         q = sub.add_parser(name, help="plan or execute a deterministic capture matrix")
         q.add_argument("--environment", help="comma-separated IDs (default: bundled)")
         q.add_argument("--material", help="comma-separated material IDs")
-        q.add_argument("--view", help="comma-separated view IDs")
+        if name != "reference":
+            q.add_argument("--view", help="comma-separated view IDs (reference always uses lit)")
         q.add_argument("--json", action="store_true")
         if name in ("run", "reference"):
             q.add_argument("--exe", type=Path, required=True)

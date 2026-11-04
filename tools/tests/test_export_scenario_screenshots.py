@@ -37,6 +37,11 @@ class ExportScenarioSnapshotsTests(unittest.TestCase):
             self.assertEqual(report["state_frame"], 120)
             self.assertFalse(output.exists())
 
+    def test_app_is_the_only_executable_flag(self):
+        self.assertEqual(exporter.parser().parse_args(["--app", "App"]).app, Path("App"))
+        with self.assertRaises(SystemExit):
+            exporter.parser().parse_args(["--exe", "App"])
+
     def test_invalid_id_rejected_before_io(self):
         with tempfile.TemporaryDirectory() as td:
             args = exporter.parser().parse_args(["--app", "App", "--output", td, "--dry-run"])

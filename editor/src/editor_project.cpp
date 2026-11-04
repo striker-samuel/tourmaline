@@ -875,11 +875,16 @@ void EditorApp::ReimportAsset(const std::string& path) {
     for (char& c : ext)
         c = char(std::tolower(static_cast<unsigned char>(c)));
     if (smvk::assets::IsMeshSourceExtension(ext)) {
+        TaskWindowBegin("Reimport asset", "Reimporting model source...");
+        TaskWindowStage("Deriving geometry and material assets...", 0.05f);
         // Explicit Reimport bypasses the timestamp/config stale gate.
         // The importer keeps the existing source/subasset GUID ledger.
         const std::string artifact = ImportMeshArtifactFor(path, nullptr, true);
-        if (artifact.empty())
+        if (artifact.empty()) {
+            TaskWindowFinish(false, "Reimport failed: mesh derivation failed.");
             return;
+        }
+        TaskWindowStage("Refreshing references...", 0.85f);
         Log("Reimport: rebuilt mesh assets for '" + path + "'.");
         bool bound = m_world && !m_gltfPath.empty()
             && IsPublishedMeshBound(path, m_gltfPath);
@@ -890,33 +895,44 @@ void EditorApp::ReimportAsset(const std::string& path) {
                     break;
                 }
         if (bound) {
-            if (ReloadReferencesViaTemp())
+            if (ReloadReferencesViaTemp()) {
                 Log("Reimport: refreshed the live scene with unsaved edits preserved.");
-            else
+                TaskWindowFinish(true, "Reimport finished; scene refreshed.");
+            } else {
                 Log("Reimport: rebuilt source; live reload failed. Reopen the scene.");
+                TaskWindowFinish(false, "Reimport derived, but live scene refresh failed.");
+            }
+        } else {
+            TaskWindowFinish(true, "Reimport finished; model assets updated.");
         }
         return;
     }
     if (ext == ".texture") {
+        TaskWindowBegin("Reimport asset", "Reimporting texture...");
+        TaskWindowStage("Resolving texture source...", 0.05f);
         smvk::assets::TextureAsset texture;
         std::string err;
         if (!smvk::assets::LoadTextureAsset(path, texture, err)) {
             Log("Reimport: invalid texture asset: " + err);
+            TaskWindowFinish(false, "Reimport failed: invalid texture definition.");
             return;
         }
         const fs::path source = fs::path(path).parent_path() / texture.source;
         if (!fs::is_regular_file(source, ec)) {
             Log("Reimport: missing texture source: " + source.generic_string());
+            TaskWindowFinish(false, "Reimport failed: missing texture source.");
             return;
         }
+        TaskWindowStage("Refreshing live texture...", 0.80f);
         LiveRefreshTextureAsset(source.generic_string());
+        TaskWindowFinish(true, "Texture refresh requested; check Console for details.");
         return;
     }
     Log("Reimport: only source models (.gltf/.glb/.obj) and .texture assets "
         "support explicit reimport. Scenes use Open/Reload.");
 }
 
-bool EditorApp::ImportAsset(const std::string& srcPath) {
+bool EditorApp::ImportAsset(const std::string& srcPath, bool openAfter) {
 	if (m_cookRunning) {
 		Log("Import: a cook is already running — wait for it to finish.");
 		return false;
@@ -940,23 +956,23 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 			"(the copied glTF stays for a fixed re-import).");
 		return false;
 	}
-	if (!OpenScene(artifact)) {
+	if (openAfter && !OpenScene(artifact)) {
 		Log("Import: could not open the derived artifact.");
 		return false;
 	}
 	const std::string stem =
 		std::filesystem::path(dest).stem().string();
-	// Cook outputs follow the project (PrimeProjectCookDefaults also
-	// runs on open, but the import states it explicitly).
-	m_cook.outPak = ProjectCookOutPak(stem);
-	std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
-		m_cook.outPak.c_str());
-	// Importing ends here: the asset is open with its ENGINE
-	// representation ready (GPU world, streamed textures, transcode
-	// cache). Cooking the product .pak is the separate next step
-	// (Ctrl+Shift+C) — as is Bake GI (on demand).
-	Log("Import: '" + stem + "' ready in the editor (cook: Ctrl+Shift+C "
-		"-> " + m_cook.outPak + ").");
+	// Imported assets should not unexpectedly replace the working scene.
+	// Only an explicit "Open after import" updates the editor cook target.
+	if (openAfter) {
+		m_cook.outPak = ProjectCookOutPak(stem);
+		std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
+			m_cook.outPak.c_str());
+		Log("Import: '" + stem + "' opened in the editor.");
+	} else {
+		Log("Import: '" + stem + "' derived in project assets; current "
+			"scene remains loaded.");
+	}
 	return true;
 }
 

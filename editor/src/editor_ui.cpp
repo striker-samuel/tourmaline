@@ -337,6 +337,8 @@ void EditorApp::FinalizePending() {
 		// A normal floating project configuration window must not be
 		// nested in ImGui's main menu-bar window stack.
 		DrawProjectExportWindow();
+		DrawImportWindow();
+		DrawIntersectionToolsWindow();
 		// Options is a large standalone settings window, not a dock tab.
 		// Render settings retain their existing live-update/autosave behavior.
 		if (m_showRenderSettingsPanel) {
@@ -697,35 +699,130 @@ void EditorApp::FinalizePending() {
 					"Test: the run preview. Profile: capture + stats.");
 			ImGui::SameLine(0.0f, 12.0f);
 		}
-		if (running) {
-			ImGui::TextUnformatted(m_taskWindow.stage.c_str());
-			ImGui::SameLine(vw - 260.0f);
-			if (m_taskWindow.progress >= 0.0f) {
-				ImGui::ProgressBar(m_taskWindow.progress,
-					ImVec2(200.0f, 0.0f), "");
+		// Reserve a right-side task/progress lane before drawing status text.
+		// Long errors are clipped with a tooltip rather than pushing
+		// interactive controls beyond the status bar window.
+		const bool hasTask = m_taskWindow.wantOpen;
+		const bool activeTask = running || m_dccPublishRunning;
+		const float available = ImGui::GetContentRegionAvail().x;
+		const float laneW = activeTask
+			? std::min(250.0f, std::max(90.0f, available * 0.45f))
+			: (hasTask ? std::min(54.0f, available * 0.25f) : 0.0f);
+		std::string status = activeTask
+			? (!m_taskWindow.stage.empty() ? m_taskWindow.stage
+				: "Working...")
+			: (m_taskWindow.done ? m_taskWindow.result : "Ready");
+		if (!m_verbToast.empty())
+			status += "  |  Last: " + m_verbToast;
+		const std::string fullStatus = status;
+		const float textW = std::max(0.0f, available - laneW - 8.0f);
+		if (ImGui::CalcTextSize(status.c_str()).x > textW) {
+			const std::string ellipsis = "...";
+			size_t lo = 0, hi = status.size();
+			while (lo < hi) {
+				const size_t mid = (lo + hi + 1) / 2;
+				const std::string trial = status.substr(0, mid) + ellipsis;
+				if (ImGui::CalcTextSize(trial.c_str()).x <= textW)
+					lo = mid;
+				else
+					hi = mid - 1;
 			}
-			else {
-				ImGui::ProgressBar(-1.0f, ImVec2(200.0f, 0.0f),
-					"working...");
-			}
-			ImGui::SameLine();
-			if (ImGui::SmallButton("Task")) {
-				ReopenTaskWindow();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Bring the task window back.");
+			status = lo ? status.substr(0, lo) + ellipsis : "";
 		}
-		else if (m_taskWindow.done) {
+		ImGui::BeginChild("##status_text", ImVec2(textW, ImGui::GetFrameHeight()),
+			false, ImGuiWindowFlags_NoScrollbar
+				| ImGuiWindowFlags_NoScrollWithMouse);
+		if (m_taskWindow.done && !activeTask)
 			ImGui::TextColored(m_taskWindow.ok
 				? ImVec4(0.4f, 1.0f, 0.5f, 1.0f)
 				: ImVec4(1.0f, 0.45f, 0.4f, 1.0f),
-				"%s", m_taskWindow.result.c_str());
-		}
-		else {
-			ImGui::TextDisabled("Ready");
+				"%s", status.c_str());
+		else
+			ImGui::TextUnformatted(status.c_str());
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", fullStatus.c_str());
+		ImGui::EndChild();
+		if (activeTask || hasTask) {
+			ImGui::SameLine();
+			if (activeTask) {
+				const float progressW = std::max(34.0f,
+					laneW - (hasTask ? 52.0f : 0.0f));
+				if (running && m_taskWindow.progress >= 0.0f)
+					ImGui::ProgressBar(m_taskWindow.progress,
+						ImVec2(progressW, 0), "");
+				else
+					ImGui::ProgressBar(-1.0f,
+						ImVec2(progressW, 0), "...");
+				if (hasTask)
+					ImGui::SameLine();
+			}
+			if (hasTask && ImGui::SmallButton("Task"))
+				ReopenTaskWindow();
+			if (hasTask && ImGui::IsItemHovered())
+				ImGui::SetTooltip("Reopen the operation log and result.");
 		}
 		ImGui::End();
 		ImGui::PopStyleVar();
+	}
+
+	void EditorApp::DrawImportWindow() {
+		if (!m_showImportWindow)
+			return;
+		ImGui::SetNextWindowSize(ImVec2(630.0f, 300.0f),
+			ImGuiCond_FirstUseEver);
+		if (ImGui::Begin("Import Asset", &m_showImportWindow)) {
+			ImGui::TextUnformatted("Source file");
+			ImGui::SetNextItemWidth(-100.0f);
+			ImGui::InputText("##import_source", m_importSourceBuf,
+				sizeof(m_importSourceBuf));
+			ImGui::SameLine();
+			if (ImGui::Button("Browse...")) {
+				std::string picked;
+				if (NativeOpenFile(picked) && !picked.empty())
+					std::snprintf(m_importSourceBuf, sizeof(m_importSourceBuf),
+						"%s", picked.c_str());
+			}
+			std::string ext = std::filesystem::path(m_importSourceBuf)
+				.extension().string();
+			for (char& c : ext)
+				c = char(std::tolower(static_cast<unsigned char>(c)));
+			const bool supported = ext == ".gltf" || ext == ".glb"
+				|| ext == ".obj";
+			ImGui::SeparatorText("Import settings");
+			if (ext == ".gltf")
+				ImGui::TextWrapped("glTF: copies external buffers, images and "
+					"source dependencies into the project, then derives geometry, "
+					"materials and animations with persistent asset GUIDs.");
+			else if (ext == ".glb")
+				ImGui::TextWrapped("GLB: imports the binary model and its "
+					"embedded resources, deriving the runtime asset set.");
+			else if (ext == ".obj")
+				ImGui::TextWrapped("OBJ: imports geometry and linked MTL "
+					"dependencies; no skeletal animation is expected.");
+			else
+				ImGui::TextDisabled("Choose a supported model: .gltf, .glb, .obj.");
+			ImGui::Checkbox("Open imported model as active scene",
+				&m_importOpenAfter);
+			ImGui::TextDisabled("Unchecked: import into Assets without "
+					"replacing the current scene.");
+			ImGui::BeginDisabled(!supported || m_projectRoot.empty()
+				|| m_cookRunning);
+			if (ImGui::Button("Import")) {
+				TaskWindowBegin("Import asset", "Importing source model...");
+				TaskWindowStage("Copying dependencies and deriving assets...", 0.05f);
+				const bool success = ImportAsset(m_importSourceBuf,
+					m_importOpenAfter);
+				TaskWindowFinish(success,
+					success ? "Import complete."
+						: "Import failed; see Console for details.");
+				if (success)
+					m_showImportWindow = false;
+			}
+			ImGui::EndDisabled();
+			if (m_projectRoot.empty())
+				ImGui::TextDisabled("Open a project before importing.");
+		}
+		ImGui::End();
 	}
 
 	void EditorApp::DrawMenuBar() {
@@ -746,11 +843,8 @@ void EditorApp::FinalizePending() {
                     CreateSceneAsset((std::filesystem::path(m_projectRoot) /
                         "content" / "scenes").generic_string());
                 if (ImGui::MenuItem("Import asset...", nullptr, false,
-					!m_cookRunning)) {
-					std::string picked;
-					if (NativeOpenFile(picked) && !picked.empty())
-						ImportAsset(picked);
-				}
+					!m_cookRunning))
+					m_showImportWindow = true;
 				ImGui::TextDisabled("project: %s", m_projectName.c_str());
 				ImGui::Separator();
 			}
@@ -961,6 +1055,11 @@ void EditorApp::FinalizePending() {
 					"identically from fewer commands.");
 			ImGui::EndMenu();
 		}
+		if (ImGui::BeginMenu("Geometry")) {
+			if (ImGui::MenuItem("Intersection curves / seam bake..."))
+				m_showIntersectionToolsPanel = true;
+			ImGui::EndMenu();
+		}
 		if (ImGui::BeginMenu("Mode")) {
 			// vi-style modal operation: the ACTIVE mode's keymap interprets
 			// keys (editor_modal.cpp); 1-4 switch modes from any mode.
@@ -991,7 +1090,32 @@ void EditorApp::FinalizePending() {
 #endif
 			ImGui::EndMenu();
 		}
+		// DCC actions belong in the application menu, not the Assets grid.
+		// A multi-selection must never silently operate on just its last item.
+		if (ImGui::BeginMenu("DCC")) {
+			const bool oneAsset = m_assetsSelSet.size() == 1
+				&& !m_assetsSel.empty()
+				&& m_assetsSelSet.front() == m_assetsSel
+				&& std::filesystem::is_regular_file(m_assetsSel);
+			if (oneAsset)
+				ImGui::TextDisabled("%s", std::filesystem::path(m_assetsSel)
+					.filename().string().c_str());
+			else
+				ImGui::TextDisabled("Select exactly one file in Assets");
+			ImGui::Separator();
+			if (ImGui::MenuItem("Open in DCC", nullptr, false, oneAsset))
+				OpenAssetInDcc(m_assetsSel);
+			if (ImGui::MenuItem("Link DCC source...", nullptr, false, oneAsset))
+				LinkAssetToDcc(m_assetsSel);
+			if (ImGui::MenuItem("Publish glTF", nullptr, false,
+					oneAsset && !m_dccPublishRunning))
+				PublishAssetFromDcc(m_assetsSel);
+			if (ImGui::MenuItem("Unlink DCC source", nullptr, false, oneAsset))
+				UnlinkAssetFromDcc(m_assetsSel);
+			ImGui::EndMenu();
+		}
 		if (ImGui::BeginMenu("Window")) {
+			ImGui::MenuItem("Import Asset", nullptr, &m_showImportWindow);
 			ImGui::MenuItem("Viewport", nullptr, &m_showViewportPanel);
 			ImGui::MenuItem("World Map", nullptr, &m_showWorldMapPanel);
 			ImGui::MenuItem("Outliner", nullptr, &m_showOutlinerPanel);
