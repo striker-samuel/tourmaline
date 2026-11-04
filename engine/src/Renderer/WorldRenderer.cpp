@@ -3539,6 +3539,9 @@ namespace engine {
 		m_debugDrawGpuCapacity.clear();
 		m_debugDrawGpuRevisions.clear();
 		m_debugDrawCpu.Clear();
+		// Retained instances belong to this renderer attachment; do not
+		// leak shape geometry into the next independently loaded world.
+		m_shapeScene.Clear();
 		m_selectedNode = UINT32_MAX;
 		m_viewportResources.forwardPlus.Destroy(*m_rendergraph);
 		m_viewportResources.exposure.Destroy(*m_rendergraph);
