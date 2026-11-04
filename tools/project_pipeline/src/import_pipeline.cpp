@@ -202,6 +202,9 @@ bool ApplyMaterialPackingRule(const MaterialPackingRule& rule,
 
 bool MaterialPackingRuleMatches(const MaterialPackingRule& rule,
     const smvk::assets::MaterialAsset& material) {
+    if (!rule.channels.empty())
+        return material.packingSource == "compose" &&
+            material.packingSignature == rule.Signature();
     if (rule.source.empty())
         return material.packingSource.empty() && material.channelSelectors == -1;
     if (!material.packingSource.empty())
@@ -244,7 +247,23 @@ bool ImportProjectAsset(const ImportRequest& request,
 	// matters when it differs from the project copy, checked below.)
 	if (!request.force && fs::is_regular_file(projectSource, ec)) {
 		if (!smvk::assets::MeshArtifactStale(projectSource,
-				request.settings)) {
+				request.settings) &&
+                [&]() {
+                    smvk::assets::AssetManifest current;
+                    std::string error;
+                    if (!smvk::assets::LoadAssetManifest(projectSource, current, error))
+                        return false;
+                    for (const auto& entry : current.entries) {
+                        if (entry.kind != smvk::assets::AssetKind::Material)
+                            continue;
+                        smvk::assets::MaterialAsset material;
+                        if (!smvk::assets::LoadMaterialAsset(
+                                projectSource.parent_path() / entry.file, material, error) ||
+                                !MaterialPackingRuleMatches(request.materialPacking, material))
+                            return false;
+                    }
+                    return true;
+                }()) {
 			out.projectSource = projectSource;
 			out.geometry =
 				fs::path(projectSource).replace_extension(".geometry");
