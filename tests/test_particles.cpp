@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <Engine/Rendergraph/particles.h>
+#include <Engine/Particles/source_graph.h>
 
 namespace {
 
@@ -224,7 +225,46 @@ void TestFreeListInvariants() {
 
 } // namespace
 
+void TestParticleSourceGraph() {
+    using namespace tour::particles;
+    auto g = Graph::Default();
+    auto provider = [](const std::string& type, int selector,
+        std::vector<Point>& points, std::string& error) {
+        if (type != kPainted) { error = "unexpected source"; return false; }
+        points.push_back({glm::vec3(1, 2, 3)});
+        points.push_back({glm::vec3(2, 4, 6)});
+        return true;
+    };
+    auto r = Evaluate(g, provider, 16);
+    Check(r.ok && r.emitters.size() == 2, "pt.source.painted-to-emitter");
+    Check(r.ok && r.emitters[0].tail.y == smvk::kParticleRender_Dust,
+        "pt.source.dust-mode");
+    Check(r.ok && std::abs(r.emitters[0].life.z - 9.0f) < 1e-5f,
+        "pt.source.total-rate-split");
+    uint32_t filter = g.AddFilter();
+    g.topology.links.clear();
+    Check(g.Connect(1, filter, "points") != 0 && g.Connect(filter, 2) != 0,
+        "pt.source.typed-connections");
+    g.attrs[filter].minY = 3.0f;
+    r = Evaluate(g, provider, 16);
+    Check(r.ok && r.emitters.size() == 1 &&
+        r.emitters[0].position.y == 4.0f, "pt.source.height-filter");
+    const auto encoded = SerializeAttributes(kEmitter, g.attrs[2]);
+    std::string parsedType;
+    Attributes parsed;
+    Check(ParseAttributes(encoded, parsedType, parsed) &&
+        parsedType == kEmitter && parsed.rate == g.attrs[2].rate,
+        "pt.source.attributes-roundtrip");
+    auto bad = g;
+    bad.topology.links.emplace(100, tour::graph::Link{100, 2, 1, "sources", "points"});
+    Check(!Evaluate(bad, provider).ok, "pt.source.reject-invalid-link");
+    r = Evaluate(Graph::Default(), provider, 1);
+    Check(r.ok && r.emitters.size() == 1 && !r.warning.empty(),
+        "pt.source.budget-downsample");
+}
+
 int main() {
+	TestParticleSourceGraph();
 	TestStructAbi();
 	TestFreeListInit();
 	TestSimGroups();

@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstdio>
 #include <sstream>
+#include <map>
+#include <limits>
 
 #include <glm/gtc/matrix_inverse.hpp>
 
@@ -184,6 +186,79 @@ void EditorApp::DrawSurfaceBrushPanel() {
             Log("Surface brush: baked " + std::to_string(created) +
                 " parented locator(s).");
         }
+        // Particle source graph: same parented brush data as PlacementGraph,
+        // but a separate typed points -> filter -> emitter evaluation chain.
+        ImGui::SeparatorText("Particle source graph");
+        ImGui::TextDisabled("Typed plugs: points -> sources; stable node IDs");
+        if (ImGui::Button("Add painted source")) {
+            const uint32_t id = m_particleSourceGraph.AddSource(tour::particles::kPainted);
+            m_particleSourceGraph.Connect(id, 2);
+            m_particleSourceSelected = id;
+            AutosaveTour();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Add terrain source")) {
+            const uint32_t id = m_particleSourceGraph.AddSource(tour::particles::kHeightfield);
+            m_particleSourceGraph.Connect(id, 2);
+            m_particleSourceSelected = id;
+            AutosaveTour();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Add placement source")) {
+            const uint32_t id = m_particleSourceGraph.AddSource(tour::particles::kPlacement);
+            m_particleSourceGraph.Connect(id, 2);
+            m_particleSourceSelected = id;
+            AutosaveTour();
+        }
+        for (const auto& [id, node] : m_particleSourceGraph.topology.nodes) {
+            if (ImGui::RadioButton((std::to_string(id) + ": " + node.type).c_str(),
+                m_particleSourceSelected == id)) m_particleSourceSelected = id;
+        }
+        if (auto it = m_particleSourceGraph.attrs.find(m_particleSourceSelected);
+            it != m_particleSourceGraph.attrs.end()) {
+            auto& a = it->second;
+            const std::string& type = m_particleSourceGraph.topology.nodes.at(it->first).type;
+            bool edited = false;
+            if (type == tour::particles::kPainted || type == tour::particles::kHeightfield ||
+                type == tour::particles::kPlacement) {
+                edited |= ImGui::InputInt("Source selector (-1 = all)", &a.selector);
+                if (ImGui::Button("Insert height filter")) {
+                    const uint32_t src = m_particleSourceSelected;
+                    const uint32_t filter = m_particleSourceGraph.AddFilter();
+                    for (auto link = m_particleSourceGraph.topology.links.begin();
+                         link != m_particleSourceGraph.topology.links.end();) {
+                        if (link->second.from == src && link->second.to == 2)
+                            link = m_particleSourceGraph.topology.links.erase(link);
+                        else ++link;
+                    }
+                    m_particleSourceGraph.Connect(src, filter, "points");
+                    m_particleSourceGraph.Connect(filter, 2);
+                    m_particleSourceSelected = filter;
+                    edited = true;
+                }
+            } else if (type == tour::particles::kHeightFilter) {
+                edited |= ImGui::DragFloat("Minimum world Y", &a.minY, 0.1f);
+                edited |= ImGui::DragFloat("Maximum world Y", &a.maxY, 0.1f);
+            } else if (type == tour::particles::kEmitter) {
+                edited |= ImGui::DragFloat("Total spawn rate (/s)", &a.rate, 0.1f, 0.0f, 500.0f);
+                edited |= ImGui::DragFloat("Start size (m)", &a.sizeStart, 0.01f, 0.001f, 5.0f);
+                edited |= ImGui::DragFloat("End size (m)", &a.sizeEnd, 0.01f, 0.001f, 8.0f);
+                edited |= ImGui::DragFloat("Lifetime (s)", &a.lifetime, 0.1f, 0.1f, 20.0f);
+                edited |= ImGui::DragFloat("Wind speed", &a.speed, 0.01f, 0.0f, 10.0f);
+                edited |= ImGui::ColorEdit3("Dust tint", &a.color.x);
+            }
+            if (edited) AutosaveTour();
+            if (m_particleSourceSelected > 2 && ImGui::Button("Remove selected node")) {
+                m_particleSourceGraph.Remove(m_particleSourceSelected);
+                m_particleSourceSelected = 1;
+                AutosaveTour();
+            }
+        }
+        for (const auto& [id, link] : m_particleSourceGraph.topology.links)
+            ImGui::TextDisabled("#%u.%s -> #%u.%s", link.from,
+                link.output.c_str(), link.to, link.input.c_str());
+        if (!m_particleSourceError.empty())
+            ImGui::TextWrapped("Particle graph: %s", m_particleSourceError.c_str());
         ImGui::TextDisabled("PlacementGraph accepts points as GPU scatter candidates.");
         ImGui::TextDisabled("Baking locators is optional.");
     }
@@ -194,7 +269,72 @@ void EditorApp::DrawSurfaceBrushPanel() {
     }
 }
 
+void EditorApp::UpdateParticleSourcePreview() {
+    if (!m_wysiwyg || !m_wysiwygValid || !m_world) return;
+    using namespace tour::particles;
+    auto provider = [this](const std::string& type, int selector,
+        std::vector<Point>& points, std::string& error) -> bool {
+        if (type == kPainted) {
+            if (m_surfaceStrokes.empty()) return true;
+            smvk::placement::PlacementPointCloudData cloud;
+            if (!BuildPlacementPointCloud(selector, cloud, error)) return false;
+            for (const auto& p : cloud.positions) points.push_back({p});
+            return true;
+        }
+        if (type == kHeightfield) {
+            // The editor's live terrain-group heightfield is the same grid
+            // consumed by terrain painting and PlacementGraph previews.
+            const smvk::placement::HeightfieldData* field = nullptr;
+            for (const auto& [id, group] : m_terrainGroups) {
+                if (group.deleted || (selector >= 0 && uint32_t(selector) != id)) continue;
+                field = &group.data.heights;
+                break;
+            }
+            if (!field || field->width < 2 || field->height < 2) {
+                error = "Heightfield source requires a live terrain group"; return false;
+            }
+            // Representative 4x4 grid: bounded by the GPU emitter budget.
+            for (int z = 0; z < 4; ++z) for (int x = 0; x < 4; ++x) {
+                const float wx = field->origin.x +
+                    field->spacing.x * float(field->width - 1) * (float(x) + 0.5f) / 4.0f;
+                const float wz = field->origin.z +
+                    field->spacing.y * float(field->height - 1) * (float(z) + 0.5f) / 4.0f;
+                points.push_back({glm::vec3(wx, field->sampleHeight(wx, wz) + 0.35f, wz)});
+            }
+            return true;
+        }
+        if (type == kPlacement) {
+            const auto& preview = m_placement.preview;
+            if (!preview.ok || preview.dirty) {
+                error = "Placement source needs an up-to-date PlacementGraph preview";
+                return false;
+            }
+            for (const auto& candidate : preview.accepted)
+                points.push_back({candidate.p});
+            return true;
+        }
+        error = "Unregistered particle source: " + type;
+        return false;
+    };
+    // Demo emitters keep their first five slots when enabled; reserve
+    // remaining rows rather than silently exceeding MAX_PARTICLE_EMITTERS.
+    const auto evaluated = Evaluate(m_particleSourceGraph, provider, 11);
+    m_particleSourceError = evaluated.ok ? evaluated.warning : evaluated.error;
+    m_wysiwyg->SetExternalParticleEmitters(evaluated.ok
+        ? evaluated.emitters : std::vector<smvk::ParticleEmitterGpu>{});
+}
+
 void EditorApp::SaveSurfaceBrushToDoc(smvk::tour::Doc& doc) const {
+    for (const auto& [id, node] : m_particleSourceGraph.topology.nodes) {
+        const auto& a = m_particleSourceGraph.attrs.at(id);
+        doc.editorSettings.emplace_back("particle.source.node." + std::to_string(id),
+            tour::particles::SerializeAttributes(node.type, a));
+    }
+    for (const auto& [id, link] : m_particleSourceGraph.topology.links) {
+        doc.editorSettings.emplace_back("particle.source.link." + std::to_string(id),
+            std::to_string(link.from) + " " + link.output + " " +
+            std::to_string(link.to) + " " + link.input);
+    }
     for (size_t i = 0; i < m_surfaceStrokes.size(); ++i) {
         const auto& stroke = m_surfaceStrokes[i];
         if (stroke.points.empty() || stroke.parentUuid.empty())
@@ -213,6 +353,42 @@ void EditorApp::LoadSurfaceBrushFromDoc(const smvk::tour::Doc& doc) {
     m_surfaceActive = {};
     m_surfaceRedo.clear();
     m_surfaceDrawing = false;
+    m_particleSourceGraph = tour::particles::Graph::Default();
+    m_particleSourceSelected = 1;
+    // Parse particle graph independently of painted stroke ordering.
+    // Malformed topology falls back to the safe default, never a partial graph.
+    tour::particles::Graph loaded;
+    bool foundGraph = false;
+    for (const auto& [key, value] : doc.editorSettings) {
+        auto nodePrefix = std::string("particle.source.node.");
+        auto linkPrefix = std::string("particle.source.link.");
+        try {
+            if (key.rfind(nodePrefix, 0) == 0) {
+                uint32_t id = uint32_t(std::stoul(key.substr(nodePrefix.size())));
+                std::string type;
+                tour::particles::Attributes a;
+                if (!id || !tour::particles::ParseAttributes(value, type, a)) continue;
+                loaded.topology.nodes[id] = tour::particles::Graph::MakeNode(id, type);
+                loaded.attrs[id] = a;
+                foundGraph = true;
+            } else if (key.rfind(linkPrefix, 0) == 0) {
+                uint32_t id = uint32_t(std::stoul(key.substr(linkPrefix.size())));
+                std::istringstream in(value);
+                tour::graph::Link l{};
+                std::string extra;
+                if (!id || !(in >> l.from >> l.output >> l.to >> l.input) ||
+                    (in >> extra)) continue;
+                l.id = id;
+                loaded.topology.links[id] = l;
+            }
+        } catch (...) { continue; }
+    }
+    if (foundGraph && tour::graph::Validate(loaded.topology).ok) {
+        bool complete = true;
+        for (const auto& [id, node] : loaded.topology.nodes)
+            complete &= loaded.attrs.contains(id);
+        if (complete) m_particleSourceGraph = std::move(loaded);
+    }
     // A temporary sparse map protects against out-of-order editorSettings.
     std::map<size_t, surface::Stroke> strokes;
     std::map<size_t, std::map<size_t, glm::vec3>> samples;

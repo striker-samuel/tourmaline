@@ -2685,6 +2685,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			return; // ortho: park this frame
 		const glm::vec3 fwd(-view[0][2], -view[1][2], -view[2][2]);
 		const glm::vec3 up(view[0][1], view[1][1], view[2][1]);
+		UpdateParticleSourcePreview();
 		m_wysiwyg->CameraPositioner().lookAt(eye, eye + fwd, up);
 		// The lens: the fov extracted from the SAME projection (exact
 		// for both bound look-through and orbit cameras — proj[1][1] is

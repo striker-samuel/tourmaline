@@ -8515,7 +8515,8 @@ namespace engine {
 		smvk::Particles& ps = m_viewportResources.particles;
 		if (!ParticlesActive())
 			return 0;
-		if (m_particleDemo.emitters.empty() && m_particleBursts.empty())
+		if (m_particleDemo.emitters.empty() && m_externalParticleEmitters.empty()
+			&& m_particleBursts.empty())
 			return 0;
 		// Optick: the CPU emitter update (ambient recentering, burst
 		// aging, the emitter-row upload) — the GPU sim passes are
@@ -8549,6 +8550,12 @@ namespace engine {
 			}
 		} else {
 			rows = m_particleDemo.emitters;
+		}
+		// Graph-authored sources reserve stable slots after demo emitters.
+		// Never overwrite the built-in indices used by ambient presets.
+		for (const auto& e : m_externalParticleEmitters) {
+			if (rows.size() >= PARTICLE_MAX_EMITTERS) break;
+			rows.push_back(e);
 		}
 		// Transient one-shot bursts (SpawnParticleBurst): age + drop
 		// expired rows, append the survivors after the demo rows, then
