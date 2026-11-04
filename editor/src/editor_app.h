@@ -3188,6 +3188,8 @@ private:
 	bool NativeOpenExternalDocument(const std::string& file, std::string& err);
 	bool NativeSaveFile(std::string& outPath,
 		const std::string& suggestedName = {});
+	bool NativeSaveTourFile(std::string& outPath,
+		const std::string& suggestedPath);
 	bool NativePickFolder(std::string& outPath);
 
 } // namespace editor
