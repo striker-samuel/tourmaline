@@ -18054,7 +18054,9 @@ namespace engine {
 							}
 							ImGui::TextDisabled("Rendergraph GPU passes (Optick labels, retired frame)");
 							if (knownPassNames.empty()) {
-								ImGui::TextDisabled("Waiting for GPU pass timestamps...");
+                                ImGui::TextDisabled(m_stageGpuTimingsSupported
+                                    ? "Waiting for GPU pass timestamps..."
+                                    : "GPU pass timestamps unavailable (cross-queue support required).");
 							} else {
 								struct PassRow { double ms = 0.0; bool valid = false; };
 								std::vector<PassRow> rows(knownPassNames.size());
@@ -18099,8 +18101,14 @@ namespace engine {
 									const ImVec2 labelTop(origin.x, origin.y + rowHeight * static_cast<float>(i));
 									draw->AddCircleFilled(ImVec2(labelTop.x + 4.0f,
 										labelTop.y + 8.0f), 3.0f, color);
-									draw->AddText(ImVec2(labelTop.x + 12.0f, labelTop.y),
-										ImGui::GetColorU32(ImGuiCol_Text), knownPassNames[i].c_str());
+                                    // Clip long pass names so they cannot paint
+                                    // over the independent timeline column.
+                                    draw->PushClipRect(labelTop,
+                                        ImVec2(labelTop.x + labelWidth - 4.0f,
+                                            labelTop.y + rowHeight), true);
+                                    draw->AddText(ImVec2(labelTop.x + 12.0f, labelTop.y),
+                                        ImGui::GetColorU32(ImGuiCol_Text), knownPassNames[i].c_str());
+                                    draw->PopClipRect();
 									char value[40];
 									if (rows[i].valid)
 										snprintf(value, sizeof(value), "%.2f ms", rows[i].ms);
