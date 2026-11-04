@@ -189,6 +189,7 @@ def run_search(args):
     if not args.list_regions and not args.scenario:
         raise ValueError("at least one --scenario required")
     target = parse_target_resolution(args.target_resolution)
+    screenshot_extent = parse_target_resolution(args.screenshot_resolution or "1080p")
     screenshot_pair = bool(args.reference_screenshot) or bool(args.candidate_screenshot)
     if not args.list_regions and not screenshot_pair and not args.allow_no_image_check:
         raise ValueError("saved screenshot comparison is required; use --allow-no-image-check for nonvisual workloads")
@@ -226,6 +227,8 @@ def run_search(args):
     env = os.environ.copy()
     env["SHADER_SEARCH_SHADER"] = str(shader)
     env["SHADER_SEARCH_OUTPUT"] = str(output)
+    env["SHADER_SEARCH_SCREENSHOT_WIDTH"] = str(screenshot_extent[0])
+    env["SHADER_SEARCH_SCREENSHOT_HEIGHT"] = str(screenshot_extent[1])
     if target:
         env["SHADER_SEARCH_TARGET_WIDTH"] = str(target[0])
         env["SHADER_SEARCH_TARGET_HEIGHT"] = str(target[1])
@@ -285,6 +288,7 @@ def run_search(args):
             feedback = json.dumps({
                 "target_knobs": knobs, "baseline_register_metrics": baseline_registers,
                 "target_resolution": args.target_resolution,
+                "screenshot_resolution": args.screenshot_resolution or "1080p",
                 "visual_error_limits": {
                     "difference_fraction": args.max_difference_fraction,
                     "average_channel_delta": args.max_average_channel_delta,
@@ -325,7 +329,7 @@ def run_search(args):
                     visual = compare_saved_screenshot(
                         args.reference_screenshot.resolve(),
                         args.candidate_screenshot.resolve(),
-                        trial / "candidate.png", target,
+                        trial / "candidate.png", screenshot_extent,
                         args.pixel_threshold,
                         args.max_difference_fraction,
                         args.max_average_channel_delta)
@@ -358,6 +362,7 @@ def run_search(args):
                            "knobs": knobs, "applied_hints": applied_hints,
                            "visual_error": visual,
                            "target_resolution": args.target_resolution,
+                           "screenshot_resolution": args.screenshot_resolution or "1080p",
                            "candidate_sha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
                            "register_metrics": candidate_registers,
                            "register_regression_percent": register_regression,
@@ -387,6 +392,7 @@ def run_search(args):
                "baseline_sha256": baseline_sha256,
                "best_sha256": hashlib.sha256(best_source.encode("utf-8")).hexdigest(),
                "target_resolution": args.target_resolution,
+               "screenshot_resolution": args.screenshot_resolution or "1080p",
                "visual_error_limits": {"difference_fraction": args.max_difference_fraction,
                                        "average_channel_delta": args.max_average_channel_delta,
                                        "pixel_threshold": args.pixel_threshold},
@@ -420,6 +426,8 @@ def main(argv=None):
                    help="Render extent: 720p/1080p/1440p/4k or 16:9 WxH")
     p.add_argument("--allow-no-image-check", action="store_true",
                    help="Explicitly opt out of numeric screenshot validation for nonvisual passes")
+    p.add_argument("--screenshot-resolution", default="1080p",
+                   help="Expected PNG output dimensions (default presentation 1920x1080)")
     p.add_argument("--reference-screenshot", type=Path,
                    help="Existing trusted PNG reference screenshot")
     p.add_argument("--candidate-screenshot", type=Path,
