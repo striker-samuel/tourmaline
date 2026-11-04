@@ -177,6 +177,55 @@ void TestDccSourcePublishing() {
 	fs::remove_all(root, ec);
 }
 
+
+void TestAssetRename() {
+    namespace fs = std::filesystem;
+    const std::string root = Root();
+    const std::string scene = root + "/content/scenes/Before.tour";
+    Write(scene, "scene");
+    Write(scene + ".meta", std::string("guid=") + kGuidA + "\n");
+    Write(scene + ".dccsource", "native");
+    std::string out, err;
+    Check(editor::RenameBrowserAsset(scene, root, "After.tour", out, err)
+        && out == root + "/content/scenes/After.tour",
+        "rename.scene.succeeds");
+    Check(fs::exists(out) && fs::exists(out + ".meta")
+        && fs::exists(out + ".dccsource") && !fs::exists(scene),
+        "rename.scene.sidecars-follow");
+    Check(!editor::RenameBrowserAsset(out, root, "../escape.tour",
+        out, err), "rename.refuse.traversal");
+    Check(!editor::RenameBrowserAsset(
+        root + "/content/scenes/After.tour", root, "After.txt",
+        out, err), "rename.refuse.extension");
+    const std::string target = root + "/content/scenes/Taken.tour";
+    Write(target, "existing");
+    Check(!editor::RenameBrowserAsset(
+        root + "/content/scenes/After.tour", root, "Taken.tour",
+        out, err), "rename.refuse.collision");
+    Write(root + "/content/scenes/Orphan.tour.meta", "orphan");
+    Check(!editor::RenameBrowserAsset(
+        root + "/content/scenes/After.tour", root, "Orphan.tour",
+        out, err), "rename.refuse.orphan-sidecar");
+    const std::string folder = root + "/content/models";
+    Check(editor::RenameBrowserAsset(folder, root, "Renamed models",
+        out, err) && fs::is_directory(out),
+        "rename.directory.succeeds");
+    const std::string derived = out + "/foo.geometry";
+    const std::string source = out + "/foo.gltf";
+    Write(source, "{}");
+    Write(source + ".meta",
+        std::string("guid=") + kGuidB + "\nsource=foo.gltf\nstem=foo\n"
+        + "geometry=foo.geometry " + kGuidC + " Geo\n");
+    Write(derived, "data");
+    Check(!editor::RenameBrowserAsset(derived, root, "bar.geometry",
+        out, err), "rename.refuse.manifest-derived");
+    Write(root + "/project.tourproj", "project");
+    Check(!editor::RenameBrowserAsset(root + "/project.tourproj", root,
+        "other.tourproj", out, err), "rename.refuse.project-marker");
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
 void TestStandaloneFile() {	const std::string root = Root();
 	const std::string file = root + "/content/bar.txt";
 	Write(file, "hello");
@@ -514,6 +563,7 @@ int main() {
 	TestDccSourcePublishing();
 	TestAssetCreationPaths();
 	TestStandaloneFile();
+	TestAssetRename();
 	TestRefusals();
 	TestDerivedSet();
 	TestDerivedSetLegacyMesh();
