@@ -1,7 +1,7 @@
 # TODO — merged-as-draft follow-up work
 
-PRs #136–#142 and #145/#148/#151/#152/#153/#157 were merged while
-still drafts (owner request, 2026-11-04).
+PRs #136–#142 and #145/#148/#151/#152/#153/#157/#159 were merged
+while still drafts (owner request, 2026-11-04).
 Each entry records the work the PR author explicitly flagged as incomplete
 in its own description. Local gates (full all-targets build + ctest +
 Python tooling tests) verified compilation and existing regressions; the
@@ -115,6 +115,13 @@ items below are the remaining author-declared gaps.
   outliner/inspector selection sync, property undo/redo + drag
   coalescing, asset navigation/import/DCC/thumbnails, modals and
   keyboard focus.
+
+## #159 — Docked live scene composite offsets
+- Author never ran a native Vulkan build or visual smoke test; the
+  merge gate compiled it and the source-level regression check passes.
+  Still open: visual verification of scene content in a docked
+  Viewport at desktop origin AND after moving the editor window,
+  including splitter resize and inactive-tab behavior.
 
 ## Legacy engineering backlog (migrated from `todo.txt`)
 
