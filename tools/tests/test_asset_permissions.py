@@ -77,6 +77,69 @@ class PermissionRegistryTests(unittest.TestCase):
         self.registry.group_set("normal", ["-source.read"])
         self.assertFalse(self.registry.allows("worker", "source.read"))
 
+    def test_per_asset_user_and_group_permissions(self):
+        source_id = "11111111-1111-4111-8111-111111111111"
+        other_id = "22222222-2222-4222-8222-222222222222"
+        self.registry.group_set("artists", ["source.read", "product.publish",
+                                            "artifact.read"])
+        self.registry.user_set("artist", ["artists"], [])
+        self.registry.user_set("guest", ["normal"], [])
+        self.registry.asset_set(source_id, "groups", "artists",
+                                ["source.read", "product.publish", "artifact.read"])
+        self.registry.asset_set(source_id, "users", "guest",
+                                ["source.read"])
+        self.assertTrue(self.registry.allows("artist", "source.read", source_id))
+        self.assertTrue(self.registry.allows("artist", "product.publish", source_id))
+        self.assertTrue(self.registry.allows("artist", "source.read", other_id))
+        self.assertTrue(self.registry.allows("guest", "source.read", source_id))
+        self.assertFalse(self.registry.allows("guest", "artifact.read", source_id))
+        self.assertFalse(self.registry.allows("guest", "product.publish", source_id))
+        self.assertTrue(self.registry.allows("admin", "artifact.read", source_id))
+        self.registry.asset_set(source_id, "users", "guest",
+                                ["-source.read"])
+        self.assertFalse(self.registry.allows("guest", "source.read", source_id))
+        self.registry.asset_clear(source_id)
+        self.assertTrue(self.registry.allows("guest", "artifact.read", source_id))
+
+    def test_api_filters_asset_lists_and_blob_downloads(self):
+        share = self.root / "share"
+        share.mkdir()
+        (share / "allowed.obj").write_bytes(b"allowed")
+        (share / "restricted.obj").write_bytes(b"restricted")
+        archive = SharedArchive(share, self.root / "archive", self.root / "cache", settle=0)
+        archive.scan()
+        ids = {row["current_path"]: row["asset_id"] for row in archive.sources()}
+        allowed_id = ids["allowed.obj"]
+        restricted_id = ids["restricted.obj"]
+        self.registry.asset_set(restricted_id, "users", "admin", ["*"])
+        httpd = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            handler_for_shared(archive, LEGACY_TOKEN, registry=self.registry))
+        bg = threading.Thread(target=httpd.serve_forever, daemon=True)
+        bg.start()
+        base = "http://127.0.0.1:%d" % httpd.server_port
+        token = self.registry.user_set("viewer", ["normal"], [])
+        def get(path, auth=token):
+            return urlopen(Request(base + path,
+                headers={"Authorization": "Bearer " + auth}), timeout=3)
+        try:
+            with get("/v2/sources") as response:
+                rows = json.load(response)["sources"]
+            self.assertEqual({r["asset_id"] for r in rows}, {allowed_id})
+            with self.assertRaises(HTTPError) as exc:
+                get("/v2/resolve?asset_id=" + restricted_id)
+            self.assertEqual(exc.exception.code, 404)
+            secret_sha = archive.source_version(restricted_id, 1)["sha256"]
+            with self.assertRaises(HTTPError) as exc:
+                get("/v2/blobs/" + secret_sha)
+            self.assertEqual(exc.exception.code, 404)
+            with get("/v2/sources", self.admin_token) as response:
+                self.assertEqual(len(json.load(response)["sources"]), 2)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            bg.join(timeout=5)
+
     def test_api_enforces_read_publish_and_rejects_old_shared_token(self):
         share = self.root / "share"
         share.mkdir()
