@@ -538,14 +538,8 @@ namespace editor {
 		}
 
 		// ---- Attribute flags + alpha ------------------------------------
-		ImGui::Separator();
+		ImGui::SeparatorText("Material properties");
 		{
-			ImGui::TextDisabled("flags");
-			ImGui::SameLine();
-			auto flagChip = [&](const char* label, bool on, const char* tip) {
-				return attr::Bool(label, on, tip);
-			};
-			(void)flagChip;
 			if (attr::Bool("DS", m->doubleSided,
 					"DOUBLE SIDED — both faces shade")) {
 				EditCmd c{};
@@ -557,7 +551,6 @@ namespace editor {
 					c.beforeVec4, c.beforeNum);
 				Do(c);
 			}
-			ImGui::SameLine();
 			if (attr::Bool("Shadow", m->castsShadows,
 					"CASTS SHADOWS — off excludes it from the shadow "
 					"passes (decal-style)")) {
@@ -590,7 +583,6 @@ namespace editor {
 					Do(c);
 				}
 			}
-			ImGui::SameLine();
 			int alpha = int(m->alphaMode);
 			if (attr::Enum("Alpha", &alpha, "Opaque\0Mask (cutout)\0Blend\0",
 					"Alpha: the blend/cutout mode (the cut value reads "
@@ -606,10 +598,28 @@ namespace editor {
 			}
 		}
 
-		// ---- Layers (vertex-color blending) + the travel ---------------
-		ImGui::Separator();
-		ImGui::Text("Layers (vertex-color blending)");
-		{
+		// Layered materials are a distinct editor presentation. Plain
+		// materials never expose inactive layer slots.
+		const bool layered = m->values.layerMaterials.w > 0;
+		bool editLayers = layered;
+		if (attr::Check("Layered material", &editLayers,
+				"Enable vertex-color blending with up to three other materials")) {
+			glm::ivec4 lm = m->values.layerMaterials;
+			lm.w = editLayers ? std::max(lm.w, 1) : 0;
+			EditCmd c{};
+			c.verb = EditVerb::SetMatAttr;
+			c.matWorld = mat;
+			c.attr = "layers";
+			ReadSharedMatAttr(mat, "layers", c.beforeVec4, c.beforeNum);
+			c.vec4 = glm::vec4(float(lm.x), float(lm.y),
+				float(lm.z), float(lm.w));
+			c.number = double(lm.w);
+			Do(c);
+		}
+		if (editLayers) {
+			ImGui::SeparatorText("Layered material");
+			ImGui::TextDisabled("Vertex-color layer weights");
+
 			glm::ivec4 lm = m->values.layerMaterials;
 			const uint32_t count = uint32_t(m_world->materialLocations.size());
 			for (int slot = 0; slot < 3; ++slot) {
