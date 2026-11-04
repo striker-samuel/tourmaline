@@ -9,6 +9,8 @@
 #include <cmath>
 #include <iostream>
 #include <unordered_map>
+#include <vector>
+#include <string>
 
 static glm::mat4 At(float x) {
     glm::mat4 m(1.0f);
