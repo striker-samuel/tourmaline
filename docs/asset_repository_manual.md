@@ -60,12 +60,11 @@ the source share. Protect the archive with filesystem permissions.
 
 ## Linux NAS installation
 
-Check out the feature PR branch (until merged):
+Clone the repository and use its default `master` branch:
 
 ~~~bash
 git clone https://github.com/striker-samuel/tourmaline.git
 cd tourmaline
-git switch feature/shared-asset-repository-and-catalog
 python3 --version
 ~~~
 
@@ -92,15 +91,20 @@ sudo python3 tools/install_shared_assets.py --source /srv/smb/project --archive 
 ~~~
 
 Make sure the service account can READ source files, and ordinary artists
-cannot WRITE the protected archive/config. The installer doesn't modify
+cannot WRITE the protected archive/config. **Never put server.json inside
+the artist-writable source share:** it contains the bearer token, and the
+installer now rejects that location. The installer doesn't modify
 permissions on the artist share. The startup unit refers to the current
-checkout and Python interpreter, which must remain accessible.
+checkout and Python interpreter, which must remain accessible. The systemd
+installer may recursively update ownership of the existing archive and cache;
+allow for that on large repositories.
 
 ~~~bash
 sudo systemctl status tourmaline-shared-assets
 sudo systemctl restart tourmaline-shared-assets
 sudo systemctl stop tourmaline-shared-assets
 sudo journalctl -u tourmaline-shared-assets -f
+curl --fail http://127.0.0.1:8765/health
 ~~~
 
 Manual startup:
@@ -122,6 +126,7 @@ PowerShell and install a Windows boot-time scheduled task (one command):
 py -3 tools/install_shared_assets.py --source 'D:\Shares\project' --archive 'D:\TourmalineHistory\archive' --cache 'D:\TourmalineHistory\server-cache' --config 'C:\ProgramData\Tourmaline\AssetRepository\server.json' --listen-lan --install-windows-task
 schtasks /Run /TN TourmalineSharedAssetRepository
 schtasks /Query /TN TourmalineSharedAssetRepository /V /FO LIST
+Invoke-RestMethod http://127.0.0.1:8765/health
 ~~~
 
 This runs under SYSTEM, not the logged-in artist account. Use **host-local**
@@ -132,7 +137,10 @@ To troubleshoot, run the Python server in a terminal and press Ctrl+C to stop:
 py -3 tools/shared_asset_server.py --config 'C:\ProgramData\Tourmaline\AssetRepository\server.json' serve
 ~~~
 
-Only one scanner may own an archive SQLite database at a time.
+Only one scanner may own an archive SQLite database at a time. The
+Windows task is registered at installation, then explicitly started using
+`schtasks /Run`. Check its Last Run Result as well as the HTTP health response;
+paths containing spaces should be tested on the intended host.
 
 ## Shared server configuration
 
@@ -159,6 +167,9 @@ Example server.json (schema 2, replace token with generated secret):
 - **archive**: permanent protected source AND published-product bytes/history.
 - **cache**: replaceable server-local materialization cache.
 - **access_token**: shared repository secret (minimum 24 characters).
+  Keep the server configuration outside the source share and restrict its
+  permissions. Configuring a client on an artist workstation stores the token
+  there too; protect that workstation's local configuration.
 - **bind/port**: 127.0.0.1 for host-only access, 0.0.0.0 for LAN, default port 8765.
 - **poll_seconds**: scanner interval; **settle_seconds**: file-age threshold
   before an observed file is captured.
@@ -198,6 +209,10 @@ The client saves a JSON config:
   "cache": "C:\\Users\\Artist\\AppData\\Local\\Tourmaline\\SharedAssetCache"
 }
 ~~~
+
+The CLI `--check` option verifies the server connection **before** saving
+client settings; a failed check leaves an existing configuration unchanged.
+The graphical wizard does not currently perform the same network verification.
 
 The workstation wizard also installs both the Maya picker and verified
 cache module. In Maya's Python Script Editor:
@@ -330,6 +345,17 @@ snapshot yet; pin compatible texture/scene revisions yourself.
 A workstation with cached bytes can keep using those local paths while
 the NAS is down, but fresh metadata queries need the server. Read-presence
 only tracks cooperating clients, and stale sessions expire automatically.
+
+## Troubleshooting startup
+
+Interactive NAS host installation starts a detached process and waits for
+`http://127.0.0.1:PORT/health` to return a healthy response. Startup errors
+are written to `server.log` alongside `server.json`; if the configured
+port is already in use or the server fails to start, the installer reports
+an error instead of claiming success. Systemd and Windows scheduled-task
+installations must be checked using their platform service status tools and
+the health URL above. For Windows scheduled tasks, remember that the `SYSTEM`
+account cannot use a logged-in user's mapped network drives.
 
 ## Validation
 

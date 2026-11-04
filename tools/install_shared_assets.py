@@ -13,6 +13,9 @@ from pathlib import Path
 import secrets
 import subprocess
 import sys
+import time
+from urllib.error import URLError
+from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,14 +34,18 @@ def configure(source, archive, cache, config=None, *, listen_lan=False,
               port=8765, poll=3.0, settle=2.0, cache_gib=20.0, token=None):
     sys.path.insert(0, str(ROOT))
     from tools.shared_asset_repository import SharedArchive
-    source_path = Path(source).expanduser()
+    source_path = Path(source).expanduser().resolve()
     if not source_path.is_dir():
         raise ValueError("source directory must exist and be mounted on the NAS host")
     if not 1024 <= port <= 65535 or poll < 0.5 or settle < 0.5 or cache_gib < 0:
         raise ValueError("invalid port, scan interval, settle time or cache size")
+    output = Path(config or default_config()).expanduser().resolve()
+    # The source share is artist-writable. Never persist the bearer token
+    # anywhere in that tree (including via symlinks or relative paths).
+    if output == source_path or source_path in output.parents:
+        raise ValueError("server config must be outside the source share")
     # This verifies that no protected data can be stored underneath the share.
     SharedArchive(source, archive, cache, settle, int(cache_gib * 1024**3))
-    output = Path(config or default_config()).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     if token is None and output.exists():
         old = json.loads(output.read_text(encoding="utf-8"))
@@ -76,15 +83,49 @@ def server_command(config):
             "--config", str(config), "serve"]
 
 
+def wait_for_health(config, process=None, timeout=10.0):
+    """Confirm the service actually answers on its configured local port."""
+    port = int(json.loads(Path(config).read_text(encoding="utf-8"))["port"])
+    url = f"http://127.0.0.1:{port}/health"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            raise RuntimeError("asset server exited during startup; inspect server.log")
+        try:
+            with urlopen(url, timeout=0.5) as response:
+                if response.status == 200 and json.load(response).get("status") == "ok":
+                    return
+        except (OSError, ValueError, URLError):
+            pass
+        time.sleep(0.2)
+    raise RuntimeError(f"asset server did not become healthy at {url}; inspect server.log")
+
+
 def run_detached(config):
-    kwargs = {"cwd": str(ROOT), "stdin": subprocess.DEVNULL,
-              "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    config = Path(config)
+    port = int(json.loads(config.read_text(encoding="utf-8"))["port"])
+    # Do not report another process already bound to this port as our success.
+    import socket
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        if probe.connect_ex(("127.0.0.1", port)) == 0:
+            raise RuntimeError(f"port {port} is already in use")
+    kwargs = {"cwd": str(ROOT), "stdin": subprocess.DEVNULL}
     if os.name == "nt":
         kwargs["creationflags"] = (subprocess.DETACHED_PROCESS |
                                    subprocess.CREATE_NEW_PROCESS_GROUP)
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen(server_command(config), **kwargs)
+    log_path = config.parent / "server.log"
+    with log_path.open("ab") as log:
+        process = subprocess.Popen(server_command(config), stdout=log,
+                                   stderr=subprocess.STDOUT, **kwargs)
+    try:
+        wait_for_health(config, process)
+    except Exception:
+        if process.poll() is None:
+            process.terminate()
+        raise
 
 
 def install_windows_boot_task(config):

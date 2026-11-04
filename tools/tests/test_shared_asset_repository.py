@@ -187,6 +187,55 @@ class SharedRepositoryTests(unittest.TestCase):
         self.assertEqual(settings["access_token"], token)
         self.assertFalse((self.source / "server.json").exists())
 
+    def test_server_config_must_not_be_inside_source_share(self):
+        bad_config = self.source / "private" / "server.json"
+        with self.assertRaisesRegex(ValueError, "outside the source share"):
+            configure_host(str(self.source), str(self.archive), str(self.cache),
+                           config=bad_config)
+        self.assertFalse(bad_config.exists())
+
+    def test_client_failed_connectivity_check_does_not_save_config(self):
+        from tools.configure_asset_client import main as client_main
+
+        target = Path(self.temp.name) / "client.json"
+        existing = b"previous working configuration"
+        target.write_bytes(existing)
+        with self.assertRaises(Exception):
+            client_main(["--url", "http://127.0.0.1:1",
+                         "--token", TOKEN, "--config", str(target), "--check"])
+        self.assertEqual(target.read_bytes(), existing)
+
+    def test_detached_installer_rejects_occupied_port(self):
+        from tools.install_shared_assets import run_detached
+        httpd = ThreadingHTTPServer(
+            ("127.0.0.1", 0), handler_for_shared(self.store, TOKEN))
+        try:
+            config, _ = configure_host(
+                str(self.source), str(self.archive), str(self.cache),
+                config=Path(self.temp.name) / "server.json",
+                port=httpd.server_port)
+            with self.assertRaisesRegex(RuntimeError, "already in use"):
+                run_detached(config)
+        finally:
+            httpd.server_close()
+
+    def test_health_check_accepts_running_server(self):
+        from tools.install_shared_assets import wait_for_health
+        httpd = ThreadingHTTPServer(
+            ("127.0.0.1", 0), handler_for_shared(self.store, TOKEN))
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            config, _ = configure_host(
+                str(self.source), str(self.archive), str(self.cache),
+                config=Path(self.temp.name) / "server.json",
+                port=httpd.server_port)
+            wait_for_health(config, timeout=2.0)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
     def test_http_auth_revisions_products_upload_and_client_cache(self):
         src = self.put("models/hero.obj", b"the-OBJ-source")
         self.store.scan()
