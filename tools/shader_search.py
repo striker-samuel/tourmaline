@@ -211,6 +211,8 @@ def run_search(args):
     if args.list_regions:
         print(json.dumps({"shader": str(shader), "regions": discover(source)}, indent=2))
         return {"best_gain_percent": 0, "best_file": None}
+    if output.is_dir() and any(output.iterdir()):
+        raise ValueError("--output must be a new/empty directory to preserve previous experiment records")
     output.mkdir(parents=True, exist_ok=True)
     region_choices = load_knobs(args.region_knobs) if args.region_knobs else {}
     tracked_regions = discover(source)
