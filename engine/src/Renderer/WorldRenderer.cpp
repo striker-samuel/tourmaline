@@ -10254,11 +10254,12 @@ namespace engine {
 	bool WorldRenderer::ConfigureSnapshotSequence(
 		const std::filesystem::path& directory, uint32_t interval, uint32_t count,
 		const std::string& sequenceId, tour::snapshot::Json provenance,
-		bool scopedCapture, std::string& error) {
+		bool scopedCapture, bool rawOutput, std::string& error) {
 		if (!m_snapshotSequence.Configure(directory, interval, 0, count, sequenceId, error))
 			return false;
 		m_snapshotProvenance = std::move(provenance);
 		m_scopedCapture = scopedCapture;
+		m_snapshotRawOutput = rawOutput;
 		return true;
 	}
 
@@ -10306,6 +10307,11 @@ namespace engine {
 				if (!m_snapshotSequence.Stage(frame.tick, frame.dtNs, frame.state,
 					std::move(frame.events), std::move(frame.provenance), m_snapshotError))
 					return;
+				if (m_snapshotRawOutput) {
+					if (!m_snapshotSequence.CompleteRaw(rgba, m_snapshotError))
+						return;
+					continue;
+				}
 				const auto dest = m_snapshotSequence.FramePath();
 				const std::filesystem::path tmp = dest.string() + ".pending.png";
 				if (std::filesystem::exists(dest) || std::filesystem::exists(tmp)) {
@@ -10347,6 +10353,10 @@ namespace engine {
 		if (!m_context->DownloadDataFromImage(m_captureImage,
 			smvk::ImageLayout::ColorAttachmentOptimal, rgba.data(), rgba.size())) {
 			m_snapshotError = "GPU capture readback failed";
+			return;
+		}
+		if (m_snapshotRawOutput) {
+			(void)m_snapshotSequence.CompleteRaw(rgba, m_snapshotError);
 			return;
 		}
 		const auto destination = m_snapshotSequence.FramePath();
