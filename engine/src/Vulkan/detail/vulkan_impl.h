@@ -5,6 +5,7 @@
 
 #include <Engine/smvk.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/RHI/swapchain.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Memory/linear_vector.h>
