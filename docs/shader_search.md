@@ -159,3 +159,49 @@ the dedicated graphics capture/tracing path; you can extract GPU counters with
 an external adapter, but the harness does not itself parse Nsight reports or
 Optick `.opt` captures. Use the same GPU, driver, resolution and build profile
 for register comparisons.
+
+
+## Addressable shader regions and Git-style identity mapping
+
+Discover individual loop, branch and function-section locations without
+starting a model or GPU benchmark:
+
+```powershell
+python tools/shader_search.py --shader engine/shaders/forwardplus.cs.hlsl --list-regions
+```
+
+The discovery result contains `id`, `kind`, `function`, source `line`,
+and (for loops) `syntax` and a short statement header. IDs are anchored to
+the initial source and tracked across successive AI-generated candidates with
+a `difflib.SequenceMatcher` line-diff correspondence, similar in purpose
+to Git's moved/unchanged context matching. Insertion of unrelated lines
+does not renumber the identified loops. A uniquely identical header in the
+same function can be reattached even if the loop moves. A heavily rewritten
+loop header **may lose its identity**; missing/duplicated/ambiguous matches
+are rejected instead of controlling another loop.
+
+Use `--region-knobs PATH` to set *several* independent loop/branch hints:
+
+```json
+{
+  "regions": {
+    "loop:mainCS:REPLACE_WITH_DISCOVERED_ID": "unroll(4)",
+    "loop:mainCS:REPLACE_WITH_ANOTHER_ID": "loop",
+    "branch:mainCS:REPLACE_WITH_DISCOVERED_ID": "flatten"
+  }
+}
+```
+
+Use the exact discovered IDs, not the illustrative placeholders above.
+The same JSON file can target multiple loops, and non-targeted regions
+remain unchanged. Every trial saves `regions.json` alongside the candidate
+for inspection. Function `section:...` IDs are discoverable for future
+localized AI proposals, but **not** directly rewriteable with HLSL loop hints.
+Source-level detection supports `for`, `while`, `do`, `if` as regions;
+attributes currently target `for` and `if` only.
+
+The source scanner is conservative and does not replace a real HLSL AST.
+DXC SPIR-V reflection can help cross-reference actual compiled instruction
+loops and debug locations when present, but cannot generally recover
+original source loop identity, especially after optimization or inlining.
+No reflection-backed matching is currently claimed.
