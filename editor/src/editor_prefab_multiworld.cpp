@@ -240,6 +240,11 @@ bool EditorApp::LoadPrefabWorld(const std::string& path) {
         return false;
     }
     ClosePrefabWorld();
+    m_prefabAnimationPreview=false;
+    m_prefabAnimationPlaying=false;
+    m_prefabAnimationTime=0.0f;
+    m_prefabAnimationRest.clear();
+    m_prefabAnimationSource.clear();
     m_prefab.path=path;
     m_prefab.document=doc;
     m_prefab.saved=doc;
@@ -314,6 +319,11 @@ void EditorApp::ClosePrefabWorld() {
         m_prefabRenderer.reset();
     }
     m_prefabRendererValid=false;
+    m_prefabAnimationPreview=false;
+    m_prefabAnimationPlaying=false;
+    m_prefabAnimationTime=0.0f;
+    m_prefabAnimationRest.clear();
+    m_prefabAnimationSource.clear();
     m_prefab.world.reset();
     m_prefab.path.clear();
     m_prefabRectFresh=false;
@@ -549,7 +559,33 @@ void EditorApp::UpdatePrefabBoundary(float dt) {
         eye,m_prefab.focus,glm::vec3(0,1,0));
     m_prefabRenderer->SetSceneFovY(45.0f);
     m_prefabRenderer->SetSelectedNode(m_prefab.selected);
-    m_prefabRenderer->Tick(dt);
+    if (m_prefabAnimationPreview && !m_prefab.world->clusters.empty()) {
+        auto& cluster = *m_prefab.world->clusters.front();
+        const float duration = float(std::max(0.0, m_prefabAnimationClip.duration));
+        if (m_prefabAnimationPlaying && duration > 0.0f) {
+            m_prefabAnimationTime += std::max(0.0f, dt)
+                * m_prefabAnimationSpeed;
+            if (m_prefabAnimationLoop) {
+                m_prefabAnimationTime = std::fmod(m_prefabAnimationTime, duration);
+            } else if (m_prefabAnimationTime >= duration) {
+                m_prefabAnimationTime = duration;
+                m_prefabAnimationPlaying = false;
+            }
+        }
+        // Resample from the original pose, never from the previous
+        // frame's pose: untracked channels must remain at bind pose.
+        if (cluster.scene.localTransform.size() == m_prefabAnimationRest.size()) {
+            cluster.scene.localTransform = m_prefabAnimationRest;
+            cluster.SetAnimClip(m_prefabAnimationClip);
+            std::vector<glm::mat4> palette;
+            cluster.SampleAnimation(m_prefabAnimationTime, palette);
+        }
+        // The renderer performs skinning with the already evaluated pose.
+        // Zero dt keeps its own clip cursor from advancing a second time.
+        m_prefabRenderer->Tick(0.0f);
+    } else {
+        m_prefabRenderer->Tick(dt);
+    }
     const float width=m_prefabRectMax.x-m_prefabRectMin.x;
     const float height=m_prefabRectMax.y-m_prefabRectMin.y;
     if (width<48 || height<48) return;
@@ -692,6 +728,45 @@ void EditorApp::DrawPrefabWindow() {
         if (ImGui::Button("Redo")) PrefabRedo();
         ImGui::SameLine();
         if (ImGui::Button("Revert unsaved")) RevertPrefab();
+        ImGui::Separator();
+        if (m_prefabAnimationPreview) {
+            ImGui::SeparatorText("Animation preview");
+            ImGui::TextWrapped("%s", m_prefabAnimationClip.name.c_str());
+            ImGui::TextDisabled("Preview only - changes are not saved to the prefab");
+            if (ImGui::Button(m_prefabAnimationPlaying ? "Pause##anim" : "Play##anim"))
+                m_prefabAnimationPlaying = !m_prefabAnimationPlaying;
+            ImGui::SameLine();
+            if (ImGui::Button("Restart##anim")) {
+                m_prefabAnimationTime = 0.0f;
+                m_prefabAnimationPlaying = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Stop preview##anim")) {
+                if (!m_prefab.world->clusters.empty()) {
+                    auto& cluster = *m_prefab.world->clusters.front();
+                    if (cluster.scene.localTransform.size() == m_prefabAnimationRest.size()) {
+                        cluster.scene.localTransform = m_prefabAnimationRest;
+                        recalculateGlobalTransforms(cluster.scene);
+                    }
+                    cluster.SetAnimClip(tour::asset::Clip{});
+                }
+                m_prefabAnimationPreview = false;
+                m_prefabAnimationPlaying = false;
+                m_prefabAnimationRest.clear();
+                m_prefabAnimationSource.clear();
+            }
+            if (m_prefabAnimationPreview) {
+                ImGui::SameLine();
+                ImGui::Checkbox("Loop##anim", &m_prefabAnimationLoop);
+                ImGui::SetNextItemWidth(120);
+                ImGui::SliderFloat("Speed##anim", &m_prefabAnimationSpeed,
+                    0.1f, 3.0f, "%.2fx");
+                const float end = float(std::max(0.0, m_prefabAnimationClip.duration));
+                if (ImGui::SliderFloat("Time##anim", &m_prefabAnimationTime,
+                    0.0f, std::max(end, 0.001f), "%.3f s"))
+                    m_prefabAnimationPlaying = false;
+            }
+        }
         ImGui::Separator();
         const float side=std::clamp(
             ImGui::GetContentRegionAvail().x*0.42f,175.0f,360.0f);
