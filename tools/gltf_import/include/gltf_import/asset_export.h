@@ -132,7 +132,8 @@ struct MaterialAsset {
 	TexRef normalTex;
 	TexRef occlusion;
 	TexRef cavity;
-	std::string packingSource; // recipe rule origin, empty for native glTF
+	std::string packingSource;
+	std::string packingSignature; // exact normalized .tourrecipe rule // recipe rule origin, empty for native glTF
 	int channelSelectors = -1; // material output channel metadata
 	TexRef emissiveTex;
 };
