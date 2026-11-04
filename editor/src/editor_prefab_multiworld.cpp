@@ -356,9 +356,13 @@ void EditorApp::SyncPrefabPreview() {
     // Never guess between duplicate siblings: a future UUID remapper
     // can support that case without accidentally moving the wrong node.
     std::unordered_map<std::string,uint32_t> sourceCounts;
-    for (uint32_t n=1;n<source.hierarchy.size();++n)
-        if (IsLiveSlot(source,n))
-            ++sourceCounts[getNodeName(source,int(n))];
+    std::unordered_map<std::string,uint32_t> sourceUuidCounts;
+    for (uint32_t n=1;n<source.hierarchy.size();++n) {
+        if (!IsLiveSlot(source,n)) continue;
+        ++sourceCounts[getNodeName(source,int(n))];
+        const std::string& uuid=GetNodeUuid(source,n);
+        if (!uuid.empty()) ++sourceUuidCounts[uuid];
+    }
     for (size_t ri=0;ri<m_references.size();++ri) {
         const auto& ref=m_references[ri];
         if (ref.root || !ref.enabled) continue;
@@ -384,6 +388,7 @@ void EditorApp::SyncPrefabPreview() {
             // UUIDs survive node renames and are copied by World merge.
             // An ambiguous UUID within this occurrence MUST NOT fall back
             // to a name, which could silently update the wrong node.
+            if (!stableId.empty() && sourceUuidCounts[stableId]!=1) continue;
             const std::string expected=ref.name+":"+sourceName;
             if (stableId.empty() && (sourceCounts[sourceName]!=1 ||
                 parentCounts[expected]!=1)) continue; // legacy unique-name compatibility
