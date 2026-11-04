@@ -117,6 +117,10 @@ inline constexpr const char* kDsPhase3CsPath =
     "content/shaders/deferredshadow_phase3.cs.hlsl.spv";
 inline constexpr const char* kDsPhase4CsPath =
     "content/shaders/deferredshadow_phase4.cs.hlsl.spv";
+inline constexpr const char* kDsPhase2VizCsPath =
+    "content/shaders/deferredshadow_phase2.cs.hlsl.viz.spv";
+inline constexpr const char* kDsPhase3VizCsPath =
+    "content/shaders/deferredshadow_phase3.cs.hlsl.viz.spv";
 
 // Must match DsPhasePush in engine/shaders/deferredshadow.hlsli (120 B).
 struct alignas(8) DsPhasePush {
@@ -443,6 +447,10 @@ struct DeferredShadows {
 
     Holder<ShaderModuleHandle> phaseModules[3]{};
     ShaderProgram phasePrograms[3]{};
+    // Clean base compute modules always run with visualization Off.
+    // Debug variants are loaded only in diagnostics-capable builds.
+    Holder<ShaderModuleHandle> phaseVizModules[2]{};
+    ShaderProgram phaseVizPrograms[2]{};
 
     Extent2D extent{ 0, 0 };
     uint32_t tileCountX = 0;
@@ -467,6 +475,12 @@ struct DeferredShadows {
             if (phasePrograms[p].shaderCount == 0 || phaseModules[p].empty())
                 return false;
         }
+#if defined(DS_DEBUG_VIZ)
+        for (uint32_t p = 0; p < 2; ++p) {
+            if (phaseVizPrograms[p].shaderCount == 0 || phaseVizModules[p].empty())
+                return false;
+        }
+#endif
         return true;
     }
 
@@ -489,6 +503,16 @@ struct DeferredShadows {
                     phaseModules[p] = ctx.CreateShaderModule(
                         readFile(kPaths[p]), "deferredShadowCS");
             }
+#if defined(DS_DEBUG_VIZ)
+            static constexpr const char* kVizPaths[2] = {
+                kDsPhase2VizCsPath, kDsPhase3VizCsPath
+            };
+            for (uint32_t p = 0; p < 2; ++p) {
+                if (phaseVizModules[p].empty())
+                    phaseVizModules[p] = ctx.CreateShaderModule(
+                        readFile(kVizPaths[p]), "deferredShadowVizCS");
+            }
+#endif
         } catch (...) {
             return false;
         }
@@ -501,6 +525,17 @@ struct DeferredShadows {
                 .stage = ShaderStage::Compute };
             phasePrograms[p] = { .shaders = { cs }, .shaderCount = 1 };
         }
+#if defined(DS_DEBUG_VIZ)
+        for (uint32_t p = 0; p < 2; ++p) {
+            if (phaseVizModules[p].empty())
+                return false;
+            Shader cs{
+                .module = phaseVizModules[p],
+                .entryPoint = "mainCS",
+                .stage = ShaderStage::Compute };
+            phaseVizPrograms[p] = { .shaders = { cs }, .shaderCount = 1 };
+        }
+#endif
         return true;
     }
 
@@ -508,6 +543,10 @@ struct DeferredShadows {
         for (uint32_t p = 0; p < 3; ++p) {
             phasePrograms[p] = ShaderProgram();
             phaseModules[p] = {};
+        }
+        for (uint32_t p = 0; p < 2; ++p) {
+            phaseVizPrograms[p] = ShaderProgram();
+            phaseVizModules[p] = {};
         }
     }
 
@@ -525,10 +564,20 @@ struct DeferredShadows {
         for (uint32_t p = 0; p < 3; ++p)
             any |= SwapShaderModule(ctx, kPaths[p], "deferredShadowCS",
                 phaseModules[p], retired);
+#if defined(DS_DEBUG_VIZ)
+        static constexpr const char* kVizPaths[2] = {
+            kDsPhase2VizCsPath, kDsPhase3VizCsPath
+        };
+        for (uint32_t p = 0; p < 2; ++p)
+            any |= SwapShaderModule(ctx, kVizPaths[p], "deferredShadowVizCS",
+                phaseVizModules[p], retired);
+#endif
         if (!any)
             return false;
         for (uint32_t p = 0; p < 3; ++p)
             phasePrograms[p] = ShaderProgram();
+        for (uint32_t p = 0; p < 2; ++p)
+            phaseVizPrograms[p] = ShaderProgram();
         EnsureShaders(ctx);
         return true;
     }
