@@ -90,6 +90,8 @@ class ConsumerPresence:
             mode = item.get("mode", "read")
             if mode not in _MODES:
                 raise ValueError("asset open mode must be read, edit, publish or review")
+            if any(previous[:3] == (kind, ident, version) for previous in normalized):
+                raise ValueError("duplicate asset version in heartbeat")
             normalized.add((kind, ident, version, mode))
         return sorted(normalized)
 
@@ -157,6 +159,25 @@ class ConsumerPresence:
             db.execute("DELETE FROM consumer_reads WHERE session_id=?", (session_id,))
             db.execute("DELETE FROM consumer_sessions WHERE session_id=?", (session_id,))
         return {"released": True, "session_id": session_id}
+
+    def open_assets(self, resource_kind=None, resource_id=None):
+        """Flat live database view for asset usage monitoring."""
+        report = self.active(resource_kind, resource_id)
+        items = []
+        for session in report["consumers"]:
+            for read in session["reads"]:
+                items.append({
+                    **read,
+                    "session_id": session["session_id"],
+                    "username": session["username"],
+                    "workstation": session["workstation"],
+                    "client_kind": session["kind"],
+                    "client_label": session["label"],
+                    "last_seen": session["last_seen"],
+                    "expires_at": session["expires_at"],
+                })
+        return {"open_assets": items, "as_of": report["as_of"],
+                "advisory_only": True, "ttl_seconds": self.ttl}
 
     def active(self, resource_kind=None, resource_id=None):
         if resource_kind is not None and resource_kind not in _RESOURCE_KINDS:
