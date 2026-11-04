@@ -813,6 +813,53 @@ void EditorApp::FinalizePending() {
 			if (ImGui::MenuItem("Baked irradiance", "F8",
 				ActiveViewMode() == ViewMode::Baked, m_world != nullptr))
 				ModalViewBaked();
+
+			// The retained engine visualizers inspect the actual deferred-
+			// shadow tile lists (which also consume Forward+ lights). Their
+			// GPU reads are available only in DS_DEBUG_VIZ builds, and only
+			// the Live Lit viewport runs the full renderer.
+#if defined(DS_DEBUG_VIZ)
+			if (ImGui::BeginMenu("Light tile diagnostics (Live Lit)")) {
+				const char* modes[] = {
+					"Off",
+					"Approximate count (phase 2)",
+					"Accurate count (phase 3)",
+					"Final light count (phase 4)",
+					"Overestimate (approx - accurate)",
+					"Cull stage (selected light)",
+					"List membership (selected light)",
+					"Visibility (selected light)",
+				};
+				int mode = int(m_dsTileVizMode);
+				if (ImGui::Combo("Tile visualization", &mode, modes, 8)) {
+					m_dsTileVizMode = engine::DsDebugViz(mode);
+					if (mode != 0) {
+						ActiveViewMode() = ViewMode::Lit;
+						m_litView = 0;
+					}
+				}
+				if (mode != 0) {
+					ImGui::Checkbox("Overlay on lit", &m_dsTileVizOverlay);
+					if (mode >= 1 && mode <= 4)
+						ImGui::SliderInt("Count heat ceiling",
+							&m_dsTileVizCountCeil, 1,
+							int(smvk::kDsMaxLightsPerTile));
+					if (mode >= 5)
+						ImGui::InputInt("Sorted light index", &m_dsTileVizLight);
+					m_dsTileVizLight = std::max(0, m_dsTileVizLight);
+					ImGui::TextDisabled("Requires deferred shadows; Live Lit viewport.");
+					ImGui::TextDisabled("Light index is phase-1 sorted, not outliner order.");
+					ImGui::TextDisabled("Diagnostic readout, not measured GPU time.");
+				}
+				ImGui::EndMenu();
+			}
+#else
+			if (ImGui::BeginMenu("Light tile diagnostics (unavailable)")) {
+				ImGui::TextDisabled("Build with -DTOURMALINE_DS_VIZ=ON");
+				ImGui::TextDisabled("and compile the corresponding shaders.");
+				ImGui::EndMenu();
+			}
+#endif
 			if (ActiveViewMode() == ViewMode::Meshlets) {
 				const char* meshletModes[] = { "Random per meshlet",
 					"Cone-cutoff heat" };
