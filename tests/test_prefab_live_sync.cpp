@@ -64,6 +64,15 @@ int main() {
     glm::mat4 invalid=At(2);
     invalid[0][0]=NAN;
     assert(!Near(invalid,invalid));
+    // Legacy migration must use explicit cluster-local mapping, not
+    // the merged node index minus one (references and holes break it).
+    const std::vector<uint32_t> mapping{1, 40, UINT32_MAX, 83, 2};
+    const auto needed=LegacyIdentityCandidates(mapping,[](uint32_t merged) {
+        return merged==40 || merged==83;
+    });
+    assert(needed.size()==2);
+    assert(needed[0].first==1 && needed[0].second==40);
+    assert(needed[1].first==3 && needed[1].second==83);
     std::cout<<"PrefabLiveSyncTests passed\n";
     return 0;
 }
