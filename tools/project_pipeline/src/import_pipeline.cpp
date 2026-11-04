@@ -48,7 +48,8 @@ bool IsDerivedFamilyFile(const std::string& name) {
 	// IsMeshSourceMetaSidecar), not just the glTF spelling.
 	return endsWith(".geometry")
 		|| smvk::assets::IsMeshSourceMetaSidecar(name)
-		|| endsWith(".material") || endsWith(".anim");
+		|| endsWith(".material") || endsWith(".anim")
+        || endsWith(".packed.png");
 }
 
 bool CopyFileTo(const std::filesystem::path& from,
