@@ -353,12 +353,12 @@ void EditorApp::FinalizePending() {
 					}
 					if (ImGui::BeginTabItem("Workspace")) {
 						ImGui::SeparatorText("Editor workspace");
-						ImGui::Checkbox("Ground grid", &m_showGrid);
-						ImGui::Checkbox("Selection wire overlay", &m_wireOverlay);
-						ImGui::Checkbox("Light gizmos", &m_showLightGizmos);
-						ImGui::Checkbox("Camera frustums", &m_showCameraGizmos);
-						ImGui::Checkbox("GI volume boxes", &m_showGiVolumeGizmos);
-						ImGui::Checkbox("Cubemap capture markers", &m_showCubemapGizmos);
+						attr::Check("Ground grid", &m_showGrid, "Show the viewport ground grid");
+						attr::Check("Selection wire overlay", &m_wireOverlay, "Show selected mesh outlines");
+						attr::Check("Light gizmos", &m_showLightGizmos, "Show light icons");
+						attr::Check("Camera frustums", &m_showCameraGizmos, "Show camera frustums");
+						attr::Check("GI volume boxes", &m_showGiVolumeGizmos, "Show GI volume bounds");
+						attr::Check("Cubemap capture markers", &m_showCubemapGizmos, "Show cubemap capture markers");
 						ImGui::EndTabItem();
 					}
 					ImGui::EndTabBar();
@@ -985,6 +985,27 @@ void EditorApp::FinalizePending() {
 #else
 			ImGui::TextDisabled("Game entry: not statically linked");
 #endif
+			ImGui::EndMenu();
+		}
+		// IDE-style panel management with persistent dock assignments.
+		if (ImGui::BeginMenu("Window")) {
+			ImGui::MenuItem("Viewport", nullptr, &m_showViewportPanel);
+			ImGui::MenuItem("World Map", nullptr, &m_showWorldMapPanel);
+			ImGui::MenuItem("Outliner", nullptr, &m_showOutlinerPanel);
+			ImGui::MenuItem("Reference", nullptr, &m_showReferencePanel);
+			ImGui::MenuItem("Assets", nullptr, &m_showAssetsPanel);
+			ImGui::MenuItem("Console", nullptr, &m_showConsolePanel);
+			ImGui::MenuItem("Overrides", nullptr, &m_showOverridesPanel);
+			ImGui::MenuItem("Inspector", nullptr, &m_showInspectorPanel);
+			ImGui::MenuItem("Material", nullptr, &m_showMaterialPanel);
+			ImGui::Separator();
+			ImGui::MenuItem("Cook & bake", nullptr, &m_showCookWindow);
+			ImGui::MenuItem("Options", nullptr, &m_showRenderSettingsPanel);
+			ImGui::Separator();
+			if (ImGui::MenuItem("Reset dock layout")) {
+				m_dockResetRequested = true;
+				m_showViewportPanel = true;
+			}
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("View")) {
