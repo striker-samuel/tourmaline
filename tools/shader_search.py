@@ -287,6 +287,7 @@ def run_search(args):
                 "guidance": ("Minimize live ranges, intermediates and spills. "
                              "Unrolling can increase register pressure; don't assume faster."),
             }, ensure_ascii=False)
+            visual = None
             try:
                 candidate = request_candidate(
                     args.provider, args.api_base, args.model, api_key,
@@ -313,7 +314,6 @@ def run_search(args):
                 ok, log = run_command(args.validate_cmd, repo, env, args.timeout)
                 if not ok:
                     raise RuntimeError("correctness gate failed: " + log)
-                visual = None
                 if screenshot_pair:
                     visual = compare_saved_screenshot(
                         args.reference_screenshot.resolve(),
@@ -358,7 +358,7 @@ def run_search(args):
             except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
                 outcome = {"iteration": index, "accepted": False,
                            "knobs": knobs, "target_resolution": args.target_resolution,
-                           "visual_error": locals().get("visual"), "reason": str(exc)[-4000:]}
+                           "visual_error": visual, "reason": str(exc)[-4000:]}
             finally:
                 # Restore the baseline for the next trial's build unless we are
                 # using the accepted candidate as the next search starting point.
@@ -437,6 +437,10 @@ def main(argv=None):
         not math.isfinite(args.max_difference_fraction) or
         not math.isfinite(args.max_average_channel_delta)):
         p.error("visual error limits must be finite and within valid ranges")
+    if (not math.isfinite(args.max_regression) or args.max_regression < 0 or
+        not math.isfinite(args.max_register_regression) or
+        not math.isfinite(args.min_gain) or args.min_gain < 0):
+        p.error("performance limits must be finite; regression limits and min gain nonnegative")
     if args.max_register_regression < 0:
         p.error("max register regression must be nonnegative")
     if not args.list_regions and (not args.exe or not args.scenario or not args.build_cmd or not args.validate_cmd or not args.model):
