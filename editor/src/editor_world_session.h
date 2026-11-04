@@ -6,6 +6,7 @@
 // world from surviving a failed load, revert, or a different hierarchy size.
 // No GPU resources or scene history are owned by this helper.
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
