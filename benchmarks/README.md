@@ -21,7 +21,6 @@ python tools/perf_harness.py trace --scenario bistro-ssr-stress --exe out/build/
 
 You can keep separate entries for shadow draw-call stress, alpha/overdraw, fog/volumetrics, texture streaming, and large light counts, then call each by its stable ID from an agent or local test run. The runner refuses malformed/duplicate IDs, unsupported scene flags, and missing pak files before launching the executable. An extra `--env TOURMALINE_X=value` can override a saved pin for a deliberate A/B variant, which is recorded in each run's result JSON.
 
-<<<<<<< HEAD
 **Reproducibility boundary:** The export captures the camera, cooked launch identity, viewer launch flags, startup pass-graph `--with`/`--without` lists, and supported `RunConfig` settings (AA/AO, texture filtering, SSR/SSGI, GI, volumetric fog, contact shadows, terrain, DLSS, render scale, and selected postprocessing). Not every advanced live-only UI slider has an equivalent startup pin. The exporter must not pretend those unpinned controls are reproduced: add their `RunConfig` counterparts before relying on them for a benchmark. The benchmark host pins auto-exposure off to avoid run-to-run adaptation. Nsight tracing is instrumented; compare uninstrumented `bench` outputs only.
 
 ## Validation and measurement notes
@@ -83,8 +82,6 @@ scene-authored inputs (e.g. nonzero fog density) to produce a visually
 meaningful result. These entries are workload presets, **not** GPU test
 results; a built Benchmark target, cooked Bistro pak, and Vulkan-capable
 GPU remain necessary.
-=======
-**Reproducibility boundary:** The export captures the camera, cooked launch identity and the renderer's supported command-line pins (AA/AO, SSR/SSGI, GI, volumetric fog, shadows, DLSS, render scale and selected postprocessing). Not every advanced live-only UI slider has an equivalent startup pin. The exporter must not pretend those unpinned controls are reproduced: add their `RunConfig` counterparts before relying on them for a benchmark. The benchmark host pins auto-exposure off to avoid run-to-run adaptation. Nsight tracing is instrumented; compare uninstrumented `bench` outputs only.
 
 ## Short Nsight GPU Trace (10 frames) and custom disk destinations
 
@@ -107,4 +104,3 @@ not saved unless you also specify `--save-paths`. Nsight's
 standard temp environment variables (best-effort for internal NVIDIA
 caches). Trace captures and their shader metadata are private artifacts.
 See [Nsight profiles](../docs/nsight_profiles.md).
->>>>>>> github/pr/46
