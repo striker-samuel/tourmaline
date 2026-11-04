@@ -236,6 +236,25 @@ were fixed post-merge.
   `3343a0f3` onward, closing most of this gap; hot-reload identity
   verification against a live dev session is still open.
 
+## #193 — docking overlays + camera mouse ownership
+- Explicit scope note from the author: a focused alignment/input fix,
+  **NOT** an offscreen scene render target for detached secondary native
+  windows — the known detached scene-view rendering gap remains open.
+- No author-declared validation checklist; covered by the green local
+  gate (full build + 107/107 ctest).
+
+## #194 — VRR-aware frame pacing + VSync controls (merged as draft)
+- (Merge note: `app/src/Host.h` carried the same literal-backslash-n
+  generation artifact as the setup wizard — the `vrr` member was
+  swallowed by the previous line's comment and PakAppArgs/PakApp failed
+  C2039; fixed in `2a68dd34`.)
+- Hardware validation NOT run: VRR cap behavior (refresh-detect, the
+  2-FPS margin, mode-change updates) needs a real VRR-capable monitor
+  with matching OS/driver settings, paired with `--vsync on` — see
+  docs/vrr_frame_pacing.md. CPU-only cap-selection tests pass.
+- Merged as a draft with CI pending; post-fix master runs must confirm
+  both platforms (the breakage above would have failed them).
+
 ## Audit series still unimplemented (open draft PRs, docs only)
 - #183 [Audit 02] GPU scene record readiness; #184 [Audit 03]
   double-precision transforms; #185 [Audit 04] WorldPartition provider
