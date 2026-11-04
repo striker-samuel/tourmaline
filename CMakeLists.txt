@@ -390,12 +390,14 @@ endif()
 message(STATUS "Tourmaline profile: ${TOURMALINE_BUILD_PROFILE}; Nsight labels: ${TOURMALINE_NSIGHT_MARKERS}")
 
 # Resolve visualization after profiles can force shipping settings.
-if(TOURMALINE_IS_TOP_LEVEL AND
-   NOT TOURMALINE_BUILD_PROFILE STREQUAL "shipping")
-  # The editor is built in top-level trees and always exposes diagnostics.
-  # Shipping profiles retain their explicit no-diagnostics contract.
-  set(DS_VIZ_ON ON)
-elseif(TOURMALINE_DS_VIZ)
+# REVERTED to Debug-auto default (the b640cf15 broadening force-compiled
+# DS_DEBUG_VIZ into EVERY shader of every top-level non-shipping tree,
+# while plain App's C++ never allocates the viz telemetry buffers - the
+# shaders' OOB telemetry stores corrupted host memory and crashed App
+# with heap corruption / AVs, 100% reproducible, bisected + isolated).
+# Editor-Release diagnostics need TARGET-SCOPED instrumentation (shader
+# variants + editor C++ only) before this branch can return - see TODO.
+if(TOURMALINE_DS_VIZ)
   set(DS_VIZ_ON ON)
 elseif(TOURMALINE_DS_VIZ STREQUAL "" AND CMAKE_BUILD_TYPE MATCHES "Debug")
   set(DS_VIZ_ON ON)
