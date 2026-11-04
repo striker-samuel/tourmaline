@@ -113,12 +113,30 @@ namespace editor {
 				return;
 			}
 			ImGui::SameLine();
-			ImGui::Checkbox("Up/Down", &m_inspectorCycle);
+			attr::Check("Up/Down", &m_inspectorCycle, "Cycle selection with the Up/Down keys");
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip(
 					"When on, the Up/Down arrow keys cycle the node selection.");
 		}
-		ImGui::Text("Node %u", node);
+		// Hierarchy breadcrumb from the root to the selected node.
+		std::vector<uint32_t> ancestry;
+		int current = int(node);
+		for (size_t depth = 0; current >= 0
+				&& size_t(current) < scene.hierarchy.size()
+				&& depth < scene.hierarchy.size(); ++depth) {
+			if (std::find(ancestry.begin(), ancestry.end(),
+					uint32_t(current)) != ancestry.end())
+				break; // corrupt/cyclic hierarchy must not hang the UI
+			ancestry.push_back(uint32_t(current));
+			current = scene.hierarchy[size_t(current)].parent;
+		}
+		std::reverse(ancestry.begin(), ancestry.end());
+		for (size_t i = 0; i < ancestry.size(); ++i) {
+			if (i)
+				ImGui::SameLine(0.0f, 5.0f), ImGui::TextUnformatted(">"),
+					ImGui::SameLine(0.0f, 5.0f);
+			ImGui::Text("Node %u", ancestry[i]);
+		}
 		// Sub-object highlight state (selection only, never edited).
 		if (m_selMode == SelMode::Face) {
 			if (m_selFaceNode != UINT32_MAX && m_selFaceTri != UINT32_MAX)
@@ -189,27 +207,6 @@ namespace editor {
 			if (sOwn && sv.finished) {
 				m_pending.cmd.afterVec = glm::vec3(ss[0], ss[1], ss[2]);
 				FinishDrag();
-			}
-		}
-
-		// Parent.
-		{
-			const int p = scene.hierarchy[node].parent;
-			ImGui::Text("Parent: %d (%s)", p,
-				p >= 0 ? getNodeName(scene, p).c_str() : "-");
-			ImGui::SameLine();
-			if (ImGui::Button("Detach to root") && p != int(m_clusterBase)) {
-				if (m_clusterBase == UINT32_MAX) {
-					Log("Detach: no cluster mapping (multi-cluster scene?)");
-				}
-				else {
-					EditCmd c{};
-					c.verb = EditVerb::Parent;
-					c.node = node;
-					c.node2 = m_clusterBase;
-					c.beforeParent = uint32_t(p);
-					Do(c);
-				}
 			}
 		}
 
@@ -494,7 +491,7 @@ namespace editor {
 		sections.DrawAll(node);
 		// Single discoverable add-component flow. Only list missing
 		// associations and reuse the existing undoable attach commands.
-		ImGui::Separator();
+		ImGui::Spacing();
 		if (ImGui::Button("Add component..."))
 			ImGui::OpenPopup("##add_component_picker");
 		if (ImGui::BeginPopup("##add_component_picker")) {
@@ -662,25 +659,24 @@ namespace editor {
 		// per-attr inherited/local/wide badges + wide-rule matches).
 		DrawInspectorOverrides(node);
 
-		// Environment node: mark/use this node as an IBL source (scene
-		// definition — the block lives in the scene, the selection below
-		// resolves into the rendered look).
+		// Environment participation is a regular editor property like Static.
 		{
-			ImGui::Separator();
-			ImGui::Text("Environment node");
-			if (IsEnvNode(node)) {
-				if (ImGui::Button("Use as current IBL source")) {
+			bool environment = IsEnvNode(node);
+			if (attr::Check("Environment node", &environment,
+					"Use this node as an environment/IBL source")) {
+				if (environment) {
+					MarkEnvNode(node);
+					m_envCurrent = node;
+					ResolveSceneEnv();
+				} else {
+					UnmarkEnvNode(node);
+				}
+			}
+			if (environment) {
+				if (ImGui::SmallButton("Use as current IBL source")) {
 					m_envCurrent = node;
 					ResolveSceneEnv();
 				}
-				ImGui::SameLine();
-				if (ImGui::Button("Unmark##envnode"))
-					UnmarkEnvNode(node);
-			}
-			else if (ImGui::Button("Mark as Environment node")) {
-				MarkEnvNode(node);
-				m_envCurrent = node;
-				ResolveSceneEnv();
 			}
 		}
 
