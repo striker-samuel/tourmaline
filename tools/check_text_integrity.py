@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check tracked source files for encoding damage and PowerShell dash substitutions.
+"""Detect text corruption from local edits (including PowerShell-based agents).
 
 Run from any directory: python tools/check_text_integrity.py
 """
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SUFFIXES = {
     ".bat", ".c", ".cc", ".cmake", ".cmd", ".cpp", ".cs", ".h",
     ".hlsl", ".hpp", ".ini", ".json", ".ps1", ".psd1", ".psm1",
-    ".py", ".sh", ".toml", ".xml", ".yaml", ".yml",
+    ".py", ".sh", ".toml", ".xml", ".yaml", ".yml", ".md", ".txt", ".rst", ".svg", ".html", ".css", ".js", ".ts", ".inl",
 }
 DASH_LOOKALIKES = frozenset("\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d")
 MOJIBAKE = ("â€“", "â€”", "â€‘", "ï¿½")
@@ -28,7 +28,7 @@ def check_text(path: Path, content: bytes) -> list[str]:
         return [f"{path}: invalid UTF-8 ({exc})"]
 
     errors = []
-    is_powershell = path.suffix.lower() in {".ps1", ".psm1", ".psd1"}
+    # Do not ban genuine Unicode from source comments, strings or docs.\n    # Flag damaged text and dash lookalikes in obvious command/option positions.\n    is_powershell = path.suffix.lower() in {".ps1", ".psm1", ".psd1"}
     for number, line in enumerate(text.splitlines(), 1):
         if "\ufffd" in line:
             errors.append(f"{path}:{number}: Unicode replacement character U+FFFD")
