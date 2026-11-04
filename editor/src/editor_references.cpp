@@ -425,8 +425,11 @@ bool EditorApp::ResolveReferenceAssetEx(const std::string& input,
 
 bool EditorApp::AddSceneReference(const std::string& source,
 	const std::string& name, bool allowGeometryAsset) {
-	if (m_gltfPath.empty()) {
-		Log("References: cannot add asset — no source scene loaded.");
+	// A loaded .tour scene can have a live world and save target without
+	// a glTF source. ReloadReferencesViaTemp already handles this case via
+	// OpenTourFile; do not reject asset placement solely on m_gltfPath.
+	if (!m_world || (m_gltfPath.empty() && TourTarget().empty())) {
+		Log("References: cannot add asset — no scene loaded.");
 		return false;
 	}
 	if (source.empty()) {
