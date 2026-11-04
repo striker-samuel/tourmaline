@@ -2785,6 +2785,13 @@ private:
 	bool m_dockResetRequested = false;
 	// Each dock tool has a close button; View > Panels can reopen it.
 	bool m_showViewportPanel = true;
+	bool m_showWorldMapPanel = true;
+	uint32_t m_worldMapGroup = UINT32_MAX;
+	glm::vec2 m_worldMapCenter{0.0f};
+	float m_worldMapScale = 0.0f; // world meters per screen pixel (0 = fit)
+	bool m_worldMapSculpt = false;
+	glm::vec2 m_worldMapLastStamp{-1e9f};
+	void DrawWorldMapPanel();
 	bool m_showOutlinerPanel = true;
 	bool m_showReferencePanel = true;
 	bool m_showAssetsPanel = true;
