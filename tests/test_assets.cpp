@@ -33,6 +33,8 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Asset/shape_asset.h>
+#include <Engine/Asset/tour.h>
 #include <Engine/Asset/pak_pager.h>
 #include <Engine/Asset/asset_plan.h>
 #include <Engine/Scene/node_schema.h>
@@ -214,6 +216,53 @@ void TestTextureSourceLifetime() {
 	Check(stored && stored->data() == pinned &&
 		stored->size() == 4096 && (*stored)[0] == 0xAB,
 		"texture.source.rehash-preserves-streaming-pointer");
+}
+
+void TestShapePakBlobs() {
+    using namespace smvk;
+    const auto cloud = tour::asset::DefaultShapeAsset(
+        tour::asset::ShapeKind::PointCloud);
+    const std::string source = tour::asset::SerializeShapeAsset(cloud);
+    const std::string placements =
+        "shapeInstance -name \"Cloud\" -source \"content/shapes/cloud.shape\" "
+        "-t 0 1 0 -color 1 0.5 0.2 -enabled on;\n";
+    PakWriter writer;
+    Check(writer.AddBlob(PakAssetKind::Shape,
+        "content/shapes/cloud.shape", std::vector<uint8_t>(
+            source.begin(), source.end())), "shape.pak.write-source");
+    Check(writer.AddBlob(PakAssetKind::ShapePlacements,
+        tour::asset::kShapePlacementsPakPath,
+        std::vector<uint8_t>(placements.begin(), placements.end())),
+        "shape.pak.write-placement-sidecar");
+    const auto image = writer.Finalize();
+    std::string error;
+    auto reader = PakReader::Open(std::span<const uint8_t>(image), error);
+    Check(reader.has_value(), "shape.pak.open");
+    if (!reader) return;
+    const auto* shapeRow = reader->Find(
+        PakAssetKind::Shape, "content/shapes/cloud.shape");
+    Check(shapeRow != nullptr, "shape.pak.source-blob-kind");
+    if (shapeRow) {
+        const auto bytes = reader->Payload(*shapeRow);
+        tour::asset::ShapeAsset parsed;
+        Check(tour::asset::ParseShapeAsset(
+            std::string(reinterpret_cast<const char*>(bytes.data()),
+                bytes.size()), parsed, error)
+                && parsed.kind == tour::asset::ShapeKind::PointCloud,
+            "shape.pak.source-valid");
+    }
+    const auto* placementRow = reader->Find(
+        PakAssetKind::ShapePlacements,
+        tour::asset::kShapePlacementsPakPath);
+    Check(placementRow != nullptr, "shape.pak.internal-placement-kind");
+    if (placementRow) {
+        const auto bytes = reader->Payload(*placementRow);
+        tour::asset::Doc doc;
+        Check(tour::asset::LoadTourFromString(
+            std::string(reinterpret_cast<const char*>(bytes.data()),
+                bytes.size()), doc, error) && doc.shapePlacements.size() == 1,
+            "shape.pak.placement-parse");
+    }
 }
 
 void TestPakRoundTrip() {
@@ -3936,6 +3985,7 @@ int main() {
 	run("TestAssetUris", TestAssetUris);
 	run("TestTextureSourceLifetime", TestTextureSourceLifetime);
 	run("TestPakRoundTrip", TestPakRoundTrip);
+	run("TestShapePakBlobs", TestShapePakBlobs);
 	run("TestPakCrcCombine", TestPakCrcCombine);
 	run("TestPakCrcParallel", TestPakCrcParallel);
 	run("TestPakTextureDigest", TestPakTextureDigest);
