@@ -1,3 +1,5 @@
+
+## Scenario export and replay
 ## Exclusive performance measurement and environment telemetry
 
 Uninstrumented `bench` measurements must run on a quiet machine. The harness
@@ -32,7 +34,6 @@ Tourmaline's `App` viewer and dedicated `Benchmark` executable share the same me
 
 Requirements: Python 3.9+, a built `App` or `Benchmark`, cooked scene pak (or `.tapp`), and a GPU/driver capable of rendering it. Launch the harness from the repository root. The executable runs with its **build directory** as the working directory so staged shader and pak files resolve correctly (`--workdir` overrides this). Use `--exe` for the binary and either `--scenario` or `--pak` / `--project` for scene input. `Benchmark` has no viewer gameplay/audio extensions and refuses to start without `--bench`.
 
-## Scenario export and replay
 
 Build the dedicated CMake `Benchmark` target explicitly. It is separate from `App` and requires a cooked source; a graphical GPU session is still needed for measurements.
 
