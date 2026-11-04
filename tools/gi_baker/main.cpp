@@ -26,10 +26,11 @@
 // defaults; the bake captures the COMPLETE ambient: bounced sun (NEE at
 // every vertex, incl. the primary hit) + the analytic sky on open-sky
 // rays (--sky-intensity), and EXCLUDES direct sun (the runtime's
-// cascaded shadow maps own it), emissive geometry, and the dynamic
+// cascaded shadow maps own it), and the dynamic
 // forward+ point/spot lights. Covered pixels take the baked source
 // ALONE at runtime (the sky IBL is the uncovered-pixel fallback).
-// --emissive is accepted but ignored (emissive stays runtime-only).
+// --emissive is passed to trace-scene build options; do not describe
+// it as inert without verifying the renderer's contribution path.
 // Materials bake white-world (uniform albedo 0.7) unless
 // --uniform-albedo off requests the textured path: per-material albedo
 // on contrasty scenes prints chromatic dots the 9-lobe fit cannot
@@ -193,8 +194,7 @@ void Usage() {
 		<< "         [--rays 1024] [--bounces 3] [--clamp 8|off] [--threads 0]\n"
 		<< "         [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]\n"
 		<< "         [--sky-intensity 600] [--textures on|off]\n"
-		<< "         --emissive on|off is accepted for compatibility but ignored;\n"
-		<< "         emissive materials remain runtime-only.\n"
+		<< "         [--emissive on|off] sets the trace-scene emissive option.\n"
 		<< "         [--verify on|off] [--uniform-albedo off|0.7|r,g,b]\n"
 		<< "         [--backend builtin|embree]\n"
 		<< "         [--spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
@@ -219,7 +219,8 @@ void Usage() {
 		<< "         [--gi-volume-dirs 1536]: bake STACKED CONVEX GI volumes\n"
 		<< "         (probes-only pivot; a DIRECT per-probe path trace per\n"
 		<< "         dense grid node — the BO3 capture/reprojection era\n"
-		<< "         is retired; --gi-volume-capture-spacing parses but is inert).\n"
+		<< "         is retired; --gi-volume-capture-spacing overrides the\n"
+		<< "         capture-spacing config, although the auto lattice is hashed).\n"
 		<< "         Spec file, one `volume <name>` block each:\n"
 		<< "           volume bar\n"
 		<< "             box 9.4,-1,0.6 28.4,5.5,18.6 [0.1,0.1]\n"
@@ -1024,9 +1025,10 @@ int Run(Args& args) {
 	// exactly the sun/sky the pak and every other bake use (ONE authored
 	// sun); the CLI --sun-*/--sky-intensity defaults stay the no-tour
 	// fallback. The analytic sky is baked on open-sky rays (TraceIncoming),
-	// so the sky intensity is meaningful; emissive stays runtime-only.
+	// so the sky intensity is meaningful. The emissive flag is forwarded
+	// to the trace-scene build options.
 	if (!args.emissive)
-		tool::out() << "  note: --emissive off (emissive is runtime-only)\n";
+		tool::out() << "  note: --emissive off (trace-scene option disabled)\n";
 	if (cluster->scene.envAuthored) {
 		const tour::scene::SceneEnv& se = cluster->scene.environment;
 		buildOpts.env.sunAzimuthDeg = se.sunAzimuth;
