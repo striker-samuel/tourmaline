@@ -296,6 +296,23 @@ were fixed post-merge.
   STILL OPEN: a Vulkan validation-layer session and silhouette/coverage
   review on a real GPU (the PR's compare list).
 
+## #191 — [Audit 10] WorldRenderer decomposition (partial, config + descriptors)
+- Author STATUS: "frame-pass preset policy and pass-descriptor
+  configuration are extracted; **orchestration extraction, native
+  tests, and GPU parity remain integrator follow-ups.**"
+- Integrator validation done post-merge: full build + 107/107 ctest, and
+  a BIT-EXACT behavior-preservation proof — the MSAA A/B captures are
+  pixel-identical pre/post decomposition (0.000 delta both modes; the
+  custom-vs-hardware parity contract still holds at mean 0.001).
+- (Merge note: the earlier msaa_custom_resolve.h `program = {}` broke
+  the LINUX CI leg only — the documented GCC/ShaderProgram brace
+  landmine, MSVC accepts it; fixed in `84180b24` with the paren form +
+  the WSL g++ syntax sweep now part of the pre-push ritual for engine
+  headers.)
+- Still open: the orchestration-extraction stages, and the AGENTS.md
+  "god objects are INTENTIONAL" owner note stands — this lands as
+  narrow-collaborator extraction, not a file split.
+
 ## Audit series still open (drafts)
 - #184 [Audit 03] double-precision transforms (docs-only, unstarted).
 - #191 [Audit 10] WorldRenderer decomposition (partial implementation
