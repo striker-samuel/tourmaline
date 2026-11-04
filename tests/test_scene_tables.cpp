@@ -76,6 +76,11 @@ int main() {
 			"mutation: both dynamic roots updated");
 		Check(s.gpuSceneGlobalChanges.size() == 2,
 			"mutation: GPU journal contains both roots");
+		glm::mat4 invalid=moved0;
+		invalid[0][0]=std::numeric_limits<float>::quiet_NaN();
+		Check(!SetLocalTransform(s, root0, invalid)
+			&& Near(s.localTransform[0][3].x, 3.0f),
+			"mutation: nonfinite input fails without side effects");
 		RetireNodeSlot(s, 2);
 		const int reused = addNode(s, -1, 0);
 		Check(reused == 2 && !SetLocalTransform(s, root2, moved2),
