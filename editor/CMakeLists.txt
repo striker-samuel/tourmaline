@@ -125,6 +125,17 @@ add_custom_command(TARGET Editor POST_BUILD
     COMMENT "Syncing SVG icons next to Editor.exe"
 )
 
+# Editor-only UI font (Roboto Medium, already licensed and checked in).
+# ImGuiOverlay uses the exe-relative path; standalone App keeps its own font.
+add_custom_command(TARGET Editor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:Editor>/content/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/app/content/fonts/Roboto-Medium.ttf"
+            "$<TARGET_FILE_DIR:Editor>/content/fonts/Roboto-Medium.ttf"
+    COMMENT "Staging the editor UI font"
+)
+
 # Branding: the checked-in logo raster (the 256px crystal mark,
 # branding/tourmaline-icon-256.png — also tracked as the repo-root
 # tourmaline_logo.png) staged next to Editor.exe as
