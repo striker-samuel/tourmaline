@@ -211,14 +211,6 @@ namespace editor {
 			}
 		}
 
-		// Own line, NEVER SameLine with the filter or actions.
-		const std::string currentPath = "Path: " + m_assetsDir;
-		const std::string pathLabel = FitLabel(currentPath,
-			ImGui::GetContentRegionAvail().x);
-		ImGui::TextDisabled("%s", pathLabel.c_str());
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("%s", m_assetsDir.c_str());
-
 		// ---- header row 2: collection filter and expanded views --------
 		// Internal cubemap / GI-cook artifacts are not browsable collections.
 		const char* filters[7] = { "All items", "Meshes", "Materials",
