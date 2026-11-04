@@ -159,7 +159,24 @@ Each probe's radiance samples are clamped to 8× the probe's own
 finite-sample mean luminance. This is the standard firefly filter
 (sun-pool outliers tamed per-probe, not globally).
 
-### 2f. The probe-count CAP — `256` per-axis
+### 2f. The SG directional-mean correction
+
+**Files:** `engine/src/GI/cubemap_volume.cpp` (after `SgFitAccumulator::Solve`),
+`engine/src/GI/sg.cpp` (`SgMatchMeanRadiance`)
+
+The nine SG basis lobes overlap. The production diagonal fit is robust
+against high-contrast rays, but it counts that overlap more than once:
+adding more rays can converge to an overly bright result rather than the
+correct energy. After the per-probe firefly clamp and SG fit, each RGB
+channel's lobes are scaled so their *analytic spherical mean* matches
+that probe's **post-clamp** sample mean. This corrects the deterministic
+amplitude bias without spatially blurring walls or raising grid density.
+It preserves the directional shape of the fit, but cannot recover energy
+already removed by firefly clamping; inspect `clampedEnergyRatio` when
+comparing bakes. The correction is applied to dense GI-volume probes,
+not to the legacy regular-volume or lightmap fitting paths.
+
+### 2g. The probe-count CAP — `256` per-axis
 
 **File:** `engine/include/Engine/GI/cubemap_volume.h` (`kGiVolumeMaxDim`)
 
