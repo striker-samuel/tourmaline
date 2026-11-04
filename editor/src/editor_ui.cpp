@@ -5917,9 +5917,9 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGui::TextDisabled("Drop onto a viewport to add a scene "
 				"reference; the tour binds it by GUID.");
 			if (m_world && !m_cookRunning && ImGui::Button("Add to scene")) {
-				Log("Assets: adding geometry asset '" + m_assetsSel
-					+ "' (asset bind).");
-				AddSceneReference(m_assetsSel, {}, true);
+				if (AddSceneReference(m_assetsSel, {}, true))
+					Log("Assets: added geometry asset '" + m_assetsSel
+						+ "' (asset bind).");
 			}
 		}
 		else if (m_assetInspectGiCook) {
@@ -6546,9 +6546,9 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 						}
 					}
 					if (isMeshAsset(target) || target != m_assetsSel) {
-						Log("Assets: adding geometry asset '" + target
-							+ "' (asset bind).");
-						AddSceneReference(target, {}, true);
+						if (AddSceneReference(target, {}, true))
+							Log("Assets: added geometry asset '" + target
+								+ "' (asset bind).");
 					}
 					else {
 						Log("Assets: '" + m_assetsSel
