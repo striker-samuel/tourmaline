@@ -7,16 +7,19 @@ set, without reproducing culling or inventing light counts in the editor.
 
 ## Why the original implementation was hidden
 
-The GPU code was retained but guarded by `DS_DEBUG_VIZ` in the shader and
-renderer: collecting extra phase-2/3 data and reading the debug buffers can
-cost memory bandwidth and change benchmark timings. This is a **diagnostic**
-workflow, not a shipping feature. The existing CMake switch controls the
-engine, shaders, and editor in unison:
+The editor includes `DS_DEBUG_VIZ` code in all top-level development
+configurations (Debug and optimized Release). Shader phases 2 and 3 have
+separate clean and diagnostic SPIR-V variants. The clean versions remain
+selected when visualization is Off, so their extra telemetry stores are
+absent rather than guarded by a per-tile branch.
 
-- Debug builds enable visualizers by default (unless disabled).
-- For optimized diagnostic builds set `-DTOURMALINE_DS_VIZ=ON`.
-- With the gate off the menu explains how to enable it, and no shader
-  instrumentation is added by this change.
+- Turning on a visualization selects the `.viz.spv` variants for phases 2/3.
+- Turning it Off selects the regular production-equivalent `.spv` variants.
+- Embedded builds without an editor still honor `TOURMALINE_DS_VIZ` and the
+  Debug auto default. The explicit `shipping` profile excludes diagnostics.
+- Optimized editor builds do not require `-DTOURMALINE_DS_VIZ=ON`.
+- The remaining Off cost is compiled shader size and loaded module/pipeline
+  memory; there are no phase-2/3 diagnostic stores or debug visualization reads.
 
 ## How to use
 
@@ -50,11 +53,14 @@ engine, shaders, and editor in unison:
 
 ## Suggested manual verification
 
-- Configure/build engine, Editor and shaders with `DS_DEBUG_VIZ` enabled;
-  confirm the menu and every visualization mode appear.
+- Configure/build engine, Editor and shaders in both Debug and Release;
+  confirm the menu and every visualization mode appear without a special flag.
+- Verify the editor shader output contains both the normal phase-2/3 SPIR-V
+  modules and the `.viz.spv` variants; inspect a normal frame with GPU
+  tooling to confirm the clean variants are bound when Off.
 - Toggle modes **Off / heat / selected-light / Off** while moving a light;
   confirm the scene resumes its normal lit view and editor transforms persist.
 - Compare approx/accurate/final under a dense light crowd; test empty scenes.
 - Disable deferred shadows and confirm the view does not display stale tiles.
-- Build with `TOURMALINE_DS_VIZ=OFF`: menu should show the enable hint,
-  and the normal editor should still compile without DS member layout drift.
+- Build a `shipping` profile: no diagnostic shader variants should be
+  required, and the normal shader path must remain unaffected.
