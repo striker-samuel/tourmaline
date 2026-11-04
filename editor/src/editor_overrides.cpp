@@ -706,7 +706,6 @@ namespace editor {
 		const std::string nm = getNodeName(scene, int(node));
 		ImGui::Separator();
 		ImGui::Text("Overrides (Clarisse-style)");
-		ImGui::TextDisabled("source < wide regex < local (more specific wins)");
 		// ---- VISIBILITY: the attribute is VISIBILITY with two states
 		// (on = visible, off = hidden) — a FLAG CHIP like the material's
 		// DS/Shadow row, never a negation-named checkbox ("Hidden" named
@@ -766,12 +765,6 @@ namespace editor {
 					ImGui::SetTooltip(
 						"Drop the local visibility override (revert to inherited).");
 			}
-			// The effective state as the TEXT BELOW the attribute.
-			const bool eff = IsVisibleNode(scene, int(node));
-			ImGui::TextDisabled("effective: %s%s",
-				eff ? "on (visible)" : "off (hidden)",
-				!eff && !IsHiddenNode(scene, int(node))
-					? " — ancestor hidden" : "");
 		}
 		// ---- per-attr status rows (edits live in their legacy controls and
 		// in the Overrides tab; this section explains the evaluated value) ----
