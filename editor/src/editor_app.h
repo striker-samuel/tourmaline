@@ -2625,6 +2625,16 @@ private:
 	// selection. Updated by DrawPlacementGraph, reset in DrawUI.
 	bool m_imguiFocusInPlacementGraph = false;
 	bool m_showLightGizmos = true; // viewport markers for light nodes
+#if defined(DS_DEBUG_VIZ)
+	// Editor-session-only diagnostics: shared engine DS tile visualizers,
+	// not part of the .tour authoring log. Off by default to avoid
+	// instrumentation/read costs until explicitly requested.
+	engine::DsDebugViz m_dsTileVizMode = engine::DsDebugViz::Off;
+	bool m_dsTileVizOverlay = true;
+	int m_dsTileVizCountCeil = 32;
+	int m_dsTileVizLight = 0; // phase-1 sorted light index
+#endif
+
 	// ---- GI volume preview (LIGHTING mode, 'V' cycles; loaded
 	// from the .cvmanifest next to the opened pak) ----
 	// 0 = off, 1 = wireframe, 2 = wireframe + translucent fill.

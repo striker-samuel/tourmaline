@@ -1829,6 +1829,24 @@ public:
 	// The editor's Lighting preview opts into the existing, depth-tested
 	// cubemap mirror spheres without changing the App's default-off view.
 	void SetCubemapProbePreview(bool enabled) { m_cubemapShowBalls = enabled; }
+#if defined(DS_DEBUG_VIZ)
+	// Host-controlled diagnostics for the borrowed-world editor preview.
+	// The costly phase-2/3/4 instrumentation is still build-gated; with
+	// mode Off it remains dormant. Keep the sorted-light index contract.
+	void SetDsDebugVisualization(DsDebugViz mode, bool overlay,
+		int countCeil, int sortedLightIndex) {
+		m_dsDebugMode = mode;
+		m_dsDebugOverlay = overlay;
+		m_dsDebugCountCeil = std::clamp(countCeil, 1,
+			int(smvk::kDsMaxLightsPerTile));
+		m_dsDebugLight = std::max(0, sortedLightIndex);
+		if (mode != DsDebugViz::Off) {
+			m_debugView = ViewMode::Lit;
+			m_giDebug = 0;
+		}
+	}
+#endif
+
 
 	void SetAmbientMode(AmbientMode m) { m_ambientMode = m; }
 	void SetAaMode(AaMode m) { m_aaMode = m; }
