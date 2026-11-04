@@ -305,9 +305,10 @@ void EditorApp::FinalizePending() {
 			// its previous-frame rect under ImGui's tab chrome. No offscreen
 			// scene texture, no extra GPU copy and no scene serialization.
 			m_dockViewportVisible = false;
+			if (m_showViewportPanel) {
 			ImGui::SetNextWindowBgAlpha(0.0f);
 			ImGui::SetNextWindowSize(ImVec2(880, 620), ImGuiCond_FirstUseEver);
-			if (ImGui::Begin("Viewport", nullptr,
+			if (ImGui::Begin("Viewport", &m_showViewportPanel,
 					ImGuiWindowFlags_NoBackground |
 					ImGuiWindowFlags_NoScrollbar |
 					ImGuiWindowFlags_NoScrollWithMouse |
@@ -331,38 +332,53 @@ void EditorApp::FinalizePending() {
 				}
 			}
 			ImGui::End();
+			}
 
 			// Previously nested tabs are now first-class dock windows:
 			// users can move EACH panel to a side, float it, or tab it
 			// with the viewport / another tool. The Embree reference
 			// render rides the same pattern (dock it beside
 			// Render/Material or tab it with them).
-			if (ImGui::Begin("Outliner"))
-				DrawOutliner();
-			ImGui::End();
-			if (ImGui::Begin("Reference"))
-				DrawReferencePanel();
-			ImGui::End();
-			if (ImGui::Begin("Assets"))
-				DrawAssetsPanel();
-			ImGui::End();
-			if (ImGui::Begin("Console"))
-				DrawConsolePanel();
-			ImGui::End();
-			if (ImGui::Begin("Overrides"))
-				DrawOverridesPanel();
-			ImGui::End();
-			if (ImGui::Begin("Inspector"))
-				DrawInspector();
-			ImGui::End();
+			if (m_showOutlinerPanel) {
+				if (ImGui::Begin("Outliner", &m_showOutlinerPanel))
+					DrawOutliner();
+				ImGui::End();
+			}
+			if (m_showReferencePanel) {
+				if (ImGui::Begin("Reference", &m_showReferencePanel))
+					DrawReferencePanel();
+				ImGui::End();
+			}
+			if (m_showAssetsPanel) {
+				if (ImGui::Begin("Assets", &m_showAssetsPanel))
+					DrawAssetsPanel();
+				ImGui::End();
+			}
+			if (m_showConsolePanel) {
+				if (ImGui::Begin("Console", &m_showConsolePanel))
+					DrawConsolePanel();
+				ImGui::End();
+			}
+			if (m_showOverridesPanel) {
+				if (ImGui::Begin("Overrides", &m_showOverridesPanel))
+					DrawOverridesPanel();
+				ImGui::End();
+			}
+			if (m_showInspectorPanel) {
+				if (ImGui::Begin("Inspector", &m_showInspectorPanel))
+					DrawInspector();
+				ImGui::End();
+			}
 			if (m_showRenderSettingsPanel) {
 				if (ImGui::Begin("Render Settings", &m_showRenderSettingsPanel))
 					DrawRenderSettingsPanel();
 				ImGui::End();
 			}
-			if (ImGui::Begin("Material"))
-				DrawMaterialEditor();
-			ImGui::End();
+			if (m_showMaterialPanel) {
+				if (ImGui::Begin("Material", &m_showMaterialPanel))
+					DrawMaterialEditor();
+				ImGui::End();
+			}
 
 			DrawStatusBar(); // pinned editor chrome, never docked
 		} // m_uiMode
@@ -927,6 +943,18 @@ void EditorApp::FinalizePending() {
 			if (ImGui::MenuItem("Quad viewports (4 panels)", "V",
 					m_vpLayout == 1) && m_vpLayout != 1)
 				ModalVpLayoutToggle();
+			if (ImGui::BeginMenu("Panels")) {
+				ImGui::MenuItem("Viewport", nullptr, &m_showViewportPanel);
+				ImGui::MenuItem("Outliner", nullptr, &m_showOutlinerPanel);
+				ImGui::MenuItem("Reference", nullptr, &m_showReferencePanel);
+				ImGui::MenuItem("Assets", nullptr, &m_showAssetsPanel);
+				ImGui::MenuItem("Console", nullptr, &m_showConsolePanel);
+				ImGui::MenuItem("Overrides", nullptr, &m_showOverridesPanel);
+				ImGui::MenuItem("Inspector", nullptr, &m_showInspectorPanel);
+				ImGui::MenuItem("Render Settings", nullptr, &m_showRenderSettingsPanel);
+				ImGui::MenuItem("Material", nullptr, &m_showMaterialPanel);
+				ImGui::EndMenu();
+			}
 			if (ImGui::MenuItem("Reset dock layout"))
 				m_dockResetRequested = true;
 			ImGui::SetItemTooltip("Restore the default Viewport, Outliner, "
