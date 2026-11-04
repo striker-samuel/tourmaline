@@ -29,14 +29,14 @@ public:
                 std::move(settings)});
     }
 
-    void DrawAll(EditorContext& context) {
-        for (auto& panel : m_panels) {
-            if (!*panel.visible) continue;
-            if (ImGui::Begin(panel.title.c_str(), panel.visible)) {
+    // Shared settings control for registered and special-case windows
+    // (Viewport and World Map have custom draw paths).
+    static void DrawSettingsGear(const char* title, bool& visible,
+        const SettingsFn& settings = {}) {
                 // Every dockable panel gets the same unobtrusive settings
                 // affordance. Draw the glyph ourselves (independent of the
                 // current ImGui font's Unicode icon coverage).
-                ImGui::PushID(panel.title.c_str());
+                ImGui::PushID(title);
                 const float side = ImGui::GetFrameHeight();
                 const float x = ImGui::GetCursorPosX()
                     + ImGui::GetContentRegionAvail().x - side;
@@ -60,19 +60,27 @@ public:
                         color, 1.4f);
                 }
                 if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s settings", panel.title.c_str());
+                    ImGui::SetTooltip("%s settings", title);
                 if (ImGui::IsItemClicked())
                     ImGui::OpenPopup("##panel_settings");
                 if (ImGui::BeginPopup("##panel_settings")) {
-                    if (panel.settings) {
-                        panel.settings();
+                    if (settings) {
+                        settings();
                         ImGui::Separator();
                     }
                     if (ImGui::MenuItem("Close panel"))
-                        *panel.visible = false;
+                        visible = false;
                     ImGui::EndPopup();
                 }
                 ImGui::PopID();
+    }
+
+    void DrawAll(EditorContext& context) {
+        for (auto& panel : m_panels) {
+            if (!*panel.visible) continue;
+            if (ImGui::Begin(panel.title.c_str(), panel.visible)) {
+                DrawSettingsGear(panel.title.c_str(), *panel.visible,
+                    panel.settings);
                 if (*panel.visible)
                     panel.draw(context);
             }
