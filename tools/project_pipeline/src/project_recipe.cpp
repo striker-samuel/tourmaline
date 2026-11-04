@@ -401,9 +401,31 @@ bool ParseText(const std::string& text, ProjectRecipe& out,
 			else
 				out.bakeSdf = on;
 		}
-		else if (directive == "materialPacking") {
+		else if (directive == "materialChannel") {
             if (inPak || !out.materialPacking.source.empty())
-                return Fail(lineNo, directive, "materialPacking must appear once in the project header", err);
+                return Fail(lineNo, directive, "materialChannel belongs in the project header and cannot mix with materialPacking", err);
+            const auto toks = SplitTokens(rest);
+            if (toks.size() != 3)
+                return Fail(lineNo, directive, "expected materialChannel <target> <slot|one|zero> <r|g|b|a>", err);
+            static const std::set<std::string> targets = {
+                "baseColor.r","baseColor.g","baseColor.b","baseColor.a",
+                "normal.r","normal.g","normal.b",
+                "emissive.r","emissive.g","emissive.b",
+                "ao","cavity","roughness","metallic" };
+            static const std::set<std::string> sources = {
+                "baseColor","normal","emissive","occlusion",
+                "metallicRoughness","cavity","one","zero" };
+            if (!targets.count(toks[0]) || !sources.count(toks[1]) ||
+                    toks[2].size() != 1 || std::string("rgba").find(toks[2][0]) == std::string::npos)
+                return Fail(lineNo, directive, "unknown material target, source slot or RGBA channel", err);
+            for (const auto& c : out.materialPacking.channels)
+                if (c.target == toks[0])
+                    return Fail(lineNo, directive, "duplicate materialChannel target: " + toks[0], err);
+            out.materialPacking.channels.push_back({toks[0], toks[1], toks[2][0]});
+        }
+		else if (directive == "materialPacking") {
+            if (inPak || !out.materialPacking.source.empty() || !out.materialPacking.channels.empty())
+                return Fail(lineNo, directive, "materialPacking must appear once in the project header and cannot mix with materialChannel", err);
             const auto words = SplitTokens(rest);
             if (words.size() != 5 ||
                     (words[0] != "metallicRoughness" && words[0] != "occlusion"))
