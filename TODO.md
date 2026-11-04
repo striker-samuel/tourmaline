@@ -287,8 +287,14 @@ were fixed post-merge.
   call in MsaaCustomResolve::Ensure, now the shaders::Read pattern.)
 - Post-merge validation: build + DXC + 107/107 ctest green; the
   sponza AA A/B (msaa2x vs msaa2xcustom, benchmarks/msaa_ab.json)
-  captured headlessly. STILL OPEN: a Vulkan validation-layer session
-  and silhouette/coverage review on a real GPU (the PR's compare list).
+  captured headlessly. **A second defect was found and fixed by exactly
+  that gate (`7c611a0d`)**: ApplyHeadlessPostfxOverrides' AA switch
+  lacked the Msaa2xCustom case, so scene seeds silently reset the mode
+  to Off — the first A/B capture was pixel-identical to AA off. After
+  the fix the custom resolve engages at near-bit-exact parity with the
+  hardware average resolve (mean 0.001, max 1.0, 0.37% differing).
+  STILL OPEN: a Vulkan validation-layer session and silhouette/coverage
+  review on a real GPU (the PR's compare list).
 
 ## Audit series still open (drafts)
 - #184 [Audit 03] double-precision transforms (docs-only, unstarted).
