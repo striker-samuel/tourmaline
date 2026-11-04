@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 import sys
 import tempfile
@@ -140,6 +142,16 @@ class PermissionRegistryTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             bg.join(timeout=5)
+
+    @unittest.skipIf(os.name == "nt", "POSIX mode/ownership test")
+    def test_registry_updates_preserve_read_permissions(self):
+        self.path.chmod(0o640)
+        original = self.path.stat()
+        self.registry.group_set("artists", ["source.read"])
+        updated = self.path.stat()
+        self.assertEqual(stat.S_IMODE(updated.st_mode), 0o640)
+        self.assertEqual((updated.st_uid, updated.st_gid),
+                         (original.st_uid, original.st_gid))
 
     def test_reinstall_preserves_registry_configuration(self):
         share = self.root / "share"
