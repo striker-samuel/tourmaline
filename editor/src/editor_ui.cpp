@@ -5214,19 +5214,31 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				clip.duration, clip.fps);
 			ImGui::Text("%zu tracks", clip.tracks.size());
 			if (ImGui::Button("Preview clip in prefab world")) {
-				if (m_prefab.world && !m_prefab.world->clusters.empty()
-					&& m_prefab.world->clusters.front()->hasSkeleton) {
+				size_t previewCluster = 0;
+				bool hasSkeleton = false;
+				if (m_prefab.world) {
+					for (size_t i = 0; i < m_prefab.world->clusters.size(); ++i) {
+						if (m_prefab.world->clusters[i]->hasSkeleton) {
+							previewCluster = i;
+							hasSkeleton = true;
+							break;
+						}
+					}
+				}
+				if (hasSkeleton) {
 					// Never modify the parent scene. Keep the original
 					// prefab locals so switching and scrubbing remain pure.
-					if (!m_prefabAnimationPreview)
+					if (!m_prefabAnimationPreview ||
+						m_prefabAnimationClusterIndex != previewCluster)
 						m_prefabAnimationRest =
-							m_prefab.world->clusters.front()->scene.localTransform;
+							m_prefab.world->clusters[previewCluster]->scene.localTransform;
+					m_prefabAnimationClusterIndex = previewCluster;
 					m_prefabAnimationClip = clip;
 					m_prefabAnimationSource = path.string();
 					m_prefabAnimationTime = 0.0f;
 					m_prefabAnimationPlaying = true;
 					m_prefabAnimationPreview = true;
-					m_prefab.world->clusters.front()->SetAnimClip(clip);
+					m_prefab.world->clusters[previewCluster]->SetAnimClip(clip);
 					m_showPrefabWindow = true;
 				} else {
 					ImGui::OpenPopup("##animationPreviewHelp");
