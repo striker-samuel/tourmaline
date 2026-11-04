@@ -875,11 +875,16 @@ void EditorApp::ReimportAsset(const std::string& path) {
     for (char& c : ext)
         c = char(std::tolower(static_cast<unsigned char>(c)));
     if (smvk::assets::IsMeshSourceExtension(ext)) {
+        TaskWindowBegin("Reimport asset", "Reimporting model source...");
+        TaskWindowStage("Deriving geometry and material assets...", 0.05f);
         // Explicit Reimport bypasses the timestamp/config stale gate.
         // The importer keeps the existing source/subasset GUID ledger.
         const std::string artifact = ImportMeshArtifactFor(path, nullptr, true);
-        if (artifact.empty())
+        if (artifact.empty()) {
+            TaskWindowFinish(false, "Reimport failed: mesh derivation failed.");
             return;
+        }
+        TaskWindowStage("Refreshing references...", 0.85f);
         Log("Reimport: rebuilt mesh assets for '" + path + "'.");
         bool bound = m_world && !m_gltfPath.empty()
             && IsPublishedMeshBound(path, m_gltfPath);
@@ -890,26 +895,37 @@ void EditorApp::ReimportAsset(const std::string& path) {
                     break;
                 }
         if (bound) {
-            if (ReloadReferencesViaTemp())
+            if (ReloadReferencesViaTemp()) {
                 Log("Reimport: refreshed the live scene with unsaved edits preserved.");
-            else
+                TaskWindowFinish(true, "Reimport finished; scene refreshed.");
+            } else {
                 Log("Reimport: rebuilt source; live reload failed. Reopen the scene.");
+                TaskWindowFinish(false, "Reimport derived, but live scene refresh failed.");
+            }
+        } else {
+            TaskWindowFinish(true, "Reimport finished; model assets updated.");
         }
         return;
     }
     if (ext == ".texture") {
+        TaskWindowBegin("Reimport asset", "Reimporting texture...");
+        TaskWindowStage("Resolving texture source...", 0.05f);
         smvk::assets::TextureAsset texture;
         std::string err;
         if (!smvk::assets::LoadTextureAsset(path, texture, err)) {
             Log("Reimport: invalid texture asset: " + err);
+            TaskWindowFinish(false, "Reimport failed: invalid texture definition.");
             return;
         }
         const fs::path source = fs::path(path).parent_path() / texture.source;
         if (!fs::is_regular_file(source, ec)) {
             Log("Reimport: missing texture source: " + source.generic_string());
+            TaskWindowFinish(false, "Reimport failed: missing texture source.");
             return;
         }
+        TaskWindowStage("Refreshing live texture...", 0.80f);
         LiveRefreshTextureAsset(source.generic_string());
+        TaskWindowFinish(true, "Texture refresh requested; check Console for details.");
         return;
     }
     Log("Reimport: only source models (.gltf/.glb/.obj) and .texture assets "
