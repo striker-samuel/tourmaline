@@ -123,11 +123,11 @@ inline void AddUnique(std::vector<glm::vec3>& out, glm::vec3 p, float tol) {
         if (glm::dot(p - q, p - q) <= tol * tol) return;
     out.push_back(p);
 }
-inline float SignedHeight(const tour::placement::HeightfieldData& f,
+inline float SignedHeight(const ::tour::placement::HeightfieldData& f,
                           glm::vec3 p) {
     return p.y - f.sampleHeight(p.x, p.z);
 }
-inline void EdgeTerrainContacts(const tour::placement::HeightfieldData& f,
+inline void EdgeTerrainContacts(const ::tour::placement::HeightfieldData& f,
     glm::vec3 a, glm::vec3 b, const BakeSettings& opt,
     std::vector<glm::vec3>& points) {
     const float len = glm::length(glm::vec2(b.x - a.x, b.z - a.z));
@@ -236,7 +236,7 @@ inline CurveSet StitchSegments(
 }
 
 inline CurveSet ExtractTerrainIntersection(
-    const tour::placement::HeightfieldData& f, const TriangleSoup& mesh,
+    const ::tour::placement::HeightfieldData& f, const TriangleSoup& mesh,
     const BakeSettings& opt = {}) {
     CurveSet result;
     if (!f.valid() || opt.step <= 0 || opt.weldTolerance <= 0) return result;
@@ -305,7 +305,7 @@ inline Polyline Resample(const Polyline& c, float maxStep) {
 }
 
 inline RibbonMesh BakeTerrainRibbon(const CurveSet& curves,
-    const tour::placement::HeightfieldData& terrain,
+    const ::tour::placement::HeightfieldData& terrain,
     const BakeSettings& opt = {}) {
     RibbonMesh out;
     if (!terrain.valid() || opt.width <= 0 || opt.step <= 0) return out;
