@@ -141,9 +141,32 @@ class SharedArchive(Archive):
                            (path, asset_id))
                 aliases[path] = asset_id
 
+            # A moved asset retains its historical path alias, but that alias
+            # must not identify a second, simultaneously live file. Keep the
+            # identity at its current path and give a reused old path a new ID.
+            live_by_id = defaultdict(list)
             for path in sorted(live_paths):
-                # If a previously deleted path is reused, preserve its path
-                # identity. The system cannot infer creator intent from bytes.
+                live_by_id[aliases[path]].append(path)
+            for asset_id, paths in live_by_id.items():
+                if len(paths) < 2:
+                    continue
+                current = existing[asset_id]["current_path"]
+                keep = current if current in paths else paths[0]
+                for path in paths:
+                    if path == keep:
+                        continue
+                    replacement = str(uuid.uuid4())
+                    db.execute(
+                        "INSERT INTO source_assets(asset_id,current_path) VALUES(?,?)",
+                        (replacement, path))
+                    db.execute(
+                        "UPDATE source_aliases SET asset_id=? WHERE path=?",
+                        (replacement, path))
+                    aliases[path] = replacement
+                    existing[replacement] = {
+                        "asset_id": replacement, "current_path": path}
+
+            for path in sorted(live_paths):
                 asset_id = aliases[path]
                 db.execute("UPDATE source_assets SET current_path=?,missing=0 WHERE asset_id=?",
                            (path, asset_id))
@@ -283,6 +306,9 @@ class SharedArchive(Archive):
                 "tourmaline-product:" + asset_id + ":" + representation + ":" + variant))
             publish_id = str(uuid.uuid4())
             with self.connect() as db:
+                # Serialize allocation of product version numbers across
+                # concurrent HTTP threads (and separate processes).
+                db.execute("BEGIN IMMEDIATE")
                 db.execute(
                     "INSERT OR IGNORE INTO published_products"
                     "(product_id,source_asset_id,representation,variant) VALUES(?,?,?,?)",
