@@ -1981,8 +1981,22 @@ namespace {
 			if (env && (std::strcmp(env, "off") == 0
 				|| std::strcmp(env, "0") == 0))
 				return nullptr;
+			// Default home: the scratch drive on Windows; the XDG cache
+			// dir elsewhere (a literal "F:/..." would be a CWD-relative
+			// directory named "F:" off Windows).
+			auto defaultDir = []() -> std::string {
+#if defined(_WIN32)
+				return "F:/pipelinecache";
+#else
+				if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg)
+					return std::string(xdg) + "/tourmaline";
+				if (const char* home = std::getenv("HOME"); home && *home)
+					return std::string(home) + "/.cache/tourmaline";
+				return "pipelinecache";
+#endif
+			};
 			const std::string dir = (env && *env)
-				? std::string(env) : std::string("F:/pipelinecache");
+				? std::string(env) : defaultDir();
 			std::error_code mk;
 			std::filesystem::create_directories(dir, mk);
 			std::error_code probe;
@@ -2615,7 +2629,22 @@ bool smvk::VulkanCore::Init() {
 			VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR computeDerivativesFeatures{};
 			computeDerivativesFeatures.sType =
 				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR;
-			computeDerivativesFeatures.computeDerivativeGroupQuads = VK_TRUE;
+			// Request quads only where the device reports them: RADV
+			// (RDNA2) exposes the extension with linear groups only, and
+			// a blind VK_TRUE fails vkCreateDevice with
+			// FEATURE_NOT_PRESENT. No shipped SPIR-V declares a
+			// DerivativeGroup* execution mode, so nothing depends on it.
+			{
+				VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR supported{};
+				supported.sType =
+					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR;
+				VkPhysicalDeviceFeatures2 query{};
+				query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+				query.pNext = &supported;
+				vkGetPhysicalDeviceFeatures2(physicalDevice_, &query);
+				computeDerivativesFeatures.computeDerivativeGroupQuads =
+					supported.computeDerivativeGroupQuads;
+			}
 
 			VkPhysicalDeviceFeatures2 feats2{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
@@ -5803,11 +5832,10 @@ void smvk::VulkanResourceManager::UploadDataToImage3DRegion(
 
 	vkCI.tiling = VK_IMAGE_TILING_OPTIMAL;
 	vkCI.usage = toVkImageUsageFlags(ci.usage);
-	if (ci.hostTransfer)
+	// hostTransfer is a caller PREFERENCE: see CreateImage.
+	if (ci.hostTransfer && m_hostImageCopySupported
+		&& IsHostTransferSupported(toVkFormat(ci.format)))
 	{
-		assert(m_hostImageCopySupported);
-		const VkFormat format = toVkFormat(ci.format);
-		assert(IsHostTransferSupported(format));
 		vkCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
 	}
 	vkCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -5886,6 +5914,29 @@ void smvk::VulkanResourceManager::UploadDataToImage3DRegion(
 // raw vkCreateImage mirror of CreateImageImpl WITHOUT the VmaAllocation -
 // the object exists unbound for the rendergraph's compile-time handle/view
 // resolution; BindHeapImage places it at a packed range later.
+// Distinct queue families for a CONCURRENT resource. Family indices must be
+// unique (VUID-VkBufferCreateInfo-sharingMode-01419 and the image twin), and
+// "dedicated transfer submitter" does not imply "dedicated family": RADV
+// exposes the transfer queue on the graphics family with compute on its own.
+// Compute is listed too, since async compute touches these resources.
+// Returns the count; fewer than 2 means the resource can stay EXCLUSIVE.
+static uint32_t CollectSharingFamilies(uint32_t graphics, uint32_t transfer,
+	std::optional<uint32_t> compute, uint32_t (&out)[3])
+{
+	uint32_t n = 0;
+	auto add = [&](uint32_t f) {
+		for (uint32_t i = 0; i < n; ++i)
+			if (out[i] == f)
+				return;
+		out[n++] = f;
+	};
+	add(graphics);
+	add(transfer);
+	if (compute)
+		add(*compute);
+	return n;
+}
+
 [[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::VulkanResourceManager::CreateHeapImage(
 	const ImageCreateInfo& ci)
 {
@@ -6969,10 +7020,14 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		toVkImageUsageFlags(
 			usage
 		);
-	if (imageCreateInfo.hostTransfer)
+	// hostTransfer is a caller PREFERENCE (the texture loaders set it
+	// unconditionally): honored only when VK_EXT_host_image_copy is live
+	// and the format supports host transfer. RADV (Mesa 25.2, RDNA2)
+	// lacks the extension; the UploadStreamer already falls back to the
+	// transfer queue, so dropping the usage bit is all that's needed.
+	if (imageCreateInfo.hostTransfer && m_hostImageCopySupported
+		&& IsHostTransferSupported(imageCI.format))
 	{
-		assert(m_hostImageCopySupported);
-		assert(IsHostTransferSupported(imageCI.format));
 		imageCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
 	}
 	// Explicit per-image opt-in for host transfer (KTX). Keep disabled
@@ -6989,15 +7044,19 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 	// re-uploaded by streaming retargets while the graphics queue may still
 	// sample them; CONCURRENT avoids per-upload queue-family ownership
 	// ping-pong (same argument as CreateBuffer's vertex/index/storage path).
-	bool concurrentSharing = m_transferSubmitter && m_transferSubmitter != m_submitter &&
-		(usage & ImageUsage::TransferDst) != ImageUsage::None;
+	uint32_t families[3] = {};
+	uint32_t familyCount = 0;
+	if (m_transferSubmitter && m_transferSubmitter != m_submitter &&
+		(usage & ImageUsage::TransferDst) != ImageUsage::None) {
+		familyCount = CollectSharingFamilies(m_submitter->queueFamilyIndex(),
+			m_transferSubmitter->queueFamilyIndex(),
+			core_ ? core_->indices.computeFamily : std::nullopt, families);
+	}
+	const bool concurrentSharing = familyCount >= 2;
 	imageCI.sharingMode =
 		concurrentSharing ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
 	if (concurrentSharing) {
-		uint32_t families[2] = {};
-		families[0] = m_submitter->queueFamilyIndex();
-		families[1] = m_transferSubmitter->queueFamilyIndex();
-		imageCI.queueFamilyIndexCount = 2;
+		imageCI.queueFamilyIndexCount = familyCount;
 		imageCI.pQueueFamilyIndices = families;
 	}
 
@@ -7553,12 +7612,10 @@ namespace {
 {
 	KtxStreamPlan plan = PrepareKtxStreamPlan(texture, firstMip, mipCount);
 
-	const bool hostTransfer = imageCreateInfo.hostTransfer;
-	if (hostTransfer)
-	{
-		assert(m_hostImageCopySupported);
-		assert(IsHostTransferSupported(plan.vkFormat));
-	}
+	// Preference, not a requirement: see CreateImage.
+	const bool hostTransfer = imageCreateInfo.hostTransfer
+		&& m_hostImageCopySupported
+		&& IsHostTransferSupported(plan.vkFormat);
 
 	VkImageCreateInfo imageCI = KtxStreamVkImageCI(plan, hostTransfer);
 
@@ -8090,17 +8147,21 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
     if (g_rayQueriesSupported && (bufferType == BufferType_Vertex || bufferType == BufferType_Index || bufferType == BufferType_Storage))
         ci.usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
 	// For frequently updated resources (vertex/index) use CONCURRENT when dedicated transfer exists to avoid ownership ping-pong
-	bool concurrentSharing = m_transferSubmitter && m_transferSubmitter != m_submitter &&
-		(bufferType == BufferType_Vertex || bufferType == BufferType_Index || bufferType == BufferType_Storage);
+	// Stack storage: vmaCreateBuffer copies the indices during the call,
+	// and concurrent buffer creation from worker threads must not share a
+	// static array.
+	uint32_t families[3] = {};
+	uint32_t familyCount = 0;
+	if (m_transferSubmitter && m_transferSubmitter != m_submitter &&
+		(bufferType == BufferType_Vertex || bufferType == BufferType_Index || bufferType == BufferType_Storage)) {
+		familyCount = CollectSharingFamilies(m_submitter->queueFamilyIndex(),
+			m_transferSubmitter->queueFamilyIndex(),
+			core_ ? core_->indices.computeFamily : std::nullopt, families);
+	}
+	const bool concurrentSharing = familyCount >= 2;
 	if (concurrentSharing) {
 		ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
-		// Stack storage: vmaCreateBuffer copies the indices during the
-		// call, and concurrent buffer creation from worker threads must
-		// not share a static array.
-		uint32_t families[2] = {};
-		families[0] = m_submitter->queueFamilyIndex();
-		families[1] = m_transferSubmitter->queueFamilyIndex();
-		ci.queueFamilyIndexCount = 2;
+		ci.queueFamilyIndexCount = familyCount;
 		ci.pQueueFamilyIndices = families;
 	}
 	else {
@@ -12263,10 +12324,11 @@ bool tour::App::Initialize() {
 		return false;
 	}
 
-	// SDL3: video + gamepad + audio subsystems. Joystick events are needed
-	// for SDL_EVENT_GAMEPAD_* hotplug; audio init is lazy (AudioEngine inits
-	// SDL_INIT_AUDIO itself if the app enables sound).
-	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
+	// SDL3: video + gamepad subsystems. Joystick events are needed for
+	// SDL_EVENT_GAMEPAD_* hotplug. Audio stays out of this fatal init: a
+	// machine with no audio device must still run; AudioEngine inits
+	// SDL_INIT_AUDIO itself, lazily, if the app enables sound.
+	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
 		std::cerr << "Failed to initialize SDL3: " << SDL_GetError() << "\n";
 		return false;
 	}
@@ -12383,9 +12445,16 @@ tour::App::~App()
 	assert(m_elements.empty());
 	WaitForDeviceIdle();
 	m_audio.Shutdown();
-	// Members m_world/m_rendergraph/m_swapchain/m_context destroyed automatically
-	// (App holds them directly; window is last member so destroyed after Vulkan).
-	// The input bridge must also outlive Input but die before SDL_Quit.
+	// Member destructors run AFTER this destructor body. Explicitly tear
+	// down the graphics owners while the SDL window (and its X11/Wayland
+	// connection) is still alive: swapchain destruction uses the surface.
+	// Destroy dependents before the context they borrow.
+	m_world.reset();
+	m_rendergraph.reset();
+	m_swapchain.reset();
+	m_context.reset();
+	// The input bridge owns SDL gamepad handles and must close them
+	// before SDL_Quit.
 	m_sdlInput.reset();
 	if (window) {
 		SDL_DestroyWindow(window);

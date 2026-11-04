@@ -2169,14 +2169,25 @@ void TestBuildPlanExecutor() {
 				&& rec.calls[0].args[2] == "cubemap:off"
 				&& rec.calls[0].args[3] == "lightmap:off",
 				"executor.cook-flags-from-recipe");
+			// Transactional publication isolates every build under
+			// <publish>/.staging/build-<nonce>/ — the nonce is random by
+			// design, so assert the CONTRACT (staged under .staging with
+			// the authored pak name) instead of one exact path.
+			const std::string stagedPak = rec.calls[2].args[3];
+			const std::string stagingRoot = (tmp / "publish" / ".staging")
+				.lexically_normal().generic_string();
+			const size_t sep = stagedPak.find_last_of('/');
+			const std::string stagedName =
+				sep == std::string::npos ? stagedPak : stagedPak.substr(sep + 1);
 			Check(rec.calls[2].args[1]
 					== "content/models/grid/grid.geometry"
 				&& rec.calls[2].args[2]
 					== (scenes / "grid.tour").lexically_normal()
 						.generic_string()
-				&& rec.calls[2].args[3]
-					== (tmp / "publish" / ".staging" / "grid.pak")
-						.lexically_normal().generic_string()
+				&& stagedPak.size() > stagingRoot.size()
+				&& stagedPak.compare(0, stagingRoot.size(), stagingRoot) == 0
+				&& stagedPak[stagingRoot.size()] == '/'
+				&& stagedName == "grid.pak"
 				&& rec.calls[2].args[4] == "verify:on",
 				"executor.pak-args");
 		}
@@ -2323,6 +2334,21 @@ void TestBuildPlanExecutor() {
 			smvk::project::BuildPlanReport ok1;
 			std::string e1;
 			RecordingAdapter rec1;
+			// A stale/in-use project build lock is never removed or
+			// bypassed automatically by the next writer.
+			const fs::path buildLockDir = fs::path(project.DerivedDataDir())
+				/ ".build.lock";
+			fs::create_directories(buildLockDir, ec);
+			{
+				RecordingAdapter conflicting;
+				smvk::project::BuildPlanReport rejected;
+				std::string reason;
+				Check(!smvk::project::ExecuteBuildPlan(project, p2,
+						conflicting, opts, rejected, reason)
+						&& reason.find("project build already active") != std::string::npos,
+					"executor.project-build-lock-rejected");
+			}
+			fs::remove(buildLockDir, ec); // operator-verified recovery
 			Check(smvk::project::ExecuteBuildPlan(project, p2, rec1,
 					opts, ok1, e1)
 				&& ok1.paks.size() == 2,
@@ -2398,6 +2424,19 @@ void TestBuildPlanExecutor() {
 				ec.clear();
 				Check(pakCount() == 2,
 					"executor.addressed-no-duplicates");
+				// The receipt is immutable, content-addressed to the
+				// committed appmanifest, and lists every published pak.
+				std::string receiptText;
+				for (const fs::directory_entry& e :
+						fs::directory_iterator(tmp / "publish5", ec)) {
+					if (e.path().extension() != ".receipt") continue;
+					const std::vector<char> bytes = ReadAllBytes(e.path());
+					receiptText.assign(bytes.begin(), bytes.end());
+				}
+				Check(receiptText.find("tourmaline-build-receipt 1") == 0
+					&& receiptText.find(fs::path(ok1World).filename().generic_string())
+						!= std::string::npos,
+					"executor.immutable-publish-receipt");
 			}
 			// Changed content (a different pak payload for world): a
 			// NEW immutable name lands, the manifest commits to it, and
@@ -2436,6 +2475,69 @@ void TestBuildPlanExecutor() {
 						.generic_string(),
 					"executor.addressed-manifest-committed");
 			}
+		// A concurrent publisher cannot commit while the final publish
+		// lock belongs to another build (no overwrite/cleanup race).
+		{
+			const fs::path held = tmp / "publish5" / ".publish.lock";
+			fs::create_directory(held, ec);
+			RecordingAdapter rec;
+			smvk::project::BuildPlanOptions lockOptions;
+			lockOptions.publishDir = (tmp / "publish5").generic_string();
+			smvk::project::BuildPlanReport rejected;
+			std::string reason;
+			Check(!smvk::project::ExecuteBuildPlan(project, p2, rec,
+					lockOptions, rejected, reason)
+				&& reason.find("publisher is active") != std::string::npos,
+				"executor.concurrent-publisher-rejected");
+			fs::remove(held, ec);
+		}
+		// Another manifest sharing this directory must retain its
+		// referenced generation after a different .tapp is rebuilt.
+		{
+			smvk::AppManifest pin;
+			std::string mErr;
+			Check(smvk::LoadAppManifest(
+				(tmp / "publish5" / "world.tapp").generic_string(),
+				pin, mErr), "executor.multi-manifest-load");
+			Check(smvk::SaveAppManifest(
+				(tmp / "publish5" / "pinned.tapp").generic_string(),
+				pin, mErr), "executor.multi-manifest-pin");
+			const fs::path priorWorld = tmp / "publish5" / pin.paks.back();
+			RecordingAdapter rec;
+			rec.payloadTag = "v3";
+			smvk::project::BuildPlanReport rep;
+			std::string e;
+			Check(smvk::project::ExecuteBuildPlan(project, p2, rec,
+				opts, rep, e), "executor.multi-manifest-build");
+			Check(fs::is_regular_file(priorWorld, ec),
+				"executor.multi-manifest-preserves-other-generation");
+			// Even a same-name addressed pak is untrusted until its bytes
+			// are checked. Simulate disk corruption, then restore the file.
+			if (!rep.paks.empty()) {
+				const fs::path latest = rep.paks.back().output;
+				const std::vector<char> clean = ReadAllBytes(latest);
+				if (!clean.empty()) {
+					std::vector<char> corrupt = clean;
+					corrupt[0] ^= 1;
+					{
+						std::ofstream f(latest, std::ios::binary | std::ios::trunc);
+						f.write(corrupt.data(), std::streamsize(corrupt.size()));
+					}
+					RecordingAdapter same;
+					same.payloadTag = "v3";
+					smvk::project::BuildPlanReport rejected;
+					std::string rejectErr;
+					Check(!smvk::project::ExecuteBuildPlan(project, p2,
+							same, opts, rejected, rejectErr)
+						&& rejectErr.find("corrupted bytes") != std::string::npos,
+						"executor.corrupted-addressed-pak-rejected");
+					std::ofstream restore(latest, std::ios::binary | std::ios::trunc);
+					restore.write(clean.data(), std::streamsize(clean.size()));
+				}
+			}
+			fs::remove(tmp / "publish5" / "pinned.tapp", ec);
+		}
+
 		}
 		// The real leg: build through the subprocess adapter, then
 		// inspect BOTH paks (BLD-02 verify + BLD-07 asset-only + the

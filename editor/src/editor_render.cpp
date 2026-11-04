@@ -695,6 +695,51 @@ namespace editor {
 				(i == 1) ? 1 : (i == 2) ? 2 : (i == 3) ? 3 : 0;
 	}
 
+	// One viewport's rect from an UNCLAMPED dock stage area. Extracted
+	// from ComputeViewportRects so the DETACHED live-view capture (the
+	// stage lives in a secondary OS window; the main-fb clamp would
+	// collapse it to 1x1) computes the SAME rect - the drive's extent
+	// and the aspect must not depend on which window hosts the stage.
+	ViewportRect EditorApp::StageViewportRect(
+		const ViewportRect& area, int vp, int layout) {
+		ViewportRect r{};
+		if (layout == 1) {
+			// Quad: 2x2 grid.
+			const float halfW = area.w * 0.5f;
+			const float halfH = area.h * 0.5f;
+			r.x = (vp & 1) ? area.x + halfW : area.x;
+			r.w = halfW;
+			r.y = (vp >= 2) ? area.y + halfH : area.y;
+			r.h = halfH;
+		}
+		else {
+			// Single: THE BIG 4:3 STAGE — the main view is an
+			// aspect-locked panel centered in the central area, not a
+			// stretch-to-fill rect. The letterbox margins around it show
+			// the editor's desk (the frame clear color), the projection
+			// derives from the LOCKED rect (a 4:3 render under any
+			// window aspect — no more reflowing perspective as side
+			// panels resize), and authoring eyeballs a fixed composition
+			// (the 4:3 target's framing stays stable across the layout).
+			// Fit the LARGER dimension, center on both axes.
+			constexpr float kStageAspect = 4.0f / 3.0f;
+			r.x = area.x;
+			r.y = area.y;
+			const float areaAspect = area.w / std::max(area.h, 1.0f);
+			if (areaAspect > kStageAspect) {
+				r.h = area.h;
+				r.w = area.h * kStageAspect;
+			}
+			else {
+				r.w = area.w;
+				r.h = area.w / kStageAspect;
+			}
+			r.x = area.x + (area.w - r.w) * 0.5f;
+			r.y = area.y + (area.h - r.h) * 0.5f;
+		}
+		return r;
+	}
+
 	void EditorApp::ComputeViewportRects(smvk::Extent2D extent) {
 		// The RenderFrame pass graph is recorded BEFORE this frame's ImGui
 		// workspace. Use the previous completed dock window content rect
@@ -749,39 +794,10 @@ namespace editor {
 		for (int i = 0; i < kMaxViewports; ++i)
 			m_viewports[i].hovered = false;
 		for (int i = 0; i < count; ++i) {
-			ViewportRect& r = m_viewports[i].rect;
-			if (m_vpLayout == 1) {
-				// Quad: 2x2 grid.
-				const float halfW = area.w * 0.5f;
-				const float halfH = area.h * 0.5f;
-				r.x = (i & 1) ? area.x + halfW : area.x;
-				r.w = halfW;
-				r.y = (i >= 2) ? area.y + halfH : area.y;
-				r.h = halfH;
-			}
-			else {
-				// Single: THE BIG 4:3 STAGE — the main view is an
-				// aspect-locked panel centered in the central area, not a
-				// stretch-to-fill rect. The letterbox margins around it show
-				// the editor's desk (the frame clear color), the projection
-				// derives from the LOCKED rect (a 4:3 render under any
-				// window aspect — no more reflowing perspective as side
-				// panels resize), and authoring eyeballs a fixed composition
-				// (the 4:3 target's framing stays stable across the layout).
-				// Fit the LARGER dimension, center on both axes.
-				constexpr float kStageAspect = 4.0f / 3.0f;
-				const float areaAspect = area.w / area.h;
-				if (areaAspect > kStageAspect) {
-					r.h = area.h;
-					r.w = area.h * kStageAspect;
-				}
-				else {
-					r.w = area.w;
-					r.h = area.w / kStageAspect;
-				}
-				r.x = area.x + (area.w - r.w) * 0.5f;
-				r.y = area.y + (area.h - r.h) * 0.5f;
-			}
+			// The quad split / the aspect-locked 4:3 fit (the shared
+			// authority: StageViewportRect above).
+			ViewportRect r = StageViewportRect(area, i, m_vpLayout);
+			m_viewports[i].rect = r;
 			m_viewports[i].hovered =
 				mx >= r.x && my >= r.y && mx < r.x + r.w && my < r.y + r.h;
 			if (m_viewports[i].hovered)
@@ -2596,6 +2612,10 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		m_wysiwygLiveRectFresh = false;
 		m_wysiwygLiveRectMin = ImVec2(0.0f, 0.0f);
 		m_wysiwygLiveRectMax = ImVec2(0.0f, 0.0f);
+		// The detached image lane's descriptor references the inline
+		// target's view - it dies with the renderer (see
+		// WysiwygStageTexture).
+		DropWysiwygStageTexture();
 		if (!m_wysiwygComposeLogical.empty()) {
 			m_rendergraph->FreeImageView(m_wysiwygComposeLogical);
 			m_wysiwygComposeLogical = {};
@@ -3045,6 +3065,15 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 		smvk::LogicalImageViewHandle swapView) {
 		if (!m_wysiwyg || !m_wysiwygValid
 			|| m_wysiwyg->InlineTargetView().empty())
+			return;
+		// DETACHED STAGE: the Viewport window lives in a secondary OS
+		// window with its own (ImGui-backend-owned) swapchain. The
+		// main-swapchain composite can never reach it; the inline target
+		// is drawn as an ImGui image inside the panel instead (see the
+		// Viewport window draw in editor_ui.cpp). Only the drive's
+		// extent capture still runs (DrawLiveViewStage's detached
+		// branch) so the render keeps the stage's size and aspect.
+		if (m_dockStageDetached)
 			return;
 		// LAYER ORDER, not modal detection: the composite is recorded
 		// BEFORE the ImGui pass (see the call site in DrawFrame), so

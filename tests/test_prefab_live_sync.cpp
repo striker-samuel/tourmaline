@@ -10,6 +10,17 @@
 #include <cmath>
 #include <iostream>
 #include <unordered_map>
+#include <vector>
+#include <string>
+
+static int g_failures = 0;
+#define CHECK(expr) do { \
+    if (!(expr)) { \
+        std::cerr << "FAIL " << __FILE__ << ':' << __LINE__ \
+                  << ": " << #expr << "\n"; \
+        ++g_failures; \
+    } \
+} while (false)
 
 static glm::mat4 At(float x) {
     glm::mat4 m(1.0f);
@@ -22,47 +33,56 @@ int main() {
     glm::mat4 sceneA=At(1), sceneB=At(1), overridden=At(8);
     const glm::mat4 authored=At(1);
     // Two occurrences of the same prefab preview the same source edit.
-    assert(Apply(original,applied,11,authored,At(4),sceneA,false));
-    assert(Apply(original,applied,19,authored,At(4),sceneB,false));
-    assert(Near(sceneA,At(4)) && Near(sceneB,At(4)));
+    CHECK(Apply(original,applied,11,authored,At(4),sceneA,false));
+    CHECK(Apply(original,applied,19,authored,At(4),sceneB,false));
+    CHECK(Near(sceneA,At(4)) && Near(sceneB,At(4)));
     // An explicit per-occurrence parent transform stays untouched.
-    assert(!Apply(original,applied,25,authored,At(4),overridden,false));
-    assert(Near(overridden,At(8)));
+    CHECK(!Apply(original,applied,25,authored,At(4),overridden,false));
+    CHECK(Near(overridden,At(8)));
     // Source Undo propagates to every occurrence, retaining overrides.
-    assert(Apply(original,applied,11,authored,authored,sceneA,false));
-    assert(Apply(original,applied,19,authored,authored,sceneB,false));
-    assert(original.empty() && applied.empty());
-    assert(Near(sceneA,authored) && Near(sceneB,authored));
+    CHECK(Apply(original,applied,11,authored,authored,sceneA,false));
+    CHECK(Apply(original,applied,19,authored,authored,sceneB,false));
+    CHECK(original.empty() && applied.empty());
+    CHECK(Near(sceneA,authored) && Near(sceneB,authored));
     // Same source re-edited, Save establishes a NEW revert baseline.
-    assert(Apply(original,applied,11,authored,At(3),sceneA,false));
-    assert(Apply(original,applied,19,authored,At(3),sceneB,false));
+    CHECK(Apply(original,applied,11,authored,At(3),sceneA,false));
+    CHECK(Apply(original,applied,19,authored,At(3),sceneB,false));
     Commit(original,applied);
-    assert(!RestoreOne(original,applied,11,sceneA));
-    assert(!RestoreOne(original,applied,19,sceneB));
-    assert(Near(sceneA,At(3)) && Near(sceneB,At(3)));
+    CHECK(!RestoreOne(original,applied,11,sceneA));
+    CHECK(!RestoreOne(original,applied,19,sceneB));
+    CHECK(Near(sceneA,At(3)) && Near(sceneB,At(3)));
     // The next edit must use the *saved* source as the new base.
-    assert(Apply(original,applied,11,At(3),At(5),sceneA,false));
-    assert(Apply(original,applied,19,At(3),At(5),sceneB,false));
-    assert(Apply(original,applied,11,At(3),At(3),sceneA,false));
-    assert(Apply(original,applied,19,At(3),At(3),sceneB,false));
-    assert(Near(sceneA,At(3)) && Near(sceneB,At(3)));
+    CHECK(Apply(original,applied,11,At(3),At(5),sceneA,false));
+    CHECK(Apply(original,applied,19,At(3),At(5),sceneB,false));
+    CHECK(Apply(original,applied,11,At(3),At(3),sceneA,false));
+    CHECK(Apply(original,applied,19,At(3),At(3),sceneB,false));
+    CHECK(Near(sceneA,At(3)) && Near(sceneB,At(3)));
     // An external parent edit during a preview is NOT rolled back.
-    assert(Apply(original,applied,11,At(3),At(9),sceneA,false));
+    CHECK(Apply(original,applied,11,At(3),At(9),sceneA,false));
     sceneA=At(21);
-    assert(!RestoreOne(original,applied,11,sceneA));
-    assert(Near(sceneA,At(21)));
+    CHECK(!RestoreOne(original,applied,11,sceneA));
+    CHECK(Near(sceneA,At(21)));
     // If an instance override is now owned by parent editing, stop
     // tracking it immediately and never overwrite its pose.
     sceneB=At(3);
-    assert(Apply(original,applied,19,At(3),At(7),sceneB,false));
-    assert(!Apply(original,applied,19,At(3),At(8),sceneB,true));
-    assert(Near(sceneB,At(7)));
-    assert(!RestoreOne(original,applied,19,sceneB));
-    assert(Near(sceneB,At(7)));
+    CHECK(Apply(original,applied,19,At(3),At(7),sceneB,false));
+    CHECK(!Apply(original,applied,19,At(3),At(8),sceneB,true));
+    CHECK(Near(sceneB,At(7)));
+    CHECK(!RestoreOne(original,applied,19,sceneB));
+    CHECK(Near(sceneB,At(7)));
     // Non-finite matrices never pass as equal/safe to overwrite.
     glm::mat4 invalid=At(2);
     invalid[0][0]=NAN;
-    assert(!Near(invalid,invalid));
+    CHECK(!Near(invalid,invalid));
+    // Legacy migration must use explicit cluster-local mapping, not
+    // the merged node index minus one (references and holes break it).
+    const std::vector<uint32_t> mapping{1, 40, UINT32_MAX, 83, 2};
+    const auto needed=LegacyIdentityCandidates(mapping,[](uint32_t merged) {
+        return merged==40 || merged==83;
+    });
+    CHECK(needed.size()==2);
+    CHECK(needed[0].first==1 && needed[0].second==40);
+    CHECK(needed[1].first==3 && needed[1].second==83);
     // Per-world selection restoration rejects stale IDs from a different
     // hierarchy and remains safe when no primary selection survives.
     {
@@ -81,5 +101,5 @@ int main() {
         CHECK(lonePrimary.primary == 1 && lonePrimary.nodes.empty());
     }
     std::cout<<"PrefabLiveSyncTests passed\n";
-    return 0;
+    return g_failures ? 1 : 0;
 }

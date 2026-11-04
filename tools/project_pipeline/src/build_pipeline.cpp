@@ -11,11 +11,15 @@
 #include <project_pipeline/build_pipeline.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
+#include <random>
 #include <set>
 #include <sstream>
 #include <system_error>
@@ -440,6 +444,35 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	if (publish.is_relative())
 		publish = projectRoot / publish;
 	fs::create_directories(publish, ec);
+	if (ec) { err = "cannot create publication directory: " + ec.message(); return false; }
+
+	// In-process import, derived-data writes and cooking all share the
+	// project registry. Serialize a project build from the FIRST write,
+	// not merely the final manifest rename, to prevent mixed generations.
+	// The lock intentionally fails closed after a hard crash: recovery is
+	// an explicit operator action after verifying no other builder runs.
+	struct ProjectBuildLock {
+		fs::path directory;
+		~ProjectBuildLock() {
+			if (directory.empty()) return;
+			std::error_code ignored;
+			fs::remove(directory, ignored);
+		}
+	} buildLock;
+	{
+		const fs::path derived(project.DerivedDataDir());
+		std::error_code lockEc;
+		fs::create_directories(derived, lockEc);
+		if (lockEc) { err = "cannot initialize derived directory: " + lockEc.message(); return false; }
+		const fs::path lockDir = derived / ".build.lock";
+		if (!fs::create_directory(lockDir, lockEc)) {
+			err = "project build already active or stale .build.lock; "
+				"verify no builder is running before manual recovery: "
+				+ lockDir.generic_string();
+			return false;
+		}
+		buildLock.directory = lockDir;
+	}
 
 	// ---- 1) import freshness (in-process, every family the plan packs) -
 	std::set<std::string> reimportedFamilies;
@@ -556,19 +589,38 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	// the staging name must stay clean); the destructor removes every
 	// un-committed staging file, so ANY early return below leaves the
 	// previous generation intact.
+	// Each build receives an isolated staging directory. Two builders for
+	// distinct manifests must never write the same temporary pak name.
 	struct StagedSet {
 		std::vector<fs::path> files;
+		fs::path directory;
 		bool committed = false;
 		~StagedSet() {
-			if (committed)
-				return;
-			std::error_code ec;
-			for (const fs::path& p : files)
-				fs::remove(p, ec);
+			std::error_code cleanupEc;
+			if (!committed)
+				for (const fs::path& p : files)
+					fs::remove(p, cleanupEc);
+			if (!directory.empty())
+				fs::remove_all(directory, cleanupEc);
 		}
 	} staged;
-	const fs::path stagingDir = publish / ".staging";
-	fs::create_directories(stagingDir, ec);
+	const fs::path stagingRoot = publish / ".staging";
+	fs::create_directories(stagingRoot, ec);
+	if (ec) { err = "cannot create staging root: " + ec.message(); return false; }
+	fs::path stagingDir;
+	std::random_device random;
+	for (int attempt = 0; attempt < 32; ++attempt) {
+		const uint64_t nonce = (uint64_t(random()) << 32) | uint64_t(random());
+		stagingDir = stagingRoot / ("build-" + std::to_string(nonce));
+		ec.clear();
+		if (fs::create_directory(stagingDir, ec)) break;
+		if (ec && ec != std::errc::file_exists) {
+			err = "cannot allocate staging directory: " + ec.message(); return false;
+		}
+		stagingDir.clear();
+	}
+	if (stagingDir.empty()) { err = "cannot allocate unique staging directory"; return false; }
+	staged.directory = stagingDir;
 
 	// The per-pak reports land in a LOCAL first: they describe PUBLISHED
 	// outputs, and a mid-set failure rolls the whole set back — the
@@ -816,6 +868,29 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		reps.push_back(std::move(rep));
 	}
 
+	// Serialize the final immutable-name landings and manifest swap.
+	// Staging/cooking stays concurrent; a second publisher fails safely
+	// and may retry instead of racing the content-addressed rename.
+	struct PublishLock {
+		fs::path path;
+		~PublishLock() {
+			if (!path.empty()) {
+				std::error_code ignore;
+				fs::remove(path, ignore);
+			}
+		}
+	} publishLock;
+	{
+		const fs::path lockPath = publish / ".publish.lock";
+		std::error_code lockEc;
+		if (!fs::create_directory(lockPath, lockEc)) {
+			err = "a publisher is active (or a stale .publish.lock exists): "
+				+ lockPath.generic_string();
+			return false;
+		}
+		publishLock.path = lockPath;
+	}
+
 	// ---- the publish pass: every staged pak verified + policed, now
 	// the content-addressed landings. Each final name is <stem>-<digest>
 	// .pak (FNV-1a 64 over the pak bytes): IMMUTABLE by construction —
@@ -855,8 +930,28 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				(publish / finalName).lexically_normal();
 			std::error_code renEc;
 			if (fs::exists(finalPath, renEc)) {
-				// Same content already published — dedup, never touch
-				// the live file.
+				// A pre-existing content-addressed name is NOT evidence that
+				// its bytes are intact: verify before trusting or deduping it.
+				std::ifstream prior(finalPath, std::ios::binary);
+				// Verify against the staged bytes in bounded blocks; loading
+				// a second multi-GiB pak would double peak publish memory.
+				bool identical = bool(prior);
+				std::array<char, 65536> chunk{};
+				for (size_t offset = 0; identical && offset < image.size();) {
+					const size_t length = std::min(chunk.size(), image.size() - offset);
+					prior.read(chunk.data(), std::streamsize(length));
+					identical = size_t(prior.gcount()) == length &&
+						std::memcmp(chunk.data(), image.data() + offset, length) == 0;
+					offset += length;
+				}
+				// Also reject a same-prefix file with trailing injected bytes.
+				if (identical && prior.peek() != std::char_traits<char>::eof())
+					identical = false;
+				if (!identical) {
+					err = "published pak filename collision or corrupted bytes: "
+						+ finalPath.generic_string();
+					return false;
+				}
 				fs::remove(stagedPath, renEc);
 			}
 			else {
@@ -964,6 +1059,75 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			err = "the appmanifest publish failed: " + mErr;
 			return false;
 		}
+		// An immutable content-set receipt captures which source plan pak
+		// owns each addressed package. The appmanifest remains the ONLY
+		// release pointer; this receipt is a verifiable audit sidecar.
+		// Land it BEFORE the manifest commit so a committed release never
+		// refers to a generation with an absent receipt after a crash.
+		{
+			std::ifstream input(stagedManifest, std::ios::binary);
+			if (!input) { err = "cannot read staged appmanifest for receipt"; return false; }
+			const std::string manifestBytes((std::istreambuf_iterator<char>(input)),
+				std::istreambuf_iterator<char>());
+			if (!input.eof() && input.fail()) {
+				err = "failed to read staged appmanifest for receipt"; return false;
+			}
+			const std::string manifestDigest = smvk::cache::HashBytes(
+				manifestBytes.data(), manifestBytes.size());
+			std::ostringstream receipt;
+			receipt << "tourmaline-build-receipt 1\n"
+				<< "manifest " << manifestPath.filename().generic_string()
+				<< " fnv1a64:" << manifestDigest << "\n";
+			for (size_t i = 0; i < plan.paks.size(); ++i)
+				receipt << "pak " << plan.paks[i].id << ' '
+					<< finalPaths[i].filename().generic_string() << " fnv1a64:"
+					<< finalDigests[i] << "\n";
+			// Capture logical source-to-package ownership as well as output
+			// bytes. Stable content IDs remain in each pak's #ids table;
+			// this ledger records the recipe edge that produced the pak.
+			for (const PlanPak& pak : plan.paks) {
+				receipt << "scene " << std::quoted(pak.id) << ' '
+					<< std::quoted(pak.scene) << "\n";
+				for (const std::string& artifact : pak.sceneArtifacts)
+					receipt << "scene-artifact " << std::quoted(pak.id)
+						<< ' ' << std::quoted(artifact) << "\n";
+				for (const PlanAsset& asset : pak.assets)
+					receipt << "input " << std::quoted(pak.id) << ' '
+						<< std::quoted(asset.path) << ' '
+						<< int(asset.kind) << "\n";
+			}
+			const std::string payload = receipt.str();
+			const fs::path stagedReceipt = stagingDir /
+				(manifestName + ".receipt");
+			staged.files.push_back(stagedReceipt);
+			{
+				std::ofstream output(stagedReceipt, std::ios::binary | std::ios::trunc);
+				output.write(payload.data(), std::streamsize(payload.size()));
+				output.close();
+				if (!output) { err = "cannot write staged build receipt"; return false; }
+			}
+			const fs::path finalReceipt = publish /
+				(manifestName + "-" + manifestDigest + ".receipt");
+			std::error_code receiptEc;
+			if (fs::exists(finalReceipt, receiptEc)) {
+				std::ifstream existing(finalReceipt, std::ios::binary);
+				const std::string existingBytes((std::istreambuf_iterator<char>(existing)),
+					std::istreambuf_iterator<char>());
+				if (!existing || existingBytes != payload) {
+					err = "existing build receipt is corrupt or collides: "
+						+ finalReceipt.generic_string();
+					return false;
+				}
+				fs::remove(stagedReceipt, receiptEc);
+			} else {
+				fs::rename(stagedReceipt, finalReceipt, receiptEc);
+				if (receiptEc) {
+					err = "cannot publish immutable build receipt: "
+						+ receiptEc.message();
+					return false;
+				}
+			}
+		}
 		// THE COMMIT: rename-over-existing is atomic on both supported
 		// platforms (MSVC MoveFileEx REPLACE_EXISTING; POSIX rename).
 		{
@@ -988,6 +1152,32 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		{
 			std::set<std::string> referenced(manifest.paks.begin(),
 				manifest.paks.end());
+			// Preserve content still referenced by OTHER published manifests
+			// in this directory. An invalid manifest disables garbage
+			// collection rather than risking deletion of a live pak.
+			bool sweepSafe = true;
+			std::error_code manifestIterEc;
+			for (const fs::directory_entry& entry :
+					fs::directory_iterator(publish, manifestIterEc)) {
+				if (manifestIterEc) { sweepSafe = false; break; }
+				if (entry.path().extension() != ".tapp") continue;
+				smvk::AppManifest other;
+				std::string loadError;
+				if (!smvk::LoadAppManifest(entry.path().generic_string(),
+						other, loadError)) { sweepSafe = false; break; }
+				referenced.insert(other.paks.begin(), other.paks.end());
+			}
+			if (manifestIterEc) sweepSafe = false;
+			// Another build may be cooking against this publish directory.
+			// Its forthcoming manifest is not visible yet: do not collect
+			// any immutable packages while its staging directory exists.
+			std::error_code activeEc;
+			for (const fs::directory_entry& pending :
+					fs::directory_iterator(stagingRoot, activeEc)) {
+				if (activeEc) { sweepSafe = false; break; }
+				if (pending.path() != stagingDir) { sweepSafe = false; break; }
+			}
+			if (activeEc) sweepSafe = false;
 			const auto isHex16 = [](const std::string& s) {
 				if (s.size() != 16)
 					return false;
@@ -1015,7 +1205,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 						&& isHex16(name.substr(stem.size() + 1,
 							name.size() - stem.size() - 5));
 					if ((plain || addressed)
-							&& !referenced.count(name))
+							&& sweepSafe && !referenced.count(name))
 						stale.push_back(e.path());
 				}
 			}

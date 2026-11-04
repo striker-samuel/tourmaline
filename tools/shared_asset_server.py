@@ -14,9 +14,11 @@ from pathlib import Path
 try:
     from tools.asset_read_presence import ConsumerPresence
     from tools.shared_asset_repository import SharedArchive, serve_shared
+    from tools.asset_permissions import PermissionRegistry
 except ModuleNotFoundError:
     from asset_read_presence import ConsumerPresence
     from shared_asset_repository import SharedArchive, serve_shared
+    from asset_permissions import PermissionRegistry
 
 
 def load(config):
@@ -42,8 +44,69 @@ def main(argv=None):
     publish.add_argument("representation")
     publish.add_argument("file")
     publish.add_argument("--variant", default="")
+    users = sub.add_parser("users", help="manage protected users and group permissions")
+    user_cmd = users.add_subparsers(dest="user_command", required=True)
+    user_cmd.add_parser("init", help="create registry and bootstrap admin token")
+    user_cmd.add_parser("list", help="show accounts without exposing tokens")
+    group_set = user_cmd.add_parser("group-set", help="set group permission rules")
+    group_set.add_argument("group")
+    group_set.add_argument("--permission", action="append", default=[])
+    user_set = user_cmd.add_parser("set", help="create/update a user's groups and rules")
+    user_set.add_argument("username")
+    user_set.add_argument("--group", action="append", default=[])
+    user_set.add_argument("--permission", action="append", default=[])
+    rotate = user_cmd.add_parser("rotate-token", help="revoke old token and issue a new one")
+    rotate.add_argument("username")
+    asset = user_cmd.add_parser("asset-set", help="set per-asset user/group ACL rules")
+    asset.add_argument("source_asset_id")
+    asset.add_argument("--user")
+    asset.add_argument("--group")
+    asset.add_argument("--permission", action="append", default=[])
+    clear = user_cmd.add_parser("asset-clear", help="remove per-asset ACL restrictions")
+    clear.add_argument("source_asset_id")
     args = parser.parse_args(argv)
     settings = load(args.config)
+    registry_location = settings.get("permissions_registry")
+    if registry_location:
+        registry_path = Path(registry_location).expanduser().resolve()
+        source_root = Path(settings["source"]).expanduser().resolve()
+        if registry_path == source_root or source_root in registry_path.parents:
+            parser.error("permissions registry must not be inside the source share")
+    else:
+        registry_path = None
+    if args.command == "users":
+        if registry_path is None:
+            parser.error("set permissions_registry in the server config first")
+        if args.user_command == "init":
+            admin_token = PermissionRegistry.initialize(registry_path)
+            print("Registry created:", registry_path)
+            print("Admin token (store securely; not shown again):", admin_token)
+            return 0
+        registry = PermissionRegistry(registry_path)
+        if args.user_command == "list":
+            print(json.dumps(registry.users(), indent=2))
+        elif args.user_command == "group-set":
+            registry.group_set(args.group, args.permission)
+            print("Group updated:", args.group)
+        elif args.user_command == "set":
+            new_token = registry.user_set(args.username, args.group, args.permission)
+            print("User configured:", args.username)
+            if new_token:
+                print("User token (store securely; not shown again):", new_token)
+        elif args.user_command == "rotate-token":
+            print("New token (store securely; not shown again):",
+                  registry.rotate_token(args.username))
+        elif args.user_command == "asset-set":
+            if bool(args.user) == bool(args.group):
+                parser.error("specify exactly one of --user or --group")
+            registry.asset_set(args.source_asset_id,
+                               "users" if args.user else "groups",
+                               args.user or args.group, args.permission)
+            print("Asset ACL updated:", args.source_asset_id)
+        elif args.user_command == "asset-clear":
+            registry.asset_clear(args.source_asset_id)
+            print("Asset ACL removed:", args.source_asset_id)
+        return 0
     store = SharedArchive(settings["source"], settings["archive"], settings["cache"],
                           settle=settings.get("settle_seconds", 2),
                           max_cache_bytes=int(settings.get("cache_gib", 20) * 1024**3))
@@ -54,7 +117,8 @@ def main(argv=None):
                          bind=settings.get("bind", "127.0.0.1"),
                          port=int(settings.get("port", 8765)),
                          poll=float(settings.get("poll_seconds", 3)),
-                         consumer_ttl_seconds=float(settings.get("consumer_ttl_seconds", 90)))
+                         consumer_ttl_seconds=float(settings.get("consumer_ttl_seconds", 90)),
+                         registry=PermissionRegistry(registry_path) if registry_path else None)
         except KeyboardInterrupt:
             return 0
     elif action == "scan":

@@ -1,3 +1,30 @@
+> **Security default:** clients require HTTPS for remote bearer-token transport.
+> Loopback HTTP is allowed. A trusted development LAN may deliberately opt in
+> using `--allow-insecure-remote` in the workstation CLI. HTTPS must be
+> terminated by a verified TLS reverse proxy; the built-in server is HTTP.
+> Server user/group ACLs and token rotation remain enforced independently.
+
+
+## HTTPS deployment boundary
+
+Run the Python HTTP server on `127.0.0.1:8765` and terminate TLS at a
+reverse proxy. With Caddy, a minimal single-host example is:
+
+```caddyfile
+assets.example.com {
+    reverse_proxy 127.0.0.1:8765
+}
+```
+
+Provide public DNS and a valid TLS certificate, and block external access
+to port 8765. Caddy automatically handles normal certificate issuance; it
+does not replace the repository's user/group token ACLs. The client verifies
+HTTPS certificates by default; do not disable that verification. Test token
+rotation and least-privilege reads/publishes against the actual gateway
+before enabling remote workstations. Insecure LAN HTTP remains an explicit
+opt-in for isolated development only.
+
+
 # Tourmaline Asset Repository — Windows/Linux NAS manual
 
 This is the setup manual for a **single authoritative shared asset service** on a
@@ -60,12 +87,11 @@ the source share. Protect the archive with filesystem permissions.
 
 ## Linux NAS installation
 
-Check out the feature PR branch (until merged):
+Clone the repository and use its default `master` branch:
 
 ~~~bash
 git clone https://github.com/striker-samuel/tourmaline.git
 cd tourmaline
-git switch feature/shared-asset-repository-and-catalog
 python3 --version
 ~~~
 
@@ -92,15 +118,20 @@ sudo python3 tools/install_shared_assets.py --source /srv/smb/project --archive 
 ~~~
 
 Make sure the service account can READ source files, and ordinary artists
-cannot WRITE the protected archive/config. The installer doesn't modify
+cannot WRITE the protected archive/config. **Never put server.json inside
+the artist-writable source share:** it contains the bearer token, and the
+installer now rejects that location. The installer doesn't modify
 permissions on the artist share. The startup unit refers to the current
-checkout and Python interpreter, which must remain accessible.
+checkout and Python interpreter, which must remain accessible. The systemd
+installer may recursively update ownership of the existing archive and cache;
+allow for that on large repositories.
 
 ~~~bash
 sudo systemctl status tourmaline-shared-assets
 sudo systemctl restart tourmaline-shared-assets
 sudo systemctl stop tourmaline-shared-assets
 sudo journalctl -u tourmaline-shared-assets -f
+curl --fail http://127.0.0.1:8765/health
 ~~~
 
 Manual startup:
@@ -122,6 +153,7 @@ PowerShell and install a Windows boot-time scheduled task (one command):
 py -3 tools/install_shared_assets.py --source 'D:\Shares\project' --archive 'D:\TourmalineHistory\archive' --cache 'D:\TourmalineHistory\server-cache' --config 'C:\ProgramData\Tourmaline\AssetRepository\server.json' --listen-lan --install-windows-task
 schtasks /Run /TN TourmalineSharedAssetRepository
 schtasks /Query /TN TourmalineSharedAssetRepository /V /FO LIST
+Invoke-RestMethod http://127.0.0.1:8765/health
 ~~~
 
 This runs under SYSTEM, not the logged-in artist account. Use **host-local**
@@ -132,7 +164,10 @@ To troubleshoot, run the Python server in a terminal and press Ctrl+C to stop:
 py -3 tools/shared_asset_server.py --config 'C:\ProgramData\Tourmaline\AssetRepository\server.json' serve
 ~~~
 
-Only one scanner may own an archive SQLite database at a time.
+Only one scanner may own an archive SQLite database at a time. The
+Windows task is registered at installation, then explicitly started using
+`schtasks /Run`. Check its Last Run Result as well as the HTTP health response;
+paths containing spaces should be tested on the intended host.
 
 ## Shared server configuration
 
@@ -159,6 +194,9 @@ Example server.json (schema 2, replace token with generated secret):
 - **archive**: permanent protected source AND published-product bytes/history.
 - **cache**: replaceable server-local materialization cache.
 - **access_token**: shared repository secret (minimum 24 characters).
+  Keep the server configuration outside the source share and restrict its
+  permissions. Configuring a client on an artist workstation stores the token
+  there too; protect that workstation's local configuration.
 - **bind/port**: 127.0.0.1 for host-only access, 0.0.0.0 for LAN, default port 8765.
 - **poll_seconds**: scanner interval; **settle_seconds**: file-age threshold
   before an observed file is captured.
@@ -171,6 +209,158 @@ encrypt the access token or assets: for production, use a trusted LAN or
 preferably an HTTPS reverse proxy, restrict the firewall, and never expose
 port 8765 directly to the Internet. Back up the WHOLE archive, including
 history.sqlite3 and blobs. SQLite needs a consistent backup/snapshot.
+
+## Optional server-side users and permission groups
+
+The shared repository supports a protected JSON user registry, with
+configurable dotted permission nodes and namespace wildcards. This is **opt-in**: existing installs
+without `permissions_registry` continue to use their legacy shared token.
+There is no password login; every user receives a separate randomly generated
+bearer token. Only SHA-256 hashes of tokens are stored in the registry.
+
+Add an absolute path to the host config (`server.json`), **outside the
+artist-writable source tree**, for example:
+
+~~~json
+"permissions_registry": "/etc/tourmaline/asset-users.json"
+~~~
+
+After saving the config, bootstrap an administrator **before restarting**.
+On a Linux NAS running under a dedicated systemd service account, ensure that
+account has **read access** to the registry without giving ordinary artists
+write access. For example, after creating the registry as root:
+
+~~~bash
+sudo chgrp tourmaline /etc/tourmaline/asset-users.json
+sudo chmod 0640 /etc/tourmaline/asset-users.json
+~~~
+
+The registry's parent directory must also be traversable by that account.
+On Windows, secure the file with NTFS ACLs and grant the service identity
+read access.
+
+Bootstrap the administrator and add groups/users with:
+
+~~~bash
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users init
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set publishers --permission 'source.*' --permission 'product.publish'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set readers --permission 'source.read' --permission 'product.read' --permission 'artifact.read'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users set artist_one --group publishers --group readers --permission 'source.read'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users list
+~~~
+
+`users init` prints the admin token once; `users set` prints a new
+individual token only when adding a new account. Save the tokens securely
+and distribute each user's token directly to that user (never commit tokens
+to Git). A user may belong to multiple groups. Repeating `users set`
+updates memberships and direct rules without changing the token. Revoke
+and replace an individual token with:
+
+~~~bash
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users rotate-token artist_one
+~~~
+
+The rules `source.*` and `product.*` match their respective dotted
+namespaces, including descendants. A bare `*` grants everything.
+Rules prefixed `-` deny access. More-specific rules take precedence; a
+direct user rule wins a tie with an inherited group rule, and group denials
+win ties between groups. Unmatched permissions are **denied by default**.
+
+| Permission node | Current API operations |
+| --- | --- |
+| `source.read` | List/resolve source revisions, including legacy v1 reads |
+| `product.read` | List published products |
+| `artifact.read` | Download immutable source/product blob bytes |
+| `product.publish` | PUT /v2/publish |
+| `presence.read` | View active readers |
+| `presence.write` | Send heartbeat or release |
+| `source.write` | Reserved for a future source-write API (no write endpoint today) |
+
+### Asset-specific access rules
+
+Permission rules can be scoped to a **source asset UUID**, independently for
+users and groups. Published products inherit their source asset's ACL; this
+prevents bypassing permissions by requesting a representation or shared blob.
+
+For example, allow the `artists` group to read and publish one asset, but
+let a particular `reviewer` read it without publishing:
+
+~~~bash
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set artists --permission source.read --permission product.read --permission product.publish --permission artifact.read
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users set reviewer --group readers
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users asset-set SOURCE_UUID --group artists --permission source.read --permission product.read --permission product.publish --permission artifact.read
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users asset-set SOURCE_UUID --user reviewer --permission source.read --permission product.read --permission artifact.read
+~~~
+
+The asset ACL is a **second layer** on top of global permission nodes:
+users need both a global permission and a matching asset-specific permission.
+When no asset ACL exists, global permissions alone apply. When an asset ACL
+exists, users who have no matching asset rule are denied, except members of the
+`admin` group with the applicable administrator grant. User rules win ties
+over group rules, and explicit denials are supported with `-source.read`.
+Delete all per-asset restrictions using:
+
+~~~bash
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users asset-clear SOURCE_UUID
+~~~
+
+Only the source UUID is used for ACL identity, so renaming an asset does not
+change its ACL. **These permissions apply to the Tourmaline HTTP asset API,
+not direct operating-system access to the underlying SMB share.** If the
+source share itself must be private, configure matching SMB/NTFS/POSIX
+permissions or route all access through a trusted server. The HTTP API filters
+unauthorized entries from source/product
+lists, rejects forbidden direct revision lookups and artifact downloads, and
+checks publishing against the source UUID. For safety, legacy v1 browser and
+local-path endpoints are unavailable while per-user registry mode is active;
+use filtered v2 endpoints.
+
+### Live asset-use database (advisory)
+
+The same protected SQLite archive stores active asset sessions. A heartbeat
+records the authenticated **username**, reported **workstation**, client kind
+and label, source/product UUID, revision, **mode** (`read`, `edit`,
+`review`, or `publish`), and last-seen/expiry times. The username is
+derived from the bearer token, not an arbitrary client field. A session belongs
+to one authenticated user, so another user cannot overwrite or release it.
+
+Query the live flat view:
+
+~~~bash
+curl -H 'Authorization: Bearer USER_TOKEN' https://assets.example.lan/v2/open-assets
+curl -H 'Authorization: Bearer USER_TOKEN' 'https://assets.example.lan/v2/open-assets?resource_kind=source&resource_id=SOURCE_UUID'
+curl -H 'Authorization: Bearer USER_TOKEN' 'https://assets.example.lan/v2/open-assets?username=artist_one&mode=edit'
+~~~
+
+Clients send heartbeats to `POST /v2/consumers/heartbeat` with
+`session_id`, `workstation`, `kind`, `label`, and a complete `reads`
+array of `{kind, id, version, mode}` records. Existing clients that omit
+`mode` default to `read`. The bundled Maya client reports its workstation
+automatically. Sessions expire after the configured TTL (90 seconds by default)
+or disappear on explicit release. The database survives server restarts, but
+expired entries are pruned on read/write.
+
+**Presence is advisory, not a file lock or guaranteed detection of open files.**
+Workstation and mode are client-reported, while username is server-authenticated.
+Normal SMB file opens outside participating clients cannot be observed here.
+Read-presence access requires `presence.read`, and the HTTP response hides
+assets not readable by the requesting user.
+
+A fresh registry provides `admin` with `*` and `readers` with read
+and presence permissions. `/health` and the static `/consumers` dashboard
+page remain publicly accessible; all asset data and API operations are
+authorized. A 401 means the token is absent/unknown; a 403 means the
+identity is recognized but lacks the requested permission.
+
+**Important migration behavior:** once `permissions_registry` is configured,
+the original shared `access_token` stops authorizing API requests. Configure
+the workstation with the newly issued **user token** instead (the existing
+client's token input remains the same). The registry is reread per request,
+so group changes, grants and token rotations take effect without restarting
+the server. The token is a credential, not a password; HTTPS is essential
+when using individual tokens over a network. Secure both the registry file
+and the host configuration with OS permissions. Registry file operations
+are intended for a single administrative writer, not concurrent editing.
 
 ## Configure a Windows or Linux workstation
 
@@ -198,6 +388,10 @@ The client saves a JSON config:
   "cache": "C:\\Users\\Artist\\AppData\\Local\\Tourmaline\\SharedAssetCache"
 }
 ~~~
+
+The CLI `--check` option verifies the server connection **before** saving
+client settings; a failed check leaves an existing configuration unchanged.
+The graphical wizard does not currently perform the same network verification.
 
 The workstation wizard also installs both the Maya picker and verified
 cache module. In Maya's Python Script Editor:
@@ -255,7 +449,7 @@ refreshes every ten seconds.
 
 A client heartbeat is an advisory, expiring **complete set** of reads. An
 empty set means idle; sessions expire after the configured TTL. It does not
-block writes, grant access, or inspect normal raw SMB file handles.
+block writes, grant access, or inspect ordinary raw SMB file handles.
 Clients can release their presence explicitly on exit.
 
 Maya's shared-cache client automatically announces source/product versions
@@ -293,6 +487,7 @@ contains NO locking/checkout/write ownership semantics.
 | PUT /v2/publish | Explicit immutable product publication |
 | GET /consumers | Dashboard login page (data fetched with token) |
 | GET /v2/consumers | Active readers, optionally filtered |
+| GET /v2/open-assets | Flat live usage records with user, mode, workstation |
 | POST /v2/consumers/heartbeat | Replace/refresh a consumer's read set |
 | POST /v2/consumers/release | Remove one consumer session |
 | GET /v1/assets and /v1/versions | Original path-based legacy views |
@@ -331,9 +526,21 @@ A workstation with cached bytes can keep using those local paths while
 the NAS is down, but fresh metadata queries need the server. Read-presence
 only tracks cooperating clients, and stale sessions expire automatically.
 
+## Troubleshooting startup
+
+Interactive NAS host installation starts a detached process and waits for
+`http://127.0.0.1:PORT/health` to return a healthy response. Startup errors
+are written to `server.log` alongside `server.json`; if the configured
+port is already in use or the server fails to start, the installer reports
+an error instead of claiming success. Systemd and Windows scheduled-task
+installations must be checked using their platform service status tools and
+the health URL above. For Windows scheduled tasks, remember that the `SYSTEM`
+account cannot use a logged-in user's mapped network drives.
+
 ## Validation
 
 ~~~bash
+python3 -m unittest discover -s tools/tests -p test_asset_permissions.py -v
 python3 -m unittest discover -s tools/tests -p test_shared_asset_repository.py -v
 python3 -m unittest discover -s tools/tests -p test_asset_read_presence.py -v
 python3 -m unittest discover -s tools/tests -p test_offline_asset_service.py -v

@@ -61,6 +61,44 @@ struct SyncStats {
     bool leafPublicationOk = true;
 };
 
+// Conservative readiness gate for *future* draw consumers. An alive
+// instance alone is not enough: topology, bounds and a physically resident
+// filterable submesh must also be published. This does NOT activate the
+// experimental GPU-scene draw path; existing renderer fallback is unchanged.
+// Row generations are checked for instance->mesh; LOD/submesh rows are
+// currently addressed by contiguous slot only, so this is not yet an
+// end-to-end generation/flight publication proof.
+[[nodiscard]] inline bool InstanceDrawReady(
+    const RenderDatabase& db, Handle<Instance> id) {
+    const Instance* instance = db.instances.Get(id);
+    if (!instance) return false;
+    const Handle<Mesh> meshId{instance->refs.x, instance->refs.y};
+    const Mesh* mesh = db.meshes.Get(meshId);
+    if (!mesh || !(mesh->flags & MeshFlagCompleteBounds) ||
+        mesh->lodCount == 0 || mesh->lodCount > 16 ||
+        mesh->firstLod >= db.lods.Size() ||
+        mesh->lodCount > db.lods.Size() - mesh->firstLod)
+        return false;
+    bool ready = false;
+    for (uint32_t level = 0; level < mesh->lodCount; ++level) {
+        const auto& lodRow = db.lods.Rows()[mesh->firstLod + level];
+        if (lodRow.identity.y != 1 ||
+            !(lodRow.value.flags & LodFlagBoundsKnown)) return false;
+        const bool resident = (mesh->residentMask & (1u << level)) != 0;
+        if (resident != ((lodRow.value.flags & LodFlagResident) != 0))
+            return false;
+        if (!resident) continue;
+        if (!(lodRow.value.flags & LodFlagFilterable) ||
+            lodRow.value.submeshCount != 1 ||
+            lodRow.value.firstSubmesh >= db.submeshes.Size()) return false;
+        const auto& sub = db.submeshes.Rows()[lodRow.value.firstSubmesh];
+        if (sub.identity.y != 1 || sub.value.geometryId == InvalidIndex)
+            return false;
+        ready = true;
+    }
+    return ready;
+}
+
 // Pure CPU reconciler; exposed independently so lifetime/dirty semantics
 // can be tested without constructing a Vulkan renderer or a cooked pak.
 class SceneRegistry {

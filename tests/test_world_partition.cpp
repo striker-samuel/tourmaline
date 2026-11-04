@@ -201,6 +201,26 @@ int main()
 			"interest.priority-first-sorted");
 	}
 
+	// ---- provider registration and cancellation contracts ----
+	{
+		wp::WorldPartition p;
+		RecordingProvider rec;
+		p.AddProvider(nullptr);
+		p.AddProvider(&rec);
+		p.AddProvider(&rec);
+		Check(p.ProviderCount() == 1, "provider.null-and-duplicate-ignored");
+		wp::StreamingInterest interest{};
+		p.SetInterests(&interest, 1);
+		p.UpdateFrame(40);
+		Check(rec.commitCalls == 1, "provider.one-commit-despite-duplicate");
+		p.SetInterests(nullptr, 0); // teleport/unload: cancel prior demand
+		p.UpdateFrame(41);
+		Check(p.InterestCount() == 0 && rec.lastInterestCount == 0,
+			"provider.empty-interest-cancels-previous");
+		Check(rec.commitCalls == 2 && rec.retireCalls == 2,
+			"provider.empty-interest-still-retires");
+	}
+
 	// ---- the provider frame sequence ----
 	{
 		wp::WorldPartition p;

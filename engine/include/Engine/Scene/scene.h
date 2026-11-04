@@ -232,6 +232,12 @@ inline constexpr int kSceneRenderFloatCount = 27;
 
 struct Scene {
 
+	// Bulk-loader/serializer backing arrays, not a per-frame mutation API.
+	// Live writers must use SetLocalTransform(NodeHandle) or explicitly
+	// MarkAllRootsChanged + recalculateGlobalTransforms after a bulk rewrite.
+	// A World-level mesh/visibility binding change additionally requires
+	// ResolveAndFixup_clusters (rebuild drawItems + topology revision).
+	// Direct writes to globalTransform bypass the GPU publication journal.
 	std::vector<mat4> localTransform;  // indexed by node
 	std::vector<mat4> globalTransform; // indexed by node
 
@@ -519,6 +525,11 @@ void UnlinkNodeFromParent(Scene& scene, int node);
 void RetireNodeSlot(Scene& scene, NodeId node);
 
 int addNode(Scene& scene, int parent, int level);
+
+// Generation-checked scene transform mutation. The setter marks affected
+// descendants for the GPU-scene journal via the existing recalc path.
+// Returns false for a retired/stale handle without writing the new slot.
+bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::mat4& transform);
 
 void markAsChanged(Scene& scene, int node);
 // Dynamic-only variant: skips static nodes so frozen subtrees never enter

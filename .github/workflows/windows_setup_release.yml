@@ -1,0 +1,187 @@
+# Windows setup installer: build on demand, publish only from an explicit setup-vX.Y.Z tag.
+# Linux continues to use setup_tourmaline.sh; no Linux binary release is generated.
+name: Tourmaline Windows setup release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'setup-v[0-9]*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tourmaline-setup-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout release source with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Verify packaging inputs and version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}"
+            if ($tag -notmatch '^setup-v([0-9]+\.[0-9]+\.[0-9]+)$') {
+              throw 'Release tag must be setup-vMAJOR.MINOR.PATCH'
+            }
+            "version=$($Matches[1])" >> $env:GITHUB_OUTPUT
+          } else {
+            "version=0.1.0" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Run setup wizard tests
+        run: |
+          python -m unittest discover -s tools/tests -p "test_setup_wizard.py" -v
+          python -m compileall -q tools/setup_wizard.py tools/project_init.py tools/install_shared_assets.py
+
+      - name: Cache Vulkan SDK
+        id: vulkan-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\VulkanSDK\1.4.357.0
+          key: vulkan-sdk-1.4.357.0-windows
+
+      - name: Install Vulkan SDK
+        if: steps.vulkan-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          curl.exe -fL -o $env:RUNNER_TEMP\vulkan-sdk.exe https://sdk.lunarg.com/sdk/download/1.4.357.0/windows/vulkan-sdk.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Vulkan SDK download failed' }
+          Start-Process -Wait -FilePath $env:RUNNER_TEMP\vulkan-sdk.exe -ArgumentList '--accept-licenses','--default-answer','--confirm-command','install'
+
+      - name: Configure Vulkan SDK
+        shell: pwsh
+        run: |
+          Add-Content $env:GITHUB_ENV 'VULKAN_SDK=C:\VulkanSDK\1.4.357.0'
+          Add-Content $env:GITHUB_PATH 'C:\VulkanSDK\1.4.357.0\Bin'
+
+      - name: Cache prebuilt Embree
+        id: embree-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\embree
+          key: embree-4.4.1-x64-windows
+
+      - name: Download pinned Embree
+        if: steps.embree-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          curl.exe -fL -o $env:RUNNER_TEMP\embree.zip https://github.com/embree/embree/releases/download/v4.4.1/embree-4.4.1.x64.windows.zip
+          if ($LASTEXITCODE -ne 0) { throw 'Embree download failed' }
+          $hash = (Get-FileHash $env:RUNNER_TEMP\embree.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne '5aa1fa3161a7209fe5cebff80306d0e892c49aa74171db8a7eeffa86f6ef0be78f') {
+            # The verified dependency SHA must match install_dependencies.ps1.
+            throw "Embree SHA256 mismatch: $hash"
+          }
+          Expand-Archive $env:RUNNER_TEMP\embree.zip -DestinationPath $env:RUNNER_TEMP\embree-unpack
+          Move-Item "$env:RUNNER_TEMP\embree-unpack\embree-4.4.1.x64.windows" C:\embree
+
+      - name: Cache KTX Software
+        id: ktx-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\ktx
+          key: ktx-4.4.2-Windows
+
+      - name: Build KTX Software
+        if: steps.ktx-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch v4.4.2 https://github.com/KhronosGroup/KTX-Software "$env:RUNNER_TEMP\ktx-src"
+          cmake -S "$env:RUNNER_TEMP\ktx-src" -B "$env:RUNNER_TEMP\ktx-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DKTX_FEATURE_TOOLS=OFF -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF -DCMAKE_INSTALL_PREFIX=C:/ktx
+          if ($LASTEXITCODE -ne 0) { throw 'KTX configure failed' }
+          cmake --build "$env:RUNNER_TEMP\ktx-build"
+          if ($LASTEXITCODE -ne 0) { throw 'KTX build failed' }
+          cmake --install "$env:RUNNER_TEMP\ktx-build"
+          if ($LASTEXITCODE -ne 0) { throw 'KTX install failed' }
+
+      - name: Cache third-party downloads
+        uses: actions/cache@v4
+        with:
+          path: external\.downloads
+          key: deps-downloads-Windows-${{ hashFiles('install_dependencies.ps1') }}
+
+      - name: Install pinned Tourmaline dependencies
+        shell: pwsh
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File install_dependencies.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Tourmaline dependency installation failed' }
+
+      - name: Build native Tourmaline Project executable
+        shell: pwsh
+        run: |
+          cmake -S . -B out/build/release-setup -G Ninja -DCMAKE_BUILD_TYPE=Release -DEMBREE_PREBUILT_DIR=C:/embree -DKTX_ROOT=C:/ktx -DBUILD_TESTING=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed' }
+          cmake --build out/build/release-setup --target Project
+          if ($LASTEXITCODE -ne 0) { throw 'Project build failed' }
+          if (-not (Test-Path out/build/release-setup/Project.exe)) {
+            throw 'Project.exe not produced in expected build directory'
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
+
+      - name: Package Windows setup EXE
+        shell: pwsh
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build_windows_installer.ps1 -NativeBinDir out/build/release-setup -Version "${{ steps.version.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { throw 'Installer packaging failed' }
+          if (-not (Test-Path out/installers/TourmalineSetup-Windows.exe)) {
+            throw 'Installer output not found'
+          }
+
+      - name: Record SHA256 checksum
+        shell: pwsh
+        run: |
+          $file = 'out/installers/TourmalineSetup-Windows.exe'
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          "$hash  TourmalineSetup-Windows.exe" | Set-Content 'out/installers/SHA256SUMS.txt' -Encoding ascii
+
+      - name: Upload workflow artifacts for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: tourmaline-windows-setup-${{ steps.version.outputs.version }}
+          path: |
+            out/installers/TourmalineSetup-Windows.exe
+            out/installers/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release only for version tag
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $installer = 'out/installers/TourmalineSetup-Windows.exe'
+          $checksum = 'out/installers/SHA256SUMS.txt'
+          if (gh release view $tag --repo "$env:GITHUB_REPOSITORY" 2>$null) {
+            gh release upload $tag $installer $checksum --clobber --repo "$env:GITHUB_REPOSITORY"
+          } else {
+            gh release create $tag $installer $checksum --verify-tag --title "Tourmaline Windows Setup ${{ steps.version.outputs.version }}" --notes-file docs/windows_setup_release_notes.md --repo "$env:GITHUB_REPOSITORY" --draft
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release upload failed' }

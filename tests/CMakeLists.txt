@@ -1323,6 +1323,10 @@ add_test(NAME gpu_scene_world_tests COMMAND GpuSceneWorldTests)
 # no Python3 interpreter exists (the C++ suite never depends on it).
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_FOUND)
+    add_test(NAME shader_variant_manifest_tests
+        COMMAND ${Python3_EXECUTABLE} tools/tests/test_shader_variant_manifest.py)
+    set_tests_properties(shader_variant_manifest_tests PROPERTIES
+        WORKING_DIRECTORY "${TOURMALINE_SOURCE_DIR}")
     add_test(NAME perf_harness_tests
         COMMAND ${Python3_EXECUTABLE} -m unittest discover
             -s ${CMAKE_SOURCE_DIR}/tools/tests

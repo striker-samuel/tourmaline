@@ -40,7 +40,7 @@ namespace engine {
 // Parse() maps the raw spellings once; invalid values warn and stay unset
 // so the authored scene wins. Nullopt = unset = scene seed wins.
 enum class OnOffPin { Off, On };
-enum class AaPin { Off, Msaa2x, Smaa1x, SmaaT2x };
+enum class AaPin { Off, Msaa2x, Smaa1x, SmaaT2x, Msaa2xCustom };
 enum class AoPin { None, Ssao, Sao };
 
 struct RunConfig {
@@ -52,7 +52,7 @@ struct RunConfig {
 	std::optional<float> camYawDeg;
 
 	// ---- antialiasing / filtering ----
-	// aa: off|msaa2x|msaa|smaa1x|smaat2x|t2x (both historical spellings accepted)
+	// aa: off|msaa2x|msaa|smaa1x|smaat2x|t2x|msaa2xcustom
 	std::optional<AaPin> aa;
 	bool a2c = false;
 	// textureFilter: trilinear|2x|4x|8x|16x

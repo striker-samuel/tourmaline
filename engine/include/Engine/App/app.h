@@ -111,8 +111,12 @@ public:
 	void SetFrameBudget(int n) { frameBudget_ = n; }
 	int GetFrameBudget() const { return frameBudget_; }
 	// Optional CPU frame cap (0 = uncapped); benchmark runs bypass it.
-	void SetMaxFps(uint32_t fps) { m_framePacer.SetTargetFps(fps); }
+	void SetMaxFps(uint32_t fps) { m_manualMaxFps = true; m_framePacer.SetTargetFps(fps); }
 	uint32_t GetMaxFps() const { return m_framePacer.GetTargetFps(); }
+	// VRR: automatically cap just below the active display refresh rate.
+	// Explicit SetMaxFps wins; Vulkan/OS/monitor VRR support is external.
+	void SetVrrEnabled(bool enabled) { m_vrrEnabled = enabled; }
+	bool GetVrrEnabled() const { return m_vrrEnabled; }
 	// True while the measured window runs (post warmup) — element-side
 	// bench accounting (WorldRenderer's [perf] phase split) keys on it.
 	bool BenchMeasuring() const { return frameBudget_ > 0 && benchWarmup_ >= 10; }
@@ -176,6 +180,10 @@ protected:
 	std::chrono::steady_clock::time_point m_lastFrameStart{};
 	bool m_clockInitialized = false;
 	FramePacer m_framePacer{};
+	bool m_vrrEnabled = false;
+	bool m_manualMaxFps = false;
+	uint32_t m_autoVrrFps = 0;
+	void UpdateVrrFrameLimit();
 #pragma endregion
 
 #pragma region ===[ Graphics State ]===

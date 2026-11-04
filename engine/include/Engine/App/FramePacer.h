@@ -29,6 +29,16 @@ public:
     uint32_t GetTargetFps() const { return targetFps_; }
     void Reset() { armed_ = false; }
 
+    // Leave room below the VRR ceiling so FIFO VSync does not start
+    // queueing frames at the fixed-refresh boundary. Unknown refresh
+    // rates deliberately yield no automatic cap.
+    static uint32_t VrrTargetFps(double refreshHz) {
+        if (!(refreshHz >= 30.0 && refreshHz <= 1000.0))
+            return 0;
+        const auto rounded = static_cast<uint32_t>(refreshHz + 0.5);
+        return rounded > 2 ? rounded - 2 : 0;
+    }
+
     static Duration PeriodForFps(uint32_t fps) {
         if (fps == 0)
             return Duration::zero();

@@ -311,6 +311,22 @@ void tour::App::DrawFrame() {
 	m_swapchain->EndAndPresentFramebuffer(fb);
 }
 
+void tour::App::UpdateVrrFrameLimit() {
+	if (!m_vrrEnabled || m_manualMaxFps || !window)
+		return;
+	const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+	const SDL_DisplayMode* mode = display ? SDL_GetCurrentDisplayMode(display) : nullptr;
+	const uint32_t target = mode ? FramePacer::VrrTargetFps(mode->refresh_rate) : 0;
+	if (target != m_autoVrrFps) {
+		m_autoVrrFps = target;
+		m_framePacer.SetTargetFps(target);
+		if (target)
+			std::cout << "[VRR] refresh " << mode->refresh_rate << " Hz, cap " << target << " FPS\n";
+		else
+			std::cerr << "[VRR] unknown display refresh rate; automatic FPS cap disabled\n";
+	}
+}
+
 void tour::App::MainLoop() {
 	SMVK_PROFILE_THREAD("MainThread");
 	windowShouldClose_ = false;
@@ -318,8 +334,10 @@ void tour::App::MainLoop() {
 	m_framePacer.Reset();
 	double benchPollMs = 0.0, benchGameMs = 0.0, benchDrawMs = 0.0;
 	while (!windowShouldClose_) {
-		if (frameBudget_ == 0)
+		if (frameBudget_ == 0) {
+			UpdateVrrFrameLimit();
 			m_framePacer.BeginFrame();
+		}
 		if (m_inputTapeMode == InputTapeMode::Record &&
 			!m_inputTape.BeginFrame(m_inputTapeFrame, m_inputTapeError))
 			break;
