@@ -28,7 +28,7 @@ void PrintUsage(const char* prog) {
 		<< "  " << (prog ? prog : "App")
 		<< " --project <path.tapp> (the generated appmanifest launch)\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
-		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--max-fps N] [--disable_control] [--no-dlss]\n"
+		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--vsync on|off] [--vrr] [--max-fps N] [--disable_control] [--no-dlss]\n"
 		<< "  [--capture] [--use_optick] [--use_optick_gpu] [--no-vfs]\n"
 		<< "  --pak runs cooked paks — REQUIRED (or --project), there is\n"
 		<< "  no default (no entry-point pak = the App refuses to run).\n"
@@ -49,7 +49,10 @@ void PrintUsage(const char* prog) {
 		<< "  --bench_move flies forward at constant velocity (default 4 m/s) past warmup\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
 		<< "  --bench also forces vsync off (uncapped immediate present; --present wins)\n"
-		<< "  --max-fps N caps interactive CPU frames to 1..1000 FPS (omitted = uncapped; ignored by --bench)\n"
+		<< "  --max-fps N caps interactive CPU frames to 1..1000 FPS (overrides --vrr; ignored by --bench)\n"
+		<< "  --vrr enables a 2 FPS margin below the detected refresh rate (e.g. 142 at 144 Hz)\n"
+		<< "  --vsync on|off selects FIFO (tear-free) or immediate (may tear)\n"
+		<< "  VRR requires compatible monitor, OS and driver settings; pair --vrr with --vsync on\n"
 		<< "  --input-record <path> writes an engine input tape at exit\n"
 		<< "  --input-replay <path> replays engine input + timestep by tick\n"
 		<< "  --snapshot-sequence <dir> exports Frame_0001.png ... with embedded state\n"
@@ -230,11 +233,40 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 					"an FPS limit, 1..1000", exitCode);
 			opts.maxFps = int(n);
 		}
+		else if (std::strcmp(a, "--vrr") == 0) {
+			opts.vrr = true;
+		}
+		else if (std::strcmp(a, "--vsync") == 0 || std::strncmp(a, "--vsync=", 8) == 0) {
+			const char* v = std::strcmp(a, "--vsync") == 0
+				? (i + 1 < argc ? argv[++i] : nullptr) : a + 8;
+			if (!v || (std::strcmp(v, "on") != 0 && std::strcmp(v, "off") != 0)) {
+				std::cerr << "Bad --vsync value (expected on|off)\n";
+				exitCode = EXIT_FAILURE;
+				return false;
+			}
+			if (opts.presentSet) {
+				std::cerr << "--vsync conflicts with --present or another --vsync\n";
+				exitCode = EXIT_FAILURE;
+				return false;
+			}
+			opts.presentMode = std::strcmp(v, "on") == 0 ? "fifo" : "immediate";
+			opts.presentSet = true;
+		}
 		else if ((std::strcmp(a, "--present") == 0) && i + 1 < argc) {
+			if (opts.presentSet) {
+				std::cerr << "--present conflicts with --vsync or another --present\n";
+				exitCode = EXIT_FAILURE;
+				return false;
+			}
 			opts.presentMode = argv[++i];
 			opts.presentSet = true;
 		}
 		else if (std::strncmp(a, "--present=", 10) == 0) {
+			if (opts.presentSet) {
+				std::cerr << "--present conflicts with --vsync or another --present\n";
+				exitCode = EXIT_FAILURE;
+				return false;
+			}
 			opts.presentMode = a + 10;
 			opts.presentSet = true;
 		}
@@ -259,7 +291,7 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 		else if (std::strcmp(a, "--snapshot-format") == 0 && i + 1 < argc) {
 			opts.snapshotOutputFormat = argv[++i];
 			if (opts.snapshotOutputFormat != "png" && opts.snapshotOutputFormat != "raw") {
-				std::cerr << "Bad --snapshot-format (expected png|raw)\\n";
+				std::cerr << "Bad --snapshot-format (expected png|raw)\n";
 				exitCode = EXIT_FAILURE;
 				return false;
 			}
@@ -267,7 +299,7 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 		else if (std::strncmp(a, "--snapshot-format=", 18) == 0) {
 			opts.snapshotOutputFormat = a + 18;
 			if (opts.snapshotOutputFormat != "png" && opts.snapshotOutputFormat != "raw") {
-				std::cerr << "Bad --snapshot-format (expected png|raw)\\n";
+				std::cerr << "Bad --snapshot-format (expected png|raw)\n";
 				exitCode = EXIT_FAILURE;
 				return false;
 			}

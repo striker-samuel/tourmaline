@@ -31,6 +31,13 @@ int main() {
     Require(Pacer::NextDeadline(origin, origin + period * 10, period) == origin + period * 11);
     Require(Pacer::NextDeadline(origin, origin, Pacer::Duration::zero()) == origin);
 
+    Require(Pacer::VrrTargetFps(144.0) == 142);
+    Require(Pacer::VrrTargetFps(143.86) == 142);
+    Require(Pacer::VrrTargetFps(59.94) == 58);
+    Require(Pacer::VrrTargetFps(240.0) == 238);
+    Require(Pacer::VrrTargetFps(0.0) == 0);
+    Require(Pacer::VrrTargetFps(-1.0) == 0);
+    Require(Pacer::VrrTargetFps(1001.0) == 0);
     Pacer pacer;
     Require(pacer.GetTargetFps() == 0);
     pacer.SetTargetFps(144);
