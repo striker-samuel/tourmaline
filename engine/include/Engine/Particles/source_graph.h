@@ -6,6 +6,7 @@
 // or a future registered provider). No editor, terrain renderer, or ImGui dependency.
 #include <Engine/Graph/graph.h>
 #include <Engine/Rendergraph/particles.h>
+#include <Engine/Rendergraph/meshparticles.h>
 #include <glm/glm.hpp>
 #include <algorithm>
 #include <cmath>
@@ -35,6 +36,10 @@ struct Point {
     glm::vec3 normal{0.0f, 1.0f, 0.0f};
     float weight = 1.0f;
 };
+// A sink can render billboards or compile GPU mesh-instance emitter rows.
+// Mesh geometry/material bindings are supplied by the renderer's mesh table.
+inline constexpr uint32_t kBillboardRender = 0;
+inline constexpr uint32_t kMeshRender = 1;
 struct Attributes {
     // Source selector: -1 = all strokes/terrain/placement data.
     int selector = -1;
@@ -44,6 +49,8 @@ struct Attributes {
     // distributed across selected sources (rather than per point).
     float rate = 18.0f, sizeStart = 0.35f, sizeEnd = 1.8f;
     float lifetime = 6.0f, speed = 0.3f, radius = 0.2f;
+    uint32_t renderMode = kBillboardRender;
+    uint32_t meshId = 0; // mesh-particle bin, [0, kMeshParticlesMaxBins)
     glm::vec3 color{0.58f, 0.49f, 0.36f};
 };
 struct Graph {
@@ -118,6 +125,7 @@ struct Result {
     bool ok = false;
     std::string error, warning;
     std::vector<smvk::ParticleEmitterGpu> emitters;
+    std::vector<smvk::MeshParticleEmitterGpu> meshEmitters;
 };
 
 // Provider-evaluation and graph compilation are deterministic by stable node ID.
@@ -161,9 +169,13 @@ inline Result Evaluate(const Graph& graph, const SourceProvider& provider,
                     candidates.insert(candidates.end(), points.begin(), points.end());
                 }
             if (candidates.empty()) continue;
-            const uint32_t remaining =
-                capacity > result.emitters.size() ?
-                capacity - static_cast<uint32_t>(result.emitters.size()) : 0u;
+            if (attr.renderMode > kMeshRender ||
+                (attr.renderMode == kMeshRender && attr.meshId >= smvk::kMeshParticlesMaxBins)) {
+                result.error = "invalid mesh particle renderer or mesh bin"; return result;
+            }
+            const size_t used = result.emitters.size() + result.meshEmitters.size();
+            const uint32_t remaining = capacity > used ?
+                capacity - static_cast<uint32_t>(used) : 0u;
             if (!remaining) {
                 result.warning = "particle emitter budget reached; some sources omitted";
                 continue;
@@ -177,6 +189,23 @@ inline Result Evaluate(const Graph& graph, const SourceProvider& provider,
                 if (!std::isfinite(pos.x) || !std::isfinite(pos.y) ||
                     !std::isfinite(pos.z) || !std::isfinite(point.weight)) {
                     result.error = "non-finite particle source point"; return result;
+                }
+                if (attr.renderMode == kMeshRender) {
+                    smvk::MeshParticleEmitterGpu mesh{};
+                    mesh.position = glm::vec4(pos, std::max(0.0f, attr.radius));
+                    mesh.direction = glm::vec4(1.0f, 0.0f, 0.0f, 0.5f);
+                    mesh.velocity = glm::vec4(std::max(0.0f, attr.speed) * 0.5f,
+                        std::max(0.0f, attr.speed), 0.0f, 1.0f);
+                    mesh.life = glm::vec4(std::max(0.01f, attr.lifetime * 0.75f),
+                        std::max(0.01f, attr.lifetime),
+                        std::max(0.0f, attr.rate) * std::clamp(point.weight, 0.0f, 1.0f) / count,
+                        float(attr.meshId));
+                    mesh.spin.z = float(id * 4099u + i);
+                    mesh.size = glm::vec4(std::max(0.001f, attr.sizeStart),
+                        std::max(0.001f, attr.sizeEnd), 0.12f, 0.0f);
+                    mesh.color = glm::vec4(glm::max(attr.color, glm::vec3(0.0f)), 0.0f);
+                    result.meshEmitters.push_back(mesh);
+                    continue;
                 }
                 smvk::ParticleEmitterGpu e{};
                 e.position = glm::vec4(pos, std::max(0.0f, attr.radius));
@@ -209,10 +238,11 @@ inline Result Evaluate(const Graph& graph, const SourceProvider& provider,
 inline std::string SerializeAttributes(const std::string& type, const Attributes& a) {
     std::ostringstream out;
     out.precision(9);
-    out << "v1 " << type << " " << a.selector << " " << a.minY << " " << a.maxY
+    out << "v2 " << type << " " << a.selector << " " << a.minY << " " << a.maxY
         << " " << a.rate << " " << a.sizeStart << " " << a.sizeEnd
         << " " << a.lifetime << " " << a.speed << " " << a.radius
-        << " " << a.color.x << " " << a.color.y << " " << a.color.z;
+        << " " << a.color.x << " " << a.color.y << " " << a.color.z
+        << " " << a.renderMode << " " << a.meshId;
     return out.str();
 }
 inline bool ParseAttributes(const std::string& text, std::string& type, Attributes& a) {
@@ -222,8 +252,14 @@ inline bool ParseAttributes(const std::string& text, std::string& type, Attribut
     if (!(in >> version >> type >> parsed.selector >> parsed.minY >> parsed.maxY
         >> parsed.rate >> parsed.sizeStart >> parsed.sizeEnd >> parsed.lifetime
         >> parsed.speed >> parsed.radius >> parsed.color.x >> parsed.color.y
-        >> parsed.color.z) || (in >> extra) || version != "v1" ||
+        >> parsed.color.z) ||
+        (version != "v1" && version != "v2") ||
         (!IsSourceType(type) && type != kHeightFilter && type != kEmitter))
+        return false;
+    if (version == "v2" &&
+        !(in >> parsed.renderMode >> parsed.meshId)) return false;
+    if ((in >> extra) || parsed.renderMode > kMeshRender ||
+        (parsed.renderMode == kMeshRender && parsed.meshId >= smvk::kMeshParticlesMaxBins))
         return false;
     const float values[] = {parsed.minY, parsed.maxY, parsed.rate,
         parsed.sizeStart, parsed.sizeEnd, parsed.lifetime, parsed.speed,
