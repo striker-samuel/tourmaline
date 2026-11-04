@@ -584,7 +584,15 @@ void EditorApp::FinalizePending() {
 					m_world != nullptr && !m_cookRunning && !m_bakeRunning)) {
 				std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
 					"%s", TourTarget().c_str());
+#ifdef _WIN32
+				std::string target;
+				if (NativeSaveTourFile(target, m_savePathBuf) && !target.empty()) {
+					if (SaveTourTo(target))
+						Log("Tour saved: " + target);
+				}
+#else
 				m_showSaveDialog = true;
+#endif
 			}
 			if (ImGui::MenuItem("Save tour incremental", "Ctrl+Alt+S",
 					false, m_world != nullptr && !m_cookRunning && !m_bakeRunning))
