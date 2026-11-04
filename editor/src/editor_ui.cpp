@@ -987,6 +987,30 @@ void EditorApp::FinalizePending() {
 #endif
 			ImGui::EndMenu();
 		}
+		// DCC actions belong in the application menu, not the Assets grid.
+		// A multi-selection must never silently operate on just its last item.
+		if (ImGui::BeginMenu("DCC")) {
+			const bool oneAsset = m_assetsSelSet.size() == 1
+				&& !m_assetsSel.empty()
+				&& m_assetsSelSet.front() == m_assetsSel
+				&& std::filesystem::is_regular_file(m_assetsSel);
+			if (oneAsset)
+				ImGui::TextDisabled("%s", std::filesystem::path(m_assetsSel)
+					.filename().string().c_str());
+			else
+				ImGui::TextDisabled("Select exactly one file in Assets");
+			ImGui::Separator();
+			if (ImGui::MenuItem("Open in DCC", nullptr, false, oneAsset))
+				OpenAssetInDcc(m_assetsSel);
+			if (ImGui::MenuItem("Link DCC source...", nullptr, false, oneAsset))
+				LinkAssetToDcc(m_assetsSel);
+			if (ImGui::MenuItem("Publish glTF", nullptr, false,
+					oneAsset && !m_dccPublishRunning))
+				PublishAssetFromDcc(m_assetsSel);
+			if (ImGui::MenuItem("Unlink DCC source", nullptr, false, oneAsset))
+				UnlinkAssetFromDcc(m_assetsSel);
+			ImGui::EndMenu();
+		}
 		if (ImGui::BeginMenu("View")) {
 			ImGui::TextDisabled("Debug views: F1..F6, F8..F12. P parents"
 				" the selection; Z toggles wireframe in Layout.");
