@@ -71,9 +71,14 @@ inline const char* vkResultToString(VkResult result);
 
 struct SDL_Window;
 
+// App lives in tour::; a local `class App;` in smvk would declare a second,
+// unrelated smvk::App, which conflicts with app.h's `using ::tour::App;`
+// (Clang rejects it; GCC and MSVC happen to let it through).
+namespace tour { class App; }
+
 namespace smvk {
 
-	class App;
+	using ::tour::App;
 	using VulkanApp = App;
 
 	// (the namespace/RHI boundary audit) The VULKAN IMPLEMENTATION

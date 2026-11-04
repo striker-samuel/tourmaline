@@ -62,6 +62,10 @@ endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# No C++20 modules in this tree. Scanning would otherwise run in subprojects
+# with a newer cmake_minimum (meshoptimizer) and need clang-scan-deps, which
+# Clang installs do not always ship.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # Vulkan#
 #--- Rendering backend ------------------------------------------------------
