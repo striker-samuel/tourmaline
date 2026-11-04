@@ -1,6 +1,6 @@
 # Decompose WorldRenderer into cohesive collaborators
 
-> **STATUS: IMPLEMENTATION NOT STARTED.** This is a draft PR scaffold containing an audit-derived scope specification only. Do not merge until actual implementation commits, tests, and review are complete.
+> **STATUS: PARTIAL IMPLEMENTATION.** The CPU-only frame-pass configuration has been extracted and regression checks added. Frame-stage orchestration decomposition and native/GPU acceptance testing are **not complete**. Keep PR #191 as a draft; do not merge yet.
 
 **Finding:** L-01  
 **Priority:** P1
@@ -8,22 +8,18 @@
 ## Problem and intended change
 Extract narrow frame-stage orchestration/services from the oversized renderer without replacing render paths or introducing general GPU memory ownership.
 
-## Source files to inspect / potentially modify
-- `engine/src/Renderer/WorldRenderer.cpp`
-- `engine/include/Engine/Renderer/WorldRenderer.h`
-- `engine/src/Rendergraph/rendergraph.cpp`
-- `tests/test_rendergraph_contract.cpp`
+## Implemented in this branch
+- [x] Extract `WorldRendererConfig` and its `All`, `Minimal`, and `FilterOnly` policies into `engine/include/Engine/Renderer/WorldRendererConfig.h`.
+- [x] Preserve public API and include the new policy header from `WorldRenderer.h`; no Vulkan execution or resource ownership changes.
+- [x] Add CPU contract checks in `tests/test_rendergraph_contract.cpp` for all/minimal/filtered presets and independent configurations.
+- [x] Inspect the existing implementation, header, and rendergraph contract tests.
 
-## Acceptance criteria
-Render output and execution order remain unchanged; unit tests pin initialization, per-pass state, shutdown and no regression in renderer benchmarks.
-
-## Implementation checklist
-- [ ] Trace all current call sites and confirm design invariants against current `master`.
-- [ ] Implement the smallest compatible correction in source code.
-- [ ] Add positive, negative, and integration regression tests.
-- [ ] Verify existing fallback and caller-owned resource lifetime behavior.
-- [ ] Run relevant native tests, and GPU/manual tests where applicable.
-- [ ] Document compatibility, benchmarking, and before/after evidence.
+## Remaining acceptance gates
+- [ ] Trace frame-stage call graph, extract appropriately narrow orchestration collaborators, and preserve order/feature fallback.
+- [ ] Test initialization, shutdown, error paths and integrations; the added contract assertions only cover policy.
+- [ ] Run CMake/native build and RendergraphContractTests on supported compilers.
+- [ ] Run GPU smoke, validation-layer and benchmark before/after tests.
+- [ ] Record verification evidence and confirm backwards compatibility and caller-owned GPU lifetime.
 
 ## Scope boundary
-No generic GPU memory or automatic lifetime manager; the caller remains responsible for memory. Do not enable experimental rendering paths as part of this fix.
+Do not introduce a GPU memory manager or automatic lifetime ownership; the caller remains responsible for GPU memory. Do not enable experimental rendering paths. No renderer benchmarks or native builds were executed through the connector.
