@@ -27,6 +27,16 @@
 //   bake gi [on|off]          the GI volume bake (bare = on)
 //   bake cubemaps [on|off]    the cubemap capture bake (bare = on)
 //   bake sdf [on|off]         per-geometry mesh-local distance sidecars
+//   materialPacking <source> <AO> <cavity> <roughness> <metallic>
+//                              optional project-wide packed-channel rule;
+//                              source = metallicRoughness | occlusion;
+//                              each channel = r | g | b | a (lowercase).
+//                              Example: materialPacking metallicRoughness r a g b
+//                              The selected existing source texture is
+//                              reused for all four scalar properties.
+//                              It does not synthesize new packed image bytes.
+//                              Missing source slots retain glTF defaults.
+
 //
 //   [pak <id>]                one section per package; ids unique
 //   output <file.pak>         REQUIRED per pak; unique across paks
