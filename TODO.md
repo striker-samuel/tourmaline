@@ -399,6 +399,30 @@ TOURMALINE_SHADER_SWAP=20 frame-safety pin — 0.00% differing pixels),
   author's follow-up (golden-sequence comparisons + cross-machine
   aggregation — blocked on a baseline policy decision).
 
+## #204 — Unicode corruption guard (checker + CI + AGENTS protocol)
+- (Merge note: the checker and its test BOTH carried the literal
+  backslash-n generation artifact — the THIRD occurrence of that
+  disease: the is_powershell assignment was swallowed into a comment
+  (NameError) and two test methods merged into one broken line. Also
+  the scan flagged its own fixtures and exited 1 on a clean tree,
+  which would have kept the workflow permanently red. Fixed in
+  `ea079324`.)
+- **Reshaped per owner direction (`4a704ab9`)**: the verification is
+  JUST A TEST now — `test_tracked_tree_is_clean` scans the whole
+  tracked tree inside the unittest suite (one command = fixtures +
+  enforcement), the CI workflow runs exactly that suite, and AGENTS.md
+  carries a five-line pointer instead of the 28-line agent checklist
+  (AGENTS.md itself is back in the CHECKED set, clean).
+
+## #205 — contaminated-benchmark failure + CPU/GPU/RAM telemetry
+- CPU-side validation: tools compile, the perf_harness suite passes.
+- **Contamination guard validated LIVE (2026-11-05)**: two bench
+  attempts on this dev box were REFUSED at preflight ("other
+  3D/compute GPU processes >= 5%") — exactly the designed behavior
+  while the GPU is busy. The telemetry RECORD itself needs a quiet GPU
+  window on a real machine (the harness output + result.json shape are
+  covered by the unit tests).
+
 ## Audit series still open (drafts)
 - #184 [Audit 03] double-precision transforms (docs-only, unstarted).
 - #191 [Audit 10] WorldRenderer decomposition (partial implementation
