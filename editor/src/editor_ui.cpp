@@ -6603,7 +6603,25 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// Defer tile-context deletes until after the grid child has ended:
 		// OpenPopup() and BeginPopupModal() must run at the same popup depth.
 		std::string tileDeleteRequested;
-		bool tileDeleteMulti = false; // the multi-set delete request
+		bool tileDeleteMulti = false;
+		static std::string renameTarget;
+		static char renameName[256]{};
+		bool openRename = false;
+		const auto requestRename = [&](const std::string& path) {
+			if (path.empty() || m_cookRunning)
+				return;
+			// Never move an active scene: autosave still targets its path.
+			if (path == m_gltfPath || path == m_gltfHostPath) {
+				Log("Rename: close the open scene first.");
+				return;
+			}
+			renameTarget = path;
+			const std::string filename =
+				fs::path(path).filename().string();
+			std::snprintf(renameName, sizeof(renameName), "%s",
+				filename.c_str());
+			openRename = true;
+		}; // the multi-set delete request
 		ImGui::Separator();
 		// The grid alone fills the remaining height, so toolbar rows never
 		// compete with tiles. IMPORTANT: obtain dl after BeginChild; using
@@ -7331,6 +7349,9 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 						UnlinkAssetFromDcc(e.abs.Str());
 					ImGui::Separator();
 				}
+				if (ImGui::MenuItem("Rename", nullptr, false,
+					!m_cookRunning && m_assetsSelSet.size() <= 1))
+					requestRename(e.abs.Str());
 				// MULTI-AWARE: deleting a tile that sits in a multi-
 				// selection (>1) requests the WHOLE set (one confirm,
 				// every plan executes); a single/unselected tile keeps
@@ -7374,6 +7395,10 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// MULTIDELETE on the Delete KEY while the grid holds the focus
 		// (the key + the context menu are the two delete gestures).
 		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)
+			&& ImGui::IsKeyPressed(ImGuiKey_F2)
+			&& m_assetsSelSet.size() == 1)
+			requestRename(m_assetsSelSet.front());
+		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)
 			&& ImGui::IsKeyPressed(ImGuiKey_Delete)) {
 			if (m_assetsSelSet.size() > 1)
 				tileDeleteMulti = true;
@@ -7391,6 +7416,62 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		else if (!tileDeleteRequested.empty())
 			RequestAssetDelete(&tileDeleteRequested, 1);
 		DrawAssetDeleteModal();
+		// Popup is hosted at the same ID depth on every frame (outside
+		// the grid child), including the context-menu request frame.
+		if (openRename)
+			ImGui::OpenPopup("Rename asset##browser");
+		if (ImGui::BeginPopupModal("Rename asset##browser", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui::TextDisabled("Renaming may break path-based references.");
+			if (ImGui::IsWindowAppearing())
+				ImGui::SetKeyboardFocusHere();
+			const bool enter = ImGui::InputText("Name", renameName,
+				sizeof(renameName), ImGuiInputTextFlags_EnterReturnsTrue);
+			if (enter || ImGui::Button("Rename")) {
+				std::string result, err;
+				if (RenameBrowserAsset(renameTarget, m_projectRoot,
+					renameName, result, err)) {
+					const auto retarget = [&](std::string& path) {
+						if (path == renameTarget)
+							path = result;
+						else if (path.size() > renameTarget.size()
+							&& path.compare(0, renameTarget.size(),
+								renameTarget) == 0
+							&& path[renameTarget.size()] == '/')
+							path = result + path.substr(renameTarget.size());
+					};
+					retarget(m_assetsSel);
+					retarget(m_assetsAnchor);
+					retarget(m_assetsDir);
+					retarget(m_assetsExpandGltf);
+					retarget(m_assetsExpandTour);
+					for (auto& path : m_assetsSelSet)
+						retarget(path);
+					m_assetInspectPath.clear();
+					m_assetInspectMat.reset();
+					m_assetInspectMesh.reset();
+					m_assetInspectGiCook.reset();
+					m_assetInspectLmCook.reset();
+					if (m_assetDb.IsOpen()) {
+						smvk::cache::RescanStats stats;
+						std::string dbErr;
+						if (!m_assetDb.RescanProject(stats, dbErr))
+							Log("Rename: asset DB rescan failed: " + dbErr);
+					}
+					Log("Renamed asset to '" + result + "'.");
+					renameTarget.clear();
+					ImGui::CloseCurrentPopup();
+				} else {
+					Log("Rename: " + err);
+				}
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel")) {
+				renameTarget.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
 		ImGui::EndChild(); // ##assets_root (non-scrolling header)
 	}
 
