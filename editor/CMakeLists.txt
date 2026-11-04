@@ -70,6 +70,16 @@ target_include_directories(Editor
         ${CMAKE_SOURCE_DIR}/tools/common
 )
 
+# Optional GPL/commercial CGAL Polygon Mesh Processing dependency.
+# OFF by default: never pull CGAL into normal MIT engine/editor builds.
+option(TOURMALINE_EDITOR_CGAL_INTERSECTIONS
+    "Enable CGAL GPL/commercial mesh intersection tools in Editor" OFF)
+if(TOURMALINE_EDITOR_CGAL_INTERSECTIONS)
+    find_package(CGAL 5.6 REQUIRED)
+    target_link_libraries(Editor PRIVATE CGAL::CGAL)
+    target_compile_definitions(Editor PRIVATE TOURMALINE_EDITOR_WITH_CGAL=1)
+endif()
+
 target_link_libraries(Editor
     PRIVATE
         engine
