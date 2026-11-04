@@ -971,13 +971,17 @@ int main() {
 	//      ktxTexture2 — are excluded by name). A new global
 	//      struct/class/enum in a public header fails outright.
 	{
-		struct ReexportBaseline { const char* file; int count; };
+		struct ReexportBaseline { const char* file; int count; int decls; };
 		static const ReexportBaseline kBaseline[] = {
-			{ "App/input.h", 120 },
-			{ "Scene/scene.h", 66 },
-			{ "Scene/scene_tables.h", 60 },
-			{ "Scene/scene_payloads.h", 13 },
-			{ "Scene/scene_node_id.h", 11 },
+			{ "App/input.h", 120, 0 },
+			{ "Scene/scene.h", 66, 0 },
+			{ "Scene/scene_tables.h", 60, 0 },
+			{ "Scene/scene_payloads.h", 13, 0 },
+			{ "Scene/scene_node_id.h", 11, 0 },
+			// The language-neutral C ABI surface (PR #74): C has no
+			// namespaces, so the five opaque catalog types are global
+			// by necessity. Reviewed exception - never grow.
+			{ "Asset/catalog_c.h", 0, 5 },
 		};
 		static const std::regex reReexport(
 			"using\\s+(namespace\\s+)?(\\w+\\s*=\\s*)?(::)?tour\\s*::");
@@ -1036,11 +1040,12 @@ int main() {
 					begin = m.suffix().first;
 				}
 			}
-			int expected = 0;
+			int expected = 0, expectedDecls = 0;
 			bool listed = false;
 			for (const ReexportBaseline& b : kBaseline)
 				if (r == b.file) {
 					expected = b.count;
+					expectedDecls = b.decls;
 					listed = true;
 					break;
 				}
@@ -1054,11 +1059,20 @@ int main() {
 					" (actual " + std::to_string(reexports)
 					+ " < baseline " + std::to_string(expected)
 					+ ") - SHRINK the baseline row");
-			for (const std::string& d : decls)
-				offenders.push_back(r + " declares engine type '"
-					+ d + "' at GLOBAL scope (the global-namespace"
-					" cleanup is complete; new global declarations"
-					" are a boundary violation)");
+			// Global TYPE declarations: zero by default. A pure C ABI
+			// header (no namespaces in C) carries a reviewed per-file
+			// allowance in the baseline - growth still fails the gate.
+			if ((int)decls.size() > expectedDecls)
+				for (const std::string& d : decls)
+					offenders.push_back(r + " declares engine type '"
+						+ d + "' at GLOBAL scope (the global-namespace"
+						" cleanup is complete; new global declarations"
+						" are a boundary violation)");
+			else if (listed && (int)decls.size() < expectedDecls)
+				stale.push_back(r + ": global type declarations retired"
+					" (actual " + std::to_string(decls.size())
+					+ " < baseline " + std::to_string(expectedDecls)
+					+ ") - SHRINK the baseline row");
 		}
 		for (const ReexportBaseline& b : kBaseline)
 			if (!scanned.count(b.file))

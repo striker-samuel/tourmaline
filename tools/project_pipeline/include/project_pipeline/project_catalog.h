@@ -237,6 +237,12 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 // catalog + the stamp + the EOF metadata comment. Byte-deterministic
 // for the same inputs (the timestamp is an INPUT here;
 // ComposeProjectHeader is the entry that decides it).
+// C11 companion to the generated project.h. Uses the same ProjectCatalog
+// rows, IDs, package ordering and CatalogFingerprintOf; no C++ types in
+// the output. Its GenerationStamp comes from ComposeProjectHeader.
+[[nodiscard]] std::string EmitProjectCHeader(const ProjectCatalog& c,
+    const GenerationStamp& stamp);
+
 [[nodiscard]] std::string EmitProjectHeader(const ProjectCatalog& c,
 	const GenerationStamp& stamp,
 	const std::vector<AssetFingerprint>& assets,

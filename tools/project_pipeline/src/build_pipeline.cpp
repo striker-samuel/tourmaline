@@ -1078,6 +1078,18 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 							static_cast<unsigned long long>(
 								stamp.generation),
 							wrote ? "re-stamped" : "unchanged");
+					// C companion: exactly the same catalog and generation.
+					if (hErr.empty()) {
+						const fs::path cHeaderPath =
+							fs::path(options.projectHeaderPath)
+							.parent_path() / "project_c.h";
+						bool cWrote = false;
+						if (WriteProjectHeaderIfChanged(
+							cHeaderPath.generic_string(),
+							EmitProjectCHeader(catalog, stamp),
+							cWrote, hErr) && cWrote)
+							std::printf("[build] project_c.h regenerated\n");
+					}
 					// THE COMPILED STATIC PLANS: the private header
 					// re-emits from the JUST-BUILT paks (the strict
 					// mode's cook-precedes-plan-generation order).

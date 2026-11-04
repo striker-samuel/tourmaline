@@ -37,6 +37,7 @@ add_library(tourmaline_apphost STATIC
     # App.exe stays its thin viewer main; PROJECT EXES drive THIS.
     src/AssetStore.cpp
     src/Runtime.cpp
+    src/RuntimeC.cpp
 )
 
 target_include_directories(tourmaline_apphost
