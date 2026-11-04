@@ -94,7 +94,18 @@ def compiler_info(dxc=None):
     lines = text.splitlines() if text else []
     version_lines = [line.strip() for line in lines
                      if re.search(r"\b(version|dxc|dxcompiler|clang)\b", line, re.IGNORECASE)]
-    return {"path": path, "version_text": "\n".join(version_lines[:8])[:1024] if text else None}
+    digest = None
+    if path and Path(path).is_file():
+        try:
+            sha = hashlib.sha256()
+            with Path(path).open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    sha.update(block)
+            digest = sha.hexdigest()
+        except OSError:
+            pass
+    return {"path": path, "version_text": "\n".join(version_lines[:8])[:1024] if text else None,
+            "sha256": digest}
 
 
 def build_info(exe):
