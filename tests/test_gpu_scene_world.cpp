@@ -77,6 +77,30 @@ int main() {
     CHECK(stats.meshesCreated == 1 && stats.meshesRetired == 1);
     CHECK(db.meshes.LiveCount() == 1);
 
+    // Provisional mesh registrations must never be treated as draw ready.
+    const auto current = bridge.Find(reloaded.instance);
+    const auto meshKey = bridge.FindMesh(reloaded.mesh);
+    CHECK(!InstanceDrawReady(db, current));
+    const LevelSource missingBounds{0.0f, 7u, true, false};
+    CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&missingBounds, 1),
+                             false, db));
+    CHECK(!InstanceDrawReady(db, current));
+    const LevelSource readyLevel{0.0f, 7u, true, true};
+    CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&readyLevel, 1),
+                             true, db));
+    CHECK(InstanceDrawReady(db, current));
+    auto corrupted = *db.instances.Get(current);
+    corrupted.refs.y += 1; // stale mesh generation
+    CHECK(db.instances.Update(current, corrupted));
+    CHECK(!InstanceDrawReady(db, current));
+    corrupted.refs.y = meshKey.generation;
+    CHECK(db.instances.Update(current, corrupted));
+    CHECK(InstanceDrawReady(db, current));
+    const LevelSource evicted{0.0f, InvalidIndex, false, true};
+    CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&evicted, 1),
+                             true, db));
+    CHECK(!InstanceDrawReady(db, current));
+
     bridge.Clear(db);
     CHECK(db.instances.LiveCount() == 0 && db.meshes.LiveCount() == 0);
 
