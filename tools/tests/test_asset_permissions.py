@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.asset_permissions import PermissionRegistry, match_rule, permitted
 from tools.shared_asset_repository import SharedArchive, handler_for_shared
+from tools.install_shared_assets import configure as configure_host
 
 LEGACY_TOKEN = "old-deployment-token-does-not-bypass-the-registry"
 
@@ -139,6 +140,21 @@ class PermissionRegistryTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             bg.join(timeout=5)
+
+    def test_reinstall_preserves_registry_configuration(self):
+        share = self.root / "share"
+        share.mkdir()
+        config = self.root / "host.json"
+        args = (str(share), str(self.root / "archive"),
+                str(self.root / "cache"))
+        config_path, old_token = configure_host(*args, config=config)
+        settings = json.loads(config_path.read_text(encoding="utf-8"))
+        settings["permissions_registry"] = str(self.path)
+        config_path.write_text(json.dumps(settings), encoding="utf-8")
+        config_path, token = configure_host(*args, config=config)
+        updated = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(updated["permissions_registry"], str(self.path))
+        self.assertEqual(token, old_token)
 
     def test_live_open_asset_database_tracks_authenticated_user_and_station(self):
         import uuid
