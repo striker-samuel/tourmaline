@@ -31,14 +31,18 @@ def configure(source, archive, cache, config=None, *, listen_lan=False,
               port=8765, poll=3.0, settle=2.0, cache_gib=20.0, token=None):
     sys.path.insert(0, str(ROOT))
     from tools.shared_asset_repository import SharedArchive
-    source_path = Path(source).expanduser()
+    source_path = Path(source).expanduser().resolve()
     if not source_path.is_dir():
         raise ValueError("source directory must exist and be mounted on the NAS host")
     if not 1024 <= port <= 65535 or poll < 0.5 or settle < 0.5 or cache_gib < 0:
         raise ValueError("invalid port, scan interval, settle time or cache size")
+    output = Path(config or default_config()).expanduser().resolve()
+    # The source share is artist-writable. Never persist the bearer token
+    # anywhere in that tree (including via symlinks or relative paths).
+    if output == source_path or source_path in output.parents:
+        raise ValueError("server config must be outside the source share")
     # This verifies that no protected data can be stored underneath the share.
     SharedArchive(source, archive, cache, settle, int(cache_gib * 1024**3))
-    output = Path(config or default_config()).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     if token is None and output.exists():
         old = json.loads(output.read_text(encoding="utf-8"))
