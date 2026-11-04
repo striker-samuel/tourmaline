@@ -955,8 +955,18 @@ void EditorApp::FinalizePending() {
 				ImGui::MenuItem("Material", nullptr, &m_showMaterialPanel);
 				ImGui::EndMenu();
 			}
-			if (ImGui::MenuItem("Reset dock layout"))
+			if (ImGui::MenuItem("Reset dock layout")) {
 				m_dockResetRequested = true;
+				// A reset restores the default workspace, including closed tools.
+				m_showViewportPanel = true;
+				m_showOutlinerPanel = true;
+				m_showAssetsPanel = true;
+				m_showConsolePanel = true;
+				m_showOverridesPanel = true;
+				m_showInspectorPanel = true;
+				m_showRenderSettingsPanel = true;
+				m_showMaterialPanel = true;
+			}
 			ImGui::SetItemTooltip("Restore the default Viewport, Outliner, "
 				"Assets, Console, Overrides, Inspector, Render and Material positions.");
 			ImGui::Separator();
