@@ -10,8 +10,27 @@
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
+#include <span>
+#include <utility>
 
 namespace editor::prefab_sync {
+
+// Map legacy UUID-less nodes using explicit CLUSTER-LOCAL IDs rather than
+// assuming the merged World node index is local+1 (holes and reference
+// composition make that assumption unsafe).
+template<typename NeedsUuid>
+inline std::vector<std::pair<uint32_t, uint32_t>>
+LegacyIdentityCandidates(std::span<const uint32_t> localToMerged,
+                         NeedsUuid shouldMint) {
+    std::vector<std::pair<uint32_t, uint32_t>> result;
+    for (uint32_t local=0;local<localToMerged.size();++local) {
+        const uint32_t merged=localToMerged[local];
+        if (merged!=UINT32_MAX && shouldMint(merged))
+            result.emplace_back(local,merged);
+    }
+    return result;
+}
 
 // Resolve exactly one node by a stable identity within an occurrence.
 // Never choose the first match when records are ambiguous or missing.
