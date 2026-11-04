@@ -12,6 +12,7 @@
 #include "editor_app.h"
 
 #include <imgui.h>
+#include <algorithm>
 
 namespace editor {
 
@@ -112,19 +113,25 @@ void EditorApp::DrawTaskWindow() {
 			m_taskWindow.inBackground = true;
 			ImGui::CloseCurrentPopup();
 		}
-		ImGui::SameLine();
-		ImGui::TextDisabled("the worker continues; the top-bar button "
-			"reopens this window.");
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("The worker continues; reopen from the status bar.");
 	}
 	else {
 		// Finished: result + acknowledge. The Console carries the same
 		// lines for the record.
+		// Reserve the right edge for Close, even for long error messages.
+		const float closeW = 78.0f;
+		const float textW = std::max(1.0f,
+			ImGui::GetContentRegionAvail().x - closeW
+				- ImGui::GetStyle().ItemSpacing.x);
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + textW);
 		ImGui::TextColored(m_taskWindow.ok
 			? ImVec4(0.4f, 1.0f, 0.5f, 1.0f)
 			: ImVec4(1.0f, 0.45f, 0.4f, 1.0f),
 			"%s", m_taskWindow.result.c_str());
-		ImGui::SameLine();
-		if (ImGui::Button("Close")) {
+		ImGui::PopTextWrapPos();
+		ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - closeW);
+		if (ImGui::Button("Close", ImVec2(closeW, 0))) {
 			m_taskWindow.wantOpen = false;
 			m_taskWindow.opened = false;
 			ImGui::CloseCurrentPopup();
