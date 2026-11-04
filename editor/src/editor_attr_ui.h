@@ -90,40 +90,25 @@ inline std::string Id(const char* name) {
 	return std::string("##") + name;
 }
 
-// ---- BOOL: the flag chip (on = the selected accent; the hint carries
-// the words). PushID(name): the chip text NEVER forms the id.
-inline bool Bool(const char* name, bool v, const char* hint) {
-	LabelCell(name, hint);
-	ImGui::PushID(name); // the chip's id IS the property name
-	if (v) {
-		ImGui::PushStyleColor(ImGuiCol_Button,
-			ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-			ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
-		ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-			ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-	}
-	const bool clicked = ImGui::Button(v ? "on###value" : "off###value",
-		ImVec2(52.0f, 0.0f));
-	if (v)
-		ImGui::PopStyleColor(3);
-	if (hint && ImGui::IsItemHovered())
-		ImGui::SetTooltip("%s", hint);
-	ImGui::PopID();
-	return clicked;
-}
-
-// ---- CHECK: a real checkbox in the VALUE column (the native
-// Checkbox draws the square LEFT of its label — the opposite of the
-// row convention). The hint rides the mouse-over like every row.
-inline bool Check(const char* name, bool* v, const char* hint) {
+// ---- BOOLEAN: one consistent Off/On value selector for every editor flag.
+// IDs are scoped to the property name, never the shared On/Off text.
+inline bool Check(const char* name, bool* value, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::PushID(name);
-	const bool toggled = ImGui::Checkbox("##check", v);
+	int selected = *value ? 1 : 0;
+	ImGui::SetNextItemWidth(-1.0f);
+	const bool edited = ImGui::Combo("##value", &selected, "Off\0On\0");
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
+	if (edited)
+		*value = selected != 0;
 	ImGui::PopID();
-	return toggled;
+	return edited;
+}
+
+// Existing callers drive the undo command when the selected value changes.
+inline bool Bool(const char* name, bool value, const char* hint) {
+	return Check(name, &value, hint);
 }
 
 // ---- READONLY: a read-only value row (name left, the value right,
