@@ -187,6 +187,33 @@ void tour::App::SetRelativeMouseMode(bool enabled) {
 		// Let ImGui consume UI events first (hook set by ImGuiOverlay::Init).
 		if (imguiEventHook_ && m_inputTapeMode != InputTapeMode::Replay)
 			imguiEventHook_(&e);
+		// ImGui owns input and close events for its native tool windows.
+		// The SDL3 backend has already processed them above; do not forward
+		// these to the scene camera, input recorder, or host quit path.
+		if (imguiEventHook_ && window) {
+			SDL_WindowID eventWindow = 0;
+			switch (e.type) {
+			case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+			case SDL_EVENT_WINDOW_FOCUS_GAINED:
+			case SDL_EVENT_WINDOW_FOCUS_LOST:
+				eventWindow = e.window.windowID; break;
+			case SDL_EVENT_MOUSE_MOTION:
+				eventWindow = e.motion.windowID; break;
+			case SDL_EVENT_MOUSE_BUTTON_DOWN:
+			case SDL_EVENT_MOUSE_BUTTON_UP:
+				eventWindow = e.button.windowID; break;
+			case SDL_EVENT_MOUSE_WHEEL:
+				eventWindow = e.wheel.windowID; break;
+			case SDL_EVENT_KEY_DOWN:
+			case SDL_EVENT_KEY_UP:
+				eventWindow = e.key.windowID; break;
+			case SDL_EVENT_TEXT_INPUT:
+				eventWindow = e.text.windowID; break;
+			default: break;
+			}
+			if (eventWindow != 0 && eventWindow != SDL_GetWindowID(window))
+				continue;
+		}
 		if ((e.type == SDL_EVENT_WINDOW_RESIZED ||
 				e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) &&
 			window && e.window.windowID == SDL_GetWindowID(window)) {

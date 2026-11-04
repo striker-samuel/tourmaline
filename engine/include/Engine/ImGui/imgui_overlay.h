@@ -89,6 +89,9 @@ struct ImGuiOverlayDesc {
     // its own format - the UNORM sibling of the surface format, since
     // ImGui authors sRGB-encoded colors that must be stored raw.
     Format colorFormat = Format::Undefined;
+    // Opt-in per host: editor supports detached native tool windows;
+    // standalone game overlays retain their single-window behavior.
+    bool enableViewports = false;
 };
 
 class ImGuiOverlay {
@@ -122,6 +125,11 @@ public:
     // Safe to call inside a RenderGraph pass recording func.
     // If ImGui::Render() hasn't been called yet this frame, it will be called.
     void Render(CommandBuffer& cmd);
+
+    // Call once after the primary swapchain has been presented, while the
+    // ImGui context and Vulkan device are alive. Creates/renders/presents
+    // ImGui-owned native SDL3 windows (not the primary scene swapchain).
+    void RenderPlatformWindows();
 
     // Convenience: appends a rendergraph pass that renders ImGui into the
     // given color view in one draw. Exactly analogous to a classic "UI pass":

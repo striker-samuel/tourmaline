@@ -256,6 +256,7 @@ bool EditorApp::Initialize() {
 		"content/fonts/Roboto-Medium.ttf").string();
 	imguiDesc.fontPath = editorFontPath.c_str();
 	imguiDesc.fontBaseSize = 16.0f;
+	imguiDesc.enableViewports = true; // editor only: detached SDL3/Vulkan tool windows
 	if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
 		std::cerr << "[Editor] ImGui init failed, continuing without UI\n";
 		m_imgui.reset();
@@ -2062,6 +2063,10 @@ void EditorApp::DrawFrame() {
 	{
 		SMVK_PROFILE_SCOPE_COLOR("Editor_Present", Optick::Color::SteelBlue);
 		m_swapchain->EndAndPresentFramebuffer(fb);
+		// ImGui's Vulkan backend owns independent swapchains for detached
+		// tools. Render/present them after the main rendergraph submission.
+		if (fb.imageIndex >= 0 && m_imgui && m_imgui->IsInitialized())
+			m_imgui->RenderPlatformWindows();
 	}
 	// BOUNDARY QUIESCE (the frame-boundary-aware extent-change wait):
 	// any frame that recreated (or queued a recreate of) the world

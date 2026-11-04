@@ -74,6 +74,10 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* 
     // means to test "an ImGui input is active (typing/dragging) or a
     // modal is open", not "a window has focus".
     io.ConfigNavCaptureKeyboard = false;
+    // Must be set BEFORE SDL3/Vulkan backend init so both backends install
+    // their platform/renderer callbacks for secondary native windows.
+    if (desc_.enableViewports)
+        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     // Enable docking / viewports optionally:
     // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
@@ -205,6 +209,13 @@ void ImGuiOverlay::Render(CommandBuffer& cmd) {
     }
 
     ui::RenderDrawData(cmd.GetNativeHandle(), drawData);
+}
+
+void ImGuiOverlay::RenderPlatformWindows() {
+    if (!initialized_ || !desc_.enableViewports) return;
+    ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
+    ImGui::UpdatePlatformWindows();
+    ImGui::RenderPlatformWindowsDefault();
 }
 
 void ImGuiOverlay::AddPass(RenderGraph& rg,

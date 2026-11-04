@@ -2783,7 +2783,16 @@ private:
 	bool m_dockViewportHovered = false;
 	bool m_dockViewportDragCaptured = false; // keep orbit/pan ownership until release
 	bool m_dockResetRequested = false;
+	// Each dock tool has a close button; View > Panels can reopen it.
+	bool m_showViewportPanel = true;
+	bool m_showOutlinerPanel = true;
+	bool m_showReferencePanel = true;
+	bool m_showAssetsPanel = true;
+	bool m_showConsolePanel = true;
+	bool m_showOverridesPanel = true;
+	bool m_showInspectorPanel = true;
 	bool m_showRenderSettingsPanel = true;
+	bool m_showMaterialPanel = true;
 	// ---- ground grid + snapping (gizmo) ----
 	bool m_showGrid = true;
 	float m_gridSize = 1.0f;   // cell size in meters (snap step too)

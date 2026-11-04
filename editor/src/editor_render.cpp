@@ -705,6 +705,14 @@ namespace editor {
 			area = m_dockViewportVisible
 				? m_dockViewportRect
 				: ViewportRect{ 0.0f, m_menuH, 1.0f, 1.0f };
+			// With platform viewports ImGui window coordinates are OS-global,
+			// whereas Vulkan attachment offsets and editor input are local
+			// to the primary SDL window. Convert before clipping/recording.
+			if (m_dockViewportVisible && m_imgui && m_imgui->IsInitialized()) {
+				const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+				area.x -= origin.x;
+				area.y -= origin.y;
+			}
 			// Floating dock windows may extend beyond the main swapchain.
 			// Never wrap a negative position into a uint32 Vulkan offset or
 			// draw outside the attachment when a user drags one offscreen.
