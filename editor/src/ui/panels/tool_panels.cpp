@@ -673,9 +673,8 @@ namespace editor {
 		ImGui::Text("GI (probes) - baked ON DEMAND, never with the cook");
 		ImGui::TextDisabled("%u GI volume node(s) authored in this scene",
 			m_world ? uint32_t(m_world->scene.tables.giVolumes.size()) : 0u);
-		ImGui::TextDisabled("bake selectors (giVolumes) live on the "
-			"ExportSettings node (the world-field selector is retired "
-			"with the octree)");
+		ImGui::TextDisabled("Bake GI uses the authored scene volumes; "
+			"no ExportSettings node or prior cook is required.");
 		if (!m_giBakedHash.empty()) {
 			const bool fresh = !m_cookDefHash.empty()
 				&& m_giBakedHash == m_cookDefHash;
@@ -688,7 +687,7 @@ namespace editor {
 				ImVec2(-1, 0), ""); // current bake phase
 		}
 		else if (ImGui::Button("Bake GI now")) {
-			BakeGI(); // guards + logs inside (needs a cook target)
+			BakeGI(); // only a loaded project scene with GI volumes is needed
 		}
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Run GiBaker over the current definition tour.\n"
