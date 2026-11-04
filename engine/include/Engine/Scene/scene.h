@@ -520,6 +520,11 @@ void RetireNodeSlot(Scene& scene, NodeId node);
 
 int addNode(Scene& scene, int parent, int level);
 
+// Generation-checked scene transform mutation. The setter marks affected
+// descendants for the GPU-scene journal via the existing recalc path.
+// Returns false for a retired/stale handle without writing the new slot.
+bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::mat4& transform);
+
 void markAsChanged(Scene& scene, int node);
 // Dynamic-only variant: skips static nodes so frozen subtrees never enter
 // changedAtThisFrame after the initial build. Prefer this on the per-frame
@@ -897,6 +902,7 @@ using tour::scene::LiveNodeCount;
 using tour::scene::loadScene;
 using tour::scene::MakeNodeHandle;
 using tour::scene::MarkAllRootsChanged;
+using tour::scene::SetLocalTransform;
 using tour::scene::markAsChanged;
 using tour::scene::markAsChangedDynamic;
 using tour::scene::MarkCastsVolumetricShadow;
