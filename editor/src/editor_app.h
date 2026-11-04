@@ -540,6 +540,7 @@ private:
 	// snaps to the grid cell, rotate to m_snapRotateDeg, scale to
 	// m_snapScaleStep).
 	bool GizmoHandleInput(); // returns true while dragging
+	bool TransposeHandleInput(); // optional classic three-handle action line
 
 	// ---- viewports + editor cameras (editor_render.cpp) ----
 	// Layout: Single (viewport 0) or Quad (2x2, four cameras). Each
@@ -2609,6 +2610,17 @@ private:
 	// and View menu act on the ACTIVE one — UV views are panel types).
 	SecondView m_secondView = SecondView::Off;
 	GizmoMode m_gizmoMode = GizmoMode::Translate;
+	// Object-only action-line alternative. The existing gizmo remains default.
+	bool m_transposeEnabled = false;
+	uint32_t m_transposeOwner = UINT32_MAX;
+	glm::vec3 m_transposeA{ 0.0f }, m_transposeB{ 0.0f };
+	// 0 idle, 1 reposition line, 2 object transform, 3 reposition tip.
+	int m_transposeDrag = 0;
+	int m_transposeHandle = -1;
+	glm::vec2 m_transposeMouseStart{ 0.0f };
+	glm::vec3 m_transposeStartA{ 0.0f }, m_transposeStartB{ 0.0f };
+	glm::vec3 m_transposeBaseT{ 0.0f }, m_transposeBaseR{ 0.0f }, m_transposeBaseS{ 1.0f };
+	glm::mat4 m_transposeBaseMat{ 1.0f };
 	// Q quick menu options: handle orientation (World default) +
 	// pivot (Node origin default; BoundsCenter = the selection's
 	// subtree AABB center).
