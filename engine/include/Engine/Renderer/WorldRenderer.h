@@ -70,6 +70,7 @@
 #include <Engine/Rendergraph/motionblur.h>
 #include <Engine/Rendergraph/motionvector.h>
 #include <Engine/Rendergraph/msaa.h>
+#include <Engine/Rendergraph/msaa_custom_resolve.h>
 #include <Engine/Rendergraph/particles.h>
 #include <Engine/Rendergraph/smaa.h>
 #include <Engine/Rendergraph/spotshadow.h>
@@ -199,6 +200,7 @@ enum class AaMode : int {
 	Msaa2x = 1,
 	Smaa1x = 2,
 	SmaaT2x = 3,
+	Msaa2xCustom = 4, // opt-in programmable HDR resolve
 };
 
 // ---------------------------------------------------------------------------
@@ -1509,6 +1511,7 @@ struct ViewportResources {
 	smvk::DepthTarget hizDepth;
 	smvk::HdrTarget hdr; // HDR intermediate (image + view + bindless + logical) + Ensure
 	smvk::MsaaTarget msaa; // transient 2x color+depth for Main, resolves to hdr
+	smvk::MsaaCustomResolve msaaCustomResolve; // optional full-screen shader resolve
 	smvk::MotionVectors motionVectors; // RG16F motion target + program + pass helper
 	smvk::MotionBlur motionBlur; // blurred HDR output + velocity-gather program + pass
 	smvk::DepthOfField dof; // DOF HDR output + CoC target + low/bokeh programs + passes
@@ -1924,7 +1927,7 @@ public:
 		m_ssrIntensity = std::clamp(r.ssrIntensity, 0.0f, 4.0f);
 		m_motionBlurEnabled = r.motionBlurEnabled;
 		m_dofEnabled = r.dofEnabled;
-		m_aaMode = static_cast<AaMode>(std::clamp(r.aaMode, 0, 3));
+		m_aaMode = static_cast<AaMode>(std::clamp(r.aaMode, 0, 4));
 		m_cubemapEnabled = r.cubemapEnabled;
 		m_cubemapIntensity = std::clamp(r.cubemapIntensity, 0.0f, 4.0f);
 	}

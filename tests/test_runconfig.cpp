@@ -83,6 +83,12 @@ int main() {
 	UnsetVar("TOURMALINE_RNG_SEED");
 
 	// Validated pin parsing (authored scene wins invalid values).
+	SetVar("TOURMALINE_AA", "msaa2xcustom");
+	{
+		const engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.aa.has_value() && *c.aa == engine::AaPin::Msaa2xCustom,
+			"runconfig.parse-aa-custom");
+	}
 	SetVar("TOURMALINE_AA", "msaa2x");
 	SetVar("TOURMALINE_MESH", "0");
 	SetVar("TOURMALINE_CAPTURE", "48");

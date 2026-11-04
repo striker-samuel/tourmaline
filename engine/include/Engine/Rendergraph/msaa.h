@@ -4,9 +4,10 @@
 #pragma once
 // Transient MSAA 2x targets for the Main scene pass.
 //
-// The multisampled color image resolves (AVERAGE) into the single-sampled
-// HDR intermediate; the multisampled depth image is transient (Clear ->
-// DontCare, no resolve). Prepass/cull keep using the 1x swapchain depth.
+// The multisampled color image normally resolves (AVERAGE) into the single-sampled
+// HDR intermediate; the opt-in programmable path samples retained MSAA
+// color instead. Multisampled depth is transient (Clear -> DontCare).
+// Prepass/cull keep using the 1x swapchain depth.
 // Both images are recreated when the swap extent or formats drift, mirroring
 // HdrTarget::Ensure.
 //
@@ -36,6 +37,7 @@ struct MsaaDesc {
 struct MsaaTarget {
 	Holder<ImageHandle> colorImage;
 	Holder<ImageViewHandle> colorView;
+	Holder<BindlessImageHandle> colorBindless; // optional programmable resolve input
 	LogicalImageViewHandle colorLogical{};
 	Holder<ImageHandle> depthImage;
 	Holder<ImageViewHandle> depthView;
@@ -43,6 +45,8 @@ struct MsaaTarget {
 	Extent2D extent{ 0, 0 };
 	Format colorFormat = Format::RGBA16_Float;
 	Format depthFormat = Format::D32_Float;
+
+	[[nodiscard]] bool CustomResolveInputValid() const { return !colorBindless.empty(); }
 
 	[[nodiscard]] bool Valid() const {
 		return !colorImage.empty() && !colorView.empty() &&
@@ -58,13 +62,21 @@ struct MsaaTarget {
 		ImageCreateInfo colorCi{};
 		colorCi.extent = { swapExtent.width, swapExtent.height, 1 };
 		colorCi.format = d.colorFormat;
-		colorCi.usage = ImageUsage::ColorAttachment;
+		colorCi.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
 		colorCi.samples = SampleCount::Count2;
 		colorCi.mipLevels = 1;
 		colorCi.arrayLayers = 1;
 		colorCi.name = d.colorName;
 
+		bool colorSampled = true;
 		Holder<ImageHandle> newColorImage = ctx.CreateImage(colorCi, nullptr);
+		if (newColorImage.empty()) {
+			// A renderable 2x format need not support multisampled sampling.
+			// Keep the original fixed-function resolve usable on such devices.
+			colorSampled = false;
+			colorCi.usage = ImageUsage::ColorAttachment;
+			newColorImage = ctx.CreateImage(colorCi, nullptr);
+		}
 		if (newColorImage.empty())
 			return false;
 
@@ -113,6 +125,9 @@ struct MsaaTarget {
 
 		colorImage = std::move(newColorImage);
 		colorView = std::move(newColorView);
+		// Failure is non-fatal: the fixed-function resolve remains usable.
+		if (colorSampled)
+			colorBindless = ctx.CreateBindlessImage(colorView, ImageLayout::ShaderReadOnlyOptimal);
 		colorLogical = newColorLogical;
 		depthImage = std::move(newDepthImage);
 		depthView = std::move(newDepthView);
@@ -130,6 +145,7 @@ struct MsaaTarget {
 			rg.FreeImageView(depthLogical);
 		colorLogical = {};
 		depthLogical = {};
+		colorBindless = {};
 		colorView = {};
 		colorImage = {};
 		depthView = {};

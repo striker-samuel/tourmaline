@@ -124,13 +124,15 @@ RunConfig RunConfig::Parse() {
 			c.aa = AaPin::Off;
 		else if (StrCaseCmp(aa.c_str(), "msaa2x") == 0 || StrCaseCmp(aa.c_str(), "msaa") == 0)
 			c.aa = AaPin::Msaa2x;
+		else if (StrCaseCmp(aa.c_str(), "msaa2xcustom") == 0)
+			c.aa = AaPin::Msaa2xCustom;
 		else if (StrCaseCmp(aa.c_str(), "smaa1x") == 0)
 			c.aa = AaPin::Smaa1x;
 		else if (StrCaseCmp(aa.c_str(), "smaat2x") == 0 || StrCaseCmp(aa.c_str(), "t2x") == 0)
 			c.aa = AaPin::SmaaT2x;
 		else
 			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_AA (want "
-				"off|msaa2x|smaa1x|smaat2x): %s\n", v);
+				"off|msaa2x|msaa2xcustom|smaa1x|smaat2x): %s\n", v);
 	}
 	if ((v = Get("TOURMALINE_A2C")) != nullptr)
 		c.a2c = std::atoi(v) != 0;
@@ -606,6 +608,7 @@ void RunConfig::Log() const {
 		switch (a) {
 		case AaPin::Off: return "off";
 		case AaPin::Msaa2x: return "msaa2x";
+		case AaPin::Msaa2xCustom: return "msaa2xcustom";
 		case AaPin::Smaa1x: return "smaa1x";
 		case AaPin::SmaaT2x: return "smaat2x";
 		}
