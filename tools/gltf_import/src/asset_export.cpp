@@ -493,6 +493,9 @@ void WriteMaterialAsset(const std::filesystem::path& path,
 	o << "alphaCutoff=" << m.info.alphaCutoff << "\n";
 	o << "normalScale=" << m.info.normalScale << "\n";
 	o << "occlusionStrength=" << m.info.occlusionStrength << "\n";
+	o << "cavityStrength=" << m.info.cavityStrength << "\n";
+	if (!m.packingSource.empty()) o << "packing.source=" << m.packingSource << "\n";
+	if (m.channelSelectors >= 0) o << "packing.channels=" << m.channelSelectors << "\n";
 	o << "doubleSided=" << (m.info.doubleSided ? 1 : 0) << "\n";
 	o << "castsShadows=" << (m.info.castsShadows ? 1 : 0) << "\n";
 	o << "receiveContactShadows=" << (m.info.receiveContactShadows ? 1 : 0) << "\n";
@@ -510,6 +513,7 @@ void WriteMaterialAsset(const std::filesystem::path& path,
 	tex("metallicRoughness", m.metallicRoughness);
 	tex("normal", m.normalTex);
 	tex("occlusion", m.occlusion);
+	tex("cavity", m.cavity);
 	tex("emissive", m.emissiveTex);
 	std::ofstream out(path, std::ios::binary | std::ios::trunc);
 	if (!out) {
@@ -532,6 +536,13 @@ bool SplitPathFlag(const std::string& val, std::string& path, bool& srgb) {
 }
 
 } // namespace
+
+bool SaveMaterialAsset(const std::filesystem::path& path,
+    const MaterialAsset& material, std::string& err) {
+    err.clear();
+    WriteMaterialAsset(path, material, err);
+    return err.empty();
+}
 
 bool LoadMaterialAsset(const std::filesystem::path& path,
 	MaterialAsset& out, std::string& err) {
@@ -588,6 +599,9 @@ bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
 			out.info.normalScale = float(std::atof(val.c_str()));
 		else if (key == "occlusionStrength")
 			out.info.occlusionStrength = float(std::atof(val.c_str()));
+		else if (key == "cavityStrength") out.info.cavityStrength = float(std::atof(val.c_str()));
+		else if (key == "packing.source") out.packingSource = val;
+		else if (key == "packing.channels") out.channelSelectors = std::atoi(val.c_str());
 		else if (key == "doubleSided")
 			out.info.doubleSided = std::atoi(val.c_str()) != 0;
 		else if (key == "castsShadows")
@@ -610,6 +624,7 @@ bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
 			SplitPathFlag(val, out.normalTex.path, out.normalTex.srgb);
 		else if (key == "tex.occlusion")
 			SplitPathFlag(val, out.occlusion.path, out.occlusion.srgb);
+		else if (key == "tex.cavity") SplitPathFlag(val, out.cavity.path, out.cavity.srgb);
 		else if (key == "tex.emissive")
 			SplitPathFlag(val, out.emissiveTex.path, out.emissiveTex.srgb);
 	}
@@ -2319,6 +2334,8 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 	info.roughnessFactor = m.info.roughnessFactor;
 	info.normalScale = m.info.normalScale;
 	info.occlusionStrength = m.info.occlusionStrength;
+	info.cavityStrength = m.info.cavityStrength;
+	info.channelSelectors = m.channelSelectors;
 	info.shadingModel = m.info.shadingModel;
 	info.alphaMode = m.info.alphaMode;
 	info.alphaCutoff = m.info.alphaCutoff;
@@ -2453,6 +2470,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 	loadTex(m.metallicRoughness, info.metallicRoughnessTexture);
 	loadTex(m.normalTex, info.normalTexture);
 	loadTex(m.occlusion, info.occlusionTexture);
+	loadTex(m.cavity, info.cavityTexture);
 	loadTex(m.emissiveTex, info.emissiveTexture);
 	info.diffuse = info.baseColorTexture; // legacy alias
 	const smvk::ClusterMaterialHandle h = cluster.CreateMaterial(info);
