@@ -500,6 +500,17 @@ void EditorApp::FinalizePending() {
 							|| ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
 						m_dockViewportDragCaptured = true;
 					ImGui::Dummy(avail); // reserve canvas space, no ImGui pixels
+					// The Viewport's render rectangle must remain full-size,
+					// so its gear is an overlaid item instead of a toolbar row.
+					const ImVec2 afterCanvas = ImGui::GetCursorScreenPos();
+					ImGui::SetCursorScreenPos(pos);
+					PanelRegistry::DrawSettingsGear("Viewport", m_showViewportPanel);
+					if (ImGui::IsItemHovered()) {
+						m_dockViewportHovered = false;
+						if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+							m_dockViewportDragCaptured = false;
+					}
+					ImGui::SetCursorScreenPos(afterCanvas);
 				}
 			}
 			ImGui::End();
@@ -511,8 +522,11 @@ void EditorApp::FinalizePending() {
 			// render rides the same pattern (dock it beside
 			// Render/Material or tab it with them).
 			if (m_showWorldMapPanel) {
-				if (ImGui::Begin("World Map", &m_showWorldMapPanel))
-					DrawWorldMapPanel();
+				if (ImGui::Begin("World Map", &m_showWorldMapPanel)) {
+					PanelRegistry::DrawSettingsGear("World Map", m_showWorldMapPanel);
+					if (m_showWorldMapPanel)
+						DrawWorldMapPanel();
+				}
 				ImGui::End();
 			}
 			// Register dockable panels in a single place. Panel lifetime and
