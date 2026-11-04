@@ -164,6 +164,32 @@ bool ImportProjectAsset(const ImportRequest& request,
 		return false; // stage stays for diagnostics? no — cleaned below
 	}
 
+    // Resolve the .tourrecipe's texture-packing rule during import.
+    // Store channels and texture bindings with the derived material, not
+    // in .tour scenes. Cooker and editor then consume identical metadata.
+    for (const auto& entry : manifest.entries) {
+        if (entry.kind != smvk::assets::AssetKind::Material)
+            continue;
+        const fs::path materialPath = stageRoot / entry.file;
+        smvk::assets::MaterialAsset mat;
+        if (!smvk::assets::LoadMaterialAsset(materialPath, mat, err))
+            return false;
+        const auto& rule = request.materialPacking;
+        if (!rule.source.empty()) {
+            const auto source = rule.source == "metallicRoughness"
+                ? mat.metallicRoughness : mat.occlusion;
+            if (!source.path.empty()) {
+                mat.metallicRoughness = source;
+                mat.occlusion = source;
+                mat.cavity = source;
+                mat.packingSource = rule.source;
+                mat.channelSelectors = rule.PackedWord();
+            }
+        }
+        if (!smvk::assets::SaveMaterialAsset(materialPath, mat, err))
+            return false;
+    }
+
 	// ---- validate the staged family BEFORE publishing ---------------------
 	// (a) Round-trip: the written .geometry parses back.
 	const fs::path stageGeometry =
