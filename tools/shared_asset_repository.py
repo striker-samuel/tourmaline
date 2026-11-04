@@ -427,7 +427,7 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                 return "product.read"
             if path.startswith("/v2/blobs/"):
                 return "artifact.read"
-            if path == "/v2/consumers":
+            if path in ("/v2/consumers", "/v2/open-assets"):
                 return "presence.read"
             return "source.read"
 
@@ -445,19 +445,26 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
             url = urlsplit(self.path)
             query = parse_qs(url.query)
             try:
-                if url.path == "/v2/consumers":
+                if url.path in ("/v2/consumers", "/v2/open-assets"):
                     kind = query.get("resource_kind", [None])[0]
                     ident = query.get("resource_id", [None])[0]
+                    if url.path == "/v2/open-assets":
+                        report = readers.open_assets(kind, ident)
+                        if registry is not None:
+                            report["open_assets"] = [entry for entry in report["open_assets"]
+                                if self.visible(
+                                    entry["id"] if entry["kind"] == "source" else
+                                    store.product_source_id(entry["id"]))]
+                        return self.reply(report)
                     result = readers.active(kind, ident)
                     if registry is not None:
                         for session in result["consumers"]:
                             session["reads"] = [read for read in session["reads"]
                                 if self.visible(
                                     read["id"] if read["kind"] == "source" else
-                                    store.product_source_id(read["id"]),
-                                    "source.read")]
-                        result["consumers"] = [s for s in result["consumers"]
-                                               if s["reads"]]
+                                    store.product_source_id(read["id"]))]
+                        result["consumers"] = [session for session in result["consumers"]
+                                               if session["reads"]]
                     return self.reply(result)
                 if url.path == "/v2/sources":
                     return self.reply({"sources": [
