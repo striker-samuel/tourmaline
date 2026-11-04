@@ -72,6 +72,16 @@ struct RecipePak {
 	}
 };
 
+// Authored only in the project .tourrecipe, never in a scene .tour.
+struct MaterialPackingRule {
+    std::string source; // metallicRoughness or occlusion; empty = native glTF
+    int ao = 0, cavity = 0, roughness = 1, metallic = 2;
+    int PackedWord() const { return ao | (cavity << 2) | (roughness << 4) | (metallic << 6); }
+    bool operator==(const MaterialPackingRule& rhs) const {
+        return source == rhs.source && ao == rhs.ao && cavity == rhs.cavity &&
+            roughness == rhs.roughness && metallic == rhs.metallic;
+    }
+};
 struct ProjectRecipe {
 	uint32_t version = 0; // 0 = unparsed (a valid parse always records 1)
 	std::string projectName;
@@ -79,6 +89,7 @@ struct ProjectRecipe {
 	bool bakeGi = false;
 	bool bakeCubemaps = false;
 	bool bakeSdf = false;
+	MaterialPackingRule materialPacking;
 	std::vector<RecipePak> paks; // authored order
 
 	[[nodiscard]] const RecipePak* FindPak(const std::string& id) const;
