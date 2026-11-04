@@ -144,8 +144,8 @@ inline void FindEdgeContacts(const TerrainHField& f, const glm::vec3& a,
         for (uint32_t j = 0; j < 2; ++j) {
             const uint32_t v = first + j;
             result.indices.insert(result.indices.end(), {
-                v, v + 3, v + 1,
-                v + 1, v + 3, v + 4
+                v, v + 1, v + 3,
+                v + 1, v + 4, v + 3
             });
         }
         ++result.contactSegments;
