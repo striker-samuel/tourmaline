@@ -245,7 +245,7 @@ struct MaterialValues
     float4 ambient;          // 0  sky-ambient factor: skyColor * skyLux/PI (albedo multiplier, lux convention)
     float4 diffuse;          // 16 baseColorFactor
     int4 tex;                // 32 x=baseColor, y=metallicRoughness, z=normal, w=occlusion
-    int4 tex2;               // 48 x=emissive, yzw unused (-1)
+    int4 tex2;               // 48 x=emissive, y=cavity, z=cavity strength (0..1000, -1=1), w=unused
     float4 params;           // 64 x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
     float4 params2;          // 80 x=occlusionStrength, y=normalScale, z=emissiveStrength, w=alphaMode (0=Opaque,1=Mask,2=Blend)
     float4 emissiveFactor;   // 96 xyz=emissiveFactor, w=material flags (MATERIAL_* defines below)
