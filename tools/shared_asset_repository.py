@@ -635,6 +635,10 @@ def serve_shared(store, token, bind="127.0.0.1", port=8765, poll=3.0,
     try:
         with ThreadingHTTPServer((bind, port), handler_for_shared(
                 store, token, consumer_ttl_seconds, registry=registry)) as server:
+            if bind == "0.0.0.0":
+                print("SECURITY WARNING: this server speaks HTTP, not TLS. "
+                      "Terminate authenticated remote traffic at an HTTPS "
+                      "reverse proxy and firewall the backend port.", flush=True)
             print(f"Tourmaline shared asset repository listening on {bind}:{port}",
                   flush=True)
             server.serve_forever()
