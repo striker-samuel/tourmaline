@@ -55,6 +55,7 @@ void PrintUsage(const char* prog) {
 		<< "  --snapshot-sequence <dir> exports Frame_0001.png ... with embedded state\n"
 		<< "  [--snapshot-count N] [--snapshot-keyframe N] [--snapshot-code-id HASH]\n"
 		<< "  [--snapshot-capture scoped|legacy] (default scoped, 15 GPU frames per batch)\n"
+		<< "  [--snapshot-format png|raw] (default png; raw writes RGBA8 + JSON sidecar)\n"
 		<< "  --no-dlss keeps the Streamline interposer out of the Vulkan chain\n"
 		<< "  (RenderDoc captures crash through the SL layer + NGX cubins)\n"
 		<< "  --capture is the one-flag RenderDoc launch config: --no-dlss plus\n"
@@ -254,6 +255,22 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 		}
 		else if (std::strncmp(a, "--snapshot-sequence=", 20) == 0) {
 			opts.snapshotSequenceDir = a + 20;
+		}
+		else if (std::strcmp(a, "--snapshot-format") == 0 && i + 1 < argc) {
+			opts.snapshotOutputFormat = argv[++i];
+			if (opts.snapshotOutputFormat != "png" && opts.snapshotOutputFormat != "raw") {
+				std::cerr << "Bad --snapshot-format (expected png|raw)\\n";
+				exitCode = EXIT_FAILURE;
+				return false;
+			}
+		}
+		else if (std::strncmp(a, "--snapshot-format=", 18) == 0) {
+			opts.snapshotOutputFormat = a + 18;
+			if (opts.snapshotOutputFormat != "png" && opts.snapshotOutputFormat != "raw") {
+				std::cerr << "Bad --snapshot-format (expected png|raw)\\n";
+				exitCode = EXIT_FAILURE;
+				return false;
+			}
 		}
 		else if (std::strcmp(a, "--snapshot-capture") == 0 && i + 1 < argc) {
 			opts.snapshotCaptureMode = argv[++i];
