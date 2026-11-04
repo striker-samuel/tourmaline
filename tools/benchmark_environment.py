@@ -18,14 +18,13 @@ def parse_nvidia_pmon(output, own_pid=None):
     """Parse nvidia-smi pmon. The '-' token denotes unavailable utilization."""
     processes = []
     unknown = False
-    observed = False
+    observed = "# gpu" in output.lower()
     for line in output.splitlines():
         fields = line.split()
         if not fields or fields[0].startswith("#"):
             continue
         if len(fields) < 7 or not fields[0].isdigit():
             continue
-        observed = True
         pid, kind = fields[1:3]
         if not pid.isdigit() or int(pid) == own_pid:
             continue
