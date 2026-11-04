@@ -205,6 +205,37 @@ class SharedRepositoryTests(unittest.TestCase):
                          "--token", TOKEN, "--config", str(target), "--check"])
         self.assertEqual(target.read_bytes(), existing)
 
+    def test_detached_installer_rejects_occupied_port(self):
+        from tools.install_shared_assets import run_detached
+        httpd = ThreadingHTTPServer(
+            ("127.0.0.1", 0), handler_for_shared(self.store, TOKEN))
+        try:
+            config, _ = configure_host(
+                str(self.source), str(self.archive), str(self.cache),
+                config=Path(self.temp.name) / "server.json",
+                port=httpd.server_port)
+            with self.assertRaisesRegex(RuntimeError, "already in use"):
+                run_detached(config)
+        finally:
+            httpd.server_close()
+
+    def test_health_check_accepts_running_server(self):
+        from tools.install_shared_assets import wait_for_health
+        httpd = ThreadingHTTPServer(
+            ("127.0.0.1", 0), handler_for_shared(self.store, TOKEN))
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            config, _ = configure_host(
+                str(self.source), str(self.archive), str(self.cache),
+                config=Path(self.temp.name) / "server.json",
+                port=httpd.server_port)
+            wait_for_health(config, timeout=2.0)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
     def test_http_auth_revisions_products_upload_and_client_cache(self):
         src = self.put("models/hero.obj", b"the-OBJ-source")
         self.store.scan()
