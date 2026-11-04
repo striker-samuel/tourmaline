@@ -187,7 +187,21 @@ artist-writable source tree**, for example:
 "permissions_registry": "/etc/tourmaline/asset-users.json"
 ~~~
 
-After saving the config, bootstrap an administrator **before restarting**:
+After saving the config, bootstrap an administrator **before restarting**.
+On a Linux NAS running under a dedicated systemd service account, ensure that
+account has **read access** to the registry without giving ordinary artists
+write access. For example, after creating the registry as root:
+
+~~~bash
+sudo chgrp tourmaline /etc/tourmaline/asset-users.json
+sudo chmod 0640 /etc/tourmaline/asset-users.json
+~~~
+
+The registry's parent directory must also be traversable by that account.
+On Windows, secure the file with NTFS ACLs and grant the service identity
+read access.
+
+Bootstrap the administrator and add groups/users with:
 
 ~~~bash
 python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users init
@@ -222,7 +236,6 @@ win ties between groups. Unmatched permissions are **denied by default**.
 | `product.publish` | PUT /v2/publish |
 | `presence.read` | View active readers |
 | `presence.write` | Send heartbeat or release |
-| `/v2/open-assets` | Live asset/version, authenticated user, workstation, mode and expiry (requires `presence.read`) |
 | `source.write` | Reserved for a future source-write API (no write endpoint today) |
 
 ### Asset-specific access rules
@@ -254,7 +267,11 @@ python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json
 ~~~
 
 Only the source UUID is used for ACL identity, so renaming an asset does not
-change its ACL. The HTTP API filters unauthorized entries from source/product
+change its ACL. **These permissions apply to the Tourmaline HTTP asset API,
+not direct operating-system access to the underlying SMB share.** If the
+source share itself must be private, configure matching SMB/NTFS/POSIX
+permissions or route all access through a trusted server. The HTTP API filters
+unauthorized entries from source/product
 lists, rejects forbidden direct revision lookups and artifact downloads, and
 checks publishing against the source UUID. For safety, legacy v1 browser and
 local-path endpoints are unavailable while per-user registry mode is active;
@@ -274,6 +291,7 @@ Query the live flat view:
 ~~~bash
 curl -H 'Authorization: Bearer USER_TOKEN' https://assets.example.lan/v2/open-assets
 curl -H 'Authorization: Bearer USER_TOKEN' 'https://assets.example.lan/v2/open-assets?resource_kind=source&resource_id=SOURCE_UUID'
+curl -H 'Authorization: Bearer USER_TOKEN' 'https://assets.example.lan/v2/open-assets?username=artist_one&mode=edit'
 ~~~
 
 Clients send heartbeats to `POST /v2/consumers/heartbeat` with
@@ -389,7 +407,7 @@ refreshes every ten seconds.
 
 A client heartbeat is an advisory, expiring **complete set** of reads. An
 empty set means idle; sessions expire after the configured TTL. It does not
-block writes, grant access, or inspect readers raw SMB file handles.
+block writes, grant access, or inspect ordinary raw SMB file handles.
 Clients can release their presence explicitly on exit.
 
 Maya's shared-cache client automatically announces source/product versions
