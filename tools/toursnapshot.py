@@ -98,6 +98,8 @@ def parser_factory() -> Parser:
     record.add_argument("--seed", type=seed_number, help="PCG32 uint64 seed, default 0 unless scenario pins one")
     record.add_argument("--code-id", default="unspecified",
                         help="caller-supplied game-code build identity, NOT source code")
+    record.add_argument("--output-format", choices=("png", "raw"), default="png",
+                        help="PNG with embedded tsNp state (default), or RGBA8 + JSON sidecar")
     record.add_argument("--capture-mode", choices=("scoped", "legacy"), default="scoped",
                         help="15-frame GPU-resident batches by default; legacy synchronizes every frame")
     record.add_argument("--input-replay", type=Path, help="optional .tinp tape for replay-and-recapture")
@@ -244,6 +246,7 @@ def plan_record(args) -> tuple[dict, dict]:
             f"--snapshot-keyframe={args.keyframe_interval}",
             f"--snapshot-code-id={args.code_id}",
             f"--snapshot-capture={args.capture_mode}",
+            f"--snapshot-format={args.output_format}",
             "--present", "immediate", *scenario_args, *args.app_arg]
     if replay:
         argv.append(f"--input-replay={replay}")
@@ -282,8 +285,8 @@ def run_record(args) -> dict:
     if paths["replay"] is not None and not paths["replay"].is_file():
         raise codec.SnapshotError(f"input tape not found: {paths['replay']}")
     if output.exists() and (not output.is_dir() or any(
-            re.fullmatch(r"Frame_[0-9]+\.png", item.name) for item in output.iterdir())):
-        raise codec.SnapshotError(f"output already contains a PNG sequence: {output}")
+            re.fullmatch(r"Frame_[0-9]+\.(?:png|rgba|json)", item.name) for item in output.iterdir())):
+        raise codec.SnapshotError(f"output already contains a snapshot sequence: {output}")
     if log.exists():
         raise codec.SnapshotError(f"refusing to overwrite App log: {log}")
     output.mkdir(parents=True, exist_ok=True)
@@ -319,8 +322,8 @@ def run_record(args) -> dict:
     if actual != expected:
         raise codec.SnapshotError(
             f"keyframe interval mismatch; expected {expected}, got {actual}")
-    result = summary(frames, pixels=args.pixels)
-    result.update({"operation": "record", "sequence_dir": str(output),
+    result = summary(frames, pixels=args.pixels or args.output_format == "raw")
+    result.update({"pixel_format": args.output_format, "operation": "record", "sequence_dir": str(output),
                    "app_exit_code": proc.returncode, "log": str(log),
                    "environment_pins": plan["environment_pins"]})
     return result

@@ -1,40 +1,45 @@
 ## Scoped GPU capture (default)
 
-Snapshot recording now uses **scoped** capture by default. The renderer
-preallocates 15 GPU-resident RGBA8 image slots at the capture resolution.
-Each simulation tick renders its snapshot into a distinct slot and stores
-its matching CPU world state, input events and RNG state. It waits for GPU
-completion and exports the 15 PNG files at the batch boundary (including
-a partial final batch). No per-frame GPU readback or device-idle wait takes
-place during the 15 captured frames.
+Snapshot recording defaults to **scoped** capture: a reusable device-local
+buffer with space for 15 tightly packed RGBA8 frames. Each frame's
+`TonemapCapture` output is copied by a render-graph transfer pass
+(`vkCmdCopyImageToBuffer`) directly into its assigned GPU-buffer offset.
+The render graph provides the color-attachment -> transfer-source layout
+transition and GPU dependency; no CPU wait, allocation or image readback
+occurs in the per-frame capture path. The matching scene state, RNG and
+inputs are retained on the CPU at the original simulation tick.
 
-Use `--snapshot-capture=legacy` on App to restore the previous behavior:
-one synchronous GPU image readback and PNG export per captured frame.
-In the agent CLI, pass `--capture-mode legacy` to select that mode.
-The default is `--capture-mode scoped`.
+After 15 frames, or on a shorter final batch, the host waits for the
+capture submissions, downloads the used region of the GPU buffer in **one staging transfer at
+resolutions that fit the readback staging cap**, or several contiguous
+transfers for larger batches (notably 4K with the default 256 MiB cap),
+and then writes
+the original per-frame PNGs with `tsNp` metadata, state deltas and hashes.
+The GPU batch buffer is reused for the next 15 frames. Export/PNG encoding
+still runs synchronously at the batch boundary.
 
-Scoped capture uses approximately `15 * width * height * 4` bytes of
-device-local image storage, excluding driver overhead. The export phase
-still reads each image back and encodes its PNG; this removes readback
-from the recording window, but **does not yet aggregate all 15 GPU image
-transfers into one Vulkan download submission**. The existing snapshot
-PNG metadata, keyframe/delta chain, hashes and verification contract
-remain unchanged.
+Use `--snapshot-capture=legacy` in App or `--capture-mode legacy`
+in `tools/toursnapshot.py record` for the original synchronous per-frame
+image download path. The default is `scoped`.
 
-# Agent manual: record, replay and verify PNG snapshot sequences
+**Lossless raw output:** `App --snapshot-format=raw` or
+`python tools/toursnapshot.py record --output-format raw` writes
+`Frame_0001.rgba` (tightly packed RGBA8, row-major, top-to-bottom) and
+`Frame_0001.json` instead of a PNG. The sidecar carries the same
+keyframe/delta, RNG, input, pixel hash and previous-payload hash as the
+PNG's `tsNp` chunk. `toursnapshot.py verify|inspect|extract|compare`
+recognizes either a homogeneous PNG sequence or a homogeneous raw sequence;
+raw verification checks exact byte length and pixel hash without Pillow.
+Raw capture avoids PNG compression entirely, but increases disk use.
+PNG remains the default, and its encoding happens only during each
+completed scoped batch's export, never during the individual 15 renders.
 
-This is the **agent entry point** for Tourmaline snapshot sequences.
-Start here if your task is to reproduce a game run, inspect another
-agent's result, compare world states, or diagnose frame divergence.
-
-The supported interface is **`python tools/toursnapshot.py`**. The native
-renderer is invoked only for **record**. Inspection, verification, extraction
-and comparison are CPU-only and use Python's standard library by default.
-
-The earlier `tools/snapshot_sequence.py` decoder and
-`tools/perf_harness.py snapshot` command remain available for compatibility;
-new agent workflows should use `toursnapshot.py` for a single command,
-consistent JSON output, safe file writes, and explicit exit statuses.
+Capture memory is roughly `15 * width * height * 4` bytes of device-local
+buffer storage, plus the host-visible staging allocation used during a
+batch drain. The default readback staging cap is 256 MiB; larger batches
+are transferred in chunks after the 15-frame capture, not read during capture. A capture resolution change during a sequence fails instead
+of producing mixed-size files. The PNG wire format and verification
+contract are unchanged.
 
 ## Commands at a glance
 

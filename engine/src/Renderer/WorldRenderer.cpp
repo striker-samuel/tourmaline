@@ -32,7 +32,8 @@
 #include <time.h>    // localtime_r (screenshot timestamp)
 #endif
 
-#include <Engine/Renderer/ray_tracing_debug.h>
+#include <Engine/Renderer/ray_tracing_debug.h> // (#145) TLAS/BLAS inspector
+#include <Engine/Memory/alloc_config.h> // (#148) scoped snapshot buffer sizing
 #include <Engine/core.h>
 #include <Engine/platform.h> // readFile (exe-relative SPV loads)
 #include <Engine/debug_log.h> // SMVK_TRACE_LOG ([exposure] dashboards)
@@ -10062,48 +10063,40 @@ namespace engine {
 
 	void WorldRenderer::EnsureCaptureTarget(smvk::Extent2D extent) {
 		if (m_scopedCapture && m_sequenceCaptureArmed) {
-			// Render directly into immutable, preallocated GPU image slots.
-			// Recycle only after the entire batch has been exported.
-			if (m_scopedReady && (extent.width != m_scopedExtent.width ||
-				extent.height != m_scopedExtent.height)) {
-				m_snapshotError = "scoped snapshot resolution changed";
+			if (!extent.width || !extent.height) {
+				m_snapshotError = "invalid scoped capture extent";
+				m_captureLogical = {};
+				return;
+			}
+			if (m_scopedReady &&
+				(extent.width != m_scopedExtent.width ||
+				 extent.height != m_scopedExtent.height)) {
+				m_snapshotError = "scoped snapshot resolution changed mid-sequence";
 				m_captureLogical = {};
 				return;
 			}
 			if (!m_scopedReady) {
-				smvk::ImageCreateInfo ci{};
-				ci.extent = { extent.width, extent.height, 1 };
-				ci.format = smvk::Format::RGBA8_SRGB;
-				ci.usage = smvk::ImageUsage::ColorAttachment | smvk::ImageUsage::TransferSrc;
-				ci.mipLevels = ci.arrayLayers = 1;
-				ci.name = "scopedSnapshot";
-				smvk::ImageViewCreateInfo vi{};
-				vi.viewType = smvk::ImageViewType::View2D;
-				vi.format = smvk::Format::Undefined;
-				vi.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 };
-				vi.name = "scopedSnapshotView";
-				for (auto& slot : m_scopedImages) {
-					slot.image = m_context->CreateImage(ci, nullptr);
-					if (slot.image.empty()) break;
-					slot.view = m_context->CreateImageView(slot.image, vi);
-					if (slot.view.empty()) break;
-					slot.logical = m_rendergraph->AddExternalImageView(
-						slot.view, smvk::Format::RGBA8_SRGB, "scopedSnapshotLogical");
-					if (slot.logical.empty()) break;
+				// RGBA8 has four bytes per pixel, so the frame stride is
+				// naturally aligned to VkBufferImageCopy's 4-byte requirement.
+				const uint64_t bytes = uint64_t(extent.width) * extent.height * 4u;
+				if (!bytes || bytes > SIZE_MAX / kScopedCaptureFrames) {
+					m_snapshotError = "scoped capture GPU allocation overflow";
+					m_captureLogical = {};
+					return;
 				}
-				m_scopedReady = true;
-				for (const auto& slot : m_scopedImages)
-					if (slot.logical.empty()) m_scopedReady = false;
-				if (!m_scopedReady) {
-					m_snapshotError = "cannot allocate scoped GPU capture images";
+				m_scopedFrameBytes = static_cast<size_t>(bytes);
+				m_scopedCaptureBuffer = m_context->CreateBuffer(
+					bytes * kScopedCaptureFrames, smvk::BufferType_Storage,
+					"scoped snapshot 15 frames");
+				if (m_scopedCaptureBuffer.empty()) {
+					m_snapshotError = "cannot allocate scoped GPU capture buffer";
 					m_captureLogical = {};
 					return;
 				}
 				m_scopedExtent = extent;
+				m_scopedReady = true;
+				m_scopedFrames.reserve(kScopedCaptureFrames);
 			}
-			m_captureLogical = m_scopedImages[m_scopedFrames.size()].logical;
-			m_captureExtent = extent;
-			return;
 		}
 		if (!m_captureImage.empty() &&
 			m_captureExtent.width == extent.width && m_captureExtent.height == extent.height)
@@ -10263,11 +10256,12 @@ namespace engine {
 	bool WorldRenderer::ConfigureSnapshotSequence(
 		const std::filesystem::path& directory, uint32_t interval, uint32_t count,
 		const std::string& sequenceId, tour::snapshot::Json provenance,
-		bool scopedCapture, std::string& error) {
+		bool scopedCapture, bool rawOutput, std::string& error) {
 		if (!m_snapshotSequence.Configure(directory, interval, 0, count, sequenceId, error))
 			return false;
 		m_snapshotProvenance = std::move(provenance);
 		m_scopedCapture = scopedCapture;
+		m_snapshotRawOutput = rawOutput;
 		return true;
 	}
 
@@ -10288,42 +10282,63 @@ namespace engine {
 	}
 
 	void WorldRenderer::ExportScopedSnapshotBatch() {
-		if (!m_snapshotError.empty()) return;
-		const size_t bytes = size_t(m_scopedExtent.width) * m_scopedExtent.height * 4u;
-		for (size_t i = 0; i < m_scopedFrames.size(); ++i) {
-			std::vector<uint8_t> rgba(bytes);
-			if (!m_context->DownloadDataFromImage(m_scopedImages[i].image,
-				smvk::ImageLayout::ColorAttachmentOptimal, rgba.data(), bytes)) {
-				m_snapshotError = "scoped image readback failed";
+		if (!m_snapshotError.empty() || m_scopedFrames.empty()) return;
+		const size_t bytes = m_scopedFrameBytes;
+		// The global staging allocator defaults to a 256 MiB ceiling.
+		// At 4K, fifteen frames exceed that; drain the same completed GPU
+		// batch in the largest possible contiguous staging transfers.
+		// At 1080p/1440p this is a single download/submission/wait.
+		const size_t cap = smvk::mem::config::Runtime().readbackStagingMax;
+		if (bytes == 0 || cap < bytes) {
+			m_snapshotError = "scoped capture frame exceeds GPU readback staging cap";
+			return;
+		}
+		const size_t framesPerDownload = std::max<size_t>(
+			1, std::min(kScopedCaptureFrames, cap / bytes));
+		for (size_t base = 0; base < m_scopedFrames.size(); base += framesPerDownload) {
+			const size_t count = std::min(framesPerDownload, m_scopedFrames.size() - base);
+			std::vector<uint8_t> rgbaBatch(bytes * count);
+			if (!m_context->DownloadDataFromBuffer(m_scopedCaptureBuffer,
+				rgbaBatch.data(), rgbaBatch.size(), base * bytes)) {
+				m_snapshotError = "scoped batch GPU readback failed";
 				return;
 			}
-			auto& f = m_scopedFrames[i];
-			if (!m_snapshotSequence.Stage(f.tick, f.dtNs, f.state,
-				std::move(f.events), std::move(f.provenance), m_snapshotError)) return;
-			const auto dest = m_snapshotSequence.FramePath();
-			const std::filesystem::path tmp = dest.string() + ".pending.png";
-			if (std::filesystem::exists(dest) || std::filesystem::exists(tmp)) {
-				m_snapshotError = "snapshot PNG already exists: " + dest.string();
-				return;
-			}
-			if (!LutWritePng(tmp.string().c_str(), m_scopedExtent.width,
-				m_scopedExtent.height, rgba.data())) {
-				m_snapshotError = "scoped PNG encoding failed: " + dest.string();
-				return;
-			}
-			if (!m_snapshotSequence.Complete(tmp.string(), rgba, m_snapshotError)) {
+			for (size_t j = 0; j < count; ++j) {
+				std::span<const uint8_t> rgba(rgbaBatch.data() + j * bytes, bytes);
+				auto& frame = m_scopedFrames[base + j];
+				if (!m_snapshotSequence.Stage(frame.tick, frame.dtNs, frame.state,
+					std::move(frame.events), std::move(frame.provenance), m_snapshotError))
+					return;
+				if (m_snapshotRawOutput) {
+					if (!m_snapshotSequence.CompleteRaw(rgba, m_snapshotError))
+						return;
+					continue;
+				}
+				const auto dest = m_snapshotSequence.FramePath();
+				const std::filesystem::path tmp = dest.string() + ".pending.png";
+				if (std::filesystem::exists(dest) || std::filesystem::exists(tmp)) {
+					m_snapshotError = "snapshot PNG already exists: " + dest.string();
+					return;
+				}
+				if (!LutWritePng(tmp.string().c_str(), m_scopedExtent.width,
+					m_scopedExtent.height, rgba.data())) {
+					m_snapshotError = "scoped PNG encoding failed: " + dest.string();
+					return;
+				}
+				if (!m_snapshotSequence.Complete(tmp.string(), rgba, m_snapshotError)) {
+					std::error_code ec;
+					std::filesystem::remove(tmp, ec);
+					return;
+				}
 				std::error_code ec;
-				std::filesystem::remove(tmp, ec);
-				return;
+				std::filesystem::rename(tmp, dest, ec);
+				if (ec) {
+					m_snapshotError = "cannot publish snapshot PNG: " + ec.message();
+					std::filesystem::remove(tmp, ec);
+					return;
+				}
+				std::cout << "[Snapshot] exported " << dest.string() << "\n";
 			}
-			std::error_code ec;
-			std::filesystem::rename(tmp, dest, ec);
-			if (ec) {
-				m_snapshotError = "cannot publish snapshot PNG: " + ec.message();
-				std::filesystem::remove(tmp, ec);
-				return;
-			}
-			std::cout << "[Snapshot] exported " << dest.string() << "\n";
 		}
 		m_scopedFrames.clear();
 	}
@@ -10340,6 +10355,10 @@ namespace engine {
 		if (!m_context->DownloadDataFromImage(m_captureImage,
 			smvk::ImageLayout::ColorAttachmentOptimal, rgba.data(), rgba.size())) {
 			m_snapshotError = "GPU capture readback failed";
+			return;
+		}
+		if (m_snapshotRawOutput) {
+			(void)m_snapshotSequence.CompleteRaw(rgba, m_snapshotError);
 			return;
 		}
 		const auto destination = m_snapshotSequence.FramePath();
@@ -17220,6 +17239,25 @@ namespace engine {
 					m_lutIntensity,
 					m_jitterDeltaUV.x,
 					m_jitterDeltaUV.y);
+				if (m_scopedCapture && m_sequenceCaptureArmed && m_snapshotError.empty()) {
+					// The graph inserts the color-attachment-write -> transfer-read
+					// dependency and layout transition. This pass records a GPU
+					// copy on the SAME graphics command stream, without a fence,
+					// CPU mapping, temporary command buffer or readback.
+					const size_t slot = m_scopedFrames.size();
+					auto& copyPass = m_rendergraph->AddComputePass("ScopedSnapshotCopy");
+					smvk::ImageSyncRequest source{};
+					source.layout = smvk::ImageLayout::TransferSrcOptimal;
+					source.barrierMasks.stageMask = smvk::PipelineStageBit_Transfer;
+					source.barrierMasks.accessMask = smvk::AccessFlags::TransferRead;
+					copyPass.AddImageHint(m_captureLogical, source);
+					copyPass.SetRecordingFunc([this, slot, outExtent](smvk::CommandBuffer& cmd) {
+						if (!m_context->RecordSnapshotImageCopy(cmd.GetNativeHandle(),
+							m_captureImage, m_scopedCaptureBuffer,
+							static_cast<uint64_t>(slot) * m_scopedFrameBytes, outExtent))
+							throw std::runtime_error("scoped snapshot GPU copy recording failed");
+					});
+				}
 			}
 		}
 
@@ -20926,7 +20964,7 @@ namespace engine {
 			// returns) - the readback must wait for it.
 			m_captureQueued = false;
 			m_captureReadbackPending = m_snapshotError.empty() &&
-				(!scopedFrame || m_scopedFrames.size() == m_scopedImages.size());
+				(!scopedFrame || m_scopedFrames.size() == kScopedCaptureFrames);
 		}
 		m_context->ProcessDeferrredTasks();
 		// Eye adaptation already ran at record time (before this frame's

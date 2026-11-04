@@ -178,6 +178,14 @@ public:
     // width * height * bytes-per-texel bytes.
     bool DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout,
                                void* out, size_t size);
+    // Scoped snapshot capture (#148): record a NON-BLOCKING RGBA8
+    // image -> device-local capture-buffer copy into the rendergraph's
+    // own command buffer (nativeCmd). The caller declares the
+    // TransferSrcOptimal/TransferRead sync on the image through graph
+    // hints; the GPU buffer is neither mapped nor downloaded by this
+    // call - the batch boundary owns the single staging transfer.
+    bool RecordSnapshotImageCopy(void* nativeCmd, ImageHandle src,
+        BufferHandle dst, uint64_t dstOffset, Extent2D extent);
     void UploadDataToImage2D(const struct Image& image, const void* data,
                              PipelineStage dstStages, AccessFlags dstAccess, size_t src_offset);
     // BATCHED partial upload into a persistent 3D image — the world-field

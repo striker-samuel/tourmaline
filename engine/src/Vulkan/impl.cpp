@@ -5103,6 +5103,41 @@ bool smvk::VulkanResourceManager::DownloadDataFromBuffer(BufferHandle src, void*
 	return DownloadDataFromBuffers(std::span<const smvk::BufferDownload>(&single, 1));
 }
 
+bool smvk::VulkanResourceManager::RecordSnapshotImageCopy(
+	void* nativeCmd, ImageHandle src, BufferHandle dst,
+	VkDeviceSize dstOffset, Extent2D extent) {
+	if (!nativeCmd || src.empty() || dst.empty() ||
+		extent.width == 0 || extent.height == 0)
+		return false;
+	const auto* img = images_.get(src);
+	const auto* buffer = buffers_.get(dst);
+	if (!img || !buffer || img->vkImage == VK_NULL_HANDLE ||
+		buffer->vkBuffer == VK_NULL_HANDLE ||
+		(img->usage & ImageUsage::TransferSrc) == ImageUsage::None ||
+		(buffer->usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT) == 0 ||
+		img->format != Format::RGBA8_SRGB ||
+		img->extent.width != extent.width || img->extent.height != extent.height ||
+		img->extent.depth != 1)
+		return false;
+	const VkDeviceSize frameBytes = VkDeviceSize(extent.width) * extent.height * 4u;
+	if (dstOffset > buffer->allocBytes || frameBytes > buffer->allocBytes - dstOffset ||
+		(dstOffset & 3u) != 0)
+		return false;
+	VkBufferImageCopy region{};
+	region.bufferOffset = dstOffset;
+	region.bufferRowLength = 0; // tightly packed
+	region.bufferImageHeight = 0;
+	region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+	region.imageExtent = { extent.width, extent.height, 1 };
+	// The rendergraph's preceding TransferRead hint performs the required
+	// COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL transition and
+	// color-write/transfer-read dependency before this callback.
+	vkCmdCopyImageToBuffer(reinterpret_cast<VkCommandBuffer>(nativeCmd),
+		img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		buffer->vkBuffer, 1, &region);
+	return true;
+}
+
 bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout, void* out, size_t outSize) {
 	if (outSize == 0 || out == nullptr || src.empty())
 		return false;

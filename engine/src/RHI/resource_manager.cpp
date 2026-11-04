@@ -204,6 +204,14 @@ bool ResourceManager::HasAsyncDownloadInFlight() const {
 bool ResourceManager::DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout, void* out, size_t size) {
     return impl_->vulkan.DownloadDataFromImage(src, currentLayout, out, size);
 }
+bool ResourceManager::RecordSnapshotImageCopy(void* nativeCmd, ImageHandle src,
+        BufferHandle dst, uint64_t dstOffset, Extent2D extent) {
+    // Forwarding seam (#148): the engine's scoped snapshot pass records
+    // into the rendergraph's command buffer through the public facade -
+    // never a detail-header include from renderer code.
+    return impl_->vulkan.RecordSnapshotImageCopy(nativeCmd, src, dst,
+        static_cast<VkDeviceSize>(dstOffset), extent);
+}
 void ResourceManager::UploadDataToImage2D(const Image& image, const void* data,
                              PipelineStage dstStages, AccessFlags dstAccess, size_t src_offset) {
     VkPipelineStageFlags2 vkStage = toVkPipelineStage(dstStages);

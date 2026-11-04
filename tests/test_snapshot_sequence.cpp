@@ -111,6 +111,34 @@ int main() {
     }
     CHECK(writer.Written() == 3);
     CHECK(writer.FramePath().filename() == "Frame_0004.png");
+
+    // Raw RGBA + JSON sidecars preserve the key/delta chain without PNG
+    // compression. Writing an existing raw sequence must fail closed.
+    const auto rawRoot = root / "raw";
+    std::filesystem::create_directories(rawRoot);
+    SequenceWriter rawWriter;
+    CHECK(rawWriter.Configure(rawRoot, 2, 0, 3, "raw-sequence", error));
+    for (uint64_t i = 0; i < 3; ++i) {
+        Json state{{"scope", "engine-scene-graph-v1"}, {"value", i}};
+        CHECK(rawWriter.Stage(i, 16666667, state, Json::array(),
+            Json{{"image_width", 1}, {"image_height", 1}}, error));
+        CHECK(rawWriter.CompleteRaw(rgba, error));
+        CHECK(std::filesystem::file_size(
+            rawRoot / ("Frame_000" + std::to_string(i + 1) + ".rgba"))
+            == rgba.size());
+        std::ifstream meta(rawRoot /
+            ("Frame_000" + std::to_string(i + 1) + ".json"));
+        Json record;
+        meta >> record;
+        CHECK(record["frame"] == i + 1);
+        CHECK(record["pixels_fnv64"] == tour::snapshot::Fnv64(rgba));
+        CHECK(record["kind"] == (i == 0 || i == 2 ? "key" : "delta"));
+        if (i == 1)
+            CHECK(record["previous_payload_fnv64"].is_string());
+    }
+    CHECK(rawWriter.Written() == 3);
+    SequenceWriter noOverwrite;
+    CHECK(!noOverwrite.Configure(rawRoot, 2, 0, 3, "other", error));
     std::filesystem::remove_all(root);
     std::cout << "snapshot_sequence_tests: passed\n";
     return 0;

@@ -154,7 +154,9 @@ public:
         // Avoid silently mixing previous captures with a new sequence.
         for (const auto& entry : std::filesystem::directory_iterator(directory)) {
             if (entry.path().filename().string().starts_with("Frame_") &&
-                entry.path().extension() == ".png") {
+                (entry.path().extension() == ".png" ||
+                 entry.path().extension() == ".rgba" ||
+                 entry.path().extension() == ".json")) {
                 error = "sequence output contains existing Frame_*.png";
                 return false;
             }
@@ -234,11 +236,89 @@ public:
         return true;
     }
 
-    [[nodiscard]] std::filesystem::path FramePath() const {
+    // Raw capture is intentionally lossless and byte-for-byte RGBA8. The
+    // sidecar contains the same keyframe/delta record and pixel hash as
+    // the PNG ancillary chunk. Sidecars are NOT PNGs: existing PNG-only
+    // tools must use the raw-aware verifier instead of silently accepting
+    // an incomplete sequence.
+    bool CompleteRaw(std::span<const uint8_t> rgba, std::string& error) {
+        if (!pending_) {
+            error = "raw sequence readback has no matching state";
+            return false;
+        }
+        pendingRecord_["pixels_fnv64"] = Fnv64(rgba);
+        pendingRecord_["pixel_format"] = "rgba8";
+        const std::string serialized = pendingRecord_.dump();
+        if (serialized.size() > 64u * 1024u * 1024u - 6u) {
+            error = "raw snapshot metadata too large";
+            return false;
+        }
+        const auto rgbaPath = FramePath(".rgba");
+        const auto statePath = FramePath(".json");
+        if (std::filesystem::exists(rgbaPath) || std::filesystem::exists(statePath)) {
+            error = "raw snapshot output already exists";
+            return false;
+        }
+        const auto rgbaTmp = std::filesystem::path(rgbaPath.string() + ".pending");
+        const auto jsonTmp = std::filesystem::path(statePath.string() + ".pending");
+        if (std::filesystem::exists(rgbaTmp) || std::filesystem::exists(jsonTmp)) {
+            error = "raw snapshot staging path already exists";
+            return false;
+        }
+        std::error_code ec;
+        auto cleanup = [&] {
+            std::filesystem::remove(rgbaTmp, ec);
+            std::filesystem::remove(jsonTmp, ec);
+        };
+        {
+            std::ofstream pixels(rgbaTmp, std::ios::binary | std::ios::trunc);
+            if (!pixels.write(reinterpret_cast<const char*>(rgba.data()),
+                              static_cast<std::streamsize>(rgba.size()))) {
+                error = "cannot write raw RGBA data";
+                cleanup();
+                return false;
+            }
+        }
+        {
+            std::ofstream meta(jsonTmp, std::ios::binary | std::ios::trunc);
+            if (!meta.write(serialized.data(),
+                            static_cast<std::streamsize>(serialized.size()))) {
+                error = "cannot write raw snapshot sidecar";
+                cleanup();
+                return false;
+            }
+        }
+        std::filesystem::rename(rgbaTmp, rgbaPath, ec);
+        if (ec) {
+            error = "cannot publish raw RGBA frame: " + ec.message();
+            cleanup();
+            return false;
+        }
+        std::filesystem::rename(jsonTmp, statePath, ec);
+        if (ec) {
+            error = "cannot publish raw state sidecar: " + ec.message();
+            std::filesystem::remove(rgbaPath, ec);
+            cleanup();
+            return false;
+        }
+        std::string payload = "TSNP1";
+        payload.push_back('\0');
+        payload += serialized;
+        previousPayloadHash_ = Fnv64(payload);
+        pending_ = false;
+        ++written_;
+        return true;
+    }
+
+    [[nodiscard]] std::filesystem::path FramePath(std::string_view extension) const {
         std::ostringstream name;
         name << "Frame_" << std::setw(4) << std::setfill('0')
-             << (written_ + 1) << ".png";
+             << (written_ + 1) << extension;
         return directory_ / name.str();
+    }
+
+    [[nodiscard]] std::filesystem::path FramePath() const {
+        return FramePath(".png");
     }
 
 private:

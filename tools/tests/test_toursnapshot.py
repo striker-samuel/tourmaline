@@ -26,7 +26,7 @@ def chunk(kind, data):
             struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
 
 
-def write_sequence(folder, count=2, interval=2, event_key=26):
+def write_sequence(folder, count=2, interval=2, event_key=26, raw=False):
     folder.mkdir(parents=True, exist_ok=True)
     previous = None
     for index in range(1, count + 1):
@@ -41,9 +41,12 @@ def write_sequence(folder, count=2, interval=2, event_key=26):
                   "state_fnv64": codec.fnv64(codec.canonical(state)),
                   "pixels_fnv64": codec.fnv64(PIXEL),
                   "events": [{"type": 3, "key": event_key}] if index == 1 else []}
+        if raw:
+            record["pixel_format"] = "rgba8"
         if key:
             record["state"] = state
-            record["provenance"] = {"code_identity": "example-commit", "rng_seed": 7}
+            record["provenance"] = {"code_identity": "example-commit", "rng_seed": 7,
+                                    "image_width": 1, "image_height": 1}
         else:
             record["previous_frame"] = index - 1
             record["patch"] = [{"op": "replace", "path": "/nodes/0:0/x", "value": index}]
@@ -52,7 +55,11 @@ def write_sequence(folder, count=2, interval=2, event_key=26):
                chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)) +
                chunk(b"IDAT", zlib.compress(b"\x00" + PIXEL)) +
                chunk(codec.CHUNK, payload) + chunk(b"IEND", b""))
-        (folder / f"Frame_{index:04d}.png").write_bytes(png)
+        if raw:
+            (folder / f"Frame_{index:04d}.rgba").write_bytes(PIXEL)
+            (folder / f"Frame_{index:04d}.json").write_bytes(codec.canonical(record))
+        else:
+            (folder / f"Frame_{index:04d}.png").write_bytes(png)
         previous = codec.fnv64(payload)
 
 
@@ -106,6 +113,38 @@ class SnapshotCliTests(unittest.TestCase):
         self.assertNotIn("--bench", report["argv"])
         self.assertFalse(output.exists())
         self.assertEqual(err, "")
+
+    def test_raw_output_mode_planning(self):
+        rc, output, err = call(
+            "record", "--app", str(self.app), "--pak", str(self.pak),
+            "--output", str(self.root / "planned_raw"),
+            "--output-format", "raw", "--dry-run", "--json")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("--snapshot-format=raw", json.loads(output)["argv"])
+
+    def test_raw_sidecars_verify_and_detect_corruption(self):
+        raw_folder = self.root / "raw"
+        write_sequence(raw_folder, count=3, raw=True)
+        rc, output, err = call("verify", str(raw_folder), "--json")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(output)["frames"], 3)
+        rc, output, err = call("verify", str(raw_folder), "--pixels", "--json")
+        self.assertEqual(rc, 0, err)
+        (raw_folder / "Frame_0002.rgba").write_bytes(b"bad!")
+        rc, output, _ = call("verify", str(raw_folder), "--json")
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(output)["status"], "error")
+
+    def test_raw_sidecar_missing_and_mixed_files_rejected(self):
+        raw_folder = self.root / "raw_missing"
+        write_sequence(raw_folder, raw=True)
+        (raw_folder / "Frame_0002.json").unlink()
+        rc, output, _ = call("verify", str(raw_folder), "--json")
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(output)["status"], "error")
+        (raw_folder / "Frame_0001.png").write_bytes(b"bogus")
+        rc, output, _ = call("verify", str(raw_folder), "--json")
+        self.assertEqual(rc, 1)
 
     def test_legacy_capture_mode_is_explicit(self):
         rc, out, err = call(
