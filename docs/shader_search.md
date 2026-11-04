@@ -55,6 +55,7 @@ python tools/shader_search.py `
   --validate-cmd "python tools/local_shader_correctness.py" `
   --provider ollama --model qwen2.5-coder:14b `
   --iterations 5 --repeat 5 --target-resolution 1080p `
+  --screenshot-resolution 1080p `
   --reference-screenshot out/references/ssr-1080p.png `
   --candidate-screenshot out/captures/current-ssr.png `
   --output out/shader-search/experiment-001
@@ -84,9 +85,16 @@ and uses `tools/pixel_compare.py` to compute the numerical metrics.
 
 `--target-resolution` uses the existing perf harness `--resolutions` path
 and validates that the reported extent matches the requested 16:9 dimensions.
-The requested width and height are also exposed as
+The requested internal render width and height are also exposed as
 `SHADER_SEARCH_TARGET_WIDTH` and `SHADER_SEARCH_TARGET_HEIGHT` to the
-capture/validation command. That command **must** render at the requested
+capture/validation command.
+**The target is an internal render extent, not necessarily the screenshot
+extent**: Tourmaline's benchmark window defaults to 1920x1080 even when the
+render scale produces 1440p/4K intermediate images. The independent
+`--screenshot-resolution` (default `1080p`) checks captured PNG
+presentation dimensions, and exposes `SHADER_SEARCH_SCREENSHOT_WIDTH` and
+`SHADER_SEARCH_SCREENSHOT_HEIGHT`. Set it to the internal render extent only
+if your capture hook actually saves that image rather than the window output. That command **must** render at the requested
 resolution with matching scenario/environment settings; the runner verifies
 the final PNG dimensions but cannot control a custom capture script's camera,
 frame, quality settings, or render scale automatically.
