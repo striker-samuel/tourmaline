@@ -114,7 +114,7 @@ class PermissionRegistryTests(unittest.TestCase):
             expect_error(403, "/v2/publish", viewer, "PUT")
             # Publish permission is authorized before metadata processing.
             expect_error(400, "/v2/publish", publisher, "PUT")
-            expect_error(403, "/v2/consumers", "wrong-token")
+            expect_error(401, "/v2/consumers", "wrong-token")
             with request("/v2/products", admin) as response:
                 self.assertIn("products", json.load(response))
             self.registry.group_set("normal", ["-source.read"])
