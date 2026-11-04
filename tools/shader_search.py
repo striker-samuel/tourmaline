@@ -130,28 +130,36 @@ def run_search(args):
     shader_root = (repo / "engine/shaders").resolve()
     if not shader.is_relative_to(shader_root) or not shader.is_file() or shader.suffix not in (".hlsl", ".hlsli"):
         raise ValueError("--shader must be an existing file under engine/shaders")
-    exe = args.exe.resolve()
+    exe = args.exe.resolve() if args.exe else None
     catalog = args.catalog.resolve() if args.catalog else repo / "benchmarks/scenarios.json"
     output = args.output.resolve()
     if output.is_relative_to(repo / "engine/shaders"):
         raise ValueError("output directory must not be inside engine/shaders")
-    if not exe.is_file() or not catalog.is_file():
+    if not args.list_regions and (not exe.is_file() or not catalog.is_file()):
         raise ValueError("benchmark executable and scenario catalog must exist")
-    if not args.scenario:
+    if not args.list_regions and not args.scenario:
         raise ValueError("at least one --scenario required")
     if args.iterations < 1 or args.repeat < 1 or args.timeout < 1:
         raise ValueError("iterations, repeat and timeout must be positive")
     from perf_harness import select_scenario
     from experiment_environment import collect_environment
     from shader_hints import apply_hints
-    for scenario in args.scenario:
+    from shader_regions import discover, preserve_identity, apply_identified_regions, load_knobs
+    for scenario in args.scenario or []:
         select_scenario(catalog, scenario)
 
     original = shader.read_bytes()
     if len(original) > args.max_source_bytes:
         raise ValueError("shader exceeds --max-source-bytes")
     source = original.decode("utf-8")
+    if args.list_regions:
+        print(json.dumps({"shader": str(shader), "regions": discover(source)}, indent=2))
+        return {"best_gain_percent": 0, "best_file": None}
     output.mkdir(parents=True, exist_ok=True)
+    region_choices = load_knobs(args.region_knobs) if args.region_knobs else {}
+    tracked_regions = discover(source)
+    (output / "regions.json").write_text(
+        json.dumps(tracked_regions, indent=2) + "\n", encoding="utf-8")
     api_key = os.environ.get(args.api_key_env, "") if args.api_key_env else ""
     env = os.environ.copy()
     env["SHADER_SEARCH_SHADER"] = str(shader)
@@ -207,7 +215,8 @@ def run_search(args):
             knobs = {"loop_mode": args.loop_mode, "loop_index": args.loop_index,
                      "unroll_count": args.unroll_count,
                      "branch_mode": args.branch_mode, "branch_index": args.branch_index,
-                     "register_pressure": args.register_pressure}
+                     "register_pressure": args.register_pressure,
+                     "region_overrides": region_choices}
             feedback = json.dumps({
                 "target_knobs": knobs, "baseline_register_metrics": baseline_registers,
                 "recent_experiments": history[-6:],
@@ -220,9 +229,21 @@ def run_search(args):
                     best_source, feedback, args.timeout)
                 if len(candidate.encode("utf-8")) > args.max_source_bytes:
                     raise ValueError("candidate exceeds source size limit")
+                source_before_hints = best_source
+                identified = preserve_identity(best_source, candidate, tracked_regions)
+                (trial / "regions.json").write_text(
+                    json.dumps(identified, indent=2) + "\n", encoding="utf-8")
                 candidate, applied_hints = apply_hints(
                     candidate, args.loop_mode, args.loop_index,
                     args.branch_mode, args.branch_index, args.unroll_count)
+                if region_choices:
+                    # Legacy index-based hints insert characters: re-map the
+                    # addressable sections through that precise intermediate diff.
+                    updated_regions = preserve_identity(
+                        best_source, candidate, tracked_regions)
+                    candidate, named_changes = apply_identified_regions(
+                        candidate, region_choices, updated_regions)
+                    applied_hints.extend(named_changes)
                 if candidate == best_source:
                     raise ValueError("model returned unchanged source")
                 # Never allow another file or shell command from the model.
@@ -249,6 +270,7 @@ def run_search(args):
                             candidate_score < best_score and (math.exp(best_score) - math.exp(candidate_score)) * 100 >= args.min_gain)
                 if accepted:
                     best_source, best_score = candidate, candidate_score
+                    tracked_regions = preserve_identity(source_before_hints, candidate, tracked_regions)
                     (output / "best.hlsl").write_text(candidate, encoding="utf-8")
                 outcome = {"iteration": index, "accepted": accepted,
                            "times_ms": measured, "gain_percent": gain,
@@ -284,13 +306,17 @@ def run_search(args):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
+    p.add_argument("--list-regions", action="store_true",
+                   help="Discover stable shader section and loop IDs (no benchmark)")
+    p.add_argument("--region-knobs", type=Path,
+                   help="JSON map of independent region IDs to loop/unroll/branch/flatten hints")
     p.add_argument("--shader", required=True, help="File below engine/shaders")
-    p.add_argument("--exe", type=Path, required=True, help="Built Benchmark executable")
-    p.add_argument("--scenario", action="append", required=True)
+    p.add_argument("--exe", type=Path, help="Built Benchmark executable")
+    p.add_argument("--scenario", action="append")
     p.add_argument("--catalog", type=Path)
     p.add_argument("--output", type=Path, default=Path("out/shader-search"))
-    p.add_argument("--build-cmd", required=True, help="Build command (argv, not shell)")
-    p.add_argument("--validate-cmd", required=True, help="Mandatory correctness command (argv, not shell)")
+    p.add_argument("--build-cmd", help="Build command (argv, not shell)")
+    p.add_argument("--validate-cmd", help="Mandatory correctness command (argv, not shell)")
     p.add_argument("--export-parquet", type=Path,
                    help="Optional analytics export (requires extended dependencies)")
     p.add_argument("--loop-mode", choices=("auto", "loop", "unroll"), default="auto")
@@ -307,7 +333,7 @@ def main(argv=None):
     p.add_argument("--dxc", help="Explicit DXC executable path for version collection")
     p.add_argument("--provider", choices=("openai", "ollama"), default="openai")
     p.add_argument("--api-base", default=None, help="OpenAI-compatible /v1 base or Ollama server root")
-    p.add_argument("--model", required=True)
+    p.add_argument("--model")
     p.add_argument("--api-key-env", default="OPENAI_API_KEY", help="Name of token environment variable")
     p.add_argument("--iterations", type=int, default=5)
     p.add_argument("--repeat", type=int, default=5)
@@ -320,6 +346,8 @@ def main(argv=None):
         p.error("--unroll-count requires --loop-mode unroll and a count in 1..1024")
     if args.loop_index < 0 or args.branch_index < 0 or args.max_register_regression < 0:
         p.error("hint indices and max register regression must be nonnegative")
+    if not args.list_regions and (not args.exe or not args.scenario or not args.build_cmd or not args.validate_cmd or not args.model):
+        p.error("search requires --exe, --scenario, --build-cmd, --validate-cmd and --model")
     if args.api_base is None:
         args.api_base = ("http://localhost:11434" if args.provider == "ollama"
                          else "https://api.openai.com/v1")
