@@ -130,6 +130,9 @@ struct MaterialAsset {
 	TexRef metallicRoughness;
 	TexRef normalTex;
 	TexRef occlusion;
+	TexRef cavity;
+	std::string packingSource; // recipe rule origin, empty for native glTF
+	int channelSelectors = -1; // material output channel metadata
 	TexRef emissiveTex;
 };
 
@@ -468,6 +471,8 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 	std::string& err);
 bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
 	std::string& err);
+bool SaveMaterialAsset(const std::filesystem::path& path,
+	const MaterialAsset& material, std::string& err);
 // Writer (round-trip; the COOK writes cooked artifacts back: stamped
 // chart UVs ride the shading blobs verbatim, meshlets/LODs persist,
 // and the v2 trailing registry carries the per-blob lightmap binding).
