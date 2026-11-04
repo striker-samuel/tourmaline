@@ -79,7 +79,8 @@ struct ViewerOptions {
 	int benchFrames = 0;
 	float benchMoveSpeed = 0.0f;
 	std::string presentMode; // empty = default; fifo|mailbox|immediate
-	bool presentSet = false; // --present/--vsync explicit (wins over --bench)\n\tbool vrr = false; // VRR-friendly automatic FPS cap below detected refresh
+	bool presentSet = false; // --present/--vsync explicit (wins over --bench)
+	bool vrr = false; // VRR-friendly automatic FPS cap below detected refresh
 	int maxFps = 0; // --max-fps N: optional interactive cap; ignored by --bench
 	bool disableControl = false;
 	// Engine-normalized input events indexed by simulation tick.
