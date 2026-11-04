@@ -37,7 +37,7 @@ class PermissionRegistryTests(unittest.TestCase):
         self.assertTrue(permitted(["source.*"], "source.revisions.read")[1])
 
     def test_users_groups_custom_rules_and_denials(self):
-        self.registry.group_set("VIP", ["source.*", "product.publish"])
+        self.registry.group_set("VIP", ["source.*", "product.*"])
         self.registry.group_set("normal", ["source.read", "artifact.*", "-product.publish"])
         token = self.registry.user_set(
             "User1", ["VIP", "normal"], ["source.revisions.*"])
