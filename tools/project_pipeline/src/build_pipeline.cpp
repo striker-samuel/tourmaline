@@ -1058,6 +1058,61 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			err = "the appmanifest publish failed: " + mErr;
 			return false;
 		}
+		// An immutable content-set receipt captures which source plan pak
+		// owns each addressed package. The appmanifest remains the ONLY
+		// release pointer; this receipt is a verifiable audit sidecar.
+		// Land it BEFORE the manifest commit so a committed release never
+		// refers to a generation with an absent receipt after a crash.
+		{
+			std::ifstream input(stagedManifest, std::ios::binary);
+			if (!input) { err = "cannot read staged appmanifest for receipt"; return false; }
+			const std::string manifestBytes((std::istreambuf_iterator<char>(input)),
+				std::istreambuf_iterator<char>());
+			if (!input.eof() && input.fail()) {
+				err = "failed to read staged appmanifest for receipt"; return false;
+			}
+			const std::string manifestDigest = smvk::cache::HashBytes(
+				manifestBytes.data(), manifestBytes.size());
+			std::ostringstream receipt;
+			receipt << "tourmaline-build-receipt 1\\n"
+				<< "manifest " << manifestPath.filename().generic_string()
+				<< " fnv1a64:" << manifestDigest << "\\n";
+			for (size_t i = 0; i < plan.paks.size(); ++i)
+				receipt << "pak " << plan.paks[i].id << ' '
+					<< finalPaths[i].filename().generic_string() << " fnv1a64:"
+					<< finalDigests[i] << "\\n";
+			const std::string payload = receipt.str();
+			const fs::path stagedReceipt = stagingDir /
+				(manifestName + ".receipt");
+			staged.files.push_back(stagedReceipt);
+			{
+				std::ofstream output(stagedReceipt, std::ios::binary | std::ios::trunc);
+				output.write(payload.data(), std::streamsize(payload.size()));
+				output.close();
+				if (!output) { err = "cannot write staged build receipt"; return false; }
+			}
+			const fs::path finalReceipt = publish /
+				(manifestName + "-" + manifestDigest + ".receipt");
+			std::error_code receiptEc;
+			if (fs::exists(finalReceipt, receiptEc)) {
+				std::ifstream existing(finalReceipt, std::ios::binary);
+				const std::string existingBytes((std::istreambuf_iterator<char>(existing)),
+					std::istreambuf_iterator<char>());
+				if (!existing || existingBytes != payload) {
+					err = "existing build receipt is corrupt or collides: "
+						+ finalReceipt.generic_string();
+					return false;
+				}
+				fs::remove(stagedReceipt, receiptEc);
+			} else {
+				fs::rename(stagedReceipt, finalReceipt, receiptEc);
+				if (receiptEc) {
+					err = "cannot publish immutable build receipt: "
+						+ receiptEc.message();
+					return false;
+				}
+			}
+		}
 		// THE COMMIT: rename-over-existing is atomic on both supported
 		// platforms (MSVC MoveFileEx REPLACE_EXISTING; POSIX rename).
 		{
