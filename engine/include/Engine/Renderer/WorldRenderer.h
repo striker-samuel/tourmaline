@@ -3881,6 +3881,8 @@ public:
     float m_rayTracedSunShadowBias = 0.02f;
     int m_rayTracedSunShadowResolutionDivisor = 2;
     std::vector<smvk::RayTracingInstance> m_rayTracingCachedInstances;
+    // Derived only when RT caster candidates change; editor inspection is free per frame.
+    smvk::RayTracingDebugSummary m_rayTracingDebugSummary;
     const smvk::World* m_rayTracingCachedWorld = nullptr;
     bool m_rayTracingCacheValid = false;
 	// ---- World voxel fields (Engine/WorldFields — the atlas-backed
