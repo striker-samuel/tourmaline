@@ -10,6 +10,7 @@
 // bake/cook can no longer scroll past unseen.
 
 #include "editor_app.h"
+#include <algorithm>
 
 #include <imgui.h>
 
@@ -119,12 +120,27 @@ void EditorApp::DrawTaskWindow() {
 	else {
 		// Finished: result + acknowledge. The Console carries the same
 		// lines for the record.
-		ImGui::TextColored(m_taskWindow.ok
+		// A long failure reason must never shove the Close button
+		// outside the modal. Reserve fixed button space and clip only the
+		// one-line summary; full details remain in the log and tooltip.
+		const float closeW = 76.0f;
+		const float messageW = std::max(24.0f,
+			ImGui::GetContentRegionAvail().x - closeW
+			- ImGui::GetStyle().ItemSpacing.x);
+		ImGui::PushStyleColor(ImGuiCol_Text, m_taskWindow.ok
 			? ImVec4(0.4f, 1.0f, 0.5f, 1.0f)
-			: ImVec4(1.0f, 0.45f, 0.4f, 1.0f),
-			"%s", m_taskWindow.result.c_str());
+			: ImVec4(1.0f, 0.45f, 0.4f, 1.0f));
+		ImGui::BeginChild("##task_result_summary",
+			ImVec2(messageW, ImGui::GetFrameHeight()), false,
+			ImGuiWindowFlags_NoScrollbar
+			| ImGuiWindowFlags_NoScrollWithMouse);
+		ImGui::TextUnformatted(m_taskWindow.result.c_str());
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", m_taskWindow.result.c_str());
+		ImGui::EndChild();
+		ImGui::PopStyleColor();
 		ImGui::SameLine();
-		if (ImGui::Button("Close")) {
+		if (ImGui::Button("Close", ImVec2(closeW, 0))) {
 			m_taskWindow.wantOpen = false;
 			m_taskWindow.opened = false;
 			ImGui::CloseCurrentPopup();
