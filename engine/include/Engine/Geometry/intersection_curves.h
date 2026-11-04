@@ -14,6 +14,7 @@
 #include <limits>
 #include <map>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -255,6 +256,33 @@ inline CurveSet ExtractTerrainIntersection(
     CurveSet stitched = StitchSegments(segments,opt.weldTolerance);
     stitched.ambiguous += result.ambiguous;
     return stitched;
+}
+
+// Optional bounded corner-cutting of extracted polylines. This operates
+// on the derivative bake curve only; exact CGAL/heightfield source curves
+// remain available for diagnostics and re-baking. "strength" is capped so
+// two adjacent new points remain close to their original segment.
+inline Polyline SmoothPolyline(const Polyline& input, int passes = 1,
+                                float strength = .2f) {
+    Polyline result = input;
+    strength = std::clamp(strength,0.0f,.25f);
+    passes = std::clamp(passes,0,4);
+    for (int pass=0;pass<passes && strength>0;++pass) {
+        const size_t n=result.points.size();
+        if (n<3 || n>200000) break;
+        Polyline next; next.closed=result.closed;
+        if (!next.closed) next.points.push_back(result.points.front());
+        const size_t edges=next.closed ? n : n-1;
+        for (size_t i=0;i<edges;++i) {
+            const glm::vec3 a=result.points[i];
+            const glm::vec3 b=result.points[(i+1)%n];
+            next.points.push_back(a*(1-strength)+b*strength);
+            next.points.push_back(a*strength+b*(1-strength));
+        }
+        if (!next.closed) next.points.push_back(result.points.back());
+        result=std::move(next);
+    }
+    return result;
 }
 
 // Polyline resampling preserves original endpoints and does NOT smooth
