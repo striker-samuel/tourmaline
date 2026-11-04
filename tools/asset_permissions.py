@@ -90,8 +90,11 @@ class PermissionRegistry:
         if not isinstance(assets, dict):
             raise ValueError("asset ACLs must be an object")
         for asset_id, acl in assets.items():
-            if str(uuid.UUID(asset_id)) != asset_id:
-                raise ValueError("asset ACL key must be a canonical source UUID")
+            try:
+                if str(uuid.UUID(asset_id)) != asset_id:
+                    raise ValueError()
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValueError("asset ACL key must be a canonical source UUID") from exc
             if not isinstance(acl, dict) or set(acl) != {"users", "groups"}:
                 raise ValueError("asset ACL must contain users and groups")
             for kind in ("users", "groups"):
@@ -128,19 +131,19 @@ class PermissionRegistry:
     def load(self):
         return self.validate(json.loads(self.path.read_text(encoding="utf-8")))
 
-    def identity(self, token):
+    def identity(self, token, *, snapshot=None):
         if not isinstance(token, str):
             return None
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        data = self.load()  # Revocations and group edits apply to next request.
+        data = snapshot if snapshot is not None else self.load()
         found = None
         for username, record in data["users"].items():
             if hmac.compare_digest(digest, record["token_sha256"]):
                 found = username
         return found
 
-    def allows(self, username, permission, asset_id=None):
-        data = self.load()
+    def allows(self, username, permission, asset_id=None, *, snapshot=None):
+        data = snapshot if snapshot is not None else self.load()
         record = data["users"].get(username)
         if record is None:
             return False
