@@ -19,9 +19,11 @@ void EditorApp::DrawIntersectionToolsWindow() {
     namespace geo = smvk::geometry;
     static char sourceA[1024] = "";
     static char sourceB[1024] = "";
-    static char output[1024] = "";
+    static char output[1024] = "seam_bake.gltf";
     static int mode = 0;       // terrain or mesh/mesh
     static int product = 0;    // terrain ribbon or vertical skirt
+    static int smoothPasses = 1;
+    static float smoothStrength = .15f;
     static geo::BakeSettings settings;
     static geo::CurveSet curves;
     static geo::RibbonMesh geometry;
@@ -58,6 +60,8 @@ void EditorApp::DrawIntersectionToolsWindow() {
     ImGui::DragFloat("Sample spacing (m)",&settings.step,.02f,.01f,10.0f);
     ImGui::DragFloat("Weld tolerance (m)",&settings.weldTolerance,.001f,
                      .0001f,1.0f,"%.4f");
+    ImGui::SliderInt("Spline smoothing passes",&smoothPasses,0,4);
+    ImGui::SliderFloat("Spline smoothing strength",&smoothStrength,0.0f,.25f);
     if (product == 0) ImGui::DragFloat("Terrain lift (m)",&settings.lift,
                                       .001f,0.0f,.25f,"%.3f");
     if (product == 1) ImGui::DragFloat("Skirt depth (m)",&settings.skirtDepth,
@@ -114,10 +118,13 @@ void EditorApp::DrawIntersectionToolsWindow() {
         }
         if (!canRibbon) ImGui::BeginDisabled();
         if (ImGui::Button("Build bake geometry")) {
+            geo::CurveSet smoothed = curves;
+            for (auto& curve : smoothed.curves)
+                curve = geo::SmoothPolyline(curve,smoothPasses,smoothStrength);
             if (product == 1)
-                geometry = geo::BakeVerticalSkirt(curves,settings);
+                geometry = geo::BakeVerticalSkirt(smoothed,settings);
             else
-                geometry = geo::BakeTerrainRibbon(curves,
+                geometry = geo::BakeTerrainRibbon(smoothed,
                     m_terrainGroups.at(bakedGroup).data.heights,settings);
             status = "Generated " + std::to_string(geometry.vertices.size())
                 + " vertices and " + std::to_string(geometry.indices.size()/3)
