@@ -54,11 +54,62 @@ python tools/shader_search.py `
   --build-cmd "cmake --build out/build/x64-Release --target Benchmark" `
   --validate-cmd "python tools/local_shader_correctness.py" `
   --provider ollama --model qwen2.5-coder:14b `
-  --iterations 5 --repeat 5 --output out/shader-search
+  --iterations 5 --repeat 5 --target-resolution 1080p \
+  --reference-screenshot out/references/ssr-1080p.png \
+  --candidate-screenshot out/captures/current-ssr.png \
+  --output out/shader-search/experiment-001
 ```
 
 The suggested shader file and validation script above are *examples*: select
 a shader that exists in your checkout and supply your own correctness script.
+
+## Numerical screenshot correctness and target resolution
+
+**A scored screenshot comparison is required by default.** Supply a trusted
+saved PNG and a path where the `--validate-cmd` script will create a **new**
+candidate PNG on every iteration. The runner deletes an old candidate screenshot
+before invoking the script, saves a copy and PNG difference map per iteration,
+and uses `tools/pixel_compare.py` to compute the numerical metrics.
+
+```powershell
+# Additional options to the example invocation above:
+--target-resolution 1080p `
+--reference-screenshot out/references/ssr-1080p.png `
+--candidate-screenshot out/captures/current-ssr.png `
+--pixel-threshold 6 `
+--max-difference-fraction 0.001 `
+--max-average-channel-delta 0.05 `
+--output out/shader-search/experiment-001
+```
+
+`--target-resolution` uses the existing perf harness `--resolutions` path
+and validates that the reported extent matches the requested 16:9 dimensions.
+The requested width and height are also exposed as
+`SHADER_SEARCH_TARGET_WIDTH` and `SHADER_SEARCH_TARGET_HEIGHT` to the
+capture/validation command. That command **must** render at the requested
+resolution with matching scenario/environment settings; the runner verifies
+the final PNG dimensions but cannot control a custom capture script's camera,
+frame, quality settings, or render scale automatically.
+
+`difference_fraction` is the fraction of RGB pixels with sum of channel
+absolute differences greater than `--pixel-threshold`. The second metric,
+`average_channel_delta`, is the mean sum of RGB absolute differences
+over all pixels. Both limits must pass. The numeric result is saved under
+`candidate-NNN/visual.json`, included in the experiment result, and fed
+to subsequent model prompts. Pillow is required for pixel comparison and is
+installed by the optional extended installer.
+
+The default limits are zero (exact pixel match). Choose controlled tolerances
+only for scenes with expected nondeterminism and inspect difference maps before
+accepting an optimized variant. For genuinely nonvisual workloads,
+`--allow-no-image-check` explicitly waives this gate; the required external
+`--validate-cmd` still runs. Don't use a no-op validator.
+
+Use a **fresh empty output directory** per search; reruns refuse to overwrite
+existing experiment records. On normal exit the original HLSL is restored
+and rebuilt, so compiled SPIR-V/binaries are not intentionally left pointing
+to the last experimental candidate. An uncatchable process kill, power loss
+or concurrent build can still leave an inconsistent tree.
 
 ## How acceptance works
 
