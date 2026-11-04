@@ -474,11 +474,15 @@ void EditorApp::DrawViewportChrome() {
 	// correct — panels are siblings, never covered by viewport chrome).
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
 	const int count = ViewportCount();
+	const ImVec2 origin = ImGui::GetMainViewport()->Pos;
 	for (int i = 0; i < count; ++i) {
 		const EditorViewport& vp = m_viewports[i];
 		const bool active = (i == m_activeVp);
-		dl->AddRect(ImVec2(vp.rect.x, vp.rect.y),
-			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h),
+		// Vulkan/editor input use SDL-local pixels; ImGui draw lists use
+		// desktop-global positions. Do not shift the F2 border offscreen.
+		dl->AddRect(ImVec2(origin.x + vp.rect.x, origin.y + vp.rect.y),
+			ImVec2(origin.x + vp.rect.x + vp.rect.w,
+				origin.y + vp.rect.y + vp.rect.h),
 			active ? IM_COL32(120, 200, 255, 220) : IM_COL32(70, 70, 76, 180),
 			0.0f, 0, active ? 2.0f : 1.0f);
 	}
