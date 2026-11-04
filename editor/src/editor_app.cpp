@@ -42,6 +42,7 @@
 #include <Engine/core.h>
 
 #include <imgui.h>
+#include <SDL3/SDL_filesystem.h> // SDL_GetBasePath: font independent of working dir
 
 namespace editor {
 
@@ -248,7 +249,12 @@ bool EditorApp::Initialize() {
 	smvk::ImGuiOverlayDesc imguiDesc{};
 	// Use the repository's existing polished medium-weight UI face,
 	// staged exe-relative for the editor only (game UI is unchanged).
-	imguiDesc.fontPath = "content/fonts/Roboto-Medium.ttf";
+	// The launcher may start Editor from an arbitrary working directory.
+	// Keep this path alive for ImGuiOverlay's font descriptor lifetime.
+	static const std::string editorFontPath = (
+		std::filesystem::path(SDL_GetBasePath() ? SDL_GetBasePath() : ".") /
+		"content/fonts/Roboto-Medium.ttf").string();
+	imguiDesc.fontPath = editorFontPath.c_str();
 	imguiDesc.fontBaseSize = 16.0f;
 	if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
 		std::cerr << "[Editor] ImGui init failed, continuing without UI\n";
