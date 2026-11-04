@@ -337,6 +337,7 @@ void EditorApp::FinalizePending() {
 		// A normal floating project configuration window must not be
 		// nested in ImGui's main menu-bar window stack.
 		DrawProjectExportWindow();
+		DrawImportWindow();
 		// Options is a large standalone settings window, not a dock tab.
 		// Render settings retain their existing live-update/autosave behavior.
 		if (m_showRenderSettingsPanel) {
@@ -742,11 +743,8 @@ void EditorApp::FinalizePending() {
                     CreateSceneAsset((std::filesystem::path(m_projectRoot) /
                         "content" / "scenes").generic_string());
                 if (ImGui::MenuItem("Import asset...", nullptr, false,
-					!m_cookRunning)) {
-					std::string picked;
-					if (NativeOpenFile(picked) && !picked.empty())
-						ImportAsset(picked);
-				}
+					!m_cookRunning))
+					m_showImportWindow = true;
 				ImGui::TextDisabled("project: %s", m_projectName.c_str());
 				ImGui::Separator();
 			}
@@ -1011,6 +1009,7 @@ void EditorApp::FinalizePending() {
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Window")) {
+			ImGui::MenuItem("Import Asset", nullptr, &m_showImportWindow);
 			ImGui::MenuItem("Viewport", nullptr, &m_showViewportPanel);
 			ImGui::MenuItem("World Map", nullptr, &m_showWorldMapPanel);
 			ImGui::MenuItem("Outliner", nullptr, &m_showOutlinerPanel);
