@@ -833,8 +833,14 @@ namespace editor {
 					std::string e = p.extension().string();
 					for (char& c : e)
 						c = char(std::tolower((unsigned char)c));
-					if (e == ".meta" || HideAssetBrowserFile(p))
-						continue; // sidecar or internal bake artifact
+					// The ordinary folder lists authored source files only.
+					// Derived geometry/material/animation files remain accessible
+					// as logical subassets through their source manifest, rather
+					// than appearing again as loose sibling files.
+					const bool generated = e == ".geometry" || e == ".mesh"
+						|| e == ".material" || e == ".anim";
+					if (e == ".meta" || generated || HideAssetBrowserFile(p))
+						continue; // generated output or internal bake artifact
 					if (smvk::assets::IsMeshSourceExtension(e)) {
 						// With a manifest the source presents as a FOLDER
 						// of its derived assets; without one it opens as
