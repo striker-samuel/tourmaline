@@ -466,6 +466,8 @@ namespace engine {
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.particles
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.meshParticles
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.motionVectors
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.motionBlur
@@ -3042,6 +3044,8 @@ namespace engine {
 			delete m_gpuPlacementDraw;
 			m_gpuPlacementDraw = nullptr;
 		}
+		m_meshParticleDraw.Destroy();
+		m_viewportResources.meshParticles.Destroy(*m_rendergraph);
 		if (!m_gpuPlacementViewLogical.empty())
 			m_rendergraph->FreeBuffer(m_gpuPlacementViewLogical);
 		m_gpuPlacementViewLogical = {};
@@ -11094,6 +11098,51 @@ namespace engine {
 		const uint32_t particleEmitterCount =
 			particlesOn ? UpdateParticles(fb.frameIndex) : 0u;
 
+		// Mesh particles share the placement prototype geometry table,
+		// but have their own persistent GPU pool and cull/indirect chain.
+		// Do not run without valid prototype draws (zero-index commands
+		// are not a substitute for registered geometry).
+		auto& meshPs = m_viewportResources.meshParticles;
+		m_meshParticlesReady = false;
+		const float meshDt = std::max(0.0f, std::min(m_deltaTime, 1.0f / 30.0f));
+		m_meshParticleTailSeconds = std::max(0.0f,
+			m_meshParticleTailSeconds - meshDt);
+		uint32_t meshEmitterCount = 0;
+		bool meshSimulationRun = false;
+		if (m_particlesEnabled && m_passes.particles &&
+			(!m_externalMeshParticleEmitters.empty() ||
+				m_meshParticleTailSeconds > 0.0f) &&
+			m_gpuPlacementSeedCount > 0 &&
+			meshPs.Ensure(*m_context, *m_rendergraph, FrameFlights(fb)) &&
+			m_meshParticleDraw.Ensure(*m_context,
+				"content/shaders/meshparticles_draw.vert.hlsl.spv",
+				tour::placement::kPlacementUnlitPsPath)) {
+			std::vector<smvk::MeshParticleEmitterGpu> rows;
+			rows.reserve(std::min<size_t>(m_externalMeshParticleEmitters.size(),
+				meshPs.desc.maxEmitters));
+			for (const auto& emitter : m_externalMeshParticleEmitters) {
+				const uint32_t bin = uint32_t(std::max(0.0f, emitter.life.w));
+				if (bin >= m_gpuPlacementSeedCount ||
+					m_gpuPlacementSeeds[bin].indexCount == 0)
+					continue;
+				rows.push_back(emitter);
+				if (rows.size() == meshPs.desc.maxEmitters) break;
+			}
+			if (meshPs.SeedIndirect(*m_context,
+				m_gpuPlacementSeeds, m_gpuPlacementSeedCount)) {
+				meshSimulationRun = !rows.empty() ||
+					m_meshParticleTailSeconds > 0.0f;
+				if (!rows.empty()) {
+					meshEmitterCount = uint32_t(rows.size());
+					meshPs.UpdateEmitters(*m_context, fb.frameIndex,
+						rows.data(), meshEmitterCount);
+					for (const auto& row : rows)
+						m_meshParticleTailSeconds = std::max(
+							m_meshParticleTailSeconds, std::max(row.life.x, row.life.y));
+				}
+			}
+		}
+
 		// ---------------------------------------------------------------------
 		// RenderView allocation (see smvk::RenderViewSet):
 		//   main camera            -> 1 view,
@@ -11424,6 +11473,83 @@ namespace engine {
 					tour::placement::kPlacementCullFrustum |
 					tour::placement::kPlacementCullDistance);
 				m_gpuPlacementReady = true;
+			}
+		}
+
+		// Mesh-particle visibility: the same frustum slab and prototype
+		// indexed geometry as GPU placement, with independent GPU bins.
+		if (meshSimulationRun &&
+			mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
+			if (m_gpuPlacementViewLogical.empty())
+				m_gpuPlacementViewLogical = m_rendergraph->AddExternalBuffer(
+					m_renderViews.Buffer(), "MeshParticlesRenderViews");
+			if (!m_gpuPlacementViewLogical.empty()) {
+				meshPs.ClearFrameChain(*m_context);
+				smvk::MeshParticlesCullPush cull{};
+				cull.particles = meshPs.ParticlesAddress(*m_context);
+				cull.mask = meshPs.MaskAddress(*m_context);
+				cull.bins = meshPs.BinsAddress(*m_context);
+				cull.renderViews = renderViewsAddress;
+				cull.renderViewIndex = mainRenderView;
+				cull.cullFlags = tour::placement::kPlacementCullFrustum;
+				cull.binCount = m_gpuPlacementSeedCount;
+				cull.maxParticles = meshPs.desc.maxParticles;
+				cull.camPos = m_cameraPositioner.cameraPosition_;
+				// Prefer the prototype's authored/cooked bounds, including
+				// off-origin sphere centres (quaternion-rotated by the CS).
+				// The fallback is for hosts that supply seed commands directly.
+				for (uint32_t i = 0; i < cull.binCount; ++i)
+					cull.meshBounds[i] = glm::vec4(0.0f, 0.0f, 0.0f, 4.0f);
+				if (m_gpuPlacementRuntime && m_gpuPlacementRuntime->layer) {
+					const auto& prototypes = m_gpuPlacementRuntime->layer->prototypes;
+					for (uint32_t i = 0; i < cull.binCount && i < prototypes.size(); ++i) {
+						const auto& proto = prototypes[i];
+						const glm::vec3 center = (proto.boundsMin + proto.boundsMax) * 0.5f;
+						const float radius = glm::length((proto.boundsMax - proto.boundsMin) * 0.5f);
+						cull.meshBounds[i] = glm::vec4(center, std::max(0.001f, radius));
+					}
+				}
+				auto& cullPass = meshPs.AddCullPass(*m_rendergraph,
+					m_gpuPlacementViewLogical);
+				cullPass.SetRecordingFunc([this, cull](smvk::CommandBuffer& cmd) {
+					smvk::MeshParticles::PushAndDispatchCull(cmd,
+						m_viewportResources.meshParticles.cullProgram, cull);
+				});
+				smvk::MeshParticlesPrefixPush prefix{};
+				prefix.bins = cull.bins;
+				prefix.binCount = cull.binCount;
+				auto& prefixPass = meshPs.AddPrefixPass(*m_rendergraph);
+				prefixPass.SetRecordingFunc([this, prefix](smvk::CommandBuffer& cmd) {
+					smvk::MeshParticles::PushAndDispatchPrefix(cmd,
+						m_viewportResources.meshParticles.prefixProgram, prefix);
+				});
+				smvk::MeshParticlesScatterPush scatter{};
+				scatter.particles = cull.particles;
+				scatter.mask = cull.mask;
+				scatter.bins = cull.bins;
+				scatter.visible = meshPs.VisibleAddress(*m_context);
+				scatter.binCount = cull.binCount;
+				scatter.maxParticles = cull.maxParticles;
+				auto& scatterPass = meshPs.AddScatterPass(*m_rendergraph);
+				scatterPass.SetRecordingFunc([this, scatter](smvk::CommandBuffer& cmd) {
+					smvk::MeshParticles::PushAndDispatchScatter(cmd,
+						m_viewportResources.meshParticles.scatterProgram, scatter);
+				});
+				tour::placement::PlacementDrawBuildPush build{};
+				build.bins = cull.bins;
+				build.indirect = meshPs.IndirectAddress(*m_context);
+				build.protoCount = cull.binCount;
+				for (uint32_t i = 0; i < cull.binCount; ++i) {
+					build.indexCount[i] = meshPs.protoSeeds[i].indexCount;
+					build.firstIndex[i] = meshPs.protoSeeds[i].firstIndex;
+					build.vertexOffset[i] = meshPs.protoSeeds[i].vertexOffset;
+				}
+				auto& buildPass = meshPs.AddDrawBuildPass(*m_rendergraph);
+				buildPass.SetRecordingFunc([this, build](smvk::CommandBuffer& cmd) {
+					smvk::MeshParticles::PushAndDispatchDrawBuild(cmd,
+						m_viewportResources.meshParticles.buildProgram, build);
+				});
+				m_meshParticlesReady = true;
 			}
 		}
 
@@ -12767,6 +12893,40 @@ namespace engine {
 			});
 		}
 
+		// Emit and simulate live mesh instances before the view-specific
+		// visibility chain. Particle transforms never round-trip via CPU.
+		if (meshSimulationRun) {
+			const float dt = meshDt;
+			smvk::MeshParticlesEmitPush emit{};
+			emit.emitters = meshPs.EmittersSliceAddress(*m_context, fb.frameIndex);
+			emit.emitterState = meshPs.EmitterStateAddress(*m_context);
+			emit.particles = meshPs.ParticlesAddress(*m_context);
+			emit.freeList = meshPs.FreeListAddress(*m_context);
+			emit.emitterCount = meshEmitterCount;
+			emit.maxParticles = meshPs.desc.maxParticles;
+			emit.dt = dt;
+			emit.frameSeed = uint32_t(m_frameCounter);
+			if (meshEmitterCount > 0) {
+				auto& emitPass = meshPs.AddEmitPass(*m_rendergraph);
+				emitPass.SetRecordingFunc([this, emit](smvk::CommandBuffer& cmd) {
+					smvk::MeshParticles::PushAndDispatchEmit(cmd,
+						m_viewportResources.meshParticles.emitProgram, emit);
+				});
+			}
+			smvk::MeshParticlesSimPush sim{};
+			sim.particles = emit.particles;
+			sim.freeList = emit.freeList;
+			sim.gravityY = m_particleDemo.gravityY;
+			sim.dt = dt;
+			sim.maxParticles = meshPs.desc.maxParticles;
+			auto& simPass = meshPs.AddSimPass(*m_rendergraph);
+			simPass.SetRecordingFunc([this, sim](smvk::CommandBuffer& cmd) {
+				smvk::MeshParticles::PushAndDispatchSim(cmd,
+					m_viewportResources.meshParticles.simProgram, sim,
+					m_viewportResources.meshParticles.SimGroupsFor(sim.maxParticles));
+			});
+		}
+
 		// Transparent frustum-cull views (snapshots: recording lambdas run
 		// at Execute, after this function may have returned for the next
 		// frame's NewFrame). Main follows the culling-freeze override so
@@ -13517,6 +13677,18 @@ namespace engine {
 				mainPass.AddBufferHint(vs->indirectL, indirectRead);
 			}
 		}
+		if (m_meshParticlesReady) {
+			smvk::BufferSyncRequest vertexRead{};
+			vertexRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			vertexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+			smvk::BufferSyncRequest indirectRead{};
+			indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
+			indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
+			mainPass.AddBufferHint(meshPs.particlesLogical, vertexRead);
+			mainPass.AddBufferHint(meshPs.visibleLogical, vertexRead);
+			mainPass.AddBufferHint(m_gpuPlacementViewLogical, vertexRead);
+			mainPass.AddBufferHint(meshPs.indirectLogical, indirectRead);
+		}
 		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, selectionLineVerts, frameViewProj, debugDrawRanges, debugDrawFlight, transparentCullView, meshActiveForFrame, mainSkinBda, mainSkinBase, mainSkinValid, placementFlight = fb.frameIndex](smvk::CommandBuffer& cmd)
 		{
 			// 1x: depth was filled by the Forward+ prepass, main is read-only.
@@ -13881,6 +14053,31 @@ namespace engine {
 							uint64_t(proto) * tour::placement::kPlacementIndirectStride,
 							1, tour::placement::kPlacementIndirectStride);
 				}
+			}
+
+			// GPU mesh particles: reuse the indexed prototype geometry and
+			// shared static vertex heap; SV_InstanceID indexes the compacted
+			// visible GPU particle list. No CPU per-instance draw/transform.
+			if (m_meshParticlesReady && m_meshParticleDraw.Valid()) {
+				auto& mp = m_viewportResources.meshParticles;
+				cmd.BindStaticVertexFmt();
+				cmd.BindRenderPipeline(m_meshParticleDraw.program,
+					smvk::VertexLayoutId::Static,
+					opaqueDepth, noStencil,
+					smvk::BlendSettings::Opaque(), msaaSettings,
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+				cmd.PushConstants(0, sizeof(IRenderer::PushConstants),
+					&pc, smvk::ShaderStage::All);
+				const smvk::MeshParticlesVsPush tail{
+					mp.VisibleAddress(*m_context),
+					mp.ParticlesAddress(*m_context),
+					renderViewsAddress, mainRenderView, 0u };
+				cmd.PushConstants(smvk::kMeshParticlesVsPushOffset,
+					sizeof(tail), &tail, smvk::ShaderStage::All);
+				for (uint32_t bin = 0; bin < mp.protoSeedCount; ++bin)
+					cmd.DrawIndexedIndirect(mp.IndirectHandle(),
+						uint64_t(bin) * tour::placement::kPlacementIndirectStride,
+						1, tour::placement::kPlacementIndirectStride);
 			}
 
 			cmd.BindRenderPipeline(
