@@ -14145,6 +14145,18 @@ namespace engine {
 				mainPass.AddBufferHint(vs->indirectL, indirectRead);
 			}
 		}
+		if (m_meshParticlesReady) {
+			smvk::BufferSyncRequest vertexRead{};
+			vertexRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			vertexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+			smvk::BufferSyncRequest indirectRead{};
+			indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
+			indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
+			mainPass.AddBufferHint(meshPs.particlesLogical, vertexRead);
+			mainPass.AddBufferHint(meshPs.visibleLogical, vertexRead);
+			mainPass.AddBufferHint(m_gpuPlacementViewLogical, vertexRead);
+			mainPass.AddBufferHint(meshPs.indirectLogical, indirectRead);
+		}
 		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, selectionLineVerts, frameViewProj, debugDrawRanges, debugDrawFlight, transparentCullView, meshActiveForFrame, mainSkinBda, mainSkinBase, mainSkinValid, placementFlight = fb.frameIndex](smvk::CommandBuffer& cmd)
 		{
 			// 1x: depth was filled by the Forward+ prepass, main is read-only.
@@ -14509,6 +14521,31 @@ namespace engine {
 							uint64_t(proto) * tour::placement::kPlacementIndirectStride,
 							1, tour::placement::kPlacementIndirectStride);
 				}
+			}
+
+			// GPU mesh particles: reuse the indexed prototype geometry and
+			// shared static vertex heap; SV_InstanceID indexes the compacted
+			// visible GPU particle list. No CPU per-instance draw/transform.
+			if (m_meshParticlesReady && m_meshParticleDraw.Valid()) {
+				auto& mp = m_viewportResources.meshParticles;
+				cmd.BindStaticVertexFmt();
+				cmd.BindRenderPipeline(m_meshParticleDraw.program,
+					smvk::VertexLayoutId::Static,
+					opaqueDepth, noStencil,
+					smvk::BlendSettings::Opaque(), msaaSettings,
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+				cmd.PushConstants(0, sizeof(IRenderer::PushConstants),
+					&pc, smvk::ShaderStage::All);
+				const smvk::MeshParticlesVsPush tail{
+					mp.VisibleAddress(*m_context),
+					mp.ParticlesAddress(*m_context),
+					renderViewsAddress, mainRenderView, 0u };
+				cmd.PushConstants(smvk::kMeshParticlesVsPushOffset,
+					sizeof(tail), &tail, smvk::ShaderStage::All);
+				for (uint32_t bin = 0; bin < mp.protoSeedCount; ++bin)
+					cmd.DrawIndexedIndirect(mp.IndirectHandle(),
+						uint64_t(bin) * tour::placement::kPlacementIndirectStride,
+						1, tour::placement::kPlacementIndirectStride);
 			}
 
 			cmd.BindRenderPipeline(
