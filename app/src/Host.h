@@ -89,6 +89,7 @@ struct ViewerOptions {
 	std::string snapshotSequenceDir; // --snapshot-sequence
 	uint32_t snapshotCount = 120;
 	uint32_t snapshotKeyframeInterval = 60;
+	std::string snapshotOutputFormat = "png"; // png (default) or raw (RGBA8 + JSON)
 	std::string snapshotCaptureMode = "scoped"; // scoped (default) or legacy
 	std::string snapshotCodeId; // optional BYOC code/revision digest (not source bytes)
 	bool useOptick = false;
