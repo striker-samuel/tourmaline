@@ -34,7 +34,11 @@ class TextIntegrityTests(unittest.TestCase):
         errors = checker.check_text(Path("script.ps1"), "# Wrong â€” encoding\n".encode("utf-8"))
         self.assertTrue(any("mojibake" in error for error in errors))
 
-    def test_mojibake_in_markdown_is_rejected(self):\n        errors = checker.check_text(Path("docs/notes.md"), "damaged â€“ dash".encode("utf-8"))\n        self.assertTrue(any("mojibake" in error for error in errors))\n\n    def test_invalid_utf8_is_rejected(self):
+    def test_mojibake_in_markdown_is_rejected(self):
+        errors = checker.check_text(Path("docs/notes.md"), "damaged â€“ dash".encode("utf-8"))
+        self.assertTrue(any("mojibake" in error for error in errors))
+
+    def test_invalid_utf8_is_rejected(self):
         errors = checker.check_text(Path("script.ps1"), b"Write-Output \xff\n")
         self.assertTrue(any("invalid UTF-8" in error for error in errors))
 

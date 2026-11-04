@@ -18,6 +18,17 @@ SOURCE_SUFFIXES = {
 }
 DASH_LOOKALIKES = frozenset("\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d")
 MOJIBAKE = ("â€“", "â€”", "â€‘", "ï¿½")
+# Self-referential exemption set: these files CONTAIN the corruption
+# markers by design (the detector's own constants, its regression
+# fixtures, and AGENTS.md's documentation of the failure symptoms) -
+# without the exemption the scan fails on a clean tree and the Text
+# integrity CI workflow is permanently red. Everything else stays
+# checked.
+EXEMPT_PATHS = frozenset((
+    "tools/check_text_integrity.py",
+    "tests/test_text_integrity.py",
+    "AGENTS.md",
+))
 
 
 def check_text(path: Path, content: bytes) -> list[str]:
@@ -28,7 +39,9 @@ def check_text(path: Path, content: bytes) -> list[str]:
         return [f"{path}: invalid UTF-8 ({exc})"]
 
     errors = []
-    # Do not ban genuine Unicode from source comments, strings or docs.\n    # Flag damaged text and dash lookalikes in obvious command/option positions.\n    is_powershell = path.suffix.lower() in {".ps1", ".psm1", ".psd1"}
+    # Do not ban genuine Unicode from source comments, strings or docs.
+    # Flag damaged text and dash lookalikes in obvious command/option positions.
+    is_powershell = path.suffix.lower() in {".ps1", ".psm1", ".psd1"}
     for number, line in enumerate(text.splitlines(), 1):
         if "\ufffd" in line:
             errors.append(f"{path}:{number}: Unicode replacement character U+FFFD")
@@ -67,6 +80,8 @@ def scan(root: Path) -> tuple[int, list[str]]:
             continue
         if relative.parts[0] == "external":
             continue  # Third-party sources are maintained upstream.
+        if relative.as_posix() in EXEMPT_PATHS:
+            continue  # Fixtures/documentation carry the markers by design.
         absolute = root / relative
         if not absolute.is_file():
             continue  # Submodules and missing sparse-checkout files.
