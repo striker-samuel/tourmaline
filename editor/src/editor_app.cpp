@@ -1605,9 +1605,12 @@ void EditorApp::UpdateCamera(float dt) {
 	// still belong to the scene when its content is hovered.
 	const bool sceneHovered = (!m_uiMode || m_dockViewportVisible)
 		&& (m_viewports[m_activeVp].hovered || m_dockViewportDragCaptured);
+	// Match RecordMainPass: an old drag cannot bypass input capture
+	// when a floating panel or popup is over the viewport.
 	const bool imguiEats = !sceneHovered ||
 		(m_imgui && m_imgui->WantsCaptureMouse() &&
-			!(m_uiMode && (m_dockViewportHovered || m_dockViewportDragCaptured)));
+			!(m_uiMode && m_dockViewportHovered &&
+				m_viewports[m_activeVp].hovered));
 	const bool alt = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
 		m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
 	if (!imguiEats && !m_gizmoDragging) {

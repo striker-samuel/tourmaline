@@ -57,9 +57,15 @@ inline std::array<glm::vec4, 6> OverlayClipPlanes() {
 
 // Clip-space point -> overlay pixels (caller guarantees the point passed
 // the six-plane test: w >= eps).
+// Convert only at the ImGui draw boundary; Vulkan and input stay local.
+ImVec2 OverlayScreenPx(float x, float y) {
+	const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+	return ImVec2(origin.x + x, origin.y + y);
+}
+
 ImVec2 OverlayPx(const glm::vec4& c, const ViewportRect& rect) {
 	const float inv = 1.0f / c.w;
-	return ImVec2(
+	return OverlayScreenPx(
 		rect.x + (c.x * inv * 0.5f + 0.5f) * rect.w,
 		rect.y + (c.y * inv * 0.5f + 0.5f) * rect.h);
 }
@@ -562,8 +568,8 @@ void EditorApp::DrawViewportChrome() {
 			{x0,y0,z0}, {x1,y0,z0}, {x0,y0,z1}, {x1,y0,z1},
 			{x0,y1,z0}, {x1,y1,z0}, {x0,y1,z1}, {x1,y1,z1}
 		};
-		dl->PushClipRect(ImVec2(rect.x, rect.y),
-			ImVec2(rect.x + rect.w, rect.y + rect.h), true);
+		dl->PushClipRect(OverlayScreenPx(rect.x, rect.y),
+			OverlayScreenPx(rect.x + rect.w, rect.y + rect.h), true);
 		for (int i = 0; i < 8; ++i)
 			for (int axis = 0; axis < 3; ++axis) {
 				const int j = i ^ (1 << axis);
@@ -576,7 +582,7 @@ void EditorApp::DrawViewportChrome() {
 			}
 		const char* hint = m_volumeBrushStage == 0 ? "Drag width (X)" :
 			m_volumeBrushStage == 1 ? "Drag depth (Z)" : "Drag height (Y)";
-		dl->AddText(ImVec2(rect.x + 14.0f, rect.y + 30.0f),
+		dl->AddText(OverlayScreenPx(rect.x + 14.0f, rect.y + 30.0f),
 			IM_COL32(80, 230, 170, 255), hint);
 		dl->PopClipRect();
 	}
@@ -620,8 +626,8 @@ void EditorApp::DrawViewportChrome() {
 				if (planeT > 0) { center = origin + dir * planeT; found = true; }
 			}
 			if (found) {
-				dl->PushClipRect(ImVec2(rect.x, rect.y),
-					ImVec2(rect.x + rect.w, rect.y + rect.h), true);
+				dl->PushClipRect(OverlayScreenPx(rect.x, rect.y),
+					OverlayScreenPx(rect.x + rect.w, rect.y + rect.h), true);
 				constexpr int segments = 40;
 				for (int k = 0; k < segments; ++k) {
 					const float a = float(k) * (6.283185307f / segments);
@@ -651,15 +657,15 @@ void EditorApp::DrawViewportChrome() {
 	// above — now background + clipped).
 	if (m_vpBoxDragging && m_vpBoxVp >= 0 && m_vpBoxVp < kMaxViewports) {
 		const ViewportRect& vp = m_viewports[m_vpBoxVp].rect;
-		dl->PushClipRect(ImVec2(vp.x, vp.y),
-			ImVec2(vp.x + vp.w, vp.y + vp.h), true);
+		dl->PushClipRect(OverlayScreenPx(vp.x, vp.y),
+			OverlayScreenPx(vp.x + vp.w, vp.y + vp.h), true);
 		const float bx0 = vp.x + std::min(m_vpBoxX0, m_vpBoxX1);
 		const float by0 = vp.y + std::min(m_vpBoxY0, m_vpBoxY1);
 		const float bx1 = vp.x + std::max(m_vpBoxX0, m_vpBoxX1);
 		const float by1 = vp.y + std::max(m_vpBoxY0, m_vpBoxY1);
-		dl->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by1),
+		dl->AddRectFilled(OverlayScreenPx(bx0, by0), OverlayScreenPx(bx1, by1),
 			IM_COL32(120, 200, 255, 28));
-		dl->AddRect(ImVec2(bx0, by0), ImVec2(bx1, by1),
+		dl->AddRect(OverlayScreenPx(bx0, by0), OverlayScreenPx(bx1, by1),
 			IM_COL32(120, 200, 255, 200), 0.0f, 0, 1.5f);
 		dl->PopClipRect();
 	}
@@ -669,7 +675,7 @@ void EditorApp::DrawViewportChrome() {
 	//for (int i = 0; i < count; ++i) {
 	//	EditorViewport& vp = m_viewports[i];
 	//	ImGui::SetNextWindowPos(
-	//		ImVec2(vp.rect.x + 8.0f, vp.rect.y + 8.0f), ImGuiCond_Always);
+	//		OverlayScreenPx(vp.rect.x + 8.0f, vp.rect.y + 8.0f), ImGuiCond_Always);
 	//	ImGui::SetNextWindowBgAlpha(1.0f);
 	//	ImGui::PushID(i);
 	//	char label[32];
@@ -834,12 +840,12 @@ void EditorApp::DrawGiVolumePreviewOverlay() {
 				return false; // behind the camera (perspective)
 			if (!OverlayPointVisible(c))
 				return false; // outside the projection's clip volume
-			out.x = vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
-			out.y = vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
+			out.x = ImGui::GetMainViewport()->Pos.x + vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
+			out.y = ImGui::GetMainViewport()->Pos.y + vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
 			return true;
 		};
-		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
-			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
+		dl->PushClipRect(OverlayScreenPx(vp.rect.x, vp.rect.y),
+			OverlayScreenPx(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
 		if (showBaked)
 		for (const GiVolumePreview& cv : m_giVolumePreviews) {
 			const ImU32 wire = priorityColor(cv.priority, 220);
@@ -933,10 +939,10 @@ void EditorApp::DrawGiVolumePreviewOverlay() {
 						cv.sampleStep[2]);
 					const float capY = 52.0f
 						+ 16.0f * (&cv - m_giVolumePreviews.data());
-					dl->AddText(ImVec2(vp.rect.x + 8.0f,
+					dl->AddText(OverlayScreenPx(vp.rect.x + 8.0f,
 						vp.rect.y + capY + 1.0f),
 						IM_COL32(0, 0, 0, 200), cov);
-					dl->AddText(ImVec2(vp.rect.x + 8.0f,
+					dl->AddText(OverlayScreenPx(vp.rect.x + 8.0f,
 						vp.rect.y + capY), IM_COL32_WHITE, cov);
 				}
 			}
@@ -1054,8 +1060,8 @@ void EditorApp::DrawOctreePreviewOverlay() {
 	for (int i = 0; i < ViewportCount(); ++i) {
 		const EditorViewport& vp = m_viewports[i];
 		const glm::mat4 vpm = vp.viewProj;
-		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
-			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
+		dl->PushClipRect(OverlayScreenPx(vp.rect.x, vp.rect.y),
+			OverlayScreenPx(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
 		// Tiles: dirty = orange-red wire, clean = teal wire.
 		for (const OctreeTile& t : m_octreeTiles) {
 			const ImU32 col = t.dirty ? IM_COL32(255, 120, 40, 160)
@@ -1290,8 +1296,8 @@ void EditorApp::DrawCaptureBallOverlay() {
 			// between-eye-and-near markers draw over the view.
 			if (ndc.z < 0.0f || ndc.z > 1.0f)
 				return false;
-			out.x = vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
-			out.y = vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
+			out.x = ImGui::GetMainViewport()->Pos.x + vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
+			out.y = ImGui::GetMainViewport()->Pos.y + vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
 			return true;
 		};
 		const auto projectInView = [&](const glm::vec3& w, ImVec2& out) {
@@ -1303,12 +1309,12 @@ void EditorApp::DrawCaptureBallOverlay() {
 				return false; // off-screen (the App culls the same way)
 			if (ndc.z < 0.0f || ndc.z > 1.0f)
 				return false; // outside the depth range (see project above)
-			out.x = vp.rect.x + (ndc.x * 0.5f + 0.5f) * float(vp.rect.w);
-			out.y = vp.rect.y + (ndc.y * 0.5f + 0.5f) * float(vp.rect.h);
+			out.x = ImGui::GetMainViewport()->Pos.x + vp.rect.x + (ndc.x * 0.5f + 0.5f) * float(vp.rect.w);
+			out.y = ImGui::GetMainViewport()->Pos.y + vp.rect.y + (ndc.y * 0.5f + 0.5f) * float(vp.rect.h);
 			return true;
 		};
-		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
-			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
+		dl->PushClipRect(OverlayScreenPx(vp.rect.x, vp.rect.y),
+			OverlayScreenPx(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
 		// The live Lit view draws baked probes as real, depth-tested mirror
 		// spheres in WorldRenderer. Do not paint 2D dots over those spheres;
 		// fallback/non-Lit viewports retain compact location markers.
@@ -1362,9 +1368,9 @@ void EditorApp::DrawCaptureBallOverlay() {
 			std::snprintf(ccap, sizeof(ccap),
 				"Cubemap probes: %u in view / %zu in level",
 				drawn, rows.size());
-			dl->AddText(ImVec2(vp.rect.x + 9.0f, vp.rect.y + 37.0f),
+			dl->AddText(OverlayScreenPx(vp.rect.x + 9.0f, vp.rect.y + 37.0f),
 				IM_COL32(0, 0, 0, 200), ccap);
-			dl->AddText(ImVec2(vp.rect.x + 8.0f, vp.rect.y + 36.0f),
+			dl->AddText(OverlayScreenPx(vp.rect.x + 8.0f, vp.rect.y + 36.0f),
 				IM_COL32_WHITE, ccap);
 		}
 		// ---- half 2: authored pins with no loaded probe: black balls ----

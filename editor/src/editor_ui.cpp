@@ -639,7 +639,10 @@ void EditorApp::FinalizePending() {
 		const ViewportRect& vp = m_viewports[m_activeVp].rect;
 		ImDrawList* dl = ImGui::GetBackgroundDrawList();
 		const ImVec2 ts = ImGui::CalcTextSize(m_verbToast.c_str());
-		const ImVec2 c(vp.x + vp.w * 0.5f, vp.y + 26.0f);
+		// Scene rect is primary-window-local; ImGui draw lists are global.
+		const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+		const ImVec2 c(origin.x + vp.x + vp.w * 0.5f,
+			origin.y + vp.y + 26.0f);
 		const ImVec2 bmin(c.x - ts.x * 0.5f - 10.0f, c.y - 4.0f);
 		const ImVec2 bmax(c.x + ts.x * 0.5f + 10.0f, c.y + ts.y + 4.0f);
 		dl->AddRectFilled(bmin, bmax,
