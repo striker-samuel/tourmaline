@@ -4,3 +4,12 @@
 # pixel_digest note in golden_capture.py).
 # GPU/driver-sensitive: one baseline per (scene, GPU).
 sponza.bench64.cap48=365230fbf044a20e0bf67a1fc57f81ca9648f0ca7e46ce84bfe04a57ca03f267
+# Release-demo scenario golden (user-verified correct 2026-11-04):
+# the demo-content release's sponza_10.tapp through the sponza-atrium
+# scenario (canonical camera; TOURMALINE_CAM_POS=8.82,5.38,-0.60,
+# CAM_FWD=-0.988,-0.018,0.152, AUTO_EXPOSURE=0, AA=off), scoped
+# capture, frame 30 of 30, engine at 1e75e428. Reruns are
+# bit-identical (0.000 avg/max delta). Verify: record the scenario
+# (toursnapshot.py record --scenario sponza-atrium --frames 30
+# --capture-mode scoped) and compare pixel_digest(Frame_0030.png).
+sponza_10.scenario-sponza-atrium.frame30.AMD_Radeon_TM_Graphics_drv31_0_22044_1=f5acf391bc8c648c182a0dbc2af3d3b29bf56961bde9e62b8b256b9df7fa09cf
