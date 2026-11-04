@@ -69,6 +69,98 @@
 - [ ] **Responsive layout.** The left message must truncate within its allotted width. Keep progress indicators and task-window reopen controls aligned and visible on the right at narrow window sizes.
 - [ ] **Single task status source.** The task modal, status bar and operation logging should agree; backgrounding a task must not erase its progress/result.
 
+## Complete request-by-request checklist
+
+This is an **exhaustive, explicit checklist of the requests made in this conversation**, including follow-up refinements. The thematic specification above explains the problems and expected behavior in detail; this checklist is the scope ledger. All boxes remain unchecked because this documentation PR does not implement the fixes.
+
+### Viewport, dockspace and input
+
+- [ ] Fix the viewport render disappearing after docking the editor Viewport.
+- [ ] Fix F2 (Unlit) rendering displaced after switching from F1 (Lit).
+- [ ] Render **F1 inside the teal viewport borders** and **F2 inside those exact same borders**, not outside them.
+- [ ] Make viewport rendering follow the docked client rectangle when tabs, floating windows or splitters move.
+- [ ] Fix inconsistent click ownership when floating or docked windows overlap other windows or the viewport.
+
+### Inspector hierarchy, properties and appearance
+
+- [ ] Remove the `Parent` row from node Inspector.
+- [ ] Remove the `Detach to root` action from node Inspector.
+- [ ] Show the selected node's ancestor path at the top, e.g. `Node 2 > Node 104`.
+- [ ] Remove redundant separators/duplicate lines in Inspector.
+- [ ] Render `Mark as Environment node` in the same property style as `Static` and `Bake lightmaps`, not a free-floating action.
+- [ ] Replace Inspector boolean checkboxes with **Off / On enum selectors**.
+- [ ] Generalize editor property field styling and drawing logic in a shared editor UI property layer.
+- [ ] Fix inconsistent presentation of material flags using that shared property system.
+- [ ] Ensure editor property panels follow a uniform **Name : Value** layout.
+- [ ] Make Options > Workspace fields also follow **Name : Value** and the same Off/On control style.
+
+### Overrides and Maya-style plugs
+
+- [ ] Show override state **on the property name**, using yellow/pink highlighted labels analogous to the Visibility indication.
+- [ ] Highlight individual plugs such as `Scale X` independently rather than only the aggregate transform.
+- [ ] Remove the redundant **Overrides section from the Inspector**; retain override editing capabilities through properties and the dedicated override editor.
+- [ ] Make overrides work across **all applicable properties**, not just Visibility, Material, Lightmap and Dither.
+- [ ] Introduce a node/property registry with stable property/plug names and explicit **plug types** to support generic overrides and editor widgets.
+- [ ] Expand editor node-type registration and abstraction in a **Maya-style architecture**, while integrating with the existing scene/document/undo pipeline.
+
+### Materials
+
+- [ ] Present **layered materials as their own material presentation/type**, rather than showing layer editing on every material.
+- [ ] Hide unused layer slots on ordinary materials.
+- [ ] Display material booleans (double-sided, shadows, contact etc.) consistently as named Off/On fields.
+- [ ] Preserve existing material bindings, layer references and undo behavior while changing their UI.
+
+### Windows and reusable panel settings
+
+- [ ] Add a top-level **Window** menu to the File/Create/Edit/Mode menu bar, like Visual Studio and similar desktop applications.
+- [ ] Make that menu show/toggle active editor windows/panels and reopen closed ones.
+- [ ] Remove the exposed `Non-DAG` checkbox and place **Non-DAG** inside a gear-icon settings dropdown.
+- [ ] Make that **gear icon a reusable panel-settings affordance for every panel type**, not just the Outliner.
+
+### Asset browser
+
+- [ ] Remove the extra `Path:` line beneath the existing `Folder > Folder > Folder` breadcrumb.
+- [ ] Remove the Asset browser's duplicate **Import asset** button; importing should live under **File > Import**.
+- [ ] Show an **X items** count for the current folder (or active filter), excluding invisible/internal entries.
+- [ ] Replace the **Rescan** text button with a **two-arrows refresh icon** (retain action and tooltip).
+- [ ] Hide generated import artifacts in the Assets browser; do not mix source assets with compiled/generated files in the normal grid.
+- [ ] Move generated artifacts to a project-local hidden folder such as `.artifacts` or `.library`, updating references and import resolution accordingly.
+- [ ] Remove the **DCC links/actions buttons** from the Assets browser.
+- [ ] Move DCC Open/Link/Publish/Unlink actions into the application's **top menu/bar**.
+- [ ] **DCC actions must work only for exactly one selected asset**; disable for none or multi-selection.
+
+### Import, reimport, references and progress
+
+- [ ] Create a dedicated **Import Asset window** opened via File > Import.
+- [ ] Offer import options appropriate to the several **actually supported asset/file types**; explain what each does.
+- [ ] Make the Import window reachable/reopenable from window management.
+- [ ] Show reimport activity through the existing **cook/process modal**, rather than silently running without the task window.
+- [ ] Fix **Add to scene** failing with `References: cannot add asset — no source scene loaded.` even while a scene is loaded.
+- [ ] Fix geometry drag/drop failing via the same reference gate, e.g. `F:/projects/game/content/models/bistro/bistro.geometry`, with an open `.tour` scene.
+- [ ] Keep adding/reloading references compatible with a loaded `.tour` world even when no glTF source path exists.
+- [ ] Prevent long cook/process modal text from pushing the **Close** button out of the window.
+
+### Bottom status / command line
+
+- [ ] Show the **current working operation** (e.g. cooking/importing/reimporting/GI bake) in the bottom status bar.
+- [ ] Include a **progress widget** for long operations, Maya-style.
+- [ ] Include the **last command run**, not only `Ready`.
+- [ ] Prevent long status text from displacing progress, task buttons or other right-aligned controls.
+
+### Outliner node-type icons (latest request)
+
+- [ ] Replace suffixes like `node20 [mesh]` and `node25 [giv]` with **leading type icons** and clean node labels: **[mesh icon] node20** and **[GI-volume icon] node25**.
+- [ ] Apply the same leading-icon treatment to **both normal tree rows and filtered/search results**, not just one Outliner rendering path.
+- [ ] Preserve node selection, collapse/expand, drag-to-reparent and accessibility/hover descriptions when replacing type text.
+
+### Delivery and verification
+
+- [ ] Publish this first commit/PR as a **complete Markdown list and descriptions** of the reported issues, **documentation only**.
+- [ ] Follow with **one consolidated implementation PR** covering the entire scope rather than splitting related requests into unrelated PRs.
+- [ ] Leave native build, runtime and visual tests for the reporter to execute; do not claim unperformed verification.
+
+---
+
 ## Requested delivery and verification
 
 - [ ] This **initial PR is documentation only**, to record the complete observed problems and desired outcomes before code changes.
