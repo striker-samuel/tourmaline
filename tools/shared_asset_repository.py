@@ -346,8 +346,12 @@ class SharedArchive(Archive):
         return path
 
 
-def handler_for_shared(store, token, consumer_ttl_seconds=90):
-    """Bearer-protected LAN endpoints + compatibility with /v1 browser API."""
+def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
+    """Bearer-protected API, with opt-in per-user permission enforcement.
+
+    When registry is enabled the legacy shared bearer token is NOT accepted.
+    This prevents the old deployment-wide secret bypassing user permissions.
+    """
     base = handler_for(store)
     token = str(token)
     if len(token) < 24:
@@ -355,12 +359,34 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90):
     readers = ConsumerPresence(store, ttl_seconds=consumer_ttl_seconds)
 
     class Handler(base):
-        def authenticated(self):
-            return hmac.compare_digest(
-                self.headers.get("Authorization", ""), _TOKEN_HEADER + token)
+        def authorized(self, permission):
+            header = self.headers.get("Authorization", "")
+            if registry is None:
+                if hmac.compare_digest(header, _TOKEN_HEADER + token):
+                    return True
+                return self.reply({"error": "unauthorized"}, 401)
+            if not header.startswith(_TOKEN_HEADER):
+                return self.reply({"error": "unauthorized"}, 401)
+            username = registry.identity(header[len(_TOKEN_HEADER):])
+            if username is None:
+                return self.reply({"error": "unauthorized"}, 401)
+            if not registry.allows(username, permission):
+                return self.reply({"error": "forbidden", "permission": permission}, 403)
+            return True
 
-        def deny(self):
-            self.reply({"error": "unauthorized"}, 401)
+        def get_permission(self, path):
+            if path in ("/", "/asset", "/v1/assets", "/v1/versions",
+                        "/v1/status", "/v1/resolve", "/v2/sources",
+                        "/v2/resolve") or (
+                            path.startswith("/v2/sources/") and path.endswith("/revisions")):
+                return "source.read"
+            if path == "/v2/products":
+                return "product.read"
+            if path.startswith("/v2/blobs/"):
+                return "artifact.read"
+            if path == "/v2/consumers":
+                return "presence.read"
+            return "source.read"
 
         def do_GET(self):
             # Static dashboard contains no asset data and never embeds a
@@ -369,8 +395,10 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90):
                 page = (Path(__file__).with_name("asset_consumers_dashboard.html")
                         .read_text(encoding="utf-8"))
                 return self.reply(page, kind="text/html")
-            if not self.authenticated() and urlsplit(self.path).path != "/health":
-                return self.deny()
+            request_path = urlsplit(self.path).path
+            if request_path != "/health" and self.authorized(
+                    self.get_permission(request_path)) is not True:
+                return
             url = urlsplit(self.path)
             query = parse_qs(url.query)
             try:
@@ -415,8 +443,8 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90):
             return super().do_GET()
 
         def do_POST(self):
-            if not self.authenticated():
-                return self.deny()
+            if self.authorized("presence.write") is not True:
+                return
             path = urlsplit(self.path).path
             if path not in ("/v2/consumers/heartbeat", "/v2/consumers/release"):
                 return self.reply({"error": "not found"}, 404)
@@ -440,8 +468,8 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90):
                 return self.reply({"error": str(exc)}, 500)
 
         def do_PUT(self):
-            if not self.authenticated():
-                return self.deny()
+            if self.authorized("product.publish") is not True:
+                return
             if urlsplit(self.path).path != "/v2/publish":
                 return self.reply({"error": "not found"}, 404)
             try:
@@ -465,7 +493,7 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90):
 
 
 def serve_shared(store, token, bind="127.0.0.1", port=8765, poll=3.0,
-                 consumer_ttl_seconds=90):
+                 consumer_ttl_seconds=90, registry=None):
     if not token or len(token) < 24:
         raise ValueError("access_token of at least 24 characters required")
     if bind not in ("127.0.0.1", "0.0.0.0"):
@@ -483,7 +511,8 @@ def serve_shared(store, token, bind="127.0.0.1", port=8765, poll=3.0,
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
     try:
-        with ThreadingHTTPServer((bind, port), handler_for_shared(store, token, consumer_ttl_seconds)) as server:
+        with ThreadingHTTPServer((bind, port), handler_for_shared(
+                store, token, consumer_ttl_seconds, registry=registry)) as server:
             print(f"Tourmaline shared asset repository listening on {bind}:{port}",
                   flush=True)
             server.serve_forever()
