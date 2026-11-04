@@ -781,6 +781,36 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		}
 	}
 
+	if (m_transposeEnabled) {
+		// An unoccluded, viewport-independent action line. No mesh deformation:
+		// it drives the same node TRS and undo commands as the old gizmo.
+		if (m_transposeOwner != m_selected) {
+			m_transposeOwner = m_selected;
+			m_transposeA = GizmoPivotPoint();
+			const glm::mat4 invVP = glm::inverse(m_viewports[m_activeVp].viewProj);
+			glm::vec3 up = -glm::vec3(invVP[1]);
+			if (glm::length(up) < 1e-5f || !std::isfinite(up.x)) up = {0,1,0};
+			else up = glm::normalize(up);
+			const float distance = glm::distance(EditorCamEye(ActiveCam()), m_transposeA);
+			m_transposeB = m_transposeA + up * std::max(distance * m_gizmoScale * 2.0f, 0.01f);
+		}
+		const glm::vec3 mid = (m_transposeA + m_transposeB) * 0.5f;
+		LineBatch line;
+		line.color = { 1.0f, 0.82f, 0.16f, 1.0f };
+		line.verts.push_back({m_transposeA});
+		line.verts.push_back({m_transposeB});
+		batches.push_back(std::move(line));
+		const glm::vec3 points[3] = {m_transposeA, mid, m_transposeB};
+		for (int h = 0; h < 3; ++h) {
+			LineBatch handle;
+			handle.color = (m_transposeDrag && m_transposeHandle == h)
+				? glm::vec4(1,1,1,1) : (h == 0 ? glm::vec4(1,0.4f,0.2f,1)
+				: h == 1 ? glm::vec4(1,0.92f,0.25f,1) : glm::vec4(0.35f,0.9f,1,1));
+			const float radius = std::max(glm::distance(EditorCamEye(ActiveCam()), points[h]) * 0.009f, 0.002f);
+			AddDiamond(handle, points[h], radius);
+			batches.push_back(std::move(handle));
+		}
+	} else {
 	// Gizmo origin = the PIVOT (Q quick menu): the node origin (as
 	// before) or the selection's bounds center. Steady while dragging
 	// (the snapshot pivot, so rings/handles don't wobble).
@@ -879,6 +909,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 			AddBox(cb, O - ch, O + ch);
 			batches.push_back(std::move(cb));
 		}
+	}
 		// Sub-object highlight (3D viewports, wire mode included): the
 		// selected triangle (yellow loop, on top) or vertex (cyan diamond
 		// + cross, on top). Selection only — never edits geometry.
@@ -1575,6 +1606,154 @@ bool EditorApp::GizmoHandleInput() {
 			}
 		}
 	}
+	return true;
+}
+
+
+// Classic ZBrush-inspired action-line ergonomics for object transforms.
+// Unlike sculpt Transpose this never writes vertex buffers or mesh assets.
+// W/E/R continue to pick the existing Move/Rotate/Scale mode; the old gizmo
+// is untouched when Transpose is off. Each transform gesture records one edit.
+bool EditorApp::TransposeHandleInput() {
+	if (!m_transposeEnabled || !m_world || m_selected == UINT32_MAX ||
+		m_selected >= m_world->scene.hierarchy.size()) return false;
+	const ViewportRect& vp = m_viewports[m_activeVp].rect;
+	if (vp.w < 1.0f || vp.h < 1.0f) return false;
+	const smvk::Extent2D extent{uint32_t(vp.w), uint32_t(vp.h)};
+	const glm::mat4 viewProj = m_viewports[m_activeVp].viewProj;
+	const glm::vec2 mouse(float(m_input.getMouseX()) - vp.x,
+		float(m_input.getMouseY()) - vp.y);
+	if (m_transposeOwner != m_selected) {
+		m_transposeOwner = m_selected;
+		m_transposeA = GizmoPivotPoint();
+		glm::vec3 up = -glm::vec3(glm::inverse(viewProj)[1]);
+		if (!std::isfinite(up.x) || glm::length(up) < 1e-5f) up = {0,1,0};
+		else up = glm::normalize(up);
+		m_transposeB = m_transposeA + up * std::max(
+			glm::distance(EditorCamEye(ActiveCam()), m_transposeA) * m_gizmoScale * 2.0f, 0.01f);
+	}
+	const glm::vec3 points[3] = {m_transposeA,
+		(m_transposeA + m_transposeB) * 0.5f, m_transposeB};
+	if (!m_transposeDrag) {
+		if (!m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT)) return false;
+		int picked = -1;
+		float nearest = 15.0f;
+		for (int i = 0; i < 3; ++i) {
+			const float d = glm::distance(mouse, ToScreen(points[i], viewProj, extent));
+			if (d < nearest) { nearest = d; picked = i; }
+		}
+		if (picked < 0) return false; // preserve ordinary click/box selection
+		m_transposeHandle = picked;
+		const bool ctrl = m_input.isKeyHeld(TOUR_KEY_LEFT_CONTROL) ||
+			m_input.isKeyHeld(TOUR_KEY_RIGHT_CONTROL);
+		m_transposeDrag = picked == 0 ? 1 : (picked == 2 && ctrl ? 3 : 2);
+		m_transposeMouseStart = mouse;
+		m_transposeStartA = m_transposeA;
+		m_transposeStartB = m_transposeB;
+		m_transposeBaseMat = m_world->scene.localTransform[m_selected];
+		ReadLocalTRS(m_selected, m_transposeBaseT, m_transposeBaseR, m_transposeBaseS);
+		return true;
+	}
+	if (!m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
+		if (m_transposeDrag == 2) {
+			glm::vec3 t,r,s;
+			ReadLocalTRS(m_selected, t, r, s);
+			const glm::mat4 after = m_world->scene.localTransform[m_selected];
+			bool changed = false;
+			for (int c=0;c<4;++c) for(int row=0;row<4;++row)
+				changed |= std::fabs(after[c][row] - m_transposeBaseMat[c][row]) > 1e-6f;
+			if (changed) {
+				EditCmd edit{};
+				edit.node = m_selected;
+				edit.beforeMat = m_transposeBaseMat;
+				edit.verb = m_gizmoMode == GizmoMode::Translate ? EditVerb::Translate
+					: m_gizmoMode == GizmoMode::Rotate ? EditVerb::Rotate : EditVerb::Scale;
+				edit.afterVec = m_gizmoMode == GizmoMode::Translate ? t
+					: m_gizmoMode == GizmoMode::Rotate ? r : s;
+				PushDone(edit);
+			}
+		}
+		m_transposeDrag = 0;
+		m_transposeHandle = -1;
+		return true;
+	}
+	const glm::vec3 pivot = m_transposeStartA;
+	const glm::vec3 eye = EditorCamEye(ActiveCam());
+	glm::vec3 planeN = pivot - eye;
+	if (glm::length(planeN) < 1e-5f) return true;
+	planeN = glm::normalize(planeN);
+	const auto onPlane = [&](glm::vec2 pos, glm::vec3& result) {
+		glm::vec3 origin;
+		const glm::vec3 ray = MouseRay(pos.x,pos.y,extent,viewProj,origin);
+		const float denom = glm::dot(ray,planeN);
+		if (std::fabs(denom) < 1e-7f) return false;
+		const float t = glm::dot(pivot-origin,planeN)/denom;
+		if (t <= 0.0f || !std::isfinite(t)) return false;
+		result = origin + ray*t;
+		return true;
+	};
+	glm::vec3 a,b;
+	if (!onPlane(m_transposeMouseStart,a) || !onPlane(mouse,b)) return true;
+	const glm::vec3 deltaW = b-a;
+	if (m_transposeDrag == 1) {
+		m_transposeA = m_transposeStartA + deltaW;
+		m_transposeB = m_transposeStartB + deltaW;
+		return true;
+	}
+	if (m_transposeDrag == 3) {
+		if (glm::length(m_transposeStartB + deltaW - pivot) > 1e-5f)
+			m_transposeB = m_transposeStartB + deltaW;
+		return true;
+	}
+	const int parent = m_world->scene.hierarchy[m_selected].parent;
+	const glm::mat4 parentW = parent >= 0
+		? m_world->scene.globalTransform[size_t(parent)] : glm::mat4(1.0f);
+	const glm::mat3 p3(parentW);
+	if (std::fabs(glm::determinant(p3)) < 1e-12f) return true;
+	const glm::mat4 invParent = glm::inverse(parentW);
+	glm::vec3 t = m_transposeBaseT, r = m_transposeBaseR, s = m_transposeBaseS;
+	const bool shift = m_input.isKeyHeld(TOUR_KEY_LEFT_SHIFT) ||
+		m_input.isKeyHeld(TOUR_KEY_RIGHT_SHIFT);
+	if (m_gizmoMode == GizmoMode::Translate) {
+		glm::vec3 movement = deltaW;
+		if (m_transposeHandle == 2) {
+			const glm::vec3 axis = glm::normalize(m_transposeStartB - pivot);
+			movement = axis * glm::dot(movement,axis);
+		}
+		t += glm::vec3(invParent * glm::vec4(movement,0.0f));
+		if (shift && m_gridSize > 0.0f)
+			for (int k=0;k<3;++k) t[k] = std::round(t[k]/m_gridSize)*m_gridSize;
+	} else if (m_gizmoMode == GizmoMode::Rotate) {
+		const glm::vec2 center = ToScreen(pivot,viewProj,extent);
+		const glm::vec2 p0 = m_transposeMouseStart-center, p1 = mouse-center;
+		if (glm::length(p0) < 2.0f || glm::length(p1) < 2.0f) return true;
+		float angle = std::atan2(p0.x*p1.y-p0.y*p1.x,glm::dot(p0,p1));
+		if (shift && m_snapRotateDeg > 0.0f)
+			angle = glm::radians(std::round(glm::degrees(angle)/m_snapRotateDeg)*m_snapRotateDeg);
+		glm::vec3 axis = m_transposeHandle == 2
+			? glm::normalize(m_transposeStartB-pivot) : planeN;
+		const glm::quat worldDelta = glm::angleAxis(angle,axis);
+		glm::vec3 pt,pr,ps;
+		transform::ReadLocalTRS(parentW,pt,pr,ps);
+		const glm::quat qParent = gizmo_rotation::Orientation(pr);
+		const glm::quat localDelta = gizmo_rotation::InFrame(worldDelta,qParent);
+		const glm::quat q = localDelta*gizmo_rotation::Orientation(m_transposeBaseR);
+		r = glm::degrees(glm::eulerAngles(q));
+		const glm::vec3 pivotP = glm::vec3(invParent*glm::vec4(pivot,1.0f));
+		t = gizmo_rotation::RotatePosition(m_transposeBaseT,pivotP,localDelta);
+	} else {
+		const glm::vec2 center = ToScreen(pivot,viewProj,extent);
+		const float d0 = glm::length(m_transposeMouseStart-center);
+		const float d1 = glm::length(mouse-center);
+		if (d0 < 4.0f) return true;
+		float ratio = std::clamp(d1/d0,0.05f,50.0f);
+		if (shift && m_snapScaleStep > 0.0f)
+			ratio = std::clamp(std::round(ratio/m_snapScaleStep)*m_snapScaleStep,0.05f,50.0f);
+		s *= ratio;
+		const glm::vec3 pivotP = glm::vec3(invParent*glm::vec4(pivot,1.0f));
+		t = pivotP + ratio*(m_transposeBaseT-pivotP);
+	}
+	WriteLocalTRS(m_selected,t,r,s);
 	return true;
 }
 
