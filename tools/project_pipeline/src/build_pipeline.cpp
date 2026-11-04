@@ -443,6 +443,35 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	if (publish.is_relative())
 		publish = projectRoot / publish;
 	fs::create_directories(publish, ec);
+	if (ec) { err = "cannot create publication directory: " + ec.message(); return false; }
+
+	// In-process import, derived-data writes and cooking all share the
+	// project registry. Serialize a project build from the FIRST write,
+	// not merely the final manifest rename, to prevent mixed generations.
+	// The lock intentionally fails closed after a hard crash: recovery is
+	// an explicit operator action after verifying no other builder runs.
+	struct ProjectBuildLock {
+		fs::path directory;
+		~ProjectBuildLock() {
+			if (directory.empty()) return;
+			std::error_code ignored;
+			fs::remove(directory, ignored);
+		}
+	} buildLock;
+	{
+		const fs::path derived(project.DerivedDataDir());
+		std::error_code lockEc;
+		fs::create_directories(derived, lockEc);
+		if (lockEc) { err = "cannot initialize derived directory: " + lockEc.message(); return false; }
+		const fs::path lockDir = derived / ".build.lock";
+		if (!fs::create_directory(lockDir, lockEc)) {
+			err = "project build already active or stale .build.lock; "
+				"verify no builder is running before manual recovery: "
+				+ lockDir.generic_string();
+			return false;
+		}
+		buildLock.directory = lockDir;
+	}
 
 	// ---- 1) import freshness (in-process, every family the plan packs) -
 	std::set<std::string> reimportedFamilies;
