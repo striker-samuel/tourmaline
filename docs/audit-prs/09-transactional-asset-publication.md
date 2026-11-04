@@ -1,6 +1,6 @@
 # Transactional identity and package publication contracts
 
-> **STATUS: IMPLEMENTATION NOT STARTED.** This is a draft PR scaffold containing an audit-derived scope specification only. Do not merge until actual implementation commits, tests, and review are complete.
+> **STATUS: IN PROGRESS.** Publication hardening committed: unique staging, publish lock, corrupted-dedup refusal, multi-manifest safe cleanup and regression tests. Provenance receipt and crash recovery remain. This branch is not merge-ready until all acceptance tests and remaining scope are complete.
 
 **Finding:** L-12  
 **Priority:** P0
