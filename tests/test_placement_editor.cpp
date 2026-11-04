@@ -13,6 +13,8 @@
 #include <string>
 
 #include "editor_placement.h"
+#include "editor_surface_brush.h"
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace {
 int g_failures = 0;
@@ -332,7 +334,42 @@ void TestUndo() {
 	(void)gid;
 }
 
+void TestSurfaceBrush() {
+    using namespace editor::surface;
+    Stroke s;
+    s.mode = Mode::Spline;
+    s.parentUuid = "f73a209d";
+    const glm::mat4 parent = glm::translate(glm::mat4(1.0f), glm::vec3(4, 5, 6));
+    Check(AppendWorldHit(s, glm::vec3(5, 7, 9), parent), "pe.surface.append");
+    Check(s.points.size() == 1 && glm::length(s.points[0] - glm::vec3(1, 2, 3)) < 1e-5f,
+        "pe.surface.local-parent-frame");
+    Check(!AppendWorldHit(s, glm::vec3(5, 7, 9), parent), "pe.surface.reject-duplicate");
+    Check(AppendWorldHit(s, glm::vec3(6, 7, 9), parent), "pe.surface.second");
+    const glm::vec3 moved = glm::vec3(glm::translate(glm::mat4(1.0f),
+        glm::vec3(10, 0, 0)) * glm::vec4(s.points[0], 1.0f));
+    Check(glm::length(moved - glm::vec3(11, 2, 3)) < 1e-5f,
+        "pe.surface.follows-parent-transform");
+    const glm::mat4 degenerate(0.0f);
+    Check(!AppendWorldHit(s, glm::vec3(0), degenerate),
+        "pe.surface.reject-singular-parent");
+    Stroke copy;
+    Check(ParseMeta(SerializeMeta(s), copy) && copy.mode == Mode::Spline
+        && copy.parentUuid == s.parentUuid, "pe.surface.meta-roundtrip");
+    Check(!ParseMeta("v1 3 f73a209d", copy) && !ParseMeta("v0 1 uuid", copy),
+        "pe.surface.invalid-meta");
+    glm::vec3 p;
+    Check(ParsePoint(SerializePoint(s.points[0]), p)
+        && glm::length(p - s.points[0]) < 1e-6f, "pe.surface.point-roundtrip");
+    Check(!ParsePoint("inf 0 0", p) && !ParsePoint("1 2 3 trailing", p),
+        "pe.surface.reject-invalid-point");
+    Stroke capped;
+    capped.points.resize(kMaxPointsPerStroke);
+    Check(!AppendWorldHit(capped, glm::vec3(1), parent),
+        "pe.surface.capacity-limit");
+}
+
 int main() {
+	TestSurfaceBrush();
 	TestScaffoldCompiles();
 	TestAcceptScale();
 	TestFieldChain();

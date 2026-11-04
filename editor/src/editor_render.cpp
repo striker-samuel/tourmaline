@@ -2057,14 +2057,31 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// Paint mode replaces the LMB press path entirely: no box select, no
 		// gizmo grab, no picking. One stamp per click; drags stamp at
 		// radius-spaced intervals along the surface.
+		const bool surfaceBrush = m_world && m_surfaceBrushEnabled;
+		if (surfaceBrush) {
+			if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+				SurfaceBrushFinish();
+				m_surfaceBrushEnabled = false;
+				m_surfaceDrawing = false;
+			} else {
+				SurfaceBrushInput(m_activeVp, lmx, lmy,
+					m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT),
+					m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT),
+					inVp && !inInset && !altNav && !uiEats);
+			}
+		}
 		const bool scatterPainting = m_world && m_paintScatter &&
 			!altNav && !inInset && inVp && !uiEats;
-		const bool painting = m_world && m_paintTerrain && !m_paintScatter
+		const bool painting = m_world && !surfaceBrush && m_paintTerrain
+			&& !m_paintScatter
 			&& !altNav && !inInset && inVp && !uiEats;
 		// Three independent drags: width on the horizontal construction
 		// plane, depth on the same plane, then height in screen space.
 		// This branch owns LMB while armed (no pick, box select or gizmo).
-		if (m_volumeBrushArmed && m_world) {
+		if (surfaceBrush) {
+			// Brush owns LMB while armed; do not pick, box-select, or drag a gizmo.
+		}
+		else if (m_volumeBrushArmed && m_world) {
 			if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
 				m_volumeBrushArmed = false;
 				m_volumeBrushDragging = false;
@@ -2260,7 +2277,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				m_vpBoxDragging = false;
 			}
 		}
-		if (!m_volumeBrushArmed && m_vpBoxDragging) {
+		if (!m_volumeBrushArmed && !surfaceBrush && m_vpBoxDragging) {
 			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
 				m_vpBoxX1 = std::clamp(float(m_input.getMouseX()) - vp.x,
 					0.0f, vp.w);
@@ -2311,7 +2328,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				m_vpBoxDragging = false;
 			}
 		}
-		else if (!m_volumeBrushArmed && (m_gizmoDragging || (inVp && !altNav &&
+		else if (!m_volumeBrushArmed && !surfaceBrush && (m_gizmoDragging || (inVp && !altNav &&
 			m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT) && !uiEats))) {
 			GizmoHandleInput();
 		}

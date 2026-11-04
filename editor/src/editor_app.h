@@ -86,6 +86,7 @@
 #include "editor_commands.h"
 
 #include "editor_placement.h"
+#include "editor_surface_brush.h"
 #include "editor_state_machine.h"
 
 namespace editor {
@@ -2070,6 +2071,25 @@ private:
 	bool ExtractPlacementMesh(uint32_t worldNode,
 		smvk::placement::PlacementMeshData& out) const;
 	placement::EditorDoc m_placement;
+	// Fast viewport surface-sketching. The sample points are stored in
+	// the hit object\'s local coordinates and keyed by persisted UUID.
+	bool m_surfaceBrushEnabled = false;
+	bool m_surfaceDrawing = false;
+	int m_surfaceViewport = 0;
+	float m_surfaceSpacingPx = 12.0f;
+	glm::vec2 m_surfaceLastPx{-1e9f};
+	surface::Mode m_surfaceMode = surface::Mode::Spline;
+	surface::Stroke m_surfaceActive;
+	std::vector<surface::Stroke> m_surfaceStrokes;
+	std::vector<surface::Stroke> m_surfaceRedo;
+	void SurfaceBrushSample(int viewport, float x, float y);
+	void SurfaceBrushFinish();
+	void SurfaceBrushInput(int viewport, float x, float y,
+		bool pressed, bool held, bool allowed);
+	void DrawSurfaceBrushPanel();
+	void DrawSurfaceBrushOverlay();
+	void SaveSurfaceBrushToDoc(smvk::tour::Doc& doc) const;
+	void LoadSurfaceBrushFromDoc(const smvk::tour::Doc& doc);
 	// ---- parallel .tour prefab edit session ----
 	// Secondary WORLD and DOCUMENT. The parent world keeps ownership of
 	// its own reference instances, selection/history, and renderer.

@@ -787,6 +787,7 @@ void EditorApp::DrawViewportChrome() {
 	DrawBakeDensityOverlay();
 	DrawOctreePreviewOverlay();
 	DrawPlacementOverlay();
+	DrawSurfaceBrushOverlay();
 }
 
 // X-ray preview of the convex GI volumes (probes-only pivot): each
