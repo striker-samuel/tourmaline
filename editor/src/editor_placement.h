@@ -218,6 +218,12 @@ struct PreviewPoint {
 	uint32_t candidate = 0; // candidateIndex (recomputes the StableID)
 	smvk::placement::StableID id;
 };
+// Sparse, deterministic world-space brush stamps for per-graph scatter masks.
+struct PaintStamp {
+	float x = 0.0f, z = 0.0f;
+	float radius = 8.0f, opacity = 0.5f;
+	bool erase = false;
+};
 struct PreviewCache {
 	bool dirty = true;
 	bool ok = false;
@@ -229,6 +235,7 @@ struct PreviewCache {
 	smvk::placement::GridDomain grid;   // bound domain (for trace re-eval)
 	smvk::placement::PlacementMeshData mesh;
 	smvk::placement::HeightfieldData terrainField; // generated analytic terrain
+	smvk::placement::EcotopeMaskData paintMask; // persistent while preview layer is registered
 	smvk::placement::HeightfieldDomain terrainDom; // points at terrainField
 	smvk::placement::DomainKind domainKind = smvk::placement::DomainKind::Grid;
 	std::vector<PreviewPoint> accepted; // sorted (system order)
@@ -242,6 +249,8 @@ struct PreviewCache {
 // ---- editor session state --------------------------------------------------
 struct EditorDoc {
 	std::map<uint64_t, GraphDoc> graphs; // ordered: deterministic files
+	std::map<uint64_t, std::vector<PaintStamp>> paintStamps; // per-graph authored density
+
 	uint64_t active = 0;
 	uint64_t nextGraph = 1;
 	bool showGraph = false;

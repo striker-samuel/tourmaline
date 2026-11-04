@@ -1244,6 +1244,19 @@ private:
 	int m_paintOp = 0;            // 0 raise, 1 lower, 2 flatten, 3 smooth
 	float m_paintRadius = 8.0f;
 	float m_paintStrength = 0.5f;
+	float m_paintStrokeSpacing = 0.5f; // radius fraction between stamps
+	bool m_paintScatter = false;
+	bool m_eraseScatter = false;
+	float m_scatterBrushRadius = 10.0f;
+	float m_scatterBrushStrength = 0.8f;
+	float m_scatterBrushSpacing = 0.25f;
+	glm::vec2 m_scatterPaintLast{-1e9f, -1e9f};
+	bool PaintScatterAt(const glm::vec3& origin, const glm::vec3& dir);
+	void EnsureScatterMaskGraph();
+	char m_terrainPresetName[64] = "Custom Terrain";
+	char m_scatterPresetName[64] = "Custom Scatter";
+	// Shared .brushpreset asset picker for sculpting and PlacementGraph.
+	void DrawBrushPresetControls(bool scatter);
 	glm::vec2 m_paintLast{ -1e9f, -1e9f }; // world XZ of last drag stamp
 	bool PaintTerrainAt(const glm::vec3& origin, const glm::vec3& dir);
 	// ---- material editor (right-dock tab) ----

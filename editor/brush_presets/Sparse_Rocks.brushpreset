@@ -1,0 +1,12 @@
+# Spaced-out GPU-scatter placement recipe
+version=1
+kind=scatter
+name=Sparse Rocks
+radius=6
+strength=0.5
+spacing=0.4
+operation=0
+density=0.3
+minScale=0.8
+maxScale=1.7
+minDistance=2.5

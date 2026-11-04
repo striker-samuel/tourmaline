@@ -2057,7 +2057,9 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// Paint mode replaces the LMB press path entirely: no box select, no
 		// gizmo grab, no picking. One stamp per click; drags stamp at
 		// radius-spaced intervals along the surface.
-		const bool painting = m_world && m_paintTerrain
+		const bool scatterPainting = m_world && m_paintScatter &&
+			!altNav && !inInset && inVp && !uiEats;
+		const bool painting = m_world && m_paintTerrain && !m_paintScatter
 			&& !altNav && !inInset && inVp && !uiEats;
 		// Three independent drags: width on the horizontal construction
 		// plane, depth on the same plane, then height in screen space.
@@ -2153,6 +2155,52 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				}
 			}
 		}
+		else if (scatterPainting) {
+			if (m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT))
+				m_scatterPaintLast = glm::vec2(-1e9f, -1e9f);
+			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
+				const smvk::Extent2D vpExt{uint32_t(vp.w), uint32_t(vp.h)};
+				glm::vec3 rayOrigin;
+				const glm::vec3 rayDir = MouseRay(lmx, lmy, vpExt,
+					m_viewports[m_activeVp].viewProj, rayOrigin);
+				// PaintScatterAt owns the domain hit and marks the graph dirty.
+				// Don't stamp at every frame when the pointer is stationary.
+				const auto& cr = m_placement.preview.compiled;
+				glm::vec3 hit;
+				bool valid = false;
+				if (cr.domainKind == smvk::placement::DomainKind::Heightfield &&
+					m_placement.preview.terrainField.width > 1) {
+					float t = 0.0f;
+					if (smvk::placement::TerrainRaycast(
+						m_placement.preview.terrainField, rayOrigin, rayDir, 5000.0f, t)) {
+						hit = rayOrigin + rayDir * t;
+						valid = true;
+					}
+				} else if (cr.domainKind == smvk::placement::DomainKind::MeshSurface) {
+					if (auto pick = PickNode(m_activeVp, lmx, lmy, vpExt)) {
+						hit = rayOrigin + rayDir * pick->t;
+						valid = true;
+					}
+				}
+				if (!valid && std::fabs(rayDir.y) > 1e-5f) {
+					const float y = cr.domainKind == smvk::placement::DomainKind::Grid
+						? cr.grid.origin.y : 0.0f;
+					const float t = (y - rayOrigin.y) / rayDir.y;
+					if (t > 0.0f) { hit = rayOrigin + rayDir * t; valid = true; }
+				}
+				if (valid) {
+					const glm::vec2 xz(hit.x, hit.z);
+					const float spacing = std::max(
+						m_scatterBrushRadius * m_scatterBrushSpacing, 0.1f);
+					if (m_scatterPaintLast.x < -1e8f ||
+						glm::length(xz - m_scatterPaintLast) >= spacing) {
+						if (PaintScatterAt(rayOrigin, rayDir))
+							m_scatterPaintLast = xz;
+					}
+				}
+			}
+			else m_scatterPaintLast = glm::vec2(-1e9f, -1e9f);
+		}
 		else if (painting) {
 			// Fresh press always stamps (drag spacing applies within one
 			// stroke only).
@@ -2171,7 +2219,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 						rayOrigin, rayDir, 5000.0f, tHit)) {
 					const glm::vec3 hit = rayOrigin + rayDir * tHit;
 					const glm::vec2 hitXZ(hit.x, hit.z);
-					const float spacing = std::max(m_paintRadius * 0.5f, 0.25f);
+					const float spacing = std::max(m_paintRadius * m_paintStrokeSpacing, 0.1f);
 					if (m_paintLast.x < -1e8f
 						|| glm::length(hitXZ - m_paintLast) >= spacing) {
 						PaintTerrainAt(rayOrigin, rayDir);
