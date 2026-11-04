@@ -397,6 +397,38 @@ namespace editor {
 			ImGui::PopID();
 		}
 
+		// Each scalar property can address any channel of the same
+		// packed texture. The slot picker above can reuse the same image.
+		ImGui::SeparatorText("Packed texture channels");
+		struct ChannelDef { const char* label; const char* attr; int shift; int legacy; };
+		const ChannelDef channelDefs[] = {
+			{ "AO", "aoChannel", 0, 0 },
+			{ "Cavity", "cavityChannel", 2, 0 },
+			{ "Roughness", "roughnessChannel", 4, 1 },
+			{ "Metallic", "metallicChannel", 6, 2 },
+		};
+		const char* channelNames[] = { "R", "G", "B", "A" };
+		for (const ChannelDef& c : channelDefs) {
+			ImGui::PushID(c.attr);
+			const int packed = m->values.textures2.w;
+			const int selected = packed < 0 ? c.legacy : ((packed >> c.shift) & 3);
+			if (ImGui::BeginCombo(c.label, channelNames[selected])) {
+				for (int channel = 0; channel < 4; ++channel) {
+					if (!ImGui::Selectable(channelNames[channel], channel == selected))
+						continue;
+					EditCmd cmd{};
+					cmd.verb = EditVerb::SetMatAttr;
+					cmd.matWorld = mat;
+					cmd.attr = c.attr;
+					cmd.number = double(channel);
+					ReadSharedMatAttr(mat, c.attr, cmd.beforeVec4, cmd.beforeNum);
+					Do(cmd);
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::PopID();
+		}
+
 		// ---- The scalar look (shared edit, the drag command path) ----
 		ImGui::Separator();
 		{
