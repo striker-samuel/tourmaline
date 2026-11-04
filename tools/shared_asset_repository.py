@@ -455,6 +455,12 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                                 if self.visible(
                                     entry["id"] if entry["kind"] == "source" else
                                     store.product_source_id(entry["id"]))]
+                        for field in ("username", "workstation", "mode"):
+                            selected = query.get(field, [None])[0]
+                            if selected is not None:
+                                report["open_assets"] = [entry
+                                    for entry in report["open_assets"]
+                                    if entry[field] == selected]
                         return self.reply(report)
                     result = readers.active(kind, ident)
                     if registry is not None:
