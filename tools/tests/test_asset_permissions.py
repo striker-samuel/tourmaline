@@ -136,6 +136,30 @@ class PermissionRegistryTests(unittest.TestCase):
             with self.assertRaises(HTTPError) as exc:
                 get("/v2/blobs/" + secret_sha)
             self.assertEqual(exc.exception.code, 404)
+            publisher = self.registry.user_set(
+                "publisher", ["readers"], ["product.publish"])
+            request = Request(base + "/v2/publish", data=b"",
+                method="PUT", headers={
+                    "Authorization": "Bearer " + publisher,
+                    "X-Source-Asset-ID": restricted_id,
+                    "Content-Length": "0"})
+            with self.assertRaises(HTTPError) as exc:
+                urlopen(request, timeout=3)
+            self.assertEqual(exc.exception.code, 403)
+            heartbeat = {
+                "session_id": "11111111-1111-4111-8111-111111111111",
+                "kind": "editor", "label": "Restricted session",
+                "workstation": "NAS-EDITOR",
+                "reads": [{"kind": "source", "id": restricted_id,
+                           "version": 1, "mode": "read"}]}
+            admin_req = Request(base + "/v2/consumers/heartbeat",
+                method="POST", data=json.dumps(heartbeat).encode(),
+                headers={"Authorization": "Bearer " + self.admin_token,
+                         "Content-Type": "application/json"})
+            with urlopen(admin_req, timeout=3):
+                pass
+            with get("/v2/open-assets") as response:
+                self.assertEqual(json.load(response)["open_assets"], [])
             with get("/v2/sources", self.admin_token) as response:
                 self.assertEqual(len(json.load(response)["sources"]), 2)
         finally:
@@ -211,6 +235,16 @@ class PermissionRegistryTests(unittest.TestCase):
             self.assertEqual(entries[0]["workstation"], "ART-STATION-07")
             self.assertEqual(entries[0]["mode"], "edit")
             self.assertEqual(entries[0]["id"], asset_id)
+            filtered = Request(
+                base + "/v2/open-assets?username=designer&mode=edit&workstation=ART-STATION-07",
+                headers={"Authorization": "Bearer " + token})
+            with urlopen(filtered, timeout=3) as response:
+                self.assertEqual(len(json.load(response)["open_assets"]), 1)
+            filtered = Request(
+                base + "/v2/open-assets?username=other",
+                headers={"Authorization": "Bearer " + token})
+            with urlopen(filtered, timeout=3) as response:
+                self.assertEqual(json.load(response)["open_assets"], [])
             with self.assertRaises(HTTPError) as exc:
                 post("/v2/consumers/release", other, {"session_id": session})
             self.assertEqual(exc.exception.code, 403)
