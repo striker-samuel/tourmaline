@@ -1,6 +1,7 @@
 # TODO — merged-as-draft follow-up work
 
-PRs #136–#142 were merged while still drafts (owner request, 2026-11-04).
+PRs #136–#142 and #145/#148/#151 were merged while still drafts (owner
+request, 2026-11-04).
 Each entry records the work the PR author explicitly flagged as incomplete
 in its own description. Local gates (full all-targets build + ctest +
 Python tooling tests) verified compilation and existing regressions; the
@@ -55,6 +56,33 @@ items below are the remaining author-declared gaps.
 - GPU/driver-dependent runtime tests were never run by the author
   (static review only) — a GPU capture regression (record + verify +
   compare against legacy mode) remains open.
+
+## #145 — TLAS/BLAS debug inspector
+- No local C++ compile, CI or Vulkan GPU run by the author; the merge
+  gate compiled it and the CPU `SdfTests` assertions pass, but a real
+  GPU session (RT sun shadows on, inspector panel open, collapsed-view
+  no-scan claim verified) is still open.
+- Counts are CPU build CANDIDATES only — Vulkan may further reject
+  geometry; GPU AS memory/compaction/build timings are not reported.
+
+## #148 — Scoped snapshot single-batch readback + raw output
+- (Resolves the #142 aggregated-readback TODO item above.)
+- GPU validation still open: real 15/16/30-frame recordings at 1080p
+  and 4K in both `scoped` and `legacy` capture modes, PNG and raw
+  formats, including the 4K >256 MiB staging split path.
+- The 4K batch split during export (staging-limit respect) is untested
+  against real output.
+- (Merge note: the branch never compiled — the RHI call was declared
+  only on the private VulkanResourceManager; the public
+  `ResourceManager::RecordSnapshotImageCopy` facade + forwarding impl
+  were added in the merge.)
+
+## #151 — Zero-off-state tile diagnostics
+- Author never built or GPU-tested; the merge gate compiled both the
+  production and `.viz.spv` instrumented variants. Still open: Debug
+  and Release Editor runs toggling Off → count heat → light-scoped →
+  Off, shader hot-reload of both variant sets, and verifying the
+  shipping profile still excludes diagnostics.
 
 ## Legacy engineering backlog (migrated from `todo.txt`)
 
