@@ -11503,7 +11503,9 @@ namespace engine {
 				if (m_gpuPlacementRuntime && m_gpuPlacementRuntime->layer) {
 					const auto& prototypes = m_gpuPlacementRuntime->layer->prototypes;
 					for (uint32_t i = 0; i < cull.binCount && i < prototypes.size(); ++i) {
-						const auto& proto = prototypes[i];
+						// PrototypeTable exposes size()/at() (no
+						// operator[]) - the placement_pass.h pattern.
+						const auto& proto = prototypes.at(i);
 						const glm::vec3 center = (proto.boundsMin + proto.boundsMax) * 0.5f;
 						const float radius = glm::length((proto.boundsMax - proto.boundsMin) * 0.5f);
 						cull.meshBounds[i] = glm::vec4(center, std::max(0.001f, radius));
