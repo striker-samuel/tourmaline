@@ -34,8 +34,9 @@ public:
     GpuMemoryWarningResult Update(const GpuMemoryPressureSample& sample,
                                   double seconds) noexcept {
         if (sample.localBudgetBytes == 0) {
+            const bool changed = state_ != GpuMemoryWarning::Unavailable;
             Reset();
-            return {GpuMemoryWarning::Unavailable, false, 0.0, 0};
+            return {GpuMemoryWarning::Unavailable, changed, 0.0, 0};
         }
         const double ratio = static_cast<double>(sample.localUsageBytes) /
                              static_cast<double>(sample.localBudgetBytes);
