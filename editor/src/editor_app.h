@@ -2738,6 +2738,7 @@ private:
 	bool m_dockViewportVisible = false;
 	bool m_dockViewportHovered = false;
 	bool m_dockResetRequested = false;
+	bool m_showRenderSettingsPanel = true;
 	// ---- ground grid + snapping (gizmo) ----
 	bool m_showGrid = true;
 	float m_gridSize = 1.0f;   // cell size in meters (snap step too)
