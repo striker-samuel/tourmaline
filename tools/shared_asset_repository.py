@@ -393,6 +393,10 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
     readers = ConsumerPresence(store, ttl_seconds=consumer_ttl_seconds)
 
     class Handler(base):
+        def setup(self):
+            super().setup()
+            self.connection.settimeout(30)
+
         def identity(self):
             if hasattr(self, "_resolved_user"):
                 return self._resolved_user
@@ -521,7 +525,8 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                     self.send_header("Content-Type", "application/octet-stream")
                     self.send_header("Content-Length", str(artifact.stat().st_size))
                     self.send_header("X-Content-SHA256", sha)
-                    self.send_header("Cache-Control", "public, immutable, max-age=31536000")
+                    self.send_header("Cache-Control", "private, immutable, max-age=31536000")
+                    self.send_header("Vary", "Authorization")
                     self.send_header("X-Content-Type-Options", "nosniff")
                     self.end_headers()
                     with artifact.open("rb") as fd:
@@ -630,6 +635,10 @@ def serve_shared(store, token, bind="127.0.0.1", port=8765, poll=3.0,
     try:
         with ThreadingHTTPServer((bind, port), handler_for_shared(
                 store, token, consumer_ttl_seconds, registry=registry)) as server:
+            if bind == "0.0.0.0":
+                print("SECURITY WARNING: this server speaks HTTP, not TLS. "
+                      "Terminate authenticated remote traffic at an HTTPS "
+                      "reverse proxy and firewall the backend port.", flush=True)
             print(f"Tourmaline shared asset repository listening on {bind}:{port}",
                   flush=True)
             server.serve_forever()

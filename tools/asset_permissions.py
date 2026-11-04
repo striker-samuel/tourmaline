@@ -21,6 +21,16 @@ import uuid
 _IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 _NODE = re.compile(r"[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*(?:\.\*)?\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+# Wildcards control granted objects, not which operations the API may
+# perform. In particular, no source.write endpoint exists: a source.*
+# grant must not silently authorize an unsupported mutation operation.
+_ALLOWED_ACTIONS = {
+    "source": frozenset(("read",)),
+    "product": frozenset(("read", "publish")),
+    "artifact": frozenset(("read",)),
+    "presence": frozenset(("read", "write")),
+}
+
 DEFAULT_GROUPS = {
     "admin": ["*"],
     "readers": ["source.read", "product.read", "artifact.read",
@@ -149,6 +159,10 @@ class PermissionRegistry:
         if record is None:
             return False
         validate_rule(permission)
+        namespace, _, action = permission.partition(".")
+        verb = permission.rsplit(".", 1)[-1] if action else ""
+        if verb not in _ALLOWED_ACTIONS.get(namespace, ()):
+            return False  # future/unknown operations are fail-closed
         # Specificity across users/groups: user-specific overrides group
         # at the same specificity, and denial wins conflicting group rules.
         options = []

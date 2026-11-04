@@ -51,6 +51,9 @@ class PermissionRegistryTests(unittest.TestCase):
         self.assertTrue(self.registry.allows("artist_one", "artifact.read"))
         self.assertFalse(self.registry.allows("artist_one", "product.publish"))
         self.assertFalse(self.registry.allows("artist_one", "source.write"))
+        self.assertFalse(self.registry.allows("artist_one", "product.write"))
+        self.assertFalse(self.registry.allows("admin", "source.write"))
+        self.assertTrue(self.registry.allows("admin", "presence.write"))
         self.registry.user_set("artist_one", ["publishers", "readers"],
                                ["source.revisions.*", "product.publish"])
         self.assertTrue(self.registry.allows("artist_one", "product.publish"))
