@@ -2791,7 +2791,7 @@ private:
 	bool m_showConsolePanel = true;
 	bool m_showOverridesPanel = true;
 	bool m_showInspectorPanel = true;
-	bool m_showRenderSettingsPanel = true;
+	bool m_showRenderSettingsPanel = false; // Options window (Rendering/Workspace)
 	bool m_showMaterialPanel = true;
 	// ---- ground grid + snapping (gizmo) ----
 	bool m_showGrid = true;
