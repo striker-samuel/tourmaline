@@ -96,6 +96,23 @@ glm::vec3 SgSpecular(const glm::vec3* amps, const glm::vec3& r, float roughness)
 	return sum;
 }
 
+void SgMatchMeanRadiance(glm::vec3 amps[kSgLobeCount], const glm::vec3& meanRadiance) {
+	// The exact spherical mean of an SG at sharpness lambda is
+	// (1 - exp(-2 lambda)) / (2 lambda) times its amplitude.
+	const float meanBasis = -std::expm1(-2.0f * kSgSharpness) / (2.0f * kSgSharpness);
+	glm::vec3 fittedMean(0.0f);
+	for (uint32_t i = 0; i < kSgLobeCount; ++i)
+		fittedMean += amps[i] * meanBasis;
+	glm::vec3 gain(0.0f);
+	for (int c = 0; c < 3; ++c) {
+		if (std::isfinite(meanRadiance[c]) && meanRadiance[c] > 0.0f
+			&& std::isfinite(fittedMean[c]) && fittedMean[c] > 1e-12f)
+			gain[c] = meanRadiance[c] / fittedMean[c];
+	}
+	for (uint32_t i = 0; i < kSgLobeCount; ++i)
+		amps[i] *= gain;
+}
+
 void SgFitAccumulator::Solve(glm::vec3 outAmps[kSgLobeCount]) const {
 	// Production path: unconditional diagonal projection (Ready-at-Dawn
 	// style). rhs[i] / selfEnergy with a non-negativity clamp. L >= 0
