@@ -67,53 +67,14 @@ bool StageAndEntry(const std::string& fileName,
 	return false;
 }
 
-// ---- THE VARIANT TABLE (the mirror of engine/CMakeLists.txt's
-// VARIANTS list — the baked-define permutations). Drift degrades
-// gracefully: a twin missing here keeps its build-compiled bytes
-// until the next full build; never a WRONG variant. -------------------
+// Generated from the same checked-in variant manifest as CMake.
 const std::map<std::string, std::vector<Variant>>& VariantTable() {
-	static const std::map<std::string, std::vector<Variant>> table = {
-		{ "hzb_spd.cs.hlsl", {
-			{ ".min", { "HZB_REDUCE_MAX=0" } },
-		} },
-		{ "default_lit.frag.hlsl", {
-			{ ".sg5", { "SG_LM_LOBE_COUNT=5" } },
-			{ ".sg6", { "SG_LM_LOBE_COUNT=6" } },
-			{ ".sg9", { "SG_LM_LOBE_COUNT=9" } },
-			{ ".sg12", { "SG_LM_LOBE_COUNT=12" } },
-			{ ".gi0", { "GI_NONE=1" } },
-			{ ".gi2", { "GI_REGULAR=1" } },
-			{ ".gi3", { "GI_VOLUMES=1" } },
-			{ ".std", { "MAT_STANDARD=1" } },
-			{ ".gi0std", { "GI_NONE=1", "MAT_STANDARD=1" } },
-			{ ".gi2std", { "GI_REGULAR=1", "MAT_STANDARD=1" } },
-			{ ".gi3std", { "GI_VOLUMES=1", "MAT_STANDARD=1" } },
-		} },
-		{ "gfxmesh_lit.frag.hlsl", {
-			{ ".sg5", { "SG_LM_LOBE_COUNT=5" } },
-			{ ".sg6", { "SG_LM_LOBE_COUNT=6" } },
-			{ ".sg9", { "SG_LM_LOBE_COUNT=9" } },
-			{ ".sg12", { "SG_LM_LOBE_COUNT=12" } },
-			{ ".gi0", { "GI_NONE=1" } },
-			{ ".gi2", { "GI_REGULAR=1" } },
-			{ ".gi3", { "GI_VOLUMES=1" } },
-			{ ".std", { "MAT_STANDARD=1" } },
-			{ ".gi0std", { "GI_NONE=1", "MAT_STANDARD=1" } },
-			{ ".gi2std", { "GI_REGULAR=1", "MAT_STANDARD=1" } },
-			{ ".gi3std", { "GI_VOLUMES=1", "MAT_STANDARD=1" } },
-		} },
-		{ "ssr_compose.frag.hlsl", {
-			{ ".dbg", { "SSR_DEBUG_CONTRIB=1" } },
-		} },
-		{ "default_pbr_debug.frag.hlsl", {
-			{ ".base", { "PBR_MODE=1" } },
-			{ ".diffuse", { "PBR_MODE=2" } },
-			{ ".rough", { "PBR_MODE=3" } },
-			{ ".metal", { "PBR_MODE=4" } },
-			{ ".f0", { "PBR_MODE=5" } },
-		} },
-	};
-	return table;
+    static const std::map<std::string, std::vector<Variant>> variants = [] {
+        std::map<std::string, std::vector<Variant>> table;
+#include "shader_variants.inc"
+        return table;
+    }();
+    return variants;
 }
 
 struct Service {
