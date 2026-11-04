@@ -106,9 +106,13 @@ bool EditorApp::SnapshotTourForProcess(const char* tag,
 	outTempTour.clear();
 	outDefHash.clear();
 	namespace fs = std::filesystem;
+	// Standalone .tour scene editing has no glTF source path.
+	const std::string scenePath = m_gltfPath.empty()
+		? TourTarget() : m_gltfPath;
+	std::string stem = fs::path(scenePath).stem().string();
+	if (stem.empty()) stem = "scene";
 	fs::path tmp = fs::temp_directory_path() /
-		("tourmaline_" + std::string(tag) + "_"
-			+ fs::path(m_gltfPath).stem().string() + ".tour");
+		("tourmaline_" + std::string(tag) + "_" + stem + ".tour");
 	if (!SaveTourTo(tmp.generic_string(), false, true)) {
 		Log(std::string(tag) + ": temp tour save failed, aborting.");
 		return false;
@@ -1060,29 +1064,14 @@ void EditorApp::BakeGI() {
 			"cook; cooking is the separate product step).");
 		return;
 	}
-	// What to bake comes from the same flags the cook dialog shows.
-	const bool giHasGiVolumes = !m_world->scene.tables.giVolumes.empty();
-	const bool wantGiVolumes = ExportCfg().giVolumes && giHasGiVolumes;
-	if (!wantGiVolumes) {
-		Log("Bake GI: nothing requested — enable GI volumes in the cook "
-			"dialog first (the world-field octree bake is retired; "
-			"convex volumes + the sky IBL carry the ambient).");
+	// GI baking is an editor authoring operation. Its input is the
+	// scene's GI volume set, not an ExportSettings toggle or a pak path.
+	if (m_world->scene.tables.giVolumes.empty()) {
+		Log("Bake GI: no GI volumes in the loaded scene.");
 		return;
 	}
-	// Bake files key to the cook target's stem; derive the project (or
-	// legacy) default when the out pak was never set.
-	if (m_cook.outPak.empty() && !m_gltfPath.empty()) {
-		const std::string stem =
-			std::filesystem::path(m_gltfPath).stem().string();
-		std::string def = ProjectCookOutPak(stem);
-		if (def.empty())
-			def = ("content/paks/" + stem + ".pak");
-		m_cook.outPak = def;
-		std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
-			def.c_str());
-	}
-	if (m_cook.outPak.empty()) {
-		Log("Bake GI: no cook target — cook once first (Ctrl+Shift+C).");
+	if (m_projectRoot.empty()) {
+		Log("Bake GI: open a project so baked GI assets have a home.");
 		return;
 	}
 	std::string tempTourPath, defHash;
