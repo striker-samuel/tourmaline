@@ -219,6 +219,7 @@ enum class PakAssetKind : uint32_t {
 	NavMesh = 19,      // immutable precomputed navigation triangles
 	Sdf = 20,          // versioned mesh-local .geometry.sdf derived volume
 	Shape = 21,        // authored .shape spline / point cloud / primitive text
+	ShapePlacements = 22, // cooked .tour scene-owned placements (not VFS)
 };
 
 enum PakEntryFlags : uint32_t {
