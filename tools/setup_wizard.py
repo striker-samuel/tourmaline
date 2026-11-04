@@ -112,7 +112,9 @@ def gui():
     rows = [
         ("name", "Project name", "My Game"),
         ("destination", "Project directory", str(Path.home() / "TourmalineProjects" / "MyGame")),
-        ("project_exe", "Project.exe (native CLI)", str(ROOT / "out" / "build" / "x64-Release" / "Project.exe")),
+        ("project_exe", "Project.exe (native CLI)", str(
+            ROOT / "Project.exe" if getattr(sys, "frozen", False) else
+            ROOT / "out" / "build" / "x64-Release" / "Project.exe")),
         ("url", "Remote HTTPS server URL", ""),
         ("token", "Repository access token", ""),
         ("cache", "Workstation cache", str(default_cache())),
@@ -186,6 +188,17 @@ def main(argv=None):
     if not args.name and not args.path and not args.terminal:
         gui()
         return 0
+    if args.terminal and not args.name and not args.path:
+        args.name = input("Project name: ").strip()
+        args.path = input("Project directory: ").strip()
+        chosen = input("Asset mode [local/remote/none] (local): ").strip().lower()
+        if chosen:
+            args.mode = chosen
+        if args.mode == "remote":
+            args.server_url = input("Remote HTTPS server URL: ").strip()
+        native = input("Project executable path (blank to autodetect): ").strip()
+        if native:
+            args.project_exe = native
     if not args.name or not args.path:
         parser.error("--name and --path are required for CLI setup")
     try:
