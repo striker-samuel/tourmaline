@@ -12,6 +12,7 @@ import hashlib
 from http.client import HTTPConnection, HTTPSConnection
 import json
 import os
+import socket
 from pathlib import Path, PurePosixPath
 import re
 import sqlite3
@@ -77,6 +78,7 @@ class AssetClient:
         self.consumer_label = consumer_label[:80]
         self.session_id = str(uuid.uuid4())
         self._reads = set()
+        self.workstation = socket.gethostname()[:120]
         self._read_lock = threading.Lock()
         self._presence_stop = threading.Event()
         self._presence_thread = None
@@ -133,12 +135,13 @@ class AssetClient:
 
     def _announce(self):
         with self._read_lock:
-            readings = [{"kind": kind, "id": ident, "version": version}
-                        for kind, ident, version in sorted(self._reads)]
+            readings = [{"kind": kind, "id": ident, "version": version, "mode": mode}
+                        for kind, ident, version, mode in sorted(self._reads)]
         return self._post("/v2/consumers/heartbeat",
                           {"session_id": self.session_id,
                            "kind": self.consumer_kind,
                            "label": self.consumer_label,
+                           "workstation": self.workstation,
                            "reads": readings})
 
     def _presence_loop(self):
@@ -150,20 +153,23 @@ class AssetClient:
                 # The server expires stale sessions if heartbeats cannot reach it.
                 pass
 
-    def track_read(self, kind, ident, version):
+    def track_read(self, kind, ident, version, mode="read"):
         """Report an actual selection and refresh while this client runs.
 
         Does not change the source share, impose locks, or grant permissions.
         The client can later clear this set when objects are unloaded.
         """
-        if kind not in ("source", "product") or type(version) is not int or version < 1:
-            raise ValueError("read tracking requires kind, UUID and positive version")
+        if (kind not in ("source", "product") or type(version) is not int
+                or version < 1 or mode not in ("read", "edit", "publish", "review")):
+            raise ValueError("tracking requires kind, UUID, version and valid open mode")
         with self._read_lock:
-            self._reads.add((kind, ident, version))
+            self._reads = {entry for entry in self._reads
+                           if entry[:3] != (kind, ident, version)}
+            self._reads.add((kind, ident, version, mode))
             if len(self._reads) > 256:
                 # Server accepts a bounded snapshot; fail closed on bookkeeping,
                 # not on asset availability.
-                self._reads.discard((kind, ident, version))
+                self._reads.discard((kind, ident, version, mode))
                 return
         if self._presence_thread is None:
             self._presence_thread = threading.Thread(
