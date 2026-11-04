@@ -45,6 +45,30 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(row["os_system"], "Linux")
             self.assertEqual(row["gain_percent"], -0.5)
 
+    def test_candidate_metrics_export_one_row_per_scenario(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "environment.json").write_text(json.dumps({"os": {"system": "Windows"}}))
+            item = root / "candidate-001"
+            item.mkdir()
+            (item / "result.json").write_text(json.dumps({
+                "iteration": 1, "accepted": True,
+                "times_ms": {"bistro": 4.3, "sponza": 6.1},
+                "gain_percent": 2.0, "target_resolution": "1080p",
+                "candidate_sha256": "abcdef",
+                "visual_error": {"difference_fraction": 0.002,
+                                 "average_channel_delta": 0.15},
+                "register_metrics": {"registers_per_thread": 32, "spill_bytes": 0},
+            }))
+            rows = [dict(zip(mod.COLUMNS, r)) for r in mod.collect_rows(root)]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({r["scenario"] for r in rows}, {"bistro", "sponza"})
+            self.assertEqual({r["frame_ms"] for r in rows}, {4.3, 6.1})
+            self.assertEqual(rows[0]["visual_difference_fraction"], 0.002)
+            self.assertEqual(rows[0]["registers_per_thread"], 32)
+            self.assertEqual(rows[0]["target_resolution"], "1080p")
+            self.assertEqual(rows[0]["shader_sha256"], "abcdef")
+
     def test_export_parquet_and_duckdb_when_installed(self):
         try:
             import duckdb
