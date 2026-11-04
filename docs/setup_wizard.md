@@ -74,10 +74,11 @@ Review the attached EXE, test it on a clean Windows VM, then manually publish
 that draft on GitHub. The workflow does **not** merge your local branches or
 automatically publish a release publicly.
 
-For a pre-release build **without creating a release**, open GitHub Actions,
-select **Tourmaline Windows setup release**, and use **Run workflow** on your
-branch. Download the resulting installer and checksum from that workflow's
-artifacts (retained for 30 days).
+After the workflow file is merged into the default branch, you can build
+a preview **without creating a release**: open GitHub Actions, select
+**Tourmaline Windows setup release**, and choose **Run workflow** on the
+desired branch. Download the resulting installer and checksum from that
+workflow's artifacts (retained for 30 days).
 
 The GitHub-hosted Windows build needs external SDK/dependency downloads,
 matching the repository's normal Windows CI. It is expected to run on a Windows
