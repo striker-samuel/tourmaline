@@ -1,6 +1,6 @@
 # Explicit GPU scene record readiness and legacy fallback
 
-> **STATUS: IMPLEMENTATION NOT STARTED.** This is a draft PR scaffold containing an audit-derived scope specification only. Do not merge until actual implementation commits, tests, and review are complete.
+> **STATUS: PARTIAL IMPLEMENTATION.** A CPU-side readiness gate has been added and tested in source; the live draw path remains unchanged. Do not merge until actual implementation commits, tests, and review are complete.
 
 **Finding:** L-03  
 **Priority:** P0
@@ -29,3 +29,11 @@ Invalid references, stale generations, nonresident geometry or missing bounds ca
 
 ## Scope boundary
 No generic GPU memory or automatic lifetime manager; the caller remains responsible for memory. Do not enable experimental rendering paths as part of this fix.
+
+## Implementation evidence (partial)
+- Added `InstanceDrawReady` predicate to `gpu_scene_world.h`: rejects invalid instance/mesh generations, missing mesh or LOD bounds, inconsistent residency, missing filterable submeshes, and nonresident geometry.
+- Added CPU tests for provisional, missing-bounds, ready, stale-mesh-generation and evicted cases in `test_gpu_scene_world.cpp`.
+- Existing legacy renderer and GPU memory ownership are unchanged. The predicate is **not yet connected to draw emission**, and it does **not** prove per-flight publication epochs or submesh/LOD generations.
+- Native CMake/CTest and GPU draw parity tests were **not run** in this environment.
+
+**Keep the PR draft. Further consumer integration and validation are required before this P0 finding is resolved.**
