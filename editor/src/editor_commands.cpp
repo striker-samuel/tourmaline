@@ -4896,7 +4896,10 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.verb = smvk::tour::Verb::CreateNode;
 		out.nodeType = "exportSettings";
 		out.node = uint32_t(pp);
-		out.parentRef = parentRefFor(liveParent);
+		// The main scene root is addressed by numeric parent 0; a
+		// symbolic root path is not replayable in a standalone .tour.
+		out.parentRef = liveParent == 0
+			? std::string{} : parentRefFor(liveParent);
 		out.text = getNodeName(app.m_world->scene, int(created));
 		out.vec = t;
 		return true;
