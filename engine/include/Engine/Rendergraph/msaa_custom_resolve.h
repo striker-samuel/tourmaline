@@ -20,8 +20,10 @@ struct MsaaCustomResolve {
     bool Ensure(ResourceManager& ctx) {
         if (Valid()) return true;
         try {
-            if (vs.empty()) vs = ctx.CreateShaderModule(readFile(kVs), "msaaResolveVert");
-            if (ps.empty()) ps = ctx.CreateShaderModule(readFile(kPs), "msaaResolveFrag");
+            // The unified shader library reader (the ShaderSwap.h
+            // pattern): validates the SPIR-V magic at read time.
+            if (vs.empty()) vs = ctx.CreateShaderModule(shaders::Read(kVs), "msaaResolveVert");
+            if (ps.empty()) ps = ctx.CreateShaderModule(shaders::Read(kPs), "msaaResolveFrag");
         } catch (...) { return false; }
         if (vs.empty() || ps.empty()) return false;
         Shader v{ .module = vs, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
