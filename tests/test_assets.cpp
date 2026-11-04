@@ -220,9 +220,9 @@ void TestTextureSourceLifetime() {
 
 void TestShapePakBlobs() {
     using namespace smvk;
-    const auto cloud = tour::asset::DefaultShapeAsset(
-        tour::asset::ShapeKind::PointCloud);
-    const std::string source = tour::asset::SerializeShapeAsset(cloud);
+    const auto cloud = ::tour::asset::DefaultShapeAsset(
+        ::tour::asset::ShapeKind::PointCloud);
+    const std::string source = ::tour::asset::SerializeShapeAsset(cloud);
     const std::string placements =
         "shapeInstance -name \"Cloud\" -source \"content/shapes/cloud.shape\" "
         "-t 0 1 0 -color 1 0.5 0.2 -enabled on;\n";
@@ -231,7 +231,7 @@ void TestShapePakBlobs() {
         "content/shapes/cloud.shape", std::vector<uint8_t>(
             source.begin(), source.end())), "shape.pak.write-source");
     Check(writer.AddBlob(PakAssetKind::ShapePlacements,
-        tour::asset::kShapePlacementsPakPath,
+        ::tour::asset::kShapePlacementsPakPath,
         std::vector<uint8_t>(placements.begin(), placements.end())),
         "shape.pak.write-placement-sidecar");
     const auto image = writer.Finalize();
@@ -244,21 +244,21 @@ void TestShapePakBlobs() {
     Check(shapeRow != nullptr, "shape.pak.source-blob-kind");
     if (shapeRow) {
         const auto bytes = reader->Payload(*shapeRow);
-        tour::asset::ShapeAsset parsed;
-        Check(tour::asset::ParseShapeAsset(
+        ::tour::asset::ShapeAsset parsed;
+        Check(::tour::asset::ParseShapeAsset(
             std::string(reinterpret_cast<const char*>(bytes.data()),
                 bytes.size()), parsed, error)
-                && parsed.kind == tour::asset::ShapeKind::PointCloud,
+                && parsed.kind == ::tour::asset::ShapeKind::PointCloud,
             "shape.pak.source-valid");
     }
     const auto* placementRow = reader->Find(
         PakAssetKind::ShapePlacements,
-        tour::asset::kShapePlacementsPakPath);
+        ::tour::asset::kShapePlacementsPakPath);
     Check(placementRow != nullptr, "shape.pak.internal-placement-kind");
     if (placementRow) {
         const auto bytes = reader->Payload(*placementRow);
-        tour::asset::Doc doc;
-        Check(tour::asset::LoadTourFromString(
+        ::tour::asset::Doc doc;
+        Check(::tour::asset::LoadTourFromString(
             std::string(reinterpret_cast<const char*>(bytes.data()),
                 bytes.size()), doc, error) && doc.shapePlacements.size() == 1,
             "shape.pak.placement-parse");
