@@ -334,6 +334,39 @@ void TestUndo() {
 	(void)gid;
 }
 
+void TestPaintedCloudGraphDomain() {
+    using namespace editor::placement;
+    GraphDoc doc;
+    BuildDefaultGraph(doc);
+    uint32_t layer = 0;
+    uint32_t gridLink = 0;
+    for (const auto& [id, n] : doc.nodes)
+        if (n.kind == NodeKind::Layer) layer = id;
+    for (const auto& [id, l] : doc.links)
+        if (l.to == layer && l.toPin == "domain") gridLink = id;
+    Check(layer != 0 && gridLink != 0, "pe.cloud.scaffold-domain-found");
+    if (gridLink) doc.removeLink(gridLink);
+    const uint32_t cloudId = doc.addNode(NodeKind::PointCloud, 10, 80);
+    Check(doc.addLink(cloudId, "domain", layer, "domain") != 0,
+        "pe.cloud.domain-wire");
+    CompileResult compiled = CompileGraph(doc, 51);
+    Check(compiled.ok && compiled.domainKind == DomainKind::PointCloud &&
+        compiled.pointStroke == -1 && compiled.gpuOk,
+        "pe.cloud.compiles-as-gpu-domain");
+    doc.nodes[cloudId].i[0] = 2;
+    compiled = CompileGraph(doc, 51);
+    Check(compiled.ok && compiled.pointStroke == 2,
+        "pe.cloud.stroke-binding");
+    const std::string saved = SerializeGraph(doc);
+    GraphDoc copy;
+    Check(ParseGraph(saved, copy) &&
+        copy.find(cloudId) && copy.find(cloudId)->kind == NodeKind::PointCloud &&
+        GetAttrI(*copy.find(cloudId), "strokeIndex") == 2,
+        "pe.cloud.graph-roundtrip");
+    doc.nodes[cloudId].i[0] = -2;
+    Check(!CompileGraph(doc, 51).ok, "pe.cloud.reject-negative-index");
+}
+
 void TestSurfaceBrush() {
     using namespace editor::surface;
     Stroke s;
@@ -369,6 +402,7 @@ void TestSurfaceBrush() {
 }
 
 int main() {
+	TestPaintedCloudGraphDomain();
 	TestSurfaceBrush();
 	TestScaffoldCompiles();
 	TestAcceptScale();

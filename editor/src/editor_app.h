@@ -2062,6 +2062,13 @@ private:
 	void SavePlacementToDoc(smvk::tour::Doc& doc) const;
 	void LoadPlacementFromDoc(const smvk::tour::Doc& doc);
 	void MarkPlacementDirty();
+	// Resolve painted parent-local samples into a GPU-ready world-space
+	// point cloud (same domain data consumed by CPU and GPU evaluators).
+	bool BuildPlacementPointCloud(int strokeIndex,
+		smvk::placement::PlacementPointCloudData& out,
+		std::string& error) const;
+	void CheckSurfaceBrushPlacementChanges();
+	uint64_t m_surfacePoseSignature = 0;
 	void RefreshPlacementPreview();
 	void PushPlacementUndo();      // snapshot placement doc (undo)
 	void DirtyPlacementOnEdit();   // MarkPlacementDirty when active item edited

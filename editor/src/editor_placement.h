@@ -105,7 +105,10 @@ enum class NodeKind : int {
 	                // Reads the layer's EcotopeMaskData — a maskless layer
 	                // REFUSES GPU evaluation (never a silent zero density).
 	                // (appended: kind ints are serialized)
-	Count = 22,
+	PointCloud = 22, // domain: the Surface Brush's parented point samples
+	                // i[0] = source stroke index (-1 means all painted strokes)
+	                // append-only ID: never renumber serialized node kinds
+	Count = 23,
 };
 
 const char* NodeKindName(NodeKind k);
@@ -202,6 +205,7 @@ struct CompileResult {
 	smvk::placement::GridDomain grid; // valid when domainKind == Grid
 	uint32_t meshNode = UINT32_MAX;   // valid when domainKind == MeshSurface
 	smvk::placement::TerrainParams terrain; // valid when Heightfield
+	int pointStroke = -1; // PointCloud: -1 = all painted strokes
 	uint32_t terrainBind = UINT32_MAX; // Heightfield: LIVE terrain group
 	                                   // world node (painted heights)
 	smvk::placement::DomainKind domainKind = smvk::placement::DomainKind::Grid;
@@ -234,6 +238,7 @@ struct PreviewCache {
 	uint64_t layerKey = 0;
 	smvk::placement::GridDomain grid;   // bound domain (for trace re-eval)
 	smvk::placement::PlacementMeshData mesh;
+	smvk::placement::PlacementPointCloudData pointCloud; // resolved world points
 	smvk::placement::HeightfieldData terrainField; // generated analytic terrain
 	smvk::placement::EcotopeMaskData paintMask; // persistent while preview layer is registered
 	smvk::placement::HeightfieldDomain terrainDom; // points at terrainField

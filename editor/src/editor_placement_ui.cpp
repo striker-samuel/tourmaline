@@ -150,6 +150,22 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 			ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "No scene node bound.");
 		break;
 	}
+	case NodeKind::PointCloud: {
+		if (n.i.empty()) n.i = { -1 };
+		int source = n.i[0];
+		if (attr::IntBox("Stroke index", &source,
+			"-1 uses all Surface Brush strokes; 0+ chooses one stroke")) {
+			m_placement.pushUndo();
+			n.i[0] = std::max(-1, source);
+			MarkPlacementDirty();
+		}
+		ImGui::TextDisabled("Sources: %zu painted strokes. -1 = all.",
+			m_surfaceStrokes.size());
+		ImGui::TextWrapped("Each painted point becomes one instancing candidate. "
+			"Connect this domain to Layer; density, prototype and "
+			"spacing controls remain active. GPU scatter uses the same source.");
+		break;
+	}
 	case NodeKind::Terrain: {
 		if (F.size() < 6) F = { 0, 0, 64, 64, 8, 0.02f };
 		if (n.i.empty()) n.i = { 1 };
@@ -475,6 +491,7 @@ void EditorApp::DrawPlacementGraph() {
 			return;
 		}
 	}
+	CheckSurfaceBrushPlacementChanges();
 	if (m_placement.preview.dirty)
 		RefreshPlacementPreview();
 	PreviewCache& pv = m_placement.preview;
@@ -791,7 +808,9 @@ void EditorApp::DrawPlacementGraph() {
 					? pv.grid.sample(pp.id, pp.candidate)
 					: (pv.domainKind == DomainKind::Heightfield
 						? pv.terrainDom.sample(pp.id)
-						: SampleMeshSurface(pv.mesh, pp.id));
+						: (pv.domainKind == DomainKind::PointCloud
+							? pv.pointCloud.sample(pp.candidate)
+							: SampleMeshSurface(pv.mesh, pp.id)));
 				std::vector<float> values = EvaluateProgram(pv.compiled.program, s);
 				if (ImGui::BeginTable("##ptracevals", 2,
 					ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
@@ -834,6 +853,7 @@ void EditorApp::DrawPlacementOverlay() {
 	PreviewCache& pv = m_placement.preview;
 	if (!m_placement.showOverlay)
 		return;
+	CheckSurfaceBrushPlacementChanges();
 	if (pv.dirty)
 		RefreshPlacementPreview();
 	if (!pv.ok)

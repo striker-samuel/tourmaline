@@ -761,10 +761,14 @@ int main() {
 			{ "Memory/linear_vector.h", 5, 0 },
 			{ "Memory/memory.h", 10, 0 },
 			{ "Placement/placement_cache.h", 7, 0 },
-			{ "Placement/placement_domain.h", 10, 0 },
+			{ "Placement/placement_domain.h", 11, 0 }, // +1 (#126): the
+				// Painted PointCloud domain's PlacementPointCloudData —
+				// deliberate smvk::placement compat growth, review at gate.
 			{ "Placement/placement_draw.h", 7, 0 },
 			{ "Placement/placement_eval.h", 6, 0 },
-			{ "Placement/placement_gpu.h", 35, 0 },
+			{ "Placement/placement_gpu.h", 37, 0 }, // +2 (#126): paint-mask
+				// + PointCloud GPU surface inputs — deliberate compat
+				// growth, review at gate.
 			{ "Placement/placement_ids.h", 12, 0 },
 			{ "Placement/placement_ir.h", 9, 0 },
 			{ "Placement/placement_override.h", 7, 0 },
@@ -774,7 +778,8 @@ int main() {
 			{ "Placement/placement_terrain.h", 21, 0 },
 			{ "Placement/placement_tile.h", 14, 0 },
 			{ "Profile/profile.h", 15, 0 },
-			{ "Rendergraph/placement_pass.h", 18, 0 },
+			{ "Rendergraph/placement_pass.h", 19, 0 }, // +1 (#126): the
+				// PointCloud placement-source plumbing — review at gate.
 			{ "Utils/shader_library.h", 0, 1 }, // namespace shaders = ::tour::shaders
 			{ "Renderer/geometry_streamer.h", 10, 0 },
 			{ "Renderer/texture_streamer.h", 4, 0 },

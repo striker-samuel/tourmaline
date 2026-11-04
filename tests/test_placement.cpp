@@ -41,6 +41,67 @@ using smvk::placement::StableID;
 using smvk::placement::TileID;
 }
 
+void TestPaintedPointCloud() {
+	using namespace smvk::placement;
+	PlacementPointCloudData cloud;
+	cloud.positions = { {2, 3, 4}, {5, 6, 7}, {-1, 9, 0} };
+	cloud.normals = { {0, 1, 0}, {1, 0, 0}, {0, 1, 0} };
+	Check(cloud.valid() && cloud.pointCount() == 3,
+		"place.pointcloud.valid-count");
+	Check(glm::distance(cloud.sample(1).p, glm::vec3(5, 6, 7)) < 1e-6f &&
+		cloud.sample(1).n.x == 1.0f && cloud.sample(1).primitiveId == 1,
+		"place.pointcloud.exact-index-normal");
+	cloud.normals.clear();
+	Check(cloud.sample(1).n == glm::vec3(0, 1, 0),
+		"place.pointcloud.default-up-normal");
+	cloud.normals = { {0, 1, 0} };
+	Check(!cloud.valid(), "place.pointcloud.reject-mismatched-normals");
+	cloud.normals.clear();
+
+	PlacementSystem::LayerBinding lb;
+	lb.programId = 44;
+	lb.domainKind = DomainKind::PointCloud;
+	lb.pointCloud = &cloud;
+	lb.program.graphSeed = 4321;
+	lb.program.nodeId = 3;
+	lb.program.instrs = { OpConst(1.0f) };
+	lb.program.acceptIndex = 0;
+	lb.config.candidatesPerTile = 1; // intentionally not the source count
+	lb.config.minSpacing = 0.0f;
+	lb.config.minScale = lb.config.maxScale = 1.0f;
+	auto instances = EvaluateTile(lb, TileID{});
+	Check(instances.size() == cloud.pointCount(),
+		"place.pointcloud.candidates-follow-source-count");
+	bool exact = true;
+	for (const RenderInstance& p : instances)
+		exact &= p.customB < cloud.pointCount() &&
+			glm::distance(p.position, cloud.positions[p.customB]) < 1e-6f;
+	Check(exact, "place.pointcloud.one-candidate-per-point");
+	Check(EvaluateTile(lb, TileID{ 2, 0, 0 }).empty(),
+		"place.pointcloud.no-replication-in-other-tiles");
+
+	PlacementProgramView program{ 0x100, 1, 0 };
+	PlacementDomainParams params{};
+	ScatterBDAs bda{ };
+	bda.pos = 0x200;
+	Check(FillScatterParams(lb, program, PlacementEcoView{}, bda, params) &&
+		params.domainKind == kPlacementScatterDomain_PointCloud &&
+		params.vertCount == 3 && params.posBDA == 0x200,
+		"place.pointcloud.gpu-params");
+	PlacementScatterPush push{};
+	Check(BuildScatterPush(lb, TileID{}, 0xAA, 0xBB, 0xCC, push) &&
+		push.candidateCount == 3, "place.pointcloud.gpu-dispatch-count");
+	Check(BuildScatterPush(lb, TileID{ 1, 0, 0 }, 0xAA, 0xBB, 0xCC, push)
+		&& push.candidateCount == 0, "place.pointcloud.gpu-other-tile-empty");
+	cloud.normals = { {0, 1, 0}, {1, 0, 0}, {0, 1, 0} };
+	Check(!FillScatterParams(lb, program, PlacementEcoView{}, bda, params),
+		"place.pointcloud.normals-require-device-buffer");
+	bda.nrm = 0x300;
+	Check(FillScatterParams(lb, program, PlacementEcoView{}, bda, params) &&
+		(params.flags & kPlacementFlag_HasNormals) != 0,
+		"place.pointcloud.optional-normals");
+}
+
 void TestStableDeterminism() {
 	TileID t{ 3, -1, 7 };
 	StableID a = smvk::placement::MakeStableID(1234, 5, t, 9, 42);
@@ -2839,6 +2900,7 @@ void TestWorldResidency() {
 }
 
 int main() {
+	TestPaintedPointCloud();
 	TestStableDeterminism();	TestChannels();
 	TestPrototypeSelect();
 	TestPointsSoA();

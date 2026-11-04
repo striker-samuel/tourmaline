@@ -68,6 +68,7 @@ void EditorApp::SurfaceBrushFinish() {
             m_surfaceStrokes.erase(m_surfaceStrokes.begin());
         m_surfaceStrokes.push_back(std::move(m_surfaceActive));
         m_surfaceRedo.clear();
+        MarkPlacementDirty();
         AutosaveTour();
     }
     m_surfaceActive = {};
@@ -121,12 +122,43 @@ void EditorApp::DrawSurfaceBrushPanel() {
         if (ImGui::Button("Undo stroke") && !m_surfaceStrokes.empty()) {
             m_surfaceRedo.push_back(std::move(m_surfaceStrokes.back()));
             m_surfaceStrokes.pop_back();
+            MarkPlacementDirty();
             AutosaveTour();
         }
         ImGui::SameLine();
         if (ImGui::Button("Redo stroke") && !m_surfaceRedo.empty()) {
             m_surfaceStrokes.push_back(std::move(m_surfaceRedo.back()));
             m_surfaceRedo.pop_back();
+            MarkPlacementDirty();
+            AutosaveTour();
+        }
+        if (ImGui::Button("Use cloud in Placement Graph") &&
+            !m_surfaceStrokes.empty()) {
+            // One-click path: paint -> PointCloud domain -> existing
+            // density/prototype/scale/min-spacing placement pipeline.
+            // Make a fresh graph so we never overwrite an authored one.
+            m_placement.pushUndo();
+            m_placement.addGraph("Surface Brush");
+            if (placement::GraphDoc* graph = m_placement.current()) {
+                uint32_t layer = 0;
+                for (const auto& [id, node] : graph->nodes)
+                    if (node.kind == placement::NodeKind::Layer)
+                        layer = id;
+                if (layer != 0) {
+                    if (const placement::PLink* old =
+                            graph->inputLink(layer, "domain")) {
+                        const uint32_t oldLink = old->id;
+                        graph->removeLink(oldLink);
+                    }
+                    const uint32_t cloudNode =
+                        graph->addNode(placement::NodeKind::PointCloud, 20, 120);
+                    graph->addLink(cloudNode, "domain", layer, "domain");
+                    m_placement.selected = int(cloudNode);
+                }
+            }
+            m_placement.showGraph = true;
+            m_placement.showOverlay = true;
+            MarkPlacementDirty();
             AutosaveTour();
         }
         if (ImGui::Button("Bake points as locators") && m_world) {
@@ -152,7 +184,8 @@ void EditorApp::DrawSurfaceBrushPanel() {
             Log("Surface brush: baked " + std::to_string(created) +
                 " parented locator(s).");
         }
-        ImGui::TextDisabled("Bake points to scene nodes; spline guides stay editor-only.");
+        ImGui::TextDisabled("PlacementGraph accepts points as GPU scatter candidates.");
+        ImGui::TextDisabled("Baking locators is optional.");
     }
     ImGui::End();
     if (!open) {

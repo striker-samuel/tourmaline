@@ -360,7 +360,8 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
 	TileID tile, std::vector<StableID>* idsOut) {
 	std::vector<RenderInstance> accepted;
 	std::vector<StableID> acceptedIds;
-	const uint32_t n = layer.config.candidatesPerTile;
+	const uint32_t n = layer.domainKind == DomainKind::PointCloud && layer.pointCloud
+		? layer.pointCloud->pointCount() : layer.config.candidatesPerTile;
 	accepted.reserve(n / 4);
 	acceptedIds.reserve(n / 4);
 
@@ -379,6 +380,12 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
 		case DomainKind::Heightfield:
 			if (!layer.heightfield) continue;
 			s = layer.heightfield->sample(id);
+			break;
+		case DomainKind::PointCloud:
+			if (!layer.pointCloud || !(layer.pointCloud->tile == tile) ||
+				!layer.pointCloud->valid() ||
+				i >= layer.pointCloud->pointCount()) continue;
+			s = layer.pointCloud->sample(i);
 			break;
 		}
 		if (!layer.program.valid()) continue;
