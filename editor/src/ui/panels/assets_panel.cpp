@@ -351,25 +351,6 @@ namespace editor {
 			if (ImGui::SmallButton("Reveal##sel"))
 				RevealInExplorer(m_assetsSel);
 			ImGui::EndDisabled();
-			// DCC operations are always one click away, without four
-			// separate toolbar buttons squeezing the asset grid.
-			SameLineIfFits("DCC...");
-			ImGui::BeginDisabled(!selFile);
-			if (ImGui::SmallButton("DCC...##sel"))
-				ImGui::OpenPopup("##selected_asset_dcc");
-			ImGui::EndDisabled();
-			if (ImGui::BeginPopup("##selected_asset_dcc")) {
-				if (ImGui::MenuItem("Open in DCC"))
-					OpenAssetInDcc(m_assetsSel);
-				if (ImGui::MenuItem("Link DCC source..."))
-					LinkAssetToDcc(m_assetsSel);
-				if (ImGui::MenuItem("Publish glTF", nullptr, false,
-						!m_dccPublishRunning))
-					PublishAssetFromDcc(m_assetsSel);
-				if (ImGui::MenuItem("Unlink DCC source"))
-					UnlinkAssetFromDcc(m_assetsSel);
-				ImGui::EndPopup();
-			}
 			// Add-to-scene (mesh/geometry selection): the click twin of the
 			// viewport drag-drop (AddSceneReference asset-bind). Imports
 			// land in-project first (ImportAsset), so this only ever adds
@@ -1240,6 +1221,13 @@ namespace editor {
 			ImGui::PopID();
 			ImGui::PopID();
 		};
+		// Folder/collection count reflects the visible entries, not hidden
+		// sidecars or generated artifacts. A virtual ".." tile is navigation.
+		const size_t visibleItems = dirs.size() + files.size()
+			- size_t(std::count_if(dirs.begin(), dirs.end(),
+				[](const Entry& e) { return e.back; }));
+		ImGui::TextDisabled("%zu item%s", visibleItems,
+			visibleItems == 1 ? "" : "s");
 		for (const Entry& e : dirs) {
 			if (col != 0)
 				ImGui::SameLine(0.0f, 4.0f);
