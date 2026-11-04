@@ -235,4 +235,88 @@ bool ExecuteAssetDelete(const AssetDeletePlan& plan, std::string& err) {
 	return true;
 }
 
+bool RenameBrowserAsset(const std::string& absPath,
+    const std::string& projectRoot, const std::string& newName,
+    std::string& newPath, std::string& err) {
+    newPath.clear();
+    const std::string root = Normalized(projectRoot);
+    const std::string old = Normalized(absPath);
+    const fs::path source(old);
+    std::error_code ec;
+    const bool isDir = fs::is_directory(source, ec) && !ec;
+    const bool isFile = !isDir && fs::is_regular_file(source, ec) && !ec;
+    if (!isDir && !isFile) {
+        err = "asset not found";
+        return false;
+    }
+    const std::string rel = RelOf(old, root);
+    if (!StrictlyInside(old, root) || rel == "project.tourproj"
+        || rel == "artifacts" || rel.starts_with("artifacts/")
+        || rel == ".tourmaline" || rel.starts_with(".tourmaline/")
+        || rel == "scratch" || rel.starts_with("scratch/")) {
+        err = "protected or outside project";
+        return false;
+    }
+    if (newName.empty() || newName == "." || newName == ".."
+        || newName.front() == '.' || newName.back() == ' '
+        || newName.back() == '.'
+        || newName.find_first_of("/\\\\:*?\"<>|") != std::string::npos) {
+        err = "invalid asset name";
+        return false;
+    }
+    if (isFile && fs::path(newName).extension() != source.extension()) {
+        err = "keep the asset's file extension";
+        return false;
+    }
+    if (isFile && !OwningGltf(old).empty()) {
+        err = "manifest-derived asset: rename its source instead";
+        return false;
+    }
+    const fs::path destination = source.parent_path() / newName;
+    if (destination == source) {
+        newPath = old;
+        return true;
+    }
+    if (fs::exists(destination, ec) || ec) {
+        err = "destination already exists or cannot be checked";
+        return false;
+    }
+    // Moving sidecars preserves the asset GUID. If a sidecar move fails,
+    // restore all previously moved files rather than leave split identity.
+    std::vector<std::pair<fs::path, fs::path>> moved;
+    auto move = [&](const fs::path& from, const fs::path& to) {
+        std::error_code moveEc;
+        fs::rename(from, to, moveEc);
+        if (moveEc) {
+            err = "rename failed: " + moveEc.message();
+            return false;
+        }
+        moved.emplace_back(from, to);
+        return true;
+    };
+    if (!move(source, destination))
+        return false;
+    if (isFile) {
+        for (const char* suffix : { ".meta", ".dccsource" }) {
+            const fs::path from(old + suffix);
+            if (!fs::is_regular_file(from, ec) || ec)
+                continue;
+            const fs::path to(destination.generic_string() + suffix);
+            if (fs::exists(to, ec) || ec || !move(from, to)) {
+                if (err.empty())
+                    err = "sidecar destination already exists";
+                for (auto it = moved.rbegin(); it != moved.rend(); ++it) {
+                    std::error_code rollbackEc;
+                    fs::rename(it->second, it->first, rollbackEc);
+                    if (rollbackEc)
+                        err += "; rollback failed: " + rollbackEc.message();
+                }
+                return false;
+            }
+        }
+    }
+    newPath = destination.lexically_normal().generic_string();
+    return true;
+}
+
 } // namespace editor
