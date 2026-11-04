@@ -1,6 +1,6 @@
 # Single-source shader variants for build and hot reload
 
-> **STATUS: IMPLEMENTATION NOT STARTED.** This is a draft PR scaffold containing an audit-derived scope specification only. Do not merge until actual implementation commits, tests, and review are complete.
+> **STATUS: IN PROGRESS.** Implementation committed: one manifest now feeds CMake and generated C++ runtime variants. Native CI and shader build verification remain. This branch is not merge-ready until all acceptance tests and remaining scope are complete.
 
 **Finding:** L-07  
 **Priority:** P0
