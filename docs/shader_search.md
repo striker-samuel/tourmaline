@@ -54,9 +54,9 @@ python tools/shader_search.py `
   --build-cmd "cmake --build out/build/x64-Release --target Benchmark" `
   --validate-cmd "python tools/local_shader_correctness.py" `
   --provider ollama --model qwen2.5-coder:14b `
-  --iterations 5 --repeat 5 --target-resolution 1080p \
-  --reference-screenshot out/references/ssr-1080p.png \
-  --candidate-screenshot out/captures/current-ssr.png \
+  --iterations 5 --repeat 5 --target-resolution 1080p `
+  --reference-screenshot out/references/ssr-1080p.png `
+  --candidate-screenshot out/captures/current-ssr.png `
   --output out/shader-search/experiment-001
 ```
 
