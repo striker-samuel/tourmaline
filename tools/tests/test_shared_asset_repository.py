@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -81,6 +82,46 @@ class SharedRepositoryTests(unittest.TestCase):
         self.store.scan()
         self.assertEqual(len(self.store.sources()), 2)
         self.assertEqual(len({s["asset_id"] for s in self.store.sources()}), 2)
+
+    def test_reusing_a_moved_source_path_creates_distinct_identity(self):
+        old = self.put("models/original.obj", b"original bytes")
+        self.store.scan()
+        original_id = self.store.sources()[0]["asset_id"]
+        moved = self.source / "models" / "renamed.obj"
+        old.rename(moved)
+        self.store.scan()
+        self.assertEqual(self.store.sources()[0]["asset_id"], original_id)
+
+        self.put("models/original.obj", b"entirely different source")
+        self.store.scan()
+        by_path = {entry["current_path"]: entry for entry in self.store.sources()}
+        self.assertEqual(by_path["models/renamed.obj"]["asset_id"], original_id)
+        self.assertNotEqual(by_path["models/original.obj"]["asset_id"], original_id)
+        self.assertEqual(len(self.store.source_revisions(original_id)), 1)
+        new_id = by_path["models/original.obj"]["asset_id"]
+        self.assertEqual(self.store.source_version(new_id, 1)["size"],
+                         len(b"entirely different source"))
+
+        self.put("models/original.obj", b"changed replacement")
+        self.store.scan()
+        self.assertEqual(len(self.store.source_revisions(new_id)), 2)
+        self.assertEqual(len(self.store.source_revisions(original_id)), 1)
+
+    def test_concurrent_publishes_get_distinct_versions(self):
+        self.put("mesh.obj", b"source")
+        self.store.scan()
+        source_id = self.store.sources()[0]["asset_id"]
+
+        def publish(index):
+            content = ("product-%03d" % index).encode("ascii")
+            return self.store.publish(source_id, 1, "mesh", "game", "mesh.glb",
+                                      io.BytesIO(content), len(content))
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            published = list(pool.map(publish, range(16)))
+        self.assertEqual(sorted(row["version"] for row in published),
+                         list(range(1, 17)))
+        self.assertEqual(len({row["publish_id"] for row in published}), 16)
 
     def test_deleted_source_preserves_versions(self):
         source = self.put("scene/shot.ma", b"original maya")
