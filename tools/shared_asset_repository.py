@@ -394,13 +394,22 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
 
     class Handler(base):
         def identity(self):
+            if hasattr(self, "_resolved_user"):
+                return self._resolved_user
             header = self.headers.get("Authorization", "")
             if registry is None:
-                return "legacy" if hmac.compare_digest(
+                user = "legacy" if hmac.compare_digest(
                     header, _TOKEN_HEADER + token) else None
-            if not header.startswith(_TOKEN_HEADER):
-                return None
-            return registry.identity(header[len(_TOKEN_HEADER):])
+            else:
+                # One registry snapshot per request prevents repeated disk reads
+                # for large asset listings and gives consistent ACL decisions.
+                self._permission_snapshot = registry.load()
+                user = registry.identity(
+                    header[len(_TOKEN_HEADER):],
+                    snapshot=self._permission_snapshot) if header.startswith(
+                        _TOKEN_HEADER) else None
+            self._resolved_user = user
+            return user
 
         def authorized(self, permission, asset_id=None):
             username = self.identity()
@@ -408,14 +417,16 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                 self.reply({"error": "unauthorized"}, 401)
                 return False
             if registry is not None and not registry.allows(
-                    username, permission, asset_id):
+                    username, permission, asset_id,
+                    snapshot=self._permission_snapshot):
                 self.reply({"error": "forbidden", "permission": permission}, 403)
                 return False
             return True
 
         def visible(self, asset_id, permission="source.read"):
             return registry is None or registry.allows(
-                self.identity(), permission, asset_id)
+                self.identity(), permission, asset_id,
+                snapshot=self._permission_snapshot)
 
         def get_permission(self, path):
             if path in ("/", "/asset", "/v1/assets", "/v1/versions",
