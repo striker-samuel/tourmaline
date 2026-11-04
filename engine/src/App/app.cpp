@@ -187,6 +187,12 @@ void tour::App::SetRelativeMouseMode(bool enabled) {
 		// Let ImGui consume UI events first (hook set by ImGuiOverlay::Init).
 		if (imguiEventHook_ && m_inputTapeMode != InputTapeMode::Replay)
 			imguiEventHook_(&e);
+		// Detached ImGui windows are owned by its SDL3 platform backend.
+		// Closing one must not terminate the host editor or enter the
+		// game/input-tape close-event path.
+		if (imguiEventHook_ && e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+			window && e.window.windowID != SDL_GetWindowID(window))
+			continue;
 		if ((e.type == SDL_EVENT_WINDOW_RESIZED ||
 				e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) &&
 			window && e.window.windowID == SDL_GetWindowID(window)) {
