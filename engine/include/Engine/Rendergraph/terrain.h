@@ -9,18 +9,21 @@
 //  - near LODs L0/L1/L2 (64/32/16 quads, TerrainVertex 32 B — the article's
 //    Terrain I..III full-float layout) with skirts, one vertex buffer +
 //    one shared index buffer per LOD;
-//  - far L3 (16 quads, TerrainFarVertex 8 B half4 — the article's Terrain IV
-//    R16G16B16A16 layout): grid coords only, world XZ reconstructs in the
+//  - far L3 (16 quads, TerrainFarVertex 12 B half4 + RGBA8):
+//    grid coords and S-mask attributes; world XZ reconstructs in the
 //    VS from the per-block push tail, height samples the R16 atlas.
 // Heights/normals come from the H-field (computed normals; the import stub
-// stays reserved), vertex color carries the S-tile test-mask checker +
-// slope rock (near) / mask brightness (far).
+// stays reserved). Vertex color preserves S-tile RGBA attributes at all
+// LODs: R = default surface blend, G/B = user material attributes,
+// A < 0.5 = clipping hole (0 = hole, 255 = solid).
 //
 // Height atlas: the 16 H-tiles merged into ONE 4096x4096 R16_UNORM texture
 // (RG16 bits copied verbatim — linear filtering stays CORRECT, unlike
 // packed-RGBA filtering). One bindless slot serves the far VS, the shadow
 // raymarch, and future collision/GI. Masks bake into vertex color and are
 // dropped after the build (GPU mask textures land with the atlas in phase 4).
+// Hole masking currently applies to visual terrain only, not CPU collision
+// or heightfield-based shadow raymarching.
 //
 // Shadows (T3): shadowmap RECEIVE (lights[0] sun convention, PCF/EVSM like
 // default_pom) times... minned with the heightfield RAYMARCHED distant
