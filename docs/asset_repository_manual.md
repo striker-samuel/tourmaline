@@ -4,6 +4,27 @@
 > terminated by a verified TLS reverse proxy; the built-in server is HTTP.
 > Server user/group ACLs and token rotation remain enforced independently.
 
+
+## HTTPS deployment boundary
+
+Run the Python HTTP server on `127.0.0.1:8765` and terminate TLS at a
+reverse proxy. With Caddy, a minimal single-host example is:
+
+```caddyfile
+assets.example.com {
+    reverse_proxy 127.0.0.1:8765
+}
+```
+
+Provide public DNS and a valid TLS certificate, and block external access
+to port 8765. Caddy automatically handles normal certificate issuance; it
+does not replace the repository's user/group token ACLs. The client verifies
+HTTPS certificates by default; do not disable that verification. Test token
+rotation and least-privilege reads/publishes against the actual gateway
+before enabling remote workstations. Insecure LAN HTTP remains an explicit
+opt-in for isolated development only.
+
+
 # Tourmaline Asset Repository — Windows/Linux NAS manual
 
 This is the setup manual for a **single authoritative shared asset service** on a
