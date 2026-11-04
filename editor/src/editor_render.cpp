@@ -2038,7 +2038,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		const ViewportRect& vp = m_viewports[m_activeVp].rect;
 		const float lmx = float(m_input.getMouseX()) - vp.x;
 		const float lmy = float(m_input.getMouseY()) - vp.y;
-		const bool inVp = lmx >= 0.0f && lmy >= 0.0f && lmx < vp.w && lmy < vp.h;
+		const bool inVp = (!m_uiMode || m_dockViewportVisible) &&
+			lmx >= 0.0f && lmy >= 0.0f && lmx < vp.w && lmy < vp.h;
 		const bool altNav = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
 			m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
 		const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse()
