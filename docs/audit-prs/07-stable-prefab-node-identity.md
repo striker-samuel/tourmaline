@@ -1,6 +1,6 @@
 # Stable identities for prefab source-node synchronization
 
-> **STATUS: IMPLEMENTATION NOT STARTED.** This is a draft PR scaffold containing an audit-derived scope specification only. Do not merge until actual implementation commits, tests, and review are complete.
+> **STATUS: IN PROGRESS.** Partial implementation committed: UUID-first preview matching and authoring, fail-closed duplicates, legacy fallback. Identity migration and editor verification remain. This branch is not merge-ready until all acceptance tests and remaining scope are complete.
 
 **Finding:** L-09  
 **Priority:** P0
