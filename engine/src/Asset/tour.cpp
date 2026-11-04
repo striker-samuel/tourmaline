@@ -1849,7 +1849,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
                             err = "line " + std::to_string(lineNo) + ": invalid shape coordinate";
                             return false;
                         }
-                    const glm::vec3 value(float(xyz[0]),float(xyz[1]),float(xyz[2]));
+                    const glm::vec3 value{float(xyz[0]),
+						float(xyz[1]), float(xyz[2])};
                     if (field == "-t") { placed.position = value; hasPosition = true; }
                     else { placed.color = value; hasColor = true; }
                 } else if (field == "-enabled") {

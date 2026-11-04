@@ -9,6 +9,8 @@
 #include "Runtime.h"
 
 #include <Engine/App/app.h> // tour::App's full type (the random() defn)
+#include <Engine/Renderer/WorldRenderer.h> // Shapes(): the full type (the
+	// branch #127 rode was a transitive include; spell it out)
 
 #include <cstring>
 #include <filesystem>
