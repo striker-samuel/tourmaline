@@ -348,16 +348,28 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 					: glm::cross(ax, glm::vec3(1, 0, 0));
 				u = glm::normalize(u);
 				const glm::vec3 v = glm::cross(ax, u);
-				const float len = s * 2.5f;
-				for (int i = 0; i < 4; ++i) {
-					const float a = float(i) / 4 * 6.2831853f;
-					const glm::vec3 dir = glm::normalize(
-						ax * std::cos(outer) +
-						(u * std::cos(a) + v * std::sin(a)) * std::sin(outer));
+				// Draw a geometrically correct cone: outer angle is
+				// measured from the aim axis, so radius = depth * tan(angle).
+				// Selected spots show their actual finite reach; idle spots
+				// remain compact so a large scene stays readable.
+				const float len = node == m_selected && l->range > 0.0f
+					? l->range : s * 2.5f;
+				const float radius = len * std::tan(outer);
+				for (int i = 0; i < 8; ++i) {
+					const float a = float(i) / 8 * 6.2831853f;
+					const glm::vec3 rim = p + ax * len +
+						(u * std::cos(a) + v * std::sin(a)) * radius;
 					b.verts.push_back({ p });
-					b.verts.push_back({ p + dir * len });
+					b.verts.push_back({ rim });
 				}
-				AddCircle(b, p + ax * len, u, v, len * std::sin(outer), 24);
+				AddCircle(b, p + ax * len, u, v, radius, 48);
+				if (node == m_selected && l->innerConeAngle > 0.0f) {
+					LineBatch inner;
+					inner.color = glm::vec4(0.25f, 0.65f, 0.9f, 1.0f);
+					AddCircle(inner, p + ax * len, u, v,
+						len * std::tan(std::min(l->innerConeAngle, outer)), 48);
+					batches.push_back(std::move(inner));
+				}
 			}
 			else {
 				b.color = glm::vec4(1.0f, 0.55f, 0.2f, 1.0f);

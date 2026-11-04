@@ -3118,6 +3118,22 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			if ((li->flags & ::SceneLight::kSceneLightFlag_Static) != 0
 				&& ImGui::IsItemHovered())
 				ImGui::SetTooltip("STATIC: bake-only (excluded from runtime)");
+			if (li->type == ::SceneLight::Type::Spot) {
+				const bool lookingThrough =
+					m_viewports[m_activeVp].boundNode == int(node);
+				if (ImGui::Button(lookingThrough
+					? "Return to editor camera" : "Look through spotlight")) {
+					m_viewports[m_activeVp].boundNode =
+						lookingThrough ? -1 : int(node);
+				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Lock the active viewport to the spotlight's "
+						"position and -Z aim. The outer cone defines the view angle. "
+						"Move or rotate the light with its transform gizmo.");
+				ImGui::SameLine();
+				ImGui::TextDisabled(lookingThrough ? "LIVE CONE VIEW" : "Preview aim");
+			}
+
 			// ---- editable light properties (point/spot): SetLightAttr,
 			// undoable, persisted as setLightAttr tour verbs so cooks replay
 			// them. Sliders coalesce one command per drag (mattr pattern);

@@ -589,7 +589,10 @@ namespace editor {
 		if (bound < 0 || bound >= int(m_world->scene.hierarchy.size()))
 			return false;
 		const ::SceneCamera* C = FindNodeCamera(uint32_t(bound));
-		if (!C)
+		const ::SceneLight* L = FindNodeLight(uint32_t(bound));
+		// Spotlights can be previewed through their -Z axis, just like
+		// authored cameras. A point light has no single look direction.
+		if (!C && (!L || L->type != ::SceneLight::Type::Spot))
 			return false;
 		const glm::mat4& G = m_world->scene.globalTransform[uint32_t(bound)];
 		out.eye = glm::vec3(G[3]);
@@ -608,11 +611,22 @@ namespace editor {
 		else
 			up = glm::normalize(up);
 		out.up = up;
-		out.nearClip = std::max(C->nearClip, 1e-4f);
-		out.farClip = std::max(C->farClip, out.nearClip * 1.1f + 1e-3f);
-		out.fovYDeg = std::clamp(C->fovYDeg, 1.0f, 179.0f);
-		out.orthoHalfH = (C->projection == ::SceneCamera::Projection::Orthographic)
-			? std::max(C->orthoHalfH, 0.01f) : 0.0f;
+		if (C) {
+			out.nearClip = std::max(C->nearClip, 1e-4f);
+			out.farClip = std::max(C->farClip, out.nearClip * 1.1f + 1e-3f);
+			out.fovYDeg = std::clamp(C->fovYDeg, 1.0f, 179.0f);
+			out.orthoHalfH = (C->projection == ::SceneCamera::Projection::Orthographic)
+				? std::max(C->orthoHalfH, 0.01f) : 0.0f;
+		} else {
+			// The authored cone is a HALF angle; the projection needs
+			// its full vertical aperture.
+			out.nearClip = 0.05f;
+			out.farClip = L->range > out.nearClip
+				? L->range : 1000.0f; // zero range means unbounded
+			out.fovYDeg = glm::degrees(2.0f * std::clamp(
+				L->outerConeAngle, 0.01f, 1.55f));
+			out.orthoHalfH = 0.0f;
+		}
 		return true;
 	}
 
@@ -834,6 +848,14 @@ namespace editor {
 				}
 				p[1][1] *= -1.0f;
 				proj = p;
+			}
+			else if (const ::SceneLight* L = FindNodeLight(
+				uint32_t(m_viewports[0].boundNode));
+				L && L->type == ::SceneLight::Type::Spot) {
+				proj = tour::MakeReversedZProjRH(
+					2.0f * std::clamp(L->outerConeAngle, 0.01f, 1.55f),
+					aspect, frame.nearPlane, frame.farPlane);
+				proj[1][1] *= -1.0f;
 			}
 		}
 		const glm::mat4 viewProj = proj * view;
