@@ -380,14 +380,27 @@ void EditorApp::SyncPrefabPreview() {
             const auto& wanted=source.localTransform[n];
             const auto& saved=m_prefab.savedLocals[n];
             const std::string sourceName=getNodeName(source,int(n));
-            if (sourceCounts[sourceName]!=1) continue;
+            const std::string& stableId=GetNodeUuid(source,n);
+            // UUIDs survive node renames and are copied by World merge.
+            // An ambiguous UUID within this occurrence MUST NOT fall back
+            // to a name, which could silently update the wrong node.
             const std::string expected=ref.name+":"+sourceName;
-            if (parentCounts[expected]!=1) continue;
+            if (stableId.empty() && (sourceCounts[sourceName]!=1 ||
+                parentCounts[expected]!=1)) continue; // legacy unique-name compatibility
+            uint32_t target=UINT32_MAX;
             for (uint32_t p=0;p<parent.hierarchy.size();++p) {
                 if (!IsLiveSlot(parent,p) || p>=parent.localTransform.size()
-                    || !DescendantOf(parent,p,placeholder)
-                    || getNodeName(parent,int(p))!=expected)
-                    continue;
+                    || !DescendantOf(parent,p,placeholder)) continue;
+                const bool matches=stableId.empty()
+                    ? getNodeName(parent,int(p))==expected
+                    : GetNodeUuid(parent,p)==stableId;
+                if (!matches) continue;
+                if (target!=UINT32_MAX) { target=UINT32_MAX; break; }
+                target=p;
+            }
+            if (target==UINT32_MAX) continue;
+            const uint32_t p=target;
+            {
                 if (prefab_sync::Apply(
                     m_prefab.parentOriginal,m_prefab.parentApplied,
                     p,saved,wanted,parent.localTransform[p],
