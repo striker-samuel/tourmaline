@@ -12,7 +12,6 @@ import sys
 import urllib.request
 import uuid
 
-from experiment_environment import collect_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 IDENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -86,6 +85,7 @@ def run(args):
         raise ValueError("machine needs a safe short identifier")
     sys.path.insert(0, str(ROOT / "tools"))
     from perf_harness import select_scenario
+    from experiment_environment import collect_environment
     for name in matrix["scenarios"]:
         select_scenario(args.catalog, name)
     failures = 0
