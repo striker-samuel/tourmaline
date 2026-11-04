@@ -295,12 +295,13 @@ namespace editor {
 		struct SlotDef { const char* label; const char* attr; int* slot; };
 		int tBC = m->values.textures.x, tMR = m->values.textures.y;
 		int tN = m->values.textures.z, tO = m->values.textures.w;
-		int tE = m->values.textures2.x;
+		int tE = m->values.textures2.x, tC = m->values.textures2.y;
 		const SlotDef slots[] = {
 			{ "Base color", "baseColorTex", &tBC },
 			{ "Metallic-rough", "metallicRoughTex", &tMR },
 			{ "Normal", "normalTex", &tN },
 			{ "Occlusion", "occlusionTex", &tO },
+			{ "Cavity", "cavityTex", &tC },
 			{ "Emissive", "emissiveTex", &tE },
 		};
 		std::vector<std::pair<smvk::StringViewT, smvk::TextureHandle>> texList;
@@ -463,7 +464,30 @@ namespace editor {
 			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
 				m_pending.cmd.attr == "roughness")
 				FinishDrag();
-			// ---- EMISSIVE COLOR + STRENGTH (HDR — the BLOOM link) ----
+			// ---- Fine-scale cavity strength (indirect lighting only) ----
+            float cavityStrength = m->values.textures2.z < 0
+                ? 1.0f : float(m->values.textures2.z) / 1000.0f;
+            if (attr::Slider("Cavity strength", &cavityStrength, 0.0f, 1.0f,
+                    "%.2f", "Fine-scale cavity map strength on indirect lighting")) {
+                if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
+                    m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "cavityStrength"))
+                    FinalizePending();
+                if (!m_pending.active) {
+                    m_pending.active = true;
+                    m_pending.cmd = EditCmd{};
+                    m_pending.cmd.verb = EditVerb::SetMatAttr;
+                    m_pending.cmd.matWorld = mat;
+                    m_pending.cmd.attr = "cavityStrength";
+                    ReadSharedMatAttr(mat, "cavityStrength",
+                        m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
+                }
+                WriteSharedMatAttr(mat, "cavityStrength", glm::vec4(0), cavityStrength);
+                m_pending.cmd.number = cavityStrength;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+                m_pending.cmd.attr == "cavityStrength")
+                FinishDrag();
+            // ---- EMISSIVE COLOR + STRENGTH (HDR — the BLOOM link) ----
 			// The strength is the HDR radiance multiplier, the SAME
 			// scale the bloom threshold thresholds (pre-exposure HDR;
 			// the sunlit default thr=400, the panel slider to 4000):
