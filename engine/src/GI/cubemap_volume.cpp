@@ -1253,6 +1253,7 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 
 					SgFitAccumulator acc;
 					acc.accumulateGram = false; // diagonal solve only
+					glm::vec3 meanClampedRadiance(0.0f);
 					if (valid[size_t(v)]) {
 						// Deterministic per-probe seed (the capture
 						// stage's pattern): results independent of
@@ -1294,10 +1295,12 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 								++localClamped;
 							}
 							sumAfter += Luminance(L);
+							meanClampedRadiance += L;
 						}
 						clamped += localClamped;
 						energyBefore += sumBefore;
 						energyAfter += sumAfter;
+						meanClampedRadiance /= float(N);
 						for (uint32_t i = 0; i < N; ++i)
 							acc.AddSample(dirs[i], rad[i],
 								texelSolidAngle);
@@ -1320,6 +1323,8 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 					}
 					glm::vec3 amps[kSgLobeCount];
 					acc.Solve(amps);
+					if (valid[size_t(v)])
+						SgMatchMeanRadiance(amps, meanClampedRadiance);
 					for (uint32_t i = 0; i < kSgLobeCount; ++i)
 						outVolume.coeffs[size_t(v) * kSgLobeCount + i]
 							= amps[i];
