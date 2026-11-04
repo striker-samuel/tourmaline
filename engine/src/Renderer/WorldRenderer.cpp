@@ -32,6 +32,7 @@
 #include <time.h>    // localtime_r (screenshot timestamp)
 #endif
 
+#include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/core.h>
 #include <Engine/platform.h> // readFile (exe-relative SPV loads)
 #include <Engine/debug_log.h> // SMVK_TRACE_LOG ([exposure] dashboards)
@@ -3574,6 +3575,7 @@ namespace engine {
         if (m_context && m_rayTracedSunShadowsEnabled)
             m_context->ClearRayTracingWorld();
         m_rayTracingCachedInstances.clear();
+        m_rayTracingDebugSummary = {};
         m_rayTracingCachedWorld = nullptr;
         m_rayTracingCacheValid = false;
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
@@ -11379,6 +11381,7 @@ namespace engine {
                         "[RayShadows] BLAS/TLAS build unavailable; retaining contact/CSM fallback\n");
                 }
                 m_rayTracingCachedInstances = std::move(rtInstances);
+                m_rayTracingDebugSummary = smvk::SummarizeRayTracingCandidates(m_rayTracingCachedInstances);
                 m_rayTracingCachedWorld = m_world;
                 m_rayTracingCacheValid = true;
             }
@@ -17403,6 +17406,46 @@ namespace engine {
                             int rtResIdx = m_rayTracedSunShadowResolutionDivisor == 1 ? 0 : 1;
                             if (ImGui::Combo("Hardware ray resolution", &rtResIdx, rtRes, 2))
                                 m_rayTracedSunShadowResolutionDivisor = rtResIdx == 0 ? 1 : 2;
+                            // CPU snapshot from the last caster-list change. No readback,
+                            // GPU query or extra draw pass is performed by this inspector.
+                            if (ImGui::CollapsingHeader("TLAS / BLAS inspector")) {
+                                const auto& summary = m_rayTracingDebugSummary;
+                                ImGui::Text("Ray-query device: %s", raySupported ? "supported" : "unsupported");
+                                ImGui::Text("GPU TLAS: %s",
+                                    m_context->RayTracingWorldReady() ? "ready" : "not built / failed");
+                                ImGui::Text("TLAS candidate instances: %zu (rejected: %u)",
+                                    summary.instances.size(), summary.rejected);
+                                ImGui::Text("Unique BLAS candidates: %zu", summary.blases.size());
+                                ImGui::Text("Triangles: %llu instanced / %llu unique",
+                                    (unsigned long long)summary.instancedTriangles,
+                                    (unsigned long long)summary.uniqueTriangles);
+                                ImGui::TextDisabled("CPU candidates, not GPU BVH nodes, memory sizes or timings.");
+                                if (ImGui::TreeNode("BLAS geometry")) {
+                                    const size_t shown = std::min<size_t>(summary.blases.size(), 256);
+                                    for (size_t i = 0; i < shown; ++i) {
+                                        const auto& blas = summary.blases[i];
+                                        ImGui::BulletText("#%zu: %u triangles, %u TLAS refs%s",
+                                            i, blas.triangles, blas.references,
+                                            blas.alphaMasked ? " (alpha MASK)" : "");
+                                    }
+                                    if (shown < summary.blases.size())
+                                        ImGui::TextDisabled("Showing first %zu of %zu BLAS", shown, summary.blases.size());
+                                    ImGui::TreePop();
+                                }
+                                if (ImGui::TreeNode("TLAS instance transforms")) {
+                                    const size_t shown = std::min<size_t>(summary.instances.size(), 256);
+                                    for (size_t i = 0; i < shown; ++i) {
+                                        const auto& entry = summary.instances[i];
+                                        const auto& src = m_rayTracingCachedInstances[entry.sourceIndex];
+                                        ImGui::BulletText("#%zu -> BLAS %u (%u triangles), pos (%.2f, %.2f, %.2f)",
+                                            i, entry.blasIndex, entry.triangles,
+                                            src.transform[3], src.transform[7], src.transform[11]);
+                                    }
+                                    if (shown < summary.instances.size())
+                                        ImGui::TextDisabled("Showing first %zu of %zu instances", shown, summary.instances.size());
+                                    ImGui::TreePop();
+                                }
+                            }
                         }
 						// Diffuse screen-space GI (see ssgi_diffuse.h): one
 						// cosine-hemisphere bounce that REPLACES the diffuse
