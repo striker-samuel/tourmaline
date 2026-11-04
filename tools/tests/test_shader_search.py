@@ -78,6 +78,46 @@ class ShaderSearchTests(unittest.TestCase):
                 self.assertEqual(search.scenario_benchmark(root, root / "benchmark",
                                  root / "catalog", "abc", 2, out, 10), 1.25)
 
+    def test_target_resolution_validation(self):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        self.assertEqual(search.parse_target_resolution("1080p"), (1920, 1080))
+        self.assertEqual(search.parse_target_resolution("2560x1440"), (2560, 1440))
+        with self.assertRaises(ValueError):
+            search.parse_target_resolution("1280x800")
+        with self.assertRaises(ValueError):
+            search.parse_target_resolution("720p,1080p")
+
+    def test_screenshot_error_score_and_resolution(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is an extended optional dependency")
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            reference, candidate = root / "reference.png", root / "candidate.png"
+            Image.new("RGB", (2, 2), (0, 0, 0)).save(reference)
+            with Image.new("RGB", (2, 2), (0, 0, 0)) as picture:
+                picture.putpixel((0, 0), (10, 0, 0))
+                picture.save(candidate)
+            report = search.compare_saved_screenshot(
+                reference, candidate, root / "output" / "candidate.png",
+                (2, 2), threshold=6, max_fraction=.25, max_delta=2.5)
+            self.assertEqual(report["difference_fraction"], 0.25)
+            self.assertEqual(report["average_channel_delta"], 2.5)
+            self.assertTrue(report["within_limit"])
+            stricter = search.compare_saved_screenshot(
+                reference, candidate, root / "output2" / "candidate.png",
+                (2, 2), threshold=6, max_fraction=.20, max_delta=2.5)
+            self.assertFalse(stricter["within_limit"])
+            with self.assertRaisesRegex(ValueError, "target resolution"):
+                search.compare_saved_screenshot(
+                    reference, candidate, root / "output3" / "candidate.png",
+                    (4, 4), threshold=6, max_fraction=1.0, max_delta=765)
+
     def test_run_command_never_uses_shell(self):
         with patch.object(search.subprocess, "run") as run:
             run.return_value.returncode = 0
