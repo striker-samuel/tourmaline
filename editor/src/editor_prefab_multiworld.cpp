@@ -898,6 +898,7 @@ void EditorApp::DrawPrefabWindow() {
                         smvk::tour::Command cmd;
                         cmd.node=node-1; // single-cluster mapping
                         cmd.name=getNodeName(source,int(node));
+                         cmd.uuid=GetNodeUuid(source,node); // persist stable target identity
                         cmd.verb=field==0
                             ? smvk::tour::Verb::SetTranslate
                             : field==1 ? smvk::tour::Verb::SetRotate
