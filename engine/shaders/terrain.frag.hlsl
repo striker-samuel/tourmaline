@@ -39,11 +39,20 @@ struct VSOut
 
 float4 mainPS(VSOut IN) : SV_Target0
 {
+    // Vertex alpha carries hole coverage rather than material opacity.
+    // Keep this fallback for partially covered primitives and platforms
+    // that do not reliably reject NaN clip-space vertex positions.
+    clip(IN.color.a - 0.5f);
     FrameUniforms frame = pcT.frameUniforms.Get();
     EnvironmentFrameData env = frame.env;
 
     float3 N = normalize(IN.normal);
-    float3 albedo = IN.color.rgb;
+    // Default look: R blends soil/grass, slope exposes rock.
+    // G/B remain available as authored terrain material attributes.
+    float3 albedo = lerp(float3(0.16f, 0.20f, 0.11f),
+        float3(0.55f, 0.56f, 0.50f), IN.color.r);
+    float rockT = saturate((1.0f - N.y) * 3.2f);
+    albedo = lerp(albedo, float3(0.36f, 0.33f, 0.30f), rockT);
 
     // Direct sun (Lambert 1/PI, the scene convention).
     float3 L = normalize(env.sunDirection.xyz + 1e-9);
