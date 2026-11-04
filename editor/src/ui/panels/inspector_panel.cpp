@@ -98,6 +98,53 @@ namespace editor {
 		Scene& scene = m_world->scene;
 		const uint32_t node = m_selected;
 		const attr::ScopedID nodeId{int(node)};
+		// Highlight properties at their edit sites (local overrides win
+		// over regex-wide rules). Transform edits are per-axis in the UI;
+		// current history represents each transform gesture as one verb.
+		std::unordered_map<std::string, int> provenance;
+		auto mark = [&](const char* property, int kind) {
+			if (kind == 1 || provenance.find(property) == provenance.end())
+				provenance[property] = kind;
+		};
+		for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+			const EditCmd& cmd = m_history[i];
+			if (cmd.node != node)
+				continue;
+			switch (cmd.verb) {
+			case EditVerb::Translate:
+				for (const char* axis : { "Translate X", "Translate Y", "Translate Z" })
+					mark(axis, 1);
+				break;
+			case EditVerb::Rotate:
+				for (const char* axis : { "Rotate X", "Rotate Y", "Rotate Z" })
+					mark(axis, 1);
+				break;
+			case EditVerb::Scale:
+				for (const char* axis : { "Scale X", "Scale Y", "Scale Z" })
+					mark(axis, 1);
+				break;
+			case EditVerb::Rename: mark("Name", 1); break;
+			case EditVerb::SetStatic: mark("Static", 1); break;
+			case EditVerb::SetLightmap: mark("Bake lightmaps", 1); break;
+			case EditVerb::SetNoLightmap: mark("Exclude lightmaps", 1); break;
+			case EditVerb::SetDitherCloseup: mark("Dither closeup", 1); break;
+			case EditVerb::SetCastsVolumetricShadow: mark("Volumetric shadow", 1); break;
+			case EditVerb::SetVisibility: mark("Visibility", 1); break;
+			case EditVerb::AssignMaterial: mark("Material", 1); break;
+			default: break;
+			}
+		}
+		const std::string nodeName = getNodeName(scene, int(node));
+		for (const auto& entry : {
+				std::pair{ smvk::tour::OverrideAttr::Visibility, "Visibility" },
+				{ smvk::tour::OverrideAttr::Material, "Material" },
+				{ smvk::tour::OverrideAttr::Lightmap, "Bake lightmaps" },
+				{ smvk::tour::OverrideAttr::NoLightmap, "Exclude lightmaps" },
+				{ smvk::tour::OverrideAttr::DitherCloseup, "Dither closeup" } }) {
+			if (LastWideRuleFor(entry.first, nodeName))
+				mark(entry.second, 2);
+		}
+		const attr::ScopedOverrideLabels highlightedProperties(&provenance);
 		if (m_selection.size() > 1)
 			ImGui::TextDisabled("multi-select: %zu nodes (primary #%u)",
 				m_selection.size(), node);
@@ -113,12 +160,30 @@ namespace editor {
 				return;
 			}
 			ImGui::SameLine();
-			ImGui::Checkbox("Up/Down", &m_inspectorCycle);
+			attr::Check("Up/Down", &m_inspectorCycle, "Cycle selection with the Up/Down keys");
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip(
 					"When on, the Up/Down arrow keys cycle the node selection.");
 		}
-		ImGui::Text("Node %u", node);
+		// Hierarchy breadcrumb from the root to the selected node.
+		std::vector<uint32_t> ancestry;
+		int current = int(node);
+		for (size_t depth = 0; current >= 0
+				&& size_t(current) < scene.hierarchy.size()
+				&& depth < scene.hierarchy.size(); ++depth) {
+			if (std::find(ancestry.begin(), ancestry.end(),
+					uint32_t(current)) != ancestry.end())
+				break; // corrupt/cyclic hierarchy must not hang the UI
+			ancestry.push_back(uint32_t(current));
+			current = scene.hierarchy[size_t(current)].parent;
+		}
+		std::reverse(ancestry.begin(), ancestry.end());
+		for (size_t i = 0; i < ancestry.size(); ++i) {
+			if (i)
+				ImGui::SameLine(0.0f, 5.0f), ImGui::TextUnformatted(">"),
+					ImGui::SameLine(0.0f, 5.0f);
+			ImGui::Text("Node %u", ancestry[i]);
+		}
 		// Sub-object highlight state (selection only, never edited).
 		if (m_selMode == SelMode::Face) {
 			if (m_selFaceNode != UINT32_MAX && m_selFaceTri != UINT32_MAX)
@@ -189,27 +254,6 @@ namespace editor {
 			if (sOwn && sv.finished) {
 				m_pending.cmd.afterVec = glm::vec3(ss[0], ss[1], ss[2]);
 				FinishDrag();
-			}
-		}
-
-		// Parent.
-		{
-			const int p = scene.hierarchy[node].parent;
-			ImGui::Text("Parent: %d (%s)", p,
-				p >= 0 ? getNodeName(scene, p).c_str() : "-");
-			ImGui::SameLine();
-			if (ImGui::Button("Detach to root") && p != int(m_clusterBase)) {
-				if (m_clusterBase == UINT32_MAX) {
-					Log("Detach: no cluster mapping (multi-cluster scene?)");
-				}
-				else {
-					EditCmd c{};
-					c.verb = EditVerb::Parent;
-					c.node = node;
-					c.node2 = m_clusterBase;
-					c.beforeParent = uint32_t(p);
-					Do(c);
-				}
 			}
 		}
 
@@ -494,7 +538,7 @@ namespace editor {
 		sections.DrawAll(node);
 		// Single discoverable add-component flow. Only list missing
 		// associations and reuse the existing undoable attach commands.
-		ImGui::Separator();
+		ImGui::Spacing();
 		if (ImGui::Button("Add component..."))
 			ImGui::OpenPopup("##add_component_picker");
 		if (ImGui::BeginPopup("##add_component_picker")) {
@@ -658,29 +702,44 @@ namespace editor {
 			}
 		}
 
-		// Clarisse-style override summary for this node (visibility control +
-		// per-attr inherited/local/wide badges + wide-rule matches).
-		DrawInspectorOverrides(node);
-
-		// Environment node: mark/use this node as an IBL source (scene
-		// definition — the block lives in the scene, the selection below
-		// resolves into the rendered look).
+		// Visibility is an ordinary editable property, not a separate
+		// override-summary subsection.
 		{
-			ImGui::Separator();
-			ImGui::Text("Environment node");
-			if (IsEnvNode(node)) {
-				if (ImGui::Button("Use as current IBL source")) {
+			bool visible = !IsHiddenNode(scene, int(node));
+			if (attr::Check("Visibility", &visible,
+					"Effective visibility is inherited from ancestors; "
+					"local values take precedence over wide rules")) {
+				EditCmd c{};
+				c.verb = EditVerb::SetVisibility;
+				c.node = node;
+				c.afterFlag = !visible;
+				c.beforeFlag = visible;
+				Do(c);
+			}
+			if (HasLocalOverride(node, smvk::tour::OverrideAttr::Visibility)) {
+				if (ImGui::SmallButton("Clear local visibility override"))
+					ClearLocalOverrides(node, smvk::tour::OverrideAttr::Visibility);
+			}
+		}
+
+		// Environment participation is a regular editor property like Static.
+		{
+			bool environment = IsEnvNode(node);
+			if (attr::Check("Environment node", &environment,
+					"Use this node as an environment/IBL source")) {
+				if (environment) {
+					MarkEnvNode(node);
+					m_envCurrent = node;
+					ResolveSceneEnv();
+				} else {
+					UnmarkEnvNode(node);
+				}
+			}
+			if (environment) {
+				if (ImGui::SmallButton("Use as current IBL source")) {
 					m_envCurrent = node;
 					ResolveSceneEnv();
 				}
-				ImGui::SameLine();
-				if (ImGui::Button("Unmark##envnode"))
-					UnmarkEnvNode(node);
-			}
-			else if (ImGui::Button("Mark as Environment node")) {
-				MarkEnvNode(node);
-				m_envCurrent = node;
-				ResolveSceneEnv();
 			}
 		}
 
