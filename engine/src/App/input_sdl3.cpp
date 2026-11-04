@@ -250,6 +250,42 @@ bool smvk::SdlInputBackend::Translate(const SDL_Event& src, input::Event& out) {
         out.x = src.wheel.x;
         out.y = src.wheel.y;
         return true;
+    case SDL_EVENT_PEN_PROXIMITY_IN:
+    case SDL_EVENT_PEN_PROXIMITY_OUT:
+        out.type = src.type == SDL_EVENT_PEN_PROXIMITY_IN
+            ? input::EventType::PenProximityIn : input::EventType::PenProximityOut;
+        out.penId = static_cast<input::PenId>(src.pproximity.which);
+        return true;
+    case SDL_EVENT_PEN_DOWN:
+    case SDL_EVENT_PEN_UP:
+        out.type = src.type == SDL_EVENT_PEN_DOWN
+            ? input::EventType::PenDown : input::EventType::PenUp;
+        out.penId = static_cast<input::PenId>(src.ptouch.which);
+        out.x = src.ptouch.x;
+        out.y = src.ptouch.y;
+        out.penEraser = src.ptouch.eraser;
+        return true;
+    case SDL_EVENT_PEN_MOTION:
+        out.type = input::EventType::PenMotion;
+        out.penId = static_cast<input::PenId>(src.pmotion.which);
+        out.x = src.pmotion.x;
+        out.y = src.pmotion.y;
+        return true;
+    case SDL_EVENT_PEN_AXIS:
+        out.type = input::EventType::PenAxis;
+        out.penId = static_cast<input::PenId>(src.paxis.which);
+        out.penAxis = static_cast<input::PenAxis>(src.paxis.axis);
+        out.penValue = src.paxis.value;
+        return true;
+    case SDL_EVENT_PEN_BUTTON_DOWN:
+    case SDL_EVENT_PEN_BUTTON_UP:
+        out.type = src.type == SDL_EVENT_PEN_BUTTON_DOWN
+            ? input::EventType::PenButtonDown : input::EventType::PenButtonUp;
+        out.penId = static_cast<input::PenId>(src.pbutton.which);
+        out.x = src.pbutton.x;
+        out.y = src.pbutton.y;
+        out.penButton = src.pbutton.button;
+        return true;
     case SDL_EVENT_GAMEPAD_ADDED: {
         const input::GamepadId id = static_cast<input::GamepadId>(src.gdevice.which);
         for (const auto& gp : gamepads_)
