@@ -4396,7 +4396,50 @@ void TestMayaNodeNamePropagation() {
 		|| resolved == uint32_t(other), "paths never target stale leaf");
 }
 
+void TestShapePlacements() {
+    using namespace smvk::tour;
+    std::string err;
+    Doc doc;
+    const std::string source =
+        "shapeInstance -name \\"Trail\\" -source \\"content/shapes/trail.shape\\" "
+        "-t 1 2 3 -color 0.2 0.8 1 -enabled on;\\n"
+        "shapeInstance -name \\"Cloud\\" -source \\"content/shapes/cloud.shape\\" "
+        "-t -2 0 4 -color 1 1 1 -enabled off;\\n";
+    Check(LoadTourFromString(source, doc, err), "shape placements parse");
+    Check(doc.shapePlacements.size() == 2, "both shape placements retained");
+    if (doc.shapePlacements.size() == 2) {
+        Check(doc.shapePlacements[0].name == "Trail"
+            && doc.shapePlacements[0].position == glm::vec3(1,2,3),
+            "shape placement transform parsed");
+        Check(!doc.shapePlacements[1].enabled,
+            "shape placement enabled flag parsed");
+    }
+    Doc packed;
+    Check(LoadTourFromString(SerializeShapePlacements(doc), packed, err),
+        "cooked shape sidecar parses");
+    Check(packed.shapePlacements.size() == 2,
+        "cooked shape sidecar carries both instances");
+    const std::string path = TempTour();
+    Check(SaveTour(path, doc, err), "save shape placements to tour");
+    Doc loaded;
+    Check(LoadTour(path, loaded, err), "load saved shape placements");
+    Check(loaded.shapePlacements.size() == 2,
+        "shape placements survive .tour roundtrip");
+    Check(!LoadTourFromString(
+        "shapeInstance -name \\"Bad\\" -source \\"../escape.shape\\";\\n",
+        loaded, err), "shape placement rejects traversal");
+    Check(!LoadTourFromString(
+        "shapeInstance -name \\"Same\\" -source \\"a.shape\\";\\n"
+        "shapeInstance -name \\"Same\\" -source \\"b.shape\\";\\n",
+        loaded, err), "shape placement rejects duplicate names");
+    Check(!LoadTourFromString(
+        "shapeInstance -name \\"Bad\\" -source \\"a.shape\\" "
+        "-t 1 NaN 2;\\n", loaded, err),
+        "shape placement rejects nonfinite coordinates");
+}
+
 int main() {
+	TestShapePlacements();
 	TestPhysicsAuthoring();
 	TestRequiredNodeNames();
 	TestMayaNodeNamePropagation();
