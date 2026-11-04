@@ -12,11 +12,11 @@ from pathlib import Path
 import subprocess
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)\n        else Path(__file__).resolve().parents[1])
 sys.path.insert(0, str(ROOT))
 from tools import project_init
 from tools.configure_asset_client import configure as configure_client, install_maya
-from tools.install_shared_assets import configure as configure_host, run_detached
+from tools.install_shared_assets import (configure as configure_host,\n                                         run_detached, wait_for_health)
 from tools.maya.tourmaline_asset_cache import AssetClient, default_cache
 
 
@@ -66,7 +66,28 @@ def setup(name, destination, mode="none", *, project_exe=None, url=None,
             str(private / "server-cache"), config=host, port=port)
         # The local server is deliberately localhost-only, with no WAN exposure.
         if start_local:
-            run_detached(cfg)
+            if getattr(sys, "frozen", False):
+                # A bundled GUI executable cannot run Python scripts with its
+                # sys.executable. Ship a distinct frozen server executable.
+                server = ROOT / "TourmalineAssetServer.exe"
+                if not server.is_file():
+                    raise RuntimeError("TourmalineAssetServer.exe is missing from the installation")
+                log_file = cfg.parent / "server.log"
+                with log_file.open("ab") as output:
+                    process = subprocess.Popen(
+                        [str(server), "--config", str(cfg), "serve"],
+                        cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=output,
+                        stderr=subprocess.STDOUT,
+                        creationflags=(subprocess.DETACHED_PROCESS |
+                                       subprocess.CREATE_NEW_PROCESS_GROUP))
+                try:
+                    wait_for_health(cfg, process)
+                except Exception:
+                    if process.poll() is None:
+                        process.terminate()
+                    raise
+            else:
+                run_detached(cfg)
         local_url = f"http://127.0.0.1:{port}"
         client_path = configure_client(local_url, secret, cache, client_config)
         result.update(server_config=str(cfg), client_config=str(client_path),
