@@ -92,7 +92,9 @@ static_assert(sizeof(ParticleGpu) % 16 == 0);
 // Spawn-volume shapes (ParticleEmitterGpu::life.w).
 static constexpr uint32_t kParticleShape_Cone = 0;   // disc at center, velocity in a cone around the axis
 static constexpr uint32_t kParticleShape_Sphere = 1; // uniform in the ball, velocity outward random
-static constexpr uint32_t kParticleShape_Point = 2;  // center point, velocity cone around the axis
+static constexpr uint32_t kParticleShape_Point = 2;
+static constexpr uint32_t kParticleShape_Ground = 3; // XZ disc, low horizontal drift
+static constexpr float kParticleRender_Dust = 1.0f; // emitter tail.y  // center point, velocity cone around the axis
 
 // ---------------------------------------------------------------------------
 // GPU emitter (must match HLSL ParticleEmitterGpu in particles.hlsli).
@@ -119,7 +121,8 @@ static constexpr uint32_t kParticleShape_Point = 2;  // center point, velocity c
 //            floating dust / rain: what leaves through one side re-enters
 //            through the opposite - rain falls out the bottom and
 //            re-enters at the top, dust drifts forever).
-// tail:      x = GPU-OWNED fractional spawn carry. Uploaded rows must leave
+// tail:      y = 1 for ground dust (alpha pass, procedural opacity).
+//            x = GPU-OWNED fractional spawn carry. Uploaded rows must leave
 //            it 0; the emit compute owns it via the separate emitterState
 //            buffer (kept in the struct only for layout symmetry with HLSL).
 // ---------------------------------------------------------------------------
@@ -195,7 +198,7 @@ struct ParticlesDrawPush {
 	uint32_t fpTileSize = 0;    // 56
 	uint32_t fpMaxPerTile = 0;  // 60
 	uint32_t maxParticles = 0;  // 64 instance cap for the VS guard
-	uint32_t pad0 = 0;          // 68
+	uint32_t renderMode = 0;    // 68 0 additive particles, 1 alpha ground dust
 	uint32_t pad1 = 0;          // 72
 	uint32_t pad2 = 0;          // 76
 };

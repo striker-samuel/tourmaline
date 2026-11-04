@@ -15,6 +15,7 @@
 #define PARTICLE_SHAPE_CONE 0
 #define PARTICLE_SHAPE_SPHERE 1
 #define PARTICLE_SHAPE_POINT 2
+#define PARTICLE_SHAPE_GROUND 3
 
 // GPU particle (64 bytes). posLife.w <= 0 = dead slot (the draw VS collapses
 // it to an off-screen degenerate; the sim pass recycles the slot).
@@ -40,7 +41,7 @@ struct ParticleEmitterGpu
     float4 size;      // 64  x sizeStart, y sizeEnd (m), z rotSpeed (rad/s), w seed
     float4 life;      // 80  x lifeMin, y lifeMax (s), z rate (per s), w shape
     float4 fade;      // 96  x fadeIn, y fadeOut, z colorJitter, w ambient wrap half-extent (m; 0 = world emitter)
-    float4 tail;      // 112 x carry (GPU-owned), yzw pads
+    float4 tail;      // 112 x carry (GPU-owned), y = ground-dust render mode
 };
 
 // BDA-addressed buffer views (typed pointers, forwardplus.cs.hlsl style).
@@ -123,7 +124,7 @@ struct ParticlesDrawPush
     uint fpTileSize;    // 56
     uint fpMaxPerTile;  // 60
     uint maxParticles;  // 64 VS instance guard
-    uint pad0;          // 68
+    uint renderMode;    // 68 0 = additive, 1 = ground dust
     uint pad1;          // 72
     uint pad2;          // 76
 };
