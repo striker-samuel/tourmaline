@@ -579,6 +579,8 @@ inline constexpr uint32_t kCreateRefFamilyMask =
 // Scene-owned procedural shape placement. Lives in the .tour source and
 // the cooked scene's shape-placement sidecar, rather than in the geometry
 // blob. Position is scene-local; prefab frames compose at instantiation.
+inline constexpr const char* kShapePlacementsPakPath = "#shapeplacements";
+
 struct ShapePlacement {
     std::string name;
     std::string source; // VFS-addressable .shape path
