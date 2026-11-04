@@ -140,6 +140,61 @@ class PermissionRegistryTests(unittest.TestCase):
             httpd.server_close()
             bg.join(timeout=5)
 
+    def test_live_open_asset_database_tracks_authenticated_user_and_station(self):
+        import uuid
+        share = self.root / "share"
+        share.mkdir()
+        (share / "scene.tour").write_bytes(b"scene")
+        archive = SharedArchive(share, self.root / "archive", self.root / "cache", settle=0)
+        archive.scan()
+        asset_id = archive.sources()[0]["asset_id"]
+        token = self.registry.user_set("designer", ["normal"], [])
+        other = self.registry.user_set("other", ["normal"], [])
+        session = str(uuid.uuid4())
+        httpd = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            handler_for_shared(archive, LEGACY_TOKEN, registry=self.registry))
+        bg = threading.Thread(target=httpd.serve_forever, daemon=True)
+        bg.start()
+        base = "http://127.0.0.1:%d" % httpd.server_port
+
+        def post(path, access_token, body):
+            return urlopen(Request(
+                base + path, method="POST", data=json.dumps(body).encode(),
+                headers={"Authorization": "Bearer " + access_token,
+                         "Content-Type": "application/json"}), timeout=3)
+
+        def get(access_token):
+            return urlopen(Request(
+                base + "/v2/open-assets",
+                headers={"Authorization": "Bearer " + access_token}), timeout=3)
+
+        body = {"session_id": session, "kind": "editor", "label": "Level Editor",
+                "workstation": "ART-STATION-07",
+                "reads": [{"kind": "source", "id": asset_id, "version": 1,
+                           "mode": "edit"}]}
+        try:
+            with post("/v2/consumers/heartbeat", token, body) as response:
+                self.assertEqual(json.load(response)["reads"], 1)
+            with get(token) as response:
+                entries = json.load(response)["open_assets"]
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["username"], "designer")
+            self.assertEqual(entries[0]["workstation"], "ART-STATION-07")
+            self.assertEqual(entries[0]["mode"], "edit")
+            self.assertEqual(entries[0]["id"], asset_id)
+            with self.assertRaises(HTTPError) as exc:
+                post("/v2/consumers/release", other, {"session_id": session})
+            self.assertEqual(exc.exception.code, 403)
+            with post("/v2/consumers/release", token, {"session_id": session}):
+                pass
+            with get(token) as response:
+                self.assertEqual(json.load(response)["open_assets"], [])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            bg.join(timeout=5)
+
     def test_api_enforces_read_publish_and_rejects_old_shared_token(self):
         share = self.root / "share"
         share.mkdir()
