@@ -67,6 +67,7 @@ enum class PlanAssetKind : uint8_t {
 	StateMachine, // immutable generic transition graph
 	NavMesh,      // precomputed CPU navigation triangle mesh
 	SpriteSet,
+	Shape, // authored spline/point-cloud/primitive source
 };
 
 struct PlanAsset {

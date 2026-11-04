@@ -13,6 +13,7 @@
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
 #include "editor_asset_browser_nav.h" // collection folders belong at root
 #include "editor_asset_inspect.h" // generic file/directory inspector
+#include "editor_asset_creation.h"
 #include "editor_asset_dcc.h" // DCC source link + export build stage
 
 #include <cstring>
@@ -27,6 +28,7 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include <Engine/Asset/shape_asset.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Profile/profile.h>
@@ -5150,6 +5152,185 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGui::TextDisabled("Binary or non-UTF-8 file (metadata only).");
 			return;
 		}
+		if (path.extension() == ".shape") {
+			// Per-selection editing state: changes are only persisted on Save.
+			// A truncated preview cannot safely round-trip the source.
+			static std::string shapePath;
+			static tour::asset::ShapeAsset shape;
+			static std::string shapeError;
+			static bool shapeLoaded = false;
+			static bool shapeDirty = false;
+			if (shapePath != m_assetsSel) {
+				shapePath = m_assetsSel;
+				shapeLoaded = !preview.truncated &&
+					tour::asset::ParseShapeAsset(preview.text, shape, shapeError);
+				shapeDirty = false;
+				if (preview.truncated)
+					shapeError = "Shape file exceeds the 64 KiB inspector limit.";
+			}
+			if (!shapeLoaded) {
+				ImGui::TextWrapped("Shape parse error: %s", shapeError.c_str());
+				return;
+			}
+			ImGui::Text("Shape: %s%s",
+				tour::asset::ShapeKindName(shape.kind),
+				shapeDirty ? " (unsaved)" : "");
+			// Lightweight CPU preview, intentionally independent of the
+			// Vulkan scene: usable before line/point draw pipelines exist.
+			// Project onto a fixed oblique view (X + 0.4 Z, Y - 0.3 Z).
+			{
+				tour::asset::ShapeGeometry geometry;
+				std::string tessError;
+				if (tour::asset::TessellateShape(shape, geometry, tessError)
+					&& !geometry.vertices.empty()) {
+					const float width = std::max(80.0f,
+						std::min(ImGui::GetContentRegionAvail().x, 440.0f));
+					const float height = 180.0f;
+					const ImVec2 origin = ImGui::GetCursorScreenPos();
+					const size_t maxScan = std::min(geometry.vertices.size(), size_t(200000));
+					float minX = 1e30f, maxX = -1e30f, minY = 1e30f, maxY = -1e30f;
+					auto project = [](const tour::asset::ShapePoint& p) {
+						return ImVec2(p.x + 0.4f*p.z, p.y - 0.3f*p.z);
+					};
+					for (size_t i=0; i<maxScan; ++i) {
+						const ImVec2 p = project(geometry.vertices[i]);
+						minX = std::min(minX, p.x); maxX = std::max(maxX, p.x);
+						minY = std::min(minY, p.y); maxY = std::max(maxY, p.y);
+					}
+					const float scale = std::min((width-24.0f)/std::max(0.01f,maxX-minX),
+						(height-24.0f)/std::max(0.01f,maxY-minY));
+					auto screen = [&](uint32_t idx) {
+						const ImVec2 p = project(geometry.vertices[idx]);
+						return ImVec2(origin.x + width*0.5f +
+							(p.x-(minX+maxX)*0.5f)*scale,
+							origin.y + height*0.5f -
+							(p.y-(minY+maxY)*0.5f)*scale);
+					};
+					ImDrawList* draw = ImGui::GetWindowDrawList();
+					draw->AddRectFilled(origin, ImVec2(origin.x+width,origin.y+height),
+						IM_COL32(25,28,34,255), 5.0f);
+					const ImU32 tint = IM_COL32(110,205,220,255);
+					if (geometry.topology == tour::asset::ShapeGeometry::Topology::Points) {
+						for (size_t i=0; i<std::min(geometry.vertices.size(),size_t(2048)); ++i)
+							draw->AddCircleFilled(screen(static_cast<uint32_t>(i)),2.0f,tint);
+					} else if (geometry.topology == tour::asset::ShapeGeometry::Topology::Lines) {
+						for (size_t i=0; i+1<geometry.indices.size() && i<8192; i+=2)
+							draw->AddLine(screen(geometry.indices[i]),
+								screen(geometry.indices[i+1]),tint,1.4f);
+					} else {
+						for (size_t i=0; i+2<geometry.indices.size() && i<12000; i+=3) {
+							const ImVec2 a=screen(geometry.indices[i]);
+							const ImVec2 b=screen(geometry.indices[i+1]);
+							const ImVec2 c=screen(geometry.indices[i+2]);
+							draw->AddLine(a,b,tint);
+							draw->AddLine(b,c,tint);
+							draw->AddLine(c,a,tint);
+						}
+					}
+					ImGui::Dummy(ImVec2(width,height));
+				} else if (!tessError.empty())
+					ImGui::TextDisabled("Preview: %s", tessError.c_str());
+			}
+			if (shape.kind == tour::asset::ShapeKind::Spline)
+				shapeDirty |= ImGui::Checkbox("Closed", &shape.closed);
+			int segments = static_cast<int>(shape.segments);
+			if (ImGui::SliderInt("Segments", &segments, 1, 256)) {
+				shape.segments = static_cast<uint32_t>(segments);
+				shapeDirty = true;
+			}
+			if (shape.kind == tour::asset::ShapeKind::Sphere ||
+				shape.kind == tour::asset::ShapeKind::Cylinder ||
+				shape.kind == tour::asset::ShapeKind::Cone) {
+				shapeDirty |= ImGui::DragFloat("Radius", &shape.radius, 0.02f, 0.01f, 10000.0f);
+				if (shape.kind != tour::asset::ShapeKind::Sphere)
+					shapeDirty |= ImGui::DragFloat("Height", &shape.height, 0.02f, 0.01f, 10000.0f);
+			}
+			if (shape.kind == tour::asset::ShapeKind::Spline ||
+				shape.kind == tour::asset::ShapeKind::PointCloud) {
+				ImGui::Text("Control points: %zu", shape.points.size());
+				if (ImGui::Button("Add point") && shape.points.size() < 100000) {
+					shape.points.push_back(shape.points.empty()
+						? tour::asset::ShapePoint{} : shape.points.back());
+					shapeDirty = true;
+				}
+				if (shape.points.size() > 256)
+					ImGui::TextDisabled("Showing first 256 points (of %zu).", shape.points.size());
+				ImGui::BeginChild("##shape_points", ImVec2(0, 220), true);
+				const size_t shown = std::min(shape.points.size(), size_t(256));
+				for (size_t i = 0; i < shown; ++i) {
+					ImGui::PushID(static_cast<int>(i));
+					float xyz[3] = {shape.points[i].x, shape.points[i].y, shape.points[i].z};
+					if (ImGui::DragFloat3("XYZ", xyz, 0.02f)) {
+						shape.points[i] = {xyz[0], xyz[1], xyz[2]};
+						shapeDirty = true;
+					}
+					ImGui::SameLine();
+					const bool canRemove = shape.points.size() >
+						(shape.kind == tour::asset::ShapeKind::PointCloud ? 1u :
+						(shape.closed ? 3u : 2u));
+					ImGui::BeginDisabled(!canRemove);
+					if (ImGui::SmallButton("X")) {
+						shape.points.erase(shape.points.begin() + static_cast<std::ptrdiff_t>(i));
+						shapeDirty = true;
+						ImGui::EndDisabled();
+						ImGui::PopID();
+						break;
+					}
+					ImGui::EndDisabled();
+					ImGui::PopID();
+				}
+				ImGui::EndChild();
+			}
+			std::string validation;
+			const bool valid = tour::asset::ValidShape(shape, validation);
+			if (!valid) ImGui::TextWrapped("Invalid shape: %s", validation.c_str());
+			ImGui::BeginDisabled(!shapeDirty || !valid);
+			if (ImGui::Button("Save shape")) {
+				// Only this authored source file is written; no cooked
+				// geometry or GPU resource is modified by the inspector.
+				std::ofstream file(path, std::ios::binary | std::ios::trunc);
+				file << tour::asset::SerializeShapeAsset(shape);
+				file.close();
+				if (file) {
+					shapeDirty = false;
+					m_assetGenericPreview = ReadBrowserFilePreview(path);
+					Log("Saved shape: " + path.generic_string());
+				} else {
+					Log("Failed to save shape: " + path.generic_string());
+				}
+			}
+			ImGui::EndDisabled();
+			if (shape.kind != tour::asset::ShapeKind::Spline &&
+				shape.kind != tour::asset::ShapeKind::PointCloud) {
+				ImGui::SameLine();
+				ImGui::BeginDisabled(!valid || shapeDirty);
+				if (ImGui::Button("Export OBJ...")) {
+					std::string obj, exportError;
+					const fs::path destination = UniqueAssetCreatePath(
+						path.parent_path(), path.stem().string(), ".obj");
+					if (tour::asset::ShapeToObj(shape, obj, exportError)
+						&& !destination.empty()) {
+						std::ofstream file(destination, std::ios::binary);
+						file << obj;
+						file.close();
+						if (file)
+							Log("Exported procedural OBJ: " + destination.generic_string());
+						else
+							Log("Failed to export OBJ: " + destination.generic_string());
+					} else {
+						Log("OBJ export failed: " + exportError);
+					}
+				}
+				ImGui::EndDisabled();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Revert")) {
+				shapeLoaded = tour::asset::ParseShapeAsset(
+					preview.text, shape, shapeError);
+				shapeDirty = false;
+			}
+			return;
+		}
 		if (ClassifyBrowserInspector(path) == BrowserInspectorKind::SpriteSet) {
 			::tour::asset::SpriteSet sheet;
 			std::string parseError;
@@ -5971,6 +6152,41 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
             if (ImGui::MenuItem("New Folder"))
                 CreateAssetFolder(m_assetsDir);
             ImGui::Separator();
+			// Authoring-only .shape documents. The importer/runtime draw
+			// paths are intentionally separate from this source creation.
+			if (ImGui::BeginMenu("New Procedural Shape")) {
+				for (tour::asset::ShapeKind kind : {
+					tour::asset::ShapeKind::Spline,
+					tour::asset::ShapeKind::PointCloud,
+					tour::asset::ShapeKind::Plane,
+					tour::asset::ShapeKind::Box,
+					tour::asset::ShapeKind::Sphere,
+					tour::asset::ShapeKind::Cylinder,
+					tour::asset::ShapeKind::Cone}) {
+					const char* name = tour::asset::ShapeKindName(kind);
+					if (!ImGui::MenuItem(name)) continue;
+					const fs::path dir = AssetCreateDirectory(m_projectRoot,
+						m_assetsDir, "shapes");
+					const fs::path target = UniqueAssetCreatePath(dir,
+						name, ".shape");
+					std::error_code ec;
+					fs::create_directories(dir, ec);
+					if (ec || target.empty()) {
+						Log("Could not create shape asset directory");
+						continue;
+					}
+					std::ofstream output(target, std::ios::binary);
+					output << tour::asset::SerializeShapeAsset(
+						tour::asset::DefaultShapeAsset(kind));
+					output.close();
+					if (!output) {
+						Log("Could not write shape asset: " + target.generic_string());
+						continue;
+					}
+					Log("Created shape source: " + target.generic_string());
+				}
+				ImGui::EndMenu();
+			}
 			if (ImGui::MenuItem("New GI Volume Asset (.givolume)"))
 				CreateGivolumeAsset(m_assetsDir);
 			if (ImGui::MenuItem("New Texture (from image)...")) {

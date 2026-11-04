@@ -38,9 +38,11 @@ app::ProjectScenes& Context::scenes() {
 	// over the SAME session every other content read resolved through
 	// (the world comes per-load; the m_vfs is the protocol surface
 	// only — see content(8)).
-	if (!m_scenes)
+	if (!m_scenes) {
 		m_scenes = std::make_unique<app::ProjectScenes>(m_session,
 			m_vfs);
+		m_scenes->SetShapeScene(&m_renderer.Shapes());
+	}
 	return *m_scenes;
 }
 

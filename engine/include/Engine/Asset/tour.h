@@ -576,6 +576,19 @@ inline constexpr uint32_t kCreateRefFamilyMask =
 	| kCreateExportRefBase | kCreateAudioSourceRefBase
 	| kCreateAudioRoomRefBase | kCreateTransformRefBase;
 
+// Scene-owned procedural shape placement. Lives in the .tour source and
+// the cooked scene's shape-placement sidecar, rather than in the geometry
+// blob. Position is scene-local; prefab frames compose at instantiation.
+inline constexpr const char* kShapePlacementsPakPath = "#shapeplacements";
+
+struct ShapePlacement {
+    std::string name;
+    std::string source; // VFS-addressable .shape path
+    glm::vec3 position{0.0f};
+    glm::vec3 color{1.0f};
+    bool enabled = true;
+};
+
 struct Doc {
 	int version = kTourVersion;
 	std::string source;      // source glTF path (DEPRECATED: geometry may
@@ -584,6 +597,7 @@ struct Doc {
 	                         // then binds references + replays commands)
 	std::string fingerprint; // size+mtime of source at save (warn on mismatch)
 	std::vector<Command> commands;
+	std::vector<ShapePlacement> shapePlacements; // scene-owned spline/point placements
 	std::vector<OverrideRule> overrides; // wide regex rules (ordered, later wins)
 	// Scene references (ordered; the OWNING scene's level-1 list —
 	// deeper nesting comes from each referenced source's own tour).
@@ -648,6 +662,10 @@ bool LoadTour(const std::string& path, Doc& doc, std::string& err,
 	std::vector<std::string>* warnings = nullptr);
 // Parse from an in-memory text (the file loader reads then calls this;
 // also lets VFS-based consumers cook referenced-scene tours).
+// Emits only the shapeInstance commands, for the scene's cooked placement
+// sidecar. Reuses the same strict parser as .tour source authoring.
+std::string SerializeShapePlacements(const Doc& doc);
+
 bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 	std::vector<std::string>* warnings = nullptr);
 

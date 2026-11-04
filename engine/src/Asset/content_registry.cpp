@@ -58,6 +58,9 @@ bool CatalogKindToPakKind(uint8_t kind, smvk::PakAssetKind& out) {
 	case smvk::kCatalogKindNavMesh:
 		out = smvk::PakAssetKind::NavMesh;
 		return true;
+	case smvk::kCatalogKindShape:
+		out = smvk::PakAssetKind::Shape;
+		return true;
 	case smvk::kCatalogKindSpriteSet:
 		out = smvk::PakAssetKind::SpriteSet;
 		return true;
@@ -461,7 +464,8 @@ std::optional<std::vector<uint8_t>> ContentRegistry::ReadPath(
 						smvk::PakAssetKind::Shader,
 						smvk::PakAssetKind::AudioGraph,
 						smvk::PakAssetKind::StateMachine,
-						smvk::PakAssetKind::NavMesh }) {
+						smvk::PakAssetKind::NavMesh,
+						smvk::PakAssetKind::Shape }) {
 				if (!ProviderServes(p, norm, kind))
 					continue;
 				return ReadThrough(p, norm, &kind, err);
@@ -609,7 +613,7 @@ std::vector<std::string> ContentRegistry::ListPathsUnder(
 				{ PakAssetKind::Texture, PakAssetKind::Sound,
 					PakAssetKind::Shader,
 					PakAssetKind::AudioGraph, PakAssetKind::StateMachine,
-					PakAssetKind::NavMesh }) {
+					PakAssetKind::NavMesh, PakAssetKind::Shape }) {
 			for (const PakTocEntry* e : reader.BlobsOfKind(kind)) {
 				const std::string& p = e->path;
 				if (p.size() <= prefixSlash.size()
@@ -761,7 +765,8 @@ std::optional<std::vector<uint8_t>> ContentRegistry::ReadThrough(
 					smvk::PakAssetKind::Shader,
 					smvk::PakAssetKind::AudioGraph,
 						smvk::PakAssetKind::StateMachine,
-						smvk::PakAssetKind::NavMesh }) {
+						smvk::PakAssetKind::NavMesh,
+						smvk::PakAssetKind::Shape }) {
 			entry = pager->Reader().Find(probe, norm);
 			if (entry) {
 				found = probe;

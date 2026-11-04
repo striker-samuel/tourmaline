@@ -85,6 +85,7 @@
 #include <Engine/Asset/audiograph.h>
 #include <Engine/Asset/spriteset.h>
 #include <Engine/Asset/state_machine.h>
+#include <Engine/Asset/shape_asset.h>
 #include <Engine/Asset/navmesh.h> // ParseAudioGraphText (the --content audiograph gate)
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
@@ -2835,6 +2836,63 @@ int Run(const PakArgs& c) {
 		tool::err() << "Serialize failed: " << err << std::endl;
 		return 1;
 	}
+	// Cook scene-owned placements as a single non-VFS blob. The authored
+	// .tour commands remain the canonical serialization, while this
+	// lightweight sidecar lets runtime scene loads acquire shapes by
+	// content path and release them on scene unload. Only scene paks
+	// own this record (asset-only paks have no .tour definition).
+	if (haveTour && !tour.shapePlacements.empty()) {
+		// A placement must resolve to actual packed source content.
+		// The recipe owns it here or through a declared dependency;
+		// never ship a dangling logical path that fails at load.
+		for (const auto& placement : tour.shapePlacements) {
+			if (!placement.enabled) continue;
+			const bool local = std::find(args.contentSet.begin(),
+				args.contentSet.end(), placement.source) != args.contentSet.end();
+			const bool shared = std::find(args.excludeVfsPaths.begin(),
+				args.excludeVfsPaths.end(), placement.source) != args.excludeVfsPaths.end();
+			if (!local && !shared) {
+				tool::err() << "shapeInstance '" << placement.name
+					<< "' references an unclaimed .shape asset: "
+					<< placement.source << " (include in recipe or declared dependency)"
+					<< std::endl;
+				return 1;
+			}
+			auto shapeBytes = vfs.TryRead(placement.source);
+			tour::asset::ShapeAsset parsedShape;
+			std::string shapeErr;
+			if (!shapeBytes || !tour::asset::ParseShapeAsset(
+					std::string(shapeBytes->begin(), shapeBytes->end()),
+					parsedShape, shapeErr)) {
+				tool::err() << "shapeInstance '" << placement.name
+					<< "' failed to resolve .shape: " << placement.source
+					<< " (" << shapeErr << ")" << std::endl;
+				return 1;
+			}
+			if (parsedShape.kind != tour::asset::ShapeKind::Spline
+					&& parsedShape.kind != tour::asset::ShapeKind::PointCloud) {
+				tool::err() << "shapeInstance '" << placement.name
+					<< "' requires spline or point_cloud .shape "
+					<< "(triangle primitives use OBJ/mesh): "
+					<< placement.source << std::endl;
+				return 1;
+			}
+		}
+		if (sceneNames.size() != 1) {
+			tool::err() << "Shape placements require exactly one cooked"
+				" scene per pak (multi-scene placement ownership needs"
+				" scene-keyed sidecars)" << std::endl;
+			return 1;
+		}
+		const std::string source =
+			smvk::tour::SerializeShapePlacements(tour);
+		if (!writer.AddBlob(smvk::PakAssetKind::ShapePlacements,
+				smvk::tour::kShapePlacementsPakPath,
+				std::vector<uint8_t>(source.begin(), source.end()))) {
+			tool::err() << "Shape placement AddBlob failed" << std::endl;
+			return 1;
+		}
+	}
 	if (!args.excludeVfsPaths.empty())
 		tool::out() << "Cross-pak texture excludes: "
 			<< args.excludeVfsPaths.size() << " path(s) not embedded"
@@ -2983,6 +3041,25 @@ int Run(const PakArgs& c) {
 			}
 			tool::out() << "Embedded content-set shader " << vfsPath
 				<< " (" << spvBytes << " B spv)\n";
+			continue;
+		}
+		if (ext == ".shape") {
+			// First-class .shape content: validate source before storing
+			// verbatim, so corrupt assets never reach packaged games.
+			tour::asset::ShapeAsset shape;
+			std::string reason;
+			if (!tour::asset::ParseShapeAsset(
+					std::string(bytes->begin(), bytes->end()), shape, reason)) {
+				tool::err() << "Content-set shape invalid: " << reason
+					<< " (" << vfsPath << ")" << std::endl;
+				return 1;
+			}
+			if (!writer.AddBlob(smvk::PakAssetKind::Shape,
+					vfsPath, std::move(*bytes))) {
+				tool::err() << "Content-set shape AddBlob failed: "
+					<< vfsPath << std::endl;
+				return 1;
+			}
 			continue;
 		}
 		if (ext == ".statemachine" || ext == ".navmesh") {

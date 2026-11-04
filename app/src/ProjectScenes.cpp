@@ -18,6 +18,8 @@
 #include <Engine/Asset/asset_registry.h> // NormalizeAssetUri
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Asset/tour.h>
+#include <glm/gtc/matrix_transform.hpp>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Vfs/vfs.h>
@@ -309,6 +311,9 @@ bool ProjectScenes::SetPrefabTransform(SceneHandle prefab, tour::World& world,
 	}
 	scene.localTransform[root] = frame * instance->prefabSourceRoot;
 	instance->prefabFrame = frame;
+	if (m_shapes)
+		for (const auto& shape : instance->shapes)
+			m_shapes->SetTransform(shape.handle, frame * shape.localTransform);
 	tour::scene::MarkAllRootsChanged(scene);
 	tour::scene::recalculateGlobalTransforms(scene);
 	world.ResolveAndFixup_clusters();
@@ -345,6 +350,32 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 		target->pak, perr);
 	if (!backend) {
 		err = perr;
+		return {};
+	}
+	// Load authored placements from the scene pak's non-VFS sidecar.
+	// A malformed record fails the scene load before allocating a handle.
+	std::vector<tour::asset::ShapePlacement> placements;
+	if (const auto* entry = backend->Reader().Find(
+			smvk::PakAssetKind::ShapePlacements,
+			tour::asset::kShapePlacementsPakPath)) {
+		try {
+			const auto payload = backend->Reader().Payload(*entry);
+			tour::asset::Doc placementDoc;
+			if (!tour::asset::LoadTourFromString(
+					std::string(reinterpret_cast<const char*>(payload.data()),
+						payload.size()), placementDoc, err)) {
+				err = "cooked shape placements invalid: " + err;
+				return {};
+			}
+			placements = std::move(placementDoc.shapePlacements);
+		} catch (const std::exception& e) {
+			err = std::string("cooked shape placement read failed: ") + e.what();
+			return {};
+		}
+	}
+	if (!placements.empty() && !m_shapes) {
+		err = "scene contains procedural shape placements but no ShapeScene"
+			" registry is attached (call SetShapeScene before load)";
 		return {};
 	}
 	// The cross-pak texture resolver (the same hook LoadProjectWorld
@@ -439,6 +470,40 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 		tour::scene::MarkAllRootsChanged(source);
 		tour::scene::recalculateGlobalTransforms(source);
 	}
+	// Scene-owned shape instances are loaded only after the cluster has
+	// succeeded. Failures undo every partial instance and the cluster,
+	// preserving the same all-or-nothing scene-load contract.
+	if (m_shapes) {
+		for (const auto& placement : placements) {
+			if (!placement.enabled) continue;
+			std::string shapeErr;
+			auto bytes = m_runtime.ReadAssetByPath(
+				smvk::kCatalogKindShape, placement.source, shapeErr);
+			if (!bytes || bytes->empty()) {
+				err = "shape '" + placement.name + "' unresolved: "
+					+ placement.source + ": " + shapeErr;
+			} else {
+				const glm::mat4 local = glm::translate(glm::mat4(1.0f),
+					placement.position);
+				const glm::mat4 worldFrame =
+					(prefabFrame ? *prefabFrame : glm::mat4(1.0f)) * local;
+				const std::string text(bytes->begin(), bytes->end());
+				auto shapeHandle = m_shapes->LoadText(
+					text, worldFrame, placement.color, shapeErr);
+				if (shapeHandle) {
+					inst->shapes.push_back({shapeHandle, local});
+					continue;
+				}
+				err = "shape '" + placement.name + "' failed: " + shapeErr;
+			}
+			for (const auto& attached : inst->shapes)
+				m_shapes->Remove(attached.handle);
+			inst->shapes.clear();
+			world.UnloadCluster(*cluster);
+			FreeHandle(handle);
+			return {};
+		}
+	}
 	// The shared post-load tail: anim attach (through the SESSION —
 	// the registry's provider union; the overlay is no longer a
 	// content source on any runtime path), cooked static flags, the
@@ -464,6 +529,12 @@ bool ProjectScenes::RemoveScene(SceneHandle scene, tour::World& world,
 			+ " (already removed?)";
 		return false;
 	}
+	// Retained shape handles belong to this scene instance, not to the
+	// whole renderer. Release before the backing cluster disappears.
+	if (m_shapes)
+		for (const auto& shape : inst->shapes)
+			m_shapes->Remove(shape.handle);
+	inst->shapes.clear();
 	// The unload: the world erases the cluster this load created and
 	// rebuilds the merged scene over the survivors — the scene's
 	// nodes/rows vanish from the world exactly as they appeared.

@@ -31,6 +31,7 @@
 #include <Engine/Asset/spriteset.h>
 #include <Engine/Asset/state_machine.h>
 #include <Engine/Asset/navmesh.h>
+#include <Engine/Asset/shape_asset.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/pak_pager.h>
 #include <Engine/Asset/tour.h>
@@ -611,6 +612,24 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 				}
 				if (!found) { err = "spriteset " + asset.path + " requires texture in its pak or a declared dependency: " + sheet.texture; return false; }
 			}
+			else if (asset.kind == PlanAssetKind::Shape) {
+				if (!ensureAsset(asset.path, "shape", pak.id, {}, out.shapes))
+					return false;
+				std::string text;
+				bool exists = false;
+				if (!ReadTextFile(
+						(fs::path(project.root) / asset.path).generic_string(),
+						exists, text) || !exists) {
+					err = "shape source read failed: " + asset.path;
+					return false;
+				}
+				::tour::asset::ShapeAsset shape;
+				std::string why;
+				if (!::tour::asset::ParseShapeAsset(text, shape, why)) {
+					err = "shape " + asset.path + ": " + why;
+					return false;
+				}
+			}
 			else if (asset.kind == PlanAssetKind::StateMachine
 					|| asset.kind == PlanAssetKind::NavMesh) {
 				const bool isState = asset.kind == PlanAssetKind::StateMachine;
@@ -744,6 +763,7 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 	std::sort(out.spritesets.begin(), out.spritesets.end(), byId);
 	std::sort(out.statemachines.begin(), out.statemachines.end(), byId);
 	std::sort(out.navmeshes.begin(), out.navmeshes.end(), byId);
+	std::sort(out.shapes.begin(), out.shapes.end(), byId);
 	std::sort(out.audiographCues.begin(), out.audiographCues.end(),
 		[](const ProjectCatalog::AudioGraphCueTable& a,
 			const ProjectCatalog::AudioGraphCueTable& b) {
@@ -782,6 +802,7 @@ uint64_t CatalogFingerprintOf(const ProjectCatalog& c) {
 	push(c.spritesets, smvk::kCatalogKindSpriteSet);
 	push(c.statemachines, smvk::kCatalogKindStateMachine);
 	push(c.navmeshes, smvk::kCatalogKindNavMesh);
+	push(c.shapes, smvk::kCatalogKindShape);
 	return smvk::ComputeCatalogFingerprint(ids.data(), kinds.data(),
 		paths.data(), ids.size());
 }
@@ -841,6 +862,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "struct SpriteSetKey { Id id = 0; constexpr operator Id() const { return id; } };\n"
 		<< "struct StateMachineKey { Id id = 0; constexpr operator Id() const { return id; } };\n"
 		<< "struct NavMeshKey { Id id = 0; constexpr operator Id() const { return id; } };\n"
+		<< "struct ShapeKey { Id id = 0; constexpr operator Id() const { return id; } };\n"
 		<< "struct AudioGraphKey { Id id = 0; constexpr operator Id()"
 		<< " const { return id; } };\n"
 		<< "// ONE CUE of an authored audio graph: the (graph id, cue\n"
@@ -908,6 +930,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitNamespace("spritesets", c.spritesets, "SpriteSetKey");
 	emitNamespace("statemachines", c.statemachines, "StateMachineKey");
 	emitNamespace("navmeshes", c.navmeshes, "NavMeshKey");
+	emitNamespace("shapes", c.shapes, "ShapeKey");
 
 	// ---- THE PER-CUE CONSTANTS (project::audiocues) --------------------
 	// Which CUE of WHICH authored graph: one constant per (graph,
@@ -1085,7 +1108,8 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		{ "AudioGraph", "= 7," },
 		{ "SpriteSet", "= 8," },
 		{ "StateMachine", "= 9," },
-		{ "NavMesh", "= 10," }
+		{ "NavMesh", "= 10," },
+		{ "Shape", "= 11," }
 	});
 	os << "};\n\n"
 		<< "// The FLAT TYPED CATALOG: plain compile-time POD records -\n"
@@ -1125,6 +1149,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		addRows(c.spritesets, "spritesets", "SpriteSet");
 		addRows(c.statemachines, "statemachines", "StateMachine");
 		addRows(c.navmeshes, "navmeshes", "NavMesh");
+		addRows(c.shapes, "shapes", "Shape");
 		EmitAlignedRows(os, rows);
 	}
 	os << "};\n\n"
@@ -1149,6 +1174,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitSymbols(c.spritesets);
 	emitSymbols(c.statemachines);
 	emitSymbols(c.navmeshes);
+	emitSymbols(c.shapes);
 	os << "};\n\n"
 		<< "// The catalog identity fingerprint: FNV-1a64 over the rows'\n"
 		<< "// stable identity in emission order (appmanifest.h's\n"
@@ -1220,6 +1246,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 			if (kind == "spriteset") return "SpriteSetKey";
 			if (kind == "statemachine") return "StateMachineKey";
 			if (kind == "navmesh") return "NavMeshKey";
+			if (kind == "shape") return "ShapeKey";
 			return "Id"; // an unknown kind degrades to the raw id
 		};
 		os << "// RETIRED assets (tombstones): the historical identities,\n"
@@ -1341,6 +1368,11 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "struct project_pipeline::query::AssetTraits<project::NavMeshKey> {\n"
 		<< "    static constexpr bool Matches(project::AssetKind k)\n"
 		<< "        { return k == project::AssetKind::NavMesh; }\n"
+		<< "};\n"
+		<< "template<>\n"
+		<< "struct project_pipeline::query::AssetTraits<project::ShapeKey> {\n"
+		<< "    static constexpr bool Matches(project::AssetKind k)\n"
+		<< "        { return k == project::AssetKind::Shape; }\n"
 		<< "};\n\n";
 
 	// The shader interface supplement is optional: projects that compile
@@ -1438,6 +1470,7 @@ std::string ComputeCatalogContentHash(const ProjectCatalog& c) {
 	addBucket("spriteset", c.spritesets);
 	addBucket("statemachine", c.statemachines);
 	addBucket("navmesh", c.navmeshes);
+	addBucket("shape", c.shapes);
 	// The node schemas are catalog SEMANTICS ("compile types; cook
 	// values"): a schema edit changes the generated TYPES — a
 	// generation event, never a silent re-emit.
@@ -1768,7 +1801,8 @@ bool CollectAssetFingerprints(const Project& project,
 		&& add(catalog.meshes) && add(catalog.sounds)
 		&& add(catalog.shaders) && add(catalog.audiographs)
 		&& add(catalog.spritesets)
-		&& add(catalog.statemachines) && add(catalog.navmeshes);
+		&& add(catalog.statemachines) && add(catalog.navmeshes)
+		&& add(catalog.shapes);
 }
 
 bool DiscoverPakFingerprints(const std::string& pakDir,

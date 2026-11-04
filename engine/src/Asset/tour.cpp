@@ -15,6 +15,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <random>
 #include <regex>
 #include <set>
@@ -1001,6 +1002,22 @@ std::string Fingerprint(const std::string& path) {
 	return buf;
 }
 
+std::string SerializeShapePlacements(const Doc& doc) {
+    std::ostringstream out;
+    out << std::setprecision(9);
+    for (const ShapePlacement& placement : doc.shapePlacements) {
+        out << "shapeInstance -name " << Quote(placement.name)
+            << " -source " << Quote(placement.source)
+            << " -t " << placement.position.x << ' '
+            << placement.position.y << ' ' << placement.position.z
+            << " -color " << placement.color.x << ' '
+            << placement.color.y << ' ' << placement.color.z
+            << " -enabled " << (placement.enabled ? "on" : "off")
+            << ";\n";
+    }
+    return out.str();
+}
+
 bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 	// Validate before truncating the destination; invalid authored names
 	// are an error, never a request to generate a fallback identity.
@@ -1104,6 +1121,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		for (const auto& [k, v] : doc.fileInfo)
 			f << "fileInfo -k " << Quote(k) << " -v " << Quote(v) << ";\n";
 	}
+	// Procedural source placements belong to the scene; they are not
+	// transient editor settings and must survive .tour save/reload.
+	f << SerializeShapePlacements(doc);
 	// File nodes (Maya file/image declarations): cooked records — the
 	// cooker consumes them for KTX conversion. One line per node.
 	for (const FileNode& fn : doc.fileNodes) {
@@ -1788,6 +1808,88 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				doc.editorSettings.emplace_back(key, val);
 			continue;
 		}
+        if (verb == "shapeInstance") {
+            // The .tour tokeniser preserves semicolons attached to the
+            // final token. The scene writer emits "-enabled on;".
+            if (!toks.empty() && !toks.back().empty()
+                    && toks.back().back() == ';')
+                toks.back().pop_back();
+            ShapePlacement placed;
+            bool hasName = false, hasSource = false;
+            bool hasPosition = false, hasColor = false;
+            bool hasEnabled = false;
+            for (size_t i = 1; i < toks.size();) {
+                const std::string field = toks[i++];
+                auto take = [&](std::string& out) {
+                    if (i >= toks.size()) return false;
+                    out = toks[i++];
+                    return true;
+                };
+                if (field == "-name") {
+                    if (hasName || !take(placed.name)) {
+                        err = "line " + std::to_string(lineNo) + ": invalid shape name";
+                        return false;
+                    }
+                    hasName = true;
+                } else if (field == "-source") {
+                    if (hasSource || !take(placed.source)) {
+                        err = "line " + std::to_string(lineNo) + ": invalid shape source";
+                        return false;
+                    }
+                    hasSource = true;
+                } else if (field == "-t" || field == "-color") {
+                    if ((field == "-t" && hasPosition)
+                        || (field == "-color" && hasColor) || i + 3 > toks.size()) {
+                        err = "line " + std::to_string(lineNo) + ": invalid shape triple";
+                        return false;
+                    }
+                    double xyz[3] = {};
+                    for (double& v : xyz)
+                        if (!ParseDouble(toks[i++], v) || !std::isfinite(v)) {
+                            err = "line " + std::to_string(lineNo) + ": invalid shape coordinate";
+                            return false;
+                        }
+                    const glm::vec3 value(float(xyz[0]),float(xyz[1]),float(xyz[2]));
+                    if (field == "-t") { placed.position = value; hasPosition = true; }
+                    else { placed.color = value; hasColor = true; }
+                } else if (field == "-enabled") {
+                    std::string value;
+                    if (hasEnabled || !take(value)
+                            || !ParseFlagWord(value, placed.enabled)) {
+                        err = "line " + std::to_string(lineNo) + ": invalid shape enabled flag";
+                        return false;
+                    }
+                    hasEnabled = true;
+                } else {
+                    err = "line " + std::to_string(lineNo) + ": unknown shapeInstance field '" + field + "'";
+                    return false;
+                }
+            }
+            const bool safePath = !placed.source.empty()
+                && placed.source.find("..") == std::string::npos
+                && placed.source[0] != '/'
+                && placed.source.find('\\') == std::string::npos
+                && placed.source.size() >= 6
+                && placed.source.substr(placed.source.size() - 6) == ".shape";
+            if (!hasName || !hasSource || !ValidNodeName(placed.name)
+                    || !safePath || doc.shapePlacements.size() >= 4096
+                    || !std::isfinite(placed.position.x)
+                    || !std::isfinite(placed.position.y)
+                    || !std::isfinite(placed.position.z)
+                    || !std::isfinite(placed.color.x)
+                    || !std::isfinite(placed.color.y)
+                    || !std::isfinite(placed.color.z)) {
+                err = "line " + std::to_string(lineNo) + ": invalid shapeInstance name, source or limits";
+                return false;
+            }
+            for (const auto& prev : doc.shapePlacements)
+                if (prev.name == placed.name) {
+                    err = "line " + std::to_string(lineNo) + ": duplicate shapeInstance name";
+                    return false;
+                }
+            doc.shapePlacements.push_back(std::move(placed));
+            continue;
+        }
 		if (verb == "fileInfo") {
 			// fileInfo -k "<key>" -v "<value>"; format constants block.
 			std::string key, val;

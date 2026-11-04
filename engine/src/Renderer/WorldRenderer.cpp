@@ -3537,7 +3537,11 @@ namespace engine {
 		m_selectionLineBuffer = {};
 		m_debugDrawGpuLines.clear();
 		m_debugDrawGpuCapacity.clear();
+		m_debugDrawGpuRevisions.clear();
 		m_debugDrawCpu.Clear();
+		// Retained instances belong to this renderer attachment; do not
+		// leak shape geometry into the next independently loaded world.
+		m_shapeScene.Clear();
 		m_selectedNode = UINT32_MAX;
 		m_viewportResources.forwardPlus.Destroy(*m_rendergraph);
 		m_viewportResources.exposure.Destroy(*m_rendergraph);
@@ -13697,41 +13701,67 @@ namespace engine {
 		}
 
         // Universal game/debug draw: pull CPU-only world-space wire lines
-        // after gameplay update. Nothing is retained in the scene, physics,
-        // or a persistent GPU collider registry. A separate vertex buffer
-        // per flight slot avoids overwriting in-flight GPU reads.
+        // after gameplay update. Immediate debug producers and renderer-
+        // retained ShapeScene instances share the native point/line pass.
+        // A buffer per flight slot avoids overwriting in-flight GPU reads.
         struct DebugDrawRange {
             uint32_t first, count;
             glm::vec3 color;
             tour::DebugDepthMode depth;
+            smvk::PrimitiveTopology topology;
         };
         std::vector<DebugDrawRange> debugDrawRanges;
         uint32_t debugDrawFlight = 0;
-        if (m_debugDrawEnabled && m_debugDrawSource
+        const bool transientDebugDraw = m_debugDrawEnabled &&
+            static_cast<bool>(m_debugDrawSource);
+        if ((transientDebugDraw || m_shapeScene.Size() != 0)
             && m_gfxRenderer.LineProgram().shaderCount == 2) {
             m_debugDrawCpu.Clear();
-            m_debugDrawSource(m_debugDrawCpu);
+            if (transientDebugDraw)
+                m_debugDrawSource(m_debugDrawCpu);
+            // Retained shape instances are visible even if transient game
+            // debug drawing is disabled. Tessellation is cached at Add().
+            m_shapeScene.AppendDraws(m_debugDrawCpu);
             if (!m_debugDrawCpu.Empty()) {
                 std::vector<smvk::DebugLineVertex> vertices;
-                vertices.reserve(m_debugDrawCpu.Size() * 2);
+                vertices.reserve(m_debugDrawCpu.Size() * 2 +
+                    m_debugDrawCpu.PointCount());
                 for (const tour::DebugLine& line : m_debugDrawCpu.Lines()) {
                     // The existing shader takes a flat push color; coalesce
                     // adjacent equal-color/depth lines into a single draw.
                     if (debugDrawRanges.empty()
                         || debugDrawRanges.back().color != line.color
-                        || debugDrawRanges.back().depth != line.depth) {
+                        || debugDrawRanges.back().depth != line.depth
+                        || debugDrawRanges.back().topology != smvk::PrimitiveTopology::LineList) {
                         debugDrawRanges.push_back({
-                            uint32_t(vertices.size()), 0, line.color, line.depth
+                            uint32_t(vertices.size()), 0, line.color, line.depth,
+                            smvk::PrimitiveTopology::LineList
                         });
                     }
                     vertices.push_back({ line.a });
                     vertices.push_back({ line.b });
                     debugDrawRanges.back().count += 2;
                 }
+                // Point-list primitives use the same position-only vertex
+                // layout and shader; pipeline topology is part of its key.
+                for (const tour::DebugPoint& point : m_debugDrawCpu.Points()) {
+                    if (debugDrawRanges.empty()
+                        || debugDrawRanges.back().color != point.color
+                        || debugDrawRanges.back().depth != point.depth
+                        || debugDrawRanges.back().topology != smvk::PrimitiveTopology::PointList) {
+                        debugDrawRanges.push_back({
+                            uint32_t(vertices.size()), 0, point.color, point.depth,
+                            smvk::PrimitiveTopology::PointList
+                        });
+                    }
+                    vertices.push_back({point.position});
+                    debugDrawRanges.back().count += 1;
+                }
                 const uint32_t flights = std::max(1u, FrameFlights(fb));
                 if (m_debugDrawGpuLines.size() != flights) {
                     m_debugDrawGpuLines.resize(flights);
                     m_debugDrawGpuCapacity.resize(flights, 0);
+                    m_debugDrawGpuRevisions.assign(flights, 0);
                 }
                 debugDrawFlight = fb.frameIndex % flights;
                 const uint32_t count = uint32_t(vertices.size());
@@ -13744,13 +13774,24 @@ namespace engine {
                             smvk::BufferType_Vertex, "game debug draw lines");
                     m_debugDrawGpuCapacity[debugDrawFlight] =
                         m_debugDrawGpuLines[debugDrawFlight].empty() ? 0 : capacity;
+                    m_debugDrawGpuRevisions[debugDrawFlight] = 0;
                 }
                 if (!m_debugDrawGpuLines[debugDrawFlight].empty()) {
-                    m_context->UploadDataToBuffer(
-                        m_debugDrawGpuLines[debugDrawFlight],
-                        vertices.data(), vertices.size() * sizeof(vertices[0]),
-                        smvk::PipelineStageBit_Vertex,
-                        smvk::AccessFlags::VertexAttributeRead);
+                    // Retained-only geometry is static until its instance
+                    // registry revision changes. Cache uploads per flight,
+                    // never share a mutable GPU buffer with an in-flight
+                    // frame. Transient debug streams always re-upload.
+                    const uint64_t revision = m_shapeScene.Revision();
+                    if (transientDebugDraw ||
+                        m_debugDrawGpuRevisions[debugDrawFlight] != revision) {
+                        m_context->UploadDataToBuffer(
+                            m_debugDrawGpuLines[debugDrawFlight],
+                            vertices.data(), vertices.size() * sizeof(vertices[0]),
+                            smvk::PipelineStageBit_Vertex,
+                            smvk::AccessFlags::VertexAttributeRead);
+                        m_debugDrawGpuRevisions[debugDrawFlight] =
+                            transientDebugDraw ? 0 : revision;
+                    }
                 } else {
                     debugDrawRanges.clear();
                 }
@@ -14999,7 +15040,7 @@ namespace engine {
                         noStencil, smvk::BlendSettings::Opaque(),
                         msaaSettings,
                         smvk::RasterSettings{ .cullMode = smvk::CullMode::None },
-                        smvk::PrimitiveTopology::LineList);
+                        r.topology);
                     LineDebugPush lp{};
                     std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
                     lp.color[0] = r.color.x * gain;

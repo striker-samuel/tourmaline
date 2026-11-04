@@ -13,6 +13,7 @@
 #include "PakPreload.h"
 #include "PakWorldLoader.h"
 #include "ProjectRuntime.h"
+#include "ShapeSceneLoader.h"
 #include "DeployCheck.h"
 
 #include <Engine/Asset/appmanifest.h>
@@ -544,6 +545,25 @@ namespace app {
 				// from the preloaded readers. --pak (single): the legacy
 				// single-pak, index-based path.
 				tour::mem::LinearPtr<tour::World> world;
+				std::string packedShapePlacements;
+				auto captureShapePlacements = [&](const PakPreload& preload) {
+					if (!preload.backend) return true; // loader reports this failure
+					const auto* e = preload.backend->Reader().Find(
+						smvk::PakAssetKind::ShapePlacements,
+						tour::asset::kShapePlacementsPakPath);
+					if (!e) return true; // legacy scene without shape instances
+					try {
+						const auto payload = preload.backend->Reader().Payload(*e);
+						packedShapePlacements.assign(
+							reinterpret_cast<const char*>(payload.data()),
+							payload.size());
+						return true;
+					} catch (const std::exception& ex) {
+						std::cerr << "[Scene] shape placement sidecar corrupt: "
+							<< ex.what() << "\n";
+						return false;
+					}
+				};
 				if (projectFutures) {
 					std::vector<PakPreload> preloads;
 					preloads.reserve(projectFutures->size());
@@ -598,18 +618,36 @@ namespace app {
 							return nullptr;
 						}
 					}
+					if (entryIdx >= preloads.size()
+							|| !captureShapePlacements(preloads[entryIdx]))
+						return nullptr;
 					world = LoadProjectWorld(std::move(preloads),
 						entryIdx, entryName, ctx, contentVfs,
 						rendererRaw->GetTextureStreamer(), session.get());
 				}
 				else {
-					world = LoadPakWorld(preloadFuture->get(),
+					PakPreload entryPreload = preloadFuture->get();
+					if (!captureShapePlacements(entryPreload))
+						return nullptr;
+					world = LoadPakWorld(std::move(entryPreload),
 						sceneIndex,
 						ctx,
 						contentVfs,
 						rendererRaw->GetTextureStreamer(),
 						*session
 						);
+				}
+				// Load the packaged entry scene's retained shapes. Additional
+				// scenes use ProjectScenes' per-SceneHandle ownership lane.
+				if (world && !packedShapePlacements.empty()) {
+					std::string shapeError;
+					if (!LoadPackedShapePlacements(packedShapePlacements,
+							*session, rendererRaw->Shapes(), shapeError)) {
+						std::cerr << "[Scene] entry shapes failed: "
+							<< shapeError << "\n";
+						rendererRaw->Shapes().Clear();
+						return nullptr;
+					}
 				}
 				*worldHandle = world.get();
 				return world;
