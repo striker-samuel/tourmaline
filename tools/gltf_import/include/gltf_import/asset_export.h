@@ -47,6 +47,7 @@
 // as a FOLDER of the derived assets.
 
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -135,6 +136,19 @@ struct MaterialAsset {
 	int channelSelectors = -1; // material output channel metadata
 	TexRef emissiveTex;
 };
+
+// Deterministic image-channel composer shared by project import and cook.
+// A source with an empty path provides its constant byte (0..255).
+// All nonconstant images must be equally sized; no implicit UV resampling.
+// Output is a linear or sRGB PNG as chosen by the material texture slot.
+struct PackedImageChannel {
+    std::filesystem::path path;
+    int component = 0;       // 0=R, 1=G, 2=B, 3=A
+    uint8_t constant = 255;  // used when path is empty
+};
+bool ComposeMaterialImage(const std::filesystem::path& output,
+    const std::array<PackedImageChannel, 4>& channels,
+    std::string& err);
 
 // ---- .texture (the texture asset) -----------------------------------------
 // A user-authored TEXTURE ASSET: an import-settings record + a source
