@@ -2287,11 +2287,11 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// drag past a few pixels -> box; release selects all nodes whose
 		// projected AABB intersects. Shift adds to the current selection.
 		// Box select stays Mesh-mode (face/vertex use click picking).
-		else if (m_world && !m_gizmoDragging && !altNav &&
+		else if (m_world && !m_gizmoDragging && !m_transposeDrag && !altNav &&
 			!inInset && inVp &&
 			m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT) && !uiEats) {
 			if (m_selMode == SelMode::Mesh) {
-				if (!GizmoHandleInput()) {
+				if (!(m_transposeEnabled ? TransposeHandleInput() : GizmoHandleInput())) {
 					m_vpBoxDragging = true;
 					m_vpBoxAdditive = shiftHeld;
 					m_vpBoxVp = m_activeVp;
@@ -2363,9 +2363,10 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				m_vpBoxDragging = false;
 			}
 		}
-		else if (!m_volumeBrushArmed && !surfaceBrush && (m_gizmoDragging || (inVp && !altNav &&
+		else if (!m_volumeBrushArmed && !surfaceBrush && (m_gizmoDragging || m_transposeDrag || (inVp && !altNav &&
 			m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT) && !uiEats))) {
-			GizmoHandleInput();
+			if (m_transposeEnabled) TransposeHandleInput();
+			else GizmoHandleInput();
 		}
 
 		// Any operation above that changes local transforms must also
