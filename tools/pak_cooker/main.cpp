@@ -2842,6 +2842,12 @@ int Run(const PakArgs& c) {
 	// content path and release them on scene unload. Only scene paks
 	// own this record (asset-only paks have no .tour definition).
 	if (haveTour && !tour.shapePlacements.empty()) {
+		if (sceneNames.size() != 1) {
+			tool::err() << "Shape placements require exactly one cooked"
+				" scene per pak (multi-scene placement ownership needs"
+				" scene-keyed sidecars)" << std::endl;
+			return 1;
+		}
 		const std::string source =
 			smvk::tour::SerializeShapePlacements(tour);
 		if (!writer.AddBlob(smvk::PakAssetKind::ShapePlacements,
