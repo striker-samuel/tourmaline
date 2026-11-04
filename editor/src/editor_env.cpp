@@ -530,12 +530,11 @@ namespace editor {
 				"GPU pre-mixed probe blend (one cubemap "
 					"fetch per pixel); off = the per-pixel probe walk");
 			ImGui::SeparatorText("Shadows");
-			// EVSM is a frequently toggled preview setting. Avoid a
-			// hover tooltip that looks like an extra floating window.
-			attr::Check("EVSM moment shadows", &q.evsmEnabled, nullptr);
-			attr::Slider("EVSM softness", &q.evsmSoftness, 0.0f, 4.0f, "%.2f",
-				"Scales shadow softness relative to the light's "
-				"physical size (0 = hard).");
+			// The editor's inline WorldRenderer cannot safely use the EVSM
+			// moment-atlas path. Keep PCF shadows in editor previews; the
+			// standalone runtime still exposes EVSM independently.
+			q.evsmEnabled = false;
+			ImGui::TextDisabled("PCF shadows (EVSM disabled in editor preview)");
 			{
 				// The renderer's whole SESSION-quality surface (the App's
 				// Quality tab parity): display, cascades, local-light
@@ -647,20 +646,6 @@ namespace editor {
 				attr::Slider("Point shadow max distance",
 					&q.pointShadowMaxDistance, 5.0f, 120.0f, "%.0f",
 					"Hard cutoff on camera->light distance (m)");
-				ImGui::SeparatorText("EVSM pipeline");
-				{
-					int pipe = (q.evsmPipeline
-							== smvk::EvsmPipelineMode::SameFrame) ? 1 : 0;
-					if (attr::Enum("Pipeline", &pipe,
-							"One-frame lag\0Same-frame\0",
-							"The moment atlas' pipelining (lag = the async "
-							"blur wins, same-frame = no lag)"))
-						q.evsmPipeline = (pipe == 1)
-							? smvk::EvsmPipelineMode::SameFrame
-							: smvk::EvsmPipelineMode::OneFrameLag;
-				}
-				attr::Slider("Local light size", &q.evsmSpotLightSize, 0.0f,
-					2.0f, "%.2f", "The spot PCSS light diameter (m; 0 = hard)");
 				ImGui::SeparatorText("Sun contact shadows");
 				attr::Check("Contact shadows", &q.contactShadowsEnabled,
 					"The pre-Main depth raymarch toward the "

@@ -336,6 +336,35 @@ void EditorApp::FinalizePending() {
 		// A normal floating project configuration window must not be
 		// nested in ImGui's main menu-bar window stack.
 		DrawProjectExportWindow();
+		// Options is a large standalone settings window, not a dock tab.
+		// Render settings retain their existing live-update/autosave behavior.
+		if (m_showRenderSettingsPanel) {
+			ImGui::SetNextWindowSize(ImVec2(900.0f, 700.0f),
+				ImGuiCond_FirstUseEver);
+			if (ImGui::Begin("Options", &m_showRenderSettingsPanel,
+				ImGuiWindowFlags_NoDocking)) {
+				if (ImGui::BeginTabBar("OptionsTabs")) {
+					if (ImGui::BeginTabItem("Rendering")) {
+						ImGui::BeginChild("RenderingOptions", ImVec2(0, 0));
+						DrawRenderSettingsPanel();
+						ImGui::EndChild();
+						ImGui::EndTabItem();
+					}
+					if (ImGui::BeginTabItem("Workspace")) {
+						ImGui::SeparatorText("Editor workspace");
+						ImGui::Checkbox("Ground grid", &m_showGrid);
+						ImGui::Checkbox("Selection wire overlay", &m_wireOverlay);
+						ImGui::Checkbox("Light gizmos", &m_showLightGizmos);
+						ImGui::Checkbox("Camera frustums", &m_showCameraGizmos);
+						ImGui::Checkbox("GI volume boxes", &m_showGiVolumeGizmos);
+						ImGui::Checkbox("Cubemap capture markers", &m_showCubemapGizmos);
+						ImGui::EndTabItem();
+					}
+					ImGui::EndTabBar();
+				}
+			}
+			ImGui::End();
+		}
 		// Tool topbar: tabbed toolbar directly under the menu bar (hidden
 		// with the panels via m_uiMode). Everything below keys off the
 		// combined menu+toolbar offset (m_menuH), so panels, splitters and
@@ -410,7 +439,6 @@ void EditorApp::FinalizePending() {
 				ImGui::DockBuilderDockWindow("Console", left);
 				ImGui::DockBuilderDockWindow("Overrides", left);
 				ImGui::DockBuilderDockWindow("Inspector", right);
-				ImGui::DockBuilderDockWindow("Render Settings", right);
 				ImGui::DockBuilderDockWindow("Material", right);
 				ImGui::DockBuilderFinish(dockId);
 				m_dockResetRequested = false;
@@ -514,11 +542,6 @@ void EditorApp::FinalizePending() {
 			if (m_showInspectorPanel) {
 				if (ImGui::Begin("Inspector", &m_showInspectorPanel))
 					DrawInspector();
-				ImGui::End();
-			}
-			if (m_showRenderSettingsPanel) {
-				if (ImGui::Begin("Render Settings", &m_showRenderSettingsPanel))
-					DrawRenderSettingsPanel();
 				ImGui::End();
 			}
 			if (m_showMaterialPanel) {
@@ -1101,7 +1124,6 @@ void EditorApp::FinalizePending() {
 				ImGui::MenuItem("Console", nullptr, &m_showConsolePanel);
 				ImGui::MenuItem("Overrides", nullptr, &m_showOverridesPanel);
 				ImGui::MenuItem("Inspector", nullptr, &m_showInspectorPanel);
-				ImGui::MenuItem("Render Settings", nullptr, &m_showRenderSettingsPanel);
 				ImGui::MenuItem("Material", nullptr, &m_showMaterialPanel);
 				ImGui::EndMenu();
 			}
@@ -1115,11 +1137,10 @@ void EditorApp::FinalizePending() {
 				m_showConsolePanel = true;
 				m_showOverridesPanel = true;
 				m_showInspectorPanel = true;
-				m_showRenderSettingsPanel = true;
 				m_showMaterialPanel = true;
 			}
 			ImGui::SetItemTooltip("Restore the default Viewport, Outliner, "
-				"Assets, Console, Overrides, Inspector, Render and Material positions.");
+				"Assets, Console, Overrides, Inspector and Material positions.");
 			ImGui::Separator();
 			ImGui::MenuItem("Ground grid", nullptr, &m_showGrid);
 			{
@@ -1273,8 +1294,8 @@ void EditorApp::FinalizePending() {
 
 
 		if (ImGui::BeginMenu("Options")) {
-			ImGui::MenuItem("Render Settings", nullptr,
-				&m_showRenderSettingsPanel);
+			if (ImGui::MenuItem("Open Options...", nullptr, m_showRenderSettingsPanel))
+				m_showRenderSettingsPanel = true;
 			ImGui::EndMenu();
 		}
 
