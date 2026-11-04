@@ -232,6 +232,12 @@ inline constexpr int kSceneRenderFloatCount = 27;
 
 struct Scene {
 
+	// Bulk-loader/serializer backing arrays, not a per-frame mutation API.
+	// Live writers must use SetLocalTransform(NodeHandle) or explicitly
+	// MarkAllRootsChanged + recalculateGlobalTransforms after a bulk rewrite.
+	// A World-level mesh/visibility binding change additionally requires
+	// ResolveAndFixup_clusters (rebuild drawItems + topology revision).
+	// Direct writes to globalTransform bypass the GPU publication journal.
 	std::vector<mat4> localTransform;  // indexed by node
 	std::vector<mat4> globalTransform; // indexed by node
 
