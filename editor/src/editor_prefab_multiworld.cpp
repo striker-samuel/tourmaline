@@ -392,7 +392,7 @@ void EditorApp::SyncPrefabPreview() {
             const std::string expected=ref.name+":"+sourceName;
             if (stableId.empty() && (sourceCounts[sourceName]!=1 ||
                 parentCounts[expected]!=1)) continue; // legacy unique-name compatibility
-            const uint32_t target=prefab_sync::ResolveUnique(
+            uint32_t target=prefab_sync::ResolveUnique(
                 uint32_t(parent.hierarchy.size()), [&](uint32_t p) {
                     if (!IsLiveSlot(parent,p) || p>=parent.localTransform.size()
                         || !DescendantOf(parent,p,placeholder)) return false;
@@ -400,6 +400,23 @@ void EditorApp::SyncPrefabPreview() {
                         ? getNodeName(parent,int(p))==expected
                         : GetNodeUuid(parent,p)==stableId;
                 });
+            // Parent Worlds opened before UUID migration may have the
+            // previous UUID-less generation in memory. Adopt the saved
+            // source identity only for an unambiguous, UUID-less target;
+            // never override a different nonempty identity.
+            if (target==UINT32_MAX && !stableId.empty()
+                && sourceCounts[sourceName]==1 && parentCounts[expected]==1) {
+                target=prefab_sync::ResolveUnique(
+                    uint32_t(parent.hierarchy.size()), [&](uint32_t p) {
+                        return IsLiveSlot(parent,p)
+                            && p<parent.localTransform.size()
+                            && DescendantOf(parent,p,placeholder)
+                            && GetNodeUuid(parent,p).empty()
+                            && getNodeName(parent,int(p))==expected;
+                    });
+                if (target!=UINT32_MAX)
+                    SetNodeUuidRaw(parent,target,stableId);
+            }
             if (target==UINT32_MAX) continue;
             const uint32_t p=target;
             {
@@ -467,6 +484,30 @@ void EditorApp::RevertPrefab() {
 bool EditorApp::SavePrefab() {
     if (!m_prefab.world || m_prefab.path.empty()) return false;
     std::string err;
+    // Upgrade UUID-less legacy nodes only on an EXPLICIT successful Save.
+    // Use the cluster-local -> merged map, never the fragile node-1
+    // assumption: holes and recursive references may move merged IDs.
+    smvk::tour::Doc candidate=m_prefab.document;
+    struct MintedUuid { uint32_t clusterNode, mergedNode; std::string uuid; };
+    std::vector<MintedUuid> minted;
+    if (m_prefab.world->clusters.size()==1 &&
+        m_prefab.world->clusterMergedNodes.size()==1) {
+        const Scene& scene=m_prefab.world->scene;
+        const auto& mapping=m_prefab.world->clusterMergedNodes[0];
+        for (uint32_t local=0;local<mapping.size();++local) {
+            const uint32_t merged=mapping[local];
+            if (merged==UINT32_MAX || merged==0 || !IsLiveSlot(scene,merged)
+                || !GetNodeUuid(scene,merged).empty()) continue;
+            const std::string id=smvk::tour::GenerateUuid();
+            smvk::tour::Command command;
+            command.verb=smvk::tour::Verb::SetUuid;
+            command.node=local;
+            command.uuid=id;
+            command.name=getNodeName(scene,int(merged));
+            candidate.commands.push_back(std::move(command));
+            minted.push_back({local,merged,id});
+        }
+    }
     // Never truncate an authored .tour on an interrupted save.
     // The same-directory staging file makes replacement atomic.
     const fs::path destination(m_prefab.path);
@@ -474,7 +515,7 @@ bool EditorApp::SavePrefab() {
     staging+=std::string(".prefab-save-")+
         std::to_string(std::chrono::steady_clock::now()
             .time_since_epoch().count());
-    if (!smvk::tour::SaveTour(staging.string(),m_prefab.document,err)) {
+    if (!smvk::tour::SaveTour(staging.string(),candidate,err)) {
         std::error_code cleanup;
         fs::remove(staging,cleanup);
         m_prefab.error="Saving prefab: "+err;
@@ -495,6 +536,17 @@ bool EditorApp::SavePrefab() {
             replaceError.message();
         return false;
     }
+    // The file replace succeeded: only now publish the newly authored
+    // identities into both copies of this session's Scene metadata.
+    if (!minted.empty()) {
+        Scene& merged=m_prefab.world->scene;
+        Scene& local=m_prefab.world->clusters[0]->scene;
+        for (const auto& id : minted) {
+            SetNodeUuidRaw(merged,id.mergedNode,id.uuid);
+            SetNodeUuidRaw(local,id.clusterNode,id.uuid);
+        }
+    }
+    m_prefab.document=std::move(candidate);
     m_prefab.saved=m_prefab.document;
     m_prefab.savedLocals=m_prefab.world->scene.localTransform;
     // A successful source save means that preview poses are now the
