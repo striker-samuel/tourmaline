@@ -1012,7 +1012,7 @@ std::string SerializeShapePlacements(const Doc& doc) {
             << " -color " << placement.color.x << ' '
             << placement.color.y << ' ' << placement.color.z
             << " -enabled " << (placement.enabled ? "on" : "off")
-            << ";\\n";
+            << ";\n";
     }
     return out.str();
 }
@@ -1862,7 +1862,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
             const bool safePath = !placed.source.empty()
                 && placed.source.find("..") == std::string::npos
                 && placed.source[0] != '/'
-                && placed.source.find('\\\\') == std::string::npos
+                && placed.source.find('\\') == std::string::npos
                 && placed.source.size() >= 6
                 && placed.source.substr(placed.source.size() - 6) == ".shape";
             if (!hasName || !hasSource || !ValidNodeName(placed.name)
