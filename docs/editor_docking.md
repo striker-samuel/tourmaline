@@ -77,6 +77,13 @@ scene in a detached native window requires a separate scene render target.
    and returning the window to a dock. Close a detached window without
    shutting down the editor. Move the main OS window away from (0,0)
    and verify the dock host/status remain positioned correctly.
+   **Regression check:** keep a live Lit scene in the docked Viewport,
+   move the main native window to a nonzero desktop position (and a
+   second monitor when available), then resize the Viewport splitter.
+   The live scene should remain inside its client rect rather than
+   disappearing, shifting, or clipping at the original desktop origin.
+   Repeat with the Viewport floated inside the main swapchain; do not
+   expect scene rendering in a detached secondary native window.
 10. Lighting > GI volumes > Lattice (pre-bake): run with and without the
    separate lattice preview fix PR; the dockspace must not obstruct the
    editor-drawn probe spheres when its pass is correctly ordered.
