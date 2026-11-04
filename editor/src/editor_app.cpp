@@ -42,58 +42,15 @@
 #include <Engine/core.h>
 
 #include <imgui.h>
+#include <Engine/ImGui/crystal_fusion_style.h>
 #include <SDL3/SDL_filesystem.h> // SDL_GetBasePath: font independent of working dir
 
 namespace editor {
 
-// The editor's charcoal authoring palette: dense, neutral surfaces and a
-// restrained warm accent for the selected tool, tabs and input controls.
-// All top-level surfaces are opaque so panels never show the viewport through.
+// Apply the shared branded palette to the editor's ImGui context.
 void ApplyEditorStyle()
 {
-	ImGuiStyle& s = ImGui::GetStyle();
-	s.WindowRounding    = 3.0f;
-	s.ChildRounding     = 3.0f;
-	s.FrameRounding     = 3.0f;
-	s.PopupRounding     = 3.0f;
-	s.ScrollbarRounding = 4.0f;
-	s.GrabRounding      = 3.0f;
-	s.TabRounding       = 3.0f;
-	s.WindowPadding     = ImVec2(8, 8);
-	s.FramePadding      = ImVec2(7, 4);
-	s.ItemSpacing       = ImVec2(7, 5);
-	s.ItemInnerSpacing  = ImVec2(5, 4);
-	s.ScrollbarSize     = 11.0f;
-	s.GrabMinSize       = 10.0f;
-
-	ImVec4* c = s.Colors;
-	c[ImGuiCol_WindowBg]          = ImVec4(.082f, .088f, .094f, 1);
-	c[ImGuiCol_ChildBg]           = ImVec4(.100f, .106f, .113f, 1);
-	c[ImGuiCol_PopupBg]           = ImVec4(.115f, .121f, .129f, 1);
-	c[ImGuiCol_MenuBarBg]         = ImVec4(.092f, .097f, .102f, 1);
-	c[ImGuiCol_Border]            = ImVec4(.19f, .20f, .21f, 1);
-	c[ImGuiCol_FrameBg]           = ImVec4(.145f, .153f, .163f, 1);
-	c[ImGuiCol_FrameBgHovered]    = ImVec4(.22f, .23f, .24f, 1);
-	c[ImGuiCol_FrameBgActive]     = ImVec4(.29f, .30f, .31f, 1);
-	c[ImGuiCol_TitleBg]           = ImVec4(.085f, .092f, .098f, 1);
-	c[ImGuiCol_TitleBgActive]     = ImVec4(.125f, .132f, .140f, 1);
-	c[ImGuiCol_TitleBgCollapsed]  = ImVec4(.085f, .092f, .098f, 1);
-	c[ImGuiCol_Button]            = ImVec4(.17f, .18f, .19f, 1);
-	c[ImGuiCol_ButtonHovered]     = ImVec4(.27f, .28f, .29f, 1);
-	c[ImGuiCol_ButtonActive]      = ImVec4(.33f, .33f, .32f, 1);
-	c[ImGuiCol_Header]            = ImVec4(.20f, .21f, .22f, 1);
-	c[ImGuiCol_HeaderHovered]     = ImVec4(.28f, .29f, .30f, 1);
-	c[ImGuiCol_HeaderActive]      = ImVec4(.35f, .32f, .27f, 1);
-	c[ImGuiCol_Tab]               = ImVec4(.13f, .14f, .15f, 1);
-	c[ImGuiCol_TabHovered]        = ImVec4(.29f, .27f, .23f, 1);
-	c[ImGuiCol_TabSelected]       = ImVec4(.26f, .23f, .19f, 1);
-	c[ImGuiCol_CheckMark]         = ImVec4(.97f, .61f, .24f, 1);
-	c[ImGuiCol_SliderGrab]        = ImVec4(.83f, .49f, .19f, 1);
-	c[ImGuiCol_SliderGrabActive]  = ImVec4(.98f, .65f, .30f, 1);
-	c[ImGuiCol_Separator]         = ImVec4(.20f, .21f, .22f, 1);
-	c[ImGuiCol_SeparatorHovered]  = ImVec4(.77f, .49f, .25f, 1);
-	c[ImGuiCol_SeparatorActive]   = ImVec4(.95f, .60f, .27f, 1);
-	c[ImGuiCol_TextDisabled]      = ImVec4(.55f, .57f, .58f, 1);
+	tour::branding::ApplyCrystalFusionImGuiStyle();
 }
 
 bool EditorApp::HasPakExtension(const std::string& path) {
@@ -281,16 +238,8 @@ bool EditorApp::Initialize() {
 		io.ConfigWindowsMoveFromTitleBarOnly = true;
 		io.IniFilename = m_dockIniPath.c_str();
 		imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
-		// The app's theme (ApplyEditorStyle above: rounded, blue-accented
-		// dark palette). Its color set defines OPAQUE top-level surfaces
-		// by design (the 3D viewport must not bleed through menus) — the
-		// two it does NOT define (MenuBarBg, TitleBgCollapsed) keep the
-		// default theme's and are alpha-forced here. Notably ChildBg is
-		// OPAQUE in this palette (the old theme kept it transparent black
-		// by design — forcing it opaque painted every child window black;
-		// here the color IS the design). Applied in the app, not the
-		// shared overlay: the theme belongs to the app, and
-		// ApplyDpiScale preserves the colors it copies.
+		// The editor owns its opaque Crystal Fusion palette. The shared
+		// overlay preserves these colors when DPI scaling resets dimensions.
 		ApplyEditorStyle();
 		ImGuiStyle& style = ImGui::GetStyle();
 		style.Colors[ImGuiCol_MenuBarBg].w = 1.0f;
