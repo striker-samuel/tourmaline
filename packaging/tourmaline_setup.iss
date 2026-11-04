@@ -32,4 +32,4 @@ Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 Name: "{autoprograms}\Tourmaline Setup Wizard"; Filename: "{app}\TourmalineSetupWizard.exe"
 
 [Run]
-Filename: "{app}\TourmalineSetupWizard.exe"; Description: "Create a Tourmaline project"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\TourmalineSetupWizard.exe"; Description: "Create a Tourmaline project"; Flags: nowait postinstall skipifsilent runasoriginaluser
