@@ -57,6 +57,13 @@ def main(argv=None):
     user_set.add_argument("--permission", action="append", default=[])
     rotate = user_cmd.add_parser("rotate-token", help="revoke old token and issue a new one")
     rotate.add_argument("username")
+    asset = user_cmd.add_parser("asset-set", help="set per-asset user/group ACL rules")
+    asset.add_argument("source_asset_id")
+    asset.add_argument("--user")
+    asset.add_argument("--group")
+    asset.add_argument("--permission", action="append", default=[])
+    clear = user_cmd.add_parser("asset-clear", help="remove per-asset ACL restrictions")
+    clear.add_argument("source_asset_id")
     args = parser.parse_args(argv)
     settings = load(args.config)
     registry_location = settings.get("permissions_registry")
@@ -89,6 +96,16 @@ def main(argv=None):
         elif args.user_command == "rotate-token":
             print("New token (store securely; not shown again):",
                   registry.rotate_token(args.username))
+        elif args.user_command == "asset-set":
+            if bool(args.user) == bool(args.group):
+                parser.error("specify exactly one of --user or --group")
+            registry.asset_set(args.source_asset_id,
+                               "users" if args.user else "groups",
+                               args.user or args.group, args.permission)
+            print("Asset ACL updated:", args.source_asset_id)
+        elif args.user_command == "asset-clear":
+            registry.asset_clear(args.source_asset_id)
+            print("Asset ACL removed:", args.source_asset_id)
         return 0
     store = SharedArchive(settings["source"], settings["archive"], settings["cache"],
                           settle=settings.get("settle_seconds", 2),
@@ -100,7 +117,8 @@ def main(argv=None):
                          bind=settings.get("bind", "127.0.0.1"),
                          port=int(settings.get("port", 8765)),
                          poll=float(settings.get("poll_seconds", 3)),
-                         consumer_ttl_seconds=float(settings.get("consumer_ttl_seconds", 90)))
+                         consumer_ttl_seconds=float(settings.get("consumer_ttl_seconds", 90)),
+                         registry=PermissionRegistry(registry_path) if registry_path else None)
         except KeyboardInterrupt:
             return 0
     elif action == "scan":
