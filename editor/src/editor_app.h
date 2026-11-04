@@ -1229,6 +1229,11 @@ private:
 	void StartProjectRecipeBuild(const std::string& recipePath,
 		const std::string& recipeText);
 	bool m_showProjectExportWindow = false;
+	// Dedicated File > Import window (not the Assets grid).
+	bool m_showImportWindow = false;
+	char m_importSourceBuf[1024]{};
+	bool m_importOpenAfter = false;
+	void DrawImportWindow();
 	std::string m_projectExportRecipeName = "game.tourrecipe";
 	char m_projectExportRecipeNameBuf[256] = "game.tourrecipe";
 	std::array<char, 65536> m_projectExportRecipeText{};
@@ -2245,7 +2250,7 @@ private:
 	// Cooking the product .pak is a separate explicit step
 	// (Ctrl+Shift+C) — as is Bake GI (on demand). False + log without
 	// an open project, while cooking, or for foreign extensions.
-	bool ImportAsset(const std::string& srcPath);
+	bool ImportAsset(const std::string& srcPath, bool openAfter = true);
 	// THE MESH IMPORTER drive (editor side; see ImportAsset +
 	// editor_project.cpp): glTF is IMPORT-ONLY — derive the .geometry
 	// artifact family beside the source when stale (MeshArtifactStale),
