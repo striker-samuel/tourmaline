@@ -259,11 +259,6 @@ def reconstruct(folder: Path, *, pixels: bool = False):
     previous_payload_hash = None
     previous_tick = -1
     full = []
-    if pixels:
-        try:
-            from PIL import Image
-        except ImportError as exc:
-            raise SnapshotError("--pixels requires Pillow") from exc
     for index, path in enumerate(sequence_files(folder), 1):
         record, payload = (read_raw_snapshot(path) if path.suffix == '.rgba'
                            else read_snapshot(path))
