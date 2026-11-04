@@ -573,7 +573,7 @@ bool smvk::Cluster::SampleAnimation(float dt,
 		}
 		// A scene mutation must pass through the journal-producing API;
 		// direct localTransform writes can leave GPU-scene mirrors stale.
-		if (!SetLocalTransform(scene, MakeNodeHandle(scene, t.joint), local))
+		if (!tour::scene::SetLocalTransform(scene, MakeNodeHandle(scene, t.joint), local))
 			return false;
 	}
 	recalculateGlobalTransforms(scene);

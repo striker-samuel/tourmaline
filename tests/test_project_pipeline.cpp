@@ -2169,14 +2169,25 @@ void TestBuildPlanExecutor() {
 				&& rec.calls[0].args[2] == "cubemap:off"
 				&& rec.calls[0].args[3] == "lightmap:off",
 				"executor.cook-flags-from-recipe");
+			// Transactional publication isolates every build under
+			// <publish>/.staging/build-<nonce>/ — the nonce is random by
+			// design, so assert the CONTRACT (staged under .staging with
+			// the authored pak name) instead of one exact path.
+			const std::string stagedPak = rec.calls[2].args[3];
+			const std::string stagingRoot = (tmp / "publish" / ".staging")
+				.lexically_normal().generic_string();
+			const size_t sep = stagedPak.find_last_of('/');
+			const std::string stagedName =
+				sep == std::string::npos ? stagedPak : stagedPak.substr(sep + 1);
 			Check(rec.calls[2].args[1]
 					== "content/models/grid/grid.geometry"
 				&& rec.calls[2].args[2]
 					== (scenes / "grid.tour").lexically_normal()
 						.generic_string()
-				&& rec.calls[2].args[3]
-					== (tmp / "publish" / ".staging" / "grid.pak")
-						.lexically_normal().generic_string()
+				&& stagedPak.size() > stagingRoot.size()
+				&& stagedPak.compare(0, stagingRoot.size(), stagingRoot) == 0
+				&& stagedPak[stagingRoot.size()] == '/'
+				&& stagedName == "grid.pak"
 				&& rec.calls[2].args[4] == "verify:on",
 				"executor.pak-args");
 		}

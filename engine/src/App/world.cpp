@@ -177,7 +177,7 @@ using namespace ::smvk;
 		const int cnode = addNode(dyn.scene, -1, 0);
 		if (cnode < 0)
 			return UINT32_MAX;
-		(void)SetLocalTransform(dyn.scene, MakeNodeHandle(dyn.scene, uint32_t(cnode)), frame);
+		(void)tour::scene::SetLocalTransform(dyn.scene, MakeNodeHandle(dyn.scene, uint32_t(cnode)), frame);
 		dyn.scene.globalTransform[size_t(cnode)] = frame;
 		if (!def.name.empty()) {
 			const uint32_t cnameId = uint32_t(dyn.scene.nodeNames.size());
@@ -198,7 +198,7 @@ using namespace ::smvk;
 		const int mnode = addNode(scene, -1, 0);
 		if (mnode < 0)
 			return UINT32_MAX;
-		(void)SetLocalTransform(scene, MakeNodeHandle(scene, uint32_t(mnode)), frame);
+		(void)tour::scene::SetLocalTransform(scene, MakeNodeHandle(scene, uint32_t(mnode)), frame);
 		scene.globalTransform[size_t(mnode)] = frame;
 		{
 			const uint32_t cnameIdx =
@@ -232,7 +232,7 @@ using namespace ::smvk;
 		const int cnode = addNode(dyn.scene, -1, 0);
 		if (cnode < 0)
 			return {};
-		(void)SetLocalTransform(dyn.scene, MakeNodeHandle(dyn.scene, uint32_t(cnode)), localFrame);
+		(void)tour::scene::SetLocalTransform(dyn.scene, MakeNodeHandle(dyn.scene, uint32_t(cnode)), localFrame);
 		dyn.scene.globalTransform[size_t(cnode)] = localFrame;
 		SetAudioSource(dyn.scene, NodeId(cnode), def);
 		// Merged-scene mirror for immediate visibility (dies at the
@@ -240,7 +240,7 @@ using namespace ::smvk;
 		const int mnode = addNode(scene, -1, 0);
 		NodeId merged = UINT32_MAX;
 		if (mnode >= 0) {
-			(void)SetLocalTransform(scene, MakeNodeHandle(scene, uint32_t(mnode)), localFrame);
+			(void)tour::scene::SetLocalTransform(scene, MakeNodeHandle(scene, uint32_t(mnode)), localFrame);
 			scene.globalTransform[size_t(mnode)] = localFrame;
 			SetAudioSource(scene, NodeId(mnode), def);
 			markAsChanged(scene, mnode);
@@ -414,7 +414,7 @@ using namespace ::smvk;
 		const int cnode = addNode(dyn.scene, -1, 0);
 		if (cnode < 0)
 			return {};
-		(void)SetLocalTransform(dyn.scene, MakeNodeHandle(dyn.scene, uint32_t(cnode)), frame);
+		(void)tour::scene::SetLocalTransform(dyn.scene, MakeNodeHandle(dyn.scene, uint32_t(cnode)), frame);
 		dyn.scene.globalTransform[size_t(cnode)] = frame;
 		// (the durable node roots at the cluster root; the resolved
 		// hierarchy owns the merge — same as the audio entities)
@@ -425,7 +425,7 @@ using namespace ::smvk;
 		NodeId merged = UINT32_MAX;
 		const int mnode = addNode(scene, -1, 0);
 		if (mnode >= 0 && worldMeshIdx != UINT32_MAX) {
-			(void)SetLocalTransform(scene, MakeNodeHandle(scene, uint32_t(mnode)), frame);
+			(void)tour::scene::SetLocalTransform(scene, MakeNodeHandle(scene, uint32_t(mnode)), frame);
 			scene.globalTransform[size_t(mnode)] = frame;
 			SetMesh(scene, NodeId(mnode), worldMeshIdx);
 			if (matLoc) {

@@ -908,7 +908,6 @@ using tour::scene::LiveNodeCount;
 using tour::scene::loadScene;
 using tour::scene::MakeNodeHandle;
 using tour::scene::MarkAllRootsChanged;
-using tour::scene::SetLocalTransform;
 using tour::scene::markAsChanged;
 using tour::scene::markAsChangedDynamic;
 using tour::scene::MarkCastsVolumetricShadow;

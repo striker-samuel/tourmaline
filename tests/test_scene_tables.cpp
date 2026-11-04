@@ -68,8 +68,8 @@ int main() {
 		glm::mat4 moved0(1.0f), moved2(1.0f);
 		moved0[3].x = 3.0f;
 		moved2[3].x = 7.0f;
-		Check(SetLocalTransform(s, root0, moved0), "mutation: set root zero");
-		Check(SetLocalTransform(s, root2, moved2), "mutation: set other root");
+		Check(tour::scene::SetLocalTransform(s, root0, moved0), "mutation: set root zero");
+		Check(tour::scene::SetLocalTransform(s, root2, moved2), "mutation: set other root");
 		Check(recalculateGlobalTransformsDynamic(s), "mutation: dynamic recalc");
 		Check(Near(s.globalTransform[0][3].x, 3.0f)
 			&& Near(s.globalTransform[2][3].x, 7.0f),
@@ -78,12 +78,12 @@ int main() {
 			"mutation: GPU journal contains both roots");
 		glm::mat4 invalid=moved0;
 		invalid[0][0]=std::numeric_limits<float>::quiet_NaN();
-		Check(!SetLocalTransform(s, root0, invalid)
+		Check(!tour::scene::SetLocalTransform(s, root0, invalid)
 			&& Near(s.localTransform[0][3].x, 3.0f),
 			"mutation: nonfinite input fails without side effects");
 		RetireNodeSlot(s, 2);
 		const int reused = addNode(s, -1, 0);
-		Check(reused == 2 && !SetLocalTransform(s, root2, moved2),
+		Check(reused == 2 && !tour::scene::SetLocalTransform(s, root2, moved2),
 			"mutation: stale generation cannot update reused slot");
 	}
 	{
