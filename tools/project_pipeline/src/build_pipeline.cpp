@@ -11,7 +11,9 @@
 #include <project_pipeline/build_pipeline.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -901,10 +903,21 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				// A pre-existing content-addressed name is NOT evidence that
 				// its bytes are intact: verify before trusting or deduping it.
 				std::ifstream prior(finalPath, std::ios::binary);
-				const std::vector<uint8_t> priorBytes(
-					(std::istreambuf_iterator<char>(prior)),
-					std::istreambuf_iterator<char>());
-				if (!prior || priorBytes != image) {
+				// Verify against the staged bytes in bounded blocks; loading
+				// a second multi-GiB pak would double peak publish memory.
+				bool identical = bool(prior);
+				std::array<char, 65536> chunk{};
+				for (size_t offset = 0; identical && offset < image.size();) {
+					const size_t length = std::min(chunk.size(), image.size() - offset);
+					prior.read(chunk.data(), std::streamsize(length));
+					identical = size_t(prior.gcount()) == length &&
+						std::memcmp(chunk.data(), image.data() + offset, length) == 0;
+					offset += length;
+				}
+				// Also reject a same-prefix file with trailing injected bytes.
+				if (identical && prior.peek() != std::char_traits<char>::eof())
+					identical = false;
+				if (!identical) {
 					err = "published pak filename collision or corrupted bytes: "
 						+ finalPath.generic_string();
 					return false;
