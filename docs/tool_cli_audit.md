@@ -33,17 +33,20 @@ Preserve compatibility for documented automation until callers are verified.
    `--help`/`-h`; make help succeed without requiring an argument.
 6. `gi_baker/main.cpp` help incorrectly pointed users to `PakCooker --lightmap`;
    the lightmap stage belongs to `cook.exe`. Also explicitly document that
-   `--emissive` is accepted but ignored, so it is not mistaken for a live switch.
+   `--emissive` is passed into the trace-scene build options; previous
+   comments describing it as ignored were inconsistent with code.
 7. `cook/src/main.cpp` described its positional CLI as `pak.exe` in
    comments; name the actual executable.
 
 ## Deliberately retained / follow-up verification
 
 - **Compatibility:** `GiBaker --out` is intentionally parsed and *rejected*
-  with a retirement diagnostic. `--gi-volume-capture-spacing` and
-  `--emissive` are compatibility-only/inert; do not make them silently functional.
-  Consider removing them in a separately announced breaking-change release,
-  after repository and downstream callers are checked.
+  with a retirement diagnostic. Do not remove without checking callers.
+  `--emissive` sets `buildOpts.includeEmissive`, and
+  `--gi-volume-capture-spacing` sets `cfg.captureSpacing`; however, the
+  GI freshness hash hardcodes `captureSpacing = 0` for the auto lattice.
+  Trace/build effects need runtime verification before either flag can be
+  called inert or removed.
 - **Aliases with possible consumers:** `tourinfo --format` alongside
   `--json`/`--jsonl`/`--paths`; `asset_reverse_search --mesh`;
   `Project --output`/`--out-pak`; per-tool `--exe` and `--app`.
