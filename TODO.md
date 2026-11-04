@@ -155,6 +155,94 @@ items below are the remaining author-declared gaps.
   Viewport at desktop origin AND after moving the editor window,
   including splitter resize and inactive-tab behavior.
 
+## 2026-11-04 (evening) — audit-fix + wizard + asset-repo barrage
+
+PRs #177–#182, #186, #188–#192 were merged on owner request the same
+evening (several still drafts, all titled "implementation planned" in
+the audit series). Local gates (full all-targets build + ctest + the
+Python tooling tests) verified compilation and regressions on every
+merge; the items below are the author-declared gaps from each audit
+doc's STATUS line, plus the defects the blind merges introduced that
+were fixed post-merge.
+
+## #177 — SDL3 tablet pen input
+- Merged as a draft with no completed CI. Post-merge master runs
+  (CI + Tests + Shared asset repository on `3343a0f3`) were all green.
+- No author-declared validation checklist was published; pen-input
+  behavior on real hardware remains unverified.
+
+## #178 — classic Transpose action line
+- Merged as a draft with no completed CI; covered by the green
+  post-merge runs above.
+
+## #180 — shared asset installation hardening
+- Merged with CI pending; the Shared asset repository workflow went
+  green on the follow-up head.
+
+## #181 — server-side user registry + permission groups
+- Author note: "Tests were not executed locally because this
+  environment cannot resolve GitHub; please confirm CI before merging."
+- (Merge note: `test_asset_permissions` failed on windows-latest only —
+  GitHub runners expose TEMP via the 8.3 short name `RUNNER~1` while
+  configure_host normalizes to the long form; the reinstall-preservation
+  assertion now compares resolved paths, `15ab8f3a`.)
+
+## #182 — [Audit 01] scene mutation journaling (partial)
+- STATUS: generation-checked transform setter, animation migration and
+  dynamic-root journal fix committed. **Complete caller migration and
+  integration tests remain.**
+- Acceptance criteria not yet met: randomized + deterministic CPU/GPU
+  snapshot parity tests for reparent/remove-reuse/transform/visibility/
+  binding mutations.
+- (Merge note: the new SetLocalTransform joined scene.h's GLOBAL compat
+  bridge, growing R9's baseline 66→67; the re-export was retired and the
+  11 call sites now spell `tour::scene::SetLocalTransform`, `f43c5059`.)
+
+## #186 — project setup wizard + installer
+- (Merge note: the generated `tools/setup_wizard.py` carried literal
+  `\n` sequences instead of line breaks — a SyntaxError on import; fixed
+  in `d18d93ba`. The shared-asset workflow union also had to be resolved
+  by hand against #181's additions.)
+- The GitHub Release / Windows-installer automation documented on the
+  branch is MANUAL dispatch + post-merge git tag steps until the release
+  workflow merges; no automated release pipeline exists yet.
+
+## #188 — [Audit 07] stable prefab node identity (partial)
+- STATUS: UUID-first preview matching and authoring, fail-closed
+  duplicates, legacy fallback committed. **Identity migration and editor
+  verification remain.**
+
+## #189 — [Audit 08] asset repository transport (partial)
+- STATUS: integrated onto per-user ACL-enabled master. **Real TLS
+  gateway validation still required.**
+- (Merge note: this PR's `_ALLOWED_ACTIONS` guard is what makes
+  `source.write`/`product.write` fail closed — #181's test expected it
+  but #181's own implementation lacked it; the failing assertion only
+  passed once this PR landed.)
+
+## #190 — [Audit 09] transactional publication (partial)
+- STATUS: unique staging, publish lock, corrupted-dedup refusal,
+  multi-manifest safe cleanup and regression tests committed.
+  **Provenance receipt and crash recovery remain.**
+- (Merge note: `executor.pak-args` still asserted the pre-isolation
+  `.staging` path; publication now stages under
+  `.staging/build-<nonce>/` so the test pins the contract instead,
+  `f43c5059`.)
+
+## #192 — [Audit 05] single-source shader variants (partial)
+- STATUS: one manifest now feeds CMake and the generated C++ runtime
+  variants. **Native CI and shader build verification remain** — the
+  post-merge CI build matrix (Windows MSVC + Linux GCC) is green from
+  `3343a0f3` onward, closing most of this gap; hot-reload identity
+  verification against a live dev session is still open.
+
+## Audit series still unimplemented (open draft PRs, docs only)
+- #183 [Audit 02] GPU scene record readiness; #184 [Audit 03]
+  double-precision transforms; #185 [Audit 04] WorldPartition provider
+  contracts; #187 [Audit 06] per-world editor session state; #191
+  [Audit 10] WorldRenderer decomposition. Each is a planning doc plus
+  unstarted implementation; the branches carry no code beyond the doc.
+
 ## Legacy engineering backlog (migrated from `todo.txt`)
 
 The following older audit notes, decisions, and deferred engineering work were
