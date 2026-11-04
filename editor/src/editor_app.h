@@ -3,6 +3,7 @@
 
 #pragma once
 #include "editor_isolate_visibility.h"
+#include "editor_day_night.h"
 // GltfEditor: inspect + cook glTF scenes with a .tour overlay.
 //
 // Loads a glTF straight into a GPU World (same importer as App/PakCooker),
@@ -1997,6 +1998,7 @@ private:
 	// the environment through any other channel.
 	using EditorEnv = tour::scene::SceneEnv;
 	uint32_t m_envCurrent = UINT32_MAX; // UINT32_MAX = default block renders
+	daynight::Settings m_dayNight; // authored clock/solar parameters; playback is preview-only
 
 	EditorEnv& CurrentEnv();   // the source that renders (scene-backed)
 	const EditorEnv& CurrentEnv() const;
