@@ -337,6 +337,7 @@ void EditorApp::FinalizePending() {
 		// A normal floating project configuration window must not be
 		// nested in ImGui's main menu-bar window stack.
 		DrawProjectExportWindow();
+		DrawIntersectionToolsWindow();
 		// Options is a large standalone settings window, not a dock tab.
 		// Render settings retain their existing live-update/autosave behavior.
 		if (m_showRenderSettingsPanel) {
@@ -955,6 +956,11 @@ void EditorApp::FinalizePending() {
 				ImGui::SetTooltip("Keeps only the last edit per node/attr "
 					"channel — the surviving state — so the tour replays "
 					"identically from fewer commands.");
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("Geometry")) {
+			if (ImGui::MenuItem("Intersection curves / seam bake..."))
+				m_showIntersectionToolsPanel = true;
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Mode")) {

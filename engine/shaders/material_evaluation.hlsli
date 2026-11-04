@@ -184,7 +184,8 @@ EvaluatedPbrMaterial EvaluatePbrMaterial(int materialId, PSInBridge IN)
     // the vertex color is consumed as weights, tint stays white).
     float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
     e.baseColorLinear = baseColorFactor * vcolTint * baseSample.rgb;
-    e.alpha = baseAlphaFactor * baseSample.a;
+    // Preserve glTF COLOR_0 alpha, including baked seam-ribbon edge fade.
+    e.alpha = baseAlphaFactor * baseSample.a * (layered ? 1.0f : IN.color.a);
 
     // ---------------------------------------------------------------
     // Metallic-roughness (glTF packing: G = roughness, B = metallic;

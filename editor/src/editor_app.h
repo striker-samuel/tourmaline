@@ -792,6 +792,7 @@ private:
 	// ---- UI (editor_ui.cpp) ----
 	void DrawUI(smvk::Extent2D targetExtent);
 	void DrawMenuBar();
+	void DrawIntersectionToolsWindow();
 	// ---- tool topbar (tabbed toolbar below the menu bar) --------------
 	// Ribbon-lite: a tab strip of TOOL TYPES (Select / Transform /
 	// Terrain / Placement / Modes) with the active tab's controls in a
@@ -2786,6 +2787,7 @@ private:
 	// Each dock tool has a close button; View > Panels can reopen it.
 	bool m_showViewportPanel = true;
 	bool m_showWorldMapPanel = true;
+	bool m_showIntersectionToolsPanel = false;
 	uint32_t m_worldMapGroup = UINT32_MAX;
 	glm::vec2 m_worldMapCenter{0.0f};
 	float m_worldMapScale = 0.0f; // world meters per screen pixel (0 = fit)
