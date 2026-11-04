@@ -49,13 +49,34 @@ items below are the remaining author-declared gaps.
   editor brush workflow validation were not completed).
 
 ## #142 — Scoped 15-frame GPU snapshot capture
-- Batch export still performs 15 individual synchronous image downloads
-  (deferred to the boundary, not aggregated): a single aggregated
-  Vulkan image-to-buffer transfer + one host readback is the follow-up
-  RHI work.
-- GPU/driver-dependent runtime tests were never run by the author
-  (static review only) — a GPU capture regression (record + verify +
-  compare against legacy mode) remains open.
+- **Runtime validation DONE (2026-11-04, post `438cd288`)**: the full
+  capture matrix records + verifies clean with pixel checks —
+  {scoped, legacy} × {png, raw} × {1080p, 4K render-scale 2} ×
+  {15, 16, 30} frames, including the 4K raw 30-frame worst case (the
+  >256 MiB staging-split path). Same-mode reruns are near-identical
+  (avg channel delta 0.23) — determinism holds.
+- (Superseded by #148 for the aggregated-readback item.)
+
+## #148 — Scoped snapshot single-batch readback + raw output
+- (Resolves the #142 aggregated-readback TODO item above.)
+- **Runtime validation DONE (2026-11-04, post `438cd288`)**: all matrix
+  legs above record + verify clean; the 4K staging split works.
+- **OPEN FINDING — capture-mode content divergence**: scoped vs legacy
+  at identical settings differ by avg channel delta ~5.45 on ~20% of
+  pixels (15x the 0.23 same-mode rerun noise; NOT a one-frame offset —
+  shifted comparison is worse at ~10.9). The scoped batch path renders
+  measurably different content from the legacy per-frame path
+  (suspect: capture insertion point or frame timing effects on
+  animated content). Needs author investigation before the two modes
+  can be treated as interchangeable baselines.
+- (Merge note: the branch never compiled — the RHI call was declared
+  only on the private VulkanResourceManager; the public
+  `ResourceManager::RecordSnapshotImageCopy` facade + forwarding impl
+  were added in the merge.)
+- **The entire matrix was blocked until `438cd288`**: master's App
+  crashed on every workload (see the #151 entry — the DS-viz
+  shader-define regression) — the crash was found BY this validation
+  run, GPU-bisected over 53 revisions, and fixed.
 
 ## #145 — TLAS/BLAS debug inspector
 - No local C++ compile, CI or Vulkan GPU run by the author; the merge
