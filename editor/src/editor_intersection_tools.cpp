@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "editor_app.h"
 #include <Engine/Geometry/intersection_curves.h>
+#include <Engine/Geometry/seam_gltf.h>
 #include <Engine/Geometry/cgal_intersection.h>
 #include <imgui.h>
 #include <algorithm>
@@ -145,6 +146,15 @@ void EditorApp::DrawIntersectionToolsWindow() {
         std::string err;
         if (geo::SaveRibbonObj(output,geometry,err))
             status = std::string("Saved baked geometry: ") + output;
+        else status = err;
+        Log("Intersection tools: " + status);
+    }
+    if (ImGui::Button("Export for Tourmaline (.gltf + .bin)")) {
+        std::filesystem::path path(output);
+        path.replace_extension(".gltf");
+        std::string err;
+        if (geo::SaveRibbonGltf(path.string(),geometry,err))
+            status = std::string("Saved glTF source: ") + path.string();
         else status = err;
         Log("Intersection tools: " + status);
     }
