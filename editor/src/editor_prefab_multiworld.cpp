@@ -494,10 +494,12 @@ bool EditorApp::SavePrefab() {
         m_prefab.world->clusterMergedNodes.size()==1) {
         const Scene& scene=m_prefab.world->scene;
         const auto& mapping=m_prefab.world->clusterMergedNodes[0];
-        for (uint32_t local=0;local<mapping.size();++local) {
-            const uint32_t merged=mapping[local];
-            if (merged==UINT32_MAX || merged==0 || !IsLiveSlot(scene,merged)
-                || !GetNodeUuid(scene,merged).empty()) continue;
+        const auto missing=prefab_sync::LegacyIdentityCandidates(mapping,
+            [&](uint32_t n) {
+                return n!=0 && IsLiveSlot(scene,n)
+                    && GetNodeUuid(scene,n).empty();
+            });
+        for (const auto& [local,merged] : missing) {
             const std::string id=smvk::tour::GenerateUuid();
             smvk::tour::Command command;
             command.verb=smvk::tour::Verb::SetUuid;
