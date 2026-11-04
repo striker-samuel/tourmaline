@@ -89,6 +89,7 @@ struct ViewerOptions {
 	std::string snapshotSequenceDir; // --snapshot-sequence
 	uint32_t snapshotCount = 120;
 	uint32_t snapshotKeyframeInterval = 60;
+	std::string snapshotCaptureMode = "scoped"; // scoped (default) or legacy
 	std::string snapshotCodeId; // optional BYOC code/revision digest (not source bytes)
 	bool useOptick = false;
 	bool useOptickGpu = false;
