@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "msaa2x"
+      },
+      "frames": 15,
+      "id": "aa-msaa2x",
+      "label": "Sponza AA A/B: msaa2x",
+      "subsystem": "aa"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "msaa2xcustom"
+      },
+      "frames": 15,
+      "id": "aa-msaa2xcustom",
+      "label": "Sponza AA A/B: msaa2xcustom",
+      "subsystem": "aa"
+    }
+  ]
+}

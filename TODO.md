@@ -262,12 +262,38 @@ were fixed post-merge.
 - Merged as a draft with CI pending; post-fix master runs must confirm
   both platforms (the breakage above would have failed them).
 
-## Audit series still unimplemented (open draft PRs, docs only)
-- #183 [Audit 02] GPU scene record readiness; #184 [Audit 03]
-  double-precision transforms; #185 [Audit 04] WorldPartition provider
-  contracts; #187 [Audit 06] per-world editor session state; #191
-  [Audit 10] WorldRenderer decomposition. Each is a planning doc plus
-  unstarted implementation; the branches carry no code beyond the doc.
+## #183 — [Audit 02] GPU scene record readiness
+- Author note: "Tests were added but not executed here" (integrator-owned
+  validation). Done post-merge: full build + 107/107 ctest green
+  (`a06a7bec` era).
+
+## #185 — [Audit 04] WorldPartition provider contracts
+- Same author note; same integrator validation (green post-merge runs).
+
+## #187 — [Audit 06] per-world editor session state (recovery/selection)
+- Still open (author checklist): validate save/revert/close/failed-open
+  paths and resize on the actual editor — source-level review only, no
+  native/GPU editor session was run.
+- (Merge note: the branch conflicted with #188's test tail in
+  test_prefab_live_sync.cpp; resolved as the union of the
+  LegacyIdentityCandidates and RestoreSelection coverage.)
+
+## #198 — opt-in programmable MSAA 2x HDR resolve (merged uncompiled)
+- The PR's own gate said "not GPU-validated or locally compiled. Do not
+  merge until build, DXC shader compilation, validation layers and
+  parity checks pass" — merged on owner request anyway.
+- (Merge note: two compile breaks fixed in `a06a7bec` — a duplicated
+  Msaa2xCustom case label in the AA switch and a nonexistent readFile()
+  call in MsaaCustomResolve::Ensure, now the shaders::Read pattern.)
+- Post-merge validation: build + DXC + 107/107 ctest green; the
+  sponza AA A/B (msaa2x vs msaa2xcustom, benchmarks/msaa_ab.json)
+  captured headlessly. STILL OPEN: a Vulkan validation-layer session
+  and silhouette/coverage review on a real GPU (the PR's compare list).
+
+## Audit series still open (drafts)
+- #184 [Audit 03] double-precision transforms (docs-only, unstarted).
+- #191 [Audit 10] WorldRenderer decomposition (partial implementation
+  on the branch, not merged).
 
 ## Legacy engineering backlog (migrated from `todo.txt`)
 
