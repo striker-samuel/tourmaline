@@ -27,6 +27,16 @@
 //   bake gi [on|off]          the GI volume bake (bare = on)
 //   bake cubemaps [on|off]    the cubemap capture bake (bare = on)
 //   bake sdf [on|off]         per-geometry mesh-local distance sidecars
+//   materialChannel <target> <slot|one|zero> <r|g|b|a>
+//      repeated project-level declarations for all material outputs:
+//      baseColor.r/g/b/a, normal.r/g/b, emissive.r/g/b,
+//      ao, cavity, roughness, metallic.
+//      All outputs are composed into canonical packed textures at import
+//      (RGBA baseColor, RGB normal/emissive, RGBA scalar AO/cavity/
+//      roughness/metallic). Source slot is baseColor, normal, emissive,
+//      occlusion, metallicRoughness or cavity. Unset channels retain their
+//      standard glTF source/default; missing explicitly named images fail.
+//      Source images must have matching pixel dimensions.
 //   materialPacking <source> <AO> <cavity> <roughness> <metallic>
 //                              optional project-wide packed-channel rule;
 //                              source = metallicRoughness | occlusion;
@@ -57,6 +67,7 @@
 // expressions — a recipe is data, never a program.
 
 #include <cstdint>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -83,12 +94,30 @@ struct RecipePak {
 };
 
 // Authored only in the project .tourrecipe, never in a scene .tour.
+struct MaterialChannelRule {
+    std::string target; // AO, cavity, roughness, metallic, baseColor.r..a, normal.r..b, emissive.r..b
+    std::string source; // source material texture slot or constant one/zero
+    char channel = 'r'; // r/g/b/a, ignored for constants
+    bool operator==(const MaterialChannelRule& other) const {
+        return target == other.target && source == other.source && channel == other.channel;
+    }
+};
+
 struct MaterialPackingRule {
+    std::vector<MaterialChannelRule> channels; // canonical output textures assembled at import
+    std::string Signature() const {
+        std::string result;
+        for (const auto& c : channels)
+            result += c.target + "=" + c.source + "." + c.channel + ";";
+        if (channels.empty() && !source.empty())
+            result = "reuse:" + source + ":" + std::to_string(PackedWord());
+        return result;
+    }
     std::string source; // metallicRoughness or occlusion; empty = native glTF
     int ao = 0, cavity = 0, roughness = 1, metallic = 2;
     int PackedWord() const { return ao | (cavity << 2) | (roughness << 4) | (metallic << 6); }
     bool operator==(const MaterialPackingRule& rhs) const {
-        return source == rhs.source && ao == rhs.ao && cavity == rhs.cavity &&
+        return channels == rhs.channels && source == rhs.source && ao == rhs.ao && cavity == rhs.cavity &&
             roughness == rhs.roughness && metallic == rhs.metallic;
     }
 };
