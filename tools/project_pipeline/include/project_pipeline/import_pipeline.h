@@ -36,6 +36,7 @@
 #include <gltf_import/asset_export.h> // DeriveConfig: the settings surface
 
 #include "project.h"
+#include "project_recipe.h"
 
 namespace smvk::project {
 
@@ -48,6 +49,7 @@ struct ImportRequest {
 	Project project;
 	std::filesystem::path source;      // the external glTF/GLB
 	GeometryImportSettings settings;
+	MaterialPackingRule materialPacking;
 	bool force = false;                // re-derive even when current
 };
 
