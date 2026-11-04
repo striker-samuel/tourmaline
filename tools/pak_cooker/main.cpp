@@ -2836,6 +2836,21 @@ int Run(const PakArgs& c) {
 		tool::err() << "Serialize failed: " << err << std::endl;
 		return 1;
 	}
+	// Cook scene-owned placements as a single non-VFS blob. The authored
+	// .tour commands remain the canonical serialization, while this
+	// lightweight sidecar lets runtime scene loads acquire shapes by
+	// content path and release them on scene unload. Only scene paks
+	// own this record (asset-only paks have no .tour definition).
+	if (haveTour && !tour.shapePlacements.empty()) {
+		const std::string source =
+			smvk::tour::SerializeShapePlacements(tour);
+		if (!writer.AddBlob(smvk::PakAssetKind::ShapePlacements,
+				smvk::tour::kShapePlacementsPakPath,
+				std::vector<uint8_t>(source.begin(), source.end()))) {
+			tool::err() << "Shape placement AddBlob failed" << std::endl;
+			return 1;
+		}
+	}
 	if (!args.excludeVfsPaths.empty())
 		tool::out() << "Cross-pak texture excludes: "
 			<< args.excludeVfsPaths.size() << " path(s) not embedded"
