@@ -55,4 +55,12 @@ bool PlanAssetDelete(const std::string& absPath,
 // error wins in err (never throws).
 bool ExecuteAssetDelete(const AssetDeletePlan& plan, std::string& err);
 
+// Rename a real project asset or folder. Names are single path components;
+// extensions are preserved for files. Sidecars move with their source so the
+// asset database can recover the GUID on rescan. Manifest-derived files are
+// not independently renameable.
+bool RenameBrowserAsset(const std::string& absPath,
+    const std::string& projectRoot, const std::string& newName,
+    std::string& newPath, std::string& err);
+
 } // namespace editor
