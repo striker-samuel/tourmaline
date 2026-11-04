@@ -2413,6 +2413,19 @@ void TestBuildPlanExecutor() {
 				ec.clear();
 				Check(pakCount() == 2,
 					"executor.addressed-no-duplicates");
+				// The receipt is immutable, content-addressed to the
+				// committed appmanifest, and lists every published pak.
+				std::string receiptText;
+				for (const fs::directory_entry& e :
+						fs::directory_iterator(tmp / "publish5", ec)) {
+					if (e.path().extension() != ".receipt") continue;
+					const std::vector<char> bytes = ReadAllBytes(e.path());
+					receiptText.assign(bytes.begin(), bytes.end());
+				}
+				Check(receiptText.find("tourmaline-build-receipt 1") == 0
+					&& receiptText.find(fs::path(ok1World).filename().generic_string())
+						!= std::string::npos,
+					"executor.immutable-publish-receipt");
 			}
 			// Changed content (a different pak payload for world): a
 			// NEW immutable name lands, the manifest commits to it, and
