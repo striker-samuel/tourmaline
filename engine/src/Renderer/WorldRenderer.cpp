@@ -11975,10 +11975,20 @@ namespace engine {
 				cull.binCount = m_gpuPlacementSeedCount;
 				cull.maxParticles = meshPs.desc.maxParticles;
 				cull.camPos = m_cameraPositioner.cameraPosition_;
-				// Conservative fallback bounds until the renderer can bind
-				// prototype-specific cooked spheres.
+				// Prefer the prototype's authored/cooked bounds, including
+				// off-origin sphere centres (quaternion-rotated by the CS).
+				// The fallback is for hosts that supply seed commands directly.
 				for (uint32_t i = 0; i < cull.binCount; ++i)
 					cull.meshBounds[i] = glm::vec4(0.0f, 0.0f, 0.0f, 4.0f);
+				if (m_gpuPlacementRuntime && m_gpuPlacementRuntime->layer) {
+					const auto& prototypes = m_gpuPlacementRuntime->layer->prototypes;
+					for (uint32_t i = 0; i < cull.binCount && i < prototypes.size(); ++i) {
+						const auto& proto = prototypes[i];
+						const glm::vec3 center = (proto.boundsMin + proto.boundsMax) * 0.5f;
+						const float radius = glm::length((proto.boundsMax - proto.boundsMin) * 0.5f);
+						cull.meshBounds[i] = glm::vec4(center, std::max(0.001f, radius));
+					}
+				}
 				auto& cullPass = meshPs.AddCullPass(*m_rendergraph,
 					m_gpuPlacementViewLogical);
 				cullPass.SetRecordingFunc([this, cull](smvk::CommandBuffer& cmd) {
