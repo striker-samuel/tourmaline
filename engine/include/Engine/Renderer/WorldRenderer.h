@@ -1794,7 +1794,7 @@ public:
 	// with keyframe/delta scene state, RNG stream state and input events.
 	bool ConfigureSnapshotSequence(const std::filesystem::path& directory,
 		uint32_t interval, uint32_t count, const std::string& sequenceId,
-		tour::snapshot::Json provenance, std::string& error);
+		tour::snapshot::Json provenance, bool scopedCapture, std::string& error);
 	[[nodiscard]] const std::string& SnapshotSequenceError() const {
 		return m_snapshotError;
 	}
@@ -3949,6 +3949,28 @@ public:
 	// Sequence data is sampled while the captured frame is being built,
 	// then paired with the GPU readback at the next frame boundary.
 	tour::snapshot::SequenceWriter m_snapshotSequence;
+	// Scoped sequence (default): render into 15 immutable device-local
+	// images, then export after one batch fence/device-idle. The legacy
+	// per-frame synchronous image download remains available.
+	static constexpr size_t kScopedCaptureFrames = 15;
+	struct ScopedCaptureImage {
+		smvk::Holder<smvk::ImageHandle> image;
+		smvk::Holder<smvk::ImageViewHandle> view;
+		smvk::LogicalImageViewHandle logical{};
+	};
+	struct ScopedCaptureFrame {
+		uint64_t tick = 0;
+		uint64_t dtNs = 0;
+		tour::snapshot::Json state;
+		tour::snapshot::Json events;
+		tour::snapshot::Json provenance;
+	};
+	std::array<ScopedCaptureImage, kScopedCaptureFrames> m_scopedImages{};
+	std::vector<ScopedCaptureFrame> m_scopedFrames;
+	smvk::Extent2D m_scopedExtent{0, 0};
+	bool m_scopedCapture = true;
+	bool m_scopedReady = false;
+	void ExportScopedSnapshotBatch();
 	std::function<tour::snapshot::Json()> m_snapshotStateExtension;
 	tour::snapshot::Json m_snapshotProvenance;
 	std::string m_snapshotError;
