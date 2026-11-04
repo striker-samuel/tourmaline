@@ -2072,9 +2072,12 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			lmx >= 0.0f && lmy >= 0.0f && lmx < vp.w && lmy < vp.h;
 		const bool altNav = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
 			m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
+		// An earlier viewport drag must not globally bypass ImGui mouse
+		// capture: menus, popups and floating panels can overlap the stage.
+		// Only the currently exposed/hovered viewport may accept scene
+		// interaction when the UI is otherwise capturing the mouse.
 		const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse()
-			&& !(m_uiMode && (m_dockViewportHovered || m_dockViewportDragCaptured)
-				&& (inVp || m_dockViewportDragCaptured));
+			&& !(m_uiMode && m_dockViewportHovered && inVp);
 		const bool shiftHeld = m_input.isKeyHeld(TOUR_KEY_LEFT_SHIFT) ||
 			m_input.isKeyHeld(TOUR_KEY_RIGHT_SHIFT);
 		uint32_t insetXAbs = 0;
