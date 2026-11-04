@@ -256,6 +256,10 @@ bool ImportProjectAsset(const ImportRequest& request,
             }
             found = item.path();
         }
+        if (ec) {
+            err = "cannot enumerate project recipes: " + ec.message();
+            return false;
+        }
         if (!found.empty()) {
             ProjectRecipe parsed;
             RecipeDiagnostic diagnostic;
