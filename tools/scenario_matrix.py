@@ -137,6 +137,12 @@ def run(args):
                               "status": record["status"], "record": str(destination / "record.json")}), flush=True)
             if record["status"] != "pass":
                 failures += 1
+    if args.export_parquet:
+        from export_experiments import export_records
+        count = export_records(args.output.resolve() / args.machine,
+                               args.export_parquet, "parquet")
+        print(json.dumps({"parquet_export": str(args.export_parquet),
+                          "records": count}), flush=True)
     return 2 if failures else 0
 
 
@@ -151,6 +157,8 @@ def main(argv=None):
     parser.add_argument("--baseline-dir", type=Path)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--export-parquet", type=Path,
+                        help="Optional analytics export (requires extended dependencies)")
     parser.add_argument("--collector")
     parser.add_argument("--token", default=os.environ.get("TOURMALINE_RECORD_TOKEN", ""))
     args = parser.parse_args(argv)
@@ -158,7 +166,7 @@ def main(argv=None):
         parser.error("repeat and timeout must be positive")
     try:
         return run(args)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, RuntimeError) as exc:
         parser.error(str(exc))
 
 
