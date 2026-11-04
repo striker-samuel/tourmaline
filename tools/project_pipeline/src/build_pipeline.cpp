@@ -300,16 +300,8 @@ bool RecipePackingMatches(const fs::path& source,
         if (!smvk::assets::LoadMaterialAsset(
                 source.parent_path() / entry.file, mat, err))
             return false;
-        if (rule.source.empty()) {
-            if (!mat.packingSource.empty()) return false;
-        } else if (!mat.packingSource.empty()) {
-            if (mat.packingSource != rule.source ||
-                mat.channelSelectors != rule.PackedWord()) return false;
-        } else {
-            const bool hasNativeInput = rule.source == "metallicRoughness"
-                ? !mat.metallicRoughness.path.empty() : !mat.occlusion.path.empty();
-            if (hasNativeInput) return false;
-        }
+        if (!MaterialPackingRuleMatches(rule, mat))
+            return false;
     }
     return true;
 }
