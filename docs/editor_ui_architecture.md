@@ -2,7 +2,7 @@
 
 The editor is C++/Dear ImGui. The main UI entry point is
 `editor/src/editor_ui.cpp`. Feature-specific implementations live in
-`editor/src/ui/panels/`, inspector implementations in
+`editor/src/ui/panels/`, individual inspector implementations in
 `editor/src/ui/inspector/`, and dialogs in `editor/src/ui/dialogs/`.
 The existing engine, scene and command implementations are unchanged.
 
@@ -39,11 +39,10 @@ The existing engine, scene and command implementations are unchanged.
 
 ## Add an inspector section
 
-1. Implement a focused `DrawYourComponentSection(uint32_t node)` in
-   `ui/inspector/inspector_sections.cpp` initially. For larger components,
-   use a dedicated `your_component_section.cpp`.
-2. Declare the section in `editor_app.h` and call it from the node branch
-   of `DrawInspector()` when the component is applicable.
+1. Implement `DrawYourComponentSection(uint32_t node)` in a dedicated
+   `ui/inspector/your_component_section.cpp`.
+2. Declare it in `editor_app.h` and register it with
+   `InspectorSectionRegistry` in the node branch of `DrawInspector()`.
 3. Reuse `editor::attr` controls and stable `attr::ScopedID` keys.
 4. Convert changes to `EditCmd` and execute through the command pipeline.
    Preserve drag coalescing; don't mutate the scene directly in a widget.
@@ -69,6 +68,10 @@ adopt narrower state models without a second massive rewrite.
   `src/*.cpp`, so added feature implementation files are auto-included.
 
 ## Validation
+
+Run `python3 tests/test_editor_ui_structure.py` for fast structural checks.
+This does not replace a C++ build or interactive Vulkan tests.
+
 
 Configure/build `Editor` on a supported environment, run existing editor
 regressions, and manually check dock restoration, selection, inspector

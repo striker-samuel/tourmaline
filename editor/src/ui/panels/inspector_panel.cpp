@@ -8,6 +8,7 @@
 // coalesce into one command per gesture via m_pending.
 
 #include "editor_app.h"
+#include "ui/inspector/section_registry.h"
 #include "editor_brush_presets.h"
 #include "modal_bindings.h"
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
@@ -481,19 +482,16 @@ namespace editor {
 		}
 
 		// Authored GI volume on this node (GI volume inspector).
-		DrawGiVolumeSection(node);
-		DrawTriggerVolumeSection(node);
-		DrawPhysicsBodySection(node);
-		// Authored cubemap capture on this node (pinned probe inspector).
-		DrawCubemapSection(node);
-		// Authored camera on this node (lens inspector).
-		DrawCamSection(node);
-		// Authored audio source on this node (emitter inspector).
-		DrawAudioSection(node);
-		// Audio room on this node (the environmental-reverb inspector
-		// — renders the Enable button when the node carries no room;
-		// ANY transform node can hold one).
-		DrawAudioRoomSection(node);
+		// Components register their existing draw handlers in display order.
+		InspectorSectionRegistry sections;
+		sections.Register("gi-volume", [this](uint32_t n) { DrawGiVolumeSection(n); });
+		sections.Register("trigger", [this](uint32_t n) { DrawTriggerVolumeSection(n); });
+		sections.Register("physics", [this](uint32_t n) { DrawPhysicsBodySection(n); });
+		sections.Register("cubemap", [this](uint32_t n) { DrawCubemapSection(n); });
+		sections.Register("camera", [this](uint32_t n) { DrawCamSection(n); });
+		sections.Register("audio", [this](uint32_t n) { DrawAudioSection(n); });
+		sections.Register("audio-room", [this](uint32_t n) { DrawAudioRoomSection(n); });
+		sections.DrawAll(node);
 		// Single discoverable add-component flow. Only list missing
 		// associations and reuse the existing undoable attach commands.
 		ImGui::Separator();
