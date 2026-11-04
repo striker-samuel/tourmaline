@@ -321,9 +321,9 @@ void tour::App::UpdateVrrFrameLimit() {
 		m_autoVrrFps = target;
 		m_framePacer.SetTargetFps(target);
 		if (target)
-			std::cout << "[VRR] refresh " << mode->refresh_rate << " Hz, cap " << target << " FPS\\n";
+			std::cout << "[VRR] refresh " << mode->refresh_rate << " Hz, cap " << target << " FPS\n";
 		else
-			std::cerr << "[VRR] unknown display refresh rate; automatic FPS cap disabled\\n";
+			std::cerr << "[VRR] unknown display refresh rate; automatic FPS cap disabled\n";
 	}
 }
 
