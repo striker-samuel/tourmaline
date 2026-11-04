@@ -1637,6 +1637,27 @@ private:
 	ImVec2 m_wysiwygLiveRectMin{ 0.0f, 0.0f };
 	ImVec2 m_wysiwygLiveRectMax{ 0.0f, 0.0f };
 	bool m_wysiwygLiveRectFresh = false;
+	// ---- the DETACHED WINDOW LANE (the offscreen scene render target) --
+	// The Viewport panel may undock into a secondary OS window (platform
+	// viewports are enabled, editor_app.cpp). The editor's rendergraph
+	// presents ONLY the primary swapchain, so the main-swapchain
+	// composite can never reach a detached stage: instead the live
+	// view's PRIVATE inline LDR target - already an offscreen scene
+	// render - is bound as an ImGui user texture and drawn INSIDE the
+	// panel; ImGui's own Vulkan backend presents it in the detached
+	// window's swapchain. The descriptor is rebuilt when the inline
+	// target view changes (a recreate) and released like the thumbnail
+	// cache. Diagnostic view modes (the legacy editor passes) remain
+	// main-window-only; the detached panel shows a hint for those.
+	bool m_dockStageDetached = false; // captured per frame in DrawUI (the Viewport window's host viewport)
+	ImTextureID m_wysiwygDetachedTex = 0;  // the ImGui descriptor set (0 = none built)
+	smvk::ImageViewHandle m_wysiwygDetachedPhysical{}; // the inline view the descriptor was built from
+	ImTextureID WysiwygStageTexture(); // editor_ui.cpp (lazy build + recreate rebuild)
+	void DropWysiwygStageTexture();
+	// One viewport's rect from an UNCLAMPED dock stage area (the quad
+	// split / the aspect-locked 4:3 fit). The shared authority for
+	// ComputeViewportRects and the detached-stage live-view capture.
+	static ViewportRect StageViewportRect(const ViewportRect& area, int vp, int layout);
 	ImVec2 m_wysiwygCanvasSize{ 0.0f, 0.0f }; // the ACTIVE render extent (deadband/hold-filtered, see the drive)
 	// The frame-boundary quiesce flag (the user's fix — the old
 	// mid-frame wait was frame-blind): set by DriveWysiwygLive on any

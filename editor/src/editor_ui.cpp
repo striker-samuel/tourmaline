@@ -328,6 +328,65 @@ void EditorApp::FinalizePending() {
 		}
 	}
 
+	// ---- the detached live-view image lane (the offscreen scene RT) --
+	// Bind the WYSIWYG inline LDR target as an ImGui user texture so the
+	// detached Viewport window can present the scene through ImGui's own
+	// Vulkan backend (its swapchain, not the editor's). The same shape
+	// as TextureThumb: a cached descriptor rebuilt when the physical
+	// view changes (an inline-target recreate) and released on
+	// teardown/recreate - never per frame.
+	ImTextureID EditorApp::WysiwygStageTexture() {
+		if (!m_wysiwyg || !m_wysiwygValid || !m_context || !m_imgui)
+			return ImTextureID(0);
+		const smvk::ImageViewHandle view = m_wysiwyg->InlineTargetView();
+		if (view.empty())
+			return ImTextureID(0);
+		if (m_wysiwygDetachedTex != 0
+			&& m_wysiwygDetachedPhysical == view)
+			return m_wysiwygDetachedTex;
+		DropWysiwygStageTexture();
+		const void* vkView = m_context->GetImageViewVkImageView(view);
+		if (!vkView)
+			return ImTextureID(0);
+		// The same linear/clamp sampler the main-swapchain composite
+		// samples the target with (lazy-shared with the thumbnail lane).
+		if (m_cubeFaceSampler == UINT32_MAX) {
+			m_cubeFaceSampler = m_context->GetOrCreateSampler(
+				smvk::SamplerCreateInfo{
+					.magFilter = smvk::Filter::Linear,
+					.minFilter = smvk::Filter::Linear,
+					.mipmapMode = smvk::MipmapMode::Nearest,
+					.addressU = smvk::AddressMode::ClampToEdge,
+					.addressV = smvk::AddressMode::ClampToEdge,
+					.addressW = smvk::AddressMode::ClampToEdge,
+					.maxAnisotropy = 1.0f });
+		}
+		const void* vkSampler =
+			m_context->GetVkSamplerOpaque(m_cubeFaceSampler);
+		if (!vkSampler)
+			return ImTextureID(0);
+		VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(
+			VkSampler(const_cast<void*>(vkSampler)),
+			VkImageView(const_cast<void*>(vkView)),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		if (set == VK_NULL_HANDLE)
+			return ImTextureID(0);
+		m_wysiwygDetachedTex = ImTextureID(reinterpret_cast<ImU64>(set));
+		m_wysiwygDetachedPhysical = view;
+		return m_wysiwygDetachedTex;
+	}
+
+	void EditorApp::DropWysiwygStageTexture() {
+		if (m_wysiwygDetachedTex == 0) {
+			m_wysiwygDetachedPhysical = smvk::ImageViewHandle{};
+			return;
+		}
+		ImGui_ImplVulkan_RemoveTexture(
+			reinterpret_cast<VkDescriptorSet>(ImU64(m_wysiwygDetachedTex)));
+		m_wysiwygDetachedTex = 0;
+		m_wysiwygDetachedPhysical = smvk::ImageViewHandle{};
+	}
+
 	void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 		(void)targetExtent;
 		if (ImGui::BeginMainMenuBar()) {
@@ -388,9 +447,11 @@ void EditorApp::FinalizePending() {
 
 		// A real ImGui dockspace replaces the old fixed-position columns.
 		// Panels can be docked, tabbed, split and floated WITHIN the editor
-		// window; ImGui saves the workspace to editor.imgui.ini. We keep
-		// platform multi-viewport disabled: the renderer still owns one
-		// Vulkan swapchain (undocking into a second OS window is not wired).
+		// window; ImGui saves the workspace to editor.imgui.ini. Platform
+		// multi-viewports ARE enabled (editor_app.cpp) so undocked panels
+		// become real OS windows; the Viewport stage supports that through
+		// the offscreen image lane (see the Viewport window below) - the
+		// editor's rendergraph still presents only the primary swapchain.
 		const ImVec2 mainPos = ImGui::GetMainViewport()->Pos;
 		ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
 		ImGui::SetNextWindowPos(ImVec2(mainPos.x, mainPos.y + menuH), ImGuiCond_Always);
@@ -472,13 +533,16 @@ void EditorApp::FinalizePending() {
 		m_wysiwygLiveRectFresh = false;
 		if (m_uiMode) {
 			// A transparent, dockable viewport client: render directly into
-			// its previous-frame rect under ImGui's tab chrome. No offscreen
-			// scene texture, no extra GPU copy and no scene serialization.
+			// its previous-frame rect under ImGui's tab chrome while
+			// DOCKED (no offscreen scene texture, no extra GPU copy, no
+			// scene serialization). DETACHED (undocked into a secondary
+			// OS window), the scene arrives through the image lane below:
+			// the live view's inline target drawn as an ImGui user
+			// texture, presented by ImGui's backend in that window's own
+			// swapchain.
 			m_dockViewportVisible = false;
+			m_dockStageDetached = false;
 			if (m_showViewportPanel) {
-			// The scene is rendered by the PRIMARY swapchain, not ImGui's
-			// secondary-window swapchains. Keep this canvas on the host.
-			ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
 			ImGui::SetNextWindowBgAlpha(0.0f);
 			ImGui::SetNextWindowSize(ImVec2(880, 620), ImGuiCond_FirstUseEver);
 			if (ImGui::Begin("Viewport", &m_showViewportPanel,
@@ -492,6 +556,12 @@ void EditorApp::FinalizePending() {
 					m_dockViewportRect = ViewportRect{ pos.x, pos.y,
 						avail.x, avail.y };
 					m_dockViewportVisible = true;
+					// The host viewport decides the lane: a window outside
+					// the main viewport presents through ImGui's own
+					// swapchain (RenderPlatformWindows), which the editor's
+					// rendergraph never touches.
+					m_dockStageDetached = ImGui::GetWindowViewport()->ID
+						!= ImGui::GetMainViewport()->ID;
 					const ImVec2 mouse = ImGui::GetMousePos();
 					m_dockViewportHovered = ImGui::IsWindowHovered()
 						&& mouse.x >= pos.x && mouse.x < pos.x + avail.x
@@ -501,7 +571,32 @@ void EditorApp::FinalizePending() {
 							|| ImGui::IsMouseClicked(ImGuiMouseButton_Middle)
 							|| ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
 						m_dockViewportDragCaptured = true;
-					ImGui::Dummy(avail); // reserve canvas space, no ImGui pixels
+					if (m_dockStageDetached) {
+						// THE OFFSCREEN SCENE RENDER TARGET LANE. The
+						// inline LDR target IS the offscreen scene render;
+						// stretch it over the stage (the drive renders at
+						// the stage extent through the deadband, so this
+						// is 1:1 outside resize transitions). Diagnostic
+						// view modes (the legacy editor passes) render
+						// into the primary swapchain only - say so.
+						const ImTextureID tex = LiveViewActive()
+							? WysiwygStageTexture() : ImTextureID(0);
+						if (tex != 0)
+							ImGui::Image(tex, avail);
+						else {
+							ImGui::Dummy(avail);
+							ImGui::SetCursorPos(ImVec2(
+								ImGui::GetCursorPos().x,
+								ImGui::GetCursorPos().y - avail.y * 0.5f));
+							ImGui::TextDisabled(
+								"%s", LiveViewActive()
+								? "scene render unavailable (attach failed)"
+								: "this view mode renders in the editor window -\n"
+									"dock the Viewport back or switch to Lit (F1)");
+						}
+					}
+					else
+						ImGui::Dummy(avail); // reserve canvas space, no ImGui pixels
 				}
 			}
 			ImGui::End();

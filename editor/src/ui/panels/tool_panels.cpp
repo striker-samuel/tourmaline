@@ -506,6 +506,27 @@ namespace editor {
 		const int liveVp = LiveViewViewport();
 		if (liveVp < 0)
 			return;
+		// DETACHED STAGE: the Viewport window lives in a secondary OS
+		// window, so ComputeViewportRects collapsed the main-window
+		// rects to 1x1 (the editor passes cannot record there). Derive
+		// the capture from the RAW dock stage through the shared layout
+		// authority (StageViewportRect) so the drive keeps the true
+		// extent and aspect. Only the SIZE is consumed (the extent
+		// settle + the deadband); the desktop position is irrelevant
+		// because the main-swapchain compose is skipped (its detached
+		// guard in RecordLiveViewComposePass) - the detached window
+		// presents the scene through the ImGui image lane instead.
+		if (m_dockStageDetached) {
+			const ViewportRect stage = StageViewportRect(
+				m_dockViewportRect, liveVp, m_vpLayout);
+			if (stage.w < 8.0f || stage.h < 8.0f)
+				return;
+			m_wysiwygLiveRectMin = ImVec2(stage.x, stage.y);
+			m_wysiwygLiveRectMax = ImVec2(stage.x + stage.w,
+				stage.y + stage.h);
+			m_wysiwygLiveRectFresh = true;
+			return; // the detached lane draws the image in the panel
+		}
 		const ViewportRect& stage = m_viewports[liveVp].rect;
 		if (stage.w < 8.0f || stage.h < 8.0f)
 			return;
