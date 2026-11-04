@@ -80,13 +80,18 @@ def inject_attribute(source, keyword, attribute, index):
 
 
 def apply_hints(source, loop_mode="auto", loop_index=0,
-                branch_mode="auto", branch_index=0):
+                branch_mode="auto", branch_index=0, unroll_count=None):
     changes = []
+    if unroll_count is not None and loop_mode != "unroll":
+        raise ValueError("unroll count requires unroll loop mode")
     if loop_mode != "auto":
         if loop_mode not in ("loop", "unroll"):
             raise ValueError("unsupported loop mode")
-        source = inject_attribute(source, "for", loop_mode, loop_index)
-        changes.append({"kind": "loop", "mode": loop_mode, "index": loop_index})
+        if unroll_count is not None and (not isinstance(unroll_count, int) or isinstance(unroll_count, bool) or not 1 <= unroll_count <= 1024):
+            raise ValueError("unroll count must be in 1..1024")
+        attr = f"unroll({unroll_count})" if unroll_count is not None else loop_mode
+        source = inject_attribute(source, "for", attr, loop_index)
+        changes.append({"kind": "loop", "mode": loop_mode, "index": loop_index, "unroll_count": unroll_count})
     if branch_mode != "auto":
         if branch_mode not in ("branch", "flatten"):
             raise ValueError("unsupported branch mode")
