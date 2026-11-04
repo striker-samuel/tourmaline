@@ -131,6 +131,14 @@ inline float SgSelfEnergy() {
 		* (1.0f - std::exp(-4.0f * kSgSharpness));
 }
 
+// Rescale non-negative fitted lobes to preserve the sampled directional
+// mean radiance. The independent (diagonal) SG projection double-counts
+// overlapping lobes, creating a systematic brightness bias even when the
+// Monte Carlo samples have converged. Apply after fitting, before spatial
+// smoothing; the caller supplies the post-firefly-clamp sample mean.
+// A zero source channel stays zero; no negative or non-finite gain is used.
+void SgMatchMeanRadiance(glm::vec3 amps[kSgLobeCount], const glm::vec3& meanRadiance);
+
 // Online accumulation for the fixed-basis fit. Radiance samples enter
 // with their solid-angle weight (uniform sphere sampling:
 // weight = 4*pi / sampleCount).

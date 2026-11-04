@@ -168,6 +168,44 @@ void TestSgFitRoundtrip() {
 	Check(allNonNeg, "sg fit clamps to non-negative");
 }
 
+void TestSgMeanMatchedCubeAmps() {
+	// A constant RGB environment should not grow brighter as more
+	// probe directions are traced. Diagonal SG projection alone
+	// double-counts its overlapping basis functions.
+	const glm::vec3 constant(0.8f, 1.5f, 0.2f);
+	constexpr float meanBasis = 0.124958067f; // (1 - exp(-8)) / 8
+	for (uint32_t n : { 64u, 256u, 1024u }) {
+		SgFitAccumulator acc;
+		acc.accumulateGram = false;
+		for (uint32_t i = 0; i < n; ++i) {
+			const float y = 1.0f - 2.0f * (float(i) + 0.5f) / float(n);
+			const float radius = std::sqrt(std::max(0.0f, 1.0f - y * y));
+			const float phi = float(i) * 2.39996323f;
+			acc.AddSample(glm::vec3(std::cos(phi) * radius, y,
+				std::sin(phi) * radius), constant, 4.0f * kPi / float(n));
+		}
+		glm::vec3 amps[kSgLobeCount];
+		acc.Solve(amps);
+		tour::gi::SgMatchMeanRadiance(amps, constant);
+		glm::vec3 integratedMean(0.0f);
+		bool valid = true;
+		for (const glm::vec3& a : amps) {
+			integratedMean += a * meanBasis;
+			valid &= glm::all(glm::greaterThanEqual(a, glm::vec3(0.0f)))
+				&& std::isfinite(a.x + a.y + a.z);
+		}
+		Check(valid, "sg cube amps finite nonnegative across sample counts");
+		Check(glm::all(glm::lessThan(glm::abs(integratedMean - constant),
+			glm::vec3(2e-4f))), "sg cube amps conserve directional mean");
+	}
+	glm::vec3 zeros[kSgLobeCount] = {};
+	tour::gi::SgMatchMeanRadiance(zeros, constant);
+	bool allZero = true;
+	for (const glm::vec3& a : zeros)
+		allZero &= glm::all(glm::equal(a, glm::vec3(0.0f)));
+	Check(allZero, "sg cube amps zero field stays zero");
+}
+
 void TestSgSelfEnergy() {
 	// Analytic self-overlap pi/lambda*(1-exp(-4 lambda)) ~= 0.785398.
 	const float self = SgSelfEnergy();
@@ -1197,15 +1235,22 @@ void TestGiVolume() {
 			const uint32_t N = cfg.captureDirs;
 			SgFitAccumulator ref;
 			const float weight = 4.0f * kPi / float(N);
+			glm::vec3 meanSky(0.0f);
 			for (uint32_t i = 0; i < N; ++i) {
 				const float y = 1.0f - 2.0f * (float(i) + 0.5f) / float(N);
 				const float r = std::sqrt(std::max(0.0f, 1.0f - y * y));
 				const float phi = float(i) * 2.39996323f;
 				const glm::vec3 d(std::cos(phi) * r, y, std::sin(phi) * r);
+				meanSky += scene.SkyRadiance(d);
 				ref.AddSample(d, scene.SkyRadiance(d), weight);
 			}
+			meanSky /= float(N);
 			glm::vec3 refAmps[kSgLobeCount];
 			ref.Solve(refAmps);
+			// The bake's mean-preservation step (#134): the fitted amps
+			// are rescaled to carry the samples' directional mean
+			// exactly, so the identity reference must apply it too.
+			tour::gi::SgMatchMeanRadiance(refAmps, meanSky);
 			// Center probe of the baked grid.
 			const uint32_t cx = baked.dims[0] / 2;
 			const uint32_t cy = baked.dims[1] / 2;
@@ -3315,6 +3360,7 @@ int main() {
 	smvk::gi::TestSgBasis();
 	smvk::gi::TestSgSelfEnergy();
 	smvk::gi::TestSgFitRoundtrip();
+	smvk::gi::TestSgMeanMatchedCubeAmps();
 	smvk::gi::TestSgFitHighContrast();
 	smvk::gi::TestGiEmptyScene();
 	smvk::gi::TestGiPrimarySunIncluded();
