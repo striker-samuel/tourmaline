@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <random>
 #include <set>
@@ -1081,6 +1082,20 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				receipt << "pak " << plan.paks[i].id << ' '
 					<< finalPaths[i].filename().generic_string() << " fnv1a64:"
 					<< finalDigests[i] << "\\n";
+			// Capture logical source-to-package ownership as well as output
+			// bytes. Stable content IDs remain in each pak's #ids table;
+			// this ledger records the recipe edge that produced the pak.
+			for (const PlanPak& pak : plan.paks) {
+				receipt << "scene " << std::quoted(pak.id) << ' '
+					<< std::quoted(pak.scene) << "\\n";
+				for (const std::string& artifact : pak.sceneArtifacts)
+					receipt << "scene-artifact " << std::quoted(pak.id)
+						<< ' ' << std::quoted(artifact) << "\\n";
+				for (const PlanAsset& asset : pak.assets)
+					receipt << "input " << std::quoted(pak.id) << ' '
+						<< std::quoted(asset.path) << ' '
+						<< int(asset.kind) << "\\n";
+			}
 			const std::string payload = receipt.str();
 			const fs::path stagedReceipt = stagingDir /
 				(manifestName + ".receipt");
