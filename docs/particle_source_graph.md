@@ -4,8 +4,9 @@ This is an initial **typed, open source graph** for particle *sources*, separate
 from the GPU emit/sim/draw graph. It uses the same domain-neutral
 `tour::graph::Document` as the placement and gameplay graph foundation;
 the graph contains stable node IDs, named typed plugs, validated links,
-and node attributes. Source evaluation is CPU-side and produces existing
-`smvk::ParticleEmitterGpu` rows. The GPU's particle state, spawn scheduling,
+and node attributes. Source evaluation is CPU-side and produces either existing
+`smvk::ParticleEmitterGpu` rows or `smvk::MeshParticleEmitterGpu` rows,
+depending on the sink rendering mode. The GPU's particle state, spawn scheduling,
 simulation and rendering are unchanged.
 
 ## Nodes and plugs
@@ -16,7 +17,7 @@ simulation and rendering are unchanged.
 | `particle.source.heightfield` | — | `points: particle.points` | terrain-group selector |
 | `particle.source.placement` | — | `points: particle.points` | current placement result selector (reserved) |
 | `particle.filter.height` | `points` | `points` | minimum/maximum world Y |
-| `particle.emitter` | `sources: particle.points` (multi) | — | rate, lifetime, size, wind, tint |
+| `particle.emitter` | `sources: particle.points` (multi) | — | rate, lifetime, size, wind, tint, billboard/mesh mode, mesh bin |
 
 Source plugs are *positions and normals*, not GPU emitters. The emitter
 sink maps representative positions to world-space GPU emitter rows. Each
@@ -77,6 +78,24 @@ runtime authored emitters. Games can evaluate the graph with their own
   remains per-flight with GPU-owned fractional spawn carry.
 - **Dust rendering:** the alpha-blended ground dust mode comes from the
   preceding ground-dust PR on which this change is stacked.
+
+## Mesh emitter compilation (backend integration pending)
+
+The emitter sink supports a `renderMode` of `kBillboardRender` (default)
+or `kMeshRender`, with a `meshId` in the eight-bin GPU mesh-particle table.
+`Evaluate` returns billboard rows in `Result::emitters` and mesh rows in
+`Result::meshEmitters`. Both count toward the supplied evaluation capacity.
+Mesh rows retain rate distribution, life, size envelope, tint, source point,
+and a stable per-row seed. Attribute serialization uses `v2` and reads
+existing `v1` documents as billboard emitters.
+
+**This is not yet an end-to-end mesh particle feature.** The live editor
+currently forwards only `Result::emitters` into `WorldRenderer`.
+Before exposing mesh mode in the editor, the renderer must own/create a
+`MeshParticles` instance, upload mesh emitter rows, register geometry/material
+draw-command prototypes for bins, and record its emit/sim/cull/prefix/scatter/
+drawbuild/draw passes. It must also preserve proper ordering and synchronization
+with the existing billboard path. No GPU rendering is claimed by this change.
 
 ## Current limitations / follow-up work
 
