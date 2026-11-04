@@ -285,12 +285,18 @@ void EditorApp::UpdateParticleSourcePreview() {
             // The editor's live terrain-group heightfield is the same grid
             // consumed by terrain painting and PlacementGraph previews.
             const smvk::placement::HeightfieldData* field = nullptr;
+            uint32_t selectedGroup = UINT32_MAX;
             for (const auto& [id, group] : m_terrainGroups) {
-                if (group.deleted || (selector >= 0 && uint32_t(selector) != id)) continue;
-                field = &group.data.heights;
-                break;
+                if (group.deleted || !group.data.heights.valid() ||
+                    (selector >= 0 && uint32_t(selector) != id)) continue;
+                // Unordered-map iteration is not an authoring order; use
+                // the smallest stable world-node ID when selector == -1.
+                if (id < selectedGroup) {
+                    selectedGroup = id;
+                    field = &group.data.heights;
+                }
             }
-            if (!field || field->width < 2 || field->height < 2) {
+            if (!field) {
                 error = "Heightfield source requires a live terrain group"; return false;
             }
             // Representative 4x4 grid: bounded by the GPU emitter budget.
