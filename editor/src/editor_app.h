@@ -2761,6 +2761,7 @@ private:
 	ViewportRect m_dockViewportRect{};
 	bool m_dockViewportVisible = false;
 	bool m_dockViewportHovered = false;
+	bool m_dockViewportDragCaptured = false; // keep orbit/pan ownership until release
 	bool m_dockResetRequested = false;
 	bool m_showRenderSettingsPanel = true;
 	// ---- ground grid + snapping (gizmo) ----
