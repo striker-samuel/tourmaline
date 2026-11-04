@@ -44,6 +44,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
+#include <Engine/Asset/touranim.h>
 #include <Engine/Asset/cook_asset.h> // GI/lightmap cook assets (browser creation)
 #include "editor_asset_inspect.h"
 #include "editor_live_preview_policy.h"
@@ -2121,6 +2122,14 @@ private:
 	ImVec2 m_prefabRectMin{0,0}, m_prefabRectMax{0,0};
 	ImVec2 m_prefabCanvasSize{0,0};
 	bool m_prefabRectFresh = false;
+	// Non-destructive animation playback in the separate prefab world.
+	bool m_prefabAnimationPreview = false;
+	bool m_prefabAnimationPlaying = false;
+	bool m_prefabAnimationLoop = true;
+	float m_prefabAnimationSpeed = 1.0f;
+	float m_prefabAnimationTime = 0.0f;
+	tour::asset::Clip m_prefabAnimationClip;
+	std::string m_prefabAnimationSource;
 	smvk::UiComposite m_prefabComposite;
 	smvk::LogicalImageViewHandle m_prefabComposeLogical{};
 	smvk::ImageViewHandle m_prefabComposePhysical{};
@@ -2317,6 +2326,12 @@ private:
 	// Generic previews are cached per selection and capped at 64 KiB.
 	std::string m_assetGenericPath;
 	BrowserFilePreview m_assetGenericPreview;
+	// .tourAnim documents may exceed the generic 64 KiB text-preview cap.
+	std::optional<tour::asset::AnimDoc> m_animationInspectDoc;
+	std::string m_animationInspectError;
+	std::vector<std::string> m_animationInspectWarnings;
+	int m_animationInspectClip = 0;
+	int m_animationInspectTrack = 0;
 	std::string m_assetInspectPath;
 	std::optional<smvk::assets::MaterialAsset> m_assetInspectMat;
 	std::optional<smvk::assets::MeshAsset> m_assetInspectMesh;
