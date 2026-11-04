@@ -65,6 +65,13 @@ struct ImportResult {
 	bool derived = false;             // false = current, nothing written
 };
 
+// Compose project-wide material channel recipes into imported PNGs.
+// Outputs are canonical by material property, and source paths resolve
+// relative to the glTF's imported family directory.
+bool ComposeMaterialFromRecipe(const MaterialPackingRule& rule,
+    smvk::assets::MaterialAsset& material,
+    const std::filesystem::path& directory, std::string& err);
+
 // Pure, testable material-policy transform. Importer applies it before
 // publication; cooker reads the resulting .material metadata.
 bool ApplyMaterialPackingRule(const MaterialPackingRule& rule,
