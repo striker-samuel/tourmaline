@@ -121,15 +121,16 @@ def main(argv=None):
     if args.url or args.token:
         if not (args.url and args.token):
             p.error("--url and --token are both required")
+        if args.check:
+            # A failed connection must not replace a working client config.
+            probe = AssetClient(args.url, args.token, cache=args.cache or default_cache())
+            count = len(probe.sources())
         path = configure(args.url, args.token, args.cache, args.config)
         print("Client config:", path)
         if args.install_maya:
             print("Installed:", *install_maya(), sep="\n  ")
         if args.check:
-            settings = json.loads(path.read_text(encoding="utf-8"))
-            client = AssetClient(settings["url"], settings["token"],
-                                 cache=settings["cache"])
-            print("Connected to repository; source assets:", len(client.sources()))
+            print("Connected to repository; source assets:", count)
     elif args.terminal:
         terminal()
     else:
