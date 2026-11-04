@@ -302,8 +302,39 @@ namespace editor {
 			ImGui::EndPopup();
 		}
 		if (m_assetDb.IsOpen()) {
-			SameLineIfFits("Rescan");
-			if (ImGui::Button("Rescan")) {
+			SameLineIfFits("Refresh");
+			const float refreshSize = ImGui::GetFrameHeight();
+			const bool rescan = ImGui::Button("##rescan_assets",
+				ImVec2(refreshSize, refreshSize));
+			// Two curved arrows drawn in the current UI font-independent style.
+			{
+				ImDrawList* dl = ImGui::GetWindowDrawList();
+				const ImVec2 a = ImGui::GetItemRectMin();
+				const ImVec2 center(a.x + refreshSize * 0.5f,
+					a.y + refreshSize * 0.5f);
+				const float radius = refreshSize * 0.22f;
+				const ImU32 c = ImGui::GetColorU32(ImGuiCol_Text);
+				constexpr float pi = 3.14159265f;
+				for (int half = 0; half < 2; ++half) {
+					const float start = half * pi + 0.25f;
+					const float finish = start + pi - 0.50f;
+					dl->PathArcTo(center, radius, start, finish, 12);
+					dl->PathStroke(c, 0, 1.5f);
+					const ImVec2 end(center.x + radius * std::cos(finish),
+						center.y + radius * std::sin(finish));
+					const ImVec2 tangent(-std::sin(finish), std::cos(finish));
+					const ImVec2 normal(std::cos(finish), std::sin(finish));
+					const float head = refreshSize * 0.13f;
+					dl->AddTriangleFilled(end,
+						ImVec2(end.x - tangent.x * head + normal.x * head * 0.65f,
+							end.y - tangent.y * head + normal.y * head * 0.65f),
+						ImVec2(end.x - tangent.x * head - normal.x * head * 0.65f,
+							end.y - tangent.y * head - normal.y * head * 0.65f), c);
+				}
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Rescan project assets and refresh identity mappings");
+			if (rescan) {
 				smvk::cache::RescanStats stats;
 				std::string rerr;
 				if (m_assetDb.RescanProject(stats, rerr))
