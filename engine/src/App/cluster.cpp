@@ -1175,7 +1175,7 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 	// the legacy/default 1.0 strength for previously cooked materials.
 	values.textures2[2] = info.cavityStrength >= 1.0f ? -1 :
 		static_cast<int>(std::clamp(info.cavityStrength, 0.0f, 1.0f) * 1000.0f + 0.5f);
-	values.textures2[3] = -1;
+	values.textures2[3] = info.channelSelectors;
 
 	values.params.x = info.alphaCutoff;
 	values.params.y = info.metallicFactor;
