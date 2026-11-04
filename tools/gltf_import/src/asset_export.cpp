@@ -495,6 +495,7 @@ void WriteMaterialAsset(const std::filesystem::path& path,
 	o << "occlusionStrength=" << m.info.occlusionStrength << "\n";
 	o << "cavityStrength=" << m.info.cavityStrength << "\n";
 	if (!m.packingSource.empty()) o << "packing.source=" << m.packingSource << "\n";
+	if (!m.packingSignature.empty()) o << "packing.signature=" << m.packingSignature << "\n";
 	if (m.channelSelectors >= 0) o << "packing.channels=" << m.channelSelectors << "\n";
 	o << "doubleSided=" << (m.info.doubleSided ? 1 : 0) << "\n";
 	o << "castsShadows=" << (m.info.castsShadows ? 1 : 0) << "\n";
@@ -601,6 +602,7 @@ bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
 			out.info.occlusionStrength = float(std::atof(val.c_str()));
 		else if (key == "cavityStrength") out.info.cavityStrength = float(std::atof(val.c_str()));
 		else if (key == "packing.source") out.packingSource = val;
+		else if (key == "packing.signature") out.packingSignature = val;
 		else if (key == "packing.channels") out.channelSelectors = std::atoi(val.c_str());
 		else if (key == "doubleSided")
 			out.info.doubleSided = std::atoi(val.c_str()) != 0;
