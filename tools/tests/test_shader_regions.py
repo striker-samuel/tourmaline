@@ -40,6 +40,28 @@ class ShaderRegionsTests(unittest.TestCase):
         self.assertNotIn("[unroll(4)] for (int i", edited)
         self.assertEqual(hints[0]["id"], target["id"])
 
+    def test_hash_is_stable_when_ai_inserts_loop_before_target(self):
+        original = regions.discover(SHADER)
+        target = next(r for r in original if r["kind"] == "loop"
+                      and "int j" in r["header"])
+        new_loop = "    for (int k = 0; k < 2; ++k) { sum += 1; }\\n"
+        rewritten = SHADER.replace("    float sum = 0;\\n",
+                                   "    float sum = 0;\\n" + new_loop)
+        discovered = regions.discover(rewritten)
+        # The hash addresses the loop itself, not its ordinal in the file.
+        same = [r for r in discovered if r["id"] == target["id"]]
+        self.assertEqual(len(same), 1)
+        self.assertEqual(same[0]["header"], target["header"])
+        self.assertEqual(same[0]["line"], target["line"] + 1)
+        mapped = regions.preserve_identity(SHADER, rewritten, original)
+        tracked = next(r for r in mapped if r["id"] == target["id"])
+        self.assertEqual(tracked["status"], "matched")
+        result, changes = regions.apply_identified_regions(
+            rewritten, {target["id"]: "unroll(4)"}, mapped)
+        self.assertIn("[unroll(4)] for (int j", result)
+        self.assertNotIn("[unroll(4)] for (int k", result)
+        self.assertEqual(changes[0]["id"], target["id"])
+
     def test_fail_closed_on_duplicate_loop_headers(self):
         duplicate = SHADER.replace("for (int j = 0; j < 8; ++j)",
                                    "for (int i = 0; i < 4; ++i)")
