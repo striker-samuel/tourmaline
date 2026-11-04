@@ -22,7 +22,7 @@ SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--catalog", type=Path, default=ROOT / "benchmarks/scenarios.json")
-    p.add_argument("--app", "--exe", dest="app", type=Path, required=True,
+    p.add_argument("--app", type=Path, required=True,
                    help="built App executable (not Benchmark)")
     p.add_argument("--workdir", type=Path, help="App working directory (defaults to binary directory)")
     p.add_argument("--output", type=Path, default=Path("out/scenario-snapshots"))

@@ -106,7 +106,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--runner", help="Python plugin filename (maya, blender, ...)")
+    parser.add_argument("--runner", help="DCC plugin name (maya, blender, ...; see --list-runners)")
     parser.add_argument("--dcc-exe", help="DCC executable override (otherwise plugin default)")
     parser.add_argument("--env", action="append", default=[], metavar="NAME=VALUE",
                         help="per-job environment override, repeatable")

@@ -19,6 +19,20 @@ class MaterialLabTests(unittest.TestCase):
     def setUp(self):
         self.suite = material_lab.load_suite(material_lab.DEFAULT_SUITE)
 
+    def test_reference_only_exposes_lit_view(self):
+        # The CPU reference runner always selects lit, so do not accept
+        # an ignored --view override on that entry point.
+        parser = material_lab.parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["reference", "--view", "roughness",
+                               "--exe", "ReferenceScene", "--output", "out",
+                               "--project", "source"])
+        planned = parser.parse_args(["plan", "--view", "roughness"])
+        self.assertEqual(planned.view, "roughness")
+        run = parser.parse_args(["run", "--view", "health",
+                                 "--exe", "App", "--output", "out"])
+        self.assertEqual(run.view, "health")
+
     def test_selects_bundled_environments_by_default(self):
         cases = material_lab.plans(self.suite, material="metal_smooth", view="lit,health")
         self.assertEqual([c["name"] for c in cases], [
