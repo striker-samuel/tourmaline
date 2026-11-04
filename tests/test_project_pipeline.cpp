@@ -2323,6 +2323,21 @@ void TestBuildPlanExecutor() {
 			smvk::project::BuildPlanReport ok1;
 			std::string e1;
 			RecordingAdapter rec1;
+			// A stale/in-use project build lock is never removed or
+			// bypassed automatically by the next writer.
+			const fs::path buildLockDir = fs::path(project.DerivedDataDir())
+				/ ".build.lock";
+			fs::create_directories(buildLockDir, ec);
+			{
+				RecordingAdapter conflicting;
+				smvk::project::BuildPlanReport rejected;
+				std::string reason;
+				Check(!smvk::project::ExecuteBuildPlan(project, p2,
+						conflicting, opts, rejected, reason)
+						&& reason.find("project build already active") != std::string::npos,
+					"executor.project-build-lock-rejected");
+			}
+			fs::remove(buildLockDir, ec); // operator-verified recovery
 			Check(smvk::project::ExecuteBuildPlan(project, p2, rec1,
 					opts, ok1, e1)
 				&& ok1.paks.size() == 2,
