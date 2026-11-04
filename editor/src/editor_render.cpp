@@ -3052,11 +3052,18 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 		// and is gone.
 		// The tab's captured rect, clamped into the framebuffer (the
 		// dock can hang past the window edge while a splitter drags).
-		const ImVec2 fbs = ImGui::GetIO().DisplaySize;
-		const float x0 = std::clamp(m_wysiwygLiveRectMin.x, 0.0f, fbs.x);
-		const float y0 = std::clamp(m_wysiwygLiveRectMin.y, 0.0f, fbs.y);
-		const float x1 = std::clamp(m_wysiwygLiveRectMax.x, 0.0f, fbs.x);
-		const float y1 = std::clamp(m_wysiwygLiveRectMax.y, 0.0f, fbs.y);
+		// ImGui window/client rectangles are in desktop coordinates when
+		// multi-viewports are enabled. The render graph's swapchain offsets
+		// are relative to the primary SDL window, even when that window has
+		// been moved away from desktop (0, 0). Subtract the primary viewport
+		// origin BEFORE clipping or casting offsets to uint32_t.
+		const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+		const ImVec2 origin = mainViewport->Pos;
+		const ImVec2 fbs = mainViewport->Size;
+		const float x0 = std::clamp(m_wysiwygLiveRectMin.x - origin.x, 0.0f, fbs.x);
+		const float y0 = std::clamp(m_wysiwygLiveRectMin.y - origin.y, 0.0f, fbs.y);
+		const float x1 = std::clamp(m_wysiwygLiveRectMax.x - origin.x, 0.0f, fbs.x);
+		const float y1 = std::clamp(m_wysiwygLiveRectMax.y - origin.y, 0.0f, fbs.y);
 		const float w = x1 - x0, h = y1 - y0;
 		if (w < 8.0f || h < 8.0f)
 			return;
