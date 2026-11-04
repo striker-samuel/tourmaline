@@ -24,10 +24,10 @@
 //   - a .hlsli edit recompiles EVERYTHING (includes are coarse —
 //     no per-file include graph at runtime).
 //
-// THE VARIANT TABLE mirrors engine/CMakeLists.txt's VARIANTS list.
-// Drift degrades gracefully: a twin missing here keeps serving its
-// build-compiled bytes until the next full build (never a wrong
-// variant — a MISSING recompile, not a mismatched one).
+// THE VARIANT TABLE is generated at CMake configure time from
+// engine/shaders/variants.txt, the same list used to compile shader
+// permutations. A missing/invalid entry fails during configuration;
+// there is no separate runtime variant list to keep in sync.
 //
 // THE CONSUMER CONTRACT (the GPU swap, the item's second leg): the
 // service only lands BYTES; the frames' shader MODULES/PIPELINES are

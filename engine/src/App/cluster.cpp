@@ -571,10 +571,10 @@ bool smvk::Cluster::SampleAnimation(float dt,
 				* glm::mat4_cast(q) * glm::scale(glm::mat4(1.0f), S);
 			break;
 		}
-		scene.localTransform[t.joint] = local;
-		// The joint's DESCENDANTS follow (markAsChanged covers the
-		// subtree; the child joints + skinned mesh nodes recalc).
-		markAsChanged(scene, int(t.joint));
+		// A scene mutation must pass through the journal-producing API;
+		// direct localTransform writes can leave GPU-scene mirrors stale.
+		if (!SetLocalTransform(scene, MakeNodeHandle(scene, t.joint), local))
+			return false;
 	}
 	recalculateGlobalTransforms(scene);
 	touranim::BuildSkinPalette(scene, skeleton, outPalette);

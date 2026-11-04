@@ -65,14 +65,16 @@ def _client():
         return None
     cache = os.environ.get("TOURMALINE_ASSET_CACHE_DIR") or settings.get("cache")
     global _SHARED_CLIENT, _SHARED_CLIENT_KEY
-    key = (url, token, cache)
+    allow_insecure_remote = settings.get('allow_insecure_remote', False)
+    key = (url, token, cache, allow_insecure_remote)
     if _SHARED_CLIENT is None or key != _SHARED_CLIENT_KEY:
         if _SHARED_CLIENT is not None:
             _SHARED_CLIENT.close()
         label = os.environ.get("TOURMALINE_CONSUMER_LABEL", "Maya")
         _SHARED_CLIENT = AssetClient(
             url, token, cache=cache, consumer_kind="maya",
-            consumer_label=label)
+            consumer_label=label,
+            allow_insecure_remote=allow_insecure_remote)
         _SHARED_CLIENT_KEY = key
     return _SHARED_CLIENT
 

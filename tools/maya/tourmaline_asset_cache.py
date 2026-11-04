@@ -12,6 +12,7 @@ import hashlib
 from http.client import HTTPConnection, HTTPSConnection
 import json
 import os
+import socket
 from pathlib import Path, PurePosixPath
 import re
 import sqlite3
@@ -20,7 +21,8 @@ import threading
 import time
 import uuid
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -53,9 +55,17 @@ def default_cache():
     return Path(base) / "Tourmaline" / "SharedAssetCache"
 
 
+class _NoAuthenticatedRedirect(HTTPRedirectHandler):
+    """Bearer tokens must never follow HTTP redirects to another origin."""
+    def redirect_request(self, request, response, code, message, headers, newurl):
+        raise HTTPError(request.full_url, code,
+                        "asset repository redirects are forbidden", headers, response)
+
+
 class AssetClient:
     def __init__(self, url, token, cache=None, max_bytes=20 * 1024**3,
-                 consumer_kind="tool", consumer_label="AssetClient"):
+                 consumer_kind="tool", consumer_label="AssetClient",
+                 allow_insecure_remote=False):
         value = url.rstrip("/")
         parts = urlsplit(value)
         if (parts.scheme not in ("http", "https") or not parts.hostname
@@ -63,12 +73,17 @@ class AssetClient:
                 or parts.username or parts.password or parts.path or parts.query
                 or parts.fragment):
             raise ValueError("expected an http(s) asset repository URL with host and port")
+        if (parts.scheme == "http" and parts.hostname not in
+                ("localhost", "127.0.0.1") and not allow_insecure_remote):
+            raise ValueError("remote asset repositories require HTTPS; "
+                             "allow_insecure_remote=True is for trusted LAN debugging only")
         if not isinstance(token, str) or len(token) < 24:
             raise ValueError("a NAS access token is required")
         if max_bytes < 0:
             raise ValueError("max_bytes cannot be negative")
         self.url = value
         self.token = token
+        self._opener = build_opener(_NoAuthenticatedRedirect())
         self.cache = Path(cache or default_cache()).expanduser().resolve()
         self.cache.mkdir(parents=True, exist_ok=True)
         (self.cache / "blobs").mkdir(exist_ok=True)
@@ -77,6 +92,7 @@ class AssetClient:
         self.consumer_label = consumer_label[:80]
         self.session_id = str(uuid.uuid4())
         self._reads = set()
+        self.workstation = socket.gethostname()[:120]
         self._read_lock = threading.Lock()
         self._presence_stop = threading.Event()
         self._presence_thread = None
@@ -111,7 +127,7 @@ class AssetClient:
         return Request(url, headers={"Authorization": "Bearer " + self.token})
 
     def get(self, endpoint, **params):
-        with urlopen(self.request(endpoint, params), timeout=30) as fd:
+        with self._opener.open(self.request(endpoint, params), timeout=30) as fd:
             return json.load(fd)
 
     def _post(self, endpoint, payload):
@@ -119,7 +135,7 @@ class AssetClient:
         request.method = "POST"
         request.add_header("Content-Type", "application/json")
         request.data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        with urlopen(request, timeout=8) as fd:
+        with self._opener.open(request, timeout=8) as fd:
             return json.load(fd)
 
     def consumers(self, resource_kind=None, resource_id=None):
@@ -133,12 +149,13 @@ class AssetClient:
 
     def _announce(self):
         with self._read_lock:
-            readings = [{"kind": kind, "id": ident, "version": version}
-                        for kind, ident, version in sorted(self._reads)]
+            readings = [{"kind": kind, "id": ident, "version": version, "mode": mode}
+                        for kind, ident, version, mode in sorted(self._reads)]
         return self._post("/v2/consumers/heartbeat",
                           {"session_id": self.session_id,
                            "kind": self.consumer_kind,
                            "label": self.consumer_label,
+                           "workstation": self.workstation,
                            "reads": readings})
 
     def _presence_loop(self):
@@ -150,20 +167,23 @@ class AssetClient:
                 # The server expires stale sessions if heartbeats cannot reach it.
                 pass
 
-    def track_read(self, kind, ident, version):
+    def track_read(self, kind, ident, version, mode="read"):
         """Report an actual selection and refresh while this client runs.
 
         Does not change the source share, impose locks, or grant permissions.
         The client can later clear this set when objects are unloaded.
         """
-        if kind not in ("source", "product") or type(version) is not int or version < 1:
-            raise ValueError("read tracking requires kind, UUID and positive version")
+        if (kind not in ("source", "product") or type(version) is not int
+                or version < 1 or mode not in ("read", "edit", "publish", "review")):
+            raise ValueError("tracking requires kind, UUID, version and valid open mode")
         with self._read_lock:
-            self._reads.add((kind, ident, version))
+            self._reads = {entry for entry in self._reads
+                           if entry[:3] != (kind, ident, version)}
+            self._reads.add((kind, ident, version, mode))
             if len(self._reads) > 256:
                 # Server accepts a bounded snapshot; fail closed on bookkeeping,
                 # not on asset availability.
-                self._reads.discard((kind, ident, version))
+                self._reads.discard((kind, ident, version, mode))
                 return
         if self._presence_thread is None:
             self._presence_thread = threading.Thread(
@@ -244,7 +264,7 @@ class AssetClient:
             actual = hashlib.sha256()
             received = 0
             try:
-                with os.fdopen(fd, "wb") as out, urlopen(
+                with os.fdopen(fd, "wb") as out, self._opener.open(
                         self.request("/v2/blobs/" + sha), timeout=120) as source:
                     for chunk in iter(lambda: source.read(1024 * 1024), b""):
                         out.write(chunk)

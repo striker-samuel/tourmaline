@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -23,7 +24,7 @@ from tools.offline_asset_service import Archive
 from tools.shared_asset_repository import SharedArchive, handler_for_shared
 from tools.install_shared_assets import configure as configure_host
 from tools.configure_asset_client import configure as configure_client
-from tourmaline_asset_cache import AssetClient, load_client_settings
+from tourmaline_asset_cache import AssetClient, load_client_settings, _NoAuthenticatedRedirect
 
 
 TOKEN = "test-only-long-random-access-token-123456789"
@@ -187,6 +188,55 @@ class SharedRepositoryTests(unittest.TestCase):
         self.assertEqual(settings["access_token"], token)
         self.assertFalse((self.source / "server.json").exists())
 
+    def test_server_config_must_not_be_inside_source_share(self):
+        bad_config = self.source / "private" / "server.json"
+        with self.assertRaisesRegex(ValueError, "outside the source share"):
+            configure_host(str(self.source), str(self.archive), str(self.cache),
+                           config=bad_config)
+        self.assertFalse(bad_config.exists())
+
+    def test_client_failed_connectivity_check_does_not_save_config(self):
+        from tools.configure_asset_client import main as client_main
+
+        target = Path(self.temp.name) / "client.json"
+        existing = b"previous working configuration"
+        target.write_bytes(existing)
+        with self.assertRaises(Exception):
+            client_main(["--url", "http://127.0.0.1:1",
+                         "--token", TOKEN, "--config", str(target), "--check"])
+        self.assertEqual(target.read_bytes(), existing)
+
+    def test_detached_installer_rejects_occupied_port(self):
+        from tools.install_shared_assets import run_detached
+        httpd = ThreadingHTTPServer(
+            ("127.0.0.1", 0), handler_for_shared(self.store, TOKEN))
+        try:
+            config, _ = configure_host(
+                str(self.source), str(self.archive), str(self.cache),
+                config=Path(self.temp.name) / "server.json",
+                port=httpd.server_port)
+            with self.assertRaisesRegex(RuntimeError, "already in use"):
+                run_detached(config)
+        finally:
+            httpd.server_close()
+
+    def test_health_check_accepts_running_server(self):
+        from tools.install_shared_assets import wait_for_health
+        httpd = ThreadingHTTPServer(
+            ("127.0.0.1", 0), handler_for_shared(self.store, TOKEN))
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            config, _ = configure_host(
+                str(self.source), str(self.archive), str(self.cache),
+                config=Path(self.temp.name) / "server.json",
+                port=httpd.server_port)
+            wait_for_health(config, timeout=2.0)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
     def test_http_auth_revisions_products_upload_and_client_cache(self):
         src = self.put("models/hero.obj", b"the-OBJ-source")
         self.store.scan()
@@ -218,6 +268,14 @@ class SharedRepositoryTests(unittest.TestCase):
             self.assertNotEqual(local_path, src)
             second = client.resolve_source(source_id, 1, pin=True)
             self.assertEqual(first["local_path"], second["local_path"])
+            # A reverse proxy may not share an authenticated blob between
+            # users, even though immutable content is otherwise cacheable.
+            digest = hashlib.sha256(src.read_bytes()).hexdigest()
+            with urlopen(Request(url + "/v2/blobs/" + digest,
+                         headers={"Authorization": "Bearer " + TOKEN})) as fd:
+                self.assertTrue(fd.headers["Cache-Control"].startswith("private"))
+                self.assertEqual(fd.headers["Vary"], "Authorization")
+                self.assertEqual(fd.read(), src.read_bytes())
 
             product_file = Path(self.temp.name) / "cooked.glb"
             product_file.write_bytes(b"immutable published representation")
@@ -246,11 +304,34 @@ class SharedRepositoryTests(unittest.TestCase):
             httpd.server_close()
             bg.join(timeout=5)
 
+    def test_remote_http_requires_explicit_opt_in(self):
+        with self.assertRaisesRegex(ValueError, "require HTTPS"):
+            AssetClient("http://nas.example:8765", TOKEN,
+                        cache=self.workstation_cache)
+        with self.assertRaisesRegex(ValueError, "require HTTPS"):
+            configure_client("http://nas.example:8765", TOKEN,
+                             cache=self.workstation_cache)
+        secure = AssetClient("https://nas.example", TOKEN,
+                             cache=self.workstation_cache)
+        secure.close()
+        local = AssetClient("http://127.0.0.1:8765", TOKEN,
+                            cache=self.workstation_cache)
+        local.close()
+
+    def test_authenticated_redirects_fail_closed(self):
+        req = Request("https://nas.example/v2/sources",
+                      headers={"Authorization": "Bearer " + TOKEN})
+        with self.assertRaises(HTTPError):
+            _NoAuthenticatedRedirect().redirect_request(
+                req, None, 302, "redirect", {},
+                "https://attacker.example/collect")
+
     def test_client_config_stores_url_and_local_cache(self):
         root = Path(self.temp.name)
         config = configure_client("http://nas.example:8765", TOKEN,
                                   cache=root / "artist-cache",
-                                  config=root / "client.json")
+                                  config=root / "client.json",
+                                   allow_insecure_remote=True)
         raw = json.loads(config.read_text(encoding="utf-8"))
         self.assertEqual(raw["url"], "http://nas.example:8765")
         self.assertEqual(raw["token"], TOKEN)
