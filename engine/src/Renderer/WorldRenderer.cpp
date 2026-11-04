@@ -1032,6 +1032,8 @@ namespace engine {
 			switch (*run.aa) {
 			case AaPin::Off: m_aaMode = AaMode::Off; break;
 			case AaPin::Msaa2x: m_aaMode = AaMode::Msaa2x; break;
+			case AaPin::Msaa2xCustom: m_aaMode = AaMode::Msaa2xCustom; break;
+			case AaPin::Msaa2xCustom: m_aaMode = AaMode::Msaa2xCustom; break;
 			case AaPin::Smaa1x: m_aaMode = AaMode::Smaa1x; break;
 			case AaPin::SmaaT2x: m_aaMode = AaMode::SmaaT2x; break;
 			}
