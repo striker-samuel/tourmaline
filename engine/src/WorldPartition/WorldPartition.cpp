@@ -10,15 +10,22 @@ namespace engine::worldpartition {
 
 void WorldPartition::AddProvider(IWorldStreamProvider* provider)
 {
-	assert(provider != nullptr);
-	for (const IWorldStreamProvider* p : providers_)
-		assert(p != provider && "provider registered twice");
+	// Borrowed providers are registered at most once, including Release
+	// builds where assert() is compiled out. Null is never registered.
+	if (!provider) return;
+	if (std::find(providers_.begin(), providers_.end(), provider) != providers_.end())
+		return;
 	providers_.push_back(provider);
 }
 
 void WorldPartition::SetInterests(const StreamingInterest* interests, size_t count)
 {
-	assert(interests != nullptr || count == 0);
+	// A zero-count interest update cancels outstanding demand, including
+	// when callers pass nullptr. Avoid null-pointer arithmetic in assign.
+	if (count == 0 || !interests) {
+		interests_.clear();
+		return;
+	}
 	interests_.assign(interests, interests + count);
 	// Highest priority first — one sort here so every provider sees the
 	// same order (the primary interest is always interests[0]).
