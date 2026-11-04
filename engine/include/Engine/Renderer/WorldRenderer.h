@@ -72,6 +72,7 @@
 #include <Engine/Rendergraph/msaa.h>
 #include <Engine/Rendergraph/msaa_custom_resolve.h>
 #include <Engine/Rendergraph/particles.h>
+#include <Engine/Rendergraph/meshparticles.h>
 #include <Engine/Rendergraph/smaa.h>
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/ssgi.h>
@@ -1502,6 +1503,7 @@ struct ViewportResources {
 	smvk::ForwardPlus forwardPlus; // tile buffers + cull/depth programs + Ensure
 	smvk::DeferredShadows deferredShadows; // fixed-size ring buffers + 3 phase programs
 	smvk::Particles particles; // GPU pool/free-list/emitter-ring buffers + emit/sim/draw programs
+	smvk::MeshParticles meshParticles; // mesh GPU emit/sim/cull/indirect buffers
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::DepthTarget renderDepth; // scene depth at internal resolution + Ensure
 	// Occluder-only depth for the HZB pyramid (Option A split): filled by
@@ -2395,6 +2397,11 @@ public:
 	void SetExternalParticleEmitters(std::vector<smvk::ParticleEmitterGpu> rows) {
 		m_externalParticleEmitters = std::move(rows);
 	}
+	// Mesh rows refer to the same indexed geometry prototype bins supplied
+	// by AttachGpuPlacementRuntime. GPU particles are not scene nodes.
+	void SetExternalMeshParticleEmitters(std::vector<smvk::MeshParticleEmitterGpu> rows) {
+		m_externalMeshParticleEmitters = std::move(rows);
+	}
 	void SpawnParticleBurst(const glm::vec3& pos, const glm::vec3& color,
 		float speed, float size, float life, uint32_t count);
 	// Lazy CPU pick scene (same triangle soup the GI baker sees): shared
@@ -2647,6 +2654,9 @@ public:
 	bool m_particlesEnabled = true;
 	ParticleDemo m_particleDemo{};
 	std::vector<smvk::ParticleEmitterGpu> m_externalParticleEmitters;
+	std::vector<smvk::MeshParticleEmitterGpu> m_externalMeshParticleEmitters;
+	tour::placement::PlacementDrawPrograms m_meshParticleDraw;
+	bool m_meshParticlesReady = false;
 	// Transient one-shot burst emitters (SpawnParticleBurst): full rows
 	// with a TTL. UpdateParticles appends them after the demo rows,
 	// ages the TTL (drops expired) and trims overflow (oldest first) so
