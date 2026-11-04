@@ -227,6 +227,10 @@ void RetireNodeSlot(Scene& scene, NodeId node)
 bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::mat4& transform)
 {
   if (!NodeHandleValid(scene, handle)) return false;
+  // Invalid transforms cannot be published safely to scene or GPU views.
+  for (int col = 0; col < 4; ++col)
+    for (int row = 0; row < 4; ++row)
+      if (!std::isfinite(transform[col][row])) return false;
   const uint32_t slot = NodeHandleSlot(handle);
   if (slot >= scene.localTransform.size()) return false;
   scene.localTransform[slot] = transform;
