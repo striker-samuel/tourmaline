@@ -1,6 +1,6 @@
 # WorldPartition provider integration contracts
 
-> **STATUS: IMPLEMENTATION NOT STARTED.** This is a draft PR scaffold containing an audit-derived scope specification only. Do not merge until actual implementation commits, tests, and review are complete.
+> **STATUS: PARTIAL IMPLEMENTATION.** Provider registration and demand cancellation are hardened; full request-epoch and publication contracts are still outstanding. Do not merge until actual implementation commits, tests, and review are complete.
 
 **Finding:** L-05  
 **Priority:** P1
@@ -28,3 +28,11 @@ Teleport, stale request, frame commit and unload paths are deterministic; no gen
 
 ## Scope boundary
 No generic GPU memory or automatic lifetime manager; the caller remains responsible for memory. Do not enable experimental rendering paths as part of this fix.
+
+## Implementation evidence (partial)
+- Added runtime duplicate/null provider rejection in `WorldPartition::AddProvider` (also effective in Release builds).
+- Empty/null interest sets now clear previous interest state without null pointer arithmetic, supporting teleport/unload cancellation.
+- Added headless tests for duplicate registration, cancellation, and commit/retire progression after cancellation.
+- **Not validated:** native build/CTest, GPU workload, provider async generation cancellation, frame epochs or stale completion filtering. Providers still own memory and eviction.
+
+**Keep this PR a draft. Do not merge as full Audit 04 completion.**
