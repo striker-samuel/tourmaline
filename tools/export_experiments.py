@@ -25,6 +25,12 @@ CREATE TABLE IF NOT EXISTS experiments (
     accepted BOOLEAN,
     frame_ms DOUBLE,
     gain_percent DOUBLE,
+    target_resolution VARCHAR,
+    visual_difference_fraction DOUBLE,
+    visual_average_channel_delta DOUBLE,
+    registers_per_thread DOUBLE,
+    spill_bytes DOUBLE,
+    shader_sha256 VARCHAR,
     os_system VARCHAR,
     os_version VARCHAR,
     windows_build BIGINT,
@@ -38,7 +44,9 @@ CREATE TABLE IF NOT EXISTS experiments (
 """
 COLUMNS = ("record_id", "experiment_kind", "machine", "setup", "scenario",
            "status", "mode", "code_id", "candidate_id", "accepted", "frame_ms",
-           "gain_percent", "os_system", "os_version", "windows_build",
+           "gain_percent", "target_resolution", "visual_difference_fraction",
+           "visual_average_channel_delta", "registers_per_thread", "spill_bytes",
+           "shader_sha256", "os_system", "os_version", "windows_build",
            "gpu_name", "gpu_driver", "dxc_version", "dxc_sha256",
            "record_path", "record_json")
 
@@ -60,7 +68,7 @@ def _finite(value):
         return None
 
 
-def row_from_record(record, path, environment=None):
+def row_from_record(record, path, environment=None, scenario=None):
     """Normalize matrix and shader-search outcomes into one comparable row."""
     if not isinstance(record, dict):
         raise ValueError("record must be an object")
@@ -77,17 +85,19 @@ def row_from_record(record, path, environment=None):
         accepted = record.get("status") == "pass"
         rec_id = str(record["record_id"])
     else:
-        frame_ms = None
+        frame_ms = (record.get("times_ms") or {}).get(scenario)
         candidate_id = "candidate-%03d" % record["iteration"]
         gain = record.get("gain_percent")
         accepted = record.get("accepted")
         rec_id = candidate_id
+    visual = record.get("visual_error") or {}
+    register = record.get("register_metrics") or {}
     build = {
         "record_id": rec_id,
         "experiment_kind": kind,
         "machine": record.get("machine"),
         "setup": record.get("setup"),
-        "scenario": record.get("scenario"),
+        "scenario": scenario or record.get("scenario"),
         "status": record.get("status") or ("accepted" if accepted else "rejected"),
         "mode": record.get("mode"),
         "code_id": record.get("code_id"),
@@ -95,6 +105,12 @@ def row_from_record(record, path, environment=None):
         "accepted": accepted,
         "frame_ms": _finite(frame_ms),
         "gain_percent": _finite(gain),
+        "target_resolution": record.get("target_resolution"),
+        "visual_difference_fraction": _finite(visual.get("difference_fraction")),
+        "visual_average_channel_delta": _finite(visual.get("average_channel_delta")),
+        "registers_per_thread": _finite(register.get("registers_per_thread")),
+        "spill_bytes": _finite(register.get("spill_bytes")),
+        "shader_sha256": record.get("candidate_sha256"),
         "os_system": os_info.get("system"),
         "os_version": os_info.get("version"),
         "windows_build": windows.get("build"),
@@ -124,7 +140,12 @@ def collect_rows(root):
     for path in sorted(root.glob("candidate-*/result.json")):
         record = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(record.get("iteration"), int):
-            rows.append(row_from_record(record, path, environment))
+            times = record.get("times_ms") or {}
+            if isinstance(times, dict) and times:
+                for scenario in sorted(times):
+                    rows.append(row_from_record(record, path, environment, scenario))
+            else:
+                rows.append(row_from_record(record, path, environment))
     return rows
 
 
