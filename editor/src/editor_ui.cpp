@@ -337,6 +337,7 @@ void EditorApp::FinalizePending() {
 		// A normal floating project configuration window must not be
 		// nested in ImGui's main menu-bar window stack.
 		DrawProjectExportWindow();
+		DrawImportWindow();
 		DrawIntersectionToolsWindow();
 		// Options is a large standalone settings window, not a dock tab.
 		// Render settings retain their existing live-update/autosave behavior.
@@ -725,6 +726,66 @@ void EditorApp::FinalizePending() {
 		ImGui::PopStyleVar();
 	}
 
+	void EditorApp::DrawImportWindow() {
+		if (!m_showImportWindow)
+			return;
+		ImGui::SetNextWindowSize(ImVec2(630.0f, 300.0f),
+			ImGuiCond_FirstUseEver);
+		if (ImGui::Begin("Import Asset", &m_showImportWindow)) {
+			ImGui::TextUnformatted("Source file");
+			ImGui::SetNextItemWidth(-100.0f);
+			ImGui::InputText("##import_source", m_importSourceBuf,
+				sizeof(m_importSourceBuf));
+			ImGui::SameLine();
+			if (ImGui::Button("Browse...")) {
+				std::string picked;
+				if (NativeOpenFile(picked) && !picked.empty())
+					std::snprintf(m_importSourceBuf, sizeof(m_importSourceBuf),
+						"%s", picked.c_str());
+			}
+			std::string ext = std::filesystem::path(m_importSourceBuf)
+				.extension().string();
+			for (char& c : ext)
+				c = char(std::tolower(static_cast<unsigned char>(c)));
+			const bool supported = ext == ".gltf" || ext == ".glb"
+				|| ext == ".obj";
+			ImGui::SeparatorText("Import settings");
+			if (ext == ".gltf")
+				ImGui::TextWrapped("glTF: copies external buffers, images and "
+					"source dependencies into the project, then derives geometry, "
+					"materials and animations with persistent asset GUIDs.");
+			else if (ext == ".glb")
+				ImGui::TextWrapped("GLB: imports the binary model and its "
+					"embedded resources, deriving the runtime asset set.");
+			else if (ext == ".obj")
+				ImGui::TextWrapped("OBJ: imports geometry and linked MTL "
+					"dependencies; no skeletal animation is expected.");
+			else
+				ImGui::TextDisabled("Choose a supported model: .gltf, .glb, .obj.");
+			ImGui::Checkbox("Open imported model as active scene",
+				&m_importOpenAfter);
+			ImGui::TextDisabled("Unchecked: import into Assets without "
+					"replacing the current scene.");
+			ImGui::BeginDisabled(!supported || m_projectRoot.empty()
+				|| m_cookRunning);
+			if (ImGui::Button("Import")) {
+				TaskWindowBegin("Import asset", "Importing source model...");
+				TaskWindowStage("Copying dependencies and deriving assets...", 0.05f);
+				const bool success = ImportAsset(m_importSourceBuf,
+					m_importOpenAfter);
+				TaskWindowFinish(success,
+					success ? "Import complete."
+						: "Import failed; see Console for details.");
+				if (success)
+					m_showImportWindow = false;
+			}
+			ImGui::EndDisabled();
+			if (m_projectRoot.empty())
+				ImGui::TextDisabled("Open a project before importing.");
+		}
+		ImGui::End();
+	}
+
 	void EditorApp::DrawMenuBar() {
 		if (ImGui::BeginMenu("File")) {
 			// Project first (Unity/Unreal style): a project folder owns
@@ -743,11 +804,8 @@ void EditorApp::FinalizePending() {
                     CreateSceneAsset((std::filesystem::path(m_projectRoot) /
                         "content" / "scenes").generic_string());
                 if (ImGui::MenuItem("Import asset...", nullptr, false,
-					!m_cookRunning)) {
-					std::string picked;
-					if (NativeOpenFile(picked) && !picked.empty())
-						ImportAsset(picked);
-				}
+					!m_cookRunning))
+					m_showImportWindow = true;
 				ImGui::TextDisabled("project: %s", m_projectName.c_str());
 				ImGui::Separator();
 			}
@@ -1015,6 +1073,10 @@ void EditorApp::FinalizePending() {
 				PublishAssetFromDcc(m_assetsSel);
 			if (ImGui::MenuItem("Unlink DCC source", nullptr, false, oneAsset))
 				UnlinkAssetFromDcc(m_assetsSel);
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("Window")) {
+			ImGui::MenuItem("Import Asset", nullptr, &m_showImportWindow);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("View")) {
