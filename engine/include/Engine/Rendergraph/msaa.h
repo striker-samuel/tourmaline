@@ -68,7 +68,15 @@ struct MsaaTarget {
 		colorCi.arrayLayers = 1;
 		colorCi.name = d.colorName;
 
+		bool colorSampled = true;
 		Holder<ImageHandle> newColorImage = ctx.CreateImage(colorCi, nullptr);
+		if (newColorImage.empty()) {
+			// A renderable 2x format need not support multisampled sampling.
+			// Keep the original fixed-function resolve usable on such devices.
+			colorSampled = false;
+			colorCi.usage = ImageUsage::ColorAttachment;
+			newColorImage = ctx.CreateImage(colorCi, nullptr);
+		}
 		if (newColorImage.empty())
 			return false;
 
@@ -118,7 +126,8 @@ struct MsaaTarget {
 		colorImage = std::move(newColorImage);
 		colorView = std::move(newColorView);
 		// Failure is non-fatal: the fixed-function resolve remains usable.
-		colorBindless = ctx.CreateBindlessImage(colorView, ImageLayout::ShaderReadOnlyOptimal);
+		if (colorSampled)
+			colorBindless = ctx.CreateBindlessImage(colorView, ImageLayout::ShaderReadOnlyOptimal);
 		colorLogical = newColorLogical;
 		depthImage = std::move(newDepthImage);
 		depthView = std::move(newDepthView);
