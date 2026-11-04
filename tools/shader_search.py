@@ -143,7 +143,6 @@ def run_search(args):
         raise ValueError("iterations, repeat and timeout must be positive")
     from perf_harness import select_scenario
     from experiment_environment import collect_environment
-    from shader_hints import apply_hints
     from shader_regions import discover, preserve_identity, apply_identified_regions, load_knobs
     for scenario in args.scenario or []:
         select_scenario(catalog, scenario)
@@ -212,10 +211,7 @@ def run_search(args):
         for index in range(1, args.iterations + 1):
             trial = output / f"candidate-{index:03}"
             trial.mkdir(exist_ok=True)
-            knobs = {"loop_mode": args.loop_mode, "loop_index": args.loop_index,
-                     "unroll_count": args.unroll_count,
-                     "branch_mode": args.branch_mode, "branch_index": args.branch_index,
-                     "register_pressure": args.register_pressure,
+            knobs = {"register_pressure": args.register_pressure,
                      "region_overrides": region_choices}
             feedback = json.dumps({
                 "target_knobs": knobs, "baseline_register_metrics": baseline_registers,
@@ -233,17 +229,8 @@ def run_search(args):
                 identified = preserve_identity(best_source, candidate, tracked_regions)
                 (trial / "regions.json").write_text(
                     json.dumps(identified, indent=2) + "\n", encoding="utf-8")
-                candidate, applied_hints = apply_hints(
-                    candidate, args.loop_mode, args.loop_index,
-                    args.branch_mode, args.branch_index, args.unroll_count)
-                if region_choices:
-                    # Legacy index-based hints insert characters: re-map the
-                    # addressable sections through that precise intermediate diff.
-                    updated_regions = preserve_identity(
-                        best_source, candidate, tracked_regions)
-                    candidate, named_changes = apply_identified_regions(
-                        candidate, region_choices, updated_regions)
-                    applied_hints.extend(named_changes)
+                candidate, applied_hints = apply_identified_regions(
+                    candidate, region_choices, identified)
                 if candidate == best_source:
                     raise ValueError("model returned unchanged source")
                 # Never allow another file or shell command from the model.
@@ -319,12 +306,6 @@ def main(argv=None):
     p.add_argument("--validate-cmd", help="Mandatory correctness command (argv, not shell)")
     p.add_argument("--export-parquet", type=Path,
                    help="Optional analytics export (requires extended dependencies)")
-    p.add_argument("--loop-mode", choices=("auto", "loop", "unroll"), default="auto")
-    p.add_argument("--loop-index", type=int, default=0, help="0-based for-loop index")
-    p.add_argument("--unroll-count", type=int,
-                   help="Optional explicit [unroll(N)] count (requires --loop-mode unroll)")
-    p.add_argument("--branch-mode", choices=("auto", "branch", "flatten"), default="auto")
-    p.add_argument("--branch-index", type=int, default=0, help="0-based if-statement index")
     p.add_argument("--register-pressure", choices=("balanced", "minimize"), default="balanced")
     p.add_argument("--register-report-cmd",
                    help="External profiler command writing JSON to SHADER_SEARCH_REGISTER_REPORT")
@@ -342,10 +323,8 @@ def main(argv=None):
     p.add_argument("--min-gain", type=float, default=0.5)
     p.add_argument("--max-source-bytes", type=int, default=200000)
     args = p.parse_args(argv)
-    if args.unroll_count is not None and (args.loop_mode != "unroll" or not 1 <= args.unroll_count <= 1024):
-        p.error("--unroll-count requires --loop-mode unroll and a count in 1..1024")
-    if args.loop_index < 0 or args.branch_index < 0 or args.max_register_regression < 0:
-        p.error("hint indices and max register regression must be nonnegative")
+    if args.max_register_regression < 0:
+        p.error("max register regression must be nonnegative")
     if not args.list_regions and (not args.exe or not args.scenario or not args.build_cmd or not args.validate_cmd or not args.model):
         p.error("search requires --exe, --scenario, --build-cmd, --validate-cmd and --model")
     if args.api_base is None:
