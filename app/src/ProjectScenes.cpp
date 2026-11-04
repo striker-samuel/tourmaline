@@ -373,6 +373,11 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 			return {};
 		}
 	}
+	if (!placements.empty() && !m_shapes) {
+		err = "scene contains procedural shape placements but no ShapeScene"
+			" registry is attached (call SetShapeScene before load)";
+		return {};
+	}
 	// The cross-pak texture resolver (the same hook LoadProjectWorld
 	// installs): a material URI with no blob in the scene's pak is
 	// served from whatever PROVIDER carries its logical path — through
@@ -498,9 +503,6 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 			FreeHandle(handle);
 			return {};
 		}
-	} else if (!placements.empty()) {
-		std::cerr << "[Scenes] " << placements.size()
-			<< " authored shape placement(s) skipped: no ShapeScene attached\\n";
 	}
 	// The shared post-load tail: anim attach (through the SESSION —
 	// the registry's provider union; the overlay is no longer a
