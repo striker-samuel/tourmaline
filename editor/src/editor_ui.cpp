@@ -1338,6 +1338,14 @@ void EditorApp::FinalizePending() {
 				m_gizmoMode == GizmoMode::Scale))
 				m_gizmoMode = GizmoMode::Scale;
 			ImGui::Separator();
+			if (ImGui::MenuItem("Classic Transpose line (object only)", nullptr,
+				m_transposeEnabled) && !m_transposeDrag) {
+				m_transposeEnabled = !m_transposeEnabled;
+				m_transposeOwner = UINT32_MAX;
+			}
+			if (m_transposeEnabled && ImGui::MenuItem("Reset Transpose line") && !m_transposeDrag)
+				m_transposeOwner = UINT32_MAX;
+			ImGui::Separator();
 			if (ImGui::MenuItem("Selection radial...", "Q"))
 				m_showSelRadial = true;
 			if (ImGui::MenuItem("Select: Mesh", "Q > 1",
@@ -1571,6 +1579,21 @@ void EditorApp::FinalizePending() {
 			if (tool(transformNames[i], transformIcons[i],
 				int(m_gizmoMode) == i, transformCaptions[i], transformNames[i]))
 				m_gizmoMode = GizmoMode(i);
+		}
+		if (m_transposeEnabled) {
+			next();
+			if (ImGui::SmallButton("Transpose: ON") && !m_transposeDrag) {
+				m_transposeEnabled = false;
+				m_transposeOwner = UINT32_MAX;
+			}
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Classic object Transpose line (View menu to enable). No mesh edits.");
+		} else {
+			next();
+			if (ImGui::SmallButton("Transpose") && !m_transposeDrag) {
+				m_transposeEnabled = true;
+				m_transposeOwner = UINT32_MAX;
+			}
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable the three-handle object Transpose line. Old gizmos stay available.");
 		}
 		ImGui::PopID();
 		split();
