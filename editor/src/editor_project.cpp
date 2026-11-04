@@ -916,7 +916,7 @@ void EditorApp::ReimportAsset(const std::string& path) {
         "support explicit reimport. Scenes use Open/Reload.");
 }
 
-bool EditorApp::ImportAsset(const std::string& srcPath) {
+bool EditorApp::ImportAsset(const std::string& srcPath, bool openAfter) {
 	if (m_cookRunning) {
 		Log("Import: a cook is already running — wait for it to finish.");
 		return false;
@@ -940,7 +940,7 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 			"(the copied glTF stays for a fixed re-import).");
 		return false;
 	}
-	if (!OpenScene(artifact)) {
+	if (openAfter && !OpenScene(artifact)) {
 		Log("Import: could not open the derived artifact.");
 		return false;
 	}
