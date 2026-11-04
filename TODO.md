@@ -83,6 +83,17 @@ items below are the remaining author-declared gaps.
   and Release Editor runs toggling Off → count heat → light-scoped →
   Off, shader hot-reload of both variant sets, and verifying the
   shipping profile still excludes diagnostics.
+- **REVERTED on master (`438cd288`)**: the commit `b640cf15` (merged
+  via this PR) broadened `DS_VIZ_ON` to every top-level non-shipping
+  tree, which force-compiled `DS_DEBUG_VIZ` into EVERY shader of plain
+  Release App builds while App's C++ never allocates the viz telemetry
+  buffers — the shaders' out-of-bounds telemetry stores corrupted host
+  memory (heap corruption / access violations at load or teardown,
+  100% reproducible; GPU-bisected over 53 revisions and isolated with
+  5/5-crash vs 5/5-clean repeat runs). The default is back to
+  Debug-auto + explicit opt-in. The editor-Release-diagnostics goal
+  needs TARGET-SCOPED instrumentation (viz shader variants + Editor-only
+  C++ define; never a tree-wide shader define) before it returns.
 
 ## #152 — Terrain NaN-clipped holes + RGBA vertex attributes
 - Author never built or ran tests; the merge gate compiled the shaders
