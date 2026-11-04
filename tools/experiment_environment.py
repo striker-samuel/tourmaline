@@ -5,6 +5,7 @@ No network or shell execution. Missing probing tools are represented as null.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import platform
@@ -41,7 +42,7 @@ def gpu_info():
         ps = shutil.which("powershell.exe") or shutil.which("powershell")
         if ps:
             cmd = ("Get-CimInstance Win32_VideoController | "
-                   "Select-Object Name,DriverVersion,PNPDeviceID,VideoProcessor | "
+                   "Select-Object Name,DriverVersion,VideoProcessor | "
                    "ConvertTo-Json -Compress -Depth 3")
             data = probe_command([ps, "-NoProfile", "-NonInteractive", "-Command", cmd])
             if data:
@@ -53,7 +54,6 @@ def gpu_info():
                             controllers.append({
                                 "name": row.get("Name"),
                                 "driver_version": row.get("DriverVersion"),
-                                "pnp_device_id": row.get("PNPDeviceID"),
                                 "video_processor": row.get("VideoProcessor"),
                             })
                 except ValueError:
@@ -120,6 +120,7 @@ def collect_environment(exe, dxc=None):
     return {"schema_version": 1,
             "os": {"system": platform.system(), "release": platform.release(),
                    "version": platform.version(), "machine": platform.machine(),
+                   "processor": platform.processor(),
                    "windows": windows_build_info()},
             "gpu": gpu_info(), "dxc": compiler_info(dxc),
             "build": build_info(exe)}
