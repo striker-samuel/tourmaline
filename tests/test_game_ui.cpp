@@ -108,6 +108,61 @@ int main() {
 	CHECK(trimmed[0].instance.clipMin[1] == 590);
 	CHECK(trimmed[0].instance.clipMax[1] == 600);
 
+
+	// Authored SpriteSets reuse their host-owned atlas; named UVs are
+	// converted without packing pixels or allocating a second atlas.
+	asset::SpriteSet atlas;
+	std::string err;
+	CHECK(asset::ParseSpriteSetText(R"(spriteset 1
+texture content/ui/panels.png
+size 128 64
+sprite panel 16 8 40 30 border 6 5 10 7
+sprite icon 64 0 16 16
+sprite cropped 80 0 8 8 trim 16 16 4 2
+)", atlas, err));
+	GameUiRenderer ui;
+	const auto handle = smvk::TextureHandle::Mint(7, 1);
+	CHECK(!ui.DrawSprite(atlas, "absent", {{0, 0}, {10, 10}}, handle));
+	CHECK(ui.DrawSprite(atlas, "icon", {{2, 4}, {32, 32}}, handle));
+	CHECK(ui.DrawSprite(atlas, "cropped", {{0, 0}, {32, 32}}, handle));
+	CHECK(ui.DrawNineSlice(atlas, "panel", {{10, 20}, {100, 60}}, handle));
+	CHECK(!ui.DrawNineSlice(atlas, "absent", {{0, 0}, {10, 10}}, handle));
+	CHECK(ui.PendingRects().size() == 11); // two sprites + nine slices
+	const auto pending = ui.PendingRects();
+	CHECK(pending[0].uvMin == glm::vec2(0.5f, 0.0f));
+	CHECK(pending[1].bounds.origin == glm::vec2(8, 4));
+	CHECK(pending[1].bounds.size == glm::vec2(16, 16));
+	CHECK(pending[2].bounds.origin == glm::vec2(10, 20));
+	CHECK(pending[2].bounds.size == glm::vec2(6, 5));
+	CHECK(pending[3].bounds.origin == glm::vec2(16, 20));
+	CHECK(pending[3].bounds.size == glm::vec2(84, 5));
+	CHECK(pending[4].bounds.size == glm::vec2(10, 5));
+	CHECK(pending[6].bounds.size == glm::vec2(84, 48));
+	CHECK(std::abs(pending[2].uvMin.x - 0.125f) < 0.0001f);
+	CHECK(std::abs(pending[2].uvMax.x - 0.171875f) < 0.0001f);
+	CHECK(pending[6].clip == std::nullopt);
+
+	// The expansion is represented as ordinary painter-ordered rectangles
+	// and can be inspected without access to a GPU device.
+	const auto* region = atlas.Find("panel");
+	CHECK(region != nullptr);
+	CHECK(region->border[0] == 6 && region->border[2] == 10);
+	const auto uv = atlas.UV(*region);
+	CHECK(std::abs(uv[0] - 0.125f) < 0.0001f);
+	CHECK(std::abs(uv[1] - 0.125f) < 0.0001f);
+	CHECK(ui.DrawNineSlice(atlas, "panel", {{0, 0}, {8, 7}}, handle));
+	CHECK(ui.PendingRects().size() == 15); // collapsed center and edges
+	const auto small = ui.PendingRects();
+	CHECK(std::abs(small[11].bounds.size.x - 3.0f) < 0.0001f);
+	CHECK(std::abs(small[11].bounds.size.y - (35.0f / 12.0f)) < 0.0001f);
+	CHECK(small[12].bounds.origin.x == 3.0f);
+	CHECK(small[13].bounds.origin.y > 0.0f;
+
+	CHECK(ui.DrawNineSlice(atlas, "icon", {{0, 0}, {16, 16}}, handle));
+	CHECK(!ui.DrawNineSlice(atlas, "panel", {{0, 0}, {0, 16}}, handle));
+	CHECK(!ui.DrawNineSlice(atlas, "panel",
+		{{0, 0}, {std::numeric_limits<float>::quiet_NaN(), 16}}, handle));
+
 	std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

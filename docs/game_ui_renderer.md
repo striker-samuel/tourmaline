@@ -73,3 +73,49 @@ renderer, not a full retained widget framework.
 
 CPU-only tests run via \`ctest -R game_ui_tests\`; GPU shader compilation,
 rendergraph integration and screenshots still need a graphics smoke test.
+
+## Authored SpriteSet atlases and nine-slice panels
+
+The first-class `.spriteset` catalog already provides named pixel rectangles,
+grids, animations, trim offsets and nine-slice border metadata. GameUI **does
+not** repack these textures: use an existing, host-owned sampled texture matching
+the SpriteSet's declared dimensions. This avoids duplicating the separate
+`World2DRenderer` runtime shelf packer.
+
+```cpp
+// Obtain sprites metadata via ParseSpriteSetText / ProjectRuntime::ReadAsset,
+// and load the image once using the application's existing texture manager.
+ui.BeginFrame();
+ui.DrawSprite(sprites, "icon", {{20, 20}, {32, 32}}, atlasTexture);
+ui.DrawNineSlice(sprites, "panel", {{10, 80}, {420, 140}},
+                 atlasTexture, glm::vec4(1.0f), panelClip);
+```
+
+`DrawSprite` resolves the named atlas region and renders it using the existing
+single-draw bindless rectangle batch. If the sprite is trimmed, the visible
+portion is placed within its original untrimmed bounds; the application retains
+responsibility for any pivot/animation behavior.
+
+`DrawNineSlice` splits the authored region into up to nine consecutive
+rectangles; fixed-pixel corners and border edges are preserved and the center
+stretches. If the target is smaller than the sum of opposite borders, those
+destination borders shrink proportionally, leaving no negative center area.
+Zero-width or height source/destination strips are skipped. Validation and
+instance-capacity checks happen before drawing, so failure cannot submit a
+partial panel. No new shader or draw call is required. Call order, tint, clip
+and the original host-owned bindless texture are preserved.
+
+The atlas remains **pre-authored**. Automatic source-image packing, runtime
+image creation, padding/extruded gutters and mip generation are outside this
+API. When bilinear filtering or mipmapping atlas art, the asset author should
+provide gutters between regions to prevent sampling adjacent sprites.
+For pixel-art sheets, `SetPixelArtSampling(true)` chooses nearest sampling.
+
+The functions return `false` for missing names, invalid bounds/metadata,
+empty texture handles and exhausted rectangle capacity. Existing direct
+`DrawRect` and `SpriteSet::UV` usage remain valid.
+
+CPU tests: `ctest -R 'game_ui_tests|spriteset_tests' --output-on-failure`.
+A Vulkan smoke test should additionally cover linear filtering near neighboring
+atlas regions, asymmetric borders, very small panels, clipping, alpha order,
+reloaded textures and HiDPI coordinate mapping.
