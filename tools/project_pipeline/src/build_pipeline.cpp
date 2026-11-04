@@ -354,6 +354,7 @@ bool RefreshPlanImports(const Project& project, const BuildPlan& plan,
 				req.source = srcAbs;
 				req.settings = GeometryImportSettings{};
 				req.materialPacking = plan.materialPacking;
+				req.materialPackingExplicit = true;
 				req.force = true;
 				ImportResult result;
 				std::string iErr;
