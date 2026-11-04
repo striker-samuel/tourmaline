@@ -235,6 +235,7 @@ def run_search(args):
     history = []
     best_source = source
     best_score = 0.0
+    baseline_sha256 = hashlib.sha256(original).hexdigest()
     baseline_registers = None
 
     def build():
@@ -357,6 +358,7 @@ def run_search(args):
                            "knobs": knobs, "applied_hints": applied_hints,
                            "visual_error": visual,
                            "target_resolution": args.target_resolution,
+                           "candidate_sha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
                            "register_metrics": candidate_registers,
                            "register_regression_percent": register_regression,
                            "registers_ok": registers_ok, "spills_ok": spills_ok,
@@ -380,6 +382,10 @@ def run_search(args):
         env["SHADER_SEARCH_PHASE"] = "restore"
         build()
     summary = {"environment": environment_metadata,
+               "model": {"provider": args.provider, "model": args.model,
+                         "api_base": args.api_base},
+               "baseline_sha256": baseline_sha256,
+               "best_sha256": hashlib.sha256(best_source.encode("utf-8")).hexdigest(),
                "target_resolution": args.target_resolution,
                "visual_error_limits": {"difference_fraction": args.max_difference_fraction,
                                        "average_channel_delta": args.max_average_channel_delta,
