@@ -2436,6 +2436,29 @@ void TestBuildPlanExecutor() {
 						.generic_string(),
 					"executor.addressed-manifest-committed");
 			}
+		// Another manifest sharing this directory must retain its
+		// referenced generation after a different .tapp is rebuilt.
+		{
+			smvk::AppManifest pin;
+			std::string mErr;
+			Check(smvk::LoadAppManifest(
+				(tmp / "publish5" / "world.tapp").generic_string(),
+				pin, mErr), "executor.multi-manifest-load");
+			Check(smvk::SaveAppManifest(
+				(tmp / "publish5" / "pinned.tapp").generic_string(),
+				pin, mErr), "executor.multi-manifest-pin");
+			const fs::path priorWorld = tmp / "publish5" / pin.paks.back();
+			RecordingAdapter rec;
+			rec.payloadTag = "v3";
+			smvk::project::BuildPlanReport rep;
+			std::string e;
+			Check(smvk::project::ExecuteBuildPlan(project, p2, rec,
+				opts, rep, e), "executor.multi-manifest-build");
+			Check(fs::is_regular_file(priorWorld, ec),
+				"executor.multi-manifest-preserves-other-generation");
+			fs::remove(tmp / "publish5" / "pinned.tapp", ec);
+		}
+
 		}
 		// The real leg: build through the subprocess adapter, then
 		// inspect BOTH paks (BLD-02 verify + BLD-07 asset-only + the
