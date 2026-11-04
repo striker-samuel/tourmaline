@@ -401,6 +401,27 @@ bool ParseText(const std::string& text, ProjectRecipe& out,
 			else
 				out.bakeSdf = on;
 		}
+		else if (directive == "materialPacking") {
+            if (inPak || !out.materialPacking.source.empty())
+                return Fail(lineNo, directive, "materialPacking must appear once in the project header", err);
+            const auto words = SplitTokens(rest);
+            if (words.size() != 5 ||
+                    (words[0] != "metallicRoughness" && words[0] != "occlusion"))
+                return Fail(lineNo, directive,
+                    "expected materialPacking <metallicRoughness|occlusion> <ao> <cavity> <roughness> <metallic>", err);
+            auto ch = [](const std::string& c) {
+                return c == "r" ? 0 : c == "g" ? 1 : c == "b" ? 2 : c == "a" ? 3 : -1;
+            };
+            const int ao = ch(words[1]), cavity = ch(words[2]);
+            const int rough = ch(words[3]), metal = ch(words[4]);
+            if (ao < 0 || cavity < 0 || rough < 0 || metal < 0)
+                return Fail(lineNo, directive, "channels must be lowercase r, g, b or a", err);
+            out.materialPacking.source = words[0];
+            out.materialPacking.ao = ao;
+            out.materialPacking.cavity = cavity;
+            out.materialPacking.roughness = rough;
+            out.materialPacking.metallic = metal;
+        }
 		else if (directive == "output") {
 			if (!inPak)
 				return Fail(lineNo, "output",
