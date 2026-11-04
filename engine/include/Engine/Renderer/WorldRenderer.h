@@ -3956,15 +3956,11 @@ public:
 	// Sequence data is sampled while the captured frame is being built,
 	// then paired with the GPU readback at the next frame boundary.
 	tour::snapshot::SequenceWriter m_snapshotSequence;
-	// Scoped sequence (default): render into 15 immutable device-local
-	// images, then export after one batch fence/device-idle. The legacy
-	// per-frame synchronous image download remains available.
+	// Scoped sequence (default): copy each completed capture image into
+	// a private 15-frame device-local GPU buffer on the render command stream.
+	// One synchronous buffer download occurs after GPU completion at each
+	// batch boundary. Legacy remains the per-frame image-download path.
 	static constexpr size_t kScopedCaptureFrames = 15;
-	struct ScopedCaptureImage {
-		smvk::Holder<smvk::ImageHandle> image;
-		smvk::Holder<smvk::ImageViewHandle> view;
-		smvk::LogicalImageViewHandle logical{};
-	};
 	struct ScopedCaptureFrame {
 		uint64_t tick = 0;
 		uint64_t dtNs = 0;
@@ -3972,7 +3968,8 @@ public:
 		tour::snapshot::Json events;
 		tour::snapshot::Json provenance;
 	};
-	std::array<ScopedCaptureImage, kScopedCaptureFrames> m_scopedImages{};
+	smvk::Holder<smvk::BufferHandle> m_scopedCaptureBuffer;
+	size_t m_scopedFrameBytes = 0;
 	std::vector<ScopedCaptureFrame> m_scopedFrames;
 	smvk::Extent2D m_scopedExtent{0, 0};
 	bool m_scopedCapture = true;
