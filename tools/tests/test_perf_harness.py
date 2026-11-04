@@ -168,6 +168,42 @@ class HarnessTests(unittest.TestCase):
                              "exports/cull_dump_12.json")
             self.assertIsNone(mod.CULL_DUMP_WROTE.search("no dump here"))
 
+    def test_gpu_process_classification(self):
+        from unittest.mock import patch
+        with patch.dict("sys.modules", {}):
+            import benchmark_environment as guard
+        sample = """# gpu        pid  type    sm   mem   enc   dec   command
+    0       123    G     18     2     -     -   chrome
+    0       456    C      7     1     -     -   blender
+    0       789    G      1     0     -     -   desktop
+"""
+        processes, uncertain = guard.parse_nvidia_pmon(sample)
+        self.assertFalse(uncertain)
+        self.assertEqual({p["pid"] for p in processes}, {123, 456})
+        self.assertEqual(guard.parse_nvidia_pmon(sample, own_pid=123)[0][0]["pid"], 456)
+        self.assertEqual(guard.parse_nvidia_pmon(sample.splitlines()[0])[0], [])
+        self.assertFalse(guard.parse_nvidia_pmon(sample.splitlines()[0])[1])
+        self.assertTrue(guard.parse_nvidia_pmon("driver unavailable")[1])
+        rows = [{"path": r"\\host\\gpu engine(pid_42_luid_0x0_0x0_phys_0_eng_0_engtype_3D)",
+                 "value": 12.0},
+                {"path": r"\\host\\gpu engine(pid_43_luid_0x0_0x0_phys_0_eng_0_engtype_Copy)",
+                 "value": 90.0}]
+        self.assertEqual([p["pid"] for p in guard.parse_windows_gpu(json.dumps(rows))], [42])
+
+    def test_compare_rejects_invalid_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            a, b = root / "a.json", root / "b.json"
+            good = {"mode": "bench", "ok": True, "frames": 120, "app_args": [],
+                    "environment": {}, "summary": {"median_ms": 10}}
+            a.write_text(json.dumps(dict(good, ok=False)))
+            b.write_text(json.dumps(good))
+            with self.assertRaises(SystemExit):
+                mod.main(["compare", "--baseline", str(a), "--candidate", str(b)])
+            a.write_text(json.dumps(dict(good, environment_checks=[{"status": "busy"}])))
+            with self.assertRaises(SystemExit):
+                mod.main(["compare", "--baseline", str(a), "--candidate", str(b)])
+
 
 if __name__ == "__main__":
     unittest.main()

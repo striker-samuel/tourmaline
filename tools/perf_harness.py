@@ -12,6 +12,9 @@ import statistics
 import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from benchmark_environment import sample_environment
+
 
 def default_paths_config():
     # User-local settings, not in the Git repository or distributed content.
@@ -318,6 +321,8 @@ def main(argv=None):
         b = json.loads(args.candidate.read_text(encoding="utf-8"))
         if a.get("mode") != "bench" or b.get("mode") != "bench":
             parser.error("comparison requires two uninstrumented bench results")
+        if a.get("ok") is False or b.get("ok") is False or a.get("environment_checks", [{}])[-1].get("status") not in ("clean", None) or b.get("environment_checks", [{}])[-1].get("status") not in ("clean", None):
+            parser.error("cannot compare invalid or contaminated benchmark results")
         if a.get("frames") != b.get("frames") or a.get("app_args") != b.get("app_args") or a.get("environment") != b.get("environment") or a.get("source_args") != b.get("source_args") or a.get("scenario") != b.get("scenario"):
             parser.error("benchmark configurations differ; compare matching runs only")
         # Resolution-scaling results compare per resolution: a regression at
@@ -557,11 +562,30 @@ def main(argv=None):
                           "scratch_dir": str(args.scratch_dir) if args.scratch_dir else "system temp"}, indent=2))
         return 0
     failed = False
+    # Only raw frame-time benchmarks require exclusivity. A check is also
+    # taken after every subprocess so contention during measurement is fatal.
+    exclusive = args.mode == "bench"
+    report["environment_checks"] = []
+    def check_clean(phase):
+        nonlocal failed
+        sample = sample_environment()
+        sample["phase"] = phase
+        report["environment_checks"].append(sample)
+        if sample["status"] != "clean":
+            failed = True
+            report["invalid_reason"] = "unclean benchmark environment at " + phase
+            print("[perf-harness] ERROR: " + report["invalid_reason"] +
+                  ": " + "; ".join(sample["reasons"]), file=sys.stderr, flush=True)
+            return False
+        return True
+
     try:
+        if exclusive:
+            check_clean("preflight")
         # Warm runs first (bench only): compilation and first-use cache
         # variance land in priming invocations that are never summarized.
         priming = []
-        if args.mode == "bench":
+        if args.mode == "bench" and not failed:
             targets = priming_targets(plan)
             for j, target in enumerate(targets, 1):
                 tag = f" [{target['resolution']['label']}]" if target["resolution"] else ""
@@ -585,10 +609,16 @@ def main(argv=None):
                     entry["error"] = "priming run failed (the measured runs never started)"
                 priming.append(entry)
                 print(json.dumps(entry), flush=True)
+                if not failed and exclusive:
+                    check_clean("after priming " + str(j))
                 if failed:
                     break
         report["priming"] = priming
         for i, item_plan in enumerate(plan, 1):
+            if failed:
+                break
+            if exclusive and not check_clean("before run " + str(i)):
+                break
             print(f"[perf-harness] {args.mode} run {i}/{len(plan)}"
                   + (f" [{item_plan['resolution']['label']}]" if item_plan["resolution"] else ""),
                   file=sys.stderr, flush=True)
@@ -632,6 +662,9 @@ def main(argv=None):
                     failed = True
                     item["error"] = f"invalid/missing snapshot sequence: {exc}"
             report["runs"].append(item)
+            if exclusive and not check_clean("after run " + str(i)):
+                item["error"] = report["invalid_reason"]
+                item.pop("avg_frame_ms", None)
             print(json.dumps(item), flush=True)
             if failed:
                 break
@@ -718,6 +751,8 @@ def main(argv=None):
                                                 f"'{args.scenario}' at {baseline}; "
                                                 f"run with --update first")
         report["ok"] = not failed
+        if failed and exclusive:
+            report.pop("summary", None)
         if args.mode in ("capture", "trace"):
             report["note"] = "Nsight runs are instrumented; do not compare their FPS against bench mode. Inspect the Nsight output/log for capture artifacts."
     finally:
