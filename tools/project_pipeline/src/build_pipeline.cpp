@@ -1075,26 +1075,26 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			const std::string manifestDigest = smvk::cache::HashBytes(
 				manifestBytes.data(), manifestBytes.size());
 			std::ostringstream receipt;
-			receipt << "tourmaline-build-receipt 1\\n"
+			receipt << "tourmaline-build-receipt 1\n"
 				<< "manifest " << manifestPath.filename().generic_string()
-				<< " fnv1a64:" << manifestDigest << "\\n";
+				<< " fnv1a64:" << manifestDigest << "\n";
 			for (size_t i = 0; i < plan.paks.size(); ++i)
 				receipt << "pak " << plan.paks[i].id << ' '
 					<< finalPaths[i].filename().generic_string() << " fnv1a64:"
-					<< finalDigests[i] << "\\n";
+					<< finalDigests[i] << "\n";
 			// Capture logical source-to-package ownership as well as output
 			// bytes. Stable content IDs remain in each pak's #ids table;
 			// this ledger records the recipe edge that produced the pak.
 			for (const PlanPak& pak : plan.paks) {
 				receipt << "scene " << std::quoted(pak.id) << ' '
-					<< std::quoted(pak.scene) << "\\n";
+					<< std::quoted(pak.scene) << "\n";
 				for (const std::string& artifact : pak.sceneArtifacts)
 					receipt << "scene-artifact " << std::quoted(pak.id)
-						<< ' ' << std::quoted(artifact) << "\\n";
+						<< ' ' << std::quoted(artifact) << "\n";
 				for (const PlanAsset& asset : pak.assets)
 					receipt << "input " << std::quoted(pak.id) << ' '
 						<< std::quoted(asset.path) << ' '
-						<< int(asset.kind) << "\\n";
+						<< int(asset.kind) << "\n";
 			}
 			const std::string payload = receipt.str();
 			const fs::path stagedReceipt = stagingDir /
