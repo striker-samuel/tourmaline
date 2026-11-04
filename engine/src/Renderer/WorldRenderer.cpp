@@ -986,6 +986,8 @@ namespace engine {
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.smaa
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.msaaCustomResolve
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		// The WorldRenderer-owned cpp builders (skydome, terrain,
 		// skinning, the probe visuals, the probe pre-mix).
 		moved += m_skydome.ReloadShaders(*m_context, retired) ? 1 : 0;
@@ -3423,7 +3425,7 @@ namespace engine {
 				// lifecycle at the msaaEnabled site owns every flip
 				// (mode changes, DLSS taking over), this just covers the
 				// starts-already-in-MSAA case.
-				if (m_passes.msaa && m_aaMode == AaMode::Msaa2x
+				if (m_passes.msaa && (m_aaMode == AaMode::Msaa2x || m_aaMode == AaMode::Msaa2xCustom)
 						&& m_context->SupportsMSAA2x()
 						&& !m_viewportResources.msaa.Ensure(*m_context,
 							*m_rendergraph, renderExtent, msaaDesc)) {
@@ -9925,7 +9927,7 @@ namespace engine {
 		// MSAA pair: lazy (the frame lifecycle at the msaaEnabled site
 		// owns it) — recreate here only when the mode is active; the
 		// inactive resize leaves it destroyed.
-		if (m_passes.msaa && m_aaMode == AaMode::Msaa2x
+		if (m_passes.msaa && (m_aaMode == AaMode::Msaa2x || m_aaMode == AaMode::Msaa2xCustom)
 				&& m_context->SupportsMSAA2x()) {
 			smvk::MsaaDesc rebuildMsaaDesc{};
 			rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
@@ -11146,7 +11148,7 @@ namespace engine {
 			// only in its own mode (SMAA after an MSAA resolve wastes the
 			// resolve; device support is still gated at the Main pass).
 			// DLSS replaces all AA when active.
-			m_viewportResources.msaaEnabled = (m_aaMode == AaMode::Msaa2x) && !dlssUsable;
+			m_viewportResources.msaaEnabled = (m_aaMode == AaMode::Msaa2x || m_aaMode == AaMode::Msaa2xCustom) && !dlssUsable;
 			// MSAA target lifecycle (lazy, the EVSM pattern): the
 			// transient 2x color+depth pair + the SSGI MSAA resolve twin
 			// (~89 MiB at 1080p) exist ONLY in the effective MSAA mode —
@@ -13699,6 +13701,10 @@ namespace engine {
 				smvk::gfx::ConeDebugLinesLogical(m_gfxRenderer.State()),
 				coneLinesRead);
 		}
+		// Shader failure and missing multisample sampling support degrade to hardware AVERAGE.
+		const bool customMsaaResolve = useMsaa && m_aaMode == AaMode::Msaa2xCustom
+			&& m_viewportResources.msaa.CustomResolveInputValid()
+			&& m_viewportResources.msaaCustomResolve.Ensure(*m_context);
 		if (useMsaa) {
 			// 2x MSAA color resolves into the 1x HDR intermediate; the
 			// aoTerm MRT twin rides the SAME resolve (AVERAGE) so the
@@ -13727,13 +13733,25 @@ namespace engine {
 				resolveViews.push_back(
 					m_viewportResources.ssgi.envSpec.logical);
 			}
-			mainPass.SetColorWithResolve(
-				msaaViews,
-				resolveViews,
-				smvk::AttachmentLoadOp::Clear,
-				smvk::AttachmentStoreOp::DontCare,
-				smvk::ClearColor(0, 0, 0, 1)
-			)
+			if (customMsaaResolve) {
+				// Retain only color for the shader pass. AO/envSpec remain hardware-resolved.
+				std::vector<smvk::RenderAttachment> attachments;
+				for (size_t i = 0; i < msaaViews.size(); ++i) {
+					smvk::RenderAttachment a{};
+					a.view = msaaViews[i];
+					a.loadOp = smvk::AttachmentLoadOp::Clear;
+					a.storeOp = i == 0 ? smvk::AttachmentStoreOp::Store : smvk::AttachmentStoreOp::DontCare;
+					a.clearColor = smvk::ClearColor(0, 0, 0, 1);
+					a.resolveView = i == 0 ? smvk::LogicalImageViewHandle{} : resolveViews[i];
+					attachments.push_back(a);
+				}
+				mainPass.SetColorAttachments(attachments);
+			} else {
+				mainPass.SetColorWithResolve(msaaViews, resolveViews,
+					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::DontCare,
+					smvk::ClearColor(0, 0, 0, 1));
+			}
+			mainPass
 				// Transient 2x depth: cleared here, written by Main.
 				// The 1x prepass depth stays reserved for Forward+ cull.
 				.SetDepth(m_viewportResources.msaa.depthLogical,
@@ -15346,6 +15364,14 @@ namespace engine {
 		}
 
 		// ---------------------------------------------------------------------
+		// Custom shader resolve must precede every HDR consumer (particles, AO, bloom).
+		if (customMsaaResolve) {
+			m_viewportResources.msaaCustomResolve.AddPass(*m_rendergraph,
+				m_viewportResources.msaa.colorLogical,
+				m_viewportResources.hdr.logicalView,
+				m_context->GetBindlessIndex(m_viewportResources.msaa.colorBindless),
+				renderExtent);
+		}
 		// GPU particles - additive HDR billboards over the resolved Main color
 		// (see particles.h). Runs after Main (HDR + prepass depth complete),
 		// before the post chain: motion blur / bloom / exposure all pick the
@@ -17412,10 +17438,10 @@ namespace engine {
 						// AA mode combo (Off / MSAA 2x / SMAA 1x / SMAA T2x);
 						// msaaEnabled derives from the mode every frame, so the
 						// combo is the single source of truth. DLSS replaces AA.
-						const char* aaNames[] = { "Off", "MSAA 2x", "SMAA 1x", "SMAA T2x" };
+						const char* aaNames[] = { "Off", "MSAA 2x", "SMAA 1x", "SMAA T2x", "MSAA 2x Custom Resolve" };
 						int aaIdx = static_cast<int>(m_aaMode);
 						ImGui::BeginDisabled(m_dlssFrameActive);
-						if (ImGui::Combo("Antialiasing (Z / 1-4)", &aaIdx, aaNames, 4))
+						if (ImGui::Combo("Antialiasing (Z / 1-4)", &aaIdx, aaNames, 5))
 							m_aaMode = static_cast<AaMode>(aaIdx);
 						ImGui::EndDisabled();
 						// Transparency technique for Blend materials.
@@ -18579,12 +18605,13 @@ namespace engine {
 							histPeak = std::max(histPeak, v);
 						ImGui::PlotHistogram("##expHist", m_exposureBinsUi,
 							(int)smvk::kExposureBinCount, 0, nullptr, 0.0f, histPeak, ImVec2(0, 48));
-						if (m_aaMode == AaMode::Msaa2x) {
+						if (m_aaMode == AaMode::Msaa2x || m_aaMode == AaMode::Msaa2xCustom) {
 							if (!m_context->SupportsMSAA2x())
 								ImGui::TextDisabled("MSAA 2x unsupported - running 1x");
 							else
 								ImGui::TextDisabled(m_viewportResources.msaa.Valid()
-									? "MSAA 2x -> HDR resolve" : "MSAA target missing - running 1x");
+									? (m_aaMode == AaMode::Msaa2xCustom ? "MSAA custom requested (hardware fallback if unavailable)" : "MSAA 2x -> HDR resolve")
+									: "MSAA target missing - running 1x");
 						}
 						else if (m_aaMode == AaMode::Smaa1x || m_aaMode == AaMode::SmaaT2x) {
 							if (!m_viewportResources.smaa.Valid())
