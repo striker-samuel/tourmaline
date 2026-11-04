@@ -198,7 +198,7 @@ def run_search(args):
                 candidate_score = score(measured, baseline, args.max_regression)
                 gain = (1 - math.exp(candidate_score)) * 100 if candidate_score is not None else None
                 accepted = (candidate_score is not None and
-                            candidate_score < best_score and gain >= args.min_gain)
+                            candidate_score < best_score and (math.exp(best_score) - math.exp(candidate_score)) * 100 >= args.min_gain)
                 if accepted:
                     best_source, best_score = candidate, candidate_score
                     (output / "best.hlsl").write_text(candidate, encoding="utf-8")
