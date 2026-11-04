@@ -16,7 +16,7 @@ static int g_failures = 0;
 #define CHECK(expr) do { \
     if (!(expr)) { \
         std::cerr << "FAIL " << __FILE__ << ':' << __LINE__ \
-                  << ": " << #expr << "\\n"; \
+                  << ": " << #expr << "\n"; \
         ++g_failures; \
     } \
 } while (false)
