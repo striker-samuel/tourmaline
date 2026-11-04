@@ -1162,7 +1162,9 @@ void EditorApp::FinalizePending() {
 	// existing selection/gizmo/mode commands, preserving keyboard shortcuts.
 	float EditorApp::DrawToolTabs(float top) {
 		constexpr float h = 58.0f;
-		ImGui::SetNextWindowPos(ImVec2(0.0f, top), ImGuiCond_Always);
+		const ImVec2 mainPos = ImGui::GetMainViewport()->Pos;
+		ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+		ImGui::SetNextWindowPos(ImVec2(mainPos.x, mainPos.y + top), ImGuiCond_Always);
 		ImGui::SetNextWindowSize(
 			ImVec2(float(ImGui::GetIO().DisplaySize.x), h), ImGuiCond_Always);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(9.0f, 4.0f));
