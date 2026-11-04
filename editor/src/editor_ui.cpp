@@ -209,8 +209,10 @@ void EditorApp::FinalizePending() {
 		if (ids.empty()) { ImGui::TextDisabled("No editable terrain."); return; }
 		const uint32_t selected = TerrainGroupOf(m_selected);
 		if (selected != UINT32_MAX && selected != m_worldMapGroup &&
-			std::binary_search(ids.begin(), ids.end(), selected))
+			std::binary_search(ids.begin(), ids.end(), selected)) {
 			m_worldMapGroup = selected;
+			m_worldMapScale = 0.0f;
+		}
 		if (!std::binary_search(ids.begin(), ids.end(), m_worldMapGroup))
 			m_worldMapGroup = ids.front();
 		uint32_t group = m_worldMapGroup;
