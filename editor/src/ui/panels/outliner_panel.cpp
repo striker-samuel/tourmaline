@@ -236,14 +236,9 @@ namespace editor {
 		if (!m_world || m_world->scene.hierarchy.empty()) {
 			return;
 		}
-		ImGui::SetNextItemWidth(-90.0f);
+		ImGui::SetNextItemWidth(-1.0f);
 		ImGui::InputTextWithHint("##filter", "filter nodes...",
 			m_filterBuf, sizeof(m_filterBuf));
-		ImGui::SameLine();
-		ImGui::Checkbox("non-DAG", &m_showNonDag);
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Show non-scene rows (file/image nodes, "
-				"materials, editor orbit cameras) in this tree.");
 		const bool filtering = m_filterBuf[0] != '\0';
 		std::string selName = "-";
 		if (m_worldSelected)

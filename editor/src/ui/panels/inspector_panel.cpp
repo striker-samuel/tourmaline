@@ -11,6 +11,8 @@
 #include "ui/inspector/section_registry.h"
 #include "editor_brush_presets.h"
 #include "modal_bindings.h"
+#include "editor_node_plugs.h"
+#include "editor_transform_trs.h"
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
 #include "editor_asset_browser_nav.h" // collection folders belong at root
 #include "editor_asset_inspect.h" // generic file/directory inspector
@@ -112,17 +114,27 @@ namespace editor {
 				continue;
 			switch (cmd.verb) {
 			case EditVerb::Translate:
-				for (const char* axis : { "Translate X", "Translate Y", "Translate Z" })
-					mark(axis, 1);
-				break;
 			case EditVerb::Rotate:
-				for (const char* axis : { "Rotate X", "Rotate Y", "Rotate Z" })
-					mark(axis, 1);
+			case EditVerb::Scale: {
+				// The command stores the entire vector. Attribute provenance
+				// must nevertheless identify only axes that actually changed.
+				glm::vec3 beforeT, beforeR, beforeS;
+				transform::ReadLocalTRS(cmd.beforeMat, beforeT, beforeR, beforeS);
+				const glm::vec3 before = cmd.verb == EditVerb::Translate
+					? beforeT : (cmd.verb == EditVerb::Rotate ? beforeR : beforeS);
+				const char* family = cmd.verb == EditVerb::Translate
+					? "transform.translate." : (cmd.verb == EditVerb::Rotate
+						? "transform.rotate." : "transform.scale.");
+				for (int axis = 0; axis < 3; ++axis) {
+					if (std::fabs(double(cmd.afterVec[axis] - before[axis]))
+						<= 0.00001)
+						continue;
+					const std::string plug = std::string(family) + "xyz"[axis];
+					if (const auto* d = plugs::Find(plugs::NodeType::Transform, plug))
+						mark(d->label.data(), 1);
+				}
 				break;
-			case EditVerb::Scale:
-				for (const char* axis : { "Scale X", "Scale Y", "Scale Z" })
-					mark(axis, 1);
-				break;
+			}
 			case EditVerb::Rename: mark("Name", 1); break;
 			case EditVerb::SetStatic: mark("Static", 1); break;
 			case EditVerb::SetLightmap: mark("Bake lightmaps", 1); break;
