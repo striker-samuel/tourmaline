@@ -33,7 +33,7 @@ third-party HDRI licensing and attribution.
 
 ## Generate and cook the fixtures
 
-Build `Project` and `App` normally for your platform (see root README).
+Build `Project` and `MaterialLab` normally for your platform (see root README).
 From the repository root, generate source assets:
 
 ```sh
@@ -59,13 +59,15 @@ scene into its own pak. Linux example:
 ```sh
 BUILD=out/build/linux-Release
 PROJ=out/material-lab/source
-cmake --build "$BUILD" --target Project App
+RUNTIME="$BUILD/material-lab-runtime"
+cmake --build "$BUILD" --target Project MaterialLab
+mkdir -p "$RUNTIME/content/paks"
 for env in studio cornell outdoor; do
     "$BUILD/Project" import --project "$PROJ" \
         --source "$PROJ/content/models/$env/$env.gltf"
     "$BUILD/Project" build --project "$PROJ" \
         --scene "content/scenes/$env.tour" \
-        --output "$BUILD/content/paks/material_lab_$env.pak"
+        --output "$RUNTIME/content/paks/material_lab_$env.pak"
 done
 ```
 
@@ -90,16 +92,16 @@ Inspect the suite, then plan a small subset without a GPU:
 ```sh
 python tools/material_lab.py list
 python tools/material_lab.py plan --environment studio,cornell \
-    --material metal_smooth,copper_brushed --view lit,health
+    --material metal_smooth,copper_brushed,toon_cel --view lit,health
 ```
 
 First capture:
 
 ```sh
 python tools/material_lab.py run \
-    --exe out/build/linux-Release/App \
+    --exe out/build/linux-Release/material-lab-runtime/MaterialLab \
     --environment studio,cornell,outdoor \
-    --material metal_smooth,copper_brushed --view lit,health,roughness \
+    --material metal_smooth,copper_brushed,toon_cel --view lit,health,roughness \
     --gpu-tag 'GPU-and-driver-id' --output out/material-lab/baseline
 ```
 
@@ -107,9 +109,9 @@ Compare a later capture on the *same GPU and driver*:
 
 ```sh
 python tools/material_lab.py run \
-    --exe out/build/linux-Release/App \
+    --exe out/build/linux-Release/material-lab-runtime/MaterialLab \
     --environment studio,cornell,outdoor \
-    --material metal_smooth,copper_brushed --view lit,health,roughness \
+    --material metal_smooth,copper_brushed,toon_cel --view lit,health,roughness \
     --gpu-tag 'GPU-and-driver-id' \
     --baseline-dir out/material-lab/baseline \
     --output out/material-lab/candidate
@@ -149,7 +151,7 @@ python tools/material_lab.py reference \
     --exe out/build/linux-Release/ReferenceScene \
     --project out/material-lab/source \
     --environment studio,cornell,outdoor \
-    --material metal_smooth,copper_brushed \
+    --material metal_smooth,copper_brushed,toon_cel \
     --resolution 256 --spp 64 --bounces 3 \
     --output out/material-lab/reference
 ```
@@ -176,3 +178,27 @@ Existing `.github/workflows/perf_scenarios.yml` runs `tools/tests` in
 GPU-less CI. To validate GPU behavior locally, cook each bundled scene,
 capture `lit` and `health` for a known sphere, repeat with a strict
 baseline, and visually inspect resulting contact sheets.
+
+## Toon material fixture
+
+The generated **toon_cel** sphere is blue, placed behind the original nine
+PBR spheres (the original camera bookmarks remain stable). Its MaterialLab
+host selects the existing `ProjectLit` shader family only for the node named
+`toon_cel`. The project hook suppresses specular response and quantizes
+post-lit HDR luminance into log-space bands; it is an NPR prototype, **not**
+per-light cel shading. This leaves the engine's macros and light model intact.
+
+Use `--exe out/build/linux-Release/material-lab-runtime/MaterialLab` for
+all default suite captures, including toon. The executable uses the existing
+production app host/renderer and stages its project-lit shaders in its own
+runtime directory, separate from the normal App and GameProject shader files.
+On Windows, run `material-lab-runtime/MaterialLab.exe` instead. The shader
+family selector is enabled for benchmark captures via
+`TOURMALINE_EXTRA_ELEMENT_BENCH=1`, automatically pinned by the suite for
+toon cases. The CLI rejects toon captures using the plain App executable.
+
+The additional geometry changes every scene: `fixture_revision=2` is now
+included in each capture signature, invalidating prior baselines. PBR
+debug views show the raw underlying material, not the toon-lit bands.
+CPU tests cover the fixture and selection, but visual verification still
+requires a Vulkan-capable GPU, shader compilation and cooked scenes.

@@ -141,6 +141,21 @@
           -1
         ]
       }
+    },
+    "toon_cel": {
+      "camera": {
+        "position": [
+          -3.2,
+          4.7,
+          0.1
+        ],
+        "forward": [
+          0,
+          0,
+          -1
+        ]
+      },
+      "shader_family": "project_lit"
     }
   },
   "environments": {
@@ -213,5 +228,6 @@
         "TOURMALINE_CUBEMAP": "1"
       }
     }
-  }
+  },
+  "fixture_revision": 2
 }
