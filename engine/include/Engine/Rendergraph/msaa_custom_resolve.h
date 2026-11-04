@@ -35,7 +35,9 @@ struct MsaaCustomResolve {
         bool changed = false;
         changed |= SwapShaderModule(ctx, kVs, "msaaResolveVert", vs, retired);
         changed |= SwapShaderModule(ctx, kPs, "msaaResolveFrag", ps, retired);
-        if (changed) { program = {}; Ensure(ctx); }
+        // Paren form, NOT `= {}`: ShaderProgram's array NSDMIs reject the
+        // braced assignment on GCC (the smvk.h toolchain note).
+        if (changed) { program = ShaderProgram(); Ensure(ctx); }
         return changed;
     }
     void AddPass(RenderGraph& rg, LogicalImageViewHandle src,
