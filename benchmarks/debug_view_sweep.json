@@ -1,0 +1,1390 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 15,
+      "id": "dbg-lit",
+      "label": "Sponza debug view: lit",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "unlit"
+      },
+      "frames": 15,
+      "id": "dbg-unlit",
+      "label": "Sponza debug view: unlit",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "meshlets"
+      },
+      "frames": 15,
+      "id": "dbg-meshlets",
+      "label": "Sponza debug view: meshlets",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "cascades"
+      },
+      "frames": 15,
+      "id": "dbg-cascades",
+      "label": "Sponza debug view: cascades",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "lods"
+      },
+      "frames": 15,
+      "id": "dbg-lods",
+      "label": "Sponza debug view: lods",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "vertexcolors"
+      },
+      "frames": 15,
+      "id": "dbg-vertexcolors",
+      "label": "Sponza debug view: vertexcolors",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "uv0"
+      },
+      "frames": 15,
+      "id": "dbg-uv0",
+      "label": "Sponza debug view: uv0",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "uv1"
+      },
+      "frames": 15,
+      "id": "dbg-uv1",
+      "label": "Sponza debug view: uv1",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "cubemap"
+      },
+      "frames": 15,
+      "id": "dbg-cubemap",
+      "label": "Sponza debug view: cubemap",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "pom"
+      },
+      "frames": 15,
+      "id": "dbg-pom",
+      "label": "Sponza debug view: pom",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "ssr_contribution"
+      },
+      "frames": 15,
+      "id": "dbg-ssr-contribution",
+      "label": "Sponza debug view: ssr_contribution",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "ssrmask"
+      },
+      "frames": 15,
+      "id": "dbg-ssrmask",
+      "label": "Sponza debug view: ssrmask",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "normals"
+      },
+      "frames": 15,
+      "id": "dbg-normals",
+      "label": "Sponza debug view: normals",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "normalsmapped"
+      },
+      "frames": 15,
+      "id": "dbg-normalsmapped",
+      "label": "Sponza debug view: normalsmapped",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "motion"
+      },
+      "frames": 15,
+      "id": "dbg-motion",
+      "label": "Sponza debug view: motion",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "ssgi_confidence",
+        "TOURMALINE_SSGI": "1"
+      },
+      "frames": 15,
+      "id": "dbg-ssgi-confidence",
+      "label": "Sponza debug view: ssgi_confidence",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "ssgi_raw",
+        "TOURMALINE_SSGI": "1"
+      },
+      "frames": 15,
+      "id": "dbg-ssgi-raw",
+      "label": "Sponza debug view: ssgi_raw",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "ssgi_layer",
+        "TOURMALINE_SSGI": "1"
+      },
+      "frames": 15,
+      "id": "dbg-ssgi-layer",
+      "label": "Sponza debug view: ssgi_layer",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "ssgi_baseline",
+        "TOURMALINE_SSGI": "1"
+      },
+      "frames": 15,
+      "id": "dbg-ssgi-baseline",
+      "label": "Sponza debug view: ssgi_baseline",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "ssgi_contribution",
+        "TOURMALINE_SSGI": "1"
+      },
+      "frames": 15,
+      "id": "dbg-ssgi-contribution",
+      "label": "Sponza debug view: ssgi_contribution",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "contact_shadows",
+        "TOURMALINE_CONTACT_SHADOWS": "1"
+      },
+      "frames": 15,
+      "id": "dbg-contact-shadows",
+      "label": "Sponza debug view: contact_shadows",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "pbrhealth"
+      },
+      "frames": 15,
+      "id": "dbg-pbrhealth",
+      "label": "Sponza debug view: pbrhealth",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "pbrbase"
+      },
+      "frames": 15,
+      "id": "dbg-pbrbase",
+      "label": "Sponza debug view: pbrbase",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "pbrdiffuse"
+      },
+      "frames": 15,
+      "id": "dbg-pbrdiffuse",
+      "label": "Sponza debug view: pbrdiffuse",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "pbrrough"
+      },
+      "frames": 15,
+      "id": "dbg-pbrrough",
+      "label": "Sponza debug view: pbrrough",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "pbrmetal"
+      },
+      "frames": 15,
+      "id": "dbg-pbrmetal",
+      "label": "Sponza debug view: pbrmetal",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "pbrf0"
+      },
+      "frames": 15,
+      "id": "dbg-pbrf0",
+      "label": "Sponza debug view: pbrf0",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "sss"
+      },
+      "frames": 15,
+      "id": "dbg-sss",
+      "label": "Sponza debug view: sss",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "hair"
+      },
+      "frames": 15,
+      "id": "dbg-hair",
+      "label": "Sponza debug view: hair",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "water"
+      },
+      "frames": 15,
+      "id": "dbg-water",
+      "label": "Sponza debug view: water",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "clipping"
+      },
+      "frames": 15,
+      "id": "dbg-clipping",
+      "label": "Sponza debug view: clipping",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "clipdark"
+      },
+      "frames": 15,
+      "id": "dbg-clipdark",
+      "label": "Sponza debug view: clipdark",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_DEBUGVIEW": "clipbright"
+      },
+      "frames": 15,
+      "id": "dbg-clipbright",
+      "label": "Sponza debug view: clipbright",
+      "subsystem": "debugview"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_SSR": "1"
+      },
+      "frames": 15,
+      "id": "feat-ssr-on",
+      "label": "Sponza feature A/B: ssr-on",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off"
+      },
+      "frames": 15,
+      "id": "feat-ao-off",
+      "label": "Sponza feature A/B: ao-off",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "ssao"
+      },
+      "frames": 15,
+      "id": "feat-ao-ssao",
+      "label": "Sponza feature A/B: ao-ssao",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "sao"
+      },
+      "frames": 15,
+      "id": "feat-ao-sao",
+      "label": "Sponza feature A/B: ao-sao",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_GI_INTENSITY": "0"
+      },
+      "frames": 15,
+      "id": "feat-gi-intensity-0",
+      "label": "Sponza feature A/B: gi-intensity-0",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_GI_INTENSITY": "1"
+      },
+      "frames": 15,
+      "id": "feat-gi-intensity-1",
+      "label": "Sponza feature A/B: gi-intensity-1",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_GI_INTENSITY": "2"
+      },
+      "frames": 15,
+      "id": "feat-gi-intensity-2",
+      "label": "Sponza feature A/B: gi-intensity-2",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_EVSM": "1"
+      },
+      "frames": 15,
+      "id": "feat-evsm",
+      "label": "Sponza feature A/B: evsm",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_TRANSPARENCY": "1"
+      },
+      "frames": 15,
+      "id": "feat-transparency",
+      "label": "Sponza feature A/B: transparency",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_VOLUMETRIC": "1"
+      },
+      "frames": 15,
+      "id": "feat-volumetric",
+      "label": "Sponza feature A/B: volumetric",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_PROBE_PREMIX": "1"
+      },
+      "frames": 15,
+      "id": "feat-probe-premix",
+      "label": "Sponza feature A/B: probe-premix",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_FP_MASKS": "1"
+      },
+      "frames": 15,
+      "id": "feat-fp-masks",
+      "label": "Sponza feature A/B: fp-masks",
+      "subsystem": "feature"
+    },
+    {
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_NORMAL_FIX": "1"
+      },
+      "frames": 15,
+      "id": "feat-normal-fix",
+      "label": "Sponza feature A/B: normal-fix",
+      "subsystem": "feature"
+    }
+  ]
+}
