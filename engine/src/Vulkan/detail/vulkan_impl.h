@@ -930,6 +930,12 @@ namespace smvk {
 		// does not write sync states back; Undefined would discard the
 		// contents on transition). Transitions to TRANSFER_SRC and back.
 		bool DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout, void* out, size_t size);
+		// Record a non-blocking RGBA8 image -> device-local capture-buffer copy
+		// in the rendergraph's own command buffer. The caller must declare
+		// TransferSrcOptimal/TransferRead on the image through graph hints;
+		// the GPU buffer is not mapped or downloaded by this call.
+		bool RecordSnapshotImageCopy(void* nativeCmd, ImageHandle src,
+			BufferHandle dst, VkDeviceSize dstOffset, Extent2D extent);
 		// Grows the persistent readback staging to cover `size` bytes
 		// (power-of-two steps, 256 KiB floor). The old buffer retires via
 		// DeferDestroy. Render-thread only, like the download itself.
