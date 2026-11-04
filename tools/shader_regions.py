@@ -134,14 +134,14 @@ def preserve_identity(previous_source, current_source, previous_regions):
     """
     old_regions = discover(previous_source)
     current_regions = discover(current_source)
-    old_by_id = {r["id"]: r for r in old_regions}
     old_lines, old_starts = _line_positions(previous_source)
     new_lines, new_starts = _line_positions(current_source)
     line_map = _mapped_lines(previous_source, current_source)
     assigned = set()
     resolved = []
     for prior in previous_regions:
-        old = old_by_id.get(prior.get("id"))
+        old = next((r for r in old_regions if r["start"] == prior.get("start")
+                    and r["kind"] == prior.get("kind")), None)
         if old is None or old.get("ambiguous"):
             resolved.append(dict(prior, status="lost"))
             continue
