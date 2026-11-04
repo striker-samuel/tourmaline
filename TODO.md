@@ -237,11 +237,18 @@ were fixed post-merge.
   verification against a live dev session is still open.
 
 ## #193 — docking overlays + camera mouse ownership
-- Explicit scope note from the author: a focused alignment/input fix,
-  **NOT** an offscreen scene render target for detached secondary native
-  windows — the known detached scene-view rendering gap remains open.
-- No author-declared validation checklist; covered by the green local
-  gate (full build + 107/107 ctest).
+- **Detached scene-viewport LANDED (`4cf3b716`)**: the Viewport panel can
+  undock into a secondary OS window — the live view's inline LDR target
+  is bound as an ImGui user texture and presented by ImGui's backend in
+  the detached window's swapchain (the offscreen scene render target
+  the PR's scope note deferred). Diagnostic view modes (the legacy
+  editor passes) remain main-window-only with an in-panel hint; camera
+  pick/orbit math still assumes the primary window's input space; the
+  inline extent still clamps to the main swap extent.
+- Still open: the reported F1/F2 disappearance is neither reproduced nor
+  fixed (the PR body's own disclaimer), and the author's manual smoke
+  list (moved window, floating/re-docked splitter drags, non-100% DPI)
+  has not been run against the detached lane.
 
 ## #194 — VRR-aware frame pacing + VSync controls (merged as draft)
 - (Merge note: `app/src/Host.h` carried the same literal-backslash-n
