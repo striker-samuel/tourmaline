@@ -41,7 +41,7 @@ are transferred in chunks after the 15-frame capture, not read during capture. A
 of producing mixed-size files. The PNG wire format and verification
 contract are unchanged.
 
-## Commands at a glance
+For direct extraction of the original per-PNG `tsNp` JSON record (including\nkeyframes or delta patches), see [PNG metadata extraction](png_metadata_cli.md).\n\n## Commands at a glance
 
 | Command | Purpose | Needs GPU? |
 | --- | --- | --- |
