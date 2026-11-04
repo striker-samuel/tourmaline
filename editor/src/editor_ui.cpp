@@ -225,7 +225,9 @@ void EditorApp::FinalizePending() {
 		// window; ImGui saves the workspace to editor.imgui.ini. We keep
 		// platform multi-viewport disabled: the renderer still owns one
 		// Vulkan swapchain (undocking into a second OS window is not wired).
-		ImGui::SetNextWindowPos(ImVec2(0.0f, menuH), ImGuiCond_Always);
+		const ImVec2 mainPos = ImGui::GetMainViewport()->Pos;
+		ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+		ImGui::SetNextWindowPos(ImVec2(mainPos.x, mainPos.y + menuH), ImGuiCond_Always);
 		ImGui::SetNextWindowSize(ImVec2(ImGui::GetIO().DisplaySize.x,
 			std::max(1.0f, vh - menuH - kEditorStatusH)), ImGuiCond_Always);
 		const ImGuiWindowFlags hostFlags =
@@ -254,7 +256,7 @@ void EditorApp::FinalizePending() {
 					ImGuiDockNodeFlags_DockSpace |
 					ImGuiDockNodeFlags_PassthruCentralNode);
 				ImGui::DockBuilderSetNodePos(dockId,
-					ImVec2(0.0f, menuH));
+					ImVec2(mainPos.x, mainPos.y + menuH));
 				ImGui::DockBuilderSetNodeSize(dockId,
 					ImVec2(ImGui::GetIO().DisplaySize.x,
 						std::max(1.0f, vh - menuH - kEditorStatusH)));
@@ -306,6 +308,9 @@ void EditorApp::FinalizePending() {
 			// scene texture, no extra GPU copy and no scene serialization.
 			m_dockViewportVisible = false;
 			if (m_showViewportPanel) {
+			// The scene is rendered by the PRIMARY swapchain, not ImGui's
+			// secondary-window swapchains. Keep this canvas on the host.
+			ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
 			ImGui::SetNextWindowBgAlpha(0.0f);
 			ImGui::SetNextWindowSize(ImVec2(880, 620), ImGuiCond_FirstUseEver);
 			if (ImGui::Begin("Viewport", &m_showViewportPanel,
@@ -486,7 +491,9 @@ void EditorApp::FinalizePending() {
 		// one line of breathing room (kEditorStatusH 28) keeps the text
 		// off the edges.
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 3.0f));
-		ImGui::SetNextWindowPos(ImVec2(0, vh - kEditorStatusH),
+		const ImVec2 mainPos = ImGui::GetMainViewport()->Pos;
+		ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+		ImGui::SetNextWindowPos(ImVec2(mainPos.x, mainPos.y + vh - kEditorStatusH),
 			ImGuiCond_Always);
 		ImGui::SetNextWindowSize(ImVec2(vw, kEditorStatusH),
 			ImGuiCond_Always);
