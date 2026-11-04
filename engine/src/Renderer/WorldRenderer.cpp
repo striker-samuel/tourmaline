@@ -1266,6 +1266,11 @@ namespace engine {
 			switch (*pins.aa) {
 			case AaPin::Off: m_aaMode = AaMode::Off; break;
 			case AaPin::Msaa2x: m_aaMode = AaMode::Msaa2x; break;
+			// The custom resolve pin MUST be re-applied here too: this
+			// override runs after every scene seed, and a missing case
+			// silently let the seed's default (Off) win — the headless
+			// msaa2xcustom capture was pixel-identical to AA off.
+			case AaPin::Msaa2xCustom: m_aaMode = AaMode::Msaa2xCustom; break;
 			case AaPin::Smaa1x: m_aaMode = AaMode::Smaa1x; break;
 			case AaPin::SmaaT2x: m_aaMode = AaMode::SmaaT2x; break;
 			}
