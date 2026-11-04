@@ -239,7 +239,7 @@ namespace editor {
         if (enabled) {
             int mode = m_dayNight.physical ? 1 : 0;
             if (ImGui::Combo("Sun model", &mode,
-                    "Artistic (fixed 6/18 horizon)\\0Physical (solar position)\\0"))
+                    "Artistic (fixed 6/18 horizon)\0Physical (solar position)\0"))
                 m_dayNight.physical = (mode == 1);
             ImGui::Checkbox("Play preview", &m_dayNight.playing);
             ImGui::SameLine();
