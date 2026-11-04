@@ -17220,7 +17220,7 @@ namespace engine {
 					// copy on the SAME graphics command stream, without a fence,
 					// CPU mapping, temporary command buffer or readback.
 					const size_t slot = m_scopedFrames.size();
-					auto& copyPass = m_rendergraph->AddPass("ScopedSnapshotCopy");
+					auto& copyPass = m_rendergraph->AddComputePass("ScopedSnapshotCopy");
 					smvk::ImageSyncRequest source{};
 					source.layout = smvk::ImageLayout::TransferSrcOptimal;
 					source.barrierMasks.stageMask = smvk::PipelineStageBit_Transfer;
