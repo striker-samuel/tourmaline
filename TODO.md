@@ -313,6 +313,29 @@ were fixed post-merge.
   "god objects are INTENTIONAL" owner note stands — this lands as
   narrow-collaborator extraction, not a file split.
 
+## #199 — GPU mesh-instance particles (merged with tests unrun)
+- Author's validation disclaimer: "Tests added but deliberately not
+  run... No local compile, GPU smoke test or performance benchmark."
+  Integrator checklist from the PR body: shader compilation, push
+  constant ABI, rendergraph synchronization, mesh bounds, scene
+  prototype registration, runtime rendering.
+- Integrator validation: full build + ctest (see below for results).
+- Known v1 limitations (author-declared): the mesh draw path is the
+  DIAGNOSTIC UNlit FS — material-aware PBR and a standalone
+  asset-picker/prototype registration UI are follow-ups; prototype
+  bins come from AttachGpuPlacementRuntime (max eight), with a
+  conservative fallback when bounds are unregistered.
+
+## #201 — local-first multi-machine scenario correctness records
+- CPU-only validation done: tools compile + the new
+  test_scenario_matrix.py suite passes locally.
+- GPU validation must run on actual machines with a built Benchmark and
+  cooked content (the matrix's `cull`/`snapshot`/`bench` verdicts need
+  real runs); this environment's GPU leg is dev-side.
+- Author follow-up: golden-sequence visual comparisons per
+  machine/setup and a cross-machine aggregation/report command after
+  the baseline policy is defined.
+
 ## Audit series still open (drafts)
 - #184 [Audit 03] double-precision transforms (docs-only, unstarted).
 - #191 [Audit 10] WorldRenderer decomposition (partial implementation
