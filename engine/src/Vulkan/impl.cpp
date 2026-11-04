@@ -12445,9 +12445,16 @@ tour::App::~App()
 	assert(m_elements.empty());
 	WaitForDeviceIdle();
 	m_audio.Shutdown();
-	// Members m_world/m_rendergraph/m_swapchain/m_context destroyed automatically
-	// (App holds them directly; window is last member so destroyed after Vulkan).
-	// The input bridge must also outlive Input but die before SDL_Quit.
+	// Member destructors run AFTER this destructor body. Explicitly tear
+	// down the graphics owners while the SDL window (and its X11/Wayland
+	// connection) is still alive: swapchain destruction uses the surface.
+	// Destroy dependents before the context they borrow.
+	m_world.reset();
+	m_rendergraph.reset();
+	m_swapchain.reset();
+	m_context.reset();
+	// The input bridge owns SDL gamepad handles and must close them
+	// before SDL_Quit.
 	m_sdlInput.reset();
 	if (window) {
 		SDL_DestroyWindow(window);
