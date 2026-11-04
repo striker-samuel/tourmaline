@@ -191,9 +191,9 @@ After saving the config, bootstrap an administrator **before restarting**:
 
 ~~~bash
 python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users init
-python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set VIP --permission 'source.*' --permission 'product.publish'
-python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set normal --permission 'source.read' --permission 'product.read' --permission 'artifact.read'
-python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users set User1 --group VIP --group normal --permission 'source.read'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set publishers --permission 'source.*' --permission 'product.publish'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set readers --permission 'source.read' --permission 'product.read' --permission 'artifact.read'
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users set artist_one --group publishers --group readers --permission 'source.read'
 python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users list
 ~~~
 
@@ -205,7 +205,7 @@ updates memberships and direct rules without changing the token. Revoke
 and replace an individual token with:
 
 ~~~bash
-python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users rotate-token User1
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users rotate-token artist_one
 ~~~
 
 The rules `source.*` and `product.*` match their respective dotted
@@ -236,7 +236,7 @@ let a particular `reviewer` read it without publishing:
 
 ~~~bash
 python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set artists --permission source.read --permission product.read --permission product.publish --permission artifact.read
-python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users set reviewer --group normal
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users set reviewer --group readers
 python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users asset-set SOURCE_UUID --group artists --permission source.read --permission product.read --permission product.publish --permission artifact.read
 python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users asset-set SOURCE_UUID --user reviewer --permission source.read --permission product.read --permission artifact.read
 ~~~
@@ -290,7 +290,7 @@ Normal SMB file opens outside participating clients cannot be observed here.
 Read-presence access requires `presence.read`, and the HTTP response hides
 assets not readable by the requesting user.
 
-A fresh registry provides `admin` with `*` and `normal` with read
+A fresh registry provides `admin` with `*` and `readers` with read
 and presence permissions. `/health` and the static `/consumers` dashboard
 page remain publicly accessible; all asset data and API operations are
 authorized. A 401 means the token is absent/unknown; a 403 means the
@@ -389,7 +389,7 @@ refreshes every ten seconds.
 
 A client heartbeat is an advisory, expiring **complete set** of reads. An
 empty set means idle; sessions expire after the configured TTL. It does not
-block writes, grant access, or inspect normal raw SMB file handles.
+block writes, grant access, or inspect readers raw SMB file handles.
 Clients can release their presence explicitly on exit.
 
 Maya's shared-cache client automatically announces source/product versions
