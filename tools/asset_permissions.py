@@ -22,7 +22,7 @@ _NODE = re.compile(r"[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*(?:\.\*)?\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 DEFAULT_GROUPS = {
     "admin": ["*"],
-    "normal": ["source.read", "product.read", "artifact.read",
+    "readers": ["source.read", "product.read", "artifact.read",
                "presence.read", "presence.write"],
 }
 
