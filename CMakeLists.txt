@@ -357,20 +357,6 @@ add_subdirectory(external/volk)  # Vulkan loader (pinned git submodule)
 #   -DTOURMALINE_DS_VIZ=OFF -> force OFF even in Debug trees
 set(TOURMALINE_DS_VIZ "" CACHE BOOL
     "Deferred-shadow debug visualizers (empty = auto: Debug builds only)")
-if(TOURMALINE_IS_TOP_LEVEL AND
-   NOT TOURMALINE_BUILD_PROFILE STREQUAL "shipping")
-  # The editor is built in top-level trees and always exposes diagnostics.
-  # Shipping profiles retain their explicit no-diagnostics contract.
-  set(DS_VIZ_ON ON)
-elseif(TOURMALINE_DS_VIZ)
-  set(DS_VIZ_ON ON)
-elseif(TOURMALINE_DS_VIZ STREQUAL "" AND CMAKE_BUILD_TYPE MATCHES "Debug")
-  set(DS_VIZ_ON ON)
-else()
-  set(DS_VIZ_ON OFF)
-endif()
-message(STATUS "Deferred-shadow visualizers: ${DS_VIZ_ON}"
-  " (TOURMALINE_DS_VIZ='${TOURMALINE_DS_VIZ}', build type '${CMAKE_BUILD_TYPE}')")
 
 # --- Explicit build profiles -------------------------------------------------
 # Distinct build directories are mandatory; never package diagnostics output.
@@ -402,6 +388,23 @@ if(NOT TOURMALINE_BUILD_PROFILE STREQUAL "custom")
   endif()
 endif()
 message(STATUS "Tourmaline profile: ${TOURMALINE_BUILD_PROFILE}; Nsight labels: ${TOURMALINE_NSIGHT_MARKERS}")
+
+# Resolve visualization after profiles can force shipping settings.
+if(TOURMALINE_IS_TOP_LEVEL AND
+   NOT TOURMALINE_BUILD_PROFILE STREQUAL "shipping")
+  # The editor is built in top-level trees and always exposes diagnostics.
+  # Shipping profiles retain their explicit no-diagnostics contract.
+  set(DS_VIZ_ON ON)
+elseif(TOURMALINE_DS_VIZ)
+  set(DS_VIZ_ON ON)
+elseif(TOURMALINE_DS_VIZ STREQUAL "" AND CMAKE_BUILD_TYPE MATCHES "Debug")
+  set(DS_VIZ_ON ON)
+else()
+  set(DS_VIZ_ON OFF)
+endif()
+message(STATUS "Deferred-shadow visualizers: ${DS_VIZ_ON}"
+  " (TOURMALINE_DS_VIZ='${TOURMALINE_DS_VIZ}', build type '${CMAKE_BUILD_TYPE}')")
+
 
 # --- Shader debug information (-Zi) ---------------------------------------------
 # Release tree whose shaders carry SPIR-V debug info (names/lines/source
