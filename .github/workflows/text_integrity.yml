@@ -1,4 +1,6 @@
 # GPU-free regression checks for accidental text encoding corruption.
+# The unittest suite IS the enforcement: fixtures + a full tracked-tree
+# scan (see tests/test_text_integrity.py).
 name: Text integrity
 
 on:
@@ -15,7 +17,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Test corruption fixtures
+      - name: Text integrity fixtures + tracked-tree scan
         run: python -m unittest discover -s tests -p 'test_text_integrity.py' -v
-      - name: Check tracked text
-        run: python tools/check_text_integrity.py

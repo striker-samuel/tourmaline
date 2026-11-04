@@ -19,15 +19,14 @@ SOURCE_SUFFIXES = {
 DASH_LOOKALIKES = frozenset("\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d")
 MOJIBAKE = ("â€“", "â€”", "â€‘", "ï¿½")
 # Self-referential exemption set: these files CONTAIN the corruption
-# markers by design (the detector's own constants, its regression
-# fixtures, and AGENTS.md's documentation of the failure symptoms) -
-# without the exemption the scan fails on a clean tree and the Text
-# integrity CI workflow is permanently red. Everything else stays
-# checked.
+# markers by design (the detector's own constants and its regression
+# fixtures) - without the exemption the scan fails on a clean tree and
+# the Text integrity CI workflow is permanently red. Everything else
+# stays checked (AGENTS.md too: its encoding section is marker-free
+# prose).
 EXEMPT_PATHS = frozenset((
     "tools/check_text_integrity.py",
     "tests/test_text_integrity.py",
-    "AGENTS.md",
 ))
 
 

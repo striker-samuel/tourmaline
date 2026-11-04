@@ -8,6 +8,8 @@ spec = importlib.util.spec_from_file_location("check_text_integrity", CHECKER)
 checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 class TextIntegrityTests(unittest.TestCase):
     def test_ascii_hyphen_and_unicode_comments_are_safe(self):
@@ -44,6 +46,16 @@ class TextIntegrityTests(unittest.TestCase):
 
     def test_unicode_text_is_not_banned_in_other_sources(self):
         self.assertEqual([], checker.check_text(Path("example.py"), "'café — résumé'\n".encode("utf-8")))
+
+    def test_tracked_tree_is_clean(self):
+        # THE enforcement: the whole tracked tree scans clean (vendored
+        # external/ and the checker's own fixture files are exempted by
+        # the tool). This single test is the "unicode contamination
+        # verification" - CI runs it on every push/PR, and agents can
+        # run it locally with one unittest command.
+        count, errors = checker.scan(REPO_ROOT)
+        self.assertEqual([], errors)
+        self.assertGreater(count, 1000)
 
 
 if __name__ == "__main__":

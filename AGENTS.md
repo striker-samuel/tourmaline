@@ -1,32 +1,22 @@
 # AGENTS.md — instructions for AI coding agents and human collaborators.
 
-## Safe local file editing for agents (PowerShell / Windows)
+## Text encoding integrity
 
-AI agents editing this checkout from Windows PowerShell **must not** let the
-PowerShell host or console code page decide the encoding of repository files.
-Typical symptoms are replacement characters (`�`), mojibake (`â€“`, `â€”`,
-`ï¿½`), or an ASCII hyphen (`-`, U+002D) becoming a Unicode dash and
-breaking command-line options. Do not globally replace dashes: Unicode em/en
-dashes and non-English characters are legitimate in docs, comments and UI text.
+Repository text is UTF-8. Damage from encoding-unsafe local edits
+(replacement characters, mojibake, non-ASCII dashes in PowerShell
+switches) is caught automatically - no agent-facing checklist:
 
-- Prefer structured patch application or a text editor that preserves UTF-8.
-  Avoid rewriting entire files via shell pipelines or default-encoding
-  `Out-File`, `Set-Content`, `>`, or `>>` across different PowerShell versions.
-- When writing via PowerShell, read the source as UTF-8 and write it explicitly
-  as UTF-8 **without BOM** (compatible with Windows PowerShell 5.1 and pwsh):
-  `$utf8 = [System.Text.UTF8Encoding]::new($false)`;
-  `$text = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)`;
-  `[System.IO.File]::WriteAllText($path, $text, $utf8)`.
-  Do not perform blind text substitutions or rewrite a file merely to change
-  encoding. Review the diff before accepting an agent edit.
-- After local agent edits, run `python tools/check_text_integrity.py` and
-  `git diff --check`; inspect `git diff` for unexpectedly modified characters.
-  The text check is a heuristic, not a substitute for inspecting the diff.
-  It checks tracked source/config/documentation and skips vendored `external/`
-  files. If a suspicious sequence is legitimate, investigate rather than
-  blindly replacing it.
-- Regression cases: `python -m unittest discover -s tests -p
-  "test_text_integrity.py" -v`.
+- `tests/test_text_integrity.py` is the regression suite AND the
+  enforcement: it covers the fixtures and scans the whole tracked tree
+  (vendored `external/` and the checker's own fixture files are
+  exempted), so `python -m unittest discover -s tests -p
+  "test_text_integrity.py" -v` is the single command.
+- The `Text integrity` CI workflow runs exactly that suite on every
+  push and pull request.
+- When scripting file writes, prefer structured edits; if you must
+  rewrite via PowerShell, write UTF-8 without BOM. Unicode em/en dashes
+  and non-English text are legitimate content - never globally replace
+  dashes.
 
 ## Agent command-line tooling manual
 
