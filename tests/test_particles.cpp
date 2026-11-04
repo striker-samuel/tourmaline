@@ -264,6 +264,45 @@ void TestParticleSourceGraph() {
 }
 
 
+void TestMeshParticleSourceCompilation() {
+    using namespace tour::particles;
+    auto graph = Graph::Default();
+    graph.attrs[2].renderMode = kMeshRender;
+    graph.attrs[2].meshId = 3;
+    const SourceProvider source = [](const std::string&, int,
+        std::vector<Point>& points, std::string&) {
+        points.push_back({glm::vec3(2.0f, 3.0f, 4.0f)});
+        return true;
+    };
+    auto result = Evaluate(graph, source, 1);
+    Check(result.ok && result.emitters.empty() && result.meshEmitters.size() == 1,
+        "pt.mesh.compiles-mesh-only");
+    if (!result.meshEmitters.empty()) {
+        const auto& e = result.meshEmitters.front();
+        Check(e.life.w == 3.0f && e.position.x == 2.0f,
+            "pt.mesh.bin-and-position");
+        Check(e.life.z == graph.attrs[2].rate && e.size.x == graph.attrs[2].sizeStart,
+            "pt.mesh.rate-and-size");
+    }
+    const auto encoded = SerializeAttributes(kEmitter, graph.attrs[2]);
+    std::string type;
+    Attributes parsed;
+    Check(ParseAttributes(encoded, type, parsed) &&
+        parsed.renderMode == kMeshRender && parsed.meshId == 3,
+        "pt.mesh.v2-roundtrip");
+    graph.attrs[2].meshId = smvk::kMeshParticlesMaxBins;
+    Check(!Evaluate(graph, source).ok, "pt.mesh.reject-unsupported-bin");
+    graph.attrs[2].meshId = 0;
+    graph.attrs[2].renderMode = kBillboardRender;
+    result = Evaluate(graph, source);
+    Check(result.ok && result.emitters.size() == 1 && result.meshEmitters.empty(),
+        "pt.mesh.billboard-backward-compatibility");
+    const std::string legacy = "v1 particle.emitter -1 -100 100 18 0.35 1.8 6 0.3 0.2 0.58 0.49 0.36";
+    Check(ParseAttributes(legacy, type, parsed) &&
+        parsed.renderMode == kBillboardRender,
+        "pt.mesh.legacy-v1-default");
+}
+
 void TestParticleSourceTopologyRegressions() {
     using namespace tour::particles;
     // Multiple registered providers may fan into the same emitter sink.
@@ -381,6 +420,7 @@ void TestParticleSourceTopologyRegressions() {
 }
 
 int main() {
+	TestMeshParticleSourceCompilation();
 	TestParticleSourceTopologyRegressions();
 	TestParticleSourceGraph();
 	TestStructAbi();
