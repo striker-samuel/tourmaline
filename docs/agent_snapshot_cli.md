@@ -1,3 +1,26 @@
+## Scoped GPU capture (default)
+
+Snapshot recording now uses **scoped** capture by default. The renderer
+preallocates 15 GPU-resident RGBA8 image slots at the capture resolution.
+Each simulation tick renders its snapshot into a distinct slot and stores
+its matching CPU world state, input events and RNG state. It waits for GPU
+completion and exports the 15 PNG files at the batch boundary (including
+a partial final batch). No per-frame GPU readback or device-idle wait takes
+place during the 15 captured frames.
+
+Use `--snapshot-capture=legacy` on App to restore the previous behavior:
+one synchronous GPU image readback and PNG export per captured frame.
+In the agent CLI, pass `--capture-mode legacy` to select that mode.
+The default is `--capture-mode scoped`.
+
+Scoped capture uses approximately `15 * width * height * 4` bytes of
+device-local image storage, excluding driver overhead. The export phase
+still reads each image back and encodes its PNG; this removes readback
+from the recording window, but **does not yet aggregate all 15 GPU image
+transfers into one Vulkan download submission**. The existing snapshot
+PNG metadata, keyframe/delta chain, hashes and verification contract
+remain unchanged.
+
 # Agent manual: record, replay and verify PNG snapshot sequences
 
 This is the **agent entry point** for Tourmaline snapshot sequences.
