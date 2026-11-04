@@ -1,3 +1,31 @@
+## Exclusive performance measurement and environment telemetry
+
+Uninstrumented `bench` measurements must run on a quiet machine. The harness
+checks system CPU, RAM and other GPU processes before priming, after priming,
+and before and after **each** measured invocation. A busy or unverifiable
+environment causes a nonzero exit, `"ok": false` and an `invalid_reason`
+in `result.json`; **no valid benchmark summary is emitted**. Each
+`environment_checks` entry includes its phase, CPU utilization, RAM
+availability/usage, GPU process utilization (where supported), and reasons for
+rejection. The comparison command rejects invalid benchmark reports.
+
+Default fail thresholds are **20% system CPU**, **90% physical RAM used**,
+or **5% utilization by an external GPU 3D/compute process**. These are
+conservative hygiene thresholds, not a guarantee that the machine was idle
+through every millisecond of the run. Browsers count whenever a browser GPU
+process is doing significant 3D/compute work; an idle open browser does not
+automatically invalidate results. GPU activity might also occur between
+samples, so close games, browsers with GPU-heavy tabs, renderers, streaming
+software, and other jobs before benchmarking.
+
+Windows uses OS GPU Engine performance counters, Windows CPU counters, and
+physical memory telemetry. Linux uses `/proc/stat`, `/proc/meminfo`,
+and NVIDIA `nvidia-smi pmon` process utilization. Missing permissions,
+unsupported GPU tooling (including non-NVIDIA Linux adapters), or unavailable
+counters fail closed with `status: "unknown"`: do not treat those runs as
+clean. Run on a supported telemetry setup for measured results. The gate
+does not attempt to terminate unrelated applications.
+
 # Agent performance harness (Benchmark + Nsight Graphics)
 
 Tourmaline's `App` viewer and dedicated `Benchmark` executable share the same measured-frame contract: 10 internal warmup frames, a fixed benchmark timestep, and an explicit measured-frame budget. The Python standard-library harness `tools/perf_harness.py` runs this contract; it does **not** invent a second timing loop. It forces `--disable_control --bench <frames> --present immediate` for each invocation.
