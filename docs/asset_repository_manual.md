@@ -222,7 +222,73 @@ win ties between groups. Unmatched permissions are **denied by default**.
 | `product.publish` | PUT /v2/publish |
 | `presence.read` | View active readers |
 | `presence.write` | Send heartbeat or release |
+| `/v2/open-assets` | Live asset/version, authenticated user, workstation, mode and expiry (requires `presence.read`) |
 | `source.write` | Reserved for a future source-write API (no write endpoint today) |
+
+### Asset-specific access rules
+
+Permission rules can be scoped to a **source asset UUID**, independently for
+users and groups. Published products inherit their source asset's ACL; this
+prevents bypassing permissions by requesting a representation or shared blob.
+
+For example, allow the `artists` group to read and publish one asset, but
+let a particular `reviewer` read it without publishing:
+
+~~~bash
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users group-set artists --permission source.read --permission product.read --permission product.publish --permission artifact.read
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users set reviewer --group normal
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users asset-set SOURCE_UUID --group artists --permission source.read --permission product.read --permission product.publish --permission artifact.read
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users asset-set SOURCE_UUID --user reviewer --permission source.read --permission product.read --permission artifact.read
+~~~
+
+The asset ACL is a **second layer** on top of global permission nodes:
+users need both a global permission and a matching asset-specific permission.
+When no asset ACL exists, global permissions alone apply. When an asset ACL
+exists, users who have no matching asset rule are denied, except members of the
+`admin` group with the applicable administrator grant. User rules win ties
+over group rules, and explicit denials are supported with `-source.read`.
+Delete all per-asset restrictions using:
+
+~~~bash
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json users asset-clear SOURCE_UUID
+~~~
+
+Only the source UUID is used for ACL identity, so renaming an asset does not
+change its ACL. The HTTP API filters unauthorized entries from source/product
+lists, rejects forbidden direct revision lookups and artifact downloads, and
+checks publishing against the source UUID. For safety, legacy v1 browser and
+local-path endpoints are unavailable while per-user registry mode is active;
+use filtered v2 endpoints.
+
+### Live asset-use database (advisory)
+
+The same protected SQLite archive stores active asset sessions. A heartbeat
+records the authenticated **username**, reported **workstation**, client kind
+and label, source/product UUID, revision, **mode** (`read`, `edit`,
+`review`, or `publish`), and last-seen/expiry times. The username is
+derived from the bearer token, not an arbitrary client field. A session belongs
+to one authenticated user, so another user cannot overwrite or release it.
+
+Query the live flat view:
+
+~~~bash
+curl -H 'Authorization: Bearer USER_TOKEN' https://assets.example.lan/v2/open-assets
+curl -H 'Authorization: Bearer USER_TOKEN' 'https://assets.example.lan/v2/open-assets?resource_kind=source&resource_id=SOURCE_UUID'
+~~~
+
+Clients send heartbeats to `POST /v2/consumers/heartbeat` with
+`session_id`, `workstation`, `kind`, `label`, and a complete `reads`
+array of `{kind, id, version, mode}` records. Existing clients that omit
+`mode` default to `read`. The bundled Maya client reports its workstation
+automatically. Sessions expire after the configured TTL (90 seconds by default)
+or disappear on explicit release. The database survives server restarts, but
+expired entries are pruned on read/write.
+
+**Presence is advisory, not a file lock or guaranteed detection of open files.**
+Workstation and mode are client-reported, while username is server-authenticated.
+Normal SMB file opens outside participating clients cannot be observed here.
+Read-presence access requires `presence.read`, and the HTTP response hides
+assets not readable by the requesting user.
 
 A fresh registry provides `admin` with `*` and `normal` with read
 and presence permissions. `/health` and the static `/consumers` dashboard
@@ -361,6 +427,7 @@ contains NO locking/checkout/write ownership semantics.
 | PUT /v2/publish | Explicit immutable product publication |
 | GET /consumers | Dashboard login page (data fetched with token) |
 | GET /v2/consumers | Active readers, optionally filtered |
+| GET /v2/open-assets | Flat live usage records with user, mode, workstation |
 | POST /v2/consumers/heartbeat | Replace/refresh a consumer's read set |
 | POST /v2/consumers/release | Remove one consumer session |
 | GET /v1/assets and /v1/versions | Original path-based legacy views |
