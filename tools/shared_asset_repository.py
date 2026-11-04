@@ -330,6 +330,40 @@ class SharedArchive(Archive):
         finally:
             Path(temp).unlink(missing_ok=True)
 
+    def blob_owners(self, sha):
+        """List all source UUIDs referencing a content-addressed blob.
+
+        A deduplicated digest may be shared across separate source assets.
+        """
+        if not _HEX_DIGEST.fullmatch(sha):
+            raise ValueError("invalid content digest")
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT asset_id FROM source_revisions WHERE sha256=? "
+                "UNION SELECT p.source_asset_id FROM published_versions v "
+                "JOIN published_products p ON p.product_id=v.product_id "
+                "WHERE v.artifact_sha256=?", (sha, sha))
+            return [r[0] for r in rows]
+
+    def product_source_id(self, product_id):
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT source_asset_id FROM published_products WHERE product_id=?",
+                (product_id,)).fetchone()
+        if row is None:
+            raise FileNotFoundError("product not found")
+        return row[0]
+
+    def legacy_path_source_id(self, path):
+        from tools.offline_asset_service import relative_asset_path
+        path = relative_asset_path(path)
+        with self.connect() as db:
+            row = db.execute("SELECT asset_id FROM source_aliases WHERE path=?",
+                             (path,)).fetchone()
+        if row is None:
+            raise FileNotFoundError("source not found")
+        return row[0]
+
     def referenced_blob(self, sha):
         if not _HEX_DIGEST.fullmatch(sha):
             raise ValueError("invalid content digest")
@@ -359,20 +393,29 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
     readers = ConsumerPresence(store, ttl_seconds=consumer_ttl_seconds)
 
     class Handler(base):
-        def authorized(self, permission):
+        def identity(self):
             header = self.headers.get("Authorization", "")
             if registry is None:
-                if hmac.compare_digest(header, _TOKEN_HEADER + token):
-                    return True
-                return self.reply({"error": "unauthorized"}, 401)
+                return "legacy" if hmac.compare_digest(
+                    header, _TOKEN_HEADER + token) else None
             if not header.startswith(_TOKEN_HEADER):
-                return self.reply({"error": "unauthorized"}, 401)
-            username = registry.identity(header[len(_TOKEN_HEADER):])
+                return None
+            return registry.identity(header[len(_TOKEN_HEADER):])
+
+        def authorized(self, permission, asset_id=None):
+            username = self.identity()
             if username is None:
-                return self.reply({"error": "unauthorized"}, 401)
-            if not registry.allows(username, permission):
-                return self.reply({"error": "forbidden", "permission": permission}, 403)
+                self.reply({"error": "unauthorized"}, 401)
+                return False
+            if registry is not None and not registry.allows(
+                    username, permission, asset_id):
+                self.reply({"error": "forbidden", "permission": permission}, 403)
+                return False
             return True
+
+        def visible(self, asset_id, permission="source.read"):
+            return registry is None or registry.allows(
+                self.identity(), permission, asset_id)
 
         def get_permission(self, path):
             if path in ("/", "/asset", "/v1/assets", "/v1/versions",
@@ -396,8 +439,8 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                         .read_text(encoding="utf-8"))
                 return self.reply(page, kind="text/html")
             request_path = urlsplit(self.path).path
-            if request_path != "/health" and self.authorized(
-                    self.get_permission(request_path)) is not True:
+            if request_path != "/health" and not self.authorized(
+                    self.get_permission(request_path)):
                 return
             url = urlsplit(self.path)
             query = parse_qs(url.query)
@@ -405,24 +448,50 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                 if url.path == "/v2/consumers":
                     kind = query.get("resource_kind", [None])[0]
                     ident = query.get("resource_id", [None])[0]
-                    return self.reply(readers.active(kind, ident))
+                    result = readers.active(kind, ident)
+                    if registry is not None:
+                        for session in result["consumers"]:
+                            session["reads"] = [read for read in session["reads"]
+                                if self.visible(
+                                    read["id"] if read["kind"] == "source" else
+                                    store.product_source_id(read["id"]),
+                                    "source.read")]
+                        result["consumers"] = [s for s in result["consumers"]
+                                               if s["reads"]]
+                    return self.reply(result)
                 if url.path == "/v2/sources":
-                    return self.reply({"sources": store.sources()})
+                    return self.reply({"sources": [
+                        asset for asset in store.sources()
+                        if self.visible(asset["asset_id"])]})
                 if url.path.startswith("/v2/sources/") and url.path.endswith("/revisions"):
                     asset_id = url.path.split("/")[3]
+                    if not self.visible(asset_id):
+                        return self.reply({"error": "not found"}, 404)
                     return self.reply({"revisions": store.source_revisions(asset_id)})
                 if url.path == "/v2/resolve":
                     raw = query.get("revision", [None])[0]
                     value = int(raw) if raw else None
-                    item = store.source_version(query.get("asset_id", [""])[0], value)
+                    asset_id = query.get("asset_id", [""])[0]
+                    if not self.visible(asset_id):
+                        return self.reply({"error": "not found"}, 404)
+                    item = store.source_version(asset_id, value)
                     return self.reply(item)
                 if url.path == "/v2/products":
-                    return self.reply({"products": store.products(
-                        query.get("source_asset_id", [None])[0])})
+                    source_id = query.get("source_asset_id", [None])[0]
+                    if source_id and not self.visible(source_id, "product.read"):
+                        return self.reply({"error": "not found"}, 404)
+                    return self.reply({"products": [
+                        row for row in store.products(source_id)
+                        if self.visible(row["source_asset_id"], "product.read")]})
                 if url.path.startswith("/v2/blobs/"):
                     sha = url.path[len("/v2/blobs/"):]
                     if "/" in sha:
                         raise ValueError("invalid content digest")
+                    owners = store.blob_owners(sha)
+                    if not owners:
+                        raise FileNotFoundError("artifact not found")
+                    if not any(self.visible(owner, "artifact.read") for owner in owners):
+                        return self.reply({"error": "not found"}, 404)
                     artifact = store.referenced_blob(sha)
                     self.send_response(200)
                     self.send_header("Content-Type", "application/octet-stream")
@@ -440,10 +509,16 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                 return self.reply({"error": str(exc)}, 404)
             except OSError as exc:
                 return self.reply({"error": str(exc)}, 500)
+            # Legacy browser/resolve APIs expose host-local paths, so do not
+            # expose them to ACL users until they have filtered v2 equivalents.
+            if registry is not None and url.path in (
+                    "/", "/asset", "/v1/assets", "/v1/versions",
+                    "/v1/resolve", "/v1/status"):
+                return self.reply({"error": "use filtered v2 API"}, 403)
             return super().do_GET()
 
         def do_POST(self):
-            if self.authorized("presence.write") is not True:
+            if not self.authorized("presence.write"):
                 return
             path = urlsplit(self.path).path
             if path not in ("/v2/consumers/heartbeat", "/v2/consumers/release"):
@@ -456,19 +531,37 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                 if not isinstance(body, dict):
                     raise ValueError("body must be a JSON object")
                 if path.endswith("/heartbeat"):
+                    if registry is not None:
+                        for read in readers._normalize(body.get("reads")):
+                            kind, ident, version, mode = read
+                            source_id = ident if kind == "source" else store.product_source_id(ident)
+                            if not self.visible(source_id):
+                                return self.reply({"error": "forbidden"}, 403)
+                            if mode == "publish" and not self.visible(
+                                    source_id, "product.publish"):
+                                return self.reply({"error": "forbidden"}, 403)
                     result = readers.heartbeat(
                         body.get("session_id"), body.get("label"),
-                        body.get("kind"), body.get("reads"))
+                        body.get("kind"), body.get("reads"),
+                        username=self.identity() if registry is not None else None,
+                        workstation=body.get("workstation", ""))
                 else:
-                    result = readers.release(body.get("session_id"))
+                    result = readers.release(
+                        body.get("session_id"),
+                        username=self.identity() if registry is not None else None)
                 return self.reply(result)
+            except PermissionError as exc:
+                return self.reply({"error": str(exc)}, 403)
             except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 return self.reply({"error": str(exc)}, 400)
             except OSError as exc:
                 return self.reply({"error": str(exc)}, 500)
 
         def do_PUT(self):
-            if self.authorized("product.publish") is not True:
+            if not self.authorized("product.publish"):
+                return
+            if not self.authorized("product.publish",
+                    self.headers.get("X-Source-Asset-ID", "")):
                 return
             if urlsplit(self.path).path != "/v2/publish":
                 return self.reply({"error": "not found"}, 404)
