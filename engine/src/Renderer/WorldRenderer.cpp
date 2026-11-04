@@ -11596,9 +11596,14 @@ namespace engine {
 		// are not a substitute for registered geometry).
 		auto& meshPs = m_viewportResources.meshParticles;
 		m_meshParticlesReady = false;
+		const float meshDt = std::max(0.0f, std::min(m_deltaTime, 1.0f / 30.0f));
+		m_meshParticleTailSeconds = std::max(0.0f,
+			m_meshParticleTailSeconds - meshDt);
 		uint32_t meshEmitterCount = 0;
+		bool meshSimulationRun = false;
 		if (m_particlesEnabled && m_passes.particles &&
-			!m_externalMeshParticleEmitters.empty() &&
+			(!m_externalMeshParticleEmitters.empty() ||
+				m_meshParticleTailSeconds > 0.0f) &&
 			m_gpuPlacementSeedCount > 0 &&
 			meshPs.Ensure(*m_context, *m_rendergraph, FrameFlights(fb)) &&
 			m_meshParticleDraw.Ensure(*m_context,
@@ -11615,11 +11620,18 @@ namespace engine {
 				rows.push_back(emitter);
 				if (rows.size() == meshPs.desc.maxEmitters) break;
 			}
-			if (!rows.empty() && meshPs.SeedIndirect(*m_context,
+			if (meshPs.SeedIndirect(*m_context,
 				m_gpuPlacementSeeds, m_gpuPlacementSeedCount)) {
-				meshEmitterCount = uint32_t(rows.size());
-				meshPs.UpdateEmitters(*m_context, fb.frameIndex,
-					rows.data(), meshEmitterCount);
+				meshSimulationRun = !rows.empty() ||
+					m_meshParticleTailSeconds > 0.0f;
+				if (!rows.empty()) {
+					meshEmitterCount = uint32_t(rows.size());
+					meshPs.UpdateEmitters(*m_context, fb.frameIndex,
+						rows.data(), meshEmitterCount);
+					for (const auto& row : rows)
+						m_meshParticleTailSeconds = std::max(
+							m_meshParticleTailSeconds, std::max(row.life.x, row.life.y));
+				}
 			}
 		}
 
@@ -11958,7 +11970,7 @@ namespace engine {
 
 		// Mesh-particle visibility: the same frustum slab and prototype
 		// indexed geometry as GPU placement, with independent GPU bins.
-		if (meshEmitterCount > 0 &&
+		if (meshSimulationRun &&
 			mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
 			if (m_gpuPlacementViewLogical.empty())
 				m_gpuPlacementViewLogical = m_rendergraph->AddExternalBuffer(
@@ -13375,8 +13387,8 @@ namespace engine {
 
 		// Emit and simulate live mesh instances before the view-specific
 		// visibility chain. Particle transforms never round-trip via CPU.
-		if (meshEmitterCount > 0) {
-			const float dt = std::min(m_deltaTime, 1.0f / 30.0f);
+		if (meshSimulationRun) {
+			const float dt = meshDt;
 			smvk::MeshParticlesEmitPush emit{};
 			emit.emitters = meshPs.EmittersSliceAddress(*m_context, fb.frameIndex);
 			emit.emitterState = meshPs.EmitterStateAddress(*m_context);
@@ -13386,11 +13398,13 @@ namespace engine {
 			emit.maxParticles = meshPs.desc.maxParticles;
 			emit.dt = dt;
 			emit.frameSeed = uint32_t(m_frameCounter);
-			auto& emitPass = meshPs.AddEmitPass(*m_rendergraph);
-			emitPass.SetRecordingFunc([this, emit](smvk::CommandBuffer& cmd) {
-				smvk::MeshParticles::PushAndDispatchEmit(cmd,
-					m_viewportResources.meshParticles.emitProgram, emit);
-			});
+			if (meshEmitterCount > 0) {
+				auto& emitPass = meshPs.AddEmitPass(*m_rendergraph);
+				emitPass.SetRecordingFunc([this, emit](smvk::CommandBuffer& cmd) {
+					smvk::MeshParticles::PushAndDispatchEmit(cmd,
+						m_viewportResources.meshParticles.emitProgram, emit);
+				});
+			}
 			smvk::MeshParticlesSimPush sim{};
 			sim.particles = emit.particles;
 			sim.freeList = emit.freeList;
