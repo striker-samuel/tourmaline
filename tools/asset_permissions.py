@@ -40,7 +40,7 @@ def validate_rule(value):
 
 
 def match_rule(rule, permission):
-    """Minecraft-style prefix wildcard: craft.* includes craft.limestone.*."""
+    """Prefix wildcard: source.* includes source.revisions.read."""
     plain = rule.lstrip("-")
     if plain == "*":
         return True
