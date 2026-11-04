@@ -2130,6 +2130,7 @@ private:
 	float m_prefabAnimationTime = 0.0f;
 	tour::asset::Clip m_prefabAnimationClip;
 	std::string m_prefabAnimationSource;
+	std::vector<glm::mat4> m_prefabAnimationRest;
 	smvk::UiComposite m_prefabComposite;
 	smvk::LogicalImageViewHandle m_prefabComposeLogical{};
 	smvk::ImageViewHandle m_prefabComposePhysical{};
