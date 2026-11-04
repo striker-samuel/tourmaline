@@ -6,6 +6,7 @@
 // The host's ResourceManager and GPU device remain shared.
 #include "editor_app.h"
 #include "editor_prefab_sync.h"
+#include "editor_world_session.h"
 #include <gltf_import/gltf.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Scene/scene.h>
@@ -108,13 +109,11 @@ void EditorApp::ProcessFullPrefabNavigation() {
         m_tourDirty = dirty;
         if (!parentCameras.empty())
             m_editorCams = parentCameras;
-        if (m_world && parentSelected < m_world->scene.hierarchy.size()) {
-            m_selected = parentSelected;
-            m_selection.clear();
-            for (uint32_t n : parentSelection)
-                if (n < m_world->scene.hierarchy.size())
-                    m_selection.push_back(n);
-        }
+        const auto restored = editor::world_session::RestoreSelection(
+            parentSelected, parentSelection,
+            m_world ? m_world->scene.hierarchy.size() : 0);
+        m_selected = restored.primary;
+        m_selection = restored.nodes;
         std::error_code ec;
         fs::remove(snapshot, ec);
         m_fullPrefabParentSnapshot.clear();
@@ -169,9 +168,21 @@ void EditorApp::ProcessFullPrefabNavigation() {
     m_prefabRequestedPath.clear();
     if (!OpenTourFile(prefabPath)) {
         Log("Prefab: failed to open source; recovering parent snapshot.");
-        (void)OpenTourFile(tmp.generic_string());
+        // Do not silently discard the parent snapshot when recovery
+        // fails: keep the file for manual recovery and report its path.
+        if (!OpenTourFile(tmp.generic_string())) {
+            Log("Prefab: parent recovery failed; snapshot retained: "
+                + tmp.generic_string());
+            return;
+        }
         m_tourPath = previousTarget;
         m_tourDirty = previousDirty;
+        m_editorCams = previousCameras;
+        const auto restored = editor::world_session::RestoreSelection(
+            previousSelected, previousSelection,
+            m_world ? m_world->scene.hierarchy.size() : 0);
+        m_selected = restored.primary;
+        m_selection = restored.nodes;
         fs::remove(tmp, ec);
         return;
     }

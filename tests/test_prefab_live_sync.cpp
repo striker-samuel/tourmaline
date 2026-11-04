@@ -4,6 +4,7 @@
 // GPU-free regression for live prefab source -> parent instance previews.
 // This is the *same policy* used by the editor's second WorldSession.
 #include "../editor/src/editor_prefab_sync.h"
+#include "../editor/src/editor_world_session.h"
 #include <glm/mat4x4.hpp>
 #include <cassert>
 #include <cmath>
@@ -82,6 +83,23 @@ int main() {
     CHECK(needed.size()==2);
     CHECK(needed[0].first==1 && needed[0].second==40);
     CHECK(needed[1].first==3 && needed[1].second==83);
+    // Per-world selection restoration rejects stale IDs from a different
+    // hierarchy and remains safe when no primary selection survives.
+    {
+        using editor::world_session::RestoreSelection;
+        const auto normal = RestoreSelection(2, {1, 2, 2, 9}, 4);
+        CHECK(normal.primary == 2);
+        CHECK((normal.nodes == std::vector<uint32_t>{1, 2}));
+        const auto stalePrimary = RestoreSelection(99, {1, 3, 8}, 4);
+        CHECK(stalePrimary.primary == 3);
+        CHECK((stalePrimary.nodes == std::vector<uint32_t>{1, 3}));
+        const auto empty = RestoreSelection(99, {8, 9}, 4);
+        CHECK(empty.primary == UINT32_MAX && empty.nodes.empty());
+        const auto noWorld = RestoreSelection(0, {0}, 0);
+        CHECK(noWorld.primary == UINT32_MAX && noWorld.nodes.empty());
+        const auto lonePrimary = RestoreSelection(1, {}, 3);
+        CHECK(lonePrimary.primary == 1 && lonePrimary.nodes.empty());
+    }
     std::cout<<"PrefabLiveSyncTests passed\n";
     return g_failures ? 1 : 0;
 }
