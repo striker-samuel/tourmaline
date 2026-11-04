@@ -272,6 +272,19 @@ std::vector<GpuMemoryHeap> ResourceManager::GetGpuMemoryInfo() const {
         return {};
     return impl_->vulkan.GetGpuMemoryInfo();
 }
+GpuMemoryWarningResult ResourceManager::PollGpuMemoryWarning(double elapsedSeconds) {
+    GpuMemoryPressureSample sample{};
+    for (const auto& heap : GetGpuMemoryInfo()) {
+        if (heap.deviceLocal) {
+            sample.localUsageBytes += heap.usageBytes;
+            sample.localBudgetBytes += heap.budgetBytes;
+        } else {
+            sample.nonlocalAvailable = true;
+            sample.nonlocalUsageBytes += heap.usageBytes;
+        }
+    }
+    return gpuMemorySpillDetector_.Update(sample, elapsedSeconds);
+}
 std::array<uint64_t, kMemoryCategoryCount> ResourceManager::GetMemoryLedger() {
     if (!impl_)
         return {};
