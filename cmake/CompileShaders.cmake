@@ -262,7 +262,10 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
             # trees only; TOURMALINE_DS_VIZ=ON forces them into optimized
             # builds, e.g. the x64-Release-DSViz preset). Release presets
             # without the flag never see the code — zero shader cost.
-            if (DS_VIZ_ON)
+            # Phase 2/3 base binaries must remain production-clean, even
+            # when editor diagnostics are compiled. Their .viz twins below
+            # contain the debug stores and are only selected at runtime.
+            if (DS_VIZ_ON AND NOT FILE_NAME MATCHES "^deferredshadow_phase[23]\\.cs\\.hlsl$")
                 list(APPEND _COMMON -DDS_DEBUG_VIZ=1)
             endif()
 
@@ -288,6 +291,18 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 COMMENT "Compiling HLSL ${FILE_NAME}  SPIR-V (Vulkan 1.3)"
                 VERBATIM
             )
+            if (DS_VIZ_ON AND FILE_NAME MATCHES "^deferredshadow_phase[23]\\.cs\\.hlsl$")
+                set(_DS_VIZ_FILE "${BINARY_DIR}/${FILE_NAME}.viz.spv")
+                add_custom_command(
+                    OUTPUT "${_DS_VIZ_FILE}"
+                    COMMAND "${DXC}" -T "${_PROFILE}" ${_ENTRY_FLAGS} ${_COMMON}
+                            -DDS_DEBUG_VIZ=1 -Fo "${_DS_VIZ_FILE}" "${SHADER}"
+                    DEPENDS "${SHADER}" ${SHADER_HEADERS}
+                    COMMENT "Compiling deferred-shadow diagnostic variant ${FILE_NAME}"
+                    VERBATIM
+                )
+                list(APPEND COMPILED_SHADERS "${_DS_VIZ_FILE}")
+            endif()
             if (TOURMALINE_DX12)
                 # --- The DXIL twin (the same DXC, no -spirv flags) ---
                 # The D3D12 backend consumes .dxil from the SAME content dir
