@@ -90,3 +90,18 @@ or open PRs for model-generated changes.
 - Only one source file is modified per run; there is no multi-file edit protocol.
 - There is no built-in SPIR-V disassembly feedback or GPU profiler integration.
 - It is an experimental local optimizer, not an unattended CI auto-merge path.
+
+## Machine and toolchain provenance
+
+The search creates `environment.json` and embeds its contents in
+`summary.json`. These records include OS/Windows build, CPU type, GPU name
+and installed driver version (Windows CIM and/or NVIDIA-SMI), DXC tool
+version/path/SHA-256 and relevant CMake shader build options when discoverable.
+Use `--dxc C:/path/to/dxc.exe` to identify an explicitly configured DXC
+compiler. Missing tools are represented as null rather than fabricated values.
+
+When comparing optimizations across GPUs or OS/driver/compiler revisions,
+treat the environment metadata as part of the experimental identity. The
+reported DXC binary is only the detected/selected executable; verify that
+it matches your build configuration. Driver metadata is best effort, not an
+authoritative Vulkan physical-device identification.
