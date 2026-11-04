@@ -25,6 +25,8 @@ namespace smvk::terrain {
 inline constexpr float kTerrainBaseY = -40.0f;
 inline constexpr float kTerrainRange = 420.0f;
 inline constexpr int kHeightTileRes = 1024;
+// S-mask RGBA8: R=default surface blend, G/B=custom material attributes,
+// A=solid coverage (0 means hole, 255 solid). Never sRGB-convert masks.
 inline constexpr int kMaskTileRes = 256;
 inline constexpr float kHeightTileSize = 1024.0f; // meters per H-tile
 inline constexpr float kGeoBlockSize = 256.0f;    // meters per G-block
