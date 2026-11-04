@@ -17,6 +17,25 @@ IDENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MODES = ("cull", "snapshot", "bench")
 
 
+def resolve_exe(raw):
+    """Resolve a setup executable path.
+
+    Tolerates the extensionless spelling on Windows - the perf harness
+    documents its executable as ``Benchmark[.exe]``, and the checked-in
+    example matrix uses the bare spelling, which would otherwise fail
+    with "executable does not exist" on win32 (case-insensitive disk,
+    but the extension is required).
+    """
+    path = Path(raw)
+    if path.exists():
+        return path
+    if os.name == "nt":
+        with_ext = path.with_name(path.name + ".exe")
+        if with_ext.exists():
+            return with_ext
+    return path  # absent either way: the harness reports it loudly
+
+
 def load_matrix(path):
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or data.get("schema_version") != 1:
@@ -92,7 +111,7 @@ def run(args):
             destination.mkdir(parents=True, exist_ok=False)
             cmd = [sys.executable, str(ROOT / "tools/perf_harness.py"), mode,
                    "--scenario", scenario, "--catalog", str(args.catalog.resolve()),
-                   "--exe", str(Path(setup["exe"]).resolve()),
+                   "--exe", str(resolve_exe(setup["exe"]).resolve()),
                    "--output", str(destination)]
             if setup.get("workdir"):
                 cmd += ["--workdir", str(Path(setup["workdir"]).resolve())]

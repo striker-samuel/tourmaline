@@ -87,5 +87,28 @@ class ScenarioMatrixTests(unittest.TestCase):
                 thread.join()
 
 
+    def test_resolve_exe_windows_extension_tolerance(self):
+        # The documented harness form is Benchmark[.exe]; the checked-in
+        # example matrix uses the bare spelling, which must resolve on
+        # win32 (the .exe sibling) and pass through elsewhere.
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / "Benchmark.exe"
+            exe.write_bytes(b"")
+            bare = Path(d) / "Benchmark"
+            if matrix.os.name == "nt":
+                self.assertEqual(matrix.resolve_exe(str(bare)), exe)
+            else:
+                bare.write_bytes(b"")
+                self.assertEqual(matrix.resolve_exe(str(bare)), bare)
+            self.assertEqual(matrix.resolve_exe(str(exe)), exe)
+
+    def test_resolve_exe_missing_passthrough(self):
+        # A genuinely absent path passes through unchanged so the
+        # harness owns the loud "executable does not exist" report.
+        with tempfile.TemporaryDirectory() as d:
+            absent = Path(d) / "nope"
+            self.assertEqual(matrix.resolve_exe(str(absent)), absent)
+
+
 if __name__ == "__main__":
     unittest.main()
