@@ -1451,3 +1451,14 @@ target_include_directories(ShapeSceneTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
     ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME shape_scene_tests COMMAND ShapeSceneTests)
+
+# Reusable terrain / scatter brush asset serialization, no GPU dependency.
+add_executable(BrushPresetTests test_brush_presets.cpp)
+target_include_directories(BrushPresetTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/editor/src
+)
+set_target_properties(BrushPresetTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+add_test(NAME brush_preset_tests COMMAND BrushPresetTests)
+
