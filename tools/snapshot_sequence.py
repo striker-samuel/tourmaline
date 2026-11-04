@@ -32,7 +32,7 @@ MAX_PNG = 512 * 1024 * 1024
 MAX_CHUNK = 64 * 1024 * 1024
 MAX_FRAMES = 1_000_000
 MAX_STATE = 64 * 1024 * 1024
-NAME = re.compile(r"Frame_([0-9]{4,9})\.png\Z")
+NAME = re.compile(r"Frame_([0-9]{4,9})\.(png|rgba)\Z")
 
 
 class SnapshotError(ValueError):
@@ -209,20 +209,47 @@ def apply_patch(state, patch):
     return state
 
 
+def read_raw_snapshot(path: Path):
+    """Load a raw RGBA8 frame's JSON record (same TSNP1 hash-chain payload)."""
+    sidecar = path.with_suffix(".json")
+    if path.is_symlink() or sidecar.is_symlink() or not (
+            path.is_file() and sidecar.is_file()):
+        _fail(f"raw frame or sidecar missing: {path}")
+    if not 0 < sidecar.stat().st_size <= MAX_STATE:
+        _fail(f"raw sidecar exceeds limits: {sidecar}")
+    data = sidecar.read_bytes()
+    record = _json(data)
+    if not isinstance(record, dict) or record.get("format") != "tourmaline.snapshot" or (
+            type(record.get("version")) is not int or record["version"] != 1):
+        _fail(f"unsupported raw snapshot format: {sidecar}")
+    if record.get("pixel_format") != "rgba8":
+        _fail(f"unsupported raw pixel format: {sidecar}")
+    return record, MARKER + data
+
+
 def sequence_files(folder: Path):
     if not folder.is_dir():
         _fail(f"snapshot directory not found: {folder}")
     files = []
+    formats = set()
     for p in folder.iterdir():
         match = NAME.fullmatch(p.name)
         if match:
+            formats.add(match.group(2))
             files.append((int(match.group(1)), p))
+    if len(formats) > 1:
+        _fail("mixed PNG/raw sequences are not supported")
     files.sort(key=lambda item: item[0])
     if not files or len(files) > MAX_FRAMES:
-        _fail("no PNG sequence or too many frames")
+        _fail("no snapshot sequence or too many frames")
     for index, (number, _) in enumerate(files, 1):
         if number != index:
             _fail(f"sequence has missing or duplicate frame: expected {index}, got {number}")
+    if formats == {"rgba"}:
+        ids = {p.stem for _, p in files}
+        sidecars = {p.stem for p in folder.glob("Frame_*.json")}
+        if ids != sidecars:
+            _fail("raw snapshot sidecars do not match frame set")
     return [item[1] for item in files]
 
 
@@ -238,7 +265,8 @@ def reconstruct(folder: Path, *, pixels: bool = False):
         except ImportError as exc:
             raise SnapshotError("--pixels requires Pillow") from exc
     for index, path in enumerate(sequence_files(folder), 1):
-        record, payload = read_snapshot(path)
+        record, payload = (read_raw_snapshot(path) if path.suffix == '.rgba'
+                           else read_snapshot(path))
         if record.get("frame") != index or type(record.get("frame")) is not int:
             _fail(f"wrong frame index in {path}")
         if index == 1:
@@ -278,7 +306,20 @@ def reconstruct(folder: Path, *, pixels: bool = False):
             if not isinstance(event, dict) or type(event.get("type")) is not int or (
                     not 3 <= event["type"] <= 14):
                 _fail(f"invalid input event at {path}")
-        if pixels:
+        if path.suffix == ".rgba":
+            # Raw is byte-exact; validate dimensions, length and hash even
+            # without --pixels, so damaged captures never pass verification.
+            provenance = full[0][0]["provenance"] if full else record.get("provenance")
+            width, height = (provenance or {}).get("image_width"), (provenance or {}).get("image_height")
+            if type(width) is not int or type(height) is not int or (
+                    not 0 < width <= 32768 or not 0 < height <= 32768):
+                _fail(f"invalid RGBA frame dimensions at {path}")
+            length = width * height * 4
+            if path.stat().st_size != length:
+                _fail(f"wrong RGBA payload size at {path}")
+            if fnv64(path.read_bytes()) != record.get("pixels_fnv64"):
+                _fail(f"raw pixel hash mismatch at {path}")
+        elif pixels:
             from PIL import Image
             try:
                 with Image.open(path) as im:
