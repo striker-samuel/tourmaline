@@ -178,6 +178,14 @@ void EditorApp::ReadSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		num = double(mat->values.textures.w);
 	else if (attr == "cavityTex")
 		num = double(mat->values.textures2.y);
+	else if (attr == "aoChannel" || attr == "cavityChannel" ||
+		attr == "roughnessChannel" || attr == "metallicChannel") {
+		const int packed = mat->values.textures2.w;
+		const int shift = attr == "aoChannel" ? 0 : attr == "cavityChannel" ? 2 :
+			attr == "roughnessChannel" ? 4 : 6;
+		const int legacy = shift == 4 ? 1 : shift == 6 ? 2 : 0;
+		num = packed < 0 ? legacy : ((packed >> shift) & 3);
+	}
 	else if (attr == "emissiveTex")
 		num = double(mat->values.textures2.x);
 }
@@ -243,6 +251,18 @@ void EditorApp::WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		mat->values.textures.w = int(num);
 	else if (attr == "cavityTex")
 		mat->values.textures2.y = int(num);
+	else if (attr == "aoChannel" || attr == "cavityChannel" ||
+		attr == "roughnessChannel" || attr == "metallicChannel") {
+		const int shift = attr == "aoChannel" ? 0 : attr == "cavityChannel" ? 2 :
+			attr == "roughnessChannel" ? 4 : 6;
+		// The sentinel is the historical R/R/G/B layout.
+		int packed = mat->values.textures2.w;
+		if (packed < 0)
+			packed = (1 << 4) | (2 << 6);
+		const int channel = glm::clamp(int(num), 0, 3);
+		packed = (packed & ~(3 << shift)) | (channel << shift);
+		mat->values.textures2.w = packed;
+	}
 	else if (attr == "emissiveTex")
 		mat->values.textures2.x = int(num);
 	mat->rebuildPipeline();
