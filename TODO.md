@@ -61,14 +61,14 @@ items below are the remaining author-declared gaps.
 - (Resolves the #142 aggregated-readback TODO item above.)
 - **Runtime validation DONE (2026-11-04, post `438cd288`)**: all matrix
   legs above record + verify clean; the 4K staging split works.
-- **OPEN FINDING — capture-mode content divergence**: scoped vs legacy
-  at identical settings differ by avg channel delta ~5.45 on ~20% of
-  pixels (15x the 0.23 same-mode rerun noise; NOT a one-frame offset —
-  shifted comparison is worse at ~10.9). The scoped batch path renders
-  measurably different content from the legacy per-frame path
-  (suspect: capture insertion point or frame timing effects on
-  animated content). Needs author investigation before the two modes
-  can be treated as interchangeable baselines.
+- **RESOLVED — capture-mode divergence was measurement noise**: on the
+  fully-pinned `sponza-atrium` scenario camera (AA off, auto-exposure
+  off, fixed cam), scoped vs legacy are pixel-identical across 30
+  frames (avg/max delta 0.000) and scoped reruns are bit-identical.
+  The earlier ~5.45 avg-delta reading came from unpinned ad-hoc runs
+  (AA jitter phase + auto-exposure convergence drift between separate
+  App launches), not the capture path. Both modes are interchangeable
+  baselines under pinned environments.
 - (Merge note: the branch never compiled — the RHI call was declared
   only on the private VulkanResourceManager; the public
   `ResourceManager::RecordSnapshotImageCopy` facade + forwarding impl
