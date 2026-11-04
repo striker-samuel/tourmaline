@@ -144,6 +144,8 @@ void EditorApp::ReadSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		num = mat->values.params2.y;
 	else if (attr == "occlusionStrength")
 		num = mat->values.params2.x;
+	else if (attr == "cavityStrength")
+		num = mat->values.textures2.z < 0 ? 1.0 : double(mat->values.textures2.z) / 1000.0;
 	else if (attr == "doubleSided")
 		num = mat->doubleSided ? 1.0 : 0.0;
 	else if (attr == "castsShadows")
@@ -174,6 +176,8 @@ void EditorApp::ReadSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		num = double(mat->values.textures.z);
 	else if (attr == "occlusionTex")
 		num = double(mat->values.textures.w);
+	else if (attr == "cavityTex")
+		num = double(mat->values.textures2.y);
 	else if (attr == "emissiveTex")
 		num = double(mat->values.textures2.x);
 }
@@ -203,6 +207,10 @@ void EditorApp::WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		mat->values.params2.y = float(num);
 	else if (attr == "occlusionStrength")
 		mat->values.params2.x = float(num);
+	else if (attr == "cavityStrength") {
+		const float strength = glm::clamp(float(num), 0.0f, 1.0f);
+		mat->values.textures2.z = strength >= 1.0f ? -1 : int(strength * 1000.0f + 0.5f);
+	}
 	else if (attr == "doubleSided")
 		mat->doubleSided = (num != 0.0);
 	else if (attr == "castsShadows")
@@ -233,6 +241,8 @@ void EditorApp::WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		mat->values.textures.z = int(num);
 	else if (attr == "occlusionTex")
 		mat->values.textures.w = int(num);
+	else if (attr == "cavityTex")
+		mat->values.textures2.y = int(num);
 	else if (attr == "emissiveTex")
 		mat->values.textures2.x = int(num);
 	mat->rebuildPipeline();
