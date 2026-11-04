@@ -92,10 +92,20 @@ inline SunPosition ArtisticPosition(float hour) {
 }
 
 inline void Advance(Settings& settings, float deltaSeconds) {
-    if (!settings.enabled || !settings.playing || settings.daySeconds <= 0.0f)
+    // Scrubbing/preview can receive invalid editor inputs. Never poison the
+    // stored hour with NaN, and don't let a large frame pause overflow the
+    // intermediate float multiplication before applying the daily wrap.
+    if (!settings.enabled || !settings.playing ||
+        !std::isfinite(settings.hour) || !std::isfinite(settings.daySeconds) ||
+        !std::isfinite(deltaSeconds) || settings.daySeconds <= 0.0f ||
+        deltaSeconds <= 0.0f)
         return;
-    settings.hour = std::fmod(settings.hour +
-        std::max(0.0f, deltaSeconds) * 24.0f / settings.daySeconds, 24.0f);
+    const double elapsedHours = std::fmod(
+        static_cast<double>(deltaSeconds) * 24.0 /
+        static_cast<double>(settings.daySeconds), 24.0);
+    double hour = std::fmod(static_cast<double>(settings.hour) + elapsedHours, 24.0);
+    if (hour < 0.0) hour += 24.0;
+    settings.hour = static_cast<float>(hour);
 }
 
 } // namespace editor::daynight
