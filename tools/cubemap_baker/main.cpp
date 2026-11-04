@@ -56,6 +56,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -99,6 +100,8 @@ struct Args {
 	uint32_t prefilterRays = 128; // GGX samples per output texel
 	uint32_t bounces = 5; // diffuse path depth after the first hit (NEE at every vertex)
 	uint32_t spp = 32;            // transport paths per capture texel (bounce GI)
+	float fireflyRatio = 8.0f; // clamp relative to each texel's samples; 0 disables
+	bool blur = true; // optional legacy 3x3 spatial filter
 	float sunAzimuth = 30.0f;
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
@@ -210,7 +213,22 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			std::string v;
 			if (!need(v)) return false;
 			out.spp = std::clamp<uint32_t>(
-				static_cast<uint32_t>(std::stoul(v)), 1, 64);
+				static_cast<uint32_t>(std::stoul(v)), 1, 4096);
+		}
+		else if (a == "--firefly-ratio") {
+			std::string v;
+			if (!need(v)) return false;
+			out.fireflyRatio = std::stof(v);
+			if (!std::isfinite(out.fireflyRatio) || out.fireflyRatio < 0.0f) {
+				std::cerr << "--firefly-ratio must be finite and nonnegative" << std::endl;
+				return false;
+			}
+		}
+		else if (a == "--blur") {
+			std::string v;
+			if (!need(v)) return false;
+			if (v != "on" && v != "off") return false;
+			out.blur = v == "on";
 		}
 		else if (a == "--sun-azimuth") {
 			std::string v;
@@ -317,7 +335,7 @@ void Usage() {
 		<< "         [--threads 0] [--backend builtin|embree]\n"
 		<< "         [--octree] [--octree-max 8.0] [--octree-min 2.0]\n"
 		<< "         [--octree-depth 4]\n"
-		<< "         [--spp 8]\n"
+		<< "         [--spp 32] [--firefly-ratio 8] [--blur on|off]\n"
 		<< "         [--png on|off] [--png-mips on|off]\n"
 		<< "         --prefilter ggx preconvolves the mip chain for the\n"
 		<< "         high-frequency specular path (GGX importance sampling,\n"
@@ -879,7 +897,7 @@ int main(int argc, char** argv) {
 			const float pngDisplayExposure =
 				1.0f / std::max(args.skyIntensity, 1e-4f);
 
-			// Trace 6 HDR faces (one deterministic sample per texel).
+			// Trace 6 HDR faces with deterministic per-texel path batches.
 			std::vector<float> faces[smvk::kCubemapFaceCount];
 			for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f)
 				faces[f].assign(size_t(S) * S * 4, 0.0f);
@@ -905,21 +923,40 @@ int main(int argc, char** argv) {
 						// term is analytic, but the bounce field is a
 						// Monte-Carlo estimate — 1 spp reads as speckle,
 						// not the GI the lightmapped scene shows.
-						glm::vec3 L(0.0f);
-						for (uint32_t s = 0; s < args.spp; ++s) {
+						// Per-texel path samples, not face-wide pixel clamping.
+						std::vector<glm::vec3> samples;
+						samples.reserve(args.spp);
+						double meanLum = 0.0;
+						for (uint32_t sampleIdx = 0; sampleIdx < args.spp; ++sampleIdx) {
 							smvk::gi::TriangleBvh::Hit h;
-							if (!traceScene.Bvh().Raycast(origin, dir, 1.0e5f, h)) {
-								L += traceScene.SkyRadiance(dir);
-							} else {
-								L += traceScene.TraceIncoming(origin, dir, rng, args.bounces);
-							}
+							glm::vec3 sample = !traceScene.Bvh().Raycast(origin, dir, 1.0e5f, h)
+								? traceScene.SkyRadiance(dir)
+								: traceScene.TraceIncoming(origin, dir, rng, args.bounces);
+							if (!std::isfinite(sample.x) || !std::isfinite(sample.y)
+								|| !std::isfinite(sample.z))
+								sample = glm::vec3(0.0f);
+							sample = glm::max(sample, glm::vec3(0.0f));
+							meanLum += 0.2126 * double(sample.r)
+								+ 0.7152 * double(sample.g) + 0.0722 * double(sample.b);
+							samples.push_back(sample);
+						}
+						const double cap = args.fireflyRatio > 0.0f
+							? std::max(meanLum / double(args.spp) * args.fireflyRatio, 1e-6)
+							: std::numeric_limits<double>::infinity();
+						glm::vec3 L(0.0f);
+						for (glm::vec3 sample : samples) {
+							const double lum = 0.2126 * double(sample.r)
+								+ 0.7152 * double(sample.g) + 0.0722 * double(sample.b);
+							if (lum > cap)
+								sample *= float(cap / lum);
+							L += sample;
 						}
 						L *= cubemapScale / float(args.spp);
 						float* px = &faces[f][(size_t(y) * S + x) * 4];
-							px[0] = L.x;
-							px[1] = L.y;
-							px[2] = L.z;
-							px[3] = 1.0f;
+						px[0] = L.x;
+						px[1] = L.y;
+						px[2] = L.z;
+						px[3] = 1.0f;
 						}
 					}
 				}));
@@ -927,35 +964,10 @@ int main(int argc, char** argv) {
 			for (auto& fu : futures)
 				fu.get();
 
-			// ---- Post-capture cleanup (the bake-quality rework): a
-			// firefly clamp (two-pass, to 8x the face mean — the same
-			// pattern the GI probe/volume bakes use) then a small 3x3
-			// center-weighted blur (the lightmap denoise pattern: the
-			// kernel removes speckle without erasing the directional
-			// signal). Level 0 of the prefilter chain is a copy of the
-			// base, so cleaning the base cleans the whole chain.
-			// NOTE: in-face 3x3 (seam-aware blur would cross faces via
-			// DirectionToFaceUv — a refinement if face-edge seams show).
-			{
+			// Optional legacy face-local blur. Disable to inspect raw convergence.
+			if (args.blur) {
 				for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f) {
 					std::vector<float>& face = faces[f];
-					// Pass 1: the face's mean radiance (firefly reference).
-					glm::vec3 mean(0.0f);
-					size_t n = 0;
-					for (size_t i = 0; i < face.size(); i += 4) {
-						mean += glm::vec3(face[i], face[i + 1], face[i + 2]);
-						++n;
-					}
-					if (n > 0)
-						mean /= float(n);
-					const glm::vec3 cap = mean * 8.0f;
-					// Pass 2: clamp outliers (hue-preserving per-channel
-					// min, the bake.cpp firefly pattern).
-					for (size_t i = 0; i < face.size(); i += 4) {
-						face[i] = std::min(face[i], cap.r);
-						face[i + 1] = std::min(face[i + 1], cap.g);
-						face[i + 2] = std::min(face[i + 2], cap.b);
-					}
 					// 3x3 center-weighted blur (center 4, orthogonal 1,
 					// diagonal 0.5 — the lightmap denoise kernel). The
 					// kernel operates on RGBA32F in-place (a copy for
@@ -985,7 +997,6 @@ int main(int argc, char** argv) {
 							}
 				}
 			}
-
 			std::vector<std::vector<std::vector<float>>> chains;
 			chains.reserve(smvk::kCubemapFaceCount);
 			const bool ggx = args.mips && args.prefilter == "ggx";
@@ -1027,6 +1038,8 @@ int main(int argc, char** argv) {
 			std::cout << "baked " << vfsPath << "  " << S << "x" << S
 				<< "x6  levels=" << expectedLevels
 				<< " filter=" << (ggx ? "ggx" : "box")
+				<< " spp=" << args.spp << " firefly=" << args.fireflyRatio
+				<< " blur=" << (args.blur ? "on" : "off")
 				<< "  origin=(" << origin.x << "," << origin.y << "," << origin.z << ")"
 				<< "  " << sizeOnDisk << " B" << std::endl;
 
