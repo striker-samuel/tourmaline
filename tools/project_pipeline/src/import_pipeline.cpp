@@ -236,6 +236,36 @@ bool ImportProjectAsset(const ImportRequest& request,
 		err = "source not found: " + request.source.generic_string();
 		return false;
 	}
+    MaterialPackingRule effectivePacking = request.materialPacking;
+    if (!request.materialPackingExplicit &&
+            request.materialPacking.source.empty() &&
+            request.materialPacking.channels.empty()) {
+        std::filesystem::path found;
+        for (const auto& item :
+                fs::directory_iterator(fs::path(request.project.root), ec)) {
+            if (ec) {
+                err = "cannot scan project recipes: " + ec.message();
+                return false;
+            }
+            if (!item.is_regular_file(ec) ||
+                    item.path().extension() != ".tourrecipe")
+                continue;
+            if (!found.empty()) {
+                err = "multiple root .tourrecipe files; select the recipe explicitly for material import";
+                return false;
+            }
+            found = item.path();
+        }
+        if (!found.empty()) {
+            ProjectRecipe parsed;
+            RecipeDiagnostic diagnostic;
+            if (!ParseProjectRecipe(found.string(), parsed, diagnostic)) {
+                err = diagnostic.Format(found.string());
+                return false;
+            }
+            effectivePacking = parsed.materialPacking;
+        }
+    }
 	const std::string stem = src.stem().string();
 	const fs::path destDir =
 		fs::path(request.project.ImportsDir()) / stem;
@@ -260,7 +290,7 @@ bool ImportProjectAsset(const ImportRequest& request,
                         smvk::assets::MaterialAsset material;
                         if (!smvk::assets::LoadMaterialAsset(
                                 projectSource.parent_path() / entry.file, material, error) ||
-                                !MaterialPackingRuleMatches(request.materialPacking, material))
+                                !MaterialPackingRuleMatches(effectivePacking, material))
                             return false;
                     }
                     return true;
@@ -339,9 +369,9 @@ bool ImportProjectAsset(const ImportRequest& request,
         smvk::assets::MaterialAsset mat;
         if (!smvk::assets::LoadMaterialAsset(materialPath, mat, err))
             return false;
-        if (request.materialPacking.channels.empty()) {
-            ApplyMaterialPackingRule(request.materialPacking, mat);
-        } else if (!ComposeMaterialFromRecipe(request.materialPacking,
+        if (effectivePacking.channels.empty()) {
+            ApplyMaterialPackingRule(effectivePacking, mat);
+        } else if (!ComposeMaterialFromRecipe(effectivePacking,
                 mat, stageRoot, err)) {
             return false;
         }
