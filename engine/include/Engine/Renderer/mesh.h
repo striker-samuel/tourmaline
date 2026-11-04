@@ -209,6 +209,7 @@ namespace tour {
 		float normalScale = 1.0f;
 		float occlusionStrength = 1.0f;
 		float cavityStrength = 1.0f;
+		int channelSelectors = -1; // packed output layout from .material metadata
 		// Thin opaque backlighting tinted by baseColor; 0 disables it.
 		// Remains in the opaque, GPU-driven draw path (no blend/sort/PSO).
 		float translucency = 0.0f;
