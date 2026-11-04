@@ -8,6 +8,7 @@ SPIR-V reflection generally cannot reconstruct original HLSL statements.
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import re
@@ -100,6 +101,102 @@ def discover(source):
     for region in result:
         region["ambiguous"] = counts[region["id"]] > 1
     return sorted(result, key=lambda r: (r["start"], r["kind"]))
+
+
+def _line_positions(source):
+    lines = source.splitlines(keepends=True)
+    starts, offset = [], 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line)
+    return lines, starts
+
+
+def _mapped_lines(previous, current):
+    """Git-style correspondence of unchanged lines; changed hunks are unknown."""
+    a, _ = _line_positions(previous)
+    b, _ = _line_positions(current)
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    mapping = {}
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        if tag == "equal":
+            mapping.update({i: new_start + i - old_start
+                            for i in range(old_start, old_end)})
+    return mapping
+
+
+def preserve_identity(previous_source, current_source, previous_regions):
+    """Map prior IDs into rewritten HLSL; never guess ambiguous matches.
+
+    Exact matching uses unchanged diff lines and relative token position on
+    those lines; fallback uses unique identical headers within the same scope.
+    Inserted loops receive fresh identifiers from discover().
+    """
+    old_regions = discover(previous_source)
+    current_regions = discover(current_source)
+    old_by_id = {r["id"]: r for r in old_regions}
+    old_lines, old_starts = _line_positions(previous_source)
+    new_lines, new_starts = _line_positions(current_source)
+    line_map = _mapped_lines(previous_source, current_source)
+    assigned = set()
+    resolved = []
+    for prior in previous_regions:
+        old = old_by_id.get(prior.get("id"))
+        if old is None or old.get("ambiguous"):
+            resolved.append(dict(prior, status="lost"))
+            continue
+        matches = [r for r in current_regions
+                   if r["kind"] == old["kind"] and r.get("syntax") == old.get("syntax")
+                   and r["function"] == old["function"] and r["start"] not in assigned]
+        old_line = old["line"] - 1
+        target_line = line_map.get(old_line)
+        exact = [r for r in matches if r["line"] - 1 == target_line
+                 and r.get("header") == old.get("header")] if target_line is not None else []
+        if len(exact) != 1:
+            # A moved or edited line is only safely identifiable by a unique
+            # fingerprint. Rewritten loop bounds require explicit re-selection.
+            exact = [r for r in matches if r.get("header") == old.get("header")]
+        if len(exact) != 1:
+            resolved.append(dict(prior, status="ambiguous" if exact else "lost"))
+            continue
+        chosen = exact[0]
+        assigned.add(chosen["start"])
+        resolved.append(dict(chosen, id=prior["id"], status="matched",
+                             previous_line=old["line"]))
+    known = {r["start"] for r in resolved if r.get("status") == "matched"}
+    for region in current_regions:
+        if region["start"] not in known:
+            resolved.append(dict(region, status="new"))
+    return sorted(resolved, key=lambda r: (r.get("start", -1), r["id"]))
+
+
+def apply_identified_regions(source, choices, identified):
+    """Apply independent hints against tracked identities, not source indices."""
+    if not isinstance(choices, dict):
+        raise ValueError("region hints must be an object")
+    insertions = []
+    changes = []
+    mask = _code_mask(source)
+    for identifier, mode in choices.items():
+        matches = [r for r in identified if r["id"] == identifier]
+        if len(matches) != 1 or matches[0].get("status") in ("ambiguous", "lost") or matches[0].get("ambiguous"):
+            raise ValueError(f"region identity cannot be resolved safely: {identifier}")
+        region = matches[0]
+        syntax = region.get("syntax")
+        if syntax == "for" and (mode == "loop" or re.fullmatch(r"unroll(?:\\(([1-9]\\d{0,3})\\))?", mode or "")):
+            if mode.startswith("unroll(") and int(mode[7:-1]) > 1024:
+                raise ValueError("unroll factor must not exceed 1024")
+        elif syntax == "if" and mode in ("branch", "flatten"):
+            pass
+        else:
+            raise ValueError(f"hint not supported for {syntax}: {mode}")
+        if re.search(r"\\[\\s*\\w+(?:\\s*\\([^\\]]*\\))?\\s*\\]\\s*$", mask[:region["start"]]):
+            raise ValueError(f"region already annotated: {identifier}")
+        insertions.append((region["start"], f"[{mode}] "))
+        changes.append({"id": identifier, "mode": mode, "line": region["line"]})
+    for position, inserted in sorted(insertions, reverse=True):
+        source = source[:position] + inserted + source[position:]
+    return source, changes
 
 
 def apply_regions(source, choices):
