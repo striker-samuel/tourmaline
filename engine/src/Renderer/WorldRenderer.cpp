@@ -18038,24 +18038,81 @@ namespace engine {
 					ImGui::SeparatorText("GPU + frame");
 					{
 						ImGui::Text("GPU: %s", smvk::ActiveDeviceName());
-						// Shadow GPU stages (timestamp queries, ~1 frame lag);
-						// exactly one representation is live per run.
+						// Stable-label vertical breakdown of the available GPU shadow stages.
+						// These duration slices are not a GPU scheduling trace: async
+						// work can overlap, and the blur-leg timers are nested in blur.
 						if (m_stageGpuTimingsSupported) {
-							ImGui::Text("PCF raster:    %s", m_stageGpuValid[smvk::kGpuStagePcfRaster]
-								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStagePcfRaster]) + " ms (smooth)").c_str() : "(off)");
-							ImGui::Text("EVSM casters:  %s", m_stageGpuValid[smvk::kGpuStageEvsmCasters]
-								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmCasters]) + " ms (smooth)").c_str() : "(off)");
-							ImGui::Text("EVSM resolve:  %s", m_stageGpuValid[smvk::kGpuStageEvsmResolve]
-								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmResolve]) + " ms (smooth)").c_str() : "(off)");
-							ImGui::Text("EVSM blur:     %s", m_stageGpuValid[smvk::kGpuStageEvsmBlur]
-								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmBlur]) + " ms (smooth)").c_str() : "(off)");
-							// Per-async-pass C-stream split (EVSM: 0 = the H
-							// blur leg, 1 = the V leg); the gap between the
-							// legs = the queue handoff/sync cost.
+							constexpr uint32_t stageIds[] = {
+								smvk::kGpuStagePcfRaster,
+								smvk::kGpuStageEvsmCasters,
+								smvk::kGpuStageEvsmResolve,
+								smvk::kGpuStageEvsmBlur
+							};
+							const char* stageLabels[] = {
+								"PCF raster", "EVSM casters", "EVSM resolve", "EVSM blur"
+							};
+							const ImU32 stageColors[] = {
+								IM_COL32(106, 139, 190, 230),
+								IM_COL32(76, 160, 150, 230),
+								IM_COL32(150, 124, 190, 230),
+								IM_COL32(194, 147, 92, 230)
+							};
+							constexpr float rowHeight = 40.0f;
+							constexpr float timelineHeight = rowHeight * 4.0f;
+							double totalMs = 0.0;
+							for (int i = 0; i < 4; ++i)
+								if (m_stageGpuValid[stageIds[i]])
+									totalMs += std::max(0.0, static_cast<double>(m_stageGpuMsSmooth[stageIds[i]]));
+
+							ImGui::TextDisabled("Shadow GPU stages (smoothed, retired frame)");
+							ImGui::BeginGroup();
+							const float labelsTop = ImGui::GetCursorPosY();
+							for (int i = 0; i < 4; ++i) {
+								ImGui::SetCursorPosY(labelsTop + i * rowHeight);
+								ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(stageColors[i]),
+									"%s", stageLabels[i]);
+								ImGui::SetCursorPosY(labelsTop + i * rowHeight + ImGui::GetTextLineHeightWithSpacing());
+								if (m_stageGpuValid[stageIds[i]])
+									ImGui::TextDisabled("%.2f ms", m_stageGpuMsSmooth[stageIds[i]]);
+								else
+									ImGui::TextDisabled("(off)");
+							}
+							ImGui::SetCursorPosY(labelsTop + timelineHeight);
+							ImGui::Dummy(ImVec2(0, 0));
+							ImGui::EndGroup();
+							ImGui::SameLine(0, 18.0f);
+							ImGui::BeginGroup();
+							const ImVec2 top = ImGui::GetCursorScreenPos();
+							const float width = std::max(48.0f, std::min(100.0f, ImGui::GetContentRegionAvail().x));
+							ImGui::InvisibleButton("##shadow_stage_vertical_timeline", ImVec2(width, timelineHeight));
+							ImDrawList* draw = ImGui::GetWindowDrawList();
+							draw->AddRectFilled(top, ImVec2(top.x + width, top.y + timelineHeight),
+								IM_COL32(70, 70, 75, 70), 3.0f);
+							if (totalMs > 0.0) {
+								float y = top.y;
+								for (int i = 0; i < 4; ++i) {
+									if (!m_stageGpuValid[stageIds[i]]) continue;
+									const double ms = std::max(0.0, static_cast<double>(m_stageGpuMsSmooth[stageIds[i]]));
+									const float h = static_cast<float>(ms / totalMs) * timelineHeight;
+									if (h <= 0.0f) continue;
+									draw->AddRectFilled(ImVec2(top.x, y), ImVec2(top.x + width, y + h),
+										stageColors[i]);
+									if (ImGui::IsItemHovered()) {
+										const float mouseY = ImGui::GetIO().MousePos.y;
+										if (mouseY >= y && mouseY < y + h)
+											ImGui::SetTooltip("%s: %.3f ms", stageLabels[i], ms);
+									}
+									y += h;
+								}
+							}
+							ImGui::TextDisabled("top -> bottom");
+							ImGui::EndGroup();
+							ImGui::TextDisabled("Duration composition, not execution order (async stages may overlap).");
+							ImGui::TextDisabled("Async blur legs (included in EVSM blur):");
 							for (uint32_t i = 0; i < smvk::kGpuAsyncPassMaxTimers; ++i) {
 								const uint32_t s = smvk::kGpuStageAsyncPassBase + i;
-								ImGui::Text("Async pass %u:   %s", i, m_stageGpuValid[s]
-									? (std::to_string(m_stageGpuMsSmooth[s]) + " ms (smooth)").c_str() : "(off)");
+								if (m_stageGpuValid[s])
+									ImGui::Text("  Pass %u: %.2f ms", i, m_stageGpuMsSmooth[s]);
 							}
 						}
 						else {
