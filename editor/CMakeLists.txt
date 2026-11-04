@@ -75,7 +75,7 @@ target_include_directories(Editor
 option(TOURMALINE_EDITOR_CGAL_INTERSECTIONS
     "Enable CGAL GPL/commercial mesh intersection tools in Editor" OFF)
 if(TOURMALINE_EDITOR_CGAL_INTERSECTIONS)
-    find_package(CGAL 5.6 REQUIRED)
+    find_package(CGAL 6.2 REQUIRED)
     target_link_libraries(Editor PRIVATE CGAL::CGAL)
     target_compile_definitions(Editor PRIVATE TOURMALINE_EDITOR_WITH_CGAL=1)
 endif()
