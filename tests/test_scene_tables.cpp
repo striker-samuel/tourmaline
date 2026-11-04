@@ -60,6 +60,28 @@ Scene MakeScene(uint32_t count) {
 
 int main() {
 	{
+		// Mutation boundary + dynamic multiple roots (with static siblings).
+		Scene s = MakeScene(3);
+		MarkSubtreeStatic(s, 1);
+		const NodeHandle root0 = MakeNodeHandle(s, 0);
+		const NodeHandle root2 = MakeNodeHandle(s, 2);
+		glm::mat4 moved0(1.0f), moved2(1.0f);
+		moved0[3].x = 3.0f;
+		moved2[3].x = 7.0f;
+		Check(SetLocalTransform(s, root0, moved0), "mutation: set root zero");
+		Check(SetLocalTransform(s, root2, moved2), "mutation: set other root");
+		Check(recalculateGlobalTransformsDynamic(s), "mutation: dynamic recalc");
+		Check(Near(s.globalTransform[0][3].x, 3.0f)
+			&& Near(s.globalTransform[2][3].x, 7.0f),
+			"mutation: both dynamic roots updated");
+		Check(s.gpuSceneGlobalChanges.size() == 2,
+			"mutation: GPU journal contains both roots");
+		RetireNodeSlot(s, 2);
+		const int reused = addNode(s, -1, 0);
+		Check(reused == 2 && !SetLocalTransform(s, root2, moved2),
+			"mutation: stale generation cannot update reused slot");
+	}
+	{
 		Scene s = MakeScene(4);
 		tour::scene::ScenePhysicsBody dynamic{};
 		dynamic.motion = 1;
