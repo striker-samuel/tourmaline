@@ -50,6 +50,9 @@ struct ImportRequest {
 	std::filesystem::path source;      // the external glTF/GLB
 	GeometryImportSettings settings;
 	MaterialPackingRule materialPacking;
+    // Builds pass an explicit resolved policy (even when the rule is
+    // empty). Standalone imports otherwise discover one root .tourrecipe.
+    bool materialPackingExplicit = false;
 	bool force = false;                // re-derive even when current
 };
 
