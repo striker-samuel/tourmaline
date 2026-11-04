@@ -16,9 +16,10 @@
 // face outward (normal check, not convention), so back-face culling never
 // eats them.
 //
-// Color: S-tile mask R (test checker) selects light/dark albedo, then the
-// legacy slope-rock tint. Normals come from SampleNormal (H-field central
-// differences, smooth across H-borders by construction).
+// Color: S-tile RGBA channels are retained as terrain vertex attributes.
+// Alpha marks solid ground (0 = hole, 255 = solid); the vertex shaders
+// generate NaN clip coordinates for holes and the pixel shader discards
+// masked fragments. Normals come from SampleNormal (H-field central differences).
 
 #include <cstdint>
 #include <span>
@@ -43,10 +44,10 @@ struct MaskSet {
 	uint32_t res = 256;         // texels per mask tile edge
 };
 
-[[nodiscard]] inline float SampleMaskR(const MaskSet& m, const TerrainMeta& meta,
+[[nodiscard]] inline glm::vec4 SampleMaskRGBA(const MaskSet& m, const TerrainMeta& meta,
 	float worldSize, float x, float z) noexcept {
 	if (!m.tiles || m.tiles->empty())
-		return 0.0f;
+		return glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 	const float lx = std::clamp(x - meta.originX, 0.0f, worldSize - 1e-4f);
 	const float lz = std::clamp(z - meta.originZ, 0.0f, worldSize - 1e-4f);
 	const float tile = worldSize / float(m.tilesPerAxis);
@@ -58,8 +59,15 @@ struct MaskSet {
 	int32_t iy = int32_t((lz - float(tz) * tile) / texel);
 	ix = std::clamp(ix, int32_t(0), int32_t(m.res) - 1);
 	iy = std::clamp(iy, int32_t(0), int32_t(m.res) - 1);
-	return float(px[(size_t(iy) * size_t(m.res) + size_t(ix)) * 4])
+	const size_t offset = (size_t(iy) * size_t(m.res) + size_t(ix)) * 4;
+	return glm::vec4(px[offset], px[offset + 1], px[offset + 2], px[offset + 3])
 		* (1.0f / 255.0f);
+}
+
+// Legacy checker/channel accessor for callers that only need R.
+[[nodiscard]] inline float SampleMaskR(const MaskSet& m, const TerrainMeta& meta,
+	float worldSize, float x, float z) noexcept {
+	return SampleMaskRGBA(m, meta, worldSize, x, z).r;
 }
 
 struct GBlockMesh {
@@ -95,20 +103,15 @@ inline void BakeGBlockVerts(const TerrainHField& hf, const MaskSet& masks,
 			glm::vec3 t(2.0f * texel, hx, 0.0f);
 			const float tl = glm::length(t);
 			t = tl > 0.0f ? t * (1.0f / tl) : glm::vec3(1, 0, 0);
-			// Test-mask checker + slope rock (legacy tint weights).
-			const float chk = SampleMaskR(masks, meta, worldSize, x, z);
-			glm::vec3 albedo = glm::mix(glm::vec3(0.16f, 0.20f, 0.11f),
-				glm::vec3(0.55f, 0.56f, 0.50f), chk);
-			const float slope = 1.0f - n.y;
-			const float rockT = std::clamp(slope * 3.2f, 0.0f, 1.0f);
-			albedo = albedo * (1.0f - rockT)
-				+ glm::vec3(0.36f, 0.33f, 0.30f) * rockT;
+			// Preserve all four authored mask channels for terrain materials.
+			// A=0 requests a terrain hole, independent of RGB attributes.
+			const glm::vec4 attributes = SampleMaskRGBA(masks, meta, worldSize, x, z);
 			TerrainVertexSrc src{};
 			src.pos = glm::vec3(x, y, z);
 			src.normal = n;
 			src.tangent = t;
 			src.tangentFlip = -1.0f;
-			src.color = glm::vec4(albedo, 1.0f);
+			src.color = attributes;
 			TerrainVertex v{};
 			PackTerrainVertex(src, v);
 			out.verts.push_back(v);
@@ -205,10 +208,9 @@ inline void BuildBlockIndices(uint32_t quads, std::vector<uint32_t>& out,
 	}
 }
 
-// ---- Far-block bake (Terrain IV): grid coords + shade + skirt flag -------
+// ---- Far-block bake: grid coords + full RGBA terrain attributes ---------
 // quads=16 fixed (kFarQuads); world XZ reconstructs in the VS from the
-// per-block push tail, height samples the R16 atlas. Shade = mask R only
-// (no slope tint: far shading is flat ambient + shadow).
+// per-block push tail, height samples the R16 atlas.
 inline constexpr uint32_t kFarQuads = 16;
 
 inline void BakeFarBlockVerts(const TerrainHField& hf, const MaskSet& masks,
@@ -225,10 +227,10 @@ inline void BakeFarBlockVerts(const TerrainHField& hf, const MaskSet& masks,
 		for (uint32_t i = 0; i <= kFarQuads; ++i) {
 			const float x = x0 + float(i) * step;
 			const float z = z0 + float(j) * step;
-			const float shade =
-				SampleMaskR(masks, meta, worldSize, x, z);
+			const glm::vec4 attributes =
+				SampleMaskRGBA(masks, meta, worldSize, x, z);
 			TerrainFarVertex v{};
-			PackTerrainFarVertex(float(i), float(j), shade, false, v);
+			PackTerrainFarVertex(float(i), float(j), attributes, false, v);
 			out.push_back(v);
 		}
 	}
@@ -236,28 +238,28 @@ inline void BakeFarBlockVerts(const TerrainHField& hf, const MaskSet& masks,
 		TerrainFarVertex v{};
 		const float x = x0 + float(i) * step; // bottom ring
 		PackTerrainFarVertex(float(i), 0.0f,
-			SampleMaskR(masks, meta, worldSize, x, z0), true, v);
+			SampleMaskRGBA(masks, meta, worldSize, x, z0), true, v);
 		out.push_back(v);
 	}
 	for (uint32_t i = 0; i <= kFarQuads; ++i) {
 		TerrainFarVertex v{};
 		const float x = x0 + float(i) * step; // top ring
 		PackTerrainFarVertex(float(i), float(kFarQuads),
-			SampleMaskR(masks, meta, worldSize, x, z0 + kBlockSize), true, v);
+			SampleMaskRGBA(masks, meta, worldSize, x, z0 + kBlockSize), true, v);
 		out.push_back(v);
 	}
 	for (uint32_t j = 0; j <= kFarQuads; ++j) {
 		TerrainFarVertex v{};
 		const float z = z0 + float(j) * step; // left ring
 		PackTerrainFarVertex(0.0f, float(j),
-			SampleMaskR(masks, meta, worldSize, x0, z), true, v);
+			SampleMaskRGBA(masks, meta, worldSize, x0, z), true, v);
 		out.push_back(v);
 	}
 	for (uint32_t j = 0; j <= kFarQuads; ++j) {
 		TerrainFarVertex v{};
 		const float z = z0 + float(j) * step; // right ring
 		PackTerrainFarVertex(float(kFarQuads), float(j),
-			SampleMaskR(masks, meta, worldSize, x0 + kBlockSize, z), true, v);
+			SampleMaskRGBA(masks, meta, worldSize, x0 + kBlockSize, z), true, v);
 		out.push_back(v);
 	}
 }
