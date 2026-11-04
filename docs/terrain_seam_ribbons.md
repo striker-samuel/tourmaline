@@ -1,47 +1,22 @@
-# Terrain-only seam ribbon bake (initial primitive)
+# Low-level tiled-terrain seam bake primitive
 
-This is the first, intentionally narrow engine-level step toward automatic
-mesh/terrain discontinuity blending. The CPU-only baker lives in
-`engine/include/Engine/Rendergraph/terrain_seam_ribbon.h` and consumes the
-existing `TerrainHField` plus world-space triangle vertices.
+`Engine/Rendergraph/terrain_seam_ribbon.h` remains an isolated, GPU-less
+helper for the world-tiled `TerrainHField` asset representation.
+It accepts world-space triangle soup, locates heightfield crossings, and
+emits terrain-conforming strips with per-vertex fade and terrain normals.
 
-## Output
+This primitive is useful to standalone cookers that already hold the tiled
+RG16 heightfield. It does not register its own renderer path or manage assets.
 
-`BakeTerrainSeamRibbons(terrain, triangles, options)` emits a mesh made of
-terrain-conforming six-vertex, four-triangle ribbons. Each detected mesh/
-heightfield intersection segment becomes a strip with zero coverage at both
-outer edges and full coverage at its centerline. The returned vertex normals,
-UVs, and weights are suitable inputs to a baked overlay-material workflow.
+**For the editor-integrated geometry workflow, see
+[Intersection geometry tools](intersection_geometry_tools.md).**
+That editor path operates on `placement::HeightfieldData` from the *live
+painted terrain group*, stitches segments into polylines, supports bounded
+spline smoothing and skirts, and exports glTF assets with alpha coverage.
+The standalone tiled-terrain helper is intentionally not used by the
+painted-terrain editor route, because these are different heightfield
+representations in Tourmaline.
 
-The baker does not require a G-buffer, deferred shading, CGAL or Vulkan.
-It does **not** yet insert the output into scene cooking, editor UI, or render
-passes. Consumers must provide a material, vertex-format conversion, and
-normal blending/alpha handling. It is an engine geometry primitive, not a
-finished interactive decal feature.
-
-## Limitations
-
-* Mesh triangle vertices must be in **world space**, with three per face.
-* The terrain must be valid and use the existing sampled heightfield.
-* Edge sampling finds multiple crossings but v1 only accepts triangles
-  with exactly two distinct contacts; ambiguous/coplanar cases are skipped.
-* Contact segments are not yet welded into long splines; independent strips
-  can leave corner artifacts. Welding, curvature-aware conforming and
-  editor preview are follow-up work.
-* A heightfield cannot model undercuts/overhangs. The ribbon only conforms
-  to terrain, not to the intersecting mesh.
-* This is **material seam masking**, not a topological mesh union or a fix
-  for silhouette intersections.
-* Very large triangles require a small `sampleStep` and sufficiently large
-  `maxSamplesPerEdge` to avoid missed terrain crossings.
-* `lift` prevents depth fighting only approximately; integration must
-  handle alpha and depth appropriately.
-
-## Next stages
-
-1. Weld adjacent line segments and build smooth, adaptive polylines.
-2. Add a non-destructive editor bake command and preview with export to the
-   existing cooked mesh pipeline.
-3. Blend receiver and source materials within the existing Forward+ lit hook.
-4. Add general mesh/mesh intersection curves behind an optional, license-
-   compatible backend; expose curves to skirting and seam generation.
+The helper's v1 topology policy skips coplanar, tangent or >2-contact
+triangles, does not stitch neighboring segments, and conforms only to
+terrain. Its regression target is `TerrainSeamRibbonTests`.
