@@ -11,6 +11,8 @@ The application/game ImGui contexts are unchanged.
   **Inspector**, **Render**, and **Material** are independent windows.
   Optional windows (GI probe viz, Cook & bake, References, Placement
   graph, etc.) use ImGui windows too and can join the dockspace.
+- Undocked tool windows have a close button. Use **View > Panels** to
+  reopen a closed panel (including the 3D Viewport).
 - **View > Reset dock layout** rebuilds the default three-column split.
   It does not touch the current scene, tools or project.
 - **I** hides the workspace for a fullscreen viewport; **I** again
@@ -38,8 +40,11 @@ Viewport dock tab parks the heavyweight live WYSIWYG renderer.
 The top tool strip, main menu and bottom status strip deliberately
 remain fixed. Docking means rearranging **tool windows**; individual
 fields/buttons inside a tool are not draggable by themselves.
-Cross-OS-window ImGui viewports are *not enabled* (one Vulkan swapchain
-still owns all editor passes).
+Dear ImGui supports cross-OS-window platform viewports with
+`ImGuiConfigFlags_ViewportsEnable`, but Tourmaline does *not* enable them:
+its renderer records to one swapchain and has no secondary-window
+render/present path. Turning on the flag alone cannot make panels render
+outside the main OS window. Floating within that window remains supported.
 
 ## Visual smoke matrix (requires Editor + Vulkan)
 
@@ -56,9 +61,12 @@ still owns all editor passes).
 5. Toggle **I** off/on: fullscreen scene then the previous dock layout.
 6. Exit/relaunch: all dock assignments, sizes and tab order should be
    restored from `editor.imgui.ini`.
-7. **View > Reset dock layout**: all eight core windows return to the
-   default arrangement, with the current project and selection intact.
-8. Lighting > GI volumes > Lattice (pre-bake): run with and without the
+7. Float Outliner and Console, close both via their title-bar X buttons,
+   then reopen them using **View > Panels**. Close/reopen Viewport and
+   confirm the scene draws again, without stale mouse capture.
+8. **View > Reset dock layout**: the core windows return to their
+   default dock positions, with the current project and selection intact.
+9. Lighting > GI volumes > Lattice (pre-bake): run with and without the
    separate lattice preview fix PR; the dockspace must not obstruct the
    editor-drawn probe spheres when its pass is correctly ordered.
 
