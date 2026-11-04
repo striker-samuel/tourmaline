@@ -2842,6 +2842,42 @@ int Run(const PakArgs& c) {
 	// content path and release them on scene unload. Only scene paks
 	// own this record (asset-only paks have no .tour definition).
 	if (haveTour && !tour.shapePlacements.empty()) {
+		// A placement must resolve to actual packed source content.
+		// The recipe owns it here or through a declared dependency;
+		// never ship a dangling logical path that fails at load.
+		for (const auto& placement : tour.shapePlacements) {
+			if (!placement.enabled) continue;
+			const bool local = std::find(args.contentSet.begin(),
+				args.contentSet.end(), placement.source) != args.contentSet.end();
+			const bool shared = std::find(args.excludeVfsPaths.begin(),
+				args.excludeVfsPaths.end(), placement.source) != args.excludeVfsPaths.end();
+			if (!local && !shared) {
+				tool::err() << "shapeInstance '" << placement.name
+					<< "' references an unclaimed .shape asset: "
+					<< placement.source << " (include in recipe or declared dependency)"
+					<< std::endl;
+				return 1;
+			}
+			auto shapeBytes = vfs.TryRead(placement.source);
+			tour::asset::ShapeAsset parsedShape;
+			std::string shapeErr;
+			if (!shapeBytes || !tour::asset::ParseShapeAsset(
+					std::string(shapeBytes->begin(), shapeBytes->end()),
+					parsedShape, shapeErr)) {
+				tool::err() << "shapeInstance '" << placement.name
+					<< "' failed to resolve .shape: " << placement.source
+					<< " (" << shapeErr << ")" << std::endl;
+				return 1;
+			}
+			if (parsedShape.kind != tour::asset::ShapeKind::Spline
+					&& parsedShape.kind != tour::asset::ShapeKind::PointCloud) {
+				tool::err() << "shapeInstance '" << placement.name
+					<< "' requires spline or point_cloud .shape "
+					<< "(triangle primitives use OBJ/mesh): "
+					<< placement.source << std::endl;
+				return 1;
+			}
+		}
 		if (sceneNames.size() != 1) {
 			tool::err() << "Shape placements require exactly one cooked"
 				" scene per pak (multi-scene placement ownership needs"
