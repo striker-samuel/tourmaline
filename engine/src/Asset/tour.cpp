@@ -1809,6 +1809,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			continue;
 		}
         if (verb == "shapeInstance") {
+            // The .tour tokeniser preserves semicolons attached to the
+            // final token. The scene writer emits "-enabled on;".
+            if (!toks.empty() && !toks.back().empty()
+                    && toks.back().back() == ';')
+                toks.back().pop_back();
             ShapePlacement placed;
             bool hasName = false, hasSource = false;
             bool hasPosition = false, hasColor = false;
