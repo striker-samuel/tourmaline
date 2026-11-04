@@ -187,6 +187,24 @@ class SharedRepositoryTests(unittest.TestCase):
         self.assertEqual(settings["access_token"], token)
         self.assertFalse((self.source / "server.json").exists())
 
+    def test_server_config_must_not_be_inside_source_share(self):
+        bad_config = self.source / "private" / "server.json"
+        with self.assertRaisesRegex(ValueError, "outside the source share"):
+            configure_host(str(self.source), str(self.archive), str(self.cache),
+                           config=bad_config)
+        self.assertFalse(bad_config.exists())
+
+    def test_client_failed_connectivity_check_does_not_save_config(self):
+        from tools.configure_asset_client import main as client_main
+
+        target = Path(self.temp.name) / "client.json"
+        existing = b"previous working configuration"
+        target.write_bytes(existing)
+        with self.assertRaises(Exception):
+            client_main(["--url", "http://127.0.0.1:1",
+                         "--token", TOKEN, "--config", str(target), "--check"])
+        self.assertEqual(target.read_bytes(), existing)
+
     def test_http_auth_revisions_products_upload_and_client_cache(self):
         src = self.put("models/hero.obj", b"the-OBJ-source")
         self.store.scan()
