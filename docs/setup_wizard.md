@@ -48,6 +48,43 @@ OS-wide account management. Remote accounts and permissions are provisioned on
 the NAS server, not on each workstation. A new project recipe is a scaffold:
 the scene must be authored/imported before it is buildable.
 
+## Publish the Windows installer through GitHub Releases
+
+The repository includes `.github/workflows/windows_setup_release.yml`.
+It builds the native Windows `Project.exe`, packages the standalone wizard and
+asset server with Inno Setup, and produces two release assets:
+
+- `TourmalineSetup-Windows.exe` — distributable x64 installer
+- `SHA256SUMS.txt` — SHA-256 checksum for installer verification
+
+**After merging the setup wizard PR locally to `master`**, push your merge
+commit and then create a unique version tag on the commit you want released:
+
+~~~powershell
+git checkout master
+git pull --ff-only
+git tag setup-v0.1.0
+git push origin setup-v0.1.0
+~~~
+
+The `setup-vMAJOR.MINOR.PATCH` tag triggers the Windows release workflow.
+When its build succeeds, GitHub creates a **draft** Release with the installer,
+checksum, and the release notes from `docs/windows_setup_release_notes.md`.
+Review the attached EXE, test it on a clean Windows VM, then manually publish
+that draft on GitHub. The workflow does **not** merge your local branches or
+automatically publish a release publicly.
+
+For a pre-release build **without creating a release**, open GitHub Actions,
+select **Tourmaline Windows setup release**, and use **Run workflow** on your
+branch. Download the resulting installer and checksum from that workflow's
+artifacts (retained for 30 days).
+
+The GitHub-hosted Windows build needs external SDK/dependency downloads,
+matching the repository's normal Windows CI. It is expected to run on a Windows
+runner, not Linux. The build script can also be invoked locally before tagging.
+The installer isn't signed automatically; review redistribution/licensing and
+code-signing requirements before publishing.
+
 ## Linux / headless script
 
 Python 3.10+ and a built native `Project` executable are required. There is no
