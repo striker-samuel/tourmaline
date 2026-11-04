@@ -193,6 +193,138 @@ void EditorApp::FinalizePending() {
 		m_pending.cmd = EditCmd{};
 	}
 
+
+	// Editor terrain-group top view: world X is right, +Z is down.
+	// The heightmap remains the same authoritative grid as terrain painting.
+	void EditorApp::DrawWorldMapPanel() {
+		if (!m_world || m_terrainGroups.empty()) {
+			ImGui::TextDisabled("Create a terrain to display its heightmap.");
+			return;
+		}
+		std::vector<uint32_t> ids;
+		for (const auto& [id, g] : m_terrainGroups)
+			if (!g.deleted && g.data.heights.width > 1 &&
+				g.data.heights.height > 1) ids.push_back(id);
+		std::sort(ids.begin(), ids.end());
+		if (ids.empty()) { ImGui::TextDisabled("No editable terrain."); return; }
+		const uint32_t selected = TerrainGroupOf(m_selected);
+		if (selected != UINT32_MAX && selected != m_worldMapGroup &&
+			std::binary_search(ids.begin(), ids.end(), selected))
+			m_worldMapGroup = selected;
+		if (!std::binary_search(ids.begin(), ids.end(), m_worldMapGroup))
+			m_worldMapGroup = ids.front();
+		uint32_t group = m_worldMapGroup;
+		if (ImGui::BeginCombo("Terrain group", std::to_string(group).c_str())) {
+			for (uint32_t id : ids)
+				if (ImGui::Selectable(std::to_string(id).c_str(), id == group))
+					group = id;
+			ImGui::EndCombo();
+		}
+		if (group != m_worldMapGroup) { m_worldMapGroup = group; m_worldMapScale = 0; }
+		auto& data = m_terrainGroups.at(group).data;
+		const auto& p = data.params;
+		if (p.size <= 0.0f) return;
+		ImGui::SameLine();
+		if (ImGui::Button("Fit")) m_worldMapScale = 0.0f;
+		ImGui::SameLine();
+		ImGui::Checkbox("Sculpt", &m_worldMapSculpt);
+		if (m_worldMapSculpt) {
+			const char* names[] = {"Raise", "Lower", "Flatten", "Smooth"};
+			ImGui::Combo("Brush", &m_paintOp, names, 4);
+			ImGui::DragFloat("Radius (m)", &m_paintRadius, 0.25f, 0.5f, 256.f);
+			ImGui::DragFloat("Strength", &m_paintStrength, 0.01f, 0.01f, 64.f);
+		}
+		const ImVec2 pos = ImGui::GetCursorScreenPos(), dim = ImGui::GetContentRegionAvail();
+		if (dim.x < 32 || dim.y < 32) return;
+		ImGui::InvisibleButton("##topMap", dim,
+			ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle |
+			ImGuiButtonFlags_MouseButtonRight);
+		const bool hovered = ImGui::IsItemHovered();
+		const ImVec2 mouse = ImGui::GetIO().MousePos;
+		const ImVec2 mid(pos.x + dim.x * 0.5f, pos.y + dim.y * 0.5f);
+		if (m_worldMapScale <= 0) {
+			m_worldMapScale = p.size * 1.1f / std::max(1.f, std::min(dim.x, dim.y));
+			m_worldMapCenter = p.origin + glm::vec2(p.size * 0.5f);
+		}
+		auto toWorld = [&](ImVec2 v) {
+			return m_worldMapCenter + glm::vec2(v.x-mid.x, v.y-mid.y)*m_worldMapScale;
+		};
+		auto toPixel = [&](glm::vec2 v) {
+			return ImVec2(mid.x+(v.x-m_worldMapCenter.x)/m_worldMapScale,
+				mid.y+(v.y-m_worldMapCenter.y)/m_worldMapScale);
+		};
+		if (hovered && ImGui::GetIO().MouseWheel != 0) {
+			const glm::vec2 anchor = toWorld(mouse);
+			m_worldMapScale = std::clamp(m_worldMapScale *
+				std::pow(1.15f, -ImGui::GetIO().MouseWheel),
+				p.size/16384.f, p.size*16.f);
+			m_worldMapCenter += anchor - toWorld(mouse);
+		}
+		if (ImGui::IsItemActive() &&
+			(ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
+			 ImGui::IsMouseDragging(ImGuiMouseButton_Right))) {
+			const auto d = ImGui::GetIO().MouseDelta;
+			m_worldMapCenter -= glm::vec2(d.x, d.y)*m_worldMapScale;
+		}
+		ImDrawList* draw = ImGui::GetWindowDrawList();
+		const ImVec2 end(pos.x+dim.x, pos.y+dim.y);
+		draw->AddRectFilled(pos, end, IM_COL32(24, 28, 33, 255));
+		draw->PushClipRect(pos, end, true);
+		// Bounded CPU preview; no GPU readback and no duplicated terrain data.
+		const int nx = std::clamp(int(dim.x / 7), 1, 96);
+		const int nz = std::clamp(int(dim.y / 7), 1, 96);
+		const float dx = dim.x/nx, dz = dim.y/nz;
+		for (int z=0; z<nz; ++z) for (int x=0; x<nx; ++x) {
+			const glm::vec2 w = toWorld(ImVec2(pos.x+(x+.5f)*dx,pos.y+(z+.5f)*dz));
+			if (w.x < p.origin.x || w.y < p.origin.y ||
+				w.x > p.origin.x+p.size || w.y > p.origin.y+p.size) continue;
+			const float level = std::clamp(data.heights.sampleHeight(w.x,w.y) /
+				std::max(1.f,p.height),0.f,1.f);
+			const int v = int(55+level*165);
+			draw->AddRectFilled(ImVec2(pos.x+x*dx,pos.y+z*dz),
+				ImVec2(pos.x+(x+1)*dx+.5f,pos.y+(z+1)*dz+.5f),
+				IM_COL32(v,v,v,255));
+		}
+		// Tile outlines follow shared grid samples, not approximate equal sizes.
+		const float step = p.size / float(data.heights.width-1);
+		for (uint32_t tz=0; tz<data.tilesZ; ++tz)
+			for (uint32_t tx=0; tx<data.tilesX; ++tx) {
+				uint32_t x0,x1,z0,z1;
+				smvk::placement::TerrainTileRange(data,tx,tz,x0,x1,z0,z1);
+				draw->AddRect(toPixel(p.origin+glm::vec2(x0*step,z0*step)),
+					toPixel(p.origin+glm::vec2(x1*step,z1*step)),
+					IM_COL32(240,203,113,220));
+			}
+		const glm::vec2 cursor = toWorld(mouse);
+		const bool inside = cursor.x>=p.origin.x && cursor.y>=p.origin.y &&
+			cursor.x<=p.origin.x+p.size && cursor.y<=p.origin.y+p.size;
+		if (hovered && inside) {
+			if (m_worldMapSculpt)
+				draw->AddCircle(mouse,m_paintRadius/m_worldMapScale,
+					IM_COL32(141,239,157,255),48,1.5f);
+			ImGui::SetTooltip("X %.2f  Z %.2f  Y %.2f m",cursor.x,cursor.y,
+				data.heights.sampleHeight(cursor.x,cursor.y));
+		}
+		draw->PopClipRect();
+		if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+			m_worldMapLastStamp = glm::vec2(-1e9f);
+		if (m_worldMapSculpt && inside && ImGui::IsItemActive() &&
+			ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+			glm::distance(cursor,m_worldMapLastStamp) >=
+				std::max(0.1f,m_paintRadius*m_paintStrokeSpacing)) {
+			static const char* ops[] = {"raise","lower","flatten","smooth"};
+			EditCmd cmd{};
+			cmd.verb = EditVerb::TerrainPaint;
+			cmd.node = group;
+			cmd.terrainOp = ops[std::clamp(m_paintOp,0,3)];
+			cmd.vec4 = glm::vec4(cursor.x,cursor.y,m_paintRadius,
+				m_paintOp==2 ? data.heights.sampleHeight(cursor.x,cursor.y) : 0.f);
+			cmd.number = double(m_paintStrength);
+			Do(cmd);
+			m_worldMapLastStamp = cursor;
+		}
+	}
+
 	void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 		(void)targetExtent;
 		if (ImGui::BeginMainMenuBar()) {
@@ -267,7 +399,10 @@ void EditorApp::FinalizePending() {
 					ImGuiDir_Right, 0.28f, nullptr, &center);
 				ImGuiID leftUpper = ImGui::DockBuilderSplitNode(left,
 					ImGuiDir_Up, 0.54f, nullptr, &left);
+				ImGuiID mapNode = ImGui::DockBuilderSplitNode(center,
+					ImGuiDir_Right, 0.38f, nullptr, &center);
 				ImGui::DockBuilderDockWindow("Viewport", center);
+				ImGui::DockBuilderDockWindow("World Map", mapNode);
 				ImGui::DockBuilderDockWindow("Outliner", leftUpper);
 				ImGui::DockBuilderDockWindow("Assets", left);
 				ImGui::DockBuilderDockWindow("Console", left);
@@ -344,6 +479,11 @@ void EditorApp::FinalizePending() {
 			// with the viewport / another tool. The Embree reference
 			// render rides the same pattern (dock it beside
 			// Render/Material or tab it with them).
+			if (m_showWorldMapPanel) {
+				if (ImGui::Begin("World Map", &m_showWorldMapPanel))
+					DrawWorldMapPanel();
+				ImGui::End();
+			}
 			if (m_showOutlinerPanel) {
 				if (ImGui::Begin("Outliner", &m_showOutlinerPanel))
 					DrawOutliner();
@@ -952,6 +1092,7 @@ void EditorApp::FinalizePending() {
 				ModalVpLayoutToggle();
 			if (ImGui::BeginMenu("Panels")) {
 				ImGui::MenuItem("Viewport", nullptr, &m_showViewportPanel);
+				ImGui::MenuItem("World Map", nullptr, &m_showWorldMapPanel);
 				ImGui::MenuItem("Outliner", nullptr, &m_showOutlinerPanel);
 				ImGui::MenuItem("Reference", nullptr, &m_showReferencePanel);
 				ImGui::MenuItem("Assets", nullptr, &m_showAssetsPanel);
@@ -966,6 +1107,7 @@ void EditorApp::FinalizePending() {
 				m_dockResetRequested = true;
 				// A reset restores the default workspace, including closed tools.
 				m_showViewportPanel = true;
+				m_showWorldMapPanel = true;
 				m_showOutlinerPanel = true;
 				m_showAssetsPanel = true;
 				m_showConsolePanel = true;
