@@ -202,7 +202,7 @@ float3 LinearToSRGB(float3 c)
 // THIS light's half-vector (see the kD note at the tail of the body).
 void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
     float3 geomN, float3 N, float3 V, float3 F0, float roughness,
-    float3 baseColor, float metallic, float NdotV, bool useInlineShadow,
+    float3 baseColor, float metallic, float translucency, float NdotV, bool useInlineShadow,
     float vis, float2 pix, float time, inout float3 direct)
 {
     // Cheapest reject first: squared distance vs squared range.
@@ -214,9 +214,10 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
     float dist = sqrt(dist2);
     float3 Lp = toLight / max(dist, 1e-6f);
 
-    // Backface reject before any spot-cone / falloff work.
-    float NdotLp = max(dot(N, Lp), 0.0f);
-    if (NdotLp <= 0.0f)
+    // Regular materials still reject rear-facing lights immediately.
+    float facing = dot(N, Lp);
+    float NdotLp = max(facing, 0.0f);
+    if (NdotLp <= 0.0f && translucency <= 0.0f)
         return;
 
     // Angular falloff for spots.
@@ -268,6 +269,16 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
 plColor *= EvaluateLightFunction(
             pl.functionType, pl.functionSpeed, pl.functionScale,
             g_time(time), spotUV, pl.type == 1);
+    }
+
+    // Rear-facing light transmits through the fully opaque surface.
+    // Reuse the existing attenuation, spotlight cone, cookie and function;
+    // skip the more expensive front-facing shadow and BRDF work.
+    if (NdotLp <= 0.0f)
+    {
+        direct += (baseColor * (1.0f - metallic) / PI) * plColor
+            * (translucency * saturate(-facing) * atten * angular);
+        return;
     }
 
     // Shadow factor: inline local-light atlas sample (legacy path) or the
@@ -1150,6 +1161,19 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     float3 direct = (diffuse * NdotLWrap + specular * NdotL) * lightColor * shadow;
 
+    // Thin-surface backlighting for fully opaque materials. The existing
+    // material-buffer ambient.w lane defaults to 0, so legacy materials
+    // keep their rendering and the existing opaque GPU-driven PSO/batches.
+    // Unshadowed approximation: front-face shadow maps self-occlude rear
+    // illumination; rear-side blocker shadows require a separate solution.
+    const float translucency = saturate(mat.ambient.w);
+    if (translucency > 0.0f)
+    {
+        float back = saturate(-dot(N, L));
+        direct += (baseColor * (1.0f - metallic) / PI) * lightColor
+            * (translucency * back);
+    }
+
     // ---------------------------------------------------------------
     // Forward+ tiled point/spot lights (depth-prepassed, GPU-culled).
     // Uses Deferred Shadows (hot.dsEnabled): iterate the phase-4 FINAL
@@ -1191,7 +1215,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                     continue;
                 EvaluateForwardPlusLight(fpLightsBuf.Get().lights[li],
                     IN.worldPos, geomN, N, V, F0, shadingRoughness,
-                    baseColor, metallic, NdotV,
+                    baseColor, metallic, translucency, NdotV,
                     false, vis, clipPos.xy, hot.time, direct);
             }
         }

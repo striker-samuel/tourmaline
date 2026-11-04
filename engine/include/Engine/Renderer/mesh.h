@@ -33,8 +33,9 @@ namespace tour {
 	// Keep 16-byte alignment for StructuredBuffer / buffer_device_address.
 	struct alignas(16) MaterialValues {
 
-		// Legacy sky-ambient factor (albedo multiplier): 0 = off by default,
-		// ambient comes from the env/IBL block. Paks round-trip this verbatim,
+		// Legacy sky-ambient RGB factor; ambient.w stores thin-surface
+		// backlighting strength (0 = disabled). This unused lane preserves
+		// the 128-byte GPU material/pak layout. Paks round-trip verbatim,
 		// so paks cooked with an old default keep their baked value.
 		glm::vec4 ambient{ 0.f };                       // 0 – see cluster.cpp
 		glm::vec4 diffuse{ 1.0f };                       // 16 – baseColorFactor (alias: diffuse)
@@ -206,6 +207,9 @@ namespace tour {
 		float roughnessFactor = 1.0f;
 		float normalScale = 1.0f;
 		float occlusionStrength = 1.0f;
+		// Thin opaque backlighting tinted by baseColor; 0 disables it.
+		// Remains in the opaque, GPU-driven draw path (no blend/sort/PSO).
+		float translucency = 0.0f;
 
 		ShadingModel shadingModel = ShadingModel::DefaultLit;
 		AlphaMode alphaMode = AlphaMode::Opaque;
