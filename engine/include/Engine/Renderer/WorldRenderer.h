@@ -53,6 +53,7 @@
 #include <Engine/Placement/placement_stream_provider.h>
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/static_sdf_gpu.h>
+#include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Rendergraph/bloom.h>
