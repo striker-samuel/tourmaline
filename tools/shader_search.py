@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import shlex
+import shutil
 import statistics
 import subprocess
 import sys
@@ -96,13 +97,16 @@ def run_command(command, cwd, env, timeout):
         return False, str(exc)
 
 
-def scenario_benchmark(repo, exe, catalog, scenario, repeat, output, timeout):
+def scenario_benchmark(repo, exe, catalog, scenario, repeat, output, timeout,
+                       resolution=None):
     cmd = [
         sys.executable, str(repo / "tools/perf_harness.py"), "bench",
         "--exe", str(exe), "--catalog", str(catalog),
         "--scenario", scenario, "--repeat", str(repeat),
         "--output", str(output), "--timeout", str(timeout),
     ]
+    if resolution:
+        cmd.extend(["--resolutions", resolution])
     result = subprocess.run(cmd, cwd=repo, capture_output=True,
                             text=True, errors="replace", timeout=timeout * (repeat + 3))
     if result.returncode:
@@ -111,7 +115,19 @@ def scenario_benchmark(repo, exe, catalog, scenario, repeat, output, timeout):
     report = json.loads((output / "result.json").read_text(encoding="utf-8"))
     if report.get("mode") != "bench" or report.get("scenario") != scenario:
         raise ValueError("unexpected benchmark report")
-    median = float(report["summary"]["median_ms"])
+    if resolution:
+        entries = report.get("resolutions") or []
+        selected = [item for item in entries if item.get("label") == resolution]
+        if len(selected) != 1:
+            raise ValueError("benchmark did not report requested resolution " + resolution)
+        dimensions = selected[0]
+        expected = parse_target_resolution(resolution)
+        if (dimensions.get("width"), dimensions.get("height")) != expected:
+            raise ValueError("benchmark reported inconsistent target dimensions")
+        summary = dimensions["summary"]
+    else:
+        summary = report["summary"]
+    median = float(summary["median_ms"])
     if not math.isfinite(median) or median <= 0:
         raise ValueError(f"invalid benchmark time: {median}")
     return median
@@ -122,6 +138,39 @@ def score(measured, baseline, max_regression_percent):
     if any((r - 1) * 100 > max_regression_percent for r in ratios):
         return None
     return statistics.mean(math.log(r) for r in ratios)
+
+
+def parse_target_resolution(value):
+    if not value:
+        return None
+    from perf_harness import parse_resolutions
+    entries = parse_resolutions(value)
+    if len(entries) != 1:
+        raise ValueError("target resolution must identify exactly one extent")
+    return (entries[0]["width"], entries[0]["height"])
+
+
+def compare_saved_screenshot(reference, candidate, destination, target,
+                             threshold, max_fraction, max_delta):
+    """Compare a freshly generated capture with saved reference pixels."""
+    if not reference.is_file() or not candidate.is_file():
+        raise ValueError("missing reference or freshly captured candidate screenshot")
+    try:
+        from pixel_compare import compare
+    except ImportError as exc:
+        raise RuntimeError("screenshot comparison requires Pillow (extended install)") from exc
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(candidate, destination)
+    try:
+        report = compare(reference, destination, threshold=threshold, stride=1,
+                         diff_out=destination.with_name("difference.png"))
+    except ImportError as exc:
+        raise RuntimeError("screenshot comparison requires Pillow (extended install)") from exc
+    if target and (report["width"], report["height"]) != target:
+        raise ValueError("screenshot dimensions differ from target resolution")
+    report["within_limit"] = (report["difference_fraction"] <= max_fraction and
+                              report["average_channel_delta"] <= max_delta)
+    return report
 
 
 def run_search(args):
@@ -139,6 +188,14 @@ def run_search(args):
         raise ValueError("benchmark executable and scenario catalog must exist")
     if not args.list_regions and not args.scenario:
         raise ValueError("at least one --scenario required")
+    target = parse_target_resolution(args.target_resolution)
+    screenshot_pair = bool(args.reference_screenshot) or bool(args.candidate_screenshot)
+    if screenshot_pair and not (args.reference_screenshot and args.candidate_screenshot):
+        raise ValueError("provide both --reference-screenshot and --candidate-screenshot")
+    if args.reference_screenshot and not args.reference_screenshot.resolve().is_file():
+        raise ValueError("reference screenshot does not exist")
+    if args.candidate_screenshot and args.candidate_screenshot.resolve() == args.reference_screenshot.resolve():
+        raise ValueError("candidate screenshot must not overwrite reference")
     if args.iterations < 1 or args.repeat < 1 or args.timeout < 1:
         raise ValueError("iterations, repeat and timeout must be positive")
     from perf_harness import select_scenario
@@ -163,6 +220,10 @@ def run_search(args):
     env = os.environ.copy()
     env["SHADER_SEARCH_SHADER"] = str(shader)
     env["SHADER_SEARCH_OUTPUT"] = str(output)
+    if target:
+        env["SHADER_SEARCH_TARGET_WIDTH"] = str(target[0])
+        env["SHADER_SEARCH_TARGET_HEIGHT"] = str(target[1])
+        env["SHADER_SEARCH_TARGET_RESOLUTION"] = args.target_resolution
     environment_metadata = collect_environment(exe, args.dxc)
     (output / "environment.json").write_text(json.dumps(environment_metadata, indent=2) + "\n", encoding="utf-8")
     history = []
@@ -199,7 +260,8 @@ def run_search(args):
     def benchmarks(label):
         return {
             name: scenario_benchmark(
-                repo, exe, catalog, name, args.repeat, output / label / name, args.timeout)
+                repo, exe, catalog, name, args.repeat, output / label / name, args.timeout,
+                args.target_resolution)
             for name in args.scenario
         }
 
@@ -215,6 +277,12 @@ def run_search(args):
                      "region_overrides": region_choices}
             feedback = json.dumps({
                 "target_knobs": knobs, "baseline_register_metrics": baseline_registers,
+                "target_resolution": args.target_resolution,
+                "visual_error_limits": {
+                    "difference_fraction": args.max_difference_fraction,
+                    "average_channel_delta": args.max_average_channel_delta,
+                    "pixel_threshold": args.pixel_threshold,
+                },
                 "recent_experiments": history[-6:],
                 "guidance": ("Minimize live ranges, intermediates and spills. "
                              "Unrolling can increase register pressure; don't assume faster."),
@@ -238,9 +306,28 @@ def run_search(args):
                 shader.write_text(candidate, encoding="utf-8")
                 env["SHADER_SEARCH_PHASE"] = "candidate"
                 build()
+                if screenshot_pair:
+                    # Prevent accidentally reusing a stale candidate image from
+                    # a previous iteration, or one generated before this build.
+                    args.candidate_screenshot.resolve().unlink(missing_ok=True)
                 ok, log = run_command(args.validate_cmd, repo, env, args.timeout)
                 if not ok:
                     raise RuntimeError("correctness gate failed: " + log)
+                visual = None
+                if screenshot_pair:
+                    visual = compare_saved_screenshot(
+                        args.reference_screenshot.resolve(),
+                        args.candidate_screenshot.resolve(),
+                        trial / "candidate.png", target,
+                        args.pixel_threshold,
+                        args.max_difference_fraction,
+                        args.max_average_channel_delta)
+                    (trial / "visual.json").write_text(
+                        json.dumps(visual, indent=2) + "\n", encoding="utf-8")
+                    if not visual["within_limit"]:
+                        raise ValueError(
+                            "visual error exceeds limit: fraction={:.6f}, avg_delta={:.6f}".format(
+                                visual["difference_fraction"], visual["average_channel_delta"]))
                 candidate_registers = register_metrics(f"candidate-{index:03}")
                 measured = benchmarks(f"candidate-{index:03}")
                 candidate_score = score(measured, baseline, args.max_regression)
@@ -262,13 +349,16 @@ def run_search(args):
                 outcome = {"iteration": index, "accepted": accepted,
                            "times_ms": measured, "gain_percent": gain,
                            "knobs": knobs, "applied_hints": applied_hints,
+                           "visual_error": visual,
+                           "target_resolution": args.target_resolution,
                            "register_metrics": candidate_registers,
                            "register_regression_percent": register_regression,
                            "registers_ok": registers_ok, "spills_ok": spills_ok,
                            "reason": "accepted" if accepted else "not improved or scenario regression"}
             except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
                 outcome = {"iteration": index, "accepted": False,
-                           "knobs": knobs, "reason": str(exc)[-4000:]}
+                           "knobs": knobs, "target_resolution": args.target_resolution,
+                           "visual_error": locals().get("visual"), "reason": str(exc)[-4000:]}
             finally:
                 # Restore the baseline for the next trial's build unless we are
                 # using the accepted candidate as the next search starting point.
@@ -278,7 +368,12 @@ def run_search(args):
             print(json.dumps(outcome), flush=True)
     finally:
         shader.write_bytes(original)
-    summary = {"environment": environment_metadata, "baseline_ms": baseline,
+    summary = {"environment": environment_metadata,
+               "target_resolution": args.target_resolution,
+               "visual_error_limits": {"difference_fraction": args.max_difference_fraction,
+                                       "average_channel_delta": args.max_average_channel_delta,
+                                       "pixel_threshold": args.pixel_threshold},
+               "baseline_ms": baseline,
                "baseline_registers": baseline_registers, "best_gain_percent": (1 - math.exp(best_score)) * 100,
                "best_file": str(output / "best.hlsl") if best_score < 0 else None,
                "history": history}
@@ -304,6 +399,18 @@ def main(argv=None):
     p.add_argument("--output", type=Path, default=Path("out/shader-search"))
     p.add_argument("--build-cmd", help="Build command (argv, not shell)")
     p.add_argument("--validate-cmd", help="Mandatory correctness command (argv, not shell)")
+    p.add_argument("--target-resolution",
+                   help="Render extent: 720p/1080p/1440p/4k or 16:9 WxH")
+    p.add_argument("--reference-screenshot", type=Path,
+                   help="Existing trusted PNG reference screenshot")
+    p.add_argument("--candidate-screenshot", type=Path,
+                   help="Fresh PNG created by --validate-cmd on every iteration")
+    p.add_argument("--pixel-threshold", type=int, default=6,
+                   help="Sum of RGB deltas counted as differing (0..765)")
+    p.add_argument("--max-difference-fraction", type=float, default=0.0,
+                   help="Maximum fraction of pixels exceeding threshold")
+    p.add_argument("--max-average-channel-delta", type=float, default=0.0,
+                   help="Maximum mean sum of RGB absolute deltas")
     p.add_argument("--export-parquet", type=Path,
                    help="Optional analytics export (requires extended dependencies)")
     p.add_argument("--register-pressure", choices=("balanced", "minimize"), default="balanced")
@@ -323,6 +430,13 @@ def main(argv=None):
     p.add_argument("--min-gain", type=float, default=0.5)
     p.add_argument("--max-source-bytes", type=int, default=200000)
     args = p.parse_args(argv)
+    if args.pixel_threshold < 0 or args.pixel_threshold > 765:
+        p.error("--pixel-threshold must be in 0..765")
+    if (not 0 <= args.max_difference_fraction <= 1 or
+        not 0 <= args.max_average_channel_delta <= 765 or
+        not math.isfinite(args.max_difference_fraction) or
+        not math.isfinite(args.max_average_channel_delta)):
+        p.error("visual error limits must be finite and within valid ranges")
     if args.max_register_regression < 0:
         p.error("max register regression must be nonnegative")
     if not args.list_regions and (not args.exe or not args.scenario or not args.build_cmd or not args.validate_cmd or not args.model):
