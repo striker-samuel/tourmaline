@@ -263,7 +263,125 @@ void TestParticleSourceGraph() {
         "pt.source.budget-downsample");
 }
 
+
+void TestParticleSourceTopologyRegressions() {
+    using namespace tour::particles;
+    // Multiple registered providers may fan into the same emitter sink.
+    Graph graph = Graph::Default();
+    const uint32_t custom = graph.AddSource("particle.source.mesh");
+    Check(custom != 0 && graph.Connect(custom, 2) != 0,
+        "pt.source.multiple-sources-connect");
+    Check(graph.AddSource("particle.unrelated") == 0,
+        "pt.source.reject-unregistered-namespace");
+    const SourceProvider provider = [](const std::string& type, int selector,
+        std::vector<Point>& points, std::string& error) {
+        if (type == kPainted) {
+            points.push_back({glm::vec3(1, 1, 0)});
+            return true;
+        }
+        if (type == "particle.source.mesh") {
+            if (selector != 7) { error = "selector not forwarded"; return false; }
+            points.push_back({glm::vec3(2, 2, 0)});
+            points.push_back({glm::vec3(3, 3, 0)});
+            return true;
+        }
+        error = "unknown provider";
+        return false;
+    };
+    graph.attrs[custom].selector = 7;
+    const auto first = Evaluate(graph, provider, 16);
+    const auto second = Evaluate(graph, provider, 16);
+    Check(first.ok && first.emitters.size() == 3 &&
+        first.emitters[0].position.x == 1.0f &&
+        first.emitters[1].position.x == 2.0f &&
+        first.emitters[2].position.x == 3.0f,
+        "pt.source.multiple-source-order");
+    Check(first.ok && second.ok && first.emitters.size() == second.emitters.size() &&
+        first.emitters[2].size.w == second.emitters[2].size.w,
+        "pt.source.stable-emitter-ids");
+    Check(first.ok && first.emitters.size() == 3 &&
+        std::abs(first.emitters[0].life.z - 6.0f) < 1e-5f &&
+        std::abs(first.emitters[1].life.z - 6.0f) < 1e-5f,
+        "pt.source.rate-shared-across-providers");
+
+    const auto capped = Evaluate(graph, provider, 2);
+    Check(capped.ok && capped.emitters.size() == 2 &&
+        !capped.warning.empty() &&
+        capped.emitters[0].position.x == 1.0f &&
+        capped.emitters[1].position.x == 2.0f,
+        "pt.source.multi-provider-budget-deterministic");
+    const auto emptyBudget = Evaluate(graph, provider, 0);
+    Check(emptyBudget.ok && emptyBudget.emitters.empty() &&
+        !emptyBudget.warning.empty(), "pt.source.zero-budget-safe");
+
+    // Source outputs cannot target an output plug or a nonexistent input.
+    Check(graph.Connect(custom, 2, "points") == 0,
+        "pt.source.reject-wrong-sink-port");
+    Check(graph.Connect(9999, 2) == 0,
+        "pt.source.reject-missing-source");
+    Check(graph.Connect(2, custom) == 0,
+        "pt.source.reject-sink-as-source");
+
+    // A height filter has a single input; cycles must not be accepted.
+    const uint32_t filterA = graph.AddFilter();
+    const uint32_t filterB = graph.AddFilter();
+    Check(graph.Connect(1, filterA, "points") != 0 &&
+        graph.Connect(custom, filterA, "points") == 0,
+        "pt.source.filter-single-input");
+    Check(graph.Connect(filterA, filterB, "points") != 0 &&
+        graph.Connect(filterB, filterA, "points") == 0,
+        "pt.source.reject-filter-cycle");
+    Check(graph.Connect(filterA, filterA, "points") == 0,
+        "pt.source.reject-filter-self-link");
+
+    auto missingAttr = graph;
+    missingAttr.attrs.erase(custom);
+    Check(!Evaluate(missingAttr, provider).ok,
+        "pt.source.reject-missing-attributes");
+    auto dangling = graph;
+    dangling.topology.links.emplace(999,
+        tour::graph::Link{999, custom, 9999, "points", "sources"});
+    Check(!Evaluate(dangling, provider).ok,
+        "pt.source.reject-dangling-link");
+    auto unknown = graph;
+    unknown.topology.nodes.at(custom).type = "particle.invalid";
+    Check(!Evaluate(unknown, provider).ok,
+        "pt.source.reject-unknown-node-type");
+    Check(!Evaluate(graph, SourceProvider{}).ok,
+        "pt.source.reject-missing-provider");
+
+    const SourceProvider failingProvider = [](const std::string&,
+        int, std::vector<Point>&, std::string& error) {
+        error = "test provider failure";
+        return false;
+    };
+    const auto failed = Evaluate(graph, failingProvider);
+    Check(!failed.ok && failed.error == "test provider failure",
+        "pt.source.provider-error-propagates");
+
+    // Removing a node removes its edges and attributes, leaving a valid graph.
+    auto removed = graph;
+    Check(removed.Remove(custom) &&
+        !removed.topology.nodes.contains(custom) &&
+        !removed.attrs.contains(custom) &&
+        tour::graph::Validate(removed.topology).ok,
+        "pt.source.remove-cleans-up-links");
+    Check(!removed.Remove(custom), "pt.source.remove-missing-id");
+
+    // Reject corrupt or unsupported editor-settings values.
+    std::string type;
+    Attributes parsed;
+    const std::string valid = SerializeAttributes(kEmitter, graph.attrs.at(2));
+    Check(!ParseAttributes("v2" + valid.substr(2), type, parsed),
+        "pt.source.reject-unknown-schema-version");
+    Check(!ParseAttributes(valid + " trailing", type, parsed),
+        "pt.source.reject-extra-tokens");
+    Check(!ParseAttributes("v1 particle.not-a-source -1 0 1 2 3 4 5 6 7 8 9 10",
+        type, parsed), "pt.source.reject-invalid-serialized-type");
+}
+
 int main() {
+	TestParticleSourceTopologyRegressions();
 	TestParticleSourceGraph();
 	TestStructAbi();
 	TestFreeListInit();
