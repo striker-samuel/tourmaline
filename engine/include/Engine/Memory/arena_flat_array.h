@@ -14,6 +14,8 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <utility>
+#include <vector>
 #include <span>
 #include <type_traits>
 
@@ -25,13 +27,48 @@ class ArenaFlatArray {
         "ArenaFlatArray only supports trivially copyable records");
 public:
     ArenaFlatArray() = default;
-    ArenaFlatArray(const ArenaFlatArray&) = delete;
-    ArenaFlatArray& operator=(const ArenaFlatArray&) = delete;
-    ArenaFlatArray(ArenaFlatArray&&) = delete;
-    ArenaFlatArray& operator=(ArenaFlatArray&&) = delete;
+    // Scene is copyable and movable (editor transactions, cluster reloads).
+    // Copies duplicate the elements; moves transfer the arena ownership.
+    ArenaFlatArray(const ArenaFlatArray& other) { Assign(std::span<const T>(other)); }
+    ArenaFlatArray& operator=(const ArenaFlatArray& other) {
+        if (this != &other) Assign(std::span<const T>(other));
+        return *this;
+    }
+    ArenaFlatArray(ArenaFlatArray&& other) noexcept
+        : arena_(std::move(other.arena_)),
+          data_(std::exchange(other.data_, nullptr)),
+          size_(std::exchange(other.size_, 0)),
+          capacity_(std::exchange(other.capacity_, 0)) {}
+    ArenaFlatArray& operator=(ArenaFlatArray&& other) noexcept {
+        if (this != &other) {
+            arena_ = std::move(other.arena_);
+            data_ = std::exchange(other.data_, nullptr);
+            size_ = std::exchange(other.size_, 0);
+            capacity_ = std::exchange(other.capacity_, 0);
+        }
+        return *this;
+    }
+
+    ArenaFlatArray(const std::vector<T>& source) {
+        Assign(std::span<const T>(source));
+    }
+    ArenaFlatArray& operator=(const std::vector<T>& source) {
+        Assign(std::span<const T>(source));
+        return *this;
+    }
+    ArenaFlatArray& operator=(std::vector<T>&& source) {
+        // No vector allocator ownership is adopted: copy into arena.
+        Assign(std::span<const T>(source));
+        return *this;
+    }
+    [[nodiscard]] operator std::vector<T>() const {
+        return data_ ? std::vector<T>(data_, data_ + size_) : std::vector<T>{};
+    }
 
     [[nodiscard]] const T* data() const noexcept { return data_; }
     [[nodiscard]] T* data() noexcept { return data_; }
+    [[nodiscard]] const T& back() const noexcept { return data_[size_ - 1]; }
+    [[nodiscard]] T& back() noexcept { return data_[size_ - 1]; }
     [[nodiscard]] size_t size() const noexcept { return size_; }
     [[nodiscard]] size_t capacity() const noexcept { return capacity_; }
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
