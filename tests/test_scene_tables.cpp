@@ -89,6 +89,86 @@ int main() {
     }
 
     {
+        // Versioned disk persistence must retain fractional positions
+        // far beyond float32's world-space precision budget.
+        Scene source;
+        const int root = addNode(source, -1, 0);
+        const int child = addNode(source, root, 1);
+        glm::dmat4 a(1.0), b(1.0);
+        a[3] = glm::dvec4(-1.0e12 - 0.125, 1.0e12 + 0.25, -1.0e12, 1.0);
+        b[3] = glm::dvec4(0.375, -0.5, 0.625, 1.0);
+        Check(SetLocalTransform(source, MakeNodeHandle(source, root), a)
+              && SetLocalTransform(source, MakeNodeHandle(source, child), b),
+              "scene v1: author double hierarchy");
+        MarkAllRootsChanged(source);
+        recalculateGlobalTransforms(source);
+        const char* path = "audit03_scene_double_roundtrip.bin";
+        saveScene(path, source);
+        Scene loaded;
+        loadScene(path, loaded);
+        Check(loaded.hierarchy.size() == 2, "scene v1: node count");
+        Check(loaded.localTransformDouble.size() == 2
+              && loaded.localTransformDouble[0][3].x == a[3].x
+              && loaded.localTransformDouble[1][3].x == b[3].x,
+              "scene v1: precise locals roundtrip");
+        Check(loaded.globalTransformDouble.size() == 2
+              && loaded.globalTransformDouble[1][3].x == (a * b)[3].x
+              && loaded.globalTransformDouble[1][3].y == (a * b)[3].y,
+              "scene v1: precise global hierarchy roundtrip");
+        std::remove(path);
+    }
+
+    {
+        // Versioned files fail closed for unsupported versions. The
+        // loader must not erase the existing scene on a bad header.
+        Scene retained = MakeScene(1);
+        const char* path = "audit03_scene_unsupported.bin";
+        FILE* f = std::fopen(path, "wb");
+        if (f) {
+            const uint32_t header[] = {0x54444D53u, 999u, 1u};
+            std::fwrite(header, sizeof(uint32_t), 3, f);
+            std::fclose(f);
+            loadScene(path, retained);
+        }
+        Check(f != nullptr && retained.hierarchy.size() == 1,
+              "scene v1: unsupported version leaves scene untouched");
+        std::remove(path);
+    }
+
+    {
+        // Legacy (no magic) still decodes float32 transforms and
+        // upgrades them to the runtime double-authoritative arrays.
+        const char* path = "audit03_scene_legacy.bin";
+        FILE* f = std::fopen(path, "wb");
+        if (f) {
+            const uint32_t count = 1u;
+            const glm::mat4 local = glm::translate(glm::mat4(1.0f),
+                                                   glm::vec3(128.5f, -64.25f, 7.0f));
+            const Hierarchy hierarchy{.parent = -1, .firstChild = -1,
+                                      .nextSibling = -1, .lastSibling = -1,
+                                      .level = 0};
+            const uint32_t emptyRows = 0u;
+            std::fwrite(&count, sizeof(count), 1, f);
+            std::fwrite(&local, sizeof(local), 1, f);
+            std::fwrite(&local, sizeof(local), 1, f);
+            std::fwrite(&hierarchy, sizeof(hierarchy), 1, f);
+            std::fwrite(&emptyRows, sizeof(emptyRows), 1, f); // materials
+            std::fwrite(&emptyRows, sizeof(emptyRows), 1, f); // meshes
+            std::fclose(f);
+            Scene legacy;
+            loadScene(path, legacy);
+            Check(legacy.hierarchy.size() == 1
+                  && legacy.globalTransformDouble.size() == 1
+                  && legacy.globalTransformDouble[0][3].x == 128.5
+                  && legacy.globalTransformDouble[0][3].y == -64.25,
+                  "scene legacy: float32 file upgrades to double state");
+        } else {
+            Check(false, "scene legacy: fixture created");
+        }
+        std::remove(path);
+    }
+
+    {
         // A legacy bulk import may resize the float arrays after a precise
         // setter has run. Repair must initialize only the missing double
         // entries, not overwrite an existing sub-float translation.
