@@ -328,10 +328,10 @@ void EditorApp::FinalizePending() {
 		}
 	}
 
-	// ---- the detached live-view image lane (the offscreen scene RT) --
-	// Bind the WYSIWYG inline LDR target as an ImGui user texture so the
-	// detached Viewport window can present the scene through ImGui's own
-	// Vulkan backend (its swapchain, not the editor's). The same shape
+	// ---- the live-view image lane (the offscreen scene RT) ----------
+	// Bind the WYSIWYG inline LDR target as an ImGui user texture for BOTH
+	// docked and detached Viewport windows. ImGui's own draw order and clip
+	// rects keep the scene below the dock chrome, panels, and popups. The same shape
 	// as TextureThumb: a cached descriptor rebuilt when the physical
 	// view changes (an inline-target recreate) and released on
 	// teardown/recreate - never per frame.
@@ -576,14 +576,13 @@ void EditorApp::FinalizePending() {
 		// DrawLiveViewStage may set this again only for a visible viewport.
 		m_wysiwygLiveRectFresh = false;
 		if (m_uiMode) {
-			// A transparent, dockable viewport client: render directly into
-			// its previous-frame rect under ImGui's tab chrome while
-			// DOCKED (no offscreen scene texture, no extra GPU copy, no
-			// scene serialization). DETACHED (undocked into a secondary
-			// OS window), the scene arrives through the image lane below:
-			// the live view's inline target drawn as an ImGui user
-			// texture, presented by ImGui's backend in that window's own
-			// swapchain.
+			// Render the live scene as a normal ImGui image in BOTH docked
+			// and detached windows. The old main-swapchain composite ran
+			// before ImGui and was subsequently covered by dock-node/window
+			// draw commands (visible in RenderDoc as a healthy scene draw
+			// followed by an opaque UI draw). An image in the Viewport draw
+			// list obeys normal dock/tab clipping and Z-order. Non-live modes
+			// retain their legacy direct-to-swapchain rendering when docked.
 			m_dockViewportVisible = false;
 			m_dockStageDetached = false;
 			if (m_showViewportPanel) {
@@ -615,32 +614,28 @@ void EditorApp::FinalizePending() {
 							|| ImGui::IsMouseClicked(ImGuiMouseButton_Middle)
 							|| ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
 						m_dockViewportDragCaptured = true;
-					if (m_dockStageDetached) {
-						// THE OFFSCREEN SCENE RENDER TARGET LANE. The
-						// inline LDR target IS the offscreen scene render;
-						// stretch it over the stage (the drive renders at
-						// the stage extent through the deadband, so this
-						// is 1:1 outside resize transitions). Diagnostic
-						// view modes (the legacy editor passes) render
-						// into the primary swapchain only - say so.
-						const ImTextureID tex = LiveViewActive()
-							? WysiwygStageTexture() : ImTextureID(0);
-						if (tex != 0)
-							ImGui::Image(tex, avail);
-						else {
-							ImGui::Dummy(avail);
-							ImGui::SetCursorPos(ImVec2(
-								ImGui::GetCursorPos().x,
-								ImGui::GetCursorPos().y - avail.y * 0.5f));
-							ImGui::TextDisabled(
-								"%s", LiveViewActive()
-								? "scene render unavailable (attach failed)"
-								: "this view mode renders in the editor window -\n"
-									"dock the Viewport back or switch to Lit (F1)");
-						}
+					// The inline target is rendered before this UI pass. Sample
+					// it inside the Viewport window rather than compositing
+					// behind the dockspace, where opaque ImGui draw calls
+					// can hide it. Both lanes share descriptor lifetime.
+					const bool live = LiveViewActive();
+					const ImTextureID tex = live
+						? WysiwygStageTexture() : ImTextureID(0);
+					if (tex != 0)
+						ImGui::Image(tex, avail);
+					else if (m_dockStageDetached || live) {
+						ImGui::Dummy(avail);
+						ImGui::SetCursorPos(ImVec2(
+							ImGui::GetCursorPos().x,
+							ImGui::GetCursorPos().y - avail.y * 0.5f));
+						ImGui::TextDisabled(
+							"%s", live
+							? "scene render unavailable (attach failed)"
+							: "this view mode renders in the editor window -\n"
+								"dock the Viewport back or switch to Lit (F1)");
 					}
 					else
-						ImGui::Dummy(avail); // reserve canvas space, no ImGui pixels
+						ImGui::Dummy(avail); // legacy view renders to the swapchain
 				}
 			}
 			ImGui::End();
@@ -700,8 +695,7 @@ void EditorApp::FinalizePending() {
 			DrawComponentTable();
 		DrawInsetTag();
 		DrawViewportChrome(); // borders, camera chips, box-select rect
-		// The live compositor still renders under ImGui in the dockable
-		// Viewport client; the viewport's presentation aspect is 4:3.
+		// Viewport chrome overlays the image; presentation aspect is 4:3.
 		DrawLiveViewStage();
 		DrawVerbToast();
 		// UV editor window retired (the Live view window replaced the
