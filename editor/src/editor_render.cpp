@@ -2824,8 +2824,31 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// re-ensure destroys nothing in flight.
 		const smvk::Extent2D inlineBefore =
 			m_wysiwyg->InlineTargetExtent();
-		if (!m_wysiwyg->EnsureInlineExtent(smvk::Extent2D{ cw, ch }))
+		if (!m_wysiwyg->EnsureInlineExtent(smvk::Extent2D{ cw, ch })) {
+			// The park oracle (the frozen-stale-image chase): a PERSISTENT
+			// ensure failure parks the world layer silently every frame -
+			// no extent updates, no renders, and (with the image lane) the
+			// panel shows the STALE target stretched at the live stage
+			// rect. Env-gated with the compose diag family.
+			{
+				static const bool on = [] {
+					const char* e =
+						std::getenv("TOURMALINE_COMPOSE_DIAG");
+					return e && *e && !(*e == '0' && !e[1]);
+				}();
+				static uint64_t lastParkPrint = ~0ull;
+				const uint64_t key = m_frameCounter / 120;
+				if (on && key != lastParkPrint) {
+					lastParkPrint = key;
+					std::fprintf(stderr,
+						"[LIVE-PARK] EnsureInlineExtent FAILED (want %ux%u, "
+						"have %ux%u, canvas %.0fx%.0f) - world layer parked\n",
+						cw, ch, inlineBefore.width, inlineBefore.height,
+						m_wysiwygCanvasSize.x, m_wysiwygCanvasSize.y);
+				}
+			}
 			return; // park: the target could not settle this frame
+		}
 		const smvk::Extent2D inlineAfter =
 			m_wysiwyg->InlineTargetExtent();
 		if (inlineAfter.width != inlineBefore.width
