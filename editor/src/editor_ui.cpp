@@ -492,6 +492,8 @@ void EditorApp::FinalizePending() {
 					ImGuiDir_Left, 0.24f, nullptr, &center);
 				ImGuiID right = ImGui::DockBuilderSplitNode(center,
 					ImGuiDir_Right, 0.28f, nullptr, &center);
+				ImGuiID bottom = ImGui::DockBuilderSplitNode(center,
+					ImGuiDir_Down, 0.22f, nullptr, &center);
 				ImGuiID leftUpper = ImGui::DockBuilderSplitNode(left,
 					ImGuiDir_Up, 0.54f, nullptr, &left);
 				ImGuiID mapNode = ImGui::DockBuilderSplitNode(center,
@@ -500,7 +502,7 @@ void EditorApp::FinalizePending() {
 				ImGui::DockBuilderDockWindow("World Map", mapNode);
 				ImGui::DockBuilderDockWindow("Outliner", leftUpper);
 				ImGui::DockBuilderDockWindow("Assets", left);
-				ImGui::DockBuilderDockWindow("Console", left);
+				ImGui::DockBuilderDockWindow("Console", bottom);
 				ImGui::DockBuilderDockWindow("Overrides", left);
 				ImGui::DockBuilderDockWindow("Inspector", right);
 				ImGui::DockBuilderDockWindow("Material", right);
@@ -812,6 +814,8 @@ void EditorApp::FinalizePending() {
 			: (m_taskWindow.done ? m_taskWindow.result : "Ready");
 		if (!m_verbToast.empty())
 			status += "  |  Last: " + m_verbToast;
+		if (!m_consoleLines.empty())
+			status += "  |  Console: " + m_consoleLines.back();
 		const std::string fullStatus = status;
 		const float textW = std::max(0.0f, available - laneW - 8.0f);
 		if (ImGui::CalcTextSize(status.c_str()).x > textW) {
@@ -1678,20 +1682,13 @@ void EditorApp::FinalizePending() {
 				int(m_gizmoMode) == i, transformCaptions[i], transformNames[i]))
 				m_gizmoMode = GizmoMode(i);
 		}
-		if (m_transposeEnabled) {
-			next();
-			if (ImGui::SmallButton("Transpose: ON") && !m_transposeDrag) {
-				m_transposeEnabled = false;
+		next();
+		if (tool("transpose", IconType::ToolTranspose, m_transposeEnabled,
+			"Trans", "Toggle the classic object Transpose line")) {
+			if (!m_transposeDrag) {
+				m_transposeEnabled = !m_transposeEnabled;
 				m_transposeOwner = UINT32_MAX;
 			}
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Classic object Transpose line (View menu to enable). No mesh edits.");
-		} else {
-			next();
-			if (ImGui::SmallButton("Transpose") && !m_transposeDrag) {
-				m_transposeEnabled = true;
-				m_transposeOwner = UINT32_MAX;
-			}
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable the three-handle object Transpose line. Old gizmos stay available.");
 		}
 		ImGui::PopID();
 		split();
