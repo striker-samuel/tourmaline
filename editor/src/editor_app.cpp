@@ -405,6 +405,14 @@ void EditorApp::Shutdown() {
 	// tear them down before device resources and ImGui are destroyed.
 	ClosePrefabWorld();
 	WaitForDeviceIdle();
+	// ImGui owns the descriptor; release it while the backend still lives.
+	DropLegacyStageTexture();
+	if (!m_legacyStageLogical.empty()) {
+		m_rendergraph->FreeImageView(m_legacyStageLogical);
+		m_legacyStageLogical = {};
+	}
+	m_legacyStageView = {};
+	m_legacyStageImage = {};
 	m_textureStreamer.reset();
 	// Fibers shutdown: deliver any queued completions, wait for
 	// in-flight jobs (workers drain them), deliver the rest — all
