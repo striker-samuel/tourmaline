@@ -2,6 +2,8 @@
 #include <cassert>
 #include <cstdint>
 #include <span>
+#include <utility>
+#include <vector>
 
 int main() {
     tour::mem::ArenaFlatArray<uint32_t> rows;
@@ -21,6 +23,19 @@ int main() {
     rows.push_back(11);
     assert(rows.size() == 4 && rows[3] == 11);
     assert(rows.begin() != rows.end());
+    // Copy/move must preserve scene values and transfer storage safely.
+    tour::mem::ArenaFlatArray<uint32_t> copied(rows);
+    assert(copied.size() == rows.size() && copied.data() != rows.data());
+    assert(copied[0] == rows[0]);
+    tour::mem::ArenaFlatArray<uint32_t> moved(std::move(copied));
+    assert(copied.empty() && copied.data() == nullptr);
+    assert(moved.size() == rows.size());
+    std::vector<uint32_t> standard = moved;
+    assert(standard.size() == moved.size() && standard.back() == 11);
+    copied = standard;
+    assert(copied.size() == standard.size());
+    moved = std::move(copied);
+    assert(copied.empty() && moved.size() == standard.size());
     rows.clear();
     assert(rows.empty() && rows.capacity() >= 5);
 }
