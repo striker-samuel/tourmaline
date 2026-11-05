@@ -66,12 +66,16 @@ namespace editor {
 		return;
 	const tour::scene::AudioRoomRow* row =
 		tour::scene::FindAudioRoom(scene, node);
-	ImGui::Separator();
 	if (!row)
 		return;
 	const tour::scene::SceneAudioRoom& def = row->room;
-	ImGui::Text("Audio room: '%s'",
-		getNodeName(scene, int(node)).c_str());
+	if (attr::ComponentHeader("Audio Room")) {
+		EditCmd cmd{};
+		cmd.verb = EditVerb::RemoveAudioRoomVerb;
+		cmd.node = node;
+		Do(cmd);
+		return;
+	}
 	ImGui::TextDisabled("shape = node translate/scale/rotation"
 		" (gizmo); a GI volume on the same node keeps its own bake");
 	// The drag pattern (one coalesced SetAudioRoomAttr per drag).
@@ -196,15 +200,7 @@ namespace editor {
 			Do(c);
 		}
 	}
-	if (ImGui::Button("Remove Audio Room component")) {
-		// Drops the ASSOCIATION only — the node + any GI volume on it
-		// stay (the RemoveAudioRoomVerb command; undo restores the
-		// captured row exactly).
-		EditCmd c{};
-		c.verb = EditVerb::RemoveAudioRoomVerb;
-		c.node = node;
-		Do(c);
-	}
+
 }
 
 } // namespace editor

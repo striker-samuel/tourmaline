@@ -63,10 +63,15 @@ namespace editor {
 			return;
 		Scene& scene = m_world->scene;
 		const auto* row = tour::scene::FindTriggerVolume(scene, node);
-		ImGui::Separator();
 		if (!row)
 			return;
-		ImGui::TextUnformatted("Trigger component");
+		if (attr::ComponentHeader("Trigger Volume")) {
+			EditCmd cmd{};
+			cmd.verb = EditVerb::RemoveTriggerVolumeVerb;
+			cmd.node = node;
+			Do(cmd);
+			return;
+		}
 		ImGui::TextDisabled("Oriented box = this node's global transform.");
 		auto check = [&](const char* label, const char* attr, bool current) {
 			bool v = current;
@@ -96,12 +101,7 @@ namespace editor {
 			cmd.afterText = tag;
 			Do(cmd);
 		}
-		if (ImGui::Button("Remove Trigger component")) {
-			EditCmd cmd{};
-			cmd.verb = EditVerb::RemoveTriggerVolumeVerb;
-			cmd.node = node;
-			Do(cmd);
-		}
+
 	}
 
 } // namespace editor
