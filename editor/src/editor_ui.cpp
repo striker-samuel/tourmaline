@@ -1761,6 +1761,9 @@ void EditorApp::FinalizePending() {
 		ui::PrepareSystemModal();
 		if (ImGui::BeginPopupModal("Save scene changes?", nullptr,
 			ui::kSystemModalFlags | ImGuiWindowFlags_AlwaysAutoResize)) {
+			if (ui::SystemModalCloseRequested())
+				ImGui::CloseCurrentPopup(); // OS X is Cancel, never Discard
+			else {
 			ImGui::TextWrapped("The current scene has unsaved changes.");
 			ImGui::TextWrapped("Save the scene before closing Tourmaline Editor?");
 			ImGui::Separator();
@@ -1779,6 +1782,7 @@ void EditorApp::FinalizePending() {
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel", ImVec2(90, 0)))
 				ImGui::CloseCurrentPopup();
+			}
 			ImGui::EndPopup();
 		}
 
@@ -1949,6 +1953,11 @@ void EditorApp::FinalizePending() {
 			m_saveBrowseSel.clear();
 			ImGui::CloseCurrentPopup();
 		};
+		if (ui::SystemModalCloseRequested()) {
+			closeDlg();
+			ImGui::EndPopup();
+			return;
+		}
 		if (m_saveBrowseDir.empty()) {
 			// First frame: start from the target field's parent dir.
 			std::error_code ec;
