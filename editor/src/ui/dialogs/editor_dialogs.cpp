@@ -8,6 +8,7 @@
 // coalesce into one command per gesture via m_pending.
 
 #include "editor_app.h"
+#include "system_modal.h"
 #include "editor_brush_presets.h"
 #include "modal_bindings.h"
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
@@ -154,8 +155,7 @@ namespace editor {
 		// construction (the popup-depth rule; no intervening statement
 		// can ever shift it again).
 		constexpr ImGuiWindowFlags kDialogFlags =
-			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-			ImGuiWindowFlags_NoSavedSettings |
+			ui::kSystemModalFlags | ImGuiWindowFlags_NoResize |
 			ImGuiWindowFlags_AlwaysAutoResize;
 		// The flag dropped since last frame (DialogClose from OUTSIDE
 		// the popup — the stale-dialog drop or a confirm button): the
@@ -163,6 +163,7 @@ namespace editor {
 		// only public close and must run INSIDE it, so begin it once
 		// more purely to close it.
 		if (!m_dialogUp) {
+			ui::PrepareSystemModal(size);
 			if (ImGui::BeginPopupModal(title, nullptr, kDialogFlags)) {
 				ImGui::CloseCurrentPopup();
 				ImGui::EndPopup();
@@ -171,10 +172,7 @@ namespace editor {
 		}
 		if (!ImGui::IsPopupOpen(title, ImGuiPopupFlags_AnyPopupId))
 			ImGui::OpenPopup(title);
-		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing,
-			ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
+		ui::PrepareSystemModal(size);
 		return ImGui::BeginPopupModal(title, nullptr, kDialogFlags);
 	}
 	void EditorApp::DialogEnd() {
