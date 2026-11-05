@@ -598,44 +598,6 @@ namespace editor {
 			}
 		}
 
-		// Terrain group/tile: height paint controls (editor paint mode).
-		if (const uint32_t group = TerrainGroupOf(node); group != UINT32_MAX) {
-			ImGui::Separator();
-			auto it = m_terrainGroups.find(group);
-			if (it != m_terrainGroups.end()) {
-				ImGui::Text("Terrain '%s'  (%ux%u tiles)",
-					getNodeName(scene, int(group)).c_str(),
-					it->second.data.tilesX, it->second.data.tilesZ);
-				{
-					char hm[96];
-					std::snprintf(hm, sizeof(hm),
-						"%u x %u samples, %.0f m, group #%u",
-						it->second.data.heights.width,
-						it->second.data.heights.height,
-						it->second.data.params.size, group);
-					attr::Readonly("Heightmap", hm);
-				}
-				attr::Enum("Brush", &m_paintOp,
-					"Raise\0Lower\0Flatten\0Smooth\0",
-					"The height paint operation");
-				attr::Float("Radius", &m_paintRadius, 0.25f, 0.5f, 256.0f,
-					"%.1f", "The brush radius (m)");
-				attr::Float("Strength", &m_paintStrength, 0.01f, 0.01f,
-					64.0f, "%.2f", "The per-stamp height delta scale");
-				DrawBrushPresetControls(false);
-				if (attr::Check("Paint mode", &m_paintTerrain,
-						"While on, LMB in a 3D viewport paints the "
-						"selected terrain instead of picking. Each stamp "
-						"is one undoable command; paint persists as tour "
-						"terrainPaint verbs (deterministic replay).")) {
-					if (m_paintTerrain) m_paintScatter = false;
-					// (The old "surface the Terrain toolbar tab" hint went
-					// with the tabs — the paint cluster is ALWAYS in the
-					// top toolbar's Terrain section now.)
-				}
-			}
-		}
-
 		// Visibility is an ordinary editable property, not a separate
 		// override-summary subsection.
 		{
@@ -673,6 +635,45 @@ namespace editor {
 				if (ImGui::SmallButton("Use as current IBL source")) {
 					m_envCurrent = node;
 					ResolveSceneEnv();
+				}
+			}
+		}
+
+		// Terrain authoring controls are separate from node flags.
+		// Terrain group/tile: height paint controls (editor paint mode).
+		if (const uint32_t group = TerrainGroupOf(node); group != UINT32_MAX) {
+			ImGui::Separator();
+			auto it = m_terrainGroups.find(group);
+			if (it != m_terrainGroups.end()) {
+				ImGui::Text("Terrain '%s'  (%ux%u tiles)",
+					getNodeName(scene, int(group)).c_str(),
+					it->second.data.tilesX, it->second.data.tilesZ);
+				{
+					char hm[96];
+					std::snprintf(hm, sizeof(hm),
+						"%u x %u samples, %.0f m, group #%u",
+						it->second.data.heights.width,
+						it->second.data.heights.height,
+						it->second.data.params.size, group);
+					attr::Readonly("Heightmap", hm);
+				}
+				attr::Enum("Brush", &m_paintOp,
+					"Raise\0Lower\0Flatten\0Smooth\0",
+					"The height paint operation");
+				attr::Float("Radius", &m_paintRadius, 0.25f, 0.5f, 256.0f,
+					"%.1f", "The brush radius (m)");
+				attr::Float("Strength", &m_paintStrength, 0.01f, 0.01f,
+					64.0f, "%.2f", "The per-stamp height delta scale");
+				DrawBrushPresetControls(false);
+				if (attr::Check("Paint mode", &m_paintTerrain,
+						"While on, LMB in a 3D viewport paints the "
+						"selected terrain instead of picking. Each stamp "
+						"is one undoable command; paint persists as tour "
+						"terrainPaint verbs (deterministic replay).")) {
+					if (m_paintTerrain) m_paintScatter = false;
+					// (The old "surface the Terrain toolbar tab" hint went
+					// with the tabs — the paint cluster is ALWAYS in the
+					// top toolbar's Terrain section now.)
 				}
 			}
 		}
