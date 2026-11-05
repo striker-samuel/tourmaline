@@ -31,20 +31,25 @@ public:
     // Copies duplicate the elements; moves transfer the arena ownership.
     ArenaFlatArray(const ArenaFlatArray& other) { Assign(std::span<const T>(other)); }
     ArenaFlatArray& operator=(const ArenaFlatArray& other) {
-        if (this != &other) Assign(std::span<const T>(other));
+        if (this != &other) {
+            if (external_) DetachExternal();
+            Assign(std::span<const T>(other));
+        }
         return *this;
     }
     ArenaFlatArray(ArenaFlatArray&& other) noexcept
         : arena_(std::move(other.arena_)),
           data_(std::exchange(other.data_, nullptr)),
           size_(std::exchange(other.size_, 0)),
-          capacity_(std::exchange(other.capacity_, 0)) {}
+          capacity_(std::exchange(other.capacity_, 0)),
+          external_(std::exchange(other.external_, false)) {}
     ArenaFlatArray& operator=(ArenaFlatArray&& other) noexcept {
         if (this != &other) {
             arena_ = std::move(other.arena_);
             data_ = std::exchange(other.data_, nullptr);
             size_ = std::exchange(other.size_, 0);
             capacity_ = std::exchange(other.capacity_, 0);
+            external_ = std::exchange(other.external_, false);
         }
         return *this;
     }
@@ -72,6 +77,34 @@ public:
     [[nodiscard]] size_t size() const noexcept { return size_; }
     [[nodiscard]] size_t capacity() const noexcept { return capacity_; }
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+    [[nodiscard]] bool IsExternal() const noexcept { return external_; }
+
+    // Borrow caller-owned contiguous storage. The owner guarantees lifetime
+    // and alignment. Existing elements are copied before switching backing.
+    // No growth beyond capacity is allowed until DetachExternal is called.
+    [[nodiscard]] bool BindExternal(T* pointer, size_t capacity) noexcept {
+        if (!pointer || !capacity || capacity < size_ ||
+            reinterpret_cast<uintptr_t>(pointer) % alignof(T) != 0)
+            return false;
+        if (pointer != data_ && size_)
+            std::memmove(pointer, data_, size_ * sizeof(T));
+        data_ = pointer;
+        capacity_ = capacity;
+        external_ = true;
+        return true;
+    }
+
+    // Copy the active stream back into arena-owned storage before the
+    // caller releases/recycles the external allocation.
+    void DetachExternal() {
+        if (!external_) return;
+        T* next = size_ ? static_cast<T*>(arena_.Allocate(
+            size_ * sizeof(T), std::max<size_t>(alignof(T), 16))) : nullptr;
+        if (size_) std::memcpy(next, data_, size_ * sizeof(T));
+        data_ = next;
+        capacity_ = size_;
+        external_ = false;
+    }
 
     [[nodiscard]] const T& operator[](size_t index) const noexcept { return data_[index]; }
     [[nodiscard]] T& operator[](size_t index) noexcept { return data_[index]; }
@@ -112,6 +145,9 @@ public:
 
     void Reserve(size_t requested) {
         if (requested <= capacity_) return;
+        if (external_)
+            tour::mem::ReportOomAndCrash("ArenaFlatArray external capacity", requested,
+                size_, capacity_);
         if (requested > std::numeric_limits<size_t>::max() / sizeof(T))
             tour::mem::ReportOomAndCrash("ArenaFlatArray", requested,
                 capacity_, std::numeric_limits<size_t>::max() / sizeof(T));
@@ -137,6 +173,7 @@ private:
     T* data_ = nullptr;
     size_t size_ = 0;
     size_t capacity_ = 0;
+    bool external_ = false;
 };
 
 } // namespace tour::mem
