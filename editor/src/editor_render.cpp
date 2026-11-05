@@ -2998,6 +2998,74 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					std::fprintf(stderr,
 						"[LIVE-DUMP] download FAILED\n");
 				}
+				// THE HDR ORACLE (root cause B discrimination): the
+				// world's scene HDR (RGBA16F, public via
+				// m_viewportResources). If the HDR holds the scene while
+				// the inline target holds only the clear, the tonemap->
+				// inline leg broke on the extent cycle; if the HDR is
+				// ALSO empty, the mesh legs never executed (the CPU-side
+				// filter stats cannot see that).
+				{
+					const auto& hdr =
+						m_wysiwyg->m_viewportResources.hdr;
+					if (hdr.Valid() && hdr.extent.width
+						&& hdr.extent.height) {
+						std::vector<uint8_t> hpx(
+							size_t(hdr.extent.width)
+							* hdr.extent.height * 8);
+						if (m_context->DownloadDataFromImage(
+								hdr.image,
+								smvk::ImageLayout::
+									ShaderReadOnlyOptimal,
+								hpx.data(), hpx.size())) {
+							// IEEE half -> float + stats
+							const auto halfToF32 =
+								[](uint16_t h) -> float {
+								const uint32_t s = (h >> 15) & 1u;
+								const uint32_t e = (h >> 10) & 0x1fu;
+								const uint32_t m = h & 0x3ffu;
+								float v;
+								if (e == 0)
+									v = std::ldexp(float(m), -24);
+								else if (e == 31)
+									v = m ? 0.0f : 1e30f;
+								else
+									v = std::ldexp(
+										float(m | 0x400u), int(e) - 25);
+								return s ? -v : v;
+							};
+							double hsum = 0;
+							uint32_t hBlack = 0, hColored = 0;
+							const size_t hn = hpx.size() / 8;
+							for (size_t i = 0; i < hn; ++i) {
+								const uint16_t* f =
+									reinterpret_cast<const uint16_t*>(
+										&hpx[i * 8]);
+								const float r = halfToF32(f[0]);
+								const float g = halfToF32(f[1]);
+								const float b = halfToF32(f[2]);
+								const float mx = std::max({r, g, b});
+								const float mn = std::min({r, g, b});
+								hsum += double((r + g + b) / 3.0f);
+								if (mx < 0.01f)
+									++hBlack;
+								if (mx - mn > 0.15f)
+									++hColored;
+							}
+							std::fprintf(stderr,
+								"[LIVE-HDR] %ux%u: meanLuma=%.3f "
+								"black=%.1f%% colored=%.1f%%\n",
+								hdr.extent.width, hdr.extent.height,
+								hsum / double(hn),
+								100.0 * hBlack / double(hn),
+								100.0 * hColored / double(hn));
+							std::fflush(stderr);
+						}
+						else
+							std::fprintf(stderr,
+								"[LIVE-HDR] download FAILED\n");
+					}
+				}
 			}
 		}
 	}
