@@ -103,4 +103,25 @@ assert 'bool Evaluate(Scene& scene) const' in plug_header
 assert 'test_node_plugs.cpp' in (
     root / "tests" / "CMakeLists.txt").read_text(encoding="utf-8")
 
+# All blocking editor dialogs must request an independent decorated OS
+# platform viewport (not merely an ImGui child popup on the editor).
+system_modal = (root / "editor" / "src" / "ui" / "dialogs" /
+    "system_modal.h").read_text(encoding="utf-8")
+assert 'ImGuiViewportFlags_NoAutoMerge' in system_modal
+assert 'ImGuiViewportFlags_NoDecoration' in system_modal
+assert 'ImGui::SetNextWindowClass(&modalClass)' in system_modal
+assert 'ImGuiWindowFlags_NoDocking' in system_modal
+for file, titles in (
+    ("editor_ui.cpp", ("Save scene changes?", "Save tour as")),
+    ("editor_taskwindow.cpp", ("m_taskWindow.popupId",)),
+    ("ui/panels/tool_panels.cpp", ("Recover autosave", "Create Terrain")),
+    ("ui/panels/assets_panel.cpp", ("Rename asset##browser",)),
+    ("ui/dialogs/editor_dialogs.cpp", ("DialogBegin(",)),
+):
+    content = (src / file).read_text(encoding="utf-8")
+    assert 'ui::PrepareSystemModal(' in content, file
+    assert 'ui::kSystemModalFlags' in content, file
+    for title in titles:
+        assert title in content, (file, title)
+
 print(f"Editor UI structural checks passed ({len(definitions)} EditorApp definitions).")
