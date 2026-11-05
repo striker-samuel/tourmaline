@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <climits>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -2090,8 +2091,25 @@ void EditorApp::DrawFrame() {
 		m_swapchain->EndAndPresentFramebuffer(fb);
 		// ImGui's Vulkan backend owns independent swapchains for detached
 		// tools. Render/present them after the main rendergraph submission.
-		if (fb.imageIndex >= 0 && m_imgui && m_imgui->IsInitialized())
+		if (fb.imageIndex >= 0 && m_imgui && m_imgui->IsInitialized()) {
+			SMVK_PROFILE_SCOPE_COLOR("Editor_PlatformWindows",
+				Optick::Color::Orange);
+			// Enable TOURMALINE_WINDOW_TIMING=1 to separate slow secondary
+			// presents from main-frame rendering and GPU boundary drains.
+			static const bool timing = [] {
+				const char* e = std::getenv("TOURMALINE_WINDOW_TIMING");
+				return e && std::atoi(e) != 0;
+			}();
+			const auto start = std::chrono::steady_clock::now();
 			m_imgui->RenderPlatformWindows();
+			if (timing) {
+				const auto ms = std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - start).count();
+				if (ms > 4.0)
+					std::fprintf(stderr,
+						"[WINDOW-TIMING] secondary platform windows %.2f ms\n", ms);
+			}
+		}
 	}
 	// BOUNDARY QUIESCE (the frame-boundary-aware extent-change wait):
 	// any frame that recreated (or queued a recreate of) the world
@@ -2110,7 +2128,16 @@ void EditorApp::DrawFrame() {
 		// it can produce a large spike unrelated to actual rendering.
 		SMVK_PROFILE_SCOPE_COLOR("Editor_BoundaryWait", Optick::Color::Red);
 		m_wysiwygBoundaryQuiesce = false;
+		const auto start = std::chrono::steady_clock::now();
 		WaitForDeviceIdle();
+		if (const char* e = std::getenv("TOURMALINE_WINDOW_TIMING")) {
+			if (std::atoi(e) != 0) {
+				const auto ms = std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - start).count();
+				std::fprintf(stderr,
+					"[WINDOW-TIMING] boundary device idle %.2f ms\\n", ms);
+			}
+		}
 	}
 	// Fibers pump (main thread): deliver job completions (cook/bake
 	// finish logic runs here, after the frame is presented).
