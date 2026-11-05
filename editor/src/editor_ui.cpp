@@ -1065,8 +1065,16 @@ void EditorApp::FinalizePending() {
             }
             if (ImGui::MenuItem("Save tour...", nullptr, false,
 					m_world != nullptr && !m_cookRunning && !m_bakeRunning)) {
+				// The startup document is transient; an explicit Save tour
+				// should offer a permanent project asset, not its temp path.
+				const std::string saveDefault =
+					!m_startupTempTour.empty()
+					&& TourTarget() == m_startupTempTour
+					? (std::filesystem::path(m_projectRoot) / "content"
+						/ "scenes" / "New Scene.tour").string()
+					: TourTarget();
 				std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
-					"%s", TourTarget().c_str());
+					"%s", saveDefault.c_str());
 #ifdef _WIN32
 				std::string target;
 				if (NativeSaveTourFile(target, m_savePathBuf) && !target.empty()) {
