@@ -4967,7 +4967,13 @@ std::string EditorApp::TourTarget() const {
 }
 
 bool EditorApp::SaveTour() {
-	const bool ok = SaveTourTo(TourTarget());
+	// The new-session scratch lives outside the project by design. Internal
+	// autosaves/shutdown flushes may write that exact temporary document;
+	// explicit Save As still goes through the project path policy.
+	const std::string target = TourTarget();
+	const bool scratch = !m_startupTempTour.empty()
+		&& target == m_startupTempTour;
+	const bool ok = SaveTourTo(target, true, scratch);
 	if (ok)
 		ClearAutosave();
 	return ok;
@@ -5091,6 +5097,10 @@ bool EditorApp::SaveTourIncremental() {
 	// so re-incrementing from sponza.0003.tour yields sponza.0004.tour).
 	namespace fs = std::filesystem;
 	const std::string cur = TourTarget();
+	if (!m_startupTempTour.empty() && cur == m_startupTempTour) {
+		Log("Incremental save: save the temporary scene into the project first.");
+		return false;
+	}
 	if (cur.empty() || !m_world) {
 		Log("Incremental save: no scene.");
 		return false;
