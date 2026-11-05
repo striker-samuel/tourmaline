@@ -1733,6 +1733,7 @@ private:
 		uint32_t node = UINT32_MAX;
 		bool beforeFlag = false;
 		uint32_t beforeMaterial = UINT32_MAX;
+		tour::scene::plugs::Value beforeValue;
 	};
 	struct OverrideRule {
 		uint32_t id = 0;
@@ -1741,10 +1742,15 @@ private:
 		std::string pattern;
 		bool flag = true; // Visibility/NoLightmap/Dither value
 		uint32_t materialWorld = UINT32_MAX; // Material: world mat idx (UI)
+		std::string plug;
+		tour::scene::plugs::Value value;
 		std::vector<OverrideApplied> applied; // nodes written by this rule
 		std::string lastError; // regex compile error, else empty
 		int lastMatches = 0; // nodes matched on last apply (pre local-skip)
 	};
+	bool HasLocalPlugOverride(uint32_t node, const std::string& plug) const;
+	bool AddPlugOverrideRule(const std::string& pattern, const std::string& plug,
+		const tour::scene::plugs::Value& value);
 	bool HasLocalOverride(uint32_t node,
 		smvk::tour::OverrideAttr attr) const; // history scan (cursor range)
 	// Regex over node names (ECMAScript, search). Returns matched world
@@ -1786,6 +1792,10 @@ private:
 	int m_overrideAttrSel = 0; // 0 vis, 1 material, 2 noLM, 3 dither
 	bool m_overrideFlagVal = true;
 	int m_overrideMatSel = 0;
+	int m_overridePlugSel = 0;
+	bool m_overridePlugBool = true;
+	float m_overridePlugNumber = 1.0f;
+	char m_overridePlugString[256] = "";
 	std::vector<OverrideRule> m_overrideRules;
 	uint32_t m_nextOverrideId = 1;
 	// Save-as dialog state.
