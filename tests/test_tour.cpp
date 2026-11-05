@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <Engine/App/cluster.h>
@@ -730,6 +731,132 @@ void TestReferences() {
 		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, nullptr);
 	Check(selfApplied == 1, "ref cycle guard (inlined once)");
 	// Cleanup.
+	fs::remove_all(dir, ec);
+}
+
+// NESTED MODERN TOURS: a referenced scene that records its own source
+// as `reference -root` (the CURRENT writer's form — SaveTour emits the
+// root line, `source -p` is the deprecated spelling) must inline exactly
+// like the legacy one: the root entry FEEDS the model source under the
+// placeholder and is consumed — never re-inlined as a second, unplaced
+// subtree at the owner's scene root.
+void TestNestedModernTourRoot() {
+	namespace fs = std::filesystem;
+	const fs::path dir = fs::temp_directory_path() / "tourmaline_nested_root";
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+	const fs::path gltf = dir / "modern.gltf";
+	{
+		// One-triangle glTF (the .geometry build needs real geometry).
+		std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
+		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scene\":0,"
+			"\"scenes\":[{\"nodes\":[0]}],"
+			"\"nodes\":[{\"name\":\"Modern\",\"mesh\":0}],"
+			"\"meshes\":[{\"primitives\":[{\"attributes\":"
+			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+			"\"accessors\":["
+			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+			"\"bufferViews\":["
+			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+			"\"byteLength\":78}]}";
+	}
+	smvk::assets::AssetManifest man;
+	std::string ierr;
+	smvk::assets::DeriveConfig dcfg{};
+	Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, dcfg, man,
+			nullptr, &ierr),
+		"nested modern derive artifact");
+	// The CELL scene exactly as the editor writes it today: its own
+	// source rides a `reference -root` line, no `source -p` verb.
+	{
+		std::ofstream f(dir / "cell.tour", std::ios::binary | std::ios::trunc);
+		f << "reference -root -n 0 -source \"modern.geometry\" "
+			"-name \"Modern\";\n";
+	}
+	smvk::tour::Doc doc;
+	smvk::tour::ReferenceCmd r{};
+	r.parent = 0;
+	r.source = "cell.tour";
+	r.name = "cell";
+	r.translate = glm::vec3(5.0f, 0.0f, -2.0f);
+	r.hasTranslate = true;
+	doc.references.push_back(r);
+	// SECOND occurrence of the SAME scene (the documented multi-reference
+	// pattern — crate_a + crate_b): every occurrence re-registers the
+	// SAME mesh URIs, which used to orphan the earlier handles in the
+	// reverse lookup (GetMeshUri -> empty -> the cook's write-back
+	// hard-error, the serializer's duplicated cluster-local fallback).
+	smvk::tour::ReferenceCmd r2{};
+	r2.parent = 0;
+	r2.source = "cell.tour";
+	r2.name = "cell_b";
+	r2.translate = glm::vec3(-5.0f, 0.0f, 2.0f);
+	r2.hasTranslate = true;
+	doc.references.push_back(r2);
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetOfflineMode(true);
+	addNode(cluster->scene, -1, 0); // cluster root (importer parity)
+	std::vector<int> ph;
+	std::vector<std::string> issues;
+	const size_t applied = ApplySceneReferences(*cluster, doc,
+		dir.generic_string(), nullptr, nullptr, nullptr,
+		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph, &issues);
+	Check(applied == 2, "nested modern tour inlined once per occurrence");
+	Check(issues.empty(), "nested modern tour no issues");
+	Check(ph.size() == 2 && ph[0] >= 0 && ph[1] >= 0,
+		"nested modern placeholder nodes");
+	Check(findNodeByName(cluster->scene, "REF cell") >= 0
+		&& findNodeByName(cluster->scene, "REF cell_b") >= 0,
+		"nested modern placeholders named");
+	Check(findNodeByName(cluster->scene, "cell:Modern") >= 0
+		&& findNodeByName(cluster->scene, "cell_b:Modern") >= 0,
+		"nested modern subtrees namespaced under their refs");
+	// The root entry must be CONSUMED as the model source: an
+	// unprefixed 'Modern' twin would mean the geometry imported a
+	// second time, anchored unplaced at the owner's scene root.
+	Check(findNodeByName(cluster->scene, "Modern") < 0,
+		"nested modern root consumed, not re-inlined");
+	if (ph.size() == 2 && ph[0] >= 0 && ph[1] >= 0) {
+		const glm::mat4& a = cluster->scene.localTransform[size_t(ph[0])];
+		const glm::mat4& b = cluster->scene.localTransform[size_t(ph[1])];
+		Check(std::abs(a[3].x - 5.0f) < 1e-4f
+			&& std::abs(a[3].z + 2.0f) < 1e-4f,
+			"nested modern placeholder placement a");
+		Check(std::abs(b[3].x + 5.0f) < 1e-4f
+			&& std::abs(b[3].z - 2.0f) < 1e-4f,
+			"nested modern placeholder placement b");
+	}
+	// THE SHARED-URI CONTRACT (the cook write-back's hard gate): every
+	// cooked mesh reverses to its artifact URI even when a LATER
+	// occurrence re-registered the same URI (latest-wins forward map).
+	{
+		size_t withUri = 0, total = 0;
+		std::unordered_set<uint32_t> seen;
+		for (const MeshRow& row : cluster->scene.tables.meshes) {
+			if (!seen.insert(row.mesh).second)
+				continue;
+			const smvk::ClusterStaticMeshHandle h =
+				cluster->staticMeshes.getHandle(row.mesh);
+			if (!h.valid())
+				continue;
+			++total;
+			if (!cluster->GetMeshUri(h).empty())
+				++withUri;
+		}
+		Check(total > 0 && withUri == total,
+			"shared-asset occurrences all reverse to their mesh uri");
+	}
 	fs::remove_all(dir, ec);
 }
 
@@ -4569,6 +4696,7 @@ int main() {
 	TestReplay();
 	TestReferences();
 	TestReferenceNamespaceFuzz();
+	TestNestedModernTourRoot();
 	TestTourReferences();
 	TestLightVerbs();
 	TestTerrainVerbs();

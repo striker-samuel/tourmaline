@@ -506,6 +506,14 @@ void EditorApp::FinalizePending() {
 				ImGui::DockBuilderDockWindow("Overrides", left);
 				ImGui::DockBuilderDockWindow("Inspector", right);
 				ImGui::DockBuilderDockWindow("Material", right);
+				// The Reference panel gets a dock HOME in the default tree
+				// (the right column, tabbed with Inspector/Material). It
+				// starts hidden now (m_showReferencePanel), but the builder
+				// assignment lands in the window SETTINGS - DockBuilder-
+				// DockWindow docks never-created windows through their
+				// settings - so the first View > Panels open lands DOCKED
+				// instead of a floating window over the viewport stage.
+				ImGui::DockBuilderDockWindow("Reference", right);
 				ImGui::DockBuilderFinish(dockId);
 				m_dockResetRequested = false;
 			}
@@ -519,6 +527,40 @@ void EditorApp::FinalizePending() {
 				m_uiMode ? ImGuiDockNodeFlags_PassthruCentralNode
 					: ImGuiDockNodeFlags_KeepAliveOnly);
 			ImGui::PopStyleColor();
+			// THE DEGENERATE-LAYOUT SELF-HEAL (the squeezed-central-node
+			// bug): ImGui persists dock splits as ABSOLUTE pixel SizeRefs.
+			// A layout authored in a large window (maximized on a big
+			// monitor) loads in a smaller one with every side panel keeping
+			// its absolute width - ImGui's sizing policy gives non-central
+			// children their explicit size and hands the central node the
+			// REMAINDER (imgui.cpp DockNodeTreeUpdatePosSize rule 3), so the
+			// central node (the Viewport's home) absorbs the whole deficit
+			// and collapses to a ~24-64 px sliver. The live view then floors
+			// at its 64 px minimum target and composites into a sliver rect:
+			// "the docked viewport doesn't render". Heal ONCE, early in the
+			// session and never mid-drag: rebuild the compiled default
+			// layout (the proven View > Reset workspace path), loudly. The
+			// saved panel arrangement is deliberately NOT preserved - a
+			// layout that starves the viewport below usability is broken
+			// state, not a preference.
+			if (m_uiMode && !m_dockResetRequested && !m_dockLayoutHealed
+				&& m_frameCounter < 600
+				&& !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+				if (ImGuiDockNode* central =
+						ImGui::DockBuilderGetCentralNode(dockId);
+					central && central->Size.x >= 1.0f
+					&& (central->Size.x < 240.0f
+						|| central->Size.y < 160.0f)) {
+					m_dockLayoutHealed = true;
+					m_dockResetRequested = true;
+					Log("Workspace: the saved dock layout squeezes the "
+						"viewport stage below usable size (central node "
+						+ std::to_string(int(central->Size.x)) + "x"
+						+ std::to_string(int(central->Size.y))
+						+ " px) - rebuilding the default layout (View > "
+						"Reset workspace to customize)");
+				}
+			}
 		}
 		ImGui::End();
 		ImGui::PopStyleVar();
