@@ -24,6 +24,7 @@
 
 #include <Engine/GI/cubemap_volume.h> // the GI parity reference
 #include <Engine/Scene/scene.h>
+#include <Engine/Scene/static_export.h>
 #include <Engine/Scene/scene_tables.h>
 #include <Engine/Scene/spatial_volume.h>
 
@@ -59,6 +60,60 @@ Scene MakeScene(uint32_t count) {
 } // namespace
 
 int main() {
+    {
+        // Export detaches static descendants, folding every ancestor's
+        // transform into each independent cooked static root. Editor state
+        // and dynamic hierarchy remain unchanged.
+        Scene s;
+        const int root = addNode(s, -1, 0);
+        const int staticParent = addNode(s, root, 1);
+        const int staticChild = addNode(s, staticParent, 2);
+        const int dynamicSibling = addNode(s, root, 1);
+        const int anotherDynamic = addNode(s, root, 1);
+        s.localTransform[root][3].x = 2.0f;
+        s.localTransform[staticParent][3].x = 3.0f;
+        s.localTransform[staticChild][3].y = 4.0f;
+        s.localTransform[dynamicSibling][3].z = 6.0f;
+        MarkSubtreeStatic(s, staticParent);
+        const auto cooked = tour::scene::BuildStaticExportHierarchy(s);
+        Check(cooked.hierarchy[staticParent].parent == -1
+            && cooked.hierarchy[staticChild].parent == -1
+            && cooked.hierarchy[staticParent].firstChild == -1
+            && cooked.hierarchy[staticChild].level == 0,
+            "static-export: every static descendant is a detached root");
+        Check(Near(cooked.transforms[staticParent][3].x, 5.0f)
+            && Near(cooked.transforms[staticChild][3].x, 5.0f)
+            && Near(cooked.transforms[staticChild][3].y, 4.0f),
+            "static-export: full ancestor transforms baked");
+        Check(cooked.hierarchy[root].firstChild == dynamicSibling
+            && cooked.hierarchy[dynamicSibling].nextSibling == anotherDynamic
+            && cooked.hierarchy[anotherDynamic].nextSibling == -1
+            && cooked.hierarchy[dynamicSibling].lastSibling == anotherDynamic,
+            "static-export: dynamic siblings retain order and valid links");
+        Check(cooked.hierarchy[dynamicSibling].parent == root
+            && Near(cooked.transforms[dynamicSibling][3].z, 6.0f)
+            && Near(cooked.transforms[dynamicSibling][3].x, 0.0f),
+            "static-export: dynamic transforms remain local");
+        Check(cooked.staticRoots[staticParent] == 1
+            && cooked.staticRoots[staticChild] == 1
+            && cooked.staticRoots[root] == 0
+            && cooked.staticRoots[dynamicSibling] == 0,
+            "static-export: cooked static marks match detached nodes");
+        Check(s.hierarchy[staticParent].parent == root
+            && s.hierarchy[staticChild].parent == staticParent
+            && Near(s.localTransform[staticChild][3].x, 0.0f),
+            "static-export: authored scene is not mutated");
+    }
+    {
+        Scene s;
+        const int root = addNode(s, -1, 0);
+        const int child = addNode(s, root, 1);
+        const auto cooked = tour::scene::BuildStaticExportHierarchy(s);
+        Check(cooked.hierarchy[child].parent == root
+            && cooked.hierarchy[root].firstChild == child
+            && cooked.staticRoots[child] == 0,
+            "static-export: all-dynamic scenes retain their hierarchy");
+    }
 	{
 		// Mutation boundary + dynamic multiple roots (with static siblings).
 		Scene s = MakeScene(3);
