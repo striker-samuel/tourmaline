@@ -377,10 +377,14 @@ void EditorApp::Shutdown() {
 	StopGamePlay(); // game state dies before authored scene
 	// Flush the working tour to the project .tour on exit (per-edit
 	// saves went to the %APPDATA% autosave) — same contract as
-	// CloseScene, so closing the editor never loses edits.
+	// CloseScene, so closing the editor never loses edits. The explicit
+	// Discard exit (#215's unsaved-exit flow) skips the flush AND the
+	// scratch preservation below — a deliberate discard leaves nothing
+	// behind.
 	const bool preserveScratch = !m_startupTempTour.empty()
-		&& TourTarget() == m_startupTempTour && m_tourDirty;
-	if (m_world && !TourTarget().empty())
+		&& TourTarget() == m_startupTempTour && m_tourDirty
+		&& !m_discardOnExit;
+	if (!m_discardOnExit && m_world && !TourTarget().empty())
 		SaveTour();
 	// An untouched startup scratch is disposable. If it contains unsaved
 	// edits and was not saved into the project, retain the flushed file

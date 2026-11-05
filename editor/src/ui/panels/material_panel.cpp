@@ -292,113 +292,6 @@ namespace editor {
 					"source .material asset (the browser's tile).");
 		}
 
-		// ---- PBR texture slots (the registry picker + thumbnails) -----
-		ImGui::Separator();
-		ImGui::Text("Texture slots");
-		struct SlotDef { const char* label; const char* attr; int* slot; };
-		int tBC = m->values.textures.x, tMR = m->values.textures.y;
-		int tN = m->values.textures.z, tO = m->values.textures.w;
-		int tE = m->values.textures2.x;
-		const SlotDef slots[] = {
-			{ "Base color", "baseColorTex", &tBC },
-			{ "Metallic-rough", "metallicRoughTex", &tMR },
-			{ "Normal", "normalTex", &tN },
-			{ "Occlusion", "occlusionTex", &tO },
-			{ "Emissive", "emissiveTex", &tE },
-		};
-		std::vector<std::pair<smvk::StringViewT, smvk::TextureHandle>> texList;
-		if (cl)
-			texList = cl->ListTextureUris();
-		struct TexAsset { std::string name; std::string abs; std::string guid; };
-		std::vector<TexAsset> texAssets;
-		if (m_assetDb.IsOpen()) {
-			std::vector<smvk::cache::AssetRecord> rows;
-			std::string derr;
-			if (m_assetDb.All(rows, derr)) {
-				texAssets.reserve(rows.size());
-				for (const auto& r : rows) {
-					if (r.kind != "texture")
-						continue;
-					const std::string abs = m_assetDb.ResolvePath(r.path);
-					if (abs.empty())
-						continue;
-					TexAsset t;
-					t.name = std::filesystem::path(abs)
-						.filename().generic_string();
-					t.abs = abs;
-					t.guid = r.guid;
-					texAssets.push_back(std::move(t));
-				}
-				std::sort(texAssets.begin(), texAssets.end(),
-					[](const TexAsset& a, const TexAsset& b) {
-						return a.name < b.name;
-					});
-			}
-		}
-		for (const SlotDef& s : slots) {
-			ImGui::PushID(s.attr);
-			std::string preview = *s.slot >= 0
-				? ("tex." + std::to_string(*s.slot)) : std::string("(none)");
-			smvk::TextureHandle slotTex{};
-			if (*s.slot >= 0)
-				for (const auto& [uri, th] : texList)
-					if (int(th.index()) == *s.slot) {
-						slotTex = th;
-						preview = std::filesystem::path(uri.Str())
-							.filename().generic_string();
-						break;
-					}
-			if (!slotTex.empty()) {
-				const ImTextureID tid = TextureThumb(slotTex);
-				if (tid != 0) {
-					ImGui::Image(tid, ImVec2(48, 48));
-					ImGui::SameLine();
-				}
-			}
-			if (ImGui::BeginCombo(s.label, preview.c_str())) {
-				if (ImGui::Selectable("(none)", *s.slot < 0)) {
-					EditCmd c{};
-					c.verb = EditVerb::SetMatAttr;
-					c.matWorld = mat;
-					c.attr = s.attr;
-					c.number = -1.0;
-					ReadSharedMatAttr(mat, s.attr, c.beforeVec4, c.beforeNum);
-					Do(c);
-				}
-				if (texAssets.empty())
-					ImGui::TextDisabled("(no texture assets in the project"
-						" — import or create them in the asset browser)");
-				for (const TexAsset& ta : texAssets) {
-					if (ImGui::Selectable(ta.name.c_str(),
-							preview == ta.name)) {
-						int poolIdx = -1;
-						for (const auto& [uri, th] : texList)
-							if (uri.Str() == ta.abs) {
-								poolIdx = int(th.index());
-								break;
-							}
-						if (poolIdx < 0)
-							poolIdx = AddTextureFromFile(ta.abs);
-						if (poolIdx < 0)
-							continue;
-						EditCmd c{};
-						c.verb = EditVerb::SetMatAttr;
-						c.matWorld = mat;
-						c.attr = s.attr;
-						c.number = double(poolIdx);
-						ReadSharedMatAttr(mat, s.attr, c.beforeVec4,
-							c.beforeNum);
-						Do(c);
-					}
-					if (ImGui::IsItemHovered())
-						ImGui::SetTooltip("%s\n%s", ta.abs.c_str(),
-							ta.guid.c_str());
-				}
-				ImGui::EndCombo();
-			}
-			ImGui::PopID();
-		}
-
 		// ---- The scalar look (shared edit, the drag command path) ----
 		ImGui::Separator();
 		{
@@ -541,7 +434,7 @@ namespace editor {
 		}
 
 		// ---- Attribute flags + alpha ------------------------------------
-		ImGui::SeparatorText("Material properties");
+		ImGui::SeparatorText("Material flags");
 		{
 			if (attr::Bool("DS", m->doubleSided,
 					"DOUBLE SIDED — both faces shade")) {
@@ -599,6 +492,117 @@ namespace editor {
 					c.beforeVec4, c.beforeNum);
 				Do(c);
 			}
+		}
+
+		// ---- PBR texture slots (the registry picker + thumbnails) -----
+		ImGui::SeparatorText("Texture slots");
+		struct SlotDef { const char* label; const char* attr; int* slot; };
+		int tBC = m->values.textures.x, tMR = m->values.textures.y;
+		int tN = m->values.textures.z, tO = m->values.textures.w;
+		int tE = m->values.textures2.x;
+		const SlotDef slots[] = {
+			{ "Base color", "baseColorTex", &tBC },
+			{ "Metallic-rough", "metallicRoughTex", &tMR },
+			{ "Normal", "normalTex", &tN },
+			{ "Occlusion", "occlusionTex", &tO },
+			{ "Emissive", "emissiveTex", &tE },
+		};
+		std::vector<std::pair<smvk::StringViewT, smvk::TextureHandle>> texList;
+		if (cl)
+			texList = cl->ListTextureUris();
+		struct TexAsset { std::string name; std::string abs; std::string guid; };
+		std::vector<TexAsset> texAssets;
+		if (m_assetDb.IsOpen()) {
+			std::vector<smvk::cache::AssetRecord> rows;
+			std::string derr;
+			if (m_assetDb.All(rows, derr)) {
+				texAssets.reserve(rows.size());
+				for (const auto& r : rows) {
+					if (r.kind != "texture")
+						continue;
+					const std::string abs = m_assetDb.ResolvePath(r.path);
+					if (abs.empty())
+						continue;
+					TexAsset t;
+					t.name = std::filesystem::path(abs)
+						.filename().generic_string();
+					t.abs = abs;
+					t.guid = r.guid;
+					texAssets.push_back(std::move(t));
+				}
+				std::sort(texAssets.begin(), texAssets.end(),
+					[](const TexAsset& a, const TexAsset& b) {
+						return a.name < b.name;
+					});
+			}
+		}
+		for (const SlotDef& s : slots) {
+			ImGui::PushID(s.attr);
+			std::string preview = *s.slot >= 0
+				? ("tex." + std::to_string(*s.slot)) : std::string("(none)");
+			smvk::TextureHandle slotTex{};
+			if (*s.slot >= 0)
+				for (const auto& [uri, th] : texList)
+					if (int(th.index()) == *s.slot) {
+						slotTex = th;
+						preview = std::filesystem::path(uri.Str())
+							.filename().generic_string();
+						break;
+					}
+			// Texture slots follow the same name/value columns as all
+			// other inspector properties. Keep the thumbnail in the
+			// value cell, not to the left of the label.
+			attr::LabelCell(s.label, nullptr);
+			if (!slotTex.empty()) {
+				const ImTextureID tid = TextureThumb(slotTex);
+				if (tid != 0) {
+					ImGui::Image(tid, ImVec2(28, 28));
+					ImGui::SameLine();
+				}
+			}
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::BeginCombo("##value", preview.c_str())) {
+				if (ImGui::Selectable("(none)", *s.slot < 0)) {
+					EditCmd c{};
+					c.verb = EditVerb::SetMatAttr;
+					c.matWorld = mat;
+					c.attr = s.attr;
+					c.number = -1.0;
+					ReadSharedMatAttr(mat, s.attr, c.beforeVec4, c.beforeNum);
+					Do(c);
+				}
+				if (texAssets.empty())
+					ImGui::TextDisabled("(no texture assets in the project"
+						" — import or create them in the asset browser)");
+				for (const TexAsset& ta : texAssets) {
+					if (ImGui::Selectable(ta.name.c_str(),
+							preview == ta.name)) {
+						int poolIdx = -1;
+						for (const auto& [uri, th] : texList)
+							if (uri.Str() == ta.abs) {
+								poolIdx = int(th.index());
+								break;
+							}
+						if (poolIdx < 0)
+							poolIdx = AddTextureFromFile(ta.abs);
+						if (poolIdx < 0)
+							continue;
+						EditCmd c{};
+						c.verb = EditVerb::SetMatAttr;
+						c.matWorld = mat;
+						c.attr = s.attr;
+						c.number = double(poolIdx);
+						ReadSharedMatAttr(mat, s.attr, c.beforeVec4,
+							c.beforeNum);
+						Do(c);
+					}
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("%s\n%s", ta.abs.c_str(),
+							ta.guid.c_str());
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::PopID();
 		}
 
 		// Layered materials are a distinct editor presentation. Plain

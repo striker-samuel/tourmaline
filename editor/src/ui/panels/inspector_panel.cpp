@@ -152,7 +152,9 @@ namespace editor {
 				{ smvk::tour::OverrideAttr::Material, "Material" },
 				{ smvk::tour::OverrideAttr::Lightmap, "Bake lightmaps" },
 				{ smvk::tour::OverrideAttr::NoLightmap, "Exclude lightmaps" },
-				{ smvk::tour::OverrideAttr::DitherCloseup, "Dither closeup" } }) {
+				{ smvk::tour::OverrideAttr::DitherCloseup, "Dither closeup" },
+				{ smvk::tour::OverrideAttr::Static, "Static" },
+				{ smvk::tour::OverrideAttr::VolumetricShadow, "Volumetric shadow" } }) {
 			if (LastWideRuleFor(entry.first, nodeName))
 				mark(entry.second, 2);
 		}
@@ -506,48 +508,10 @@ namespace editor {
 		sections.Register("audio", [this](uint32_t n) { DrawAudioSection(n); });
 		sections.Register("audio-room", [this](uint32_t n) { DrawAudioRoomSection(n); });
 		sections.DrawAll(node);
-		// Single discoverable add-component flow. Only list missing
-		// associations and reuse the existing undoable attach commands.
-		ImGui::Spacing();
-		if (ImGui::Button("Add component..."))
-			ImGui::OpenPopup("##add_component_picker");
-		if (ImGui::BeginPopup("##add_component_picker")) {
-			ImGui::TextUnformatted("Add component");
-			ImGui::Separator();
-			static ImGuiTextFilter componentFilter;
-			componentFilter.Draw("Search##component", 230.0f);
-			struct ComponentChoice { const char* label; EditVerb verb; bool present; };
-			const ComponentChoice choices[] = {
-				{ "Physics Body", EditVerb::AttachPhysicsBody,
-					tour::scene::FindPhysicsBody(scene, node) != nullptr },
-				{ "Trigger Volume", EditVerb::AttachTriggerVolume,
-					tour::scene::FindTriggerVolume(scene, node) != nullptr },
-				{ "GI Volume", EditVerb::AttachGiVolume,
-					FindGiVolume(scene, node) != nullptr },
-				{ "Audio Room", EditVerb::AttachAudioRoom,
-					tour::scene::FindAudioRoom(scene, node) != nullptr },
-			};
-			bool any = false;
-			for (const ComponentChoice& choice : choices) {
-				if (choice.present || !componentFilter.PassFilter(choice.label))
-					continue;
-				any = true;
-				if (ImGui::Selectable(choice.label)) {
-					EditCmd cmd{};
-					cmd.verb = choice.verb;
-					cmd.node = node;
-					Do(cmd);
-					ImGui::CloseCurrentPopup();
-					break;
-				}
-			}
-			if (!any)
-				ImGui::TextDisabled("No available components");
-			ImGui::EndPopup();
-		}
 		// The scene's export config node (cook/export knobs).
 		DrawExportSettingsSection(node);
 
+		ImGui::SeparatorText("Node flags");
 		// Static subtree (transform freeze): the root mark affects the WHOLE
 		// tree (Scene::staticRoot) — frozen transforms after the initial
 		// build (skip per-frame updates + BVH rebuilds) + mega-mesh collapse
@@ -634,44 +598,6 @@ namespace editor {
 			}
 		}
 
-		// Terrain group/tile: height paint controls (editor paint mode).
-		if (const uint32_t group = TerrainGroupOf(node); group != UINT32_MAX) {
-			ImGui::Separator();
-			auto it = m_terrainGroups.find(group);
-			if (it != m_terrainGroups.end()) {
-				ImGui::Text("Terrain '%s'  (%ux%u tiles)",
-					getNodeName(scene, int(group)).c_str(),
-					it->second.data.tilesX, it->second.data.tilesZ);
-				{
-					char hm[96];
-					std::snprintf(hm, sizeof(hm),
-						"%u x %u samples, %.0f m, group #%u",
-						it->second.data.heights.width,
-						it->second.data.heights.height,
-						it->second.data.params.size, group);
-					attr::Readonly("Heightmap", hm);
-				}
-				attr::Enum("Brush", &m_paintOp,
-					"Raise\0Lower\0Flatten\0Smooth\0",
-					"The height paint operation");
-				attr::Float("Radius", &m_paintRadius, 0.25f, 0.5f, 256.0f,
-					"%.1f", "The brush radius (m)");
-				attr::Float("Strength", &m_paintStrength, 0.01f, 0.01f,
-					64.0f, "%.2f", "The per-stamp height delta scale");
-				DrawBrushPresetControls(false);
-				if (attr::Check("Paint mode", &m_paintTerrain,
-						"While on, LMB in a 3D viewport paints the "
-						"selected terrain instead of picking. Each stamp "
-						"is one undoable command; paint persists as tour "
-						"terrainPaint verbs (deterministic replay).")) {
-					if (m_paintTerrain) m_paintScatter = false;
-					// (The old "surface the Terrain toolbar tab" hint went
-					// with the tabs — the paint cluster is ALWAYS in the
-					// top toolbar's Terrain section now.)
-				}
-			}
-		}
-
 		// Visibility is an ordinary editable property, not a separate
 		// override-summary subsection.
 		{
@@ -713,13 +639,61 @@ namespace editor {
 			}
 		}
 
+		// Terrain authoring controls are separate from node flags.
+		// Terrain group/tile: height paint controls (editor paint mode).
+		if (const uint32_t group = TerrainGroupOf(node); group != UINT32_MAX) {
+			ImGui::Separator();
+			auto it = m_terrainGroups.find(group);
+			if (it != m_terrainGroups.end()) {
+				ImGui::Text("Terrain '%s'  (%ux%u tiles)",
+					getNodeName(scene, int(group)).c_str(),
+					it->second.data.tilesX, it->second.data.tilesZ);
+				{
+					char hm[96];
+					std::snprintf(hm, sizeof(hm),
+						"%u x %u samples, %.0f m, group #%u",
+						it->second.data.heights.width,
+						it->second.data.heights.height,
+						it->second.data.params.size, group);
+					attr::Readonly("Heightmap", hm);
+				}
+				attr::Enum("Brush", &m_paintOp,
+					"Raise\0Lower\0Flatten\0Smooth\0",
+					"The height paint operation");
+				attr::Float("Radius", &m_paintRadius, 0.25f, 0.5f, 256.0f,
+					"%.1f", "The brush radius (m)");
+				attr::Float("Strength", &m_paintStrength, 0.01f, 0.01f,
+					64.0f, "%.2f", "The per-stamp height delta scale");
+				DrawBrushPresetControls(false);
+				if (attr::Check("Paint mode", &m_paintTerrain,
+						"While on, LMB in a 3D viewport paints the "
+						"selected terrain instead of picking. Each stamp "
+						"is one undoable command; paint persists as tour "
+						"terrainPaint verbs (deterministic replay).")) {
+					if (m_paintTerrain) m_paintScatter = false;
+					// (The old "surface the Terrain toolbar tab" hint went
+					// with the tabs — the paint cluster is ALWAYS in the
+					// top toolbar's Terrain section now.)
+				}
+			}
+		}
+
 		// Scene reference block (placeholder nodes).
 		DrawReferenceSection(node);
-		// Material reassignment.
-		if (const MaterialRow* matRow = FindMaterial(scene, node)) {
-			ImGui::Separator();
-			ImGui::Text("Material");
+		// A material is an optional node component. Without one the
+		// renderer uses its editor-default material, not a scene binding.
+		const MaterialRow* matRow = FindMaterial(scene, node);
+		if (matRow) {
+			ImGui::SeparatorText("Material component");
 			const uint32_t curMat = matRow->material;
+			if (ImGui::SmallButton("Remove material component")) {
+				EditCmd c{};
+				c.verb = EditVerb::AssignMaterial;
+				c.node = node;
+				c.beforeMaterial = curMat;
+				c.material = UINT32_MAX; // no binding; editor default
+				Do(c);
+			} else {
 			std::string preview = "mat." + std::to_string(curMat);
 			if (ImGui::BeginCombo("##mat", preview.c_str())) {
 				const uint32_t count = uint32_t(m_world->materialLocations.size());
@@ -757,7 +731,83 @@ namespace editor {
 			// copy — the same surface the Material tab and the focus
 			// page render, from ONE function).
 			DrawMaterialBody(curMat);
+			}
 		}
+		else {
+			ImGui::SeparatorText("Material component");
+			ImGui::TextDisabled("None (editor default material)");
+		}
+		ImGui::Separator();
+		// Add component stays at the bottom. Only list missing
+		// associations and reuse the existing undoable attach commands.
+		ImGui::Spacing();
+		if (ImGui::Button("Add component..."))
+			ImGui::OpenPopup("##add_component_picker");
+		if (ImGui::BeginPopup("##add_component_picker")) {
+			ImGui::TextUnformatted("Add component");
+			ImGui::Separator();
+			static ImGuiTextFilter componentFilter;
+			componentFilter.Draw("Search##component", 230.0f);
+			struct ComponentChoice { const char* label; EditVerb verb; bool present; };
+			const ComponentChoice choices[] = {
+				{ "Physics Body", EditVerb::AttachPhysicsBody,
+					tour::scene::FindPhysicsBody(scene, node) != nullptr },
+				{ "Trigger Volume", EditVerb::AttachTriggerVolume,
+					tour::scene::FindTriggerVolume(scene, node) != nullptr },
+				{ "GI Volume", EditVerb::AttachGiVolume,
+					FindGiVolume(scene, node) != nullptr },
+				{ "Audio Room", EditVerb::AttachAudioRoom,
+					tour::scene::FindAudioRoom(scene, node) != nullptr },
+			};
+			bool any = false;
+			for (const ComponentChoice& choice : choices) {
+				if (choice.present || !componentFilter.PassFilter(choice.label))
+					continue;
+				any = true;
+				if (ImGui::Selectable(choice.label)) {
+					EditCmd cmd{};
+					cmd.verb = choice.verb;
+					cmd.node = node;
+					Do(cmd);
+					ImGui::CloseCurrentPopup();
+					break;
+				}
+			}
+			// Material binding is optional: absent means the editor's
+			// default material. Add it through the component picker,
+			// rather than silently assigning an arbitrary material.
+			if (!FindMaterial(scene, node)
+				&& !m_world->materialLocations.empty()
+				&& componentFilter.PassFilter("Material")) {
+				any = true;
+				if (ImGui::BeginMenu("Material")) {
+					for (uint32_t mat = 0;
+						mat < m_world->materialLocations.size(); ++mat) {
+						const auto& loc = m_world->materialLocations[mat];
+						const std::string uri = loc.cluster
+							? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
+							: "";
+						const std::string label = "mat." + std::to_string(mat)
+							+ " " + uri;
+						if (ImGui::MenuItem(label.c_str())) {
+							EditCmd c{};
+							c.verb = EditVerb::AssignMaterial;
+							c.node = node;
+							c.material = mat;
+							c.beforeMaterial = UINT32_MAX;
+							Do(c);
+							ImGui::CloseCurrentPopup();
+							break;
+						}
+					}
+					ImGui::EndMenu();
+				}
+			}
+			if (!any)
+				ImGui::TextDisabled("No available components");
+			ImGui::EndPopup();
+		}
+
 		// NOTE: the active-viewport orbit camera used to live here; it moved
 		// to the World panel ("Viewport camera"). Node pages show authored
 		// state only — camera nodes get the lens section above instead.

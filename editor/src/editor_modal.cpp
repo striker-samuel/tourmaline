@@ -285,6 +285,10 @@ void EditorApp::UpdateModalInput() {
 			"delete: selection", "Del" },
 		{ TOUR_KEY_D, kModalCtrl, kScopeGlobal, &EditorApp::ModalDuplicate,
 			"duplicate: selection", "Ctrl+D" },
+		{ TOUR_KEY_G, kModalCtrl, kScopeGlobal, &EditorApp::ModalGroupSelection,
+			"group: selection under new transform", "Ctrl+G" },
+		{ TOUR_KEY_ESCAPE, 0, kScopeGlobal, &EditorApp::ModalEscape,
+			"exit editor (confirm unsaved changes)", "Esc" },
 		{ TOUR_KEY_1, kModalCtrl, kScopeGlobal,
 			&EditorApp::ModalIsolateSelect,
 			"viewport: isolate selected (toggle)", "Ctrl+1" },
@@ -500,6 +504,17 @@ void EditorApp::ModalSave() {
 }
 void EditorApp::ModalSaveIncremental() { SaveTourIncremental(); }
 
+void EditorApp::ModalEscape() {
+	// A modal or in-progress gizmo gesture owns Esc. Never dismiss a
+	// blocking task or typed inspector input by quitting the editor.
+	if (TaskWindowBlocking() || m_selRadialOpen ||
+		ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
+		return;
+	if (m_tourDirty) m_showExitPrompt = true;
+	else RequestClose();
+}
+
+
 // ---- layout handlers ----
 
 void EditorApp::ModalGizmoTranslate() { m_gizmoMode = GizmoMode::Translate; }
@@ -512,6 +527,71 @@ void EditorApp::ModalGizmoCycle() {
 void EditorApp::ModalSelRadial() { m_showSelRadial = true; }
 
 void EditorApp::ModalWireframeToggle() { m_wireframeAll = !m_wireframeAll; }
+
+void EditorApp::ModalGroupSelection() {
+	if (!m_world || m_selection.empty() || m_imguiFocusInPlacementGraph)
+		return;
+	const Scene& scene = m_world->scene;
+	// Keep selected roots only: nesting a selected parent and child in
+	// the group must not flatten the child's original hierarchy.
+	std::vector<uint32_t> roots;
+	for (uint32_t n : m_selection) {
+		if (n == 0 || n >= scene.hierarchy.size() || IsRefPlaceholder(n))
+			continue;
+		bool hasSelectedAncestor = false;
+		for (int p = scene.hierarchy[n].parent; p >= 0;
+			p = scene.hierarchy[size_t(p)].parent) {
+			if (std::find(m_selection.begin(), m_selection.end(), uint32_t(p))
+				!= m_selection.end()) {
+				hasSelectedAncestor = true;
+				break;
+			}
+		}
+		if (!hasSelectedAncestor)
+			roots.push_back(n);
+	}
+	if (roots.empty()) return;
+	// A common existing parent keeps the original transforms and sibling
+	// positions stable; mixed-parent selections group at the scene root.
+	const int firstParent = scene.hierarchy[roots.front()].parent;
+	bool common = true;
+	for (uint32_t n : roots)
+		if (scene.hierarchy[n].parent != firstParent) common = false;
+	uint32_t parent = common && firstParent >= 0
+		? uint32_t(firstParent) : 0u;
+	// Avoid name collisions with authored node names.
+	std::string name = "group1";
+	for (uint32_t suffix=1;;++suffix) {
+		name = "group" + std::to_string(suffix);
+		bool taken = false;
+		for (size_t i=0;i<scene.hierarchy.size();++i)
+			if (getNodeName(scene,int(i)) == name) { taken=true; break; }
+		if (!taken) break;
+	}
+	EditCmd create{};
+	create.verb = EditVerb::CreateTransform;
+	create.node2 = parent;
+	create.afterText = name;
+	create.svec = glm::vec3(1.0f);
+	// Creating the group at its parent's origin means ReparentNode can
+	// preserve each child's current world transform without shifting it.
+	Do(create);
+	const uint32_t group = m_selected;
+	if (group == UINT32_MAX || group >= m_world->scene.hierarchy.size())
+		return;
+	for (uint32_t n : roots) {
+		EditCmd c{};
+		c.verb = EditVerb::Parent;
+		c.node = n;
+		c.node2 = group;
+		c.beforeParent = uint32_t(m_world->scene.hierarchy[n].parent);
+		Do(c);
+	}
+	m_selection = {group};
+	m_selected = group;
+	Log("Grouped " + std::to_string(roots.size()) +
+		" selected root(s) under " + name + " (Ctrl+G).");
+}
 
 void EditorApp::ModalParentSelection() {
 	// Maya P: parent EVERY selected node under the LAST selected (the

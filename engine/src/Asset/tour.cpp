@@ -816,6 +816,12 @@ bool OverrideAttrFromString(const std::string& s, OverrideAttr& out) {
 		out = OverrideAttr::DitherCloseup;
 		return true;
 	}
+	if (s == "static") { out = OverrideAttr::Static; return true; }
+	if (s == "volumetricShadow" || s == "castsVolumetricShadow") {
+		out = OverrideAttr::VolumetricShadow;
+		return true;
+	}
+	if (s == "plug") { out = OverrideAttr::Plug; return true; }
 	return false;
 }
 
@@ -958,6 +964,9 @@ const char* OverrideAttrName(OverrideAttr a) {
 	case OverrideAttr::NoLightmap: return "noLightmap";
 	case OverrideAttr::Lightmap: return "lightmap";
 	case OverrideAttr::DitherCloseup: return "ditherCloseup";
+	case OverrideAttr::Static: return "static";
+	case OverrideAttr::VolumetricShadow: return "volumetricShadow";
+	case OverrideAttr::Plug: return "plug";
 	}
 	return "?";
 }
@@ -976,7 +985,14 @@ bool OverridePatternMatches(const std::string& pattern,
 }
 
 std::string DescribeOverride(const OverrideRule& r) {	char buf[512];
-	if (r.attr == OverrideAttr::Material)
+	if (r.attr == OverrideAttr::Plug)
+		std::snprintf(buf, sizeof(buf), "override /%s/ .%s -> %s%s",
+			r.pattern.c_str(), r.plug.c_str(),
+			r.value.kind == tour::scene::plugs::Kind::Boolean
+				? (r.value.boolean ? "on" : "off") :
+				r.value.kind == tour::scene::plugs::Kind::String ? r.value.text.c_str() : "number",
+			r.enabled ? "" : " [off]");
+	else if (r.attr == OverrideAttr::Material)
 		std::snprintf(buf, sizeof(buf), "override /%s/ .%s -> mat.%u%s",
 			r.pattern.c_str(), OverrideAttrName(r.attr), r.material,
 			r.enabled ? "" : " [off]");
@@ -1316,10 +1332,28 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -at " << OverrideAttrName(r.attr);
 		if (r.attr == OverrideAttr::Material)
 			f << " -m " << r.material;
+		else if (r.attr == OverrideAttr::Plug) {
+			f << " -name " << Quote(r.plug);
+			switch (r.value.kind) {
+			case tour::scene::plugs::Kind::Boolean:
+				f << " -type bool -v " << FlagVal(r.value.boolean); break;
+			case tour::scene::plugs::Kind::Number:
+				f << " -type double -t " << r.value.number; break;
+			case tour::scene::plugs::Kind::String:
+				f << " -type string -t " << Quote(r.value.text); break;
+			}
+		}
 		else
 			f << " -v " << FlagVal(r.flag);
 		f << " -enabled " << (r.enabled ? "on" : "off") << ";\n";
 	}
+	// Directed, typed plug connections are serialized independently of
+	// override regex rules. Evaluation is deferred until nodes exist.
+	for (const auto& c : doc.connections)
+		f << "connectAttr -m " << c.source.node
+			<< " -name " << Quote(c.source.plug)
+			<< " -n " << c.destination.node
+			<< " -at " << Quote(c.destination.plug) << ";\n";
 	// Editor-only settings (editorSet): persisted for the editor, never
 	// applied at cook (ApplyTourToCluster ignores doc.editorSettings).
 	for (const auto& [k, v] : doc.editorSettings)
@@ -1443,6 +1477,14 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 		else if (k == "-at" && i + 1 < toks.size()) {
 			f.hasAt = true;
 			f.at = toks[i + 1];
+			// A line-ending ';' GLUES to the previous token when no
+			// space separates them (the tokenizer only emits ';' as its
+			// own token after a space) - strip it or the attr/plug name
+			// carries the terminator into every lookup (the connectAttr
+			// roundtrip bug: -at "physics.mass"; parsed as
+			// "physics.mass;" and the plug registry Find failed).
+			if (!f.at.empty() && f.at.back() == ';')
+				f.at.pop_back();
 			i += 2;
 		}
 		else if (k == "-root") {
@@ -2319,6 +2361,22 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.node = fl.n;
 			c.flag = b;
 		}
+		else if (effVerb == "connectAttr" && fl.hasM && fl.hasName &&
+			fl.hasN && fl.hasAt) {
+			tour::scene::plugs::Connection conn{};
+			conn.source.node = fl.m;
+			conn.source.plug = fl.name;
+			conn.destination.node = fl.n;
+			conn.destination.plug = fl.at;
+			const auto* src = tour::scene::plugs::Find(conn.source.plug);
+			const auto* dst = tour::scene::plugs::Find(conn.destination.plug);
+			if (!src || !dst || src->kind != dst->kind) {
+				warn("tour:" + std::to_string(lineNo) + ": incompatible plug connection (skipped)");
+				continue;
+			}
+			doc.connections.push_back(std::move(conn));
+			continue;
+		}
 		else if (effVerb == "override" && fl.hasPattern && fl.hasAt) {
 			OverrideRule r{};
 			if (!OverrideAttrFromString(fl.at, r.attr)) {
@@ -2328,7 +2386,49 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 			r.pattern = fl.pattern;
 			r.enabled = fl.hasEnabled ? fl.enabled : true;
-			if (r.attr == OverrideAttr::Material) {
+			if (r.attr == OverrideAttr::Plug) {
+				if (!fl.hasName) {
+					err = "line " + std::to_string(lineNo) + ": override plug needs -name";
+					return false;
+				}
+				r.plug = fl.name;
+				const auto* descriptor = tour::scene::plugs::Find(r.plug);
+				if (!descriptor) {
+					warn("tour:" + std::to_string(lineNo) +
+						": unsupported plug '" + r.plug + "' (skipped)");
+					continue;
+				}
+				using tour::scene::plugs::Kind;
+				if (descriptor->kind == Kind::Boolean) {
+					bool b = false;
+					if (!fl.hasV || !ParseFlagWord(fl.v, b)) {
+						err = "line " + std::to_string(lineNo) + ": bad boolean plug value";
+						return false;
+					}
+					r.value = tour::scene::plugs::Value::Bool(b);
+				} else if (descriptor->kind == Kind::String) {
+					if (fl.t.size() != 1) {
+						err = "line " + std::to_string(lineNo) + ": string plug needs one -t";
+						return false;
+					}
+					r.value = tour::scene::plugs::Value::String(fl.t[0]);
+				} else {
+					if (fl.t.size() != 1) {
+						err = "line " + std::to_string(lineNo) + ": numeric plug needs one -t";
+						return false;
+					}
+					try {
+						size_t used = 0;
+						const double n = std::stod(fl.t[0], &used);
+						if (used != fl.t[0].size() || !std::isfinite(n)) throw std::invalid_argument("non-finite");
+						r.value = tour::scene::plugs::Value::Number(n);
+					} catch (...) {
+						err = "line " + std::to_string(lineNo) + ": bad numeric plug value";
+						return false;
+					}
+				}
+			}
+			else if (r.attr == OverrideAttr::Material) {
 				if (!fl.hasM) {
 					err = "line " + std::to_string(lineNo) + ": override material needs -m";
 					return false;
@@ -4043,6 +4143,13 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					return false;
 				break;
 			}
+			// UINT32_MAX represents the absence of a material component.
+			// Keep the existing assignMaterial verb/undo and .tour format;
+			// never try to resolve this sentinel as a pool index.
+			if (c.material == UINT32_MAX) {
+				RemoveMaterial(scene, target);
+				break;
+			}
 			if (!CookMaterial(cluster, c.material)) {
 				if (err)
 					*err = "tour: material out of range: " +
@@ -5621,6 +5728,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// wide rule touching the same node+attr (local wins).
 	if (!doc.overrides.empty()) {
 		std::unordered_set<uint32_t> localVis, localMat, localNoLM, localLM, localDither;
+		std::unordered_set<uint32_t> localStatic, localVolumetric;
 		for (const Command& c : doc.commands) {
 			switch (c.verb) {
 			case Verb::SetVisibility: localVis.insert(c.node); break;
@@ -5628,6 +5736,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			case Verb::SetNoLightmap: localNoLM.insert(c.node); break;
 			case Verb::SetLightmap: localLM.insert(c.node); break;
 			case Verb::SetDitherCloseup: localDither.insert(c.node); break;
+			case Verb::SetStatic: localStatic.insert(c.node); break;
+			case Verb::SetCastsVolumetricShadow: localVolumetric.insert(c.node); break;
 			default: break;
 			}
 		}
@@ -5660,6 +5770,27 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				if (!hit)
 					continue;
 				switch (r.attr) {
+				case OverrideAttr::Plug: {
+					// Generic typed plugs share the same read/write adapter in
+					// editor and cook, rather than reimplementing each field.
+					bool local = false;
+					for (const Command& c : doc.commands) {
+						if (c.node != n) continue;
+						if (r.plug == "node.visibility" && c.verb == Verb::SetVisibility) local = true;
+						if (r.plug == "node.static" && c.verb == Verb::SetStatic) local = true;
+						if (r.plug == "node.material" && c.verb == Verb::AssignMaterial) local = true;
+						if (r.plug == "node.lightmap" && c.verb == Verb::SetLightmap) local = true;
+						if (r.plug == "node.noLightmap" && c.verb == Verb::SetNoLightmap) local = true;
+						if (r.plug == "node.ditherCloseup" && c.verb == Verb::SetDitherCloseup) local = true;
+						if (r.plug == "node.volumetricShadow" && c.verb == Verb::SetCastsVolumetricShadow) local = true;
+					}
+					if (!local && tour::scene::plugs::Write(scene,n,r.plug,r.value)) {
+						// Scene tables now carry the evaluated rule value.
+					} else if (!local) {
+						warn("tour: plug override skipped on incompatible node: " + r.plug);
+					}
+					break;
+				}
 				case OverrideAttr::Visibility:
 					if (localVis.contains(n))
 						continue; // local wins
@@ -5693,9 +5824,30 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 						scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
 					scene.ditherCloseup[n] = r.flag ? 1 : 0;
 					break;
+				case OverrideAttr::Static:
+					if (localStatic.contains(n)) continue;
+					if (r.flag) MarkSubtreeStatic(scene, int(n));
+					else ClearSubtreeStatic(scene, int(n));
+					break;
+				case OverrideAttr::VolumetricShadow:
+					if (localVolumetric.contains(n)) continue;
+					if (r.flag) MarkCastsVolumetricShadow(scene, int(n));
+					else ClearCastsVolumetricShadow(scene, int(n));
+					break;
 				}
 			}
 		}
+	}
+	// Apply typed plug connections after ordinary commands and wide rules.
+	// Topological evaluation respects source-to-destination dependencies.
+	// Invalid/cyclic or dangling links cannot mutate past a failed read.
+	{
+		tour::scene::plugs::Graph graph;
+		for (const auto& link : doc.connections)
+			if (!graph.Connect(link))
+				warn("tour: rejected incompatible/cyclic connectAttr");
+		if (!graph.Evaluate(scene))
+			warn("tour: one or more connectAttr targets are unavailable");
 	}
 	// Authored environment (tour env blocks -> cluster scene): resolve the
 	// ACTIVE block (the doc's env.current node, else the default block)

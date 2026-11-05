@@ -8,6 +8,7 @@
 // coalesce into one command per gesture via m_pending.
 
 #include "editor_app.h"
+#include "ui/dialogs/system_modal.h"
 #include "ui/panel_registry.h"
 #include "editor_brush_presets.h"
 #include "modal_bindings.h"
@@ -570,6 +571,30 @@ void EditorApp::FinalizePending() {
 				m_uiMode ? ImGuiDockNodeFlags_PassthruCentralNode
 					: ImGuiDockNodeFlags_KeepAliveOnly);
 			ImGui::PopStyleColor();
+			// When a right-edge dock is squeezed to an unusable strip,
+			// close its tabs on release. The View menu can reopen them;
+			// their dock assignments remain saved by ImGui.
+			static bool rightDockWasMouseDown = false;
+			const bool rightDockMouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+			if (m_uiMode && rightDockWasMouseDown && !rightDockMouseDown) {
+				ImGuiWindow* inspector = ImGui::FindWindowByName("Inspector");
+				ImGuiWindow* material = ImGui::FindWindowByName("Material");
+				ImGuiWindow* reference = ImGui::FindWindowByName("Reference");
+				ImGuiDockNode* rightDock = inspector && inspector->DockNode
+					? inspector->DockNode : (material ? material->DockNode : nullptr);
+				if (rightDock && rightDock->IsLeafNode()
+					&& rightDock->Size.x > 0.0f && rightDock->Size.x < 96.0f
+					&& rightDock->Pos.x + rightDock->Size.x
+						>= mainPos.x + ImGui::GetIO().DisplaySize.x - 3.0f) {
+					if (inspector && inspector->DockNode == rightDock)
+						m_showInspectorPanel = false;
+					if (material && material->DockNode == rightDock)
+						m_showMaterialPanel = false;
+					if (reference && reference->DockNode == rightDock)
+						m_showReferencePanel = false;
+				}
+			}
+			rightDockWasMouseDown = rightDockMouseDown;
 			// THE DEGENERATE-LAYOUT SELF-HEAL (the squeezed-central-node
 			// bug): ImGui persists dock splits as ABSOLUTE pixel SizeRefs.
 			// A layout authored in a large window (maximized on a big
@@ -1727,6 +1752,40 @@ void EditorApp::FinalizePending() {
 			m_showSaveDialog = false;
 		}
 		DrawSaveDialog();
+		// Esc exit confirmation: only opened for unsaved scene changes.
+		// No implicit write occurs on Cancel or Discard.
+		if (m_showExitPrompt) {
+			ImGui::OpenPopup("Save scene changes?");
+			m_showExitPrompt = false;
+		}
+		ui::PrepareSystemModal();
+		if (ImGui::BeginPopupModal("Save scene changes?", nullptr,
+			ui::kSystemModalFlags | ImGuiWindowFlags_AlwaysAutoResize)) {
+			if (ui::SystemModalCloseRequested())
+				ImGui::CloseCurrentPopup(); // OS X is Cancel, never Discard
+			else {
+			ImGui::TextWrapped("The current scene has unsaved changes.");
+			ImGui::TextWrapped("Save the scene before closing Tourmaline Editor?");
+			ImGui::Separator();
+			if (ImGui::Button("Save and exit", ImVec2(140, 0))) {
+				if (SaveTour()) {
+					ImGui::CloseCurrentPopup();
+					RequestClose();
+				} else Log("Exit canceled: scene could not be saved.");
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Discard", ImVec2(90, 0))) {
+				m_discardOnExit = true;
+				ImGui::CloseCurrentPopup();
+				RequestClose();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(90, 0)))
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
 		if (m_showRecoverDialog) {
 			ImGui::OpenPopup("Recover autosave");
 			m_showRecoverDialog = false;
@@ -1885,15 +1944,20 @@ void EditorApp::FinalizePending() {
 
 	void EditorApp::DrawSaveDialog() {
 		namespace fs = std::filesystem;
-		ImGui::SetNextWindowSize(ImVec2(620, 420), ImGuiCond_FirstUseEver);
+		ui::PrepareSystemModal(ImVec2(620, 420), ImGuiCond_FirstUseEver);
 		if (!ImGui::BeginPopupModal("Save tour as", nullptr,
-			ImGuiWindowFlags_NoCollapse))
+			ui::kSystemModalFlags))
 			return;
 		auto closeDlg = [&]() {
 			m_saveBrowseDir.clear();
 			m_saveBrowseSel.clear();
 			ImGui::CloseCurrentPopup();
 		};
+		if (ui::SystemModalCloseRequested()) {
+			closeDlg();
+			ImGui::EndPopup();
+			return;
+		}
 		if (m_saveBrowseDir.empty()) {
 			// First frame: start from the target field's parent dir.
 			std::error_code ec;

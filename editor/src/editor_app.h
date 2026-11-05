@@ -386,6 +386,9 @@ public:
 
 protected:
 	bool Initialize() override;
+	// Escape is editor-owned: never let App's held-Esc quit bypass
+	// the unsaved-scene confirmation dialog.
+	bool AllowEscQuit() const override { return false; }
 	void Shutdown() override;
 	void DrawFrame() override;
 	void EarlyUpdate() override { Super::EarlyUpdate(); }
@@ -477,7 +480,8 @@ private:
 	float PreviewExposure() const;
 	// Line overlay (grid + gizmos + light markers): ONE upload, ONE pass
 	// PER VISIBLE VIEWPORT (that viewport's viewProj + rect).
-	void RecordGizmoPass(smvk::LogicalImageViewHandle swapView);
+	void RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
+		tour::DebugDrawList* debugOutput = nullptr);
 	void UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent);
 	// Viewport rects for the current frame (single: one central rect;
 	// quad: 2x2 grid inside the central area) + hovered/active tracking.
@@ -749,6 +753,8 @@ private:
 	void ModalDelete(); // Del: DeleteSelection() (skipped while the
 	                     // placement graph window owns the keyboard —
 	                     // its canvas Del removes graph nodes instead)
+	void ModalGroupSelection(); // Ctrl+G: new transform over selected roots
+	void ModalEscape(); // Esc: confirm unsaved changes before exit
 	void ModalDuplicate(); // Ctrl+D: DuplicateSelection() (same
 	                       // placement-graph keyboard guard as Del)
 	void ModalIsolateSelect(); // Ctrl+1: Maya-style isolate/toggle/clear
@@ -1748,6 +1754,7 @@ private:
 		uint32_t node = UINT32_MAX;
 		bool beforeFlag = false;
 		uint32_t beforeMaterial = UINT32_MAX;
+		tour::scene::plugs::Value beforeValue;
 	};
 	struct OverrideRule {
 		uint32_t id = 0;
@@ -1756,10 +1763,15 @@ private:
 		std::string pattern;
 		bool flag = true; // Visibility/NoLightmap/Dither value
 		uint32_t materialWorld = UINT32_MAX; // Material: world mat idx (UI)
+		std::string plug;
+		tour::scene::plugs::Value value;
 		std::vector<OverrideApplied> applied; // nodes written by this rule
 		std::string lastError; // regex compile error, else empty
 		int lastMatches = 0; // nodes matched on last apply (pre local-skip)
 	};
+	bool HasLocalPlugOverride(uint32_t node, const std::string& plug) const;
+	bool AddPlugOverrideRule(const std::string& pattern, const std::string& plug,
+		const tour::scene::plugs::Value& value);
 	bool HasLocalOverride(uint32_t node,
 		smvk::tour::OverrideAttr attr) const; // history scan (cursor range)
 	// Regex over node names (ECMAScript, search). Returns matched world
@@ -1801,7 +1813,15 @@ private:
 	int m_overrideAttrSel = 0; // 0 vis, 1 material, 2 noLM, 3 dither
 	bool m_overrideFlagVal = true;
 	int m_overrideMatSel = 0;
+	int m_overridePlugSel = 0;
+	bool m_overridePlugBool = true;
+	float m_overridePlugNumber = 1.0f;
+	char m_overridePlugString[256] = "";
 	std::vector<OverrideRule> m_overrideRules;
+	// Directed typed plug wiring shares the cooked scene's graph model.
+	tour::scene::plugs::Graph m_plugGraph;
+	int m_connectSourceNode = 0, m_connectDestNode = 0;
+	int m_connectSourcePlug = 0, m_connectDestPlug = 0;
 	uint32_t m_nextOverrideId = 1;
 	// Save-as dialog state.
 	bool m_showSaveDialog = false;
@@ -2683,6 +2703,8 @@ private:
 	// (AutosaveTour fires exactly on those paths), cleared by explicit
 	// saves, clean loads and scene close.
 	bool m_tourDirty = false;
+	bool m_showExitPrompt = false; // Esc after unsaved scene changes
+	bool m_discardOnExit = false; // bypass automatic shutdown save on Discard
 	std::string m_lastWindowTitle; // change-detected SDL title cache
 	void UpdateWindowTitle(); // "Tourmaline Editor — <scene> [*]"
 	// True while the focused ImGui window sits inside the Placement Graph

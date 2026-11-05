@@ -329,7 +329,11 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 		break;
 	}
 	case EditVerb::AssignMaterial: {
-		SetMaterial(scene, c.node, forward ? c.material : c.beforeMaterial);
+		const uint32_t material = forward ? c.material : c.beforeMaterial;
+		if (material == UINT32_MAX)
+			RemoveMaterial(scene, c.node);
+		else
+			SetMaterial(scene, c.node, material);
 		RefreshNodeDrawState(c.node);
 		break;
 	}
@@ -4211,11 +4215,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 	case EditVerb::AssignMaterial: {
 		if (!needNode())
 			return false;
-		const int pool = app.WorldMatToCluster(c.material);
-		if (pool < 0)
+		const int pool = c.material == UINT32_MAX
+			? -1 : app.WorldMatToCluster(c.material);
+		if (pool < 0 && c.material != UINT32_MAX)
 			return false;
 		out.verb = smvk::tour::Verb::AssignMaterial;
-		out.material = uint32_t(pool);
+		out.material = c.material == UINT32_MAX ? UINT32_MAX : uint32_t(pool);
 		return true;
 	}
 	case EditVerb::SetMatAttr: {
@@ -5679,11 +5684,12 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 	case smvk::tour::Verb::AssignMaterial: {
 		if (!needNode())
 			return false;
-		const int wm = app.ClusterMatToWorld(tc.material);
-		if (wm < 0)
+		const int wm = tc.material == UINT32_MAX
+			? -1 : app.ClusterMatToWorld(tc.material);
+		if (wm < 0 && tc.material != UINT32_MAX)
 			return false;
 		out.verb = EditVerb::AssignMaterial;
-		out.material = uint32_t(wm);
+		out.material = tc.material == UINT32_MAX ? UINT32_MAX : uint32_t(wm);
 		const MaterialRow* row =
 			FindMaterial(app.m_world->scene, node);
 		out.beforeMaterial = row ? row->material : UINT32_MAX;

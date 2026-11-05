@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <regex>
 
 #include <imgui.h>
@@ -39,6 +40,10 @@ namespace editor {
 				return attr == OverrideAttr::Lightmap;
 			case editor::EditVerb::SetDitherCloseup:
 				return attr == OverrideAttr::DitherCloseup;
+			case editor::EditVerb::SetStatic:
+				return attr == OverrideAttr::Static;
+			case editor::EditVerb::SetCastsVolumetricShadow:
+				return attr == OverrideAttr::VolumetricShadow;
 			default:
 				return false;
 			}
@@ -89,6 +94,59 @@ namespace editor {
 				return true;
 		}
 		return false;
+	}
+
+	bool EditorApp::HasLocalPlugOverride(uint32_t node, const std::string& plug) const {
+		for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+			const EditCmd& c = m_history[i];
+			if (c.node != node) continue;
+			using EV = EditVerb;
+			if ((plug == "node.visibility" && c.verb == EV::SetVisibility) ||
+				(plug == "node.static" && c.verb == EV::SetStatic) ||
+				(plug == "node.material" && c.verb == EV::AssignMaterial) ||
+				(plug == "node.lightmap" && c.verb == EV::SetLightmap) ||
+				(plug == "node.noLightmap" && c.verb == EV::SetNoLightmap) ||
+				(plug == "node.ditherCloseup" && c.verb == EV::SetDitherCloseup) ||
+				(plug == "node.volumetricShadow" && c.verb == EV::SetCastsVolumetricShadow))
+				return true;
+			if (c.verb == EV::SetGiVolumeAttr &&
+				((plug == "gi.spacing" && c.giVolumeAttr == "spacing") ||
+				(plug == "gi.priority" && c.giVolumeAttr == "priority") ||
+				(plug == "gi.insideFade" && c.giVolumeAttr == "inside") ||
+				(plug == "gi.outsideFade" && c.giVolumeAttr == "outside")))
+				return true;
+			if (c.verb == EV::SetCubemapAttr && plug == "cubemap.radius" && c.cubemapAttr == "radius")
+				return true;
+			if (c.verb == EV::SetAudioAttr && plug.rfind("audio.",0)==0 &&
+				(plug.substr(6) == c.audioAttr ||
+				(plug == "audio.gain" && c.audioAttr == "volume")))
+				return true;
+			if (c.verb == EV::SetAudioRoomAttr && plug.rfind("audioRoom.",0)==0 &&
+				plug.substr(10) == c.roomAttr) return true;
+			if (c.verb == EV::SetPhysicsBodyAttr && plug.rfind("physics.",0)==0 &&
+				plug.substr(8) == c.physicsAttr) return true;
+			if (c.verb == EV::SetTriggerVolumeAttr && plug.rfind("trigger.",0)==0 &&
+				plug.substr(8) == c.triggerVolumeAttr) return true;
+		}
+		return false;
+	}
+
+	bool EditorApp::AddPlugOverrideRule(const std::string& pattern,
+		const std::string& plug, const tour::scene::plugs::Value& value) {
+		if (!m_world || pattern.empty() || !tour::scene::plugs::ValidValue(plug,value))
+			return false;
+		try { std::regex rx(pattern, std::regex::ECMAScript | std::regex::optimize); (void)rx; }
+		catch (...) { Log("Override: invalid regex."); return false; }
+		OverrideRule rule{};
+		rule.id = m_nextOverrideId++;
+		rule.attr = smvk::tour::OverrideAttr::Plug;
+		rule.pattern = pattern;
+		rule.plug = plug;
+		rule.value = value;
+		m_overrideRules.push_back(std::move(rule));
+		ApplyOverrideRule(m_overrideRules.back());
+		AutosaveTour();
+		return true;
 	}
 
 	std::vector<uint32_t> EditorApp::MatchOverrideNodes(
@@ -166,11 +224,23 @@ namespace editor {
 		Scene& scene = m_world->scene;
 		int touched = 0;
 		for (uint32_t n : hits) {
-			if (HasLocalOverride(n, r.attr))
+			if (r.attr == smvk::tour::OverrideAttr::Plug
+				? HasLocalPlugOverride(n,r.plug) : HasLocalOverride(n,r.attr))
 				continue; // local wins: never touch
 			OverrideApplied a{};
 			a.node = n;
 			switch (r.attr) {
+			case smvk::tour::OverrideAttr::Plug: {
+				tour::scene::plugs::Value before;
+				if (!tour::scene::plugs::Read(scene,n,r.plug,before) ||
+					before == r.value || !tour::scene::plugs::Write(scene,n,r.plug,r.value))
+					break;
+				a.beforeValue = std::move(before);
+				r.applied.push_back(a);
+				++touched;
+				RefreshNodeDrawState(n);
+				break;
+			}
 			case smvk::tour::OverrideAttr::Visibility: {
 				if (scene.hidden.size() != scene.hierarchy.size())
 					scene.hidden.assign(scene.hierarchy.size(), 0);
@@ -238,6 +308,25 @@ namespace editor {
 				++touched;
 				break;
 			}
+			case smvk::tour::OverrideAttr::Static: {
+				a.beforeFlag = n < scene.staticRoot.size() && scene.staticRoot[n] != 0;
+				if (a.beforeFlag == r.flag) break;
+				if (r.flag) MarkSubtreeStatic(scene, int(n));
+				else ClearSubtreeStatic(scene, int(n));
+				r.applied.push_back(a);
+				++touched;
+				break;
+			}
+			case smvk::tour::OverrideAttr::VolumetricShadow: {
+				a.beforeFlag = IsCastsVolumetricShadowNode(scene, int(n));
+				if (a.beforeFlag == r.flag) break;
+				if (r.flag) MarkCastsVolumetricShadow(scene, int(n));
+				else ClearCastsVolumetricShadow(scene, int(n));
+				RefreshNodeDrawState(n);
+				r.applied.push_back(a);
+				++touched;
+				break;
+			}
 			}
 		}
 		r.lastMatches = int(hits.size());
@@ -254,9 +343,18 @@ namespace editor {
 			const uint32_t n = it->node;
 			if (n >= scene.hierarchy.size())
 				continue;
-			if (HasLocalOverride(n, r.attr))
+			if (r.attr == smvk::tour::OverrideAttr::Plug
+				? HasLocalPlugOverride(n,r.plug) : HasLocalOverride(n,r.attr))
 				continue; // a local owns this node now: never clobber
 			switch (r.attr) {
+			case smvk::tour::OverrideAttr::Plug: {
+				tour::scene::plugs::Value current;
+				if (tour::scene::plugs::Read(scene,n,r.plug,current) &&
+					current == r.value &&
+					tour::scene::plugs::Write(scene,n,r.plug,it->beforeValue))
+					RefreshNodeDrawState(n);
+				break;
+			}
 			case smvk::tour::OverrideAttr::Visibility: {
 				if (scene.hidden.size() != scene.hierarchy.size())
 					continue;
@@ -315,6 +413,20 @@ namespace editor {
 					ClearDitherCloseup(scene, int(n));
 				break;
 			}
+			case smvk::tour::OverrideAttr::Static: {
+				const bool current = n < scene.staticRoot.size() && scene.staticRoot[n] != 0;
+				if (current != r.flag) continue;
+				if (it->beforeFlag) MarkSubtreeStatic(scene, int(n));
+				else ClearSubtreeStatic(scene, int(n));
+				break;
+			}
+			case smvk::tour::OverrideAttr::VolumetricShadow: {
+				if (IsCastsVolumetricShadowNode(scene, int(n)) != r.flag) continue;
+				if (it->beforeFlag) MarkCastsVolumetricShadow(scene, int(n));
+				else ClearCastsVolumetricShadow(scene, int(n));
+				RefreshNodeDrawState(n);
+				break;
+			}
 			}
 		}
 		r.applied.clear();
@@ -327,10 +439,8 @@ namespace editor {
 		for (auto& r : m_overrideRules)
 			if (r.enabled)
 				ApplyOverrideRule(r);
-			else {
-				r.applied.clear();
-				r.lastMatches = 0;
-			}
+		if (m_world && !m_plugGraph.Evaluate(m_world->scene))
+			Log("tour: some connectAttr sources or destinations are unavailable.");
 	}
 
 	bool EditorApp::AddOverrideRule(smvk::tour::OverrideAttr attr,
@@ -483,12 +593,17 @@ namespace editor {
 	}
 
 	void EditorApp::SaveOverridesToDoc(smvk::tour::Doc& doc) const {
+		doc.connections = m_plugGraph.Connections();
 		for (const OverrideRule& r : m_overrideRules) {
 			smvk::tour::OverrideRule tr{};
 			tr.attr = r.attr;
 			tr.pattern = r.pattern;
 			tr.enabled = r.enabled;
-			if (r.attr == smvk::tour::OverrideAttr::Material) {
+			if (r.attr == smvk::tour::OverrideAttr::Plug) {
+				tr.plug = r.plug;
+				tr.value = r.value;
+			}
+			else if (r.attr == smvk::tour::OverrideAttr::Material) {
 				const int pool = WorldMatToCluster(r.materialWorld);
 				if (pool < 0)
 					continue; // stale material: skip, keep the tour loadable
@@ -502,6 +617,10 @@ namespace editor {
 	}
 
 	void EditorApp::LoadOverridesFromDoc(const smvk::tour::Doc& doc) {
+		m_plugGraph = tour::scene::plugs::Graph{};
+		for (const auto& link : doc.connections)
+			if (!m_plugGraph.Connect(link))
+				Log("tour: rejected cyclic or incompatible connectAttr");
 		m_overrideRules.clear();
 		m_nextOverrideId = 1;
 		for (const smvk::tour::OverrideRule& tr : doc.overrides) {
@@ -510,7 +629,14 @@ namespace editor {
 			r.enabled = tr.enabled;
 			r.attr = tr.attr;
 			r.pattern = tr.pattern;
-			if (tr.attr == smvk::tour::OverrideAttr::Material) {
+			if (tr.attr == smvk::tour::OverrideAttr::Plug) {
+				if (!tour::scene::plugs::ValidValue(tr.plug,tr.value)) {
+					--m_nextOverrideId; continue;
+				}
+				r.plug = tr.plug;
+				r.value = tr.value;
+			}
+			else if (tr.attr == smvk::tour::OverrideAttr::Material) {
 				const int wm = ClusterMatToWorld(tr.material);
 				if (wm < 0) {
 					Log("tour: override material out of range: " +
@@ -553,7 +679,8 @@ namespace editor {
 		for (auto& r : m_overrideRules) {
 			if (!r.enabled || r.pattern.empty())
 				continue;
-			if (HasLocalOverride(node, r.attr))
+			if (r.attr == smvk::tour::OverrideAttr::Plug
+				? HasLocalPlugOverride(node,r.plug) : HasLocalOverride(node,r.attr))
 				continue; // a local still owns it
 			bool already = false;
 			for (const auto& a : r.applied)
@@ -579,6 +706,16 @@ namespace editor {
 			OverrideApplied a{};
 			a.node = node;
 			switch (r.attr) {
+			case smvk::tour::OverrideAttr::Plug: {
+				tour::scene::plugs::Value before;
+				if (!tour::scene::plugs::Read(scene,node,r.plug,before) ||
+					before == r.value || !tour::scene::plugs::Write(scene,node,r.plug,r.value))
+					break;
+				a.beforeValue = std::move(before);
+				r.applied.push_back(a);
+				RefreshNodeDrawState(node);
+				break;
+			}
 			case smvk::tour::OverrideAttr::Visibility: {
 				if (scene.hidden.size() != scene.hierarchy.size())
 					scene.hidden.assign(scene.hierarchy.size(), 0);
@@ -641,6 +778,23 @@ namespace editor {
 					MarkDitherCloseup(scene, int(node));
 				else
 					ClearDitherCloseup(scene, int(node));
+				r.applied.push_back(a);
+				break;
+			}
+			case smvk::tour::OverrideAttr::Static: {
+				a.beforeFlag = node < scene.staticRoot.size() && scene.staticRoot[node] != 0;
+				if (a.beforeFlag == r.flag) break;
+				if (r.flag) MarkSubtreeStatic(scene, int(node));
+				else ClearSubtreeStatic(scene, int(node));
+				r.applied.push_back(a);
+				break;
+			}
+			case smvk::tour::OverrideAttr::VolumetricShadow: {
+				a.beforeFlag = IsCastsVolumetricShadowNode(scene, int(node));
+				if (a.beforeFlag == r.flag) break;
+				if (r.flag) MarkCastsVolumetricShadow(scene, int(node));
+				else ClearCastsVolumetricShadow(scene, int(node));
+				RefreshNodeDrawState(node);
 				r.applied.push_back(a);
 				break;
 			}
@@ -853,7 +1007,7 @@ namespace editor {
 				"matches many nodes — the point of wide overrides.");
 		ImGui::SameLine();
 		ImGui::SetNextItemWidth(130.0f);
-		const char* kAttrs = "Visibility\0Material\0NoLightmap\0DitherCloseup\0";
+		const char* kAttrs = "Visibility\0Material\0NoLightmap\0DitherCloseup\0Static\0Volumetric shadow\0Bake lightmaps\0Typed plug...\0";
 		ImGui::Combo("##attr", &m_overrideAttrSel, kAttrs);
 		if (m_overrideAttrSel == 1) {
 			// Material value picker (world slots, like the Inspector combo).
@@ -880,6 +1034,35 @@ namespace editor {
 				ImGui::EndCombo();
 			}
 		}
+		else if (m_overrideAttrSel == 7) {
+			using namespace tour::scene::plugs;
+			m_overridePlugSel = std::clamp(m_overridePlugSel, 0,
+				int(std::size(kDescriptors)) - 1);
+			const Descriptor& selected = kDescriptors[m_overridePlugSel];
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(175.0f);
+			if (ImGui::BeginCombo("##plug", selected.path.data())) {
+				for (size_t k = 0; k < std::size(kDescriptors); ++k) {
+					const Descriptor& d = kDescriptors[k];
+					const std::string label = std::string(d.nodeType) +
+						": " + std::string(d.path);
+					if (ImGui::Selectable(label.c_str(), int(k)==m_overridePlugSel))
+						m_overridePlugSel = int(k);
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(130.0f);
+			const Descriptor& active = kDescriptors[m_overridePlugSel];
+			switch (active.kind) {
+			case Kind::Boolean: ImGui::Checkbox("##plugBool", &m_overridePlugBool); break;
+			case Kind::Number:
+				ImGui::InputFloat("##plugNumber", &m_overridePlugNumber, 0, 0, "%.4g"); break;
+			case Kind::String:
+				ImGui::InputText("##plugString", m_overridePlugString,
+					sizeof(m_overridePlugString)); break;
+			}
+		}
 		else {
 			// The bool value as the attribute's OWN two states ("on/off"
 			// — never a negation-named flag: visibility rules read
@@ -896,8 +1079,7 @@ namespace editor {
 					ImGui::SetTooltip("NoLightmap on: matched nodes "
 						"bake probe/sky-lit (excluded from the atlas).");
 				else
-					ImGui::SetTooltip("DitherCloseup on: matched nodes "
-						"use the closeup dither path.");
+					ImGui::SetTooltip("On: matched nodes enable the selected flag.");
 			}
 		}
 		ImGui::SameLine();
@@ -913,7 +1095,11 @@ namespace editor {
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Add rule")) {
-			const OverrideAttr attr = OverrideAttr(m_overrideAttrSel);
+			const OverrideAttr attrs[] = { OverrideAttr::Visibility, OverrideAttr::Material,
+				OverrideAttr::NoLightmap, OverrideAttr::DitherCloseup,
+				OverrideAttr::Static, OverrideAttr::VolumetricShadow,
+				OverrideAttr::Lightmap, OverrideAttr::Plug };
+			const OverrideAttr attr = attrs[std::clamp(m_overrideAttrSel, 0, 7)];
 			const uint32_t mat =
 				(m_overrideAttrSel == 1) ? uint32_t(m_overrideMatSel) : UINT32_MAX;
 			// VISIBILITY inverts here: the form's checkbox is the
@@ -921,10 +1107,88 @@ namespace editor {
 			// flag is the legacy hidden bit.
 			const bool flag = m_overrideAttrSel == 0
 				? !m_overrideFlagVal : m_overrideFlagVal;
-			if (AddOverrideRule(attr, m_overridePatternBuf, flag, mat))
-				m_overridePatternBuf[0] = '\0';
+			bool added = false;
+			if (attr == OverrideAttr::Plug) {
+				using namespace tour::scene::plugs;
+				const Descriptor& d = kDescriptors[std::clamp(
+					m_overridePlugSel, 0, int(std::size(kDescriptors)) - 1)];
+				Value value;
+				switch (d.kind) {
+				case Kind::Boolean: value = Value::Bool(m_overridePlugBool); break;
+				case Kind::Number: value = Value::Number(m_overridePlugNumber); break;
+				case Kind::String: value = Value::String(m_overridePlugString); break;
+				}
+				added = AddPlugOverrideRule(m_overridePatternBuf, std::string(d.path), value);
+			} else
+				added = AddOverrideRule(attr, m_overridePatternBuf, flag, mat);
+			if (added) m_overridePatternBuf[0] = '\0';
 		}
 		ImGui::PopID();
+
+		// Typed source -> destination scene plug wiring (Maya-style
+		// connectAttr). The graph rejects mismatched types and cycles.
+		ImGui::SeparatorText("Plug connections");
+		if (ImGui::TreeNode("Connect attributes")) {
+			ImGui::SetNextItemWidth(90.0f);
+			ImGui::InputInt("Source node", &m_connectSourceNode);
+			ImGui::SetNextItemWidth(90.0f);
+			ImGui::InputInt("Destination node", &m_connectDestNode);
+			const auto choose = [](const char* id, int& selected) {
+				using namespace tour::scene::plugs;
+				selected = std::clamp(selected, 0, int(std::size(kDescriptors)) - 1);
+				ImGui::SetNextItemWidth(250.0f);
+				if (ImGui::BeginCombo(id, kDescriptors[selected].path.data())) {
+					for (size_t i=0; i<std::size(kDescriptors); ++i)
+						if (ImGui::Selectable(kDescriptors[i].path.data(), int(i)==selected))
+							selected=int(i);
+					ImGui::EndCombo();
+				}
+			};
+			choose("Source plug", m_connectSourcePlug);
+			choose("Destination plug", m_connectDestPlug);
+			if (ImGui::Button("Connect")) {
+				using namespace tour::scene::plugs;
+				if (m_connectSourceNode < 0 || m_connectDestNode < 0 ||
+					!m_world ||
+					uint32_t(m_connectSourceNode) >= m_world->scene.hierarchy.size() ||
+					uint32_t(m_connectDestNode) >= m_world->scene.hierarchy.size()) {
+					Log("connectAttr: node ID out of range");
+				} else {
+					Connection e{};
+					e.source = { uint32_t(m_connectSourceNode),
+						std::string(kDescriptors[m_connectSourcePlug].path) };
+					e.destination = { uint32_t(m_connectDestNode),
+						std::string(kDescriptors[m_connectDestPlug].path) };
+					Value value;
+					if (!Read(m_world->scene,e.source.node,e.source.plug,value) ||
+						!Read(m_world->scene,e.destination.node,e.destination.plug,value)) {
+						Log("connectAttr: source/destination component is not present");
+					} else {
+						Graph next = m_plugGraph;
+						if (next.Connect(e)) {
+							m_plugGraph = std::move(next);
+							m_plugGraph.Evaluate(m_world->scene);
+							AutosaveTour();
+						} else Log("connectAttr: type mismatch or cycle");
+					}
+				}
+			}
+			ImGui::TreePop();
+		}
+		int connectionIndex = 0;
+		for (const auto& link : m_plugGraph.Connections()) {
+			ImGui::PushID(connectionIndex++);
+			ImGui::Text("%u.%s -> %u.%s",link.source.node,link.source.plug.c_str(),
+				link.destination.node,link.destination.plug.c_str());
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Disconnect")) {
+				m_plugGraph.Disconnect(link.destination);
+				AutosaveTour();
+				ImGui::PopID();
+				break;
+			}
+			ImGui::PopID();
+		}
 
 		if (m_overrideRules.empty()) {
 			ImGui::Separator();
@@ -975,7 +1239,8 @@ namespace editor {
 				ImGui::TextDisabled("%u", r.id);
 				// Attribute.
 				ImGui::TableNextColumn();
-				ImGui::TextUnformatted(smvk::tour::OverrideAttrName(r.attr));
+				ImGui::TextUnformatted(r.attr == OverrideAttr::Plug ? r.plug.c_str()
+					: smvk::tour::OverrideAttrName(r.attr));
 				// Pattern (in-place retarget, Enter to re-apply).
 				ImGui::TableNextColumn();
 				{
@@ -999,7 +1264,15 @@ namespace editor {
 				}
 				// Value (bool attrs flip in place; material is fixed).
 				ImGui::TableNextColumn();
-				if (r.attr == OverrideAttr::Material) {
+				if (r.attr == OverrideAttr::Plug) {
+					using tour::scene::plugs::Kind;
+					switch (r.value.kind) {
+					case Kind::Boolean: ImGui::TextUnformatted(r.value.boolean ? "on" : "off"); break;
+					case Kind::Number: ImGui::Text("%.6g", r.value.number); break;
+					case Kind::String: ImGui::TextUnformatted(r.value.text.c_str()); break;
+					}
+				}
+				else if (r.attr == OverrideAttr::Material) {
 					ImGui::Text("mat.%u", r.materialWorld);
 					if (ImGui::IsItemHovered()) {
 						const auto& loc =
@@ -1017,7 +1290,9 @@ namespace editor {
 					// pair — a visibility rule reads "on = visible"
 					// (the stored flag is the legacy hidden bit, the
 					// display inverts).
-					const char* lbl = r.flag ? "off" : "on";
+					const bool valueOn = r.attr == OverrideAttr::Visibility
+						? !r.flag : r.flag;
+					const char* lbl = valueOn ? "on" : "off";
 					if (ImGui::SmallButton(lbl))
 						SetOverrideFlag(r.id, !r.flag);
 					if (ImGui::IsItemHovered())

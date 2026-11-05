@@ -123,6 +123,27 @@ void TestRoundTrip() {
 	r.flag = true;
 	r.enabled = false;
 	doc.overrides.push_back(r);
+	// Typed per-plug rules: number, boolean and string survive the
+	// same .tour text format and retain stable, machine-readable keys.
+	r = smvk::tour::OverrideRule{};
+	r.attr = smvk::tour::OverrideAttr::Plug;
+	r.pattern = "Body.*";
+	r.plug = "physics.mass";
+	r.value = tour::scene::plugs::Value::Number(12.5);
+	doc.overrides.push_back(r);
+	r = smvk::tour::OverrideRule{};
+	r.attr = smvk::tour::OverrideAttr::Plug;
+	r.pattern = "Sensor.*";
+	r.plug = "trigger.enabled";
+	r.value = tour::scene::plugs::Value::Bool(false);
+	doc.overrides.push_back(r);
+	r = smvk::tour::OverrideRule{};
+	r.attr = smvk::tour::OverrideAttr::Plug;
+	r.pattern = "Sensor.*";
+	r.plug = "trigger.tag";
+	r.value = tour::scene::plugs::Value::String("Zone A");
+	doc.overrides.push_back(r);
+	doc.connections.push_back({{7,"physics.mass"},{9,"physics.mass"}});
 	// Cook/export knobs ride the scene's exportSettings NODE: a createNode
 	// -at exportSettings line + setExportAttr lines (the singleton is the
 	// first create; attrs address it via kCreateExportRefBase | 0).
@@ -230,8 +251,8 @@ void TestRoundTrip() {
 			back.commands[9].flag == true, "tour visibility");
 		Check(back.commands[10].node2 == 12, "tour parent");
 	}
-	Check(back.overrides.size() == 2, "tour override count");
-	if (back.overrides.size() == 2) {
+	Check(back.overrides.size() == 5, "tour override count");
+	if (back.overrides.size() == 5) {
 		Check(back.overrides[0].attr ==
 			smvk::tour::OverrideAttr::Visibility &&
 			back.overrides[0].pattern == "Building_.*" &&
@@ -246,7 +267,23 @@ void TestRoundTrip() {
 			"Tree_01"), "tour override non-match");
 		Check(!smvk::tour::OverridePatternMatches("([bad",
 			"anything"), "tour override bad regex");
+		Check(back.overrides[2].attr == smvk::tour::OverrideAttr::Plug &&
+			back.overrides[2].plug == "physics.mass" &&
+			back.overrides[2].value == tour::scene::plugs::Value::Number(12.5),
+			"tour numeric plug override round trip");
+		Check(back.overrides[3].plug == "trigger.enabled" &&
+			back.overrides[3].value == tour::scene::plugs::Value::Bool(false),
+			"tour boolean plug override round trip");
+		Check(back.overrides[4].plug == "trigger.tag" &&
+			back.overrides[4].value == tour::scene::plugs::Value::String("Zone A"),
+			"tour string plug override round trip");
 	}
+	Check(back.connections.size() == 1 &&
+		back.connections[0].source.node == 7 &&
+		back.connections[0].destination.node == 9 &&
+		back.connections[0].source.plug == "physics.mass" &&
+		back.connections[0].destination.plug == "physics.mass",
+		"tour connectAttr round trip");
 	std::error_code ec;
 	std::filesystem::remove(TempTour(), ec);
 }
@@ -506,6 +543,13 @@ void TestReplay() {
 		"replay override applies");
 	Check(smvk::tour::OverrideAttrFromString("visibility", r.attr) &&
 		r.attr == smvk::tour::OverrideAttr::Visibility, "override attr parse");
+	Check(smvk::tour::OverrideAttrFromString("static", r.attr) &&
+		r.attr == smvk::tour::OverrideAttr::Static, "override static attr parse");
+	Check(smvk::tour::OverrideAttrFromString("volumetricShadow", r.attr) &&
+		r.attr == smvk::tour::OverrideAttr::VolumetricShadow,
+		"override volumetric-shadow attr parse");
+	Check(std::string(smvk::tour::OverrideAttrName(smvk::tour::OverrideAttr::Static))
+		== "static", "override static serialization name");
 
 	// Out-of-range ids fail loudly.
 	smvk::tour::Doc bad;
