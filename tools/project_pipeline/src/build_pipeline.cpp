@@ -285,6 +285,27 @@ std::unique_ptr<StageAdapter> MakeSubprocessStageAdapter() {
 	return std::make_unique<SubprocessStageAdapter>();
 }
 
+// Packing rules are project-wide: if the recipe changes, regenerate
+// material assets even when the source model fingerprint is unchanged.
+bool RecipePackingMatches(const fs::path& source,
+    const MaterialPackingRule& rule) {
+    smvk::assets::AssetManifest manifest;
+    std::string err;
+    if (!smvk::assets::LoadAssetManifest(source, manifest, err))
+        return false;
+    for (const auto& entry : manifest.entries) {
+        if (entry.kind != smvk::assets::AssetKind::Material)
+            continue;
+        smvk::assets::MaterialAsset mat;
+        if (!smvk::assets::LoadMaterialAsset(
+                source.parent_path() / entry.file, mat, err))
+            return false;
+        if (!MaterialPackingRuleMatches(rule, mat))
+            return false;
+    }
+    return true;
+}
+
 bool RefreshPlanImports(const Project& project, const BuildPlan& plan,
 	std::set<std::string>* reimportedFamilies, std::string& err) {
 	err.clear();
@@ -326,11 +347,15 @@ bool RefreshPlanImports(const Project& project, const BuildPlan& plan,
 			if (!fs::is_regular_file(srcAbs, ec))
 				continue;
 			if (smvk::assets::MeshArtifactStale(srcAbs,
-					GeometryImportSettings{})) {
+					GeometryImportSettings{}) ||
+                    !RecipePackingMatches(srcAbs, plan.materialPacking)) {
 				ImportRequest req;
 				req.project = project;
 				req.source = srcAbs;
 				req.settings = GeometryImportSettings{};
+				req.materialPacking = plan.materialPacking;
+				req.materialPackingExplicit = true;
+				req.force = true;
 				ImportResult result;
 				std::string iErr;
 				if (!ImportProjectAsset(req, result, iErr)) {

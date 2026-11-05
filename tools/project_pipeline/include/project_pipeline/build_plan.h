@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "project_recipe.h"
+
 namespace smvk::project {
 
 enum class PlanAssetKind : uint8_t {
@@ -108,6 +110,7 @@ struct PlanPak {
 };
 
 struct BuildPlan {
+	MaterialPackingRule materialPacking;
 	std::string projectName;
 	std::string entryScene; // project-relative .tour
 	std::string entryPak;   // the pak owning the entry scene
@@ -122,7 +125,7 @@ struct BuildPlan {
 	[[nodiscard]] const PlanPak* FindPak(const std::string& id) const;
 
 	bool operator==(const BuildPlan& o) const {
-		return projectName == o.projectName
+		return materialPacking == o.materialPacking && projectName == o.projectName
 			&& entryScene == o.entryScene && entryPak == o.entryPak
 			&& bakeGi == o.bakeGi && bakeCubemaps == o.bakeCubemaps
 			&& bakeSdf == o.bakeSdf

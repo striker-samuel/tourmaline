@@ -48,7 +48,8 @@ bool IsDerivedFamilyFile(const std::string& name) {
 	// IsMeshSourceMetaSidecar), not just the glTF spelling.
 	return endsWith(".geometry")
 		|| smvk::assets::IsMeshSourceMetaSidecar(name)
-		|| endsWith(".material") || endsWith(".anim");
+		|| endsWith(".material") || endsWith(".anim")
+        || endsWith(".packed.png");
 }
 
 bool CopyFileTo(const std::filesystem::path& from,
@@ -66,6 +67,154 @@ bool CopyFileTo(const std::filesystem::path& from,
 }
 
 } // namespace
+
+// The authored recipe specifies every output channel, including color,
+// opacity, normal and emissive. Canonical output channels keep the
+// shader's baseColor/normal/emissive sample paths unchanged and use the
+// existing channel-select word for the scalar map.
+bool ComposeMaterialFromRecipe(const MaterialPackingRule& rule,
+    smvk::assets::MaterialAsset& material,
+    const std::filesystem::path& outputDir, std::string& err) {
+    if (rule.channels.empty())
+        return true;
+    using smvk::assets::MaterialAsset;
+    using smvk::assets::PackedImageChannel;
+    const MaterialAsset original = material;
+
+    struct Group {
+        const char* name;
+        std::array<const char*, 4> targets;
+        int count;
+        bool srgb;
+    };
+    const Group groups[] = {
+        { "baseColor", { "baseColor.r", "baseColor.g", "baseColor.b", "baseColor.a" }, 4, true },
+        { "normal", { "normal.r", "normal.g", "normal.b", "" }, 3, false },
+        { "emissive", { "emissive.r", "emissive.g", "emissive.b", "" }, 3, true },
+        { "scalar", { "ao", "cavity", "roughness", "metallic" }, 4, false }
+    };
+    const auto slot = [&](const std::string& name) -> const MaterialAsset::TexRef* {
+        if (name == "baseColor") return &original.baseColor;
+        if (name == "normal") return &original.normalTex;
+        if (name == "emissive") return &original.emissiveTex;
+        if (name == "occlusion") return &original.occlusion;
+        if (name == "cavity") return &original.cavity;
+        if (name == "metallicRoughness") return &original.metallicRoughness;
+        return nullptr;
+    };
+    for (const Group& group : groups) {
+        bool changed = false;
+        for (int i = 0; i < group.count; ++i)
+            for (const auto& ruleChannel : rule.channels)
+                changed |= ruleChannel.target == group.targets[i];
+        if (!changed)
+            continue;
+        std::array<PackedImageChannel, 4> inputs{};
+        for (int i = 0; i < 4; ++i) {
+            inputs[i].constant = group.name == std::string("normal")
+                ? uint8_t(i == 0 || i == 1 ? 128 : 255) : uint8_t(255);
+        }
+        // Native glTF defaults for scalar texture lanes: occlusion R,
+        // cavity absent=1, roughness G, metallic B.
+        const MaterialAsset::TexRef* defaults[4] = {
+            &original.occlusion, &original.cavity,
+            &original.metallicRoughness, &original.metallicRoughness };
+        if (std::string(group.name) == "scalar") {
+            for (int i = 0; i < 4; ++i) {
+                inputs[i].path = defaults[i]->path.empty()
+                    ? std::filesystem::path{} : outputDir / defaults[i]->path;
+                inputs[i].component = i == 2 ? 1 : i == 3 ? 2 : 0;
+            }
+        } else {
+            const auto* tex = slot(group.name);
+            for (int i = 0; i < group.count; ++i) {
+                inputs[i].path = tex->path.empty()
+                    ? std::filesystem::path{} : outputDir / tex->path;
+                inputs[i].component = i;
+            }
+        }
+        for (const auto& channel : rule.channels) {
+            for (int i = 0; i < group.count; ++i) {
+                if (channel.target != group.targets[i])
+                    continue;
+                if (channel.source == "one" || channel.source == "zero") {
+                    inputs[i].path.clear();
+                    inputs[i].constant = channel.source == "one" ? 255 : 0;
+                } else {
+                    const auto* tex = slot(channel.source);
+                    if (!tex || tex->path.empty()) {
+                        err = "material '" + material.name + "' has no source texture for " +
+                            channel.target + ": " + channel.source;
+                        return false;
+                    }
+                    inputs[i].path = outputDir / tex->path;
+                    const auto index = std::string("rgba").find(channel.channel);
+                    inputs[i].component = static_cast<int>(index);
+                }
+            }
+        }
+        const std::filesystem::path file =
+            material.name.empty() ? std::filesystem::path("material") :
+            std::filesystem::path(material.guid);
+        const std::filesystem::path result = outputDir /
+            (file.string() + "." + group.name + ".packed.png");
+        if (!smvk::assets::ComposeMaterialImage(result, inputs, err)) {
+            err = "material '" + material.name + "' output " + group.name +
+                ": " + err;
+            return false;
+        }
+        MaterialAsset::TexRef output;
+        output.path = result.filename().generic_string();
+        output.srgb = group.srgb;
+        if (std::string(group.name) == "scalar") {
+            material.occlusion = output;
+            material.cavity = output;
+            material.metallicRoughness = output;
+            // Canonical packed RGBA = AO, cavity, roughness, metallic.
+            material.channelSelectors = (1 << 2) | (2 << 4) | (3 << 6);
+        } else if (std::string(group.name) == "baseColor") {
+            material.baseColor = output;
+        } else if (std::string(group.name) == "normal") {
+            material.normalTex = output;
+        } else {
+            material.emissiveTex = output;
+        }
+    }
+    material.packingSource = "compose";
+    material.packingSignature = rule.Signature();
+    return true;
+}
+
+bool ApplyMaterialPackingRule(const MaterialPackingRule& rule,
+    smvk::assets::MaterialAsset& material) {
+    if (rule.source.empty())
+        return false;
+    const auto source = rule.source == "metallicRoughness"
+        ? material.metallicRoughness : material.occlusion;
+    if (source.path.empty())
+        return false;
+    material.metallicRoughness = source;
+    material.occlusion = source;
+    material.cavity = source;
+    material.packingSource = rule.source;
+    material.channelSelectors = rule.PackedWord();
+    return true;
+}
+
+bool MaterialPackingRuleMatches(const MaterialPackingRule& rule,
+    const smvk::assets::MaterialAsset& material) {
+    if (!rule.channels.empty())
+        return material.packingSource == "compose" &&
+            material.packingSignature == rule.Signature();
+    if (rule.source.empty())
+        return material.packingSource.empty() && material.channelSelectors == -1;
+    if (!material.packingSource.empty())
+        return material.packingSource == rule.source &&
+            material.channelSelectors == rule.PackedWord();
+    const bool available = rule.source == "metallicRoughness"
+        ? !material.metallicRoughness.path.empty() : !material.occlusion.path.empty();
+    return !available && material.channelSelectors == -1;
+}
 
 bool ImportProjectAsset(const ImportRequest& request,
 	ImportResult& out, std::string& err) {
@@ -87,6 +236,40 @@ bool ImportProjectAsset(const ImportRequest& request,
 		err = "source not found: " + request.source.generic_string();
 		return false;
 	}
+    MaterialPackingRule effectivePacking = request.materialPacking;
+    if (!request.materialPackingExplicit &&
+            request.materialPacking.source.empty() &&
+            request.materialPacking.channels.empty()) {
+        std::filesystem::path found;
+        for (const auto& item :
+                fs::directory_iterator(fs::path(request.project.root), ec)) {
+            if (ec) {
+                err = "cannot scan project recipes: " + ec.message();
+                return false;
+            }
+            if (!item.is_regular_file(ec) ||
+                    item.path().extension() != ".tourrecipe")
+                continue;
+            if (!found.empty()) {
+                err = "multiple root .tourrecipe files; select the recipe explicitly for material import";
+                return false;
+            }
+            found = item.path();
+        }
+        if (ec) {
+            err = "cannot enumerate project recipes: " + ec.message();
+            return false;
+        }
+        if (!found.empty()) {
+            ProjectRecipe parsed;
+            RecipeDiagnostic diagnostic;
+            if (!ParseProjectRecipe(found.string(), parsed, diagnostic)) {
+                err = diagnostic.Format(found.string());
+                return false;
+            }
+            effectivePacking = parsed.materialPacking;
+        }
+    }
 	const std::string stem = src.stem().string();
 	const fs::path destDir =
 		fs::path(request.project.ImportsDir()) / stem;
@@ -99,7 +282,23 @@ bool ImportProjectAsset(const ImportRequest& request,
 	// matters when it differs from the project copy, checked below.)
 	if (!request.force && fs::is_regular_file(projectSource, ec)) {
 		if (!smvk::assets::MeshArtifactStale(projectSource,
-				request.settings)) {
+				request.settings) &&
+                [&]() {
+                    smvk::assets::AssetManifest current;
+                    std::string error;
+                    if (!smvk::assets::LoadAssetManifest(projectSource, current, error))
+                        return false;
+                    for (const auto& entry : current.entries) {
+                        if (entry.kind != smvk::assets::AssetKind::Material)
+                            continue;
+                        smvk::assets::MaterialAsset material;
+                        if (!smvk::assets::LoadMaterialAsset(
+                                projectSource.parent_path() / entry.file, material, error) ||
+                                !MaterialPackingRuleMatches(effectivePacking, material))
+                            return false;
+                    }
+                    return true;
+                }()) {
 			out.projectSource = projectSource;
 			out.geometry =
 				fs::path(projectSource).replace_extension(".geometry");
@@ -163,6 +362,26 @@ bool ImportProjectAsset(const ImportRequest& request,
 		err = "import failed: " + err;
 		return false; // stage stays for diagnostics? no — cleaned below
 	}
+
+    // Resolve the .tourrecipe's texture-packing rule during import.
+    // Store channels and texture bindings with the derived material, not
+    // in .tour scenes. Cooker and editor then consume identical metadata.
+    for (const auto& entry : manifest.entries) {
+        if (entry.kind != smvk::assets::AssetKind::Material)
+            continue;
+        const fs::path materialPath = stageRoot / entry.file;
+        smvk::assets::MaterialAsset mat;
+        if (!smvk::assets::LoadMaterialAsset(materialPath, mat, err))
+            return false;
+        if (effectivePacking.channels.empty()) {
+            ApplyMaterialPackingRule(effectivePacking, mat);
+        } else if (!ComposeMaterialFromRecipe(effectivePacking,
+                mat, stageRoot, err)) {
+            return false;
+        }
+        if (!smvk::assets::SaveMaterialAsset(materialPath, mat, err))
+            return false;
+    }
 
 	// ---- validate the staged family BEFORE publishing ---------------------
 	// (a) Round-trip: the written .geometry parses back.

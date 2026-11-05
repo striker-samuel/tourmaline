@@ -40,7 +40,7 @@ namespace tour {
 		glm::vec4 ambient{ 0.f };                       // 0 – see cluster.cpp
 		glm::vec4 diffuse{ 1.0f };                       // 16 – baseColorFactor (alias: diffuse)
 		glm::ivec4 textures{ -1 };                       // 32 – x=baseColor, y=metallicRoughness, z=normal, w=occlusion
-		glm::ivec4 textures2{ -1 };                      // 48 – x=emissive, yzw unused (-1)
+		glm::ivec4 textures2{ -1 };                      // 48 – x=emissive, y=cavity, z=cavity strength (0..1000, -1=1), w=packed channel selectors
 		glm::vec4 params{ 0.5f, 1.0f, 1.0f, 0.0f };       // 64 – x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
 		glm::vec4 params2{ 1.0f, 1.0f, 1.0f, 0.0f };      // 80 – x=occlusionStrength, y=normalScale, z=emissiveStrength, w=alphaMode (0=Opaque,1=Mask,2=Blend)
 		glm::vec4 emissiveFactor{ 0.0f, 0.0f, 0.0f, 0.0f }; // 96 – xyz=emissiveFactor, w=material flags (kMaterialFlag*)
@@ -195,6 +195,7 @@ namespace tour {
 		smvk::TextureHandle metallicRoughnessTexture{};
 		smvk::TextureHandle normalTexture{};
 		smvk::TextureHandle occlusionTexture{};
+		smvk::TextureHandle cavityTexture{};
 		smvk::TextureHandle emissiveTexture{};
 		// Legacy alias: alias for baseColorTexture
 		smvk::TextureHandle diffuse{};
@@ -207,6 +208,8 @@ namespace tour {
 		float roughnessFactor = 1.0f;
 		float normalScale = 1.0f;
 		float occlusionStrength = 1.0f;
+		float cavityStrength = 1.0f;
+		int channelSelectors = -1; // packed output layout from .material metadata
 		// Thin opaque backlighting tinted by baseColor; 0 disables it.
 		// Remains in the opaque, GPU-driven draw path (no blend/sort/PSO).
 		float translucency = 0.0f;

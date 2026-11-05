@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -948,6 +949,260 @@ void TestRecipeParsing() {
 				&& r.version == 0 && r.paks.empty() && lineOk,
 			(std::string("recipe.parse.reject.") + b.name).c_str());
 	}
+}
+
+// Material packing is a project-recipe policy, not scene data.
+// Table-driven fixtures make new packed layouts/sources easy to add.
+void TestMaterialPackingPolicies() {
+    using namespace smvk::project;
+    struct Case { const char* source; const char* channels; int packed; };
+    const Case cases[] = {
+        { "metallicRoughness", "r a g b", 0 | (3 << 2) | (1 << 4) | (2 << 6) },
+        { "occlusion", "b g a r", 2 | (1 << 2) | (3 << 4) | (0 << 6) },
+    };
+    for (const auto& c : cases) {
+        const std::string text = std::string("recipe 1\n")
+            + "entry content/scenes/a.tour\n"
+            + "materialPacking " + c.source + " " + c.channels + "\n"
+            + "[pak world]\noutput world.pak\nscene content/scenes/a.tour\n";
+        ProjectRecipe recipe;
+        RecipeDiagnostic d;
+        const bool parsed = ParseProjectRecipeText(text, recipe, d);
+        Check(parsed && recipe.materialPacking.PackedWord() == c.packed,
+            "material-packing.recipe-parse-and-channel-word");
+        if (!parsed) continue;
+        smvk::assets::MaterialAsset mat{};
+        mat.guid = "packing-test-material";
+        mat.name = "Packed Material";
+        mat.metallicRoughness.path = "mr.png";
+        mat.occlusion.path = "ao.png";
+        const std::string sourcePath = std::string(c.source) == "occlusion"
+            ? "ao.png" : "mr.png";
+        Check(ApplyMaterialPackingRule(recipe.materialPacking, mat)
+                && mat.metallicRoughness.path == sourcePath
+                && mat.occlusion.path == sourcePath
+                && mat.cavity.path == sourcePath
+                && mat.channelSelectors == c.packed
+                && MaterialPackingRuleMatches(recipe.materialPacking, mat),
+            "material-packing.importer-applies-shared-source");
+        const fs::path temp = fs::temp_directory_path() /
+            (std::string("tourmaline_test_packing_") + c.source + ".material");
+        std::string err;
+        smvk::assets::MaterialAsset roundtrip{};
+        const bool saved = smvk::assets::SaveMaterialAsset(temp, mat, err);
+        const bool loaded = saved &&
+            smvk::assets::LoadMaterialAsset(temp, roundtrip, err);
+        Check(loaded && roundtrip.packingSource == c.source
+                && roundtrip.channelSelectors == c.packed
+                && roundtrip.metallicRoughness.path == sourcePath
+                && roundtrip.occlusion.path == sourcePath
+                && roundtrip.cavity.path == sourcePath,
+            "material-packing.metadata-roundtrip");
+        std::error_code ec;
+        fs::remove(temp, ec);
+        auto changed = recipe.materialPacking;
+        changed.cavity = (changed.cavity + 1) & 3;
+        Check(!MaterialPackingRuleMatches(changed, mat),
+            "material-packing.recipe-change-invalidates");
+        changed = recipe.materialPacking;
+        changed.source = changed.source == "occlusion"
+            ? "metallicRoughness" : "occlusion";
+        Check(!MaterialPackingRuleMatches(changed, mat),
+            "material-packing.source-change-invalidates");
+    }
+    // Serialized GPU material rows retain the 128-byte contract; channel
+    // selectors travel in its reserved tex2.w lane.
+    Check(sizeof(smvk::MaterialValues) == 128 &&
+            smvk::MaterialValues{}.textures2.w == -1,
+        "material-packing.legacy-cooked-row-default");
+    MaterialPackingRule rule;
+    smvk::assets::MaterialAsset native{};
+    Check(!ApplyMaterialPackingRule(rule, native)
+            && MaterialPackingRuleMatches(rule, native),
+        "material-packing.native-default-backcompat");
+    rule.source = "metallicRoughness";
+    Check(!ApplyMaterialPackingRule(rule, native)
+            && MaterialPackingRuleMatches(rule, native),
+        "material-packing.missing-texture-backcompat");
+
+    const char* invalid[] = {
+        "materialPacking metallicRoughness r g b x",
+        "materialPacking bogus r g b a",
+        "materialPacking occlusion r g",
+        "materialPacking metallicRoughness r g b a\nmaterialPacking occlusion r g b a",
+    };
+    for (const char* line : invalid) {
+        const std::string text = std::string("recipe 1\n") + line
+            + "\nentry content/scenes/a.tour\n[pak world]\n"
+              "output world.pak\nscene content/scenes/a.tour\n";
+        ProjectRecipe recipe;
+        RecipeDiagnostic diag;
+        Check(!ParseProjectRecipeText(text, recipe, diag)
+                && !diag.message.empty() && diag.line > 0,
+            "material-packing.invalid-recipe-rejected");
+    }
+}
+
+// Pixel-accurate integration of all fourteen project-configurable PBR
+// channels. The table can grow as texture families gain new outputs.
+void TestMaterialChannelComposition() {
+    using namespace smvk::project;
+    const fs::path dir = fs::temp_directory_path() / "tourmaline_material_compose_regression";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    if (ec) {
+        Check(false, "material-compose.fixture-directory");
+        return;
+    }
+    struct Input { const char* slot; std::array<uint8_t, 4> rgba; };
+    const Input inputs[] = {
+        { "baseColor", { 10, 20, 30, 40 } },
+        { "normal", { 90, 100, 110, 120 } },
+        { "emissive", { 210, 220, 230, 240 } },
+        { "occlusion", { 170, 180, 190, 200 } },
+        { "metallicRoughness", { 130, 140, 150, 160 } }
+    };
+    smvk::assets::MaterialAsset material;
+    material.guid = "testpack";
+    material.name = "Pixels";
+    for (const auto& in : inputs) {
+        const std::string file = std::string(in.slot) + ".png";
+        std::array<uint8_t, 8> pixels{};
+        for (int i = 0; i < 2; ++i)
+            std::copy(in.rgba.begin(), in.rgba.end(), pixels.begin() + i * 4);
+        Check(stbi_write_png((dir / file).string().c_str(), 2, 1, 4,
+            pixels.data(), 8) != 0, "material-compose.fixture-png");
+        smvk::assets::MaterialAsset::TexRef* ref = nullptr;
+        const std::string name = in.slot;
+        if (name == "baseColor") ref = &material.baseColor;
+        else if (name == "normal") ref = &material.normalTex;
+        else if (name == "emissive") ref = &material.emissiveTex;
+        else if (name == "occlusion") ref = &material.occlusion;
+        else ref = &material.metallicRoughness;
+        ref->path = file;
+    }
+    const std::string recipeText =
+        "recipe 1\n"
+        "entry content/scenes/demo.tour\n"
+        "materialChannel baseColor.r emissive b\n"
+        "materialChannel baseColor.g baseColor g\n"
+        "materialChannel baseColor.b normal a\n"
+        "materialChannel baseColor.a occlusion a\n"
+        "materialChannel normal.r normal r\n"
+        "materialChannel normal.g normal g\n"
+        "materialChannel normal.b normal b\n"
+        "materialChannel emissive.r baseColor r\n"
+        "materialChannel emissive.g emissive g\n"
+        "materialChannel emissive.b emissive b\n"
+        "materialChannel ao occlusion r\n"
+        "materialChannel cavity occlusion a\n"
+        "materialChannel roughness metallicRoughness g\n"
+        "materialChannel metallic metallicRoughness b\n"
+        "[pak world]\n"
+        "output game.pak\n"
+        "scene content/scenes/demo.tour\n";
+    ProjectRecipe recipe;
+    RecipeDiagnostic diagnostic;
+    const bool parsed = ParseProjectRecipeText(recipeText, recipe, diagnostic);
+    Check(parsed && recipe.materialPacking.channels.size() == 14,
+        "material-compose.parse-all-material-channels");
+    if (!parsed) { fs::remove_all(dir, ec); return; }
+
+    std::string error;
+    const bool composed = ComposeMaterialFromRecipe(recipe.materialPacking,
+        material, dir, error);
+    Check(composed, "material-compose.generate-four-packed-images");
+    if (composed) {
+        struct Output {
+            const char* name;
+            const std::string* path;
+            std::array<uint8_t, 4> rgba;
+        };
+        const Output expected[] = {
+            { "base-color", &material.baseColor.path, { 230, 20, 120, 200 } },
+            { "normal", &material.normalTex.path, { 90, 100, 110, 255 } },
+            { "emissive", &material.emissiveTex.path, { 10, 220, 230, 255 } },
+            { "scalar", &material.occlusion.path, { 170, 200, 140, 150 } }
+        };
+        for (const auto& output : expected) {
+            int width = 0, height = 0, components = 0;
+            stbi_uc* png = stbi_load((dir / *output.path).string().c_str(),
+                &width, &height, &components, 4);
+            const bool correct = png && width == 2 && height == 1 &&
+                std::equal(output.rgba.begin(), output.rgba.end(), png);
+            Check(correct, (std::string("material-compose.pixel-") + output.name).c_str());
+            if (png) stbi_image_free(png);
+        }
+        Check(material.occlusion.path == material.cavity.path &&
+                material.occlusion.path == material.metallicRoughness.path &&
+                material.channelSelectors == ((1 << 2) | (2 << 4) | (3 << 6)) &&
+                material.packingSource == "compose" &&
+                MaterialPackingRuleMatches(recipe.materialPacking, material),
+            "material-compose.canonical-scalar-metadata");
+        const fs::path materialFile = dir / "asset.material";
+        smvk::assets::MaterialAsset loaded;
+        Check(smvk::assets::SaveMaterialAsset(materialFile, material, error) &&
+                smvk::assets::LoadMaterialAsset(materialFile, loaded, error) &&
+                loaded.packingSignature == recipe.materialPacking.Signature() &&
+                loaded.channelSelectors == material.channelSelectors &&
+                loaded.baseColor.path == material.baseColor.path,
+            "material-compose.material-metadata-roundtrip");
+        auto changed = recipe.materialPacking;
+        changed.channels[0].channel = 'g';
+        Check(!MaterialPackingRuleMatches(changed, loaded),
+            "material-compose.recipe-change-invalidates");
+    }
+
+    // Explicitly missing texture sources must fail instead of silently
+    // sampling an unrelated slot or manufacturing data.
+    {
+        auto missing = material;
+        missing.guid = "missing-source";
+        missing.emissiveTex.path.clear();
+        std::string missingError;
+        Check(!ComposeMaterialFromRecipe(recipe.materialPacking,
+                missing, dir, missingError) &&
+                missingError.find("no source texture") != std::string::npos,
+            "material-compose.reject-missing-explicit-source");
+    }
+    // No implicit UV-space stretch between unrelated source resolutions.
+    {
+        const std::array<uint8_t, 4> smaller = { 1, 2, 3, 4 };
+        const bool written = stbi_write_png((dir / "normal.png").string().c_str(),
+            1, 1, 4, smaller.data(), 4) != 0;
+        auto mismatch = material;
+        mismatch.guid = "mismatched-dimensions";
+        mismatch.baseColor.path = "baseColor.png";
+        mismatch.normalTex.path = "normal.png";
+        mismatch.emissiveTex.path = "emissive.png";
+        mismatch.occlusion.path = "occlusion.png";
+        mismatch.metallicRoughness.path = "metallicRoughness.png";
+        std::string mismatchError;
+        Check(written && !ComposeMaterialFromRecipe(recipe.materialPacking,
+                mismatch, dir, mismatchError) &&
+                mismatchError.find("dimensions differ") != std::string::npos,
+            "material-compose.reject-mismatched-dimensions");
+    }
+
+    const char* invalid[] = {
+        "materialChannel roughness metallicRoughness x\n",
+        "materialChannel baseColor.x baseColor r\n",
+        "materialChannel metallic unknown r\n",
+        "materialChannel ao occlusion r\nmaterialChannel ao occlusion g\n",
+        "materialPacking occlusion r a g b\nmaterialChannel ao occlusion r\n"
+    };
+    for (const char* directive : invalid) {
+        const std::string text = std::string("recipe 1\n") + directive +
+            "entry content/scenes/demo.tour\n[pak world]\n" +
+            "output game.pak\nscene content/scenes/demo.tour\n";
+        ProjectRecipe invalidRecipe;
+        RecipeDiagnostic err;
+        Check(!ParseProjectRecipeText(text, invalidRecipe, err) &&
+                err.line > 0 && !err.message.empty(),
+            "material-compose.reject-malformed-rules");
+    }
+    fs::remove_all(dir, ec);
 }
 
 // Glob matcher unit checks ('**' crosses directories; '*'/'?' do not).
@@ -4606,6 +4861,8 @@ int main(int argc, char** argv) {
 	TestShaderAssets();
 	TestAudioGraphAssets();
 	TestRecipeParsing();
+	TestMaterialPackingPolicies();
+	TestMaterialChannelComposition();
 	TestRecipeGlob();
 	TestRecipeResolution();
 	TestAppManifest();

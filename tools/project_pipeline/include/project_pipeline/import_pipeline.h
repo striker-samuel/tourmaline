@@ -36,6 +36,7 @@
 #include <gltf_import/asset_export.h> // DeriveConfig: the settings surface
 
 #include "project.h"
+#include "project_recipe.h"
 
 namespace smvk::project {
 
@@ -48,6 +49,10 @@ struct ImportRequest {
 	Project project;
 	std::filesystem::path source;      // the external glTF/GLB
 	GeometryImportSettings settings;
+	MaterialPackingRule materialPacking;
+    // Builds pass an explicit resolved policy (even when the rule is
+    // empty). Standalone imports otherwise discover one root .tourrecipe.
+    bool materialPackingExplicit = false;
 	bool force = false;                // re-derive even when current
 };
 
@@ -62,6 +67,20 @@ struct ImportResult {
 	uint32_t meshletSets = 0;          // blobs carrying a cooked set
 	bool derived = false;             // false = current, nothing written
 };
+
+// Compose project-wide material channel recipes into imported PNGs.
+// Outputs are canonical by material property, and source paths resolve
+// relative to the glTF's imported family directory.
+bool ComposeMaterialFromRecipe(const MaterialPackingRule& rule,
+    smvk::assets::MaterialAsset& material,
+    const std::filesystem::path& directory, std::string& err);
+
+// Pure, testable material-policy transform. Importer applies it before
+// publication; cooker reads the resulting .material metadata.
+bool ApplyMaterialPackingRule(const MaterialPackingRule& rule,
+    smvk::assets::MaterialAsset& material);
+bool MaterialPackingRuleMatches(const MaterialPackingRule& rule,
+    const smvk::assets::MaterialAsset& material);
 
 // The canonical import. True on success (fresh derivation OR current
 // skip); false + err on failure (the previous generation stays live).
