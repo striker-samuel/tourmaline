@@ -71,6 +71,8 @@ public:
         data_[size_++] = value;
     }
 
+    void reserve(size_t requested) { Reserve(requested); }
+
     void Reserve(size_t requested) {
         if (requested <= capacity_) return;
         if (requested > std::numeric_limits<size_t>::max() / sizeof(T))
@@ -94,7 +96,7 @@ public:
     }
 
 private:
-    smvk::Arena arena_{};
+    smvk::Arena arena_{4096};
     T* data_ = nullptr;
     size_t size_ = 0;
     size_t capacity_ = 0;
