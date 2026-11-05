@@ -438,6 +438,8 @@ namespace editor {
 		for (auto& r : m_overrideRules)
 			if (r.enabled)
 				ApplyOverrideRule(r);
+		if (m_world && !m_plugGraph.Evaluate(m_world->scene))
+			Log("tour: some connectAttr sources or destinations are unavailable.");
 			else {
 				r.applied.clear();
 				r.lastMatches = 0;
@@ -594,6 +596,7 @@ namespace editor {
 	}
 
 	void EditorApp::SaveOverridesToDoc(smvk::tour::Doc& doc) const {
+		doc.connections = m_plugGraph.Connections();
 		for (const OverrideRule& r : m_overrideRules) {
 			smvk::tour::OverrideRule tr{};
 			tr.attr = r.attr;
@@ -617,6 +620,10 @@ namespace editor {
 	}
 
 	void EditorApp::LoadOverridesFromDoc(const smvk::tour::Doc& doc) {
+		m_plugGraph = tour::scene::plugs::Graph{};
+		for (const auto& link : doc.connections)
+			if (!m_plugGraph.Connect(link))
+				Log("tour: rejected cyclic or incompatible connectAttr");
 		m_overrideRules.clear();
 		m_nextOverrideId = 1;
 		for (const smvk::tour::OverrideRule& tr : doc.overrides) {
@@ -1120,6 +1127,71 @@ namespace editor {
 			if (added) m_overridePatternBuf[0] = '\0';
 		}
 		ImGui::PopID();
+
+		// Typed source -> destination scene plug wiring (Maya-style
+		// connectAttr). The graph rejects mismatched types and cycles.
+		ImGui::SeparatorText("Plug connections");
+		if (ImGui::TreeNode("Connect attributes")) {
+			ImGui::SetNextItemWidth(90.0f);
+			ImGui::InputInt("Source node", &m_connectSourceNode);
+			ImGui::SetNextItemWidth(90.0f);
+			ImGui::InputInt("Destination node", &m_connectDestNode);
+			const auto choose = [](const char* id, int& selected) {
+				using namespace tour::scene::plugs;
+				selected = std::clamp(selected, 0, int(std::size(kDescriptors)) - 1);
+				ImGui::SetNextItemWidth(250.0f);
+				if (ImGui::BeginCombo(id, kDescriptors[selected].path.data())) {
+					for (size_t i=0; i<std::size(kDescriptors); ++i)
+						if (ImGui::Selectable(kDescriptors[i].path.data(), int(i)==selected))
+							selected=int(i);
+					ImGui::EndCombo();
+				}
+			};
+			choose("Source plug", m_connectSourcePlug);
+			choose("Destination plug", m_connectDestPlug);
+			if (ImGui::Button("Connect")) {
+				using namespace tour::scene::plugs;
+				if (m_connectSourceNode < 0 || m_connectDestNode < 0 ||
+					!m_world ||
+					uint32_t(m_connectSourceNode) >= m_world->scene.hierarchy.size() ||
+					uint32_t(m_connectDestNode) >= m_world->scene.hierarchy.size()) {
+					Log("connectAttr: node ID out of range");
+				} else {
+					Connection e{};
+					e.source = { uint32_t(m_connectSourceNode),
+						std::string(kDescriptors[m_connectSourcePlug].path) };
+					e.destination = { uint32_t(m_connectDestNode),
+						std::string(kDescriptors[m_connectDestPlug].path) };
+					Value value;
+					if (!Read(m_world->scene,e.source.node,e.source.plug,value) ||
+						!Read(m_world->scene,e.destination.node,e.destination.plug,value)) {
+						Log("connectAttr: source/destination component is not present");
+					} else {
+						Graph next = m_plugGraph;
+						if (next.Connect(e)) {
+							m_plugGraph = std::move(next);
+							m_plugGraph.Evaluate(m_world->scene);
+							AutosaveTour();
+						} else Log("connectAttr: type mismatch or cycle");
+					}
+				}
+			}
+			ImGui::TreePop();
+		}
+		int connectionIndex = 0;
+		for (const auto& link : m_plugGraph.Connections()) {
+			ImGui::PushID(connectionIndex++);
+			ImGui::Text("%u.%s -> %u.%s",link.source.node,link.source.plug.c_str(),
+				link.destination.node,link.destination.plug.c_str());
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Disconnect")) {
+				m_plugGraph.Disconnect(link.destination);
+				AutosaveTour();
+				ImGui::PopID();
+				break;
+			}
+			ImGui::PopID();
+		}
 
 		if (m_overrideRules.empty()) {
 			ImGui::Separator();
