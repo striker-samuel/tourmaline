@@ -90,11 +90,11 @@ inline void LabelCell(const char* name, const char* hint) {
 			: ImVec4(0.98f, 0.43f, 0.70f, 1.0f));
 	// Maya-style: property names end at one shared right edge, while
 	// controls begin at one shared left edge. Long names clip on the LEFT.
-	ImGui::SetCursorPosX(startX + labelW - size.x);
+	ImGui::SetCursorPosX(startX + std::max(0.0f, labelW - size.x));
 	const ImVec2 textPos = ImGui::GetCursorScreenPos();
 	if (clipped)
 		ImGui::PushClipRect(
-			ImVec2(textPos.x + size.x - labelW, textPos.y),
+			ImVec2(textPos.x + std::max(0.0f, size.x - labelW), textPos.y),
 			ImVec2(textPos.x + size.x, textPos.y + size.y + 2.0f), true);
 	ImGui::TextUnformatted(shown);
 	if (clipped)
