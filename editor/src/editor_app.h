@@ -1797,6 +1797,10 @@ private:
 	float m_overridePlugNumber = 1.0f;
 	char m_overridePlugString[256] = "";
 	std::vector<OverrideRule> m_overrideRules;
+	// Directed typed plug wiring shares the cooked scene's graph model.
+	tour::scene::plugs::Graph m_plugGraph;
+	int m_connectSourceNode = 0, m_connectDestNode = 0;
+	int m_connectSourcePlug = 0, m_connectDestPlug = 0;
 	uint32_t m_nextOverrideId = 1;
 	// Save-as dialog state.
 	bool m_showSaveDialog = false;
