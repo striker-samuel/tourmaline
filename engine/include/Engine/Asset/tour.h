@@ -401,6 +401,8 @@ enum class OverrideAttr : uint8_t {
 	NoLightmap,   // flag
 	Lightmap,     // flag (bake opt-in)
 	DitherCloseup, // flag
+	Static,       // subtree frozen-transform root
+	VolumetricShadow, // coarse fog shadow caster
 };
 
 struct OverrideRule {
