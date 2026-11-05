@@ -46,8 +46,8 @@ public:
     void Reserve(size_t requested) {
         if (requested <= capacity_) return;
         if (requested > std::numeric_limits<size_t>::max() / sizeof(T))
-            smvk::mem::ReportOomAndCrash("ArenaFlatArray", requested * sizeof(T),
-                capacity_ * sizeof(T), std::numeric_limits<size_t>::max());
+            smvk::mem::ReportOomAndCrash("ArenaFlatArray", requested,
+                capacity_, std::numeric_limits<size_t>::max() / sizeof(T));
         // Exact-size growth: the hot path is one Assign per frame with a
         // stable node count, and scene reloads need not precommit 1M nodes.
         T* next = static_cast<T*>(arena_.Allocate(requested * sizeof(T),
