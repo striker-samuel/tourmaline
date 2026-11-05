@@ -111,6 +111,8 @@ assert 'ImGuiViewportFlags_NoAutoMerge' in system_modal
 assert 'ImGuiViewportFlags_NoDecoration' in system_modal
 assert 'ImGui::SetNextWindowClass(&modalClass)' in system_modal
 assert 'ImGuiWindowFlags_NoDocking' in system_modal
+assert 'ImGuiWindowFlags_NoTitleBar' in system_modal, "avoid double native/ImGui captions"
+assert 'PlatformRequestClose' in system_modal, "native close must be handled explicitly"
 for file, titles in (
     ("editor_ui.cpp", ("Save scene changes?", "Save tour as")),
     ("editor_taskwindow.cpp", ("m_taskWindow.popupId",)),
@@ -121,6 +123,8 @@ for file, titles in (
     content = (src / file).read_text(encoding="utf-8")
     assert 'ui::PrepareSystemModal(' in content, file
     assert 'ui::kSystemModalFlags' in content, file
+    assert 'ui::SystemModalCloseRequested()' in content, (
+        file, "native OS close must behave like Cancel/Close")
     for title in titles:
         assert title in content, (file, title)
 
