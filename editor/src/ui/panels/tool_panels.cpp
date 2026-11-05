@@ -8,6 +8,7 @@
 // coalesce into one command per gesture via m_pending.
 
 #include "editor_app.h"
+#include "ui/dialogs/system_modal.h"
 #include "editor_brush_presets.h"
 #include "modal_bindings.h"
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
@@ -343,9 +344,17 @@ namespace editor {
 		// arms this modal at load; the user picks the document explicitly.
 		if (!m_recoverArmed)
 			return;
+		ui::PrepareSystemModal();
 		if (!ImGui::BeginPopupModal("Recover autosave", nullptr,
-			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
+			ui::kSystemModalFlags | ImGuiWindowFlags_AlwaysAutoResize))
 			return;
+		if (ui::SystemModalCloseRequested()) {
+			// Preserve the autosave for a later recovery prompt.
+			m_recoverArmed = false;
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
 		ImGui::Text("An autosave is newer than the tour file.");
 		ImGui::TextDisabled("tour: %s", m_recoverTour.c_str());
 		ImGui::TextDisabled("autosave (%s): %s",
@@ -389,9 +398,16 @@ namespace editor {
 	}
 
 	void EditorApp::DrawCreateTerrainDialog() {
+		ui::PrepareSystemModal(ImVec2(520, 420));
 		if (!ImGui::BeginPopupModal("Create Terrain", nullptr,
-			ImGuiWindowFlags_NoCollapse))
+			ui::kSystemModalFlags))
 			return;
+		if (ui::SystemModalCloseRequested()) {
+			m_showTerrainDialog = false;
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
 		ImGui::Text("Create a procedural terrain mesh (heightfield grid).");
 		ImGui::Separator();
 		ImGui::SetNextItemWidth(300.0f);

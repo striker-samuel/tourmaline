@@ -1,5 +1,23 @@
 # AGENTS.md — instructions for AI coding agents and human collaborators.
 
+## Text encoding integrity
+
+Repository text is UTF-8. Damage from encoding-unsafe local edits
+(replacement characters, mojibake, non-ASCII dashes in PowerShell
+switches) is caught automatically - no agent-facing checklist:
+
+- `tests/test_text_integrity.py` is the regression suite AND the
+  enforcement: it covers the fixtures and scans the whole tracked tree
+  (vendored `external/` and the checker's own fixture files are
+  exempted), so `python -m unittest discover -s tests -p
+  "test_text_integrity.py" -v` is the single command.
+- The `Text integrity` CI workflow runs exactly that suite on every
+  push and pull request.
+- When scripting file writes, prefer structured edits; if you must
+  rewrite via PowerShell, write UTF-8 without BOM. Unicode em/en dashes
+  and non-English text are legitimate content - never globally replace
+  dashes.
+
 ## Agent command-line tooling manual
 
 **Snapshot recording and cross-agent verification:** Read

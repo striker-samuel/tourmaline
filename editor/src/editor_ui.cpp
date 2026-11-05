@@ -8,6 +8,7 @@
 // coalesce into one command per gesture via m_pending.
 
 #include "editor_app.h"
+#include "ui/dialogs/system_modal.h"
 #include "ui/panel_registry.h"
 #include "editor_brush_presets.h"
 #include "modal_bindings.h"
@@ -328,10 +329,10 @@ void EditorApp::FinalizePending() {
 		}
 	}
 
-	// ---- the detached live-view image lane (the offscreen scene RT) --
-	// Bind the WYSIWYG inline LDR target as an ImGui user texture so the
-	// detached Viewport window can present the scene through ImGui's own
-	// Vulkan backend (its swapchain, not the editor's). The same shape
+	// ---- the live-view image lane (the offscreen scene RT) ----------
+	// Bind the WYSIWYG inline LDR target as an ImGui user texture for BOTH
+	// docked and detached Viewport windows. ImGui's own draw order and clip
+	// rects keep the scene below the dock chrome, panels, and popups. The same shape
 	// as TextureThumb: a cached descriptor rebuilt when the physical
 	// view changes (an inline-target recreate) and released on
 	// teardown/recreate - never per frame.
@@ -385,6 +386,49 @@ void EditorApp::FinalizePending() {
 			reinterpret_cast<VkDescriptorSet>(ImU64(m_wysiwygDetachedTex)));
 		m_wysiwygDetachedTex = 0;
 		m_wysiwygDetachedPhysical = smvk::ImageViewHandle{};
+	}
+
+	ImTextureID EditorApp::LegacyStageTexture() {
+		if (!m_imgui || !m_context || m_legacyStageView.empty())
+			return ImTextureID(0);
+		const smvk::ImageViewHandle view = m_legacyStageView;
+		if (m_legacyStageTex != 0 && m_legacyStagePhysical == view)
+			return m_legacyStageTex;
+		DropLegacyStageTexture();
+		const void* vkView = m_context->GetImageViewVkImageView(view);
+		if (!vkView)
+			return ImTextureID(0);
+		if (m_cubeFaceSampler == UINT32_MAX) {
+			m_cubeFaceSampler = m_context->GetOrCreateSampler(
+				smvk::SamplerCreateInfo{
+					.magFilter = smvk::Filter::Linear,
+					.minFilter = smvk::Filter::Linear,
+					.mipmapMode = smvk::MipmapMode::Nearest,
+					.addressU = smvk::AddressMode::ClampToEdge,
+					.addressV = smvk::AddressMode::ClampToEdge,
+					.addressW = smvk::AddressMode::ClampToEdge,
+					.maxAnisotropy = 1.0f });
+		}
+		const void* vkSampler = m_context->GetVkSamplerOpaque(m_cubeFaceSampler);
+		if (!vkSampler)
+			return ImTextureID(0);
+		const VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(
+			VkSampler(const_cast<void*>(vkSampler)),
+			VkImageView(const_cast<void*>(vkView)),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		if (set == VK_NULL_HANDLE)
+			return ImTextureID(0);
+		m_legacyStageTex = ImTextureID(reinterpret_cast<ImU64>(set));
+		m_legacyStagePhysical = view;
+		return m_legacyStageTex;
+	}
+
+	void EditorApp::DropLegacyStageTexture() {
+		if (m_legacyStageTex != 0)
+			ImGui_ImplVulkan_RemoveTexture(
+				reinterpret_cast<VkDescriptorSet>(ImU64(m_legacyStageTex)));
+		m_legacyStageTex = 0;
+		m_legacyStagePhysical = {};
 	}
 
 	void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
@@ -492,6 +536,8 @@ void EditorApp::FinalizePending() {
 					ImGuiDir_Left, 0.24f, nullptr, &center);
 				ImGuiID right = ImGui::DockBuilderSplitNode(center,
 					ImGuiDir_Right, 0.28f, nullptr, &center);
+				ImGuiID bottom = ImGui::DockBuilderSplitNode(center,
+					ImGuiDir_Down, 0.22f, nullptr, &center);
 				ImGuiID leftUpper = ImGui::DockBuilderSplitNode(left,
 					ImGuiDir_Up, 0.54f, nullptr, &left);
 				ImGuiID mapNode = ImGui::DockBuilderSplitNode(center,
@@ -500,10 +546,18 @@ void EditorApp::FinalizePending() {
 				ImGui::DockBuilderDockWindow("World Map", mapNode);
 				ImGui::DockBuilderDockWindow("Outliner", leftUpper);
 				ImGui::DockBuilderDockWindow("Assets", left);
-				ImGui::DockBuilderDockWindow("Console", left);
+				ImGui::DockBuilderDockWindow("Console", bottom);
 				ImGui::DockBuilderDockWindow("Overrides", left);
 				ImGui::DockBuilderDockWindow("Inspector", right);
 				ImGui::DockBuilderDockWindow("Material", right);
+				// The Reference panel gets a dock HOME in the default tree
+				// (the right column, tabbed with Inspector/Material). It
+				// starts hidden now (m_showReferencePanel), but the builder
+				// assignment lands in the window SETTINGS - DockBuilder-
+				// DockWindow docks never-created windows through their
+				// settings - so the first View > Panels open lands DOCKED
+				// instead of a floating window over the viewport stage.
+				ImGui::DockBuilderDockWindow("Reference", right);
 				ImGui::DockBuilderFinish(dockId);
 				m_dockResetRequested = false;
 			}
@@ -517,6 +571,64 @@ void EditorApp::FinalizePending() {
 				m_uiMode ? ImGuiDockNodeFlags_PassthruCentralNode
 					: ImGuiDockNodeFlags_KeepAliveOnly);
 			ImGui::PopStyleColor();
+			// When a right-edge dock is squeezed to an unusable strip,
+			// close its tabs on release. The View menu can reopen them;
+			// their dock assignments remain saved by ImGui.
+			static bool rightDockWasMouseDown = false;
+			const bool rightDockMouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+			if (m_uiMode && rightDockWasMouseDown && !rightDockMouseDown) {
+				ImGuiWindow* inspector = ImGui::FindWindowByName("Inspector");
+				ImGuiWindow* material = ImGui::FindWindowByName("Material");
+				ImGuiWindow* reference = ImGui::FindWindowByName("Reference");
+				ImGuiDockNode* rightDock = inspector && inspector->DockNode
+					? inspector->DockNode : (material ? material->DockNode : nullptr);
+				if (rightDock && rightDock->IsLeafNode()
+					&& rightDock->Size.x > 0.0f && rightDock->Size.x < 96.0f
+					&& rightDock->Pos.x + rightDock->Size.x
+						>= mainPos.x + ImGui::GetIO().DisplaySize.x - 3.0f) {
+					if (inspector && inspector->DockNode == rightDock)
+						m_showInspectorPanel = false;
+					if (material && material->DockNode == rightDock)
+						m_showMaterialPanel = false;
+					if (reference && reference->DockNode == rightDock)
+						m_showReferencePanel = false;
+				}
+			}
+			rightDockWasMouseDown = rightDockMouseDown;
+			// THE DEGENERATE-LAYOUT SELF-HEAL (the squeezed-central-node
+			// bug): ImGui persists dock splits as ABSOLUTE pixel SizeRefs.
+			// A layout authored in a large window (maximized on a big
+			// monitor) loads in a smaller one with every side panel keeping
+			// its absolute width - ImGui's sizing policy gives non-central
+			// children their explicit size and hands the central node the
+			// REMAINDER (imgui.cpp DockNodeTreeUpdatePosSize rule 3), so the
+			// central node (the Viewport's home) absorbs the whole deficit
+			// and collapses to a ~24-64 px sliver. The live view then floors
+			// at its 64 px minimum target and composites into a sliver rect:
+			// "the docked viewport doesn't render". Heal ONCE, early in the
+			// session and never mid-drag: rebuild the compiled default
+			// layout (the proven View > Reset workspace path), loudly. The
+			// saved panel arrangement is deliberately NOT preserved - a
+			// layout that starves the viewport below usability is broken
+			// state, not a preference.
+			if (m_uiMode && !m_dockResetRequested && !m_dockLayoutHealed
+				&& m_frameCounter < 600
+				&& !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+				if (ImGuiDockNode* central =
+						ImGui::DockBuilderGetCentralNode(dockId);
+					central && central->Size.x >= 1.0f
+					&& (central->Size.x < 240.0f
+						|| central->Size.y < 160.0f)) {
+					m_dockLayoutHealed = true;
+					m_dockResetRequested = true;
+					Log("Workspace: the saved dock layout squeezes the "
+						"viewport stage below usable size (central node "
+						+ std::to_string(int(central->Size.x)) + "x"
+						+ std::to_string(int(central->Size.y))
+						+ " px) - rebuilding the default layout (View > "
+						"Reset workspace to customize)");
+				}
+			}
 		}
 		ImGui::End();
 		ImGui::PopStyleVar();
@@ -532,14 +644,13 @@ void EditorApp::FinalizePending() {
 		// DrawLiveViewStage may set this again only for a visible viewport.
 		m_wysiwygLiveRectFresh = false;
 		if (m_uiMode) {
-			// A transparent, dockable viewport client: render directly into
-			// its previous-frame rect under ImGui's tab chrome while
-			// DOCKED (no offscreen scene texture, no extra GPU copy, no
-			// scene serialization). DETACHED (undocked into a secondary
-			// OS window), the scene arrives through the image lane below:
-			// the live view's inline target drawn as an ImGui user
-			// texture, presented by ImGui's backend in that window's own
-			// swapchain.
+			// Render the live scene as a normal ImGui image in BOTH docked
+			// and detached windows. The old main-swapchain composite ran
+			// before ImGui and was subsequently covered by dock-node/window
+			// draw commands (visible in RenderDoc as a healthy scene draw
+			// followed by an opaque UI draw). An image in the Viewport draw
+			// list obeys normal dock/tab clipping and Z-order. Non-live modes
+			// retain their legacy direct-to-swapchain rendering when docked.
 			m_dockViewportVisible = false;
 			m_dockStageDetached = false;
 			if (m_showViewportPanel) {
@@ -571,32 +682,103 @@ void EditorApp::FinalizePending() {
 							|| ImGui::IsMouseClicked(ImGuiMouseButton_Middle)
 							|| ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
 						m_dockViewportDragCaptured = true;
-					if (m_dockStageDetached) {
-						// THE OFFSCREEN SCENE RENDER TARGET LANE. The
-						// inline LDR target IS the offscreen scene render;
-						// stretch it over the stage (the drive renders at
-						// the stage extent through the deadband, so this
-						// is 1:1 outside resize transitions). Diagnostic
-						// view modes (the legacy editor passes) render
-						// into the primary swapchain only - say so.
-						const ImTextureID tex = LiveViewActive()
-							? WysiwygStageTexture() : ImTextureID(0);
-						if (tex != 0)
-							ImGui::Image(tex, avail);
-						else {
-							ImGui::Dummy(avail);
-							ImGui::SetCursorPos(ImVec2(
-								ImGui::GetCursorPos().x,
-								ImGui::GetCursorPos().y - avail.y * 0.5f));
-							ImGui::TextDisabled(
-								"%s", LiveViewActive()
-								? "scene render unavailable (attach failed)"
-								: "this view mode renders in the editor window -\n"
-									"dock the Viewport back or switch to Lit (F1)");
+					// The inline target is rendered before this UI pass. Sample
+					// it inside the Viewport window rather than compositing
+					// behind the dockspace, where opaque ImGui draw calls
+					// can hide it. Both lanes share descriptor lifetime.
+					// ASPECT LOCK: the drive renders the target at the 4:3
+					// stage extent (StageViewportRect's aspect-locked fit -
+					// the projection derives from it), so the image draws
+					// at the SAME stage rect, letterboxed inside the window.
+					// A stretch over the full panel would distort the
+					// projection whenever the panel is not 4:3.
+					const int liveVp = LiveViewViewport();
+					const bool live = liveVp >= 0;
+					// The legacy preview is rendered in primary-window pixel
+					// coordinates. Subrect UVs sample that exact area inside
+					// the docked Viewport's normal draw list, with clipping and
+					// Z-order identical to the live image lane.
+					const auto drawLegacy = [&]() {
+						if (m_dockStageDetached)
+							return;
+						const ImTextureID oldTex = LegacyStageTexture();
+						if (oldTex == 0 || m_legacyStageExtent.width == 0
+							|| m_legacyStageExtent.height == 0)
+							return;
+						const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+						const float tw = float(m_legacyStageExtent.width);
+						const float th = float(m_legacyStageExtent.height);
+						for (int vp = 0; vp < ViewportCount(); ++vp) {
+							if (vp == liveVp)
+								continue;
+							const ViewportRect& r = m_viewports[vp].rect;
+							if (r.w < 8.0f || r.h < 8.0f || r.x < 0.0f
+								|| r.y < 0.0f || r.x + r.w > tw
+								|| r.y + r.h > th)
+								continue;
+							ImGui::SetCursorScreenPos(
+								ImVec2(origin.x + r.x, origin.y + r.y));
+							ImGui::Image(oldTex, ImVec2(r.w, r.h),
+								ImVec2(r.x / tw, r.y / th),
+								ImVec2((r.x + r.w) / tw, (r.y + r.h) / th));
 						}
+					};
+					const ImTextureID tex = live
+						? WysiwygStageTexture() : ImTextureID(0);
+					if (tex != 0) {
+						// Reserve the FULL canvas first (the rect capture
+						// above and the hover/drag math key on the whole
+						// window content), then draw the image at the
+						// stage sub-rect.
+						ImGui::Dummy(avail);
+						ViewportRect stage;
+						if (m_dockStageDetached) {
+							// The detached window's own content rect is
+							// already in ImGui/global coords - the same
+							// derivation DrawLiveViewStage's detached
+							// branch feeds the drive's extent.
+							stage = StageViewportRect(m_dockViewportRect,
+								liveVp, m_vpLayout);
+						}
+						else {
+							// Docked: the computed stage is SDL-window
+							// local; convert to ImGui's global desktop
+							// coords exactly once - the pairing of
+							// DrawLiveViewStage's docked conversion, and
+							// the same one-frame rect lag the old
+							// composite had.
+							const ViewportRect& local =
+								m_viewports[liveVp].rect;
+							const ImVec2 origin =
+								ImGui::GetMainViewport()->Pos;
+							stage = ViewportRect{ origin.x + local.x,
+								origin.y + local.y, local.w, local.h };
+						}
+						if (stage.w >= 8.0f && stage.h >= 8.0f) {
+							ImGui::SetCursorScreenPos(
+								ImVec2(stage.x, stage.y));
+							ImGui::Image(tex,
+								ImVec2(stage.w, stage.h));
+						}
+						drawLegacy(); // other non-live viewports in multi-view layouts
+					}
+					else if (!live && !m_dockStageDetached) {
+						ImGui::Dummy(avail);
+						drawLegacy();
+					}
+					else if (m_dockStageDetached || live) {
+						ImGui::Dummy(avail);
+						ImGui::SetCursorPos(ImVec2(
+							ImGui::GetCursorPos().x,
+							ImGui::GetCursorPos().y - avail.y * 0.5f));
+						ImGui::TextDisabled(
+							"%s", live
+							? "scene render unavailable (attach failed)"
+							: "this view mode renders in the editor window -\n"
+								"dock the Viewport back or switch to Lit (F1)");
 					}
 					else
-						ImGui::Dummy(avail); // reserve canvas space, no ImGui pixels
+						ImGui::Dummy(avail); // legacy view renders to the swapchain
 				}
 			}
 			ImGui::End();
@@ -656,8 +838,7 @@ void EditorApp::FinalizePending() {
 			DrawComponentTable();
 		DrawInsetTag();
 		DrawViewportChrome(); // borders, camera chips, box-select rect
-		// The live compositor still renders under ImGui in the dockable
-		// Viewport client; the viewport's presentation aspect is 4:3.
+		// Viewport chrome overlays the image; presentation aspect is 4:3.
 		DrawLiveViewStage();
 		DrawVerbToast();
 		// UV editor window retired (the Live view window replaced the
@@ -812,6 +993,8 @@ void EditorApp::FinalizePending() {
 			: (m_taskWindow.done ? m_taskWindow.result : "Ready");
 		if (!m_verbToast.empty())
 			status += "  |  Last: " + m_verbToast;
+		if (!m_consoleLines.empty())
+			status += "  |  Console: " + m_consoleLines.back();
 		const std::string fullStatus = status;
 		const float textW = std::max(0.0f, available - laneW - 8.0f);
 		if (ImGui::CalcTextSize(status.c_str()).x > textW) {
@@ -984,8 +1167,16 @@ void EditorApp::FinalizePending() {
             }
             if (ImGui::MenuItem("Save tour...", nullptr, false,
 					m_world != nullptr && !m_cookRunning && !m_bakeRunning)) {
+				// The startup document is transient; an explicit Save tour
+				// should offer a permanent project asset, not its temp path.
+				const std::string saveDefault =
+					!m_startupTempTour.empty()
+					&& TourTarget() == m_startupTempTour
+					? (std::filesystem::path(m_projectRoot) / "content"
+						/ "scenes" / "New Scene.tour").string()
+					: TourTarget();
 				std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
-					"%s", TourTarget().c_str());
+					"%s", saveDefault.c_str());
 #ifdef _WIN32
 				std::string target;
 				if (NativeSaveTourFile(target, m_savePathBuf) && !target.empty()) {
@@ -1561,6 +1752,40 @@ void EditorApp::FinalizePending() {
 			m_showSaveDialog = false;
 		}
 		DrawSaveDialog();
+		// Esc exit confirmation: only opened for unsaved scene changes.
+		// No implicit write occurs on Cancel or Discard.
+		if (m_showExitPrompt) {
+			ImGui::OpenPopup("Save scene changes?");
+			m_showExitPrompt = false;
+		}
+		ui::PrepareSystemModal();
+		if (ImGui::BeginPopupModal("Save scene changes?", nullptr,
+			ui::kSystemModalFlags | ImGuiWindowFlags_AlwaysAutoResize)) {
+			if (ui::SystemModalCloseRequested())
+				ImGui::CloseCurrentPopup(); // OS X is Cancel, never Discard
+			else {
+			ImGui::TextWrapped("The current scene has unsaved changes.");
+			ImGui::TextWrapped("Save the scene before closing Tourmaline Editor?");
+			ImGui::Separator();
+			if (ImGui::Button("Save and exit", ImVec2(140, 0))) {
+				if (SaveTour()) {
+					ImGui::CloseCurrentPopup();
+					RequestClose();
+				} else Log("Exit canceled: scene could not be saved.");
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Discard", ImVec2(90, 0))) {
+				m_discardOnExit = true;
+				ImGui::CloseCurrentPopup();
+				RequestClose();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(90, 0)))
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
 		if (m_showRecoverDialog) {
 			ImGui::OpenPopup("Recover autosave");
 			m_showRecoverDialog = false;
@@ -1678,20 +1903,13 @@ void EditorApp::FinalizePending() {
 				int(m_gizmoMode) == i, transformCaptions[i], transformNames[i]))
 				m_gizmoMode = GizmoMode(i);
 		}
-		if (m_transposeEnabled) {
-			next();
-			if (ImGui::SmallButton("Transpose: ON") && !m_transposeDrag) {
-				m_transposeEnabled = false;
+		next();
+		if (tool("transpose", IconType::ToolTranspose, m_transposeEnabled,
+			"Trans", "Toggle the classic object Transpose line")) {
+			if (!m_transposeDrag) {
+				m_transposeEnabled = !m_transposeEnabled;
 				m_transposeOwner = UINT32_MAX;
 			}
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Classic object Transpose line (View menu to enable). No mesh edits.");
-		} else {
-			next();
-			if (ImGui::SmallButton("Transpose") && !m_transposeDrag) {
-				m_transposeEnabled = true;
-				m_transposeOwner = UINT32_MAX;
-			}
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable the three-handle object Transpose line. Old gizmos stay available.");
 		}
 		ImGui::PopID();
 		split();
@@ -1726,15 +1944,20 @@ void EditorApp::FinalizePending() {
 
 	void EditorApp::DrawSaveDialog() {
 		namespace fs = std::filesystem;
-		ImGui::SetNextWindowSize(ImVec2(620, 420), ImGuiCond_FirstUseEver);
+		ui::PrepareSystemModal(ImVec2(620, 420), ImGuiCond_FirstUseEver);
 		if (!ImGui::BeginPopupModal("Save tour as", nullptr,
-			ImGuiWindowFlags_NoCollapse))
+			ui::kSystemModalFlags))
 			return;
 		auto closeDlg = [&]() {
 			m_saveBrowseDir.clear();
 			m_saveBrowseSel.clear();
 			ImGui::CloseCurrentPopup();
 		};
+		if (ui::SystemModalCloseRequested()) {
+			closeDlg();
+			ImGui::EndPopup();
+			return;
+		}
 		if (m_saveBrowseDir.empty()) {
 			// First frame: start from the target field's parent dir.
 			std::error_code ec;

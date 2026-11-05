@@ -386,6 +386,9 @@ public:
 
 protected:
 	bool Initialize() override;
+	// Escape is editor-owned: never let App's held-Esc quit bypass
+	// the unsaved-scene confirmation dialog.
+	bool AllowEscQuit() const override { return false; }
 	void Shutdown() override;
 	void DrawFrame() override;
 	void EarlyUpdate() override { Super::EarlyUpdate(); }
@@ -393,6 +396,8 @@ protected:
 	void OnFramebufferResized(int w, int h) override {
 		Super::OnFramebufferResized(w, h);
 		m_swapViews.clear(); // re-register against the new swapchain
+		// Rebuild any ImGui descriptor cached across a swapchain reflow.
+		DropLegacyStageTexture();
 	}
 
 private:
@@ -475,7 +480,8 @@ private:
 	float PreviewExposure() const;
 	// Line overlay (grid + gizmos + light markers): ONE upload, ONE pass
 	// PER VISIBLE VIEWPORT (that viewport's viewProj + rect).
-	void RecordGizmoPass(smvk::LogicalImageViewHandle swapView);
+	void RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
+		tour::DebugDrawList* debugOutput = nullptr);
 	void UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent);
 	// Viewport rects for the current frame (single: one central rect;
 	// quad: 2x2 grid inside the central area) + hovered/active tracking.
@@ -747,6 +753,8 @@ private:
 	void ModalDelete(); // Del: DeleteSelection() (skipped while the
 	                     // placement graph window owns the keyboard —
 	                     // its canvas Del removes graph nodes instead)
+	void ModalGroupSelection(); // Ctrl+G: new transform over selected roots
+	void ModalEscape(); // Esc: confirm unsaved changes before exit
 	void ModalDuplicate(); // Ctrl+D: DuplicateSelection() (same
 	                       // placement-graph keyboard guard as Del)
 	void ModalIsolateSelect(); // Ctrl+1: Maya-style isolate/toggle/clear
@@ -1654,6 +1662,20 @@ private:
 	smvk::ImageViewHandle m_wysiwygDetachedPhysical{}; // the inline view the descriptor was built from
 	ImTextureID WysiwygStageTexture(); // editor_ui.cpp (lazy build + recreate rebuild)
 	void DropWysiwygStageTexture();
+	// Non-live editor preview: one full-primary-window offscreen color
+	// image shared by the legacy viewport passes. Drawing its source
+	// subrect as ImGui::Image puts F2+ under dock chrome/popups.
+	bool EnsureLegacyStageTarget(smvk::Extent2D extent);
+	ImTextureID LegacyStageTexture();
+	void DropLegacyStageTexture();
+	smvk::Holder<smvk::ImageHandle> m_legacyStageImage{};
+	smvk::Holder<smvk::ImageViewHandle> m_legacyStageView{};
+	smvk::LogicalImageViewHandle m_legacyStageLogical{};
+	smvk::Extent2D m_legacyStageExtent{};
+	smvk::Format m_legacyStageFormat = smvk::Format::Undefined;
+	ImTextureID m_legacyStageTex = 0;
+	smvk::ImageViewHandle m_legacyStagePhysical{};
+
 	// One viewport's rect from an UNCLAMPED dock stage area (the quad
 	// split / the aspect-locked 4:3 fit). The shared authority for
 	// ComputeViewportRects and the detached-stage live-view capture.
@@ -1732,6 +1754,7 @@ private:
 		uint32_t node = UINT32_MAX;
 		bool beforeFlag = false;
 		uint32_t beforeMaterial = UINT32_MAX;
+		tour::scene::plugs::Value beforeValue;
 	};
 	struct OverrideRule {
 		uint32_t id = 0;
@@ -1740,10 +1763,15 @@ private:
 		std::string pattern;
 		bool flag = true; // Visibility/NoLightmap/Dither value
 		uint32_t materialWorld = UINT32_MAX; // Material: world mat idx (UI)
+		std::string plug;
+		tour::scene::plugs::Value value;
 		std::vector<OverrideApplied> applied; // nodes written by this rule
 		std::string lastError; // regex compile error, else empty
 		int lastMatches = 0; // nodes matched on last apply (pre local-skip)
 	};
+	bool HasLocalPlugOverride(uint32_t node, const std::string& plug) const;
+	bool AddPlugOverrideRule(const std::string& pattern, const std::string& plug,
+		const tour::scene::plugs::Value& value);
 	bool HasLocalOverride(uint32_t node,
 		smvk::tour::OverrideAttr attr) const; // history scan (cursor range)
 	// Regex over node names (ECMAScript, search). Returns matched world
@@ -1785,7 +1813,15 @@ private:
 	int m_overrideAttrSel = 0; // 0 vis, 1 material, 2 noLM, 3 dither
 	bool m_overrideFlagVal = true;
 	int m_overrideMatSel = 0;
+	int m_overridePlugSel = 0;
+	bool m_overridePlugBool = true;
+	float m_overridePlugNumber = 1.0f;
+	char m_overridePlugString[256] = "";
 	std::vector<OverrideRule> m_overrideRules;
+	// Directed typed plug wiring shares the cooked scene's graph model.
+	tour::scene::plugs::Graph m_plugGraph;
+	int m_connectSourceNode = 0, m_connectDestNode = 0;
+	int m_connectSourcePlug = 0, m_connectDestPlug = 0;
 	uint32_t m_nextOverrideId = 1;
 	// Save-as dialog state.
 	bool m_showSaveDialog = false;
@@ -1793,6 +1829,7 @@ private:
 	std::string m_saveBrowseDir;
 	std::string m_saveBrowseSel;
 	std::string m_tourPath; // live target, reset to TourPath() on scene load
+	std::string m_startupTempTour; // transient empty scene opened at startup
 	void DrawSaveDialog();
 	static bool CmdToTour(const EditorApp& app, const EditCmd& c,
 		smvk::tour::Command& out);
@@ -2338,7 +2375,7 @@ private:
 		Light, Camera, Env, GI, Character, Skeleton,
 		Animation, Timeline, Settings,
 		ToolObject, ToolFace, ToolVertex, ToolFrame, ToolClear,
-		ToolMove, ToolRotate, ToolScale, ToolLayout, ToolLighting,
+		ToolMove, ToolRotate, ToolScale, ToolTranspose, ToolLayout, ToolLighting,
 		ToolTest, ToolProfile,
 		Brush, BrushStroke, BrushPoints, BrushTrees, Count
 	};
@@ -2666,6 +2703,8 @@ private:
 	// (AutosaveTour fires exactly on those paths), cleared by explicit
 	// saves, clean loads and scene close.
 	bool m_tourDirty = false;
+	bool m_showExitPrompt = false; // Esc after unsaved scene changes
+	bool m_discardOnExit = false; // bypass automatic shutdown save on Discard
 	std::string m_lastWindowTitle; // change-detected SDL title cache
 	void UpdateWindowTitle(); // "Tourmaline Editor — <scene> [*]"
 	// True while the focused ImGui window sits inside the Placement Graph
@@ -2822,6 +2861,9 @@ private:
 	bool m_dockViewportHovered = false;
 	bool m_dockViewportDragCaptured = false; // keep orbit/pan ownership until release
 	bool m_dockResetRequested = false;
+	// One-shot startup latch for the degenerate-layout self-heal (see the
+	// central-node check after the DockSpace submit in FinalizePending).
+	bool m_dockLayoutHealed = false;
 	// Each dock tool has a close button; View > Panels can reopen it.
 	bool m_showViewportPanel = true;
 	bool m_showWorldMapPanel = true;
@@ -2833,7 +2875,12 @@ private:
 	glm::vec2 m_worldMapLastStamp{-1e9f};
 	void DrawWorldMapPanel();
 	bool m_showOutlinerPanel = true;
-	bool m_showReferencePanel = true;
+	// The Reference panel does NOT autostart: it used to open as a
+	// FLOATING window over the viewport stage on every boot (the default
+	// dock builder never assigned it a node, so it covered the scene).
+	// View > Panels reopens it - docked into the right column (the
+	// default builder's "Reference" assignment in FinalizePending).
+	bool m_showReferencePanel = false;
 	bool m_showAssetsPanel = true;
 	bool m_showConsolePanel = true;
 	bool m_showOverridesPanel = true;

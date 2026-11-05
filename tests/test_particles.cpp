@@ -40,7 +40,13 @@ void Check(bool cond, const char* name) {
 // sizes/offsets are the contract.
 // ---------------------------------------------------------------------------
 void TestStructAbi() {
-	Check(sizeof(smvk::ParticleGpu) == 64, "pt.abi.particle-size");
+	Check(sizeof(smvk::MeshParticleGpu) == 96, "pt.mesh.abi-particle");
+    Check(sizeof(smvk::MeshParticleEmitterGpu) == 128, "pt.mesh.abi-emitter");
+    Check(sizeof(smvk::MeshParticlesEmitPush) == 48, "pt.mesh.abi-emit-push");
+    Check(sizeof(smvk::MeshParticlesSimPush) == 48, "pt.mesh.abi-sim-push");
+    Check(sizeof(smvk::MeshParticlesCullPush) == 208, "pt.mesh.abi-cull-push");
+    Check(sizeof(smvk::MeshParticlesVsPush) == 32, "pt.mesh.abi-vs-push");
+    Check(sizeof(smvk::ParticleGpu) == 64, "pt.abi.particle-size");
 	Check(sizeof(smvk::ParticleGpu) % 16 == 0, "pt.abi.particle-align");
 	Check(sizeof(smvk::ParticleEmitterGpu) == 128, "pt.abi.emitter-size");
 	Check(sizeof(smvk::ParticleEmitterGpu) % 16 == 0, "pt.abi.emitter-align");
@@ -264,6 +270,63 @@ void TestParticleSourceGraph() {
 }
 
 
+void TestMeshParticleSourceCompilation() {
+    using namespace tour::particles;
+    auto graph = Graph::Default();
+    graph.attrs[2].renderMode = kMeshRender;
+    graph.attrs[2].meshId = 3;
+    const SourceProvider source = [](const std::string&, int,
+        std::vector<Point>& points, std::string&) {
+        points.push_back({glm::vec3(2.0f, 3.0f, 4.0f)});
+        return true;
+    };
+    auto result = Evaluate(graph, source, 1);
+    Check(result.ok && result.emitters.empty() && result.meshEmitters.size() == 1,
+        "pt.mesh.compiles-mesh-only");
+    if (!result.meshEmitters.empty()) {
+        const auto& e = result.meshEmitters.front();
+        Check(e.life.w == 3.0f && e.position.x == 2.0f,
+            "pt.mesh.bin-and-position");
+        Check(e.life.z == graph.attrs[2].rate && e.size.x == graph.attrs[2].sizeStart,
+            "pt.mesh.rate-and-size");
+    }
+    const auto encoded = SerializeAttributes(kEmitter, graph.attrs[2]);
+    std::string type;
+    Attributes parsed;
+    Check(ParseAttributes(encoded, type, parsed) &&
+        parsed.renderMode == kMeshRender && parsed.meshId == 3,
+        "pt.mesh.v2-roundtrip");
+    graph.attrs[2].meshId = smvk::kMeshParticlesMaxBins;
+    Check(!Evaluate(graph, source).ok, "pt.mesh.reject-unsupported-bin");
+    Attributes invalid = graph.attrs[2];
+    const std::string invalidValue = SerializeAttributes(kEmitter, invalid);
+    Check(!ParseAttributes(invalidValue, type, parsed),
+        "pt.mesh.reject-invalid-serialized-bin");
+    graph.attrs[2].meshId = 0;
+    graph.attrs[2].renderMode = kBillboardRender;
+    result = Evaluate(graph, source);
+    Check(result.ok && result.emitters.size() == 1 && result.meshEmitters.empty(),
+        "pt.mesh.billboard-backward-compatibility");
+    const std::string legacy = "v1 particle.emitter -1 -100 100 18 0.35 1.8 6 0.3 0.2 0.58 0.49 0.36";
+    Check(ParseAttributes(legacy, type, parsed) &&
+        parsed.renderMode == kBillboardRender,
+        "pt.mesh.legacy-v1-default");
+    graph.attrs[2].renderMode = kMeshRender;
+    graph.attrs[2].meshId = 1;
+    const uint32_t secondSink = 4;
+    graph.topology.nodes.emplace(secondSink, Graph::MakeNode(secondSink, kEmitter));
+    graph.attrs[secondSink] = {};
+    Check(graph.Connect(1, secondSink) != 0, "pt.mesh.second-sink-connect");
+    auto mixed = Evaluate(graph, source, 1);
+    Check(mixed.ok && mixed.meshEmitters.size() == 1 &&
+        mixed.emitters.empty() && !mixed.warning.empty(),
+        "pt.mesh.mixed-sinks-share-capacity");
+    mixed = Evaluate(graph, source, 2);
+    Check(mixed.ok && mixed.meshEmitters.size() == 1 &&
+        mixed.emitters.size() == 1,
+        "pt.mesh.mixed-sinks-independent-outputs");
+}
+
 void TestParticleSourceTopologyRegressions() {
     using namespace tour::particles;
     // Multiple registered providers may fan into the same emitter sink.
@@ -372,7 +435,7 @@ void TestParticleSourceTopologyRegressions() {
     std::string type;
     Attributes parsed;
     const std::string valid = SerializeAttributes(kEmitter, graph.attrs.at(2));
-    Check(!ParseAttributes("v2" + valid.substr(2), type, parsed),
+    Check(!ParseAttributes("v3" + valid.substr(2), type, parsed),
         "pt.source.reject-unknown-schema-version");
     Check(!ParseAttributes(valid + " trailing", type, parsed),
         "pt.source.reject-extra-tokens");
@@ -381,6 +444,7 @@ void TestParticleSourceTopologyRegressions() {
 }
 
 int main() {
+	TestMeshParticleSourceCompilation();
 	TestParticleSourceTopologyRegressions();
 	TestParticleSourceGraph();
 	TestStructAbi();

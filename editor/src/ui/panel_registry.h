@@ -73,8 +73,17 @@ public:
                     ImGui::EndPopup();
                 }
                 ImGui::PopID();
-                if (*panel.visible)
+                if (*panel.visible) {
+                    // Dense property inspectors use a slightly smaller
+                    // text scale than the rest of the editor chrome.
+                    // Restore the window scale before ending the panel.
+                    const bool compact = panel.title == "Inspector";
+                    if (compact)
+                        ImGui::SetWindowFontScale(0.875f);
                     panel.draw(context);
+                    if (compact)
+                        ImGui::SetWindowFontScale(1.0f);
+                }
             }
             ImGui::End();
         }

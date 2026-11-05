@@ -49,13 +49,12 @@ public:
 };
 
 
-// The label column width: MEASURED against the window's content width
-// (42% clamped to [90, 220] px — the two-column property contract at
-// any inspector width/DPI; a long label truncates with a full-text
-// tooltip instead of colliding into the value field).
+// Reserve a stable name/value gutter in every property row. The label
+// must never be left-clipped just because the dock was resized: below
+// the minimum two-column width, stack the full label above the control.
 inline float LabelColumnWidth() {
 	const float w = ImGui::GetContentRegionAvail().x;
-	return std::clamp(w * 0.42f, 90.0f, 220.0f);
+	return std::clamp(w * 0.48f, 156.0f, 220.0f);
 }
 
 // Attribute provenance scoped to the Inspector: 1=local, 2=wide rule.
@@ -69,15 +68,15 @@ private:
 	const std::unordered_map<std::string, int>* previous_;
 };
 
-// One property row's label cell: the name CLIPPED to the column (a
-// long label never collides into the value field) with the full text
-// on the tooltip when it clipped; the hint tooltip wins when present.
+// Draw the full property name. At normal widths it is right-aligned in
+// a reserved label column, separated from the value by a fixed gutter.
+// When there is not enough room for both columns, use a stacked layout.
 inline void LabelCell(const char* name, const char* hint) {
-	const float colW = LabelColumnWidth();
 	const char* shown = name ? name : "";
-	const ImVec2 ts = ImGui::CalcTextSize(shown);
-	const float avail = colW - 10.0f;
-	const bool clipped = ts.x > avail;
+	const float available = ImGui::GetContentRegionAvail().x;
+	const float colW = LabelColumnWidth();
+	const float startX = ImGui::GetCursorPosX();
+	const bool stacked = available < colW + 112.0f;
 	int overrideKind = 0;
 	if (overrideLabels) {
 		const auto it = overrideLabels->find(shown);
@@ -87,16 +86,11 @@ inline void LabelCell(const char* name, const char* hint) {
 		ImGui::PushStyleColor(ImGuiCol_Text, overrideKind == 1
 			? ImVec4(1.0f, 0.69f, 0.23f, 1.0f)
 			: ImVec4(0.98f, 0.43f, 0.70f, 1.0f));
-	if (clipped) {
-		// Clip at the column edge (the visual cut IS the column rule);
-		// the tooltip carries the full name.
-		ImVec2 pos = ImGui::GetCursorScreenPos();
-		ImGui::PushClipRect(pos, ImVec2(pos.x + avail, pos.y + ts.y + 2.0f),
-			true);
-		ImGui::TextUnformatted(shown);
-		ImGui::PopClipRect();
-	}
-	else {
+	if (stacked) {
+		ImGui::TextWrapped("%s", shown);
+	} else {
+		const float nameW = ImGui::CalcTextSize(shown).x;
+		ImGui::SetCursorPosX(startX + std::max(0.0f, colW - 12.0f - nameW));
 		ImGui::TextUnformatted(shown);
 	}
 	if (overrideKind)
@@ -107,9 +101,28 @@ inline void LabelCell(const char* name, const char* hint) {
 			hint ? "\\n" : "", hint ? hint : "");
 	else if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
-	else if (clipped && ImGui::IsItemHovered())
-		ImGui::SetTooltip("%s", shown);
-	ImGui::SameLine(colW);
+	if (!stacked) {
+		ImGui::SameLine(0.0f, 0.0f);
+		ImGui::SetCursorPosX(startX + colW);
+	}
+}
+
+// Component header with the removal action next to the component name.
+// Returning true allows the caller to run its existing undoable Remove verb
+// and return before accessing the removed component row.
+inline bool ComponentHeader(const char* title, const char* hint = nullptr) {
+	ImGui::Separator();
+	ImGui::TextUnformatted(title);
+	if (hint && ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", hint);
+	const float buttonW = ImGui::GetFrameHeight();
+	ImGui::SameLine();
+	ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),
+		ImGui::GetWindowContentRegionMax().x - buttonW));
+	const bool remove = ImGui::SmallButton("X##remove_component");
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Remove %s component (undoable)", title);
+	return remove;
 }
 
 // The unique-but-invisible widget label for an attribute name.
@@ -152,7 +165,7 @@ inline bool Float(const char* name, float* v, float speed, float mn,
 	float mx, const char* fmt, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f); // the rest of the row - no dead gap
-	float candidate = numeric::Display(*v, mn < mx ? mn : 0.0f);
+	float candidate = numeric::DisplayFixed(*v, 3, mn < mx ? mn : 0.0f);
 	const bool edited = ImGui::DragFloat(Id(name).c_str(), &candidate, speed, mn,
 		mx, fmt ? fmt : "%.3f");
 	if (hint && ImGui::IsItemHovered())
@@ -168,7 +181,7 @@ inline bool Slider(const char* name, float* v, float mn, float mx,
 	const char* fmt, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
-	float candidate = numeric::Display(*v, mn);
+	float candidate = numeric::DisplayFixed(*v, 2, mn);
 	const bool edited = ImGui::SliderFloat(Id(name).c_str(), &candidate, mn, mx,
 		fmt ? fmt : "%.2f");
 	if (hint && ImGui::IsItemHovered())
@@ -208,7 +221,7 @@ inline Vec3Result Vec3(const char* name, float v[3], float speed,
 		const std::string label = std::string(name) + " " + kAxes[i];
 		LabelCell(label.c_str(), hint);
 		ImGui::SetNextItemWidth(-1.0f);
-		float candidate = numeric::Display(v[i]);
+		float candidate = numeric::DisplayFixed(v[i]);
 		if (ImGui::DragFloat("##axis", &candidate, speed, 0.0f, 0.0f,
 				"%.3f") && numeric::Finite(candidate)) {
 			v[i] = candidate;
@@ -231,7 +244,7 @@ inline bool Vec2(const char* name, float v[2], float speed, float mn,
 	float mx, const char* fmt, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
-	float candidate[2] = { numeric::Display(v[0]), numeric::Display(v[1]) };
+	float candidate[2] = { numeric::DisplayFixed(v[0]), numeric::DisplayFixed(v[1]) };
 	const bool edited = ImGui::DragFloat2(Id(name).c_str(), candidate, speed, mn,
 		mx, fmt ? fmt : "%.3f");
 	if (hint && ImGui::IsItemHovered())
@@ -262,8 +275,8 @@ inline bool Vec3Compact(const char* name, float v[3], float speed,
 	const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
-	float candidate[3] = { numeric::Display(v[0]), numeric::Display(v[1]),
-		numeric::Display(v[2]) };
+	float candidate[3] = { numeric::DisplayFixed(v[0]), numeric::DisplayFixed(v[1]),
+		numeric::DisplayFixed(v[2]) };
 	const bool edited = ImGui::DragFloat3(Id(name).c_str(), candidate, speed);
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);

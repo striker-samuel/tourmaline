@@ -61,10 +61,15 @@ namespace editor {
 		const attr::ScopedID componentId("physics_body");
 		if (!m_world || node >= m_world->scene.hierarchy.size()) return;
 		auto* row = tour::scene::FindPhysicsBody(m_world->scene, node);
-		ImGui::Separator();
 		if (!row)
 			return;
-		ImGui::TextUnformatted("Physics Body / Collider");
+		if (attr::ComponentHeader("Physics Body / Collider")) {
+			EditCmd cmd{};
+			cmd.verb = EditVerb::RemovePhysicsBodyVerb;
+			cmd.node = node;
+			Do(cmd);
+			return;
+		}
 		ImGui::TextDisabled("Authored definition (simulation preview not yet available).");
 		auto commit = [&](const char* key, double value, bool flag = false) {
 			EditCmd cmd{};
@@ -105,12 +110,7 @@ namespace editor {
 		bool sensor = row->body.sensor;
 		if (ImGui::Checkbox("Sensor (no contact response)", &sensor))
 			commit("sensor", 0, sensor);
-		if (ImGui::Button("Remove Physics Body")) {
-			EditCmd cmd{};
-			cmd.verb = EditVerb::RemovePhysicsBodyVerb;
-			cmd.node = node;
-			Do(cmd);
-		}
+
 	}
 
 } // namespace editor

@@ -38,6 +38,14 @@ set_target_properties(DebugDrawTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME debug_draw_tests COMMAND DebugDrawTests)
 
+# Headless authored-node plug registry, typed value adapters and
+# acyclic source->destination connection evaluation.
+add_executable(NodePlugsTests test_node_plugs.cpp)
+target_link_libraries(NodePlugsTests PRIVATE engine)
+set_target_properties(NodePlugsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME node_plugs_tests COMMAND NodePlugsTests)
+
 # Planar reflection camera math (CPU only; no Vulkan device required).
 add_executable(PlanarReflectionTests test_planar_reflection.cpp)
 target_link_libraries(PlanarReflectionTests PRIVATE engine)
@@ -1507,3 +1515,17 @@ set_target_properties(BrushPresetTests PROPERTIES
 )
 add_test(NAME brush_preset_tests COMMAND BrushPresetTests)
 
+
+# Bump-arena flat-array core, no GPU context needed.
+add_executable(ArenaFlatArrayTests test_arena_flat_array.cpp)
+target_link_libraries(ArenaFlatArrayTests PRIVATE engine)
+set_target_properties(ArenaFlatArrayTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME arena_flat_array_tests COMMAND ArenaFlatArrayTests)
+
+# Semantic Scene CPU-memory views and external-backing contracts.
+add_executable(SceneMemoryBindingsTests test_scene_memory_bindings.cpp)
+target_link_libraries(SceneMemoryBindingsTests PRIVATE engine)
+set_target_properties(SceneMemoryBindingsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME scene_memory_bindings_tests COMMAND SceneMemoryBindingsTests)

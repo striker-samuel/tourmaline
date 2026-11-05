@@ -769,6 +769,11 @@ void RunConfig::WarnUnknown() {
 		// Build-time / CMake-only (legit in env, not runtime knobs):
 		"TOURMALINE_CONTENT_DIR", "TOURMALINE_PCH",
 		"TOURMALINE_DS_VIZ", "TOURMALINE_SHADER_DEBUG", "TOURMALINE_SHADER_OD_RETRY",
+		// Hot-reload service pins - read directly by shader_reload (the
+		// arming vars) and the renderer (the swap frame-safety regression
+		// pin), documented AGENTS knobs rather than RunConfig state:
+		"TOURMALINE_SHADER_RELOAD", "TOURMALINE_SHADER_RELOAD_SRC",
+		"TOURMALINE_SHADER_SWAP",
 		// Stale doc-only (AGENTS.md): warn to guide migration, not error.
 		"TOURMALINE_TRANSPARENCY",
 	};

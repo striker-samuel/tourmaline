@@ -165,6 +165,63 @@ merge; the items below are the author-declared gaps from each audit
 doc's STATUS line, plus the defects the blind merges introduced that
 were fixed post-merge.
 
+**Run-here validation battery (2026-11-05)** — every automated check
+that could run on this dev box has run; the corresponding bullets are
+removed from the entries below. Done and green: #199 (build + DXC +
+107/107 ctest with its own particle regressions), #198 (the Vulkan
+validation-layer session with the custom AA mode — clean, no VUID
+errors, capture produced), #201 (an end-to-end single-machine
+scenario_matrix run — `pass` record), #192 (the
+TOURMALINE_SHADER_SWAP=20 frame-safety pin — 0.00% differing pixels),
+#191 (bit-exact pre/post decomposition parity), #198 parity gate
+(custom resolve vs hardware average: mean 0.001, 0.37% differing).
+
+## Remaining work — classified
+
+**EASY MECHANICAL TARGETS (no big design; safe to pick up next):**
+1. ~~scenario_matrix extensionless-exe tolerance~~ **DONE (`7c675b01`)**:
+   resolve_exe + unit tests; the example matrix spelling works on
+   win32.
+2. ~~Declare the hot-reload pins in RunConfig~~ **DONE (`7c675b01`)**:
+   TOURMALINE_SHADER_RELOAD/_SRC/_SWAP join kKnown — the "unknown var
+   (typo?)" warning is gone (verified live: clean swap-arm messages
+   only).
+3. Proofread backlog items 1-5 (the legacy block below): pak.cpp
+   overflow guards, impl.cpp barrier assert+log, bindless fail-closed,
+   gfxLodFilterable null-guard, NewFrame transient reuse — each is a
+   small, test-covered change.
+4. [Audit 01] #182's remaining CALLER MIGRATION — ~80 direct
+   localTransform/globalTransform write sites (engine/editor/tests),
+   each needing the loader-vs-live-writer classification from the
+   scene.h contract; mechanical but substantial. The randomized
+   snapshot-parity tests are the bigger half, see below.
+
+**DESIGN / MAJOR WORK (needs an owner plan, not a quick pass):**
+- [Audit 01] randomized CPU/GPU snapshot-parity test harness (#182).
+- [Audit 09] crash recovery for interrupted publications (#190 — the
+  receipt/staging side landed; recovery semantics are unwritten).
+- [Audit 10] orchestration extraction stages beyond the landed
+  config/descriptor collaborators (#191).
+- [Audit 08] the real TLS gateway deployment/validation (#189 —
+  environment work, not code).
+- #201's golden-sequence comparisons + cross-machine aggregation
+  (blocked on a baseline policy decision).
+- #186's automated release pipeline (replaces the manual dispatch +
+  tag steps).
+- #199's material-aware PBR particle draw + prototype registration UI.
+
+**MANUAL / HARDWARE-DEPENDENT (cannot run headless here):**
+- #187 editor-session checklist (save/revert/close/failed-open, resize).
+- #193 F1/F2 repro + the detached-lane manual smoke (moved window,
+  splitter drags, non-100% DPI).
+- #194 VRR behavior on a VRR-capable monitor (pair with --vsync on).
+- #177 pen-input on real tablet hardware.
+- #199's GPU runtime smoke + perf bench (needs authored mesh-emitter
+  scene content, which no release pak currently carries).
+- #198's silhouette/coverage eyeball (the A/B captures exist under
+  out/msaa-ab* — a human review away from closing).
+
+
 ## #177 — SDL3 tablet pen input
 - Merged as a draft with no completed CI. Post-merge master runs
   (CI + Tests + Shared asset repository on `3343a0f3`) were all green.
@@ -229,12 +286,14 @@ were fixed post-merge.
   `.staging/build-<nonce>/` so the test pins the contract instead,
   `f43c5059`.)
 
-## #192 — [Audit 05] single-source shader variants (partial)
-- STATUS: one manifest now feeds CMake and the generated C++ runtime
-  variants. **Native CI and shader build verification remain** — the
-  post-merge CI build matrix (Windows MSVC + Linux GCC) is green from
-  `3343a0f3` onward, closing most of this gap; hot-reload identity
-  verification against a live dev session is still open.
+## #192 — [Audit 05] single-source shader variants
+- **Validation DONE (2026-11-05)**: the manifest test suite passes, CI
+  green from `3343a0f3` onward, and the TOURMALINE_SHADER_SWAP=20
+  frame-safety bench pin reproduces the documented contract with the
+  new manifest — 0.00% differing pixels vs the no-swap reference.
+  (Out-of-band note: RunConfig warns "unknown TOURMALINE_* var" for
+  TOURMALINE_SHADER_SWAP because the reload service reads it directly —
+  harmless; declaring it in RunConfig.h is on the easy-target list.)
 
 ## #193 — docking overlays + camera mouse ownership
 - **Detached scene-viewport LANDED (`4cf3b716`)**: the Viewport panel can
@@ -293,8 +352,11 @@ were fixed post-merge.
   to Off — the first A/B capture was pixel-identical to AA off. After
   the fix the custom resolve engages at near-bit-exact parity with the
   hardware average resolve (mean 0.001, max 1.0, 0.37% differing).
-  STILL OPEN: a Vulkan validation-layer session and silhouette/coverage
-  review on a real GPU (the PR's compare list).
+- **Validation-layer session DONE (2026-11-05)**: App + msaa2xcustom +
+  sponza headless bench with the engine's validation layers on — exit 0,
+  zero VUID/validation errors, capture produced. Remaining: the
+  silhouette/coverage EYEBALL (the A/B captures exist under
+  out/msaa-ab*).
 
 ## #191 — [Audit 10] WorldRenderer decomposition (partial, config + descriptors)
 - Author STATUS: "frame-pass preset policy and pass-descriptor
@@ -312,6 +374,54 @@ were fixed post-merge.
 - Still open: the orchestration-extraction stages, and the AGENTS.md
   "god objects are INTENTIONAL" owner note stands — this lands as
   narrow-collaborator extraction, not a file split.
+
+## #199 — GPU mesh-instance particles (merged with tests unrun)
+- **Integrator validation DONE (2026-11-05)**: full build + DXC +
+  107/107 ctest (the PR's own CPU regressions: mesh ABI, emitter
+  compilation, schema compatibility, invalid bins, mixed budgets).
+  (Merge note: the prototype-bounds loop indexed PrototypeTable with
+  operator[] — fixed to the size()/at() pattern, `f3caa27e`.)
+- Remaining: a GPU runtime-rendering smoke with AUTHORED mesh-particle
+  content (no scene with mesh emitters exists in the Sponza release)
+  and a perf benchmark once such content exists.
+- Known v1 limitations (author-declared): diagnostic unlit draw path;
+  material-aware PBR and a prototype registration UI are follow-ups.
+
+## #201 — local-first multi-machine scenario correctness records
+- **Single-machine validation DONE (2026-11-05)**: tools compile, the
+  test_scenario_matrix suite passes, and an end-to-end local matrix run
+  (sponza-atrium, snapshot mode) produced a `pass` record under
+  out/scenario-matrix-records/.
+- Found + pending: the example matrix's extensionless `exe` spelling
+  fails on Windows (the perf harness's `[.exe]` tolerance is not
+  inherited by the matrix tool) — see the easy-target list below.
+- Remaining: real multi-machine GPU runs (needs other machines) and the
+  author's follow-up (golden-sequence comparisons + cross-machine
+  aggregation — blocked on a baseline policy decision).
+
+## #204 — Unicode corruption guard (checker + CI + AGENTS protocol)
+- (Merge note: the checker and its test BOTH carried the literal
+  backslash-n generation artifact — the THIRD occurrence of that
+  disease: the is_powershell assignment was swallowed into a comment
+  (NameError) and two test methods merged into one broken line. Also
+  the scan flagged its own fixtures and exited 1 on a clean tree,
+  which would have kept the workflow permanently red. Fixed in
+  `ea079324`.)
+- **Reshaped per owner direction (`4a704ab9`)**: the verification is
+  JUST A TEST now — `test_tracked_tree_is_clean` scans the whole
+  tracked tree inside the unittest suite (one command = fixtures +
+  enforcement), the CI workflow runs exactly that suite, and AGENTS.md
+  carries a five-line pointer instead of the 28-line agent checklist
+  (AGENTS.md itself is back in the CHECKED set, clean).
+
+## #205 — contaminated-benchmark failure + CPU/GPU/RAM telemetry
+- CPU-side validation: tools compile, the perf_harness suite passes.
+- **Contamination guard validated LIVE (2026-11-05)**: two bench
+  attempts on this dev box were REFUSED at preflight ("other
+  3D/compute GPU processes >= 5%") — exactly the designed behavior
+  while the GPU is busy. The telemetry RECORD itself needs a quiet GPU
+  window on a real machine (the harness output + result.json shape are
+  covered by the unit tests).
 
 ## Audit series still open (drafts)
 - #184 [Audit 03] double-precision transforms (docs-only, unstarted).

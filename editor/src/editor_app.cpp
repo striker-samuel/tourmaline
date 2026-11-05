@@ -19,6 +19,9 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <cstdint>
+#include <climits>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -44,6 +47,8 @@
 #include <imgui.h>
 #include <Engine/ImGui/crystal_fusion_style.h>
 #include <SDL3/SDL_filesystem.h> // SDL_GetBasePath: font independent of working dir
+#include <SDL3/SDL_video.h> // multi-display window recovery
+#include <SDL3/SDL_rect.h>
 
 namespace editor {
 
@@ -183,6 +188,75 @@ bool EditorApp::Initialize() {
 	}
 	LoadPrefs(); // tool/project prefs; dock placement uses ImGui ini
 	SetRelativeMouseMode(false);
+	// Recover *inaccessible* restored windows, not windows intentionally
+	// spanning displays. SDL_GetDisplayForWindow selects just one monitor;
+	// clamping to it destroys valid multi-monitor editor layouts.
+	// The title strip is the accessibility criterion: at least 80 logical
+	// pixels of the title bar must be visible on one real display.
+	// Gaps between monitors are not valid screen area.
+	{
+		int wx = 0, wy = 0, ww = 0, wh = 0;
+		SDL_GetWindowPosition(window, &wx, &wy);
+		SDL_GetWindowSize(window, &ww, &wh);
+		const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+		const bool regularWindow = (flags & (SDL_WINDOW_FULLSCREEN
+			| SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED)) == 0;
+		int displayCount = 0;
+		SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);
+		if (regularWindow && displays && displayCount > 0 && ww > 0 && wh > 0) {
+			const int titleHeight = std::min(32, wh);
+			const int minTitleWidth = std::min(80, ww);
+			const SDL_Rect title{ wx, wy, ww, titleHeight };
+			bool accessible = false;
+			SDL_Rect recovery{};
+			int64_t bestDistance = INT64_MAX;
+			for (int i = 0; i < displayCount; ++i) {
+				SDL_Rect usable{};
+				if (!SDL_GetDisplayUsableBounds(displays[i], &usable)
+					|| usable.w <= 0 || usable.h <= 0)
+					continue;
+				SDL_Rect intersection{};
+				if (SDL_GetRectIntersection(&title, &usable, &intersection)
+					&& intersection.w >= minTitleWidth
+					&& intersection.h >= std::min(16, titleHeight))
+					accessible = true;
+				// Choose the recovery display requiring the least translation,
+				// not simply SDL's dominant-overlap display.
+				const int nx = std::clamp(wx, usable.x,
+					usable.x + usable.w - std::min(ww, usable.w));
+				const int ny = std::clamp(wy, usable.y,
+					usable.y + usable.h - std::min(wh, usable.h));
+				const int64_t dx = int64_t(nx) - wx;
+				const int64_t dy = int64_t(ny) - wy;
+				const int64_t distance = dx * dx + dy * dy;
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					recovery = usable;
+				}
+			}
+			const bool haveRecovery = bestDistance != INT64_MAX;
+			if (const char* e = std::getenv("TOURMALINE_WINDOW_CLAMP_DIAG")) {
+				if (std::atoi(e) != 0)
+					std::fprintf(stderr,
+						"[WINDOW-RECOVERY] %dx%d@%d,%d displays=%d accessible=%d recovery=%d\n",
+						ww, wh, wx, wy, displayCount, accessible ? 1 : 0,
+						haveRecovery ? 1 : 0);
+			}
+			if (!accessible && haveRecovery) {
+				// Only resize if the unreachable window cannot fit on the
+				// recovery display; never resize an accessible spanning window.
+				const int cw = std::min(ww, recovery.w);
+				const int ch = std::min(wh, recovery.h);
+				if (cw != ww || ch != wh)
+					SDL_SetWindowSize(window, cw, ch);
+				SDL_SetWindowPosition(window,
+					std::clamp(wx, recovery.x, recovery.x + recovery.w - cw),
+					std::clamp(wy, recovery.y, recovery.y + recovery.h - ch));
+			}
+		}
+		if (displays)
+			SDL_free(displays);
+	}
 
 	// THE BOOT PROJECT (the --project arg — REQUIRED since the
 	// editor/launcher split): EditorLauncher owns selection (recents +
@@ -265,6 +339,34 @@ bool EditorApp::Initialize() {
 		// replay (OpenScene alone fails the tour as a glTF import).
 		if (!OpenAnySceneFile(p))
 			std::cerr << "[Editor] failed to load '" << p << "'\n";
+	} else {
+		// A new editor session has a real, empty definition-backed scene.
+		// Keep it in the OS temporary directory rather than creating an
+		// unsolicited project asset. The normal OpenTourFile funnel builds
+		// the World and scene root, so editing, saving and live rendering
+		// follow exactly the same path as an explicit empty .tour open.
+		// An explicit CLI scene always wins over this startup fallback.
+		std::error_code tempError;
+		const auto tempDir = std::filesystem::temp_directory_path(tempError);
+		if (!tempError) {
+			const auto tempScene = tempDir /
+				("tourmaline-editor-" + smvk::tour::GenerateUuid() + ".tour");
+			smvk::tour::Doc emptyScene;
+			std::string saveError;
+			if (smvk::tour::SaveTour(tempScene.string(), emptyScene, saveError)) {
+				if (OpenTourFile(tempScene.string()))
+					m_startupTempTour = tempScene.string();
+				else
+					Log("Startup scene: could not open temporary scene '"
+						+ tempScene.string() + "'.");
+			} else {
+				Log("Startup scene: could not write temporary scene: "
+					+ saveError);
+			}
+		} else {
+			Log("Startup scene: could not locate temporary directory: "
+				+ tempError.message());
+		}
 	}
 
 	Log("Tourmaline Editor ready. File > Open scene... to load a scene.");
@@ -275,9 +377,28 @@ void EditorApp::Shutdown() {
 	StopGamePlay(); // game state dies before authored scene
 	// Flush the working tour to the project .tour on exit (per-edit
 	// saves went to the %APPDATA% autosave) — same contract as
-	// CloseScene, so closing the editor never loses edits.
-	if (m_world && !TourTarget().empty())
+	// CloseScene, so closing the editor never loses edits. The explicit
+	// Discard exit (#215's unsaved-exit flow) skips the flush AND the
+	// scratch preservation below — a deliberate discard leaves nothing
+	// behind.
+	const bool preserveScratch = !m_startupTempTour.empty()
+		&& TourTarget() == m_startupTempTour && m_tourDirty
+		&& !m_discardOnExit;
+	if (!m_discardOnExit && m_world && !TourTarget().empty())
 		SaveTour();
+	// An untouched startup scratch is disposable. If it contains unsaved
+	// edits and was not saved into the project, retain the flushed file
+	// rather than silently destroying the user's work on shutdown.
+	if (!m_startupTempTour.empty()) {
+		if (preserveScratch)
+			Log("Unsaved temporary scene preserved for recovery: "
+				+ m_startupTempTour);
+		else {
+			std::error_code ec;
+			std::filesystem::remove(m_startupTempTour, ec);
+		}
+		m_startupTempTour.clear();
+	}
 	SavePrefs(); // save editor pr on close
 	// Same shutdown contract as the parent scene: flush unsaved prefab
 	// source edits before destroying the second world. Explicit Revert
@@ -288,6 +409,14 @@ void EditorApp::Shutdown() {
 	// tear them down before device resources and ImGui are destroyed.
 	ClosePrefabWorld();
 	WaitForDeviceIdle();
+	// ImGui owns the descriptor; release it while the backend still lives.
+	DropLegacyStageTexture();
+	if (!m_legacyStageLogical.empty()) {
+		m_rendergraph->FreeImageView(m_legacyStageLogical);
+		m_legacyStageLogical = {};
+	}
+	m_legacyStageView = {};
+	m_legacyStageImage = {};
 	m_textureStreamer.reset();
 	// Fibers shutdown: deliver any queued completions, wait for
 	// in-flight jobs (workers drain them), deliver the rest — all
@@ -2017,8 +2146,25 @@ void EditorApp::DrawFrame() {
 		m_swapchain->EndAndPresentFramebuffer(fb);
 		// ImGui's Vulkan backend owns independent swapchains for detached
 		// tools. Render/present them after the main rendergraph submission.
-		if (fb.imageIndex >= 0 && m_imgui && m_imgui->IsInitialized())
+		if (fb.imageIndex >= 0 && m_imgui && m_imgui->IsInitialized()) {
+			SMVK_PROFILE_SCOPE_COLOR("Editor_PlatformWindows",
+				Optick::Color::Orange);
+			// Enable TOURMALINE_WINDOW_TIMING=1 to separate slow secondary
+			// presents from main-frame rendering and GPU boundary drains.
+			static const bool timing = [] {
+				const char* e = std::getenv("TOURMALINE_WINDOW_TIMING");
+				return e && std::atoi(e) != 0;
+			}();
+			const auto start = std::chrono::steady_clock::now();
 			m_imgui->RenderPlatformWindows();
+			if (timing) {
+				const auto ms = std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - start).count();
+				if (ms > 4.0)
+					std::fprintf(stderr,
+						"[WINDOW-TIMING] secondary platform windows %.2f ms\n", ms);
+			}
+		}
 	}
 	// BOUNDARY QUIESCE (the frame-boundary-aware extent-change wait):
 	// any frame that recreated (or queued a recreate of) the world
@@ -2037,7 +2183,16 @@ void EditorApp::DrawFrame() {
 		// it can produce a large spike unrelated to actual rendering.
 		SMVK_PROFILE_SCOPE_COLOR("Editor_BoundaryWait", Optick::Color::Red);
 		m_wysiwygBoundaryQuiesce = false;
+		const auto start = std::chrono::steady_clock::now();
 		WaitForDeviceIdle();
+		if (const char* e = std::getenv("TOURMALINE_WINDOW_TIMING")) {
+			if (std::atoi(e) != 0) {
+				const auto ms = std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - start).count();
+				std::fprintf(stderr,
+					"[WINDOW-TIMING] boundary device idle %.2f ms\n", ms);
+			}
+		}
 	}
 	// Fibers pump (main thread): deliver job completions (cook/bake
 	// finish logic runs here, after the frame is presented).

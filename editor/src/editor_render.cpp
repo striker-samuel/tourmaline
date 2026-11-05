@@ -749,7 +749,8 @@ namespace editor {
 		if (m_uiMode) {
 			area = m_dockViewportVisible
 				? m_dockViewportRect
-				: ViewportRect{ 0.0f, m_menuH, 1.0f, 1.0f };
+				: ViewportRect{ 0.0f, m_menuH, float(extent.width),
+					float(extent.height) - m_menuH - kEditorStatusH };
 			// With platform viewports ImGui window coordinates are OS-global,
 			// whereas Vulkan attachment offsets and editor input are local
 			// to the primary SDL window. Convert before clipping/recording.
@@ -814,10 +815,20 @@ namespace editor {
 			}();
 			if (on) {
 				const ViewportRect& s = m_viewports[0].rect;
+				// The mapping oracles: the ImGui main viewport origin (OS
+				// window position in desktop coords) + its size, so a
+				// desktop screenshot rect can be matched against the
+				// window-local stage rect exactly (TOURMALINE_COMPOSE_DIAG's
+				// "record: WxH at X,Y (window-local)" pairs with this).
+				const ImVec2 vpOrigin = (m_imgui && m_imgui->IsInitialized())
+					? ImGui::GetMainViewport()->Pos : ImVec2(0.0f, 0.0f);
+				const ImVec2 vpSize = (m_imgui && m_imgui->IsInitialized())
+					? ImGui::GetMainViewport()->Size : ImVec2(0.0f, 0.0f);
 				std::fprintf(stderr,
-					"[LAYOUT] dock stage %.0fx%.0f@%.0f,%.0f | vp0 %.0fx%.0f@%.0f,%.0f aspect %.3f\n",
+					"[LAYOUT] dock stage %.0fx%.0f@%.0f,%.0f | vp0 %.0fx%.0f@%.0f,%.0f aspect %.3f | win origin %.0f,%.0f size %.0fx%.0f\n",
 					area.w, area.h, area.x, area.y,
-					s.w, s.h, s.x, s.y, s.w / std::max(s.h, 1.0f));
+					s.w, s.h, s.x, s.y, s.w / std::max(s.h, 1.0f),
+					vpOrigin.x, vpOrigin.y, vpSize.x, vpSize.y);
 			}
 		}
 	}
@@ -2399,6 +2410,17 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				UpdateInsetFrameData(flight, insetStrip);
 		}
 
+		// In docked UI mode, the legacy (F2+ and fallback) preview must
+		// render to a sampled target rather than behind opaque ImGui dock
+		// windows. Keep the old direct swapchain route in fullscreen mode.
+		const bool hasLegacyViewports =
+			LiveViewViewport() < 0 || ViewportCount() > 1;
+		const bool legacyImageLane = hasLegacyViewports
+			&& m_uiMode && m_dockViewportVisible && !m_dockStageDetached
+			&& EnsureLegacyStageTarget(extent);
+		const smvk::LogicalImageViewHandle sceneColor = legacyImageLane
+			? m_legacyStageLogical : m_swapViews[fb.imageIndex];
+
 		// ---- PASSES: background clear + per-viewport scene + overlays ----
 		// The whole window clears FIRST (the dark chrome color shows
 		// through the gaps between the ImGui panels), then each viewport
@@ -2424,6 +2446,17 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
 					smvk::ClearDepthStencil(0.0f, 0));
 			bg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+			if (legacyImageLane) {
+				// A complete clear prevents vacated/docked stage rects from
+				// displaying pixels from an earlier layout or scene.
+				m_rendergraph->AddPass("EditorLegacyBg")
+					.SetOffset(0, 0).SetExtent(extent)
+					.SetColor({ m_legacyStageLogical },
+						smvk::AttachmentLoadOp::Clear,
+						smvk::AttachmentStoreOp::Store,
+						smvk::ClearColor(0.18f, 0.18f, 0.18f, 1.0f))
+					.SetRecordingFunc([](smvk::CommandBuffer&) {});
+			}
 		}
 		if (m_sceneHdr.Valid()) {
 			// Preview HDR black clear (full window, see m_sceneHdr): the
@@ -2478,14 +2511,14 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					continue; // panel 0's rect shows the live view's composite
 				// RecordMainPass also records its HDR lattice overlay BEFORE
 				// the per-viewport tonemap. Do not append HDR overlays here.
-				RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
+				RecordMainPass(sceneColor, vpIdx, flight, m_wireOverlay);
 			}
 			// The gizmo + inset ride the ACTIVE viewport — they skip only
 			// while the ACTIVE one IS the live host (panel 0 in Lit): their
 			// depth comes from the scene pass that no longer ran there.
 			if (m_activeVp != liveVp) {
-				RecordInsetPass(m_swapViews[fb.imageIndex], flight);
-				RecordGizmoPass(m_swapViews[fb.imageIndex]);
+				RecordInsetPass(sceneColor, flight);
+				RecordGizmoPass(sceneColor);
 			}
 			// One-shot lightmap PNG export: renders the offscreen target this
 			// frame, then reads it back after the submit (button in Bake panel).
@@ -2509,6 +2542,18 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			if (matBallThisFrame)
 				RecordMatBallPass();
 
+			if (legacyImageLane) {
+				// The UI pass samples this physical image through an ImGui
+				// descriptor. The read hint is the explicit color-write ->
+				// shader-read layout/visibility handoff within this graph.
+				smvk::ImageSyncRequest read{};
+				read.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+				read.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+				read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+				m_rendergraph->AddComputePass("EditorLegacyRelease")
+					.AddImageHint(m_legacyStageLogical, read)
+					.SetRecordingFunc([](smvk::CommandBuffer&) {});
+			}
 			if (m_imgui && m_imgui->IsInitialized()) {
 				// Optick: the ImGui build + record (NewFrame through the
 				// composite + AddPass).
@@ -2517,20 +2562,12 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				DrawUI(extent);
 				// UV editor window canvas retired (see RecordUvWindowPass).
 				//RecordUvWindowPass(m_swapViews[fb.imageIndex], flight);
-				// THE WYSIWYG COMPOSITE BEFORE THE IMGUI PASS (the editor's
-				// layer order: scene -> live view -> ImGui panels/popups/
-				// modals). The stage rect is a GAP in the ImGui layout (the
-				// viewport chrome lives on the background draw list), so
-				// nothing ImGui-side paints under the composite; everything
-				// ImGui-side paints OVER it. The old order (composite AFTER
-				// ImGui) painted the live image over any modal/dropdown/
-				// floating window touching the rect, which needed a popup-
-				// name allowlist to hide the view — every new dialog had to
-				// be added to that list or it was obscured. The layer order
-				// replaces the list: popups and modals are ordinary ImGui
-				// windows now, drawn above the image like any other panel.
-				if (m_wysiwygLiveRectFresh)
-					RecordLiveViewComposePass(m_swapViews[fb.imageIndex]);
+				// The docked live viewport now draws the inline target as a
+				// normal ImGui::Image in its own Viewport window, just like
+				// detached platform windows. Do not composite into the main
+				// swapchain here: dock-node/window draw calls can cover a
+				// pre-ImGui composite, leaving a blank gray viewport even
+				// though the renderer produced the scene.
 				m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
 					smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
 				// Prefab's child viewport is an opaque image region. Compose
@@ -2564,6 +2601,54 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	}
 
 	// ---- WYSIWYG LIVE VIEW (the full-graph renderer; editor_app.h) ----
+	bool EditorApp::EnsureLegacyStageTarget(smvk::Extent2D extent) {
+		if (!m_context || !m_rendergraph || !m_swapchain
+			|| extent.width == 0 || extent.height == 0)
+			return false;
+		const smvk::Format format = m_swapchain->GetSurfaceFormat();
+		if (!m_legacyStageLogical.empty()
+			&& m_legacyStageExtent.width == extent.width
+			&& m_legacyStageExtent.height == extent.height
+			&& m_legacyStageFormat == format)
+			return true;
+		smvk::ImageCreateInfo ci{};
+		ci.extent = { extent.width, extent.height, 1 };
+		ci.format = format;
+		ci.usage = smvk::ImageUsage::ColorAttachment
+			| smvk::ImageUsage::Sampled;
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+		ci.name = "editorLegacyStage";
+		auto image = m_context->CreateImage(ci, nullptr);
+		if (image.empty())
+			return false;
+		const smvk::ImageViewCreateInfo vi{
+			.viewType = smvk::ImageViewType::View2D,
+			.format = format,
+			.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 },
+			.name = "editorLegacyStageView",
+		};
+		auto view = m_context->CreateImageView(image, vi);
+		if (view.empty())
+			return false;
+		const auto logical = m_rendergraph->AddExternalImageView(
+			view, format, "editorLegacyStageLogical");
+		if (logical.empty())
+			return false;
+		// The view changed: the cached ImGui descriptor must not sample
+		// the previous image. Physical images retire through Holder's
+		// deferred destruction path just like the WYSIWYG target.
+		DropLegacyStageTexture();
+		if (!m_legacyStageLogical.empty())
+			m_rendergraph->FreeImageView(m_legacyStageLogical);
+		m_legacyStageLogical = logical;
+		m_legacyStageImage = std::move(image);
+		m_legacyStageView = std::move(view);
+		m_legacyStageExtent = extent;
+		m_legacyStageFormat = format;
+		return true;
+	}
+
 	void EditorApp::LaunchWysiwyg() {
 		if (!m_world)
 			return;
@@ -2576,6 +2661,13 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		cfg.ui = false;
 		m_wysiwyg = tour::mem::MakeProcess<engine::WorldRenderer>(*this);
 		m_wysiwyg->Configure(cfg);
+		// Build the same axis/ring/marker geometry as the legacy editor
+		// path, but draw it in the live renderer's HDR/depth pass. The
+		// editor still owns gizmo picking, dragging and undo.
+		m_wysiwyg->SetDebugDrawSource([this](tour::DebugDrawList& draw) {
+			RecordGizmoPass({}, &draw);
+		});
+		m_wysiwyg->SetDebugDrawEnabled(true);
 		// The BORROWED form of the world contract (see WorldRenderer.h):
 		// the editor KEEPS owning + mutating its world — the renderer
 		// reads the same object, so edits (moves, material swaps, light
@@ -2802,7 +2894,11 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		}
 		uint32_t cw = std::max(uint32_t(m_wysiwygCanvasSize.x), 64u);
 		uint32_t ch = std::max(uint32_t(m_wysiwygCanvasSize.y), 64u);
-		{
+		// The main swapchain is NOT the size authority for a detached
+		// Viewport: its ImGui platform window has an independent framebuffer.
+		// Applying the main swap extent to it produces an undersized target
+		// on a larger/higher-DPI second monitor.
+		if (!m_dockStageDetached) {
 			const smvk::Extent2D swapExt = m_swapchain->GetExtent();
 			if (swapExt.width > 64)
 				cw = std::min(cw, swapExt.width);
@@ -2817,13 +2913,57 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// re-ensure destroys nothing in flight.
 		const smvk::Extent2D inlineBefore =
 			m_wysiwyg->InlineTargetExtent();
-		if (!m_wysiwyg->EnsureInlineExtent(smvk::Extent2D{ cw, ch }))
+		if (!m_wysiwyg->EnsureInlineExtent(smvk::Extent2D{ cw, ch })) {
+			// The park oracle (the frozen-stale-image chase): a PERSISTENT
+			// ensure failure parks the world layer silently every frame -
+			// no extent updates, no renders, and (with the image lane) the
+			// panel shows the STALE target stretched at the live stage
+			// rect. Env-gated with the compose diag family.
+			{
+				static const bool on = [] {
+					const char* e =
+						std::getenv("TOURMALINE_COMPOSE_DIAG");
+					return e && *e && !(*e == '0' && !e[1]);
+				}();
+				static uint64_t lastParkPrint = ~0ull;
+				const uint64_t key = m_frameCounter / 120;
+				if (on && key != lastParkPrint) {
+					lastParkPrint = key;
+					std::fprintf(stderr,
+						"[LIVE-PARK] EnsureInlineExtent FAILED (want %ux%u, "
+						"have %ux%u, canvas %.0fx%.0f) - world layer parked\n",
+						cw, ch, inlineBefore.width, inlineBefore.height,
+						m_wysiwygCanvasSize.x, m_wysiwygCanvasSize.y);
+				}
+			}
 			return; // park: the target could not settle this frame
+		}
 		const smvk::Extent2D inlineAfter =
 			m_wysiwyg->InlineTargetExtent();
 		if (inlineAfter.width != inlineBefore.width
-			|| inlineAfter.height != inlineBefore.height)
+			|| inlineAfter.height != inlineBefore.height) {
 			m_wysiwygBoundaryQuiesce = true;
+			// The recreate oracle (the post-resize parked-target chase):
+			// every inline target recreate prints old -> new extent. If
+			// the subsequent LIVE-DUMP samples show the target at the
+			// CLEAR color (encoded ~118 mean, 0% colored) after one of
+			// these lines, the world's write into the recreated target
+			// is what dies. Env-gated with the compose diag family.
+			{
+				static const bool on = [] {
+					const char* e =
+						std::getenv("TOURMALINE_COMPOSE_DIAG");
+					return e && *e && !(*e == '0' && !e[1]);
+				}();
+				if (on)
+					std::fprintf(stderr,
+						"[LIVE-EXTENT] target recreated %ux%u -> %ux%u "
+						"(canvas %.0fx%.0f)\n",
+						inlineBefore.width, inlineBefore.height,
+						inlineAfter.width, inlineAfter.height,
+						m_wysiwygCanvasSize.x, m_wysiwygCanvasSize.y);
+			}
+		}
 		m_wysiwygLayerRenderable = true;
 	}
 
@@ -2894,10 +3034,17 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				const char* e = std::getenv("TOURMALINE_LIVE_DUMP");
 				return e && std::atoi(e) != 0;
 			}();
-			static bool liveDumpDone = false;
-			if (liveDump && !liveDumpDone && m_frameCounter > 30
+			// INTERVAL form (the post-resize parked-target chase): the
+			// old one-shot latch could only ever see the FIRST healthy
+			// frame, hiding any later state (the recreated target left
+			// at the clear color after an extent change). Sample every
+			// 120 frames (~2 s) while the env is set - a sync readback,
+			// so only for diagnosis sessions.
+			static uint64_t lastDumpFrame = ~0ull;
+			const uint64_t dumpKey = m_frameCounter / 120;
+			if (liveDump && dumpKey != lastDumpFrame && m_frameCounter > 30
 				&& !m_wysiwyg->InlineTargetImage().empty()) {
-				liveDumpDone = true;
+				lastDumpFrame = dumpKey;
 				const smvk::Extent2D le = m_wysiwyg->InlineTargetExtent();
 				std::vector<uint8_t> px(
 					size_t(le.width) * le.height * 4);
@@ -2925,17 +3072,88 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					}
 					std::fprintf(stderr,
 						"[LIVE-DUMP] %ux%u: meanLuma=%llu "
-						"black=%.1f%% colored=%.1f%% alpha>128=%.1f%%\n",
+						"black=%.1f%% colored=%.1f%% alpha>128=%.1f%%"
+						" | geometry: drawItems=%zu clusters=%zu\n",
 						le.width, le.height,
 						(unsigned long long)(sum / n),
 						100.0 * blackN / double(n),
 						100.0 * coloredN / double(n),
-						100.0 * alphaN / double(n));
+						100.0 * alphaN / double(n),
+						m_world ? m_world->drawItems.size() : size_t(0),
+						m_world ? m_world->clusters.size() : size_t(0));
 					std::fflush(stderr);
 				}
 				else {
 					std::fprintf(stderr,
 						"[LIVE-DUMP] download FAILED\n");
+				}
+				// THE HDR ORACLE (root cause B discrimination): the
+				// world's scene HDR (RGBA16F, public via
+				// m_viewportResources). If the HDR holds the scene while
+				// the inline target holds only the clear, the tonemap->
+				// inline leg broke on the extent cycle; if the HDR is
+				// ALSO empty, the mesh legs never executed (the CPU-side
+				// filter stats cannot see that).
+				{
+					const auto& hdr =
+						m_wysiwyg->m_viewportResources.hdr;
+					if (hdr.Valid() && hdr.extent.width
+						&& hdr.extent.height) {
+						std::vector<uint8_t> hpx(
+							size_t(hdr.extent.width)
+							* hdr.extent.height * 8);
+						if (m_context->DownloadDataFromImage(
+								hdr.image,
+								smvk::ImageLayout::
+									ShaderReadOnlyOptimal,
+								hpx.data(), hpx.size())) {
+							// IEEE half -> float + stats
+							const auto halfToF32 =
+								[](uint16_t h) -> float {
+								const uint32_t s = (h >> 15) & 1u;
+								const uint32_t e = (h >> 10) & 0x1fu;
+								const uint32_t m = h & 0x3ffu;
+								float v;
+								if (e == 0)
+									v = std::ldexp(float(m), -24);
+								else if (e == 31)
+									v = m ? 0.0f : 1e30f;
+								else
+									v = std::ldexp(
+										float(m | 0x400u), int(e) - 25);
+								return s ? -v : v;
+							};
+							double hsum = 0;
+							uint32_t hBlack = 0, hColored = 0;
+							const size_t hn = hpx.size() / 8;
+							for (size_t i = 0; i < hn; ++i) {
+								const uint16_t* f =
+									reinterpret_cast<const uint16_t*>(
+										&hpx[i * 8]);
+								const float r = halfToF32(f[0]);
+								const float g = halfToF32(f[1]);
+								const float b = halfToF32(f[2]);
+								const float mx = std::max({r, g, b});
+								const float mn = std::min({r, g, b});
+								hsum += double((r + g + b) / 3.0f);
+								if (mx < 0.01f)
+									++hBlack;
+								if (mx - mn > 0.15f)
+									++hColored;
+							}
+							std::fprintf(stderr,
+								"[LIVE-HDR] %ux%u: meanLuma=%.3f "
+								"black=%.1f%% colored=%.1f%%\n",
+								hdr.extent.width, hdr.extent.height,
+								hsum / double(hn),
+								100.0 * hBlack / double(hn),
+								100.0 * hColored / double(hn));
+							std::fflush(stderr);
+						}
+						else
+							std::fprintf(stderr,
+								"[LIVE-HDR] download FAILED\n");
+					}
 				}
 			}
 		}
@@ -3063,9 +3281,30 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 	// world's inline-release pass left the target in SHADER_READ).
 	void EditorApp::RecordLiveViewComposePass(
 		smvk::LogicalImageViewHandle swapView) {
+		// TOURMALINE_COMPOSE_DIAG=1 (diag): the composite oracle - prints
+		// the destination rect on record AND the exact gate on every
+		// early-out. Answers "the live view renders but nothing shows"
+		// in one stderr line instead of a bisect.
+		static const bool composeDiag = [] {
+			const char* e = std::getenv("TOURMALINE_COMPOSE_DIAG");
+			return e && *e && !(*e == '0' && !e[1]);
+		}();
+		static uint64_t diagLastPrint = ~0ull;
+		const uint64_t diagKey = m_frameCounter / 30; // every ~0.5 s
+		const bool diagNow = composeDiag && diagKey != diagLastPrint;
+		if (diagNow)
+			diagLastPrint = diagKey;
 		if (!m_wysiwyg || !m_wysiwygValid
-			|| m_wysiwyg->InlineTargetView().empty())
+			|| m_wysiwyg->InlineTargetView().empty()) {
+			if (diagNow)
+				std::fprintf(stderr,
+					"[LIVE-COMPOSE] skip: no renderer/inline target "
+					"(wysiwyg=%d valid=%d view=%d)\n",
+					m_wysiwyg ? 1 : 0, m_wysiwygValid ? 1 : 0,
+					(m_wysiwyg && !m_wysiwyg->InlineTargetView().empty())
+						? 1 : 0);
 			return;
+		}
 		// DETACHED STAGE: the Viewport window lives in a secondary OS
 		// window with its own (ImGui-backend-owned) swapchain. The
 		// main-swapchain composite can never reach it; the inline target
@@ -3073,8 +3312,13 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 		// Viewport window draw in editor_ui.cpp). Only the drive's
 		// extent capture still runs (DrawLiveViewStage's detached
 		// branch) so the render keeps the stage's size and aspect.
-		if (m_dockStageDetached)
+		if (m_dockStageDetached) {
+			if (diagNow)
+				std::fprintf(stderr,
+					"[LIVE-COMPOSE] skip: dock stage detached (secondary "
+					"OS window presents via the ImGui image lane)\n");
 			return;
+		}
 		// LAYER ORDER, not modal detection: the composite is recorded
 		// BEFORE the ImGui pass (see the call site in DrawFrame), so
 		// every ImGui element - panels, floating windows, dropdowns,
@@ -3098,8 +3342,18 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 		const float x1 = std::clamp(m_wysiwygLiveRectMax.x - origin.x, 0.0f, fbs.x);
 		const float y1 = std::clamp(m_wysiwygLiveRectMax.y - origin.y, 0.0f, fbs.y);
 		const float w = x1 - x0, h = y1 - y0;
-		if (w < 8.0f || h < 8.0f)
+		if (w < 8.0f || h < 8.0f) {
+			if (diagNow)
+				std::fprintf(stderr,
+					"[LIVE-COMPOSE] skip: clamped rect too small "
+					"(%.0fx%.0f at %.0f,%.0f; raw min %.0f,%.0f max "
+					"%.0f,%.0f origin %.0f,%.0f fb %.0fx%.0f)\n",
+					w, h, x0, y0,
+					m_wysiwygLiveRectMin.x, m_wysiwygLiveRectMin.y,
+					m_wysiwygLiveRectMax.x, m_wysiwygLiveRectMax.y,
+					origin.x, origin.y, fbs.x, fbs.y);
 			return;
+		}
 		if (!m_wysiwygComposite.Ensure(*m_context))
 			return;
 		// The source: the world's inline target imported into the
@@ -3117,10 +3371,61 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 			if (m_wysiwygComposeLogical.empty())
 				return;
 		}
-		// decodeOutput stays false: the target's format MIRRORS the
-		// swap surface, so the sample/store encode pair round-trips
-		// (sRGB swap: decode on sample, hardware re-encode on store;
-		// UNORM swap: raw bytes both ways).
+		// TOURMALINE_COMPOSE_PINK=1 (diag): draw an UNCONDITIONAL bright
+		// pink clear at the composite's exact rect, INSTEAD of the real
+		// composite - the "does anything this pass claims survive to the
+		// screen" oracle. If the pink shows, the composite's rect,
+		// ordering and surface access are healthy and any dead pixels are
+		// the SOURCE (the inline target's content). If the pink is
+		// covered/vanishes (esp. after a window resize), something AFTER
+		// this pass overwrites the rect - the composite stage itself is
+		// the victim, not the culprit.
+		static const bool pinkDiag = [] {
+			const char* e = std::getenv("TOURMALINE_COMPOSE_PINK");
+			return e && *e && !(*e == '0' && !e[1]);
+		}();
+		if (pinkDiag) {
+			// FULL-SWAP FLOOD: paint the ENTIRE swap attachment pink -
+			// immune to every rect/monitor/DPI mapping question. If ANY
+			// pink appears anywhere on screen, this pass writes; if the
+			// screen shows no pink at all, the pass never lands.
+			const smvk::Extent2D swapExt = m_swapchain->GetExtent();
+			m_rendergraph->AddPass("WysiwygPinkDiag")
+				.SetOffset(0, 0)
+				.SetExtent(swapExt)
+				.SetColor({ swapView }, smvk::AttachmentLoadOp::Clear,
+					smvk::AttachmentStoreOp::Store,
+					smvk::ClearColor(1.0f, 0.0f, 1.0f, 1.0f))
+				.SetRecordingFunc([](smvk::CommandBuffer&) {});
+			if (diagNow)
+				std::fprintf(stderr,
+					"[LIVE-COMPOSE] PINK-FLOOD swap %ux%u (stage was "
+					"%.0fx%.0f at %.0f,%.0f)\n",
+					swapExt.width, swapExt.height, w, h, x0, y0);
+			return;
+		}
+		// decodeOutput follows the ACTUAL surface variant, exactly like
+		// the App's own UiComposite call site (WorldRenderer: swapIsSrgb):
+		// the inline target's bytes are SRGB-ENCODED (the world's tonemap
+		// stores through the surface-format attachment), and the bindless
+		// sample serves them RAW - so on an sRGB swap the shader must
+		// decode before the hardware store encode, or the image is
+		// encoded TWICE and the docked viewport renders as a washed-out
+		// flat gray (the "docked renders gray / floating renders" bug:
+		// the detached lane goes through ImGui's own image path and never
+		// had the problem). The old hard-coded false assumed a hardware
+		// decode on sample that the bindless descriptor never provided.
+		const smvk::Format surface = m_swapchain->GetSurfaceFormat();
+		const bool swapIsSrgb = surface == smvk::Format::BGRA8_SRGB
+			|| surface == smvk::Format::RGBA8_SRGB;
+		if (diagNow) {
+			const smvk::Extent2D te = m_wysiwyg->InlineTargetExtent();
+			std::fprintf(stderr,
+				"[LIVE-COMPOSE] record: %.0fx%.0f at %.0f,%.0f "
+				"(window-local) surface=%d srgb=%d target=%ux%u\n",
+				w, h, x0, y0, int(surface), swapIsSrgb ? 1 : 0,
+				te.width, te.height);
+		}
 		// OPAQUE blend — the alpha-is-DATA lesson: the SMAA T2x chain
 		// packs the VELOCITY MAGNITUDE into the output alpha
 		// (smaa_neighborhood - the resolve's history attenuation; the
@@ -3136,7 +3441,7 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 			0 /* linear clamp sampler */,
 			{ swapView },
 			smvk::Extent2D{ uint32_t(w), uint32_t(h) },
-			false,
+			swapIsSrgb,
 			"WysiwygCompose",
 			uint32_t(x0), uint32_t(y0),
 			true /* opaqueBlend */);

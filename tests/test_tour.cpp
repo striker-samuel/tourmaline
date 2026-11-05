@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <Engine/App/cluster.h>
@@ -122,6 +123,27 @@ void TestRoundTrip() {
 	r.flag = true;
 	r.enabled = false;
 	doc.overrides.push_back(r);
+	// Typed per-plug rules: number, boolean and string survive the
+	// same .tour text format and retain stable, machine-readable keys.
+	r = smvk::tour::OverrideRule{};
+	r.attr = smvk::tour::OverrideAttr::Plug;
+	r.pattern = "Body.*";
+	r.plug = "physics.mass";
+	r.value = tour::scene::plugs::Value::Number(12.5);
+	doc.overrides.push_back(r);
+	r = smvk::tour::OverrideRule{};
+	r.attr = smvk::tour::OverrideAttr::Plug;
+	r.pattern = "Sensor.*";
+	r.plug = "trigger.enabled";
+	r.value = tour::scene::plugs::Value::Bool(false);
+	doc.overrides.push_back(r);
+	r = smvk::tour::OverrideRule{};
+	r.attr = smvk::tour::OverrideAttr::Plug;
+	r.pattern = "Sensor.*";
+	r.plug = "trigger.tag";
+	r.value = tour::scene::plugs::Value::String("Zone A");
+	doc.overrides.push_back(r);
+	doc.connections.push_back({{7,"physics.mass"},{9,"physics.mass"}});
 	// Cook/export knobs ride the scene's exportSettings NODE: a createNode
 	// -at exportSettings line + setExportAttr lines (the singleton is the
 	// first create; attrs address it via kCreateExportRefBase | 0).
@@ -229,8 +251,8 @@ void TestRoundTrip() {
 			back.commands[9].flag == true, "tour visibility");
 		Check(back.commands[10].node2 == 12, "tour parent");
 	}
-	Check(back.overrides.size() == 2, "tour override count");
-	if (back.overrides.size() == 2) {
+	Check(back.overrides.size() == 5, "tour override count");
+	if (back.overrides.size() == 5) {
 		Check(back.overrides[0].attr ==
 			smvk::tour::OverrideAttr::Visibility &&
 			back.overrides[0].pattern == "Building_.*" &&
@@ -245,7 +267,23 @@ void TestRoundTrip() {
 			"Tree_01"), "tour override non-match");
 		Check(!smvk::tour::OverridePatternMatches("([bad",
 			"anything"), "tour override bad regex");
+		Check(back.overrides[2].attr == smvk::tour::OverrideAttr::Plug &&
+			back.overrides[2].plug == "physics.mass" &&
+			back.overrides[2].value == tour::scene::plugs::Value::Number(12.5),
+			"tour numeric plug override round trip");
+		Check(back.overrides[3].plug == "trigger.enabled" &&
+			back.overrides[3].value == tour::scene::plugs::Value::Bool(false),
+			"tour boolean plug override round trip");
+		Check(back.overrides[4].plug == "trigger.tag" &&
+			back.overrides[4].value == tour::scene::plugs::Value::String("Zone A"),
+			"tour string plug override round trip");
 	}
+	Check(back.connections.size() == 1 &&
+		back.connections[0].source.node == 7 &&
+		back.connections[0].destination.node == 9 &&
+		back.connections[0].source.plug == "physics.mass" &&
+		back.connections[0].destination.plug == "physics.mass",
+		"tour connectAttr round trip");
 	std::error_code ec;
 	std::filesystem::remove(TempTour(), ec);
 }
@@ -505,6 +543,13 @@ void TestReplay() {
 		"replay override applies");
 	Check(smvk::tour::OverrideAttrFromString("visibility", r.attr) &&
 		r.attr == smvk::tour::OverrideAttr::Visibility, "override attr parse");
+	Check(smvk::tour::OverrideAttrFromString("static", r.attr) &&
+		r.attr == smvk::tour::OverrideAttr::Static, "override static attr parse");
+	Check(smvk::tour::OverrideAttrFromString("volumetricShadow", r.attr) &&
+		r.attr == smvk::tour::OverrideAttr::VolumetricShadow,
+		"override volumetric-shadow attr parse");
+	Check(std::string(smvk::tour::OverrideAttrName(smvk::tour::OverrideAttr::Static))
+		== "static", "override static serialization name");
 
 	// Out-of-range ids fail loudly.
 	smvk::tour::Doc bad;
@@ -586,6 +631,7 @@ void TestReferences() {
 	r.parent = 0;
 	r.source = "wheel.tour";
 	r.name = "wheel";
+	r.nameSpace = "vehicle";
 	r.translate = glm::vec3(1.0f, 2.0f, 3.0f);
 	r.hasTranslate = true;
 	r.rotate = glm::vec3(0.0f, 90.0f, 0.0f);
@@ -604,6 +650,7 @@ void TestReferences() {
 		Check(back.references[0].source == "wheel.tour" &&
 			!back.references[0].asset &&
 			back.references[0].name == "wheel" &&
+			back.references[0].nameSpace == "vehicle" &&
 			back.references[0].parent == 0 &&
 			back.references[0].hasTranslate &&
 			back.references[0].translate.y == 2.0f &&
@@ -638,10 +685,10 @@ void TestReferences() {
 	Check(findNodeByName(cluster->scene, "REF wheel") >= 0, "ref placeholder node");
 	// Reference namespaces (Maya): the subtree takes '<ref>:' — root
 	// namespace is the master tour (its nodes carry no prefix).
-	Check(findNodeByName(cluster->scene, "wheel:Wheel") >= 0,
+	Check(findNodeByName(cluster->scene, "vehicle:Wheel") >= 0,
 		"ref subtree namespaced");
 	Check(findNodeByName(cluster->scene, "REF gear") >= 0, "ref nested placeholder");
-	Check(findNodeByName(cluster->scene, "wheel:gear:Gear") >= 0,
+	Check(findNodeByName(cluster->scene, "vehicle:gear:Gear") >= 0,
 		"ref nested namespaced chain");
 	// Resolved sources: one canonical path per doc reference, in order
 	// (the raw string is what the file says; this is what bound — the
@@ -652,6 +699,59 @@ void TestReferences() {
 		Check(!resolved[0].empty()
 			&& resolved[0].find("wheel.geometry") != std::string::npos,
 			"ref resolved canonical path");
+	}
+	// Without -namespace, references retain the placeholder-name prefix.
+	back.references[0].nameSpace.clear();
+	auto legacyCluster = std::make_unique<smvk::Cluster>(nullptr);
+	legacyCluster->SetOfflineMode(true);
+	addNode(legacyCluster->scene, -1, 0);
+	Check(ApplySceneReferences(*legacyCluster, back, dir.generic_string(),
+		nullptr, nullptr, nullptr, smvk::MeshOptConfig{},
+		smvk::MeshletConfig{}, 0, nullptr) == 2,
+		"ref default namespace applied");
+	Check(findNodeByName(legacyCluster->scene, "wheel:Wheel") >= 0 &&
+		findNodeByName(legacyCluster->scene, "wheel:gear:Gear") >= 0,
+		"ref default namespace unchanged");
+
+	// Multiple occurrences of the same .tour remain independently placed
+	// and their nested namespace chains must not alias one another.
+	{
+		smvk::tour::Doc instances;
+		auto occurrence = r;
+		occurrence.name = "wheel_left";
+		occurrence.nameSpace = "left";
+		occurrence.translate = glm::vec3(-4.0f, 0.0f, 0.0f);
+		occurrence.hasRotate = false;
+		occurrence.hasScale = false;
+		instances.references.push_back(occurrence);
+		occurrence.name = "wheel_right";
+		occurrence.nameSpace = "right";
+		occurrence.translate = glm::vec3(6.0f, 0.0f, 0.0f);
+		instances.references.push_back(occurrence);
+		auto world = std::make_unique<smvk::Cluster>(nullptr);
+		world->SetOfflineMode(true);
+		addNode(world->scene, -1, 0);
+		std::vector<int> placeholders;
+		Check(ApplySceneReferences(*world, instances, dir.generic_string(),
+			nullptr, nullptr, nullptr, smvk::MeshOptConfig{},
+			smvk::MeshletConfig{}, 0, &placeholders) == 4,
+			"prefab namespace occurrences resolve both nested subtrees");
+		Check(placeholders.size() == 2 && placeholders[0] >= 0
+			&& placeholders[1] >= 0 && placeholders[0] != placeholders[1],
+			"prefab instances have distinct placeholders");
+		if (placeholders.size() == 2 && placeholders[0] >= 0
+			&& placeholders[1] >= 0)
+			Check(std::abs(world->scene.localTransform[size_t(placeholders[0])][3].x + 4.0f) < 1e-4f
+				&& std::abs(world->scene.localTransform[size_t(placeholders[1])][3].x - 6.0f) < 1e-4f,
+				"prefab instance placements are independent");
+		Check(findNodeByName(world->scene, "left:Wheel") >= 0
+			&& findNodeByName(world->scene, "left:gear:Gear") >= 0
+			&& findNodeByName(world->scene, "right:Wheel") >= 0
+			&& findNodeByName(world->scene, "right:gear:Gear") >= 0,
+			"prefab instances retain separate nested namespaces");
+		Check(findNodeByName(world->scene, "wheel_left:Wheel") < 0
+			&& findNodeByName(world->scene, "wheel_right:Wheel") < 0,
+			"explicit namespace is independent of placeholder name");
 	}
 	// Cycle guard: a scene whose tour references itself inlines once.
 	writeGltf("self.gltf", "Self");
@@ -675,6 +775,132 @@ void TestReferences() {
 		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, nullptr);
 	Check(selfApplied == 1, "ref cycle guard (inlined once)");
 	// Cleanup.
+	fs::remove_all(dir, ec);
+}
+
+// NESTED MODERN TOURS: a referenced scene that records its own source
+// as `reference -root` (the CURRENT writer's form — SaveTour emits the
+// root line, `source -p` is the deprecated spelling) must inline exactly
+// like the legacy one: the root entry FEEDS the model source under the
+// placeholder and is consumed — never re-inlined as a second, unplaced
+// subtree at the owner's scene root.
+void TestNestedModernTourRoot() {
+	namespace fs = std::filesystem;
+	const fs::path dir = fs::temp_directory_path() / "tourmaline_nested_root";
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+	const fs::path gltf = dir / "modern.gltf";
+	{
+		// One-triangle glTF (the .geometry build needs real geometry).
+		std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
+		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scene\":0,"
+			"\"scenes\":[{\"nodes\":[0]}],"
+			"\"nodes\":[{\"name\":\"Modern\",\"mesh\":0}],"
+			"\"meshes\":[{\"primitives\":[{\"attributes\":"
+			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+			"\"accessors\":["
+			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+			"\"bufferViews\":["
+			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+			"\"byteLength\":78}]}";
+	}
+	smvk::assets::AssetManifest man;
+	std::string ierr;
+	smvk::assets::DeriveConfig dcfg{};
+	Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, dcfg, man,
+			nullptr, &ierr),
+		"nested modern derive artifact");
+	// The CELL scene exactly as the editor writes it today: its own
+	// source rides a `reference -root` line, no `source -p` verb.
+	{
+		std::ofstream f(dir / "cell.tour", std::ios::binary | std::ios::trunc);
+		f << "reference -root -n 0 -source \"modern.geometry\" "
+			"-name \"Modern\";\n";
+	}
+	smvk::tour::Doc doc;
+	smvk::tour::ReferenceCmd r{};
+	r.parent = 0;
+	r.source = "cell.tour";
+	r.name = "cell";
+	r.translate = glm::vec3(5.0f, 0.0f, -2.0f);
+	r.hasTranslate = true;
+	doc.references.push_back(r);
+	// SECOND occurrence of the SAME scene (the documented multi-reference
+	// pattern — crate_a + crate_b): every occurrence re-registers the
+	// SAME mesh URIs, which used to orphan the earlier handles in the
+	// reverse lookup (GetMeshUri -> empty -> the cook's write-back
+	// hard-error, the serializer's duplicated cluster-local fallback).
+	smvk::tour::ReferenceCmd r2{};
+	r2.parent = 0;
+	r2.source = "cell.tour";
+	r2.name = "cell_b";
+	r2.translate = glm::vec3(-5.0f, 0.0f, 2.0f);
+	r2.hasTranslate = true;
+	doc.references.push_back(r2);
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetOfflineMode(true);
+	addNode(cluster->scene, -1, 0); // cluster root (importer parity)
+	std::vector<int> ph;
+	std::vector<std::string> issues;
+	const size_t applied = ApplySceneReferences(*cluster, doc,
+		dir.generic_string(), nullptr, nullptr, nullptr,
+		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph, &issues);
+	Check(applied == 2, "nested modern tour inlined once per occurrence");
+	Check(issues.empty(), "nested modern tour no issues");
+	Check(ph.size() == 2 && ph[0] >= 0 && ph[1] >= 0,
+		"nested modern placeholder nodes");
+	Check(findNodeByName(cluster->scene, "REF cell") >= 0
+		&& findNodeByName(cluster->scene, "REF cell_b") >= 0,
+		"nested modern placeholders named");
+	Check(findNodeByName(cluster->scene, "cell:Modern") >= 0
+		&& findNodeByName(cluster->scene, "cell_b:Modern") >= 0,
+		"nested modern subtrees namespaced under their refs");
+	// The root entry must be CONSUMED as the model source: an
+	// unprefixed 'Modern' twin would mean the geometry imported a
+	// second time, anchored unplaced at the owner's scene root.
+	Check(findNodeByName(cluster->scene, "Modern") < 0,
+		"nested modern root consumed, not re-inlined");
+	if (ph.size() == 2 && ph[0] >= 0 && ph[1] >= 0) {
+		const glm::mat4& a = cluster->scene.localTransform[size_t(ph[0])];
+		const glm::mat4& b = cluster->scene.localTransform[size_t(ph[1])];
+		Check(std::abs(a[3].x - 5.0f) < 1e-4f
+			&& std::abs(a[3].z + 2.0f) < 1e-4f,
+			"nested modern placeholder placement a");
+		Check(std::abs(b[3].x + 5.0f) < 1e-4f
+			&& std::abs(b[3].z - 2.0f) < 1e-4f,
+			"nested modern placeholder placement b");
+	}
+	// THE SHARED-URI CONTRACT (the cook write-back's hard gate): every
+	// cooked mesh reverses to its artifact URI even when a LATER
+	// occurrence re-registered the same URI (latest-wins forward map).
+	{
+		size_t withUri = 0, total = 0;
+		std::unordered_set<uint32_t> seen;
+		for (const MeshRow& row : cluster->scene.tables.meshes) {
+			if (!seen.insert(row.mesh).second)
+				continue;
+			const smvk::ClusterStaticMeshHandle h =
+				cluster->staticMeshes.getHandle(row.mesh);
+			if (!h.valid())
+				continue;
+			++total;
+			if (!cluster->GetMeshUri(h).empty())
+				++withUri;
+		}
+		Check(total > 0 && withUri == total,
+			"shared-asset occurrences all reverse to their mesh uri");
+	}
 	fs::remove_all(dir, ec);
 }
 
@@ -4357,6 +4583,61 @@ void TestRequiredNodeNames() {
 		"replay refuses programmatic unnamed nodes");
 }
 
+
+void TestReferenceNamespaceFuzz() {
+	using namespace smvk::tour;
+	std::string err;
+	Doc doc;
+	const auto makeLine = [](const std::string& ns) {
+		return std::string("reference -n 0 -source \"part.tour\" -name \"instance\" -namespace \"")
+			+ ns + "\";\n";
+	};
+	for (const std::string& ns : { "", ":", "a:b", "a/b",
+		"../escape", "branch:leaf", "/absolute" })
+		Check(!LoadTourFromString(makeLine(ns), doc, err),
+			"namespace negative corpus rejects invalid values");
+	for (const char* line : {
+		"reference -n 0 -source \"part.tour\" -name \"part\" -namespace;\n",
+		"reference -n 0 -source \"part.tour\" -name \"part\" -namespace -t 1 2 3;\n",
+		"reference -root -n 0 -source \"root.geometry\" -namespace \"root\";\n",
+		"reference -n 0 -source \"mesh.geometry\" -name \"part\" -namespace \"mesh\";\n" })
+		Check(!LoadTourFromString(line, doc, err),
+			"namespace forbidden for root and mesh references");
+
+	// Fixed-seed grammar mutation: stable and reproducible in CI.
+	uint32_t seed = 0x6e735f31u;
+	const auto rnd = [&]() {
+		seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+		return seed;
+	};
+	const std::string alphabet =
+		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/.";
+	for (int k = 0; k < 256; ++k) {
+		std::string ns;
+		const size_t len = 1 + rnd() % 28;
+		for (size_t i = 0; i < len; ++i)
+			ns += alphabet[rnd() % alphabet.size()];
+		const bool valid = ns.find_first_of(":/") == std::string::npos;
+		const bool parsed = LoadTourFromString(makeLine(ns), doc, err);
+		Check(parsed == valid, "namespace fuzz grammar accepted/rejected");
+		if (!parsed) continue;
+		Check(doc.references.size() == 1
+			&& doc.references[0].nameSpace == ns,
+			"namespace fuzz parsed value is exact");
+		const std::string path = TempTour();
+		Check(SaveTour(path, doc, err), "namespace fuzz save");
+		Doc loaded;
+		Check(LoadTour(path, loaded, err)
+			&& loaded.references.size() == 1
+			&& loaded.references[0].nameSpace == ns,
+			"namespace fuzz stable file roundtrip");
+	}
+	Check(LoadTourFromString(
+		"reference -n 0 -source \"part.tour\" -name \"part\";\n", doc, err)
+		&& doc.references.size() == 1 && doc.references[0].nameSpace.empty(),
+		"namespace missing flag uses old fallback");
+}
+
 void TestMayaNodeNamePropagation() {
 	using namespace smvk::tour;
 	Scene scene;
@@ -4458,6 +4739,8 @@ int main() {
 	TestIdentityLayers();
 	TestReplay();
 	TestReferences();
+	TestReferenceNamespaceFuzz();
+	TestNestedModernTourRoot();
 	TestTourReferences();
 	TestLightVerbs();
 	TestTerrainVerbs();

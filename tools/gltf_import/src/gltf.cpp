@@ -3380,8 +3380,34 @@ size_t ApplySceneReferences(
 					continue;
 				}
 				if (refTour.source.empty()) {
-					const std::string m = "[References] tour '" + tourResolved +
-						"' names no source scene (skipped)";
+					// MODERN AUTHORED SCENES record their own source as a
+					// `reference -root` line (SaveTour writes `reference
+					// -root`; the `source -p` verb is the deprecated
+					// spelling kept only when a session still carries
+					// one). Consume the FIRST root entry as the nested
+					// scene's model source AND strip it from the nested
+					// doc: the geometry imports under the placeholder
+					// below, and the nested level queued for further
+					// inlining must never see it again — a nested
+					// level's root reference anchors at the OWNER's
+					// scene root (isRoot -> parent 0), which would
+					// duplicate the subtree with no placement.
+					for (size_t ri = 0;
+						ri < refTour.references.size(); ++ri) {
+						const smvk::tour::ReferenceCmd& rr =
+							refTour.references[ri];
+						if (rr.root && !rr.source.empty()) {
+							refTour.source = rr.source;
+							refTour.references.erase(
+								refTour.references.begin()
+								+ std::ptrdiff_t(ri));
+							break;
+						}
+					}
+				}
+				if (refTour.source.empty()) {
+					const std::string m = "[References] tour '" + tourResolved
+						+ "' names no source scene (skipped)";
 					std::cerr << m << "\n";
 					issue(m);
 					++warnings;
@@ -3456,6 +3482,15 @@ size_t ApplySceneReferences(
 							&& !cur.baseDir.empty())
 							p = smvk::vfs::Join(cur.baseDir,
 								modelSource);
+						// A source lifted from a NESTED tour's root
+						// reference is relative to THAT tour's dir —
+						// the LAST candidate, after every existing one
+						// fails (an additive fallback: nothing that
+						// resolved before changes).
+						if (!vfs->Exists(p) && !refTourDir.empty()
+							&& refTourDir != cur.baseDir)
+							p = smvk::vfs::Join(refTourDir,
+								modelSource);
 						if (vfs->Exists(p)) {
 							meshResolved = p;
 							meshBytes = vfs->TryRead(p);
@@ -3484,6 +3519,14 @@ size_t ApplySceneReferences(
 						if (!std::filesystem::exists(hp, ec)
 							&& !cur.baseDir.empty())
 							hp = std::filesystem::path(cur.baseDir)
+							/ modelSource;
+						// NESTED-tour root source: relative to the
+						// nested tour's OWN dir — the last candidate
+						// (additive; nothing above changes).
+						if (!std::filesystem::exists(hp, ec)
+							&& !refTourDir.empty()
+							&& refTourDir != cur.baseDir)
+							hp = std::filesystem::path(refTourDir)
 							/ modelSource;
 					}
 					if (std::filesystem::exists(hp, ec)) {
@@ -3781,7 +3824,8 @@ size_t ApplySceneReferences(
 		// verify-names and its own wide overrides matched the
 		// un-prefixed names.
 		if (!isRoot) {
-			const std::string ns = cur.nsPrefix + name + ":";
+			const std::string ns = cur.nsPrefix
+				+ (r.nameSpace.empty() ? name : r.nameSpace) + ":";
 			std::vector<uint32_t> stack;
 			for (int ch = cluster.scene.hierarchy[size_t(ph)].firstChild;
 				ch >= 0;
@@ -3850,7 +3894,7 @@ size_t ApplySceneReferences(
 			// Root references never extend the namespace chain (the
 			// master's own contents stay unprefixed at every depth).
 			next.nsPrefix = isRoot ? cur.nsPrefix
-				: cur.nsPrefix + name + ":";
+				: cur.nsPrefix + (r.nameSpace.empty() ? name : r.nameSpace) + ":";
 			next.depth = cur.depth + 1;
 			next.nodeBase = subtreeBase;
 			queue.push_back(std::move(next));

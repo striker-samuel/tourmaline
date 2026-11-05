@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/Asset/cluster_serializer.h>
+#include <Engine/Scene/static_export.h>
 
 #include <algorithm>
 #include <cmath>
@@ -1117,6 +1118,7 @@ bool SerializeClusters(
 	// --- Scene ---------------------------------------------------------------
 	{
 		const Scene& scene = cluster.scene;
+		const auto exportView = tour::scene::BuildStaticExportHierarchy(scene);
 		std::vector<uint8_t> blob;
 		// Epoch 6b: the cooked scene stays DENSE (the locked decision —
 		// a cooked scene needs no free list). Live slots compact in
@@ -1136,7 +1138,7 @@ bool SerializeClusters(
 		for (uint32_t s = 0; s < scene.hierarchy.size(); ++s) {
 			if (slotToDense[s] == UINT32_MAX)
 				continue;
-			const Hierarchy& h = scene.hierarchy[s];
+			const Hierarchy& h = exportView.hierarchy[s];
 			PutI32(blob, denseLink(h.parent));
 			PutI32(blob, denseLink(h.firstChild));
 			PutI32(blob, denseLink(h.nextSibling));
@@ -1146,7 +1148,7 @@ bool SerializeClusters(
 		for (uint32_t s = 0; s < scene.hierarchy.size(); ++s) {
 			if (slotToDense[s] == UINT32_MAX)
 				continue;
-			const float* p = glm::value_ptr(scene.localTransform[s]);
+			const float* p = glm::value_ptr(exportView.transforms[s]);
 			for (int i = 0; i < 16; ++i)
 				PutF32(blob, p[i]);
 		}
@@ -1238,11 +1240,11 @@ bool SerializeClusters(
 		};
 		// Trailing static-subtree section (v2; v1 blobs end here).
 		{
-			putFlagBytes(scene.staticRoot);
+			putFlagBytes(exportView.staticRoots);
 			if (stats) {
 				for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
 					if (slotToDense[s] != UINT32_MAX
-						&& s < scene.staticRoot.size() && scene.staticRoot[s])
+						&& s < exportView.staticRoots.size() && exportView.staticRoots[s])
 						stats->staticRoots++;
 			}
 		}

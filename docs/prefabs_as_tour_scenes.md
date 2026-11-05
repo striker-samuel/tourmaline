@@ -29,6 +29,7 @@ is illustrative). The authored reference syntax now accepts:
 - `-s sx sy sz`: component scale (defaults to 1,1,1).
 - The placeholder matrix is `T * Rx * Ry * Rz * S`. The reference's
   actual scene nodes remain local to the referenced definition.
+- Optional `-namespace "vehicle"` overrides the prefix for this reference's imported nodes and nested references (`vehicle:Wheel`, `vehicle:gear:Gear`), independent of the placeholder `-name`. Without it, the namespace defaults to `-name` for compatibility. Namespace values must be nonempty, contain no `/` or `:`, and apply only to non-root scene references.
 - Existing `-name`, `-guid`, `-enabled`, and nested reference behavior
   stay unchanged. The `-root` reference is the definition's own
   geometry source and does not become an extra placeholder.

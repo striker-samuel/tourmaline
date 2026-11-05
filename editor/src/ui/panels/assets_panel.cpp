@@ -8,6 +8,7 @@
 // coalesce into one command per gesture via m_pending.
 
 #include "editor_app.h"
+#include "ui/dialogs/system_modal.h"
 #include "editor_brush_presets.h"
 #include "modal_bindings.h"
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
@@ -1310,8 +1311,12 @@ namespace editor {
 		// the grid child), including the context-menu request frame.
 		if (openRename)
 			ImGui::OpenPopup("Rename asset##browser");
+		ui::PrepareSystemModal();
 		if (ImGui::BeginPopupModal("Rename asset##browser", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize)) {
+			ui::kSystemModalFlags | ImGuiWindowFlags_AlwaysAutoResize)) {
+			if (ui::SystemModalCloseRequested())
+				ImGui::CloseCurrentPopup();
+			else {
 			ImGui::TextDisabled("Renaming may break path-based references.");
 			if (ImGui::IsWindowAppearing())
 				ImGui::SetKeyboardFocusHere();
@@ -1359,6 +1364,7 @@ namespace editor {
 			if (ImGui::Button("Cancel")) {
 				renameTarget.clear();
 				ImGui::CloseCurrentPopup();
+			}
 			}
 			ImGui::EndPopup();
 		}

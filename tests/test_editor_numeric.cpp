@@ -77,6 +77,19 @@ int main() {
         "invalid stored number has editable finite display value");
     Check(!editor::numeric::Finite(std::numeric_limits<float>::quiet_NaN()),
         "reject NaN scalar");
+    // Negative zero and any value rounding to zero at the field's
+    // precision must be displayed as +0.000, without mutating the scene.
+    const float negativeZero = -0.0f;
+    const float justNegative = -0.00009f;
+    Check(!std::signbit(editor::numeric::DisplayFixed(negativeZero)),
+        "negative zero displays as positive zero");
+    Check(editor::numeric::DisplayFixed(justNegative) == 0.0f &&
+        !std::signbit(editor::numeric::DisplayFixed(justNegative)),
+        "small negative rotation never displays as -0.000");
+    Check(editor::numeric::DisplayFixed(-0.002f) < 0.0f,
+        "real negative values remain negative");
+    Check(editor::numeric::DisplayFixed(-0.004f, 2) == 0.0f,
+        "slider decimal precision also normalizes negative zero");
     // Bounds-center pivot regression. Identity drag must not move a
     // pre-rotated object, and a 90-degree delta orbits the pivot once.
     using namespace editor::gizmo_rotation;

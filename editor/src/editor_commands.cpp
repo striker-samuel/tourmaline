@@ -359,7 +359,11 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 		break;
 	}
 	case EditVerb::AssignMaterial: {
-		SetMaterial(scene, c.node, forward ? c.material : c.beforeMaterial);
+		const uint32_t material = forward ? c.material : c.beforeMaterial;
+		if (material == UINT32_MAX)
+			RemoveMaterial(scene, c.node);
+		else
+			SetMaterial(scene, c.node, material);
 		RefreshNodeDrawState(c.node);
 		break;
 	}
@@ -4241,11 +4245,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 	case EditVerb::AssignMaterial: {
 		if (!needNode())
 			return false;
-		const int pool = app.WorldMatToCluster(c.material);
-		if (pool < 0)
+		const int pool = c.material == UINT32_MAX
+			? -1 : app.WorldMatToCluster(c.material);
+		if (pool < 0 && c.material != UINT32_MAX)
 			return false;
 		out.verb = smvk::tour::Verb::AssignMaterial;
-		out.material = uint32_t(pool);
+		out.material = c.material == UINT32_MAX ? UINT32_MAX : uint32_t(pool);
 		return true;
 	}
 	case EditVerb::SetMatAttr: {
@@ -4992,7 +4997,13 @@ std::string EditorApp::TourTarget() const {
 }
 
 bool EditorApp::SaveTour() {
-	const bool ok = SaveTourTo(TourTarget());
+	// The new-session scratch lives outside the project by design. Internal
+	// autosaves/shutdown flushes may write that exact temporary document;
+	// explicit Save As still goes through the project path policy.
+	const std::string target = TourTarget();
+	const bool scratch = !m_startupTempTour.empty()
+		&& target == m_startupTempTour;
+	const bool ok = SaveTourTo(target, true, scratch);
 	if (ok)
 		ClearAutosave();
 	return ok;
@@ -5116,6 +5127,10 @@ bool EditorApp::SaveTourIncremental() {
 	// so re-incrementing from sponza.0003.tour yields sponza.0004.tour).
 	namespace fs = std::filesystem;
 	const std::string cur = TourTarget();
+	if (!m_startupTempTour.empty() && cur == m_startupTempTour) {
+		Log("Incremental save: save the temporary scene into the project first.");
+		return false;
+	}
 	if (cur.empty() || !m_world) {
 		Log("Incremental save: no scene.");
 		return false;
@@ -5699,11 +5714,12 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 	case smvk::tour::Verb::AssignMaterial: {
 		if (!needNode())
 			return false;
-		const int wm = app.ClusterMatToWorld(tc.material);
-		if (wm < 0)
+		const int wm = tc.material == UINT32_MAX
+			? -1 : app.ClusterMatToWorld(tc.material);
+		if (wm < 0 && tc.material != UINT32_MAX)
 			return false;
 		out.verb = EditVerb::AssignMaterial;
-		out.material = uint32_t(wm);
+		out.material = tc.material == UINT32_MAX ? UINT32_MAX : uint32_t(wm);
 		const MaterialRow* row =
 			FindMaterial(app.m_world->scene, node);
 		out.beforeMaterial = row ? row->material : UINT32_MAX;

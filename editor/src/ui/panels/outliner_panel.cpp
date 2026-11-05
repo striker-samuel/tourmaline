@@ -282,7 +282,7 @@ namespace editor {
 				ImGui::PushID(int(n));
 				const bool sel = IsSelected(n);
 				char label[300];
-				std::snprintf(label, sizeof(label), "   %u: %s%s%s%s%s%s%s%s%s", n,
+				std::snprintf(label, sizeof(label), "     %u: %s%s%s%s%s%s%s%s%s", n,
 					name.empty() ? "(unnamed)" : name.c_str(),
 					FindNodeLight(n) ? " [light]" : "",
 					(FindCubemap(m_world->scene, n) != nullptr) ? " [cube]" : "",
@@ -369,7 +369,7 @@ namespace editor {
 				nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 		}
 		char label[300];
-		std::snprintf(label, sizeof(label), "   %s%s%s%s%s%s%s%s%s%s%s%s%s",
+		std::snprintf(label, sizeof(label), "      %s%s%s%s%s%s%s%s%s%s%s%s%s",
 			name.empty() ? "(node)" : name.c_str(),
 			lightTag,
 			(FindCubemap(scene, node) != nullptr) ? " [cube]" : "",
@@ -394,7 +394,7 @@ namespace editor {
 		const ImVec2 rowPos = ImGui::GetItemRectMin();
 		const float iconSide = ImGui::GetFontSize();
 		DrawAssetIconFallback(ImGui::GetWindowDrawList(),
-			ImVec2(rowPos.x + ImGui::GetTreeNodeToLabelSpacing(),
+			ImVec2(rowPos.x + ImGui::GetTreeNodeToLabelSpacing() + 1.0f,
 				rowPos.y + (ImGui::GetItemRectSize().y - iconSide) * 0.5f),
 			iconSide, rowIcon);
 		// Drag source (reparent by drop).

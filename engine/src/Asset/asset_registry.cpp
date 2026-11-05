@@ -106,7 +106,9 @@ bool Cluster::RegisterMeshUri(StringViewT uri, ClusterStaticMeshHandle handle) {
 	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
 	if (n.empty() || !handle.valid())
 		return false;
-	meshByUri_.Insert(uriArena_.AllocateString(n), handle);
+	const StringViewT key = uriArena_.AllocateString(n);
+	meshByUri_.Insert(key, handle);
+	meshUriLedger_.emplace_back(handle, key);
 	return true;
 }
 
@@ -114,7 +116,9 @@ bool Cluster::RegisterMaterialUri(StringViewT uri, ClusterMaterialHandle handle)
 	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
 	if (n.empty() || !handle.valid())
 		return false;
-	materialByUri_.Insert(uriArena_.AllocateString(n), handle);
+	const StringViewT key = uriArena_.AllocateString(n);
+	materialByUri_.Insert(key, handle);
+	materialUriLedger_.emplace_back(handle, key);
 	return true;
 }
 
@@ -122,7 +126,9 @@ bool Cluster::RegisterLightUri(StringViewT uri, ClusterLightHandle handle) {
 	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
 	if (n.empty() || !handle.valid())
 		return false;
-	lightByUri_.Insert(uriArena_.AllocateString(n), handle);
+	const StringViewT key = uriArena_.AllocateString(n);
+	lightByUri_.Insert(key, handle);
+	lightUriLedger_.emplace_back(handle, key);
 	return true;
 }
 
@@ -130,7 +136,9 @@ bool Cluster::RegisterCameraUri(StringViewT uri, ClusterCameraHandle handle) {
 	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
 	if (n.empty() || !handle.valid())
 		return false;
-	cameraByUri_.Insert(uriArena_.AllocateString(n), handle);
+	const StringViewT key = uriArena_.AllocateString(n);
+	cameraByUri_.Insert(key, handle);
+	cameraUriLedger_.emplace_back(handle, key);
 	return true;
 }
 
@@ -138,7 +146,9 @@ bool Cluster::RegisterDecalUri(StringViewT uri, ClusterDecalHandle handle) {
 	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
 	if (n.empty() || !handle.valid())
 		return false;
-	decalByUri_.Insert(uriArena_.AllocateString(n), handle);
+	const StringViewT key = uriArena_.AllocateString(n);
+	decalByUri_.Insert(key, handle);
+	decalUriLedger_.emplace_back(handle, key);
 	return true;
 }
 
@@ -260,56 +270,54 @@ std::optional<TextureHandle> Cluster::FindTextureByUri(StringViewT uri) const {
 StringViewT Cluster::GetMeshUri(ClusterStaticMeshHandle handle) const {
 	if (!handle.valid())
 		return {};
-	StringViewT found;
-	meshByUri_.ForEach([&](StringViewT uri, const ClusterStaticMeshHandle& h) {
-		if (h == handle)
-			found = uri;
-	});
-	return found;
+	// Ledger newest-first (see meshUriLedger_): the forward map keeps
+	// only the newest handle per uri, so a shared-asset scene's earlier
+	// occurrences resolve here — through their own registration rows.
+	for (auto it = meshUriLedger_.rbegin(); it != meshUriLedger_.rend();
+		++it)
+		if (it->first == handle)
+			return it->second;
+	return {};
 }
 
 StringViewT Cluster::GetMaterialUri(ClusterMaterialHandle handle) const {
 	if (!handle.valid())
 		return {};
-	StringViewT found;
-	materialByUri_.ForEach([&](StringViewT uri, const ClusterMaterialHandle& h) {
-		if (h == handle)
-			found = uri;
-	});
-	return found;
+	for (auto it = materialUriLedger_.rbegin();
+		it != materialUriLedger_.rend(); ++it)
+		if (it->first == handle)
+			return it->second;
+	return {};
 }
 
 StringViewT Cluster::GetLightUri(ClusterLightHandle handle) const {
 	if (!handle.valid())
 		return {};
-	StringViewT found;
-	lightByUri_.ForEach([&](StringViewT uri, const ClusterLightHandle& h) {
-		if (h == handle)
-			found = uri;
-	});
-	return found;
+	for (auto it = lightUriLedger_.rbegin(); it != lightUriLedger_.rend();
+		++it)
+		if (it->first == handle)
+			return it->second;
+	return {};
 }
 
 StringViewT Cluster::GetCameraUri(ClusterCameraHandle handle) const {
 	if (!handle.valid())
 		return {};
-	StringViewT found;
-	cameraByUri_.ForEach([&](StringViewT uri, const ClusterCameraHandle& h) {
-		if (h == handle)
-			found = uri;
-	});
-	return found;
+	for (auto it = cameraUriLedger_.rbegin(); it != cameraUriLedger_.rend();
+		++it)
+		if (it->first == handle)
+			return it->second;
+	return {};
 }
 
 StringViewT Cluster::GetDecalUri(ClusterDecalHandle handle) const {
 	if (!handle.valid())
 		return {};
-	StringViewT found;
-	decalByUri_.ForEach([&](StringViewT uri, const ClusterDecalHandle& h) {
-		if (h == handle)
-			found = uri;
-	});
-	return found;
+	for (auto it = decalUriLedger_.rbegin(); it != decalUriLedger_.rend();
+		++it)
+		if (it->first == handle)
+			return it->second;
+	return {};
 }
 
 ClusterLightHandle Cluster::CreateLight(SceneLight def) {
