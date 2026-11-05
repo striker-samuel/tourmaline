@@ -76,6 +76,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/Asset/meshlet.h> // kMeshletMaxVertices/Triangles (the engine meshlet canon)
+#include <Engine/Scene/node_plugs.h>
 #include <Engine/Scene/scene.h> // SceneExportSettings (the export-settings node payload)
 
 namespace tour { struct Cluster; }
@@ -403,6 +404,7 @@ enum class OverrideAttr : uint8_t {
 	DitherCloseup, // flag
 	Static,       // subtree frozen-transform root
 	VolumetricShadow, // coarse fog shadow caster
+	Plug, // path + typed value from the shared scene plug registry
 };
 
 struct OverrideRule {
@@ -410,6 +412,8 @@ struct OverrideRule {
 	std::string pattern; // ECMAScript regex over node names
 	bool flag = false;   // Visibility/NoLightmap/Lightmap/Dither value
 	uint32_t material = 0; // Material: cluster material pool index
+	std::string plug; // Plug: stable node/component property path
+	tour::scene::plugs::Value value; // Plug: bool/number/string
 	bool enabled = true;
 };
 
