@@ -10,6 +10,7 @@
 // bake/cook can no longer scroll past unseen.
 
 #include "editor_app.h"
+#include "ui/dialogs/system_modal.h"
 #include <algorithm>
 
 #include <imgui.h>
@@ -75,9 +76,9 @@ void EditorApp::DrawTaskWindow() {
 		ImGui::OpenPopup(m_taskWindow.popupId.c_str());
 		m_taskWindow.opened = true;
 	}
-	ImGui::SetNextWindowSize(ImVec2(640, 420), ImGuiCond_Appearing);
+	ui::PrepareSystemModal(ImVec2(640, 420));
 	if (!ImGui::BeginPopupModal(m_taskWindow.popupId.c_str(), nullptr,
-			ImGuiWindowFlags_NoCollapse)) {
+			ui::kSystemModalFlags)) {
 		// Popup not up this frame (e.g. stacked behind another modal):
 		// stay armed, keep blocking, retry next frame.
 		return;
