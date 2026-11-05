@@ -762,6 +762,36 @@ namespace editor {
 					break;
 				}
 			}
+			// Material binding is optional: absent means the editor's
+			// default material. Add it through the component picker,
+			// rather than silently assigning an arbitrary material.
+			if (!FindMaterial(scene, node)
+				&& !m_world->materialLocations.empty()
+				&& componentFilter.PassFilter("Material")) {
+				any = true;
+				if (ImGui::BeginMenu("Material")) {
+					for (uint32_t mat = 0;
+						mat < m_world->materialLocations.size(); ++mat) {
+						const auto& loc = m_world->materialLocations[mat];
+						const std::string uri = loc.cluster
+							? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
+							: "";
+						const std::string label = "mat." + std::to_string(mat)
+							+ " " + uri;
+						if (ImGui::MenuItem(label.c_str())) {
+							EditCmd c{};
+							c.verb = EditVerb::AssignMaterial;
+							c.node = node;
+							c.material = mat;
+							c.beforeMaterial = UINT32_MAX;
+							Do(c);
+							ImGui::CloseCurrentPopup();
+							break;
+						}
+					}
+					ImGui::EndMenu();
+				}
+			}
 			if (!any)
 				ImGui::TextDisabled("No available components");
 			ImGui::EndPopup();
