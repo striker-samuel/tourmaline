@@ -3892,9 +3892,6 @@ public:
 	// bindless registration only records the expected layout; nothing
 	// else transitions a per-frame-written image for off-graph
 	// sampling).
-	smvk::Holder<smvk::ImageHandle> m_inlineScratchImage;
-	smvk::Holder<smvk::ImageViewHandle> m_inlineScratchView;
-	smvk::LogicalImageViewHandle m_inlineScratchLogical{};
 	bool EnsureInlineTarget(smvk::Extent2D extent);
 	bool m_captureQueued = false; // emit the capture pass this frame
 	bool m_captureReadbackPending = false; // read back after the submit (DrawFrame)
