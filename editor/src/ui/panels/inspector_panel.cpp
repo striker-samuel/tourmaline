@@ -160,23 +160,6 @@ namespace editor {
 		if (m_selection.size() > 1)
 			ImGui::TextDisabled("multi-select: %zu nodes (primary #%u)",
 				m_selection.size(), node);
-		// Selection cycling (Up/Down arrows + Prev/Next option).
-		{
-			if (ImGui::Button("< Prev")) {
-				SelectPrevNode();
-				return;
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Next >")) {
-				SelectNextNode();
-				return;
-			}
-			ImGui::SameLine();
-			attr::Check("Up/Down", &m_inspectorCycle, "Cycle selection with the Up/Down keys");
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip(
-					"When on, the Up/Down arrow keys cycle the node selection.");
-		}
 		// Hierarchy breadcrumb from the root to the selected node.
 		std::vector<uint32_t> ancestry;
 		int current = int(node);
@@ -268,31 +251,6 @@ namespace editor {
 				FinishDrag();
 			}
 		}
-
-		// Mesh info.
-		if (const MeshRow* meshRow = FindMesh(scene, node)) {
-			if (smvk::StaticMesh* mesh = m_world->GetMesh(meshRow->mesh)) {
-				uint32_t tris = 0;
-				for (auto& s : mesh->geometry.surfaces)
-					tris += s.indexCount / 3;
-				ImGui::Text("Mesh: %u verts, %u tris", mesh->geometry.vertexCount, tris);
-				if (mesh->lmChunk == 0xFFFFFFFFu) {
-					ImGui::Text("Lightmap: none (probe/sky lit)");
-				}
-				else {
-					ImGui::Text("Lightmap: baked, %u lobes", mesh->lmChunk);
-					if (m_hasSglm)
-						ImGui::TextDisabled("atlas: %s (%ux%u)",
-							m_sglmPath.c_str(), m_sglm.width, m_sglm.height);
-					else
-						ImGui::TextDisabled("atlas: not loaded (see panel below)");
-					if (ImGui::IsItemHovered())
-						ImGui::SetTooltip("UV1 (F10) shows baked texCoord2;\n"
-							"F8 shows baked irradiance in place.");
-				}
-			}
-		}
-
 
 		// Cooked light on this node (KHR punctual, import or pak).
 		if (glm::vec3 aimWs(0.0f);
