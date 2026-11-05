@@ -393,6 +393,8 @@ protected:
 	void OnFramebufferResized(int w, int h) override {
 		Super::OnFramebufferResized(w, h);
 		m_swapViews.clear(); // re-register against the new swapchain
+		// Rebuild any ImGui descriptor cached across a swapchain reflow.
+		DropLegacyStageTexture();
 	}
 
 private:
