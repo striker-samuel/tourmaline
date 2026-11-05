@@ -950,8 +950,7 @@ namespace editor {
 					ImGui::SetTooltip("NoLightmap on: matched nodes "
 						"bake probe/sky-lit (excluded from the atlas).");
 				else
-					ImGui::SetTooltip("DitherCloseup on: matched nodes "
-						"use the closeup dither path.");
+					ImGui::SetTooltip("On: matched nodes enable the selected flag.");
 			}
 		}
 		ImGui::SameLine();
@@ -1075,7 +1074,9 @@ namespace editor {
 					// pair — a visibility rule reads "on = visible"
 					// (the stored flag is the legacy hidden bit, the
 					// display inverts).
-					const char* lbl = r.flag ? "off" : "on";
+					const bool valueOn = r.attr == OverrideAttr::Visibility
+						? !r.flag : r.flag;
+					const char* lbl = valueOn ? "on" : "off";
 					if (ImGui::SmallButton(lbl))
 						SetOverrideFlag(r.id, !r.flag);
 					if (ImGui::IsItemHovered())
