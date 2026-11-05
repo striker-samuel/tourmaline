@@ -3623,8 +3623,8 @@ public:
 		uint32_t dbgSpotClip = 0;
 	};
 	DsStats m_dsStats{};
-	std::vector<uint32_t> m_dsZBinStaging;  // 4 * kDsZBinCount
-	std::vector<uint32_t> m_dsMaskStaging;  // per-TileGroup mask entries
+	tour::mem::ArenaFlatArray<uint32_t> m_dsZBinStaging;  // 4 * kDsZBinCount
+	tour::mem::ArenaFlatArray<uint32_t> m_dsMaskStaging;  // per-TileGroup mask entries
 	// Light count captured at phase-1 upload time (telemetry reference
 	// for the async counter readback; see UpdateReadbacks).
 	uint32_t m_dsReadbackLightCount = 0;
