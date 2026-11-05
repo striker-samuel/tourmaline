@@ -2135,7 +2135,7 @@ void EditorApp::DrawFrame() {
 				const auto ms = std::chrono::duration<double, std::milli>(
 					std::chrono::steady_clock::now() - start).count();
 				std::fprintf(stderr,
-					"[WINDOW-TIMING] boundary device idle %.2f ms\\n", ms);
+					"[WINDOW-TIMING] boundary device idle %.2f ms\n", ms);
 			}
 		}
 	}
