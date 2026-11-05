@@ -348,6 +348,13 @@ namespace editor {
 		if (!ImGui::BeginPopupModal("Recover autosave", nullptr,
 			ui::kSystemModalFlags | ImGuiWindowFlags_AlwaysAutoResize))
 			return;
+		if (ui::SystemModalCloseRequested()) {
+			// Preserve the autosave for a later recovery prompt.
+			m_recoverArmed = false;
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
 		ImGui::Text("An autosave is newer than the tour file.");
 		ImGui::TextDisabled("tour: %s", m_recoverTour.c_str());
 		ImGui::TextDisabled("autosave (%s): %s",
@@ -395,6 +402,12 @@ namespace editor {
 		if (!ImGui::BeginPopupModal("Create Terrain", nullptr,
 			ui::kSystemModalFlags))
 			return;
+		if (ui::SystemModalCloseRequested()) {
+			m_showTerrainDialog = false;
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
 		ImGui::Text("Create a procedural terrain mesh (heightfield grid).");
 		ImGui::Separator();
 		ImGui::SetNextItemWidth(300.0f);
