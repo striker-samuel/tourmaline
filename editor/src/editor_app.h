@@ -2338,7 +2338,7 @@ private:
 		Light, Camera, Env, GI, Character, Skeleton,
 		Animation, Timeline, Settings,
 		ToolObject, ToolFace, ToolVertex, ToolFrame, ToolClear,
-		ToolMove, ToolRotate, ToolScale, ToolLayout, ToolLighting,
+		ToolMove, ToolRotate, ToolScale, ToolTranspose, ToolLayout, ToolLighting,
 		ToolTest, ToolProfile,
 		Brush, BrushStroke, BrushPoints, BrushTrees, Count
 	};
