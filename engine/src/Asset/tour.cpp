@@ -816,6 +816,11 @@ bool OverrideAttrFromString(const std::string& s, OverrideAttr& out) {
 		out = OverrideAttr::DitherCloseup;
 		return true;
 	}
+	if (s == "static") { out = OverrideAttr::Static; return true; }
+	if (s == "volumetricShadow" || s == "castsVolumetricShadow") {
+		out = OverrideAttr::VolumetricShadow;
+		return true;
+	}
 	return false;
 }
 
@@ -958,6 +963,8 @@ const char* OverrideAttrName(OverrideAttr a) {
 	case OverrideAttr::NoLightmap: return "noLightmap";
 	case OverrideAttr::Lightmap: return "lightmap";
 	case OverrideAttr::DitherCloseup: return "ditherCloseup";
+	case OverrideAttr::Static: return "static";
+	case OverrideAttr::VolumetricShadow: return "volumetricShadow";
 	}
 	return "?";
 }
@@ -5628,6 +5635,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// wide rule touching the same node+attr (local wins).
 	if (!doc.overrides.empty()) {
 		std::unordered_set<uint32_t> localVis, localMat, localNoLM, localLM, localDither;
+		std::unordered_set<uint32_t> localStatic, localVolumetric;
 		for (const Command& c : doc.commands) {
 			switch (c.verb) {
 			case Verb::SetVisibility: localVis.insert(c.node); break;
@@ -5635,6 +5643,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			case Verb::SetNoLightmap: localNoLM.insert(c.node); break;
 			case Verb::SetLightmap: localLM.insert(c.node); break;
 			case Verb::SetDitherCloseup: localDither.insert(c.node); break;
+			case Verb::SetStatic: localStatic.insert(c.node); break;
+			case Verb::SetCastsVolumetricShadow: localVolumetric.insert(c.node); break;
 			default: break;
 			}
 		}
@@ -5699,6 +5709,16 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					if (scene.ditherCloseup.size() != scene.hierarchy.size())
 						scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
 					scene.ditherCloseup[n] = r.flag ? 1 : 0;
+					break;
+				case OverrideAttr::Static:
+					if (localStatic.contains(n)) continue;
+					if (r.flag) MarkSubtreeStatic(scene, int(n));
+					else ClearSubtreeStatic(scene, int(n));
+					break;
+				case OverrideAttr::VolumetricShadow:
+					if (localVolumetric.contains(n)) continue;
+					if (r.flag) MarkCastsVolumetricShadow(scene, int(n));
+					else ClearCastsVolumetricShadow(scene, int(n));
 					break;
 				}
 			}
