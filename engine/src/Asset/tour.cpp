@@ -1549,7 +1549,13 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 				f.name.pop_back();
 			i += 2;
 		}
-		else if (k == "-namespace" && i + 1 < toks.size()) {
+		else if (k == "-namespace") {
+			if (i + 1 >= toks.size() || toks[i + 1] == ";" ||
+				(!toks[i + 1].empty() && toks[i + 1][0] == '-')) {
+				err = "line " + std::to_string(lineNo)
+					+ ": reference -namespace requires a value";
+				return false;
+			}
 			f.hasNamespace = true;
 			f.nameSpace = toks[i + 1];
 			if (!f.nameSpace.empty() && f.nameSpace.back() == ';')
