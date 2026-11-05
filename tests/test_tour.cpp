@@ -586,6 +586,7 @@ void TestReferences() {
 	r.parent = 0;
 	r.source = "wheel.tour";
 	r.name = "wheel";
+	r.nameSpace = "vehicle";
 	r.translate = glm::vec3(1.0f, 2.0f, 3.0f);
 	r.hasTranslate = true;
 	r.rotate = glm::vec3(0.0f, 90.0f, 0.0f);
@@ -604,6 +605,7 @@ void TestReferences() {
 		Check(back.references[0].source == "wheel.tour" &&
 			!back.references[0].asset &&
 			back.references[0].name == "wheel" &&
+			back.references[0].nameSpace == "vehicle" &&
 			back.references[0].parent == 0 &&
 			back.references[0].hasTranslate &&
 			back.references[0].translate.y == 2.0f &&
@@ -638,10 +640,10 @@ void TestReferences() {
 	Check(findNodeByName(cluster->scene, "REF wheel") >= 0, "ref placeholder node");
 	// Reference namespaces (Maya): the subtree takes '<ref>:' — root
 	// namespace is the master tour (its nodes carry no prefix).
-	Check(findNodeByName(cluster->scene, "wheel:Wheel") >= 0,
+	Check(findNodeByName(cluster->scene, "vehicle:Wheel") >= 0,
 		"ref subtree namespaced");
 	Check(findNodeByName(cluster->scene, "REF gear") >= 0, "ref nested placeholder");
-	Check(findNodeByName(cluster->scene, "wheel:gear:Gear") >= 0,
+	Check(findNodeByName(cluster->scene, "vehicle:gear:Gear") >= 0,
 		"ref nested namespaced chain");
 	// Resolved sources: one canonical path per doc reference, in order
 	// (the raw string is what the file says; this is what bound — the
@@ -653,6 +655,18 @@ void TestReferences() {
 			&& resolved[0].find("wheel.geometry") != std::string::npos,
 			"ref resolved canonical path");
 	}
+	// Without -namespace, references retain the placeholder-name prefix.
+	back.references[0].nameSpace.clear();
+	auto legacyCluster = std::make_unique<smvk::Cluster>(nullptr);
+	legacyCluster->SetOfflineMode(true);
+	addNode(legacyCluster->scene, -1, 0);
+	Check(ApplySceneReferences(*legacyCluster, back, dir.generic_string(),
+		nullptr, nullptr, nullptr, smvk::MeshOptConfig{},
+		smvk::MeshletConfig{}, 0, nullptr) == 2,
+		"ref default namespace applied");
+	Check(findNodeByName(legacyCluster->scene, "wheel:Wheel") >= 0 &&
+		findNodeByName(legacyCluster->scene, "wheel:gear:Gear") >= 0,
+		"ref default namespace unchanged");
 	// Cycle guard: a scene whose tour references itself inlines once.
 	writeGltf("self.gltf", "Self");
 	deriveGeometry(dir / "self.gltf", "ref derive self artifact");
