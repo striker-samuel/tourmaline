@@ -378,15 +378,21 @@ void EditorApp::Shutdown() {
 	// Flush the working tour to the project .tour on exit (per-edit
 	// saves went to the %APPDATA% autosave) — same contract as
 	// CloseScene, so closing the editor never loses edits.
+	const bool preserveScratch = !m_startupTempTour.empty()
+		&& TourTarget() == m_startupTempTour && m_tourDirty;
 	if (m_world && !TourTarget().empty())
 		SaveTour();
-	// The startup document is only a transient working surface. Do not
-	// leave an unsolicited .tour in the OS temp directory after exit.
-	// Save As points m_tourPath at the user's chosen permanent location;
-	// removing this original scratch file never touches that asset.
+	// An untouched startup scratch is disposable. If it contains unsaved
+	// edits and was not saved into the project, retain the flushed file
+	// rather than silently destroying the user's work on shutdown.
 	if (!m_startupTempTour.empty()) {
-		std::error_code ec;
-		std::filesystem::remove(m_startupTempTour, ec);
+		if (preserveScratch)
+			Log("Unsaved temporary scene preserved for recovery: "
+				+ m_startupTempTour);
+		else {
+			std::error_code ec;
+			std::filesystem::remove(m_startupTempTour, ec);
+		}
 		m_startupTempTour.clear();
 	}
 	SavePrefs(); // save editor pr on close
