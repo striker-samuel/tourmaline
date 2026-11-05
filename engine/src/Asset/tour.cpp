@@ -1083,6 +1083,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			f << " -guid " << r.guid;
 		if (!r.name.empty())
 			f << " -name " << Quote(r.name);
+		if (!r.root && !r.asset && !r.nameSpace.empty())
+			f << " -namespace " << Quote(r.nameSpace);
 		if (r.hasTranslate || (!sourceVerb && r.hasRotate)) {
 			f << " -t " << r.translate.x << " " << r.translate.y
 				<< " " << r.translate.z;
@@ -1356,6 +1358,8 @@ struct Flags {
 	bool hasSource = false;
 	std::string name;
 	bool hasName = false;
+	std::string nameSpace;
+	bool hasNamespace = false;
 	bool root = false;     // -root (reference lines only: the scene's
 	                       // own source, inlined without placeholder/ns)
 	bool hasRoot = false;
@@ -1449,7 +1453,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint" || w == "-ref" ||
 					w == "-uuid" || w == "-source" || w == "-name" ||
-					w == "-type" || w == "-root" || w == "-kind" || w == "-hash" || w == "-loop";
+					w == "-type" || w == "-root" || w == "-kind" || w == "-hash" || w == "-loop" || w == "-namespace";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -1472,7 +1476,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint" || w == "-ref" ||
 					w == "-uuid" || w == "-source" || w == "-name" ||
-					w == "-type" || w == "-root" || w == "-kind" || w == "-hash" || w == "-loop";
+					w == "-type" || w == "-root" || w == "-kind" || w == "-hash" || w == "-loop" || w == "-namespace";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -1538,6 +1542,13 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 			f.name = toks[i + 1];
 			if (!f.name.empty() && f.name.back() == ';')
 				f.name.pop_back();
+			i += 2;
+		}
+		else if (k == "-namespace" && i + 1 < toks.size()) {
+			f.hasNamespace = true;
+			f.nameSpace = toks[i + 1];
+			if (!f.nameSpace.empty() && f.nameSpace.back() == ';')
+				f.nameSpace.pop_back();
 			i += 2;
 		}
 		else if (k == "-uuid" && i + 1 < toks.size()) {
@@ -2366,6 +2377,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			r.root = fl.hasRoot;
 			if (fl.hasName)
 				r.name = fl.name;
+			if (fl.hasNamespace)
+				r.nameSpace = fl.nameSpace;
 			if (!r.root && !ValidNodeName(r.name)) {
 				err = "line " + std::to_string(lineNo)
 					+ ": reference requires non-empty -name";
