@@ -2413,8 +2413,11 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// In docked UI mode, the legacy (F2+ and fallback) preview must
 		// render to a sampled target rather than behind opaque ImGui dock
 		// windows. Keep the old direct swapchain route in fullscreen mode.
-		const bool legacyImageLane = m_uiMode && m_dockViewportVisible
-			&& !m_dockStageDetached && EnsureLegacyStageTarget(extent);
+		const bool hasLegacyViewports =
+			LiveViewViewport() < 0 || ViewportCount() > 1;
+		const bool legacyImageLane = hasLegacyViewports
+			&& m_uiMode && m_dockViewportVisible && !m_dockStageDetached
+			&& EnsureLegacyStageTarget(extent);
 		const smvk::LogicalImageViewHandle sceneColor = legacyImageLane
 			? m_legacyStageLogical : m_swapViews[fb.imageIndex];
 
