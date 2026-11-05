@@ -663,12 +663,71 @@ static bool loadRenderFloats(FILE* f, SceneRenderSettings& r)
   return true;
 }
 
+// Versioned scene transform encoding. The legacy format starts with a node
+// count (at most 2^20 slots), so this magic can never be a valid legacy count.
+// Version 1 stores 16 IEEE754 binary64 values per matrix in column-major
+// order, avoiding GLM alignment/layout assumptions.
+static constexpr uint32_t kSceneDoubleMagic = 0x54444D53u; // "SMDT"
+static constexpr uint32_t kSceneDoubleVersion = 1u;
+
+static void WriteSceneDoubleMatrix(FILE* f, const glm::dmat4& m)
+{
+  for (int col = 0; col < 4; ++col)
+    for (int row = 0; row < 4; ++row) {
+      const double v = m[col][row];
+      fwrite(&v, sizeof(v), 1, f);
+    }
+}
+
+static bool ReadSceneDoubleMatrix(FILE* f, glm::dmat4& m)
+{
+  for (int col = 0; col < 4; ++col)
+    for (int row = 0; row < 4; ++row)
+      if (fread(&m[col][row], sizeof(double), 1, f) != 1 ||
+          !std::isfinite(m[col][row]))
+        return false;
+  return true;
+}
+
 void loadScene(const char* fileName, Scene& scene)
 {
   FILE* f = fopen(fileName, "rb");
+  if (!f) return;
 
-  uint32_t sz = 0;
-  fread(&sz, sizeof(sz), 1, f);
+  uint32_t first = 0, sz = 0;
+  if (fread(&first, sizeof(first), 1, f) != 1) {
+    fclose(f);
+    return;
+  }
+  const bool hasDoubles = first == kSceneDoubleMagic;
+  if (hasDoubles) {
+    uint32_t version = 0;
+    if (fread(&version, sizeof(version), 1, f) != 1 ||
+        version != kSceneDoubleVersion ||
+        fread(&sz, sizeof(sz), 1, f) != 1) {
+      fclose(f); // Reject unknown versions before modifying the target.
+      return;
+    }
+  } else {
+    sz = first;
+  }
+  if (sz > kNodeSlotCountMax) {
+    fclose(f);
+    return;
+  }
+
+  // Validate the complete fixed-size transform and hierarchy section
+  // before mutating the destination scene. A truncated v1 file fails
+  // closed instead of partially replacing the current world.
+  const long payloadStart = ftell(f);
+  const uint64_t matrixBytes = hasDoubles ? 16u * sizeof(double) : sizeof(glm::mat4);
+  const uint64_t fixedBytes = uint64_t(sz) * (2u * matrixBytes + sizeof(Hierarchy));
+  if (payloadStart < 0 || fseek(f, 0, SEEK_END) != 0 ||
+      ftell(f) < 0 || uint64_t(ftell(f) - payloadStart) < fixedBytes ||
+      fseek(f, payloadStart, SEEK_SET) != 0) {
+    fclose(f);
+    return;
+  }
 
   scene.hierarchy.resize(sz);
   scene.globalTransform.resize(sz);
@@ -694,9 +753,36 @@ void loadScene(const char* fileName, Scene& scene)
   scene.metadata.clear();
   // TODO: check > -1
   // TODO: recalculate changedAtThisLevel() - find max depth of a node [or save scene.maxLevel]
-  fread(scene.localTransform.data(), sizeof(glm::mat4), sz, f);
-  fread(scene.globalTransform.data(), sizeof(glm::mat4), sz, f);
-  fread(scene.hierarchy.data(), sizeof(Hierarchy), sz, f);
+  if (hasDoubles) {
+    scene.localTransformDouble.resize(sz);
+    scene.globalTransformDouble.resize(sz);
+    for (uint32_t i = 0; i < sz; ++i)
+      if (!ReadSceneDoubleMatrix(f, scene.localTransformDouble[i])) {
+        fclose(f);
+        return;
+      }
+    for (uint32_t i = 0; i < sz; ++i)
+      if (!ReadSceneDoubleMatrix(f, scene.globalTransformDouble[i])) {
+        fclose(f);
+        return;
+      }
+    scene.localTransformFloatShadow.resize(sz);
+    for (uint32_t i = 0; i < sz; ++i) {
+      scene.localTransform[i] = glm::mat4(scene.localTransformDouble[i]);
+      scene.globalTransform[i] = glm::mat4(scene.globalTransformDouble[i]);
+      scene.localTransformFloatShadow[i] = scene.localTransform[i];
+    }
+  } else {
+    if (fread(scene.localTransform.data(), sizeof(glm::mat4), sz, f) != sz ||
+        fread(scene.globalTransform.data(), sizeof(glm::mat4), sz, f) != sz) {
+      fclose(f);
+      return;
+    }
+  }
+  if (fread(scene.hierarchy.data(), sizeof(Hierarchy), sz, f) != sz) {
+    fclose(f);
+    return;
+  }
 
   // Mesh/material associations (the typed tables — row-native
   // sections; material first like always).
@@ -914,6 +1000,7 @@ void saveNameRows(FILE* f, const Scene& scene, const std::vector<uint32_t>& slot
 void saveScene(const char* fileName, const Scene& scene)
 {
   FILE* f = fopen(fileName, "wb");
+  if (!f) return;
 
   // Epoch 6b: the file stays DENSE — live slots compact in ascending
   // slot order (a never-deleted scene is byte-identical to the pre-6b
@@ -922,13 +1009,17 @@ void saveScene(const char* fileName, const Scene& scene)
   // identity across a round trip is the uuid's job, never the id's).
   const std::vector<uint32_t> slotToDense = BuildSlotToDenseMap(scene);
   const uint32_t sz = LiveNodeCount(scene);
+  // Explicit v1 header. Older files without the magic still load with
+  // their original float32 transform layout.
+  fwrite(&kSceneDoubleMagic, sizeof(kSceneDoubleMagic), 1, f);
+  fwrite(&kSceneDoubleVersion, sizeof(kSceneDoubleVersion), 1, f);
   fwrite(&sz, sizeof(sz), 1, f);
 
   // Transforms + hierarchy, compacted; links remap through the map (a
   // live node's links point at live nodes by the deletion discipline).
   {
-    std::vector<glm::mat4> local;
-    std::vector<glm::mat4> global;
+    std::vector<glm::dmat4> local;
+    std::vector<glm::dmat4> global;
     std::vector<Hierarchy> hierarchy;
     local.reserve(sz);
     global.reserve(sz);
@@ -942,8 +1033,15 @@ void saveScene(const char* fileName, const Scene& scene)
     for (uint32_t s = 0; s < scene.hierarchy.size(); ++s) {
       if (slotToDense[s] == UINT32_MAX)
         continue;
-      local.push_back(scene.localTransform[s]);
-      global.push_back(scene.globalTransform[s]);
+      // Legacy clients can write the float array directly. Respect a
+      // changed float shadow while keeping untouched dmat4 state exact.
+      const bool hasLocal = s < scene.localTransformDouble.size();
+      const bool floatChanged = s >= scene.localTransformFloatShadow.size() ||
+        scene.localTransform[s] != scene.localTransformFloatShadow[s];
+      local.push_back(hasLocal && !floatChanged
+        ? scene.localTransformDouble[s] : glm::dmat4(scene.localTransform[s]));
+      global.push_back(s < scene.globalTransformDouble.size()
+        ? scene.globalTransformDouble[s] : glm::dmat4(scene.globalTransform[s]));
       const Hierarchy& h = scene.hierarchy[s];
       hierarchy.push_back(Hierarchy{
         .parent      = mapLink(h.parent),
@@ -954,8 +1052,8 @@ void saveScene(const char* fileName, const Scene& scene)
         });
     }
     if (sz > 0) {
-      fwrite(local.data(), sizeof(glm::mat4), sz, f);
-      fwrite(global.data(), sizeof(glm::mat4), sz, f);
+      for (const glm::dmat4& m : local) WriteSceneDoubleMatrix(f, m);
+      for (const glm::dmat4& m : global) WriteSceneDoubleMatrix(f, m);
       fwrite(hierarchy.data(), sizeof(Hierarchy), sz, f);
     }
   }
