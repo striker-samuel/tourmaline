@@ -19,6 +19,8 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <cstdint>
+#include <climits>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -44,7 +46,8 @@
 #include <imgui.h>
 #include <Engine/ImGui/crystal_fusion_style.h>
 #include <SDL3/SDL_filesystem.h> // SDL_GetBasePath: font independent of working dir
-#include <SDL3/SDL_video.h> // the boot-time off-screen window clamp
+#include <SDL3/SDL_video.h> // multi-display window recovery
+#include <SDL3/SDL_rect.h>
 
 namespace editor {
 
@@ -184,48 +187,74 @@ bool EditorApp::Initialize() {
 	}
 	LoadPrefs(); // tool/project prefs; dock placement uses ImGui ini
 	SetRelativeMouseMode(false);
-	// THE OFF-SCREEN WINDOW CLAMP: the OS reopens the editor at its last
-	// position and nothing keeps that position inside the monitor
-	// (observed live: a 1920x1080 window at (374,~240) on a 2048x1152
-	// display - the bottom ~170px hung BELOW the visible edge and ~250px
-	// spilled onto the next monitor). A LOW-docked Viewport then
-	// composites mostly below the screen and reads as "the docked
-	// viewport does not render" while every render oracle (LAYOUT/
-	// LIVE-DUMP/LIVE-COMPOSE) is healthy. Clamp the window into its
-	// display's USABLE bounds at boot: shrink first if it exceeds the
-	// work area, then move it fully on-screen. Only acts when out of
-	// bounds - an in-bounds position is never touched.
+	// Recover *inaccessible* restored windows, not windows intentionally
+	// spanning displays. SDL_GetDisplayForWindow selects just one monitor;
+	// clamping to it destroys valid multi-monitor editor layouts.
+	// The title strip is the accessibility criterion: at least 80 logical
+	// pixels of the title bar must be visible on one real display.
+	// Gaps between monitors are not valid screen area.
 	{
 		int wx = 0, wy = 0, ww = 0, wh = 0;
 		SDL_GetWindowPosition(window, &wx, &wy);
 		SDL_GetWindowSize(window, &ww, &wh);
-		SDL_Rect usable{};
-		const SDL_DisplayID did = SDL_GetDisplayForWindow(window);
-		const bool haveUsable =
-			SDL_GetDisplayUsableBounds(did, &usable);
-		// TOURMALINE_WINDOW_CLAMP_DIAG=1: the clamp's own oracle (the
-		// in-values, the usable bounds, the out-values). Remove once the
-		// off-screen boot case is verified fixed.
-		if (const char* e = std::getenv("TOURMALINE_WINDOW_CLAMP_DIAG")) {
-			if (std::atoi(e) != 0)
-				std::fprintf(stderr,
-					"[WINDOW-CLAMP] in %dx%d@%d,%d display=%u usable=%d "
-					"[%d,%d %dx%d]\n",
-					ww, wh, wx, wy, unsigned(did), haveUsable ? 1 : 0,
-					usable.x, usable.y, usable.w, usable.h);
+		const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+		const bool regularWindow = (flags & (SDL_WINDOW_FULLSCREEN
+			| SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED)) == 0;
+		int displayCount = 0;
+		SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);
+		if (regularWindow && displays && displayCount > 0 && ww > 0 && wh > 0) {
+			const int titleHeight = std::min(32, wh);
+			const int minTitleWidth = std::min(80, ww);
+			const SDL_Rect title{ wx, wy, ww, titleHeight };
+			bool accessible = false;
+			SDL_Rect recovery{};
+			int64_t bestDistance = INT64_MAX;
+			for (int i = 0; i < displayCount; ++i) {
+				SDL_Rect usable{};
+				if (!SDL_GetDisplayUsableBounds(displays[i], &usable)
+					|| usable.w <= 0 || usable.h <= 0)
+					continue;
+				SDL_Rect intersection{};
+				if (SDL_GetRectIntersection(&title, &usable, &intersection)
+					&& intersection.w >= minTitleWidth
+					&& intersection.h >= std::min(16, titleHeight))
+					accessible = true;
+				// Choose the recovery display requiring the least translation,
+				// not simply SDL's dominant-overlap display.
+				const int nx = std::clamp(wx, usable.x,
+					usable.x + usable.w - std::min(ww, usable.w));
+				const int ny = std::clamp(wy, usable.y,
+					usable.y + usable.h - std::min(wh, usable.h));
+				const int64_t dx = int64_t(nx) - wx;
+				const int64_t dy = int64_t(ny) - wy;
+				const int64_t distance = dx * dx + dy * dy;
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					recovery = usable;
+				}
+			}
+			const bool haveRecovery = bestDistance != INT64_MAX;
+			if (const char* e = std::getenv("TOURMALINE_WINDOW_CLAMP_DIAG")) {
+				if (std::atoi(e) != 0)
+					std::fprintf(stderr,
+						"[WINDOW-RECOVERY] %dx%d@%d,%d displays=%d accessible=%d recovery=%d\n",
+						ww, wh, wx, wy, displayCount, accessible ? 1 : 0,
+						haveRecovery ? 1 : 0);
+			}
+			if (!accessible && haveRecovery) {
+				// Only resize if the unreachable window cannot fit on the
+				// recovery display; never resize an accessible spanning window.
+				const int cw = std::min(ww, recovery.w);
+				const int ch = std::min(wh, recovery.h);
+				if (cw != ww || ch != wh)
+					SDL_SetWindowSize(window, cw, ch);
+				SDL_SetWindowPosition(window,
+					std::clamp(wx, recovery.x, recovery.x + recovery.w - cw),
+					std::clamp(wy, recovery.y, recovery.y + recovery.h - ch));
+			}
 		}
-		if (haveUsable) {
-			const int cw = std::min(ww, usable.w);
-			const int ch = std::min(wh, usable.h);
-			if (cw != ww || ch != wh)
-				SDL_SetWindowSize(window, cw, ch);
-			const int cx = std::clamp(wx, usable.x,
-				usable.x + usable.w - cw);
-			const int cy = std::clamp(wy, usable.y,
-				usable.y + usable.h - ch);
-			if (cx != wx || cy != wy)
-				SDL_SetWindowPosition(window, cx, cy);
-		}
+		if (displays)
+			SDL_free(displays);
 	}
 
 	// THE BOOT PROJECT (the --project arg — REQUIRED since the
