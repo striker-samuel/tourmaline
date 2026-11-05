@@ -1240,7 +1240,7 @@ bool SerializeClusters(
 			if (stats) {
 				for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
 					if (slotToDense[s] != UINT32_MAX
-						&& s < scene.staticRoot.size() && scene.staticRoot[s])
+						&& s < exportView.staticRoots.size() && exportView.staticRoots[s])
 						stats->staticRoots++;
 			}
 		}
