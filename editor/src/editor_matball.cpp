@@ -326,10 +326,14 @@ bool EditorApp::QueueMaterialBallPreview(uint32_t matWorld,
 	// The queue head (consumed at the next RenderFrame — the render must
 	// sit inside a frame's graph Execute; a bare out-of-frame render
 	// would need its own submit plumbing for one thumbnail).
-	if (matWorld == UINT32_MAX || pngPath.empty())
+	if (!m_world || !m_world->GetMaterial(matWorld) || pngPath.empty()) {
+		Log("Material ball preview: no valid material or output path.");
 		return false;
-	if (!EnsureMatBallResources())
+	}
+	if (!EnsureMatBallResources()) {
+		Log("Material ball preview: GPU preview resources unavailable.");
 		return false;
+	}
 	m_matBallQueuedMat = matWorld;
 	m_matBallOutPath = pngPath;
 	return true;
