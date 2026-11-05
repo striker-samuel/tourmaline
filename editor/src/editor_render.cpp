@@ -2829,8 +2829,29 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		const smvk::Extent2D inlineAfter =
 			m_wysiwyg->InlineTargetExtent();
 		if (inlineAfter.width != inlineBefore.width
-			|| inlineAfter.height != inlineBefore.height)
+			|| inlineAfter.height != inlineBefore.height) {
 			m_wysiwygBoundaryQuiesce = true;
+			// The recreate oracle (the post-resize parked-target chase):
+			// every inline target recreate prints old -> new extent. If
+			// the subsequent LIVE-DUMP samples show the target at the
+			// CLEAR color (encoded ~118 mean, 0% colored) after one of
+			// these lines, the world's write into the recreated target
+			// is what dies. Env-gated with the compose diag family.
+			{
+				static const bool on = [] {
+					const char* e =
+						std::getenv("TOURMALINE_COMPOSE_DIAG");
+					return e && *e && !(*e == '0' && !e[1]);
+				}();
+				if (on)
+					std::fprintf(stderr,
+						"[LIVE-EXTENT] target recreated %ux%u -> %ux%u "
+						"(canvas %.0fx%.0f)\n",
+						inlineBefore.width, inlineBefore.height,
+						inlineAfter.width, inlineAfter.height,
+						m_wysiwygCanvasSize.x, m_wysiwygCanvasSize.y);
+			}
+		}
 		m_wysiwygLayerRenderable = true;
 	}
 
@@ -2901,10 +2922,17 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				const char* e = std::getenv("TOURMALINE_LIVE_DUMP");
 				return e && std::atoi(e) != 0;
 			}();
-			static bool liveDumpDone = false;
-			if (liveDump && !liveDumpDone && m_frameCounter > 30
+			// INTERVAL form (the post-resize parked-target chase): the
+			// old one-shot latch could only ever see the FIRST healthy
+			// frame, hiding any later state (the recreated target left
+			// at the clear color after an extent change). Sample every
+			// 120 frames (~2 s) while the env is set - a sync readback,
+			// so only for diagnosis sessions.
+			static uint64_t lastDumpFrame = ~0ull;
+			const uint64_t dumpKey = m_frameCounter / 120;
+			if (liveDump && dumpKey != lastDumpFrame && m_frameCounter > 30
 				&& !m_wysiwyg->InlineTargetImage().empty()) {
-				liveDumpDone = true;
+				lastDumpFrame = dumpKey;
 				const smvk::Extent2D le = m_wysiwyg->InlineTargetExtent();
 				std::vector<uint8_t> px(
 					size_t(le.width) * le.height * 4);
@@ -2932,12 +2960,15 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					}
 					std::fprintf(stderr,
 						"[LIVE-DUMP] %ux%u: meanLuma=%llu "
-						"black=%.1f%% colored=%.1f%% alpha>128=%.1f%%\n",
+						"black=%.1f%% colored=%.1f%% alpha>128=%.1f%%"
+						" | geometry: drawItems=%zu clusters=%zu\n",
 						le.width, le.height,
 						(unsigned long long)(sum / n),
 						100.0 * blackN / double(n),
 						100.0 * coloredN / double(n),
-						100.0 * alphaN / double(n));
+						100.0 * alphaN / double(n),
+						m_world ? m_world->drawItems.size() : size_t(0),
+						m_world ? m_world->clusters.size() : size_t(0));
 					std::fflush(stderr);
 				}
 				else {
@@ -3159,6 +3190,39 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 			m_wysiwygComposePhysical = m_wysiwyg->InlineTargetView();
 			if (m_wysiwygComposeLogical.empty())
 				return;
+		}
+		// TOURMALINE_COMPOSE_PINK=1 (diag): draw an UNCONDITIONAL bright
+		// pink clear at the composite's exact rect, INSTEAD of the real
+		// composite - the "does anything this pass claims survive to the
+		// screen" oracle. If the pink shows, the composite's rect,
+		// ordering and surface access are healthy and any dead pixels are
+		// the SOURCE (the inline target's content). If the pink is
+		// covered/vanishes (esp. after a window resize), something AFTER
+		// this pass overwrites the rect - the composite stage itself is
+		// the victim, not the culprit.
+		static const bool pinkDiag = [] {
+			const char* e = std::getenv("TOURMALINE_COMPOSE_PINK");
+			return e && *e && !(*e == '0' && !e[1]);
+		}();
+		if (pinkDiag) {
+			// FULL-SWAP FLOOD: paint the ENTIRE swap attachment pink -
+			// immune to every rect/monitor/DPI mapping question. If ANY
+			// pink appears anywhere on screen, this pass writes; if the
+			// screen shows no pink at all, the pass never lands.
+			const smvk::Extent2D swapExt = m_swapchain->GetExtent();
+			m_rendergraph->AddPass("WysiwygPinkDiag")
+				.SetOffset(0, 0)
+				.SetExtent(swapExt)
+				.SetColor({ swapView }, smvk::AttachmentLoadOp::Clear,
+					smvk::AttachmentStoreOp::Store,
+					smvk::ClearColor(1.0f, 0.0f, 1.0f, 1.0f))
+				.SetRecordingFunc([](smvk::CommandBuffer&) {});
+			if (diagNow)
+				std::fprintf(stderr,
+					"[LIVE-COMPOSE] PINK-FLOOD swap %ux%u (stage was "
+					"%.0fx%.0f at %.0f,%.0f)\n",
+					swapExt.width, swapExt.height, w, h, x0, y0);
+			return;
 		}
 		// decodeOutput follows the ACTUAL surface variant, exactly like
 		// the App's own UiComposite call site (WorldRenderer: swapIsSrgb):
