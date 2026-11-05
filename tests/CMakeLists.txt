@@ -1507,3 +1507,12 @@ set_target_properties(BrushPresetTests PROPERTIES
 )
 add_test(NAME brush_preset_tests COMMAND BrushPresetTests)
 
+
+# Experimental borrowed scene-memory descriptors (headless, no Vulkan).
+add_executable(SceneMemoryBindingsTests test_scene_memory_bindings.cpp)
+target_include_directories(SceneMemoryBindingsTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+set_target_properties(SceneMemoryBindingsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME scene_memory_bindings_tests COMMAND SceneMemoryBindingsTests)
