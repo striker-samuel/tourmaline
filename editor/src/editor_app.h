@@ -475,7 +475,8 @@ private:
 	float PreviewExposure() const;
 	// Line overlay (grid + gizmos + light markers): ONE upload, ONE pass
 	// PER VISIBLE VIEWPORT (that viewport's viewProj + rect).
-	void RecordGizmoPass(smvk::LogicalImageViewHandle swapView);
+	void RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
+		tour::DebugDrawList* debugOutput = nullptr);
 	void UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent);
 	// Viewport rects for the current frame (single: one central rect;
 	// quad: 2x2 grid inside the central area) + hovered/active tracking.
