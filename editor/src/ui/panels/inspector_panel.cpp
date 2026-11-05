@@ -732,10 +732,8 @@ namespace editor {
 			DrawMaterialBody(curMat);
 			}
 		}
-		else {
-			ImGui::SeparatorText("Material component");
-			ImGui::TextDisabled("None (editor default material)");
-		}
+		// An absent material is not a component. The renderer still uses
+		// the editor default; attach a real binding via Add component.
 		ImGui::Separator();
 		// Add component stays at the bottom. Only list missing
 		// associations and reuse the existing undoable attach commands.
