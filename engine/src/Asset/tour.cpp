@@ -1032,6 +1032,11 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			err = "tour: non-root reference/source requires -name";
 			return false;
 		}
+		if (!r.nameSpace.empty() && (r.root || r.asset ||
+			!ValidNodeName(r.nameSpace) || r.nameSpace.find(':') != std::string::npos)) {
+			err = "tour: invalid reference namespace";
+			return false;
+		}
 	}
 	for (const FileNode& n : doc.fileNodes) {
 		if (!ValidNodeName(n.name)) {
@@ -2377,8 +2382,15 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			r.root = fl.hasRoot;
 			if (fl.hasName)
 				r.name = fl.name;
-			if (fl.hasNamespace)
+			if (fl.hasNamespace) {
+				if (r.root || r.asset || !ValidNodeName(fl.nameSpace) ||
+					fl.nameSpace.find(':') != std::string::npos) {
+					err = "line " + std::to_string(lineNo)
+						+ ": invalid reference namespace";
+					return false;
+				}
 				r.nameSpace = fl.nameSpace;
+			}
 			if (!r.root && !ValidNodeName(r.name)) {
 				err = "line " + std::to_string(lineNo)
 					+ ": reference requires non-empty -name";
