@@ -374,7 +374,13 @@ void EditorApp::ModalVpLayoutToggle() {
 	if (m_vpLayout == 0)
 		m_activeVp = 0;
 }
-void EditorApp::ModalUiToggle() { m_uiMode = !m_uiMode; }
+void EditorApp::ModalUiToggle() {
+	m_uiMode = !m_uiMode;
+	// When restoring the workspace, recapture the viewport dock content
+	// instead of trusting a rect left over from fullscreen rendering.
+	if (m_uiMode)
+		m_dockViewportVisible = false;
+}
 
 void EditorApp::ModalDelete() {
 	// The placement graph window owns Del while its hierarchy is

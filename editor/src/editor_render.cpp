@@ -749,7 +749,8 @@ namespace editor {
 		if (m_uiMode) {
 			area = m_dockViewportVisible
 				? m_dockViewportRect
-				: ViewportRect{ 0.0f, m_menuH, 1.0f, 1.0f };
+				: ViewportRect{ 0.0f, m_menuH, float(extent.width),
+					float(extent.height) - m_menuH - kEditorStatusH };
 			// With platform viewports ImGui window coordinates are OS-global,
 			// whereas Vulkan attachment offsets and editor input are local
 			// to the primary SDL window. Convert before clipping/recording.

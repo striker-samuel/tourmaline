@@ -75,9 +75,10 @@ private:
 inline void LabelCell(const char* name, const char* hint) {
 	const float colW = LabelColumnWidth();
 	const char* shown = name ? name : "";
-	const ImVec2 ts = ImGui::CalcTextSize(shown);
-	const float avail = colW - 10.0f;
-	const bool clipped = ts.x > avail;
+	const ImVec2 size = ImGui::CalcTextSize(shown);
+	const float startX = ImGui::GetCursorPosX();
+	const float labelW = std::max(1.0f, colW - 10.0f);
+	const bool clipped = size.x > labelW;
 	int overrideKind = 0;
 	if (overrideLabels) {
 		const auto it = overrideLabels->find(shown);
@@ -87,18 +88,17 @@ inline void LabelCell(const char* name, const char* hint) {
 		ImGui::PushStyleColor(ImGuiCol_Text, overrideKind == 1
 			? ImVec4(1.0f, 0.69f, 0.23f, 1.0f)
 			: ImVec4(0.98f, 0.43f, 0.70f, 1.0f));
-	if (clipped) {
-		// Clip at the column edge (the visual cut IS the column rule);
-		// the tooltip carries the full name.
-		ImVec2 pos = ImGui::GetCursorScreenPos();
-		ImGui::PushClipRect(pos, ImVec2(pos.x + avail, pos.y + ts.y + 2.0f),
-			true);
-		ImGui::TextUnformatted(shown);
+	// Maya-style: property names end at one shared right edge, while
+	// controls begin at one shared left edge. Long names clip on the LEFT.
+	ImGui::SetCursorPosX(startX + std::max(0.0f, labelW - size.x));
+	const ImVec2 textPos = ImGui::GetCursorScreenPos();
+	if (clipped)
+		ImGui::PushClipRect(
+			ImVec2(textPos.x + std::max(0.0f, size.x - labelW), textPos.y),
+			ImVec2(textPos.x + size.x, textPos.y + size.y + 2.0f), true);
+	ImGui::TextUnformatted(shown);
+	if (clipped)
 		ImGui::PopClipRect();
-	}
-	else {
-		ImGui::TextUnformatted(shown);
-	}
 	if (overrideKind)
 		ImGui::PopStyleColor();
 	if (ImGui::IsItemHovered() && overrideKind)
@@ -109,7 +109,8 @@ inline void LabelCell(const char* name, const char* hint) {
 		ImGui::SetTooltip("%s", hint);
 	else if (clipped && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", shown);
-	ImGui::SameLine(colW);
+	ImGui::SameLine(0.0f, 0.0f);
+	ImGui::SetCursorPosX(startX + colW);
 }
 
 // The unique-but-invisible widget label for an attribute name.

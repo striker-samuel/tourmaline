@@ -121,6 +121,7 @@ bool EditorApp::EnsureSvgIcons() {
 		{ IconType::ToolMove, "tool_move.svg" },
 		{ IconType::ToolRotate, "tool_rotate.svg" },
 		{ IconType::ToolScale, "tool_scale.svg" },
+		{ IconType::ToolTranspose, "tool_transpose.svg" },
 		{ IconType::ToolLayout, "tool_layout.svg" },
 		{ IconType::ToolLighting, "tool_lighting.svg" },
 		{ IconType::ToolTest, "tool_test.svg" },

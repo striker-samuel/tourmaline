@@ -281,7 +281,10 @@ namespace editor {
 				if (sidecar.empty())
 					sidecar = "exports/matball_"
 						+ std::to_string(mat) + ".png";
-				QueueMaterialBallPreview(mat, sidecar);
+				if (!QueueMaterialBallPreview(mat, sidecar))
+					Log("Material ball preview: unable to queue render (see shader/resource logs).");
+				else
+					Log("Material ball preview queued: " + sidecar);
 			}
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Renders this material on a sphere "
