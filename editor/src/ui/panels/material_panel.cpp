@@ -262,34 +262,12 @@ namespace editor {
 		ImGui::EndGroup();
 		ImGui::SameLine();
 		{
-			// The BALL PREVIEW sidecar: renders the material on a sphere
-			// under the fixed default sky into a 256x256 PNG next to the
-			// source .material asset (editor_matball.cpp).
-			if (ImGui::SmallButton("Ball preview##body")) {
-				const auto& loc = m_world->materialLocations[mat];
-				std::string uri = loc.cluster
-					? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
-					: "";
-				std::string sidecar;
-				if (!uri.empty()) {
-					namespace fs = std::filesystem;
-					fs::path host = fs::path(ResolveVfsRoot()) / uri;
-					if (uri.size() > 9
-						&& host.extension().generic_string() == ".material")
-						sidecar = host.generic_string() + ".png";
-				}
-				if (sidecar.empty())
-					sidecar = "exports/matball_"
-						+ std::to_string(mat) + ".png";
-				if (!QueueMaterialBallPreview(mat, sidecar))
-					Log("Material ball preview: unable to queue render (see shader/resource logs).");
-				else
-					Log("Material ball preview queued: " + sidecar);
+			if (ImGui::SmallButton("Preview material##body")) {
+				m_matBallQueuedMat = mat;
+				m_showMaterialPreview = true;
 			}
 			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Renders this material on a sphere "
-					"under the default sky; the PNG lands next to the "
-					"source .material asset (the browser's tile).");
+				ImGui::SetTooltip("Open the live sphere/cube material preview.");
 		}
 
 		// ---- The scalar look (shared edit, the drag command path) ----
