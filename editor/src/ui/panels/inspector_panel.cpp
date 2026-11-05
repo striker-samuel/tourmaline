@@ -684,9 +684,8 @@ namespace editor {
 		// renderer uses its editor-default material, not a scene binding.
 		const MaterialRow* matRow = FindMaterial(scene, node);
 		if (matRow) {
-			ImGui::SeparatorText("Material component");
 			const uint32_t curMat = matRow->material;
-			if (ImGui::SmallButton("Remove material component")) {
+			if (attr::ComponentHeader("Material")) {
 				EditCmd c{};
 				c.verb = EditVerb::AssignMaterial;
 				c.node = node;
