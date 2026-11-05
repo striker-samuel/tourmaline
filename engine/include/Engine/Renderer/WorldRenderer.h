@@ -2756,7 +2756,7 @@ public:
 		glm::vec4 boxMaxPad{ 0.0f };    // xyz = depth-fitted box max (world), w = pad
 	};
 	static_assert(sizeof(CubemapProbeGpu) == 64);
-	std::vector<CubemapProbeGpu> m_cubemapProbes; // cached probe rows (<= 32 appended)
+	tour::mem::ArenaFlatArray<CubemapProbeGpu> m_cubemapProbes; // cached probe rows (<= 32 appended)
 	void LoadCubemaps();
 	// ---- Cubemap probe streaming (distance residency) -----------------
 	// LoadCubemaps used to upload EVERY manifest row up front (KTX decode
@@ -2815,13 +2815,13 @@ public:
 	}
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
-	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
+	tour::mem::ArenaFlatArray<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
 	// Point-light shadows (six cube-face tiles per light, same atlas):
 	// frame numbering is spots first, faces after, so the combined tile
 	// index of face f of light k is m_spotShadowCount + k*6 + f.
 	uint32_t m_pointShadowLightCount = 0; // shadowed points this frame
 	uint32_t m_pointShadowTileCount = 0;  // 6 * light count (face tiles used)
-	std::vector<smvk::GpuCascadeDescription> m_pointShadowTiles; // face tiles this frame (feed the face RenderViews, CubemapFace order per light)
+	tour::mem::ArenaFlatArray<smvk::GpuCascadeDescription> m_pointShadowTiles; // face tiles this frame (feed the face RenderViews, CubemapFace order per light)
 	// Total local-light shadow tiles this frame (spots + point faces): the
 	// pc.spotShadowCount / DsPhasePush.spotShadowCount the shaders guard
 	// tile indexing against (the array bound is kMaxLocalShadowTiles).
