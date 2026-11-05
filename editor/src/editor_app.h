@@ -1664,6 +1664,7 @@ private:
 	smvk::Holder<smvk::ImageViewHandle> m_legacyStageView{};
 	smvk::LogicalImageViewHandle m_legacyStageLogical{};
 	smvk::Extent2D m_legacyStageExtent{};
+	smvk::Format m_legacyStageFormat = smvk::Format::Undefined;
 	ImTextureID m_legacyStageTex = 0;
 	smvk::ImageViewHandle m_legacyStagePhysical{};
 
