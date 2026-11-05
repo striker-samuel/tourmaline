@@ -14,6 +14,13 @@ int main() {
     uint32_t larger[] = {3, 4, 5};
     rows.Assign(std::span<const uint32_t>(larger));
     assert(rows.size() == 3 && rows[2] == 5);
+    rows.resize(5, 42);
+    assert(rows.size() == 5 && rows[3] == 42 && rows[4] == 42);
+    rows.assign(3, 7);
+    assert(rows.size() == 3 && rows[0] == 7 && rows[2] == 7);
+    rows.push_back(11);
+    assert(rows.size() == 4 && rows[3] == 11);
+    assert(rows.begin() != rows.end());
     rows.clear();
-    assert(rows.empty() && rows.capacity() >= 3);
+    assert(rows.empty() && rows.capacity() >= 5);
 }
