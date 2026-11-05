@@ -1631,6 +1631,36 @@ void EditorApp::FinalizePending() {
 			m_showSaveDialog = false;
 		}
 		DrawSaveDialog();
+		// Esc exit confirmation: only opened for unsaved scene changes.
+		// No implicit write occurs on Cancel or Discard.
+		if (m_showExitPrompt) {
+			ImGui::OpenPopup("Save scene changes?");
+			m_showExitPrompt = false;
+		}
+		ImGui::SetNextWindowSize(ImVec2(450, 0), ImGuiCond_Appearing);
+		if (ImGui::BeginPopupModal("Save scene changes?", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse)) {
+			ImGui::TextWrapped("The current scene has unsaved changes.");
+			ImGui::TextWrapped("Save the scene before closing Tourmaline Editor?");
+			ImGui::Separator();
+			if (ImGui::Button("Save and exit", ImVec2(140, 0))) {
+				if (SaveTour()) {
+					ImGui::CloseCurrentPopup();
+					RequestClose();
+				} else Log("Exit canceled: scene could not be saved.");
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Discard", ImVec2(90, 0))) {
+				m_discardOnExit = true;
+				ImGui::CloseCurrentPopup();
+				RequestClose();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(90, 0)))
+				ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
+
 		if (m_showRecoverDialog) {
 			ImGui::OpenPopup("Recover autosave");
 			m_showRecoverDialog = false;
