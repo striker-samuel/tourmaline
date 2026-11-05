@@ -26,6 +26,7 @@ class ArenaFlatArray {
     static_assert(std::is_trivially_copyable_v<T>,
         "ArenaFlatArray only supports trivially copyable records");
 public:
+    using value_type = T;
     ArenaFlatArray() = default;
     // Scene is copyable and movable (editor transactions, cluster reloads).
     // Copies duplicate the elements; moves transfer the arena ownership.
@@ -84,6 +85,7 @@ public:
     // No growth beyond capacity is allowed until DetachExternal is called.
     [[nodiscard]] bool BindExternal(T* pointer, size_t capacity) noexcept {
         if (!pointer || !capacity || capacity < size_ ||
+            (pointer == data_ && !external_) ||
             reinterpret_cast<uintptr_t>(pointer) % alignof(T) != 0)
             return false;
         if (pointer != data_ && size_)
