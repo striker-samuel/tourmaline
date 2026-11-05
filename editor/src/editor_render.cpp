@@ -2813,7 +2813,11 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		}
 		uint32_t cw = std::max(uint32_t(m_wysiwygCanvasSize.x), 64u);
 		uint32_t ch = std::max(uint32_t(m_wysiwygCanvasSize.y), 64u);
-		{
+		// The main swapchain is NOT the size authority for a detached
+		// Viewport: its ImGui platform window has an independent framebuffer.
+		// Applying the main swap extent to it produces an undersized target
+		// on a larger/higher-DPI second monitor.
+		if (!m_dockStageDetached) {
 			const smvk::Extent2D swapExt = m_swapchain->GetExtent();
 			if (swapExt.width > 64)
 				cw = std::min(cw, swapExt.width);
