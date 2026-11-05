@@ -50,4 +50,25 @@ for edge, axis in (("x0", "x"), ("x1", "x"), ("y0", "y"), ("y1", "y")):
         compose,
     ), f"{edge} must be converted to main-window-relative coordinates"
 
+# Inspector layout regression: never clip names from the LEFT, and
+# keep the add-component picker after node flags/material sections.
+attrs = (src / "editor_attr_ui.h").read_text(encoding="utf-8")
+assert "const bool stacked = available < colW + 112.0f;" in attrs
+assert "ImGui::TextWrapped(\"%s\", shown)" in attrs
+assert "ImGui::PushClipRect(" not in attrs.split("inline void LabelCell(", 1)[1].split("// Component header", 1)[0]
+assert sections.index('SeparatorText("Node flags")') < sections.index('SeparatorText("Material component")')
+assert sections.index('SeparatorText("Material component")') < sections.index('Button("Add component...")')
+material_ui = (src / "ui" / "panels" / "material_panel.cpp").read_text(encoding="utf-8")
+assert material_ui.index('attr::Color("Base color"') < material_ui.index('SeparatorText("Texture slots")')
+assert 'SeparatorText("Material flags")' in material_ui
+assert 'attr::LabelCell(s.label, nullptr)' in material_ui
+assert 'Remove material component' in sections
+assert 'None (editor default material)' in sections
+
+# Live gizmos use the renderer debug primitive source; legacy previews
+# retain their own pass for non-live viewport modes.
+gizmo = (src / "editor_gizmo.cpp").read_text(encoding="utf-8")
+assert 'debugOutput->Line(' in gizmo
+assert 'SetDebugDrawSource([this]' in render
+
 print(f"Editor UI structural checks passed ({len(definitions)} EditorApp definitions).")
