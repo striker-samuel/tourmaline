@@ -9,6 +9,7 @@
 
 #include <project_pipeline/project_recipe.h>
 
+#include <algorithm>
 #include <cctype>
 #include <fstream>
 #include <map>
@@ -423,8 +424,30 @@ bool ParseText(const std::string& text, ProjectRecipe& out,
                     return Fail(lineNo, directive, "duplicate materialChannel target: " + toks[0], err);
             out.materialPacking.channels.push_back({toks[0], toks[1], toks[2][0]});
         }
+		else if (directive == "materialEncoding") {
+            if (inPak || !out.materialPacking.source.empty())
+                return Fail(lineNo, directive, "materialEncoding belongs in the project header and cannot mix with materialPacking", err);
+            const auto toks = SplitTokens(rest);
+            if (toks.size() != 2)
+                return Fail(lineNo, directive, "expected materialEncoding <baseColor|normal|emissive|scalar> <rgba8|bc1|bc3|bc4|bc5|bc7>", err);
+            const std::array<std::string, 4> groups = { "baseColor", "normal", "emissive", "scalar" };
+            const auto it = std::find(groups.begin(), groups.end(), toks[0]);
+            if (it == groups.end())
+                return Fail(lineNo, directive, "unknown material encoding group: " + toks[0], err);
+            const size_t index = size_t(it - groups.begin());
+            const bool valid = toks[1] == "rgba8" || toks[1] == "bc3" || toks[1] == "bc7" ||
+                (index == 1 && toks[1] == "bc5") || (index == 2 && toks[1] == "bc1");
+            if (!valid)
+                return Fail(lineNo, directive, "unsupported encoding for " + toks[0] +
+                    " (rgba8|bc3|bc7, plus bc5 for normal or bc1 for emissive)", err);
+            if (!out.materialPacking.encodings[index].empty())
+                return Fail(lineNo, directive, "duplicate materialEncoding group: " + toks[0], err);
+            out.materialPacking.encodings[index] = toks[1];
+        }
 		else if (directive == "materialPacking") {
-            if (inPak || !out.materialPacking.source.empty() || !out.materialPacking.channels.empty())
+            if (inPak || !out.materialPacking.source.empty() || !out.materialPacking.channels.empty() ||
+                std::any_of(out.materialPacking.encodings.begin(), out.materialPacking.encodings.end(),
+                    [](const std::string& value) { return !value.empty(); }))
                 return Fail(lineNo, directive, "materialPacking must appear once in the project header and cannot mix with materialChannel", err);
             const auto words = SplitTokens(rest);
             if (words.size() != 5 ||
@@ -628,6 +651,22 @@ bool ParseText(const std::string& text, ProjectRecipe& out,
 			}
 		}
 	}
+    const std::array<std::string, 4> groupNames = { "baseColor", "normal", "emissive", "scalar" };
+    for (size_t i = 0; i < groupNames.size(); ++i) {
+        if (out.materialPacking.encodings[i].empty())
+            continue;
+        bool generated = false;
+        for (const auto& channel : out.materialPacking.channels) {
+            const bool matches = i == 3
+                ? (channel.target == "ao" || channel.target == "cavity" ||
+                    channel.target == "roughness" || channel.target == "metallic")
+                : channel.target.rfind(groupNames[i] + ".", 0) == 0;
+            if (matches) { generated = true; break; }
+        }
+        if (!generated)
+            return Fail(0, "materialEncoding",
+                "encoding for " + groupNames[i] + " requires materialChannel in that group", err);
+    }
 	return true;
 }
 

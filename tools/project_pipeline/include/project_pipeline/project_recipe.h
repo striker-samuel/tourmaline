@@ -37,6 +37,9 @@
 //      occlusion, metallicRoughness or cavity. Unset channels retain their
 //      standard glTF source/default; missing explicitly named images fail.
 //      Source images must have matching pixel dimensions.
+//   materialEncoding <baseColor|normal|emissive|scalar> <rgba8|bc1|bc3|bc4|bc5|bc7>
+//                              per-generated-output KTX2 format; without
+//                              this directive, existing RGBA8 behavior stays.
 //   materialPacking <source> <AO> <cavity> <roughness> <metallic>
 //                              optional project-wide packed-channel rule;
 //                              source = metallicRoughness | occlusion;
@@ -106,10 +109,14 @@ struct MaterialChannelRule {
 
 struct MaterialPackingRule {
     std::vector<MaterialChannelRule> channels; // canonical output textures assembled at import
+    std::array<std::string, 4> encodings{}; // baseColor, normal, emissive, scalar; empty=default
     std::string Signature() const {
         std::string result;
         for (const auto& c : channels)
             result += c.target + "=" + c.source + "." + c.channel + ";";
+        for (size_t i = 0; i < encodings.size(); ++i)
+            if (!encodings[i].empty())
+                result += "encoding" + std::to_string(i) + "=" + encodings[i] + ";";
         if (channels.empty() && !source.empty())
             result = "reuse:" + source + ":" + std::to_string(PackedWord());
         return result;
@@ -118,7 +125,7 @@ struct MaterialPackingRule {
     int ao = 0, cavity = 0, roughness = 1, metallic = 2;
     int PackedWord() const { return ao | (cavity << 2) | (roughness << 4) | (metallic << 6); }
     bool operator==(const MaterialPackingRule& rhs) const {
-        return channels == rhs.channels && source == rhs.source && ao == rhs.ao && cavity == rhs.cavity &&
+        return channels == rhs.channels && encodings == rhs.encodings && source == rhs.source && ao == rhs.ao && cavity == rhs.cavity &&
             roughness == rhs.roughness && metallic == rhs.metallic;
     }
 };
