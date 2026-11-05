@@ -49,5 +49,80 @@ int main() {
     b.count = 2;
     b.stride = 0;
     assert(!Validate(b));
+
+    // Semantic registry includes empty streams and reports field layouts.
+    size_t visited = 0;
+    ForEachView(scene, [&](View view, Layout layout) {
+        assert(view.semantic == layout.semantic);
+        ++visited;
+    });
+    assert(visited == AllSemantics.size());
+    const Layout hierarchyLayout = Describe(scene, Semantic::Hierarchy);
+    assert(hierarchyLayout.nodeIndexed && hierarchyLayout.externalBindingSupported);
+    assert(hierarchyLayout.fieldCount == 5);
+    assert(hierarchyLayout.fields[0].offset == offsetof(Hierarchy, parent));
+    const Layout matrixLayout = Describe(scene, Semantic::LocalTransform);
+    assert(matrixLayout.fieldCount == 4);
+    assert(matrixLayout.fields[3].offset == 48);
+    assert(matrixLayout.format == ScalarFormat::Mat4x4Float32);
+
+    // Bind real caller-owned memory to all three authoritative streams.
+    Scene bound;
+    const int root = addNode(bound, -1, 0);
+    const int child = addNode(bound, root, 1);
+    alignas(16) glm::mat4 externalLocal[8]{};
+    alignas(16) glm::mat4 externalGlobal[8]{};
+    alignas(16) Hierarchy externalHierarchy[8]{};
+    ExternalBinding localBind{ Semantic::LocalTransform, externalLocal, 2, 8,
+                               sizeof(glm::mat4), 16 };
+    ExternalBinding globalBind{ Semantic::GlobalTransform, externalGlobal, 2, 8,
+                                sizeof(glm::mat4), 16 };
+    ExternalBinding hierarchyBind{ Semantic::Hierarchy, externalHierarchy, 2, 8,
+                                   sizeof(Hierarchy), 16 };
+    assert(BindExternal(bound, localBind));
+    assert(BindExternal(bound, globalBind));
+    assert(BindExternal(bound, hierarchyBind));
+    assert(bound.localTransform.data() == externalLocal);
+    assert(bound.globalTransform.data() == externalGlobal);
+    assert(bound.hierarchy.data() == externalHierarchy);
+    assert(externalHierarchy[child].parent == root);
+    assert(GetView(bound, Semantic::Hierarchy).ownership == Ownership::External);
+    assert(GetView(bound, Semantic::LocalTransform).capacity == 8);
+
+    const NodeHandle childHandle = MakeNodeHandle(bound, child);
+    glm::mat4 translated(1.0f);
+    translated[3].x = 7.0f;
+    assert(SetLocalTransform(bound, childHandle, translated));
+    assert(externalLocal[child][3].x == 7.0f);
+    assert(recalculateGlobalTransformsDynamic(bound));
+    assert(externalGlobal[child][3].x == 7.0f);
+
+    // Rejected bindings must not modify the currently active buffers.
+    ExternalBinding invalidBinding = localBind;
+    invalidBinding.stride += 16;
+    assert(!BindExternal(bound, invalidBinding));
+    invalidBinding = localBind;
+    invalidBinding.count = 1;
+    assert(!BindExternal(bound, invalidBinding));
+    invalidBinding = localBind;
+    invalidBinding.access = Access::ReadOnly;
+    assert(!BindExternal(bound, invalidBinding));
+    assert(bound.localTransform.data() == externalLocal);
+
+    assert(DetachExternal(bound, Semantic::LocalTransform));
+    assert(DetachExternal(bound, Semantic::GlobalTransform));
+    assert(DetachExternal(bound, Semantic::Hierarchy));
+    assert(bound.localTransform.data() != externalLocal);
+    assert(bound.globalTransform.data() != externalGlobal);
+    assert(bound.hierarchy.data() != externalHierarchy);
+    assert(bound.localTransform[child][3].x == 7.0f);
+    assert(bound.hierarchy[child].parent == root);
+
+    // Copying a bound scene must NOT carry another owner's borrowed memory.
+    assert(BindExternal(bound, localBind));
+    Scene copied(bound);
+    assert(copied.localTransform.data() != externalLocal);
+    assert(copied.localTransform[child][3].x == 7.0f);
+    assert(DetachExternal(bound, Semantic::LocalTransform));
     return 0;
 }
