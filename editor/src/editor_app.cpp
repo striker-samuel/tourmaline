@@ -354,7 +354,9 @@ bool EditorApp::Initialize() {
 			smvk::tour::Doc emptyScene;
 			std::string saveError;
 			if (smvk::tour::SaveTour(tempScene.string(), emptyScene, saveError)) {
-				if (!OpenTourFile(tempScene.string()))
+				if (OpenTourFile(tempScene.string()))
+					m_startupTempTour = tempScene.string();
+				else
 					Log("Startup scene: could not open temporary scene '"
 						+ tempScene.string() + "'.");
 			} else {
@@ -378,6 +380,15 @@ void EditorApp::Shutdown() {
 	// CloseScene, so closing the editor never loses edits.
 	if (m_world && !TourTarget().empty())
 		SaveTour();
+	// The startup document is only a transient working surface. Do not
+	// leave an unsolicited .tour in the OS temp directory after exit.
+	// Save As points m_tourPath at the user's chosen permanent location;
+	// removing this original scratch file never touches that asset.
+	if (!m_startupTempTour.empty()) {
+		std::error_code ec;
+		std::filesystem::remove(m_startupTempTour, ec);
+		m_startupTempTour.clear();
+	}
 	SavePrefs(); // save editor pr on close
 	// Same shutdown contract as the parent scene: flush unsaved prefab
 	// source edits before destroying the second world. Explicit Revert
