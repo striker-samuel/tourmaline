@@ -590,6 +590,33 @@ namespace tour {
 		smvk::UriMap<std::vector<uint8_t>> textureSources_;
 		smvk::UriMap<smvk::LodInfo> meshLods_;
 		smvk::UriMap<smvk::CookedMeshlets> meshMeshlets_;
+		// REVERSE URI LEDGERS (append-only, one entry per REGISTER call):
+		// the forward maps above are latest-wins, so a URI re-registered
+		// by a LATER occurrence of the SAME artifact (the documented
+		// multi-reference pattern: one scene referencing crate.tour as
+		// crate_a AND crate_b — every occurrence re-registers the same
+		// .geometry URIs, see docs/prefabs_as_tour_scenes.md) silently
+		// orphaned every EARLIER handle in the reverse lookup: Get*Uri
+		// returned empty, the cook's write-back hard-errored ("cooked
+		// mesh N carries no URI") and the serializer fell back to
+		// duplicated per-occurrence cluster-local blobs. Every
+		// registration appends (handle, uri); the reverse lookup walks
+		// newest-first, so a handle re-registered under a new uri
+		// reports its latest one. The ledgers are never pruned
+		// (UnregisterUri only drops the FORWARD entry — same liveness
+		// contract the forward map always had: a destroyed handle's
+		// reverse row is unreachable garbage until the Cluster dies
+		// with its arena).
+		std::vector<std::pair<ClusterStaticMeshHandle, smvk::StringViewT>>
+			meshUriLedger_;
+		std::vector<std::pair<ClusterMaterialHandle, smvk::StringViewT>>
+			materialUriLedger_;
+		std::vector<std::pair<ClusterLightHandle, smvk::StringViewT>>
+			lightUriLedger_;
+		std::vector<std::pair<ClusterCameraHandle, smvk::StringViewT>>
+			cameraUriLedger_;
+		std::vector<std::pair<ClusterDecalHandle, smvk::StringViewT>>
+			decalUriLedger_;
 		bool retainUploads_ = false;
 		std::unordered_map<uint32_t, StaticMeshUpload> retainedUploads_;
 		// Pak-image pin for borrowed texture payloads (see PinPakImage).
