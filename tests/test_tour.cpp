@@ -506,6 +506,13 @@ void TestReplay() {
 		"replay override applies");
 	Check(smvk::tour::OverrideAttrFromString("visibility", r.attr) &&
 		r.attr == smvk::tour::OverrideAttr::Visibility, "override attr parse");
+	Check(smvk::tour::OverrideAttrFromString("static", r.attr) &&
+		r.attr == smvk::tour::OverrideAttr::Static, "override static attr parse");
+	Check(smvk::tour::OverrideAttrFromString("volumetricShadow", r.attr) &&
+		r.attr == smvk::tour::OverrideAttr::VolumetricShadow,
+		"override volumetric-shadow attr parse");
+	Check(std::string(smvk::tour::OverrideAttrName(smvk::tour::OverrideAttr::Static))
+		== "static", "override static serialization name");
 
 	// Out-of-range ids fail loudly.
 	smvk::tour::Doc bad;
