@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <regex>
 
 #include <imgui.h>
