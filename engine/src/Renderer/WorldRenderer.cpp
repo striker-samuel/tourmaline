@@ -9735,41 +9735,6 @@ namespace engine {
 		m_inlineTargetImage = std::move(newImage);
 		m_inlineTargetLogical = newLogical;
 		m_inlineTargetExtent = extent;
-		// The release scratch (1x1): rebuilt with the target through the
-		// same deferred-retire swap — the release pass of an IN-FLIGHT
-		// frame writes it, so a plain destroy would fault the same way
-		// the target's comment above describes.
-		{
-			smvk::ImageCreateInfo sci{};
-			sci.extent = { 1, 1, 1 };
-			sci.format = fmt;
-			sci.usage = smvk::ImageUsage::ColorAttachment;
-			sci.mipLevels = 1;
-			sci.arrayLayers = 1;
-			sci.name = "inlineScratch";
-			smvk::Holder<smvk::ImageHandle> newScratch =
-				m_context->CreateImage(sci, nullptr);
-			const smvk::ImageViewCreateInfo svci{
-				.viewType = smvk::ImageViewType::View2D,
-				.format = fmt,
-				.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 },
-				.name = "inlineScratchView",
-			};
-			smvk::Holder<smvk::ImageViewHandle> newScratchView =
-				newScratch.empty() ? smvk::Holder<smvk::ImageViewHandle>{}
-				: m_context->CreateImageView(newScratch, svci);
-			smvk::LogicalImageViewHandle newScratchLogical =
-				newScratchView.empty() ? smvk::LogicalImageViewHandle{}
-				: m_rendergraph->AddExternalImageView(newScratchView, fmt,
-					"inlineScratchLogical");
-			if (!newScratchLogical.empty()) {
-				if (!m_inlineScratchLogical.empty())
-					m_rendergraph->FreeImageView(m_inlineScratchLogical);
-				m_inlineScratchImage = std::move(newScratch);
-				m_inlineScratchView = std::move(newScratchView);
-				m_inlineScratchLogical = newScratchLogical;
-			}
-		}
 		return true;
 	}
 
@@ -20157,30 +20122,20 @@ namespace engine {
 			//     .SetRecordingFunc([this](smvk::CommandBuffer& cmd){ m_imgui->Render(cmd); });
 		}
 
-		// INLINE RELEASE (see the SetInlineOutput contract): one tiny
-		// composite pass — the inline target sampled into the 1x1
-		// scratch — AFTER the last output writer (tonemap / SMAA
-		// resolve / UI composite above). The pass exists for its SIDE
-		// effect: SetInputImages records the COLOR_ATTACHMENT ->
-		// SHADER_READ transition, so the target ends the frame in
-		// exactly the layout the HOST's ImGui descriptor declares
-		// (CreateBindlessImage only records the expected layout;
-		// nothing else transitions a per-frame-written image for
-		// off-graph sampling — an undeclared sample would race the
-		// tonemap write and mismatch the descriptor's layout).
-		if (inlineOut && !m_inlineScratchLogical.empty()
-			&& (m_viewportResources.uiComposite.ShadersValid()
-				|| m_viewportResources.uiComposite.Ensure(*m_context))) {
-			m_viewportResources.uiComposite.AddCompositePass(*m_rendergraph,
-				m_inlineTargetLogical,
-				m_inlineTargetBindlessIndex,
-				linearSampler,
-				{ m_inlineScratchLogical },
-				smvk::Extent2D{ 1, 1 },
-				false,
-				"InlineRelease",
-				0,
-				0);
+		// INLINE RELEASE: the host's ImGui descriptor samples this output
+		// as SHADER_READ_ONLY_OPTIMAL. A read-only rendergraph hint is
+		// sufficient to emit the color-attachment-write -> shader-read
+		// barrier and final layout transition. The old 1x1 dummy
+		// UiComposite draw depended on a freshly recreated bindless slot,
+		// introducing an unnecessary GPU read/write dependency on resize.
+		if (inlineOut && !m_inlineTargetLogical.empty()) {
+			smvk::ImageSyncRequest read{};
+			read.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+			read.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+			read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			m_rendergraph->AddComputePass("InlineRelease")
+				.AddImageHint(m_inlineTargetLogical, read)
+				.SetRecordingFunc([](smvk::CommandBuffer&) {});
 		}
 
 		// Cooperative shadow list builds must land before Execute: the

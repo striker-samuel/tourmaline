@@ -339,6 +339,34 @@ bool EditorApp::Initialize() {
 		// replay (OpenScene alone fails the tour as a glTF import).
 		if (!OpenAnySceneFile(p))
 			std::cerr << "[Editor] failed to load '" << p << "'\n";
+	} else {
+		// A new editor session has a real, empty definition-backed scene.
+		// Keep it in the OS temporary directory rather than creating an
+		// unsolicited project asset. The normal OpenTourFile funnel builds
+		// the World and scene root, so editing, saving and live rendering
+		// follow exactly the same path as an explicit empty .tour open.
+		// An explicit CLI scene always wins over this startup fallback.
+		std::error_code tempError;
+		const auto tempDir = std::filesystem::temp_directory_path(tempError);
+		if (!tempError) {
+			const auto tempScene = tempDir /
+				("tourmaline-editor-" + smvk::tour::GenerateUuid() + ".tour");
+			smvk::tour::Doc emptyScene;
+			std::string saveError;
+			if (smvk::tour::SaveTour(tempScene.string(), emptyScene, saveError)) {
+				if (OpenTourFile(tempScene.string()))
+					m_startupTempTour = tempScene.string();
+				else
+					Log("Startup scene: could not open temporary scene '"
+						+ tempScene.string() + "'.");
+			} else {
+				Log("Startup scene: could not write temporary scene: "
+					+ saveError);
+			}
+		} else {
+			Log("Startup scene: could not locate temporary directory: "
+				+ tempError.message());
+		}
 	}
 
 	Log("Tourmaline Editor ready. File > Open scene... to load a scene.");
@@ -350,8 +378,23 @@ void EditorApp::Shutdown() {
 	// Flush the working tour to the project .tour on exit (per-edit
 	// saves went to the %APPDATA% autosave) — same contract as
 	// CloseScene, so closing the editor never loses edits.
+	const bool preserveScratch = !m_startupTempTour.empty()
+		&& TourTarget() == m_startupTempTour && m_tourDirty;
 	if (m_world && !TourTarget().empty())
 		SaveTour();
+	// An untouched startup scratch is disposable. If it contains unsaved
+	// edits and was not saved into the project, retain the flushed file
+	// rather than silently destroying the user's work on shutdown.
+	if (!m_startupTempTour.empty()) {
+		if (preserveScratch)
+			Log("Unsaved temporary scene preserved for recovery: "
+				+ m_startupTempTour);
+		else {
+			std::error_code ec;
+			std::filesystem::remove(m_startupTempTour, ec);
+		}
+		m_startupTempTour.clear();
+	}
 	SavePrefs(); // save editor pr on close
 	// Same shutdown contract as the parent scene: flush unsaved prefab
 	// source edits before destroying the second world. Explicit Revert
@@ -362,6 +405,14 @@ void EditorApp::Shutdown() {
 	// tear them down before device resources and ImGui are destroyed.
 	ClosePrefabWorld();
 	WaitForDeviceIdle();
+	// ImGui owns the descriptor; release it while the backend still lives.
+	DropLegacyStageTexture();
+	if (!m_legacyStageLogical.empty()) {
+		m_rendergraph->FreeImageView(m_legacyStageLogical);
+		m_legacyStageLogical = {};
+	}
+	m_legacyStageView = {};
+	m_legacyStageImage = {};
 	m_textureStreamer.reset();
 	// Fibers shutdown: deliver any queued completions, wait for
 	// in-flight jobs (workers drain them), deliver the rest — all
