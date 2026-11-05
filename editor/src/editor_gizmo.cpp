@@ -263,10 +263,11 @@ void EditorApp::ApplyMultiDragScaleUniform(float ratio) {
 	}
 }
 
-void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
-	if (swapView.empty() || !m_world)
+void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
+	tour::DebugDrawList* debugOutput) {
+	if (!m_world || (!debugOutput && swapView.empty()))
 		return;
-	if (m_lineProgram.shaderCount != 2)
+	if (!debugOutput && m_lineProgram.shaderCount != 2)
 		return;
 	SetupDefaultCameras();
 	std::vector<LineBatch> batches;
@@ -961,6 +962,20 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		ranges.push_back({ uint32_t(all.size()), uint32_t(b.verts.size()),
 			b.color, b.depthTest });
 		all.insert(all.end(), b.verts.begin(), b.verts.end());
+	}
+	if (debugOutput) {
+		// The world renderer owns the depth buffer, HDR target and final
+		// viewport composition. Emit the exact same editor gizmo batches
+		// as world-space primitives; mouse picking stays in the editor.
+		for (const auto& batch : batches) {
+			const glm::vec3 color(batch.color);
+			const tour::DebugDepthMode depth = batch.depthTest
+				? tour::DebugDepthMode::Tested : tour::DebugDepthMode::Always;
+			for (size_t i = 1; i < batch.verts.size(); i += 2)
+				debugOutput->Line(batch.verts[i - 1].position,
+					batch.verts[i].position, color, depth);
+		}
+		return;
 	}
 	if (all.empty())
 		return;
