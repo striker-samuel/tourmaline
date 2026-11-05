@@ -23,6 +23,8 @@ Large positive and negative coordinates and nested parent chains round-trip with
 - [ ] Trace all current call sites and confirm design invariants against current `master`.
 - [x] Preserve double local/global transforms and publish their double values to the GPU scene.
 - [x] Add nested signed, invalid-handle, NaN and legacy float writer assertions to test_scene_tables.
+- [x] Preserve populated double entries during partial legacy-array growth and repair; test mixed double/float parent-child hierarchies.
+- [x] Apply merged-scene root offsets to double-local transforms and synchronize the float shadow.
 - [ ] Verify existing fallback and caller-owned resource lifetime behavior.
 - [ ] Run relevant native tests, and GPU/manual tests where applicable.
 - [ ] Document compatibility, benchmarking, and before/after evidence.
@@ -32,3 +34,17 @@ Legacy float arrays and binary fields retain their format; doubles are preserved
 
 ## Scope boundary
 No generic GPU memory or automatic lifetime manager; the caller remains responsible for memory. Do not enable experimental rendering paths as part of this fix.
+
+## Additional implementation notes
+
+- `PrepareDoubleTransforms` and `SetLocalTransform` now extend partially populated
+  double/shadow arrays without resetting existing double-precision transforms.
+- `mergeScenes` applies legacy root transform offsets in double precision and
+  synchronizes the float shadow so the next recalc cannot import a rounded root.
+- `test_scene_tables.cpp` includes an array-repair regression at absolute
+  coordinates near 1e12 with fractional translations and a parent-child chain.
+- Native build, CTest, graphics parity, and performance measurements were **not
+  performed** by this author; the integrator must validate those gates.
+- This change does **not** make the legacy float32 scene file format lossless.
+  Retain that compatibility limitation until an explicitly versioned format
+  migration is designed and verified.
