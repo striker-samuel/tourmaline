@@ -71,4 +71,36 @@ gizmo = (src / "editor_gizmo.cpp").read_text(encoding="utf-8")
 assert 'debugOutput->Line(' in gizmo
 assert 'SetDebugDrawSource([this]' in render
 
+# Ctrl+G is one centrally-registered shortcut; it creates a group and
+# parents selection roots through the undoable editor commands.
+modal = (src / "editor_modal.cpp").read_text(encoding="utf-8")
+assert '{ TOUR_KEY_G, kModalCtrl, kScopeGlobal, &EditorApp::ModalGroupSelection' in modal
+group = modal.split('void EditorApp::ModalGroupSelection()', 1)[1].split(
+    'void EditorApp::ModalParentSelection()', 1)[0]
+assert 'EditVerb::CreateTransform' in group
+assert 'EditVerb::Parent' in group
+assert 'hasSelectedAncestor' in group
+assert 'm_selection = {group}' in group
+
+# Esc is editor-owned; dirty scenes get Save/Discard/Cancel, and
+# Discard must not be re-saved automatically during Shutdown.
+app_h = (src / "editor_app.h").read_text(encoding="utf-8")
+app_cpp = (src / "editor_app.cpp").read_text(encoding="utf-8")
+assert 'AllowEscQuit() const override { return false; }' in app_h
+assert 'TOUR_KEY_ESCAPE, 0, kScopeGlobal, &EditorApp::ModalEscape' in modal
+assert 'if (m_tourDirty) m_showExitPrompt = true;' in modal
+for choice in ('Save and exit', 'Discard', 'Cancel'):
+    assert choice in main
+assert '!m_discardOnExit && m_world' in app_cpp
+
+# The same stable typed paths are used in the editor, tour and
+# engine-level plug registry (not the display labels).
+plug_header = (root / "engine" / "include" / "Engine" / "Scene" /
+               "node_plugs.h").read_text(encoding="utf-8")
+assert 'struct Connection {' in plug_header
+assert 'class Graph {' in plug_header
+assert 'bool Evaluate(Scene& scene) const' in plug_header
+assert 'test_node_plugs.cpp' in (
+    root / "tests" / "CMakeLists.txt").read_text(encoding="utf-8")
+
 print(f"Editor UI structural checks passed ({len(definitions)} EditorApp definitions).")
