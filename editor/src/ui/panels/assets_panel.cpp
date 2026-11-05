@@ -1314,6 +1314,9 @@ namespace editor {
 		ui::PrepareSystemModal();
 		if (ImGui::BeginPopupModal("Rename asset##browser", nullptr,
 			ui::kSystemModalFlags | ImGuiWindowFlags_AlwaysAutoResize)) {
+			if (ui::SystemModalCloseRequested())
+				ImGui::CloseCurrentPopup();
+			else {
 			ImGui::TextDisabled("Renaming may break path-based references.");
 			if (ImGui::IsWindowAppearing())
 				ImGui::SetKeyboardFocusHere();
@@ -1361,6 +1364,7 @@ namespace editor {
 			if (ImGui::Button("Cancel")) {
 				renameTarget.clear();
 				ImGui::CloseCurrentPopup();
+			}
 			}
 			ImGui::EndPopup();
 		}
