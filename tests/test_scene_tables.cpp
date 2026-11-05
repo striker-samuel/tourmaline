@@ -89,6 +89,37 @@ int main() {
     }
 
     {
+        // A legacy bulk import may resize the float arrays after a precise
+        // setter has run. Repair must initialize only the missing double
+        // entries, not overwrite an existing sub-float translation.
+        Scene s;
+        const int root = addNode(s, -1, 0);
+        glm::dmat4 precise(1.0);
+        precise[3].x = 1.0e12 + 0.125;
+        Check(SetLocalTransform(s, MakeNodeHandle(s, root), precise),
+              "double repair: precise root");
+        const int child = addNode(s, root, 1);
+        s.localTransform[child][3].y = 7.0f;
+        s.localTransformDouble.resize(1);
+        s.globalTransformDouble.resize(1);
+        s.localTransformFloatShadow.resize(1);
+        MarkAllRootsChanged(s);
+        Check(recalculateGlobalTransforms(s), "double repair: recalculate");
+        Check(GlobalTransformDouble(s, root)[3].x == precise[3].x,
+              "double repair: root precision retained");
+        Check(GlobalTransformDouble(s, child)[3].x == precise[3].x
+              && GlobalTransformDouble(s, child)[3].y == 7.0,
+              "double repair: legacy child initialized");
+        glm::dmat4 next = precise;
+        next[3].x += 0.25;
+        Check(SetLocalTransform(s, MakeNodeHandle(s, root), next),
+              "double repair: setter after resized arrays");
+        Check(recalculateGlobalTransforms(s), "double repair: updated");
+        Check(GlobalTransformDouble(s, child)[3].x == next[3].x,
+              "double repair: descendant keeps fractional delta");
+    }
+
+    {
         // Export detaches static descendants, folding every ancestor's
         // transform into each independent cooked static root. Editor state
         // and dynamic hierarchy remain unchanged.
