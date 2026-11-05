@@ -1,4 +1,5 @@
 #include <Engine/Memory/arena_flat_array.h>
+#include <Engine/Scene/scene.h>
 #include <cassert>
 #include <cstdint>
 #include <span>
@@ -36,6 +37,23 @@ int main() {
     assert(copied.size() == standard.size());
     moved = std::move(copied);
     assert(copied.empty() && moved.size() == standard.size());
+    // Authoritative scene arrays use the same storage and keep stable slots.
+    Scene graph;
+    const int root = addNode(graph, -1, 0);
+    const int child = addNode(graph, root, 1);
+    assert(graph.hierarchy.size() == 2);
+    assert(graph.hierarchy[child].parent == root);
+    assert(graph.localTransform.size() == graph.globalTransform.size());
+    const auto saved = graph.localTransform;
+    assert(saved.size() == graph.localTransform.size());
+    assert(saved.data() != graph.localTransform.data());
+
+    Scene movedGraph(std::move(graph));
+    assert(movedGraph.hierarchy[child].parent == root);
+    assert(movedGraph.globalTransform.size() == 2);
+    RetireNodeSlot(movedGraph, child);
+    assert(!IsNodeAlive(movedGraph, child));
+    assert(addNode(movedGraph, root, 1) == child);
     rows.clear();
     assert(rows.empty() && rows.capacity() >= 5);
 }
