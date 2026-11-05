@@ -20807,7 +20807,7 @@ namespace engine {
 		m_prevUnjitteredViewProj = m_unjitteredViewProj;
 		m_prevViewProjValid = true;
 		m_prevJitterUV = m_currJitterUV;
-		m_prevGlobalTransforms = m_world->scene.globalTransform;
+		m_prevGlobalTransforms.Assign(m_world->scene.globalTransform);
 		// SMAA T2x global toggle: the neighborhood pass wrote
 		// history[parity] during Execute (when the T2x chain ran), so the
 		// next record blends against this one. A non-T2x record freezes
