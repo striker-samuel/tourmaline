@@ -429,6 +429,8 @@ struct ReferenceCmd {
 	                          // stable across moves/renames, resolved first;
 	                          // `source` stays as the legacy fallback
 	std::string name;         // placeholder node name ("REF <name>")
+	std::string nameSpace;    // optional Maya-style namespace override (-namespace);
+	                          // empty = use name (legacy behavior)
 	glm::vec3 translate{ 0.0f }; // optional placement offset
 	bool hasTranslate = false;
 	// Authored .tour scene occurrences can be fully placed without

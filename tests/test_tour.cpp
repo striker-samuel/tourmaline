@@ -587,6 +587,7 @@ void TestReferences() {
 	r.parent = 0;
 	r.source = "wheel.tour";
 	r.name = "wheel";
+	r.nameSpace = "vehicle";
 	r.translate = glm::vec3(1.0f, 2.0f, 3.0f);
 	r.hasTranslate = true;
 	r.rotate = glm::vec3(0.0f, 90.0f, 0.0f);
@@ -605,6 +606,7 @@ void TestReferences() {
 		Check(back.references[0].source == "wheel.tour" &&
 			!back.references[0].asset &&
 			back.references[0].name == "wheel" &&
+			back.references[0].nameSpace == "vehicle" &&
 			back.references[0].parent == 0 &&
 			back.references[0].hasTranslate &&
 			back.references[0].translate.y == 2.0f &&
@@ -639,10 +641,10 @@ void TestReferences() {
 	Check(findNodeByName(cluster->scene, "REF wheel") >= 0, "ref placeholder node");
 	// Reference namespaces (Maya): the subtree takes '<ref>:' — root
 	// namespace is the master tour (its nodes carry no prefix).
-	Check(findNodeByName(cluster->scene, "wheel:Wheel") >= 0,
+	Check(findNodeByName(cluster->scene, "vehicle:Wheel") >= 0,
 		"ref subtree namespaced");
 	Check(findNodeByName(cluster->scene, "REF gear") >= 0, "ref nested placeholder");
-	Check(findNodeByName(cluster->scene, "wheel:gear:Gear") >= 0,
+	Check(findNodeByName(cluster->scene, "vehicle:gear:Gear") >= 0,
 		"ref nested namespaced chain");
 	// Resolved sources: one canonical path per doc reference, in order
 	// (the raw string is what the file says; this is what bound — the
@@ -653,6 +655,59 @@ void TestReferences() {
 		Check(!resolved[0].empty()
 			&& resolved[0].find("wheel.geometry") != std::string::npos,
 			"ref resolved canonical path");
+	}
+	// Without -namespace, references retain the placeholder-name prefix.
+	back.references[0].nameSpace.clear();
+	auto legacyCluster = std::make_unique<smvk::Cluster>(nullptr);
+	legacyCluster->SetOfflineMode(true);
+	addNode(legacyCluster->scene, -1, 0);
+	Check(ApplySceneReferences(*legacyCluster, back, dir.generic_string(),
+		nullptr, nullptr, nullptr, smvk::MeshOptConfig{},
+		smvk::MeshletConfig{}, 0, nullptr) == 2,
+		"ref default namespace applied");
+	Check(findNodeByName(legacyCluster->scene, "wheel:Wheel") >= 0 &&
+		findNodeByName(legacyCluster->scene, "wheel:gear:Gear") >= 0,
+		"ref default namespace unchanged");
+
+	// Multiple occurrences of the same .tour remain independently placed
+	// and their nested namespace chains must not alias one another.
+	{
+		smvk::tour::Doc instances;
+		auto occurrence = r;
+		occurrence.name = "wheel_left";
+		occurrence.nameSpace = "left";
+		occurrence.translate = glm::vec3(-4.0f, 0.0f, 0.0f);
+		occurrence.hasRotate = false;
+		occurrence.hasScale = false;
+		instances.references.push_back(occurrence);
+		occurrence.name = "wheel_right";
+		occurrence.nameSpace = "right";
+		occurrence.translate = glm::vec3(6.0f, 0.0f, 0.0f);
+		instances.references.push_back(occurrence);
+		auto world = std::make_unique<smvk::Cluster>(nullptr);
+		world->SetOfflineMode(true);
+		addNode(world->scene, -1, 0);
+		std::vector<int> placeholders;
+		Check(ApplySceneReferences(*world, instances, dir.generic_string(),
+			nullptr, nullptr, nullptr, smvk::MeshOptConfig{},
+			smvk::MeshletConfig{}, 0, &placeholders) == 4,
+			"prefab namespace occurrences resolve both nested subtrees");
+		Check(placeholders.size() == 2 && placeholders[0] >= 0
+			&& placeholders[1] >= 0 && placeholders[0] != placeholders[1],
+			"prefab instances have distinct placeholders");
+		if (placeholders.size() == 2 && placeholders[0] >= 0
+			&& placeholders[1] >= 0)
+			Check(std::abs(world->scene.localTransform[size_t(placeholders[0])][3].x + 4.0f) < 1e-4f
+				&& std::abs(world->scene.localTransform[size_t(placeholders[1])][3].x - 6.0f) < 1e-4f,
+				"prefab instance placements are independent");
+		Check(findNodeByName(world->scene, "left:Wheel") >= 0
+			&& findNodeByName(world->scene, "left:gear:Gear") >= 0
+			&& findNodeByName(world->scene, "right:Wheel") >= 0
+			&& findNodeByName(world->scene, "right:gear:Gear") >= 0,
+			"prefab instances retain separate nested namespaces");
+		Check(findNodeByName(world->scene, "wheel_left:Wheel") < 0
+			&& findNodeByName(world->scene, "wheel_right:Wheel") < 0,
+			"explicit namespace is independent of placeholder name");
 	}
 	// Cycle guard: a scene whose tour references itself inlines once.
 	writeGltf("self.gltf", "Self");
@@ -4484,6 +4539,61 @@ void TestRequiredNodeNames() {
 		"replay refuses programmatic unnamed nodes");
 }
 
+
+void TestReferenceNamespaceFuzz() {
+	using namespace smvk::tour;
+	std::string err;
+	Doc doc;
+	const auto makeLine = [](const std::string& ns) {
+		return std::string("reference -n 0 -source \"part.tour\" -name \"instance\" -namespace \"")
+			+ ns + "\";\n";
+	};
+	for (const std::string& ns : { "", ":", "a:b", "a/b",
+		"../escape", "branch:leaf", "/absolute" })
+		Check(!LoadTourFromString(makeLine(ns), doc, err),
+			"namespace negative corpus rejects invalid values");
+	for (const char* line : {
+		"reference -n 0 -source \"part.tour\" -name \"part\" -namespace;\n",
+		"reference -n 0 -source \"part.tour\" -name \"part\" -namespace -t 1 2 3;\n",
+		"reference -root -n 0 -source \"root.geometry\" -namespace \"root\";\n",
+		"reference -n 0 -source \"mesh.geometry\" -name \"part\" -namespace \"mesh\";\n" })
+		Check(!LoadTourFromString(line, doc, err),
+			"namespace forbidden for root and mesh references");
+
+	// Fixed-seed grammar mutation: stable and reproducible in CI.
+	uint32_t seed = 0x6e735f31u;
+	const auto rnd = [&]() {
+		seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+		return seed;
+	};
+	const std::string alphabet =
+		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/.";
+	for (int k = 0; k < 256; ++k) {
+		std::string ns;
+		const size_t len = 1 + rnd() % 28;
+		for (size_t i = 0; i < len; ++i)
+			ns += alphabet[rnd() % alphabet.size()];
+		const bool valid = ns.find_first_of(":/") == std::string::npos;
+		const bool parsed = LoadTourFromString(makeLine(ns), doc, err);
+		Check(parsed == valid, "namespace fuzz grammar accepted/rejected");
+		if (!parsed) continue;
+		Check(doc.references.size() == 1
+			&& doc.references[0].nameSpace == ns,
+			"namespace fuzz parsed value is exact");
+		const std::string path = TempTour();
+		Check(SaveTour(path, doc, err), "namespace fuzz save");
+		Doc loaded;
+		Check(LoadTour(path, loaded, err)
+			&& loaded.references.size() == 1
+			&& loaded.references[0].nameSpace == ns,
+			"namespace fuzz stable file roundtrip");
+	}
+	Check(LoadTourFromString(
+		"reference -n 0 -source \"part.tour\" -name \"part\";\n", doc, err)
+		&& doc.references.size() == 1 && doc.references[0].nameSpace.empty(),
+		"namespace missing flag uses old fallback");
+}
+
 void TestMayaNodeNamePropagation() {
 	using namespace smvk::tour;
 	Scene scene;
@@ -4585,6 +4695,7 @@ int main() {
 	TestIdentityLayers();
 	TestReplay();
 	TestReferences();
+	TestReferenceNamespaceFuzz();
 	TestNestedModernTourRoot();
 	TestTourReferences();
 	TestLightVerbs();

@@ -3824,7 +3824,8 @@ size_t ApplySceneReferences(
 		// verify-names and its own wide overrides matched the
 		// un-prefixed names.
 		if (!isRoot) {
-			const std::string ns = cur.nsPrefix + name + ":";
+			const std::string ns = cur.nsPrefix
+				+ (r.nameSpace.empty() ? name : r.nameSpace) + ":";
 			std::vector<uint32_t> stack;
 			for (int ch = cluster.scene.hierarchy[size_t(ph)].firstChild;
 				ch >= 0;
@@ -3893,7 +3894,7 @@ size_t ApplySceneReferences(
 			// Root references never extend the namespace chain (the
 			// master's own contents stay unprefixed at every depth).
 			next.nsPrefix = isRoot ? cur.nsPrefix
-				: cur.nsPrefix + name + ":";
+				: cur.nsPrefix + (r.nameSpace.empty() ? name : r.nameSpace) + ":";
 			next.depth = cur.depth + 1;
 			next.nodeBase = subtreeBase;
 			queue.push_back(std::move(next));
