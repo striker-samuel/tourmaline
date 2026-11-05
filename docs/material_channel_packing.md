@@ -31,6 +31,12 @@ materialChannel cavity occlusion a
 materialChannel roughness metallicRoughness g
 materialChannel metallic metallicRoughness b
 
+# Optional cooked KTX2 formats for generated output groups.
+materialEncoding baseColor bc7
+materialEncoding normal bc5
+materialEncoding emissive bc7
+materialEncoding scalar bc7
+
 [pak world]
 output game.pak
 scene content/scenes/main.tour
@@ -50,7 +56,7 @@ The composer uses the material's **existing source texture slots**, not arbitrar
 
 A group is generated only if at least one of its targets is explicitly specified. Unconfigured channels in that group retain the corresponding original glTF source channel or the neutral fallback. The normal shader currently consumes packed X/Y and reconstructs normal Z; the authored B channel is retained in the image but not read by the existing normal-mapping path.
 
-Input images must have identical dimensions when combined into one output. Incompatible sizes and explicitly requested missing input slots cause an import error rather than silent stretching or undefined sampling. The importer creates lossless PNGs; the existing texture loader converts them to the cooked GPU format. Each rule is checked during import and can trigger regeneration when the recipe changes.
+`materialEncoding <baseColor|normal|emissive|scalar> <format>` sets the cooked KTX2 encoding for a generated group. Supported formats are `rgba8`, `bc3`, and `bc7` for all groups; `bc5` is also supported for normals (XY; reconstructed Z), and `bc1` for emissive. A directive requires at least one `materialChannel` in its group. The importer writes a derived `.packed.texture` settings asset pointing at the lossless PNG; the normal `.texture` transcode path encodes the KTX2. If absent, the existing RGBA8 behavior is unchanged. Changing a format changes the packing signature and invalidates import metadata. Encodings are project-wide, not per material.\n\nInput images must have identical dimensions when combined into one output. Incompatible sizes and explicitly requested missing input slots cause an import error rather than silent stretching or undefined sampling. The importer creates lossless PNGs; the existing texture loader converts them to the cooked GPU format. Each rule is checked during import and can trigger regeneration when the recipe changes.
 
 ## Metadata and compatibility
 

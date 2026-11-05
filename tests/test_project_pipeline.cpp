@@ -1099,6 +1099,7 @@ void TestMaterialChannelComposition() {
         "materialChannel cavity occlusion a\n"
         "materialChannel roughness metallicRoughness g\n"
         "materialChannel metallic metallicRoughness b\n"
+        "materialEncoding scalar bc7\n"
         "[pak world]\n"
         "output game.pak\n"
         "scene content/scenes/demo.tour\n";
@@ -1127,7 +1128,16 @@ void TestMaterialChannelComposition() {
         };
         for (const auto& output : expected) {
             int width = 0, height = 0, components = 0;
-            stbi_uc* png = stbi_load((dir / *output.path).string().c_str(),
+            fs::path imagePath = dir / *output.path;
+            if (imagePath.extension() == ".texture") {
+                smvk::assets::TextureAsset texture;
+                Check(smvk::assets::LoadTextureAsset(imagePath, texture, error) &&
+                    texture.format == int(smvk::assets::KtxEncodeFormat::Bc7) &&
+                    texture.colorspace == 1,
+                    "material-compose.encoding-asset-settings");
+                imagePath = imagePath.parent_path() / texture.source;
+            }
+            stbi_uc* png = stbi_load(imagePath.string().c_str(),
                 &width, &height, &components, 4);
             const bool correct = png && width == 2 && height == 1 &&
                 std::equal(output.rgba.begin(), output.rgba.end(), png);
@@ -1152,6 +1162,10 @@ void TestMaterialChannelComposition() {
         changed.channels[0].channel = 'g';
         Check(!MaterialPackingRuleMatches(changed, loaded),
             "material-compose.recipe-change-invalidates");
+        changed = recipe.materialPacking;
+        changed.encodings[3] = "bc3";
+        Check(!MaterialPackingRuleMatches(changed, loaded),
+            "material-compose.encoding-change-invalidates");
     }
 
     // Explicitly missing texture sources must fail instead of silently
@@ -1189,6 +1203,9 @@ void TestMaterialChannelComposition() {
         "materialChannel roughness metallicRoughness x\n",
         "materialChannel baseColor.x baseColor r\n",
         "materialChannel metallic unknown r\n",
+        "materialEncoding scalar bc1\n",
+        "materialEncoding unknown bc7\n",
+        "materialEncoding scalar bc7\nmaterialEncoding scalar bc3\n",
         "materialChannel ao occlusion r\nmaterialChannel ao occlusion g\n",
         "materialPacking occlusion r a g b\nmaterialChannel ao occlusion r\n"
     };
