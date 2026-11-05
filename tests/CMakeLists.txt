@@ -38,6 +38,14 @@ set_target_properties(DebugDrawTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME debug_draw_tests COMMAND DebugDrawTests)
 
+# Headless authored-node plug registry, typed value adapters and
+# acyclic source->destination connection evaluation.
+add_executable(NodePlugsTests test_node_plugs.cpp)
+target_link_libraries(NodePlugsTests PRIVATE engine)
+set_target_properties(NodePlugsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME node_plugs_tests COMMAND NodePlugsTests)
+
 # Planar reflection camera math (CPU only; no Vulkan device required).
 add_executable(PlanarReflectionTests test_planar_reflection.cpp)
 target_link_libraries(PlanarReflectionTests PRIVATE engine)
