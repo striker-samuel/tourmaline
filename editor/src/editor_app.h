@@ -1793,6 +1793,7 @@ private:
 	std::string m_saveBrowseDir;
 	std::string m_saveBrowseSel;
 	std::string m_tourPath; // live target, reset to TourPath() on scene load
+	std::string m_startupTempTour; // transient empty scene opened at startup
 	void DrawSaveDialog();
 	static bool CmdToTour(const EditorApp& app, const EditCmd& c,
 		smvk::tour::Command& out);
