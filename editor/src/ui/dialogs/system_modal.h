@@ -30,6 +30,15 @@ inline void PrepareSystemModal(const ImVec2& size = ImVec2(0, 0),
 
 // The operating system draws the title bar for these decorated
 // platform windows. Suppress ImGui's own one to avoid two title bars.
+// ImGui keeps popup visibility itself, so native viewport close events
+// do not automatically dismiss a BeginPopupModal(nullptr). Consumers
+// must treat the platform close button like their Cancel/Close action.
+inline bool SystemModalCloseRequested() {
+    const ImGuiViewport* viewport = ImGui::GetWindowViewport();
+    return viewport && viewport != ImGui::GetMainViewport() &&
+        viewport->PlatformRequestClose;
+}
+
 inline constexpr ImGuiWindowFlags kSystemModalFlags =
     ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings;
