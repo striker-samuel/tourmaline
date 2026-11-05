@@ -95,6 +95,59 @@ namespace editor {
 		return false;
 	}
 
+	bool EditorApp::HasLocalPlugOverride(uint32_t node, const std::string& plug) const {
+		for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+			const EditCmd& c = m_history[i];
+			if (c.node != node) continue;
+			using EV = EditVerb;
+			if ((plug == "node.visibility" && c.verb == EV::SetVisibility) ||
+				(plug == "node.static" && c.verb == EV::SetStatic) ||
+				(plug == "node.material" && c.verb == EV::AssignMaterial) ||
+				(plug == "node.lightmap" && c.verb == EV::SetLightmap) ||
+				(plug == "node.noLightmap" && c.verb == EV::SetNoLightmap) ||
+				(plug == "node.ditherCloseup" && c.verb == EV::SetDitherCloseup) ||
+				(plug == "node.volumetricShadow" && c.verb == EV::SetCastsVolumetricShadow))
+				return true;
+			if (c.verb == EV::SetGiVolumeAttr &&
+				((plug == "gi.spacing" && c.giVolumeAttr == "spacing") ||
+				(plug == "gi.priority" && c.giVolumeAttr == "priority") ||
+				(plug == "gi.insideFade" && c.giVolumeAttr == "inside") ||
+				(plug == "gi.outsideFade" && c.giVolumeAttr == "outside")))
+				return true;
+			if (c.verb == EV::SetCubemapAttr && plug == "cubemap.radius" && c.cubemapAttr == "radius")
+				return true;
+			if (c.verb == EV::SetAudioAttr && plug.rfind("audio.",0)==0 &&
+				(plug.substr(6) == c.audioAttr ||
+				(plug == "audio.gain" && c.audioAttr == "volume")))
+				return true;
+			if (c.verb == EV::SetAudioRoomAttr && plug.rfind("audioRoom.",0)==0 &&
+				plug.substr(10) == c.roomAttr) return true;
+			if (c.verb == EV::SetPhysicsBodyAttr && plug.rfind("physics.",0)==0 &&
+				plug.substr(8) == c.physicsAttr) return true;
+			if (c.verb == EV::SetTriggerVolumeAttr && plug.rfind("trigger.",0)==0 &&
+				plug.substr(8) == c.triggerVolumeAttr) return true;
+		}
+		return false;
+	}
+
+	bool EditorApp::AddPlugOverrideRule(const std::string& pattern,
+		const std::string& plug, const tour::scene::plugs::Value& value) {
+		if (!m_world || pattern.empty() || !tour::scene::plugs::ValidValue(plug,value))
+			return false;
+		try { std::regex rx(pattern, std::regex::ECMAScript | std::regex::optimize); (void)rx; }
+		catch (...) { Log("Override: invalid regex."); return false; }
+		OverrideRule rule{};
+		rule.id = m_nextOverrideId++;
+		rule.attr = smvk::tour::OverrideAttr::Plug;
+		rule.pattern = pattern;
+		rule.plug = plug;
+		rule.value = value;
+		m_overrideRules.push_back(std::move(rule));
+		ApplyOverrideRule(m_overrideRules.back());
+		AutosaveTour();
+		return true;
+	}
+
 	std::vector<uint32_t> EditorApp::MatchOverrideNodes(
 		const std::string& pattern, std::string& errOut) const {
 		std::vector<uint32_t> out;
@@ -170,11 +223,23 @@ namespace editor {
 		Scene& scene = m_world->scene;
 		int touched = 0;
 		for (uint32_t n : hits) {
-			if (HasLocalOverride(n, r.attr))
+			if (r.attr == smvk::tour::OverrideAttr::Plug
+				? HasLocalPlugOverride(n,r.plug) : HasLocalOverride(n,r.attr))
 				continue; // local wins: never touch
 			OverrideApplied a{};
 			a.node = n;
 			switch (r.attr) {
+			case smvk::tour::OverrideAttr::Plug: {
+				tour::scene::plugs::Value before;
+				if (!tour::scene::plugs::Read(scene,n,r.plug,before) ||
+					before == r.value || !tour::scene::plugs::Write(scene,n,r.plug,r.value))
+					break;
+				a.beforeValue = std::move(before);
+				r.applied.push_back(a);
+				++touched;
+				RefreshNodeDrawState(n);
+				break;
+			}
 			case smvk::tour::OverrideAttr::Visibility: {
 				if (scene.hidden.size() != scene.hierarchy.size())
 					scene.hidden.assign(scene.hierarchy.size(), 0);
@@ -277,9 +342,18 @@ namespace editor {
 			const uint32_t n = it->node;
 			if (n >= scene.hierarchy.size())
 				continue;
-			if (HasLocalOverride(n, r.attr))
+			if (r.attr == smvk::tour::OverrideAttr::Plug
+				? HasLocalPlugOverride(n,r.plug) : HasLocalOverride(n,r.attr))
 				continue; // a local owns this node now: never clobber
 			switch (r.attr) {
+			case smvk::tour::OverrideAttr::Plug: {
+				tour::scene::plugs::Value current;
+				if (tour::scene::plugs::Read(scene,n,r.plug,current) &&
+					current == r.value &&
+					tour::scene::plugs::Write(scene,n,r.plug,it->beforeValue))
+					RefreshNodeDrawState(n);
+				break;
+			}
 			case smvk::tour::OverrideAttr::Visibility: {
 				if (scene.hidden.size() != scene.hierarchy.size())
 					continue;
@@ -525,7 +599,11 @@ namespace editor {
 			tr.attr = r.attr;
 			tr.pattern = r.pattern;
 			tr.enabled = r.enabled;
-			if (r.attr == smvk::tour::OverrideAttr::Material) {
+			if (r.attr == smvk::tour::OverrideAttr::Plug) {
+				tr.plug = r.plug;
+				tr.value = r.value;
+			}
+			else if (r.attr == smvk::tour::OverrideAttr::Material) {
 				const int pool = WorldMatToCluster(r.materialWorld);
 				if (pool < 0)
 					continue; // stale material: skip, keep the tour loadable
@@ -547,7 +625,14 @@ namespace editor {
 			r.enabled = tr.enabled;
 			r.attr = tr.attr;
 			r.pattern = tr.pattern;
-			if (tr.attr == smvk::tour::OverrideAttr::Material) {
+			if (tr.attr == smvk::tour::OverrideAttr::Plug) {
+				if (!tour::scene::plugs::ValidValue(tr.plug,tr.value)) {
+					--m_nextOverrideId; continue;
+				}
+				r.plug = tr.plug;
+				r.value = tr.value;
+			}
+			else if (tr.attr == smvk::tour::OverrideAttr::Material) {
 				const int wm = ClusterMatToWorld(tr.material);
 				if (wm < 0) {
 					Log("tour: override material out of range: " +
@@ -590,7 +675,8 @@ namespace editor {
 		for (auto& r : m_overrideRules) {
 			if (!r.enabled || r.pattern.empty())
 				continue;
-			if (HasLocalOverride(node, r.attr))
+			if (r.attr == smvk::tour::OverrideAttr::Plug
+				? HasLocalPlugOverride(node,r.plug) : HasLocalOverride(node,r.attr))
 				continue; // a local still owns it
 			bool already = false;
 			for (const auto& a : r.applied)
@@ -616,6 +702,16 @@ namespace editor {
 			OverrideApplied a{};
 			a.node = node;
 			switch (r.attr) {
+			case smvk::tour::OverrideAttr::Plug: {
+				tour::scene::plugs::Value before;
+				if (!tour::scene::plugs::Read(scene,node,r.plug,before) ||
+					before == r.value || !tour::scene::plugs::Write(scene,node,r.plug,r.value))
+					break;
+				a.beforeValue = std::move(before);
+				r.applied.push_back(a);
+				RefreshNodeDrawState(node);
+				break;
+			}
 			case smvk::tour::OverrideAttr::Visibility: {
 				if (scene.hidden.size() != scene.hierarchy.size())
 					scene.hidden.assign(scene.hierarchy.size(), 0);
