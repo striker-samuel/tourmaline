@@ -70,9 +70,14 @@ namespace editor {
 		if (!it)
 			return;
 		::SceneGiVolume& def = it->volume;
-		ImGui::Separator();
-		ImGui::Text("Convex volume: '%s'",
-			getNodeName(scene, int(node)).c_str());
+		if (attr::ComponentHeader("GI Volume",
+			"GI volume properties; the node transform defines its shape")) {
+			EditCmd cmd{};
+			cmd.verb = EditVerb::RemoveGiVolumeVerb;
+			cmd.node = node;
+			Do(cmd);
+			return;
+		}
 		glm::vec3 mn, mx;
 		if (GiVolumeBox(node, mn, mx))
 			ImGui::TextDisabled("aabb (%.1f,%.1f,%.1f)..(%.1f,%.1f,%.1f) m",
@@ -203,12 +208,7 @@ namespace editor {
 		else if (ImGui::Button("Optimize grid layout")) {
 			RunGiLayoutOptimizer(node);
 		}
-		if (ImGui::Button("Remove GI Volume component")) {
-			EditCmd c{};
-			c.verb = EditVerb::RemoveGiVolumeVerb;
-			c.node = node;
-			Do(c);
-		}
+
 	}
 
 } // namespace editor
