@@ -4426,6 +4426,8 @@ void TestReferenceNamespaceFuzz() {
 		Check(!LoadTourFromString(makeLine(ns), doc, err),
 			"namespace negative corpus rejects invalid values");
 	for (const char* line : {
+		"reference -n 0 -source \"part.tour\" -name \"part\" -namespace;\n",
+		"reference -n 0 -source \"part.tour\" -name \"part\" -namespace -t 1 2 3;\n",
 		"reference -root -n 0 -source \"root.geometry\" -namespace \"root\";\n",
 		"reference -n 0 -source \"mesh.geometry\" -name \"part\" -namespace \"mesh\";\n" })
 		Check(!LoadTourFromString(line, doc, err),
