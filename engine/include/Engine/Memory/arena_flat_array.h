@@ -38,15 +38,43 @@ public:
 
     [[nodiscard]] const T& operator[](size_t index) const noexcept { return data_[index]; }
     [[nodiscard]] T& operator[](size_t index) noexcept { return data_[index]; }
+    [[nodiscard]] T* begin() noexcept { return data_; }
     [[nodiscard]] const T* begin() const noexcept { return data_; }
+    [[nodiscard]] T* end() noexcept { return data_ ? data_ + size_ : nullptr; }
     [[nodiscard]] const T* end() const noexcept { return data_ ? data_ + size_ : nullptr; }
 
     void clear() noexcept { size_ = 0; }
 
+    void resize(size_t count, const T& value = T{}) {
+        Reserve(count);
+        for (size_t i = size_; i < count; ++i)
+            data_[i] = value;
+        size_ = count;
+    }
+
+    void assign(size_t count, const T& value) {
+        Reserve(count);
+        for (size_t i = 0; i < count; ++i)
+            data_[i] = value;
+        size_ = count;
+    }
+
+    void push_back(const T& value) {
+        if (size_ == capacity_) {
+            const size_t maxCount = std::numeric_limits<size_t>::max() / sizeof(T);
+            if (size_ == maxCount)
+                tour::mem::ReportOomAndCrash("ArenaFlatArray", 1, size_, maxCount);
+            const size_t grown = capacity_ > maxCount / 2 ? maxCount :
+                std::max<size_t>(8, capacity_ * 2);
+            Reserve(grown);
+        }
+        data_[size_++] = value;
+    }
+
     void Reserve(size_t requested) {
         if (requested <= capacity_) return;
         if (requested > std::numeric_limits<size_t>::max() / sizeof(T))
-            smvk::mem::ReportOomAndCrash("ArenaFlatArray", requested,
+            tour::mem::ReportOomAndCrash("ArenaFlatArray", requested,
                 capacity_, std::numeric_limits<size_t>::max() / sizeof(T));
         // Exact-size growth: the hot path is one Assign per frame with a
         // stable node count, and scene reloads need not precommit 1M nodes.
