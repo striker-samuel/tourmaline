@@ -246,15 +246,19 @@ bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::dmat4& transf
       if (!std::isfinite(transform[col][row])) return false;
   const uint32_t slot = NodeHandleSlot(handle);
   if (slot >= scene.localTransform.size()) return false;
-  if (scene.localTransformDouble.size() != scene.localTransform.size()) {
-    scene.localTransformDouble.resize(scene.localTransform.size());
-    scene.globalTransformDouble.resize(scene.localTransform.size());
-    scene.localTransformFloatShadow.resize(scene.localTransform.size());
-    for (size_t i = 0; i < scene.localTransform.size(); ++i) {
-      scene.localTransformDouble[i] = glm::dmat4(scene.localTransform[i]);
-      scene.globalTransformDouble[i] = glm::dmat4(scene.globalTransform[i]);
-      scene.localTransformFloatShadow[i] = scene.localTransform[i];
-    }
+  // Repair partially populated legacy arrays without destroying the
+  // precision of already-authoritative double entries.
+  const size_t count = scene.localTransform.size();
+  const size_t oldLocal = scene.localTransformDouble.size();
+  const size_t oldGlobal = scene.globalTransformDouble.size();
+  const size_t oldShadow = scene.localTransformFloatShadow.size();
+  scene.localTransformDouble.resize(count);
+  scene.globalTransformDouble.resize(count);
+  scene.localTransformFloatShadow.resize(count);
+  for (size_t i = 0; i < count; ++i) {
+    if (i >= oldLocal) scene.localTransformDouble[i] = glm::dmat4(scene.localTransform[i]);
+    if (i >= oldGlobal) scene.globalTransformDouble[i] = glm::dmat4(scene.globalTransform[i]);
+    if (i >= oldShadow) scene.localTransformFloatShadow[i] = scene.localTransform[i];
   }
   scene.localTransformDouble[slot] = transform;
   scene.localTransform[slot] = glm::mat4(transform);
@@ -381,17 +385,18 @@ static void QueueGpuSceneGlobalChange(Scene& scene, uint32_t node)
 static void PrepareDoubleTransforms(Scene& scene)
 {
   const size_t count = scene.localTransform.size();
-  if (scene.localTransformDouble.size() != count ||
-      scene.globalTransformDouble.size() != count ||
-      scene.localTransformFloatShadow.size() != count) {
-    scene.localTransformDouble.resize(count);
-    scene.globalTransformDouble.resize(count);
-    scene.localTransformFloatShadow.resize(count);
-    for (size_t i = 0; i < count; ++i) {
-      scene.localTransformDouble[i] = glm::dmat4(scene.localTransform[i]);
-      scene.globalTransformDouble[i] = glm::dmat4(scene.globalTransform[i]);
-      scene.localTransformFloatShadow[i] = scene.localTransform[i];
-    }
+  const size_t oldLocal = scene.localTransformDouble.size();
+  const size_t oldGlobal = scene.globalTransformDouble.size();
+  const size_t oldShadow = scene.localTransformFloatShadow.size();
+  if (oldLocal == count && oldGlobal == count && oldShadow == count)
+    return;
+  scene.localTransformDouble.resize(count);
+  scene.globalTransformDouble.resize(count);
+  scene.localTransformFloatShadow.resize(count);
+  for (size_t i = 0; i < count; ++i) {
+    if (i >= oldLocal) scene.localTransformDouble[i] = glm::dmat4(scene.localTransform[i]);
+    if (i >= oldGlobal) scene.globalTransformDouble[i] = glm::dmat4(scene.globalTransform[i]);
+    if (i >= oldShadow) scene.localTransformFloatShadow[i] = scene.localTransform[i];
   }
 }
 
@@ -1443,9 +1448,15 @@ void mergeScenes(
       if (root == UINT32_MAX)
         continue; // empty source: contributes no hierarchy
       scene.hierarchy[root].parent = 0;
-      if (!rootTransforms.empty())
-        scene.localTransform[root] =
-          rootTransforms[idx] * scene.localTransform[root];
+      if (!rootTransforms.empty()) {
+        // Preserve the precise source translation when applying the
+        // legacy float root offset; update the float shadow as well so
+        // recalculation cannot silently re-import a rounded matrix.
+        scene.localTransformDouble[root] =
+          glm::dmat4(rootTransforms[idx]) * scene.localTransformDouble[root];
+        scene.localTransform[root] = glm::mat4(scene.localTransformDouble[root]);
+        scene.localTransformFloatShadow[root] = scene.localTransform[root];
+      }
       if (prevRoot == UINT32_MAX)
         scene.hierarchy[0].firstChild = int(root);
       else
