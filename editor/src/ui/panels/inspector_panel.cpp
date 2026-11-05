@@ -179,7 +179,15 @@ namespace editor {
 			if (i)
 				ImGui::SameLine(0.0f, 5.0f), ImGui::TextUnformatted(">"),
 					ImGui::SameLine(0.0f, 5.0f);
-			ImGui::Text("Node %u", ancestry[i]);
+			// Breadcrumbs show the authored scene name, not the internal
+			// world-node index (which may differ after imports/creates).
+			// Keep the index in the hover tooltip for diagnostics.
+			const std::string ancestorName = getNodeName(scene, int(ancestry[i]));
+			ImGui::TextUnformatted(ancestorName.empty()
+				? ("Node #" + std::to_string(ancestry[i])).c_str()
+				: ancestorName.c_str());
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Internal node ID: %u", ancestry[i]);
 		}
 		// Sub-object highlight state (selection only, never edited).
 		if (m_selMode == SelMode::Face) {
