@@ -2822,6 +2822,9 @@ private:
 	bool m_dockViewportHovered = false;
 	bool m_dockViewportDragCaptured = false; // keep orbit/pan ownership until release
 	bool m_dockResetRequested = false;
+	// One-shot startup latch for the degenerate-layout self-heal (see the
+	// central-node check after the DockSpace submit in FinalizePending).
+	bool m_dockLayoutHealed = false;
 	// Each dock tool has a close button; View > Panels can reopen it.
 	bool m_showViewportPanel = true;
 	bool m_showWorldMapPanel = true;
@@ -2833,7 +2836,12 @@ private:
 	glm::vec2 m_worldMapLastStamp{-1e9f};
 	void DrawWorldMapPanel();
 	bool m_showOutlinerPanel = true;
-	bool m_showReferencePanel = true;
+	// The Reference panel does NOT autostart: it used to open as a
+	// FLOATING window over the viewport stage on every boot (the default
+	// dock builder never assigned it a node, so it covered the scene).
+	// View > Panels reopens it - docked into the right column (the
+	// default builder's "Reference" assignment in FinalizePending).
+	bool m_showReferencePanel = false;
 	bool m_showAssetsPanel = true;
 	bool m_showConsolePanel = true;
 	bool m_showOverridesPanel = true;
