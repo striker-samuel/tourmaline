@@ -165,7 +165,7 @@ inline bool Float(const char* name, float* v, float speed, float mn,
 	float mx, const char* fmt, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f); // the rest of the row - no dead gap
-	float candidate = numeric::Display(*v, mn < mx ? mn : 0.0f);
+	float candidate = numeric::DisplayFixed(*v, 3, mn < mx ? mn : 0.0f);
 	const bool edited = ImGui::DragFloat(Id(name).c_str(), &candidate, speed, mn,
 		mx, fmt ? fmt : "%.3f");
 	if (hint && ImGui::IsItemHovered())
@@ -181,7 +181,7 @@ inline bool Slider(const char* name, float* v, float mn, float mx,
 	const char* fmt, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
-	float candidate = numeric::Display(*v, mn);
+	float candidate = numeric::DisplayFixed(*v, 2, mn);
 	const bool edited = ImGui::SliderFloat(Id(name).c_str(), &candidate, mn, mx,
 		fmt ? fmt : "%.2f");
 	if (hint && ImGui::IsItemHovered())
@@ -221,7 +221,7 @@ inline Vec3Result Vec3(const char* name, float v[3], float speed,
 		const std::string label = std::string(name) + " " + kAxes[i];
 		LabelCell(label.c_str(), hint);
 		ImGui::SetNextItemWidth(-1.0f);
-		float candidate = numeric::Display(v[i]);
+		float candidate = numeric::DisplayFixed(v[i]);
 		if (ImGui::DragFloat("##axis", &candidate, speed, 0.0f, 0.0f,
 				"%.3f") && numeric::Finite(candidate)) {
 			v[i] = candidate;
