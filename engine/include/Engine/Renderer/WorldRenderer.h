@@ -45,6 +45,7 @@
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/DebugDraw.h>
+#include <Engine/Memory/arena_flat_array.h>
 #include <Engine/Renderer/ShapeScene.h>
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene_world.h>
@@ -3658,7 +3659,7 @@ public:
 	glm::vec2 m_currJitterUV{ 0.0f };
 	glm::vec2 m_prevJitterUV{ 0.0f };
 	glm::vec2 m_jitterDeltaUV{ 0.0f };
-	std::vector<glm::mat4> m_prevGlobalTransforms; // last frame's node transforms
+	tour::mem::ArenaFlatArray<glm::mat4> m_prevGlobalTransforms; // last frame's node transforms
 	// Motion vectors are a DEBUG VIEW now (ViewMode::MotionVectors, the
 	// V key / combo / env) — the tonemap's debug view renders them and
 	// REPLACES the scene composite; the old "overlay" checkbox is
