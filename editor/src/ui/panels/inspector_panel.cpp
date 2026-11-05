@@ -681,9 +681,16 @@ namespace editor {
 		// renderer uses its editor-default material, not a scene binding.
 		const MaterialRow* matRow = FindMaterial(scene, node);
 		if (matRow) {
-			ImGui::Separator();
 			ImGui::SeparatorText("Material component");
 			const uint32_t curMat = matRow->material;
+			if (ImGui::SmallButton("Remove material component")) {
+				EditCmd c{};
+				c.verb = EditVerb::AssignMaterial;
+				c.node = node;
+				c.beforeMaterial = curMat;
+				c.material = UINT32_MAX; // no binding; editor default
+				Do(c);
+			} else {
 			std::string preview = "mat." + std::to_string(curMat);
 			if (ImGui::BeginCombo("##mat", preview.c_str())) {
 				const uint32_t count = uint32_t(m_world->materialLocations.size());
@@ -721,6 +728,7 @@ namespace editor {
 			// copy — the same surface the Material tab and the focus
 			// page render, from ONE function).
 			DrawMaterialBody(curMat);
+			}
 		}
 		else {
 			ImGui::SeparatorText("Material component");
