@@ -152,7 +152,9 @@ namespace editor {
 				{ smvk::tour::OverrideAttr::Material, "Material" },
 				{ smvk::tour::OverrideAttr::Lightmap, "Bake lightmaps" },
 				{ smvk::tour::OverrideAttr::NoLightmap, "Exclude lightmaps" },
-				{ smvk::tour::OverrideAttr::DitherCloseup, "Dither closeup" } }) {
+				{ smvk::tour::OverrideAttr::DitherCloseup, "Dither closeup" },
+				{ smvk::tour::OverrideAttr::Static, "Static" },
+				{ smvk::tour::OverrideAttr::VolumetricShadow, "Volumetric shadow" } }) {
 			if (LastWideRuleFor(entry.first, nodeName))
 				mark(entry.second, 2);
 		}
