@@ -173,7 +173,15 @@ namespace editor {
 		if (!ImGui::IsPopupOpen(title, ImGuiPopupFlags_AnyPopupId))
 			ImGui::OpenPopup(title);
 		ui::PrepareSystemModal(size);
-		return ImGui::BeginPopupModal(title, nullptr, kDialogFlags);
+		if (!ImGui::BeginPopupModal(title, nullptr, kDialogFlags))
+			return false;
+		if (ui::SystemModalCloseRequested()) {
+			DialogClose();
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return false;
+		}
+		return true;
 	}
 	void EditorApp::DialogEnd() {
 		ImGui::EndPopup();
