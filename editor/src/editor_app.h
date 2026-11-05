@@ -386,6 +386,9 @@ public:
 
 protected:
 	bool Initialize() override;
+	// Escape is editor-owned: never let App's held-Esc quit bypass
+	// the unsaved-scene confirmation dialog.
+	bool AllowEscQuit() const override { return false; }
 	void Shutdown() override;
 	void DrawFrame() override;
 	void EarlyUpdate() override { Super::EarlyUpdate(); }
@@ -748,6 +751,8 @@ private:
 	void ModalDelete(); // Del: DeleteSelection() (skipped while the
 	                     // placement graph window owns the keyboard —
 	                     // its canvas Del removes graph nodes instead)
+	void ModalGroupSelection(); // Ctrl+G: new transform over selected roots
+	void ModalEscape(); // Esc: confirm unsaved changes before exit
 	void ModalDuplicate(); // Ctrl+D: DuplicateSelection() (same
 	                       // placement-graph keyboard guard as Del)
 	void ModalIsolateSelect(); // Ctrl+1: Maya-style isolate/toggle/clear
@@ -2681,6 +2686,8 @@ private:
 	// (AutosaveTour fires exactly on those paths), cleared by explicit
 	// saves, clean loads and scene close.
 	bool m_tourDirty = false;
+	bool m_showExitPrompt = false; // Esc after unsaved scene changes
+	bool m_discardOnExit = false; // bypass automatic shutdown save on Discard
 	std::string m_lastWindowTitle; // change-detected SDL title cache
 	void UpdateWindowTitle(); // "Tourmaline Editor — <scene> [*]"
 	// True while the focused ImGui window sits inside the Placement Graph
