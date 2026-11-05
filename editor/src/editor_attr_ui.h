@@ -244,7 +244,7 @@ inline bool Vec2(const char* name, float v[2], float speed, float mn,
 	float mx, const char* fmt, const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
-	float candidate[2] = { numeric::Display(v[0]), numeric::Display(v[1]) };
+	float candidate[2] = { numeric::DisplayFixed(v[0]), numeric::DisplayFixed(v[1]) };
 	const bool edited = ImGui::DragFloat2(Id(name).c_str(), candidate, speed, mn,
 		mx, fmt ? fmt : "%.3f");
 	if (hint && ImGui::IsItemHovered())
@@ -275,8 +275,8 @@ inline bool Vec3Compact(const char* name, float v[3], float speed,
 	const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
-	float candidate[3] = { numeric::Display(v[0]), numeric::Display(v[1]),
-		numeric::Display(v[2]) };
+	float candidate[3] = { numeric::DisplayFixed(v[0]), numeric::DisplayFixed(v[1]),
+		numeric::DisplayFixed(v[2]) };
 	const bool edited = ImGui::DragFloat3(Id(name).c_str(), candidate, speed);
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
