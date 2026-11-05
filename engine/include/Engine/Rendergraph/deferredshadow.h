@@ -203,9 +203,10 @@ inline void DsSortLightsByNearDistance(std::vector<ForwardPlusLight>& lights,
 // minIdx[0], which stays safe).
 // ---------------------------------------------------------------------------
 
+template <typename OutputArray>
 inline void DsBuildZBins(const std::vector<ForwardPlusLight>& sortedLights,
     const glm::mat4& view, float nearPlane, float farPlane,
-    std::vector<uint32_t>& outBins)
+    OutputArray& outBins)
 {
     outBins.assign(4 * kDsZBinCount, 0);
     const uint32_t n = (uint32_t)sortedLights.size();
@@ -287,10 +288,11 @@ inline void DsBuildZBins(const std::vector<ForwardPlusLight>& sortedLights,
 // group corners; NDC y down in the framebuffer).
 // ---------------------------------------------------------------------------
 
+template <typename OutputArray>
 inline void DsBuildTileMasks(const std::vector<ForwardPlusLight>& lights,
     const glm::mat4& view, const glm::mat4& proj,
     uint32_t vpWidth, uint32_t vpHeight,
-    std::vector<uint32_t>& outMasks,
+    OutputArray& outMasks,
     uint32_t& outGroupCountX, uint32_t& outGroupCountY)
 {
     outGroupCountX = (vpWidth + kDsTileGroupPx - 1) / kDsTileGroupPx;
