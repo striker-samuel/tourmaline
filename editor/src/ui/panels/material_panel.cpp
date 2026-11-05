@@ -260,15 +260,18 @@ namespace editor {
 			}
 		}
 		ImGui::EndGroup();
-		ImGui::SameLine();
-		{
-			if (ImGui::SmallButton("Preview material##body")) {
-				m_matBallQueuedMat = mat;
-				m_showMaterialPreview = true;
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Open the live sphere/cube material preview.");
+		// Actions obey the same name/value gutter as material properties.
+		// A free-floating button beside the preview breaks the inspector
+		// alignment in narrow and docked panels.
+		attr::LabelCell("Preview", "Open the live primitive material preview.");
+		ImGui::PushID("material_preview");
+		if (ImGui::Button("Open preview", ImVec2(-1.0f, 0.0f))) {
+			m_matBallQueuedMat = mat;
+			m_showMaterialPreview = true;
 		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Preview this material on a sphere or cube.");
+		ImGui::PopID();
 
 		// ---- The scalar look (shared edit, the drag command path) ----
 		ImGui::Separator();
