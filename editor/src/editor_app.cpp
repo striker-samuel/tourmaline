@@ -339,6 +339,32 @@ bool EditorApp::Initialize() {
 		// replay (OpenScene alone fails the tour as a glTF import).
 		if (!OpenAnySceneFile(p))
 			std::cerr << "[Editor] failed to load '" << p << "'\n";
+	} else {
+		// A new editor session has a real, empty definition-backed scene.
+		// Keep it in the OS temporary directory rather than creating an
+		// unsolicited project asset. The normal OpenTourFile funnel builds
+		// the World and scene root, so editing, saving and live rendering
+		// follow exactly the same path as an explicit empty .tour open.
+		// An explicit CLI scene always wins over this startup fallback.
+		std::error_code tempError;
+		const auto tempDir = std::filesystem::temp_directory_path(tempError);
+		if (!tempError) {
+			const auto tempScene = tempDir /
+				("tourmaline-editor-" + smvk::tour::GenerateUuid() + ".tour");
+			smvk::tour::Doc emptyScene;
+			std::string saveError;
+			if (smvk::tour::SaveTour(tempScene.string(), emptyScene, saveError)) {
+				if (!OpenTourFile(tempScene.string()))
+					Log("Startup scene: could not open temporary scene '"
+						+ tempScene.string() + "'.");
+			} else {
+				Log("Startup scene: could not write temporary scene: "
+					+ saveError);
+			}
+		} else {
+			Log("Startup scene: could not locate temporary directory: "
+				+ tempError.message());
+		}
 	}
 
 	Log("Tourmaline Editor ready. File > Open scene... to load a scene.");
