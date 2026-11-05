@@ -618,11 +618,52 @@ void EditorApp::FinalizePending() {
 					// it inside the Viewport window rather than compositing
 					// behind the dockspace, where opaque ImGui draw calls
 					// can hide it. Both lanes share descriptor lifetime.
-					const bool live = LiveViewActive();
+					// ASPECT LOCK: the drive renders the target at the 4:3
+					// stage extent (StageViewportRect's aspect-locked fit -
+					// the projection derives from it), so the image draws
+					// at the SAME stage rect, letterboxed inside the window.
+					// A stretch over the full panel would distort the
+					// projection whenever the panel is not 4:3.
+					const int liveVp = LiveViewViewport();
+					const bool live = liveVp >= 0;
 					const ImTextureID tex = live
 						? WysiwygStageTexture() : ImTextureID(0);
-					if (tex != 0)
-						ImGui::Image(tex, avail);
+					if (tex != 0) {
+						// Reserve the FULL canvas first (the rect capture
+						// above and the hover/drag math key on the whole
+						// window content), then draw the image at the
+						// stage sub-rect.
+						ImGui::Dummy(avail);
+						ViewportRect stage;
+						if (m_dockStageDetached) {
+							// The detached window's own content rect is
+							// already in ImGui/global coords - the same
+							// derivation DrawLiveViewStage's detached
+							// branch feeds the drive's extent.
+							stage = StageViewportRect(m_dockViewportRect,
+								liveVp, m_vpLayout);
+						}
+						else {
+							// Docked: the computed stage is SDL-window
+							// local; convert to ImGui's global desktop
+							// coords exactly once - the pairing of
+							// DrawLiveViewStage's docked conversion, and
+							// the same one-frame rect lag the old
+							// composite had.
+							const ViewportRect& local =
+								m_viewports[liveVp].rect;
+							const ImVec2 origin =
+								ImGui::GetMainViewport()->Pos;
+							stage = ViewportRect{ origin.x + local.x,
+								origin.y + local.y, local.w, local.h };
+						}
+						if (stage.w >= 8.0f && stage.h >= 8.0f) {
+							ImGui::SetCursorScreenPos(
+								ImVec2(stage.x, stage.y));
+							ImGui::Image(tex,
+								ImVec2(stage.w, stage.h));
+						}
+					}
 					else if (m_dockStageDetached || live) {
 						ImGui::Dummy(avail);
 						ImGui::SetCursorPos(ImVec2(
