@@ -2410,6 +2410,14 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				UpdateInsetFrameData(flight, insetStrip);
 		}
 
+		// In docked UI mode, the legacy (F2+ and fallback) preview must
+		// render to a sampled target rather than behind opaque ImGui dock
+		// windows. Keep the old direct swapchain route in fullscreen mode.
+		const bool legacyImageLane = m_uiMode && m_dockViewportVisible
+			&& !m_dockStageDetached && EnsureLegacyStageTarget(extent);
+		const smvk::LogicalImageViewHandle sceneColor = legacyImageLane
+			? m_legacyStageLogical : m_swapViews[fb.imageIndex];
+
 		// ---- PASSES: background clear + per-viewport scene + overlays ----
 		// The whole window clears FIRST (the dark chrome color shows
 		// through the gaps between the ImGui panels), then each viewport
@@ -2435,6 +2443,17 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
 					smvk::ClearDepthStencil(0.0f, 0));
 			bg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+			if (legacyImageLane) {
+				// A complete clear prevents vacated/docked stage rects from
+				// displaying pixels from an earlier layout or scene.
+				m_rendergraph->AddPass("EditorLegacyBg")
+					.SetOffset(0, 0).SetExtent(extent)
+					.SetColor({ m_legacyStageLogical },
+						smvk::AttachmentLoadOp::Clear,
+						smvk::AttachmentStoreOp::Store,
+						smvk::ClearColor(0.18f, 0.18f, 0.18f, 1.0f))
+					.SetRecordingFunc([](smvk::CommandBuffer&) {});
+			}
 		}
 		if (m_sceneHdr.Valid()) {
 			// Preview HDR black clear (full window, see m_sceneHdr): the
@@ -2489,14 +2508,14 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					continue; // panel 0's rect shows the live view's composite
 				// RecordMainPass also records its HDR lattice overlay BEFORE
 				// the per-viewport tonemap. Do not append HDR overlays here.
-				RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
+				RecordMainPass(sceneColor, vpIdx, flight, m_wireOverlay);
 			}
 			// The gizmo + inset ride the ACTIVE viewport — they skip only
 			// while the ACTIVE one IS the live host (panel 0 in Lit): their
 			// depth comes from the scene pass that no longer ran there.
 			if (m_activeVp != liveVp) {
-				RecordInsetPass(m_swapViews[fb.imageIndex], flight);
-				RecordGizmoPass(m_swapViews[fb.imageIndex]);
+				RecordInsetPass(sceneColor, flight);
+				RecordGizmoPass(sceneColor);
 			}
 			// One-shot lightmap PNG export: renders the offscreen target this
 			// frame, then reads it back after the submit (button in Bake panel).
@@ -2520,6 +2539,18 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			if (matBallThisFrame)
 				RecordMatBallPass();
 
+			if (legacyImageLane) {
+				// The UI pass samples this physical image through an ImGui
+				// descriptor. The read hint is the explicit color-write ->
+				// shader-read layout/visibility handoff within this graph.
+				smvk::ImageSyncRequest read{};
+				read.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+				read.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+				read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+				m_rendergraph->AddComputePass("EditorLegacyRelease")
+					.AddImageHint(m_legacyStageLogical, read)
+					.SetRecordingFunc([](smvk::CommandBuffer&) {});
+			}
 			if (m_imgui && m_imgui->IsInitialized()) {
 				// Optick: the ImGui build + record (NewFrame through the
 				// composite + AddPass).
@@ -2567,6 +2598,54 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	}
 
 	// ---- WYSIWYG LIVE VIEW (the full-graph renderer; editor_app.h) ----
+	bool EditorApp::EnsureLegacyStageTarget(smvk::Extent2D extent) {
+		if (!m_context || !m_rendergraph || !m_swapchain
+			|| extent.width == 0 || extent.height == 0)
+			return false;
+		const smvk::Format format = m_swapchain->GetSurfaceFormat();
+		if (!m_legacyStageLogical.empty()
+			&& m_legacyStageExtent.width == extent.width
+			&& m_legacyStageExtent.height == extent.height
+			&& m_legacyStageFormat == format)
+			return true;
+		smvk::ImageCreateInfo ci{};
+		ci.extent = { extent.width, extent.height, 1 };
+		ci.format = format;
+		ci.usage = smvk::ImageUsage::ColorAttachment
+			| smvk::ImageUsage::Sampled;
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+		ci.name = "editorLegacyStage";
+		auto image = m_context->CreateImage(ci, nullptr);
+		if (image.empty())
+			return false;
+		const smvk::ImageViewCreateInfo vi{
+			.viewType = smvk::ImageViewType::View2D,
+			.format = format,
+			.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 },
+			.name = "editorLegacyStageView",
+		};
+		auto view = m_context->CreateImageView(image, vi);
+		if (view.empty())
+			return false;
+		const auto logical = m_rendergraph->AddExternalImageView(
+			view, format, "editorLegacyStageLogical");
+		if (logical.empty())
+			return false;
+		// The view changed: the cached ImGui descriptor must not sample
+		// the previous image. Physical images retire through Holder's
+		// deferred destruction path just like the WYSIWYG target.
+		DropLegacyStageTexture();
+		if (!m_legacyStageLogical.empty())
+			m_rendergraph->FreeImageView(m_legacyStageLogical);
+		m_legacyStageLogical = logical;
+		m_legacyStageImage = std::move(image);
+		m_legacyStageView = std::move(view);
+		m_legacyStageExtent = extent;
+		m_legacyStageFormat = format;
+		return true;
+	}
+
 	void EditorApp::LaunchWysiwyg() {
 		if (!m_world)
 			return;
