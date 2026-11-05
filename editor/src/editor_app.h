@@ -1654,6 +1654,19 @@ private:
 	smvk::ImageViewHandle m_wysiwygDetachedPhysical{}; // the inline view the descriptor was built from
 	ImTextureID WysiwygStageTexture(); // editor_ui.cpp (lazy build + recreate rebuild)
 	void DropWysiwygStageTexture();
+	// Non-live editor preview: one full-primary-window offscreen color
+	// image shared by the legacy viewport passes. Drawing its source
+	// subrect as ImGui::Image puts F2+ under dock chrome/popups.
+	bool EnsureLegacyStageTarget(smvk::Extent2D extent);
+	ImTextureID LegacyStageTexture();
+	void DropLegacyStageTexture();
+	smvk::Holder<smvk::ImageHandle> m_legacyStageImage{};
+	smvk::Holder<smvk::ImageViewHandle> m_legacyStageView{};
+	smvk::LogicalImageViewHandle m_legacyStageLogical{};
+	smvk::Extent2D m_legacyStageExtent{};
+	ImTextureID m_legacyStageTex = 0;
+	smvk::ImageViewHandle m_legacyStagePhysical{};
+
 	// One viewport's rect from an UNCLAMPED dock stage area (the quad
 	// split / the aspect-locked 4:3 fit). The shared authority for
 	// ComputeViewportRects and the detached-stage live-view capture.
