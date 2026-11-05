@@ -28,8 +28,10 @@ inline void PrepareSystemModal(const ImVec2& size = ImVec2(0, 0),
         ImGui::SetNextWindowSize(size, sizeCondition);
 }
 
+// The operating system draws the title bar for these decorated
+// platform windows. Suppress ImGui's own one to avoid two title bars.
 inline constexpr ImGuiWindowFlags kSystemModalFlags =
     ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
-    ImGuiWindowFlags_NoSavedSettings;
+    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings;
 
 } // namespace editor::ui
