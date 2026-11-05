@@ -7462,7 +7462,7 @@ namespace engine {
 				m_spotShadowMapIndex = sampleIdx;
 				SMVK_PROFILE_TAG("spotTiles", m_spotShadowCount);
 				// Keep the tiles for the per-frame spot RenderViews.
-				m_spotShadowTiles = std::move(tiles);
+				m_spotShadowTiles.Assign(tiles);
 			}
 		}
 		}
@@ -7549,7 +7549,7 @@ namespace engine {
 					m_pointShadowTileCount = (uint32_t)tiles.size();
 					SMVK_PROFILE_TAG("pointLights", m_pointShadowLightCount);
 					SMVK_PROFILE_TAG("pointFaceTiles", m_pointShadowTileCount);
-					m_pointShadowTiles = std::move(tiles);
+					m_pointShadowTiles.Assign(tiles);
 				}
 			}
 		}
