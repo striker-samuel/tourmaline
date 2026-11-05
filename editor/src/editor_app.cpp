@@ -350,7 +350,7 @@ void EditorApp::Shutdown() {
 	// Flush the working tour to the project .tour on exit (per-edit
 	// saves went to the %APPDATA% autosave) — same contract as
 	// CloseScene, so closing the editor never loses edits.
-	if (m_world && !TourTarget().empty())
+	if (!m_discardOnExit && m_world && !TourTarget().empty())
 		SaveTour();
 	SavePrefs(); // save editor pr on close
 	// Same shutdown contract as the parent scene: flush unsaved prefab
