@@ -2587,6 +2587,13 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		cfg.ui = false;
 		m_wysiwyg = tour::mem::MakeProcess<engine::WorldRenderer>(*this);
 		m_wysiwyg->Configure(cfg);
+		// Build the same axis/ring/marker geometry as the legacy editor
+		// path, but draw it in the live renderer's HDR/depth pass. The
+		// editor still owns gizmo picking, dragging and undo.
+		m_wysiwyg->SetDebugDrawSource([this](tour::DebugDrawList& draw) {
+			RecordGizmoPass({}, &draw);
+		});
+		m_wysiwyg->SetDebugDrawEnabled(true);
 		// The BORROWED form of the world contract (see WorldRenderer.h):
 		// the editor KEEPS owning + mutating its world — the renderer
 		// reads the same object, so edits (moves, material swaps, light
