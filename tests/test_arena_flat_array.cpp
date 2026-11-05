@@ -51,6 +51,7 @@ int main() {
     Scene movedGraph(std::move(graph));
     assert(movedGraph.hierarchy[child].parent == root);
     assert(movedGraph.globalTransform.size() == 2);
+    UnlinkNodeFromParent(movedGraph, child);
     RetireNodeSlot(movedGraph, child);
     assert(!IsNodeAlive(movedGraph, child));
     assert(addNode(movedGraph, root, 1) == child);
