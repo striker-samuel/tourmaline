@@ -441,10 +441,6 @@ namespace editor {
 				ApplyOverrideRule(r);
 		if (m_world && !m_plugGraph.Evaluate(m_world->scene))
 			Log("tour: some connectAttr sources or destinations are unavailable.");
-			else {
-				r.applied.clear();
-				r.lastMatches = 0;
-			}
 	}
 
 	bool EditorApp::AddOverrideRule(smvk::tour::OverrideAttr attr,
