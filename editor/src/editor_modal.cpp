@@ -287,6 +287,8 @@ void EditorApp::UpdateModalInput() {
 			"duplicate: selection", "Ctrl+D" },
 		{ TOUR_KEY_G, kModalCtrl, kScopeGlobal, &EditorApp::ModalGroupSelection,
 			"group: selection under new transform", "Ctrl+G" },
+		{ TOUR_KEY_ESCAPE, 0, kScopeGlobal, &EditorApp::ModalEscape,
+			"exit editor (confirm unsaved changes)", "Esc" },
 		{ TOUR_KEY_1, kModalCtrl, kScopeGlobal,
 			&EditorApp::ModalIsolateSelect,
 			"viewport: isolate selected (toggle)", "Ctrl+1" },
@@ -501,6 +503,17 @@ void EditorApp::ModalSave() {
 		Log("Tour saved: " + TourTarget());
 }
 void EditorApp::ModalSaveIncremental() { SaveTourIncremental(); }
+
+void EditorApp::ModalEscape() {
+	// A modal or in-progress gizmo gesture owns Esc. Never dismiss a
+	// blocking task or typed inspector input by quitting the editor.
+	if (TaskWindowBlocking() || m_selRadialOpen ||
+		ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
+		return;
+	if (m_tourDirty) m_showExitPrompt = true;
+	else RequestClose();
+}
+
 
 // ---- layout handlers ----
 
