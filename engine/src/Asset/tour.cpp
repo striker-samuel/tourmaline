@@ -1347,6 +1347,13 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			f << " -v " << FlagVal(r.flag);
 		f << " -enabled " << (r.enabled ? "on" : "off") << ";\n";
 	}
+	// Directed, typed plug connections are serialized independently of
+	// override regex rules. Evaluation is deferred until nodes exist.
+	for (const auto& c : doc.connections)
+		f << "connectAttr -m " << c.source.node
+			<< " -name " << Quote(c.source.plug)
+			<< " -n " << c.destination.node
+			<< " -at " << Quote(c.destination.plug) << ";\n";
 	// Editor-only settings (editorSet): persisted for the editor, never
 	// applied at cook (ApplyTourToCluster ignores doc.editorSettings).
 	for (const auto& [k, v] : doc.editorSettings)
@@ -2345,6 +2352,22 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.verb = Verb::SetVisibility;
 			c.node = fl.n;
 			c.flag = b;
+		}
+		else if (effVerb == "connectAttr" && fl.hasM && fl.hasName &&
+			fl.hasN && fl.hasAt) {
+			tour::scene::plugs::Connection conn{};
+			conn.source.node = fl.m;
+			conn.source.plug = fl.name;
+			conn.destination.node = fl.n;
+			conn.destination.plug = fl.at;
+			const auto* src = tour::scene::plugs::Find(conn.source.plug);
+			const auto* dst = tour::scene::plugs::Find(conn.destination.plug);
+			if (!src || !dst || src->kind != dst->kind) {
+				warn("tour:" + std::to_string(lineNo) + ": incompatible plug connection (skipped)");
+				continue;
+			}
+			doc.connections.push_back(std::move(conn));
+			continue;
 		}
 		else if (effVerb == "override" && fl.hasPattern && fl.hasAt) {
 			OverrideRule r{};
@@ -5806,6 +5829,17 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				}
 			}
 		}
+	}
+	// Apply typed plug connections after ordinary commands and wide rules.
+	// Topological evaluation respects source-to-destination dependencies.
+	// Invalid/cyclic or dangling links cannot mutate past a failed read.
+	{
+		tour::scene::plugs::Graph graph;
+		for (const auto& link : doc.connections)
+			if (!graph.Connect(link))
+				warn("tour: rejected incompatible/cyclic connectAttr");
+		if (!graph.Evaluate(scene))
+			warn("tour: one or more connectAttr targets are unavailable");
 	}
 	// Authored environment (tour env blocks -> cluster scene): resolve the
 	// ACTIVE block (the doc's env.current node, else the default block)
