@@ -607,6 +607,7 @@ struct Doc {
 	std::vector<Command> commands;
 	std::vector<ShapePlacement> shapePlacements; // scene-owned spline/point placements
 	std::vector<OverrideRule> overrides; // wide regex rules (ordered, later wins)
+	std::vector<tour::scene::plugs::Connection> connections; // typed DAG plug links (source -> destination)
 	// Scene references (ordered; the OWNING scene's level-1 list —
 	// deeper nesting comes from each referenced source's own tour).
 	// Written FIRST in the file (Maya file-block order).
