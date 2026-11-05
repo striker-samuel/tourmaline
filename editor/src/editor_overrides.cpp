@@ -1003,7 +1003,7 @@ namespace editor {
 				"matches many nodes — the point of wide overrides.");
 		ImGui::SameLine();
 		ImGui::SetNextItemWidth(130.0f);
-		const char* kAttrs = "Visibility\0Material\0NoLightmap\0DitherCloseup\0Static\0Volumetric shadow\0Bake lightmaps\0";
+		const char* kAttrs = "Visibility\0Material\0NoLightmap\0DitherCloseup\0Static\0Volumetric shadow\0Bake lightmaps\0Typed plug...\0";
 		ImGui::Combo("##attr", &m_overrideAttrSel, kAttrs);
 		if (m_overrideAttrSel == 1) {
 			// Material value picker (world slots, like the Inspector combo).
@@ -1028,6 +1028,35 @@ namespace editor {
 						ImGui::SetItemDefaultFocus();
 				}
 				ImGui::EndCombo();
+			}
+		}
+		else if (m_overrideAttrSel == 7) {
+			using namespace tour::scene::plugs;
+			m_overridePlugSel = std::clamp(m_overridePlugSel, 0,
+				int(std::size(kDescriptors)) - 1);
+			const Descriptor& selected = kDescriptors[m_overridePlugSel];
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(175.0f);
+			if (ImGui::BeginCombo("##plug", selected.path.data())) {
+				for (size_t k = 0; k < std::size(kDescriptors); ++k) {
+					const Descriptor& d = kDescriptors[k];
+					const std::string label = std::string(d.nodeType) +
+						": " + std::string(d.path);
+					if (ImGui::Selectable(label.c_str(), int(k)==m_overridePlugSel))
+						m_overridePlugSel = int(k);
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(130.0f);
+			const Descriptor& active = kDescriptors[m_overridePlugSel];
+			switch (active.kind) {
+			case Kind::Boolean: ImGui::Checkbox("##plugBool", &m_overridePlugBool); break;
+			case Kind::Number:
+				ImGui::InputFloat("##plugNumber", &m_overridePlugNumber, 0, 0, "%.4g"); break;
+			case Kind::String:
+				ImGui::InputText("##plugString", m_overridePlugString,
+					sizeof(m_overridePlugString)); break;
 			}
 		}
 		else {
@@ -1065,8 +1094,8 @@ namespace editor {
 			const OverrideAttr attrs[] = { OverrideAttr::Visibility, OverrideAttr::Material,
 				OverrideAttr::NoLightmap, OverrideAttr::DitherCloseup,
 				OverrideAttr::Static, OverrideAttr::VolumetricShadow,
-				OverrideAttr::Lightmap };
-			const OverrideAttr attr = attrs[std::clamp(m_overrideAttrSel, 0, 6)];
+				OverrideAttr::Lightmap, OverrideAttr::Plug };
+			const OverrideAttr attr = attrs[std::clamp(m_overrideAttrSel, 0, 7)];
 			const uint32_t mat =
 				(m_overrideAttrSel == 1) ? uint32_t(m_overrideMatSel) : UINT32_MAX;
 			// VISIBILITY inverts here: the form's checkbox is the
@@ -1074,8 +1103,21 @@ namespace editor {
 			// flag is the legacy hidden bit.
 			const bool flag = m_overrideAttrSel == 0
 				? !m_overrideFlagVal : m_overrideFlagVal;
-			if (AddOverrideRule(attr, m_overridePatternBuf, flag, mat))
-				m_overridePatternBuf[0] = '\0';
+			bool added = false;
+			if (attr == OverrideAttr::Plug) {
+				using namespace tour::scene::plugs;
+				const Descriptor& d = kDescriptors[std::clamp(
+					m_overridePlugSel, 0, int(std::size(kDescriptors)) - 1)];
+				Value value;
+				switch (d.kind) {
+				case Kind::Boolean: value = Value::Bool(m_overridePlugBool); break;
+				case Kind::Number: value = Value::Number(m_overridePlugNumber); break;
+				case Kind::String: value = Value::String(m_overridePlugString); break;
+				}
+				added = AddPlugOverrideRule(m_overridePatternBuf, std::string(d.path), value);
+			} else
+				added = AddOverrideRule(attr, m_overridePatternBuf, flag, mat);
+			if (added) m_overridePatternBuf[0] = '\0';
 		}
 		ImGui::PopID();
 
@@ -1128,7 +1170,8 @@ namespace editor {
 				ImGui::TextDisabled("%u", r.id);
 				// Attribute.
 				ImGui::TableNextColumn();
-				ImGui::TextUnformatted(smvk::tour::OverrideAttrName(r.attr));
+				ImGui::TextUnformatted(r.attr == OverrideAttr::Plug ? r.plug.c_str()
+					: smvk::tour::OverrideAttrName(r.attr));
 				// Pattern (in-place retarget, Enter to re-apply).
 				ImGui::TableNextColumn();
 				{
@@ -1152,7 +1195,15 @@ namespace editor {
 				}
 				// Value (bool attrs flip in place; material is fixed).
 				ImGui::TableNextColumn();
-				if (r.attr == OverrideAttr::Material) {
+				if (r.attr == OverrideAttr::Plug) {
+					using tour::scene::plugs::Kind;
+					switch (r.value.kind) {
+					case Kind::Boolean: ImGui::TextUnformatted(r.value.boolean ? "on" : "off"); break;
+					case Kind::Number: ImGui::Text("%.6g", r.value.number); break;
+					case Kind::String: ImGui::TextUnformatted(r.value.text.c_str()); break;
+					}
+				}
+				else if (r.attr == OverrideAttr::Material) {
 					ImGui::Text("mat.%u", r.materialWorld);
 					if (ImGui::IsItemHovered()) {
 						const auto& loc =
