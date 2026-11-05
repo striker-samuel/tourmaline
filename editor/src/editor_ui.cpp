@@ -527,6 +527,30 @@ void EditorApp::FinalizePending() {
 				m_uiMode ? ImGuiDockNodeFlags_PassthruCentralNode
 					: ImGuiDockNodeFlags_KeepAliveOnly);
 			ImGui::PopStyleColor();
+			// When a right-edge dock is squeezed to an unusable strip,
+			// close its tabs on release. The View menu can reopen them;
+			// their dock assignments remain saved by ImGui.
+			static bool rightDockWasMouseDown = false;
+			const bool rightDockMouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+			if (m_uiMode && rightDockWasMouseDown && !rightDockMouseDown) {
+				ImGuiWindow* inspector = ImGui::FindWindowByName("Inspector");
+				ImGuiWindow* material = ImGui::FindWindowByName("Material");
+				ImGuiWindow* reference = ImGui::FindWindowByName("Reference");
+				ImGuiDockNode* rightDock = inspector && inspector->DockNode
+					? inspector->DockNode : (material ? material->DockNode : nullptr);
+				if (rightDock && rightDock->IsLeafNode()
+					&& rightDock->Size.x > 0.0f && rightDock->Size.x < 96.0f
+					&& rightDock->Pos.x + rightDock->Size.x
+						>= mainPos.x + ImGui::GetIO().DisplaySize.x - 3.0f) {
+					if (inspector && inspector->DockNode == rightDock)
+						m_showInspectorPanel = false;
+					if (material && material->DockNode == rightDock)
+						m_showMaterialPanel = false;
+					if (reference && reference->DockNode == rightDock)
+						m_showReferencePanel = false;
+				}
+			}
+			rightDockWasMouseDown = rightDockMouseDown;
 			// THE DEGENERATE-LAYOUT SELF-HEAL (the squeezed-central-node
 			// bug): ImGui persists dock splits as ABSOLUTE pixel SizeRefs.
 			// A layout authored in a large window (maximized on a big
