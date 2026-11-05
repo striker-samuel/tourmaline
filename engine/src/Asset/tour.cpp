@@ -1477,6 +1477,14 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 		else if (k == "-at" && i + 1 < toks.size()) {
 			f.hasAt = true;
 			f.at = toks[i + 1];
+			// A line-ending ';' GLUES to the previous token when no
+			// space separates them (the tokenizer only emits ';' as its
+			// own token after a space) - strip it or the attr/plug name
+			// carries the terminator into every lookup (the connectAttr
+			// roundtrip bug: -at "physics.mass"; parsed as
+			// "physics.mass;" and the plug registry Find failed).
+			if (!f.at.empty() && f.at.back() == ';')
+				f.at.pop_back();
 			i += 2;
 		}
 		else if (k == "-root") {
