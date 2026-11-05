@@ -4043,6 +4043,13 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					return false;
 				break;
 			}
+			// UINT32_MAX represents the absence of a material component.
+			// Keep the existing assignMaterial verb/undo and .tour format;
+			// never try to resolve this sentinel as a pool index.
+			if (c.material == UINT32_MAX) {
+				RemoveMaterial(scene, target);
+				break;
+			}
 			if (!CookMaterial(cluster, c.material)) {
 				if (err)
 					*err = "tour: material out of range: " +
