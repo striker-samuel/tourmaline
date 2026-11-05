@@ -83,6 +83,15 @@ void EditorApp::DrawTaskWindow() {
 		// stay armed, keep blocking, retry next frame.
 		return;
 	}
+	if (ui::SystemModalCloseRequested()) {
+		// Closing the native window never cancels an in-process worker.
+		if (!m_taskWindow.done) m_taskWindow.inBackground = true;
+		else m_taskWindow.wantOpen = false;
+		m_taskWindow.opened = false;
+		ImGui::CloseCurrentPopup();
+		ImGui::EndPopup();
+		return;
+	}
 	ImGui::Text("%s", m_taskWindow.title.c_str());
 	ImGui::Separator();
 	ImGui::Text("%s", m_taskWindow.stage.c_str());
