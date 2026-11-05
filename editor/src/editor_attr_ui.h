@@ -113,6 +113,24 @@ inline void LabelCell(const char* name, const char* hint) {
 	ImGui::SetCursorPosX(startX + colW);
 }
 
+// Component header with the removal action next to the component name.
+// Returning true allows the caller to run its existing undoable Remove verb
+// and return before accessing the removed component row.
+inline bool ComponentHeader(const char* title, const char* hint = nullptr) {
+	ImGui::Separator();
+	ImGui::TextUnformatted(title);
+	if (hint && ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", hint);
+	const float buttonW = ImGui::GetFrameHeight();
+	ImGui::SameLine();
+	ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),
+		ImGui::GetWindowContentRegionMax().x - buttonW));
+	const bool remove = ImGui::SmallButton("X##remove_component");
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Remove %s component (undoable)", title);
+	return remove;
+}
+
 // The unique-but-invisible widget label for an attribute name.
 inline std::string Id(const char* name) {
 	return std::string("##") + name;
