@@ -821,6 +821,7 @@ bool OverrideAttrFromString(const std::string& s, OverrideAttr& out) {
 		out = OverrideAttr::VolumetricShadow;
 		return true;
 	}
+	if (s == "plug") { out = OverrideAttr::Plug; return true; }
 	return false;
 }
 
@@ -965,6 +966,7 @@ const char* OverrideAttrName(OverrideAttr a) {
 	case OverrideAttr::DitherCloseup: return "ditherCloseup";
 	case OverrideAttr::Static: return "static";
 	case OverrideAttr::VolumetricShadow: return "volumetricShadow";
+	case OverrideAttr::Plug: return "plug";
 	}
 	return "?";
 }
@@ -983,7 +985,14 @@ bool OverridePatternMatches(const std::string& pattern,
 }
 
 std::string DescribeOverride(const OverrideRule& r) {	char buf[512];
-	if (r.attr == OverrideAttr::Material)
+	if (r.attr == OverrideAttr::Plug)
+		std::snprintf(buf, sizeof(buf), "override /%s/ .%s -> %s%s",
+			r.pattern.c_str(), r.plug.c_str(),
+			r.value.kind == tour::scene::plugs::Kind::Boolean
+				? (r.value.boolean ? "on" : "off") :
+				r.value.kind == tour::scene::plugs::Kind::String ? r.value.text.c_str() : "number",
+			r.enabled ? "" : " [off]");
+	else if (r.attr == OverrideAttr::Material)
 		std::snprintf(buf, sizeof(buf), "override /%s/ .%s -> mat.%u%s",
 			r.pattern.c_str(), OverrideAttrName(r.attr), r.material,
 			r.enabled ? "" : " [off]");
@@ -1323,6 +1332,17 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -at " << OverrideAttrName(r.attr);
 		if (r.attr == OverrideAttr::Material)
 			f << " -m " << r.material;
+		else if (r.attr == OverrideAttr::Plug) {
+			f << " -name " << Quote(r.plug);
+			switch (r.value.kind) {
+			case tour::scene::plugs::Kind::Boolean:
+				f << " -type bool -v " << FlagVal(r.value.boolean); break;
+			case tour::scene::plugs::Kind::Number:
+				f << " -type double -t " << r.value.number; break;
+			case tour::scene::plugs::Kind::String:
+				f << " -type string -t " << Quote(r.value.text); break;
+			}
+		}
 		else
 			f << " -v " << FlagVal(r.flag);
 		f << " -enabled " << (r.enabled ? "on" : "off") << ";\n";
@@ -2335,7 +2355,49 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 			r.pattern = fl.pattern;
 			r.enabled = fl.hasEnabled ? fl.enabled : true;
-			if (r.attr == OverrideAttr::Material) {
+			if (r.attr == OverrideAttr::Plug) {
+				if (!fl.hasName) {
+					err = "line " + std::to_string(lineNo) + ": override plug needs -name";
+					return false;
+				}
+				r.plug = fl.name;
+				const auto* descriptor = tour::scene::plugs::Find(r.plug);
+				if (!descriptor) {
+					warn("tour:" + std::to_string(lineNo) +
+						": unsupported plug '" + r.plug + "' (skipped)");
+					continue;
+				}
+				using tour::scene::plugs::Kind;
+				if (descriptor->kind == Kind::Boolean) {
+					bool b = false;
+					if (!fl.hasV || !ParseFlagWord(fl.v, b)) {
+						err = "line " + std::to_string(lineNo) + ": bad boolean plug value";
+						return false;
+					}
+					r.value = tour::scene::plugs::Value::Bool(b);
+				} else if (descriptor->kind == Kind::String) {
+					if (fl.t.size() != 1) {
+						err = "line " + std::to_string(lineNo) + ": string plug needs one -t";
+						return false;
+					}
+					r.value = tour::scene::plugs::Value::String(fl.t[0]);
+				} else {
+					if (fl.t.size() != 1) {
+						err = "line " + std::to_string(lineNo) + ": numeric plug needs one -t";
+						return false;
+					}
+					try {
+						size_t used = 0;
+						const double n = std::stod(fl.t[0], &used);
+						if (used != fl.t[0].size() || !std::isfinite(n)) throw std::invalid_argument("non-finite");
+						r.value = tour::scene::plugs::Value::Number(n);
+					} catch (...) {
+						err = "line " + std::to_string(lineNo) + ": bad numeric plug value";
+						return false;
+					}
+				}
+			}
+			else if (r.attr == OverrideAttr::Material) {
 				if (!fl.hasM) {
 					err = "line " + std::to_string(lineNo) + ": override material needs -m";
 					return false;
@@ -5677,6 +5739,27 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				if (!hit)
 					continue;
 				switch (r.attr) {
+				case OverrideAttr::Plug: {
+					// Generic typed plugs share the same read/write adapter in
+					// editor and cook, rather than reimplementing each field.
+					bool local = false;
+					for (const Command& c : doc.commands) {
+						if (c.node != n) continue;
+						if (r.plug == "node.visibility" && c.verb == Verb::SetVisibility) local = true;
+						if (r.plug == "node.static" && c.verb == Verb::SetStatic) local = true;
+						if (r.plug == "node.material" && c.verb == Verb::AssignMaterial) local = true;
+						if (r.plug == "node.lightmap" && c.verb == Verb::SetLightmap) local = true;
+						if (r.plug == "node.noLightmap" && c.verb == Verb::SetNoLightmap) local = true;
+						if (r.plug == "node.ditherCloseup" && c.verb == Verb::SetDitherCloseup) local = true;
+						if (r.plug == "node.volumetricShadow" && c.verb == Verb::SetCastsVolumetricShadow) local = true;
+					}
+					if (!local && tour::scene::plugs::Write(scene,n,r.plug,r.value)) {
+						// Scene tables now carry the evaluated rule value.
+					} else if (!local) {
+						warn("tour: plug override skipped on incompatible node: " + r.plug);
+					}
+					break;
+				}
 				case OverrideAttr::Visibility:
 					if (localVis.contains(n))
 						continue; // local wins
