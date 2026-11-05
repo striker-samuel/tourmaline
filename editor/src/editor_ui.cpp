@@ -8,6 +8,7 @@
 // coalesce into one command per gesture via m_pending.
 
 #include "editor_app.h"
+#include "ui/dialogs/system_modal.h"
 #include "ui/panel_registry.h"
 #include "editor_brush_presets.h"
 #include "modal_bindings.h"
@@ -1637,9 +1638,9 @@ void EditorApp::FinalizePending() {
 			ImGui::OpenPopup("Save scene changes?");
 			m_showExitPrompt = false;
 		}
-		ImGui::SetNextWindowSize(ImVec2(450, 0), ImGuiCond_Appearing);
+		ui::PrepareSystemModal();
 		if (ImGui::BeginPopupModal("Save scene changes?", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse)) {
+			ui::kSystemModalFlags | ImGuiWindowFlags_AlwaysAutoResize)) {
 			ImGui::TextWrapped("The current scene has unsaved changes.");
 			ImGui::TextWrapped("Save the scene before closing Tourmaline Editor?");
 			ImGui::Separator();
@@ -1819,9 +1820,9 @@ void EditorApp::FinalizePending() {
 
 	void EditorApp::DrawSaveDialog() {
 		namespace fs = std::filesystem;
-		ImGui::SetNextWindowSize(ImVec2(620, 420), ImGuiCond_FirstUseEver);
+		ui::PrepareSystemModal(ImVec2(620, 420), ImGuiCond_FirstUseEver);
 		if (!ImGui::BeginPopupModal("Save tour as", nullptr,
-			ImGuiWindowFlags_NoCollapse))
+			ui::kSystemModalFlags))
 			return;
 		auto closeDlg = [&]() {
 			m_saveBrowseDir.clear();
