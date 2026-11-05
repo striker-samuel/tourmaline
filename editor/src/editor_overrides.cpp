@@ -39,6 +39,10 @@ namespace editor {
 				return attr == OverrideAttr::Lightmap;
 			case editor::EditVerb::SetDitherCloseup:
 				return attr == OverrideAttr::DitherCloseup;
+			case editor::EditVerb::SetStatic:
+				return attr == OverrideAttr::Static;
+			case editor::EditVerb::SetCastsVolumetricShadow:
+				return attr == OverrideAttr::VolumetricShadow;
 			default:
 				return false;
 			}
@@ -238,6 +242,25 @@ namespace editor {
 				++touched;
 				break;
 			}
+			case smvk::tour::OverrideAttr::Static: {
+				a.beforeFlag = n < scene.staticRoot.size() && scene.staticRoot[n] != 0;
+				if (a.beforeFlag == r.flag) break;
+				if (r.flag) MarkSubtreeStatic(scene, int(n));
+				else ClearSubtreeStatic(scene, int(n));
+				r.applied.push_back(a);
+				++touched;
+				break;
+			}
+			case smvk::tour::OverrideAttr::VolumetricShadow: {
+				a.beforeFlag = IsCastsVolumetricShadowNode(scene, int(n));
+				if (a.beforeFlag == r.flag) break;
+				if (r.flag) MarkCastsVolumetricShadow(scene, int(n));
+				else ClearCastsVolumetricShadow(scene, int(n));
+				RefreshNodeDrawState(n);
+				r.applied.push_back(a);
+				++touched;
+				break;
+			}
 			}
 		}
 		r.lastMatches = int(hits.size());
@@ -313,6 +336,20 @@ namespace editor {
 					MarkDitherCloseup(scene, int(n));
 				else
 					ClearDitherCloseup(scene, int(n));
+				break;
+			}
+			case smvk::tour::OverrideAttr::Static: {
+				const bool current = n < scene.staticRoot.size() && scene.staticRoot[n] != 0;
+				if (current != r.flag) continue;
+				if (it->beforeFlag) MarkSubtreeStatic(scene, int(n));
+				else ClearSubtreeStatic(scene, int(n));
+				break;
+			}
+			case smvk::tour::OverrideAttr::VolumetricShadow: {
+				if (IsCastsVolumetricShadowNode(scene, int(n)) != r.flag) continue;
+				if (it->beforeFlag) MarkCastsVolumetricShadow(scene, int(n));
+				else ClearCastsVolumetricShadow(scene, int(n));
+				RefreshNodeDrawState(n);
 				break;
 			}
 			}
@@ -644,6 +681,23 @@ namespace editor {
 				r.applied.push_back(a);
 				break;
 			}
+			case smvk::tour::OverrideAttr::Static: {
+				a.beforeFlag = node < scene.staticRoot.size() && scene.staticRoot[node] != 0;
+				if (a.beforeFlag == r.flag) break;
+				if (r.flag) MarkSubtreeStatic(scene, int(node));
+				else ClearSubtreeStatic(scene, int(node));
+				r.applied.push_back(a);
+				break;
+			}
+			case smvk::tour::OverrideAttr::VolumetricShadow: {
+				a.beforeFlag = IsCastsVolumetricShadowNode(scene, int(node));
+				if (a.beforeFlag == r.flag) break;
+				if (r.flag) MarkCastsVolumetricShadow(scene, int(node));
+				else ClearCastsVolumetricShadow(scene, int(node));
+				RefreshNodeDrawState(node);
+				r.applied.push_back(a);
+				break;
+			}
 			}
 		}
 	}
@@ -853,7 +907,7 @@ namespace editor {
 				"matches many nodes — the point of wide overrides.");
 		ImGui::SameLine();
 		ImGui::SetNextItemWidth(130.0f);
-		const char* kAttrs = "Visibility\0Material\0NoLightmap\0DitherCloseup\0";
+		const char* kAttrs = "Visibility\0Material\0NoLightmap\0DitherCloseup\0Static\0Volumetric shadow\0Bake lightmaps\0";
 		ImGui::Combo("##attr", &m_overrideAttrSel, kAttrs);
 		if (m_overrideAttrSel == 1) {
 			// Material value picker (world slots, like the Inspector combo).
@@ -913,7 +967,11 @@ namespace editor {
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Add rule")) {
-			const OverrideAttr attr = OverrideAttr(m_overrideAttrSel);
+			const OverrideAttr attrs[] = { OverrideAttr::Visibility, OverrideAttr::Material,
+				OverrideAttr::NoLightmap, OverrideAttr::DitherCloseup,
+				OverrideAttr::Static, OverrideAttr::VolumetricShadow,
+				OverrideAttr::Lightmap };
+			const OverrideAttr attr = attrs[std::clamp(m_overrideAttrSel, 0, 6)];
 			const uint32_t mat =
 				(m_overrideAttrSel == 1) ? uint32_t(m_overrideMatSel) : UINT32_MAX;
 			// VISIBILITY inverts here: the form's checkbox is the
