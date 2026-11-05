@@ -61,6 +61,34 @@ Scene MakeScene(uint32_t count) {
 
 int main() {
     {
+        Scene s;
+        const int root = addNode(s, -1, 0);
+        const int child = addNode(s, root, 1);
+        const int leaf = addNode(s, child, 2);
+        glm::dmat4 r(1.0), c(1.0), l(1.0);
+        r[3] = glm::dvec4(1.0e12 + 0.125, -1.0e12 - 0.25, 1.0e12, 1.0);
+        c[3] = glm::dvec4(0.375, 0.5, -0.125, 1.0);
+        l[3] = glm::dvec4(-0.25, -0.125, 0.625, 1.0);
+        Check(SetLocalTransform(s, MakeNodeHandle(s, root), r), "double root");
+        Check(SetLocalTransform(s, MakeNodeHandle(s, child), c), "double child");
+        Check(SetLocalTransform(s, MakeNodeHandle(s, leaf), l), "double leaf");
+        Check(recalculateGlobalTransforms(s), "double recalc");
+        Check(glm::length(glm::dvec3(GlobalTransformDouble(s, leaf)[3])
+            - glm::dvec3((r * c * l)[3])) < 0.0001, "double signed hierarchy");
+        glm::dmat4 bad(1.0);
+        bad[3].x = std::numeric_limits<double>::quiet_NaN();
+        Check(!SetLocalTransform(s, MakeNodeHandle(s, leaf), bad), "double reject NaN");
+        const auto stale = MakeNodeHandle(s, leaf);
+        UnlinkNodeFromParent(s, leaf);
+        RetireNodeSlot(s, leaf);
+        Check(!SetLocalTransform(s, stale, l), "double stale handle");
+        s.localTransform[root][3].x = 12.0f;
+        MarkAllRootsChanged(s);
+        Check(recalculateGlobalTransforms(s), "legacy direct float recalc");
+        Check(GlobalTransformDouble(s, root)[3].x == 12.0, "legacy float imported");
+    }
+
+    {
         // Export detaches static descendants, folding every ancestor's
         // transform into each independent cooked static root. Editor state
         // and dynamic hierarchy remain unchanged.

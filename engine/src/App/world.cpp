@@ -1146,6 +1146,10 @@ using namespace ::smvk;
 				nodeMap[s] = static_cast<NodeId>(dst);
 				scene.localTransform[size_t(dst)] = cs.localTransform[s];
 				scene.globalTransform[size_t(dst)] = cs.globalTransform[s];
+				scene.localTransformDouble[size_t(dst)] = s < cs.localTransformDouble.size()
+					? cs.localTransformDouble[s] : glm::dmat4(cs.localTransform[s]);
+				scene.globalTransformDouble[size_t(dst)] = tour::scene::GlobalTransformDouble(cs, s);
+				scene.localTransformFloatShadow[size_t(dst)] = scene.localTransform[size_t(dst)];
 				// Flag tables: per-slot guarded copies (missing table ==
 				// defaults; addNode already pushed zeros). staticNode is
 				// rebuilt wholesale by RebuildStaticCache below.

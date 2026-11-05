@@ -65,6 +65,11 @@ int addNode(Scene& scene, int parent, int level)
     assert(node >= 0 && node < nodeCount);
     scene.localTransform[size_t(node)] = glm::mat4(1.0f);
     scene.globalTransform[size_t(node)] = glm::mat4(1.0f);
+    if (scene.localTransformDouble.size() > size_t(node)) {
+      scene.localTransformDouble[size_t(node)] = glm::dmat4(1.0);
+      scene.globalTransformDouble[size_t(node)] = glm::dmat4(1.0);
+      scene.localTransformFloatShadow[size_t(node)] = glm::mat4(1.0f);
+    }
     if (scene.staticRoot.size() > size_t(node)) scene.staticRoot[size_t(node)] = 0;
     if (scene.staticNode.size() > size_t(node)) scene.staticNode[size_t(node)] = 0;
     if (scene.noLightmap.size() > size_t(node)) scene.noLightmap[size_t(node)] = 0;
@@ -86,6 +91,9 @@ int addNode(Scene& scene, int parent, int level)
       // TODO: resize aux arrays (local/global etc.)
       scene.localTransform.push_back(glm::mat4(1.0f));
       scene.globalTransform.push_back(glm::mat4(1.0f));
+      scene.localTransformDouble.push_back(glm::dmat4(1.0));
+      scene.globalTransformDouble.push_back(glm::dmat4(1.0));
+      scene.localTransformFloatShadow.push_back(glm::mat4(1.0f));
       scene.staticRoot.push_back(0);
       scene.staticNode.push_back(0);
       scene.noLightmap.push_back(0);
@@ -226,6 +234,11 @@ void RetireNodeSlot(Scene& scene, NodeId node)
 
 bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::mat4& transform)
 {
+  return SetLocalTransform(scene, handle, glm::dmat4(transform));
+}
+
+bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::dmat4& transform)
+{
   if (!NodeHandleValid(scene, handle)) return false;
   // Invalid transforms cannot be published safely to scene or GPU views.
   for (int col = 0; col < 4; ++col)
@@ -233,7 +246,19 @@ bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::mat4& transfo
       if (!std::isfinite(transform[col][row])) return false;
   const uint32_t slot = NodeHandleSlot(handle);
   if (slot >= scene.localTransform.size()) return false;
-  scene.localTransform[slot] = transform;
+  if (scene.localTransformDouble.size() != scene.localTransform.size()) {
+    scene.localTransformDouble.resize(scene.localTransform.size());
+    scene.globalTransformDouble.resize(scene.localTransform.size());
+    scene.localTransformFloatShadow.resize(scene.localTransform.size());
+    for (size_t i = 0; i < scene.localTransform.size(); ++i) {
+      scene.localTransformDouble[i] = glm::dmat4(scene.localTransform[i]);
+      scene.globalTransformDouble[i] = glm::dmat4(scene.globalTransform[i]);
+      scene.localTransformFloatShadow[i] = scene.localTransform[i];
+    }
+  }
+  scene.localTransformDouble[slot] = transform;
+  scene.localTransform[slot] = glm::mat4(transform);
+  scene.localTransformFloatShadow[slot] = scene.localTransform[slot];
   markAsChanged(scene, int(slot));
   return true;
 }
@@ -353,8 +378,49 @@ static void QueueGpuSceneGlobalChange(Scene& scene, uint32_t node)
   scene.gpuSceneGlobalChanges.push_back(node);
 }
 
+static void PrepareDoubleTransforms(Scene& scene)
+{
+  const size_t count = scene.localTransform.size();
+  if (scene.localTransformDouble.size() != count ||
+      scene.globalTransformDouble.size() != count ||
+      scene.localTransformFloatShadow.size() != count) {
+    scene.localTransformDouble.resize(count);
+    scene.globalTransformDouble.resize(count);
+    scene.localTransformFloatShadow.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+      scene.localTransformDouble[i] = glm::dmat4(scene.localTransform[i]);
+      scene.globalTransformDouble[i] = glm::dmat4(scene.globalTransform[i]);
+      scene.localTransformFloatShadow[i] = scene.localTransform[i];
+    }
+  }
+}
+
+static void ComposeDoubleTransform(Scene& scene, int c)
+{
+  const size_t n = size_t(c);
+  // Import legacy float mutations without quantizing unchanged double state.
+  if (scene.localTransform[n] != scene.localTransformFloatShadow[n]) {
+    scene.localTransformDouble[n] = glm::dmat4(scene.localTransform[n]);
+    scene.localTransformFloatShadow[n] = scene.localTransform[n];
+  }
+  const int p = scene.hierarchy[n].parent;
+  scene.globalTransformDouble[n] = p < 0 ? scene.localTransformDouble[n]
+    : scene.globalTransformDouble[size_t(p)] * scene.localTransformDouble[n];
+  scene.globalTransform[n] = glm::mat4(scene.globalTransformDouble[n]);
+}
+
+glm::dmat4 GlobalTransformDouble(const Scene& scene, NodeId node)
+{
+  if (node < scene.globalTransformDouble.size() &&
+      scene.globalTransformDouble.size() == scene.globalTransform.size())
+    return scene.globalTransformDouble[node];
+  return node < scene.globalTransform.size()
+    ? glm::dmat4(scene.globalTransform[node]) : glm::dmat4(1.0);
+}
+
 bool recalculateGlobalTransforms(Scene& scene)
 {
+  PrepareDoubleTransforms(scene);
   bool wasUpdated = false;
 
   // Level 0: process EVERY changed entry (the old code took only [0] -
@@ -365,7 +431,7 @@ bool recalculateGlobalTransforms(Scene& scene)
   for (int c : scene.changedAtThisFrame[0]) {
     if (!IsLiveSlot(scene, uint32_t(c)))
       continue;
-    scene.globalTransform[c] = scene.localTransform[c];
+    ComposeDoubleTransform(scene, c);
     QueueGpuSceneGlobalChange(scene, uint32_t(c));
     wasUpdated = true;
   }
@@ -380,10 +446,8 @@ bool recalculateGlobalTransforms(Scene& scene)
       // addNode(scene, -1, 1) - a deliberate root, see EnsureWorldSun):
       // global = local (the old code read globalTransform[-1] - UB that
       // showed up as an identity/horizontal sun: az=0/el=0).
-      if (p <= -1)
-        scene.globalTransform[c] = scene.localTransform[c];
-      else
-        scene.globalTransform[c] = scene.globalTransform[p] * scene.localTransform[c];
+      (void)p;
+      ComposeDoubleTransform(scene, c);
       QueueGpuSceneGlobalChange(scene, uint32_t(c));
     }
     wasUpdated |= !scene.changedAtThisFrame[i].empty();
@@ -395,6 +459,7 @@ bool recalculateGlobalTransforms(Scene& scene)
 
 bool recalculateGlobalTransformsDynamic(Scene& scene)
 {
+  PrepareDoubleTransforms(scene);
   const bool hasStatic =
     scene.staticNode.size() == scene.hierarchy.size() &&
     std::any_of(scene.staticNode.begin(), scene.staticNode.end(),
@@ -409,7 +474,7 @@ bool recalculateGlobalTransformsDynamic(Scene& scene)
     if (c < 0 || !IsLiveSlot(scene, uint32_t(c))) continue;
     const bool isStatic = (size_t)c < scene.staticNode.size() && scene.staticNode[(size_t)c] != 0;
     if (isStatic) continue;
-    scene.globalTransform[c] = scene.localTransform[c];
+    ComposeDoubleTransform(scene, c);
     QueueGpuSceneGlobalChange(scene, uint32_t(c));
     wasUpdated = true;
   }
@@ -423,8 +488,8 @@ bool recalculateGlobalTransformsDynamic(Scene& scene)
       if (isStatic)
         continue;
       const int p              = scene.hierarchy[c].parent;
-      scene.globalTransform[c] = p < 0 ? scene.localTransform[c]
-        : scene.globalTransform[p] * scene.localTransform[c];
+      (void)p;
+      ComposeDoubleTransform(scene, c);
       QueueGpuSceneGlobalChange(scene, uint32_t(c));
       wasUpdated = true;
     }
@@ -603,6 +668,9 @@ void loadScene(const char* fileName, Scene& scene)
   scene.hierarchy.resize(sz);
   scene.globalTransform.resize(sz);
   scene.localTransform.resize(sz);
+  scene.localTransformDouble.clear();
+  scene.globalTransformDouble.clear();
+  scene.localTransformFloatShadow.clear();
   scene.staticRoot.assign(sz, 0);
   scene.staticNode.assign(sz, 0);
   scene.noLightmap.assign(sz, 0);
@@ -1195,6 +1263,9 @@ void mergeScenes(
 
   scene.localTransform.assign(1, glm::mat4(1.f));
   scene.globalTransform.assign(1, glm::mat4(1.f));
+  scene.localTransformDouble.assign(1, glm::dmat4(1.0));
+  scene.globalTransformDouble.assign(1, glm::dmat4(1.0));
+  scene.localTransformFloatShadow.assign(1, glm::mat4(1.0f));
   scene.staticRoot.assign(1, 0);
   scene.staticNode.assign(1, 0);
   scene.noLightmap.assign(1, 0);
@@ -1249,6 +1320,10 @@ void mergeScenes(
       nodeMap[src] = (NodeId)dst;
       scene.localTransform[size_t(dst)] = s->localTransform[src];
       scene.globalTransform[size_t(dst)] = s->globalTransform[src];
+      scene.localTransformDouble[size_t(dst)] = src < s->localTransformDouble.size()
+        ? s->localTransformDouble[src] : glm::dmat4(s->localTransform[src]);
+      scene.globalTransformDouble[size_t(dst)] = GlobalTransformDouble(*s, src);
+      scene.localTransformFloatShadow[size_t(dst)] = scene.localTransform[size_t(dst)];
       if (s->staticRoot.size() > size_t(src))
         scene.staticRoot[size_t(dst)] = s->staticRoot[src];
       if (s->noLightmap.size() > size_t(src))

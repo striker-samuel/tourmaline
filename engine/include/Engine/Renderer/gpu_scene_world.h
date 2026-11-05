@@ -359,7 +359,7 @@ public:
                 record.instance = key;
                 record.mesh = {owner->second, loc.handle.index(), loc.handle.gen()};
                 meshWorldIndices.try_emplace(record.mesh, item.mesh);
-                record.globalModel = glm::dmat4(world.scene.globalTransform[item.node]);
+                record.globalModel = tour::scene::GlobalTransformDouble(world.scene, item.node);
                 record.material = item.material; // interim World index
                 record.flags = static_cast<uint32_t>(item.flags);
                 // Union the bounds of EVERY cooked LOD, including payloads
@@ -430,7 +430,7 @@ public:
             if (node < nodeKeys_.size() &&
                 node < world.scene.globalTransform.size() &&
                 registry_.UpdateGlobal(nodeKeys_[node],
-                                       world.scene.globalTransform[node], db))
+                                       tour::scene::GlobalTransformDouble(world.scene, node), db))
                 ++stats.updated;
         }
         for (NodeId node : dirty)
