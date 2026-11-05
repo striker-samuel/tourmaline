@@ -49,13 +49,12 @@ public:
 };
 
 
-// The label column width: MEASURED against the window's content width
-// (42% clamped to [90, 220] px — the two-column property contract at
-// any inspector width/DPI; a long label truncates with a full-text
-// tooltip instead of colliding into the value field).
+// Reserve a stable name/value gutter in every property row. The label
+// must never be left-clipped just because the dock was resized: below
+// the minimum two-column width, stack the full label above the control.
 inline float LabelColumnWidth() {
 	const float w = ImGui::GetContentRegionAvail().x;
-	return std::clamp(w * 0.42f, 90.0f, 220.0f);
+	return std::clamp(w * 0.48f, 156.0f, 220.0f);
 }
 
 // Attribute provenance scoped to the Inspector: 1=local, 2=wide rule.
@@ -69,16 +68,15 @@ private:
 	const std::unordered_map<std::string, int>* previous_;
 };
 
-// One property row's label cell: the name CLIPPED to the column (a
-// long label never collides into the value field) with the full text
-// on the tooltip when it clipped; the hint tooltip wins when present.
+// Draw the full property name. At normal widths it is right-aligned in
+// a reserved label column, separated from the value by a fixed gutter.
+// When there is not enough room for both columns, use a stacked layout.
 inline void LabelCell(const char* name, const char* hint) {
-	const float colW = LabelColumnWidth();
 	const char* shown = name ? name : "";
-	const ImVec2 size = ImGui::CalcTextSize(shown);
+	const float available = ImGui::GetContentRegionAvail().x;
+	const float colW = LabelColumnWidth();
 	const float startX = ImGui::GetCursorPosX();
-	const float labelW = std::max(1.0f, colW - 10.0f);
-	const bool clipped = size.x > labelW;
+	const bool stacked = available < colW + 112.0f;
 	int overrideKind = 0;
 	if (overrideLabels) {
 		const auto it = overrideLabels->find(shown);
@@ -88,17 +86,13 @@ inline void LabelCell(const char* name, const char* hint) {
 		ImGui::PushStyleColor(ImGuiCol_Text, overrideKind == 1
 			? ImVec4(1.0f, 0.69f, 0.23f, 1.0f)
 			: ImVec4(0.98f, 0.43f, 0.70f, 1.0f));
-	// Maya-style: property names end at one shared right edge, while
-	// controls begin at one shared left edge. Long names clip on the LEFT.
-	ImGui::SetCursorPosX(startX + std::max(0.0f, labelW - size.x));
-	const ImVec2 textPos = ImGui::GetCursorScreenPos();
-	if (clipped)
-		ImGui::PushClipRect(
-			ImVec2(textPos.x + std::max(0.0f, size.x - labelW), textPos.y),
-			ImVec2(textPos.x + size.x, textPos.y + size.y + 2.0f), true);
-	ImGui::TextUnformatted(shown);
-	if (clipped)
-		ImGui::PopClipRect();
+	if (stacked) {
+		ImGui::TextWrapped("%s", shown);
+	} else {
+		const float nameW = ImGui::CalcTextSize(shown).x;
+		ImGui::SetCursorPosX(startX + std::max(0.0f, colW - 12.0f - nameW));
+		ImGui::TextUnformatted(shown);
+	}
 	if (overrideKind)
 		ImGui::PopStyleColor();
 	if (ImGui::IsItemHovered() && overrideKind)
@@ -107,10 +101,10 @@ inline void LabelCell(const char* name, const char* hint) {
 			hint ? "\\n" : "", hint ? hint : "");
 	else if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
-	else if (clipped && ImGui::IsItemHovered())
-		ImGui::SetTooltip("%s", shown);
-	ImGui::SameLine(0.0f, 0.0f);
-	ImGui::SetCursorPosX(startX + colW);
+	if (!stacked) {
+		ImGui::SameLine(0.0f, 0.0f);
+		ImGui::SetCursorPosX(startX + colW);
+	}
 }
 
 // Component header with the removal action next to the component name.
