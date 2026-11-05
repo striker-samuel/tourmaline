@@ -387,6 +387,49 @@ void EditorApp::FinalizePending() {
 		m_wysiwygDetachedPhysical = smvk::ImageViewHandle{};
 	}
 
+	ImTextureID EditorApp::LegacyStageTexture() {
+		if (!m_imgui || !m_context || m_legacyStageView.empty())
+			return ImTextureID(0);
+		const smvk::ImageViewHandle view = m_legacyStageView;
+		if (m_legacyStageTex != 0 && m_legacyStagePhysical == view)
+			return m_legacyStageTex;
+		DropLegacyStageTexture();
+		const void* vkView = m_context->GetImageViewVkImageView(view);
+		if (!vkView)
+			return ImTextureID(0);
+		if (m_cubeFaceSampler == UINT32_MAX) {
+			m_cubeFaceSampler = m_context->GetOrCreateSampler(
+				smvk::SamplerCreateInfo{
+					.magFilter = smvk::Filter::Linear,
+					.minFilter = smvk::Filter::Linear,
+					.mipmapMode = smvk::MipmapMode::Nearest,
+					.addressU = smvk::AddressMode::ClampToEdge,
+					.addressV = smvk::AddressMode::ClampToEdge,
+					.addressW = smvk::AddressMode::ClampToEdge,
+					.maxAnisotropy = 1.0f });
+		}
+		const void* vkSampler = m_context->GetVkSamplerOpaque(m_cubeFaceSampler);
+		if (!vkSampler)
+			return ImTextureID(0);
+		const VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(
+			VkSampler(const_cast<void*>(vkSampler)),
+			VkImageView(const_cast<void*>(vkView)),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		if (set == VK_NULL_HANDLE)
+			return ImTextureID(0);
+		m_legacyStageTex = ImTextureID(reinterpret_cast<ImU64>(set));
+		m_legacyStagePhysical = view;
+		return m_legacyStageTex;
+	}
+
+	void EditorApp::DropLegacyStageTexture() {
+		if (m_legacyStageTex != 0)
+			ImGui_ImplVulkan_RemoveTexture(
+				reinterpret_cast<VkDescriptorSet>(ImU64(m_legacyStageTex)));
+		m_legacyStageTex = 0;
+		m_legacyStagePhysical = {};
+	}
+
 	void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 		(void)targetExtent;
 		if (ImGui::BeginMainMenuBar()) {
@@ -626,6 +669,35 @@ void EditorApp::FinalizePending() {
 					// projection whenever the panel is not 4:3.
 					const int liveVp = LiveViewViewport();
 					const bool live = liveVp >= 0;
+					// The legacy preview is rendered in primary-window pixel
+					// coordinates. Subrect UVs sample that exact area inside
+					// the docked Viewport's normal draw list, with clipping and
+					// Z-order identical to the live image lane.
+					const auto drawLegacy = [&]() {
+						if (m_dockStageDetached)
+							return;
+						const ImTextureID oldTex = LegacyStageTexture();
+						if (oldTex == 0 || m_legacyStageExtent.width == 0
+							|| m_legacyStageExtent.height == 0)
+							return;
+						const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+						const float tw = float(m_legacyStageExtent.width);
+						const float th = float(m_legacyStageExtent.height);
+						for (int vp = 0; vp < ViewportCount(); ++vp) {
+							if (vp == liveVp)
+								continue;
+							const ViewportRect& r = m_viewports[vp].rect;
+							if (r.w < 8.0f || r.h < 8.0f || r.x < 0.0f
+								|| r.y < 0.0f || r.x + r.w > tw
+								|| r.y + r.h > th)
+								continue;
+							ImGui::SetCursorScreenPos(
+								ImVec2(origin.x + r.x, origin.y + r.y));
+							ImGui::Image(oldTex, ImVec2(r.w, r.h),
+								ImVec2(r.x / tw, r.y / th),
+								ImVec2((r.x + r.w) / tw, (r.y + r.h) / th));
+						}
+					};
 					const ImTextureID tex = live
 						? WysiwygStageTexture() : ImTextureID(0);
 					if (tex != 0) {
@@ -663,6 +735,11 @@ void EditorApp::FinalizePending() {
 							ImGui::Image(tex,
 								ImVec2(stage.w, stage.h));
 						}
+						drawLegacy(); // other non-live viewports in multi-view layouts
+					}
+					else if (!live && !m_dockStageDetached) {
+						ImGui::Dummy(avail);
+						drawLegacy();
 					}
 					else if (m_dockStageDetached || live) {
 						ImGui::Dummy(avail);
