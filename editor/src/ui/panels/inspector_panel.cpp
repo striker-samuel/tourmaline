@@ -506,48 +506,10 @@ namespace editor {
 		sections.Register("audio", [this](uint32_t n) { DrawAudioSection(n); });
 		sections.Register("audio-room", [this](uint32_t n) { DrawAudioRoomSection(n); });
 		sections.DrawAll(node);
-		// Single discoverable add-component flow. Only list missing
-		// associations and reuse the existing undoable attach commands.
-		ImGui::Spacing();
-		if (ImGui::Button("Add component..."))
-			ImGui::OpenPopup("##add_component_picker");
-		if (ImGui::BeginPopup("##add_component_picker")) {
-			ImGui::TextUnformatted("Add component");
-			ImGui::Separator();
-			static ImGuiTextFilter componentFilter;
-			componentFilter.Draw("Search##component", 230.0f);
-			struct ComponentChoice { const char* label; EditVerb verb; bool present; };
-			const ComponentChoice choices[] = {
-				{ "Physics Body", EditVerb::AttachPhysicsBody,
-					tour::scene::FindPhysicsBody(scene, node) != nullptr },
-				{ "Trigger Volume", EditVerb::AttachTriggerVolume,
-					tour::scene::FindTriggerVolume(scene, node) != nullptr },
-				{ "GI Volume", EditVerb::AttachGiVolume,
-					FindGiVolume(scene, node) != nullptr },
-				{ "Audio Room", EditVerb::AttachAudioRoom,
-					tour::scene::FindAudioRoom(scene, node) != nullptr },
-			};
-			bool any = false;
-			for (const ComponentChoice& choice : choices) {
-				if (choice.present || !componentFilter.PassFilter(choice.label))
-					continue;
-				any = true;
-				if (ImGui::Selectable(choice.label)) {
-					EditCmd cmd{};
-					cmd.verb = choice.verb;
-					cmd.node = node;
-					Do(cmd);
-					ImGui::CloseCurrentPopup();
-					break;
-				}
-			}
-			if (!any)
-				ImGui::TextDisabled("No available components");
-			ImGui::EndPopup();
-		}
 		// The scene's export config node (cook/export knobs).
 		DrawExportSettingsSection(node);
 
+		ImGui::SeparatorText("Node flags");
 		// Static subtree (transform freeze): the root mark affects the WHOLE
 		// tree (Scene::staticRoot) — frozen transforms after the initial
 		// build (skip per-frame updates + BVH rebuilds) + mega-mesh collapse
@@ -715,10 +677,12 @@ namespace editor {
 
 		// Scene reference block (placeholder nodes).
 		DrawReferenceSection(node);
-		// Material reassignment.
-		if (const MaterialRow* matRow = FindMaterial(scene, node)) {
+		// A material is an optional node component. Without one the
+		// renderer uses its editor-default material, not a scene binding.
+		const MaterialRow* matRow = FindMaterial(scene, node);
+		if (matRow) {
 			ImGui::Separator();
-			ImGui::Text("Material");
+			ImGui::SeparatorText("Material component");
 			const uint32_t curMat = matRow->material;
 			std::string preview = "mat." + std::to_string(curMat);
 			if (ImGui::BeginCombo("##mat", preview.c_str())) {
@@ -758,6 +722,51 @@ namespace editor {
 			// page render, from ONE function).
 			DrawMaterialBody(curMat);
 		}
+		else {
+			ImGui::SeparatorText("Material component");
+			ImGui::TextDisabled("None (editor default material)");
+		}
+		ImGui::Separator();
+		// Add component stays at the bottom. Only list missing
+		// associations and reuse the existing undoable attach commands.
+		ImGui::Spacing();
+		if (ImGui::Button("Add component..."))
+			ImGui::OpenPopup("##add_component_picker");
+		if (ImGui::BeginPopup("##add_component_picker")) {
+			ImGui::TextUnformatted("Add component");
+			ImGui::Separator();
+			static ImGuiTextFilter componentFilter;
+			componentFilter.Draw("Search##component", 230.0f);
+			struct ComponentChoice { const char* label; EditVerb verb; bool present; };
+			const ComponentChoice choices[] = {
+				{ "Physics Body", EditVerb::AttachPhysicsBody,
+					tour::scene::FindPhysicsBody(scene, node) != nullptr },
+				{ "Trigger Volume", EditVerb::AttachTriggerVolume,
+					tour::scene::FindTriggerVolume(scene, node) != nullptr },
+				{ "GI Volume", EditVerb::AttachGiVolume,
+					FindGiVolume(scene, node) != nullptr },
+				{ "Audio Room", EditVerb::AttachAudioRoom,
+					tour::scene::FindAudioRoom(scene, node) != nullptr },
+			};
+			bool any = false;
+			for (const ComponentChoice& choice : choices) {
+				if (choice.present || !componentFilter.PassFilter(choice.label))
+					continue;
+				any = true;
+				if (ImGui::Selectable(choice.label)) {
+					EditCmd cmd{};
+					cmd.verb = choice.verb;
+					cmd.node = node;
+					Do(cmd);
+					ImGui::CloseCurrentPopup();
+					break;
+				}
+			}
+			if (!any)
+				ImGui::TextDisabled("No available components");
+			ImGui::EndPopup();
+		}
+
 		// NOTE: the active-viewport orbit camera used to live here; it moved
 		// to the World panel ("Viewport camera"). Node pages show authored
 		// state only — camera nodes get the lens section above instead.
