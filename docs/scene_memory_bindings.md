@@ -75,8 +75,19 @@ access layer throughout the scene mutation and serialization code.
 ## Remaining integration work
 
 - External binding for nontrivial scene table rows is not implemented.
-- The six GPU-scene database tables and per-flight uploader addresses are
-  separate from this CPU scene-memory API.
+- The six GPU-scene tables are exposed separately as **per-flight** metadata
+  via `gpu_scene_memory_bindings.h`. They remain uploader-owned (no external
+  GPU-buffer binding yet). For example:
+
+  ```cpp
+  auto addresses = uploader.DeviceAddresses(context, flight);
+  auto gpuStreams = tour::scene::memory::GetGpuViews(database, addresses, flight);
+  // semantic, address, row count/stride, generation and alive offsets
+  ```
+
+  Query after a successful `Publish` on a properly fenced flight. Zero
+  device address means there is no published table at that slot. Row count
+  includes tombstones; row identity carries generation and alive bits.
 - Native C++ ABI layouts are not a C ABI or cross-process schema.
 - No stream version/dirty-range or synchronized acquire/release protocol yet.
 - CPU scene views are not GPU addresses; per-flight GPU resource ownership
