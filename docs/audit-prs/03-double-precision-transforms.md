@@ -30,7 +30,7 @@ Large positive and negative coordinates and nested parent chains round-trip with
 - [ ] Document compatibility, benchmarking, and before/after evidence.
 
 ## Compatibility
-Legacy float arrays and binary fields retain their format; doubles are preserved at runtime with the new dmat4 setter and in the GPU scene bridge. Legacy disk serialization remains float32 and is **not** lossless for large double coordinates. A format-version migration is still required for precise disk round-trips. Integrator owns native compilation, GPU parity and performance baselines.
+Legacy float-facing runtime arrays remain available; authoritative double transforms flow through hierarchy recalculation and GPU-scene publication. New scene files use a versioned transform encoding with 16 binary64 scalars per local/global matrix, preserving large fractional world coordinates. Legacy unversioned scene files remain readable with their float32 matrices, promoted to doubles in memory. Older binaries cannot read the new versioned files; re-export in the old format is not provided. Integrator owns native compilation, GPU parity and performance baselines.
 
 ## Scope boundary
 No generic GPU memory or automatic lifetime manager; the caller remains responsible for memory. Do not enable experimental rendering paths as part of this fix.
@@ -48,3 +48,24 @@ No generic GPU memory or automatic lifetime manager; the caller remains responsi
 - This change does **not** make the legacy float32 scene file format lossless.
   Retain that compatibility limitation until an explicitly versioned format
   migration is designed and verified.
+
+## Versioned scene binary layout (Audit 03)
+
+- New file prefix: `uint32 magic = 0x54444D53`, `uint32 version = 1`,
+  `uint32 liveNodeCount`. The magic is outside the valid legacy node-count
+  range, so unversioned files are detected without ambiguity.
+- After the prefix: `liveNodeCount` local affine matrices, then the same
+  number of global matrices; each matrix is 16 contiguous IEEE754 binary64
+  scalars in GLM column-major order, written individually to avoid GLM
+  structure packing assumptions. Hierarchy and all remaining scene sections
+  retain their existing native binary representation and order.
+- Files with no magic use the original `uint32 nodeCount`, float32 local/global
+  matrices, hierarchy and optional sections. Unsupported v1 versions and
+  invalid/truncated fixed headers are rejected; no silent float32 fallback.
+- Storage is not an independent endian-neutral interchange format. The
+  existing scene tail also contains native records. The same platform/
+  architecture expectations therefore continue to apply.
+- Regression coverage: large positive/negative fractional nested scene
+  save/load, unknown-version rejection, and legacy float32 fixture loading.
+  Test execution and end-to-end editor/cooker consumer checks remain assigned
+  to the integrator.
