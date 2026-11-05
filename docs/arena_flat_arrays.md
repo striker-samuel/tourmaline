@@ -54,13 +54,15 @@ initial block sizing for each array. Growth can retain prior blocks until
 destruction; that is intentional for the bump allocator but should be
 measured with scene-size churn.
 
-## Remaining work required for full World/Scene replacement
+## Authoritative scene storage and outstanding work
 
 `Scene::hierarchy`, `Scene::localTransform`, and
-`Scene::globalTransform` are still `std::vector` in this PR.
-They are consumed by authored-scene writers, merging, serializers and GPU
-publication. A wholesale type substitution without migrating those
-interfaces would break the renderer. `WorldRenderer` also retains vectors
+`Scene::globalTransform` are now `ArenaFlatArray` (no longer `std::vector`).
+The array implements explicit `assign`, `resize`, `push_back`, deep-copy and
+move semantics to preserve current scene writers, scene loading, and stable
+node slots. A temporary `std::vector<T>` conversion is provided for existing
+interop call sites; this conversion copies and does not transfer ownership.
+Scene mutation journaling and serializer byte layout are unchanged. `WorldRenderer` also retains vectors
 for nontrivial or externally passed types (strings, futures, resource
 holders, and parameter vectors), and pass-subsystem internals are not
 converted.
@@ -69,3 +71,13 @@ A full conversion needs a distinct growable arena-vector implementation
 with element construction/destruction and move/copy semantics, call-site
 migration, lifetime tests, and end-to-end rendering CI. Do not use this
 partial migration as evidence that scene vectors can be rebound externally.
+
+## Caveats
+
+- These scene arrays are now **arena-owned**, but **not externally bound**.
+- This is not ping-pong storage: local/global/hierarchy each own one logical
+  array. GPU publication and frame-in-flight buffers remain separate.
+- `std::vector` conversions incur copies; migrate consumers to spans/views
+  before removing compatibility operations.
+- Arena growth retains old chunks until destruction (no per-allocation free).
+- CI must verify scene writers, loaders, serializer compatibility, and tests.
