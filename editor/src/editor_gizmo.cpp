@@ -972,8 +972,8 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
 			const tour::DebugDepthMode depth = batch.depthTest
 				? tour::DebugDepthMode::Tested : tour::DebugDepthMode::Always;
 			for (size_t i = 1; i < batch.verts.size(); i += 2)
-				debugOutput->Line(batch.verts[i - 1].position,
-					batch.verts[i].position, color, depth);
+				debugOutput->Line(batch.verts[i - 1].pos,
+					batch.verts[i].pos, color, depth);
 		}
 		return;
 	}
