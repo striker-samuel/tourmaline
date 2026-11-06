@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 namespace tour {
@@ -50,7 +51,12 @@ smvk::StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 	StringViewT body = file;
 
 	// Segment pass: collapse separators, skip '.', reject "..".
-	std::vector<StringViewT> parts;
+	// At most (n + 1) / 2 segments in a path of length n.
+	// Scratch views are scoped to the caller's arena, not the heap.
+	const size_t maxParts = (body.size() + 1) / 2;
+	auto* parts = static_cast<StringViewT*>(
+		scratch.Allocate(maxParts * sizeof(StringViewT), alignof(StringViewT)));
+	size_t partCount = 0;
 	size_t start = 0;
 	for (size_t i = 0; i <= body.size(); ++i) {
 		if (i == body.size() || body[i] == '/' || body[i] == '\\') {
@@ -60,14 +66,14 @@ smvk::StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 				continue;
 			if (seg.size() == 2 && seg[0] == '.' && seg[1] == '.')
 				return {}; // escaped the virtual root
-			parts.push_back(seg);
+			std::construct_at(parts + partCount++, seg);
 		}
 	}
-	if (parts.empty())
+	if (partCount == 0)
 		return {};
 
 	size_t total = 1; // NUL
-	for (size_t i = 0; i < parts.size(); ++i) {
+	for (size_t i = 0; i < partCount; ++i) {
 		if (i)
 			total += 1;
 		total += parts[i].size();
@@ -77,7 +83,7 @@ smvk::StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 
 	char* buf = static_cast<char*>(scratch.Allocate(total));
 	size_t off = 0;
-	for (size_t i = 0; i < parts.size(); ++i) {
+	for (size_t i = 0; i < partCount; ++i) {
 		if (i)
 			buf[off++] = '/';
 		std::memcpy(buf + off, parts[i].data(), parts[i].size());
