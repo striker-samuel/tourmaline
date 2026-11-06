@@ -6,6 +6,7 @@
 // frame builder no longer polls input, owns keybinds, or drives modes.
 
 #include <Engine/Renderer/WorldRendererElement.h>
+#include <Engine/ImGui/crystal_fusion_style.h>
 
 #include <cstdio>
 
@@ -23,7 +24,48 @@ namespace engine {
 	bool WorldRendererElement::onAttach() {
 		if (!m_renderer.onAttach())
 			return false;
-		// The renderer's gamepad CONFIG widgets + footer status read the
+		// Only the standalone host creates an ImGui context. Embedded renderers
+	// disable the UI pass to avoid replacing the editor's event hook.
+	if (m_renderer.m_passes.ui) {
+		m_imgui = smvk::mem::MakeProcess<smvk::ImGuiOverlay>();
+		smvk::ImGuiOverlayDesc desc{};
+		desc.fontPath = "content/fonts/Roboto-Medium.ttf";
+		desc.fontBaseSize = 16.0f;
+		desc.colorFormat = m_renderer.m_viewportResources.ui.format;
+		if (!m_imgui->Init(*m_renderer.m_context, *m_renderer.m_swapchain,
+			m_host.GetWindow(), desc)) {
+			std::fprintf(stderr, "[WorldRendererElement] ImGui overlay unavailable\\n");
+			m_imgui.reset();
+		} else {
+			m_renderer.m_uiDpiScale = m_imgui->AppliedDpiScale();
+			tour::branding::ApplyCrystalFusionImGuiStyle();
+			m_host.SetImGuiEventHook(&smvk::ImGuiOverlay::ProcessEvent);
+			m_renderer.SetUiTextureService({
+                [this](smvk::TextureHandle texture, uint32_t sampler) -> uint64_t {
+                    return m_imgui ? m_imgui->AddUserTexture(texture, sampler) : 0;
+                },
+                [this](smvk::ImageViewHandle view, uint32_t sampler) -> uint64_t {
+                    return m_imgui ? m_imgui->AddUserTextureView(view, sampler) : 0;
+                },
+                [this](uint64_t id) {
+                    if (m_imgui && id) m_imgui->RetireUserTexture(id);
+                },
+                [this](float scale) {
+                    if (m_imgui) m_imgui->ApplyDpiScale(scale);
+                }
+            });
+            m_renderer.SetUiFrameService([this](WorldRenderer& renderer,
+                const WorldRenderer::DebugUiFrame& frame) {
+                if (!m_imgui || !frame.graph) return;
+                m_imgui->NewFrame(frame.uiExtent);
+                renderer.DrawSettingsUi(frame);
+                m_imgui->AddPass(*frame.graph, frame.uiTarget, frame.uiExtent,
+                    smvk::AttachmentLoadOp::Clear,
+                    smvk::ClearColor(0, 0, 0, 0));
+            });
+		}
+	}
+	// The renderer's gamepad CONFIG widgets + footer status read the
 		// input through this back-pointer (status display, never control).
 		m_renderer.SetInputForUi(&m_input);
 		// Start in FPS mode (DISABLED): mouse captured for mouselook; the
@@ -35,6 +77,14 @@ namespace engine {
 
 	void WorldRendererElement::onDetach() {
 		m_renderer.onDetach();
+    m_renderer.ReleaseUiPreviewBindings();
+	m_renderer.SetUiFrameService({});
+    m_renderer.SetUiTextureService({});
+	if (m_imgui) {
+        m_host.SetImGuiEventHook(nullptr);
+		m_imgui->Shutdown();
+		m_imgui.reset();
+	}
 	}
 
 	void WorldRendererElement::onResize(smvk::Extent2D swapExtent) {

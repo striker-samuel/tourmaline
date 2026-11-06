@@ -5,8 +5,8 @@
 // WorldRendererElement: the CONTROL layer over WorldRenderer.
 //
 // The split (the "control leaking into the renderer" fix): WorldRenderer is
-// the pure frame builder (rendergraph, scene passes, post chain, its own
-// settings/debug panel — driven by data + explicit setters); THIS class is
+// the pure frame builder (rendergraph, scene passes, post chain,
+// host-owned UI callbacks); THIS class is
 // the IAppElement the host stacks — it owns every control concern:
 //   - the INPUT (the host's Input&) and all keybind polling
 //     (HandleShortcuts, the old WorldRenderer::HandleShortcuts verbatim),
@@ -24,16 +24,16 @@
 // parallel toggle-method per checkbox would just mirror the panel; the
 // control FLOW, who decides and when, is entirely this element's).
 //
-// The renderer's settings/debug panel stays in WorldRenderer (nvpro-style:
-// a renderer may own its settings widgets); its gamepad config + footer
-// read the Input*/ui-mode hint this element pushes per frame
-// (SetInputForUi/SetUiModeHint) — status display, never control.
+// Debug/settings widgets are compiled in the standalone App and drawn via
+// SetSettingsUi. This element owns the ImGui backend and publishes frame
+// and preview-texture services; WorldRenderer owns only its rendergraph UI target.
 
 #include <Engine/App/Element.h>
 #include <Engine/App/input.h>
 #include <Engine/App/keybindings.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/Renderer/WorldRenderer.h>
+#include <Engine/ImGui/imgui_overlay.h>
 
 #include <glm/glm.hpp>
 
@@ -98,6 +98,8 @@ private:
 	smvk::App& m_host;
 	Input& m_input;
 	WorldRenderer m_renderer;
+	// Lifetime owner of the optional ImGui context.
+	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
 	// Control state (moved from the renderer):
 	bool m_uiMode = false;
 	bool m_disableControl = false;
