@@ -1,5 +1,24 @@
 # Catalog-first game spawning
 
+## Node/mesh invariant
+
+**One node owns one transform and has at most one mesh association.**
+A node may have no mesh; it must never have multiple mesh bindings.
+Two instances of the same catalog mesh are two independent nodes with
+separate transforms, sharing only the loaded mesh asset. To assemble
+multi-part objects, create child nodes under a parent; do not place
+multiple mesh components on a single node.
+
+`SetMesh(key)` on an existing node means **replace its single mesh
+binding in place**, preserving node identity, transform and children.
+It must not append another mesh, create a new node, or reparent it.
+An invalid catalog key must leave the existing binding untouched.
+The replacement must release the previous mesh resource reference only
+when it is no longer used by that node (other nodes may share it).
+
+The current `CatalogWorld::Add` creates an entity/node for each call.
+Node-level `SetMesh` is a future API, not implemented by this PR.
+
 Game code uses generated project catalog keys, never transient World mesh
 location indices. Include `app/src/CatalogWorld.h` (or the apphost's
 include path for `CatalogWorld.h`) and construct a facade with the live
@@ -47,7 +66,7 @@ The eventual ergonomic node API should also use catalog identity:
 ```cpp
 // Intended syntax only; not implemented yet.
 auto node = world.AddNode();
-world[node].SetMesh(project::meshes::Stone);
+world[node].SetMesh(project::meshes::Stone); // single slot; replace, never append
 world[node].SetLocalTransform(frame);
 ```
 
