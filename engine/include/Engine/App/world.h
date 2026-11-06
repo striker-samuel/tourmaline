@@ -164,15 +164,15 @@ namespace tour {
 				return owner_.IsGameNode(handle_)
 					&& tour::scene::SetLocalTransform(owner_.scene, handle_, frame);
 			}
-			[[nodiscard]] bool SetPhysicsBody(const ScenePhysicsBody& body) const {
+			[[nodiscard]] bool SetPhysicsBody(const tour::scene::ScenePhysicsBody& body) const {
 				return owner_.IsGameNode(handle_)
 					&& tour::scene::SetPhysicsBody(owner_.scene, NodeHandleSlot(handle_), body);
 			}
-			[[nodiscard]] bool SetAudioRoom(const SceneAudioRoom& room) const {
+			[[nodiscard]] bool SetAudioRoom(const tour::scene::SceneAudioRoom& room) const {
 				return owner_.IsGameNode(handle_)
 					&& tour::scene::SetAudioRoom(owner_.scene, NodeHandleSlot(handle_), room);
 			}
-			[[nodiscard]] bool SetTriggerVolume(const SceneTriggerVolume& trigger) const {
+			[[nodiscard]] bool SetTriggerVolume(const tour::scene::SceneTriggerVolume& trigger) const {
 				return owner_.IsGameNode(handle_)
 					&& tour::scene::SetTriggerVolume(owner_.scene, NodeHandleSlot(handle_), trigger);
 			}
