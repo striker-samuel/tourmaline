@@ -18,8 +18,7 @@ int main() {
         "duplicate cell rejected");
     check(!tiles.SetManifest({{{11,{0,0}}, 0}}), "missing content id rejected");
     check(tiles.SetManifest({{{11,{-1,0}}, 101}, {{11,{0,0}}, 102},
-        {{11,{1,0}}, 103}, {{11,{3,0}}, 104},
-        {{22,{0,0}}, 105}}), "manifest accepted");
+        {{11,{1,0}}, 103}, {{11,{3,0}}, 104}}), "manifest accepted");
     std::vector<uint64_t> requested, retired, tickets;
     tiles.SetCallbacks(
         [&](const wp::SceneTileDescriptor& d, wp::DesiredResidency, uint64_t ticket) {
@@ -63,7 +62,9 @@ int main() {
     // A late completion after demand drops must not resurrect the cell.
     check(!tiles.Activate({11,{-1,0}}, tickets[1]),
         "late completion from canceled IO rejected");
-    check(tiles.SetManifest({{{11,{5,5}}, 401}, {{22,{5,5}}, 402}}),
+    check(!tiles.SetManifest({{{11,{5,5}}, 401}, {{22,{5,5}}, 402}}),
+        "mixed-world manifest rejected");
+    check(tiles.SetManifest({{{22,{5,5}}, 402}}),
         "manifest replacement succeeds after retirement");
     interest.position = glm::dvec3(128,0,128);
     interest.radiusMeters = 1000000;
@@ -87,7 +88,7 @@ int main() {
         && partition.Requests()[0].world == 22,
         "world-scoped demand selects other world's tile");
     check(!tiles.Activate({11,{5,5}}, tickets.back()),
-        "same coordinate in other world cannot adopt ticket");
+        "retired world cannot adopt newer world ticket");
     check(tiles.Activate({22,{5,5}}, tickets.back())
         && tiles.IsResident({22,{5,5}})
         && !tiles.IsResident({11,{5,5}}),
