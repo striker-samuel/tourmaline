@@ -232,6 +232,12 @@ struct SceneRenderSettings {
 inline constexpr int kSceneRenderFloatCount = 27;
 
 struct Scene {
+	// Explicit per-scene slot budget (0 = unbudgeted editor/tool scene).
+	// Runtime callers configure this before loading any nodes. No growth
+	// beyond the bound: budget exhaustion is a fatal configuration error.
+	size_t nodeSlotBudget = 0;
+	void ReserveNodeSlots(size_t slots);
+	void ResetForResolve(); // retain preallocated node storage
 
 	// Bulk-loader/serializer backing arrays, not a per-frame mutation API.
 	// Live writers must use SetLocalTransform(NodeHandle) or explicitly
@@ -534,6 +540,8 @@ void RetireNodeSlot(Scene& scene, NodeId node);
 // (stripped at pack time - cluster_serializer.h), so synthesizing a
 // million to_string names for a flat stress grid (or leaking them into
 // the table as garbage next to the recorded names) serves nobody.
+[[noreturn]] void CrashNodeBudget(const char* stage, size_t requested,
+	size_t budget);
 int addNode(Scene& scene, int parent, int level, bool autoName = true);
 
 // Generation-checked scene transform mutation. The setter marks affected
