@@ -12,6 +12,7 @@
 #include <Engine/Scene/scene.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
