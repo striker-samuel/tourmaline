@@ -13845,8 +13845,15 @@ namespace engine {
 			};
 			// Opt-in VS/FS pairs are created only after a baked direct draw
 			// appears. The regular VS + PSO selection is untouched otherwise.
-			std::unordered_map<const smvk::ShaderProgram*,
-				smvk::ShaderProgram> lmDirectPrograms;
+			using LmCacheEntry = std::pair<const smvk::ShaderProgram* const,
+				smvk::ShaderProgram>;
+			std::unordered_map<const smvk::ShaderProgram*, smvk::ShaderProgram,
+				std::hash<const smvk::ShaderProgram*>,
+				std::equal_to<const smvk::ShaderProgram*>,
+				tour::mem::LinearAllocatorSTL<LmCacheEntry>> lmDirectPrograms{
+				0, std::hash<const smvk::ShaderProgram*>{},
+				std::equal_to<const smvk::ShaderProgram*>{},
+				tour::mem::LinearAllocatorSTL<LmCacheEntry>{&tour::mem::FrameAllocator()}};
 			auto directLmProgram = [&](smvk::ShaderProgram& regular,
 				bool withLightmap) -> smvk::ShaderProgram& {
 				if (!withLightmap || regular.shaderCount != 2)
