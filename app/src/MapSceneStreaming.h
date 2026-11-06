@@ -61,10 +61,19 @@ public:
             error_ = "invalid MapTile manifest";
             return false;
         }
-        if (!provider_.SetManifest(std::move(descriptors))) {
-            error_ = "failed to install MapTile manifest";
+        std::vector<tour::CookedMapPlacement> global;
+        if (!tour::mapcook::ReadPersistentPlacements(reader, worldId, global)) {
+            error_ = "Map persistent placement page missing or corrupt";
             return false;
         }
+        std::vector<SceneHandle> created;
+        if (!InstantiateRecords(global, created)) return false;
+        if (!provider_.SetManifest(std::move(descriptors))) {
+            error_ = "failed to install MapTile manifest";
+            Rollback(created);
+            return false;
+        }
+        persistent_ = std::move(created);
         reader_ = &reader;
         return true;
     }
@@ -80,6 +89,14 @@ public:
             error_ = "Map retirement left active scene instances: " +
                 std::to_string(active_.size());
             return false;
+        }
+        while (!persistent_.empty()) {
+            std::string err;
+            if (!scenes_.RemoveScene(persistent_.back(), world_, err)) {
+                error_ = "persistent Map scene retirement failed: " + err;
+                return false;
+            }
+            persistent_.pop_back();
         }
         if (!provider_.SetManifest({})) {
             error_ = "Map provider still has pending or resident tiles";
@@ -104,10 +121,32 @@ private:
             return;
         }
         std::vector<SceneHandle> created;
+        if (!InstantiateRecords(records, created)) {
+            provider_.ResetPending(descriptor.tile, ticket);
+            return;
+        }
+        if (!provider_.Activate(descriptor.tile, ticket)) {
+            Rollback(created);
+            return;
+        }
+        active_.emplace(descriptor.tile, std::move(created));
+    }
+
+    void Rollback(std::vector<SceneHandle>& handles) {
+        while (!handles.empty()) {
+            std::string err;
+            if (!scenes_.RemoveScene(handles.back(), world_, err)) {
+                error_ = "rollback failed: " + err;
+                break;
+            }
+            handles.pop_back();
+        }
+    }
+
+    bool InstantiateRecords(const std::vector<tour::CookedMapPlacement>& records,
+                            std::vector<SceneHandle>& created) {
         created.reserve(records.size());
         for (const auto& record : records) {
-            // Current world Scene transforms are float matrices; reject
-            // overflow rather than silently losing an unbounded map pose.
             glm::mat4 frame(1.0f);
             bool valid = true;
             for (int c = 0; c < 4; ++c)
@@ -120,45 +159,33 @@ private:
                 }
             if (!valid) {
                 error_ = "Map placement transform exceeds runtime precision";
-                break;
+                Rollback(created);
+                return false;
             }
             std::string err;
-            const SceneHandle scene = scenes_.InstantiatePrefab(
+            const SceneHandle instance = scenes_.InstantiatePrefab(
                 world_, context_, streamer_, record.sceneAssetId, frame, err);
-            if (!scene) {
-                error_ = "failed to instantiate placed Scene " +
+            if (!instance) {
+                error_ = "failed to instantiate Scene " +
                     std::to_string(record.sceneAssetId) + ": " + err;
-                break;
+                Rollback(created);
+                return false;
             }
-            created.push_back(scene);
+            created.push_back(instance);
         }
-        if (created.size() != records.size()) {
-            for (auto it = created.rbegin(); it != created.rend(); ++it) {
-                std::string err;
-                scenes_.RemoveScene(*it, world_, err);
-            }
-            provider_.ResetPending(descriptor.tile, ticket);
-            return;
-        }
-        if (!provider_.Activate(descriptor.tile, ticket)) {
-            for (auto it = created.rbegin(); it != created.rend(); ++it) {
-                std::string err;
-                scenes_.RemoveScene(*it, world_, err);
-            }
-            return;
-        }
-        active_.emplace(descriptor.tile, std::move(created));
+        return true;
     }
 
     void Retire(engine::worldpartition::WorldTileKey tile) {
         const auto it = active_.find(tile);
         if (it == active_.end()) return;
-        for (auto scene = it->second.rbegin(); scene != it->second.rend(); ++scene) {
+        while (!it->second.empty()) {
             std::string err;
-            if (!scenes_.RemoveScene(*scene, world_, err)) {
+            if (!scenes_.RemoveScene(it->second.back(), world_, err)) {
                 error_ = "MapTile scene retirement failed: " + err;
                 return;
             }
+            it->second.pop_back();
         }
         active_.erase(it);
     }
@@ -172,6 +199,7 @@ private:
     std::map<engine::worldpartition::WorldTileKey,
              std::vector<SceneHandle>,
              engine::worldpartition::WorldTileKeyLess> active_;
+    std::vector<SceneHandle> persistent_;
     std::string error_;
 };
 
