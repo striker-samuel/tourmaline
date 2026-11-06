@@ -250,7 +250,14 @@ struct GfxKeptBits { uint kept[GFX_MAX_BATCH_SLOTS * 2]; };
 // in one small buffer per flight. Verdict words are [0, GFX_MAX_DRAWS);
 // the counter is word GFX_MAX_DRAWS.
 #define GFX_CULL_STATE_COUNTER GFX_MAX_DRAWS
-struct GfxCullState { uint v[GFX_MAX_DRAWS + 1]; };
+// Temporary distant-view investigation counters, written by GfxFilter.
+// Indexed after the draw verdicts and the filtered-index allocation counter.
+#define GFX_DIAG_EMPTY       (GFX_MAX_DRAWS + 1)
+#define GFX_DIAG_OVERFLOW    (GFX_MAX_DRAWS + 2)
+#define GFX_DIAG_ALLOCATED   (GFX_MAX_DRAWS + 3)
+#define GFX_DIAG_GATED       (GFX_MAX_DRAWS + 4)
+#define GFX_CULL_STATE_WORDS (GFX_MAX_DRAWS + 5)
+struct GfxCullState { uint v[GFX_CULL_STATE_WORDS]; };
 
 // Static per-mesh cluster range (mirror of C++ gfx::Mesh /
 // ClusterConstants' layout counterpart). Load-time upload.

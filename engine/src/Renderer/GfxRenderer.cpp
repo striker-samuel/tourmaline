@@ -2195,6 +2195,21 @@ namespace engine {
 			SMVK_DEBUG_LOG("[GfxAudit] slot %u: indirect download failed.\n", slot);
 			return;
 		}
+		// Filter outcome counters: one update per candidate batch.
+		// A nonzero overflow count proves a capacity drop; empty batches
+		// need a second (per-clip-plane) experiment to identify why.
+		uint32_t filterDiag[5] = {};
+		if (ctx.DownloadDataFromBuffer(v.cullStateBuffers[v.frameIndex],
+			filterDiag, sizeof(filterDiag),
+			size_t(kCullStateCounterWord) * sizeof(uint32_t))) {
+			std::fprintf(stderr,
+				"[GfxAudit] filter slot=%u allocatedIndices=%u empty=%u "
+				"overflow=%u allocatedBatches=%u gated=%u (total=%u/%u)\n",
+				slot, filterDiag[0], filterDiag[1], filterDiag[2],
+				filterDiag[3], filterDiag[4],
+				filterDiag[1] + filterDiag[2] + filterDiag[3] + filterDiag[4],
+				v.batchCount);
+		}
 		// Release-visible compact summary (the detailed lines below are
 		// SMVK_DEBUG_LOG = Debug-only): killed/kept counts split by draw-set
 		// bucket, so headless A/B runs can diff the GPU verdicts.

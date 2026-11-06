@@ -457,13 +457,27 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     if (gid < pcF.batchCount && tid == 0)
     {
         uint outBase = 0;
-        bool fits = gLocalCount > 0;
-        if (fits)
+        const bool hasTriangles = gLocalCount != 0u;
+        bool fits = hasTriangles;
+        if (hasTriangles)
         {
             InterlockedAdd(pcF.cullState.Get().v[GFX_CULL_STATE_COUNTER],
                 gLocalCount, outBase);
-            fits = outBase + gLocalCount <= GFX_MAX_FILTERED;
+            // Subtract instead of adding first: a wrapped uint allocation
+            // must never be mistaken for a valid range.
+            fits = gLocalCount <= GFX_MAX_FILTERED
+                && outBase <= GFX_MAX_FILTERED - gLocalCount;
         }
+        // Distinguish actual triangle rejection from ring exhaustion and
+        // verdict-gated work. One atomic per batch, not per triangle.
+        if (!slotKept || !drawOk || gClusterCull != 0u)
+            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_GATED], 1u);
+        else if (!hasTriangles)
+            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_EMPTY], 1u);
+        else if (!fits)
+            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_OVERFLOW], 1u);
+        else
+            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_ALLOCATED], 1u);
         if (fits)
         {
             gOutBase = outBase;
