@@ -29,8 +29,8 @@ namespace engine {
 	if (m_renderer.m_passes.ui) {
 		m_imgui = smvk::mem::MakeProcess<smvk::ImGuiOverlay>();
 		smvk::ImGuiOverlayDesc desc{};
-		desc.fontPath = UI_FONT_PATH;
-		desc.fontBaseSize = UI_FONT_BASE_SIZE;
+		desc.fontPath = "content/fonts/Roboto-Medium.ttf";
+		desc.fontBaseSize = 16.0f;
 		desc.colorFormat = m_renderer.m_viewportResources.ui.format;
 		if (!m_imgui->Init(*m_renderer.m_context, *m_renderer.m_swapchain,
 			m_host.GetWindow(), desc)) {

@@ -323,8 +323,6 @@ static constexpr float UI_SCALE_MIN = 0.5f;
 static constexpr float UI_SCALE_MAX = 2.0f;
 static constexpr float UI_DPI_MIN = 0.5f;
 static constexpr float UI_DPI_MAX = 3.0f;
-static constexpr float UI_FONT_BASE_SIZE = 16.0f;
-static const char* UI_FONT_PATH = "content/fonts/Roboto-Medium.ttf";
 
 static smvk::Extent2D ScaledExtent(smvk::Extent2D base, float scale) {
 	scale = std::clamp(scale, 0.1f, 4.0f);
