@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <utility>
@@ -34,6 +35,12 @@ public:
     using RetireCallback = std::function<void(const SceneTileDescriptor&)>;
 
     const char* ProviderName() const override { return "SceneTiles"; }
+
+    void SetMaxNewRequestsPerFrame(size_t limit) {
+        maxNewRequestsPerFrame_ = limit;
+    }
+    size_t MaxNewRequestsPerFrame() const { return maxNewRequestsPerFrame_; }
+
 
     // Manifest replaces previous availability, never runtime identity.
     // Do not swap a manifest while cells are resident: retire first.
@@ -102,6 +109,7 @@ public:
                 || !(interest.layerMask & StreamLayerBit(StreamLayer::Scene))
                 || !std::isfinite(interest.radiusMeters)
                 || interest.radiusMeters < 0.0
+                || !std::isfinite(interest.priority)
                 || !std::isfinite(interest.position.x)
                 || !std::isfinite(interest.position.z))
                 continue;
@@ -145,15 +153,35 @@ public:
     }
 
     void CommitFrame(uint64_t) override {
-        if (!request_) return;
+        if (!request_ || maxNewRequestsPerFrame_ == 0) return;
+        struct Candidate {
+            WorldTileKey tile;
+            float priority;
+            DesiredResidency desired;
+        };
+        std::vector<Candidate> candidates;
+        candidates.reserve(desired_.size());
         for (const auto& [key, policy] : desired_) {
-            if (resident_.count(key) || pending_.count(key)) continue;
-            const auto it = manifest_.find(key);
+            if (resident_.count(key) || pending_.count(key)
+                || manifest_.find(key) == manifest_.end()) continue;
+            candidates.push_back({key, policy.first, policy.second});
+        }
+        std::stable_sort(candidates.begin(), candidates.end(),
+            [](const Candidate& a, const Candidate& b) {
+                if (a.priority != b.priority)
+                    return a.priority > b.priority;
+                return SceneTileKeyLess{}(a.tile, b.tile);
+            });
+        size_t issued = 0;
+        for (const auto& candidate : candidates) {
+            if (issued >= maxNewRequestsPerFrame_) break;
+            const auto it = manifest_.find(candidate.tile);
             if (it == manifest_.end()) continue;
+            if (nextTicket_ == 0) break; // ticket space exhausted, fail closed
             const uint64_t ticket = nextTicket_++;
-            if (ticket == 0) continue; // exhausted monotonic identity
-            pending_.emplace(key, ticket);
-            request_(it->second, policy.second, ticket);
+            pending_.emplace(candidate.tile, ticket);
+            ++issued;
+            request_(it->second, candidate.desired, ticket);
         }
     }
 
@@ -182,6 +210,7 @@ private:
     std::map<WorldTileKey, std::pair<float, DesiredResidency>, SceneTileKeyLess> desired_;
     std::map<WorldTileKey, uint64_t, SceneTileKeyLess> pending_;
     uint64_t nextTicket_ = 1;
+    size_t maxNewRequestsPerFrame_ = 8;
     std::set<WorldTileKey, SceneTileKeyLess> resident_;
     RequestCallback request_;
     RetireCallback retire_;
