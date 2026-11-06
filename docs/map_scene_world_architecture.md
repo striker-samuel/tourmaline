@@ -10,10 +10,11 @@ are NOT copies of the local scene hierarchies.
 prefab, reusable building, or other contained hierarchy. It is not a world
 partition, pak, map, or global spatial index.
 
-`tour::World` remains the **runtime simulation/rendering host** with stable
-world-qualified entity identities, resident scene instances, GPU scene data and
-dynamic entities. One Map may result in many streamed runtime instances; one
-local Scene asset may be instantiated many times.
+`tour::World` (the renderer's `m_world`) remains the **single active runtime
+simulation/rendering host**. It owns active scene instances, GPU scene state
+and dynamic entities. Many authored Maps can exist on disk/in the project,
+but **exactly one Map is active in the runtime at a time**. A Map may place
+many local Scenes; each Scene asset may be reused by many placements.
 
 ```
 Map (world document)
@@ -41,6 +42,22 @@ Project Build
 WorldPartition -> tile demand -> asset pages -> World instance activation
 ```
 
+## World asset identity is not a second runtime World
+
+- `WorldId` identifies an authored Map/world-wide spatial distribution.
+  It is stable across recooks and not derived from the pak pathname.
+- `WorldTileKey { WorldId, WorldCellKey }` identifies a tile within an
+  authored Map, so two Maps can both contain tile `(0, 0)`.
+- `tour::World` is the runtime host, not another authored world. Its active
+  Map ID selects one streamed distribution. A map switch retires old tile
+  ownership before installing the next manifest; streaming interests from
+  the old Map must not activate the new Map's tiles.
+- Do not create additional runtime-World instances, simultaneous active Maps,
+  or an unnecessary runtime-world-instance ID. Existing generational entity
+  handles remain runtime state and must invalidate safely on a Map switch.
+- The initial `SceneTileProvider` enforces single-Map manifest ownership;
+  production `m_world` switch/unload integration remains outstanding.
+
 ## Stable identifiers
 
 - Map nodes: durable authored `uint64_t` IDs, not array offsets.
@@ -49,7 +66,7 @@ WorldPartition -> tile demand -> asset pages -> World instance activation
 - Runtime scene instances: world-qualified generational handles.
 - Runtime nodes: world-qualified generational identities, not source-map IDs.
 - Cooked BVH primitives: local cooked instance keys stable across remap.
-- World tiles: `WorldCellKey` logical coordinates, not archive filenames.
+- World tiles: `(WorldId, WorldCellKey)` logical identity, not archive filenames.
 
 ## Implemented stepping stone
 
@@ -59,7 +76,7 @@ deterministic `CompileMapTilePlacements` phase. It handles nested transforms,
 cycle/ID validation, persistent placements and canonical root-cell ownership.
 
 This is an in-memory cook preparation API only. It has NOT been connected to
-the editor `.tour` document format, Project Build, the pak writer, the
+the editor `.tour` document format, Project Build, the production pak writer, the
 runtime loader or the GPU scene. It does NOT yet compute conservative bounds
 of a referenced Scene or cross-tile spatial visibility. Those must precede
 runtime use.
