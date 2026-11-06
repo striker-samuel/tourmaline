@@ -7,7 +7,7 @@
 // Terrain push block: DXC allows a SINGLE push_constant block per entry, so
 // terrain shaders that need the per-draw tail declare ONE block here.
 // Bytes 0..192 mirror the scene PushConstants EXACTLY (same field order as
-// push_constants.hlsli — the app pushes the scene pc first, then the 32B
+// push_constants.hlsli — the app pushes the scene pc first, then the 36B
 // tail at 192); bytes 192..224 carry the C++ TerrainBlockPush tail
 // (Rendergraph/terrain.h, static_assert(sizeof==32) pins it).
 // Shaders using this block MUST #define TERRAIN_NOPC before including
@@ -51,6 +51,7 @@ struct TerrainPushBlock
     float range;
     int hfShadow;
     int hfSteps;
+    uint occlusionSlot;
 };
 
 GPU_PUSH(TerrainPushBlock, pcT);

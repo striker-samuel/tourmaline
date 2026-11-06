@@ -26,6 +26,7 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Rendergraph/terrain_meta.h>
+#include <Engine/Rendergraph/terrain_occlusion.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/renderview.h>
@@ -101,10 +102,39 @@ using namespace ::smvk;
 		}
 		const uint32_t nH = 4;  // v1 fixed grid (cook-enforced)
 		const uint32_t nS = 16; // worldSize/gBlock = 4096/256
-		if (blobs.size() != 1 + size_t(nH) * size_t(nH) + size_t(nS) * size_t(nS)) {
-			err = "Terrain blob count mismatch (want 1+16+256)";
-			return false;
-		}
+        // Legacy paks have 273 rows; newer paks add 16 shadow-height
+        // rows + one max hierarchy. Validate required paths below, and
+        // require either all optional occlusion rows or none.
+        const size_t legacy = 1 + size_t(nH) * nH + size_t(nS) * nS;
+        const size_t occlusion = size_t(nH) * nH + 1;
+        if (blobs.size() != legacy && blobs.size() != legacy + occlusion) {
+            err = "Terrain blob count mismatch (expected legacy or occlusion layout)";
+            return false;
+        }
+        const bool hasOcclusion = blobs.size() == legacy + occlusion;
+        if (hasOcclusion) {
+            for (uint32_t tz = 0; tz < nH; ++tz)
+                for (uint32_t tx = 0; tx < nH; ++tx) {
+                    const std::string path = "terrain/occlusion/"
+                        + terrain::HTileName(tx, tz);
+                    const auto* entry = reader.Find(PakAssetKind::Terrain, path);
+                    if (!entry || reader.Payload(*entry).size() !=
+                        size_t(meta.hRes) * meta.hRes * 4) {
+                        err = "missing or malformed " + path;
+                        return false;
+                    }
+                }
+            const auto* entry = reader.Find(PakAssetKind::Terrain,
+                terrain::kOcclusionPyramidPath);
+            if (!entry || reader.Payload(*entry).size() !=
+                size_t(terrain::kOcclusionAtlasWidth)
+                    * terrain::kOcclusionAtlasHeight * 2) {
+                err = "missing or malformed terrain/occlusion/max_pyramid";
+                return false;
+            }
+            const auto data = reader.Payload(*entry);
+            terrainSource.occlusionPyramid.assign(data.begin(), data.end());
+        }
 		terrain::TerrainHField hf;
 		hf.meta = meta;
 		hf.tiles.resize(size_t(nH) * size_t(nH));

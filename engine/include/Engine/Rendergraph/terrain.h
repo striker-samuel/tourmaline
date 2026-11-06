@@ -80,7 +80,7 @@ inline constexpr uint32_t kTerrainBlocksPerAxis = 16;
 inline constexpr uint32_t kTerrainBlockCount =
 	kTerrainBlocksPerAxis * kTerrainBlocksPerAxis;
 
-// Per-draw tail @192 for ALL terrain draws (32 B; HLSL mirrors:
+// Per-draw tail @192 for ALL terrain draws (36 B; HLSL mirrors:
 // terrain.frag.hlsl TerrainFragTail reads every word, terrainfar.vert.hlsl
 // TerrainFarPushHlsl reads the world half). Words 0..5 are layout-identical
 // for both readers. The far VS takes its block id from firstInstance
@@ -95,9 +95,10 @@ struct TerrainBlockPush {
 	float baseY = 0.0f;               // worldY = baseY + h01*range
 	float range = 1.0f;
 	int32_t hfShadow = 1;             // 0 off | 1 receive | 2 receive+raymarch
-	int32_t hfSteps = 16;             // raymarch steps (4..64)
+	int32_t hfSteps = 16;             // legacy raymarch fallback steps
+	uint32_t occlusionSlot = 0xFFFFFFFFu; // optional packed maximum height atlas
 };
-static_assert(sizeof(TerrainBlockPush) == 32,
+static_assert(sizeof(TerrainBlockPush) == 36,
 	"TerrainBlockPush moved - update terrain.frag.hlsl + terrainfar.vert.hlsl");
 
 inline constexpr uint32_t kTerrainPushOffset = 192;
@@ -119,6 +120,8 @@ struct TerrainField {
 	Holder<BufferHandle> farVertexBuffer; // ALL blocks, TerrainFarVertex
 	Holder<BufferHandle> farIndexBuffer;  // one shared far topology
 	Holder<TextureHandle> heightAtlas{};  // merged 4096 R16 (one slot)
+	Holder<TextureHandle> occlusionAtlas{}; // cooked 2048x1024 R16 max hierarchy
+	uint32_t occlusionSlot = 0xFFFFFFFFu;
 	uint32_t atlasSlot = 0xFFFFFFFFu;
 	bool valid = false;
 
