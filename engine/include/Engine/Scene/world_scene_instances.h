@@ -73,7 +73,8 @@ public:
         }
         for (int c = 0; c < 4; ++c)
             for (int r = 0; r < 4; ++r)
-                if (!std::isfinite(frame[c][r])) {
+                if (!std::isfinite(frame[c][r])
+                    || std::abs(frame[c][r]) > double(std::numeric_limits<float>::max())) {
                     err = "nonfinite Scene placement";
                     return 0;
                 }
@@ -123,12 +124,13 @@ public:
             if (!IsLiveSlot(source, i)) continue;
             std::vector<uint32_t> chain;
             int current = int(i);
-            while (current >= 0 && depth[size_t(current)] < 0) {
+            while (current >= 0) {
                 if (size_t(current) >= n
                     || !IsLiveSlot(source, uint32_t(current))) {
                     err = "Scene parent points outside live hierarchy";
                     return 0;
                 }
+                if (depth[size_t(current)] >= 0) break;
                 if (visit[size_t(current)] == 1) {
                     err = "Scene hierarchy cycle";
                     return 0;
@@ -153,7 +155,8 @@ public:
         const size_t size = target.hierarchy.size();
         const size_t reuse = target.nodeFreeList.size();
         const size_t growth = needed > reuse ? needed - reuse : 0;
-        if (growth > kNodeSlotCountMax - 1 - size
+        if (size >= kNodeSlotCountMax - 1
+            || growth > kNodeSlotCountMax - 1 - size
             || (target.nodeSlotBudget
                 && growth > target.nodeSlotBudget - std::min(size, target.nodeSlotBudget))) {
             err = "World instance would exceed scene node budget";
