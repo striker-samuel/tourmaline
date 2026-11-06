@@ -36,6 +36,8 @@ namespace tour {
 		// 256 S-tiles of 256x256 RGBA8, row-major (tz*16+tx) test masks.
 		// Present only between harvest and the terrain bake.
 		std::vector<std::vector<uint8_t>> masks{};
+		// Optional packed conservative max-Y pyramid from the cook.
+		std::vector<uint8_t> occlusionPyramid{};
 		bool hasTerrain = false;
 	};
 
