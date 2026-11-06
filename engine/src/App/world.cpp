@@ -1988,7 +1988,7 @@ using namespace ::smvk;
 		for (const MeshEntity& entity : meshEntities)
 			if (entity.alive && entity.mergedNode == node)
 				return false;
-		for (const AudioSourceEntity& entity : audioSourceEntities)
+		for (const AudioSourceEntity& entity : audioEntities)
 			if (entity.alive && entity.mergedNode == node)
 				return false;
 		deleteSceneNodes(scene, { node });
