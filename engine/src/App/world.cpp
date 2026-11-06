@@ -985,6 +985,49 @@ using namespace ::smvk;
 		return true;
 	}
 
+	uint64_t World::InstantiateSceneHierarchy(
+		const Scene& source, uint64_t sceneAssetId,
+		const glm::dmat4& placement,
+		std::vector<tour::asset::AssetLease> assets,
+		std::string& err)
+	{
+		const uint64_t instance = worldSceneInstances.Instantiate(
+			scene, regions, source, sceneAssetId, placement,
+			std::move(assets), err);
+		if (instance) {
+			flags.resize(scene.hierarchy.size(), IteratorFlagBit_None);
+			InvalidateStaticBvh();
+			flagLists.clear();
+			dirtyCull = true;
+			++gpuSceneTopologyRevision;
+		}
+		return instance;
+	}
+
+	bool World::RetireSceneHierarchy(uint64_t instanceId)
+	{
+		const auto* instance = worldSceneInstances.Find(instanceId);
+		if (!instance) return false;
+		const std::vector<NodeHandle> ownedNodes = instance->sourceNodes;
+		const NodeHandle root = instance->root;
+		if (!worldSceneInstances.Retire(scene, regions, instanceId))
+			return false;
+		for (const NodeHandle node : ownedNodes) {
+			if (node == kNodeInvalidHandle) continue;
+			const uint32_t slot = NodeHandleSlot(node);
+			if (slot < flags.size()) flags[slot] = IteratorFlagBit_None;
+		}
+		if (root != kNodeInvalidHandle) {
+			const uint32_t slot = NodeHandleSlot(root);
+			if (slot < flags.size()) flags[slot] = IteratorFlagBit_None;
+		}
+		InvalidateStaticBvh();
+		flagLists.clear();
+		dirtyCull = true;
+		++gpuSceneTopologyRevision;
+		return true;
+	}
+
 	void World::RegisterCluster(std::unique_ptr<Cluster> cluster)
 	{
 		assert(cluster != nullptr);
@@ -1036,6 +1079,11 @@ using namespace ::smvk;
 	// slots that point back to the owning Cluster + handle.
 	void World::ResolveAndFixup_clusters()
 	{
+		// Never silently discard direct World-owned nodes while rebuilding
+		// legacy Cluster copies. Complete the legacy renderer cutover before
+		// combining both paths in one active World.
+		if (worldSceneInstances.Count() != 0)
+			throw std::logic_error("cannot resolve Cluster scenes while direct World scene instances are active");
 		// MATERIAL USERDATA RE-KEY CAPTURE (consumed by the re-key below
 		// the material-table rebuild): the world material indices are
 		// about to be rebuilt, so the per-material defaults are captured
