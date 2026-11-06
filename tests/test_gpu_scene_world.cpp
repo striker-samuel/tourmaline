@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Headless contracts for the GPUIR World -> GPU scene bridge.
 #include <Engine/Renderer/gpu_scene_world.h>
+#include <Engine/Renderer/gpu_scene_instancing.h>
 #include <Engine/Scene/scene.h>
 #include <cstdio>
 #include <span>
@@ -131,6 +132,52 @@ int main() {
         tour::math::JoinDoubleFloat(largeDb.instances.Get(largeId)->worldPosition);
     CHECK(std::abs(movedPosition.x - (largeOrigin.x + 0.375)) < 0.01);
     CHECK(!largeBridge.UpdateGlobal(large.instance, movedDouble, largeDb));
+
+    // The instancing planner uses ONLY GPU-scene generational identities;
+    // selected LOD, material, and flags remain distinct draw keys.
+    RenderDatabase planDb{};
+    SceneRegistry planRegistry{};
+    SourceRecord i0{};
+    i0.instance = {1001, 1, 1};
+    i0.mesh = {1001, 5, 1};
+    i0.material = 11;
+    SourceRecord i1 = i0;
+    i1.instance = {1001, 2, 1};
+    SourceRecord i2 = i0;
+    i2.instance = {1001, 3, 1};
+    i2.material = 12;
+    std::vector<SourceRecord> instanceSources{i0, i1, i2};
+    const auto planSync = planRegistry.Reconcile(instanceSources, planDb);
+    CHECK(planSync.created == 3);
+    const auto h0 = planRegistry.Find(i0.instance);
+    const auto h1 = planRegistry.Find(i1.instance);
+    const auto h2 = planRegistry.Find(i2.instance);
+    const LevelSource twoLods[2] = {
+        {0.0f, 31u, true, true}, {0.5f, 32u, true, true}};
+    CHECK(planRegistry.PublishMesh(i0.mesh, std::span(twoLods), true, planDb));
+    const InstanceDrawCandidate chosen[] = {
+        {h1, 0u}, {h2, 0u}, {h0, 0u}, {h0, 1u},
+        {Handle<Instance>{h0.slot, h0.generation + 1u}, 0u}, {h1, 9u}};
+    const auto plan = BuildInstanceDrawPlan(planDb, chosen);
+    CHECK(plan.rejected == 2u);
+    CHECK(plan.refs.size() == 4u && plan.ranges.size() == 3u);
+    CHECK(plan.ranges[0].instanceCount == 2u);
+    CHECK(plan.ranges[0].firstInstance == 0u);
+    CHECK(plan.ranges[0].key.lod == 0u && plan.ranges[0].key.material == 11u);
+    CHECK(plan.refs[0] == h1 && plan.refs[1] == h0);
+    CHECK(plan.ranges[1].instanceCount == 1u && plan.ranges[1].key.material == 12u);
+    CHECK(plan.ranges[2].instanceCount == 1u && plan.ranges[2].key.lod == 1u);
+    // Eviction and stale generations are rejected; the direct fallback
+    // continues to own anything that is not ready for GPU-scene raster.
+    const LevelSource oneEvicted[2] = {
+        {0.0f, 31u, true, true}, {0.5f, InvalidIndex, false, true}};
+    CHECK(planRegistry.PublishMesh(i0.mesh, std::span(oneEvicted), true, planDb));
+    const auto evictedPlan = BuildInstanceDrawPlan(planDb, chosen);
+    CHECK(evictedPlan.rejected == 3u);
+    CHECK(evictedPlan.refs.size() == 3u);
+    planRegistry.Clear(planDb);
+    const auto retiredPlan = BuildInstanceDrawPlan(planDb, chosen);
+    CHECK(retiredPlan.refs.empty() && retiredPlan.rejected == 6u);
 
     // Recalculation clears the existing dirty-at-level queues, but the
     // GPU scene journal keeps the successfully recomputed parent + child.
