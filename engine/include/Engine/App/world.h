@@ -13,6 +13,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/animator.h>
+#include <Engine/Asset/mesh_handle.h>
 #include <Engine/Asset/cluster_serializer.h> // smvk::ExternalTextureResolver
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
@@ -22,7 +23,7 @@
 #include <Engine/Scene/region_registry.h>
 #include <Engine/Scene/world_scene_instances.h>
 
-namespace app { class AssetManager; struct MeshHandle; }
+namespace app { class AssetManager; }
 
 namespace tour {
 // (namespace/RHI boundary audit) this block's RHI dependencies are
