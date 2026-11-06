@@ -17,6 +17,13 @@
 
 namespace tour::mapcook {
 
+// Forward declaration (the definition sits below the tile discovery;
+// GCC/MSVC reject the use-before-declaration otherwise - the CI red on
+// every platform).
+inline bool ReadMapManifest(const smvk::PakReader& reader,
+                            engine::worldpartition::WorldId world,
+                            uint32_t& tileCount, uint32_t& persistentCount);
+
 inline std::string TilePath(engine::worldpartition::WorldTileKey tile) {
     return "worlds/" + std::to_string(tile.world) + "/tiles/" +
         std::to_string(tile.cell.x) + "_" +
