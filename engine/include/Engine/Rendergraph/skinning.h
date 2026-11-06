@@ -22,6 +22,7 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace smvk::skinning {
@@ -80,7 +81,7 @@ struct SkinVisual {
 	// false when nothing could run (no shader/no data/empty palette).
 	bool AppendPass(ResourceManager& ctx, RenderGraph& rg,
 		uint32_t frameIndex, const SkinPush& push,
-		const std::vector<glm::mat4>& palette);
+		std::span<const glm::mat4> palette);
 };
 
 } // namespace smvk::skinning
