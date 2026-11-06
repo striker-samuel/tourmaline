@@ -104,7 +104,15 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         // downstream; group 0 zeroes it once per frame here (GfxBatchCull
         // always runs before the filter — the rendergraph orders them).
         if (drawIdx == 0)
+        {
             pcB.cullState.Get().v[GFX_CULL_STATE_COUNTER] = 0u;
+            // Reset diagnostic counters before GfxFilter; the rendergraph
+            // orders this pass ahead of all filter workgroups.
+            pcB.cullState.Get().v[GFX_DIAG_EMPTY] = 0u;
+            pcB.cullState.Get().v[GFX_DIAG_OVERFLOW] = 0u;
+            pcB.cullState.Get().v[GFX_DIAG_ALLOCATED] = 0u;
+            pcB.cullState.Get().v[GFX_DIAG_GATED] = 0u;
+        }
     }
     GroupMemoryBarrierWithGroupSync();
 
