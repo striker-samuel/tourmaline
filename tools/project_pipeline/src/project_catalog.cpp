@@ -840,6 +840,9 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< " { return id; } };\n"
 		<< "struct TextureKey { Id id = 0; constexpr operator Id() const"
 		<< " { return id; } };\n"
+		<< "// LUTs are project textures under luts/: they share the stable\\n"
+		<< "// texture catalog identity, but have their own typed key.\\n"
+		<< "struct LutKey { Id id = 0; constexpr operator Id() const { return id; } };\\n"
 		<< "struct MeshKey { Id id = 0; constexpr operator Id() const"
 		<< " { return id; } };\n"
 		<< "struct SoundKey { Id id = 0; constexpr operator Id() const"
@@ -922,6 +925,17 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	};
 	emitNamespace("scenes", c.scenes, "SceneKey");
 	emitNamespace("textures", c.textures, "TextureKey");
+	// LUTs are a typed VIEW of project texture entries under luts/.
+	// They reuse the exact same catalog id/kind/provider; no parallel
+	// identity store and no runtime directory discovery.
+	std::vector<CatalogEntry> lutEntries;
+	for (const CatalogEntry& entry : c.textures) {
+		const size_t pos = entry.path.find("luts/");
+		if (pos != std::string::npos
+				&& (pos == 0 || entry.path[pos - 1] == '/'))
+			lutEntries.push_back(entry);
+	}
+	emitNamespace("luts", lutEntries, "LutKey");
 	emitNamespace("meshes", c.meshes, "MeshKey");
 	emitNamespace("sounds", c.sounds, "SoundKey");
 	emitNamespace("shaders", c.shaders, "ShaderKey");
