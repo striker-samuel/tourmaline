@@ -165,8 +165,8 @@ int main() {
     CHECK(plan.ranges[0].firstInstance == 0u);
     CHECK(plan.ranges[0].key.lod == 0u && plan.ranges[0].key.material == 11u);
     CHECK(plan.refs[0] == h1 && plan.refs[1] == h0);
-    CHECK(plan.ranges[1].instanceCount == 1u && plan.ranges[1].key.lod == 1u);
-    CHECK(plan.ranges[2].instanceCount == 1u && plan.ranges[2].key.material == 12u);
+    CHECK(plan.ranges[1].instanceCount == 1u && plan.ranges[1].key.material == 12u);
+    CHECK(plan.ranges[2].instanceCount == 1u && plan.ranges[2].key.lod == 1u);
     // Eviction and stale generations are rejected; the direct fallback
     // continues to own anything that is not ready for GPU-scene raster.
     const LevelSource oneEvicted[2] = {
