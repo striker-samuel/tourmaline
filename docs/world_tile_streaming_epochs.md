@@ -60,8 +60,8 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
 - [x] Introduce CPU-only `SceneTileProvider` using
   `WorldPartition::StreamLayer::Scene`.
 - [x] Manifest addresses logical tile IDs, independent of physical pak layout.
-- [x] Demand collection, pending dedup, acknowledgement, cancellation
-  and retired-cell notification with headless tests.
+- [x] Demand collection, pending dedup, ticket-checked acknowledgement,
+  cancellation and retired-cell notification with headless tests.
 - [ ] Integrate into application render-thread WorldPartition provider wiring.
 - [ ] Add priority queues, dependency resolution, velocity prefetch,
   hysteresis, bandwidth/IO/upload/memory budgets and cancel generations.
@@ -84,6 +84,10 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
   static/animated exclusion, transforms and every LOD.
 
 ### Epoch 3 — logical paging, storage, and dependencies
+- [x] Reserve a dedicated internal SMP8 `MapTile` kind and add
+  `AddMapTiles` / `ReadMapTile` adapters for independent placement pages;
+  exercise multiple logical cells in one archive using the real PakWriter
+  and PakReader in a headless test. Does not yet integrate with Project Build.
 - [ ] Add tile manifest entries to the existing paged SMP8 pak TOC,
   resolved through ContentRegistry and PakReader positional reads.
 - [ ] Keep packaging policy separate: one pak, regional paks, or tile paks
@@ -169,7 +173,8 @@ Manual end-to-end acceptance:
 
 ## What this initial PR actually changes
 
-Epoch 1's standalone CPU streaming seam and the preliminary Map/tile codec
-slice of Epoch 2 are implemented with headless tests. **Epochs 2–7 are not
-claimed complete.** Do not merge this
+Epoch 1's standalone CPU streaming seam (including ticket-safe completion),
+the preliminary Map/tile codec slice of Epoch 2, and an SMP8 tile-page
+read/write adapter slice of Epoch 3 are implemented with headless tests.
+**Epochs 2–7 are not claimed complete.** Do not merge this
 as the requested finished architecture merely because the PR exists.
