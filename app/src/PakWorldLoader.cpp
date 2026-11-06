@@ -255,7 +255,8 @@ namespace app {
 		smvk::ResourceManager& ctx,
 		smvk::OverlayVfs& contentVfs,
 		tour::TextureStreamer* sceneStreamer,
-		app::ProjectRuntime& session
+		app::ProjectRuntime& session,
+		size_t nodeBudget
 	) {
 		// Optick: the synchronous scene-load path (startup / scene-switch
 		// latency, not steady frame cost) — stage scopes below.
@@ -283,6 +284,7 @@ namespace app {
 				std::cerr << "[App] no scenes: terrain-only pak, loading "
 					"terrain without a scene\n";
 				auto world = tour::mem::MakeProcess<tour::World>();
+				world->ConfigureSceneNodeBudget(nodeBudget);
 				std::string terrErr;
 				if (!world->LoadTerrainFromPak(reader, terrErr)) {
 					std::cerr << "[App] terrain harvest failed: " << terrErr
@@ -311,6 +313,7 @@ namespace app {
 		std::cerr << "[App] loading scene[" << sceneIndex << "] '"
 			<< scenes[size_t(sceneIndex)].name << "'...\n";
 		auto world = tour::mem::MakeProcess<tour::World>();
+		world->ConfigureSceneNodeBudget(nodeBudget);
 		{
 			// The cluster deserialize + GPU uploads (meshes, materials,
 			// textures staged through the streamer) — the dominant
@@ -348,7 +351,8 @@ namespace app {
 		smvk::ResourceManager& ctx,
 		smvk::OverlayVfs& contentVfs,
 		tour::TextureStreamer* sceneStreamer,
-		app::ProjectRuntime* session
+		app::ProjectRuntime* session,
+		size_t nodeBudget
 	) {
 		SMVK_PROFILE_IO("ProjectWorld_Load");
 		// EVERY listed pak must have preloaded clean — one missing or
@@ -458,6 +462,7 @@ namespace app {
 		};
 
 		auto world = tour::mem::MakeProcess<tour::World>();
+		world->ConfigureSceneNodeBudget(nodeBudget);
 		{
 			SMVK_PROFILE_IO("ProjectWorld_LoadCluster");
 			try {
