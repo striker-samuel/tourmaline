@@ -1970,6 +1970,18 @@ using namespace ::smvk;
 		const int node = addNode(scene, -1, 0);
 		if (node < 0)
 			return kNodeInvalidHandle;
+		// Preserve the ABA guarantee even across the legacy full-scene
+		// resolve: its replacement Scene may reuse the same slot number.
+		uint32_t& highWater = gameSlotGeneration_[NodeId(node)];
+		const uint32_t sceneGeneration = NodeGenerationOf(scene, NodeId(node));
+		const uint32_t generation = std::max(highWater + 1u, sceneGeneration);
+		if (generation >= tour::scene::kNodeGenMask) {
+			RetireNodeSlot(scene, NodeId(node));
+			return kNodeInvalidHandle;
+		}
+		highWater = generation;
+		scene.nodeGeneration[size_t(node)] =
+			tour::scene::kNodeSlotAliveBit | generation;
 		const NodeHandle handle = MakeNodeHandle(scene, NodeId(node));
 		gameNodes_.insert(handle);
 		(void)tour::scene::SetLocalTransform(scene, handle, localFrame);
