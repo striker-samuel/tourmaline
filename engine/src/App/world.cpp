@@ -1078,6 +1078,21 @@ using namespace ::smvk;
 		// replaces the per-node addNode allocation/copy/remap passes.
 		// We cannot move Cluster::scene: it is the durable owner used by
 		// later resolves, unloading and runtime entity updates.
+		//
+		// KNOWN BUG (WIP - #228 follow-up, pushed as WIP by owner
+		// direction): the identity layout only applies while
+		// clusters.size() == 1, and that count CHANGES at runtime - the
+		// first mesh-entity/animator/decal/audio spawn creates the
+		// internal dynamic cluster (EnsureDynamicCluster), flipping the
+		// world onto the legacy path below, which re-roots the merge at
+		// slot 0 and shifts every primary-cluster node by +1. Raw
+		// merged-scene node ids are NOT stable across that transition:
+		// world_entity_tests segfaults at meshent.rowspawn-material-bind
+		// (sourceNode's rows moved to node+1 mid-test; the entity layer
+		// itself survives via clusterMergedNodes, gameplay holding raw
+		// node ids does not). FIX DIRECTION: count CONTENT clusters only
+		// (exclude isDynamic) and fold dynamic clusters by APPENDING
+		// after the identity-copied primary, so primary ids never move.
 		const bool singleCluster = clusters.size() == 1;
 		if (singleCluster)
 			scene = clusters.front()->scene;
