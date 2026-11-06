@@ -12,10 +12,8 @@ indices in gameplay code.
 #include "AssetManager.h"
 #include "project.h"       // generated, project-specific catalog
 
-// Construct AssetManager once using the SAME world; the manager
-// automatically attaches to world for its lifetime.
-app::AssetManager assets(runtime, world, ctx, &renderer);
-
+// The app host creates World and its internal asset service during
+// World loading. Game code does NOT construct an AssetManager.
 // Load from a typed catalog key BEFORE creating nodes. The loaded
 // handle is a RESOURCE, not a node or a runtime mesh entity.
 app::MeshHandle stone = world.LoadMesh(project::meshes::Stone);
@@ -37,12 +35,12 @@ world[node].SetTriggerVolume({});
 // Unload in reverse: detach the node before releasing its resource.
 world[node].RemoveMesh();
 world.RemoveNode(node);
-assets.UnloadMesh(stone);
+world.UnloadMesh(stone);
 ```
 
-All mesh resources come from `World::LoadMesh(key)` (delegating to the
-attached `AssetManager::LoadMesh`) or the existing
-`AssetManager::LoadMesh(key, error)` overload. The returned
+All mesh resources come from `World::LoadMesh(key)`, delegating to
+the runtime-owned AssetManager for catalog lookup, caching and lifetime
+management. The game needs no access to that internal service. The returned
 `app::MeshHandle` is shared across nodes and is passed explicitly to
 `world[node].SetMesh(handle)`; **do not pass a catalog key directly to
 `SetMesh`**. For diagnostic code,
@@ -68,12 +66,17 @@ values. These are *typed value definitions*, not loadable assets.
   nodes may bind the same loaded mesh handle, with independent transforms.
 - `SetMesh` replaces the mesh on the **existing** node; no second node
   or hidden transform is created.
-- The loaded asset belongs to `AssetManager`. The node merely borrows
-  its handle. `UnloadMesh(handle)` refuses while any game node still
-  refers to it. `UnloadAllMeshes()` and AssetManager detachment first
-  clear game-node mesh associations so resources cannot dangle.
-- The same World must outlive its AssetManager. Game code should
-  detach/destroy nodes and release resources before teardown.
+- The loaded asset belongs to the runtime-owned AssetManager. The node
+  merely borrows its handle. `world.UnloadMesh(handle)` refuses while
+  any game node still refers to it; `UnloadAllMeshes()` at internal
+  teardown first clears node mesh associations so resources cannot
+  dangle.
+- The World owns the service through an erased pointer installed by
+  PakApp's World-source callback; the service is destroyed before the
+  World's scene and cluster pools. No explicit service initialization
+  or shutdown belongs in gameplay code. Headless/custom World
+  constructors must still install a service explicitly if they want
+  catalog-backed loading.
 - Unknown catalog keys, wrong catalog kinds and missing World mappings
   fail via existing AssetManager checks. No fallback string lookup
   or fake resource index is introduced.
