@@ -598,6 +598,24 @@ void TestLifetimeCounters() {
 		"memory.telemetry.arena-lifetime-totals");
 }
 
+void TestFlightArenas() {
+	// Distinct frame slots have independent backing reservations. Resetting
+	// one retired slot must never invalidate another flight's CPU data.
+	auto& slot0 = smvk::FlightArena(0);
+	auto& slot1 = smvk::FlightArena(1);
+	auto* p0 = static_cast<uint32_t*>(slot0.Allocate(sizeof(uint32_t), alignof(uint32_t)));
+	auto* p1 = static_cast<uint32_t*>(slot1.Allocate(sizeof(uint32_t), alignof(uint32_t)));
+	*p0 = 0x1234abcd;
+	*p1 = 0xbaddcafe;
+	Check(p0 != p1, "memory.flight.distinct-storage");
+	smvk::ResetFlightArena(0);
+	Check(*p1 == 0xbaddcafe, "memory.flight.other-slot-remains-live");
+	auto* p0b = static_cast<uint32_t*>(slot0.Allocate(sizeof(uint32_t), alignof(uint32_t)));
+	Check(p0b == p0, "memory.flight.retired-slot-reuses-address");
+	smvk::ResetFlightArena(0);
+	smvk::ResetFlightArena(1);
+}
+
 void TestStlAdapter() {
 	smvk::mem::LinearAllocator alloc("test-stl", 1 * 1024 * 1024, 64 * 1024);
 	smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
@@ -640,6 +658,7 @@ int main() {
 	TestFrameReset();
 	TestGlobals();
 	TestArenaBacking();
+	TestFlightArenas();
 	TestBenchmarks();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
