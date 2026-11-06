@@ -113,6 +113,8 @@
 #include <Engine/Vfs/vfs.h>
 #include <meshoptimizer.h>
 #include <Engine/Asset/sdf.h> // the --content SDF validation gate
+#include <Engine/WorldPartition/map_text.h>
+#include <Engine/WorldPartition/map_tile_pak.h>
 
 namespace paktool {
 
@@ -132,6 +134,7 @@ namespace paktool {
 		// right after import, before collapse/LOD/bake/serialize. CLI flags
 		// win over tour cook defaults (tracked via explicitSet).
 		std::string tour;
+		std::string mapFile;
 		std::unordered_set<std::string> explicitSet;
 		bool meshopt = true;
 		float overdraw = 1.05f;
@@ -435,6 +438,9 @@ namespace paktool {
 			else if (a == "--tour") {
 				if (!need(out.tour)) return false;
 			}
+			else if (a == "--map") {
+				if (!need(out.mapFile)) return false;
+			}
 			else if (a == "--meshopt") {
 				std::string v;
 				if (!need(v)) return false;
@@ -610,21 +616,21 @@ namespace paktool {
 	if ((!out.shaderDir.empty() || !out.shaderList.empty())
 			&& positional.empty())
 		return true;
-	if (positional.empty()) {
+	if (positional.empty() && out.mapFile.empty()) {
 		tool::err() << "Required: pak.exe <vfs_path> <artifact...> [--options]"
 			" - the VFS content root + the processed .geometry list"
 			" (import raw glTF with import.exe / the editor first)"
 			<< std::endl;
 		return false;
 	}
-	out.contentDir = positional[0];
+	if (!positional.empty()) out.contentDir = positional[0];
 	if (positional.size() > 1) {
 		out.inVfsList.assign(positional.begin() + 1, positional.end());
 		out.inVfs = out.inVfsList.front();
 	}
 	if (out.inVfsList.empty() && out.tour.empty() && out.terrainDir.empty()
 			&& out.contentSet.empty() && out.shaderDir.empty()
-			&& out.shaderList.empty()) {
+			&& out.shaderList.empty() && out.mapFile.empty()) {
 		tool::err() << "Required: at least one artifact .geometry (or --tour"
 		" <scene.tour> - the editor-authored definition), and"
 		" --out-pak <host path> (--terrain <dir> alone cooks a"
@@ -1625,6 +1631,7 @@ int Run(const PakArgs& c) {
 	args.inVfsList = c.inVfsList;
 	args.inVfs = c.inVfs;
 	args.tour = c.tour;
+	args.mapFile = c.mapFile;
 	args.registryDir = c.registryDir;
 	args.outPak = c.outPak;
 	args.dumpPak = c.dumpPak;
@@ -1658,7 +1665,8 @@ int Run(const PakArgs& c) {
 	// self-check.
 	if ((!args.shaderDir.empty() || !args.shaderList.empty())
 			&& args.inVfsList.empty() && args.tour.empty()
-			&& args.contentSet.empty() && args.terrainDir.empty()) {
+			&& args.contentSet.empty() && args.terrainDir.empty()
+			&& args.mapFile.empty()) {
 		if (args.outPak.empty()) {
 			tool::err() << "Required: --out-pak <host path>"
 				<< std::endl;
@@ -1788,6 +1796,71 @@ int Run(const PakArgs& c) {
 					<< s.key << " (" << s.size << " B)\n";
 		}
 		DumpManifestFromPak(*reader, args.dumpNodes);
+		return 0;
+	}
+
+	// The map-only packaging lane is a real SMP8 cooker path: no Cluster,
+	// geometry import, Vulkan device, or local Scene is required.
+	if (!args.mapFile.empty() && args.tour.empty()
+			&& args.inVfsList.empty() && args.contentSet.empty()
+			&& args.terrainDir.empty() && args.shaderDir.empty()
+			&& args.shaderList.empty()) {
+		std::ifstream file(args.mapFile, std::ios::binary);
+		if (!file) {
+			tool::err() << "Cannot open map: " << args.mapFile << std::endl;
+			return 1;
+		}
+		const std::string source((std::istreambuf_iterator<char>(file)),
+			std::istreambuf_iterator<char>());
+		tour::Map map;
+		std::string error;
+		if (!tour::mapcook::ParseMap(source, map, error)) {
+			tool::err() << "Map parse failed: " << error << std::endl;
+			return 1;
+		}
+		tour::CompiledMapTiles compiled;
+		if (!tour::CompileMapTilePlacements(map, compiled)) {
+			tool::err() << "Map compile failed" << std::endl;
+			return 1;
+		}
+		smvk::PakWriter writer;
+		writer.SetCompression(args.compress ? smvk::PakCompression::Lz4
+			: smvk::PakCompression::None, args.lz4Accel);
+		if (!tour::mapcook::AddMapTiles(writer, compiled)) {
+			tool::err() << "Map tile packing failed" << std::endl;
+			return 1;
+		}
+		const std::vector<uint8_t> bytes = writer.Finalize();
+		std::filesystem::path dest(args.outPak);
+		std::error_code ec;
+		if (dest.has_parent_path())
+			std::filesystem::create_directories(dest.parent_path(), ec);
+		std::ofstream out(dest, std::ios::binary);
+		if (!out || !out.write(reinterpret_cast<const char*>(bytes.data()),
+				static_cast<std::streamsize>(bytes.size()))) {
+			tool::err() << "Map pak write failed: " << args.outPak << std::endl;
+			return 1;
+		}
+		out.close();
+		if (args.verify) {
+			std::string verr;
+			auto reader = smvk::PakReader::OpenFile(args.outPak, verr);
+			if (!reader) {
+				tool::err() << "Map pak verify failed: " << verr << std::endl;
+				return 1;
+			}
+			for (const auto& [cell, placements] : compiled.tiles) {
+				std::vector<tour::CookedMapPlacement> decoded;
+				if (!tour::mapcook::ReadMapTile(*reader, {map.id, cell}, decoded)
+						|| decoded.size() != placements.size()) {
+					tool::err() << "Map tile verify failed at "
+						<< cell.x << "," << cell.z << std::endl;
+					return 1;
+				}
+			}
+		}
+		tool::out() << "Packed Map " << map.id << " ("
+			<< compiled.tiles.size() << " tiles) into " << args.outPak << "\\n";
 		return 0;
 	}
 
@@ -2885,6 +2958,26 @@ int Run(const PakArgs& c) {
 		tool::err() << "Serialize failed: " << err << std::endl;
 		return 1;
 	}
+	// Optional Map placement pages share this pak with local Scene assets.
+	// Each page remains addressable by durable (WorldId, WorldCellKey).
+	if (!args.mapFile.empty()) {
+		std::ifstream file(args.mapFile, std::ios::binary);
+		if (!file) {
+			tool::err() << "Cannot open map: " << args.mapFile << std::endl;
+			return 1;
+		}
+		const std::string source((std::istreambuf_iterator<char>(file)),
+			std::istreambuf_iterator<char>());
+		tour::Map map;
+		std::string mapError;
+		tour::CompiledMapTiles compiled;
+		if (!tour::mapcook::ParseMap(source, map, mapError)
+				|| !tour::CompileMapTilePlacements(map, compiled)
+				|| !tour::mapcook::AddMapTiles(writer, compiled)) {
+			tool::err() << "Map tile cook failed: " << mapError << std::endl;
+			return 1;
+		}
+	}
 	// Cook scene-owned placements as a single non-VFS blob. The authored
 	// .tour commands remain the canonical serialization, while this
 	// lightweight sidecar lets runtime scene loads acquire shapes by
@@ -3496,6 +3589,7 @@ int main(int argc, char** argv) {
 	c.inVfsList = args.inVfsList;
 	c.inVfs = args.inVfs;
 	c.tour = args.tour;
+	c.mapFile = args.mapFile;
 	c.registryDir = args.registryDir;
 	c.outPak = args.outPak;
 	c.dumpPak = args.dumpPak;
