@@ -20,6 +20,7 @@
 #include <Engine/Scene/entity_handle.h> // smvk::AudioSourceHandle (typed)
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/region_registry.h>
+#include <Engine/Scene/world_scene_instances.h>
 
 namespace tour {
 // (namespace/RHI boundary audit) this block's RHI dependencies are
@@ -130,6 +131,22 @@ namespace tour {
 		// world hierarchy. Registration does not take ownership of assets:
 		// cluster-backed resource pools remain the transitional asset layer.
 		RegionRegistry regions;
+		// Direct World-owned hierarchy instances do not create Clusters or
+		// duplicate authoring Scenes. Asset leases are instance-independent.
+		tour::scene::WorldSceneInstances worldSceneInstances;
+		// One active authored Map lives in this runtime World.
+		bool SetActiveMapIdentity(uint64_t id) {
+			return worldSceneInstances.SetActiveMap(id);
+		}
+		uint64_t ActiveMapIdentity() const {
+			return worldSceneInstances.ActiveMap();
+		}
+		uint64_t InstantiateSceneHierarchy(
+			const Scene& source, uint64_t sceneAssetId,
+			const glm::dmat4& placement,
+			std::vector<tour::asset::AssetLease> assets,
+			std::string& err);
+		bool RetireSceneHierarchy(uint64_t instanceId);
 
 		// Registration of a region root is separate from node lifetime;
 		// the caller must retire the subtree independently at unload.
