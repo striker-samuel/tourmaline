@@ -41,6 +41,7 @@
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/asset_plan.h>
 #include <Engine/Asset/mesh_handle.h>
+#include <Engine/Asset/lut_handle.h>
 #include <Engine/Scene/entity_handle.h>
 #include <Engine/Scene/scene_node_id.h>
 
@@ -193,6 +194,14 @@ public:
 	MeshHandle LoadMeshByPlan(const smvk::MeshPlanRef& plan,
 		std::string& err,
 		const MeshLoadOptions& options = {});
+
+	// ---- ARTISTIC COLOR LUTS ------------------------------------------
+	// A LutKey in project::luts is a typed catalog view over texture
+	// assets in luts/. Loading caches decoded RGBA bytes; SetLut
+	// uploads them through the renderer, never scans local directories.
+	LutHandle LoadLut(std::uint64_t key, std::string& err);
+	bool SetLut(LutHandle handle);
+	bool UnloadLut(LutHandle handle);
 
 	// ---- GI BAKE SETS --------------------------------------------------
 	// Loads a GI set BY KEY: the [ids] row's .givolumemanifest bytes
