@@ -83,6 +83,13 @@ add_executable(Benchmark src/benchmark_main.cpp)
 target_link_libraries(Benchmark PRIVATE tourmaline_apphost)
 tourmaline_host_setup(Benchmark)
 
+# Synthetic CPU scene benchmark. No apphost, window, Vulkan device or shader
+# setup is constructed at runtime. Runs World draw-item iteration and CPU
+# renderer bounds/frustum helpers to isolate scene-size scaling.
+add_executable(CpuBenchmark src/cpu_benchmark_main.cpp)
+target_link_libraries(CpuBenchmark PRIVATE engine)
+target_compile_features(CpuBenchmark PRIVATE cxx_std_20)
+
 # Convenience launcher for saved Nsight GPU Trace scenarios. It is a tiny
 # Windows-only exe that invokes the existing stdlib-only Python harness,
 # so we don't duplicate scene validation or link any GPU profiler SDK.
