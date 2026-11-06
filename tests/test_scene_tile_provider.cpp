@@ -94,6 +94,36 @@ int main() {
         && !tiles.IsResident({11,{5,5}}),
         "world-scoped residency isolated");
 
+    {
+        wp::SceneTileProvider budget;
+        check(budget.SetManifest(77, {}), "empty Map still retains identity");
+        check(budget.ActiveWorld() == 77, "empty Map active ID retained");
+        check(budget.SetManifest({{{44,{-1,0}}, 1}, {{44,{0,0}}, 2},
+            {{44,{1,0}}, 3}}), "priority fixture installed");
+        budget.SetMaxNewRequestsPerFrame(1);
+        std::vector<uint64_t> loadOrder;
+        budget.SetCallbacks(
+            [&](const wp::SceneTileDescriptor& d, wp::DesiredResidency,
+                uint64_t) { loadOrder.push_back(d.contentId); },
+            [](const wp::SceneTileDescriptor&) {});
+        wp::WorldPartition p;
+        p.AddProvider(&budget);
+        wp::StreamingInterest interests[2]{};
+        interests[0].world = 44;
+        interests[0].radiusMeters = 1024.0;
+        interests[0].priority = 1.0f;
+        interests[0].layerMask = wp::StreamLayerBit(wp::StreamLayer::Scene);
+        interests[1] = interests[0];
+        interests[1].position = glm::dvec3(384,0,128);
+        interests[1].radiusMeters = 0;
+        interests[1].priority = 10.0f;
+        p.SetInterests(interests, 2);
+        p.UpdateFrame(20);
+        check(loadOrder.size() == 1 && loadOrder.front() == 3,
+            "highest-priority tile requested first");
+        p.UpdateFrame(21);
+        check(loadOrder.size() == 2, "per-frame request budget enforced");
+    }
     std::cout << "scene_tile_provider failures=" << failures << "\n";
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }
