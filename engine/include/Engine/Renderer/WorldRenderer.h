@@ -1497,6 +1497,7 @@ public:
     }
     // App-only implementation in app/src/RenderSettingsUi.cpp.
     void DrawAppSettingsUi(const DebugUiFrame& frame);
+    void DrawAppDebugUi(const DebugUiFrame& frame);
 
 
 	// ------------------------------------------------------------------

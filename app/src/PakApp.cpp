@@ -486,7 +486,7 @@ namespace app {
 			renderer.SetSceneId(sceneId);
             renderer.SetSettingsUi([](engine::WorldRenderer& r,
                 const engine::WorldRenderer::DebugUiFrame& frame) {
-                r.DrawAppSettingsUi(frame);
+                r.DrawAppDebugUi(frame);
             });
             // Snapshot the COOKED launch identity, not the editor's live
             // world. The benchmark target consumes these same App flags.
