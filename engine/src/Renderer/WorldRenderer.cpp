@@ -11019,7 +11019,9 @@ namespace engine {
         // list is a fast no-op; moving casters trigger an expensive but
         // correct blocking rebuild (see the RHI's v1 limitations).
         if (m_rayTracedSunShadowsEnabled && m_context->SupportsRayQueries() && m_world) {
-            std::vector<smvk::RayTracingInstance> rtInstances;
+            tour::mem::FrameVector<smvk::RayTracingInstance> rtInstances{
+                tour::mem::LinearAllocatorSTL<smvk::RayTracingInstance>{
+                    &tour::mem::FrameAllocator()}};
             // MaterialValues.tex stores pool IDs, NOT sampled descriptor
             // indices. Resolve before building micromaps so the alpha
             // compute bake accesses the same base-color texture as raster.
@@ -11089,7 +11091,8 @@ namespace engine {
                     std::fprintf(stderr,
                         "[RayShadows] BLAS/TLAS build unavailable; retaining contact/CSM fallback\n");
                 }
-                m_rayTracingCachedInstances = std::move(rtInstances);
+                // Cached instances survive frame reset; copy only on change.
+                m_rayTracingCachedInstances.assign(rtInstances.begin(), rtInstances.end());
                 m_rayTracingDebugSummary = smvk::SummarizeRayTracingCandidates(m_rayTracingCachedInstances);
                 m_rayTracingCachedWorld = m_world;
                 m_rayTracingCacheValid = true;
