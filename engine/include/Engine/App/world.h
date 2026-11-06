@@ -126,6 +126,20 @@ namespace tour {
 		}
 
 
+		// Game-facing transform-only node creation. A node has one local
+		// transform and at most one mesh association. Catalog-backed
+		// bindings are supplied by the app layer (AssetManager), not by
+		// World itself. Epoch 6c must make these nodes survive legacy
+		// cluster full resolves; until then, treat handles as invalid
+		// after ResolveAndFixup_clusters.
+		[[nodiscard]] NodeHandle AddNode(
+			const glm::mat4& localFrame = glm::mat4(1.0f));
+		bool RemoveNode(NodeHandle node);
+		// Use after modifying scene association tables in-place, without
+		// rebuilding clusters or moving existing node slots. The engine
+		// render-item flags, LOD, BVH and GPU topology caches are refreshed.
+		void RefreshRuntimeSceneCaches();
+
 		// Merged runtime scene graph. Imported Cluster scenes are folded into
 		// this via ResolveAndFixup_clusters().
 		Scene scene;
