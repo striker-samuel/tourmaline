@@ -14,6 +14,7 @@
 #include <Engine/App/cluster.h>
 #include <Engine/App/animator.h>
 #include <Engine/Asset/mesh_handle.h>
+#include <Engine/Asset/lut_handle.h>
 #include <Engine/Asset/cluster_serializer.h> // smvk::ExternalTextureResolver
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
@@ -137,6 +138,17 @@ namespace tour {
 			std::string& error);
 		// Refuses while a World node still references the handle.
 		bool UnloadMesh(app::MeshHandle mesh);
+		// Global artistic LUT, with the same explicit catalog-key ->
+		// loaded resource-handle discipline as meshes. A LUT is a world
+		// rendering setting, not a mesh/node component.
+		[[nodiscard]] app::LutHandle LoadLut(uint64_t catalogKey,
+			std::string& error);
+		[[nodiscard]] app::LutHandle LoadLut(uint64_t catalogKey) {
+			lastGameAssetError_.clear();
+			return LoadLut(catalogKey, lastGameAssetError_);
+		}
+		bool SetLut(app::LutHandle lut);
+		bool UnloadLut(app::LutHandle lut);
 		// Ergonomic overload for callers that do not need an immediate
 		// out-error; details remain available through LastAssetError().
 		[[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey) {
