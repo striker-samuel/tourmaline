@@ -135,10 +135,18 @@ namespace tour {
 		[[nodiscard]] NodeHandle AddNode(
 			const glm::mat4& localFrame = glm::mat4(1.0f));
 		bool RemoveNode(NodeHandle node);
+		[[nodiscard]] bool IsGameNode(NodeHandle node) const {
+			return gameNodes_.contains(node) && NodeHandleValid(scene, node);
+		}
 		// Use after modifying scene association tables in-place, without
 		// rebuilding clusters or moving existing node slots. The engine
 		// render-item flags, LOD, BVH and GPU topology caches are refreshed.
 		void RefreshRuntimeSceneCaches();
+
+		// Only nodes allocated through AddNode are mutable through the
+		// game API. Resolve invalidates these provisional handles until
+		// the incremental World hierarchy migration lands (Epoch 6c).
+		std::unordered_set<NodeHandle> gameNodes_;
 
 		// Merged runtime scene graph. Imported Cluster scenes are folded into
 		// this via ResolveAndFixup_clusters().
