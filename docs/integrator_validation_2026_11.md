@@ -1,75 +1,68 @@
 # Integrator validation matrix — 2026-11-06
 
-**Status: draft / not executed here.** This is a handoff checklist, not a report of passing tests. All relevant PRs must report the exact commit SHA, OS/compiler/SDK, command, result, and links to logs or artifacts.
+**Draft; no tests executed by this PR.** Record exact SHA, toolchain, command, result and logs.
 
-## P0 — build and compatibility
+## P0 — builds
 
-- [ ] Full Linux GCC and Clang builds including tests, shaders and tools.
-- [ ] Full Windows MSVC editor, cook tools, runtime and shaders build.
-- [ ] Run all headless CTest targets and attach failures/summary.
-- [ ] Confirm all material encoding sites use the global `::KtxEncodeFormat` declaration with the required header visible (previous CI fix commits).
-- [ ] Verify no stale generated assets hide an incompatible binary/material serializer layout.
+- [ ] Linux GCC and Clang builds (engine, editor, tools, tests, shaders).
+- [ ] Windows MSVC builds and smoke runs.
+- [ ] Headless CTest suite, including parser/project pipeline tests.
 
-## P0 — legacy terrain compatibility (PR #225; no format migration)
+## P0 — new world-level terrain model (PR #225)
 
-- [ ] Keep the existing `.tour` format and historical create-order references unchanged; legacy `createNode -type terrain` + `TerrainPaint -ref` fixtures replay to the same groups, tiles and channels.
-- [ ] Invalid/ambiguous creation-order refs fail explicitly without modifying terrain.
-- [ ] Multiple legacy terrain groups and scene merge preserve reference isolation.
-- [ ] Save/reload, undo/redo, and editor crash-recovery replay preserve paint.
-- [ ] Any proposed world-enable change is evaluated separately; it must not rewrite legacy terrain files or paint references.
-- [ ] Paint across tile seams; evict/reload; verify editor/cooker parity.
-- [ ] Do not mark complete until backward-compatibility code and fixtures are implemented; **no automatic legacy format migration**.
+- [ ] One world-level terrain enable/configuration record, no repeatable terrain group authoring.
+- [ ] New paint commands are independent of historical creation-order refs (`kCreateTerrainRefBase`).
+- [ ] Parser, exporter, replay, undo/redo and cooker agree about the new format.
+- [ ] Tests validate save/load, disabled/enabled with tile data preserved, seam painting and tile streaming eviction/reload.
+- [ ] Scene-command reordering does not retarget paint.
+- [ ] Reauthor/update repository test scenes and fixtures for the new terrain format.
+- [ ] Unsupported historical terrain syntax fails clearly; **legacy migration is not required**.
 
-## P0 — bake input fingerprints and light direction
+## P0 — sun / bake fingerprints
 
-- [ ] Cook, GiBaker, and pak freshness checks yield identical environment/light/grid hashes for identical authored inputs.
-- [ ] Compare scenes with no lights, only synthesized `sun/world`, runtime-only lights, and authored static directional lights.
-- [ ] Change authored sun azimuth/elevation, irradiance and light color independently; expected hashes change.
-- [ ] Confirm synthesized sun is not double-counted and inverse-trig reconstruction cannot perturb authored environment hashes.
-- [ ] Create GI and cubemap captures, rebuild unchanged content and verify no false rejection.
-- [ ] Confirm generated sun direction convention (toward sun vs incoming ray), coordinate handedness and shadow/GI agreement.
+- [ ] Cook, GiBaker and Pak agree on environment/light/grid fingerprints.
+- [ ] Check zero-light, generated `sun/world`, and authored static directional cases.
+- [ ] Verify authored sun direction/intensity edits change the relevant fingerprints.
+- [ ] Produce and reload GI/cubemap bakes; verify no false freshness rejection.
+- [ ] Confirm sun direction conventions between editor, shadowing and GI.
 
-## P1 — materials / cook
+## P1 — material packing and cooking
 
-- [ ] Run `ProjectPipelineTests` and related material packing tests.
-- [ ] Encode/decode BC7 scalar, BC5 normal, BC1 emissive, and RGBA8/BC3 cases in a full project cook.
-- [ ] Verify linear scalar/normal sampling and appropriate sRGB color/emissive sampling on GPU.
-- [ ] Validate recipe-change invalidation, generated file cleanup, missing textures, incompatible sizes, duplicate directives and older unmodified materials.
-- [ ] Compare source and cooked channel selectors; verify legacy material blobs continue to load.
+- [ ] Run `ProjectPipelineTests` and full project cooking.
+- [ ] Exercise BC7 scalar, BC5 normal, BC1 emissive and RGBA8/BC3 alternatives.
+- [ ] Decode GPU assets and check channel selectors and linear/sRGB usage.
+- [ ] Validate recipe invalidation and malformed recipe diagnostics.
 
-## P1 — precision / scene memory
+## P1 — scene precision / semantic memory
 
-- [ ] Run scene-table, double-float, scene-memory-binding and relevant serialization tests.
-- [ ] Validate +/− large absolute coordinates, fractional positions, deep parent/child transforms and scene merges.
-- [ ] Confirm v1 double scene format round-trips and legacy unversioned float scene files remain readable.
-- [ ] Verify unsupported/truncated versioned inputs reject cleanly; older executables are not advertised as forward-compatible.
-- [ ] Exercise bind/detach and external capacity limits, pointer lifetime and mutation journaling.
-- [ ] Confirm float semantic views cannot overwrite authoritative doubles inadvertently.
-- [ ] Run GPU camera-relative publication parity on real Vulkan hardware, including multi-view/frozen culling.
+- [ ] Scene-table, double-float and semantic binding tests.
+- [ ] Large signed fractional translations, nested hierarchies, merge and serialization.
+- [ ] GPU publication parity under camera-relative/multiview rendering.
+- [ ] External bind/detach lifetime/capacity and dirty-state journal coverage.
+- [ ] Check float semantic views do not silently overwrite authoritative double transforms.
 
-## P1 — editor / runtime
+## P1 — editor/runtime
 
-- [ ] Live sphere/cube material preview: resize, material switches, docking, Vulkan layout synchronization, cleanup.
-- [ ] Component remove/undo/redo, authored-name breadcrumbs and optional material component behavior.
-- [ ] Missing materials consistently show the pink error material.
-- [ ] Verify `--bench_turn` with positive/negative rates, `--bench_move`, warm-up and frame budgets.
+- [ ] Live sphere/cube material preview Vulkan resource transitions and resizing.
+- [ ] Undoable Material component removal, breadcumbs and optional binding.
+- [ ] Pink error-material behavior for missing assets.
+- [ ] `--bench_turn` positive/negative and combined `--bench_move`.
 
-## P2 — performance
+## P2 — profiling
 
-- [ ] Run representative 4K, 32K and 105K scene-content workloads with identical settings.
-- [ ] Capture CPU stage Optick aggregates and GPU times; record median, p95 and warm-up.
-- [ ] Distinguish synthetic CPU-only harness measurements from real cooked-scene GPU runtime measurements.
-- [ ] Compare before/after scene storage and transform changes for memory, frame-time and streaming regressions.
+- [ ] Repeat representative CPU/GPU benchmarks with fixed scenarios and environments.
+- [ ] Capture CPU stage timings and GPU execution; compare medians/p95.
+- [ ] Distinguish synthetic CPU harness results from real cooked-scene measurements.
 
-## Signoff template
+## Signoff
 
-| Gate | Commit SHA | Platform | Command / capture | Result | Artifact / issue |
-| --- | --- | --- | --- | --- | --- |
-| Build | TBD | TBD | TBD | NOT RUN | TBD |
-| Terrain migration | TBD | TBD | TBD | NOT RUN | TBD |
-| Bake consistency | TBD | TBD | TBD | NOT RUN | TBD |
-| Material smoke cook | TBD | TBD | TBD | NOT RUN | TBD |
-| Precision / memory | TBD | TBD | TBD | NOT RUN | TBD |
-| GPU/editor parity | TBD | TBD | TBD | NOT RUN | TBD |
+| Gate | Commit SHA | Platform / command | Result | Logs |
+| --- | --- | --- | --- | --- |
+| Builds | TBD | TBD | NOT RUN | TBD |
+| World terrain | TBD | TBD | NOT RUN | TBD |
+| Sun / baking | TBD | TBD | NOT RUN | TBD |
+| Material cook | TBD | TBD | NOT RUN | TBD |
+| Scene precision | TBD | TBD | NOT RUN | TBD |
+| GPU/editor | TBD | TBD | NOT RUN | TBD |
 
-Do not turn unchecked gates into PASS merely because their implementation commits were merged.
+Do not treat implementation commits or unchecked gates as passing tests.
