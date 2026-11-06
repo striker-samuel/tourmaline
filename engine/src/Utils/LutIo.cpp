@@ -13,6 +13,7 @@
 #include <stb_image_write.h>
 
 #include <Engine/Utils/LutIo.h>
+#include <climits>
 
 namespace engine {
 
@@ -20,6 +21,22 @@ bool LutLoadPng(const char* path, std::vector<uint8_t>& rgba, int& w, int& h)
 {
 	int comp = 0;
 	stbi_uc* pixels = stbi_load(path, &w, &h, &comp, 4);
+	if (!pixels)
+		return false;
+	rgba.assign(pixels, pixels + static_cast<size_t>(w) * h * 4);
+	stbi_image_free(pixels);
+	return true;
+}
+
+bool LutLoadPngMemory(const uint8_t* bytes, size_t count,
+	std::vector<uint8_t>& rgba, int& w, int& h)
+{
+	w = h = 0;
+	if (!bytes || !count || count > static_cast<size_t>(INT_MAX))
+		return false;
+	int comp = 0;
+	stbi_uc* pixels = stbi_load_from_memory(bytes,
+		static_cast<int>(count), &w, &h, &comp, 4);
 	if (!pixels)
 		return false;
 	rgba.assign(pixels, pixels + static_cast<size_t>(w) * h * 4);
