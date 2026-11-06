@@ -912,6 +912,8 @@ using namespace ::smvk;
 
 	void World::UnloadCluster(Cluster& cluster)
 	{
+		if (worldSceneInstances.Count() != 0)
+			throw std::logic_error("cannot unload Cluster during direct World instance lifetime");
 		// The dynamic cluster is runtime-created state, never pak
 		// content: unloading it would drop every runtime entity — refuse.
 		if (cluster.isDynamic)
@@ -985,9 +987,165 @@ using namespace ::smvk;
 		return true;
 	}
 
+	uint64_t World::InstantiateSceneHierarchy(
+		const Scene& source, uint64_t sceneAssetId,
+		const glm::dmat4& placement,
+		std::vector<tour::asset::AssetLease> assets,
+		std::string& err,
+		const tour::scene::WorldSceneResourceMap* bindings)
+	{
+		err.clear();
+		// World indices must point at already-resident render resources,
+		// never source-local integer slots or expired Cluster resources.
+		// The future page-backed AssetStore will populate these stable
+		// locations without requiring a Cluster carrier.
+		if (bindings) {
+			for (const MeshRow& row : source.tables.meshes) {
+				if (row.mesh >= bindings->mesh.size()
+						|| !GetMesh(bindings->mesh[row.mesh])) {
+					err = "local mesh has no resident World resource";
+					return 0;
+				}
+			}
+			for (const MaterialRow& row : source.tables.materials) {
+				if (row.material >= bindings->material.size()
+						|| !GetMaterial(bindings->material[row.material])) {
+					err = "local material has no resident World resource";
+					return 0;
+				}
+			}
+			for (const LightRow& row : source.tables.lights) {
+					if (row.light >= bindings->light.size()
+						|| bindings->light[row.light] >= lightLocations.size()
+						|| !lightLocations[bindings->light[row.light]].cluster) {
+					err = "local light has no resident World resource";
+					return 0;
+				}
+			}
+			for (const CameraRow& row : source.tables.cameras) {
+				if (row.camera >= bindings->camera.size()
+						|| bindings->camera[row.camera] >= cameraLocations.size()
+						|| !cameraLocations[bindings->camera[row.camera]].cluster) {
+					err = "local camera has no resident World resource";
+					return 0;
+				}
+			}
+			for (const DecalRow& row : source.tables.decals) {
+				if (row.decal >= bindings->decal.size()
+						|| bindings->decal[row.decal] >= decalLocations.size()
+						|| !decalLocations[bindings->decal[row.decal]].cluster) {
+					err = "local decal has no resident World resource";
+					return 0;
+			}
+			}
+		}
+		const uint64_t instance = worldSceneInstances.Instantiate(
+			scene, regions, source, sceneAssetId, placement,
+			std::move(assets), err, bindings);
+		if (!instance) return 0;
+		flags.resize(scene.hierarchy.size(), IteratorFlagBit_None);
+		const auto* inst = worldSceneInstances.Find(instance);
+		if (bindings) {
+			const size_t oldDrawCount = drawItems.size();
+			for (const MeshRow& sourceMesh : source.tables.meshes) {
+				const NodeHandle nodeHandle =
+					inst->sourceNodes[sourceMesh.node];
+				const NodeId node = NodeHandleSlot(nodeHandle);
+				if (!IsVisibleNode(scene, int(node))) continue;
+				IteratorFlags f = static_cast<IteratorFlags>(
+					IteratorFlagBit_Renderable)
+					| static_cast<IteratorFlags>(IteratorFlagBit_StaticVertexFmt);
+				if (IsStaticNode(scene, int(node)))
+					f |= static_cast<IteratorFlags>(IteratorFlagBit_Static);
+				if (IsCastsVolumetricShadowNode(scene, int(node)))
+					f |= static_cast<IteratorFlags>(IteratorFlagBit_CastVolumetricShadow);
+				const MaterialRow* matRow = FindMaterial(scene, node);
+				if (matRow) {
+					const Material* mat = GetMaterial(matRow->material);
+					if (mat && mat->isTransparent())
+						f |= static_cast<IteratorFlags>(IteratorFlagBit_Transparent);
+					else {
+						f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque);
+						if (!mat || mat->castsShadows)
+							f |= static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
+						if (mat && mat->shadingModel == ShadingModel::Masked)
+							f |= static_cast<IteratorFlags>(IteratorFlagBit_Masked);
+					}
+				} else {
+					f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
+						| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
+				}
+				flags[node] = f;
+				drawItems.push_back(RenderItem{
+					.node = node,
+					.mesh = bindings->mesh[sourceMesh.mesh],
+					.material = matRow ? matRow->material : kInvalidIndex,
+					.flags = f,
+					.materialInstance = 0,
+				});
+			}
+			const auto byMaterial = [](const RenderItem& a,
+						const RenderItem& b) {
+				return a.material < b.material;
+			};
+			std::stable_sort(drawItems.begin() + oldDrawCount,
+				drawItems.end(), byMaterial);
+			std::inplace_merge(drawItems.begin(),
+				drawItems.begin() + oldDrawCount,
+				drawItems.end(), byMaterial);
+			itemFlags.clear();
+			itemFlags.reserve(drawItems.size());
+			for (const RenderItem& item : drawItems)
+				itemFlags.push_back(item.flags);
+		}
+		InvalidateLodCache();
+		InvalidateStaticBvh();
+		flagLists.clear();
+		dirtyCull = true;
+		++gpuSceneTopologyRevision;
+		return instance;
+	}
+
+	bool World::RetireSceneHierarchy(uint64_t instanceId)
+	{
+		const auto* instance = worldSceneInstances.Find(instanceId);
+		if (!instance) return false;
+		std::vector<NodeId> ownedSlots;
+		ownedSlots.reserve(instance->sourceNodes.size() + 1);
+		for (const NodeHandle h : instance->sourceNodes)
+			if (h != kNodeInvalidHandle)
+				ownedSlots.push_back(NodeHandleSlot(h));
+		if (instance->root != kNodeInvalidHandle)
+			ownedSlots.push_back(NodeHandleSlot(instance->root));
+		std::sort(ownedSlots.begin(), ownedSlots.end());
+		if (!worldSceneInstances.Retire(scene, regions, instanceId))
+			return false;
+		for (const NodeId slot : ownedSlots)
+			if (slot < flags.size()) flags[slot] = IteratorFlagBit_None;
+		// Remove only this instance's draw records, never walk the entire
+		// authored World graph or renumber another Scene's node slots.
+		drawItems.erase(std::remove_if(drawItems.begin(), drawItems.end(),
+			[&](const RenderItem& item) {
+				return std::binary_search(ownedSlots.begin(), ownedSlots.end(),
+					item.node);
+			}), drawItems.end());
+		itemFlags.clear();
+		itemFlags.reserve(drawItems.size());
+		for (const RenderItem& item : drawItems)
+			itemFlags.push_back(item.flags);
+		InvalidateLodCache();
+		InvalidateStaticBvh();
+		flagLists.clear();
+		dirtyCull = true;
+		++gpuSceneTopologyRevision;
+		return true;
+	}
+
 	void World::RegisterCluster(std::unique_ptr<Cluster> cluster)
 	{
 		assert(cluster != nullptr);
+		if (!cluster->isDynamic && worldSceneInstances.Count() != 0)
+			throw std::logic_error("cannot register content Cluster during direct World instance lifetime");
 		cluster->world = this;
 		gpuSceneClusterIds[cluster.get()] = nextGpuSceneClusterId++;
 		clusters.push_back(std::move(cluster));
@@ -995,6 +1153,8 @@ using namespace ::smvk;
 
 	std::unique_ptr<Cluster> World::UnregisterCluster(Cluster& cluster)
 	{
+		if (worldSceneInstances.Count() != 0)
+			throw std::logic_error("cannot detach Cluster during direct World instance lifetime");
 		// Same refusal as UnloadCluster: the dynamic cluster is runtime
 		// state and stays with its world.
 		if (cluster.isDynamic)
@@ -1036,6 +1196,11 @@ using namespace ::smvk;
 	// slots that point back to the owning Cluster + handle.
 	void World::ResolveAndFixup_clusters()
 	{
+		// Never silently discard direct World-owned nodes while rebuilding
+		// legacy Cluster copies. Complete the legacy renderer cutover before
+		// combining both paths in one active World.
+		if (worldSceneInstances.Count() != 0)
+			throw std::logic_error("cannot resolve Cluster scenes while direct World scene instances are active");
 		// MATERIAL USERDATA RE-KEY CAPTURE (consumed by the re-key below
 		// the material-table rebuild): the world material indices are
 		// about to be rebuilt, so the per-material defaults are captured
