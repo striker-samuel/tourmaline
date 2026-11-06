@@ -77,6 +77,7 @@ namespace engine {
 
 	void WorldRendererElement::onDetach() {
 		m_renderer.onDetach();
+    m_renderer.ReleaseUiPreviewBindings();
 	m_renderer.SetUiFrameService({});
     m_renderer.SetUiTextureService({});
 	if (m_imgui) {

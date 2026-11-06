@@ -1505,6 +1505,15 @@ public:
     void SetUiTextureService(UiTextureService service) {
         m_uiTextureService = std::move(service);
     }
+    // Called after the GPU has gone idle on detach, but before the host
+    // overlay is destroyed. Descriptor IDs cannot survive an attach cycle.
+    void ReleaseUiPreviewBindings() {
+        DropTexDebugSelection();
+        if (m_worldMapHeightId != 0 && m_uiTextureService.retire)
+            m_uiTextureService.retire(m_worldMapHeightId);
+        m_worldMapHeightId = 0;
+        m_worldMapHeightTex = {};
+    }
     // Called by the host UI service between NewFrame and AddPass.
     void DrawSettingsUi(const DebugUiFrame& frame) {
         if (m_settingsUiCallback) m_settingsUiCallback(*this, frame);
