@@ -7,6 +7,9 @@
 // generated project::meshes::<Name> key; it never sees ephemeral World
 // mesh-location indices. AssetManager owns loaded resource handles and
 // World owns entity handles. Neither is a substitute for the other.
+// Invariant: each spawned entity has ONE node, ONE transform, and at most
+// ONE mesh association. A new Add call creates a new entity/node; it
+// does not attach a second mesh to an existing transform.
 #include "AssetManager.h"
 
 #include <Engine/App/world.h>
@@ -36,6 +39,8 @@ public:
 			assets_.UnloadMesh(mesh);
 	}
 
+	// Each call creates exactly one mesh entity with its own transform.
+	// Reusing a key shares the mesh RESOURCE, never the entity node.
 	// 'meshKey' comes from project::meshes::Stone, or a generated
 	// project::MeshKey. The asset is loaded on first use and reused.
 	// A missing catalog key or a parked/unmapped carrier returns an
