@@ -10,6 +10,7 @@
 #include <Engine/Rendergraph/terrain.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Rendergraph/terrain_blocks.h>
+#include <Engine/Rendergraph/terrain_occlusion.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
@@ -249,6 +250,31 @@ bool TerrainField::BuildFromSource(ResourceManager& ctx,
 		}
 		atlasSlot = ctx.GetTextureBindlessIndex(heightAtlas);
 	}
+	// Optional cooked mesh+terrain max-Y hierarchy. This is a distinct
+	// sampled texture: no hardware mip reductions, each hierarchy level
+	// was max-filtered conservatively during pak cooking. Older paks keep
+	// the legacy fixed-step terrain raymarch.
+	if (src.occlusionPyramid.size() ==
+		size_t(kOcclusionAtlasWidth) * kOcclusionAtlasHeight * 2) {
+		std::vector<uint16_t> maxHeights(
+			size_t(kOcclusionAtlasWidth) * kOcclusionAtlasHeight);
+		for (size_t i = 0; i < maxHeights.size(); ++i)
+			maxHeights[i] = uint16_t(src.occlusionPyramid[2 * i])
+				| uint16_t(src.occlusionPyramid[2 * i + 1]) << 8;
+		ImageCreateInfo ci;
+		ci.type = ImageType::Image2D;
+		ci.extent = Extent3D{ kOcclusionAtlasWidth,
+			kOcclusionAtlasHeight, 1 };
+		ci.format = Format::R16_UNorm;
+		ci.mipLevels = 1;
+		ci.name = "terrain/occlusion/max_pyramid";
+		occlusionAtlas = ctx.CreateTexture(ci, maxHeights.data());
+		if (!occlusionAtlas.empty())
+			occlusionSlot = ctx.GetTextureBindlessIndex(occlusionAtlas);
+		else
+			std::fprintf(stderr, "[terrain] occlusion max pyramid upload failed;"
+				" falling back to terrain-only shadows\\n");
+	}
 	ctx.UploadDataToBuffer(vertexBuffer, verts.data(),
 		sizeof(TerrainVertex) * verts.size(),
 		PipelineStageBit_AllGraphics, AccessFlags::VertexAttributeRead, 0, 0);
@@ -287,7 +313,9 @@ void TerrainField::Destroy() {
 	farVertexBuffer = {};
 	farIndexBuffer = {};
 	heightAtlas = {};
+	occlusionAtlas = {};
 	atlasSlot = 0xFFFFFFFFu;
+	occlusionSlot = 0xFFFFFFFFu;
 	hfield = TerrainHField{};
 	valid = false;
 	blocks.clear();
@@ -380,6 +408,7 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
 	// Shared tail words (atlas + world mapping + shadow mode).
 	TerrainBlockPush tail{};
 	tail.atlasSlot = atlasSlot;
+	tail.occlusionSlot = occlusionSlot;
 	tail.originX = hfield.meta.originX;
 	tail.originZ = hfield.meta.originZ;
 	tail.invWorldSize = 1.0f / hfield.meta.worldSize;
