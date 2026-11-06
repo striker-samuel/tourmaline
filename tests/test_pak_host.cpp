@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -47,6 +48,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
+#include <Engine/Utils/LutIo.h>
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
@@ -892,6 +894,7 @@ void TestProjectScenes() {
 	fs::remove_all(tmp, ec);
 	fs::create_directories(tmp, ec);
 	const std::string texPath = "content/models/s/stone.png";
+	const std::string lutPath = "content/luts/neutral.png";
 	const std::vector<uint8_t> ktx = { 0xAB, 'K', 'T', 'X', ' ', '2',
 		'0', 0x0D, 0x0A, 7, 7, 7, 7 };
 	// A sound asset (the raw .wav bytes — Sound-kind blobs ride the
@@ -912,6 +915,21 @@ void TestProjectScenes() {
 		w.AddBlob(smvk::PakAssetKind::Texture, texPath,
 			smvk::BuildTexturePayload(texPath, -1, -1, -1, -1,
 				std::span<const uint8_t>(ktx)));
+		// The catalog LUT travels in the same texture VFS channel,
+		// preserving the original PNG bytes instead of KTX2.
+		const fs::path lutFile = tmp / "neutral.png";
+		std::vector<uint8_t> sourceLut(1024u * 32u * 4u, 255);
+		Check(engine::LutWritePng(lutFile.string().c_str(),
+			1024, 32, sourceLut.data()), "am.lut-source-png");
+		std::ifstream pngIn(lutFile, std::ios::binary);
+		const std::vector<uint8_t> encodedPng(
+			(std::istreambuf_iterator<char>(pngIn)),
+			std::istreambuf_iterator<char>());
+		Check(!encodedPng.empty()
+			&& w.AddBlob(smvk::PakAssetKind::Texture, lutPath,
+				smvk::BuildTexturePayload(lutPath, -1, -1, -1, -1,
+					std::span<const uint8_t>(encodedPng))),
+			"am.lut-packed-by-catalog-path");
 		w.AddBlob(smvk::PakAssetKind::Sound, wavPath, wav);
 		// THE PER-PAK IDENTITY TABLE (the records the runtime reads —
 		// the manifest's [ids] mirror is vestigial): the scene row
@@ -920,6 +938,7 @@ void TestProjectScenes() {
 			{ 0x1000, smvk::kCatalogKindScene,
 				"content/scenes/church.tour", "Church" },
 			{ 0x2000, smvk::kCatalogKindTexture, texPath, "" },
+			{ 0x2002, smvk::kCatalogKindTexture, lutPath, "" },
 			{ 0x4000, smvk::kCatalogKindSound, wavPath, "" },
 		};
 		w.AddBlob(smvk::PakAssetKind::Identity,
@@ -1492,6 +1511,24 @@ void TestAssetManager() {
 		Check(false, "am.mesh-seam-load");
 		return;
 	}
+	// Runtime-owned service: no AssetManager in gameplay code. Mirror
+	// PakApp's World-source setup and verify the World facade works.
+	{
+		auto gameWorld = std::make_unique<smvk::World>();
+		auto service = std::make_shared<app::AssetManager>(
+			*rtOpt, *gameWorld, nullptr, nullptr);
+		gameWorld->OwnGameAssets(std::move(service));
+		Check(gameWorld->HasAssetService(),
+			"am.world-internal-assets-installed");
+		std::string unknownError;
+		Check(!gameWorld->LoadMesh(0x9999, unknownError)
+			&& !unknownError.empty(),
+			"am.world-loadmesh-no-manual-manager");
+		Check(!gameWorld->UnloadMesh(app::MeshHandle{}),
+			"am.world-unload-invalid-handle");
+		// The service is destroyed first, while the World is alive.
+		gameWorld.reset();
+	}
 	smvk::World world;
 	app::AssetManager assets(*rtOpt, world, nullptr, nullptr);
 	// ---- the GI lane ----
@@ -1527,6 +1564,23 @@ void TestAssetManager() {
 		std::string rErr;
 		app::GiHandle day3 = assets.LoadGI(0x6000, rErr);
 		Check(bool(day3) && day3 != day, "am.gi-reload-after-unload");
+	}
+	// ---- LUT catalog key -> bytes -> loaded handle (GPU-less) ----
+	{
+		std::string lutErr;
+		const app::LutHandle lut = world.LoadLut(0x2002, lutErr);
+		Check(bool(lut) && lutErr.empty(),
+			"am.lut-catalog-png-load");
+		Check(world.LoadLut(0x2002) == lut,
+			"am.lut-key-deduplicates");
+		Check(!world.SetLut(lut),
+			"am.lut-activation-needs-renderer");
+		Check(world.UnloadLut(lut) && !world.UnloadLut(lut),
+			"am.lut-unload-generational");
+		Check(!world.LoadLut(0x2000, lutErr) && !lutErr.empty(),
+			"am.lut-refuses-non-lut-texture");
+		Check(!world.LoadLut(0x9999, lutErr) && !lutErr.empty(),
+			"am.lut-refuses-unknown-key");
 	}
 	// ---- the MESH lane's CPU-refused legs ----
 	{
@@ -1610,6 +1664,40 @@ void TestAssetManager() {
 			"am.mesh-adopts-scene-cluster");
 		Check(assets.MeshWorldIndex(tree) != UINT32_MAX,
 			"am.mesh-worldindex");
+		// Native World gameplay path: the key is loaded explicitly,
+		// then the LOADED MeshHandle attaches to a standalone node.
+		// No CatalogWorld wrapper, and never two meshes on one node.
+		std::string wErr;
+		Check(world.LoadMesh(0x3000, wErr) == tree && wErr.empty(),
+			"am.world-loadmesh-catalog-key");
+		const NodeHandle gameNode = world.AddNode();
+		const NodeId gameSlot = NodeHandleSlot(gameNode);
+		Check(world.IsGameNode(gameNode) && !FindMesh(world.scene, gameSlot),
+			"am.world-addnode-empty");
+		Check(world[gameNode].SetMesh(tree)
+			&& FindMesh(world.scene, gameSlot)
+			&& FindMesh(world.scene, gameSlot)->mesh
+				== assets.MeshWorldIndex(tree),
+			"am.world-setmesh-loaded-handle");
+		Check(!world[gameNode].SetMesh(app::MeshHandle{})
+			&& FindMesh(world.scene, gameSlot) != nullptr,
+			"am.world-invalid-handle-preserves-existing-mesh");
+		Check(world[gameNode].SetPhysicsBody({})
+			&& world[gameNode].SetAudioRoom({})
+			&& world[gameNode].SetTriggerVolume({}),
+			"am.world-node-inline-default-components");
+		uint32_t gameMeshRows = 0;
+		for (const MeshRow& row : world.scene.tables.meshes)
+			if (row.node == gameSlot) ++gameMeshRows;
+		Check(gameMeshRows == 1,
+			"am.world-one-mesh-per-transform");
+		Check(!assets.UnloadMesh(tree),
+			"am.world-mesh-handle-cannot-unload-while-attached");
+		Check(world[gameNode].RemoveMesh()
+			&& FindMesh(world.scene, gameSlot) == nullptr,
+			"am.world-remove-mesh-keeps-node");
+		Check(world.RemoveNode(gameNode) && !world.IsGameNode(gameNode),
+			"am.world-remove-node-invalidates-handle");
 		// The typed-key spawn lane (the gameplay surface): the loaded
 		// handle instances through its CURRENT row - the entity is
 		// world-owned, DestroyMesh kills it.

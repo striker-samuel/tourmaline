@@ -40,6 +40,8 @@
 
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/asset_plan.h>
+#include <Engine/Asset/mesh_handle.h>
+#include <Engine/Asset/lut_handle.h>
 #include <Engine/Scene/entity_handle.h>
 #include <Engine/Scene/scene_node_id.h>
 
@@ -82,15 +84,6 @@ struct MeshLoadOptions {
 	// for the session (the prefetch idiom, released at UnloadAllMeshes
 	// or teardown).
 	bool keepResident = true;
-};
-
-// MeshHandle: a loaded MESH (an asset resource - NOT a world entity).
-// Generational; zero = invalid. Resolves to the mesh's owning cluster
-// row for spawn-side use (the World::SpawnMesh follow-up).
-struct MeshHandle {
-	std::uint64_t value = 0;
-	constexpr bool operator==(const MeshHandle&) const = default;
-	constexpr explicit operator bool() const { return value != 0; }
 };
 
 // GiHandle: a loaded GI SET (a baked lighting set - one or more GI
@@ -201,6 +194,14 @@ public:
 	MeshHandle LoadMeshByPlan(const smvk::MeshPlanRef& plan,
 		std::string& err,
 		const MeshLoadOptions& options = {});
+
+	// ---- ARTISTIC COLOR LUTS ------------------------------------------
+	// A LutKey in project::luts is a typed catalog view over texture
+	// assets in luts/. Loading caches decoded RGBA bytes; SetLut
+	// uploads them through the renderer, never scans local directories.
+	LutHandle LoadLut(std::uint64_t key, std::string& err);
+	bool SetLut(LutHandle handle);
+	bool UnloadLut(LutHandle handle);
 
 	// ---- GI BAKE SETS --------------------------------------------------
 	// Loads a GI set BY KEY: the [ids] row's .givolumemanifest bytes

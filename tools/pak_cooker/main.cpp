@@ -3280,7 +3280,26 @@ int Run(const PakArgs& c) {
 			continue;
 		}
 		std::vector<uint8_t> embed;
-		if (ext == ".ktx2" || ext == ".cubemanifest"
+		// Artistic grading LUTs are a typed view of catalog textures
+		// under luts/. Preserve their PNG-encoded 32^3 strip so the
+		// runtime LUT decoder can read the original pixels; ordinary
+		// textures retain the KTX2 conversion. No runtime file scan.
+		const size_t lutPart = vfsPath.find("luts/");
+		const bool isLut = lutPart != std::string::npos
+			&& (lutPart == 0 || vfsPath[lutPart - 1] == '/');
+		if (isLut) {
+			static constexpr uint8_t pngSignature[8] =
+				{137, 80, 78, 71, 13, 10, 26, 10};
+			if (ext != ".png" || bytes->size() < sizeof(pngSignature)
+					|| !std::equal(std::begin(pngSignature),
+						std::end(pngSignature), bytes->begin())) {
+				tool::err() << "LUT must be a PNG strip in luts/: "
+					<< vfsPath << std::endl;
+				return 1;
+			}
+			embed = std::move(*bytes);
+		}
+		else if (ext == ".ktx2" || ext == ".cubemanifest"
 				|| ext == ".givolumemanifest" || ext == ".givolume") {
 			embed = std::move(*bytes);
 		}

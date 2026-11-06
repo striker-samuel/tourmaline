@@ -1252,6 +1252,10 @@ using namespace ::smvk;
 		// combining both paths in one active World.
 		if (worldSceneInstances.Count() != 0)
 			throw std::logic_error("cannot resolve Cluster scenes while direct World scene instances are active");
+		// Full legacy resolve replaces the node slots: reject stale game
+		// handles after it, rather than accidentally mutating a reused slot.
+		gameNodes_.clear();
+		gameMeshBindings_.clear();
 		// MATERIAL USERDATA RE-KEY CAPTURE (consumed by the re-key below
 		// the material-table rebuild): the world material indices are
 		// about to be rebuilt, so the per-material defaults are captured
@@ -1951,6 +1955,76 @@ using namespace ::smvk;
 		MarkAllRootsChanged(scene);
 		recalculateGlobalTransforms(scene);
 
+		RefreshRuntimeSceneCaches();
+
+		// (The mesh entities' mirrors were re-established EARLIER in
+		// this resolve — before the flags/drawItems build, so their
+		// rows take part in the iterator lists; see the moved block
+		// above. The animators' target clusters persist through
+		// resolves — their rest poses + cursors stand; the next Update
+		// re-flushes the pose onto the rebuilt cluster scene.)
+	}
+
+	NodeHandle World::AddNode(const glm::mat4& localFrame)
+	{
+		const int node = addNode(scene, -1, 0);
+		if (node < 0)
+			return kNodeInvalidHandle;
+		// Preserve the ABA guarantee even across the legacy full-scene
+		// resolve: its replacement Scene may reuse the same slot number.
+		uint32_t& highWater = gameSlotGeneration_[NodeId(node)];
+		const uint32_t sceneGeneration = NodeGenerationOf(scene, NodeId(node));
+		const uint32_t generation = std::max(highWater + 1u, sceneGeneration);
+		if (generation >= tour::scene::kNodeGenMask) {
+			RetireNodeSlot(scene, NodeId(node));
+			return kNodeInvalidHandle;
+		}
+		highWater = generation;
+		scene.nodeGeneration[size_t(node)] =
+			tour::scene::kNodeSlotAliveBit | generation;
+		const NodeHandle handle = MakeNodeHandle(scene, NodeId(node));
+		gameNodes_.insert(handle);
+		(void)tour::scene::SetLocalTransform(scene, handle, localFrame);
+		scene.globalTransform[size_t(node)] = localFrame;
+		markAsChanged(scene, node);
+		RefreshRuntimeSceneCaches();
+		return handle;
+	}
+
+	bool World::RemoveNode(NodeHandle handle)
+	{
+		if (!IsGameNode(handle))
+			return false;
+		const NodeId node = NodeHandleSlot(handle);
+		// Only unowned game nodes can be removed through this entry point:
+		// authored/cluster nodes are managed by their scene owners.
+		for (const auto& maps : clusterMergedNodes)
+			for (const NodeId source : maps)
+				if (source == node)
+					return false;
+		for (const MeshEntity& entity : meshEntities)
+			if (entity.alive && entity.mergedNode == node)
+				return false;
+		for (const AudioSourceEntity& entity : audioEntities)
+			if (entity.alive && entity.mergedNode == node)
+				return false;
+		deleteSceneNodes(scene, { node });
+		gameNodes_.erase(handle);
+		gameMeshBindings_.erase(handle);
+		RefreshRuntimeSceneCaches();
+		return true;
+	}
+
+	// Rebuild runtime draw/cull caches after in-place node or component
+	// edits without invoking the destructive cluster resolve.
+	void World::RefreshRuntimeSceneCaches()
+	{
+		std::unordered_map<NodeId, uint64_t> entityInstanceByNode;
+		for (const MeshEntity& entity : meshEntities)
+			if (entity.alive && entity.mergedNode != UINT32_MAX
+					&& entity.materialInstance)
+				entityInstanceByNode[entity.mergedNode] =
+					entity.materialInstance.value;
 		// Build the per-node iterator flags from the resolved scene: renderable
 		// nodes are those carrying a mesh; material drives Opaque vs Transparent.
 		// Hidden subtrees (Clarisse-style visibility overrides) are excluded:
@@ -2088,12 +2162,6 @@ using namespace ::smvk;
 		++gpuSceneTopologyRevision; // authored/runtime topology or binding remap
 		dirtyCull = true;
 
-		// (The mesh entities' mirrors were re-established EARLIER in
-		// this resolve — before the flags/drawItems build, so their
-		// rows take part in the iterator lists; see the moved block
-		// above. The animators' target clusters persist through
-		// resolves — their rest poses + cursors stand; the next Update
-		// re-flushes the pose onto the rebuilt cluster scene.)
 	}
 
 	StaticMesh* World::GetMesh(uint32_t meshIndex)

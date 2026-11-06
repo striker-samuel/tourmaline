@@ -1275,6 +1275,54 @@ void TestResolveHoledCluster()
 		"holedresolve.default-camera-through-map");
 }
 
+// Node-first World gameplay API: independently create transform nodes,
+// add inline (non-catalog) components and retire with generation checks.
+// Mesh binding is tested separately through app::AssetManager, since the
+// engine has no dependency on the generated project catalog.
+void TestGameOwnedNodes()
+{
+	smvk::World w;
+	const glm::mat4 frame = glm::translate(glm::mat4(1.0f),
+		glm::vec3(4.0f, 5.0f, 6.0f));
+	const NodeHandle node = w.AddNode(frame);
+	Check(w.IsGameNode(node), "game-node: added independently of asset");
+	Check(w.scene.localTransform[NodeHandleSlot(node)][3].x == 4.0f,
+		"game-node: single local transform");
+	Check(w[node].SetPhysicsBody({})
+		&& w[node].SetAudioRoom({})
+		&& w[node].SetTriggerVolume({}),
+		"game-node: typed default brace components");
+	const NodeId slot = NodeHandleSlot(node);
+	Check(tour::scene::FindPhysicsBody(w.scene, slot)
+		&& tour::scene::FindAudioRoom(w.scene, slot)
+		&& tour::scene::FindTriggerVolume(w.scene, slot),
+		"game-node: inline associations share the same node");
+	Check(!FindMesh(w.scene, slot),
+		"game-node: no mesh required to create node");
+	const auto update = glm::translate(glm::mat4(1.0f),
+		glm::vec3(3.0f, 2.0f, 1.0f));
+	Check(w[node].SetLocalTransform(update)
+		&& w.scene.localTransform[slot][3].x == 3.0f,
+		"game-node: transform updated without node replacement");
+	Check(w.RemoveNode(node), "game-node: remove");
+	Check(!w.IsGameNode(node) && !w.RemoveNode(node)
+		&& !w[node].SetPhysicsBody({}),
+		"game-node: stale handle cannot mutate deleted node");
+	const NodeHandle replacement = w.AddNode();
+	Check(w.IsGameNode(replacement)
+		&& !w.IsGameNode(node)
+		&& (NodeHandleSlot(replacement) != slot || replacement != node),
+		"game-node: reusable slot bumps generation");
+	// The legacy cluster resolve still destroys direct game nodes
+	// until Epoch 6c. A reminted slot must NOT make an old handle live.
+	w.ResolveAndFixup_clusters();
+	Check(!w.IsGameNode(replacement),
+		"game-node: legacy resolve explicitly invalidates old handles");
+	const NodeHandle afterResolve = w.AddNode();
+	Check(w.IsGameNode(afterResolve) && !w.IsGameNode(replacement),
+		"game-node: no handle ABA across full scene resolve");
+}
+
 // Renderer instances can survive a scene switch. Two newly constructed
 // worlds used to publish the same revision (1) after their first rebuild,
 // making the renderer reuse the previous scene's chart-transform buffer.
@@ -1311,6 +1359,7 @@ int main() {
 	TestResolveHoledCluster();
 	TestSchemaAssocFold();
 	TestLightmapChartRevisionAcrossWorlds();
+	TestGameOwnedNodes();
 	std::cout << (g_failures == 0 ? "ALL PASS" : "FAILURES") << " ("
 		<< g_checks << " checks)\n";
 	return g_failures == 0 ? 0 : 1;

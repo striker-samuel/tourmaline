@@ -13,6 +13,8 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/animator.h>
+#include <Engine/Asset/mesh_handle.h>
+#include <Engine/Asset/lut_handle.h>
 #include <Engine/Asset/cluster_serializer.h> // smvk::ExternalTextureResolver
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
@@ -21,6 +23,8 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/region_registry.h>
 #include <Engine/Scene/world_scene_instances.h>
+
+namespace app { class AssetManager; }
 
 namespace tour {
 // (namespace/RHI boundary audit) this block's RHI dependencies are
@@ -125,6 +129,120 @@ namespace tour {
 			scene.ReserveNodeSlots(slots);
 		}
 
+
+		// The World owns nodes. The project catalog names assets; LoadMesh
+		// resolves a catalog key through the attached app AssetManager,
+		// returning a reusable loaded resource handle. Game code attaches
+		// this handle to nodes; no raw world mesh indices escape this API.
+		[[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey,
+			std::string& error);
+		// Refuses while a World node still references the handle.
+		bool UnloadMesh(app::MeshHandle mesh);
+		// Global artistic LUT, with the same explicit catalog-key ->
+		// loaded resource-handle discipline as meshes. A LUT is a world
+		// rendering setting, not a mesh/node component.
+		[[nodiscard]] app::LutHandle LoadLut(uint64_t catalogKey,
+			std::string& error);
+		[[nodiscard]] app::LutHandle LoadLut(uint64_t catalogKey) {
+			lastGameAssetError_.clear();
+			return LoadLut(catalogKey, lastGameAssetError_);
+		}
+		bool SetLut(app::LutHandle lut);
+		bool UnloadLut(app::LutHandle lut);
+		// Ergonomic overload for callers that do not need an immediate
+		// out-error; details remain available through LastAssetError().
+		[[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey) {
+			lastGameAssetError_.clear();
+			return LoadMesh(catalogKey, lastGameAssetError_);
+		}
+		[[nodiscard]] const std::string& LastAssetError() const {
+			return lastGameAssetError_;
+		}
+		[[nodiscard]] NodeHandle AddNode(
+			const glm::mat4& localFrame = glm::mat4(1.0f));
+		bool RemoveNode(NodeHandle node);
+		[[nodiscard]] bool IsGameNode(NodeHandle node) const {
+			return gameNodes_.contains(node) && NodeHandleValid(scene, node);
+		}
+		// Called by AssetManager for the duration of its attachment.
+		// AssetManager must outlive its loaded mesh handles.
+		// The runtime installs its asset service here. Ownership follows the
+		// World lifetime, so no app::AssetManager setup is needed in game
+		// code. The concrete type lives in the apphost; this erased owner
+		// avoids a dependency from engine back onto apphost.
+		void OwnGameAssets(std::shared_ptr<void> owner) {
+			gameAssetOwner_ = std::move(owner);
+		}
+		[[nodiscard]] bool HasAssetService() const {
+			return gameAssets_ != nullptr;
+		}
+		void SetGameAssets(app::AssetManager* assets) {
+			if (gameAssets_ && gameAssets_ != assets)
+				ClearGameMeshBindings();
+			gameAssets_ = assets;
+		}
+		// Called before releasing all assets or the bound manager.
+		// Attached nodes become meshless; their transforms and value
+		// components remain intact.
+		void ClearGameMeshBindings() {
+			if (gameMeshBindings_.empty())
+				return;
+			for (const auto& [handle, resource] : gameMeshBindings_)
+				if (IsGameNode(handle))
+					(void)tour::scene::RemoveMesh(scene, NodeHandleSlot(handle));
+			gameMeshBindings_.clear();
+			RefreshRuntimeSceneCaches();
+		}
+		[[nodiscard]] bool HasGameMeshBinding(uint64_t resourceValue) const {
+			for (const auto& [node, mesh] : gameMeshBindings_)
+				if (mesh == resourceValue && IsGameNode(node))
+					return true;
+			return false;
+		}
+
+		class NodeRef {
+		public:
+			NodeRef(World& owner, NodeHandle handle)
+				: owner_(owner), handle_(handle) {}
+			// Requires a PREVIOUSLY loaded app::MeshHandle. One mesh per
+			// node: replacement is atomic on invalid/unmapped handles.
+			bool SetMesh(app::MeshHandle mesh) const;
+			bool RemoveMesh() const;
+			bool SetLocalTransform(const glm::mat4& frame) const {
+				return owner_.IsGameNode(handle_)
+					&& tour::scene::SetLocalTransform(owner_.scene, handle_, frame);
+			}
+			bool SetPhysicsBody(const tour::scene::ScenePhysicsBody& body) const {
+				return owner_.IsGameNode(handle_)
+					&& tour::scene::SetPhysicsBody(owner_.scene, NodeHandleSlot(handle_), body);
+			}
+			bool SetAudioRoom(const tour::scene::SceneAudioRoom& room) const {
+				return owner_.IsGameNode(handle_)
+					&& tour::scene::SetAudioRoom(owner_.scene, NodeHandleSlot(handle_), room);
+			}
+			bool SetTriggerVolume(const tour::scene::SceneTriggerVolume& trigger) const {
+				return owner_.IsGameNode(handle_)
+					&& tour::scene::SetTriggerVolume(owner_.scene, NodeHandleSlot(handle_), trigger);
+			}
+		private:
+			World& owner_;
+			NodeHandle handle_;
+		};
+		[[nodiscard]] NodeRef operator[](NodeHandle handle) {
+			return NodeRef(*this, handle);
+		}
+
+		// In-place draw/cull refresh, never the destructive cluster fold.
+		void RefreshRuntimeSceneCaches();
+		// Legacy ResolveAndFixup currently invalidates game nodes; this
+		// pending 6c migration is an explicit limitation of this slice.
+		std::unordered_set<NodeHandle> gameNodes_;
+		// Cross-resolve per-slot generation high water mark. The legacy
+		// scene reset cannot re-mint a stale game handle on reused slots.
+		std::unordered_map<NodeId, uint32_t> gameSlotGeneration_;
+		std::unordered_map<NodeHandle, uint64_t> gameMeshBindings_;
+		app::AssetManager* gameAssets_ = nullptr;
+		std::string lastGameAssetError_;
 
 		// Merged runtime scene graph. Imported Cluster scenes are folded into
 		// this via ResolveAndFixup_clusters().
@@ -1007,6 +1125,10 @@ namespace tour {
 			}
 		}
 
+		// Keep this LAST: C++ destroys fields in reverse order. The
+		// AssetManager releases its held assets while World::scene,
+		// cluster pools, and location tables are still alive.
+		std::shared_ptr<void> gameAssetOwner_;
 	};
 
 } // namespace tour

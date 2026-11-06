@@ -13,6 +13,7 @@
 #include "PakPreload.h"
 #include "PakWorldLoader.h"
 #include "ProjectRuntime.h"
+#include "AssetManager.h" // World-owned runtime asset service
 #include "ShapeSceneLoader.h"
 #include "DeployCheck.h"
 #include "RuntimeProcedurals.h"
@@ -673,6 +674,15 @@ namespace app {
 						rendererRaw->Shapes().Clear();
 						return nullptr;
 					}
+				}
+				// WORLD OWNS THE ASSET SERVICE: game code only holds the
+				// loaded MeshHandle returned by world.LoadMesh(catalogKey).
+				// The World destroys this service FIRST on teardown, while
+				// its Scene + Cluster resource pools are still alive.
+				if (world && session) {
+					auto assets = std::make_shared<app::AssetManager>(
+						*session, *world, &ctx, rendererRaw);
+					world->OwnGameAssets(std::move(assets));
 				}
 				*worldHandle = world.get();
 				return world;

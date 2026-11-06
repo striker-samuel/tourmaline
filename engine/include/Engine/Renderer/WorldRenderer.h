@@ -1507,6 +1507,12 @@ public:
 	// Detach (host shutdown, reverse stack order) releases everything
 	// while the context is alive.
 	// ------------------------------------------------------------------
+	// A loaded catalog LUT, supplied as decoded RGBA8 bytes by the
+	// runtime asset service. No filesystem scanning or filename lookup.
+	bool SetColorLutRgba(const uint8_t* rgba, size_t bytes,
+		std::string_view assetName);
+	void ClearColorLut();
+
 	explicit WorldRenderer(smvk::App& host);
 	~WorldRenderer();
 	smvk::App& Host() { return m_host; }
@@ -3890,7 +3896,7 @@ private:
 	uint32_t m_lutBindless = UINT32_MAX;
 	std::string m_lutFile; // "" = off
 	float m_lutIntensity = 1.0f;
-	std::vector<std::string> m_lutFiles;
+
 	// Screenshot capture: the tonemap pass writes one extra RGBA8_SRGB
 	// target on the capture frame; the bytes read back to PNG after Execute.
 	smvk::Holder<smvk::ImageHandle> m_captureImage;
@@ -3951,8 +3957,7 @@ private:
 	bool m_sequenceReadbackPending = false;
 	void ExportSequenceScreenshot(smvk::Extent2D extent);
 
-	void ScanLutFiles();
-	bool LoadLut(const std::string& file);
+
 	void ExportNeutralLut();
 	void EnsureCaptureTarget(smvk::Extent2D extent);
 	void ExportScreenshot(smvk::Extent2D extent);

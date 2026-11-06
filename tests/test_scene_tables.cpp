@@ -584,6 +584,61 @@ int main() {
 	}
 
 	{
+		// The value-component lane accepts default braced values without
+		// a catalog key. The concrete payload type is supplied by the
+		// mutator signature (a generic template cannot deduce from {}).
+		Scene s = MakeScene(1);
+		Check(tour::scene::SetPhysicsBody(s, 0, {}),
+			"value component: default-braced physics body");
+		Check(tour::scene::SetAudioRoom(s, 0, {}),
+			"value component: default-braced audio room");
+		Check(tour::scene::SetTriggerVolume(s, 0, {}),
+			"value component: default-braced trigger volume");
+		const tour::scene::PhysicsBodyRow* physics = tour::scene::FindPhysicsBody(s, 0);
+		const tour::scene::AudioRoomRow* room = tour::scene::FindAudioRoom(s, 0);
+		const tour::scene::TriggerVolumeRow* trigger = tour::scene::FindTriggerVolume(s, 0);
+		Check(physics && physics->body.mass == 1.0f,
+			"value component: physics defaults preserved");
+		Check(room && room->room.enabled,
+			"value component: audio room defaults preserved");
+		Check(trigger && trigger->trigger.enabled,
+			"value component: trigger defaults preserved");
+	}
+
+	{
+		// Catalog-first node binding invariant: the scene holds exactly
+		// ONE mesh association per node; rebinding the mesh replaces
+		// its row, retaining the node's generation and transform.
+		Scene s = MakeScene(2);
+		const NodeHandle node = MakeNodeHandle(s, 0);
+		const glm::mat4 frame = glm::translate(glm::mat4(1.0f),
+			glm::vec3(7.0f, 8.0f, 9.0f));
+		Check(SetLocalTransform(s, node, frame),
+			"mesh-slot: set node-local transform");
+		Check(SetMesh(s, 0, 12), "mesh-slot: initial assignment");
+		Check(SetMesh(s, 0, 23), "mesh-slot: replacement succeeds");
+		uint32_t associations = 0;
+		for (const MeshRow& row : s.tables.meshes)
+			if (row.node == 0) {
+				++associations;
+				Check(row.mesh == 23,
+					"mesh-slot: replacement stores only new mesh");
+			}
+		Check(associations == 1,
+			"mesh-slot: rebind cannot append a second mesh");
+		Check(NodeHandleValid(s, node)
+			&& s.localTransform[0][3].x == 7.0f
+			&& s.localTransform[0][3].y == 8.0f
+			&& s.localTransform[0][3].z == 9.0f,
+			"mesh-slot: rebind preserves node identity and transform");
+		Check(FindMesh(s, 1) == nullptr,
+			"mesh-slot: another node remains meshless");
+		Check(RemoveMesh(s, 0) && FindMesh(s, 0) == nullptr
+			&& NodeHandleValid(s, node),
+			"mesh-slot: detach preserves the node");
+	}
+
+	{
 		// ---- THE SHARED SPATIAL-VOLUME SHAPE (spatial_volume.h) ----
 		// The GI-volume placement convention: center = translation,
 		// axes = normalized columns, half = HALF the column lengths.

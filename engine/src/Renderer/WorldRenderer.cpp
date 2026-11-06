@@ -28,7 +28,6 @@
 #include <vector>
 
 #ifndef _WIN32
-#include <strings.h> // strcasecmp (ScanLutFiles' extension compare)
 #include <time.h>    // localtime_r (screenshot timestamp)
 #endif
 
@@ -2774,7 +2773,7 @@ namespace engine {
 			std::cerr << "[WorldRenderer] SMAA LUT upload failed - SMAA unavailable\n";
 		m_context->FlushUploads();
 		// Artistic LUTs: seed the neutral strip + list editable strips.
-		ScanLutFiles();
+		// Catalog LUTs are loaded explicitly by World::LoadLut; no scan.
 		ExportNeutralLut();
 
 
@@ -9520,55 +9519,36 @@ namespace engine {
 	// is 1024x32 sRGB-encoded PNG (32 tiles along x, blue = tile, red =
 	// column, green = row); Photoshop edits the bytes directly.
 	// ---------------------------------------------------------------------
-	void WorldRenderer::ScanLutFiles() {
-		m_lutFiles.clear();
-		std::error_code ec;
-		std::filesystem::create_directories("content/luts", ec);
-		for (const auto& entry : std::filesystem::directory_iterator("content/luts", ec)) {
-			if (!entry.is_regular_file())
-				continue;
-#ifdef _WIN32
-			if (_stricmp(entry.path().extension().string().c_str(), ".png") != 0)
-#else
-			if (strcasecmp(entry.path().extension().string().c_str(), ".png") != 0)
-#endif
-				continue;
-			m_lutFiles.push_back(entry.path().filename().string());
-		}
-		std::sort(m_lutFiles.begin(), m_lutFiles.end());
-	}
-
-	bool WorldRenderer::LoadLut(const std::string& file) {
-		std::vector<uint8_t> rgba;
-		int w = 0, h = 0;
-		const std::string path = "content/luts/" + file;
-		if (!LutLoadPng(path.c_str(), rgba, w, h)) {
-			std::cerr << "[WorldRenderer] LUT decode failed: " << path << "\n";
+	bool WorldRenderer::SetColorLutRgba(
+		const uint8_t* rgba, size_t bytes, std::string_view assetName)
+	{
+		// A fixed 32^3 LUT strip. The runtime decoder validates this
+		// shape before upload; check it again at the renderer boundary.
+		constexpr size_t expected = 1024u * 32u * 4u;
+		if (!m_context || !rgba || bytes != expected)
 			return false;
-		}
-		if (w != 1024 || h != 32) {
-			std::cerr << "[WorldRenderer] LUT " << file << " is " << w << "x" << h
-				<< ", expected 1024x32 (32^3 strip)\n";
-			return false;
-		}
-
 		smvk::ImageCreateInfo ci{};
 		ci.extent = { 1024, 32, 1 };
-		ci.format = smvk::Format::RGBA8_SRGB; // sRGB view: sampling lands in linear
+		ci.format = smvk::Format::RGBA8_SRGB;
 		ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
 		ci.name = "colorLut";
-		auto tex = m_context->CreateTexture(ci, rgba.data());
+		auto tex = m_context->CreateTexture(ci, rgba);
 		if (tex.empty())
 			return false;
-		m_lutTexture = std::move(tex); // old texture retires via Holder
+		m_lutTexture = std::move(tex);
 		m_lutBindless = m_context->GetTextureBindlessIndex(m_lutTexture);
 		m_context->FlushUploads();
-		m_lutFile = file;
-		std::cout << "[WorldRenderer] LUT loaded: " << file
-			<< " (bindless " << m_lutBindless << ")\n";
+		m_lutFile = std::string(assetName);
 		return true;
+	}
+
+	void WorldRenderer::ClearColorLut()
+	{
+		m_lutTexture = {};
+		m_lutBindless = UINT32_MAX;
+		m_lutFile.clear();
 	}
 
 	void WorldRenderer::ExportNeutralLut() {
@@ -9602,10 +9582,6 @@ namespace engine {
 			std::cout << "[WorldRenderer] neutral LUT strip exported: exports/lut_neutral.png\n";
 		else
 			std::cerr << "[WorldRenderer] neutral LUT export failed (exports/lut_neutral.png)\n";
-		// Seed the editable copy into content/luts once; never overwrite (the
-		// user may have graded it already - F7 always refreshes exports/).
-		if (!std::filesystem::exists("content/luts/neutral.png", ec))
-			LutWritePng("content/luts/neutral.png", W, H, px.data());
 	}
 
 	void WorldRenderer::EnsureCaptureTarget(smvk::Extent2D extent) {

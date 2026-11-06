@@ -3651,6 +3651,40 @@ void TestProjectCatalog() {
 			&& sym == "_uStone",
 			"catalog.reserved-normalized");
 	}
+	// LUT keys are a typed PROJECT catalog view of texture identities,
+	// not runtime-discovered filenames or a duplicate catalog bucket.
+	{
+		smvk::project::ProjectCatalog c;
+		c.projectName = "LutCatalog";
+		c.textures.push_back({ 0x2000, "Neutral",
+			"content/luts/neutral.png", "world" });
+		c.textures.push_back({ 0x2001, "Stone",
+			"content/textures/stone.png", "world" });
+		smvk::project::GenerationStamp stamp;
+		stamp.generation = 1;
+		stamp.timestamp = 1793451600;
+		stamp.contentHash = smvk::project::ComputeCatalogContentHash(c);
+		const std::string header =
+			smvk::project::EmitProjectHeader(c, stamp, {}, {});
+		Check(header.find("struct LutKey {") != std::string::npos
+			&& header.find("namespace luts {") != std::string::npos
+			&& header.find("inline constexpr LutKey Neutral{0x2000ULL}")
+				!= std::string::npos,
+			"catalog.lut-typed-key-from-project-texture");
+		const size_t lutStart = header.find("namespace luts {");
+		const size_t lutEnd = lutStart == std::string::npos
+			? std::string::npos : header.find("}", lutStart);
+		Check(lutStart != std::string::npos
+			&& lutEnd != std::string::npos
+			&& header.substr(lutStart, lutEnd - lutStart).find("Stone")
+				== std::string::npos,
+			"catalog.lut-view-excludes-ordinary-textures");
+		Check(header.find("AssetDesc{textures::Neutral,")
+			!= std::string::npos
+			&& header.find("AssetDesc{luts::Neutral,")
+				== std::string::npos,
+			"catalog.lut-identity-reused-no-second-record");
+	}
 	// Structural validation of the emitted header: every generated
 	// symbol line is a valid, non-reserved, non-keyword identifier.
 	// The entries carry DB-SANITIZED symbols (what SymbolFromPath
