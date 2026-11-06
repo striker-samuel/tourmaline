@@ -166,6 +166,15 @@ std::string BakeLightsHash(const Cluster& cluster) {
 		hs.feedPod(g);
 	}
 	hs.feedPod(uint64_t(count)); // a light deleted from the set changes it
+	// An EMPTY bake-light set must hash identically however it came up
+	// empty - no lights at all, runtime-only lights, or nothing left after
+	// the sun/world exclusion. The zero-count fold and the empty-table
+	// "lights-none" marker above would otherwise diverge, which is exactly
+	// the lightless-scene gate asymmetry: the cook folds with the
+	// synthesized sun present (non-empty table, all skipped) while the pak
+	// gate and the GiBaker fold before their own seed (empty table).
+	if (count == 0)
+		return BakeInputHash(std::string("lights-none"));
 	return hs.str();
 }
 
