@@ -871,3 +871,49 @@ are implementation, test, diagnostics and compilation fixes within
 these four tracks. Their completed changes are represented by the
 checked items above; they do not independently establish that the
 still-unrun integration/GPU gates have passed.
+
+## 2026-11-06 — latest 100 master commits audit (through `aa2ad7c883`)
+
+Scope: `750cab9575` through `aa2ad7c883`, including the merged
+30-commit audit PR #236. The 70 additional earlier commits mainly
+establish Map/Scene identity, per-world tile isolation, SMP8 Map
+packing, synchronous runtime streaming and shared direct-instance
+groundwork (#231/#232). These features are already covered as landed
+by the checklist above; **do not re-open them as TODOs**. The
+`docs/world_tile_streaming_epochs.md` checklist was also reconciled
+to distinguish landed standalone APIs from production cutover.
+
+Additional **specific open acceptance gates** from the epoch roadmap
+(not satisfied merely by the merged feature commits):
+
+- [ ] Establish the Epoch-0 fixture/performance baseline: shared mesh
+  across cells, skinned and decal/audio instances, nested prefab,
+  tall cross-cell object, startup/resolve timings, CPU/GPU stages,
+  upload bytes, page reads and memory; retain before/after records.
+- [ ] Make tile residency predictive and measurable: add velocity
+  prefetch, eviction hysteresis, dependency resolution, byte/IO/
+  upload/memory budgets and telemetry. Existing request-count budget
+  and priority ordering do not satisfy these limits.
+- [ ] Prove that a host callback arriving after cancellation, tile
+  retirement or a Map switch cannot resurrect old content, including
+  the actual async worker/host integration. Generation-checked provider
+  tickets are landed, but asynchronous end-to-end completion is not.
+- [ ] Validate complete scene/tile spatial-record integrity: finalized
+  transformed multi-LOD static bounds, tall/cross-cell ownership,
+  deterministic cooked BVHs, invalid leaf references, finite
+  transforms, endian/alignment/CRC checks and repeatable recooks.
+  The existing MapTile placement codec tests are not BVH acceptance.
+- [ ] Verify independent asset pins for borrowed texture/pak pages
+  during unload, plus shared IDs across multiple tiles/paks and GPU
+  flight-safe destruction; standalone `AssetResidency` lease tests do
+  not establish production Cluster-free asset lifetimes.
+- [ ] Complete standalone prefab authoring undo/reimport and Map
+  editing with stable document identities separate from runtime
+  generational node slots. Switching runtime Map IDs is already
+  implemented in the bridge, but the editor cutover is not.
+
+Detailed gates: `docs/world_tile_streaming_epochs.md`,
+`docs/map_scene_world_architecture.md`, and
+`docs/incremental_world_scene_instances.md`. This is a source/docs
+audit; no native build, CTests, cooker integration or GPU session
+was executed for the expanded review.
