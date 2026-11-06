@@ -90,6 +90,16 @@ int main() {
                 *reader, {map.id + 1, {-2,2}}, decoded)
                 && decoded.size() == 1,
                 "world ID namespaces pak tile lookup");
+            std::vector<tour::CookedMapPlacement> persistent;
+            Check(tour::mapcook::ReadPersistentPlacements(*reader, map.id, persistent)
+                && persistent.size() == 1
+                && persistent.front().mapNodeId == 40
+                && persistent.front().sceneAssetId == 404,
+                "persistent placements roundtrip without joining tile residency");
+            Check(tour::mapcook::ReadPersistentPlacements(
+                *reader, map.id + 1, persistent)
+                && persistent.size() == 1,
+                "separate world has its own persistent page");
             Check(tour::mapcook::DiscoverMapTiles(*reader, map.id, discovery)
                 && discovery.size() == 2
                 && discovery.front().tile.world == map.id,
@@ -98,8 +108,8 @@ int main() {
                 && discovery.size() == 2
                 && discovery.front().tile.world == map.id + 1,
                 "overlapping cells in second Map remain independent");
-            Check(reader->BlobsOfKind(smvk::PakAssetKind::MapTile).size() == 4,
-                "four MapTile pages across two authored worlds");
+            Check(reader->BlobsOfKind(smvk::PakAssetKind::MapTile).size() == 6,
+                "four streamed pages and two persistent Map pages");
         }
     }
     Check(out.world == map.id, "compiled map preserves authored world identity");
