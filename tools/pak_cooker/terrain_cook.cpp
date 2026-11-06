@@ -16,6 +16,7 @@
 
 #include <Engine/Rendergraph/terrain_hfield.h>
 #include <Engine/Rendergraph/terrain_meta.h>
+#include <Engine/Rendergraph/terrain_occlusion.h>
 
 // The standalone exe owns the stb_image implementation; the PakLib
 // build linked into the editor skips its own copy (editor_branding.cpp
@@ -69,6 +70,7 @@ bool CookTerrainBlobs(const std::string& terrainDir,
 
 	float tileMinMax[16][2];
 	uint64_t raisedSamples = 0;
+	auto pyramid = smvk::terrain::NewOcclusionAtlas();
 	// H-tiles: 1024 RGBA8, RG16 height.
 	for (uint32_t tz = 0; tz < nH; ++tz) {
 		for (uint32_t tx = 0; tx < nH; ++tx) {
@@ -105,6 +107,7 @@ bool CookTerrainBlobs(const std::string& terrainDir,
 			// alter the original RG16 H-tile or its terrain/meta min/max.
 			std::vector<uint8_t> shadowHeights = payload;
 			raisedSamples += RasterPlacedHeight(meta, tx, tz, scenes, shadowHeights);
+			smvk::terrain::AccumulateOcclusionTile(pyramid, shadowHeights, tx, tz);
 			if (!writer.AddBlob(smvk::PakAssetKind::Terrain,
 				"terrain/occlusion/" + smvk::terrain::HTileName(tx, tz),
 				std::move(shadowHeights))) {
@@ -121,6 +124,13 @@ bool CookTerrainBlobs(const std::string& terrainDir,
 				<< tileMinMax[tz * 4 + tx][0] << ".."
 				<< tileMinMax[tz * 4 + tx][1] << ")\n";
 		}
+	}
+	// One conservative hierarchy across ALL 16 tiles, including seams.
+	smvk::terrain::FinishOcclusionAtlas(pyramid);
+	if (!writer.AddBlob(smvk::PakAssetKind::Terrain,
+		smvk::terrain::kOcclusionPyramidPath, std::move(pyramid))) {
+		err = "terrain: occlusion maximum-height pyramid AddBlob failed";
+		return false;
 	}
 	// S-tiles (test mask v1): 256 RGBA8, checker in R.
 	for (uint32_t tz = 0; tz < nS; ++tz) {
