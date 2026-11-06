@@ -65,10 +65,36 @@ inline bool DiscoverMapTiles(const smvk::PakReader& reader,
     return true;
 }
 
+inline std::string PersistentPath(engine::worldpartition::WorldId world) {
+    return "worlds/" + std::to_string(world) + "/persistent.mtile";
+}
+
+// A non-spatial record is a distinct pak path: never included in resident
+// cell enumeration. Its page uses MTL2's record layout with reserved cell
+// coordinate (0,0), but cannot collide with an actual (0,0) tile path.
+inline bool ReadPersistentPlacements(
+    const smvk::PakReader& reader, engine::worldpartition::WorldId world,
+    std::vector<CookedMapPlacement>& out) {
+    if (!world) return false;
+    const auto* entry = reader.Find(smvk::PakAssetKind::MapTile,
+                                     PersistentPath(world));
+    if (!entry) { out.clear(); return true; }
+    try {
+        return DecodeTile(reader.Payload(*entry), {world, {0,0}}, out);
+    } catch (...) { return false; }
+}
+
 // Does not finalize the pak. Caller may add other assets and choose regional
 // packaging. Fail-fast on invalid placement page or repeated logical key.
 inline bool AddMapTiles(smvk::PakWriter& writer, const CompiledMapTiles& tiles) {
     if (!tiles.world) return false;
+    if (!tiles.persistent.empty()) {
+        std::vector<uint8_t> bytes;
+        if (!EncodeTile({tiles.world, {0,0}}, tiles.persistent, bytes)
+            || !writer.AddBlob(smvk::PakAssetKind::MapTile,
+                               PersistentPath(tiles.world), std::move(bytes)))
+            return false;
+    }
     for (const auto& [cell, placements] : tiles.tiles) {
         const engine::worldpartition::WorldTileKey tile{tiles.world, cell};
         std::vector<uint8_t> bytes;
