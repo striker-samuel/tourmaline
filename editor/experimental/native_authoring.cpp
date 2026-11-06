@@ -151,6 +151,7 @@ private:
         auto* self = reinterpret_cast<NativeEditor*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (message == WM_NCCREATE) {
             self = static_cast<NativeEditor*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);
+            self->window_ = hwnd; // WM_CREATE fires before CreateWindowExW returns.
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
         }
         return self ? self->Handle(hwnd, message, wp, lp)
