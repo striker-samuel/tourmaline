@@ -8,26 +8,26 @@
 // source-tree-only: walks the engine's PUBLIC headers and enforces the
 // boundary rules that hold TODAY, so every NEW violation fails CI:
 //
-//   R1  no public header includes Vulkan headers (<vulkan/...>,
+//   R1 — Vulkan Include Guard: no public header includes Vulkan headers (<vulkan/...>,
 //       <volk.h>, vk_mem_alloc) - the include path is the sharpest
 //       leak and it is clean today (stage 2 made the path PRIVATE on
 //       the engine target; this guards the header side forever).
-//   R2  no public header includes the private backend impl
+//   R2 — Private Implementation Guard: no public header includes the private backend impl
 //       (Vulkan/detail/ or anything under engine/src/). Scans with
 //       string contents PRESERVED: a quoted #include "..." path is a
 //       real include directive, not prose - stripping quoted strings
 //       (the audit's scanner weakness) let quoted paths evade this.
-//   R3  no Vulkan TYPE NAME (Vk[A-Z]...) in public header CODE
+//   R3 — Vulkan Type Leakage Guard: no Vulkan TYPE NAME (Vk[A-Z]...) in public header CODE
 //       (comments stripped) - opaque pointers + prose references are
 //       the baseline; a typed Vk handle in a signature is new.
-//   R4  no direct upward include from the public RHI headers
+//   R4 — Direct RHI Dependency Guard: no direct upward include from the public RHI headers
 //       (smvk.h + backend.h + RHI/*) into engine-domain headers.
-//   R5  no TRANSITIVE upward include from the same RHI roots - the
+//   R5 — Transitive RHI Dependency Guard: no TRANSITIVE upward include from the same RHI roots - the
 //       full include graph is walked, INCLUDING Renderer/ headers
 //       (the audit's weakness: the walk deliberately stopped at the
 //       gray zone; a chain RHI -> Renderer/foo.h -> Engine/App/...
 //       is now caught).
-//   R6  no broad `using namespace ::smvk` import in ANY public header
+//   R6 — Broad Namespace Import Guard: no broad `using namespace ::smvk` import in ANY public header
 //       (the audit's finding 1: an engine namespace absorbing the
 //       whole RHI namespace hides incomplete migrations and makes
 //       name lookup ambiguous). BASELINE-GATED, exact both ways:
@@ -36,7 +36,7 @@
 //       fails until the baseline entry is deleted (the shrink-only
 //       ratchet - the baseline IS the exception list, and it may only
 //       shrink, never grow).
-//   R7  COMPAT ALIAS CONTAINMENT (the audit's finding 4): the
+//   R7 — Legacy Namespace Compatibility Guard: COMPAT ALIAS CONTAINMENT (the audit's finding 4): the
 //       migration's `using ::tour::*` / `namespace X = ::tour...`
 //       re-export blocks keep engine symbols reachable through
 //       namespace smvk (smvk::World, smvk::PakReader...). They are
@@ -47,7 +47,7 @@
 //       audit's finding 3, e.g. mesh.h's MaterialValues) are the
 //       declaration-migration work in todo 8.4; detecting those
 //       textually without an AST is the documented follow-up gap.
-//   R8  RHI IMPLEMENTATION-STATE EXPOSURE (the audit's findings 2+5,
+//   R8 — RHI Implementation Exposure Guard: RHI IMPLEMENTATION-STATE EXPOSURE (the audit's findings 2+5,
 //       regex form): the concrete RHI implementation vocabulary in
 //       the ENGINE-facing public headers - ResourceManager*/
 //       Swapchain*/RenderGraph*/Framebuffer* pointer types,
@@ -66,7 +66,7 @@
 //       directory - it joins when the todo 8.5 renderer-interface
 //       split makes the distinction meaningful.
 //
-// BASELINE DISCIPLINE (R6/R7/R8): every baseline below is an EXACT
+// BASELINE DISCIPLINE (R6/R7/R8/R9): every baseline below is an EXACT
 // count, checked in both directions. A grown count or a new file is a
 // violation; a shrunk count is a STALE BASELINE failure that says
 // "shrink the list" - retiring compat surface REQUIRES deleting its
@@ -392,7 +392,7 @@ int main() {
 					|| Contains(code, "vk_mem_alloc"))
 				offenders.push_back(p.generic_string());
 		}
-		Check(offenders.empty(), "arch.r1-no-vulkan-includes");
+		Check(offenders.empty(), "arch.r1-no-vulkan-includes (R1: Vulkan Include Guard)");
 		for (const std::string& o : offenders)
 			std::cout << "  R1 offender: " << o << "\n";
 	}
@@ -425,7 +425,7 @@ int main() {
 					? code.size() : lineEnd;
 			}
 		}
-		Check(offenders.empty(), "arch.r2-no-impl-includes");
+		Check(offenders.empty(), "arch.r2-no-impl-includes (R2: Private Implementation Guard)");
 		for (const std::string& o : offenders)
 			std::cout << "  R2 offender: " << o << "\n";
 	}
@@ -483,7 +483,7 @@ int main() {
 				at += 2;
 			}
 		}
-		Check(offenders.empty(), "arch.r3-no-vk-types-in-code");
+		Check(offenders.empty(), "arch.r3-no-vk-types-in-code (R3: Vulkan Type Leakage Guard)");
 		for (const std::string& o : offenders)
 			std::cout << "  R3 offender: " << o << "\n";
 	}
@@ -546,7 +546,7 @@ int main() {
 					? code.size() : lineEnd;
 			}
 		}
-		Check(offenders.empty(), "arch.r4-rhi-no-engine-includes");
+		Check(offenders.empty(), "arch.r4-rhi-no-engine-includes (R4: Direct RHI Dependency Guard)");
 		for (const std::string& o : offenders)
 			std::cout << "  R4 offender: " << o << "\n";
 	}
@@ -659,7 +659,7 @@ int main() {
 					StripCommentsKeepStrings(ReadText(next))))
 				queue.push_back({ inc, deeper });
 		}
-		Check(offenders.empty(), "arch.r5-rhi-transitively-clean");
+		Check(offenders.empty(), "arch.r5-rhi-transitively-clean (R5: Transitive RHI Dependency Guard)");
 		for (const std::string& o : offenders)
 			std::cout << "  R5 offender: " << o << "\n";
 	}
@@ -715,7 +715,7 @@ int main() {
 					+ ": baseline row points at a missing header"
 					" - DELETE it");
 		Check(offenders.empty() && stale.empty(),
-			"arch.r6-no-broad-smvk-imports");
+			"arch.r6-no-broad-smvk-imports (R6: Broad Namespace Import Guard)");
 		for (const std::string& o : offenders)
 			std::cout << "  R6 offender: " << o << "\n";
 		for (const std::string& o : stale)
@@ -837,7 +837,7 @@ int main() {
 					+ ": baseline row points at a missing header"
 					" - DELETE it");
 		Check(offenders.empty() && stale.empty(),
-			"arch.r7-compat-alias-containment");
+			"arch.r7-compat-alias-containment (R7: Legacy Namespace Compatibility Guard)");
 		for (const std::string& o : offenders)
 			std::cout << "  R7 offender: " << o << "\n";
 		for (const std::string& o : stale)
@@ -952,7 +952,7 @@ int main() {
 					+ "': baseline row points at a missing header"
 					" - DELETE it");
 		Check(offenders.empty() && stale.empty(),
-			"arch.r8-rhi-impl-state-exposure");
+			"arch.r8-rhi-impl-state-exposure (R8: RHI Implementation Exposure Guard)");
 		for (const std::string& o : offenders)
 			std::cout << "  R8 offender: " << o << "\n";
 		for (const std::string& o : stale)
@@ -1085,7 +1085,7 @@ int main() {
 					+ ": R9 baseline row points at a missing header"
 					" - DELETE it");
 		Check(offenders.empty() && stale.empty(),
-			"arch.r9-no-new-global-decls");
+			"arch.r9-no-new-global-decls (R9: Global Namespace Pollution Guard)");
 		for (const std::string& o : offenders)
 			std::cout << "  R9 offender: " << o << "\n";
 		for (const std::string& o : stale)
