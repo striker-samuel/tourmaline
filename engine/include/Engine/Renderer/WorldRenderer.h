@@ -2046,6 +2046,19 @@ public:
 	// world_field.hlsli instead.
 	engine::worldfields::WorldFieldSystem& WorldFields() { return m_worldFields; }
 	const engine::worldfields::WorldFieldSystem& WorldFields() const { return m_worldFields; }
+	// The renderer hosts exactly one runtime World and one active authored
+	// Map. WorldId names the spatial distribution, NOT another World.
+	// The host must install its borrowed SceneTileProvider on this partition
+	// after renderer attachment, and detach before provider destruction.
+	void SetActiveMapId(engine::worldpartition::WorldId id) { m_activeMapId = id; }
+	engine::worldpartition::WorldId ActiveMapId() const { return m_activeMapId; }
+	engine::worldpartition::WorldPartition& StreamingPartition() {
+		return m_worldPartition;
+	}
+	void SetMapStreamingRadius(double metres) {
+		if (std::isfinite(metres) && metres >= 0.0)
+			m_mapStreamingRadius = metres;
+	}
 	void SetSkydomeEnabled(bool v) { m_skyEnabled = v; }
 	bool SkydomeEnabled() const { return m_skyEnabled; }
 
@@ -3855,6 +3868,8 @@ public:
 	engine::worldfields::WorldFieldSystem m_worldFields;
 	engine::worldfields::WorldFieldProvider m_worldFieldProvider{ m_worldFields };
 	engine::worldpartition::WorldPartition m_worldPartition;
+	engine::worldpartition::WorldId m_activeMapId = 0;
+	double m_mapStreamingRadius = 512.0;
 	std::unique_ptr<smvk::ThreadPool> m_worldFieldWorkPool;
 	glm::vec3 m_worldFieldPrevEye{ 0.0f };
 	bool m_worldFieldPrevEyeValid = false;
