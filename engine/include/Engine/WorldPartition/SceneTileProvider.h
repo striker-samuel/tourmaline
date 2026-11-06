@@ -34,7 +34,7 @@ struct SceneTileKeyLess {
 
 class SceneTileProvider final : public IWorldStreamProvider {
 public:
-    using RequestCallback = std::function<void(const SceneTileDescriptor&, DesiredResidency)>;
+    using RequestCallback = std::function<void(const SceneTileDescriptor&, DesiredResidency, uint64_t ticket)>;
     using RetireCallback = std::function<void(const SceneTileDescriptor&)>;
 
     const char* ProviderName() const override { return "SceneTiles"; }
@@ -59,15 +59,23 @@ public:
 
     // Successful asynchronous completion must be acknowledged at the host's
     // safe publication point; failed requests can be retried by ResetPending.
-    bool Activate(WorldCellKey cell) {
+    bool Activate(WorldCellKey cell, uint64_t ticket) {
         const auto it = pending_.find(cell);
-        if (it == pending_.end()) return false;
+        // Stale completion from canceled/evicted load cannot adopt a fresh
+        // request for the same tile. Reject demand removed this frame too.
+        if (it == pending_.end() || it->second != ticket
+            || !desired_.count(cell)) return false;
         pending_.erase(it);
         resident_.insert(cell);
         return true;
     }
 
-    void ResetPending(WorldCellKey cell) { pending_.erase(cell); }
+    bool ResetPending(WorldCellKey cell, uint64_t ticket) {
+        const auto it = pending_.find(cell);
+        if (it == pending_.end() || it->second != ticket) return false;
+        pending_.erase(it);
+        return true;
+    }
 
     bool IsResident(WorldCellKey cell) const {
         return resident_.find(cell) != resident_.end();
@@ -131,8 +139,10 @@ public:
             if (resident_.count(key) || pending_.count(key)) continue;
             const auto it = manifest_.find(key);
             if (it == manifest_.end()) continue;
-            pending_.insert(key); // mark before callback; reentrant completion safe
-            request_(it->second, policy.second);
+            const uint64_t ticket = nextTicket_++;
+            if (ticket == 0) continue; // exhausted monotonic identity
+            pending_.emplace(key, ticket);
+            request_(it->second, policy.second, ticket);
         }
     }
 
@@ -150,7 +160,7 @@ public:
         // Backend cancellation is the caller's responsibility; subsequent
         // asynchronous completion will be rejected by Activate().
         for (auto it = pending_.begin(); it != pending_.end();) {
-            if (desired_.count(*it)) { ++it; continue; }
+            if (desired_.count(it->first)) { ++it; continue; }
             it = pending_.erase(it);
         }
     }
@@ -158,7 +168,8 @@ public:
 private:
     std::map<WorldCellKey, SceneTileDescriptor, SceneTileKeyLess> manifest_;
     std::map<WorldCellKey, std::pair<float, DesiredResidency>, SceneTileKeyLess> desired_;
-    std::set<WorldCellKey, SceneTileKeyLess> pending_;
+    std::map<WorldCellKey, uint64_t, SceneTileKeyLess> pending_;
+    uint64_t nextTicket_ = 1;
     std::set<WorldCellKey, SceneTileKeyLess> resident_;
     RequestCallback request_;
     RetireCallback retire_;
