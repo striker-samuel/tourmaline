@@ -433,6 +433,47 @@ void TestMeshEntitiesAndAnimators() {
 	}
 }
 
+// A single cooked cluster must retain source slot ids (including holes),
+// metadata and association tables without rebuilding nodes through addNode.
+void TestSingleClusterBulkResolve() {
+	using namespace smvk;
+	World w;
+	auto c = std::make_unique<Cluster>(nullptr);
+	c->SetOfflineMode(true);
+	const int root = addNode(c->scene, -1, 0);
+	const int child = addNode(c->scene, root, 1);
+	const int retired = addNode(c->scene, root, 1);
+	const auto light = c->CreateLight(SceneLight{});
+	SetLight(c->scene, NodeId(child), light.index());
+	RetireNodeSlot(c->scene, NodeId(retired));
+	const size_t sourceSlots = c->scene.hierarchy.size();
+	Cluster* ptr = c.get();
+	w.RegisterCluster(std::move(c));
+	w.ResolveAndFixup_clusters();
+	Check(w.scene.hierarchy.size() == sourceSlots + 1,
+		"single.bulk.slot-count");
+	Check(w.clusterMergedNodes.size() == 1
+		&& w.clusterMergedNodes[0].size() == sourceSlots
+		&& w.clusterMergedNodes[0][NodeId(root)] == NodeId(root)
+		&& w.clusterMergedNodes[0][NodeId(child)] == NodeId(child)
+		&& w.clusterMergedNodes[0][NodeId(retired)] == UINT32_MAX,
+		"single.bulk.identity-and-holes");
+	Check(w.scene.hierarchy[NodeId(root)].parent == int(sourceSlots)
+		&& w.scene.hierarchy[NodeId(child)].parent == root,
+		"single.bulk.reparent");
+	Check(w.lightLocations.size() == 1
+		&& w.lightLocations[0].cluster == ptr
+		&& FindLight(w.scene, NodeId(child)) != nullptr,
+		"single.bulk.light-remap");
+	Check(ptr->scene.hierarchy.size() == sourceSlots
+		&& ptr->scene.hierarchy[NodeId(root)].parent == -1,
+		"single.bulk.source-intact");
+	w.ResolveAndFixup_clusters();
+	Check(w.scene.hierarchy.size() == sourceSlots + 1
+		&& w.lightLocations.size() == 1,
+		"single.bulk.repeat-resolve");
+}
+
 // ---------------------------------------------------------------------------
 // Material runtime state + material instances (the 32-bit userdata lane,
 // docs/shader_library_design.md Phase A): the base-material default, the
@@ -1194,6 +1235,7 @@ void TestLightmapChartRevisionAcrossWorlds() {
 } // namespace
 
 int main() {
+	TestSingleClusterBulkResolve();
 	TestUnloadAndDynamicCluster();
 	TestDecalEntities();
 	TestAudioSourceEntities();
