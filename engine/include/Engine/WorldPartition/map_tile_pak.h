@@ -30,6 +30,9 @@ inline bool DiscoverMapTiles(const smvk::PakReader& reader,
                              engine::worldpartition::WorldId world,
                              std::vector<engine::worldpartition::SceneTileDescriptor>& out) {
     if (!world) return false;
+    uint32_t expectedTiles = 0, expectedPersistent = 0;
+    if (!ReadMapManifest(reader, world, expectedTiles, expectedPersistent))
+        return false;
     std::map<engine::worldpartition::WorldTileKey, uint64_t,
              engine::worldpartition::WorldTileKeyLess> found;
     const std::string prefix = "worlds/" + std::to_string(world) + "/tiles/";
@@ -57,12 +60,45 @@ inline bool DiscoverMapTiles(const smvk::PakReader& reader,
         // Stable spatial identity is the WorldTileKey, never this slot.
         if (!found.emplace(key, uint64_t(entry->slot) + 1).second) return false;
     }
+    if (found.size() != expectedTiles) return false;
     std::vector<engine::worldpartition::SceneTileDescriptor> next;
     next.reserve(found.size());
     for (const auto& [key, slot] : found)
         next.push_back({key, slot});
     out = std::move(next);
     return true;
+}
+
+inline std::string ManifestPath(engine::worldpartition::WorldId world) {
+    return "worlds/" + std::to_string(world) + "/manifest.mmap";
+}
+
+// Fixed-width metadata page. Required even for empty Maps so a world ID
+// exists in the archive without any resident scene placement or tile.
+inline constexpr uint32_t kMapManifestMagic = 0x31504D4D; // "MMP1" LE
+inline bool ReadMapManifest(const smvk::PakReader& reader,
+                            engine::worldpartition::WorldId world,
+                            uint32_t& tileCount, uint32_t& persistentCount) {
+    if (!world) return false;
+    const auto* entry = reader.Find(smvk::PakAssetKind::MapManifest,
+                                     ManifestPath(world));
+    if (!entry) return false;
+    try {
+        const auto bytes = reader.Payload(*entry);
+        if (bytes.size() != 24) return false;
+        size_t pos = 0;
+        uint32_t magic = 0, version = 0, tiles = 0, persistent = 0;
+        uint64_t id = 0;
+        if (!ReadU32(bytes, pos, magic) || magic != kMapManifestMagic
+            || !ReadU32(bytes, pos, version) || version != 1
+            || !ReadU64(bytes, pos, id) || id != world
+            || !ReadU32(bytes, pos, tiles)
+            || !ReadU32(bytes, pos, persistent))
+            return false;
+        tileCount = tiles;
+        persistentCount = persistent;
+        return true;
+    } catch (...) { return false; }
 }
 
 inline std::string PersistentPath(engine::worldpartition::WorldId world) {
@@ -87,7 +123,18 @@ inline bool ReadPersistentPlacements(
 // Does not finalize the pak. Caller may add other assets and choose regional
 // packaging. Fail-fast on invalid placement page or repeated logical key.
 inline bool AddMapTiles(smvk::PakWriter& writer, const CompiledMapTiles& tiles) {
-    if (!tiles.world) return false;
+    if (!tiles.world || tiles.tiles.size() > uint64_t(UINT32_MAX)
+        || tiles.persistent.size() > uint64_t(UINT32_MAX))
+        return false;
+    std::vector<uint8_t> header;
+    WriteU32(header, kMapManifestMagic);
+    WriteU32(header, 1);
+    WriteU64(header, tiles.world);
+    WriteU32(header, uint32_t(tiles.tiles.size()));
+    WriteU32(header, uint32_t(tiles.persistent.size()));
+    if (!writer.AddBlob(smvk::PakAssetKind::MapManifest,
+                        ManifestPath(tiles.world), std::move(header)))
+        return false;
     if (!tiles.persistent.empty()) {
         std::vector<uint8_t> bytes;
         if (!EncodeTile({tiles.world, {0,0}}, tiles.persistent, bytes)
