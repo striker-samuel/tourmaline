@@ -1961,6 +1961,41 @@ using namespace ::smvk;
 		// re-flushes the pose onto the rebuilt cluster scene.)
 	}
 
+	NodeHandle World::AddNode(const glm::mat4& localFrame)
+	{
+		const int node = addNode(scene, -1, 0);
+		if (node < 0)
+			return kNodeInvalidHandle;
+		const NodeHandle handle = MakeNodeHandle(scene, NodeId(node));
+		(void)tour::scene::SetLocalTransform(scene, handle, localFrame);
+		scene.globalTransform[size_t(node)] = localFrame;
+		markAsChanged(scene, node);
+		RefreshRuntimeSceneCaches();
+		return handle;
+	}
+
+	bool World::RemoveNode(NodeHandle handle)
+	{
+		if (!NodeHandleValid(scene, handle))
+			return false;
+		const NodeId node = NodeHandleSlot(handle);
+		// Only unowned game nodes can be removed through this entry point:
+		// authored/cluster nodes are managed by their scene owners.
+		for (const auto& maps : clusterMergedNodes)
+			for (const NodeId source : maps)
+				if (source == node)
+					return false;
+		for (const MeshEntity& entity : meshEntities)
+			if (entity.alive && entity.mergedNode == node)
+				return false;
+		for (const AudioSourceEntity& entity : audioSourceEntities)
+			if (entity.alive && entity.mergedNode == node)
+				return false;
+		deleteSceneNodes(scene, { node });
+		RefreshRuntimeSceneCaches();
+		return true;
+	}
+
 	// Rebuild runtime draw/cull caches after in-place node or component
 	// edits without invoking the destructive cluster resolve.
 	void World::RefreshRuntimeSceneCaches()
