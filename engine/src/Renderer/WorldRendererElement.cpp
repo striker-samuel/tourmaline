@@ -81,6 +81,7 @@ namespace engine {
 	m_renderer.SetUiFrameService({});
     m_renderer.SetUiTextureService({});
 	if (m_imgui) {
+        m_host.SetImGuiEventHook(nullptr);
 		m_imgui->Shutdown();
 		m_imgui.reset();
 	}

@@ -1462,7 +1462,7 @@ struct ViewportResources {
 };
 
 // Pure frame renderer: builds the rendergraph + records the frame (scene,
-// post chain, its own settings/debug panel) for the current camera state.
+// post chain, and host-provided UI target) for the current camera state.
 // All CONTROL (input polling, keybinds, camera drive, UI mode, bench
 // flight, host lifecycle) lives in WorldRendererElement — the element owns
 // an instance of this class and drives it through the public API below.
