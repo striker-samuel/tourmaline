@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Map hierarchy is authored world placement, NOT an in-memory Scene clone.
 #include <Engine/WorldPartition/WorldMap.h>
+#include <Engine/WorldPartition/map_tile_codec.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdlib>
 #include <iostream>
@@ -37,6 +38,25 @@ int main() {
         "scene assets referenced without copying local hierarchy");
     Check(out.persistent.size() == 1 && out.persistent[0].mapNodeId == 40,
         "persistent placement separated from tiles");
+    {
+        const engine::worldpartition::WorldCellKey key{-2,2};
+        std::vector<uint8_t> bytes, bytes2;
+        const auto& placements = out.tiles.at(key);
+        Check(tour::mapcook::EncodeTile(key, placements, bytes)
+            && tour::mapcook::EncodeTile(key, placements, bytes2)
+            && bytes == bytes2, "tile encoding deterministic");
+        std::vector<tour::CookedMapPlacement> decoded;
+        Check(tour::mapcook::DecodeTile(bytes, key, decoded)
+            && decoded.size() == 1
+            && decoded[0].mapNodeId == 20
+            && decoded[0].sceneAssetId == 202,
+            "tile page roundtrip");
+        Check(!tour::mapcook::DecodeTile(bytes, {1,2}, decoded),
+            "cross-cell page substitution rejected");
+        bytes.pop_back();
+        Check(!tour::mapcook::DecodeTile(bytes, key, decoded)
+            && decoded.size() == 1, "truncated page rejected transactionally");
+    }
     const auto oldTiles = out.tiles.size();
     tour::Map invalid = map;
     invalid.nodes[1].parent = 1;
