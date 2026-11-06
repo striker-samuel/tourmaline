@@ -27,7 +27,7 @@ namespace tour::scene {
 {
   std::fprintf(stderr,
     "FATAL [SceneBudget] %s: requested %zu node slots; user budget %zu. "
-    "Increase --scene-node-budget (no automatic growth).\\n",
+    "Increase --scene-node-budget (no automatic growth).\n",
     stage, requested, budget);
   std::fflush(stderr);
   std::abort();
