@@ -1,36 +1,36 @@
-# Preserve existing terrain paint references (no format migration)
+# World-owned terrain: replace legacy create-order references
 
-**Status: implementation and validation pending.** This PR is a backward-compatibility contract; it does **not** change the `.tour` format or implement the fix yet.
+**Status: implementation pending.** Project terrain content is currently test scenes that can be reauthored. **No backwards-compatibility or migration support is required.** This specification does not implement the parser/editor/runtime changes.
 
-## Non-negotiable compatibility rule
+## Goal
 
-Existing repository scenes containing `createNode -type terrain` and `TerrainPaint -ref` **must continue to load, replay, save, and cook with identical terrain and paint data**. Historical references are creation-order based (the `kCreateTerrainRefBase` namespace). Do not rewrite their meaning, renumber them, or silently merge multiple terrain groups.
+Implement the world-level terrain architecture described in `docs/terrain_world_semantics.md`. Terrain is a **single logical world feature**, not a set of independently created terrain scene nodes. Tiles remain the unit of persisted height/material/paint data and streaming residency.
 
-**Out of scope:** converting legacy files to a new world-level terrain format; removing `CreateTerrain` / `TerrainPaint` syntax; converting historical group references into world-global identifiers; normalizing multiple old terrain groups; changing serialized paint records. Those changes require a separate, explicitly opted-in versioned migration with a proved lossless round-trip.
+## Required implementation
 
-## Required compatibility fix
+1. Replace repeatable `EditVerb::CreateTerrain` / `createNode -type terrain` authoring with explicit world terrain enable/configuration operations. One terrain definition per world.
+2. Remove the creation-order `kCreateTerrainRefBase` reference dependency from new `TerrainPaint` records. Paint must address the world terrain and affected tiles deterministically; do not bind to a historical terrain-group insertion ordinal.
+3. Update the `.tour` parser, exporter, command replay, editor undo/redo and cook pipeline **together**, with one documented representation. Old terrain syntax/refs can be rejected with clear errors; do not add a compatibility reader or data migration machinery.
+4. World-level enable/disable must preserve tile storage. Missing or unloaded tiles are separate from world terrain enablement.
+5. World-space painting must apply to the correct tiles, including seam neighbors, with stable paint results across save/load and undo/redo.
+6. Delete obsolete terrain-group UI and code paths and update example/test scenes to the new representation.
 
-1. Preserve the current on-disk commands and reference numbering, including command order, when loading and re-saving legacy scenes. Keep the existing legacy parser/serializer path.
-2. If internal code changes require reference resolution, resolve legacy paint refs against the terrain group created by the corresponding historical create command **within the same scene/replay session**. Do not reuse mapping state across unrelated scene loads. Do not replace all old references with the first or sole world terrain.
-3. Maintain ordering and exact terrain height/material/paint fields, target group, tile coordinates and brushes. No silent fallback or skipped command when a reference cannot be resolved; report the offending command and value without writing partial paint.
-4. Keep undo/redo, recovery replay, scene copy/merge, and cooker loading behavior compatible. Protect existing scenes as authored; do not force a new world-level representation when saving legacy content.
-5. The world-level terrain semantics proposal is **independent**. It must not alter existing files or their meaning until a distinct migration has been designed, implemented, and validated.
+## Acceptance tests
 
-## Required regression fixtures
+- [ ] Enable terrain, configure world parameters, save, reload, and compare exact values.
+- [ ] Disable and re-enable without losing tile heights/material/paint.
+- [ ] Paint across a tile seam; test all affected tile data.
+- [ ] Evict/reload tiles with terrain still enabled.
+- [ ] Reorder unrelated scene commands: terrain paint targets remain unchanged.
+- [ ] Repeat replay, undo/redo and save/reload; verify deterministic results.
+- [ ] Cook and editor use the same world-terrain representation.
+- [ ] Legacy terrain syntax produces a clear actionable diagnostic, unless intentionally removed entirely.
+- [ ] Reauthor/update any repository test scenes still using historical `createNode -type terrain` and `TerrainPaint -ref`.
 
-- [ ] Load and replay a real historical repository `.tour` scene; capture baseline terrain heights/materials/paint before changing code.
-- [ ] Save/reload it using the existing format; verify byte-level command/reference stability where feasible and semantic parity of all tile data.
-- [ ] Two terrain create commands with interleaved paints: each historical `-ref` must address its original group.
-- [ ] Legacy refs across separate world/scene loads: mapping state must not leak.
-- [ ] Unknown/stale refs: diagnostic and no accidental target mutation.
-- [ ] Tile seams, brush order, undo/redo, autosave/recovery, scene copying/merging.
-- [ ] Editor and cooker replay produce the same results and report invalid references consistently.
-- [ ] Existing fixture outputs remain unchanged unless a separately approved compatibility fix explicitly corrects a previously demonstrated bug.
+## Explicit non-goals
 
-## Integrator gate
+- Supporting old terrain files or historical creation-order references.
+- Lossless migration of old terrain groups.
+- Keeping the old terrain-node authoring workflow.
 
-- [ ] Trace parser, serializer, replay, editor and cooker references to `kCreateTerrainRefBase`, `CreateTerrain`, and `TerrainPaint`.
-- [ ] Implement the narrow backward-compatible fix and tests, **without editing format definitions**.
-- [ ] Execute legacy-scene tests and compare baseline outputs before marking complete.
-
-Do not merge this draft as an implementation: it currently contains only this compatibility specification.
+Do not mark this draft complete until the actual implementation, fixture updates, and tests have landed and passed.
