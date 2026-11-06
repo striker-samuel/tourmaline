@@ -438,15 +438,17 @@ struct SpotShadowCandidate {
 //     Brighter, wider, closer, on-screen lights win. Ties break by light
 //     index so the selection is deterministic frame to frame.
 // Callers assign tiles 0..selected-1 in the returned order.
-inline std::vector<SpotShadowCandidate> SelectSpotShadowCasters(
-	const std::vector<ForwardPlusLight>& lights,
+template<typename LightAllocator, typename CandidateAllocator = std::allocator<SpotShadowCandidate>>
+inline std::vector<SpotShadowCandidate, CandidateAllocator> SelectSpotShadowCasters(
+	const std::vector<ForwardPlusLight, LightAllocator>& lights,
 	const glm::mat4& viewProj,
 	const glm::vec3& cameraPos,
 	float maxDistance,
 	uint32_t maxCount,
-	float proj11Abs)
+	float proj11Abs,
+	CandidateAllocator allocator = {})
 {
-	std::vector<SpotShadowCandidate> out;
+	std::vector<SpotShadowCandidate, CandidateAllocator> out{allocator};
 	if (maxCount == 0 || maxDistance <= 0.0f)
 		return out;
 	maxCount = std::min(maxCount, kMaxSpotShadows);
@@ -517,15 +519,17 @@ inline std::vector<SpotShadowCandidate> SelectSpotShadowCasters(
 // selected light costs SIX atlas tiles + six depth passes, which is why
 // kMaxPointShadowLights stays small.
 // ---------------------------------------------------------------------------
-inline std::vector<SpotShadowCandidate> SelectPointShadowCasters(
-	const std::vector<ForwardPlusLight>& lights,
+template<typename LightAllocator, typename CandidateAllocator = std::allocator<SpotShadowCandidate>>
+inline std::vector<SpotShadowCandidate, CandidateAllocator> SelectPointShadowCasters(
+	const std::vector<ForwardPlusLight, LightAllocator>& lights,
 	const glm::mat4& viewProj,
 	const glm::vec3& cameraPos,
 	float maxDistance,
 	uint32_t maxCount,
-	float proj11Abs)
+	float proj11Abs,
+	CandidateAllocator allocator = {})
 {
-	std::vector<SpotShadowCandidate> out;
+	std::vector<SpotShadowCandidate, CandidateAllocator> out{allocator};
 	if (maxCount == 0 || maxDistance <= 0.0f)
 		return out;
 	maxCount = std::min(maxCount, kMaxPointShadowLights);
