@@ -166,7 +166,8 @@ inline float DsNearSortKey(const ForwardPlusLight& L, const glm::mat4& view)
     return std::max(z - range, 0.0f);
 }
 
-inline void DsSortLightsByNearDistance(std::vector<ForwardPlusLight>& lights,
+template<typename LightAllocator>
+inline void DsSortLightsByNearDistance(std::vector<ForwardPlusLight, LightAllocator>& lights,
     const glm::mat4& view)
 {
     const uint32_t n = (uint32_t)lights.size();
@@ -203,8 +204,8 @@ inline void DsSortLightsByNearDistance(std::vector<ForwardPlusLight>& lights,
 // minIdx[0], which stays safe).
 // ---------------------------------------------------------------------------
 
-template <typename OutputArray>
-inline void DsBuildZBins(const std::vector<ForwardPlusLight>& sortedLights,
+template <typename OutputArray, typename LightAllocator>
+inline void DsBuildZBins(const std::vector<ForwardPlusLight, LightAllocator>& sortedLights,
     const glm::mat4& view, float nearPlane, float farPlane,
     OutputArray& outBins)
 {
@@ -288,8 +289,8 @@ inline void DsBuildZBins(const std::vector<ForwardPlusLight>& sortedLights,
 // group corners; NDC y down in the framebuffer).
 // ---------------------------------------------------------------------------
 
-template <typename OutputArray>
-inline void DsBuildTileMasks(const std::vector<ForwardPlusLight>& lights,
+template <typename OutputArray, typename LightAllocator>
+inline void DsBuildTileMasks(const std::vector<ForwardPlusLight, LightAllocator>& lights,
     const glm::mat4& view, const glm::mat4& proj,
     uint32_t vpWidth, uint32_t vpHeight,
     OutputArray& outMasks,
