@@ -10872,8 +10872,18 @@ namespace engine {
 
 			// Placement's optional interest is a separate layer, but shares
 			// the partition's priority ordering and commit sequence.
-			engine::worldpartition::StreamingInterest interests[2]{ interest, interest };
+			engine::worldpartition::StreamingInterest interests[3]{ interest, interest, interest };
 			size_t interestCount = 1;
+			if (m_activeMapId) {
+				interests[interestCount].world = m_activeMapId;
+				interests[interestCount].radiusMeters = m_mapStreamingRadius;
+				interests[interestCount].layerMask =
+					engine::worldpartition::StreamLayerBit(
+						engine::worldpartition::StreamLayer::Scene);
+				interests[interestCount].desired =
+					engine::worldpartition::DesiredResidency::Active;
+				++interestCount;
+			}
 			auto* rt = m_gpuPlacementRuntime;
 			if (rt && !rt->hfield && m_terrain.valid)
 				rt->hfield = &m_terrain.hfield;
@@ -10885,8 +10895,10 @@ namespace engine {
 					meta.originX, meta.originZ,
 					meta.originX + meta.worldSize,
 					meta.originZ + meta.worldSize));
-				interests[1].radiusMeters = double(m_gpuPlacementRadius);
-				interests[1].layerMask = engine::worldpartition::StreamLayerBit(
+				const size_t placementIndex = interestCount;
+				interests[placementIndex] = interest;
+				interests[placementIndex].radiusMeters = double(m_gpuPlacementRadius);
+				interests[placementIndex].layerMask = engine::worldpartition::StreamLayerBit(
 					engine::worldpartition::StreamLayer::Placement);
 				++interestCount;
 			} else {
