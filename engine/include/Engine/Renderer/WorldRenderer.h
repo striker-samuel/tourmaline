@@ -2420,7 +2420,7 @@ public:
 		uint32_t materialId;
 		float dist2;
 	};
-	std::vector<TransparentDrawItem> CollectTransparentDraws(
+	tour::mem::FrameVector<TransparentDrawItem> CollectTransparentDraws(
 		const smvk::RenderView& cullView,
 		bool sortBackToFront,
 		std::optional<glm::vec3> sortCamPos = std::nullopt
