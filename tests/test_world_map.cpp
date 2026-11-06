@@ -44,7 +44,7 @@ int main() {
     {
         const engine::worldpartition::WorldTileKey key{map.id, {-2,2}};
         std::vector<uint8_t> bytes, bytes2;
-        const auto& placements = out.tiles.at(key);
+        const auto& placements = out.tiles.at(key.cell);
         Check(tour::mapcook::EncodeTile(key, placements, bytes)
             && tour::mapcook::EncodeTile(key, placements, bytes2)
             && bytes == bytes2, "tile encoding deterministic");
