@@ -10131,11 +10131,13 @@ namespace engine {
 	// PaneMask redraw always draw the same geometry. Distance-sorted only
 	// when the caller blends back-to-front; the pane pass passes false
 	// (its Max blend is order-independent).
-	std::vector<WorldRenderer::TransparentDrawItem>
+	tour::mem::FrameVector<WorldRenderer::TransparentDrawItem>
 		WorldRenderer::CollectTransparentDraws(const smvk::RenderView& cullView,
 			bool sortBackToFront, std::optional<glm::vec3> sortCamPos)
 	{
-		std::vector<TransparentDrawItem> draws;
+		tour::mem::FrameVector<TransparentDrawItem> draws{
+			tour::mem::LinearAllocatorSTL<TransparentDrawItem>{
+				&tour::mem::FrameAllocator()}};
 		if (m_hideTransparent)
 			return draws;
 		// Sort camera: the main positioner by default; multiview secondary
@@ -14664,7 +14666,7 @@ namespace engine {
 			{
 				const bool ditheredTransp =
 					(m_transparentMode == smvk::TransparentMode::Dithered);
-				std::vector<TransparentDrawItem> draws =
+				auto draws =
 					CollectTransparentDraws(transparentCullView, !ditheredTransp);
 				const bool lodDbg = (effView == ViewMode::Lods);
 
