@@ -333,6 +333,9 @@ bool AssetManager::UnloadMesh(MeshHandle handle) {
 void AssetManager::UnloadAllMeshes() {
 	if (!m_impl)
 		return;
+	// Drop node associations before releasing their loaded resources.
+	// The World retains nodes/transforms and its other value components.
+	m_impl->world.ClearGameMeshBindings();
 	// SNAPSHOT the handles before unloading: UnloadMesh ERASES the
 	// slot's meshByKey/meshByPlan entries (every non-keepResident
 	// slot), so unloading while range-iterating meshByKey is iterator
