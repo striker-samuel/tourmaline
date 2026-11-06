@@ -220,6 +220,7 @@ enum class PakAssetKind : uint32_t {
 	Sdf = 20,          // versioned mesh-local .geometry.sdf derived volume
 	Shape = 21,        // authored .shape spline / point cloud / primitive text
 	ShapePlacements = 22, // cooked .tour scene-owned placements (not VFS)
+	MapTile = 23, // cooked Map tile placement pages (logical world-cell content, not VFS)
 };
 
 enum PakEntryFlags : uint32_t {
