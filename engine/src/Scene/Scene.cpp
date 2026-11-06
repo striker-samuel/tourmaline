@@ -13,12 +13,81 @@
 #include <cassert>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <numeric>
 
 
 
 namespace tour::scene {
+
+[[noreturn]] void CrashNodeBudget(const char* stage, size_t requested,
+  size_t budget)
+{
+  std::fprintf(stderr,
+    "FATAL [SceneBudget] %s: requested %zu node slots; user budget %zu. "
+    "Increase --scene-node-budget (no automatic growth).\\n",
+    stage, requested, budget);
+  std::fflush(stderr);
+  std::abort();
+}
+
+void Scene::ReserveNodeSlots(size_t slots)
+{
+  if (!slots || slots >= kNodeSlotCountMax)
+    CrashNodeBudget("invalid startup budget (packed node slot limit)",
+      slots, kNodeSlotCountMax - 1);
+  if (hierarchy.size() > slots)
+    CrashNodeBudget("budget smaller than existing scene", hierarchy.size(), slots);
+  nodeSlotBudget = slots;
+  hierarchy.reserve(slots);
+  localTransform.reserve(slots);
+  globalTransform.reserve(slots);
+  localTransformDouble.reserve(slots);
+  globalTransformDouble.reserve(slots);
+  localTransformFloatShadow.reserve(slots);
+  nodeGeneration.reserve(slots);
+  nodeFreeList.reserve(slots);
+  staticRoot.reserve(slots);
+  staticNode.reserve(slots);
+  noLightmap.reserve(slots);
+  lightmap.reserve(slots);
+  castsVolumetricShadow.reserve(slots);
+  ditherCloseup.reserve(slots);
+  hidden.reserve(slots);
+  metadata.reserve(slots);
+  rowsForNode.reserve(slots);
+  gpuSceneGlobalQueued.reserve(slots);
+  gpuSceneGlobalChanges.reserve(slots);
+}
+
+void Scene::ResetForResolve()
+{
+  // Transfer capacity instead of throwing away the startup allocations.
+  Scene fresh;
+  fresh.nodeSlotBudget = nodeSlotBudget;
+  fresh.hierarchy = std::move(hierarchy); fresh.hierarchy.clear();
+  fresh.localTransform = std::move(localTransform); fresh.localTransform.clear();
+  fresh.globalTransform = std::move(globalTransform); fresh.globalTransform.clear();
+  fresh.localTransformDouble = std::move(localTransformDouble); fresh.localTransformDouble.clear();
+  fresh.globalTransformDouble = std::move(globalTransformDouble); fresh.globalTransformDouble.clear();
+  fresh.localTransformFloatShadow = std::move(localTransformFloatShadow); fresh.localTransformFloatShadow.clear();
+  fresh.nodeGeneration = std::move(nodeGeneration); fresh.nodeGeneration.clear();
+  fresh.nodeFreeList = std::move(nodeFreeList); fresh.nodeFreeList.clear();
+  fresh.staticRoot = std::move(staticRoot); fresh.staticRoot.clear();
+  fresh.staticNode = std::move(staticNode); fresh.staticNode.clear();
+  fresh.noLightmap = std::move(noLightmap); fresh.noLightmap.clear();
+  fresh.lightmap = std::move(lightmap); fresh.lightmap.clear();
+  fresh.castsVolumetricShadow = std::move(castsVolumetricShadow); fresh.castsVolumetricShadow.clear();
+  fresh.ditherCloseup = std::move(ditherCloseup); fresh.ditherCloseup.clear();
+  fresh.hidden = std::move(hidden); fresh.hidden.clear();
+  fresh.metadata = std::move(metadata); fresh.metadata.clear();
+  fresh.rowsForNode = std::move(rowsForNode); fresh.rowsForNode.clear();
+  fresh.gpuSceneGlobalQueued = std::move(gpuSceneGlobalQueued); fresh.gpuSceneGlobalQueued.clear();
+  fresh.gpuSceneGlobalChanges = std::move(gpuSceneGlobalChanges); fresh.gpuSceneGlobalChanges.clear();
+  *this = std::move(fresh);
+}
 
 std::string UniqueSiblingNodeName(const Scene& scene, int node,
 	const std::string& requested)
@@ -54,6 +123,9 @@ int addNode(Scene& scene, int parent, int level, bool autoName)
   assert(parent == -1
     || (parent >= 0 && parent < nodeCount
       && IsLiveSlot(scene, uint32_t(parent))));
+  if (scene.nodeSlotBudget && scene.nodeFreeList.empty()
+      && size_t(nodeCount) >= scene.nodeSlotBudget)
+    CrashNodeBudget("addNode", size_t(nodeCount) + 1, scene.nodeSlotBudget);
   int node;
   if (!scene.nodeFreeList.empty()) {
     // Reuse a retired slot: everything the old life wrote is reset
