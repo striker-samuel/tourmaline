@@ -79,7 +79,7 @@ bool SkinVisual::ReloadShaders(ResourceManager& ctx,
 
 bool SkinVisual::AppendPass(ResourceManager& ctx, RenderGraph& rg,
 	uint32_t frameIndex, const SkinPush& push,
-	const std::vector<glm::mat4>& palette) {
+	std::span<const glm::mat4> palette) {
 	if (!valid || push.paletteCount == 0 || push.rangeCount == 0
 		|| push.skin == 0 || push.deformed == 0
 		|| palette.size() < push.paletteCount)
