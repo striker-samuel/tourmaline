@@ -12347,7 +12347,7 @@ bool tour::App::Initialize() {
 		SDL_Quit();
 		return false;
 	}
-	SDL_SetWindowTitle(window, /*ENGINE_NAME*/ "samuelmartin.1999@outlok.com");
+	SDL_SetWindowTitle(window, /*ENGINE_NAME*/ "samuelmartin.1999@outlook.com");
 	// Capture the mouse like the old GLFW_CURSOR_DISABLED default; scenes
 	// that need a cursor (image viewers, editors) call SetRelativeMouseMode(false).
 	SetRelativeMouseMode(true);
