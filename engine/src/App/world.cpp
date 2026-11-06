@@ -62,7 +62,8 @@ using namespace ::smvk;
 	{
 		std::string err;
 		auto cluster = DeserializeCluster(ctx, reader, &err, sceneIndex,
-			streamer, std::move(imagePin), externalTexture);
+			streamer, std::move(imagePin), externalTexture,
+			scene.nodeSlotBudget);
 		if (!cluster)
 			throw std::runtime_error("LoadClusterFromPak failed: " + err);
 		Cluster& ref = *cluster;
@@ -1074,7 +1075,21 @@ using namespace ::smvk;
 				}
 			}
 		}
-		scene = Scene{};
+		// Fail BEFORE rebuilding if aggregate live nodes exceed the user
+		// budget. The synthetic world root consumes one slot too.
+		if (scene.nodeSlotBudget) {
+			size_t needed = 1;
+			for (const auto& c : clusters) {
+				needed += tour::scene::LiveNodeCount(c->scene);
+				if (needed > scene.nodeSlotBudget)
+					tour::scene::CrashNodeBudget("World resolve", needed,
+						scene.nodeSlotBudget);
+			}
+		}
+		if (scene.nodeSlotBudget)
+			scene.ResetForResolve();
+		else
+			scene = Scene{};
 		meshLocations.clear();
 		materialLocations.clear();
 		textureLocations.clear();
