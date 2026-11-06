@@ -226,6 +226,7 @@ public:
         instance.root = MakeNodeHandle(target, NodeId(root));
         target.localTransform[size_t(root)] = glm::mat4(frame);
         target.localTransformDouble[size_t(root)] = frame;
+        target.localTransformFloatShadow[size_t(root)] = glm::mat4(frame);
         setNodeName(target, root, "SceneInstance");
         const uint64_t region = regions.Register(
             target, instance.root, RegionKind::PrefabInstance);
@@ -246,6 +247,8 @@ public:
                 src < source.localTransformDouble.size()
                 ? source.localTransformDouble[src]
                 : glm::dmat4(source.localTransform[src]);
+            target.localTransformFloatShadow[size_t(dst)] =
+                target.localTransform[size_t(dst)];
             const std::string name = getNodeName(source, int(src));
             if (!name.empty()) setNodeName(target, dst, name);
             if (src < source.staticRoot.size())
