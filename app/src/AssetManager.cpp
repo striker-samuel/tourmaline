@@ -20,6 +20,7 @@
 #include <Engine/App/world.h>
 #include <Engine/Asset/bake_asset.h>
 #include <Engine/Asset/cluster_serializer.h>
+#include <Engine/Utils/LutIo.h>
 #include <Engine/Renderer/WorldRenderer.h>
 
 #include <algorithm>
@@ -70,6 +71,20 @@ struct AssetManager::Impl {
 	// the handle (a parallel key into the same slots).
 	std::map<uint64_t, MeshHandle> meshByPlan;
 
+	// Catalog LUTs are application-scoped loaded resources; their PNG
+	// strips are decoded once and retained for GPU activation.
+	struct LutSlot {
+		uint32_t generation = 1;
+		bool alive = false;
+		uint64_t key = 0;
+		std::string path;
+		std::vector<uint8_t> rgba;
+	};
+	std::vector<LutSlot> lutSlots;
+	std::vector<uint32_t> lutFree;
+	std::map<uint64_t, LutHandle> lutByKey;
+	LutHandle activeLut{};
+
 	// GI slots: a loaded set's manifest rows (the identity), kept
 	// resident while referenced. The renderer builds/publishes on
 	// SetGI/SetGIBlend; both endpoints of a blend stay live here.
@@ -101,6 +116,17 @@ struct AssetManager::Impl {
 		if (!s.alive || s.generation != gen)
 			return nullptr;
 		return &s;
+	}
+
+	LutSlot* LutSlotOf(LutHandle h) {
+		if (!h)
+			return nullptr;
+		const uint32_t idx = uint32_t(h.value);
+		const uint32_t gen = uint32_t(h.value >> 32);
+		if (idx >= lutSlots.size())
+			return nullptr;
+		LutSlot& s = lutSlots[idx];
+		return (s.alive && s.generation == gen) ? &s : nullptr;
 	}
 
 	GiSlot* GiSlotOf(GiHandle h) {
@@ -140,6 +166,8 @@ AssetManager::AssetManager(ProjectRuntime& runtime, ::tour::World& world,
 }
 
 AssetManager::~AssetManager() {
+	if (m_impl && m_impl->renderer && m_impl->activeLut)
+		m_impl->renderer->ClearColorLut();
 	if (m_impl && m_impl->world.gameAssets_ == this)
 		m_impl->world.SetGameAssets(nullptr);
 	delete m_impl;
@@ -458,6 +486,108 @@ MeshHandle AssetManager::LoadMeshByPlan(const smvk::MeshPlanRef& plan,
 	return handle;
 }
 
+// ---- CATALOG COLOR LUTS ---------------------------------------------------
+
+// The typed project::luts namespace is a VIEW of catalog texture ids,
+// specifically PNG strips under luts/. It adds no parallel asset table.
+LutHandle AssetManager::LoadLut(uint64_t key, std::string& err)
+{
+	err.clear();
+	if (!m_impl) {
+		err = "asset system unavailable";
+		return {};
+	}
+	if (auto found = m_impl->lutByKey.find(key);
+			found != m_impl->lutByKey.end()) {
+		if (m_impl->LutSlotOf(found->second))
+			return found->second;
+		m_impl->lutByKey.erase(found);
+	}
+	const auto* record = m_impl->runtime.Asset(key);
+	if (!record || record->kind != smvk::kCatalogKindTexture) {
+		err = "LUT catalog key does not resolve to a project texture";
+		return {};
+	}
+	const size_t part = record->path.find("luts/");
+	if (part == std::string::npos
+			|| (part && record->path[part - 1] != '/')
+			|| record->path.size() < 4
+			|| record->path.substr(record->path.size() - 4) != ".png") {
+		err = "LUT catalog key must name a .png under luts/";
+		return {};
+	}
+	const auto source = m_impl->runtime.ReadAsset(key, err);
+	if (!source || source->empty()) {
+		if (err.empty()) err = "LUT bytes are not available from the project";
+		return {};
+	}
+	std::vector<uint8_t> rgba;
+	int width = 0, height = 0;
+	if (!engine::LutLoadPngMemory(source->data(), source->size(),
+			rgba, width, height) || width != 1024 || height != 32) {
+		err = "LUT must be a PNG-encoded 1024x32 RGBA color strip";
+		return {};
+	}
+	uint32_t index;
+	if (!m_impl->lutFree.empty()) {
+		index = m_impl->lutFree.back();
+		m_impl->lutFree.pop_back();
+	}
+	else {
+		index = uint32_t(m_impl->lutSlots.size());
+		m_impl->lutSlots.emplace_back();
+	}
+	auto& slot = m_impl->lutSlots[index];
+	slot.alive = true;
+	slot.key = key;
+	slot.path = record->path;
+	slot.rgba = std::move(rgba);
+	const LutHandle handle{
+		(uint64_t(slot.generation) << 32) | uint64_t(index) };
+	m_impl->lutByKey.emplace(key, handle);
+	return handle;
+}
+
+bool AssetManager::SetLut(LutHandle lut)
+{
+	if (!m_impl || !m_impl->renderer)
+		return false;
+	if (!lut) {
+		m_impl->renderer->ClearColorLut();
+		m_impl->activeLut = {};
+		return true;
+	}
+	const auto* slot = m_impl->LutSlotOf(lut);
+	if (!slot)
+		return false;
+	if (!m_impl->renderer->SetColorLutRgba(
+			slot->rgba.data(), slot->rgba.size(), slot->path))
+		return false;
+	m_impl->activeLut = lut;
+	return true;
+}
+
+bool AssetManager::UnloadLut(LutHandle lut)
+{
+	if (!m_impl)
+		return false;
+	auto* slot = m_impl->LutSlotOf(lut);
+	if (!slot)
+		return false;
+	if (m_impl->activeLut == lut && !SetLut({}))
+		return false;
+	m_impl->lutByKey.erase(slot->key);
+	slot->rgba.clear();
+	slot->path.clear();
+	slot->alive = false;
+	if (slot->generation != UINT32_MAX) {
+		++slot->generation;
+		if (slot->generation != 0)
+			m_impl->lutFree.push_back(uint32_t(lut.value));
+	}
+	return true;
+}
+
 // ---- GI BAKE SETS ---------------------------------------------------------
 
 GiHandle AssetManager::LoadGI(uint64_t key, std::string& err) {
@@ -596,6 +726,25 @@ app::MeshHandle World::LoadMesh(uint64_t catalogKey, std::string& error)
 bool World::UnloadMesh(app::MeshHandle mesh)
 {
 	return gameAssets_ && gameAssets_->UnloadMesh(mesh);
+}
+
+app::LutHandle World::LoadLut(uint64_t catalogKey, std::string& error)
+{
+	if (!gameAssets_) {
+		error = "World has no attached catalog asset service";
+		return {};
+	}
+	return gameAssets_->LoadLut(catalogKey, error);
+}
+
+bool World::SetLut(app::LutHandle lut)
+{
+	return gameAssets_ && gameAssets_->SetLut(lut);
+}
+
+bool World::UnloadLut(app::LutHandle lut)
+{
+	return gameAssets_ && gameAssets_->UnloadLut(lut);
 }
 
 bool World::NodeRef::SetMesh(app::MeshHandle mesh) const
