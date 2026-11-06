@@ -61,6 +61,7 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <Engine/Core/Limits.h>
 #include <Engine/WorldPartition/WorldTilePath.h>
 
 namespace engine::worldpartition {
@@ -68,8 +69,8 @@ namespace engine::worldpartition {
 // ---------------------------------------------------------------------------
 // Cell constants (1 world unit = 1 metre).
 // ---------------------------------------------------------------------------
-inline constexpr double kRootCellSize = 256.0; // world cells (XZ)
-inline constexpr double kSubcellSize = 64.0; // terrain patches / veg groups
+inline constexpr double kRootCellSize = engine::limits::WorldRootCellSizeMeters; // XZ
+inline constexpr double kSubcellSize = engine::limits::WorldSubcellSizeMeters; // XZ
 
 // ---------------------------------------------------------------------------
 // World cell keys — 2D (XZ) for terrain and ordinary scene content.
