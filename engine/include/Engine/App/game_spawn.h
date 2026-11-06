@@ -14,7 +14,10 @@
 // is a CURRENT World location, not a persistent asset id. Resolve a typed
 // asset key again before spawning after a content topology change.
 //
-// Parent assignment is deliberately not exposed: current mesh and audio\n// spawn implementations ignore their parent parameter. Do not offer a\n// fluent operation that silently fails to parent game objects.\n// This facade does not create independent transform-only nodes yet:
+// Parent assignment is deliberately not exposed: current mesh and audio
+// spawn implementations ignore their parent parameter. Do not offer a
+// fluent operation that silently fails to parent game objects.
+// This facade does not create independent transform-only nodes yet:
 // World::scene must become authoritative (Epoch 6c/6d) before exposing
 // long-lived free nodes or arbitrary attachments safely.
 namespace tour::game {
