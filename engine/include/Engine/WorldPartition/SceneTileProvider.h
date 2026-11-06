@@ -38,19 +38,22 @@ public:
     // Manifest replaces previous availability, never runtime identity.
     // Do not swap a manifest while cells are resident: retire first.
     bool SetManifest(std::vector<SceneTileDescriptor> tiles) {
+        const WorldId world = tiles.empty() ? 0 : tiles.front().tile.world;
+        return SetManifest(world, std::move(tiles));
+    }
+    // Explicit identity supports Maps containing only persistent placements
+    // or no cells yet. A nonzero world may have an empty tile manifest.
+    bool SetManifest(WorldId world, std::vector<SceneTileDescriptor> tiles) {
         if (!resident_.empty() || !pending_.empty()) return false;
         std::map<WorldTileKey, SceneTileDescriptor, SceneTileKeyLess> next;
-        WorldId nextWorld = 0;
         for (const auto& tile : tiles) {
-            if (!tile.tile.world || !tile.contentId
-                || (nextWorld && tile.tile.world != nextWorld)
+            if (!world || tile.tile.world != world || !tile.contentId
                 || !next.emplace(tile.tile, tile).second)
                 return false;
-            nextWorld = tile.tile.world;
         }
         manifest_ = std::move(next);
         desired_.clear();
-        activeWorld_ = nextWorld;
+        activeWorld_ = world;
         return true;
     }
 
