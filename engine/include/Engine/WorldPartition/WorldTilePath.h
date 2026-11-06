@@ -4,6 +4,7 @@
 
 #include <bit>
 #include <cstdint>
+#include <Engine/Core/Limits.h>
 
 namespace engine::worldpartition {
 
@@ -16,7 +17,7 @@ namespace engine::worldpartition {
 struct WorldTilePath {
     uint64_t bits = 1;
 
-    static constexpr uint32_t kMaxLevels = 31;
+    static constexpr uint32_t kMaxLevels = engine::limits::MaxWorldTileSubdivisionLevels;
 
     constexpr bool Valid() const { return bits != 0; }
     constexpr bool IsRoot() const { return bits == 1; }
