@@ -93,6 +93,7 @@ struct RecipePak {
 	std::string id;
 	std::string output;                // authored output file name
 	std::string scene;                 // project-relative tour ("" = none)
+	std::string map;                   // optional authored .map world distribution
 	std::vector<std::string> includes; // project-relative globs, authored order
 	std::vector<std::string> depends;  // pak ids, authored order
 	bool dependenciesTransitive = false;
@@ -106,7 +107,7 @@ struct RecipePak {
 	size_t line = 0;                   // the [pak] header's 1-based line
 
 	[[nodiscard]] bool HasContentSource() const {
-		return !scene.empty() || !includes.empty();
+		return !scene.empty() || !map.empty() || !includes.empty();
 	}
 };
 
