@@ -387,6 +387,22 @@ including/referencing engine-domain headers.
    compat aliases — they are TRANSITIONAL, not the canonical surface.
    New code writes the `tour::` spelling.
 
+**Architecture guard names (stable R1–R9 IDs):**
+
+| Rule | Descriptive name | Boundary enforced |
+| --- | --- | --- |
+| R1 | Vulkan Include Guard | No Vulkan header includes in public headers. |
+| R2 | Private Implementation Guard | No private backend implementation includes in public headers. |
+| R3 | Vulkan Type Leakage Guard | No Vulkan type names in public header code. |
+| R4 | Direct RHI Dependency Guard | No direct upward includes from public RHI headers into engine domains. |
+| R5 | Transitive RHI Dependency Guard | No transitive upward includes from public RHI headers into engine domains. |
+| R6 | Broad Namespace Import Guard | No broad `smvk` namespace imports in public headers. |
+| R7 | Legacy Namespace Compatibility Guard | Existing `smvk::` compatibility re-exports are tracked by exact per-file baseline. |
+| R8 | RHI Implementation Exposure Guard | Existing RHI implementation-state exposure in engine-facing headers is tracked by exact baseline. |
+| R9 | Global Namespace Pollution Guard | No new global engine-type declarations; legacy global re-exports are tracked by exact baseline. |
+
+The `R1`–`R9` IDs stay stable for historical references and test diagnostics; descriptive names are displayed alongside them. Naming does not change enforcement.
+
 **The CI leak alarm — `tests/test_architecture.cpp` (R1–R9):** the
 namespace/RHI boundary scanner, GPU-free + source-tree-only, runs in
 every ctest/CI run. R1–R5: no Vulkan includes / private-impl includes /
