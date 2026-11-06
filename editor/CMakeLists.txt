@@ -220,3 +220,14 @@ if(TOURMALINE_EXPERIMENTAL_WIN32_EDITOR_HOST)
     set_target_properties(EditorWin32HostSmoke PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 endif()
+
+# Native Win32 authoring experiment: deliberately has no SDL3 or Dear ImGui.
+# It is separate from Editor.exe until feature parity is implemented.
+if(WIN32 AND TOURMALINE_EXPERIMENTAL_WIN32_EDITOR_HOST)
+    add_executable(EditorWin32Native WIN32 experimental/native_authoring.cpp)
+    target_compile_features(EditorWin32Native PRIVATE cxx_std_20)
+    target_compile_definitions(EditorWin32Native PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(EditorWin32Native PRIVATE comctl32 comdlg32 shell32 ole32 user32 gdi32)
+    set_target_properties(EditorWin32Native PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+endif()
