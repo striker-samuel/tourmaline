@@ -5,6 +5,7 @@
 #pragma once
 
 
+#include <Engine/Memory/linear_vector.h>
 #include <optional>
 #include <span>
 #include <string>
@@ -350,6 +351,9 @@ namespace tour {
 		[[nodiscard]] bool HasAnimClip() const
 		{ return animClip_.has_value(); }
 		bool SampleAnimation(float dt, std::vector<glm::mat4>& outPalette);
+		// Same pose update with frame-backed output storage for renderer use.
+		bool SampleAnimation(float dt, tour::mem::FrameVector<glm::mat4>& outPalette);
+		bool SampleAnimationPose(float dt);
 		// ANIMATOR-DRIVEN pose (World::Update flushes a live animator's
 		// evaluated joint locals into this scene and sets this): the
 		// renderer's skinning leg must NOT advance its own clip on a
