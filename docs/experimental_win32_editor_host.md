@@ -49,3 +49,26 @@ successful Windows compilation (no Windows build has been run here).
 The existing `Editor` target remains unchanged at runtime. This is an
 incremental starting point for future migration PRs, not a claim that the
 editor has already moved to Win32.
+
+## Native UI, no Dear ImGui (additional experimental target)
+
+`EditorWin32Native` is a standalone Win32/Common Controls + RichEdit source
+authoring frontend. It uses neither SDL3 nor Dear ImGui; it is not wired into
+the scene renderer, editor command stack, or engine asset database.
+
+Configure with `-DTOURMALINE_EXPERIMENTAL_WIN32_EDITOR_HOST=ON` and build
+`EditorWin32Native`. Launch it with `--project <directory>` or pick a project
+directory from its **Project** menu.
+
+Implemented in this frontend:
+- Native project file tree showing source scenes and common asset formats.
+- Open/new/save/save-as/reload for UTF-8 `.tour` files, including unsaved-edit prompts.
+- Native RichEdit text editing and undo/redo, basic find-next, and keyboard shortcuts.
+- Save via same-directory temporary file and replace-on-success.
+
+Missing: Vulkan live viewport, visual outliner/inspector, gizmos, full scene
+load/replay validation, cooking/baking integration, asset transforms, dockable
+native panels, and integration with the existing editor's edit-command stack.
+The existing SDL3/ImGui `Editor.exe` is **not** used as a fallback by this
+new executable; it remains the separate legacy editor while this work
+continues. Never describe `EditorWin32Native` as feature-complete.
