@@ -256,10 +256,7 @@ struct GfxKeptBits { uint kept[GFX_MAX_BATCH_SLOTS * 2]; };
 #define GFX_DIAG_OVERFLOW    (GFX_MAX_DRAWS + 2)
 #define GFX_DIAG_ALLOCATED   (GFX_MAX_DRAWS + 3)
 #define GFX_DIAG_GATED       (GFX_MAX_DRAWS + 4)
-#define GFX_DIAG_REJECT_XY   (GFX_MAX_DRAWS + 5)
-#define GFX_DIAG_REJECT_Z    (GFX_MAX_DRAWS + 6)
-#define GFX_DIAG_BEHIND      (GFX_MAX_DRAWS + 7)
-#define GFX_CULL_STATE_WORDS (GFX_MAX_DRAWS + 8)
+#define GFX_CULL_STATE_WORDS (GFX_MAX_DRAWS + 5)
 struct GfxCullState { uint v[GFX_CULL_STATE_WORDS]; };
 
 // Static per-mesh cluster range (mirror of C++ gfx::Mesh /
