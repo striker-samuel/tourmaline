@@ -1252,6 +1252,9 @@ using namespace ::smvk;
 		// combining both paths in one active World.
 		if (worldSceneInstances.Count() != 0)
 			throw std::logic_error("cannot resolve Cluster scenes while direct World scene instances are active");
+		// Full legacy resolve replaces the node slots: reject stale game
+		// handles after it, rather than accidentally mutating a reused slot.
+		gameNodes_.clear();
 		// MATERIAL USERDATA RE-KEY CAPTURE (consumed by the re-key below
 		// the material-table rebuild): the world material indices are
 		// about to be rebuilt, so the per-material defaults are captured
@@ -1967,6 +1970,7 @@ using namespace ::smvk;
 		if (node < 0)
 			return kNodeInvalidHandle;
 		const NodeHandle handle = MakeNodeHandle(scene, NodeId(node));
+		gameNodes_.insert(handle);
 		(void)tour::scene::SetLocalTransform(scene, handle, localFrame);
 		scene.globalTransform[size_t(node)] = localFrame;
 		markAsChanged(scene, node);
@@ -1976,7 +1980,7 @@ using namespace ::smvk;
 
 	bool World::RemoveNode(NodeHandle handle)
 	{
-		if (!NodeHandleValid(scene, handle))
+		if (!IsGameNode(handle))
 			return false;
 		const NodeId node = NodeHandleSlot(handle);
 		// Only unowned game nodes can be removed through this entry point:
@@ -1992,6 +1996,7 @@ using namespace ::smvk;
 			if (entity.alive && entity.mergedNode == node)
 				return false;
 		deleteSceneNodes(scene, { node });
+		gameNodes_.erase(handle);
 		RefreshRuntimeSceneCaches();
 		return true;
 	}
