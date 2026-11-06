@@ -7903,7 +7903,7 @@ namespace engine {
 			}
 			if (bindless < 0 && m_decalTexWarnedUris.insert(uri).second)
 				std::cerr << "[Decals] texture '" << uri
-					<< "' unresolved (no cluster texture) - decal skipped\\n";
+					<< "' unresolved (no cluster texture) - decal skipped\n";
 			texCache[slot] = { &uri, bindless };
 			return bindless;
 		};
