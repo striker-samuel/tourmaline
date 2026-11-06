@@ -84,9 +84,13 @@ float4 mainPS(VSOut IN) : SV_Target0
         // double-darkening where both agree.
         if (pcT.hfShadow >= 2)
         {
-            float hf = TerrainRaymarchShadow(pcT.atlasSlot,
-                float2(pcT.originX, pcT.originZ), pcT.invWorldSize,
-                pcT.baseY, pcT.range, IN.worldPos, L, pcT.hfSteps);
+            float hf = pcT.occlusionSlot != 0xFFFFFFFFu
+                ? TerrainHierarchicalShadow(pcT.occlusionSlot,
+                    float2(pcT.originX, pcT.originZ), pcT.invWorldSize,
+                    pcT.baseY, pcT.range, IN.worldPos, L)
+                : TerrainRaymarchShadow(pcT.atlasSlot,
+                    float2(pcT.originX, pcT.originZ), pcT.invWorldSize,
+                    pcT.baseY, pcT.range, IN.worldPos, L, pcT.hfSteps);
             shadow = min(shadow, hf);
         }
     }
