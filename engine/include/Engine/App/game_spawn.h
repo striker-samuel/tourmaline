@@ -14,7 +14,7 @@
 // is a CURRENT World location, not a persistent asset id. Resolve a typed
 // asset key again before spawning after a content topology change.
 //
-// This facade does not create independent transform-only nodes yet:
+// Parent assignment is deliberately not exposed: current mesh and audio\n// spawn implementations ignore their parent parameter. Do not offer a\n// fluent operation that silently fails to parent game objects.\n// This facade does not create independent transform-only nodes yet:
 // World::scene must become authoritative (Epoch 6c/6d) before exposing
 // long-lived free nodes or arbitrary attachments safely.
 namespace tour::game {
@@ -32,22 +32,17 @@ public:
 			frame_ = localFrame;
 			return *this;
 		}
-		[[nodiscard]] MeshRequest& Under(NodeId parent) {
-			parent_ = parent;
-			return *this;
-		}
 		[[nodiscard]] MeshRequest& Material(uint32_t materialIndex) {
 			material_ = materialIndex;
 			return *this;
 		}
 		[[nodiscard]] smvk::MeshEntityHandle Spawn() const {
-			return world_.SpawnMesh(meshIndex_, frame_, parent_, material_);
+			return world_.SpawnMesh(meshIndex_, frame_, UINT32_MAX, material_);
 		}
 	private:
 		World& world_;
 		uint32_t meshIndex_;
 		uint32_t material_ = World::kInvalidIndex;
-		NodeId parent_ = UINT32_MAX;
 		glm::mat4 frame_{ 1.0f };
 	};
 
@@ -60,17 +55,12 @@ public:
 			frame_ = localFrame;
 			return *this;
 		}
-		[[nodiscard]] MeshFromNodeRequest& Under(NodeId parent) {
-			parent_ = parent;
-			return *this;
-		}
 		[[nodiscard]] smvk::MeshEntityHandle Spawn() const {
-			return world_.SpawnMeshFromNode(source_, frame_, parent_);
+			return world_.SpawnMeshFromNode(source_, frame_, UINT32_MAX);
 		}
 	private:
 		World& world_;
 		NodeId source_;
-		NodeId parent_ = UINT32_MAX;
 		glm::mat4 frame_{ 1.0f };
 	};
 
@@ -83,17 +73,12 @@ public:
 			frame_ = localFrame;
 			return *this;
 		}
-		[[nodiscard]] AudioRequest& Under(NodeId parent) {
-			parent_ = parent;
-			return *this;
-		}
 		[[nodiscard]] smvk::AudioSourceHandle Spawn() const {
-			return world_.SpawnAudioSource(frame_, parent_, definition_);
+			return world_.SpawnAudioSource(frame_, UINT32_MAX, definition_);
 		}
 	private:
 		World& world_;
 		SceneAudioSource definition_;
-		NodeId parent_ = UINT32_MAX;
 		glm::mat4 frame_{ 1.0f };
 	};
 
