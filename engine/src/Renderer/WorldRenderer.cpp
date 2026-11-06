@@ -11851,7 +11851,9 @@ namespace engine {
 					if (!c->EnsureSkinnedGpuData(*m_context))
 						continue;
 				}
-				std::vector<glm::mat4> palette;
+				tour::mem::FrameVector<glm::mat4> palette{
+					tour::mem::LinearAllocatorSTL<glm::mat4>{
+						&tour::mem::FrameAllocator()}};
 				{
 					// The CPU bone-eval box: track samples -> joint
 					// locals -> the global walk -> the palette (or the
