@@ -584,6 +584,28 @@ int main() {
 	}
 
 	{
+		// The value-component lane accepts default braced values without
+		// a catalog key. The concrete payload type is supplied by the
+		// mutator signature (a generic template cannot deduce from {}).
+		Scene s = MakeScene(1);
+		Check(SetPhysicsBody(s, 0, {}),
+			"value component: default-braced physics body");
+		Check(SetAudioRoom(s, 0, {}),
+			"value component: default-braced audio room");
+		Check(SetTriggerVolume(s, 0, {}),
+			"value component: default-braced trigger volume");
+		const PhysicsBodyRow* physics = FindPhysicsBody(s, 0);
+		const AudioRoomRow* room = FindAudioRoom(s, 0);
+		const TriggerVolumeRow* trigger = FindTriggerVolume(s, 0);
+		Check(physics && physics->body.mass == 1.0f,
+			"value component: physics defaults preserved");
+		Check(room && room->room.enabled,
+			"value component: audio room defaults preserved");
+		Check(trigger && trigger->trigger.enabled,
+			"value component: trigger defaults preserved");
+	}
+
+	{
 		// Catalog-first node binding invariant: the scene holds exactly
 		// ONE mesh association per node; rebinding the mesh replaces
 		// its row, retaining the node's generation and transform.
