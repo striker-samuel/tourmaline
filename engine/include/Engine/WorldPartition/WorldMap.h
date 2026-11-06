@@ -34,6 +34,7 @@ struct MapNode {
 };
 
 struct Map {
+    engine::worldpartition::WorldId id = 0; // stable authored, never inferred from pak name
     std::vector<MapNode> nodes;
 };
 
@@ -53,6 +54,7 @@ struct MapCellLess {
 };
 
 struct CompiledMapTiles {
+    engine::worldpartition::WorldId world = 0;
     std::map<engine::worldpartition::WorldCellKey,
              std::vector<CookedMapPlacement>, MapCellLess> tiles;
     std::vector<CookedMapPlacement> persistent;
@@ -63,6 +65,8 @@ struct CompiledMapTiles {
 // Node order does not affect the output tile/placement ordering.
 inline bool CompileMapTilePlacements(const Map& map, CompiledMapTiles& output) {
     CompiledMapTiles next;
+    if (map.id == 0) return false; // world identity is mandatory for cooked Maps
+    next.world = map.id;
     const size_t n = map.nodes.size();
     if (n > uint64_t(UINT32_MAX)) return false;
 
