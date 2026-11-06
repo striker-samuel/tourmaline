@@ -1224,8 +1224,29 @@ using namespace ::smvk;
 	// we only flatten the hierarchy/transforms/node->resource index maps here,
 	// and remap the node->mesh/material indices to world-level resolution
 	// slots that point back to the owning Cluster + handle.
+
+	bool World::MarkClusterDirty(const smvk::Cluster& cluster)
+	{
+		for (const auto& registered : clusters) {
+			if (registered.get() == &cluster) {
+				clustersDirty_ = true;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool World::ResolveDirtyClusters()
+	{
+		if (!clustersDirty_)
+			return false;
+		ResolveAndFixup_clusters();
+		return true;
+	}
+
 	void World::ResolveAndFixup_clusters()
 	{
+		clustersDirty_ = false;
 		// Never silently discard direct World-owned nodes while rebuilding
 		// legacy Cluster copies. Complete the legacy renderer cutover before
 		// combining both paths in one active World.

@@ -10435,6 +10435,18 @@ namespace engine {
 		// ImGui queues test-fixture changes after scene passes are built.
 		// Apply them before recording the NEXT frame (no mid-frame mutations).
 		ApplyRuntimeProceduralRequest();
+		// Scene ownership and invalidation live in World. A single merge
+		// also regenerates the render-item and mesh lookup tables.
+		if (m_world && m_world->ResolveDirtyClusters()) {
+			if (m_gfxFilterAvailable) {
+				smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
+				m_gfxRenderer.RegisterWorldMeshes(*m_world);
+				++m_gpuSceneGeometryRevision;
+				m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+			}
+			m_context->FlushUploads();
+		}
+
 		// Texture filtering (trilinear <-> aniso 16x) is renderer state: enforce
 		// the selected sampler state on the bindless sampler slots every frame
 		// (no-op when already set; recreates slots 0 + 2 on change).
