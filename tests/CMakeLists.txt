@@ -546,6 +546,13 @@ set_target_properties(CacheTests PROPERTIES
 
 add_test(NAME cache_tests COMMAND CacheTests)
 
+# World-wide authored Map hierarchy (independent from local Scene graphs).
+add_executable(WorldMapTests test_world_map.cpp)
+target_link_libraries(WorldMapTests PRIVATE engine)
+set_target_properties(WorldMapTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME world_map_tests COMMAND WorldMapTests)
+
 # Scene tile provider CPU-only residency contract.
 add_executable(SceneTileProviderTests test_scene_tile_provider.cpp)
 target_link_libraries(SceneTileProviderTests PRIVATE engine)
