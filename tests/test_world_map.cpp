@@ -90,6 +90,14 @@ int main() {
                 *reader, {map.id + 1, {-2,2}}, decoded)
                 && decoded.size() == 1,
                 "world ID namespaces pak tile lookup");
+            uint32_t tilesCount = 0, persistentCount = 0;
+            Check(tour::mapcook::ReadMapManifest(
+                *reader, map.id, tilesCount, persistentCount)
+                && tilesCount == 2 && persistentCount == 1,
+                "typed Map manifest carries stable WorldId and counts");
+            Check(!tour::mapcook::ReadMapManifest(
+                *reader, map.id + 999, tilesCount, persistentCount),
+                "absent world manifest fails closed");
             std::vector<tour::CookedMapPlacement> persistent;
             Check(tour::mapcook::ReadPersistentPlacements(*reader, map.id, persistent)
                 && persistent.size() == 1
@@ -144,6 +152,20 @@ int main() {
             "map 1 99\\nnode 1 2 300 0 0 0 0\\n"
             "node 2 1 0 0 0 0 0\\n",
             parsed, error), "authored map ancestry cycle fails");
+    }
+    {
+        tour::CompiledMapTiles empty;
+        empty.world = 999;
+        smvk::PakWriter writer;
+        Check(tour::mapcook::AddMapTiles(writer, empty),
+            "empty Map still emits identity page");
+        const auto bytes = writer.Finalize();
+        std::string err;
+        auto reader = smvk::PakReader::Open(bytes, err);
+        std::vector<engine::worldpartition::SceneTileDescriptor> descriptors;
+        Check(reader && tour::mapcook::DiscoverMapTiles(
+            *reader, 999, descriptors) && descriptors.empty(),
+            "empty Map discovered without tile allocation");
     }
     const auto oldTiles = out.tiles.size();
     tour::Map invalid = map;
