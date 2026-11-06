@@ -221,6 +221,7 @@ enum class PakAssetKind : uint32_t {
 	Shape = 21,        // authored .shape spline / point cloud / primitive text
 	ShapePlacements = 22, // cooked .tour scene-owned placements (not VFS)
 	MapTile = 23, // cooked Map tile placement pages (logical world-cell content, not VFS)
+	MapManifest = 24, // cooked world-wide Map ID, tile count and persistent placement index
 };
 
 enum PakEntryFlags : uint32_t {
