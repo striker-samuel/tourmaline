@@ -61,6 +61,7 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <Engine/WorldPartition/WorldTilePath.h>
 
 namespace engine::worldpartition {
 
@@ -195,8 +196,9 @@ enum class DesiredResidency : uint8_t
 struct WorldTileKey {
     WorldId world = 0;
     WorldCellKey cell{};
+    WorldTilePath path{}; // hierarchical address relative to the root cell
     bool operator==(const WorldTileKey& o) const {
-        return world == o.world && cell == o.cell;
+        return world == o.world && cell == o.cell && path == o.path;
     }
 };
 struct WorldTileKeyLess {
@@ -204,7 +206,8 @@ struct WorldTileKeyLess {
         return a.world < b.world ||
             (a.world == b.world &&
                 (a.cell.x < b.cell.x ||
-                    (a.cell.x == b.cell.x && a.cell.z < b.cell.z)));
+                    (a.cell.x == b.cell.x && (a.cell.z < b.cell.z ||
+                    (a.cell.z == b.cell.z && a.path.bits < b.path.bits)))));
     }
 };
 
