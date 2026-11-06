@@ -152,7 +152,7 @@ int main(int argc, char** argv) {
             transform[3] = glm::vec4(x, y, z, 1.0f);
             world.scene.globalTransform.push_back(transform);
             World::RenderItem item{};
-            item.node = static_cast<smvk::NodeId>(i);
+            item.node = static_cast<tour::scene::NodeId>(i);
             item.mesh = static_cast<uint32_t>(i % 128);
             item.material = static_cast<uint32_t>(i % 32);
             item.flags = smvk::IteratorFlagBit_Renderable |
