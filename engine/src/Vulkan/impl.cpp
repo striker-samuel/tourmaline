@@ -52,6 +52,7 @@
 #include <Engine/App/app.h>
 #include <Engine/App/input_sdl3.h>
 #include <Engine/Memory/memory.h>
+#include <Engine/Memory/arena.h>
 #include <Engine/Memory/linear_vector.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Rendergraph/dlss.h>
@@ -11053,6 +11054,11 @@ smvk::VulkanFrameBuffer smvk::detail::vulkan::VulkanSwapchain::AcquireFramebuffe
 	// slot's fence; safe to unsignal it here (see the NOTE above the fence
 	// wait for why this must not happen before a successful acquire).
 	VK_CHECK(vkResetFences(device_, 1, &inFlightFences_[currentFrame_]));
+
+	// Only now: the previous use of this flight slot has retired and
+	// acquisition succeeded. Keep independent transfer-timeline data
+	// outside this arena (those uploads can outlive their graphics slot).
+	smvk::ResetFlightArena(currentFrame_);
 
 	SetCurrentImageIndex(imageIndex);
 
