@@ -24,6 +24,7 @@ static tour::MapNode Node(uint64_t id, uint32_t parent, double x, double z,
 }
 int main() {
     tour::Map map{};
+    map.id = 0x123456789ULL;
     map.nodes = {
         Node(30, tour::kMapNodeInvalid, -256.0, 512.0, 0),
         Node(20, 0, -1.0, 0.0, 202),
@@ -40,7 +41,7 @@ int main() {
     Check(out.persistent.size() == 1 && out.persistent[0].mapNodeId == 40,
         "persistent placement separated from tiles");
     {
-        const engine::worldpartition::WorldCellKey key{-2,2};
+        const engine::worldpartition::WorldTileKey key{map.id, {-2,2}};
         std::vector<uint8_t> bytes, bytes2;
         const auto& placements = out.tiles.at(key);
         Check(tour::mapcook::EncodeTile(key, placements, bytes)
@@ -52,8 +53,10 @@ int main() {
             && decoded[0].mapNodeId == 20
             && decoded[0].sceneAssetId == 202,
             "tile page roundtrip");
-        Check(!tour::mapcook::DecodeTile(bytes, {1,2}, decoded),
+        Check(!tour::mapcook::DecodeTile(bytes, {map.id, {1,2}}, decoded),
             "cross-cell page substitution rejected");
+        Check(!tour::mapcook::DecodeTile(bytes, {map.id+1, {-2,2}}, decoded),
+            "other world with same tile coordinates rejected");
         bytes.pop_back();
         Check(!tour::mapcook::DecodeTile(bytes, key, decoded)
             && decoded.size() == 1, "truncated page rejected transactionally");
@@ -68,17 +71,25 @@ int main() {
         Check(reader.has_value(), "SMP8 map pages parse");
         if (reader) {
             std::vector<tour::CookedMapPlacement> decoded;
-            Check(tour::mapcook::ReadMapTile(*reader, {-2,2}, decoded)
+            Check(tour::mapcook::ReadMapTile(*reader, {map.id, {-2,2}}, decoded)
                 && decoded.size() == 1
                 && decoded[0].mapNodeId == 20,
                 "tile fetched by logical cell without Cluster");
-            Check(!tour::mapcook::ReadMapTile(*reader, {9,9}, decoded)
+            Check(!tour::mapcook::ReadMapTile(*reader, {map.id, {9,9}}, decoded)
                 && decoded.size() == 1,
                 "missing tile leaves output unchanged");
+            Check(!tour::mapcook::ReadMapTile(
+                *reader, {map.id + 1, {-2,2}}, decoded),
+                "world ID namespaces pak tile lookup");
             Check(reader->BlobsOfKind(smvk::PakAssetKind::MapTile).size() == 2,
                 "two independent MapTile pages");
         }
     }
+    Check(out.world == map.id, "compiled map preserves authored world identity");
+    tour::Map missingWorld = map;
+    missingWorld.id = 0;
+    Check(!tour::CompileMapTilePlacements(missingWorld, out),
+        "zero world ID rejected");
     const auto oldTiles = out.tiles.size();
     tour::Map invalid = map;
     invalid.nodes[1].parent = 1;
