@@ -161,10 +161,15 @@ static constexpr uint32_t kMaxDraws = 4096;   // draws pushed per view
 // (~3x the LOD0-only count), so headroom over the pre-LOD 4k budget.
 static constexpr uint32_t kMaxMeshes = 8192;
 static constexpr uint32_t kMaxViews = 64; // mirrors kMaxRenderViews
-// Draw-cull verdict words ([0, kMaxDraws)) + the filter's atomic
-// filtered-offset counter (word kMaxDraws) packed in one small buffer.
-static constexpr uint32_t kCullStateWords = kMaxDraws + 1;
+// Draw verdict words, the filtered-index allocation counter, and temporary
+// per-batch diagnostic counters (empty, overflow, allocated, gated).
+// HLSL mirror: gfxfilter.hlsli GFX_CULL_STATE_WORDS.
 static constexpr uint32_t kCullStateCounterWord = kMaxDraws;
+static constexpr uint32_t kCullStateDiagEmptyWord = kMaxDraws + 1;
+static constexpr uint32_t kCullStateDiagOverflowWord = kMaxDraws + 2;
+static constexpr uint32_t kCullStateDiagAllocatedWord = kMaxDraws + 3;
+static constexpr uint32_t kCullStateDiagGatedWord = kMaxDraws + 4;
+static constexpr uint32_t kCullStateWords = kMaxDraws + 5;
 
 // GPU cluster entry (4x uvec4). Must match HLSL GfxClusterData (64 bytes):
 // (indexOffset, triCount, 0, 0) + (boundCenter.xyz, boundRadius) for the
