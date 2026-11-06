@@ -1610,6 +1610,40 @@ void TestAssetManager() {
 			"am.mesh-adopts-scene-cluster");
 		Check(assets.MeshWorldIndex(tree) != UINT32_MAX,
 			"am.mesh-worldindex");
+		// Native World gameplay path: the key is loaded explicitly,
+		// then the LOADED MeshHandle attaches to a standalone node.
+		// No CatalogWorld wrapper, and never two meshes on one node.
+		std::string wErr;
+		Check(world.LoadMesh(0x3000, wErr) == tree && wErr.empty(),
+			"am.world-loadmesh-catalog-key");
+		const NodeHandle gameNode = world.AddNode();
+		const NodeId gameSlot = NodeHandleSlot(gameNode);
+		Check(world.IsGameNode(gameNode) && !FindMesh(world.scene, gameSlot),
+			"am.world-addnode-empty");
+		Check(world[gameNode].SetMesh(tree)
+			&& FindMesh(world.scene, gameSlot)
+			&& FindMesh(world.scene, gameSlot)->mesh
+				== assets.MeshWorldIndex(tree),
+			"am.world-setmesh-loaded-handle");
+		Check(!world[gameNode].SetMesh(app::MeshHandle{})
+			&& FindMesh(world.scene, gameSlot) != nullptr,
+			"am.world-invalid-handle-preserves-existing-mesh");
+		Check(world[gameNode].SetPhysicsBody({})
+			&& world[gameNode].SetAudioRoom({})
+			&& world[gameNode].SetTriggerVolume({}),
+			"am.world-node-inline-default-components");
+		uint32_t gameMeshRows = 0;
+		for (const MeshRow& row : world.scene.tables.meshes)
+			if (row.node == gameSlot) ++gameMeshRows;
+		Check(gameMeshRows == 1,
+			"am.world-one-mesh-per-transform");
+		Check(!assets.UnloadMesh(tree),
+			"am.world-mesh-handle-cannot-unload-while-attached");
+		Check(world[gameNode].RemoveMesh()
+			&& FindMesh(world.scene, gameSlot) == nullptr,
+			"am.world-remove-mesh-keeps-node");
+		Check(world.RemoveNode(gameNode) && !world.IsGameNode(gameNode),
+			"am.world-remove-node-invalidates-handle");
 		// The typed-key spawn lane (the gameplay surface): the loaded
 		// handle instances through its CURRENT row - the entity is
 		// world-owned, DestroyMesh kills it.
