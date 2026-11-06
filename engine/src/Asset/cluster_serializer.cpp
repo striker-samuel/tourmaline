@@ -1828,6 +1828,9 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 	// they do not scale with scene size.
 	if (!c.ok || nodeCount == 0 || nodeCount > 4096 * 1024)
 		return fail("bad scene node count");
+	if (scene.nodeSlotBudget && nodeCount > scene.nodeSlotBudget)
+		tour::scene::CrashNodeBudget("pak scene parse", nodeCount,
+			scene.nodeSlotBudget);
 	// Stash the recorded linkage first (single parse), then grow the
 	// scene in index order with addNode (sibling order preserved), then
 	// restore the recorded linkage verbatim as authoritative.
@@ -2566,7 +2569,8 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	uint32_t sceneIndex,
 	TextureStreamer* streamer,
 	std::shared_ptr<const std::vector<uint8_t>> imagePin,
-	const ExternalTextureResolver* externalTexture) {
+	const ExternalTextureResolver* externalTexture,
+	size_t sceneNodeBudget) {
 	// Failure after textures/meshes were queued in the upload streamer
 	// leaves transfer command buffers + graphics acquire barriers
 	// referencing the partial cluster's VkImages/VkBuffers. The cluster
@@ -2588,6 +2592,8 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	};
 
 	auto cluster = std::make_unique<Cluster>(&ctx);
+	if (sceneNodeBudget)
+		cluster->scene.ReserveNodeSlots(sceneNodeBudget);
 
 	// --- Textures first (materials resolve URIs against them) ---------------
 	// Two lists: digest entries (Texture blobs carrying a tail digest —
@@ -3387,7 +3393,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				std::fprintf(stderr,
 					"[GeometryStreaming] scene referenced %zu deferred "
 					"sibling(s) - promoted at link time\n", healedCount);
-				cluster->scene = Scene{};
+				cluster->scene.ResetForResolve();
 				cluster->skeleton = {};
 				cluster->hasSkeleton = false;
 				sceneName.clear();
