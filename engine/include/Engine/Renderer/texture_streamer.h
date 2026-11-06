@@ -34,6 +34,7 @@
 
 #include <Engine/smvk.h>
 #include <Engine/Memory/pool.h>
+#include <Engine/Memory/linear_vector.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -167,6 +168,12 @@ public:
 	void RequestMipsByDistance(const std::unordered_map<uint32_t, float>& minDistBySlot,
 		float viewportHeightPx, float fovYRad, uint32_t frameIndex,
 		float approxWorldSize = 2.0f);
+	using FrameMinDistanceMap = std::unordered_map<uint32_t, float,
+		std::hash<uint32_t>, std::equal_to<uint32_t>,
+		tour::mem::LinearAllocatorSTL<std::pair<const uint32_t, float>>>;
+	void RequestMipsByDistance(const FrameMinDistanceMap& minDistBySlot,
+		float viewportHeightPx, float fovYRad, uint32_t frameIndex,
+		float approxWorldSize = 2.0f);
 
 	// Bindless slot -> streamed TextureHandle snapshot for demand
 	// consumers (slot-keyed GPU feedback). Slots without
@@ -186,6 +193,7 @@ public:
 		uint32_t fullMips = 0; // 0 = slot holds no streamed texture
 	};
 	std::vector<TextureSlotMeta> BuildSlotMeta() const;
+	void BuildSlotMeta(tour::mem::FrameVector<TextureSlotMeta>& out) const;
 	// Bumped on every register/unregister (NOT on retargets — the
 	// slot->texture mapping is retarget-stable, only the slot set
 	// changes). Consumers re-upload their meta table when this moves.
