@@ -12,18 +12,21 @@
 
 namespace tour::mapcook {
 
-inline std::string TilePath(engine::worldpartition::WorldCellKey cell) {
-    return "world/tiles/" + std::to_string(cell.x) + "_" +
-        std::to_string(cell.z) + ".mtile";
+inline std::string TilePath(engine::worldpartition::WorldTileKey tile) {
+    return "worlds/" + std::to_string(tile.world) + "/tiles/" +
+        std::to_string(tile.cell.x) + "_" +
+        std::to_string(tile.cell.z) + ".mtile";
 }
 
 // Does not finalize the pak. Caller may add other assets and choose regional
 // packaging. Fail-fast on invalid placement page or repeated logical key.
 inline bool AddMapTiles(smvk::PakWriter& writer, const CompiledMapTiles& tiles) {
+    if (!tiles.world) return false;
     for (const auto& [cell, placements] : tiles.tiles) {
+        const engine::worldpartition::WorldTileKey tile{tiles.world, cell};
         std::vector<uint8_t> bytes;
-        if (!EncodeTile(cell, placements, bytes) ||
-            !writer.AddBlob(smvk::PakAssetKind::MapTile, TilePath(cell),
+        if (!EncodeTile(tile, placements, bytes) ||
+            !writer.AddBlob(smvk::PakAssetKind::MapTile, TilePath(tile),
                             std::move(bytes)))
             return false;
     }
@@ -33,12 +36,13 @@ inline bool AddMapTiles(smvk::PakWriter& writer, const CompiledMapTiles& tiles) 
 // Returns false for no page, corrupt page, wrong cell or invalid payload.
 // Output remains unchanged on validation failure.
 inline bool ReadMapTile(const smvk::PakReader& reader,
-                        engine::worldpartition::WorldCellKey cell,
+                        engine::worldpartition::WorldTileKey tile,
                         std::vector<CookedMapPlacement>& out) {
-    const auto* entry = reader.Find(smvk::PakAssetKind::MapTile, TilePath(cell));
+    if (!tile.world) return false;
+    const auto* entry = reader.Find(smvk::PakAssetKind::MapTile, TilePath(tile));
     if (!entry) return false;
     try {
-        return DecodeTile(reader.Payload(*entry), cell, out);
+        return DecodeTile(reader.Payload(*entry), tile, out);
     } catch (...) {
         // CRC/decompress failures must not leak half-initialized placement
         // records to the runtime. The host reports the failing tile/key.
