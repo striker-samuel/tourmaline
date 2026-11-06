@@ -143,7 +143,21 @@ namespace tour {
 		// Called by AssetManager for the duration of its attachment.
 		// AssetManager must outlive its loaded mesh handles.
 		void SetGameAssets(app::AssetManager* assets) {
+			if (gameAssets_ && gameAssets_ != assets)
+				ClearGameMeshBindings();
 			gameAssets_ = assets;
+		}
+		// Called before releasing all assets or the bound manager.
+		// Attached nodes become meshless; their transforms and value
+		// components remain intact.
+		void ClearGameMeshBindings() {
+			if (gameMeshBindings_.empty())
+				return;
+			for (const auto& [handle, resource] : gameMeshBindings_)
+				if (IsGameNode(handle))
+					(void)tour::scene::RemoveMesh(scene, NodeHandleSlot(handle));
+			gameMeshBindings_.clear();
+			RefreshRuntimeSceneCaches();
 		}
 		[[nodiscard]] bool HasGameMeshBinding(uint64_t resourceValue) const {
 			for (const auto& [node, mesh] : gameMeshBindings_)
@@ -189,6 +203,9 @@ namespace tour {
 		// Legacy ResolveAndFixup currently invalidates game nodes; this
 		// pending 6c migration is an explicit limitation of this slice.
 		std::unordered_set<NodeHandle> gameNodes_;
+		// Cross-resolve per-slot generation high water mark. The legacy
+		// scene reset cannot re-mint a stale game handle on reused slots.
+		std::unordered_map<NodeId, uint32_t> gameSlotGeneration_;
 		std::unordered_map<NodeHandle, uint64_t> gameMeshBindings_;
 		app::AssetManager* gameAssets_ = nullptr;
 
