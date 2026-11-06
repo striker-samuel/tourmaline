@@ -473,6 +473,13 @@ namespace tour {
 		// Enumerates registered texture URIs for serialization
 		// ({uri, RHI handle} pairs, sorted by uri for deterministic paks).
 		std::vector<std::pair<smvk::StringViewT, smvk::TextureHandle>> ListTextureUris() const;
+		// Allocation-free enumeration for render-frame remapping. Ordering is
+		// irrelevant to pool-index lookups; serializer callers retain the
+		// sorted, owning ListTextureUris() API.
+		template<typename Fn>
+		void ForEachTextureUri(Fn&& fn) const {
+			textureByUri_.ForEach(std::forward<Fn>(fn));
+		}
 
 		// glTF sampler parameters per texture uri (persisted into paks;
 		// the renderer still uses its default sampler until sampler
