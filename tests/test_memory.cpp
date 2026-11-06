@@ -598,6 +598,36 @@ void TestLifetimeCounters() {
 		"memory.telemetry.arena-lifetime-totals");
 }
 
+void TestFlightArenas() {
+	auto& slot0 = smvk::FlightArena(0);
+	auto& slot1 = smvk::FlightArena(1);
+	auto* first = static_cast<uint32_t*>(
+		slot0.Allocate(sizeof(uint32_t), alignof(uint32_t)));
+	auto* other = static_cast<uint32_t*>(
+		slot1.Allocate(sizeof(uint32_t), alignof(uint32_t)));
+	*first = 0x12345678u;
+	*other = 0xabcdef12u;
+	Check(first != other, "memory.flight.arenas-are-independent");
+	smvk::ResetFlightArena(0);
+	Check(*other == 0xabcdef12u, "memory.flight.other-slot-survives-reset");
+	auto* reused = static_cast<uint32_t*>(
+		slot0.Allocate(sizeof(uint32_t), alignof(uint32_t)));
+	Check(reused == first, "memory.flight.retired-slot-recycles-storage");
+	smvk::ResetFlightArena(0);
+	smvk::ResetFlightArena(1);
+}
+
+void TestArenaLongFormat() {
+	smvk::Arena scratch(256);
+	const std::string payload(1500, 'a');
+	const auto formatted = scratch.FormatString("prefix:%s:suffix", payload.c_str());
+	Check(formatted.size() == payload.size() + 14,
+		"memory.arena.long-format-length");
+	Check(formatted.substr(0, 7) == "prefix:"
+		&& formatted.substr(formatted.size() - 7) == ":suffix",
+		"memory.arena.long-format-contents");
+}
+
 void TestStlAdapter() {
 	smvk::mem::LinearAllocator alloc("test-stl", 1 * 1024 * 1024, 64 * 1024);
 	smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
@@ -640,6 +670,8 @@ int main() {
 	TestFrameReset();
 	TestGlobals();
 	TestArenaBacking();
+	TestFlightArenas();
+	TestArenaLongFormat();
 	TestBenchmarks();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
