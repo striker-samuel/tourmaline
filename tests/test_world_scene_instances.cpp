@@ -90,8 +90,33 @@ int main() {
     const size_t before = world.scene.hierarchy.size();
     CHECK(!world.InstantiateSceneHierarchy(
         drawable, 9010, glm::dmat4(1.0), {}, error));
-    CHECK(error.find("typed bindings") != std::string::npos);
+    CHECK(error.find("binding") != std::string::npos);
     CHECK(world.scene.hierarchy.size() == before);
+    {
+        // Exercise the generic Scene -> World row remapper without a GPU.
+        // World::InstantiateSceneHierarchy additionally verifies that each
+        // World index resolves to an actually resident mesh/material.
+        Scene mappedTarget;
+        tour::RegionRegistry regionStore;
+        tour::scene::WorldSceneInstances direct;
+        CHECK(direct.SetActiveMap(200));
+        tour::scene::WorldSceneResourceMap remap;
+        remap.mesh = {77};
+        Scene drawable2;
+        const int node = addNode(drawable2, -1, 0);
+        CHECK(SetMesh(drawable2, NodeId(node), 0));
+        const uint64_t instance = direct.Instantiate(
+            mappedTarget, regionStore, drawable2, 9020, glm::dmat4(1.0),
+            {}, error, &remap);
+        CHECK(instance != 0 && error.empty());
+        if (const auto* inst = direct.Find(instance)) {
+            const NodeId mappedNode = NodeHandleSlot(inst->sourceNodes[size_t(node)]);
+            const auto* binding = FindMesh(mappedTarget, mappedNode);
+            CHECK(binding && binding->mesh == 77);
+        } else CHECK(false);
+        CHECK(direct.Retire(mappedTarget, regionStore, instance));
+        CHECK(mappedTarget.tables.meshes.empty());
+    }
     glm::dmat4 bad(1.0);
     bad[3][0] = std::numeric_limits<double>::infinity();
     CHECK(!world.InstantiateSceneHierarchy(source, 9001, bad, {}, error));
