@@ -6,6 +6,11 @@
 // checksummed/seekable by the PakReader, not loaded as one Cluster.
 #include <Engine/WorldPartition/map_tile_codec.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/WorldPartition/SceneTileProvider.h>
+
+#include <charconv>
+#include <map>
+#include <string_view>
 
 #include <string>
 #include <vector>
@@ -16,6 +21,48 @@ inline std::string TilePath(engine::worldpartition::WorldTileKey tile) {
     return "worlds/" + std::to_string(tile.world) + "/tiles/" +
         std::to_string(tile.cell.x) + "_" +
         std::to_string(tile.cell.z) + ".mtile";
+}
+
+// The pak TOC is already a bounded, indexed metadata manifest. Discover
+// logical tiles without fetching/allocating any tile payloads. The provider
+// reads one active Map at a time; other Maps may coexist in the same pak.
+inline bool DiscoverMapTiles(const smvk::PakReader& reader,
+                             engine::worldpartition::WorldId world,
+                             std::vector<engine::worldpartition::SceneTileDescriptor>& out) {
+    if (!world) return false;
+    std::map<engine::worldpartition::WorldTileKey, uint64_t,
+             engine::worldpartition::WorldTileKeyLess> found;
+    const std::string prefix = "worlds/" + std::to_string(world) + "/tiles/";
+    constexpr std::string_view suffix = ".mtile";
+    for (const auto* entry : reader.BlobsOfKind(smvk::PakAssetKind::MapTile)) {
+        const std::string_view path(entry->path);
+        if (!path.starts_with(prefix)) continue;
+        if (!path.ends_with(suffix)) return false;
+        const std::string_view base =
+            path.substr(prefix.size(), path.size() - prefix.size() - suffix.size());
+        const size_t sep = base.find('_');
+        if (sep == std::string_view::npos || base.find('_', sep + 1) != std::string_view::npos)
+            return false;
+        int64_t x = 0, z = 0;
+        const auto left = base.substr(0, sep);
+        const auto right = base.substr(sep + 1);
+        const auto px = std::from_chars(left.data(), left.data() + left.size(), x);
+        const auto pz = std::from_chars(right.data(), right.data() + right.size(), z);
+        if (px.ec != std::errc{} || pz.ec != std::errc{}
+            || px.ptr != left.data() + left.size()
+            || pz.ptr != right.data() + right.size())
+            return false;
+        const engine::worldpartition::WorldTileKey key{world, {x,z}};
+        // The request payload identity is an archive-local slot ticket.
+        // Stable spatial identity is the WorldTileKey, never this slot.
+        if (!found.emplace(key, uint64_t(entry->slot) + 1).second) return false;
+    }
+    std::vector<engine::worldpartition::SceneTileDescriptor> next;
+    next.reserve(found.size());
+    for (const auto& [key, slot] : found)
+        next.push_back({key, slot});
+    out = std::move(next);
+    return true;
 }
 
 // Does not finalize the pak. Caller may add other assets and choose regional
