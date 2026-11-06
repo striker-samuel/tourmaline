@@ -5,6 +5,7 @@
 
 #include <Engine/Memory/memory.h>
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
@@ -44,6 +45,8 @@ void Arena::PushBlock(size_t bytes) {
 void* Arena::Allocate(size_t size, size_t align) {
 	if (align < 8)
 		align = 8;
+	++allocationCount_;
+	totalRequestedBytes_ += size;
 	// Dedicated block when the request cannot fit a default block.
 	if (size > blockSize_) {
 		PushBlock(size + align);
@@ -52,6 +55,7 @@ void* Arena::Allocate(size_t size, size_t align) {
 		const size_t pad = (align - (reinterpret_cast<uintptr_t>(p) & (align - 1))) & (align - 1);
 		big.used = pad + size;
 		totalUsed_ += size;
+		peakUsedBytes_ = std::max(peakUsedBytes_, totalUsed_);
 		return p + pad;
 	}
 	// Bump inside the current block; chain a fresh one when full.
@@ -63,6 +67,7 @@ void* Arena::Allocate(size_t size, size_t align) {
 	const size_t pad = (align - (reinterpret_cast<uintptr_t>(p) & (align - 1))) & (align - 1);
 	cur.used += pad + size;
 	totalUsed_ += size;
+	peakUsedBytes_ = std::max(peakUsedBytes_, totalUsed_);
 	return p + pad;
 }
 
