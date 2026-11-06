@@ -9,6 +9,7 @@
 // Pointer is stable between Reserve calls, NOT across a growth operation.
 
 #include <Engine/Memory/arena.h>
+#include <Engine/Memory/linear_allocator.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -40,6 +41,7 @@ public:
     }
     ArenaFlatArray(ArenaFlatArray&& other) noexcept
         : arena_(std::move(other.arena_)),
+          linearBacking_(std::exchange(other.linearBacking_, nullptr)),
           data_(std::exchange(other.data_, nullptr)),
           size_(std::exchange(other.size_, 0)),
           capacity_(std::exchange(other.capacity_, 0)),
@@ -47,6 +49,7 @@ public:
     ArenaFlatArray& operator=(ArenaFlatArray&& other) noexcept {
         if (this != &other) {
             arena_ = std::move(other.arena_);
+            linearBacking_ = std::exchange(other.linearBacking_, nullptr);
             data_ = std::exchange(other.data_, nullptr);
             size_ = std::exchange(other.size_, 0);
             capacity_ = std::exchange(other.capacity_, 0);
@@ -143,6 +146,14 @@ public:
         data_[size_++] = value;
     }
 
+    // Scene node streams may use the existing process linear allocator
+    // instead of creating private arena chunks. Must be set before growth.
+    void SetLinearBacking(tour::mem::LinearAllocator& backing) {
+        if (size_ || capacity_)
+            tour::mem::ReportOomAndCrash("ArenaFlatArray late backing",
+                size_, capacity_, 0);
+        linearBacking_ = &backing;
+    }
     void reserve(size_t requested) { Reserve(requested); }
 
     void Reserve(size_t requested) {
@@ -155,8 +166,11 @@ public:
                 capacity_, std::numeric_limits<size_t>::max() / sizeof(T));
         // Exact-size growth: the hot path is one Assign per frame with a
         // stable node count, and scene reloads need not precommit 1M nodes.
-        T* next = static_cast<T*>(arena_.Allocate(requested * sizeof(T),
-            std::max<size_t>(alignof(T), 16)));
+        T* next = static_cast<T*>(linearBacking_
+            ? linearBacking_->Allocate(requested * sizeof(T),
+                std::max<size_t>(alignof(T), 16))
+            : arena_.Allocate(requested * sizeof(T),
+                std::max<size_t>(alignof(T), 16)));
         if (size_) std::memcpy(next, data_, size_ * sizeof(T));
         data_ = next;
         capacity_ = requested;
@@ -172,6 +186,7 @@ public:
 
 private:
     smvk::Arena arena_{4096};
+    tour::mem::LinearAllocator* linearBacking_ = nullptr;
     T* data_ = nullptr;
     size_t size_ = 0;
     size_t capacity_ = 0;
