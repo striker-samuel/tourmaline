@@ -76,9 +76,13 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
 - [x] Manifest addresses logical tile IDs, independent of physical pak layout.
 - [x] Demand collection, pending dedup, ticket-checked acknowledgement,
   cancellation and retired-cell notification with headless tests.
-- [ ] Integrate into application render-thread WorldPartition provider wiring.
-- [ ] Add priority queues, dependency resolution, velocity prefetch,
-  hysteresis, bandwidth/IO/upload/memory budgets and cancel generations.
+- [x] Expose WorldRenderer's WorldPartition and emit one active Map's
+  Scene-layer streaming interest beside the WorldField/Placement interests.
+  The apphost still must own/register the borrowed MapSceneStreaming bridge.
+- [x] Add per-frame scene tile request-count budget, priority ordering,
+  and ticket-based stale completion rejection.
+- [ ] Add dependency resolution, velocity prefetch, hysteresis,
+  actual byte/IO/upload/memory budgets, and asynchronous worker dispatch.
 - [ ] Ensure the host's completion callback cannot revive a retired tile.
 
 ### Epoch 2 — cooker-produced tile and spatial records
@@ -92,8 +96,10 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
 - [ ] Build coarse world-cell index; serialize local-instance references.
 - [ ] Version the scene/tile format and check bounds, finite transforms,
   array extents, byte order, alignment, CRC and invalid leaf references.
-- [ ] Run the same cook path from standalone cook, editor Cook and
-  Project Build. No runtime BVH partitioning for cooked static scenes.
+- [x] Wire authored Map placement-page packaging into Pak CLI and
+  recipe-driven Project Build via a first-class `map <path>` directive.
+- [ ] Cook static BVHs through standalone cooker, editor Cook and
+  Project Build. Runtime still builds static BVHs for old Scene paths.
 - [ ] Roundtrip and deterministic-recook tests with negative cells,
   static/animated exclusion, transforms and every LOD.
 
@@ -102,12 +108,17 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
   `AddMapTiles` / `ReadMapTile` adapters for independent placement pages;
   exercise multiple logical cells in one archive using the real PakWriter
   and PakReader in a headless test. Does not yet integrate with Project Build.
-- [ ] Add tile manifest entries to the existing paged SMP8 pak TOC,
-  resolved through ContentRegistry and PakReader positional reads.
+- [x] Add world-scoped tile pages to SMP8 and discover the tile manifest
+  from the TOC without materializing each page. Include a dedicated
+  persistent-placement page per authored Map.
+- [ ] Integrate ContentRegistry's content-addressed tile dependency join,
+  live pager eviction and asynchronous positional reads.
 - [ ] Keep packaging policy separate: one pak, regional paks, or tile paks
   are all valid implementations of identical logical tile IDs.
-- [ ] Add asynchronous IO/decode, failure and retry semantics, checksum
-  handling, cancellation, deduplicated in-flight reads and telemetry.
+- [x] Hook a synchronous runtime bridge to paged MapTile read + real
+  ProjectScenes prefab activation, rollback, retirement and active Map switching.
+- [ ] Replace that bridge's synchronous loading with async IO/decode,
+  budgeted publication and GPU-fence-aware retirement; add telemetry.
 - [ ] Verify multi-tile shared asset IDs and cross-pak dependency resolution.
 
 ### Epoch 4 — asset ownership independence
@@ -187,8 +198,12 @@ Manual end-to-end acceptance:
 
 ## What this initial PR actually changes
 
-Epoch 1's standalone CPU streaming seam (including ticket-safe completion),
-the preliminary Map/tile codec slice of Epoch 2, and an SMP8 tile-page
-read/write adapter slice of Epoch 3 are implemented with headless tests.
-**Epochs 2–7 are not claimed complete.** Do not merge this
-as the requested finished architecture merely because the PR exists.
+Epoch 1 includes a world-aware scene residency provider, priority/request
+budget and renderer-facing active Map interest. Epochs 2 and 3 now include
+authoring Map parsing, tile placement encoding, real SMP8 page packaging,
+TOC discovery, persistent placements, recipe-driven Project Build and
+a runtime ProjectScenes bridge. **This is still a legacy-cluster bridge, not
+the requested full cutover.** Cook-time static BVHs, independent asset
+ownership, incremental World mutation, async IO, visibility-driven GPU scene
+and full perf acceptance remain unimplemented. Tests are prescribed but
+not run in this environment. Keep this PR draft.
