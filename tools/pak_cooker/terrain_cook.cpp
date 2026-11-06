@@ -5,6 +5,7 @@
 // validation + raw-RGBA8 Terrain blobs + meta blob with per-tile min/max.
 
 #include "terrain_cook.h"
+#include "world_height_bake.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -40,7 +41,8 @@ bool ReadFile(const std::string& path, std::string& out) {
 } // namespace
 
 bool CookTerrainBlobs(const std::string& terrainDir,
-	smvk::PakWriter& writer, std::string& err) {
+	smvk::PakWriter& writer, std::string& err,
+    const std::vector<const smvk::Cluster*>& scenes) {
 	// terrain.json (the flat schema; .json never reaches the runtime).
 	std::string jsonText;
 	if (!ReadFile(terrainDir + "/terrain.json", jsonText)) {
@@ -66,6 +68,7 @@ bool CookTerrainBlobs(const std::string& terrainDir,
 	}
 
 	float tileMinMax[16][2];
+	uint64_t raisedSamples = 0;
 	// H-tiles: 1024 RGBA8, RG16 height.
 	for (uint32_t tz = 0; tz < nH; ++tz) {
 		for (uint32_t tx = 0; tx < nH; ++tx) {
@@ -96,6 +99,17 @@ bool CookTerrainBlobs(const std::string& terrainDir,
 					meta.range, mn, mx);
 				tileMinMax[tz * 4 + tx][0] = mn;
 				tileMinMax[tz * 4 + tx][1] = mx;
+			}
+			// A distinct derived occlusion layer: terrain remains authoritative
+			// for rendering, collision and placement. Scene meshes must never
+			// alter the original RG16 H-tile or its terrain/meta min/max.
+			std::vector<uint8_t> shadowHeights = payload;
+			raisedSamples += RasterPlacedHeight(meta, tx, tz, scenes, shadowHeights);
+			if (!writer.AddBlob(smvk::PakAssetKind::Terrain,
+				"terrain/occlusion/" + smvk::terrain::HTileName(tx, tz),
+				std::move(shadowHeights))) {
+				err = "terrain: occlusion tile AddBlob failed for " + path;
+				return false;
 			}
 			if (!writer.AddBlob(smvk::PakAssetKind::Terrain,
 				smvk::terrain::HTileBlobPath(tx, tz), std::move(payload))) {
@@ -139,6 +153,8 @@ bool CookTerrainBlobs(const std::string& terrainDir,
 			}
 		}
 	}
+	std::cout << "Terrain occlusion: " << raisedSamples
+		<< " raised texel write(s) from placed static meshes\\n";
 	std::cout << "Terrain S: " << (nS * nS) << " mask tiles\n";
 	// Meta blob (runtime form).
 	{
