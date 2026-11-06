@@ -238,6 +238,10 @@ public:
 			args.push_back("--tour");
 			args.push_back(a.tour);
 		}
+		if (!a.mapFile.empty()) {
+			args.push_back("--map");
+			args.push_back(a.mapFile);
+		}
 		for (const std::string& path : a.contentSet) {
 			args.push_back("--content-set");
 			args.push_back(path);
@@ -673,6 +677,16 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		stage.outPak = stagedPath.generic_string();
 		staged.files.push_back(stagedPath);
 		stage.verify = true;
+		if (!pak.map.empty()) {
+			const fs::path mapPath =
+				(projectRoot / fs::path(pak.map)).lexically_normal();
+			if (!fs::is_regular_file(mapPath, ec)) {
+				err = "[Pak " + pak.id + "] authored Map is missing: " +
+					mapPath.generic_string();
+				return false;
+			}
+			stage.mapFile = mapPath.generic_string();
+		}
 		// Pack the derived companion alongside its owning geometry.
 		// Generated paths never enter authored include ownership/catalogs.
 		if (plan.bakeSdf) {

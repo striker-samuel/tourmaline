@@ -22,6 +22,7 @@ struct PakArgs {
 	std::vector<std::string> inVfsList; // processed .geometry artifacts
 	std::string inVfs; // primary identity (first artifact / tour ref)
 	std::string tour; // definition tour (editor scene overlay)
+	std::string mapFile; // optional world-wide .map placement document
 	std::string registryDir; // explicit programmatic registry root
 	                         // (editor store); bare CLI packs derive it
 	                         // from the content root

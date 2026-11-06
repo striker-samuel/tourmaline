@@ -9,6 +9,7 @@
 // treatment (anim attach, cooked static flags, the resolve).
 
 #include "ProjectScenes.h"
+#include "MapSceneStreaming.h" // compile-check the streamed Map/Scene host bridge
 
 #include "PakPreload.h"
 #include "PakWorldLoader.h"

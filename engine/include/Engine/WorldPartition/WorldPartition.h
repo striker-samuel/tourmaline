@@ -73,6 +73,11 @@ inline constexpr double kSubcellSize = 64.0; // terrain patches / veg groups
 // ---------------------------------------------------------------------------
 // World cell keys — 2D (XZ) for terrain and ordinary scene content.
 // ---------------------------------------------------------------------------
+// Durable project-authored world identity. Zero denotes the legacy/unscoped
+// default for existing single-world providers; streamed Map tiles require
+// a nonzero ID. World instance generations are separate runtime identities.
+using WorldId = uint64_t;
+
 struct WorldCellKey
 {
 	int64_t x = 0;
@@ -185,6 +190,24 @@ enum class DesiredResidency : uint8_t
 	Active = 3, // visible/simulatable
 };
 
+// A streaming tile is identified by its world AND its spatial address.
+// Coordinates can overlap across worlds without sharing residency or assets.
+struct WorldTileKey {
+    WorldId world = 0;
+    WorldCellKey cell{};
+    bool operator==(const WorldTileKey& o) const {
+        return world == o.world && cell == o.cell;
+    }
+};
+struct WorldTileKeyLess {
+    bool operator()(const WorldTileKey& a, const WorldTileKey& b) const {
+        return a.world < b.world ||
+            (a.world == b.world &&
+                (a.cell.x < b.cell.x ||
+                    (a.cell.x == b.cell.x && a.cell.z < b.cell.z)));
+    }
+};
+
 // One streaming-interest source: the player, camera, a vehicle, an editor
 // viewport, a teleport destination. Providers translate the interest
 // set into their own desired resources (a field provider centers its
@@ -192,6 +215,7 @@ enum class DesiredResidency : uint8_t
 // terrain provider requests the covering height pages).
 struct StreamingInterest
 {
+	WorldId world = 0; // 0: legacy unscoped providers
 	glm::dvec3 position{ 0.0 };
 	glm::dvec3 velocity{ 0.0 }; // m/s — lookahead direction (the prefetch
 	// rule: d_prefetch >= v_max * t_worstReady + d_safety)
@@ -206,6 +230,7 @@ struct StreamingInterest
 // this is the shared currency the dedupe/priority engine will resolve.
 struct StreamRequest
 {
+	WorldId world = 0; // shared scheduler must key (world, layer, cell)
 	StreamLayer layer = StreamLayer::WorldField;
 	WorldCellKey cell{};
 	DesiredResidency desired = DesiredResidency::GpuReady;

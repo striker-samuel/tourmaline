@@ -541,6 +541,25 @@ bool ParseText(const std::string& text, ProjectRecipe& out,
 						+ "'", err);
 			current.scene = normalized;
 		}
+		else if (directive == "map") {
+			if (!inPak)
+				return Fail(lineNo, "map",
+					"'map' only exists inside a [pak] section", err);
+			if (!current.map.empty())
+				return Fail(lineNo, "map",
+					"duplicate 'map' in [pak " + current.id + "]", err);
+			std::string value;
+			if (!Unquote(rest, lineNo, directive, value, err))
+				return false;
+			std::string normalized, why;
+			if (!ValidatePath(value, false, normalized, why))
+				return Fail(lineNo, directive, why, err);
+			if (normalized.size() < 5 ||
+					normalized.substr(normalized.size() - 4) != ".map")
+				return Fail(lineNo, directive,
+					"'map' must name a .map document", err);
+			current.map = normalized;
+		}
 		else if (directive == "depends") {
 			if (!inPak)
 				return Fail(lineNo, "depends",

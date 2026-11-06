@@ -423,7 +423,7 @@ bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
 			owned[rel] = { pak.id, kind, false };
 			++assetsClaimed;
 		}
-		if (pak.scene.empty() && assetsClaimed == 0) {
+		if (pak.scene.empty() && pak.map.empty() && assetsClaimed == 0) {
 			err = "[pak " + pak.id + "] owns no content: its includes"
 				" matched no asset files";
 			return false;
@@ -486,6 +486,7 @@ bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
 		pp.id = rp.id;
 		pp.output = rp.output;
 		pp.scene = rp.scene;
+		pp.map = rp.map;
 		pp.transitive = rp.dependenciesTransitive;
 		pp.depends = rp.depends;
 		// Resolve the bake switches: the recipe-level defaults, then
