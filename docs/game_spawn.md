@@ -60,6 +60,42 @@ braced values without a catalog key or template argument. Some inline
 value components contain `std::string`, and are not PODs or constexpr
 values. These are *typed value definitions*, not loadable assets.
 
+## Catalog-driven artistic LUTs
+
+LUTs no longer use a renderer-side directory scan or a filename-based
+loader. The project build owns the `luts/` content and generates
+`project::luts::<Symbol>` as a distinct **typed view** of the existing
+project texture catalog. The stable ID is that texture's original ID;
+there is **no second registry or runtime string lookup**.
+
+Add a `content/luts/neutral.png` (or another file under a `luts/`
+folder) to the project's recipe asset set, then regenerate and cook the
+project. The cook preserves its PNG strip bytes rather than transcoding
+it into a normal KTX2 material texture. LUTs must be **1024x32 PNG
+strips** (32³ grid, sRGB encoded) for the current tonemap pass.
+
+```cpp
+auto grade = world.LoadLut(project::luts::Neutral);
+if (!grade)
+    throw std::runtime_error(world.LastAssetError());
+
+world.SetLut(grade);     // activates the loaded GPU color LUT
+// ... when no longer needed:
+world.SetLut({});        // disables color grading
+world.UnloadLut(grade);  // retires the loaded resource handle
+```
+
+The loading and unloading pattern matches meshes: catalog key ->
+loaded, generational resource handle -> World use -> World unload.
+Unlike a mesh, a color LUT is a **global postprocessing state**, so
+`world.SetLut(handle)` is on the World, not on `world[node]`.
+`World::SetLut({})` disables grading; unloading the active handle
+also disables it. A failed load never replaces an already active LUT.
+
+Neutral LUT authoring/export to `exports/lut_neutral.png` remains a
+tooling operation; engine startup no longer scans `content/luts`
+or creates `content/luts/neutral.png` implicitly.
+
 ## Runtime invariants and resource lifetime
 
 - One node has **one transform** and **zero or one mesh**. Multiple
