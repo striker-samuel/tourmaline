@@ -18,6 +18,7 @@
 #   ./install_dependencies.sh
 #   ./install_dependencies.sh --force
 #   ./install_dependencies.sh --include-unused   # zlib (not wired in)
+#   ./install_dependencies.sh --extended         # optional DuckDB/Parquet + Pillow
 
 set -euo pipefail
 
@@ -27,13 +28,15 @@ DEPS="$ROOT/tools/deps"
 CACHE="$EXT/.downloads"
 FORCE=0
 INCLUDE_UNUSED=0
+EXTENDED=0
 FAILED_DEPS=""
 
 for arg in "$@"; do
     case "$arg" in
         --force) FORCE=1 ;;
         --include-unused) INCLUDE_UNUSED=1 ;;
-        *) echo "unknown option: $arg (use --force / --include-unused)"; exit 1 ;;
+        --extended) EXTENDED=1 ;;
+        *) echo "unknown option: $arg (use --force / --include-unused / --extended)"; exit 1 ;;
     esac
 done
 
@@ -323,6 +326,20 @@ if [ "$INCLUDE_UNUSED" = 1 ]; then
         '*' '' '' '' '' || fail zlib
 else
     echo "[zlib]  skipped (not wired into the build; pass --include-unused)"
+fi
+
+# Extended analytics is a Python-only optional layer.  Standard install never
+# imports or installs these packages. Use the active python3 environment.
+if [ "$EXTENDED" = 1 ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "[extended] python3 not found; cannot install analytics tools" >&2
+        fail extended
+    elif ! python3 -m pip install -r "$ROOT/tools/requirements-extended.txt"; then
+        echo "[extended] optional Python requirements failed" >&2
+        fail extended
+    fi
+else
+    echo "[extended] skipped (pass --extended for DuckDB/Parquet and Pillow)"
 fi
 
 if [ -n "$FAILED_DEPS" ]; then
