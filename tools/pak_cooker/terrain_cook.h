@@ -10,7 +10,8 @@
 #include <string>
 #include <vector>
 
-namespace smvk { struct Cluster; }
+namespace tour { struct Cluster; }
+namespace smvk { using ::tour::Cluster; }
 
 #include <Engine/Asset/pak.h>
 
