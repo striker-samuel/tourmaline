@@ -1478,6 +1478,24 @@ class WorldRenderer : public IRenderer {
 	friend class WorldRendererElement;
 public:
 	const char* RendererName() const override { return "World"; }
+    // Rendering is independent of ImGui settings presentation. Only the
+    // standalone App installs this callback. Embedded renderers omit it.
+    struct DebugUiFrame {
+        smvk::Framebuffer* fb = nullptr;
+        const smvk::EnvironmentSettings* env = nullptr;
+        smvk::Extent2D uiExtent{};
+        smvk::Extent2D renderExtent{};
+        smvk::Extent2D swapExtent{};
+        uint32_t cascadeViewBase = UINT32_MAX;
+        uint32_t spotViewBase = UINT32_MAX;
+        uint32_t pointViewBase = UINT32_MAX;
+    };
+    void SetSettingsUi(std::function<void(WorldRenderer&, const DebugUiFrame&)> callback) {
+        m_settingsUiCallback = std::move(callback);
+    }
+    // App-only implementation in app/src/RenderSettingsUi.cpp.
+    void DrawAppSettingsUi(const DebugUiFrame& frame);
+
 
 	// ------------------------------------------------------------------
 	// HOST: the App owns the window/context/swapchain (the frame-sync
@@ -2166,6 +2184,7 @@ protected:
 	// Installed extra-UI hook (see SetExtraUi): app-owned overlay draw,
 	// invoked inside the ImGui frame build.
 	std::function<void()> m_extraUi;
+    std::function<void(WorldRenderer&, const DebugUiFrame&)> m_settingsUiCallback;
 	// Caller-owned, optional CPU-only producer; evaluated only when enabled.
 	std::function<void(tour::DebugDrawList&)> m_debugDrawSource;
 	tour::DebugDrawList m_debugDrawCpu;

@@ -484,6 +484,10 @@ namespace app {
 			auto element = std::make_shared<engine::WorldRendererElement>(app);
 			engine::WorldRenderer& renderer = element->Renderer();
 			renderer.SetSceneId(sceneId);
+            renderer.SetSettingsUi([](engine::WorldRenderer& r,
+                const engine::WorldRenderer::DebugUiFrame& frame) {
+                r.DrawAppSettingsUi(frame);
+            });
             // Snapshot the COOKED launch identity, not the editor's live
             // world. The benchmark target consumes these same App flags.
             std::vector<std::string> benchmarkSourceArgs;
