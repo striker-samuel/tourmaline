@@ -112,11 +112,23 @@ inline bool ReadPersistentPlacements(
     const smvk::PakReader& reader, engine::worldpartition::WorldId world,
     std::vector<CookedMapPlacement>& out) {
     if (!world) return false;
+    uint32_t countTiles = 0, countPersistent = 0;
+    if (!ReadMapManifest(reader, world, countTiles, countPersistent))
+        return false;
     const auto* entry = reader.Find(smvk::PakAssetKind::MapTile,
                                      PersistentPath(world));
-    if (!entry) { out.clear(); return true; }
+    if (!entry) {
+        if (countPersistent != 0) return false;
+        out.clear();
+        return true;
+    }
     try {
-        return DecodeTile(reader.Payload(*entry), {world, {0,0}}, out);
+        std::vector<CookedMapPlacement> decoded;
+        if (!DecodeTile(reader.Payload(*entry), {world, {0,0}}, decoded)
+            || decoded.size() != countPersistent)
+            return false;
+        out = std::move(decoded);
+        return true;
     } catch (...) { return false; }
 }
 
