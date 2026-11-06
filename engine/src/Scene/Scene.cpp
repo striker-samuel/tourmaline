@@ -9,6 +9,7 @@
 
 #include "Engine/Scene/scene.h"
 #include "Engine/Scene/scene_utils.h"
+#include <Engine/Memory/memory.h>
 
 #include <cassert>
 #include <algorithm>
@@ -41,6 +42,13 @@ void Scene::ReserveNodeSlots(size_t slots)
   if (hierarchy.size() > slots)
     CrashNodeBudget("budget smaller than existing scene", hierarchy.size(), slots);
   nodeSlotBudget = slots;
+  // The three arena-flat node streams use the process linear allocation
+  // already established by InitMemory(), not independent per-scene arenas.
+  // These are bound before the first allocation and remain valid until
+  // process teardown. Other std::vector streams are reserved below.
+  if (!hierarchy.capacity()) hierarchy.SetLinearBacking(tour::mem::ProcessAllocator());
+  if (!localTransform.capacity()) localTransform.SetLinearBacking(tour::mem::ProcessAllocator());
+  if (!globalTransform.capacity()) globalTransform.SetLinearBacking(tour::mem::ProcessAllocator());
   hierarchy.reserve(slots);
   localTransform.reserve(slots);
   globalTransform.reserve(slots);
