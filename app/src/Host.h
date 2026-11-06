@@ -86,6 +86,8 @@ struct ViewerOptions {
 	size_t memFrameMb = 0;
 	size_t memProcessMb = 0;
 	size_t memTransientMb = 0;
+	// Required packaged-runtime node slot cap (includes the synthetic root).
+	size_t sceneNodeBudget = 0;
 	std::string presentMode; // empty = default; fifo|mailbox|immediate
 	bool presentSet = false; // --present/--vsync explicit (wins over --bench)
 	bool vrr = false; // VRR-friendly automatic FPS cap below detected refresh
