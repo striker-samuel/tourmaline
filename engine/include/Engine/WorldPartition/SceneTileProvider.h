@@ -40,14 +40,22 @@ public:
     bool SetManifest(std::vector<SceneTileDescriptor> tiles) {
         if (!resident_.empty() || !pending_.empty()) return false;
         std::map<WorldTileKey, SceneTileDescriptor, SceneTileKeyLess> next;
+        WorldId nextWorld = 0;
         for (const auto& tile : tiles) {
             if (!tile.tile.world || !tile.contentId
+                || (nextWorld && tile.tile.world != nextWorld)
                 || !next.emplace(tile.tile, tile).second)
                 return false;
+            nextWorld = tile.tile.world;
         }
         manifest_ = std::move(next);
+        desired_.clear();
+        activeWorld_ = nextWorld;
         return true;
     }
+
+    // Only one Map owns this provider at a time; zero means no active Map.
+    WorldId ActiveWorld() const { return activeWorld_; }
 
     void SetCallbacks(RequestCallback request, RetireCallback retire) {
         request_ = std::move(request);
@@ -87,7 +95,8 @@ public:
         // rectangles. Selection is independent from camera frustum visibility.
         for (size_t i = 0; i < count; ++i) {
             const auto& interest = interests[i];
-            if (!(interest.layerMask & StreamLayerBit(StreamLayer::Scene))
+            if (!activeWorld_ || interest.world != activeWorld_
+                || !(interest.layerMask & StreamLayerBit(StreamLayer::Scene))
                 || !std::isfinite(interest.radiusMeters)
                 || interest.radiusMeters < 0.0
                 || !std::isfinite(interest.position.x)
@@ -165,6 +174,7 @@ public:
     }
 
 private:
+    WorldId activeWorld_ = 0;
     std::map<WorldTileKey, SceneTileDescriptor, SceneTileKeyLess> manifest_;
     std::map<WorldTileKey, std::pair<float, DesiredResidency>, SceneTileKeyLess> desired_;
     std::map<WorldTileKey, uint64_t, SceneTileKeyLess> pending_;
