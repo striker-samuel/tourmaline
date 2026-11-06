@@ -86,6 +86,7 @@ struct PlanPak {
 	std::string output; // the authored output name (the executor places
 	                    // it under the build/publish directory)
 	std::string scene;  // project-relative tour; "" = asset-only pak
+	std::string map;    // world-wide .map content; can coexist with scene
 	bool transitive = false; // the recipe's 'dependencies transitive'
 	std::vector<std::string> depends; // pak ids, authored order (the
 	                                  // plan's order guarantees every
@@ -113,6 +114,7 @@ struct PlanPak {
 
 	bool operator==(const PlanPak& o) const {
 		return id == o.id && output == o.output && scene == o.scene
+			&& map == o.map
 			&& transitive == o.transitive && depends == o.depends
 			&& bakeGi == o.bakeGi && bakeCubemaps == o.bakeCubemaps
 			&& sceneArtifacts == o.sceneArtifacts && assets == o.assets;
