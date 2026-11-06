@@ -1119,7 +1119,8 @@ static void TestProceduralBc4Source()
                     for (uint32_t h = 0; h < wf::kBrickBorder; ++h) {
                         const size_t idxA = (size_t(z) * n + y) * n
                             + wf::kBrickInteriorRes + wf::kBrickBorder + h;
-                        const size_t idxB = (size_t(z) * n + y) * n + h;
+                        const size_t idxB = (size_t(z) * n + y) * n
+                            + wf::kBrickBorder + h;
                         if (std::abs(int(texelA[idxA]) - int(texelB[idxB])) > 3)
                             seam = false;
                     }
