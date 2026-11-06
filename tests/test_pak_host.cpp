@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -359,6 +360,32 @@ void TestPakCorruption() {
 		auto backend = smvk::PakBackend::Open(
 			std::make_shared<std::vector<uint8_t>>(image), "ok", err);
 		Check(backend != nullptr, "pakcorruption.valid-pak-opens");
+	}
+	// Payload must reject copied and foreign TOC entries before touching
+	// the per-reader verification/decompression caches.
+	{
+		std::string err;
+		auto first = smvk::PakReader::Open(image, err);
+		auto second = smvk::PakReader::Open(image, err);
+		Check(first.has_value() && second.has_value(),
+			"pakcorruption.provenance-readers-open");
+		if (first && second) {
+			const auto* owned = first->Find(smvk::PakAssetKind::Scene, "scene/only");
+			const auto* foreign = second->Find(smvk::PakAssetKind::Scene, "scene/only");
+			bool valid = owned && first->Payload(*owned).size() == 4;
+			bool copiedRejected = false, foreignRejected = false;
+			if (owned) {
+				const smvk::PakTocEntry copy = *owned;
+				try { (void)first->Payload(copy); }
+				catch (const std::invalid_argument&) { copiedRejected = true; }
+			}
+			if (foreign) {
+				try { (void)first->Payload(*foreign); }
+				catch (const std::invalid_argument&) { foreignRejected = true; }
+			}
+			Check(valid && copiedRejected && foreignRejected,
+				"pakcorruption.payload-rejects-unowned-entry");
+		}
 	}
 	// Garbage bytes: rejected with a reason.
 	{

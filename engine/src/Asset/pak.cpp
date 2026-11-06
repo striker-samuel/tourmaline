@@ -10,6 +10,7 @@
 #include <array>
 #include <bit>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -163,8 +164,8 @@ uint32_t PakCrc32Parallel(std::span<const uint8_t> data, size_t chunkBytes) {
 	const size_t chunkCount = (data.size() + chunkBytes - 1) / chunkBytes;
 	std::vector<std::future<ChunkCrc>> futs;
 	try {
-		ThreadPool pool(std::min<size_t>(chunkCount,
-			std::thread::hardware_concurrency()));
+		ThreadPool pool(std::max<size_t>(1, std::min<size_t>(chunkCount,
+			std::thread::hardware_concurrency())));
 		futs.reserve(chunkCount);
 		for (size_t i = 0; i < chunkCount; ++i) {
 			const uint8_t* base = data.data() + i * chunkBytes;
@@ -1040,10 +1041,15 @@ void PakReader::BuildSlotIndex(PakReader& r)
 }
 
 std::span<const uint8_t> PakReader::Payload(const PakTocEntry& entry) const {
-	// Entries are only ever accessed via pointers into entries_ (Find /
-	// BlobsOfKind / FindBySlot), so pointer arithmetic recovers the
-	// owned buffer.
-	const size_t idx = static_cast<size_t>(&entry - entries_.data());
+	// Only TOC entries owned by this reader are valid. Subtracting pointers
+	// from unrelated allocations is undefined behavior, and indexing the
+	// lazy caches with that difference can corrupt memory.
+	const auto base = reinterpret_cast<std::uintptr_t>(entries_.data());
+	const auto addr = reinterpret_cast<std::uintptr_t>(&entry);
+	if (addr < base || (addr - base) % sizeof(PakTocEntry) != 0
+		|| (addr - base) / sizeof(PakTocEntry) >= entries_.size())
+		throw std::invalid_argument("pak payload entry is not owned by this reader");
+	const size_t idx = static_cast<size_t>((addr - base) / sizeof(PakTocEntry));
 	// First fetch: materialize (file-backed: positional page read) +
 	// VERIFY the page's contentCrc once per reader. Guarded so
 	// concurrent first reads (the preload thread + the render thread

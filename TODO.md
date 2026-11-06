@@ -441,9 +441,9 @@ TODO
 
 (Proofread backlog — highest value first)
 
-1. `pak.cpp`: TOC/blob `u64` overflow checks, `Payload` entry-provenance;
-   the pool-ctor `ThreadPool(0)` hang is guarded now, but the pak sites
-   still use `min(count, hc)` — wrap with `max(1u,…)` when touched.
+1. `pak.cpp`: TOC/blob `u64` overflow checks remain. `Payload` entry-provenance
+   and the `ThreadPool(0)` hardware-concurrency edge case are fixed with
+   regression coverage for copied and cross-reader entries.
 2. `impl.cpp` barrier collection: `continue`-on-missing skips (assert+log
    instead); `%2` SDSM slots vs 3 flights (verify/convert to flight count).
 3. Bindless: exhaustion must fail closed (`UINT32_MAX`, not assert-only);
