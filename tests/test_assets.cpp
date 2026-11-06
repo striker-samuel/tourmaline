@@ -2435,30 +2435,44 @@ void TestLodSelection() {
 		// band never changes these outcomes.
 		world.SetLodFullRate(false);
 		world.InvalidateLodCache();
-		// Frame 1 (tick 1, odd): even node not due yet, bootstrap computes
-		// anyway — far inputs select LOD1.
+		// The halfrate parity split is PER-NODE: node n recomputes on
+		// ticks where (tick & 1) == (n & 1). The merged id's PARITY
+		// depends on the world layout (the single-cluster identity copy
+		// keeps source ids, the legacy multi-cluster shift moves them
+		// +1), so the cadence checks drive rn's OWN parity instead of
+		// assuming an even merged id.
+		const bool rnOdd = (rn & 1u) != 0u;
+		// Frame 1 (tick 1): rn not due yet on its off-parity tick, but
+		// the empty-cache bootstrap computes anyway - far inputs select
+		// LOD1. (On rn's own parity tick the recompute is immediate -
+		// same outcome.)
 		in.frameId = 1;
 		in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
 		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.bootstrap");
-		// Frame 2 (tick 2, even): even node IS due — near inputs recompute
-		// to LOD0.
+		// Frame 2 (tick 2): rn due only when even - near inputs
+		// recompute to LOD0 then; odd rn serves the stale LOD1 (this is
+		// the halfrate serving 1-frame-stale decisions).
 		in.frameId = 2;
 		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.halfrate.refresh");
-		// Frame 3 (tick 3, odd): even node NOT due — far inputs are
-		// ignored this frame, the cached LOD0 decision is served (this is
-		// the halfrate: 1-frame-stale at worst, half the work per frame).
+		Check(world.LodIndexForNode(rn, 0, in) == (rnOdd ? 1 : 0),
+			"lod.halfrate.refresh");
+		// Frame 3 (tick 3): the mirrored tick - even rn serves its
+		// cached LOD0 (the staleness pin), odd rn recomputes on its due
+		// tick with the far inputs and lands on LOD1.
 		in.frameId = 3;
 		in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.halfrate.stale");
-		// Frame 4 (tick 4, even): due again — far inputs win once more.
+		Check(world.LodIndexForNode(rn, 0, in) == (rnOdd ? 1 : 0),
+			"lod.halfrate.stale");
+		// Frame 4 (tick 4): far inputs win for both parities - even rn
+		// recomputes (due) to LOD1, odd rn serves its tick-3 LOD1.
 		in.frameId = 4;
 		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.nextrefresh");
 		// Same frame, different eye: the stamped decision is served to
 		// every consumer (filter/prepass/main consistency within a frame).
 		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
 		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.sameframe");
-		// Invalidate forces a recompute on the very next call.
+		// Invalidate forces a recompute on the very next call (the
+		// cleared stamps bootstrap regardless of parity).
 		world.InvalidateLodCache();
 		in.frameId = 5;
 		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
