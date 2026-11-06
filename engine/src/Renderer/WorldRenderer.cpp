@@ -13385,10 +13385,11 @@ namespace engine {
 
 		// useMsaa is hoisted above the fc fill (the stencil layer gate + the
 		// pane layer below + Main's attachments here all key on it).
-		std::vector<smvk::LogicalImageViewHandle> mainInputs;
-		mainInputs.push_back(m_viewportResources.directionalShadows.logicalView);
-		if (m_viewportResources.spotShadows.Valid())
-			mainInputs.push_back(m_viewportResources.spotShadows.logicalView);
+		std::array<smvk::LogicalImageViewHandle, 2> mainInputs{};
+		mainInputs[0] = m_viewportResources.directionalShadows.logicalView;
+		const size_t mainInputCount = m_viewportResources.spotShadows.Valid() ? 2 : 1;
+		if (mainInputCount == 2)
+			mainInputs[1] = m_viewportResources.spotShadows.logicalView;
 		const auto rfTM = bench_clk::now();
 		// The GPU filter normally publishes chart xforms, but direct
 		// fallback draws must also work when no filtered slot exists.
@@ -13397,7 +13398,7 @@ namespace engine {
 			m_gfxRenderer.EnsureChartXforms(*m_world, *m_context);
 		auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
-			.SetInputImages(mainInputs)
+			.SetInputImages(std::span<const smvk::LogicalImageViewHandle>(mainInputs.data(), mainInputCount))
 			.SetExtent(renderExtent);
 		// Sun contact shadows: the paired READ half of the write->read
 		// edge (the probe-premix pattern). CollectPassUsages sees only
@@ -13447,35 +13448,39 @@ namespace engine {
 			const bool envSpecMsaaOn =
 				m_viewportResources.ssgi.envSpec.Valid()
 				&& m_viewportResources.ssgi.MsaaEnvSpecValid();
-			std::vector<smvk::LogicalImageViewHandle> msaaViews = {
+			std::array<smvk::LogicalImageViewHandle, 3> msaaViews = {
 				m_viewportResources.msaa.colorLogical,
 				m_viewportResources.ssgi.aoTermMsaa.logical,
+				{}
 			};
-			std::vector<smvk::LogicalImageViewHandle> resolveViews = {
+			std::array<smvk::LogicalImageViewHandle, 3> resolveViews = {
 				m_viewportResources.hdr.logicalView,
 				m_viewportResources.ssgi.aoTerm.logical,
+				{}
 			};
+			const size_t msaaViewCount = envSpecMsaaOn ? 3 : 2;
 			if (envSpecMsaaOn) {
-				msaaViews.push_back(
-					m_viewportResources.ssgi.envSpecMsaa.logical);
-				resolveViews.push_back(
-					m_viewportResources.ssgi.envSpec.logical);
+				msaaViews[2] = m_viewportResources.ssgi.envSpecMsaa.logical;
+				resolveViews[2] = m_viewportResources.ssgi.envSpec.logical;
 			}
 			if (customMsaaResolve) {
 				// Retain only color for the shader pass. AO/envSpec remain hardware-resolved.
-				std::vector<smvk::RenderAttachment> attachments;
-				for (size_t i = 0; i < msaaViews.size(); ++i) {
+				std::array<smvk::RenderAttachment, 3> attachments{};
+				for (size_t i = 0; i < msaaViewCount; ++i) {
 					smvk::RenderAttachment a{};
 					a.view = msaaViews[i];
 					a.loadOp = smvk::AttachmentLoadOp::Clear;
 					a.storeOp = i == 0 ? smvk::AttachmentStoreOp::Store : smvk::AttachmentStoreOp::DontCare;
 					a.clearColor = smvk::ClearColor(0, 0, 0, 1);
 					a.resolveView = i == 0 ? smvk::LogicalImageViewHandle{} : resolveViews[i];
-					attachments.push_back(a);
+					attachments[i] = a;
 				}
-				mainPass.SetColorAttachments(attachments);
+				mainPass.SetColorAttachments(std::span<const smvk::RenderAttachment>(
+					attachments.data(), msaaViewCount));
 			} else {
-				mainPass.SetColorWithResolve(msaaViews, resolveViews,
+				mainPass.SetColorWithResolve(
+					std::span<const smvk::LogicalImageViewHandle>(msaaViews.data(), msaaViewCount),
+					std::span<const smvk::LogicalImageViewHandle>(resolveViews.data(), msaaViewCount),
 					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::DontCare,
 					smvk::ClearColor(0, 0, 0, 1));
 			}
