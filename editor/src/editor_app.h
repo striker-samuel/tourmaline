@@ -814,6 +814,14 @@ private:
 	void DrawOutlinerNode(uint32_t node,
 		const std::unordered_set<uint32_t>* expandSet = nullptr);
 	void DrawInspector();
+	// Maya-style scene node graph: empty until the user graphs a selection.
+	void DrawSceneNodeGraph();
+	bool m_showSceneNodeGraph = false;
+	uint32_t m_sceneGraphRoot = UINT32_MAX;
+	int m_sceneGraphDirection = 0; // 0 only, 1 incoming, 2 outgoing, 3 both
+	float m_sceneGraphPanX = 35.0f, m_sceneGraphPanY = 40.0f;
+	float m_sceneGraphZoom = 1.0f;
+	std::unordered_map<uint32_t, glm::vec2> m_sceneGraphPositions;
 	void DrawComponentTable(); // scene-wide undoable component data grid
 	bool m_showComponentTable = false;
 	char m_componentTableFilter[128] = {};
@@ -3251,7 +3259,7 @@ private:
 	void StartReferenceRender();
 	void CancelReferenceRender();
 	void DrawReferencePanel();
-	// ---- SIDECAR MATERIAL BALL PREVIEW (editor_matball.cpp) -----------
+	// ---- LIVE MATERIAL PRIMITIVE PREVIEW (editor_matball.cpp) -----------
 	// An offscreen 256x256 pass — a unit sphere wearing the material's
 	// PBR look under a FIXED default sky (matball.vert/frag.hlsl — one
 	// program, a fullscreen sky tri + the sphere, the kDefaultEnv block
@@ -3270,13 +3278,21 @@ private:
 	smvk::Holder<smvk::BufferHandle> m_matBallSphereVB;
 	smvk::Holder<smvk::BufferHandle> m_matBallSphereIB;
 	smvk::Holder<smvk::BufferHandle> m_matBallSkyVB;
+	smvk::Holder<smvk::BufferHandle> m_matBallCubeVB;
+	smvk::Holder<smvk::BufferHandle> m_matBallCubeIB;
+	uint32_t m_matBallCubeIdx = 0;
 	uint32_t m_matBallSphereIdx = 0;
 	smvk::Holder<smvk::ShaderModuleHandle> m_matBallVsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_matBallFsModule;
 	smvk::ShaderProgram m_matBallProgram{};
 	glm::mat4 m_matBallViewProj{ 1.0f };
 	glm::vec3 m_matBallEye{ 0.0f };
-	uint32_t m_matBallQueuedMat = UINT32_MAX; // UINT32_MAX = idle
+	uint32_t m_matBallQueuedMat = UINT32_MAX; // live preview material
+	bool m_showMaterialPreview = false;
+	int m_materialPreviewPrimitive = 0; // 0 sphere, 1 cube
+	ImTextureID m_matBallPreviewTex = 0;
+	void DrawMaterialPreview();
+	ImTextureID MaterialPreviewTexture();
 	std::string m_matBallOutPath;
 	bool EnsureMatBallResources();
 	void RecordMatBallPass();       // the frame's record position

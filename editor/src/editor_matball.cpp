@@ -25,6 +25,7 @@
 #include <Engine/platform.h>       // readFile (the .spv loader)
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <stb_image_write.h>
+#include <imgui_impl_vulkan.h>
 
 namespace editor {
 
@@ -57,7 +58,7 @@ bool EditorApp::EnsureMatBallResources() {
 		ci.extent = { 256, 256, 1 };
 		ci.format = smvk::Format::RGBA8_SRGB;
 		ci.usage = smvk::ImageUsage::ColorAttachment
-			| smvk::ImageUsage::TransferSrc;
+			| smvk::ImageUsage::TransferSrc | smvk::ImageUsage::Sampled;
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
 		ci.name = "matBall";
@@ -163,6 +164,54 @@ bool EditorApp::EnsureMatBallResources() {
 			smvk::AccessFlags::IndexRead);
 		m_matBallSphereIdx = uint32_t(si.size());
 	}
+	// A second selectable primitive: six faces with independent UVs and
+	// flat normals. The shared shader and material bindings are unchanged.
+	{
+		std::vector<smvk::TerrainVertex> vertices;
+		std::vector<uint32_t> indices;
+		const glm::vec3 normals[6] = {
+			{1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}
+		};
+		for (const glm::vec3& n : normals) {
+			const glm::vec3 u = std::abs(n.y) > 0.5f
+				? glm::vec3(1,0,0) : glm::vec3(0,1,0);
+			const glm::vec3 right = glm::normalize(glm::cross(u, n));
+			const glm::vec3 up = glm::cross(n, right);
+			const uint32_t base = uint32_t(vertices.size());
+			for (int k = 0; k < 4; ++k) {
+				const float x = (k == 0 || k == 3) ? -1.0f : 1.0f;
+				const float y = (k < 2) ? -1.0f : 1.0f;
+				smvk::TerrainVertexSrc src{};
+				src.pos = 0.8f * (n + right * x + up * y);
+				src.normal = n;
+				src.tangent = glm::vec3((x + 1.0f) * 0.5f,
+					(y + 1.0f) * 0.5f, 0.0f);
+				src.color = glm::vec4(1.0f);
+				smvk::TerrainVertex packed{};
+				smvk::PackTerrainVertex(src, packed);
+				vertices.push_back(packed);
+			}
+			indices.insert(indices.end(), {base, base + 1, base + 2,
+				base, base + 2, base + 3});
+		}
+		m_matBallCubeVB = m_context->CreateBuffer(
+			sizeof(smvk::TerrainVertex) * vertices.size(),
+			smvk::BufferType_Vertex, "material preview cube");
+		m_matBallCubeIB = m_context->CreateBuffer(
+			sizeof(uint32_t) * indices.size(), smvk::BufferType_Index,
+			"material preview cube indices");
+		if (m_matBallCubeVB.empty() || m_matBallCubeIB.empty())
+			return false;
+		m_context->UploadDataToBuffer(m_matBallCubeVB, vertices.data(),
+			sizeof(smvk::TerrainVertex) * vertices.size(),
+			smvk::PipelineStage(smvk::PipelineStageBit_AllGraphics),
+			smvk::AccessFlags::VertexAttributeRead);
+		m_context->UploadDataToBuffer(m_matBallCubeIB, indices.data(),
+			sizeof(uint32_t) * indices.size(),
+			smvk::PipelineStage(smvk::PipelineStageBit_AllGraphics),
+			smvk::AccessFlags::IndexRead);
+		m_matBallCubeIdx = uint32_t(indices.size());
+	}
 	// ---- The sky triangle: NDC corners + the CPU-built world RAYS in
 	// the normal slot (flag 0 via color.a). The camera: eye elevated
 	// slightly above the equator, 2.9 units out, fovY 38deg, 1:1.
@@ -172,7 +221,7 @@ bool EditorApp::EnsureMatBallResources() {
 	const glm::mat4 view = glm::lookAtRH(eye, at, up);
 	const glm::mat4 proj = tour::MakeReversedZProjRH(glm::radians(38.0f), 1.0f,
 		0.05f, 20.0f);
-	m_matBallViewProj = proj;
+	m_matBallViewProj = proj * view;
 	m_matBallViewProj[1][1] *= -1.0f; // Vulkan Y-flip (EditorCamProj's)
 	m_matBallEye = eye;
 	{
@@ -255,9 +304,12 @@ void EditorApp::RecordMatBallPass() {
 	// Raw handles into the lambda (Holder is move-only; the members keep
 	// the ownership — the recorded pass borrows).
 	const smvk::BufferHandle skyVB = m_matBallSkyVB;
-	const smvk::BufferHandle sphereVB = m_matBallSphereVB;
-	const smvk::BufferHandle sphereIB = m_matBallSphereIB;
-	const uint32_t sphereIdx = m_matBallSphereIdx;
+	const bool cube = m_materialPreviewPrimitive == 1;
+	const smvk::BufferHandle sphereVB = cube ? smvk::BufferHandle(m_matBallCubeVB)
+		: smvk::BufferHandle(m_matBallSphereVB);
+	const smvk::BufferHandle sphereIB = cube ? smvk::BufferHandle(m_matBallCubeIB)
+		: smvk::BufferHandle(m_matBallSphereIB);
+	const uint32_t sphereIdx = cube ? m_matBallCubeIdx : m_matBallSphereIdx;
 	auto& rg = *m_rendergraph;
 	rg.AddPass("MatBall")
 		.SetExtent(smvk::Extent2D{ 256, 256 })
@@ -288,6 +340,55 @@ void EditorApp::RecordMatBallPass() {
 			cmd.BindIndexBuffer(sphereIB, 0);
 			cmd.DrawIndexed(sphereIdx, 1, 0, 0, 0);
 		});
+}
+
+ImTextureID EditorApp::MaterialPreviewTexture() {
+	if (!EnsureMatBallResources() || !m_imgui)
+		return 0;
+	if (m_matBallPreviewTex)
+		return m_matBallPreviewTex;
+	const void* view = m_context->GetImageViewVkImageView(m_matBallView);
+	const uint32_t sampler = m_context->GetOrCreateSampler(
+		smvk::SamplerCreateInfo{
+			.magFilter = smvk::Filter::Linear,
+			.minFilter = smvk::Filter::Linear,
+			.mipmapMode = smvk::MipmapMode::Nearest,
+			.addressU = smvk::AddressMode::ClampToEdge,
+			.addressV = smvk::AddressMode::ClampToEdge,
+			.addressW = smvk::AddressMode::ClampToEdge,
+			.maxAnisotropy = 1.0f });
+	const void* vkSampler = m_context->GetVkSamplerOpaque(sampler);
+	if (!view || !vkSampler)
+		return 0;
+	const VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(
+		VkSampler(const_cast<void*>(vkSampler)),
+		VkImageView(const_cast<void*>(view)),
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	if (set == VK_NULL_HANDLE)
+		return 0;
+	m_matBallPreviewTex = ImTextureID(reinterpret_cast<ImU64>(set));
+	return m_matBallPreviewTex;
+}
+
+void EditorApp::DrawMaterialPreview() {
+	if (!m_showMaterialPreview)
+		return;
+	ImGui::SetNextWindowSize(ImVec2(360, 410), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Material preview", &m_showMaterialPreview)) {
+		ImGui::End();
+		return;
+	}
+	const char* names[] = { "Sphere", "Cube" };
+	ImGui::SetNextItemWidth(150.0f);
+	ImGui::Combo("Primitive", &m_materialPreviewPrimitive, names, 2);
+	ImGui::TextDisabled("Live material preview (no PNG export)");
+	if (m_matBallQueuedMat != UINT32_MAX) {
+		if (const ImTextureID tex = MaterialPreviewTexture()) {
+			const float side = std::min(ImGui::GetContentRegionAvail().x, 320.0f);
+			ImGui::Image(tex, ImVec2(side, side));
+		} else ImGui::TextDisabled("Preview renderer unavailable");
+	} else ImGui::TextDisabled("Select a material to preview");
+	ImGui::End();
 }
 
 void EditorApp::ExportMatBallPng() {

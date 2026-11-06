@@ -2537,10 +2537,18 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			// queued material's offscreen ball records into this frame's
 			// graph; the post-submit wait + readback + PNG write land the
 			// sidecar next to the source .material asset.
-			const bool matBallThisFrame = m_matBallQueuedMat != UINT32_MAX
-				&& EnsureMatBallResources();
-			if (matBallThisFrame)
+			const bool matBallThisFrame = m_showMaterialPreview
+				&& m_matBallQueuedMat != UINT32_MAX && EnsureMatBallResources();
+			if (matBallThisFrame) {
 				RecordMatBallPass();
+				smvk::ImageSyncRequest read{};
+				read.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+				read.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+				read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+				m_rendergraph->AddComputePass("MaterialPreviewRelease")
+					.AddImageHint(m_matBallLogical, read)
+					.SetRecordingFunc([](smvk::CommandBuffer&) {});
+			}
 
 			if (legacyImageLane) {
 				// The UI pass samples this physical image through an ImGui
@@ -2591,10 +2599,6 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				// The export pass ran in this submit: read it back + write PNG.
 				WaitForDeviceIdle();
 				ExportLightmapPng();
-			}
-			if (matBallThisFrame) {
-				WaitForDeviceIdle();
-				ExportMatBallPng();
 			}
 		} // Editor_Round2Scene
 		++m_frameCounter;

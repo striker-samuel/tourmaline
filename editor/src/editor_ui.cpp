@@ -849,6 +849,7 @@ void EditorApp::FinalizePending() {
 		DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex highlight modes
 		DrawReferencesPanel(); // Maya-style reference list (View menu)
 		DrawPrefabWindow(); // separate .tour World + source editor
+		DrawMaterialPreview(); // live primitive material preview
 		DrawPathsPanel(); // consolidated file/path view (File menu)
 		DrawGiVizWindow(); // GI-authoring legend + probe overlay controls
 		// The WYSIWYG view is part of the dockable Viewport window.

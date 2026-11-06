@@ -179,7 +179,15 @@ namespace editor {
 			if (i)
 				ImGui::SameLine(0.0f, 5.0f), ImGui::TextUnformatted(">"),
 					ImGui::SameLine(0.0f, 5.0f);
-			ImGui::Text("Node %u", ancestry[i]);
+			// Breadcrumbs show the authored scene name, not the internal
+			// world-node index (which may differ after imports/creates).
+			// Keep the index in the hover tooltip for diagnostics.
+			const std::string ancestorName = getNodeName(scene, int(ancestry[i]));
+			ImGui::TextUnformatted(ancestorName.empty()
+				? ("Node #" + std::to_string(ancestry[i])).c_str()
+				: ancestorName.c_str());
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Internal node ID: %u", ancestry[i]);
 		}
 		// Sub-object highlight state (selection only, never edited).
 		if (m_selMode == SelMode::Face) {
@@ -684,9 +692,8 @@ namespace editor {
 		// renderer uses its editor-default material, not a scene binding.
 		const MaterialRow* matRow = FindMaterial(scene, node);
 		if (matRow) {
-			ImGui::SeparatorText("Material component");
 			const uint32_t curMat = matRow->material;
-			if (ImGui::SmallButton("Remove material component")) {
+			if (attr::ComponentHeader("Material")) {
 				EditCmd c{};
 				c.verb = EditVerb::AssignMaterial;
 				c.node = node;
@@ -733,10 +740,8 @@ namespace editor {
 			DrawMaterialBody(curMat);
 			}
 		}
-		else {
-			ImGui::SeparatorText("Material component");
-			ImGui::TextDisabled("None (editor default material)");
-		}
+		// An absent material is not a component. The renderer still uses
+		// the editor default; attach a real binding via Add component.
 		ImGui::Separator();
 		// Add component stays at the bottom. Only list missing
 		// associations and reuse the existing undoable attach commands.
