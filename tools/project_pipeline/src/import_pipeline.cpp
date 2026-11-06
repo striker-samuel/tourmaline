@@ -21,6 +21,7 @@
 #include <system_error>
 
 #include <gltf_import/asset_export.h>
+#include <gltf_import/gltf.h>
 #include <gltf_import/source_formats.h>
 
 #include "registry_detail.h"
@@ -49,7 +50,7 @@ bool IsDerivedFamilyFile(const std::string& name) {
 	return endsWith(".geometry")
 		|| smvk::assets::IsMeshSourceMetaSidecar(name)
 		|| endsWith(".material") || endsWith(".anim")
-        || endsWith(".packed.png");
+        || endsWith(".packed.png") || endsWith(".packed.texture");
 }
 
 bool CopyFileTo(const std::filesystem::path& from,
@@ -102,7 +103,8 @@ bool ComposeMaterialFromRecipe(const MaterialPackingRule& rule,
         if (name == "metallicRoughness") return &original.metallicRoughness;
         return nullptr;
     };
-    for (const Group& group : groups) {
+    for (size_t groupIndex = 0; groupIndex < 4; ++groupIndex) {
+        const Group& group = groups[groupIndex];
         bool changed = false;
         for (int i = 0; i < group.count; ++i)
             for (const auto& ruleChannel : rule.channels)
@@ -166,6 +168,27 @@ bool ComposeMaterialFromRecipe(const MaterialPackingRule& rule,
         MaterialAsset::TexRef output;
         output.path = result.filename().generic_string();
         output.srgb = group.srgb;
+        const std::string& encoding = rule.encodings[groupIndex];
+        if (!encoding.empty()) {
+            smvk::assets::KtxEncodeFormat format{};
+            if (!smvk::assets::KtxEncodeFormatFromName(encoding, format)) {
+                err = "invalid encoding for generated " + std::string(group.name);
+                return false;
+            }
+            smvk::assets::TextureAsset settings;
+            settings.guid = smvk::assets::DerivedEntryGuid(material.guid,
+                smvk::assets::AssetKind::Material, int(groupIndex));
+            settings.name = file.string() + "." + group.name;
+            settings.source = result.filename().generic_string();
+            settings.colorspace = group.srgb ? 0 : 1;
+            settings.format = int(format);
+            const auto texturePath = outputDir /
+                (file.string() + "." + group.name + ".packed.texture");
+            if (!smvk::assets::SaveTextureAsset(texturePath, settings, err))
+                return false;
+            output.path = texturePath.filename().generic_string();
+        }
+
         if (std::string(group.name) == "scalar") {
             material.occlusion = output;
             material.cavity = output;
@@ -239,7 +262,10 @@ bool ImportProjectAsset(const ImportRequest& request,
     MaterialPackingRule effectivePacking = request.materialPacking;
     if (!request.materialPackingExplicit &&
             request.materialPacking.source.empty() &&
-            request.materialPacking.channels.empty()) {
+            request.materialPacking.channels.empty() &&
+            std::all_of(request.materialPacking.encodings.begin(),
+                request.materialPacking.encodings.end(),
+                [](const std::string& value) { return value.empty(); })) {
         std::filesystem::path found;
         for (const auto& item :
                 fs::directory_iterator(fs::path(request.project.root), ec)) {
