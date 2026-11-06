@@ -25,7 +25,10 @@ int main() {
             requested.push_back(d.contentId);
             tickets.push_back(ticket);
         },
-        [&](const wp::SceneTileDescriptor& d) { retired.push_back(d.contentId); }
+        [&](const wp::SceneTileDescriptor& d) {
+            retired.push_back(d.contentId);
+            return true;
+        }
     );
     wp::WorldPartition partition;
     partition.AddProvider(&tiles);
@@ -105,7 +108,7 @@ int main() {
         budget.SetCallbacks(
             [&](const wp::SceneTileDescriptor& d, wp::DesiredResidency,
                 uint64_t) { loadOrder.push_back(d.contentId); },
-            [](const wp::SceneTileDescriptor&) {});
+            [](const wp::SceneTileDescriptor&) { return true; });
         wp::WorldPartition p;
         p.AddProvider(&budget);
         wp::StreamingInterest interests[2]{};
