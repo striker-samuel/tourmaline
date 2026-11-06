@@ -43,6 +43,7 @@
 #include <Engine/Memory/memory.h>
 #include <Engine/WorldFields/WorldField.h>
 #include <Engine/WorldFields/WorldFieldGpu.h>
+#include <Engine/WorldFields/WorldFieldProcedural.h>
 
 namespace wf = engine::worldfields;
 
@@ -1076,6 +1077,71 @@ static void TestGpuLayout()
 	Check((16u + 3u * 320u) % 16u == 0u, "gpu.pages-offset-aligned");
 }
 
+// The production procedural adapter must use the same stored-texel
+// positions on adjacent bricks, and respect the field encoding/format.
+struct ProceduralGradientSource final : wf::ProceduralScalarBc4Source
+{
+    float SampleNormalized(glm::vec3 p) const override
+    {
+        return std::min(std::max(0.25f + p.x * 0.001f, 0.0f), 1.0f);
+    }
+};
+
+static void TestProceduralBc4Source()
+{
+    ProceduralGradientSource source;
+    wf::WorldFieldDesc desc{};
+    desc.format = smvk::Format::BC4_UNorm;
+    desc.encoding = wf::WorldFieldEncoding::Linear;
+    desc.baseVoxelSizeMeters = 1.0f;
+    desc.lodCount = 2;
+    const uint32_t n = wf::kBrickStoredRes;
+    const size_t bytes = wf::StoredBrickBlockBytes(n, 4, 4, 8);
+    std::vector<std::byte> blockA(bytes), blockB(bytes);
+    std::vector<uint8_t> texelA(size_t(n) * n * n);
+    std::vector<uint8_t> texelB(size_t(n) * n * n);
+
+    const bool a = source.GenerateBrick(desc, 0, 0, 0, 0, blockA.data(), bytes);
+    const bool b = source.GenerateBrick(desc, 0, 1, 0, 0, blockB.data(), bytes);
+    Check(a && b, "procedural.bc4-generates-neighbor-bricks");
+    if (a && b) {
+        const bool decodedA = wf::Bc4DecodeBrick(blockA.data(), bytes, n,
+            texelA.data(), texelA.size()) == bytes;
+        const bool decodedB = wf::Bc4DecodeBrick(blockB.data(), bytes, n,
+            texelB.data(), texelB.size()) == bytes;
+        Check(decodedA && decodedB, "procedural.bc4-decodes");
+        if (decodedA && decodedB) {
+            // Two-texel halo duplicates the actual neighbor samples.
+            // BC4 is lossy; compare with one quantization + codec tolerance.
+            bool seam = true;
+            for (uint32_t z = 0; z < n; ++z)
+                for (uint32_t y = 0; y < n; ++y)
+                    for (uint32_t h = 0; h < wf::kBrickBorder; ++h) {
+                        const size_t idxA = (size_t(z) * n + y) * n
+                            + wf::kBrickInteriorRes + wf::kBrickBorder + h;
+                        const size_t idxB = (size_t(z) * n + y) * n + h;
+                        if (std::abs(int(texelA[idxA]) - int(texelB[idxB])) > 3)
+                            seam = false;
+                    }
+            Check(seam, "procedural.bc4-halo-neighbor-consistency");
+        }
+    }
+
+    desc.encoding = wf::WorldFieldEncoding::SqrtUNorm;
+    Check(source.GenerateBrick(desc, 1, -1, 0, 0, blockA.data(), bytes),
+        "procedural.sqrt-encoding-and-negative-lod-brick");
+    desc.encoding = wf::WorldFieldEncoding::SignedNormalized;
+    Check(!source.GenerateBrick(desc, 0, 0, 0, 0, blockA.data(), bytes),
+        "procedural.rejects-unsupported-encoding");
+    desc.encoding = wf::WorldFieldEncoding::Linear;
+    desc.format = smvk::Format::R8_UNorm;
+    Check(!source.GenerateBrick(desc, 0, 0, 0, 0, blockA.data(), bytes),
+        "procedural.rejects-non-bc4-format");
+    desc.format = smvk::Format::BC4_UNorm;
+    Check(!source.GenerateBrick(desc, 0, 0, 0, 0, blockA.data(), bytes - 1),
+        "procedural.rejects-wrong-payload-size");
+}
+
 int main()
 {
 	std::setvbuf(stdout, nullptr, _IONBF, 0); // crash diagnostics: keep every PASS line
@@ -1086,6 +1152,7 @@ int main()
 	TestEvictionPolicy();
 	TestAsyncStreaming();
 	TestAsyncStuckBrickRecovery();
+	TestProceduralBc4Source();
 	TestGpuLayout();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
