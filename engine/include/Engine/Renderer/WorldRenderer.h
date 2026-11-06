@@ -1490,8 +1490,20 @@ public:
         uint32_t cascadeViewBase = UINT32_MAX;
         uint32_t spotViewBase = UINT32_MAX;
         uint32_t pointViewBase = UINT32_MAX;
+        // Targets supplied by the rendergraph builder; only the host UI
+        // service renders ImGui into these. The renderer never advances
+        // or records an ImGui context.
+        smvk::RenderGraph* graph = nullptr;
+        smvk::LogicalImageViewHandle uiTarget{};
     };
     void SetUiOverlay(smvk::ImGuiOverlay* overlay) { m_uiOverlay = overlay; }
+    // Called by the host UI service between NewFrame and AddPass.
+    void DrawSettingsUi(const DebugUiFrame& frame) {
+        if (m_settingsUiCallback) m_settingsUiCallback(*this, frame);
+    }
+    void SetUiFrameService(std::function<void(WorldRenderer&, const DebugUiFrame&)> callback) {
+        m_uiFrameService = std::move(callback);
+    }
     void SetSettingsUi(std::function<void(WorldRenderer&, const DebugUiFrame&)> callback) {
         m_settingsUiCallback = std::move(callback);
     }
@@ -2188,6 +2200,9 @@ protected:
 	// invoked inside the ImGui frame build.
 	std::function<void()> m_extraUi;
     std::function<void(WorldRenderer&, const DebugUiFrame&)> m_settingsUiCallback;
+    // Host-controlled UI frame begin/draw/record; engine rendergraph code
+    // only invokes the service and composites its target.
+    std::function<void(WorldRenderer&, const DebugUiFrame&)> m_uiFrameService;
 	// Caller-owned, optional CPU-only producer; evaluated only when enabled.
 	std::function<void(tour::DebugDrawList&)> m_debugDrawSource;
 	tour::DebugDrawList m_debugDrawCpu;

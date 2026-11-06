@@ -16697,27 +16697,14 @@ namespace engine {
 		}
 
 		// ---------------------------------------------------------------------
-		// ImGui - Build the UI before adding the rendergraph pass.
-		// ---------------------------------------------------------------------
-		if (m_passes.ui && m_uiOverlay && m_uiOverlay->IsInitialized() && m_viewportResources.ui.Valid()) {
-			// Target extent != window size when ui scale != 1: the overlay maps
-			// ImGui draw data + font raster density onto the UI target.
-			m_uiOverlay->NewFrame(uiExtent);
-
-			if (m_settingsUiCallback) {
-				DebugUiFrame uiFrame{&fb, &frameEnv, uiExtent, renderExtent, swapExtent,
-					cascadeViewBase, spotViewBase, pointViewBase};
-				m_settingsUiCallback(*this, uiFrame);
-			}
-
-			// Separated UI pass: ImGui renders into its own offscreen target
-			// (transparent clear, ui scale resolution), then UiComposite
-			// alpha-blends it over the tonemapped swapchain at swap extent.
-			// Internally AddPass calls ImGui::Render() +
-			// ImGui_ImplVulkan_RenderDrawData inside the pass recording.
-			m_uiOverlay->AddPass(*m_rendergraph,
-				m_viewportResources.ui.logicalView, uiExtent,
-				smvk::AttachmentLoadOp::Clear, smvk::ClearColor(0, 0, 0, 0));
+		// UI drawing and rendergraph pass registration are owned by the
+		// host callback service. WorldRenderer only allocates/composites the
+		// render target; embedded renderers have no UI service.
+		if (m_passes.ui && m_uiFrameService && m_viewportResources.ui.Valid()) {
+			DebugUiFrame uiFrame{&fb, &frameEnv, uiExtent, renderExtent,
+				swapExtent, cascadeViewBase, spotViewBase, pointViewBase,
+				m_rendergraph, m_viewportResources.ui.logicalView};
+			m_uiFrameService(*this, uiFrame);
 			// Native game HUD uses the SAME offscreen UI target and rendergraph
 			// as the authored scene. SDL is window/input only, never a renderer.
 			if (m_extraGameUi) {
@@ -16739,13 +16726,7 @@ namespace engine {
 				outX,
 				outY);
 
-			// Manual alternative (equivalent, more explicit):
-			// ImGui::Render();
-			// m_rendergraph->AddPass("ImGuiManual")
-			//     .SetOffset(0,0)
-			//     .SetExtent(uiExtent)
-			//     .SetColor({m_viewportResources.ui.logicalView}, smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store)
-			//     .SetRecordingFunc([this](smvk::CommandBuffer& cmd){ m_uiOverlay->Render(cmd); });
+
 		}
 
 		// INLINE RELEASE: the host's ImGui descriptor samples this output

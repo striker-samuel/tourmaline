@@ -41,6 +41,15 @@ namespace engine {
 			tour::branding::ApplyCrystalFusionImGuiStyle();
 			m_host.SetImGuiEventHook(&smvk::ImGuiOverlay::ProcessEvent);
 			m_renderer.SetUiOverlay(m_imgui.operator->());
+            m_renderer.SetUiFrameService([this](WorldRenderer& renderer,
+                const WorldRenderer::DebugUiFrame& frame) {
+                if (!m_imgui || !frame.graph) return;
+                m_imgui->NewFrame(frame.uiExtent);
+                renderer.DrawSettingsUi(frame);
+                m_imgui->AddPass(*frame.graph, frame.uiTarget, frame.uiExtent,
+                    smvk::AttachmentLoadOp::Clear,
+                    smvk::ClearColor(0, 0, 0, 0));
+            });
 		}
 	}
 	// The renderer's gamepad CONFIG widgets + footer status read the
@@ -55,7 +64,8 @@ namespace engine {
 
 	void WorldRendererElement::onDetach() {
 		m_renderer.onDetach();
-	m_renderer.SetUiOverlay(nullptr);
+	m_renderer.SetUiFrameService({});
+    m_renderer.SetUiOverlay(nullptr);
 	if (m_imgui) {
 		m_imgui->Shutdown();
 		m_imgui.reset();
