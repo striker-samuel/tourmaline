@@ -2204,7 +2204,7 @@ namespace engine {
 			size_t(kCullStateCounterWord) * sizeof(uint32_t))) {
 			std::fprintf(stderr,
 				"[GfxAudit] filter slot=%u allocatedIndices=%u empty=%u "
-				"overflow=%u allocatedBatches=%u gated=%u (total=%u/%u)\\n",
+				"overflow=%u allocatedBatches=%u gated=%u (total=%u/%u)\n",
 				slot, filterDiag[0], filterDiag[1], filterDiag[2],
 				filterDiag[3], filterDiag[4],
 				filterDiag[1] + filterDiag[2] + filterDiag[3] + filterDiag[4],
