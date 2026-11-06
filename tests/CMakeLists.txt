@@ -546,6 +546,13 @@ set_target_properties(CacheTests PROPERTIES
 
 add_test(NAME cache_tests COMMAND CacheTests)
 
+# Scene tile provider CPU-only residency contract.
+add_executable(SceneTileProviderTests test_scene_tile_provider.cpp)
+target_link_libraries(SceneTileProviderTests PRIVATE engine)
+set_target_properties(SceneTileProviderTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME scene_tile_provider_tests COMMAND SceneTileProviderTests)
+
 # Cluster unload + dynamic-cluster contracts (GPU-less value worlds).
 add_executable(WorldEntityTests test_world_entities.cpp)
 
