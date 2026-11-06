@@ -60,6 +60,10 @@ public:
 	void Reset();
 	[[nodiscard]] size_t UsedBytes() const { return totalUsed_; }
 	[[nodiscard]] size_t BlockCount() const { return blocks_.size(); }
+	// Lifetime counters (not reset by Reset/ResetForFrameReuse).
+	[[nodiscard]] uint64_t AllocationCount() const { return allocationCount_; }
+	[[nodiscard]] uint64_t TotalRequestedBytes() const { return totalRequestedBytes_; }
+	[[nodiscard]] size_t PeakUsedBytes() const { return peakUsedBytes_; }
 
 	// Attaches a backing linear allocator for block storage (Phase 1/2
 	// migration). Ideally called before the first Allocate; blocks already
@@ -105,6 +109,9 @@ private:
 	bool backingMarkValid_ = false;
 	size_t blockSize_ = kDefaultBlockSize;
 	size_t totalUsed_ = 0;
+	uint64_t allocationCount_ = 0;
+	uint64_t totalRequestedBytes_ = 0;
+	size_t peakUsedBytes_ = 0;
 
 	size_t BlockRemainder() const {
 		return blocks_.empty() ? 0
