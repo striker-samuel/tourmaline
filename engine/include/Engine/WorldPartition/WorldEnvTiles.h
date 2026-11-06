@@ -52,6 +52,7 @@
 
 #include <glm/glm.hpp>
 
+#include <Engine/Core/Limits.h>
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Scene/scene.h>
 
@@ -94,8 +95,8 @@ struct EnvTileCell
 static_assert(sizeof(EnvTileCell) == 32, "EnvTileCell: HLSL mirror");
 
 inline constexpr uint32_t kEnvTileMaxRecords = 64; // [0]=base + 63 zones
-inline constexpr uint32_t kEnvTileMaxDim = 256; // 256 tiles * 64 m = 16 km edge
-inline constexpr float kEnvTileSize = 64.0f; // == kSubcellSize (one subcell per tile)
+inline constexpr uint32_t kEnvTileMaxDim = engine::limits::MaxWorldEnvTilesPerAxis;
+inline constexpr float kEnvTileSize = float(engine::limits::WorldSubcellSizeMeters);
 
 // The grid extent for a bake: the tile-aligned XZ window + the vertical
 // search range. MESH-ONLY scene bounds miss volumes placed outside the
