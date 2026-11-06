@@ -3,10 +3,14 @@
 
 // The recipe resolver (see recipe_resolver.h). Three passes over the
 // parsed recipe, all in AUTHORED order so failures are deterministic:
-//   1) scene paks — load + validate every owning scene, walk its
-//      references (nested .tours recurse, cycle-guarded) into the
-//      ordered artifact list, and FORCE-own the geometry into the
-//      scene's pak (cluster-internal: no cross-pak geometry, ever)
+//   1) scene paks — load + validate every owning scene and collect its
+//      geometry references into the ordered artifact list, FORCE-owning
+//      them into the scene's pak (cluster-internal: no cross-pak
+//      geometry, ever). NESTED SCENE REFERENCES (.tour sources) are
+//      REJECTED here: a pak cooks ONE flat scene — the editor's
+//      prefab-authoring pattern (a reference naming another scene) must
+//      never silently flatten into a pak; duplicate the model artifact
+//      (the `source` verb) instead.
 //   2) includes — expand every glob against the project tree, classify
 //      by extension, claim ownership; a second claim on an owned path
 //      is an error (RES-04: never silently dedup)
@@ -140,32 +144,21 @@ bool ExpandPattern(const fs::path& root, const std::string& pattern,
 	return true;
 }
 
-// Loads + validates one scene tour (BuildProject's contract, extended
-// to nested references): the tour loads, has a root reference, the
-// root is project-relative and its artifact exists. Non-root
-// references contribute their geometry (.geometry/.gltf/.glb) to the
-// SAME pak; nested .tour references recurse — a referenced scene's
-// content is part of the referencing scene's cluster, so it ships with
-// it. The recursion guard is a proper DFS: an ACTIVE set (the current
-// path — only a back-edge onto it is a cycle) plus a DONE set (fully
-// processed subtrees — skipped, so a shared subtree referenced twice
-// (A -> B -> D and A -> C -> D, a valid DAG) walks ONCE and never
-// reports as a cycle).
+// Loads + validates one scene tour (BuildProject's contract): the tour
+// loads, has a root reference, the root is project-relative and its
+// artifact exists. Non-root references contribute their geometry
+// (.geometry/.gltf/.glb) to the SAME pak. NESTED SCENE REFERENCES
+// (.tour sources, root or not) are REJECTED: a pak cooks ONE flat
+// scene. The editor still binds scene references at import (the
+// prefab-authoring pattern), but the pak lane refuses them loudly —
+// silently flattening a scene graph the author never sees flattened is
+// exactly how a 1,024-reference stress scene sneaks into a pak.
 bool CollectSceneArtifacts(const Project& project, const std::string& scene,
-	std::vector<std::string>& artifacts, std::string& err,
-	std::set<std::string>& active, std::set<std::string>& done) {
+	std::vector<std::string>& artifacts, std::string& err) {
 	std::error_code ec;
 	const fs::path tourAbs = fs::path(project.root) / fs::path(scene);
-	const std::string tourKey =
-		tourAbs.lexically_normal().generic_string();
-	if (done.count(tourKey))
-		return true; // already walked (a shared subtree — not a cycle)
 	if (!fs::is_regular_file(tourAbs, ec)) {
 		err = "scene tour not found: " + scene;
-		return false;
-	}
-	if (!active.insert(tourKey).second) {
-		err = "nested scene reference cycle through: " + scene;
 		return false;
 	}
 	smvk::tour::Doc doc;
@@ -188,6 +181,12 @@ bool CollectSceneArtifacts(const Project& project, const std::string& scene,
 			+ rootRef + "' (" + scene + ")";
 		return false;
 	}
+	if (LowerExt(rootRef) == ".tour") {
+		err = "the tour's ROOT reference is another scene: '" + rootRef
+			+ "' (" + scene + ") — paks cook ONE flat scene; make the"
+				" root a model artifact (.geometry) instead";
+		return false;
+	}
 	if (!fs::is_regular_file(fs::path(project.root) / fs::path(rootRef),
 			ec)) {
 		err = "the tour's referenced artifact is missing: '" + rootRef
@@ -206,10 +205,11 @@ bool CollectSceneArtifacts(const Project& project, const std::string& scene,
 		}
 		const std::string ext = LowerExt(ref.source);
 		if (ext == ".tour") {
-			// Nested scene: its content joins THIS pak's cluster.
-			if (!CollectSceneArtifacts(project, ref.source, artifacts,
-					err, active, done))
-				return false;
+			// Nested scene: REJECTED (the pak-lane policy above).
+			err = "nested scene reference '" + ref.source + "' (" + scene
+				+ "): paks do not support scene-to-scene references —"
+					" reference the model artifact (.geometry) directly";
+			return false;
 		}
 		else if (ext == ".geometry"
 				|| smvk::assets::IsMeshSourceExtension(ext)) {
@@ -223,17 +223,37 @@ bool CollectSceneArtifacts(const Project& project, const std::string& scene,
 		}
 		else {
 			err = "unsupported reference '" + ref.source + "' (" + scene
-				+ "): references are .tour scenes or .geometry/"
-					"model-source artifacts";
+				+ "): references are .geometry/"
+					"model-source artifacts (scenes are flat)";
 			return false;
 		}
 	}
-	// Completed subtree: off the active path, into done (a second
-	// reference to this scene later in the walk is a SHARE, not a
-	// cycle).
-	active.erase(tourKey);
-	done.insert(tourKey);
 	return true;
+}
+
+// Transitive depends test (the parser already rejected cycles, so the
+// walk terminates). Feeds the scene-geometry ownership rule below: a
+// scene pak may cook over a model family OWNED by a pak it depends on.
+bool PakDependsOn(const std::vector<RecipePak>& paks,
+	const std::string& pakId, const std::string& ownerId) {
+	std::set<std::string> visited;
+	std::vector<std::string> stack{ pakId };
+	while (!stack.empty()) {
+		const std::string cur = stack.back();
+		stack.pop_back();
+		if (!visited.insert(cur).second)
+			continue;
+		for (const RecipePak& p : paks) {
+			if (p.id != cur)
+				continue;
+			for (const std::string& dep : p.depends) {
+				if (dep == ownerId)
+					return true;
+				stack.push_back(dep);
+			}
+		}
+	}
+	return false;
 }
 
 } // namespace
@@ -298,12 +318,11 @@ bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
 		if (pak.scene.empty())
 			continue;
 		std::vector<std::string> artifacts;
-		std::set<std::string> active, done;
-		if (!CollectSceneArtifacts(project, pak.scene, artifacts, err,
-				active, done))
+		if (!CollectSceneArtifacts(project, pak.scene, artifacts, err))
 			return false;
-		// order-preserving dedupe (a nested tour may share a reference
-		// with the parent)
+		// order-preserving dedupe (a flat scene may reference the same
+		// model artifact many times — 1,024 Sponza duplicates own ONE
+		// geometry)
 		{
 			std::set<std::string> seen;
 			std::vector<std::string> unique;
@@ -315,11 +334,27 @@ bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
 		for (const std::string& a : artifacts) {
 			auto it = owned.find(a);
 			if (it != owned.end()) {
+				// SANCTIONED SHARE: a scene pak that DEPENDS on the
+				// owning pak cooks over the shared model family. The
+				// dependent scene's cluster still embeds the meshes
+				// CLUSTER-INTERNALLY (the serializer inlines the scene's
+				// whole reference walk into ITS pak — bytes duplicate per
+				// pak by design), while the OWNED table keeps exactly one
+				// owner: the dependency, which the plan's topological
+				// order mounts first, so its records serve the shared
+				// paths. This is how a deployment ships several FLAT
+				// scenes over one geometry family (the sponza_10 demo
+				// set: the atrium scene + the grid stress scenes, all
+				// referencing the one Sponza.geometry).
+				if (PakDependsOn(recipe.paks, pak.id, it->second.pak))
+					continue; // keep as a cook input, do not re-claim
 				err = "[pak " + pak.id + "] references '" + a
 					+ "' already owned by [pak " + it->second.pak + "] —"
 						" meshes/materials are cluster-internal and"
 						" cannot be shared across paks (v1): give one"
-						" pak the scene, the other a 'depends' edge";
+						" pak the scene, the other a 'depends' edge"
+						" (a scene pak that depends on the owner may"
+						" cook over the shared family)";
 				return false;
 			}
 			owned[a] = { pak.id, PlanAssetKind::Geometry, true };
@@ -452,6 +487,11 @@ bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
 		pp.scene = rp.scene;
 		pp.transitive = rp.dependenciesTransitive;
 		pp.depends = rp.depends;
+		// Resolve the bake switches: the recipe-level defaults, then
+		// any per-pak overrides (a stress-scene pak beside a baked demo
+		// pak turns ITS bakes off).
+		pp.bakeGi = rp.bakeGi.value_or(recipe.bakeGi);
+		pp.bakeCubemaps = rp.bakeCubemaps.value_or(recipe.bakeCubemaps);
 		pp.line = rp.line;
 		if (!pp.scene.empty())
 			pp.sceneArtifacts = pakArtifacts.at(pp.id);

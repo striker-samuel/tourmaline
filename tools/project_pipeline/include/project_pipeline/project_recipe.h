@@ -39,6 +39,11 @@
 //                              edge (mount order + permitted
 //                              cross-pak references), never a hint
 //   dependencies transitive   'none' (the default) or 'transitive'
+//   bake gi [on|off]          OPTIONAL per-pak override of the
+//   bake cubemaps [on|off]    recipe-level switches, for THIS pak's
+//                              scene stages only (a stress-scene pak
+//                              beside a baked demo pak; 'sdf' is
+//                              family-wide and stays header-only)
 //
 // Paths are PROJECT-RELATIVE with forward slashes (Windows-authored
 // backslashes are normalized): absolute paths, drive letters, '..'/
@@ -47,6 +52,7 @@
 // expressions — a recipe is data, never a program.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -65,6 +71,13 @@ struct RecipePak {
 	std::vector<std::string> includes; // project-relative globs, authored order
 	std::vector<std::string> depends;  // pak ids, authored order
 	bool dependenciesTransitive = false;
+	// Per-pak bake overrides: unset = inherit the recipe-level 'bake'
+	// switches. A pak shipping a stress scene beside a fully baked
+	// demo pak (the sponza_10 grid paks) turns ITS capture/GI bakes
+	// off without demoting the recipe for every other pak. 'sdf' is a
+	// geometry-family-wide bake and stays recipe-level only.
+	std::optional<bool> bakeGi;
+	std::optional<bool> bakeCubemaps;
 	size_t line = 0;                   // the [pak] header's 1-based line
 
 	[[nodiscard]] bool HasContentSource() const {

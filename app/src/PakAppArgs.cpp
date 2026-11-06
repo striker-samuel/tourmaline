@@ -28,7 +28,7 @@ void PrintUsage(const char* prog) {
 		<< "  " << (prog ? prog : "App")
 		<< " --project <path.tapp> (the generated appmanifest launch)\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
-		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--vsync on|off] [--vrr] [--max-fps N] [--disable_control] [--no-dlss]\n"
+		<< "  [--bench <frames>] [--bench_move <m/s>] [--bench_turn <deg/s>] [--present <fifo|mailbox|immediate>] [--vsync on|off] [--vrr] [--max-fps N] [--disable_control] [--no-dlss]\n"
 		<< "  [--capture] [--use_optick] [--use_optick_gpu] [--no-vfs]\n"
 		<< "  --pak runs cooked paks — REQUIRED (or --project), there is\n"
 		<< "  no default (no entry-point pak = the App refuses to run).\n"
@@ -47,6 +47,7 @@ void PrintUsage(const char* prog) {
 		<< "  scene loads by identity — no --scene-index, no source .tour.\n"
 		<< "  --disable_control freezes camera input for deterministic benching\n"
 		<< "  --bench_move flies forward at constant velocity (default 4 m/s) past warmup\n"
+		<< "  --bench_turn yaws at a constant rate (default 30 deg/s, negative = left) past warmup; stacks with --bench_move\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
 		<< "  --bench also forces vsync off (uncapped immediate present; --present wins)\n"
 		<< "  --max-fps N caps interactive CPU frames to 1..1000 FPS (overrides --vrr; ignored by --bench)\n"
@@ -216,6 +217,31 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 			if (!ParseFloat(v, 0.01f, 1000.0f, opts.benchMoveSpeed))
 				return RejectNumeric("--bench_move", v,
 					"a speed in m/s, 0.01..1000", exitCode);
+		}
+		else if (std::strcmp(a, "--bench_turn") == 0
+			|| std::strcmp(a, "--bench-turn") == 0) {
+			// Bare flag: default turn rate (30 deg/s sweeps a full circle
+			// in 12 s — a strong frustum-churn rate for the stress grid).
+			// Optional value follows; NEGATIVE turns left (a leading '-'
+			// followed by a digit is a value, not the next flag).
+			opts.benchTurnRate = 30.0f;
+			const char* n = (i + 1 < argc) ? argv[i + 1] : "";
+			const bool isValue = n[0] != '-'
+				|| (n[0] == '-' && n[1] >= '0' && n[1] <= '9');
+			if (i + 1 < argc && isValue) {
+				const char* v = argv[++i];
+				if (!ParseFloat(v, -720.0f, 720.0f, opts.benchTurnRate))
+					return RejectNumeric("--bench_turn", v,
+						"a yaw rate in deg/s, -720..720", exitCode);
+			}
+		}
+		else if (std::strncmp(a, "--bench_turn=", 13) == 0
+			|| std::strncmp(a, "--bench-turn=", 13) == 0) {
+			// Both spellings are 13 characters to the value.
+			const char* v = a + 13;
+			if (!ParseFloat(v, -720.0f, 720.0f, opts.benchTurnRate))
+				return RejectNumeric("--bench_turn", v,
+					"a yaw rate in deg/s, -720..720", exitCode);
 		}
 		else if (std::strcmp(a, "--max-fps") == 0 && i + 1 < argc) {
 			const char* v = argv[++i];

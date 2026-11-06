@@ -370,10 +370,8 @@ bool ParseText(const std::string& text, ProjectRecipe& out,
 			sawEntry = true;
 		}
 		else if (directive == "bake") {
-			if (inPak)
-				return Fail(lineNo, "bake",
-					"'bake' belongs in the recipe header (before any"
-						" [pak] section)", err);
+			// 'bake' lives in the recipe header (the defaults) AND
+			// inside [pak] blocks (per-pak overrides — see below).
 			const std::vector<std::string> toks = SplitTokens(rest);
 			if (toks.empty() || toks.size() > 2)
 				return Fail(lineNo, "bake",
@@ -391,15 +389,44 @@ bool ParseText(const std::string& text, ProjectRecipe& out,
 							+ toks[1] + "')", err);
 				on = toks[1] == "on";
 			}
-			if (!bakeSeen.insert(toks[0]).second)
-				return Fail(lineNo, "bake",
-					"duplicate bake line for '" + toks[0] + "'", err);
-			if (toks[0] == "gi")
-				out.bakeGi = on;
-			else if (toks[0] == "cubemaps")
-				out.bakeCubemaps = on;
-			else
-				out.bakeSdf = on;
+			if (inPak) {
+				// Per-pak OVERRIDE of the recipe-level switch, scoped
+				// to THIS pak's scene stages (a stress-scene pak beside
+				// a fully baked demo pak turns ITS bakes off without
+				// demoting the recipe for every other pak). 'sdf' is a
+				// geometry-family-wide bake and stays header-only.
+				if (toks[0] == "sdf")
+					return Fail(lineNo, "bake",
+						"'bake sdf' is recipe-level only (the sidecars"
+							" belong to the geometry family, not to a"
+							" pak)", err);
+				if (toks[0] == "gi") {
+					if (current.bakeGi.has_value())
+						return Fail(lineNo, "bake",
+							"duplicate 'bake gi' in [pak " + current.id
+								+ "]", err);
+					current.bakeGi = on;
+				}
+				else {
+					if (current.bakeCubemaps.has_value())
+						return Fail(lineNo, "bake",
+							"duplicate 'bake cubemaps' in [pak "
+								+ current.id + "]", err);
+					current.bakeCubemaps = on;
+				}
+			}
+			else {
+				if (!bakeSeen.insert(toks[0]).second)
+					return Fail(lineNo, "bake",
+						"duplicate bake line for '" + toks[0] + "'",
+						err);
+				if (toks[0] == "gi")
+					out.bakeGi = on;
+				else if (toks[0] == "cubemaps")
+					out.bakeCubemaps = on;
+				else
+					out.bakeSdf = on;
+			}
 		}
 		else if (directive == "output") {
 			if (!inPak)

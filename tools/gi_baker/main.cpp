@@ -67,6 +67,7 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Scene/scene.h>
 #include <gltf_import/gltf.h>
+#include <gltf_import/asset_export.h> // the texture/material asset pool imports (the tour lanes)
 #include <Engine/Vfs/vfs.h>
 
 #include "gi_baker.h"
@@ -796,6 +797,67 @@ int Run(Args& args) {
 					0, nullptr, nullptr, nullptr,
 					true, nullptr, nullptr, nullptr, nullptr,
 					/*contentRoot=*/args.contentDir);
+			// Texture-asset POOL imports (the tour's textureAsset
+			// records — a light cookie or a material tex ref naming a
+			// .texture must find its pool entry BEFORE the replay).
+			// MIRRORED from the Cook / PakCooker / tour_world
+			// bootstrap: the GiBaker used to skip BOTH pool lanes, so
+			// a tour whose materialAsset records mint pool entries
+			// (the editor's '-default' material — what a terrain's -m
+			// index addresses) replayed against a SMALLER pool and
+			// every createNode -m past the reference set fell to the
+			// fallback mint — silently diverging the bake-input hashes
+			// from every other stage (the pak gate then refuses the
+			// bakes: recorded != fresh, with identical mesh/cell
+			// counts and only the fallback-bound materials differing).
+			for (const auto& ta : tour.textureAssets) {
+				namespace fs = std::filesystem;
+				fs::path hp = fs::path(args.contentDir) / ta.path;
+				std::error_code ec;
+				if (hp.empty() || !fs::exists(hp, ec))
+					hp = fs::path(ta.path);
+				if (!fs::exists(hp, ec)) {
+					tool::err() << "Tour textureAsset not found: '"
+						<< ta.path << "' (under '" << args.contentDir
+						<< "', then as-is)\n";
+					return 1;
+				}
+				std::string imErr;
+				if (smvk::assets::ImportTextureAssetToCluster(
+						*cluster, hp, nullptr, imErr).empty()) {
+					tool::err() << "Tour textureAsset import failed: '"
+						<< ta.path << "': " << imErr << "\n";
+					return 1;
+				}
+			}
+			// Material-asset POOL imports (ordered — the record order
+			// IS the pool order the tour's -m indices were recorded
+			// against; the editor's '-default' record ensures the
+			// default material entry).
+			for (const auto& ma : tour.materialAssets) {
+				if (ma.editorDefault) {
+					smvk::assets::EnsureClusterDefaultMaterial(*cluster);
+					continue;
+				}
+				namespace fs = std::filesystem;
+				fs::path hp = fs::path(args.contentDir) / ma.path;
+				std::error_code ec;
+				if (hp.empty() || !fs::exists(hp, ec))
+					hp = fs::path(ma.path);
+				if (!fs::exists(hp, ec)) {
+					tool::err() << "Tour materialAsset not found: '"
+						<< ma.path << "' (under '" << args.contentDir
+						<< "', then as-is)\n";
+					return 1;
+				}
+				std::string imErr;
+				if (smvk::assets::ImportMaterialAssetToCluster(
+						*cluster, hp, nullptr, imErr).empty()) {
+					tool::err() << "Tour materialAsset import failed: '"
+						<< ma.path << "': " << imErr << "\n";
+					return 1;
+				}
+			}
 			std::vector<std::string> rwarn;
 			std::string rerr;
 			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
@@ -985,6 +1047,15 @@ int Run(Args& args) {
 		bakeGrid = smvk::gi::BuildBakeCellGrid(*cluster);
 		tool::out() << "  bake-input grid: " << bakeGrid.meshCount
 			<< " meshes, " << bakeGrid.cells.size() << " cells (1 m)\n";
+		// The gate's component hashes (env / lights / grid root), so a
+		// pak-gate refusal ("recorded != fresh; gate env=... lights=...")
+		// can be DIFFED against the baker's own inputs from the log
+		// alone — an asymmetry between the two cluster builds names
+		// itself without a debugger.
+		tool::out() << "  bake-input gate: env="
+			<< smvk::gi::BakeEnvHash(cluster->scene)
+			<< " lights=" << smvk::gi::BakeLightsHash(*cluster)
+			<< " grid=" << bakeGrid.root << "\n";
 	}
 
 	// Optional texture averaging (role-agnostic per-texture average:

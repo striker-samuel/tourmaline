@@ -3354,6 +3354,44 @@ void TestBakeInputHashFolds() {
 	Check(capHash(ca) != capHash(cb), "bakehash capture bounces fold");
 	cb = ca; cb.albedoUniform = true;
 	Check(capHash(ca) != capHash(cb), "bakehash capture albedo folds");
+
+	// The SYNTHESIZED WorldSun is not an authored bake input. It is a
+	// tool-side helper (EnsureWorldSun, uri "sun/world") that mirrors the
+	// env block's sun so sunless scenes still reach the runtime with one
+	// directional - and the tools seed it at DIFFERENT pipeline points
+	// (the cook before its bake stage, the pak gate before its own seed).
+	// Folding it made the same authored scene hash differently per tool,
+	// which is what refused every freshly baked capture. Its inputs are
+	// the env fields BakeEnvHash already folds, and the identity is the
+	// registered uri, so an AUTHORED directional (any other uri - even
+	// the same type/slot) still folds.
+	auto addLightNode = [&](const SceneLight& def, const char* uri) {
+		const int n = addNode(cluster->scene, 0, 1);
+		cluster->scene.localTransform[size_t(n)] = glm::mat4(1.0f);
+		cluster->scene.globalTransform[size_t(n)] = glm::mat4(1.0f);
+		const smvk::ClusterLightHandle h = cluster->CreateLight(def);
+		Check(h.valid(), "bakehash light created");
+		if (h.valid()) {
+			if (uri)
+				cluster->RegisterLightUri(uri, h);
+			SetLight(cluster->scene, NodeId(n), h.index());
+		}
+	};
+	const std::string lightsBefore = smvk::gi::BakeLightsHash(*cluster);
+	SceneLight synth{};
+	synth.type = SceneLight::Type::Directional;
+	synth.color = glm::vec3(1.0f, 1.0f, 1.0f);
+	synth.intensity = 6980.0f;
+	synth.name = "WorldSun";
+	synth.flags = SceneLight::kSceneLightFlag_Static;
+	addLightNode(synth, "sun/world");
+	Check(smvk::gi::BakeLightsHash(*cluster) == lightsBefore,
+		"bakehash sun/world excluded");
+	// The authored twin: same light, its own uri -> folds (an authored
+	// directional is scene CONTENT and must invalidate the bakes).
+	addLightNode(synth, "sun/authored");
+	Check(smvk::gi::BakeLightsHash(*cluster) != lightsBefore,
+		"bakehash authored directional folds");
 }
 
 int main() {

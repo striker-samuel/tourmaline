@@ -137,6 +137,19 @@ std::string BakeLightsHash(const Cluster& cluster) {
 		const SceneLight* L = cluster.lights.get(handle);
 		if (!L || !(L->flags & SceneLight::kSceneLightFlag_Static))
 			continue;
+		// The tool-synthesized WorldSun is NOT authored content: the
+		// cook and the pak add it (EnsureWorldSun, uri "sun/world") so a
+		// sunless scene still reaches the runtime with one directional,
+		// and its color/intensity/direction are DERIVED from the env
+		// block that BakeEnvHash already folds. Folding it again made
+		// the SAME authored scene hash differently depending on whether
+		// a tool synthesized the sun before hashing - the capture-vs-gate
+		// asymmetry that refused every freshly baked capture (the cook
+		// synthesized before its bake stage; the pak gate runs before
+		// its own). Identity is the registered uri, so an AUTHORED
+		// directional (any other uri) always folds.
+		if (cluster.GetLightUri(handle) == "sun/world")
+			continue;
 		++count;
 		const glm::mat4& g =
 			scene.globalTransform.size() > node

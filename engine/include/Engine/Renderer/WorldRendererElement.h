@@ -70,6 +70,14 @@ public:
 	// Deterministic — no input ramp/damping — and drives LOD promotion
 	// + texture streaming churn through the measured frames. 0 = off.
 	void SetBenchMoveSpeed(float v) { m_benchMoveSpeed = v; }
+	// Bench turn (--bench_turn <deg/s>): constant-rate YAW around the
+	// world up vector through the measured frames (0 = off; negative
+	// turns left). Stacks with --bench_move — the flight path curves
+	// through the scene, sweeping the view frustum (and with it the
+	// shadow-caster candidate churn) far harder than straight-line
+	// motion. Same warmup-stationary + deterministic contract as the
+	// move rate.
+	void SetBenchTurnRate(float v) { m_benchTurnRate = v; }
 	// FPS <-> UI mode (the I key / gamepad Start): relative-mouse capture
 	// for FPS, free cursor for ImGui (the old WorldRenderer::SetUIMode).
 	void SetUIMode(bool ui);
@@ -94,6 +102,7 @@ private:
 	bool m_uiMode = false;
 	bool m_disableControl = false;
 	float m_benchMoveSpeed = 0.0f;
+	float m_benchTurnRate = 0.0f; // deg/s yaw (world up), bench window only
 	// Virtual cursor for FPS mouselook: SDL relative mode warps the real
 	// cursor, so absolute positions are garbage while captured. The look
 	// deltas (xrel/yrel, valid in BOTH relative and normal mode) fold

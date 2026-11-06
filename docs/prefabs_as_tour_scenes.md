@@ -40,6 +40,19 @@ edits to that occurrence stay in the owning scene's `.tour` overlay.
 No new per-prefab component language or automatic property inheritance is
 introduced.
 
+### The pak lane rejects scene references
+
+Scene references are an **editor-side authoring composition** (bound at
+import by `ApplySceneReferences`, editor parity). They are **not a
+shippable content form**: the recipe resolver and the pak cooker both
+REJECT a scene whose references name another `.tour` (root or not) —
+a pak cooks ONE flat scene and never silently flattens a scene graph
+the author never sees flattened. A scene destined for a pak duplicates
+the model artifact directly (the `source -n <parent> -p "<file>.geometry"
+-name "<n>" -t x y z` verb); the *shipping* repeated-instance mechanism
+is the runtime `InstantiatePrefab` lane below (separately cooked scene,
+instantiated by stable scene content ID).
+
 ## Runtime: instantiate a cooked `.tour` scene
 
 Scenes already support repeated additive loading and generational

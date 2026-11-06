@@ -482,8 +482,11 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	// ---- 2) per scene pak: Cook + GiBaker (plan order) ------------------
 	// The bake flags come from the RECIPE (the plan), never
 	// build-settings.txt — a recipe build is fully described by its
-	// recipe. 'bake gi off' skips the GiBaker stage outright; 'bake
-	// cubemaps off' passes --cubemap off to Cook.
+	// recipe. The PER-PAK resolution applies here: 'bake gi off' or
+	// 'bake cubemaps off' inside a [pak] block overrides the recipe
+	// switch for THAT pak's scene stages (a stress-scene pak beside a
+	// fully baked demo pak). 'bake gi off' skips the GiBaker stage
+	// outright; 'bake cubemaps off' passes --cubemap off to Cook.
 	for (const PlanPak& pak : plan.paks) {
 		if (pak.scene.empty())
 			continue; // asset-only pak: no scene bakes
@@ -503,7 +506,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			CookStageArgs stage;
 			stage.contentDir = project.root;
 			stage.tour = tourAbs.lexically_normal().generic_string();
-			stage.cubemap = plan.bakeCubemaps;
+			stage.cubemap = pak.bakeCubemaps;
 			stage.lightmap = false; // the deprecated path stays off
 			stage.registryDir = options.registryDir;
 			const int rc = adapter.Cook(stage, err);
@@ -512,7 +515,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				return false;
 			}
 		}
-		if (plan.bakeGi) {
+		if (pak.bakeGi) {
 			GiBakerStageArgs stage;
 			stage.contentDir = project.root;
 			stage.tour = tourAbs.lexically_normal().generic_string();

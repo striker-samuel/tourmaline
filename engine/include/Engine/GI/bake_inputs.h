@@ -134,11 +134,16 @@ BakeCellGrid BuildBakeCellGrid(Cluster& cluster);
 // hash.
 std::string BakeEnvHash(const Scene& scene);
 
-// Every static-marked light (the bake light set), sorted by node id:
-// flags/type/transform/color/intensity/range/cones/cookie. Also folded
-// into every unit hash — a light reaches arbitrarily far through
+// Every static-marked AUTHORED light (the bake light set), sorted by node
+// id: flags/type/transform/color/intensity/range/cones/cookie. Also
+// folded into every unit hash — a light reaches arbitrarily far through
 // bounces, so a light change is a global invalidate. (The lights live
 // in the cluster pool; scene.lightForNode maps the nodes.)
+// The tool-synthesized WorldSun (EnsureWorldSun's "sun/world" uri) is
+// EXCLUDED: it is a derived helper mirroring the env block — all of its
+// inputs are already folded by BakeEnvHash, and the cook/pak seed it at
+// different pipeline points, so folding it would make one authored scene
+// hash differently per tool (the capture-vs-gate refusal class).
 std::string BakeLightsHash(const Cluster& cluster);
 
 // ---------------------------------------------------------------------------

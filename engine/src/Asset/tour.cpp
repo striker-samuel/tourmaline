@@ -29,6 +29,9 @@
 #include <Engine/App/cluster.h>
 #include <Engine/Placement/placement_terrain.h>
 #include <Engine/Scene/scene.h>
+#include <Engine/Utils/ktx_error_texture.h>
+
+#include <ktx.h>
 
 namespace tour::asset {
 namespace {
@@ -3672,6 +3675,55 @@ static Material* CookMaterial(Cluster& cluster, uint32_t poolIdx) {
 	return cluster.materials.get(h);
 }
 
+// The missing-material ERROR binding: bright pink, find-or-create by
+// URI. A tour line whose material index resolves to nothing (a stale
+// -m against a re-derived family, a shifted pool) must NEVER silently
+// cook a plausible default — the mesh renders unmistakable pink in
+// every output (pak, bake, viewport) so the stale reference is found
+// at authoring/inspection time, never in shipped content. And because
+// the mint lives in the SHARED replay and is find-or-create, every
+// tool (Cook / GiBaker / PakCooker bootstraps) produces the IDENTICAL
+// pool entry — the bake-input material fold stays consistent and the
+// pak gate never sees tool-dependent hashes.
+static ClusterMaterialHandle EnsureErrorMaterial(Cluster& cluster) {
+	if (auto hit = cluster.FindMaterialByUri("error://material"))
+		return *hit;
+	// The pink payload: the engine's error-texture convention (the
+	// streamer's retarget swap + the cook's Basis refusal embed), a
+	// plain 2D sRGB RGBA8 pink KTX2 stashed offline like any cook
+	// texture so the serializer embeds it and the runtime streams it.
+	smvk::TextureHandle tex{};
+	if (auto hit = cluster.FindTextureByUri("error://material")) {
+		tex = *hit;
+	}
+	else {
+		ktxTexture2* pink = smvk::CreatePinkKtx2(64, 64, 0);
+		if (pink) {
+			std::vector<uint8_t> blob;
+			if (smvk::WritePinkKtx2Blob(*pink, blob) && !blob.empty()) {
+				tex = smvk::TextureHandle::Mint(
+					cluster.AllocOfflineTextureId());
+				cluster.SetTextureSource("error://material",
+					std::move(blob));
+				cluster.RegisterTextureUri("error://material", tex);
+			}
+			ktxTexture2_Destroy(pink);
+		}
+	}
+	smvk::MaterialCreateInfo info{};
+	// Bright pink even if the texture lane ever fails: the FACTOR is
+	// the flag, the texture is the consistency.
+	info.baseColorFactor = glm::vec4(1.0f, 0.0f, 1.0f, 1.0f);
+	info.metallicFactor = 0.0f;
+	info.roughnessFactor = 1.0f;
+	info.baseColorTexture = tex;
+	info.diffuse = tex; // legacy alias
+	const ClusterMaterialHandle h = cluster.CreateMaterial(info);
+	if (!h.empty())
+		cluster.RegisterMaterialUri("error://material", h);
+	return h;
+}
+
 static void ApplyMatAttr(Material& mat, const Command& c) {
 	const std::string& at = c.text;
 	if (at == "baseColor")
@@ -4984,19 +5036,24 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			}
 			uint32_t material = c.material;
 			if (!CookMaterial(cluster, material)) {
-				// Editor fallback: scenes authored with the editor's
-				// default material cook against a fresh import that does
-				// not carry it. Mint the same deterministic default here
-				// (same URI, same values) so the tour replays.
+				// Missing material: the ERROR binding (bright pink) —
+				// never a plausible silent default. The terrain screams
+				// in every cooked output; find the stale -m at authoring
+				// time, not in a shipped pak.
 				warn("tour: createTerrain material out of range: " +
 					std::to_string(c.material)
-					+ " — creating the editor default material");
-				Material def{};
-				def.rebuildPipeline();
-				const ClusterMaterialHandle dh =
-					cluster.materials.create(std::move(def));
-				cluster.RegisterMaterialUri("editor://default", dh);
-				material = dh.index();
+					+ " — binding the bright-pink ERROR material");
+				const ClusterMaterialHandle eh =
+					EnsureErrorMaterial(cluster);
+				if (eh.empty()) {
+					if (err)
+						*err = "tour: createTerrain error material"
+							" mint failed";
+					if (!failCmd(c))
+						return false;
+					break;
+				}
+				material = eh.index();
 			}
 			smvk::placement::TerrainGroupData tg;
 			tg.params.origin = glm::vec2(c.vec.x, c.vec.z);

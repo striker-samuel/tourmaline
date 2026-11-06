@@ -9,6 +9,9 @@
 
 #include <cstdio>
 
+// The bench-turn yaw composes a world-space rotation quat directly.
+#include <glm/gtc/quaternion.hpp>
+
 namespace engine {
 
 	WorldRendererElement::WorldRendererElement(smvk::App& host)
@@ -82,6 +85,19 @@ namespace engine {
 			&& m_host.BenchMeasuring() && !m_uiMode) {
 			auto& cam = m_renderer.CameraPositioner();
 			cam.cameraPosition_ += cam.getForward() * (m_benchMoveSpeed * dt);
+		}
+		// Bench turn (--bench_turn): constant-rate yaw around the WORLD
+		// up vector (world-space pre-multiply keeps any spawn pitch
+		// intact while the heading sweeps — a first-person yaw, not a
+		// tumble). Same measured-window gating as the move rate; the
+		// two stack (curved flight).
+		if (m_benchTurnRate != 0.0f && m_host.GetFrameBudget() > 0
+			&& m_host.BenchMeasuring() && !m_uiMode) {
+			auto& cam = m_renderer.CameraPositioner();
+			const glm::vec3 up = glm::normalize(cam.up_);
+			cam.cameraOrientation_ =
+				glm::angleAxis(glm::radians(m_benchTurnRate) * dt, up)
+				* cam.cameraOrientation_;
 		}
 	}
 

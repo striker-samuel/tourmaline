@@ -63,6 +63,70 @@
       "frames": 120
     },
     {
+      "id": "sponza-grid-overlook",
+      "label": "Sponza 4x4 grid overlook (17 copies, high camera)",
+      "subsystem": "gfx-filter",
+      "notes": "The flat 4x4 Sponza stress grid (16 duplicates + the root copy over the one Sponza.geometry), framed from above so the shot carries tens of Sponzas. Requires a locally staged content/paks/sponza_grid.pak (the stable-named copy of the sponza_10 deployment's grid pak, built from the game project's sponza_10.tourrecipe) - it is NOT part of the fetched demo-content release. PERF NOTE (2026-11-06, grid32 9000-frame rotating stress): grid views are CPU-PACED - cpu 24.2 ms vs gpu 0.5 ms frame averages; preB (Forward+ prepass/tile-cull recording ~13.6 ms) + rendergraph execute (~16.5 ms) dominate, and the cost tracks scene CONTENT count (the full draw-item walk), not visibility (culling is GPU-driven). Treat this scenario's frame-time deltas as CPU-side regression signal.",
+      "source_args": [
+        "--pak",
+        "content/paks/sponza_grid.pak",
+        "--scene",
+        "scene"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          0.0,
+          70.0,
+          -130.0
+        ],
+        "forward": [
+          0.0,
+          -0.447,
+          0.894
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "0,70,-130",
+        "TOURMALINE_CAM_FWD": "0,-0.447,0.894",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "sponza-grid32-overlook",
+      "label": "Sponza 32x32 grid overlook (1025 copies, high camera)",
+      "subsystem": "gfx-filter",
+      "notes": "The flat 32x32 Sponza stress grid (1,024 duplicates + the root copy, ~105k mesh instances), framed from 420 m up so the shot carries hundreds of Sponzas and the view saturates the GPU-driven filter budgets (kMaxDraws 4096 / kMaxBatchSlots 262144). Requires a locally staged content/paks/sponza_grid32.pak (the stable-named copy of the sponza_10 deployment's grid pak, built from the game project's sponza_10.tourrecipe) - it is NOT part of the fetched demo-content release. PERF NOTE (2026-11-06, 9000-frame --bench_turn 30 --bench_move 5 stress, exit 0/no crash): grid views are CPU-PACED - cpu 24.2 ms vs gpu 0.5 ms frame averages (static overlook bench: cpu 89.7 ms vs gpu 29.9 ms); preB (Forward+ prepass/tile-cull recording) + rendergraph execute dominate, and the cost tracks scene CONTENT count (the full 105k draw-item walk), not visibility (culling is GPU-driven) - the CPU floor persists even looking at empty space. Treat this scenario's frame-time deltas as CPU-side regression signal.",
+      "source_args": [
+        "--pak",
+        "content/paks/sponza_grid32.pak",
+        "--scene",
+        "scene"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          0.0,
+          420.0,
+          -850.0
+        ],
+        "forward": [
+          0.0,
+          -0.443,
+          0.897
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "0,420,-850",
+        "TOURMALINE_CAM_FWD": "0,-0.443,0.897",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
       "id": "bistro-fp-lights-off",
       "label": "Bistro Forward+ baseline (crowd off)",
       "subsystem": "forward+",

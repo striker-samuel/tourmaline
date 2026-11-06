@@ -840,6 +840,26 @@ namespace app {
 				std::cout << "bench: constant-velocity flight " << cfg.cli.benchMoveSpeed
 					<< " m/s forward from the spawn pose (past warmup)\n";
 			}
+			if (cfg.cli.benchTurnRate != 0.0f) {
+				// Same pairing contract as --bench_move: the turn gates on
+				// the measured window, so a bare --bench_turn needs a bench
+				// budget to do anything.
+				if (benchFrames <= 0) {
+					benchFrames = 300;
+					app.SetFrameBudget(benchFrames);
+					if (!cfg.cli.presentSet) {
+						app.SetPresentMode(smvk::PresentMode::Immediate);
+						std::cout << "bench: vsync off (uncapped immediate present; "
+							"--present <mode> overrides)\n";
+					}
+					renderer.SetAutoExposurePinned(false);
+					renderer.SetAutoExposureEnabled(false);
+					std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
+				}
+				element->SetBenchTurnRate(cfg.cli.benchTurnRate);
+				std::cout << "bench: constant-rate turn " << cfg.cli.benchTurnRate
+					<< " deg/s (world-up yaw) from the spawn heading (past warmup)\n";
+			}
 			// Host extension elements (the game-host hook, see Host.h):
 			// stacked AFTER the renderer element, IN LIST ORDER -
 			// attach order guarantees the world is loaded (the

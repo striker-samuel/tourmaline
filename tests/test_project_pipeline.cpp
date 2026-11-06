@@ -1201,6 +1201,74 @@ void TestRecipeResolution() {
 			"[pak a]\noutput a.pak\nscene content/scenes/world.tour\n"
 			"[pak b]\noutput b.pak\nscene content/scenes/twin.tour\n",
 			"cluster-internal");
+		// ...WITH a depends edge the share is SANCTIONED: the dependent
+		// scene pak cooks over the shared family (the sponza_10 demo
+		// shape — the atrium scene + the grid stress scenes over the one
+		// Sponza.geometry). The owner keeps the asset; the dependent
+		// keeps the cook input; the plan mounts the owner first.
+		smvk::project::ProjectRecipe r;
+		smvk::project::RecipeDiagnostic d;
+		smvk::project::BuildPlan p;
+		std::string e;
+		const std::string share =
+			"recipe 1\nentry content/scenes/world.tour\n"
+			"[pak a]\noutput a.pak\nscene content/scenes/world.tour\n"
+			"[pak b]\noutput b.pak\nscene content/scenes/twin.tour\n"
+			"depends a\n";
+		Check(smvk::project::ParseProjectRecipeText(share, r, d)
+			&& smvk::project::ResolveRecipe(project, r, p, e) && e.empty(),
+			"resolve.depends-shares-geometry");
+		bool ok = p.paks.size() == 2;
+		if (ok) {
+			// Topological order: the owner ('a') mounts first.
+			ok = p.paks[0].id == "a" && p.paks[1].id == "b";
+			// The owner owns the geometry asset...
+			ok = ok && p.paks[0].assets.size() == 1
+				&& p.paks[0].assets[0].path
+					== "content/models/world/world.geometry";
+			// ...the dependent still carries it as its COOK INPUT
+			// (sceneArtifacts[0] = the root artifact) but owns nothing
+			// of the shared family.
+			ok = ok && p.paks[1].sceneArtifacts.size() == 1
+				&& p.paks[1].sceneArtifacts[0]
+					== "content/models/world/world.geometry"
+				&& p.paks[1].assets.empty();
+		}
+		Check(ok, "resolve.depends-share-ownership-split");
+	}
+	// Per-pak bake overrides: a [pak] block's 'bake gi/cubemaps off'
+	// wins for ITS scene stages; the recipe-level switches stay the
+	// default for every other pak; 'bake sdf' stays recipe-level only.
+	{
+		smvk::project::ProjectRecipe r;
+		smvk::project::RecipeDiagnostic d;
+		smvk::project::BuildPlan p;
+		std::string e;
+		const std::string mixed =
+			"recipe 1\nentry content/scenes/world.tour\n"
+			"bake gi\nbake cubemaps\n"
+			"[pak a]\noutput a.pak\nscene content/scenes/world.tour\n"
+			"[pak b]\noutput b.pak\nscene content/scenes/twin.tour\n"
+			"depends a\nbake gi off\nbake cubemaps off\n";
+		Check(smvk::project::ParseProjectRecipeText(mixed, r, d)
+			&& smvk::project::ResolveRecipe(project, r, p, e) && e.empty(),
+			"resolve.per-pak-bake-overrides");
+		bool ok = p.paks.size() == 2;
+		if (ok) {
+			// The inheriting pak keeps the recipe-level switches...
+			ok = p.paks[0].bakeGi && p.paks[0].bakeCubemaps;
+			// ...the overriding pak turned both off for its stages.
+			ok = ok && !p.paks[1].bakeGi && !p.paks[1].bakeCubemaps;
+		}
+		Check(ok, "resolve.per-pak-bake-override-values");
+		// 'bake sdf' inside a [pak] is rejected (family-wide bake).
+		const std::string badSdf =
+			"recipe 1\nentry content/scenes/world.tour\n"
+			"[pak a]\noutput a.pak\nscene content/scenes/world.tour\n"
+			"bake sdf off\n";
+		smvk::project::ProjectRecipe r2;
+		Check(!smvk::project::ParseProjectRecipeText(badSdf, r2, d),
+			"resolve.per-pak-bake-sdf-rejected");
 	}
 	// A glob matching nothing (typo'd directory).
 	resolveFails("empty-glob",
@@ -1223,10 +1291,12 @@ void TestRecipeResolution() {
 		"include content/models/world/*.geometry\n"
 		"[pak world]\noutput w.pak\nscene content/scenes/world.tour\n",
 		"cluster-internal");
-	// A SHARED nested subtree is a DAG, not a cycle: A -> B -> D and
-	// A -> C -> D must resolve (the old never-cleared visited set
-	// false-positived exactly this as a cycle — the commit review
-	// caught it).
+	// A SHARED nested subtree is a DAG, not a cycle — but the pak lane
+	// no longer cares: NESTED SCENE REFERENCES (.tour sources) are
+	// REJECTED at plan time (a pak cooks ONE flat scene; the editor's
+	// prefab-authoring pattern never silently flattens into a pak).
+	// The DAG fixtures stay: they exercise the rejection against the
+	// exact shapes the old DFS resolved (shared subtree + fan-in).
 	{
 		const auto writeTourWithRefs =
 			[&](const fs::path& path,
@@ -1258,30 +1328,14 @@ void TestRecipeResolution() {
 			{ "content/scenes/dagD.tour" });
 		writeTourWithRefs(scenes / "dagA.tour",
 			{ "content/scenes/dagB.tour", "content/scenes/dagC.tour" });
-		smvk::project::ProjectRecipe r;
-		smvk::project::RecipeDiagnostic d;
-		smvk::project::BuildPlan p;
-		std::string e;
-		const std::string dag =
-			"recipe 1\n"
-			"entry content/scenes/dagA.tour\n"
-			"[pak a]\noutput a.pak\nscene content/scenes/dagA.tour\n";
-		Check(smvk::project::ParseProjectRecipeText(dag, r, d)
-			&& smvk::project::ResolveRecipe(project, r, p, e),
-			"resolve.shared-subtree-dag-ok");
-		// The shared subtree's artifact appears ONCE (the dedupe), and
-		// a real back-edge (D -> A) still rejects as a cycle.
-		Check(e.empty() && p.paks[0].sceneArtifacts.size() == 1,
-			"resolve.shared-subtree-walks-once");
-		writeTourWithRefs(scenes / "dagD.tour",
-			{ "content/scenes/dagA.tour" });
-		smvk::project::BuildPlan p2;
-		std::string e2;
-		Check(!smvk::project::ResolveRecipe(project, r, p2, e2)
-			&& e2.find("cycle") != std::string::npos,
-			"resolve.real-back-edge-still-cycle");
+		resolveFails("resolve.nested-scene-rejected",
+			"recipe 1\nentry content/scenes/dagA.tour\n"
+			"[pak a]\noutput a.pak\nscene content/scenes/dagA.tour\n",
+			"nested scene reference 'content/scenes/dagB.tour'");
 	}
-	// A nested scene-reference cycle (a -> b -> a).
+	// A nested scene-reference cycle (a -> b -> a) is rejected as
+	// NESTING first — the DFS cycle hunt is retired with the recursion;
+	// the error names the .tour source, never "cycle".
 	{
 		writeTour(scenes / "loopA.tour", "content/models/world/world.geometry");
 		smvk::tour::Doc doc;
@@ -1300,10 +1354,27 @@ void TestRecipeResolution() {
 		doc.references[1].source = "content/scenes/loopA.tour";
 		smvk::tour::SaveTour((scenes / "loopB.tour").generic_string(),
 			doc, saveErr);
-		resolveFails("nested-reference-cycle",
+		resolveFails("nested-reference-is-nesting-not-cycle",
 			"recipe 1\nentry content/scenes/loopA.tour\n"
 			"[pak a]\noutput a.pak\nscene content/scenes/loopA.tour\n",
-			"cycle");
+			"nested scene reference 'content/scenes/loopB.tour'");
+	}
+	// A scene whose ROOT reference names another scene: the same
+	// nesting one step up (the scene IS another scene).
+	{
+		smvk::tour::Doc doc;
+		smvk::tour::ReferenceCmd root;
+		root.source = "content/scenes/world.tour";
+		root.name = "ROOT";
+		root.root = true;
+		doc.references.push_back(root);
+		std::string saveErr;
+		smvk::tour::SaveTour((scenes / "isworld.tour").generic_string(),
+			doc, saveErr);
+		resolveFails("nested-root-reference-rejected",
+			"recipe 1\nentry content/scenes/isworld.tour\n"
+			"[pak a]\noutput a.pak\nscene content/scenes/isworld.tour\n",
+			"ROOT reference is another scene");
 	}
 }
 
@@ -2201,10 +2272,14 @@ void TestBuildPlanExecutor() {
 			Check(false, "executor.report");
 		}
 	}
-	// 'bake gi off' skips the GiBaker stage entirely.
+	// 'bake gi off' skips the GiBaker stage entirely. The executor
+	// consumes the PER-PAK resolved switch (the recipe-level flag only
+	// feeds the resolver), so a hand-built plan mutates the pak field.
 	{
 		smvk::project::BuildPlan noGi = plan;
 		noGi.bakeGi = false;
+		for (smvk::project::PlanPak& pk : noGi.paks)
+			pk.bakeGi = false;
 		RecordingAdapter rec;
 		smvk::project::BuildPlanOptions opts;
 		opts.publishDir = (tmp / "publish").generic_string();

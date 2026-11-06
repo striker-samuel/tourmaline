@@ -24,7 +24,7 @@
 //   App [--pak <path.pak>] [--scene-index N] [--no-vfs]
 //   App --project <path.tapp> [--no-vfs]
 //   [--minimal] [--filter-only] [--with <csv>] [--without <csv>]
-//   [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--vsync on|off] [--vrr] [--max-fps N]
+//   [--bench <frames>] [--bench_move <m/s>] [--bench_turn <deg/s>] [--present <fifo|mailbox|immediate>] [--vsync on|off] [--vrr] [--max-fps N]
 //   [--disable_control] [--no-dlss] [--capture] [--use_optick] [--use_optick_gpu]
 
 #include <functional>
@@ -78,6 +78,7 @@ struct ViewerOptions {
 	std::string withoutCsv;
 	int benchFrames = 0;
 	float benchMoveSpeed = 0.0f;
+	float benchTurnRate = 0.0f; // --bench_turn <deg/s>: yaw during measured frames
 	std::string presentMode; // empty = default; fifo|mailbox|immediate
 	bool presentSet = false; // --present/--vsync explicit (wins over --bench)
 	bool vrr = false; // VRR-friendly automatic FPS cap below detected refresh

@@ -3334,6 +3334,14 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	};
 
 	tool::err() << "  [CUBE] captures=" << positions.size() << "\n" << std::flush;
+	// The gate's component hashes (env / lights), the Cook-side twin of
+	// the GiBaker/pak prints — a pak-gate capture refusal with identical
+	// grids/rows/cfg/cells diffs to the diverging ENV/LIGHTS fold from
+	// the log alone (the unit hash folds them per row).
+	tool::err() << "  [CUBE] bake-input gate: env="
+		<< smvk::gi::BakeEnvHash(cluster.scene)
+		<< " lights=" << smvk::gi::BakeLightsHash(cluster) << "\n"
+		<< std::flush;
 
 	for (size_t cap = 0; cap < positions.size(); ++cap) {
 		const glm::vec3 origin = positions[cap];
@@ -4000,6 +4008,12 @@ bool WriteCookedArtifactsBack(const Args& args,
 			std::filesystem::path(args.contentDir) / file;
 		const std::filesystem::path manPath =
 			hostPath.parent_path() / (stem + ".cooked");
+		// The marker's directory may not exist yet: a GENERATED asset
+		// (the terrain tiles — uri terrain/<tile>, materialized by the
+		// cook itself) writes its first marker into a fresh directory.
+		// Same contract as the GI loose-bake writes below.
+		std::error_code dirEc;
+		std::filesystem::create_directories(manPath.parent_path(), dirEc);
 		std::ofstream man(manPath, std::ios::binary | std::ios::trunc);
 		if (!man) {
 			err = "cannot write manifest '" + manPath.generic_string() + "'";
@@ -4167,6 +4181,10 @@ bool WriteCookedArtifactsBack(const Args& args,
 			stem = stem.substr(0, mld);
 		const std::filesystem::path manPath =
 			hostPath.parent_path() / (stem + ".cooked");
+		// See writeMarker above: a generated asset's first marker may
+		// land in a directory that does not exist yet.
+		std::error_code dirEc2;
+		std::filesystem::create_directories(manPath.parent_path(), dirEc2);
 		std::ofstream man(manPath, std::ios::binary | std::ios::trunc);
 		if (!man) {
 			err = "cannot write manifest '" + manPath.generic_string()
@@ -4925,6 +4943,16 @@ int Run(const CookArgs& c) {
 				continue;
 			const SceneLight* L = sc->lights.get(handle);
 			if (!L || L->type != SceneLight::Type::Directional)
+				continue;
+			// The synthesized WorldSun mirrors the env block's sun
+			// (EnsureWorldSun seeds it FROM EnvForBake), and the
+			// asin/atan2 reconstruction below is NOT a bit-exact inverse
+			// of that sin/cos seed: "resolving" it perturbed the authored
+			// env's az/el in the last bits, which is exactly what made the
+			// cook's bake-input ENV hash diverge from the pak gate's (and
+			// refused every freshly baked capture). The seed is a literal
+			// no-op - skip it, keep the authored env bits intact.
+			if (sc->GetLightUri(handle) == "sun/world")
 				continue;
 			glm::vec3 emis = glm::vec3(
 				scene.globalTransform[node] * glm::vec4(aimAxis, 0.0f));

@@ -1884,6 +1884,30 @@ int Run(const PakArgs& c) {
 		haveTour = true;
 		for (auto& w : twarn)
 			tool::err() << "Tour warning: " << w << std::endl;
+		// PAK POLICY — NO NESTED SCENES: a reference whose source names
+		// another .tour scene is the editor's prefab-authoring pattern
+		// (bound at import, inlined by ApplySceneReferences). A pak
+		// cooks ONE flat scene and must never silently flatten a scene
+		// graph the author never sees flattened — duplicate the model
+		// artifact instead (the `source -n <p> -p "<.geometry>"` verb,
+		// or the recipe resolver rejects the plan first). Root and
+		// non-root references are both covered: a .tour root means the
+		// scene IS another scene, the same nesting one step up.
+		for (const auto& ref : tour.references) {
+			std::string src = ref.source;
+			for (char& c : src)
+				c = char(std::tolower(static_cast<unsigned char>(c)));
+			if (src.size() >= 5
+					&& src.compare(src.size() - 5, 5, ".tour") == 0) {
+				tool::err() << "Tour rejected: "
+					<< (ref.root ? "the ROOT reference" : "reference '"
+						+ ref.name + "'") << " names another scene ('"
+					<< ref.source << "') — paks cook ONE flat scene;"
+						" reference the model artifact (.geometry)"
+						" directly" << std::endl;
+				return 1;
+			}
+		}
 		// The tour's root reference doubles as the artifact identity when
 		// the positional list is empty (the "Cooked <identity> -> ..." log
 		// + BakeStems: bake logicals key on the SCENE stem, so
@@ -2407,10 +2431,14 @@ int Run(const PakArgs& c) {
 		// diverging side — env / lights / grid — so an asymmetry is
 		// diagnosable from the log alone).
 		auto diagParts = [&](const smvk::Cluster& c) {
+			const smvk::gi::BakeCellGrid diag =
+				smvk::gi::BuildBakeCellGrid(
+					const_cast<smvk::Cluster&>(c));
 			return "env=" + smvk::gi::BakeEnvHash(c.scene)
 				+ " lights=" + smvk::gi::BakeLightsHash(c)
-				+ " grid=" + smvk::gi::BuildBakeCellGrid(
-					const_cast<smvk::Cluster&>(c)).root;
+				+ " grid=" + diag.root + " (" + std::to_string(diag.meshCount)
+				+ " meshes, " + std::to_string(diag.cells.size())
+				+ " cells)";
 		};
 		smvk::gi::BakeCellGrid grid;
 		bool gridBuilt = false;
@@ -2571,12 +2599,23 @@ int Run(const PakArgs& c) {
 											cells ? *cells
 												: std::vector<
 													smvk::gi::CellId>{});
-									if (fresh != row.inputHash)
-										gateRefuse("the capture '"
-											+ row.vfsPath + "'",
+									if (fresh != row.inputHash) {
+										// The same shape as the volume
+										// refusal: recorded vs fresh plus
+										// the gate's component hashes, so
+										// the diverging fold names itself
+										// from the log alone.
+										const std::string detail =
 											"the scene changed since the "
 											"bake (env/lights/geometry "
-											"or the capture config)");
+											"or the capture config)"
+											"; recorded=" + row.inputHash
+											+ " fresh=" + fresh
+											+ "; gate "
+											+ diagParts(*gateCluster);
+										gateRefuse("the capture '"
+											+ row.vfsPath + "'", detail);
+									}
 								}
 							}
 							if (!gateFailed) {
@@ -2713,6 +2752,16 @@ int Run(const PakArgs& c) {
 				continue;
 			const SceneLight* L = sc->lights.get(handle);
 			if (!L || L->type != SceneLight::Type::Directional)
+				continue;
+			// The synthesized WorldSun mirrors the env block's sun
+			// (EnsureWorldSun seeds it FROM EnvForBake), and the
+			// asin/atan2 reconstruction below is NOT a bit-exact inverse
+			// of that sin/cos seed: "resolving" it perturbed the authored
+			// env's az/el in the last bits, which is exactly what made the
+			// cook's bake-input ENV hash diverge from this gate's (and
+			// refused every freshly baked capture). The seed is a literal
+			// no-op - skip it, keep the authored env bits intact.
+			if (sc->GetLightUri(handle) == "sun/world")
 				continue;
 			glm::vec3 emis = glm::vec3(
 				scene.globalTransform[node] * glm::vec4(aimAxis, 0.0f));

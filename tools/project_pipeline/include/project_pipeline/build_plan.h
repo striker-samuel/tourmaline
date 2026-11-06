@@ -88,11 +88,20 @@ struct PlanPak {
 	std::vector<std::string> depends; // pak ids, authored order (the
 	                                  // plan's order guarantees every
 	                                  // one appears EARLIER in paks)
+	// The RESOLVED bake switches for THIS pak's scene stages: the
+	// recipe-level 'bake gi/cubemaps' defaults, overridden by any
+	// per-pak 'bake' lines. The executor consumes THESE, never the
+	// recipe-level flags (a stress-scene pak beside a baked demo pak).
+	bool bakeGi = false;
+	bool bakeCubemaps = false;
 	// The scene's cooked geometry dependencies in TOUR order — index 0
 	// is the ROOT artifact (the packer's primary VFS input; the same
 	// contract BuildProject's refSource feeds Pak.exe). Empty for
-	// asset-only paks. Nested .tour references are walked into this
-	// list (they ship in the SAME pak — meshes are cluster-internal).
+	// asset-only paks. Repeated references to the same model artifact
+	// appear ONCE (deduped — a flat scene may duplicate a .geometry any
+	// number of times; the geometry itself ships once, cluster-internal
+	// to this pak). Nested .tour references never reach this list: the
+	// resolver REJECTS them (paks cook ONE flat scene).
 	std::vector<std::string> sceneArtifacts;
 	// The pak's OWNED content, sorted by path: the sceneArtifacts (as
 	// Geometry) plus every include-claimed asset. Exactly one pak owns
@@ -103,6 +112,7 @@ struct PlanPak {
 	bool operator==(const PlanPak& o) const {
 		return id == o.id && output == o.output && scene == o.scene
 			&& transitive == o.transitive && depends == o.depends
+			&& bakeGi == o.bakeGi && bakeCubemaps == o.bakeCubemaps
 			&& sceneArtifacts == o.sceneArtifacts && assets == o.assets;
 	}
 };
