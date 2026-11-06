@@ -826,11 +826,11 @@ void TestRecipeParsing() {
 	// valid alongside an entry Scene pak; no geometry duplication.
 	{
 		const std::string spec =
-			"recipe 1\\nentry content/scenes/Sponza.tour\\n"
-			"[pak entry]\\noutput entry.pak\\n"
-			"scene content/scenes/Sponza.tour\\n"
-			"[pak map]\\noutput map.pak\\n"
-			"map content/maps/main.map\\n";
+			"recipe 1\nentry content/scenes/Sponza.tour\n"
+			"[pak entry]\noutput entry.pak\n"
+			"scene content/scenes/Sponza.tour\n"
+			"[pak map]\noutput map.pak\n"
+			"map content/maps/main.map\n";
 		smvk::project::ProjectRecipe parsed;
 		smvk::project::RecipeDiagnostic error;
 		Check(smvk::project::ParseProjectRecipeText(spec, parsed, error)
@@ -839,9 +839,9 @@ void TestRecipeParsing() {
 			&& parsed.paks[1].HasContentSource(),
 			"recipe.parse.map-only-pak");
 		Check(!smvk::project::ParseProjectRecipeText(
-			"recipe 1\\nentry content/scenes/a.tour\\n"
-			"[pak a]\\noutput a.pak\\nscene content/scenes/a.tour\\n"
-			"map content/maps/not-map.txt\\n", parsed, error),
+			"recipe 1\nentry content/scenes/a.tour\n"
+			"[pak a]\noutput a.pak\nscene content/scenes/a.tour\n"
+			"map content/maps/not-map.txt\n", parsed, error),
 			"recipe.parse.map-rejects-other-extension");
 	}
 	// Line numbers are 1-based physical lines (the [pak world] header

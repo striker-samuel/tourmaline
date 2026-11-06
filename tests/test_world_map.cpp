@@ -127,11 +127,11 @@ int main() {
         "zero world ID rejected");
     {
         const std::string source =
-            "map 1 4886718345\\n"
-            "node 30 0 0 0 -256 0 512\\n"
-            "node 20 30 202 0 -1 0 0\\n"
-            "node 10 30 101 0 512 0 0\\n"
-            "node 40 30 404 1 0 0 0\\n";
+            "map 1 4886718345\n"
+            "node 30 0 0 0 -256 0 512\n"
+            "node 20 30 202 0 -1 0 0\n"
+            "node 10 30 101 0 512 0 0\n"
+            "node 40 30 404 1 0 0 0\n";
         tour::Map parsed;
         std::string error;
         Check(tour::mapcook::ParseMap(source, parsed, error)
@@ -143,14 +143,14 @@ int main() {
             && compiled.persistent.size() == 1,
             "authored map file feeds cooked tiles");
         Check(!tour::mapcook::ParseMap(
-            "map 1 99\\nnode 1 2 300 0 0 0 0\\n", parsed, error),
+            "map 1 99\nnode 1 2 300 0 0 0 0\n", parsed, error),
             "unknown authored parent fails closed");
         Check(!tour::mapcook::ParseMap(
-            "map 1 99\\nnode 1 0 300 0 0 0 0 trailing\\n",
+            "map 1 99\nnode 1 0 300 0 0 0 0 trailing\n",
             parsed, error), "trailing tokens fail closed");
         Check(!tour::mapcook::ParseMap(
-            "map 1 99\\nnode 1 2 300 0 0 0 0\\n"
-            "node 2 1 0 0 0 0 0\\n",
+            "map 1 99\nnode 1 2 300 0 0 0 0\n"
+            "node 2 1 0 0 0 0 0\n",
             parsed, error), "authored map ancestry cycle fails");
     }
     {
