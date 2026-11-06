@@ -61,8 +61,9 @@ def run(exe, scenario, warmup, repeat, timeout):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("list", "run"))
-    parser.add_argument("--catalog", type=Path, default=CATALOG)
+    parser.add_argument("action", choices=("list", "run", "scene-list", "scene-run"))
+    parser.add_argument("--catalog", type=Path, help="Catalog override (defaults depend on action)")
+    parser.add_argument("--renderer-exe", type=Path, help="Built Benchmark executable for real scenes")
     parser.add_argument("--scenario", action="append")
     parser.add_argument("--exe", type=Path)
     parser.add_argument("--repeat", type=int, default=5)
@@ -71,7 +72,37 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, default=ROOT / "out/perf/cpu")
     args = parser.parse_args(argv)
     try:
-        catalog = scenarios(args.catalog)
+        if args.action in ("scene-list", "scene-run"):
+            # Cooked scene playback requires the renderer; reuse authoritative
+            # validation, environment gates and frame measurement from perf_harness.
+            import perf_harness
+            scene_catalog = args.catalog or (ROOT / "benchmarks/scenarios.json")
+            entries = perf_harness.read_catalog(scene_catalog)
+            indexed = {item["id"]: item for item in entries}
+            if args.action == "scene-list":
+                for item in entries:
+                    print(f"{item['id']:28} {item.get('subsystem', ''):16} "
+                          f"{item.get('label', '')}")
+                return 0
+            if not args.renderer_exe or not args.renderer_exe.is_file():
+                raise ValueError("--renderer-exe must point to a built Benchmark binary")
+            selected = args.scenario or list(indexed)
+            if len(selected) != len(set(selected)) or any(x not in indexed for x in selected):
+                raise ValueError("unknown or duplicate real scene scenario")
+            if args.repeat < 1 or args.repeat > 100:
+                raise ValueError("repeat out of range")
+            for sid in selected:
+                target = args.output / "scenes" / sid
+                code = perf_harness.main(["bench", "--catalog", str(scene_catalog),
+                    "--scenario", sid, "--exe", str(args.renderer_exe.resolve()),
+                    "--repeat", str(args.repeat), "--timeout", str(args.timeout),
+                    "--output", str(target)])
+                if code != 0:
+                    return code or 1
+                print(f"{sid}: {target / 'result.json'}")
+            return 0
+
+        catalog = scenarios(args.catalog or CATALOG)
         if args.action == "list":
             for sid, item in catalog.items():
                 print(f"{sid:28} {item['instances']:>7} items  {item['camera']}")
