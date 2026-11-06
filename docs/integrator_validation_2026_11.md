@@ -10,15 +10,15 @@
 - [ ] Confirm all material encoding sites use the global `::KtxEncodeFormat` declaration with the required header visible (previous CI fix commits).
 - [ ] Verify no stale generated assets hide an incompatible binary/material serializer layout.
 
-## P0 — terrain migration (separate implementation PR)
+## P0 — legacy terrain compatibility (PR #225; no format migration)
 
-- [ ] Legacy `createNode -type terrain` + `TerrainPaint -ref` fixtures replay to the same tiles and channels.
+- [ ] Keep the existing `.tour` format and historical create-order references unchanged; legacy `createNode -type terrain` + `TerrainPaint -ref` fixtures replay to the same groups, tiles and channels.
 - [ ] Invalid/ambiguous creation-order refs fail explicitly without modifying terrain.
 - [ ] Multiple legacy terrain groups and scene merge preserve reference isolation.
 - [ ] Save/reload, undo/redo, and editor crash-recovery replay preserve paint.
-- [ ] World-enable toggle is independent of per-tile residency.
+- [ ] Any proposed world-enable change is evaluated separately; it must not rewrite legacy terrain files or paint references.
 - [ ] Paint across tile seams; evict/reload; verify editor/cooker parity.
-- [ ] Do not mark complete until corresponding implementation PR adds code and fixtures.
+- [ ] Do not mark complete until backward-compatibility code and fixtures are implemented; **no automatic legacy format migration**.
 
 ## P0 — bake input fingerprints and light direction
 
