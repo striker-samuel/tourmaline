@@ -1132,7 +1132,7 @@ void TestMaterialChannelComposition() {
             if (imagePath.extension() == ".texture") {
                 smvk::assets::TextureAsset texture;
                 Check(smvk::assets::LoadTextureAsset(imagePath, texture, error) &&
-                    texture.format == int(smvk::assets::KtxEncodeFormat::Bc7) &&
+                    texture.format == int(::KtxEncodeFormat::Bc7) &&
                     texture.colorspace == 1,
                     "material-compose.encoding-asset-settings");
                 imagePath = imagePath.parent_path() / texture.source;
