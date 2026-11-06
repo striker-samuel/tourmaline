@@ -177,6 +177,34 @@ int main()
 		Check(c.x == -1 && c.z == 0, "subcell.to-cell");
 	}
 
+	// ---- constexpr binary tile path / local XZ addressing ----
+	{
+		constexpr auto root = wp::WorldTilePath::FromXY(0, 0, 0);
+		constexpr auto tile = wp::WorldTilePath::FromXY(3, 2, 2);
+		constexpr auto maxTile = wp::WorldTilePath::FromXY(0x7fffffffu, 0x7fffffffu, 31);
+		static_assert(root.IsRoot() && root.Level() == 0);
+		static_assert(tile.Valid() && tile.IsXZTile() && tile.ToXY().x == 3
+			&& tile.ToXY().z == 2 && tile.Level() == 2);
+		static_assert(tile.Parent().Parent() == wp::WorldTilePath::FromXY(1, 1, 1));
+		static_assert(maxTile.Valid() && maxTile.ToXY().x == 0x7fffffffu
+			&& maxTile.ToXY().z == 0x7fffffffu);
+		static_assert(!wp::WorldTilePath::FromXY(4, 0, 2).Valid());
+		static_assert(!wp::WorldTilePath::FromXY(0, 0, 32).Valid());
+		static_assert(!maxTile.Child(0).Valid());
+		static_assert(!root.Parent().Valid());
+		static_assert(!root.Child(0).IsXZTile());
+		Check(tile.bits != wp::WorldTilePath::FromXY(3, 2, 3).bits,
+			"tilepath.level-is-part-of-identity");
+		const wp::WorldTileKey a{7, {1, -2}, tile};
+		const wp::WorldTileKey b{7, {1, -2}, root};
+		const wp::WorldTileKey c{7, {2, -2}, tile};
+		const wp::WorldTileKey d{8, {1, -2}, tile};
+		const wp::WorldTileKeyLess less{};
+		Check(!(a == b) && less(b, a) && !less(a, b),
+			"tilepath.distinct-depth-ordering");
+		Check(less(a, c) && less(a, d), "tilepath.cell-and-world-ordering");
+	}
+
 	// ---- field-brick alignment relationships ----
 	{
 		Check(wp::BricksPerRootCell(1.0) == 4,
