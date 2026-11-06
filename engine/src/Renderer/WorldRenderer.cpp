@@ -34,6 +34,7 @@
 
 #include <Engine/Renderer/ray_tracing_debug.h> // (#145) TLAS/BLAS inspector
 #include <Engine/Memory/alloc_config.h> // (#148) scoped snapshot buffer sizing
+#include <Engine/Memory/arena.h> // per-frame decal scratch
 #include <Engine/core.h>
 #include <Engine/platform.h> // readFile (exe-relative SPV loads)
 #include <Engine/debug_log.h> // SMVK_TRACE_LOG ([exposure] dashboards)
@@ -7813,17 +7814,50 @@ namespace engine {
 		// entirely unprofiled.
 		SMVK_PROFILE_RENDER("Decals_BuildUpload");
 
-		// Texture URI -> bindless cache for this frame (decal counts are
-		// small; the cache avoids re-walking clusters per decal when they
-		// share looks). Resolution mirrors the light-cookie path: cluster
-		// pool first match wins, unresolved refs warn once + skip.
-		std::unordered_map<std::string, int32_t> bindlessByUri;
+		// All per-frame scratch lives in the frame arena. Views into this
+		// memory must not escape the update (ResetFrameArena at frame start).
+		auto& scratch = smvk::FrameArena();
+		const size_t rowCount = m_world->scene.tables.decals.size();
+		if (rowCount == 0)
+			return 0;
+
+		// The scene table's storage order is not node order. Sort an arena
+		// copy, preserving the deterministic FP_MAX_DECALS selection.
+		auto* decalRows = static_cast<DecalRow*>(
+			scratch.Allocate(sizeof(DecalRow) * rowCount, alignof(DecalRow)));
+		std::uninitialized_copy(m_world->scene.tables.decals.begin(),
+			m_world->scene.tables.decals.end(), decalRows);
+		std::sort(decalRows, decalRows + rowCount,
+			[](const DecalRow& a, const DecalRow& b) {
+				return a.node < b.node;
+			});
+
+		// Open-addressed, frame-local texture URI cache: non-owning keys,
+		// no STL nodes, buckets or string copies. At most two lookups per
+		// row; a 4x-sized table keeps probing short.
+		struct TextureCacheEntry {
+			const std::string* uri = nullptr;
+			int32_t bindless = -1;
+		};
+		size_t cacheCapacity = 8;
+		while (cacheCapacity < rowCount * 4)
+			cacheCapacity *= 2;
+		auto* texCache = static_cast<TextureCacheEntry*>(
+			scratch.Allocate(sizeof(TextureCacheEntry) * cacheCapacity,
+				alignof(TextureCacheEntry)));
+		std::uninitialized_value_construct_n(texCache, cacheCapacity);
+		const size_t cacheMask = cacheCapacity - 1;
+
 		auto resolveTex = [&](const std::string& uri) -> int32_t {
 			if (uri.empty())
 				return -1;
-			auto hit = bindlessByUri.find(uri);
-			if (hit != bindlessByUri.end())
-				return hit->second;
+			size_t slot = static_cast<size_t>(
+				smvk::StringViewHash::Of(uri.data(), uri.size())) & cacheMask;
+			while (texCache[slot].uri) {
+				if (*texCache[slot].uri == uri)
+					return texCache[slot].bindless;
+				slot = (slot + 1) & cacheMask;
+			}
 			int32_t bindless = -1;
 			for (const auto& cp : m_world->clusters) {
 				if (!cp)
@@ -7835,27 +7869,21 @@ namespace engine {
 			}
 			if (bindless < 0 && m_decalTexWarnedUris.insert(uri).second)
 				std::cerr << "[Decals] texture '" << uri
-				<< "' unresolved (no cluster texture) - decal skipped\n";
-			bindlessByUri[uri] = bindless;
+					<< "' unresolved (no cluster texture) - decal skipped\\n";
+			texCache[slot] = { &uri, bindless };
 			return bindless;
 		};
 
-		// Node-ordered walk (deterministic frame to frame; the table's
-		// row storage order is not) capped at FP_MAX_DECALS.
-		std::vector<DecalRow> decalRows(
-			m_world->scene.tables.decals.begin(),
-			m_world->scene.tables.decals.end());
-		std::sort(decalRows.begin(), decalRows.end(),
-			[](const DecalRow& a, const DecalRow& b) {
-				return a.node < b.node; // one row per node: node is total
-			});
-
-		std::vector<smvk::ForwardPlusDecal> gpu;
-		gpu.reserve(std::min<size_t>(decalRows.size(), FP_MAX_DECALS));
-		for (const DecalRow& row : decalRows) {
+		const size_t gpuCapacity = std::min<size_t>(rowCount, FP_MAX_DECALS);
+		auto* gpu = static_cast<smvk::ForwardPlusDecal*>(
+			scratch.Allocate(sizeof(smvk::ForwardPlusDecal) * gpuCapacity,
+				alignof(smvk::ForwardPlusDecal)));
+		size_t gpuCount = 0;
+		for (size_t rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
+			const DecalRow& row = decalRows[rowIndex];
 			const NodeId node = row.node;
 			const uint32_t worldIdx = row.decal;
-			if (gpu.size() >= FP_MAX_DECALS)
+			if (gpuCount >= FP_MAX_DECALS)
 				break;
 			if (node >= m_world->scene.globalTransform.size()
 				|| worldIdx >= m_world->decalLocations.size())
@@ -7896,29 +7924,29 @@ namespace engine {
 
 			smvk::gi::Pcg32 yawRng(d->seed ? d->seed : 1u);
 			const float yaw = float(yawRng.Next()) * (6.2831853f / 4294967296.0f);
-			gpu.push_back(smvk::MakeDecal(center, axisZ, upHint,
+			std::construct_at(gpu + gpuCount++, smvk::MakeDecal(center, axisZ, upHint,
 				glm::vec3(halfX, halfY, halfZ), albedoTex, normalTex, flags,
 				glm::clamp(d->opacity, 0.0f, 1.0f), d->tint, 0.0f,
 				glm::vec3(0.0f), d->normalStrength, d->roughnessTarget,
 				d->metalTarget, d->depthFadeStart, yaw));
 		}
 
-		if (!gpu.empty()) {
+		if (gpuCount != 0) {
 			constexpr size_t DECAL_FRAME_STRIDE =
 				sizeof(smvk::ForwardPlusDecal) * FP_MAX_DECALS;
 			// Cull reads the decal buffer in compute; Main samples it in
 			// fragment (same upload pattern as the fpLights ring).
 			m_context->UploadDataToBuffer(
 				m_resources.decalsBuffer,
-				gpu.data(),
-				sizeof(smvk::ForwardPlusDecal) * gpu.size(),
+				gpu,
+				sizeof(smvk::ForwardPlusDecal) * gpuCount,
 				smvk::PipelineStage(smvk::PipelineStageBit_Compute | smvk::PipelineStageBit_Fragment),
 				smvk::AccessFlags::ShaderRead,
 				0,
 				currentFrame * DECAL_FRAME_STRIDE
 			);
 		}
-		m_decalFrameCount = (uint32_t)gpu.size();
+		m_decalFrameCount = (uint32_t)gpuCount;
 		SMVK_PROFILE_TAG("decals", m_decalFrameCount);
 		return m_decalFrameCount;
 	}
