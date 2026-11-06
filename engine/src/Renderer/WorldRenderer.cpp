@@ -6078,13 +6078,17 @@ namespace engine {
 		// Touches first: everything served this frame is idle-clock
 		// fresh (a level in use never evicts).
 		{
-			std::vector<std::pair<uint32_t, uint32_t>> drawn;
+			tour::mem::FrameVector<std::pair<uint32_t, uint32_t>> drawn{
+				tour::mem::LinearAllocatorSTL<std::pair<uint32_t, uint32_t>>{
+					&tour::mem::FrameAllocator()}};
 			m_world->ConsumeLodDrawn(drawn);
 			for (const auto& [mesh, level] : drawn)
 				m_geometryStreamer.NoteTouch(mesh, level, frame);
 		}
 
-		std::vector<std::pair<uint32_t, uint32_t>> demand;
+		tour::mem::FrameVector<std::pair<uint32_t, uint32_t>> demand{
+			tour::mem::LinearAllocatorSTL<std::pair<uint32_t, uint32_t>>{
+				&tour::mem::FrameAllocator()}};
 		m_world->ConsumeLodDemand(demand);
 		bool dirty = false;
 		uint64_t bytesThisFrame = 0;
