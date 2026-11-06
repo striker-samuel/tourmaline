@@ -71,6 +71,7 @@
 #include <Engine/Vfs/vfs.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Renderer/WorldRenderer.h>
+#include <Engine/WorldFields/WorldFieldProcedural.h>
 #include <Engine/App/world_snapshot.h>
 #include <Engine/Rendergraph/placement_pass.h>
 #include <Engine/Profile/profile.h>
@@ -4722,7 +4723,7 @@ namespace engine {
 	// pins). A near-ground band (the courtyard floor is ~y 0..1) plus
 	// two soft volumes — static world fog; time-varying fields are the
 	// CpuUpdated/GpuGenerated modes, not wired.
-	class WorldFogDensitySource final : public worldfields::IWorldFieldBrickSource
+	class WorldFogDensitySource final : public worldfields::ProceduralScalarBc4Source
 	{
 	public:
 		static float WorldDensity01(glm::vec3 p)
@@ -4736,52 +4737,11 @@ namespace engine {
 			return std::min(v, 1.0f);
 		}
 
-		bool GenerateBrick(const worldfields::WorldFieldDesc& field, uint32_t lod,
-			int32_t x, int32_t y, int32_t z,
-			std::byte* payload, size_t payloadBytes) override
+		float SampleNormalized(glm::vec3 p) const override
 		{
-			const uint32_t stored = worldfields::kBrickStoredRes;
-			const size_t blockBytes = worldfields::StoredBrickBlockBytes(stored, 4, 4, 8);
-			assert(payloadBytes == blockBytes
-				&& field.format == smvk::Format::BC4_UNorm);
-			if (payloadBytes != blockBytes)
-				return false;
-			// LOD voxel edge (base * 2^lod): every level samples the SAME
-			// world function (coarser bricks = sparser lattice positions,
-			// so the LOD fallback walk is consistent).
-			const float voxel = field.baseVoxelSizeMeters * float(1u << lod);
-			// Stored-texel world position: brick min corner + TEXEL
-			// CENTER offset (texel + 0.5 - halo) — the half-texel-aligned
-			// lattice hardware trilinear filters on (point-sampling
-			// corners would shift every filtered sample half a voxel);
-			// the halo samples the NEIGHBOR bricks' positions (the whole
-			// point of the stored border).
-			const glm::vec3 brickMin = field.originMeters
-				+ glm::vec3(float(x), float(y), float(z))
-					* (float(worldfields::kBrickInteriorRes) * voxel);
-			std::vector<uint8_t> texels(size_t(stored) * stored * stored);
-			size_t i = 0;
-			for (uint32_t tz = 0; tz < stored; ++tz)
-				for (uint32_t ty = 0; ty < stored; ++ty)
-					for (uint32_t tx = 0; tx < stored; ++tx) {
-						const glm::vec3 texel = brickMin
-							+ glm::vec3(float(tx) + 0.5f - float(worldfields::kBrickBorder),
-								float(ty) + 0.5f - float(worldfields::kBrickBorder),
-								float(tz) + 0.5f - float(worldfields::kBrickBorder)) * voxel;
-						// Sqrt density BEFORE quantization: the 8 bits
-						// concentrate where LOW densities live (fog's
-						// perceptual range); the shader's decode is
-						// scale * enc^2 (SqrtUNorm).
-						texels[i++] = uint8_t(
-							std::sqrt(WorldDensity01(texel)) * 255.0f + 0.5f);
-					}
-			// Per-z-slice BC4_UNORM blocks — exactly the atlas slot
-			// layout the region uploads expect.
-			return worldfields::Bc4EncodeBrick(texels.data(), stored,
-				payload, payloadBytes) == payloadBytes;
+			return WorldDensity01(p);
 		}
 	};
-
 	WorldFogDensitySource g_fogDensitySource;
 
 	} // namespace
