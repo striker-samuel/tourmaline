@@ -73,8 +73,12 @@ int main() {
         Check(SetLocalTransform(s, MakeNodeHandle(s, child), c), "double child");
         Check(SetLocalTransform(s, MakeNodeHandle(s, leaf), l), "double leaf");
         Check(recalculateGlobalTransforms(s), "double recalc");
-        Check(glm::length(glm::dvec3(GlobalTransformDouble(s, leaf)[3])
-            - glm::dvec3((r * c * l)[3])) < 0.0001, "double signed hierarchy");
+        const glm::mat4 floatExpected = glm::mat4(r) * glm::mat4(c) * glm::mat4(l);
+        Check(glm::length(glm::vec3(s.globalTransform[leaf][3])
+            - glm::vec3(floatExpected[3])) < 0.0001f,
+            "CPU hierarchy composes in float32");
+        Check(GlobalTransformDouble(s, leaf) == glm::dmat4(s.globalTransform[leaf]),
+            "double global mirror reflects float32 CPU result");
         glm::dmat4 bad(1.0);
         bad[3].x = std::numeric_limits<double>::quiet_NaN();
         Check(!SetLocalTransform(s, MakeNodeHandle(s, leaf), bad), "double reject NaN");
@@ -111,10 +115,11 @@ int main() {
               && loaded.localTransformDouble[0][3].x == a[3].x
               && loaded.localTransformDouble[1][3].x == b[3].x,
               "scene v1: precise locals roundtrip");
+        const glm::dmat4 floatComposed = glm::dmat4(glm::mat4(a) * glm::mat4(b));
         Check(loaded.globalTransformDouble.size() == 2
-              && loaded.globalTransformDouble[1][3].x == (a * b)[3].x
-              && loaded.globalTransformDouble[1][3].y == (a * b)[3].y,
-              "scene v1: precise global hierarchy roundtrip");
+              && loaded.globalTransformDouble[1][3].x == floatComposed[3].x
+              && loaded.globalTransformDouble[1][3].y == floatComposed[3].y,
+              "scene v1: float-composed global hierarchy roundtrip");
         std::remove(path);
     }
 
@@ -185,18 +190,19 @@ int main() {
         s.localTransformFloatShadow.resize(1);
         MarkAllRootsChanged(s);
         Check(recalculateGlobalTransforms(s), "double repair: recalculate");
-        Check(GlobalTransformDouble(s, root)[3].x == precise[3].x,
-              "double repair: root precision retained");
-        Check(GlobalTransformDouble(s, child)[3].x == precise[3].x
+        const double roundedX = double(float(precise[3].x));
+        Check(GlobalTransformDouble(s, root)[3].x == roundedX,
+              "float CPU root intentionally loses fractional precision");
+        Check(GlobalTransformDouble(s, child)[3].x == roundedX
               && GlobalTransformDouble(s, child)[3].y == 7.0,
-              "double repair: legacy child initialized");
+              "float CPU child inherits rounded parent");
         glm::dmat4 next = precise;
         next[3].x += 0.25;
         Check(SetLocalTransform(s, MakeNodeHandle(s, root), next),
               "double repair: setter after resized arrays");
         Check(recalculateGlobalTransforms(s), "double repair: updated");
-        Check(GlobalTransformDouble(s, child)[3].x == next[3].x,
-              "double repair: descendant keeps fractional delta");
+        Check(GlobalTransformDouble(s, child)[3].x == roundedX,
+              "float CPU descendant loses sub-ULP delta");
     }
 
     {

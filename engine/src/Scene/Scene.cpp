@@ -484,6 +484,10 @@ static void PrepareDoubleTransforms(Scene& scene)
   }
 }
 
+// CPU scene globals deliberately compose in float32; double storage and
+// GPU high/low position scaffolding remain available for future use.
+static constexpr bool kCpuDoubleTransformComposition = false;
+
 static void ComposeDoubleTransform(Scene& scene, int c)
 {
   const size_t n = size_t(c);
@@ -493,9 +497,17 @@ static void ComposeDoubleTransform(Scene& scene, int c)
     scene.localTransformFloatShadow[n] = scene.localTransform[n];
   }
   const int p = scene.hierarchy[n].parent;
-  scene.globalTransformDouble[n] = p < 0 ? scene.localTransformDouble[n]
-    : scene.globalTransformDouble[size_t(p)] * scene.localTransformDouble[n];
-  scene.globalTransform[n] = glm::mat4(scene.globalTransformDouble[n]);
+  if constexpr (kCpuDoubleTransformComposition) {
+    scene.globalTransformDouble[n] = p < 0 ? scene.localTransformDouble[n]
+      : scene.globalTransformDouble[size_t(p)] * scene.localTransformDouble[n];
+    scene.globalTransform[n] = glm::mat4(scene.globalTransformDouble[n]);
+  } else {
+    scene.globalTransform[n] = p < 0 ? scene.localTransform[n]
+      : scene.globalTransform[size_t(p)] * scene.localTransform[n];
+    // Keep consumers of the retained double array consistent with the
+    // intentionally float32-quantized CPU global transform.
+    scene.globalTransformDouble[n] = glm::dmat4(scene.globalTransform[n]);
+  }
 }
 
 glm::dmat4 GlobalTransformDouble(const Scene& scene, NodeId node)
