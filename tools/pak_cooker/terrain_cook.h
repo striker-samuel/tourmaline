@@ -10,6 +10,9 @@
 #include <string>
 #include <vector>
 
+namespace tour { struct Cluster; }
+namespace smvk { using ::tour::Cluster; }
+
 #include <Engine/Asset/pak.h>
 
 namespace terraincook {
@@ -17,6 +20,7 @@ namespace terraincook {
 // Cooks every terrain blob into writer (compression follows the writer's
 // mode). Returns false with err set on any validation/IO failure.
 bool CookTerrainBlobs(const std::string& terrainDir,
-	smvk::PakWriter& writer, std::string& err);
+	smvk::PakWriter& writer, std::string& err,
+    const std::vector<const smvk::Cluster*>& scenes = {});
 
 } // namespace terraincook
