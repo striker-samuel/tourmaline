@@ -1491,6 +1491,7 @@ public:
         uint32_t spotViewBase = UINT32_MAX;
         uint32_t pointViewBase = UINT32_MAX;
     };
+    void SetUiOverlay(smvk::ImGuiOverlay* overlay) { m_uiOverlay = overlay; }
     void SetSettingsUi(std::function<void(WorldRenderer&, const DebugUiFrame&)> callback) {
         m_settingsUiCallback = std::move(callback);
     }
@@ -2560,7 +2561,8 @@ public:
 	// Host demo-content opt-in (see SetDemoContentEnabled). Default OFF.
 	bool m_demoContent = false;
 
-	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
+	// The control element owns the overlay; this pointer is borrowed.
+	smvk::ImGuiOverlay* m_uiOverlay = nullptr;
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	// Resolved KHR_lights_punctual set for the loaded scene (snapshotted
@@ -4366,13 +4368,13 @@ private:
 	// retire through the RMI destroy) so a dropped selection never
 	// samples a dead view.
 	void DropTexDebugSelection() {
-		if (m_texDebugPreview != 0) {
-			m_imgui->RetireUserTexture(m_texDebugPreview);
+		if (m_texDebugPreview != 0 && m_uiOverlay) {
+			m_uiOverlay->RetireUserTexture(m_texDebugPreview);
 			m_texDebugPreview = 0;
 		}
 		for (ImTextureID& id : m_texDebugCubePreview) {
-			if (id != 0) {
-				m_imgui->RetireUserTexture(id);
+			if (id != 0 && m_uiOverlay) {
+				m_uiOverlay->RetireUserTexture(id);
 				id = 0;
 			}
 		}

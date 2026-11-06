@@ -80,7 +80,6 @@
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <Engine/Utils/shader_hot_reload.h> // the frame-tick consume (the hot-reload seam)
 #include <imgui.h>
-#include <Engine/ImGui/crystal_fusion_style.h>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -2993,33 +2992,7 @@ namespace engine {
 			}
 		}
 
-		// ImGui overlay - init after swapchain/rendergraph are ready.
-		// Uses dynamic rendering; no external RenderPass needed.
-		// GATED on the ui pass: an embedded host (the editor's WYSIWYG
-		// live view) drives this renderer with ui=false and owns its own
-		// ImGuiOverlay — a second context here would steal the host's
-		// event hook (SetImGuiEventHook below) and fight the host's.
-		if (m_passes.ui) {
-		m_imgui = smvk::mem::MakeProcess<smvk::ImGuiOverlay>();
-		smvk::ImGuiOverlayDesc imguiDesc{};
-		imguiDesc.fontPath = UI_FONT_PATH;
-		imguiDesc.fontBaseSize = UI_FONT_BASE_SIZE;
-		imguiDesc.colorFormat = LdrUnormSibling(); // must match the UI target above
-		if (!m_imgui->Init(*m_context, *m_swapchain, m_host.GetWindow(), imguiDesc)) {
-			std::cerr << "[WorldRenderer] Failed to init ImGuiOverlay - continuing without UI\n";
-			m_imgui.reset();
-		}
-		else {
-			m_uiDpiScale = m_imgui->AppliedDpiScale(); // auto = monitor content scale
-			// Match the editor's stone-gray and logo-accented render-settings UI.
-			tour::branding::ApplyCrystalFusionImGuiStyle();
-			// (Start-in-FPS + the ImGui event hook moved to the ELEMENT's
-			// onAttach — the mode switch is control; see
-			// WorldRendererElement::onAttach.)
-			// Feed every SDL event to the ImGui SDL3 backend (App::PollEvents).
-			m_host.SetImGuiEventHook(&smvk::ImGuiOverlay::ProcessEvent);
-		}
-		} // m_passes.ui (the embedded-host gate above)
+		// The owning WorldRendererElement initializes and registers the UI backend.
 
 		return true;
 	};
@@ -3117,10 +3090,7 @@ namespace engine {
 		m_captureImage = {};
 		m_lutTexture = {};
 		m_lutBindless = UINT32_MAX;
-		if (m_imgui) {
-			m_imgui->Shutdown();
-			m_imgui.reset();
-		}
+		// The element shuts down its ImGui backend after renderer teardown.
 	}
 
 	// ---------------------------------------------------------------------------
@@ -9012,7 +8982,7 @@ namespace engine {
 			// The overlay's user-texture binding: the backend's descriptor
 			// registration wrapped behind RHI-opaque types (a dead handle
 			// returns 0 there - the preview simply doesn't appear).
-			m_texDebugPreview = m_imgui->AddUserTexture(
+			m_texDebugPreview = m_uiOverlay->AddUserTexture(
 				t.handle, m_texDebugSampler);
 		}
 		else if (cube) {
@@ -9040,7 +9010,7 @@ namespace engine {
 					m_context->CreateImageView(img, vci);
 				if (!m_texDebugCubeViews[face].empty())
 					m_texDebugCubePreview[face] =
-						m_imgui->AddUserTextureView(
+						m_uiOverlay->AddUserTextureView(
 							m_texDebugCubeViews[face], m_texDebugSampler);
 			}
 		}
@@ -17109,10 +17079,10 @@ namespace engine {
 		// ---------------------------------------------------------------------
 		// ImGui - Build the UI before adding the rendergraph pass.
 		// ---------------------------------------------------------------------
-		if (m_passes.ui && m_imgui && m_imgui->IsInitialized() && m_viewportResources.ui.Valid()) {
+		if (m_passes.ui && m_uiOverlay && m_uiOverlay->IsInitialized() && m_viewportResources.ui.Valid()) {
 			// Target extent != window size when ui scale != 1: the overlay maps
 			// ImGui draw data + font raster density onto the UI target.
-			m_imgui->NewFrame(uiExtent);
+			m_uiOverlay->NewFrame(uiExtent);
 
 			// Fixed debug panel: full-height side bar on the Right (fixed
 			// side - dock cycling removed; the top-left corner stays free
@@ -18634,7 +18604,7 @@ namespace engine {
 			// alpha-blends it over the tonemapped swapchain at swap extent.
 			// Internally AddPass calls ImGui::Render() +
 			// ImGui_ImplVulkan_RenderDrawData inside the pass recording.
-			m_imgui->AddPass(*m_rendergraph,
+			m_uiOverlay->AddPass(*m_rendergraph,
 				m_viewportResources.ui.logicalView, uiExtent,
 				smvk::AttachmentLoadOp::Clear, smvk::ClearColor(0, 0, 0, 0));
 			// Native game HUD uses the SAME offscreen UI target and rendergraph
@@ -18664,7 +18634,7 @@ namespace engine {
 			//     .SetOffset(0,0)
 			//     .SetExtent(uiExtent)
 			//     .SetColor({m_viewportResources.ui.logicalView}, smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store)
-			//     .SetRecordingFunc([this](smvk::CommandBuffer& cmd){ m_imgui->Render(cmd); });
+			//     .SetRecordingFunc([this](smvk::CommandBuffer& cmd){ m_uiOverlay->Render(cmd); });
 		}
 
 		// INLINE RELEASE: the host's ImGui descriptor samples this output
@@ -19864,16 +19834,16 @@ namespace engine {
 			m_worldMapSampler = m_context->GetOrCreateSampler(sci);
 		}
 		m_worldMapHeightId =
-			m_imgui->AddUserTexture(m_worldMapHeightTex, m_worldMapSampler);
+			m_uiOverlay->AddUserTexture(m_worldMapHeightTex, m_worldMapSampler);
 	}
 
 	void WorldRenderer::DropWorldMapHeight() {
-		if (m_worldMapHeightId != 0 && m_imgui) {
+		if (m_worldMapHeightId != 0 && m_uiOverlay) {
 			// Deferred retire (see the overlay contract): the binding's
 			// descriptor set is referenced by the draw data of the frame
 			// that last drew the map background (+ in-flight submissions) —
 			// the immediate free bound a freed set (device lost).
-			m_imgui->RetireUserTexture(m_worldMapHeightId);
+			m_uiOverlay->RetireUserTexture(m_worldMapHeightId);
 			m_worldMapHeightId = 0;
 		}
 		m_worldMapHeightTex = {};

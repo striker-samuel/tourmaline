@@ -98,6 +98,8 @@ private:
 	smvk::App& m_host;
 	Input& m_input;
 	WorldRenderer m_renderer;
+	// Lifetime owner of the optional ImGui context.
+	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
 	// Control state (moved from the renderer):
 	bool m_uiMode = false;
 	bool m_disableControl = false;

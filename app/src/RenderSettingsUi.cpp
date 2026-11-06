@@ -87,8 +87,8 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
 							UI_SCALE_MIN, UI_SCALE_MAX, "%.2fx");
 						ImGui::SliderFloat("UI DPI scale", &m_uiDpiScale,
 							UI_DPI_MIN, UI_DPI_MAX, "%.2fx");
-						if (ImGui::IsItemEdited() && m_imgui)
-							m_imgui->ApplyDpiScale(m_uiDpiScale);
+						if (ImGui::IsItemEdited() && m_uiOverlay)
+							m_uiOverlay->ApplyDpiScale(m_uiDpiScale);
 						// Conventional order for the combo; indices remap to the
 						// sl-aligned DlssMode enum values.
 						const char* dlssNames[] = { "Off", "Ultra Performance", "Performance",
