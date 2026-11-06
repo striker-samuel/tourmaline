@@ -766,3 +766,108 @@ Standing pre-merge gate for the branch: the golden/dev-GPU pass
 (bistro/sponza captures + the sample's visual launch) — the headless
 suite + the live smokes on the dev machine covered everything else.
 ```
+
+## 2026-11-06 — latest 30 master commits audit (through `011bb351`)
+
+Scope: the 30 most recent commits on `master`, from `021ed9169` through
+`011bb351`. The checklist below reconciles newly merged work with the
+open gates in PRs #227, #231, #232 and #234. **Merged does not imply
+complete, and a test added does not imply a test executed.** Existing
+long-term work elsewhere in this TODO is not duplicated here.
+
+### Renderer — #234 / `bd83e1ed` (OPEN: distant-view sky-only output)
+
+- [x] Harden the filtered-index ring bounds check against unsigned wrap;
+  add distinct gated/empty/overflow/allocated batch diagnostics and
+  document reproduction and the audit decision tree.
+- [ ] Reproduce near and far packed-grid views on Vulkan hardware; read
+  **all** indirect commands and outcome counters *after synchronized
+  filter completion* for the same frame/slice. Distinguish triangle
+  rejection, gating, overflow and stale/partial readback before changing
+  clip math. See `docs/renderer/gfxfilter_far_view_investigation.md`.
+- [ ] Fix the confirmed cause of sky-only distant views; validate both
+  mesh-shader and `TOURMALINE_MESH=0` indexed rendering against actual
+  output. The earlier claim that all near-view indexed commands are
+  zero was based on incomplete readback and is **not proven**.
+- [ ] Remove temporary per-batch atomics/readbacks once diagnosed and
+  rerun *visually valid* grid/grid32 performance captures. Existing
+  far-view 79.9/95.6/320 ms readings are sky-plus-sliver, not valid
+  full-scene comparisons. Separately address the 4,096-draw cap with
+  the instancing work tracked by #224.
+- [ ] Audit the compute filter's static-position versus deformed/skinned
+  vertex-position mismatch before claiming skinned-path parity.
+- [ ] Run native build, shader compilation, and GPU/validation testing;
+  none was claimed by #234.
+
+### Map-authoring and tile streaming — #231 (PARTIAL; epochs 2–7 open)
+
+- [x] Add authored Map IDs/transforms, map text/MTL2 codecs, SMP8
+  map/persistent pages, TOC discovery, cooker and `.tourrecipe` map
+  packaging, renderer interest, synchronous ProjectScenes bridge and
+  headless map/provider tests. The later fixes correct a map-test
+  newline escape and a required forward declaration.
+- [ ] Cook, serialize and consume reusable static mesh BVHs, including
+  conservative LOD/cross-cell bounds and deterministic recook coverage.
+- [ ] Replace the synchronous, Cluster-backed ProjectScenes tile bridge
+  with production cooked-scene dependency loading, asynchronous
+  IO/decode, budgeted publication, retry/hysteresis and GPU-fence-safe
+  retirement; validate shared assets across tiles/paks.
+- [ ] Deliver GPU-scene deltas and tile-local spatial traversal instead
+  of whole-scene draw-item scans; validate multiple views, skinning,
+  LODs, shadows, the packed-grid draw cap and the large-grid performance
+  target. Coordinate with #224.
+- [ ] Add automatic apphost Map discovery/selection, Map editing UI,
+  full cutover/removal of legacy cluster paths and end-to-end tests.
+  See `docs/world_tile_streaming_epochs.md` and
+  `docs/map_streaming_integrator.md`.
+- [ ] Run the prescribed build/CTest matrix and real Map cook,
+  reload, corrupt-page, rapid-movement and GPU lifetime tests; the
+  author did not report running those integration gates.
+
+### World-owned direct scene instances — #232 (PARTIAL, not Cluster-free)
+
+- [x] Introduce independently leased asset backing, direct
+  generational World scene-node instances, single-active-Map guards,
+  source resource remapping, incremental mesh/material render-item
+  insertion/retirement, and focused headless tests. Later commits
+  harden invalid hierarchy/transform handling and resource cleanup.
+- [ ] Populate World resource records from independent page-backed
+  asset pools rather than existing Cluster-owned location entries.
+  Supply the cooked-scene loader and runtime resource/GPU residency
+  provider needed to switch the production map bridge.
+- [ ] Publish non-render component lifetime/bindings (animation,
+  audio, physics, GI/schema) and implement bake/lightmap/LOD parity,
+  direct GPU scene updates, static BVH reuse and safe delayed releases.
+- [ ] Finish the legacy-Cluster coexistence/cutover, including
+  incremental Cluster append/remove, entity ownership and eventual
+  dynamic-Cluster retirement; do not remove fail-closed protections
+  before the replacement is ready. See
+  `docs/incremental_world_scene_instances.md`.
+- [ ] Run the documented native build, `world_scene_instance_tests`,
+  related CTests, sanitizers and integration/GPU lifetime checks.
+  Tests are added and registered, but the author did not execute them.
+
+### Cooked terrain+object height envelope — #227 (CODE LANDED; GPU gate OPEN)
+
+- [x] Cook maximum-height terrain/placed-static-mesh tiles and the
+  packed cross-tile hierarchy; load/upload the R16 hierarchy and
+  implement coarse-to-fine directional terrain shadow traversal with
+  old-pak fallback. Add `TerrainOcclusionTests` source and wiring.
+- [ ] Compile PakLib/Pak and terrain HLSL on Linux and Windows; run
+  `TerrainOcclusionTests` and end-to-end terrain-only/placed-mesh
+  cooking with verification, rotated transforms and cross-tile cases.
+- [ ] GPU-compare old-pak fallback, hierarchy shadows, seams, low sun,
+  silhouette/over-shadowing and under-roof views; profile fragment
+  cost. Current 4m height-column reduction can over-shadow and
+  texel-center mesh rasterization can miss subtexel geometry.
+- [ ] Consider coverage-conservative voxelization or 1m leaf
+  verification and horizon filtering if those visual limitations
+  prove unacceptable; these are quality follow-ups, not claims that
+  the landed 2.5D algorithm is broken.
+  See `docs/cooked_world_height_envelope.md`.
+
+Audit note: the remaining individual commits in this 30-commit window
+are implementation, test, diagnostics and compilation fixes within
+these four tracks. Their completed changes are represented by the
+checked items above; they do not independently establish that the
+still-unrun integration/GPU gates have passed.
