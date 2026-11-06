@@ -108,6 +108,11 @@ void BuildSkinPaletteInto(const Scene& scene, const Skeleton& skeleton,
 }
 
 void BuildSkinPalette(const Scene& scene, const Skeleton& skeleton,
+	std::span<glm::mat4> palette) {
+	BuildSkinPaletteInto(scene, skeleton, palette);
+}
+
+void BuildSkinPalette(const Scene& scene, const Skeleton& skeleton,
 	std::vector<glm::mat4>& palette) {
 	palette.resize(skeleton.Count());
 	BuildSkinPaletteInto(scene, skeleton, palette);
