@@ -18,6 +18,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <map>
+#include <tuple>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1949,6 +1951,46 @@ namespace engine {
 				s_gates.lodHist[0], s_gates.lodHist[1], s_gates.lodHist[2],
 				s_gates.lodHist[3], s_gates.lodHist[4], s_gates.lodHist[5],
 				s_gates.lodHist[6], s_gates.lodHist[7]);
+		}
+		// Opt-in CPU candidate census for deciding whether repeated filtered
+		// draws warrant promotion to instanced indirect commands. This samples
+		// BEFORE GPU occlusion; it is an upper bound, never a visible-instance
+		// count or an estimate of actual command savings after GPU culling.
+		// No GPU scene DB rows, generations, or draw buffers are modified.
+		if (std::getenv("TOURMALINE_INSTANCE_METRICS") && (frameCounter_ % 300) == 0) {
+			const auto measureStart = std::chrono::steady_clock::now();
+			const auto& candidates = gfx.views[slot].draws;
+			using InstanceKey = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t,
+				uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
+			std::map<InstanceKey, uint32_t> groups;
+			for (const smvk::gfx::DrawRequest& draw : candidates) {
+				// Match mesh, material, shader state and per-draw resource
+				// values. Transforms deliberately differ between instances.
+				const InstanceKey key{draw.mesh, draw.material, draw.flags,
+					draw.drawSet, draw.lmChunk, draw.lmChartOffset,
+					draw.lmDelta, draw.userData, 0u};
+				++groups[key];
+			}
+			uint32_t repeatedCandidates = 0;
+			uint32_t repeatedGroups = 0;
+			uint32_t largestGroup = 0;
+			for (const auto& [key, count] : groups) {
+				(void)key;
+				largestGroup = std::max(largestGroup, count);
+				if (count > 1) {
+					repeatedCandidates += count;
+					++repeatedGroups;
+				}
+			}
+			const auto measureUs = std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - measureStart).count();
+			SMVK_TRACE_LOG(
+				"[InstanceMetrics] filtered candidates=%zu groups=%zu repeated_candidates=%u "
+				"repeated_groups=%u largest_group=%u candidate_command_upper_bound=%zu "
+				"census_us=%lld (pre-GPU-cull; NOT actual draw commands or visible instances)\\n",
+				candidates.size(), groups.size(), repeatedCandidates,
+				repeatedGroups, largestGroup, candidates.size() - groups.size(),
+				static_cast<long long>(measureUs));
 		}
 		const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
 		// NOTE: Release-visible trace (not SMVK_DEBUG_LOG): this is the only
