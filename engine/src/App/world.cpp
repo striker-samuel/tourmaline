@@ -912,6 +912,8 @@ using namespace ::smvk;
 
 	void World::UnloadCluster(Cluster& cluster)
 	{
+		if (worldSceneInstances.Count() != 0)
+			throw std::logic_error("cannot unload Cluster during direct World instance lifetime");
 		// The dynamic cluster is runtime-created state, never pak
 		// content: unloading it would drop every runtime entity — refuse.
 		if (cluster.isDynamic)
@@ -1142,6 +1144,8 @@ using namespace ::smvk;
 	void World::RegisterCluster(std::unique_ptr<Cluster> cluster)
 	{
 		assert(cluster != nullptr);
+		if (!cluster->isDynamic && worldSceneInstances.Count() != 0)
+			throw std::logic_error("cannot register content Cluster during direct World instance lifetime");
 		cluster->world = this;
 		gpuSceneClusterIds[cluster.get()] = nextGpuSceneClusterId++;
 		clusters.push_back(std::move(cluster));
@@ -1149,6 +1153,8 @@ using namespace ::smvk;
 
 	std::unique_ptr<Cluster> World::UnregisterCluster(Cluster& cluster)
 	{
+		if (worldSceneInstances.Count() != 0)
+			throw std::logic_error("cannot detach Cluster during direct World instance lifetime");
 		// Same refusal as UnloadCluster: the dynamic cluster is runtime
 		// state and stays with its world.
 		if (cluster.isDynamic)
