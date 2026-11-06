@@ -546,6 +546,13 @@ set_target_properties(CacheTests PROPERTIES
 
 add_test(NAME cache_tests COMMAND CacheTests)
 
+# Direct World-owned hierarchy instances and Cluster-free asset leases.
+add_executable(WorldSceneInstanceTests test_world_scene_instances.cpp)
+target_link_libraries(WorldSceneInstanceTests PRIVATE engine)
+set_target_properties(WorldSceneInstanceTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME world_scene_instance_tests COMMAND WorldSceneInstanceTests)
+
 # World-wide authored Map hierarchy (independent from local Scene graphs).
 add_executable(WorldMapTests test_world_map.cpp)
 target_link_libraries(WorldMapTests PRIVATE engine)
