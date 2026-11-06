@@ -1074,6 +1074,10 @@ using namespace ::smvk;
 				}
 			}
 		}
+		// The transitional cluster fold rebuilds every world node slot.
+		// Never retain region handles across that rebuild: generations from
+		// different Scene instances are not interchangeable.
+		regions = RegionRegistry{};
 		scene = Scene{};
 		meshLocations.clear();
 		materialLocations.clear();
@@ -1222,6 +1226,11 @@ using namespace ::smvk;
 					scene.hierarchy[root].firstChild = clusterRootNode;
 				}
 				scene.hierarchy[clusterRootNode].level += 1;
+				// Expose each imported subtree as a registered ownership
+				// boundary. This compatibility path still holds resources in
+				// Cluster pools until the asset-owner migration is complete.
+				regions.Register(scene, MakeNodeHandle(scene, clusterRootNode),
+					cluster.isDynamic ? RegionKind::Runtime : RegionKind::Scene);
 			}
 
 			// Remap node metadata (names index into nodeNames after the
