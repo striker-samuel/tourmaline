@@ -45,18 +45,17 @@ struct CookedMapPlacement {
     glm::dmat4 worldTransform{1.0};
 };
 
-struct CompiledMapTiles {
-    std::map<engine::worldpartition::WorldCellKey,
-             std::vector<CookedMapPlacement>,
-             struct MapCellLess> tiles;
-    std::vector<CookedMapPlacement> persistent;
-};
-
 struct MapCellLess {
     bool operator()(engine::worldpartition::WorldCellKey a,
                     engine::worldpartition::WorldCellKey b) const {
         return a.x < b.x || (a.x == b.x && a.z < b.z);
     }
+};
+
+struct CompiledMapTiles {
+    std::map<engine::worldpartition::WorldCellKey,
+             std::vector<CookedMapPlacement>, MapCellLess> tiles;
+    std::vector<CookedMapPlacement> persistent;
 };
 
 // Returns false for duplicate/zero IDs, invalid parents, cycles, nonfinite
