@@ -445,6 +445,7 @@ void TestSingleClusterBulkResolve() {
 	const int retired = addNode(c->scene, root, 1);
 	const auto light = c->CreateLight(SceneLight{});
 	SetLight(c->scene, NodeId(child), light.index());
+	UnlinkNodeFromParent(c->scene, retired);
 	RetireNodeSlot(c->scene, NodeId(retired));
 	const size_t sourceSlots = c->scene.hierarchy.size();
 	Cluster* ptr = c.get();
