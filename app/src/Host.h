@@ -86,7 +86,11 @@ struct ViewerOptions {
 	size_t memFrameMb = 0;
 	size_t memProcessMb = 0;
 	size_t memTransientMb = 0;
-	// Required packaged-runtime node slot cap (includes the synthetic root).
+	// Optional host-API node slot cap (0 = unbudgeted: node storage rides
+	// the PROCESS linear allocator, so the BYTE budget (--mem-process-mb /
+	// TOURMALINE_MEM_PROCESS_MB) owns capacity and its [OOM] fail-fast is
+	// the overflow abort; there is NO CLI flag - a host wanting an explicit
+	// slot cap calls World::ConfigureSceneNodeBudget itself).
 	size_t sceneNodeBudget = 0;
 	std::string presentMode; // empty = default; fifo|mailbox|immediate
 	bool presentSet = false; // --present/--vsync explicit (wins over --bench)
