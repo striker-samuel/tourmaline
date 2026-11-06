@@ -75,11 +75,23 @@ WorldPartition -> tile demand -> asset pages -> World instance activation
 deterministic `CompileMapTilePlacements` phase. It handles nested transforms,
 cycle/ID validation, persistent placements and canonical root-cell ownership.
 
-This is an in-memory cook preparation API only. It has NOT been connected to
-the editor `.tour` document format, Project Build, the production pak writer, the
-runtime loader or the GPU scene. It does NOT yet compute conservative bounds
-of a referenced Scene or cross-tile spatial visibility. Those must precede
-runtime use.
+The `.map` text reader, standalone `pak --map` mode, project-recipe
+`map <path>` directive, shared Project Build executor, and SMP8 MapTile pages
+now provide an end-to-end **format/packaging** path. MapTile TOC discovery
+selects one WorldId without loading other Maps' pages. Persistent placements
+are separate pages so they do not evict with camera-facing tiles.
+
+`app/src/MapSceneStreaming.h` is a production-API bridge that reads tile
+pages and instantiates their local Scene references through existing
+`ProjectScenes::InstantiatePrefab` / `RemoveScene`. It is available to
+hosts via `WorldRenderer::StreamingPartition()`, `SetActiveMapId()`, and
+`SetMapStreamingRadius()`; the host still has to own/register the bridge
+after renderer attachment and unbind it before provider destruction.
+
+**Incomplete:** the bridge still uses Cluster-based additive scene loading;
+it does NOT yet give incremental world-node mutation, background paging,
+independent asset-store ownership, spatial BVHs or visibility-driven GPU draws.
+The separate authored Map editor/persistence UI has not been implemented.
 
 ## Critical correctness rules
 
@@ -102,7 +114,9 @@ runtime use.
 ## Future gates
 
 - Wire Map persistence and editor placement UI.
-- Make Project Build cook Map and Scene artifacts independently.
+- Complete the Project Build's static BVH and full dependency derivation for
+  independently cooked local Scenes. (Map placement-page build is wired.)
 - Serialize tile placement manifest plus spatial BVH pages into SMP8.
-- Add stream provider IO/dependencies and activate instances incrementally.
+- Replace the synchronous legacy ProjectScenes bridge with budgeted
+  asynchronous IO + incremental World and GPU-scene publication.
 - Preserve standalone scene/prefab compatibility across the cutover.
