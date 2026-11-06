@@ -42,7 +42,6 @@
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/GI/regular_volume.h>
-#include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/DebugDraw.h>
 #include <Engine/Memory/arena_flat_array.h>
@@ -1496,7 +1495,16 @@ public:
         smvk::RenderGraph* graph = nullptr;
         smvk::LogicalImageViewHandle uiTarget{};
     };
-    void SetUiOverlay(smvk::ImGuiOverlay* overlay) { m_uiOverlay = overlay; }
+    // Host-provided texture preview callbacks; backend independent.
+    struct UiTextureService {
+        std::function<uint64_t(smvk::TextureHandle, uint32_t)> addTexture;
+        std::function<uint64_t(smvk::ImageViewHandle, uint32_t)> addView;
+        std::function<void(uint64_t)> retire;
+        std::function<void(float)> applyDpiScale;
+    };
+    void SetUiTextureService(UiTextureService service) {
+        m_uiTextureService = std::move(service);
+    }
     // Called by the host UI service between NewFrame and AddPass.
     void DrawSettingsUi(const DebugUiFrame& frame) {
         if (m_settingsUiCallback) m_settingsUiCallback(*this, frame);
@@ -2578,7 +2586,7 @@ public:
 	bool m_demoContent = false;
 
 	// The control element owns the overlay; this pointer is borrowed.
-	smvk::ImGuiOverlay* m_uiOverlay = nullptr;
+	UiTextureService m_uiTextureService{};
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	// Resolved KHR_lights_punctual set for the loaded scene (snapshotted
@@ -4361,18 +4369,18 @@ private:
 	// Heightmap preview (built lazily from the baked terrain's CPU
 	// heightfield; destroyed when the terrain goes away).
 	smvk::Holder<smvk::TextureHandle> m_worldMapHeightTex{};
-	ImTextureID m_worldMapHeightId = 0;
+	uint64_t m_worldMapHeightId = 0;
 	uint32_t m_worldMapSampler = UINT32_MAX; // preview sampler (clamp/linear, created once)
 	void DrawWorldMapWindow();
 	void BuildWorldMapHeight();
 	void DropWorldMapHeight();
 	smvk::TextureHandle m_texDebugSelected{}; // empty = none selected
-	ImTextureID m_texDebugPreview = 0;       // 2D: the overlay's user-texture binding (0 = none)
+	uint64_t m_texDebugPreview = 0;       // 2D: the overlay's user-texture binding (0 = none)
 	// Cubemap selection: 6 per-face 2D views (Holder = auto-destroy on
 	// reassign/reset) + their overlay bindings. Cube arrays (6*N layers)
 	// preview cube 0 (faces 0..5).
 	std::array<smvk::Holder<smvk::ImageViewHandle>, 6> m_texDebugCubeViews{};
-	std::array<ImTextureID, 6> m_texDebugCubePreview{};
+	std::array<uint64_t, 6> m_texDebugCubePreview{};
 	uint32_t m_texDebugSampler = UINT32_MAX; // preview sampler (clamp/linear, created once)
 	// Drops the preview binding(s) + selection (window closed / toggle
 	// off): the overlay's retire is DEFERRED (RetireUserTexture — the
@@ -4384,16 +4392,14 @@ private:
 	// retire through the RMI destroy) so a dropped selection never
 	// samples a dead view.
 	void DropTexDebugSelection() {
-		if (m_texDebugPreview != 0 && m_uiOverlay) {
-			m_uiOverlay->RetireUserTexture(m_texDebugPreview);
-			m_texDebugPreview = 0;
-		}
-		for (ImTextureID& id : m_texDebugCubePreview) {
-			if (id != 0 && m_uiOverlay) {
-				m_uiOverlay->RetireUserTexture(id);
-				id = 0;
-			}
-		}
+		if (m_texDebugPreview != 0 && m_uiTextureService.retire)
+            m_uiTextureService.retire(m_texDebugPreview);
+        m_texDebugPreview = 0;
+		for (uint64_t& id : m_texDebugCubePreview) {
+            if (id != 0 && m_uiTextureService.retire)
+                m_uiTextureService.retire(id);
+            id = 0;
+        }
 		for (auto& v : m_texDebugCubeViews)
 			v = nullptr; // Holder reset -> DestroyImageView
 		m_texDebugSelected = {};

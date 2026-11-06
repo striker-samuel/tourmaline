@@ -34,6 +34,7 @@
 #include <Engine/App/keybindings.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/Renderer/WorldRenderer.h>
+#include <Engine/ImGui/imgui_overlay.h>
 
 #include <glm/glm.hpp>
 

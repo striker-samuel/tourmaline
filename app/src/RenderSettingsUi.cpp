@@ -89,8 +89,8 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
 							UI_SCALE_MIN, UI_SCALE_MAX, "%.2fx");
 						ImGui::SliderFloat("UI DPI scale", &m_uiDpiScale,
 							UI_DPI_MIN, UI_DPI_MAX, "%.2fx");
-						if (ImGui::IsItemEdited() && m_uiOverlay)
-							m_uiOverlay->ApplyDpiScale(m_uiDpiScale);
+						if (ImGui::IsItemEdited() && m_uiTextureService.applyDpiScale)
+                            m_uiTextureService.applyDpiScale(m_uiDpiScale);
 						// Conventional order for the combo; indices remap to the
 						// sl-aligned DlssMode enum values.
 						const char* dlssNames[] = { "Off", "Ultra Performance", "Performance",
@@ -1611,8 +1611,8 @@ namespace engine {
 			// The overlay's user-texture binding: the backend's descriptor
 			// registration wrapped behind RHI-opaque types (a dead handle
 			// returns 0 there - the preview simply doesn't appear).
-			m_texDebugPreview = m_uiOverlay->AddUserTexture(
-				t.handle, m_texDebugSampler);
+			m_texDebugPreview = m_uiTextureService.addTexture
+                ? m_uiTextureService.addTexture(t.handle, m_texDebugSampler) : 0;
 		}
 		else if (cube) {
 			// A dead view (destroyed, generation bumped) returns 0 - that
@@ -1638,9 +1638,9 @@ namespace engine {
 				m_texDebugCubeViews[face] =
 					m_context->CreateImageView(img, vci);
 				if (!m_texDebugCubeViews[face].empty())
-					m_texDebugCubePreview[face] =
-						m_uiOverlay->AddUserTextureView(
-							m_texDebugCubeViews[face], m_texDebugSampler);
+					m_texDebugCubePreview[face] = m_uiTextureService.addView
+                        ? m_uiTextureService.addView(
+                            m_texDebugCubeViews[face], m_texDebugSampler) : 0;
 			}
 		}
 	}
@@ -2043,17 +2043,18 @@ namespace engine {
 			sci.addressW = smvk::AddressMode::ClampToEdge;
 			m_worldMapSampler = m_context->GetOrCreateSampler(sci);
 		}
-		m_worldMapHeightId =
-			m_uiOverlay->AddUserTexture(m_worldMapHeightTex, m_worldMapSampler);
+		m_worldMapHeightId = m_uiTextureService.addTexture
+            ? m_uiTextureService.addTexture(m_worldMapHeightTex, m_worldMapSampler) : 0;
 	}
 
 	void WorldRenderer::DropWorldMapHeight() {
-		if (m_worldMapHeightId != 0 && m_uiOverlay) {
+		if (m_worldMapHeightId != 0) {
 			// Deferred retire (see the overlay contract): the binding's
 			// descriptor set is referenced by the draw data of the frame
 			// that last drew the map background (+ in-flight submissions) —
 			// the immediate free bound a freed set (device lost).
-			m_uiOverlay->RetireUserTexture(m_worldMapHeightId);
+			if (m_uiTextureService.retire)
+                m_uiTextureService.retire(m_worldMapHeightId);
 			m_worldMapHeightId = 0;
 		}
 		m_worldMapHeightTex = {};

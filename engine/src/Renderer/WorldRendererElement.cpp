@@ -40,7 +40,20 @@ namespace engine {
 			m_renderer.m_uiDpiScale = m_imgui->AppliedDpiScale();
 			tour::branding::ApplyCrystalFusionImGuiStyle();
 			m_host.SetImGuiEventHook(&smvk::ImGuiOverlay::ProcessEvent);
-			m_renderer.SetUiOverlay(m_imgui.operator->());
+			m_renderer.SetUiTextureService({
+                [this](smvk::TextureHandle texture, uint32_t sampler) -> uint64_t {
+                    return m_imgui ? m_imgui->AddUserTexture(texture, sampler) : 0;
+                },
+                [this](smvk::ImageViewHandle view, uint32_t sampler) -> uint64_t {
+                    return m_imgui ? m_imgui->AddUserTextureView(view, sampler) : 0;
+                },
+                [this](uint64_t id) {
+                    if (m_imgui && id) m_imgui->RetireUserTexture(id);
+                },
+                [this](float scale) {
+                    if (m_imgui) m_imgui->ApplyDpiScale(scale);
+                }
+            });
             m_renderer.SetUiFrameService([this](WorldRenderer& renderer,
                 const WorldRenderer::DebugUiFrame& frame) {
                 if (!m_imgui || !frame.graph) return;
@@ -65,7 +78,7 @@ namespace engine {
 	void WorldRendererElement::onDetach() {
 		m_renderer.onDetach();
 	m_renderer.SetUiFrameService({});
-    m_renderer.SetUiOverlay(nullptr);
+    m_renderer.SetUiTextureService({});
 	if (m_imgui) {
 		m_imgui->Shutdown();
 		m_imgui.reset();
