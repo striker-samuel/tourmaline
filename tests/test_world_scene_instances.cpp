@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -45,7 +46,10 @@ int main() {
     const int child = addNode(source, sr, 1);
     setNodeName(source, sr, "Building");
     setNodeName(source, child, "Room");
-    source.localTransform[child][3].x = 3.0f;
+    glm::dmat4 local(1.0);
+    local[3][0] = 3.0;
+    CHECK(tour::scene::SetLocalTransform(
+        source, MakeNodeHandle(source, NodeId(child)), local));
 
     tour::World world;
     CHECK(world.SetActiveMapIdentity(100));
