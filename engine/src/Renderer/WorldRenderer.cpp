@@ -13605,7 +13605,7 @@ namespace engine {
             tour::DebugDepthMode depth;
             smvk::PrimitiveTopology topology;
         };
-        std::vector<DebugDrawRange> debugDrawRanges;
+        tour::mem::FrameVector<DebugDrawRange> debugDrawRanges{tour::mem::LinearAllocatorSTL<DebugDrawRange>{&tour::mem::FrameAllocator()}};
         uint32_t debugDrawFlight = 0;
         const bool transientDebugDraw = m_debugDrawEnabled &&
             static_cast<bool>(m_debugDrawSource);
@@ -13618,7 +13618,7 @@ namespace engine {
             // debug drawing is disabled. Tessellation is cached at Add().
             m_shapeScene.AppendDraws(m_debugDrawCpu);
             if (!m_debugDrawCpu.Empty()) {
-                std::vector<smvk::DebugLineVertex> vertices;
+                tour::mem::FrameVector<smvk::DebugLineVertex> vertices{tour::mem::LinearAllocatorSTL<smvk::DebugLineVertex>{&tour::mem::FrameAllocator()}};
                 vertices.reserve(m_debugDrawCpu.Size() * 2 +
                     m_debugDrawCpu.PointCount());
                 for (const tour::DebugLine& line : m_debugDrawCpu.Lines()) {
@@ -16498,7 +16498,7 @@ namespace engine {
 		// heightfield was off, which is the default).
 		if (m_cubemapEnabled && m_cubemapShowBalls
 			&& !m_cubemapProbes.empty()) {
-			std::vector<smvk::probeball::ProbeBallRow> ballRows;
+			tour::mem::FrameVector<smvk::probeball::ProbeBallRow> ballRows{tour::mem::LinearAllocatorSTL<smvk::probeball::ProbeBallRow>{&tour::mem::FrameAllocator()}};
 			ballRows.reserve(m_cubemapProbes.size());
 			for (const CubemapProbeGpu& p : m_cubemapProbes) {
 				smvk::probeball::ProbeBallRow row{};
@@ -16544,13 +16544,13 @@ namespace engine {
 				// moves/edits volumes live, and the upload is tiny.
 				if (m_world
 					&& !m_world->scene.tables.giVolumes.empty()) {
-					std::vector<uint32_t> nodes;
+					tour::mem::FrameVector<uint32_t> nodes{tour::mem::LinearAllocatorSTL<uint32_t>{&tour::mem::FrameAllocator()}};
 					nodes.reserve(m_world->scene.tables.giVolumes.size());
 					for (const GiVolumeRow& row
 						: m_world->scene.tables.giVolumes)
 						nodes.push_back(row.node);
 					std::sort(nodes.begin(), nodes.end());
-					std::vector<smvk::giprobe::GiProbeInstance> rows;
+					tour::mem::FrameVector<smvk::giprobe::GiProbeInstance> rows{tour::mem::LinearAllocatorSTL<smvk::giprobe::GiProbeInstance>{&tour::mem::FrameAllocator()}};
 					for (size_t ni = 0; ni < nodes.size() && ni < 8; ++ni) {
 						const uint32_t node = nodes[ni];
 						if (node >= m_world->scene.globalTransform.size())
