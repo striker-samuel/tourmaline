@@ -548,7 +548,8 @@ namespace app {
 			renderer.SetWorldSource(
 				[preloadFuture, projectFutures, entryPakIndex,
 					entrySceneName, entryByIdentity, discoveryScene,
-					sceneIndex, rendererRaw, worldHandle,
+					sceneIndex, nodeBudget = cfg.cli.sceneNodeBudget,
+					rendererRaw, worldHandle,
 					session]
 				(
 					smvk::ResourceManager& ctx,
@@ -641,7 +642,7 @@ namespace app {
 						return nullptr;
 					world = LoadProjectWorld(std::move(preloads),
 						entryIdx, entryName, ctx, contentVfs,
-						rendererRaw->GetTextureStreamer(), session.get());
+						rendererRaw->GetTextureStreamer(), session.get(), nodeBudget);
 				}
 				else {
 					PakPreload entryPreload = preloadFuture->get();
@@ -652,7 +653,7 @@ namespace app {
 						ctx,
 						contentVfs,
 						rendererRaw->GetTextureStreamer(),
-						*session
+						*session, nodeBudget
 						);
 				}
 				// Load the packaged entry scene's retained shapes. Additional
