@@ -32,7 +32,7 @@ using SceneTileKeyLess = WorldTileKeyLess;
 class SceneTileProvider final : public IWorldStreamProvider {
 public:
     using RequestCallback = std::function<void(const SceneTileDescriptor&, DesiredResidency, uint64_t ticket)>;
-    using RetireCallback = std::function<void(const SceneTileDescriptor&)>;
+    using RetireCallback = std::function<bool(const SceneTileDescriptor&)>;
 
     const char* ProviderName() const override { return "SceneTiles"; }
 
@@ -190,10 +190,13 @@ public:
         // the host owns the actual retirement fence and asset release.
         for (auto it = resident_.begin(); it != resident_.end();) {
             if (desired_.count(*it)) { ++it; continue; }
-            auto old = it++;
-            const auto desc = manifest_.find(*old);
-            if (retire_ && desc != manifest_.end()) retire_(desc->second);
-            resident_.erase(old);
+            const auto desc = manifest_.find(*it);
+            if (retire_ && desc != manifest_.end()
+                && !retire_(desc->second)) {
+                ++it; // failed retirement must remain resident for retry
+                continue;
+            }
+            it = resident_.erase(it);
         }
         // A canceled IO request must not be treated as a newly resident tile.
         // Backend cancellation is the caller's responsibility; subsequent
