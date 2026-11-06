@@ -1074,7 +1074,15 @@ using namespace ::smvk;
 				}
 			}
 		}
-		scene = Scene{};
+		// Single-cluster resolves retain source slot identity. A bulk copy
+		// replaces the per-node addNode allocation/copy/remap passes.
+		// We cannot move Cluster::scene: it is the durable owner used by
+		// later resolves, unloading and runtime entity updates.
+		const bool singleCluster = clusters.size() == 1;
+		if (singleCluster)
+			scene = clusters.front()->scene;
+		else
+			scene = Scene{};
 		meshLocations.clear();
 		materialLocations.clear();
 		textureLocations.clear();
@@ -1107,17 +1115,27 @@ using namespace ::smvk;
 		// an unauthored cluster never shadows an authored one).
 		bool renderTaken = false;
 
-		// World root node (parent = -1)
+		// Append the synthetic root to the copied single-cluster scene.
+		// Do not recycle a retired source slot (node ids must stay 1:1).
+		std::vector<uint32_t> savedFreeList;
+		if (singleCluster) {
+			savedFreeList = std::move(scene.nodeFreeList);
+			scene.nodeFreeList.clear();
+		}
 		const int root = addNode(scene, -1, 0);
+		if (singleCluster)
+			scene.nodeFreeList = std::move(savedFreeList);
 		scene.localTransform[root] = glm::mat4(1.0f);
 		scene.globalTransform[root] = glm::mat4(1.0f);
-		scene.staticRoot.assign(scene.hierarchy.size(), 0);
-		scene.staticNode.assign(scene.hierarchy.size(), 0);
-		scene.noLightmap.assign(scene.hierarchy.size(), 0);
-		scene.lightmap.assign(scene.hierarchy.size(), 0);
-		scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
-		scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
-		scene.hidden.assign(scene.hierarchy.size(), 0);
+		if (!singleCluster) {
+			scene.staticRoot.assign(scene.hierarchy.size(), 0);
+			scene.staticNode.assign(scene.hierarchy.size(), 0);
+			scene.noLightmap.assign(scene.hierarchy.size(), 0);
+			scene.lightmap.assign(scene.hierarchy.size(), 0);
+			scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
+			scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
+			scene.hidden.assign(scene.hierarchy.size(), 0);
+		}
 
 		for (auto& clusterPtr : clusters) {
 			Cluster& cluster = *clusterPtr.get();
@@ -1132,13 +1150,18 @@ using namespace ::smvk;
 			const uint32_t clusterSlotCount =
 				static_cast<uint32_t>(cs.hierarchy.size());
 			std::vector<NodeId> nodeMap(clusterSlotCount, UINT32_MAX);
+			if (singleCluster) {
+				for (uint32_t s = 0; s < clusterSlotCount; ++s)
+					if (IsLiveSlot(cs, s))
+						nodeMap[s] = s;
+			}
 
 			// Pass 1: allocate a world slot per LIVE cluster node and
 			// copy its payload (level as-is; links stay default until
 			// pass 2). addNode appends sequentially on the freshly
 			// wiped scene, so world ids match the old dense layout
 			// exactly until the world scene itself grows holes.
-			for (uint32_t s = 0; s < clusterSlotCount; ++s) {
+			if (!singleCluster) for (uint32_t s = 0; s < clusterSlotCount; ++s) {
 				if (!IsLiveSlot(cs, s))
 					continue;
 				const int dst = addNode(scene, -1, cs.hierarchy[s].level);
@@ -1187,7 +1210,7 @@ using namespace ::smvk;
 				if (e.alive && e.owner == &cluster
 						&& e.clusterNode < nodeMap.size())
 					e.mergedNode = nodeMap[e.clusterNode];
-			for (uint32_t s = 0; s < clusterSlotCount; ++s) {
+			if (!singleCluster) for (uint32_t s = 0; s < clusterSlotCount; ++s) {
 				if (nodeMap[s] == UINT32_MAX)
 					continue;
 				const Hierarchy& sh = cs.hierarchy[s];
@@ -1231,6 +1254,7 @@ using namespace ::smvk;
 			// every node from allocation), so the pre-pass-1 offset left
 			// every merged name pointing into the auto-name block
 			// (world_entity_tests: resolve/schemafold name-at-row-node).
+			if (!singleCluster) {
 			const uint32_t clusterNameOffset =
 				static_cast<uint32_t>(scene.nodeNames.size());
 			scene.nodeNames.insert(
@@ -1245,6 +1269,7 @@ using namespace ::smvk;
 					SetNodeNameIndex(scene, nodeMap[s],
 						cs.metadata[s].name + clusterNameOffset);
 				SetNodeUuidRaw(scene, nodeMap[s], cs.metadata[s].uuid);
+			}
 			}
 
 			// Remap the mesh table: cluster-local handle index -> world
