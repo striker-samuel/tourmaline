@@ -6219,9 +6219,14 @@ namespace engine {
 		SMVK_PROFILE_STREAM("TextureMeta_RebuildUpload");
 		// Typed copy (streamer -> gfx layouts are deliberately decoupled;
 		// the loop is the trust boundary).
-		const std::vector<smvk::TextureStreamer::TextureSlotMeta> slots =
-			m_textureStreamer->BuildSlotMeta();
-		std::vector<smvk::gfx::TextureMeta> meta(slots.size());
+		tour::mem::FrameVector<smvk::TextureStreamer::TextureSlotMeta> slots{
+			tour::mem::LinearAllocatorSTL<smvk::TextureStreamer::TextureSlotMeta>{
+				&tour::mem::FrameAllocator()}};
+		m_textureStreamer->BuildSlotMeta(slots);
+		tour::mem::FrameVector<smvk::gfx::TextureMeta> meta(
+			slots.size(), smvk::gfx::TextureMeta{},
+			tour::mem::LinearAllocatorSTL<smvk::gfx::TextureMeta>{
+				&tour::mem::FrameAllocator()});
 		for (size_t i = 0; i < slots.size(); ++i) {
 			meta[i].longSide = slots[i].longSide;
 			meta[i].fullMips = slots[i].fullMips;
