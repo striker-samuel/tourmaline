@@ -245,12 +245,27 @@ struct MaterialValues
     float4 ambient;          // 0  sky-ambient factor: skyColor * skyLux/PI (albedo multiplier, lux convention)
     float4 diffuse;          // 16 baseColorFactor
     int4 tex;                // 32 x=baseColor, y=metallicRoughness, z=normal, w=occlusion
-    int4 tex2;               // 48 x=emissive, yzw unused (-1)
+    int4 tex2;               // 48 x=emissive, y=cavity, z=cavity strength (0..1000, -1=1), w=packed channel selectors
     float4 params;           // 64 x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
     float4 params2;          // 80 x=occlusionStrength, y=normalScale, z=emissiveStrength, w=alphaMode (0=Opaque,1=Mask,2=Blend)
     float4 emissiveFactor;   // 96 xyz=emissiveFactor, w=material flags (MATERIAL_* defines below)
     int4 layerMaterials;     // 112 x/y/z = layer 1..3 material ids (this material is layer 0; -1 = none), w = layer mode (0 = vertex-color tint, 1..4 = layered with N layers)
 };
+
+// Channel selector word (tex2.w): -1 means legacy glTF defaults.
+// Four 2-bit selections: AO bits 0..1, cavity 2..3,
+// roughness 4..5, metallic 6..7. 0=R,1=G,2=B,3=A.
+// Preserves the 128-byte MaterialValues layout and existing pak behavior.
+int MaterialChannelIndex(int packed, uint shift, int legacyChannel)
+{
+    return packed < 0 ? legacyChannel : ((packed >> shift) & 3);
+}
+
+float MaterialChannelSample(float4 rgba, int channel)
+{
+    return channel == 0 ? rgba.r : channel == 1 ? rgba.g :
+        channel == 2 ? rgba.b : rgba.a;
+}
 
 // MaterialValues::emissiveFactor.w bit flags (the old pad word; the
 // C++ mirror is mesh.h's kMaterialFlag* + MaterialFlagsToWord/FromWord).

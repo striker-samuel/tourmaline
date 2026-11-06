@@ -207,8 +207,8 @@ EvaluatedPbrMaterial EvaluatePbrMaterial(int materialId, PSInBridge IN)
     {
         float4 mrSample = textures[NonUniformResourceIndex((uint) ml0.tex.y)]
             .Sample(samplers[0], IN.uv);
-        roughMult = mrSample.g;
-        metalMult = mrSample.b;
+        roughMult = MaterialChannelSample(mrSample, MaterialChannelIndex(ml0.tex2.w, 4u, 1));
+        metalMult = MaterialChannelSample(mrSample, MaterialChannelIndex(ml0.tex2.w, 6u, 2));
     }
     if (layered)
     {
@@ -226,8 +226,13 @@ EvaluatedPbrMaterial EvaluatePbrMaterial(int materialId, PSInBridge IN)
                 continue;
             float2 gb = float2(1.0f, 1.0f);
             if (idx >= 0)
-                gb = textures[NonUniformResourceIndex((uint) idx)]
-                    .Sample(samplers[0], IN.uv).gb;
+                {
+                    float4 sampleMR = textures[NonUniformResourceIndex((uint) idx)]
+                        .Sample(samplers[0], IN.uv);
+                    int selectors = li == 0 ? ml0.tex2.w : li == 1 ? ml1.tex2.w : li == 2 ? ml2.tex2.w : ml3.tex2.w;
+                    gb = float2(MaterialChannelSample(sampleMR, MaterialChannelIndex(selectors, 4u, 1)),
+                        MaterialChannelSample(sampleMR, MaterialChannelIndex(selectors, 6u, 2)));
+                }
             roughMult += gb.x * w;
             metalMult += gb.y * w;
         }

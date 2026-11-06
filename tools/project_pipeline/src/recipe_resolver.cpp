@@ -273,6 +273,7 @@ bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
 		return false;
 	}
 	out.projectName = recipe.projectName;
+	out.materialPacking = recipe.materialPacking;
 	out.bakeGi = recipe.bakeGi;
 	out.bakeCubemaps = recipe.bakeCubemaps;
 	out.bakeSdf = recipe.bakeSdf;

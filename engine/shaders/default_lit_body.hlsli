@@ -546,7 +546,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // ---------------------------------------------------------------
     // Decode material indices and factors
     // tex: x=baseColor, y=metallicRoughness, z=normal, w=occlusion
-    // tex2: x=emissive
+    // tex2: x=emissive, y=cavity, z=cavity strength, w=channel selectors (-1=legacy)
     // params: x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
     // params2: x=occlusionStrength, y=normalScale, z=emissiveStrength
     // (Layered: factors blend below; indices are per-layer.)
@@ -556,6 +556,21 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     int normalIdx = mat.tex.z;
     int occIdx = mat.tex.w;
     int emissiveIdx = mat.tex2.x;
+    int cavityIdx = mat.tex2.y;
+
+    // Fast path for recipe-composed RGBA scalar maps: a single texture
+    // fetch supplies AO (R), cavity (G), roughness (B) and metallic (A).
+    // The selector word and shared index are persisted with the material,
+    // so legacy glTF and independently authored slots take the old path.
+    const bool canonicalScalar = !layered && mrIdx >= 0 &&
+        mrIdx == occIdx && mrIdx == cavityIdx &&
+        mat.tex2.w == ((1 << 2) | (2 << 4) | (3 << 6));
+    float4 canonicalScalarSample = float4(1, 1, 1, 1);
+    if (canonicalScalar)
+    {
+        Texture2D packedScalar = textures[NonUniformResourceIndex((uint)mrIdx)];
+        canonicalScalarSample = packedScalar.Sample(samplers[0], IN.uv);
+    }
 
     float alphaCutoff = mat.params.x;
     float metallicFactor = layered
@@ -665,12 +680,20 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float roughness = roughnessFactor;
     if (!layered && mrIdx >= 0)
     {
-        uint slot = (uint) mrIdx;
-        Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
-        float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
-        // Spec says: roughness = G * factor, metallic = B * factor
-        roughness *= mrSample.g;
-        metallic *= mrSample.b;
+        if (canonicalScalar)
+        {
+            roughness *= canonicalScalarSample.b;
+            metallic *= canonicalScalarSample.a;
+        }
+        else
+        {
+            uint slot = (uint) mrIdx;
+            Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
+            float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
+            // Legacy glTF uses G=roughness, B=metallic.
+            roughness *= MaterialChannelSample(mrSample, MaterialChannelIndex(mat.tex2.w, 4u, 1));
+            metallic *= MaterialChannelSample(mrSample, MaterialChannelIndex(mat.tex2.w, 6u, 2));
+        }
     }
     if (layered)
     {
@@ -690,7 +713,9 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 uint slot = (uint) idx;
                 Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
                 float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
-                gb = mrSample.gb;
+                int selectors = li == 0 ? ml0.tex2.w : li == 1 ? ml1.tex2.w : li == 2 ? ml2.tex2.w : ml3.tex2.w;
+                gb = float2(MaterialChannelSample(mrSample, MaterialChannelIndex(selectors, 4u, 1)),
+                    MaterialChannelSample(mrSample, MaterialChannelIndex(selectors, 6u, 2)));
             }
             roughMult += gb.x * w;
             metalMult += gb.y * w;
@@ -838,9 +863,14 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float occlusion = 1.0f;
     if (!layered && occIdx >= 0)
     {
-        uint slot = (uint) occIdx;
-        Texture2D occTex = textures[NonUniformResourceIndex(slot)];
-        float occSample = occTex.Sample(samplers[0], IN.uv).r;
+        float occSample = canonicalScalar ? canonicalScalarSample.r : 1.0f;
+        if (!canonicalScalar)
+        {
+            uint slot = (uint) occIdx;
+            Texture2D occTex = textures[NonUniformResourceIndex(slot)];
+            occSample = MaterialChannelSample(occTex.Sample(samplers[0], IN.uv),
+                MaterialChannelIndex(mat.tex2.w, 0u, 0));
+        }
         occlusion = lerp(1.0f, occSample, occlusionStrength);
     }
     if (layered)
@@ -859,11 +889,58 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             {
                 uint slot = (uint) idx;
                 Texture2D occTex = textures[NonUniformResourceIndex(slot)];
-                s = occTex.Sample(samplers[0], IN.uv).r;
+                int selectors = li == 0 ? ml0.tex2.w : li == 1 ? ml1.tex2.w : li == 2 ? ml2.tex2.w : ml3.tex2.w;
+                s = MaterialChannelSample(occTex.Sample(samplers[0], IN.uv),
+                    MaterialChannelIndex(selectors, 0u, 0));
             }
             occAcc += s * w;
         }
         occlusion = lerp(1.0f, occAcc, occlusionStrength);
+    }
+
+    // ---------------------------------------------------------------
+    // Cavity: small-scale indirect occlusion, independently authored
+    // from glTF AO. tex2.z is an optional fixed-point strength; -1
+    // preserves full strength for older 128-byte packed material rows.
+    // Keep direct lighting, emissive and screen-space AO untouched.
+    // ---------------------------------------------------------------
+    float cavity = 1.0f;
+    if (!layered && cavityIdx >= 0)
+    {
+        float sampleCavity = canonicalScalar ? canonicalScalarSample.g : 1.0f;
+        if (!canonicalScalar)
+        {
+            Texture2D cavityTex = textures[NonUniformResourceIndex((uint)cavityIdx)];
+            sampleCavity = MaterialChannelSample(cavityTex.Sample(samplers[0], IN.uv),
+                MaterialChannelIndex(mat.tex2.w, 2u, 0));
+        }
+        float strength = mat.tex2.z < 0 ? 1.0f : saturate((float)mat.tex2.z * 0.001f);
+        cavity = lerp(1.0f, saturate(sampleCavity), strength);
+    }
+    if (layered)
+    {
+        float cavityAcc = 0.0f;
+        int4 cIdx = int4(ml0.tex2.y, ml1.tex2.y, ml2.tex2.y, ml3.tex2.y);
+        int4 cStrength = int4(ml0.tex2.z, ml1.tex2.z, ml2.tex2.z, ml3.tex2.z);
+        [unroll]
+        for (int li = 0; li < 4; ++li)
+        {
+            float w = (li == 0) ? layerW.x : (li == 1) ? layerW.y : (li == 2) ? layerW.z : layerW.w;
+            if (w < 0.004f)
+                continue;
+            int idx = cIdx[li];
+            float sampleCavity = 1.0f;
+            if (idx >= 0)
+            {
+                Texture2D cavityTex = textures[NonUniformResourceIndex((uint)idx)];
+                int selectors = li == 0 ? ml0.tex2.w : li == 1 ? ml1.tex2.w : li == 2 ? ml2.tex2.w : ml3.tex2.w;
+                sampleCavity = saturate(MaterialChannelSample(cavityTex.Sample(samplers[0], IN.uv),
+                    MaterialChannelIndex(selectors, 2u, 0)));
+            }
+            float strength = cStrength[li] < 0 ? 1.0f : saturate((float)cStrength[li] * 0.001f);
+            cavityAcc += lerp(1.0f, sampleCavity, strength) * w;
+        }
+        cavity = cavityAcc;
     }
 
     // ---------------------------------------------------------------
@@ -1595,7 +1672,7 @@ float envVis = 1.0f;
     // next to the skipped env fetch.)
     if (litSpecular == 0u)
         ambientSpec = float3(0.0f, 0.0f, 0.0f);
-    float3 aoTerm = (ambient + ambientSpec) * occlusion;
+    float3 aoTerm = (ambient + ambientSpec) * occlusion * cavity;
     float3 color = direct * occlusion + aoTerm;
 
     // Emissive additive

@@ -47,6 +47,7 @@
 // as a FOLDER of the derived assets.
 
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -130,8 +131,25 @@ struct MaterialAsset {
 	TexRef metallicRoughness;
 	TexRef normalTex;
 	TexRef occlusion;
+	TexRef cavity;
+	std::string packingSource;
+	std::string packingSignature; // exact normalized .tourrecipe rule // recipe rule origin, empty for native glTF
+	int channelSelectors = -1; // material output channel metadata
 	TexRef emissiveTex;
 };
+
+// Deterministic image-channel composer shared by project import and cook.
+// A source with an empty path provides its constant byte (0..255).
+// All nonconstant images must be equally sized; no implicit UV resampling.
+// Output is a linear or sRGB PNG as chosen by the material texture slot.
+struct PackedImageChannel {
+    std::filesystem::path path;
+    int component = 0;       // 0=R, 1=G, 2=B, 3=A
+    uint8_t constant = 255;  // used when path is empty
+};
+bool ComposeMaterialImage(const std::filesystem::path& output,
+    const std::array<PackedImageChannel, 4>& channels,
+    std::string& err);
 
 // ---- .texture (the texture asset) -----------------------------------------
 // A user-authored TEXTURE ASSET: an import-settings record + a source
@@ -468,6 +486,8 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 	std::string& err);
 bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
 	std::string& err);
+bool SaveMaterialAsset(const std::filesystem::path& path,
+	const MaterialAsset& material, std::string& err);
 // Writer (round-trip; the COOK writes cooked artifacts back: stamped
 // chart UVs ride the shading blobs verbatim, meshlets/LODs persist,
 // and the v2 trailing registry carries the per-blob lightmap binding).
