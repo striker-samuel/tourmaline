@@ -32,6 +32,11 @@ void EditorApp::ReparentNode(uint32_t node, uint32_t newParent) {
 	Scene& scene = m_world->scene;
 	if (node >= scene.hierarchy.size() || newParent >= scene.hierarchy.size())
 		return;
+	// Authoring can reparent freely within the same ownership region.
+	// Cross-region transfers need an explicit content-owner migration,
+	// not merely a hierarchy pointer change.
+	if (!m_world->regions.CanReparent(scene, node, newParent))
+		return;
 	const int before = scene.hierarchy[node].parent;
 	smvk::tour::TourReparent(scene, node, newParent);
 	if (scene.hierarchy[node].parent != before) {

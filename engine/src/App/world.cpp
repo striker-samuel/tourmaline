@@ -1074,6 +1074,11 @@ using namespace ::smvk;
 				}
 			}
 		}
+		// The transitional cluster fold rebuilds every world node slot.
+		// Never retain region handles across that rebuild: generations from
+		// different Scene instances are not interchangeable (true for the
+		// single-cluster bulk copy too - it swaps the Scene instance).
+		regions = RegionRegistry{};
 		// Single-cluster resolves retain source slot identity. A bulk copy
 		// replaces the per-node addNode allocation/copy/remap passes.
 		// We cannot move Cluster::scene: it is the durable owner used by
@@ -1260,6 +1265,11 @@ using namespace ::smvk;
 					scene.hierarchy[root].firstChild = clusterRootNode;
 				}
 				scene.hierarchy[clusterRootNode].level += 1;
+				// Expose each imported subtree as a registered ownership
+				// boundary. This compatibility path still holds resources in
+				// Cluster pools until the asset-owner migration is complete.
+				regions.Register(scene, MakeNodeHandle(scene, clusterRootNode),
+					cluster.isDynamic ? RegionKind::Runtime : RegionKind::Scene);
 			}
 
 			// Remap node metadata (names index into nodeNames after the

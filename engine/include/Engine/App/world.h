@@ -19,6 +19,7 @@
 #include <Engine/Utils/bvh.h>
 #include <Engine/Scene/entity_handle.h> // smvk::AudioSourceHandle (typed)
 #include <Engine/Scene/scene.h>
+#include <Engine/Scene/region_registry.h>
 
 namespace tour {
 // (namespace/RHI boundary audit) this block's RHI dependencies are
@@ -106,6 +107,23 @@ namespace tour {
 		// Merged runtime scene graph. Imported Cluster scenes are folded into
 		// this via ResolveAndFixup_clusters().
 		Scene scene;
+		// Registered streaming/ownership subtree roots in the authoritative
+		// world hierarchy. Registration does not take ownership of assets:
+		// cluster-backed resource pools remain the transitional asset layer.
+		RegionRegistry regions;
+
+		// Registration of a region root is separate from node lifetime;
+		// the caller must retire the subtree independently at unload.
+		uint64_t RegisterRegion(NodeHandle root,
+			RegionKind kind = RegionKind::Scene) {
+			return regions.Register(scene, root, kind);
+		}
+		bool UnregisterRegion(uint64_t id) {
+			return regions.Unregister(id);
+		}
+		const SceneRegion* RegionForNode(NodeId node) const {
+			return regions.RegionOf(scene, node);
+		}
 		// Monotonic per-World owner registration identity; never use a
 		// recycled Cluster* address as the permanent GPU scene key.
 		uint64_t gpuSceneTopologyRevision = 0;
