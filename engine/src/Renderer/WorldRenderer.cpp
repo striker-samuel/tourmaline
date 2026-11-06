@@ -34,6 +34,8 @@
 
 #include <Engine/Renderer/ray_tracing_debug.h> // (#145) TLAS/BLAS inspector
 #include <Engine/Memory/alloc_config.h> // (#148) scoped snapshot buffer sizing
+#include <Engine/Memory/arena.h>
+#include <Engine/Memory/linear_vector.h>
 #include <Engine/Memory/arena.h> // per-frame decal scratch
 #include <Engine/core.h>
 #include <Engine/platform.h> // readFile (exe-relative SPV loads)
@@ -5874,19 +5876,20 @@ namespace engine {
 	// UploadMaterials fixed with m_bindlessBySlot (see editor_render.cpp
 	// "[MATSLOT] remap MISS" note: "the observed device-death"). Rebuilt
 	// per call so live editor texture edits apply without a rebind signal.
-	std::unordered_map<uint32_t, uint32_t> WorldRenderer::BuildPoolToBindlessMap() const {
-		std::unordered_map<uint32_t, uint32_t> byPool;
+	WorldRenderer::FrameBindlessMap WorldRenderer::BuildPoolToBindlessMap() const {
+		using Entry = std::pair<const uint32_t, uint32_t>;
+		FrameBindlessMap byPool{0, std::hash<uint32_t>{},
+			std::equal_to<uint32_t>{},
+			tour::mem::LinearAllocatorSTL<Entry>{&tour::mem::FrameAllocator()}};
 		for (const auto& clusterPtr : m_world->clusters) {
 			if (!clusterPtr)
 				continue;
-			for (const auto& [uri, h] : clusterPtr->ListTextureUris()) {
-				(void)uri; // enumeration only: pool idx -> RHI handle
-				if (h.empty())
-					continue;
-				// RHI texture pool indices are GLOBAL (one pool per
-				// context), so cluster ordering cannot collide keys.
-				byPool[h.index()] = m_context->GetTextureBindlessIndex(h);
-			}
+			// The serialization enumeration allocates and sorts an owning
+			// vector. Hot-path remapping only needs the live handles.
+			clusterPtr->ForEachTextureUri([&](smvk::StringViewT, smvk::TextureHandle h) {
+				if (!h.empty())
+					byPool[h.index()] = m_context->GetTextureBindlessIndex(h);
+			});
 		}
 		return byPool;
 	}
@@ -5912,8 +5915,7 @@ namespace engine {
 		// diagnostic behavior - the freed-slot null-write in impl.cpp's
 		// destroy(BindlessImageHandle) makes that a safe black sample
 		// instead of the old dangling-descriptor device death.
-		const std::unordered_map<uint32_t, uint32_t> bindlessByPool =
-			BuildPoolToBindlessMap();
+		const FrameBindlessMap bindlessByPool = BuildPoolToBindlessMap();
 		auto remapSlot = [&](int poolIdx) -> int {
 			if (poolIdx < 0)
 				return -1;
@@ -5928,7 +5930,11 @@ namespace engine {
 			}
 			return static_cast<int>(hit->second);
 		};
-		std::vector<smvk::MaterialValues> mats(uploadCount);
+		// Upload scratch is valid only until the next frame-arena reset.
+		auto* mats = static_cast<smvk::MaterialValues*>(smvk::FrameArena().Allocate(
+			size_t(std::max(1u, uploadCount)) * sizeof(smvk::MaterialValues),
+			alignof(smvk::MaterialValues)));
+		std::uninitialized_value_construct_n(mats, uploadCount);
 		for (uint32_t i = 0; i < uploadCount; ++i) {
 			if (auto* mat = m_world->GetMaterial(i)) {
 				mats[i] = mat->values;
@@ -5962,11 +5968,11 @@ namespace engine {
 		size_t frameOffset =
 			currentFrame * MATERIAL_FRAME_STRIDE;
 
-		if (!mats.empty()) {
+		if (uploadCount != 0) {
 			m_context->UploadDataToBuffer(
 				m_resources.materialsBuffer,
-				mats.data(),
-				sizeof(smvk::MaterialValues) * mats.size(),
+				mats,
+				sizeof(smvk::MaterialValues) * uploadCount,
 				smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute,
 				smvk::AccessFlags::ShaderRead,
 				0,
@@ -5988,7 +5994,13 @@ namespace engine {
 		const uint32_t streamFrame = static_cast<uint32_t>(m_frameCounter);
 		if ((m_frameCounter & 3u) == 0u) {
 			SMVK_PROFILE_STREAM("TexStreamingMinDistPass");
-			std::unordered_map<uint32_t, float> minDist;
+			using FrameMinDistanceMap = std::unordered_map<uint32_t, float,
+				std::hash<uint32_t>, std::equal_to<uint32_t>,
+				tour::mem::LinearAllocatorSTL<std::pair<const uint32_t, float>>>;
+			FrameMinDistanceMap minDist{0, std::hash<uint32_t>{},
+				std::equal_to<uint32_t>{},
+				tour::mem::LinearAllocatorSTL<std::pair<const uint32_t, float>>{
+					&tour::mem::FrameAllocator()}};
 			minDist.reserve(256);
 			const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
 			// The streamer keys demand by BINDLESS slot (RequestMip/
@@ -5998,8 +6010,7 @@ namespace engine {
 			// UpdateMaterials, or the CPU demand leg misses every entry
 			// once pool!=bindless (re-imports) and streamed
 			// textures never upgrade on distance.
-			const std::unordered_map<uint32_t, uint32_t> bindlessByPool =
-				BuildPoolToBindlessMap();
+			const FrameBindlessMap bindlessByPool = BuildPoolToBindlessMap();
 			auto note = [&](int poolIdx, float dist) {
 				if (poolIdx < 0)
 					return;
@@ -7293,7 +7304,9 @@ namespace engine {
 		using fp_clk = std::chrono::steady_clock;
 		const bool fpBench = m_host.BenchMeasuring();
 		const auto fpT0 = fp_clk::now();
-		std::vector<smvk::ForwardPlusLight> lights;
+		tour::mem::FrameVector<smvk::ForwardPlusLight> lights{
+			tour::mem::LinearAllocatorSTL<smvk::ForwardPlusLight>{
+				&tour::mem::FrameAllocator()}};
 		lights.reserve(FP_MAX_LIGHTS);
 		// NOTE: m_debugLights is filled AFTER the phase-1 sort below (the
 		// marker list then matches the GPU buffer order — labels read as
@@ -7419,7 +7432,10 @@ namespace engine {
 					: -1;
 				const int32_t sampleIdx = (evsmIdx >= 0) ? evsmIdx : atlasIdx;
 				if (atlasIdx >= 0 && !selected.empty()) {
-					std::vector<smvk::GpuCascadeDescription> tiles(selected.size());
+					tour::mem::FrameVector<smvk::GpuCascadeDescription> tiles(
+						selected.size(), smvk::GpuCascadeDescription{},
+						tour::mem::LinearAllocatorSTL<smvk::GpuCascadeDescription>{
+							&tour::mem::FrameAllocator()});
 					for (size_t k = 0; k < selected.size(); ++k) {
 						smvk::ForwardPlusLight& sl = lights[selected[k].lightIndex];
 						if (m_spotLightLiSPSM) {
@@ -7513,7 +7529,10 @@ namespace engine {
 							*m_context, currentFrame)
 						: -1;
 					const int32_t sampleIdx = (evsmIdx >= 0) ? evsmIdx : atlasIdx;
-					std::vector<smvk::GpuCascadeDescription> tiles(selected.size() * 6u);
+					tour::mem::FrameVector<smvk::GpuCascadeDescription> tiles(
+						selected.size() * 6u, smvk::GpuCascadeDescription{},
+						tour::mem::LinearAllocatorSTL<smvk::GpuCascadeDescription>{
+							&tour::mem::FrameAllocator()});
 					const uint32_t faceBase0 = m_spotShadowCount;
 					for (size_t k = 0; k < selected.size(); ++k) {
 						smvk::ForwardPlusLight& pl = lights[selected[k].lightIndex];
@@ -7628,7 +7647,9 @@ namespace engine {
 				&& lights.size() + probeEntries <= FP_MAX_LIGHTS) {
 				SMVK_PROFILE_RENDER("Lights_UploadProbes");
 				SMVK_PROFILE_TAG("probes", probeEntries);
-				std::vector<smvk::ForwardPlusLight> gpu;
+				tour::mem::FrameVector<smvk::ForwardPlusLight> gpu{
+					tour::mem::LinearAllocatorSTL<smvk::ForwardPlusLight>{
+						&tour::mem::FrameAllocator()}};
 				gpu.reserve(probeEntries);
 				for (uint32_t i = 0; i < probeEntries; ++i) {
 					const CubemapProbeGpu& pr = m_cubemapProbes[i];
@@ -8092,18 +8113,20 @@ namespace engine {
 		// particles toroidally, the emitter keeps the volume stocked
 		// wherever the camera is).
 		const glm::vec3& cam = m_cameraPositioner.cameraPosition_;
-		std::vector<smvk::ParticleEmitterGpu> rows;
+		tour::mem::FrameVector<smvk::ParticleEmitterGpu> rows{
+			tour::mem::LinearAllocatorSTL<smvk::ParticleEmitterGpu>{
+				&tour::mem::FrameAllocator()}};
 		bool ambient = false;
 		for (const auto& e : m_particleDemo.emitters)
 			ambient = ambient || e.fade.w > 0.0f;
 		if (ambient) {
-			rows = m_particleDemo.emitters;
+			rows.assign(m_particleDemo.emitters.begin(), m_particleDemo.emitters.end());
 			for (auto& e : rows) {
 				if (e.fade.w > 0.0f)
 					e.position = glm::vec4(cam, e.position.w);
 			}
 		} else {
-			rows = m_particleDemo.emitters;
+			rows.assign(m_particleDemo.emitters.begin(), m_particleDemo.emitters.end());
 		}
 		// Graph-authored sources reserve stable slots after demo emitters.
 		// Never overwrite the built-in indices used by ambient presets.
@@ -11122,7 +11145,9 @@ namespace engine {
 			m_meshParticleDraw.Ensure(*m_context,
 				"content/shaders/meshparticles_draw.vert.hlsl.spv",
 				tour::placement::kPlacementUnlitPsPath)) {
-			std::vector<smvk::MeshParticleEmitterGpu> rows;
+			tour::mem::FrameVector<smvk::MeshParticleEmitterGpu> rows{
+				tour::mem::LinearAllocatorSTL<smvk::MeshParticleEmitterGpu>{
+					&tour::mem::FrameAllocator()}};
 			rows.reserve(std::min<size_t>(m_externalMeshParticleEmitters.size(),
 				meshPs.desc.maxEmitters));
 			for (const auto& emitter : m_externalMeshParticleEmitters) {
