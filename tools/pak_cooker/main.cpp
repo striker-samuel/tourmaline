@@ -3262,7 +3262,8 @@ int Run(const PakArgs& c) {
 	// runtime loads terrain straight from the Terrain blobs).
 	if (!args.terrainDir.empty()) {
 		std::string terrErr;
-		if (!terraincook::CookTerrainBlobs(args.terrainDir, writer, terrErr)) {
+		if (!terraincook::CookTerrainBlobs(args.terrainDir, writer,
+                terrErr, cookPtrs)) {
 			tool::err() << "Terrain cook failed: " << terrErr << std::endl;
 			return 1;
 		}
