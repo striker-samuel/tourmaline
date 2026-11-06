@@ -161,10 +161,13 @@ struct GiProbeVisual {
 // shifts to bMin + phase * spacing — the OPTIMIZER's chosen offset (a
 // seeded volume's preview matches its bake exactly). Null = phase 0
 // (the legacy layout).
+// Accept either the standard allocator or the renderer's frame allocator;
+// the lattice construction does not depend on the vector allocator.
+template <typename Allocator>
 [[nodiscard]] inline uint32_t BuildGiProbeLatticeRows(
 	const glm::vec3& center, const glm::mat3& axes,
 	const glm::vec3& half, float spacing,
-	std::vector<GiProbeInstance>& out,
+	std::vector<GiProbeInstance, Allocator>& out,
 	uint32_t cap = kGiProbeMaxInstances,
 	const float phase[3] = nullptr)
 {
