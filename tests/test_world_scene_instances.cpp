@@ -117,6 +117,27 @@ int main() {
         CHECK(direct.Retire(mappedTarget, regionStore, instance));
         CHECK(mappedTarget.tables.meshes.empty());
     }
+    {
+        Scene cyclic;
+        const int root = addNode(cyclic, -1, 0);
+        const int nested = addNode(cyclic, root, 1);
+        cyclic.hierarchy[root].parent = nested;
+        const size_t countBefore = world.scene.hierarchy.size();
+        CHECK(!world.InstantiateSceneHierarchy(
+            cyclic, 9011, glm::dmat4(1.0), {}, error));
+        CHECK(error.find("cycle") != std::string::npos);
+        CHECK(world.scene.hierarchy.size() == countBefore);
+    }
+    {
+        Scene dangling;
+        const int root = addNode(dangling, -1, 0);
+        dangling.hierarchy[root].parent = 9999;
+        const size_t countBefore = world.scene.hierarchy.size();
+        CHECK(!world.InstantiateSceneHierarchy(
+            dangling, 9012, glm::dmat4(1.0), {}, error));
+        CHECK(error.find("parent") != std::string::npos);
+        CHECK(world.scene.hierarchy.size() == countBefore);
+    }
     glm::dmat4 bad(1.0);
     bad[3][0] = std::numeric_limits<double>::infinity();
     CHECK(!world.InstantiateSceneHierarchy(source, 9001, bad, {}, error));
