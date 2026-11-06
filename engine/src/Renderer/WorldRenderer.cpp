@@ -17063,6 +17063,7 @@ namespace engine {
 				outLoad);
 			(void)tonemapPass;
 			if (captureThisFrame) {
+				const std::array<smvk::LogicalImageViewHandle, 1> captureViews{m_captureLogical};
 				m_viewportResources.tonemap.AddTonemapPass(
 					*m_rendergraph,
 					sceneHdrView,
@@ -17071,7 +17072,7 @@ namespace engine {
 					bloomBindless,
 					bloomIntensity,
 					linearSampler,
-					{ m_captureLogical },
+					std::span<const smvk::LogicalImageViewHandle>(captureViews),
 					outExtent,
 					tonemapDesc,
 					"TonemapCapture",
