@@ -588,15 +588,15 @@ int main() {
 		// a catalog key. The concrete payload type is supplied by the
 		// mutator signature (a generic template cannot deduce from {}).
 		Scene s = MakeScene(1);
-		Check(SetPhysicsBody(s, 0, {}),
+		Check(tour::scene::SetPhysicsBody(s, 0, {}),
 			"value component: default-braced physics body");
-		Check(SetAudioRoom(s, 0, {}),
+		Check(tour::scene::SetAudioRoom(s, 0, {}),
 			"value component: default-braced audio room");
-		Check(SetTriggerVolume(s, 0, {}),
+		Check(tour::scene::SetTriggerVolume(s, 0, {}),
 			"value component: default-braced trigger volume");
-		const PhysicsBodyRow* physics = FindPhysicsBody(s, 0);
-		const AudioRoomRow* room = FindAudioRoom(s, 0);
-		const TriggerVolumeRow* trigger = FindTriggerVolume(s, 0);
+		const tour::scene::PhysicsBodyRow* physics = tour::scene::FindPhysicsBody(s, 0);
+		const tour::scene::AudioRoomRow* room = tour::scene::FindAudioRoom(s, 0);
+		const tour::scene::TriggerVolumeRow* trigger = tour::scene::FindTriggerVolume(s, 0);
 		Check(physics && physics->body.mass == 1.0f,
 			"value component: physics defaults preserved");
 		Check(room && room->room.enabled,
@@ -627,7 +627,9 @@ int main() {
 		Check(associations == 1,
 			"mesh-slot: rebind cannot append a second mesh");
 		Check(NodeHandleValid(s, node)
-			&& s.localTransform[0] == frame,
+			&& s.localTransform[0][3].x == 7.0f
+			&& s.localTransform[0][3].y == 8.0f
+			&& s.localTransform[0][3].z == 9.0f,
 			"mesh-slot: rebind preserves node identity and transform");
 		Check(FindMesh(s, 1) == nullptr,
 			"mesh-slot: another node remains meshless");
