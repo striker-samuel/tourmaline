@@ -21,16 +21,12 @@
 namespace engine::worldpartition {
 
 struct SceneTileDescriptor {
-    WorldCellKey cell{};
+    WorldTileKey tile{};
     uint64_t contentId = 0; // logical cooked tile ID, NOT a pak file offset
 };
 
 // Stable lexicographic ordering, including negative cell coordinates.
-struct SceneTileKeyLess {
-    bool operator()(WorldCellKey a, WorldCellKey b) const {
-        return a.x < b.x || (a.x == b.x && a.z < b.z);
-    }
-};
+using SceneTileKeyLess = WorldTileKeyLess;
 
 class SceneTileProvider final : public IWorldStreamProvider {
 public:
@@ -43,9 +39,10 @@ public:
     // Do not swap a manifest while cells are resident: retire first.
     bool SetManifest(std::vector<SceneTileDescriptor> tiles) {
         if (!resident_.empty() || !pending_.empty()) return false;
-        std::map<WorldCellKey, SceneTileDescriptor, SceneTileKeyLess> next;
+        std::map<WorldTileKey, SceneTileDescriptor, SceneTileKeyLess> next;
         for (const auto& tile : tiles) {
-            if (!tile.contentId || !next.emplace(tile.cell, tile).second)
+            if (!tile.tile.world || !tile.contentId
+                || !next.emplace(tile.tile, tile).second)
                 return false;
         }
         manifest_ = std::move(next);
@@ -59,7 +56,7 @@ public:
 
     // Successful asynchronous completion must be acknowledged at the host's
     // safe publication point; failed requests can be retried by ResetPending.
-    bool Activate(WorldCellKey cell, uint64_t ticket) {
+    bool Activate(WorldTileKey cell, uint64_t ticket) {
         const auto it = pending_.find(cell);
         // Stale completion from canceled/evicted load cannot adopt a fresh
         // request for the same tile. Reject demand removed this frame too.
@@ -70,14 +67,14 @@ public:
         return true;
     }
 
-    bool ResetPending(WorldCellKey cell, uint64_t ticket) {
+    bool ResetPending(WorldTileKey cell, uint64_t ticket) {
         const auto it = pending_.find(cell);
         if (it == pending_.end() || it->second != ticket) return false;
         pending_.erase(it);
         return true;
     }
 
-    bool IsResident(WorldCellKey cell) const {
+    bool IsResident(WorldTileKey cell) const {
         return resident_.find(cell) != resident_.end();
     }
     size_t ResidentCount() const { return resident_.size(); }
@@ -98,9 +95,10 @@ public:
                 continue;
             const double radius = interest.radiusMeters;
             for (const auto& [key, tile] : manifest_) {
+                if (key.world != interest.world) continue;
                 // XZ distance from interest position to tile's closest point.
-                const double x0 = double(key.x) * kRootCellSize;
-                const double z0 = double(key.z) * kRootCellSize;
+                const double x0 = double(key.cell.x) * kRootCellSize;
+                const double z0 = double(key.cell.z) * kRootCellSize;
                 const double dx = std::max({x0 - interest.position.x,
                     0.0, interest.position.x - (x0 + kRootCellSize)});
                 const double dz = std::max({z0 - interest.position.z,
@@ -123,7 +121,8 @@ public:
         for (const auto& [key, policy] : desired_) {
             StreamRequest req{};
             req.layer = StreamLayer::Scene;
-            req.cell = key;
+            req.world = key.world;
+            req.cell = key.cell;
             req.priority = policy.first;
             req.desired = policy.second;
             req.frameRequested = frameIndex;
@@ -166,11 +165,11 @@ public:
     }
 
 private:
-    std::map<WorldCellKey, SceneTileDescriptor, SceneTileKeyLess> manifest_;
-    std::map<WorldCellKey, std::pair<float, DesiredResidency>, SceneTileKeyLess> desired_;
-    std::map<WorldCellKey, uint64_t, SceneTileKeyLess> pending_;
+    std::map<WorldTileKey, SceneTileDescriptor, SceneTileKeyLess> manifest_;
+    std::map<WorldTileKey, std::pair<float, DesiredResidency>, SceneTileKeyLess> desired_;
+    std::map<WorldTileKey, uint64_t, SceneTileKeyLess> pending_;
     uint64_t nextTicket_ = 1;
-    std::set<WorldCellKey, SceneTileKeyLess> resident_;
+    std::set<WorldTileKey, SceneTileKeyLess> resident_;
     RequestCallback request_;
     RetireCallback retire_;
 };
