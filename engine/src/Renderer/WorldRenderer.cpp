@@ -13334,10 +13334,11 @@ namespace engine {
 
 		// useMsaa is hoisted above the fc fill (the stencil layer gate + the
 		// pane layer below + Main's attachments here all key on it).
-		std::vector<smvk::LogicalImageViewHandle> mainInputs;
-		mainInputs.push_back(m_viewportResources.directionalShadows.logicalView);
-		if (m_viewportResources.spotShadows.Valid())
-			mainInputs.push_back(m_viewportResources.spotShadows.logicalView);
+		std::array<smvk::LogicalImageViewHandle, 2> mainInputs{};
+		mainInputs[0] = m_viewportResources.directionalShadows.logicalView;
+		const size_t mainInputCount = m_viewportResources.spotShadows.Valid() ? 2 : 1;
+		if (mainInputCount == 2)
+			mainInputs[1] = m_viewportResources.spotShadows.logicalView;
 		const auto rfTM = bench_clk::now();
 		// The GPU filter normally publishes chart xforms, but direct
 		// fallback draws must also work when no filtered slot exists.
@@ -13346,7 +13347,7 @@ namespace engine {
 			m_gfxRenderer.EnsureChartXforms(*m_world, *m_context);
 		auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
-			.SetInputImages(mainInputs)
+			.SetInputImages(std::span<const smvk::LogicalImageViewHandle>(mainInputs.data(), mainInputCount))
 			.SetExtent(renderExtent);
 		// Sun contact shadows: the paired READ half of the write->read
 		// edge (the probe-premix pattern). CollectPassUsages sees only
@@ -13396,35 +13397,39 @@ namespace engine {
 			const bool envSpecMsaaOn =
 				m_viewportResources.ssgi.envSpec.Valid()
 				&& m_viewportResources.ssgi.MsaaEnvSpecValid();
-			std::vector<smvk::LogicalImageViewHandle> msaaViews = {
+			std::array<smvk::LogicalImageViewHandle, 3> msaaViews = {
 				m_viewportResources.msaa.colorLogical,
 				m_viewportResources.ssgi.aoTermMsaa.logical,
+				{}
 			};
-			std::vector<smvk::LogicalImageViewHandle> resolveViews = {
+			std::array<smvk::LogicalImageViewHandle, 3> resolveViews = {
 				m_viewportResources.hdr.logicalView,
 				m_viewportResources.ssgi.aoTerm.logical,
+				{}
 			};
+			const size_t msaaViewCount = envSpecMsaaOn ? 3 : 2;
 			if (envSpecMsaaOn) {
-				msaaViews.push_back(
-					m_viewportResources.ssgi.envSpecMsaa.logical);
-				resolveViews.push_back(
-					m_viewportResources.ssgi.envSpec.logical);
+				msaaViews[2] = m_viewportResources.ssgi.envSpecMsaa.logical;
+				resolveViews[2] = m_viewportResources.ssgi.envSpec.logical;
 			}
 			if (customMsaaResolve) {
 				// Retain only color for the shader pass. AO/envSpec remain hardware-resolved.
-				std::vector<smvk::RenderAttachment> attachments;
-				for (size_t i = 0; i < msaaViews.size(); ++i) {
+				std::array<smvk::RenderAttachment, 3> attachments{};
+				for (size_t i = 0; i < msaaViewCount; ++i) {
 					smvk::RenderAttachment a{};
 					a.view = msaaViews[i];
 					a.loadOp = smvk::AttachmentLoadOp::Clear;
 					a.storeOp = i == 0 ? smvk::AttachmentStoreOp::Store : smvk::AttachmentStoreOp::DontCare;
 					a.clearColor = smvk::ClearColor(0, 0, 0, 1);
 					a.resolveView = i == 0 ? smvk::LogicalImageViewHandle{} : resolveViews[i];
-					attachments.push_back(a);
+					attachments[i] = a;
 				}
-				mainPass.SetColorAttachments(attachments);
+				mainPass.SetColorAttachments(std::span<const smvk::RenderAttachment>(
+					attachments.data(), msaaViewCount));
 			} else {
-				mainPass.SetColorWithResolve(msaaViews, resolveViews,
+				mainPass.SetColorWithResolve(
+					std::span<const smvk::LogicalImageViewHandle>(msaaViews.data(), msaaViewCount),
+					std::span<const smvk::LogicalImageViewHandle>(resolveViews.data(), msaaViewCount),
 					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::DontCare,
 					smvk::ClearColor(0, 0, 0, 1));
 			}
@@ -13554,7 +13559,7 @@ namespace engine {
             tour::DebugDepthMode depth;
             smvk::PrimitiveTopology topology;
         };
-        std::vector<DebugDrawRange> debugDrawRanges;
+        tour::mem::FrameVector<DebugDrawRange> debugDrawRanges{tour::mem::LinearAllocatorSTL<DebugDrawRange>{&tour::mem::FrameAllocator()}};
         uint32_t debugDrawFlight = 0;
         const bool transientDebugDraw = m_debugDrawEnabled &&
             static_cast<bool>(m_debugDrawSource);
@@ -13567,7 +13572,7 @@ namespace engine {
             // debug drawing is disabled. Tessellation is cached at Add().
             m_shapeScene.AppendDraws(m_debugDrawCpu);
             if (!m_debugDrawCpu.Empty()) {
-                std::vector<smvk::DebugLineVertex> vertices;
+                tour::mem::FrameVector<smvk::DebugLineVertex> vertices{tour::mem::LinearAllocatorSTL<smvk::DebugLineVertex>{&tour::mem::FrameAllocator()}};
                 vertices.reserve(m_debugDrawCpu.Size() * 2 +
                     m_debugDrawCpu.PointCount());
                 for (const tour::DebugLine& line : m_debugDrawCpu.Lines()) {
@@ -13794,8 +13799,15 @@ namespace engine {
 			};
 			// Opt-in VS/FS pairs are created only after a baked direct draw
 			// appears. The regular VS + PSO selection is untouched otherwise.
-			std::unordered_map<const smvk::ShaderProgram*,
-				smvk::ShaderProgram> lmDirectPrograms;
+			using LmCacheEntry = std::pair<const smvk::ShaderProgram* const,
+				smvk::ShaderProgram>;
+			std::unordered_map<const smvk::ShaderProgram*, smvk::ShaderProgram,
+				std::hash<const smvk::ShaderProgram*>,
+				std::equal_to<const smvk::ShaderProgram*>,
+				tour::mem::LinearAllocatorSTL<LmCacheEntry>> lmDirectPrograms{
+				0, std::hash<const smvk::ShaderProgram*>{},
+				std::equal_to<const smvk::ShaderProgram*>{},
+				tour::mem::LinearAllocatorSTL<LmCacheEntry>{&tour::mem::FrameAllocator()}};
 			auto directLmProgram = [&](smvk::ShaderProgram& regular,
 				bool withLightmap) -> smvk::ShaderProgram& {
 				if (!withLightmap || regular.shaderCount != 2)
@@ -16447,7 +16459,7 @@ namespace engine {
 		// heightfield was off, which is the default).
 		if (m_cubemapEnabled && m_cubemapShowBalls
 			&& !m_cubemapProbes.empty()) {
-			std::vector<smvk::probeball::ProbeBallRow> ballRows;
+			tour::mem::FrameVector<smvk::probeball::ProbeBallRow> ballRows{tour::mem::LinearAllocatorSTL<smvk::probeball::ProbeBallRow>{&tour::mem::FrameAllocator()}};
 			ballRows.reserve(m_cubemapProbes.size());
 			for (const CubemapProbeGpu& p : m_cubemapProbes) {
 				smvk::probeball::ProbeBallRow row{};
@@ -16493,13 +16505,13 @@ namespace engine {
 				// moves/edits volumes live, and the upload is tiny.
 				if (m_world
 					&& !m_world->scene.tables.giVolumes.empty()) {
-					std::vector<uint32_t> nodes;
+					tour::mem::FrameVector<uint32_t> nodes{tour::mem::LinearAllocatorSTL<uint32_t>{&tour::mem::FrameAllocator()}};
 					nodes.reserve(m_world->scene.tables.giVolumes.size());
 					for (const GiVolumeRow& row
 						: m_world->scene.tables.giVolumes)
 						nodes.push_back(row.node);
 					std::sort(nodes.begin(), nodes.end());
-					std::vector<smvk::giprobe::GiProbeInstance> rows;
+					tour::mem::FrameVector<smvk::giprobe::GiProbeInstance> rows{tour::mem::LinearAllocatorSTL<smvk::giprobe::GiProbeInstance>{&tour::mem::FrameAllocator()}};
 					for (size_t ni = 0; ni < nodes.size() && ni < 8; ++ni) {
 						const uint32_t node = nodes[ni];
 						if (node >= m_world->scene.globalTransform.size())
@@ -17000,6 +17012,7 @@ namespace engine {
 				outLoad);
 			(void)tonemapPass;
 			if (captureThisFrame) {
+				const std::array<smvk::LogicalImageViewHandle, 1> captureViews{m_captureLogical};
 				m_viewportResources.tonemap.AddTonemapPass(
 					*m_rendergraph,
 					sceneHdrView,
@@ -17008,7 +17021,7 @@ namespace engine {
 					bloomBindless,
 					bloomIntensity,
 					linearSampler,
-					{ m_captureLogical },
+					std::span<const smvk::LogicalImageViewHandle>(captureViews),
 					outExtent,
 					tonemapDesc,
 					"TonemapCapture",

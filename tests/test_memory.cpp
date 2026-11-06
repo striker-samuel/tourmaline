@@ -596,6 +596,32 @@ void TestLifetimeCounters() {
 		&& arena.TotalRequestedBytes() == 96
 		&& arena.PeakUsedBytes() == peak,
 		"memory.telemetry.arena-lifetime-totals");
+	// The large FormatString path must write directly to arena memory,
+	// rather than routing through an owned temporary string.
+	const std::string longValue(1400, 'x');
+	const auto formatted = arena.FormatString("%s", longValue.c_str());
+	Check(formatted.size() == longValue.size()
+		&& formatted[0] == 'x'
+		&& formatted[formatted.size() - 1] == 'x',
+		"memory.arena.large-format-correct");
+}
+
+void TestFlightArenas() {
+	// Distinct frame slots have independent backing reservations. Resetting
+	// one retired slot must never invalidate another flight's CPU data.
+	auto& slot0 = smvk::FlightArena(0);
+	auto& slot1 = smvk::FlightArena(1);
+	auto* p0 = static_cast<uint32_t*>(slot0.Allocate(sizeof(uint32_t), alignof(uint32_t)));
+	auto* p1 = static_cast<uint32_t*>(slot1.Allocate(sizeof(uint32_t), alignof(uint32_t)));
+	*p0 = 0x1234abcd;
+	*p1 = 0xbaddcafe;
+	Check(p0 != p1, "memory.flight.distinct-storage");
+	smvk::ResetFlightArena(0);
+	Check(*p1 == 0xbaddcafe, "memory.flight.other-slot-remains-live");
+	auto* p0b = static_cast<uint32_t*>(slot0.Allocate(sizeof(uint32_t), alignof(uint32_t)));
+	Check(p0b == p0, "memory.flight.retired-slot-reuses-address");
+	smvk::ResetFlightArena(0);
+	smvk::ResetFlightArena(1);
 }
 
 void TestStlAdapter() {
@@ -640,6 +666,7 @@ int main() {
 	TestFrameReset();
 	TestGlobals();
 	TestArenaBacking();
+	TestFlightArenas();
 	TestBenchmarks();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;

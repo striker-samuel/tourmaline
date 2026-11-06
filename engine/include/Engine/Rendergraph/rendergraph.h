@@ -370,8 +370,8 @@ namespace smvk
 		// per-index for no-resolve). resolveViews must match views in size
 		// when provided.
 		RenderPass& SetColorWithResolve(
-			const std::vector<LogicalImageViewHandle>& views,
-			const std::vector<LogicalImageViewHandle>& resolveViews,
+			std::span<const LogicalImageViewHandle> views,
+			std::span<const LogicalImageViewHandle> resolveViews,
 			AttachmentLoadOp loadOp =
 			AttachmentLoadOp::Clear,
 			AttachmentStoreOp storeOp =
@@ -398,13 +398,25 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 			return *this;
 		}
 
+		RenderPass& SetColorWithResolve(
+			const std::vector<LogicalImageViewHandle>& views,
+			const std::vector<LogicalImageViewHandle>& resolveViews,
+			AttachmentLoadOp loadOp = AttachmentLoadOp::Clear,
+			AttachmentStoreOp storeOp = AttachmentStoreOp::DontCare,
+			ClearColor clearValue = {})
+		{
+			return SetColorWithResolve(std::span<const LogicalImageViewHandle>(views),
+				std::span<const LogicalImageViewHandle>(resolveViews),
+				loadOp, storeOp, clearValue);
+		}
+
 		// Per-attachment color setup: each RenderAttachment carries its own
 		// loadOp/storeOp/clearColor/resolveView, allowing mixed clear values
 		// (e.g. HDR clear 0 + roughness clear 1).
 		RenderPass& SetColorAttachments(
-			const std::vector<RenderAttachment>& attachments)
+			std::span<const RenderAttachment> attachments)
 		{
-			colorAttachments_ = attachments;
+			colorAttachments_.assign(attachments.begin(), attachments.end());
 
 			for (const auto& att : colorAttachments_)
 			{
@@ -413,6 +425,11 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 
 			return *this;
 		}
+		RenderPass& SetColorAttachments(const std::vector<RenderAttachment>& attachments)
+		{
+			return SetColorAttachments(std::span<const RenderAttachment>(attachments));
+		}
+
 
 		RenderPass& SetDepth(
 			LogicalImageViewHandle view,
@@ -440,6 +457,24 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 		// --------------------------------------------------------
 		// Shader resources (legacy sugar – derives sync hints)
 		// --------------------------------------------------------
+
+		// Non-owning source list: only the pass-owned copy survives.
+		RenderPass& SetInputImages(std::span<const LogicalImageViewHandle> images)
+		{
+			inputImages_.assign(images.begin(), images.end());
+			for (auto v : inputImages_) {
+				bool exists = false;
+				for (auto& h : imageHints_) if (h.view == v) { exists = true; break; }
+				if (!exists) {
+					ImageSyncRequest req{};
+					req.barrierMasks.accessMask = AccessFlags::ShaderRead;
+					req.barrierMasks.stageMask = DerivePipelineStage(req.barrierMasks.accessMask);
+					req.layout = ImageLayout::ShaderReadOnlyOptimal;
+					imageHints_.push_back({v, req});
+				}
+			}
+			return *this;
+		}
 
 		RenderPass& SetInputImages(
 			std::vector<LogicalImageViewHandle> images)

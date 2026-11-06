@@ -180,6 +180,7 @@ void InitMemory() {
 }
 
 void ShutdownMemory() {
+#ifndef NDEBUG
 	// Footprint report: the whole migration's memory cost in three lines.
 	// Function-local statics destroy themselves at exit in reverse order;
 	// nothing else to do. Kept as a named teardown hook for symmetry.
@@ -204,6 +205,7 @@ void ShutdownMemory() {
 		static_cast<double>(backing.PeakUsed()) / (1024.0 * 1024.0),
 		backing.Used());
 	std::fflush(stderr);
+#endif
 }
 
 namespace {
