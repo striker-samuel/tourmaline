@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "id": "draw-items-4k",
+      "label": "Small draw list baseline",
+      "instances": 4096,
+      "frames": 120,
+      "camera": "fixed",
+      "seed": 1
+    },
+    {
+      "id": "draw-items-32k",
+      "label": "Medium static camera scene",
+      "instances": 32768,
+      "frames": 120,
+      "camera": "fixed",
+      "seed": 1
+    },
+    {
+      "id": "draw-items-105k",
+      "label": "Large grid32-sized scene",
+      "instances": 105000,
+      "frames": 120,
+      "camera": "fixed",
+      "seed": 1
+    },
+    {
+      "id": "draw-items-105k-sweep",
+      "label": "Large moving camera scene",
+      "instances": 105000,
+      "frames": 120,
+      "camera": "sweep",
+      "seed": 1
+    }
+  ]
+}
