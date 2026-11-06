@@ -46,6 +46,7 @@
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/DebugDraw.h>
 #include <Engine/Memory/arena_flat_array.h>
+#include <Engine/Memory/linear_vector.h>
 #include <Engine/Renderer/ShapeScene.h>
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene_world.h>
@@ -2281,7 +2282,10 @@ public:
 	// only holds by creation-order luck, and live worlds churn the\r\n\t// bindless pool across re-imports). Rebuilt
 	// per call (cheap: one pass over the clusters' registered textures)
 	// so live editor texture edits are picked up without a rebind.
-	std::unordered_map<uint32_t, uint32_t> BuildPoolToBindlessMap() const;
+	using FrameBindlessMap = std::unordered_map<uint32_t, uint32_t,
+		std::hash<uint32_t>, std::equal_to<uint32_t>,
+		tour::mem::LinearAllocatorSTL<std::pair<const uint32_t, uint32_t>>>;
+	FrameBindlessMap BuildPoolToBindlessMap() const;
 
 	// Procedural Forward+ demo lights (no scene nodes; see UpdateForwardPlusLights).
 	uint32_t UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame);
