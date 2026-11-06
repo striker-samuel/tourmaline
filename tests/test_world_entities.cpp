@@ -478,8 +478,8 @@ void TestSingleClusterBulkResolve() {
 	Check(w.scene.hierarchy.size() == sourceSlots + 1
 		&& w.lightLocations.size() == 1,
 		"single.bulk.repeat-resolve");
-// Explicit scene-node budgets preallocate all node slot arrays and enforce a
-// hard cap, rather than permitting per-node vector growth during assembly.
+}
+
 void TestSceneNodeBudget() {
     using namespace smvk;
     Scene slots;
