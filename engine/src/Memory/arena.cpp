@@ -93,12 +93,13 @@ StringViewT Arena::FormatString(const char* fmt, ...) {
 		return {};
 	if (static_cast<size_t>(n) < sizeof(stackBuf))
 		return AllocateString(StringViewT(stackBuf, static_cast<size_t>(n)));
-	// Truncated: format into a heap buffer, then copy into the arena.
-	std::string heap(static_cast<size_t>(n) + 1, '\0');
+	// Long formatting stays in arena storage: no intermediate
+	// std::string heap buffer or redundant copy.
+	char* formatted = static_cast<char*>(Allocate(static_cast<size_t>(n) + 1));
 	va_start(args, fmt);
-	std::vsnprintf(heap.data(), heap.size(), fmt, args);
+	std::vsnprintf(formatted, static_cast<size_t>(n) + 1, fmt, args);
 	va_end(args);
-	return AllocateString(StringViewT(heap.data(), static_cast<size_t>(n)));
+	return StringViewT(formatted, static_cast<size_t>(n));
 }
 
 void Arena::Reset() {
