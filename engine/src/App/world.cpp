@@ -1091,29 +1091,33 @@ using namespace ::smvk;
 						scene.nodeSlotBudget);
 			}
 		}
-		// Single-cluster resolves retain source slot identity. A bulk copy
-		// replaces the per-node addNode allocation/copy/remap passes.
-		// We cannot move Cluster::scene: it is the durable owner used by
-		// later resolves, unloading and runtime entity updates.
-		//
-		// KNOWN BUG (WIP - #228 follow-up, pushed as WIP by owner
-		// direction): the identity layout only applies while
-		// clusters.size() == 1, and that count CHANGES at runtime - the
-		// first mesh-entity/animator/decal/audio spawn creates the
-		// internal dynamic cluster (EnsureDynamicCluster), flipping the
-		// world onto the legacy path below, which re-roots the merge at
-		// slot 0 and shifts every primary-cluster node by +1. Raw
-		// merged-scene node ids are NOT stable across that transition:
-		// world_entity_tests segfaults at meshent.rowspawn-material-bind
-		// (sourceNode's rows moved to node+1 mid-test; the entity layer
-		// itself survives via clusterMergedNodes, gameplay holding raw
-		// node ids does not). FIX DIRECTION: count CONTENT clusters only
-		// (exclude isDynamic) and fold dynamic clusters by APPENDING
-		// after the identity-copied primary, so primary ids never move.
+		// Content-cluster identity (#228's layout-stability contract, FIXED):
+		// the fast path applies when the world holds exactly ONE CONTENT
+		// cluster - DYNAMIC clusters (EnsureDynamicCluster's spawn home)
+		// are excluded from the count and fold by APPENDING after the
+		// identity-copied primary. The primary's merged node ids therefore
+		// NEVER move when a mesh-entity/animator/decal/audio spawn creates
+		// the dynamic cluster mid-session (the old shape flipped to the
+		// legacy +1-shift merge on the first spawn, moving every primary
+		// node id and breaking raw-id holders). The dynamic cluster's own
+		// ids ride clusterMergedNodes, which the entity layer already
+		// survives; a second CONTENT cluster is a real topology event and
+		// still takes the legacy merge.
+		const Cluster* identityPrimary = nullptr;
+		{
+			size_t contentClusters = 0;
+			for (const auto& c : clusters)
+				if (c && !c->isDynamic) {
+					++contentClusters;
+					identityPrimary = c.get();
+				}
+			if (contentClusters != 1)
+				identityPrimary = nullptr; // 0 or 2+: the legacy merge
+		}
+		const bool singleCluster = identityPrimary != nullptr;
 		const size_t savedNodeSlotBudget = scene.nodeSlotBudget;
-		const bool singleCluster = clusters.size() == 1;
 		if (singleCluster) {
-			scene = clusters.front()->scene;
+			scene = identityPrimary->scene;
 			// The bulk copy carries the CLUSTER scene's budget (unset for
 			// cooked content); re-apply the world's user budget so the
 			// overflow gate + the dynamic-spawn headroom survive the
@@ -1192,7 +1196,13 @@ using namespace ::smvk;
 			const uint32_t clusterSlotCount =
 				static_cast<uint32_t>(cs.hierarchy.size());
 			std::vector<NodeId> nodeMap(clusterSlotCount, UINT32_MAX);
-			if (singleCluster) {
+			// The identity fast path is PER-CLUSTER: the one content
+			// primary keeps source slot ids (the bulk copy above already
+			// placed its nodes); every other cluster - the dynamic spawn
+			// home, or the second content cluster that disabled the fast
+			// path - folds through the legacy append below.
+			const bool isIdentityPrimary = identityPrimary == &cluster;
+			if (isIdentityPrimary) {
 				for (uint32_t s = 0; s < clusterSlotCount; ++s)
 					if (IsLiveSlot(cs, s))
 						nodeMap[s] = s;
@@ -1203,7 +1213,7 @@ using namespace ::smvk;
 			// pass 2). addNode appends sequentially on the freshly
 			// wiped scene, so world ids match the old dense layout
 			// exactly until the world scene itself grows holes.
-			if (!singleCluster) for (uint32_t s = 0; s < clusterSlotCount; ++s) {
+			if (!isIdentityPrimary) for (uint32_t s = 0; s < clusterSlotCount; ++s) {
 				if (!IsLiveSlot(cs, s))
 					continue;
 				const int dst = addNode(scene, -1, cs.hierarchy[s].level);
@@ -1252,7 +1262,7 @@ using namespace ::smvk;
 				if (e.alive && e.owner == &cluster
 						&& e.clusterNode < nodeMap.size())
 					e.mergedNode = nodeMap[e.clusterNode];
-			if (!singleCluster) for (uint32_t s = 0; s < clusterSlotCount; ++s) {
+			if (!isIdentityPrimary) for (uint32_t s = 0; s < clusterSlotCount; ++s) {
 				if (nodeMap[s] == UINT32_MAX)
 					continue;
 				const Hierarchy& sh = cs.hierarchy[s];
@@ -1301,7 +1311,7 @@ using namespace ::smvk;
 			// every node from allocation), so the pre-pass-1 offset left
 			// every merged name pointing into the auto-name block
 			// (world_entity_tests: resolve/schemafold name-at-row-node).
-			if (!singleCluster) {
+			if (!isIdentityPrimary) {
 			const uint32_t clusterNameOffset =
 				static_cast<uint32_t>(scene.nodeNames.size());
 			scene.nodeNames.insert(

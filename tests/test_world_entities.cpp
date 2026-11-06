@@ -1251,15 +1251,22 @@ void TestResolveHoledCluster()
 	w.RegisterCluster(std::move(c));
 	w.ResolveAndFixup_clusters();
 	const ::Scene& s = w.scene;
-	// The world scene is freshly wiped — always dense here.
-	Check(s.hierarchy.size() == 3 && LiveNodeCount(s) == 3,
+	// The single-content-cluster identity copy (#228): source slots stay
+	// 1:1 - the world scene carries the cluster's slots INCLUDING the
+	// retired hole (kept retired, never recycled) plus the appended
+	// synthetic root. Slot map: 0 = cluster root, 1 = the hole, 2 = b,
+	// 3 = world root.
+	Check(s.hierarchy.size() == 4 && LiveNodeCount(s) == 3,
 		"holedresolve.world-dense");
-	// Layout: 0 = world root, 1 = cluster root, 2 = b. The hole never
-	// entered; b links under the cluster root with no sibling ghosts.
-	Check(s.hierarchy[0].firstChild == 1 && s.hierarchy[1].parent == 0,
+	// The cluster root keeps its source id (0) and reparents under the
+	// appended world root (3).
+	Check(s.hierarchy[3].firstChild == 0 && s.hierarchy[0].parent == 3,
 		"holedresolve.cluster-root-reparented");
-	Check(s.hierarchy[1].firstChild == 2 && s.hierarchy[2].parent == 1
-		&& s.hierarchy[2].nextSibling == -1 && s.hierarchy[1].nextSibling == -1,
+	// b (source slot 2) links under the cluster root with no sibling
+	// ghosts - the retirement already unlinked the hole; the identity
+	// copy preserves that linkage verbatim.
+	Check(s.hierarchy[0].firstChild == 2 && s.hierarchy[2].parent == 0
+		&& s.hierarchy[2].nextSibling == -1 && s.hierarchy[0].nextSibling == -1,
 		"holedresolve.links-skipped-hole");
 	Check(s.metadata.size() > 2
 		&& s.metadata[2].uuid == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
