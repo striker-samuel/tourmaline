@@ -3,6 +3,7 @@
 // Map hierarchy is authored world placement, NOT an in-memory Scene clone.
 #include <Engine/WorldPartition/WorldMap.h>
 #include <Engine/WorldPartition/map_tile_codec.h>
+#include <Engine/WorldPartition/map_tile_pak.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdlib>
 #include <iostream>
@@ -56,6 +57,27 @@ int main() {
         bytes.pop_back();
         Check(!tour::mapcook::DecodeTile(bytes, key, decoded)
             && decoded.size() == 1, "truncated page rejected transactionally");
+    }
+    {
+        smvk::PakWriter writer;
+        Check(tour::mapcook::AddMapTiles(writer, out),
+            "map tiles packed via SMP8 writer");
+        const std::vector<uint8_t> image = writer.Finalize();
+        std::string err;
+        auto reader = smvk::PakReader::Open(image, err);
+        Check(reader.has_value(), "SMP8 map pages parse");
+        if (reader) {
+            std::vector<tour::CookedMapPlacement> decoded;
+            Check(tour::mapcook::ReadMapTile(*reader, {-2,2}, decoded)
+                && decoded.size() == 1
+                && decoded[0].mapNodeId == 20,
+                "tile fetched by logical cell without Cluster");
+            Check(!tour::mapcook::ReadMapTile(*reader, {9,9}, decoded)
+                && decoded.size() == 1,
+                "missing tile leaves output unchanged");
+            Check(reader->BlobsOfKind(smvk::PakAssetKind::MapTile).size() == 2,
+                "two independent MapTile pages");
+        }
     }
     const auto oldTiles = out.tiles.size();
     tour::Map invalid = map;
