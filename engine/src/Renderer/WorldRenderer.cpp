@@ -11648,11 +11648,10 @@ namespace engine {
 		// fall back to direct draws with correct prevModel).
 		uint32_t gfxSlot = smvk::RenderViewSet::kInvalidIndex;
 		//
-		std::vector<smvk::LogicalImageViewHandle> colors;
-		if (inlineOut)
-			colors.push_back(m_inlineTargetLogical); // the private LDR target — never a swap image
-		else
-			colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
+		const std::array<smvk::LogicalImageViewHandle, 1> colors{{
+			inlineOut ? m_inlineTargetLogical
+				: m_viewportResources.swapImages[fb.imageIndex]
+		}};
 		// HDR target for scene - intermediate before tonemap. The aoTerm
 		// MRT twin (target1, the SSGI AO export) rides along whenever the
 		// SSGI targets exist; Main's lit FS family writes both, the debug
@@ -11663,12 +11662,15 @@ namespace engine {
 		// writes it (the env-spec slice the SSR composite replaces on a
 		// hit); the flat debug views leave it at the clear (SSR is gated
 		// off under debug viz anyway).
-		std::vector<smvk::LogicalImageViewHandle> hdrColors;
-		hdrColors.push_back(m_viewportResources.hdr.logicalView);
+		std::array<smvk::LogicalImageViewHandle, 3> hdrTargets{};
+		size_t hdrTargetCount = 0;
+		hdrTargets[hdrTargetCount++] = m_viewportResources.hdr.logicalView;
 		if (m_viewportResources.ssgi.aoTerm.Valid())
-			hdrColors.push_back(m_viewportResources.ssgi.aoTerm.logical);
+			hdrTargets[hdrTargetCount++] = m_viewportResources.ssgi.aoTerm.logical;
 		if (m_viewportResources.ssgi.envSpec.Valid())
-			hdrColors.push_back(m_viewportResources.ssgi.envSpec.logical);
+			hdrTargets[hdrTargetCount++] = m_viewportResources.ssgi.envSpec.logical;
+		const std::span<const smvk::LogicalImageViewHandle> hdrColors{
+			hdrTargets.data(), hdrTargetCount};
 
 		uint64_t frameUniformsAddress =
 			m_context->GetBufferDeviceAddress(m_resources.frameUniforms)
@@ -16970,9 +16972,12 @@ namespace engine {
 				motionView = m_viewportResources.motionVectors.target.logicalView;
 				motionBindless = m_viewportResources.motionVectors.target.bindlessIndex;
 			}
-			std::vector<smvk::LogicalImageViewHandle> tonemapTargets = colors;
-			if (smaaActive)
-				tonemapTargets = { m_viewportResources.smaa.ldr.logicalView };
+			const std::array<smvk::LogicalImageViewHandle, 1> smaaTargets{{
+				m_viewportResources.smaa.ldr.logicalView
+			}};
+			const std::span<const smvk::LogicalImageViewHandle> tonemapTargets =
+				smaaActive ? std::span<const smvk::LogicalImageViewHandle>(smaaTargets)
+					: std::span<const smvk::LogicalImageViewHandle>(colors);
 			const bool lutOn = !m_lutFile.empty()
 				&& m_lutBindless != UINT32_MAX && m_lutIntensity > 0.0f;
 			// Screenshot frame: the composite is drawn once more into an sRGB
