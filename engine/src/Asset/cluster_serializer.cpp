@@ -29,6 +29,23 @@
 
 #include "ktx.h"
 
+// The process-wide wantNodeNames default (see cluster_serializer.h):
+// ON for editors/tools/tests (names are authoring data); RunPakApp flips
+// it OFF before any load because the runtime render lanes consume zero
+// node names. Written once at startup, read on every scene-blob parse -
+// no locking by contract.
+namespace tour::asset {
+namespace {
+bool g_sceneNodeNamesWanted = true;
+}
+void SetSceneNodeNamesWanted(bool wanted) {
+	g_sceneNodeNamesWanted = wanted;
+}
+bool SceneNodeNamesWanted() {
+	return g_sceneNodeNamesWanted;
+}
+} // namespace tour::asset
+
 namespace smvk {
 namespace {
 
@@ -410,6 +427,19 @@ struct Cursor {
 		s.assign(reinterpret_cast<const char*>(img.data() + off), n);
 		off += n;
 		return s;
+	}
+	// The allocation-free str() (the names-skip lane): same validation,
+	// same cursor advance, no std::string constructed.
+	bool skipStr() {
+		const uint32_t n = u32();
+		if (!ok)
+			return false;
+		if (n > 16 * 1024 * 1024 || off + n > img.size()) {
+			ok = false;
+			return false;
+		}
+		off += n;
+		return true;
 	}
 	glm::vec3 vec3() {
 		const float x = f32(), y = f32(), z = f32();
@@ -1201,25 +1231,18 @@ bool SerializeClusters(
 				PutU32(blob, it->second);
 			}
 		}
-		// Node names via the dense metadata (node-ordered, byte-stable).
-		{
-			std::vector<std::pair<uint32_t, uint32_t>> namePairs;
-			for (uint32_t n = 0; n < scene.metadata.size(); ++n)
-				if (scene.metadata[n].name != 0xFFFFFFFFu) {
-					if (n >= slotToDense.size() || slotToDense[n] == UINT32_MAX)
-						continue; // retired slot: no node, no name
-					namePairs.emplace_back(slotToDense[n], scene.metadata[n].name);
-				}
-			std::sort(namePairs.begin(), namePairs.end());
-			PutU32(blob, static_cast<uint32_t>(namePairs.size()));
-			for (const auto& [node, nameIdx] : namePairs) {
-				PutU32(blob, node);
-				PutU32(blob, nameIdx);
-			}
-		}
-		PutU32(blob, static_cast<uint32_t>(scene.nodeNames.size()));
-		for (const auto& n : scene.nodeNames)
-			PutStr(blob, n);
+		// Node names: STRIPPED from the cooked blob (zero-count sections).
+		// The names' home is the .tour - node names are AUTHORING-ONLY
+		// data (no renderer/audio/app runtime consumer exists; the cooked
+		// skeleton binds joints by node id + inverse binds, no names), and
+		// a flat stress grid's ~1M names were a THIRD of the pak's bytes
+		// plus a million dead heap strings at load. The sections stay in
+		// the format as zero counts (old readers parse clean; the runtime
+		// load-skip flag covers old paks that still carry names). The
+		// scene NAME and MATERIAL names stay - the identity lane and
+		// diagnostics consume those.
+		PutU32(blob, 0); // namePairCount
+		PutU32(blob, 0); // nodeNames table
 		PutU32(blob, static_cast<uint32_t>(scene.materialNames.size()));
 		for (const auto& n : scene.materialNames)
 			PutStr(blob, n);
@@ -1786,7 +1809,8 @@ bool SerializeCluster(
 bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 	std::string& nameOut, const SceneLinkMaps* maps, std::string& err,
 	smvk::touranim::Skeleton* skeletonOut,
-	bool* hasSkeletonOut) {
+	bool* hasSkeletonOut,
+	bool wantNodeNames) {
 	auto fail = [&](const std::string& msg) {
 		err = msg;
 		return false;
@@ -1821,7 +1845,14 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		recorded.push_back(hh);
 	}
 	for (uint32_t i = 0; i < nodeCount; ++i)
-		addNode(scene, recorded[i].parent, recorded[i].level);
+		// autoName=false: cooked names come ONLY from the blob's name
+		// sections below (node names are authoring data - stripped at
+		// pack time; the load-skip flag covers old paks). Synthesizing
+		// "node<id>" per node was a million to_string allocations on a
+		// flat stress grid, and they leaked into nodeNames as garbage
+		// even on the names-on path.
+		addNode(scene, recorded[i].parent, recorded[i].level,
+			/*autoName=*/false);
 	for (uint32_t i = 0; i < nodeCount; ++i)
 		scene.hierarchy[i] = recorded[i];
 	// Transforms.
@@ -1863,16 +1894,44 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		}
 	}
 	const uint32_t namePairCount = c.u32();
-	for (uint32_t i = 0; i < namePairCount; ++i) {
-		const uint32_t node = c.u32();
-		const uint32_t nameIdx = c.u32();
+	if (!c.ok)
+		return fail("bad scene name mapping");
+	if (wantNodeNames) {
+		for (uint32_t i = 0; i < namePairCount; ++i) {
+			const uint32_t node = c.u32();
+			const uint32_t nameIdx = c.u32();
+			if (!c.ok)
+				return fail("bad scene name mapping");
+			SetNodeNameIndex(scene, node, nameIdx);
+		}
+	} else {
+		// AUTHORING-ONLY data skipped (the header contract): the runtime
+		// world-load lanes never read node names, so the pair table is
+		// bounds-checked cursor advance - no SetNodeNameIndex writes, no
+		// per-node bookkeeping. A flat stress grid carries ~1M pairs.
+		for (uint32_t i = 0; i < namePairCount; ++i) {
+			c.u32();
+			c.u32();
+		}
 		if (!c.ok)
 			return fail("bad scene name mapping");
-		SetNodeNameIndex(scene, node, nameIdx);
 	}
 	const uint32_t nodeNameCount = c.u32();
-	for (uint32_t i = 0; i < nodeNameCount; ++i)
-		scene.nodeNames.push_back(c.str());
+	if (!c.ok)
+		return fail("truncated scene blob");
+	if (wantNodeNames) {
+		for (uint32_t i = 0; i < nodeNameCount; ++i)
+			scene.nodeNames.push_back(c.str());
+	} else {
+		// The 1M-heap-strings killer: cursor-skip the string table. The
+		// walk itself is a few ms over tens of MB; the win is zero
+		// std::string constructions + zero allocator churn.
+		for (uint32_t i = 0; i < nodeNameCount; ++i)
+			if (!c.skipStr())
+				break;
+	}
+	if (!c.ok)
+		return fail("truncated scene blob");
 	const uint32_t matNameCount = c.u32();
 	for (uint32_t i = 0; i < matNameCount; ++i)
 		scene.materialNames.push_back(c.str());
@@ -3297,9 +3356,13 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		SceneLinkMaps maps{ &meshByPakId, &matByPakId, &lightByPakId,
 			&camByPakId, &decalByPakId };
 		std::string sceneName, perr;
+		// The process default (RunPakApp flips it OFF: the runtime render
+		// lanes consume zero node names; editors/tools keep it ON).
+		const bool wantNodeNames = tour::asset::SceneNodeNamesWanted();
 		if (!ParseSceneBlob(reader.Payload(*sceneEntries[sceneIndex]),
 				cluster->scene, sceneName, &maps, perr,
-				&cluster->skeleton, &cluster->hasSkeleton)) {
+				&cluster->skeleton, &cluster->hasSkeleton,
+				wantNodeNames)) {
 			// SELF-HEAL (geometry streaming only): ParseSceneBlob hard-
 			// fails on an invalid mesh pak id - with streaming on, a
 			// DEFERRED sibling sits invalid in meshByPakId. Cooked scenes
@@ -3332,7 +3395,8 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				healed = ParseSceneBlob(
 					reader.Payload(*sceneEntries[sceneIndex]),
 					cluster->scene, sceneName, &maps, perr,
-					&cluster->skeleton, &cluster->hasSkeleton);
+					&cluster->skeleton, &cluster->hasSkeleton,
+					wantNodeNames);
 			}
 			if (!healed)
 				return fail(perr);

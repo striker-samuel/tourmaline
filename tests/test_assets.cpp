@@ -3952,6 +3952,96 @@ void TestAudioRoomSection() {
 	}
 }
 
+// Node names are AUTHORING-ONLY (cluster_serializer.h's contract): the
+// cooked blob STRIPS them (zero-count name sections - a flat stress
+// grid's ~1M names were a third of the pak's bytes), and the runtime
+// load SKIPS them on OLD paks that still carry them (cursor-advance,
+// zero allocations). This pins both halves.
+void TestNodeNameStripping() {
+	using namespace smvk;
+	{
+		// (a) The WRITER strip: a named cluster cooks to zero-count name
+		// sections; the structure round-trips unchanged.
+		auto c = std::make_unique<smvk::Cluster>(nullptr);
+		c->SetOfflineMode(true);
+		addNode(c->scene, -1, 0);
+		const int child = addNode(c->scene, 0, 1);
+		setNodeName(c->scene, child, "QuadNode");
+		PakWriter w;
+		std::string err;
+		Check(SerializeClusters({ c.get() }, { "Names" }, w, nullptr,
+				&err, nullptr, 0, nullptr, nullptr, 0) && err.empty(),
+			"names.serialize.ok");
+		const std::vector<uint8_t> img = w.Finalize();
+		auto reader = PakReader::Open(std::span<const uint8_t>(img), err);
+		Check(reader.has_value(), "names.pak.open");
+		if (reader) {
+			const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
+			Check(scenes.size() == 1, "names.pak.scene1");
+			if (scenes.size() == 1) {
+				Scene scene;
+				std::string nameOut, perr;
+				Check(ParseSceneBlob(reader->Payload(*scenes[0]), scene,
+						nameOut, nullptr, perr) && perr.empty(),
+					"names.parse.ok");
+				Check(scene.nodeNames.empty()
+					&& scene.hierarchy.size() == 2,
+					"names.stripped-from-cooked-blob");
+			}
+		}
+	}
+	{
+		// (b) The LOAD skip on an OLD-STYLE blob (names present, the
+		// pre-strip writer's shape): wantNodeNames=false cursor-skips
+		// the pair + string tables with zero allocations and identical
+		// structure; the default (true) still materializes them.
+		std::vector<uint8_t> p;
+		auto putU32 = [&p](uint32_t v) {
+			for (int i = 0; i < 4; ++i)
+				p.push_back(uint8_t((v >> (8 * i)) & 0xFF));
+		};
+		auto putF32 = [&p, &putU32](float f) {
+			uint32_t v = 0;
+			std::memcpy(&v, &f, 4);
+			putU32(v);
+		};
+		const uint32_t kNone = 0xFFFFFFFFu;
+		putU32(2); // nodeCount
+		// hierarchy: 2 x (parent, firstChild, nextSibling, lastSibling,
+		// level) - root then its child.
+		putU32(kNone); putU32(1); putU32(kNone); putU32(1); putU32(0);
+		putU32(0); putU32(kNone); putU32(kNone); putU32(kNone); putU32(1);
+		// transforms: 2 x 16 f32 (identity).
+		for (int n = 0; n < 2 * 16; ++n)
+			putF32((n % 5 == 0) ? 1.0f : 0.0f);
+		putU32(0); // meshPairCount
+		putU32(0); // matPairCount
+		putU32(1); // namePairCount: node 1 -> nameIdx 0
+		putU32(1);
+		putU32(0);
+		putU32(1); // nodeNameCount: "QuadNode"
+		putU32(8);
+		p.insert(p.end(), { 'Q','u','a','d','N','o','d','e' });
+		putU32(0); // matNameCount
+		{
+			Scene on, off;
+			std::string nameOn, nameOff, errOn, errOff;
+			Check(ParseSceneBlob(p, on, nameOn, nullptr, errOn,
+					nullptr, nullptr, /*wantNodeNames=*/true)
+				&& errOn.empty() && on.nodeNames.size() == 1
+				&& on.nodeNames[0] == "QuadNode"
+				&& getNodeName(on, 1) == "QuadNode",
+				"names.default-still-loads");
+			Check(ParseSceneBlob(p, off, nameOff, nullptr, errOff,
+					nullptr, nullptr, /*wantNodeNames=*/false)
+				&& errOff.empty() && off.nodeNames.empty()
+				&& off.hierarchy.size() == on.hierarchy.size()
+				&& nameOff == nameOn,
+				"names.skip-no-alloc-identical-structure");
+		}
+	}
+}
+
 } // namespace
 
 int main() {
@@ -4011,6 +4101,7 @@ int main() {
 	run("TestMultiSceneSerialize", TestMultiSceneSerialize);
 	run("TestAudioSceneSection", TestAudioSceneSection);
 	run("TestAudioRoomSection", TestAudioRoomSection);
+run("TestNodeNameStripping", TestNodeNameStripping);
 	run("TestStaticSubtrees", TestStaticSubtrees);
 	run("TestMeshlets", TestMeshlets);
 	run("TestStaticCollapse", TestStaticCollapse);

@@ -133,6 +133,16 @@ namespace app {
 		// unsatisfiable reservation fails fast here with the OOM diagnostic.
 		tour::mem::InitMemory();
 
+		// Node names are AUTHORING-ONLY (cluster_serializer.h's contract):
+		// the runtime render lanes consume ZERO node names (the cooked
+		// skeleton binds joints by node id + inverse binds), so the world
+		// load skips the scene blob's name sections entirely - on paks
+		// cooked by the stripped writer they are zero-count anyway; on
+		// older paks the load cursor-skips them with no allocations. The
+		// EDITOR never runs through RunPakApp - its own main keeps the
+		// process default (names on, from the .tour replay).
+		tour::asset::SetSceneNodeNamesWanted(false);
+
 		// Early gate: an unknown --present value fails fast, BEFORE any
 		// window/context/element work (nothing to shut down but the memory
 		// footprint report, same as the pre-wiring failures below).

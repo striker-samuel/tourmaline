@@ -192,10 +192,31 @@ using ExternalTextureResolver =
 	// without (null), only structure + names come out. skeletonOut/
 	// hasSkeletonOut (v14): null = skip (structure-only callers); an
 	// absent section leaves *hasSkeletonOut false.
+	// wantNodeNames (default true): NODE names are AUTHORING-ONLY data -
+	// no renderer/audio/app runtime consumer exists (the cooked skeleton
+	// binds joints by node id + inverse binds, no names) - so a runtime
+	// world-load lane passes false and the blob's node-name pair table +
+	// string table are cursor-skipped with ZERO allocations (a flat
+	// stress grid carries ~1M of each; materializing them was 1M heap
+	// strings nobody read). Material names always load (diagnostics).
 	bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		std::string& nameOut, const SceneLinkMaps* maps,
 		std::string& err,
 		smvk::touranim::Skeleton* skeletonOut = nullptr,
-		bool* hasSkeletonOut = nullptr);
+		bool* hasSkeletonOut = nullptr,
+		bool wantNodeNames = true);
 
 } // namespace smvk
+
+// The process-wide default for ParseSceneBlob's wantNodeNames, read by
+// DeserializeCluster's world-load lane. ON by default (editors, tools
+// and tests author scenes - names are their data); RunPakApp flips it
+// OFF before any load because the runtime render lanes consume zero
+// node names. A host that wants them back (a game addressing nodes by
+// name) calls the setter before loading. Set once at startup, before
+// the first load - no locking by contract (same shape as
+// smvk::StrictResources).
+namespace tour::asset {
+void SetSceneNodeNamesWanted(bool wanted);
+bool SceneNodeNamesWanted();
+}

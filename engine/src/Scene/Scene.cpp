@@ -46,7 +46,7 @@ std::string UniqueSiblingNodeName(const Scene& scene, int node,
 	return requested;
 }
 
-int addNode(Scene& scene, int parent, int level)
+int addNode(Scene& scene, int parent, int level, bool autoName)
 {
   const int nodeCount = (int)scene.hierarchy.size();
   // Parent must be a LIVE slot (not just in range): a retired slot is
@@ -139,7 +139,11 @@ int addNode(Scene& scene, int parent, int level)
   scene.hierarchy[node].firstChild  = -1;
   // Names exist from allocation, including the synthetic root, mesh
   // primitives and recycled slots. Importers may replace this default.
-  setNodeName(scene, node, "node" + std::to_string(node));
+  // autoName=false (the cooked-blob parse): no synthesized names - the
+  // blob's own name sections are the only source (see addNode's header
+  // comment).
+  if (autoName)
+    setNodeName(scene, node, "node" + std::to_string(node));
   return node;
 }
 

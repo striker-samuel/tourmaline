@@ -528,7 +528,13 @@ void UnlinkNodeFromParent(Scene& scene, int node);
 // (re-resolve, or clean the entries like the editor's uncreate paths).
 void RetireNodeSlot(Scene& scene, NodeId node);
 
-int addNode(Scene& scene, int parent, int level);
+// autoName (default true): allocation names the node "node<id>" (the
+// authoring invariant - importers may replace it). The cooked-blob parse
+// passes false: cooked names come from the blob's own name sections only
+// (stripped at pack time - cluster_serializer.h), so synthesizing a
+// million to_string names for a flat stress grid (or leaking them into
+// the table as garbage next to the recorded names) serves nobody.
+int addNode(Scene& scene, int parent, int level, bool autoName = true);
 
 // Generation-checked scene transform mutation. The setter marks affected
 // descendants for the GPU-scene journal via the existing recalc path.
