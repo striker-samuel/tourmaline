@@ -5,6 +5,8 @@
 #include <Engine/Renderer/WorldRenderer.h>
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Renderer/RendererLimits.h>
+#include <Engine/Rendergraph/volumetric.h>
 #include <Engine/App/world.h>
 #include <Engine/App/app.h>
 #include <Engine/RHI/resource_manager.h>
@@ -21,6 +23,21 @@
 #include <vector>
 
 namespace engine {
+// Mirror the renderer's shared UI bounds. Keep in sync with
+// WorldRendererPassDescriptors.inl when modifying the renderer presets.
+static constexpr uint32_t NUM_CASCADES = 4;
+static constexpr float RENDER_SCALE_MIN = 0.25f;
+static constexpr float RENDER_SCALE_MAX = 2.0f;
+static constexpr float UI_SCALE_MIN = 0.5f;
+static constexpr float UI_SCALE_MAX = 2.0f;
+static constexpr float UI_DPI_MIN = 0.5f;
+static constexpr float UI_DPI_MAX = 3.0f;
+static constexpr uint32_t FP_TILE_SIZE = 16;
+static constexpr uint32_t FP_MAX_LIGHTS =
+	engine::renderer::limits::MaxSimultaneousLights;
+static constexpr uint32_t FP_MAX_DECALS = 256;
+static constexpr uint32_t FP_MAX_DECALS_PER_TILE = 16;
+static constexpr uint32_t PARTICLE_MAX_EMITTERS = 16;
 void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
     if (!frame.fb || !frame.env) return;
     smvk::Framebuffer& fb = *frame.fb;
@@ -490,7 +507,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
 							if (ImGui::Combo("Quality preset", &volQ, kVolNames, 5)) {
 								m_volumetricQuality = static_cast<smvk::VolumetricQuality>(std::clamp(volQ, 0, 4));
 								if (m_volumetricQuality != smvk::VolumetricQuality::Custom) {
-									smvk::VolumetricDesc qd = MakeVolumetricDesc();
+									smvk::VolumetricDesc qd{};
 									smvk::ApplyVolumetricQuality(qd, m_volumetricQuality);
 									m_volumetricSteps = (int)qd.steps;
 								}
