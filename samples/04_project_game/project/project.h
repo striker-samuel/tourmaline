@@ -45,6 +45,7 @@ struct GiKey { Id id = 0; constexpr operator Id() const { return id; } };
 struct SpriteSetKey { Id id = 0; constexpr operator Id() const { return id; } };
 struct StateMachineKey { Id id = 0; constexpr operator Id() const { return id; } };
 struct NavMeshKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct ShapeKey { Id id = 0; constexpr operator Id() const { return id; } };
 struct AudioGraphKey { Id id = 0; constexpr operator Id() const { return id; } };
 // ONE CUE of an authored audio graph: the (graph id, cue
 // ordinal) pair (the ordinal indexes the authored file's
@@ -70,9 +71,9 @@ inline constexpr std::string_view Name = "GameProject";
 // paks, entry scene) - a texture repixel keeps it; the EOF
 // metadata at the bottom of this file carries the new file
 // hash instead.
-inline constexpr std::uint64_t Generation = 9ULL;
-inline constexpr std::uint64_t GeneratedAt = 1793701773ULL;
-inline constexpr std::string_view ContentHash = "ad0cac7f766b29a0";
+inline constexpr std::uint64_t Generation = 10ULL;
+inline constexpr std::uint64_t GeneratedAt = 1793967263ULL;
+inline constexpr std::string_view ContentHash = "b829ad750b0e2cec";
 
 namespace scenes {
     inline constexpr SceneKey game{0x1000ULL};
@@ -107,6 +108,9 @@ namespace statemachines {
 }
 
 namespace navmeshes {
+}
+
+namespace shapes {
 }
 
 // The authored audio-graph CUES (docs/audio_graph.md):
@@ -144,6 +148,7 @@ enum class AssetKind : std::uint8_t {
     SpriteSet    = 8,
     StateMachine = 9,
     NavMesh      = 10,
+    Shape        = 11,
 };
 
 // The FLAT TYPED CATALOG: plain compile-time POD records -
@@ -302,6 +307,11 @@ struct project_pipeline::query::AssetTraits<project::NavMeshKey> {
     static constexpr bool Matches(project::AssetKind k)
         { return k == project::AssetKind::NavMesh; }
 };
+template<>
+struct project_pipeline::query::AssetTraits<project::ShapeKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::Shape; }
+};
 
 // Optional build-generated local shader reflection catalog.
 #if __has_include("project_compiled_shaders.h")
@@ -318,8 +328,8 @@ struct project_pipeline::query::AssetTraits<project::NavMeshKey> {
 // only what mtime+size say moved. An unknown version reads
 // as absent (a fresh scan, never a stale-cache reuse).
 //
-// generator generation=9 timestamp=1793701773
-// catalog hash=ad0cac7f766b29a0
+// generator generation=10 timestamp=1793967263
+// catalog hash=b829ad750b0e2cec
 //
 // [assets]
 // asset 0x1000 path="content/scenes/game.tour" pak="world"
@@ -327,7 +337,7 @@ struct project_pipeline::query::AssetTraits<project::NavMeshKey> {
 // asset 0x2000 path="content/models/game/shared/stone.png" pak="shared"
 //   mtime_s=1793447799 size=73 hash=fnv1a64:c602ab332a5e2cb5
 // asset 0x3001 path="content/models/game/game.geometry" pak="world"
-//   mtime_s=1793445008 size=7567 hash=fnv1a64:d1536cde7f485dd2
+//   mtime_s=1793967263 size=7582 hash=fnv1a64:5a338ff3a16333c6
 // asset 0x4000 path="content/audio/bells.wav" pak="shared"
 //   mtime_s=1793452759 size=57644 hash=fnv1a64:72f371a17d324d66
 // asset 0x7000 path="content/audio/forest.audiograph" pak="shared"
