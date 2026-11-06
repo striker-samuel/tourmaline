@@ -61,6 +61,145 @@ Scene MakeScene(uint32_t count) {
 
 int main() {
     {
+        Scene s;
+        const int root = addNode(s, -1, 0);
+        const int child = addNode(s, root, 1);
+        const int leaf = addNode(s, child, 2);
+        glm::dmat4 r(1.0), c(1.0), l(1.0);
+        r[3] = glm::dvec4(1.0e12 + 0.125, -1.0e12 - 0.25, 1.0e12, 1.0);
+        c[3] = glm::dvec4(0.375, 0.5, -0.125, 1.0);
+        l[3] = glm::dvec4(-0.25, -0.125, 0.625, 1.0);
+        Check(SetLocalTransform(s, MakeNodeHandle(s, root), r), "double root");
+        Check(SetLocalTransform(s, MakeNodeHandle(s, child), c), "double child");
+        Check(SetLocalTransform(s, MakeNodeHandle(s, leaf), l), "double leaf");
+        Check(recalculateGlobalTransforms(s), "double recalc");
+        Check(glm::length(glm::dvec3(GlobalTransformDouble(s, leaf)[3])
+            - glm::dvec3((r * c * l)[3])) < 0.0001, "double signed hierarchy");
+        glm::dmat4 bad(1.0);
+        bad[3].x = std::numeric_limits<double>::quiet_NaN();
+        Check(!SetLocalTransform(s, MakeNodeHandle(s, leaf), bad), "double reject NaN");
+        const auto stale = MakeNodeHandle(s, leaf);
+        UnlinkNodeFromParent(s, leaf);
+        RetireNodeSlot(s, leaf);
+        Check(!SetLocalTransform(s, stale, l), "double stale handle");
+        s.localTransform[root][3].x = 12.0f;
+        MarkAllRootsChanged(s);
+        Check(recalculateGlobalTransforms(s), "legacy direct float recalc");
+        Check(GlobalTransformDouble(s, root)[3].x == 12.0, "legacy float imported");
+    }
+
+    {
+        // Versioned disk persistence must retain fractional positions
+        // far beyond float32's world-space precision budget.
+        Scene source;
+        const int root = addNode(source, -1, 0);
+        const int child = addNode(source, root, 1);
+        glm::dmat4 a(1.0), b(1.0);
+        a[3] = glm::dvec4(-1.0e12 - 0.125, 1.0e12 + 0.25, -1.0e12, 1.0);
+        b[3] = glm::dvec4(0.375, -0.5, 0.625, 1.0);
+        Check(SetLocalTransform(source, MakeNodeHandle(source, root), a)
+              && SetLocalTransform(source, MakeNodeHandle(source, child), b),
+              "scene v1: author double hierarchy");
+        MarkAllRootsChanged(source);
+        recalculateGlobalTransforms(source);
+        const char* path = "audit03_scene_double_roundtrip.bin";
+        saveScene(path, source);
+        Scene loaded;
+        loadScene(path, loaded);
+        Check(loaded.hierarchy.size() == 2, "scene v1: node count");
+        Check(loaded.localTransformDouble.size() == 2
+              && loaded.localTransformDouble[0][3].x == a[3].x
+              && loaded.localTransformDouble[1][3].x == b[3].x,
+              "scene v1: precise locals roundtrip");
+        Check(loaded.globalTransformDouble.size() == 2
+              && loaded.globalTransformDouble[1][3].x == (a * b)[3].x
+              && loaded.globalTransformDouble[1][3].y == (a * b)[3].y,
+              "scene v1: precise global hierarchy roundtrip");
+        std::remove(path);
+    }
+
+    {
+        // Versioned files fail closed for unsupported versions. The
+        // loader must not erase the existing scene on a bad header.
+        Scene retained = MakeScene(1);
+        const char* path = "audit03_scene_unsupported.bin";
+        FILE* f = std::fopen(path, "wb");
+        if (f) {
+            const uint32_t header[] = {0x54444D53u, 999u, 1u};
+            std::fwrite(header, sizeof(uint32_t), 3, f);
+            std::fclose(f);
+            loadScene(path, retained);
+        }
+        Check(f != nullptr && retained.hierarchy.size() == 1,
+              "scene v1: unsupported version leaves scene untouched");
+        std::remove(path);
+    }
+
+    {
+        // Legacy (no magic) still decodes float32 transforms and
+        // upgrades them to the runtime double-authoritative arrays.
+        const char* path = "audit03_scene_legacy.bin";
+        FILE* f = std::fopen(path, "wb");
+        if (f) {
+            const uint32_t count = 1u;
+            const glm::mat4 local = glm::translate(glm::mat4(1.0f),
+                                                   glm::vec3(128.5f, -64.25f, 7.0f));
+            const Hierarchy hierarchy{.parent = -1, .firstChild = -1,
+                                      .nextSibling = -1, .lastSibling = -1,
+                                      .level = 0};
+            const uint32_t emptyRows = 0u;
+            std::fwrite(&count, sizeof(count), 1, f);
+            std::fwrite(&local, sizeof(local), 1, f);
+            std::fwrite(&local, sizeof(local), 1, f);
+            std::fwrite(&hierarchy, sizeof(hierarchy), 1, f);
+            std::fwrite(&emptyRows, sizeof(emptyRows), 1, f); // materials
+            std::fwrite(&emptyRows, sizeof(emptyRows), 1, f); // meshes
+            std::fclose(f);
+            Scene legacy;
+            loadScene(path, legacy);
+            Check(legacy.hierarchy.size() == 1
+                  && legacy.globalTransformDouble.size() == 1
+                  && legacy.globalTransformDouble[0][3].x == 128.5
+                  && legacy.globalTransformDouble[0][3].y == -64.25,
+                  "scene legacy: float32 file upgrades to double state");
+        } else {
+            Check(false, "scene legacy: fixture created");
+        }
+        std::remove(path);
+    }
+
+    {
+        // A legacy bulk import may resize the float arrays after a precise
+        // setter has run. Repair must initialize only the missing double
+        // entries, not overwrite an existing sub-float translation.
+        Scene s;
+        const int root = addNode(s, -1, 0);
+        glm::dmat4 precise(1.0);
+        precise[3].x = 1.0e12 + 0.125;
+        Check(SetLocalTransform(s, MakeNodeHandle(s, root), precise),
+              "double repair: precise root");
+        const int child = addNode(s, root, 1);
+        s.localTransform[child][3].y = 7.0f;
+        s.localTransformDouble.resize(1);
+        s.globalTransformDouble.resize(1);
+        s.localTransformFloatShadow.resize(1);
+        MarkAllRootsChanged(s);
+        Check(recalculateGlobalTransforms(s), "double repair: recalculate");
+        Check(GlobalTransformDouble(s, root)[3].x == precise[3].x,
+              "double repair: root precision retained");
+        Check(GlobalTransformDouble(s, child)[3].x == precise[3].x
+              && GlobalTransformDouble(s, child)[3].y == 7.0,
+              "double repair: legacy child initialized");
+        glm::dmat4 next = precise;
+        next[3].x += 0.25;
+        Check(SetLocalTransform(s, MakeNodeHandle(s, root), next),
+              "double repair: setter after resized arrays");
+        Check(recalculateGlobalTransforms(s), "double repair: updated");
+        Check(GlobalTransformDouble(s, child)[3].x == next[3].x,
+              "double repair: descendant keeps fractional delta");
+    }
+
+    {
         // Export detaches static descendants, folding every ancestor's
         // transform into each independent cooked static root. Editor state
         // and dynamic hierarchy remain unchanged.

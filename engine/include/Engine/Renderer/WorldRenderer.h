@@ -45,6 +45,7 @@
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/DebugDraw.h>
+#include <Engine/Memory/arena_flat_array.h>
 #include <Engine/Renderer/ShapeScene.h>
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene_world.h>
@@ -2755,7 +2756,7 @@ public:
 		glm::vec4 boxMaxPad{ 0.0f };    // xyz = depth-fitted box max (world), w = pad
 	};
 	static_assert(sizeof(CubemapProbeGpu) == 64);
-	std::vector<CubemapProbeGpu> m_cubemapProbes; // cached probe rows (<= 32 appended)
+	tour::mem::ArenaFlatArray<CubemapProbeGpu> m_cubemapProbes; // cached probe rows (<= 32 appended)
 	void LoadCubemaps();
 	// ---- Cubemap probe streaming (distance residency) -----------------
 	// LoadCubemaps used to upload EVERY manifest row up front (KTX decode
@@ -2814,13 +2815,13 @@ public:
 	}
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
-	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
+	tour::mem::ArenaFlatArray<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
 	// Point-light shadows (six cube-face tiles per light, same atlas):
 	// frame numbering is spots first, faces after, so the combined tile
 	// index of face f of light k is m_spotShadowCount + k*6 + f.
 	uint32_t m_pointShadowLightCount = 0; // shadowed points this frame
 	uint32_t m_pointShadowTileCount = 0;  // 6 * light count (face tiles used)
-	std::vector<smvk::GpuCascadeDescription> m_pointShadowTiles; // face tiles this frame (feed the face RenderViews, CubemapFace order per light)
+	tour::mem::ArenaFlatArray<smvk::GpuCascadeDescription> m_pointShadowTiles; // face tiles this frame (feed the face RenderViews, CubemapFace order per light)
 	// Total local-light shadow tiles this frame (spots + point faces): the
 	// pc.spotShadowCount / DsPhasePush.spotShadowCount the shaders guard
 	// tile indexing against (the array bound is kMaxLocalShadowTiles).
@@ -2991,7 +2992,7 @@ public:
 	bool m_sdsmLastCamPosValid = false;
 	// Per-flight stats buffers + the readback plumbing (own ticket).
 	smvk::Holder<smvk::BufferHandle> m_sdsmStatsBuffers[2]{};
-	std::vector<uint8_t> m_pendingSdsmStats; // kSdsmStatsBytes; readback destination
+	tour::mem::ArenaFlatArray<uint8_t> m_pendingSdsmStats; // kSdsmStatsBytes; readback destination
 	uint64_t m_sdsmReadbackTicket = 0;       // own 1-in-flight async ticket
 	uint32_t m_sdsmReadbackSlot = 0;         // flight slot the ticket copies
 	bool m_sdsmStatsArmed = false; // the stats pass ran this frame
@@ -3095,10 +3096,10 @@ public:
 	smvk::Holder<smvk::BufferHandle> m_selectionLineBuffer;
 	// Temporary debug-line uploads are isolated by frame-in-flight.
 	std::vector<smvk::Holder<smvk::BufferHandle>> m_debugDrawGpuLines;
-	std::vector<uint32_t> m_debugDrawGpuCapacity;
+	tour::mem::ArenaFlatArray<uint32_t> m_debugDrawGpuCapacity;
 	// Last retained-shape revision uploaded to each flight's buffer;
 	// 0 is invalid/uninitialized. Transient game debug streams bypass cache.
-	std::vector<uint64_t> m_debugDrawGpuRevisions;
+	tour::mem::ArenaFlatArray<uint64_t> m_debugDrawGpuRevisions;
 
 	// The filtered main view is ALWAYS ON - the runtime A/B toggle (false =
 	// legacy direct draws) is gone. This latch is setup-time availability
@@ -3622,8 +3623,8 @@ public:
 		uint32_t dbgSpotClip = 0;
 	};
 	DsStats m_dsStats{};
-	std::vector<uint32_t> m_dsZBinStaging;  // 4 * kDsZBinCount
-	std::vector<uint32_t> m_dsMaskStaging;  // per-TileGroup mask entries
+	tour::mem::ArenaFlatArray<uint32_t> m_dsZBinStaging;  // 4 * kDsZBinCount
+	tour::mem::ArenaFlatArray<uint32_t> m_dsMaskStaging;  // per-TileGroup mask entries
 	// Light count captured at phase-1 upload time (telemetry reference
 	// for the async counter readback; see UpdateReadbacks).
 	uint32_t m_dsReadbackLightCount = 0;
@@ -3658,7 +3659,7 @@ public:
 	glm::vec2 m_currJitterUV{ 0.0f };
 	glm::vec2 m_prevJitterUV{ 0.0f };
 	glm::vec2 m_jitterDeltaUV{ 0.0f };
-	std::vector<glm::mat4> m_prevGlobalTransforms; // last frame's node transforms
+	tour::mem::ArenaFlatArray<glm::mat4> m_prevGlobalTransforms; // last frame's node transforms
 	// Motion vectors are a DEBUG VIEW now (ViewMode::MotionVectors, the
 	// V key / combo / env) — the tonemap's debug view renders them and
 	// REPLACES the scene composite; the old "overlay" checkbox is
@@ -4402,7 +4403,7 @@ public:
 	std::array<uint32_t, smvk::kDsCounterCount> m_pendingDsCounters{};
 	// Gfx draw-level demand download destination (sized to the live slot
 	// count at submit time; kDemandNoReport entries are skipped at poll).
-	std::vector<uint32_t> m_pendingGfxDemand;
+	tour::mem::ArenaFlatArray<uint32_t> m_pendingGfxDemand;
 	// GPU-cull kept-count readback (the "0/797 culled" fix): the CPU stats
 	// cannot see the GPU-mode cull (clustersCulled only counts the CPU-mode
 	// path), so the filter's atomic filtered-offset counter word (zeroed by
@@ -4426,11 +4427,11 @@ public:
 	uint32_t m_filterAuditSlot = 0;
 	uint32_t m_filterAuditBatchCount = 0;
 	uint32_t m_filterAuditDrawCount = 0;
-	std::vector<uint32_t> m_filterAuditVerdicts;   // kCullStateWords
-	std::vector<uint32_t> m_filterAuditKept[2];   // per parity region, live slots
-	std::vector<uint32_t> m_filterAuditIndirect;  // 5 words per slot
-	std::vector<uint32_t> m_filterAuditBatches;   // 4 words per slot
-	std::vector<uint32_t> m_filterAuditMeshes;    // drawConstants[].mesh snapshot
+	tour::mem::ArenaFlatArray<uint32_t> m_filterAuditVerdicts;   // kCullStateWords
+	tour::mem::ArenaFlatArray<uint32_t> m_filterAuditKept[2];   // per parity region, live slots
+	tour::mem::ArenaFlatArray<uint32_t> m_filterAuditIndirect;  // 5 words per slot
+	tour::mem::ArenaFlatArray<uint32_t> m_filterAuditBatches;   // 4 words per slot
+	tour::mem::ArenaFlatArray<uint32_t> m_filterAuditMeshes;    // drawConstants[].mesh snapshot
 	// Streamer slot-meta epoch last uploaded into the gfx filter (0 = none
 	// yet; register/unregister bumps it — retargets never do).
 	uint64_t m_gfxMetaEpochUploaded = 0;

@@ -19,6 +19,7 @@
 #include <glm/glm.hpp>
 #include <glm/ext.hpp>
 
+#include <Engine/Memory/arena_flat_array.h>
 #include <Engine/Scene/scene_node_id.h>
 #include <Engine/Scene/scene_tables.h>
 #include <Engine/Scene/scene_payloads.h>
@@ -238,8 +239,11 @@ struct Scene {
 	// A World-level mesh/visibility binding change additionally requires
 	// ResolveAndFixup_clusters (rebuild drawItems + topology revision).
 	// Direct writes to globalTransform bypass the GPU publication journal.
-	std::vector<mat4> localTransform;  // indexed by node
-	std::vector<mat4> globalTransform; // indexed by node
+	tour::mem::ArenaFlatArray<mat4> localTransform;  // indexed by node
+	tour::mem::ArenaFlatArray<mat4> globalTransform; // indexed by node
+	// CPU-authoritative transforms, independent of the legacy float-facing ABI.
+	std::vector<glm::dmat4> localTransformDouble, globalTransformDouble;
+	std::vector<glm::mat4> localTransformFloatShadow;
 
 	std::vector<NodeId> changedAtThisFrame[MAX_NODE_LEVEL];
 	// Final global-transform writes, consumed by the GPU scene after
@@ -249,7 +253,7 @@ struct Scene {
 	// multiple recalculations occur before the renderer consumes changes.
 	std::vector<uint8_t> gpuSceneGlobalQueued;
 
-	std::vector<Hierarchy> hierarchy;
+	tour::mem::ArenaFlatArray<Hierarchy> hierarchy;
 
 	// ---- stable node slots (Epoch 6b, docs/scene_tables_migration.md) ----
 	// The hierarchy/transform/flag/metadata vectors above are SLOT
@@ -530,6 +534,8 @@ int addNode(Scene& scene, int parent, int level);
 // descendants for the GPU-scene journal via the existing recalc path.
 // Returns false for a retired/stale handle without writing the new slot.
 bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::mat4& transform);
+bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::dmat4& transform);
+glm::dmat4 GlobalTransformDouble(const Scene& scene, NodeId node);
 
 void markAsChanged(Scene& scene, int node);
 // Dynamic-only variant: skips static nodes so frozen subtrees never enter

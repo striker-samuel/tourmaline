@@ -1,0 +1,83 @@
+# Arena-backed renderer arrays (first migration)
+
+This PR replaces the renderer's previous-frame transform cache
+(`WorldRenderer::m_prevGlobalTransforms`) with an arena-backed contiguous
+array using the project's existing `smvk::Arena`. It is deliberately
+independent of the semantic scene-memory descriptor PR.
+
+## Why this first
+
+The cache is a renderer-owned snapshot of `World::scene.globalTransform`.
+Its lifetime is the renderer lifetime; it can be copied each frame without
+owning scene nodes or participating in scene mutation journals. It is a safe
+place to exercise replacing `std::vector<T>` without changing core scene
+data structures or asset serialization.
+
+## Properties
+
+- Trivially-copyable records only, contiguous and pointer-addressable.
+- `Assign(std::span<const T>)` reuses capacity when possible.
+- When larger input arrives, `smvk::Arena` bump-allocates a new region;
+  old regions are reclaimed only when the owning array/arena is destroyed.
+- Not a general `std::vector` replacement: no erase, insert, per-element
+  destruction, or implicit automatic growth from push_back.
+- No externally owned storage in this PR. Its exported `data()` is only
+  valid until the next growth/renderer destruction.
+- No fixed arbitrary scene-node limit: allocation grows to the observed
+  node count. High-water memory consumption is the tradeoff of bump arenas.
+
+## Test
+
+`arena_flat_array_tests` checks empty, assignment, reuse after shrink,
+growth, and clear. Full project build and CI are not yet verified.
+
+## Follow-up
+
+If this ownership shape works, a separate migration can move the
+authoritative scene transforms/hierarchy behind a fixed-capacity or
+arena-backed container, with explicit mutation/resize policies and
+serialization compatibility. Those vectors should not be changed
+implicitly in this PR.
+
+## Additional renderer arrays migrated
+
+- Previous-frame global transforms.
+- Deferred-shadow and Forward+ z-bin / tile-mask staging (CPU builder
+  outputs now accept either vectors or arena-backed arrays).
+- Async shadow-statistics readback, GPU demand and filtering-audit snapshots.
+- Debug-line capacities and revisions.
+- Probe upload rows and local shadow-tile snapshots.
+
+These arrays are **flat snapshots/staging**, not authoritative scene objects.
+The implementation reuses existing `smvk::Arena` with small 4 KiB
+initial block sizing for each array. Growth can retain prior blocks until
+destruction; that is intentional for the bump allocator but should be
+measured with scene-size churn.
+
+## Authoritative scene storage and outstanding work
+
+`Scene::hierarchy`, `Scene::localTransform`, and
+`Scene::globalTransform` are now `ArenaFlatArray` (no longer `std::vector`).
+The array implements explicit `assign`, `resize`, `push_back`, deep-copy and
+move semantics to preserve current scene writers, scene loading, and stable
+node slots. A temporary `std::vector<T>` conversion is provided for existing
+interop call sites; this conversion copies and does not transfer ownership.
+Scene mutation journaling and serializer byte layout are unchanged. `WorldRenderer` also retains vectors
+for nontrivial or externally passed types (strings, futures, resource
+holders, and parameter vectors), and pass-subsystem internals are not
+converted.
+
+A full conversion needs a distinct growable arena-vector implementation
+with element construction/destruction and move/copy semantics, call-site
+migration, lifetime tests, and end-to-end rendering CI. Do not use this
+partial migration as evidence that scene vectors can be rebound externally.
+
+## Caveats
+
+- These scene arrays are now **arena-owned**, but **not externally bound**.
+- This is not ping-pong storage: local/global/hierarchy each own one logical
+  array. GPU publication and frame-in-flight buffers remain separate.
+- `std::vector` conversions incur copies; migrate consumers to spans/views
+  before removing compatibility operations.
+- Arena growth retains old chunks until destruction (no per-allocation free).
+- CI must verify scene writers, loaders, serializer compatibility, and tests.
