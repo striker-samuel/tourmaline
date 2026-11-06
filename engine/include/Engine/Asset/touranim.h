@@ -59,6 +59,8 @@
 
 #include <cstdint>
 #include <string>
+#include <span>
+#include <span>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -158,6 +160,18 @@ glm::vec4 SampleTrack(const Track& track, double t);
 // then this rides the existing global-transform walk (see scene.h).
 void BuildSkinPalette(const scene::Scene& scene, const Skeleton& skeleton,
 	std::vector<glm::mat4>& palette);
+void BuildSkinPalette(const scene::Scene& scene, const Skeleton& skeleton,
+	std::span<glm::mat4> palette);
+// Non-owning output permits the caller to choose frame-arena backing.
+void BuildSkinPaletteInto(const scene::Scene& scene, const Skeleton& skeleton,
+	std::span<glm::mat4> palette);
+
+template<typename Allocator>
+void BuildSkinPalette(const scene::Scene& scene, const Skeleton& skeleton,
+	std::vector<glm::mat4, Allocator>& palette) {
+	palette.resize(skeleton.Count());
+	BuildSkinPaletteInto(scene, skeleton, palette);
+}
 
 } // namespace tour::asset
 

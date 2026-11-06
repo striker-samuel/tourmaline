@@ -768,6 +768,16 @@ namespace tour {
 		// chain has deferred siblings.
 		void ConsumeLodDemand(
 			std::vector<std::pair<uint32_t, uint32_t>>& out);
+		// Frame-scratch overload, avoiding a temporary heap vector in the
+		// geometry-streaming tick.
+		template<typename Alloc>
+		void ConsumeLodDemand(std::vector<std::pair<uint32_t, uint32_t>, Alloc>& out) {
+			out.clear();
+			out.reserve(lodDemand_.size());
+			for (const auto& [mesh, level] : lodDemand_)
+				out.emplace_back(mesh, level);
+			lodDemand_.clear();
+		}
 		// Drawn-level touches (the eviction idle clock's other half):
 		// while touch tracking is on, LodIndexForNode records every
 		// SERVED (mesh, level) - the streamer's promote registry decays
@@ -776,6 +786,14 @@ namespace tour {
 		void SetLodTouchTracking(bool on) { lodTouchTracking_ = on; }
 		void ConsumeLodDrawn(
 			std::vector<std::pair<uint32_t, uint32_t>>& out);
+		template<typename Alloc>
+		void ConsumeLodDrawn(std::vector<std::pair<uint32_t, uint32_t>, Alloc>& out) {
+			out.clear();
+			out.reserve(lodDrawnSet_.size());
+			for (const uint64_t k : lodDrawnSet_)
+				out.emplace_back(uint32_t(k >> 32), uint32_t(k & 0xFFFFFFFFu));
+			lodDrawnSet_.clear();
+		}
 		// Promote one deferred sibling to resident: locate its deferred
 		// record on the owning cluster and replay the upload +
 		// registration (Cluster::PromoteDeferredMeshLod). Returns the

@@ -34,6 +34,8 @@
 
 #include <Engine/Renderer/ray_tracing_debug.h> // (#145) TLAS/BLAS inspector
 #include <Engine/Memory/alloc_config.h> // (#148) scoped snapshot buffer sizing
+#include <Engine/Memory/arena.h>
+#include <Engine/Memory/linear_vector.h>
 #include <Engine/Memory/arena.h> // per-frame decal scratch
 #include <Engine/core.h>
 #include <Engine/platform.h> // readFile (exe-relative SPV loads)
@@ -5866,19 +5868,20 @@ namespace engine {
 	// UploadMaterials fixed with m_bindlessBySlot (see editor_render.cpp
 	// "[MATSLOT] remap MISS" note: "the observed device-death"). Rebuilt
 	// per call so live editor texture edits apply without a rebind signal.
-	std::unordered_map<uint32_t, uint32_t> WorldRenderer::BuildPoolToBindlessMap() const {
-		std::unordered_map<uint32_t, uint32_t> byPool;
+	WorldRenderer::FrameBindlessMap WorldRenderer::BuildPoolToBindlessMap() const {
+		using Entry = std::pair<const uint32_t, uint32_t>;
+		FrameBindlessMap byPool{0, std::hash<uint32_t>{},
+			std::equal_to<uint32_t>{},
+			tour::mem::LinearAllocatorSTL<Entry>{&tour::mem::FrameAllocator()}};
 		for (const auto& clusterPtr : m_world->clusters) {
 			if (!clusterPtr)
 				continue;
-			for (const auto& [uri, h] : clusterPtr->ListTextureUris()) {
-				(void)uri; // enumeration only: pool idx -> RHI handle
-				if (h.empty())
-					continue;
-				// RHI texture pool indices are GLOBAL (one pool per
-				// context), so cluster ordering cannot collide keys.
-				byPool[h.index()] = m_context->GetTextureBindlessIndex(h);
-			}
+			// The serialization enumeration allocates and sorts an owning
+			// vector. Hot-path remapping only needs the live handles.
+			clusterPtr->ForEachTextureUri([&](smvk::StringViewT, smvk::TextureHandle h) {
+				if (!h.empty())
+					byPool[h.index()] = m_context->GetTextureBindlessIndex(h);
+			});
 		}
 		return byPool;
 	}
@@ -5904,8 +5907,7 @@ namespace engine {
 		// diagnostic behavior - the freed-slot null-write in impl.cpp's
 		// destroy(BindlessImageHandle) makes that a safe black sample
 		// instead of the old dangling-descriptor device death.
-		const std::unordered_map<uint32_t, uint32_t> bindlessByPool =
-			BuildPoolToBindlessMap();
+		const FrameBindlessMap bindlessByPool = BuildPoolToBindlessMap();
 		auto remapSlot = [&](int poolIdx) -> int {
 			if (poolIdx < 0)
 				return -1;
@@ -5920,7 +5922,11 @@ namespace engine {
 			}
 			return static_cast<int>(hit->second);
 		};
-		std::vector<smvk::MaterialValues> mats(uploadCount);
+		// Upload scratch is valid only until the next frame-arena reset.
+		auto* mats = static_cast<smvk::MaterialValues*>(smvk::FrameArena().Allocate(
+			size_t(std::max(1u, uploadCount)) * sizeof(smvk::MaterialValues),
+			alignof(smvk::MaterialValues)));
+		std::uninitialized_value_construct_n(mats, uploadCount);
 		for (uint32_t i = 0; i < uploadCount; ++i) {
 			if (auto* mat = m_world->GetMaterial(i)) {
 				mats[i] = mat->values;
@@ -5954,11 +5960,11 @@ namespace engine {
 		size_t frameOffset =
 			currentFrame * MATERIAL_FRAME_STRIDE;
 
-		if (!mats.empty()) {
+		if (uploadCount != 0) {
 			m_context->UploadDataToBuffer(
 				m_resources.materialsBuffer,
-				mats.data(),
-				sizeof(smvk::MaterialValues) * mats.size(),
+				mats,
+				sizeof(smvk::MaterialValues) * uploadCount,
 				smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute,
 				smvk::AccessFlags::ShaderRead,
 				0,
@@ -5980,7 +5986,13 @@ namespace engine {
 		const uint32_t streamFrame = static_cast<uint32_t>(m_frameCounter);
 		if ((m_frameCounter & 3u) == 0u) {
 			SMVK_PROFILE_STREAM("TexStreamingMinDistPass");
-			std::unordered_map<uint32_t, float> minDist;
+			using FrameMinDistanceMap = std::unordered_map<uint32_t, float,
+				std::hash<uint32_t>, std::equal_to<uint32_t>,
+				tour::mem::LinearAllocatorSTL<std::pair<const uint32_t, float>>>;
+			FrameMinDistanceMap minDist{0, std::hash<uint32_t>{},
+				std::equal_to<uint32_t>{},
+				tour::mem::LinearAllocatorSTL<std::pair<const uint32_t, float>>{
+					&tour::mem::FrameAllocator()}};
 			minDist.reserve(256);
 			const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
 			// The streamer keys demand by BINDLESS slot (RequestMip/
@@ -5990,8 +6002,7 @@ namespace engine {
 			// UpdateMaterials, or the CPU demand leg misses every entry
 			// once pool!=bindless (re-imports) and streamed
 			// textures never upgrade on distance.
-			const std::unordered_map<uint32_t, uint32_t> bindlessByPool =
-				BuildPoolToBindlessMap();
+			const FrameBindlessMap bindlessByPool = BuildPoolToBindlessMap();
 			auto note = [&](int poolIdx, float dist) {
 				if (poolIdx < 0)
 					return;
@@ -6059,13 +6070,17 @@ namespace engine {
 		// Touches first: everything served this frame is idle-clock
 		// fresh (a level in use never evicts).
 		{
-			std::vector<std::pair<uint32_t, uint32_t>> drawn;
+			tour::mem::FrameVector<std::pair<uint32_t, uint32_t>> drawn{
+				tour::mem::LinearAllocatorSTL<std::pair<uint32_t, uint32_t>>{
+					&tour::mem::FrameAllocator()}};
 			m_world->ConsumeLodDrawn(drawn);
 			for (const auto& [mesh, level] : drawn)
 				m_geometryStreamer.NoteTouch(mesh, level, frame);
 		}
 
-		std::vector<std::pair<uint32_t, uint32_t>> demand;
+		tour::mem::FrameVector<std::pair<uint32_t, uint32_t>> demand{
+			tour::mem::LinearAllocatorSTL<std::pair<uint32_t, uint32_t>>{
+				&tour::mem::FrameAllocator()}};
 		m_world->ConsumeLodDemand(demand);
 		bool dirty = false;
 		uint64_t bytesThisFrame = 0;
@@ -6200,9 +6215,14 @@ namespace engine {
 		SMVK_PROFILE_STREAM("TextureMeta_RebuildUpload");
 		// Typed copy (streamer -> gfx layouts are deliberately decoupled;
 		// the loop is the trust boundary).
-		const std::vector<smvk::TextureStreamer::TextureSlotMeta> slots =
-			m_textureStreamer->BuildSlotMeta();
-		std::vector<smvk::gfx::TextureMeta> meta(slots.size());
+		tour::mem::FrameVector<smvk::TextureStreamer::TextureSlotMeta> slots{
+			tour::mem::LinearAllocatorSTL<smvk::TextureStreamer::TextureSlotMeta>{
+				&tour::mem::FrameAllocator()}};
+		m_textureStreamer->BuildSlotMeta(slots);
+		tour::mem::FrameVector<smvk::gfx::TextureMeta> meta(
+			slots.size(), smvk::gfx::TextureMeta{},
+			tour::mem::LinearAllocatorSTL<smvk::gfx::TextureMeta>{
+				&tour::mem::FrameAllocator()});
 		for (size_t i = 0; i < slots.size(); ++i) {
 			meta[i].longSide = slots[i].longSide;
 			meta[i].fullMips = slots[i].fullMips;
@@ -7285,7 +7305,9 @@ namespace engine {
 		using fp_clk = std::chrono::steady_clock;
 		const bool fpBench = m_host.BenchMeasuring();
 		const auto fpT0 = fp_clk::now();
-		std::vector<smvk::ForwardPlusLight> lights;
+		tour::mem::FrameVector<smvk::ForwardPlusLight> lights{
+			tour::mem::LinearAllocatorSTL<smvk::ForwardPlusLight>{
+				&tour::mem::FrameAllocator()}};
 		lights.reserve(FP_MAX_LIGHTS);
 		// NOTE: m_debugLights is filled AFTER the phase-1 sort below (the
 		// marker list then matches the GPU buffer order — labels read as
@@ -7394,7 +7416,9 @@ namespace engine {
 				const float proj11 = std::abs(frame.proj[1][1]);
 				auto selected = smvk::SelectSpotShadowCasters(
 					lights, frame.viewProj, frame.cameraPos,
-					m_spotShadowMaxDistance, budget, proj11);
+					m_spotShadowMaxDistance, budget, proj11,
+					tour::mem::LinearAllocatorSTL<smvk::SpotShadowCandidate>{
+						&tour::mem::FrameAllocator()});
 				const int32_t atlasIdx = m_viewportResources.spotShadows.BindlessIndex(*m_context);
 				// EVSM: lights address the blurred moments (1-frame lag);
 				// tile descriptors are layout-identical (the moment atlas
@@ -7411,7 +7435,10 @@ namespace engine {
 					: -1;
 				const int32_t sampleIdx = (evsmIdx >= 0) ? evsmIdx : atlasIdx;
 				if (atlasIdx >= 0 && !selected.empty()) {
-					std::vector<smvk::GpuCascadeDescription> tiles(selected.size());
+					tour::mem::FrameVector<smvk::GpuCascadeDescription> tiles(
+						selected.size(), smvk::GpuCascadeDescription{},
+						tour::mem::LinearAllocatorSTL<smvk::GpuCascadeDescription>{
+							&tour::mem::FrameAllocator()});
 					for (size_t k = 0; k < selected.size(); ++k) {
 						smvk::ForwardPlusLight& sl = lights[selected[k].lightIndex];
 						if (m_spotLightLiSPSM) {
@@ -7492,7 +7519,9 @@ namespace engine {
 				const float proj11 = std::abs(frame.proj[1][1]);
 				auto selected = smvk::SelectPointShadowCasters(
 					lights, frame.viewProj, frame.cameraPos,
-					m_pointShadowMaxDistance, budget, proj11);
+					m_pointShadowMaxDistance, budget, proj11,
+					tour::mem::LinearAllocatorSTL<smvk::SpotShadowCandidate>{
+						&tour::mem::FrameAllocator()});
 				const int32_t atlasIdx =
 					m_viewportResources.spotShadows.BindlessIndex(*m_context);
 				if (atlasIdx >= 0 && !selected.empty()) {
@@ -7505,7 +7534,10 @@ namespace engine {
 							*m_context, currentFrame)
 						: -1;
 					const int32_t sampleIdx = (evsmIdx >= 0) ? evsmIdx : atlasIdx;
-					std::vector<smvk::GpuCascadeDescription> tiles(selected.size() * 6u);
+					tour::mem::FrameVector<smvk::GpuCascadeDescription> tiles(
+						selected.size() * 6u, smvk::GpuCascadeDescription{},
+						tour::mem::LinearAllocatorSTL<smvk::GpuCascadeDescription>{
+							&tour::mem::FrameAllocator()});
 					const uint32_t faceBase0 = m_spotShadowCount;
 					for (size_t k = 0; k < selected.size(); ++k) {
 						smvk::ForwardPlusLight& pl = lights[selected[k].lightIndex];
@@ -7620,7 +7652,9 @@ namespace engine {
 				&& lights.size() + probeEntries <= FP_MAX_LIGHTS) {
 				SMVK_PROFILE_RENDER("Lights_UploadProbes");
 				SMVK_PROFILE_TAG("probes", probeEntries);
-				std::vector<smvk::ForwardPlusLight> gpu;
+				tour::mem::FrameVector<smvk::ForwardPlusLight> gpu{
+					tour::mem::LinearAllocatorSTL<smvk::ForwardPlusLight>{
+						&tour::mem::FrameAllocator()}};
 				gpu.reserve(probeEntries);
 				for (uint32_t i = 0; i < probeEntries; ++i) {
 					const CubemapProbeGpu& pr = m_cubemapProbes[i];
@@ -7861,7 +7895,7 @@ namespace engine {
 			}
 			if (bindless < 0 && m_decalTexWarnedUris.insert(uri).second)
 				std::cerr << "[Decals] texture '" << uri
-					<< "' unresolved (no cluster texture) - decal skipped\\n";
+					<< "' unresolved (no cluster texture) - decal skipped\n";
 			texCache[slot] = { &uri, bindless };
 			return bindless;
 		};
@@ -8084,18 +8118,20 @@ namespace engine {
 		// particles toroidally, the emitter keeps the volume stocked
 		// wherever the camera is).
 		const glm::vec3& cam = m_cameraPositioner.cameraPosition_;
-		std::vector<smvk::ParticleEmitterGpu> rows;
+		tour::mem::FrameVector<smvk::ParticleEmitterGpu> rows{
+			tour::mem::LinearAllocatorSTL<smvk::ParticleEmitterGpu>{
+				&tour::mem::FrameAllocator()}};
 		bool ambient = false;
 		for (const auto& e : m_particleDemo.emitters)
 			ambient = ambient || e.fade.w > 0.0f;
 		if (ambient) {
-			rows = m_particleDemo.emitters;
+			rows.assign(m_particleDemo.emitters.begin(), m_particleDemo.emitters.end());
 			for (auto& e : rows) {
 				if (e.fade.w > 0.0f)
 					e.position = glm::vec4(cam, e.position.w);
 			}
 		} else {
-			rows = m_particleDemo.emitters;
+			rows.assign(m_particleDemo.emitters.begin(), m_particleDemo.emitters.end());
 		}
 		// Graph-authored sources reserve stable slots after demo emitters.
 		// Never overwrite the built-in indices used by ambient presets.
@@ -10087,11 +10123,13 @@ namespace engine {
 	// PaneMask redraw always draw the same geometry. Distance-sorted only
 	// when the caller blends back-to-front; the pane pass passes false
 	// (its Max blend is order-independent).
-	std::vector<WorldRenderer::TransparentDrawItem>
+	tour::mem::FrameVector<WorldRenderer::TransparentDrawItem>
 		WorldRenderer::CollectTransparentDraws(const smvk::RenderView& cullView,
 			bool sortBackToFront, std::optional<glm::vec3> sortCamPos)
 	{
-		std::vector<TransparentDrawItem> draws;
+		tour::mem::FrameVector<TransparentDrawItem> draws{
+			tour::mem::LinearAllocatorSTL<TransparentDrawItem>{
+				&tour::mem::FrameAllocator()}};
 		if (m_hideTransparent)
 			return draws;
 		// Sort camera: the main positioner by default; multiview secondary
@@ -10970,7 +11008,9 @@ namespace engine {
         // list is a fast no-op; moving casters trigger an expensive but
         // correct blocking rebuild (see the RHI's v1 limitations).
         if (m_rayTracedSunShadowsEnabled && m_context->SupportsRayQueries() && m_world) {
-            std::vector<smvk::RayTracingInstance> rtInstances;
+            tour::mem::FrameVector<smvk::RayTracingInstance> rtInstances{
+                tour::mem::LinearAllocatorSTL<smvk::RayTracingInstance>{
+                    &tour::mem::FrameAllocator()}};
             // MaterialValues.tex stores pool IDs, NOT sampled descriptor
             // indices. Resolve before building micromaps so the alpha
             // compute bake accesses the same base-color texture as raster.
@@ -11040,7 +11080,8 @@ namespace engine {
                     std::fprintf(stderr,
                         "[RayShadows] BLAS/TLAS build unavailable; retaining contact/CSM fallback\n");
                 }
-                m_rayTracingCachedInstances = std::move(rtInstances);
+                // Cached instances survive frame reset; copy only on change.
+                m_rayTracingCachedInstances.assign(rtInstances.begin(), rtInstances.end());
                 m_rayTracingDebugSummary = smvk::SummarizeRayTracingCandidates(m_rayTracingCachedInstances);
                 m_rayTracingCachedWorld = m_world;
                 m_rayTracingCacheValid = true;
@@ -11111,7 +11152,9 @@ namespace engine {
 			m_meshParticleDraw.Ensure(*m_context,
 				"content/shaders/meshparticles_draw.vert.hlsl.spv",
 				tour::placement::kPlacementUnlitPsPath)) {
-			std::vector<smvk::MeshParticleEmitterGpu> rows;
+			tour::mem::FrameVector<smvk::MeshParticleEmitterGpu> rows{
+				tour::mem::LinearAllocatorSTL<smvk::MeshParticleEmitterGpu>{
+					&tour::mem::FrameAllocator()}};
 			rows.reserve(std::min<size_t>(m_externalMeshParticleEmitters.size(),
 				meshPs.desc.maxEmitters));
 			for (const auto& emitter : m_externalMeshParticleEmitters) {
@@ -11594,11 +11637,10 @@ namespace engine {
 		// fall back to direct draws with correct prevModel).
 		uint32_t gfxSlot = smvk::RenderViewSet::kInvalidIndex;
 		//
-		std::vector<smvk::LogicalImageViewHandle> colors;
-		if (inlineOut)
-			colors.push_back(m_inlineTargetLogical); // the private LDR target — never a swap image
-		else
-			colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
+		const std::array<smvk::LogicalImageViewHandle, 1> colors{{
+			inlineOut ? m_inlineTargetLogical
+				: m_viewportResources.swapImages[fb.imageIndex]
+		}};
 		// HDR target for scene - intermediate before tonemap. The aoTerm
 		// MRT twin (target1, the SSGI AO export) rides along whenever the
 		// SSGI targets exist; Main's lit FS family writes both, the debug
@@ -11609,12 +11651,15 @@ namespace engine {
 		// writes it (the env-spec slice the SSR composite replaces on a
 		// hit); the flat debug views leave it at the clear (SSR is gated
 		// off under debug viz anyway).
-		std::vector<smvk::LogicalImageViewHandle> hdrColors;
-		hdrColors.push_back(m_viewportResources.hdr.logicalView);
+		std::array<smvk::LogicalImageViewHandle, 3> hdrTargets{};
+		size_t hdrTargetCount = 0;
+		hdrTargets[hdrTargetCount++] = m_viewportResources.hdr.logicalView;
 		if (m_viewportResources.ssgi.aoTerm.Valid())
-			hdrColors.push_back(m_viewportResources.ssgi.aoTerm.logical);
+			hdrTargets[hdrTargetCount++] = m_viewportResources.ssgi.aoTerm.logical;
 		if (m_viewportResources.ssgi.envSpec.Valid())
-			hdrColors.push_back(m_viewportResources.ssgi.envSpec.logical);
+			hdrTargets[hdrTargetCount++] = m_viewportResources.ssgi.envSpec.logical;
+		const std::span<const smvk::LogicalImageViewHandle> hdrColors{
+			hdrTargets.data(), hdrTargetCount};
 
 		uint64_t frameUniformsAddress =
 			m_context->GetBufferDeviceAddress(m_resources.frameUniforms)
@@ -11800,7 +11845,9 @@ namespace engine {
 					if (!c->EnsureSkinnedGpuData(*m_context))
 						continue;
 				}
-				std::vector<glm::mat4> palette;
+				tour::mem::FrameVector<glm::mat4> palette{
+					tour::mem::LinearAllocatorSTL<glm::mat4>{
+						&tour::mem::FrameAllocator()}};
 				{
 					// The CPU bone-eval box: track samples -> joint
 					// locals -> the global walk -> the palette (or the
@@ -14615,7 +14662,7 @@ namespace engine {
 			{
 				const bool ditheredTransp =
 					(m_transparentMode == smvk::TransparentMode::Dithered);
-				std::vector<TransparentDrawItem> draws =
+				auto draws =
 					CollectTransparentDraws(transparentCullView, !ditheredTransp);
 				const bool lodDbg = (effView == ViewMode::Lods);
 
@@ -16914,9 +16961,12 @@ namespace engine {
 				motionView = m_viewportResources.motionVectors.target.logicalView;
 				motionBindless = m_viewportResources.motionVectors.target.bindlessIndex;
 			}
-			std::vector<smvk::LogicalImageViewHandle> tonemapTargets = colors;
-			if (smaaActive)
-				tonemapTargets = { m_viewportResources.smaa.ldr.logicalView };
+			const std::array<smvk::LogicalImageViewHandle, 1> smaaTargets{{
+				m_viewportResources.smaa.ldr.logicalView
+			}};
+			const std::span<const smvk::LogicalImageViewHandle> tonemapTargets =
+				smaaActive ? std::span<const smvk::LogicalImageViewHandle>(smaaTargets)
+					: std::span<const smvk::LogicalImageViewHandle>(colors);
 			const bool lutOn = !m_lutFile.empty()
 				&& m_lutBindless != UINT32_MAX && m_lutIntensity > 0.0f;
 			// Screenshot frame: the composite is drawn once more into an sRGB

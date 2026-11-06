@@ -31,6 +31,7 @@
 #include <cassert>
 #include <cstdint>
 #include <string>
+#include <span>
 #include <vector>
 
 namespace smvk {
@@ -219,7 +220,7 @@ struct UiComposite {
 		LogicalImageViewHandle uiView,
 		uint32_t uiBindlessIndex,
 		uint32_t linearSamplerIndex,
-		const std::vector<LogicalImageViewHandle>& swapViews,
+		std::span<const LogicalImageViewHandle> swapViews,
 		Extent2D swapExtent,
 		bool decodeOutput = false,
 		const char* name = nullptr,

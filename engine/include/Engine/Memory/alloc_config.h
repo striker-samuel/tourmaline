@@ -56,6 +56,8 @@ inline constexpr size_t kFrameArenaBlock = 1 * kMiB;
 // on demand in kCommitQuantum chunks.
 inline constexpr size_t kProcessReserve = 4 * kGiB;
 inline constexpr size_t kFrameReserve = 256 * kMiB;
+// Independent virtual reservation per GPU in-flight slot (lazy init).
+inline constexpr size_t kFlightReserve = 64 * kMiB;
 inline constexpr size_t kTransientReserve = 1 * kGiB;
 
 // -- Static geometry heaps (GPU, Renderer/mesh.cpp) --------------------------
@@ -136,6 +138,7 @@ inline constexpr size_t kDefaultAlign = 16;
 //
 //   TOURMALINE_MEM_PROCESS_MB           processReserve
 //   TOURMALINE_MEM_FRAME_MB             frameReserve
+//   TOURMALINE_MEM_FLIGHT_MB            flightReserve (per in-flight slot)
 //   TOURMALINE_MEM_TRANSIENT_MB         transientReserve
 //   TOURMALINE_MEM_APP_ARENA_MB         appArenaBlock
 //   TOURMALINE_MEM_FRAME_ARENA_MB       frameArenaBlock
@@ -157,6 +160,7 @@ struct RuntimeConfig {
 
 	size_t processReserve = kProcessReserve;
 	size_t frameReserve = kFrameReserve;
+	size_t flightReserve = kFlightReserve;
 	size_t transientReserve = kTransientReserve;
 
 	size_t streamerTotalBudget = kStreamerTotalBudget;

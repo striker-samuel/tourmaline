@@ -106,6 +106,7 @@
 #include <cassert>
 #include <cstdint>
 #include <string>
+#include <span>
 #include <vector>
 
 namespace smvk {
@@ -534,7 +535,7 @@ struct Smaa {
 		bool historyValid,
 		const float subsampleIndices[4],
 		uint32_t historySlot,
-		const std::vector<LogicalImageViewHandle>& swapViews,
+		std::span<const LogicalImageViewHandle> swapViews,
 		Extent2D passExtent,
 		bool swapTargetsAreSrgb = false,
 		float jitterDeltaX = 0.0f,

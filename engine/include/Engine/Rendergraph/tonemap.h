@@ -32,6 +32,7 @@
 #include <cassert>
 #include <cstdint>
 #include <string>
+#include <span>
 #include <vector>
 
 namespace smvk {
@@ -206,7 +207,7 @@ struct Tonemapper {
 		uint32_t bloomBindlessIndex,
 		float bloomIntensity,
 		uint32_t linearSamplerIndex,
-		const std::vector<LogicalImageViewHandle>& swapViews,
+		std::span<const LogicalImageViewHandle> swapViews,
 		Extent2D swapExtent,
 		const TonemapDesc& overrideDesc,
 		const char* name = nullptr,
@@ -311,7 +312,7 @@ struct Tonemapper {
 		uint32_t bloomBindlessIndex,
 		float bloomIntensity,
 		uint32_t linearSamplerIndex,
-		const std::vector<LogicalImageViewHandle>& swapViews,
+		std::span<const LogicalImageViewHandle> swapViews,
 		Extent2D swapExtent,
 		const char* name = nullptr,
 		LogicalImageViewHandle motionView = {},

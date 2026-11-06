@@ -125,6 +125,11 @@ void* LinearAllocator::Allocate(size_t size, size_t align) {
 			ReportOomAndCrash(name_, size, oldOff, reserved_);
 		if (offset_.compare_exchange_weak(oldOff, newOff,
 				std::memory_order_relaxed, std::memory_order_relaxed)) {
+			allocationCount_.fetch_add(1, std::memory_order_relaxed);
+			totalRequested_.fetch_add(size, std::memory_order_relaxed);
+			size_t peak = peakUsed_.load(std::memory_order_relaxed);
+			while (peak < newOff && !peakUsed_.compare_exchange_weak(
+				peak, newOff, std::memory_order_relaxed, std::memory_order_relaxed)) {}
 			CommitUpTo(newOff);
 			return base_ + aligned;
 		}

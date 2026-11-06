@@ -570,6 +570,34 @@ void TestBenchmarks() {
 		Check(linMs < 1000.0, "memory.bench.vec-linear-sane");
 	}
 }
+void TestLifetimeCounters() {
+	using smvk::mem::LinearAllocator;
+	LinearAllocator alloc("test-lifetime", 1024 * 1024, 64 * 1024);
+	Check(alloc.AllocationCount() == 0 && alloc.TotalRequested() == 0
+		&& alloc.PeakUsed() == 0, "memory.telemetry.initial-zero");
+	(void)alloc.Allocate(100, 16);
+	const size_t firstPeak = alloc.Used();
+	alloc.ResetAll();
+	Check(alloc.Used() == 0 && alloc.PeakUsed() == firstPeak,
+		"memory.telemetry.peak-survives-reset");
+	(void)alloc.Allocate(32, 16);
+	Check(alloc.AllocationCount() == 2 && alloc.TotalRequested() == 132,
+		"memory.telemetry.cumulative-allocation-totals");
+	Check(alloc.PeakUsed() >= alloc.Used(),
+		"memory.telemetry.peak-at-least-current-offset");
+
+	// Arena counters also survive frame-style resets, unlike UsedBytes.
+	smvk::Arena arena(4096);
+	(void)arena.Allocate(80);
+	const size_t peak = arena.UsedBytes();
+	arena.Reset();
+	(void)arena.Allocate(16);
+	Check(arena.AllocationCount() == 2
+		&& arena.TotalRequestedBytes() == 96
+		&& arena.PeakUsedBytes() == peak,
+		"memory.telemetry.arena-lifetime-totals");
+}
+
 void TestStlAdapter() {
 	smvk::mem::LinearAllocator alloc("test-stl", 1 * 1024 * 1024, 64 * 1024);
 	smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
@@ -606,6 +634,7 @@ int main() {
 	TestUploadInFlightSplit();
 	TestThreadPoolResidency();
 	TestAllocatorStats();
+	TestLifetimeCounters();
 	TestThreadPool();
 	TestThreadPoolShardLeases();
 	TestFrameReset();

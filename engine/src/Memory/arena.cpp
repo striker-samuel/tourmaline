@@ -4,7 +4,11 @@
 #include <Engine/Memory/arena.h>
 
 #include <Engine/Memory/memory.h>
+#include <Engine/smvk.h>
 
+#include <algorithm>
+#include <array>
+#include <cassert>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
@@ -44,6 +48,8 @@ void Arena::PushBlock(size_t bytes) {
 void* Arena::Allocate(size_t size, size_t align) {
 	if (align < 8)
 		align = 8;
+	++allocationCount_;
+	totalRequestedBytes_ += size;
 	// Dedicated block when the request cannot fit a default block.
 	if (size > blockSize_) {
 		PushBlock(size + align);
@@ -52,6 +58,7 @@ void* Arena::Allocate(size_t size, size_t align) {
 		const size_t pad = (align - (reinterpret_cast<uintptr_t>(p) & (align - 1))) & (align - 1);
 		big.used = pad + size;
 		totalUsed_ += size;
+		peakUsedBytes_ = std::max(peakUsedBytes_, totalUsed_);
 		return p + pad;
 	}
 	// Bump inside the current block; chain a fresh one when full.
@@ -63,6 +70,7 @@ void* Arena::Allocate(size_t size, size_t align) {
 	const size_t pad = (align - (reinterpret_cast<uintptr_t>(p) & (align - 1))) & (align - 1);
 	cur.used += pad + size;
 	totalUsed_ += size;
+	peakUsedBytes_ = std::max(peakUsedBytes_, totalUsed_);
 	return p + pad;
 }
 
@@ -124,6 +132,42 @@ void ResetFrameArena() {
 	// allocation is live (see mem::memory.h reset discipline).
 	FrameArena().ResetForFrameReuse();
 	mem::FrameAllocator().ResetAll();
+}
+
+namespace {
+struct FlightArenaStorage {
+	mem::LinearAllocator backing;
+	Arena arena;
+
+	FlightArenaStorage()
+		: backing("flight", mem::config::Runtime().flightReserve,
+			mem::config::Runtime().commitQuantum)
+		, arena(mem::config::Runtime().frameArenaBlock, &backing) {}
+
+	void Reset() {
+		// The slot fence has retired; invalidate all its CPU views.
+		arena.ResetForFrameReuse();
+		backing.ResetAll();
+	}
+};
+
+FlightArenaStorage& FlightStorage(uint32_t flightIndex) {
+	assert(flightIndex < smvk::limits::MaxFramesInFlight);
+	// Flight arenas are accessed on the render/acquire thread only.
+	static std::array<std::unique_ptr<FlightArenaStorage>,
+		smvk::limits::MaxFramesInFlight> slots;
+	if (!slots[flightIndex])
+		slots[flightIndex] = std::make_unique<FlightArenaStorage>();
+	return *slots[flightIndex];
+}
+} // namespace
+
+Arena& FlightArena(uint32_t flightIndex) {
+	return FlightStorage(flightIndex).arena;
+}
+
+void ResetFlightArena(uint32_t flightIndex) {
+	FlightStorage(flightIndex).Reset();
 }
 
 } // namespace smvk

@@ -260,6 +260,21 @@ std::vector<TextureStreamer::TextureSlotMeta> TextureStreamer::BuildSlotMeta() c
 	}
 	return meta;
 }
+void TextureStreamer::BuildSlotMeta(
+	tour::mem::FrameVector<TextureSlotMeta>& meta) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	meta.clear();
+	for (const auto& [key, e] : entries_) {
+		(void)key;
+		const uint32_t slot = ctx_.GetTextureBindlessIndex(e.handle);
+		if (slot >= meta.size())
+			meta.resize(static_cast<size_t>(slot) + 1);
+		meta[slot].longSide = std::max(e.baseWidth, e.baseHeight);
+		meta[slot].fullMips = e.fullMips;
+	}
+}
+
 
 uint64_t TextureStreamer::SlotMetaEpoch() const
 {
@@ -297,6 +312,37 @@ void TextureStreamer::RequestMipsByDistance(const std::unordered_map<uint32_t, f
 		e.lastRequestFrame = frameIndex;
 	}
 }
+void TextureStreamer::RequestMipsByDistance(const TextureStreamer::FrameMinDistanceMap& minDistBySlot,
+	float viewportHeightPx, float fovYRad, uint32_t frameIndex, float approxWorldSize)
+{
+	// Lock-wait split like Update: the render thread blocks here while
+	// retargets (Update) or loads (StreamTexture) hold the mutex.
+	std::unique_lock<std::mutex> lock(mutex_, std::defer_lock);
+	{
+		SMVK_PROFILE_STREAM("TexStreamer_LockWait");
+		lock.lock();
+	}
+	SMVK_PROFILE_STREAM("TexStreamer_RequestByDistance");
+	SMVK_PROFILE_TAG("entries", entries_.size());
+	SMVK_PROFILE_TAG("slots", minDistBySlot.size());
+	for (auto& [key, e] : entries_)
+	{
+		(void)key;
+		const uint32_t slot = ctx_.GetTextureBindlessIndex(e.handle);
+		auto hit = minDistBySlot.find(slot);
+		if (hit == minDistBySlot.end())
+			continue;
+		const uint32_t want = WantedMipForDistance(e.fullMips,
+			std::max(e.baseWidth, e.baseHeight), hit->second,
+			viewportHeightPx, fovYRad, approxWorldSize, config_.mipBias);
+		const uint32_t clamped = std::min(want, e.fullMips - 1);
+		if (!e.everRequested || clamped < e.desiredBase)
+			e.desiredBase = clamped;
+		e.everRequested = true;
+		e.lastRequestFrame = frameIndex;
+	}
+}
+
 
 uint32_t TextureStreamer::WantedMipForScreenCoverage(uint32_t fullMips, uint32_t baseLongSide,
 	float screenCoveragePx) const

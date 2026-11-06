@@ -521,8 +521,7 @@ void smvk::Cluster::SetAnimClip(touranim::Clip clip) {
 	animTime_ = 0.0;
 }
 
-bool smvk::Cluster::SampleAnimation(float dt,
-	std::vector<glm::mat4>& outPalette) {
+bool smvk::Cluster::SampleAnimationPose(float dt) {
 	if (!hasSkeleton || !animClip_ || skeleton.Count() == 0)
 		return false;
 	const touranim::Clip& clip = *animClip_;
@@ -577,6 +576,22 @@ bool smvk::Cluster::SampleAnimation(float dt,
 			return false;
 	}
 	recalculateGlobalTransforms(scene);
+	return true;
+}
+
+
+bool smvk::Cluster::SampleAnimation(float dt,
+	std::vector<glm::mat4>& outPalette) {
+	if (!SampleAnimationPose(dt))
+		return false;
+	touranim::BuildSkinPalette(scene, skeleton, outPalette);
+	return true;
+}
+
+bool smvk::Cluster::SampleAnimation(float dt,
+	tour::mem::FrameVector<glm::mat4>& outPalette) {
+	if (!SampleAnimationPose(dt))
+		return false;
 	touranim::BuildSkinPalette(scene, skeleton, outPalette);
 	return true;
 }

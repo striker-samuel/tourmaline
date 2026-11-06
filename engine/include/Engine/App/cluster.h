@@ -5,6 +5,7 @@
 #pragma once
 
 
+#include <Engine/Memory/linear_vector.h>
 #include <optional>
 #include <span>
 #include <string>
@@ -350,6 +351,9 @@ namespace tour {
 		[[nodiscard]] bool HasAnimClip() const
 		{ return animClip_.has_value(); }
 		bool SampleAnimation(float dt, std::vector<glm::mat4>& outPalette);
+		// Same pose update with frame-backed output storage for renderer use.
+		bool SampleAnimation(float dt, tour::mem::FrameVector<glm::mat4>& outPalette);
+		bool SampleAnimationPose(float dt);
 		// ANIMATOR-DRIVEN pose (World::Update flushes a live animator's
 		// evaluated joint locals into this scene and sets this): the
 		// renderer's skinning leg must NOT advance its own clip on a
@@ -473,6 +477,13 @@ namespace tour {
 		// Enumerates registered texture URIs for serialization
 		// ({uri, RHI handle} pairs, sorted by uri for deterministic paks).
 		std::vector<std::pair<smvk::StringViewT, smvk::TextureHandle>> ListTextureUris() const;
+		// Allocation-free enumeration for render-frame remapping. Ordering is
+		// irrelevant to pool-index lookups; serializer callers retain the
+		// sorted, owning ListTextureUris() API.
+		template<typename Fn>
+		void ForEachTextureUri(Fn&& fn) const {
+			textureByUri_.ForEach(std::forward<Fn>(fn));
+		}
 
 		// glTF sampler parameters per texture uri (persisted into paks;
 		// the renderer still uses its default sampler until sampler

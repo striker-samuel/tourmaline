@@ -6,6 +6,7 @@
 #include <Engine/Memory/memory.h>
 
 #include <Engine/Memory/alloc_config.h>
+#include <Engine/Memory/arena.h>
 
 #include <cerrno>
 #include <cstdio>
@@ -58,6 +59,7 @@ config::RuntimeConfig ParseRuntimeConfig() {
 	c.frameArenaBlock = EnvSize("TOURMALINE_MEM_FRAME_ARENA_MB", kMiB, c.frameArenaBlock);
 	c.processReserve = EnvSize("TOURMALINE_MEM_PROCESS_MB", kMiB, c.processReserve);
 	c.frameReserve = EnvSize("TOURMALINE_MEM_FRAME_MB", kMiB, c.frameReserve);
+	c.flightReserve = EnvSize("TOURMALINE_MEM_FLIGHT_MB", kMiB, c.flightReserve);
 	c.transientReserve = EnvSize("TOURMALINE_MEM_TRANSIENT_MB", kMiB, c.transientReserve);
 	c.streamerTotalBudget = EnvSize("TOURMALINE_MEM_STREAMER_MB", kMiB, c.streamerTotalBudget);
 	c.stagingRingPerThread = EnvSize("TOURMALINE_MEM_STAGING_RING_MB", kMiB, c.stagingRingPerThread);
@@ -182,6 +184,26 @@ void ShutdownMemory() {
 	// Function-local statics destroy themselves at exit in reverse order;
 	// nothing else to do. Kept as a named teardown hook for symmetry.
 	DumpStats(stderr);
+	const auto& arena = smvk::FrameArena();
+	const auto& backing = FrameAllocator();
+	std::fprintf(stderr,
+		"[Memory] FrameArena lifetime: allocations=%llu, requested=%llu bytes (%.2f MiB), "
+		"peak requested in a frame=%zu bytes (%.2f MiB)\n",
+		static_cast<unsigned long long>(arena.AllocationCount()),
+		static_cast<unsigned long long>(arena.TotalRequestedBytes()),
+		static_cast<double>(arena.TotalRequestedBytes()) / (1024.0 * 1024.0),
+		arena.PeakUsedBytes(),
+		static_cast<double>(arena.PeakUsedBytes()) / (1024.0 * 1024.0));
+	std::fprintf(stderr,
+		"[Memory] FrameAllocator lifetime: allocations=%llu, requested=%llu bytes (%.2f MiB), "
+		"max offset=%zu bytes (%.2f MiB), offset at shutdown=%zu bytes\n",
+		static_cast<unsigned long long>(backing.AllocationCount()),
+		static_cast<unsigned long long>(backing.TotalRequested()),
+		static_cast<double>(backing.TotalRequested()) / (1024.0 * 1024.0),
+		backing.PeakUsed(),
+		static_cast<double>(backing.PeakUsed()) / (1024.0 * 1024.0),
+		backing.Used());
+	std::fflush(stderr);
 }
 
 namespace {

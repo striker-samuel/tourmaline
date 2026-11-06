@@ -12,6 +12,7 @@
 #include <Engine/Scene/scene.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -95,15 +96,26 @@ glm::vec4 SampleTrack(const Track& track, double t) {
 	}
 }
 
-void BuildSkinPalette(const Scene& scene, const Skeleton& skeleton,
-	std::vector<glm::mat4>& palette) {
-	palette.assign(skeleton.Count(), glm::mat4(1.0f));
+void BuildSkinPaletteInto(const Scene& scene, const Skeleton& skeleton,
+	std::span<glm::mat4> palette) {
+	assert(palette.size() >= skeleton.Count());
+	std::fill(palette.begin(), palette.end(), glm::mat4(1.0f));
 	for (uint32_t i = 0; i < skeleton.Count(); ++i) {
 		const uint32_t node = skeleton.joints[i];
-		if (node >= scene.globalTransform.size())
-			continue;
-		palette[i] = scene.globalTransform[node] * skeleton.inverseBind[i];
+		if (node < scene.globalTransform.size())
+			palette[i] = scene.globalTransform[node] * skeleton.inverseBind[i];
 	}
+}
+
+void BuildSkinPalette(const Scene& scene, const Skeleton& skeleton,
+	std::span<glm::mat4> palette) {
+	BuildSkinPaletteInto(scene, skeleton, palette);
+}
+
+void BuildSkinPalette(const Scene& scene, const Skeleton& skeleton,
+	std::vector<glm::mat4>& palette) {
+	palette.resize(skeleton.Count());
+	BuildSkinPaletteInto(scene, skeleton, palette);
 }
 
 // ---------------------------------------------------------------------------
