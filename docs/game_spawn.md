@@ -1,89 +1,101 @@
-# Catalog-first World node API — contract for Epoch 6c/6d
+# Game nodes and catalog-backed mesh assignment
 
-> **Design and regression checkpoint, not a delivered gameplay API.**
-> The current World cluster merge rebuilds the scene and changes node
-> identities; this API must not be exposed as durable until Epoch 6c
-> replaces that destructive merge. PR #235 audits that prerequisite.
+The World owns nodes and their transforms. The generated project catalog
+names assets; AssetManager loads those identities into reusable resource
+handles. **No separate CatalogWorld object** and no raw world resource
+indices in gameplay code.
 
-## Separate identities
-
-- **World nodes** are runtime identities. Each node owns **one transform**
-  and has **zero or one mesh association**. Nodes may exist without assets.
-- **The generated project catalog** owns asset identity. Game code passes
-  typed keys such as `project::meshes::Stone`, never transient World mesh
-  location indices. AssetManager/AssetStore own loaded resource lifetimes.
-- **Value components** are inline definitions, not catalog references.
-  They can be assigned directly using default initialization `{}` or
-  an explicit payload. The node's transform places those components.
-- Reusing the same catalog mesh on many nodes shares the resource, **not**
-  the node. `SetMesh` **replaces** the existing binding; it never adds a
-  second mesh, silently creates a child, or changes the node's transform.
-
-## Desired C++ game-code syntax (not implemented)
+## Game-code API (implemented in this branch)
 
 ```cpp
-auto node = world.AddNode();
-world[node].SetLocalTransform(frame);
-world[node].SetMesh(project::meshes::Stone);
+#include <Engine/App/world.h>
+#include "AssetManager.h"
+#include "project.h"       // generated, project-specific catalog
 
-// A different catalog key REPLACES the same mesh slot.
-world[node].SetMesh(project::meshes::Granite);
+// Construct AssetManager once using the SAME world; the manager
+// automatically attaches to world for its lifetime.
+app::AssetManager assets(runtime, world, ctx, &renderer);
 
-// Typed value components: no catalog lookup, defaults are constexpr-capable
-// where their value types permit it.
-world[node].SetPhysicsBody({});
+// Load from a typed catalog key BEFORE creating nodes. The loaded
+// handle is a RESOURCE, not a node or a runtime mesh entity.
+app::MeshHandle stone = world.LoadMesh(project::meshes::Stone);
+if (!stone)
+    throw std::runtime_error(world.LastAssetError());
+
+const NodeHandle node = world.AddNode();
+world[node].SetLocalTransform(transform);
+world[node].SetMesh(stone);        // one optional mesh slot per node
+world[node].SetPhysicsBody({});   // inline value (no catalog lookup)
 world[node].SetAudioRoom({});
 world[node].SetTriggerVolume({});
 
-// Alternatively, specify the type explicitly for generic operations:
-world[node].SetPhysicsBody(ScenePhysicsBody{ .mass = 2.0f });
+// A different loaded mesh REPLACES the existing slot on this same
+// node, preserving its transform and other component associations.
+// auto granite = world.LoadMesh(project::meshes::Granite);
+// world[node].SetMesh(granite);
+
+// Unload in reverse: detach the node before releasing its resource.
+world[node].RemoveMesh();
+world.RemoveNode(node);
+assets.UnloadMesh(stone);
 ```
 
-For the user-facing shorthand `Mesh::Stone`, the generated project
-catalog may provide an alias or namespace; its real generated spelling
-currently follows `project::meshes::Stone`. Do not invent fallback
-asset names, hashes, or string lookup in the World.
+All mesh resources come from `World::LoadMesh(key)` (delegating to the
+attached `AssetManager::LoadMesh`) or the existing
+`AssetManager::LoadMesh(key, error)` overload. The returned
+`app::MeshHandle` is shared across nodes and is passed explicitly to
+`world[node].SetMesh(handle)`; **do not pass a catalog key directly to
+`SetMesh`**. For diagnostic code,
+`World::LoadMesh(key, std::string& error)` is also available.
 
-A generic `SetType<T>(T)` cannot infer `T` from an empty `{}` in C++.
-Use a concrete typed setter `SetPhysicsBody(const ScenePhysicsBody&)`,
-`SetAudioRoom(const SceneAudioRoom&)`, etc. No key lookup is involved;
-the compiler knows the payload type from the setter signature.
-`SceneTriggerVolume` includes a string and is a value payload but is
-**not** a trivially-copyable POD. Do not falsely require every inline
-component to be a literal/constexpr type.
+`world.AddNode(frame)` returns a generational `NodeHandle`.
+`world[node]` is a lightweight proxy borrowing the World, which
+validates the handle before writes. `SetMesh(handle)` uses the
+manager's current World mapping and the scene's single mesh row per
+node; it refuses invalid/unmapped handles without replacing an
+existing association. `RemoveMesh()` removes only that row.
+`RemoveNode(handle)` destroys the game-owned node and its inline rows.
 
-## Required semantics
+Concrete component setters such as `SetPhysicsBody({})`,
+`SetAudioRoom({})`, and `SetTriggerVolume({})` accept default
+braced values without a catalog key or template argument. Some inline
+value components contain `std::string`, and are not PODs or constexpr
+values. These are *typed value definitions*, not loadable assets.
 
-1. `AddNode` allocates one world-owned stable node/transform, and returns
-   a **generational NodeHandle**. Existing content nodes and live handles
-   remain valid through content load/unload.
-2. `world[node]` validates that handle before any mutation; a deleted and
-   reused slot cannot be controlled through a stale handle.
-3. `SetMesh(key)` validates and acquires the catalog resource **before**
-   replacing the current mesh; on failure, existing bindings stay intact.
-   A successful replacement retains the same node/transform/children and
-   releases the old resource only once it has no remaining owners.
-4. The mesh binding is a **single slot per node** (the typed scene-table
-   `SetMesh` already provides replacement semantics). Any renderer
-   cache/draw journal must be updated when that slot changes.
-5. For inline value components, a setter accepts `{}` directly. Each
-   kind has one replaceable slot. Components sharing a node reuse its
-   **one transform**; they do not create extra transform nodes.
-6. Node deletion removes associations once, including mesh asset leases,
-   and invalidates its handle; parenting and unloading preserve the
-   hierarchy contract.
+## Runtime invariants and resource lifetime
 
-## Current verified foundation
+- One node has **one transform** and **zero or one mesh**. Multiple
+  nodes may bind the same loaded mesh handle, with independent transforms.
+- `SetMesh` replaces the mesh on the **existing** node; no second node
+  or hidden transform is created.
+- The loaded asset belongs to `AssetManager`. The node merely borrows
+  its handle. `UnloadMesh(handle)` refuses while any game node still
+  refers to it. `UnloadAllMeshes()` and AssetManager detachment first
+  clear game-node mesh associations so resources cannot dangle.
+- The same World must outlive its AssetManager. Game code should
+  detach/destroy nodes and release resources before teardown.
+- Unknown catalog keys, wrong catalog kinds and missing World mappings
+  fail via existing AssetManager checks. No fallback string lookup
+  or fake resource index is introduced.
 
-The existing scene-table functions `SetMesh(Scene&, NodeId, index)`,
-`SetPhysicsBody(Scene&, NodeId, ScenePhysicsBody)`,
-`SetAudioRoom(Scene&, NodeId, SceneAudioRoom)`, and
-`SetTriggerVolume(Scene&, NodeId, SceneTriggerVolume)` already operate
-on one association per kind with replacement semantics. The
-`scene_table_tests` additions pin mesh replacement without moving a node
-and default-braced value components.
+## Known limit: legacy streaming/cluster resolve
 
-**Not implemented:** `World::AddNode`, `World::operator[]`, direct
-catalog attachment to world nodes, incremental cluster streaming (6c),
-and dynamic-cluster retirement (6d). Do not merge this checkpoint as a
-finished implementation.
+**Epoch 6c is not complete.** The current legacy
+`ResolveAndFixup_clusters()` reconstructs the World scene. It
+invalidates game node handles and bindings created through
+`AddNode()`; the implementation explicitly clears registrations and
+preserves a high-water slot generation to guard against stale handles
+silently becoming live again. Thus, during this interim API, **load
+mesh assets before creating gameplay nodes**, and do not expect those
+nodes to survive another legacy cluster load/unload or full resolve.
+
+That is a known functional limitation to remove in the 6c incremental
+World-node migration, not a claimed implementation of #235's complete
+dynamic-cluster retirement. The other catalog resource kinds still use
+their existing specialized loaders/services; no generic
+`world[node].SetAsset(anyKey)` exists yet.
+
+Tests added in this branch cover typed inline components, node
+creation/deletion and handle invalidation, one-mesh replacement,
+and catalog-key -> loaded mesh handle -> node attachment through the
+apphost's CPU-only AssetManager seam.
