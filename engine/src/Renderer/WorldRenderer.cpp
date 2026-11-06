@@ -7415,7 +7415,9 @@ namespace engine {
 				const float proj11 = std::abs(frame.proj[1][1]);
 				auto selected = smvk::SelectSpotShadowCasters(
 					lights, frame.viewProj, frame.cameraPos,
-					m_spotShadowMaxDistance, budget, proj11);
+					m_spotShadowMaxDistance, budget, proj11,
+					tour::mem::LinearAllocatorSTL<smvk::SpotShadowCandidate>{
+						&tour::mem::FrameAllocator()});
 				const int32_t atlasIdx = m_viewportResources.spotShadows.BindlessIndex(*m_context);
 				// EVSM: lights address the blurred moments (1-frame lag);
 				// tile descriptors are layout-identical (the moment atlas
@@ -7516,7 +7518,9 @@ namespace engine {
 				const float proj11 = std::abs(frame.proj[1][1]);
 				auto selected = smvk::SelectPointShadowCasters(
 					lights, frame.viewProj, frame.cameraPos,
-					m_pointShadowMaxDistance, budget, proj11);
+					m_pointShadowMaxDistance, budget, proj11,
+					tour::mem::LinearAllocatorSTL<smvk::SpotShadowCandidate>{
+						&tour::mem::FrameAllocator()});
 				const int32_t atlasIdx =
 					m_viewportResources.spotShadows.BindlessIndex(*m_context);
 				if (atlasIdx >= 0 && !selected.empty()) {
