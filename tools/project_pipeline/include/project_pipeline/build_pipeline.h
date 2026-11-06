@@ -90,6 +90,7 @@ struct PakStageArgs {
 	std::string inVfs;     // the root artifact (the primary identity)
 	std::vector<std::string> extraArtifacts; // additional positional artifacts
 	std::string tour;      // "" = an asset-only pak (no scene blob)
+	std::string mapFile;   // world-wide .map document (optional)
 	std::string outPak;    // absolute destination
 	bool verify = true;
 	// The playable-unit convention (the editor's cooks pack one): packs
