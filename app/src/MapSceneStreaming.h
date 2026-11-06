@@ -32,7 +32,7 @@ public:
                 Load(desc, ticket);
             },
             [this](const engine::worldpartition::SceneTileDescriptor& desc) {
-                Retire(desc.tile);
+                return Retire(desc.tile);
             });
     }
 
@@ -177,18 +177,19 @@ private:
         return true;
     }
 
-    void Retire(engine::worldpartition::WorldTileKey tile) {
+    bool Retire(engine::worldpartition::WorldTileKey tile) {
         const auto it = active_.find(tile);
-        if (it == active_.end()) return;
+        if (it == active_.end()) return true;
         while (!it->second.empty()) {
             std::string err;
             if (!scenes_.RemoveScene(it->second.back(), world_, err)) {
                 error_ = "MapTile scene retirement failed: " + err;
-                return;
+                return false;
             }
             it->second.pop_back();
         }
         active_.erase(it);
+        return true;
     }
 
     ProjectScenes& scenes_;
