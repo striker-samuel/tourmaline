@@ -1951,6 +1951,26 @@ using namespace ::smvk;
 		MarkAllRootsChanged(scene);
 		recalculateGlobalTransforms(scene);
 
+		RefreshRuntimeSceneCaches();
+
+		// (The mesh entities' mirrors were re-established EARLIER in
+		// this resolve — before the flags/drawItems build, so their
+		// rows take part in the iterator lists; see the moved block
+		// above. The animators' target clusters persist through
+		// resolves — their rest poses + cursors stand; the next Update
+		// re-flushes the pose onto the rebuilt cluster scene.)
+	}
+
+	// Rebuild runtime draw/cull caches after in-place node or component
+	// edits without invoking the destructive cluster resolve.
+	void World::RefreshRuntimeSceneCaches()
+	{
+		std::unordered_map<NodeId, uint64_t> entityInstanceByNode;
+		for (const MeshEntity& entity : meshEntities)
+			if (entity.alive && entity.mergedNode != UINT32_MAX
+					&& entity.materialInstance)
+				entityInstanceByNode[entity.mergedNode] =
+					entity.materialInstance.value;
 		// Build the per-node iterator flags from the resolved scene: renderable
 		// nodes are those carrying a mesh; material drives Opaque vs Transparent.
 		// Hidden subtrees (Clarisse-style visibility overrides) are excluded:
@@ -2088,12 +2108,6 @@ using namespace ::smvk;
 		++gpuSceneTopologyRevision; // authored/runtime topology or binding remap
 		dirtyCull = true;
 
-		// (The mesh entities' mirrors were re-established EARLIER in
-		// this resolve — before the flags/drawItems build, so their
-		// rows take part in the iterator lists; see the moved block
-		// above. The animators' target clusters persist through
-		// resolves — their rest poses + cursors stand; the next Update
-		// re-flushes the pose onto the rebuilt cluster scene.)
 	}
 
 	StaticMesh* World::GetMesh(uint32_t meshIndex)
