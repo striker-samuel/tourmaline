@@ -30,6 +30,18 @@
 
 namespace tour::scene {
 
+// Explicit local Scene -> already-resident World resource indices.
+// A direct instance does not own a Cluster or assume that source indices
+// equal World indices. A required binding that cannot be resolved fails
+// before any target node is published.
+struct WorldSceneResourceMap {
+    std::vector<uint32_t> mesh;
+    std::vector<uint32_t> material;
+    std::vector<uint32_t> light;
+    std::vector<uint32_t> camera;
+    std::vector<uint32_t> decal;
+};
+
 struct WorldSceneInstance {
     uint64_t id = 0;
     uint64_t mapId = 0;
@@ -65,7 +77,8 @@ public:
                          const Scene& source, uint64_t sceneAssetId,
                          const glm::dmat4& frame,
                          std::vector<asset::AssetLease> assets,
-                         std::string& err) {
+                         std::string& err,
+                         const WorldSceneResourceMap* bindings = nullptr) {
         err.clear();
         if (!activeMap_ || !sceneAssetId || nextId_ == 0) {
             err = "active Map and source Scene asset IDs are required";
@@ -84,17 +97,49 @@ public:
                 return 0;
             }
         const auto& t = source.tables;
-        if (!t.meshes.empty() || !t.materials.empty()
-            || !t.lights.empty() || !t.cameras.empty()
-            || !t.decals.empty() || !t.giVolumes.empty()
-            || !t.cubemaps.empty() || !t.exports.empty()
-            || !t.envs.empty() || !t.envVolumes.empty()
-            || !t.audioSources.empty() || !t.audioRooms.empty()
-            || !t.triggerVolumes.empty() || !t.physicsBodies.empty()
-            || !t.schemaAssocs.empty()) {
+        // Non-resource component rows still need their own owner-specific
+        // publication. Do not silently discard animation/audio/physics/etc.
+        if (!t.giVolumes.empty() || !t.cubemaps.empty()
+            || !t.exports.empty() || !t.envs.empty()
+            || !t.envVolumes.empty() || !t.audioSources.empty()
+            || !t.audioRooms.empty() || !t.triggerVolumes.empty()
+            || !t.physicsBodies.empty() || !t.schemaAssocs.empty()) {
             err = "Scene has typed bindings requiring the incremental resource/component publisher";
             return 0;
         }
+        // Mesh/material/light/camera/decal rows all have one integer
+        // resource index; validate explicitly to avoid an unsafe cast.
+        const auto validRow = [&](uint32_t node, uint32_t sourceIndex,
+                                  const std::vector<uint32_t>* remap) {
+            return remap && node < source.hierarchy.size()
+                && IsLiveSlot(source, node) && sourceIndex < remap->size()
+                && (*remap)[sourceIndex] != UINT32_MAX;
+        };
+        for (const MeshRow& row : t.meshes)
+            if (!bindings || !validRow(row.node, row.mesh, &bindings->mesh)) {
+                err = "Scene mesh resource binding unresolved";
+                return 0;
+            }
+        for (const MaterialRow& row : t.materials)
+            if (!bindings || !validRow(row.node, row.material, &bindings->material)) {
+                err = "Scene material resource binding unresolved";
+                return 0;
+            }
+        for (const LightRow& row : t.lights)
+            if (!bindings || !validRow(row.node, row.light, &bindings->light)) {
+                err = "Scene light resource binding unresolved";
+                return 0;
+            }
+        for (const CameraRow& row : t.cameras)
+            if (!bindings || !validRow(row.node, row.camera, &bindings->camera)) {
+                err = "Scene camera resource binding unresolved";
+                return 0;
+            }
+        for (const DecalRow& row : t.decals)
+            if (!bindings || !validRow(row.node, row.decal, &bindings->decal)) {
+                err = "Scene decal resource binding unresolved";
+                return 0;
+            }
 
         // Validate all parents, cycles, depths, and source transforms before
         // modifying target. The source can contain retired node slots.
@@ -216,6 +261,23 @@ public:
             if (src < source.castsVolumetricShadow.size())
                 target.castsVolumetricShadow[size_t(dst)] =
                     source.castsVolumetricShadow[src];
+        }
+        if (bindings) {
+            for (const MeshRow& row : t.meshes)
+                SetMesh(target, NodeHandleSlot(instance.sourceNodes[row.node]),
+                        bindings->mesh[row.mesh]);
+            for (const MaterialRow& row : t.materials)
+                SetMaterial(target, NodeHandleSlot(instance.sourceNodes[row.node]),
+                            bindings->material[row.material]);
+            for (const LightRow& row : t.lights)
+                SetLight(target, NodeHandleSlot(instance.sourceNodes[row.node]),
+                         bindings->light[row.light]);
+            for (const CameraRow& row : t.cameras)
+                SetCamera(target, NodeHandleSlot(instance.sourceNodes[row.node]),
+                          bindings->camera[row.camera]);
+            for (const DecalRow& row : t.decals)
+                SetDecal(target, NodeHandleSlot(instance.sourceNodes[row.node]),
+                         bindings->decal[row.decal]);
         }
         // Only the new subtree is marked; no ResolveAndFixup_clusters(),
         // source Scene copy, location-table rebuild, or unrelated ID remap.
