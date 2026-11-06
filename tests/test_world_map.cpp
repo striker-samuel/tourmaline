@@ -66,6 +66,13 @@ int main() {
         smvk::PakWriter writer;
         Check(tour::mapcook::AddMapTiles(writer, out),
             "map tiles packed via SMP8 writer");
+        std::vector<engine::worldpartition::SceneTileDescriptor> discovery;
+        // Also include another world at the very same cell addresses:
+        // the pak is a container, not the source of tile identity.
+        tour::CompiledMapTiles other = out;
+        other.world = map.id + 1;
+        Check(tour::mapcook::AddMapTiles(writer, other),
+            "one pak carries multiple authored Maps");
         const std::vector<uint8_t> image = writer.Finalize();
         std::string err;
         auto reader = smvk::PakReader::Open(image, err);
@@ -82,8 +89,16 @@ int main() {
             Check(!tour::mapcook::ReadMapTile(
                 *reader, {map.id + 1, {-2,2}}, decoded),
                 "world ID namespaces pak tile lookup");
-            Check(reader->BlobsOfKind(smvk::PakAssetKind::MapTile).size() == 2,
-                "two independent MapTile pages");
+            Check(tour::mapcook::DiscoverMapTiles(*reader, map.id, discovery)
+                && discovery.size() == 2
+                && discovery.front().tile.world == map.id,
+                "discover only active world's tile metadata without reading pages");
+            Check(tour::mapcook::DiscoverMapTiles(*reader, map.id + 1, discovery)
+                && discovery.size() == 2
+                && discovery.front().tile.world == map.id + 1,
+                "overlapping cells in second Map remain independent");
+            Check(reader->BlobsOfKind(smvk::PakAssetKind::MapTile).size() == 4,
+                "four MapTile pages across two authored worlds");
         }
     }
     Check(out.world == map.id, "compiled map preserves authored world identity");
