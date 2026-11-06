@@ -135,9 +135,13 @@ struct AssetManager::Impl {
 AssetManager::AssetManager(ProjectRuntime& runtime, ::tour::World& world,
 		smvk::ResourceManager* ctx,
 		::engine::WorldRenderer* renderer)
-	: m_impl(new Impl{ runtime, world, ctx, renderer }) {}
+	: m_impl(new Impl{ runtime, world, ctx, renderer }) {
+	world.SetGameAssets(this);
+}
 
 AssetManager::~AssetManager() {
+	if (m_impl && m_impl->world.gameAssets_ == this)
+		m_impl->world.SetGameAssets(nullptr);
 	delete m_impl;
 }
 
@@ -296,6 +300,10 @@ bool AssetManager::MeshValid(MeshHandle handle) const {
 bool AssetManager::UnloadMesh(MeshHandle handle) {
 	Impl::MeshSlot* s = m_impl ? m_impl->MeshSlotOf(handle) : nullptr;
 	if (!s)
+		return false;
+	// A node holds a loaded resource identity, not a duplicated asset.
+	// Unloading while still attached would leave a dangling world row.
+	if (m_impl->world.HasGameMeshBinding(handle.value))
 		return false;
 	// Release the slot's store reference FIRST (the cluster pointer is
 	// the lookup key - identity only). The carrier drops when its last
@@ -570,3 +578,45 @@ std::size_t AssetManager::LoadedGiCount() const {
 }
 
 } // namespace app
+
+namespace tour {
+
+app::MeshHandle World::LoadMesh(uint64_t catalogKey, std::string& error)
+{
+	if (!gameAssets_) {
+		error = "World has no attached AssetManager";
+		return {};
+	}
+	return gameAssets_->LoadMesh(catalogKey, error);
+}
+
+bool World::NodeRef::SetMesh(app::MeshHandle mesh) const
+{
+	// Validate the generation and loaded resource before touching the
+	// existing binding. A missing or parked mesh leaves it untouched.
+	if (!owner_.IsGameNode(handle_) || !owner_.gameAssets_
+			|| !owner_.gameAssets_->MeshValid(mesh))
+		return false;
+	const uint32_t worldMesh = owner_.gameAssets_->MeshWorldIndex(mesh);
+	if (worldMesh == UINT32_MAX)
+		return false;
+	if (!tour::scene::SetMesh(owner_.scene, NodeHandleSlot(handle_), worldMesh))
+		return false;
+	owner_.gameMeshBindings_[handle_] = mesh.value;
+	owner_.RefreshRuntimeSceneCaches();
+	return true;
+}
+
+bool World::NodeRef::RemoveMesh() const
+{
+	if (!owner_.IsGameNode(handle_))
+		return false;
+	const bool removed = tour::scene::RemoveMesh(
+		owner_.scene, NodeHandleSlot(handle_));
+	owner_.gameMeshBindings_.erase(handle_);
+	if (removed)
+		owner_.RefreshRuntimeSceneCaches();
+	return removed;
+}
+
+} // namespace tour
