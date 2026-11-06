@@ -2632,6 +2632,7 @@ public:
 	// placement, and the optional animation advances with the frame time
 	// (fixed dt headless - byte-identical captures, like the particles).
 	// TOURMALINE_LIGHT_CROWD=<n> pins the crowd headless for benches.
+public:
 	struct LightDemo {
 		bool enabled = false;      // off by default (stress tool, not content)
 		int count = 32;            // lights in the crowd (capped on upload)
@@ -2660,28 +2661,14 @@ public:
 		bool castShadows = false;  // off by default (stress tool, not content)
 		int shadowCount = 2;       // crowd lights requesting shadows (stride-spread)
 	};
+	LightDemo& LightCrowdSettings() { return m_lightDemo; }
+	uint32_t LightCrowdCount() const { return m_lightCrowdCount; }
+	bool DebugPanelOpen() const { return m_debugPanelOpen; }
+private:
 	LightDemo m_lightDemo{};
 	// Crowd lights actually appended this frame (spawned-report readout;
 	// the count caps at FP_MAX_BUILD_LIGHTS minus the scene lights).
 	uint32_t m_lightCrowdCount = 0;
-	// Runtime Procedurals test lab (WorldRendererProcedurals.cpp). This
-	// state only mutates OWNED App worlds; borrowed editor worlds never
-	// receive test meshes. Requests are applied at the next frame boundary.
-	void DrawRuntimeProceduralsTab();
-	void ApplyRuntimeProceduralRequest();
-	int m_runtimeProcShape = 0;
-	int m_runtimeProcResolution = 24;
-	float m_runtimeProcSize = 2.0f;
-	float m_runtimeProcDistance = 5.0f;
-	float m_runtimeProcThickness = 0.2f;
-	float m_runtimeProcWaveHeight = 0.2f;
-	float m_runtimeProcWaveFreq = 3.0f;
-	int m_runtimeProcRequest = 0; // 0 idle, 1 spawn/replace, 2 remove
-	uint32_t m_runtimeProcNode = UINT32_MAX; // dynamic-cluster node
-	smvk::ClusterStaticMeshHandle m_runtimeProcMesh{};
-	smvk::ClusterMaterialHandle m_runtimeProcMaterial{};
-	smvk::ClusterStaticMeshHandle m_runtimeProcOldMesh{};
-	smvk::ClusterMaterialHandle m_runtimeProcOldMaterial{};
 
 	// The live Forward+ point/spot set the frame built (the scene's
 	// lights; the spawn helper appends to it directly - one list, one

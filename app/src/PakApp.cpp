@@ -15,6 +15,8 @@
 #include "ProjectRuntime.h"
 #include "ShapeSceneLoader.h"
 #include "DeployCheck.h"
+#include "RuntimeProcedurals.h"
+#include <imgui.h>
 
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/cluster_serializer.h> // ListPakScenes (the discovery lane's entry pick)
@@ -910,6 +912,22 @@ namespace app {
 			// element destruction to after ~App and leak the GPU handles).
 			app.AddElement(element);
 			element.reset();
+            // App owns the lab; reverse detach order protects the World.
+            auto fixtureUi = std::make_shared<app::RuntimeProcedurals>(
+                app, renderer, worldHandle);
+            renderer.SetExtraUi([weak = std::weak_ptr<app::RuntimeProcedurals>(fixtureUi),
+                &renderer]() {
+                if (!renderer.DebugPanelOpen()) return;
+                if (auto ui = weak.lock()) {
+                    ImGui::SetNextWindowSize(ImVec2(450, 620), ImGuiCond_FirstUseEver);
+                    if (ImGui::Begin("Procedurals (App)"))
+                        ui->DrawRuntimeProceduralsTab();
+                    ImGui::End();
+                }
+            });
+            app.AddElement(fixtureUi);
+            fixtureUi.reset();
+
 			for (const auto& factory : cfg.extraElements) {
 				if (auto extra = factory(app, renderer, worldHandle,
 						session)) {
