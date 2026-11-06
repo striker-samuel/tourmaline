@@ -411,6 +411,7 @@ void RuntimeProcedurals::DrawRuntimeProceduralsTab() {
 
 
 void RuntimeProcedurals::RetireResources() {
+    if (m_retired.empty()) return;
     auto* world = World();
     if (!world) { m_retired.clear(); return; }
     auto* ctx = m_host.GetResourceManager();

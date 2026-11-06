@@ -6,6 +6,7 @@
 #include <Engine/App/Element.h>
 #include <Engine/Renderer/WorldRenderer.h>
 #include <memory>
+#include <utility>
 #include <vector>
 namespace app {
 // App-only procedural fixture lab. All mutation goes through the World.
