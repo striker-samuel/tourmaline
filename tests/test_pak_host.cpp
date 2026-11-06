@@ -1492,6 +1492,24 @@ void TestAssetManager() {
 		Check(false, "am.mesh-seam-load");
 		return;
 	}
+	// Runtime-owned service: no AssetManager in gameplay code. Mirror
+	// PakApp's World-source setup and verify the World facade works.
+	{
+		auto gameWorld = std::make_unique<smvk::World>();
+		auto service = std::make_shared<app::AssetManager>(
+			*rtOpt, *gameWorld, nullptr, nullptr);
+		gameWorld->OwnGameAssets(std::move(service));
+		Check(gameWorld->HasAssetService(),
+			"am.world-internal-assets-installed");
+		std::string unknownError;
+		Check(!gameWorld->LoadMesh(0x9999, unknownError)
+			&& !unknownError.empty(),
+			"am.world-loadmesh-no-manual-manager");
+		Check(!gameWorld->UnloadMesh(app::MeshHandle{}),
+			"am.world-unload-invalid-handle");
+		// The service is destroyed first, while the World is alive.
+		gameWorld.reset();
+	}
 	smvk::World world;
 	app::AssetManager assets(*rtOpt, world, nullptr, nullptr);
 	// ---- the GI lane ----
