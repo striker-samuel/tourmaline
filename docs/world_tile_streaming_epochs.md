@@ -125,19 +125,20 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
 - [ ] Move mesh/material/texture/light/camera/decal asset records and
   skeleton/clip/bake references out of `Cluster` pools into stable
   asset-owned records or equivalent independently referenceable stores.
-- [ ] Make load/unload leases independent of node-region ownership.
+- [x] Introduce shared, durable-content-ID asset leases independent of node/Region ownership (`AssetResidency`, #232). Physical World resource records and production loading are **still Cluster-backed**; the lease ledger alone does not close Epoch 4.
+- [ ] Integrate those leases into production tile asset loading/unloading, including physical resource residency and delayed GPU destruction.
 - [ ] Retire `Cluster::assetRefs`, parked clusters and `retainedClusters`
   after validating external references and delayed GPU destruction.
 - [ ] Verify texture/pak image pins remain alive while borrowed data is
   accessed, even when a scene tile unloads.
 
 ### Epoch 5 — incremental authoritative World
-- [ ] Instantiate tile/scene nodes directly into `World::scene` with
-  world-qualified generational handles and explicit instance ownership.
+- [x] Add a direct `World::scene` hierarchy-instantiation API with generational node handles, active Map identity, explicit instance ownership and selective retirement (#232). The production Map tile bridge still uses the legacy ProjectScenes/Cluster loader.
+- [ ] Switch production tile activation to that direct-instance API after cooked-scene/resource-provider integration; preserve world-qualified ownership across Map changes.
 - [ ] Implement transactional `ActivateTile` and `DeactivateTile`:
   check budgets and dependencies before publishing; rollback on failure.
-- [ ] Avoid node-slot remapping on unrelated tile load/unload, and retire
-  nested ownership deterministically.
+- [x] Preserve unrelated World node slots and generation validity during direct hierarchy-instance retirement; cover subtree removal with headless tests (#232).
+- [ ] Verify these guarantees in production tile unload/reload (currently using the legacy bridge).
 - [ ] Remove `clusterMergedNodes`, source scene mirrors and
   `ResolveAndFixup_clusters` on the new loading path.
 - [ ] Support standalone prefab instances and authoring undo/reimport
@@ -195,6 +196,18 @@ Manual end-to-end acceptance:
    cross-cell geometry, prefabs and rapid cancellation/re-request.
 6. Compare performance to baseline and assert the scene visibility pass
    scales with traversed/visible candidates, not all authored instances.
+
+## Post-#232 status note (latest 100 master commits, 2026-11-06)
+
+The original epoch checkboxes predate the merged direct-instance PR #232.
+Its **standalone direct World hierarchy API**, independent asset lease ledger,
+explicit resource remapping and incremental render-item publication are
+implemented and have *registered headless tests*. These are not proof of
+production Map-tile cutover: `MapSceneStreaming` still calls legacy
+`ProjectScenes`, World resource location tables still refer to Cluster-owned
+pools, and no author-run native/CTest/GPU validation was reported. The
+checkboxes above distinguish these landed primitives from the remaining
+production integration and hardware acceptance gates.
 
 ## What this initial PR actually changes
 
