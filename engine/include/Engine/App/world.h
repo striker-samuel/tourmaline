@@ -105,7 +105,18 @@ namespace tour {
 		explicit World() {};
 		// Must be set before loading/registering clusters or first resolve.
 		// Budget includes the synthetic world root and any runtime nodes.
+		// 0 = UNBUDGETED (the default host shape): node storage rides the
+		// PROCESS linear allocator, the byte budget (--mem-process-mb /
+		// TOURMALINE_MEM_PROCESS_MB) owns capacity and its [OOM] fail-fast
+		// is the overflow abort. There is NO CLI flag.
 		void ConfigureSceneNodeBudget(size_t slots) {
+			if (!slots) {
+				// 0 = clear to unbudgeted (a no-op when already 0): keep
+				// any pre-reserved storage, drop the cap
+				// (ReserveNodeSlots treats 0 as invalid).
+				scene.nodeSlotBudget = 0;
+				return;
+			}
 			if (!clusters.empty() || !scene.hierarchy.empty())
 				tour::scene::CrashNodeBudget("late World budget", scene.hierarchy.size(), slots);
 			scene.ReserveNodeSlots(slots);
