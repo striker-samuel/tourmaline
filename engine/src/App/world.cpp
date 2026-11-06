@@ -1255,6 +1255,7 @@ using namespace ::smvk;
 		// Full legacy resolve replaces the node slots: reject stale game
 		// handles after it, rather than accidentally mutating a reused slot.
 		gameNodes_.clear();
+		gameMeshBindings_.clear();
 		// MATERIAL USERDATA RE-KEY CAPTURE (consumed by the re-key below
 		// the material-table rebuild): the world material indices are
 		// about to be rebuilt, so the per-material defaults are captured
@@ -1997,6 +1998,7 @@ using namespace ::smvk;
 				return false;
 		deleteSceneNodes(scene, { node });
 		gameNodes_.erase(handle);
+		gameMeshBindings_.erase(handle);
 		RefreshRuntimeSceneCaches();
 		return true;
 	}
