@@ -593,6 +593,11 @@ app::MeshHandle World::LoadMesh(uint64_t catalogKey, std::string& error)
 	return gameAssets_->LoadMesh(catalogKey, error);
 }
 
+bool World::UnloadMesh(app::MeshHandle mesh)
+{
+	return gameAssets_ && gameAssets_->UnloadMesh(mesh);
+}
+
 bool World::NodeRef::SetMesh(app::MeshHandle mesh) const
 {
 	// Validate the generation and loaded resource before touching the
