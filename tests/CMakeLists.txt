@@ -4,6 +4,15 @@
 
 project(AssetTests)
 
+# Cooked terrain + placed-object maximum-height hierarchy (GPU-free).
+add_executable(TerrainOcclusionTests test_terrain_occlusion.cpp)
+target_include_directories(TerrainOcclusionTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+set_target_properties(TerrainOcclusionTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME terrain_occlusion_tests COMMAND TerrainOcclusionTests)
+
 # Header-only brush sampling core: no renderer/device needed.
 add_executable(BrushPrimitivesTests test_brush_primitives.cpp)
 target_include_directories(BrushPrimitivesTests PRIVATE
