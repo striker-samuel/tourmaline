@@ -114,6 +114,15 @@ void TestAssetUris() {
 	Check(f == "models/s.gltf" && frag == "mesh.1/prim.0", "uri.split");
 	Check(smvk::NormalizeAssetUri("models\\s.gltf#mesh.1") == "models/s.gltf#mesh.1", "uri.normalize");
 	Check(smvk::NormalizeAssetUri("../evil#x") == "", "uri.escape");
+	// Noncanonical paths must use the caller's arena, not a temporary
+	// heap-backed segment vector. Preserve fragment and escape semantics.
+	smvk::Arena uriScratch(512);
+	Check(smvk::NormalizeAssetUri("textures\\\\folder//./detail.ktx2#albedo",
+		uriScratch) == "textures/folder/detail.ktx2#albedo",
+		"uri.normalize.arena-segments");
+	Check(smvk::NormalizeAssetUri("one/two/../escape", uriScratch) == "",
+		"uri.normalize.reject-parent");
+
 	Check(smvk::MakeSubUri("models/s.gltf", "mat.3") == "models/s.gltf#mat.3", "uri.mksub");
 	Check(smvk::AssetFilePart("models/s.gltf#mat.3") == "models/s.gltf", "uri.filepart");
 }
