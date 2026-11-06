@@ -4,6 +4,20 @@ Status: **Migration in progress — NOT a completed cluster replacement.**
 Base: the existing WorldPartition, SMP8 paged pak container, RegionRegistry,
 ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
 
+## One active runtime World, multiple authored Maps
+
+- `tour::World` / `m_world` is the single active runtime simulation object.
+- `tour::Map` is the durable world-wide spatial distribution, identified by
+  stable `WorldId`. Multiple Maps are project assets; **one Map is active**.
+- `WorldTileKey` is `(WorldId, cell)`; world A's `(0,0)` is unrelated to
+  world B's `(0,0)` even when stored in one archive.
+- Map switching must first invalidate outstanding async request tickets,
+  retire old regions/assets safely, and only then bind the new Map manifest.
+- No concurrent runtime worlds, multi-Map residency, or additional world
+  instance identifier is required.
+- The CPU SceneTileProvider now enforces one Map per manifest; host-level
+  switch, renderer and GPU fence cutover still require implementation.
+
 ## Map versus Scene (new decision)
 
 - `tour::Map` is the world-wide authored hierarchy of anchors and placed
