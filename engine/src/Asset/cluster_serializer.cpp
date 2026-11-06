@@ -1793,7 +1793,16 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 	};
 	Cursor c{ payload, 0 };
 	const uint32_t nodeCount = c.u32();
-	if (!c.ok || nodeCount == 0 || nodeCount > 1024 * 1024)
+	// The node-count sanity ceiling: a CORRUPT count must not drive a
+	// multi-gigabyte reserve, but a legitimately authored giant flat
+	// scene may not be refused either. 1 Mi nodes predated the stress
+	// grids - a 100x100 Sponza grid (one reference family per cell) is
+	// 10,001 x 105 = 1,050,107 nodes, 0.15% over the old bound - so the
+	// ceiling moves to 4 Mi (~400 MB worst-case parse structures, still
+	// a loud bounded fail on garbage). The small authored-few tables
+	// (lights/cameras/envs/decals/rooms/triggers) keep their 1 Mi caps:
+	// they do not scale with scene size.
+	if (!c.ok || nodeCount == 0 || nodeCount > 4096 * 1024)
 		return fail("bad scene node count");
 	// Stash the recorded linkage first (single parse), then grow the
 	// scene in index order with addNode (sibling order preserved), then

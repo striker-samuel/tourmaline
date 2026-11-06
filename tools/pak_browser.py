@@ -575,7 +575,11 @@ def decode_scene_summary(payload: bytes) -> dict:
     """Node count + name-table summary without building a cluster."""
     c = _Cur(payload)
     nn = c.u32()
-    if not c.ok or nn == 0 or nn > 1024 * 1024:
+    # Mirrors the loader's node-count ceiling (cluster_serializer.cpp):
+    # 4 Mi nodes - the giant flat stress grids (100x100 Sponza = 1.05M
+    # nodes) are legitimate authored scenes; the bound only guards
+    # against corrupt counts driving huge reserves.
+    if not c.ok or nn == 0 or nn > 4096 * 1024:
         return {"error": "bad scene node count"}
     for _ in range(nn):  # hierarchy: 5 x i32
         for _k in range(5):
