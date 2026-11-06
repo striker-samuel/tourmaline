@@ -80,6 +80,10 @@ public:
                          std::string& err,
                          const WorldSceneResourceMap* bindings = nullptr) {
         err.clear();
+        if (&source == &target) {
+            err = "source authoring Scene cannot alias mutable runtime World scene";
+            return 0;
+        }
         if (!activeMap_ || !sceneAssetId || nextId_ == 0) {
             err = "active Map and source Scene asset IDs are required";
             return 0;
@@ -159,11 +163,17 @@ public:
                 return 0;
             }
             for (int c = 0; c < 4; ++c)
-                for (int r = 0; r < 4; ++r)
-                    if (!std::isfinite(source.localTransform[i][c][r])) {
-                        err = "nonfinite source transform";
+                for (int r = 0; r < 4; ++r) {
+                    const double value = i < source.localTransformDouble.size()
+                        ? source.localTransformDouble[i][c][r]
+                        : double(source.localTransform[i][c][r]);
+                    if (!std::isfinite(source.localTransform[i][c][r])
+                        || !std::isfinite(value)
+                        || std::abs(value) > double(std::numeric_limits<float>::max())) {
+                        err = "nonfinite or unrepresentable source transform";
                         return 0;
                     }
+                }
         }
         for (uint32_t i = 0; i < n; ++i) {
             if (!IsLiveSlot(source, i)) continue;
