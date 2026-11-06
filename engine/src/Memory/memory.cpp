@@ -59,6 +59,7 @@ config::RuntimeConfig ParseRuntimeConfig() {
 	c.frameArenaBlock = EnvSize("TOURMALINE_MEM_FRAME_ARENA_MB", kMiB, c.frameArenaBlock);
 	c.processReserve = EnvSize("TOURMALINE_MEM_PROCESS_MB", kMiB, c.processReserve);
 	c.frameReserve = EnvSize("TOURMALINE_MEM_FRAME_MB", kMiB, c.frameReserve);
+	c.flightReserve = EnvSize("TOURMALINE_MEM_FLIGHT_MB", kMiB, c.flightReserve);
 	c.transientReserve = EnvSize("TOURMALINE_MEM_TRANSIENT_MB", kMiB, c.transientReserve);
 	c.streamerTotalBudget = EnvSize("TOURMALINE_MEM_STREAMER_MB", kMiB, c.streamerTotalBudget);
 	c.stagingRingPerThread = EnvSize("TOURMALINE_MEM_STAGING_RING_MB", kMiB, c.stagingRingPerThread);
