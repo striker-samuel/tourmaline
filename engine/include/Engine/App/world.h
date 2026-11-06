@@ -22,6 +22,8 @@
 #include <Engine/Scene/region_registry.h>
 #include <Engine/Scene/world_scene_instances.h>
 
+namespace app { class AssetManager; struct MeshHandle; }
+
 namespace tour {
 // (namespace/RHI boundary audit) this block's RHI dependencies are
 // FULLY QUALIFIED (smvk::) - no broad using-directive (R6-gated).
@@ -126,27 +128,69 @@ namespace tour {
 		}
 
 
-		// Game-facing transform-only node creation. A node has one local
-		// transform and at most one mesh association. Catalog-backed
-		// bindings are supplied by the app layer (AssetManager), not by
-		// World itself. Epoch 6c must make these nodes survive legacy
-		// cluster full resolves; until then, treat handles as invalid
-		// after ResolveAndFixup_clusters.
+		// The World owns nodes. The project catalog names assets; LoadMesh
+		// resolves a catalog key through the attached app AssetManager,
+		// returning a reusable loaded resource handle. Game code attaches
+		// this handle to nodes; no raw world mesh indices escape this API.
+		[[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey,
+			std::string& error);
 		[[nodiscard]] NodeHandle AddNode(
 			const glm::mat4& localFrame = glm::mat4(1.0f));
 		bool RemoveNode(NodeHandle node);
 		[[nodiscard]] bool IsGameNode(NodeHandle node) const {
 			return gameNodes_.contains(node) && NodeHandleValid(scene, node);
 		}
-		// Use after modifying scene association tables in-place, without
-		// rebuilding clusters or moving existing node slots. The engine
-		// render-item flags, LOD, BVH and GPU topology caches are refreshed.
-		void RefreshRuntimeSceneCaches();
+		// Called by AssetManager for the duration of its attachment.
+		// AssetManager must outlive its loaded mesh handles.
+		void SetGameAssets(app::AssetManager* assets) {
+			gameAssets_ = assets;
+		}
+		[[nodiscard]] bool HasGameMeshBinding(uint64_t resourceValue) const {
+			for (const auto& [node, mesh] : gameMeshBindings_)
+				if (mesh == resourceValue && IsGameNode(node))
+					return true;
+			return false;
+		}
 
-		// Only nodes allocated through AddNode are mutable through the
-		// game API. Resolve invalidates these provisional handles until
-		// the incremental World hierarchy migration lands (Epoch 6c).
+		class NodeRef {
+		public:
+			NodeRef(World& owner, NodeHandle handle)
+				: owner_(owner), handle_(handle) {}
+			// Requires a PREVIOUSLY loaded app::MeshHandle. One mesh per
+			// node: replacement is atomic on invalid/unmapped handles.
+			[[nodiscard]] bool SetMesh(app::MeshHandle mesh) const;
+			[[nodiscard]] bool RemoveMesh() const;
+			[[nodiscard]] bool SetLocalTransform(const glm::mat4& frame) const {
+				return owner_.IsGameNode(handle_)
+					&& tour::scene::SetLocalTransform(owner_.scene, handle_, frame);
+			}
+			[[nodiscard]] bool SetPhysicsBody(const ScenePhysicsBody& body) const {
+				return owner_.IsGameNode(handle_)
+					&& tour::scene::SetPhysicsBody(owner_.scene, NodeHandleSlot(handle_), body);
+			}
+			[[nodiscard]] bool SetAudioRoom(const SceneAudioRoom& room) const {
+				return owner_.IsGameNode(handle_)
+					&& tour::scene::SetAudioRoom(owner_.scene, NodeHandleSlot(handle_), room);
+			}
+			[[nodiscard]] bool SetTriggerVolume(const SceneTriggerVolume& trigger) const {
+				return owner_.IsGameNode(handle_)
+					&& tour::scene::SetTriggerVolume(owner_.scene, NodeHandleSlot(handle_), trigger);
+			}
+		private:
+			World& owner_;
+			NodeHandle handle_;
+		};
+		[[nodiscard]] NodeRef operator[](NodeHandle handle) {
+			return NodeRef(*this, handle);
+		}
+
+		// In-place draw/cull refresh, never the destructive cluster fold.
+		void RefreshRuntimeSceneCaches();
+		// Legacy ResolveAndFixup currently invalidates game nodes; this
+		// pending 6c migration is an explicit limitation of this slice.
 		std::unordered_set<NodeHandle> gameNodes_;
+		std::unordered_map<NodeHandle, uint64_t> gameMeshBindings_;
+		app::AssetManager* gameAssets_ = nullptr;
 
 		// Merged runtime scene graph. Imported Cluster scenes are folded into
 		// this via ResolveAndFixup_clusters().
