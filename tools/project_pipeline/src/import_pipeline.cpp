@@ -170,8 +170,11 @@ bool ComposeMaterialFromRecipe(const MaterialPackingRule& rule,
         output.srgb = group.srgb;
         const std::string& encoding = rule.encodings[groupIndex];
         if (!encoding.empty()) {
-            smvk::assets::KtxEncodeFormat format{};
-            if (!smvk::assets::KtxEncodeFormatFromName(encoding, format)) {
+            // KtxEncodeFormat lives at GLOBAL scope in gltf_import/gltf.h
+            // (a tool-header enum, not part of smvk::assets) - the PR's
+            // smvk::assets:: spelling was the CI red on every platform.
+            ::KtxEncodeFormat format{};
+            if (!::KtxEncodeFormatFromName(encoding, format)) {
                 err = "invalid encoding for generated " + std::string(group.name);
                 return false;
             }
