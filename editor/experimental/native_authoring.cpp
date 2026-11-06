@@ -21,6 +21,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <algorithm>
 #include <cwctype>
@@ -111,12 +112,25 @@ public:
     }
 
     int Run() {
+        ACCEL shortcuts[] = {
+            { FCONTROL | FVIRTKEY, 'N', FileNew },
+            { FCONTROL | FVIRTKEY, 'O', FileOpen },
+            { FCONTROL | FVIRTKEY, 'S', FileSave },
+            { FCONTROL | FVIRTKEY, 'Z', EditUndo },
+            { FCONTROL | FVIRTKEY, 'Y', EditRedo },
+            { FVIRTKEY, VK_F3, EditFindNext },
+            { FVIRTKEY, VK_F5, ProjectRefresh }
+        };
+        HACCEL accelerators = CreateAcceleratorTableW(shortcuts, ARRAYSIZE(shortcuts));
         MSG msg{};
         while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+            if (search_ && !IsWindow(search_)) search_ = nullptr;
             if (search_ && IsDialogMessageW(search_, &msg)) continue;
+            if (accelerators && TranslateAcceleratorW(window_, accelerators, &msg)) continue;
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        if (accelerators) DestroyAcceleratorTable(accelerators);
         return static_cast<int>(msg.wParam);
     }
     ~NativeEditor() {
@@ -284,6 +298,7 @@ private:
         SendMessageW(edit_, EM_EMPTYUNDOBUFFER, 0, 0);
         loading_ = false;
         current_ = path;
+        SendMessageW(edit_, EM_SETMODIFY, FALSE, 0);
         SetDirty(false);
         Status(L"Opened " + path.wstring());
         return true;
@@ -328,6 +343,7 @@ private:
             return false;
         }
         current_ = target;
+        SendMessageW(edit_, EM_SETMODIFY, FALSE, 0);
         SetDirty(false);
         Status(L"Saved " + target.wstring());
         RefreshTree();
@@ -456,8 +472,8 @@ private:
         case FileSaveAs: Save(true); break;
         case FileReload:
             if (!current_.empty() && ConfirmDiscard()) {
-                // Avoid double-prompt when the requested reload is confirmed.
                 const auto old = current_;
+                // Prompt already resolved; OpenFile must not prompt again.
                 SetDirty(false);
                 OpenFile(old);
             }
