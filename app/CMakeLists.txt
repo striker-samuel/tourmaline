@@ -22,6 +22,8 @@ message(STATUS "APP_DIR = ${APP_DIR}")
 # ---------------------------------------------------------------------------
 add_library(tourmaline_apphost STATIC
     src/PakApp.cpp
+    src/RuntimeProcedurals.cpp
+    src/RenderSettingsUi.cpp
     src/PakAppArgs.cpp
     src/PakPreload.cpp
     src/PakWorldLoader.cpp

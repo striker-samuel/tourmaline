@@ -169,6 +169,7 @@ namespace tour {
 		uint64_t nextGpuSceneClusterId = 1;
 		std::unordered_map<const Cluster*, uint64_t> gpuSceneClusterIds;
 
+		bool clustersDirty_ = false; // pending cluster scene merge
 		mutable bool dirtyCull = true;
 		std::vector<IteratorFlags> flags; // indexed by node
 		std::vector<std::unique_ptr<Cluster>> clusters;
@@ -660,6 +661,13 @@ namespace tour {
 		// case). Refuses the dynamic cluster.
 		std::unique_ptr<Cluster> UnregisterCluster(Cluster&);
 		void ResolveAndFixup_clusters();
+		// App/scene code marks a mutated cluster; the renderer consumes this
+		// at the next frame boundary, before recording any scene readers.
+		// The cluster must be registered in this World (including dynamic).
+		bool MarkClusterDirty(const smvk::Cluster& cluster);
+		bool HasDirtyClusters() const { return clustersDirty_; }
+		bool ResolveDirtyClusters();
+
 
 		smvk::StaticMesh* GetMesh(uint32_t meshIndex);
 		const smvk::StaticMesh* GetMesh(uint32_t meshIndex) const;

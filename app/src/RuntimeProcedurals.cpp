@@ -6,9 +6,8 @@
 // Meshes/materials live in the World's dynamic cluster and are discarded
 // with the running App session.
 
-#include <Engine/Renderer/WorldRenderer.h>
+#include "RuntimeProcedurals.h"
 #include <Engine/Renderer/mesh.h>
-#include <Engine/Renderer/gfx_filter.h>
 #include <Engine/App/cluster.h>
 #include <Engine/Scene/scene.h>
 
@@ -22,7 +21,7 @@
 #include <cstdio>
 #include <utility>
 
-namespace engine {
+namespace app {
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
@@ -247,14 +246,13 @@ smvk::MaterialCreateInfo FixtureMaterial(int shape) {
 
 // Queued by ImGui during the last frame. Rebuild only at the next frame
 // boundary, before the rendergraph records any view of the new world.
-void WorldRenderer::ApplyRuntimeProceduralRequest() {
-    if (m_runtimeProcRequest == 0 || m_worldOwned.get() == nullptr || !m_world
-        || !m_context || !m_rendergraph) {
+void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
+    if (m_runtimeProcRequest == 0 || !World() || !m_host.GetResourceManager()) {
         m_runtimeProcRequest = 0;
         return;
     }
     const int request = std::exchange(m_runtimeProcRequest, 0);
-    smvk::Cluster& dyn = m_world->EnsureDynamicCluster(m_context);
+    smvk::Cluster& dyn = World()->EnsureDynamicCluster(m_host.GetResourceManager());
 
     if (request == 1) {
         const smvk::StaticMeshUpload upload = MakeFixture(
@@ -278,21 +276,22 @@ void WorldRenderer::ApplyRuntimeProceduralRequest() {
             std::fprintf(stderr,"[Procedurals] material creation failed\n");
             return;
         }
-        // Retire previous fixture only after the new one has been built.
-        if (m_runtimeProcNode != UINT32_MAX) {
-            RemoveMesh(dyn.scene, m_runtimeProcNode);
-            RemoveMaterial(dyn.scene, m_runtimeProcNode);
-            RetireNodeSlot(dyn.scene, m_runtimeProcNode);
-        }
+        // Preserve the old fixture until replacement allocation succeeds.
         const int node = addNode(dyn.scene, -1, 0);
         if (node < 0) {
             dyn.DestroyMesh(newMesh);
             dyn.DestroyMaterial(newMaterial);
             return;
         }
+        if (m_runtimeProcNode != UINT32_MAX) {
+            RemoveMesh(dyn.scene, m_runtimeProcNode);
+            RemoveMaterial(dyn.scene, m_runtimeProcNode);
+            RetireNodeSlot(dyn.scene, m_runtimeProcNode);
+            m_retired.push_back({m_runtimeProcMesh, m_runtimeProcMaterial});
+        }
         m_runtimeProcNode = uint32_t(node);
-        const glm::vec3 center = m_cameraPositioner.cameraPosition_
-            + m_cameraPositioner.getForward() * m_runtimeProcDistance;
+        const glm::vec3 center = m_renderer.CameraPositioner().cameraPosition_
+            + m_renderer.CameraPositioner().getForward() * m_runtimeProcDistance;
         dyn.scene.localTransform[size_t(node)] =
             glm::translate(glm::mat4(1.0f), center);
         dyn.scene.globalTransform[size_t(node)] =
@@ -308,33 +307,16 @@ void WorldRenderer::ApplyRuntimeProceduralRequest() {
         RemoveMaterial(dyn.scene, m_runtimeProcNode);
         RetireNodeSlot(dyn.scene, m_runtimeProcNode);
         m_runtimeProcNode = UINT32_MAX;
+        m_retired.push_back({m_runtimeProcMesh, m_runtimeProcMaterial});
     }
-    // Scene + render-item tables must be derived from the cluster
-    // content, never patched directly (same rule as loaded pak scenes).
-    m_world->ResolveAndFixup_clusters();
-    if (m_gfxFilterAvailable) {
-        smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
-        m_gfxRenderer.RegisterWorldMeshes(*m_world);
-        m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
-    }
-    m_context->FlushUploads();
-    // Old mesh regions retire behind the GPU in-flight safety margin.
-    // World resolved first so no new frame references these handles.
-    if (request == 2 || m_runtimeProcNode != UINT32_MAX) {
-        if (m_runtimeProcOldMesh.valid())
-            dyn.DestroyMesh(m_runtimeProcOldMesh);
-        if (m_runtimeProcOldMaterial.valid())
-            dyn.DestroyMaterial(m_runtimeProcOldMaterial);
-        m_runtimeProcOldMesh = {};
-        m_runtimeProcOldMaterial = {};
-    }
+    World()->MarkClusterDirty(dyn);
     if (request == 2) {
         m_runtimeProcMesh = {};
         m_runtimeProcMaterial = {};
     }
 }
 
-void WorldRenderer::DrawRuntimeProceduralsTab() {
+void RuntimeProcedurals::DrawRuntimeProceduralsTab() {
     ImGui::TextWrapped("Runtime-only rendering fixtures. No .tour, "
         "project assets or editor entities are created.");
     ImGui::SeparatorText("Geometry");
@@ -358,17 +340,13 @@ void WorldRenderer::DrawRuntimeProceduralsTab() {
     }
     if (m_runtimeProcShape == 5)
         ImGui::TextDisabled("Solid strands, not alpha-tested hair cards.");
-    const bool canSpawn = m_worldOwned.get() != nullptr && m_world != nullptr;
+    const bool canSpawn = World() != nullptr;
     ImGui::BeginDisabled(!canSpawn);
     if (ImGui::Button("Spawn / replace fixture")) {
-        m_runtimeProcOldMesh = m_runtimeProcMesh;
-        m_runtimeProcOldMaterial = m_runtimeProcMaterial;
         m_runtimeProcRequest = 1;
     }
     ImGui::SameLine();
     if (ImGui::Button("Remove fixture") && m_runtimeProcNode != UINT32_MAX) {
-        m_runtimeProcOldMesh = m_runtimeProcMesh;
-        m_runtimeProcOldMaterial = m_runtimeProcMaterial;
         m_runtimeProcRequest = 2;
     }
     ImGui::EndDisabled();
@@ -377,7 +355,7 @@ void WorldRenderer::DrawRuntimeProceduralsTab() {
 
     ImGui::SeparatorText("Fixture material");
     if (canSpawn && m_runtimeProcMaterial.valid()) {
-        smvk::Cluster& dyn = m_world->EnsureDynamicCluster(m_context);
+        smvk::Cluster& dyn = World()->EnsureDynamicCluster(m_host.GetResourceManager());
         if (smvk::Material* mat = dyn.materials.get(m_runtimeProcMaterial)) {
             ImGui::ColorEdit3("Base color", &mat->values.diffuse.x);
             ImGui::SliderFloat("Metallic", &mat->values.params.y, 0, 1);
@@ -393,41 +371,70 @@ void WorldRenderer::DrawRuntimeProceduralsTab() {
 
     ImGui::SeparatorText("Rendering diagnostic");
     if (ImGui::Button("Lit"))
-        m_debugView = ViewMode::Lit;
+        m_renderer.SetDebugView(engine::ViewMode::Lit);
     ImGui::SameLine();
     if (ImGui::Button("SSS debug"))
-        m_debugView = ViewMode::SssPreview;
+        m_renderer.SetDebugView(engine::ViewMode::SssPreview);
     ImGui::SameLine();
     if (ImGui::Button("Hair debug"))
-        m_debugView = ViewMode::HairPreview;
+        m_renderer.SetDebugView(engine::ViewMode::HairPreview);
     if (ImGui::Button("Water debug"))
-        m_debugView = ViewMode::WaterPreview;
+        m_renderer.SetDebugView(engine::ViewMode::WaterPreview);
     ImGui::TextDisabled("SSS/hair/water modes are existing renderer diagnostics, not physical shaders.");
 
     ImGui::SeparatorText("Light Crowd");
-    ImGui::Checkbox("Enable light crowd", &m_lightDemo.enabled);
+    auto& light = m_renderer.LightCrowdSettings();
+    ImGui::Checkbox("Enable light crowd", &light.enabled);
     ImGui::SameLine();
-    ImGui::TextDisabled(m_lightCrowdCount > 0 ? "(spawned)" : "(off)");
-    ImGui::SliderInt("Count", &m_lightDemo.count, 0, 96);
-    ImGui::SliderFloat3("Center", &m_lightDemo.center.x, -30.0f, 30.0f);
-    ImGui::SliderFloat("Spiral radius (m)", &m_lightDemo.radius, 0.5f, 30.0f);
-    ImGui::SliderFloat("Height (m)", &m_lightDemo.height, 0.0f, 12.0f);
-    ImGui::SliderFloat("Bob (m)", &m_lightDemo.bob, 0.0f, 4.0f);
-    ImGui::SliderFloat("Cutoff range (m)", &m_lightDemo.range, 0.5f, 20.0f);
-    ImGui::SliderFloat("Intensity (cd)", &m_lightDemo.intensity, 0.0f, 200000.0f, "%.0f");
+    ImGui::TextDisabled(m_renderer.LightCrowdCount() > 0 ? "(spawned)" : "(off)");
+    ImGui::SliderInt("Count", &light.count, 0, 96);
+    ImGui::SliderFloat3("Center", &light.center.x, -30.0f, 30.0f);
+    ImGui::SliderFloat("Spiral radius (m)", &light.radius, 0.5f, 30.0f);
+    ImGui::SliderFloat("Height (m)", &light.height, 0.0f, 12.0f);
+    ImGui::SliderFloat("Bob (m)", &light.bob, 0.0f, 4.0f);
+    ImGui::SliderFloat("Cutoff range (m)", &light.range, 0.5f, 20.0f);
+    ImGui::SliderFloat("Intensity (cd)", &light.intensity, 0.0f, 200000.0f, "%.0f");
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Sunlit scenes may need 20000+ cd to read clearly.");
-    ImGui::SliderFloat("Orbit speed (rad/s)", &m_lightDemo.speed, 0.0f, 2.0f);
-    ImGui::SliderFloat("Base hue", &m_lightDemo.baseHue, 0.0f, 1.0f);
-    ImGui::SliderFloat("Hue spread", &m_lightDemo.hueSpread, 0.0f, 1.0f);
-    ImGui::Checkbox("Cast shadows (crowd)", &m_lightDemo.castShadows);
-    if (m_lightDemo.castShadows) {
+    ImGui::SliderFloat("Orbit speed (rad/s)", &light.speed, 0.0f, 2.0f);
+    ImGui::SliderFloat("Base hue", &light.baseHue, 0.0f, 1.0f);
+    ImGui::SliderFloat("Hue spread", &light.hueSpread, 0.0f, 1.0f);
+    ImGui::Checkbox("Cast shadows (crowd)", &light.castShadows);
+    if (light.castShadows) {
         const int cap = std::min(int(smvk::kMaxPointShadowLights),
-            std::max(m_lightDemo.count, 1));
-        int shadows = std::min(m_lightDemo.shadowCount, cap);
+            std::max(light.count, 1));
+        int shadows = std::min(light.shadowCount, cap);
         if (ImGui::SliderInt("Shadow casters", &shadows, 0, cap))
-            m_lightDemo.shadowCount = shadows;
+            light.shadowCount = shadows;
     }
 }
 
-} // namespace engine
+
+void RuntimeProcedurals::RetireResources() {
+    if (m_retired.empty()) return;
+    auto* world = World();
+    if (!world) { m_retired.clear(); return; }
+    auto* ctx = m_host.GetResourceManager();
+    if (!ctx) return;
+    auto& dyn = world->EnsureDynamicCluster(ctx);
+    for (const auto& item : m_retired) {
+        if (item.mesh.valid()) dyn.DestroyMesh(item.mesh);
+        if (item.material.valid()) dyn.DestroyMaterial(item.material);
+    }
+    m_retired.clear();
+}
+
+void RuntimeProcedurals::onUpdate(float) {
+    // Last frame's World resolution no longer references retired handles.
+    RetireResources();
+    ApplyRuntimeProceduralRequest();
+}
+
+void RuntimeProcedurals::onDetach() {
+    m_renderer.SetExtraUi({});
+    m_host.WaitForDeviceIdle();
+    RetireResources();
+    m_runtimeProcRequest = 0;
+}
+
+} // namespace app
