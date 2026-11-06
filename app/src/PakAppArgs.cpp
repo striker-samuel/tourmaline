@@ -30,6 +30,7 @@ void PrintUsage(const char* prog) {
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
 		<< "  [--bench <frames>] [--bench_move <m/s>] [--bench_turn <deg/s>] [--present <fifo|mailbox|immediate>] [--vsync on|off] [--vrr] [--max-fps N] [--disable_control] [--no-dlss]\n"
 		<< "  [--mem-frame-mb N] [--mem-process-mb N] [--mem-transient-mb N]\n"
+		<< "  --scene-node-budget N (REQUIRED: fixed slots, abort on overflow)\n"
 		<< "  [--capture] [--use_optick] [--use_optick_gpu] [--no-vfs]\n"
 		<< "  --pak runs cooked paks — REQUIRED (or --project), there is\n"
 		<< "  no default (no entry-point pak = the App refuses to run).\n"
@@ -298,6 +299,16 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 					"a transient reserve in MiB, 1..1048576", exitCode);
 			opts.memTransientMb = size_t(n);
 		}
+		else if (std::strcmp(a, "--scene-node-budget") == 0
+			|| std::strncmp(a, "--scene-node-budget=", 20) == 0) {
+			const char* v = std::strcmp(a, "--scene-node-budget") == 0
+				? (i + 1 < argc ? argv[++i] : nullptr) : a + 20;
+			long long n = 0;
+			if (!v || !ParseInt(v, 1, (1 << 20) - 1, n))
+				return RejectNumeric("--scene-node-budget", v,
+					"node slots, 1..1048575 (including world root)", exitCode);
+			opts.sceneNodeBudget = size_t(n);
+		}
 		else if (std::strcmp(a, "--vrr") == 0) {
 			opts.vrr = true;
 		}
@@ -445,6 +456,13 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 			exitCode = EXIT_FAILURE;
 			return false;
 		}
+	}
+	if (!opts.sceneNodeBudget) {
+		std::cerr << "Missing required --scene-node-budget N: packaged worlds "
+			"must declare capacity at launch.\n";
+		PrintUsage(argv[0]);
+		exitCode = EXIT_FAILURE;
+		return false;
 	}
 	if (opts.snapshotCodeId.size() > 256) {
 		std::cerr << "--snapshot-code-id exceeds 256 characters.\n";
