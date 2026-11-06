@@ -12,6 +12,7 @@
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1607,6 +1608,25 @@ namespace engine {
 		EnsureChartXforms(world, ctx);
 
 		SMVK_PROFILE_SCOPE("GfxFilterPushDraws");
+		// Aggregate per-item stage costs into Optick tags rather than creating
+		// thousands of timeline events. Only sample clocks during CPU captures.
+		using PushClock = std::chrono::steady_clock;
+		struct PushStageTimer {
+			uint64_t& nanoseconds;
+			bool enabled;
+			PushClock::time_point start;
+			PushStageTimer(uint64_t& sum, bool on)
+				: nanoseconds(sum), enabled(on), start(on ? PushClock::now() : PushClock::time_point{}) {}
+			~PushStageTimer() {
+				if (enabled)
+					nanoseconds += static_cast<uint64_t>(
+						std::chrono::duration_cast<std::chrono::nanoseconds>(
+								PushClock::now() - start).count());
+			}
+		};
+		const bool profilePushStages = smvk::profiler::Enabled();
+		uint64_t lodNs = 0, boundsNs = 0, lightmapNs = 0, pushNs = 0;
+		const auto traversalStart = profilePushStages ? PushClock::now() : PushClock::time_point{};
 		// TMP-DIAG (TOURMALINE_DUMPGFX): per-gate push counters, first frame
 		// only. Remove later (folds into the draw dump above).
 		struct PushGates { uint64_t items = 0, badMat = 0, unknownMesh = 0;
@@ -1705,6 +1725,9 @@ namespace engine {
 			// registration failed falls through to the direct fallback,
 			// so each instance still rasterizes exactly once.
 			uint32_t lodIdx = 0;
+			uint32_t gfxMesh = UINT32_MAX;
+			{
+				PushStageTimer timer(lodNs, profilePushStages);
 			if (lod && world.LodChainLength(worldMesh) > 1)
 				lodIdx = world.LodIndexForNode(item.node, worldMesh, *lod);
 			if (dumpGates && lodIdx < 8)
@@ -1720,7 +1743,6 @@ namespace engine {
 				if (dumpGates) ++s_gates.shaderLod;
 				return;
 			}
-			uint32_t gfxMesh = UINT32_MAX;
 			if (worldMesh < lodMeshMap_.size()
 				&& lodIdx < lodMeshMap_[worldMesh].size())
 				gfxMesh = lodMeshMap_[worldMesh][lodIdx];
@@ -1735,6 +1757,7 @@ namespace engine {
 			// (The old meshMap_ fallback pushed LOD0's gfx mesh here
 			// while the direct legs skipped on the selected sibling:
 			// double-draw of mismatched geometry.)
+			} // LOD/registration stage
 		// Mesh-level sphere pre-cull on CONSERVATIVE bounds: LOD
 		// siblings may have tighter/smaller AABBs than LOD0, so
 		// culling on the selected sibling alone drops instances the
@@ -1744,6 +1767,7 @@ namespace engine {
 		// when EITHER the base or the selected sibling intersects;
 		// per-cluster GPU culling still rejects truly hidden meshlets.
 			{
+				PushStageTimer timer(boundsNs, profilePushStages);
 				smvk::StaticMesh* baseDesc = world.GetMesh(worldMesh);
 				smvk::StaticMesh* selDesc = world.GetLodMesh(worldMesh, lodIdx);
 				bool baseHit = true, selHit = true;
@@ -1829,16 +1853,19 @@ namespace engine {
 			// geometry with its own count here. GetLodMesh
 			// falls back to LOD0 for missing siblings. Unlightmapped meshes
 			// carry 0xFFFFFFFF and the FS falls back to probe/grid ambient.
+			uint32_t chartOffset = 0;
+			uint32_t lmDelta = 0u;
+			{
+			PushStageTimer timer(lightmapNs, profilePushStages);
 			if (const smvk::StaticMesh* mesh = world.GetLodMesh(worldMesh, lodIdx))
 				lmChunk = mesh->lmChunk;
 			// Per-draw chart offset: base into the scene-wide transform
 			// table for the SELECTED LOD sibling (each level owns its chart
 			// list; unlightmapped meshes resolve 0 and gate on lmChunk).
-			const uint32_t chartOffset = world.ChartOffsetFor(worldMesh, lodIdx);
+			chartOffset = world.ChartOffsetFor(worldMesh, lodIdx);
 			// The per-draw unsigned lightmap-heap delta is NOT a presence
 			// sentinel: -1 in modular arithmetic equals UINT32_MAX and
 			// is a valid offset. Publish stream presence via lmChunk.
-			uint32_t lmDelta = 0u;
 			bool lmResident = false;
 			// No chart-transform BDA means the vertex shader must not
 			// dereference xforms. Keep the lobe sentinel and dynamic GI.
@@ -1861,12 +1888,16 @@ namespace engine {
 			}
 			if (!lmResident)
 				lmChunk = UINT32_MAX;
+			} // Lightmap lookup stage
+			{
+			PushStageTimer timer(pushNs, profilePushStages);
 			smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
 				item.material, drawFlags, drawSet, lmChunk, chartOffset,
 				lmDelta,
 				// The resolved material userdata (the instance override
 				// or the base default — the lit hooks' runtime input).
 				world.ResolvedItemUserData(item));
+			} // PushDraw stage (includes userdata resolution)
 			if (dumpGates) ++s_gates.pushed;
 			// TMP-DIAG (TOURMALINE_DUMPGFX, the LOD-sibling draw-drop hunt):
 			// the pushed draw list, once per process (the camera is static
@@ -1888,6 +1919,19 @@ namespace engine {
 					worldMesh, (unsigned)item.node, lodIdx, gfxMesh, uri.c_str());
 			}
 		});
+		if (profilePushStages) {
+			const uint64_t totalNs = static_cast<uint64_t>(
+				std::chrono::duration_cast<std::chrono::nanoseconds>(
+					PushClock::now() - traversalStart).count());
+			const uint64_t stagesNs = lodNs + boundsNs + lightmapNs + pushNs;
+			// Residual includes iterator traversal, other callback logic and
+			// timer overhead; do not interpret it as pure iterator cost.
+			SMVK_PROFILE_TAG("traversalOtherUs", (totalNs - std::min(totalNs, stagesNs)) / 1000);
+			SMVK_PROFILE_TAG("lodUs", lodNs / 1000);
+			SMVK_PROFILE_TAG("boundsFrustumUs", boundsNs / 1000);
+			SMVK_PROFILE_TAG("lightmapUs", lightmapNs / 1000);
+			SMVK_PROFILE_TAG("pushDrawUs", pushNs / 1000);
+		}
 		if (dumpGates && !s_gatesDone) {
 			s_gatesDone = true;
 			std::fprintf(stderr,
