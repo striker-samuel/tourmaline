@@ -18,6 +18,7 @@
 #include <memory>
 #include <unordered_map>
 #include <utility>
+#include <span>
 #include <vector>
 
 namespace smvk
@@ -330,7 +331,7 @@ namespace smvk
 		// --------------------------------------------------------
 
 		RenderPass& SetColor(
-			const std::vector<LogicalImageViewHandle>& views,
+			std::span<const LogicalImageViewHandle> views,
 			AttachmentLoadOp loadOp =
 			AttachmentLoadOp::Load,
 			AttachmentStoreOp storeOp =
@@ -354,7 +355,17 @@ namespace smvk
 			return *this;
 		}
 
-		// MSAA variant: views are multisampled, resolveViews are the
+		// Keep initializer-list/std::vector call sites source-compatible.
+		RenderPass& SetColor(
+			const std::vector<LogicalImageViewHandle>& views,
+			AttachmentLoadOp loadOp = AttachmentLoadOp::Load,
+			AttachmentStoreOp storeOp = AttachmentStoreOp::Store,
+			ClearColor clearValue = {}) {
+			return SetColor(std::span<const LogicalImageViewHandle>(views),
+				loadOp, storeOp, clearValue);
+		}
+
+				// MSAA variant: views are multisampled, resolveViews are the
 		// single-sampled resolve destinations (same count, may be empty
 		// per-index for no-resolve). resolveViews must match views in size
 		// when provided.
