@@ -4,6 +4,18 @@ Status: **Migration in progress — NOT a completed cluster replacement.**
 Base: the existing WorldPartition, SMP8 paged pak container, RegionRegistry,
 ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
 
+## Map versus Scene (new decision)
+
+- `tour::Map` is the world-wide authored hierarchy of anchors and placed
+  local Scene asset references. `tour::scene::Scene` is a reusable local
+  hierarchy for interiors, prefabs and closed spaces, not an open world.
+- `tour::World` is the runtime state; Map and Scene authoring documents are
+  not alternate mutable runtime worlds. See `docs/map_scene_world_architecture.md`.
+- Initial code now provides `WorldMap.h` Map hierarchy compilation into
+  deterministic logical tiles, and `map_tile_codec.h` for a bounded LE tile
+  placement page. This is not yet connected to standalone/Project Build,
+  pak writing, or world instance activation.
+
 ## Architectural contract
 
 1. `WorldPartition` decides **residency**, considering gameplay/camera interests,
@@ -56,6 +68,9 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
 - [ ] Ensure the host's completion callback cannot revive a retired tile.
 
 ### Epoch 2 — cooker-produced tile and spatial records
+- [x] Add a headless authored Map placement hierarchy, deterministic
+  root-cell ownership projection, and a bounded, versioned LE placement
+  page codec with CPU tests (preliminary format; not yet shipped by cooker).
 - [ ] Partition finalized authored scene records into root-cell ownership,
   with explicit handling for objects spanning cells.
 - [ ] Build deterministic static instance BVHs **offline after authored
@@ -131,7 +146,7 @@ Configure with the repository's normal supported CMake preset. Build the
 engine, app, tools, editor and test targets. Run:
 
 ```sh
-ctest --test-dir <build-dir> --output-on-failure -R "scene_tile_provider_tests|world_partition_tests|world_entity_tests|scene_table_tests|content_registry_tests|gpu_scene|streaming_tests|asset_tests"
+ctest --test-dir <build-dir> --output-on-failure -R "scene_tile_provider_tests|world_map_tests|world_partition_tests|world_entity_tests|scene_table_tests|content_registry_tests|gpu_scene|streaming_tests|asset_tests"
 ctest --test-dir <build-dir> --output-on-failure
 ```
 
@@ -154,6 +169,7 @@ Manual end-to-end acceptance:
 
 ## What this initial PR actually changes
 
-Only Epoch 1's standalone CPU streaming seam and tests are implemented
-so far. **None of Epochs 2–7 are claimed complete.** Do not merge this
+Epoch 1's standalone CPU streaming seam and the preliminary Map/tile codec
+slice of Epoch 2 are implemented with headless tests. **Epochs 2–7 are not
+claimed complete.** Do not merge this
 as the requested finished architecture merely because the PR exists.
