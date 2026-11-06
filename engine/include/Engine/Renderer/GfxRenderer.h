@@ -848,6 +848,9 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	void DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot);
 	// DEBUG: Download and print HZB buffer contents for inspection.
 	void DumpHzb(smvk::ResourceManager& ctx, uint32_t slot);
+	// TMP-DIAG (the distant-view color-kill hunt): read the main pass's
+	// first indirect commands (the filter compute's output).
+	void DebugReadMainIndirect(smvk::ResourceManager& ctx, uint32_t slot);
 
 private:
 	// world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).

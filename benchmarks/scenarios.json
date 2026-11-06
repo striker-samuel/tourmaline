@@ -77,8 +77,8 @@
       "camera": {
         "position": [
           0.0,
-          70.0,
-          -130.0
+          60.0,
+          -110.0
         ],
         "forward": [
           0.0,
@@ -87,7 +87,7 @@
         ]
       },
       "environment": {
-        "TOURMALINE_CAM_POS": "0,70,-130",
+        "TOURMALINE_CAM_POS": "0,60,-110",
         "TOURMALINE_CAM_FWD": "0,-0.447,0.894",
         "TOURMALINE_AUTO_EXPOSURE": "0",
         "TOURMALINE_AA": "off"
@@ -109,8 +109,8 @@
       "camera": {
         "position": [
           0.0,
-          420.0,
-          -850.0
+          300.0,
+          -600.0
         ],
         "forward": [
           0.0,
@@ -119,7 +119,7 @@
         ]
       },
       "environment": {
-        "TOURMALINE_CAM_POS": "0,420,-850",
+        "TOURMALINE_CAM_POS": "0,300,-600",
         "TOURMALINE_CAM_FWD": "0,-0.443,0.897",
         "TOURMALINE_AUTO_EXPOSURE": "0",
         "TOURMALINE_AA": "off"

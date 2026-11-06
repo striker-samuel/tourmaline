@@ -14361,6 +14361,40 @@ namespace engine {
 						opaqueDepth, msaaSettings);
 				}
 				const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
+				// TMP-DIAG (the distant-view color-kill hunt, frame-gated):
+				// dump the main pass's filtered-range state + the ring's
+				// first draw constants + the live view pose, so the far
+				// (blank) and near (working) views diff at the exact seam.
+				if (m_frameCounter == 16u) {
+					size_t totalCmds = 0;
+					for (const auto& r : gfxRanges)
+						totalCmds += r.commandCount;
+					std::fprintf(stderr,
+						"[maindiag] f=%u ranges=%zu cmds=%zu batchCount=%u "
+						"viewProj[3]=(%.1f,%.1f,%.1f) eye=(%.1f,%.1f,%.1f)\n",
+						unsigned(m_frameCounter), gfxRanges.size(),
+						totalCmds,
+						m_gfxRenderer.LastBatchCount(),
+						frameViewProj[3][0], frameViewProj[3][1],
+						frameViewProj[3][2],
+						m_cameraPositioner.cameraPosition_.x,
+						m_cameraPositioner.cameraPosition_.y,
+						m_cameraPositioner.cameraPosition_.z);
+					// TMP-DIAG: read the MAIN indirect args (the filter
+					// compute's output) at the settled frame - the seed
+					// buffer (depth leg) works, so if these are zero the
+					// filter's arg writes are the dead piece.
+					m_gfxRenderer.DebugReadMainIndirect(*m_context,
+						gfxSlot);
+					for (size_t i = 0; i < gfxRanges.size() && i < 3; ++i)
+						std::fprintf(stderr,
+							"[maindiag] range[%zu] mat=%u cmds=%u "
+							"firstCmd=%u\n",
+							i, gfxRanges[i].material,
+							gfxRanges[i].commandCount,
+							gfxRanges[i].firstCommand);
+					std::fflush(stderr);
+				}
 				// The GI permutation is a per-frame uniform decision (the
 				// loaded GI state - one FS for the whole frame): the .giN
 				// twin carries the GI ambient + the F8 debug views. It takes

@@ -2452,10 +2452,61 @@ namespace engine {
 		const smvk::gfx::MaterialRange& r = ranges[rangeIdx];
 		if (r.commandCount == 0)
 			return;
+		// TMP-DIAG (the distant-view color-kill hunt, first 3 calls): read
+		// back the FIRST indirect args of this range from the GPU - if the
+		// compute-written command carries instanceCount 0 / garbage, the
+		// draw records but rasterizes nothing. One-frame-stale is fine.
+		{
+			static int s_calls = 0;
+			++s_calls;
+			// ~25 DrawRange calls per frame: calls 400-402 land around
+			// frame 16 - post-warmup, temporal loop settled.
+			if (s_calls >= 400 && s_calls <= 402 && rangeIdx == 0u) {
+				const smvk::BufferHandle buf =
+					smvk::gfx::IndirectBuffer(gfx, slot);
+				uint32_t words[10] = {};
+				const size_t at = size_t(r.firstCommand) * 20;
+				if (ctx.DownloadDataFromBuffer(buf, words, sizeof(words), at)) {
+					std::fprintf(stderr,
+						"[maindiag] indirect[%d] idx=%u inst=%u firstIdx=%u "
+						"baseVtx=%u firstInst=%u (want cmds=%u)\n",
+						s_calls, words[0], words[1], words[2], words[3],
+						words[4], r.commandCount);
+					std::fflush(stderr);
+				}
+				else {
+					std::fprintf(stderr,
+						"[maindiag] indirect readback FAILED\n");
+					std::fflush(stderr);
+				}
+			}
+		}
 		// No index bind: indirect firstIndex is absolute into the static index
 		// monoblock (offset-0 binding from BindStaticVertexFmt is correct).
 		cmd.DrawIndexedIndirect(smvk::gfx::IndirectBuffer(gfx, slot),
 			(uint64_t)r.firstCommand * 20, r.commandCount, 20);
+	}
+
+	void GfxRenderer::DebugReadMainIndirect(smvk::ResourceManager& ctx,
+		uint32_t slot) {
+		// TMP-DIAG (the distant-view color-kill hunt): read the first
+		// three main-pass indirect commands (the filter compute's output).
+		// The seed/depth leg's buffer works, so zero args here name the
+		// filter's arg writes as the dead piece.
+		const smvk::BufferHandle buf = smvk::gfx::IndirectBuffer(gfx, slot);
+		uint32_t words[15] = {};
+		if (!ctx.DownloadDataFromBuffer(buf, words, sizeof(words), 0)) {
+			std::fprintf(stderr, "[maindiag] main-indirect readback FAILED\n");
+			std::fflush(stderr);
+			return;
+		}
+		for (int i = 0; i < 3; ++i)
+			std::fprintf(stderr,
+				"[maindiag] main-indirect[%d] idx=%u inst=%u firstIdx=%u "
+				"baseVtx=%u firstInst=%u\n",
+				i, words[i*5], words[i*5+1], words[i*5+2], words[i*5+3],
+				words[i*5+4]);
+		std::fflush(stderr);
 	}
 
 	void GfxRenderer::DumpHzb(smvk::ResourceManager& ctx, uint32_t slot) {
