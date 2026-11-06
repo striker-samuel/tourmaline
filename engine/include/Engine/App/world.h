@@ -135,6 +135,8 @@ namespace tour {
 		// this handle to nodes; no raw world mesh indices escape this API.
 		[[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey,
 			std::string& error);
+		// Refuses while a World node still references the handle.
+		bool UnloadMesh(app::MeshHandle mesh);
 		// Ergonomic overload for callers that do not need an immediate
 		// out-error; details remain available through LastAssetError().
 		[[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey) {
@@ -152,6 +154,16 @@ namespace tour {
 		}
 		// Called by AssetManager for the duration of its attachment.
 		// AssetManager must outlive its loaded mesh handles.
+		// The runtime installs its asset service here. Ownership follows the
+		// World lifetime, so no app::AssetManager setup is needed in game
+		// code. The concrete type lives in the apphost; this erased owner
+		// avoids a dependency from engine back onto apphost.
+		void OwnGameAssets(std::shared_ptr<void> owner) {
+			gameAssetOwner_ = std::move(owner);
+		}
+		[[nodiscard]] bool HasAssetService() const {
+			return gameAssets_ != nullptr;
+		}
 		void SetGameAssets(app::AssetManager* assets) {
 			if (gameAssets_ && gameAssets_ != assets)
 				ClearGameMeshBindings();
@@ -1101,6 +1113,10 @@ namespace tour {
 			}
 		}
 
+		// Keep this LAST: C++ destroys fields in reverse order. The
+		// AssetManager releases its held assets while World::scene,
+		// cluster pools, and location tables are still alive.
+		std::shared_ptr<void> gameAssetOwner_;
 	};
 
 } // namespace tour
