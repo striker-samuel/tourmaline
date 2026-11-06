@@ -90,6 +90,10 @@ public:
 	[[nodiscard]] size_t Used() const noexcept {
 		return offset_.load(std::memory_order_relaxed);
 	}
+	// Lifetime counters survive ResetAll().
+	[[nodiscard]] size_t PeakUsed() const noexcept { return peakUsed_.load(std::memory_order_relaxed); }
+	[[nodiscard]] uint64_t AllocationCount() const noexcept { return allocationCount_.load(std::memory_order_relaxed); }
+	[[nodiscard]] uint64_t TotalRequested() const noexcept { return totalRequested_.load(std::memory_order_relaxed); }
 	[[nodiscard]] LinearStats GetStats() const noexcept {
 		return LinearStats{reserved_, Committed(), Used()};
 	}
@@ -114,6 +118,9 @@ private:
 	uint8_t* base_ = nullptr;
 	std::atomic<size_t> offset_{0};
 	std::atomic<size_t> committed_{0};
+	std::atomic<size_t> peakUsed_{0};
+	std::atomic<uint64_t> allocationCount_{0};
+	std::atomic<uint64_t> totalRequested_{0};
 	std::mutex commitMutex_;
 	bool reserveFailed_ = false;
 };
