@@ -135,6 +135,15 @@ namespace tour {
 		// this handle to nodes; no raw world mesh indices escape this API.
 		[[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey,
 			std::string& error);
+		// Ergonomic overload for callers that do not need an immediate
+		// out-error; details remain available through LastAssetError().
+		[[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey) {
+			lastGameAssetError_.clear();
+			return LoadMesh(catalogKey, lastGameAssetError_);
+		}
+		[[nodiscard]] const std::string& LastAssetError() const {
+			return lastGameAssetError_;
+		}
 		[[nodiscard]] NodeHandle AddNode(
 			const glm::mat4& localFrame = glm::mat4(1.0f));
 		bool RemoveNode(NodeHandle node);
@@ -173,21 +182,21 @@ namespace tour {
 				: owner_(owner), handle_(handle) {}
 			// Requires a PREVIOUSLY loaded app::MeshHandle. One mesh per
 			// node: replacement is atomic on invalid/unmapped handles.
-			[[nodiscard]] bool SetMesh(app::MeshHandle mesh) const;
-			[[nodiscard]] bool RemoveMesh() const;
-			[[nodiscard]] bool SetLocalTransform(const glm::mat4& frame) const {
+			bool SetMesh(app::MeshHandle mesh) const;
+			bool RemoveMesh() const;
+			bool SetLocalTransform(const glm::mat4& frame) const {
 				return owner_.IsGameNode(handle_)
 					&& tour::scene::SetLocalTransform(owner_.scene, handle_, frame);
 			}
-			[[nodiscard]] bool SetPhysicsBody(const tour::scene::ScenePhysicsBody& body) const {
+			bool SetPhysicsBody(const tour::scene::ScenePhysicsBody& body) const {
 				return owner_.IsGameNode(handle_)
 					&& tour::scene::SetPhysicsBody(owner_.scene, NodeHandleSlot(handle_), body);
 			}
-			[[nodiscard]] bool SetAudioRoom(const tour::scene::SceneAudioRoom& room) const {
+			bool SetAudioRoom(const tour::scene::SceneAudioRoom& room) const {
 				return owner_.IsGameNode(handle_)
 					&& tour::scene::SetAudioRoom(owner_.scene, NodeHandleSlot(handle_), room);
 			}
-			[[nodiscard]] bool SetTriggerVolume(const tour::scene::SceneTriggerVolume& trigger) const {
+			bool SetTriggerVolume(const tour::scene::SceneTriggerVolume& trigger) const {
 				return owner_.IsGameNode(handle_)
 					&& tour::scene::SetTriggerVolume(owner_.scene, NodeHandleSlot(handle_), trigger);
 			}
@@ -209,6 +218,7 @@ namespace tour {
 		std::unordered_map<NodeId, uint32_t> gameSlotGeneration_;
 		std::unordered_map<NodeHandle, uint64_t> gameMeshBindings_;
 		app::AssetManager* gameAssets_ = nullptr;
+		std::string lastGameAssetError_;
 
 		// Merged runtime scene graph. Imported Cluster scenes are folded into
 		// this via ResolveAndFixup_clusters().
