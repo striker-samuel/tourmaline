@@ -187,6 +187,25 @@ struct RuntimeConfig {
 // Never mutated after this function returns — callers hold a const ref.
 const RuntimeConfig& Runtime();
 
+// ---------------------------------------------------------------------------
+// CLI-ARG overrides (the App's --mem-* flags)
+// ---------------------------------------------------------------------------
+// Hosts apply these AFTER arg parsing and BEFORE tour::mem::InitMemory()
+// / the first Runtime() call — the config is a function-local static that
+// BAKES on first use, so a late apply is silently ignored (RunPakApp's
+// apply site sits directly above its InitMemory call for exactly that
+// reason). Fields are in MiB, the same units as the TOURMALINE_MEM_* env
+// spellings; 0 = the flag was not given, the env/compile-time default
+// stands. Precedence: CLI > env > compile-time default (an explicit
+// launch flag beats the ambient environment). Single-threaded by
+// contract: written once on the main thread before any allocator exists.
+struct MemCliOverrides {
+	size_t processReserveMb = 0;
+	size_t frameReserveMb = 0;
+	size_t transientReserveMb = 0;
+};
+void ApplyMemCliOverrides(const MemCliOverrides& o);
+
 } // namespace tour::mem::config
 
 // COMPAT (the boundary audit): the allocator CONFIG block is engine-
@@ -220,4 +239,6 @@ namespace smvk::mem::config {
 	using ::tour::mem::config::kDefaultAlign;
 	using ::tour::mem::config::RuntimeConfig;
 	using ::tour::mem::config::Runtime;
+	using ::tour::mem::config::MemCliOverrides;
+	using ::tour::mem::config::ApplyMemCliOverrides;
 }

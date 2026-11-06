@@ -17,6 +17,12 @@ namespace tour::mem {
 
 namespace {
 
+// The CLI-override slot (alloc_config.h's MemCliOverrides): written once
+// by the host's arg parsing, BEFORE the first Runtime() call (RunPakApp
+// applies it directly above InitMemory); read exactly once by
+// ParseRuntimeConfig below. Single-threaded by contract - no locking.
+config::MemCliOverrides g_memCliOverrides;
+
 // Program-entry size override: `<name>` in TOURMALINE_MEM_*, a positive
 // integer in `unit` bytes (MB/KB/slots). Bad values warn and keep the
 // compile-time default — same fallback policy as RunConfig pins.
@@ -105,10 +111,37 @@ config::RuntimeConfig ParseRuntimeConfig() {
 			"[Memory] FLUSH threshold above BULK_RING; clamping flush down\n");
 		c.uploadFlushThreshold = c.bulkRingCapacity;
 	}
+	// CLI overrides (the App's --mem-* flags; alloc_config.h's contract):
+	// applied AFTER the env pass + its clamps so an explicit launch flag
+	// beats the ambient environment. The reserves carry no cross-field
+	// invariants beyond positivity - the same bad-value policy the host's
+	// arg parse already enforces (1 MiB..1 TiB).
+	if (g_memCliOverrides.processReserveMb) {
+		c.processReserve = g_memCliOverrides.processReserveMb * kMiB;
+		std::fprintf(stderr,
+			"[Memory] cli --mem-process-mb=%zu -> %zu bytes\n",
+			g_memCliOverrides.processReserveMb, c.processReserve);
+	}
+	if (g_memCliOverrides.frameReserveMb) {
+		c.frameReserve = g_memCliOverrides.frameReserveMb * kMiB;
+		std::fprintf(stderr,
+			"[Memory] cli --mem-frame-mb=%zu -> %zu bytes\n",
+			g_memCliOverrides.frameReserveMb, c.frameReserve);
+	}
+	if (g_memCliOverrides.transientReserveMb) {
+		c.transientReserve = g_memCliOverrides.transientReserveMb * kMiB;
+		std::fprintf(stderr,
+			"[Memory] cli --mem-transient-mb=%zu -> %zu bytes\n",
+			g_memCliOverrides.transientReserveMb, c.transientReserve);
+	}
 	return c;
 }
 
 } // namespace
+
+void config::ApplyMemCliOverrides(const config::MemCliOverrides& o) {
+	g_memCliOverrides = o;
+}
 
 const config::RuntimeConfig& config::Runtime() {
 	// Function-local static: parsed exactly once, before the first

@@ -97,6 +97,13 @@ void TestConfig() {
 		&& rt.staticVertexHeap > 0 && rt.staticIndexHeap > 0
 		&& rt.targetHeapBlock > 0,
 		"memory.config.runtime-heaps-nonzero");
+	// The CLI-override seam (main's ApplyMemCliOverrides, applied before
+	// this function's first Runtime() call): the overridden field wins,
+	// the unset (0) fields keep the env/compile-time path.
+	Check(rt.frameReserve == 512ull * kMiB,
+		"memory.config.cli-override-wins");
+	Check(rt.transientReserve > 0,
+		"memory.config.cli-unset-keeps-default");
 }
 
 void TestBump() {
@@ -582,6 +589,13 @@ void TestStlAdapter() {
 } // namespace
 
 int main() {
+	// The CLI-override seam (the App's --mem-* flags) must be exercised
+	// BEFORE the first Runtime() call - the config is a function-local
+	// static that bakes on first use, and TestConfig below makes that
+	// first call. Override ONE field (frame), leave the others at 0: the
+	// pin then proves an explicit override wins while unset fields keep
+	// the env/compile-time path.
+	smvk::mem::config::ApplyMemCliOverrides({ 0, 512, 0 });
 	TestConfig();
 	TestBump();
 	TestCreate();

@@ -756,7 +756,9 @@ int main() {
 			{ "GI/regular_volume.h", 6, 0 },
 			{ "GI/sg.h", 21, 0 },
 			{ "GI/triangle_bvh.h", 2, 0 },
-			{ "Memory/alloc_config.h", 27, 0 },
+			{ "Memory/alloc_config.h", 29, 0 }, // +2 (#220-era): MemCliOverrides
+				// + ApplyMemCliOverrides — the App's --mem-* CLI-override
+				// seam (deliberate compat surface, documented contract).
 			{ "Memory/linear_allocator.h", 2, 0 },
 			{ "Memory/linear_vector.h", 5, 0 },
 			{ "Memory/memory.h", 10, 0 },

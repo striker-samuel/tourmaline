@@ -120,6 +120,14 @@ namespace app {
 		// failure used to exit 0, so launch scripts read success on a
 		// dead viewer).
 		int exitCode = EXIT_SUCCESS;
+		// CLI memory-budget overrides (the --mem-* flags): applied BEFORE
+		// InitMemory - the first allocator construction bakes
+		// tour::mem::config::Runtime() (a function-local static), so a late
+		// apply would be silently ignored (alloc_config.h's contract). Unset
+		// flags are 0: the TOURMALINE_MEM_* env / compile-time defaults stand.
+		tour::mem::config::ApplyMemCliOverrides(
+			{ cfg.cli.memProcessMb, cfg.cli.memFrameMb,
+				cfg.cli.memTransientMb });
 		// Reserve linear-allocator virtual address space FIRST, before worker
 		// threads, Vulkan, or asset loading (see Engine/Memory/memory.h). An
 		// unsatisfiable reservation fails fast here with the OOM diagnostic.

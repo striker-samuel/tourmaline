@@ -29,6 +29,7 @@ void PrintUsage(const char* prog) {
 		<< " --project <path.tapp> (the generated appmanifest launch)\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
 		<< "  [--bench <frames>] [--bench_move <m/s>] [--bench_turn <deg/s>] [--present <fifo|mailbox|immediate>] [--vsync on|off] [--vrr] [--max-fps N] [--disable_control] [--no-dlss]\n"
+		<< "  [--mem-frame-mb N] [--mem-process-mb N] [--mem-transient-mb N]\n"
 		<< "  [--capture] [--use_optick] [--use_optick_gpu] [--no-vfs]\n"
 		<< "  --pak runs cooked paks — REQUIRED (or --project), there is\n"
 		<< "  no default (no entry-point pak = the App refuses to run).\n"
@@ -50,6 +51,10 @@ void PrintUsage(const char* prog) {
 		<< "  --bench_turn yaws at a constant rate (default 30 deg/s, negative = left) past warmup; stacks with --bench_move\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
 		<< "  --bench also forces vsync off (uncapped immediate present; --present wins)\n"
+		<< "  --mem-frame-mb N overrides the frame scratch reserve (default 256 MiB) - big\n"
+		<< "    scene cooks/loads can need more (the 100x100 grid needs ~1 GiB); beats the\n"
+		<< "    TOURMALINE_MEM_FRAME_MB env pin, which beats the default. Same shape for\n"
+		<< "    --mem-process-mb (default 4096) and --mem-transient-mb (default 1024)\n"
 		<< "  --max-fps N caps interactive CPU frames to 1..1000 FPS (overrides --vrr; ignored by --bench)\n"
 		<< "  --vrr enables a 2 FPS margin below the detected refresh rate (e.g. 142 at 144 Hz)\n"
 		<< "  --vsync on|off selects FIFO (tear-free) or immediate (may tear)\n"
@@ -258,6 +263,40 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 				return RejectNumeric("--max-fps", v,
 					"an FPS limit, 1..1000", exitCode);
 			opts.maxFps = int(n);
+		}
+		// --mem-frame-mb / --mem-process-mb / --mem-transient-mb: the CLI
+		// memory-budget overrides (alloc_config.h's MemCliOverrides). Both
+		// spellings (--mem-frame-mb N and --mem-frame-mb=N); 1 MiB..1 TiB.
+		// Unset (0) keeps the TOURMALINE_MEM_* env / compile-time default.
+		else if (std::strcmp(a, "--mem-frame-mb") == 0
+			|| std::strncmp(a, "--mem-frame-mb=", 15) == 0) {
+			const char* v = std::strcmp(a, "--mem-frame-mb") == 0
+				? (i + 1 < argc ? argv[++i] : nullptr) : a + 15;
+			long long n = 0;
+			if (!v || !ParseInt(v, 1, 1 << 20, n))
+				return RejectNumeric("--mem-frame-mb", v,
+					"a frame reserve in MiB, 1..1048576", exitCode);
+			opts.memFrameMb = size_t(n);
+		}
+		else if (std::strcmp(a, "--mem-process-mb") == 0
+			|| std::strncmp(a, "--mem-process-mb=", 17) == 0) {
+			const char* v = std::strcmp(a, "--mem-process-mb") == 0
+				? (i + 1 < argc ? argv[++i] : nullptr) : a + 17;
+			long long n = 0;
+			if (!v || !ParseInt(v, 1, 1 << 20, n))
+				return RejectNumeric("--mem-process-mb", v,
+					"a process reserve in MiB, 1..1048576", exitCode);
+			opts.memProcessMb = size_t(n);
+		}
+		else if (std::strcmp(a, "--mem-transient-mb") == 0
+			|| std::strncmp(a, "--mem-transient-mb=", 19) == 0) {
+			const char* v = std::strcmp(a, "--mem-transient-mb") == 0
+				? (i + 1 < argc ? argv[++i] : nullptr) : a + 19;
+			long long n = 0;
+			if (!v || !ParseInt(v, 1, 1 << 20, n))
+				return RejectNumeric("--mem-transient-mb", v,
+					"a transient reserve in MiB, 1..1048576", exitCode);
+			opts.memTransientMb = size_t(n);
 		}
 		else if (std::strcmp(a, "--vrr") == 0) {
 			opts.vrr = true;

@@ -79,6 +79,13 @@ struct ViewerOptions {
 	int benchFrames = 0;
 	float benchMoveSpeed = 0.0f;
 	float benchTurnRate = 0.0f; // --bench_turn <deg/s>: yaw during measured frames
+	// --mem-* CLI memory-budget overrides (alloc_config.h's MemCliOverrides;
+	// RunPakApp applies them BEFORE InitMemory - the config bakes on first
+	// use). 0 = flag not given: the TOURMALINE_MEM_* env / compile-time
+	// default stands (frame 256 MiB, process 4 GiB, transient 1 GiB).
+	size_t memFrameMb = 0;
+	size_t memProcessMb = 0;
+	size_t memTransientMb = 0;
 	std::string presentMode; // empty = default; fifo|mailbox|immediate
 	bool presentSet = false; // --present/--vsync explicit (wins over --bench)
 	bool vrr = false; // VRR-friendly automatic FPS cap below detected refresh
