@@ -145,7 +145,8 @@ namespace tour {
 			const Scene& source, uint64_t sceneAssetId,
 			const glm::dmat4& placement,
 			std::vector<tour::asset::AssetLease> assets,
-			std::string& err);
+			std::string& err,
+			const tour::scene::WorldSceneResourceMap* bindings = nullptr);
 		bool RetireSceneHierarchy(uint64_t instanceId);
 
 		// Registration of a region root is separate from node lifetime;
