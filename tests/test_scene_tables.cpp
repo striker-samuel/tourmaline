@@ -73,8 +73,12 @@ int main() {
         Check(SetLocalTransform(s, MakeNodeHandle(s, child), c), "double child");
         Check(SetLocalTransform(s, MakeNodeHandle(s, leaf), l), "double leaf");
         Check(recalculateGlobalTransforms(s), "double recalc");
-        Check(glm::length(glm::dvec3(GlobalTransformDouble(s, leaf)[3])
-            - glm::dvec3((r * c * l)[3])) < 0.0001, "double signed hierarchy");
+        const glm::mat4 floatExpected = glm::mat4(r) * glm::mat4(c) * glm::mat4(l);
+        Check(glm::length(glm::vec3(s.globalTransform[leaf][3])
+            - glm::vec3(floatExpected[3])) < 0.0001f,
+            "CPU hierarchy composes in float32");
+        Check(GlobalTransformDouble(s, leaf) == glm::dmat4(s.globalTransform[leaf]),
+            "double global mirror reflects float32 CPU result");
         glm::dmat4 bad(1.0);
         bad[3].x = std::numeric_limits<double>::quiet_NaN();
         Check(!SetLocalTransform(s, MakeNodeHandle(s, leaf), bad), "double reject NaN");
@@ -111,10 +115,11 @@ int main() {
               && loaded.localTransformDouble[0][3].x == a[3].x
               && loaded.localTransformDouble[1][3].x == b[3].x,
               "scene v1: precise locals roundtrip");
+        const glm::dmat4 floatComposed = glm::dmat4(glm::mat4(a) * glm::mat4(b));
         Check(loaded.globalTransformDouble.size() == 2
-              && loaded.globalTransformDouble[1][3].x == (a * b)[3].x
-              && loaded.globalTransformDouble[1][3].y == (a * b)[3].y,
-              "scene v1: precise global hierarchy roundtrip");
+              && loaded.globalTransformDouble[1][3].x == floatComposed[3].x
+              && loaded.globalTransformDouble[1][3].y == floatComposed[3].y,
+              "scene v1: float-composed global hierarchy roundtrip");
         std::remove(path);
     }
 
@@ -185,18 +190,19 @@ int main() {
         s.localTransformFloatShadow.resize(1);
         MarkAllRootsChanged(s);
         Check(recalculateGlobalTransforms(s), "double repair: recalculate");
-        Check(GlobalTransformDouble(s, root)[3].x == precise[3].x,
-              "double repair: root precision retained");
-        Check(GlobalTransformDouble(s, child)[3].x == precise[3].x
+        const double roundedX = double(float(precise[3].x));
+        Check(GlobalTransformDouble(s, root)[3].x == roundedX,
+              "float CPU root intentionally loses fractional precision");
+        Check(GlobalTransformDouble(s, child)[3].x == roundedX
               && GlobalTransformDouble(s, child)[3].y == 7.0,
-              "double repair: legacy child initialized");
+              "float CPU child inherits rounded parent");
         glm::dmat4 next = precise;
         next[3].x += 0.25;
         Check(SetLocalTransform(s, MakeNodeHandle(s, root), next),
               "double repair: setter after resized arrays");
         Check(recalculateGlobalTransforms(s), "double repair: updated");
-        Check(GlobalTransformDouble(s, child)[3].x == next[3].x,
-              "double repair: descendant keeps fractional delta");
+        Check(GlobalTransformDouble(s, child)[3].x == roundedX,
+              "float CPU descendant loses sub-ULP delta");
     }
 
     {
@@ -581,6 +587,61 @@ int main() {
 			if (row.node == (uint32_t)e)
 				staleRow = true;
 		Check(!staleRow, "rebuild compacts rows of retired slots");
+	}
+
+	{
+		// The value-component lane accepts default braced values without
+		// a catalog key. The concrete payload type is supplied by the
+		// mutator signature (a generic template cannot deduce from {}).
+		Scene s = MakeScene(1);
+		Check(tour::scene::SetPhysicsBody(s, 0, {}),
+			"value component: default-braced physics body");
+		Check(tour::scene::SetAudioRoom(s, 0, {}),
+			"value component: default-braced audio room");
+		Check(tour::scene::SetTriggerVolume(s, 0, {}),
+			"value component: default-braced trigger volume");
+		const tour::scene::PhysicsBodyRow* physics = tour::scene::FindPhysicsBody(s, 0);
+		const tour::scene::AudioRoomRow* room = tour::scene::FindAudioRoom(s, 0);
+		const tour::scene::TriggerVolumeRow* trigger = tour::scene::FindTriggerVolume(s, 0);
+		Check(physics && physics->body.mass == 1.0f,
+			"value component: physics defaults preserved");
+		Check(room && room->room.enabled,
+			"value component: audio room defaults preserved");
+		Check(trigger && trigger->trigger.enabled,
+			"value component: trigger defaults preserved");
+	}
+
+	{
+		// Catalog-first node binding invariant: the scene holds exactly
+		// ONE mesh association per node; rebinding the mesh replaces
+		// its row, retaining the node's generation and transform.
+		Scene s = MakeScene(2);
+		const NodeHandle node = MakeNodeHandle(s, 0);
+		const glm::mat4 frame = glm::translate(glm::mat4(1.0f),
+			glm::vec3(7.0f, 8.0f, 9.0f));
+		Check(SetLocalTransform(s, node, frame),
+			"mesh-slot: set node-local transform");
+		Check(SetMesh(s, 0, 12), "mesh-slot: initial assignment");
+		Check(SetMesh(s, 0, 23), "mesh-slot: replacement succeeds");
+		uint32_t associations = 0;
+		for (const MeshRow& row : s.tables.meshes)
+			if (row.node == 0) {
+				++associations;
+				Check(row.mesh == 23,
+					"mesh-slot: replacement stores only new mesh");
+			}
+		Check(associations == 1,
+			"mesh-slot: rebind cannot append a second mesh");
+		Check(NodeHandleValid(s, node)
+			&& s.localTransform[0][3].x == 7.0f
+			&& s.localTransform[0][3].y == 8.0f
+			&& s.localTransform[0][3].z == 9.0f,
+			"mesh-slot: rebind preserves node identity and transform");
+		Check(FindMesh(s, 1) == nullptr,
+			"mesh-slot: another node remains meshless");
+		Check(RemoveMesh(s, 0) && FindMesh(s, 0) == nullptr
+			&& NodeHandleValid(s, node),
+			"mesh-slot: detach preserves the node");
 	}
 
 	{
