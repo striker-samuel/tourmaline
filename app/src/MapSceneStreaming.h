@@ -51,8 +51,9 @@ public:
                  engine::worldpartition::WorldId worldId) {
         error_.clear();
         if (!worldId) { error_ = "Map identity must be nonzero"; return false; }
-        if (provider_.ResidentCount() || provider_.PendingCount()
-            || !active_.empty()) {
+        if (provider_.ActiveWorld() || provider_.ResidentCount()
+            || provider_.PendingCount() || !active_.empty()
+            || !persistent_.empty()) {
             error_ = "retire the active Map before binding a replacement";
             return false;
         }
@@ -68,7 +69,7 @@ public:
         }
         std::vector<SceneHandle> created;
         if (!InstantiateRecords(global, created)) return false;
-        if (!provider_.SetManifest(std::move(descriptors))) {
+        if (!provider_.SetManifest(worldId, std::move(descriptors))) {
             error_ = "failed to install MapTile manifest";
             Rollback(created);
             return false;
