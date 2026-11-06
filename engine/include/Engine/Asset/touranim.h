@@ -158,6 +158,16 @@ glm::vec4 SampleTrack(const Track& track, double t);
 // then this rides the existing global-transform walk (see scene.h).
 void BuildSkinPalette(const scene::Scene& scene, const Skeleton& skeleton,
 	std::vector<glm::mat4>& palette);
+template<typename Allocator>
+void BuildSkinPalette(const scene::Scene& scene, const Skeleton& skeleton,
+	std::vector<glm::mat4, Allocator>& palette) {
+	palette.assign(skeleton.Count(), glm::mat4(1.0f));
+	for (uint32_t i = 0; i < skeleton.Count(); ++i) {
+		const uint32_t node = skeleton.joints[i];
+		if (node < scene.globalTransform.size())
+			palette[i] = scene.globalTransform[node] * skeleton.inverseBind[i];
+	}
+}
 
 } // namespace tour::asset
 
