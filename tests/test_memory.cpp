@@ -596,6 +596,14 @@ void TestLifetimeCounters() {
 		&& arena.TotalRequestedBytes() == 96
 		&& arena.PeakUsedBytes() == peak,
 		"memory.telemetry.arena-lifetime-totals");
+	// The large FormatString path must write directly to arena memory,
+	// rather than routing through an owned temporary string.
+	const std::string longValue(1400, 'x');
+	const auto formatted = arena.FormatString("%s", longValue.c_str());
+	Check(formatted.size() == longValue.size()
+		&& formatted[0] == 'x'
+		&& formatted[formatted.size() - 1] == 'x',
+		"memory.arena.large-format-correct");
 }
 
 void TestFlightArenas() {
