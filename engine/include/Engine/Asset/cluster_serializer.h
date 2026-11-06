@@ -173,7 +173,8 @@ using ExternalTextureResolver =
 		uint32_t sceneIndex = 0,
 		TextureStreamer* streamer = nullptr,
 		std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
-		const ExternalTextureResolver* externalTexture = nullptr);
+		const ExternalTextureResolver* externalTexture = nullptr,
+		size_t sceneNodeBudget = 0);
 
 	// ---- the GPU-less scene-blob reader (the structure-only lane) ----
 	// The pak-id remap tables for one scene-blob parse (null = a

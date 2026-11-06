@@ -103,6 +103,14 @@ namespace tour {
 	// material indices stored in the Scene to the owning Cluster + handle.
 	struct World {
 		explicit World() {};
+		// Must be set before loading/registering clusters or first resolve.
+		// Budget includes the synthetic world root and any runtime nodes.
+		void ConfigureSceneNodeBudget(size_t slots) {
+			if (!clusters.empty() || !scene.hierarchy.empty())
+				tour::scene::CrashNodeBudget("late World budget", scene.hierarchy.size(), slots);
+			scene.ReserveNodeSlots(slots);
+		}
+
 
 		// Merged runtime scene graph. Imported Cluster scenes are folded into
 		// this via ResolveAndFixup_clusters().

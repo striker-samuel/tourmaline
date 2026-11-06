@@ -62,7 +62,8 @@ using namespace ::smvk;
 	{
 		std::string err;
 		auto cluster = DeserializeCluster(ctx, reader, &err, sceneIndex,
-			streamer, std::move(imagePin), externalTexture);
+			streamer, std::move(imagePin), externalTexture,
+			scene.nodeSlotBudget);
 		if (!cluster)
 			throw std::runtime_error("LoadClusterFromPak failed: " + err);
 		Cluster& ref = *cluster;
@@ -1079,6 +1080,17 @@ using namespace ::smvk;
 		// different Scene instances are not interchangeable (true for the
 		// single-cluster bulk copy too - it swaps the Scene instance).
 		regions = RegionRegistry{};
+		// Fail BEFORE rebuilding if aggregate live nodes exceed the user
+		// budget. The synthetic world root consumes one slot too.
+		if (scene.nodeSlotBudget) {
+			size_t needed = 1;
+			for (const auto& c : clusters) {
+				needed += tour::scene::LiveNodeCount(c->scene);
+				if (needed > scene.nodeSlotBudget)
+					tour::scene::CrashNodeBudget("World resolve", needed,
+						scene.nodeSlotBudget);
+			}
+		}
 		// Single-cluster resolves retain source slot identity. A bulk copy
 		// replaces the per-node addNode allocation/copy/remap passes.
 		// We cannot move Cluster::scene: it is the durable owner used by
@@ -1098,9 +1110,19 @@ using namespace ::smvk;
 		// node ids does not). FIX DIRECTION: count CONTENT clusters only
 		// (exclude isDynamic) and fold dynamic clusters by APPENDING
 		// after the identity-copied primary, so primary ids never move.
+		const size_t savedNodeSlotBudget = scene.nodeSlotBudget;
 		const bool singleCluster = clusters.size() == 1;
-		if (singleCluster)
+		if (singleCluster) {
 			scene = clusters.front()->scene;
+			// The bulk copy carries the CLUSTER scene's budget (unset for
+			// cooked content); re-apply the world's user budget so the
+			// overflow gate + the dynamic-spawn headroom survive the
+			// resolve (ResetForResolve's job on the legacy path).
+			if (savedNodeSlotBudget)
+				scene.ReserveNodeSlots(savedNodeSlotBudget);
+		}
+		else if (scene.nodeSlotBudget)
+			scene.ResetForResolve();
 		else
 			scene = Scene{};
 		meshLocations.clear();

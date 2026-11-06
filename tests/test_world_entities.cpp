@@ -16,6 +16,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+#if defined(__unix__) || defined(__APPLE__)
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
@@ -473,6 +478,54 @@ void TestSingleClusterBulkResolve() {
 	Check(w.scene.hierarchy.size() == sourceSlots + 1
 		&& w.lightLocations.size() == 1,
 		"single.bulk.repeat-resolve");
+// Explicit scene-node budgets preallocate all node slot arrays and enforce a
+// hard cap, rather than permitting per-node vector growth during assembly.
+void TestSceneNodeBudget() {
+    using namespace smvk;
+    Scene slots;
+    slots.ReserveNodeSlots(3);
+    Check(slots.hierarchy.capacity() >= 3
+        && slots.localTransform.capacity() >= 3
+        && slots.localTransformDouble.capacity() >= 3
+        && slots.nodeGeneration.capacity() >= 3,
+        "budget.reserved-before-first-node");
+    const auto* initial = slots.hierarchy.data();
+    addNode(slots, -1, 0, false);
+    addNode(slots, -1, 0, false);
+    addNode(slots, -1, 0, false);
+    Check(slots.hierarchy.size() == 3 && slots.hierarchy.data() == initial,
+        "budget.exact-capacity-no-realloc");
+
+    World w;
+    w.ConfigureSceneNodeBudget(4); // 3 cluster nodes + synthetic root
+    auto c = std::make_unique<Cluster>(nullptr);
+    for (int i = 0; i < 3; ++i)
+        addNode(c->scene, -1, 0, false);
+    w.RegisterCluster(std::move(c));
+    w.ResolveAndFixup_clusters();
+    Check(w.scene.hierarchy.size() == 4, "budget.world-exact-capacity");
+    const auto* mergedStorage = w.scene.hierarchy.data();
+    w.ResolveAndFixup_clusters();
+    Check(w.scene.hierarchy.size() == 4
+        && w.scene.hierarchy.data() == mergedStorage,
+        "budget.resolve-reuses-node-storage");
+
+#if defined(__unix__) || defined(__APPLE__)
+    // Death test: a budget overrun is SIGABRT (never exception, fallback,
+    // invisible growth, or silent clamp).
+    const pid_t pid = fork();
+    if (pid == 0) {
+        Scene overflow;
+        overflow.ReserveNodeSlots(1);
+        addNode(overflow, -1, 0, false);
+        addNode(overflow, -1, 0, false); // must abort
+        _exit(0);
+    }
+    int status = 0;
+    Check(pid > 0 && waitpid(pid, &status, 0) == pid
+        && WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT,
+        "budget.overflow-aborts");
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1237,6 +1290,7 @@ void TestLightmapChartRevisionAcrossWorlds() {
 
 int main() {
 	TestSingleClusterBulkResolve();
+	TestSceneNodeBudget();
 	TestUnloadAndDynamicCluster();
 	TestDecalEntities();
 	TestAudioSourceEntities();

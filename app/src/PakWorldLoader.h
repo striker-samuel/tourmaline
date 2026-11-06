@@ -13,6 +13,7 @@
 
 #include <Engine/Memory/memory.h> // mem::LinearPtr
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -44,7 +45,8 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(
 	smvk::ResourceManager& ctx,
 	smvk::OverlayVfs& contentVfs,
 	tour::TextureStreamer* sceneStreamer,
-	app::ProjectRuntime& session);
+	app::ProjectRuntime& session,
+	size_t nodeBudget);
 
 // The --project + multi-pak launch (the session flows): EVERY listed
 // pak preloaded + mounted (manifest order) BEFORE the cluster load —
@@ -64,7 +66,8 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(
 	smvk::ResourceManager& ctx,
 	smvk::OverlayVfs& contentVfs,
 	tour::TextureStreamer* sceneStreamer,
-	app::ProjectRuntime* session);
+	app::ProjectRuntime* session,
+	size_t nodeBudget);
 
 // STATIC-FLAG APPLICATION (the loader's decision seam — public for
 // PakHostTests, which drives it on hand-built value worlds). Cooked
