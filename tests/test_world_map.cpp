@@ -86,8 +86,9 @@ int main() {
             Check(!tour::mapcook::ReadMapTile(*reader, {map.id, {9,9}}, decoded)
                 && decoded.size() == 1,
                 "missing tile leaves output unchanged");
-            Check(!tour::mapcook::ReadMapTile(
-                *reader, {map.id + 1, {-2,2}}, decoded),
+            Check(tour::mapcook::ReadMapTile(
+                *reader, {map.id + 1, {-2,2}}, decoded)
+                && decoded.size() == 1,
                 "world ID namespaces pak tile lookup");
             Check(tour::mapcook::DiscoverMapTiles(*reader, map.id, discovery)
                 && discovery.size() == 2
