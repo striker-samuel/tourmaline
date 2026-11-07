@@ -259,8 +259,9 @@ struct alignas(16) Draw {
     // Color-only by v1 contract: the depth/shadow/seed legs copy the
     // word for ring consistency but never read it (no coverage hooks).
     uint32_t userData = 0;
-    // misc3.y/z/w: reserved (stride padding to the 16-byte multiple).
-    uint32_t userDataPad[3] = {};
+    // misc3.y: per-instance direct-light receiving channels.
+    uint32_t lightLayerMask = 0xffffffffu;
+    uint32_t userDataPad[2] = {};
 };
 static_assert(sizeof(Draw) == 112);
 
@@ -696,6 +697,7 @@ struct DrawRequest {
     // World::ResolvedItemUserData). 0 = none (the StandardLit no-op
     // family ignores it entirely).
     uint32_t userData = 0;
+    uint32_t lightLayerMask = 0xffffffffu;
 };
 
 struct Cluster {
@@ -1464,7 +1466,8 @@ void PushDraw(State& s,
               // Trailing + defaulted so existing callers (tests, tools) stay
               // source-compatible; hosts that set it resolve per draw from the
               // World's material runtime state.
-              uint32_t userData = 0);
+              uint32_t userData = 0,
+              uint32_t lightLayerMask = 0xffffffffu);
 // Pure-CPU cluster test (meshoptimizer perspective cone + sphere vs planes).
 // Exported for unit tests; eye must be the camera world position.
 // The normal-cone (backface) and sphere-vs-frustum parts always run. The
