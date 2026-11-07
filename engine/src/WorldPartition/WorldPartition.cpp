@@ -5,8 +5,14 @@
 #include <unordered_set>
 
 #include <Engine/WorldPartition/WorldPartition.h>
+#include <Engine/WorldPartition/StreamBudgetPool.h>
 
 namespace engine::worldpartition {
+
+WorldPartition::WorldPartition() : budgets_(std::make_unique<StreamBudgetPool>()) {}
+WorldPartition::~WorldPartition() = default;
+StreamBudgetPool& WorldPartition::Budgets() { return *budgets_; }
+const StreamBudgetPool& WorldPartition::Budgets() const { return *budgets_; }
 
 void WorldPartition::AddProvider(IWorldStreamProvider* provider) {
     // Borrowed providers are registered at most once, including Release
@@ -15,6 +21,7 @@ void WorldPartition::AddProvider(IWorldStreamProvider* provider) {
         return;
     if (std::find(providers_.begin(), providers_.end(), provider) != providers_.end())
         return;
+    provider->SetBudgetPool(budgets_.get());
     providers_.push_back(provider);
 }
 

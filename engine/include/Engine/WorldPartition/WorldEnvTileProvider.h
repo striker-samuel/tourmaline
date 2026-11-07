@@ -16,12 +16,14 @@
 #include <Engine/WorldPartition/WorldEnvTiles.h>
 #include <Engine/WorldPartition/WorldPartition.h>
 #include <Engine/WorldPartition/StreamTicketLedger.h>
+#include <Engine/WorldPartition/StreamBudgetPool.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <map>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -32,6 +34,15 @@ public:
     using RequestCallback = std::function<void(WorldSubcellKey, uint64_t ticket)>;
 
     const char* ProviderName() const override { return "WorldEnvTiles"; }
+
+    void SetBudgetPool(StreamBudgetPool* pool) override {
+        if (budgets_ == pool) return;
+        ReleaseAllBudgets();
+        budgets_ = pool;
+    }
+    // Can be overridden with actual cooked page upper bounds by the host.
+    using CostEstimator = std::function<std::pair<uint64_t,uint64_t>(WorldSubcellKey)>;
+    void SetCostEstimator(CostEstimator estimate) { costEstimator_ = std::move(estimate); }
 
     void SetWorld(WorldId world) {
         if (world == world_) return;
@@ -128,13 +139,16 @@ public:
             if (candidate >= source_->RecordCount()) return false;
         tickets_.Accept(i, ticket);
         resident_[i] = std::move(candidates);
+        if (budgets_) budgets_->CompleteIo(BudgetKey(subcell));
         PublishSnapshot();
         return true;
     }
 
     bool Fail(WorldSubcellKey subcell, uint64_t ticket) {
         const size_t i = Index(subcell);
-        return tickets_.Fail(i, ticket, lastFrame_, 120); // corrupt page backoff
+        if (!tickets_.Fail(i, ticket, lastFrame_, 120)) return false;
+        ReleaseBudget(i);
+        return true; // corrupt page backoff
     }
 
     void CommitFrame(uint64_t frame) override {
@@ -146,6 +160,7 @@ public:
             if (it->first < desired_.size() && desired_[it->first])
                 ++it;
             else {
+                ReleaseBudget(it->first);
                 it = resident_.erase(it);
                 changed = true;
             }
@@ -153,6 +168,12 @@ public:
         tickets_.CancelUndesired([&](size_t i) {
             return i < desired_.size() && desired_[i];
         });
+        for (auto it = reservations_.begin(); it != reservations_.end();) {
+            const size_t i = it->first;
+            if (i < desired_.size() && desired_[i]) { ++it; continue; }
+            if (budgets_) budgets_->Release(it->second);
+            it = reservations_.erase(it);
+        }
 
         std::vector<size_t> missing;
         for (size_t i = 0; i < desired_.size(); ++i)
@@ -169,9 +190,10 @@ public:
             const uint32_t ix = uint32_t(i % source_->DimX());
             const uint32_t iz = uint32_t(i / source_->DimX());
             const WorldSubcellKey subcell = Key(ix, iz);
+            if (!ReserveBudget(i, subcell)) continue;
             if (request_) {
                 const auto ticket = tickets_.Issue(i, frame);
-                if (!ticket) break; // no ticket wraparound
+                if (!ticket) { ReleaseBudget(i); break; }
                 request_(subcell, *ticket);
             } else {
                 // Scene-backed synchronous fallback. This never touches pak
@@ -183,6 +205,7 @@ public:
                     candidates.assign(src + cell.firstCandidate,
                         src + cell.firstCandidate + cell.candidateCount);
                 resident_.emplace(i, std::move(candidates));
+                if (budgets_) budgets_->CompleteIo(BudgetKey(subcell));
                 changed = true;
             }
         }
@@ -210,6 +233,37 @@ public:
     size_t PendingCount() const { return tickets_.PendingCount(); }
 
 private:
+    StreamBudgetKey BudgetKey(WorldSubcellKey subcell) const {
+        StreamBudgetKey key{};
+        key.world = world_;
+        key.layer = StreamLayer::Environment;
+        key.cell = SubcellToCell(subcell);
+        key.subcell = subcell;
+        return key;
+    }
+    bool ReserveBudget(size_t i, WorldSubcellKey subcell) {
+        if (!budgets_) return true;
+        const uint64_t count = uint64_t(source_->RecordCount());
+        // Conservative per-cell upper bound: all candidates plus a whole
+        // 4x4 physical root page. Shared immutable shape/look buffers are
+        // not charged here; the renderer must account for them separately.
+        const auto cost = costEstimator_ ? costEstimator_(subcell)
+                                          : std::pair<uint64_t,uint64_t>{64 + 4*count, 512 + 4*count};
+        const auto key = BudgetKey(subcell);
+        if (!budgets_->Reserve(key, cost.first, cost.second)) return false;
+        reservations_.emplace(i, key);
+        return true;
+    }
+    void ReleaseBudget(size_t i) {
+        const auto it = reservations_.find(i);
+        if (it == reservations_.end()) return;
+        if (budgets_) budgets_->Release(it->second);
+        reservations_.erase(it);
+    }
+    void ReleaseAllBudgets() {
+        if (budgets_) for (const auto& [i,key] : reservations_) budgets_->Release(key);
+        reservations_.clear();
+    }
     WorldSubcellKey Key(uint32_t ix, uint32_t iz) const {
         const glm::vec2 o = source_->GridMin();
         const glm::dvec3 p(double(o.x) + (double(ix) + 0.5) * kEnvTileSize,
@@ -267,6 +321,7 @@ private:
         unpublished_ = false;
     }
     void Invalidate() {
+        ReleaseAllBudgets();
         resident_.clear();
         tickets_.Clear();
         desired_.clear();
@@ -278,6 +333,9 @@ private:
         unpublished_ = true;
         ++revision_;
     }
+    StreamBudgetPool* budgets_ = nullptr;
+    CostEstimator costEstimator_;
+    std::map<size_t, StreamBudgetKey> reservations_;
     WorldId world_ = 0;
     const WorldEnvTiles* source_ = nullptr;
     uint64_t sourceRevision_ = 0;

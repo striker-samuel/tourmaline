@@ -58,6 +58,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include <Engine/Core/Limits.h>
@@ -306,10 +307,15 @@ class StreamRequestSink {
 // mutation happen ONLY in these callbacks (resources finishing after
 // this frame's publication point defer to the next frame).
 // ---------------------------------------------------------------------------
+class StreamBudgetPool;
+
 class IWorldStreamProvider {
   public:
     virtual ~IWorldStreamProvider() = default;
     virtual const char* ProviderName() const = 0;
+    // Optional shared admission ledger; providers that support estimated
+    // resource costs reserve before dispatch and release on retirement.
+    virtual void SetBudgetPool(StreamBudgetPool*) {}
     // The resolved interest set (deduped by the partition; highest
     // priority first). Providers snapshot what they need.
     virtual void OnStreamingInterests(const StreamingInterest* interests, size_t count) = 0;
@@ -345,8 +351,8 @@ class IWorldStreamProvider {
 // ---------------------------------------------------------------------------
 class WorldPartition {
   public:
-    WorldPartition() = default;
-    ~WorldPartition() = default;
+    WorldPartition();
+    ~WorldPartition();
     WorldPartition(const WorldPartition&) = delete;
     WorldPartition& operator=(const WorldPartition&) = delete;
 
@@ -354,11 +360,14 @@ class WorldPartition {
     // Providers are borrowed from the renderer. Release registrations before
     // a renderer detaches so a later onAttach cannot register duplicates.
     void ClearProviders() {
+        for (auto* provider : providers_) provider->SetBudgetPool(nullptr);
         providers_.clear();
         interests_.clear();
         requestCount_ = 0;
         requestDrops_ = 0;
     }
+    StreamBudgetPool& Budgets();
+    const StreamBudgetPool& Budgets() const;
     size_t ProviderCount() const {
         return providers_.size();
     }
@@ -394,6 +403,7 @@ class WorldPartition {
     size_t ActiveCellCount() const;
 
   private:
+    std::unique_ptr<StreamBudgetPool> budgets_;
     std::vector<IWorldStreamProvider*> providers_; // not owned
     std::vector<StreamingInterest> interests_;     // sorted priority-first
     std::vector<StreamRequest> requestBuffer_;     // gather scratch (grows)
