@@ -515,6 +515,10 @@ class WorldSynchronizer {
     [[nodiscard]] std::vector<LeafTicket> LeafTickets(const RenderDatabase& db) const {
         return leafRegistry_.Tickets(db);
     }
+    [[nodiscard]] std::span<const LeafTicket> LeafTicketsFrame(
+        const RenderDatabase& db) const {
+        return leafRegistry_.TicketsFrame(db);
+    }
     [[nodiscard]] size_t LeafCount() const {
         return leafRegistry_.LeafCount();
     }
