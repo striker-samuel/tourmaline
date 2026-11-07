@@ -11002,6 +11002,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
         }
+        if (m_gpuSceneRasterBuildProgram.shaderCount == 0) {
+            try {
+                auto bytes = smvk::shaders::Read(
+                    "content/shaders/gpu_scene_raster_work_drawbuild.cs.hlsl.spv");
+                m_gpuSceneRasterBuildModule =
+                    m_context->CreateShaderModule(std::move(bytes), "gpuSceneRasterBuildCS");
+                if (!m_gpuSceneRasterBuildModule.empty()) {
+                    smvk::Shader cs{.module = m_gpuSceneRasterBuildModule,
+                                    .entryPoint = "mainCS",
+                                    .stage = smvk::ShaderStage::Compute};
+                    m_gpuSceneRasterBuildProgram = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                static bool logged = false;
+                if (!logged) {
+                    std::fprintf(stderr,
+                                 "[GpuSceneRaster] indexed drawbuilder unavailable; skipped\n");
+                    logged = true;
+                }
+            }
+        }
         if (m_gpuSceneCullProgram.shaderCount == 1) {
             // This is a validation bridge, NOT true large-world camera
             // authority. The source VP remains float32; we only change
@@ -11057,6 +11078,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         workSelect,
                         workPrefix,
                         workScatter);
+                tour::gpu_scene::RasterWorkDrawBuildPush rasterPush{};
+                smvk::BufferHandle rasterCommands{};
+                const bool rasterReady =
+                    workReady && m_gpuSceneRasterBuildProgram.shaderCount == 1 &&
+                    m_gpuSceneValidator.PrepareRasterCommands(
+                        *m_context,
+                        fb.frameIndex,
+                        m_gpuSceneIndexedGeometry.DeviceAddress(*m_context, fb.frameIndex),
+                        m_gpuSceneIndexedGeometry.Count(fb.frameIndex),
+                        rasterPush,
+                        rasterCommands);
                 tour::gpu_scene::SceneIndirectArgsPush indirectArgs{};
                 tour::gpu_scene::SceneIndirectVerifyPush indirectVerify{};
                 smvk::BufferHandle indirectBuffer{};
@@ -11074,11 +11106,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 auto program = m_gpuSceneCullProgram;
                 auto compactPrograms = m_gpuSceneCompactPrograms;
                 auto workPrograms = m_gpuSceneWorkPrograms;
+                auto rasterProgram = m_gpuSceneRasterBuildProgram;
                 auto indirectPrograms = m_gpuSceneIndirectPrograms;
                 const uint32_t groups = (selected.candidateCount + 63u) / 64u;
                 pass.SetRecordingFunc([program,
                                        compactPrograms,
                                        workPrograms,
+                                       rasterProgram,
                                        indirectPrograms,
                                        gpuPush,
                                        countPush,
@@ -11087,12 +11121,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        workSelect,
                                        workPrefix,
                                        workScatter,
+                                       rasterPush,
+                                       rasterCommands,
                                        indirectArgs,
                                        indirectVerify,
                                        indirectBuffer,
                                        groups,
                                        compactReady,
                                        workReady,
+                                       rasterReady,
                                        indirectReady](smvk::CommandBuffer& cmd) mutable {
                     cmd.BindComputePipeline(program);
                     cmd.PushConstants(0, sizeof(gpuPush), &gpuPush, smvk::ShaderStage::Compute);
@@ -11132,6 +11169,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     cmd.PushConstants(
                         0, sizeof(workScatter), &workScatter, smvk::ShaderStage::Compute);
                     cmd.Dispatch(groups, 1, 1);
+                    if (rasterReady) {
+                        // GPU work -> indexed draw argument visibility; no
+                        // CPU readback, and all 20 command bytes are GPU-written.
+                        cmd.EmitGlobalMemoryBarrier();
+                        cmd.BindComputePipeline(rasterProgram);
+                        cmd.PushConstants(
+                            0, sizeof(rasterPush), &rasterPush, smvk::ShaderStage::Compute);
+                        cmd.Dispatch((rasterPush.commandCapacity + 63u) / 64u, 1, 1);
+                    }
                     if (!indirectReady)
                         return;
                     cmd.EmitGlobalMemoryBarrier();
