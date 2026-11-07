@@ -16819,7 +16819,7 @@ namespace engine {
 						fw, fh, mn, mx, sum / (double)px.size(),
 						drawn, 100.0 * (double)drawn / (double)px.size());
 					for (uint32_t ry = 0; ry < 16; ++ry) {
-						std::string row;
+						char row[33] = {};
 						for (uint32_t rx = 0; rx < 32; ++rx) {
 							double cell = 0;
 							size_t n = 0;
@@ -16829,10 +16829,10 @@ namespace engine {
 									++n;
 								}
 							const float c = n ? float(cell / (double)n) : 1.0f;
-							row += (c >= 0.999f) ? '.'
+							row[rx] = (c >= 0.999f) ? '.'
 								: (c > 0.75f ? '-' : (c > 0.5f ? '+' : 'X'));
 						}
-						std::fprintf(stderr, "[FogTileDump] %s\n", row.c_str());
+						std::fprintf(stderr, "[FogTileDump] %s\n", row);
 					}
 				}
 				else {
@@ -16887,7 +16887,7 @@ namespace engine {
 						occluded, 100.0 * (double)occluded / (double)total,
 						partial);
 					for (uint32_t ry = 0; ry < 16; ++ry) {
-						std::string row;
+						char row[33] = {};
 						for (uint32_t rx = 0; rx < 32; ++rx) {
 							size_t hits = 0, n = 0;
 							for (uint32_t y = ry * vh / 16; y < (ry + 1) * vh / 16; ++y)
@@ -16896,10 +16896,10 @@ namespace engine {
 									++n;
 								}
 							const float c = n ? float(hits) / float(n) : 0.0f;
-							row += (c < 0.02f) ? '.'
+							row[rx] = (c < 0.02f) ? '.'
 								: (c < 0.25f ? '-' : (c < 0.5f ? '+' : 'X'));
 						}
-						std::fprintf(stderr, "[ContactShadowDump] %s\n", row.c_str());
+						std::fprintf(stderr, "[ContactShadowDump] %s\n", row);
 					}
 				}
 				else {
