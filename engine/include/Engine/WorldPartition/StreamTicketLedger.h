@@ -8,6 +8,7 @@
 // must never match a new request after a world or source revision swap.
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
