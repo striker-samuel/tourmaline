@@ -114,7 +114,7 @@ class IndexedGeometryPublisher {
         ctx.UploadDataToBuffer(buffers_[flight],
                                rows,
                                size_t(count) * sizeof(IndexedGeometry),
-                               smvk::PipelineStageBit_Compute,
+                               smvk::PipelineStage(smvk::PipelineStageBit_Compute),
                                smvk::AccessFlags::ShaderRead);
         std::destroy_n(rows, count);
         counts_[flight] = count;
