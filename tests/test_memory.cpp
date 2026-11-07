@@ -20,10 +20,16 @@
 #include <iostream>
 #include <numeric>
 
-#include <Engine/Memory/alloc_config.h>
+// Canonical Core headers and legacy forwarding headers must coexist.
+#include <Core/Memory/alloc_config.h>
+#include <Core/Memory/arena.h>
+#include <Core/Memory/arena_flat_array.h>
+#include <Core/Memory/linear_allocator.h>
+#include <Core/Memory/linear_vector.h>
+#include <Core/Memory/memory.h>
+#include <Core/Memory/string_view.h>
 #include <Engine/Memory/arena.h>
 #include <Engine/Memory/linear_allocator.h>
-#include <Engine/Memory/linear_vector.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Utils/thread_pool.h>
