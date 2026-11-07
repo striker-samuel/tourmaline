@@ -36,7 +36,7 @@
 // 4k budget silently dropped whole instances on grid32-scale instanced
 // scenes; the survivor ring (GFX_MAX_BATCHES) stays the real per-view
 // geometry ceiling.
-#define GFX_MAX_DRAWS 65536
+#define GFX_MAX_DRAWS 65535
 #define GFX_MAX_BATCHES 65536
 // GPU-cull candidate capacity: per (draw x cluster) slot pushed by the
 // CPU candidate build (batches + indirect + seed/remainder command arrays
