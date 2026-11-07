@@ -159,26 +159,31 @@ class SceneRegistry {
             return false;
         MeshState& state = it->second;
         const size_t count = levels.size();
-        if (state.lods.size() != count) {
-            // Do not retire old rows before successfully allocating a new
-            // replacement; on failure the existing mesh record is intact.
-            std::vector<Submesh> subValues(count);
-            auto subs = db.submeshes.InsertContiguous(subValues);
-            if (subs.size() != count)
+        if (state.count != count) {
+            // Max LOD chain is 16, so both payloads and handles fit in a
+            // fixed stack array. No heap vector or per-update allocation.
+            std::array<Submesh, 16> subValues{};
+            std::array<Lod, 16> lodValues{};
+            std::array<Handle<Submesh>, 16> subs{};
+            std::array<Handle<Lod>, 16> lods{};
+            const auto subsIn = std::span<const Submesh>(subValues.data(), count);
+            const auto subsOut = std::span<Handle<Submesh>>(subs.data(), count);
+            if (!db.submeshes.InsertContiguous(subsIn, subsOut))
                 return false;
-            std::vector<Lod> lodValues(count);
-            auto lods = db.lods.InsertContiguous(lodValues);
-            if (lods.size() != count) {
-                for (auto id : subs)
-                    (void)db.submeshes.Erase(id);
+            const auto lodsIn = std::span<const Lod>(lodValues.data(), count);
+            const auto lodsOut = std::span<Handle<Lod>>(lods.data(), count);
+            if (!db.lods.InsertContiguous(lodsIn, lodsOut)) {
+                for (size_t i = 0; i < count; ++i)
+                    (void)db.submeshes.Erase(subs[i]);
                 return false;
             }
-            for (auto id : state.lods)
-                (void)db.lods.Erase(id);
-            for (auto id : state.submeshes)
-                (void)db.submeshes.Erase(id);
-            state.lods = std::move(lods);
-            state.submeshes = std::move(subs);
+            for (size_t i = 0; i < state.count; ++i) {
+                (void)db.lods.Erase(state.lods[i]);
+                (void)db.submeshes.Erase(state.submeshes[i]);
+            }
+            state.lods = lods;
+            state.submeshes = subs;
+            state.count = static_cast<uint32_t>(count);
         }
         uint32_t residentMask = 0;
         for (uint32_t level = 0; level < count; ++level) {
@@ -260,7 +265,7 @@ class SceneRegistry {
                 auto handle = db.meshes.Insert(Mesh{});
                 if (!handle)
                     continue;
-                mesh = meshes_.emplace(r.mesh, MeshState{handle, {}, {}}).first;
+                mesh = meshes_.emplace(r.mesh, MeshState{handle, {}, {}, 0}).first;
                 ++stats.meshesCreated;
             }
             Instance data{};
@@ -308,15 +313,17 @@ class SceneRegistry {
   private:
     struct MeshState {
         Handle<Mesh> id{};
-        std::vector<Handle<Lod>> lods;
-        std::vector<Handle<Submesh>> submeshes;
+        std::array<Handle<Lod>, 16> lods{};
+        std::array<Handle<Submesh>, 16> submeshes{};
+        uint32_t count = 0;
     };
     static void EraseMesh(MeshState& state, RenderDatabase& db) {
-        for (auto id : state.lods)
-            (void)db.lods.Erase(id);
-        for (auto id : state.submeshes)
-            (void)db.submeshes.Erase(id);
+        for (uint32_t i = 0; i < state.count; ++i) {
+            (void)db.lods.Erase(state.lods[i]);
+            (void)db.submeshes.Erase(state.submeshes[i]);
+        }
         (void)db.meshes.Erase(state.id);
+        state.count = 0;
     }
     std::vector<InstanceId> changed_;
     std::vector<InstanceId> retired_;
