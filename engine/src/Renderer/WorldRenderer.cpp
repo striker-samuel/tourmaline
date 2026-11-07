@@ -2254,6 +2254,7 @@ bool WorldRenderer::onAttach() {
     }
     m_worldFieldProvider.SetContext(m_context);
     m_worldPartition.AddProvider(&m_worldFieldProvider);
+    m_worldPartition.AddProvider(&m_envTileProvider);
     // Placement receives the SAME prioritized interest stream and commits
     // its generation passes at the partition publication point. The
     // renderer still owns Vulkan resources and records view-specific
@@ -2847,6 +2848,13 @@ void WorldRenderer::onDetach() {
     m_worldPartition.ClearProviders();
     m_placementStreamProvider.SetCommitCallback({});
     m_worldFieldProvider.SetContext(nullptr);
+    m_envTileProvider.SetRequestCallback({});
+    m_envTileProvider.SetSource(nullptr, 0);
+    m_envPageJobs.clear(); // futures join before dropping reader captures
+    m_envPageReader = {};
+    m_envCooked = false;
+    m_envCookedHashInitialized = false;
+    m_envTileResidentRevision = 0;
     // Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
     m_host.WaitForDeviceIdle();
     if (m_gpuPlacementRuntime && m_gpuPlacementRuntime->Valid())
@@ -4990,7 +4998,9 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     if (m_envTilesPublished && !m_resources.envTileRecordsBuffer.empty() &&
         !m_resources.envTileCellsBuffer.empty() &&
         !m_resources.envTileShapesBuffer.empty() &&
-        !m_resources.envTileIndicesBuffer.empty()) {
+        !m_resources.envTileIndicesBuffer.empty() &&
+        !m_resources.envTilePageTableBuffer.empty() &&
+        !m_resources.envTileFarIndicesBuffer.empty()) {
         data.envZones = m_context->GetBufferDeviceAddress(m_resources.envTileRecordsBuffer);
         data.envZoneCount = m_envTiles.RecordCount();
         // bit0 = tiles live; bit1 = any record authors volumetric
@@ -5005,6 +5015,9 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         data.envTileCells = m_context->GetBufferDeviceAddress(m_resources.envTileCellsBuffer);
         data.envTileShapes = m_context->GetBufferDeviceAddress(m_resources.envTileShapesBuffer);
         data.envTileIndices = m_context->GetBufferDeviceAddress(m_resources.envTileIndicesBuffer);
+        data.envTilePageTable = m_context->GetBufferDeviceAddress(m_resources.envTilePageTableBuffer);
+        data.envTileFarIndices = m_context->GetBufferDeviceAddress(m_resources.envTileFarIndicesBuffer);
+        data.envTileFarCount = m_envTiles.FarCandidateCount();
     } else {
         data.envZones = 0;
         data.envZoneCount = 0;
@@ -5016,6 +5029,9 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         data.envTileCells = 0;
         data.envTileShapes = 0;
         data.envTileIndices = 0;
+        data.envTilePageTable = 0;
+        data.envTileFarIndices = 0;
+        data.envTileFarCount = 0;
     }
 
     // ---- Forward+ decals (tiled projected splats) ----
@@ -9694,6 +9710,80 @@ static smvk::EnvironmentSettings MapSceneEnv(const tour::scene::SceneEnv& w, boo
 // zonePriority - 0 by default - sits under the node priorities).
 // Failure/overflow is non-fatal (count 0 = the plain resolved env
 // path, the default look still renders through it).
+bool WorldRenderer::InstallCookedEnvironment(
+    engine::worldpartition::WorldId world, glm::vec2 gridMin,
+    uint32_t dimX, uint32_t dimZ,
+    const engine::worldpartition::EnvTileRecord* records,
+    const smvk::envzones::EnvZoneGpu* shapes, uint32_t recordCount,
+    const uint32_t* farCandidates, uint32_t farCount,
+    EnvPageReader reader) {
+    if (!reader) return false;
+    // Invalidate all pending page tickets BEFORE installing a new
+    // manifest, even if the scene hash/world identity happens to match.
+    m_envTileProvider.SetSource(nullptr, 0);
+    if (!m_envTiles.LoadCooked(gridMin, dimX, dimZ,
+                              records, shapes, recordCount) ||
+        !m_envTiles.SetCookedFarCandidates(farCandidates, farCount))
+        return false;
+    m_envCooked = true;
+    m_envCookedWorld = world;
+    m_envCookedHashInitialized = false;
+    m_envTilesPublished = false;
+    m_envTileProvider.SetWorld(world);
+    m_envPageReader = std::move(reader);
+    // Bounded async pak page IO. Never call the page reader in the
+    // render frame; the Future is polled without blocking next frame.
+    m_envTileProvider.SetMaxNewRequestsPerFrame(8);
+    m_envTileProvider.SetRequestCallback([this](worldpartition::WorldSubcellKey key,
+                                                 uint64_t ticket) {
+        if (m_envPageJobs.size() >= 16) {
+            m_envTileProvider.Fail(key, ticket);
+            return;
+        }
+        try {
+            EnvPageReader readerCopy = m_envPageReader;
+            EnvPageJob job{};
+            job.key = key;
+            job.ticket = ticket;
+            job.future = std::async(std::launch::async,
+                [readerCopy = std::move(readerCopy), key]() mutable {
+                    std::vector<uint32_t> ids;
+                    try {
+                        const bool ok = readerCopy(key, ids);
+                        return std::make_pair(ok, std::move(ids));
+                    } catch (...) {
+                        return std::make_pair(false, std::vector<uint32_t>{});
+                    }
+                });
+            m_envPageJobs.push_back(std::move(job));
+        } catch (...) {
+            m_envTileProvider.Fail(key, ticket);
+        }
+    });
+    return true;
+}
+
+void WorldRenderer::DrainEnvPageJobs() {
+    for (size_t i = 0; i < m_envPageJobs.size();) {
+        auto& job = m_envPageJobs[i];
+        if (job.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            ++i;
+            continue;
+        }
+        const auto [ok, candidates] = job.future.get();
+        if (ok) {
+            if (!m_envTileProvider.Activate(job.key, job.ticket, candidates))
+                m_envTileProvider.Fail(job.key, job.ticket);
+        } else {
+            if (m_envTileProvider.Fail(job.key, job.ticket))
+                std::cerr << "[EnvTiles] cooked page read failed ("
+                          << job.key.x << ", " << job.key.z
+                          << "), retry deferred\n";
+        }
+        m_envPageJobs.erase(m_envPageJobs.begin() + ptrdiff_t(i));
+    }
+}
+
 void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
     // The env-tile bake (the world-tile rework of the zone system):
     // hash the bake inputs (zone tables + their transforms + the base
@@ -9773,6 +9863,19 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
         mixF(bounds.mx.z);
     }
 
+    if (m_envCooked) {
+        if (!m_envCookedHashInitialized) {
+            m_envCookedHash = hash;
+            m_envCookedHashInitialized = true;
+        } else if (hash != m_envCookedHash) {
+            // A live editor edit invalidates the immutable pak bake.
+            // Return to the scene-backed exact source immediately.
+            m_envCooked = false;
+            m_envPageReader = {};
+            m_envTileProvider.SetRequestCallback({});
+            m_envTileProvider.SetMaxNewRequestsPerFrame(64);
+        }
+    }
     if (hash != m_envTilesDirtyHash || !m_envTilesPublished) {
         // Optick: the change-triggered bake (grid extent + the tile
         // Build + record/cell uploads) — the edit-hitch investigation
@@ -9788,10 +9891,14 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
         // base record; infinite faces extend their world axes to the
         // 16 km design edge). The math + its contract live in
         // WorldPartition (ComputeEnvGridExtent) next to the bake.
-        const worldpartition::EnvGridExtent ext = worldpartition::ComputeEnvGridExtent(
-            scene, worldpartition::EnvGridBounds{bounds.mn, bounds.mx});
+        const worldpartition::EnvGridExtent ext = m_envCooked
+            ? worldpartition::EnvGridExtent{m_envTiles.GridMin(),
+                m_envTiles.DimX(), m_envTiles.DimZ(), 0.0f, 0.0f}
+            : worldpartition::ComputeEnvGridExtent(
+                scene, worldpartition::EnvGridBounds{bounds.mn, bounds.mx});
 
-        if (m_envTiles.Build(scene, ext.gridMin, ext.dimX, ext.dimZ, ext.yMin, ext.yMax) &&
+        if ((m_envCooked ||
+             m_envTiles.Build(scene, ext.gridMin, ext.dimX, ext.dimZ, ext.yMin, ext.yMax)) &&
             !m_resources.envTileRecordsBuffer.empty()) {
             SMVK_PROFILE_TAG("tiles", ext.dimX * ext.dimZ);
             SMVK_PROFILE_TAG("records", m_envTiles.RecordCount());
@@ -9804,40 +9911,14 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
                     sizeof(worldpartition::EnvTileRecord) * m_envTiles.RecordCount(),
                     smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
                     smvk::AccessFlags::ShaderRead);
-                // Cells: recreate when the grid extent changed (the BDA
-                // re-reads fresh each frame; the old holder retires through
-                // the deferred queue while in-flight frames still read it).
-                const size_t cellBytes =
-                    sizeof(worldpartition::EnvTileCell) * m_envTiles.CellCount();
-                if (m_resources.envTileCellsBuffer.empty() || m_envTileCellBytes != cellBytes) {
-                    m_resources.envTileCellsBuffer = m_context->CreateBuffer(
-                        cellBytes, smvk::BufferType_Storage, "env tile cells");
-                    m_envTileCellBytes = m_resources.envTileCellsBuffer.empty() ? 0 : cellBytes;
-                    if (m_resources.envTileCellsBuffer.empty()) {
-                        smvk::OnResourceExhaustion("env tile cells");
-                        return; // count 0 -> the plain env path, retried next frame
-                    }
-                }
-                m_context->UploadDataToBuffer(m_resources.envTileCellsBuffer,
-                                              m_envTiles.Cells(),
-                                              cellBytes,
-                                              smvk::PipelineStageBit_Vertex |
-                                                  smvk::PipelineStageBit_Fragment,
-                                              smvk::AccessFlags::ShaderRead);
+                // Cell headers are allocated ONLY for resident 4x4 root
+                // pages after the WorldPartition provider commits.
                 if (m_resources.envTileShapesBuffer.empty())
                     m_resources.envTileShapesBuffer = m_context->CreateBuffer(
                         sizeof(smvk::envzones::EnvZoneGpu) * worldpartition::kEnvTileMaxRecords,
                         smvk::BufferType_Storage, "env tile exact shapes");
-                const size_t indexBytes = sizeof(uint32_t) * m_envTiles.CandidateIndexCount();
-                if (m_resources.envTileIndicesBuffer.empty() || m_envTileIndexBytes != indexBytes) {
-                    m_resources.envTileIndicesBuffer = m_context->CreateBuffer(
-                        std::max(indexBytes, size_t(4)), smvk::BufferType_Storage,
-                        "env tile candidate indices");
-                    m_envTileIndexBytes = m_resources.envTileIndicesBuffer.empty() ? 0 : indexBytes;
-                }
-                if (m_resources.envTileShapesBuffer.empty() ||
-                    m_resources.envTileIndicesBuffer.empty()) {
-                    smvk::OnResourceExhaustion("env tile spatial index buffers");
+                if (m_resources.envTileShapesBuffer.empty()) {
+                    smvk::OnResourceExhaustion("env tile shape buffer");
                     return;
                 }
                 m_context->UploadDataToBuffer(m_resources.envTileShapesBuffer,
@@ -9845,13 +9926,25 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
                     sizeof(smvk::envzones::EnvZoneGpu) * m_envTiles.RecordCount(),
                     smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
                     smvk::AccessFlags::ShaderRead);
-                if (indexBytes)
-                    m_context->UploadDataToBuffer(m_resources.envTileIndicesBuffer,
-                        m_envTiles.CandidateIndices(), indexBytes,
+                if (m_resources.envTileFarIndicesBuffer.empty())
+                    m_resources.envTileFarIndicesBuffer = m_context->CreateBuffer(
+                        sizeof(uint32_t) * worldpartition::kEnvTileMaxRecords,
+                        smvk::BufferType_Storage, "env far shortlisted candidates");
+                if (m_resources.envTileFarIndicesBuffer.empty()) {
+                    smvk::OnResourceExhaustion("env far candidates");
+                    return;
+                }
+                if (m_envTiles.FarCandidateCount())
+                    m_context->UploadDataToBuffer(m_resources.envTileFarIndicesBuffer,
+                        m_envTiles.FarCandidates(),
+                        sizeof(uint32_t) * m_envTiles.FarCandidateCount(),
                         smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
                         smvk::AccessFlags::ShaderRead);
+                // Candidate IDs are published from the provider's compact
+                // resident index stream after WorldPartition::UpdateFrame.
             }
             m_envTilesPublished = true;
+            m_envTileProvider.SetSource(&m_envTiles, m_envTilesDirtyHash);
             // One-time diagnostic (the bake replaced the per-frame pack).
             if (m_envTileZoneCount == UINT32_MAX) {
                 m_envTileZoneCount = m_envTiles.RecordCount();
@@ -10403,7 +10496,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 
         // Placement's optional interest is a separate layer, but shares
         // the partition's priority ordering and commit sequence.
-        engine::worldpartition::StreamingInterest interests[3]{interest, interest, interest};
+        engine::worldpartition::StreamingInterest interests[4]{interest, interest, interest, interest};
         size_t interestCount = 1;
         if (m_activeMapId) {
             interests[interestCount].world = m_activeMapId;
@@ -10434,10 +10527,76 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         } else {
             m_placementStreamProvider.SetFrameSource(false, glm::vec4(0.0f));
         }
+        DrainEnvPageJobs();
+        m_envTileProvider.SetWorld(m_envCooked ? m_envCookedWorld : m_activeMapId);
+        // Environment volumes share the 64m subcell address space but
+        // are resident only around the requested streaming interests.
+        // The provider commits this frame before FrameUniforms publishes
+        // GPU addresses. Its dense cell-header grid is just an address
+        // table; only resident cells have packed candidate references.
+        if (m_world && m_envTiles.Valid()) {
+            engine::worldpartition::StreamingInterest envInterest = interest;
+            envInterest.world = m_envCooked ? m_envCookedWorld : m_activeMapId;
+            envInterest.radiusMeters = std::max(512.0, m_mapStreamingRadius);
+            envInterest.layerMask =
+                engine::worldpartition::StreamLayerBit(
+                    engine::worldpartition::StreamLayer::Environment);
+            interests[interestCount++] = envInterest;
+        }
         m_worldPartition.SetInterests(interests, interestCount);
         // Residency/LRU clocks require a monotonic simulation frame, not the
         // swapchain's cycling frames-in-flight slot (fb.frameIndex).
         m_worldPartition.UpdateFrame(m_frameCounter);
+        // Publish the provider's resident candidate stream only on a
+        // membership/bake change, not per frame. Cells without residency
+        // intentionally resolve the base environment.
+        if (m_envTilesPublished &&
+            m_envTileProvider.Revision() != m_envTileResidentRevision) {
+            const size_t bytes = m_envTileProvider.PackedCellCount() *
+                sizeof(engine::worldpartition::EnvTileCell);
+            const size_t tableBytes = m_envTileProvider.PageTableCount() * sizeof(uint32_t);
+            const size_t indexBytes = m_envTileProvider.IndexCount() * sizeof(uint32_t);
+            if (m_envTileCellBytes != bytes ||
+                m_resources.envTileCellsBuffer.empty()) {
+                m_resources.envTileCellsBuffer = m_context->CreateBuffer(
+                    std::max(bytes, size_t(32)), smvk::BufferType_Storage,
+                    "env tile resident 4x4 cell pages");
+                m_envTileCellBytes = m_resources.envTileCellsBuffer.empty() ? 0 : bytes;
+            }
+            if (m_envTileTableBytes != tableBytes ||
+                m_resources.envTilePageTableBuffer.empty()) {
+                m_resources.envTilePageTableBuffer = m_context->CreateBuffer(
+                    std::max(tableBytes, size_t(4)), smvk::BufferType_Storage,
+                    "env tile root page table");
+                m_envTileTableBytes = m_resources.envTilePageTableBuffer.empty() ? 0 : tableBytes;
+            }
+            if (m_envTileIndexBytes != indexBytes ||
+                m_resources.envTileIndicesBuffer.empty()) {
+                m_resources.envTileIndicesBuffer = m_context->CreateBuffer(
+                    std::max(indexBytes, size_t(4)), smvk::BufferType_Storage,
+                    "env tile resident candidates");
+                m_envTileIndexBytes = m_resources.envTileIndicesBuffer.empty() ? 0 : indexBytes;
+            }
+            if (!m_resources.envTileCellsBuffer.empty() &&
+                !m_resources.envTilePageTableBuffer.empty() &&
+                !m_resources.envTileIndicesBuffer.empty()) {
+                if (bytes)
+                    m_context->UploadDataToBuffer(m_resources.envTileCellsBuffer,
+                        m_envTileProvider.PackedCells(), bytes,
+                        smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                        smvk::AccessFlags::ShaderRead);
+                m_context->UploadDataToBuffer(m_resources.envTilePageTableBuffer,
+                    m_envTileProvider.PageTable(), tableBytes,
+                    smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                    smvk::AccessFlags::ShaderRead);
+                if (indexBytes)
+                    m_context->UploadDataToBuffer(m_resources.envTileIndicesBuffer,
+                        m_envTileProvider.Indices(), indexBytes,
+                        smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                        smvk::AccessFlags::ShaderRead);
+                m_envTileResidentRevision = m_envTileProvider.Revision();
+            }
+        }
     }
     // The renderer owns no environment: the frame's look is built
     // from the WORLD's scene env here, once per frame (the main

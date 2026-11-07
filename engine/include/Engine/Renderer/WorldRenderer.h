@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <memory>
 #include <optional>
 #include <span>
@@ -95,6 +96,7 @@
 #include <Engine/WorldFields/WorldFieldCodec.h>
 #include <Engine/WorldFields/WorldFieldProvider.h>
 #include <Engine/WorldPartition/WorldEnvTiles.h>
+#include <Engine/WorldPartition/WorldEnvTileProvider.h>
 #include <Engine/WorldPartition/WorldPartition.h>
 
 #include <Engine/App/Element.h>
@@ -1040,7 +1042,10 @@ struct FrameUniforms {
     uint64_t envTileCells = 0;         // 1704 the EnvTileCell grid BDA (raw)
     uint64_t envTileShapes = 0;        // 1712 exact OBBs BDA
     uint64_t envTileIndices = 0;       // 1720 candidate ids BDA
-    uint32_t envTileReserved[38] = {}; // 1712 (keeps lmLayers@1888 pinned)
+    uint64_t envTilePageTable = 0;    // 1728 root-page -> physical slot BDA
+    uint64_t envTileFarIndices = 0;  // 1736 far candidate shortlist
+    uint32_t envTileFarCount = 0;     // 1744
+    uint32_t envTileReserved[33] = {}; // 1736 pinned lmLayers tail // 1712 (keeps lmLayers@1888 pinned)
     // ---- SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h):
     // atlas layers ride the bindless texture slots. lmLayerKind selects
     // the layout: 0 = the classic 9 RGBA16F stream layers, 1 = BC6H
@@ -1219,7 +1224,10 @@ static_assert(offsetof(FrameUniforms, envTileDimZ) == 1700, "envTileDimZ offset:
 static_assert(offsetof(FrameUniforms, envTileCells) == 1704, "envTileCells offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, envTileShapes) == 1712, "envTileShapes HLSL mirror");
 static_assert(offsetof(FrameUniforms, envTileIndices) == 1720, "envTileIndices HLSL mirror");
-static_assert(offsetof(FrameUniforms, envTileReserved) == 1728,
+static_assert(offsetof(FrameUniforms, envTilePageTable) == 1728, "envTilePageTable HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileFarIndices) == 1736, "far BDA HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileFarCount) == 1744, "far count HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileReserved) == 1748,
               "envTileReserved offset: HLSL mirror");
 // SG 2D lightmap tail (append-only; see the block above envZoneReserved).
 static_assert(offsetof(FrameUniforms, lmLayers) == 1888, "lmLayers offset: HLSL mirror");
@@ -1327,6 +1335,8 @@ struct AppResources {
     smvk::Holder<smvk::BufferHandle> envTileCellsBuffer;
     smvk::Holder<smvk::BufferHandle> envTileShapesBuffer;
     smvk::Holder<smvk::BufferHandle> envTileIndicesBuffer;
+    smvk::Holder<smvk::BufferHandle> envTilePageTableBuffer;
+    smvk::Holder<smvk::BufferHandle> envTileFarIndicesBuffer;
     smvk::Holder<smvk::BufferHandle>
         spotShadowBuffer; // GpuCascadeDescription * kMaxLocalShadowTiles per frame (spot tiles +
                           // point faces)
@@ -2280,6 +2290,20 @@ class WorldRenderer : public IRenderer {
     engine::worldpartition::WorldPartition& StreamingPartition() {
         return m_worldPartition;
     }
+    // The application host (never the renderer) owns pak discovery and
+    // supplies immutable cooked metadata plus a thread-safe page reader.
+    // Request callback runs off the render thread; completions are adopted
+    // at the next WorldPartition frame publication point.
+    using EnvPageReader = std::function<bool(
+        engine::worldpartition::WorldSubcellKey, std::vector<uint32_t>&)>;
+    bool InstallCookedEnvironment(
+        engine::worldpartition::WorldId world, glm::vec2 gridMin,
+        uint32_t dimX, uint32_t dimZ,
+        const engine::worldpartition::EnvTileRecord* records,
+        const smvk::envzones::EnvZoneGpu* shapes, uint32_t recordCount,
+        const uint32_t* farCandidates, uint32_t farCount,
+        EnvPageReader reader);
+
     void SetMapStreamingRadius(double metres) {
         if (std::isfinite(metres) && metres >= 0.0)
             m_mapStreamingRadius = metres;
@@ -4134,6 +4158,8 @@ class WorldRenderer : public IRenderer {
     engine::worldfields::WorldFieldSystem m_worldFields;
     engine::worldfields::WorldFieldProvider m_worldFieldProvider{m_worldFields};
     engine::worldpartition::WorldPartition m_worldPartition;
+    engine::worldpartition::WorldEnvTileProvider m_envTileProvider;
+    uint64_t m_envTileResidentRevision = 0;
     engine::worldpartition::WorldId m_activeMapId = 0;
     double m_mapStreamingRadius = 512.0;
     std::unique_ptr<smvk::ThreadPool> m_worldFieldWorkPool;
@@ -4550,7 +4576,21 @@ class WorldRenderer : public IRenderer {
     bool m_envTilesPublished = false;         // buffers exist + built
     uint32_t m_envTileZoneCount = UINT32_MAX; // overflow log dedupe
     size_t m_envTileIndexBytes = 0;
+    size_t m_envTileTableBytes = 0;
     size_t m_envTileCellBytes = 0;            // the cells buffer size (recreate key)
+    bool m_envCooked = false;
+    bool m_envCookedHashInitialized = false;
+    uint64_t m_envCookedHash = 0;
+    engine::worldpartition::WorldId m_envCookedWorld = 0;
+    EnvPageReader m_envPageReader;
+    struct EnvPageJob {
+        engine::worldpartition::WorldSubcellKey key{};
+        uint64_t ticket = 0;
+        std::future<std::pair<bool, std::vector<uint32_t>>> future;
+    };
+    std::vector<EnvPageJob> m_envPageJobs;
+    void DrainEnvPageJobs();
+
     // Hashes the zone tables + transforms (the bake inputs) and rebuilds +
     // re-uploads the tiles on change (see UpdateEnvTiles — called before
     // UpdateFrameUniforms).

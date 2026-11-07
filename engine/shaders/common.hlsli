@@ -810,7 +810,10 @@ uint decalCount;                                         // 776 0 = decals off
     uint64_t envTileCells;                                        // 1704 the EnvTileCell grid BDA (raw)
     uint64_t envTileShapes;                                     // 1712 OBB shapes BDA
     uint64_t envTileIndices;                                    // 1720 candidate ids BDA
-    uint envTileReserved[38];                                     // 1712 (keeps lmLayers@1888 pinned)
+    uint64_t envTilePageTable;                                  // 1728 root-page indirection BDA
+    uint64_t envTileFarIndices;                                   // 1736 far OBB shortlist BDA
+    uint envTileFarCount;                                        // 1744
+    uint envTileReserved[33];                                    // 1748 pinned tail                                   // 1736 pinned tail                                     // 1712 (keeps lmLayers@1888 pinned)
     // ---- SG 2D lightmaps (STATIC geometry): atlas layers ride the
     // bindless texture slots (mirror of the C++ APPEND-ONLY tail — every
     // pinned offset above stays put). lmLayerKind: 0 = 9 RGBA16F stream

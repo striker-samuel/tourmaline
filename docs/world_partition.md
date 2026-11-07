@@ -105,18 +105,29 @@ publication point defer to the next frame — by design.
   identity through the pager, fidelity-tested against a dense reference
   (including exact brick-boundary positions and the
   sqrt-filtering-noncommutativity bound).
-- **World env tiles** (`WorldEnvTiles`): the environment zone system's
-  runtime rework — the retired per-frame zone ring (64 x 144 B packed
-  every frame) and the per-pixel OBB walk are gone; the zone tables BAKE
-  onto the 64 m subcell grid on a dirty hash (load/edit only), and the
-  terrain/volumetric shaders resolve a zone by TILE ADDRESS (the cell's
-  dominant record + weight + the vertical split for underwater/interior
-  half-spaces). The authoring surface is unchanged (the editor's OBB
-  volumes + the tour/pak keys are the bake's input). Records[0] = the
-  base (the default environment — the old zone-zero). Fidelity contract:
-  the winner selection + weights are the retired walk's exact math at
-  tile-sample positions; zones coarser than a tile are faithful, fade
-  bands quantize to 64 m granularity by design.
+- **World env tiles** (`WorldEnvTiles`, `WorldEnvTileProvider`):
+  static authored environment OBBs are cooked with their exact inverse
+  transforms, priority, appearance and continuous blend falloff. The 64 m
+  cells store **conservative candidate indices**, not rasterized winners.
+  The Pak cooker writes a scene-owned manifest and independently seekable,
+  CRC-verified 64 m pages. WorldPartition streams near cells using bounded
+  tickets, cancellation, and a sparse 256 m root-page / 64 m subcell GPU
+  indirection. The shader resolves the first influencing candidate at
+  the true 3D position; priority and falloff never quantize to tile size.
+- **Far environment**: the manifest also contains a small *always-resident*
+  priority-ordered shortlist: records with a projected 512 m+ horizontal
+  influence footprint or unbounded faces, plus the base record in its
+  original priority position. When a detailed page is absent, the shader
+  checks only this shortlist using the **same exact OBB falloff**, with
+  no distant tile reads. Near resident cells always use their complete
+  local lists. This prevents missing large fog/weather/underwater regions
+  at viewing distances beyond the near 512 m residency radius.
+  The 512 m footprint criterion is a cook heuristic, **not** an authored
+  artist tag or a quality tier: small distant volumes are intentionally
+  omitted from the far tier, even if visible; future content may need
+  explicit far-visibility authoring and camera-frustum prioritization.
+  The far list does not replace near streaming or guarantee an exact
+  environment for every distant small volume.
 
 The App wiring: `WorldRenderer` owns the partition + the provider +
 the work pool; the frame builds the camera interest (position +

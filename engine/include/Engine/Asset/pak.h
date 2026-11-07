@@ -222,6 +222,7 @@ enum class PakAssetKind : uint32_t {
     ShapePlacements = 22, // cooked .tour scene-owned placements (not VFS)
     MapTile = 23,         // cooked Map tile placement pages (logical world-cell content, not VFS)
     MapManifest = 24,     // cooked world-wide Map ID, tile count and persistent placement index
+    EnvTile = 25,         // cooked immutable 64m environment-volume candidate page (not VFS)
 };
 
 enum PakEntryFlags : uint32_t {
@@ -522,6 +523,11 @@ class PakReader {
     // Null when no entry carries the slot.
     const PakTocEntry* FindBySlot(uint32_t slot) const;
     std::span<const uint8_t> Payload(const PakTocEntry& entry) const;
+    // Independent verified page read without persistent materialization.
+    // Returns owned bytes; safe for evictable streamed subcell content.
+    // Serializes positional file access with normal Payload(), validates
+    // content CRC and decodes LZ4, but NEVER fills the lazy page cache.
+    std::vector<uint8_t> PayloadCopyUncached(const PakTocEntry& entry) const;
     // The explicit full-verification policy: hashes every entry's
     // stored bytes against its contentCrc (image-backed: in-memory;
     // file-backed: positional reads). False + the first failing path
