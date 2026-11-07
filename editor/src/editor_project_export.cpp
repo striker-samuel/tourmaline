@@ -467,6 +467,22 @@ void EditorApp::DrawProjectExportWindow() {
                         apply(WithRecipeDirective(m_projectExportRecipeText.data(), pak.id,
                                                   "dependencies",
                                                   transitive ? "transitive" : "none"));
+                    ImGui::TextDisabled("Per-package bake overrides");
+                    auto pakBake = [&](const char* label, const char* key,
+                                       const std::optional<bool>& overrideValue) {
+                        int selection = !overrideValue.has_value() ? 0 :
+                                        (*overrideValue ? 1 : 2);
+                        ImGui::PushID(key);
+                        if (ImGui::Combo(label, &selection, "Inherit\0On\0Off\0")) {
+                            apply(WithRecipeDirective(
+                                m_projectExportRecipeText.data(), pak.id,
+                                std::string("bake ") + key,
+                                selection == 0 ? "" : selection == 1 ? "on" : "off"));
+                        }
+                        ImGui::PopID();
+                    };
+                    pakBake("GI override", "gi", pak.bakeGi);
+                    pakBake("Cubemap override", "cubemaps", pak.bakeCubemaps);
                     ImGui::TextDisabled("Includes (project-relative globs)");
                     for (size_t i = 0; i < pak.includes.size(); ++i) {
                         ImGui::PushID(static_cast<int>(i));
@@ -534,7 +550,7 @@ void EditorApp::DrawProjectExportWindow() {
                         m_projectExportNewPakBuf[0] = '\0';
                     }
                 }
-                ImGui::TextDisabled("Advanced material directives and per-pak bake overrides: Text tab.");
+                ImGui::TextDisabled("Advanced material channel/encoding directives: Text tab.");
             }
             ImGui::EndTabItem();
         }
