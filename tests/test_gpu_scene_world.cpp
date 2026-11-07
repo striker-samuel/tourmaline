@@ -28,6 +28,25 @@ int g_failures = 0;
 using namespace tour::gpu_scene;
 
 int main() {
+    // Geometry-only revisions must not revisit CPU drawItems or reconcile
+    // the complete instance registry. The empty World tests the control
+    // path without requiring Vulkan or a cooked cluster.
+    {
+        World world{};
+        RenderDatabase snapshot{};
+        WorldSynchronizer sync{};
+        const auto first = sync.Synchronize(world, snapshot, 1);
+        CHECK(first.topologyReconciled && first.geometryRefreshed);
+        const auto unchanged = sync.Synchronize(world, snapshot, 1);
+        CHECK(!unchanged.topologyReconciled && !unchanged.geometryRefreshed);
+        const auto geometryOnly = sync.Synchronize(world, snapshot, 2);
+        CHECK(!geometryOnly.topologyReconciled && geometryOnly.geometryRefreshed);
+        CHECK(geometryOnly.created == 0 && geometryOnly.updated == 0 &&
+              geometryOnly.retired == 0 && geometryOnly.geometryMeshesVisited == 0);
+        ++world.gpuSceneTopologyRevision;
+        const auto topology = sync.Synchronize(world, snapshot, 2);
+        CHECK(topology.topologyReconciled);
+    }
     RenderDatabase db{};
     SceneRegistry bridge{};
     SourceRecord a{};
