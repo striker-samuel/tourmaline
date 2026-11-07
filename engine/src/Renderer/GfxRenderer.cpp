@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/Renderer/GfxRenderer.h>
+#include <Engine/Memory/linear_vector.h>
 #include <Engine/Rendergraph/FrameContext.h>
 #include <Engine/Renderer/Renderer.h>
 
@@ -670,7 +671,9 @@ namespace engine {
 		// spans; one span per eligible range, same 1:1 shape as the
 		// indexed multi-draw loop).
 		struct Span { smvk::ShaderProgram* prog; uint32_t base; uint32_t count; };
-		std::vector<Span> spans;
+		// Recording-only scratch; destroyed before the next frame allocator reset.
+		tour::mem::FrameVector<Span> spans{
+			tour::mem::LinearAllocatorSTL<Span>{&tour::mem::FrameAllocator()}};
 		auto& list = v.meshListScratch;
 		list.clear();
 		const std::vector<smvk::gfx::MaterialRange>& ranges =
