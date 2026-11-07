@@ -528,7 +528,9 @@ void TextureStreamer::Update(uint32_t frameIndex)
 	//    (pops in where it matters most), cheapest first on ties. Pinned
 	//    (pink error) entries never re-attempt their broken payload.
 	struct Candidate { Entry* e; uint32_t deficit; };
-	std::vector<Candidate> upgrades;
+	// Update is render-thread-only, within the renderer's frame scratch lifetime.
+	tour::mem::FrameVector<Candidate> upgrades{
+		tour::mem::LinearAllocatorSTL<Candidate>{&tour::mem::FrameAllocator()}};
 	for (auto& [key, e] : entries_)
 	{
 		(void)key;
@@ -587,7 +589,8 @@ void TextureStreamer::Update(uint32_t frameIndex)
 	if (total > config_.budgetBytes)
 	{
 		SMVK_PROFILE_STREAM("TexStreamer_Downgrades");
-		std::vector<Entry*> cands;
+		tour::mem::FrameVector<Entry*> cands{
+			tour::mem::LinearAllocatorSTL<Entry*>{&tour::mem::FrameAllocator()}};
 		for (auto& [key, e] : entries_)
 		{
 			(void)key;
