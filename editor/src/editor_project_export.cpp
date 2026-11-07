@@ -111,6 +111,123 @@ std::string WithBakeFlag(const std::string& source, const std::string& target, b
     return source + (source.empty() || source.back() == '\n' ? "" : "\n") + replacement + "\n";
 }
 
+
+// Patch a single directive within a recipe header or one [pak] section.
+// Edit only the selected line: unrecognized directives and comments remain intact.
+std::string WithRecipeDirective(const std::string& source,
+                                const std::string& pakId,
+                                const std::string& key,
+                                const std::string& value) {
+    size_t sectionStart = 0;
+    size_t sectionEnd = source.size();
+    const size_t firstPak = source.find("[pak ");
+    if (pakId.empty()) {
+        if (firstPak != std::string::npos)
+            sectionEnd = firstPak;
+    } else {
+        const std::string header = "[pak " + pakId + "]";
+        const size_t at = source.find(header);
+        if (at == std::string::npos)
+            return source;
+        const size_t lineEnd = source.find('\n', at);
+        sectionStart = lineEnd == std::string::npos ? source.size() : lineEnd + 1;
+        const size_t next = source.find("[pak ", sectionStart);
+        if (next != std::string::npos)
+            sectionEnd = next;
+    }
+    const std::string directive = key + " ";
+    for (size_t at = sectionStart; at < sectionEnd;) {
+        const size_t eol = source.find('\n', at);
+        const size_t stop = eol == std::string::npos ? source.size() : eol;
+        const size_t nonspace = source.find_first_not_of(" \t", at);
+        if (nonspace != std::string::npos && nonspace < stop &&
+            (source.compare(nonspace, directive.size(), directive) == 0 ||
+             source.compare(nonspace, key.size(), key) == 0 &&
+                 nonspace + key.size() == stop)) {
+            const size_t comment = source.find('#', nonspace + key.size());
+            const std::string suffix = comment != std::string::npos && comment < stop
+                                           ? " " + source.substr(comment, stop - comment)
+                                           : "";
+            const size_t removeEnd = eol == std::string::npos ? stop : eol + 1;
+            const std::string replacement =
+                value.empty() ? "" : key + " " + value + suffix +
+                                         (eol == std::string::npos ? "" : "\n");
+            return source.substr(0, at) + replacement + source.substr(removeEnd);
+        }
+        if (eol == std::string::npos)
+            break;
+        at = eol + 1;
+    }
+    if (value.empty())
+        return source;
+    const size_t insertAt = sectionEnd;
+    const std::string prefix = insertAt > 0 && source[insertAt - 1] != '\n' ? "\n" : "";
+    return source.substr(0, insertAt) + prefix + key + " " + value + "\n" +
+           source.substr(insertAt);
+}
+
+// Append repeated directives rather than replacing the first owned item.
+std::string WithRecipeListItem(const std::string& source,
+                               const std::string& pakId,
+                               const std::string& key,
+                               const std::string& value) {
+    const size_t start = source.find("[pak " + pakId + "]");
+    if (start == std::string::npos)
+        return source;
+    const size_t next = source.find("[pak ", start + 1);
+    const size_t insertAt = next == std::string::npos ? source.size() : next;
+    const std::string prefix = insertAt > 0 && source[insertAt - 1] != '\n' ? "\n" : "";
+    return source.substr(0, insertAt) + prefix + key + " " + value + "\n" +
+           source.substr(insertAt);
+}
+
+// Remove one repeated include/depends directive, without touching siblings.
+std::string WithoutRecipeListItem(const std::string& source,
+                                  const std::string& pakId,
+                                  const std::string& key,
+                                  size_t index) {
+    const std::string header = "[pak " + pakId + "]";
+    const size_t start = source.find(header);
+    if (start == std::string::npos)
+        return source;
+    const size_t firstLine = source.find('\n', start);
+    if (firstLine == std::string::npos)
+        return source;
+    const size_t end = source.find("[pak ", firstLine + 1);
+    const size_t limit = end == std::string::npos ? source.size() : end;
+    size_t seen = 0;
+    for (size_t at = firstLine + 1; at < limit;) {
+        const size_t eol = source.find('\n', at);
+        const size_t stop = eol == std::string::npos ? source.size() : eol;
+        const size_t first = source.find_first_not_of(" \t", at);
+        if (first != std::string::npos && first < stop &&
+            source.compare(first, key.size() + 1, key + " ") == 0) {
+            if (seen++ == index)
+                return source.substr(0, at) +
+                       source.substr(eol == std::string::npos ? stop : eol + 1);
+        }
+        if (eol == std::string::npos)
+            break;
+        at = eol + 1;
+    }
+    return source;
+}
+
+std::string WithoutRecipePak(const std::string& source, const std::string& id) {
+    const size_t start = source.find("[pak " + id + "]");
+    if (start == std::string::npos)
+        return source;
+    const size_t next = source.find("[pak ", start + 1);
+    return source.substr(0, start) +
+           (next == std::string::npos ? "" : source.substr(next));
+}
+
+std::string RecipeValue(const std::string& value) {
+    if (value.find_first_of(" \t#") == std::string::npos)
+        return value;
+    return "\"" + value + "\"";
+}
+
 } // namespace
 
 bool EditorApp::LoadProjectExportRecipe(const std::string& filename) {
@@ -267,38 +384,192 @@ void EditorApp::DrawProjectExportWindow() {
         if (!LoadProjectExportRecipe(m_projectExportRecipeNameBuf))
             Log("Export Project: " + m_projectExportStatus);
     }
-    // Keep the complete text as the source of truth; the quick bake
-    // controls patch only their directives and preserve other lines.
+    // Both views edit the SAME canonical recipe buffer. A malformed raw draft
+    // stays editable in Text mode; no form state may silently rewrite it.
+    auto apply = [&](const std::string& next) {
+        if (next == m_projectExportRecipeText.data())
+            return;
+        if (next.size() >= m_projectExportRecipeText.size()) {
+            m_projectExportStatus = "Recipe exceeds the editor's 64 KiB text limit.";
+            return;
+        }
+        m_projectExportRecipeText.fill('\0');
+        std::memcpy(m_projectExportRecipeText.data(), next.data(), next.size());
+        m_projectExportDirty = true;
+    };
+    const auto directiveInput = [&](const char* label,
+                                    const char* id,
+                                    const std::string& pak,
+                                    const std::string& key,
+                                    const std::string& current,
+                                    bool allowEmpty = false) {
+        char buf[1024]{};
+        std::snprintf(buf, sizeof(buf), "%s", current.c_str());
+        ImGui::PushID(id);
+        if (ImGui::InputText(label, buf, sizeof(buf))) {
+            const std::string value(buf);
+            if (allowEmpty || !value.empty())
+                apply(WithRecipeDirective(m_projectExportRecipeText.data(), pak, key,
+                                          value.empty() ? "" : RecipeValue(value)));
+        }
+        ImGui::PopID();
+    };
     smvk::project::ProjectRecipe preview;
     smvk::project::RecipeDiagnostic previewError;
-    if (smvk::project::ParseProjectRecipeText(
-            m_projectExportRecipeText.data(), preview, previewError)) {
-        ImGui::TextDisabled(
-            "Entry: %s | %zu package(s)", preview.entry.c_str(), preview.paks.size());
-        auto bakeCheckbox = [&](const char* label, const char* key, bool on) {
-            if (ImGui::Checkbox(label, &on)) {
-                const std::string next = WithBakeFlag(m_projectExportRecipeText.data(), key, on);
-                if (next.size() < m_projectExportRecipeText.size()) {
-                    m_projectExportRecipeText.fill('\0');
-                    std::memcpy(m_projectExportRecipeText.data(), next.data(), next.size());
-                    m_projectExportDirty = true;
+    const bool parsed = smvk::project::ParseProjectRecipeText(
+        m_projectExportRecipeText.data(), preview, previewError);
+
+    if (ImGui::BeginTabBar("##recipeViews")) {
+        if (ImGui::BeginTabItem("Configure")) {
+            m_projectExportVisualMode = true;
+            if (!parsed) {
+                ImGui::TextWrapped("The recipe has a syntax error: %s",
+                                   previewError.Format(m_projectExportRecipeNameBuf).c_str());
+                ImGui::TextWrapped("Switch to Text to fix it. Your draft has not been changed.");
+            } else {
+                ImGui::TextDisabled("Edit project settings and package ownership below.");
+                directiveInput("Project name", "project", "", "project", preview.projectName);
+                directiveInput("Entry scene", "entry", "", "entry", preview.entry);
+                ImGui::SeparatorText("Default baking");
+                auto bake = [&](const char* label, const char* key, bool on) {
+                    if (ImGui::Checkbox(label, &on))
+                        apply(WithRecipeDirective(m_projectExportRecipeText.data(), "",
+                                                  std::string("bake ") + key,
+                                                  on ? "on" : "off"));
+                };
+                bake("GI", "gi", preview.bakeGi);
+                ImGui::SameLine();
+                bake("Cubemaps", "cubemaps", preview.bakeCubemaps);
+                ImGui::SameLine();
+                bake("SDF", "sdf", preview.bakeSdf);
+
+                ImGui::SeparatorText("Packages");
+                if (m_projectExportSelectedPak >= static_cast<int>(preview.paks.size()))
+                    m_projectExportSelectedPak = std::max(0, int(preview.paks.size()) - 1);
+                ImGui::BeginChild("##pakList", ImVec2(175, 255), ImGuiChildFlags_Borders);
+                for (size_t i = 0; i < preview.paks.size(); ++i) {
+                    ImGui::PushID(static_cast<int>(i));
+                    if (ImGui::Selectable(preview.paks[i].id.c_str(),
+                                          int(i) == m_projectExportSelectedPak))
+                        m_projectExportSelectedPak = static_cast<int>(i);
+                    ImGui::PopID();
                 }
+                ImGui::EndChild();
+                ImGui::SameLine();
+                ImGui::BeginGroup();
+                if (!preview.paks.empty()) {
+                    const auto& pak = preview.paks[size_t(m_projectExportSelectedPak)];
+                    ImGui::Text("Package: %s", pak.id.c_str());
+                    directiveInput("Output (.pak)", "output", pak.id, "output", pak.output);
+                    directiveInput("Owned scene", "scene", pak.id, "scene", pak.scene, true);
+                    bool transitive = pak.dependenciesTransitive;
+                    if (ImGui::Checkbox("Transitive dependencies", &transitive))
+                        apply(WithRecipeDirective(m_projectExportRecipeText.data(), pak.id,
+                                                  "dependencies",
+                                                  transitive ? "transitive" : "none"));
+                    ImGui::TextDisabled("Per-package bake overrides");
+                    auto pakBake = [&](const char* label, const char* key,
+                                       const std::optional<bool>& overrideValue) {
+                        int selection = !overrideValue.has_value() ? 0 :
+                                        (*overrideValue ? 1 : 2);
+                        ImGui::PushID(key);
+                        if (ImGui::Combo(label, &selection, "Inherit\0On\0Off\0")) {
+                            apply(WithRecipeDirective(
+                                m_projectExportRecipeText.data(), pak.id,
+                                std::string("bake ") + key,
+                                selection == 0 ? "" : selection == 1 ? "on" : "off"));
+                        }
+                        ImGui::PopID();
+                    };
+                    pakBake("GI override", "gi", pak.bakeGi);
+                    pakBake("Cubemap override", "cubemaps", pak.bakeCubemaps);
+                    ImGui::TextDisabled("Includes (project-relative globs)");
+                    for (size_t i = 0; i < pak.includes.size(); ++i) {
+                        ImGui::PushID(static_cast<int>(i));
+                        ImGui::TextUnformatted(pak.includes[i].c_str());
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Remove##include"))
+                            apply(WithoutRecipeListItem(m_projectExportRecipeText.data(),
+                                                        pak.id, "include", i));
+                        ImGui::PopID();
+                    }
+                    ImGui::InputTextWithHint("##newInclude", "content/models/**",
+                                             m_projectExportNewIncludeBuf,
+                                             sizeof(m_projectExportNewIncludeBuf));
+                    ImGui::SameLine();
+                    if (ImGui::Button("Add include") && m_projectExportNewIncludeBuf[0]) {
+                        apply(WithRecipeListItem(
+                            m_projectExportRecipeText.data(), pak.id, "include",
+                            RecipeValue(m_projectExportNewIncludeBuf)));
+                        m_projectExportNewIncludeBuf[0] = '\0';
+                    }
+                    ImGui::TextDisabled("Depends on (pak IDs)");
+                    for (size_t i = 0; i < pak.depends.size(); ++i) {
+                        ImGui::PushID(static_cast<int>(i));
+                        ImGui::TextUnformatted(pak.depends[i].c_str());
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Remove##depends"))
+                            apply(WithoutRecipeListItem(m_projectExportRecipeText.data(),
+                                                        pak.id, "depends", i));
+                        ImGui::PopID();
+                    }
+                    ImGui::InputTextWithHint("##newDepends", "shared",
+                                             m_projectExportNewDependsBuf,
+                                             sizeof(m_projectExportNewDependsBuf));
+                    ImGui::SameLine();
+                    if (ImGui::Button("Add dependency") && m_projectExportNewDependsBuf[0]) {
+                        apply(WithRecipeListItem(
+                            m_projectExportRecipeText.data(), pak.id, "depends",
+                            RecipeValue(m_projectExportNewDependsBuf)));
+                        m_projectExportNewDependsBuf[0] = '\0';
+                    }
+                    if (ImGui::Button("Remove package")) {
+                        // Removing a package never implicitly rewires dependants.
+                        apply(WithoutRecipePak(m_projectExportRecipeText.data(), pak.id));
+                    }
+                }
+                ImGui::EndGroup();
+                ImGui::InputTextWithHint("##newPak", "new-package-id",
+                                         m_projectExportNewPakBuf,
+                                         sizeof(m_projectExportNewPakBuf));
+                ImGui::SameLine();
+                if (ImGui::Button("Add package") && m_projectExportNewPakBuf[0]) {
+                    const std::string id(m_projectExportNewPakBuf);
+                    const bool safe = id.find_first_not_of(
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") ==
+                                      std::string::npos;
+                    if (!safe || preview.FindPak(id))
+                        m_projectExportStatus = "Choose a unique package ID (letters, digits, - or _).";
+                    else {
+                        std::string next(m_projectExportRecipeText.data());
+                        if (!next.empty() && next.back() != '\n')
+                            next += '\n';
+                        next += "\n[pak " + id + "]\noutput " + id + ".pak\n";
+                        apply(next);
+                        m_projectExportSelectedPak = static_cast<int>(preview.paks.size());
+                        m_projectExportNewPakBuf[0] = '\0';
+                    }
+                }
+                ImGui::TextDisabled("Advanced material channel/encoding directives: Text tab.");
             }
-        };
-        bakeCheckbox("Bake GI", "gi", preview.bakeGi);
-        ImGui::SameLine();
-        bakeCheckbox("Bake cubemaps", "cubemaps", preview.bakeCubemaps);
-        ImGui::SameLine();
-        bakeCheckbox("Bake SDF", "sdf", preview.bakeSdf);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Text")) {
+            m_projectExportVisualMode = false;
+            ImGui::TextDisabled("Full .tourrecipe source. Comments and advanced directives are preserved.");
+            if (ImGui::InputTextMultiline("##tourrecipe",
+                                          m_projectExportRecipeText.data(),
+                                          m_projectExportRecipeText.size(),
+                                          ImVec2(-1.0f, 310.0f),
+                                          ImGuiInputTextFlags_AllowTabInput))
+                m_projectExportDirty = true;
+            if (!parsed)
+                ImGui::TextWrapped("%s",
+                                   previewError.Format(m_projectExportRecipeNameBuf).c_str());
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
     }
-    ImGui::TextDisabled("recipe 1 | project | entry | bake gi/cubemaps/sdf | "
-                        "[pak id]: output, scene, include, depends, dependencies transitive");
-    if (ImGui::InputTextMultiline("##tourrecipe",
-                                  m_projectExportRecipeText.data(),
-                                  m_projectExportRecipeText.size(),
-                                  ImVec2(-1.0f, -130.0f),
-                                  ImGuiInputTextFlags_AllowTabInput))
-        m_projectExportDirty = true;
     const bool busy = m_cookRunning || m_bakeRunning || m_dccPublishRunning;
     if (m_tourDirty && m_world)
         ImGui::TextWrapped("Current scene has unsaved changes. Save it "
