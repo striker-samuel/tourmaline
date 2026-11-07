@@ -754,6 +754,18 @@ class CandidateValidator {
         return true;
     }
 
+    [[nodiscard]] uint64_t RasterWorkAddress(const smvk::ResourceManager& ctx,
+                                            uint32_t flight) const {
+        return flight < Flights && !flight_[flight].workOutput.empty()
+                   ? ctx.GetBufferDeviceAddress(flight_[flight].workOutput)
+                   : 0;
+    }
+
+    [[nodiscard]] smvk::BufferHandle RasterWorkBuffer(uint32_t flight) const {
+        return flight < Flights ? smvk::BufferHandle(flight_[flight].workOutput)
+                                : smvk::BufferHandle{};
+    }
+
     void MarkDispatched(uint32_t flight) {
         if (flight >= Flights)
             return;
