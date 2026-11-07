@@ -6,12 +6,15 @@
 // receives a persistent Leaf table and contiguous generational instance refs.
 // No view-frustum test or GPU culling is performed in this phase.
 #include <Engine/Renderer/gpu_scene_upload.h>
+#include <Engine/Memory/arena.h>
 
 #include <algorithm>
 #include <cmath>
 #include <compare>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <span>
 #include <map>
 #include <set>
 #include <utility>
@@ -137,6 +140,27 @@ class LeafRegistry {
                               (row->range.z & LeafFlagBoundsComplete) != 0});
         }
         return result;
+    }
+
+    // Production coarse selection: frame-lifetime tickets with no heap
+    // vector. The returned span is invalid after ResetFrameArena.
+    [[nodiscard]] std::span<const LeafTicket> TicketsFrame(const RenderDatabase& db) const {
+        if (leaves_.empty())
+            return {};
+        auto* storage = static_cast<LeafTicket*>(
+            smvk::FrameArena().Allocate(leaves_.size() * sizeof(LeafTicket),
+                                        alignof(LeafTicket)));
+        size_t written = 0;
+        for (const auto& [cell, state] : leaves_) {
+            const Leaf* row = db.leaves.Get(state.leaf);
+            if (!row || row->range.y == 0)
+                continue;
+            std::construct_at(storage + written++,
+                              LeafTicket{cell, state.leaf, row->range.x,
+                                         row->range.y,
+                                         (row->range.z & LeafFlagBoundsComplete) != 0});
+        }
+        return {storage, written};
     }
 
     [[nodiscard]] static LeafCell CellFor(const Instance& instance) {
