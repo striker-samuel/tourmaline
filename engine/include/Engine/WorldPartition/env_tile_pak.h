@@ -8,6 +8,8 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/WorldPartition/WorldEnvTiles.h>
 #include <bit>
+#include <cmath>
+#include <utility>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
