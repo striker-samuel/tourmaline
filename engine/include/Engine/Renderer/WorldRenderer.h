@@ -4440,6 +4440,13 @@ class WorldRenderer : public IRenderer {
     // 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
     // Exposure section; applied per-frame onto the tonemapDesc push.
     uint32_t m_tonemapMode = smvk::kTonemapGT7;
+    // SDR display preview trims, applied after LUT and before the sRGB encode.
+    // Not a monitor ICC/EDID profile, HDR calibration or physical nit control.
+    float m_displayRedGain = 1.0f;
+    float m_displayGreenGain = 1.0f;
+    float m_displayBlueGain = 1.0f;
+    float m_displayBrightness = 1.0f;
+    bool m_displayTestPattern = false;
 
     // Clipping-view thresholds (IsClippingDebugView; display-encoded SDR
     // luma, ImGui sliders in the Debug panel): shadow at/below, highlight

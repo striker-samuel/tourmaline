@@ -43,6 +43,11 @@ struct TonemapPush
     // appended tail, 88 bytes total).
     float shadowClipThreshold;
     float highlightClipThreshold;
+    float displayRedGain;
+    float displayGreenGain;
+    float displayBlueGain;
+    float displayBrightness;
+    uint displayTestPattern;
 };
 
 GPU_PUSH(TonemapPush, tp);
@@ -167,6 +172,34 @@ float3 GT7Tonemap(float3 c)
     return 0.4f * min(blended, 2.5f); // SDR correction 1/2.5, clamp to peak
 }
 
+// SDR-only preview: upper band is a 10-step linear gray ramp,
+// lower band displays black, white, and Rec.709 primaries/secondaries.
+// The pattern bypasses exposure, tonemapping and the artistic LUT.
+float3 DisplayCalibrationPattern(float2 uv)
+{
+    if (uv.y < 0.5f)
+    {
+        float gray = floor(saturate(uv.x) * 9.999f) / 9.0f;
+        return gray.xxx;
+    }
+    uint patch = min((uint)(saturate(uv.x) * 8.0f), 7u);
+    if (patch == 0u) return float3(0, 0, 0);
+    if (patch == 1u) return float3(1, 1, 1);
+    if (patch == 2u) return float3(1, 0, 0);
+    if (patch == 3u) return float3(0, 1, 0);
+    if (patch == 4u) return float3(0, 0, 1);
+    if (patch == 5u) return float3(1, 1, 0);
+    if (patch == 6u) return float3(0, 1, 1);
+    return float3(1, 0, 1);
+}
+
+float3 ApplyDisplayCalibration(float3 linearSdr)
+{
+    float3 gains = max(float3(tp.displayRedGain, tp.displayGreenGain,
+                               tp.displayBlueGain), 0.0f);
+    return saturate(linearSdr * gains * max(tp.displayBrightness, 0.0f));
+}
+
 float3 Tonemap(float3 c, uint mode)
 {
     if (mode == 0) return Reinhard(c);
@@ -265,6 +298,12 @@ PSOut mainPS(PSIn IN)
     float3 mapped = Tonemap(hdr * exposure, mode);
     if (tp.lutTextureIndex != 0xffffffff && tp.lutTextureIndex < 100000 && tp.lutIntensity > 0.0f)
         mapped = lerp(mapped, SampleLut(mapped), saturate(tp.lutIntensity));
+
+    // Test colors are defined in linear SDR, independent of scene exposure,
+    // chosen tone curve, bloom, and LUT. Apply the same display trims.
+    if (tp.displayTestPattern != 0u)
+        mapped = DisplayCalibrationPattern(IN.uv);
+    mapped = ApplyDisplayCalibration(mapped);
 
     // Clipping debug views (2 = combined, 3 = shadows, 4 = highlights):
     // inspect the FINAL image — after exposure, bloom, tonemap AND LUT

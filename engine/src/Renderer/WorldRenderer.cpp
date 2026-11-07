@@ -16452,6 +16452,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         smvk::TonemapDesc tonemapDesc = m_viewportResources.tonemap.desc;
         tonemapDesc.exposure = frameExposure;
         tonemapDesc.tonemapMode = m_tonemapMode;
+        tonemapDesc.displayRedGain = m_displayRedGain;
+        tonemapDesc.displayGreenGain = m_displayGreenGain;
+        tonemapDesc.displayBlueGain = m_displayBlueGain;
+        tonemapDesc.displayBrightness = m_displayBrightness;
+        tonemapDesc.displayTestPattern = m_displayTestPattern;
         // The clipping views' thresholds (debugView 2..4 reads them;
         // harmless zeros for every other mode).
         tonemapDesc.shadowClipThreshold = m_shadowClipThreshold;
