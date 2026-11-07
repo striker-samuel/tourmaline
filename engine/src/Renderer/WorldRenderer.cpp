@@ -8247,6 +8247,16 @@ void WorldRenderer::DumpDeferredShadows(uint32_t frameIndex) {
     const uint32_t groups = ds.groupCountX * ds.groupCountY;
     constexpr uint32_t kEntries = 1 + smvk::kDsMaxLightGroups;
 
+    // Readbacks overwrite the entire buffer on success. Keep their temporary
+    // storage in frame memory; a span is only a pointer and an element count.
+    const auto frameWords = [](size_t count) -> std::span<uint32_t> {
+        if (count == 0)
+            return {};
+        return {static_cast<uint32_t*>(tour::mem::FrameAllocator().Allocate(
+                    count * sizeof(uint32_t), alignof(uint32_t))),
+                count};
+    };
+
     std::fprintf(stderr,
                  "[ds-dump] frame=%u localTiles=%u (spots %u + point faces %u) spotMapIdx=%d "
                  "(retired stats: list=%u vis=%u lit=%u shadow=%u penumbra=%u early=%u final=%u)\n",
@@ -8265,7 +8275,7 @@ void WorldRenderer::DumpDeferredShadows(uint32_t frameIndex) {
 
     // ---- Phase 1 output (CPU Tile Light Masks, phase 2's input) ----
     {
-        std::vector<uint32_t> masks(size_t(groups) * kEntries, 0);
+        std::span<uint32_t> masks = frameWords(size_t(groups) * kEntries);
         if (m_context->DownloadDataFromBuffer(
                 ds.TileMasksBuffer(frameIndex), masks.data(), masks.size() * sizeof(uint32_t))) {
             uint32_t withLights = 0, spotGroups = 0;
@@ -8296,7 +8306,7 @@ void WorldRenderer::DumpDeferredShadows(uint32_t frameIndex) {
 
     // ---- Phase 2 output: TileGroup light masks ----
     {
-        std::vector<uint32_t> masks(size_t(groups) * kEntries, 0);
+        std::span<uint32_t> masks = frameWords(size_t(groups) * kEntries);
         if (m_context->DownloadDataFromBuffer(ds.TileGroupMasksBuffer(frameIndex),
                                               masks.data(),
                                               masks.size() * sizeof(uint32_t))) {
@@ -8339,7 +8349,7 @@ void WorldRenderer::DumpDeferredShadows(uint32_t frameIndex) {
 
     // ---- Phase 3/4 output: tile state + sampled final entries ----
     {
-        std::vector<uint32_t> state(size_t(tiles) * 4, 0);
+        std::span<uint32_t> state = frameWords(size_t(tiles) * 4);
         if (!m_context->DownloadDataFromBuffer(
                 ds.TileStateBuffer(frameIndex), state.data(), state.size() * sizeof(uint32_t))) {
             std::fprintf(stderr, "[ds-dump] tileState download FAILED\n");
