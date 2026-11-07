@@ -725,10 +725,11 @@ void EditorApp::RecordPrefabComposePass(
         m_prefabComposePhysical=m_prefabRenderer->InlineTargetView();
     }
     if (m_prefabComposeLogical.empty()) return;
+    const smvk::LogicalImageViewHandle prefabSwapViews[] = { swapView };
     m_prefabComposite.AddCompositePass(*m_rendergraph,
         m_prefabComposeLogical,
         m_prefabRenderer->InlineTargetBindlessIndex(),0,
-        {swapView},
+        prefabSwapViews,
         smvk::Extent2D{uint32_t(x1-x0),uint32_t(y1-y0)},
         false,"PrefabWorldCompose",uint32_t(x0),uint32_t(y0),
         true);

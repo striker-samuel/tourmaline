@@ -1365,6 +1365,7 @@ namespace editor {
 		// shows the scene).
 		d.exposure = PreviewExposure();
 		d.tonemapMode = RenderLook().tonemapMode;
+		const smvk::LogicalImageViewHandle previewSwapViews[] = { swapView };
 		m_previewTonemap.AddTonemapPass(*m_rendergraph,
 			m_sceneHdr.logicalView,
 			m_sceneHdr.bindlessIndex,
@@ -1376,7 +1377,7 @@ namespace editor {
 				.addressV = smvk::AddressMode::ClampToEdge,
 				.addressW = smvk::AddressMode::ClampToEdge,
 				.maxAnisotropy = 1.0f }), // dedupes to slot 0 (EnsureShaders)
-			{ swapView },
+			previewSwapViews,
 			smvk::Extent2D{ uint32_t(rect.w), uint32_t(rect.h) },
 			d, name,
 			{}, UINT32_MAX, 0u, 16.0f,   // no motion-vector debug layer
@@ -3439,11 +3440,12 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 		// alpha-blending copy paints NOTHING (the "gray tab" bug:
 		// identical ON/OFF screenshots, the pass traced healthy).
 		// Opaque replaces the dst regardless of the source alpha.
+		const smvk::LogicalImageViewHandle wysiwygSwapViews[] = { swapView };
 		m_wysiwygComposite.AddCompositePass(*m_rendergraph,
 			m_wysiwygComposeLogical,
 			m_wysiwyg->InlineTargetBindlessIndex(),
 			0 /* linear clamp sampler */,
-			{ swapView },
+			wysiwygSwapViews,
 			smvk::Extent2D{ uint32_t(w), uint32_t(h) },
 			swapIsSrgb,
 			"WysiwygCompose",

@@ -428,26 +428,21 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
 							ImGui::SliderFloat("Highlight boost", &m_dofHighlightBoost, 1.0f, 4.0f);
 							ImGui::SliderFloat("Highlight threshold", &m_dofHighlightThreshold, 0.0f, 8.0f);
 						}
-						// Color grading / LUT.
-						const char* current = m_lutFile.empty() ? "Off" : m_lutFile.c_str();
-						if (ImGui::BeginCombo("Color LUT", current)) {
-							if (ImGui::Selectable("Off", m_lutFile.empty())) {
-								m_lutFile.clear();
-								m_lutTexture = {};
-								m_lutBindless = UINT32_MAX;
-							}
-							for (const std::string& f : m_lutFiles) {
-								const bool selected = (m_lutFile == f);
-								if (ImGui::Selectable(f.c_str(), selected))
-									LoadLut(f);
-							}
-							ImGui::EndCombo();
+						// Color grading / LUT. The renderer no longer scans a
+						// directory: the runtime asset service supplies decoded
+						// catalog LUT bytes through SetColorLutRgba, so this panel
+						// only reports the active LUT and clears it.
+						if (m_lutFile.empty()) {
+							ImGui::TextDisabled(
+								"Color LUT: off (catalog LUTs load through the runtime asset service)");
 						}
-						if (!m_lutFile.empty())
+						else {
+							ImGui::Text("Color LUT: %s", m_lutFile.c_str());
+							ImGui::SameLine();
+							if (ImGui::Button("Clear"))
+								ClearColorLut();
 							ImGui::SliderFloat("LUT intensity", &m_lutIntensity, 0.0f, 1.0f, "%.2f");
-						ImGui::SameLine();
-						if (ImGui::Button("Rescan"))
-							ScanLutFiles();
+						}
 					}
 
 					// ---- Atmosphere: sky, sun, zones, fog.
@@ -1529,6 +1524,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
 							const bool occOn = (m_gfxRenderer.config.cullFlags
 								& smvk::gfx::CullFlagBit_HzbOcclusion) != 0;
 							uint32_t hw = 0, hh = 0, hm = 0;
+							const uint32_t gfxSlot = m_gfxRenderer.LastSlot();
 							if (gfxSlot != smvk::RenderViewSet::kInvalidIndex
 								&& gfxSlot < m_gfxRenderer.State().temporals.size()) {
 								const smvk::gfx::HizResources& hz =
@@ -1537,6 +1533,8 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
 							}
 							const bool depthOk =
 								m_viewportResources.hizDepth.bindlessIndex != UINT32_MAX;
+							const bool cullingFrozen =
+								m_freezeCullingView && m_frozenViewValid;
 							ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s",
 								hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
 								cullingFrozen ? "FROZEN" : "live");
@@ -2210,8 +2208,7 @@ namespace engine {
 			// disables itself and says why, instead of silently showing
 			// the wrong function.
 			const bool proceduralReference =
-				m_worldFields.BrickSource(kMapFogFieldId)
-					== &g_fogDensitySource;
+				FogFieldUsesProceduralReference();
 			if (!proceduralReference) {
 				dl->AddText(ImVec2(o.x + 6.0f, o.y + 4.0f),
 					IM_COL32(220, 160, 90, 255),
@@ -2228,7 +2225,7 @@ namespace engine {
 					gz < z1; gz += worldCell)
 					for (float gx = std::floor(vx0 / worldCell) * worldCell;
 						gx < x1; gx += worldCell) {
-						const float d = WorldFogDensitySource::WorldDensity01(
+						const float d = WorldRenderer::ProceduralFogDensity01(
 							glm::vec3(gx, mapEye.y, gz));
 						if (d <= 0.02f)
 							continue;

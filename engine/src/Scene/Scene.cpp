@@ -183,14 +183,17 @@ int addNode(Scene& scene, int parent, int level, bool autoName)
       scene.hidden.push_back(0);
     }
     // Generation word: grow-with-alive so a lagging array (wholesale
-    // resizes never touched it) keeps its untracked slots LIVE.
+    // resizes never touched it) keeps its untracked slots LIVE. This
+    // MUST run AFTER the hierarchy push below covers the new slot —
+    // resizing to the pre-push size leaves the fresh slot untracked and
+    // the nodeGeneration[node] write one past the end.
+    scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
     if (scene.nodeGeneration.size() < scene.hierarchy.size()) {
       const size_t base = scene.nodeGeneration.size();
       scene.nodeGeneration.resize(scene.hierarchy.size());
       for (size_t i = base; i < scene.nodeGeneration.size(); ++i)
         scene.nodeGeneration[i] = kNodeSlotAliveBit;
     }
-    scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
   }
   // The linking block below only mutates the PARENT's entry (and
   // siblings'); the node's own .parent is set HERE for both branches

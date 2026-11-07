@@ -2102,6 +2102,14 @@ public:
 	// world_field.hlsli instead.
 	engine::worldfields::WorldFieldSystem& WorldFields() { return m_worldFields; }
 	const engine::worldfields::WorldFieldSystem& WorldFields() const { return m_worldFields; }
+	// The World Map's fog heat layer evaluates the engine's PROCEDURAL
+	// fog reference; that evaluation is only truthful while the fog
+	// field's installed brick source IS that reference (a cooked or
+	// alternate source would make the layer a lie, so the UI disables
+	// it). These expose exactly the two pieces the layer needs without
+	// leaking the source object itself.
+	bool FogFieldUsesProceduralReference() const;
+	static float ProceduralFogDensity01(glm::vec3 p);
 	// The renderer hosts exactly one runtime World and one active authored
 	// Map. WorldId names the spatial distribution, NOT another World.
 	// The host must install its borrowed SceneTileProvider on this partition
@@ -3614,6 +3622,7 @@ private:
 	bool BuildGiVolumeSetFromPaths(const std::vector<std::string>& lines,
 		std::vector<GiVolumeResources>& built,
 		smvk::Holder<smvk::BufferHandle>& buf, uint64_t& addr);
+public:
 	// ---- THE ASSET-MANAGER GI LANE (docs/content_as_code.md) --------
 	// Publish an EXTERNAL GI set (a loaded GiKey's volumes) as the
 	// ACTIVE set A - the hot-swap publish pattern (old Holders retire
@@ -3644,6 +3653,7 @@ private:
 	// (per-flight FrameUniforms slabs keep their own slots/BDA). False
 	// = the old generation stays.
 	bool ReloadGiVolumesHotSwap();
+private:
 	// The probe-sphere instance tables (one per volume, strided to the
 	// cap, static): built lazily on the first m_giShowProbes arm.
 	void EnsureGiProbeInstances();

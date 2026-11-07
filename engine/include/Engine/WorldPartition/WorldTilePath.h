@@ -31,7 +31,9 @@ struct WorldTilePath {
         return bits > 1 ? WorldTilePath{bits >> 1} : WorldTilePath{0};
     }
     constexpr WorldTilePath Child(uint32_t side) const {
-        return Valid() && Depth() < 63 && side < 2
+        // A child never exceeds the max complete XZ level (2 bits per
+        // level): a path one half-step past it is not addressable.
+        return Valid() && Depth() < 2u * kMaxLevels && side < 2
             ? WorldTilePath{(bits << 1) | side}
             : WorldTilePath{0};
     }

@@ -978,15 +978,15 @@ void TestProjectScenes() {
 	// sounds; id-sorted within - the fold the generated project.h
 	// emits as CatalogFingerprint). IDENTITY ONLY (id, kind, path) —
 	// no package addressing in the fold.
-	const uint64_t fpIds[4] = { 0x1000, 0x1001, 0x2000, 0x4000 };
-	const uint8_t fpKinds[4] = { smvk::kCatalogKindScene,
+	const uint64_t fpIds[5] = { 0x1000, 0x1001, 0x2000, 0x2002, 0x4000 };
+	const uint8_t fpKinds[5] = { smvk::kCatalogKindScene,
 		smvk::kCatalogKindScene, smvk::kCatalogKindTexture,
-		smvk::kCatalogKindSound };
-	const char* const fpPaths[4] = { "content/scenes/church.tour",
+		smvk::kCatalogKindTexture, smvk::kCatalogKindSound };
+	const char* const fpPaths[5] = { "content/scenes/church.tour",
 		"content/scenes/two.tour", "content/models/s/stone.png",
-		"content/audio/bells.wav" };
+		lutPath.c_str(), "content/audio/bells.wav" };
 	const uint64_t catalogFp = smvk::ComputeCatalogFingerprint(
-		fpIds, fpKinds, fpPaths, 4);
+		fpIds, fpKinds, fpPaths, 5);
 	{
 		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
 		// appmanifest 2 (the RELEASE POINTER): entry + [paks] — the
@@ -1012,23 +1012,24 @@ void TestProjectScenes() {
 	// themselves against the deployment manifest.
 	{
 		using Desc = app::ProjectRuntime::CompiledAssetDesc;
-		const Desc assets[4] = {
+		const Desc assets[5] = {
 			{ 0x1000, smvk::kCatalogKindScene,
 				"content/scenes/church.tour", "" },
 			{ 0x1001, smvk::kCatalogKindScene,
 				"content/scenes/two.tour", "" },
 			{ 0x2000, smvk::kCatalogKindTexture,
 				"content/models/s/stone.png", "" },
+			{ 0x2002, smvk::kCatalogKindTexture, lutPath, "" },
 			{ 0x4000, smvk::kCatalogKindSound,
 				"content/audio/bells.wav", "" },
 		};
 		std::string aErr;
-		Check(rt.AttachCompiledCatalog(assets, 4, catalogFp, aErr)
+		Check(rt.AttachCompiledCatalog(assets, 5, catalogFp, aErr)
 			&& aErr.empty() && rt.CompiledCatalogAttached(),
 			"pscenes.catalog-attach-validates");
 		// A WRONG fingerprint fails loudly (the version-skew case).
 		std::string fErr;
-		Check(!rt.AttachCompiledCatalog(assets, 4, catalogFp + 1, fErr)
+		Check(!rt.AttachCompiledCatalog(assets, 5, catalogFp + 1, fErr)
 			&& fErr.find("mismatch") != std::string::npos,
 			"pscenes.catalog-fingerprint-mismatch-fails");
 		// A row the manifest does not carry fails loudly.
@@ -1045,12 +1046,12 @@ void TestProjectScenes() {
 		// the compiled row and the deployed record must agree on the
 		// LOGICAL PATH, the one field beyond id + kind).
 		{
-			const Desc moved[4] = { assets[0], assets[1],
+			const Desc moved[5] = { assets[0], assets[1],
 				{ 0x2000, smvk::kCatalogKindTexture,
 					"content/models/s/moved.png", "" },
-				assets[3] };
+				assets[3], assets[4] };
 			std::string mErr;
-			Check(!rt.AttachCompiledCatalog(moved, 4, catalogFp,
+			Check(!rt.AttachCompiledCatalog(moved, 5, catalogFp,
 					mErr)
 				&& mErr.find("moved") != std::string::npos,
 				"pscenes.catalog-path-drift-fails");
@@ -1066,18 +1067,19 @@ void TestProjectScenes() {
 				std::string_view path;
 				std::string_view sceneName;
 			};
-			const GeneratedDesc gen[4] = {
+			const GeneratedDesc gen[5] = {
 				{ 0x1000, smvk::kCatalogKindScene,
 					"content/scenes/church.tour", "" },
 				{ 0x1001, smvk::kCatalogKindScene,
 					"content/scenes/two.tour", "" },
 				{ 0x2000, smvk::kCatalogKindTexture,
 					"content/models/s/stone.png", "" },
+				{ 0x2002, smvk::kCatalogKindTexture, lutPath, "" },
 				{ 0x4000, smvk::kCatalogKindSound,
 					"content/audio/bells.wav", "" },
 			};
 			std::string gErr;
-			Check(app::AttachCompiledCatalog(rt, gen, 4, catalogFp,
+			Check(app::AttachCompiledCatalog(rt, gen, 5, catalogFp,
 					gErr)
 				&& gErr.empty(),
 				"pscenes.typed-helper-attaches");
@@ -1411,6 +1413,7 @@ void TestAssetManager() {
 		"# a legacy guid row (still parses)\n"
 		"abcdef0123456789abcdef0123456789 gi/scene_day_cellar.givolume\n";
 	const std::string texPath = "content/models/s/stone.png";
+	const std::string lutPath = "content/luts/neutral.png";
 	const std::string treeFamily = "content/models/tree.geometry";
 	const std::string rockFamily = "content/models/rock.geometry";
 	{
@@ -1423,6 +1426,24 @@ void TestAssetManager() {
 		w.AddBlob(smvk::PakAssetKind::Texture, texPath,
 			smvk::BuildTexturePayload(texPath, -1, -1, -1, -1,
 				std::span<const uint8_t>(ktx)));
+		// The catalog LUT travels in the same texture VFS channel,
+		// preserving the original PNG bytes instead of KTX2 (the
+		// am.lut-* checks below load it back through World::LoadLut).
+		{
+			const fs::path lutFile = tmp / "neutral.png";
+			std::vector<uint8_t> sourceLut(1024u * 32u * 4u, 255);
+			Check(engine::LutWritePng(lutFile.string().c_str(),
+				1024, 32, sourceLut.data()), "am.lut-source-png");
+			std::ifstream pngIn(lutFile, std::ios::binary);
+			const std::vector<uint8_t> encodedPng(
+				(std::istreambuf_iterator<char>(pngIn)),
+				std::istreambuf_iterator<char>());
+			Check(!encodedPng.empty()
+				&& w.AddBlob(smvk::PakAssetKind::Texture, lutPath,
+					smvk::BuildTexturePayload(lutPath, -1, -1, -1, -1,
+						std::span<const uint8_t>(encodedPng))),
+				"am.lut-packed-by-catalog-path");
+		}
 		w.AddBlob(smvk::PakAssetKind::Texture,
 			"content/gi/day.givolumemanifest",
 			smvk::BuildTexturePayload("content/gi/day.givolumemanifest",
@@ -1469,6 +1490,7 @@ void TestAssetManager() {
 			{ 0x1001, smvk::kCatalogKindScene,
 				"content/scenes/meshes.tour", "Meshes" },
 			{ 0x2000, smvk::kCatalogKindTexture, texPath, "" },
+			{ 0x2002, smvk::kCatalogKindTexture, lutPath, "" },
 			{ 0x3000, smvk::kCatalogKindMesh, treeFamily, "" },
 			{ 0x3001, smvk::kCatalogKindMesh, rockFamily, "" },
 			{ 0x3002, smvk::kCatalogKindMesh,

@@ -4718,6 +4718,18 @@ namespace engine {
 
 	} // namespace
 
+	bool WorldRenderer::FogFieldUsesProceduralReference() const
+	{
+		// Field id 0 = the fog density field (the WORLD_FIELD_ID_FOG
+		// registration contract).
+		return m_worldFields.BrickSource(0) == &g_fogDensitySource;
+	}
+
+	float WorldRenderer::ProceduralFogDensity01(glm::vec3 p)
+	{
+		return WorldFogDensitySource::WorldDensity01(p);
+	}
+
 	void WorldRenderer::InitWorldFields()
 	{
 		// Re-attach guard (the editor's relaunch flow re-runs onAttach on
@@ -16706,7 +16718,7 @@ namespace engine {
 		if (m_passes.ui && m_uiFrameService && m_viewportResources.ui.Valid()) {
 			DebugUiFrame uiFrame{&fb, &frameEnv, uiExtent, renderExtent,
 				swapExtent, cascadeViewBase, spotViewBase, pointViewBase,
-				m_rendergraph, m_viewportResources.ui.logicalView};
+				m_rendergraph.get(), m_viewportResources.ui.logicalView};
 			m_uiFrameService(*this, uiFrame);
 			// Native game HUD uses the SAME offscreen UI target and rendergraph
 			// as the authored scene. SDL is window/input only, never a renderer.

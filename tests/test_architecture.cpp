@@ -756,12 +756,10 @@ int main() {
 			{ "GI/regular_volume.h", 6, 0 },
 			{ "GI/sg.h", 21, 0 },
 			{ "GI/triangle_bvh.h", 2, 0 },
-			{ "Memory/alloc_config.h", 29, 0 }, // +2 (#220-era): MemCliOverrides
-				// + ApplyMemCliOverrides — the App's --mem-* CLI-override
-				// seam (deliberate compat surface, documented contract).
-			{ "Memory/linear_allocator.h", 2, 0 },
-			{ "Memory/linear_vector.h", 5, 0 },
-			{ "Memory/memory.h", 10, 0 },
+			// (The engine Memory/* headers became pure forwarding
+			// shims over Core/Memory in the frame-arena extraction
+			// (#251): zero compat aliases remain, so their R7 rows are
+			// deleted rather than shrunk.)
 			{ "Placement/placement_cache.h", 7, 0 },
 			{ "Placement/placement_domain.h", 11, 0 }, // +1 (#126): the
 				// Painted PointCloud domain's PlacementPointCloudData —
@@ -890,6 +888,12 @@ int main() {
 			{ "Renderer/geometry_upload.h", 7, 1 },
 			{ "Renderer/WorldRenderer.h", 7, 1 },
 			{ "Renderer/WorldRenderer.h", 8, 6 },
+			// DebugUiFrame (the host-owned UI service seam, #248): the
+			// frame context hands the host service the rendergraph + the
+			// swap framebuffer to append its ImGui pass - deliberate
+			// exposure, reviewed at the gate.
+			{ "Renderer/WorldRenderer.h", 9, 1 },
+			{ "Renderer/WorldRenderer.h", 10, 1 },
 			{ "Renderer/GfxRenderer.h", 6, 2 }, // gfx member + State()
 			{ "Rendergraph/mipchain.h", 9, 1 },
 			{ "Rendergraph/renderer.h", 7, 1 },
