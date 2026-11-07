@@ -5,7 +5,7 @@
 #include "gpu_scene.hlsli"
 #define GS_MAX_CANDIDATES 1048576u
 #define GS_MAX_ROWS 4194304u
-#define GS_MAX_WORK 524288u
+#define GS_MAX_WORK 1048576u
 #define GS_INVALID 0xffffffffu
 struct WorkChoice { uint4 identity; uint4 range; };
 struct Choices { WorkChoice rows[GS_MAX_CANDIDATES]; };
