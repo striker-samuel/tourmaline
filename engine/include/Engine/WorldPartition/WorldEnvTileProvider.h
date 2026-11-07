@@ -200,8 +200,14 @@ public:
         // deferred in-flight frame retirement fence.
     }
 
+    // CPU-readable logical grid for tests/editor, and compact physical
+    // 4x4 root-cell pages for GPU. UINT32_MAX in page table = base.
     const EnvTileCell* Cells() const { return cells_.data(); }
     size_t CellCount() const { return cells_.size(); }
+    const EnvTileCell* PackedCells() const { return packedCells_.data(); }
+    size_t PackedCellCount() const { return packedCells_.size(); }
+    const uint32_t* PageTable() const { return pageTable_.data(); }
+    size_t PageTableCount() const { return pageTable_.size(); }
     const uint32_t* Indices() const { return indices_.data(); }
     size_t IndexCount() const { return indices_.size(); }
     uint64_t Revision() const { return revision_; }
@@ -228,6 +234,7 @@ private:
     void PublishSnapshot() {
         if (!source_ || !source_->Valid()) {
             cells_.clear(); indices_.clear();
+            packedCells_.clear(); pageTable_.clear();
         } else {
             cells_.assign(source_->CellCount(), EnvTileCell{});
             indices_.clear();
@@ -237,6 +244,29 @@ private:
                 cell.candidateCount = uint32_t(page.size());
                 indices_.insert(indices_.end(), page.begin(), page.end());
             }
+            // Compact physical pages of 4x4 64m cells; each root-cell
+            // page costs 512B. The table itself is <= 64x64 uints.
+            const uint32_t dimX = source_->DimX(), dimZ = source_->DimZ();
+            const uint32_t rootX = (dimX + 3u) / 4u;
+            const uint32_t rootZ = (dimZ + 3u) / 4u;
+            pageTable_.assign(size_t(rootX)*rootZ, UINT32_MAX);
+            packedCells_.clear();
+            for (uint32_t rz = 0; rz < rootZ; ++rz)
+                for (uint32_t rx = 0; rx < rootX; ++rx) {
+                    bool live = false;
+                    for (uint32_t z = rz*4; z < std::min(rz*4+4,dimZ); ++z)
+                        for (uint32_t x = rx*4; x < std::min(rx*4+4,dimX); ++x)
+                            live |= resident_.count(size_t(z)*dimX+x) != 0;
+                    if (!live) continue;
+                    pageTable_[size_t(rz)*rootX+rx] =
+                        uint32_t(packedCells_.size()/16);
+                    for (uint32_t z=0; z<4; ++z)
+                        for (uint32_t x=0; x<4; ++x) {
+                            const uint32_t gx=rx*4+x, gz=rz*4+z;
+                            packedCells_.push_back((gx < dimX && gz < dimZ)
+                                ? cells_[size_t(gz)*dimX+gx] : EnvTileCell{});
+                        }
+                }
         }
         ++revision_;
         unpublished_ = false;
@@ -248,6 +278,8 @@ private:
         priority_.clear();
         cells_.clear();
         indices_.clear();
+        packedCells_.clear();
+        pageTable_.clear();
         unpublished_ = true;
         ++revision_;
     }
@@ -263,7 +295,9 @@ private:
     std::vector<float> priority_;
     std::map<size_t, std::vector<uint32_t>> resident_;
     std::map<size_t, uint64_t> pending_;
-    std::vector<EnvTileCell> cells_;
+    std::vector<EnvTileCell> cells_; // logical grid, CPU only
+    std::vector<EnvTileCell> packedCells_; // physical resident 4x4 root pages
+    std::vector<uint32_t> pageTable_; // root coords to physical slot
     std::vector<uint32_t> indices_;
 };
 
