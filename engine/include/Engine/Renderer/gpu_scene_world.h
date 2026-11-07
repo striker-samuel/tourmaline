@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <new>
 #include <tuple>
 #include <span>
@@ -437,7 +438,8 @@ class WorldSynchronizer {
                 return std::tie(a.source.registration, a.source.slot, a.source.generation) <
                        std::tie(b.source.registration, b.source.slot, b.source.generation);
             };
-            std::sort(scratchMeshes, scratchMeshes + meshCount, meshLess);
+            if (meshCount > 1)
+                std::sort(scratchMeshes, scratchMeshes + meshCount, meshLess);
             size_t uniqueCount = 0;
             for (size_t i = 0; i < meshCount; ++i) {
                 if (uniqueCount == 0 || !(scratchMeshes[i].source == scratchMeshes[uniqueCount - 1].source))
@@ -494,7 +496,7 @@ class WorldSynchronizer {
         registry_.Clear(db);
         (void)registry_.TakeDeltas();
         nodeKeyCount_ = 0;
-        meshSourceCount_ = 0;
+        meshSourceCount_ = 0; // Retain AppArena capacity for subsequent Worlds.
         revision_ = ~uint64_t(0);
         geometryRevision_ = ~uint64_t(0);
         world_ = nullptr;
