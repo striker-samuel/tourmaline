@@ -646,6 +646,8 @@ static void WriteCommandLine(std::ostream& f, const Command& c, const char* inde
             f << " -type \"string\" -v " << Quote(c.name);
         else if (c.text == "static" || c.text == "shadow")
             f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
+        else if (c.text == "layerMask" || c.text == "receiverMask")
+            f << " -v " << uint32_t(c.number); // exact 32-bit mask (no float precision loss)
         else
             f << " -v " << c.number;
         break;
