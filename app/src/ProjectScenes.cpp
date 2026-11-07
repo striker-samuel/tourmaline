@@ -9,7 +9,8 @@
 // treatment (anim attach, cooked static flags, the resolve).
 
 #include "ProjectScenes.h"
-#include "MapSceneStreaming.h" // compile-check the streamed Map/Scene host bridge
+#include "MapSceneStreaming.h" // canonical direct World Map streaming adapter
+#include "LegacyMapSceneStreaming.h" // explicit compatibility adapter: compile-check only
 
 #include "PakPreload.h"
 #include "PakWorldLoader.h"
