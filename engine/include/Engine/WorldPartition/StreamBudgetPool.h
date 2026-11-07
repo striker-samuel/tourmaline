@@ -24,9 +24,10 @@ struct StreamBudgetKey {
     StreamLayer layer = StreamLayer::WorldField;
     WorldCellKey cell{};
     WorldSubcellKey subcell{};
+    uint64_t pathBits = 0;
     bool operator<(const StreamBudgetKey& b) const {
-        return std::tie(world, layer, cell.x, cell.z, subcell.x, subcell.z) <
-               std::tie(b.world, b.layer, b.cell.x, b.cell.z, b.subcell.x, b.subcell.z);
+        return std::tie(world, layer, cell.x, cell.z, subcell.x, subcell.z, pathBits) <
+               std::tie(b.world, b.layer, b.cell.x, b.cell.z, b.subcell.x, b.subcell.z, b.pathBits);
     }
 };
 
