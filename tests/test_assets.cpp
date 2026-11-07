@@ -2725,7 +2725,11 @@ bool SceneTailMatchesWithBvhSection(std::span<const uint8_t> p,
         diag = "bvh re-serialize failed";
         return false;
     }
-    const size_t bvhTotal = 4 + bvhBytes.size() + 12; // len + payload + bakedNodeCount + hash
+    // The section tail (post the #270 light-linking rework): payload +
+    // bakedNodeCount + stateHash + the dense receiver-mask block
+    // (u32 maskCount + maskCount masks). maskCount == the parsed scene's
+    // node count by the reader's framing check.
+    const size_t bvhTotal = 4 + bvhBytes.size() + 12 + 4 + size_t(probe.hierarchy.size()) * 4;
     if (p.size() < bvhTotal + expect.size()) {
         diag = "payload shorter than the pinned tail + bvh section";
         return false;
@@ -3026,6 +3030,11 @@ void TestClusterSerializeCook() {
             Check(cookie.empty() && fn == 0 && std::abs(fnSpeed - 1.0f) < 1e-6f &&
                       std::abs(fnScale - 0.5f) < 1e-6f,
                   "cook.pak.light.gobo.defaults");
+            // v7 light-linking section (#270): the 32-bit EMIT channel
+            // mask trails the function block. This test light never sets
+            // it - the default is all channels.
+            const uint32_t layerMask = u32();
+            Check(ok && layerMask == 0xffffffffu, "cook.pak.light.layermask.default");
             Check(off == p.size(), "cook.pak.light.exactend");
         }
     }
@@ -3976,7 +3985,10 @@ void TestStaticBvhSection() {
             // BVH, clean parse) — the World's rebuild fallback.
             std::vector<uint8_t> treeBytes;
             Check(::tour::SerializeBvh(cooked.tree, treeBytes), "bvh.reserialize");
-            const size_t sectionTotal = 4 + treeBytes.size() + 12; // len + payload + baked + hash
+            // The full section tail: len + payload + bakedNodeCount +
+            // stateHash + the receiver-mask block (u32 maskCount + one
+            // mask per node; this scene has 2 nodes).
+            const size_t sectionTotal = 4 + treeBytes.size() + 12 + 4 + 2 * 4;
             Check(img.size() > sectionTotal, "bvh.strip.size");
             // The section lives inside the SCENE blob, not the pak image:
             // re-open, take the scene payload, strip, reparse.
