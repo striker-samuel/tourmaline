@@ -162,18 +162,21 @@ static constexpr uint32_t kMaxBatchSlots = 262144;
 // instanced scenes (1024 Sponzas = 105k meshes, ~10-30k visible draws in a
 // fly-through, more from overhead vantages) silently dropped whole
 // instances past 4k. Sized to kMaxBatches: the filtered-index survivor
-// ring stays the REAL per-view geometry budget (see kMaxBatches + the
-// monoblock note above). Content must stay within every independent
-// draw/candidate/survivor budget; exceeding a budget is not a fallback. Memory cost: one Draw ring slice per (view,
+// ring stays the REAL per-view geometry ceiling (see kMaxBatches + the
+// monoblock note above). These limits are ENGINE-GLOBAL compile-time
+// constants, not per-content authored values: content authors nothing
+// here, and exceeding a limit is a fatal contract violation, never a
+// silent drop or a fallback. Memory cost: one Draw ring slice per (view,
 // flight) at kMaxDraws * sizeof(Draw) ~= 7 MB, the cullState verdict
 // words (kMaxDraws + 5 uints ~= 256 KB) and the skin-bounds drawBound
 // tail (kMaxDraws * 16 B = 1 MB). HLSL mirror: gfxfilter.hlsli
 // GFX_MAX_DRAWS (GfxDraws, GfxCullState, drawBound tail) — keep both in
 // lockstep. Note: the per-draw cull dispatches run one workgroup per draw
 // (Dispatch(drawCount,1,1)). 65535 is the Vulkan 1.3 minimum guaranteed
-// maxComputeWorkGroupCount[0]. Larger workloads are unsupported by the
-// fixed authored-content contract; never silently drop draws.
-static constexpr uint32_t kMaxDraws = 65535; // authored per-view limit; Vulkan 1.3 minimum dispatch X
+// maxComputeWorkGroupCount[0]. Workloads beyond a limit are unsupported
+// until the ENGINE CONSTANT moves; never silently drop draws.
+static constexpr uint32_t kMaxDraws =
+    65535; // engine fixed per-view limit; Vulkan 1.3 minimum dispatch X
 // Sized for LOD chains: every cooked sibling registers its own gfx mesh
 // (~3x the LOD0-only count), so headroom over the pre-LOD 4k budget.
 static constexpr uint32_t kMaxMeshes = 8192;

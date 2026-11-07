@@ -1752,8 +1752,8 @@ static void EmitBucketMajor(State& s,
             const uint32_t slot = (uint32_t)outCmds.size();
             if (slot >= kMaxBatches) {
                 std::fprintf(stderr,
-                             "[GfxFilter] FATAL: seed emitter exceeded authored batch budget "
-                             "(%u commands).\n",
+                             "[GfxFilter] FATAL: seed emitter exceeded the engine batch limit "
+                             "(kMaxBatches=%u).\n",
                              kMaxBatches);
                 std::fflush(stderr);
                 std::abort();
@@ -2065,8 +2065,9 @@ void PushDraw(State& s,
     View& v = s.views[view];
     if (v.draws.size() >= kMaxDraws) {
         std::fprintf(stderr,
-                     "[GfxFilter] FATAL: view %u exceeded the authored draw budget "
-                     "(%u draws). No geometry is dropped or alternate path used.\n",
+                     "[GfxFilter] FATAL: view %u exceeded the engine draw limit "
+                     "(kMaxDraws=%u per view). No geometry is dropped or alternate path "
+                     "used.\n",
                      view,
                      kMaxDraws);
         std::fflush(stderr);
@@ -2294,8 +2295,9 @@ void PushShadowDraw(State& s,
     ShadowView& sv = s.shadowViews[sview];
     if (sv.draws.size() >= kMaxDraws) {
         std::fprintf(stderr,
-                     "[GfxFilter] FATAL: shadow view %u exceeded the authored draw budget "
-                     "(%u draws). No geometry is dropped or alternate path used.\n",
+                     "[GfxFilter] FATAL: shadow view %u exceeded the engine draw limit "
+                     "(kMaxDraws=%u per view). No geometry is dropped or alternate path "
+                     "used.\n",
                      sview,
                      kMaxDraws);
         std::fflush(stderr);
@@ -2382,8 +2384,8 @@ void BuildShadowList(State& s, uint32_t sview) {
             // traversal tail.
             if (sv.emitScratch.size() >= kMaxBatches) {
                 std::fprintf(stderr,
-                             "[GfxFilter] FATAL: shadow view %u exceeded authored batch budget "
-                             "(%u clusters).\n",
+                             "[GfxFilter] FATAL: shadow view %u exceeded the engine batch limit "
+                             "(kMaxBatches=%u).\n",
                              sview,
                              kMaxBatches);
                 std::fflush(stderr);
@@ -2718,11 +2720,11 @@ void BuildBatches(State& s, uint32_t view) {
         }
         // Candidate-slot base + (bucket, material) range walk.
         // Validate the entire draw BEFORE assigning a candidate base:
-        // no partial mesh may enter the authored GPU workload.
+        // no partial mesh may enter the fixed-budget GPU workload.
         if (mesh.clusterCount > cap - batchSlot) {
             std::fprintf(stderr,
-                         "[GfxFilter] FATAL: view %u exceeded authored candidate budget "
-                         "(%u slots; current=%u, requested=%u).\n",
+                         "[GfxFilter] FATAL: view %u exceeded the engine candidate limit "
+                         "(kMaxBatchSlots=%u; current=%u, requested=%u).\n",
                          view,
                          cap,
                          batchSlot,
