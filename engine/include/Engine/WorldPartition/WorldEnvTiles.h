@@ -86,6 +86,14 @@ class WorldEnvTiles {
     };
     Lookup At(glm::vec3 pos) const;
 
+    // Load the immutable metadata cooked into an SMP8 environment manifest.
+    // The provider supplies individual cell pages on demand; the CPU cell
+    // address table initially contains only base fallback entries.
+    bool LoadCooked(glm::vec2 gridMin, uint32_t dimX, uint32_t dimZ,
+                    const EnvTileRecord* looks,
+                    const smvk::envzones::EnvZoneGpu* shapes,
+                    uint32_t count);
+
     // ---- pointer + count accessors (the FrameUniforms publication) ----
     const EnvTileRecord* Records() const {
         return records_.data();
