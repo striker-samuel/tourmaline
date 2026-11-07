@@ -8,6 +8,7 @@
 // safe activation/retirement at its own render-thread publication boundary.
 
 #include <Engine/WorldPartition/WorldPartition.h>
+#include <Engine/WorldPartition/StreamTicketLedger.h>
 
 #include <algorithm>
 #include <cmath>
@@ -55,7 +56,7 @@ class SceneTileProvider final : public IWorldStreamProvider {
     // Explicit identity supports Maps containing only persistent placements
     // or no cells yet. A nonzero world may have an empty tile manifest.
     bool SetManifest(WorldId world, std::vector<SceneTileDescriptor> tiles) {
-        if (!resident_.empty() || !pending_.empty())
+        if (!resident_.empty() || !tickets_.Empty())
             return false;
         std::map<WorldTileKey, SceneTileDescriptor, SceneTileKeyLess> next;
         for (const auto& tile : tiles) {
@@ -82,22 +83,15 @@ class SceneTileProvider final : public IWorldStreamProvider {
     // Successful asynchronous completion must be acknowledged at the host's
     // safe publication point; failed requests can be retried by ResetPending.
     bool Activate(WorldTileKey cell, uint64_t ticket) {
-        const auto it = pending_.find(cell);
-        // Stale completion from canceled/evicted load cannot adopt a fresh
-        // request for the same tile. Reject demand removed this frame too.
-        if (it == pending_.end() || it->second != ticket || !desired_.count(cell))
+        // A late completion may not resurrect a tile no longer desired.
+        if (!desired_.count(cell) || !tickets_.Accept(cell, ticket))
             return false;
-        pending_.erase(it);
         resident_.insert(cell);
         return true;
     }
 
     bool ResetPending(WorldTileKey cell, uint64_t ticket) {
-        const auto it = pending_.find(cell);
-        if (it == pending_.end() || it->second != ticket)
-            return false;
-        pending_.erase(it);
-        return true;
+        return tickets_.Fail(cell, ticket);
     }
 
     bool IsResident(WorldTileKey cell) const {
@@ -107,7 +101,7 @@ class SceneTileProvider final : public IWorldStreamProvider {
         return resident_.size();
     }
     size_t PendingCount() const {
-        return pending_.size();
+        return tickets_.PendingCount();
     }
 
     void OnStreamingInterests(const StreamingInterest* interests, size_t count) override {
@@ -177,7 +171,7 @@ class SceneTileProvider final : public IWorldStreamProvider {
         std::vector<Candidate> candidates;
         candidates.reserve(desired_.size());
         for (const auto& [key, policy] : desired_) {
-            if (resident_.count(key) || pending_.count(key) ||
+            if (resident_.count(key) || tickets_.IsPending(key) ||
                 manifest_.find(key) == manifest_.end())
                 continue;
             candidates.push_back({key, policy.first, policy.second});
@@ -195,12 +189,10 @@ class SceneTileProvider final : public IWorldStreamProvider {
             const auto it = manifest_.find(candidate.tile);
             if (it == manifest_.end())
                 continue;
-            if (nextTicket_ == 0)
-                break; // ticket space exhausted, fail closed
-            const uint64_t ticket = nextTicket_++;
-            pending_.emplace(candidate.tile, ticket);
+            const auto ticket = tickets_.Issue(candidate.tile);
+            if (!ticket) break; // exhausted ticket IDs, fail closed
             ++issued;
-            request_(it->second, candidate.desired, ticket);
+            request_(it->second, candidate.desired, *ticket);
         }
     }
 
@@ -222,21 +214,16 @@ class SceneTileProvider final : public IWorldStreamProvider {
         // A canceled IO request must not be treated as a newly resident tile.
         // Backend cancellation is the caller's responsibility; subsequent
         // asynchronous completion will be rejected by Activate().
-        for (auto it = pending_.begin(); it != pending_.end();) {
-            if (desired_.count(it->first)) {
-                ++it;
-                continue;
-            }
-            it = pending_.erase(it);
-        }
+        tickets_.CancelUndesired([&](const WorldTileKey& key) {
+            return desired_.count(key) != 0;
+        });
     }
 
   private:
     WorldId activeWorld_ = 0;
     std::map<WorldTileKey, SceneTileDescriptor, SceneTileKeyLess> manifest_;
     std::map<WorldTileKey, std::pair<float, DesiredResidency>, SceneTileKeyLess> desired_;
-    std::map<WorldTileKey, uint64_t, SceneTileKeyLess> pending_;
-    uint64_t nextTicket_ = 1;
+    StreamTicketLedger<WorldTileKey, SceneTileKeyLess> tickets_;
     size_t maxNewRequestsPerFrame_ = 8;
     std::set<WorldTileKey, SceneTileKeyLess> resident_;
     RequestCallback request_;
