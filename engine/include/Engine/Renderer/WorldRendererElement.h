@@ -37,6 +37,8 @@
 
 #include <glm/glm.hpp>
 
+#include <chrono>
+
 namespace engine {
 
 class WorldRendererElement : public IAppElement {
@@ -115,6 +117,8 @@ class WorldRendererElement : public IAppElement {
     bool m_disableControl = false;
     float m_benchMoveSpeed = 0.0f;
     float m_benchTurnRate = 0.0f; // deg/s yaw (world up), bench window only
+    // One-second, wall-clock GPU memory pressure reporting; never uses frame dt.
+    std::chrono::steady_clock::time_point m_lastGpuMemoryPoll{};
     // Virtual cursor for FPS mouselook: SDL relative mode warps the real
     // cursor, so absolute positions are garbage while captured. The look
     // deltas (xrel/yrel, valid in BOTH relative and normal mode) fold

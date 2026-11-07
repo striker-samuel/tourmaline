@@ -27,10 +27,22 @@ if (warning.changed) {
 }
 ```
 
+The standalone `WorldRendererElement` now polls the existing
+`ResourceManager::PollGpuMemoryWarning` automatically at approximately
+1 Hz using elapsed wall-clock time. It prints a `[GpuMemory]` line only when
+the warning state changes, including local heap usage/budget and nonlocal
+growth. The detector does not change rendering quality, allocations or
+asset residency. Embedded hosts not using `WorldRendererElement` may poll
+the same ResourceManager API themselves; they must use a single poller
+per ResourceManager because the detector maintains elapsed-time state.
+
 Keep the detector attached to a single ResourceManager and call it with
 elapsed time measured since the previous poll (not frame delta unless
 polling every frame). Do not automatically degrade graphics quality based
 on this result alone.
+
+A standalone CPU-only CTest exercises the warning threshold and recovery
+state machine: `ctest --test-dir <build-dir> --output-on-failure -R gpu_memory_spill_tests`.
 
 **These are heuristic warnings, not confirmed eviction events.** VMA
 reports allocation and memory budget estimates, not GPU memory
