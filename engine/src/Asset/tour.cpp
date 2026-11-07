@@ -2668,7 +2668,8 @@ bool LoadTourFromString(const std::string& text,
                                            "function",
                                            "functionSpeed",
                                            "functionScale",
-                                           "layerMask"};
+                                           "layerMask",
+                                           "receiverMask"};
             bool known = false;
             for (const char* a : kAttrs)
                 if (fl.at == a) {
@@ -5023,6 +5024,11 @@ bool ApplyTourToCluster(Cluster& cluster,
             } else if (!checkNode(target, c)) {
                 if (!failCmd(c))
                     return false;
+                break;
+            }
+            if (c.text == "receiverMask") {
+                EnsureNodeMetadata(scene);
+                scene.metadata[target].lightLayerMask = uint32_t(c.number);
                 break;
             }
             const LightRow* lit = FindLight(scene, target);
