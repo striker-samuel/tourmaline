@@ -23,6 +23,7 @@
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/cluster_serializer.h> // ListPakScenes (the discovery lane's entry pick)
 #include <Engine/Asset/pak_pager.h>
+#include <Engine/WorldPartition/env_tile_pak.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Profile/profile.h>
 
@@ -600,6 +601,9 @@ int RunPakApp(PakAppConfig cfg) {
             // single-pak, index-based path.
             tour::mem::LinearPtr<tour::World> world;
             std::string packedShapePlacements;
+            std::shared_ptr<smvk::PakBackend> envPageBackend;
+            std::string envPakPath;
+            std::string envSceneName;
             auto captureShapePlacements = [&](const PakPreload& preload) {
                 if (!preload.backend)
                     return true; // loader reports this failure
@@ -666,6 +670,11 @@ int RunPakApp(PakAppConfig cfg) {
                 }
                 if (entryIdx >= preloads.size() || !captureShapePlacements(preloads[entryIdx]))
                     return nullptr;
+                // Retain the selected pak pager independently of the
+                // preload vector, for asynchronous env subcell reads.
+                envPageBackend = preloads[entryIdx].backend;
+                envPakPath = preloads[entryIdx].openPath;
+                envSceneName = entryName;
                 world = LoadProjectWorld(std::move(preloads),
                                          entryIdx,
                                          entryName,
@@ -678,6 +687,13 @@ int RunPakApp(PakAppConfig cfg) {
                 PakPreload entryPreload = preloadFuture->get();
                 if (!captureShapePlacements(entryPreload))
                     return nullptr;
+                envPageBackend = entryPreload.backend;
+                envPakPath = entryPreload.openPath;
+                if (envPageBackend) {
+                    const auto scenes = smvk::ListPakScenes(envPageBackend->Reader());
+                    if (sceneIndex >= 0 && size_t(sceneIndex) < scenes.size())
+                        envSceneName = scenes[size_t(sceneIndex)].name;
+                }
                 world = LoadPakWorld(std::move(entryPreload),
                                      sceneIndex,
                                      ctx,
@@ -685,6 +701,69 @@ int RunPakApp(PakAppConfig cfg) {
                                      rendererRaw->GetTextureStreamer(),
                                      *session,
                                      nodeBudget);
+            }
+            // Cooked static environment volumes: Pak owns the pages,
+            // renderer owns GPU residency. The reader is held alive by
+            // the worker callback, and every page is CRC-checked on its
+            // first independently seekable fetch.
+            if (world && envPageBackend && !envSceneName.empty()) {
+                const auto envWorld = tour::envcook::SceneWorldId(envSceneName);
+                const smvk::PakReader& metadataReader = envPageBackend->Reader();
+                if (metadataReader.Find(smvk::PakAssetKind::EnvTile,
+                                        tour::envcook::ManifestPath(envWorld))) {
+                    // Use a separate FILE-BACKED pak reader for streaming
+                    // (SMP8 positional reads + CRC); unlike the preload
+                    // backend, it does not retain the entire pak image.
+                    std::shared_ptr<smvk::PakReader> pagePak;
+                    if (!envPakPath.empty()) {
+                        std::string openError;
+                        auto filePak = smvk::PakReader::OpenFile(envPakPath, openError);
+                        if (!filePak) {
+                            std::cerr << "[EnvTiles] page reader failed: "
+                                      << openError << "\n";
+                            return nullptr;
+                        }
+                        pagePak = std::make_shared<smvk::PakReader>(std::move(*filePak));
+                    }
+                    const smvk::PakReader& reader =
+                        pagePak ? *pagePak : metadataReader;
+                    tour::envcook::Manifest cooked{};
+                    if (!tour::envcook::ReadEnvManifest(reader, envWorld, cooked)) {
+                        std::cerr << "[EnvTiles] invalid cooked manifest for '"
+                                  << envSceneName << "'\n";
+                        return nullptr;
+                    }
+                    const uint32_t count = uint32_t(cooked.records.size());
+                    const int64_t originX = int64_t(std::floor(
+                        double(cooked.gridMin.x) / engine::worldpartition::kEnvTileSize));
+                    const int64_t originZ = int64_t(std::floor(
+                        double(cooked.gridMin.y) / engine::worldpartition::kEnvTileSize));
+                    const uint32_t dimX = cooked.dimX, dimZ = cooked.dimZ;
+                    auto pageReader = [backend=envPageBackend, pagePak, envWorld, count,
+                                       originX, originZ, dimX, dimZ,
+                                       present = std::move(cooked.pagePresent)](
+                        engine::worldpartition::WorldSubcellKey key,
+                        std::vector<uint32_t>& ids) {
+                        const int64_t x = key.x - originX, z = key.z - originZ;
+                        if (x < 0 || z < 0 || x >= dimX || z >= dimZ)
+                            return false;
+                        const bool required = present[size_t(z)*dimX + size_t(x)] != 0;
+                        const smvk::PakReader& pak =
+                            pagePak ? *pagePak : backend->Reader();
+                        return tour::envcook::ReadEnvPage(
+                            pak, envWorld, key, count, required, ids);
+                    };
+                    if (!rendererRaw->InstallCookedEnvironment(
+                            envWorld, cooked.gridMin, cooked.dimX, cooked.dimZ,
+                            cooked.records.data(), cooked.shapes.data(), count,
+                            cooked.farCandidates.data(),
+                            uint32_t(cooked.farCandidates.size()),
+                            std::move(pageReader))) {
+                        std::cerr << "[EnvTiles] cooked environment rejected for '"
+                                  << envSceneName << "'\n";
+                        return nullptr;
+                    }
+                }
             }
             // Load the packaged entry scene's retained shapes. Additional
             // scenes use ProjectScenes' per-SceneHandle ownership lane.

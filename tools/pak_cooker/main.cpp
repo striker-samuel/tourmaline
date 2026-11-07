@@ -91,6 +91,7 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/navmesh.h> // ParseAudioGraphText (the --content audiograph gate)
 #include <Engine/Asset/pak.h>
+#include <Engine/WorldPartition/env_tile_pak.h>
 #include <Engine/Asset/sdf.h> // the --content SDF validation gate
 #include <Engine/Asset/shape_asset.h>
 #include <Engine/Asset/spriteset.h>
@@ -2845,6 +2846,31 @@ int Run(const PakArgs& c) {
         tool::err() << "Serialize failed: " << err << std::endl;
         return 1;
     }
+    // Static authored environment volumes are COOKED, not rasterized at
+    // runtime. Each scene publishes immutable OBB/appearance metadata once
+    // and individually seekable 64m candidate pages keyed by a stable
+    // scene namespace. Editor/loose sources still use the rebuild path.
+    for (size_t i = 0; i < sceneClusters.size(); ++i) {
+        const auto& scene = sceneClusters[i]->scene;
+        if (scene.tables.envs.empty())
+            continue; // no authored zone geometry: ordinary base env
+        const auto extent = engine::worldpartition::ComputeEnvGridExtent(
+            scene, engine::worldpartition::EnvGridBounds{glm::vec3(0), glm::vec3(0)});
+        engine::worldpartition::WorldEnvTiles baked;
+        if (!baked.Build(scene, extent.gridMin, extent.dimX, extent.dimZ,
+                         extent.yMin, extent.yMax) ||
+            !tour::envcook::AddEnvTiles(
+                writer, tour::envcook::SceneWorldId(sceneNames[i]), baked)) {
+            tool::err() << "Environment page cook failed for scene '"
+                        << sceneNames[i] << "'" << std::endl;
+            return 1;
+        }
+        tool::out() << "Cooked exact environment candidate pages for scene '"
+                    << sceneNames[i] << "' (" << baked.DimX() << "x"
+                    << baked.DimZ() << " subcells, " << baked.RecordCount()
+                    << " immutable looks/shapes)\n";
+    }
+
     // Optional Map placement pages share this pak with local Scene assets.
     // Each page remains addressable by durable (WorldId, WorldCellKey).
     if (!args.mapFile.empty()) {

@@ -21,6 +21,8 @@
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/WorldPartition/WorldEnvTiles.h>
+#include <Engine/WorldPartition/WorldEnvTileProvider.h>
+#include <Engine/WorldPartition/env_tile_pak.h>
 
 namespace {
 
@@ -548,6 +550,261 @@ int main() {
                 Check(e.yMin >= -16.0f && e.yMax <= 48.0f,
                       "envtile.extent-underwater-vertical-range-kept");
             }
+        }
+    }
+
+    // WorldPartition environment residency: subcell selection is
+    // interest-driven; distant authored cells must not remain resident.
+    {
+        ::Scene scene;
+        engine::worldpartition::WorldEnvTiles baked;
+        Check(baked.Build(scene, glm::vec2(0), 4, 1, 0, 40),
+              "envtile.stream-source-build");
+        engine::worldpartition::WorldEnvTileProvider provider;
+        provider.SetSource(&baked, 1);
+        engine::worldpartition::WorldPartition partition;
+        partition.AddProvider(&provider);
+        engine::worldpartition::StreamingInterest interest{};
+        interest.position = glm::dvec3(32, 0, 32);
+        interest.radiusMeters = 0;
+        interest.layerMask = engine::worldpartition::StreamLayerBit(
+            engine::worldpartition::StreamLayer::Environment);
+        partition.SetInterests(&interest, 1);
+        partition.UpdateFrame(1);
+        const auto first = provider.Revision();
+        Check(first != 0 && provider.CellCount() == 4 &&
+              provider.Cells()[0].candidateCount > 0 &&
+              provider.Cells()[3].candidateCount == 0,
+              "envtile.stream-near-cell-resident");
+        partition.UpdateFrame(2);
+        Check(provider.Revision() == first,
+              "envtile.stream-steady-no-republish");
+        interest.position.x = 224.0;
+        partition.SetInterests(&interest, 1);
+        partition.UpdateFrame(3);
+        Check(provider.Revision() > first &&
+              provider.Cells()[0].candidateCount == 0 &&
+              provider.Cells()[3].candidateCount > 0,
+              "envtile.stream-movement-retire-and-activate");
+        Check(partition.RequestCount() > 0,
+              "envtile.stream-requested-through-partition");
+        partition.SetInterests(nullptr, 0);
+        partition.UpdateFrame(4);
+        Check(provider.ResidentCount() == 0 && provider.IndexCount() == 0,
+              "envtile.stream-no-interests-retired");
+    }
+
+    // Async path: a completion is published only with its current ticket;
+    // moving the interest must discard stale in-flight page payloads.
+    {
+        ::Scene scene;
+        engine::worldpartition::WorldEnvTiles baked;
+        Check(baked.Build(scene, glm::vec2(0), 4, 1, 0, 40),
+              "envtile.async-source-build");
+        using namespace engine::worldpartition;
+        WorldEnvTileProvider provider;
+        provider.SetSource(&baked, 20);
+        provider.SetMaxNewRequestsPerFrame(1);
+        WorldSubcellKey requested{};
+        uint64_t ticket = 0;
+        size_t requestCount = 0;
+        provider.SetRequestCallback([&](WorldSubcellKey key, uint64_t t) {
+            requested = key;
+            ticket = t;
+            ++requestCount;
+        });
+        WorldPartition partition;
+        partition.AddProvider(&provider);
+        StreamingInterest interest{};
+        interest.position = glm::dvec3(32, 0, 32);
+        interest.radiusMeters = 0;
+        interest.layerMask = StreamLayerBit(StreamLayer::Environment);
+        partition.SetInterests(&interest, 1);
+        partition.UpdateFrame(1);
+        const WorldSubcellKey oldKey = requested;
+        const uint64_t oldTicket = ticket;
+        Check(requestCount == 1 && provider.PendingCount() == 1 &&
+              provider.ResidentCount() == 0,
+              "envtile.async-one-request-in-flight");
+        // A stale page should never enter a new camera window.
+        interest.position.x = 224;
+        partition.SetInterests(&interest, 1);
+        partition.UpdateFrame(2);
+        Check(!provider.Activate(oldKey, oldTicket, {0}) &&
+              provider.ResidentCount() == 0,
+              "envtile.async-stale-ticket-rejected");
+        Check(ticket != oldTicket && provider.PendingCount() == 1,
+              "envtile.async-new-request-after-teleport");
+        const uint64_t activeTicket = ticket;
+        Check(!provider.Activate(requested, activeTicket, {999}),
+              "envtile.async-corrupt-record-id-rejected");
+        Check(provider.Activate(requested, activeTicket, {0}),
+              "envtile.async-valid-ticket-accepted");
+        Check(provider.ResidentCount() == 1 && provider.IndexCount() == 1,
+              "envtile.async-publication-only-after-activation");
+        const auto revision = provider.Revision();
+        partition.UpdateFrame(3);
+        Check(provider.Revision() == revision,
+              "envtile.async-steady-state-does-not-publish");
+        // A new bake supersedes an old page, even if the tile key matches.
+        provider.SetSource(&baked, 21);
+        Check(provider.ResidentCount() == 0 && provider.PendingCount() == 0,
+              "envtile.async-revision-invalidates-residency");
+    }
+
+    // Far tier is a shortlist of exact large/unbounded OBBs, not
+    // far-distance tile rasterization. Tiny interiors are never added.
+    {
+        ::Scene scene;
+        const uint32_t large = MakeZone(scene, glm::vec3(400, 20, 400));
+        const uint32_t small = MakeZone(scene, glm::vec3(4, 4, 4));
+        (void)large; (void)small;
+        engine::worldpartition::WorldEnvTiles baked;
+        Check(baked.Build(scene, glm::vec2(-512), 16, 16, -50, 50),
+              "envtile.far-build");
+        Check(baked.FarCandidateCount()==2,
+              "envtile.far-large-plus-base-only");
+        Check(baked.FarCandidateCount()>=2 &&
+              baked.FarCandidates()[0]!=0 &&
+              baked.FarCandidates()[1]==0,
+              "envtile.far-preserves-priority-order");
+        tour::envcook::Manifest manifest{};
+        manifest.world = 55;
+        manifest.gridMin = baked.GridMin();
+        manifest.dimX = baked.DimX();
+        manifest.dimZ = baked.DimZ();
+        manifest.records.assign(baked.Records(), baked.Records()+baked.RecordCount());
+        manifest.shapes.assign(baked.Shapes(), baked.Shapes()+baked.RecordCount());
+        manifest.farCandidates.assign(baked.FarCandidates(),
+                                      baked.FarCandidates()+baked.FarCandidateCount());
+        manifest.pagePresent.assign(size_t(manifest.dimX)*manifest.dimZ,0);
+        std::vector<uint8_t> bytes;
+        Check(tour::envcook::EncodeManifest(manifest,bytes),
+              "envtile.far-manifest-encode");
+        tour::envcook::Manifest decoded{};
+        Check(tour::envcook::DecodeManifest(bytes,55,decoded) &&
+              decoded.farCandidates==manifest.farCandidates,
+              "envtile.far-manifest-roundtrip");
+        engine::worldpartition::WorldEnvTiles loaded;
+        Check(loaded.LoadCooked(decoded.gridMin,decoded.dimX,decoded.dimZ,
+                               decoded.records.data(),decoded.shapes.data(),
+                               uint32_t(decoded.records.size())) &&
+              loaded.SetCookedFarCandidates(decoded.farCandidates.data(),
+                                            uint32_t(decoded.farCandidates.size())) &&
+              loaded.FarCandidateCount()==2,
+              "envtile.far-cooked-restored");
+    }
+
+    // Persistent baked pages: stable little-endian manifest and
+    // independently decodable world-scoped 64m pages.
+    {
+        using namespace tour::envcook;
+        ::Scene scene;
+        engine::worldpartition::WorldEnvTiles baked;
+        Check(baked.Build(scene,glm::vec2(0),2,2,0,40),"envtile.pak-source");
+        Manifest manifest{};
+        manifest.world = 12;
+        manifest.gridMin = baked.GridMin();
+        manifest.dimX = baked.DimX();
+        manifest.dimZ = baked.DimZ();
+        manifest.records.assign(baked.Records(),baked.Records()+baked.RecordCount());
+        manifest.shapes.assign(baked.Shapes(),baked.Shapes()+baked.RecordCount());
+        manifest.pagePresent.assign(size_t(manifest.dimX)*manifest.dimZ, uint8_t(0));
+        std::vector<uint8_t> bytes;
+        Check(EncodeManifest(manifest,bytes),"envtile.pak-manifest-encode");
+        Manifest decoded{};
+        Check(DecodeManifest(bytes,12,decoded) && decoded.world==12 &&
+              decoded.records.size()==baked.RecordCount() &&
+              decoded.shapes.size()==baked.RecordCount() &&
+              decoded.pagePresent.size()==4 &&
+              decoded.dimX==2 && decoded.dimZ==2,"envtile.pak-manifest-roundtrip");
+        Check(!DecodeManifest(bytes,13,decoded),"envtile.pak-manifest-wrong-world");
+        bytes.pop_back();
+        Check(!DecodeManifest(bytes,12,decoded),"envtile.pak-manifest-truncated");
+        const engine::worldpartition::WorldSubcellKey key{-1,7};
+        const std::vector<uint32_t> ids{0};
+        bytes.clear();
+        Check(EncodePage(12,key,ids,bytes),"envtile.pak-page-encode");
+        std::vector<uint32_t> read;
+        Check(DecodePage(bytes,12,key,1,read) && read==ids,
+              "envtile.pak-page-roundtrip-negative-key");
+        Check(!DecodePage(bytes,12,{0,7},1,read),
+              "envtile.pak-page-mismatched-coordinates");
+        const auto corrupt = bytes.size()-1;
+        bytes[corrupt] = 0xff;
+        Check(!DecodePage(bytes,12,key,1,read) && read==ids,
+              "envtile.pak-page-invalid-record-fail-atomic");
+    }
+
+    // Sparse GPU page representation: only a resident 4x4 root page
+    // allocates physical 32B cell headers; root-page misses are base.
+    {
+        using namespace engine::worldpartition;
+        ::Scene scene;
+        WorldEnvTiles baked;
+        Check(baked.Build(scene, glm::vec2(0), 8, 1, 0, 40),
+              "envtile.sparse-source-build");
+        WorldEnvTileProvider provider;
+        provider.SetSource(&baked, 7);
+        WorldPartition partition;
+        partition.AddProvider(&provider);
+        StreamingInterest interest{};
+        interest.position=glm::dvec3(32,0,32);
+        interest.radiusMeters=0;
+        interest.layerMask=StreamLayerBit(StreamLayer::Environment);
+        partition.SetInterests(&interest,1);
+        partition.UpdateFrame(1);
+        Check(provider.PageTableCount()==2 &&
+              provider.PageTable()[0]==0 &&
+              provider.PageTable()[1]==UINT32_MAX &&
+              provider.PackedCellCount()==16,
+              "envtile.sparse-one-root-page");
+        interest.position.x=480;
+        partition.SetInterests(&interest,1);
+        partition.UpdateFrame(2);
+        Check(provider.PageTable()[0]==UINT32_MAX &&
+              provider.PageTable()[1]==0 &&
+              provider.PackedCellCount()==16,
+              "envtile.sparse-root-page-relocation");
+        partition.SetInterests(nullptr,0);
+        partition.UpdateFrame(3);
+        Check(provider.PackedCellCount()==0 &&
+              provider.PageTable()[0]==UINT32_MAX &&
+              provider.PageTable()[1]==UINT32_MAX,
+              "envtile.sparse-no-resident-all-base");
+    }
+
+    // Full SMP8 cook/read path (the cooker uses the same helper):
+    // immutable OBB manifest + independently seekable candidate page.
+    {
+        ::Scene scene;
+        const uint32_t node = MakeZone(scene, glm::vec3(3,3,3));
+        scene.globalTransform[node] = glm::translate(glm::mat4(1),
+            glm::vec3(8,10,8))*glm::scale(glm::mat4(1),glm::vec3(3,3,3));
+        engine::worldpartition::WorldEnvTiles baked;
+        Check(baked.Build(scene,glm::vec2(0),1,1,0,40),
+              "envtile.smp8-source");
+        smvk::PakWriter writer;
+        constexpr auto world=uint64_t(123);
+        Check(tour::envcook::AddEnvTiles(writer,world,baked),
+              "envtile.smp8-cook-pages");
+        const std::vector<uint8_t> image=writer.Finalize();
+        std::string error;
+        auto reader=smvk::PakReader::Open(image,error);
+        Check(reader.has_value(),"envtile.smp8-reader-open");
+        if (reader) {
+            tour::envcook::Manifest manifest;
+            Check(tour::envcook::ReadEnvManifest(*reader,world,manifest) &&
+                  manifest.records.size()==2 && manifest.pagePresent.size()==1 &&
+                  manifest.pagePresent[0]==1,
+                  "envtile.smp8-cooked-manifest");
+            std::vector<uint32_t> ids;
+            Check(tour::envcook::ReadEnvPage(*reader,world,{0,0},
+                  uint32_t(manifest.records.size()),true,ids) &&
+                  ids.size()==2,"envtile.smp8-page-roundtrip");
+            Check(!tour::envcook::ReadEnvPage(*reader,world,{1,0},
+                  uint32_t(manifest.records.size()),true,ids),
+                  "envtile.smp8-missing-required-page-fails");
         }
     }
 

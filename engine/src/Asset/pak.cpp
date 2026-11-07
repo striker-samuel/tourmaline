@@ -1090,6 +1090,41 @@ std::span<const uint8_t> PakReader::Payload(const PakTocEntry& entry) const {
     return image_.subspan(static_cast<size_t>(entry.offset), static_cast<size_t>(entry.size));
 }
 
+std::vector<uint8_t> PakReader::PayloadCopyUncached(const PakTocEntry& entry) const {
+    // Same ownership guard as Payload(): a foreign TOC entry is never a
+    // safe offset or cache index for this reader.
+    const auto base = reinterpret_cast<std::uintptr_t>(entries_.data());
+    const auto addr = reinterpret_cast<std::uintptr_t>(&entry);
+    if (addr < base || (addr - base) % sizeof(PakTocEntry) != 0 ||
+        (addr - base) / sizeof(PakTocEntry) >= entries_.size())
+        throw std::invalid_argument("pak uncached page entry is not owned by this reader");
+    // The file handle is shared with Payload() and VerifyAll(): positional
+    // IO must be serialized. No decompressed_[idx], verified_ or cached
+    // page bytes are retained, so residency retirement releases memory.
+    std::lock_guard<std::mutex> lock(*lazyMutex_);
+    std::vector<uint8_t> stored(static_cast<size_t>(entry.size));
+    if (file_) {
+        file_->f.clear();
+        file_->f.seekg(std::streamoff(entry.offset), std::ios::beg);
+        file_->f.read(reinterpret_cast<char*>(stored.data()),
+                      std::streamsize(stored.size()));
+        if (file_->f.gcount() != std::streamsize(stored.size()))
+            throw std::runtime_error("pak uncached page read failed: " + entry.path);
+    } else {
+        const auto blob = image_.subspan(
+            static_cast<size_t>(entry.offset), static_cast<size_t>(entry.size));
+        std::copy(blob.begin(), blob.end(), stored.begin());
+    }
+    if (PakCrc32(stored.data(), stored.size()) != entry.contentCrc)
+        throw std::runtime_error("pak uncached page CRC mismatch: " + entry.path);
+    if ((entry.flags & PakEntryFlag_Lz4) == 0)
+        return stored;
+    std::vector<uint8_t> decompressed;
+    if (!DecompressPakBlob(stored, true, decompressed))
+        throw std::runtime_error("pak uncached page LZ4 decode failed: " + entry.path);
+    return decompressed;
+}
+
 bool PakReader::VerifyAll(std::string& outError) const {
     // The explicit full-verification policy (deployment gates): hash
     // every entry's STORED bytes against its contentCrc. Pages already
