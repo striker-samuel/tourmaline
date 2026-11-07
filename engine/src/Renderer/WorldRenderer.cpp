@@ -4999,7 +4999,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         !m_resources.envTileCellsBuffer.empty() &&
         !m_resources.envTileShapesBuffer.empty() &&
         !m_resources.envTileIndicesBuffer.empty() &&
-        !m_resources.envTilePageTableBuffer.empty()) {
+        !m_resources.envTilePageTableBuffer.empty() &&
+        !m_resources.envTileFarIndicesBuffer.empty()) {
         data.envZones = m_context->GetBufferDeviceAddress(m_resources.envTileRecordsBuffer);
         data.envZoneCount = m_envTiles.RecordCount();
         // bit0 = tiles live; bit1 = any record authors volumetric
@@ -5015,6 +5016,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         data.envTileShapes = m_context->GetBufferDeviceAddress(m_resources.envTileShapesBuffer);
         data.envTileIndices = m_context->GetBufferDeviceAddress(m_resources.envTileIndicesBuffer);
         data.envTilePageTable = m_context->GetBufferDeviceAddress(m_resources.envTilePageTableBuffer);
+        data.envTileFarIndices = m_context->GetBufferDeviceAddress(m_resources.envTileFarIndicesBuffer);
+        data.envTileFarCount = m_envTiles.FarCandidateCount();
     } else {
         data.envZones = 0;
         data.envZoneCount = 0;
@@ -5027,6 +5030,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         data.envTileShapes = 0;
         data.envTileIndices = 0;
         data.envTilePageTable = 0;
+        data.envTileFarIndices = 0;
+        data.envTileFarCount = 0;
     }
 
     // ---- Forward+ decals (tiled projected splats) ----
@@ -9710,13 +9715,15 @@ bool WorldRenderer::InstallCookedEnvironment(
     uint32_t dimX, uint32_t dimZ,
     const engine::worldpartition::EnvTileRecord* records,
     const smvk::envzones::EnvZoneGpu* shapes, uint32_t recordCount,
+    const uint32_t* farCandidates, uint32_t farCount,
     EnvPageReader reader) {
     if (!reader) return false;
     // Invalidate all pending page tickets BEFORE installing a new
     // manifest, even if the scene hash/world identity happens to match.
     m_envTileProvider.SetSource(nullptr, 0);
     if (!m_envTiles.LoadCooked(gridMin, dimX, dimZ,
-                              records, shapes, recordCount))
+                              records, shapes, recordCount) ||
+        !m_envTiles.SetCookedFarCandidates(farCandidates, farCount))
         return false;
     m_envCooked = true;
     m_envCookedWorld = world;
@@ -9919,6 +9926,20 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
                     sizeof(smvk::envzones::EnvZoneGpu) * m_envTiles.RecordCount(),
                     smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
                     smvk::AccessFlags::ShaderRead);
+                if (m_resources.envTileFarIndicesBuffer.empty())
+                    m_resources.envTileFarIndicesBuffer = m_context->CreateBuffer(
+                        sizeof(uint32_t) * worldpartition::kEnvTileMaxRecords,
+                        smvk::BufferType_Storage, "env far shortlisted candidates");
+                if (m_resources.envTileFarIndicesBuffer.empty()) {
+                    smvk::OnResourceExhaustion("env far candidates");
+                    return;
+                }
+                if (m_envTiles.FarCandidateCount())
+                    m_context->UploadDataToBuffer(m_resources.envTileFarIndicesBuffer,
+                        m_envTiles.FarCandidates(),
+                        sizeof(uint32_t) * m_envTiles.FarCandidateCount(),
+                        smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                        smvk::AccessFlags::ShaderRead);
                 // Candidate IDs are published from the provider's compact
                 // resident index stream after WorldPartition::UpdateFrame.
             }
