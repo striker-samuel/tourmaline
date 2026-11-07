@@ -1339,6 +1339,11 @@ class EditorApp : public tour::App {
     std::vector<std::string> m_projectExportRecipes;
     std::string m_projectExportStatus;
     bool m_projectExportDirty = false;
+    bool m_projectExportVisualMode = true;
+    int m_projectExportSelectedPak = 0;
+    char m_projectExportNewIncludeBuf[512]{};
+    char m_projectExportNewDependsBuf[128]{};
+    char m_projectExportNewPakBuf[128]{};
     // Floating cook/bake tools window (View menu). NOT in the bottom
     // dock: the export knobs live on the scene's exportSettings node,
     // this window only hosts the tools + progress.
