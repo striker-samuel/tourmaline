@@ -31,7 +31,7 @@ bool WorldRendererElement::onAttach() {
         desc.colorFormat = m_renderer.m_viewportResources.ui.format;
         if (!m_imgui->Init(
                 *m_renderer.m_context, *m_renderer.m_swapchain, m_host.GetWindow(), desc)) {
-            std::fprintf(stderr, "[WorldRendererElement] ImGui overlay unavailable\\n");
+            std::fprintf(stderr, "[WorldRendererElement] ImGui overlay unavailable\n");
             m_imgui.reset();
         } else {
             m_renderer.m_uiDpiScale = m_imgui->AppliedDpiScale();
@@ -135,7 +135,7 @@ void WorldRendererElement::onUpdate(float dt) {
                 constexpr double MiB = 1024.0 * 1024.0;
                 std::fprintf(stderr,
                              "[GpuMemory] %s local=%.1f/%.1f MiB (%.1f%%)"
-                             " nonlocal-growth=%.1f MiB (suspected spill is not confirmed eviction)\\n",
+                             " nonlocal-growth=%.1f MiB (suspected spill is not confirmed eviction)\n",
                              state, double(localUsage) / MiB, double(localBudget) / MiB,
                              warning.localRatio * 100.0,
                              double(warning.nonlocalGrowthBytes) / MiB);
