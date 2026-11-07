@@ -652,6 +652,49 @@ int main() {
               "envtile.async-revision-invalidates-residency");
     }
 
+    // Shared resource budgeting: a canceled environment page returns its
+    // IO and GPU reservation; a fresh page receives a new ticket.
+    {
+        using namespace engine::worldpartition;
+        ::Scene scene;
+        WorldEnvTiles baked;
+        Check(baked.Build(scene, glm::vec2(0), 8, 1, 0, 40),
+              "envtile.budget-source-build");
+        WorldEnvTileProvider provider;
+        provider.SetSource(&baked, 1);
+        provider.SetMaxNewRequestsPerFrame(1);
+        WorldPartition partition;
+        partition.Budgets().SetLimits({1024, 1024, 1});
+        partition.AddProvider(&provider);
+        WorldSubcellKey requested{};
+        uint64_t ticket = 0;
+        size_t issued = 0;
+        provider.SetRequestCallback([&](WorldSubcellKey subcell, uint64_t t) {
+            requested = subcell; ticket = t; ++issued;
+        });
+        StreamingInterest interest{};
+        interest.position = glm::dvec3(32, 0, 32);
+        interest.radiusMeters = 0;
+        interest.layerMask = StreamLayerBit(StreamLayer::Environment);
+        partition.SetInterests(&interest, 1);
+        partition.UpdateFrame(1);
+        const WorldSubcellKey firstKey = requested;
+        const uint64_t firstTicket = ticket;
+        Check(issued == 1 && partition.Budgets().ReservationCount() == 1,
+              "envtile.budget-one-request");
+        interest.position.x = 480;
+        partition.SetInterests(&interest, 1);
+        partition.UpdateFrame(2);
+        Check(issued == 2 && ticket != firstTicket &&
+              !provider.Activate(firstKey, firstTicket, {0}) &&
+              partition.Budgets().ReservationCount() == 1,
+              "envtile.budget-teleport-recycles-credit");
+        Check(provider.Fail(requested, ticket) &&
+              partition.Budgets().ReservationCount() == 0,
+              "envtile.budget-failure-releases-credit");
+        partition.ClearProviders();
+    }
+
     // Far tier is a shortlist of exact large/unbounded OBBs, not
     // far-distance tile rasterization. Tiny interiors are never added.
     {
