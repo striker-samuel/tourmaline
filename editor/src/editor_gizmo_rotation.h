@@ -14,21 +14,18 @@ inline glm::quat Orientation(const glm::vec3& eulerDegrees) {
     return glm::normalize(glm::quat(glm::radians(eulerDegrees)));
 }
 
-inline glm::quat LocalDelta(const glm::vec3& fromDegrees,
-    const glm::vec3& toDegrees) {
-    return glm::normalize(Orientation(toDegrees)
-        * glm::inverse(Orientation(fromDegrees)));
+inline glm::quat LocalDelta(const glm::vec3& fromDegrees, const glm::vec3& toDegrees) {
+    return glm::normalize(Orientation(toDegrees) * glm::inverse(Orientation(fromDegrees)));
 }
 
-inline glm::quat InFrame(const glm::quat& worldDelta,
-    const glm::quat& parentWorld) {
+inline glm::quat InFrame(const glm::quat& worldDelta, const glm::quat& parentWorld) {
     return glm::normalize(glm::inverse(parentWorld) * worldDelta * parentWorld);
 }
 
 inline glm::vec3 RotatePosition(const glm::vec3& baseTranslation,
-    const glm::vec3& pivotInParent, const glm::quat& parentLocalDelta) {
-    return pivotInParent
-        + parentLocalDelta * (baseTranslation - pivotInParent);
+                                const glm::vec3& pivotInParent,
+                                const glm::quat& parentLocalDelta) {
+    return pivotInParent + parentLocalDelta * (baseTranslation - pivotInParent);
 }
 
 } // namespace editor::gizmo_rotation

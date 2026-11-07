@@ -51,15 +51,15 @@ namespace {
 // Function table (resolved from sl.interposer.dll)
 // ---------------------------------------------------------------------
 HMODULE g_module = nullptr;
-bool g_ready = false;         // slInit succeeded
+bool g_ready = false; // slInit succeeded
 bool g_supportedChecked = false;
 bool g_supported = false;
 // Startup suppression (DlssSetStartupEnabled): consulted by
 // DlssStartup before any Streamline machinery is touched.
 bool g_startupEnabled = true;
 
-	PFun_slInit* g_slInit = nullptr;
-	PFun_slShutdown* g_slShutdown = nullptr;
+PFun_slInit* g_slInit = nullptr;
+PFun_slShutdown* g_slShutdown = nullptr;
 PFun_slIsFeatureSupported* g_slIsFeatureSupported = nullptr;
 PFun_slIsFeatureLoaded* g_slIsFeatureLoaded = nullptr;
 PFun_slEvaluateFeature* g_slEvaluateFeature = nullptr;
@@ -83,30 +83,29 @@ sl::FrameToken* g_frameToken = nullptr;
 uint32_t g_frameTokenId = UINT32_MAX;
 
 // Single main viewport shared by every DLSS call.
-const sl::ViewportHandle kDlssViewport{ 1u };
+const sl::ViewportHandle kDlssViewport{1u};
 
 void DlssLog(sl::LogType type, const char* msg) {
-	std::fprintf(stderr, "[SL] %s%s",
-		type == sl::LogType::eError ? "ERROR: " : (type == sl::LogType::eWarn ? "WARN: " : ""),
-		msg ? msg : "");
+    std::fprintf(stderr,
+                 "[SL] %s%s",
+                 type == sl::LogType::eError ? "ERROR: "
+                                             : (type == sl::LogType::eWarn ? "WARN: " : ""),
+                 msg ? msg : "");
 }
 
-template <typename T>
-bool ResolveProc(const char* name, T*& out) {
-	out = reinterpret_cast<T*>(reinterpret_cast<void*>(GetProcAddress(g_module, name)));
-	if (!out) {
-		std::fprintf(stderr, "[DLSS] sl.interposer.dll is missing export '%s'\n", name);
-		return false;
-	}
-	return true;
+template <typename T> bool ResolveProc(const char* name, T*& out) {
+    out = reinterpret_cast<T*>(reinterpret_cast<void*>(GetProcAddress(g_module, name)));
+    if (!out) {
+        std::fprintf(stderr, "[DLSS] sl.interposer.dll is missing export '%s'\n", name);
+        return false;
+    }
+    return true;
 }
 
 [[nodiscard]] sl::DLSSMode ToSlMode(smvk::DlssMode mode) {
-	// Ordering matches 1:1 (dlss.h DlssMode mirrors sl::DLSSMode).
-	return static_cast<sl::DLSSMode>(static_cast<uint32_t>(mode));
+    // Ordering matches 1:1 (dlss.h DlssMode mirrors sl::DLSSMode).
+    return static_cast<sl::DLSSMode>(static_cast<uint32_t>(mode));
 }
-
-
 
 } // namespace
 #endif // _WIN32 (first anon-namespace block: SL state + proc resolution)
@@ -115,191 +114,205 @@ namespace smvk {
 
 #ifdef _WIN32
 // PclMarker must stay 1:1 with sl::PCLMarker (DlssPclMarker casts across).
-static_assert(static_cast<uint32_t>(PclMarker::SimulationStart) == static_cast<uint32_t>(sl::PCLMarker::eSimulationStart));
-static_assert(static_cast<uint32_t>(PclMarker::SimulationEnd) == static_cast<uint32_t>(sl::PCLMarker::eSimulationEnd));
-static_assert(static_cast<uint32_t>(PclMarker::RenderSubmitStart) == static_cast<uint32_t>(sl::PCLMarker::eRenderSubmitStart));
-static_assert(static_cast<uint32_t>(PclMarker::RenderSubmitEnd) == static_cast<uint32_t>(sl::PCLMarker::eRenderSubmitEnd));
-static_assert(static_cast<uint32_t>(PclMarker::PresentStart) == static_cast<uint32_t>(sl::PCLMarker::ePresentStart));
-static_assert(static_cast<uint32_t>(PclMarker::PresentEnd) == static_cast<uint32_t>(sl::PCLMarker::ePresentEnd));
+static_assert(static_cast<uint32_t>(PclMarker::SimulationStart) ==
+              static_cast<uint32_t>(sl::PCLMarker::eSimulationStart));
+static_assert(static_cast<uint32_t>(PclMarker::SimulationEnd) ==
+              static_cast<uint32_t>(sl::PCLMarker::eSimulationEnd));
+static_assert(static_cast<uint32_t>(PclMarker::RenderSubmitStart) ==
+              static_cast<uint32_t>(sl::PCLMarker::eRenderSubmitStart));
+static_assert(static_cast<uint32_t>(PclMarker::RenderSubmitEnd) ==
+              static_cast<uint32_t>(sl::PCLMarker::eRenderSubmitEnd));
+static_assert(static_cast<uint32_t>(PclMarker::PresentStart) ==
+              static_cast<uint32_t>(sl::PCLMarker::ePresentStart));
+static_assert(static_cast<uint32_t>(PclMarker::PresentEnd) ==
+              static_cast<uint32_t>(sl::PCLMarker::ePresentEnd));
 
 // ---------------------------------------------------------------------
 // Backend bootstrap / teardown
 // ---------------------------------------------------------------------
 
 bool DlssStartup() {
-	if (g_module)
-		return g_ready;
-	// Process-wide suppression (App CLI --no-dlss): skip the load + slInit
-	// entirely so no SL proxy sits in the Vulkan call chain (RenderDoc
-	// captures; also the "no Streamline at all" A/B).
-	if (!g_startupEnabled) {
-		static bool s_noticed = false;
-		if (!s_noticed) {
-			s_noticed = true;
-			std::fprintf(stderr, "[DLSS] Streamline startup disabled: native vulkan-1.dll path only\n");
-		}
-		return false;
-	}
+    if (g_module)
+        return g_ready;
+    // Process-wide suppression (App CLI --no-dlss): skip the load + slInit
+    // entirely so no SL proxy sits in the Vulkan call chain (RenderDoc
+    // captures; also the "no Streamline at all" A/B).
+    if (!g_startupEnabled) {
+        static bool s_noticed = false;
+        if (!s_noticed) {
+            s_noticed = true;
+            std::fprintf(stderr,
+                         "[DLSS] Streamline startup disabled: native vulkan-1.dll path only\n");
+        }
+        return false;
+    }
 
-	// Load from the executable directory (CMake stages the DLLs there).
-	char exePath[MAX_PATH] = {};
-	GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-	char* lastSlash = std::strrchr(exePath, '\\');
-	if (!lastSlash) {
-		std::fprintf(stderr, "[DLSS] cannot locate the executable directory\n");
-		return false;
-	}
-	*lastSlash = '\0';
-	std::string dllPath = std::string(exePath) + "\\sl.interposer.dll";
+    // Load from the executable directory (CMake stages the DLLs there).
+    char exePath[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    char* lastSlash = std::strrchr(exePath, '\\');
+    if (!lastSlash) {
+        std::fprintf(stderr, "[DLSS] cannot locate the executable directory\n");
+        return false;
+    }
+    *lastSlash = '\0';
+    std::string dllPath = std::string(exePath) + "\\sl.interposer.dll";
 
-	// Silent when the DLL is simply not installed (e.g. git checkout
-	// without the vendored binaries): DLSS just stays unavailable.
-	if (GetFileAttributesA(dllPath.c_str()) == INVALID_FILE_ATTRIBUTES)
-		return false;
+    // Silent when the DLL is simply not installed (e.g. git checkout
+    // without the vendored binaries): DLSS just stays unavailable.
+    if (GetFileAttributesA(dllPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return false;
 
-	g_module = LoadLibraryA(dllPath.c_str());
-	if (!g_module) {
-		std::fprintf(stderr, "[DLSS] LoadLibrary('%s') failed (GetLastError=%lu)\n",
-			dllPath.c_str(), GetLastError());
-		return false;
-	}
+    g_module = LoadLibraryA(dllPath.c_str());
+    if (!g_module) {
+        std::fprintf(stderr,
+                     "[DLSS] LoadLibrary('%s') failed (GetLastError=%lu)\n",
+                     dllPath.c_str(),
+                     GetLastError());
+        return false;
+    }
 
-	if (!ResolveProc("slInit", g_slInit)
-		|| !ResolveProc("slShutdown", g_slShutdown)
-		|| !ResolveProc("slIsFeatureSupported", g_slIsFeatureSupported)
-		|| !ResolveProc("slIsFeatureLoaded", g_slIsFeatureLoaded)
-		|| !ResolveProc("slEvaluateFeature", g_slEvaluateFeature)
-		|| !ResolveProc("slGetNewFrameToken", g_slGetNewFrameToken)
-		|| !ResolveProc("slSetConstants", g_slSetConstants)
-		|| !ResolveProc("slAllocateResources", g_slAllocateResources)
-		|| !ResolveProc("slFreeResources", g_slFreeResources)
-		|| !ResolveProc("slGetFeatureFunction", g_slGetFeatureFunction)
-		|| !ResolveProc("vkGetInstanceProcAddr", g_vkGetInstanceProcAddr)) {
-		FreeLibrary(g_module);
-		g_module = nullptr;
-		g_vkGetInstanceProcAddr = nullptr;
-		return false;
-	}
+    if (!ResolveProc("slInit", g_slInit) || !ResolveProc("slShutdown", g_slShutdown) ||
+        !ResolveProc("slIsFeatureSupported", g_slIsFeatureSupported) ||
+        !ResolveProc("slIsFeatureLoaded", g_slIsFeatureLoaded) ||
+        !ResolveProc("slEvaluateFeature", g_slEvaluateFeature) ||
+        !ResolveProc("slGetNewFrameToken", g_slGetNewFrameToken) ||
+        !ResolveProc("slSetConstants", g_slSetConstants) ||
+        !ResolveProc("slAllocateResources", g_slAllocateResources) ||
+        !ResolveProc("slFreeResources", g_slFreeResources) ||
+        !ResolveProc("slGetFeatureFunction", g_slGetFeatureFunction) ||
+        !ResolveProc("vkGetInstanceProcAddr", g_vkGetInstanceProcAddr)) {
+        FreeLibrary(g_module);
+        g_module = nullptr;
+        g_vkGetInstanceProcAddr = nullptr;
+        return false;
+    }
 
-	sl::Preferences pref{};
-	pref.showConsole = false;
-	pref.logLevel = sl::LogLevel::eOff;
-	pref.logMessageCallback = &DlssLog;
-	pref.flags = sl::PreferenceFlags::eDisableCLStateTracking
-		| sl::PreferenceFlags::eAllowOTA
-		| sl::PreferenceFlags::eLoadDownloadedPlugins;
-	// PCL alongside DLSS: sl.common's VkNvLowLatency2 init only succeeds
-	// when a loaded plugin pulls VK_NV_low_latency2 into the device (the
-	// interposer appends plugin-required extensions at vkCreateDevice).
-	// DLSS alone never requested it -> "Failed to init VkNvLowLatency2: 2".
-	// PCL lives in sl.common.dll (no extra binary to stage).
-	const sl::Feature features[] = { sl::kFeatureDLSS, sl::kFeaturePCL };
-	pref.featuresToLoad = features;
-	pref.numFeaturesToLoad = uint32_t(std::size(features));
-	pref.engine = sl::EngineType::eCustom;
-	pref.engineVersion = "1.0.0";
-	// NGX validates this as a GUID string (an arbitrary project name is
-	// rejected with "invalid character" and NGX init fails outright).
-	pref.projectId = "6f6c1b2e-9d34-4a51-8e0f-2b7c9a3d5e14";
-	pref.renderAPI = sl::RenderAPI::eVulkan;
+    sl::Preferences pref{};
+    pref.showConsole = false;
+    pref.logLevel = sl::LogLevel::eOff;
+    pref.logMessageCallback = &DlssLog;
+    pref.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eAllowOTA |
+                 sl::PreferenceFlags::eLoadDownloadedPlugins;
+    // PCL alongside DLSS: sl.common's VkNvLowLatency2 init only succeeds
+    // when a loaded plugin pulls VK_NV_low_latency2 into the device (the
+    // interposer appends plugin-required extensions at vkCreateDevice).
+    // DLSS alone never requested it -> "Failed to init VkNvLowLatency2: 2".
+    // PCL lives in sl.common.dll (no extra binary to stage).
+    const sl::Feature features[] = {sl::kFeatureDLSS, sl::kFeaturePCL};
+    pref.featuresToLoad = features;
+    pref.numFeaturesToLoad = uint32_t(std::size(features));
+    pref.engine = sl::EngineType::eCustom;
+    pref.engineVersion = "1.0.0";
+    // NGX validates this as a GUID string (an arbitrary project name is
+    // rejected with "invalid character" and NGX init fails outright).
+    pref.projectId = "6f6c1b2e-9d34-4a51-8e0f-2b7c9a3d5e14";
+    pref.renderAPI = sl::RenderAPI::eVulkan;
 
-	sl::Result res = g_slInit(pref, sl::kSDKVersion);
-	if (res != sl::Result::eOk) {
-		// No NVIDIA driver / NGX unsupported: expected on non-NVDA
-		// systems, log once and stay on the fallback path.
-		std::fprintf(stderr, "[DLSS] slInit failed (result=%u) - DLSS unavailable, "
-			"falling back to the native path\n", static_cast<uint32_t>(res));
-		FreeLibrary(g_module);
-		g_module = nullptr;
-		g_vkGetInstanceProcAddr = nullptr;
-		return false;
-	}
-	std::fprintf(stderr, "[DLSS] Streamline initialized (DLSS+PCL features requested)\n");
-	g_ready = true;
-	// NOTE: slGetFeatureFunction only works AFTER the VkDevice exists
-	// (sl.h: "can only be used AFTER device is set"), so the PCL marker
-	// entry point resolves lazily in DlssPclAvailable, not here.
-	return true;
+    sl::Result res = g_slInit(pref, sl::kSDKVersion);
+    if (res != sl::Result::eOk) {
+        // No NVIDIA driver / NGX unsupported: expected on non-NVDA
+        // systems, log once and stay on the fallback path.
+        std::fprintf(stderr,
+                     "[DLSS] slInit failed (result=%u) - DLSS unavailable, "
+                     "falling back to the native path\n",
+                     static_cast<uint32_t>(res));
+        FreeLibrary(g_module);
+        g_module = nullptr;
+        g_vkGetInstanceProcAddr = nullptr;
+        return false;
+    }
+    std::fprintf(stderr, "[DLSS] Streamline initialized (DLSS+PCL features requested)\n");
+    g_ready = true;
+    // NOTE: slGetFeatureFunction only works AFTER the VkDevice exists
+    // (sl.h: "can only be used AFTER device is set"), so the PCL marker
+    // entry point resolves lazily in DlssPclAvailable, not here.
+    return true;
 }
 
 void DlssSetStartupEnabled(bool enabled) {
-	g_startupEnabled = enabled;
+    g_startupEnabled = enabled;
 }
 
 void DlssShutdown() {
-	if (!g_module)
-		return;
-	if (g_ready) {
-		sl::Result res = g_slShutdown();
-		if (res != sl::Result::eOk)
-			std::fprintf(stderr, "[DLSS] slShutdown failed (result=%u)\n", static_cast<uint32_t>(res));
-		g_ready = false;
-	}
-	// Deliberately NOT FreeLibrary-ing sl.interposer.dll here: volk's
-	// dispatch tables and VMA's imported function table hold pointers
-	// into the interposer (App::Initialize routed volk through its
-	// vkGetInstanceProcAddr), and every remaining Vulkan teardown call
-	// (~Swapchain / ~VulkanResourceManager / ~VulkanCore) runs through
-	// them. Unloading now unmaps that code and the next vk* call jumps
-	// into freed memory (0xC0000005 at app exit). DlssRelease() unloads
-	// the module once the last Vulkan call has happened.
-	g_vkGetInstanceProcAddr = nullptr;
-	g_supported = false;
-	g_supportedChecked = false;
-	g_slPCLSetMarker = nullptr;
-	g_pclChecked = false;
-	g_pclReady = false;
-	g_frameToken = nullptr;
-	g_frameTokenId = UINT32_MAX;
+    if (!g_module)
+        return;
+    if (g_ready) {
+        sl::Result res = g_slShutdown();
+        if (res != sl::Result::eOk)
+            std::fprintf(
+                stderr, "[DLSS] slShutdown failed (result=%u)\n", static_cast<uint32_t>(res));
+        g_ready = false;
+    }
+    // Deliberately NOT FreeLibrary-ing sl.interposer.dll here: volk's
+    // dispatch tables and VMA's imported function table hold pointers
+    // into the interposer (App::Initialize routed volk through its
+    // vkGetInstanceProcAddr), and every remaining Vulkan teardown call
+    // (~Swapchain / ~VulkanResourceManager / ~VulkanCore) runs through
+    // them. Unloading now unmaps that code and the next vk* call jumps
+    // into freed memory (0xC0000005 at app exit). DlssRelease() unloads
+    // the module once the last Vulkan call has happened.
+    g_vkGetInstanceProcAddr = nullptr;
+    g_supported = false;
+    g_supportedChecked = false;
+    g_slPCLSetMarker = nullptr;
+    g_pclChecked = false;
+    g_pclReady = false;
+    g_frameToken = nullptr;
+    g_frameTokenId = UINT32_MAX;
 }
 
 void DlssRelease() {
-	if (!g_module)
-		return;
-	// Only safe after the final Vulkan call of the process (end of
-	// ~VulkanCore): see the note in DlssShutdown. No-op when Streamline
-	// never loaded or was already released.
-	FreeLibrary(g_module);
-	g_module = nullptr;
+    if (!g_module)
+        return;
+    // Only safe after the final Vulkan call of the process (end of
+    // ~VulkanCore): see the note in DlssShutdown. No-op when Streamline
+    // never loaded or was already released.
+    FreeLibrary(g_module);
+    g_module = nullptr;
 }
 
 bool DlssAvailable() {
-	return g_ready;
+    return g_ready;
 }
 
 const void* DlssVulkanGetInstanceProcAddr() {
-	return reinterpret_cast<const void*>(g_vkGetInstanceProcAddr);
+    return reinterpret_cast<const void*>(g_vkGetInstanceProcAddr);
 }
 
 bool DlssFeatureSupported() {
-	if (!g_ready || g_supportedChecked)
-		return g_supported;
-	g_supportedChecked = true;
+    if (!g_ready || g_supportedChecked)
+        return g_supported;
+    g_supportedChecked = true;
 
-	bool loaded = false;
-	sl::Result res = g_slIsFeatureLoaded(sl::kFeatureDLSS, loaded);
-	if (res != sl::Result::eOk || !loaded) {
-		std::fprintf(stderr, "[DLSS] feature not loaded (result=%u loaded=%d)\n",
-			static_cast<uint32_t>(res), loaded ? 1 : 0);
-		return g_supported = false;
-	}
+    bool loaded = false;
+    sl::Result res = g_slIsFeatureLoaded(sl::kFeatureDLSS, loaded);
+    if (res != sl::Result::eOk || !loaded) {
+        std::fprintf(stderr,
+                     "[DLSS] feature not loaded (result=%u loaded=%d)\n",
+                     static_cast<uint32_t>(res),
+                     loaded ? 1 : 0);
+        return g_supported = false;
+    }
 
-	VkPhysicalDevice pd = GetVkPhysicalDevice();
-	if (pd == VK_NULL_HANDLE) {
-		std::fprintf(stderr, "[DLSS] no VkPhysicalDevice yet - support check deferred\n");
-		g_supportedChecked = false; // re-check once the device exists
-		return g_supported = false;
-	}
-	sl::AdapterInfo info{};
-	info.vkPhysicalDevice = reinterpret_cast<void*>(pd);
-	res = g_slIsFeatureSupported(sl::kFeatureDLSS, info);
-	if (res != sl::Result::eOk) {
-		std::fprintf(stderr, "[DLSS] not supported on this adapter (result=%u: "
-			"driver out of date / non-NVIDIA GPU / OS check)\n", static_cast<uint32_t>(res));
-		return g_supported = false;
-	}
-	std::fprintf(stderr, "[DLSS] supported on this adapter\n");
-	return g_supported = true;
+    VkPhysicalDevice pd = GetVkPhysicalDevice();
+    if (pd == VK_NULL_HANDLE) {
+        std::fprintf(stderr, "[DLSS] no VkPhysicalDevice yet - support check deferred\n");
+        g_supportedChecked = false; // re-check once the device exists
+        return g_supported = false;
+    }
+    sl::AdapterInfo info{};
+    info.vkPhysicalDevice = reinterpret_cast<void*>(pd);
+    res = g_slIsFeatureSupported(sl::kFeatureDLSS, info);
+    if (res != sl::Result::eOk) {
+        std::fprintf(stderr,
+                     "[DLSS] not supported on this adapter (result=%u: "
+                     "driver out of date / non-NVIDIA GPU / OS check)\n",
+                     static_cast<uint32_t>(res));
+        return g_supported = false;
+    }
+    std::fprintf(stderr, "[DLSS] supported on this adapter\n");
+    return g_supported = true;
 }
 
 // ---------------------------------------------------------------------
@@ -307,157 +320,169 @@ bool DlssFeatureSupported() {
 // ---------------------------------------------------------------------
 
 bool DlssPclAvailable() {
-	if (!g_ready || g_pclChecked)
-		return g_pclReady;
-	// Resolve on first use: slGetFeatureFunction requires a live VkDevice,
-	// which does not exist yet during DlssStartup (sl.h documents this).
-	// One attempt per run; a miss (older SL, non-NVIDIA) parks PCL off.
-	g_pclChecked = true;
+    if (!g_ready || g_pclChecked)
+        return g_pclReady;
+    // Resolve on first use: slGetFeatureFunction requires a live VkDevice,
+    // which does not exist yet during DlssStartup (sl.h documents this).
+    // One attempt per run; a miss (older SL, non-NVIDIA) parks PCL off.
+    g_pclChecked = true;
 
-	bool loaded = false;
-	sl::Result res = g_slIsFeatureLoaded(sl::kFeaturePCL, loaded);
-	if (res != sl::Result::eOk || !loaded) {
-		std::fprintf(stderr, "[DLSS] PCL feature not loaded (result=%u loaded=%d) - markers off\n",
-			static_cast<uint32_t>(res), loaded ? 1 : 0);
-		return g_pclReady = false;
-	}
-	if (g_slGetFeatureFunction(sl::kFeaturePCL, "slPCLSetMarker",
-			reinterpret_cast<void*&>(g_slPCLSetMarker)) != sl::Result::eOk
-		|| !g_slPCLSetMarker) {
-		g_slPCLSetMarker = nullptr;
-		std::fprintf(stderr, "[DLSS] slPCLSetMarker unavailable - PCL markers off\n");
-		return g_pclReady = false;
-	}
-	std::fprintf(stderr, "[DLSS] PCL markers ready\n");
-	return g_pclReady = true;
+    bool loaded = false;
+    sl::Result res = g_slIsFeatureLoaded(sl::kFeaturePCL, loaded);
+    if (res != sl::Result::eOk || !loaded) {
+        std::fprintf(stderr,
+                     "[DLSS] PCL feature not loaded (result=%u loaded=%d) - markers off\n",
+                     static_cast<uint32_t>(res),
+                     loaded ? 1 : 0);
+        return g_pclReady = false;
+    }
+    if (g_slGetFeatureFunction(sl::kFeaturePCL,
+                               "slPCLSetMarker",
+                               reinterpret_cast<void*&>(g_slPCLSetMarker)) != sl::Result::eOk ||
+        !g_slPCLSetMarker) {
+        g_slPCLSetMarker = nullptr;
+        std::fprintf(stderr, "[DLSS] slPCLSetMarker unavailable - PCL markers off\n");
+        return g_pclReady = false;
+    }
+    std::fprintf(stderr, "[DLSS] PCL markers ready\n");
+    return g_pclReady = true;
 }
 
 bool DlssBeginFrame(uint32_t frameIndex) {
-	// Previous frame's token (if any) is superseded: SL retires frames by
-	// index, and a leaked token from a thrown frame is harmless — the next
-	// Begin overwrites it. EndFrame normally clears it after present.
-	g_frameToken = nullptr;
-	g_frameTokenId = frameIndex;
-	if (!DlssPclAvailable())
-		return false;
-	sl::Result res = g_slGetNewFrameToken(g_frameToken, &frameIndex);
-	if (res != sl::Result::eOk || !g_frameToken) {
-		std::fprintf(stderr, "[DLSS] PCL slGetNewFrameToken failed (result=%u)\n",
-			static_cast<uint32_t>(res));
-		g_frameToken = nullptr;
-		return false;
-	}
-	DlssPclMarker(static_cast<PclMarker>(sl::PCLMarker::eSimulationStart));
-	return true;
+    // Previous frame's token (if any) is superseded: SL retires frames by
+    // index, and a leaked token from a thrown frame is harmless — the next
+    // Begin overwrites it. EndFrame normally clears it after present.
+    g_frameToken = nullptr;
+    g_frameTokenId = frameIndex;
+    if (!DlssPclAvailable())
+        return false;
+    sl::Result res = g_slGetNewFrameToken(g_frameToken, &frameIndex);
+    if (res != sl::Result::eOk || !g_frameToken) {
+        std::fprintf(stderr,
+                     "[DLSS] PCL slGetNewFrameToken failed (result=%u)\n",
+                     static_cast<uint32_t>(res));
+        g_frameToken = nullptr;
+        return false;
+    }
+    DlssPclMarker(static_cast<PclMarker>(sl::PCLMarker::eSimulationStart));
+    return true;
 }
 
 void DlssPclMarker(PclMarker marker) {
-	if (!g_pclReady || !g_slPCLSetMarker || !g_frameToken)
-		return;
-	sl::Result res = g_slPCLSetMarker(
-		static_cast<sl::PCLMarker>(static_cast<uint32_t>(marker)), *g_frameToken);
-	if (res != sl::Result::eOk)
-		std::fprintf(stderr, "[DLSS] slPCLSetMarker(%u) failed (result=%u)\n",
-			static_cast<uint32_t>(marker), static_cast<uint32_t>(res));
+    if (!g_pclReady || !g_slPCLSetMarker || !g_frameToken)
+        return;
+    sl::Result res =
+        g_slPCLSetMarker(static_cast<sl::PCLMarker>(static_cast<uint32_t>(marker)), *g_frameToken);
+    if (res != sl::Result::eOk)
+        std::fprintf(stderr,
+                     "[DLSS] slPCLSetMarker(%u) failed (result=%u)\n",
+                     static_cast<uint32_t>(marker),
+                     static_cast<uint32_t>(res));
 }
 
 void DlssEndFrame() {
-	g_frameToken = nullptr;
-	g_frameTokenId = UINT32_MAX;
+    g_frameToken = nullptr;
+    g_frameTokenId = UINT32_MAX;
 }
 
 bool DlssQueryOptimalSettings(DlssMode mode,
-	uint32_t outputWidth, uint32_t outputHeight, DlssOptimalSettings& out) {
-	if (!g_ready || mode == DlssMode::Off
-		|| outputWidth == 0 || outputHeight == 0)
-		return false;
+                              uint32_t outputWidth,
+                              uint32_t outputHeight,
+                              DlssOptimalSettings& out) {
+    if (!g_ready || mode == DlssMode::Off || outputWidth == 0 || outputHeight == 0)
+        return false;
 
-	PFun_slDLSSGetOptimalSettings* fn = nullptr;
-	sl::Result res = g_slGetFeatureFunction(sl::kFeatureDLSS,
-		"slDLSSGetOptimalSettings", reinterpret_cast<void*&>(fn));
-	if (res != sl::Result::eOk || !fn) {
-		std::fprintf(stderr, "[DLSS] slDLSSGetOptimalSettings unavailable (result=%u)\n",
-			static_cast<uint32_t>(res));
-		return false;
-	}
-	sl::DLSSOptions o{};
-	o.mode = ToSlMode(mode);
-	o.outputWidth = outputWidth;
-	o.outputHeight = outputHeight;
-	sl::DLSSOptimalSettings settings{};
-	if (SL_FAILED(res, fn(o, settings)))
-		return false;
-	out.renderWidth = settings.optimalRenderWidth;
-	out.renderHeight = settings.optimalRenderHeight;
-	return out.renderWidth != 0 && out.renderHeight != 0;
+    PFun_slDLSSGetOptimalSettings* fn = nullptr;
+    sl::Result res = g_slGetFeatureFunction(
+        sl::kFeatureDLSS, "slDLSSGetOptimalSettings", reinterpret_cast<void*&>(fn));
+    if (res != sl::Result::eOk || !fn) {
+        std::fprintf(stderr,
+                     "[DLSS] slDLSSGetOptimalSettings unavailable (result=%u)\n",
+                     static_cast<uint32_t>(res));
+        return false;
+    }
+    sl::DLSSOptions o{};
+    o.mode = ToSlMode(mode);
+    o.outputWidth = outputWidth;
+    o.outputHeight = outputHeight;
+    sl::DLSSOptimalSettings settings{};
+    if (SL_FAILED(res, fn(o, settings)))
+        return false;
+    out.renderWidth = settings.optimalRenderWidth;
+    out.renderHeight = settings.optimalRenderHeight;
+    return out.renderWidth != 0 && out.renderHeight != 0;
 }
 
 bool DlssApplyOptions(DlssMode mode, uint32_t outputWidth, uint32_t outputHeight) {
-	if (!g_ready)
-		return false;
-	if (mode == DlssMode::Off || outputWidth == 0 || outputHeight == 0)
-		return false;
+    if (!g_ready)
+        return false;
+    if (mode == DlssMode::Off || outputWidth == 0 || outputHeight == 0)
+        return false;
 
-	PFun_slDLSSSetOptions* fn = nullptr;
-	sl::Result res = g_slGetFeatureFunction(sl::kFeatureDLSS,
-		"slDLSSSetOptions", reinterpret_cast<void*&>(fn));
-	if (res != sl::Result::eOk || !fn) {
-		std::fprintf(stderr, "[DLSS] slDLSSSetOptions unavailable (result=%u)\n",
-			static_cast<uint32_t>(res));
-		return false;
-	}
-	sl::DLSSOptions o{};
-	o.mode = ToSlMode(mode);
-	o.outputWidth = outputWidth;
-	o.outputHeight = outputHeight;
-	// HDR pipeline: linear RGBA16F in/out, real exposure texture tagged
-	// every frame (useAutoExposure stays off - see AddDlssPasses).
-	o.colorBuffersHDR = sl::Boolean::eTrue;
-	o.useAutoExposure = sl::Boolean::eFalse;
-	o.alphaUpscalingEnabled = sl::Boolean::eFalse;
-	if (SL_FAILED(res, fn(kDlssViewport, o))) {
-		std::fprintf(stderr, "[DLSS] slDLSSSetOptions failed (result=%u)\n",
-			static_cast<uint32_t>(res));
-		return false;
-	}
-	// No explicit slAllocateResources here: the DLSS plugin's allocate
-	// path runs the same begin-event as evaluate and needs the common
-	// constants + tagged resources, which only exist at evaluate time.
-	// The NGX feature instance is instead created by the first
-	// slEvaluateFeature (ProgrammingGuideDLSS 8.0: "If slAllocateResources
-	// is not called DLSS resources would be initialized at this point").
-	return true;
+    PFun_slDLSSSetOptions* fn = nullptr;
+    sl::Result res =
+        g_slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSSetOptions", reinterpret_cast<void*&>(fn));
+    if (res != sl::Result::eOk || !fn) {
+        std::fprintf(stderr,
+                     "[DLSS] slDLSSSetOptions unavailable (result=%u)\n",
+                     static_cast<uint32_t>(res));
+        return false;
+    }
+    sl::DLSSOptions o{};
+    o.mode = ToSlMode(mode);
+    o.outputWidth = outputWidth;
+    o.outputHeight = outputHeight;
+    // HDR pipeline: linear RGBA16F in/out, real exposure texture tagged
+    // every frame (useAutoExposure stays off - see AddDlssPasses).
+    o.colorBuffersHDR = sl::Boolean::eTrue;
+    o.useAutoExposure = sl::Boolean::eFalse;
+    o.alphaUpscalingEnabled = sl::Boolean::eFalse;
+    if (SL_FAILED(res, fn(kDlssViewport, o))) {
+        std::fprintf(
+            stderr, "[DLSS] slDLSSSetOptions failed (result=%u)\n", static_cast<uint32_t>(res));
+        return false;
+    }
+    // No explicit slAllocateResources here: the DLSS plugin's allocate
+    // path runs the same begin-event as evaluate and needs the common
+    // constants + tagged resources, which only exist at evaluate time.
+    // The NGX feature instance is instead created by the first
+    // slEvaluateFeature (ProgrammingGuideDLSS 8.0: "If slAllocateResources
+    // is not called DLSS resources would be initialized at this point").
+    return true;
 }
 
 void DlssDeactivate(uint32_t outputWidth, uint32_t outputHeight) {
-	if (!g_ready)
-		return;
-	PFun_slDLSSSetOptions* setFn = nullptr;
-	if (g_slGetFeatureFunction(sl::kFeatureDLSS,
-			"slDLSSSetOptions", reinterpret_cast<void*&>(setFn)) == sl::Result::eOk && setFn) {
-		sl::DLSSOptions o{};
-		o.mode = sl::DLSSMode::eOff;
-		// eOff still validates extents: forward the last applied output
-		// size instead of the INVALID_UINT defaults. Zero means unknown
-		// (never applied) — leave the defaults in that case.
-		if (outputWidth != 0 && outputHeight != 0) {
-			o.outputWidth = outputWidth;
-			o.outputHeight = outputHeight;
-		}
-		// Keep the HDR/auto-exposure/alpha fields consistent with the
-		// enabled path so the transition doesn't look like a format drift.
-		o.colorBuffersHDR = sl::Boolean::eTrue;
-		o.useAutoExposure = sl::Boolean::eFalse;
-		o.alphaUpscalingEnabled = sl::Boolean::eFalse;
-		sl::Result setRes = setFn(kDlssViewport, o);
-		if (setRes != sl::Result::eOk)
-			std::fprintf(stderr, "[DLSS] slDLSSSetOptions(eOff) failed (result=%u)\n",
-				static_cast<uint32_t>(setRes));
-	}
-	sl::Result res = g_slFreeResources(sl::kFeatureDLSS, kDlssViewport);
-	if (res != sl::Result::eOk)
-		std::fprintf(stderr, "[DLSS] slFreeResources failed (result=%u)\n",
-			static_cast<uint32_t>(res));
+    if (!g_ready)
+        return;
+    PFun_slDLSSSetOptions* setFn = nullptr;
+    if (g_slGetFeatureFunction(sl::kFeatureDLSS,
+                               "slDLSSSetOptions",
+                               reinterpret_cast<void*&>(setFn)) == sl::Result::eOk &&
+        setFn) {
+        sl::DLSSOptions o{};
+        o.mode = sl::DLSSMode::eOff;
+        // eOff still validates extents: forward the last applied output
+        // size instead of the INVALID_UINT defaults. Zero means unknown
+        // (never applied) — leave the defaults in that case.
+        if (outputWidth != 0 && outputHeight != 0) {
+            o.outputWidth = outputWidth;
+            o.outputHeight = outputHeight;
+        }
+        // Keep the HDR/auto-exposure/alpha fields consistent with the
+        // enabled path so the transition doesn't look like a format drift.
+        o.colorBuffersHDR = sl::Boolean::eTrue;
+        o.useAutoExposure = sl::Boolean::eFalse;
+        o.alphaUpscalingEnabled = sl::Boolean::eFalse;
+        sl::Result setRes = setFn(kDlssViewport, o);
+        if (setRes != sl::Result::eOk)
+            std::fprintf(stderr,
+                         "[DLSS] slDLSSSetOptions(eOff) failed (result=%u)\n",
+                         static_cast<uint32_t>(setRes));
+    }
+    sl::Result res = g_slFreeResources(sl::kFeatureDLSS, kDlssViewport);
+    if (res != sl::Result::eOk)
+        std::fprintf(
+            stderr, "[DLSS] slFreeResources failed (result=%u)\n", static_cast<uint32_t>(res));
 }
 #else
 // ---------------------------------------------------------------------
@@ -469,26 +494,41 @@ void DlssDeactivate(uint32_t outputWidth, uint32_t outputHeight) {
 // the same contract as a Windows run without the Streamline files).
 // ---------------------------------------------------------------------
 bool DlssStartup() {
-	static bool s_noticed = false;
-	if (!s_noticed) {
-		s_noticed = true;
-		std::fprintf(stderr,
-			"[DLSS] Streamline is Windows-only - the feature stays unavailable on this platform\n");
-	}
-	return false;
+    static bool s_noticed = false;
+    if (!s_noticed) {
+        s_noticed = true;
+        std::fprintf(
+            stderr,
+            "[DLSS] Streamline is Windows-only - the feature stays unavailable on this platform\n");
+    }
+    return false;
 }
 void DlssSetStartupEnabled(bool) {}
 void DlssShutdown() {}
 void DlssRelease() {}
-bool DlssAvailable() { return false; }
-const void* DlssVulkanGetInstanceProcAddr() { return nullptr; }
-bool DlssFeatureSupported() { return false; }
-bool DlssPclAvailable() { return false; }
-bool DlssBeginFrame(uint32_t) { return false; }
+bool DlssAvailable() {
+    return false;
+}
+const void* DlssVulkanGetInstanceProcAddr() {
+    return nullptr;
+}
+bool DlssFeatureSupported() {
+    return false;
+}
+bool DlssPclAvailable() {
+    return false;
+}
+bool DlssBeginFrame(uint32_t) {
+    return false;
+}
 void DlssPclMarker(PclMarker) {}
 void DlssEndFrame() {}
-bool DlssQueryOptimalSettings(DlssMode, uint32_t, uint32_t, DlssOptimalSettings&) { return false; }
-bool DlssApplyOptions(DlssMode, uint32_t, uint32_t) { return false; }
+bool DlssQueryOptimalSettings(DlssMode, uint32_t, uint32_t, DlssOptimalSettings&) {
+    return false;
+}
+bool DlssApplyOptions(DlssMode, uint32_t, uint32_t) {
+    return false;
+}
 void DlssDeactivate(uint32_t, uint32_t) {}
 #endif // _WIN32 (Streamline backend entry points)
 
@@ -497,27 +537,29 @@ void DlssDeactivate(uint32_t, uint32_t) {}
 // ---------------------------------------------------------------------
 
 float DlssHalton(uint32_t index, uint32_t radix) {
-	// Van der Corput radical inverse; index >= 1.
-	float f = 1.0f;
-	float r = 0.0f;
-	uint32_t i = index;
-	while (i > 0) {
-		f /= static_cast<float>(radix);
-		r += f * static_cast<float>(i % radix);
-		i /= radix;
-	}
-	return r;
+    // Van der Corput radical inverse; index >= 1.
+    float f = 1.0f;
+    float r = 0.0f;
+    uint32_t i = index;
+    while (i > 0) {
+        f /= static_cast<float>(radix);
+        r += f * static_cast<float>(i % radix);
+        i /= radix;
+    }
+    return r;
 }
 
-uint32_t DlssPhaseCount(uint32_t renderWidth, uint32_t renderHeight,
-	uint32_t outputWidth, uint32_t outputHeight) {
-	if (renderWidth == 0 || renderHeight == 0 || outputWidth == 0 || outputHeight == 0)
-		return 8;
-	const double renderPixels = double(renderWidth) * double(renderHeight);
-	const double outputPixels = double(outputWidth) * double(outputHeight);
-	const double ratio2 = outputPixels / renderPixels; // output/render pixel area
-	const uint32_t scaled = uint32_t(8.0 * ratio2 + 0.5);
-	return (scaled < 8u) ? 8u : (scaled > 128u ? 128u : scaled);
+uint32_t DlssPhaseCount(uint32_t renderWidth,
+                        uint32_t renderHeight,
+                        uint32_t outputWidth,
+                        uint32_t outputHeight) {
+    if (renderWidth == 0 || renderHeight == 0 || outputWidth == 0 || outputHeight == 0)
+        return 8;
+    const double renderPixels = double(renderWidth) * double(renderHeight);
+    const double outputPixels = double(outputWidth) * double(outputHeight);
+    const double ratio2 = outputPixels / renderPixels; // output/render pixel area
+    const uint32_t scaled = uint32_t(8.0 * ratio2 + 0.5);
+    return (scaled < 8u) ? 8u : (scaled > 128u ? 128u : scaled);
 }
 
 // ---------------------------------------------------------------------
@@ -527,221 +569,252 @@ uint32_t DlssPhaseCount(uint32_t renderWidth, uint32_t renderHeight,
 #ifdef _WIN32
 namespace {
 
-bool DlssEvaluate(ResourceManager& ctx, void* vkCommandBuffer,
-	uint32_t frameIndex, const DlssFrameInputs& in) {
-	assert(g_ready);
-	assert(vkCommandBuffer);
-	VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(vkCommandBuffer);
+bool DlssEvaluate(ResourceManager& ctx,
+                  void* vkCommandBuffer,
+                  uint32_t frameIndex,
+                  const DlssFrameInputs& in) {
+    assert(g_ready);
+    assert(vkCommandBuffer);
+    VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(vkCommandBuffer);
 
-	auto& vctx = *static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque());
-	auto vkImage = [&vctx](ImageHandle h) {
-		auto* img = vctx.images_.get(h);
-		assert(img && img->vkImage != VK_NULL_HANDLE);
-		return img->vkImage;
-	};
-	auto vkView = [&vctx](ImageViewHandle h) {
-		auto* v = vctx.imageViews_.get(h);
-		assert(v && v->vkView != VK_NULL_HANDLE);
-		return v->vkView;
-	};
-	auto usageOf = [&vctx](ImageHandle h) {
-		auto* img = vctx.images_.get(h);
-		return img ? img->usage : ImageUsage::None;
-	};
+    auto& vctx = *static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque());
+    auto vkImage = [&vctx](ImageHandle h) {
+        auto* img = vctx.images_.get(h);
+        assert(img && img->vkImage != VK_NULL_HANDLE);
+        return img->vkImage;
+    };
+    auto vkView = [&vctx](ImageViewHandle h) {
+        auto* v = vctx.imageViews_.get(h);
+        assert(v && v->vkView != VK_NULL_HANDLE);
+        return v->vkView;
+    };
+    auto usageOf = [&vctx](ImageHandle h) {
+        auto* img = vctx.images_.get(h);
+        return img ? img->usage : ImageUsage::None;
+    };
 
-	// Lifecycles follow the DLSS programming guide's tagging example:
-	// depth lives until present, the volatile per-frame inputs are
-	// consumed immediately at evaluate.
-	dlss_vk::TaggedResource colorIn(
-		in.renderExtent, in.colorFormat, usageOf(in.colorInImage),
-		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow,
-		vkImage(in.colorInImage), vkView(in.colorInView));
-	dlss_vk::TaggedResource colorOut(
-		in.outputExtent, in.colorFormat, usageOf(in.colorOutImage),
-		VK_IMAGE_LAYOUT_GENERAL,
-		sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow,
-		vkImage(in.colorOutImage), vkView(in.colorOutView));
-	dlss_vk::TaggedResource depth(
-		in.renderExtent, in.depthFormat, usageOf(in.depthImage),
-		VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-		sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent,
-		vkImage(in.depthImage), vkView(in.depthView));
-	dlss_vk::TaggedResource mvec(
-		in.renderExtent, in.mvecFormat, usageOf(in.mvecImage),
-		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eOnlyValidNow,
-		vkImage(in.mvecImage), vkView(in.mvecView));
-	dlss_vk::TaggedResource exposure(
-		Extent2D{ 1u, 1u }, in.exposureFormat, usageOf(in.exposureImage),
-		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		sl::kBufferTypeExposure, sl::ResourceLifecycle::eOnlyValidNow,
-		vkImage(in.exposureImage), vkView(in.exposureView));
+    // Lifecycles follow the DLSS programming guide's tagging example:
+    // depth lives until present, the volatile per-frame inputs are
+    // consumed immediately at evaluate.
+    dlss_vk::TaggedResource colorIn(in.renderExtent,
+                                    in.colorFormat,
+                                    usageOf(in.colorInImage),
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    sl::kBufferTypeScalingInputColor,
+                                    sl::ResourceLifecycle::eOnlyValidNow,
+                                    vkImage(in.colorInImage),
+                                    vkView(in.colorInView));
+    dlss_vk::TaggedResource colorOut(in.outputExtent,
+                                     in.colorFormat,
+                                     usageOf(in.colorOutImage),
+                                     VK_IMAGE_LAYOUT_GENERAL,
+                                     sl::kBufferTypeScalingOutputColor,
+                                     sl::ResourceLifecycle::eOnlyValidNow,
+                                     vkImage(in.colorOutImage),
+                                     vkView(in.colorOutView));
+    dlss_vk::TaggedResource depth(in.renderExtent,
+                                  in.depthFormat,
+                                  usageOf(in.depthImage),
+                                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                                  sl::kBufferTypeDepth,
+                                  sl::ResourceLifecycle::eValidUntilPresent,
+                                  vkImage(in.depthImage),
+                                  vkView(in.depthView));
+    dlss_vk::TaggedResource mvec(in.renderExtent,
+                                 in.mvecFormat,
+                                 usageOf(in.mvecImage),
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                 sl::kBufferTypeMotionVectors,
+                                 sl::ResourceLifecycle::eOnlyValidNow,
+                                 vkImage(in.mvecImage),
+                                 vkView(in.mvecView));
+    dlss_vk::TaggedResource exposure(Extent2D{1u, 1u},
+                                     in.exposureFormat,
+                                     usageOf(in.exposureImage),
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                     sl::kBufferTypeExposure,
+                                     sl::ResourceLifecycle::eOnlyValidNow,
+                                     vkImage(in.exposureImage),
+                                     vkView(in.exposureView));
 
-	// Common constants - matrices arrive row-major + unjittered from the
-	// app; the 16-float arrays share the sl::float4x4 row-major layout.
-	sl::Constants consts{};
-	std::memcpy(&consts.cameraViewToClip, in.cameraViewToClip, sizeof(float) * 16);
-	std::memcpy(&consts.clipToCameraView, in.clipToCameraView, sizeof(float) * 16);
-	std::memcpy(&consts.clipToPrevClip, in.clipToPrevClip, sizeof(float) * 16);
-	std::memcpy(&consts.prevClipToClip, in.prevClipToClip, sizeof(float) * 16);
-	consts.jitterOffset = sl::float2(in.jitterOffset[0], in.jitterOffset[1]);
-	// Motion vectors are UV deltas (prevUV - currUV, y-down): identity
-	// scale maps UV -> pixels inside the plugin (MV_Scale = mvecScale *
-	// renderSize).
-	consts.mvecScale = sl::float2(1.0f, 1.0f);
-	consts.cameraPos = sl::float3(in.cameraPos[0], in.cameraPos[1], in.cameraPos[2]);
-	consts.cameraUp = sl::float3(in.cameraUp[0], in.cameraUp[1], in.cameraUp[2]);
-	consts.cameraRight = sl::float3(in.cameraRight[0], in.cameraRight[1], in.cameraRight[2]);
-	consts.cameraFwd = sl::float3(in.cameraFwd[0], in.cameraFwd[1], in.cameraFwd[2]);
-	consts.cameraNear = in.cameraNear;
-	consts.cameraFar = in.cameraFar;
-	consts.cameraFOV = in.cameraFOV;
-	consts.cameraAspectRatio = in.cameraAspectRatio;
-	// Reversed-Z (near maps to 1), geometry-based vectors carry camera
-	// motion and include the sub-pixel jitter (prevViewProj is jittered).
-	consts.depthInverted = sl::Boolean::eTrue;
-	consts.cameraMotionIncluded = sl::Boolean::eTrue;
-	consts.motionVectors3D = sl::Boolean::eFalse;
-	consts.reset = in.reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
-	consts.orthographicProjection = sl::Boolean::eFalse;
-	consts.motionVectorsDilated = sl::Boolean::eFalse;
-	consts.motionVectorsJittered = sl::Boolean::eTrue;
+    // Common constants - matrices arrive row-major + unjittered from the
+    // app; the 16-float arrays share the sl::float4x4 row-major layout.
+    sl::Constants consts{};
+    std::memcpy(&consts.cameraViewToClip, in.cameraViewToClip, sizeof(float) * 16);
+    std::memcpy(&consts.clipToCameraView, in.clipToCameraView, sizeof(float) * 16);
+    std::memcpy(&consts.clipToPrevClip, in.clipToPrevClip, sizeof(float) * 16);
+    std::memcpy(&consts.prevClipToClip, in.prevClipToClip, sizeof(float) * 16);
+    consts.jitterOffset = sl::float2(in.jitterOffset[0], in.jitterOffset[1]);
+    // Motion vectors are UV deltas (prevUV - currUV, y-down): identity
+    // scale maps UV -> pixels inside the plugin (MV_Scale = mvecScale *
+    // renderSize).
+    consts.mvecScale = sl::float2(1.0f, 1.0f);
+    consts.cameraPos = sl::float3(in.cameraPos[0], in.cameraPos[1], in.cameraPos[2]);
+    consts.cameraUp = sl::float3(in.cameraUp[0], in.cameraUp[1], in.cameraUp[2]);
+    consts.cameraRight = sl::float3(in.cameraRight[0], in.cameraRight[1], in.cameraRight[2]);
+    consts.cameraFwd = sl::float3(in.cameraFwd[0], in.cameraFwd[1], in.cameraFwd[2]);
+    consts.cameraNear = in.cameraNear;
+    consts.cameraFar = in.cameraFar;
+    consts.cameraFOV = in.cameraFOV;
+    consts.cameraAspectRatio = in.cameraAspectRatio;
+    // Reversed-Z (near maps to 1), geometry-based vectors carry camera
+    // motion and include the sub-pixel jitter (prevViewProj is jittered).
+    consts.depthInverted = sl::Boolean::eTrue;
+    consts.cameraMotionIncluded = sl::Boolean::eTrue;
+    consts.motionVectors3D = sl::Boolean::eFalse;
+    consts.reset = in.reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    consts.orthographicProjection = sl::Boolean::eFalse;
+    consts.motionVectorsDilated = sl::Boolean::eFalse;
+    consts.motionVectorsJittered = sl::Boolean::eTrue;
 
-	// One token per rendered frame: reuse the DlssBeginFrame token when
-	// the ids match (markers + constants + evaluate share it). Fall back
-	// to a private token when the frame never opened one (tests, or a
-	// host that skips BeginFrame) — same behavior as before.
-	sl::FrameToken* token = nullptr;
-	sl::Result res = sl::Result::eOk;
-	if (g_frameToken && g_frameTokenId == frameIndex) {
-		token = g_frameToken;
-	}
-	else {
-		res = g_slGetNewFrameToken(token, &frameIndex);
-		if (res != sl::Result::eOk || !token) {
-			std::fprintf(stderr, "[DLSS] slGetNewFrameToken failed (result=%u)\n",
-				static_cast<uint32_t>(res));
-			return false;
-		}
-	}
-	if (SL_FAILED(res, g_slSetConstants(consts, *token, kDlssViewport))) {
-		std::fprintf(stderr, "[DLSS] slSetConstants failed (result=%u)\n",
-			static_cast<uint32_t>(res));
-		return false;
-	}
+    // One token per rendered frame: reuse the DlssBeginFrame token when
+    // the ids match (markers + constants + evaluate share it). Fall back
+    // to a private token when the frame never opened one (tests, or a
+    // host that skips BeginFrame) — same behavior as before.
+    sl::FrameToken* token = nullptr;
+    sl::Result res = sl::Result::eOk;
+    if (g_frameToken && g_frameTokenId == frameIndex) {
+        token = g_frameToken;
+    } else {
+        res = g_slGetNewFrameToken(token, &frameIndex);
+        if (res != sl::Result::eOk || !token) {
+            std::fprintf(stderr,
+                         "[DLSS] slGetNewFrameToken failed (result=%u)\n",
+                         static_cast<uint32_t>(res));
+            return false;
+        }
+    }
+    if (SL_FAILED(res, g_slSetConstants(consts, *token, kDlssViewport))) {
+        std::fprintf(
+            stderr, "[DLSS] slSetConstants failed (result=%u)\n", static_cast<uint32_t>(res));
+        return false;
+    }
 
-	// One-shot call: viewport + local tags consumed at this evaluate.
-	const sl::BaseStructure* inputs[] = {
-		&kDlssViewport,
-		&colorIn.tag,
-		&colorOut.tag,
-		&depth.tag,
-		&mvec.tag,
-		&exposure.tag,
-	};
-	if (SL_FAILED(res, g_slEvaluateFeature(sl::kFeatureDLSS, *token,
-			inputs, uint32_t(std::size(inputs)),
-			reinterpret_cast<sl::CommandBuffer*>(vkCmd)))) {
-		std::fprintf(stderr, "[DLSS] slEvaluateFeature failed (result=%u)\n",
-			static_cast<uint32_t>(res));
-		return false;
-	}
-	// Throttled heartbeat: positive proof the evaluate path is live
-	// (first record + every 600th), mirroring the exposure meter's tick.
-	{
-		static uint64_t s_evalTick = 0;
-		const uint64_t tick = s_evalTick++;
-		if (tick < 3 || tick % 600 == 0) {
-			std::fprintf(stderr,
-				"[DLSS] evaluate tick=%llu %ux%u -> %ux%u jitter=(%.3f,%.3f) reset=%d\n",
-				(unsigned long long)tick,
-				in.renderExtent.width, in.renderExtent.height,
-				in.outputExtent.width, in.outputExtent.height,
-				in.jitterOffset[0], in.jitterOffset[1], in.reset ? 1 : 0);
-		}
-	}
-	return true;
+    // One-shot call: viewport + local tags consumed at this evaluate.
+    const sl::BaseStructure* inputs[] = {
+        &kDlssViewport,
+        &colorIn.tag,
+        &colorOut.tag,
+        &depth.tag,
+        &mvec.tag,
+        &exposure.tag,
+    };
+    if (SL_FAILED(res,
+                  g_slEvaluateFeature(sl::kFeatureDLSS,
+                                      *token,
+                                      inputs,
+                                      uint32_t(std::size(inputs)),
+                                      reinterpret_cast<sl::CommandBuffer*>(vkCmd)))) {
+        std::fprintf(
+            stderr, "[DLSS] slEvaluateFeature failed (result=%u)\n", static_cast<uint32_t>(res));
+        return false;
+    }
+    // Throttled heartbeat: positive proof the evaluate path is live
+    // (first record + every 600th), mirroring the exposure meter's tick.
+    {
+        static uint64_t s_evalTick = 0;
+        const uint64_t tick = s_evalTick++;
+        if (tick < 3 || tick % 600 == 0) {
+            std::fprintf(stderr,
+                         "[DLSS] evaluate tick=%llu %ux%u -> %ux%u jitter=(%.3f,%.3f) reset=%d\n",
+                         (unsigned long long)tick,
+                         in.renderExtent.width,
+                         in.renderExtent.height,
+                         in.outputExtent.width,
+                         in.outputExtent.height,
+                         in.jitterOffset[0],
+                         in.jitterOffset[1],
+                         in.reset ? 1 : 0);
+        }
+    }
+    return true;
 }
 
 } // namespace
 #endif // _WIN32 (DlssEvaluate + the tagged-resource plumbing)
 
-bool AddDlssPasses(RenderGraph& rg, ResourceManager& ctx,
-	Dlss& dlss, const DlssFrameInputs& inputs, float exposureValue,
-	uint32_t frameIndex, const char* name) {
+bool AddDlssPasses(RenderGraph& rg,
+                   ResourceManager& ctx,
+                   Dlss& dlss,
+                   const DlssFrameInputs& inputs,
+                   float exposureValue,
+                   uint32_t frameIndex,
+                   const char* name) {
 #ifndef _WIN32
-	// Linux stub: the Streamline runtime is Windows-only (see the file
-	// header above) - report the backend unavailable so the caller keeps
-	// its fallback upscale path. The DlssExposure/targets never get
-	// created; the app's own bilinear/renderScale chain covers them.
-	(void)rg; (void)ctx; (void)dlss; (void)inputs; (void)exposureValue;
-	(void)frameIndex; (void)name;
-	return false;
+    // Linux stub: the Streamline runtime is Windows-only (see the file
+    // header above) - report the backend unavailable so the caller keeps
+    // its fallback upscale path. The DlssExposure/targets never get
+    // created; the app's own bilinear/renderScale chain covers them.
+    (void)rg;
+    (void)ctx;
+    (void)dlss;
+    (void)inputs;
+    (void)exposureValue;
+    (void)frameIndex;
+    (void)name;
+    return false;
 #else
-	if (!g_ready)
-		return false;
-	assert(dlss.Valid());
-	assert(!inputs.colorInLogical.empty());
-	assert(!inputs.colorOutLogical.empty());
-	assert(!inputs.depthLogical.empty());
-	assert(!inputs.mvecLogical.empty());
-	assert(!inputs.exposureLogical.empty());
-	assert(inputs.renderExtent.width != 0 && inputs.renderExtent.height != 0);
-	assert(inputs.outputExtent.width != 0 && inputs.outputExtent.height != 0);
+    if (!g_ready)
+        return false;
+    assert(dlss.Valid());
+    assert(!inputs.colorInLogical.empty());
+    assert(!inputs.colorOutLogical.empty());
+    assert(!inputs.depthLogical.empty());
+    assert(!inputs.mvecLogical.empty());
+    assert(!inputs.exposureLogical.empty());
+    assert(inputs.renderExtent.width != 0 && inputs.renderExtent.height != 0);
+    assert(inputs.outputExtent.width != 0 && inputs.outputExtent.height != 0);
 
-	// 1) Exposure scalar: 1x1 clear (the value is CPU-known this frame -
-	//    the meter downloads with a 1-2 frame lag, see FrameExposure).
-	{
-		RenderPass& pass = rg.AddPass("DlssExposure");
-		pass.SetOffset(0, 0)
-			.SetExtent({ 1, 1 })
-			.SetColor({ dlss.exposure.logicalView },
-				AttachmentLoadOp::Clear,
-				AttachmentStoreOp::Store,
-				ClearColor(exposureValue, 0.0f, 0.0f, 0.0f));
-		pass.SetRecordingFunc([](CommandBuffer&) {});
-	}
+    // 1) Exposure scalar: 1x1 clear (the value is CPU-known this frame -
+    //    the meter downloads with a 1-2 frame lag, see FrameExposure).
+    {
+        RenderPass& pass = rg.AddPass("DlssExposure");
+        pass.SetOffset(0, 0).SetExtent({1, 1}).SetColor(
+            {dlss.exposure.logicalView},
+            AttachmentLoadOp::Clear,
+            AttachmentStoreOp::Store,
+            ClearColor(exposureValue, 0.0f, 0.0f, 0.0f));
+        pass.SetRecordingFunc([](CommandBuffer&) {});
+    }
 
-	// 2) DLSS evaluate. Compute-style pass: no attachments, the recording
-	//    func hands the raw VkCommandBuffer to slEvaluateFeature which
-	//    records its own barriers + dispatches (SL restores every tagged
-	//    resource to the layout it was tagged in, matching the graph's
-	//    committed states).
-	{
-		RenderPass& pass = rg.AddComputePass(name ? name : "DLSS");
-		pass.SetOffset(0, 0)
-			.SetExtent(inputs.outputExtent);
+    // 2) DLSS evaluate. Compute-style pass: no attachments, the recording
+    //    func hands the raw VkCommandBuffer to slEvaluateFeature which
+    //    records its own barriers + dispatches (SL restores every tagged
+    //    resource to the layout it was tagged in, matching the graph's
+    //    committed states).
+    {
+        RenderPass& pass = rg.AddComputePass(name ? name : "DLSS");
+        pass.SetOffset(0, 0).SetExtent(inputs.outputExtent);
 
-		ImageSyncRequest read{};
-		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		read.barrierMasks.stageMask = DerivePipelineStage(read.barrierMasks.accessMask);
-		read.layout = ImageLayout::ShaderReadOnlyOptimal;
-		pass.AddImageHint(inputs.colorInLogical, read);
-		pass.AddImageHint(inputs.mvecLogical, read);
-		pass.AddImageHint(inputs.exposureLogical, read);
-		// Depth: requested as sampled; CollectPassUsages promotes depth
-		// formats to DepthStencilReadOnlyOptimal, which is exactly the
-		// layout the depth tag declares below.
-		pass.AddImageHint(inputs.depthLogical, read);
+        ImageSyncRequest read{};
+        read.barrierMasks.accessMask = AccessFlags::ShaderRead;
+        read.barrierMasks.stageMask = DerivePipelineStage(read.barrierMasks.accessMask);
+        read.layout = ImageLayout::ShaderReadOnlyOptimal;
+        pass.AddImageHint(inputs.colorInLogical, read);
+        pass.AddImageHint(inputs.mvecLogical, read);
+        pass.AddImageHint(inputs.exposureLogical, read);
+        // Depth: requested as sampled; CollectPassUsages promotes depth
+        // formats to DepthStencilReadOnlyOptimal, which is exactly the
+        // layout the depth tag declares below.
+        pass.AddImageHint(inputs.depthLogical, read);
 
-		ImageSyncRequest write{};
-		write.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		write.barrierMasks.stageMask = DerivePipelineStage(write.barrierMasks.accessMask);
-		write.layout = ImageLayout::General;
-		pass.AddImageHint(inputs.colorOutLogical, write);
+        ImageSyncRequest write{};
+        write.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+        write.barrierMasks.stageMask = DerivePipelineStage(write.barrierMasks.accessMask);
+        write.layout = ImageLayout::General;
+        pass.AddImageHint(inputs.colorOutLogical, write);
 
-		DlssFrameInputs captured = inputs; // handles are copyable PODs
-		ResourceManager* ctxPtr = &ctx;
-		pass.SetRecordingFunc([ctxPtr, captured, frameIndex](CommandBuffer& cmd) {
-			// Runs after the barrier batch the hints above produced;
-			// slEvaluateFeature records its own barriers + dispatches and
-			// restores tagged resources to their tagged layouts.
-			void* vkCmd = cmd.GetNativeHandle();
-			DlssEvaluate(*ctxPtr, vkCmd, frameIndex, captured);
-		});
-	}
-	return true;
+        DlssFrameInputs captured = inputs; // handles are copyable PODs
+        ResourceManager* ctxPtr = &ctx;
+        pass.SetRecordingFunc([ctxPtr, captured, frameIndex](CommandBuffer& cmd) {
+            // Runs after the barrier batch the hints above produced;
+            // slEvaluateFeature records its own barriers + dispatches and
+            // restores tagged resources to their tagged layouts.
+            void* vkCmd = cmd.GetNativeHandle();
+            DlssEvaluate(*ctxPtr, vkCmd, frameIndex, captured);
+        });
+    }
+    return true;
 #endif // _WIN32 (AddDlssPasses)
 }
 

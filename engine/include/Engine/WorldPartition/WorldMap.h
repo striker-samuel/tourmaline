@@ -55,8 +55,8 @@ struct MapCellLess {
 
 struct CompiledMapTiles {
     engine::worldpartition::WorldId world = 0;
-    std::map<engine::worldpartition::WorldCellKey,
-             std::vector<CookedMapPlacement>, MapCellLess> tiles;
+    std::map<engine::worldpartition::WorldCellKey, std::vector<CookedMapPlacement>, MapCellLess>
+        tiles;
     std::vector<CookedMapPlacement> persistent;
 };
 
@@ -65,10 +65,12 @@ struct CompiledMapTiles {
 // Node order does not affect the output tile/placement ordering.
 inline bool CompileMapTilePlacements(const Map& map, CompiledMapTiles& output) {
     CompiledMapTiles next;
-    if (map.id == 0) return false; // world identity is mandatory for cooked Maps
+    if (map.id == 0)
+        return false; // world identity is mandatory for cooked Maps
     next.world = map.id;
     const size_t n = map.nodes.size();
-    if (n > uint64_t(UINT32_MAX)) return false;
+    if (n > uint64_t(UINT32_MAX))
+        return false;
 
     std::vector<glm::dmat4> globals(n, glm::dmat4(1.0));
     std::vector<uint8_t> visit(n, 0);
@@ -80,7 +82,8 @@ inline bool CompileMapTilePlacements(const Map& map, CompiledMapTiles& output) {
             return false;
         for (int c = 0; c < 4; ++c)
             for (int r = 0; r < 4; ++r)
-                if (!std::isfinite(node.localTransform[c][r])) return false;
+                if (!std::isfinite(node.localTransform[c][r]))
+                    return false;
         ids.push_back(node.id);
     }
     std::sort(ids.begin(), ids.end());
@@ -92,7 +95,8 @@ inline bool CompileMapTilePlacements(const Map& map, CompiledMapTiles& output) {
         std::vector<MapNodeId> chain;
         MapNodeId current = static_cast<MapNodeId>(i);
         while (current != kMapNodeInvalid && visit[current] != 2) {
-            if (visit[current] == 1) return false; // ancestor cycle
+            if (visit[current] == 1)
+                return false; // ancestor cycle
             visit[current] = 1;
             chain.push_back(current);
             current = map.nodes[current].parent;
@@ -109,13 +113,15 @@ inline bool CompileMapTilePlacements(const Map& map, CompiledMapTiles& output) {
     }
     for (size_t i = 0; i < n; ++i) {
         const auto& node = map.nodes[i];
-        if (!node.sceneAssetId) continue;
+        if (!node.sceneAssetId)
+            continue;
         const auto& m = globals[i];
         bool finite = true;
         for (int c = 0; c < 4; ++c)
             for (int r = 0; r < 4; ++r)
                 finite &= std::isfinite(m[c][r]);
-        if (!finite) return false;
+        if (!finite)
+            return false;
         CookedMapPlacement record{node.id, node.sceneAssetId, m};
         if (node.persistent) {
             next.persistent.push_back(record);
@@ -129,12 +135,10 @@ inline bool CompileMapTilePlacements(const Map& map, CompiledMapTiles& output) {
         const double z = std::floor(m[3][2] / engine::worldpartition::kRootCellSize);
         const double lo = double(std::numeric_limits<int64_t>::min());
         const double hi = std::nextafter(double(std::numeric_limits<int64_t>::max()),
-                                          -std::numeric_limits<double>::infinity());
-        if (!std::isfinite(x) || !std::isfinite(z)
-            || x < lo || x >= hi || z < lo || z >= hi)
+                                         -std::numeric_limits<double>::infinity());
+        if (!std::isfinite(x) || !std::isfinite(z) || x < lo || x >= hi || z < lo || z >= hi)
             return false;
-        next.tiles[{static_cast<int64_t>(x), static_cast<int64_t>(z)}]
-            .push_back(record);
+        next.tiles[{static_cast<int64_t>(x), static_cast<int64_t>(z)}].push_back(record);
     }
     auto stable = [](const CookedMapPlacement& a, const CookedMapPlacement& b) {
         return a.mapNodeId < b.mapNodeId;

@@ -38,8 +38,7 @@ ktxTexture2* CreatePinkKtx2(const ktxTexture2& mirror);
 // see assets::EnsureClusterErrorTexture): a plain 2D sRGB RGBA8 pink
 // KTX2 with `levels` mips from the given base dims (levels = 0 derives
 // the full chain). Returns null when the mint fails.
-ktxTexture2* CreatePinkKtx2(uint32_t width, uint32_t height,
-	uint32_t levels = 0);
+ktxTexture2* CreatePinkKtx2(uint32_t width, uint32_t height, uint32_t levels = 0);
 
 // Serialized form (the cook embeds it into the pak payload). Returns
 // false when the mint or serialization fails (caller keeps whatever

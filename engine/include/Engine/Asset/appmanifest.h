@@ -55,11 +55,11 @@ inline constexpr uint32_t kAppManifestVersion = 2;
 // OWN "#ids" tables (see pak.h's kPakAssetIdsPath); the runtime's
 // ContentRegistry reads them from there.
 struct AppManifest {
-	uint32_t version = 0;
-	std::string entryPak;   // pak file (manifest-relative)
-	std::string entryScene; // the cooked scene's name inside entryPak
-	std::vector<std::string> paks; // the generation's complete set,
-	                               // mount order, manifest-relative
+    uint32_t version = 0;
+    std::string entryPak;          // pak file (manifest-relative)
+    std::string entryScene;        // the cooked scene's name inside entryPak
+    std::vector<std::string> paks; // the generation's complete set,
+                                   // mount order, manifest-relative
 };
 
 // The catalog identity KIND BYTES — an ABI shared by three writers:
@@ -90,8 +90,7 @@ inline constexpr uint8_t kCatalogKindNavMesh = 10;
 inline constexpr uint8_t kCatalogKindShape = 11;
 // The kind string <-> byte mapping ("scene"/"texture"/"mesh"/"sound"/
 // "shader"/"gi"/"audiograph"; false for any other spelling).
-[[nodiscard]] bool CatalogKindFromString(const std::string& kind,
-	uint8_t& out);
+[[nodiscard]] bool CatalogKindFromString(const std::string& kind, uint8_t& out);
 [[nodiscard]] const char* CatalogKindToString(uint8_t kind);
 
 // The CATALOG FINGERPRINT fold: FNV-1a64 over the rows in EMISSION
@@ -106,20 +105,18 @@ inline constexpr uint8_t kCatalogKindShape = 11;
 // — the compiled game and its content only need to agree on WHAT
 // the assets are, never on which package carries them). Raw pointer
 // + count per the public-API convention.
-[[nodiscard]] uint64_t ComputeCatalogFingerprint(
-	const uint64_t* ids, const uint8_t* kinds,
-	const char* const* paths, size_t count);
+[[nodiscard]] uint64_t ComputeCatalogFingerprint(const uint64_t* ids,
+                                                 const uint8_t* kinds,
+                                                 const char* const* paths,
+                                                 size_t count);
 
 // Text round-trip. Save refuses an invalid manifest (no entry, entry
 // pak not listed, empty paks, absolute/escaping paths). Load applies
 // the same validation — a corrupt or hand-mangled manifest fails the
 // launch visibly, never a guess.
-bool SaveAppManifest(const std::string& path, const AppManifest& m,
-	std::string& err);
-bool LoadAppManifest(const std::string& path, AppManifest& out,
-	std::string& err);
-bool LoadAppManifestText(const std::string& text, AppManifest& out,
-	std::string& err);
+bool SaveAppManifest(const std::string& path, const AppManifest& m, std::string& err);
+bool LoadAppManifest(const std::string& path, AppManifest& out, std::string& err);
+bool LoadAppManifestText(const std::string& text, AppManifest& out, std::string& err);
 
 // Structural validation shared by both directions (also the cheap
 // "is this manifest complete" probe).

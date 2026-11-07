@@ -8,8 +8,8 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <vector>
 #include <unordered_map>
+#include <vector>
 
 #include <tiny_gltf.h>
 
@@ -22,26 +22,33 @@
 // succeed regardless of cache state.
 // ---------------------------------------------------------------------------
 struct GltfArtifactCache {
-	virtual ~GltfArtifactCache() = default;
-	// klass: "texture" today. sourceHash: TextureConversionHash().
-	// False = miss (transcode proceeds).
-	virtual bool Get(const std::string& klass, const std::string& uri,
-		std::vector<uint8_t>& out) = 0;
-	// Stage the cooked payload (the owner Flushes after the import
-	// batch; a failed Put never blocks — the payload is used anyway).
-	virtual bool Put(const std::string& klass, const std::string& uri,
-		const void* payload, size_t payloadSize,
-		const std::string& sourceHash, const std::string& meta) = 0;
-	// Registry-only hash probe (the "is this cached entry CURRENT?"
-	// gate). Default true = callers without registry access accept
-	// any Get hit (legacy behavior); real adapters override with the
-	// actual lookup. A Has-miss before Get prevents serving STALE
-	// bytes (a different source under the same uri).
-	virtual bool Has(const std::string& klass, const std::string& uri,
-		const std::string& sourceHash) {
-		(void)klass; (void)uri; (void)sourceHash;
-		return true;
-	}
+    virtual ~GltfArtifactCache() = default;
+    // klass: "texture" today. sourceHash: TextureConversionHash().
+    // False = miss (transcode proceeds).
+    virtual bool Get(const std::string& klass,
+                     const std::string& uri,
+                     std::vector<uint8_t>& out) = 0;
+    // Stage the cooked payload (the owner Flushes after the import
+    // batch; a failed Put never blocks — the payload is used anyway).
+    virtual bool Put(const std::string& klass,
+                     const std::string& uri,
+                     const void* payload,
+                     size_t payloadSize,
+                     const std::string& sourceHash,
+                     const std::string& meta) = 0;
+    // Registry-only hash probe (the "is this cached entry CURRENT?"
+    // gate). Default true = callers without registry access accept
+    // any Get hit (legacy behavior); real adapters override with the
+    // actual lookup. A Has-miss before Get prevents serving STALE
+    // bytes (a different source under the same uri).
+    virtual bool Has(const std::string& klass,
+                     const std::string& uri,
+                     const std::string& sourceHash) {
+        (void)klass;
+        (void)uri;
+        (void)sourceHash;
+        return true;
+    }
 };
 
 // Asset-GUID resolver hook (optional): the editor injects its project
@@ -51,9 +58,9 @@ struct GltfArtifactCache {
 // as the fallback). Null (cooker, baker, tests) keeps path-only
 // resolution — GUIDs stored in tours are simply unused there.
 struct GltfGuidResolver {
-	virtual ~GltfGuidResolver() = default;
-	// "" when unknown/invalid — the caller falls back to -source.
-	virtual std::string PathForGuid(const std::string& guid) = 0;
+    virtual ~GltfGuidResolver() = default;
+    // "" when unknown/invalid — the caller falls back to -source.
+    virtual std::string PathForGuid(const std::string& guid) = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -70,39 +77,37 @@ struct GltfGuidResolver {
 // addressable at its authored uri; the plug is a pure input).
 // ---------------------------------------------------------------------------
 struct GltfTextureRemap {
-	std::string oldUri; // authored glTF image uri (the plug key)
-	std::string newPath; // replacement source (host path; VFS-relative ok)
+    std::string oldUri;  // authored glTF image uri (the plug key)
+    std::string newPath; // replacement source (host path; VFS-relative ok)
 };
 
 // One imported image, per source ("importer data" — what the import saw,
 // reported to the caller so post-import tools (the editor's path panel +
 // live relink) never need the parsed glTF):
 struct GltfImportImage {
-	std::string source;   // resolved source file this image belongs to
-	std::string uri;       // authored glTF image uri
-	std::string identity;  // registered asset identity ("" = failed)
-	bool loaded = false;  // bytes resolved + registered
-	struct User {
-		std::string materialUri; // "<source>#mat.N" (resolves per cluster)
-		const char* slot = "";   // "baseColorTex", ...
-	};
-	std::vector<User> users; // (material, slot) pairs that sample it
+    std::string source;   // resolved source file this image belongs to
+    std::string uri;      // authored glTF image uri
+    std::string identity; // registered asset identity ("" = failed)
+    bool loaded = false;  // bytes resolved + registered
+    struct User {
+        std::string materialUri; // "<source>#mat.N" (resolves per cluster)
+        const char* slot = "";   // "baseColorTex", ...
+    };
+    std::vector<User> users; // (material, slot) pairs that sample it
 };
 
 // Texture-relink plugs of one source asset (its <source>.meta sidecar).
 // Missing sidecar / no plug rows = empty (the common case). The .meta
 // format is owned by artifact_cache (assetdb.h); this is the tolerant
 // read side shared by every importer entry point.
-std::vector<GltfTextureRemap> ReadTextureRemapPlugs(
-	const std::string& resolvedSourcePath);
+std::vector<GltfTextureRemap> ReadTextureRemapPlugs(const std::string& resolvedSourcePath);
 
 // Deterministic texture-conversion cache key: FNV-1a 64 over the
 // SOURCE bytes with the transfer (srgb/linear) mixed in. The ONLY
 // producer and consumer of these keys is gltf_import (the store
 // treats them as opaque strings), so identical inputs always map to
 // the same artifact across editor sessions and cooks.
-std::string TextureConversionHash(const void* data, size_t size,
-	bool srgb);
+std::string TextureConversionHash(const void* data, size_t size, bool srgb);
 
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/mesh_optimizer.h>
@@ -118,209 +123,218 @@ std::string TextureConversionHash(const void* data, size_t size,
 // (moved: the TextureStreamer is ENGINE-OWNED and lives in tour; the
 // smvk using-declaration keeps the smvk::TextureStreamer* spellings in
 // this header + the importer resolving)
-namespace tour { class TextureStreamer; }
-namespace smvk { using ::tour::TextureStreamer; }
+namespace tour {
+class TextureStreamer;
+}
+namespace smvk {
+using ::tour::TextureStreamer;
+}
 
-struct GltfToSceneImporter
-{
-	GltfToSceneImporter(
-		smvk::Cluster& inCluster,
-		const tinygltf::Model& inModel,
-		std::filesystem::path inGltfModelPath
-	);
-	void setTextureStreamer(smvk::TextureStreamer* streamer) { textureStreamer_ = streamer; }	void import(int gltfNodeIndex) {
-		importNodeRecursive(gltfNodeIndex, 0, 1, true);
-	}
-	// Attach this glTF node's subtree UNDER an existing cluster scene
-	// node (nested scene references: the placeholder group node created
-	// by ApplySceneReferences). Same recursion as import().
-	// TOP-OF-CHAIN BASIS: every import entry (import/importUnder — each
-	// independent glTF chain) applies the coordFix basis ONCE at its
-	// first node (C * M_top): node locals stay RAW (identity nodes stay
-	// identity — the authoring frame is honest), vertices/AABBs/
-	// normals/tangents stay raw, and every node's world basis is
-	// C * gltfWorld (the render lands exactly where the old per-node
-	// conjugation put it).
-	void importUnder(int gltfNodeIndex, int parentSceneNode, int level) {
-		importNodeRecursive(gltfNodeIndex, parentSceneNode, level, true);
-	}
-	// Multicore texture read + upload: decodes/transcodes all KTX2 files
-	// referenced by the scene's materials on worker threads and uploads
-	// them in parallel. Fills textureCache so per-material creation hits
-	// the cache. Safe to call once before importing nodes; missing entries
-	// still fall back to sequential load in getOrCreateMaterial.
-	void preloadTextures();
-	// Cook/render configuration. All reads go through the texture source
-	// (host files by default, or a VFS overlay for the cooker); every
-	// created asset is stamped with its VFS-path asset URI (see
-	// Asset/asset_registry.h) so paks round-trip the lookup maps.
-	// The texture source resolves a glTF-relative image uri (posix) to
-	// decoded source bytes plus the VFS identity path for that texture.
-	struct TextureSource {
-		virtual ~TextureSource() = default;
-		virtual std::optional<std::vector<uint8_t>> ReadBytes(const std::string& imageUri) = 0;
-		virtual std::string ResolveIdentity(const std::string& imageUri) const = 0;
-		// Host filesystem path backing imageUri when the source is
-		// host-backed (sidecar cache placement); nullopt for VFS sources.
-		virtual std::optional<std::filesystem::path> HostPath(
-			const std::string& imageUri) const {
-			(void)imageUri;
-			return std::nullopt;
-		}
-	};
-	void setTextureSource(std::shared_ptr<TextureSource> source);
-	void setModelUriBase(const std::string& vfsPath);
-	// Optional artifact-cache hook (see GltfArtifactCache above):
-	// consulted before texture transcodes. Not owned; outlives the
-	// importer call scope (owner flushes staged puts afterwards).
-	void setArtifactCache(GltfArtifactCache* cache) {
-		artifactCache_ = cache;
-	}
-	void setMeshOptConfig(const smvk::MeshOptConfig& config);
-	// Meshlet cook config (disabled by default). When enabled,
-	// getOrCreateMesh builds meshlets from the optimized upload and stamps
-	// them on the Cluster keyed by mesh URI.
-	void setMeshletConfig(const smvk::MeshletConfig& config);
-	// Far-shading derivation (DeriveConfig::shaderLods parity; DEFAULT
-	// OFF). When enabled, getOrCreateMaterial derives
-	// MaterialCreateInfo::allowFarVertexLit for opaque materials (the
-	// cheap vertex-lit program has no cutout/blend, so masked/blend stay
-	// lit regardless). Off = fresh imports carry the ShaderLodPolicy
-	// default (vertex-lit off); explicit tour/material authoring
-	// (farVertexLit) always wins.
-	void setDeriveShaderLods(bool enabled) { deriveShaderLods_ = enabled; }
-	// Cooked file nodes (tour fileNode records / editor image defs):
-	// per-texture colorspace + sampler intent for KTX conversion, matched
-	// to glTF images by path basename then stem. Empty = usage inference
-	// only (baseColor/emissive = sRGB, everything else linear).
-	void setFileNodes(const std::vector<smvk::tour::FileNode>& nodes);
-	// KTX auto-convert (default on): non-KTX sources transcode in-process
-	// (stb decode + libktx write, `.ktx2` sidecar cached next to the
-	// source). Off restores warn-and-skip for non-KTX payloads.
-	void setAutoKtx(bool enabled) { autoKtx_ = enabled; }
-	void setCoordFix(int mode) { coordFix_ = mode; }
-	void setPreTransform(const glm::mat4& m) { preTransform_ = m; }
-	// Texture-relink input plugs (see GltfTextureRemap): consulted BEFORE
-	// the texture source read in both load paths (sequential + preload).
-	// The import registers the ORIGINAL image identity; the plug only
-	// redirects the bytes.
-	void setTextureRemaps(const std::vector<GltfTextureRemap>* remaps) {
-		textureRemaps_ = remaps;
-	}
-	// Importer data out-collector (see GltfImportImage): one row per
-	// referenced image (loaded or failed), with the (material, slot) users.
-	// The collector OWNS the rows; the importer appends. Null = no record.
-	void setImportImages(std::vector<GltfImportImage>* out) {
-		importImages_ = out;
-	}
-	// Multiplies the scene root's local transform by preTransform_ (left).
-	void applyPreTransform(Scene& scene, int rootNode);
-	// glTF node index -> cluster scene node id (filled by the import
-	// traversal; -1 = not imported). The ASSET DERIVATION uses it to
-	// retarget glTF animation targets + material bindings onto the
-	// deterministic cluster ids (the same order the .mesh asset stores).
-	const std::vector<int>& gltfNodeMap() const { return gltfNodeMap_; }
-	// SKIN post pass (the Northlight data path): builds the cluster
-	// Skeleton from the glTF skins (joints via the fully-populated node
-	// map + inverseBindMatrices) and patches every recorded
-	// (mesh, skin) pair's retained upload with the packed PackedSkinInfluences
-	// stream (JOINTS_0/WEIGHTS_0 -> top-4 normalized RGBA8). Called by
-	// the import flow's owner AFTER the node walk finishes (the joint
-	// nodes may import after the meshes that reference them). The
-	// stream rides the retained uploads through the serializer; the
-	// cluster's skeleton lands in the scene blob's trailing section.
-	// Returns the number of skinned meshes patched.
-	int BuildSkinData();
-private:
-	smvk::ClusterMaterialHandle
-		getOrCreateMaterial(int gltfMaterialIndex);
+struct GltfToSceneImporter {
+    GltfToSceneImporter(smvk::Cluster& inCluster,
+                        const tinygltf::Model& inModel,
+                        std::filesystem::path inGltfModelPath);
+    void setTextureStreamer(smvk::TextureStreamer* streamer) {
+        textureStreamer_ = streamer;
+    }
+    void import(int gltfNodeIndex) {
+        importNodeRecursive(gltfNodeIndex, 0, 1, true);
+    }
+    // Attach this glTF node's subtree UNDER an existing cluster scene
+    // node (nested scene references: the placeholder group node created
+    // by ApplySceneReferences). Same recursion as import().
+    // TOP-OF-CHAIN BASIS: every import entry (import/importUnder — each
+    // independent glTF chain) applies the coordFix basis ONCE at its
+    // first node (C * M_top): node locals stay RAW (identity nodes stay
+    // identity — the authoring frame is honest), vertices/AABBs/
+    // normals/tangents stay raw, and every node's world basis is
+    // C * gltfWorld (the render lands exactly where the old per-node
+    // conjugation put it).
+    void importUnder(int gltfNodeIndex, int parentSceneNode, int level) {
+        importNodeRecursive(gltfNodeIndex, parentSceneNode, level, true);
+    }
+    // Multicore texture read + upload: decodes/transcodes all KTX2 files
+    // referenced by the scene's materials on worker threads and uploads
+    // them in parallel. Fills textureCache so per-material creation hits
+    // the cache. Safe to call once before importing nodes; missing entries
+    // still fall back to sequential load in getOrCreateMaterial.
+    void preloadTextures();
+    // Cook/render configuration. All reads go through the texture source
+    // (host files by default, or a VFS overlay for the cooker); every
+    // created asset is stamped with its VFS-path asset URI (see
+    // Asset/asset_registry.h) so paks round-trip the lookup maps.
+    // The texture source resolves a glTF-relative image uri (posix) to
+    // decoded source bytes plus the VFS identity path for that texture.
+    struct TextureSource {
+        virtual ~TextureSource() = default;
+        virtual std::optional<std::vector<uint8_t>> ReadBytes(const std::string& imageUri) = 0;
+        virtual std::string ResolveIdentity(const std::string& imageUri) const = 0;
+        // Host filesystem path backing imageUri when the source is
+        // host-backed (sidecar cache placement); nullopt for VFS sources.
+        virtual std::optional<std::filesystem::path> HostPath(const std::string& imageUri) const {
+            (void)imageUri;
+            return std::nullopt;
+        }
+    };
+    void setTextureSource(std::shared_ptr<TextureSource> source);
+    void setModelUriBase(const std::string& vfsPath);
+    // Optional artifact-cache hook (see GltfArtifactCache above):
+    // consulted before texture transcodes. Not owned; outlives the
+    // importer call scope (owner flushes staged puts afterwards).
+    void setArtifactCache(GltfArtifactCache* cache) {
+        artifactCache_ = cache;
+    }
+    void setMeshOptConfig(const smvk::MeshOptConfig& config);
+    // Meshlet cook config (disabled by default). When enabled,
+    // getOrCreateMesh builds meshlets from the optimized upload and stamps
+    // them on the Cluster keyed by mesh URI.
+    void setMeshletConfig(const smvk::MeshletConfig& config);
+    // Far-shading derivation (DeriveConfig::shaderLods parity; DEFAULT
+    // OFF). When enabled, getOrCreateMaterial derives
+    // MaterialCreateInfo::allowFarVertexLit for opaque materials (the
+    // cheap vertex-lit program has no cutout/blend, so masked/blend stay
+    // lit regardless). Off = fresh imports carry the ShaderLodPolicy
+    // default (vertex-lit off); explicit tour/material authoring
+    // (farVertexLit) always wins.
+    void setDeriveShaderLods(bool enabled) {
+        deriveShaderLods_ = enabled;
+    }
+    // Cooked file nodes (tour fileNode records / editor image defs):
+    // per-texture colorspace + sampler intent for KTX conversion, matched
+    // to glTF images by path basename then stem. Empty = usage inference
+    // only (baseColor/emissive = sRGB, everything else linear).
+    void setFileNodes(const std::vector<smvk::tour::FileNode>& nodes);
+    // KTX auto-convert (default on): non-KTX sources transcode in-process
+    // (stb decode + libktx write, `.ktx2` sidecar cached next to the
+    // source). Off restores warn-and-skip for non-KTX payloads.
+    void setAutoKtx(bool enabled) {
+        autoKtx_ = enabled;
+    }
+    void setCoordFix(int mode) {
+        coordFix_ = mode;
+    }
+    void setPreTransform(const glm::mat4& m) {
+        preTransform_ = m;
+    }
+    // Texture-relink input plugs (see GltfTextureRemap): consulted BEFORE
+    // the texture source read in both load paths (sequential + preload).
+    // The import registers the ORIGINAL image identity; the plug only
+    // redirects the bytes.
+    void setTextureRemaps(const std::vector<GltfTextureRemap>* remaps) {
+        textureRemaps_ = remaps;
+    }
+    // Importer data out-collector (see GltfImportImage): one row per
+    // referenced image (loaded or failed), with the (material, slot) users.
+    // The collector OWNS the rows; the importer appends. Null = no record.
+    void setImportImages(std::vector<GltfImportImage>* out) {
+        importImages_ = out;
+    }
+    // Multiplies the scene root's local transform by preTransform_ (left).
+    void applyPreTransform(Scene& scene, int rootNode);
+    // glTF node index -> cluster scene node id (filled by the import
+    // traversal; -1 = not imported). The ASSET DERIVATION uses it to
+    // retarget glTF animation targets + material bindings onto the
+    // deterministic cluster ids (the same order the .mesh asset stores).
+    const std::vector<int>& gltfNodeMap() const {
+        return gltfNodeMap_;
+    }
+    // SKIN post pass (the Northlight data path): builds the cluster
+    // Skeleton from the glTF skins (joints via the fully-populated node
+    // map + inverseBindMatrices) and patches every recorded
+    // (mesh, skin) pair's retained upload with the packed PackedSkinInfluences
+    // stream (JOINTS_0/WEIGHTS_0 -> top-4 normalized RGBA8). Called by
+    // the import flow's owner AFTER the node walk finishes (the joint
+    // nodes may import after the meshes that reference them). The
+    // stream rides the retained uploads through the serializer; the
+    // cluster's skeleton lands in the scene blob's trailing section.
+    // Returns the number of skinned meshes patched.
+    int BuildSkinData();
 
-	// `skinned` attaches the primitive's JOINTS_0/WEIGHTS_0 as a
-	// PackedSkinInfluences stream BEFORE the meshopt pass, so it rides the vertex
-	// remap in lockstep with the geometry (BuildSkinData then only builds
-	// the Skeleton + publishes the stream; a stream attached after
-	// optimization would desync from the reordered vertices and spike).
-	smvk::ClusterStaticMeshHandle
-		getOrCreateMesh(
-			int gltfMeshIndex,
-			int primitiveIndex,
-			bool skinned = false
-		);
+  private:
+    smvk::ClusterMaterialHandle getOrCreateMaterial(int gltfMaterialIndex);
 
-	smvk::ClusterLightHandle
-		getOrCreateLight(int gltfLightIndex, bool staticLight);
-	// Importer data rows (see setImportImages): find-or-create the row for
-	// imageIndex (nullptr when no collector), note the import result, and
-	// append the (material, slot) users as getOrCreateMaterial walks slots.
-	GltfImportImage* importImageRow(int imageIndex);
-	void noteImage(int imageIndex, const std::string& identity, bool loaded);
-	void noteImageUser(int imageIndex, const std::string& materialUri,
-		const char* slot);
-	void importNodeRecursive(
-		int gltfNodeIndex,
-		int parentSceneNode,
-		int level,
-		bool topOfImport = false // the chain's first node carries the
-		                         // coordFix basis (see importUnder)
-	);
-	smvk::Cluster& cluster;
-	const tinygltf::Model& model;
-	std::filesystem::path gltfModelPath;
-	std::shared_ptr<TextureSource> textureSource;
-	std::string modelUriBase; // normalized VFS file part for asset URIs
-	smvk::MeshOptConfig meshOptConfig{}; // disabled by default (runtime parity)
-	smvk::MeshletConfig meshletConfig{}; // disabled by default (opt-in cook)
-	bool deriveShaderLods_ = false; // setDeriveShaderLods (far-shading derivation, default off)
-	bool autoKtx_ = true;
-	std::vector<smvk::tour::FileNode> fileNodes_;
-	int coordFix_ = 0; // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
-	std::vector<int> gltfNodeMap_; // glTF node idx -> cluster node id (-1 = none)
-	glm::mat4 preTransform_{ 1.0f };
-	std::vector<smvk::ClusterMaterialHandle> materialCache;
-	std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
-	std::vector<smvk::ClusterLightHandle> lightCache; // gltf light index -> handle
-	std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
-	// glTF skin references recorded during the node walk: (mesh handle,
-	// glTF skin index, glTF mesh index, primitive index) per primitive
-	// of a node carrying node.skin. BuildSkinData consumes them.
-	struct SkinRef {
-		smvk::ClusterStaticMeshHandle mesh;
-		int skinIndex = -1;
-		int gltfMeshIndex = -1;
-		int primitiveIndex = -1;
-	};
-	std::vector<SkinRef> skinRefs_;
-	// Optional texture-streaming sink: when set (and not cooking), uploads
-	// go through TextureStreamer::StreamTexture (tail-resident) instead of
-	// the full-res LoadKtxTexture* path. Owned by the caller (app/world).
-	smvk::TextureStreamer* textureStreamer_ = nullptr;
-	// Optional artifact cache (registry store adapter): texture
-	// transcode acceleration. Not owned.
-	GltfArtifactCache* artifactCache_ = nullptr;
+    // `skinned` attaches the primitive's JOINTS_0/WEIGHTS_0 as a
+    // PackedSkinInfluences stream BEFORE the meshopt pass, so it rides the vertex
+    // remap in lockstep with the geometry (BuildSkinData then only builds
+    // the Skeleton + publishes the stream; a stream attached after
+    // optimization would desync from the reordered vertices and spike).
+    smvk::ClusterStaticMeshHandle getOrCreateMesh(int gltfMeshIndex,
+                                                  int primitiveIndex,
+                                                  bool skinned = false);
 
-	// Texture-relink input plugs (not owned; see setTextureRemaps).
-	const std::vector<GltfTextureRemap>* textureRemaps_ = nullptr;
-	// Importer data out-collector (not owned; see setImportImages) +
-	// the imageIndex -> row index so noteImage/noteImageUser find rows.
-	std::vector<GltfImportImage>* importImages_ = nullptr;
-	std::unordered_map<int, size_t> importImageRows_;
+    smvk::ClusterLightHandle getOrCreateLight(int gltfLightIndex, bool staticLight);
+    // Importer data rows (see setImportImages): find-or-create the row for
+    // imageIndex (nullptr when no collector), note the import result, and
+    // append the (material, slot) users as getOrCreateMaterial walks slots.
+    GltfImportImage* importImageRow(int imageIndex);
+    void noteImage(int imageIndex, const std::string& identity, bool loaded);
+    void noteImageUser(int imageIndex, const std::string& materialUri, const char* slot);
+    void importNodeRecursive(int gltfNodeIndex,
+                             int parentSceneNode,
+                             int level,
+                             bool topOfImport = false // the chain's first node carries the
+                                                      // coordFix basis (see importUnder)
+    );
+    smvk::Cluster& cluster;
+    const tinygltf::Model& model;
+    std::filesystem::path gltfModelPath;
+    std::shared_ptr<TextureSource> textureSource;
+    std::string modelUriBase;            // normalized VFS file part for asset URIs
+    smvk::MeshOptConfig meshOptConfig{}; // disabled by default (runtime parity)
+    smvk::MeshletConfig meshletConfig{}; // disabled by default (opt-in cook)
+    bool deriveShaderLods_ = false; // setDeriveShaderLods (far-shading derivation, default off)
+    bool autoKtx_ = true;
+    std::vector<smvk::tour::FileNode> fileNodes_;
+    int coordFix_ = 0; // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
+    std::vector<int> gltfNodeMap_; // glTF node idx -> cluster node id (-1 = none)
+    glm::mat4 preTransform_{1.0f};
+    std::vector<smvk::ClusterMaterialHandle> materialCache;
+    std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
+    std::vector<smvk::ClusterLightHandle> lightCache;          // gltf light index -> handle
+    std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
+    // glTF skin references recorded during the node walk: (mesh handle,
+    // glTF skin index, glTF mesh index, primitive index) per primitive
+    // of a node carrying node.skin. BuildSkinData consumes them.
+    struct SkinRef {
+        smvk::ClusterStaticMeshHandle mesh;
+        int skinIndex = -1;
+        int gltfMeshIndex = -1;
+        int primitiveIndex = -1;
+    };
+    std::vector<SkinRef> skinRefs_;
+    // Optional texture-streaming sink: when set (and not cooking), uploads
+    // go through TextureStreamer::StreamTexture (tail-resident) instead of
+    // the full-res LoadKtxTexture* path. Owned by the caller (app/world).
+    smvk::TextureStreamer* textureStreamer_ = nullptr;
+    // Optional artifact cache (registry store adapter): texture
+    // transcode acceleration. Not owned.
+    GltfArtifactCache* artifactCache_ = nullptr;
 
-	smvk::TextureHandle loadTextureForImage(int imageIndex, int textureIndex);
-	// KTX auto-convert: file-node match for an image URI (basename, then
-	// stem; null when no file node covers it).
-	const smvk::tour::FileNode* matchFileNode(const std::string& imageUri) const;
-	// Usage inference: true when any material samples the image as
-	// baseColor/emissive (sRGB); data maps (normal/metallic/roughness/
-	// occlusion) and unknown uses are linear.
-	bool inferSrgb(int imageIndex) const;
-	// KTX2 bytes for a source payload: KTX2 passes through; anything
-	// else promotes a fresh `.ktx2` sidecar or transcodes (+caches the
-	// sidecar when host-backed). False + err = keep today's skip.
-	bool resolveKtxBytes(const std::string& imageUri, std::vector<uint8_t> srcBytes,
-		int imageIndex, std::vector<uint8_t>& out, std::string& err) const;
-	smvk::ClusterMaterialHandle defaultMaterialHandle{};
+    // Texture-relink input plugs (not owned; see setTextureRemaps).
+    const std::vector<GltfTextureRemap>* textureRemaps_ = nullptr;
+    // Importer data out-collector (not owned; see setImportImages) +
+    // the imageIndex -> row index so noteImage/noteImageUser find rows.
+    std::vector<GltfImportImage>* importImages_ = nullptr;
+    std::unordered_map<int, size_t> importImageRows_;
+
+    smvk::TextureHandle loadTextureForImage(int imageIndex, int textureIndex);
+    // KTX auto-convert: file-node match for an image URI (basename, then
+    // stem; null when no file node covers it).
+    const smvk::tour::FileNode* matchFileNode(const std::string& imageUri) const;
+    // Usage inference: true when any material samples the image as
+    // baseColor/emissive (sRGB); data maps (normal/metallic/roughness/
+    // occlusion) and unknown uses are linear.
+    bool inferSrgb(int imageIndex) const;
+    // KTX2 bytes for a source payload: KTX2 passes through; anything
+    // else promotes a fresh `.ktx2` sidecar or transcodes (+caches the
+    // sidecar when host-backed). False + err = keep today's skip.
+    bool resolveKtxBytes(const std::string& imageUri,
+                         std::vector<uint8_t> srcBytes,
+                         int imageIndex,
+                         std::vector<uint8_t>& out,
+                         std::string& err) const;
+    smvk::ClusterMaterialHandle defaultMaterialHandle{};
 };
-
 
 // THE source-model loader (every mesh import funnels through here):
 // dispatches by format — glTF (ASCII JSON) and GLB (detected by MAGIC,
@@ -339,14 +353,13 @@ private:
 // existing artifact derivation owns all asset serialization and packaging.
 #ifdef TOURMALINE_WITH_USD
 bool LoadUsdFileAsModel(tinygltf::Model& model,
-    const std::filesystem::path& path, std::vector<std::string>& dependencies);
+                        const std::filesystem::path& path,
+                        std::vector<std::string>& dependencies);
 #endif
 
-bool LoadModelFromSourceFile(
-	tinygltf::Model& model,
-	const char* filename,
-	std::vector<std::string>* extraDeps = nullptr
-);
+bool LoadModelFromSourceFile(tinygltf::Model& model,
+                             const char* filename,
+                             std::vector<std::string>* extraDeps = nullptr);
 
 // The OBJ adapter (obj_import.cpp): parses the .obj (+ its mtllib
 // .mtl files, which must exist — a missing material library is a loud
@@ -361,11 +374,9 @@ bool LoadModelFromSourceFile(
 // uris relative to the .obj. OBJ and glTF share the Y-up right-handed
 // basis, so no correction transform is applied. `mtlDeps` receives the
 // .mtl file names as authored (the digest/staging dependency set).
-bool LoadObjFileAsModel(
-	tinygltf::Model& model,
-	const std::filesystem::path& objPath,
-	std::vector<std::string>& mtlDeps
-);
+bool LoadObjFileAsModel(tinygltf::Model& model,
+                        const std::filesystem::path& objPath,
+                        std::vector<std::string>& mtlDeps);
 
 // glTF punctual aim axis (KHR_lights_punctual: the light node's -Z
 // direction). Raw locals (the coordFix basis rides the chain top):
@@ -383,7 +394,7 @@ bool LoadObjFileAsModel(
 // first -> undefined reference). Header-defined = no link dependency,
 // the layering debt dies here.
 inline glm::vec3 GltfPunctualAimAxis(int) {
-	return glm::vec3(0.0f, 0.0f, -1.0f);
+    return glm::vec3(0.0f, 0.0f, -1.0f);
 }
 
 // The node's RAW local as authored (matrix verbatim, else T*R*S from
@@ -397,13 +408,13 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n);
 // baseDir/imageUri from the host filesystem; identity is the normalized
 // host-relative path so asset URIs match the VFS layout 1:1.
 struct HostTextureSource final : GltfToSceneImporter::TextureSource {
-	explicit HostTextureSource(std::filesystem::path baseDir);
-	std::optional<std::vector<uint8_t>> ReadBytes(const std::string& imageUri) override;
-	std::string ResolveIdentity(const std::string& imageUri) const override;
-	std::optional<std::filesystem::path> HostPath(
-		const std::string& imageUri) const override;
-private:
-	std::filesystem::path baseDir_;
+    explicit HostTextureSource(std::filesystem::path baseDir);
+    std::optional<std::vector<uint8_t>> ReadBytes(const std::string& imageUri) override;
+    std::string ResolveIdentity(const std::string& imageUri) const override;
+    std::optional<std::filesystem::path> HostPath(const std::string& imageUri) const override;
+
+  private:
+    std::filesystem::path baseDir_;
 };
 
 // In-process texture conversion (tex_transcode.cpp): stb-decodes LDR
@@ -417,12 +428,12 @@ private:
 // top N levels. False + err when the source isn't decodable (HDR
 // .hdr/.exr must be checked by the caller — stb would mangle them).
 enum class KtxEncodeFormat : int {
-	Rgba8 = 0, // uncompressed RGBA8 (the import default)
-	Bc1 = 1,   // BC1 RGB (+1-bit alpha) — opaque color
-	Bc3 = 2,   // BC3 RGBA — alpha color
-	Bc4 = 3,   // BC4 R — single-channel data
-	Bc5 = 4,   // BC5 RG — two-channel data (normal XY)
-	Bc7 = 5,   // BC7 RGBA — high-quality alpha color
+    Rgba8 = 0, // uncompressed RGBA8 (the import default)
+    Bc1 = 1,   // BC1 RGB (+1-bit alpha) — opaque color
+    Bc3 = 2,   // BC3 RGBA — alpha color
+    Bc4 = 3,   // BC4 R — single-channel data
+    Bc5 = 4,   // BC5 RG — two-channel data (normal XY)
+    Bc7 = 5,   // BC7 RGBA — high-quality alpha color
 };
 // "rgba8"|"bc1"|"bc3"|"bc4"|"bc5"|"bc7" (round-trip; false on unknown).
 const char* KtxEncodeFormatName(KtxEncodeFormat f);
@@ -432,11 +443,17 @@ bool KtxEncodeFormatFromName(const std::string& name, KtxEncodeFormat& f);
 // dependency).
 uint32_t KtxEncodeFormatVkFormat(KtxEncodeFormat f, bool srgb);
 // True for the block-compressed targets (Rgba8 is not).
-inline bool KtxEncodeFormatIsBcn(KtxEncodeFormat f) { return f != KtxEncodeFormat::Rgba8; }
-bool TranscodeImageToKtx2(const uint8_t* srcBytes, size_t srcSize, bool srgb,
-	const std::string& logName, std::vector<uint8_t>& outKtx2, std::string& err,
-	KtxEncodeFormat format = KtxEncodeFormat::Rgba8,
-	uint32_t maxMipLevels = 0);
+inline bool KtxEncodeFormatIsBcn(KtxEncodeFormat f) {
+    return f != KtxEncodeFormat::Rgba8;
+}
+bool TranscodeImageToKtx2(const uint8_t* srcBytes,
+                          size_t srcSize,
+                          bool srgb,
+                          const std::string& logName,
+                          std::vector<uint8_t>& outKtx2,
+                          std::string& err,
+                          KtxEncodeFormat format = KtxEncodeFormat::Rgba8,
+                          uint32_t maxMipLevels = 0);
 
 // Source-header probe (tex_transcode.cpp; read-only texture-asset
 // inspector fields): a KTX2 source reports its header-decided facts
@@ -445,28 +462,28 @@ bool TranscodeImageToKtx2(const uint8_t* srcBytes, size_t srcSize, bool srgb,
 // (the import settings decide everything else). False on undecodable
 // bytes (the caller reports it).
 struct TextureSourceInfo {
-	bool isKtx2 = false;
-	uint32_t width = 0;
-	uint32_t height = 0;
-	uint32_t components = 0;  // LDR only (stb report)
-	uint32_t mipLevels = 0;   // KTX2 only (the file's chain)
-	uint32_t vkFormat = 0;    // KTX2 only
-	bool srgb = false;        // KTX2 transfer (LDR: the import setting)
-	bool bcn = false;         // KTX2 payload is block-compressed
-	bool basis = false;       // KTX2 payload needs a (cook-time) transcode
+    bool isKtx2 = false;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t components = 0; // LDR only (stb report)
+    uint32_t mipLevels = 0;  // KTX2 only (the file's chain)
+    uint32_t vkFormat = 0;   // KTX2 only
+    bool srgb = false;       // KTX2 transfer (LDR: the import setting)
+    bool bcn = false;        // KTX2 payload is block-compressed
+    bool basis = false;      // KTX2 payload needs a (cook-time) transcode
 };
-bool ProbeTextureSource(const uint8_t* data, size_t size,
-	TextureSourceInfo& out);
+bool ProbeTextureSource(const uint8_t* data, size_t size, TextureSourceInfo& out);
 
 // VFS texture source (cooker path): reads through an OverlayVfs mounted
 // with the content tree; identity is the VFS path itself.
 struct VfsTextureSource final : GltfToSceneImporter::TextureSource {
-	VfsTextureSource(const smvk::OverlayVfs* vfs, std::string vfsBaseDir);
-	std::optional<std::vector<uint8_t>> ReadBytes(const std::string& imageUri) override;
-	std::string ResolveIdentity(const std::string& imageUri) const override;
-private:
-	const smvk::OverlayVfs* vfs_ = nullptr;
-	std::string vfsBaseDir_;
+    VfsTextureSource(const smvk::OverlayVfs* vfs, std::string vfsBaseDir);
+    std::optional<std::vector<uint8_t>> ReadBytes(const std::string& imageUri) override;
+    std::string ResolveIdentity(const std::string& imageUri) const override;
+
+  private:
+    const smvk::OverlayVfs* vfs_ = nullptr;
+    std::string vfsBaseDir_;
 };
 
 // ---------------------------------------------------------------------------
@@ -488,17 +505,16 @@ private:
 // (0 = failure; the caller reports, never falls back).
 // ---------------------------------------------------------------------------
 size_t BuildFromMeshAsset(
-	smvk::Cluster& cluster,
-	smvk::TextureStreamer* streamer,
-	const smvk::assets::MeshAsset& asset,
-	const smvk::assets::AssetManifest& manifest,
-	const std::string& meshBaseUri,
-	int ph,
-	const std::shared_ptr<GltfToSceneImporter::TextureSource>& textureSource,
-	bool autoKtx,
-	GltfArtifactCache* artifactCache,
-	const std::function<std::optional<std::vector<uint8_t>>(
-		const std::string&)>& readSibling);
+    smvk::Cluster& cluster,
+    smvk::TextureStreamer* streamer,
+    const smvk::assets::MeshAsset& asset,
+    const smvk::assets::AssetManifest& manifest,
+    const std::string& meshBaseUri,
+    int ph,
+    const std::shared_ptr<GltfToSceneImporter::TextureSource>& textureSource,
+    bool autoKtx,
+    GltfArtifactCache* artifactCache,
+    const std::function<std::optional<std::vector<uint8_t>>(const std::string&)>& readSibling);
 
 // ---------------------------------------------------------------------------
 // Clarisse-style nested SCENE REFERENCES.
@@ -521,139 +537,132 @@ size_t BuildFromMeshAsset(
 // node ids in doc.references order (level-1 refs only). Returns the
 // number of references applied (level-1 + nested).
 // ---------------------------------------------------------------------------
-	size_t ApplySceneReferences(
-	smvk::Cluster& cluster,
-	const smvk::tour::Doc& doc,
-	const std::string& ownerBaseDir,
-	smvk::ResourceManager* ctx,
-	smvk::TextureStreamer* streamer,
-	const smvk::OverlayVfs* vfs,
-	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
-	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
-	int coordFix = 0,
-	std::vector<int>* outPlaceholderNodes = nullptr,
-	// Every failure (unresolved source, parse error, skipped command in
-	// a referenced .tour, cycle...) collected for the editor's reference
-	// list; nullptr keeps the stderr-only behavior.
-	std::vector<std::string>* outIssues = nullptr,
-	// Canonical RESOLVED source per top-level reference (in doc.references
-	// order; empty when the source did not resolve). Lets path-solver /
-	// symlink users verify what actually bound versus what the tour says.
-	std::vector<std::string>* outResolvedSources = nullptr,
-	// KTX conversion: autoKtx gates in-process conversion of non-KTX
-	// sources (default on); fileNodes carries cooked file-node records
-	// for conversion intent (null = usage inference only). Appended last
-	// so existing positional callers keep compiling. artifactCache: the
-	// registry store hook (null = no acceleration).
-	bool autoKtx = true,
-	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr,
-	GltfArtifactCache* artifactCache = nullptr,
-	// GUID resolver (see GltfGuidResolver): identity-first reference
-	// resolution; null = path-only (cooker/baker/tests).
-	GltfGuidResolver* guidResolver = nullptr,
-	// Importer data out (see GltfImportImage): one row per referenced image
-	// across EVERY import in the chain (root + nested references), with the
-	// (material, slot) users. Null = no record. Appended last so existing
-	// callers keep compiling.
-	std::vector<GltfImportImage>* outImages = nullptr,
-	// Content root (host-mode resolution): RELATIVE reference sources
-	// resolve against this BEFORE the process CWD — the project owns the
-	// content tree and tours record project-relative sources
-	// ("content/models/..."). Empty = CWD-first (the old behavior, which
-	// silently bound the TOOL'S OWN synced content/ copy — the build
-	// dir carries one — instead of the project's cooked .geometry:
-	// meshlets/LOD siblings went missing and every tour pak shipped a
-	// stale scene). Absolute sources and the vfs mode are unaffected.
-	const std::string& contentRoot = std::string());
+size_t ApplySceneReferences(smvk::Cluster& cluster,
+                            const smvk::tour::Doc& doc,
+                            const std::string& ownerBaseDir,
+                            smvk::ResourceManager* ctx,
+                            smvk::TextureStreamer* streamer,
+                            const smvk::OverlayVfs* vfs,
+                            const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
+                            const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
+                            int coordFix = 0,
+                            std::vector<int>* outPlaceholderNodes = nullptr,
+                            // Every failure (unresolved source, parse error, skipped command in
+                            // a referenced .tour, cycle...) collected for the editor's reference
+                            // list; nullptr keeps the stderr-only behavior.
+                            std::vector<std::string>* outIssues = nullptr,
+                            // Canonical RESOLVED source per top-level reference (in doc.references
+                            // order; empty when the source did not resolve). Lets path-solver /
+                            // symlink users verify what actually bound versus what the tour says.
+                            std::vector<std::string>* outResolvedSources = nullptr,
+                            // KTX conversion: autoKtx gates in-process conversion of non-KTX
+                            // sources (default on); fileNodes carries cooked file-node records
+                            // for conversion intent (null = usage inference only). Appended last
+                            // so existing positional callers keep compiling. artifactCache: the
+                            // registry store hook (null = no acceleration).
+                            bool autoKtx = true,
+                            const std::vector<smvk::tour::FileNode>* fileNodes = nullptr,
+                            GltfArtifactCache* artifactCache = nullptr,
+                            // GUID resolver (see GltfGuidResolver): identity-first reference
+                            // resolution; null = path-only (cooker/baker/tests).
+                            GltfGuidResolver* guidResolver = nullptr,
+                            // Importer data out (see GltfImportImage): one row per referenced image
+                            // across EVERY import in the chain (root + nested references), with the
+                            // (material, slot) users. Null = no record. Appended last so existing
+                            // callers keep compiling.
+                            std::vector<GltfImportImage>* outImages = nullptr,
+                            // Content root (host-mode resolution): RELATIVE reference sources
+                            // resolve against this BEFORE the process CWD — the project owns the
+                            // content tree and tours record project-relative sources
+                            // ("content/models/..."). Empty = CWD-first (the old behavior, which
+                            // silently bound the TOOL'S OWN synced content/ copy — the build
+                            // dir carries one — instead of the project's cooked .geometry:
+                            // meshlets/LOD siblings went missing and every tour pak shipped a
+                            // stale scene). Absolute sources and the vfs mode are unaffected.
+                            const std::string& contentRoot = std::string());
 
 inline void GltfToCluster(
-	smvk::ResourceManager& ctx,
-	const tinygltf::Model& inModel,
-	std::filesystem::path inGltfModelPath,
-	smvk::Cluster& out,
-	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
-	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
-	int coordFix = 0, // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
-	const glm::mat4& preTransform = glm::mat4(1.0f),
-	smvk::TextureStreamer* streamer = nullptr, // tail-resident uploads when set (see texture_streamer.h)
-	GltfArtifactCache* artifactCache = nullptr
-) {
-	GltfToSceneImporter importer{
-		out,
-		inModel,
-		inGltfModelPath
-	};
-	importer.setMeshOptConfig(meshOpt);
-	importer.setMeshletConfig(meshlets);
-	importer.setArtifactCache(artifactCache);
-	importer.setCoordFix(coordFix);
-	importer.setPreTransform(preTransform);
-	importer.setTextureStreamer(streamer);
-	// Stamp VFS-style asset URIs ("<path>#mat.N", "<path>#mesh.N/prim.M").
-	// setModelUriBase falls back to a content-relative/filename base for
-	// absolute host paths (which NormalizeAssetUri rejects) so mesh URIs
-	// — and with them LOD chains + meshlets — are never silently dropped.
-	// URI-backed materials let tools (e.g. the glTF editor) map runtime
-	// materials back to glTF material indices exactly.
-	importer.setModelUriBase(inGltfModelPath.generic_string());
+    smvk::ResourceManager& ctx,
+    const tinygltf::Model& inModel,
+    std::filesystem::path inGltfModelPath,
+    smvk::Cluster& out,
+    const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
+    const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
+    int coordFix = 0, // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
+    const glm::mat4& preTransform = glm::mat4(1.0f),
+    smvk::TextureStreamer* streamer =
+        nullptr, // tail-resident uploads when set (see texture_streamer.h)
+    GltfArtifactCache* artifactCache = nullptr) {
+    GltfToSceneImporter importer{out, inModel, inGltfModelPath};
+    importer.setMeshOptConfig(meshOpt);
+    importer.setMeshletConfig(meshlets);
+    importer.setArtifactCache(artifactCache);
+    importer.setCoordFix(coordFix);
+    importer.setPreTransform(preTransform);
+    importer.setTextureStreamer(streamer);
+    // Stamp VFS-style asset URIs ("<path>#mat.N", "<path>#mesh.N/prim.M").
+    // setModelUriBase falls back to a content-relative/filename base for
+    // absolute host paths (which NormalizeAssetUri rejects) so mesh URIs
+    // — and with them LOD chains + meshlets — are never silently dropped.
+    // URI-backed materials let tools (e.g. the glTF editor) map runtime
+    // materials back to glTF material indices exactly.
+    importer.setModelUriBase(inGltfModelPath.generic_string());
 
-	assert(out.scene.hierarchy.empty());
+    assert(out.scene.hierarchy.empty());
 
-	// Cluster-scene root (index 0, parent = -1). Imported glTF scene roots
-	// attach underneath it so addNode() always sees a valid parent index.
-	const int root = addNode(out.scene, -1, 0);
+    // Cluster-scene root (index 0, parent = -1). Imported glTF scene roots
+    // attach underneath it so addNode() always sees a valid parent index.
+    const int root = addNode(out.scene, -1, 0);
 
-	out.scene.localTransform[root] = glm::mat4(1.0f);
-	out.scene.globalTransform[root] = glm::mat4(1.0f);
+    out.scene.localTransform[root] = glm::mat4(1.0f);
+    out.scene.globalTransform[root] = glm::mat4(1.0f);
 
-	// Collect the glTF top-level node indices.
-	std::vector<int> gltfRoots;
-	if (inModel.defaultScene >= 0 && inModel.defaultScene < (int)inModel.scenes.size()) {
-		gltfRoots = inModel.scenes[inModel.defaultScene].nodes;
-	}
-	else if (!inModel.scenes.empty()) {
-		gltfRoots = inModel.scenes.front().nodes;
-	}
-	else {
-		// Fallback: a node is a root if it isn't referenced as anyone's child.
-		std::vector<bool> referenced(inModel.nodes.size());
-		for (const auto& n : inModel.nodes)
-			for (int c : n.children)
-				if (c >= 0 && c < (int)inModel.nodes.size())
-					referenced[c] = true;
-		for (int i = 0; i < (int)inModel.nodes.size(); ++i)
-			if (!referenced[i]) gltfRoots.push_back(i);
-	}
+    // Collect the glTF top-level node indices.
+    std::vector<int> gltfRoots;
+    if (inModel.defaultScene >= 0 && inModel.defaultScene < (int)inModel.scenes.size()) {
+        gltfRoots = inModel.scenes[inModel.defaultScene].nodes;
+    } else if (!inModel.scenes.empty()) {
+        gltfRoots = inModel.scenes.front().nodes;
+    } else {
+        // Fallback: a node is a root if it isn't referenced as anyone's child.
+        std::vector<bool> referenced(inModel.nodes.size());
+        for (const auto& n : inModel.nodes)
+            for (int c : n.children)
+                if (c >= 0 && c < (int)inModel.nodes.size())
+                    referenced[c] = true;
+        for (int i = 0; i < (int)inModel.nodes.size(); ++i)
+            if (!referenced[i])
+                gltfRoots.push_back(i);
+    }
 
-	importer.preloadTextures();
+    importer.preloadTextures();
 
-	for (int gltfNode : gltfRoots)
-		importer.import(gltfNode);
-		//importer.importNodeRecursive(gltfNode, root, 1);
+    for (int gltfNode : gltfRoots)
+        importer.import(gltfNode);
+    // importer.importNodeRecursive(gltfNode, root, 1);
 
-	// SKIN post pass (the Northlight data path): the node walk recorded
-	// every (mesh, node.skin) pair - build the cluster Skeleton (the
-	// gltfNodeMap is fully populated now; the joint nodes may import
-	// after the meshes that reference them) + patch the retained
-	// uploads' PackedSkinInfluences streams. Before this, skinned glTFs silently
-	// imported as static geometry.
-	importer.BuildSkinData();
+    // SKIN post pass (the Northlight data path): the node walk recorded
+    // every (mesh, node.skin) pair - build the cluster Skeleton (the
+    // gltfNodeMap is fully populated now; the joint nodes may import
+    // after the meshes that reference them) + patch the retained
+    // uploads' PackedSkinInfluences streams. Before this, skinned glTFs silently
+    // imported as static geometry.
+    importer.BuildSkinData();
 
-	importer.applyPreTransform(out.scene, root);
+    importer.applyPreTransform(out.scene, root);
 
-	RebuildStaticCache(out.scene);
-	markAsChanged(out.scene, root);
-	recalculateGlobalTransforms(out.scene);
-	// (No LOD world-error finalize at import time: cooked sibling errors
-	// stay MESH-LOCAL (scale-free) in the artifact - the renderer applies
-	// each instance's own world scale at pick time (World::SelectLodIndex).
-	// Baking the scene scale in here compounded per re-cook: CookLodSiblings
-	// skips meshes that already carry siblings, so the loaded world-scaled
-	// errors flowed through the finalize again each run and shrank by the
-	// node scale per pass - Sponza's 0.008 root = 125x/run, and the picker
-	// served the coarsest LOD centimeters from the camera.)
-	// Flush batched uploads (256MB threshold, or manual at end of whole scene)
-	if (out.ctx_)
-		out.ctx_->FlushUploads();
+    RebuildStaticCache(out.scene);
+    markAsChanged(out.scene, root);
+    recalculateGlobalTransforms(out.scene);
+    // (No LOD world-error finalize at import time: cooked sibling errors
+    // stay MESH-LOCAL (scale-free) in the artifact - the renderer applies
+    // each instance's own world scale at pick time (World::SelectLodIndex).
+    // Baking the scene scale in here compounded per re-cook: CookLodSiblings
+    // skips meshes that already carry siblings, so the loaded world-scaled
+    // errors flowed through the finalize again each run and shrank by the
+    // node scale per pass - Sponza's 0.008 root = 125x/run, and the picker
+    // served the coarsest LOD centimeters from the camera.)
+    // Flush batched uploads (256MB threshold, or manual at end of whole scene)
+    if (out.ctx_)
+        out.ctx_->FlushUploads();
 }
-

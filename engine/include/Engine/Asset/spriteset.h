@@ -45,9 +45,8 @@ struct SpriteAnimation {
         if (frames.empty() || !std::isfinite(seconds) || seconds <= 0)
             return frames.empty() ? UINT32_MAX : frames.front();
         const double n = std::floor(double(seconds) * double(fps));
-        const size_t index = loop
-            ? static_cast<size_t>(std::fmod(n, double(frames.size())))
-            : (n >= double(frames.size()) ? frames.size() - 1 : size_t(n));
+        const size_t index = loop ? static_cast<size_t>(std::fmod(n, double(frames.size())))
+                                  : (n >= double(frames.size()) ? frames.size() - 1 : size_t(n));
         return frames[index];
     }
 };
@@ -60,27 +59,31 @@ struct SpriteSet {
 
     [[nodiscard]] const SpriteRegion* Find(std::string_view name) const {
         for (const auto& s : sprites)
-            if (s.name == name) return &s;
+            if (s.name == name)
+                return &s;
         return nullptr;
     }
-    [[nodiscard]] const SpriteAnimation* FindAnimation(
-        std::string_view name) const {
+    [[nodiscard]] const SpriteAnimation* FindAnimation(std::string_view name) const {
         for (const auto& a : animations)
-            if (a.name == name) return &a;
+            if (a.name == name)
+                return &a;
         return nullptr;
     }
     // x/y/w/h in UV units, without padding or half-texel contraction.
     [[nodiscard]] std::array<float, 4> UV(const SpriteRegion& s) const {
-        if (!width || !height) return {};
-        return {float(s.rect.x) / width, float(s.rect.y) / height,
-            float(uint64_t(s.rect.x) + s.rect.width) / width,
-            float(uint64_t(s.rect.y) + s.rect.height) / height};
+        if (!width || !height)
+            return {};
+        return {float(s.rect.x) / width,
+                float(s.rect.y) / height,
+                float(uint64_t(s.rect.x) + s.rect.width) / width,
+                float(uint64_t(s.rect.y) + s.rect.height) / height};
     }
 };
 
 namespace sprite_detail {
 inline bool Integer(std::string_view token, uint32_t& out) {
-    if (token.empty()) return false;
+    if (token.empty())
+        return false;
     const char* first = token.data();
     const auto result = std::from_chars(first, first + token.size(), out);
     return result.ec == std::errc{} && result.ptr == first + token.size();
@@ -91,49 +94,45 @@ inline bool Real(const std::string& token, float& out) {
     return bool(in) && in.eof() && std::isfinite(out);
 }
 inline bool Name(std::string_view s) {
-    if (s.empty()) return false;
+    if (s.empty())
+        return false;
     for (unsigned char c : s)
-        if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z')
-            && !(c >= '0' && c <= '9') && c != '_' && c != '-')
+        if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') &&
+            c != '_' && c != '-')
             return false;
     return true;
 }
 inline bool Path(std::string_view s) {
-    if (s.empty() || s[0] == '/' || s.find('\\') != s.npos
-        || s.find(':') != s.npos || s.find("//") != s.npos)
+    if (s.empty() || s[0] == '/' || s.find('\\') != s.npos || s.find(':') != s.npos ||
+        s.find("//") != s.npos)
         return false;
     for (size_t i = 0; i < s.size();) {
         const size_t e = s.find('/', i);
-        const auto segment = s.substr(i,
-            e == s.npos ? s.npos : e - i);
+        const auto segment = s.substr(i, e == s.npos ? s.npos : e - i);
         if (segment == "." || segment == ".." || segment.empty())
             return false;
-        if (e == s.npos) break;
+        if (e == s.npos)
+            break;
         i = e + 1;
     }
     return true;
 }
 inline bool Inside(SpriteRect r, uint32_t w, uint32_t h) {
-    return r.width && r.height && uint64_t(r.x) + r.width <= w
-        && uint64_t(r.y) + r.height <= h;
+    return r.width && r.height && uint64_t(r.x) + r.width <= w && uint64_t(r.y) + r.height <= h;
 }
 inline bool Valid(const SpriteRegion& s, uint32_t w, uint32_t h) {
-    if (!Inside(s.rect, w, h) || !std::isfinite(s.pivotX)
-        || !std::isfinite(s.pivotY) || s.pivotX < 0 || s.pivotX > 1
-        || s.pivotY < 0 || s.pivotY > 1
-        || !s.sourceWidth || !s.sourceHeight
-        || uint64_t(s.trimX) + s.rect.width > s.sourceWidth
-        || uint64_t(s.trimY) + s.rect.height > s.sourceHeight)
+    if (!Inside(s.rect, w, h) || !std::isfinite(s.pivotX) || !std::isfinite(s.pivotY) ||
+        s.pivotX < 0 || s.pivotX > 1 || s.pivotY < 0 || s.pivotY > 1 || !s.sourceWidth ||
+        !s.sourceHeight || uint64_t(s.trimX) + s.rect.width > s.sourceWidth ||
+        uint64_t(s.trimY) + s.rect.height > s.sourceHeight)
         return false;
     const auto& b = s.border;
-    if (uint64_t(b[0]) + b[2] > s.rect.width
-        || uint64_t(b[1]) + b[3] > s.rect.height)
+    if (uint64_t(b[0]) + b[2] > s.rect.width || uint64_t(b[1]) + b[3] > s.rect.height)
         return false;
     // Nine-slice and cropping are incompatible: borders describe
     // the untrimmed sprite, not an arbitrarily cropped alpha region.
-    if ((b[0] || b[1] || b[2] || b[3])
-        && (s.trimX || s.trimY || s.sourceWidth != s.rect.width
-            || s.sourceHeight != s.rect.height))
+    if ((b[0] || b[1] || b[2] || b[3]) &&
+        (s.trimX || s.trimY || s.sourceWidth != s.rect.width || s.sourceHeight != s.rect.height))
         return false;
     return true;
 }
@@ -150,8 +149,7 @@ inline bool Valid(const SpriteRegion& s, uint32_t w, uint32_t h) {
 //
 // Grid names are prefix_<row-major index>. Animation names resolve after
 // parsing, so forward references are legal. Unknown/duplicate fields fail.
-inline bool ParseSpriteSetText(std::string_view text, SpriteSet& out,
-    std::string& err) {
+inline bool ParseSpriteSetText(std::string_view text, SpriteSet& out, std::string& err) {
     err.clear();
     SpriteSet result;
     std::unordered_map<std::string, uint32_t> names;
@@ -173,12 +171,15 @@ inline bool ParseSpriteSetText(std::string_view text, SpriteSet& out,
     while (std::getline(lines, line)) {
         ++lineNo;
         const auto comment = line.find('#');
-        if (comment != std::string::npos) line.resize(comment);
+        if (comment != std::string::npos)
+            line.resize(comment);
         std::istringstream in(line);
         std::string verb;
-        if (!(in >> verb)) continue;
+        if (!(in >> verb))
+            continue;
         std::vector<std::string> tok;
-        for (std::string t; in >> t;) tok.push_back(std::move(t));
+        for (std::string t; in >> t;)
+            tok.push_back(std::move(t));
         if (!header) {
             if (verb != "spriteset" || tok.size() != 1 || tok[0] != "1")
                 return fail("expected spriteset 1");
@@ -186,23 +187,20 @@ inline bool ParseSpriteSetText(std::string_view text, SpriteSet& out,
             continue;
         }
         if (verb == "texture") {
-            if (hasTexture || tok.size() != 1
-                || !sprite_detail::Path(tok[0]))
+            if (hasTexture || tok.size() != 1 || !sprite_detail::Path(tok[0]))
                 return fail("expected a single relative texture path");
             result.texture = tok[0];
             hasTexture = true;
         } else if (verb == "size") {
-            if (hasSize || tok.size() != 2
-                || !sprite_detail::Integer(tok[0], result.width)
-                || !sprite_detail::Integer(tok[1], result.height)
-                || !result.width || !result.height)
+            if (hasSize || tok.size() != 2 || !sprite_detail::Integer(tok[0], result.width) ||
+                !sprite_detail::Integer(tok[1], result.height) || !result.width || !result.height)
                 return fail("expected nonzero texture size W H");
             hasSize = true;
         } else if (verb == "sprite" || verb == "grid") {
-            if (!hasSize) return fail("size must precede sprite/grid");
+            if (!hasSize)
+                return fail("size must precede sprite/grid");
             const bool grid = verb == "grid";
-            if (tok.size() < (grid ? 7u : 5u)
-                || !sprite_detail::Name(tok[0]))
+            if (tok.size() < (grid ? 7u : 5u) || !sprite_detail::Name(tok[0]))
                 return fail("invalid region name or coordinates");
             uint32_t numbers[6]{};
             const size_t n = grid ? 6 : 4;
@@ -211,45 +209,43 @@ inline bool ParseSpriteSetText(std::string_view text, SpriteSet& out,
                     return fail("region coordinates must be uint32");
             SpriteRegion proto;
             proto.name = tok[0];
-            proto.rect = {numbers[0], numbers[1],
-                grid ? numbers[4] : numbers[2],
-                grid ? numbers[5] : numbers[3]};
+            proto.rect = {numbers[0],
+                          numbers[1],
+                          grid ? numbers[4] : numbers[2],
+                          grid ? numbers[5] : numbers[3]};
             proto.sourceWidth = proto.rect.width;
             proto.sourceHeight = proto.rect.height;
             for (size_t i = n + 1; i < tok.size();) {
                 const std::string& option = tok[i++];
                 if (option == "pivot") {
-                    if (i + 2 > tok.size()
-                        || !sprite_detail::Real(tok[i], proto.pivotX)
-                        || !sprite_detail::Real(tok[i + 1], proto.pivotY))
+                    if (i + 2 > tok.size() || !sprite_detail::Real(tok[i], proto.pivotX) ||
+                        !sprite_detail::Real(tok[i + 1], proto.pivotY))
                         return fail("pivot requires two finite floats");
                     i += 2;
                 } else if (option == "trim" && !grid) {
-                    if (i + 4 > tok.size()
-                        || !sprite_detail::Integer(tok[i], proto.sourceWidth)
-                        || !sprite_detail::Integer(tok[i + 1], proto.sourceHeight)
-                        || !sprite_detail::Integer(tok[i + 2], proto.trimX)
-                        || !sprite_detail::Integer(tok[i + 3], proto.trimY))
+                    if (i + 4 > tok.size() || !sprite_detail::Integer(tok[i], proto.sourceWidth) ||
+                        !sprite_detail::Integer(tok[i + 1], proto.sourceHeight) ||
+                        !sprite_detail::Integer(tok[i + 2], proto.trimX) ||
+                        !sprite_detail::Integer(tok[i + 3], proto.trimY))
                         return fail("trim requires sourceW sourceH offsetX offsetY");
                     i += 4;
                 } else if (option == "border" && !grid) {
-                    if (i + 4 > tok.size()) return fail("border needs L T R B");
+                    if (i + 4 > tok.size())
+                        return fail("border needs L T R B");
                     for (size_t j = 0; j < 4; ++j)
                         if (!sprite_detail::Integer(tok[i + j], proto.border[j]))
                             return fail("border must contain four uint32 values");
                     i += 4;
-                } else return fail("unknown or disallowed region option: " + option);
+                } else
+                    return fail("unknown or disallowed region option: " + option);
             }
             const uint32_t columns = grid ? numbers[2] : 1;
             const uint32_t rows = grid ? numbers[3] : 1;
-            if (!columns || !rows
-                || uint64_t(columns) * rows >
-                    65536ull - result.sprites.size())
+            if (!columns || !rows || uint64_t(columns) * rows > 65536ull - result.sprites.size())
                 return fail("grid count is empty or too large");
-            if (grid && (uint64_t(proto.rect.x) +
-                    uint64_t(columns) * proto.rect.width > result.width
-                || uint64_t(proto.rect.y) +
-                    uint64_t(rows) * proto.rect.height > result.height))
+            if (grid &&
+                (uint64_t(proto.rect.x) + uint64_t(columns) * proto.rect.width > result.width ||
+                 uint64_t(proto.rect.y) + uint64_t(rows) * proto.rect.height > result.height))
                 return fail("grid exceeds texture bounds");
             for (uint32_t y = 0; y < rows; ++y)
                 for (uint32_t x = 0; x < columns; ++x) {
@@ -261,8 +257,7 @@ inline bool ParseSpriteSetText(std::string_view text, SpriteSet& out,
                     }
                     if (!sprite_detail::Valid(s, result.width, result.height))
                         return fail("sprite bounds, trim, pivot or border invalid");
-                    if (!names.emplace(s.name,
-                            static_cast<uint32_t>(result.sprites.size())).second)
+                    if (!names.emplace(s.name, static_cast<uint32_t>(result.sprites.size())).second)
                         return fail("duplicate sprite name: " + s.name);
                     result.sprites.push_back(std::move(s));
                 }
@@ -271,19 +266,21 @@ inline bool ParseSpriteSetText(std::string_view text, SpriteSet& out,
                 return fail("anim requires name fps loop|once frames...");
             PendingAnimation a;
             a.name = tok[0];
-            if (!sprite_detail::Real(tok[1], a.fps)
-                || a.fps <= 0 || (tok[2] != "loop" && tok[2] != "once"))
+            if (!sprite_detail::Real(tok[1], a.fps) || a.fps <= 0 ||
+                (tok[2] != "loop" && tok[2] != "once"))
                 return fail("invalid animation fps or playback");
             a.loop = tok[2] == "loop";
             a.frames.assign(tok.begin() + 3, tok.end());
-            if (std::any_of(pending.begin(), pending.end(),
-                [&](const PendingAnimation& b) { return b.name == a.name; }))
+            if (std::any_of(pending.begin(), pending.end(), [&](const PendingAnimation& b) {
+                    return b.name == a.name;
+                }))
                 return fail("duplicate animation name: " + a.name);
             pending.push_back(std::move(a));
-        } else return fail("unknown directive: " + verb);
+        } else
+            return fail("unknown directive: " + verb);
     }
-    if (!header || !hasTexture || !hasSize) return fail(
-        "missing spriteset 1, texture or size directive");
+    if (!header || !hasTexture || !hasSize)
+        return fail("missing spriteset 1, texture or size directive");
     for (const auto& a : pending) {
         SpriteAnimation anim;
         anim.name = a.name;
@@ -291,8 +288,8 @@ inline bool ParseSpriteSetText(std::string_view text, SpriteSet& out,
         anim.loop = a.loop;
         for (const auto& name : a.frames) {
             auto it = names.find(name);
-            if (it == names.end()) return fail(
-                "animation '" + a.name + "' references unknown sprite: " + name);
+            if (it == names.end())
+                return fail("animation '" + a.name + "' references unknown sprite: " + name);
             anim.frames.push_back(it->second);
         }
         result.animations.push_back(std::move(anim));

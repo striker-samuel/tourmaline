@@ -7,8 +7,8 @@
 // the unstable merged World NodeId or material-sorted drawItems index.
 
 #include <Engine/App/world.h>
-#include <Engine/Renderer/gpu_scene_upload.h>
 #include <Engine/Renderer/gpu_scene_leaf.h>
+#include <Engine/Renderer/gpu_scene_upload.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -29,8 +29,7 @@ struct SourceKey {
 };
 struct SourceKeyHash {
     size_t operator()(const SourceKey& k) const noexcept {
-        uint64_t h = k.registration ^ (uint64_t(k.slot) << 17)
-                                     ^ (uint64_t(k.generation) << 39);
+        uint64_t h = k.registration ^ (uint64_t(k.slot) << 17) ^ (uint64_t(k.generation) << 39);
         h ^= h >> 30;
         h *= 0xbf58476d1ce4e5b9ull;
         h ^= h >> 27;
@@ -68,29 +67,29 @@ struct SyncStats {
 // Row generations are checked for instance->mesh; LOD/submesh rows are
 // currently addressed by contiguous slot only, so this is not yet an
 // end-to-end generation/flight publication proof.
-[[nodiscard]] inline bool InstanceDrawReady(
-    const RenderDatabase& db, Handle<Instance> id) {
+[[nodiscard]] inline bool InstanceDrawReady(const RenderDatabase& db, Handle<Instance> id) {
     const Instance* instance = db.instances.Get(id);
-    if (!instance) return false;
+    if (!instance)
+        return false;
     const Handle<Mesh> meshId{instance->refs.x, instance->refs.y};
     const Mesh* mesh = db.meshes.Get(meshId);
-    if (!mesh || !(mesh->flags & MeshFlagCompleteBounds) ||
-        mesh->lodCount == 0 || mesh->lodCount > 16 ||
-        mesh->firstLod >= db.lods.Size() ||
+    if (!mesh || !(mesh->flags & MeshFlagCompleteBounds) || mesh->lodCount == 0 ||
+        mesh->lodCount > 16 || mesh->firstLod >= db.lods.Size() ||
         mesh->lodCount > db.lods.Size() - mesh->firstLod)
         return false;
     bool ready = false;
     for (uint32_t level = 0; level < mesh->lodCount; ++level) {
         const auto& lodRow = db.lods.Rows()[mesh->firstLod + level];
-        if (lodRow.identity.y != 1 ||
-            !(lodRow.value.flags & LodFlagBoundsKnown)) return false;
+        if (lodRow.identity.y != 1 || !(lodRow.value.flags & LodFlagBoundsKnown))
+            return false;
         const bool resident = (mesh->residentMask & (1u << level)) != 0;
         if (resident != ((lodRow.value.flags & LodFlagResident) != 0))
             return false;
-        if (!resident) continue;
-        if (!(lodRow.value.flags & LodFlagFilterable) ||
-            lodRow.value.submeshCount != 1 ||
-            lodRow.value.firstSubmesh >= db.submeshes.Size()) return false;
+        if (!resident)
+            continue;
+        if (!(lodRow.value.flags & LodFlagFilterable) || lodRow.value.submeshCount != 1 ||
+            lodRow.value.firstSubmesh >= db.submeshes.Size())
+            return false;
         const auto& sub = db.submeshes.Rows()[lodRow.value.firstSubmesh];
         if (sub.identity.y != 1 || sub.value.geometryId == InvalidIndex)
             return false;
@@ -102,7 +101,7 @@ struct SyncStats {
 // Pure CPU reconciler; exposed independently so lifetime/dirty semantics
 // can be tested without constructing a Vulkan renderer or a cooked pak.
 class SceneRegistry {
-public:
+  public:
     using InstanceId = Handle<Instance>;
     [[nodiscard]] InstanceId Find(SourceKey key) const {
         auto it = instances_.find(key);
@@ -128,7 +127,8 @@ public:
             retired_.push_back(kv.second);
             (void)db.instances.Erase(kv.second);
         }
-        for (auto& kv : meshes_) EraseMesh(kv.second, db);
+        for (auto& kv : meshes_)
+            EraseMesh(kv.second, db);
         instances_.clear();
         meshes_.clear();
     }
@@ -144,8 +144,9 @@ public:
     // Returns false on invalid metadata / allocation failure. No GPU reader
     // can use these rows until the standard per-flight uploader completes.
     [[nodiscard]] bool PublishMesh(SourceKey key,
-        std::span<const LevelSource> levels, bool allBoundsKnown,
-        RenderDatabase& db) {
+                                   std::span<const LevelSource> levels,
+                                   bool allBoundsKnown,
+                                   RenderDatabase& db) {
         auto it = meshes_.find(key);
         if (it == meshes_.end() || levels.empty() || levels.size() > 16)
             return false;
@@ -161,11 +162,14 @@ public:
             std::vector<Lod> lodValues(count);
             auto lods = db.lods.InsertContiguous(lodValues);
             if (lods.size() != count) {
-                for (auto id : subs) (void)db.submeshes.Erase(id);
+                for (auto id : subs)
+                    (void)db.submeshes.Erase(id);
                 return false;
             }
-            for (auto id : state.lods) (void)db.lods.Erase(id);
-            for (auto id : state.submeshes) (void)db.submeshes.Erase(id);
+            for (auto id : state.lods)
+                (void)db.lods.Erase(id);
+            for (auto id : state.submeshes)
+                (void)db.submeshes.Erase(id);
             state.lods = std::move(lods);
             state.submeshes = std::move(subs);
         }
@@ -173,14 +177,16 @@ public:
         for (uint32_t level = 0; level < count; ++level) {
             const LevelSource& src = levels[level];
             const bool filterable = src.resident && src.gfxMesh != InvalidIndex;
-            if (src.resident) residentMask |= 1u << level;
-            const Submesh sub{filterable ? src.gfxMesh : InvalidIndex,
-                              InvalidIndex, InvalidIndex, 0u};
-            const Lod lod{state.submeshes[level].slot, 1u,
+            if (src.resident)
+                residentMask |= 1u << level;
+            const Submesh sub{
+                filterable ? src.gfxMesh : InvalidIndex, InvalidIndex, InvalidIndex, 0u};
+            const Lod lod{state.submeshes[level].slot,
+                          1u,
                           src.simplifyError,
                           (src.resident ? LodFlagResident : 0u) |
-                          (src.boundsKnown ? LodFlagBoundsKnown : 0u) |
-                          (filterable ? LodFlagFilterable : 0u)};
+                              (src.boundsKnown ? LodFlagBoundsKnown : 0u) |
+                              (filterable ? LodFlagFilterable : 0u)};
             const Submesh* prevSub = db.submeshes.Get(state.submeshes[level]);
             if (!prevSub || std::memcmp(prevSub, &sub, sizeof(sub)) != 0)
                 (void)db.submeshes.Update(state.submeshes[level], sub);
@@ -188,8 +194,10 @@ public:
             if (!prevLod || std::memcmp(prevLod, &lod, sizeof(lod)) != 0)
                 (void)db.lods.Update(state.lods[level], lod);
         }
-        const Mesh desc{state.lods.front().slot, uint32_t(count),
-                        residentMask, allBoundsKnown ? MeshFlagCompleteBounds : 0u};
+        const Mesh desc{state.lods.front().slot,
+                        uint32_t(count),
+                        residentMask,
+                        allBoundsKnown ? MeshFlagCompleteBounds : 0u};
         const Mesh* old = db.meshes.Get(state.id);
         if (!old || std::memcmp(old, &desc, sizeof(desc)) != 0)
             (void)db.meshes.Update(state.id, desc);
@@ -205,38 +213,37 @@ public:
         out.basisZ = glm::vec4(glm::vec3(model[2]), 0.0f);
     }
 
-    [[nodiscard]] bool UpdateGlobal(SourceKey key, const glm::dmat4& model,
-                                     RenderDatabase& db) {
+    [[nodiscard]] bool UpdateGlobal(SourceKey key, const glm::dmat4& model, RenderDatabase& db) {
         auto it = instances_.find(key);
-        if (it == instances_.end()) return false;
+        if (it == instances_.end())
+            return false;
         const Instance* existing = db.instances.Get(it->second);
-        if (!existing) return false;
+        if (!existing)
+            return false;
         Instance next = *existing;
         SetTransform(next, model);
         if (std::memcmp(existing, &next, sizeof(Instance)) == 0)
             return false;
         const bool updated = db.instances.Update(it->second, next);
-        if (updated) changed_.push_back(it->second);
+        if (updated)
+            changed_.push_back(it->second);
         return updated;
     }
 
     // Current Scene journals still publish float matrices. This adapter
     // is deliberate and isolated; the dmat4 overload is authoritative
     // when a double transform source is available.
-    [[nodiscard]] bool UpdateGlobal(SourceKey key, const glm::mat4& model,
-                                    RenderDatabase& db) {
+    [[nodiscard]] bool UpdateGlobal(SourceKey key, const glm::mat4& model, RenderDatabase& db) {
         return UpdateGlobal(key, glm::dmat4(model), db);
     }
 
-    SyncStats Reconcile(std::span<const SourceRecord> sources,
-                         RenderDatabase& db) {
+    SyncStats Reconcile(std::span<const SourceRecord> sources, RenderDatabase& db) {
         SyncStats stats{};
         std::unordered_set<SourceKey, SourceKeyHash> seen, usedMeshes;
         seen.reserve(sources.size());
         usedMeshes.reserve(sources.size());
         for (const SourceRecord& r : sources) {
-            if (!r.instance.registration || !r.mesh.registration ||
-                !seen.insert(r.instance).second)
+            if (!r.instance.registration || !r.mesh.registration || !seen.insert(r.instance).second)
                 continue; // stale or duplicate source mapping
             usedMeshes.insert(r.mesh);
             auto mesh = meshes_.find(r.mesh);
@@ -244,15 +251,16 @@ public:
                 // Placeholder deliberately advertises NO resident LOD.
                 // Geometry and LOD tables are populated in a later PR.
                 auto handle = db.meshes.Insert(Mesh{});
-                if (!handle) continue;
+                if (!handle)
+                    continue;
                 mesh = meshes_.emplace(r.mesh, MeshState{handle, {}, {}}).first;
                 ++stats.meshesCreated;
             }
             Instance data{};
             SetTransform(data, r.globalModel);
             data.localSphere = r.localSphere; // LOD0 sphere only
-            data.refs = glm::uvec4(mesh->second.id.slot,
-                                    mesh->second.id.generation, r.material, r.flags);
+            data.refs =
+                glm::uvec4(mesh->second.id.slot, mesh->second.id.generation, r.material, r.flags);
             auto it = instances_.find(r.instance);
             if (it == instances_.end()) {
                 auto handle = db.instances.Insert(data);
@@ -276,27 +284,31 @@ public:
                 (void)db.instances.Erase(it->second);
                 it = instances_.erase(it);
                 ++stats.retired;
-            } else ++it;
+            } else
+                ++it;
         }
         for (auto it = meshes_.begin(); it != meshes_.end();) {
             if (!usedMeshes.contains(it->first)) {
                 EraseMesh(it->second, db);
                 it = meshes_.erase(it);
                 ++stats.meshesRetired;
-            } else ++it;
+            } else
+                ++it;
         }
         return stats;
     }
 
-private:
+  private:
     struct MeshState {
         Handle<Mesh> id{};
         std::vector<Handle<Lod>> lods;
         std::vector<Handle<Submesh>> submeshes;
     };
     static void EraseMesh(MeshState& state, RenderDatabase& db) {
-        for (auto id : state.lods) (void)db.lods.Erase(id);
-        for (auto id : state.submeshes) (void)db.submeshes.Erase(id);
+        for (auto id : state.lods)
+            (void)db.lods.Erase(id);
+        for (auto id : state.submeshes)
+            (void)db.submeshes.Erase(id);
         (void)db.meshes.Erase(state.id);
     }
     std::vector<InstanceId> changed_;
@@ -309,34 +321,35 @@ private:
 // revision, then O(changed nodes) in steady state. Scene's change journal is
 // consumed after global transform recalculation, not before.
 class WorldSynchronizer {
-public:
+  public:
     using GeometryLookup = std::function<uint32_t(uint32_t, uint32_t)>;
-    SyncStats Synchronize(World& world, RenderDatabase& db,
-                           uint64_t geometryRevision = 0,
-                           const GeometryLookup& geometryLookup = {}) {
+    SyncStats Synchronize(World& world,
+                          RenderDatabase& db,
+                          uint64_t geometryRevision = 0,
+                          const GeometryLookup& geometryLookup = {}) {
         if (world_ != &world) {
             Reset(db);
             world_ = &world;
         }
         SyncStats stats{};
-        if (revision_ != world.gpuSceneTopologyRevision ||
-            geometryRevision_ != geometryRevision) {
+        if (revision_ != world.gpuSceneTopologyRevision || geometryRevision_ != geometryRevision) {
             nodeKeys_.assign(world.scene.hierarchy.size(), {});
-            for (size_t i = 0; i < world.clusters.size() &&
-                               i < world.clusterMergedNodes.size(); ++i) {
+            for (size_t i = 0; i < world.clusters.size() && i < world.clusterMergedNodes.size();
+                 ++i) {
                 const Cluster* c = world.clusters[i].get();
-                if (!c) continue;
+                if (!c)
+                    continue;
                 const auto owner = world.gpuSceneClusterIds.find(c);
-                if (owner == world.gpuSceneClusterIds.end()) continue;
+                if (owner == world.gpuSceneClusterIds.end())
+                    continue;
                 const auto& nodes = world.clusterMergedNodes[i];
                 for (uint32_t local = 0; local < nodes.size(); ++local) {
                     const uint32_t merged = nodes[local];
                     if (merged == InvalidIndex || merged >= nodeKeys_.size())
                         continue;
-                    const uint32_t gen =
-                        local < c->scene.nodeGeneration.size()
-                            ? (c->scene.nodeGeneration[local] & kNodeGenMask)
-                            : 0;
+                    const uint32_t gen = local < c->scene.nodeGeneration.size()
+                                             ? (c->scene.nodeGeneration[local] & kNodeGenMask)
+                                             : 0;
                     nodeKeys_[merged] = {owner->second, local, gen};
                 }
             }
@@ -350,11 +363,14 @@ public:
                     item.mesh >= world.meshLocations.size())
                     continue;
                 const SourceKey key = nodeKeys_[item.node];
-                if (!key.registration) continue;
+                if (!key.registration)
+                    continue;
                 const World::MeshLocation& loc = world.meshLocations[item.mesh];
-                if (!loc.cluster || !loc.handle.valid()) continue;
+                if (!loc.cluster || !loc.handle.valid())
+                    continue;
                 const auto owner = world.gpuSceneClusterIds.find(loc.cluster);
-                if (owner == world.gpuSceneClusterIds.end()) continue;
+                if (owner == world.gpuSceneClusterIds.end())
+                    continue;
                 SourceRecord record{};
                 record.instance = key;
                 record.mesh = {owner->second, loc.handle.index(), loc.handle.gen()};
@@ -370,7 +386,8 @@ public:
                     bool anyBounds = false;
                     glm::vec3 bmin(0.0f), bmax(0.0f);
                     for (const auto& level : levels) {
-                        if (!level.boundsKnown) continue;
+                        if (!level.boundsKnown)
+                            continue;
                         if (!anyBounds) {
                             bmin = level.boundsMin;
                             bmax = level.boundsMax;
@@ -382,8 +399,7 @@ public:
                     }
                     if (anyBounds) {
                         const glm::vec3 center = bmin + (bmax - bmin) * 0.5f;
-                        record.localSphere = glm::vec4(center,
-                                                       glm::length(bmax - center));
+                        record.localSphere = glm::vec4(center, glm::length(bmax - center));
                     }
                 }
                 records.push_back(record);
@@ -392,9 +408,11 @@ public:
             // Metadata is per shared mesh, not per instance. On streaming
             // revisions, re-scan unique chains but dirty only changed rows.
             for (const auto& [source, worldIndex] : meshWorldIndices) {
-                if (worldIndex >= world.lodChains.size()) continue;
+                if (worldIndex >= world.lodChains.size())
+                    continue;
                 const auto& chain = world.lodChains[worldIndex].levels;
-                if (chain.empty() || chain.size() > 16) continue;
+                if (chain.empty() || chain.size() > 16)
+                    continue;
                 std::vector<LevelSource> levels;
                 levels.reserve(chain.size());
                 bool complete = true;
@@ -406,10 +424,9 @@ public:
                 for (uint32_t i = 0; i < chain.size(); ++i) {
                     const auto& l = chain[i];
                     complete &= l.boundsKnown;
-                    const uint32_t gfxId = geometryLookup
-                        ? geometryLookup(worldIndex, i) : InvalidIndex;
-                    levels.push_back(LevelSource{l.error, gfxId,
-                                                 l.resident, l.boundsKnown});
+                    const uint32_t gfxId =
+                        geometryLookup ? geometryLookup(worldIndex, i) : InvalidIndex;
+                    levels.push_back(LevelSource{l.error, gfxId, l.resident, l.boundsKnown});
                 }
                 (void)registry_.PublishMesh(source, levels, complete, db);
             }
@@ -419,7 +436,8 @@ public:
             stats.leafPublicationOk = SyncLeaves(db, meshPublicationChanged);
             world.scene.gpuSceneGlobalChanges.clear();
             std::fill(world.scene.gpuSceneGlobalQueued.begin(),
-                      world.scene.gpuSceneGlobalQueued.end(), uint8_t(0));
+                      world.scene.gpuSceneGlobalQueued.end(),
+                      uint8_t(0));
             return stats;
         }
         // Recalc can append the same node multiple times before a frame.
@@ -427,10 +445,9 @@ public:
         std::sort(dirty.begin(), dirty.end());
         dirty.erase(std::unique(dirty.begin(), dirty.end()), dirty.end());
         for (NodeId node : dirty) {
-            if (node < nodeKeys_.size() &&
-                node < world.scene.globalTransform.size() &&
-                registry_.UpdateGlobal(nodeKeys_[node],
-                                       tour::scene::GlobalTransformDouble(world.scene, node), db))
+            if (node < nodeKeys_.size() && node < world.scene.globalTransform.size() &&
+                registry_.UpdateGlobal(
+                    nodeKeys_[node], tour::scene::GlobalTransformDouble(world.scene, node), db))
                 ++stats.updated;
         }
         for (NodeId node : dirty)
@@ -449,14 +466,17 @@ public:
         geometryRevision_ = ~uint64_t(0);
         world_ = nullptr;
     }
-    [[nodiscard]] std::vector<LeafTicket> LeafTickets(
-        const RenderDatabase& db) const { return leafRegistry_.Tickets(db); }
-    [[nodiscard]] size_t LeafCount() const { return leafRegistry_.LeafCount(); }
+    [[nodiscard]] std::vector<LeafTicket> LeafTickets(const RenderDatabase& db) const {
+        return leafRegistry_.Tickets(db);
+    }
+    [[nodiscard]] size_t LeafCount() const {
+        return leafRegistry_.LeafCount();
+    }
     [[nodiscard]] SceneRegistry::InstanceId Find(SourceKey k) const {
         return registry_.Find(k);
     }
 
-private:
+  private:
     [[nodiscard]] bool SyncLeaves(RenderDatabase& db, bool meshChanged) {
         SceneRegistry::Deltas changes = registry_.TakeDeltas();
         for (auto id : changes.retired)

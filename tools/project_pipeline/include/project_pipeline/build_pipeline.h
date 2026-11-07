@@ -34,25 +34,27 @@
 namespace smvk::project {
 
 struct BuildOptions {
-	// The scene tour, project-relative (e.g. "content/scenes/Sponza.tour").
-	// Empty = discover content/scenes/*.tour — exactly one must exist.
-	std::string scene;
-	// The output pak (absolute or project-relative).
-	std::string outputPak;
+    // The scene tour, project-relative (e.g. "content/scenes/Sponza.tour").
+    // Empty = discover content/scenes/*.tour — exactly one must exist.
+    std::string scene;
+    // The output pak (absolute or project-relative).
+    std::string outputPak;
 };
 
 struct BuildReport {
-	std::string scene;      // the resolved tour (project-relative)
-	std::string artifact;   // the tour's imported .geometry (content-relative)
-	bool reimported = false;
-	std::string pak;        // the written pak (absolute)
+    std::string scene;    // the resolved tour (project-relative)
+    std::string artifact; // the tour's imported .geometry (content-relative)
+    bool reimported = false;
+    std::string pak; // the written pak (absolute)
 };
 
 // One build. True + report on success; false + err (the failing stage is
 // named) on any failure — a failed stage never reaches the next one, and
 // a failed build never replaces the last valid pak.
-bool BuildProject(const Project& project, const BuildOptions& options,
-	BuildReport& out, std::string& err);
+bool BuildProject(const Project& project,
+                  const BuildOptions& options,
+                  BuildReport& out,
+                  std::string& err);
 
 // ---- the shared build-plan executor (the recipe spec) ----------------
 //
@@ -70,59 +72,59 @@ bool BuildProject(const Project& project, const BuildOptions& options,
 // home and never leaks into plan builds.
 
 struct CookStageArgs {
-	std::string contentDir; // the project root
-	std::string tour;       // the scene tour (absolute)
-	bool cubemap = true;
-	bool lightmap = false;
-	// The artifact-cache store root (the editor's registry; empty = the
-	// CLI's derived convention or off). Acceleration only — the output
-	// is byte-identical either way (the cache's own contract).
-	std::string registryDir;
+    std::string contentDir; // the project root
+    std::string tour;       // the scene tour (absolute)
+    bool cubemap = true;
+    bool lightmap = false;
+    // The artifact-cache store root (the editor's registry; empty = the
+    // CLI's derived convention or off). Acceleration only — the output
+    // is byte-identical either way (the cache's own contract).
+    std::string registryDir;
 };
 
 struct GiBakerStageArgs {
-	std::string contentDir;
-	std::string tour;
+    std::string contentDir;
+    std::string tour;
 };
 
 struct PakStageArgs {
-	std::string contentDir;
-	std::string inVfs;     // the root artifact (the primary identity)
-	std::vector<std::string> extraArtifacts; // additional positional artifacts
-	std::string tour;      // "" = an asset-only pak (no scene blob)
-	std::string mapFile;   // world-wide .map document (optional)
-	std::string outPak;    // absolute destination
-	bool verify = true;
-	// The playable-unit convention (the editor's cooks pack one): packs
-	// levels/<levelName>.level into the pak. Empty = no level blob.
-	std::string levelName;
-	// The artifact-cache store root (see CookStageArgs::registryDir).
-	std::string registryDir;
-	// The multi-pak ownership surface (the resolved plan's tables):
-	// contentSet = the VFS paths an ASSET-ONLY pak embeds directly as
-	// Texture/Sound blobs (no scene, no clusters — the shared-texture
-	// pak); excludeVfs = VFS texture/sound paths a DEPENDENCY pak owns
-	// (this pak's serializer skips them; the materials keep their refs
-	// and resolve cross-pak through the mounted backends at runtime).
-	std::vector<std::string> contentSet;
-	std::vector<std::string> excludeVfs;
-	// The SOUND-ID map (the [ids] table slice for the sounds the plan
-	// owns): authored sound assetPath -> stable 0x4xxx content id. The
-	// pak stage stamps the ids into the cooked scene's audio section;
-	// an EMPTY map (a plan with no sound assets) is the bare-cook
-	// semantic (referenced sounds serialize 0 = unresolved).
-	std::vector<std::pair<std::string, uint64_t>> soundIds;
+    std::string contentDir;
+    std::string inVfs;                       // the root artifact (the primary identity)
+    std::vector<std::string> extraArtifacts; // additional positional artifacts
+    std::string tour;                        // "" = an asset-only pak (no scene blob)
+    std::string mapFile;                     // world-wide .map document (optional)
+    std::string outPak;                      // absolute destination
+    bool verify = true;
+    // The playable-unit convention (the editor's cooks pack one): packs
+    // levels/<levelName>.level into the pak. Empty = no level blob.
+    std::string levelName;
+    // The artifact-cache store root (see CookStageArgs::registryDir).
+    std::string registryDir;
+    // The multi-pak ownership surface (the resolved plan's tables):
+    // contentSet = the VFS paths an ASSET-ONLY pak embeds directly as
+    // Texture/Sound blobs (no scene, no clusters — the shared-texture
+    // pak); excludeVfs = VFS texture/sound paths a DEPENDENCY pak owns
+    // (this pak's serializer skips them; the materials keep their refs
+    // and resolve cross-pak through the mounted backends at runtime).
+    std::vector<std::string> contentSet;
+    std::vector<std::string> excludeVfs;
+    // The SOUND-ID map (the [ids] table slice for the sounds the plan
+    // owns): authored sound assetPath -> stable 0x4xxx content id. The
+    // pak stage stamps the ids into the cooked scene's audio section;
+    // an EMPTY map (a plan with no sound assets) is the bare-cook
+    // semantic (referenced sounds serialize 0 = unresolved).
+    std::vector<std::pair<std::string, uint64_t>> soundIds;
 };
 
 struct StageAdapter {
-	virtual ~StageAdapter() = default;
-	// Each returns the stage's exit code (0 = success). err carries the
-	// LAUNCH failure only (a missing exe, a dead fork) — the stage's own
-	// diagnostics stream through the adapter's output channel (the
-	// subprocess console; the editor's tool::SetLineSink feed).
-	virtual int Cook(const CookStageArgs& args, std::string& err) = 0;
-	virtual int GiBaker(const GiBakerStageArgs& args, std::string& err) = 0;
-	virtual int Pak(const PakStageArgs& args, std::string& err) = 0;
+    virtual ~StageAdapter() = default;
+    // Each returns the stage's exit code (0 = success). err carries the
+    // LAUNCH failure only (a missing exe, a dead fork) — the stage's own
+    // diagnostics stream through the adapter's output channel (the
+    // subprocess console; the editor's tool::SetLineSink feed).
+    virtual int Cook(const CookStageArgs& args, std::string& err) = 0;
+    virtual int GiBaker(const GiBakerStageArgs& args, std::string& err) = 0;
+    virtual int Pak(const PakStageArgs& args, std::string& err) = 0;
 };
 
 // The CLI default: the stage exes as subprocesses (flag-for-flag the
@@ -130,47 +132,47 @@ struct StageAdapter {
 [[nodiscard]] std::unique_ptr<StageAdapter> MakeSubprocessStageAdapter();
 
 struct BuildPlanOptions {
-	// Where the paks (and the appmanifest) publish. Absolute or
-	// project-relative; empty = <root>/build.
-	std::string publishDir;
-	// The manifest's name (sponza.tourrecipe -> "sponza" publishes
-	// sponza.tapp). Empty = the entry pak's stem.
-	std::string manifestName;
-	// The playable-unit convention: packs levels/<levelName>.level into
-	// every SCENE pak (the editor sets this to the pak stem; the CLI
-	// default is empty). EDT-01 equivalence holds when both
-	// environments pass the same options.
-	std::string levelName;
-	// The generated project.h to RE-STAMP after the publish (the
-	// <Name>_paks CMake target passes it; empty = no rewrite). This is
-	// the one place a pak's content is actually known — every pak just
-	// passed verify + police — so the EOF metadata's pak records go
-	// state=verified here (a catalog-only refresh never upgrades a
-	// state; it can only preserve or demote to stale).
-	std::string projectHeaderPath;
-	// The artifact-cache store root (the editor's registry; empty = the
-	// CLI convention — derived or off). Acceleration ONLY: the stage
-	// output is byte-identical either way.
-	std::string registryDir;
-	// THE UNSAVED-SCENE BUILD (the editor's EDT-02 form): the plan
-	// RESOLVES against the authored .tour on disk (the saved truth),
-	// but every STAGE runs against this snapshot tour instead — the
-	// authored document is never touched. Empty = run the authored doc.
-	std::string sceneSnapshot;
+    // Where the paks (and the appmanifest) publish. Absolute or
+    // project-relative; empty = <root>/build.
+    std::string publishDir;
+    // The manifest's name (sponza.tourrecipe -> "sponza" publishes
+    // sponza.tapp). Empty = the entry pak's stem.
+    std::string manifestName;
+    // The playable-unit convention: packs levels/<levelName>.level into
+    // every SCENE pak (the editor sets this to the pak stem; the CLI
+    // default is empty). EDT-01 equivalence holds when both
+    // environments pass the same options.
+    std::string levelName;
+    // The generated project.h to RE-STAMP after the publish (the
+    // <Name>_paks CMake target passes it; empty = no rewrite). This is
+    // the one place a pak's content is actually known — every pak just
+    // passed verify + police — so the EOF metadata's pak records go
+    // state=verified here (a catalog-only refresh never upgrades a
+    // state; it can only preserve or demote to stale).
+    std::string projectHeaderPath;
+    // The artifact-cache store root (the editor's registry; empty = the
+    // CLI convention — derived or off). Acceleration ONLY: the stage
+    // output is byte-identical either way.
+    std::string registryDir;
+    // THE UNSAVED-SCENE BUILD (the editor's EDT-02 form): the plan
+    // RESOLVES against the authored .tour on disk (the saved truth),
+    // but every STAGE runs against this snapshot tour instead — the
+    // authored document is never touched. Empty = run the authored doc.
+    std::string sceneSnapshot;
 };
 
 struct BuildPlanReport {
-	struct Pak {
-		std::string id;
-		std::string output; // absolute
-		std::string scene;  // project-relative ("" = asset-only)
-		bool reimported = false;
-	};
-	std::vector<Pak> paks; // plan order (topological — mount order)
-	// The published appmanifest (.tapp; empty until M4's writer ran).
-	// Written LAST: every pak verified + policed first, so a failed
-	// build leaves the previous manifest + its paks intact.
-	std::string manifest;
+    struct Pak {
+        std::string id;
+        std::string output; // absolute
+        std::string scene;  // project-relative ("" = asset-only)
+        bool reimported = false;
+    };
+    std::vector<Pak> paks; // plan order (topological — mount order)
+    // The published appmanifest (.tapp; empty until M4's writer ran).
+    // Written LAST: every pak verified + policed first, so a failed
+    // build leaves the previous manifest + its paks intact.
+    std::string manifest;
 };
 
 // Execute a resolved plan end to end:
@@ -182,9 +184,12 @@ struct BuildPlanReport {
 // reaches the next one; the Pak stage writes only on success, so the
 // previous build's outputs stand (a failed build never replaces the
 // last valid anything).
-bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
-	StageAdapter& adapter, const BuildPlanOptions& options,
-	BuildPlanReport& out, std::string& err);
+bool ExecuteBuildPlan(const Project& project,
+                      const BuildPlan& plan,
+                      StageAdapter& adapter,
+                      const BuildPlanOptions& options,
+                      BuildPlanReport& out,
+                      std::string& err);
 
 // The import-freshness half alone (the executor's step 1, shared with
 // the content-id generation — `Project.exe ids` imports so a project
@@ -192,7 +197,9 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 // plan packs (scene artifacts + owned geometry), stale -> the
 // canonical ImportProjectAsset. `reimportedFamilies` (optional)
 // receives the artifact paths that re-derived.
-bool RefreshPlanImports(const Project& project, const BuildPlan& plan,
-	std::set<std::string>* reimportedFamilies, std::string& err);
+bool RefreshPlanImports(const Project& project,
+                        const BuildPlan& plan,
+                        std::set<std::string>* reimportedFamilies,
+                        std::string& err);
 
 } // namespace smvk::project

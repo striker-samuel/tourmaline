@@ -40,13 +40,20 @@ namespace smvk {
 // local in an inline function with external linkage is ONE flag for the
 // whole process — every module (engine libs, host app) shares it.
 inline bool& TraceEnabledRef() {
-	static bool enabled = true;
-	return enabled;
+    static bool enabled = true;
+    return enabled;
 }
-inline void SetTraceEnabled(bool enabled) { TraceEnabledRef() = enabled; }
-inline bool TraceEnabled() { return TraceEnabledRef(); }
+inline void SetTraceEnabled(bool enabled) {
+    TraceEnabledRef() = enabled;
+}
+inline bool TraceEnabled() {
+    return TraceEnabledRef();
+}
 
 } // namespace smvk
 
-#define SMVK_TRACE_LOG(...) \
-	do { if (smvk::TraceEnabled()) std::fprintf(stderr, __VA_ARGS__); } while (0)
+#define SMVK_TRACE_LOG(...)                                                                        \
+    do {                                                                                           \
+        if (smvk::TraceEnabled())                                                                  \
+            std::fprintf(stderr, __VA_ARGS__);                                                     \
+    } while (0)

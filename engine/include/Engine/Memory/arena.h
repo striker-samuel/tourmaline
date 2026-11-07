@@ -11,4 +11,4 @@ namespace smvk {
 void ResetFrameArena();
 [[nodiscard]] Arena& FlightArena(uint32_t flightIndex);
 void ResetFlightArena(uint32_t flightIndex);
-}
+} // namespace smvk

@@ -14,18 +14,18 @@
 // it).
 namespace tour::dxc {
 
-enum class DxcShaderStage
-{
-	Vertex,
-	Fragment,
-	Compute,
-	Task, // amplification (as_6_7, entry mainAS)
-	Mesh, // mesh (ms_6_7, entry mainMS)
+enum class DxcShaderStage {
+    Vertex,
+    Fragment,
+    Compute,
+    Task, // amplification (as_6_7, entry mainAS)
+    Mesh, // mesh (ms_6_7, entry mainMS)
 };
 
 // The legacy self-contained form (no includes, no defines).
 std::vector<char> CompileHLSLToSPIRV(std::string_view source,
-	DxcShaderStage stage, const wchar_t* entryPoint = L"main");
+                                     DxcShaderStage stage,
+                                     const wchar_t* entryPoint = L"main");
 
 // The full-control form (the shader hot-reload path): an INCLUDE
 // directory (DXC's default include handler resolves #include against
@@ -36,9 +36,10 @@ std::vector<char> CompileHLSLToSPIRV(std::string_view source,
 // recompile failed. Throws std::runtime_error on failure (the
 // diagnostics string rides the throw when non-empty).
 std::vector<char> CompileHLSLToSPIRV(std::string_view source,
-	DxcShaderStage stage, const wchar_t* entryPoint,
-	const std::wstring& includeDir,
-	const std::vector<std::wstring>& defines,
-	std::string* outDiagnostics);
+                                     DxcShaderStage stage,
+                                     const wchar_t* entryPoint,
+                                     const std::wstring& includeDir,
+                                     const std::vector<std::wstring>& defines,
+                                     std::string* outDiagnostics);
 
 } // namespace tour::dxc

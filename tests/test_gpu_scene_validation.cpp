@@ -11,10 +11,18 @@
 // whose NDEBUG no-op makes Release runs vacuous - and any side effect
 // inside an assert (see test_gpu_scene_candidates.cpp:
 // assert(leaves.Flush(db))) was silently skipped, crashing the run.
-#define CHECK(cond) do { ++g_checks; if (!(cond)) { ++g_failures; \
-    std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } \
-    while (0)
-namespace { int g_checks = 0; int g_failures = 0; }
+#define CHECK(cond)                                                                                \
+    do {                                                                                           \
+        ++g_checks;                                                                                \
+        if (!(cond)) {                                                                             \
+            ++g_failures;                                                                          \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                   \
+        }                                                                                          \
+    } while (0)
+namespace {
+int g_checks = 0;
+int g_failures = 0;
+} // namespace
 
 using namespace tour::gpu_scene;
 
@@ -31,30 +39,28 @@ void CheckDoubleView() {
     CHECK(PackInstanceCullView(frustum, packed));
     CHECK(sizeof(packed) == 128);
     const glm::dvec3 rejoined = tour::math::JoinDoubleFloat(packed.origin);
-    CHECK(glm::length(rejoined-eye) < 0.01);
-    for (int i=0;i<6;++i)
+    CHECK(glm::length(rejoined - eye) < 0.01);
+    for (int i = 0; i < 6; ++i)
         CHECK(std::isfinite(double(packed.inwardPlanes[i].w)));
 
     RenderDatabase db{};
     const auto mesh = db.meshes.Insert(Mesh{0, 1, 1, MeshFlagCompleteBounds});
     CHECK(mesh);
     Instance near{};
-    near.worldPosition = tour::math::SplitDoubleFloat(
-        eye + glm::dvec3(0.25, 0.0, 0.5));
-    near.localSphere = glm::vec4(0,0,0,0.01f);
+    near.worldPosition = tour::math::SplitDoubleFloat(eye + glm::dvec3(0.25, 0.0, 0.5));
+    near.localSphere = glm::vec4(0, 0, 0, 0.01f);
     near.refs = glm::uvec4(mesh.slot, mesh.generation, 0u, 0u);
     const auto id = db.instances.Insert(near);
     CHECK(id);
     CHECK(ReferenceInstanceVisible(db, id, frustum));
-    near.worldPosition = tour::math::SplitDoubleFloat(
-        eye + glm::dvec3(10.0, 0.0, 0.5));
+    near.worldPosition = tour::math::SplitDoubleFloat(eye + glm::dvec3(10.0, 0.0, 0.5));
     CHECK(db.instances.Update(id, near));
     CHECK(!ReferenceInstanceVisible(db, id, frustum));
 
     // The disabled (infinite-far) plane is intentionally valid and can
     // never reject an instance. A zero normal/zero offset is malformed.
     auto disabled = frustum;
-    disabled.planes[5] = glm::dvec4(0,0,0,1e30);
+    disabled.planes[5] = glm::dvec4(0, 0, 0, 1e30);
     CHECK(disabled.Valid());
     disabled.planes[0] = glm::dvec4(0);
     CHECK(!disabled.Valid());
@@ -89,8 +95,7 @@ void CheckMalformedDoubleFrusta() {
     infiniteReverseZ[3][2] = 1.0;
     infiniteReverseZ[2][3] = -1.0;
     infiniteReverseZ[3][3] = 0.0;
-    const auto infinite = DoubleRelativeFrustum(infiniteReverseZ,
-                                                glm::dvec3(0.0));
+    const auto infinite = DoubleRelativeFrustum(infiniteReverseZ, glm::dvec3(0.0));
     CHECK(infinite.Valid());
     CHECK(PackInstanceCullView(infinite, packed));
 }
@@ -112,29 +117,25 @@ void CheckIndirectAndAuthoritativeView() {
     // The origin remains full double throughout plane construction.
     const glm::dvec3 origin(1.0e12, -1.0e12, 1.0e12);
     glm::dmat4 projection(1.0);
-    const auto frustum = AuthoritativeRelativeFrustum(
-        projection, glm::dmat4(1.0), origin);
+    const auto frustum = AuthoritativeRelativeFrustum(projection, glm::dmat4(1.0), origin);
     CHECK(frustum.Valid());
     InstanceCullGpuView packed{};
     CHECK(PackInstanceCullView(frustum, packed));
-    CHECK(glm::length(tour::math::JoinDoubleFloat(packed.origin)-origin) < 0.01);
+    CHECK(glm::length(tour::math::JoinDoubleFloat(packed.origin) - origin) < 0.01);
     CHECK(std::abs(frustum.planes[0].w - 1.0) < 1e-12);
 
     RenderDatabase db{};
-    const auto mesh = db.meshes.Insert(
-        Mesh{0u, 1u, 1u, MeshFlagCompleteBounds});
+    const auto mesh = db.meshes.Insert(Mesh{0u, 1u, 1u, MeshFlagCompleteBounds});
     CHECK(mesh);
     Instance instance{};
-    instance.refs=glm::uvec4(mesh.slot,mesh.generation,0u,0u);
-    instance.worldPosition=tour::math::SplitDoubleFloat(
-        origin+glm::dvec3(0.25,0.0,0.5));
-    instance.localSphere=glm::vec4(0,0,0,0.01f);
-    auto handle=db.instances.Insert(instance);
-    CHECK(ReferenceInstanceVisible(db,handle,frustum));
-    instance.worldPosition=tour::math::SplitDoubleFloat(
-        origin+glm::dvec3(10.0,0.0,0.5));
-    CHECK(db.instances.Update(handle,instance));
-    CHECK(!ReferenceInstanceVisible(db,handle,frustum));
+    instance.refs = glm::uvec4(mesh.slot, mesh.generation, 0u, 0u);
+    instance.worldPosition = tour::math::SplitDoubleFloat(origin + glm::dvec3(0.25, 0.0, 0.5));
+    instance.localSphere = glm::vec4(0, 0, 0, 0.01f);
+    auto handle = db.instances.Insert(instance);
+    CHECK(ReferenceInstanceVisible(db, handle, frustum));
+    instance.worldPosition = tour::math::SplitDoubleFloat(origin + glm::dvec3(10.0, 0.0, 0.5));
+    CHECK(db.instances.Update(handle, instance));
+    CHECK(!ReferenceInstanceVisible(db, handle, frustum));
 }
 
 void CheckStableCompaction() {
@@ -150,14 +151,14 @@ void CheckStableCompaction() {
     }
     input[0].value.x = InvalidIndex;
     input[3].value.y = 0u;
-    input[64].value.z = 1u; // first index of the next workgroup
+    input[64].value.z = 1u;  // first index of the next workgroup
     input[129].value.z = 1u; // partial last workgroup
     const auto output = CompactVisibleVerdicts(input);
     CHECK(output.size() == 43u);
     CHECK(output.front().value.x == 6u);
     CHECK(output.back().value.x == 129u);
     for (size_t i = 1; i < output.size(); ++i)
-        CHECK(output[i-1].value.x < output[i].value.x);
+        CHECK(output[i - 1].value.x < output[i].value.x);
 
     std::vector<InstanceCullVerdict> empty(64);
     CHECK(CompactVisibleVerdicts(empty).empty());
@@ -170,8 +171,9 @@ void CheckStableCompaction() {
     size_t totals = 0;
     for (size_t first = 0; first < input.size(); first += 64u) {
         const size_t last = std::min(first + 64u, input.size());
-        totals += CompactVisibleVerdicts(std::span<const InstanceCullVerdict>(
-            input.data() + first, last - first)).size();
+        totals += CompactVisibleVerdicts(
+                      std::span<const InstanceCullVerdict>(input.data() + first, last - first))
+                      .size();
     }
     CHECK(totals == output.size());
 }
@@ -184,28 +186,22 @@ void CheckSubmeshWorkExpansion() {
 
     RenderDatabase db{};
     // LOD0 has two registered submeshes; LOD1 is a fallback.
-    std::array<Submesh, 3> submeshes{
-        Submesh{11u, 101u, 201u, 301u},
-        Submesh{12u, 102u, 202u, 302u},
-        Submesh{21u, 121u, 221u, 321u}
-    };
+    std::array<Submesh, 3> submeshes{Submesh{11u, 101u, 201u, 301u},
+                                     Submesh{12u, 102u, 202u, 302u},
+                                     Submesh{21u, 121u, 221u, 321u}};
     const auto subs = db.submeshes.InsertContiguous(submeshes);
     CHECK(subs.size() == 3);
-    std::array<Lod, 2> levels{
-        Lod{subs[0].slot, 2u, 0.0f, LodFlagResident | LodFlagFilterable},
-        Lod{subs[2].slot, 1u, 1.0f, LodFlagResident | LodFlagFilterable}
-    };
+    std::array<Lod, 2> levels{Lod{subs[0].slot, 2u, 0.0f, LodFlagResident | LodFlagFilterable},
+                              Lod{subs[2].slot, 1u, 1.0f, LodFlagResident | LodFlagFilterable}};
     const auto lods = db.lods.InsertContiguous(levels);
     CHECK(lods.size() == 2);
-    const auto mesh = db.meshes.Insert(Mesh{
-        lods[0].slot, 2u, 3u, MeshFlagCompleteBounds
-    });
+    const auto mesh = db.meshes.Insert(Mesh{lods[0].slot, 2u, 3u, MeshFlagCompleteBounds});
     CHECK(mesh);
     Instance instance{};
     instance.refs = glm::uvec4(mesh.slot, mesh.generation, 0u, 0u);
     const auto id = db.instances.Insert(instance);
     CHECK(id);
-    const auto v = [&] (uint32_t visible) {
+    const auto v = [&](uint32_t visible) {
         InstanceCullVerdict verdict{};
         verdict.value = glm::uvec4(id.slot, id.generation, visible, 0u);
         return verdict;
@@ -226,8 +222,7 @@ void CheckSubmeshWorkExpansion() {
     CHECK(work[0].identity.z == 12u);
 
     // When LOD0 is evicted, LOD1 is the first eligible resident LOD.
-    CHECK(db.meshes.Update(mesh, Mesh{lods[0].slot, 2u, 2u,
-                                       MeshFlagCompleteBounds}));
+    CHECK(db.meshes.Update(mesh, Mesh{lods[0].slot, 2u, 2u, MeshFlagCompleteBounds}));
     work = ReferenceExpandWork(db, visible);
     CHECK(work.size() == 1u);
     CHECK(work[0].identity.z == 21u);
@@ -248,13 +243,13 @@ void CheckSubmeshWorkExpansion() {
 void CheckLegacyRebasing() {
     smvk::RenderView view{};
     // Absolute plane: world x <= 103, but origin is world x=100.
-    view.m_viewPlanes[0] = glm::vec4(-1,0,0,103);
-    view.m_viewPlanes[1] = glm::vec4( 1,0,0,-97);
-    view.m_viewPlanes[2] = glm::vec4(0, 1,0,4);
-    view.m_viewPlanes[3] = glm::vec4(0,-1,0,4);
-    view.m_viewPlanes[4] = glm::vec4(0,0,1,4);
-    view.m_viewPlanes[5] = glm::vec4(0,0,-1,4);
-    const auto frustum = LegacyRelativeFrustum(view, glm::dvec3(100,0,0));
+    view.m_viewPlanes[0] = glm::vec4(-1, 0, 0, 103);
+    view.m_viewPlanes[1] = glm::vec4(1, 0, 0, -97);
+    view.m_viewPlanes[2] = glm::vec4(0, 1, 0, 4);
+    view.m_viewPlanes[3] = glm::vec4(0, -1, 0, 4);
+    view.m_viewPlanes[4] = glm::vec4(0, 0, 1, 4);
+    view.m_viewPlanes[5] = glm::vec4(0, 0, -1, 4);
+    const auto frustum = LegacyRelativeFrustum(view, glm::dvec3(100, 0, 0));
     CHECK(frustum.Valid());
     CHECK(std::abs(frustum.planes[0].w - 3.0) < 1e-8);
     CHECK(std::abs(frustum.planes[1].w - 3.0) < 1e-8);
@@ -266,29 +261,28 @@ void CheckLegacyRebasing() {
     RenderDatabase db{};
     auto m = db.meshes.Insert(Mesh{0, 1, 1, MeshFlagCompleteBounds});
     Instance a{};
-    a.worldPosition = tour::math::SplitDoubleFloat(glm::dvec3(101,0,0));
-    a.localSphere = glm::vec4(0,0,0,0.25f);
-    a.refs = glm::uvec4(m.slot,m.generation,0u,0u);
+    a.worldPosition = tour::math::SplitDoubleFloat(glm::dvec3(101, 0, 0));
+    a.localSphere = glm::vec4(0, 0, 0, 0.25f);
+    a.refs = glm::uvec4(m.slot, m.generation, 0u, 0u);
     auto id = db.instances.Insert(a);
-    auto member = db.leafMembers.Insert(LeafMember{
-        glm::uvec4(id.slot,id.generation,0u,0u)});
-    CHECK(ReferenceInstanceVisible(db,id,frustum));
-    auto verdict = ReferenceCandidate(db,member.slot,frustum);
-    CHECK(verdict.value.x==id.slot && verdict.value.z==1 && verdict.value.w==0);
-    a.worldPosition = tour::math::SplitDoubleFloat(glm::dvec3(1000,0,0));
-    CHECK(db.instances.Update(id,a));
-    verdict = ReferenceCandidate(db,member.slot,frustum);
-    CHECK(verdict.value.z==0 && verdict.value.w==0);
+    auto member = db.leafMembers.Insert(LeafMember{glm::uvec4(id.slot, id.generation, 0u, 0u)});
+    CHECK(ReferenceInstanceVisible(db, id, frustum));
+    auto verdict = ReferenceCandidate(db, member.slot, frustum);
+    CHECK(verdict.value.x == id.slot && verdict.value.z == 1 && verdict.value.w == 0);
+    a.worldPosition = tour::math::SplitDoubleFloat(glm::dvec3(1000, 0, 0));
+    CHECK(db.instances.Update(id, a));
+    verdict = ReferenceCandidate(db, member.slot, frustum);
+    CHECK(verdict.value.z == 0 && verdict.value.w == 0);
 
     // Invalid mesh bounds fail open and are marked bypass.
     CHECK(db.meshes.Update(m, Mesh{}));
-    verdict = ReferenceCandidate(db,member.slot,frustum);
-    CHECK(verdict.value.z==1 && verdict.value.w==1);
+    verdict = ReferenceCandidate(db, member.slot, frustum);
+    CHECK(verdict.value.z == 1 && verdict.value.w == 1);
     CHECK(db.instances.Erase(id));
-    verdict = ReferenceCandidate(db,member.slot,frustum);
-    CHECK(verdict.value.x == InvalidIndex && verdict.value.z==0);
+    verdict = ReferenceCandidate(db, member.slot, frustum);
+    CHECK(verdict.value.x == InvalidIndex && verdict.value.z == 0);
 }
-}
+} // namespace
 int main() {
     CheckDoubleView();
     CheckMalformedDoubleFrusta();

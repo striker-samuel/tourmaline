@@ -44,9 +44,9 @@
 
 // Math (GLM) – header-only, very stable
 #include <glm/glm.hpp>
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <glm/gtc/constants.hpp>
 
 // Vulkan / core infrastructure (always available)
 #include <Engine/Renderer/renderview.h>
@@ -61,8 +61,8 @@
 #include <imgui.h>
 
 // Engine render graph minimal types (core only, keeps stable)
-#include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/depth.h>
+#include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/hdr.h>
 
 // String / utility

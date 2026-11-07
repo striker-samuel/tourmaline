@@ -11,10 +11,10 @@
 
 #include <glm/glm.hpp>
 
-#include <array>
 #include <algorithm>
-#include <cstddef>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <set>
@@ -73,27 +73,23 @@ struct RelativeFrustum {
 
     [[nodiscard]] bool Valid() const {
         for (int k = 0; k < 3; ++k)
-            if (!std::isfinite(originWorld[k])) return false;
+            if (!std::isfinite(originWorld[k]))
+                return false;
         for (const auto& p : planes) {
             for (int k = 0; k < 4; ++k)
-                if (!std::isfinite(p[k])) return false;
+                if (!std::isfinite(p[k]))
+                    return false;
             // A disabled infinite-far plane is (0,0,0,+1e30).
             // Zero normal + positive w rejects nothing; zero plane
             // with w<=0 is malformed, not a valid cull frustum.
-            if (!(glm::dot(glm::dvec3(p), glm::dvec3(p)) > 1e-20)
-                && !(p.w > 0.0))
+            if (!(glm::dot(glm::dvec3(p), glm::dvec3(p)) > 1e-20) && !(p.w > 0.0))
                 return false;
         }
         return true;
     }
 };
 
-enum class CandidateStatus : uint32_t {
-    Ok,
-    InvalidView,
-    InvalidSnapshot,
-    CapacityExceeded
-};
+enum class CandidateStatus : uint32_t { Ok, InvalidView, InvalidSnapshot, CapacityExceeded };
 enum class CandidateMode : uint32_t {
     Frustum,
     PassAll // debug/parity: identical candidates, no coarse rejection
@@ -104,20 +100,19 @@ struct CandidateSelection {
     uint32_t candidateCount = 0;
     uint32_t rejectedLeaves = 0;
     uint32_t unculledLeaves = 0; // incomplete bounds => must pass
-    [[nodiscard]] bool Valid() const { return status == CandidateStatus::Ok; }
+    [[nodiscard]] bool Valid() const {
+        return status == CandidateStatus::Ok;
+    }
 };
 
-[[nodiscard]] inline bool PossibleLeafInFrustum(
-    const Leaf& leaf, const RelativeFrustum& view) {
+[[nodiscard]] inline bool PossibleLeafInFrustum(const Leaf& leaf, const RelativeFrustum& view) {
     // Fail open: invalid/incomplete bounds must NEVER drop geometry.
     if ((leaf.range.z & LeafFlagBoundsComplete) == 0)
         return true;
-    const glm::dvec3 center =
-        math::JoinDoubleFloat(leaf.worldCenter) - view.originWorld;
+    const glm::dvec3 center = math::JoinDoubleFloat(leaf.worldCenter) - view.originWorld;
     const glm::dvec3 extents(leaf.halfExtents);
     for (int k = 0; k < 3; ++k)
-        if (!std::isfinite(center[k]) || !std::isfinite(extents[k])
-            || extents[k] < 0.0)
+        if (!std::isfinite(center[k]) || !std::isfinite(extents[k]) || extents[k] < 0.0)
             return true;
     for (const auto& p : view.planes) {
         const glm::dvec3 n(p);
@@ -127,8 +122,7 @@ struct CandidateSelection {
             return true;
         // Outward slack for finite float32 leaf bounds/view reconstruction.
         // The actual future render-view guard is an additional dilation.
-        const double slack = 0.01 + 2e-6 *
-            (std::abs(signedDistance) + reach + 1.0);
+        const double slack = 0.01 + 2e-6 * (std::abs(signedDistance) + reach + 1.0);
         if (signedDistance + reach < -slack)
             return false;
     }
@@ -159,20 +153,17 @@ struct CandidateSelection {
 
     std::set<std::pair<uint32_t, uint32_t>> seen;
     for (const LeafTicket& ticket : tickets) {
-        if (!ticket.leaf || !seen.emplace(ticket.leaf.slot,
-                                          ticket.leaf.generation).second)
+        if (!ticket.leaf || !seen.emplace(ticket.leaf.slot, ticket.leaf.generation).second)
             return fail(CandidateStatus::InvalidSnapshot);
         const Leaf* leaf = db.leaves.Get(ticket.leaf);
-        if (!leaf || leaf->range.x != ticket.firstMember ||
-            leaf->range.y != ticket.memberCount ||
+        if (!leaf || leaf->range.x != ticket.firstMember || leaf->range.y != ticket.memberCount ||
             ticket.memberCount == 0 ||
-            uint64_t(ticket.firstMember) + ticket.memberCount >
-                db.leafMembers.Size())
+            uint64_t(ticket.firstMember) + ticket.memberCount > db.leafMembers.Size())
             return fail(CandidateStatus::InvalidSnapshot);
         const bool safe = (leaf->range.z & LeafFlagBoundsComplete) != 0;
-        if (!safe) ++out.unculledLeaves;
-        if (mode == CandidateMode::Frustum && safe &&
-            !PossibleLeafInFrustum(*leaf, view)) {
+        if (!safe)
+            ++out.unculledLeaves;
+        if (mode == CandidateMode::Frustum && safe && !PossibleLeafInFrustum(*leaf, view)) {
             ++out.rejectedLeaves;
             continue;
         }
@@ -180,10 +171,8 @@ struct CandidateSelection {
             uint64_t(out.candidateCount) + ticket.memberCount > maxCandidates)
             return fail(CandidateStatus::CapacityExceeded);
         PassedInstanceRange range{};
-        range.members = glm::uvec4(ticket.firstMember, ticket.memberCount,
-                                    out.candidateCount, 0u);
-        range.leaf = glm::uvec4(ticket.leaf.slot, ticket.leaf.generation,
-                               0u, 0u);
+        range.members = glm::uvec4(ticket.firstMember, ticket.memberCount, out.candidateCount, 0u);
+        range.leaf = glm::uvec4(ticket.leaf.slot, ticket.leaf.generation, 0u, 0u);
         out.ranges.push_back(range);
         out.candidateCount += ticket.memberCount;
     }
@@ -194,12 +183,14 @@ struct CandidateSelection {
 // It inspects a single candidate, not a hot-path prerequisite of leaf cull.
 // Invalid generational handles are rejected; incomplete geometry bounds
 // conservatively pass (the later renderer must resolve residency/LOD).
-[[nodiscard]] inline bool ReferenceInstanceVisible(
-    const RenderDatabase& db, Handle<Instance> id,
-    const RelativeFrustum& view) {
+[[nodiscard]] inline bool ReferenceInstanceVisible(const RenderDatabase& db,
+                                                   Handle<Instance> id,
+                                                   const RelativeFrustum& view) {
     const Instance* inst = db.instances.Get(id);
-    if (!inst) return false;
-    if (!view.Valid()) return true;
+    if (!inst)
+        return false;
+    if (!view.Valid())
+        return true;
     if (inst->refs.x >= db.meshes.Rows().size())
         return true; // unknown geometry cannot justify occlusion
     const auto& mesh = db.meshes.Rows()[inst->refs.x];
@@ -207,26 +198,23 @@ struct CandidateSelection {
         (mesh.value.flags & MeshFlagCompleteBounds) == 0)
         return true;
 
-    const glm::dvec3 translation =
-        math::JoinDoubleFloat(inst->worldPosition) - view.originWorld;
-    const glm::dvec3 bx(inst->basisX), by(inst->basisY),
-                      bz(inst->basisZ);
+    const glm::dvec3 translation = math::JoinDoubleFloat(inst->worldPosition) - view.originWorld;
+    const glm::dvec3 bx(inst->basisX), by(inst->basisY), bz(inst->basisZ);
     const glm::dvec3 local(inst->localSphere);
-    const glm::dvec3 center =
-        translation + bx * local.x + by * local.y + bz * local.z;
+    const glm::dvec3 center = translation + bx * local.x + by * local.y + bz * local.z;
     const double radius = double(inst->localSphere.w) *
-        std::sqrt(glm::dot(bx, bx) + glm::dot(by, by) + glm::dot(bz, bz));
+                          std::sqrt(glm::dot(bx, bx) + glm::dot(by, by) + glm::dot(bz, bz));
     if (!std::isfinite(radius) || radius < 0.0)
         return true;
     for (int k = 0; k < 3; ++k)
-        if (!std::isfinite(center[k])) return true;
+        if (!std::isfinite(center[k]))
+            return true;
 
     for (const auto& p : view.planes) {
-        const double signedDistance =
-            glm::dot(glm::dvec3(p), center) + p.w;
-        if (!std::isfinite(signedDistance)) return true;
-        const double slack = 0.02 + 2e-6 *
-            (std::abs(signedDistance) + radius + 1.0);
+        const double signedDistance = glm::dot(glm::dvec3(p), center) + p.w;
+        if (!std::isfinite(signedDistance))
+            return true;
+        const double slack = 0.02 + 2e-6 * (std::abs(signedDistance) + radius + 1.0);
         if (signedDistance < -(radius + slack))
             return false;
     }

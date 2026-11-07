@@ -32,8 +32,15 @@ struct InstanceDrawKey {
     uint32_t passMask = 0;
     uint32_t instanceFlags = 0;
     [[nodiscard]] auto Tie() const {
-        return std::tie(meshSlot, meshGeneration, lod, geometry, material,
-                        submeshMaterial, pipelineGroup, passMask, instanceFlags);
+        return std::tie(meshSlot,
+                        meshGeneration,
+                        lod,
+                        geometry,
+                        material,
+                        submeshMaterial,
+                        pipelineGroup,
+                        passMask,
+                        instanceFlags);
     }
     [[nodiscard]] bool operator<(const InstanceDrawKey& rhs) const {
         return Tie() < rhs.Tie();
@@ -65,7 +72,8 @@ struct InstanceDrawPlan {
 // plan MUST NOT be submitted as real indirect commands until those are
 // either validated here or consumed as per-instance shader data.
 [[nodiscard]] inline InstanceDrawPlan BuildInstanceDrawPlan(
-    const RenderDatabase& db, std::span<const InstanceDrawCandidate> candidates) {
+    const RenderDatabase& db,
+    std::span<const InstanceDrawCandidate> candidates) {
     InstanceDrawPlan plan{};
     std::map<InstanceDrawKey, std::vector<Handle<Instance>>> grouped;
     for (const auto& candidate : candidates) {
@@ -83,10 +91,8 @@ struct InstanceDrawPlan {
         }
         const auto& lodRow = db.lods.Rows()[mesh->firstLod + candidate.lod];
         const Lod& lod = lodRow.value;
-        if (lodRow.identity.y != 1u ||
-            !(lod.flags & LodFlagResident) ||
-            !(lod.flags & LodFlagFilterable) ||
-            lod.submeshCount != 1u ||
+        if (lodRow.identity.y != 1u || !(lod.flags & LodFlagResident) ||
+            !(lod.flags & LodFlagFilterable) || lod.submeshCount != 1u ||
             lod.firstSubmesh >= db.submeshes.Size()) {
             ++plan.rejected;
             continue;
@@ -97,14 +103,20 @@ struct InstanceDrawPlan {
             ++plan.rejected;
             continue;
         }
-        const InstanceDrawKey key{meshId.slot, meshId.generation,
-            candidate.lod, sub.geometryId, instance->refs.z,
-            sub.materialId, sub.pipelineGroup, sub.passMask, instance->refs.w};
+        const InstanceDrawKey key{meshId.slot,
+                                  meshId.generation,
+                                  candidate.lod,
+                                  sub.geometryId,
+                                  instance->refs.z,
+                                  sub.materialId,
+                                  sub.pipelineGroup,
+                                  sub.passMask,
+                                  instance->refs.w};
         grouped[key].push_back(candidate.instance);
     }
     for (const auto& [key, refs] : grouped) {
-        plan.ranges.push_back({key, static_cast<uint32_t>(plan.refs.size()),
-                               static_cast<uint32_t>(refs.size())});
+        plan.ranges.push_back(
+            {key, static_cast<uint32_t>(plan.refs.size()), static_cast<uint32_t>(refs.size())});
         plan.refs.insert(plan.refs.end(), refs.begin(), refs.end());
     }
     return plan;

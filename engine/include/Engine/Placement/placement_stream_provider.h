@@ -24,7 +24,7 @@
 namespace tour::placement {
 
 class PlacementStreamProvider final : public engine::worldpartition::IWorldStreamProvider {
-public:
+  public:
     using CommitCallback = std::function<bool(const glm::vec4*, size_t, uint64_t)>;
 
     void SetCommitCallback(CommitCallback callback) {
@@ -34,47 +34,48 @@ public:
     // A disabled/missing placement layer must never publish stale requests.
     // Bounds are the authoritative world heightfield's XZ rectangle.
     void SetFrameSource(bool enabled, const glm::vec4& worldBounds) {
-        enabled_ = enabled && worldBounds.z > worldBounds.x
-            && worldBounds.w > worldBounds.y;
+        enabled_ = enabled && worldBounds.z > worldBounds.x && worldBounds.w > worldBounds.y;
         bounds_ = worldBounds;
     }
 
-    const char* ProviderName() const override { return "Placement"; }
+    const char* ProviderName() const override {
+        return "Placement";
+    }
 
-    void OnStreamingInterests(
-        const engine::worldpartition::StreamingInterest* interests,
-        size_t count) override {
+    void OnStreamingInterests(const engine::worldpartition::StreamingInterest* interests,
+                              size_t count) override {
         rects_.clear();
         metadata_.clear();
         committed_ = false;
-        if (!enabled_) return;
+        if (!enabled_)
+            return;
         for (size_t i = 0; i < count; ++i) {
             const auto& in = interests[i];
             if (!(in.layerMask & engine::worldpartition::StreamLayerBit(
-                    engine::worldpartition::StreamLayer::Placement)))
+                                     engine::worldpartition::StreamLayer::Placement)))
                 continue;
-            if (!(in.radiusMeters > 0.0) || !std::isfinite(in.radiusMeters)
-                || !std::isfinite(in.position.x)
-                || !std::isfinite(in.position.z))
+            if (!(in.radiusMeters > 0.0) || !std::isfinite(in.radiusMeters) ||
+                !std::isfinite(in.position.x) || !std::isfinite(in.position.z))
                 continue;
             const double r = in.radiusMeters;
             // Clip in double precision before converting to the placement
             // runtime's float rectangles. WorldPartition retains the
             // authoritative double-precision interest coordinates.
-            const glm::vec4 rect(
-                float(std::max(double(bounds_.x), in.position.x - r)),
-                float(std::max(double(bounds_.y), in.position.z - r)),
-                float(std::min(double(bounds_.z), in.position.x + r)),
-                float(std::min(double(bounds_.w), in.position.z + r)));
-            if (!(rect.z > rect.x && rect.w > rect.y)) continue;
+            const glm::vec4 rect(float(std::max(double(bounds_.x), in.position.x - r)),
+                                 float(std::max(double(bounds_.y), in.position.z - r)),
+                                 float(std::min(double(bounds_.z), in.position.x + r)),
+                                 float(std::min(double(bounds_.w), in.position.z + r)));
+            if (!(rect.z > rect.x && rect.w > rect.y))
+                continue;
             rects_.push_back(rect); // order is partition priority order
-            metadata_.push_back({ in.priority, in.desired });
+            metadata_.push_back({in.priority, in.desired});
         }
     }
 
     size_t GatherRequests(engine::worldpartition::StreamRequestSink* sink,
-        uint64_t frameIndex) override {
-        if (!sink) return 0;
+                          uint64_t frameIndex) override {
+        if (!sink)
+            return 0;
         size_t pushed = 0;
         for (size_t i = 0; i < rects_.size(); ++i) {
             const glm::vec4 rect = rects_[i];
@@ -88,7 +89,7 @@ public:
                 for (int64_t x = x0; x <= x1; ++x) {
                     engine::worldpartition::StreamRequest req{};
                     req.layer = engine::worldpartition::StreamLayer::Placement;
-                    req.cell = { x, z };
+                    req.cell = {x, z};
                     req.priority = metadata_[i].priority;
                     req.desired = metadata_[i].desired;
                     req.frameRequested = frameIndex;
@@ -107,10 +108,14 @@ public:
 
     // The renderer may issue per-view cull and indirect passes only after
     // this provider recorded placement generation at the partition commit.
-    bool CommittedThisFrame() const { return committed_; }
-    size_t InterestRectCount() const { return rects_.size(); }
+    bool CommittedThisFrame() const {
+        return committed_;
+    }
+    size_t InterestRectCount() const {
+        return rects_.size();
+    }
 
-private:
+  private:
     struct RequestMetadata {
         float priority = 0.0f;
         engine::worldpartition::DesiredResidency desired =
@@ -118,7 +123,7 @@ private:
     };
     bool enabled_ = false;
     bool committed_ = false;
-    glm::vec4 bounds_{ 0.0f };
+    glm::vec4 bounds_{0.0f};
     std::vector<glm::vec4> rects_;
     std::vector<RequestMetadata> metadata_;
     CommitCallback commit_;

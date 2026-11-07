@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/App/cluster.h>
-#include <Engine/Renderer/vertex_pack.h>
-#include <Engine/Renderer/static_vertex_heap.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/static_vertex_heap.h>
+#include <Engine/Renderer/vertex_pack.h>
 #include <Engine/Scene/scene.h>
 
 #include <cstdio>
@@ -22,358 +22,307 @@ using namespace ::smvk;
 
 smvk::Cluster::~Cluster() {
 
-	staticMeshes.forEachHandle([&](ClusterStaticMeshHandle han) {
-		DestroyMesh(han);
-	});
+    staticMeshes.forEachHandle([&](ClusterStaticMeshHandle han) { DestroyMesh(han); });
 
-	assert(meshAllocations_.empty());
+    assert(meshAllocations_.empty());
 
-	// Materials are just pods
-	materials.clear();
+    // Materials are just pods
+    materials.clear();
 
-	// textures own holders, when cleared holders go.
-	textures.clear();
+    // textures own holders, when cleared holders go.
+    textures.clear();
 }
 
-smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
-	const StaticMeshUpload& data)
-{
-	const uint32_t vertexCount =
-		static_cast<uint32_t>(data.vertices.size());
-
-	const uint32_t indexCount =
-		static_cast<uint32_t>(data.indices.size());
-
-
-	if (vertexCount == 0)
-		return {};
-
-	// GPU-free offline mode: CPU geometry only (no VMA/streamer). Mirrors the
-	// runtime single-surface layout so the serializer sees the same shape.
-	if (offlineMode_) {
-		StaticMesh mesh{};
-		mesh.geometry.topology = PrimitiveTopology::TriangleList;
-		mesh.geometry.vertexCount = vertexCount;
-		mesh.geometry.indexCount = indexCount;
-		mesh.geometry.aabbMin = data.aabbMin;
-		mesh.geometry.aabbMax = data.aabbMax;
-		mesh.geometry.sphereRadius =
-			glm::length(data.aabbMax - data.aabbMin) * 0.5f;
-		Surface surface{};
-		surface.firstIndex = 0;
-		surface.indexCount = indexCount;
-		surface.baseVertex = 0;
-		mesh.geometry.surfaces.push_back(surface);
-		const ClusterStaticMeshHandle handle =
-			staticMeshes.create(std::move(mesh));
-		if (retainUploads_)
-			retainedUploads_[handle.index()] = data;
-		return handle;
-	}
-
-	StaticMesh result{};
-	StaticMeshAllocation alloc{};
-
-
-	// =========================================================================
-	// 1. Allocate vertex range
-	//
-	// vertexBase is in VERTEX UNITS, not bytes.
-	// =========================================================================
-
-	uint64_t vertexBase = 0;
-
-	{
-		alloc.vertexAllocation =
-			staticVertexFmtHeap.m_staticVertexBlock.Allocate(
-				vertexCount, 1, vertexBase);
-
-		if (alloc.vertexAllocation == 0) {
-			return {};
-		}
-	}
-
-
-	// =========================================================================
-	// 2. Allocate index range
-	// =========================================================================
-
-	const uint64_t indexBytes =
-		sizeof(uint32_t) *
-		static_cast<uint64_t>(indexCount);
-
-	uint64_t indexByteOffset = 0;
-
-	if (indexCount > 0) {
-
-		alloc.indexAllocation =
-			staticVertexFmtHeap.m_staticIndexBlock.Allocate(
-				indexBytes, alignof(uint32_t), indexByteOffset);
-
-		if (alloc.indexAllocation == 0) {
-
-			staticVertexFmtHeap.m_staticVertexBlock.Free(
-				alloc.vertexAllocation);
-
-			return {};
-		}
-	}
-
-
-	// =========================================================================
-	// 3. Convert AoS -> SoA-ish GPU streams
-	// =========================================================================
-
-	std::vector<PackedVertexPosition> positions(vertexCount);
-	std::vector<PackedVertexShading> shading(vertexCount);
-	std::vector<PackedVertexLightmap> lightmap(vertexCount);
-	bool hasLightmap = false;
-
-	for (uint32_t i = 0; i < vertexCount; ++i) {
-
-		const ImportStaticVertex& src = data.vertices[i];
-
-		PackStaticVertex(src, positions[i], shading[i], lightmap[i]);
-		// The optional stream carves only when chart data exists (the
-		// uncharted sentinel means "never lightmapped").
-		if (src.chartId != 0xFFFFFFFFu)
-			hasLightmap = true;
-	}
-
-	// =========================================================================
-	// 3b. The OPTIONAL lightmap range — carved only for charted meshes,
-	// independently packed (its base is NOT vertexBase).
-	// =========================================================================
-
-	if (hasLightmap) {
-		uint64_t lightmapBase = 0;
-		alloc.lightmapAllocation =
-			staticVertexFmtHeap.m_staticLightmapBlock.Allocate(
-				vertexCount, 1, lightmapBase);
-		if (alloc.lightmapAllocation == 0) {
-			// All-or-nothing: release the vertex + index ranges carved
-			// above.
-			staticVertexFmtHeap.m_staticVertexBlock.Free(
-				alloc.vertexAllocation);
-			if (alloc.indexAllocation)
-				staticVertexFmtHeap.m_staticIndexBlock.Free(
-					alloc.indexAllocation);
-			return {};
-		}
-		alloc.lightmapBase = lightmapBase;
-	}
-
-
-	// =========================================================================
-	// 4. Upload position stream
-	// =========================================================================
-
-	const uint64_t positionOffset =
-		vertexBase * sizeof(PackedVertexPosition);
-
-	const uint64_t positionBytes =
-		vertexCount * sizeof(PackedVertexPosition);
-
-	ctx_->UploadDataToBuffer(
-		staticVertexFmtHeap.m_staticVertexPosBuffer,
-		positions.data(),
-		positionBytes,
-
-		PipelineStageBit_Vertex,
-		AccessFlags::VertexAttributeRead,
+smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(const StaticMeshUpload& data) {
+    const uint32_t vertexCount = static_cast<uint32_t>(data.vertices.size());
+
+    const uint32_t indexCount = static_cast<uint32_t>(data.indices.size());
+
+    if (vertexCount == 0)
+        return {};
+
+    // GPU-free offline mode: CPU geometry only (no VMA/streamer). Mirrors the
+    // runtime single-surface layout so the serializer sees the same shape.
+    if (offlineMode_) {
+        StaticMesh mesh{};
+        mesh.geometry.topology = PrimitiveTopology::TriangleList;
+        mesh.geometry.vertexCount = vertexCount;
+        mesh.geometry.indexCount = indexCount;
+        mesh.geometry.aabbMin = data.aabbMin;
+        mesh.geometry.aabbMax = data.aabbMax;
+        mesh.geometry.sphereRadius = glm::length(data.aabbMax - data.aabbMin) * 0.5f;
+        Surface surface{};
+        surface.firstIndex = 0;
+        surface.indexCount = indexCount;
+        surface.baseVertex = 0;
+        mesh.geometry.surfaces.push_back(surface);
+        const ClusterStaticMeshHandle handle = staticMeshes.create(std::move(mesh));
+        if (retainUploads_)
+            retainedUploads_[handle.index()] = data;
+        return handle;
+    }
+
+    StaticMesh result{};
+    StaticMeshAllocation alloc{};
+
+    // =========================================================================
+    // 1. Allocate vertex range
+    //
+    // vertexBase is in VERTEX UNITS, not bytes.
+    // =========================================================================
+
+    uint64_t vertexBase = 0;
+
+    {
+        alloc.vertexAllocation =
+            staticVertexFmtHeap.m_staticVertexBlock.Allocate(vertexCount, 1, vertexBase);
+
+        if (alloc.vertexAllocation == 0) {
+            return {};
+        }
+    }
+
+    // =========================================================================
+    // 2. Allocate index range
+    // =========================================================================
+
+    const uint64_t indexBytes = sizeof(uint32_t) * static_cast<uint64_t>(indexCount);
+
+    uint64_t indexByteOffset = 0;
+
+    if (indexCount > 0) {
+
+        alloc.indexAllocation = staticVertexFmtHeap.m_staticIndexBlock.Allocate(
+            indexBytes, alignof(uint32_t), indexByteOffset);
+
+        if (alloc.indexAllocation == 0) {
+
+            staticVertexFmtHeap.m_staticVertexBlock.Free(alloc.vertexAllocation);
+
+            return {};
+        }
+    }
+
+    // =========================================================================
+    // 3. Convert AoS -> SoA-ish GPU streams
+    // =========================================================================
+
+    std::vector<PackedVertexPosition> positions(vertexCount);
+    std::vector<PackedVertexShading> shading(vertexCount);
+    std::vector<PackedVertexLightmap> lightmap(vertexCount);
+    bool hasLightmap = false;
+
+    for (uint32_t i = 0; i < vertexCount; ++i) {
+
+        const ImportStaticVertex& src = data.vertices[i];
+
+        PackStaticVertex(src, positions[i], shading[i], lightmap[i]);
+        // The optional stream carves only when chart data exists (the
+        // uncharted sentinel means "never lightmapped").
+        if (src.chartId != 0xFFFFFFFFu)
+            hasLightmap = true;
+    }
+
+    // =========================================================================
+    // 3b. The OPTIONAL lightmap range — carved only for charted meshes,
+    // independently packed (its base is NOT vertexBase).
+    // =========================================================================
+
+    if (hasLightmap) {
+        uint64_t lightmapBase = 0;
+        alloc.lightmapAllocation =
+            staticVertexFmtHeap.m_staticLightmapBlock.Allocate(vertexCount, 1, lightmapBase);
+        if (alloc.lightmapAllocation == 0) {
+            // All-or-nothing: release the vertex + index ranges carved
+            // above.
+            staticVertexFmtHeap.m_staticVertexBlock.Free(alloc.vertexAllocation);
+            if (alloc.indexAllocation)
+                staticVertexFmtHeap.m_staticIndexBlock.Free(alloc.indexAllocation);
+            return {};
+        }
+        alloc.lightmapBase = lightmapBase;
+    }
 
-		0,
-		positionOffset
-	);
-
+    // =========================================================================
+    // 4. Upload position stream
+    // =========================================================================
 
-	// =========================================================================
-	// 5. Upload shading stream
-	// =========================================================================
+    const uint64_t positionOffset = vertexBase * sizeof(PackedVertexPosition);
 
-	const uint64_t shadingOffset =
-		vertexBase * sizeof(PackedVertexShading);
-
-	const uint64_t shadingBytes =
-		vertexCount * sizeof(PackedVertexShading);
-
-	ctx_->UploadDataToBuffer(
-		staticVertexFmtHeap.m_staticVertexShadingBuffer,
-		shading.data(),
-		shadingBytes,
-
-		PipelineStageBit_Vertex,
-		AccessFlags::VertexAttributeRead,
-
-		0,
-		shadingOffset
-	);
-
-	// =========================================================================
-	// 5b. Upload the OPTIONAL lightmap stream (BDA-read by the mesh-shader
-	// leg + the future chart-unpack VS — ShaderRead, not a vertex-binding
-	// fetch: the stream is a storage buffer by design).
-	// =========================================================================
-
-	if (alloc.lightmapAllocation) {
-		const uint64_t lightmapOffset =
-			alloc.lightmapBase * sizeof(PackedVertexLightmap);
-		const uint64_t lightmapBytes =
-			vertexCount * sizeof(PackedVertexLightmap);
-		ctx_->UploadDataToBuffer(
-			staticVertexFmtHeap.m_staticVertexLightmapBuffer,
-			lightmap.data(),
-			lightmapBytes,
-			PipelineStageBit_All,
-			AccessFlags::ShaderRead,
-			0,
-			lightmapOffset);
-	}
-
-
-	// =========================================================================
-	// 6. Upload indices
-	// =========================================================================
-
-	if (indexCount > 0) {
-
-		ctx_->UploadDataToBuffer(
-			staticVertexFmtHeap.m_staticIndexBuffer,
-			data.indices.data(),
-			indexBytes,
-
-			PipelineStageBit_Vertex,
-			AccessFlags::IndexRead,
-
-			0,
-			indexByteOffset
-		);
-	}
-
-
-	// =========================================================================
-	// 7. Construct mesh
-	// =========================================================================
-
-	StaticMesh& mesh = result;
-
-	mesh.geometry.topology =
-		PrimitiveTopology::TriangleList;
-
-	mesh.geometry.vertexCount = vertexCount;
-	mesh.geometry.indexCount = indexCount;
-
-		mesh.geometry.aabbMin = data.aabbMin;
-		mesh.geometry.aabbMax = data.aabbMax;
-
-
-	Surface surface{};
-
-	surface.firstIndex =
-		static_cast<uint32_t>(
-			indexByteOffset / sizeof(uint32_t)
-			);
-
-	surface.indexCount = indexCount;
-
-	surface.baseVertex =
-		static_cast<int32_t>(vertexBase);
-
-	mesh.geometry.surfaces.push_back(surface);
-
-	// The optional lightmap window's published base (0xFFFFFFFF = none)
-	// — the draw-ring fill reads it to compute the per-draw delta.
-	mesh.lightmapBase = alloc.lightmapAllocation
-		? static_cast<uint32_t>(alloc.lightmapBase) : 0xFFFFFFFFu;
-
-	const ClusterStaticMeshHandle handle =
-		staticMeshes.create(std::move(result));
-
-	if (handle.empty()) {
-		// The UploadDataToBuffer calls above were already staged into
-		// these ranges (vertex/shading/lightmap/index), so the frees must
-		// retire with that GPU work - never in place (see
-		// DeferFreeStaticMeshRanges).
-		DeferFreeStaticMeshRanges(
-			ctx_,
-			alloc.vertexAllocation, alloc.indexAllocation,
-			alloc.lightmapAllocation);
-		return {};
-	}
-
-	alloc.vertexBase = vertexBase;
-	alloc.indexByteOffset = indexByteOffset;
-
-	auto [it, inserted] = meshAllocations_.emplace(
-		handle.index(),
-		new StaticMeshAllocation(std::move(alloc)));
-	assert(inserted);
-
-	if (retainUploads_)
-		retainedUploads_[handle.index()] = data;
-
-	return handle;
+    const uint64_t positionBytes = vertexCount * sizeof(PackedVertexPosition);
+
+    ctx_->UploadDataToBuffer(staticVertexFmtHeap.m_staticVertexPosBuffer,
+                             positions.data(),
+                             positionBytes,
+
+                             PipelineStageBit_Vertex,
+                             AccessFlags::VertexAttributeRead,
+
+                             0,
+                             positionOffset);
+
+    // =========================================================================
+    // 5. Upload shading stream
+    // =========================================================================
+
+    const uint64_t shadingOffset = vertexBase * sizeof(PackedVertexShading);
+
+    const uint64_t shadingBytes = vertexCount * sizeof(PackedVertexShading);
+
+    ctx_->UploadDataToBuffer(staticVertexFmtHeap.m_staticVertexShadingBuffer,
+                             shading.data(),
+                             shadingBytes,
+
+                             PipelineStageBit_Vertex,
+                             AccessFlags::VertexAttributeRead,
+
+                             0,
+                             shadingOffset);
+
+    // =========================================================================
+    // 5b. Upload the OPTIONAL lightmap stream (BDA-read by the mesh-shader
+    // leg + the future chart-unpack VS — ShaderRead, not a vertex-binding
+    // fetch: the stream is a storage buffer by design).
+    // =========================================================================
+
+    if (alloc.lightmapAllocation) {
+        const uint64_t lightmapOffset = alloc.lightmapBase * sizeof(PackedVertexLightmap);
+        const uint64_t lightmapBytes = vertexCount * sizeof(PackedVertexLightmap);
+        ctx_->UploadDataToBuffer(staticVertexFmtHeap.m_staticVertexLightmapBuffer,
+                                 lightmap.data(),
+                                 lightmapBytes,
+                                 PipelineStageBit_All,
+                                 AccessFlags::ShaderRead,
+                                 0,
+                                 lightmapOffset);
+    }
+
+    // =========================================================================
+    // 6. Upload indices
+    // =========================================================================
+
+    if (indexCount > 0) {
+
+        ctx_->UploadDataToBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
+                                 data.indices.data(),
+                                 indexBytes,
+
+                                 PipelineStageBit_Vertex,
+                                 AccessFlags::IndexRead,
+
+                                 0,
+                                 indexByteOffset);
+    }
+
+    // =========================================================================
+    // 7. Construct mesh
+    // =========================================================================
+
+    StaticMesh& mesh = result;
+
+    mesh.geometry.topology = PrimitiveTopology::TriangleList;
+
+    mesh.geometry.vertexCount = vertexCount;
+    mesh.geometry.indexCount = indexCount;
+
+    mesh.geometry.aabbMin = data.aabbMin;
+    mesh.geometry.aabbMax = data.aabbMax;
+
+    Surface surface{};
+
+    surface.firstIndex = static_cast<uint32_t>(indexByteOffset / sizeof(uint32_t));
+
+    surface.indexCount = indexCount;
+
+    surface.baseVertex = static_cast<int32_t>(vertexBase);
+
+    mesh.geometry.surfaces.push_back(surface);
+
+    // The optional lightmap window's published base (0xFFFFFFFF = none)
+    // — the draw-ring fill reads it to compute the per-draw delta.
+    mesh.lightmapBase =
+        alloc.lightmapAllocation ? static_cast<uint32_t>(alloc.lightmapBase) : 0xFFFFFFFFu;
+
+    const ClusterStaticMeshHandle handle = staticMeshes.create(std::move(result));
+
+    if (handle.empty()) {
+        // The UploadDataToBuffer calls above were already staged into
+        // these ranges (vertex/shading/lightmap/index), so the frees must
+        // retire with that GPU work - never in place (see
+        // DeferFreeStaticMeshRanges).
+        DeferFreeStaticMeshRanges(
+            ctx_, alloc.vertexAllocation, alloc.indexAllocation, alloc.lightmapAllocation);
+        return {};
+    }
+
+    alloc.vertexBase = vertexBase;
+    alloc.indexByteOffset = indexByteOffset;
+
+    auto [it, inserted] =
+        meshAllocations_.emplace(handle.index(), new StaticMeshAllocation(std::move(alloc)));
+    assert(inserted);
+
+    if (retainUploads_)
+        retainedUploads_[handle.index()] = data;
+
+    return handle;
 }
 
-void smvk::Cluster::PatchRetainedSkinStream(
-	ClusterStaticMeshHandle handle, std::vector<PackedSkinInfluences>&& stream)
-{
-	if (handle.empty() || stream.empty())
-		return;
-	// The skin stream ALWAYS lands the runtime-side map (the draw path's
-	// source until the binding-2 GPU allocation), and - when uploads are
-	// retained - the retained upload (the serializer's source).
-	skinStreams_[handle.index()] = stream;
-	auto it = retainedUploads_.find(handle.index());
-	if (it == retainedUploads_.end())
-		std::fprintf(stderr,
-			"[Cluster] PatchRetainedSkinStream: mesh slot %u has no"
-			" retained upload (the cook path loses the stream; the"
-			" runtime map keeps it)\n", handle.index());
-	else
-		it->second.skin = stream;
-	StaticMesh* mesh = staticMeshes.get(handle);
-	if (mesh)
-		mesh->skinned = true;
+void smvk::Cluster::PatchRetainedSkinStream(ClusterStaticMeshHandle handle,
+                                            std::vector<PackedSkinInfluences>&& stream) {
+    if (handle.empty() || stream.empty())
+        return;
+    // The skin stream ALWAYS lands the runtime-side map (the draw path's
+    // source until the binding-2 GPU allocation), and - when uploads are
+    // retained - the retained upload (the serializer's source).
+    skinStreams_[handle.index()] = stream;
+    auto it = retainedUploads_.find(handle.index());
+    if (it == retainedUploads_.end())
+        std::fprintf(stderr,
+                     "[Cluster] PatchRetainedSkinStream: mesh slot %u has no"
+                     " retained upload (the cook path loses the stream; the"
+                     " runtime map keeps it)\n",
+                     handle.index());
+    else
+        it->second.skin = stream;
+    StaticMesh* mesh = staticMeshes.get(handle);
+    if (mesh)
+        mesh->skinned = true;
 }
 
-void smvk::Cluster::SetMeshSkinned(ClusterStaticMeshHandle handle, bool skinned)
-{
-	if (handle.empty())
-		return;
-	if (StaticMesh* mesh = staticMeshes.get(handle))
-		mesh->skinned = skinned;
+void smvk::Cluster::SetMeshSkinned(ClusterStaticMeshHandle handle, bool skinned) {
+    if (handle.empty())
+        return;
+    if (StaticMesh* mesh = staticMeshes.get(handle))
+        mesh->skinned = skinned;
 }
 
 const std::vector<smvk::PackedSkinInfluences>* smvk::Cluster::GetMeshSkinStream(
-	ClusterStaticMeshHandle handle) const
-{
-	if (handle.empty())
-		return nullptr;
-	auto it = skinStreams_.find(handle.index());
-	return it == skinStreams_.end() ? nullptr : &it->second;
+    ClusterStaticMeshHandle handle) const {
+    if (handle.empty())
+        return nullptr;
+    auto it = skinStreams_.find(handle.index());
+    return it == skinStreams_.end() ? nullptr : &it->second;
 }
 
 const std::vector<smvk::PackedSkinInfluences>* smvk::Cluster::GetRetainedSkinStream(
-	ClusterStaticMeshHandle handle) const
-{
-	if (handle.empty())
-		return nullptr;
-	auto it = retainedUploads_.find(handle.index());
-	if (it == retainedUploads_.end() || it->second.skin.empty())
-		return nullptr;
-	return &it->second.skin;
+    ClusterStaticMeshHandle handle) const {
+    if (handle.empty())
+        return nullptr;
+    auto it = retainedUploads_.find(handle.index());
+    if (it == retainedUploads_.end() || it->second.skin.empty())
+        return nullptr;
+    return &it->second.skin;
 }
 
 void smvk::Cluster::SetMeshSkinStream(ClusterStaticMeshHandle handle,
-	std::vector<smvk::PackedSkinInfluences>&& stream)
-{
-	if (handle.empty() || stream.empty())
-		return;
-	skinStreams_[handle.index()] = std::move(stream);
-	if (StaticMesh* mesh = staticMeshes.get(handle))
-		mesh->skinned = true;
-	skinnedGpuValid_ = false; // re-Ensure picks up the new stream
+                                      std::vector<smvk::PackedSkinInfluences>&& stream) {
+    if (handle.empty() || stream.empty())
+        return;
+    skinStreams_[handle.index()] = std::move(stream);
+    if (StaticMesh* mesh = staticMeshes.get(handle))
+        mesh->skinned = true;
+    skinnedGpuValid_ = false; // re-Ensure picks up the new stream
 }
 
 // ---------------------------------------------------------------------------
@@ -385,128 +334,133 @@ void smvk::Cluster::SetMeshSkinStream(ClusterStaticMeshHandle handle,
 // The heaps stay the BIND POSE (the pass's input).
 // ---------------------------------------------------------------------------
 bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
-	if (skinnedGpuValid_)
-		return !skinnedRanges_.empty();
-	if (skinStreams_.empty() || !ctx_) {
-		skinnedGpuValid_ = true;
-		skinnedRanges_.clear();
-		return false;
-	}
-	skinnedGpuValid_ = true; // one shot (a rebuild re-Ensures via SetMeshSkinStream)
+    if (skinnedGpuValid_)
+        return !skinnedRanges_.empty();
+    if (skinStreams_.empty() || !ctx_) {
+        skinnedGpuValid_ = true;
+        skinnedRanges_.clear();
+        return false;
+    }
+    skinnedGpuValid_ = true; // one shot (a rebuild re-Ensures via SetMeshSkinStream)
 
-	// Gather the per-mesh ranges: the stream (skinStreams_) + the heap
-	// base (meshAllocations_, recorded by every upload path). The vertex
-	// count comes from the mesh's geometry (the stream must parallel it;
-	// a mismatched stream clamps to the geometry count).
-	skinnedRanges_.clear();
-	skinnedRanges_.reserve(skinStreams_.size());
-	std::vector<smvk::PackedSkinInfluences> streamData;
-	uint32_t minBase = UINT32_MAX;
-	uint32_t maxEnd = 0;
-	for (auto& [poolIdx, stream] : skinStreams_) {
-		auto it = meshAllocations_.find(poolIdx);
-		if (it == meshAllocations_.end() || !it->second)
-			continue; // no heap range (offline clusters call this never)
-		const StaticMesh* m = staticMeshes.get(
-			ClusterStaticMeshHandle::Mint(poolIdx));
-		if (!m)
-			continue;
-		SkinnedMeshRange r{};
-		r.mesh = ClusterStaticMeshHandle::Mint(poolIdx);
-		r.vertexCount = std::min(uint32_t(stream.size()),
-			m->geometry.vertexCount);
-		r.heapVertexBase = uint32_t(it->second->vertexBase);
-		r.skinBase = uint32_t(streamData.size());
-		if (r.vertexCount == 0)
-			continue;
-		streamData.insert(streamData.end(),
-			stream.begin(), stream.begin() + r.vertexCount);
-		skinnedRanges_.push_back(r);
-		minBase = std::min(minBase, r.heapVertexBase);
-		maxEnd = std::max(maxEnd, r.heapVertexBase + r.vertexCount);
-	}
-	if (skinnedRanges_.empty())
-		return false;
+    // Gather the per-mesh ranges: the stream (skinStreams_) + the heap
+    // base (meshAllocations_, recorded by every upload path). The vertex
+    // count comes from the mesh's geometry (the stream must parallel it;
+    // a mismatched stream clamps to the geometry count).
+    skinnedRanges_.clear();
+    skinnedRanges_.reserve(skinStreams_.size());
+    std::vector<smvk::PackedSkinInfluences> streamData;
+    uint32_t minBase = UINT32_MAX;
+    uint32_t maxEnd = 0;
+    for (auto& [poolIdx, stream] : skinStreams_) {
+        auto it = meshAllocations_.find(poolIdx);
+        if (it == meshAllocations_.end() || !it->second)
+            continue; // no heap range (offline clusters call this never)
+        const StaticMesh* m = staticMeshes.get(ClusterStaticMeshHandle::Mint(poolIdx));
+        if (!m)
+            continue;
+        SkinnedMeshRange r{};
+        r.mesh = ClusterStaticMeshHandle::Mint(poolIdx);
+        r.vertexCount = std::min(uint32_t(stream.size()), m->geometry.vertexCount);
+        r.heapVertexBase = uint32_t(it->second->vertexBase);
+        r.skinBase = uint32_t(streamData.size());
+        if (r.vertexCount == 0)
+            continue;
+        streamData.insert(streamData.end(), stream.begin(), stream.begin() + r.vertexCount);
+        skinnedRanges_.push_back(r);
+        minBase = std::min(minBase, r.heapVertexBase);
+        maxEnd = std::max(maxEnd, r.heapVertexBase + r.vertexCount);
+    }
+    if (skinnedRanges_.empty())
+        return false;
 
-	if (std::getenv("TOURMALINE_KD")) {
-		for (const SkinnedMeshRange& r : skinnedRanges_) {
-			double wsum = 0.0;
-			uint32_t zeroW = 0, maxJoint = 0;
-			for (uint32_t v = 0; v < r.vertexCount; ++v) {
-				const smvk::PackedSkinInfluences& sk = streamData[r.skinBase + v];
-				const float s = float(sk.weights & 0xFF)
-					+ float((sk.weights >> 8) & 0xFF)
-					+ float((sk.weights >> 16) & 0xFF)
-					+ float((sk.weights >> 24) & 0xFF);
-				if (s <= 1e-3f)
-					++zeroW;
-				wsum += s;
-				maxJoint = (std::max)(maxJoint,
-					(std::max)({(sk.joints) & 0xFFu,
-						(sk.joints >> 8) & 0xFFu,
-						(sk.joints >> 16) & 0xFFu,
-						(sk.joints >> 24) & 0xFFu}));
-			}
-			std::fprintf(stderr,
-				"[KD] skinRange heapBase=%u count=%u skinBase=%u"
-				" meanW=%.1f zeroW=%u maxJoint=%u\n",
-				r.heapVertexBase, r.vertexCount, r.skinBase,
-				wsum / (std::max)(1u, r.vertexCount), zeroW, maxJoint);
-		}
-	}
+    if (std::getenv("TOURMALINE_KD")) {
+        for (const SkinnedMeshRange& r : skinnedRanges_) {
+            double wsum = 0.0;
+            uint32_t zeroW = 0, maxJoint = 0;
+            for (uint32_t v = 0; v < r.vertexCount; ++v) {
+                const smvk::PackedSkinInfluences& sk = streamData[r.skinBase + v];
+                const float s = float(sk.weights & 0xFF) + float((sk.weights >> 8) & 0xFF) +
+                                float((sk.weights >> 16) & 0xFF) + float((sk.weights >> 24) & 0xFF);
+                if (s <= 1e-3f)
+                    ++zeroW;
+                wsum += s;
+                maxJoint = (std::max)(maxJoint,
+                                      (std::max)({(sk.joints) & 0xFFu,
+                                                  (sk.joints >> 8) & 0xFFu,
+                                                  (sk.joints >> 16) & 0xFFu,
+                                                  (sk.joints >> 24) & 0xFFu}));
+            }
+            std::fprintf(stderr,
+                         "[KD] skinRange heapBase=%u count=%u skinBase=%u"
+                         " meanW=%.1f zeroW=%u maxJoint=%u\n",
+                         r.heapVertexBase,
+                         r.vertexCount,
+                         r.skinBase,
+                         wsum / (std::max)(1u, r.vertexCount),
+                         zeroW,
+                         maxJoint);
+        }
+    }
 
-	// The deformed buffer covers the skinned SPAN [minBase, maxEnd) of
-	// the heap id space (a non-skinned interleave wastes 20B/id - the
-	// demo's clusters are all-skinned, and the offset math stays one
-	// subtract for every fetch).
-	skinnedDeformedBase_ = minBase;
-	const uint32_t span = maxEnd - minBase;
+    // The deformed buffer covers the skinned SPAN [minBase, maxEnd) of
+    // the heap id space (a non-skinned interleave wastes 20B/id - the
+    // demo's clusters are all-skinned, and the offset math stays one
+    // subtract for every fetch).
+    skinnedDeformedBase_ = minBase;
+    const uint32_t span = maxEnd - minBase;
 
-	// 5 words per vertex: pos (3 uint words, reinterpreted floats) +
-	// normal and tangent (the packed oct words). The skinning pass writes
-	// them; the draw fetches map vi - skinnedDeformedBase_ into the span.
-	const size_t skinBytes = streamData.size() * sizeof(smvk::PackedSkinInfluences);
-	skinnedStream_ = ctx_->CreateBuffer(
-		skinBytes > 0 ? skinBytes : 4, BufferType_Storage, "skinned stream");
-	// The deformed buffer is a PARITY DOUBLE BUFFER (two halves of the
-	// span): the driver flips a per-frame parity and points the pass's
-	// deformed BDA at the cur half (every render fetch follows the BDA -
-	// no consumer arithmetic changes), while the motion vector leg reads
-	// cur + PREV halves for the skinned motion vectors (this frame's +
-	// last frame's animated pose - the SMAA T2x resolve / DLSS / motion
-	// blur histories need TRUE mesh motion; static-heap vectors ghosted
-	// every animated mesh through those temporal consumers).
-	const size_t deformBytes = size_t(span) * 5 * sizeof(uint32_t);
-	skinnedDeformedSpanBytes_ = deformBytes;
-	skinnedDeformed_ = ctx_->CreateBuffer(deformBytes * 2, BufferType_Storage,
-		"skinned deformed");
-	// The ranges table: (heapBase, count, skinBase) rows (the compute
-	// pass's per-range dispatch inputs; one workgroup per range).
-	struct SkinnedRangeGpu {
-		uint32_t heapBase;
-		uint32_t count;
-		uint32_t skinBase;
-		uint32_t pad;
-	};
-	std::vector<SkinnedRangeGpu> table;
-	table.reserve(skinnedRanges_.size());
-	for (const SkinnedMeshRange& r : skinnedRanges_)
-		table.push_back({ r.heapVertexBase, r.vertexCount, r.skinBase, 0 });
-	skinnedRangesBuf_ = ctx_->CreateBuffer(
-		table.size() * sizeof(SkinnedRangeGpu), BufferType_Storage,
-		"skinned ranges");
-	if (skinnedStream_.empty() || skinnedDeformed_.empty()
-		|| skinnedRangesBuf_.empty()) {
-		skinnedRanges_.clear();
-		skinnedDeformedBase_ = UINT32_MAX;
-		return false;
-	}
-	ctx_->UploadDataToBuffer(skinnedStream_, streamData.data(), skinBytes,
-		PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
-	ctx_->UploadDataToBuffer(skinnedRangesBuf_, table.data(),
-		table.size() * sizeof(SkinnedRangeGpu),
-		PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
-	return true;
+    // 5 words per vertex: pos (3 uint words, reinterpreted floats) +
+    // normal and tangent (the packed oct words). The skinning pass writes
+    // them; the draw fetches map vi - skinnedDeformedBase_ into the span.
+    const size_t skinBytes = streamData.size() * sizeof(smvk::PackedSkinInfluences);
+    skinnedStream_ =
+        ctx_->CreateBuffer(skinBytes > 0 ? skinBytes : 4, BufferType_Storage, "skinned stream");
+    // The deformed buffer is a PARITY DOUBLE BUFFER (two halves of the
+    // span): the driver flips a per-frame parity and points the pass's
+    // deformed BDA at the cur half (every render fetch follows the BDA -
+    // no consumer arithmetic changes), while the motion vector leg reads
+    // cur + PREV halves for the skinned motion vectors (this frame's +
+    // last frame's animated pose - the SMAA T2x resolve / DLSS / motion
+    // blur histories need TRUE mesh motion; static-heap vectors ghosted
+    // every animated mesh through those temporal consumers).
+    const size_t deformBytes = size_t(span) * 5 * sizeof(uint32_t);
+    skinnedDeformedSpanBytes_ = deformBytes;
+    skinnedDeformed_ = ctx_->CreateBuffer(deformBytes * 2, BufferType_Storage, "skinned deformed");
+    // The ranges table: (heapBase, count, skinBase) rows (the compute
+    // pass's per-range dispatch inputs; one workgroup per range).
+    struct SkinnedRangeGpu {
+        uint32_t heapBase;
+        uint32_t count;
+        uint32_t skinBase;
+        uint32_t pad;
+    };
+    std::vector<SkinnedRangeGpu> table;
+    table.reserve(skinnedRanges_.size());
+    for (const SkinnedMeshRange& r : skinnedRanges_)
+        table.push_back({r.heapVertexBase, r.vertexCount, r.skinBase, 0});
+    skinnedRangesBuf_ = ctx_->CreateBuffer(
+        table.size() * sizeof(SkinnedRangeGpu), BufferType_Storage, "skinned ranges");
+    if (skinnedStream_.empty() || skinnedDeformed_.empty() || skinnedRangesBuf_.empty()) {
+        skinnedRanges_.clear();
+        skinnedDeformedBase_ = UINT32_MAX;
+        return false;
+    }
+    ctx_->UploadDataToBuffer(skinnedStream_,
+                             streamData.data(),
+                             skinBytes,
+                             PipelineStageBit_Compute,
+                             AccessFlags::ShaderRead,
+                             0,
+                             0);
+    ctx_->UploadDataToBuffer(skinnedRangesBuf_,
+                             table.data(),
+                             table.size() * sizeof(SkinnedRangeGpu),
+                             PipelineStageBit_Compute,
+                             AccessFlags::ShaderRead,
+                             0,
+                             0);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -517,394 +471,370 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
 // glTF TRS-authored locals).
 // ---------------------------------------------------------------------------
 void smvk::Cluster::SetAnimClip(touranim::Clip clip) {
-	animClip_ = std::move(clip);
-	animTime_ = 0.0;
+    animClip_ = std::move(clip);
+    animTime_ = 0.0;
 }
 
 bool smvk::Cluster::SampleAnimationPose(float dt) {
-	if (!hasSkeleton || !animClip_ || skeleton.Count() == 0)
-		return false;
-	const touranim::Clip& clip = *animClip_;
-	if (clip.duration > 1e-6) {
-		animTime_ += double(dt);
-		while (animTime_ > clip.duration)
-			animTime_ -= clip.duration;
-	}
-	for (const touranim::Track& t : clip.tracks) {
-		if (t.joint >= scene.localTransform.size())
-			continue;
-		const glm::vec4 v = touranim::SampleTrack(t, animTime_);
-		glm::mat4 local = scene.localTransform[t.joint];
-		// Decompose the current local (the bind channels for untracked
-		// axes; exact round trip for TRS-authored locals).
-		const glm::vec3 T(local[3]);
-		const glm::mat3 R3(local);
-		glm::vec3 S(
-			glm::length(glm::vec3(R3[0])),
-			glm::length(glm::vec3(R3[1])),
-			glm::length(glm::vec3(R3[2])));
-		glm::quat q(1.0f, 0.0f, 0.0f, 0.0f);
-		{
-			glm::mat3 Rn(1.0f);
-			for (int c = 0; c < 3; ++c) {
-				if (S[c] > 1e-8f)
-					Rn[c] = R3[c] / S[c];
-			}
-			q = glm::quat_cast(Rn);
-		}
-		// The track REPLACES its whole channel (the .tourAnim rule).
-		switch (t.channel) {
-		case touranim::Channel::Translate:
-			local = glm::translate(glm::mat4(1.0f),
-					glm::vec3(v.x, v.y, v.z))
-				* glm::mat4_cast(q) * glm::scale(glm::mat4(1.0f), S);
-			break;
-		case touranim::Channel::Rotate:
-			q = glm::quat(v.w, v.x, v.y, v.z); // xyzw keys -> wxyz ctor
-			local = glm::translate(glm::mat4(1.0f), T)
-				* glm::mat4_cast(q) * glm::scale(glm::mat4(1.0f), S);
-			break;
-		case touranim::Channel::Scale:
-			S = glm::vec3(v.x, v.y, v.z);
-			local = glm::translate(glm::mat4(1.0f), T)
-				* glm::mat4_cast(q) * glm::scale(glm::mat4(1.0f), S);
-			break;
-		}
-		// A scene mutation must pass through the journal-producing API;
-		// direct localTransform writes can leave GPU-scene mirrors stale.
-		if (!tour::scene::SetLocalTransform(scene, MakeNodeHandle(scene, t.joint), local))
-			return false;
-	}
-	recalculateGlobalTransforms(scene);
-	return true;
+    if (!hasSkeleton || !animClip_ || skeleton.Count() == 0)
+        return false;
+    const touranim::Clip& clip = *animClip_;
+    if (clip.duration > 1e-6) {
+        animTime_ += double(dt);
+        while (animTime_ > clip.duration)
+            animTime_ -= clip.duration;
+    }
+    for (const touranim::Track& t : clip.tracks) {
+        if (t.joint >= scene.localTransform.size())
+            continue;
+        const glm::vec4 v = touranim::SampleTrack(t, animTime_);
+        glm::mat4 local = scene.localTransform[t.joint];
+        // Decompose the current local (the bind channels for untracked
+        // axes; exact round trip for TRS-authored locals).
+        const glm::vec3 T(local[3]);
+        const glm::mat3 R3(local);
+        glm::vec3 S(glm::length(glm::vec3(R3[0])),
+                    glm::length(glm::vec3(R3[1])),
+                    glm::length(glm::vec3(R3[2])));
+        glm::quat q(1.0f, 0.0f, 0.0f, 0.0f);
+        {
+            glm::mat3 Rn(1.0f);
+            for (int c = 0; c < 3; ++c) {
+                if (S[c] > 1e-8f)
+                    Rn[c] = R3[c] / S[c];
+            }
+            q = glm::quat_cast(Rn);
+        }
+        // The track REPLACES its whole channel (the .tourAnim rule).
+        switch (t.channel) {
+        case touranim::Channel::Translate:
+            local = glm::translate(glm::mat4(1.0f), glm::vec3(v.x, v.y, v.z)) * glm::mat4_cast(q) *
+                    glm::scale(glm::mat4(1.0f), S);
+            break;
+        case touranim::Channel::Rotate:
+            q = glm::quat(v.w, v.x, v.y, v.z); // xyzw keys -> wxyz ctor
+            local = glm::translate(glm::mat4(1.0f), T) * glm::mat4_cast(q) *
+                    glm::scale(glm::mat4(1.0f), S);
+            break;
+        case touranim::Channel::Scale:
+            S = glm::vec3(v.x, v.y, v.z);
+            local = glm::translate(glm::mat4(1.0f), T) * glm::mat4_cast(q) *
+                    glm::scale(glm::mat4(1.0f), S);
+            break;
+        }
+        // A scene mutation must pass through the journal-producing API;
+        // direct localTransform writes can leave GPU-scene mirrors stale.
+        if (!tour::scene::SetLocalTransform(scene, MakeNodeHandle(scene, t.joint), local))
+            return false;
+    }
+    recalculateGlobalTransforms(scene);
+    return true;
 }
 
-
-bool smvk::Cluster::SampleAnimation(float dt,
-	std::vector<glm::mat4>& outPalette) {
-	if (!SampleAnimationPose(dt))
-		return false;
-	touranim::BuildSkinPalette(scene, skeleton, outPalette);
-	return true;
+bool smvk::Cluster::SampleAnimation(float dt, std::vector<glm::mat4>& outPalette) {
+    if (!SampleAnimationPose(dt))
+        return false;
+    touranim::BuildSkinPalette(scene, skeleton, outPalette);
+    return true;
 }
 
-bool smvk::Cluster::SampleAnimation(float dt,
-	tour::mem::FrameVector<glm::mat4>& outPalette) {
-	if (!SampleAnimationPose(dt))
-		return false;
-	touranim::BuildSkinPalette(scene, skeleton, outPalette);
-	return true;
+bool smvk::Cluster::SampleAnimation(float dt, tour::mem::FrameVector<glm::mat4>& outPalette) {
+    if (!SampleAnimationPose(dt))
+        return false;
+    touranim::BuildSkinPalette(scene, skeleton, outPalette);
+    return true;
 }
-
-
 
 std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
-	std::span<const StaticMeshUpload> uploads)
-{
-	std::vector<ClusterStaticMeshHandle> handles;
-	if (uploads.empty())
-		return handles;
+    std::span<const StaticMeshUpload> uploads) {
+    std::vector<ClusterStaticMeshHandle> handles;
+    if (uploads.empty())
+        return handles;
 
-	// GPU-free offline mode: CPU geometry only — per-mesh single path (the
-	// batch win is GPU-side staging, which offline mode never touches).
-	if (offlineMode_) {
-		handles.reserve(uploads.size());
-		for (const StaticMeshUpload& data : uploads)
-			handles.push_back(UploadStaticMesh(data));
-		return handles;
-	}
+    // GPU-free offline mode: CPU geometry only — per-mesh single path (the
+    // batch win is GPU-side staging, which offline mode never touches).
+    if (offlineMode_) {
+        handles.reserve(uploads.size());
+        for (const StaticMeshUpload& data : uploads)
+            handles.push_back(UploadStaticMesh(data));
+        return handles;
+    }
 
-	// =========================================================================
-	// 1. Allocate heap ranges (per mesh; all-or-nothing — a degenerate mesh
-	//    or a full heap fails the batch with NOTHING staged to the GPU)
-	// =========================================================================
+    // =========================================================================
+    // 1. Allocate heap ranges (per mesh; all-or-nothing — a degenerate mesh
+    //    or a full heap fails the batch with NOTHING staged to the GPU)
+    // =========================================================================
 
-	struct MeshRange {
-		uint64_t vertexBase = 0; // VERTEX UNITS, not bytes
-		uint64_t indexByteOffset = 0;
-		StaticMeshAllocation alloc{};
-	};
-	std::vector<MeshRange> ranges(uploads.size());
-	// All-or-nothing rollback for the carve loop below: a degenerate or
-	// heap-failing entry must free every range the loop already carved
-	// (entries [0, i) + entry i's PARTIAL carve - a vertex alloc that
-	// succeeded before its index alloc failed). The old bare `return {}`
-	// LEAKED all of them (the ranges stayed allocated in the virtual
-	// blocks forever - nothing tracked them without pool handles). IN
-	// PLACE is safe here: nothing of this batch was staged to the GPU
-	// yet (the bulk uploads run only after every range is carved + every
-	// pool entry created), so an immediate retry sees the full capacity.
-	auto failCarved = [&ranges](size_t upto) {
-		for (size_t j = 0; j < upto; ++j)
-			FreeStaticMeshRangesNow(ranges[j].alloc.vertexAllocation,
-				ranges[j].alloc.indexAllocation,
-				ranges[j].alloc.lightmapAllocation);
-	};
-	for (size_t i = 0; i < uploads.size(); ++i) {
-		const StaticMeshUpload& data = uploads[i];
-		const uint32_t vertexCount =
-			static_cast<uint32_t>(data.vertices.size());
-		const uint32_t indexCount =
-			static_cast<uint32_t>(data.indices.size());
-		if (vertexCount == 0) {
-			failCarved(i); // degenerate entry fails the whole batch
-			return {};
-		}
-		MeshRange& r = ranges[i];
-		{
-			r.alloc.vertexAllocation =
-				staticVertexFmtHeap.m_staticVertexBlock.Allocate(
-					vertexCount, 1, r.vertexBase);
-			if (r.alloc.vertexAllocation == 0) {
-				failCarved(i);
-				return {};
-			}
-		}
-		if (indexCount > 0) {
-			const uint64_t indexBytes = sizeof(uint32_t)
-				* static_cast<uint64_t>(indexCount);
-			r.alloc.indexAllocation =
-				staticVertexFmtHeap.m_staticIndexBlock.Allocate(
-					indexBytes, alignof(uint32_t), r.indexByteOffset);
-			if (r.alloc.indexAllocation == 0) {
-				// Entry i's own vertex carve rolls back too (it succeeded
-				// above and nothing references it yet).
-				failCarved(i + 1);
-				return {};
-			}
-		}
-		// The OPTIONAL lightmap range: carved only when any vertex is
-		// charted (independently packed — its base is not vertexBase).
-		{
-			bool charted = false;
-			for (const ImportStaticVertex& v : data.vertices)
-				if (v.chartId != 0xFFFFFFFFu) {
-					charted = true;
-					break;
-				}
-			if (charted) {
-				uint64_t lmBase = 0;
-				r.alloc.lightmapAllocation =
-					staticVertexFmtHeap.m_staticLightmapBlock.Allocate(
-						vertexCount, 1, lmBase);
-				if (r.alloc.lightmapAllocation == 0) {
-					failCarved(i + 1);
-					return {};
-				}
-				r.alloc.lightmapBase = lmBase;
-			}
-		}
-	}
+    struct MeshRange {
+        uint64_t vertexBase = 0; // VERTEX UNITS, not bytes
+        uint64_t indexByteOffset = 0;
+        StaticMeshAllocation alloc{};
+    };
+    std::vector<MeshRange> ranges(uploads.size());
+    // All-or-nothing rollback for the carve loop below: a degenerate or
+    // heap-failing entry must free every range the loop already carved
+    // (entries [0, i) + entry i's PARTIAL carve - a vertex alloc that
+    // succeeded before its index alloc failed). The old bare `return {}`
+    // LEAKED all of them (the ranges stayed allocated in the virtual
+    // blocks forever - nothing tracked them without pool handles). IN
+    // PLACE is safe here: nothing of this batch was staged to the GPU
+    // yet (the bulk uploads run only after every range is carved + every
+    // pool entry created), so an immediate retry sees the full capacity.
+    auto failCarved = [&ranges](size_t upto) {
+        for (size_t j = 0; j < upto; ++j)
+            FreeStaticMeshRangesNow(ranges[j].alloc.vertexAllocation,
+                                    ranges[j].alloc.indexAllocation,
+                                    ranges[j].alloc.lightmapAllocation);
+    };
+    for (size_t i = 0; i < uploads.size(); ++i) {
+        const StaticMeshUpload& data = uploads[i];
+        const uint32_t vertexCount = static_cast<uint32_t>(data.vertices.size());
+        const uint32_t indexCount = static_cast<uint32_t>(data.indices.size());
+        if (vertexCount == 0) {
+            failCarved(i); // degenerate entry fails the whole batch
+            return {};
+        }
+        MeshRange& r = ranges[i];
+        {
+            r.alloc.vertexAllocation =
+                staticVertexFmtHeap.m_staticVertexBlock.Allocate(vertexCount, 1, r.vertexBase);
+            if (r.alloc.vertexAllocation == 0) {
+                failCarved(i);
+                return {};
+            }
+        }
+        if (indexCount > 0) {
+            const uint64_t indexBytes = sizeof(uint32_t) * static_cast<uint64_t>(indexCount);
+            r.alloc.indexAllocation = staticVertexFmtHeap.m_staticIndexBlock.Allocate(
+                indexBytes, alignof(uint32_t), r.indexByteOffset);
+            if (r.alloc.indexAllocation == 0) {
+                // Entry i's own vertex carve rolls back too (it succeeded
+                // above and nothing references it yet).
+                failCarved(i + 1);
+                return {};
+            }
+        }
+        // The OPTIONAL lightmap range: carved only when any vertex is
+        // charted (independently packed — its base is not vertexBase).
+        {
+            bool charted = false;
+            for (const ImportStaticVertex& v : data.vertices)
+                if (v.chartId != 0xFFFFFFFFu) {
+                    charted = true;
+                    break;
+                }
+            if (charted) {
+                uint64_t lmBase = 0;
+                r.alloc.lightmapAllocation =
+                    staticVertexFmtHeap.m_staticLightmapBlock.Allocate(vertexCount, 1, lmBase);
+                if (r.alloc.lightmapAllocation == 0) {
+                    failCarved(i + 1);
+                    return {};
+                }
+                r.alloc.lightmapBase = lmBase;
+            }
+        }
+    }
 
-	// =========================================================================
-	// 2. Pool entries + bookkeeping (BEFORE any GPU staging: a failure here
-	//    leaves nothing queued in the upload streamer)
-	// =========================================================================
+    // =========================================================================
+    // 2. Pool entries + bookkeeping (BEFORE any GPU staging: a failure here
+    //    leaves nothing queued in the upload streamer)
+    // =========================================================================
 
-	handles.resize(uploads.size());
-	for (size_t i = 0; i < uploads.size(); ++i) {
-		const StaticMeshUpload& data = uploads[i];
-		MeshRange& r = ranges[i];
-		const uint32_t vertexCount =
-			static_cast<uint32_t>(data.vertices.size());
-		const uint32_t indexCount =
-			static_cast<uint32_t>(data.indices.size());
-		StaticMesh mesh{};
-		mesh.geometry.topology = PrimitiveTopology::TriangleList;
-		mesh.geometry.vertexCount = vertexCount;
-		mesh.geometry.indexCount = indexCount;
-		mesh.geometry.aabbMin = data.aabbMin;
-		mesh.geometry.aabbMax = data.aabbMax;
-		Surface surface{};
-		surface.firstIndex = static_cast<uint32_t>(
-			r.indexByteOffset / sizeof(uint32_t));
-		surface.indexCount = indexCount;
-		surface.baseVertex = static_cast<int32_t>(r.vertexBase);
-		mesh.geometry.surfaces.push_back(surface);
-		// The optional lightmap window's published base (0xFFFFFFFF =
-		// none) — the draw-ring fill reads it for the per-draw delta.
-		mesh.lightmapBase = r.alloc.lightmapAllocation
-			? static_cast<uint32_t>(r.alloc.lightmapBase) : 0xFFFFFFFFu;
-		handles[i] = staticMeshes.create(std::move(mesh));
-		if (handles[i].empty()) {
-			// Roll the created entries back (frees their heap ranges via
-			// meshAllocations_), then the failed entry's own fresh ranges.
-			// The rolled-back DestroyMesh frees are now RETIREMENT-ORDERED
-			// (deferred - see DeferFreeStaticMeshRanges): conservative by a
-			// frame or two, never wrong (nothing of this batch was staged
-			// yet). The failed entry's OWN fresh ranges free IN PLACE:
-			// never staged, never referenced by any GPU work (the bulk
-			// uploads happen only after every pool entry succeeds), so an
-			// immediate retry of the batch still sees the full capacity.
-			for (size_t j = 0; j < i; ++j)
-				DestroyMesh(handles[j]);
-			// The failed entry's OWN fresh ranges free in place: never
-			// staged, never referenced by any GPU work (the bulk uploads
-			// happen only after every pool entry succeeds), so an
-			// immediate retry of the batch still sees the full capacity.
-			FreeStaticMeshRangesNow(r.alloc.vertexAllocation,
-				r.alloc.indexAllocation, r.alloc.lightmapAllocation);
-			return {};
-		}
-		r.alloc.vertexBase = r.vertexBase;
-		r.alloc.indexByteOffset = r.indexByteOffset;
-		auto [it, inserted] = meshAllocations_.emplace(
-			handles[i].index(),
-			new StaticMeshAllocation(std::move(r.alloc)));
-		assert(inserted);
-		if (retainUploads_)
-			retainedUploads_[handles[i].index()] = data;
-	}
+    handles.resize(uploads.size());
+    for (size_t i = 0; i < uploads.size(); ++i) {
+        const StaticMeshUpload& data = uploads[i];
+        MeshRange& r = ranges[i];
+        const uint32_t vertexCount = static_cast<uint32_t>(data.vertices.size());
+        const uint32_t indexCount = static_cast<uint32_t>(data.indices.size());
+        StaticMesh mesh{};
+        mesh.geometry.topology = PrimitiveTopology::TriangleList;
+        mesh.geometry.vertexCount = vertexCount;
+        mesh.geometry.indexCount = indexCount;
+        mesh.geometry.aabbMin = data.aabbMin;
+        mesh.geometry.aabbMax = data.aabbMax;
+        Surface surface{};
+        surface.firstIndex = static_cast<uint32_t>(r.indexByteOffset / sizeof(uint32_t));
+        surface.indexCount = indexCount;
+        surface.baseVertex = static_cast<int32_t>(r.vertexBase);
+        mesh.geometry.surfaces.push_back(surface);
+        // The optional lightmap window's published base (0xFFFFFFFF =
+        // none) — the draw-ring fill reads it for the per-draw delta.
+        mesh.lightmapBase =
+            r.alloc.lightmapAllocation ? static_cast<uint32_t>(r.alloc.lightmapBase) : 0xFFFFFFFFu;
+        handles[i] = staticMeshes.create(std::move(mesh));
+        if (handles[i].empty()) {
+            // Roll the created entries back (frees their heap ranges via
+            // meshAllocations_), then the failed entry's own fresh ranges.
+            // The rolled-back DestroyMesh frees are now RETIREMENT-ORDERED
+            // (deferred - see DeferFreeStaticMeshRanges): conservative by a
+            // frame or two, never wrong (nothing of this batch was staged
+            // yet). The failed entry's OWN fresh ranges free IN PLACE:
+            // never staged, never referenced by any GPU work (the bulk
+            // uploads happen only after every pool entry succeeds), so an
+            // immediate retry of the batch still sees the full capacity.
+            for (size_t j = 0; j < i; ++j)
+                DestroyMesh(handles[j]);
+            // The failed entry's OWN fresh ranges free in place: never
+            // staged, never referenced by any GPU work (the bulk uploads
+            // happen only after every pool entry succeeds), so an
+            // immediate retry of the batch still sees the full capacity.
+            FreeStaticMeshRangesNow(
+                r.alloc.vertexAllocation, r.alloc.indexAllocation, r.alloc.lightmapAllocation);
+            return {};
+        }
+        r.alloc.vertexBase = r.vertexBase;
+        r.alloc.indexByteOffset = r.indexByteOffset;
+        auto [it, inserted] = meshAllocations_.emplace(
+            handles[i].index(), new StaticMeshAllocation(std::move(r.alloc)));
+        assert(inserted);
+        if (retainUploads_)
+            retainedUploads_[handles[i].index()] = data;
+    }
 
-	// =========================================================================
-	// 3. Convert AoS -> SoA-ish into ONE packed blob per heap stream
-	// =========================================================================
+    // =========================================================================
+    // 3. Convert AoS -> SoA-ish into ONE packed blob per heap stream
+    // =========================================================================
 
-	size_t totalVerts = 0;
-	size_t totalIdx = 0;
-	for (size_t i = 0; i < uploads.size(); ++i) {
-		totalVerts += uploads[i].vertices.size();
-		totalIdx += uploads[i].indices.size();
-	}
-	std::vector<PackedVertexPosition> positions(totalVerts);
-	std::vector<PackedVertexShading> shading(totalVerts);
-	std::vector<PackedVertexLightmap> lightmap(totalVerts);
-	std::vector<uint32_t> indices(totalIdx);
-	std::vector<BufferBulkCopy> posCopies;
-	std::vector<BufferBulkCopy> shadeCopies;
-	std::vector<BufferBulkCopy> lmCopies;
-	std::vector<BufferBulkCopy> idxCopies;
-	posCopies.reserve(uploads.size());
-	shadeCopies.reserve(uploads.size());
-	lmCopies.reserve(uploads.size());
-	idxCopies.reserve(uploads.size());
-	size_t srcVert = 0;
-	size_t srcIdx = 0;
-	for (size_t i = 0; i < uploads.size(); ++i) {
-		const StaticMeshUpload& data = uploads[i];
-		MeshRange& r = ranges[i];
-		const uint32_t vertexCount =
-			static_cast<uint32_t>(data.vertices.size());
-		const uint32_t indexCount =
-			static_cast<uint32_t>(data.indices.size());
-		PackedVertexPosition* posOut = positions.data() + srcVert;
-		PackedVertexShading* shadeOut = shading.data() + srcVert;
-		PackedVertexLightmap* lmOut = lightmap.data() + srcVert;
-		for (uint32_t v = 0; v < vertexCount; ++v)
-			PackStaticVertex(data.vertices[v], posOut[v], shadeOut[v],
-				lmOut[v]);
-		if (indexCount > 0) {
-			memcpy(indices.data() + srcIdx, data.indices.data(),
-				size_t(indexCount) * sizeof(uint32_t));
-			idxCopies.push_back(BufferBulkCopy{
-				srcIdx * sizeof(uint32_t),
-				size_t(r.indexByteOffset),
-				size_t(indexCount) * sizeof(uint32_t) });
-		}
-		posCopies.push_back(BufferBulkCopy{
-			srcVert * sizeof(PackedVertexPosition),
-			size_t(r.vertexBase) * sizeof(PackedVertexPosition),
-			size_t(vertexCount) * sizeof(PackedVertexPosition) });
-		shadeCopies.push_back(BufferBulkCopy{
-			srcVert * sizeof(PackedVertexShading),
-			size_t(r.vertexBase) * sizeof(PackedVertexShading),
-			size_t(vertexCount) * sizeof(PackedVertexShading) });
-		// The lightmap stream packs CONTIGUOUSLY in the staging blob
-		// (only charted meshes contribute); the destination addresses
-		// each mesh's independently-carved window. The source slice
-		// rides the SAME srcVert slot as the shading words (the
-		// lightmap vector is vertex-parallel).
-		if (r.alloc.lightmapAllocation) {
-			lmCopies.push_back(BufferBulkCopy{
-				srcVert * sizeof(PackedVertexLightmap),
-				size_t(r.alloc.lightmapBase)
-					* sizeof(PackedVertexLightmap),
-				size_t(vertexCount) * sizeof(PackedVertexLightmap) });
-		}
-		srcVert += vertexCount;
-		srcIdx += indexCount;
-	}
+    size_t totalVerts = 0;
+    size_t totalIdx = 0;
+    for (size_t i = 0; i < uploads.size(); ++i) {
+        totalVerts += uploads[i].vertices.size();
+        totalIdx += uploads[i].indices.size();
+    }
+    std::vector<PackedVertexPosition> positions(totalVerts);
+    std::vector<PackedVertexShading> shading(totalVerts);
+    std::vector<PackedVertexLightmap> lightmap(totalVerts);
+    std::vector<uint32_t> indices(totalIdx);
+    std::vector<BufferBulkCopy> posCopies;
+    std::vector<BufferBulkCopy> shadeCopies;
+    std::vector<BufferBulkCopy> lmCopies;
+    std::vector<BufferBulkCopy> idxCopies;
+    posCopies.reserve(uploads.size());
+    shadeCopies.reserve(uploads.size());
+    lmCopies.reserve(uploads.size());
+    idxCopies.reserve(uploads.size());
+    size_t srcVert = 0;
+    size_t srcIdx = 0;
+    for (size_t i = 0; i < uploads.size(); ++i) {
+        const StaticMeshUpload& data = uploads[i];
+        MeshRange& r = ranges[i];
+        const uint32_t vertexCount = static_cast<uint32_t>(data.vertices.size());
+        const uint32_t indexCount = static_cast<uint32_t>(data.indices.size());
+        PackedVertexPosition* posOut = positions.data() + srcVert;
+        PackedVertexShading* shadeOut = shading.data() + srcVert;
+        PackedVertexLightmap* lmOut = lightmap.data() + srcVert;
+        for (uint32_t v = 0; v < vertexCount; ++v)
+            PackStaticVertex(data.vertices[v], posOut[v], shadeOut[v], lmOut[v]);
+        if (indexCount > 0) {
+            memcpy(indices.data() + srcIdx,
+                   data.indices.data(),
+                   size_t(indexCount) * sizeof(uint32_t));
+            idxCopies.push_back(BufferBulkCopy{srcIdx * sizeof(uint32_t),
+                                               size_t(r.indexByteOffset),
+                                               size_t(indexCount) * sizeof(uint32_t)});
+        }
+        posCopies.push_back(BufferBulkCopy{srcVert * sizeof(PackedVertexPosition),
+                                           size_t(r.vertexBase) * sizeof(PackedVertexPosition),
+                                           size_t(vertexCount) * sizeof(PackedVertexPosition)});
+        shadeCopies.push_back(BufferBulkCopy{srcVert * sizeof(PackedVertexShading),
+                                             size_t(r.vertexBase) * sizeof(PackedVertexShading),
+                                             size_t(vertexCount) * sizeof(PackedVertexShading)});
+        // The lightmap stream packs CONTIGUOUSLY in the staging blob
+        // (only charted meshes contribute); the destination addresses
+        // each mesh's independently-carved window. The source slice
+        // rides the SAME srcVert slot as the shading words (the
+        // lightmap vector is vertex-parallel).
+        if (r.alloc.lightmapAllocation) {
+            lmCopies.push_back(
+                BufferBulkCopy{srcVert * sizeof(PackedVertexLightmap),
+                               size_t(r.alloc.lightmapBase) * sizeof(PackedVertexLightmap),
+                               size_t(vertexCount) * sizeof(PackedVertexLightmap)});
+        }
+        srcVert += vertexCount;
+        srcIdx += indexCount;
+    }
 
-	// =========================================================================
-	// 4. Four table-driven bulk uploads (one per heap; the RHI stages 512MB
-	//    blobs — one memcpy pass + one submit + one barrier set per blob)
-	// =========================================================================
+    // =========================================================================
+    // 4. Four table-driven bulk uploads (one per heap; the RHI stages 512MB
+    //    blobs — one memcpy pass + one submit + one barrier set per blob)
+    // =========================================================================
 
-	ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexPosBuffer,
-		positions.data(), posCopies,
-		PipelineStageBit_Vertex,
-		AccessFlags::VertexAttributeRead);
-	ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexShadingBuffer,
-		shading.data(), shadeCopies,
-		PipelineStageBit_Vertex,
-		AccessFlags::VertexAttributeRead);
-	if (!lmCopies.empty()) {
-		ctx_->BulkCopyBuffer(
-			staticVertexFmtHeap.m_staticVertexLightmapBuffer,
-			lightmap.data(), lmCopies,
-			PipelineStageBit_All,
-			AccessFlags::ShaderRead);
-	}
-	if (!idxCopies.empty()) {
-		ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
-			indices.data(), idxCopies,
-			PipelineStageBit_Vertex,
-			AccessFlags::IndexRead);
-	}
-	return handles;
+    ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexPosBuffer,
+                         positions.data(),
+                         posCopies,
+                         PipelineStageBit_Vertex,
+                         AccessFlags::VertexAttributeRead);
+    ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexShadingBuffer,
+                         shading.data(),
+                         shadeCopies,
+                         PipelineStageBit_Vertex,
+                         AccessFlags::VertexAttributeRead);
+    if (!lmCopies.empty()) {
+        ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexLightmapBuffer,
+                             lightmap.data(),
+                             lmCopies,
+                             PipelineStageBit_All,
+                             AccessFlags::ShaderRead);
+    }
+    if (!idxCopies.empty()) {
+        ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
+                             indices.data(),
+                             idxCopies,
+                             PipelineStageBit_Vertex,
+                             AccessFlags::IndexRead);
+    }
+    return handles;
 }
 
 std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDirect(
-	const void* content, std::span<const StaticGeometrySource> sources)
-{
-	std::vector<ClusterStaticMeshHandle> handles;
-	if (!content || sources.empty())
-		return handles;
-	assert(!offlineMode_ && "UploadStaticMeshesDirect is a GPU-context fast path");
+    const void* content,
+    std::span<const StaticGeometrySource> sources) {
+    std::vector<ClusterStaticMeshHandle> handles;
+    if (!content || sources.empty())
+        return handles;
+    assert(!offlineMode_ && "UploadStaticMeshesDirect is a GPU-context fast path");
 
-	// The SHARED GEOMETRY UPLOAD SERVICE (Renderer/geometry_upload.h)
-	// owns the carve + the all-or-nothing rollback + the table-driven
-	// bulk copies — extracted verbatim from this body so non-cluster
-	// owners (the app AssetStore's shared mesh rows, the pak-vNext
-	// pager's page-aware uploads) submit through the same seam. THIS
-	// cluster keeps only its own bookkeeping: the pool row + the
-	// meshAllocations_ entry per mesh (the service hands the arena
-	// tokens back CALLER-OWNED).
-	std::vector<StaticGeometryUpload> uploaded =
-		UploadStaticGeometry(*ctx_, content, sources);
-	if (uploaded.empty())
-		return handles;
+    // The SHARED GEOMETRY UPLOAD SERVICE (Renderer/geometry_upload.h)
+    // owns the carve + the all-or-nothing rollback + the table-driven
+    // bulk copies — extracted verbatim from this body so non-cluster
+    // owners (the app AssetStore's shared mesh rows, the pak-vNext
+    // pager's page-aware uploads) submit through the same seam. THIS
+    // cluster keeps only its own bookkeeping: the pool row + the
+    // meshAllocations_ entry per mesh (the service hands the arena
+    // tokens back CALLER-OWNED).
+    std::vector<StaticGeometryUpload> uploaded = UploadStaticGeometry(*ctx_, content, sources);
+    if (uploaded.empty())
+        return handles;
 
-	// Pool entries + bookkeeping (the caller side of the service
-	// contract). The service's bulk copies are ALREADY STAGED by this
-	// point, so a failure here frees RETIREMENT-ORDERED (deferred) —
-	// the pre-extraction code could free the failed entry's fresh
-	// ranges in place only because nothing was staged before every
-	// pool entry existed.
-	handles.resize(uploaded.size());
-	for (size_t i = 0; i < uploaded.size(); ++i) {
-		handles[i] = staticMeshes.create(std::move(uploaded[i].mesh));
-		if (handles[i].empty()) {
-			// Same rollback contract as UploadStaticMeshes: the
-			// rolled-back DestroyMesh frees are retirement-ordered.
-			for (size_t j = 0; j < i; ++j)
-				DestroyMesh(handles[j]);
-			// The failed entry's own fresh ranges were staged with the
-			// batch — deferred, never in place.
-			DeferFreeStaticMeshRanges(ctx_,
-				uploaded[i].alloc.vertexAllocation,
-				uploaded[i].alloc.indexAllocation,
-				uploaded[i].alloc.lightmapAllocation);
-			return {};
-		}
-		auto [it, inserted] = meshAllocations_.emplace(
-			handles[i].index(),
-			new StaticMeshAllocation(std::move(uploaded[i].alloc)));
-		assert(inserted);
-	}
-	return handles;
+    // Pool entries + bookkeeping (the caller side of the service
+    // contract). The service's bulk copies are ALREADY STAGED by this
+    // point, so a failure here frees RETIREMENT-ORDERED (deferred) —
+    // the pre-extraction code could free the failed entry's fresh
+    // ranges in place only because nothing was staged before every
+    // pool entry existed.
+    handles.resize(uploaded.size());
+    for (size_t i = 0; i < uploaded.size(); ++i) {
+        handles[i] = staticMeshes.create(std::move(uploaded[i].mesh));
+        if (handles[i].empty()) {
+            // Same rollback contract as UploadStaticMeshes: the
+            // rolled-back DestroyMesh frees are retirement-ordered.
+            for (size_t j = 0; j < i; ++j)
+                DestroyMesh(handles[j]);
+            // The failed entry's own fresh ranges were staged with the
+            // batch — deferred, never in place.
+            DeferFreeStaticMeshRanges(ctx_,
+                                      uploaded[i].alloc.vertexAllocation,
+                                      uploaded[i].alloc.indexAllocation,
+                                      uploaded[i].alloc.lightmapAllocation);
+            return {};
+        }
+        auto [it, inserted] = meshAllocations_.emplace(
+            handles[i].index(), new StaticMeshAllocation(std::move(uploaded[i].alloc)));
+        assert(inserted);
+    }
+    return handles;
 }
-
 
 // -----------------------------------------------------------------------------
 // Geometry LOD streaming (Renderer/geometry_streamer.h): the deferred
@@ -914,70 +844,64 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 // -----------------------------------------------------------------------------
 
 uint64_t smvk::Cluster::DeferMeshLod(DeferredMeshLod&& d) {
-	// Payload accounting: the pos + shading streams are interleaved in
-	// the vertex block (VERTEX units - the arena counts vertices, the
-	// bytes are the physical cost) + the index bytes. Both matter to
-	// the streamer's budget, so account the physical bytes: vertices
-	// cost ~28-32 B each (pos3 + shading stream), indices 4 B.
-	const uint64_t vertexBytes =
-		uint64_t(d.src.vertexCount) * 32ull; // upper bound (pos+shade+pad)
-	const uint64_t indexBytes =
-		uint64_t(d.src.indexCount) * sizeof(uint32_t);
-	d.payloadBytes = vertexBytes + indexBytes;
-	deferredLods_.push_back(std::move(d));
-	return vertexBytes + indexBytes;
+    // Payload accounting: the pos + shading streams are interleaved in
+    // the vertex block (VERTEX units - the arena counts vertices, the
+    // bytes are the physical cost) + the index bytes. Both matter to
+    // the streamer's budget, so account the physical bytes: vertices
+    // cost ~28-32 B each (pos3 + shading stream), indices 4 B.
+    const uint64_t vertexBytes = uint64_t(d.src.vertexCount) * 32ull; // upper bound (pos+shade+pad)
+    const uint64_t indexBytes = uint64_t(d.src.indexCount) * sizeof(uint32_t);
+    d.payloadBytes = vertexBytes + indexBytes;
+    deferredLods_.push_back(std::move(d));
+    return vertexBytes + indexBytes;
 }
 
-const smvk::Cluster::DeferredMeshLod* smvk::Cluster::FindDeferredMeshLod(
-	StringViewT uri) const
-{
-	for (const DeferredMeshLod& d : deferredLods_)
-		if (uri == d.uri)
-			return &d;
-	return nullptr;
+const smvk::Cluster::DeferredMeshLod* smvk::Cluster::FindDeferredMeshLod(StringViewT uri) const {
+    for (const DeferredMeshLod& d : deferredLods_)
+        if (uri == d.uri)
+            return &d;
+    return nullptr;
 }
 
 size_t smvk::Cluster::DeferredLodCount() const {
-	size_t n = 0;
-	for (const DeferredMeshLod& d : deferredLods_)
-		if (!d.promotedHandle.valid())
-			++n;
-	return n;
+    size_t n = 0;
+    for (const DeferredMeshLod& d : deferredLods_)
+        if (!d.promotedHandle.valid())
+            ++n;
+    return n;
 }
 
 uint64_t smvk::Cluster::DeferredLodBytes() const {
-	uint64_t b = 0;
-	for (const DeferredMeshLod& d : deferredLods_)
-		if (!d.promotedHandle.valid())
-			b += d.payloadBytes;
-	return b;
+    uint64_t b = 0;
+    for (const DeferredMeshLod& d : deferredLods_)
+        if (!d.promotedHandle.valid())
+            b += d.payloadBytes;
+    return b;
 }
 
-std::optional<smvk::Cluster::PromotedLod>
-smvk::Cluster::PromoteDeferredMeshLod(StringViewT uri)
-{
-	DeferredMeshLod* rec = nullptr;
-	for (DeferredMeshLod& d : deferredLods_) {
-		if (uri != d.uri)
-			continue;
-		if (!d.promotedHandle.valid())
-			rec = &d;
-		break; // one record per uri; skip already-promoted ones
-	}
-	if (rec == nullptr)
-		return std::nullopt;
-	if (!pakImagePin_ || pakImagePin_->empty())
-		return std::nullopt; // no payload source: cannot promote
+std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::PromoteDeferredMeshLod(StringViewT uri) {
+    DeferredMeshLod* rec = nullptr;
+    for (DeferredMeshLod& d : deferredLods_) {
+        if (uri != d.uri)
+            continue;
+        if (!d.promotedHandle.valid())
+            rec = &d;
+        break; // one record per uri; skip already-promoted ones
+    }
+    if (rec == nullptr)
+        return std::nullopt;
+    if (!pakImagePin_ || pakImagePin_->empty())
+        return std::nullopt; // no payload source: cannot promote
 
-	// One direct upload from the pinned pak image (the deserializer's
-	// batch path with a single source - fresh arena ranges, table-driven
-	// copies through the RHI upload streamer).
-	const StaticGeometrySource srcs[1] = { rec->src };
-	const std::vector<ClusterStaticMeshHandle> handles =
-		UploadStaticMeshesDirect(pakImagePin_->data(), srcs);
-	if (handles.size() != 1 || !handles[0].valid())
-		return std::nullopt;
-	return FinishPromoteDeferred(rec, handles[0]);
+    // One direct upload from the pinned pak image (the deserializer's
+    // batch path with a single source - fresh arena ranges, table-driven
+    // copies through the RHI upload streamer).
+    const StaticGeometrySource srcs[1] = {rec->src};
+    const std::vector<ClusterStaticMeshHandle> handles =
+        UploadStaticMeshesDirect(pakImagePin_->data(), srcs);
+    if (handles.size() != 1 || !handles[0].valid())
+        return std::nullopt;
+    return FinishPromoteDeferred(rec, handles[0]);
 }
 
 // STAGE 6 (the pager lane): the same promote with the payload
@@ -987,266 +911,256 @@ smvk::Cluster::PromoteDeferredMeshLod(StringViewT uri)
 // must fit the page (a truncated page refuses loudly, never a wild
 // upload). The caller owns the payload's lifetime through the call
 // (BulkCopyBuffer stages synchronously — release the page after).
-std::optional<smvk::Cluster::PromotedLod>
-smvk::Cluster::PromoteDeferredMeshLodFromPage(StringViewT uri,
-	const uint8_t* entryPayload, size_t entryBytes)
-{
-	DeferredMeshLod* rec = nullptr;
-	for (DeferredMeshLod& d : deferredLods_) {
-		if (uri != d.uri)
-			continue;
-		if (!d.promotedHandle.valid())
-			rec = &d;
-		break; // one record per uri; skip already-promoted ones
-	}
-	if (rec == nullptr)
-		return std::nullopt;
-	if (!entryPayload || entryBytes == 0)
-		return std::nullopt; // no payload source: cannot promote
-	const uint64_t base = rec->entryOffset;
-	StaticGeometrySource src = rec->src;
-	src.posSrc -= base;
-	src.shadeSrc -= base;
-	src.lmSrc = src.lmSrc ? src.lmSrc - base : 0;
-	src.idxSrc -= base;
-	const auto fits = [&](uint64_t off, uint64_t bytes) {
-		return off <= entryBytes && bytes <= entryBytes - off;
-	};
-	// PackedVertexPosition 12 B, PackedVertexShading 16 B,
-	// PackedVertexLightmap 8 B, u32 indices.
-	const uint64_t posBytes = uint64_t(src.vertexCount) * 12;
-	const uint64_t shadeBytes = uint64_t(src.vertexCount) * 16;
-	const uint64_t lmBytes = src.lmSrc
-		? uint64_t(src.vertexCount) * 8 : 0;
-	const uint64_t idxBytes = uint64_t(src.indexCount) * 4;
-	if (!fits(src.posSrc, posBytes) || !fits(src.shadeSrc, shadeBytes)
-			|| (src.lmSrc && !fits(src.lmSrc, lmBytes))
-			|| !fits(src.idxSrc, idxBytes))
-		return std::nullopt; // the page does not carry the blob whole
-	const StaticGeometrySource srcs[1] = { src };
-	const std::vector<ClusterStaticMeshHandle> handles =
-		UploadStaticMeshesDirect(entryPayload, srcs);
-	if (handles.size() != 1 || !handles[0].valid())
-		return std::nullopt;
-	return FinishPromoteDeferred(rec, handles[0]);
+std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::PromoteDeferredMeshLodFromPage(
+    StringViewT uri,
+    const uint8_t* entryPayload,
+    size_t entryBytes) {
+    DeferredMeshLod* rec = nullptr;
+    for (DeferredMeshLod& d : deferredLods_) {
+        if (uri != d.uri)
+            continue;
+        if (!d.promotedHandle.valid())
+            rec = &d;
+        break; // one record per uri; skip already-promoted ones
+    }
+    if (rec == nullptr)
+        return std::nullopt;
+    if (!entryPayload || entryBytes == 0)
+        return std::nullopt; // no payload source: cannot promote
+    const uint64_t base = rec->entryOffset;
+    StaticGeometrySource src = rec->src;
+    src.posSrc -= base;
+    src.shadeSrc -= base;
+    src.lmSrc = src.lmSrc ? src.lmSrc - base : 0;
+    src.idxSrc -= base;
+    const auto fits = [&](uint64_t off, uint64_t bytes) {
+        return off <= entryBytes && bytes <= entryBytes - off;
+    };
+    // PackedVertexPosition 12 B, PackedVertexShading 16 B,
+    // PackedVertexLightmap 8 B, u32 indices.
+    const uint64_t posBytes = uint64_t(src.vertexCount) * 12;
+    const uint64_t shadeBytes = uint64_t(src.vertexCount) * 16;
+    const uint64_t lmBytes = src.lmSrc ? uint64_t(src.vertexCount) * 8 : 0;
+    const uint64_t idxBytes = uint64_t(src.indexCount) * 4;
+    if (!fits(src.posSrc, posBytes) || !fits(src.shadeSrc, shadeBytes) ||
+        (src.lmSrc && !fits(src.lmSrc, lmBytes)) || !fits(src.idxSrc, idxBytes))
+        return std::nullopt; // the page does not carry the blob whole
+    const StaticGeometrySource srcs[1] = {src};
+    const std::vector<ClusterStaticMeshHandle> handles =
+        UploadStaticMeshesDirect(entryPayload, srcs);
+    if (handles.size() != 1 || !handles[0].valid())
+        return std::nullopt;
+    return FinishPromoteDeferred(rec, handles[0]);
 }
 
 // The shared promote tail (both payload lanes): the meta re-attach +
 // the registration + the record's promotedHandle — verbatim the old
 // inline block (cluster_serializer.cpp's post-upload sequence).
-std::optional<smvk::Cluster::PromotedLod>
-smvk::Cluster::FinishPromoteDeferred(DeferredMeshLod* rec,
-	ClusterStaticMeshHandle h)
-{
+std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::FinishPromoteDeferred(
+    DeferredMeshLod* rec,
+    ClusterStaticMeshHandle h) {
 
-	// The deserializer's meta re-attach (cluster_serializer.cpp's
-	// post-upload block, verbatim): sphere + lightmap chunk/xforms +
-	// cooked meshlets. Skinned never defers (the v1 exclusion), so
-	// skinned stays false here. The fields MOVE OUT of the record (the
-	// evict path moves them back).
-	if (StaticMesh* m = staticMeshes.get(h)) {
-		m->geometry.sphereRadius = rec->sphere;
-		m->lmChunk = rec->lmChunk;
-		m->lmChartXforms = std::move(rec->lmXforms);
-		if (!rec->meshlets.meshlets.empty())
-			m->meshlets = std::move(rec->meshlets);
-		m->skinned = false;
-	}
-	RegisterMeshUri(rec->uri, h);
-	// LodInfo was registered at DEFER time (RebuildLodChains needed it
-	// to see the full chain) - re-registering is an idempotent refresh.
-	RegisterMeshLod(rec->uri, rec->lod);
-	if (const StaticMesh* m = staticMeshes.get(h)) {
-		if (m->meshlets && !m->meshlets->empty())
-			RegisterMeshMeshlets(rec->uri, *m->meshlets);
-	}
-	// The record STAYS with promotedHandle set - the evict path's
-	// source. Its payload fields are spent (moved into the mesh); evict
-	// re-fills them from the mesh before destroying it.
-	rec->promotedHandle = h;
+    // The deserializer's meta re-attach (cluster_serializer.cpp's
+    // post-upload block, verbatim): sphere + lightmap chunk/xforms +
+    // cooked meshlets. Skinned never defers (the v1 exclusion), so
+    // skinned stays false here. The fields MOVE OUT of the record (the
+    // evict path moves them back).
+    if (StaticMesh* m = staticMeshes.get(h)) {
+        m->geometry.sphereRadius = rec->sphere;
+        m->lmChunk = rec->lmChunk;
+        m->lmChartXforms = std::move(rec->lmXforms);
+        if (!rec->meshlets.meshlets.empty())
+            m->meshlets = std::move(rec->meshlets);
+        m->skinned = false;
+    }
+    RegisterMeshUri(rec->uri, h);
+    // LodInfo was registered at DEFER time (RebuildLodChains needed it
+    // to see the full chain) - re-registering is an idempotent refresh.
+    RegisterMeshLod(rec->uri, rec->lod);
+    if (const StaticMesh* m = staticMeshes.get(h)) {
+        if (m->meshlets && !m->meshlets->empty())
+            RegisterMeshMeshlets(rec->uri, *m->meshlets);
+    }
+    // The record STAYS with promotedHandle set - the evict path's
+    // source. Its payload fields are spent (moved into the mesh); evict
+    // re-fills them from the mesh before destroying it.
+    rec->promotedHandle = h;
 
-	return PromotedLod{ h, rec->payloadBytes };
+    return PromotedLod{h, rec->payloadBytes};
 }
 
-uint64_t smvk::Cluster::EvictMeshLod(StringViewT uri)
-{
-	DeferredMeshLod* rec = nullptr;
-	for (DeferredMeshLod& d : deferredLods_) {
-		if (uri != d.uri)
-			continue;
-		if (d.promotedHandle.valid())
-			rec = &d;
-		break;
-	}
-	if (rec == nullptr)
-		return 0;
-	const ClusterStaticMeshHandle h = rec->promotedHandle;
+uint64_t smvk::Cluster::EvictMeshLod(StringViewT uri) {
+    DeferredMeshLod* rec = nullptr;
+    for (DeferredMeshLod& d : deferredLods_) {
+        if (uri != d.uri)
+            continue;
+        if (d.promotedHandle.valid())
+            rec = &d;
+        break;
+    }
+    if (rec == nullptr)
+        return 0;
+    const ClusterStaticMeshHandle h = rec->promotedHandle;
 
-	// Move the mesh's runtime fields back into the record BEFORE the
-	// destroy (the pool entry dies with them otherwise) - a re-promote
-	// is then byte-identical to the first one.
-	if (StaticMesh* m = staticMeshes.get(h)) {
-		rec->sphere = m->geometry.sphereRadius;
-		rec->lmChunk = m->lmChunk;
-		rec->lmXforms = std::move(m->lmChartXforms);
-		if (m->meshlets)
-			rec->meshlets = std::move(*m->meshlets);
-	}
-	rec->promotedHandle = {};
+    // Move the mesh's runtime fields back into the record BEFORE the
+    // destroy (the pool entry dies with them otherwise) - a re-promote
+    // is then byte-identical to the first one.
+    if (StaticMesh* m = staticMeshes.get(h)) {
+        rec->sphere = m->geometry.sphereRadius;
+        rec->lmChunk = m->lmChunk;
+        rec->lmXforms = std::move(m->lmChartXforms);
+        if (m->meshlets)
+            rec->meshlets = std::move(*m->meshlets);
+    }
+    rec->promotedHandle = {};
 
-	// The mesh URI must MISS again (RebuildLodChains' deferred
-	// detection = GetMeshLod hit + FindMeshByUri miss). NOT
-	// UnregisterUri() - that erases meshLods_/meshMeshlets_ too, and
-	// the LodInfo metadata is exactly what must SURVIVE eviction (the
-	// chain builder + the next promote both need it). The targeted
-	// erase keeps every other registry row intact.
-	meshByUri_.Erase(uri);
-	meshMeshlets_.Erase(uri);
+    // The mesh URI must MISS again (RebuildLodChains' deferred
+    // detection = GetMeshLod hit + FindMeshByUri miss). NOT
+    // UnregisterUri() - that erases meshLods_/meshMeshlets_ too, and
+    // the LodInfo metadata is exactly what must SURVIVE eviction (the
+    // chain builder + the next promote both need it). The targeted
+    // erase keeps every other registry row intact.
+    meshByUri_.Erase(uri);
+    meshMeshlets_.Erase(uri);
 
-	// DestroyMesh: pool entry + bookkeeping now, the heap ranges retire
-	// DEFERRED (DeferFreeStaticMeshRanges - in-flight frames may still
-	// be drawing this sibling's ranges; the arena hands them back only
-	// after the +MaxFramesInFlight margin).
-	DestroyMesh(h);
+    // DestroyMesh: pool entry + bookkeeping now, the heap ranges retire
+    // DEFERRED (DeferFreeStaticMeshRanges - in-flight frames may still
+    // be drawing this sibling's ranges; the arena hands them back only
+    // after the +MaxFramesInFlight margin).
+    DestroyMesh(h);
 
-	return rec->payloadBytes;
+    return rec->payloadBytes;
 }
 
 // -----------------------------------------------------------------------------
 // Mesh destruction
 // -----------------------------------------------------------------------------
 
-void smvk::Cluster::DestroyMesh(
-	smvk::ClusterStaticMeshHandle handle)
-{
-	if (handle.empty())
-		return;
+void smvk::Cluster::DestroyMesh(smvk::ClusterStaticMeshHandle handle) {
+    if (handle.empty())
+        return;
 
-	retainedUploads_.erase(handle.index());
+    retainedUploads_.erase(handle.index());
 
-	auto it =
-		meshAllocations_.find(handle.index());
+    auto it = meshAllocations_.find(handle.index());
 
-	if (it != meshAllocations_.end()) {
+    if (it != meshAllocations_.end()) {
 
-		StaticMeshAllocation* allocation = it->second;
+        StaticMeshAllocation* allocation = it->second;
 
-		// Detach the range ids FIRST: the CPU bookkeeping dies now, the
-		// physical heap ranges retire below. An in-flight frame can still
-		// be DRAWING these ranges - the frees must land behind the last
-		// published graphics point (DeferFreeStaticMeshRanges), or the
-		// virtual block hands the range to a new mesh while the old
-		// frame's draws read the new mesh's data through the old draw
-		// args (garbage).
-		const StaticHeapArena::AllocId vertexAllocation =
-			allocation->vertexAllocation;
-		const StaticHeapArena::AllocId indexAllocation =
-			allocation->indexAllocation;
-		const StaticHeapArena::AllocId lightmapAllocation =
-			allocation->lightmapAllocation;
+        // Detach the range ids FIRST: the CPU bookkeeping dies now, the
+        // physical heap ranges retire below. An in-flight frame can still
+        // be DRAWING these ranges - the frees must land behind the last
+        // published graphics point (DeferFreeStaticMeshRanges), or the
+        // virtual block hands the range to a new mesh while the old
+        // frame's draws read the new mesh's data through the old draw
+        // args (garbage).
+        const StaticHeapArena::AllocId vertexAllocation = allocation->vertexAllocation;
+        const StaticHeapArena::AllocId indexAllocation = allocation->indexAllocation;
+        const StaticHeapArena::AllocId lightmapAllocation = allocation->lightmapAllocation;
 
-		delete allocation;
-		meshAllocations_.erase(it);
+        delete allocation;
+        meshAllocations_.erase(it);
 
-		DeferFreeStaticMeshRanges(
-			ctx_,
-			vertexAllocation, indexAllocation, lightmapAllocation);
-	}
+        DeferFreeStaticMeshRanges(ctx_, vertexAllocation, indexAllocation, lightmapAllocation);
+    }
 
-	staticMeshes.destroy(handle);
+    staticMeshes.destroy(handle);
 }
-
-
 
 // -----------------------------------------------------------------------------
 // Material
 // -----------------------------------------------------------------------------
 
-smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
-	smvk::TextureHandle diffuse)
-{
-	MaterialCreateInfo ci{};
-	ci.diffuse = diffuse;
-	ci.baseColorTexture = diffuse;
-	return CreateMaterial(ci);
+smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(smvk::TextureHandle diffuse) {
+    MaterialCreateInfo ci{};
+    ci.diffuse = diffuse;
+    ci.baseColorTexture = diffuse;
+    return CreateMaterial(ci);
 }
 
-smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
-	const MaterialCreateInfo& info)
-{
-	// Resolve baseColor texture – prefer baseColorTexture, fall back to legacy diffuse
-	TextureHandle baseTex = !info.baseColorTexture.empty() ? info.baseColorTexture : info.diffuse;
+smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(const MaterialCreateInfo& info) {
+    // Resolve baseColor texture – prefer baseColorTexture, fall back to legacy diffuse
+    TextureHandle baseTex = !info.baseColorTexture.empty() ? info.baseColorTexture : info.diffuse;
 
-	MaterialValues values{};
-	values.diffuse = info.baseColorFactor;
-	values.ambient.w = std::clamp(info.translucency, 0.0f, 1.0f);
-	values.textures[0] = baseTex.empty() ? -1 : static_cast<int>(baseTex.index());
-	values.textures[1] = info.metallicRoughnessTexture.empty() ? -1 : static_cast<int>(info.metallicRoughnessTexture.index());
-	values.textures[2] = info.normalTexture.empty() ? -1 : static_cast<int>(info.normalTexture.index());
-	values.textures[3] = info.occlusionTexture.empty() ? -1 : static_cast<int>(info.occlusionTexture.index());
-	values.textures2[0] = info.emissiveTexture.empty() ? -1 : static_cast<int>(info.emissiveTexture.index());
-	values.textures2[1] = info.cavityTexture.empty() ? -1 : static_cast<int>(info.cavityTexture.index());
-	// Fixed-point strength preserves the 128-byte GPU/pak layout; -1 is
-	// the legacy/default 1.0 strength for previously cooked materials.
-	values.textures2[2] = info.cavityStrength >= 1.0f ? -1 :
-		static_cast<int>(std::clamp(info.cavityStrength, 0.0f, 1.0f) * 1000.0f + 0.5f);
-	values.textures2[3] = info.channelSelectors;
+    MaterialValues values{};
+    values.diffuse = info.baseColorFactor;
+    values.ambient.w = std::clamp(info.translucency, 0.0f, 1.0f);
+    values.textures[0] = baseTex.empty() ? -1 : static_cast<int>(baseTex.index());
+    values.textures[1] = info.metallicRoughnessTexture.empty()
+                             ? -1
+                             : static_cast<int>(info.metallicRoughnessTexture.index());
+    values.textures[2] =
+        info.normalTexture.empty() ? -1 : static_cast<int>(info.normalTexture.index());
+    values.textures[3] =
+        info.occlusionTexture.empty() ? -1 : static_cast<int>(info.occlusionTexture.index());
+    values.textures2[0] =
+        info.emissiveTexture.empty() ? -1 : static_cast<int>(info.emissiveTexture.index());
+    values.textures2[1] =
+        info.cavityTexture.empty() ? -1 : static_cast<int>(info.cavityTexture.index());
+    // Fixed-point strength preserves the 128-byte GPU/pak layout; -1 is
+    // the legacy/default 1.0 strength for previously cooked materials.
+    values.textures2[2] =
+        info.cavityStrength >= 1.0f
+            ? -1
+            : static_cast<int>(std::clamp(info.cavityStrength, 0.0f, 1.0f) * 1000.0f + 0.5f);
+    values.textures2[3] = info.channelSelectors;
 
-	values.params.x = info.alphaCutoff;
-	values.params.y = info.metallicFactor;
-	values.params.z = info.roughnessFactor;
-	values.params.w = static_cast<float>(static_cast<uint32_t>(info.shadingModel));
+    values.params.x = info.alphaCutoff;
+    values.params.y = info.metallicFactor;
+    values.params.z = info.roughnessFactor;
+    values.params.w = static_cast<float>(static_cast<uint32_t>(info.shadingModel));
 
-	values.params2.x = info.occlusionStrength;
-	values.params2.y = info.normalScale;
-	values.params2.z = info.emissiveStrength;
-	values.params2.w = 0.0f;
+    values.params2.x = info.occlusionStrength;
+    values.params2.y = info.normalScale;
+    values.params2.z = info.emissiveStrength;
+    values.params2.w = 0.0f;
 
-	// The w word carries the per-material flag bits (mesh.h): the
-	// receive-contact-shadows bit rides the old pad.
-	values.emissiveFactor = glm::vec4(info.emissiveFactor,
-		MaterialFlagsToWord(info.receiveContactShadows
-			? kMaterialFlagReceiveContactShadows : 0u));
-	// values.ambient keeps the MaterialValues default (0,0,0,0): the legacy
-	// sky-ambient floor is off by default; ambient comes from the env/IBL
-	// block instead. See comment in mesh.h.
-	return CreateMaterialFromValues(
-		values, info.shadingModel, info.alphaMode, info.alphaCutoff,
-		info.doubleSided, info.castsShadows, info.allowFarVertexLit,
-		info.farQuality);
+    // The w word carries the per-material flag bits (mesh.h): the
+    // receive-contact-shadows bit rides the old pad.
+    values.emissiveFactor = glm::vec4(
+        info.emissiveFactor,
+        MaterialFlagsToWord(info.receiveContactShadows ? kMaterialFlagReceiveContactShadows : 0u));
+    // values.ambient keeps the MaterialValues default (0,0,0,0): the legacy
+    // sky-ambient floor is off by default; ambient comes from the env/IBL
+    // block instead. See comment in mesh.h.
+    return CreateMaterialFromValues(values,
+                                    info.shadingModel,
+                                    info.alphaMode,
+                                    info.alphaCutoff,
+                                    info.doubleSided,
+                                    info.castsShadows,
+                                    info.allowFarVertexLit,
+                                    info.farQuality);
 }
 
-	smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(
-		const MaterialValues& values,
-		ShadingModel shadingModel,
-		AlphaMode alphaMode,
-		float alphaCutoff,
-		bool doubleSided,
-		bool castsShadows,
-		bool allowFarVertexLit,
-		ShaderLodQuality farQuality)
-	{
-		smvk::Material material{};
-		material.values = values;
-	// Authoritative alphaMode mirror for the shader (params2.w): Blend
-	// materials need screen-door dither in the fragment shader, but
-	// shadingModel alone cannot distinguish them from Opaque (both are
-	// DefaultLit). Enforced here so cooked paks (whose blob predates the
-	// encoding) backfill correctly on deserialize.
-	material.values.params2.w = static_cast<float>(static_cast<uint32_t>(alphaMode));
-	material.shadingModel = shadingModel;
-	material.alphaMode = alphaMode;
-	material.alphaCutoff = alphaCutoff;
-	material.doubleSided = doubleSided;
-	material.castsShadows = castsShadows;
-	material.shaderLod.allowFarVertexLit = allowFarVertexLit;
-	material.shaderLod.farQuality = farQuality;
-	material.pipeline = MakePipelineStateForMaterial(alphaMode, shadingModel);
-	return materials.create(std::move(material));
+smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(const MaterialValues& values,
+                                                                    ShadingModel shadingModel,
+                                                                    AlphaMode alphaMode,
+                                                                    float alphaCutoff,
+                                                                    bool doubleSided,
+                                                                    bool castsShadows,
+                                                                    bool allowFarVertexLit,
+                                                                    ShaderLodQuality farQuality) {
+    smvk::Material material{};
+    material.values = values;
+    // Authoritative alphaMode mirror for the shader (params2.w): Blend
+    // materials need screen-door dither in the fragment shader, but
+    // shadingModel alone cannot distinguish them from Opaque (both are
+    // DefaultLit). Enforced here so cooked paks (whose blob predates the
+    // encoding) backfill correctly on deserialize.
+    material.values.params2.w = static_cast<float>(static_cast<uint32_t>(alphaMode));
+    material.shadingModel = shadingModel;
+    material.alphaMode = alphaMode;
+    material.alphaCutoff = alphaCutoff;
+    material.doubleSided = doubleSided;
+    material.castsShadows = castsShadows;
+    material.shaderLod.allowFarVertexLit = allowFarVertexLit;
+    material.shaderLod.farQuality = farQuality;
+    material.pipeline = MakePipelineStateForMaterial(alphaMode, shadingModel);
+    return materials.create(std::move(material));
 }
 
-void smvk::Cluster::DestroyMaterial(smvk::ClusterMaterialHandle handle)
-{
-	materials.destroy(handle);
+void smvk::Cluster::DestroyMaterial(smvk::ClusterMaterialHandle handle) {
+    materials.destroy(handle);
 }
-

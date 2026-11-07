@@ -37,270 +37,250 @@ int g_failures = 0;
 int g_checks = 0;
 
 void Check(bool cond, const char* name) {
-	++g_checks;
-	if (cond) {
-		std::cout << "PASS " << name << "\n";
-	}
-	else {
-		++g_failures;
-		std::cout << "FAIL " << name << "\n";
-	}
+    ++g_checks;
+    if (cond) {
+        std::cout << "PASS " << name << "\n";
+    } else {
+        ++g_failures;
+        std::cout << "FAIL " << name << "\n";
+    }
 }
 
 // NDC z of an on-axis point at view distance d (camera looks -Z).
 float NdcZ(const glm::mat4& proj, float dist) {
-	const glm::vec4 clip = proj * glm::vec4(0.0f, 0.0f, -dist, 1.0f);
-	return clip.z / clip.w;
+    const glm::vec4 clip = proj * glm::vec4(0.0f, 0.0f, -dist, 1.0f);
+    return clip.z / clip.w;
 }
 
 void TestFiniteMapping() {
-	constexpr float kFov = glm::radians(45.0f);
-	constexpr float kAspect = 16.0f / 9.0f;
-	constexpr float kNear = 0.01f;
-	constexpr float kFar = 100000.0f;
-	const glm::mat4 proj = tour::MakeReversedZProjRH(kFov, kAspect, kNear, kFar);
+    constexpr float kFov = glm::radians(45.0f);
+    constexpr float kAspect = 16.0f / 9.0f;
+    constexpr float kNear = 0.01f;
+    constexpr float kFar = 100000.0f;
+    const glm::mat4 proj = tour::MakeReversedZProjRH(kFov, kAspect, kNear, kFar);
 
-	Check(std::abs(NdcZ(proj, kNear) - 1.0f) < 1e-6f, "camera.finite.near-maps-to-one");
-	Check(std::abs(NdcZ(proj, kFar)) < 1e-6f, "camera.finite.far-maps-to-zero");
-	// Monotonic decrease across the range (spot check ordered pair).
-	Check(NdcZ(proj, 1.0f) > NdcZ(proj, 10.0f)
-		&& NdcZ(proj, 10.0f) > NdcZ(proj, 1000.0f),
-		"camera.finite.monotonic");
-	// Beyond far -> NDC z<0 side (frustum-cullable); inside near -> past 1.
-	Check(NdcZ(proj, kFar * 2.0f) < 0.0f, "camera.finite.beyond-far-negative");
-	Check(NdcZ(proj, kNear * 0.5f) > 1.0f, "camera.finite.inside-near-above-one");
+    Check(std::abs(NdcZ(proj, kNear) - 1.0f) < 1e-6f, "camera.finite.near-maps-to-one");
+    Check(std::abs(NdcZ(proj, kFar)) < 1e-6f, "camera.finite.far-maps-to-zero");
+    // Monotonic decrease across the range (spot check ordered pair).
+    Check(NdcZ(proj, 1.0f) > NdcZ(proj, 10.0f) && NdcZ(proj, 10.0f) > NdcZ(proj, 1000.0f),
+          "camera.finite.monotonic");
+    // Beyond far -> NDC z<0 side (frustum-cullable); inside near -> past 1.
+    Check(NdcZ(proj, kFar * 2.0f) < 0.0f, "camera.finite.beyond-far-negative");
+    Check(NdcZ(proj, kNear * 0.5f) > 1.0f, "camera.finite.inside-near-above-one");
 }
 
 void TestMatchesInfiniteInRange() {
-	constexpr float kFov = glm::radians(45.0f);
-	constexpr float kAspect = 16.0f / 9.0f;
-	constexpr float kNear = 0.01f;
-	constexpr float kFar = 100000.0f;
-	const glm::mat4 finite = tour::MakeReversedZProjRH(kFov, kAspect, kNear, kFar);
-	const glm::mat4 infinite = tour::MakeInfReversedZProjRH(kFov, kAspect, kNear);
+    constexpr float kFov = glm::radians(45.0f);
+    constexpr float kAspect = 16.0f / 9.0f;
+    constexpr float kNear = 0.01f;
+    constexpr float kFar = 100000.0f;
+    const glm::mat4 finite = tour::MakeReversedZProjRH(kFov, kAspect, kNear, kFar);
+    const glm::mat4 infinite = tour::MakeInfReversedZProjRH(kFov, kAspect, kNear);
 
-	// Inside [near, far] the finite form must agree with the infinite form
-	// to ~1e-7 relative: switching projections is visually silent, only
-	// beyond-far behavior changes (cullable vs clamped).
-	const float dists[] = { 0.02f, 1.0f, 10.0f, 100.0f, 10000.0f };
-	bool ok = true;
-	for (float d : dists) {
-		const float a = NdcZ(finite, d);
-		const float b = NdcZ(infinite, d);
-		if (!(std::abs(a - b) <= 1e-6f * std::max(1.0f, std::abs(b))))
-			ok = false;
-	}
-	Check(ok, "camera.finite.matches-infinite-in-range");
+    // Inside [near, far] the finite form must agree with the infinite form
+    // to ~1e-7 relative: switching projections is visually silent, only
+    // beyond-far behavior changes (cullable vs clamped).
+    const float dists[] = {0.02f, 1.0f, 10.0f, 100.0f, 10000.0f};
+    bool ok = true;
+    for (float d : dists) {
+        const float a = NdcZ(finite, d);
+        const float b = NdcZ(infinite, d);
+        if (!(std::abs(a - b) <= 1e-6f * std::max(1.0f, std::abs(b))))
+            ok = false;
+    }
+    Check(ok, "camera.finite.matches-infinite-in-range");
 }
 
 // Max abs component difference of two 4x4 matrices.
 float MatMaxDiff(const glm::mat4& a, const glm::mat4& b) {
-	float m = 0.0f;
-	for (int c = 0; c < 4; ++c)
-		for (int r = 0; r < 4; ++r)
-			m = std::max(m, std::abs(a[c][r] - b[c][r]));
-	return m;
+    float m = 0.0f;
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+            m = std::max(m, std::abs(a[c][r] - b[c][r]));
+    return m;
 }
 
 void TestSafeLookAt() {
-	// The SHARED degenerate-lookAt resolution (tour::ResolveLookAtUp/tour::SafeLookAt):
-	// every camera framing that can look straight down/up resolves through
-	// it, so all consumers of one (eye, target) pair agree on the screen
-	// basis (the editor's overlay camera + the drive paths picking
-	// their own fallbacks rotated the editor's wire boxes 90 degrees
-	// against the scene in the straight-down top view).
-	const glm::vec3 upPref(0.0f, 1.0f, 0.0f);
+    // The SHARED degenerate-lookAt resolution (tour::ResolveLookAtUp/tour::SafeLookAt):
+    // every camera framing that can look straight down/up resolves through
+    // it, so all consumers of one (eye, target) pair agree on the screen
+    // basis (the editor's overlay camera + the drive paths picking
+    // their own fallbacks rotated the editor's wire boxes 90 degrees
+    // against the scene in the straight-down top view).
+    const glm::vec3 upPref(0.0f, 1.0f, 0.0f);
 
-	// Non-degenerate framing: tour::SafeLookAt == plain lookAt with the
-	// preferred up (byte-identical basis).
-	const glm::vec3 eye(3.0f, 4.0f, 5.0f);
-	const glm::vec3 tgt(0.0f, 1.0f, 0.0f);
-	Check(MatMaxDiff(tour::SafeLookAt(eye, tgt), glm::lookAt(eye, tgt, upPref))
-			< 1e-6f, "camera.safelookat.nondeg-plain-agrees");
+    // Non-degenerate framing: tour::SafeLookAt == plain lookAt with the
+    // preferred up (byte-identical basis).
+    const glm::vec3 eye(3.0f, 4.0f, 5.0f);
+    const glm::vec3 tgt(0.0f, 1.0f, 0.0f);
+    Check(MatMaxDiff(tour::SafeLookAt(eye, tgt), glm::lookAt(eye, tgt, upPref)) < 1e-6f,
+          "camera.safelookat.nondeg-plain-agrees");
 
-	// Straight DOWN (eye above target): right = +X, screen-up = -Z
-	// ("north up"), deterministically. (View-matrix axes live in the ROWS
-	// of the column-major mat4: row 0 = right, row 1 = screen-up.)
-	{
-		const glm::mat4 v = tour::SafeLookAt(glm::vec3(0.0f, 25.0f, 0.0f),
-			glm::vec3(0.0f), upPref);
-		const glm::vec3 right(v[0][0], v[1][0], v[2][0]);
-		const glm::vec3 up(v[0][1], v[1][1], v[2][1]);
-		bool ok = glm::dot(right, glm::vec3(1, 0, 0)) > 0.999f
-			&& glm::dot(up, glm::vec3(0, 0, -1)) > 0.999f;
-		Check(ok, "camera.safelookat.straight-down-basis");
-	}
-	// Straight UP (eye below target): screen-up = +Z.
-	{
-		const glm::mat4 v = tour::SafeLookAt(glm::vec3(0.0f, -25.0f, 0.0f),
-			glm::vec3(0.0f), upPref);
-		const glm::vec3 up(v[0][1], v[1][1], v[2][1]);
-		Check(glm::dot(up, glm::vec3(0, 0, 1)) > 0.999f,
-			"camera.safelookat.straight-up-basis");
-	}
-	// The editor's Top camera (pitch truncated near -pi/2, yaw 0) resolves
-	// to the SAME basis as the exact straight-down framing — the old direct
-	// lookAt built its basis from the pitch residue (right=+X/up=-Z) while
-	// the drive paths' target nudge picked (right=+Z/up=+X): the 90-degree
-	// rotation. Both must be identical now.
-	{
-		const float pitch = -1.5707963f; // SetupDefaultCameras' Top value
-		const float yaw = 0.0f;
-		const glm::vec3 topEye = glm::vec3(0.0f)
-			+ 25.0f * glm::vec3(
-				std::cos(pitch) * std::sin(yaw),
-				-std::sin(pitch),
-				std::cos(pitch) * std::cos(yaw));
-		const glm::mat4 a = tour::SafeLookAt(topEye, glm::vec3(0.0f), upPref);
-		const glm::mat4 b = tour::SafeLookAt(glm::vec3(0.0f, 25.0f, 0.0f),
-			glm::vec3(0.0f), upPref);
-		Check(MatMaxDiff(a, b) < 1e-4f,
-			"camera.safelookat.topcam-equals-exact-straight-down");
-	}
-	// The camera drive paths feed the resolved up into the POSITIONER's
-	// lookAt (quat orientation -> mat4_cast view): it must agree with the
-	// mat4 tour::SafeLookAt for the same (eye, target, resolved up) — straight
-	// down AND a normal framing.
-	{
-		tour::CameraPositioner_FirstPerson p;
-		const glm::vec3 eyes[2] = {
-			glm::vec3(0.0f, 25.0f, 0.0f), // straight down
-			glm::vec3(3.0f, 4.0f, 5.0f),  // normal
-		};
-		const glm::vec3 tgts[2] = {
-			glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
-		};
-		bool okDown = true, okNorm = true;
-		for (int i = 0; i < 2; ++i) {
-			p.lookAt(eyes[i], tgts[i], tour::ResolveLookAtUp(eyes[i], tgts[i]));
-			const float diff = MatMaxDiff(p.getViewMatrix(),
-				tour::SafeLookAt(eyes[i], tgts[i]));
-			if (i == 0)
-				okDown = diff < 1e-4f;
-			else
-				okNorm = diff < 1e-4f;
-		}
-		Check(okDown, "camera.safelookat.positioner-agrees-straight-down");
-		Check(okNorm, "camera.safelookat.positioner-agrees-normal");
-	}
+    // Straight DOWN (eye above target): right = +X, screen-up = -Z
+    // ("north up"), deterministically. (View-matrix axes live in the ROWS
+    // of the column-major mat4: row 0 = right, row 1 = screen-up.)
+    {
+        const glm::mat4 v = tour::SafeLookAt(glm::vec3(0.0f, 25.0f, 0.0f), glm::vec3(0.0f), upPref);
+        const glm::vec3 right(v[0][0], v[1][0], v[2][0]);
+        const glm::vec3 up(v[0][1], v[1][1], v[2][1]);
+        bool ok = glm::dot(right, glm::vec3(1, 0, 0)) > 0.999f &&
+                  glm::dot(up, glm::vec3(0, 0, -1)) > 0.999f;
+        Check(ok, "camera.safelookat.straight-down-basis");
+    }
+    // Straight UP (eye below target): screen-up = +Z.
+    {
+        const glm::mat4 v =
+            tour::SafeLookAt(glm::vec3(0.0f, -25.0f, 0.0f), glm::vec3(0.0f), upPref);
+        const glm::vec3 up(v[0][1], v[1][1], v[2][1]);
+        Check(glm::dot(up, glm::vec3(0, 0, 1)) > 0.999f, "camera.safelookat.straight-up-basis");
+    }
+    // The editor's Top camera (pitch truncated near -pi/2, yaw 0) resolves
+    // to the SAME basis as the exact straight-down framing — the old direct
+    // lookAt built its basis from the pitch residue (right=+X/up=-Z) while
+    // the drive paths' target nudge picked (right=+Z/up=+X): the 90-degree
+    // rotation. Both must be identical now.
+    {
+        const float pitch = -1.5707963f; // SetupDefaultCameras' Top value
+        const float yaw = 0.0f;
+        const glm::vec3 topEye =
+            glm::vec3(0.0f) + 25.0f * glm::vec3(std::cos(pitch) * std::sin(yaw),
+                                                -std::sin(pitch),
+                                                std::cos(pitch) * std::cos(yaw));
+        const glm::mat4 a = tour::SafeLookAt(topEye, glm::vec3(0.0f), upPref);
+        const glm::mat4 b = tour::SafeLookAt(glm::vec3(0.0f, 25.0f, 0.0f), glm::vec3(0.0f), upPref);
+        Check(MatMaxDiff(a, b) < 1e-4f, "camera.safelookat.topcam-equals-exact-straight-down");
+    }
+    // The camera drive paths feed the resolved up into the POSITIONER's
+    // lookAt (quat orientation -> mat4_cast view): it must agree with the
+    // mat4 tour::SafeLookAt for the same (eye, target, resolved up) — straight
+    // down AND a normal framing.
+    {
+        tour::CameraPositioner_FirstPerson p;
+        const glm::vec3 eyes[2] = {
+            glm::vec3(0.0f, 25.0f, 0.0f), // straight down
+            glm::vec3(3.0f, 4.0f, 5.0f),  // normal
+        };
+        const glm::vec3 tgts[2] = {
+            glm::vec3(0.0f),
+            glm::vec3(0.0f, 1.0f, 0.0f),
+        };
+        bool okDown = true, okNorm = true;
+        for (int i = 0; i < 2; ++i) {
+            p.lookAt(eyes[i], tgts[i], tour::ResolveLookAtUp(eyes[i], tgts[i]));
+            const float diff = MatMaxDiff(p.getViewMatrix(), tour::SafeLookAt(eyes[i], tgts[i]));
+            if (i == 0)
+                okDown = diff < 1e-4f;
+            else
+                okNorm = diff < 1e-4f;
+        }
+        Check(okDown, "camera.safelookat.positioner-agrees-straight-down");
+        Check(okNorm, "camera.safelookat.positioner-agrees-normal");
+    }
 }
 
 void TestMouseLookFramerateIndependent() {
-	// Mouse deltas are per-frame displacements, not rates: the same
-	// cursor travel must produce the same orientation at ANY dt (the old
-	// `* deltaSeconds` turned 2x slower per second at 2x fps for
-	// identical physical movement). Same splits, different dts =>
-	// bit-identical forward vectors.
-	const glm::vec2 total(0.35f, -0.2f);
-	auto drive = [&](int steps, double dt) {
-		tour::CameraPositioner_FirstPerson p;
-		glm::vec2 cursor(0.0f);
-		const glm::vec2 step = total / float(steps);
-		for (int i = 0; i < steps; ++i) {
-			cursor += step;
-			p.update(dt, cursor, true);
-		}
-		return p.getForward();
-	};
-	const glm::vec3 f60 = drive(4, 1.0 / 60.0);
-	const glm::vec3 f30 = drive(4, 1.0 / 30.0);
-	const glm::vec3 f240 = drive(4, 1.0 / 240.0);
-	Check(glm::distance(f60, f30) < 1e-6f, "camera.mouselook.dt-invariant-30");
-	Check(glm::distance(f60, f240) < 1e-6f, "camera.mouselook.dt-invariant-240");
-	// Sanity: it actually turned (not a vacuous comparison).
-	Check(glm::distance(f60, glm::vec3(0.0f, 0.0f, -1.0f)) > 0.05f,
-		"camera.mouselook.turns");
+    // Mouse deltas are per-frame displacements, not rates: the same
+    // cursor travel must produce the same orientation at ANY dt (the old
+    // `* deltaSeconds` turned 2x slower per second at 2x fps for
+    // identical physical movement). Same splits, different dts =>
+    // bit-identical forward vectors.
+    const glm::vec2 total(0.35f, -0.2f);
+    auto drive = [&](int steps, double dt) {
+        tour::CameraPositioner_FirstPerson p;
+        glm::vec2 cursor(0.0f);
+        const glm::vec2 step = total / float(steps);
+        for (int i = 0; i < steps; ++i) {
+            cursor += step;
+            p.update(dt, cursor, true);
+        }
+        return p.getForward();
+    };
+    const glm::vec3 f60 = drive(4, 1.0 / 60.0);
+    const glm::vec3 f30 = drive(4, 1.0 / 30.0);
+    const glm::vec3 f240 = drive(4, 1.0 / 240.0);
+    Check(glm::distance(f60, f30) < 1e-6f, "camera.mouselook.dt-invariant-30");
+    Check(glm::distance(f60, f240) < 1e-6f, "camera.mouselook.dt-invariant-240");
+    // Sanity: it actually turned (not a vacuous comparison).
+    Check(glm::distance(f60, glm::vec3(0.0f, 0.0f, -1.0f)) > 0.05f, "camera.mouselook.turns");
 }
 
 void TestResetAnchorsAtLookAt() {
-	// The camera reset (App keybind::CAMERA_RESET -> positioner.reset())
-	// returns to the LAST lookAt pose — every framing site (Configure
-	// defaults, authored scene cameras, the generic fit) re-anchors the
-	// snapshot through lookAt — and the glide dies (moveSpeed_ zeroed, or
-	// the damping decay keeps drifting the camera off the restored pose).
-	tour::CameraPositioner_FirstPerson p;
-	const glm::vec3 eye(7.24f, 4.03f, 0.04f);
-	const glm::vec3 fwd(-0.949f, -0.312f, -0.045f);
-	p.lookAt(eye, eye + fwd, glm::vec3(0.0f, 1.0f, 0.0f));
+    // The camera reset (App keybind::CAMERA_RESET -> positioner.reset())
+    // returns to the LAST lookAt pose — every framing site (Configure
+    // defaults, authored scene cameras, the generic fit) re-anchors the
+    // snapshot through lookAt — and the glide dies (moveSpeed_ zeroed, or
+    // the damping decay keeps drifting the camera off the restored pose).
+    tour::CameraPositioner_FirstPerson p;
+    const glm::vec3 eye(7.24f, 4.03f, 0.04f);
+    const glm::vec3 fwd(-0.949f, -0.312f, -0.045f);
+    p.lookAt(eye, eye + fwd, glm::vec3(0.0f, 1.0f, 0.0f));
 
-	// Fly away on held forward (builds to maxSpeed, ~10m over 5s).
-	p.movement_.forward_ = true;
-	for (int i = 0; i < 300; ++i)
-		p.update(1.0 / 60.0, glm::vec2(0.0f), false);
-	p.movement_.forward_ = false;
-	Check(glm::distance(p.getPosition(), eye) > 1.0f,
-		"camera.reset.flew-away");
+    // Fly away on held forward (builds to maxSpeed, ~10m over 5s).
+    p.movement_.forward_ = true;
+    for (int i = 0; i < 300; ++i)
+        p.update(1.0 / 60.0, glm::vec2(0.0f), false);
+    p.movement_.forward_ = false;
+    Check(glm::distance(p.getPosition(), eye) > 1.0f, "camera.reset.flew-away");
 
-	p.reset();
-	Check(glm::distance(p.getPosition(), eye) < 1e-6f,
-		"camera.reset.position-restored");
-	Check(glm::distance(p.getForward(), glm::normalize(fwd)) < 1e-4f,
-		"camera.reset.orientation-restored");
-	Check(glm::length(p.moveSpeed_) == 0.0f,
-		"camera.reset.glide-killed");
+    p.reset();
+    Check(glm::distance(p.getPosition(), eye) < 1e-6f, "camera.reset.position-restored");
+    Check(glm::distance(p.getForward(), glm::normalize(fwd)) < 1e-4f,
+          "camera.reset.orientation-restored");
+    Check(glm::length(p.moveSpeed_) == 0.0f, "camera.reset.glide-killed");
 
-	// A second spawn re-anchors: reset goes to the NEWEST lookAt pose,
-	// never the ctor default. Straight-down exercises the resolved
-	// horizontal up (0,0,-1) — the snapshot must carry it (up_ restored,
-	// first mouselook keeps the basis instead of NaN-ing).
-	const glm::vec3 eye2(0.0f, 25.0f, 0.0f);
-	const glm::vec3 tgt2(0.0f);
-	p.lookAt(eye2, tgt2, tour::ResolveLookAtUp(eye2, tgt2));
-	p.reset();
-	Check(glm::distance(p.getPosition(), eye2) < 1e-6f,
-		"camera.reset.reanchor-latest");
-	Check(glm::distance(p.getForward(), glm::vec3(0.0f, -1.0f, 0.0f))
-			< 1e-4f, "camera.reset.straight-down-forward");
-	Check(glm::distance(p.up_, glm::vec3(0.0f, 0.0f, -1.0f)) < 1e-6f,
-		"camera.reset.resolved-up-carried");
+    // A second spawn re-anchors: reset goes to the NEWEST lookAt pose,
+    // never the ctor default. Straight-down exercises the resolved
+    // horizontal up (0,0,-1) — the snapshot must carry it (up_ restored,
+    // first mouselook keeps the basis instead of NaN-ing).
+    const glm::vec3 eye2(0.0f, 25.0f, 0.0f);
+    const glm::vec3 tgt2(0.0f);
+    p.lookAt(eye2, tgt2, tour::ResolveLookAtUp(eye2, tgt2));
+    p.reset();
+    Check(glm::distance(p.getPosition(), eye2) < 1e-6f, "camera.reset.reanchor-latest");
+    Check(glm::distance(p.getForward(), glm::vec3(0.0f, -1.0f, 0.0f)) < 1e-4f,
+          "camera.reset.straight-down-forward");
+    Check(glm::distance(p.up_, glm::vec3(0.0f, 0.0f, -1.0f)) < 1e-6f,
+          "camera.reset.resolved-up-carried");
 }
 
 void TestCameraCutSemantics() {
-	using tour::CameraChange;
-	using tour::CameraChangeTracker;
-	using tour::CameraFramePose;
-	CameraChangeTracker tracker;
-	CameraFramePose pose{};
-	Check(tracker.Observe(pose) == CameraChange::Initial,
-		"camera.cut.first-frame-is-initial");
-	Check(tracker.Observe(pose) == CameraChange::Continuous,
-		"camera.cut.stationary-is-continuous");
-	pose.position.x += 1.0f;
-	Check(tracker.Observe(pose) == CameraChange::Continuous,
-		"camera.cut.normal-motion-keeps-history");
-	pose.position.x += 6.0f;
-	Check(tracker.Observe(pose) == CameraChange::Cut,
-		"camera.cut.teleport");
-	Check(tracker.Observe(pose) == CameraChange::Continuous,
-		"camera.cut.one-shot");
-	pose.orientation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
-	Check(tracker.Observe(pose) == CameraChange::Cut,
-		"camera.cut.rapid-rotation");
-	pose.orientation = -pose.orientation;
-	Check(tracker.Observe(pose) == CameraChange::Continuous,
-		"camera.cut.quaternion-sign-is-not-motion");
-	pose.fovYDegrees += 10.0f;
-	Check(tracker.Observe(pose) == CameraChange::Cut,
-		"camera.cut.lens-change");
-	pose.nearClip *= 2.0f;
-	Check(tracker.Observe(pose) == CameraChange::Cut,
-		"camera.cut.near-plane-change");
-	tracker.RequestCut();
-	Check(tracker.Observe(pose) == CameraChange::Cut,
-		"camera.cut.explicit-request");
-	Check(tracker.Observe(pose) == CameraChange::Continuous,
-		"camera.cut.explicit-request-consumed");
+    using tour::CameraChange;
+    using tour::CameraChangeTracker;
+    using tour::CameraFramePose;
+    CameraChangeTracker tracker;
+    CameraFramePose pose{};
+    Check(tracker.Observe(pose) == CameraChange::Initial, "camera.cut.first-frame-is-initial");
+    Check(tracker.Observe(pose) == CameraChange::Continuous, "camera.cut.stationary-is-continuous");
+    pose.position.x += 1.0f;
+    Check(tracker.Observe(pose) == CameraChange::Continuous,
+          "camera.cut.normal-motion-keeps-history");
+    pose.position.x += 6.0f;
+    Check(tracker.Observe(pose) == CameraChange::Cut, "camera.cut.teleport");
+    Check(tracker.Observe(pose) == CameraChange::Continuous, "camera.cut.one-shot");
+    pose.orientation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
+    Check(tracker.Observe(pose) == CameraChange::Cut, "camera.cut.rapid-rotation");
+    pose.orientation = -pose.orientation;
+    Check(tracker.Observe(pose) == CameraChange::Continuous,
+          "camera.cut.quaternion-sign-is-not-motion");
+    pose.fovYDegrees += 10.0f;
+    Check(tracker.Observe(pose) == CameraChange::Cut, "camera.cut.lens-change");
+    pose.nearClip *= 2.0f;
+    Check(tracker.Observe(pose) == CameraChange::Cut, "camera.cut.near-plane-change");
+    tracker.RequestCut();
+    Check(tracker.Observe(pose) == CameraChange::Cut, "camera.cut.explicit-request");
+    Check(tracker.Observe(pose) == CameraChange::Continuous,
+          "camera.cut.explicit-request-consumed");
 }
 
 } // namespace
 
 int main() {
-	TestFiniteMapping();
-	TestMatchesInfiniteInRange();
-	TestSafeLookAt();
-	TestMouseLookFramerateIndependent();
-	TestResetAnchorsAtLookAt();
-	TestCameraCutSemantics();
-	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
-	return g_failures == 0 ? 0 : 1;
+    TestFiniteMapping();
+    TestMatchesInfiniteInRange();
+    TestSafeLookAt();
+    TestMouseLookFramerateIndependent();
+    TestResetAnchorsAtLookAt();
+    TestCameraCutSemantics();
+    std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
+    return g_failures == 0 ? 0 : 1;
 }

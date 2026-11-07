@@ -43,7 +43,9 @@
 #include <Engine/Scene/scene_node_id.h>
 #include <Engine/Scene/scene_payloads.h>
 
-namespace tour::scene { struct Scene; }	// the graph (moved with scene.h)
+namespace tour::scene {
+struct Scene;
+} // namespace tour::scene
 namespace tour::scene {
 
 // Row index into a SceneTables member vector. InvalidRow = no row.
@@ -60,34 +62,34 @@ constexpr RowId InvalidRow = 0xFFFFFFFFu;
 // instancing path can set a mesh with no material): two independent
 // maps became two independent tables, one owner per fact.
 struct MeshRow {
-	NodeId node = 0;
-	uint32_t mesh = 0xFFFFFFFFu;
+    NodeId node = 0;
+    uint32_t mesh = 0xFFFFFFFFu;
 };
 
 // Node -> material association (the materialForNode override —
 // independent of any mesh row on the same node).
 struct MaterialRow {
-	NodeId node = 0;
-	uint32_t material = 0xFFFFFFFFu;
+    NodeId node = 0;
+    uint32_t material = 0xFFFFFFFFu;
 };
 
 // Node -> light association (the owning Cluster's lights pool index —
 // what lightForNode stores today).
 struct LightRow {
-	NodeId node = 0;
-	uint32_t light = 0xFFFFFFFFu;
+    NodeId node = 0;
+    uint32_t light = 0xFFFFFFFFu;
 };
 
 // Node -> camera association (the owning Cluster's cameras pool index).
 struct CameraRow {
-	NodeId node = 0;
-	uint32_t camera = 0xFFFFFFFFu;
+    NodeId node = 0;
+    uint32_t camera = 0xFFFFFFFFu;
 };
 
 // Node -> decal association (the owning Cluster's decals pool index).
 struct DecalRow {
-	NodeId node = 0;
-	uint32_t decal = 0xFFFFFFFFu;
+    NodeId node = 0;
+    uint32_t decal = 0xFFFFFFFFu;
 };
 
 // ---- inline-payload rows (Epoch 5) ----
@@ -101,34 +103,34 @@ struct DecalRow {
 
 // Node -> authored GI volume (was giVolumeForNode).
 struct GiVolumeRow {
-	NodeId node = 0;
-	SceneGiVolume volume{};
+    NodeId node = 0;
+    SceneGiVolume volume{};
 };
 
 // Node -> authored cubemap capture pin (was cubemapForNode).
 struct CubemapRow {
-	NodeId node = 0;
-	SceneCubemap cubemap{};
+    NodeId node = 0;
+    SceneCubemap cubemap{};
 };
 
 // Node -> export/cook settings (was exportForNode; deliberately
 // editor/cook-only — never packed into runtime content, preserved
 // behavior from the map era).
 struct ExportRow {
-	NodeId node = 0;
-	SceneExportSettings settings{};
+    NodeId node = 0;
+    SceneExportSettings settings{};
 };
 
 // Node -> authored environment look block (was envForNode).
 struct EnvRow {
-	NodeId node = 0;
-	SceneEnv environment{};
+    NodeId node = 0;
+    SceneEnv environment{};
 };
 
 // Node -> authored env-volume shape (was envVolumeForNode).
 struct EnvVolumeRow {
-	NodeId node = 0;
-	EnvVolume volume{};
+    NodeId node = 0;
+    EnvVolume volume{};
 };
 
 // Node -> authored audio source (the emitter association; see
@@ -136,8 +138,8 @@ struct EnvVolumeRow {
 // emitter is a node-local definition — no pool, the sounds list is
 // asset REFERENCES (the clips themselves are shared pak assets).
 struct AudioSourceRow {
-	NodeId node = 0;
-	SceneAudioSource source{};
+    NodeId node = 0;
+    SceneAudioSource source{};
 };
 
 // Node -> authored AUDIO ROOM (the environmental-reverb volume; see
@@ -145,20 +147,20 @@ struct AudioSourceRow {
 // is a node-local definition — at most ONE per node (Set replaces),
 // independent of any GiVolumeRow on the same node.
 struct AudioRoomRow {
-	NodeId node = 0;
-	SceneAudioRoom room{};
+    NodeId node = 0;
+    SceneAudioRoom room{};
 };
 
 // Node -> authored rigid-body and collider settings.
 struct PhysicsBodyRow {
-	NodeId node = 0;
-	ScenePhysicsBody body{};
+    NodeId node = 0;
+    ScenePhysicsBody body{};
 };
 
 // Node -> optional spatial trigger component.
 struct TriggerVolumeRow {
-	NodeId node = 0;
-	SceneTriggerVolume trigger{};
+    NodeId node = 0;
+    SceneTriggerVolume trigger{};
 };
 
 // Node -> PROJECT-DEFINED SCHEMA ASSOCIATION (the custom-node-schema
@@ -171,9 +173,9 @@ struct TriggerVolumeRow {
 // the value block is a node-local definition, exactly like the audio
 // source. At most ONE schema association per node (Set replaces).
 struct SchemaAssocRow {
-	NodeId node = 0;
-	uint32_t schemaId = 0; // the STABLE schema id (the pak's registry)
-	std::vector<uint8_t> values; // the cooked value block
+    NodeId node = 0;
+    uint32_t schemaId = 0;       // the STABLE schema id (the pak's registry)
+    std::vector<uint8_t> values; // the cooked value block
 };
 
 // The row contract for the future pak chunks (Epoch 7): every row is
@@ -195,22 +197,22 @@ static_assert(std::is_trivially_copyable_v<DecalRow> && sizeof(DecalRow) == 8);
 // env / envVolume / export rows at Epoch 5, rigid bodies + colliders
 // at Epoch 10) — each as its own explicit member + row type.
 struct SceneTables {
-	std::vector<MeshRow> meshes;
-	std::vector<MaterialRow> materials;
-	std::vector<LightRow> lights;
-	std::vector<CameraRow> cameras;
-	std::vector<DecalRow> decals;
-	std::vector<GiVolumeRow> giVolumes;
-	std::vector<CubemapRow> cubemaps;
-	std::vector<ExportRow> exports;
-	std::vector<EnvRow> envs;
-	std::vector<EnvVolumeRow> envVolumes;
-	std::vector<AudioSourceRow> audioSources;
-	std::vector<AudioRoomRow> audioRooms;
-	std::vector<TriggerVolumeRow> triggerVolumes;
-	std::vector<PhysicsBodyRow> physicsBodies;
-	std::vector<SchemaAssocRow> schemaAssocs;
-	// Rigid bodies + colliders arrive at Epoch 10.
+    std::vector<MeshRow> meshes;
+    std::vector<MaterialRow> materials;
+    std::vector<LightRow> lights;
+    std::vector<CameraRow> cameras;
+    std::vector<DecalRow> decals;
+    std::vector<GiVolumeRow> giVolumes;
+    std::vector<CubemapRow> cubemaps;
+    std::vector<ExportRow> exports;
+    std::vector<EnvRow> envs;
+    std::vector<EnvVolumeRow> envVolumes;
+    std::vector<AudioSourceRow> audioSources;
+    std::vector<AudioRoomRow> audioRooms;
+    std::vector<TriggerVolumeRow> triggerVolumes;
+    std::vector<PhysicsBodyRow> physicsBodies;
+    std::vector<SchemaAssocRow> schemaAssocs;
+    // Rigid bodies + colliders arrive at Epoch 10.
 };
 
 // Derived per-node index over SceneTables — resized to the node count,
@@ -220,21 +222,21 @@ struct SceneTables {
 // Epoch 10's RigidBodyRow (present now so the struct's shape is
 // stable across the migration).
 struct NodeRows {
-	RowId mesh = InvalidRow;
-	RowId material = InvalidRow;
-	RowId light = InvalidRow;
-	RowId camera = InvalidRow;
-	RowId decal = InvalidRow;
-	RowId giVolume = InvalidRow;
-	RowId cubemap = InvalidRow;
-	RowId exportSettings = InvalidRow;
-	RowId env = InvalidRow;
-	RowId envVolume = InvalidRow;
-	RowId audioSource = InvalidRow;
-	RowId audioRoom = InvalidRow;
-	RowId triggerVolume = InvalidRow;
-	RowId schemaAssoc = InvalidRow;
-	RowId body = InvalidRow; // physics body association
+    RowId mesh = InvalidRow;
+    RowId material = InvalidRow;
+    RowId light = InvalidRow;
+    RowId camera = InvalidRow;
+    RowId decal = InvalidRow;
+    RowId giVolume = InvalidRow;
+    RowId cubemap = InvalidRow;
+    RowId exportSettings = InvalidRow;
+    RowId env = InvalidRow;
+    RowId envVolume = InvalidRow;
+    RowId audioSource = InvalidRow;
+    RowId audioRoom = InvalidRow;
+    RowId triggerVolume = InvalidRow;
+    RowId schemaAssoc = InvalidRow;
+    RowId body = InvalidRow; // physics body association
 };
 
 // Dense per-node IDENTITY metadata (Epoch 5: replaced nameForNode +
@@ -245,10 +247,9 @@ struct NodeRows {
 // NOT trivially copyable (uuid owns a string); the cooked META chunk
 // (Epoch 7) serializes it field-wise.
 struct NodeMetadata {
-	uint32_t name = 0xFFFFFFFFu;
-	std::string uuid;
+    uint32_t name = 0xFFFFFFFFu;
+    std::string uuid;
 };
-
 
 // ---- handwritten maintenance (no FindRow<T> — one explicit set per
 // kind; the duplication is the design, see the header) ----
@@ -305,16 +306,14 @@ bool SetCubemap(Scene& scene, NodeId node, const SceneCubemap& cubemap);
 bool SetExport(Scene& scene, NodeId node, const SceneExportSettings& settings);
 bool SetEnv(Scene& scene, NodeId node, const SceneEnv& environment);
 bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume);
-bool SetAudioSource(Scene& scene, NodeId node,
-	const SceneAudioSource& source);
+bool SetAudioSource(Scene& scene, NodeId node, const SceneAudioSource& source);
 bool SetAudioRoom(Scene& scene, NodeId node, const SceneAudioRoom& room);
 bool SetPhysicsBody(Scene& scene, NodeId node, const ScenePhysicsBody& body);
 bool SetTriggerVolume(Scene& scene, NodeId node, const SceneTriggerVolume& trigger);
 // The schema association (node_schema.h): the cooked value block is
 // stored verbatim — the schema id names the layout (the pak's
 // registry); `values` may be empty (defaults decode at read time).
-bool SetSchemaAssoc(Scene& scene, NodeId node, uint32_t schemaId,
-	std::vector<uint8_t> values);
+bool SetSchemaAssoc(Scene& scene, NodeId node, uint32_t schemaId, std::vector<uint8_t> values);
 
 // Removes the node's row of that kind (swap-and-pop + lookup repair).
 // Returns whether a row existed.
@@ -356,62 +355,62 @@ bool RemoveNodeRows(Scene& scene, NodeId node);
 // sites; the boundary scanner guards against NEW globals, these are
 // the tracked pre-existing set).
 using RowId = tour::scene::RowId;
-using tour::scene::InvalidRow;
-using tour::scene::MeshRow;
-using tour::scene::MaterialRow;
-using tour::scene::LightRow;
+using tour::scene::AudioSourceRow;
 using tour::scene::CameraRow;
-using tour::scene::DecalRow;
-using tour::scene::GiVolumeRow;
 using tour::scene::CubemapRow;
-using tour::scene::ExportRow;
+using tour::scene::DecalRow;
+using tour::scene::EnsureNodeMetadata;
 using tour::scene::EnvRow;
 using tour::scene::EnvVolumeRow;
-using tour::scene::AudioSourceRow;
-using tour::scene::SceneTables;
-using tour::scene::NodeRows;
-using tour::scene::NodeMetadata;
-using tour::scene::RebuildNodeRows;
-using tour::scene::RemoveNodeRows;
-using tour::scene::EnsureNodeMetadata;
-using tour::scene::GetNodeNameIndex;
-using tour::scene::SetNodeNameIndex;
-using tour::scene::GetNodeUuid;
-using tour::scene::SetNodeUuidRaw;
-using tour::scene::FindMesh;
-using tour::scene::SetMesh;
-using tour::scene::RemoveMesh;
-using tour::scene::FindMaterial;
-using tour::scene::SetMaterial;
-using tour::scene::RemoveMaterial;
-using tour::scene::FindLight;
-using tour::scene::SetLight;
-using tour::scene::RemoveLight;
-using tour::scene::FindCamera;
-using tour::scene::SetCamera;
-using tour::scene::RemoveCamera;
-using tour::scene::FindDecal;
-using tour::scene::SetDecal;
-using tour::scene::RemoveDecal;
-using tour::scene::FindGiVolume;
-using tour::scene::SetGiVolume;
-using tour::scene::RemoveGiVolume;
-using tour::scene::FindCubemap;
-using tour::scene::SetCubemap;
-using tour::scene::RemoveCubemap;
-using tour::scene::FindExport;
-using tour::scene::SetExport;
-using tour::scene::RemoveExport;
-using tour::scene::FindEnv;
-using tour::scene::SetEnv;
-using tour::scene::RemoveEnv;
-using tour::scene::FindEnvVolume;
-using tour::scene::SetEnvVolume;
-using tour::scene::RemoveEnvVolume;
+using tour::scene::ExportRow;
 using tour::scene::FindAudioSource;
-using tour::scene::SetAudioSource;
-using tour::scene::RemoveAudioSource;
-using tour::scene::SchemaAssocRow;
+using tour::scene::FindCamera;
+using tour::scene::FindCubemap;
+using tour::scene::FindDecal;
+using tour::scene::FindEnv;
+using tour::scene::FindEnvVolume;
+using tour::scene::FindExport;
+using tour::scene::FindGiVolume;
+using tour::scene::FindLight;
+using tour::scene::FindMaterial;
+using tour::scene::FindMesh;
 using tour::scene::FindSchemaAssoc;
-using tour::scene::SetSchemaAssoc;
+using tour::scene::GetNodeNameIndex;
+using tour::scene::GetNodeUuid;
+using tour::scene::GiVolumeRow;
+using tour::scene::InvalidRow;
+using tour::scene::LightRow;
+using tour::scene::MaterialRow;
+using tour::scene::MeshRow;
+using tour::scene::NodeMetadata;
+using tour::scene::NodeRows;
+using tour::scene::RebuildNodeRows;
+using tour::scene::RemoveAudioSource;
+using tour::scene::RemoveCamera;
+using tour::scene::RemoveCubemap;
+using tour::scene::RemoveDecal;
+using tour::scene::RemoveEnv;
+using tour::scene::RemoveEnvVolume;
+using tour::scene::RemoveExport;
+using tour::scene::RemoveGiVolume;
+using tour::scene::RemoveLight;
+using tour::scene::RemoveMaterial;
+using tour::scene::RemoveMesh;
+using tour::scene::RemoveNodeRows;
 using tour::scene::RemoveSchemaAssoc;
+using tour::scene::SceneTables;
+using tour::scene::SchemaAssocRow;
+using tour::scene::SetAudioSource;
+using tour::scene::SetCamera;
+using tour::scene::SetCubemap;
+using tour::scene::SetDecal;
+using tour::scene::SetEnv;
+using tour::scene::SetEnvVolume;
+using tour::scene::SetExport;
+using tour::scene::SetGiVolume;
+using tour::scene::SetLight;
+using tour::scene::SetMaterial;
+using tour::scene::SetMesh;
+using tour::scene::SetNodeNameIndex;
+using tour::scene::SetNodeUuidRaw;
+using tour::scene::SetSchemaAssoc;

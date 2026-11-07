@@ -46,8 +46,7 @@
 
 namespace smvk {
 
-template <typename Tag>
-struct EntityHandle {
+template <typename Tag> struct EntityHandle {
     uint64_t value = 0;
 
     [[nodiscard]] constexpr uint32_t Index() const {
@@ -65,10 +64,8 @@ struct EntityHandle {
 // Mint/validate helpers for the registries (the gameplay side never
 // packs these by hand).
 template <typename Tag>
-[[nodiscard]] constexpr EntityHandle<Tag> MakeEntityHandle(uint32_t index,
-    uint32_t generation) {
-    return EntityHandle<Tag>{
-        (static_cast<uint64_t>(generation) << 32) | index };
+[[nodiscard]] constexpr EntityHandle<Tag> MakeEntityHandle(uint32_t index, uint32_t generation) {
+    return EntityHandle<Tag>{(static_cast<uint64_t>(generation) << 32) | index};
 }
 
 struct MeshEntityTag {};

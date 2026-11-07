@@ -60,7 +60,7 @@
 //   audio.Shutdown();
 //
 
-#include <Engine/Asset/audiograph.h> // AudioGraphDoc (the asset model)
+#include <Engine/Asset/audiograph.h>    // AudioGraphDoc (the asset model)
 #include <Engine/Scene/entity_handle.h> // AudioInstanceHandle
 
 #include <cstdint>
@@ -72,8 +72,8 @@ namespace tour::audio {
 
 struct Config {
     int sampleRate = 48000;
-    int channels = 2;               // 1 = mono, 2 = stereo
-    int framesPerChunk = 1024;      // mixer quantum pushed per iteration
+    int channels = 2;          // 1 = mono, 2 = stereo
+    int framesPerChunk = 1024; // mixer quantum pushed per iteration
     int maxVoices = 64;
     // Dedicated core for the mixer thread:
     //   >= 0 : pin to that core index
@@ -89,12 +89,16 @@ struct Config {
 
 struct ClipHandle {
     uint32_t index = UINT32_MAX;
-    bool valid() const { return index != UINT32_MAX; }
+    bool valid() const {
+        return index != UINT32_MAX;
+    }
 };
 
 struct VoiceHandle {
     uint32_t id = 0; // 0 = invalid
-    bool valid() const { return id != 0; }
+    bool valid() const {
+        return id != 0;
+    }
 };
 
 // The voice's ROUTE (the environmental bus contract, docs/
@@ -121,19 +125,22 @@ struct EnvironmentReverb {
 // invalid handle to fail the create (the named path lands in `err`).
 // The app layer's implementation reads through the content session
 // (Sound-kind blobs by path) and decodes through LoadWavFromMemory.
-using AudioClipResolver = ClipHandle (*)(void* user,
-    const char* soundVfsPath);
+using AudioClipResolver = ClipHandle (*)(void* user, const char* soundVfsPath);
 
 class AudioEngine {
-public:
+  public:
     AudioEngine() = default;
-    ~AudioEngine() { Shutdown(); }
+    ~AudioEngine() {
+        Shutdown();
+    }
     AudioEngine(const AudioEngine&) = delete;
     AudioEngine& operator=(const AudioEngine&) = delete;
 
     bool Init(const Config& cfg = {});
     void Shutdown();
-    bool IsInitialized() const { return initialized_; }
+    bool IsInitialized() const {
+        return initialized_;
+    }
 
     // Loads a .wav file, converting to engine format (float32, engine rate).
     // Returns invalid handle on failure; error text via LastError().
@@ -148,9 +155,11 @@ public:
     // or the shared environmental WorldSfx bus (the scene-aware layer
     // routes spatial emitters there so listener-driven rooms reverber
     // them; 2D/music/UI stay direct).
-    VoiceHandle Play(ClipHandle clip, float volume = 1.0f,
-        bool loop = false, float pitch = 1.0f,
-        AudioRoute route = AudioRoute::Direct);
+    VoiceHandle Play(ClipHandle clip,
+                     float volume = 1.0f,
+                     bool loop = false,
+                     float pitch = 1.0f,
+                     AudioRoute route = AudioRoute::Direct);
     void Stop(VoiceHandle voice);
     void StopAll();
     void SetVoiceVolume(VoiceHandle voice, float volume);
@@ -172,7 +181,9 @@ public:
     static void ConstantPowerPan(float pan, float& left, float& right);
 
     void SetMasterVolume(float v);
-    float GetMasterVolume() const { return config_.masterVolume; }
+    float GetMasterVolume() const {
+        return config_.masterVolume;
+    }
     void SetPaused(bool paused);
 
     // Sets the ENVIRONMENTAL REVERB target (the shared world-SFX
@@ -193,10 +204,10 @@ public:
     // next chunk boundary. The instance OWNS its doc copy.
     // `doc` must have passed ParseAudioGraphText (the parser's
     // structural guarantees are the build's preconditions).
-    smvk::AudioInstanceHandle CreateInstance(
-        const asset::AudioGraphDoc& doc,
-        AudioClipResolver resolver, void* resolverUser,
-        std::string* err = nullptr);
+    smvk::AudioInstanceHandle CreateInstance(const asset::AudioGraphDoc& doc,
+                                             AudioClipResolver resolver,
+                                             void* resolverUser,
+                                             std::string* err = nullptr);
     // Destroys the instance (stops its voices, tears its node set
     // down at the next chunk boundary). Stale handles fail false.
     bool DestroyInstance(smvk::AudioInstanceHandle handle);
@@ -210,10 +221,14 @@ public:
     // initialized deviceless. NOT for the live path.
     bool PumpOffline(float* out, int frames);
 
-    int MixerCore() const { return mixerCore_; }
-    const std::string& LastError() const { return lastError_; }
+    int MixerCore() const {
+        return mixerCore_;
+    }
+    const std::string& LastError() const {
+        return lastError_;
+    }
 
-private:
+  private:
     // The mixer-thread core (ma_engine, the clip store, voices,
     // instances) — an opaque pimpl: the public header never sees a
     // miniaudio type (the vendored include path is PRIVATE to
@@ -242,20 +257,31 @@ private:
     // indices into the registries).
     struct Command {
         enum class Type {
-            Play, Stop, StopAll, setVolume, SetPan, SetSpatial,
-            SetMaster, SetPaused, UnloadClip,
+            Play,
+            Stop,
+            StopAll,
+            setVolume,
+            SetPan,
+            SetSpatial,
+            SetMaster,
+            SetPaused,
+            UnloadClip,
             // Instance lane (generation-validated at the drain)
-            InstanceCreate, InstanceDestroy, InstancePlay,
-            InstanceCrossFade, InstanceStop, InstanceSetParam,
+            InstanceCreate,
+            InstanceDestroy,
+            InstancePlay,
+            InstanceCrossFade,
+            InstanceStop,
+            InstanceSetParam,
             InstanceSetVolume,
             // The environmental bus (the shared world-SFX send)
             SetEnvironment,
         } type;
         uint32_t voiceId = 0;
         uint32_t clipIndex = UINT32_MAX;
-        uint32_t slot = UINT32_MAX;      // instance slot index
-        uint32_t generation = 0;         // instance slot generation
-        uint32_t ordinal = UINT32_MAX;   // cue / param ordinal
+        uint32_t slot = UINT32_MAX;    // instance slot index
+        uint32_t generation = 0;       // instance slot generation
+        uint32_t ordinal = UINT32_MAX; // cue / param ordinal
         float volume = 1.0f;
         float pan = 0.0f;
         float pitch = 1.0f;
@@ -292,7 +318,7 @@ private:
     // Instance registries (control side; the mixer side lives in Core)
     std::vector<InstanceSlot> instanceSlots_;
     std::vector<uint32_t> instanceFree_;
-    std::vector<Command> pending_; // guarded by mutex_, consumed by mixer
+    std::vector<Command> pending_;  // guarded by mutex_, consumed by mixer
     mutable void* mutex_ = nullptr; // SDL_Mutex* (void* to avoid SDL include in header)
     void* mixerThread_ = nullptr;   // SDL_Thread*
     void* deviceStream_ = nullptr;  // SDL_AudioStream* bound to output device
@@ -312,7 +338,7 @@ private:
 // project.h constants carry them) or by NAME (resolved against the
 // graph doc the instance was created from).
 class AudioInstance {
-public:
+  public:
     AudioInstance() = default;
     AudioInstance(AudioEngine& engine, smvk::AudioInstanceHandle handle)
         : m_engine(&engine), m_handle(handle) {}
@@ -351,7 +377,7 @@ public:
         return m_handle;
     }
 
-private:
+  private:
     AudioEngine* m_engine = nullptr;
     smvk::AudioInstanceHandle m_handle{};
 };
@@ -373,10 +399,10 @@ int LogicalCoreCount();
 // aliases: new surface is tour::-only from day one, never a new R7
 // row.)
 namespace smvk::audio {
-	using ::tour::audio::Config;
-	using ::tour::audio::ClipHandle;
-	using ::tour::audio::VoiceHandle;
-	using ::tour::audio::AudioEngine;
-	using ::tour::audio::PinCurrentThreadToCore;
-	using ::tour::audio::LogicalCoreCount;
-}
+using ::tour::audio::AudioEngine;
+using ::tour::audio::ClipHandle;
+using ::tour::audio::Config;
+using ::tour::audio::LogicalCoreCount;
+using ::tour::audio::PinCurrentThreadToCore;
+using ::tour::audio::VoiceHandle;
+} // namespace smvk::audio

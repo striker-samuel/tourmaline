@@ -22,94 +22,93 @@
 namespace cooktool {
 
 struct CookArgs {
-	std::string contentDir = "content";
-	std::string tour; // definition tour (preferred; else inVfsList/inVfs)
-	std::vector<std::string> inVfsList; // processed .geometry artifacts
-	std::string inVfs; // primary identity (first artifact)
-	std::string outPak; // destination pak (stem source for bake file
-	                    // names: GI-volume manifest/volumes, cubemap base fallback).
-	                    // No pak is written — pak.exe assembles it.
-	std::unordered_set<std::string> explicitSet; // CLI-wins tour-merge keys
-	bool meshopt = true;
-	float overdraw = 1.05f;
-	// Cooked LOD chain (meshopt_simplify, sibling blobs "<base>/lodN").
-	bool lods = false;
-	std::string lodRatios = "0.75,0.5,0.3,0.15";
-	float lodError = 0.01f;
-	bool meshlets = false;
-	bool autoKtx = true;
-	bool collapseStatic = false;
-	// Lightmap cook (--lightmap on).
-	bool lightmap = false;
-	float lmMetersPerTexel = 0.25f;
-	uint32_t lmLobes = 12;
-	uint32_t lmAtlasWidth = 1024;
-	uint32_t lmMaxHeight = 8192;
-	uint32_t lmGutter = 1;
-	smvk::gi::SgLightmapCompression lmCompress =
-		smvk::gi::SgLightmapCompression::Bc6HOpt;
-	uint32_t lmRays = 1024;
-	uint32_t lmBounces = 3;
-	int lmProxyRes = 256;
-	float lmLobeRelErr = 0.15f;
-	std::string lmLodLock = "attr";
-	bool lmDebugPink = false;
-	bool lmStitch = true;
-	float lmCurveTarget = 7.0f;
-	float lmCurveMax = 2.5f;
-	std::string lmExclude;
-	std::vector<std::string> lmExcludeKeywords;
-	float lmExcludeSmall = 0.0f;
-	// Bake sun/sky (the tour env block wins when the definition carries
-	// one — see EnvForBake).
-	float sunAzimuth = 30.0f;
-	float sunElevation = 55.0f;
-	float sunIntensity = 10000.0f;
-	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
-	float skyIntensity = 600.0f;
-	std::vector<std::string> spots;
-	std::string backend = "embree";
-	// NOTE: no giProbes here (pak owns probe registration; a --gi-probe
-	// CLI flag never took effect in cook and was removed).
-	// Preconvolved specular cubemaps (--cubemap on; cook.exe bakes, pak
-	// embeds the loose bake files at the canonical gi/cubemaps/ paths).
-	// Capture sets are NAMELESS: the base is the scene stem (pak.exe
-	// discovers + embeds by gi/cubemaps/<stem>.cubemanifest).
-	bool cubemap = false;
-	uint32_t cubemapSize = 128;
-	uint32_t cubemapRays = 128;
-	uint32_t cubemapBounces = 5;
-	uint32_t cubemapSpp = 8;
-	std::vector<std::string> cubemapPos;
-	float cubemapHeight = 1.5f;
-	float cubemapGrid = 8.0f;
-	bool cubemapOctree = false;
-	float cubemapOctreeMax = 8.0f;
-	float cubemapOctreeMin = 2.0f;
-	uint32_t cubemapOctreeDepth = 4;
-	std::vector<std::string> cubemapExtraPos;
-	float cubemapExtraRadius = 5.5f;
-	bool cubemapPng = true;
-	bool cubemapPngMips = true;
-	// Ambient closure (default OFF: the GI stack owns the ambient; ON
-	// only for stack-less cooks - matches the runtime sky fallback but
-	// double-counts with the GI volumes in the pak).
-	bool cubemapAmbientClosure = false;
-	// Weave transmission for MASK (cutout cloth) materials: the cloth
-	// keeps its lit albedo AND passes light tinted per texel (the tint
-	// stays real in white-world GI bakes). Default OFF (MASK stays the
-	// opaque occluder - bistro foliage).
-	bool maskTransmission = false;
-	// Authored GI volumes baked INTO the pak (default on).
-	bool giVolume = true;
-	bool quickBakes = false; // capture-only refresh, no pak write
-	// Read-only inspection (--dump-pak): no cooking, no writes.
-	std::string dumpPak;
-	std::vector<uint32_t> dumpNodes;
-	// Explicit programmatic registry root (editor store; bare CLI
-	// cooks derive it from the content root). Optional acceleration,
-	// NEVER a precondition.
-	std::string registryDir;
+    std::string contentDir = "content";
+    std::string tour;                   // definition tour (preferred; else inVfsList/inVfs)
+    std::vector<std::string> inVfsList; // processed .geometry artifacts
+    std::string inVfs;                  // primary identity (first artifact)
+    std::string outPak;                 // destination pak (stem source for bake file
+                        // names: GI-volume manifest/volumes, cubemap base fallback).
+                        // No pak is written — pak.exe assembles it.
+    std::unordered_set<std::string> explicitSet; // CLI-wins tour-merge keys
+    bool meshopt = true;
+    float overdraw = 1.05f;
+    // Cooked LOD chain (meshopt_simplify, sibling blobs "<base>/lodN").
+    bool lods = false;
+    std::string lodRatios = "0.75,0.5,0.3,0.15";
+    float lodError = 0.01f;
+    bool meshlets = false;
+    bool autoKtx = true;
+    bool collapseStatic = false;
+    // Lightmap cook (--lightmap on).
+    bool lightmap = false;
+    float lmMetersPerTexel = 0.25f;
+    uint32_t lmLobes = 12;
+    uint32_t lmAtlasWidth = 1024;
+    uint32_t lmMaxHeight = 8192;
+    uint32_t lmGutter = 1;
+    smvk::gi::SgLightmapCompression lmCompress = smvk::gi::SgLightmapCompression::Bc6HOpt;
+    uint32_t lmRays = 1024;
+    uint32_t lmBounces = 3;
+    int lmProxyRes = 256;
+    float lmLobeRelErr = 0.15f;
+    std::string lmLodLock = "attr";
+    bool lmDebugPink = false;
+    bool lmStitch = true;
+    float lmCurveTarget = 7.0f;
+    float lmCurveMax = 2.5f;
+    std::string lmExclude;
+    std::vector<std::string> lmExcludeKeywords;
+    float lmExcludeSmall = 0.0f;
+    // Bake sun/sky (the tour env block wins when the definition carries
+    // one — see EnvForBake).
+    float sunAzimuth = 30.0f;
+    float sunElevation = 55.0f;
+    float sunIntensity = 10000.0f;
+    glm::vec3 sunColor{1.0f, 0.95f, 0.90f};
+    float skyIntensity = 600.0f;
+    std::vector<std::string> spots;
+    std::string backend = "embree";
+    // NOTE: no giProbes here (pak owns probe registration; a --gi-probe
+    // CLI flag never took effect in cook and was removed).
+    // Preconvolved specular cubemaps (--cubemap on; cook.exe bakes, pak
+    // embeds the loose bake files at the canonical gi/cubemaps/ paths).
+    // Capture sets are NAMELESS: the base is the scene stem (pak.exe
+    // discovers + embeds by gi/cubemaps/<stem>.cubemanifest).
+    bool cubemap = false;
+    uint32_t cubemapSize = 128;
+    uint32_t cubemapRays = 128;
+    uint32_t cubemapBounces = 5;
+    uint32_t cubemapSpp = 8;
+    std::vector<std::string> cubemapPos;
+    float cubemapHeight = 1.5f;
+    float cubemapGrid = 8.0f;
+    bool cubemapOctree = false;
+    float cubemapOctreeMax = 8.0f;
+    float cubemapOctreeMin = 2.0f;
+    uint32_t cubemapOctreeDepth = 4;
+    std::vector<std::string> cubemapExtraPos;
+    float cubemapExtraRadius = 5.5f;
+    bool cubemapPng = true;
+    bool cubemapPngMips = true;
+    // Ambient closure (default OFF: the GI stack owns the ambient; ON
+    // only for stack-less cooks - matches the runtime sky fallback but
+    // double-counts with the GI volumes in the pak).
+    bool cubemapAmbientClosure = false;
+    // Weave transmission for MASK (cutout cloth) materials: the cloth
+    // keeps its lit albedo AND passes light tinted per texel (the tint
+    // stays real in white-world GI bakes). Default OFF (MASK stays the
+    // opaque occluder - bistro foliage).
+    bool maskTransmission = false;
+    // Authored GI volumes baked INTO the pak (default on).
+    bool giVolume = true;
+    bool quickBakes = false; // capture-only refresh, no pak write
+    // Read-only inspection (--dump-pak): no cooking, no writes.
+    std::string dumpPak;
+    std::vector<uint32_t> dumpNodes;
+    // Explicit programmatic registry root (editor store; bare CLI
+    // cooks derive it from the content root). Optional acceleration,
+    // NEVER a precondition.
+    std::string registryDir;
 };
 
 // Byte-identical to the CLI run (same return codes). Prints go through

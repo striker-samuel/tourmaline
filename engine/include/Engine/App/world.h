@@ -11,1147 +11,1134 @@
 
 #include <glm/glm.hpp>
 
-#include <Engine/App/cluster.h>
 #include <Engine/App/animator.h>
-#include <Engine/Asset/mesh_handle.h>
-#include <Engine/Asset/lut_handle.h>
+#include <Engine/App/cluster.h>
 #include <Engine/Asset/cluster_serializer.h> // smvk::ExternalTextureResolver
+#include <Engine/Asset/lut_handle.h>
+#include <Engine/Asset/mesh_handle.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
-#include <Engine/Utils/bvh.h>
 #include <Engine/Scene/entity_handle.h> // smvk::AudioSourceHandle (typed)
-#include <Engine/Scene/scene.h>
 #include <Engine/Scene/region_registry.h>
+#include <Engine/Scene/scene.h>
 #include <Engine/Scene/world_scene_instances.h>
+#include <Engine/Utils/bvh.h>
 
-namespace app { class AssetManager; }
+namespace app {
+class AssetManager;
+}
 
 namespace tour {
 // (namespace/RHI boundary audit) this block's RHI dependencies are
 // FULLY QUALIFIED (smvk::) - no broad using-directive (R6-gated).
 
-	class TextureStreamer;
+class TextureStreamer;
 
-	// Tiled-terrain source payload (CPU side): harvested from a pak's
-	// Terrain blobs by LoadTerrainFromPak. The renderer bakes G-blocks
-	// from hfield (+ mask R into vertex color) at terrain build; masks
-	// are NOT kept resident past the bake in v1 (GPU mask textures land
-	// with the atlas in phase 4). Empty (hasTerrain=false) = no terrain.
-	struct TerrainSource {
-		smvk::terrain::TerrainHField hfield{};
-		// 256 S-tiles of 256x256 RGBA8, row-major (tz*16+tx) test masks.
-		// Present only between harvest and the terrain bake.
-		std::vector<std::vector<uint8_t>> masks{};
-		// Optional packed conservative max-Y pyramid from the cook.
-		std::vector<uint8_t> occlusionPyramid{};
-		bool hasTerrain = false;
-	};
+// Tiled-terrain source payload (CPU side): harvested from a pak's
+// Terrain blobs by LoadTerrainFromPak. The renderer bakes G-blocks
+// from hfield (+ mask R into vertex color) at terrain build; masks
+// are NOT kept resident past the bake in v1 (GPU mask textures land
+// with the atlas in phase 4). Empty (hasTerrain=false) = no terrain.
+struct TerrainSource {
+    smvk::terrain::TerrainHField hfield{};
+    // 256 S-tiles of 256x256 RGBA8, row-major (tz*16+tx) test masks.
+    // Present only between harvest and the terrain bake.
+    std::vector<std::vector<uint8_t>> masks{};
+    // Optional packed conservative max-Y pyramid from the cook.
+    std::vector<uint8_t> occlusionPyramid{};
+    bool hasTerrain = false;
+};
 
-	// Per-frame inputs for error-driven LOD selection (see World::
-	// LodIndexForNode). frameId is renderer-supplied and MONOTONIC (the
-	// RHI ring index is NOT — it wraps); it keys the per-node decision
-	// stamps (and the halfrate parity tick when full rate is off).
-	struct LodFrameInputs {
-		uint64_t frameId = 0;
-		glm::vec3 eye{ 0.0f };
-		float viewportHeight = 1080.0f;
-		float fovY = 0.7853982f; // 45 deg
-		float pixelBudget = 1.0f;
-	};
+// Per-frame inputs for error-driven LOD selection (see World::
+// LodIndexForNode). frameId is renderer-supplied and MONOTONIC (the
+// RHI ring index is NOT — it wraps); it keys the per-node decision
+// stamps (and the halfrate parity tick when full rate is off).
+struct LodFrameInputs {
+    uint64_t frameId = 0;
+    glm::vec3 eye{0.0f};
+    float viewportHeight = 1080.0f;
+    float fovY = 0.7853982f; // 45 deg
+    float pixelBudget = 1.0f;
+};
 
-	// ---- Shader LODs (per-material shading programs) ---------------
-	// A LOD level carries a geometry sibling; the shading program that
-	// draws it is resolved per MATERIAL (see ShaderLodPolicy), not
-	// stamped on the level. The Main pass reads the resolved program,
-	// geometry consumers — shadows, prepass, motion, culling — ignore
-	// it. The farthest level of a cooked chain keeps the coarsest
-	// geometry and — when the material allows it — downgrades shading
-	// to the cheap vertex-lit program: lighting is computed per vertex
-	// (directional sun + ambient, no shadow-map sampling, no forward+
-	// lights, no specular, no textures), so far instances trade shading
-	// quality for fragment cost. Every other level (and every uncooked
-	// chain) stays fully lit.
+// ---- Shader LODs (per-material shading programs) ---------------
+// A LOD level carries a geometry sibling; the shading program that
+// draws it is resolved per MATERIAL (see ShaderLodPolicy), not
+// stamped on the level. The Main pass reads the resolved program,
+// geometry consumers — shadows, prepass, motion, culling — ignore
+// it. The farthest level of a cooked chain keeps the coarsest
+// geometry and — when the material allows it — downgrades shading
+// to the cheap vertex-lit program: lighting is computed per vertex
+// (directional sun + ambient, no shadow-map sampling, no forward+
+// lights, no specular, no textures), so far instances trade shading
+// quality for fragment cost. Every other level (and every uncooked
+// chain) stays fully lit.
 
-	typedef enum IteratorFlagBits {
-		IteratorFlagBit_None = 0,
-		IteratorFlagBit_Renderable = 1u << 0,
-		IteratorFlagBit_Opaque = 1u << 1,
-		IteratorFlagBit_Transparent = 1u << 2,
-		IteratorFlagBit_PassedCullTest = 1u << 3,
-		IteratorFlagBit_StaticVertexFmt = 1u << 4,
-		IteratorFlagBit_CastShadow = 1u << 5,
-		IteratorFlagBit_LightDirectional = 1u << 6,
-		IteratorFlagBit_LightSpot = 1u << 7,
-		IteratorFlagBit_LightPoint = 1u << 8,
-		// Set when the node sits inside a static subtree (see Scene::
-		// staticRoot/staticNode). Static nodes skip per-frame transform
-		// updates and dynamic BVH rebuilds; collapsed mega-mesh nodes keep
-		// this flag as well.
-		IteratorFlagBit_Static = 1u << 9,
-		// Cutout material (ShadingModel::Masked): alpha-tested draw path.
-		// Set alongside Opaque so the masked/solid phase splits in the
-		// shadow, prepass and motion passes test one bit instead of
-		// fetching the material per node per pass.
-		IteratorFlagBit_Masked = 1u << 10,
-		// Volumetric-shadow caster (the coarse fog tile's marked large
-		// occluders - see Scene::castsVolumetricShadow): set alongside
-		// Opaque/CastShadow for flagged nodes so the coarse fog-shadow
-		// pass iterates a prefiltered list (forEachRenderItem's exact
-		// flag-match walk). Material-independent - the SCENE owns the
-		// mark (buildings/roofs/cliffs, not small props).
-		IteratorFlagBit_CastVolumetricShadow = 1u << 11,
-		//IteratorFlagBit_Skinned,
-	} IteratorFlagBits;
-	typedef uint32_t IteratorFlags;
+typedef enum IteratorFlagBits {
+    IteratorFlagBit_None = 0,
+    IteratorFlagBit_Renderable = 1u << 0,
+    IteratorFlagBit_Opaque = 1u << 1,
+    IteratorFlagBit_Transparent = 1u << 2,
+    IteratorFlagBit_PassedCullTest = 1u << 3,
+    IteratorFlagBit_StaticVertexFmt = 1u << 4,
+    IteratorFlagBit_CastShadow = 1u << 5,
+    IteratorFlagBit_LightDirectional = 1u << 6,
+    IteratorFlagBit_LightSpot = 1u << 7,
+    IteratorFlagBit_LightPoint = 1u << 8,
+    // Set when the node sits inside a static subtree (see Scene::
+    // staticRoot/staticNode). Static nodes skip per-frame transform
+    // updates and dynamic BVH rebuilds; collapsed mega-mesh nodes keep
+    // this flag as well.
+    IteratorFlagBit_Static = 1u << 9,
+    // Cutout material (ShadingModel::Masked): alpha-tested draw path.
+    // Set alongside Opaque so the masked/solid phase splits in the
+    // shadow, prepass and motion passes test one bit instead of
+    // fetching the material per node per pass.
+    IteratorFlagBit_Masked = 1u << 10,
+    // Volumetric-shadow caster (the coarse fog tile's marked large
+    // occluders - see Scene::castsVolumetricShadow): set alongside
+    // Opaque/CastShadow for flagged nodes so the coarse fog-shadow
+    // pass iterates a prefiltered list (forEachRenderItem's exact
+    // flag-match walk). Material-independent - the SCENE owns the
+    // mark (buildings/roofs/cliffs, not small props).
+    IteratorFlagBit_CastVolumetricShadow = 1u << 11,
+    // IteratorFlagBit_Skinned,
+} IteratorFlagBits;
+typedef uint32_t IteratorFlags;
 
-	// World is the single runtime scene graph. It is *not* an imported scene.
-	// It owns (has-a) the merged Scene hierarchy, owns the Clusters that hold
-	// the actual mesh/material/texture resources, and resolves per-node mesh/
-	// material indices stored in the Scene to the owning Cluster + handle.
-	struct World {
-		explicit World() {};
-		// Must be set before loading/registering clusters or first resolve.
-		// Budget includes the synthetic world root and any runtime nodes.
-		// 0 = UNBUDGETED (the default host shape): node storage rides the
-		// PROCESS linear allocator, the byte budget (--mem-process-mb /
-		// TOURMALINE_MEM_PROCESS_MB) owns capacity and its [OOM] fail-fast
-		// is the overflow abort. There is NO CLI flag.
-		void ConfigureSceneNodeBudget(size_t slots) {
-			if (!slots) {
-				// 0 = clear to unbudgeted (a no-op when already 0): keep
-				// any pre-reserved storage, drop the cap
-				// (ReserveNodeSlots treats 0 as invalid).
-				scene.nodeSlotBudget = 0;
-				return;
-			}
-			if (!clusters.empty() || !scene.hierarchy.empty())
-				tour::scene::CrashNodeBudget("late World budget", scene.hierarchy.size(), slots);
-			scene.ReserveNodeSlots(slots);
-		}
+// World is the single runtime scene graph. It is *not* an imported scene.
+// It owns (has-a) the merged Scene hierarchy, owns the Clusters that hold
+// the actual mesh/material/texture resources, and resolves per-node mesh/
+// material indices stored in the Scene to the owning Cluster + handle.
+struct World {
+    explicit World() {};
+    // Must be set before loading/registering clusters or first resolve.
+    // Budget includes the synthetic world root and any runtime nodes.
+    // 0 = UNBUDGETED (the default host shape): node storage rides the
+    // PROCESS linear allocator, the byte budget (--mem-process-mb /
+    // TOURMALINE_MEM_PROCESS_MB) owns capacity and its [OOM] fail-fast
+    // is the overflow abort. There is NO CLI flag.
+    void ConfigureSceneNodeBudget(size_t slots) {
+        if (!slots) {
+            // 0 = clear to unbudgeted (a no-op when already 0): keep
+            // any pre-reserved storage, drop the cap
+            // (ReserveNodeSlots treats 0 as invalid).
+            scene.nodeSlotBudget = 0;
+            return;
+        }
+        if (!clusters.empty() || !scene.hierarchy.empty())
+            tour::scene::CrashNodeBudget("late World budget", scene.hierarchy.size(), slots);
+        scene.ReserveNodeSlots(slots);
+    }
 
+    // The World owns nodes. The project catalog names assets; LoadMesh
+    // resolves a catalog key through the attached app AssetManager,
+    // returning a reusable loaded resource handle. Game code attaches
+    // this handle to nodes; no raw world mesh indices escape this API.
+    [[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey, std::string& error);
+    // Refuses while a World node still references the handle.
+    bool UnloadMesh(app::MeshHandle mesh);
+    // Global artistic LUT, with the same explicit catalog-key ->
+    // loaded resource-handle discipline as meshes. A LUT is a world
+    // rendering setting, not a mesh/node component.
+    [[nodiscard]] app::LutHandle LoadLut(uint64_t catalogKey, std::string& error);
+    [[nodiscard]] app::LutHandle LoadLut(uint64_t catalogKey) {
+        lastGameAssetError_.clear();
+        return LoadLut(catalogKey, lastGameAssetError_);
+    }
+    bool SetLut(app::LutHandle lut);
+    bool UnloadLut(app::LutHandle lut);
+    // Ergonomic overload for callers that do not need an immediate
+    // out-error; details remain available through LastAssetError().
+    [[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey) {
+        lastGameAssetError_.clear();
+        return LoadMesh(catalogKey, lastGameAssetError_);
+    }
+    [[nodiscard]] const std::string& LastAssetError() const {
+        return lastGameAssetError_;
+    }
+    [[nodiscard]] NodeHandle AddNode(const glm::mat4& localFrame = glm::mat4(1.0f));
+    bool RemoveNode(NodeHandle node);
+    [[nodiscard]] bool IsGameNode(NodeHandle node) const {
+        return gameNodes_.contains(node) && NodeHandleValid(scene, node);
+    }
+    // Called by AssetManager for the duration of its attachment.
+    // AssetManager must outlive its loaded mesh handles.
+    // The runtime installs its asset service here. Ownership follows the
+    // World lifetime, so no app::AssetManager setup is needed in game
+    // code. The concrete type lives in the apphost; this erased owner
+    // avoids a dependency from engine back onto apphost.
+    void OwnGameAssets(std::shared_ptr<void> owner) {
+        gameAssetOwner_ = std::move(owner);
+    }
+    [[nodiscard]] bool HasAssetService() const {
+        return gameAssets_ != nullptr;
+    }
+    void SetGameAssets(app::AssetManager* assets) {
+        if (gameAssets_ && gameAssets_ != assets)
+            ClearGameMeshBindings();
+        gameAssets_ = assets;
+    }
+    // Called before releasing all assets or the bound manager.
+    // Attached nodes become meshless; their transforms and value
+    // components remain intact.
+    void ClearGameMeshBindings() {
+        if (gameMeshBindings_.empty())
+            return;
+        for (const auto& [handle, resource] : gameMeshBindings_)
+            if (IsGameNode(handle))
+                (void)tour::scene::RemoveMesh(scene, NodeHandleSlot(handle));
+        gameMeshBindings_.clear();
+        RefreshRuntimeSceneCaches();
+    }
+    [[nodiscard]] bool HasGameMeshBinding(uint64_t resourceValue) const {
+        for (const auto& [node, mesh] : gameMeshBindings_)
+            if (mesh == resourceValue && IsGameNode(node))
+                return true;
+        return false;
+    }
 
-		// The World owns nodes. The project catalog names assets; LoadMesh
-		// resolves a catalog key through the attached app AssetManager,
-		// returning a reusable loaded resource handle. Game code attaches
-		// this handle to nodes; no raw world mesh indices escape this API.
-		[[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey,
-			std::string& error);
-		// Refuses while a World node still references the handle.
-		bool UnloadMesh(app::MeshHandle mesh);
-		// Global artistic LUT, with the same explicit catalog-key ->
-		// loaded resource-handle discipline as meshes. A LUT is a world
-		// rendering setting, not a mesh/node component.
-		[[nodiscard]] app::LutHandle LoadLut(uint64_t catalogKey,
-			std::string& error);
-		[[nodiscard]] app::LutHandle LoadLut(uint64_t catalogKey) {
-			lastGameAssetError_.clear();
-			return LoadLut(catalogKey, lastGameAssetError_);
-		}
-		bool SetLut(app::LutHandle lut);
-		bool UnloadLut(app::LutHandle lut);
-		// Ergonomic overload for callers that do not need an immediate
-		// out-error; details remain available through LastAssetError().
-		[[nodiscard]] app::MeshHandle LoadMesh(uint64_t catalogKey) {
-			lastGameAssetError_.clear();
-			return LoadMesh(catalogKey, lastGameAssetError_);
-		}
-		[[nodiscard]] const std::string& LastAssetError() const {
-			return lastGameAssetError_;
-		}
-		[[nodiscard]] NodeHandle AddNode(
-			const glm::mat4& localFrame = glm::mat4(1.0f));
-		bool RemoveNode(NodeHandle node);
-		[[nodiscard]] bool IsGameNode(NodeHandle node) const {
-			return gameNodes_.contains(node) && NodeHandleValid(scene, node);
-		}
-		// Called by AssetManager for the duration of its attachment.
-		// AssetManager must outlive its loaded mesh handles.
-		// The runtime installs its asset service here. Ownership follows the
-		// World lifetime, so no app::AssetManager setup is needed in game
-		// code. The concrete type lives in the apphost; this erased owner
-		// avoids a dependency from engine back onto apphost.
-		void OwnGameAssets(std::shared_ptr<void> owner) {
-			gameAssetOwner_ = std::move(owner);
-		}
-		[[nodiscard]] bool HasAssetService() const {
-			return gameAssets_ != nullptr;
-		}
-		void SetGameAssets(app::AssetManager* assets) {
-			if (gameAssets_ && gameAssets_ != assets)
-				ClearGameMeshBindings();
-			gameAssets_ = assets;
-		}
-		// Called before releasing all assets or the bound manager.
-		// Attached nodes become meshless; their transforms and value
-		// components remain intact.
-		void ClearGameMeshBindings() {
-			if (gameMeshBindings_.empty())
-				return;
-			for (const auto& [handle, resource] : gameMeshBindings_)
-				if (IsGameNode(handle))
-					(void)tour::scene::RemoveMesh(scene, NodeHandleSlot(handle));
-			gameMeshBindings_.clear();
-			RefreshRuntimeSceneCaches();
-		}
-		[[nodiscard]] bool HasGameMeshBinding(uint64_t resourceValue) const {
-			for (const auto& [node, mesh] : gameMeshBindings_)
-				if (mesh == resourceValue && IsGameNode(node))
-					return true;
-			return false;
-		}
+    class NodeRef {
+      public:
+        NodeRef(World& owner, NodeHandle handle) : owner_(owner), handle_(handle) {}
+        // Requires a PREVIOUSLY loaded app::MeshHandle. One mesh per
+        // node: replacement is atomic on invalid/unmapped handles.
+        bool SetMesh(app::MeshHandle mesh) const;
+        bool RemoveMesh() const;
+        bool SetLocalTransform(const glm::mat4& frame) const {
+            return owner_.IsGameNode(handle_) &&
+                   tour::scene::SetLocalTransform(owner_.scene, handle_, frame);
+        }
+        bool SetPhysicsBody(const tour::scene::ScenePhysicsBody& body) const {
+            return owner_.IsGameNode(handle_) &&
+                   tour::scene::SetPhysicsBody(owner_.scene, NodeHandleSlot(handle_), body);
+        }
+        bool SetAudioRoom(const tour::scene::SceneAudioRoom& room) const {
+            return owner_.IsGameNode(handle_) &&
+                   tour::scene::SetAudioRoom(owner_.scene, NodeHandleSlot(handle_), room);
+        }
+        bool SetTriggerVolume(const tour::scene::SceneTriggerVolume& trigger) const {
+            return owner_.IsGameNode(handle_) &&
+                   tour::scene::SetTriggerVolume(owner_.scene, NodeHandleSlot(handle_), trigger);
+        }
 
-		class NodeRef {
-		public:
-			NodeRef(World& owner, NodeHandle handle)
-				: owner_(owner), handle_(handle) {}
-			// Requires a PREVIOUSLY loaded app::MeshHandle. One mesh per
-			// node: replacement is atomic on invalid/unmapped handles.
-			bool SetMesh(app::MeshHandle mesh) const;
-			bool RemoveMesh() const;
-			bool SetLocalTransform(const glm::mat4& frame) const {
-				return owner_.IsGameNode(handle_)
-					&& tour::scene::SetLocalTransform(owner_.scene, handle_, frame);
-			}
-			bool SetPhysicsBody(const tour::scene::ScenePhysicsBody& body) const {
-				return owner_.IsGameNode(handle_)
-					&& tour::scene::SetPhysicsBody(owner_.scene, NodeHandleSlot(handle_), body);
-			}
-			bool SetAudioRoom(const tour::scene::SceneAudioRoom& room) const {
-				return owner_.IsGameNode(handle_)
-					&& tour::scene::SetAudioRoom(owner_.scene, NodeHandleSlot(handle_), room);
-			}
-			bool SetTriggerVolume(const tour::scene::SceneTriggerVolume& trigger) const {
-				return owner_.IsGameNode(handle_)
-					&& tour::scene::SetTriggerVolume(owner_.scene, NodeHandleSlot(handle_), trigger);
-			}
-		private:
-			World& owner_;
-			NodeHandle handle_;
-		};
-		[[nodiscard]] NodeRef operator[](NodeHandle handle) {
-			return NodeRef(*this, handle);
-		}
+      private:
+        World& owner_;
+        NodeHandle handle_;
+    };
+    [[nodiscard]] NodeRef operator[](NodeHandle handle) {
+        return NodeRef(*this, handle);
+    }
 
-		// In-place draw/cull refresh, never the destructive cluster fold.
-		void RefreshRuntimeSceneCaches();
-		// Legacy ResolveAndFixup currently invalidates game nodes; this
-		// pending 6c migration is an explicit limitation of this slice.
-		std::unordered_set<NodeHandle> gameNodes_;
-		// Cross-resolve per-slot generation high water mark. The legacy
-		// scene reset cannot re-mint a stale game handle on reused slots.
-		std::unordered_map<NodeId, uint32_t> gameSlotGeneration_;
-		std::unordered_map<NodeHandle, uint64_t> gameMeshBindings_;
-		app::AssetManager* gameAssets_ = nullptr;
-		std::string lastGameAssetError_;
+    // In-place draw/cull refresh, never the destructive cluster fold.
+    void RefreshRuntimeSceneCaches();
+    // Legacy ResolveAndFixup currently invalidates game nodes; this
+    // pending 6c migration is an explicit limitation of this slice.
+    std::unordered_set<NodeHandle> gameNodes_;
+    // Cross-resolve per-slot generation high water mark. The legacy
+    // scene reset cannot re-mint a stale game handle on reused slots.
+    std::unordered_map<NodeId, uint32_t> gameSlotGeneration_;
+    std::unordered_map<NodeHandle, uint64_t> gameMeshBindings_;
+    app::AssetManager* gameAssets_ = nullptr;
+    std::string lastGameAssetError_;
 
-		// Merged runtime scene graph. Imported Cluster scenes are folded into
-		// this via ResolveAndFixup_clusters().
-		Scene scene;
-		// Registered streaming/ownership subtree roots in the authoritative
-		// world hierarchy. Registration does not take ownership of assets:
-		// cluster-backed resource pools remain the transitional asset layer.
-		RegionRegistry regions;
-		// Direct World-owned hierarchy instances do not create Clusters or
-		// duplicate authoring Scenes. Asset leases are instance-independent.
-		tour::scene::WorldSceneInstances worldSceneInstances;
-		// One active authored Map lives in this runtime World.
-		bool SetActiveMapIdentity(uint64_t id) {
-			return worldSceneInstances.SetActiveMap(id);
-		}
-		uint64_t ActiveMapIdentity() const {
-			return worldSceneInstances.ActiveMap();
-		}
-		uint64_t InstantiateSceneHierarchy(
-			const Scene& source, uint64_t sceneAssetId,
-			const glm::dmat4& placement,
-			std::vector<tour::asset::AssetLease> assets,
-			std::string& err,
-			const tour::scene::WorldSceneResourceMap* bindings = nullptr);
-		bool RetireSceneHierarchy(uint64_t instanceId);
+    // Merged runtime scene graph. Imported Cluster scenes are folded into
+    // this via ResolveAndFixup_clusters().
+    Scene scene;
+    // Registered streaming/ownership subtree roots in the authoritative
+    // world hierarchy. Registration does not take ownership of assets:
+    // cluster-backed resource pools remain the transitional asset layer.
+    RegionRegistry regions;
+    // Direct World-owned hierarchy instances do not create Clusters or
+    // duplicate authoring Scenes. Asset leases are instance-independent.
+    tour::scene::WorldSceneInstances worldSceneInstances;
+    // One active authored Map lives in this runtime World.
+    bool SetActiveMapIdentity(uint64_t id) {
+        return worldSceneInstances.SetActiveMap(id);
+    }
+    uint64_t ActiveMapIdentity() const {
+        return worldSceneInstances.ActiveMap();
+    }
+    uint64_t InstantiateSceneHierarchy(
+        const Scene& source,
+        uint64_t sceneAssetId,
+        const glm::dmat4& placement,
+        std::vector<tour::asset::AssetLease> assets,
+        std::string& err,
+        const tour::scene::WorldSceneResourceMap* bindings = nullptr);
+    bool RetireSceneHierarchy(uint64_t instanceId);
 
-		// Registration of a region root is separate from node lifetime;
-		// the caller must retire the subtree independently at unload.
-		uint64_t RegisterRegion(NodeHandle root,
-			RegionKind kind = RegionKind::Scene) {
-			return regions.Register(scene, root, kind);
-		}
-		bool UnregisterRegion(uint64_t id) {
-			return regions.Unregister(id);
-		}
-		const SceneRegion* RegionForNode(NodeId node) const {
-			return regions.RegionOf(scene, node);
-		}
-		// Monotonic per-World owner registration identity; never use a
-		// recycled Cluster* address as the permanent GPU scene key.
-		uint64_t gpuSceneTopologyRevision = 0;
-		uint64_t nextGpuSceneClusterId = 1;
-		std::unordered_map<const Cluster*, uint64_t> gpuSceneClusterIds;
+    // Registration of a region root is separate from node lifetime;
+    // the caller must retire the subtree independently at unload.
+    uint64_t RegisterRegion(NodeHandle root, RegionKind kind = RegionKind::Scene) {
+        return regions.Register(scene, root, kind);
+    }
+    bool UnregisterRegion(uint64_t id) {
+        return regions.Unregister(id);
+    }
+    const SceneRegion* RegionForNode(NodeId node) const {
+        return regions.RegionOf(scene, node);
+    }
+    // Monotonic per-World owner registration identity; never use a
+    // recycled Cluster* address as the permanent GPU scene key.
+    uint64_t gpuSceneTopologyRevision = 0;
+    uint64_t nextGpuSceneClusterId = 1;
+    std::unordered_map<const Cluster*, uint64_t> gpuSceneClusterIds;
 
-		bool clustersDirty_ = false; // pending cluster scene merge
-		mutable bool dirtyCull = true;
-		std::vector<IteratorFlags> flags; // indexed by node
-		std::vector<std::unique_ptr<Cluster>> clusters;
-		// RETAINED clusters (the shared-asset bridge, Cluster::assetRefs):
-		// clusters PARKED by UnloadCluster while asset-side references
-		// were live. A parked cluster is OUT of the merged fold + every
-		// location table (its scene instance is gone — removal never
-		// resurrects scene content) but its resource rows (meshes...)
-		// stay alive for the reference holders (app::AssetStore). The
-		// last ReleaseCluster destroys it. UnregisterCluster can pull a
-		// parked cluster back out for re-parenting. Main-thread only.
-		std::vector<std::unique_ptr<Cluster>> retainedClusters;
+    bool clustersDirty_ = false; // pending cluster scene merge
+    mutable bool dirtyCull = true;
+    std::vector<IteratorFlags> flags; // indexed by node
+    std::vector<std::unique_ptr<Cluster>> clusters;
+    // RETAINED clusters (the shared-asset bridge, Cluster::assetRefs):
+    // clusters PARKED by UnloadCluster while asset-side references
+    // were live. A parked cluster is OUT of the merged fold + every
+    // location table (its scene instance is gone — removal never
+    // resurrects scene content) but its resource rows (meshes...)
+    // stay alive for the reference holders (app::AssetStore). The
+    // last ReleaseCluster destroys it. UnregisterCluster can pull a
+    // parked cluster back out for re-parenting. Main-thread only.
+    std::vector<std::unique_ptr<Cluster>> retainedClusters;
 
-		// Tiled-terrain source (see TerrainSource): empty unless a loaded
-		// pak carried Terrain blobs.
-		TerrainSource terrainSource;
+    // Tiled-terrain source (see TerrainSource): empty unless a loaded
+    // pak carried Terrain blobs.
+    TerrainSource terrainSource;
 
-		// ---- Compact draw list (hot-path iterator) --------------------
-		// Built once per ResolveAndFixup_clusters() and kept in sync by
-		// Cull(). Every renderable node (mesh attached) appears exactly
-		// once, sorted by material so per-material pipeline binds run
-		// once per material per pass. Node id + world-level mesh/material
-		// indices are precomputed here: iterating this list replaces the
-		// per-node scene.tables hash-free row lookups and
-		// the full hierarchy scan of forEachNode (which every pass used
-		// to repeat, ~20-30 times per frame).
-		// material == kInvalidIndex marks a mesh node with no material;
-		// passes that require one (all but the depth prepass) skip it.
-		static constexpr uint32_t kInvalidIndex = 0xFFFFFFFFu;
-		struct RenderItem {
-			NodeId node;
-			uint32_t mesh;     // world mesh index (meshLocations)
-			uint32_t material; // world material index (materialLocations)
-			IteratorFlags flags;
-			// The resolved MATERIAL-INSTANCE linkage: the bound
-			// instance's HANDLE VALUE (0 = none — inherit the base
-			// material default). Stored as the raw handle so a
-			// destroyed instance (or a younger one that reused the
-			// slot) fails the generation check in ResolvedItemUserData
-			// and cleanly falls back, never aliasing a stranger's
-			// value. The LINKAGE is resolved here (drawItems build /
-			// entity mirrors); the VALUE stays live in the pool —
-			// per-frame value updates (SetMaterialInstanceUserData:
-			// the damage flash fade) are plain pool writes, no
-			// rebuild, visible on the next frame build.
-			uint64_t materialInstance = 0;
-		};
-		std::vector<RenderItem> drawItems; // material-sorted; see above
+    // ---- Compact draw list (hot-path iterator) --------------------
+    // Built once per ResolveAndFixup_clusters() and kept in sync by
+    // Cull(). Every renderable node (mesh attached) appears exactly
+    // once, sorted by material so per-material pipeline binds run
+    // once per material per pass. Node id + world-level mesh/material
+    // indices are precomputed here: iterating this list replaces the
+    // per-node scene.tables hash-free row lookups and
+    // the full hierarchy scan of forEachNode (which every pass used
+    // to repeat, ~20-30 times per frame).
+    // material == kInvalidIndex marks a mesh node with no material;
+    // passes that require one (all but the depth prepass) skip it.
+    static constexpr uint32_t kInvalidIndex = 0xFFFFFFFFu;
+    struct RenderItem {
+        NodeId node;
+        uint32_t mesh;     // world mesh index (meshLocations)
+        uint32_t material; // world material index (materialLocations)
+        IteratorFlags flags;
+        // The resolved MATERIAL-INSTANCE linkage: the bound
+        // instance's HANDLE VALUE (0 = none — inherit the base
+        // material default). Stored as the raw handle so a
+        // destroyed instance (or a younger one that reused the
+        // slot) fails the generation check in ResolvedItemUserData
+        // and cleanly falls back, never aliasing a stranger's
+        // value. The LINKAGE is resolved here (drawItems build /
+        // entity mirrors); the VALUE stays live in the pool —
+        // per-frame value updates (SetMaterialInstanceUserData:
+        // the damage flash fade) are plain pool writes, no
+        // rebuild, visible on the next frame build.
+        uint64_t materialInstance = 0;
+    };
+    std::vector<RenderItem> drawItems; // material-sorted; see above
 
-		// SoA mirror of drawItems[].flags: a dense flags-only column the
-		// SIMD scan in ItemIndicesFor walks 8 items per iteration.
-		std::vector<IteratorFlags> itemFlags;
+    // SoA mirror of drawItems[].flags: a dense flags-only column the
+    // SIMD scan in ItemIndicesFor walks 8 items per iteration.
+    std::vector<IteratorFlags> itemFlags;
 
-		// Lazily cooked index lists into drawItems, keyed by the
-		// required-flags combination (call sites use ~3 distinct combos).
-		// Built once per combo on first request — vectorized on AVX2
-		// (AND + CMPEQ + movemask + bit-scan over itemFlags) — and
-		// invalidated whenever flags change (ResolveAndFixup rebuild,
-		// Cull). Hot passes then iterate a contiguous, prefiltered
-		// uint32 index array: no per-item flag test, no branch
-		// mispredicts, and pairs perfectly with the material sort.
-		mutable std::unordered_map<IteratorFlags, std::vector<uint32_t>> flagLists;
+    // Lazily cooked index lists into drawItems, keyed by the
+    // required-flags combination (call sites use ~3 distinct combos).
+    // Built once per combo on first request — vectorized on AVX2
+    // (AND + CMPEQ + movemask + bit-scan over itemFlags) — and
+    // invalidated whenever flags change (ResolveAndFixup rebuild,
+    // Cull). Hot passes then iterate a contiguous, prefiltered
+    // uint32 index array: no per-item flag test, no branch
+    // mispredicts, and pairs perfectly with the material sort.
+    mutable std::unordered_map<IteratorFlags, std::vector<uint32_t>> flagLists;
 
-		// Returns the cooked item-index list for a flag combination
-		// (lazily built; see flagLists above).
-		const std::vector<uint32_t>& ItemIndicesFor(IteratorFlags requiredFlags) const;
+    // Returns the cooked item-index list for a flag combination
+    // (lazily built; see flagLists above).
+    const std::vector<uint32_t>& ItemIndicesFor(IteratorFlags requiredFlags) const;
 
-		// Hot-path iterator over drawItems (see above). `func` takes
-		// const RenderItem&. The flag test is resolved through the
-		// cooked index list, not per-item.
-		template<typename Func>
-		void forEachRenderItem(IteratorFlags requiredFlags, Func&& func) const
-		{
-			if (requiredFlags == static_cast<IteratorFlags>(IteratorFlagBit_None)) {
-				for (const RenderItem& item : drawItems)
-					func(item);
-				return;
-			}
-			for (uint32_t idx : ItemIndicesFor(requiredFlags))
-				func(drawItems[idx]);
-		}
+    // Hot-path iterator over drawItems (see above). `func` takes
+    // const RenderItem&. The flag test is resolved through the
+    // cooked index list, not per-item.
+    template <typename Func>
+    void forEachRenderItem(IteratorFlags requiredFlags, Func&& func) const {
+        if (requiredFlags == static_cast<IteratorFlags>(IteratorFlagBit_None)) {
+            for (const RenderItem& item : drawItems)
+                func(item);
+            return;
+        }
+        for (uint32_t idx : ItemIndicesFor(requiredFlags))
+            func(drawItems[idx]);
+    }
 
-		// Resource lookup into clusters
-		struct MeshLocation {
-			Cluster* cluster;
-			ClusterStaticMeshHandle handle;
-		};
-		struct MaterialLocation {
-			Cluster* cluster;
-			ClusterMaterialHandle handle;
-		};
-		struct TextureLocation {
-			Cluster* cluster;
-			ClusterTextureHandle handle;
-		};
-		// Cooked punctual lights (KHR_lights_punctual): pool assets like
-		// meshes — scene.lightForNode stores world indices into this table,
-		// each entry resolving back to the owning Cluster + handle.
-		struct LightLocation {
-			Cluster* cluster;
-			ClusterLightHandle handle;
-		};
-		// Authored cameras: pool assets like lights — scene.cameraForNode
-		// stores world indices into this table, each entry resolving back
-		// to the owning Cluster + handle.
-		struct CameraLocation {
-			Cluster* cluster;
-			ClusterCameraHandle handle;
-		};
-		// Authored/runtime decals: pool assets like lights — scene.decalForNode
-		// stores world indices into this table, each entry resolving back to
-		// the owning Cluster + handle. The shape rides the node transform
-		// (see SceneDecal).
-		struct DecalLocation {
-			Cluster* cluster;
-			ClusterDecalHandle handle;
-		};
-		// Indexed by the mesh/material index stored in the scene's
-		// tables (tables.meshes / tables.materials). Each entry points back to the owning
-		// Cluster so resources stay owned by clusters.
-		std::vector<MeshLocation> meshLocations;
-		std::vector<MaterialLocation> materialLocations;
-		std::vector<TextureLocation> textureLocations;
-		std::vector<LightLocation> lightLocations;
-		std::vector<CameraLocation> cameraLocations;
-		std::vector<DecalLocation> decalLocations;
-		// Cluster-slot -> MERGED-scene node id, parallel to `clusters`
-		// (filled by ResolveAndFixup; UINT32_MAX = hole/retired). The
-		// retained mapping is what lets the entity layers key state by
-		// the STABLE (cluster, cluster-local node) pair while reading
-		// positions from the merged global transforms — merged node
-		// ids themselves are rebuilt on every resolve (unstable).
-		std::vector<std::vector<NodeId>> clusterMergedNodes;
-		// Runtime audio-source entity registry (the smvk::AudioSourceHandle
-		// slots — see SpawnAudioSource). Keyed by handle index; the
-		// generation is the stale-handle guarantee. `owner` +
-		// `clusterNode` are the DURABLE identity (the dynamic cluster
-		// + its own scene's node); `mergedNode` is the resolved/mirrored
-		// merged-scene node (rebuilt by resolve/mirror).
-		struct AudioSourceEntity {
-			uint32_t generation = 1;
-			bool alive = false;
-			Cluster* owner = nullptr;
-			NodeId clusterNode = 0;
-			NodeId mergedNode = 0;
-		};
-		std::vector<AudioSourceEntity> audioEntities;
-		std::vector<uint32_t> audioEntityFree;
-		// Runtime MESH entities: a bare durable transform node (dynamic
-		// cluster) + CROSS-CLUSTER mesh/material bindings stored as the
-		// stable (owner cluster, pool handle) pair — the merged-scene
-		// rows are mirrors the resolve tail re-establishes. The
-		// animatorSlot is the ATTACHED animator (an explicitly-owned
-		// attachment: DestroyMesh cleans it up).
-		struct MeshEntity {
-			uint32_t generation = 1;
-			bool alive = false;
-			Cluster* transformOwner = nullptr; // the dynamic cluster
-			NodeId clusterNode = 0;            // durable transform node
-			NodeId mergedNode = 0;             // resolved/mirrored node
-			Cluster* meshOwner = nullptr;      // the mesh's owning cluster
-			ClusterStaticMeshHandle mesh{};
-			ClusterMaterialHandle material{};  // empty = material-less
-			uint32_t animatorSlot = UINT32_MAX;
-			// The OPTIONAL material instance (the 32-bit userdata
-			// override lane — see the material-instance registry
-			// below): empty = inherit the base material's default.
-			// Binding changes mark the world dirty like any other
-			// mirror edit; the INSTANCE VALUE stays live in the pool.
-			smvk::MaterialInstanceHandle materialInstance{};
-		};
-		std::vector<MeshEntity> meshEntities;
-		std::vector<uint32_t> meshEntityFree;
-		// ---- material instances (the userdata override lane,
-		// docs/shader_library_design.md Phase A) ----
-		// A material instance references ONE base material (the world
-		// material index at creation, re-keyed through resolves like
-		// every location) and optionally overrides the material's
-		// 32-bit userdata. NO MaterialValues copy: the base material's
-		// GPU row, textures, PBR factors, alpha mode and batching stay
-		// SHARED — the instance only owns the one runtime word, so
-		// instance value changes are never a reupload, a pipeline
-		// event or a batch split. The base binding is stored as the
-		// stable (owner cluster, pool handle) pair so cluster
-		// unloads/re-resolves re-key it like the entity bindings.
-		struct MaterialInstanceEntity {
-			uint32_t generation = 1;
-			bool alive = false;
-			Cluster* baseOwner = nullptr;      // the base material's owner
-			ClusterMaterialHandle base{};      // ... and its pool handle
-			uint32_t userData = 0;
-			bool overridesUserData = false;
-		};
-		std::vector<MaterialInstanceEntity> materialInstances;
-		std::vector<uint32_t> materialInstanceFree;
-		// Per-MATERIAL userdata defaults, parallel to materialLocations
-		// (the resolved value for every draw of the material that has
-		// no live instance override). Re-keyed at every resolve through
-		// the (owner, handle) capture so the values survive cluster
-		// loads/unloads reordering the index layout. NEVER inside
-		// MaterialValues (the GPU 128B row): a value change is a CPU
-		// write, nothing more.
-		std::vector<uint32_t> materialUserData;
-		// Per-MATERIAL shader family (MaterialShaderFamily, packed in
-		// uint8_t rows), parallel to materialLocations + re-keyed by
-		// the same (owner, handle) capture as materialUserData — the
-		// Phase B lane over the userdata lane (the family is CODE
-		// identity: which compiled lit FS the material's draws bind;
-		// the userdata is the runtime VALUE the family's hooks read).
-		// NEVER inside MaterialValues (CPU pipeline-selection state,
-		// design §5) and NEVER per-instance (instances inherit the
-		// base family; only userdata overrides per instance).
-		std::vector<uint8_t> materialShaderFamily;
-		// Animator registry (the AnimatorState payloads + generational
-		// slots — see animator.h; meshEntitySlot back-references the
-		// attached entity for the DestroyMesh cleanup).
-		struct AnimatorEntity {
-			uint32_t generation = 1;
-			bool alive = false;
-			uint32_t meshEntitySlot = UINT32_MAX;
-			AnimatorState state{};
-		};
-		std::vector<AnimatorEntity> animators;
-		std::vector<uint32_t> animatorFree;
-		// Per-mesh LOD markers parallel to meshLocations (cook-time chain:
-		// LOD0 + "/lodN" siblings with world-scaled simplifier error used
-		// for runtime LOD selection — see SelectLodIndex).
-		std::vector<smvk::LodInfo> meshLodInfos;
+    // Resource lookup into clusters
+    struct MeshLocation {
+        Cluster* cluster;
+        ClusterStaticMeshHandle handle;
+    };
+    struct MaterialLocation {
+        Cluster* cluster;
+        ClusterMaterialHandle handle;
+    };
+    struct TextureLocation {
+        Cluster* cluster;
+        ClusterTextureHandle handle;
+    };
+    // Cooked punctual lights (KHR_lights_punctual): pool assets like
+    // meshes — scene.lightForNode stores world indices into this table,
+    // each entry resolving back to the owning Cluster + handle.
+    struct LightLocation {
+        Cluster* cluster;
+        ClusterLightHandle handle;
+    };
+    // Authored cameras: pool assets like lights — scene.cameraForNode
+    // stores world indices into this table, each entry resolving back
+    // to the owning Cluster + handle.
+    struct CameraLocation {
+        Cluster* cluster;
+        ClusterCameraHandle handle;
+    };
+    // Authored/runtime decals: pool assets like lights — scene.decalForNode
+    // stores world indices into this table, each entry resolving back to
+    // the owning Cluster + handle. The shape rides the node transform
+    // (see SceneDecal).
+    struct DecalLocation {
+        Cluster* cluster;
+        ClusterDecalHandle handle;
+    };
+    // Indexed by the mesh/material index stored in the scene's
+    // tables (tables.meshes / tables.materials). Each entry points back to the owning
+    // Cluster so resources stay owned by clusters.
+    std::vector<MeshLocation> meshLocations;
+    std::vector<MaterialLocation> materialLocations;
+    std::vector<TextureLocation> textureLocations;
+    std::vector<LightLocation> lightLocations;
+    std::vector<CameraLocation> cameraLocations;
+    std::vector<DecalLocation> decalLocations;
+    // Cluster-slot -> MERGED-scene node id, parallel to `clusters`
+    // (filled by ResolveAndFixup; UINT32_MAX = hole/retired). The
+    // retained mapping is what lets the entity layers key state by
+    // the STABLE (cluster, cluster-local node) pair while reading
+    // positions from the merged global transforms — merged node
+    // ids themselves are rebuilt on every resolve (unstable).
+    std::vector<std::vector<NodeId>> clusterMergedNodes;
+    // Runtime audio-source entity registry (the smvk::AudioSourceHandle
+    // slots — see SpawnAudioSource). Keyed by handle index; the
+    // generation is the stale-handle guarantee. `owner` +
+    // `clusterNode` are the DURABLE identity (the dynamic cluster
+    // + its own scene's node); `mergedNode` is the resolved/mirrored
+    // merged-scene node (rebuilt by resolve/mirror).
+    struct AudioSourceEntity {
+        uint32_t generation = 1;
+        bool alive = false;
+        Cluster* owner = nullptr;
+        NodeId clusterNode = 0;
+        NodeId mergedNode = 0;
+    };
+    std::vector<AudioSourceEntity> audioEntities;
+    std::vector<uint32_t> audioEntityFree;
+    // Runtime MESH entities: a bare durable transform node (dynamic
+    // cluster) + CROSS-CLUSTER mesh/material bindings stored as the
+    // stable (owner cluster, pool handle) pair — the merged-scene
+    // rows are mirrors the resolve tail re-establishes. The
+    // animatorSlot is the ATTACHED animator (an explicitly-owned
+    // attachment: DestroyMesh cleans it up).
+    struct MeshEntity {
+        uint32_t generation = 1;
+        bool alive = false;
+        Cluster* transformOwner = nullptr; // the dynamic cluster
+        NodeId clusterNode = 0;            // durable transform node
+        NodeId mergedNode = 0;             // resolved/mirrored node
+        Cluster* meshOwner = nullptr;      // the mesh's owning cluster
+        ClusterStaticMeshHandle mesh{};
+        ClusterMaterialHandle material{}; // empty = material-less
+        uint32_t animatorSlot = UINT32_MAX;
+        // The OPTIONAL material instance (the 32-bit userdata
+        // override lane — see the material-instance registry
+        // below): empty = inherit the base material's default.
+        // Binding changes mark the world dirty like any other
+        // mirror edit; the INSTANCE VALUE stays live in the pool.
+        smvk::MaterialInstanceHandle materialInstance{};
+    };
+    std::vector<MeshEntity> meshEntities;
+    std::vector<uint32_t> meshEntityFree;
+    // ---- material instances (the userdata override lane,
+    // docs/shader_library_design.md Phase A) ----
+    // A material instance references ONE base material (the world
+    // material index at creation, re-keyed through resolves like
+    // every location) and optionally overrides the material's
+    // 32-bit userdata. NO MaterialValues copy: the base material's
+    // GPU row, textures, PBR factors, alpha mode and batching stay
+    // SHARED — the instance only owns the one runtime word, so
+    // instance value changes are never a reupload, a pipeline
+    // event or a batch split. The base binding is stored as the
+    // stable (owner cluster, pool handle) pair so cluster
+    // unloads/re-resolves re-key it like the entity bindings.
+    struct MaterialInstanceEntity {
+        uint32_t generation = 1;
+        bool alive = false;
+        Cluster* baseOwner = nullptr; // the base material's owner
+        ClusterMaterialHandle base{}; // ... and its pool handle
+        uint32_t userData = 0;
+        bool overridesUserData = false;
+    };
+    std::vector<MaterialInstanceEntity> materialInstances;
+    std::vector<uint32_t> materialInstanceFree;
+    // Per-MATERIAL userdata defaults, parallel to materialLocations
+    // (the resolved value for every draw of the material that has
+    // no live instance override). Re-keyed at every resolve through
+    // the (owner, handle) capture so the values survive cluster
+    // loads/unloads reordering the index layout. NEVER inside
+    // MaterialValues (the GPU 128B row): a value change is a CPU
+    // write, nothing more.
+    std::vector<uint32_t> materialUserData;
+    // Per-MATERIAL shader family (MaterialShaderFamily, packed in
+    // uint8_t rows), parallel to materialLocations + re-keyed by
+    // the same (owner, handle) capture as materialUserData — the
+    // Phase B lane over the userdata lane (the family is CODE
+    // identity: which compiled lit FS the material's draws bind;
+    // the userdata is the runtime VALUE the family's hooks read).
+    // NEVER inside MaterialValues (CPU pipeline-selection state,
+    // design §5) and NEVER per-instance (instances inherit the
+    // base family; only userdata overrides per instance).
+    std::vector<uint8_t> materialShaderFamily;
+    // Animator registry (the AnimatorState payloads + generational
+    // slots — see animator.h; meshEntitySlot back-references the
+    // attached entity for the DestroyMesh cleanup).
+    struct AnimatorEntity {
+        uint32_t generation = 1;
+        bool alive = false;
+        uint32_t meshEntitySlot = UINT32_MAX;
+        AnimatorState state{};
+    };
+    std::vector<AnimatorEntity> animators;
+    std::vector<uint32_t> animatorFree;
+    // Per-mesh LOD markers parallel to meshLocations (cook-time chain:
+    // LOD0 + "/lodN" siblings with world-scaled simplifier error used
+    // for runtime LOD selection — see SelectLodIndex).
+    std::vector<smvk::LodInfo> meshLodInfos;
 
-		Cluster& LoadCluster(smvk::ResourceManager& ctx);
-		// Deserializes a cooked pak (PakReader over caller-owned bytes) into
-		// a new registered Cluster. Throws std::runtime_error on failure.
-		// The caller issues ctx.FlushUploads() after ResolveAndFixup.
-		// streamer (optional): v4 textures carrying a digest stream through
-		// CreateStreamingTextureFromMeta (tail-only upload, no KTX parse)
-		// and register for demand upgrades — imagePin (the loaded pak
-		// image) must then be given to pin the borrowed payloads.
-		Cluster& LoadClusterFromPak(smvk::ResourceManager& ctx, const asset::PakReader& reader,
-			uint32_t sceneIndex = 0,
-			TextureStreamer* streamer = nullptr,
-			std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
-			const smvk::ExternalTextureResolver* externalTexture = nullptr);
-		// Harvests the pak's Terrain blobs (terrain/meta + 16x H + 256x S)
-		// into terrainSource (byte copies; the reader may die after). Also
-		// called by LoadClusterFromPak (non-fatal: scene loads even when
-		// terrain is broken). False with err set on malformed terrain.
-		bool LoadTerrainFromPak(const asset::PakReader& reader, std::string& err);
-		// The world's DYNAMIC cluster (see Cluster::isDynamic): the
-		// dedicated home for runtime-created entities (editor-created
-		// lights/cameras, app demo content, later decals/particles).
-		// Lazily created on first call — repeat calls return the SAME
-		// cluster. ctx is the host context (nullptr only in GPU-less
-		// tests: value entities need no GPU). NOT resolved here: callers
-		// either edit incrementally (node in the merged scene + location
-		// push, the editor's live path) or keep their nodes in the
-		// dynamic cluster's own scene so a later resolve folds them in.
-		Cluster& EnsureDynamicCluster(smvk::ResourceManager* ctx);
-		// Runtime decal creation (app presets, the renderer's J crosshair
-		// spawn): appends a node with `frame` as its local transform
-		// (translation = projector center, local -Z into the surface, +Y
-		// texture V up, scale = half extents x/y/z — see SceneDecal) plus a
-		// SceneDecal look def in the DYNAMIC cluster. The durable home is
-		// the dynamic cluster's OWN scene, so a later ResolveAndFixup
-		// (e.g. a pak-cluster unload) folds the decal back in like cooked
-		// content — runtime entities survive pak unloads. A MIRROR node +
-		// link land in the merged scene incrementally for immediate
-		// visibility (the mirror dies at the next resolve; the original
-		// folds in). Returns the merged-scene node id (UINT32_MAX on
-		// failure).
-		NodeId CreateDecalAt(const glm::mat4& frame, SceneDecal def);
+    Cluster& LoadCluster(smvk::ResourceManager& ctx);
+    // Deserializes a cooked pak (PakReader over caller-owned bytes) into
+    // a new registered Cluster. Throws std::runtime_error on failure.
+    // The caller issues ctx.FlushUploads() after ResolveAndFixup.
+    // streamer (optional): v4 textures carrying a digest stream through
+    // CreateStreamingTextureFromMeta (tail-only upload, no KTX parse)
+    // and register for demand upgrades — imagePin (the loaded pak
+    // image) must then be given to pin the borrowed payloads.
+    Cluster& LoadClusterFromPak(smvk::ResourceManager& ctx,
+                                const asset::PakReader& reader,
+                                uint32_t sceneIndex = 0,
+                                TextureStreamer* streamer = nullptr,
+                                std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
+                                const smvk::ExternalTextureResolver* externalTexture = nullptr);
+    // Harvests the pak's Terrain blobs (terrain/meta + 16x H + 256x S)
+    // into terrainSource (byte copies; the reader may die after). Also
+    // called by LoadClusterFromPak (non-fatal: scene loads even when
+    // terrain is broken). False with err set on malformed terrain.
+    bool LoadTerrainFromPak(const asset::PakReader& reader, std::string& err);
+    // The world's DYNAMIC cluster (see Cluster::isDynamic): the
+    // dedicated home for runtime-created entities (editor-created
+    // lights/cameras, app demo content, later decals/particles).
+    // Lazily created on first call — repeat calls return the SAME
+    // cluster. ctx is the host context (nullptr only in GPU-less
+    // tests: value entities need no GPU). NOT resolved here: callers
+    // either edit incrementally (node in the merged scene + location
+    // push, the editor's live path) or keep their nodes in the
+    // dynamic cluster's own scene so a later resolve folds them in.
+    Cluster& EnsureDynamicCluster(smvk::ResourceManager* ctx);
+    // Runtime decal creation (app presets, the renderer's J crosshair
+    // spawn): appends a node with `frame` as its local transform
+    // (translation = projector center, local -Z into the surface, +Y
+    // texture V up, scale = half extents x/y/z — see SceneDecal) plus a
+    // SceneDecal look def in the DYNAMIC cluster. The durable home is
+    // the dynamic cluster's OWN scene, so a later ResolveAndFixup
+    // (e.g. a pak-cluster unload) folds the decal back in like cooked
+    // content — runtime entities survive pak unloads. A MIRROR node +
+    // link land in the merged scene incrementally for immediate
+    // visibility (the mirror dies at the next resolve; the original
+    // folds in). Returns the merged-scene node id (UINT32_MAX on
+    // failure).
+    NodeId CreateDecalAt(const glm::mat4& frame, SceneDecal def);
 
-		// ---- runtime audio-source entities (the gameplay-handle
-		// surface — see Engine/Scene/entity_handle.h) ----
-		// Spawns a runtime audio-source EMITTER: a transform node (the
-		// durable home is the dynamic cluster's own scene, so the
-		// entity survives pak-cluster unloads + resolves — the
-		// CreateDecalAt pattern) + the SceneAudioSource payload row +
-		// a registry slot keyed by the returned smvk::AudioSourceHandle. A
-		// MIRROR row lands in the merged scene for immediate
-		// visibility. Gameplay code holds the handle and destroys it
-		// EXPLICITLY (World::DestroyAudioSource); authored .tour
-		// sources carry no handle (they die with their scene).
-		// `parent` (optional, UINT32_MAX = the world root) parents
-		// the durable node — the emitter pose resolves from the node's
-		// GLOBAL transform at use, so parenting applies like meshes.
-		smvk::AudioSourceHandle SpawnAudioSource(const glm::mat4& localFrame,
-			NodeId parent, const SceneAudioSource& def);
-		// Destroys the spawned emitter (its rows + nodes drop, its
-		// registry generation advances — every stale copy of the
-		// handle fails validation forever). False on a stale/unknown
-		// handle. The VOICES keyed to it stop: the audio manager
-		// validates its emitters against IsAudioSourceAlive each
-		// update (nothing here reaches the mixer).
-		bool DestroyAudioSource(smvk::AudioSourceHandle handle);
-		[[nodiscard]] bool IsAudioSourceAlive(smvk::AudioSourceHandle handle)
-			const;
-		// The emitter's MERGED-scene node (UINT32_MAX = stale handle
-		// or not-yet-resolved). Unstable across resolves — the durable
-		// identity is the handle; use this only for same-frame reads
-		// (FindAudioSource on the merged row, gizmo selection...).
-		[[nodiscard]] NodeId AudioSourceNode(smvk::AudioSourceHandle handle)
-			const;
+    // ---- runtime audio-source entities (the gameplay-handle
+    // surface — see Engine/Scene/entity_handle.h) ----
+    // Spawns a runtime audio-source EMITTER: a transform node (the
+    // durable home is the dynamic cluster's own scene, so the
+    // entity survives pak-cluster unloads + resolves — the
+    // CreateDecalAt pattern) + the SceneAudioSource payload row +
+    // a registry slot keyed by the returned smvk::AudioSourceHandle. A
+    // MIRROR row lands in the merged scene for immediate
+    // visibility. Gameplay code holds the handle and destroys it
+    // EXPLICITLY (World::DestroyAudioSource); authored .tour
+    // sources carry no handle (they die with their scene).
+    // `parent` (optional, UINT32_MAX = the world root) parents
+    // the durable node — the emitter pose resolves from the node's
+    // GLOBAL transform at use, so parenting applies like meshes.
+    smvk::AudioSourceHandle SpawnAudioSource(const glm::mat4& localFrame,
+                                             NodeId parent,
+                                             const SceneAudioSource& def);
+    // Destroys the spawned emitter (its rows + nodes drop, its
+    // registry generation advances — every stale copy of the
+    // handle fails validation forever). False on a stale/unknown
+    // handle. The VOICES keyed to it stop: the audio manager
+    // validates its emitters against IsAudioSourceAlive each
+    // update (nothing here reaches the mixer).
+    bool DestroyAudioSource(smvk::AudioSourceHandle handle);
+    [[nodiscard]] bool IsAudioSourceAlive(smvk::AudioSourceHandle handle) const;
+    // The emitter's MERGED-scene node (UINT32_MAX = stale handle
+    // or not-yet-resolved). Unstable across resolves — the durable
+    // identity is the handle; use this only for same-frame reads
+    // (FindAudioSource on the merged row, gizmo selection...).
+    [[nodiscard]] NodeId AudioSourceNode(smvk::AudioSourceHandle handle) const;
 
-		// ---- runtime MESH entities (the gameplay-handle surface,
-		// Engine/Scene/entity_handle.h — one spawn API, static and
-		// skinned alike; skinning is a capability of the MESH ASSET,
-		// not a separate entity category) ----
-		// Instances a loaded world mesh onto a fresh entity node: the
-		// durable home is the dynamic cluster's own scene (a bare
-		// transform — the CreateDecalAt pattern), and the MESH +
-		// MATERIAL bindings live on the ENTITY (cross-cluster: the
-		// source mesh stays owned by its pak cluster; the merged-scene
-		// mirror rows resolve through world meshLocations, and the
-		// resolve tail RE-MIRRORS them after every rebuild — the
-		// binding is stored as the stable (owner cluster, pool handle)
-		// pair). `frame` is the entity node's local transform.
-		// SpawnMeshFromNode copies the source NODE's mesh + material
-		// associations (the classic spawn-point instancing); empty
-		// handle on a bad source.
-		smvk::MeshEntityHandle SpawnMeshFromNode(NodeId sourceNode,
-			const glm::mat4& frame, NodeId parent);
-		// The KEY-DRIVEN spawn (the content-as-code lane, the typed-key
-		// gameplay surface): instances a WORLD MESH ROW directly — no
-		// authored source node. The game loads a typed project mesh key
-		// through app::AssetManager (LoadMesh — MeshWorldIndex resolves
-		// the handle's CURRENT row fresh) and spawns HERE; the row's
-		// owning cluster keeps the mesh (cross-cluster binding, exactly
-		// like SpawnMeshFromNode). `worldMaterialIndex` is the optional
-		// base-material row (kInvalidIndex = material-less). The parent
-		// contract matches SpawnMeshFromNode (the resolved hierarchy
-		// owns the merge). Empty handle on a bad row.
-		smvk::MeshEntityHandle SpawnMesh(uint32_t worldMeshIndex,
-			const glm::mat4& frame, NodeId parent,
-			uint32_t worldMaterialIndex = kInvalidIndex);
-		// The shared spawn core (both entries): the durable transform
-		// node (dynamic cluster) + the merged mirror (fresh world
-		// indices) + the entity slot. NOT API — the public entries
-		// resolve the (mesh, material) bindings from their own sources.
-		smvk::MeshEntityHandle SpawnMeshEntityInternal(
-			const MeshLocation& meshLoc, const MaterialLocation* matLoc,
-			const glm::mat4& frame);
-		// Destroys the entity (rows + nodes drop, the generation
-		// advances — stale copies fail validation forever). The
-		// ATTACHED animator (an explicitly-owned attachment) dies with
-		// it: its playback state + its external-pose claim drop; an
-		// independently-held smvk::AnimatorHandle fails validation.
-		bool DestroyMesh(smvk::MeshEntityHandle handle);
-		[[nodiscard]] bool IsMeshEntityAlive(smvk::MeshEntityHandle handle)
-			const;
-		// The entity's MERGED-scene node (UINT32_MAX = stale). Like
-		// AudioSourceNode: unstable across resolves, same-frame use.
-		[[nodiscard]] NodeId MeshEntityNode(smvk::MeshEntityHandle handle)
-			const;
-		// The world meshLocations index the entity's mesh resolves
-		// through (UINT32_MAX = stale/unresolvable — the owning
-		// cluster may have been unloaded).
-		[[nodiscard]] uint32_t MeshEntityMeshIndex(
-			smvk::MeshEntityHandle handle) const;
+    // ---- runtime MESH entities (the gameplay-handle surface,
+    // Engine/Scene/entity_handle.h — one spawn API, static and
+    // skinned alike; skinning is a capability of the MESH ASSET,
+    // not a separate entity category) ----
+    // Instances a loaded world mesh onto a fresh entity node: the
+    // durable home is the dynamic cluster's own scene (a bare
+    // transform — the CreateDecalAt pattern), and the MESH +
+    // MATERIAL bindings live on the ENTITY (cross-cluster: the
+    // source mesh stays owned by its pak cluster; the merged-scene
+    // mirror rows resolve through world meshLocations, and the
+    // resolve tail RE-MIRRORS them after every rebuild — the
+    // binding is stored as the stable (owner cluster, pool handle)
+    // pair). `frame` is the entity node's local transform.
+    // SpawnMeshFromNode copies the source NODE's mesh + material
+    // associations (the classic spawn-point instancing); empty
+    // handle on a bad source.
+    smvk::MeshEntityHandle SpawnMeshFromNode(NodeId sourceNode,
+                                             const glm::mat4& frame,
+                                             NodeId parent);
+    // The KEY-DRIVEN spawn (the content-as-code lane, the typed-key
+    // gameplay surface): instances a WORLD MESH ROW directly — no
+    // authored source node. The game loads a typed project mesh key
+    // through app::AssetManager (LoadMesh — MeshWorldIndex resolves
+    // the handle's CURRENT row fresh) and spawns HERE; the row's
+    // owning cluster keeps the mesh (cross-cluster binding, exactly
+    // like SpawnMeshFromNode). `worldMaterialIndex` is the optional
+    // base-material row (kInvalidIndex = material-less). The parent
+    // contract matches SpawnMeshFromNode (the resolved hierarchy
+    // owns the merge). Empty handle on a bad row.
+    smvk::MeshEntityHandle SpawnMesh(uint32_t worldMeshIndex,
+                                     const glm::mat4& frame,
+                                     NodeId parent,
+                                     uint32_t worldMaterialIndex = kInvalidIndex);
+    // The shared spawn core (both entries): the durable transform
+    // node (dynamic cluster) + the merged mirror (fresh world
+    // indices) + the entity slot. NOT API — the public entries
+    // resolve the (mesh, material) bindings from their own sources.
+    smvk::MeshEntityHandle SpawnMeshEntityInternal(const MeshLocation& meshLoc,
+                                                   const MaterialLocation* matLoc,
+                                                   const glm::mat4& frame);
+    // Destroys the entity (rows + nodes drop, the generation
+    // advances — stale copies fail validation forever). The
+    // ATTACHED animator (an explicitly-owned attachment) dies with
+    // it: its playback state + its external-pose claim drop; an
+    // independently-held smvk::AnimatorHandle fails validation.
+    bool DestroyMesh(smvk::MeshEntityHandle handle);
+    [[nodiscard]] bool IsMeshEntityAlive(smvk::MeshEntityHandle handle) const;
+    // The entity's MERGED-scene node (UINT32_MAX = stale). Like
+    // AudioSourceNode: unstable across resolves, same-frame use.
+    [[nodiscard]] NodeId MeshEntityNode(smvk::MeshEntityHandle handle) const;
+    // The world meshLocations index the entity's mesh resolves
+    // through (UINT32_MAX = stale/unresolvable — the owning
+    // cluster may have been unloaded).
+    [[nodiscard]] uint32_t MeshEntityMeshIndex(smvk::MeshEntityHandle handle) const;
 
-		// ---- material runtime state + MATERIAL INSTANCES (the
-		// 32-bit userdata lane, docs/shader_library_design.md) ----
-		// userData is ONE runtime word per resolved draw: the material
-		// instance override or the base material default, resolved at
-		// frame build and forwarded flat to the lit fragment's
-		// TM_ModifySurface / TM_ModifyLitColor hooks (VS location 9 /
-		// gfx Draw misc3.x / the direct legs' push byte 244). The bit
-		// layout belongs to gameplay code — the engine never
-		// interprets it. A value change is a plain CPU write: no
-		// shader recompile, no pipeline event, no MaterialValues
-		// reupload, no batch split (the material stays the sort key).
-		// Sets the base material's DEFAULT userdata (every draw of the
-		// material without a live instance override). False on a bad
-		// index.
-		bool SetMaterialUserData(uint32_t materialIndex, uint32_t userData);
-		// The material's default (0 = never set / bad index).
-		[[nodiscard]] uint32_t MaterialUserData(
-			uint32_t materialIndex) const;
-		// Creates a material instance over a base material (the shared
-		// base row stays untouched). Empty handle on a bad base index.
-		[[nodiscard]] smvk::MaterialInstanceHandle CreateMaterialInstance(
-			uint32_t baseMaterialIndex);
-		// Destroys the instance (its overrides die with it; meshes
-		// bound to it silently fall back to the base default — the
-		// drawItems linkage stays valid, ResolvedItemUserData skips
-		// dead slots). NEVER touches the base material.
-		bool DestroyMaterialInstance(smvk::MaterialInstanceHandle handle);
-		[[nodiscard]] bool IsMaterialInstanceAlive(
-			smvk::MaterialInstanceHandle handle) const;
-		// Binds a material instance to a live mesh ENTITY (the
-		// per-entity override join — static scene nodes take instances
-		// through spawn/editor flows only in v1). Binding marks the
-		// world for the next resolve's linkage rebuild; the instance
-		// VALUE stays live per frame. False on stale handles.
-		bool SetMeshMaterialInstance(smvk::MeshEntityHandle mesh,
-			smvk::MaterialInstanceHandle instance);
-		// The instance's value override (live: visible on the next
-		// frame build, no rebuild). False on a stale handle.
-		bool SetMaterialInstanceUserData(smvk::MaterialInstanceHandle instance,
-			uint32_t userData);
-		// Clears the override — the instance goes back to inheriting
-		// the base material's default. False on a stale handle.
-		bool ClearMaterialInstanceUserDataOverride(
-			smvk::MaterialInstanceHandle instance);
-		// The per-frame RESOLUTION: a draw item's effective userdata —
-		// the bound instance's override when live and overriding, else
-		// the base material default. This is what the draw producers
-		// call per item at frame build (GfxRenderer's filtered walk,
-		// the direct legs' per-draw push).
-		[[nodiscard]] uint32_t ResolvedItemUserData(
-			const RenderItem& item) const;
-		// ---- the SHADER FAMILY lane (Phase B, design §5) -----------
-		// Sets the base material's lit shader family (the compiled
-		// ProjectLit hook family vs the engine's StandardLit no-ops).
-		// Every draw of the material (and every material INSTANCE —
-		// families inherit, never override) binds the family's FS
-		// twins from the next frame build. False on a bad index.
-		bool SetMaterialShaderFamily(uint32_t materialIndex,
-			smvk::MaterialShaderFamily family);
-		// The material's family (StandardLit when never set / bad
-		// index — the fail-safe stock pick).
-		[[nodiscard]] smvk::MaterialShaderFamily ShaderFamilyOf(
-			uint32_t materialIndex) const;
+    // ---- material runtime state + MATERIAL INSTANCES (the
+    // 32-bit userdata lane, docs/shader_library_design.md) ----
+    // userData is ONE runtime word per resolved draw: the material
+    // instance override or the base material default, resolved at
+    // frame build and forwarded flat to the lit fragment's
+    // TM_ModifySurface / TM_ModifyLitColor hooks (VS location 9 /
+    // gfx Draw misc3.x / the direct legs' push byte 244). The bit
+    // layout belongs to gameplay code — the engine never
+    // interprets it. A value change is a plain CPU write: no
+    // shader recompile, no pipeline event, no MaterialValues
+    // reupload, no batch split (the material stays the sort key).
+    // Sets the base material's DEFAULT userdata (every draw of the
+    // material without a live instance override). False on a bad
+    // index.
+    bool SetMaterialUserData(uint32_t materialIndex, uint32_t userData);
+    // The material's default (0 = never set / bad index).
+    [[nodiscard]] uint32_t MaterialUserData(uint32_t materialIndex) const;
+    // Creates a material instance over a base material (the shared
+    // base row stays untouched). Empty handle on a bad base index.
+    [[nodiscard]] smvk::MaterialInstanceHandle CreateMaterialInstance(uint32_t baseMaterialIndex);
+    // Destroys the instance (its overrides die with it; meshes
+    // bound to it silently fall back to the base default — the
+    // drawItems linkage stays valid, ResolvedItemUserData skips
+    // dead slots). NEVER touches the base material.
+    bool DestroyMaterialInstance(smvk::MaterialInstanceHandle handle);
+    [[nodiscard]] bool IsMaterialInstanceAlive(smvk::MaterialInstanceHandle handle) const;
+    // Binds a material instance to a live mesh ENTITY (the
+    // per-entity override join — static scene nodes take instances
+    // through spawn/editor flows only in v1). Binding marks the
+    // world for the next resolve's linkage rebuild; the instance
+    // VALUE stays live per frame. False on stale handles.
+    bool SetMeshMaterialInstance(smvk::MeshEntityHandle mesh,
+                                 smvk::MaterialInstanceHandle instance);
+    // The instance's value override (live: visible on the next
+    // frame build, no rebuild). False on a stale handle.
+    bool SetMaterialInstanceUserData(smvk::MaterialInstanceHandle instance, uint32_t userData);
+    // Clears the override — the instance goes back to inheriting
+    // the base material's default. False on a stale handle.
+    bool ClearMaterialInstanceUserDataOverride(smvk::MaterialInstanceHandle instance);
+    // The per-frame RESOLUTION: a draw item's effective userdata —
+    // the bound instance's override when live and overriding, else
+    // the base material default. This is what the draw producers
+    // call per item at frame build (GfxRenderer's filtered walk,
+    // the direct legs' per-draw push).
+    [[nodiscard]] uint32_t ResolvedItemUserData(const RenderItem& item) const;
+    // ---- the SHADER FAMILY lane (Phase B, design §5) -----------
+    // Sets the base material's lit shader family (the compiled
+    // ProjectLit hook family vs the engine's StandardLit no-ops).
+    // Every draw of the material (and every material INSTANCE —
+    // families inherit, never override) binds the family's FS
+    // twins from the next frame build. False on a bad index.
+    bool SetMaterialShaderFamily(uint32_t materialIndex, smvk::MaterialShaderFamily family);
+    // The material's family (StandardLit when never set / bad
+    // index — the fail-safe stock pick).
+    [[nodiscard]] smvk::MaterialShaderFamily ShaderFamilyOf(uint32_t materialIndex) const;
 
-		// ---- the ANIMATOR component (Engine/App/animator.h —
-		// per-entity playback state, the explicit Option-B surface) ----
-		// Attaches an animator to a live MESH entity. The skeleton
-		// binding is the entity mesh's OWNING cluster (must carry one —
-		// the v1 single-skeleton-per-cluster contract; a static-mesh
-		// entity refuses with an empty facade). The returned facade
-		// forwards to World-owned state; clips pass BY VALUE (the
-		// animator owns its copy — shared clip caches are the asset
-		// manager's business).
-		[[nodiscard]] Animator AddAnimator(smvk::MeshEntityHandle mesh,
-			asset::Clip initialClip);
-		// Destroys the animator (independent ownership — gameplay code
-		// that holds animators NOT attached through DestroyMesh's
-		// cleanup destroys them explicitly; see the Kill() pattern).
-		bool DestroyAnimator(smvk::AnimatorHandle handle);
-		[[nodiscard]] bool IsAnimatorAlive(smvk::AnimatorHandle handle) const;
-		[[nodiscard]] AnimatorState* AnimatorStateOf(
-			smvk::AnimatorHandle handle);
-		[[nodiscard]] const AnimatorState* AnimatorStateOf(
-			smvk::AnimatorHandle handle) const;
+    // ---- the ANIMATOR component (Engine/App/animator.h —
+    // per-entity playback state, the explicit Option-B surface) ----
+    // Attaches an animator to a live MESH entity. The skeleton
+    // binding is the entity mesh's OWNING cluster (must carry one —
+    // the v1 single-skeleton-per-cluster contract; a static-mesh
+    // entity refuses with an empty facade). The returned facade
+    // forwards to World-owned state; clips pass BY VALUE (the
+    // animator owns its copy — shared clip caches are the asset
+    // manager's business).
+    [[nodiscard]] Animator AddAnimator(smvk::MeshEntityHandle mesh, asset::Clip initialClip);
+    // Destroys the animator (independent ownership — gameplay code
+    // that holds animators NOT attached through DestroyMesh's
+    // cleanup destroys them explicitly; see the Kill() pattern).
+    bool DestroyAnimator(smvk::AnimatorHandle handle);
+    [[nodiscard]] bool IsAnimatorAlive(smvk::AnimatorHandle handle) const;
+    [[nodiscard]] AnimatorState* AnimatorStateOf(smvk::AnimatorHandle handle);
+    [[nodiscard]] const AnimatorState* AnimatorStateOf(smvk::AnimatorHandle handle) const;
 
-		// Advances every live animator + flushes the FIRST-ALIVE
-		// animator's evaluated pose into its target cluster's scene
-		// (Cluster::poseExternallyDriven — the existing skinning path
-		// consumes the pose; the renderer's own clip advance skips
-		// driven clusters). PUBLIC because the renderer's frame build
-		// drives it with the frame's dt (bench-deterministic); custom
-		// hosts that drive it themselves own the call instead.
-		void Update(float dt);
+    // Advances every live animator + flushes the FIRST-ALIVE
+    // animator's evaluated pose into its target cluster's scene
+    // (Cluster::poseExternallyDriven — the existing skinning path
+    // consumes the pose; the renderer's own clip advance skips
+    // driven clusters). PUBLIC because the renderer's frame build
+    // drives it with the frame's dt (bench-deterministic); custom
+    // hosts that drive it themselves own the call instead.
+    void Update(float dt);
 
-		// Erases the cluster and REBUILDS the world: after the erase the
-		// merged scene + every location table still point into the
-		// destroyed cluster, so a full ResolveAndFixup_clusters() runs
-		// over the survivors — the unloaded cluster's entities vanish.
-		// Refuses the dynamic cluster (runtime state, never pak content).
-		// Load-time operation, not a hot path.
-		//
-		// SHARED-ASSET PARKING: a cluster with live external references
-		// (Cluster::assetRefs — an asset holder retained its resource
-		// rows) is NOT destroyed: it detaches from the merged fold
-		// exactly like an unload (nodes stop rendering, location tables
-		// rebuild) but moves to retainedClusters until the last
-		// ReleaseCluster. Scene removal never destroys an independently
-		// referenced asset — and never resurrects scene content.
-		void UnloadCluster(smvk::Cluster&);
+    // Erases the cluster and REBUILDS the world: after the erase the
+    // merged scene + every location table still point into the
+    // destroyed cluster, so a full ResolveAndFixup_clusters() runs
+    // over the survivors — the unloaded cluster's entities vanish.
+    // Refuses the dynamic cluster (runtime state, never pak content).
+    // Load-time operation, not a hot path.
+    //
+    // SHARED-ASSET PARKING: a cluster with live external references
+    // (Cluster::assetRefs — an asset holder retained its resource
+    // rows) is NOT destroyed: it detaches from the merged fold
+    // exactly like an unload (nodes stop rendering, location tables
+    // rebuild) but moves to retainedClusters until the last
+    // ReleaseCluster. Scene removal never destroys an independently
+    // referenced asset — and never resurrects scene content.
+    void UnloadCluster(smvk::Cluster&);
 
-		// ---- Shared-asset retention (Cluster::assetRefs) ---------------
-		// Bumps the external ref count of a REGISTERED or RETAINED
-		// cluster (false when this world does not hold it; the dynamic
-		// cluster is refused — runtime state is never an asset carrier).
-		// Main-thread only.
-		bool RetainCluster(Cluster&);
-		// Drops one external ref. When the count reaches zero on a
-		// RETAINED (parked) cluster the cluster is DESTROYED there (its
-		// mesh range frees ride the same deferred-retirement contract
-		// as UnloadCluster; no resolve is needed — a parked cluster is
-		// outside the fold). A still-REGISTERED cluster is left to its
-		// scene owner (UnloadCluster re-checks the count when its scene
-		// goes). False when the cluster is unknown to this world.
-		bool ReleaseCluster(Cluster&);
+    // ---- Shared-asset retention (Cluster::assetRefs) ---------------
+    // Bumps the external ref count of a REGISTERED or RETAINED
+    // cluster (false when this world does not hold it; the dynamic
+    // cluster is refused — runtime state is never an asset carrier).
+    // Main-thread only.
+    bool RetainCluster(Cluster&);
+    // Drops one external ref. When the count reaches zero on a
+    // RETAINED (parked) cluster the cluster is DESTROYED there (its
+    // mesh range frees ride the same deferred-retirement contract
+    // as UnloadCluster; no resolve is needed — a parked cluster is
+    // outside the fold). A still-REGISTERED cluster is left to its
+    // scene owner (UnloadCluster re-checks the count when its scene
+    // goes). False when the cluster is unknown to this world.
+    bool ReleaseCluster(Cluster&);
 
-		void RegisterCluster(std::unique_ptr<Cluster> cluster);
-		// Detaches (does not destroy) + rebuilds like UnloadCluster; the
-		// returned cluster is re-parentable into another World (also
-		// pulls a RETAINED/parked cluster out — the re-parenting use
-		// case). Refuses the dynamic cluster.
-		std::unique_ptr<Cluster> UnregisterCluster(Cluster&);
-		void ResolveAndFixup_clusters();
-		// App/scene code marks a mutated cluster; the renderer consumes this
-		// at the next frame boundary, before recording any scene readers.
-		// The cluster must be registered in this World (including dynamic).
-		bool MarkClusterDirty(const smvk::Cluster& cluster);
-		bool HasDirtyClusters() const { return clustersDirty_; }
-		bool ResolveDirtyClusters();
+    void RegisterCluster(std::unique_ptr<Cluster> cluster);
+    // Detaches (does not destroy) + rebuilds like UnloadCluster; the
+    // returned cluster is re-parentable into another World (also
+    // pulls a RETAINED/parked cluster out — the re-parenting use
+    // case). Refuses the dynamic cluster.
+    std::unique_ptr<Cluster> UnregisterCluster(Cluster&);
+    void ResolveAndFixup_clusters();
+    // App/scene code marks a mutated cluster; the renderer consumes this
+    // at the next frame boundary, before recording any scene readers.
+    // The cluster must be registered in this World (including dynamic).
+    bool MarkClusterDirty(const smvk::Cluster& cluster);
+    bool HasDirtyClusters() const {
+        return clustersDirty_;
+    }
+    bool ResolveDirtyClusters();
 
+    smvk::StaticMesh* GetMesh(uint32_t meshIndex);
+    const smvk::StaticMesh* GetMesh(uint32_t meshIndex) const;
+    smvk::Material* GetMaterial(uint32_t materialIndex);
+    const smvk::Material* GetMaterial(uint32_t materialIndex) const;
+    // LOD marker for tooling (LOD0 + cooked "/lodN" siblings with
+    // world-scaled simplifier error). Null when the index is out of range.
+    const smvk::LodInfo* GetLodInfo(uint32_t meshIndex) const;
 
-		smvk::StaticMesh* GetMesh(uint32_t meshIndex);
-		const smvk::StaticMesh* GetMesh(uint32_t meshIndex) const;
-		smvk::Material* GetMaterial(uint32_t materialIndex);
-		const smvk::Material* GetMaterial(uint32_t materialIndex) const;
-		// LOD marker for tooling (LOD0 + cooked "/lodN" siblings with
-		// world-scaled simplifier error). Null when the index is out of range.
-		const smvk::LodInfo* GetLodInfo(uint32_t meshIndex) const;
+    // Runtime LOD chain over cooked "/lodN" siblings (see mesh_optimizer.h).
+    // The scene always references LOD0; siblings share the base URI and
+    // are resolved here per instance. Length is >= 1 (LOD0 alone when
+    // nothing was cooked). ResolveLodMesh() misses (nullopt) past the end.
+    // Chains are resolved once in ResolveAndFixup_clusters() into
+    // lodChains (hot paths below are O(1): no URI strings, no cluster
+    // scans — the previous per-draw probing showed up as a major CPU
+    // regression once every Bistro mesh had a cooked chain).
+    //
+    // One LEVEL = one geometry sibling; the shading program is
+    // resolved per (level, material) off the same level index
+    // (UseVertexLitShaderAt) — there is no separate shader LOD
+    // level. The farthest level of a cooked chain (length > 1)
+    // shades vertex-lit when the material allows it (see
+    // ShaderLodPolicy); level 0 and uncooked chains stay lit.
+    struct LodChain {
+        // Resolved levels, LOD0..N (levels[0].mesh == meshLocations[i]).
+        struct Level {
+            MeshLocation mesh; // geometry sibling for this level
+            float error;       // world-space simplifier error (0 for LOD0)
+            // Geometry streaming (geometry_streamer.h): false = the
+            // sibling is KNOWN (smvk::LodInfo registered - the metadata
+            // chain includes it) but its payload is NOT resident
+            // (no pool mesh). mesh is invalid for such levels; the
+            // picker never selects them (World::SelectLodIndex
+            // compacts the resident subset), the demand pass reports
+            // them, GetLodMesh would fall back to LOD0 if anything
+            // ever asked (defense in depth - nothing should).
+            bool resident = true;
+            // Metadata bounds survive deferred residency. Required for a
+            // conservative sphere across the FULL cooked LOD chain.
+            glm::vec3 boundsMin{0.0f};
+            glm::vec3 boundsMax{0.0f};
+            bool boundsKnown = false;
+        };
+        std::vector<Level> levels;
+        // True when any level is deferred: gates the desired-LOD
+        // demand computation (chains without deferred siblings skip
+        // it - their hot path is unchanged).
+        bool anyDeferred = false;
+    };
+    uint32_t LodChainLength(uint32_t meshIndex) const;
+    std::optional<MeshLocation> ResolveLodMesh(uint32_t meshIndex, uint32_t lodIndex) const;
+    smvk::StaticMesh* GetLodMesh(uint32_t meshIndex, uint32_t lodIndex);
+    void RebuildLodChains();
+    // Simplifier error for a chain entry (0 for LOD0, world units).
+    // Falls back to 0 when the marker is missing.
+    float LodErrorAt(uint32_t meshIndex, uint32_t lodIndex) const;
+    // Resolved far-level shading for a (mesh level, material) pair
+    // (shader LODs; see ShaderLodPolicy): the farthest level of a
+    // cooked chain (length > 1) either substitutes the cheap
+    // vertex-lit program (the material allows it) or stays on the
+    // lit program with the material's quality specialization.
+    // Every other level, every uncooked chain, out-of-range probes
+    // and invalid materials resolve default (full-lit, no spec).
+    struct FarShading {
+        bool vertexLit = false;     // use the cheap vertex-lit program
+        ShaderLodQuality quality{}; // quality spec when staying on lit
+        // Default full-lit shading: neither substitution nor
+        // specialization (the level draws exactly like LOD0).
+        bool isDefault() const {
+            return !vertexLit && quality == ShaderLodQuality{};
+        }
+    };
+    FarShading FarShadingAt(uint32_t meshIndex, uint32_t lodIndex, uint32_t materialIndex) const;
+    // Error-driven selection: coarsest LOD whose projected screen error
+    // (LodProjectedPixelError over each entry's simplifyError scaled by
+    // the INSTANCE's world scale) stays within maxPixelError at
+    // `distance`. The serialized simplifyError is MESH-LOCAL (scale-free
+    // by design - never bake a scene transform into the artifact: the
+    // removed cook-time world-scaling pass compounded per re-cook), so
+    // the pick multiplies by the node's own world scale here -
+    // per-instance exact, including multi-instance meshes. Returns 0
+    // (full mesh) when no chain was cooked or nothing coarser is in
+    // budget. currentLod anchors the hysteresis band
+    // (kLodSelectHysteresis): levels within the band of the current one
+    // are sticky, so switch distances don't flip siblings frame to
+    // frame.
+    uint32_t SelectLodIndex(uint32_t meshIndex,
+                            float distance,
+                            float viewportHeightPx,
+                            float fovYRadians,
+                            float maxPixelError,
+                            uint32_t currentLod = 0,
+                            float instanceWorldScale = 1.0f) const;
 
-		// Runtime LOD chain over cooked "/lodN" siblings (see mesh_optimizer.h).
-		// The scene always references LOD0; siblings share the base URI and
-		// are resolved here per instance. Length is >= 1 (LOD0 alone when
-		// nothing was cooked). ResolveLodMesh() misses (nullopt) past the end.
-		// Chains are resolved once in ResolveAndFixup_clusters() into
-		// lodChains (hot paths below are O(1): no URI strings, no cluster
-		// scans — the previous per-draw probing showed up as a major CPU
-		// regression once every Bistro mesh had a cooked chain).
-		//
-		// One LEVEL = one geometry sibling; the shading program is
-		// resolved per (level, material) off the same level index
-		// (UseVertexLitShaderAt) — there is no separate shader LOD
-		// level. The farthest level of a cooked chain (length > 1)
-		// shades vertex-lit when the material allows it (see
-		// ShaderLodPolicy); level 0 and uncooked chains stay lit.
-		struct LodChain {
-			// Resolved levels, LOD0..N (levels[0].mesh == meshLocations[i]).
-			struct Level {
-				MeshLocation mesh;  // geometry sibling for this level
-				float error;        // world-space simplifier error (0 for LOD0)
-				// Geometry streaming (geometry_streamer.h): false = the
-				// sibling is KNOWN (smvk::LodInfo registered - the metadata
-				// chain includes it) but its payload is NOT resident
-				// (no pool mesh). mesh is invalid for such levels; the
-				// picker never selects them (World::SelectLodIndex
-				// compacts the resident subset), the demand pass reports
-				// them, GetLodMesh would fall back to LOD0 if anything
-				// ever asked (defense in depth - nothing should).
-				bool resident = true;
-				// Metadata bounds survive deferred residency. Required for a
-				// conservative sphere across the FULL cooked LOD chain.
-				glm::vec3 boundsMin{0.0f};
-				glm::vec3 boundsMax{0.0f};
-				bool boundsKnown = false;
-			};
-			std::vector<Level> levels;
-			// True when any level is deferred: gates the desired-LOD
-			// demand computation (chains without deferred siblings skip
-			// it - their hot path is unchanged).
-			bool anyDeferred = false;
-		};
-		uint32_t LodChainLength(uint32_t meshIndex) const;
-		std::optional<MeshLocation> ResolveLodMesh(uint32_t meshIndex, uint32_t lodIndex) const;
-		smvk::StaticMesh* GetLodMesh(uint32_t meshIndex, uint32_t lodIndex);
-		void RebuildLodChains();
-		// Simplifier error for a chain entry (0 for LOD0, world units).
-		// Falls back to 0 when the marker is missing.
-		float LodErrorAt(uint32_t meshIndex, uint32_t lodIndex) const;
-		// Resolved far-level shading for a (mesh level, material) pair
-		// (shader LODs; see ShaderLodPolicy): the farthest level of a
-		// cooked chain (length > 1) either substitutes the cheap
-		// vertex-lit program (the material allows it) or stays on the
-		// lit program with the material's quality specialization.
-		// Every other level, every uncooked chain, out-of-range probes
-		// and invalid materials resolve default (full-lit, no spec).
-		struct FarShading {
-			bool vertexLit = false;     // use the cheap vertex-lit program
-			ShaderLodQuality quality{}; // quality spec when staying on lit
-			// Default full-lit shading: neither substitution nor
-			// specialization (the level draws exactly like LOD0).
-			bool isDefault() const {
-				return !vertexLit && quality == ShaderLodQuality{};
-			}
-		};
-		FarShading FarShadingAt(uint32_t meshIndex, uint32_t lodIndex,
-			uint32_t materialIndex) const;
-		// Error-driven selection: coarsest LOD whose projected screen error
-		// (LodProjectedPixelError over each entry's simplifyError scaled by
-		// the INSTANCE's world scale) stays within maxPixelError at
-		// `distance`. The serialized simplifyError is MESH-LOCAL (scale-free
-		// by design - never bake a scene transform into the artifact: the
-		// removed cook-time world-scaling pass compounded per re-cook), so
-		// the pick multiplies by the node's own world scale here -
-		// per-instance exact, including multi-instance meshes. Returns 0
-		// (full mesh) when no chain was cooked or nothing coarser is in
-		// budget. currentLod anchors the hysteresis band
-		// (kLodSelectHysteresis): levels within the band of the current one
-		// are sticky, so switch distances don't flip siblings frame to
-		// frame.
-		uint32_t SelectLodIndex(uint32_t meshIndex, float distance,
-			float viewportHeightPx, float fovYRadians, float maxPixelError,
-			uint32_t currentLod = 0, float instanceWorldScale = 1.0f) const;
+    // ---- Geometry LOD streaming (Renderer/geometry_streamer.h) ------
+    // Consume the accumulated per-frame DEMAND: (world mesh, level)
+    // pairs the camera wanted but that are not resident (the full-
+    // chain selection vs the resident selection). Sharpest (lowest)
+    // level per mesh wins; the map clears on consume. Empty when no
+    // chain has deferred siblings.
+    void ConsumeLodDemand(std::vector<std::pair<uint32_t, uint32_t>>& out);
+    // Frame-scratch overload, avoiding a temporary heap vector in the
+    // geometry-streaming tick.
+    template <typename Alloc>
+    void ConsumeLodDemand(std::vector<std::pair<uint32_t, uint32_t>, Alloc>& out) {
+        out.clear();
+        out.reserve(lodDemand_.size());
+        for (const auto& [mesh, level] : lodDemand_)
+            out.emplace_back(mesh, level);
+        lodDemand_.clear();
+    }
+    // Drawn-level touches (the eviction idle clock's other half):
+    // while touch tracking is on, LodIndexForNode records every
+    // SERVED (mesh, level) - the streamer's promote registry decays
+    // entries nothing has drawn or demanded within
+    // idleFramesBeforeEvict. Drain between frames like the demand.
+    void SetLodTouchTracking(bool on) {
+        lodTouchTracking_ = on;
+    }
+    void ConsumeLodDrawn(std::vector<std::pair<uint32_t, uint32_t>>& out);
+    template <typename Alloc>
+    void ConsumeLodDrawn(std::vector<std::pair<uint32_t, uint32_t>, Alloc>& out) {
+        out.clear();
+        out.reserve(lodDrawnSet_.size());
+        for (const uint64_t k : lodDrawnSet_)
+            out.emplace_back(uint32_t(k >> 32), uint32_t(k & 0xFFFFFFFFu));
+        lodDrawnSet_.clear();
+    }
+    // Promote one deferred sibling to resident: locate its deferred
+    // record on the owning cluster and replay the upload +
+    // registration (Cluster::PromoteDeferredMeshLod). Returns the
+    // fresh handle + payload bytes for the streamer's accounting, or
+    // nullopt when the level is not deferred/already promoted. The
+    // caller rebuilds the chains + the gfx tables afterwards.
+    [[nodiscard]] std::optional<Cluster::PromotedLod> PromoteLodLevel(uint32_t meshIndex,
+                                                                      uint32_t lodIndex);
+    // Evict a PROMOTED sibling back to deferred (the budget
+    // enforcement path): Cluster::EvictMeshLod destroys the pool
+    // mesh (heap ranges retire deferred), the record returns to the
+    // deferred state. Returns the freed payload bytes, 0 when the
+    // level is not currently promoted (or is the never-evictable
+    // LOD0 base).
+    [[nodiscard]] uint64_t EvictLodLevel(uint32_t meshIndex, uint32_t lodIndex);
+    // Any cluster still holding deferred siblings (the streamer's
+    // census).
+    [[nodiscard]] bool HasDeferredLods() const;
+    // Any cluster holding LOD streaming records at all - deferred
+    // OR promoted (the tick's active gate: with eviction on, the
+    // tick keeps running for touch tracking + budget enforcement
+    // even after everything promoted).
+    [[nodiscard]] bool HasLodRecords() const;
 
-		// ---- Geometry LOD streaming (Renderer/geometry_streamer.h) ------
-		// Consume the accumulated per-frame DEMAND: (world mesh, level)
-		// pairs the camera wanted but that are not resident (the full-
-		// chain selection vs the resident selection). Sharpest (lowest)
-		// level per mesh wins; the map clears on consume. Empty when no
-		// chain has deferred siblings.
-		void ConsumeLodDemand(
-			std::vector<std::pair<uint32_t, uint32_t>>& out);
-		// Frame-scratch overload, avoiding a temporary heap vector in the
-		// geometry-streaming tick.
-		template<typename Alloc>
-		void ConsumeLodDemand(std::vector<std::pair<uint32_t, uint32_t>, Alloc>& out) {
-			out.clear();
-			out.reserve(lodDemand_.size());
-			for (const auto& [mesh, level] : lodDemand_)
-				out.emplace_back(mesh, level);
-			lodDemand_.clear();
-		}
-		// Drawn-level touches (the eviction idle clock's other half):
-		// while touch tracking is on, LodIndexForNode records every
-		// SERVED (mesh, level) - the streamer's promote registry decays
-		// entries nothing has drawn or demanded within
-		// idleFramesBeforeEvict. Drain between frames like the demand.
-		void SetLodTouchTracking(bool on) { lodTouchTracking_ = on; }
-		void ConsumeLodDrawn(
-			std::vector<std::pair<uint32_t, uint32_t>>& out);
-		template<typename Alloc>
-		void ConsumeLodDrawn(std::vector<std::pair<uint32_t, uint32_t>, Alloc>& out) {
-			out.clear();
-			out.reserve(lodDrawnSet_.size());
-			for (const uint64_t k : lodDrawnSet_)
-				out.emplace_back(uint32_t(k >> 32), uint32_t(k & 0xFFFFFFFFu));
-			lodDrawnSet_.clear();
-		}
-		// Promote one deferred sibling to resident: locate its deferred
-		// record on the owning cluster and replay the upload +
-		// registration (Cluster::PromoteDeferredMeshLod). Returns the
-		// fresh handle + payload bytes for the streamer's accounting, or
-		// nullopt when the level is not deferred/already promoted. The
-		// caller rebuilds the chains + the gfx tables afterwards.
-		[[nodiscard]] std::optional<Cluster::PromotedLod> PromoteLodLevel(
-			uint32_t meshIndex, uint32_t lodIndex);
-		// Evict a PROMOTED sibling back to deferred (the budget
-		// enforcement path): Cluster::EvictMeshLod destroys the pool
-		// mesh (heap ranges retire deferred), the record returns to the
-		// deferred state. Returns the freed payload bytes, 0 when the
-		// level is not currently promoted (or is the never-evictable
-		// LOD0 base).
-		[[nodiscard]] uint64_t EvictLodLevel(
-			uint32_t meshIndex, uint32_t lodIndex);
-		// Any cluster still holding deferred siblings (the streamer's
-		// census).
-		[[nodiscard]] bool HasDeferredLods() const;
-		// Any cluster holding LOD streaming records at all - deferred
-		// OR promoted (the tick's active gate: with eviction on, the
-		// tick keeps running for touch tracking + budget enforcement
-		// even after everything promoted).
-		[[nodiscard]] bool HasLodRecords() const;
+    // Cached LOD chains parallel to meshLocations (see RebuildLodChains).
+    // Mutable so const hot paths (LodChainLength/SelectLodIndex) can
+    // lazily rebuild after direct cluster edits that bypassed
+    // ResolveAndFixup_clusters().
+    mutable std::vector<LodChain> lodChains;
 
-		// Cached LOD chains parallel to meshLocations (see RebuildLodChains).
-		// Mutable so const hot paths (LodChainLength/SelectLodIndex) can
-		// lazily rebuild after direct cluster edits that bypassed
-		// ResolveAndFixup_clusters().
-		mutable std::vector<LodChain> lodChains;
+    // ---- Lightmap chart transform table -----------------------
+    // Scene-wide concatenation of every StaticMesh::lmChartXforms,
+    // sorted by world mesh index, then LOD level, then chart index
+    // (one float4 per chart: xy = scale, zw = offset, so atlasUv =
+    // chartUv * xy + zw). The runtime uploads this once per scene
+    // into a GPU buffer; each draw's chart offset (see
+    // gfx::Draw::lmChartOffset, GfxDraw.misc2.x) is its mesh's base
+    // into the table, and the vertex shader fetches
+    // xforms[base + chartId]. Rebuilt by RebuildLightmapChartTable()
+    // at the end of ResolveAndFixup_clusters(); lmChartVersion bumps
+    // on every rebuild so renderers re-upload only on change.
+    std::vector<glm::vec4> lmChartTable;
+    // Process-unique rebuild revision, not a counter local to this World:
+    // the GPU chart-transform cache survives scene switches.
+    uint64_t lmChartVersion = 0;
+    struct LmChartKey {
+        const Cluster* cluster = nullptr;
+        uint32_t poolIndex = 0;
+        bool operator==(const LmChartKey&) const = default;
+    };
+    struct LmChartKeyHash {
+        size_t operator()(const LmChartKey& k) const noexcept {
+            return std::hash<const void*>{}(k.cluster) * 31u + k.poolIndex;
+        }
+    };
+    std::unordered_map<LmChartKey, uint32_t, LmChartKeyHash> lmChartBase_;
+    void RebuildLightmapChartTable();
+    // Base offset for a mesh location (0 when the mesh carries no
+    // lightmap — the shader gates on the draw's lobe count anyway).
+    uint32_t ChartOffsetFor(MeshLocation loc) const;
+    // Convenience over meshLocations[i] / lodChains (LOD sibling).
+    uint32_t ChartOffsetFor(uint32_t meshIndex, uint32_t lodIndex) const;
 
-		// ---- Lightmap chart transform table -----------------------
-		// Scene-wide concatenation of every StaticMesh::lmChartXforms,
-		// sorted by world mesh index, then LOD level, then chart index
-		// (one float4 per chart: xy = scale, zw = offset, so atlasUv =
-		// chartUv * xy + zw). The runtime uploads this once per scene
-		// into a GPU buffer; each draw's chart offset (see
-		// gfx::Draw::lmChartOffset, GfxDraw.misc2.x) is its mesh's base
-		// into the table, and the vertex shader fetches
-		// xforms[base + chartId]. Rebuilt by RebuildLightmapChartTable()
-		// at the end of ResolveAndFixup_clusters(); lmChartVersion bumps
-		// on every rebuild so renderers re-upload only on change.
-		std::vector<glm::vec4> lmChartTable;
-		// Process-unique rebuild revision, not a counter local to this World:
-		// the GPU chart-transform cache survives scene switches.
-		uint64_t lmChartVersion = 0;
-		struct LmChartKey {
-			const Cluster* cluster = nullptr;
-			uint32_t poolIndex = 0;
-			bool operator==(const LmChartKey&) const = default;
-		};
-		struct LmChartKeyHash {
-			size_t operator()(const LmChartKey& k) const noexcept {
-				return std::hash<const void*>{}(k.cluster) * 31u + k.poolIndex;
-			}
-		};
-		std::unordered_map<LmChartKey, uint32_t, LmChartKeyHash> lmChartBase_;
-		void RebuildLightmapChartTable();
-		// Base offset for a mesh location (0 when the mesh carries no
-		// lightmap — the shader gates on the draw's lobe count anyway).
-		uint32_t ChartOffsetFor(MeshLocation loc) const;
-		// Convenience over meshLocations[i] / lodChains (LOD sibling).
-		uint32_t ChartOffsetFor(uint32_t meshIndex, uint32_t lodIndex) const;
+    // ---- Per-node LOD decision cache -------------------------------
+    // Decisions are cached per node and refreshed EVERY FRAME (full
+    // rate, the default) or on a parity split (halfrate opt-out via
+    // SetLodFullRate(false): on tick T only nodes with (node & 1) ==
+    // (tick & 1) recompute; every other node serves its last decision,
+    // 1 frame stale at worst). All passes inside one frame observe the
+    // SAME value for a node (the first computation of a refresh frame
+    // wins and is stamped), so filter/direct splits stay consistent
+    // even when queried with different eyes (debug cull override).
+    // Selection is hysteretic around the pixel budget (see
+    // kLodSelectHysteresis): the node keeps its level while the
+    // projected error stays inside the band, anchored on the cached
+    // current level.
+    uint32_t LodIndexForNode(NodeId node, uint32_t worldMesh, const LodFrameInputs& inputs) const;
+    // View distance used by LodIndexForNode: closest approach from the
+    // eye to the instance's LOD0 world sphere (0 when inside/touching).
+    // Node origins can sit meters from the visible surface (Sponza
+    // cooks the whole building onto ONE node), so an origin distance
+    // would select coarser LODs for nearby surfaces. Conservative:
+    // siblings only shrink the surface. Falls back to the origin
+    // distance when bounds are unavailable.
+    float LodDistanceForNode(NodeId node, uint32_t worldMesh, const glm::vec3& eye) const;
+    // Drops every cached decision (parameter tweak / scene edit).
+    void InvalidateLodCache();
+    // Full-rate LOD refresh (default): every node recomputes every
+    // frame. false = the halfrate parity split above (perf A/B).
+    // Config, not cache: InvalidateLodCache never touches it.
+    void SetLodFullRate(bool on) {
+        lodFullRate = on;
+    }
+    bool LodFullRate() const {
+        return lodFullRate;
+    }
+    bool lodFullRate = true;
+    // ---- Per-frame LOD decision stats (the always-0 bug fix) ------
+    // The renderer-side counters (LodMeshForNode) only fired on the
+    // DIRECT draw legs; the filtered legs (Main via the gfx filter,
+    // the filtered shadow registration) decide through LodIndexForNode
+    // directly, so the panel/HUD read 0/0/0 with the filter on (the
+    // default). Counting HERE - once per (node, frame) at the FIRST
+    // query, whichever leg asks first - counts EVERY leg's decision
+    // exactly once: a chain instance that draws always queries at
+    // least once, all legs share the value from then on.
+    // draws = chain instances decided this frame; switched = decided
+    // onto a non-LOD0 level (halfrate parity-skips still count the
+    // stale level they actually serve). Reset at frame rollover.
+    [[nodiscard]] uint32_t LodStatDraws() const {
+        return lodStatDraws_;
+    }
+    [[nodiscard]] uint32_t LodStatSwitched() const {
+        return lodStatSwitched_;
+    }
+    // Cache storage (lazily sized to the node count; reset by
+    // ResolveAndFixup_clusters).
+    mutable std::vector<uint8_t> nodeLod_;
+    mutable std::vector<uint64_t> nodeLodStamp_;      // frameId of computation
+    mutable std::vector<uint64_t> nodeLodCountFrame_; // frameId of stat count
+    mutable uint32_t lodStatDraws_ = 0;
+    mutable uint32_t lodStatSwitched_ = 0;
+    mutable uint64_t lodTick_ = 0; // parity source
+    mutable uint64_t lodLastFrameId_ = ~uint64_t(0);
+    mutable LodFrameInputs lodInputs_{};
+    // Geometry streaming: accumulated (world mesh -> sharpest
+    // non-resident level) demand since the last ConsumeLodDemand -
+    // filled by LodIndexForNode's full-chain selection, drained by
+    // the streamer tick between frames.
+    mutable std::unordered_map<uint32_t, uint32_t> lodDemand_;
+    // Geometry streaming: every SERVED (mesh, level) since the last
+    // ConsumeLodDrawn (packed mesh<<32|level) - the eviction idle
+    // clock. Only accumulated while lodTouchTracking_ (the streamer
+    // arms it when streaming is live).
+    mutable std::unordered_set<uint64_t> lodDrawnSet_;
+    mutable bool lodTouchTracking_ = false;
 
-		// ---- Per-node LOD decision cache -------------------------------
-		// Decisions are cached per node and refreshed EVERY FRAME (full
-		// rate, the default) or on a parity split (halfrate opt-out via
-		// SetLodFullRate(false): on tick T only nodes with (node & 1) ==
-		// (tick & 1) recompute; every other node serves its last decision,
-		// 1 frame stale at worst). All passes inside one frame observe the
-		// SAME value for a node (the first computation of a refresh frame
-		// wins and is stamped), so filter/direct splits stay consistent
-		// even when queried with different eyes (debug cull override).
-		// Selection is hysteretic around the pixel budget (see
-		// kLodSelectHysteresis): the node keeps its level while the
-		// projected error stays inside the band, anchored on the cached
-		// current level.
-		uint32_t LodIndexForNode(NodeId node, uint32_t worldMesh,
-			const LodFrameInputs& inputs) const;
-		// View distance used by LodIndexForNode: closest approach from the
-		// eye to the instance's LOD0 world sphere (0 when inside/touching).
-		// Node origins can sit meters from the visible surface (Sponza
-		// cooks the whole building onto ONE node), so an origin distance
-		// would select coarser LODs for nearby surfaces. Conservative:
-		// siblings only shrink the surface. Falls back to the origin
-		// distance when bounds are unavailable.
-		float LodDistanceForNode(NodeId node, uint32_t worldMesh,
-			const glm::vec3& eye) const;
-		// Drops every cached decision (parameter tweak / scene edit).
-		void InvalidateLodCache();
-		// Full-rate LOD refresh (default): every node recomputes every
-		// frame. false = the halfrate parity split above (perf A/B).
-		// Config, not cache: InvalidateLodCache never touches it.
-		void SetLodFullRate(bool on) { lodFullRate = on; }
-		bool LodFullRate() const { return lodFullRate; }
-		bool lodFullRate = true;
-		// ---- Per-frame LOD decision stats (the always-0 bug fix) ------
-		// The renderer-side counters (LodMeshForNode) only fired on the
-		// DIRECT draw legs; the filtered legs (Main via the gfx filter,
-		// the filtered shadow registration) decide through LodIndexForNode
-		// directly, so the panel/HUD read 0/0/0 with the filter on (the
-		// default). Counting HERE - once per (node, frame) at the FIRST
-		// query, whichever leg asks first - counts EVERY leg's decision
-		// exactly once: a chain instance that draws always queries at
-		// least once, all legs share the value from then on.
-		// draws = chain instances decided this frame; switched = decided
-		// onto a non-LOD0 level (halfrate parity-skips still count the
-		// stale level they actually serve). Reset at frame rollover.
-		[[nodiscard]] uint32_t LodStatDraws() const { return lodStatDraws_; }
-		[[nodiscard]] uint32_t LodStatSwitched() const { return lodStatSwitched_; }
-		// Cache storage (lazily sized to the node count; reset by
-		// ResolveAndFixup_clusters).
-		mutable std::vector<uint8_t> nodeLod_;
-		mutable std::vector<uint64_t> nodeLodStamp_; // frameId of computation
-		mutable std::vector<uint64_t> nodeLodCountFrame_; // frameId of stat count
-		mutable uint32_t lodStatDraws_ = 0;
-		mutable uint32_t lodStatSwitched_ = 0;
-		mutable uint64_t lodTick_ = 0;               // parity source
-		mutable uint64_t lodLastFrameId_ = ~uint64_t(0);
-		mutable LodFrameInputs lodInputs_{};
-		// Geometry streaming: accumulated (world mesh -> sharpest
-		// non-resident level) demand since the last ConsumeLodDemand -
-		// filled by LodIndexForNode's full-chain selection, drained by
-		// the streamer tick between frames.
-		mutable std::unordered_map<uint32_t, uint32_t> lodDemand_;
-		// Geometry streaming: every SERVED (mesh, level) since the last
-		// ConsumeLodDrawn (packed mesh<<32|level) - the eviction idle
-		// clock. Only accumulated while lodTouchTracking_ (the streamer
-		// arms it when streaming is live).
-		mutable std::unordered_set<uint64_t> lodDrawnSet_;
-		mutable bool lodTouchTracking_ = false;
+    // First-hit URI resolution across clusters in registration order
+    // (mirrors the VFS overlay rule). Used for cross-pak references.
+    std::optional<MeshLocation> ResolveMeshAcrossClusters(smvk::StringViewT uri) const;
+    std::optional<MaterialLocation> ResolveMaterialAcrossClusters(smvk::StringViewT uri) const;
+    // Bake-payload channel (see Cluster::bakePayloads): the bytes at a
+    // GI/cubemap VFS path ("gi/<stem>.sggi", "textures/cubemaps/...").
+    // DYNAMIC cluster first — runtime injections (editor quick-bake)
+    // override cooked pak payloads — then pak clusters in registration
+    // order. Empty span = nothing carries it.
+    [[nodiscard]] std::span<const uint8_t> ReadBakeBytes(const std::string& vfsPath) const;
+    // ---- Env zones (see ZoneAtPosition in Engine/Scene/scene.h) --------
+    // The zone covering a world-space point / a node's world ORIGIN:
+    // priority descending, then innermost (smallest bounded volume),
+    // INFINITE scale axes = unbounded slabs. UINT32_MAX = no zone — the
+    // resolved default environment stands. The zone's look block:
+    // scene.envForNode[zone].
+    [[nodiscard]] NodeId zoneAtPosition(const glm::vec3& p) const {
+        return ZoneAtPosition(scene, p);
+    }
+    [[nodiscard]] NodeId zoneForNode(NodeId node) const {
+        if (node >= scene.globalTransform.size())
+            return UINT32_MAX;
+        return ZoneAtPosition(scene, glm::vec3(scene.globalTransform[node][3]));
+    }
 
-		// First-hit URI resolution across clusters in registration order
-		// (mirrors the VFS overlay rule). Used for cross-pak references.
-		std::optional<MeshLocation> ResolveMeshAcrossClusters(smvk::StringViewT uri) const;
-		std::optional<MaterialLocation> ResolveMaterialAcrossClusters(smvk::StringViewT uri) const;
-		// Bake-payload channel (see Cluster::bakePayloads): the bytes at a
-		// GI/cubemap VFS path ("gi/<stem>.sggi", "textures/cubemaps/...").
-		// DYNAMIC cluster first — runtime injections (editor quick-bake)
-		// override cooked pak payloads — then pak clusters in registration
-		// order. Empty span = nothing carries it.
-		[[nodiscard]] std::span<const uint8_t> ReadBakeBytes(
-			const std::string& vfsPath) const;
-		// ---- Env zones (see ZoneAtPosition in Engine/Scene/scene.h) --------
-		// The zone covering a world-space point / a node's world ORIGIN:
-		// priority descending, then innermost (smallest bounded volume),
-		// INFINITE scale axes = unbounded slabs. UINT32_MAX = no zone — the
-		// resolved default environment stands. The zone's look block:
-		// scene.envForNode[zone].
-		[[nodiscard]] NodeId zoneAtPosition(const glm::vec3& p) const {
-			return ZoneAtPosition(scene, p);
-		}
-		[[nodiscard]] NodeId zoneForNode(NodeId node) const {
-			if (node >= scene.globalTransform.size())
-				return UINT32_MAX;
-			return ZoneAtPosition(scene,
-				glm::vec3(scene.globalTransform[node][3]));
-		}
+    // ---- Static BVH for CPU frustum culling ---------------------
+    // Built once from frozen static-subtree nodes (see Scene::
+    // staticNode) at the end of ResolveAndFixup_clusters(); static
+    // globals never move per frame so the tree stays valid until the
+    // next resolve. Bounds are the LOD-chain union per instance so any
+    // LodIndexForNode selection stays inside the cached AABB.
+    // Dynamic nodes are NOT in this tree: callers brute-force a sphere
+    // test per dynamic item (few, moving) while static items do one
+    // O(1) mask lookup after a single ::tour::frustumCullBVH walk.
+    mutable ::tour::BvhTree staticBvh_;
+    mutable bool staticBvhValid_ = false;
+    // (Re)builds staticBvh_ from the current scene. Cheap no-op when
+    // there are no static mesh nodes (leaves the tree empty).
+    void RebuildStaticBvh();
+    void InvalidateStaticBvh();
+    // Lazily rebuilds when invalid; returns the cached static tree.
+    const ::tour::BvhTree& EnsureStaticBvh() const;
+    // World-space AABB over every mesh instance (union of the
+    // per-instance mesh AABBs under their global transforms). Used to
+    // fit procedural content (e.g. the Forward+ demo light grid) to the
+    // loaded scene. Empty (infinities) when the world holds no geometry.
+    ::tour::Aabb ComputeSceneBounds() const;
+    [[nodiscard]] bool HasStaticBvh() const {
+        return staticBvhValid_ && !staticBvh_.nodes.empty() && !staticBvh_.primIndices.empty();
+    }
+    // Frustum-culls the static tree against caller planes (e.g. the
+    // main RenderView's 6 guarded planes) and returns a per-node mask
+    // sized to scene.hierarchy.size(): 1 = static node visible OR any
+    // non-static node (pass-through; caller sphere-tests dynamic),
+    // 0 = static node culled. Empty vector = nothing cached / no
+    // culling (caller must draw everything).
+    std::vector<uint8_t> StaticVisibilityMask(const glm::vec4* planes, int planeCount) const;
 
-		// ---- Static BVH for CPU frustum culling ---------------------
-		// Built once from frozen static-subtree nodes (see Scene::
-		// staticNode) at the end of ResolveAndFixup_clusters(); static
-		// globals never move per frame so the tree stays valid until the
-		// next resolve. Bounds are the LOD-chain union per instance so any
-		// LodIndexForNode selection stays inside the cached AABB.
-		// Dynamic nodes are NOT in this tree: callers brute-force a sphere
-		// test per dynamic item (few, moving) while static items do one
-		// O(1) mask lookup after a single ::tour::frustumCullBVH walk.
-		mutable ::tour::BvhTree staticBvh_;
-		mutable bool staticBvhValid_ = false;
-		// (Re)builds staticBvh_ from the current scene. Cheap no-op when
-		// there are no static mesh nodes (leaves the tree empty).
-		void RebuildStaticBvh();
-		void InvalidateStaticBvh();
-		// Lazily rebuilds when invalid; returns the cached static tree.
-		const ::tour::BvhTree& EnsureStaticBvh() const;
-		// World-space AABB over every mesh instance (union of the
-		// per-instance mesh AABBs under their global transforms). Used to
-		// fit procedural content (e.g. the Forward+ demo light grid) to the
-		// loaded scene. Empty (infinities) when the world holds no geometry.
-		::tour::Aabb ComputeSceneBounds() const;
-		[[nodiscard]] bool HasStaticBvh() const {
-			return staticBvhValid_ && !staticBvh_.nodes.empty()
-				&& !staticBvh_.primIndices.empty();
-		}
-		// Frustum-culls the static tree against caller planes (e.g. the
-		// main RenderView's 6 guarded planes) and returns a per-node mask
-		// sized to scene.hierarchy.size(): 1 = static node visible OR any
-		// non-static node (pass-through; caller sphere-tests dynamic),
-		// 0 = static node culled. Empty vector = nothing cached / no
-		// culling (caller must draw everything).
-		std::vector<uint8_t> StaticVisibilityMask(
-			const glm::vec4* planes, int planeCount) const;
+    template <typename Func> void forEachNode(IteratorFlags requiredFlags, Func&& func) {
+        for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {
+            // Epoch 6b: retired slots are holes — the flags vector
+            // may still carry a pre-retirement entry for them.
+            if (!IsLiveSlot(scene, i))
+                continue;
+            const IteratorFlags nf =
+                (i < flags.size()) ? flags[i] : static_cast<IteratorFlags>(IteratorFlagBit_None);
 
-		template<typename Func>
-		void forEachNode(IteratorFlags requiredFlags, Func&& func)
-		{
-			for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {
-				// Epoch 6b: retired slots are holes — the flags vector
-				// may still carry a pre-retirement entry for them.
-				if (!IsLiveSlot(scene, i))
-					continue;
-				const IteratorFlags nf =
-					(i < flags.size()) ? flags[i]
-					: static_cast<IteratorFlags>(IteratorFlagBit_None);
+            if ((nf & requiredFlags) != requiredFlags)
+                continue;
 
-				if ((nf & requiredFlags) != requiredFlags)
-					continue;
+            func(static_cast<NodeId>(i));
+        }
+    }
 
-				func(static_cast<NodeId>(i));
-			}
-		}
-
-		// Keep this LAST: C++ destroys fields in reverse order. The
-		// AssetManager releases its held assets while World::scene,
-		// cluster pools, and location tables are still alive.
-		std::shared_ptr<void> gameAssetOwner_;
-	};
+    // Keep this LAST: C++ destroys fields in reverse order. The
+    // AssetManager releases its held assets while World::scene,
+    // cluster pools, and location tables are still alive.
+    std::shared_ptr<void> gameAssetOwner_;
+};
 
 } // namespace tour
 // COMPAT (the namespace/RHI boundary audit, todo item 8.4): the World is
 // ENGINE-OWNED and lives in tour; the smvk aliases keep the existing
 // call sites compiling through the consumer migration.
 namespace smvk {
-	using ::tour::World;
-	using ::tour::LodFrameInputs;
-	using ::tour::TerrainSource;
-	using ::tour::IteratorFlagBits;
-	using ::tour::IteratorFlags;
-	using ::tour::IteratorFlagBit_CastShadow;
-	using ::tour::IteratorFlagBit_CastVolumetricShadow;
-	using ::tour::IteratorFlagBit_LightDirectional;
-	using ::tour::IteratorFlagBit_LightPoint;
-	using ::tour::IteratorFlagBit_LightSpot;
-	using ::tour::IteratorFlagBit_Masked;
-	using ::tour::IteratorFlagBit_None;
-	using ::tour::IteratorFlagBit_Opaque;
-	using ::tour::IteratorFlagBit_PassedCullTest;
-	using ::tour::IteratorFlagBit_Renderable;
-	using ::tour::IteratorFlagBit_Static;
-	using ::tour::IteratorFlagBit_StaticVertexFmt;
-	using ::tour::IteratorFlagBit_Transparent;
-}
+using ::tour::IteratorFlagBit_CastShadow;
+using ::tour::IteratorFlagBit_CastVolumetricShadow;
+using ::tour::IteratorFlagBit_LightDirectional;
+using ::tour::IteratorFlagBit_LightPoint;
+using ::tour::IteratorFlagBit_LightSpot;
+using ::tour::IteratorFlagBit_Masked;
+using ::tour::IteratorFlagBit_None;
+using ::tour::IteratorFlagBit_Opaque;
+using ::tour::IteratorFlagBit_PassedCullTest;
+using ::tour::IteratorFlagBit_Renderable;
+using ::tour::IteratorFlagBit_Static;
+using ::tour::IteratorFlagBit_StaticVertexFmt;
+using ::tour::IteratorFlagBit_Transparent;
+using ::tour::IteratorFlagBits;
+using ::tour::IteratorFlags;
+using ::tour::LodFrameInputs;
+using ::tour::TerrainSource;
+using ::tour::World;
+} // namespace smvk

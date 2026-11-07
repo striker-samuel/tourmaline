@@ -7,11 +7,11 @@
 // ui::InitBackend.
 
 #include <Engine/ImGui/imgui_overlay.h>
-#include <Engine/platform.h>
 #include <Engine/Profile/profile.h>
+#include <Engine/platform.h>
 
-#include <imgui.h>
 #include <backends/imgui_impl_sdl3.h>
+#include <imgui.h>
 
 #include <SDL3/SDL_video.h>
 
@@ -30,7 +30,8 @@ ImGuiOverlay::ImGuiOverlay(ImGuiOverlay&& o) noexcept {
 }
 ImGuiOverlay& ImGuiOverlay::operator=(ImGuiOverlay&& o) noexcept {
     if (this != &o) {
-        if (initialized_) Shutdown();
+        if (initialized_)
+            Shutdown();
         initialized_ = o.initialized_;
         window_ = o.window_;
         imguiCtx_ = o.imguiCtx_;
@@ -48,9 +49,12 @@ ImGuiOverlay& ImGuiOverlay::operator=(ImGuiOverlay&& o) noexcept {
     return *this;
 }
 
-bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* window,
-    const ImGuiOverlayDesc& desc) {
-    if (initialized_) return true;
+bool ImGuiOverlay::Init(ResourceManager& ctx,
+                        Swapchain& swapchain,
+                        SDL_Window* window,
+                        const ImGuiOverlayDesc& desc) {
+    if (initialized_)
+        return true;
     ctx_ = &ctx;
     swapchain_ = &swapchain;
     window_ = window;
@@ -88,17 +92,17 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* 
     // forwards every SDL event to ImGui via ProcessEvent (see
     // imguiEventHook_), so no install-callbacks step is needed.
     ui::UiBackendDesc backendDesc{};
-    backendDesc.colorFormat = desc_.colorFormat != Format::Undefined
-        ? desc_.colorFormat
-        : swapchain.GetSurfaceFormat();
+    backendDesc.colorFormat =
+        desc_.colorFormat != Format::Undefined ? desc_.colorFormat : swapchain.GetSurfaceFormat();
     backendDesc.minImageCount = swapchain.GetMinImageCount();
     backendDesc.imageCount = swapchain.GetImageCount();
     // The window is not optional: the SDL3 platform backend owns
     // io.DisplaySize from it every frame (see the UiBackendDesc comment).
     backendDesc.window = window;
     if (!ui::InitBackend(ctx, swapchain, backendDesc)) {
-        fprintf(stderr, "[ImGuiOverlay] ui::InitBackend failed (unsupported "
-                        "or misconfigured backend)\n");
+        fprintf(stderr,
+                "[ImGuiOverlay] ui::InitBackend failed (unsupported "
+                "or misconfigured backend)\n");
         return false;
     }
 
@@ -121,8 +125,9 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* 
             if (!font)
                 fprintf(stderr, "[ImGuiOverlay] AddFontFromFileTTF failed – using default font\n");
         } catch (...) {
-            fprintf(stderr, "[ImGuiOverlay] Font '%s' unreadable – using default font\n",
-                desc_.fontPath ? desc_.fontPath : "(null)");
+            fprintf(stderr,
+                    "[ImGuiOverlay] Font '%s' unreadable – using default font\n",
+                    desc_.fontPath ? desc_.fontPath : "(null)");
         }
     }
     ApplyDpiScale(desc_.dpiScale > 0.0f ? desc_.dpiScale : GetWindowDpiScale());
@@ -131,7 +136,8 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* 
 }
 
 void ImGuiOverlay::Shutdown() {
-    if (!initialized_) return;
+    if (!initialized_)
+        return;
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
     // The backend seam owns the wait-idle + the graphics backend shutdown
     // + its pool/heap teardown + the paired SDL3 platform shutdown.
@@ -146,7 +152,8 @@ void ImGuiOverlay::Shutdown() {
 }
 
 void ImGuiOverlay::NewFrame(Extent2D targetExtent) {
-    if (!initialized_) return;
+    if (!initialized_)
+        return;
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
     ui::NewFrameBackend();
     ImGui_ImplSDL3_NewFrame();
@@ -154,17 +161,18 @@ void ImGuiOverlay::NewFrame(Extent2D targetExtent) {
     // (separated UI pass target != window size when ui scale != 1 or on
     // HiDPI). 1.92 also uses this as the font rasterizer density.
     ImGuiIO& io = ImGui::GetIO();
-    if (targetExtent.width > 0 && targetExtent.height > 0 &&
-        io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
-        io.DisplayFramebufferScale = ImVec2(
-            static_cast<float>(targetExtent.width) / io.DisplaySize.x,
-            static_cast<float>(targetExtent.height) / io.DisplaySize.y);
+    if (targetExtent.width > 0 && targetExtent.height > 0 && io.DisplaySize.x > 0.0f &&
+        io.DisplaySize.y > 0.0f) {
+        io.DisplayFramebufferScale =
+            ImVec2(static_cast<float>(targetExtent.width) / io.DisplaySize.x,
+                   static_cast<float>(targetExtent.height) / io.DisplaySize.y);
     }
     ImGui::NewFrame();
 }
 
 void ImGuiOverlay::Render(CommandBuffer& cmd) {
-    if (!initialized_) return;
+    if (!initialized_)
+        return;
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
 
     // If the app didn't call ImGui::Render() after building UI, do it now.
@@ -183,9 +191,11 @@ void ImGuiOverlay::Render(CommandBuffer& cmd) {
         // If drawData exists but empty, it's fine.
     }
 
-    if (!drawData) return;
+    if (!drawData)
+        return;
     // Nothing to draw?
-    if (drawData->CmdListsCount == 0) return;
+    if (drawData->CmdListsCount == 0)
+        return;
 
     // Deferred user-texture retirement drain (see RetireUserTexture): one
     // tick per render (each render = a frame boundary). Entries older than
@@ -212,16 +222,20 @@ void ImGuiOverlay::Render(CommandBuffer& cmd) {
 }
 
 void ImGuiOverlay::RenderPlatformWindows() {
-    if (!initialized_ || !desc_.enableViewports) return;
+    if (!initialized_ || !desc_.enableViewports)
+        return;
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
     ImGui::UpdatePlatformWindows();
     ImGui::RenderPlatformWindowsDefault();
 }
 
 void ImGuiOverlay::AddPass(RenderGraph& rg,
-    LogicalImageViewHandle colorView, Extent2D extent,
-    AttachmentLoadOp loadOp, ClearColor clear) {
-    if (!initialized_) return;
+                           LogicalImageViewHandle colorView,
+                           Extent2D extent,
+                           AttachmentLoadOp loadOp,
+                           ClearColor clear) {
+    if (!initialized_)
+        return;
     // Ensure ImGui draw data exists before submit. If the user built UI after NewFrame()
     // but didn't call Render(), do it now so the pass has something to draw.
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
@@ -230,26 +244,26 @@ void ImGuiOverlay::AddPass(RenderGraph& rg,
     }
 
     auto& pass = rg.AddPass("ImGui")
-        .SetOffset(0, 0)
-        .SetExtent(extent)
-        // Swapchain: LoadOp::Load keeps the scene under the UI.
-        // Separated UI target: LoadOp::Clear + transparent clear.
-        .SetColor({colorView}, loadOp, AttachmentStoreOp::Store, clear);
+                     .SetOffset(0, 0)
+                     .SetExtent(extent)
+                     // Swapchain: LoadOp::Load keeps the scene under the UI.
+                     // Separated UI target: LoadOp::Clear + transparent clear.
+                     .SetColor({colorView}, loadOp, AttachmentStoreOp::Store, clear);
 
     // No depth for UI overlay. If caller needs depth-testing UI (rare), they can
     // use SetDepth() manually via Render() path instead of AddPass().
-    pass.SetRecordingFunc([this](CommandBuffer& cmd) {
-        this->Render(cmd);
-    });
+    pass.SetRecordingFunc([this](CommandBuffer& cmd) { this->Render(cmd); });
 }
 
 bool ImGuiOverlay::WantsCaptureMouse() const {
-    if (!initialized_) return false;
+    if (!initialized_)
+        return false;
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
     return ImGui::GetIO().WantCaptureMouse;
 }
 bool ImGuiOverlay::WantsCaptureKeyboard() const {
-    if (!initialized_) return false;
+    if (!initialized_)
+        return false;
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
     return ImGui::GetIO().WantCaptureKeyboard;
 }
@@ -257,8 +271,7 @@ bool ImGuiOverlay::WantsCaptureAny() const {
     return WantsCaptureMouse() || WantsCaptureKeyboard();
 }
 
-ImTextureID ImGuiOverlay::AddUserTexture(TextureHandle texture,
-    uint32_t samplerIndex) {
+ImTextureID ImGuiOverlay::AddUserTexture(TextureHandle texture, uint32_t samplerIndex) {
     // User-texture binding (see the header contract): the backend's
     // descriptor registration over the texture's sampled view + a
     // bindless sampler slot. Vulkan types resolve through the RMI's
@@ -284,8 +297,7 @@ ImTextureID ImGuiOverlay::AddUserTexture(TextureHandle texture,
     return ui::AddTexture(*ctx_, texture, samplerIndex);
 }
 
-ImTextureID ImGuiOverlay::AddUserTextureView(ImageViewHandle view,
-    uint32_t samplerIndex) {
+ImTextureID ImGuiOverlay::AddUserTextureView(ImageViewHandle view, uint32_t samplerIndex) {
     // View variant of AddUserTexture (see the header contract): same
     // binding registration, but over a STANDALONE caller-created view
     // (e.g. a per-face View2D of a cubemap) instead of the texture's own
@@ -308,16 +320,15 @@ void ImGuiOverlay::RetireUserTexture(ImTextureID id) {
     // referencing submissions are fence-complete.
     if (!initialized_ || id == ImTextureID(0))
         return;
-    userTextureRetireQueue_.emplace_back(
-        static_cast<uint64_t>(id), renderTicks_);
+    userTextureRetireQueue_.emplace_back(static_cast<uint64_t>(id), renderTicks_);
 }
 
 float ImGuiOverlay::GetWindowDpiScale() const {
-    if (!window_) return 1.0f;
+    if (!window_)
+        return 1.0f;
     float scale = SDL_GetWindowDisplayScale(window_);
     if (scale == 0.0f) {
-        fprintf(stderr, "[ImGuiOverlay] SDL_GetWindowDisplayScale failed: %s\n",
-            SDL_GetError());
+        fprintf(stderr, "[ImGuiOverlay] SDL_GetWindowDisplayScale failed: %s\n", SDL_GetError());
         return 1.0f;
     }
     return scale;
@@ -328,7 +339,8 @@ bool ImGuiOverlay::ProcessEvent(const void* sdlEvent) {
 }
 
 void ImGuiOverlay::ApplyDpiScale(float scale) {
-    if (!initialized_) return;
+    if (!initialized_)
+        return;
     if (scale <= 0.0f)
         scale = 1.0f;
 
@@ -369,11 +381,12 @@ void DrawFrameHistogramUi() {
     constexpr float kStripH = 76.0f; // graph + one readout line
     ImGui::SetNextWindowPos(ImVec2(0.0f, disp.y - kStripH), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(disp.x, kStripH), ImGuiCond_Always);
-    if (!ImGui::Begin("##frameTimeHistogram", nullptr,
-            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-            ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar)) {
+    if (!ImGui::Begin("##frameTimeHistogram",
+                      nullptr,
+                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                          ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar)) {
         ImGui::End();
         return;
     }
@@ -394,22 +407,22 @@ void DrawFrameHistogramUi() {
     for (size_t b = 0; b < FrameHistogramData::kBucketCount; ++b)
         if (d.buckets[b] > peak)
             peak = d.buckets[b];
-    const float barW = (availW - float(FrameHistogramData::kBucketCount - 1) * 2.0f)
-        / float(FrameHistogramData::kBucketCount);
+    const float barW = (availW - float(FrameHistogramData::kBucketCount - 1) * 2.0f) /
+                       float(FrameHistogramData::kBucketCount);
     for (size_t b = 0; b < FrameHistogramData::kBucketCount; ++b) {
         const float h = graphH * float(d.buckets[b]) / float(peak);
         const float x = p0.x + float(b) * (barW + 2.0f);
         // Ramp: 0 ms -> green (140,220,120), 8+ ms -> red (230,90,80).
         const float t = std::min(1.0f, float(b) / 16.0f);
-        const ImU32 col = ImGui::GetColorU32(ImVec4(
-            0.55f + 0.35f * t, 0.86f - 0.51f * t, 0.47f - 0.19f * t, 0.90f));
+        const ImU32 col = ImGui::GetColorU32(
+            ImVec4(0.55f + 0.35f * t, 0.86f - 0.51f * t, 0.47f - 0.19f * t, 0.90f));
         if (h > 0.0f)
-            dl->AddRectFilled(ImVec2(x, p0.y + graphH - h),
-                ImVec2(x + barW, p0.y + graphH), col, 1.0f);
+            dl->AddRectFilled(
+                ImVec2(x, p0.y + graphH - h), ImVec2(x + barW, p0.y + graphH), col, 1.0f);
         else
             dl->AddRect(ImVec2(x, p0.y + graphH - 1.5f),
-                ImVec2(x + barW, p0.y + graphH),
-                ImGui::GetColorU32(ImVec4(0.5f, 0.5f, 0.5f, 0.4f)));
+                        ImVec2(x + barW, p0.y + graphH),
+                        ImGui::GetColorU32(ImVec4(0.5f, 0.5f, 0.5f, 0.4f)));
     }
     // Invisible hover surface over the graph for the bucket tooltip.
     ImGui::Dummy(ImVec2(availW, graphH));
@@ -423,15 +436,28 @@ void DrawFrameHistogramUi() {
         const uint32_t n = d.buckets[b];
         if (overflow)
             ImGui::SetTooltip(">= %.1f ms: %u frame%s (%.1f%%)",
-                lo, n, n == 1 ? "" : "s", 100.0 * n / double(d.count));
+                              lo,
+                              n,
+                              n == 1 ? "" : "s",
+                              100.0 * n / double(d.count));
         else
             ImGui::SetTooltip("[%.1f .. %.1f) ms: %u frame%s (%.1f%%)",
-                lo, lo + 0.5, n, n == 1 ? "" : "s",
-                100.0 * n / double(d.count));
+                              lo,
+                              lo + 0.5,
+                              n,
+                              n == 1 ? "" : "s",
+                              100.0 * n / double(d.count));
     }
-    ImGui::Text("frame time - avg %.2f | p50 %.1f | p95 %.1f | p99 %.1f | max %.1f ms   (%zu frames)",
-        d.avgMs, d.p50Ms, d.p95Ms, d.p99Ms, d.maxMs, d.count);
-    ImGui::TextDisabled("0.5 ms buckets left-to-right (last >= 16 ms), last 1024 frames - F12 toggles");
+    ImGui::Text(
+        "frame time - avg %.2f | p50 %.1f | p95 %.1f | p99 %.1f | max %.1f ms   (%zu frames)",
+        d.avgMs,
+        d.p50Ms,
+        d.p95Ms,
+        d.p99Ms,
+        d.maxMs,
+        d.count);
+    ImGui::TextDisabled(
+        "0.5 ms buckets left-to-right (last >= 16 ms), last 1024 frames - F12 toggles");
     ImGui::End();
 }
 

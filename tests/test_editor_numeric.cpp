@@ -7,21 +7,24 @@
 // extension) - the editor targets define GLM_ENABLE_EXPERIMENTAL; this
 // standalone test target must spell it before the include chain.
 #define GLM_ENABLE_EXPERIMENTAL
-#include "editor_numeric.h"
 #include "editor_gizmo_rotation.h"
 #include "editor_isolate_visibility.h"
+#include "editor_numeric.h"
 #include "editor_transform_trs.h"
 
 #include <cmath>
+#include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
 #include <limits>
-#include <glm/gtc/matrix_transform.hpp>
 
 namespace {
 int failures = 0;
 void Check(bool ok, const char* name) {
-    if (!ok) { ++failures; std::cerr << "FAIL " << name << "\n"; }
-    else std::cout << "PASS " << name << "\n";
+    if (!ok) {
+        ++failures;
+        std::cerr << "FAIL " << name << "\n";
+    } else
+        std::cout << "PASS " << name << "\n";
 }
 
 glm::mat4 Compose(const glm::vec3& t, const glm::vec3& r, const glm::vec3& s) {
@@ -32,33 +35,34 @@ glm::mat4 Compose(const glm::vec3& t, const glm::vec3& r, const glm::vec3& s) {
     m = glm::rotate(m, glm::radians(r.x), glm::vec3(1, 0, 0));
     return glm::scale(m, s);
 }
-bool Near(float x, float y) { return std::abs(x - y) < 0.001f; }
+bool Near(float x, float y) {
+    return std::abs(x - y) < 0.001f;
 }
+} // namespace
 
 int main() {
     using editor::transform::Finite;
     const glm::vec3 originalT(3, -2, 7);
     const glm::vec3 originalR(15, 25, 30);
-    for (const glm::vec3 originalS : {
-            glm::vec3(0, 2, 3), glm::vec3(2, 0, 3),
-            glm::vec3(2, 3, 0), glm::vec3(0, 0, 3),
-            glm::vec3(0, 0, 0) }) {
+    for (const glm::vec3 originalS : {glm::vec3(0, 2, 3),
+                                      glm::vec3(2, 0, 3),
+                                      glm::vec3(2, 3, 0),
+                                      glm::vec3(0, 0, 3),
+                                      glm::vec3(0, 0, 0)}) {
         const glm::mat4 before = Compose(originalT, originalR, originalS);
         glm::vec3 t, r, s;
         editor::transform::ReadLocalTRS(before, t, r, s);
         Check(Finite(t) && Finite(r) && Finite(s), "zero scale decomposes to finite TRS");
         Check(Near(t.x, 3) && Near(t.y, -2) && Near(t.z, 7), "translation retained");
-        Check(Near(s.x, originalS.x) && Near(s.y, originalS.y)
-            && Near(s.z, originalS.z), "zero scale retained");
+        Check(Near(s.x, originalS.x) && Near(s.y, originalS.y) && Near(s.z, originalS.z),
+              "zero scale retained");
         const glm::mat4 roundTrip = Compose(t, r, s);
         Check(Finite(roundTrip), "singular transform round-trip stays finite");
         const glm::mat4 restored = Compose(t, r, glm::vec3(1, 2, 3));
         Check(Finite(restored), "scale can be edited back from zero");
-        if (Near(originalS.x, 0) && Near(originalS.y, 2)
-            && Near(originalS.z, 3))
-            Check(Near(roundTrip[1][0], before[1][0])
-                && Near(roundTrip[2][1], before[2][1]),
-                "single collapsed axis preserves surviving rotation");
+        if (Near(originalS.x, 0) && Near(originalS.y, 2) && Near(originalS.z, 3))
+            Check(Near(roundTrip[1][0], before[1][0]) && Near(roundTrip[2][1], before[2][1]),
+                  "single collapsed axis preserves surviving rotation");
     }
 
     glm::mat4 corrupted(1.0f);
@@ -69,27 +73,25 @@ int main() {
     Check(Finite(t) && Finite(r) && Finite(s), "previous NaN transform can be repaired");
     Check(Near(t.x, 4.0f) && Finite(Compose(t, r, s)), "repair keeps valid position");
 
-    const float bad[] = { 2.0f, std::numeric_limits<float>::infinity() };
-    const float good[] = { 0.0f, -2.0f };
+    const float bad[] = {2.0f, std::numeric_limits<float>::infinity()};
+    const float good[] = {0.0f, -2.0f};
     Check(!editor::numeric::AllFinite(bad, 2), "reject invalid vector edit");
     Check(editor::numeric::AllFinite(good, 2), "accept zero and finite vector edit");
     Check(editor::numeric::Display(bad[1]) == 0.0f,
-        "invalid stored number has editable finite display value");
-    Check(!editor::numeric::Finite(std::numeric_limits<float>::quiet_NaN()),
-        "reject NaN scalar");
+          "invalid stored number has editable finite display value");
+    Check(!editor::numeric::Finite(std::numeric_limits<float>::quiet_NaN()), "reject NaN scalar");
     // Negative zero and any value rounding to zero at the field's
     // precision must be displayed as +0.000, without mutating the scene.
     const float negativeZero = -0.0f;
     const float justNegative = -0.00009f;
     Check(!std::signbit(editor::numeric::DisplayFixed(negativeZero)),
-        "negative zero displays as positive zero");
+          "negative zero displays as positive zero");
     Check(editor::numeric::DisplayFixed(justNegative) == 0.0f &&
-        !std::signbit(editor::numeric::DisplayFixed(justNegative)),
-        "small negative rotation never displays as -0.000");
-    Check(editor::numeric::DisplayFixed(-0.002f) < 0.0f,
-        "real negative values remain negative");
+              !std::signbit(editor::numeric::DisplayFixed(justNegative)),
+          "small negative rotation never displays as -0.000");
+    Check(editor::numeric::DisplayFixed(-0.002f) < 0.0f, "real negative values remain negative");
     Check(editor::numeric::DisplayFixed(-0.004f, 2) == 0.0f,
-        "slider decimal precision also normalizes negative zero");
+          "slider decimal precision also normalizes negative zero");
     // Bounds-center pivot regression. Identity drag must not move a
     // pre-rotated object, and a 90-degree delta orbits the pivot once.
     using namespace editor::gizmo_rotation;
@@ -99,23 +101,20 @@ int main() {
     const glm::quat unchanged = LocalDelta(baseR, baseR);
     const glm::vec3 sameT = RotatePosition(baseT, pivot, unchanged);
     Check(glm::length(sameT - baseT) < 1e-4f,
-        "bounds-center unchanged rotation does not move node");
+          "bounds-center unchanged rotation does not move node");
     const glm::quat quarterTurn = LocalDelta(baseR, glm::vec3(0, 0, 135));
     const glm::vec3 orbit = RotatePosition(baseT, pivot, quarterTurn);
-    Check(Near(orbit.x, 1) && Near(orbit.y, 1),
-        "bounds-center uses drag delta to orbit pivot");
+    Check(Near(orbit.x, 1) && Near(orbit.y, 1), "bounds-center uses drag delta to orbit pivot");
     const glm::quat parentQ = Orientation(glm::vec3(0, 0, 30));
-    const glm::quat worldDelta =
-        parentQ * quarterTurn * glm::inverse(parentQ);
+    const glm::quat worldDelta = parentQ * quarterTurn * glm::inverse(parentQ);
     const glm::quat nextParentQ = Orientation(glm::vec3(0, 25, 0));
     const glm::quat nextDelta = InFrame(worldDelta, nextParentQ);
     const glm::vec3 multiT = RotatePosition(baseT, pivot, nextDelta);
     Check(Finite(multiT) && Near(glm::length(multiT - pivot), 1),
-        "multi-select rotation preserves distance to shared pivot");
+          "multi-select rotation preserves distance to shared pivot");
     const float angleRad = glm::radians(90.0f);
     const glm::quat worldRing = glm::angleAxis(angleRad, glm::vec3(0, 0, 1));
-    Check(Near((worldRing * glm::vec3(1, 0, 0)).y, 1.0f),
-        "world ring angle remains in radians");
+    Check(Near((worldRing * glm::vec3(1, 0, 0)).y, 1.0f), "world ring angle remains in radians");
 
     // Isolate Select modifies only the temporary viewport mask and
     // restores the author's original per-node hidden flags on toggle.
@@ -125,16 +124,15 @@ int main() {
     std::vector<uint8_t> hidden = {0, 0, 1, 0, 0};
     Check(isolated.begin(hidden, parents, {3}), "isolate selected descendant");
     Check(isolated.active() && hidden == std::vector<uint8_t>({0, 0, 1, 0, 1}),
-        "selected path shown, unrelated branch hidden");
+          "selected path shown, unrelated branch hidden");
     isolated.restore(hidden);
     Check(!isolated.active() && hidden == std::vector<uint8_t>({0, 0, 1, 0, 0}),
-        "isolate toggle restores authored visibility");
+          "isolate toggle restores authored visibility");
     Check(isolated.begin(hidden, parents, {2}), "isolate originally hidden node");
     Check(hidden[2] == 0 && hidden[4] == 0 && hidden[1] == 1,
-        "isolated hidden node and descendants become temporarily visible");
+          "isolated hidden node and descendants become temporarily visible");
     isolated.restore(hidden);
-    Check(hidden[2] == 1 && hidden[4] == 0,
-        "authored hidden state survives isolate");
+    Check(hidden[2] == 1 && hidden[4] == 0, "authored hidden state survives isolate");
     Check(!isolated.begin(hidden, parents, {}), "empty selection does not isolate");
     Check(hidden[2] == 1, "empty selection preserves original visibility");
     Check(!isolated.begin(hidden, parents, {999}), "invalid selection does not isolate");

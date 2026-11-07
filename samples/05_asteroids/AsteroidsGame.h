@@ -27,7 +27,7 @@ struct Input {
     bool start = false;
 };
 struct Ship {
-    Vec2 position{ Width * 0.5f, Height * 0.5f };
+    Vec2 position{Width * 0.5f, Height * 0.5f};
     Vec2 velocity{};
     float angle = -1.5707963268f;
     float invulnerable = 0.0f;
@@ -52,7 +52,7 @@ struct Spark {
     float maxLifetime = 0.0f;
 };
 class Game {
-public:
+  public:
     enum class State { Ready, Playing, GameOver };
     // Ready/GameOver: Input::start starts or restarts the game.
     void Step(const Input& input, float dt);
@@ -64,17 +64,38 @@ public:
         m_initialRandomState = stream.Save();
     }
 
-    [[nodiscard]] State state() const { return m_state; }
-    [[nodiscard]] int score() const { return m_score; }
-    [[nodiscard]] int lives() const { return m_lives; }
-    [[nodiscard]] int wave() const { return m_wave; }
-    [[nodiscard]] float seconds() const { return m_seconds; }
-    [[nodiscard]] float waveDelay() const { return m_waveDelay; }
-    [[nodiscard]] const Ship& ship() const { return m_ship; }
-    [[nodiscard]] const std::vector<Asteroid>& rocks() const { return m_rocks; }
-    [[nodiscard]] const std::vector<Bullet>& bullets() const { return m_bullets; }
-    [[nodiscard]] const std::vector<Spark>& sparks() const { return m_sparks; }
-private:
+    [[nodiscard]] State state() const {
+        return m_state;
+    }
+    [[nodiscard]] int score() const {
+        return m_score;
+    }
+    [[nodiscard]] int lives() const {
+        return m_lives;
+    }
+    [[nodiscard]] int wave() const {
+        return m_wave;
+    }
+    [[nodiscard]] float seconds() const {
+        return m_seconds;
+    }
+    [[nodiscard]] float waveDelay() const {
+        return m_waveDelay;
+    }
+    [[nodiscard]] const Ship& ship() const {
+        return m_ship;
+    }
+    [[nodiscard]] const std::vector<Asteroid>& rocks() const {
+        return m_rocks;
+    }
+    [[nodiscard]] const std::vector<Bullet>& bullets() const {
+        return m_bullets;
+    }
+    [[nodiscard]] const std::vector<Spark>& sparks() const {
+        return m_sparks;
+    }
+
+  private:
     void SpawnWave();
     void BreakRock(size_t index);
     void Burst(Vec2 position, int count);

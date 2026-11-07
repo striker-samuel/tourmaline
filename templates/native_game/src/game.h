@@ -22,7 +22,8 @@ struct State {
     }
 
     void tick(double dt) {
-        if (!std::isfinite(dt) || dt <= 0) return;
+        if (!std::isfinite(dt) || dt <= 0)
+            return;
         favor += std::min(dt, 0.1) * productionPerSecond();
     }
     [[nodiscard]] bool apply(Action action) {
@@ -33,13 +34,15 @@ struct State {
             score += 10;
             return true;
         case Action::Upgrade:
-            if (favor < upgradeCost()) return false;
+            if (favor < upgradeCost())
+                return false;
             favor -= upgradeCost();
             ++upgrades;
             score += 40;
             return true;
         case Action::Defend:
-            if (favor < 5.0) return false;
+            if (favor < 5.0)
+                return false;
             favor -= 5.0;
             ++defenses;
             score += 60;

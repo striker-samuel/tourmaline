@@ -9,21 +9,27 @@
 
 #include <cmath>
 #include <cstdio>
-#include <memory>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
 static int checks = 0, failures = 0;
-#define CHECK(cond) do { ++checks; if (!(cond)) { ++failures; \
-    std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } \
+#define CHECK(cond)                                                                                \
+    do {                                                                                           \
+        ++checks;                                                                                  \
+        if (!(cond)) {                                                                             \
+            ++failures;                                                                            \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                   \
+        }                                                                                          \
     } while (0)
 
 int main() {
     int loads = 0;
     int unloads = 0;
     tour::asset::AssetResidency store([&](uint64_t id) -> std::shared_ptr<void> {
-        if (id == 999) return {};
+        if (id == 999)
+            return {};
         ++loads;
         return std::shared_ptr<void>(new uint64_t(id), [&](void* p) {
             ++unloads;
@@ -48,14 +54,13 @@ int main() {
     setNodeName(source, child, "Room");
     glm::dmat4 local(1.0);
     local[3][0] = 3.0;
-    CHECK(tour::scene::SetLocalTransform(
-        source, MakeNodeHandle(source, NodeId(child)), local));
+    CHECK(tour::scene::SetLocalTransform(source, MakeNodeHandle(source, NodeId(child)), local));
 
     tour::World world;
     CHECK(world.SetActiveMapIdentity(100));
     std::string error;
-    const uint64_t a = world.InstantiateSceneHierarchy(
-        source, 9001, glm::dmat4(1.0), std::move(leaseA), error);
+    const uint64_t a =
+        world.InstantiateSceneHierarchy(source, 9001, glm::dmat4(1.0), std::move(leaseA), error);
     CHECK(a != 0 && error.empty());
     const auto* ai = world.worldSceneInstances.Find(a);
     CHECK(ai && ai->assets.size() == 2);
@@ -64,12 +69,12 @@ int main() {
     const NodeHandle firstChild = ai->sourceNodes[size_t(child)];
     CHECK(NodeHandleValid(world.scene, firstChild));
     CHECK(world.scene.hierarchy[NodeHandleSlot(firstChild)].parent ==
-        int(NodeHandleSlot(ai->sourceNodes[size_t(sr)])));
+          int(NodeHandleSlot(ai->sourceNodes[size_t(sr)])));
 
     glm::dmat4 secondFrame(1.0);
     secondFrame[3][0] = 128.0;
-    const uint64_t b = world.InstantiateSceneHierarchy(
-        source, 9001, secondFrame, std::move(leaseB), error);
+    const uint64_t b =
+        world.InstantiateSceneHierarchy(source, 9001, secondFrame, std::move(leaseB), error);
     CHECK(b && b != a && world.worldSceneInstances.Count() == 2);
     CHECK(!world.SetActiveMapIdentity(101));
     const auto* bi = world.worldSceneInstances.Find(b);
@@ -88,8 +93,7 @@ int main() {
     int meshNode = addNode(drawable, -1, 0);
     CHECK(SetMesh(drawable, NodeId(meshNode), 0));
     const size_t before = world.scene.hierarchy.size();
-    CHECK(!world.InstantiateSceneHierarchy(
-        drawable, 9010, glm::dmat4(1.0), {}, error));
+    CHECK(!world.InstantiateSceneHierarchy(drawable, 9010, glm::dmat4(1.0), {}, error));
     CHECK(error.find("binding") != std::string::npos);
     CHECK(world.scene.hierarchy.size() == before);
     {
@@ -106,14 +110,14 @@ int main() {
         const int node = addNode(drawable2, -1, 0);
         CHECK(SetMesh(drawable2, NodeId(node), 0));
         const uint64_t instance = direct.Instantiate(
-            mappedTarget, regionStore, drawable2, 9020, glm::dmat4(1.0),
-            {}, error, &remap);
+            mappedTarget, regionStore, drawable2, 9020, glm::dmat4(1.0), {}, error, &remap);
         CHECK(instance != 0 && error.empty());
         if (const auto* inst = direct.Find(instance)) {
             const NodeId mappedNode = NodeHandleSlot(inst->sourceNodes[size_t(node)]);
             const auto* binding = FindMesh(mappedTarget, mappedNode);
             CHECK(binding && binding->mesh == 77);
-        } else CHECK(false);
+        } else
+            CHECK(false);
         CHECK(direct.Retire(mappedTarget, regionStore, instance));
         CHECK(mappedTarget.tables.meshes.empty());
     }
@@ -123,8 +127,7 @@ int main() {
         const int nested = addNode(cyclic, root, 1);
         cyclic.hierarchy[root].parent = nested;
         const size_t countBefore = world.scene.hierarchy.size();
-        CHECK(!world.InstantiateSceneHierarchy(
-            cyclic, 9011, glm::dmat4(1.0), {}, error));
+        CHECK(!world.InstantiateSceneHierarchy(cyclic, 9011, glm::dmat4(1.0), {}, error));
         CHECK(error.find("cycle") != std::string::npos);
         CHECK(world.scene.hierarchy.size() == countBefore);
     }
@@ -133,8 +136,7 @@ int main() {
         const int root = addNode(dangling, -1, 0);
         dangling.hierarchy[root].parent = 9999;
         const size_t countBefore = world.scene.hierarchy.size();
-        CHECK(!world.InstantiateSceneHierarchy(
-            dangling, 9012, glm::dmat4(1.0), {}, error));
+        CHECK(!world.InstantiateSceneHierarchy(dangling, 9012, glm::dmat4(1.0), {}, error));
         CHECK(error.find("parent") != std::string::npos);
         CHECK(world.scene.hierarchy.size() == countBefore);
     }
@@ -152,13 +154,11 @@ int main() {
     CHECK(world.ActiveMapIdentity() == 101);
 
     // Deleted slot reuse cannot resurrect a stale generation-checked handle.
-    const uint64_t c = world.InstantiateSceneHierarchy(
-        source, 9001, glm::dmat4(1.0), {}, error);
+    const uint64_t c = world.InstantiateSceneHierarchy(source, 9001, glm::dmat4(1.0), {}, error);
     CHECK(c != 0);
     CHECK(!NodeHandleValid(world.scene, firstChild));
     CHECK(world.RetireSceneHierarchy(c));
 
-    std::printf("world_scene_instance_tests: %d checks, %d failures\n",
-        checks, failures);
+    std::printf("world_scene_instance_tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

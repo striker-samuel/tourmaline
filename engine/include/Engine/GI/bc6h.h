@@ -26,21 +26,18 @@ namespace tour::gi {
 // (self-sufficient: no smvk types referenced - no bridge needed)
 // One image: halves = w*h RGB half patterns (row-major), w and h must
 // be multiples of 4. out receives (w/4)*(h/4)*16 block bytes.
-void Bc6hEncodeImage(const uint16_t* halves, uint32_t w, uint32_t h,
-	std::vector<uint8_t>& out);
+void Bc6hEncodeImage(const uint16_t* halves, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
 
 // Decode one BC6H image (every mode; out = w*h*3 half patterns).
-void Bc6hDecodeImage(const uint8_t* blocks, uint32_t w, uint32_t h,
-	std::vector<uint16_t>& out);
+void Bc6hDecodeImage(const uint8_t* blocks, uint32_t w, uint32_t h, std::vector<uint16_t>& out);
 
 } // namespace tour::gi
-
 
 // COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
 // header's declarations live in tour::gi; the smvk::gi aliases keep the
 // existing call sites compiling through the consumer migration.
-namespace smvk {} // (declare the namespace so the compat alias below compiles standalone)
+namespace smvk {} // namespace smvk
 namespace smvk::gi {
-	using ::tour::gi::Bc6hDecodeImage;
-	using ::tour::gi::Bc6hEncodeImage;
-}
+using ::tour::gi::Bc6hDecodeImage;
+using ::tour::gi::Bc6hEncodeImage;
+} // namespace smvk::gi

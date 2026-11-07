@@ -60,25 +60,22 @@ void DumpStats(std::FILE* out = stderr);
 // reset(), release(), operator-> all behave identically; only the
 // allocation (MakeProcess/MakeLinear + Create) and the free (none)
 // differ. OOM still crashes via ReportOomAndCrash.
-template<typename T>
-struct LinearDeleter {
-	void operator()(T* p) const noexcept {
-		if (p)
-			p->~T();
-	}
+template <typename T> struct LinearDeleter {
+    void operator()(T* p) const noexcept {
+        if (p)
+            p->~T();
+    }
 };
 
-template<typename T>
-using LinearPtr = std::unique_ptr<T, LinearDeleter<T>>;
+template <typename T> using LinearPtr = std::unique_ptr<T, LinearDeleter<T>>;
 
-template<typename T, typename... Args>
+template <typename T, typename... Args>
 [[nodiscard]] LinearPtr<T> MakeLinear(LinearAllocator& allocator, Args&&... args) {
-	return LinearPtr<T>(allocator.Create<T>(std::forward<Args>(args)...));
+    return LinearPtr<T>(allocator.Create<T>(std::forward<Args>(args)...));
 }
 
-template<typename T, typename... Args>
-[[nodiscard]] LinearPtr<T> MakeProcess(Args&&... args) {
-	return MakeLinear<T>(ProcessAllocator(), std::forward<Args>(args)...);
+template <typename T, typename... Args> [[nodiscard]] LinearPtr<T> MakeProcess(Args&&... args) {
+    return MakeLinear<T>(ProcessAllocator(), std::forward<Args>(args)...);
 }
 
 } // namespace tour::mem
@@ -88,14 +85,14 @@ template<typename T, typename... Args>
 // aliases keep the existing call sites compiling through the consumer
 // migration. RETIRE them as call sites move to tour::mem.
 namespace smvk::mem {
-	using ::tour::mem::InitMemory;
-	using ::tour::mem::ShutdownMemory;
-	using ::tour::mem::DumpStats;
-	using ::tour::mem::LinearDeleter;
-	using ::tour::mem::LinearPtr;
-	using ::tour::mem::MakeLinear;
-	using ::tour::mem::MakeProcess;
-	using ::tour::mem::ProcessAllocator;
-	using ::tour::mem::FrameAllocator;
-	using ::tour::mem::TransientAllocator;
-}
+using ::tour::mem::DumpStats;
+using ::tour::mem::FrameAllocator;
+using ::tour::mem::InitMemory;
+using ::tour::mem::LinearDeleter;
+using ::tour::mem::LinearPtr;
+using ::tour::mem::MakeLinear;
+using ::tour::mem::MakeProcess;
+using ::tour::mem::ProcessAllocator;
+using ::tour::mem::ShutdownMemory;
+using ::tour::mem::TransientAllocator;
+} // namespace smvk::mem

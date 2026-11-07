@@ -33,7 +33,6 @@ inline constexpr uint32_t MaxMaterials = engine::limits::MaxMaterials;
 // entry, LightBuffer.lights[] in common.hlsli) and the Forward+
 // ForwardPlusLight ring + per-tile lists (WorldRenderer's FP_MAX_LIGHTS
 // = this budget). 1024 = the Forward+ budget this engine actually runs.
-inline constexpr uint32_t MaxSimultaneousLights =
-	engine::limits::MaxSimultaneousLights;
+inline constexpr uint32_t MaxSimultaneousLights = engine::limits::MaxSimultaneousLights;
 
 } // namespace engine::renderer::limits

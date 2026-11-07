@@ -42,34 +42,30 @@ inline constexpr const char* kBakeAssetKindCubemap = "cubemap";
 // guid first ("<guid> <vfsPath>  # <note>"); current and hand-edited
 // rows are bare paths. Returns the vfs path ("" for blanks/comments).
 [[nodiscard]] inline std::string SplitManifestRow(std::string_view line) {
-	// Inline '#' comments first (headers + the "# <note>" row tails).
-	if (const size_t hash = line.find('#'); hash != std::string_view::npos)
-		line = line.substr(0, hash);
-	// Trim.
-	while (!line.empty()
-		&& (line.back() == ' ' || line.back() == '\t'
-			|| line.back() == '\r' || line.back() == '\n'))
-		line.remove_suffix(1);
-	while (!line.empty()
-		&& (line.front() == ' ' || line.front() == '\t'))
-		line.remove_prefix(1);
-	if (line.empty())
-		return {};
-	// "<guid> <path>": the first token is a 32-hex guid.
-	const size_t sp = line.find_first_of(" \t");
-	if (sp != std::string_view::npos) {
-		const std::string_view first = line.substr(0, sp);
-		if (IsBakeAssetGuid(first)) {
-			std::string_view rest = line.substr(sp + 1);
-			while (!rest.empty()
-				&& (rest.front() == ' ' || rest.front() == '\t'))
-				rest.remove_prefix(1);
-			const size_t end = rest.find_first_of(" \t");
-			return std::string(
-				end == std::string_view::npos ? rest : rest.substr(0, end));
-		}
-	}
-	return std::string(line);
+    // Inline '#' comments first (headers + the "# <note>" row tails).
+    if (const size_t hash = line.find('#'); hash != std::string_view::npos)
+        line = line.substr(0, hash);
+    // Trim.
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\t' || line.back() == '\r' ||
+                             line.back() == '\n'))
+        line.remove_suffix(1);
+    while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+        line.remove_prefix(1);
+    if (line.empty())
+        return {};
+    // "<guid> <path>": the first token is a 32-hex guid.
+    const size_t sp = line.find_first_of(" \t");
+    if (sp != std::string_view::npos) {
+        const std::string_view first = line.substr(0, sp);
+        if (IsBakeAssetGuid(first)) {
+            std::string_view rest = line.substr(sp + 1);
+            while (!rest.empty() && (rest.front() == ' ' || rest.front() == '\t'))
+                rest.remove_prefix(1);
+            const size_t end = rest.find_first_of(" \t");
+            return std::string(end == std::string_view::npos ? rest : rest.substr(0, end));
+        }
+    }
+    return std::string(line);
 }
 
 } // namespace smvk::bake

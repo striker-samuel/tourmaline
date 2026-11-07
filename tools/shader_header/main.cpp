@@ -46,12 +46,24 @@ std::string Escape(const std::string& s) {
     std::string out = "\"";
     for (char c : s) {
         switch (c) {
-        case '\\': out += "\\\\"; break;
-        case '"': out += "\\\""; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default: out += c; break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '"':
+            out += "\\\"";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            out += c;
+            break;
         }
     }
     return out + "\"";
@@ -81,20 +93,28 @@ std::string Symbol(const fs::path& path) {
 
 std::string Stage(SpvReflectShaderStageFlagBits stage) {
     switch (stage) {
-    case SPV_REFLECT_SHADER_STAGE_VERTEX_BIT: return "Vertex";
-    case SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT: return "Fragment";
-    case SPV_REFLECT_SHADER_STAGE_COMPUTE_BIT: return "Compute";
-    case SPV_REFLECT_SHADER_STAGE_GEOMETRY_BIT: return "Geometry";
-    case SPV_REFLECT_SHADER_STAGE_TESSELLATION_CONTROL_BIT: return "TessControl";
-    case SPV_REFLECT_SHADER_STAGE_TESSELLATION_EVALUATION_BIT: return "TessEvaluation";
-    case SPV_REFLECT_SHADER_STAGE_TASK_BIT_EXT: return "Task";
-    case SPV_REFLECT_SHADER_STAGE_MESH_BIT_EXT: return "Mesh";
-    default: return "Other";
+    case SPV_REFLECT_SHADER_STAGE_VERTEX_BIT:
+        return "Vertex";
+    case SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT:
+        return "Fragment";
+    case SPV_REFLECT_SHADER_STAGE_COMPUTE_BIT:
+        return "Compute";
+    case SPV_REFLECT_SHADER_STAGE_GEOMETRY_BIT:
+        return "Geometry";
+    case SPV_REFLECT_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
+        return "TessControl";
+    case SPV_REFLECT_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
+        return "TessEvaluation";
+    case SPV_REFLECT_SHADER_STAGE_TASK_BIT_EXT:
+        return "Task";
+    case SPV_REFLECT_SHADER_STAGE_MESH_BIT_EXT:
+        return "Mesh";
+    default:
+        return "Other";
     }
 }
 
-bool ReadModule(const fs::path& file, const fs::path& root, Module& out,
-                std::string& error) {
+bool ReadModule(const fs::path& file, const fs::path& root, Module& out, std::string& error) {
     std::error_code ec;
     const fs::path rel = fs::relative(file, root, ec);
     if (ec || rel.empty() || rel.is_absolute() || *rel.begin() == "..") {
@@ -125,8 +145,8 @@ bool ReadModule(const fs::path& file, const fs::path& root, Module& out,
     const SpvReflectResult created =
         spvReflectCreateShaderModule(bytes.size(), bytes.data(), &reflect);
     if (created != SPV_REFLECT_RESULT_SUCCESS) {
-        error = "SPIR-V reflection failed (" + std::to_string(created) +
-                "): " + file.generic_string();
+        error =
+            "SPIR-V reflection failed (" + std::to_string(created) + "): " + file.generic_string();
         return false;
     }
     out.stage = Stage(reflect.shader_stage);
@@ -134,24 +154,24 @@ bool ReadModule(const fs::path& file, const fs::path& root, Module& out,
         out.entry = reflect.entry_points[0].name;
 
     uint32_t count = 0;
-    if (spvReflectEnumerateDescriptorBindings(&reflect, &count, nullptr)
-            == SPV_REFLECT_RESULT_SUCCESS) {
+    if (spvReflectEnumerateDescriptorBindings(&reflect, &count, nullptr) ==
+        SPV_REFLECT_RESULT_SUCCESS) {
         std::vector<SpvReflectDescriptorBinding*> bindings(count);
-        if (spvReflectEnumerateDescriptorBindings(
-                &reflect, &count, bindings.data()) == SPV_REFLECT_RESULT_SUCCESS) {
+        if (spvReflectEnumerateDescriptorBindings(&reflect, &count, bindings.data()) ==
+            SPV_REFLECT_RESULT_SUCCESS) {
             for (auto* b : bindings) {
                 if (b)
-                    out.descriptors.push_back({b->set, b->binding, b->count,
-                                              static_cast<uint32_t>(b->descriptor_type)});
+                    out.descriptors.push_back(
+                        {b->set, b->binding, b->count, static_cast<uint32_t>(b->descriptor_type)});
             }
         }
     }
     count = 0;
-    if (spvReflectEnumeratePushConstantBlocks(&reflect, &count, nullptr)
-            == SPV_REFLECT_RESULT_SUCCESS) {
+    if (spvReflectEnumeratePushConstantBlocks(&reflect, &count, nullptr) ==
+        SPV_REFLECT_RESULT_SUCCESS) {
         std::vector<SpvReflectBlockVariable*> blocks(count);
-        if (spvReflectEnumeratePushConstantBlocks(
-                &reflect, &count, blocks.data()) == SPV_REFLECT_RESULT_SUCCESS) {
+        if (spvReflectEnumeratePushConstantBlocks(&reflect, &count, blocks.data()) ==
+            SPV_REFLECT_RESULT_SUCCESS) {
             for (auto* b : blocks) {
                 if (b && b->size)
                     out.push.push_back({b->offset, b->size});
@@ -159,11 +179,11 @@ bool ReadModule(const fs::path& file, const fs::path& root, Module& out,
         }
     }
     count = 0;
-    if (spvReflectEnumerateSpecializationConstants(&reflect, &count, nullptr)
-            == SPV_REFLECT_RESULT_SUCCESS) {
+    if (spvReflectEnumerateSpecializationConstants(&reflect, &count, nullptr) ==
+        SPV_REFLECT_RESULT_SUCCESS) {
         std::vector<SpvReflectSpecializationConstant*> specs(count);
-        if (spvReflectEnumerateSpecializationConstants(
-                &reflect, &count, specs.data()) == SPV_REFLECT_RESULT_SUCCESS) {
+        if (spvReflectEnumerateSpecializationConstants(&reflect, &count, specs.data()) ==
+            SPV_REFLECT_RESULT_SUCCESS) {
             for (auto* s : specs) {
                 if (s)
                     out.specs.push_back({s->constant_id, s->default_value_size});
@@ -172,39 +192,39 @@ bool ReadModule(const fs::path& file, const fs::path& root, Module& out,
     }
     if (reflect.shader_stage == SPV_REFLECT_SHADER_STAGE_VERTEX_BIT) {
         count = 0;
-        if (spvReflectEnumerateInputVariables(&reflect, &count, nullptr)
-                == SPV_REFLECT_RESULT_SUCCESS) {
+        if (spvReflectEnumerateInputVariables(&reflect, &count, nullptr) ==
+            SPV_REFLECT_RESULT_SUCCESS) {
             std::vector<SpvReflectInterfaceVariable*> vars(count);
-            if (spvReflectEnumerateInputVariables(
-                    &reflect, &count, vars.data()) == SPV_REFLECT_RESULT_SUCCESS) {
+            if (spvReflectEnumerateInputVariables(&reflect, &count, vars.data()) ==
+                SPV_REFLECT_RESULT_SUCCESS) {
                 for (auto* v : vars) {
                     if (v && !(v->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN))
-                        out.inputs.push_back({
-                            v->location, v->numeric.vector.component_count});
+                        out.inputs.push_back({v->location, v->numeric.vector.component_count});
                 }
             }
         }
     }
     spvReflectDestroyShaderModule(&reflect);
 
-    std::sort(out.descriptors.begin(), out.descriptors.end(),
-              [](auto a, auto b) { return std::tie(a.set, a.binding) <
-                                           std::tie(b.set, b.binding); });
-    std::sort(out.push.begin(), out.push.end(),
-              [](auto a, auto b) { return a.offset < b.offset; });
-    std::sort(out.specs.begin(), out.specs.end(),
-              [](auto a, auto b) { return a.id < b.id; });
-    std::sort(out.inputs.begin(), out.inputs.end(),
-              [](auto a, auto b) { return a.location < b.location; });
+    std::sort(out.descriptors.begin(), out.descriptors.end(), [](auto a, auto b) {
+        return std::tie(a.set, a.binding) < std::tie(b.set, b.binding);
+    });
+    std::sort(out.push.begin(), out.push.end(), [](auto a, auto b) { return a.offset < b.offset; });
+    std::sort(out.specs.begin(), out.specs.end(), [](auto a, auto b) { return a.id < b.id; });
+    std::sort(out.inputs.begin(), out.inputs.end(), [](auto a, auto b) {
+        return a.location < b.location;
+    });
     return true;
 }
 
 template <class T, class Print>
-void EmitArray(std::ostringstream& out, const std::string& type,
-               const std::string& name, const std::vector<T>& values,
+void EmitArray(std::ostringstream& out,
+               const std::string& type,
+               const std::string& name,
+               const std::vector<T>& values,
                Print print) {
-    out << "inline constexpr std::array<" << type << ", " << values.size()
-        << "> " << name << "{{\n";
+    out << "inline constexpr std::array<" << type << ", " << values.size() << "> " << name
+        << "{{\n";
     for (const auto& v : values) {
         out << "    " << type << "{";
         print(out, v);
@@ -244,31 +264,27 @@ std::string Generate(const std::vector<Module>& modules) {
 
     for (const auto& m : modules) {
         const auto prefix = m.symbol + "_";
-        EmitArray(out, "DescriptorBinding", prefix + "descriptors",
-                  m.descriptors, [](auto& s, auto v) {
-                      s << v.set << ", " << v.binding << ", "
-                        << v.count << ", " << v.type;
-                  });
-        EmitArray(out, "PushConstantRange", prefix + "push",
-                  m.push, [](auto& s, auto v) {
-                      s << v.offset << ", " << v.size;
-                  });
-        EmitArray(out, "SpecializationConstant", prefix + "specs",
-                  m.specs, [](auto& s, auto v) {
-                      s << v.id << ", " << v.size;
-                  });
-        EmitArray(out, "VertexInput", prefix + "inputs",
-                  m.inputs, [](auto& s, auto v) {
-                      s << v.location << ", " << v.components;
-                  });
+        EmitArray(
+            out, "DescriptorBinding", prefix + "descriptors", m.descriptors, [](auto& s, auto v) {
+                s << v.set << ", " << v.binding << ", " << v.count << ", " << v.type;
+            });
+        EmitArray(out, "PushConstantRange", prefix + "push", m.push, [](auto& s, auto v) {
+            s << v.offset << ", " << v.size;
+        });
+        EmitArray(out, "SpecializationConstant", prefix + "specs", m.specs, [](auto& s, auto v) {
+            s << v.id << ", " << v.size;
+        });
+        EmitArray(out, "VertexInput", prefix + "inputs", m.inputs, [](auto& s, auto v) {
+            s << v.location << ", " << v.components;
+        });
     }
     out << "} // namespace detail\n\n";
     for (const auto& m : modules) {
         const auto prefix = m.symbol + "_";
         out << "inline constexpr ShaderInfo " << m.symbol << "{\n"
             << "    0x" << std::hex << m.id << std::dec << "ULL,\n"
-            << "    " << Escape(m.path) << ", " << Escape(m.entry)
-            << ", Stage::" << m.stage << ",\n"
+            << "    " << Escape(m.path) << ", " << Escape(m.entry) << ", Stage::" << m.stage
+            << ",\n"
             << "    detail::" << prefix << "descriptors,\n"
             << "    detail::" << prefix << "push,\n"
             << "    detail::" << prefix << "specs,\n"
@@ -279,8 +295,7 @@ std::string Generate(const std::vector<Module>& modules) {
     return out.str();
 }
 
-bool WriteIfChanged(const fs::path& output, const std::string& contents,
-                    std::string& error) {
+bool WriteIfChanged(const fs::path& output, const std::string& contents, std::string& error) {
     std::ifstream previous(output, std::ios::binary);
     if (previous) {
         std::ostringstream buf;
@@ -318,9 +333,12 @@ int main(int argc, char** argv) {
             return 2;
         }
         const std::string value = argv[++i];
-        if (arg == "--output") output = value;
-        else if (arg == "--runtime-root") runtimeRoot = value;
-        else if (arg == "--shader") files.emplace_back(value);
+        if (arg == "--output")
+            output = value;
+        else if (arg == "--runtime-root")
+            runtimeRoot = value;
+        else if (arg == "--shader")
+            files.emplace_back(value);
         else {
             std::cerr << "unknown option: " << arg << '\n';
             return 2;
@@ -341,14 +359,14 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (!symbols.insert(m.symbol).second || !paths.insert(m.path).second) {
-            std::cerr << "duplicate shader name or output path: "
-                      << m.path << '\n';
+            std::cerr << "duplicate shader name or output path: " << m.path << '\n';
             return 1;
         }
         modules.push_back(std::move(m));
     }
-    std::sort(modules.begin(), modules.end(),
-              [](const Module& a, const Module& b) { return a.path < b.path; });
+    std::sort(modules.begin(), modules.end(), [](const Module& a, const Module& b) {
+        return a.path < b.path;
+    });
     std::string error;
     if (!WriteIfChanged(output, Generate(modules), error)) {
         std::cerr << error << '\n';

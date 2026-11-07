@@ -57,19 +57,25 @@
 #include <glm/glm.hpp>
 
 namespace tour {
-	namespace audio { class AudioEngine; struct VoiceHandle; }
-}
-namespace tour { struct World; class App; }
+namespace audio {
+class AudioEngine;
+struct VoiceHandle;
+} // namespace audio
+} // namespace tour
+namespace tour {
+struct World;
+class App;
+} // namespace tour
 namespace smvk {
-	using ::tour::App;
-	using ::tour::World;
-	class ResourceManager;
-}
+using ::tour::App;
+using ::tour::World;
+class ResourceManager;
+} // namespace smvk
 
 namespace engine {
-	class WorldRenderer;
-	class IAppElement;
-}
+class WorldRenderer;
+class IAppElement;
+} // namespace engine
 
 namespace app {
 
@@ -81,10 +87,10 @@ namespace app {
 // preloaded + MOUNTED every pak (the scene layer's adopt-or-open pass
 // then shares those images instead of re-reading the archives).
 [[nodiscard]] std::shared_ptr<engine::IAppElement> MakeAudioRuntime(
-	tour::App& host,
-	const std::string& tappPath,
-	std::shared_ptr<tour::World*> worldHandle,
-	engine::WorldRenderer* renderer);
+    tour::App& host,
+    const std::string& tappPath,
+    std::shared_ptr<tour::World*> worldHandle,
+    engine::WorldRenderer* renderer);
 
 // The SHARED-SESSION form (the consolidated content architecture): a
 // --project launch builds ONE content session up front (RunPakApp —
@@ -97,10 +103,10 @@ namespace app {
 // archives. The tappPath form above stays for hosts that run without
 // a launch session (the lazy lane).
 [[nodiscard]] std::shared_ptr<engine::IAppElement> MakeAudioRuntime(
-	tour::App& host,
-	std::shared_ptr<ProjectRuntime> session,
-	std::shared_ptr<tour::World*> worldHandle,
-	engine::WorldRenderer* renderer);
+    tour::App& host,
+    std::shared_ptr<ProjectRuntime> session,
+    std::shared_ptr<tour::World*> worldHandle,
+    engine::WorldRenderer* renderer);
 
 // ---- the imperative surface (gameplay code drives these directly;
 // they are safe before/without the element — no-ops then) ----
@@ -120,19 +126,19 @@ bool ReleaseSound(uint64_t soundId);
 // scene/spawn lifetime. Returns the mixer voice handle (invalid +
 // err on an unknown node/clip).
 tour::audio::VoiceHandle PlaySound(tour::World& world,
-	uint32_t emitterNode, uint64_t soundId, float gain = 1.0f,
-	std::string* err = nullptr);
+                                   uint32_t emitterNode,
+                                   uint64_t soundId,
+                                   float gain = 1.0f,
+                                   std::string* err = nullptr);
 // Stops a voice started by PlaySound (the mixer handle).
 void StopSound(tour::audio::VoiceHandle voice);
 // Sets an emitter's master volume (both row copies — the merged scene
 // row the renderer world carries + the owning cluster's durable row —
 // so a later resolve keeps the edit). False when the node carries no
 // audio source.
-bool SetAudioSourceVolume(tour::World& world, uint32_t emitterNode,
-	float volume);
+bool SetAudioSourceVolume(tour::World& world, uint32_t emitterNode, float volume);
 // Pins the listener pose (world-space). An empty forward resets to
 // FOLLOW-THE-CAMERA (the default when a renderer was given).
-void SetListener(const glm::vec3& position, const glm::vec3& forward,
-	const glm::vec3& up);
+void SetListener(const glm::vec3& position, const glm::vec3& forward, const glm::vec3& up);
 
 } // namespace app

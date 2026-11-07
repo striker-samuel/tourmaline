@@ -8,8 +8,8 @@
 #include <Engine/Renderer/gpu_scene_upload.h>
 
 #include <algorithm>
-#include <compare>
 #include <cmath>
+#include <compare>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -41,14 +41,17 @@ struct LeafTicket {
 inline constexpr double kLeafCellMeters = 64.0;
 
 class LeafRegistry {
-public:
+  public:
     using InstanceId = Handle<Instance>;
 
     // On a changed instance, update only its old/new leaf. IDs contain
     // the generation: reusing a GPU slot cannot inherit stale membership.
     void Upsert(InstanceId id, const RenderDatabase& db) {
         const Instance* instance = db.instances.Get(id);
-        if (!instance) { Remove(id); return; }
+        if (!instance) {
+            Remove(id);
+            return;
+        }
         const LeafCell next = CellFor(*instance);
         const uint64_t key = Pack(id);
         if (auto it = membership_.find(key); it != membership_.end()) {
@@ -60,8 +63,7 @@ public:
             membership_.erase(it);
         }
         LeafState& state = leaves_[next];
-        auto pos = std::lower_bound(state.members.begin(), state.members.end(),
-                                    id, Less);
+        auto pos = std::lower_bound(state.members.begin(), state.members.end(), id, Less);
         if (pos == state.members.end() || *pos != id)
             state.members.insert(pos, id);
         membership_.emplace(key, next);
@@ -70,7 +72,8 @@ public:
 
     void Remove(InstanceId id) {
         const auto it = membership_.find(Pack(id));
-        if (it == membership_.end()) return;
+        if (it == membership_.end())
+            return;
         EraseFromCell(it->second, id);
         membership_.erase(it);
     }
@@ -114,16 +117,24 @@ public:
         dirty_.clear();
     }
 
-    [[nodiscard]] size_t LeafCount() const noexcept { return leaves_.size(); }
-    [[nodiscard]] size_t PendingLeafCount() const noexcept { return dirty_.size(); }
+    [[nodiscard]] size_t LeafCount() const noexcept {
+        return leaves_.size();
+    }
+    [[nodiscard]] size_t PendingLeafCount() const noexcept {
+        return dirty_.size();
+    }
     [[nodiscard]] std::vector<LeafTicket> Tickets(const RenderDatabase& db) const {
         std::vector<LeafTicket> result;
         result.reserve(leaves_.size());
         for (const auto& [cell, state] : leaves_) {
             const Leaf* row = db.leaves.Get(state.leaf);
-            if (!row || row->range.y == 0) continue;
-            result.push_back({cell, state.leaf, row->range.x, row->range.y,
-                (row->range.z & LeafFlagBoundsComplete) != 0});
+            if (!row || row->range.y == 0)
+                continue;
+            result.push_back({cell,
+                              state.leaf,
+                              row->range.x,
+                              row->range.y,
+                              (row->range.z & LeafFlagBoundsComplete) != 0});
         }
         return result;
     }
@@ -136,13 +147,13 @@ public:
         // or coordinates outside the 64-bit tile grid. Overflow objects
         // enter a non-cullable sentinel leaf, rather than disappearing.
         constexpr double safe = 9.0e18;
-        if (!std::isfinite(x) || !std::isfinite(z) ||
-            x <= -safe || x >= safe || z <= -safe || z >= safe)
+        if (!std::isfinite(x) || !std::isfinite(z) || x <= -safe || x >= safe || z <= -safe ||
+            z >= safe)
             return {INT64_MIN, INT64_MIN};
         return {int64_t(x), int64_t(z)};
     }
 
-private:
+  private:
     struct LeafState {
         Handle<Leaf> leaf{};
         std::vector<InstanceId> members; // sorted by (slot,generation)
@@ -157,7 +168,8 @@ private:
     }
     void EraseFromCell(LeafCell cell, InstanceId id) {
         auto it = leaves_.find(cell);
-        if (it == leaves_.end()) return;
+        if (it == leaves_.end())
+            return;
         auto& members = it->second.members;
         auto pos = std::lower_bound(members.begin(), members.end(), id, Less);
         if (pos != members.end() && *pos == id) {
@@ -168,31 +180,29 @@ private:
 
     // Conservative transform of a local sphere. Frobenius norm bounds
     // arbitrary shear as well as rotation/nonuniform scale.
-    static bool WorldSphere(const Instance& instance, glm::dvec3& center,
-                            double& radius) {
+    static bool WorldSphere(const Instance& instance, glm::dvec3& center, double& radius) {
         const glm::dvec3 p = math::JoinDoubleFloat(instance.worldPosition);
-        const glm::dvec3 bx(instance.basisX), by(instance.basisY),
-                          bz(instance.basisZ);
+        const glm::dvec3 bx(instance.basisX), by(instance.basisY), bz(instance.basisZ);
         const glm::dvec3 local(instance.localSphere);
         center = p + bx * local.x + by * local.y + bz * local.z;
-        const double f = std::sqrt(glm::dot(bx,bx) + glm::dot(by,by)
-                                 + glm::dot(bz,bz));
+        const double f = std::sqrt(glm::dot(bx, bx) + glm::dot(by, by) + glm::dot(bz, bz));
         radius = f * double(instance.localSphere.w);
-        return std::isfinite(center.x) && std::isfinite(center.y)
-            && std::isfinite(center.z) && std::isfinite(radius)
-            && radius >= 0.0;
+        return std::isfinite(center.x) && std::isfinite(center.y) && std::isfinite(center.z) &&
+               std::isfinite(radius) && radius >= 0.0;
     }
 
-    [[nodiscard]] bool PublishCell(LeafCell cell, LeafState& state,
-                                    RenderDatabase& db) {
+    [[nodiscard]] bool PublishCell(LeafCell cell, LeafState& state, RenderDatabase& db) {
         if (state.members.empty()) {
-            for (auto row : state.memberRows) (void)db.leafMembers.Erase(row);
+            for (auto row : state.memberRows)
+                (void)db.leafMembers.Erase(row);
             state.memberRows.clear();
-            if (state.leaf) (void)db.leaves.Erase(state.leaf);
+            if (state.leaf)
+                (void)db.leaves.Erase(state.leaf);
             state.leaf = {};
             return true;
         }
-        if (state.members.size() > UINT32_MAX) return false;
+        if (state.members.size() > UINT32_MAX)
+            return false;
         const size_t count = state.members.size();
         // Always allocate NEW member rows before releasing an old range.
         // This preserves the old snapshot if allocation ever fails.
@@ -202,16 +212,17 @@ private:
             for (InstanceId id : state.members)
                 values.push_back({glm::uvec4(id.slot, id.generation, 0u, 0u)});
             auto fresh = db.leafMembers.InsertContiguous(values);
-            if (fresh.size() != count) return false;
-            for (auto old : state.memberRows) (void)db.leafMembers.Erase(old);
+            if (fresh.size() != count)
+                return false;
+            for (auto old : state.memberRows)
+                (void)db.leafMembers.Erase(old);
             state.memberRows = std::move(fresh);
         } else {
             for (size_t i = 0; i < count; ++i) {
                 const InstanceId id = state.members[i];
                 LeafMember value{glm::uvec4(id.slot, id.generation, 0u, 0u)};
                 const LeafMember* existing = db.leafMembers.Get(state.memberRows[i]);
-                if (!existing || existing->ref.x != value.ref.x ||
-                    existing->ref.y != value.ref.y)
+                if (!existing || existing->ref.x != value.ref.x || existing->ref.y != value.ref.y)
                     (void)db.leafMembers.Update(state.memberRows[i], value);
             }
         }
@@ -223,8 +234,7 @@ private:
         glm::dvec3 mn(0.0), mx(0.0);
         for (InstanceId id : state.members) {
             const Instance* inst = db.instances.Get(id);
-            if (!inst || inst->refs.x == InvalidIndex ||
-                inst->refs.x >= db.meshes.Rows().size()) {
+            if (!inst || inst->refs.x == InvalidIndex || inst->refs.x >= db.meshes.Rows().size()) {
                 complete = false;
                 continue;
             }
@@ -243,7 +253,9 @@ private:
             const glm::dvec3 lo = center - glm::dvec3(radius);
             const glm::dvec3 hi = center + glm::dvec3(radius);
             if (!haveBounds) {
-                mn = lo; mx = hi; haveBounds = true;
+                mn = lo;
+                mx = hi;
+                haveBounds = true;
             } else {
                 mn = glm::min(mn, lo);
                 mx = glm::max(mx, hi);
@@ -259,8 +271,8 @@ private:
             for (int axis = 0; axis < 3; ++axis) {
                 // Round up + compensate center splitting; do not quietly
                 // shrink a published bound at large absolute positions.
-                const double margin = std::abs(restored[axis] - center[axis])
-                                    + std::max(0.001, extents[axis] * 1e-6);
+                const double margin =
+                    std::abs(restored[axis] - center[axis]) + std::max(0.001, extents[axis] * 1e-6);
                 const float inflated = float(extents[axis] + margin);
                 if (!std::isfinite(inflated) || inflated < 0.0f) {
                     complete = false;
@@ -271,19 +283,22 @@ private:
                 }
             }
         } else if (cell.x != INT64_MIN) {
-            record.worldCenter = math::SplitDoubleFloat(glm::dvec3(
-                (double(cell.x) + 0.5) * kLeafCellMeters, 0.0,
-                (double(cell.z) + 0.5) * kLeafCellMeters));
+            record.worldCenter =
+                math::SplitDoubleFloat(glm::dvec3((double(cell.x) + 0.5) * kLeafCellMeters,
+                                                  0.0,
+                                                  (double(cell.z) + 0.5) * kLeafCellMeters));
         }
         record.range = glm::uvec4(state.memberRows.front().slot,
                                   uint32_t(count),
-                                  complete ? LeafFlagBoundsComplete : 0u, 0u);
+                                  complete ? LeafFlagBoundsComplete : 0u,
+                                  0u);
         if (!state.leaf) {
             state.leaf = db.leaves.Insert(record);
             return bool(state.leaf);
         }
         const Leaf* old = db.leaves.Get(state.leaf);
-        if (!old) return false;
+        if (!old)
+            return false;
         // Compare only meaningful fields, avoiding padding byte reads.
         bool changed = false;
         for (int axis = 0; axis < 4; ++axis) {
@@ -292,7 +307,8 @@ private:
             changed |= old->worldCenter.low[axis] != record.worldCenter.low[axis];
             changed |= old->halfExtents[axis] != record.halfExtents[axis];
         }
-        if (changed) (void)db.leaves.Update(state.leaf, record);
+        if (changed)
+            (void)db.leaves.Update(state.leaf, record);
         return true;
     }
 

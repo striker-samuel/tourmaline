@@ -16,20 +16,20 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <Windows.h>
-#include <shobjidl.h> // IFileOpenDialog
-#include <shellapi.h> // ShellExecuteW (OS-associated DCC document)
 #include <SDL3/SDL_keyboard.h> // SDL_GetKeyboardFocus (the owner window)
-#include <SDL3/SDL_video.h>
 #include <SDL3/SDL_properties.h>
+#include <SDL3/SDL_video.h>
+#include <Windows.h>
+#include <shellapi.h> // ShellExecuteW (OS-associated DCC document)
+#include <shobjidl.h> // IFileOpenDialog
 #else
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cerrno>
 #include <iostream>
-#include <string>
 #include <spawn.h>
+#include <string>
 #include <sys/wait.h>
 #include <thread>
 extern char** environ;
@@ -43,308 +43,297 @@ namespace editor {
 // Keep shell dialogs modal to the editor, rather than allowing an
 // unowned picker to disappear behind the main window.
 static HWND DialogOwner() {
-	SDL_Window* window = SDL_GetKeyboardFocus();
-	if (!window)
-		return nullptr;
-	return static_cast<HWND>(SDL_GetPointerProperty(
-		SDL_GetWindowProperties(window),
-		SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+    SDL_Window* window = SDL_GetKeyboardFocus();
+    if (!window)
+        return nullptr;
+    return static_cast<HWND>(SDL_GetPointerProperty(
+        SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
 }
 
 bool NativeOpenFile(std::string& outPath, bool images, bool allFiles) {
-	// COM for the shell dialog (the editor otherwise avoids COM).
-	const HRESULT coInit = CoInitializeEx(nullptr,
-		COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-	const bool coOwns = SUCCEEDED(coInit);
-	if (FAILED(coInit) && coInit != RPC_E_CHANGED_MODE)
-		return false;
-	bool ok = false;
-	IFileOpenDialog* dlg = nullptr;
-	if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
-			CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
-		static const COMDLG_FILTERSPEC kFilters[] = {
-			{ L"Scene files", L"*.gltf;*.glb;*.obj;*.tour" },
-			{ L"Model sources", L"*.gltf;*.glb;*.obj" },
-			{ L"Tour files", L"*.tour" },
-			{ L"All files", L"*.*" },
-		};
-		static const COMDLG_FILTERSPEC kDccFilters[] = {
-			{ L"All authoring documents", L"*.*" },
-			{ L"DCC scenes and mesh exports",
-				L"*.ma;*.mb;*.blend;*.obj;*.gltf;*.glb;*.fbx;*.usd;*.usda;*.usdc;*.hip;*.max;*.c4d" },
-		};
-		static const COMDLG_FILTERSPEC kImageFilters[] = {
-			{ L"Image files", L"*.ktx2;*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.exr;*.hdr" },
-			{ L"KTX2 textures", L"*.ktx2" },
-			{ L"PNG", L"*.png" },
-			{ L"All files", L"*.*" },
-		};
-		const COMDLG_FILTERSPEC* filters = allFiles ? kDccFilters
-			: (images ? kImageFilters : kFilters);
-		UINT filterCount = allFiles
-			? static_cast<UINT>(sizeof(kDccFilters) / sizeof(kDccFilters[0]))
-			: (images
-				? static_cast<UINT>(sizeof(kImageFilters) / sizeof(kImageFilters[0]))
-				: static_cast<UINT>(sizeof(kFilters) / sizeof(kFilters[0])));
-		dlg->SetFileTypes(filterCount, filters);
-		dlg->SetFileTypeIndex(1);
-		// Start in C:/; fall back to the default folder on failure.
-		IShellItem* startDir = nullptr;
-		if (SUCCEEDED(SHCreateItemFromParsingName(L"C:\\", nullptr,
-				IID_PPV_ARGS(&startDir)))) {
-			dlg->SetFolder(startDir);
-			startDir->Release();
-		}
-		if (SUCCEEDED(dlg->Show(DialogOwner()))) {
-			IShellItem* item = nullptr;
-			if (SUCCEEDED(dlg->GetResult(&item))) {
-				PWSTR path = nullptr;
-				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,
-						&path))) {
-					const int n = WideCharToMultiByte(CP_UTF8, 0, path, -1,
-						nullptr, 0, nullptr, nullptr);
-					if (n > 1) {
-						std::string utf8(size_t(n) - 1, '\0');
-						WideCharToMultiByte(CP_UTF8, 0, path, -1,
-							utf8.data(), n, nullptr, nullptr);
-						outPath = std::move(utf8);
-						ok = true;
-					}
-					CoTaskMemFree(path);
-				}
-				item->Release();
-			}
-		}
-		dlg->Release();
-	}
-	if (coOwns)
-		CoUninitialize();
-	return ok;
+    // COM for the shell dialog (the editor otherwise avoids COM).
+    const HRESULT coInit =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool coOwns = SUCCEEDED(coInit);
+    if (FAILED(coInit) && coInit != RPC_E_CHANGED_MODE)
+        return false;
+    bool ok = false;
+    IFileOpenDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(
+            CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+        static const COMDLG_FILTERSPEC kFilters[] = {
+            {L"Scene files", L"*.gltf;*.glb;*.obj;*.tour"},
+            {L"Model sources", L"*.gltf;*.glb;*.obj"},
+            {L"Tour files", L"*.tour"},
+            {L"All files", L"*.*"},
+        };
+        static const COMDLG_FILTERSPEC kDccFilters[] = {
+            {L"All authoring documents", L"*.*"},
+            {L"DCC scenes and mesh exports",
+             L"*.ma;*.mb;*.blend;*.obj;*.gltf;*.glb;*.fbx;*.usd;*.usda;*.usdc;*.hip;*.max;*.c4d"},
+        };
+        static const COMDLG_FILTERSPEC kImageFilters[] = {
+            {L"Image files", L"*.ktx2;*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.exr;*.hdr"},
+            {L"KTX2 textures", L"*.ktx2"},
+            {L"PNG", L"*.png"},
+            {L"All files", L"*.*"},
+        };
+        const COMDLG_FILTERSPEC* filters =
+            allFiles ? kDccFilters : (images ? kImageFilters : kFilters);
+        UINT filterCount =
+            allFiles ? static_cast<UINT>(sizeof(kDccFilters) / sizeof(kDccFilters[0]))
+                     : (images ? static_cast<UINT>(sizeof(kImageFilters) / sizeof(kImageFilters[0]))
+                               : static_cast<UINT>(sizeof(kFilters) / sizeof(kFilters[0])));
+        dlg->SetFileTypes(filterCount, filters);
+        dlg->SetFileTypeIndex(1);
+        // Start in C:/; fall back to the default folder on failure.
+        IShellItem* startDir = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(L"C:\\", nullptr, IID_PPV_ARGS(&startDir)))) {
+            dlg->SetFolder(startDir);
+            startDir->Release();
+        }
+        if (SUCCEEDED(dlg->Show(DialogOwner()))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dlg->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                    const int n =
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+                    if (n > 1) {
+                        std::string utf8(size_t(n) - 1, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8.data(), n, nullptr, nullptr);
+                        outPath = std::move(utf8);
+                        ok = true;
+                    }
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dlg->Release();
+    }
+    if (coOwns)
+        CoUninitialize();
+    return ok;
 }
 
 // Launch the user's OS-associated DCC application with the document,
 // never via a shell command. Windows gets UTF-8->UTF-16 for project paths.
 bool NativeOpenExternalDocument(const std::string& file, std::string& err) {
-	const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-		file.c_str(), -1, nullptr, 0);
-	if (n <= 1) {
-		err = "invalid UTF-8 DCC path";
-		return false;
-	}
-	std::wstring path(size_t(n), L'\0');
-	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-			file.c_str(), -1, path.data(), n)) {
-		err = "cannot decode DCC path";
-		return false;
-	}
-	path.pop_back();
-	const auto launched = ::ShellExecuteW(nullptr, L"open", path.c_str(),
-		nullptr, nullptr, SW_SHOWNORMAL);
-	if (reinterpret_cast<INT_PTR>(launched) <= 32) {
-		err = "the OS has no application associated with the DCC document";
-		return false;
-	}
-	err.clear();
-	return true;
+    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, file.c_str(), -1, nullptr, 0);
+    if (n <= 1) {
+        err = "invalid UTF-8 DCC path";
+        return false;
+    }
+    std::wstring path(size_t(n), L'\0');
+    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, file.c_str(), -1, path.data(), n)) {
+        err = "cannot decode DCC path";
+        return false;
+    }
+    path.pop_back();
+    const auto launched =
+        ::ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(launched) <= 32) {
+        err = "the OS has no application associated with the DCC document";
+        return false;
+    }
+    err.clear();
+    return true;
 }
 
 // Native Windows file-SAVE dialog (IFileSaveDialog): for choosing an
 // output path (e.g., cook output .pak). Starts in content/paks/ with
 // a .pak extension filter and a caller-supplied suggested filename.
 bool NativeSaveFile(std::string& outPath, const std::string& suggestedName) {
-	const HRESULT coInit = CoInitializeEx(nullptr,
-		COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-	const bool coOwns = SUCCEEDED(coInit);
-	if (FAILED(coInit) && coInit != RPC_E_CHANGED_MODE)
-		return false;
-	bool ok = false;
-	IFileSaveDialog* dlg = nullptr;
-	if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr,
-			CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
-		static const COMDLG_FILTERSPEC kFilters[] = {
-			{ L"Pak files", L"*.pak" },
-			{ L"All files", L"*.*" },
-		};
-		dlg->SetFileTypes(ARRAYSIZE(kFilters), kFilters);
-		dlg->SetFileTypeIndex(1);
-		dlg->SetDefaultExtension(L"pak");
-		// Start in content/paks/ if it exists
-		IShellItem* startDir = nullptr;
-		wchar_t cwd[MAX_PATH];
-		GetCurrentDirectoryW(MAX_PATH, cwd);
-		std::wstring startPath = std::wstring(cwd) + L"\\content\\paks";
-		if (SUCCEEDED(SHCreateItemFromParsingName(startPath.c_str(), nullptr,
-				IID_PPV_ARGS(&startDir)))) {
-			dlg->SetFolder(startDir);
-			startDir->Release();
-		}
-		// Suggest the caller's filename (UTF-8 -> wide), defaulting to
-		// the historic "scene.pak".
-		std::wstring suggest = L"scene.pak";
-		if (!suggestedName.empty()) {
-			const int wn = MultiByteToWideChar(CP_UTF8, 0,
-				suggestedName.c_str(), -1, nullptr, 0);
-			if (wn > 1) {
-				suggest.resize(size_t(wn));
-				MultiByteToWideChar(CP_UTF8, 0, suggestedName.c_str(), -1,
-					suggest.data(), wn);
-				suggest.pop_back(); // drop the terminator WideCharToMultiByte wrote
-			}
-		}
-		dlg->SetFileName(suggest.c_str());
-		if (SUCCEEDED(dlg->Show(DialogOwner()))) {
-			IShellItem* item = nullptr;
-			if (SUCCEEDED(dlg->GetResult(&item))) {
-				PWSTR path = nullptr;
-				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-					const int n = WideCharToMultiByte(CP_UTF8, 0, path, -1,
-						nullptr, 0, nullptr, nullptr);
-					if (n > 1) {
-						std::string utf8(size_t(n) - 1, '\0');
-						WideCharToMultiByte(CP_UTF8, 0, path, -1,
-							utf8.data(), n, nullptr, nullptr);
-						outPath = std::move(utf8);
-						ok = true;
-					}
-					CoTaskMemFree(path);
-				}
-				item->Release();
-			}
-		}
-		dlg->Release();
-	}
-	if (coOwns)
-		CoUninitialize();
-	return ok;
+    const HRESULT coInit =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool coOwns = SUCCEEDED(coInit);
+    if (FAILED(coInit) && coInit != RPC_E_CHANGED_MODE)
+        return false;
+    bool ok = false;
+    IFileSaveDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(
+            CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+        static const COMDLG_FILTERSPEC kFilters[] = {
+            {L"Pak files", L"*.pak"},
+            {L"All files", L"*.*"},
+        };
+        dlg->SetFileTypes(ARRAYSIZE(kFilters), kFilters);
+        dlg->SetFileTypeIndex(1);
+        dlg->SetDefaultExtension(L"pak");
+        // Start in content/paks/ if it exists
+        IShellItem* startDir = nullptr;
+        wchar_t cwd[MAX_PATH];
+        GetCurrentDirectoryW(MAX_PATH, cwd);
+        std::wstring startPath = std::wstring(cwd) + L"\\content\\paks";
+        if (SUCCEEDED(
+                SHCreateItemFromParsingName(startPath.c_str(), nullptr, IID_PPV_ARGS(&startDir)))) {
+            dlg->SetFolder(startDir);
+            startDir->Release();
+        }
+        // Suggest the caller's filename (UTF-8 -> wide), defaulting to
+        // the historic "scene.pak".
+        std::wstring suggest = L"scene.pak";
+        if (!suggestedName.empty()) {
+            const int wn = MultiByteToWideChar(CP_UTF8, 0, suggestedName.c_str(), -1, nullptr, 0);
+            if (wn > 1) {
+                suggest.resize(size_t(wn));
+                MultiByteToWideChar(CP_UTF8, 0, suggestedName.c_str(), -1, suggest.data(), wn);
+                suggest.pop_back(); // drop the terminator WideCharToMultiByte wrote
+            }
+        }
+        dlg->SetFileName(suggest.c_str());
+        if (SUCCEEDED(dlg->Show(DialogOwner()))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dlg->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                    const int n =
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+                    if (n > 1) {
+                        std::string utf8(size_t(n) - 1, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8.data(), n, nullptr, nullptr);
+                        outPath = std::move(utf8);
+                        ok = true;
+                    }
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dlg->Release();
+    }
+    if (coOwns)
+        CoUninitialize();
+    return ok;
 }
 
 // Save an authored .tour document via the Windows shell picker.
 // The full suggested path determines both the starting folder and name;
 // the shell handles existing-file confirmation and the default extension.
 bool NativeSaveTourFile(std::string& outPath, const std::string& suggestedPath) {
-	const HRESULT coInit = CoInitializeEx(nullptr,
-		COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-	const bool coOwns = SUCCEEDED(coInit);
-	if (FAILED(coInit) && coInit != RPC_E_CHANGED_MODE)
-		return false;
-	bool ok = false;
-	IFileSaveDialog* dlg = nullptr;
-	if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr,
-			CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
-		static const COMDLG_FILTERSPEC filters[] = {
-			{ L"Tour scenes", L"*.tour" },
-			{ L"All files", L"*.*" },
-		};
-		dlg->SetFileTypes(ARRAYSIZE(filters), filters);
-		dlg->SetFileTypeIndex(1);
-		dlg->SetDefaultExtension(L"tour");
-		dlg->SetTitle(L"Save tour as");
-		if (suggestedPath.size() > 0) {
-			const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-				suggestedPath.c_str(), -1, nullptr, 0);
-			if (count > 1) {
-				std::wstring wide(size_t(count), L'\0');
-				if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-						suggestedPath.c_str(), -1, wide.data(), count)) {
-					wide.pop_back();
-					const size_t slash = wide.find_last_of(L"/\\");
-					const std::wstring name = slash == std::wstring::npos
-						? wide : wide.substr(slash + 1);
-					if (!name.empty())
-						dlg->SetFileName(name.c_str());
-					if (slash != std::wstring::npos) {
-						const std::wstring folder = wide.substr(0, slash + 1);
-						IShellItem* startDir = nullptr;
-						if (SUCCEEDED(SHCreateItemFromParsingName(
-								folder.c_str(), nullptr, IID_PPV_ARGS(&startDir)))) {
-							dlg->SetFolder(startDir);
-							startDir->Release();
-						}
-					}
-				}
-			}
-		}
-		if (SUCCEEDED(dlg->Show(DialogOwner()))) {
-			IShellItem* item = nullptr;
-			if (SUCCEEDED(dlg->GetResult(&item))) {
-				PWSTR path = nullptr;
-				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-					const int n = WideCharToMultiByte(CP_UTF8, 0, path, -1,
-						nullptr, 0, nullptr, nullptr);
-					if (n > 1) {
-						std::string utf8(size_t(n), '\0');
-						WideCharToMultiByte(CP_UTF8, 0, path, -1,
-							utf8.data(), n, nullptr, nullptr);
-						utf8.pop_back();
-						outPath = std::move(utf8);
-						ok = true;
-					}
-					CoTaskMemFree(path);
-				}
-				item->Release();
-			}
-		}
-		dlg->Release();
-	}
-	if (coOwns)
-		CoUninitialize();
-	return ok;
+    const HRESULT coInit =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool coOwns = SUCCEEDED(coInit);
+    if (FAILED(coInit) && coInit != RPC_E_CHANGED_MODE)
+        return false;
+    bool ok = false;
+    IFileSaveDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(
+            CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+        static const COMDLG_FILTERSPEC filters[] = {
+            {L"Tour scenes", L"*.tour"},
+            {L"All files", L"*.*"},
+        };
+        dlg->SetFileTypes(ARRAYSIZE(filters), filters);
+        dlg->SetFileTypeIndex(1);
+        dlg->SetDefaultExtension(L"tour");
+        dlg->SetTitle(L"Save tour as");
+        if (suggestedPath.size() > 0) {
+            const int count = MultiByteToWideChar(
+                CP_UTF8, MB_ERR_INVALID_CHARS, suggestedPath.c_str(), -1, nullptr, 0);
+            if (count > 1) {
+                std::wstring wide(size_t(count), L'\0');
+                if (MultiByteToWideChar(CP_UTF8,
+                                        MB_ERR_INVALID_CHARS,
+                                        suggestedPath.c_str(),
+                                        -1,
+                                        wide.data(),
+                                        count)) {
+                    wide.pop_back();
+                    const size_t slash = wide.find_last_of(L"/\\");
+                    const std::wstring name =
+                        slash == std::wstring::npos ? wide : wide.substr(slash + 1);
+                    if (!name.empty())
+                        dlg->SetFileName(name.c_str());
+                    if (slash != std::wstring::npos) {
+                        const std::wstring folder = wide.substr(0, slash + 1);
+                        IShellItem* startDir = nullptr;
+                        if (SUCCEEDED(SHCreateItemFromParsingName(
+                                folder.c_str(), nullptr, IID_PPV_ARGS(&startDir)))) {
+                            dlg->SetFolder(startDir);
+                            startDir->Release();
+                        }
+                    }
+                }
+            }
+        }
+        if (SUCCEEDED(dlg->Show(DialogOwner()))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dlg->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                    const int n =
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+                    if (n > 1) {
+                        std::string utf8(size_t(n), '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8.data(), n, nullptr, nullptr);
+                        utf8.pop_back();
+                        outPath = std::move(utf8);
+                        ok = true;
+                    }
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dlg->Release();
+    }
+    if (coOwns)
+        CoUninitialize();
+    return ok;
 }
 
 // Native Windows FOLDER picker (IFileOpenDialog + FOS_PICKFOLDERS):
 // for choosing a project folder (New / Open Project...). An existing
 // project dir just opens; anything else gets scaffolded.
 bool NativePickFolder(std::string& outPath) {
-	const HRESULT coInit = CoInitializeEx(nullptr,
-		COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-	const bool coOwns = SUCCEEDED(coInit);
-	if (FAILED(coInit) && coInit != RPC_E_CHANGED_MODE)
-		return false;
-	bool ok = false;
-	IFileOpenDialog* dlg = nullptr;
-	if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
-			CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
-		DWORD opts = 0;
-		if (SUCCEEDED(dlg->GetOptions(&opts)))
-			dlg->SetOptions(opts | FOS_PICKFOLDERS
-				| FOS_FORCEFILESYSTEM);
-		dlg->SetTitle(L"Select project folder");
-		IShellItem* startDir = nullptr;
-		if (SUCCEEDED(SHCreateItemFromParsingName(L"F:\\", nullptr,
-				IID_PPV_ARGS(&startDir)))) {
-			dlg->SetFolder(startDir);
-			startDir->Release();
-		}
-		if (SUCCEEDED(dlg->Show(DialogOwner()))) {
-			IShellItem* item = nullptr;
-			if (SUCCEEDED(dlg->GetResult(&item))) {
-				PWSTR path = nullptr;
-				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,
-						&path))) {
-					const int n = WideCharToMultiByte(CP_UTF8, 0, path, -1,
-						nullptr, 0, nullptr, nullptr);
-					if (n > 1) {
-						std::string utf8(size_t(n) - 1, '\0');
-						WideCharToMultiByte(CP_UTF8, 0, path, -1,
-							utf8.data(), n, nullptr, nullptr);
-						outPath = std::move(utf8);
-						ok = true;
-					}
-					CoTaskMemFree(path);
-				}
-				item->Release();
-			}
-		}
-		dlg->Release();
-	}
-	if (coOwns)
-		CoUninitialize();
-	return ok;
+    const HRESULT coInit =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool coOwns = SUCCEEDED(coInit);
+    if (FAILED(coInit) && coInit != RPC_E_CHANGED_MODE)
+        return false;
+    bool ok = false;
+    IFileOpenDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(
+            CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+        DWORD opts = 0;
+        if (SUCCEEDED(dlg->GetOptions(&opts)))
+            dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        dlg->SetTitle(L"Select project folder");
+        IShellItem* startDir = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(L"F:\\", nullptr, IID_PPV_ARGS(&startDir)))) {
+            dlg->SetFolder(startDir);
+            startDir->Release();
+        }
+        if (SUCCEEDED(dlg->Show(DialogOwner()))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dlg->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                    const int n =
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+                    if (n > 1) {
+                        std::string utf8(size_t(n) - 1, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8.data(), n, nullptr, nullptr);
+                        outPath = std::move(utf8);
+                        ok = true;
+                    }
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dlg->Release();
+    }
+    if (coOwns)
+        CoUninitialize();
+    return ok;
 }
 
 } // namespace editor
 
-#else // !_WIN32: zenity + terminal-prompt fallbacks
+#else  // !_WIN32: zenity + terminal-prompt fallbacks
 // ---------------------------------------------------------------------------
 // Linux dialogs: `zenity --file-selection` covers the three modes (open /
 // save / folder). zenity prints the picked absolute path on stdout (UTF-8,
@@ -356,117 +345,117 @@ bool NativePickFolder(std::string& outPath) {
 namespace {
 
 bool HaveZenity() {
-	return std::system("command -v zenity >/dev/null 2>&1") == 0;
+    return std::system("command -v zenity >/dev/null 2>&1") == 0;
 }
 
 // Runs zenity with `args` appended to --file-selection; returns false on
 // cancel/failure, else the picked path in outPath (trailing newline
 // stripped, quotes already handled by zenity itself).
 bool RunZenity(std::string& outPath, const char* args) {
-	// popen only takes a shell line: the args are repo-controlled
-	// constants (no caller-supplied text reaches the command line
-	// verbatim; suggested filenames go through the quoted form below).
-	std::string cmd = std::string("zenity --file-selection ") + args + " 2>/dev/null";
-	FILE* p = popen(cmd.c_str(), "r");
-	if (!p)
-		return false;
-	char buf[4096] = {};
-	const size_t n = std::fread(buf, 1, sizeof(buf) - 1, p);
-	const int rc = pclose(p);
-	if (rc != 0 || n == 0)
-		return false;
-	buf[n] = '\0';
-	std::string path(buf);
-	while (!path.empty() && (path.back() == '\n' || path.back() == '\r'))
-		path.pop_back();
-	if (path.empty())
-		return false;
-	outPath = std::move(path);
-	return true;
+    // popen only takes a shell line: the args are repo-controlled
+    // constants (no caller-supplied text reaches the command line
+    // verbatim; suggested filenames go through the quoted form below).
+    std::string cmd = std::string("zenity --file-selection ") + args + " 2>/dev/null";
+    FILE* p = popen(cmd.c_str(), "r");
+    if (!p)
+        return false;
+    char buf[4096] = {};
+    const size_t n = std::fread(buf, 1, sizeof(buf) - 1, p);
+    const int rc = pclose(p);
+    if (rc != 0 || n == 0)
+        return false;
+    buf[n] = '\0';
+    std::string path(buf);
+    while (!path.empty() && (path.back() == '\n' || path.back() == '\r'))
+        path.pop_back();
+    if (path.empty())
+        return false;
+    outPath = std::move(path);
+    return true;
 }
 
 // Single-quote a suggested filename for the shell (zenity --filename=).
 std::string ShellQuote(const std::string& s) {
-	std::string q = "'";
-	for (char c : s) {
-		if (c == '\'')
-			q += "'\\''";
-		else
-			q += c;
-	}
-	q += "'";
-	return q;
+    std::string q = "'";
+    for (char c : s) {
+        if (c == '\'')
+            q += "'\\''";
+        else
+            q += c;
+    }
+    q += "'";
+    return q;
 }
 
 // Terminal fallback (no zenity): type the path by hand.
 bool PromptPath(const char* what, std::string& outPath) {
-	std::cout << what << " (type path, empty cancels): " << std::flush;
-	std::string line;
-	if (!std::getline(std::cin, line))
-		return false;
-	while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
-		line.pop_back();
-	if (line.empty())
-		return false;
-	outPath = std::move(line);
-	return true;
+    std::cout << what << " (type path, empty cancels): " << std::flush;
+    std::string line;
+    if (!std::getline(std::cin, line))
+        return false;
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+        line.pop_back();
+    if (line.empty())
+        return false;
+    outPath = std::move(line);
+    return true;
 }
 
-} // namespace (zenity helpers)
+} // namespace
 
 namespace editor {
 
 bool NativeOpenFile(std::string& outPath, bool images, bool allFiles) {
-	const char* filter = allFiles
-		? "--file-filter='All files | *'"
-		: (images
-			? "--file-filter='Images | *.ktx2 *.png *.jpg *.jpeg *.tga *.bmp *.exr *.hdr' "
-			  "--file-filter='All files | *'"
-			: "--file-filter='Scene files | *.gltf *.glb *.obj *.tour' "
-			  "--file-filter='All files | *'");
-	if (HaveZenity())
-		return RunZenity(outPath, filter);
-	return PromptPath("Open scene/image file", outPath);
+    const char* filter =
+        allFiles
+            ? "--file-filter='All files | *'"
+            : (images
+                   ? "--file-filter='Images | *.ktx2 *.png *.jpg *.jpeg *.tga *.bmp *.exr *.hdr' "
+                     "--file-filter='All files | *'"
+                   : "--file-filter='Scene files | *.gltf *.glb *.obj *.tour' "
+                     "--file-filter='All files | *'");
+    if (HaveZenity())
+        return RunZenity(outPath, filter);
+    return PromptPath("Open scene/image file", outPath);
 }
 
 // xdg-open uses desktop file associations. Spawn argv directly so paths
 // containing quotes/spaces/metacharacters cannot become shell commands.
 bool NativeOpenExternalDocument(const std::string& file, std::string& err) {
-	const char* app = "xdg-open";
-	char* const args[] = {
-		const_cast<char*>(app), const_cast<char*>(file.c_str()), nullptr
-	};
-	pid_t pid = 0;
-	const int rc = ::posix_spawnp(&pid, app, nullptr, nullptr, args, environ);
-	if (rc != 0) {
-		err = std::string("xdg-open launch failed: ") + std::strerror(rc);
-		return false;
-	}
-	// Reap the desktop opener without stalling editor frames (xdg-open
-	// may wait for the associated application).
-	std::thread([pid]() {
-		int status = 0;
-		while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-	}).detach();
-	err.clear();
-	return true;
+    const char* app = "xdg-open";
+    char* const args[] = {const_cast<char*>(app), const_cast<char*>(file.c_str()), nullptr};
+    pid_t pid = 0;
+    const int rc = ::posix_spawnp(&pid, app, nullptr, nullptr, args, environ);
+    if (rc != 0) {
+        err = std::string("xdg-open launch failed: ") + std::strerror(rc);
+        return false;
+    }
+    // Reap the desktop opener without stalling editor frames (xdg-open
+    // may wait for the associated application).
+    std::thread([pid]() {
+        int status = 0;
+        while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        }
+    }).detach();
+    err.clear();
+    return true;
 }
 
 bool NativeSaveFile(std::string& outPath, const std::string& suggestedName) {
-	const std::string suggest = suggestedName.empty() ? "scene.pak" : suggestedName;
-	// --save --confirm-overwrite + the suggested filename pre-filled.
-	const std::string args = std::string("--save --confirm-overwrite ")
-		+ "--file-filter='Pak files | *.pak' --file-filter='All files | *' "
-		+ "--filename=" + ShellQuote(suggest);
-	if (HaveZenity())
-		return RunZenity(outPath, args.c_str());
-	return PromptPath("Save pak", outPath);
+    const std::string suggest = suggestedName.empty() ? "scene.pak" : suggestedName;
+    // --save --confirm-overwrite + the suggested filename pre-filled.
+    const std::string args = std::string("--save --confirm-overwrite ") +
+                             "--file-filter='Pak files | *.pak' --file-filter='All files | *' " +
+                             "--filename=" + ShellQuote(suggest);
+    if (HaveZenity())
+        return RunZenity(outPath, args.c_str());
+    return PromptPath("Save pak", outPath);
 }
 
 bool NativePickFolder(std::string& outPath) {
-	if (HaveZenity())
-		return RunZenity(outPath, "--directory");
-	return PromptPath("Project folder", outPath);
+    if (HaveZenity())
+        return RunZenity(outPath, "--directory");
+    return PromptPath("Project folder", outPath);
 }
 
 } // namespace editor

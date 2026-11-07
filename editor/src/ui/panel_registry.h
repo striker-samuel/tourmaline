@@ -3,9 +3,9 @@
 #pragma once
 
 #include "ui/editor_context.h"
-#include <imgui.h>
-#include <functional>
 #include <cmath>
+#include <functional>
+#include <imgui.h>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -15,36 +15,33 @@ namespace editor {
 // Per-frame registration of dockable panels. Owns ImGui Begin/End so
 // individual panels only draw their contents and can share a context.
 class PanelRegistry {
-public:
+  public:
     using DrawFn = std::function<void(EditorContext&)>;
     using SettingsFn = std::function<void()>;
 
-    void Register(const char* title, bool& visible, DrawFn draw,
-        SettingsFn settings = {}) {
+    void Register(const char* title, bool& visible, DrawFn draw, SettingsFn settings = {}) {
         IM_ASSERT(title && *title);
         const bool inserted = m_names.emplace(title).second;
         IM_ASSERT(inserted && "Duplicate editor panel title");
         if (inserted)
-            m_panels.push_back({title, &visible, std::move(draw),
-                std::move(settings)});
+            m_panels.push_back({title, &visible, std::move(draw), std::move(settings)});
     }
 
     void DrawAll(EditorContext& context) {
         for (auto& panel : m_panels) {
-            if (!*panel.visible) continue;
+            if (!*panel.visible)
+                continue;
             if (ImGui::Begin(panel.title.c_str(), panel.visible)) {
                 // Every dockable panel gets the same unobtrusive settings
                 // affordance. Draw the glyph ourselves (independent of the
                 // current ImGui font's Unicode icon coverage).
                 ImGui::PushID(panel.title.c_str());
                 const float side = ImGui::GetFrameHeight();
-                const float x = ImGui::GetCursorPosX()
-                    + ImGui::GetContentRegionAvail().x - side;
+                const float x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - side;
                 ImGui::SetCursorPosX(x);
                 ImGui::InvisibleButton("##panel_gear", ImVec2(side, side));
                 const ImVec2 lo = ImGui::GetItemRectMin();
-                const ImVec2 center(lo.x + side * 0.5f,
-                    lo.y + side * 0.5f);
+                const ImVec2 center(lo.x + side * 0.5f, lo.y + side * 0.5f);
                 const float r = side * 0.23f;
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 const ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
@@ -53,11 +50,11 @@ public:
                 for (int k = 0; k < 8; ++k) {
                     const float a = float(k) * 0.78539816339f;
                     const ImVec2 u(cosf(a), sinf(a));
-                    dl->AddLine(
-                        ImVec2(center.x + u.x * r, center.y + u.y * r),
-                        ImVec2(center.x + u.x * (r + side * 0.12f),
-                            center.y + u.y * (r + side * 0.12f)),
-                        color, 1.4f);
+                    dl->AddLine(ImVec2(center.x + u.x * r, center.y + u.y * r),
+                                ImVec2(center.x + u.x * (r + side * 0.12f),
+                                       center.y + u.y * (r + side * 0.12f)),
+                                color,
+                                1.4f);
                 }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("%s settings", panel.title.c_str());
@@ -89,7 +86,7 @@ public:
         }
     }
 
-private:
+  private:
     struct Panel {
         std::string title;
         bool* visible;

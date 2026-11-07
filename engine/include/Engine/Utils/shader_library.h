@@ -38,9 +38,9 @@ namespace shaders {
 
 // The compiled-bytecode format (validated on every read).
 enum class Bytecode : uint8_t {
-	Spirv,    // SPIR-V (the Vulkan backend's module format)
-	Dxil,     // DXBC container (the DXIL twin artifacts)
-	Unknown,  // neither magic — a corrupt/truncated blob
+    Spirv,   // SPIR-V (the Vulkan backend's module format)
+    Dxil,    // DXBC container (the DXIL twin artifacts)
+    Unknown, // neither magic — a corrupt/truncated blob
 };
 
 // Bytecode detection from the payload's magic (SPIR-V: 07 23 02 03;
@@ -67,12 +67,12 @@ void Shutdown();
 // pak). The file is read + verified (PakReader::Open CRCs the image)
 // + served at production precedence. Returns false + err on a
 // missing/corrupt file.
-[[nodiscard]] bool MountPak(const std::string& pakFilePath,
-	std::string& err);
+[[nodiscard]] bool MountPak(const std::string& pakFilePath, std::string& err);
 // Mount ONE loose dev tree (rootDir/content/shaders/... — an
 // explicitly configured development override; wins over packages).
 [[nodiscard]] bool MountLooseDir(const std::string& rootDir,
-	const std::string& name, std::string& err);
+                                 const std::string& name,
+                                 std::string& err);
 // Unmount one named provider (tests swap sources; hosts never need
 // this in production).
 [[nodiscard]] bool Unmount(const std::string& name);
@@ -87,7 +87,9 @@ void Shutdown();
 // The non-throwing form: false + err on a missing/unvalidated blob;
 // `provider` names what served it (diagnostics).
 [[nodiscard]] bool TryRead(const std::string& path,
-	std::vector<uint8_t>& out, std::string& provider, std::string& err);
+                           std::vector<uint8_t>& out,
+                           std::string& provider,
+                           std::string& err);
 
 } // namespace shaders
 
@@ -100,5 +102,5 @@ void Shutdown();
 // no per-name enumeration needed); retire it as call sites migrate.
 // Canonical NEW code writes tour::shaders::Read(...).
 namespace smvk {
-	namespace shaders = ::tour::shaders;
+namespace shaders = ::tour::shaders;
 }

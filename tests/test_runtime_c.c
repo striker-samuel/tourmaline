@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 // Compile this file with a C compiler: no C++ or std::string_view leaks.
-#include <RuntimeC.h>
 #include "../samples/04_project_game/project/project_c.h"
+#include <RuntimeC.h>
 #include <assert.h>
 #include <string.h>
 
@@ -27,11 +27,14 @@ int main(void) {
     // the poison sentinel untouched (free((void*)1) = heap corruption
     // at exit). Assert RESULTS, never side effects.
     int ok = (tour_c_runtime_open(0, error, sizeof error) == 0);
-    assert(ok); assert(strlen(error) > 0);
+    assert(ok);
+    assert(strlen(error) > 0);
     ok = (tour_c_runtime_open("", error, sizeof error) == 0);
-    assert(ok); assert(error[0] != 0);
+    assert(ok);
+    assert(error[0] != 0);
     ok = (tour_c_runtime_attach_catalog(0, 0, error, sizeof error) == 0);
-    assert(ok); assert(error[0] != 0);
+    assert(ok);
+    assert(error[0] != 0);
     tour_c_bytes bytes = {(void*)1, 1};
     ok = (tour_c_runtime_read_asset(0, 0, &bytes, error, sizeof error) == 0);
     assert(ok);

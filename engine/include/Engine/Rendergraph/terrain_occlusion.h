@@ -23,46 +23,46 @@ inline constexpr uint32_t kOcclusionAtlasHeight = 1024;
 inline constexpr uint32_t kOcclusionBaseWidth = 1024;
 inline constexpr uint32_t kOcclusionFirstLevel = 2;
 inline constexpr uint32_t kOcclusionLastLevel = 12;
-inline constexpr const char* kOcclusionPyramidPath =
-    "terrain/occlusion/max_pyramid";
+inline constexpr const char* kOcclusionPyramidPath = "terrain/occlusion/max_pyramid";
 
 // The atlas contains little-endian uint16 samples, unwrapped as R16_UNorm
 // by the renderer. Do not assume host endian when emitting pack bytes.
 inline void SetOcclusionSample(std::vector<uint8_t>& atlas,
-    uint32_t x, uint32_t z, uint16_t sample) {
+                               uint32_t x,
+                               uint32_t z,
+                               uint16_t sample) {
     const size_t offset = (size_t(z) * kOcclusionAtlasWidth + x) * 2;
     atlas[offset] = uint8_t(sample & 255);
     atlas[offset + 1] = uint8_t(sample >> 8);
 }
-inline uint16_t GetOcclusionSample(std::span<const uint8_t> atlas,
-    uint32_t x, uint32_t z) {
+inline uint16_t GetOcclusionSample(std::span<const uint8_t> atlas, uint32_t x, uint32_t z) {
     const size_t offset = (size_t(z) * kOcclusionAtlasWidth + x) * 2;
     return uint16_t(atlas[offset]) | uint16_t(atlas[offset + 1]) << 8;
 }
 inline uint32_t OcclusionLevelX(uint32_t level) {
-    if (level <= kOcclusionFirstLevel) return 0;
+    if (level <= kOcclusionFirstLevel)
+        return 0;
     uint32_t x = kOcclusionBaseWidth;
     for (uint32_t n = 3; n < level; ++n)
         x += (4096u >> n);
     return x;
 }
 inline std::vector<uint8_t> NewOcclusionAtlas() {
-    return std::vector<uint8_t>(
-        size_t(kOcclusionAtlasWidth) * kOcclusionAtlasHeight * 2, 0);
+    return std::vector<uint8_t>(size_t(kOcclusionAtlasWidth) * kOcclusionAtlasHeight * 2, 0);
 }
 // Write one input 1024x1024 RG16/RGBA8 H-tile into the 4x4 max base.
 // Values are MAX, never averages: safe for conservative ray skipping.
 inline void AccumulateOcclusionTile(std::vector<uint8_t>& atlas,
-    std::span<const uint8_t> tile, uint32_t tx, uint32_t tz) {
+                                    std::span<const uint8_t> tile,
+                                    uint32_t tx,
+                                    uint32_t tz) {
     for (uint32_t z = 0; z < 256; ++z)
         for (uint32_t x = 0; x < 256; ++x) {
             uint16_t maxH = 0;
             for (uint32_t dz = 0; dz < 4; ++dz)
                 for (uint32_t dx = 0; dx < 4; ++dx) {
-                    const size_t i = (size_t(z * 4 + dz) * 1024 +
-                        (x * 4 + dx)) * 4;
-                    maxH = std::max(maxH,
-                        PackHeightR16(tile[i], tile[i + 1]));
+                    const size_t i = (size_t(z * 4 + dz) * 1024 + (x * 4 + dx)) * 4;
+                    maxH = std::max(maxH, PackHeightR16(tile[i], tile[i + 1]));
                 }
             SetOcclusionSample(atlas, tx * 256 + x, tz * 256 + z, maxH);
         }
@@ -79,8 +79,8 @@ inline void FinishOcclusionAtlas(std::vector<uint8_t>& atlas) {
                 uint16_t maxH = 0;
                 for (uint32_t dz = 0; dz < 2; ++dz)
                     for (uint32_t dx = 0; dx < 2; ++dx)
-                        maxH = std::max(maxH, GetOcclusionSample(atlas,
-                            prevX + 2 * x + dx, 2 * z + dz));
+                        maxH = std::max(maxH,
+                                        GetOcclusionSample(atlas, prevX + 2 * x + dx, 2 * z + dz));
                 SetOcclusionSample(atlas, dstX + x, z, maxH);
             }
     }

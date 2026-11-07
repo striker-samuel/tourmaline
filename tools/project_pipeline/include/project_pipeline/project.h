@@ -62,37 +62,41 @@ inline constexpr const char* kProjectMarkerVersion = "2";
 [[nodiscard]] uint64_t DeriveProjectId(const std::string& guid);
 
 struct Project {
-	// Absolute, lexically-normalized project root ("" = invalid).
-	std::string root;
-	std::string name; // the marker's name row (the dir name when absent)
-	std::string guid; // the marker's guid row — the PERSISTENT project
-	                  // identity (valid 32-hex; never name/path derived)
+    // Absolute, lexically-normalized project root ("" = invalid).
+    std::string root;
+    std::string name; // the marker's name row (the dir name when absent)
+    std::string guid; // the marker's guid row — the PERSISTENT project
+                      // identity (valid 32-hex; never name/path derived)
 
-	[[nodiscard]] bool Valid() const { return !root.empty(); }
+    [[nodiscard]] bool Valid() const {
+        return !root.empty();
+    }
 
-	// Opens an existing project (requires the marker). Invalid + err when
-	// the directory has no project.tourproj.
-	static Project Open(const std::string& dir, std::string& err);
+    // Opens an existing project (requires the marker). Invalid + err when
+    // the directory has no project.tourproj.
+    static Project Open(const std::string& dir, std::string& err);
 
-	// Creates (or adopts) a project: writes the marker + the conventional
-	// tree. Refuses to overwrite an existing marker's NAME (adopting an
-	// existing project is the normal path — created=false).
-	static Project Init(const std::string& dir, const std::string& name,
-		bool& created, std::string& err);
+    // Creates (or adopts) a project: writes the marker + the conventional
+    // tree. Refuses to overwrite an existing marker's NAME (adopting an
+    // existing project is the normal path — created=false).
+    static Project Init(const std::string& dir,
+                        const std::string& name,
+                        bool& created,
+                        std::string& err);
 
-	// ---- project-rooted paths (all generic-string, forward slashes) ----
-	// The content root: tours record sources content-relative against it
-	// (ApplySceneReferences' contentRoot — see gltf.h).
-	[[nodiscard]] std::string ContentRoot() const;
-	// Where imported glTF sources + their derived families live.
-	[[nodiscard]] std::string ImportsDir() const;
-	// The derived-data home (artifact cache + registry + staging).
-	[[nodiscard]] std::string DerivedDataDir() const;
-	// The import registry (see registry.cpp for the row format).
-	[[nodiscard]] std::string RegistryPath() const;
-	// Project-relative form of an absolute path inside the project
-	// ("" when outside — the belt-and-braces escape guard).
-	[[nodiscard]] std::string RelativeTo(const std::string& absPath) const;
+    // ---- project-rooted paths (all generic-string, forward slashes) ----
+    // The content root: tours record sources content-relative against it
+    // (ApplySceneReferences' contentRoot — see gltf.h).
+    [[nodiscard]] std::string ContentRoot() const;
+    // Where imported glTF sources + their derived families live.
+    [[nodiscard]] std::string ImportsDir() const;
+    // The derived-data home (artifact cache + registry + staging).
+    [[nodiscard]] std::string DerivedDataDir() const;
+    // The import registry (see registry.cpp for the row format).
+    [[nodiscard]] std::string RegistryPath() const;
+    // Project-relative form of an absolute path inside the project
+    // ("" when outside — the belt-and-braces escape guard).
+    [[nodiscard]] std::string RelativeTo(const std::string& absPath) const;
 };
 
 } // namespace smvk::project

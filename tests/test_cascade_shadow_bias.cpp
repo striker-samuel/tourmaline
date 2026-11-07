@@ -14,12 +14,11 @@ void Near(float value, float expected, const char* label) {
     if (std::fabs(value - expected) <= 1e-6f * (1.0f + std::fabs(expected)))
         std::cout << "PASS " << label << '\n';
     else {
-        std::cerr << "FAIL " << label << ": " << value
-                  << " != " << expected << '\n';
+        std::cerr << "FAIL " << label << ": " << value << " != " << expected << '\n';
         ++failures;
     }
 }
-}
+} // namespace
 
 int main() {
     const auto nearBias = smvk::ComputeCascadeReceiverBias(0.01f, 10.0f);

@@ -50,8 +50,7 @@ struct UiBackendDesc {
 // Brings up the graphics backend (device/queue/format + its descriptor
 // pool or heap machinery) AND the paired ImGui_ImplSDL3 platform init.
 // Returns false (with a stderr note) when the backend is unsupported.
-bool InitBackend(ResourceManager& ctx, Swapchain& swapchain,
-                 const UiBackendDesc& desc);
+bool InitBackend(ResourceManager& ctx, Swapchain& swapchain, const UiBackendDesc& desc);
 // The graphics backend's per-frame housekeeping (ImGui_ImplVulkan_NewFrame
 // on Vulkan). The SDL3 platform NewFrame is backend-neutral and stays in
 // the overlay.
@@ -62,10 +61,8 @@ void RenderDrawData(void* nativeCmd, ImDrawData* drawData);
 // returns a descriptor set over the texture's view + cached sampler; the
 // D3D12 form will return the bindless slot imgui_impl_dx12 consumes).
 // 0 = binding failed.
-ImTextureID AddTexture(ResourceManager& ctx, TextureHandle texture,
-                       uint32_t samplerIndex);
-ImTextureID AddTextureView(ResourceManager& ctx, ImageViewHandle view,
-                           uint32_t samplerIndex);
+ImTextureID AddTexture(ResourceManager& ctx, TextureHandle texture, uint32_t samplerIndex);
+ImTextureID AddTextureView(ResourceManager& ctx, ImageViewHandle view, uint32_t samplerIndex);
 void RemoveTexture(ImTextureID id);
 // Graphics backend + platform shutdown (waits the device where the
 // backend requires it before tearing pipelines/pools down).
@@ -95,7 +92,7 @@ struct ImGuiOverlayDesc {
 };
 
 class ImGuiOverlay {
-public:
+  public:
     ImGuiOverlay() = default;
     ~ImGuiOverlay();
 
@@ -107,11 +104,15 @@ public:
     // Must be called after ResourceManager + Swapchain are created and window exists.
     // Creates ImGui context, SDL3 + Vulkan backends (dynamic rendering, no manual RenderPass),
     // loads the desc font and applies the desc DPI scale.
-    bool Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* window,
+    bool Init(ResourceManager& ctx,
+              Swapchain& swapchain,
+              SDL_Window* window,
               const ImGuiOverlayDesc& desc = {});
     void Shutdown();
 
-    bool IsInitialized() const { return initialized_; }
+    bool IsInitialized() const {
+        return initialized_;
+    }
 
     // Call at start of each frame BEFORE building ImGui UI.
     // Handles ImGui_ImplVulkan_NewFrame / ImGui_ImplSDL3_NewFrame / ImGui::NewFrame.
@@ -133,7 +134,8 @@ public:
 
     // Convenience: appends a rendergraph pass that renders ImGui into the
     // given color view in one draw. Exactly analogous to a classic "UI pass":
-    //   - onto the swapchain: AddPass(rg, swapView, swapExtent)          (LoadOp::Load, scene preserved)
+    //   - onto the swapchain: AddPass(rg, swapView, swapExtent)          (LoadOp::Load, scene
+    //   preserved)
     //   - into a separated UI target:   AddPass(rg, uiView, uiExtent,
     //                                      AttachmentLoadOp::Clear, {0,0,0,0}) (transparent clear)
     void AddPass(RenderGraph& rg,
@@ -195,9 +197,11 @@ public:
     // so never scale relative to an already scaled style). Idempotent.
     void ApplyDpiScale(float scale);
     // DPI scale currently applied to the ImGui context (0 before Init).
-    float AppliedDpiScale() const { return appliedDpiScale_; }
+    float AppliedDpiScale() const {
+        return appliedDpiScale_;
+    }
 
-private:
+  private:
     bool initialized_ = false;
     SDL_Window* window_ = nullptr;
     void* imguiCtx_ = nullptr;
@@ -208,7 +212,8 @@ private:
     // Deferred user-texture retirement (see RetireUserTexture): one render
     // tick per Render() call; entries free once
     // (renderTicks_ - stamp) > kUserTextureRetireRenders.
-    static constexpr uint64_t kUserTextureRetireRenders = 4; // smvk::limits::MaxFramesInFlight (2-3) + 1 margin
+    static constexpr uint64_t kUserTextureRetireRenders =
+        4; // smvk::limits::MaxFramesInFlight (2-3) + 1 margin
     std::vector<std::pair<uint64_t, uint64_t>> userTextureRetireQueue_{}; // (id, render stamp)
     uint64_t renderTicks_ = 0;
 };

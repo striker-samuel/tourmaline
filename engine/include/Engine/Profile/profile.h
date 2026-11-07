@@ -35,7 +35,7 @@
 // Named CPU scope with explicit Optick::Color (e.g. Optick::Color::OrangeRed).
 // Encodes the color through a Rendering-filter category so the timeline shows it.
 #if USE_OPTICK
-#define SMVK_PROFILE_SCOPE_COLOR(NAME, COLOR) \
+#define SMVK_PROFILE_SCOPE_COLOR(NAME, COLOR)                                                      \
     OPTICK_EVENT(NAME, OPTICK_MAKE_CATEGORY(Optick::Filter::Rendering, COLOR))
 #else
 #define SMVK_PROFILE_SCOPE_COLOR(NAME, COLOR) OPTICK_EVENT(NAME)
@@ -68,15 +68,15 @@
 // ---------------------------------------------------------------------------
 // Color-coded shortcuts for hot engine systems
 // ---------------------------------------------------------------------------
-#define SMVK_PROFILE_RENDER(NAME)  SMVK_PROFILE_CATEGORY(NAME, Optick::Category::Rendering)
-#define SMVK_PROFILE_SCENE(NAME)   SMVK_PROFILE_CATEGORY(NAME, Optick::Category::Scene)
-#define SMVK_PROFILE_IO(NAME)      SMVK_PROFILE_CATEGORY(NAME, Optick::Category::IO)
-#define SMVK_PROFILE_STREAM(NAME)  SMVK_PROFILE_CATEGORY(NAME, Optick::Category::Streaming)
+#define SMVK_PROFILE_RENDER(NAME) SMVK_PROFILE_CATEGORY(NAME, Optick::Category::Rendering)
+#define SMVK_PROFILE_SCENE(NAME) SMVK_PROFILE_CATEGORY(NAME, Optick::Category::Scene)
+#define SMVK_PROFILE_IO(NAME) SMVK_PROFILE_CATEGORY(NAME, Optick::Category::IO)
+#define SMVK_PROFILE_STREAM(NAME) SMVK_PROFILE_CATEGORY(NAME, Optick::Category::Streaming)
 #define SMVK_PROFILE_GAMELOGIC(NAME) SMVK_PROFILE_CATEGORY(NAME, Optick::Category::GameLogic)
-#define SMVK_PROFILE_UI(NAME)      SMVK_PROFILE_CATEGORY(NAME, Optick::Category::UI)
-#define SMVK_PROFILE_GPU_SCENE(NAME)   OPTICK_GPU_EVENT(NAME)
-#define SMVK_PROFILE_GPU_SHADOW(NAME)  OPTICK_GPU_EVENT(NAME)
-#define SMVK_PROFILE_GPU_POSTFX(NAME)  OPTICK_GPU_EVENT(NAME)
+#define SMVK_PROFILE_UI(NAME) SMVK_PROFILE_CATEGORY(NAME, Optick::Category::UI)
+#define SMVK_PROFILE_GPU_SCENE(NAME) OPTICK_GPU_EVENT(NAME)
+#define SMVK_PROFILE_GPU_SHADOW(NAME) OPTICK_GPU_EVENT(NAME)
+#define SMVK_PROFILE_GPU_POSTFX(NAME) OPTICK_GPU_EVENT(NAME)
 
 namespace tour::profiler {
 
@@ -91,7 +91,9 @@ void InitBackendGpuTimelines();
 // on D3D12). profile.cpp's gate wrapper calls it.
 void InitBackendGpuTimelinesImpl();
 // Legacy Vulkan alias (the impl.cpp call site).
-inline void InitVulkanGPU() { InitBackendGpuTimelines(); }
+inline void InitVulkanGPU() {
+    InitBackendGpuTimelines();
+}
 
 // Tear down Optick state (call after vkDeviceWaitIdle, before vkDestroyDevice).
 void Shutdown();
@@ -126,7 +128,7 @@ void RecordFrameTime(double milliseconds);
 struct FrameHistogramData {
     // Bucket i covers [i*0.5, (i+1)*0.5) ms; the last is the >= 16 ms tail.
     static constexpr size_t kBucketCount = 33;
-    size_t count = 0;   // recorded frames (capped at the ring size, 1024)
+    size_t count = 0; // recorded frames (capped at the ring size, 1024)
     double avgMs = 0.0;
     double maxMs = 0.0; // since the (re)enable
     double p50Ms = 0.0;
@@ -147,8 +149,8 @@ struct GpuPassScope {
     ::Optick::Event cpuEvent;
     ::Optick::GPUEvent gpuEvent;
     GpuPassScope(const char* name, const char* file, int line)
-        : cpuEvent(*::Optick::EventDescription::CreateShared(name, file, line))
-        , gpuEvent(*::Optick::EventDescription::CreateShared(name, file, line)) {}
+        : cpuEvent(*::Optick::EventDescription::CreateShared(name, file, line)),
+          gpuEvent(*::Optick::EventDescription::CreateShared(name, file, line)) {}
 };
 #else
 struct GpuPassScope {
@@ -163,26 +165,26 @@ struct GpuPassScope {
 // aliases keep the existing call sites (incl. the macros below, which
 // spell ::smvk::profiler::) compiling through the consumer migration.
 namespace smvk::profiler {
-	using ::tour::profiler::InitBackendGpuTimelines;
-	using ::tour::profiler::InitBackendGpuTimelinesImpl;
-	using ::tour::profiler::InitVulkanGPU;
-	using ::tour::profiler::Shutdown;
-	using ::tour::profiler::SetEnabled;
-	using ::tour::profiler::Enabled;
-	using ::tour::profiler::SetGpuEnabled;
-	using ::tour::profiler::GpuEnabled;
-	using ::tour::profiler::SetFrameHistogramEnabled;
-	using ::tour::profiler::FrameHistogramEnabled;
-	using ::tour::profiler::RecordFrameTime;
-	using ::tour::profiler::GetFrameHistogramData;
-	using ::tour::profiler::FrameHistogramData;
-	using ::tour::profiler::DrawFrameHistogramUi;
-	using ::tour::profiler::GpuPassScope;
-}
+using ::tour::profiler::DrawFrameHistogramUi;
+using ::tour::profiler::Enabled;
+using ::tour::profiler::FrameHistogramData;
+using ::tour::profiler::FrameHistogramEnabled;
+using ::tour::profiler::GetFrameHistogramData;
+using ::tour::profiler::GpuEnabled;
+using ::tour::profiler::GpuPassScope;
+using ::tour::profiler::InitBackendGpuTimelines;
+using ::tour::profiler::InitBackendGpuTimelinesImpl;
+using ::tour::profiler::InitVulkanGPU;
+using ::tour::profiler::RecordFrameTime;
+using ::tour::profiler::SetEnabled;
+using ::tour::profiler::SetFrameHistogramEnabled;
+using ::tour::profiler::SetGpuEnabled;
+using ::tour::profiler::Shutdown;
+} // namespace smvk::profiler
 
 // Dynamic CPU+GPU scope for run-time strings (rendergraph pass names, ...).
 // Safe when Optick is disabled (expands to a no-op scope object).
 #define SMVK_CONCAT_IMPL(x, y) x##y
 #define SMVK_CONCAT(x, y) SMVK_CONCAT_IMPL(x, y)
-#define SMVK_PROFILE_GPU_PASS(NAME) \
+#define SMVK_PROFILE_GPU_PASS(NAME)                                                                \
     ::smvk::profiler::GpuPassScope SMVK_CONCAT(_smvk_gpu_pass_, __LINE__)(NAME, __FILE__, __LINE__)

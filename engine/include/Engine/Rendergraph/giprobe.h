@@ -33,11 +33,11 @@
 // runs at INSTANCE-TABLE BUILD time as a lattice stride (the tables are
 // static — probes never move — built once, zero per-frame CPU work).
 
+#include <Engine/GI/cubemap_volume.h>
 #include <Engine/Memory/pool.h>
-#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/mesh.h>
-#include <Engine/GI/cubemap_volume.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
 #include <glm/glm.hpp>
@@ -47,10 +47,8 @@
 
 namespace smvk::giprobe {
 
-inline constexpr const char* kGiProbeVsPath =
-	"content/shaders/giprobe.vert.hlsl.spv";
-inline constexpr const char* kGiProbePsPath =
-	"content/shaders/giprobe.frag.hlsl.spv";
+inline constexpr const char* kGiProbeVsPath = "content/shaders/giprobe.vert.hlsl.spv";
+inline constexpr const char* kGiProbePsPath = "content/shaders/giprobe.frag.hlsl.spv";
 
 // The instance-table cap (the old overlay's ImGui budget, kept as the
 // GPU draw budget; HLSL mirror: GI_PROBE_MAX_INSTANCES in
@@ -61,10 +59,10 @@ inline constexpr uint32_t kGiProbeMaxInstances = 6000;
 // coordinates (the exact Texture3D texel the VS Loads). 32 bytes, the
 // HLSL mirror's layout (giprobe.vert.hlsl GiProbeInstance).
 struct GiProbeInstance {
-	glm::vec3 pos{ 0.0f };
-	float pad_ = 0.0f;
-	uint32_t grid[3]{};
-	uint32_t pad2_ = 0;
+    glm::vec3 pos{0.0f};
+    float pad_ = 0.0f;
+    uint32_t grid[3]{};
+    uint32_t pad2_ = 0;
 };
 static_assert(sizeof(GiProbeInstance) == 32, "HLSL mirror (giprobe.vert.hlsl)");
 
@@ -73,10 +71,10 @@ static_assert(sizeof(GiProbeInstance) == 32, "HLSL mirror (giprobe.vert.hlsl)");
 // layer slots as giVolumeLayers[volumeIndex * 7 + t], exactly like
 // SgGiVolumeSample).
 struct GiProbeVolumeRow {
-	BufferHandle instances{};
-	uint64_t instancesBda = 0;
-	uint32_t instanceCount = 0;
-	uint32_t volumeIndex = 0;
+    BufferHandle instances{};
+    uint64_t instancesBda = 0;
+    uint32_t instanceCount = 0;
+    uint32_t volumeIndex = 0;
 };
 
 // The pass's own push block — must mirror giprobe.vert.hlsl exactly
@@ -84,17 +82,17 @@ struct GiProbeVolumeRow {
 // FrameUniforms BDA (the giVolumeLayers bindless slots); instances
 // carries this volume's instance-table BDA.
 struct alignas(16) GiProbePush {
-	glm::mat4 viewProj;  // 0  the rendering view's VP (reversed-Z, Y-flipped)
-	glm::vec4 eyeMaxDist; // 64 xyz camera, w the distance filter (m)
-	uint64_t frame = 0;     // 72 FrameUniforms BDA (0 in lattice mode)
-	uint64_t instances = 0; // 80 the volume's instance-table BDA
-	uint32_t volumeIndex = 0; // 88 the giVolumeLayers row / 7
-	uint32_t mode = 0;        // 92 0 baked GI, 1 visibility, 2 lattice
-	float markerGain = 1.0f;  // 96 1/exposure for the MARKER modes (1/2):
-	                           //    display-authored colors, the flat-view
-	                           //    pre-scale convention (the baked-GI mode
-	                           //    is physical radiance, never scaled)
-	uint32_t pad_{};          // 100 (16-align tail; 112 total)
+    glm::mat4 viewProj;       // 0  the rendering view's VP (reversed-Z, Y-flipped)
+    glm::vec4 eyeMaxDist;     // 64 xyz camera, w the distance filter (m)
+    uint64_t frame = 0;       // 72 FrameUniforms BDA (0 in lattice mode)
+    uint64_t instances = 0;   // 80 the volume's instance-table BDA
+    uint32_t volumeIndex = 0; // 88 the giVolumeLayers row / 7
+    uint32_t mode = 0;        // 92 0 baked GI, 1 visibility, 2 lattice
+    float markerGain = 1.0f;  // 96 1/exposure for the MARKER modes (1/2):
+                              //    display-authored colors, the flat-view
+                              //    pre-scale convention (the baked-GI mode
+                              //    is physical radiance, never scaled)
+    uint32_t pad_{};          // 100 (16-align tail; 112 total)
 };
 static_assert(sizeof(GiProbePush) == 112);
 
@@ -104,50 +102,55 @@ inline constexpr uint32_t kGiProbeModeVisibility = 1;
 inline constexpr uint32_t kGiProbeModeLattice = 2;
 
 struct GiProbeVisual {
-	Holder<BufferHandle> sphereVB;   // TerrainVertex unit icosphere
-	Holder<BufferHandle> sphereIB;   // uint32 indices
-	uint32_t vertexCount = 0;
-	uint32_t indexCount = 0;
-	bool geometryValid = false;
+    Holder<BufferHandle> sphereVB; // TerrainVertex unit icosphere
+    Holder<BufferHandle> sphereIB; // uint32 indices
+    uint32_t vertexCount = 0;
+    uint32_t indexCount = 0;
+    bool geometryValid = false;
 
-	Holder<ShaderModuleHandle> vsModule;
-	Holder<ShaderModuleHandle> psModule;
-	ShaderProgram program{};
+    Holder<ShaderModuleHandle> vsModule;
+    Holder<ShaderModuleHandle> psModule;
+    ShaderProgram program{};
 
-	[[nodiscard]] bool ShadersValid() const {
-		return program.shaderCount == 2 && !vsModule.empty()
-			&& !psModule.empty();
-	}
+    [[nodiscard]] bool ShadersValid() const {
+        return program.shaderCount == 2 && !vsModule.empty() && !psModule.empty();
+    }
 
-	// Hardcoded icosphere (1-subdivision icosahedron: 42 verts, 80
-	// tris, fixed radius baked into the shader) + the programs.
-	// Non-fatal on shader failure: AppendPass checks ShadersValid and
-	// skips.
-	bool Ensure(ResourceManager& ctx);
-	void Destroy();
+    // Hardcoded icosphere (1-subdivision icosahedron: 42 verts, 80
+    // tris, fixed radius baked into the shader) + the programs.
+    // Non-fatal on shader failure: AppendPass checks ShadersValid and
+    // skips.
+    bool Ensure(ResourceManager& ctx);
+    void Destroy();
 
-	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
-	// module swap (a failed read keeps the standing module), zero the
-	// program, re-Ensure (geometry stands). Returns true when anything
-	// moved; the released old handles ride `retired` for the caller's
-	// retirement pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-		std::vector<ShaderModuleHandle>& retired);
+    // HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+    // module swap (a failed read keeps the standing module), zero the
+    // program, re-Ensure (geometry stands). Returns true when anything
+    // moved; the released old handles ride `retired` for the caller's
+    // retirement pass.
+    [[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+                                     std::vector<ShaderModuleHandle>& retired);
 
-	// Appends the dedicated probe-sphere pass: the HDR color
-	// (load/store) + the scene depth (load, TEST-ONLY) at `extent`, ONE
-	// instanced DrawIndexed per volume row. Rows are COPIED (handles +
-	// BDAs are plain values — the caller's tables may mutate after the
-	// call). Returns false when nothing can draw (no geometry/shaders/
-	// valid rows).
-	bool AppendPass(RenderGraph& rg,
-		LogicalImageViewHandle hdrView, LogicalImageViewHandle depthView,
-		Extent2D extent, const glm::mat4& viewProj, const glm::vec3& eye,
-		float maxDist, const GiProbeVolumeRow* rows, uint32_t rowCount,
-		uint64_t frameUniformsAddress,
-		uint32_t colorMode = kGiProbeModeBakedGI,
-		float markerGain = 1.0f,
-		uint32_t offsetX = 0, uint32_t offsetY = 0);
+    // Appends the dedicated probe-sphere pass: the HDR color
+    // (load/store) + the scene depth (load, TEST-ONLY) at `extent`, ONE
+    // instanced DrawIndexed per volume row. Rows are COPIED (handles +
+    // BDAs are plain values — the caller's tables may mutate after the
+    // call). Returns false when nothing can draw (no geometry/shaders/
+    // valid rows).
+    bool AppendPass(RenderGraph& rg,
+                    LogicalImageViewHandle hdrView,
+                    LogicalImageViewHandle depthView,
+                    Extent2D extent,
+                    const glm::mat4& viewProj,
+                    const glm::vec3& eye,
+                    float maxDist,
+                    const GiProbeVolumeRow* rows,
+                    uint32_t rowCount,
+                    uint64_t frameUniformsAddress,
+                    uint32_t colorMode = kGiProbeModeBakedGI,
+                    float markerGain = 1.0f,
+                    uint32_t offsetX = 0,
+                    uint32_t offsetY = 0);
 };
 
 // The PRE-BAKE lattice (cook parity): the authored OBB (center/axes/
@@ -164,47 +167,45 @@ struct GiProbeVisual {
 // Accept either the standard allocator or the renderer's frame allocator;
 // the lattice construction does not depend on the vector allocator.
 template <typename Allocator>
-[[nodiscard]] inline uint32_t BuildGiProbeLatticeRows(
-	const glm::vec3& center, const glm::mat3& axes,
-	const glm::vec3& half, float spacing,
-	std::vector<GiProbeInstance, Allocator>& out,
-	uint32_t cap = kGiProbeMaxInstances,
-	const float phase[3] = nullptr)
-{
-	out.clear();
-	spacing = std::max(spacing, 0.01f);
-	const float ph[3] = {
-		phase ? phase[0] : 0.0f,
-		phase ? phase[1] : 0.0f,
-		phase ? phase[2] : 0.0f,
-	};
-	smvk::gi::GiVolumeDef def;
-	def.planes = smvk::gi::GiVolumeBoxPlanesRotated(center, axes, half);
-	glm::vec3 bMin, bMax;
-	if (!def.Bounds(bMin, bMax))
-		return 0;
-	const glm::vec3 gridMin = bMin + glm::vec3(ph[0], ph[1], ph[2]) * spacing;
-	uint32_t dims[3] = { 1, 1, 1 };
-	for (int a = 0; a < 3; ++a) {
-		dims[a] = std::min(
-			std::max(1u, uint32_t(std::ceil((bMax[a] - gridMin[a]) / spacing))),
-			smvk::gi::kGiVolumeMaxDim);
-	}
-	const uint64_t n = uint64_t(dims[0]) * dims[1] * dims[2];
-	const uint64_t stride = std::max<uint64_t>(1, (n + cap - 1) / cap);
-	for (uint64_t v = 0; v < n && out.size() < cap; v += stride) {
-		const uint32_t ix = uint32_t(v % dims[0]);
-		const uint32_t iy = uint32_t((v / dims[0]) % dims[1]);
-		const uint32_t iz =
-			uint32_t(v / (uint64_t(dims[0]) * dims[1]));
-		GiProbeInstance row{};
-		row.pos = gridMin + (glm::vec3(ix, iy, iz) + 0.5f) * spacing;
-		row.grid[0] = ix;
-		row.grid[1] = iy;
-		row.grid[2] = iz;
-		out.push_back(row);
-	}
-	return uint32_t(out.size());
+[[nodiscard]] inline uint32_t BuildGiProbeLatticeRows(const glm::vec3& center,
+                                                      const glm::mat3& axes,
+                                                      const glm::vec3& half,
+                                                      float spacing,
+                                                      std::vector<GiProbeInstance, Allocator>& out,
+                                                      uint32_t cap = kGiProbeMaxInstances,
+                                                      const float phase[3] = nullptr) {
+    out.clear();
+    spacing = std::max(spacing, 0.01f);
+    const float ph[3] = {
+        phase ? phase[0] : 0.0f,
+        phase ? phase[1] : 0.0f,
+        phase ? phase[2] : 0.0f,
+    };
+    smvk::gi::GiVolumeDef def;
+    def.planes = smvk::gi::GiVolumeBoxPlanesRotated(center, axes, half);
+    glm::vec3 bMin, bMax;
+    if (!def.Bounds(bMin, bMax))
+        return 0;
+    const glm::vec3 gridMin = bMin + glm::vec3(ph[0], ph[1], ph[2]) * spacing;
+    uint32_t dims[3] = {1, 1, 1};
+    for (int a = 0; a < 3; ++a) {
+        dims[a] = std::min(std::max(1u, uint32_t(std::ceil((bMax[a] - gridMin[a]) / spacing))),
+                           smvk::gi::kGiVolumeMaxDim);
+    }
+    const uint64_t n = uint64_t(dims[0]) * dims[1] * dims[2];
+    const uint64_t stride = std::max<uint64_t>(1, (n + cap - 1) / cap);
+    for (uint64_t v = 0; v < n && out.size() < cap; v += stride) {
+        const uint32_t ix = uint32_t(v % dims[0]);
+        const uint32_t iy = uint32_t((v / dims[0]) % dims[1]);
+        const uint32_t iz = uint32_t(v / (uint64_t(dims[0]) * dims[1]));
+        GiProbeInstance row{};
+        row.pos = gridMin + (glm::vec3(ix, iy, iz) + 0.5f) * spacing;
+        row.grid[0] = ix;
+        row.grid[1] = iy;
+        row.grid[2] = iz;
+        out.push_back(row);
+    }
+    return uint32_t(out.size());
 }
 
 } // namespace smvk::giprobe

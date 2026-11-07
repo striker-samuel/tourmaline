@@ -1,27 +1,25 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 // GPU-free regressions for packed conservative maximum-height hierarchy.
+#include <Engine/Rendergraph/terrain_occlusion.h>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
-#include <Engine/Rendergraph/terrain_occlusion.h>
 
 int main() {
     using namespace smvk::terrain;
     auto atlas = NewOcclusionAtlas();
     auto check = [](bool yes, const char* msg) {
-        if (!yes) std::fprintf(stderr, "FAIL %s\\n", msg);
+        if (!yes)
+            std::fprintf(stderr, "FAIL %s\\n", msg);
         return yes;
     };
     bool ok = true;
-    ok &= check(atlas.size() == size_t(2048) * 1024 * 2,
-        "packed atlas dimensions");
-    ok &= check(OcclusionLevelX(2) == 0
-        && OcclusionLevelX(3) == 1024
-        && OcclusionLevelX(4) == 1536
-        && OcclusionLevelX(6) == 1920
-        && OcclusionLevelX(12) == 2046,
-        "packed level offsets");
+    ok &= check(atlas.size() == size_t(2048) * 1024 * 2, "packed atlas dimensions");
+    ok &=
+        check(OcclusionLevelX(2) == 0 && OcclusionLevelX(3) == 1024 && OcclusionLevelX(4) == 1536 &&
+                  OcclusionLevelX(6) == 1920 && OcclusionLevelX(12) == 2046,
+              "packed level offsets");
     // Two adjacent source H-tiles. A 2x2 parent covering their shared
     // boundary MUST preserve a peak from either side, never average it.
     std::vector<uint8_t> left(1024u * 1024u * 4u, 0);
@@ -39,17 +37,15 @@ int main() {
     right[rightPeak + 3] = 200;
     AccumulateOcclusionTile(atlas, left, 0, 0);
     AccumulateOcclusionTile(atlas, right, 1, 0);
-    ok &= check(GetOcclusionSample(atlas, 255, 0) == 0x1234,
-        "left tile peak retained");
-    ok &= check(GetOcclusionSample(atlas, 256, 0) == 0xFEDC,
-        "right tile peak retained");
+    ok &= check(GetOcclusionSample(atlas, 255, 0) == 0x1234, "left tile peak retained");
+    ok &= check(GetOcclusionSample(atlas, 256, 0) == 0xFEDC, "right tile peak retained");
     FinishOcclusionAtlas(atlas);
-    ok &= check(GetOcclusionSample(atlas, OcclusionLevelX(3) + 127, 0)
-        == 0x1234, "left L3 max retained");
-    ok &= check(GetOcclusionSample(atlas, OcclusionLevelX(3) + 128, 0)
-        == 0xFEDC, "right L3 max retained");
-    ok &= check(GetOcclusionSample(atlas, OcclusionLevelX(12), 0)
-        == 0xFEDC, "root max includes both tiles");
+    ok &= check(GetOcclusionSample(atlas, OcclusionLevelX(3) + 127, 0) == 0x1234,
+                "left L3 max retained");
+    ok &= check(GetOcclusionSample(atlas, OcclusionLevelX(3) + 128, 0) == 0xFEDC,
+                "right L3 max retained");
+    ok &= check(GetOcclusionSample(atlas, OcclusionLevelX(12), 0) == 0xFEDC,
+                "root max includes both tiles");
 
     // General parent invariant: the encoded parent is >= all four
     // children, across every level and every valid cell.
@@ -62,8 +58,7 @@ int main() {
                 uint16_t parent = GetOcclusionSample(atlas, parentX + x, z);
                 for (uint32_t dz = 0; dz < 2; ++dz)
                     for (uint32_t dx = 0; dx < 2; ++dx)
-                        if (parent < GetOcclusionSample(atlas,
-                            childX + 2 * x + dx, 2 * z + dz))
+                        if (parent < GetOcclusionSample(atlas, childX + 2 * x + dx, 2 * z + dz))
                             ok = false;
             }
     }

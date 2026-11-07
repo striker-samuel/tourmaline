@@ -45,29 +45,28 @@ constexpr float kOverlayClipEps = 1e-3f; // keep-plane slack (~1 mm at 1 m)
 
 // The six keep-planes d = dot(plane, clip) >= -eps (reversed-Z ZO).
 inline std::array<glm::vec4, 6> OverlayClipPlanes() {
-	return {
-		glm::vec4{ 1.0f, 0.0f, 0.0f, 1.0f}, // x + w >= 0 (left)
-		glm::vec4{-1.0f, 0.0f, 0.0f, 1.0f}, // w - x >= 0 (right)
-		glm::vec4{ 0.0f, 1.0f, 0.0f, 1.0f}, // y + w >= 0 (bottom)
-		glm::vec4{ 0.0f, -1.0f, 0.0f, 1.0f}, // w - y >= 0 (top)
-		glm::vec4{ 0.0f, 0.0f, 1.0f, 0.0f}, // z >= 0 (reversed-Z far side)
-		glm::vec4{ 0.0f, 0.0f, -1.0f, 1.0f}, // w - z >= 0 (the NEAR plane)
-	};
+    return {
+        glm::vec4{1.0f, 0.0f, 0.0f, 1.0f},  // x + w >= 0 (left)
+        glm::vec4{-1.0f, 0.0f, 0.0f, 1.0f}, // w - x >= 0 (right)
+        glm::vec4{0.0f, 1.0f, 0.0f, 1.0f},  // y + w >= 0 (bottom)
+        glm::vec4{0.0f, -1.0f, 0.0f, 1.0f}, // w - y >= 0 (top)
+        glm::vec4{0.0f, 0.0f, 1.0f, 0.0f},  // z >= 0 (reversed-Z far side)
+        glm::vec4{0.0f, 0.0f, -1.0f, 1.0f}, // w - z >= 0 (the NEAR plane)
+    };
 }
 
 // Clip-space point -> overlay pixels (caller guarantees the point passed
 // the six-plane test: w >= eps).
 // Convert only at the ImGui draw boundary; Vulkan and input stay local.
 ImVec2 OverlayScreenPx(float x, float y) {
-	const ImVec2 origin = ImGui::GetMainViewport()->Pos;
-	return ImVec2(origin.x + x, origin.y + y);
+    const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+    return ImVec2(origin.x + x, origin.y + y);
 }
 
 ImVec2 OverlayPx(const glm::vec4& c, const ViewportRect& rect) {
-	const float inv = 1.0f / c.w;
-	return OverlayScreenPx(
-		rect.x + (c.x * inv * 0.5f + 0.5f) * rect.w,
-		rect.y + (c.y * inv * 0.5f + 0.5f) * rect.h);
+    const float inv = 1.0f / c.w;
+    return OverlayScreenPx(rect.x + (c.x * inv * 0.5f + 0.5f) * rect.w,
+                           rect.y + (c.y * inv * 0.5f + 0.5f) * rect.h);
 }
 
 // Clips one world-space segment to the FULL clip volume (six planes).
@@ -76,31 +75,33 @@ ImVec2 OverlayPx(const glm::vec4& c, const ViewportRect& rect) {
 // the interval intersection is exact — the endpoints land ON the
 // crossing planes, exactly like the GPU clipper's emitted vertices.
 bool ClipSegmentToCamera(const glm::mat4& vpm,
-	const glm::vec3& w0, const glm::vec3& w1,
-	glm::vec4& out0, glm::vec4& out1) {
-	const glm::vec4 c0 = vpm * glm::vec4(w0, 1.0f);
-	const glm::vec4 c1 = vpm * glm::vec4(w1, 1.0f);
-	float t0 = 0.0f, t1 = 1.0f;
-	for (const glm::vec4& p : OverlayClipPlanes()) {
-		const float d0 = glm::dot(p, c0);
-		const float d1 = glm::dot(p, c1);
-		if (d0 < -kOverlayClipEps && d1 < -kOverlayClipEps)
-			return false; // whole segment outside this plane
-		if (d0 >= -kOverlayClipEps && d1 >= -kOverlayClipEps)
-			continue; // whole segment inside: plane is a no-op
-		// One endpoint out: the crossing at d == -eps is the exact
-		// boundary point (d1 - d0 is strictly nonzero here).
-		const float t = (-kOverlayClipEps - d0) / (d1 - d0);
-		if (d0 < -kOverlayClipEps)
-			t0 = (std::max)(t0, t); // entering: move the start up to it
-		else
-			t1 = (std::min)(t1, t); // leaving: trim the end back to it
-		if (t0 > t1)
-			return false; // the interval closed: clipped away entirely
-	}
-	out0 = c0 + (c1 - c0) * t0;
-	out1 = c0 + (c1 - c0) * t1;
-	return true;
+                         const glm::vec3& w0,
+                         const glm::vec3& w1,
+                         glm::vec4& out0,
+                         glm::vec4& out1) {
+    const glm::vec4 c0 = vpm * glm::vec4(w0, 1.0f);
+    const glm::vec4 c1 = vpm * glm::vec4(w1, 1.0f);
+    float t0 = 0.0f, t1 = 1.0f;
+    for (const glm::vec4& p : OverlayClipPlanes()) {
+        const float d0 = glm::dot(p, c0);
+        const float d1 = glm::dot(p, c1);
+        if (d0 < -kOverlayClipEps && d1 < -kOverlayClipEps)
+            return false; // whole segment outside this plane
+        if (d0 >= -kOverlayClipEps && d1 >= -kOverlayClipEps)
+            continue; // whole segment inside: plane is a no-op
+        // One endpoint out: the crossing at d == -eps is the exact
+        // boundary point (d1 - d0 is strictly nonzero here).
+        const float t = (-kOverlayClipEps - d0) / (d1 - d0);
+        if (d0 < -kOverlayClipEps)
+            t0 = (std::max)(t0, t); // entering: move the start up to it
+        else
+            t1 = (std::min)(t1, t); // leaving: trim the end back to it
+        if (t0 > t1)
+            return false; // the interval closed: clipped away entirely
+    }
+    out0 = c0 + (c1 - c0) * t0;
+    out1 = c0 + (c1 - c0) * t1;
+    return true;
 }
 
 // Sutherland-Hodgman clip of a world-space CONVEX polygon against the
@@ -109,48 +110,50 @@ bool ClipSegmentToCamera(const glm::mat4& vpm,
 // hold n + 12 entries (each of the six planes adds at most two crossings
 // to a convex polygon).
 bool ClipPolyToCamera(const glm::mat4& vpm,
-	const glm::vec3* poly, size_t n,
-	glm::vec4* out, size_t& outN) {
-	outN = 0;
-	if (n == 0)
-		return false;
-	// Ring 0: the world polygon in clip space.
-	std::array<glm::vec4, 64> ring{};
-	if (n > ring.size())
-		return false; // absurd overlay polygon: refuse, never overrun
-	for (size_t i = 0; i < n; ++i)
-		ring[i] = vpm * glm::vec4(poly[i], 1.0f);
-	size_t count = n;
-	for (const glm::vec4& p : OverlayClipPlanes()) {
-		size_t m = 0;
-		glm::vec4 prev = ring[count - 1];
-		bool prevIn = glm::dot(p, prev) >= -kOverlayClipEps;
-		for (size_t k = 0; k < count; ++k) {
-			const glm::vec4 cur = ring[k];
-			const bool curIn = glm::dot(p, cur) >= -kOverlayClipEps;
-			if (curIn != prevIn) {
-				// d is linear in the clip coords: t lands the crossing
-				// exactly on the boundary plane.
-				const float dPrev = glm::dot(p, prev);
-				const float dCur = glm::dot(p, cur);
-				const float t = (-kOverlayClipEps - dPrev) / (dCur - dPrev);
-				out[m++] = prev + (cur - prev) * t;
-			}
-			if (curIn)
-				out[m++] = cur;
-			prev = cur;
-			prevIn = curIn;
-		}
-		if (m < 3)
-			return false; // fully clipped away
-		for (size_t i = 0; i < m; ++i)
-			ring[i] = out[i];
-		count = m;
-	}
-	for (size_t i = 0; i < count; ++i)
-		out[i] = ring[i];
-	outN = count;
-	return outN >= 3;
+                      const glm::vec3* poly,
+                      size_t n,
+                      glm::vec4* out,
+                      size_t& outN) {
+    outN = 0;
+    if (n == 0)
+        return false;
+    // Ring 0: the world polygon in clip space.
+    std::array<glm::vec4, 64> ring{};
+    if (n > ring.size())
+        return false; // absurd overlay polygon: refuse, never overrun
+    for (size_t i = 0; i < n; ++i)
+        ring[i] = vpm * glm::vec4(poly[i], 1.0f);
+    size_t count = n;
+    for (const glm::vec4& p : OverlayClipPlanes()) {
+        size_t m = 0;
+        glm::vec4 prev = ring[count - 1];
+        bool prevIn = glm::dot(p, prev) >= -kOverlayClipEps;
+        for (size_t k = 0; k < count; ++k) {
+            const glm::vec4 cur = ring[k];
+            const bool curIn = glm::dot(p, cur) >= -kOverlayClipEps;
+            if (curIn != prevIn) {
+                // d is linear in the clip coords: t lands the crossing
+                // exactly on the boundary plane.
+                const float dPrev = glm::dot(p, prev);
+                const float dCur = glm::dot(p, cur);
+                const float t = (-kOverlayClipEps - dPrev) / (dCur - dPrev);
+                out[m++] = prev + (cur - prev) * t;
+            }
+            if (curIn)
+                out[m++] = cur;
+            prev = cur;
+            prevIn = curIn;
+        }
+        if (m < 3)
+            return false; // fully clipped away
+        for (size_t i = 0; i < m; ++i)
+            ring[i] = out[i];
+        count = m;
+    }
+    for (size_t i = 0; i < count; ++i)
+        out[i] = ring[i];
+    outN = count;
+    return outN >= 3;
 }
 
 // Point visibility for the overlay's labels/markers: the same six-plane
@@ -158,647 +161,640 @@ bool ClipPolyToCamera(const glm::mat4& vpm,
 // project() lambdas only tested the eye plane, so labels for geometry
 // between the eye and near drew over the view).
 inline bool OverlayPointVisible(const glm::vec4& clip) {
-	for (const glm::vec4& p : OverlayClipPlanes())
-		if (glm::dot(p, clip) < -kOverlayClipEps)
-			return false;
-	return true;
+    for (const glm::vec4& p : OverlayClipPlanes())
+        if (glm::dot(p, clip) < -kOverlayClipEps)
+            return false;
+    return true;
 }
 
 } // namespace
 
 bool EditorApp::IsSelected(uint32_t node) const {
-	return std::find(m_selection.begin(), m_selection.end(), node) !=
-		m_selection.end();
+    return std::find(m_selection.begin(), m_selection.end(), node) != m_selection.end();
 }
 
 void EditorApp::SetSelection(uint32_t node) {
-	m_worldSelected = false;
-	ClearNonDagSelection();
-	// Node selection supersedes the ASSET-BROWSER selection (the
-	// read-only asset inspector page shows only while an asset tile is
-	// the current selection).
-	m_assetsSel.clear();
-	m_selection.clear();
-	if (node != UINT32_MAX) {
-		m_selection.push_back(node);
-		m_selected = node;
-	}
-	else {
-		m_selected = UINT32_MAX;
-	}
-	// Node change invalidates sub-object highlights that pointed elsewhere.
-	if (m_selFaceNode != node && m_selFaceNode != UINT32_MAX &&
-		m_selMode == SelMode::Face) {
-		m_selFaceNode = UINT32_MAX;
-		m_selFaceTri = UINT32_MAX;
-	}
-	if (m_selVertNode != node && m_selVertNode != UINT32_MAX &&
-		m_selMode == SelMode::Vertex) {
-		m_selVertNode = UINT32_MAX;
-		m_selVertIdx = UINT32_MAX;
-	}
-	if (node == UINT32_MAX)
-		ClearSubSelection();
+    m_worldSelected = false;
+    ClearNonDagSelection();
+    // Node selection supersedes the ASSET-BROWSER selection (the
+    // read-only asset inspector page shows only while an asset tile is
+    // the current selection).
+    m_assetsSel.clear();
+    m_selection.clear();
+    if (node != UINT32_MAX) {
+        m_selection.push_back(node);
+        m_selected = node;
+    } else {
+        m_selected = UINT32_MAX;
+    }
+    // Node change invalidates sub-object highlights that pointed elsewhere.
+    if (m_selFaceNode != node && m_selFaceNode != UINT32_MAX && m_selMode == SelMode::Face) {
+        m_selFaceNode = UINT32_MAX;
+        m_selFaceTri = UINT32_MAX;
+    }
+    if (m_selVertNode != node && m_selVertNode != UINT32_MAX && m_selMode == SelMode::Vertex) {
+        m_selVertNode = UINT32_MAX;
+        m_selVertIdx = UINT32_MAX;
+    }
+    if (node == UINT32_MAX)
+        ClearSubSelection();
 }
 
 void EditorApp::ClearSubSelection() {
-	m_selFaceNode = UINT32_MAX;
-	m_selFaceTri = UINT32_MAX;
-	m_selVertNode = UINT32_MAX;
-	m_selVertIdx = UINT32_MAX;
+    m_selFaceNode = UINT32_MAX;
+    m_selFaceTri = UINT32_MAX;
+    m_selVertNode = UINT32_MAX;
+    m_selVertIdx = UINT32_MAX;
 }
 
 void EditorApp::SelectPrevNode() {
-	if (!m_world || m_world->scene.hierarchy.empty())
-		return;
-	const uint32_t n = uint32_t(m_world->scene.hierarchy.size());
-	uint32_t cur = (m_selected == UINT32_MAX || m_selected >= n)
-		? 0 : m_selected;
-	cur = (cur == 0) ? n - 1 : cur - 1;
-	SetSelection(cur);
-	m_revealNode = cur;
+    if (!m_world || m_world->scene.hierarchy.empty())
+        return;
+    const uint32_t n = uint32_t(m_world->scene.hierarchy.size());
+    uint32_t cur = (m_selected == UINT32_MAX || m_selected >= n) ? 0 : m_selected;
+    cur = (cur == 0) ? n - 1 : cur - 1;
+    SetSelection(cur);
+    m_revealNode = cur;
 }
 
 void EditorApp::SelectNextNode() {
-	if (!m_world || m_world->scene.hierarchy.empty())
-		return;
-	const uint32_t n = uint32_t(m_world->scene.hierarchy.size());
-	uint32_t cur = (m_selected == UINT32_MAX || m_selected >= n)
-		? 0 : m_selected;
-	cur = (cur + 1 >= n) ? 0 : cur + 1;
-	SetSelection(cur);
-	m_revealNode = cur;
+    if (!m_world || m_world->scene.hierarchy.empty())
+        return;
+    const uint32_t n = uint32_t(m_world->scene.hierarchy.size());
+    uint32_t cur = (m_selected == UINT32_MAX || m_selected >= n) ? 0 : m_selected;
+    cur = (cur + 1 >= n) ? 0 : cur + 1;
+    SetSelection(cur);
+    m_revealNode = cur;
 }
 
 void EditorApp::DrawSelectionRadial() {
-	// Q radial: Mesh / Face / Vertex highlight modes (selection only).
-	if (m_showSelRadial) {
-		ImGui::OpenPopup("##selRadial");
-		m_selRadialPos = ImGui::GetIO().MousePos;
-		ImGui::SetNextWindowPos(m_selRadialPos, ImGuiCond_Always);
-		m_showSelRadial = false;
-	}
-	const bool radialOpen = ImGui::BeginPopup("##selRadial");
-	m_selRadialOpen = radialOpen; // modal keys pause while it owns 1/2/3
-	if (!radialOpen)
-		return;
-	ImGui::TextDisabled("Select mode (Q)");
-	ImGui::Separator();
-	const SelMode modes[3] = { SelMode::Mesh, SelMode::Face, SelMode::Vertex };
-	const char* hints[3] = { "object nodes", "one triangle", "one vertex" };
-	for (int i = 0; i < 3; ++i) {
-		char label[64];
-		std::snprintf(label, sizeof(label), "%s  (%d)%s", SelModeName(modes[i]),
-			i + 1, m_selMode == modes[i] ? "  *" : "");
-		if (ImGui::Selectable(label, m_selMode == modes[i])) {
-			m_selMode = modes[i];
-			ClearSubSelection();
-			Log(std::string("Selection mode: ") + SelModeName(m_selMode) +
-				" (" + hints[i] + ", highlight only).");
-			ImGui::CloseCurrentPopup();
-		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("%s highlight; gizmo stays on the node.", hints[i]);
-	}
-	ImGui::Separator();
-	ImGui::TextDisabled("Gizmo space");
-	{
-		// Handle orientation (World default): World = scene axes, Local =
-		// the node's rotated axes (scale is always local — no TRS form).
-		const GizmoSpace spaces[2] = { GizmoSpace::World,
-			GizmoSpace::Local };
-		for (int i = 0; i < 2; ++i) {
-			char label[64];
-			std::snprintf(label, sizeof(label), "%s%s",
-				GizmoSpaceName(spaces[i]),
-				m_gizmoSpace == spaces[i] ? "  *" : "");
-			if (ImGui::Selectable(label,
-					m_gizmoSpace == spaces[i])) {
-				m_gizmoSpace = spaces[i];
-				Log(std::string("Gizmo space: ") + GizmoSpaceName(spaces[i])
-					+ (spaces[i] == GizmoSpace::Local
-						? " (node axes; scale stays local)" : ""));
-				ImGui::CloseCurrentPopup();
-			}
-		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Translate/rotate align to the selected "
-				"axes. Scale is always local (per-axis world scaling of "
-				"a rotated node has no TRS form).");
-	}
-	ImGui::Separator();
-	ImGui::TextDisabled("Gizmo pivot");
-	{
-		// Where the gizmo sits + the rotate/scale math origin (Node
-		// default = as before; BoundsCenter = the selection's subtree
-		// AABB center, rotate/scale act about it).
-		const GizmoPivot pivots[2] = { GizmoPivot::Node,
-			GizmoPivot::BoundsCenter };
-		for (int i = 0; i < 2; ++i) {
-			char label[64];
-			std::snprintf(label, sizeof(label), "%s%s",
-				GizmoPivotName(pivots[i]),
-				m_gizmoPivot == pivots[i] ? "  *" : "");
-			if (ImGui::Selectable(label, m_gizmoPivot == pivots[i])) {
-				m_gizmoPivot = pivots[i];
-				Log(std::string("Gizmo pivot: ") + GizmoPivotName(pivots[i]));
-				ImGui::CloseCurrentPopup();
-			}
-		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Bounds center: the gizmo sits at the "
-				"selection's subtree AABB center; rotate/scale act "
-				"ABOUT it (translate compensates). Falls back to the "
-				"node origin without mesh bounds.");
-	}
-	ImGui::Separator();
-	ImGui::TextDisabled("Q reopens  |  1/2/3 picks while open");
-	// Number shortcuts while the popup is open.
-	for (int i = 0; i < 3; ++i) {
-		if (ImGui::IsKeyPressed(ImGuiKey(ImGuiKey_1 + i))) {
-			m_selMode = modes[i];
-			ClearSubSelection();
-			Log(std::string("Selection mode: ") + SelModeName(m_selMode));
-			ImGui::CloseCurrentPopup();
-			break;
-		}
-	}
-	ImGui::EndPopup();
+    // Q radial: Mesh / Face / Vertex highlight modes (selection only).
+    if (m_showSelRadial) {
+        ImGui::OpenPopup("##selRadial");
+        m_selRadialPos = ImGui::GetIO().MousePos;
+        ImGui::SetNextWindowPos(m_selRadialPos, ImGuiCond_Always);
+        m_showSelRadial = false;
+    }
+    const bool radialOpen = ImGui::BeginPopup("##selRadial");
+    m_selRadialOpen = radialOpen; // modal keys pause while it owns 1/2/3
+    if (!radialOpen)
+        return;
+    ImGui::TextDisabled("Select mode (Q)");
+    ImGui::Separator();
+    const SelMode modes[3] = {SelMode::Mesh, SelMode::Face, SelMode::Vertex};
+    const char* hints[3] = {"object nodes", "one triangle", "one vertex"};
+    for (int i = 0; i < 3; ++i) {
+        char label[64];
+        std::snprintf(label,
+                      sizeof(label),
+                      "%s  (%d)%s",
+                      SelModeName(modes[i]),
+                      i + 1,
+                      m_selMode == modes[i] ? "  *" : "");
+        if (ImGui::Selectable(label, m_selMode == modes[i])) {
+            m_selMode = modes[i];
+            ClearSubSelection();
+            Log(std::string("Selection mode: ") + SelModeName(m_selMode) + " (" + hints[i] +
+                ", highlight only).");
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s highlight; gizmo stays on the node.", hints[i]);
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Gizmo space");
+    {
+        // Handle orientation (World default): World = scene axes, Local =
+        // the node's rotated axes (scale is always local — no TRS form).
+        const GizmoSpace spaces[2] = {GizmoSpace::World, GizmoSpace::Local};
+        for (int i = 0; i < 2; ++i) {
+            char label[64];
+            std::snprintf(label,
+                          sizeof(label),
+                          "%s%s",
+                          GizmoSpaceName(spaces[i]),
+                          m_gizmoSpace == spaces[i] ? "  *" : "");
+            if (ImGui::Selectable(label, m_gizmoSpace == spaces[i])) {
+                m_gizmoSpace = spaces[i];
+                Log(std::string("Gizmo space: ") + GizmoSpaceName(spaces[i]) +
+                    (spaces[i] == GizmoSpace::Local ? " (node axes; scale stays local)" : ""));
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Translate/rotate align to the selected "
+                              "axes. Scale is always local (per-axis world scaling of "
+                              "a rotated node has no TRS form).");
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Gizmo pivot");
+    {
+        // Where the gizmo sits + the rotate/scale math origin (Node
+        // default = as before; BoundsCenter = the selection's subtree
+        // AABB center, rotate/scale act about it).
+        const GizmoPivot pivots[2] = {GizmoPivot::Node, GizmoPivot::BoundsCenter};
+        for (int i = 0; i < 2; ++i) {
+            char label[64];
+            std::snprintf(label,
+                          sizeof(label),
+                          "%s%s",
+                          GizmoPivotName(pivots[i]),
+                          m_gizmoPivot == pivots[i] ? "  *" : "");
+            if (ImGui::Selectable(label, m_gizmoPivot == pivots[i])) {
+                m_gizmoPivot = pivots[i];
+                Log(std::string("Gizmo pivot: ") + GizmoPivotName(pivots[i]));
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Bounds center: the gizmo sits at the "
+                              "selection's subtree AABB center; rotate/scale act "
+                              "ABOUT it (translate compensates). Falls back to the "
+                              "node origin without mesh bounds.");
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Q reopens  |  1/2/3 picks while open");
+    // Number shortcuts while the popup is open.
+    for (int i = 0; i < 3; ++i) {
+        if (ImGui::IsKeyPressed(ImGuiKey(ImGuiKey_1 + i))) {
+            m_selMode = modes[i];
+            ClearSubSelection();
+            Log(std::string("Selection mode: ") + SelModeName(m_selMode));
+            ImGui::CloseCurrentPopup();
+            break;
+        }
+    }
+    ImGui::EndPopup();
 }
 
 void EditorApp::AddToSelection(uint32_t node) {
-	if (node == UINT32_MAX || IsSelected(node))
-		return;
-	m_worldSelected = false;
-	ClearNonDagSelection();
-	m_selection.push_back(node);
-	m_selected = node; // newest = primary
+    if (node == UINT32_MAX || IsSelected(node))
+        return;
+    m_worldSelected = false;
+    ClearNonDagSelection();
+    m_selection.push_back(node);
+    m_selected = node; // newest = primary
 }
 
 void EditorApp::ToggleSelection(uint32_t node) {
-	if (node == UINT32_MAX)
-		return;
-	auto it = std::find(m_selection.begin(), m_selection.end(), node);
-	if (it != m_selection.end()) {
-		m_selection.erase(it);
-		if (m_selected == node)
-			m_selected = m_selection.empty()
-				? UINT32_MAX : m_selection.back();
-	}
-	else {
-		m_worldSelected = false;
-		ClearNonDagSelection();
-		m_selection.push_back(node);
-		m_selected = node;
-	}
+    if (node == UINT32_MAX)
+        return;
+    auto it = std::find(m_selection.begin(), m_selection.end(), node);
+    if (it != m_selection.end()) {
+        m_selection.erase(it);
+        if (m_selected == node)
+            m_selected = m_selection.empty() ? UINT32_MAX : m_selection.back();
+    } else {
+        m_worldSelected = false;
+        ClearNonDagSelection();
+        m_selection.push_back(node);
+        m_selected = node;
+    }
 }
 
 void EditorApp::SelectRange(uint32_t node) {
-	// Shift-click: contiguous VISIBLE range between the primary and the
-	// clicked row (outliner order); falls back to single select when the
-	// anchor is gone (deleted/collapsed away).
-	m_worldSelected = false;
-	ClearNonDagSelection();
-	ClearSubSelection();
-	if (node < m_world->scene.hierarchy.size()) {
-		const auto it = std::find(m_outlinerOrder.begin(),
-			m_outlinerOrder.end(), node);
-		const auto anchor = std::find(m_outlinerOrder.begin(),
-			m_outlinerOrder.end(), m_selected);
-		if (it != m_outlinerOrder.end()
-			&& anchor != m_outlinerOrder.end()
-			&& m_selected != UINT32_MAX) {
-			size_t a = size_t(anchor - m_outlinerOrder.begin());
-			size_t b = size_t(it - m_outlinerOrder.begin());
-			if (a > b)
-				std::swap(a, b);
-			m_selection.clear();
-			for (size_t i = a; i <= b; ++i)
-				m_selection.push_back(m_outlinerOrder[i]);
-			m_selected = node;
-			return;
-		}
-	}
-	SetSelection(node);
+    // Shift-click: contiguous VISIBLE range between the primary and the
+    // clicked row (outliner order); falls back to single select when the
+    // anchor is gone (deleted/collapsed away).
+    m_worldSelected = false;
+    ClearNonDagSelection();
+    ClearSubSelection();
+    if (node < m_world->scene.hierarchy.size()) {
+        const auto it = std::find(m_outlinerOrder.begin(), m_outlinerOrder.end(), node);
+        const auto anchor = std::find(m_outlinerOrder.begin(), m_outlinerOrder.end(), m_selected);
+        if (it != m_outlinerOrder.end() && anchor != m_outlinerOrder.end() &&
+            m_selected != UINT32_MAX) {
+            size_t a = size_t(anchor - m_outlinerOrder.begin());
+            size_t b = size_t(it - m_outlinerOrder.begin());
+            if (a > b)
+                std::swap(a, b);
+            m_selection.clear();
+            for (size_t i = a; i <= b; ++i)
+                m_selection.push_back(m_outlinerOrder[i]);
+            m_selected = node;
+            return;
+        }
+    }
+    SetSelection(node);
 }
 
 void EditorApp::ClearSelection() {
-	m_worldSelected = false;
-	ClearNonDagSelection();
-	m_assetsSel.clear(); // node/world selection supersedes the asset page
-	m_selection.clear();
-	m_selected = UINT32_MAX;
-	ClearSubSelection();
+    m_worldSelected = false;
+    ClearNonDagSelection();
+    m_assetsSel.clear(); // node/world selection supersedes the asset page
+    m_selection.clear();
+    m_selected = UINT32_MAX;
+    ClearSubSelection();
 }
 
 void EditorApp::SelectWorldNode() {
-	// Pseudo-selection (see m_worldSelected): clears the node selection
-	// without touching the hierarchy. m_selected stays UINT32_MAX so
-	// every consumer keeps its existing no-selection behavior.
-	m_selection.clear();
-	m_selected = UINT32_MAX;
-	ClearSubSelection();
-	ClearNonDagSelection();
-	m_worldSelected = true;
+    // Pseudo-selection (see m_worldSelected): clears the node selection
+    // without touching the hierarchy. m_selected stays UINT32_MAX so
+    // every consumer keeps its existing no-selection behavior.
+    m_selection.clear();
+    m_selected = UINT32_MAX;
+    ClearSubSelection();
+    ClearNonDagSelection();
+    m_worldSelected = true;
 }
 
 uint32_t EditorApp::FindSunNode() const {
-	if (!m_world)
-		return UINT32_MAX;
-	for (const LightRow& _row : m_world->scene.tables.lights) {
-		const NodeId node = _row.node; const auto& li = _row.light;
-		(void)li;
-		if (const ::SceneLight* L = FindNodeLight(node))
-			if (L->type == ::SceneLight::Type::Directional)
-				return node;
-	}
-	return UINT32_MAX;
+    if (!m_world)
+        return UINT32_MAX;
+    for (const LightRow& _row : m_world->scene.tables.lights) {
+        const NodeId node = _row.node;
+        const auto& li = _row.light;
+        (void)li;
+        if (const ::SceneLight* L = FindNodeLight(node))
+            if (L->type == ::SceneLight::Type::Directional)
+                return node;
+    }
+    return UINT32_MAX;
 }
 
 void EditorApp::FinishBoxSelect() {
-	if (!m_world)
-		return;
-	const EditorViewport& vp = m_viewports[std::clamp(m_vpBoxVp, 0,
-		kMaxViewports - 1)];
-	const float x0 = std::min(m_vpBoxX0, m_vpBoxX1);
-	const float x1 = std::max(m_vpBoxX0, m_vpBoxX1);
-	const float y0 = std::min(m_vpBoxY0, m_vpBoxY1);
-	const float y1 = std::max(m_vpBoxY0, m_vpBoxY1);
-	const smvk::Extent2D ext{ uint32_t(vp.rect.w), uint32_t(vp.rect.h) };
-	// A mesh node matches when its projected AABB intersects the box.
-	std::vector<uint32_t> hits;
-	const smvk::IteratorFlags req = smvk::IteratorFlags(
-		smvk::IteratorFlagBit_Renderable |
-		smvk::IteratorFlagBit_StaticVertexFmt);
-	m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-		if (!IsVisibleNode(m_world->scene, int(item.node)))
-			return;
-		const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
-		if (!mesh)
-			return;
-		const glm::mat4& model = m_world->scene.globalTransform[item.node];
-		float sx0 = FLT_MAX, sy0 = FLT_MAX, sx1 = -FLT_MAX, sy1 = -FLT_MAX;
-		for (int k = 0; k < 8; ++k) {
-			const glm::vec3 corner(
-				(k & 1) ? mesh->geometry.aabbMax.x : mesh->geometry.aabbMin.x,
-				(k & 2) ? mesh->geometry.aabbMax.y : mesh->geometry.aabbMin.y,
-				(k & 4) ? mesh->geometry.aabbMax.z : mesh->geometry.aabbMin.z);
-			const glm::vec4 c = vp.viewProj * model * glm::vec4(corner, 1.0f);
-			if (c.w <= 1e-6f)
-				return; // behind the camera: skip
-			const float px = (c.x / c.w * 0.5f + 0.5f) * float(ext.width);
-			const float py = (c.y / c.w * 0.5f + 0.5f) * float(ext.height);
-			sx0 = std::min(sx0, px); sx1 = std::max(sx1, px);
-			sy0 = std::min(sy0, py); sy1 = std::max(sy1, py);
-		}
-		if (sx1 < x0 || sx0 > x1 || sy1 < y0 || sy0 > y1)
-			return;
-		hits.push_back(item.node);
-	});
-	if (!m_vpBoxAdditive)
-		m_selection.clear();
-	for (uint32_t n : hits)
-		if (!IsSelected(n))
-			m_selection.push_back(n);
-	// Primary: keep the previous primary when still selected, else first.
-	if (!IsSelected(m_selected))
-		m_selected = m_selection.empty() ? UINT32_MAX : m_selection.back();
-	ClearSubSelection(); // box select is node-level (mesh mode)
-	if (!m_selection.empty())
-		Log("Box select: " + std::to_string(m_selection.size()) +
-			" node(s) selected.");
+    if (!m_world)
+        return;
+    const EditorViewport& vp = m_viewports[std::clamp(m_vpBoxVp, 0, kMaxViewports - 1)];
+    const float x0 = std::min(m_vpBoxX0, m_vpBoxX1);
+    const float x1 = std::max(m_vpBoxX0, m_vpBoxX1);
+    const float y0 = std::min(m_vpBoxY0, m_vpBoxY1);
+    const float y1 = std::max(m_vpBoxY0, m_vpBoxY1);
+    const smvk::Extent2D ext{uint32_t(vp.rect.w), uint32_t(vp.rect.h)};
+    // A mesh node matches when its projected AABB intersects the box.
+    std::vector<uint32_t> hits;
+    const smvk::IteratorFlags req = smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
+                                                        smvk::IteratorFlagBit_StaticVertexFmt);
+    m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+        if (!IsVisibleNode(m_world->scene, int(item.node)))
+            return;
+        const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+        if (!mesh)
+            return;
+        const glm::mat4& model = m_world->scene.globalTransform[item.node];
+        float sx0 = FLT_MAX, sy0 = FLT_MAX, sx1 = -FLT_MAX, sy1 = -FLT_MAX;
+        for (int k = 0; k < 8; ++k) {
+            const glm::vec3 corner((k & 1) ? mesh->geometry.aabbMax.x : mesh->geometry.aabbMin.x,
+                                   (k & 2) ? mesh->geometry.aabbMax.y : mesh->geometry.aabbMin.y,
+                                   (k & 4) ? mesh->geometry.aabbMax.z : mesh->geometry.aabbMin.z);
+            const glm::vec4 c = vp.viewProj * model * glm::vec4(corner, 1.0f);
+            if (c.w <= 1e-6f)
+                return; // behind the camera: skip
+            const float px = (c.x / c.w * 0.5f + 0.5f) * float(ext.width);
+            const float py = (c.y / c.w * 0.5f + 0.5f) * float(ext.height);
+            sx0 = std::min(sx0, px);
+            sx1 = std::max(sx1, px);
+            sy0 = std::min(sy0, py);
+            sy1 = std::max(sy1, py);
+        }
+        if (sx1 < x0 || sx0 > x1 || sy1 < y0 || sy0 > y1)
+            return;
+        hits.push_back(item.node);
+    });
+    if (!m_vpBoxAdditive)
+        m_selection.clear();
+    for (uint32_t n : hits)
+        if (!IsSelected(n))
+            m_selection.push_back(n);
+    // Primary: keep the previous primary when still selected, else first.
+    if (!IsSelected(m_selected))
+        m_selected = m_selection.empty() ? UINT32_MAX : m_selection.back();
+    ClearSubSelection(); // box select is node-level (mesh mode)
+    if (!m_selection.empty())
+        Log("Box select: " + std::to_string(m_selection.size()) + " node(s) selected.");
 }
 
 void EditorApp::DrawViewportChrome() {
-	// Borders + per-viewport label (camera combo) + the rubber-band box.
-	// BACKGROUND list, not foreground: both composite above the Vulkan 3D
-	// scene, but the foreground list renders above EVERY ImGui window —
-	// the active viewport's (brighter, 2px) selection border painted over
-	// panels, combo dropdowns and tooltips touching the viewport edge.
-	// On the background list the chrome stays under all windows (a 1px
-	// edge spill hides beneath the abutting sibling panel, which is
-	// correct — panels are siblings, never covered by viewport chrome).
-	ImDrawList* dl = ImGui::GetBackgroundDrawList();
-	// Scene viewport rectangles are primary-window-local; ImGui draw lists
-	// and SetNextWindowPos use desktop/global screen coordinates.
-	const ImVec2 origin = ImGui::GetMainViewport()->Pos;
-	const int count = ViewportCount();
-	for (int i = 0; i < count; ++i) {
-		const EditorViewport& vp = m_viewports[i];
-		const bool active = (i == m_activeVp);
-		dl->AddRect(ImVec2(origin.x + vp.rect.x, origin.y + vp.rect.y),
-			ImVec2(origin.x + vp.rect.x + vp.rect.w,
-				origin.y + vp.rect.y + vp.rect.h),
-			active ? IM_COL32(120, 200, 255, 220) : IM_COL32(70, 70, 76, 180),
-			0.0f, 0, active ? 2.0f : 1.0f);
-	}
-	// ASSET DROP TARGETS: while an asset drag is in flight (the browser's
-	// mesh/material tiles), a transparent window covers each visible
-	// viewport — drop a MESH asset to add a scene reference, a MATERIAL
-	// asset to assign it to the selection. The overlay exists ONLY
-	// during the drag (no clicks consumed otherwise; the highlight tint
-	// shows the drop zone).
-	if (const ImGuiPayload* payload = ImGui::GetDragDropPayload()) {
-		const bool isMesh = payload->IsDataType("VT_ASSET_MESH");
-		const bool isMat = payload->IsDataType("VT_ASSET_MAT");
-		if (isMesh || isMat) {
-			for (int i = 0; i < count; ++i) {
-				const EditorViewport& vp = m_viewports[i];
-				ImGui::SetNextWindowPos(
-					ImVec2(origin.x + vp.rect.x,
-						origin.y + vp.rect.y), ImGuiCond_Always);
-				ImGui::SetNextWindowSize(
-					ImVec2(vp.rect.w, vp.rect.h), ImGuiCond_Always);
-				ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
-					ImVec2(0, 0));
-				ImGui::PushStyleColor(ImGuiCol_WindowBg,
-					(i == m_activeVp) ? ImVec4(0.25f, 0.45f, 0.7f, 0.25f)
-					: ImVec4(0.2f, 0.2f, 0.25f, 0.2f));
-				char wname[48];
-				std::snprintf(wname, sizeof(wname), "##assetdrop%d", i);
-				if (ImGui::Begin(wname, nullptr,
-						ImGuiWindowFlags_NoDecoration |
-						ImGuiWindowFlags_NoMove |
-						ImGuiWindowFlags_NoSavedSettings |
-						ImGuiWindowFlags_NoBringToFrontOnFocus)) {
-					ImGui::InvisibleButton("##drop",
-						ImVec2(vp.rect.w, vp.rect.h));
-					if (ImGui::BeginDragDropTarget()) {
-						if (const ImGuiPayload* accepted =
-								ImGui::AcceptDragDropPayload(
-									isMesh ? "VT_ASSET_MESH"
-									: "VT_ASSET_MAT")) {
-							const char* p =
-								static_cast<const char*>(
-									accepted->Data);
-							const std::string asset(p,
-								p + accepted->DataSize - 1);
-							if (isMesh) {
-								Log("Assets: dropping geometry asset '"
-									+ asset + "' - placing its content "
-									"(asset bind).");
-								AddSceneReference(asset, {}, true);
-							}
-							else {
-								AssignMaterialAsset(asset);
-							}
-						}
-						ImGui::EndDragDropTarget();
-					}
-				}
-				ImGui::End();
-				ImGui::PopStyleColor();
-				ImGui::PopStyleVar();
-			}
-		}
-	}
-	// Brush preview: clipped three-dimensional wire box in the viewport,
-	// using the same full-frustum clipper as other editor overlays.
-	if (m_volumeBrushArmed && m_world && m_volumeBrushVp >= 0 &&
-		m_volumeBrushVp < kMaxViewports) {
-		const EditorViewport& brushVp = m_viewports[m_volumeBrushVp];
-		const ViewportRect& rect = brushVp.rect;
-		const glm::vec3 a = m_volumeBrushStart;
-		const glm::vec3 b = m_volumeBrushEnd;
-		const float x0 = std::min(a.x, b.x), x1 = std::max(a.x, b.x);
-		const float z0 = std::min(a.z, b.z), z1 = std::max(a.z, b.z);
-		const float y0 = std::min(a.y, a.y + m_volumeBrushHeight);
-		const float y1 = std::max(a.y, a.y + m_volumeBrushHeight);
-		const glm::vec3 corners[8] = {
-			{x0,y0,z0}, {x1,y0,z0}, {x0,y0,z1}, {x1,y0,z1},
-			{x0,y1,z0}, {x1,y1,z0}, {x0,y1,z1}, {x1,y1,z1}
-		};
-		dl->PushClipRect(OverlayScreenPx(rect.x, rect.y),
-			OverlayScreenPx(rect.x + rect.w, rect.y + rect.h), true);
-		for (int i = 0; i < 8; ++i)
-			for (int axis = 0; axis < 3; ++axis) {
-				const int j = i ^ (1 << axis);
-				if (i >= j) continue;
-				glm::vec4 p, q;
-				if (ClipSegmentToCamera(brushVp.viewProj, corners[i],
-					corners[j], p, q))
-					dl->AddLine(OverlayPx(p, rect), OverlayPx(q, rect),
-						IM_COL32(80, 230, 170, 240), 2.0f);
-			}
-		const char* hint = m_volumeBrushStage == 0 ? "Drag width (X)" :
-			m_volumeBrushStage == 1 ? "Drag depth (Z)" : "Drag height (Y)";
-		dl->AddText(OverlayScreenPx(rect.x + 14.0f, rect.y + 30.0f),
-			IM_COL32(80, 230, 170, 255), hint);
-		dl->PopClipRect();
-	}
-	// World-space brush footprint for terrain and scatter painting. Use
-	// the same scene raycast as stamping, not a fixed pixel-size cursor.
-	if (m_world && (m_paintTerrain || m_paintScatter)) {
-		const int index = m_activeVp;
-		const EditorViewport& brushVp = m_viewports[index];
-		const ViewportRect& rect = brushVp.rect;
-		const float x = float(m_input.getMouseX()) - rect.x;
-		const float y = float(m_input.getMouseY()) - rect.y;
-		if (x >= 0 && y >= 0 && x < rect.w && y < rect.h) {
-			const smvk::Extent2D ext{uint32_t(rect.w), uint32_t(rect.h)};
-			glm::vec3 origin;
-			const glm::vec3 dir = MouseRay(x, y, ext, brushVp.viewProj, origin);
-			glm::vec3 center{};
-			bool found = false;
-			const smvk::placement::HeightfieldData* field = nullptr;
-			float radius = m_paintTerrain ? m_paintRadius : m_scatterBrushRadius;
-			if (m_paintScatter) {
-				if (m_placement.preview.domainKind ==
-					smvk::placement::DomainKind::Heightfield &&
-					m_placement.preview.terrainField.width > 1)
-					field = &m_placement.preview.terrainField;
-			} else {
-				const uint32_t group = TerrainGroupOf(m_selected);
-				const auto it = m_terrainGroups.find(group);
-				if (it != m_terrainGroups.end())
-					field = &it->second.data.heights;
-			}
-			float t = 0;
-			if (field && smvk::placement::TerrainRaycast(
-					*field, origin, dir, 5000.0f, t)) {
-				center = origin + dir * t;
-				found = true;
-			} else if (m_paintScatter && std::fabs(dir.y) > 1e-5f) {
-				const float h = m_placement.preview.domainKind ==
-					smvk::placement::DomainKind::Grid
-					? m_placement.preview.grid.origin.y : 0.0f;
-				const float planeT = (h - origin.y) / dir.y;
-				if (planeT > 0) { center = origin + dir * planeT; found = true; }
-			}
-			if (found) {
-				dl->PushClipRect(OverlayScreenPx(rect.x, rect.y),
-					OverlayScreenPx(rect.x + rect.w, rect.y + rect.h), true);
-				constexpr int segments = 40;
-				for (int k = 0; k < segments; ++k) {
-					const float a = float(k) * (6.283185307f / segments);
-					const float b = float(k + 1) * (6.283185307f / segments);
-					glm::vec3 p = center + glm::vec3(std::cos(a) * radius,
-						0, std::sin(a) * radius);
-					glm::vec3 q = center + glm::vec3(std::cos(b) * radius,
-						0, std::sin(b) * radius);
-					if (field) {
-						p.y = field->sampleHeight(p.x, p.z);
-						q.y = field->sampleHeight(q.x, q.z);
-					}
-					glm::vec4 clipP, clipQ;
-					if (ClipSegmentToCamera(brushVp.viewProj, p, q, clipP, clipQ))
-						dl->AddLine(OverlayPx(clipP, rect),
-							OverlayPx(clipQ, rect),
-							m_paintScatter ? IM_COL32(96, 235, 168, 235)
-								: IM_COL32(255, 190, 80, 235), 2.0f);
-				}
-				dl->PopClipRect();
-			}
-		}
-	}
-	// Rubber-band box (window pixels), clipped to its viewport: a drag
-	// past the viewport edge used to paint the selection tint over the
-	// neighboring panels (same foreground-layer defect as the borders
-	// above — now background + clipped).
-	if (m_vpBoxDragging && m_vpBoxVp >= 0 && m_vpBoxVp < kMaxViewports) {
-		const ViewportRect& vp = m_viewports[m_vpBoxVp].rect;
-		dl->PushClipRect(OverlayScreenPx(vp.x, vp.y),
-			OverlayScreenPx(vp.x + vp.w, vp.y + vp.h), true);
-		const float bx0 = vp.x + std::min(m_vpBoxX0, m_vpBoxX1);
-		const float by0 = vp.y + std::min(m_vpBoxY0, m_vpBoxY1);
-		const float bx1 = vp.x + std::max(m_vpBoxX0, m_vpBoxX1);
-		const float by1 = vp.y + std::max(m_vpBoxY0, m_vpBoxY1);
-		dl->AddRectFilled(OverlayScreenPx(bx0, by0), OverlayScreenPx(bx1, by1),
-			IM_COL32(120, 200, 255, 28));
-		dl->AddRect(OverlayScreenPx(bx0, by0), OverlayScreenPx(bx1, by1),
-			IM_COL32(120, 200, 255, 200), 0.0f, 0, 1.5f);
-		dl->PopClipRect();
-	}
-	//// Per-viewport camera picker + VIEW TYPE chip (UV views are panel
-	//// types: any panel can show UV0/UV1/lightmap debug like a camera
-	//// view). Top-left inside each rect.
-	//for (int i = 0; i < count; ++i) {
-	//	EditorViewport& vp = m_viewports[i];
-	//	ImGui::SetNextWindowPos(
-	//		OverlayScreenPx(vp.rect.x + 8.0f, vp.rect.y + 8.0f), ImGuiCond_Always);
-	//	ImGui::SetNextWindowBgAlpha(1.0f);
-	//	ImGui::PushID(i);
-	//	char label[32];
-	//	std::snprintf(label, sizeof(label), "##vpchip%d", i);
-	//	if (ImGui::Begin(label, nullptr,
-	//		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-	//		ImGuiWindowFlags_NoSavedSettings |
-	//		ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoMove |
-	//		ImGuiWindowFlags_NoNav)) {
-	//		// Camera combo: free orbit cameras, or a locked look-through
-	//		// binding to a scene camera node (viewport follows the node
-	//		// until released back to an orbit camera).
-	//		std::string bindLabel;
-	//		bool bound = false;
-	//		uint32_t boundNode = UINT32_MAX;
-	//		if (vp.boundNode >= 0 && m_world
-	//			&& FindNodeCamera(uint32_t(vp.boundNode)) != nullptr) {
-	//			bound = true;
-	//			boundNode = uint32_t(vp.boundNode);
-	//			bindLabel = "Cam: "
-	//				+ getNodeName(m_world->scene, int(boundNode));
-	//		}
-	//		else {
-	//			bindLabel = m_editorCams[vp.camIdx].name;
-	//		}
-	//		if (ImGui::BeginCombo("##cam", bindLabel.c_str())) {
-	//			for (size_t c = 0; c < m_editorCams.size(); ++c)
-	//				if (ImGui::Selectable(m_editorCams[c].name.c_str(),
-	//						!bound && int(c) == vp.camIdx)) {
-	//					vp.camIdx = int(c);
-	//					vp.boundNode = -1;
-	//				}
-	//			// Scene cameras (hierarchy order, stable list).
-	//			if (m_world && !m_world->scene.tables.cameras.empty()) {
-	//				ImGui::Separator();
-	//				std::vector<uint32_t> camNodes;
-	//				for (const CameraRow& _row : m_world->scene.tables.cameras) {
-	//				const NodeId n = _row.node; (void)ci;
-	//					(void)ci;
-	//					if (n < m_world->scene.hierarchy.size()
-	//						&& !m_deletedNodes.contains(n))
-	//						camNodes.push_back(n);
-	//				}
-	//				std::sort(camNodes.begin(), camNodes.end());
-	//				for (uint32_t n : camNodes) {
-	//					const std::string item = "Cam: "
-	//						+ getNodeName(m_world->scene, int(n));
-	//					if (ImGui::Selectable(item.c_str(),
-	//							bound && boundNode == n)) {
-	//						vp.boundNode = int(n);
-	//						Log("Viewport " + std::to_string(i)
-	//							+ " look-through: '"
-	//							+ getNodeName(m_world->scene, int(n))
-	//							+ "' (#" + std::to_string(n) + ").");
-	//					}
-	//				}
-	//			}
-	//			else {
-	//				ImGui::TextDisabled("no scene cameras (Create > Camera)");
-	//			}
-	//			ImGui::EndCombo();
-	//		}
-	//		if (ImGui::IsItemHovered())
-	//			ImGui::SetTooltip(bound
-	//				? "Locked look-through: viewport follows the camera "
-	//				  "node (orbit nav parked; move the node instead). "
-	//				  "Pick an orbit camera to release."
-	//				: "Free orbit. Bind a scene camera node for locked "
-	//				  "look-through.");
-	//		if (bound) {
-	//			ImGui::SameLine();
-	//			ImGui::TextDisabled("[locked]");
-	//		}
-	//		ImGui::SameLine();
-	//		// View type combo (this panel's shading/debug view). Flat UV
-	//		// panes are not viewports anymore (separate UV editor
-	//		// window) — 3D modes only here.
-	//		if (ImGui::BeginCombo("##view", ViewModeName(vp.viewMode))) {
-	//			for (int m = 0; m <= int(ViewMode::Pom); ++m) {
-	//				const ViewMode vm = ViewMode(m);
-	//				if (vm == ViewMode::FlatUv0 || vm == ViewMode::FlatUv1)
-	//					continue;
-	//				// Atlas views need the loaded lightmap GPU layers.
-	//				if (ViewModeNeedsAtlas(vm) && !m_lmGpu)
-	//					continue;
-	//				if (ImGui::Selectable(ViewModeName(vm),
-	//						int(vp.viewMode) == m)) {
-	//					vp.viewMode = vm;
-	//					if (vp.viewMode == ViewMode::Meshlets &&
-	//						!m_meshletDebugHasData && !EnsureMeshletDebug())
-	//						Log("Meshlet view: no cooked meshlets in this "
-	//							"scene; meshes show as flat fallbacks.");
-	//				}
-	//			}
-	//			ImGui::EndCombo();
-	//		}
-	//		ImGui::SameLine();
-	//		// Selection-mode combo (Mesh/Face/Vertex highlight, Q radial).
-	//		if (ImGui::BeginCombo("##selmode", SelModeName(m_selMode))) {
-	//			for (int m = 0; m <= int(SelMode::Vertex); ++m) {
-	//				if (ImGui::Selectable(SelModeName(SelMode(m)),
-	//						int(m_selMode) == m)) {
-	//					m_selMode = SelMode(m);
-	//					ClearSubSelection();
-	//					Log(std::string("Selection mode: ") +
-	//						SelModeName(m_selMode) + " (highlight only).");
-	//				}
-	//			}
-	//			ImGui::EndCombo();
-	//		}
-	//		if (ImGui::IsItemHovered())
-	//			ImGui::SetTooltip("Q opens the selection radial.");
-	//	}
-	//	ImGui::End();
-	//	ImGui::PopID();
-	//}
-	// Convex GI volume preview (LIGHTING 'V': off/wireframe/solid).
-	DrawGiVolumePreviewOverlay();
-	DrawCaptureBallOverlay();
-	DrawBakeDensityOverlay();
-	DrawOctreePreviewOverlay();
-	DrawPlacementOverlay();
-	DrawSurfaceBrushOverlay();
+    // Borders + per-viewport label (camera combo) + the rubber-band box.
+    // BACKGROUND list, not foreground: both composite above the Vulkan 3D
+    // scene, but the foreground list renders above EVERY ImGui window —
+    // the active viewport's (brighter, 2px) selection border painted over
+    // panels, combo dropdowns and tooltips touching the viewport edge.
+    // On the background list the chrome stays under all windows (a 1px
+    // edge spill hides beneath the abutting sibling panel, which is
+    // correct — panels are siblings, never covered by viewport chrome).
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    // Scene viewport rectangles are primary-window-local; ImGui draw lists
+    // and SetNextWindowPos use desktop/global screen coordinates.
+    const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+    const int count = ViewportCount();
+    for (int i = 0; i < count; ++i) {
+        const EditorViewport& vp = m_viewports[i];
+        const bool active = (i == m_activeVp);
+        dl->AddRect(ImVec2(origin.x + vp.rect.x, origin.y + vp.rect.y),
+                    ImVec2(origin.x + vp.rect.x + vp.rect.w, origin.y + vp.rect.y + vp.rect.h),
+                    active ? IM_COL32(120, 200, 255, 220) : IM_COL32(70, 70, 76, 180),
+                    0.0f,
+                    0,
+                    active ? 2.0f : 1.0f);
+    }
+    // ASSET DROP TARGETS: while an asset drag is in flight (the browser's
+    // mesh/material tiles), a transparent window covers each visible
+    // viewport — drop a MESH asset to add a scene reference, a MATERIAL
+    // asset to assign it to the selection. The overlay exists ONLY
+    // during the drag (no clicks consumed otherwise; the highlight tint
+    // shows the drop zone).
+    if (const ImGuiPayload* payload = ImGui::GetDragDropPayload()) {
+        const bool isMesh = payload->IsDataType("VT_ASSET_MESH");
+        const bool isMat = payload->IsDataType("VT_ASSET_MAT");
+        if (isMesh || isMat) {
+            for (int i = 0; i < count; ++i) {
+                const EditorViewport& vp = m_viewports[i];
+                ImGui::SetNextWindowPos(ImVec2(origin.x + vp.rect.x, origin.y + vp.rect.y),
+                                        ImGuiCond_Always);
+                ImGui::SetNextWindowSize(ImVec2(vp.rect.w, vp.rect.h), ImGuiCond_Always);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+                ImGui::PushStyleColor(ImGuiCol_WindowBg,
+                                      (i == m_activeVp) ? ImVec4(0.25f, 0.45f, 0.7f, 0.25f)
+                                                        : ImVec4(0.2f, 0.2f, 0.25f, 0.2f));
+                char wname[48];
+                std::snprintf(wname, sizeof(wname), "##assetdrop%d", i);
+                if (ImGui::Begin(wname,
+                                 nullptr,
+                                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                     ImGuiWindowFlags_NoSavedSettings |
+                                     ImGuiWindowFlags_NoBringToFrontOnFocus)) {
+                    ImGui::InvisibleButton("##drop", ImVec2(vp.rect.w, vp.rect.h));
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* accepted = ImGui::AcceptDragDropPayload(
+                                isMesh ? "VT_ASSET_MESH" : "VT_ASSET_MAT")) {
+                            const char* p = static_cast<const char*>(accepted->Data);
+                            const std::string asset(p, p + accepted->DataSize - 1);
+                            if (isMesh) {
+                                Log("Assets: dropping geometry asset '" + asset +
+                                    "' - placing its content "
+                                    "(asset bind).");
+                                AddSceneReference(asset, {}, true);
+                            } else {
+                                AssignMaterialAsset(asset);
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                }
+                ImGui::End();
+                ImGui::PopStyleColor();
+                ImGui::PopStyleVar();
+            }
+        }
+    }
+    // Brush preview: clipped three-dimensional wire box in the viewport,
+    // using the same full-frustum clipper as other editor overlays.
+    if (m_volumeBrushArmed && m_world && m_volumeBrushVp >= 0 && m_volumeBrushVp < kMaxViewports) {
+        const EditorViewport& brushVp = m_viewports[m_volumeBrushVp];
+        const ViewportRect& rect = brushVp.rect;
+        const glm::vec3 a = m_volumeBrushStart;
+        const glm::vec3 b = m_volumeBrushEnd;
+        const float x0 = std::min(a.x, b.x), x1 = std::max(a.x, b.x);
+        const float z0 = std::min(a.z, b.z), z1 = std::max(a.z, b.z);
+        const float y0 = std::min(a.y, a.y + m_volumeBrushHeight);
+        const float y1 = std::max(a.y, a.y + m_volumeBrushHeight);
+        const glm::vec3 corners[8] = {{x0, y0, z0},
+                                      {x1, y0, z0},
+                                      {x0, y0, z1},
+                                      {x1, y0, z1},
+                                      {x0, y1, z0},
+                                      {x1, y1, z0},
+                                      {x0, y1, z1},
+                                      {x1, y1, z1}};
+        dl->PushClipRect(OverlayScreenPx(rect.x, rect.y),
+                         OverlayScreenPx(rect.x + rect.w, rect.y + rect.h),
+                         true);
+        for (int i = 0; i < 8; ++i)
+            for (int axis = 0; axis < 3; ++axis) {
+                const int j = i ^ (1 << axis);
+                if (i >= j)
+                    continue;
+                glm::vec4 p, q;
+                if (ClipSegmentToCamera(brushVp.viewProj, corners[i], corners[j], p, q))
+                    dl->AddLine(
+                        OverlayPx(p, rect), OverlayPx(q, rect), IM_COL32(80, 230, 170, 240), 2.0f);
+            }
+        const char* hint = m_volumeBrushStage == 0   ? "Drag width (X)"
+                           : m_volumeBrushStage == 1 ? "Drag depth (Z)"
+                                                     : "Drag height (Y)";
+        dl->AddText(
+            OverlayScreenPx(rect.x + 14.0f, rect.y + 30.0f), IM_COL32(80, 230, 170, 255), hint);
+        dl->PopClipRect();
+    }
+    // World-space brush footprint for terrain and scatter painting. Use
+    // the same scene raycast as stamping, not a fixed pixel-size cursor.
+    if (m_world && (m_paintTerrain || m_paintScatter)) {
+        const int index = m_activeVp;
+        const EditorViewport& brushVp = m_viewports[index];
+        const ViewportRect& rect = brushVp.rect;
+        const float x = float(m_input.getMouseX()) - rect.x;
+        const float y = float(m_input.getMouseY()) - rect.y;
+        if (x >= 0 && y >= 0 && x < rect.w && y < rect.h) {
+            const smvk::Extent2D ext{uint32_t(rect.w), uint32_t(rect.h)};
+            glm::vec3 origin;
+            const glm::vec3 dir = MouseRay(x, y, ext, brushVp.viewProj, origin);
+            glm::vec3 center{};
+            bool found = false;
+            const smvk::placement::HeightfieldData* field = nullptr;
+            float radius = m_paintTerrain ? m_paintRadius : m_scatterBrushRadius;
+            if (m_paintScatter) {
+                if (m_placement.preview.domainKind == smvk::placement::DomainKind::Heightfield &&
+                    m_placement.preview.terrainField.width > 1)
+                    field = &m_placement.preview.terrainField;
+            } else {
+                const uint32_t group = TerrainGroupOf(m_selected);
+                const auto it = m_terrainGroups.find(group);
+                if (it != m_terrainGroups.end())
+                    field = &it->second.data.heights;
+            }
+            float t = 0;
+            if (field && smvk::placement::TerrainRaycast(*field, origin, dir, 5000.0f, t)) {
+                center = origin + dir * t;
+                found = true;
+            } else if (m_paintScatter && std::fabs(dir.y) > 1e-5f) {
+                const float h = m_placement.preview.domainKind == smvk::placement::DomainKind::Grid
+                                    ? m_placement.preview.grid.origin.y
+                                    : 0.0f;
+                const float planeT = (h - origin.y) / dir.y;
+                if (planeT > 0) {
+                    center = origin + dir * planeT;
+                    found = true;
+                }
+            }
+            if (found) {
+                dl->PushClipRect(OverlayScreenPx(rect.x, rect.y),
+                                 OverlayScreenPx(rect.x + rect.w, rect.y + rect.h),
+                                 true);
+                constexpr int segments = 40;
+                for (int k = 0; k < segments; ++k) {
+                    const float a = float(k) * (6.283185307f / segments);
+                    const float b = float(k + 1) * (6.283185307f / segments);
+                    glm::vec3 p = center + glm::vec3(std::cos(a) * radius, 0, std::sin(a) * radius);
+                    glm::vec3 q = center + glm::vec3(std::cos(b) * radius, 0, std::sin(b) * radius);
+                    if (field) {
+                        p.y = field->sampleHeight(p.x, p.z);
+                        q.y = field->sampleHeight(q.x, q.z);
+                    }
+                    glm::vec4 clipP, clipQ;
+                    if (ClipSegmentToCamera(brushVp.viewProj, p, q, clipP, clipQ))
+                        dl->AddLine(OverlayPx(clipP, rect),
+                                    OverlayPx(clipQ, rect),
+                                    m_paintScatter ? IM_COL32(96, 235, 168, 235)
+                                                   : IM_COL32(255, 190, 80, 235),
+                                    2.0f);
+                }
+                dl->PopClipRect();
+            }
+        }
+    }
+    // Rubber-band box (window pixels), clipped to its viewport: a drag
+    // past the viewport edge used to paint the selection tint over the
+    // neighboring panels (same foreground-layer defect as the borders
+    // above — now background + clipped).
+    if (m_vpBoxDragging && m_vpBoxVp >= 0 && m_vpBoxVp < kMaxViewports) {
+        const ViewportRect& vp = m_viewports[m_vpBoxVp].rect;
+        dl->PushClipRect(
+            OverlayScreenPx(vp.x, vp.y), OverlayScreenPx(vp.x + vp.w, vp.y + vp.h), true);
+        const float bx0 = vp.x + std::min(m_vpBoxX0, m_vpBoxX1);
+        const float by0 = vp.y + std::min(m_vpBoxY0, m_vpBoxY1);
+        const float bx1 = vp.x + std::max(m_vpBoxX0, m_vpBoxX1);
+        const float by1 = vp.y + std::max(m_vpBoxY0, m_vpBoxY1);
+        dl->AddRectFilled(
+            OverlayScreenPx(bx0, by0), OverlayScreenPx(bx1, by1), IM_COL32(120, 200, 255, 28));
+        dl->AddRect(OverlayScreenPx(bx0, by0),
+                    OverlayScreenPx(bx1, by1),
+                    IM_COL32(120, 200, 255, 200),
+                    0.0f,
+                    0,
+                    1.5f);
+        dl->PopClipRect();
+    }
+    //// Per-viewport camera picker + VIEW TYPE chip (UV views are panel
+    //// types: any panel can show UV0/UV1/lightmap debug like a camera
+    //// view). Top-left inside each rect.
+    // for (int i = 0; i < count; ++i) {
+    //	EditorViewport& vp = m_viewports[i];
+    //	ImGui::SetNextWindowPos(
+    //		OverlayScreenPx(vp.rect.x + 8.0f, vp.rect.y + 8.0f), ImGuiCond_Always);
+    //	ImGui::SetNextWindowBgAlpha(1.0f);
+    //	ImGui::PushID(i);
+    //	char label[32];
+    //	std::snprintf(label, sizeof(label), "##vpchip%d", i);
+    //	if (ImGui::Begin(label, nullptr,
+    //		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+    //		ImGuiWindowFlags_NoSavedSettings |
+    //		ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoMove |
+    //		ImGuiWindowFlags_NoNav)) {
+    //		// Camera combo: free orbit cameras, or a locked look-through
+    //		// binding to a scene camera node (viewport follows the node
+    //		// until released back to an orbit camera).
+    //		std::string bindLabel;
+    //		bool bound = false;
+    //		uint32_t boundNode = UINT32_MAX;
+    //		if (vp.boundNode >= 0 && m_world
+    //			&& FindNodeCamera(uint32_t(vp.boundNode)) != nullptr) {
+    //			bound = true;
+    //			boundNode = uint32_t(vp.boundNode);
+    //			bindLabel = "Cam: "
+    //				+ getNodeName(m_world->scene, int(boundNode));
+    //		}
+    //		else {
+    //			bindLabel = m_editorCams[vp.camIdx].name;
+    //		}
+    //		if (ImGui::BeginCombo("##cam", bindLabel.c_str())) {
+    //			for (size_t c = 0; c < m_editorCams.size(); ++c)
+    //				if (ImGui::Selectable(m_editorCams[c].name.c_str(),
+    //						!bound && int(c) == vp.camIdx)) {
+    //					vp.camIdx = int(c);
+    //					vp.boundNode = -1;
+    //				}
+    //			// Scene cameras (hierarchy order, stable list).
+    //			if (m_world && !m_world->scene.tables.cameras.empty()) {
+    //				ImGui::Separator();
+    //				std::vector<uint32_t> camNodes;
+    //				for (const CameraRow& _row : m_world->scene.tables.cameras) {
+    //				const NodeId n = _row.node; (void)ci;
+    //					(void)ci;
+    //					if (n < m_world->scene.hierarchy.size()
+    //						&& !m_deletedNodes.contains(n))
+    //						camNodes.push_back(n);
+    //				}
+    //				std::sort(camNodes.begin(), camNodes.end());
+    //				for (uint32_t n : camNodes) {
+    //					const std::string item = "Cam: "
+    //						+ getNodeName(m_world->scene, int(n));
+    //					if (ImGui::Selectable(item.c_str(),
+    //							bound && boundNode == n)) {
+    //						vp.boundNode = int(n);
+    //						Log("Viewport " + std::to_string(i)
+    //							+ " look-through: '"
+    //							+ getNodeName(m_world->scene, int(n))
+    //							+ "' (#" + std::to_string(n) + ").");
+    //					}
+    //				}
+    //			}
+    //			else {
+    //				ImGui::TextDisabled("no scene cameras (Create > Camera)");
+    //			}
+    //			ImGui::EndCombo();
+    //		}
+    //		if (ImGui::IsItemHovered())
+    //			ImGui::SetTooltip(bound
+    //				? "Locked look-through: viewport follows the camera "
+    //				  "node (orbit nav parked; move the node instead). "
+    //				  "Pick an orbit camera to release."
+    //				: "Free orbit. Bind a scene camera node for locked "
+    //				  "look-through.");
+    //		if (bound) {
+    //			ImGui::SameLine();
+    //			ImGui::TextDisabled("[locked]");
+    //		}
+    //		ImGui::SameLine();
+    //		// View type combo (this panel's shading/debug view). Flat UV
+    //		// panes are not viewports anymore (separate UV editor
+    //		// window) — 3D modes only here.
+    //		if (ImGui::BeginCombo("##view", ViewModeName(vp.viewMode))) {
+    //			for (int m = 0; m <= int(ViewMode::Pom); ++m) {
+    //				const ViewMode vm = ViewMode(m);
+    //				if (vm == ViewMode::FlatUv0 || vm == ViewMode::FlatUv1)
+    //					continue;
+    //				// Atlas views need the loaded lightmap GPU layers.
+    //				if (ViewModeNeedsAtlas(vm) && !m_lmGpu)
+    //					continue;
+    //				if (ImGui::Selectable(ViewModeName(vm),
+    //						int(vp.viewMode) == m)) {
+    //					vp.viewMode = vm;
+    //					if (vp.viewMode == ViewMode::Meshlets &&
+    //						!m_meshletDebugHasData && !EnsureMeshletDebug())
+    //						Log("Meshlet view: no cooked meshlets in this "
+    //							"scene; meshes show as flat fallbacks.");
+    //				}
+    //			}
+    //			ImGui::EndCombo();
+    //		}
+    //		ImGui::SameLine();
+    //		// Selection-mode combo (Mesh/Face/Vertex highlight, Q radial).
+    //		if (ImGui::BeginCombo("##selmode", SelModeName(m_selMode))) {
+    //			for (int m = 0; m <= int(SelMode::Vertex); ++m) {
+    //				if (ImGui::Selectable(SelModeName(SelMode(m)),
+    //						int(m_selMode) == m)) {
+    //					m_selMode = SelMode(m);
+    //					ClearSubSelection();
+    //					Log(std::string("Selection mode: ") +
+    //						SelModeName(m_selMode) + " (highlight only).");
+    //				}
+    //			}
+    //			ImGui::EndCombo();
+    //		}
+    //		if (ImGui::IsItemHovered())
+    //			ImGui::SetTooltip("Q opens the selection radial.");
+    //	}
+    //	ImGui::End();
+    //	ImGui::PopID();
+    // }
+    //  Convex GI volume preview (LIGHTING 'V': off/wireframe/solid).
+    DrawGiVolumePreviewOverlay();
+    DrawCaptureBallOverlay();
+    DrawBakeDensityOverlay();
+    DrawOctreePreviewOverlay();
+    DrawPlacementOverlay();
+    DrawSurfaceBrushOverlay();
 }
 
 // X-ray preview of the convex GI volumes (probes-only pivot): each
@@ -814,162 +810,165 @@ void EditorApp::DrawViewportChrome() {
 // gizmo batches instead — depth-tested scene objects, all view
 // modes): name + priority at the box center, same priority hue.
 void EditorApp::DrawGiVolumePreviewOverlay() {
-	// MODAL: GI authoring previews belong to LIGHTING mode.
-	if (m_mode != EditorMode::Lighting)
-		return;
-	const bool showBaked = m_giVolumePreviewMode != 0
-		&& !m_giVolumePreviews.empty();
-	const bool showAuthored = m_showGiVolumeGizmos && m_world
-		&& !m_world->scene.tables.giVolumes.empty();
-	if (!showBaked && !showAuthored)
-		return;
-	ImDrawList* dl = ImGui::GetForegroundDrawList();
-	// Priority -> stable hue (stacked override volumes read at a glance).
-	const auto priorityColor = [](uint32_t priority, int alpha) {
-		const float hue = std::fmod(float(priority) * 0.13f, 1.0f);
-		ImColor c = ImColor::HSV(hue, 0.7f, 1.0f);
-		c.Value.w = float(alpha) / 255.0f;
-		return (ImU32)c;
-	};
-	for (int i = 0; i < ViewportCount(); ++i) {
-		const EditorViewport& vp = m_viewports[i];
-		const glm::mat4 vpm = vp.viewProj;
-		const auto project = [&](const glm::vec3& w, ImVec2& out) {
-			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
-			if (c.w <= 1e-6f)
-				return false; // behind the camera (perspective)
-			if (!OverlayPointVisible(c))
-				return false; // outside the projection's clip volume
-			out.x = ImGui::GetMainViewport()->Pos.x + vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
-			out.y = ImGui::GetMainViewport()->Pos.y + vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
-			return true;
-		};
-		dl->PushClipRect(OverlayScreenPx(vp.rect.x, vp.rect.y),
-			OverlayScreenPx(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
-		if (showBaked)
-		for (const GiVolumePreview& cv : m_giVolumePreviews) {
-			const ImU32 wire = priorityColor(cv.priority, 220);
-			const ImU32 fill = priorityColor(cv.priority, 42);
-			for (const auto& poly : cv.polys) {
-				if (poly.size() < 3)
-					continue;
-				// Wire edges: NEAR-CLIPPED per segment (ClipSegmentToCamera)
-				// - the old both-endpoints-projected test dropped whole
-				// edges crossing the camera plane, cutting the hull apart
-				// whenever a corner went behind the eye.
-				for (size_t k = 0; k < poly.size(); ++k) {
-					glm::vec4 c0, c1;
-					if (ClipSegmentToCamera(vpm, poly[k],
-							poly[(k + 1) % poly.size()], c0, c1))
-						dl->AddLine(OverlayPx(c0, vp.rect), OverlayPx(c1, vp.rect),
-							wire, 1.5f);
-				}
-			// Fill (mode 2): clip the whole polygon against the FULL clip
-			// volume (six planes, exact crossings), then fan - per-triangle
-			// projection dropped straddling faces whole. cp sized for the
-			// six-plane worst case: poly + 2 crossings per plane.
-			if (m_giVolumePreviewMode == 2 && poly.size() <= 38) {
-				glm::vec4 cp[64]; // 38 + 12 crossing headroom
-				size_t cn = 0;
-					if (ClipPolyToCamera(vpm, poly.data(), poly.size(),
-							cp, cn)) {
-						const ImVec2 p0 = OverlayPx(cp[0], vp.rect);
-						for (size_t k = 1; k + 1 < cn; ++k)
-							dl->AddTriangleFilled(p0, OverlayPx(cp[k], vp.rect),
-								OverlayPx(cp[k + 1], vp.rect), fill);
-					}
-				}
-			}
-			ImVec2 c;
-			if (project(cv.center, c)) {
-				char label[96];
-				std::snprintf(label, sizeof(label), "%s  p%u",
-					cv.name.c_str(), cv.priority);
-				dl->AddText(ImVec2(c.x + 4.0f, c.y - 8.0f), wire, label);
-			}
-			// Probe mode: the dense bake-lattice sample as SMALL
-			// OCTAHEDRA colored by the SG value (the probe's baked
-			// radiance — Σ of the 9 lobe luminances, the same scalar
-			// the [CV] coeffs readout prints). Zero/invalid probes go
-			// dark red (the coverage answer); bright octahedra in
-			// solid regions = visibility leaks (the Laplacian/dilation
-			// pulling bright across walls — the thing this mode exists
-			// to inspect at a glance). Strided to stay ImGui-cheap;
-			// the counts ride a per-volume caption.
-			if (m_giVolumePreviewMode == 3 && !cv.sampleState.empty()) {
-				auto lumRamp = [](float t) {
-					// t in [0,1] -> dark red -> orange -> yellow ->
-					// white (a heat ramp; t=0 zero radiance).
-					const int r = 90 + int(165 * t);
-					const int g = int(230 * t * t);
-					const int b = int(255 * t * t * t);
-					return IM_COL32(std::min(r, 255),
-						std::min(g, 255), std::min(b, 255), 230);
-				};
-				const float invMax = 1.0f / cv.sampleLumMax;
-				const glm::vec3 st(float(cv.sampleStep[0]),
-					float(cv.sampleStep[1]), float(cv.sampleStep[2]));
-				size_t si = 0;
-				for (uint32_t z = 0; z < cv.sampleCount[2]; ++z)
-					for (uint32_t y = 0; y < cv.sampleCount[1]; ++y)
-						for (uint32_t x = 0; x < cv.sampleCount[0];
-								++x, ++si) {
-							const glm::vec3 p = cv.gridMin
-								+ glm::vec3(float(x), float(y), float(z))
-								* st * cv.probeSpacing;
-							ImVec2 pt;
-							if (!project(p, pt))
-								continue;
-							const float t = cv.sampleLum[si] * invMax;
-							DrawProbeOctahedron(dl, pt,
-								m_probeMarkerSize,
-								cv.sampleState[si]
-									? lumRamp(std::sqrt(t))
-									: IM_COL32(70, 20, 20, 160));
-						}
-				if (si > 0) {
-					char cov[128];
-					std::snprintf(cov, sizeof(cov),
-						"%s: %llu/%llu voxels nonzero (step %ux%ux%u "
-						"octahedra, color = SG radiance)",
-						cv.name.c_str(),
-						(unsigned long long)cv.voxNonzero,
-						(unsigned long long)cv.voxTotal,
-						cv.sampleStep[0], cv.sampleStep[1],
-						cv.sampleStep[2]);
-					const float capY = 52.0f
-						+ 16.0f * (&cv - m_giVolumePreviews.data());
-					dl->AddText(OverlayScreenPx(vp.rect.x + 8.0f,
-						vp.rect.y + capY + 1.0f),
-						IM_COL32(0, 0, 0, 200), cov);
-					dl->AddText(OverlayScreenPx(vp.rect.x + 8.0f,
-						vp.rect.y + capY), IM_COL32_WHITE, cov);
-				}
-			}
-		}
-		if (showAuthored && m_world) {
-			// Authored boxes already draw as 3D gizmo wires; the
-			// overlay contributes the name/priority tag at the box
-			// center (same priority hue both places).
-			const Scene& scene = m_world->scene;
-			for (const GiVolumeRow& _row : scene.tables.giVolumes) {
-		const NodeId node = _row.node; const auto& def = _row.volume;
-				glm::vec3 mn, mx;
-				if (!GiVolumeBox(node, mn, mx))
-					continue;
-				ImVec2 c;
-				if (project((mn + mx) * 0.5f, c)) {
-					char label[128];
-					std::snprintf(label, sizeof(label), "%s  p%u",
-						getNodeName(scene, int(node)).c_str(),
-						def.priority);
-					dl->AddText(ImVec2(c.x + 4.0f, c.y - 8.0f),
-						priorityColor(def.priority, 220), label);
-				}
-			}
-		}
-		dl->PopClipRect();
-	}
+    // MODAL: GI authoring previews belong to LIGHTING mode.
+    if (m_mode != EditorMode::Lighting)
+        return;
+    const bool showBaked = m_giVolumePreviewMode != 0 && !m_giVolumePreviews.empty();
+    const bool showAuthored =
+        m_showGiVolumeGizmos && m_world && !m_world->scene.tables.giVolumes.empty();
+    if (!showBaked && !showAuthored)
+        return;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    // Priority -> stable hue (stacked override volumes read at a glance).
+    const auto priorityColor = [](uint32_t priority, int alpha) {
+        const float hue = std::fmod(float(priority) * 0.13f, 1.0f);
+        ImColor c = ImColor::HSV(hue, 0.7f, 1.0f);
+        c.Value.w = float(alpha) / 255.0f;
+        return (ImU32)c;
+    };
+    for (int i = 0; i < ViewportCount(); ++i) {
+        const EditorViewport& vp = m_viewports[i];
+        const glm::mat4 vpm = vp.viewProj;
+        const auto project = [&](const glm::vec3& w, ImVec2& out) {
+            const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
+            if (c.w <= 1e-6f)
+                return false; // behind the camera (perspective)
+            if (!OverlayPointVisible(c))
+                return false; // outside the projection's clip volume
+            out.x = ImGui::GetMainViewport()->Pos.x + vp.rect.x +
+                    (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
+            out.y = ImGui::GetMainViewport()->Pos.y + vp.rect.y +
+                    (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
+            return true;
+        };
+        dl->PushClipRect(OverlayScreenPx(vp.rect.x, vp.rect.y),
+                         OverlayScreenPx(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h),
+                         true);
+        if (showBaked)
+            for (const GiVolumePreview& cv : m_giVolumePreviews) {
+                const ImU32 wire = priorityColor(cv.priority, 220);
+                const ImU32 fill = priorityColor(cv.priority, 42);
+                for (const auto& poly : cv.polys) {
+                    if (poly.size() < 3)
+                        continue;
+                    // Wire edges: NEAR-CLIPPED per segment (ClipSegmentToCamera)
+                    // - the old both-endpoints-projected test dropped whole
+                    // edges crossing the camera plane, cutting the hull apart
+                    // whenever a corner went behind the eye.
+                    for (size_t k = 0; k < poly.size(); ++k) {
+                        glm::vec4 c0, c1;
+                        if (ClipSegmentToCamera(vpm, poly[k], poly[(k + 1) % poly.size()], c0, c1))
+                            dl->AddLine(OverlayPx(c0, vp.rect), OverlayPx(c1, vp.rect), wire, 1.5f);
+                    }
+                    // Fill (mode 2): clip the whole polygon against the FULL clip
+                    // volume (six planes, exact crossings), then fan - per-triangle
+                    // projection dropped straddling faces whole. cp sized for the
+                    // six-plane worst case: poly + 2 crossings per plane.
+                    if (m_giVolumePreviewMode == 2 && poly.size() <= 38) {
+                        glm::vec4 cp[64]; // 38 + 12 crossing headroom
+                        size_t cn = 0;
+                        if (ClipPolyToCamera(vpm, poly.data(), poly.size(), cp, cn)) {
+                            const ImVec2 p0 = OverlayPx(cp[0], vp.rect);
+                            for (size_t k = 1; k + 1 < cn; ++k)
+                                dl->AddTriangleFilled(p0,
+                                                      OverlayPx(cp[k], vp.rect),
+                                                      OverlayPx(cp[k + 1], vp.rect),
+                                                      fill);
+                        }
+                    }
+                }
+                ImVec2 c;
+                if (project(cv.center, c)) {
+                    char label[96];
+                    std::snprintf(label, sizeof(label), "%s  p%u", cv.name.c_str(), cv.priority);
+                    dl->AddText(ImVec2(c.x + 4.0f, c.y - 8.0f), wire, label);
+                }
+                // Probe mode: the dense bake-lattice sample as SMALL
+                // OCTAHEDRA colored by the SG value (the probe's baked
+                // radiance — Σ of the 9 lobe luminances, the same scalar
+                // the [CV] coeffs readout prints). Zero/invalid probes go
+                // dark red (the coverage answer); bright octahedra in
+                // solid regions = visibility leaks (the Laplacian/dilation
+                // pulling bright across walls — the thing this mode exists
+                // to inspect at a glance). Strided to stay ImGui-cheap;
+                // the counts ride a per-volume caption.
+                if (m_giVolumePreviewMode == 3 && !cv.sampleState.empty()) {
+                    auto lumRamp = [](float t) {
+                        // t in [0,1] -> dark red -> orange -> yellow ->
+                        // white (a heat ramp; t=0 zero radiance).
+                        const int r = 90 + int(165 * t);
+                        const int g = int(230 * t * t);
+                        const int b = int(255 * t * t * t);
+                        return IM_COL32(std::min(r, 255), std::min(g, 255), std::min(b, 255), 230);
+                    };
+                    const float invMax = 1.0f / cv.sampleLumMax;
+                    const glm::vec3 st(
+                        float(cv.sampleStep[0]), float(cv.sampleStep[1]), float(cv.sampleStep[2]));
+                    size_t si = 0;
+                    for (uint32_t z = 0; z < cv.sampleCount[2]; ++z)
+                        for (uint32_t y = 0; y < cv.sampleCount[1]; ++y)
+                            for (uint32_t x = 0; x < cv.sampleCount[0]; ++x, ++si) {
+                                const glm::vec3 p =
+                                    cv.gridMin +
+                                    glm::vec3(float(x), float(y), float(z)) * st * cv.probeSpacing;
+                                ImVec2 pt;
+                                if (!project(p, pt))
+                                    continue;
+                                const float t = cv.sampleLum[si] * invMax;
+                                DrawProbeOctahedron(dl,
+                                                    pt,
+                                                    m_probeMarkerSize,
+                                                    cv.sampleState[si] ? lumRamp(std::sqrt(t))
+                                                                       : IM_COL32(70, 20, 20, 160));
+                            }
+                    if (si > 0) {
+                        char cov[128];
+                        std::snprintf(cov,
+                                      sizeof(cov),
+                                      "%s: %llu/%llu voxels nonzero (step %ux%ux%u "
+                                      "octahedra, color = SG radiance)",
+                                      cv.name.c_str(),
+                                      (unsigned long long)cv.voxNonzero,
+                                      (unsigned long long)cv.voxTotal,
+                                      cv.sampleStep[0],
+                                      cv.sampleStep[1],
+                                      cv.sampleStep[2]);
+                        const float capY = 52.0f + 16.0f * (&cv - m_giVolumePreviews.data());
+                        dl->AddText(OverlayScreenPx(vp.rect.x + 8.0f, vp.rect.y + capY + 1.0f),
+                                    IM_COL32(0, 0, 0, 200),
+                                    cov);
+                        dl->AddText(OverlayScreenPx(vp.rect.x + 8.0f, vp.rect.y + capY),
+                                    IM_COL32_WHITE,
+                                    cov);
+                    }
+                }
+            }
+        if (showAuthored && m_world) {
+            // Authored boxes already draw as 3D gizmo wires; the
+            // overlay contributes the name/priority tag at the box
+            // center (same priority hue both places).
+            const Scene& scene = m_world->scene;
+            for (const GiVolumeRow& _row : scene.tables.giVolumes) {
+                const NodeId node = _row.node;
+                const auto& def = _row.volume;
+                glm::vec3 mn, mx;
+                if (!GiVolumeBox(node, mn, mx))
+                    continue;
+                ImVec2 c;
+                if (project((mn + mx) * 0.5f, c)) {
+                    char label[128];
+                    std::snprintf(label,
+                                  sizeof(label),
+                                  "%s  p%u",
+                                  getNodeName(scene, int(node)).c_str(),
+                                  def.priority);
+                    dl->AddText(
+                        ImVec2(c.x + 4.0f, c.y - 8.0f), priorityColor(def.priority, 220), label);
+                }
+            }
+        }
+        dl->PopClipRect();
+    }
 }
 
 // ---- octree PRECOOK visualization --------------------------------------
@@ -980,207 +979,234 @@ void EditorApp::DrawGiVolumePreviewOverlay() {
 // Partial-update model: UpdateOctreePreview() rebuilds the grid,
 // MarkOctreeDirty() dirties every tile (called on scene edits + cooks).
 void EditorApp::MarkOctreeDirty() {
-	for (OctreeTile& t : m_octreeTiles)
-		t.dirty = true;
+    for (OctreeTile& t : m_octreeTiles)
+        t.dirty = true;
 }
 
 void EditorApp::UpdateOctreePreview() {
-	m_octreeTiles.clear();
-	if (!m_world)
-		return;
-	// Scene AABB: node translations + authored GI volume boxes (so empty
-	// scenes still frame their volumes).
-	glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
-	bool any = false;
-	const Scene& scene = m_world->scene;
-	if (scene.globalTransform.size() == scene.hierarchy.size()) {
-		for (size_t n = 0; n < scene.globalTransform.size(); ++n) {
-			const glm::vec3 p(scene.globalTransform[n][3]);
-			if (!std::isfinite(p.x + p.y + p.z))
-				continue;
-			mn = glm::min(mn, p);
-			mx = glm::max(mx, p);
-			any = true;
-		}
-	}
-	for (const GiVolumeRow& _row : scene.tables.giVolumes) {
-		const NodeId node = _row.node; const auto& def = _row.volume;
-		glm::vec3 bmn, bmx;
-			if (!GiVolumeBox(node, bmn, bmx))
-			continue;
-		mn = glm::min(mn, bmn);
-		mx = glm::max(mx, bmx);
-		any = true;
-		(void)def;
-	}
-	if (!any) {
-		mn = glm::vec3(-8.0f);
-		mx = glm::vec3(8.0f);
-	}
-	// Pad one tile so captures on the boundary stay inside.
-	const float pad = std::max(m_octreeTileSize, 1.0f);
-	mn -= glm::vec3(pad);
-	mx += glm::vec3(pad);
-	m_octreeMn = mn;
-	m_octreeMx = mx;
-	const float ts = std::max(m_octreeTileSize, 0.5f);
-	const int nx = std::clamp(int((mx.x - mn.x) / ts) + 1, 1, 32);
-	const int ny = std::clamp(int((mx.y - mn.y) / ts) + 1, 1, 32);
-	const int nz = std::clamp(int((mx.z - mn.z) / ts) + 1, 1, 32);
-	if (nx * ny * nz > 4096) {
-		// Scene too large for a per-tile overlay at this size: keep
-		// the bounds box only (the GI panel says so).
-		Log("Octree preview: grid capped ("
-			+ std::to_string(nx * ny * nz) + " tiles) — bounds only.");
-		return;
-	}
-	m_octreeTiles.reserve(size_t(nx * ny * nz));
-	for (int ix = 0; ix < nx; ++ix)
-		for (int iy = 0; iy < ny; ++iy)
-			for (int iz = 0; iz < nz; ++iz) {
-				OctreeTile t;
-				t.mn = mn + glm::vec3(ix * ts, iy * ts, iz * ts);
-				t.mx = glm::min(t.mn + glm::vec3(ts), mx);
-				t.dirty = true; // fresh grid needs its bake
-				m_octreeTiles.push_back(t);
-			}
-	Log("Octree preview: " + std::to_string(m_octreeTiles.size())
-		+ " tiles (" + std::to_string(nx) + "x" + std::to_string(ny)
-		+ "x" + std::to_string(nz) + " @ " + std::to_string(ts)
-		+ "m) — all dirty.");
+    m_octreeTiles.clear();
+    if (!m_world)
+        return;
+    // Scene AABB: node translations + authored GI volume boxes (so empty
+    // scenes still frame their volumes).
+    glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
+    bool any = false;
+    const Scene& scene = m_world->scene;
+    if (scene.globalTransform.size() == scene.hierarchy.size()) {
+        for (size_t n = 0; n < scene.globalTransform.size(); ++n) {
+            const glm::vec3 p(scene.globalTransform[n][3]);
+            if (!std::isfinite(p.x + p.y + p.z))
+                continue;
+            mn = glm::min(mn, p);
+            mx = glm::max(mx, p);
+            any = true;
+        }
+    }
+    for (const GiVolumeRow& _row : scene.tables.giVolumes) {
+        const NodeId node = _row.node;
+        const auto& def = _row.volume;
+        glm::vec3 bmn, bmx;
+        if (!GiVolumeBox(node, bmn, bmx))
+            continue;
+        mn = glm::min(mn, bmn);
+        mx = glm::max(mx, bmx);
+        any = true;
+        (void)def;
+    }
+    if (!any) {
+        mn = glm::vec3(-8.0f);
+        mx = glm::vec3(8.0f);
+    }
+    // Pad one tile so captures on the boundary stay inside.
+    const float pad = std::max(m_octreeTileSize, 1.0f);
+    mn -= glm::vec3(pad);
+    mx += glm::vec3(pad);
+    m_octreeMn = mn;
+    m_octreeMx = mx;
+    const float ts = std::max(m_octreeTileSize, 0.5f);
+    const int nx = std::clamp(int((mx.x - mn.x) / ts) + 1, 1, 32);
+    const int ny = std::clamp(int((mx.y - mn.y) / ts) + 1, 1, 32);
+    const int nz = std::clamp(int((mx.z - mn.z) / ts) + 1, 1, 32);
+    if (nx * ny * nz > 4096) {
+        // Scene too large for a per-tile overlay at this size: keep
+        // the bounds box only (the GI panel says so).
+        Log("Octree preview: grid capped (" + std::to_string(nx * ny * nz) +
+            " tiles) — bounds only.");
+        return;
+    }
+    m_octreeTiles.reserve(size_t(nx * ny * nz));
+    for (int ix = 0; ix < nx; ++ix)
+        for (int iy = 0; iy < ny; ++iy)
+            for (int iz = 0; iz < nz; ++iz) {
+                OctreeTile t;
+                t.mn = mn + glm::vec3(ix * ts, iy * ts, iz * ts);
+                t.mx = glm::min(t.mn + glm::vec3(ts), mx);
+                t.dirty = true; // fresh grid needs its bake
+                m_octreeTiles.push_back(t);
+            }
+    Log("Octree preview: " + std::to_string(m_octreeTiles.size()) + " tiles (" +
+        std::to_string(nx) + "x" + std::to_string(ny) + "x" + std::to_string(nz) + " @ " +
+        std::to_string(ts) + "m) — all dirty.");
 }
 
 void EditorApp::DrawOctreePreviewOverlay() {
-	// MODAL: GI authoring previews belong to LIGHTING mode.
-	if (m_mode != EditorMode::Lighting)
-		return;
-	if (!m_octreePreviewOn || !m_world)
-		return;
-	ImDrawList* dl = ImGui::GetForegroundDrawList();
-	for (int i = 0; i < ViewportCount(); ++i) {
-		const EditorViewport& vp = m_viewports[i];
-		const glm::mat4 vpm = vp.viewProj;
-		dl->PushClipRect(OverlayScreenPx(vp.rect.x, vp.rect.y),
-			OverlayScreenPx(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
-		// Tiles: dirty = orange-red wire, clean = teal wire.
-		for (const OctreeTile& t : m_octreeTiles) {
-			const ImU32 col = t.dirty ? IM_COL32(255, 120, 40, 160)
-				: IM_COL32(60, 220, 200, 120);
-			const glm::vec3 c[8] = {
-				{ t.mn.x, t.mn.y, t.mn.z }, { t.mx.x, t.mn.y, t.mn.z },
-				{ t.mx.x, t.mx.y, t.mn.z }, { t.mn.x, t.mx.y, t.mn.z },
-				{ t.mn.x, t.mn.y, t.mx.z }, { t.mx.x, t.mn.y, t.mx.z },
-				{ t.mx.x, t.mx.y, t.mx.z }, { t.mn.x, t.mx.y, t.mx.z },
-			};
-			static const int kE[12][2] = { { 0, 1 }, { 1, 2 }, { 2, 3 },
-				{ 3, 0 }, { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
-				{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
-			for (const auto& e : kE) {
-				glm::vec4 c0, c1;
-				if (ClipSegmentToCamera(vpm, c[e[0]], c[e[1]], c0, c1))
-					dl->AddLine(OverlayPx(c0, vp.rect), OverlayPx(c1, vp.rect), col, 1.0f);
-			}
-		}
-		// World bounds: white wire.
-		{
-			const glm::vec3 mn = m_octreeMn, mx = m_octreeMx;
-			const glm::vec3 c[8] = {
-				{ mn.x, mn.y, mn.z }, { mx.x, mn.y, mn.z },
-				{ mx.x, mx.y, mn.z }, { mn.x, mx.y, mn.z },
-				{ mn.x, mn.y, mx.z }, { mx.x, mn.y, mx.z },
-				{ mx.x, mx.y, mx.z }, { mn.x, mx.y, mx.z },
-			};
-			static const int kE[12][2] = { { 0, 1 }, { 1, 2 }, { 2, 3 },
-				{ 3, 0 }, { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
-				{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
-			for (const auto& e : kE) {
-				glm::vec4 c0, c1;
-				if (ClipSegmentToCamera(vpm, c[e[0]], c[e[1]], c0, c1))
-					dl->AddLine(OverlayPx(c0, vp.rect), OverlayPx(c1, vp.rect),
-						IM_COL32(255, 255, 255, 200), 2.0f);
-			}
-		}
-		// Captures read through DrawCaptureBallOverlay (baked-aware balls,
-		// always on with the cubemap gizmos) — the precook grid draws
-		// tiles + bounds only so the two never double up.
-		dl->PopClipRect();
-	}
+    // MODAL: GI authoring previews belong to LIGHTING mode.
+    if (m_mode != EditorMode::Lighting)
+        return;
+    if (!m_octreePreviewOn || !m_world)
+        return;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    for (int i = 0; i < ViewportCount(); ++i) {
+        const EditorViewport& vp = m_viewports[i];
+        const glm::mat4 vpm = vp.viewProj;
+        dl->PushClipRect(OverlayScreenPx(vp.rect.x, vp.rect.y),
+                         OverlayScreenPx(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h),
+                         true);
+        // Tiles: dirty = orange-red wire, clean = teal wire.
+        for (const OctreeTile& t : m_octreeTiles) {
+            const ImU32 col = t.dirty ? IM_COL32(255, 120, 40, 160) : IM_COL32(60, 220, 200, 120);
+            const glm::vec3 c[8] = {
+                {t.mn.x, t.mn.y, t.mn.z},
+                {t.mx.x, t.mn.y, t.mn.z},
+                {t.mx.x, t.mx.y, t.mn.z},
+                {t.mn.x, t.mx.y, t.mn.z},
+                {t.mn.x, t.mn.y, t.mx.z},
+                {t.mx.x, t.mn.y, t.mx.z},
+                {t.mx.x, t.mx.y, t.mx.z},
+                {t.mn.x, t.mx.y, t.mx.z},
+            };
+            static const int kE[12][2] = {{0, 1},
+                                          {1, 2},
+                                          {2, 3},
+                                          {3, 0},
+                                          {4, 5},
+                                          {5, 6},
+                                          {6, 7},
+                                          {7, 4},
+                                          {0, 4},
+                                          {1, 5},
+                                          {2, 6},
+                                          {3, 7}};
+            for (const auto& e : kE) {
+                glm::vec4 c0, c1;
+                if (ClipSegmentToCamera(vpm, c[e[0]], c[e[1]], c0, c1))
+                    dl->AddLine(OverlayPx(c0, vp.rect), OverlayPx(c1, vp.rect), col, 1.0f);
+            }
+        }
+        // World bounds: white wire.
+        {
+            const glm::vec3 mn = m_octreeMn, mx = m_octreeMx;
+            const glm::vec3 c[8] = {
+                {mn.x, mn.y, mn.z},
+                {mx.x, mn.y, mn.z},
+                {mx.x, mx.y, mn.z},
+                {mn.x, mx.y, mn.z},
+                {mn.x, mn.y, mx.z},
+                {mx.x, mn.y, mx.z},
+                {mx.x, mx.y, mx.z},
+                {mn.x, mx.y, mx.z},
+            };
+            static const int kE[12][2] = {{0, 1},
+                                          {1, 2},
+                                          {2, 3},
+                                          {3, 0},
+                                          {4, 5},
+                                          {5, 6},
+                                          {6, 7},
+                                          {7, 4},
+                                          {0, 4},
+                                          {1, 5},
+                                          {2, 6},
+                                          {3, 7}};
+            for (const auto& e : kE) {
+                glm::vec4 c0, c1;
+                if (ClipSegmentToCamera(vpm, c[e[0]], c[e[1]], c0, c1))
+                    dl->AddLine(OverlayPx(c0, vp.rect),
+                                OverlayPx(c1, vp.rect),
+                                IM_COL32(255, 255, 255, 200),
+                                2.0f);
+            }
+        }
+        // Captures read through DrawCaptureBallOverlay (baked-aware balls,
+        // always on with the cubemap gizmos) — the precook grid draws
+        // tiles + bounds only so the two never double up.
+        dl->PopClipRect();
+    }
 }
 
 // Loaded cubemap probe rows parsed straight from the scene's bake
 // manifest (see the header): the same rows the renderer loads at runtime.
-bool EditorApp::CubemapProbeRowsFromFile(
-	std::vector<CubemapProbeRow>& out) const {
-	out.clear();
-	if (m_gltfPath.empty() && m_gltfHostPath.empty())
-		return false;
-	namespace fs = std::filesystem;
-	const std::string rel =
-		smvk::CubemapManifestVfsPath(SceneIdForHost());
-	std::vector<std::string> roots;
-	if (!m_projectRoot.empty())
-		roots.push_back(m_projectRoot);
-	roots.push_back("content");
-	for (const auto& root : roots) {
-		const fs::path host = fs::path(root) / fs::path(rel);
-		std::ifstream f(host, std::ios::binary | std::ios::ate);
-		if (!f)
-			continue;
-		const auto end = f.tellg();
-		if (end == std::ifstream::pos_type(-1) || end <= 0)
-			return false;
-		f.seekg(0);
-		std::string text(static_cast<size_t>(end), '\0');
-		if (!f.read(text.data(), static_cast<std::streamsize>(text.size())))
-			return false;
-		std::string mErr;
-		std::vector<smvk::CubemapManifestEntry> rows;
-		if (!smvk::CubemapManifestParse(text, rows, mErr))
-			return false;
-		out.reserve(rows.size());
-		for (const auto& row : rows) {
-			CubemapProbeRow r;
-			r.center = row.position;
-			r.influence = row.influenceRadius;
-			r.fade = row.fadeRadius;
-			out.push_back(r);
-		}
-		return !out.empty();
-	}
-	return false;
+bool EditorApp::CubemapProbeRowsFromFile(std::vector<CubemapProbeRow>& out) const {
+    out.clear();
+    if (m_gltfPath.empty() && m_gltfHostPath.empty())
+        return false;
+    namespace fs = std::filesystem;
+    const std::string rel = smvk::CubemapManifestVfsPath(SceneIdForHost());
+    std::vector<std::string> roots;
+    if (!m_projectRoot.empty())
+        roots.push_back(m_projectRoot);
+    roots.push_back("content");
+    for (const auto& root : roots) {
+        const fs::path host = fs::path(root) / fs::path(rel);
+        std::ifstream f(host, std::ios::binary | std::ios::ate);
+        if (!f)
+            continue;
+        const auto end = f.tellg();
+        if (end == std::ifstream::pos_type(-1) || end <= 0)
+            return false;
+        f.seekg(0);
+        std::string text(static_cast<size_t>(end), '\0');
+        if (!f.read(text.data(), static_cast<std::streamsize>(text.size())))
+            return false;
+        std::string mErr;
+        std::vector<smvk::CubemapManifestEntry> rows;
+        if (!smvk::CubemapManifestParse(text, rows, mErr))
+            return false;
+        out.reserve(rows.size());
+        for (const auto& row : rows) {
+            CubemapProbeRow r;
+            r.center = row.position;
+            r.influence = row.influenceRadius;
+            r.fade = row.fadeRadius;
+            out.push_back(r);
+        }
+        return !out.empty();
+    }
+    return false;
 }
 
 // Baked/unbaked census over the authored pins (overlay + cook dialog
 // share it so the readout and the balls can never disagree).
 void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
-	bakedOut = 0;
-	totalOut = 0;
-	if (!m_world)
-		return;
-	totalOut = m_world->scene.tables.cubemaps.size();
-	if (totalOut == 0)
-		return;
-	std::vector<CubemapProbeRow> rows;
-	if (!CubemapProbeRowsFromFile(rows))
-		return;
-	for (const CubemapRow& _row : m_world->scene.tables.cubemaps) {
-		const NodeId node = _row.node; const auto& def = _row.cubemap;
-		(void)def;
-		if (node >= m_world->scene.globalTransform.size())
-			continue;
-		const glm::vec3 p(m_world->scene.globalTransform[node][3]);
-		for (const auto& r : rows) {
-			if (glm::distance(p, r.center) < kCaptureBakeMatchM) {
-				++bakedOut;
-				break;
-			}
-		}
-	}
+    bakedOut = 0;
+    totalOut = 0;
+    if (!m_world)
+        return;
+    totalOut = m_world->scene.tables.cubemaps.size();
+    if (totalOut == 0)
+        return;
+    std::vector<CubemapProbeRow> rows;
+    if (!CubemapProbeRowsFromFile(rows))
+        return;
+    for (const CubemapRow& _row : m_world->scene.tables.cubemaps) {
+        const NodeId node = _row.node;
+        const auto& def = _row.cubemap;
+        (void)def;
+        if (node >= m_world->scene.globalTransform.size())
+            continue;
+        const glm::vec3 p(m_world->scene.globalTransform[node][3]);
+        for (const auto& r : rows) {
+            if (glm::distance(p, r.center) < kCaptureBakeMatchM) {
+                ++bakedOut;
+                break;
+            }
+        }
+    }
 }
 
 // Capture balls + App-parity probe overlay (LIGHTING mode only). Two
 // halves sharing one viewport walk:
-	//   1. LOADED probes (the bake manifest rows - see
+//   1. LOADED probes (the bake manifest rows - see
 //      CubemapProbeRowsFromFile): center dot + C<idx> +
 //      influence ring (solid) + fade ring (dim), camera-distance colored
 //      (green = inside influence, yellow = in fade, gray = out of range),
@@ -1200,207 +1226,211 @@ void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
 // the ~7 px marker size, where a wireframe would collapse into noise.
 // Same color table as the caller's dot (col passed through, only
 // shaded per face).
-void DrawProbeOctahedron(ImDrawList* dl, const ImVec2& cpt, float r,
-	ImU32 col) {
-	// Fixed view basis: camera on the +Z/+X/+Y side, looking at the
-	// origin (view = camera->origin; right/up span the screen).
-	const glm::vec3 view =
-		glm::normalize(glm::vec3(0.55f, 0.35f, 0.75f));
-	const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
-	const glm::vec3 right = glm::normalize(glm::cross(worldUp, view));
-	const glm::vec3 up = glm::cross(view, right);
-	const glm::vec3 v[6] = {
-		worldUp, -worldUp,                          // +Y -Y
-		glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(-1.0f, 0.0f, 0.0f), // +X -X
-		glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, 0.0f, -1.0f), // +Z -Z
-	};
-	ImVec2 p[6];
-	for (int k = 0; k < 6; ++k)
-		p[k] = ImVec2(cpt.x + glm::dot(v[k], right) * r,
-			cpt.y - glm::dot(v[k], up) * r); // screen Y grows down
-	// The 8 faces as vertex-index triples (mutually adjacent — no
-	// opposite pair in a triple): 4 around +Y, 4 around -Y.
-	static const int faces[8][3] = {
-		{0, 2, 4}, {0, 4, 3}, {0, 3, 5}, {0, 5, 2},
-		{1, 4, 2}, {1, 3, 4}, {1, 5, 3}, {1, 2, 5},
-	};
-	const glm::vec3 L = glm::normalize(glm::vec3(-0.35f, 0.75f, 0.55f));
-	int order[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
-	std::sort(order, order + 8, [&](int a, int b) {
-		const glm::vec3 ca =
-			v[faces[a][0]] + v[faces[a][1]] + v[faces[a][2]];
-		const glm::vec3 cb =
-			v[faces[b][0]] + v[faces[b][1]] + v[faces[b][2]];
-		return glm::dot(ca, view) > glm::dot(cb, view); // farthest first
-	});
-	// Face fill = the marker color scaled by the Lambert term (floor
-	// 0.4 so back faces stay a visible dark tint of the same hue).
-	const auto shade = [&](float k) {
-		return IM_COL32(
-			int(float((col >> IM_COL32_R_SHIFT) & 0xFF) * k),
-			int(float((col >> IM_COL32_G_SHIFT) & 0xFF) * k),
-			int(float((col >> IM_COL32_B_SHIFT) & 0xFF) * k),
-			int((col >> IM_COL32_A_SHIFT) & 0xFF));
-	};
-	for (int oi = 0; oi < 8; ++oi) {
-		const int* f = faces[order[oi]];
-		const glm::vec3 n = glm::normalize(v[f[0]] + v[f[1]] + v[f[2]]);
-		const float b = 0.4f + 0.6f
-			* std::max(0.0f, glm::dot(n, L));
-		dl->AddTriangleFilled(p[f[0]], p[f[1]], p[f[2]], shade(b));
-	}
+void DrawProbeOctahedron(ImDrawList* dl, const ImVec2& cpt, float r, ImU32 col) {
+    // Fixed view basis: camera on the +Z/+X/+Y side, looking at the
+    // origin (view = camera->origin; right/up span the screen).
+    const glm::vec3 view = glm::normalize(glm::vec3(0.55f, 0.35f, 0.75f));
+    const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+    const glm::vec3 right = glm::normalize(glm::cross(worldUp, view));
+    const glm::vec3 up = glm::cross(view, right);
+    const glm::vec3 v[6] = {
+        worldUp,
+        -worldUp, // +Y -Y
+        glm::vec3(1.0f, 0.0f, 0.0f),
+        glm::vec3(-1.0f, 0.0f, 0.0f), // +X -X
+        glm::vec3(0.0f, 0.0f, 1.0f),
+        glm::vec3(0.0f, 0.0f, -1.0f), // +Z -Z
+    };
+    ImVec2 p[6];
+    for (int k = 0; k < 6; ++k)
+        p[k] = ImVec2(cpt.x + glm::dot(v[k], right) * r,
+                      cpt.y - glm::dot(v[k], up) * r); // screen Y grows down
+    // The 8 faces as vertex-index triples (mutually adjacent — no
+    // opposite pair in a triple): 4 around +Y, 4 around -Y.
+    static const int faces[8][3] = {
+        {0, 2, 4},
+        {0, 4, 3},
+        {0, 3, 5},
+        {0, 5, 2},
+        {1, 4, 2},
+        {1, 3, 4},
+        {1, 5, 3},
+        {1, 2, 5},
+    };
+    const glm::vec3 L = glm::normalize(glm::vec3(-0.35f, 0.75f, 0.55f));
+    int order[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::sort(order, order + 8, [&](int a, int b) {
+        const glm::vec3 ca = v[faces[a][0]] + v[faces[a][1]] + v[faces[a][2]];
+        const glm::vec3 cb = v[faces[b][0]] + v[faces[b][1]] + v[faces[b][2]];
+        return glm::dot(ca, view) > glm::dot(cb, view); // farthest first
+    });
+    // Face fill = the marker color scaled by the Lambert term (floor
+    // 0.4 so back faces stay a visible dark tint of the same hue).
+    const auto shade = [&](float k) {
+        return IM_COL32(int(float((col >> IM_COL32_R_SHIFT) & 0xFF) * k),
+                        int(float((col >> IM_COL32_G_SHIFT) & 0xFF) * k),
+                        int(float((col >> IM_COL32_B_SHIFT) & 0xFF) * k),
+                        int((col >> IM_COL32_A_SHIFT) & 0xFF));
+    };
+    for (int oi = 0; oi < 8; ++oi) {
+        const int* f = faces[order[oi]];
+        const glm::vec3 n = glm::normalize(v[f[0]] + v[f[1]] + v[f[2]]);
+        const float b = 0.4f + 0.6f * std::max(0.0f, glm::dot(n, L));
+        dl->AddTriangleFilled(p[f[0]], p[f[1]], p[f[2]], shade(b));
+    }
 }
 
 void EditorApp::DrawCaptureBallOverlay() {
-	// MODAL: the light-authoring set shows only in LIGHTING mode.
-	if (m_mode != EditorMode::Lighting)
-		return;
-	if (!m_world)
-		return;
-	// Loaded probe rows (empty when no bake manifest - pins all read
-	// unbaked, probes draw nothing).
-	std::vector<CubemapProbeRow> rows;
-	CubemapProbeRowsFromFile(rows);
-	const bool showPins = m_showCubemapGizmos
-		&& !m_world->scene.tables.cubemaps.empty();
-	if (!m_showProbeOverlay && !showPins)
-		return;
-	const auto pinBaked = [&](const glm::vec3& p) {
-		for (const auto& r : rows)
-			if (glm::distance(p, r.center) < kCaptureBakeMatchM)
-				return true;
-		return false;
-	};
-	ImDrawList* dl = ImGui::GetForegroundDrawList();
-	const Scene& scene = m_world->scene;
-	const float maxDist = std::max(m_probeOverlayMaxDist, 1.0f);
-	const float maxDist2 = maxDist * maxDist;
-	// In-view witness (the viz window's legend): the busiest viewport's
-	// marker count — reset per frame, kept as a max so multi-viewport
-	// layouts report the fullest view, not whichever drew last.
-	m_probeDrawnLast = 0;
-	for (int i = 0; i < ViewportCount(); ++i) {
-		const EditorViewport& vp = m_viewports[i];
-		const glm::mat4 vpm = vp.viewProj;
-		glm::vec3 eye(0.0f);
-		if (vp.camIdx >= 0
-			&& size_t(vp.camIdx) < m_editorCams.size())
-			eye = EditorCamEye(m_editorCams[size_t(vp.camIdx)]);
-		const auto project = [&](const glm::vec3& w, ImVec2& out) {
-			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
-			if (c.w <= 1e-6f)
-				return false; // behind the camera
-			const glm::vec3 ndc = glm::vec3(c) / c.w;
-			// The projection's near plane (reversed-Z ZO: ndc z = 1) and
-			// the far side (z = 0): the old eye-plane-only test let
-			// between-eye-and-near markers draw over the view.
-			if (ndc.z < 0.0f || ndc.z > 1.0f)
-				return false;
-			out.x = ImGui::GetMainViewport()->Pos.x + vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
-			out.y = ImGui::GetMainViewport()->Pos.y + vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
-			return true;
-		};
-		const auto projectInView = [&](const glm::vec3& w, ImVec2& out) {
-			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
-			if (c.w <= 1e-6f)
-				return false;
-			const glm::vec3 ndc = glm::vec3(c) / c.w;
-			if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f)
-				return false; // off-screen (the App culls the same way)
-			if (ndc.z < 0.0f || ndc.z > 1.0f)
-				return false; // outside the depth range (see project above)
-			out.x = ImGui::GetMainViewport()->Pos.x + vp.rect.x + (ndc.x * 0.5f + 0.5f) * float(vp.rect.w);
-			out.y = ImGui::GetMainViewport()->Pos.y + vp.rect.y + (ndc.y * 0.5f + 0.5f) * float(vp.rect.h);
-			return true;
-		};
-		dl->PushClipRect(OverlayScreenPx(vp.rect.x, vp.rect.y),
-			OverlayScreenPx(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
-		// The live Lit view draws baked probes as real, depth-tested mirror
-		// spheres in WorldRenderer. Do not paint 2D dots over those spheres;
-		// fallback/non-Lit viewports retain compact location markers.
-		const bool liveMirrorView = i == LiveViewViewport()
-			&& m_wysiwygValid && m_wysiwygLayerRenderable;
-		// ---- half 1: baked probe locations (fallback views only) ----
-		uint32_t drawn = 0;
-		if (m_showProbeOverlay && !liveMirrorView) {
-			uint32_t ci = 0;
-			for (const auto& pr : rows) {
-				const uint32_t idx = ci++;
-				if (drawn >= 64)
-					break;
-				const glm::vec3 dc = pr.center - eye;
-				if (glm::dot(dc, dc) > maxDist2)
-					continue;
-				ImVec2 cpt;
-				if (!projectInView(pr.center, cpt))
-					continue;
-				const float cdist = std::sqrt(glm::dot(dc, dc));
-				ImU32 col;
-				if (cdist <= pr.influence)
-					col = IM_COL32(80, 255, 120, 230);
-				else if (pr.fade > 0.0f
-					&& cdist <= pr.influence + pr.fade)
-					col = IM_COL32(255, 220, 80, 230);
-				else
-					col = IM_COL32(120, 140, 160, 160);
-				// Influence is a world-space volume, not a screen-space
-				// circle; the selected authored probe's 3D guide lives in
-				// RecordGizmoPass instead.
-				if (m_showProbeOctahedra) {
-					DrawProbeOctahedron(dl, cpt, m_probeMarkerSize, col);
-				} else {
-					dl->AddCircleFilled(cpt, m_probeMarkerSize, col);
-				}
-				if (m_probeLabels) {
-					char clab[16];
-					std::snprintf(clab, sizeof(clab), "C%u", idx);
-					dl->AddText(ImVec2(cpt.x + 6.0f, cpt.y - 7.0f),
-						col, clab);
-				}
-				++drawn;
-			}
-			m_probeDrawnLast = std::max(m_probeDrawnLast, drawn);
-			// Caption (the App draws it top-left of the full display;
-			// per viewport here so quads stay readable). The in-LEVEL
-			// total rides along — "how many am I authoring" is the
-			// legend question, answered right where the eye already is.
-			char ccap[96];
-			std::snprintf(ccap, sizeof(ccap),
-				"Cubemap probes: %u in view / %zu in level",
-				drawn, rows.size());
-			dl->AddText(OverlayScreenPx(vp.rect.x + 9.0f, vp.rect.y + 37.0f),
-				IM_COL32(0, 0, 0, 200), ccap);
-			dl->AddText(OverlayScreenPx(vp.rect.x + 8.0f, vp.rect.y + 36.0f),
-				IM_COL32_WHITE, ccap);
-		}
-		// ---- half 2: authored pins with no loaded probe: black balls ----
-		if (showPins) {
-			for (const CubemapRow& _row : scene.tables.cubemaps) {
-		const NodeId node = _row.node; const auto& def = _row.cubemap;
-				(void)def;
-				if (node >= scene.globalTransform.size())
-					continue;
-				const glm::vec3 p(scene.globalTransform[node][3]);
-				if (pinBaked(p))
-					continue; // the loaded-probe marker above owns it
-				ImVec2 s;
-				if (!project(p, s))
-					continue;
-				const bool selected = (node == m_selected);
-				// Unbaked capture pins should be distinct from real baked
-				// reflection spheres and should not obscure the scene.
-				const ImU32 pinColor = selected
-					? IM_COL32(255, 220, 80, 255)
-					: IM_COL32(180, 140, 200, 220);
-				DrawProbeOctahedron(dl, s, selected ? 8.0f : 6.0f,
-					pinColor);
-			}
-		}
-		dl->PopClipRect();
-	}
+    // MODAL: the light-authoring set shows only in LIGHTING mode.
+    if (m_mode != EditorMode::Lighting)
+        return;
+    if (!m_world)
+        return;
+    // Loaded probe rows (empty when no bake manifest - pins all read
+    // unbaked, probes draw nothing).
+    std::vector<CubemapProbeRow> rows;
+    CubemapProbeRowsFromFile(rows);
+    const bool showPins = m_showCubemapGizmos && !m_world->scene.tables.cubemaps.empty();
+    if (!m_showProbeOverlay && !showPins)
+        return;
+    const auto pinBaked = [&](const glm::vec3& p) {
+        for (const auto& r : rows)
+            if (glm::distance(p, r.center) < kCaptureBakeMatchM)
+                return true;
+        return false;
+    };
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const Scene& scene = m_world->scene;
+    const float maxDist = std::max(m_probeOverlayMaxDist, 1.0f);
+    const float maxDist2 = maxDist * maxDist;
+    // In-view witness (the viz window's legend): the busiest viewport's
+    // marker count — reset per frame, kept as a max so multi-viewport
+    // layouts report the fullest view, not whichever drew last.
+    m_probeDrawnLast = 0;
+    for (int i = 0; i < ViewportCount(); ++i) {
+        const EditorViewport& vp = m_viewports[i];
+        const glm::mat4 vpm = vp.viewProj;
+        glm::vec3 eye(0.0f);
+        if (vp.camIdx >= 0 && size_t(vp.camIdx) < m_editorCams.size())
+            eye = EditorCamEye(m_editorCams[size_t(vp.camIdx)]);
+        const auto project = [&](const glm::vec3& w, ImVec2& out) {
+            const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
+            if (c.w <= 1e-6f)
+                return false; // behind the camera
+            const glm::vec3 ndc = glm::vec3(c) / c.w;
+            // The projection's near plane (reversed-Z ZO: ndc z = 1) and
+            // the far side (z = 0): the old eye-plane-only test let
+            // between-eye-and-near markers draw over the view.
+            if (ndc.z < 0.0f || ndc.z > 1.0f)
+                return false;
+            out.x = ImGui::GetMainViewport()->Pos.x + vp.rect.x +
+                    (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
+            out.y = ImGui::GetMainViewport()->Pos.y + vp.rect.y +
+                    (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
+            return true;
+        };
+        const auto projectInView = [&](const glm::vec3& w, ImVec2& out) {
+            const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
+            if (c.w <= 1e-6f)
+                return false;
+            const glm::vec3 ndc = glm::vec3(c) / c.w;
+            if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f)
+                return false; // off-screen (the App culls the same way)
+            if (ndc.z < 0.0f || ndc.z > 1.0f)
+                return false; // outside the depth range (see project above)
+            out.x = ImGui::GetMainViewport()->Pos.x + vp.rect.x +
+                    (ndc.x * 0.5f + 0.5f) * float(vp.rect.w);
+            out.y = ImGui::GetMainViewport()->Pos.y + vp.rect.y +
+                    (ndc.y * 0.5f + 0.5f) * float(vp.rect.h);
+            return true;
+        };
+        dl->PushClipRect(OverlayScreenPx(vp.rect.x, vp.rect.y),
+                         OverlayScreenPx(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h),
+                         true);
+        // The live Lit view draws baked probes as real, depth-tested mirror
+        // spheres in WorldRenderer. Do not paint 2D dots over those spheres;
+        // fallback/non-Lit viewports retain compact location markers.
+        const bool liveMirrorView =
+            i == LiveViewViewport() && m_wysiwygValid && m_wysiwygLayerRenderable;
+        // ---- half 1: baked probe locations (fallback views only) ----
+        uint32_t drawn = 0;
+        if (m_showProbeOverlay && !liveMirrorView) {
+            uint32_t ci = 0;
+            for (const auto& pr : rows) {
+                const uint32_t idx = ci++;
+                if (drawn >= 64)
+                    break;
+                const glm::vec3 dc = pr.center - eye;
+                if (glm::dot(dc, dc) > maxDist2)
+                    continue;
+                ImVec2 cpt;
+                if (!projectInView(pr.center, cpt))
+                    continue;
+                const float cdist = std::sqrt(glm::dot(dc, dc));
+                ImU32 col;
+                if (cdist <= pr.influence)
+                    col = IM_COL32(80, 255, 120, 230);
+                else if (pr.fade > 0.0f && cdist <= pr.influence + pr.fade)
+                    col = IM_COL32(255, 220, 80, 230);
+                else
+                    col = IM_COL32(120, 140, 160, 160);
+                // Influence is a world-space volume, not a screen-space
+                // circle; the selected authored probe's 3D guide lives in
+                // RecordGizmoPass instead.
+                if (m_showProbeOctahedra) {
+                    DrawProbeOctahedron(dl, cpt, m_probeMarkerSize, col);
+                } else {
+                    dl->AddCircleFilled(cpt, m_probeMarkerSize, col);
+                }
+                if (m_probeLabels) {
+                    char clab[16];
+                    std::snprintf(clab, sizeof(clab), "C%u", idx);
+                    dl->AddText(ImVec2(cpt.x + 6.0f, cpt.y - 7.0f), col, clab);
+                }
+                ++drawn;
+            }
+            m_probeDrawnLast = std::max(m_probeDrawnLast, drawn);
+            // Caption (the App draws it top-left of the full display;
+            // per viewport here so quads stay readable). The in-LEVEL
+            // total rides along — "how many am I authoring" is the
+            // legend question, answered right where the eye already is.
+            char ccap[96];
+            std::snprintf(ccap,
+                          sizeof(ccap),
+                          "Cubemap probes: %u in view / %zu in level",
+                          drawn,
+                          rows.size());
+            dl->AddText(
+                OverlayScreenPx(vp.rect.x + 9.0f, vp.rect.y + 37.0f), IM_COL32(0, 0, 0, 200), ccap);
+            dl->AddText(OverlayScreenPx(vp.rect.x + 8.0f, vp.rect.y + 36.0f), IM_COL32_WHITE, ccap);
+        }
+        // ---- half 2: authored pins with no loaded probe: black balls ----
+        if (showPins) {
+            for (const CubemapRow& _row : scene.tables.cubemaps) {
+                const NodeId node = _row.node;
+                const auto& def = _row.cubemap;
+                (void)def;
+                if (node >= scene.globalTransform.size())
+                    continue;
+                const glm::vec3 p(scene.globalTransform[node][3]);
+                if (pinBaked(p))
+                    continue; // the loaded-probe marker above owns it
+                ImVec2 s;
+                if (!project(p, s))
+                    continue;
+                const bool selected = (node == m_selected);
+                // Unbaked capture pins should be distinct from real baked
+                // reflection spheres and should not obscure the scene.
+                const ImU32 pinColor =
+                    selected ? IM_COL32(255, 220, 80, 255) : IM_COL32(180, 140, 200, 220);
+                DrawProbeOctahedron(dl, s, selected ? 8.0f : 6.0f, pinColor);
+            }
+        }
+        dl->PopClipRect();
+    }
 }
 
-#if 0 // UV editor window retired (the Live view window replaced the canvas era)
+#if 0  // UV editor window retired (the Live view window replaced the canvas era)
 void EditorApp::DrawUvEditorWindow() {
 	// UV EDITOR WINDOW (floating, separate from the viewports): chrome
 	// here, canvas CONTENT from RecordUvWindowPass — which is added
@@ -1491,6 +1521,6 @@ void EditorApp::DrawUvEditorWindow() {
 	ImGui::PopStyleColor(4);
 }
 #endif // UV editor window retired (the Live view window replaced
-        // the canvas era — solid backgrounds everywhere now)
+       // the canvas era — solid backgrounds everywhere now)
 
 } // namespace editor

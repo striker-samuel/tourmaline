@@ -67,12 +67,11 @@ inline constexpr uint32_t kMaxFieldLods = 4;
 //          state is reserved for the BC4 fog milestone: brickless empty
 //          cells that never allocate physical slots.)
 // ---------------------------------------------------------------------------
-struct alignas(16) WorldPageGpu
-{
-	int32_t brickX = 0; // 0  absolute brick coord (signed world lattice)
-	int32_t brickY = 0; // 4
-	int32_t brickZ = 0; // 8
-	int32_t atlasSlot = -1; // 12  physical pool slot; -1 = not resident
+struct alignas(16) WorldPageGpu {
+    int32_t brickX = 0;     // 0  absolute brick coord (signed world lattice)
+    int32_t brickY = 0;     // 4
+    int32_t brickZ = 0;     // 8
+    int32_t atlasSlot = -1; // 12  physical pool slot; -1 = not resident
 };
 static_assert(sizeof(WorldPageGpu) == 16, "WorldPageGpu size: HLSL mirror (world_field.hlsli)");
 
@@ -84,13 +83,12 @@ static_assert(sizeof(WorldPageGpu) == 16, "WorldPageGpu size: HLSL mirror (world
 // the absolute-coord tag in every page is what makes a wrapped-around
 // stale entry detectable.
 // ---------------------------------------------------------------------------
-struct alignas(16) WorldLevelGpu
-{
-	glm::ivec4 windowMinBrick{ 0 }; // 0   xyz = min brick coord of the window; w unused
-	glm::uvec4 windowDim{ 0 }; // 16  xyz = per-axis entry counts (power of two); w unused
-	uint32_t pageTableOffset = 0; // 32  byte offset of this level's pages from the table base
-	float voxelSizeMeters = 1.0f; // 36  voxel edge at this LOD (base * 2^lod)
-	uint32_t reserved[2] = { 0, 0 }; // 40  (16-align tail; struct ends 48)
+struct alignas(16) WorldLevelGpu {
+    glm::ivec4 windowMinBrick{0};  // 0   xyz = min brick coord of the window; w unused
+    glm::uvec4 windowDim{0};       // 16  xyz = per-axis entry counts (power of two); w unused
+    uint32_t pageTableOffset = 0;  // 32  byte offset of this level's pages from the table base
+    float voxelSizeMeters = 1.0f;  // 36  voxel edge at this LOD (base * 2^lod)
+    uint32_t reserved[2] = {0, 0}; // 40  (16-align tail; struct ends 48)
 };
 static_assert(sizeof(WorldLevelGpu) == 48, "WorldLevelGpu size: HLSL mirror (world_field.hlsli)");
 
@@ -100,39 +98,40 @@ static_assert(sizeof(WorldLevelGpu) == 48, "WorldLevelGpu size: HLSL mirror (wor
 // binding. The struct is a fixed 320-byte stride so the shader can index
 // fields[] without a second indirection.
 // ---------------------------------------------------------------------------
-struct alignas(16) WorldFieldGpu
-{
-	glm::vec4 originMeters{ 0.0f }; // 0   xyz = world min corner of brick (0,0,0); w unused
-	glm::vec4 decodeScale{ 1.0f }; // 16  attribute = decodeScale * decodeFn(encoded) + decodeBias
-	glm::vec4 decodeBias{ 0.0f }; // 32
-	glm::vec4 fallbackValue{ 0.0f }; // 48  DECODED value when no level resolves (m/s wind, m^-1 fog...)
-	glm::uvec4 atlasSlots{ 0 }; // 64  xyz = physical slot grid (atlasDims = slots * storedBrick); w unused
-	glm::uvec4 meta{ 0 }; // 80  x = atlas bindless index (UINT32_MAX = no atlas yet),
-	//     y = encoding (WorldFieldEncoding), z = levelCount, w = flags
-	WorldLevelGpu levels[kMaxFieldLods]; // 96  4 * 48 = 192 -> 288
-	uint32_t reserved[8] = {}; // 288 (16-align tail; struct ends 320)
+struct alignas(16) WorldFieldGpu {
+    glm::vec4 originMeters{0.0f}; // 0   xyz = world min corner of brick (0,0,0); w unused
+    glm::vec4 decodeScale{1.0f};  // 16  attribute = decodeScale * decodeFn(encoded) + decodeBias
+    glm::vec4 decodeBias{0.0f};   // 32
+    glm::vec4 fallbackValue{
+        0.0f}; // 48  DECODED value when no level resolves (m/s wind, m^-1 fog...)
+    glm::uvec4 atlasSlots{
+        0};             // 64  xyz = physical slot grid (atlasDims = slots * storedBrick); w unused
+    glm::uvec4 meta{0}; // 80  x = atlas bindless index (UINT32_MAX = no atlas yet),
+    //     y = encoding (WorldFieldEncoding), z = levelCount, w = flags
+    WorldLevelGpu levels[kMaxFieldLods]; // 96  4 * 48 = 192 -> 288
+    uint32_t reserved[8] = {};           // 288 (16-align tail; struct ends 320)
 };
 static_assert(sizeof(WorldFieldGpu) == 320, "WorldFieldGpu size: HLSL mirror (world_field.hlsli)");
 static_assert(offsetof(WorldFieldGpu, levels) == 96, "WorldFieldGpu levels offset: HLSL mirror");
 
 // The 16-byte table header. pagesOffset = 16 + fieldCount * 320 (always
 // 16-aligned; the C++ side asserts the arithmetic at publish time).
-struct alignas(16) WorldFieldTableHeader
-{
-	uint32_t fieldCount = 0; // 0  live fields this frame
-	uint32_t fieldStride = 320; // 4  bytes (sizeof(WorldFieldGpu), pinned)
-	uint32_t pagesOffset = 0; // 8  byte offset of the page pool from the table base
-	uint32_t reserved = 0; // 12
+struct alignas(16) WorldFieldTableHeader {
+    uint32_t fieldCount = 0;    // 0  live fields this frame
+    uint32_t fieldStride = 320; // 4  bytes (sizeof(WorldFieldGpu), pinned)
+    uint32_t pagesOffset = 0;   // 8  byte offset of the page pool from the table base
+    uint32_t reserved = 0;      // 12
 };
 static_assert(sizeof(WorldFieldTableHeader) == 16, "WorldFieldTableHeader size: HLSL mirror");
 
 // What WorldFieldSystem publishes into FrameUniforms (the app-side
 // mirror is two plain members — a BDA + a count).
-struct WorldFieldGpuBinding
-{
-	uint64_t tableBda = 0; // 0 = subsystem off / not yet published
-	uint32_t fieldCount = 0;
-	bool Valid() const { return tableBda != 0; }
+struct WorldFieldGpuBinding {
+    uint64_t tableBda = 0; // 0 = subsystem off / not yet published
+    uint32_t fieldCount = 0;
+    bool Valid() const {
+        return tableBda != 0;
+    }
 };
 
 } // namespace engine::worldfields

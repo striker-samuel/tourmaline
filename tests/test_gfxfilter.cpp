@@ -26,15 +26,15 @@
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-#include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/GfxRenderer.h>
+#include <Engine/Renderer/gfx_filter.h>
 #include <Engine/debug_log.h>
 // Detail diagnostics (winding/cull/spawn/mirror traces) print in debug
 // builds only; PASS/FAIL lines and the final summary always print.
 #include <Engine/Asset/meshlet.h>
+#include <Engine/Camera/camera.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
-#include <Engine/Camera/camera.h>
 
 namespace {
 
@@ -42,14 +42,13 @@ int g_failures = 0;
 int g_checks = 0;
 
 void Check(bool cond, const char* name) {
-	++g_checks;
-	if (cond) {
-		std::cout << "PASS " << name << "\n";
-	}
-	else {
-		++g_failures;
-		std::cout << "FAIL " << name << "\n";
-	}
+    ++g_checks;
+    if (cond) {
+        std::cout << "PASS " << name << "\n";
+    } else {
+        ++g_failures;
+        std::cout << "FAIL " << name << "\n";
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -58,35 +57,36 @@ void Check(bool cond, const char* name) {
 // ---------------------------------------------------------------------------
 
 smvk::StaticMeshUpload MakeSphere(int rings, int segments, float radius) {
-	smvk::StaticMeshUpload out{};
-	for (int r = 0; r <= rings; ++r) {
-		const float theta = (float)r / (float)rings * glm::pi<float>();
-		const float y = std::cos(theta) * radius;
-		const float ringR = std::sin(theta) * radius;
-		for (int s = 0; s <= segments; ++s) {
-			const float phi = (float)s / (float)segments * 2.0f * glm::pi<float>();
-			smvk::ImportStaticVertex v{};
-			v.pos = glm::vec3(std::cos(phi) * ringR, y, std::sin(phi) * ringR);
-			v.normal = ringR > 1e-9f ? glm::normalize(v.pos) : glm::vec3(0, theta < 1.0f ? 1.0f : -1.0f, 0);
-			out.vertices.push_back(v);
-		}
-	}
-	const int stride = segments + 1;
-	for (int r = 0; r < rings; ++r) {
-		for (int s = 0; s < segments; ++s) {
-			const uint32_t a = (uint32_t)(r * stride + s);
-			const uint32_t b = (uint32_t)(r * stride + s + 1);
-			const uint32_t c = (uint32_t)((r + 1) * stride + s);
-			const uint32_t d = (uint32_t)((r + 1) * stride + s + 1);
-			// Outward winding (verified by CheckOutwardWinding below).
-			out.indices.insert(out.indices.end(), { a, b, c, b, d, c });
-		}
-	}
-	return out;
+    smvk::StaticMeshUpload out{};
+    for (int r = 0; r <= rings; ++r) {
+        const float theta = (float)r / (float)rings * glm::pi<float>();
+        const float y = std::cos(theta) * radius;
+        const float ringR = std::sin(theta) * radius;
+        for (int s = 0; s <= segments; ++s) {
+            const float phi = (float)s / (float)segments * 2.0f * glm::pi<float>();
+            smvk::ImportStaticVertex v{};
+            v.pos = glm::vec3(std::cos(phi) * ringR, y, std::sin(phi) * ringR);
+            v.normal = ringR > 1e-9f ? glm::normalize(v.pos)
+                                     : glm::vec3(0, theta < 1.0f ? 1.0f : -1.0f, 0);
+            out.vertices.push_back(v);
+        }
+    }
+    const int stride = segments + 1;
+    for (int r = 0; r < rings; ++r) {
+        for (int s = 0; s < segments; ++s) {
+            const uint32_t a = (uint32_t)(r * stride + s);
+            const uint32_t b = (uint32_t)(r * stride + s + 1);
+            const uint32_t c = (uint32_t)((r + 1) * stride + s);
+            const uint32_t d = (uint32_t)((r + 1) * stride + s + 1);
+            // Outward winding (verified by CheckOutwardWinding below).
+            out.indices.insert(out.indices.end(), {a, b, c, b, d, c});
+        }
+    }
+    return out;
 }
 
 static float TriArea2(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
-	return glm::length(glm::cross(b - a, c - a));
+    return glm::length(glm::cross(b - a, c - a));
 }
 
 // Pole slivers (sin(pi) != 0 in float) have areas ~1e-8: pure noise.
@@ -94,26 +94,26 @@ static float TriArea2(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c
 static constexpr float kDegenerateArea = 1e-6f;
 
 bool CheckOutwardWinding(const smvk::StaticMeshUpload& up) {
-	for (size_t t = 0; t < up.indices.size(); t += 3) {
-		const glm::vec3& a = up.vertices[up.indices[t + 0]].pos;
-		const glm::vec3& b = up.vertices[up.indices[t + 1]].pos;
-		const glm::vec3& c = up.vertices[up.indices[t + 2]].pos;
-		if (TriArea2(a, b, c) < kDegenerateArea)
-			continue; // degenerate pole triangles/slivers
-		const glm::vec3 n = glm::cross(b - a, c - a);
-		const glm::vec3 center = (a + b + c) / 3.0f;
-		if (glm::dot(n, center) <= 0.0f) {
+    for (size_t t = 0; t < up.indices.size(); t += 3) {
+        const glm::vec3& a = up.vertices[up.indices[t + 0]].pos;
+        const glm::vec3& b = up.vertices[up.indices[t + 1]].pos;
+        const glm::vec3& c = up.vertices[up.indices[t + 2]].pos;
+        if (TriArea2(a, b, c) < kDegenerateArea)
+            continue; // degenerate pole triangles/slivers
+        const glm::vec3 n = glm::cross(b - a, c - a);
+        const glm::vec3 center = (a + b + c) / 3.0f;
+        if (glm::dot(n, center) <= 0.0f) {
 #ifndef NDEBUG
-			std::cout << "[gfx.wind] inward tri " << (t / 3)
-				<< " a=(" << a.x << "," << a.y << "," << a.z << ")"
-				<< " b=(" << b.x << "," << b.y << "," << b.z << ")"
-				<< " c=(" << c.x << "," << c.y << "," << c.z << ")"
-				<< " dot=" << glm::dot(n, center) << "\n";
+            std::cout << "[gfx.wind] inward tri " << (t / 3) << " a=(" << a.x << "," << a.y << ","
+                      << a.z << ")"
+                      << " b=(" << b.x << "," << b.y << "," << b.z << ")"
+                      << " c=(" << c.x << "," << c.y << "," << c.z << ")"
+                      << " dot=" << glm::dot(n, center) << "\n";
 #endif
-			return false;
-		}
-	}
-	return true;
+            return false;
+        }
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,87 +130,84 @@ bool CheckOutwardWinding(const smvk::StaticMeshUpload& up) {
 // ---------------------------------------------------------------------------
 
 void TestWindingSign() {
-	const auto up = MakeSphere(16, 24, 1.0f);
-	Check(CheckOutwardWinding(up), "gfx.wind.sphere-outward");
+    const auto up = MakeSphere(16, 24, 1.0f);
+    Check(CheckOutwardWinding(up), "gfx.wind.sphere-outward");
 
-	const glm::vec3 eye(0.0f, 0.0f, 4.0f);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f; // viewport fix, mirrors UpdateFrameUniforms
-	const glm::mat4 viewProj = proj * view;
+    const glm::vec3 eye(0.0f, 0.0f, 4.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f; // viewport fix, mirrors UpdateFrameUniforms
+    const glm::mat4 viewProj = proj * view;
 
-	uint32_t counted = 0, agreeFlip = 0, agreeNoFlip = 0, total = 0;
-	uint32_t geoPixelAgree = 0, detPixelFrontNoFlip = 0, detPixelFrontFlip = 0;
-	for (size_t t = 0; t < up.indices.size(); t += 3) {
-		const glm::vec3& a = up.vertices[up.indices[t + 0]].pos;
-		const glm::vec3& b = up.vertices[up.indices[t + 1]].pos;
-		const glm::vec3& c = up.vertices[up.indices[t + 2]].pos;
-		++total;
-		if (TriArea2(a, b, c) < kDegenerateArea)
-			continue; // degenerate pole triangles/slivers
-		const glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
-		const glm::vec3 center = (a + b + c) / 3.0f;
-		const float facing = glm::dot(n, glm::normalize(center - eye));
-		if (std::abs(facing) < 0.15f)
-			continue; // silhouette band: methods may legitimately differ
-		++counted;
-		const bool front = facing < 0.0f;
+    uint32_t counted = 0, agreeFlip = 0, agreeNoFlip = 0, total = 0;
+    uint32_t geoPixelAgree = 0, detPixelFrontNoFlip = 0, detPixelFrontFlip = 0;
+    for (size_t t = 0; t < up.indices.size(); t += 3) {
+        const glm::vec3& a = up.vertices[up.indices[t + 0]].pos;
+        const glm::vec3& b = up.vertices[up.indices[t + 1]].pos;
+        const glm::vec3& c = up.vertices[up.indices[t + 2]].pos;
+        ++total;
+        if (TriArea2(a, b, c) < kDegenerateArea)
+            continue; // degenerate pole triangles/slivers
+        const glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
+        const glm::vec3 center = (a + b + c) / 3.0f;
+        const float facing = glm::dot(n, glm::normalize(center - eye));
+        if (std::abs(facing) < 0.15f)
+            continue; // silhouette band: methods may legitimately differ
+        ++counted;
+        const bool front = facing < 0.0f;
 
-		const glm::vec4 ca = viewProj * glm::vec4(a, 1.0f);
-		const glm::vec4 cb = viewProj * glm::vec4(b, 1.0f);
-		const glm::vec4 cc = viewProj * glm::vec4(c, 1.0f);
-		if (ca.w <= 0.0f || cb.w <= 0.0f || cc.w <= 0.0f)
-			continue; // behind camera: not rasterized, out of experiment
-		// Same expression as the shader (det sign is transpose-invariant).
-		const glm::mat3 m(
-			glm::vec3(ca.x, ca.y, ca.w),
-			glm::vec3(cb.x, cb.y, cb.w),
-			glm::vec3(cc.x, cc.y, cc.w));
-		const bool backNoFlip = glm::determinant(m) > 0.0f;
-		if ((front && backNoFlip) || (!front && !backNoFlip))
-			++agreeFlip; // flipped: keep = backNoFlip
-		if ((front && !backNoFlip) || (!front && backNoFlip))
-			++agreeNoFlip;
+        const glm::vec4 ca = viewProj * glm::vec4(a, 1.0f);
+        const glm::vec4 cb = viewProj * glm::vec4(b, 1.0f);
+        const glm::vec4 cc = viewProj * glm::vec4(c, 1.0f);
+        if (ca.w <= 0.0f || cb.w <= 0.0f || cc.w <= 0.0f)
+            continue; // behind camera: not rasterized, out of experiment
+        // Same expression as the shader (det sign is transpose-invariant).
+        const glm::mat3 m(
+            glm::vec3(ca.x, ca.y, ca.w), glm::vec3(cb.x, cb.y, cb.w), glm::vec3(cc.x, cc.y, cc.w));
+        const bool backNoFlip = glm::determinant(m) > 0.0f;
+        if ((front && backNoFlip) || (!front && !backNoFlip))
+            ++agreeFlip; // flipped: keep = backNoFlip
+        if ((front && !backNoFlip) || (!front && backNoFlip))
+            ++agreeNoFlip;
 
-		// Rasterizer-anchored link: pixels are y-down; visually-CCW (what
-		// FrontFace::CounterClockwise keeps) has negative math signed area.
-		constexpr float W = 800.0f, H = 600.0f;
-		const glm::vec2 pa(ca.x / ca.w * 0.5f + 0.5f, ca.y / ca.w * 0.5f + 0.5f);
-		const glm::vec2 pb(cb.x / cb.w * 0.5f + 0.5f, cb.y / cb.w * 0.5f + 0.5f);
-		const glm::vec2 pc2(cc.x / cc.w * 0.5f + 0.5f, cc.y / cc.w * 0.5f + 0.5f);
-		(void)W;
-		(void)H;
-		const float area2 = (pb.x - pa.x) * (pc2.y - pa.y) - (pc2.x - pa.x) * (pb.y - pa.y);
-		const bool pixelFront = area2 < 0.0f; // visual CCW in y-down pixels
-		if (front == pixelFront)
-			++geoPixelAgree;
-		if ((!backNoFlip) == pixelFront)
-			++detPixelFrontNoFlip;
-		if (backNoFlip == pixelFront)
-			++detPixelFrontFlip;
-	}
+        // Rasterizer-anchored link: pixels are y-down; visually-CCW (what
+        // FrontFace::CounterClockwise keeps) has negative math signed area.
+        constexpr float W = 800.0f, H = 600.0f;
+        const glm::vec2 pa(ca.x / ca.w * 0.5f + 0.5f, ca.y / ca.w * 0.5f + 0.5f);
+        const glm::vec2 pb(cb.x / cb.w * 0.5f + 0.5f, cb.y / cb.w * 0.5f + 0.5f);
+        const glm::vec2 pc2(cc.x / cc.w * 0.5f + 0.5f, cc.y / cc.w * 0.5f + 0.5f);
+        (void)W;
+        (void)H;
+        const float area2 = (pb.x - pa.x) * (pc2.y - pa.y) - (pc2.x - pa.x) * (pb.y - pa.y);
+        const bool pixelFront = area2 < 0.0f; // visual CCW in y-down pixels
+        if (front == pixelFront)
+            ++geoPixelAgree;
+        if ((!backNoFlip) == pixelFront)
+            ++detPixelFrontNoFlip;
+        if (backNoFlip == pixelFront)
+            ++detPixelFrontFlip;
+    }
 
-	const double fracFlip = counted ? (double)agreeFlip / (double)counted : 0.0;
-	const double fracNoFlip = counted ? (double)agreeNoFlip / (double)counted : 0.0;
-	const double fracGeoPixel = counted ? (double)geoPixelAgree / (double)counted : 0.0;
-	const double fracDetNoFlip = counted ? (double)detPixelFrontNoFlip / (double)counted : 0.0;
-	const double fracDetFlip = counted ? (double)detPixelFrontFlip / (double)counted : 0.0;
+    const double fracFlip = counted ? (double)agreeFlip / (double)counted : 0.0;
+    const double fracNoFlip = counted ? (double)agreeNoFlip / (double)counted : 0.0;
+    const double fracGeoPixel = counted ? (double)geoPixelAgree / (double)counted : 0.0;
+    const double fracDetNoFlip = counted ? (double)detPixelFrontNoFlip / (double)counted : 0.0;
+    const double fracDetFlip = counted ? (double)detPixelFrontFlip / (double)counted : 0.0;
 #ifndef NDEBUG
-	std::cout << "[gfx.wind] tris=" << total << " counted=" << counted
-		<< " agreeFlip=" << fracFlip << " agreeNoFlip=" << fracNoFlip
-		<< " geoPixel=" << fracGeoPixel
-		<< " detPixelNoFlip=" << fracDetNoFlip << " detPixelFlip=" << fracDetFlip << "\n";
+    std::cout << "[gfx.wind] tris=" << total << " counted=" << counted << " agreeFlip=" << fracFlip
+              << " agreeNoFlip=" << fracNoFlip << " geoPixel=" << fracGeoPixel
+              << " detPixelNoFlip=" << fracDetNoFlip << " detPixelFlip=" << fracDetFlip << "\n";
 #endif
-	Check(counted > total * 7 / 10, "gfx.wind.meaningful-subset");
-	Check(fracGeoPixel > 0.98, "gfx.wind.ground-truth-matches-rasterizer");
-	// Exactly one of these must hold; whichever does selects the flag.
-	const bool noFlipRight = fracDetNoFlip > 0.98 && fracDetFlip < 0.05;
-	const bool flipRight = fracDetFlip > 0.98 && fracDetNoFlip < 0.05;
+    Check(counted > total * 7 / 10, "gfx.wind.meaningful-subset");
+    Check(fracGeoPixel > 0.98, "gfx.wind.ground-truth-matches-rasterizer");
+    // Exactly one of these must hold; whichever does selects the flag.
+    const bool noFlipRight = fracDetNoFlip > 0.98 && fracDetFlip < 0.05;
+    const bool flipRight = fracDetFlip > 0.98 && fracDetNoFlip < 0.05;
 #ifndef NDEBUG
-	std::cout << "[gfx.wind] noFlipRight=" << noFlipRight << " flipRight=" << flipRight << "\n";
+    std::cout << "[gfx.wind] noFlipRight=" << noFlipRight << " flipRight=" << flipRight << "\n";
 #endif
-	Check(noFlipRight != flipRight, "gfx.wind.unambiguous");
-	Check(noFlipRight, "gfx.wind.noflip-matches-rasterizer");
+    Check(noFlipRight != flipRight, "gfx.wind.unambiguous");
+    Check(noFlipRight, "gfx.wind.noflip-matches-rasterizer");
 }
 
 // ---------------------------------------------------------------------------
@@ -218,35 +215,35 @@ void TestWindingSign() {
 // ---------------------------------------------------------------------------
 
 void TestRegistration() {
-	using namespace smvk::gfx;
-	State s{};
-	const auto up = MakeSphere(8, 12, 1.0f);
-	const uint32_t baseVertex = 17; // nonzero: exercises the global-id lift
-	const uint32_t mesh = RegisterMeshFromUpload(s, up, baseVertex);
-	Check(mesh == 0, "gfx.reg.mesh-index");
-	Check(!s.clusters.empty(), "gfx.reg.has-clusters");
+    using namespace smvk::gfx;
+    State s{};
+    const auto up = MakeSphere(8, 12, 1.0f);
+    const uint32_t baseVertex = 17; // nonzero: exercises the global-id lift
+    const uint32_t mesh = RegisterMeshFromUpload(s, up, baseVertex);
+    Check(mesh == 0, "gfx.reg.mesh-index");
+    Check(!s.clusters.empty(), "gfx.reg.has-clusters");
 
-	uint32_t triSum = 0;
-	bool idsOk = true, sizeOk = true;
-	const uint32_t meshTris = (uint32_t)up.indices.size() / 3;
-	for (const Cluster& c : s.clusters) {
-		triSum += c.triCount;
-		if (c.triCount == 0 || c.triCount > kMaxClusterTris)
-			sizeOk = false;
-		if (c.indexOffset + c.triCount * 3 > (uint32_t)s.filterIndices.size())
-			sizeOk = false;
-		for (uint32_t k = 0; k < c.triCount * 3; ++k) {
-			const uint32_t id = s.filterIndices[c.indexOffset + k];
-			if (id < baseVertex || id >= baseVertex + (uint32_t)up.vertices.size())
-				idsOk = false;
-		}
-	}
-	Check(triSum == meshTris, "gfx.reg.tri-cover");
-	Check(idsOk, "gfx.reg.global-ids-in-range");
-	Check(sizeOk, "gfx.reg.cluster-size-bounds");
-	Check(s.meshes.size() == 1 && s.meshes[0].clusterCount == (uint32_t)s.clusters.size(),
-		"gfx.reg.mesh-range");
-	Check(s.filterIndices.size() == up.indices.size(), "gfx.reg.index-count-preserved");
+    uint32_t triSum = 0;
+    bool idsOk = true, sizeOk = true;
+    const uint32_t meshTris = (uint32_t)up.indices.size() / 3;
+    for (const Cluster& c : s.clusters) {
+        triSum += c.triCount;
+        if (c.triCount == 0 || c.triCount > kMaxClusterTris)
+            sizeOk = false;
+        if (c.indexOffset + c.triCount * 3 > (uint32_t)s.filterIndices.size())
+            sizeOk = false;
+        for (uint32_t k = 0; k < c.triCount * 3; ++k) {
+            const uint32_t id = s.filterIndices[c.indexOffset + k];
+            if (id < baseVertex || id >= baseVertex + (uint32_t)up.vertices.size())
+                idsOk = false;
+        }
+    }
+    Check(triSum == meshTris, "gfx.reg.tri-cover");
+    Check(idsOk, "gfx.reg.global-ids-in-range");
+    Check(sizeOk, "gfx.reg.cluster-size-bounds");
+    Check(s.meshes.size() == 1 && s.meshes[0].clusterCount == (uint32_t)s.clusters.size(),
+          "gfx.reg.mesh-range");
+    Check(s.filterIndices.size() == up.indices.size(), "gfx.reg.index-count-preserved");
 }
 
 // ---------------------------------------------------------------------------
@@ -254,94 +251,93 @@ void TestRegistration() {
 // ---------------------------------------------------------------------------
 
 smvk::StaticMeshUpload MakeTri(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
-	smvk::StaticMeshUpload out{};
-	smvk::ImportStaticVertex va{}, vb{}, vc{};
-	va.pos = a;
-	vb.pos = b;
-	vc.pos = c;
-	out.vertices = { va, vb, vc };
-	out.indices = { 0, 1, 2 };
-	return out;
+    smvk::StaticMeshUpload out{};
+    smvk::ImportStaticVertex va{}, vb{}, vc{};
+    va.pos = a;
+    vb.pos = b;
+    vc.pos = c;
+    out.vertices = {va, vb, vc};
+    out.indices = {0, 1, 2};
+    return out;
 }
 
 void TestBatching() {
-	using namespace smvk::gfx;
-	State s{};
-	// Two single-triangle meshes (each cooks to exactly 1 cluster).
-	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
-	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
-	Check(m0 == 0 && m1 == 1, "gfx.batch.mesh-ids");
-	Check(s.clusters.size() == 2, "gfx.batch.two-clusters");
+    using namespace smvk::gfx;
+    State s{};
+    // Two single-triangle meshes (each cooks to exactly 1 cluster).
+    const uint32_t m0 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+    const uint32_t m1 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+    Check(m0 == 0 && m1 == 1, "gfx.batch.mesh-ids");
+    Check(s.clusters.size() == 2, "gfx.batch.two-clusters");
 
-	// Camera in front (+Z looking -Z): both front-facing, fully in frustum.
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+    // Camera in front (+Z looking -Z): both front-facing, fully in frustum.
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
 
-	View v{};
-	v.renderView = &views.Get(rv);
-	v.eye = eye;
-	v.width = 800;
-	v.height = 600;
-	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-	v.cullFlags = CullFlagBit_Degenerate;
-	s.views.push_back(std::move(v));
-	s.viewCount = 1;
+    View v{};
+    v.renderView = &views.Get(rv);
+    v.eye = eye;
+    v.width = 800;
+    v.height = 600;
+    v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+    v.cullFlags = CullFlagBit_Degenerate;
+    s.views.push_back(std::move(v));
+    s.viewCount = 1;
 
-	// 3 draws, 2 materials (order shuffled to test material sorting).
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 7);
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 3);
-	BuildBatches(s, 0);
+    // 3 draws, 2 materials (order shuffled to test material sorting).
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 7);
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 3);
+    BuildBatches(s, 0);
 
-	const View& out = s.views[0];
-	Check(out.batchCount == 3, "gfx.batch.count");
-	Check(out.stats.trianglesProcessed == 3, "gfx.batch.tris");
-	Check(out.stats.commands == 3, "gfx.batch.commands");
-	Check(out.drawConstants.size() == 3, "gfx.batch.drawconsts");
+    const View& out = s.views[0];
+    Check(out.batchCount == 3, "gfx.batch.count");
+    Check(out.stats.trianglesProcessed == 3, "gfx.batch.tris");
+    Check(out.stats.commands == 3, "gfx.batch.commands");
+    Check(out.drawConstants.size() == 3, "gfx.batch.drawconsts");
 
-	// Ranges: contiguous, cover all commands, sorted by material; every
-	// batch header references a valid cluster/draw/mesh.
-	uint32_t covered = 0;
-	bool sorted = true, refsOk = true;
-	uint32_t prevMat = 0;
-	for (size_t i = 0; i < out.materialRanges.size(); ++i) {
-		const MaterialRange& r = out.materialRanges[i];
-		if (i > 0 && r.material < prevMat)
-			sorted = false;
-		if (r.firstCommand != covered)
-			refsOk = false;
-		covered += r.commandCount;
-		prevMat = r.material;
-		for (uint32_t k = 0; k < r.commandCount; ++k) {
-			const Batch& b = out.batches[r.firstCommand + k];
-			if (b.cluster >= s.clusters.size() || b.draw >= out.drawConstants.size())
-				refsOk = false;
-			else if (out.drawConstants[b.draw].mesh >= s.meshes.size())
-				refsOk = false;
-			// Chain layout: outputOffset stays 0 (the filter CS allocates
-			// real filtered offsets through the cullState counter atomically).
-			if (b.outputOffset != 0)
-				refsOk = false;
-		}
-	}
-	Check(sorted, "gfx.batch.ranges-sorted");
-	Check(refsOk, "gfx.batch.refs-valid");
-	Check(covered == out.batchCount, "gfx.batch.ranges-cover");
-	Check(out.materialRanges.size() == 2, "gfx.batch.two-materials");
-	// Default DrawRequests carry no lightmap (0xFFFFFFFFu), so the new
-	// lobe grouping must not split these ranges.
-	bool lobesDefault = true;
-	for (size_t i = 0; i < out.materialRanges.size(); ++i)
-		lobesDefault = lobesDefault
-			&& out.materialRanges[i].lobeCount == 0xFFFFFFFFu;
-	Check(lobesDefault, "gfx.batch.ranges-default-lobes");
+    // Ranges: contiguous, cover all commands, sorted by material; every
+    // batch header references a valid cluster/draw/mesh.
+    uint32_t covered = 0;
+    bool sorted = true, refsOk = true;
+    uint32_t prevMat = 0;
+    for (size_t i = 0; i < out.materialRanges.size(); ++i) {
+        const MaterialRange& r = out.materialRanges[i];
+        if (i > 0 && r.material < prevMat)
+            sorted = false;
+        if (r.firstCommand != covered)
+            refsOk = false;
+        covered += r.commandCount;
+        prevMat = r.material;
+        for (uint32_t k = 0; k < r.commandCount; ++k) {
+            const Batch& b = out.batches[r.firstCommand + k];
+            if (b.cluster >= s.clusters.size() || b.draw >= out.drawConstants.size())
+                refsOk = false;
+            else if (out.drawConstants[b.draw].mesh >= s.meshes.size())
+                refsOk = false;
+            // Chain layout: outputOffset stays 0 (the filter CS allocates
+            // real filtered offsets through the cullState counter atomically).
+            if (b.outputOffset != 0)
+                refsOk = false;
+        }
+    }
+    Check(sorted, "gfx.batch.ranges-sorted");
+    Check(refsOk, "gfx.batch.refs-valid");
+    Check(covered == out.batchCount, "gfx.batch.ranges-cover");
+    Check(out.materialRanges.size() == 2, "gfx.batch.two-materials");
+    // Default DrawRequests carry no lightmap (0xFFFFFFFFu), so the new
+    // lobe grouping must not split these ranges.
+    bool lobesDefault = true;
+    for (size_t i = 0; i < out.materialRanges.size(); ++i)
+        lobesDefault = lobesDefault && out.materialRanges[i].lobeCount == 0xFFFFFFFFu;
+    Check(lobesDefault, "gfx.batch.ranges-default-lobes");
 }
 
 // ---------------------------------------------------------------------------
@@ -354,92 +350,86 @@ void TestBatching() {
 // ---------------------------------------------------------------------------
 
 void TestLobeGrouping() {
-	using namespace smvk::gfx;
-	State s{};
-	// Two single-triangle meshes (each cooks to exactly 1 cluster).
-	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
-	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
-	Check(m0 == 0 && m1 == 1, "gfx.lobe.mesh-ids");
+    using namespace smvk::gfx;
+    State s{};
+    // Two single-triangle meshes (each cooks to exactly 1 cluster).
+    const uint32_t m0 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+    const uint32_t m1 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+    Check(m0 == 0 && m1 == 1, "gfx.lobe.mesh-ids");
 
-	// Camera in front (+Z looking -Z): both front-facing, fully in frustum.
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+    // Camera in front (+Z looking -Z): both front-facing, fully in frustum.
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
 
-	View v{};
-	v.renderView = &views.Get(rv);
-	v.eye = eye;
-	v.width = 800;
-	v.height = 600;
-	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-	v.cullFlags = CullFlagBit_Degenerate;
-	s.views.push_back(std::move(v));
-	s.viewCount = 1;
+    View v{};
+    v.renderView = &views.Get(rv);
+    v.eye = eye;
+    v.width = 800;
+    v.height = 600;
+    v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+    v.cullFlags = CullFlagBit_Degenerate;
+    s.views.push_back(std::move(v));
+    s.viewCount = 1;
 
-	// 4 draws, ONE material, THREE lobe classes (shuffled): the range
-	// must split by (material, lobe) even though the material is shared.
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 6u);
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 12u);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 0xFFFFFFFFu);
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 6u);
-	BuildBatches(s, 0);
+    // 4 draws, ONE material, THREE lobe classes (shuffled): the range
+    // must split by (material, lobe) even though the material is shared.
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 6u);
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 12u);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 0xFFFFFFFFu);
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 6u);
+    BuildBatches(s, 0);
 
-	const View& out = s.views[0];
-	Check(out.batchCount == 4, "gfx.lobe.count");
-	const uint32_t expectLobes[3] = { 6u, 12u, 0xFFFFFFFFu };
-	const uint32_t expectCmds[3] = { 2, 1, 1 };
-	uint32_t covered = 0;
-	bool grouped = out.materialRanges.size() == 3;
-	for (size_t i = 0; grouped && i < out.materialRanges.size(); ++i) {
-		const MaterialRange& r = out.materialRanges[i];
-		grouped = grouped
-			&& r.material == 3
-			&& r.lobeCount == expectLobes[i]
-			&& r.commandCount == expectCmds[i]
-			&& r.firstCommand == covered;
-		for (uint32_t k = 0; grouped && k < r.commandCount; ++k) {
-			const Batch& b = out.batches[r.firstCommand + k];
-			grouped = grouped
-				&& b.draw < out.drawConstants.size()
-				&& out.drawConstants[b.draw].lmChunk == r.lobeCount;
-		}
-		covered += r.commandCount;
-	}
-	Check(grouped, "gfx.lobe.split");
-	Check(covered == out.batchCount, "gfx.lobe.cover");
+    const View& out = s.views[0];
+    Check(out.batchCount == 4, "gfx.lobe.count");
+    const uint32_t expectLobes[3] = {6u, 12u, 0xFFFFFFFFu};
+    const uint32_t expectCmds[3] = {2, 1, 1};
+    uint32_t covered = 0;
+    bool grouped = out.materialRanges.size() == 3;
+    for (size_t i = 0; grouped && i < out.materialRanges.size(); ++i) {
+        const MaterialRange& r = out.materialRanges[i];
+        grouped = grouped && r.material == 3 && r.lobeCount == expectLobes[i] &&
+                  r.commandCount == expectCmds[i] && r.firstCommand == covered;
+        for (uint32_t k = 0; grouped && k < r.commandCount; ++k) {
+            const Batch& b = out.batches[r.firstCommand + k];
+            grouped = grouped && b.draw < out.drawConstants.size() &&
+                      out.drawConstants[b.draw].lmChunk == r.lobeCount;
+        }
+        covered += r.commandCount;
+    }
+    Check(grouped, "gfx.lobe.split");
+    Check(covered == out.batchCount, "gfx.lobe.cover");
 
-	// Material stays the major key: (7,6) sorts after every (3,*).
-	State s2{};
-	const uint32_t n0 = RegisterMeshFromUpload(s2, MakeTri(
-		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
-	smvk::RenderViewSet views2;
-	views2.NewFrame();
-	const uint32_t rv2 = views2.AllocateMainView(proj * view, { 800.0f, 600.0f });
-	View v2{};
-	v2.renderView = &views2.Get(rv2);
-	v2.eye = eye;
-	v2.width = 800;
-	v2.height = 600;
-	v2.viewProj = views2.Get(rv2).m_viewProjectionMatrix;
-	v2.cullFlags = CullFlagBit_Degenerate;
-	s2.views.push_back(std::move(v2));
-	s2.viewCount = 1;
-	PushDraw(s2, 0, n0, glm::mat4(1.0f), 7, 0, DrawSetBit_Opaque, 6u);
-	PushDraw(s2, 0, n0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 9u);
-	BuildBatches(s2, 0);
-	const View& out2 = s2.views[0];
-	bool orderOk = out2.materialRanges.size() == 2
-		&& out2.materialRanges[0].material == 3
-		&& out2.materialRanges[0].lobeCount == 9u
-		&& out2.materialRanges[1].material == 7
-		&& out2.materialRanges[1].lobeCount == 6u;
-	Check(orderOk, "gfx.lobe.material-major");
+    // Material stays the major key: (7,6) sorts after every (3,*).
+    State s2{};
+    const uint32_t n0 = RegisterMeshFromUpload(
+        s2, MakeTri(glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+    smvk::RenderViewSet views2;
+    views2.NewFrame();
+    const uint32_t rv2 = views2.AllocateMainView(proj * view, {800.0f, 600.0f});
+    View v2{};
+    v2.renderView = &views2.Get(rv2);
+    v2.eye = eye;
+    v2.width = 800;
+    v2.height = 600;
+    v2.viewProj = views2.Get(rv2).m_viewProjectionMatrix;
+    v2.cullFlags = CullFlagBit_Degenerate;
+    s2.views.push_back(std::move(v2));
+    s2.viewCount = 1;
+    PushDraw(s2, 0, n0, glm::mat4(1.0f), 7, 0, DrawSetBit_Opaque, 6u);
+    PushDraw(s2, 0, n0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 9u);
+    BuildBatches(s2, 0);
+    const View& out2 = s2.views[0];
+    bool orderOk = out2.materialRanges.size() == 2 && out2.materialRanges[0].material == 3 &&
+                   out2.materialRanges[0].lobeCount == 9u && out2.materialRanges[1].material == 7 &&
+                   out2.materialRanges[1].lobeCount == 6u;
+    Check(orderOk, "gfx.lobe.material-major");
 }
 
 // ---------------------------------------------------------------------------
@@ -451,101 +441,98 @@ void TestLobeGrouping() {
 // ---------------------------------------------------------------------------
 
 void TestDemandPlumbing() {
-	using namespace smvk::gfx;
-	State s{};
-	// Sphere cooks to many clusters; the tri is a single cluster.
-	const uint32_t sphere = RegisterMeshFromUpload(s, MakeSphere(12, 18, 1.0f), 0);
-	const uint32_t tri = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(3, 0, 0), glm::vec3(4, 0, 0), glm::vec3(3, 1, 0)), 0);
-	Check(sphere != UINT32_MAX && tri != UINT32_MAX, "gfx.demand.mesh-ids");
-	Check(s.meshBounds.size() == s.meshes.size(), "gfx.demand.bounds-per-mesh");
+    using namespace smvk::gfx;
+    State s{};
+    // Sphere cooks to many clusters; the tri is a single cluster.
+    const uint32_t sphere = RegisterMeshFromUpload(s, MakeSphere(12, 18, 1.0f), 0);
+    const uint32_t tri = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(3, 0, 0), glm::vec3(4, 0, 0), glm::vec3(3, 1, 0)), 0);
+    Check(sphere != UINT32_MAX && tri != UINT32_MAX, "gfx.demand.mesh-ids");
+    Check(s.meshBounds.size() == s.meshes.size(), "gfx.demand.bounds-per-mesh");
 
-	// Union bounds: every cluster sphere sits inside its mesh's bound.
-	bool covered = true;
-	for (size_t ci = 0; ci < s.clusters.size(); ++ci) {
-		const Cluster& c = s.clusters[ci];
-		const glm::vec4& mb = s.meshBounds[c.mesh];
-		const float d = glm::length(c.boundCenter - glm::vec3(mb));
-		covered = covered && (d + c.boundRadius <= mb.w + 1e-4f);
-	}
-	Check(covered, "gfx.demand.union-covers-clusters");
-	// The sphere mesh's union bound is strictly larger than any single
-	// cluster bound (sanity: the union actually unions).
-	const Mesh& sm = s.meshes[sphere];
-	float maxClusterR = 0.0f;
-	for (uint32_t ci = 0; ci < sm.clusterCount; ++ci)
-		maxClusterR = std::max(maxClusterR,
-			s.clusters[sm.clusterStart + ci].boundRadius);
-	Check(s.meshBounds[sphere].w > maxClusterR, "gfx.demand.union-larger");
+    // Union bounds: every cluster sphere sits inside its mesh's bound.
+    bool covered = true;
+    for (size_t ci = 0; ci < s.clusters.size(); ++ci) {
+        const Cluster& c = s.clusters[ci];
+        const glm::vec4& mb = s.meshBounds[c.mesh];
+        const float d = glm::length(c.boundCenter - glm::vec3(mb));
+        covered = covered && (d + c.boundRadius <= mb.w + 1e-4f);
+    }
+    Check(covered, "gfx.demand.union-covers-clusters");
+    // The sphere mesh's union bound is strictly larger than any single
+    // cluster bound (sanity: the union actually unions).
+    const Mesh& sm = s.meshes[sphere];
+    float maxClusterR = 0.0f;
+    for (uint32_t ci = 0; ci < sm.clusterCount; ++ci)
+        maxClusterR = std::max(maxClusterR, s.clusters[sm.clusterStart + ci].boundRadius);
+    Check(s.meshBounds[sphere].w > maxClusterR, "gfx.demand.union-larger");
 
-	// Camera in front of the sphere: all clusters survive the
-	// degenerate-flag-only CPU pre-cull, so every draw keeps its batches.
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(0.5f, 0.5f, 5.0f);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
-	View v{};
-	v.renderView = &views.Get(rv);
-	v.eye = eye;
-	v.width = 800;
-	v.height = 600;
-	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-	v.cullFlags = CullFlagBit_Degenerate;
-	s.views.push_back(std::move(v));
-	s.viewCount = 1;
+    // Camera in front of the sphere: all clusters survive the
+    // degenerate-flag-only CPU pre-cull, so every draw keeps its batches.
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(0.5f, 0.5f, 5.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
+    View v{};
+    v.renderView = &views.Get(rv);
+    v.eye = eye;
+    v.width = 800;
+    v.height = 600;
+    v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+    v.cullFlags = CullFlagBit_Degenerate;
+    s.views.push_back(std::move(v));
+    s.viewCount = 1;
 
-	PushDraw(s, 0, sphere, glm::mat4(1.0f), 9);
-	PushDraw(s, 0, tri, glm::mat4(1.0f), 5);
-	PushDraw(s, 0, sphere,
-		glm::translate(glm::mat4(1.0f), glm::vec3(0.2f, 0.0f, 0.0f)), 5);
-	BuildBatches(s, 0);
+    PushDraw(s, 0, sphere, glm::mat4(1.0f), 9);
+    PushDraw(s, 0, tri, glm::mat4(1.0f), 5);
+    PushDraw(s, 0, sphere, glm::translate(glm::mat4(1.0f), glm::vec3(0.2f, 0.0f, 0.0f)), 5);
+    BuildBatches(s, 0);
 
-	const View& out = s.views[0];
-	// Material mirror: stable material sort maps the pushes to
-	// (tri,5), (sphere+0.2x,5), (sphere,9).
-	const bool sortOk = out.drawConstants.size() == 3
-		&& out.drawConstants[0].material == 5 && out.drawConstants[0].mesh == tri
-		&& out.drawConstants[1].material == 5 && out.drawConstants[1].mesh == sphere
-		&& out.drawConstants[2].material == 9 && out.drawConstants[2].mesh == sphere;
-	Check(sortOk, "gfx.demand.material-mirror");
+    const View& out = s.views[0];
+    // Material mirror: stable material sort maps the pushes to
+    // (tri,5), (sphere+0.2x,5), (sphere,9).
+    const bool sortOk = out.drawConstants.size() == 3 && out.drawConstants[0].material == 5 &&
+                        out.drawConstants[0].mesh == tri && out.drawConstants[1].material == 5 &&
+                        out.drawConstants[1].mesh == sphere && out.drawConstants[2].material == 9 &&
+                        out.drawConstants[2].mesh == sphere;
+    Check(sortOk, "gfx.demand.material-mirror");
 
-	// Designated-publisher bit: the CPU emits NONE (gfxbatchcull assigns
-	// the first KEPT slot on the GPU). Every batch flag reads 0 here.
-	uint32_t designated = 0;
-	bool firstOnly = true;
-	uint32_t prevDraw = UINT32_MAX;
-	bool seenForDraw = false;
-	for (size_t bi = 0; bi < out.batchCount; ++bi) {
-		const Batch& b = out.batches[bi];
-		const bool bit = (b.flags & BatchFlagBit_DemandPublisher) != 0;
-		if (b.draw != prevDraw) {
-			prevDraw = b.draw;
-			seenForDraw = false;
-		}
-		if (bit) {
-			++designated;
-			firstOnly = firstOnly && !seenForDraw;
-			seenForDraw = true;
-		}
-	}
-	Check(firstOnly, "gfx.demand.first-only");
-	// 3 draws, GPU-assigned publishers => the CPU designates none.
-	Check(designated == 0, "gfx.demand.cpu-designates-none");
-	// The single-cluster tri draw has exactly one batch (the degenerate-only
-	// cull keeps it; cone/frustum verdicts are the GPU's).
-	size_t triBatches = 0, triDesignated = 0;
-	for (size_t bi = 0; bi < out.batchCount; ++bi) {
-		if (out.batches[bi].draw < out.drawConstants.size()
-			&& out.drawConstants[out.batches[bi].draw].mesh == tri) {
-			++triBatches;
-			triDesignated +=
-				(out.batches[bi].flags & BatchFlagBit_DemandPublisher) ? 1 : 0;
-		}
-	}
-	Check(triBatches == 1 && triDesignated == 0, "gfx.demand.tri-single");
+    // Designated-publisher bit: the CPU emits NONE (gfxbatchcull assigns
+    // the first KEPT slot on the GPU). Every batch flag reads 0 here.
+    uint32_t designated = 0;
+    bool firstOnly = true;
+    uint32_t prevDraw = UINT32_MAX;
+    bool seenForDraw = false;
+    for (size_t bi = 0; bi < out.batchCount; ++bi) {
+        const Batch& b = out.batches[bi];
+        const bool bit = (b.flags & BatchFlagBit_DemandPublisher) != 0;
+        if (b.draw != prevDraw) {
+            prevDraw = b.draw;
+            seenForDraw = false;
+        }
+        if (bit) {
+            ++designated;
+            firstOnly = firstOnly && !seenForDraw;
+            seenForDraw = true;
+        }
+    }
+    Check(firstOnly, "gfx.demand.first-only");
+    // 3 draws, GPU-assigned publishers => the CPU designates none.
+    Check(designated == 0, "gfx.demand.cpu-designates-none");
+    // The single-cluster tri draw has exactly one batch (the degenerate-only
+    // cull keeps it; cone/frustum verdicts are the GPU's).
+    size_t triBatches = 0, triDesignated = 0;
+    for (size_t bi = 0; bi < out.batchCount; ++bi) {
+        if (out.batches[bi].draw < out.drawConstants.size() &&
+            out.drawConstants[out.batches[bi].draw].mesh == tri) {
+            ++triBatches;
+            triDesignated += (out.batches[bi].flags & BatchFlagBit_DemandPublisher) ? 1 : 0;
+        }
+    }
+    Check(triBatches == 1 && triDesignated == 0, "gfx.demand.tri-single");
 }
 
 // ---------------------------------------------------------------------------
@@ -558,98 +545,98 @@ void TestDemandPlumbing() {
 // callers — the chain culls GPU-side).
 // ---------------------------------------------------------------------------
 
-bool ExpectedCull(const smvk::gfx::Cluster& c, const glm::mat4& model,
-	const glm::vec3& eye, const smvk::RenderView& rv) {
-	const glm::vec3 wc = glm::vec3(model * glm::vec4(c.boundCenter, 1.0f));
-	const float s = std::max({
-		glm::length(glm::vec3(model[0])),
-		glm::length(glm::vec3(model[1])),
-		glm::length(glm::vec3(model[2])) });
-	const float wr = c.boundRadius * s;
-	for (uint32_t i = 0; i < 6; ++i) {
-		const glm::vec4& p = rv.m_viewPlanes[i];
-		if (glm::dot(glm::vec3(p), wc) + p.w < -wr)
-			return true;
-	}
-	const glm::vec3 eyeObj = glm::vec3(glm::inverse(model) * glm::vec4(eye, 1.0f));
-	const glm::vec3 d = c.coneApex - eyeObj;
-	const float len = glm::length(d);
-	if (len < 1e-6f)
-		return false;
-	return glm::dot(d / len, c.coneAxis) >= c.coneCutoff;
+bool ExpectedCull(const smvk::gfx::Cluster& c,
+                  const glm::mat4& model,
+                  const glm::vec3& eye,
+                  const smvk::RenderView& rv) {
+    const glm::vec3 wc = glm::vec3(model * glm::vec4(c.boundCenter, 1.0f));
+    const float s = std::max({glm::length(glm::vec3(model[0])),
+                              glm::length(glm::vec3(model[1])),
+                              glm::length(glm::vec3(model[2]))});
+    const float wr = c.boundRadius * s;
+    for (uint32_t i = 0; i < 6; ++i) {
+        const glm::vec4& p = rv.m_viewPlanes[i];
+        if (glm::dot(glm::vec3(p), wc) + p.w < -wr)
+            return true;
+    }
+    const glm::vec3 eyeObj = glm::vec3(glm::inverse(model) * glm::vec4(eye, 1.0f));
+    const glm::vec3 d = c.coneApex - eyeObj;
+    const float len = glm::length(d);
+    if (len < 1e-6f)
+        return false;
+    return glm::dot(d / len, c.coneAxis) >= c.coneCutoff;
 }
 
 void TestPreCull() {
-	using namespace smvk::gfx;
-	State s{};
-	// Large enough for real meshlets (~15+ clusters).
-	const auto up = MakeSphere(24, 36, 1.0f);
-	const uint32_t m = RegisterMeshFromUpload(s, up, 0);
-	Check(m == 0, "gfx.cull.mesh-id");
+    using namespace smvk::gfx;
+    State s{};
+    // Large enough for real meshlets (~15+ clusters).
+    const auto up = MakeSphere(24, 36, 1.0f);
+    const uint32_t m = RegisterMeshFromUpload(s, up, 0);
+    Check(m == 0, "gfx.cull.mesh-id");
 
-	// Front view: the build emits every candidate (cone verdicts are the
-	// GPU batch cull's).
-	{
-		s.views.clear();
-		s.viewCount = 0;
-		smvk::RenderViewSet views;
-		views.NewFrame();
-		const glm::vec3 eye(0, 0, 4);
-		const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-		glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-		proj[1][1] *= -1.0f;
-		const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
-		View v{};
-		v.renderView = &views.Get(rv);
-		v.eye = eye;
-		v.width = 800;
-		v.height = 600;
-		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-		s.views.push_back(std::move(v));
-		s.viewCount = 1;
-		PushDraw(s, 0, m, glm::mat4(1.0f), 0);
-		BuildBatches(s, 0);
-		const View& out = s.views[0];
+    // Front view: the build emits every candidate (cone verdicts are the
+    // GPU batch cull's).
+    {
+        s.views.clear();
+        s.viewCount = 0;
+        smvk::RenderViewSet views;
+        views.NewFrame();
+        const glm::vec3 eye(0, 0, 4);
+        const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+        glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+        proj[1][1] *= -1.0f;
+        const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
+        View v{};
+        v.renderView = &views.Get(rv);
+        v.eye = eye;
+        v.width = 800;
+        v.height = 600;
+        v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+        s.views.push_back(std::move(v));
+        s.viewCount = 1;
+        PushDraw(s, 0, m, glm::mat4(1.0f), 0);
+        BuildBatches(s, 0);
+        const View& out = s.views[0];
 #ifndef NDEBUG
-		std::cout << "[gfx.cull] front: kept=" << out.batchCount
-			<< " culled=" << out.stats.clustersCulled
-			<< " processed=" << out.stats.clustersProcessed << "\n";
+        std::cout << "[gfx.cull] front: kept=" << out.batchCount
+                  << " culled=" << out.stats.clustersCulled
+                  << " processed=" << out.stats.clustersProcessed << "\n";
 #endif
-		Check(out.batchCount > 0, "gfx.cull.front-keeps-some");
-		Check(out.stats.clustersCulled == 0, "gfx.cull.no-cpu-cull");
-		Check(out.batchCount + out.stats.clustersCulled == out.stats.clustersProcessed,
-			"gfx.cull.accounts-all");
+        Check(out.batchCount > 0, "gfx.cull.front-keeps-some");
+        Check(out.stats.clustersCulled == 0, "gfx.cull.no-cpu-cull");
+        Check(out.batchCount + out.stats.clustersCulled == out.stats.clustersProcessed,
+              "gfx.cull.accounts-all");
 
-		// (No per-batch CPU retest: the build emits every candidate and
-		// the GPU batch cull owns verdicts. ExpectedCull below still guards
-		// the reference math against CullCluster directly.)
-	}
+        // (No per-batch CPU retest: the build emits every candidate and
+        // the GPU batch cull owns verdicts. ExpectedCull below still guards
+        // the reference math against CullCluster directly.)
+    }
 
-	// Looking away: the build still emits every candidate (frustum
-	// verdicts are the GPU draw cull's, not the CPU build's).
-	{
-		s.views.clear();
-		s.viewCount = 0;
-		smvk::RenderViewSet views;
-		views.NewFrame();
-		const glm::vec3 eye(0, 0, 4);
-		const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 8), glm::vec3(0, 1, 0));
-		glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-		proj[1][1] *= -1.0f;
-		const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
-		View v{};
-		v.renderView = &views.Get(rv);
-		v.eye = eye;
-		v.width = 800;
-		v.height = 600;
-		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-		s.views.push_back(std::move(v));
-		s.viewCount = 1;
-		PushDraw(s, 0, m, glm::mat4(1.0f), 0);
-		BuildBatches(s, 0);
-		Check(s.views[0].batchCount == (uint32_t)s.clusters.size(),
-			"gfx.cull.away-keeps-all");
-	}
+    // Looking away: the build still emits every candidate (frustum
+    // verdicts are the GPU draw cull's, not the CPU build's).
+    {
+        s.views.clear();
+        s.viewCount = 0;
+        smvk::RenderViewSet views;
+        views.NewFrame();
+        const glm::vec3 eye(0, 0, 4);
+        const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 8), glm::vec3(0, 1, 0));
+        glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+        proj[1][1] *= -1.0f;
+        const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
+        View v{};
+        v.renderView = &views.Get(rv);
+        v.eye = eye;
+        v.width = 800;
+        v.height = 600;
+        v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+        s.views.push_back(std::move(v));
+        s.viewCount = 1;
+        PushDraw(s, 0, m, glm::mat4(1.0f), 0);
+        BuildBatches(s, 0);
+        Check(s.views[0].batchCount == (uint32_t)s.clusters.size(), "gfx.cull.away-keeps-all");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -660,83 +647,83 @@ void TestPreCull() {
 // ---------------------------------------------------------------------------
 
 void TestConeCull() {
-	using namespace smvk::gfx;
-	State s{};
-	const auto up = MakeSphere(24, 36, 1.0f);
-	const uint32_t m = RegisterMeshFromUpload(s, up, 0);
-	Check(m == 0, "gfx.cone.mesh-id");
-	const uint32_t clusterTotal = (uint32_t)s.clusters.size();
-	Check(clusterTotal > 10, "gfx.cone.has-clusters");
+    using namespace smvk::gfx;
+    State s{};
+    const auto up = MakeSphere(24, 36, 1.0f);
+    const uint32_t m = RegisterMeshFromUpload(s, up, 0);
+    Check(m == 0, "gfx.cone.mesh-id");
+    const uint32_t clusterTotal = (uint32_t)s.clusters.size();
+    Check(clusterTotal > 10, "gfx.cone.has-clusters");
 
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(0, 0, 4);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(0, 0, 4);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
 
-	// A draw facing the sphere emits every candidate here (the whole
-	// sphere is inside the frustum from this eye) — BuildBatches does no
-	// cone pre-cull; the verdicts are the GPU's.
-	{
-		s.views.clear();
-		s.viewCount = 0;
-		View v{};
-		v.renderView = &views.Get(rv);
-		v.eye = eye;
-		v.width = 800;
-		v.height = 600;
-		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-		s.views.push_back(std::move(v));
-		s.viewCount = 1;
-		PushDraw(s, 0, m, glm::mat4(1.0f), 0);
-		BuildBatches(s, 0);
-		Check(s.views[0].batchCount == clusterTotal, "gfx.cone.no-cpu-cull");
-	}
-	// Draw flags survive into draw constants (the GPU reads misc.y from
-	// these; skinned is the example flag — two-sided no longer exists).
-	{
-		s.views.clear();
-		s.viewCount = 0;
-		View v{};
-		v.renderView = &views.Get(rv);
-		v.eye = eye;
-		v.width = 800;
-		v.height = 600;
-		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-		s.views.push_back(std::move(v));
-		s.viewCount = 1;
-		PushDraw(s, 0, m, glm::mat4(1.0f), 0, DrawFlagBit_Skinned);
-		BuildBatches(s, 0);
-		const View& out = s.views[0];
-		Check(out.drawConstants.size() == 1, "gfx.cone.one-drawconst");
-		Check((out.drawConstants[0].flags & DrawFlagBit_Skinned) != 0,
-			"gfx.cone.flag-in-drawconst");
-	}
+    // A draw facing the sphere emits every candidate here (the whole
+    // sphere is inside the frustum from this eye) — BuildBatches does no
+    // cone pre-cull; the verdicts are the GPU's.
+    {
+        s.views.clear();
+        s.viewCount = 0;
+        View v{};
+        v.renderView = &views.Get(rv);
+        v.eye = eye;
+        v.width = 800;
+        v.height = 600;
+        v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+        s.views.push_back(std::move(v));
+        s.viewCount = 1;
+        PushDraw(s, 0, m, glm::mat4(1.0f), 0);
+        BuildBatches(s, 0);
+        Check(s.views[0].batchCount == clusterTotal, "gfx.cone.no-cpu-cull");
+    }
+    // Draw flags survive into draw constants (the GPU reads misc.y from
+    // these; skinned is the example flag — two-sided no longer exists).
+    {
+        s.views.clear();
+        s.viewCount = 0;
+        View v{};
+        v.renderView = &views.Get(rv);
+        v.eye = eye;
+        v.width = 800;
+        v.height = 600;
+        v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+        s.views.push_back(std::move(v));
+        s.viewCount = 1;
+        PushDraw(s, 0, m, glm::mat4(1.0f), 0, DrawFlagBit_Skinned);
+        BuildBatches(s, 0);
+        const View& out = s.views[0];
+        Check(out.drawConstants.size() == 1, "gfx.cone.one-drawconst");
+        Check((out.drawConstants[0].flags & DrawFlagBit_Skinned) != 0,
+              "gfx.cone.flag-in-drawconst");
+    }
 
-	// Mirrored instance: a z-mirror flips the cone axis to face the eye,
-	// so a cluster facing away unmirrored must be kept mirrored.
-	smvk::RenderViewSet views2;
-	views2.NewFrame();
-	const glm::vec3 eye2(0, 0, -4);
-	const glm::mat4 view2 = glm::lookAt(eye2, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-	glm::mat4 proj2 = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj2[1][1] *= -1.0f;
-	const uint32_t rv2 = views2.AllocateMainView(proj2 * view2, { 800.0f, 600.0f });
-	const smvk::RenderView& renderView2 = views2.Get(rv2);
-	Cluster c{};
-	c.boundCenter = glm::vec3(0.0f);
-	c.boundRadius = 0.1f;
-	c.coneApex = glm::vec3(0.0f);
-	c.coneAxis = glm::vec3(0.0f, 0.0f, 1.0f);
-	c.coneCutoff = 0.9f;
-	const glm::mat4 ident(1.0f);
-	const glm::mat4 mirror = glm::scale(ident, glm::vec3(1.0f, 1.0f, -1.0f));
-	Check(CullCluster(c, ident, glm::inverse(ident), eye2, renderView2),
-		"gfx.cone.mirror-away-culls");
-	Check(!CullCluster(c, mirror, glm::inverse(mirror), eye2, renderView2),
-		"gfx.cone.mirror-keeps");
+    // Mirrored instance: a z-mirror flips the cone axis to face the eye,
+    // so a cluster facing away unmirrored must be kept mirrored.
+    smvk::RenderViewSet views2;
+    views2.NewFrame();
+    const glm::vec3 eye2(0, 0, -4);
+    const glm::mat4 view2 = glm::lookAt(eye2, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+    glm::mat4 proj2 = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj2[1][1] *= -1.0f;
+    const uint32_t rv2 = views2.AllocateMainView(proj2 * view2, {800.0f, 600.0f});
+    const smvk::RenderView& renderView2 = views2.Get(rv2);
+    Cluster c{};
+    c.boundCenter = glm::vec3(0.0f);
+    c.boundRadius = 0.1f;
+    c.coneApex = glm::vec3(0.0f);
+    c.coneAxis = glm::vec3(0.0f, 0.0f, 1.0f);
+    c.coneCutoff = 0.9f;
+    const glm::mat4 ident(1.0f);
+    const glm::mat4 mirror = glm::scale(ident, glm::vec3(1.0f, 1.0f, -1.0f));
+    Check(CullCluster(c, ident, glm::inverse(ident), eye2, renderView2),
+          "gfx.cone.mirror-away-culls");
+    Check(!CullCluster(c, mirror, glm::inverse(mirror), eye2, renderView2),
+          "gfx.cone.mirror-keeps");
 }
 
 // ---------------------------------------------------------------------------
@@ -754,250 +741,254 @@ void TestConeCull() {
 // ---------------------------------------------------------------------------
 
 void TestDeformedConeFit() {
-	using namespace smvk::gfx;
+    using namespace smvk::gfx;
 
-	// Deterministic LCG (no <random> dependency; the engine's frameSeed
-	// pattern). Unit() in [-1,1), Dir() a uniform-ish unit vector (retries
-	// around the degenerate pole).
-	struct Lcg {
-		uint32_t s = 0x1234567u;
-		uint32_t Next() { return s = 1664525u * s + 1013904223u; }
-		float Unit() {
-			return float((int32_t)((Next() >> 9) & 0xFFFFu) - 32768)
-				* (1.0f / 32768.0f);
-		}
-		glm::vec3 Dir() {
-			for (;;) {
-				const glm::vec3 v(Unit(), Unit(), Unit());
-				const float l2 = glm::dot(v, v);
-				if (l2 > 1e-4f && l2 < 1.0f)
-					return v / std::sqrt(l2);
-			}
-		}
-	};
+    // Deterministic LCG (no <random> dependency; the engine's frameSeed
+    // pattern). Unit() in [-1,1), Dir() a uniform-ish unit vector (retries
+    // around the degenerate pole).
+    struct Lcg {
+        uint32_t s = 0x1234567u;
+        uint32_t Next() {
+            return s = 1664525u * s + 1013904223u;
+        }
+        float Unit() {
+            return float((int32_t)((Next() >> 9) & 0xFFFFu) - 32768) * (1.0f / 32768.0f);
+        }
+        glm::vec3 Dir() {
+            for (;;) {
+                const glm::vec3 v(Unit(), Unit(), Unit());
+                const float l2 = glm::dot(v, v);
+                if (l2 > 1e-4f && l2 < 1.0f)
+                    return v / std::sqrt(l2);
+            }
+        }
+    };
 
-	// The fit's verdict math — the GfxConeCulled/CullCluster object-space
-	// core verbatim (identity model): degenerate fits never cull.
-	const auto fitCulls = [](const DeformedConeFit& f, const glm::vec3& eye) {
-		if (f.degenerate)
-			return false;
-		const glm::vec3 d = f.coneApex - eye;
-		const float len2 = glm::dot(d, d);
-		if (len2 < 1e-12f)
-			return false;
-		return glm::dot(d / std::sqrt(len2), f.coneAxis) >= f.coneCutoff;
-	};
-	// The ground truth: cull-legal iff every non-degenerate face plane puts
-	// the eye on its negative (back) side. A tiny positive tolerance keeps
-	// float-borderline planes from failing exact cone ties.
-	const auto groundInvisible = [](const glm::vec3* corners,
-		uint32_t triCount, const glm::vec3& eye) {
-		for (uint32_t t = 0; t < triCount; ++t) {
-			const glm::vec3 n = glm::cross(
-				corners[t * 3 + 1] - corners[t * 3 + 0],
-				corners[t * 3 + 2] - corners[t * 3 + 0]);
-			if (glm::dot(n, n) < 1e-24f)
-				continue; // sliver: shades nothing, cannot forbid a cull
-			if (glm::dot(eye - corners[t * 3 + 0], n / std::sqrt(glm::dot(n, n)))
-				> 1e-6f)
-				return false; // this face is front-facing from the eye
-		}
-		return true;
-	};
-	// The pass's conservative sphere anchor: AABB center over the corners.
-	const auto aabbCenter = [](const glm::vec3* corners, uint32_t triCount) {
-		glm::vec3 mn(std::numeric_limits<float>::infinity());
-		glm::vec3 mx(-std::numeric_limits<float>::infinity());
-		for (uint32_t i = 0; i < triCount * 3; ++i) {
-			mn = glm::min(mn, corners[i]);
-			mx = glm::max(mx, corners[i]);
-		}
-		return (mn + mx) * 0.5f;
-	};
+    // The fit's verdict math — the GfxConeCulled/CullCluster object-space
+    // core verbatim (identity model): degenerate fits never cull.
+    const auto fitCulls = [](const DeformedConeFit& f, const glm::vec3& eye) {
+        if (f.degenerate)
+            return false;
+        const glm::vec3 d = f.coneApex - eye;
+        const float len2 = glm::dot(d, d);
+        if (len2 < 1e-12f)
+            return false;
+        return glm::dot(d / std::sqrt(len2), f.coneAxis) >= f.coneCutoff;
+    };
+    // The ground truth: cull-legal iff every non-degenerate face plane puts
+    // the eye on its negative (back) side. A tiny positive tolerance keeps
+    // float-borderline planes from failing exact cone ties.
+    const auto groundInvisible =
+        [](const glm::vec3* corners, uint32_t triCount, const glm::vec3& eye) {
+            for (uint32_t t = 0; t < triCount; ++t) {
+                const glm::vec3 n = glm::cross(corners[t * 3 + 1] - corners[t * 3 + 0],
+                                               corners[t * 3 + 2] - corners[t * 3 + 0]);
+                if (glm::dot(n, n) < 1e-24f)
+                    continue; // sliver: shades nothing, cannot forbid a cull
+                if (glm::dot(eye - corners[t * 3 + 0], n / std::sqrt(glm::dot(n, n))) > 1e-6f)
+                    return false; // this face is front-facing from the eye
+            }
+            return true;
+        };
+    // The pass's conservative sphere anchor: AABB center over the corners.
+    const auto aabbCenter = [](const glm::vec3* corners, uint32_t triCount) {
+        glm::vec3 mn(std::numeric_limits<float>::infinity());
+        glm::vec3 mx(-std::numeric_limits<float>::infinity());
+        for (uint32_t i = 0; i < triCount * 3; ++i) {
+            mn = glm::min(mn, corners[i]);
+            mx = glm::max(mx, corners[i]);
+        }
+        return (mn + mx) * 0.5f;
+    };
 
-	// ---- Guards -------------------------------------------------------------
-	{
-		Check(FitDeformedCone(nullptr, 4, glm::vec3(0.0f)).degenerate,
-			"gfx.conefit.null-degenerate");
-		const glm::vec3 none[1]{};
-		Check(FitDeformedCone(none, 0, glm::vec3(0.0f)).degenerate,
-			"gfx.conefit.empty-degenerate");
+    // ---- Guards -------------------------------------------------------------
+    {
+        Check(FitDeformedCone(nullptr, 4, glm::vec3(0.0f)).degenerate,
+              "gfx.conefit.null-degenerate");
+        const glm::vec3 none[1]{};
+        Check(FitDeformedCone(none, 0, glm::vec3(0.0f)).degenerate, "gfx.conefit.empty-degenerate");
 
-		// A coherent +Z quad at z=0: valid, axis ~+Z, sane cutoff.
-		const glm::vec3 quad[6] = {
-			glm::vec3(-1.0f, -1.0f, 0.0f), glm::vec3(1.0f, -1.0f, 0.0f),
-			glm::vec3(1.0f, 1.0f, 0.0f),
-			glm::vec3(-1.0f, -1.0f, 0.0f), glm::vec3(1.0f, 1.0f, 0.0f),
-			glm::vec3(-1.0f, 1.0f, 0.0f),
-		};
-		const DeformedConeFit quadFit =
-			FitDeformedCone(quad, 2, glm::vec3(0.0f));
-		Check(!quadFit.degenerate, "gfx.conefit.quad-valid");
-		Check(glm::dot(quadFit.coneAxis, glm::vec3(0, 0, 1)) > 0.999f,
-			"gfx.conefit.quad-axis");
-		Check(quadFit.coneCutoff >= 0.0f && quadFit.coneCutoff <= 1.0f,
-			"gfx.conefit.quad-cutoff-range");
-		// The apex lands ON or behind every face plane by construction —
-		// for this flat quad through the center the maxt crossing is
-		// exact (t = 0), so the apex sits on the plane (dot <= 0).
-		Check(quadFit.coneApex.z <= 0.0f, "gfx.conefit.quad-apex-behind");
-		// Front eye keeps, back eye (far behind, on-axis) culls: the fit
-		// actually rejects (a never-culling fit trivially passes every
-		// conservativeness check).
-		Check(!fitCulls(quadFit, glm::vec3(0, 0, 5.0f)), "gfx.conefit.quad-front-keeps");
-		Check(fitCulls(quadFit, glm::vec3(0, 0, -50.0f)), "gfx.conefit.quad-back-culls");
+        // A coherent +Z quad at z=0: valid, axis ~+Z, sane cutoff.
+        const glm::vec3 quad[6] = {
+            glm::vec3(-1.0f, -1.0f, 0.0f),
+            glm::vec3(1.0f, -1.0f, 0.0f),
+            glm::vec3(1.0f, 1.0f, 0.0f),
+            glm::vec3(-1.0f, -1.0f, 0.0f),
+            glm::vec3(1.0f, 1.0f, 0.0f),
+            glm::vec3(-1.0f, 1.0f, 0.0f),
+        };
+        const DeformedConeFit quadFit = FitDeformedCone(quad, 2, glm::vec3(0.0f));
+        Check(!quadFit.degenerate, "gfx.conefit.quad-valid");
+        Check(glm::dot(quadFit.coneAxis, glm::vec3(0, 0, 1)) > 0.999f, "gfx.conefit.quad-axis");
+        Check(quadFit.coneCutoff >= 0.0f && quadFit.coneCutoff <= 1.0f,
+              "gfx.conefit.quad-cutoff-range");
+        // The apex lands ON or behind every face plane by construction —
+        // for this flat quad through the center the maxt crossing is
+        // exact (t = 0), so the apex sits on the plane (dot <= 0).
+        Check(quadFit.coneApex.z <= 0.0f, "gfx.conefit.quad-apex-behind");
+        // Front eye keeps, back eye (far behind, on-axis) culls: the fit
+        // actually rejects (a never-culling fit trivially passes every
+        // conservativeness check).
+        Check(!fitCulls(quadFit, glm::vec3(0, 0, 5.0f)), "gfx.conefit.quad-front-keeps");
+        Check(fitCulls(quadFit, glm::vec3(0, 0, -50.0f)), "gfx.conefit.quad-back-culls");
 
-		// Double-sided (exactly opposite facings — the cloth case): the
-		// raw cross sum cancels -> degenerate keep-cone.
-		const glm::vec3 cloth[6] = {
-			quad[0], quad[1], quad[2],
-			quad[2], quad[1], quad[0], // same triangle, flipped winding
-		};
-		Check(FitDeformedCone(cloth, 2, glm::vec3(0.0f)).degenerate,
-			"gfx.conefit.double-sided-degenerate");
+        // Double-sided (exactly opposite facings — the cloth case): the
+        // raw cross sum cancels -> degenerate keep-cone.
+        const glm::vec3 cloth[6] = {
+            quad[0],
+            quad[1],
+            quad[2],
+            quad[2],
+            quad[1],
+            quad[0], // same triangle, flipped winding
+        };
+        Check(FitDeformedCone(cloth, 2, glm::vec3(0.0f)).degenerate,
+              "gfx.conefit.double-sided-degenerate");
 
-		// A sliver appended to the coherent quad: ignored, the quad's cone
-		// survives (the sliver shades nothing).
-		glm::vec3 withSliver[9];
-		std::memcpy(withSliver, quad, sizeof(quad));
-		withSliver[6] = withSliver[7] = glm::vec3(0.5f, 0.5f, 0.1f);
-		withSliver[8] = glm::vec3(0.5f, 0.5001f, 0.1f);
-		const DeformedConeFit sliverFit =
-			FitDeformedCone(withSliver, 3, glm::vec3(0.0f));
-		Check(!sliverFit.degenerate, "gfx.conefit.sliver-ignored");
-		Check(glm::dot(sliverFit.coneAxis, quadFit.coneAxis) > 0.999f,
-			"gfx.conefit.sliver-same-axis");
-	}
+        // A sliver appended to the coherent quad: ignored, the quad's cone
+        // survives (the sliver shades nothing).
+        glm::vec3 withSliver[9];
+        std::memcpy(withSliver, quad, sizeof(quad));
+        withSliver[6] = withSliver[7] = glm::vec3(0.5f, 0.5f, 0.1f);
+        withSliver[8] = glm::vec3(0.5f, 0.5001f, 0.1f);
+        const DeformedConeFit sliverFit = FitDeformedCone(withSliver, 3, glm::vec3(0.0f));
+        Check(!sliverFit.degenerate, "gfx.conefit.sliver-ignored");
+        Check(glm::dot(sliverFit.coneAxis, quadFit.coneAxis) > 0.999f,
+              "gfx.conefit.sliver-same-axis");
+    }
 
-	// ---- Randomized conservativeness sweep ----------------------------------
-	{
-		Lcg rng;
-		uint32_t sweeps = 0, culls = 0, degen = 0;
-		bool allConservative = true;
-		for (uint32_t iter = 0; iter < 96; ++iter) {
-			// One random cluster-like patch: a rough facing axis, a spread
-			// strength sweeping coherent -> wider-than-hemisphere, a few
-			// triangle pairs (plus occasional slivers).
-			const glm::vec3 facing = rng.Dir();
-			const float strength = 0.15f + 4.0f * std::fabs(rng.Unit());
-			const uint32_t triCount = 2u + (rng.Next() % 10u);
-			std::vector<glm::vec3> corners(triCount * 3);
-			for (uint32_t t = 0; t < triCount; ++t) {
-				// Intended normal: facing jittered by the spread strength.
-				glm::vec3 n = facing + strength * rng.Dir();
-				const float nl2 = glm::dot(n, n);
-				n = nl2 > 1e-12f ? n / std::sqrt(nl2) : facing;
-				// A small in-plane triangle at a random offset, wound so its
-				// raw cross points along n.
-				glm::vec3 t1 = std::fabs(n.z) < 0.9f
-					? glm::cross(n, glm::vec3(0, 0, 1)) : glm::cross(n, glm::vec3(1, 0, 0));
-				t1 = glm::normalize(t1);
-				const glm::vec3 t2 = glm::cross(n, t1);
-				const glm::vec3 p = rng.Dir() * (0.5f + std::fabs(rng.Unit()));
-				glm::vec3 c[3] = {
-					p - 0.3f * t1 - 0.2f * t2,
-					p + 0.35f * t1 - 0.1f * t2 + 0.05f * n,
-					p + 0.05f * t1 + 0.3f * t2,
-				};
-				if (glm::dot(glm::cross(c[1] - c[0], c[2] - c[0]), n) < 0.0f)
-					std::swap(c[1], c[2]);
-				// Occasional sliver (zero-area): the fit must skip it.
-				if ((rng.Next() & 7u) == 0u) {
-					c[1] = c[0] + 1e-5f * t1;
-					c[2] = c[0] + 2e-5f * t2;
-				}
-				corners[t * 3 + 0] = c[0];
-				corners[t * 3 + 1] = c[1];
-				corners[t * 3 + 2] = c[2];
-			}
-			const glm::vec3 center = aabbCenter(corners.data(), triCount);
-			const DeformedConeFit fit =
-				FitDeformedCone(corners.data(), triCount, center);
-			if (fit.degenerate) {
-				++degen;
-				continue;
-			}
-			// Viewpoints on a shell around the patch (outside the AABB
-			// sphere, near to far).
-			glm::vec3 mn(std::numeric_limits<float>::infinity());
-			glm::vec3 mx(-std::numeric_limits<float>::infinity());
-			for (const glm::vec3& c : corners) {
-				mn = glm::min(mn, c);
-				mx = glm::max(mx, c);
-			}
-			const float radius = glm::length((mx - mn) * 0.5f);
-			for (uint32_t k = 0; k < 24; ++k) {
-				const float dist = radius * (1.05f + 9.0f * std::fabs(rng.Unit()));
-				const glm::vec3 eye = center + rng.Dir() * dist;
-				++sweeps;
-				if (fitCulls(fit, eye)) {
-					++culls;
-					if (!groundInvisible(corners.data(), triCount, eye)) {
-						allConservative = false;
-						std::cout << "FAIL detail: cone culled a front-facing "
-							"viewpoint (iter " << iter << ")\n";
-					}
-				}
-			}
-		}
-		Check(degen > 0, "gfx.conefit.sweep-has-degenerate"); // the guard paths exercised
-		Check(culls > 0, "gfx.conefit.sweep-culls-something"); // non-trivial fit
-		Check(allConservative, "gfx.conefit.sweep-conservative");
-	}
+    // ---- Randomized conservativeness sweep ----------------------------------
+    {
+        Lcg rng;
+        uint32_t sweeps = 0, culls = 0, degen = 0;
+        bool allConservative = true;
+        for (uint32_t iter = 0; iter < 96; ++iter) {
+            // One random cluster-like patch: a rough facing axis, a spread
+            // strength sweeping coherent -> wider-than-hemisphere, a few
+            // triangle pairs (plus occasional slivers).
+            const glm::vec3 facing = rng.Dir();
+            const float strength = 0.15f + 4.0f * std::fabs(rng.Unit());
+            const uint32_t triCount = 2u + (rng.Next() % 10u);
+            std::vector<glm::vec3> corners(triCount * 3);
+            for (uint32_t t = 0; t < triCount; ++t) {
+                // Intended normal: facing jittered by the spread strength.
+                glm::vec3 n = facing + strength * rng.Dir();
+                const float nl2 = glm::dot(n, n);
+                n = nl2 > 1e-12f ? n / std::sqrt(nl2) : facing;
+                // A small in-plane triangle at a random offset, wound so its
+                // raw cross points along n.
+                glm::vec3 t1 = std::fabs(n.z) < 0.9f ? glm::cross(n, glm::vec3(0, 0, 1))
+                                                     : glm::cross(n, glm::vec3(1, 0, 0));
+                t1 = glm::normalize(t1);
+                const glm::vec3 t2 = glm::cross(n, t1);
+                const glm::vec3 p = rng.Dir() * (0.5f + std::fabs(rng.Unit()));
+                glm::vec3 c[3] = {
+                    p - 0.3f * t1 - 0.2f * t2,
+                    p + 0.35f * t1 - 0.1f * t2 + 0.05f * n,
+                    p + 0.05f * t1 + 0.3f * t2,
+                };
+                if (glm::dot(glm::cross(c[1] - c[0], c[2] - c[0]), n) < 0.0f)
+                    std::swap(c[1], c[2]);
+                // Occasional sliver (zero-area): the fit must skip it.
+                if ((rng.Next() & 7u) == 0u) {
+                    c[1] = c[0] + 1e-5f * t1;
+                    c[2] = c[0] + 2e-5f * t2;
+                }
+                corners[t * 3 + 0] = c[0];
+                corners[t * 3 + 1] = c[1];
+                corners[t * 3 + 2] = c[2];
+            }
+            const glm::vec3 center = aabbCenter(corners.data(), triCount);
+            const DeformedConeFit fit = FitDeformedCone(corners.data(), triCount, center);
+            if (fit.degenerate) {
+                ++degen;
+                continue;
+            }
+            // Viewpoints on a shell around the patch (outside the AABB
+            // sphere, near to far).
+            glm::vec3 mn(std::numeric_limits<float>::infinity());
+            glm::vec3 mx(-std::numeric_limits<float>::infinity());
+            for (const glm::vec3& c : corners) {
+                mn = glm::min(mn, c);
+                mx = glm::max(mx, c);
+            }
+            const float radius = glm::length((mx - mn) * 0.5f);
+            for (uint32_t k = 0; k < 24; ++k) {
+                const float dist = radius * (1.05f + 9.0f * std::fabs(rng.Unit()));
+                const glm::vec3 eye = center + rng.Dir() * dist;
+                ++sweeps;
+                if (fitCulls(fit, eye)) {
+                    ++culls;
+                    if (!groundInvisible(corners.data(), triCount, eye)) {
+                        allConservative = false;
+                        std::cout << "FAIL detail: cone culled a front-facing "
+                                     "viewpoint (iter "
+                                  << iter << ")\n";
+                    }
+                }
+            }
+        }
+        Check(degen > 0, "gfx.conefit.sweep-has-degenerate");  // the guard paths exercised
+        Check(culls > 0, "gfx.conefit.sweep-culls-something"); // non-trivial fit
+        Check(allConservative, "gfx.conefit.sweep-conservative");
+    }
 
-	// ---- Baked-parity (the sphere mesh): both fitters conservative ---------
-	{
-		State s{};
-		const auto up = MakeSphere(24, 36, 1.0f);
-		Check(RegisterMeshFromUpload(s, up, 0) == 0, "gfx.conefit.parity-mesh");
-		bool bakedConservative = true, refitConservative = true;
-		uint32_t refitValid = 0, refitCulls = 0;
-		Lcg rng;
-		for (uint32_t ci = 0; ci < s.clusters.size(); ++ci) {
-			const Cluster& cl = s.clusters[ci];
-			if (cl.triCount == 0 || cl.triCount > kMaxClusterTris)
-				continue;
-			std::vector<glm::vec3> corners(cl.triCount * 3);
-			bool ok = true;
-			for (uint32_t t = 0; t < cl.triCount && ok; ++t)
-				for (uint32_t k = 0; k < 3; ++k) {
-					const uint32_t vi = s.filterIndices[cl.indexOffset + t * 3 + k];
-					if (vi >= up.vertices.size()) { ok = false; break; }
-					corners[t * 3 + k] = up.vertices[vi].pos;
-				}
-			if (!ok)
-				continue;
-			const DeformedConeFit refit =
-				FitDeformedCone(corners.data(), cl.triCount, cl.boundCenter);
-			if (!refit.degenerate)
-				++refitValid;
-			// Baked + refit verdicts vs the shared ground truth over shell
-			// viewpoints.
-			for (uint32_t k = 0; k < 16; ++k) {
-				const float dist = cl.boundRadius * (1.05f + 9.0f * std::fabs(rng.Unit()));
-				const glm::vec3 eye = cl.boundCenter + rng.Dir() * dist;
-				// Baked cone verdict (the CullCluster object-space core).
-				const glm::vec3 bd = cl.coneApex - eye;
-				const float bLen2 = glm::dot(bd, bd);
-				const float bAxis2 = glm::dot(cl.coneAxis, cl.coneAxis);
-				const bool bakedCull = bLen2 > 1e-12f && bAxis2 > 1e-12f
-					&& glm::dot(bd / std::sqrt(bLen2),
-						cl.coneAxis / std::sqrt(bAxis2)) >= cl.coneCutoff;
-				if (bakedCull && !groundInvisible(corners.data(), cl.triCount, eye))
-					bakedConservative = false;
-				if (fitCulls(refit, eye)) {
-					++refitCulls;
-					if (!groundInvisible(corners.data(), cl.triCount, eye))
-						refitConservative = false;
-				}
-			}
-		}
-		Check(bakedConservative, "gfx.conefit.baked-conservative");
-		Check(refitConservative, "gfx.conefit.refit-conservative");
-		Check(refitValid > s.clusters.size() / 2,
-			"gfx.conefit.refit-mostly-valid"); // facing-pure post-split sphere
-		Check(refitCulls > 0, "gfx.conefit.refit-culls-something");
-	}
+    // ---- Baked-parity (the sphere mesh): both fitters conservative ---------
+    {
+        State s{};
+        const auto up = MakeSphere(24, 36, 1.0f);
+        Check(RegisterMeshFromUpload(s, up, 0) == 0, "gfx.conefit.parity-mesh");
+        bool bakedConservative = true, refitConservative = true;
+        uint32_t refitValid = 0, refitCulls = 0;
+        Lcg rng;
+        for (uint32_t ci = 0; ci < s.clusters.size(); ++ci) {
+            const Cluster& cl = s.clusters[ci];
+            if (cl.triCount == 0 || cl.triCount > kMaxClusterTris)
+                continue;
+            std::vector<glm::vec3> corners(cl.triCount * 3);
+            bool ok = true;
+            for (uint32_t t = 0; t < cl.triCount && ok; ++t)
+                for (uint32_t k = 0; k < 3; ++k) {
+                    const uint32_t vi = s.filterIndices[cl.indexOffset + t * 3 + k];
+                    if (vi >= up.vertices.size()) {
+                        ok = false;
+                        break;
+                    }
+                    corners[t * 3 + k] = up.vertices[vi].pos;
+                }
+            if (!ok)
+                continue;
+            const DeformedConeFit refit =
+                FitDeformedCone(corners.data(), cl.triCount, cl.boundCenter);
+            if (!refit.degenerate)
+                ++refitValid;
+            // Baked + refit verdicts vs the shared ground truth over shell
+            // viewpoints.
+            for (uint32_t k = 0; k < 16; ++k) {
+                const float dist = cl.boundRadius * (1.05f + 9.0f * std::fabs(rng.Unit()));
+                const glm::vec3 eye = cl.boundCenter + rng.Dir() * dist;
+                // Baked cone verdict (the CullCluster object-space core).
+                const glm::vec3 bd = cl.coneApex - eye;
+                const float bLen2 = glm::dot(bd, bd);
+                const float bAxis2 = glm::dot(cl.coneAxis, cl.coneAxis);
+                const bool bakedCull = bLen2 > 1e-12f && bAxis2 > 1e-12f &&
+                                       glm::dot(bd / std::sqrt(bLen2),
+                                                cl.coneAxis / std::sqrt(bAxis2)) >= cl.coneCutoff;
+                if (bakedCull && !groundInvisible(corners.data(), cl.triCount, eye))
+                    bakedConservative = false;
+                if (fitCulls(refit, eye)) {
+                    ++refitCulls;
+                    if (!groundInvisible(corners.data(), cl.triCount, eye))
+                        refitConservative = false;
+                }
+            }
+        }
+        Check(bakedConservative, "gfx.conefit.baked-conservative");
+        Check(refitConservative, "gfx.conefit.refit-conservative");
+        Check(refitValid > s.clusters.size() / 2,
+              "gfx.conefit.refit-mostly-valid"); // facing-pure post-split sphere
+        Check(refitCulls > 0, "gfx.conefit.refit-culls-something");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,185 +1008,169 @@ void TestDeformedConeFit() {
 // ---------------------------------------------------------------------------
 
 void TestMeshletIntegrity() {
-	struct TriSet {
-		std::map<std::array<uint32_t, 3>, uint32_t> counts;
-		void Add(uint32_t a, uint32_t b, uint32_t c) {
-			std::array<uint32_t, 3> k{ a, b, c };
-			std::sort(k.begin(), k.end());
-			++counts[k];
-		}
-	};
-	auto checkUpload = [&](const smvk::StaticMeshUpload& up,
-		const char* name) {
-		smvk::MeshletConfig cfg{};
-		cfg.enabled = true;
-		smvk::CookedMeshlets cooked;
-		smvk::MeshletStats stats;
-		std::string merr;
-		Check(smvk::BuildMeshletsForUpload(up, cfg, &cooked, &stats, &merr),
-			(std::string("gfx.mli.build-") + name).c_str());
+    struct TriSet {
+        std::map<std::array<uint32_t, 3>, uint32_t> counts;
+        void Add(uint32_t a, uint32_t b, uint32_t c) {
+            std::array<uint32_t, 3> k{a, b, c};
+            std::sort(k.begin(), k.end());
+            ++counts[k];
+        }
+    };
+    auto checkUpload = [&](const smvk::StaticMeshUpload& up, const char* name) {
+        smvk::MeshletConfig cfg{};
+        cfg.enabled = true;
+        smvk::CookedMeshlets cooked;
+        smvk::MeshletStats stats;
+        std::string merr;
+        Check(smvk::BuildMeshletsForUpload(up, cfg, &cooked, &stats, &merr),
+              (std::string("gfx.mli.build-") + name).c_str());
 
-		TriSet in, out;
-		for (size_t i = 0; i + 2 < up.indices.size(); i += 3)
-			in.Add(up.indices[i], up.indices[i + 1], up.indices[i + 2]);
+        TriSet in, out;
+        for (size_t i = 0; i + 2 < up.indices.size(); i += 3)
+            in.Add(up.indices[i], up.indices[i + 1], up.indices[i + 2]);
 
-		uint32_t badLocal = 0;
-		uint32_t capViolations = 0;
-		for (const smvk::Meshlet& m : cooked.meshlets) {
-			if (m.vertexCount > smvk::kMeshletMaxVertices
-				|| m.triangleCount > smvk::kMeshletMaxTriangles)
-				++capViolations;
-			if (m.vertexOffset + m.vertexCount
-				> (uint32_t)cooked.vertices.size()
-				|| m.triangleOffset + m.triangleCount * 3
-				> (uint32_t)cooked.triangles.size()) {
-				++badLocal;
-				continue;
-			}
-			for (uint32_t t = 0; t < m.triangleCount; ++t) {
-				uint32_t g[3] = { 0, 0, 0 };
-				bool ok = true;
-				for (uint32_t k = 0; k < 3; ++k) {
-					const uint32_t local =
-						cooked.triangles[m.triangleOffset + t * 3 + k];
-					if (local >= m.vertexCount) {
-						ok = false;
-						break;
-					}
-					g[k] = cooked.vertices[m.vertexOffset + local];
-				}
-				if (!ok) {
-					++badLocal;
-					continue;
-				}
-				out.Add(g[0], g[1], g[2]);
-			}
-		}
-		Check(capViolations == 0,
-			(std::string("gfx.mli.caps-") + name).c_str());
-		Check(badLocal == 0,
-			(std::string("gfx.mli.locals-") + name).c_str());
-		Check(in.counts == out.counts,
-			(std::string("gfx.mli.exact-triangles-") + name).c_str());
-		std::cout << "[gfx.mli] " << name << ": meshlets="
-			<< stats.meshletCount << " split=" << stats.splitMeshlets
-			<< " degenerate=" << stats.degenerateCones
-			<< " meanCutoff=" << stats.meanCutoff << "\n";
-		return stats;
-	};
+        uint32_t badLocal = 0;
+        uint32_t capViolations = 0;
+        for (const smvk::Meshlet& m : cooked.meshlets) {
+            if (m.vertexCount > smvk::kMeshletMaxVertices ||
+                m.triangleCount > smvk::kMeshletMaxTriangles)
+                ++capViolations;
+            if (m.vertexOffset + m.vertexCount > (uint32_t)cooked.vertices.size() ||
+                m.triangleOffset + m.triangleCount * 3 > (uint32_t)cooked.triangles.size()) {
+                ++badLocal;
+                continue;
+            }
+            for (uint32_t t = 0; t < m.triangleCount; ++t) {
+                uint32_t g[3] = {0, 0, 0};
+                bool ok = true;
+                for (uint32_t k = 0; k < 3; ++k) {
+                    const uint32_t local = cooked.triangles[m.triangleOffset + t * 3 + k];
+                    if (local >= m.vertexCount) {
+                        ok = false;
+                        break;
+                    }
+                    g[k] = cooked.vertices[m.vertexOffset + local];
+                }
+                if (!ok) {
+                    ++badLocal;
+                    continue;
+                }
+                out.Add(g[0], g[1], g[2]);
+            }
+        }
+        Check(capViolations == 0, (std::string("gfx.mli.caps-") + name).c_str());
+        Check(badLocal == 0, (std::string("gfx.mli.locals-") + name).c_str());
+        Check(in.counts == out.counts, (std::string("gfx.mli.exact-triangles-") + name).c_str());
+        std::cout << "[gfx.mli] " << name << ": meshlets=" << stats.meshletCount
+                  << " split=" << stats.splitMeshlets << " degenerate=" << stats.degenerateCones
+                  << " meanCutoff=" << stats.meanCutoff << "\n";
+        return stats;
+    };
 
-	// Single-skin sphere: the no-split common case.
-	checkUpload(MakeSphere(24, 36, 1.0f), "sphere");
+    // Single-skin sphere: the no-split common case.
+    checkUpload(MakeSphere(24, 36, 1.0f), "sphere");
 
-	// Double-layer cloth: a wavy sheet emitted twice — the back skin 2mm
-	// under the front, opposite winding (the facing-split's target).
-	{
-		smvk::StaticMeshUpload cloth{};
-		auto addSkin = [&](float yOff, bool flip) {
-			const uint32_t base = (uint32_t)cloth.vertices.size();
-			const int nu = 48, nv = 48;
-			for (int j = 0; j <= nv; ++j)
-				for (int i = 0; i <= nu; ++i) {
-					smvk::ImportStaticVertex v{};
-					const float x = (float)i / nu;
-					const float z = (float)j / nv;
-					v.pos = glm::vec3(x,
-						0.06f * std::sin(x * 9.0f) * std::cos(z * 7.0f) + yOff,
-						z);
-					v.normal = glm::vec3(0, 1, 0);
-					cloth.vertices.push_back(v);
-				}
-			const uint32_t stride = nu + 1;
-			for (int j = 0; j < nv; ++j)
-				for (int i = 0; i < nu; ++i) {
-					const uint32_t a = base + (uint32_t)(j * stride + i);
-					const uint32_t b = a + 1;
-					const uint32_t c = a + stride;
-					const uint32_t d = c + 1;
-					if (flip)
-						cloth.indices.insert(cloth.indices.end(),
-							{ a, c, b, b, c, d });
-					else
-						cloth.indices.insert(cloth.indices.end(),
-							{ a, b, c, b, d, c });
-				}
-		};
-		addSkin(+0.001f, false);
-		addSkin(-0.001f, true);
-		const smvk::MeshletStats st = checkUpload(cloth, "cloth");
-		// The split must leave only a small degenerate minority (the
-		// un-split cloth degenerates nearly every cone).
-		Check(st.degenerateCones * 4 < st.meshletCount,
-			"gfx.mli.cloth-degenerate-minority");
-		Check(st.splitMeshlets > 0, "gfx.mli.cloth-split-ran");
-	}
+    // Double-layer cloth: a wavy sheet emitted twice — the back skin 2mm
+    // under the front, opposite winding (the facing-split's target).
+    {
+        smvk::StaticMeshUpload cloth{};
+        auto addSkin = [&](float yOff, bool flip) {
+            const uint32_t base = (uint32_t)cloth.vertices.size();
+            const int nu = 48, nv = 48;
+            for (int j = 0; j <= nv; ++j)
+                for (int i = 0; i <= nu; ++i) {
+                    smvk::ImportStaticVertex v{};
+                    const float x = (float)i / nu;
+                    const float z = (float)j / nv;
+                    v.pos = glm::vec3(x, 0.06f * std::sin(x * 9.0f) * std::cos(z * 7.0f) + yOff, z);
+                    v.normal = glm::vec3(0, 1, 0);
+                    cloth.vertices.push_back(v);
+                }
+            const uint32_t stride = nu + 1;
+            for (int j = 0; j < nv; ++j)
+                for (int i = 0; i < nu; ++i) {
+                    const uint32_t a = base + (uint32_t)(j * stride + i);
+                    const uint32_t b = a + 1;
+                    const uint32_t c = a + stride;
+                    const uint32_t d = c + 1;
+                    if (flip)
+                        cloth.indices.insert(cloth.indices.end(), {a, c, b, b, c, d});
+                    else
+                        cloth.indices.insert(cloth.indices.end(), {a, b, c, b, d, c});
+                }
+        };
+        addSkin(+0.001f, false);
+        addSkin(-0.001f, true);
+        const smvk::MeshletStats st = checkUpload(cloth, "cloth");
+        // The split must leave only a small degenerate minority (the
+        // un-split cloth degenerates nearly every cone).
+        Check(st.degenerateCones * 4 < st.meshletCount, "gfx.mli.cloth-degenerate-minority");
+        Check(st.splitMeshlets > 0, "gfx.mli.cloth-split-ran");
+    }
 }
 
 void TestTemporalSnapshot() {
-	using namespace smvk::gfx;
-	State s{};
-	const auto up = MakeSphere(24, 36, 1.0f);
-	const uint32_t m = RegisterMeshFromUpload(s, up, 0);
-	Check(m == 0, "gfx.hist.mesh-id");
+    using namespace smvk::gfx;
+    State s{};
+    const auto up = MakeSphere(24, 36, 1.0f);
+    const uint32_t m = RegisterMeshFromUpload(s, up, 0);
+    Check(m == 0, "gfx.hist.mesh-id");
 
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(0, 0, 4);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
-	View v{};
-	v.renderView = &views.Get(rv);
-	v.eye = eye;
-	v.width = 800;
-	v.height = 600;
-	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-	s.views.push_back(std::move(v));
-	s.viewCount = 1;
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(0, 0, 4);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
+    View v{};
+    v.renderView = &views.Get(rv);
+    v.eye = eye;
+    v.width = 800;
+    v.height = 600;
+    v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+    s.views.push_back(std::move(v));
+    s.viewCount = 1;
 
-	// History starts invalid; invalidating fresh state is a safe no-op.
-	Check(!Temporal(s, 0).historyValid, "gfx.hist.starts-invalid");
-	InvalidateHistory(s, 0);
-	Check(!Temporal(s, 0).historyValid, "gfx.hist.invalidate-noop");
+    // History starts invalid; invalidating fresh state is a safe no-op.
+    Check(!Temporal(s, 0).historyValid, "gfx.hist.starts-invalid");
+    InvalidateHistory(s, 0);
+    Check(!Temporal(s, 0).historyValid, "gfx.hist.invalidate-noop");
 
-	PushDraw(s, 0, m, glm::mat4(1.0f), 0);
-	BuildBatches(s, 0);
-	const uint32_t kept = s.views[0].batchCount;
-	Check(kept > 0, "gfx.hist.kept-some");
+    PushDraw(s, 0, m, glm::mat4(1.0f), 0);
+    BuildBatches(s, 0);
+    const uint32_t kept = s.views[0].batchCount;
+    Check(kept > 0, "gfx.hist.kept-some");
 
-	SnapshotVisible(s, 0);
-	const TemporalView& t = Temporal(s, 0);
-	Check(t.historyValid, "gfx.hist.armed");
-	Check(t.prevBatchCount == kept, "gfx.hist.batch-count");
-	Check(t.prevDrawCount == (uint32_t)s.views[0].drawConstants.size(),
-		"gfx.hist.draw-count");
-	Check(t.prevDraws.size() == s.views[0].drawConstants.size(),
-		"gfx.hist.draws-cover");
-	bool pairsOk = t.prevBatches.size() == s.views[0].batches.size();
-	for (size_t i = 0; pairsOk && i < t.prevBatches.size(); ++i) {
-		pairsOk = t.prevBatches[i].cluster == s.views[0].batches[i].cluster
-			&& t.prevBatches[i].draw == s.views[0].batches[i].draw;
-	}
-	Check(pairsOk, "gfx.hist.pairs-match");
-	Check(t.prevRanges.size() == s.views[0].materialRanges.size(),
-		"gfx.hist.ranges-cover");
-	Check(t.width == 800 && t.height == 600, "gfx.hist.extent");
+    SnapshotVisible(s, 0);
+    const TemporalView& t = Temporal(s, 0);
+    Check(t.historyValid, "gfx.hist.armed");
+    Check(t.prevBatchCount == kept, "gfx.hist.batch-count");
+    Check(t.prevDrawCount == (uint32_t)s.views[0].drawConstants.size(), "gfx.hist.draw-count");
+    Check(t.prevDraws.size() == s.views[0].drawConstants.size(), "gfx.hist.draws-cover");
+    bool pairsOk = t.prevBatches.size() == s.views[0].batches.size();
+    for (size_t i = 0; pairsOk && i < t.prevBatches.size(); ++i) {
+        pairsOk = t.prevBatches[i].cluster == s.views[0].batches[i].cluster &&
+                  t.prevBatches[i].draw == s.views[0].batches[i].draw;
+    }
+    Check(pairsOk, "gfx.hist.pairs-match");
+    Check(t.prevRanges.size() == s.views[0].materialRanges.size(), "gfx.hist.ranges-cover");
+    Check(t.width == 800 && t.height == 600, "gfx.hist.extent");
 
-	// Rotation overwrites, never appends (simulate an empty follow-up frame).
-	s.views[0].batches.clear();
-	s.views[0].drawConstants.clear();
-	s.views[0].materialRanges.clear();
-	s.views[0].batchCount = 0;
-	SnapshotVisible(s, 0);
-	const TemporalView& t2 = Temporal(s, 0);
-	Check(t2.prevBatchCount == 0 && t2.prevBatches.empty()
-		&& t2.prevDraws.empty() && t2.prevRanges.empty(),
-		"gfx.hist.rotate-overwrites");
+    // Rotation overwrites, never appends (simulate an empty follow-up frame).
+    s.views[0].batches.clear();
+    s.views[0].drawConstants.clear();
+    s.views[0].materialRanges.clear();
+    s.views[0].batchCount = 0;
+    SnapshotVisible(s, 0);
+    const TemporalView& t2 = Temporal(s, 0);
+    Check(t2.prevBatchCount == 0 && t2.prevBatches.empty() && t2.prevDraws.empty() &&
+              t2.prevRanges.empty(),
+          "gfx.hist.rotate-overwrites");
 
-	// Invalidate disarms but keeps buffers (next frame rebuilds).
-	InvalidateHistory(s, 0);
-	Check(!Temporal(s, 0).historyValid, "gfx.hist.invalidate-disarms");
+    // Invalidate disarms but keeps buffers (next frame rebuilds).
+    InvalidateHistory(s, 0);
+    Check(!Temporal(s, 0).historyValid, "gfx.hist.invalidate-disarms");
 }
 
 // ---------------------------------------------------------------------------
@@ -1204,51 +1179,49 @@ void TestTemporalSnapshot() {
 // ---------------------------------------------------------------------------
 
 void TestHizLayout() {
-	using namespace smvk::gfx;
-	Check(HzbMipCount(0, 0) == 0, "gfx.hiz.zero-extent");
-	Check(HzbMipCount(1, 1) == 1, "gfx.hiz.single-texel");
-	Check(HzbMipCount(64, 64) == 7, "gfx.hiz.pow2-levels");
-	Check(HzbMipCount(1920, 1080) == 12, "gfx.hiz.hd-levels");
+    using namespace smvk::gfx;
+    Check(HzbMipCount(0, 0) == 0, "gfx.hiz.zero-extent");
+    Check(HzbMipCount(1, 1) == 1, "gfx.hiz.single-texel");
+    Check(HzbMipCount(64, 64) == 7, "gfx.hiz.pow2-levels");
+    Check(HzbMipCount(1920, 1080) == 12, "gfx.hiz.hd-levels");
 
-	uint32_t w = 0, h = 0;
-	HzbMipDims(1920, 1080, 0, w, h);
-	Check(w == 1920 && h == 1080, "gfx.hiz.dims-mip0");
-	HzbMipDims(1920, 1080, 1, w, h);
-	Check(w == 960 && h == 540, "gfx.hiz.dims-mip1");
-	HzbMipDims(1920, 1080, 11, w, h);
-	Check(w == 1 && h == 1, "gfx.hiz.dims-last");
-	// Odd-extent regression (ceil-halve): the builder's clamped 2x2 folds
-	// the odd edge into the last texel, so 240x135 -> 120x68 (not 120x67).
-	HzbMipDims(240, 135, 1, w, h);
-	Check(w == 120 && h == 68, "gfx.hiz.dims-odd-ceil");
-	HzbMipDims(5, 3, 1, w, h);
-	Check(w == 3 && h == 2, "gfx.hiz.dims-5x3-mip1");
-	HzbMipDims(5, 3, 2, w, h);
-	Check(w == 2 && h == 1, "gfx.hiz.dims-5x3-mip2");
-	HzbMipDims(5, 3, 3, w, h);
-	Check(w == 1 && h == 1, "gfx.hiz.dims-5x3-mip3");
-	Check(HzbMipOffsetFloats(5, 3, 1) == 5u * 3u, "gfx.hiz.off-odd-mip1");
-	Check(HzbMipOffsetFloats(5, 3, 2) == 5u * 3u + 3u * 2u, "gfx.hiz.off-odd-mip2");
+    uint32_t w = 0, h = 0;
+    HzbMipDims(1920, 1080, 0, w, h);
+    Check(w == 1920 && h == 1080, "gfx.hiz.dims-mip0");
+    HzbMipDims(1920, 1080, 1, w, h);
+    Check(w == 960 && h == 540, "gfx.hiz.dims-mip1");
+    HzbMipDims(1920, 1080, 11, w, h);
+    Check(w == 1 && h == 1, "gfx.hiz.dims-last");
+    // Odd-extent regression (ceil-halve): the builder's clamped 2x2 folds
+    // the odd edge into the last texel, so 240x135 -> 120x68 (not 120x67).
+    HzbMipDims(240, 135, 1, w, h);
+    Check(w == 120 && h == 68, "gfx.hiz.dims-odd-ceil");
+    HzbMipDims(5, 3, 1, w, h);
+    Check(w == 3 && h == 2, "gfx.hiz.dims-5x3-mip1");
+    HzbMipDims(5, 3, 2, w, h);
+    Check(w == 2 && h == 1, "gfx.hiz.dims-5x3-mip2");
+    HzbMipDims(5, 3, 3, w, h);
+    Check(w == 1 && h == 1, "gfx.hiz.dims-5x3-mip3");
+    Check(HzbMipOffsetFloats(5, 3, 1) == 5u * 3u, "gfx.hiz.off-odd-mip1");
+    Check(HzbMipOffsetFloats(5, 3, 2) == 5u * 3u + 3u * 2u, "gfx.hiz.off-odd-mip2");
 
-	Check(HzbMipOffsetFloats(1920, 1080, 0) == 0, "gfx.hiz.off-mip0");
-	Check(HzbMipOffsetFloats(1920, 1080, 1) == 1920u * 1080u, "gfx.hiz.off-mip1");
-	Check(HzbMipOffsetFloats(1920, 1080, 2) == 1920u * 1080u + 960u * 540u,
-		"gfx.hiz.off-mip2");
-	// 64x64: 4096+1024+256+64+16+4+1.
-	Check(HzbTotalFloats(64, 64) == 5461, "gfx.hiz.total-pow2");
-	Check(HzbTotalFloats(0, 5) == 0, "gfx.hiz.total-zero");
-	// Total covers the last mip exactly (no gap, no overrun).
-	{
-		const uint32_t total = HzbTotalFloats(1920, 1080);
-		uint32_t lw = 0, lh = 0;
-		HzbMipDims(1920, 1080, HzbMipCount(1920, 1080) - 1, lw, lh);
-		Check(total == HzbMipOffsetFloats(1920, 1080, 11) + lw * lh,
-			"gfx.hiz.total-tight");
-	}
+    Check(HzbMipOffsetFloats(1920, 1080, 0) == 0, "gfx.hiz.off-mip0");
+    Check(HzbMipOffsetFloats(1920, 1080, 1) == 1920u * 1080u, "gfx.hiz.off-mip1");
+    Check(HzbMipOffsetFloats(1920, 1080, 2) == 1920u * 1080u + 960u * 540u, "gfx.hiz.off-mip2");
+    // 64x64: 4096+1024+256+64+16+4+1.
+    Check(HzbTotalFloats(64, 64) == 5461, "gfx.hiz.total-pow2");
+    Check(HzbTotalFloats(0, 5) == 0, "gfx.hiz.total-zero");
+    // Total covers the last mip exactly (no gap, no overrun).
+    {
+        const uint32_t total = HzbTotalFloats(1920, 1080);
+        uint32_t lw = 0, lh = 0;
+        HzbMipDims(1920, 1080, HzbMipCount(1920, 1080) - 1, lw, lh);
+        Check(total == HzbMipOffsetFloats(1920, 1080, 11) + lw * lh, "gfx.hiz.total-tight");
+    }
 
-	// Reversed-Z conservative reduction: MIN (sky 0.0 poisons to keep).
-	Check(HzbReduce2x2(0.9f, 0.85f, 0.92f, 0.88f) == 0.85f, "gfx.hiz.reduce-min");
-	Check(HzbReduce2x2(0.0f, 0.9f, 0.8f, 0.7f) == 0.0f, "gfx.hiz.reduce-sky");
+    // Reversed-Z conservative reduction: MIN (sky 0.0 poisons to keep).
+    Check(HzbReduce2x2(0.9f, 0.85f, 0.92f, 0.88f) == 0.85f, "gfx.hiz.reduce-min");
+    Check(HzbReduce2x2(0.0f, 0.9f, 0.8f, 0.7f) == 0.0f, "gfx.hiz.reduce-sky");
 }
 
 // ---------------------------------------------------------------------------
@@ -1257,94 +1230,89 @@ void TestHizLayout() {
 // ---------------------------------------------------------------------------
 
 void TestSeedCommands() {
-	using namespace smvk::gfx;
-	State s{};
-	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
-	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
-	Check(m0 == 0 && m1 == 1, "gfx.seed.mesh-ids");
+    using namespace smvk::gfx;
+    State s{};
+    const uint32_t m0 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+    const uint32_t m1 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+    Check(m0 == 0 && m1 == 1, "gfx.seed.mesh-ids");
 
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
-	View v{};
-	v.renderView = &views.Get(rv);
-	v.eye = eye;
-	v.width = 800;
-	v.height = 600;
-	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-	s.views.push_back(std::move(v));
-	s.viewCount = 1;
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
+    View v{};
+    v.renderView = &views.Get(rv);
+    v.eye = eye;
+    v.width = 800;
+    v.height = 600;
+    v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+    s.views.push_back(std::move(v));
+    s.viewCount = 1;
 
-	// No history -> no seed commands (ranges cleared too).
-	BuildSeedCommands(s, 0);
-	Check(Temporal(s, 0).seedCommands.empty(), "gfx.seed.no-history-empty");
+    // No history -> no seed commands (ranges cleared too).
+    BuildSeedCommands(s, 0);
+    Check(Temporal(s, 0).seedCommands.empty(), "gfx.seed.no-history-empty");
 
-	// Mixed buckets, shuffled materials: opaque must come first.
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, DrawFlagBit_Skinned, DrawSetBit_Opaque);
-	BuildBatches(s, 0);
-	Check(s.views[0].batchCount == 3, "gfx.seed.three-batches");
-	SnapshotVisible(s, 0);
-	BuildSeedCommands(s, 0);
-	const TemporalView& t = Temporal(s, 0);
-	Check(t.seedCommands.size() == 3, "gfx.seed.cmd-count");
-	Check(t.seedOpaqueCommands == 2, "gfx.seed.opaque-first");
-	Check(t.seedRanges.size() == 2, "gfx.seed.two-ranges");
-	bool rangesOk = false;
-	if (t.seedRanges.size() == 2) {
-		const SeedRange& o = t.seedRanges[0];
-		const SeedRange& mk = t.seedRanges[1];
-		rangesOk = o.drawSet == DrawSetBit_Opaque && o.material == 3
-			&& o.firstCommand == 0 && o.commandCount == 2
-			&& mk.drawSet == DrawSetBit_Masked && mk.material == 7
-			&& mk.firstCommand == 2 && mk.commandCount == 1;
-	}
-	Check(rangesOk, "gfx.seed.ranges-bucketed");
-	// Commands reference the cluster-ordered heap + snapshot draws.
-	// Clusters: m0 -> 0, m1 -> 1 (single-triangle meshes). Batch.draw is
-	// the material-sorted draw index: mat3 draws sort first, so the
-	// snapshot draws are [m0 opaque, m0 opaque, m1 masked] and the
-	// bucket-major commands are (c0,d0) (c0,d1) (c1,d2).
-	bool cmdsOk = t.seedCommands.size() == 3;
-	const uint32_t expectCluster[3] = { 0, 0, 1 };
-	const uint32_t expectDraw[3] = { 0, 1, 2 };
-	for (size_t i = 0; cmdsOk && i < 3; ++i) {
-		const SeedCommand& c = t.seedCommands[i];
-		const Cluster& cl = s.clusters[expectCluster[i]];
-		cmdsOk = c.instanceCount == 1 && c.vertexOffset == 0
-			&& c.indexCount == cl.triCount * 3
-			&& c.firstIndex == cl.indexOffset
-			&& c.firstInstance == expectDraw[i];
-	}
-	Check(cmdsOk, "gfx.seed.cmds-shape");
-	// firstIndex is absolute into the static index monoblock (region base
-	// + cluster offset), so the IA index binding never switches buffers.
-	// Headless State has no GPU region (base 0); pin the formula with a
-	// nonzero sentinel base.
-	s.clusterIndexBase = 1337u;
-	BuildSeedCommands(s, 0);
-	bool absOk = Temporal(s, 0).seedCommands.size() == 3;
-	for (size_t i = 0; absOk && i < 3; ++i) {
-		const SeedCommand& c = Temporal(s, 0).seedCommands[i];
-		absOk = c.firstIndex
-			== 1337u + s.clusters[expectCluster[i]].indexOffset;
-	}
-	Check(absOk, "gfx.seed.abs-firstindex");
-	s.clusterIndexBase = 0;
+    // Mixed buckets, shuffled materials: opaque must come first.
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, DrawFlagBit_Skinned, DrawSetBit_Opaque);
+    BuildBatches(s, 0);
+    Check(s.views[0].batchCount == 3, "gfx.seed.three-batches");
+    SnapshotVisible(s, 0);
+    BuildSeedCommands(s, 0);
+    const TemporalView& t = Temporal(s, 0);
+    Check(t.seedCommands.size() == 3, "gfx.seed.cmd-count");
+    Check(t.seedOpaqueCommands == 2, "gfx.seed.opaque-first");
+    Check(t.seedRanges.size() == 2, "gfx.seed.two-ranges");
+    bool rangesOk = false;
+    if (t.seedRanges.size() == 2) {
+        const SeedRange& o = t.seedRanges[0];
+        const SeedRange& mk = t.seedRanges[1];
+        rangesOk = o.drawSet == DrawSetBit_Opaque && o.material == 3 && o.firstCommand == 0 &&
+                   o.commandCount == 2 && mk.drawSet == DrawSetBit_Masked && mk.material == 7 &&
+                   mk.firstCommand == 2 && mk.commandCount == 1;
+    }
+    Check(rangesOk, "gfx.seed.ranges-bucketed");
+    // Commands reference the cluster-ordered heap + snapshot draws.
+    // Clusters: m0 -> 0, m1 -> 1 (single-triangle meshes). Batch.draw is
+    // the material-sorted draw index: mat3 draws sort first, so the
+    // snapshot draws are [m0 opaque, m0 opaque, m1 masked] and the
+    // bucket-major commands are (c0,d0) (c0,d1) (c1,d2).
+    bool cmdsOk = t.seedCommands.size() == 3;
+    const uint32_t expectCluster[3] = {0, 0, 1};
+    const uint32_t expectDraw[3] = {0, 1, 2};
+    for (size_t i = 0; cmdsOk && i < 3; ++i) {
+        const SeedCommand& c = t.seedCommands[i];
+        const Cluster& cl = s.clusters[expectCluster[i]];
+        cmdsOk = c.instanceCount == 1 && c.vertexOffset == 0 && c.indexCount == cl.triCount * 3 &&
+                 c.firstIndex == cl.indexOffset && c.firstInstance == expectDraw[i];
+    }
+    Check(cmdsOk, "gfx.seed.cmds-shape");
+    // firstIndex is absolute into the static index monoblock (region base
+    // + cluster offset), so the IA index binding never switches buffers.
+    // Headless State has no GPU region (base 0); pin the formula with a
+    // nonzero sentinel base.
+    s.clusterIndexBase = 1337u;
+    BuildSeedCommands(s, 0);
+    bool absOk = Temporal(s, 0).seedCommands.size() == 3;
+    for (size_t i = 0; absOk && i < 3; ++i) {
+        const SeedCommand& c = Temporal(s, 0).seedCommands[i];
+        absOk = c.firstIndex == 1337u + s.clusters[expectCluster[i]].indexOffset;
+    }
+    Check(absOk, "gfx.seed.abs-firstindex");
+    s.clusterIndexBase = 0;
 
-	// Invalidating clears the seed list (no stale commands survive).
-	InvalidateHistory(s, 0);
-	BuildSeedCommands(s, 0);
-	Check(Temporal(s, 0).seedCommands.empty()
-		&& Temporal(s, 0).seedRanges.empty(),
-		"gfx.seed.invalidate-clears");
+    // Invalidating clears the seed list (no stale commands survive).
+    InvalidateHistory(s, 0);
+    BuildSeedCommands(s, 0);
+    Check(Temporal(s, 0).seedCommands.empty() && Temporal(s, 0).seedRanges.empty(),
+          "gfx.seed.invalidate-clears");
 }
 
 // ---------------------------------------------------------------------------
@@ -1356,85 +1324,83 @@ void TestSeedCommands() {
 // ---------------------------------------------------------------------------
 
 void TestSeedIntersection() {
-	using namespace smvk::gfx;
-	State s{};
-	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
-	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
-	const uint32_t m2 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(4, 0, 0), glm::vec3(5, 0, 0), glm::vec3(4, 1, 0)), 6);
-	Check(m0 == 0 && m1 == 1 && m2 == 2, "gfx.seedix.mesh-ids");
+    using namespace smvk::gfx;
+    State s{};
+    const uint32_t m0 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+    const uint32_t m1 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+    const uint32_t m2 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(4, 0, 0), glm::vec3(5, 0, 0), glm::vec3(4, 1, 0)), 6);
+    Check(m0 == 0 && m1 == 1 && m2 == 2, "gfx.seedix.mesh-ids");
 
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
-	auto freshView = [&]() {
-		s.views.clear();
-		s.viewCount = 0;
-		View v{};
-		v.renderView = &views.Get(rv);
-		v.eye = eye;
-		v.width = 800;
-		v.height = 600;
-		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-		s.views.push_back(std::move(v));
-		s.viewCount = 1;
-	};
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
+    auto freshView = [&]() {
+        s.views.clear();
+        s.viewCount = 0;
+        View v{};
+        v.renderView = &views.Get(rv);
+        v.eye = eye;
+        v.width = 800;
+        v.height = 600;
+        v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+        s.views.push_back(std::move(v));
+        s.viewCount = 1;
+    };
 
-	// Frame A baseline: m0 (opaque mat3) + m1 (opaque mat5).
-	freshView();
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
-	BuildBatches(s, 0);
-	Check(s.views[0].batchCount == 2, "gfx.seedix.frame-a-batches");
-	SnapshotVisible(s, 0);
+    // Frame A baseline: m0 (opaque mat3) + m1 (opaque mat5).
+    freshView();
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
+    BuildBatches(s, 0);
+    Check(s.views[0].batchCount == 2, "gfx.seedix.frame-a-batches");
+    SnapshotVisible(s, 0);
 
-	// Frame B identical: the whole snapshot is still current -> full seed.
-	freshView();
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
-	BuildBatches(s, 0);
-	BuildSeedCommands(s, 0);
-	Check(Temporal(s, 0).seedCommands.size() == 2, "gfx.seedix.stable-full-seed");
+    // Frame B identical: the whole snapshot is still current -> full seed.
+    freshView();
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
+    BuildBatches(s, 0);
+    BuildSeedCommands(s, 0);
+    Check(Temporal(s, 0).seedCommands.size() == 2, "gfx.seedix.stable-full-seed");
 
-	// Frame C (LOD flip): m0's slot now draws sibling m2 (disjoint cluster
-	// ids), m1 unchanged. Seed must carry only m1's prev batch — replaying
-	// m0's stale cluster would poison depth Main tests read-only.
-	freshView();
-	PushDraw(s, 0, m2, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
-	BuildBatches(s, 0);
-	BuildSeedCommands(s, 0);
-	bool flipOk = false;
-	if (Temporal(s, 0).seedCommands.size() == 1) {
-		const SeedCommand& c = Temporal(s, 0).seedCommands[0];
-		// Prev snapshot draws sorted mat3 first: [m0, m1], so m1 == draw 1.
-		flipOk = c.firstIndex == s.clusters[1].indexOffset
-			&& c.firstInstance == 1
-			&& c.indexCount == 3;
-	}
-	Check(flipOk, "gfx.seedix.lod-flip-seeds-survivor-only");
+    // Frame C (LOD flip): m0's slot now draws sibling m2 (disjoint cluster
+    // ids), m1 unchanged. Seed must carry only m1's prev batch — replaying
+    // m0's stale cluster would poison depth Main tests read-only.
+    freshView();
+    PushDraw(s, 0, m2, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
+    BuildBatches(s, 0);
+    BuildSeedCommands(s, 0);
+    bool flipOk = false;
+    if (Temporal(s, 0).seedCommands.size() == 1) {
+        const SeedCommand& c = Temporal(s, 0).seedCommands[0];
+        // Prev snapshot draws sorted mat3 first: [m0, m1], so m1 == draw 1.
+        flipOk =
+            c.firstIndex == s.clusters[1].indexOffset && c.firstInstance == 1 && c.indexCount == 3;
+    }
+    Check(flipOk, "gfx.seedix.lod-flip-seeds-survivor-only");
 
-	// Frame D (moved instance): m0 translated, m1 static. Only m1 seeds.
-	freshView();
-	glm::mat4 moved(1.0f);
-	moved[3][0] = 0.5f;
-	PushDraw(s, 0, m0, moved, 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
-	BuildBatches(s, 0);
-	BuildSeedCommands(s, 0);
-	bool movedOk = false;
-	if (Temporal(s, 0).seedCommands.size() == 1) {
-		const SeedCommand& c = Temporal(s, 0).seedCommands[0];
-		movedOk = c.firstIndex == s.clusters[1].indexOffset
-			&& c.firstInstance == 1;
-	}
-	Check(movedOk, "gfx.seedix.moved-seeds-static-only");
+    // Frame D (moved instance): m0 translated, m1 static. Only m1 seeds.
+    freshView();
+    glm::mat4 moved(1.0f);
+    moved[3][0] = 0.5f;
+    PushDraw(s, 0, m0, moved, 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
+    BuildBatches(s, 0);
+    BuildSeedCommands(s, 0);
+    bool movedOk = false;
+    if (Temporal(s, 0).seedCommands.size() == 1) {
+        const SeedCommand& c = Temporal(s, 0).seedCommands[0];
+        movedOk = c.firstIndex == s.clusters[1].indexOffset && c.firstInstance == 1;
+    }
+    Check(movedOk, "gfx.seedix.moved-seeds-static-only");
 }
 
 // ---------------------------------------------------------------------------
@@ -1443,117 +1409,120 @@ void TestSeedIntersection() {
 // ---------------------------------------------------------------------------
 
 void TestHzbOcclusion() {
-	using namespace smvk::gfx;
-	const glm::vec3 eye(0, 0, 4);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f; // engine Y-flip, mirrors UpdateFrameUniforms
-	const glm::mat4 viewProj = proj * view;
-	constexpr uint32_t W = 800, H = 600;
+    using namespace smvk::gfx;
+    const glm::vec3 eye(0, 0, 4);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f; // engine Y-flip, mirrors UpdateFrameUniforms
+    const glm::mat4 viewProj = proj * view;
+    constexpr uint32_t W = 800, H = 600;
 
-	// Frontal unit sphere: centered, radii in the hundreds of px.
-	ClusterFootprint f = ProjectClusterFootprint(
-		glm::vec3(0, 0, 0), 1.0f, eye, viewProj, W, H);
-	Check(!f.behindCamera, "gfx.occ.front-testable");
-	Check(std::abs(f.centerX - 400.0f) < 1.0f && std::abs(f.centerY - 300.0f) < 1.0f,
-		"gfx.occ.front-center");
-	// Radii use nearest-point depth (conservative overestimate vs radial).
-	Check(f.radiusX > 190.0f && f.radiusX < 280.0f
-		&& f.radiusY > 140.0f && f.radiusY < 215.0f, "gfx.occ.front-radii");
-	Check(f.nearestDepth > 0.0f && f.nearestDepth < 1.0f, "gfx.occ.depth-range");
-	{
-		// Nearer point = larger reversed-Z value than the center.
-		const glm::vec4 clipC = viewProj * glm::vec4(0, 0, 0, 1);
-		const float dCenter = clipC.z / clipC.w;
-		Check(f.nearestDepth > dCenter, "gfx.occ.near-beats-center");
-	}
+    // Frontal unit sphere: centered, radii in the hundreds of px.
+    ClusterFootprint f = ProjectClusterFootprint(glm::vec3(0, 0, 0), 1.0f, eye, viewProj, W, H);
+    Check(!f.behindCamera, "gfx.occ.front-testable");
+    Check(std::abs(f.centerX - 400.0f) < 1.0f && std::abs(f.centerY - 300.0f) < 1.0f,
+          "gfx.occ.front-center");
+    // Radii use nearest-point depth (conservative overestimate vs radial).
+    Check(f.radiusX > 190.0f && f.radiusX < 280.0f && f.radiusY > 140.0f && f.radiusY < 215.0f,
+          "gfx.occ.front-radii");
+    Check(f.nearestDepth > 0.0f && f.nearestDepth < 1.0f, "gfx.occ.depth-range");
+    {
+        // Nearer point = larger reversed-Z value than the center.
+        const glm::vec4 clipC = viewProj * glm::vec4(0, 0, 0, 1);
+        const float dCenter = clipC.z / clipC.w;
+        Check(f.nearestDepth > dCenter, "gfx.occ.near-beats-center");
+    }
 
-	// Behind the projection's camera / eye-inside keep (no test possible).
-	Check(ProjectClusterFootprint(glm::vec3(0, 0, 8), 1.0f, eye,
-		viewProj, W, H).behindCamera, "gfx.occ.behind-keeps");
-	Check(ProjectClusterFootprint(glm::vec3(0, 0, 3.5f), 1.0f, eye,
-		viewProj, W, H).behindCamera, "gfx.occ.inside-keeps");
+    // Behind the projection's camera / eye-inside keep (no test possible).
+    Check(ProjectClusterFootprint(glm::vec3(0, 0, 8), 1.0f, eye, viewProj, W, H).behindCamera,
+          "gfx.occ.behind-keeps");
+    Check(ProjectClusterFootprint(glm::vec3(0, 0, 3.5f), 1.0f, eye, viewProj, W, H).behindCamera,
+          "gfx.occ.inside-keeps");
 
-	// Mip selection: smallest texel covering the rect.
-	Check(HzbMipForRect(1.0f, 1.0f, 11) == 0, "gfx.occ.mip-subtexel");
-	Check(HzbMipForRect(300.0f, 200.0f, 11) == 9, "gfx.occ.mip-rect");
-	Check(HzbMipForRect(5000.0f, 10.0f, 11) == 10, "gfx.occ.mip-clamp");
+    // Mip selection: smallest texel covering the rect.
+    Check(HzbMipForRect(1.0f, 1.0f, 11) == 0, "gfx.occ.mip-subtexel");
+    Check(HzbMipForRect(300.0f, 200.0f, 11) == 9, "gfx.occ.mip-rect");
+    Check(HzbMipForRect(5000.0f, 10.0f, 11) == 10, "gfx.occ.mip-clamp");
 
-	// Occlusion over an explicit pyramid (8x8 uniform 0.9 -> mips all 0.9).
-	std::vector<float> hzb(HzbTotalFloats(8, 8), 0.9f);
-	const uint32_t mips = HzbMipCount(8, 8);
-	Check(mips == 4, "gfx.hiz.tiny-levels");
-	ClusterFootprint vis{};
-	vis.behindCamera = false;
-	vis.centerX = 4.0f; vis.centerY = 4.0f;
-	vis.radiusX = 50.0f; vis.radiusY = 50.0f; // clamped mip, center texel
-	vis.nearestDepth = 0.5f; // behind the 0.9 surface
-	Check(HzbOccluded(hzb.data(), 8, 8, mips, vis), "gfx.occ.hidden");
-	vis.nearestDepth = 0.95f; // in front: keep
-	Check(!HzbOccluded(hzb.data(), 8, 8, mips, vis), "gfx.occ.visible-keeps");
-	// Sky-poisoned texel under a tiny rect: keep (conservative).
-	hzb[HzbMipOffsetFloats(8, 8, 0) + 4 * 8 + 4] = 0.0f;
-	ClusterFootprint tiny = vis;
-	tiny.radiusX = tiny.radiusY = 0.25f;
-	tiny.nearestDepth = 0.5f;
-	Check(!HzbOccluded(hzb.data(), 8, 8, mips, tiny), "gfx.occ.sky-keeps");
-	// Null/empty pyramid keeps unconditionally.
-	Check(!HzbOccluded(nullptr, 8, 8, mips, vis), "gfx.occ.null-keeps");
-	Check(!HzbOccluded(hzb.data(), 0, 0, 0, vis), "gfx.occ.empty-keeps");
-	// Fully off-target rect belongs to the frustum stages, not occlusion.
-	ClusterFootprint off = vis;
-	off.centerX = 5000.0f;
-	Check(!HzbOccluded(hzb.data(), 8, 8, mips, off), "gfx.occ.offscreen-keeps");
+    // Occlusion over an explicit pyramid (8x8 uniform 0.9 -> mips all 0.9).
+    std::vector<float> hzb(HzbTotalFloats(8, 8), 0.9f);
+    const uint32_t mips = HzbMipCount(8, 8);
+    Check(mips == 4, "gfx.hiz.tiny-levels");
+    ClusterFootprint vis{};
+    vis.behindCamera = false;
+    vis.centerX = 4.0f;
+    vis.centerY = 4.0f;
+    vis.radiusX = 50.0f;
+    vis.radiusY = 50.0f;     // clamped mip, center texel
+    vis.nearestDepth = 0.5f; // behind the 0.9 surface
+    Check(HzbOccluded(hzb.data(), 8, 8, mips, vis), "gfx.occ.hidden");
+    vis.nearestDepth = 0.95f; // in front: keep
+    Check(!HzbOccluded(hzb.data(), 8, 8, mips, vis), "gfx.occ.visible-keeps");
+    // Sky-poisoned texel under a tiny rect: keep (conservative).
+    hzb[HzbMipOffsetFloats(8, 8, 0) + 4 * 8 + 4] = 0.0f;
+    ClusterFootprint tiny = vis;
+    tiny.radiusX = tiny.radiusY = 0.25f;
+    tiny.nearestDepth = 0.5f;
+    Check(!HzbOccluded(hzb.data(), 8, 8, mips, tiny), "gfx.occ.sky-keeps");
+    // Null/empty pyramid keeps unconditionally.
+    Check(!HzbOccluded(nullptr, 8, 8, mips, vis), "gfx.occ.null-keeps");
+    Check(!HzbOccluded(hzb.data(), 0, 0, 0, vis), "gfx.occ.empty-keeps");
+    // Fully off-target rect belongs to the frustum stages, not occlusion.
+    ClusterFootprint off = vis;
+    off.centerX = 5000.0f;
+    Check(!HzbOccluded(hzb.data(), 8, 8, mips, off), "gfx.occ.offscreen-keeps");
 
-	// Y-row discrimination: world +Y (up) must map to the TOP half of the
-	// target (rows y-down) under the engine Y-flip. Catches a row-mirror
-	// (wrong-texel) regression that mid-screen tests cannot see.
-	{
-		ClusterFootprint up = ProjectClusterFootprint(
-			glm::vec3(0, 1, 0), 0.25f, eye, viewProj, W, H);
-		Check(!up.behindCamera, "gfx.occ.up-testable");
-		Check(up.centerY < (float)H * 0.5f, "gfx.occ.up-is-top");
-		ClusterFootprint dn = ProjectClusterFootprint(
-			glm::vec3(0, -1, 0), 0.25f, eye, viewProj, W, H);
-		Check(!dn.behindCamera, "gfx.occ.down-testable");
-		Check(dn.centerY > (float)H * 0.5f, "gfx.occ.down-is-bottom");
-	}
-	// Row-index discrimination: only the addressed row occludes. A Y-mirror
-	// in fetch (vs projection) would read row H-1-y and keep here.
-	{
-		const uint32_t W8 = 8, H8 = 8;
-		const uint32_t m8 = HzbMipCount(W8, H8);
-		std::vector<float> rows(HzbTotalFloats(W8, H8), 0.0f);
-		rows[HzbMipOffsetFloats(W8, H8, 0) + 2 * W8 + 4] = 0.9f; // row 2 only
-		ClusterFootprint row{};
-		row.behindCamera = false;
-		row.centerX = 4.5f; row.centerY = 2.5f; // texel interior: single texel
-		row.radiusX = row.radiusY = 0.25f;
-		row.nearestDepth = 0.5f;
-		Check(HzbOccluded(rows.data(), W8, H8, m8, row), "gfx.occ.row-hit");
-		ClusterFootprint rowMiss = row;
-		rowMiss.centerY = 5.5f; // row 5 is far (0.0): keep
-		Check(!HzbOccluded(rows.data(), W8, H8, m8, rowMiss), "gfx.occ.row-miss-keeps");
-	}
-	// Cover conservatism: rect [5,11]^2 at level 3 (texel 8, 2x2) spans
-	// all four texels. Only texel (1,1) near -> keep (edges see far).
-	// All four near -> hidden.
-	{
-		const uint32_t W16 = 16, H16 = 16;
-		const uint32_t m16 = HzbMipCount(W16, H16);
-		Check(HzbMipForRect(6.0f, 6.0f, m16) == 3, "gfx.occ.cover-level");
-		ClusterFootprint wide{};
-		wide.behindCamera = false;
-		wide.centerX = 8.0f; wide.centerY = 8.0f;
-		wide.radiusX = wide.radiusY = 3.0f;
-		wide.nearestDepth = 0.5f;
-		std::vector<float> het(HzbTotalFloats(W16, H16), 0.0f);
-		het[HzbMipOffsetFloats(W16, H16, 3) + 1 * 2 + 1] = 0.9f;
-		Check(!HzbOccluded(het.data(), W16, H16, m16, wide), "gfx.occ.cover-keeps");
-		for (uint32_t k = 0; k < 4; ++k)
-			het[HzbMipOffsetFloats(W16, H16, 3) + k] = 0.9f;
-		Check(HzbOccluded(het.data(), W16, H16, m16, wide), "gfx.occ.cover-hidden");
-	}
+    // Y-row discrimination: world +Y (up) must map to the TOP half of the
+    // target (rows y-down) under the engine Y-flip. Catches a row-mirror
+    // (wrong-texel) regression that mid-screen tests cannot see.
+    {
+        ClusterFootprint up =
+            ProjectClusterFootprint(glm::vec3(0, 1, 0), 0.25f, eye, viewProj, W, H);
+        Check(!up.behindCamera, "gfx.occ.up-testable");
+        Check(up.centerY < (float)H * 0.5f, "gfx.occ.up-is-top");
+        ClusterFootprint dn =
+            ProjectClusterFootprint(glm::vec3(0, -1, 0), 0.25f, eye, viewProj, W, H);
+        Check(!dn.behindCamera, "gfx.occ.down-testable");
+        Check(dn.centerY > (float)H * 0.5f, "gfx.occ.down-is-bottom");
+    }
+    // Row-index discrimination: only the addressed row occludes. A Y-mirror
+    // in fetch (vs projection) would read row H-1-y and keep here.
+    {
+        const uint32_t W8 = 8, H8 = 8;
+        const uint32_t m8 = HzbMipCount(W8, H8);
+        std::vector<float> rows(HzbTotalFloats(W8, H8), 0.0f);
+        rows[HzbMipOffsetFloats(W8, H8, 0) + 2 * W8 + 4] = 0.9f; // row 2 only
+        ClusterFootprint row{};
+        row.behindCamera = false;
+        row.centerX = 4.5f;
+        row.centerY = 2.5f; // texel interior: single texel
+        row.radiusX = row.radiusY = 0.25f;
+        row.nearestDepth = 0.5f;
+        Check(HzbOccluded(rows.data(), W8, H8, m8, row), "gfx.occ.row-hit");
+        ClusterFootprint rowMiss = row;
+        rowMiss.centerY = 5.5f; // row 5 is far (0.0): keep
+        Check(!HzbOccluded(rows.data(), W8, H8, m8, rowMiss), "gfx.occ.row-miss-keeps");
+    }
+    // Cover conservatism: rect [5,11]^2 at level 3 (texel 8, 2x2) spans
+    // all four texels. Only texel (1,1) near -> keep (edges see far).
+    // All four near -> hidden.
+    {
+        const uint32_t W16 = 16, H16 = 16;
+        const uint32_t m16 = HzbMipCount(W16, H16);
+        Check(HzbMipForRect(6.0f, 6.0f, m16) == 3, "gfx.occ.cover-level");
+        ClusterFootprint wide{};
+        wide.behindCamera = false;
+        wide.centerX = 8.0f;
+        wide.centerY = 8.0f;
+        wide.radiusX = wide.radiusY = 3.0f;
+        wide.nearestDepth = 0.5f;
+        std::vector<float> het(HzbTotalFloats(W16, H16), 0.0f);
+        het[HzbMipOffsetFloats(W16, H16, 3) + 1 * 2 + 1] = 0.9f;
+        Check(!HzbOccluded(het.data(), W16, H16, m16, wide), "gfx.occ.cover-keeps");
+        for (uint32_t k = 0; k < 4; ++k)
+            het[HzbMipOffsetFloats(W16, H16, 3) + k] = 0.9f;
+        Check(HzbOccluded(het.data(), W16, H16, m16, wide), "gfx.occ.cover-hidden");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1562,82 +1531,79 @@ void TestHzbOcclusion() {
 // ---------------------------------------------------------------------------
 
 void TestRemainderCommands() {
-	using namespace smvk::gfx;
-	State s{};
-	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
-	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
-	Check(m0 == 0 && m1 == 1, "gfx.rem.mesh-ids");
+    using namespace smvk::gfx;
+    State s{};
+    const uint32_t m0 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+    const uint32_t m1 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+    Check(m0 == 0 && m1 == 1, "gfx.rem.mesh-ids");
 
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
-	auto freshView = [&]() {
-		s.views.clear();
-		s.viewCount = 0;
-		View v{};
-		v.renderView = &views.Get(rv);
-		v.eye = eye;
-		v.width = 800;
-		v.height = 600;
-		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-		s.views.push_back(std::move(v));
-		s.viewCount = 1;
-	};
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
+    auto freshView = [&]() {
+        s.views.clear();
+        s.viewCount = 0;
+        View v{};
+        v.renderView = &views.Get(rv);
+        v.eye = eye;
+        v.width = 800;
+        v.height = 600;
+        v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+        s.views.push_back(std::move(v));
+        s.viewCount = 1;
+    };
 
-	// Frame A: two draws, snapshot as baseline.
-	freshView();
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
-	BuildBatches(s, 0);
-	Check(s.views[0].batchCount == 2, "gfx.rem.frame-a-batches");
-	SnapshotVisible(s, 0);
+    // Frame A: two draws, snapshot as baseline.
+    freshView();
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
+    BuildBatches(s, 0);
+    Check(s.views[0].batchCount == 2, "gfx.rem.frame-a-batches");
+    SnapshotVisible(s, 0);
 
-	// Frame B identical: nothing newly visible.
-	freshView();
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
-	BuildBatches(s, 0);
-	BuildRemainderCommands(s, 0);
-	Check(Temporal(s, 0).remainderCommands.empty()
-		&& Temporal(s, 0).remainderRanges.empty(),
-		"gfx.rem.static-empty");
+    // Frame B identical: nothing newly visible.
+    freshView();
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
+    BuildBatches(s, 0);
+    BuildRemainderCommands(s, 0);
+    Check(Temporal(s, 0).remainderCommands.empty() && Temporal(s, 0).remainderRanges.empty(),
+          "gfx.rem.static-empty");
 
-	// Frame C: m0 translated (moved instance) -> only its cluster is new.
-	// m1 untouched -> covered by the snapshot.
-	freshView();
-	glm::mat4 moved(1.0f);
-	moved[3][0] = 0.5f;
-	PushDraw(s, 0, m0, moved, 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
-	BuildBatches(s, 0);
-	BuildRemainderCommands(s, 0);
-	const TemporalView& t = Temporal(s, 0);
-	Check(t.remainderCommands.size() == 1, "gfx.rem.moved-count");
-	Check(t.remainderOpaqueCommands == 1, "gfx.rem.moved-opaque");
-	bool remOk = false;
-	if (t.remainderCommands.size() == 1 && t.remainderRanges.size() == 1) {
-		const SeedCommand& c = t.remainderCommands[0];
-		const SeedRange& r = t.remainderRanges[0];
-		// Draw order sorts mat3 first: curr draw 0 = moved m0.
-		remOk = c.firstInstance == 0
-			&& c.firstIndex == s.clusters[0].indexOffset
-			&& c.indexCount == 3
-			&& r.drawSet == DrawSetBit_Opaque && r.material == 3
-			&& r.firstCommand == 0 && r.commandCount == 1;
-	}
-	Check(remOk, "gfx.rem.moved-shape");
+    // Frame C: m0 translated (moved instance) -> only its cluster is new.
+    // m1 untouched -> covered by the snapshot.
+    freshView();
+    glm::mat4 moved(1.0f);
+    moved[3][0] = 0.5f;
+    PushDraw(s, 0, m0, moved, 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
+    BuildBatches(s, 0);
+    BuildRemainderCommands(s, 0);
+    const TemporalView& t = Temporal(s, 0);
+    Check(t.remainderCommands.size() == 1, "gfx.rem.moved-count");
+    Check(t.remainderOpaqueCommands == 1, "gfx.rem.moved-opaque");
+    bool remOk = false;
+    if (t.remainderCommands.size() == 1 && t.remainderRanges.size() == 1) {
+        const SeedCommand& c = t.remainderCommands[0];
+        const SeedRange& r = t.remainderRanges[0];
+        // Draw order sorts mat3 first: curr draw 0 = moved m0.
+        remOk = c.firstInstance == 0 && c.firstIndex == s.clusters[0].indexOffset &&
+                c.indexCount == 3 && r.drawSet == DrawSetBit_Opaque && r.material == 3 &&
+                r.firstCommand == 0 && r.commandCount == 1;
+    }
+    Check(remOk, "gfx.rem.moved-shape");
 
-	// No baseline (invalidated): empty even though geometry is "new" —
-	// the full prepass covered it, so pass 2 has nothing to add.
-	InvalidateHistory(s, 0);
-	BuildRemainderCommands(s, 0);
-	Check(Temporal(s, 0).remainderCommands.empty(), "gfx.rem.invalid-empty");
+    // No baseline (invalidated): empty even though geometry is "new" —
+    // the full prepass covered it, so pass 2 has nothing to add.
+    InvalidateHistory(s, 0);
+    BuildRemainderCommands(s, 0);
+    Check(Temporal(s, 0).remainderCommands.empty(), "gfx.rem.invalid-empty");
 }
 
 // ---------------------------------------------------------------------------
@@ -1650,71 +1616,72 @@ void TestRemainderCommands() {
 // ---------------------------------------------------------------------------
 
 void TestVisKeyMerge() {
-	using namespace smvk::gfx;
-	const glm::mat4 A(1.0f);
-	glm::mat4 B(1.0f);
-	B[3][0] = 0.5f;
+    using namespace smvk::gfx;
+    const glm::mat4 A(1.0f);
+    glm::mat4 B(1.0f);
+    B[3][0] = 0.5f;
 
-	// MakeVisKey: same bits -> same key; moved -> different; -0.0 vs
-	// +0.0 stays distinct (bitwise, matching the memcmp identity); the
-	// cluster id rides the low bits.
-	glm::mat4 negZero(1.0f);
-	negZero[0][0] = -0.0f;
-	Check(detail::MakeVisKey(A, 0) == detail::MakeVisKey(A, 0), "gfx.viskey.stable");
-	Check(detail::MakeVisKey(A, 0) != detail::MakeVisKey(B, 0), "gfx.viskey.moved-distinct");
-	Check(detail::MakeVisKey(A, 0) != detail::MakeVisKey(negZero, 0), "gfx.viskey.negzero-distinct");
-	Check(detail::MakeVisKey(A, 0) != detail::MakeVisKey(A, 1), "gfx.viskey.cluster-distinct");
+    // MakeVisKey: same bits -> same key; moved -> different; -0.0 vs
+    // +0.0 stays distinct (bitwise, matching the memcmp identity); the
+    // cluster id rides the low bits.
+    glm::mat4 negZero(1.0f);
+    negZero[0][0] = -0.0f;
+    Check(detail::MakeVisKey(A, 0) == detail::MakeVisKey(A, 0), "gfx.viskey.stable");
+    Check(detail::MakeVisKey(A, 0) != detail::MakeVisKey(B, 0), "gfx.viskey.moved-distinct");
+    Check(detail::MakeVisKey(A, 0) != detail::MakeVisKey(negZero, 0),
+          "gfx.viskey.negzero-distinct");
+    Check(detail::MakeVisKey(A, 0) != detail::MakeVisKey(A, 1), "gfx.viskey.cluster-distinct");
 
-	// Worst case: every key collides (as if all model hashes tied). Prev
-	// = A, B, A (batches 0,1,2); curr = B, A (batches 0,1). Tie-group
-	// verification must match across models: A's find A's, B finds B.
-	{
-		const glm::mat4 prevModels[3] = { A, B, A };
-		const glm::mat4 currModels[2] = { B, A };
-		const auto modelEq = [&](uint32_t p, uint32_t c) {
-			return std::memcmp(&prevModels[p], &currModels[c], sizeof(glm::mat4)) == 0;
-		};
-		const detail::VisKeyEntry tiedPrev[3] = { {1, 0}, {1, 1}, {1, 2} };
-		const detail::VisKeyEntry tiedCurr[2] = { {1, 0}, {1, 1} };
-		uint8_t seed[3] = {}, rem[2] = {};
-		detail::MergeKeyMasks(tiedPrev, 3, tiedCurr, 2, modelEq, seed, rem);
-		Check(seed[0] == 1 && seed[1] == 1 && seed[2] == 1, "gfx.viskey.tied-all-match");
-		Check(rem[0] == 0 && rem[1] == 0, "gfx.viskey.tied-no-remainder");
-	}
+    // Worst case: every key collides (as if all model hashes tied). Prev
+    // = A, B, A (batches 0,1,2); curr = B, A (batches 0,1). Tie-group
+    // verification must match across models: A's find A's, B finds B.
+    {
+        const glm::mat4 prevModels[3] = {A, B, A};
+        const glm::mat4 currModels[2] = {B, A};
+        const auto modelEq = [&](uint32_t p, uint32_t c) {
+            return std::memcmp(&prevModels[p], &currModels[c], sizeof(glm::mat4)) == 0;
+        };
+        const detail::VisKeyEntry tiedPrev[3] = {{1, 0}, {1, 1}, {1, 2}};
+        const detail::VisKeyEntry tiedCurr[2] = {{1, 0}, {1, 1}};
+        uint8_t seed[3] = {}, rem[2] = {};
+        detail::MergeKeyMasks(tiedPrev, 3, tiedCurr, 2, modelEq, seed, rem);
+        Check(seed[0] == 1 && seed[1] == 1 && seed[2] == 1, "gfx.viskey.tied-all-match");
+        Check(rem[0] == 0 && rem[1] == 0, "gfx.viskey.tied-no-remainder");
+    }
 
-	// Same key, different model bits: the verify must REJECT (collision
-	// cannot seed stale depth) and the curr entry must fall to remainder.
-	{
-		const glm::mat4 prevModels[1] = { A };
-		const glm::mat4 currModels[1] = { B };
-		const auto modelEq = [&](uint32_t p, uint32_t c) {
-			return std::memcmp(&prevModels[p], &currModels[c], sizeof(glm::mat4)) == 0;
-		};
-		const detail::VisKeyEntry collidePrev[1] = { {7, 0} };
-		const detail::VisKeyEntry collideCurr[1] = { {7, 0} };
-		uint8_t seed[1] = {}, rem[1] = {};
-		detail::MergeKeyMasks(collidePrev, 1, collideCurr, 1, modelEq, seed, rem);
-		Check(seed[0] == 0, "gfx.viskey.collision-rejects");
-		Check(rem[0] == 1, "gfx.viskey.collision-remainders");
-	}
+    // Same key, different model bits: the verify must REJECT (collision
+    // cannot seed stale depth) and the curr entry must fall to remainder.
+    {
+        const glm::mat4 prevModels[1] = {A};
+        const glm::mat4 currModels[1] = {B};
+        const auto modelEq = [&](uint32_t p, uint32_t c) {
+            return std::memcmp(&prevModels[p], &currModels[c], sizeof(glm::mat4)) == 0;
+        };
+        const detail::VisKeyEntry collidePrev[1] = {{7, 0}};
+        const detail::VisKeyEntry collideCurr[1] = {{7, 0}};
+        uint8_t seed[1] = {}, rem[1] = {};
+        detail::MergeKeyMasks(collidePrev, 1, collideCurr, 1, modelEq, seed, rem);
+        Check(seed[0] == 0, "gfx.viskey.collision-rejects");
+        Check(rem[0] == 1, "gfx.viskey.collision-remainders");
+    }
 
-	// Distinct keys (sorted fast paths + one tie with equal models):
-	// prev = keys {1, 3} -> A, B; curr = keys {2, 3, 5} -> B, B, A. Only
-	// the key-3 pair matches; everything else lands on its side of the
-	// difference (curr key 2 and key 5 -> remainder, prev key 1 -> no seed).
-	{
-		const glm::mat4 prevModels[2] = { A, B };
-		const glm::mat4 currModels[3] = { B, B, A };
-		const auto modelEq = [&](uint32_t p, uint32_t c) {
-			return std::memcmp(&prevModels[p], &currModels[c], sizeof(glm::mat4)) == 0;
-		};
-		const detail::VisKeyEntry distinctPrev[2] = { {1, 0}, {3, 1} };
-		const detail::VisKeyEntry distinctCurr[3] = { {2, 0}, {3, 1}, {5, 2} };
-		uint8_t seed[2] = {}, rem[3] = {};
-		detail::MergeKeyMasks(distinctPrev, 2, distinctCurr, 3, modelEq, seed, rem);
-		Check(seed[0] == 0 && seed[1] == 1, "gfx.viskey.sorted-merge-seed");
-		Check(rem[0] == 1 && rem[1] == 0 && rem[2] == 1, "gfx.viskey.sorted-merge-remainder");
-	}
+    // Distinct keys (sorted fast paths + one tie with equal models):
+    // prev = keys {1, 3} -> A, B; curr = keys {2, 3, 5} -> B, B, A. Only
+    // the key-3 pair matches; everything else lands on its side of the
+    // difference (curr key 2 and key 5 -> remainder, prev key 1 -> no seed).
+    {
+        const glm::mat4 prevModels[2] = {A, B};
+        const glm::mat4 currModels[3] = {B, B, A};
+        const auto modelEq = [&](uint32_t p, uint32_t c) {
+            return std::memcmp(&prevModels[p], &currModels[c], sizeof(glm::mat4)) == 0;
+        };
+        const detail::VisKeyEntry distinctPrev[2] = {{1, 0}, {3, 1}};
+        const detail::VisKeyEntry distinctCurr[3] = {{2, 0}, {3, 1}, {5, 2}};
+        uint8_t seed[2] = {}, rem[3] = {};
+        detail::MergeKeyMasks(distinctPrev, 2, distinctCurr, 3, modelEq, seed, rem);
+        Check(seed[0] == 0 && seed[1] == 1, "gfx.viskey.sorted-merge-seed");
+        Check(rem[0] == 1 && rem[1] == 0 && rem[2] == 1, "gfx.viskey.sorted-merge-remainder");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1726,77 +1693,75 @@ void TestVisKeyMerge() {
 // ---------------------------------------------------------------------------
 
 void TestSeedDuplicateBatches() {
-	using namespace smvk::gfx;
-	State s{};
-	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
-	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
-	Check(m0 == 0 && m1 == 1, "gfx.seeddup.mesh-ids");
+    using namespace smvk::gfx;
+    State s{};
+    const uint32_t m0 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+    const uint32_t m1 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+    Check(m0 == 0 && m1 == 1, "gfx.seeddup.mesh-ids");
 
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
-	auto freshView = [&]() {
-		s.views.clear();
-		s.viewCount = 0;
-		View v{};
-		v.renderView = &views.Get(rv);
-		v.eye = eye;
-		v.width = 800;
-		v.height = 600;
-		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-		s.views.push_back(std::move(v));
-		s.viewCount = 1;
-	};
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
+    auto freshView = [&]() {
+        s.views.clear();
+        s.viewCount = 0;
+        View v{};
+        v.renderView = &views.Get(rv);
+        v.eye = eye;
+        v.width = 800;
+        v.height = 600;
+        v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+        s.views.push_back(std::move(v));
+        s.viewCount = 1;
+    };
 
-	// Frame A: m0 drawn twice with the SAME transform (identical co-located
-	// instances -> duplicate keys) + m1.
-	freshView();
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	BuildBatches(s, 0);
-	Check(s.views[0].batchCount == 3, "gfx.seeddup.frame-a-batches");
-	SnapshotVisible(s, 0);
+    // Frame A: m0 drawn twice with the SAME transform (identical co-located
+    // instances -> duplicate keys) + m1.
+    freshView();
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    BuildBatches(s, 0);
+    Check(s.views[0].batchCount == 3, "gfx.seeddup.frame-a-batches");
+    SnapshotVisible(s, 0);
 
-	// Frame B identical: both duplicates must seed, remainder empty, one
-	// material -> one coalesced range over all three commands.
-	freshView();
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	BuildBatches(s, 0);
-	BuildSeedAndRemainder(s, 0);
-	const TemporalView& t = Temporal(s, 0);
-	Check(t.seedCommands.size() == 3, "gfx.seeddup.dup-seeds-both");
-	Check(t.seedOpaqueCommands == 3, "gfx.seeddup.all-opaque");
-	Check(t.remainderCommands.empty() && t.remainderRanges.empty(),
-		"gfx.seeddup.remainder-empty");
-	bool rangeOk = t.seedRanges.size() == 1;
-	if (rangeOk) {
-		const SeedRange& r = t.seedRanges[0];
-		rangeOk = r.drawSet == DrawSetBit_Opaque && r.material == 3
-			&& r.firstCommand == 0 && r.commandCount == 3;
-	}
-	Check(rangeOk, "gfx.seeddup.range-coalesced");
+    // Frame B identical: both duplicates must seed, remainder empty, one
+    // material -> one coalesced range over all three commands.
+    freshView();
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    BuildBatches(s, 0);
+    BuildSeedAndRemainder(s, 0);
+    const TemporalView& t = Temporal(s, 0);
+    Check(t.seedCommands.size() == 3, "gfx.seeddup.dup-seeds-both");
+    Check(t.seedOpaqueCommands == 3, "gfx.seeddup.all-opaque");
+    Check(t.remainderCommands.empty() && t.remainderRanges.empty(), "gfx.seeddup.remainder-empty");
+    bool rangeOk = t.seedRanges.size() == 1;
+    if (rangeOk) {
+        const SeedRange& r = t.seedRanges[0];
+        rangeOk = r.drawSet == DrawSetBit_Opaque && r.material == 3 && r.firstCommand == 0 &&
+                  r.commandCount == 3;
+    }
+    Check(rangeOk, "gfx.seeddup.range-coalesced");
 
-	// Frame B -> C rotation through the memo path: SnapshotVisible reuses
-	// the builder's sorted curr keys instead of re-sorting. Frame C must
-	// still full-seed from the rotated keys.
-	SnapshotVisible(s, 0);
-	freshView();
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	BuildBatches(s, 0);
-	BuildSeedAndRemainder(s, 0);
-	Check(Temporal(s, 0).seedCommands.size() == 3,
-		"gfx.seeddup.key-rotate-full-seed");
+    // Frame B -> C rotation through the memo path: SnapshotVisible reuses
+    // the builder's sorted curr keys instead of re-sorting. Frame C must
+    // still full-seed from the rotated keys.
+    SnapshotVisible(s, 0);
+    freshView();
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+    BuildBatches(s, 0);
+    BuildSeedAndRemainder(s, 0);
+    Check(Temporal(s, 0).seedCommands.size() == 3, "gfx.seeddup.key-rotate-full-seed");
 }
 
 // ---------------------------------------------------------------------------
@@ -1811,136 +1776,153 @@ void TestSeedDuplicateBatches() {
 // ---------------------------------------------------------------------------
 
 void TestHzbSpawnView() {
-	using namespace smvk::gfx;
-	constexpr uint32_t W = 480, H = 270;
-	const float nearP = 0.01f;
-	const glm::vec3 eye(0.0f, 1.0f, 0.0f);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 1, 1), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(45.0f), W / float(H), nearP);
-	proj[1][1] *= -1.0f; // engine Y-flip (UpdateFrameUniforms)
-	const glm::mat4 viewProj = proj * view;
-	const glm::mat4 invViewProj = glm::inverse(viewProj);
+    using namespace smvk::gfx;
+    constexpr uint32_t W = 480, H = 270;
+    const float nearP = 0.01f;
+    const glm::vec3 eye(0.0f, 1.0f, 0.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 1, 1), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(45.0f), W / float(H), nearP);
+    proj[1][1] *= -1.0f; // engine Y-flip (UpdateFrameUniforms)
+    const glm::mat4 viewProj = proj * view;
+    const glm::mat4 invViewProj = glm::inverse(viewProj);
 
-	// Cloth banner (center screen, double-sided) + back wall behind it.
-	const glm::vec3 clothA(-0.5f, 0.6f, 2.0f), clothB(0.5f, 2.0f, 2.0f);
-	const glm::vec3 wallA(-4.0f, 0.0f, 5.0f), wallB(4.0f, 4.0f, 5.0f);
+    // Cloth banner (center screen, double-sided) + back wall behind it.
+    const glm::vec3 clothA(-0.5f, 0.6f, 2.0f), clothB(0.5f, 2.0f, 2.0f);
+    const glm::vec3 wallA(-4.0f, 0.0f, 5.0f), wallB(4.0f, 4.0f, 5.0f);
 
-	// Software raster: per-pixel nearest hit -> reversed-Z depth = n / |z_view|.
-	std::vector<float> depth((size_t)W * H, 0.0f); // sky = 0 (reversed-Z clear)
-	for (uint32_t y = 0; y < H; ++y) {
-		for (uint32_t x = 0; x < W; ++x) {
-			const glm::vec2 ndc((float(x) + 0.5f) / W * 2.0f - 1.0f,
-				(float(y) + 0.5f) / H * 2.0f - 1.0f);
-		// NDC z: reversed-Z maps near=1; unproject near corner + direction.
-		// Infinite far plane: the far unproject lands at/beyond infinity
-		// (f4.w ~= 0), so a raw vec3(f4)/f4.w division yields inf/NaN for
-		// near-center pixels. A point at infinity IS a direction: fall back
-		// to normalize(vec3(f4)) when |w| is degenerate.
-		const glm::vec4 n4 = invViewProj * glm::vec4(ndc, 1.0f, 1.0f);
-		const glm::vec4 f4 = invViewProj * glm::vec4(ndc, 0.0f, 1.0f);
-		const glm::vec3 o = glm::vec3(n4) / n4.w;
-		const glm::vec3 d = (std::abs(f4.w) > 1e-9f)
-			? glm::normalize(glm::vec3(f4) / f4.w - o)
-			: glm::normalize(glm::vec3(f4));
-			float bestZ = -1.0f; // |z_view| of the nearest hit
-			auto quad = [&](float planeZ, const glm::vec3& a, const glm::vec3& b) {
-				if (std::abs(d.z) < 1e-9f) return;
-				const float t = (planeZ - o.z) / d.z;
-				if (t < 1e-6f) return;
-				const glm::vec3 p = o + d * t;
-				if (p.x < a.x || p.x > b.x || p.y < a.y || p.y > b.y) return;
-				const float z = std::abs((view * glm::vec4(p, 1.0f)).z);
-				if (bestZ < 0.0f || z < bestZ) bestZ = z;
-			};
-			quad(2.0f, clothA, clothB);
-			quad(5.0f, wallA, wallB);
-			if (bestZ > 0.0f)
-				depth[(size_t)y * W + x] = nearP / bestZ;
-		}
-	}
-	// Sanity: the center pixel hits the cloth interior (not sky, not wall).
-	const float centerDepth = depth[(size_t)(H / 2) * W + W / 2];
-	const float clothDepth = nearP / std::abs((view * glm::vec4(0.0f, 1.0f, 2.0f, 1.0f)).z);
-	Check(std::abs(centerDepth - clothDepth) < clothDepth * 0.05f,
-		"gfx.spawn.center-is-cloth");
+    // Software raster: per-pixel nearest hit -> reversed-Z depth = n / |z_view|.
+    std::vector<float> depth((size_t)W * H, 0.0f); // sky = 0 (reversed-Z clear)
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            const glm::vec2 ndc((float(x) + 0.5f) / W * 2.0f - 1.0f,
+                                (float(y) + 0.5f) / H * 2.0f - 1.0f);
+            // NDC z: reversed-Z maps near=1; unproject near corner + direction.
+            // Infinite far plane: the far unproject lands at/beyond infinity
+            // (f4.w ~= 0), so a raw vec3(f4)/f4.w division yields inf/NaN for
+            // near-center pixels. A point at infinity IS a direction: fall back
+            // to normalize(vec3(f4)) when |w| is degenerate.
+            const glm::vec4 n4 = invViewProj * glm::vec4(ndc, 1.0f, 1.0f);
+            const glm::vec4 f4 = invViewProj * glm::vec4(ndc, 0.0f, 1.0f);
+            const glm::vec3 o = glm::vec3(n4) / n4.w;
+            const glm::vec3 d = (std::abs(f4.w) > 1e-9f) ? glm::normalize(glm::vec3(f4) / f4.w - o)
+                                                         : glm::normalize(glm::vec3(f4));
+            float bestZ = -1.0f; // |z_view| of the nearest hit
+            auto quad = [&](float planeZ, const glm::vec3& a, const glm::vec3& b) {
+                if (std::abs(d.z) < 1e-9f)
+                    return;
+                const float t = (planeZ - o.z) / d.z;
+                if (t < 1e-6f)
+                    return;
+                const glm::vec3 p = o + d * t;
+                if (p.x < a.x || p.x > b.x || p.y < a.y || p.y > b.y)
+                    return;
+                const float z = std::abs((view * glm::vec4(p, 1.0f)).z);
+                if (bestZ < 0.0f || z < bestZ)
+                    bestZ = z;
+            };
+            quad(2.0f, clothA, clothB);
+            quad(5.0f, wallA, wallB);
+            if (bestZ > 0.0f)
+                depth[(size_t)y * W + x] = nearP / bestZ;
+        }
+    }
+    // Sanity: the center pixel hits the cloth interior (not sky, not wall).
+    const float centerDepth = depth[(size_t)(H / 2) * W + W / 2];
+    const float clothDepth = nearP / std::abs((view * glm::vec4(0.0f, 1.0f, 2.0f, 1.0f)).z);
+    Check(std::abs(centerDepth - clothDepth) < clothDepth * 0.05f, "gfx.spawn.center-is-cloth");
 
-	// HZB build: exact hzb.cs.hlsl mirror (mip0 copy, MIN 2x2 clamped).
-	const uint32_t mips = HzbMipCount(W, H);
-	std::vector<float> hzb(HzbTotalFloats(W, H), 0.0f);
-	std::copy(depth.begin(), depth.end(), hzb.begin());
-	for (uint32_t m = 1; m < mips; ++m) {
-		uint32_t sw = 0, sh = 0, dw = 0, dh = 0;
-		HzbMipDims(W, H, m - 1, sw, sh);
-		HzbMipDims(W, H, m, dw, dh);
-		const uint32_t srcOff = HzbMipOffsetFloats(W, H, m - 1);
-		const uint32_t dstOff = HzbMipOffsetFloats(W, H, m);
-		for (uint32_t y = 0; y < dh; ++y) {
-			for (uint32_t x = 0; x < dw; ++x) {
-				const uint32_t bx = x * 2, by = y * 2;
-				const uint32_t sx1 = std::min(bx + 1, sw - 1);
-				const uint32_t sy1 = std::min(by + 1, sh - 1);
-				hzb[dstOff + y * dw + x] = HzbReduce2x2(
-					hzb[srcOff + by * sw + bx], hzb[srcOff + by * sw + sx1],
-					hzb[srcOff + sy1 * sw + bx], hzb[srcOff + sy1 * sw + sx1]);
-			}
-		}
-	}
+    // HZB build: exact hzb.cs.hlsl mirror (mip0 copy, MIN 2x2 clamped).
+    const uint32_t mips = HzbMipCount(W, H);
+    std::vector<float> hzb(HzbTotalFloats(W, H), 0.0f);
+    std::copy(depth.begin(), depth.end(), hzb.begin());
+    for (uint32_t m = 1; m < mips; ++m) {
+        uint32_t sw = 0, sh = 0, dw = 0, dh = 0;
+        HzbMipDims(W, H, m - 1, sw, sh);
+        HzbMipDims(W, H, m, dw, dh);
+        const uint32_t srcOff = HzbMipOffsetFloats(W, H, m - 1);
+        const uint32_t dstOff = HzbMipOffsetFloats(W, H, m);
+        for (uint32_t y = 0; y < dh; ++y) {
+            for (uint32_t x = 0; x < dw; ++x) {
+                const uint32_t bx = x * 2, by = y * 2;
+                const uint32_t sx1 = std::min(bx + 1, sw - 1);
+                const uint32_t sy1 = std::min(by + 1, sh - 1);
+                hzb[dstOff + y * dw + x] = HzbReduce2x2(hzb[srcOff + by * sw + bx],
+                                                        hzb[srcOff + by * sw + sx1],
+                                                        hzb[srcOff + sy1 * sw + bx],
+                                                        hzb[srcOff + sy1 * sw + sx1]);
+            }
+        }
+    }
 
-	// Cloth patches (4x4 flat grid): every one must survive its own pyramid.
-	bool allKeep = true;
-	ClusterFootprint centerF{};
-	float bestCenterDist = std::numeric_limits<float>::max();
-	for (uint32_t iy = 0; iy < 4; ++iy) {
-		for (uint32_t ix = 0; ix < 4; ++ix) {
-			const glm::vec3 c(clothA.x + (ix + 0.5f) * 0.25f,
-				clothA.y + (iy + 0.5f) * 0.35f, 2.0f);
-			const float r = 0.5f * std::sqrt(0.25f * 0.25f + 0.35f * 0.35f);
-			ClusterFootprint f = ProjectClusterFootprint(c, r, eye, viewProj, W, H);
-			if (f.behindCamera) { allKeep = false; continue; }
-			float stored = -1.0f;
-			const bool occ = HzbOccluded(hzb.data(), W, H, mips, f, &stored);
-			if (occ) {
-				allKeep = false;
-				SMVK_DEBUG_LOG("[gfx.spawn] cloth patch (%u,%u) CULLED: dNear=%.6f stored=%.6f "
-					"c=(%.1f,%.1f) r=(%.1f,%.1f)\n", ix, iy, f.nearestDepth, stored,
-					f.centerX, f.centerY, f.radiusX, f.radiusY);
-			}
-			// The user's exact case: the patch nearest screen center. The
-			// screen center lands on a patch boundary (and this +z view is
-			// mirrored: world -x appears right of center), so no fixed
-			// (ix,iy) is exactly centered; take the closest footprint
-			// (euclidean; pitch here is ~40x57px, nearest is ~29px away).
-			const float dx = f.centerX - (float)W * 0.5f;
-			const float dy = f.centerY - (float)H * 0.5f;
-			const float dd = std::sqrt(dx * dx + dy * dy);
-			if (dd < bestCenterDist) {
-				bestCenterDist = dd;
-				centerF = f;
-			}
-		}
-	}
-	Check(allKeep, "gfx.spawn.cloth-keeps");
-	// Nearest patch is ~29px from center; pitch is ~40x57px, so 40.0
-	// separates it cleanly from the next candidates (>= 42px).
-	Check(!centerF.behindCamera && bestCenterDist < 40.0f, "gfx.spawn.center-is-center");
-	{
-		float stored = -1.0f;
-		const bool occ = HzbOccluded(hzb.data(), W, H, mips, centerF, &stored);
-		SMVK_DEBUG_LOG("[gfx.spawn] center patch: dNear=%.6f stored=%.6f occ=%d "
-			"(pole margin %.2fx)\n", centerF.nearestDepth, stored, occ ? 1 : 0,
-			stored > 0.0f ? centerF.nearestDepth / stored : 0.0f);
-		Check(!occ, "gfx.spawn.center-keeps");
-	}
-	// Wall patch behind the cloth interior must cull (harness sees both ways).
-	{
-		ClusterFootprint f = ProjectClusterFootprint(glm::vec3(0.0f, 1.0f, 5.0f),
-			0.3f, eye, viewProj, W, H);
-		float stored = -1.0f;
-		const bool occ = HzbOccluded(hzb.data(), W, H, mips, f, &stored);
-		SMVK_DEBUG_LOG("[gfx.spawn] wall patch: dNear=%.6f stored=%.6f occ=%d\n",
-			f.nearestDepth, stored, occ ? 1 : 0);
-		Check(!f.behindCamera && occ, "gfx.spawn.wall-behind-cloth-culls");
-	}
+    // Cloth patches (4x4 flat grid): every one must survive its own pyramid.
+    bool allKeep = true;
+    ClusterFootprint centerF{};
+    float bestCenterDist = std::numeric_limits<float>::max();
+    for (uint32_t iy = 0; iy < 4; ++iy) {
+        for (uint32_t ix = 0; ix < 4; ++ix) {
+            const glm::vec3 c(clothA.x + (ix + 0.5f) * 0.25f, clothA.y + (iy + 0.5f) * 0.35f, 2.0f);
+            const float r = 0.5f * std::sqrt(0.25f * 0.25f + 0.35f * 0.35f);
+            ClusterFootprint f = ProjectClusterFootprint(c, r, eye, viewProj, W, H);
+            if (f.behindCamera) {
+                allKeep = false;
+                continue;
+            }
+            float stored = -1.0f;
+            const bool occ = HzbOccluded(hzb.data(), W, H, mips, f, &stored);
+            if (occ) {
+                allKeep = false;
+                SMVK_DEBUG_LOG("[gfx.spawn] cloth patch (%u,%u) CULLED: dNear=%.6f stored=%.6f "
+                               "c=(%.1f,%.1f) r=(%.1f,%.1f)\n",
+                               ix,
+                               iy,
+                               f.nearestDepth,
+                               stored,
+                               f.centerX,
+                               f.centerY,
+                               f.radiusX,
+                               f.radiusY);
+            }
+            // The user's exact case: the patch nearest screen center. The
+            // screen center lands on a patch boundary (and this +z view is
+            // mirrored: world -x appears right of center), so no fixed
+            // (ix,iy) is exactly centered; take the closest footprint
+            // (euclidean; pitch here is ~40x57px, nearest is ~29px away).
+            const float dx = f.centerX - (float)W * 0.5f;
+            const float dy = f.centerY - (float)H * 0.5f;
+            const float dd = std::sqrt(dx * dx + dy * dy);
+            if (dd < bestCenterDist) {
+                bestCenterDist = dd;
+                centerF = f;
+            }
+        }
+    }
+    Check(allKeep, "gfx.spawn.cloth-keeps");
+    // Nearest patch is ~29px from center; pitch is ~40x57px, so 40.0
+    // separates it cleanly from the next candidates (>= 42px).
+    Check(!centerF.behindCamera && bestCenterDist < 40.0f, "gfx.spawn.center-is-center");
+    {
+        float stored = -1.0f;
+        const bool occ = HzbOccluded(hzb.data(), W, H, mips, centerF, &stored);
+        SMVK_DEBUG_LOG("[gfx.spawn] center patch: dNear=%.6f stored=%.6f occ=%d "
+                       "(pole margin %.2fx)\n",
+                       centerF.nearestDepth,
+                       stored,
+                       occ ? 1 : 0,
+                       stored > 0.0f ? centerF.nearestDepth / stored : 0.0f);
+        Check(!occ, "gfx.spawn.center-keeps");
+    }
+    // Wall patch behind the cloth interior must cull (harness sees both ways).
+    {
+        ClusterFootprint f =
+            ProjectClusterFootprint(glm::vec3(0.0f, 1.0f, 5.0f), 0.3f, eye, viewProj, W, H);
+        float stored = -1.0f;
+        const bool occ = HzbOccluded(hzb.data(), W, H, mips, f, &stored);
+        SMVK_DEBUG_LOG("[gfx.spawn] wall patch: dNear=%.6f stored=%.6f occ=%d\n",
+                       f.nearestDepth,
+                       stored,
+                       occ ? 1 : 0);
+        Check(!f.behindCamera && occ, "gfx.spawn.wall-behind-cloth-culls");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1966,183 +1948,198 @@ void TestHzbSpawnView() {
 namespace {
 // Conservative n/w interval matching ConservativeRatioInterval in HLSL.
 std::pair<float, float> GpuRatioInterval(float nCenter, float nRadius, float wMin, float wMax) {
-	float r0 = (nCenter - nRadius) / wMin;
-	float r1 = (nCenter - nRadius) / wMax;
-	float r2 = (nCenter + nRadius) / wMin;
-	float r3 = (nCenter + nRadius) / wMax;
-	return { std::min(std::min(r0, r1), std::min(r2, r3)),
-		std::max(std::max(r0, r1), std::max(r2, r3)) };
+    float r0 = (nCenter - nRadius) / wMin;
+    float r1 = (nCenter - nRadius) / wMax;
+    float r2 = (nCenter + nRadius) / wMin;
+    float r3 = (nCenter + nRadius) / wMax;
+    return {std::min(std::min(r0, r1), std::min(r2, r3)),
+            std::max(std::max(r0, r1), std::max(r2, r3))};
 }
 } // namespace
 
 // Identity model (world-space sphere in, like the audit path with the model
 // already applied). Mirrors ClusterOccluded in gfxfilter.cs.hlsl step by step.
-bool GpuClusterOccluded(const glm::vec3& wc, float wr, const glm::vec3& eye,
-	const glm::mat4& viewProj, uint32_t W, uint32_t H,
-	const float* hzb, uint32_t mips) {
-	using namespace smvk::gfx;
-	if (hzb == nullptr || mips == 0 || W == 0 || H == 0)
-		return false;
-	const float width = (float)W, height = (float)H;
-	const glm::vec3 toEye = eye - wc;
-	const float dist = glm::length(toEye);
-	if (!(dist > wr))
-		return false; // eye inside: never cull
-	const glm::vec4 clipC = viewProj * glm::vec4(wc, 1.0f);
-	// HLSL viewProj._1C is row 0 (1-based row/col, layout-independent);
-	// glm m[col][row], so row r is (m[0][r], m[1][r], m[2][r]).
-	const float xRadius = wr * glm::length(glm::vec3(viewProj[0][0], viewProj[1][0], viewProj[2][0]));
-	const float yRadius = wr * glm::length(glm::vec3(viewProj[0][1], viewProj[1][1], viewProj[2][1]));
-	const float zRadius = wr * glm::length(glm::vec3(viewProj[0][2], viewProj[1][2], viewProj[2][2]));
-	const float wRadius = wr * glm::length(glm::vec3(viewProj[0][3], viewProj[1][3], viewProj[2][3]));
-	const float wMin = clipC.w - wRadius;
-	const float wMax = clipC.w + wRadius;
-	if (!(wMin > 1e-6f) || !(wMax >= wMin))
-		return false;
-	const auto ndcX = GpuRatioInterval(clipC.x, xRadius, wMin, wMax);
-	const auto ndcY = GpuRatioInterval(clipC.y, yRadius, wMin, wMax);
-	const auto ndcZ = GpuRatioInterval(clipC.z, zRadius, wMin, wMax);
-	const float dNear = ndcZ.second;
-	if (!(dNear >= 0.0f) || dNear > 1.0f)
-		return false;
-	const float x0 = (ndcX.first * 0.5f + 0.5f) * width;
-	const float x1 = (ndcX.second * 0.5f + 0.5f) * width;
-	const float y0 = (ndcY.first * 0.5f + 0.5f) * height;
-	const float y1 = (ndcY.second * 0.5f + 0.5f) * height;
-	if (!(x1 >= x0) || !(y1 >= y0))
-		return false;
-	if (x1 < 0.0f || x0 > width || y1 < 0.0f || y0 > height)
-		return false; // off-target: frustum stages own it
-	const float sx0 = std::min(std::max(x0, 0.0f), width);
-	const float sx1 = std::min(std::max(x1, 0.0f), width);
-	const float sy0 = std::min(std::max(y0, 0.0f), height);
-	const float sy1 = std::min(std::max(y1, 0.0f), height);
-	const float rectW = std::max(sx1 - sx0, 0.0f);
-	const float rectH = std::max(sy1 - sy0, 0.0f);
-	if (!(rectW > 0.0f) || !(rectH > 0.0f))
-		return false;
-	uint32_t level = 0;
-	float texel = 1.0f;
-	const float rectMax = std::max(rectW, rectH);
-	while (texel < rectMax && level + 1 < mips) {
-		texel *= 2.0f;
-		++level;
-	}
-	uint32_t lw = W, lh = H, off = 0;
-	for (uint32_t k = 0; k < level; ++k) {
-		off += lw * lh;
-		lw = std::max((lw + 1u) >> 1, 1u);
-		lh = std::max((lh + 1u) >> 1, 1u);
-	}
-	if (lw == 0 || lh == 0)
-		return false;
-	const uint32_t tx0 = std::min((uint32_t)std::max(std::floor(sx0 / texel), 0.0f), lw - 1);
-	const uint32_t tx1 = std::min((uint32_t)std::max(std::floor(sx1 / texel), 0.0f), lw - 1);
-	const uint32_t ty0 = std::min((uint32_t)std::max(std::floor(sy0 / texel), 0.0f), lh - 1);
-	const uint32_t ty1 = std::min((uint32_t)std::max(std::floor(sy1 / texel), 0.0f), lh - 1);
-	if (tx0 > tx1 || ty0 > ty1)
-		return false;
-	const float testDepth = dNear + std::max(1e-7f, std::abs(dNear) * 1e-5f);
-	for (uint32_t ty = ty0; ty <= ty1; ++ty) {
-		for (uint32_t tx = tx0; tx <= tx1; ++tx) {
-			if (testDepth >= hzb[off + ty * lw + tx])
-				return false;
-		}
-	}
-	return true;
+bool GpuClusterOccluded(const glm::vec3& wc,
+                        float wr,
+                        const glm::vec3& eye,
+                        const glm::mat4& viewProj,
+                        uint32_t W,
+                        uint32_t H,
+                        const float* hzb,
+                        uint32_t mips) {
+    using namespace smvk::gfx;
+    if (hzb == nullptr || mips == 0 || W == 0 || H == 0)
+        return false;
+    const float width = (float)W, height = (float)H;
+    const glm::vec3 toEye = eye - wc;
+    const float dist = glm::length(toEye);
+    if (!(dist > wr))
+        return false; // eye inside: never cull
+    const glm::vec4 clipC = viewProj * glm::vec4(wc, 1.0f);
+    // HLSL viewProj._1C is row 0 (1-based row/col, layout-independent);
+    // glm m[col][row], so row r is (m[0][r], m[1][r], m[2][r]).
+    const float xRadius =
+        wr * glm::length(glm::vec3(viewProj[0][0], viewProj[1][0], viewProj[2][0]));
+    const float yRadius =
+        wr * glm::length(glm::vec3(viewProj[0][1], viewProj[1][1], viewProj[2][1]));
+    const float zRadius =
+        wr * glm::length(glm::vec3(viewProj[0][2], viewProj[1][2], viewProj[2][2]));
+    const float wRadius =
+        wr * glm::length(glm::vec3(viewProj[0][3], viewProj[1][3], viewProj[2][3]));
+    const float wMin = clipC.w - wRadius;
+    const float wMax = clipC.w + wRadius;
+    if (!(wMin > 1e-6f) || !(wMax >= wMin))
+        return false;
+    const auto ndcX = GpuRatioInterval(clipC.x, xRadius, wMin, wMax);
+    const auto ndcY = GpuRatioInterval(clipC.y, yRadius, wMin, wMax);
+    const auto ndcZ = GpuRatioInterval(clipC.z, zRadius, wMin, wMax);
+    const float dNear = ndcZ.second;
+    if (!(dNear >= 0.0f) || dNear > 1.0f)
+        return false;
+    const float x0 = (ndcX.first * 0.5f + 0.5f) * width;
+    const float x1 = (ndcX.second * 0.5f + 0.5f) * width;
+    const float y0 = (ndcY.first * 0.5f + 0.5f) * height;
+    const float y1 = (ndcY.second * 0.5f + 0.5f) * height;
+    if (!(x1 >= x0) || !(y1 >= y0))
+        return false;
+    if (x1 < 0.0f || x0 > width || y1 < 0.0f || y0 > height)
+        return false; // off-target: frustum stages own it
+    const float sx0 = std::min(std::max(x0, 0.0f), width);
+    const float sx1 = std::min(std::max(x1, 0.0f), width);
+    const float sy0 = std::min(std::max(y0, 0.0f), height);
+    const float sy1 = std::min(std::max(y1, 0.0f), height);
+    const float rectW = std::max(sx1 - sx0, 0.0f);
+    const float rectH = std::max(sy1 - sy0, 0.0f);
+    if (!(rectW > 0.0f) || !(rectH > 0.0f))
+        return false;
+    uint32_t level = 0;
+    float texel = 1.0f;
+    const float rectMax = std::max(rectW, rectH);
+    while (texel < rectMax && level + 1 < mips) {
+        texel *= 2.0f;
+        ++level;
+    }
+    uint32_t lw = W, lh = H, off = 0;
+    for (uint32_t k = 0; k < level; ++k) {
+        off += lw * lh;
+        lw = std::max((lw + 1u) >> 1, 1u);
+        lh = std::max((lh + 1u) >> 1, 1u);
+    }
+    if (lw == 0 || lh == 0)
+        return false;
+    const uint32_t tx0 = std::min((uint32_t)std::max(std::floor(sx0 / texel), 0.0f), lw - 1);
+    const uint32_t tx1 = std::min((uint32_t)std::max(std::floor(sx1 / texel), 0.0f), lw - 1);
+    const uint32_t ty0 = std::min((uint32_t)std::max(std::floor(sy0 / texel), 0.0f), lh - 1);
+    const uint32_t ty1 = std::min((uint32_t)std::max(std::floor(sy1 / texel), 0.0f), lh - 1);
+    if (tx0 > tx1 || ty0 > ty1)
+        return false;
+    const float testDepth = dNear + std::max(1e-7f, std::abs(dNear) * 1e-5f);
+    for (uint32_t ty = ty0; ty <= ty1; ++ty) {
+        for (uint32_t tx = tx0; tx <= tx1; ++tx) {
+            if (testDepth >= hzb[off + ty * lw + tx])
+                return false;
+        }
+    }
+    return true;
 }
 
 void TestGpuMirrorAgreement() {
-	using namespace smvk::gfx;
-	const glm::vec3 eye(0, 0, 4);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f; // engine Y-flip, mirrors UpdateFrameUniforms
-	const glm::mat4 viewProj = proj * view;
-	constexpr uint32_t W = 256, H = 256;
-	const uint32_t mips = HzbMipCount(W, H);
+    using namespace smvk::gfx;
+    const glm::vec3 eye(0, 0, 4);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f; // engine Y-flip, mirrors UpdateFrameUniforms
+    const glm::mat4 viewProj = proj * view;
+    constexpr uint32_t W = 256, H = 256;
+    const uint32_t mips = HzbMipCount(W, H);
 
-	auto cpuVerdict = [&](const glm::vec3& c, float r, const float* hzb) {
-		return HzbOccluded(hzb, W, H, mips,
-			ProjectClusterFootprint(c, r, eye, viewProj, W, H));
-	};
+    auto cpuVerdict = [&](const glm::vec3& c, float r, const float* hzb) {
+        return HzbOccluded(hzb, W, H, mips, ProjectClusterFootprint(c, r, eye, viewProj, W, H));
+    };
 
-	// Uniform-near pyramid (0.9 everywhere): frontal unit sphere sits behind
-	// it (dNear ~0.03) so BOTH mirrors must cull — occlusion can fire.
-	std::vector<float> nearHzb(HzbTotalFloats(W, H), 0.9f);
-	const glm::vec3 front(0, 0, 0);
-	Check(cpuVerdict(front, 1.0f, nearHzb.data()), "gfx.gpumirror.cpu-culls-behind");
-	Check(GpuClusterOccluded(front, 1.0f, eye, viewProj, W, H, nearHzb.data(), mips),
-		"gfx.gpumirror.gpu-culls-behind");
+    // Uniform-near pyramid (0.9 everywhere): frontal unit sphere sits behind
+    // it (dNear ~0.03) so BOTH mirrors must cull — occlusion can fire.
+    std::vector<float> nearHzb(HzbTotalFloats(W, H), 0.9f);
+    const glm::vec3 front(0, 0, 0);
+    Check(cpuVerdict(front, 1.0f, nearHzb.data()), "gfx.gpumirror.cpu-culls-behind");
+    Check(GpuClusterOccluded(front, 1.0f, eye, viewProj, W, H, nearHzb.data(), mips),
+          "gfx.gpumirror.gpu-culls-behind");
 
-	// All-far pyramid (sky): nothing is hidden in either mirror.
-	std::vector<float> farHzb(HzbTotalFloats(W, H), 0.0f);
-	Check(!cpuVerdict(front, 1.0f, farHzb.data()), "gfx.gpumirror.cpu-sky-keeps");
-	Check(!GpuClusterOccluded(front, 1.0f, eye, viewProj, W, H, farHzb.data(), mips),
-		"gfx.gpumirror.gpu-sky-keeps");
+    // All-far pyramid (sky): nothing is hidden in either mirror.
+    std::vector<float> farHzb(HzbTotalFloats(W, H), 0.0f);
+    Check(!cpuVerdict(front, 1.0f, farHzb.data()), "gfx.gpumirror.cpu-sky-keeps");
+    Check(!GpuClusterOccluded(front, 1.0f, eye, viewProj, W, H, farHzb.data(), mips),
+          "gfx.gpumirror.gpu-sky-keeps");
 
-	// Degenerate inputs keep in both mirrors.
-	Check(!GpuClusterOccluded(glm::vec3(0, 0, 3.5f), 1.0f, eye, viewProj, W, H,
-		nearHzb.data(), mips), "gfx.gpumirror.gpu-inside-keeps");
-	Check(!GpuClusterOccluded(glm::vec3(0, 0, 8.0f), 1.0f, eye, viewProj, W, H,
-		nearHzb.data(), mips), "gfx.gpumirror.gpu-behind-keeps");
-	Check(!GpuClusterOccluded(front, 1.0f, eye, viewProj, W, H, nullptr, mips),
-		"gfx.gpumirror.gpu-null-keeps");
+    // Degenerate inputs keep in both mirrors.
+    Check(
+        !GpuClusterOccluded(glm::vec3(0, 0, 3.5f), 1.0f, eye, viewProj, W, H, nearHzb.data(), mips),
+        "gfx.gpumirror.gpu-inside-keeps");
+    Check(
+        !GpuClusterOccluded(glm::vec3(0, 0, 8.0f), 1.0f, eye, viewProj, W, H, nearHzb.data(), mips),
+        "gfx.gpumirror.gpu-behind-keeps");
+    Check(!GpuClusterOccluded(front, 1.0f, eye, viewProj, W, H, nullptr, mips),
+          "gfx.gpumirror.gpu-null-keeps");
 
-	// Fuzz over a sloped pyramid: GPU must never cull what the CPU keeps
-	// (no over-cull divergence), with high overall agreement. Deterministic
-	// LCG so failures reproduce exactly.
-	std::vector<float> slopeHzb(HzbTotalFloats(W, H), 0.0f);
-	for (uint32_t m = 0; m < mips; ++m) {
-		uint32_t mw = 0, mh = 0;
-		HzbMipDims(W, H, m, mw, mh);
-		const uint32_t off = HzbMipOffsetFloats(W, H, m);
-		for (uint32_t y = 0; y < mh; ++y)
-			for (uint32_t x = 0; x < mw; ++x)
-				slopeHzb[off + y * mw + x] =
-					0.05f + 0.9f * (float(x + y) / float(mw + mh));
-	}
-	uint32_t rng = 0xC0FFEEu;
-	auto rnd = [&]() {
-		rng = rng * 1664525u + 1013904223u;
-		return float(rng >> 8) / float(1u << 24);
-	};
-	uint32_t overCull = 0, agree = 0;
-	constexpr uint32_t kSamples = 300;
-	for (uint32_t i = 0; i < kSamples; ++i) {
-		const glm::vec3 c(-6.0f + rnd() * 12.0f, -4.0f + rnd() * 8.0f,
-			-12.0f + rnd() * 11.0f);
-		const float r = 0.1f + rnd() * 0.7f;
-		const ClusterFootprint f = ProjectClusterFootprint(c, r, eye, viewProj, W, H);
-		const bool cpu = HzbOccluded(slopeHzb.data(), W, H, mips, f);
-		const bool gpu = GpuClusterOccluded(c, r, eye, viewProj, W, H,
-			slopeHzb.data(), mips);
-		if (gpu && !cpu) {
-			// Allowed divergence only: the CPU footprint is fully
-			// off-target, i.e. the GPU merely pre-empts the frustum
-			// stages (which own off-screen triangles and would drop
-			// them anyway). A GPU cull for an ON-SCREEN CPU-keep is a
-			// genuine over-cull (visible geometry vanishes).
-			const bool cpuOffscreen = f.behindCamera
-				|| f.centerX + f.radiusX < 0.0f || f.centerX - f.radiusX > (float)W
-				|| f.centerY + f.radiusY < 0.0f || f.centerY - f.radiusY > (float)H;
-			if (!cpuOffscreen) {
-				++overCull;
-				float stored = -1.0f;
-				HzbOccluded(slopeHzb.data(), W, H, mips, f, &stored);
-				SMVK_DEBUG_LOG("[gfx.gpumirror] OVERCULL c=(%.3f,%.3f,%.3f) r=%.3f "
-					"cpu c=(%.1f,%.1f) r=(%.1f,%.1f) dNear=%.6f stored=%.6f\n",
-					c.x, c.y, c.z, r, f.centerX, f.centerY, f.radiusX, f.radiusY,
-					f.nearestDepth, stored);
-			}
-		}
-		if (gpu == cpu)
-			++agree;
-	}
-	SMVK_DEBUG_LOG("[gfx.gpumirror] fuzz: %u/%u agree, %u over-cull\n",
-		agree, kSamples, overCull);
-	Check(overCull == 0, "gfx.gpumirror.no-overcull");
-	Check(agree >= kSamples * 9 / 10, "gfx.gpumirror.agreement");
+    // Fuzz over a sloped pyramid: GPU must never cull what the CPU keeps
+    // (no over-cull divergence), with high overall agreement. Deterministic
+    // LCG so failures reproduce exactly.
+    std::vector<float> slopeHzb(HzbTotalFloats(W, H), 0.0f);
+    for (uint32_t m = 0; m < mips; ++m) {
+        uint32_t mw = 0, mh = 0;
+        HzbMipDims(W, H, m, mw, mh);
+        const uint32_t off = HzbMipOffsetFloats(W, H, m);
+        for (uint32_t y = 0; y < mh; ++y)
+            for (uint32_t x = 0; x < mw; ++x)
+                slopeHzb[off + y * mw + x] = 0.05f + 0.9f * (float(x + y) / float(mw + mh));
+    }
+    uint32_t rng = 0xC0FFEEu;
+    auto rnd = [&]() {
+        rng = rng * 1664525u + 1013904223u;
+        return float(rng >> 8) / float(1u << 24);
+    };
+    uint32_t overCull = 0, agree = 0;
+    constexpr uint32_t kSamples = 300;
+    for (uint32_t i = 0; i < kSamples; ++i) {
+        const glm::vec3 c(-6.0f + rnd() * 12.0f, -4.0f + rnd() * 8.0f, -12.0f + rnd() * 11.0f);
+        const float r = 0.1f + rnd() * 0.7f;
+        const ClusterFootprint f = ProjectClusterFootprint(c, r, eye, viewProj, W, H);
+        const bool cpu = HzbOccluded(slopeHzb.data(), W, H, mips, f);
+        const bool gpu = GpuClusterOccluded(c, r, eye, viewProj, W, H, slopeHzb.data(), mips);
+        if (gpu && !cpu) {
+            // Allowed divergence only: the CPU footprint is fully
+            // off-target, i.e. the GPU merely pre-empts the frustum
+            // stages (which own off-screen triangles and would drop
+            // them anyway). A GPU cull for an ON-SCREEN CPU-keep is a
+            // genuine over-cull (visible geometry vanishes).
+            const bool cpuOffscreen = f.behindCamera || f.centerX + f.radiusX < 0.0f ||
+                                      f.centerX - f.radiusX > (float)W ||
+                                      f.centerY + f.radiusY < 0.0f ||
+                                      f.centerY - f.radiusY > (float)H;
+            if (!cpuOffscreen) {
+                ++overCull;
+                float stored = -1.0f;
+                HzbOccluded(slopeHzb.data(), W, H, mips, f, &stored);
+                SMVK_DEBUG_LOG("[gfx.gpumirror] OVERCULL c=(%.3f,%.3f,%.3f) r=%.3f "
+                               "cpu c=(%.1f,%.1f) r=(%.1f,%.1f) dNear=%.6f stored=%.6f\n",
+                               c.x,
+                               c.y,
+                               c.z,
+                               r,
+                               f.centerX,
+                               f.centerY,
+                               f.radiusX,
+                               f.radiusY,
+                               f.nearestDepth,
+                               stored);
+            }
+        }
+        if (gpu == cpu)
+            ++agree;
+    }
+    SMVK_DEBUG_LOG("[gfx.gpumirror] fuzz: %u/%u agree, %u over-cull\n", agree, kSamples, overCull);
+    Check(overCull == 0, "gfx.gpumirror.no-overcull");
+    Check(agree >= kSamples * 9 / 10, "gfx.gpumirror.agreement");
 }
 
 // ---------------------------------------------------------------------------
@@ -2162,85 +2159,88 @@ void TestGpuMirrorAgreement() {
 // Deterministic: fixed grid, no RNG.
 // ---------------------------------------------------------------------------
 
-static glm::mat4 JitteredProjForTest(const glm::mat4& proj, float jxPx, float jyPx,
-	float w, float h) {
-	glm::mat4 j = proj;
-	const float jx = jxPx * 2.0f / w;
-	const float jy = jyPx * 2.0f / h;
-	for (int c = 0; c < 4; ++c) {
-		j[c][0] += jx * j[c][3];
-		j[c][1] += jy * j[c][3];
-	}
-	return j;
+static glm::mat4 JitteredProjForTest(const glm::mat4& proj,
+                                     float jxPx,
+                                     float jyPx,
+                                     float w,
+                                     float h) {
+    glm::mat4 j = proj;
+    const float jx = jxPx * 2.0f / w;
+    const float jy = jyPx * 2.0f / h;
+    for (int c = 0; c < 4; ++c) {
+        j[c][0] += jx * j[c][3];
+        j[c][1] += jy * j[c][3];
+    }
+    return j;
 }
 
 void TestJitterCullStability() {
-	constexpr float W = 800.0f, H = 600.0f;
-	constexpr float kGuardPx = 1.0f;
-	constexpr float kPxNdcX = 2.0f / W;
+    constexpr float W = 800.0f, H = 600.0f;
+    constexpr float kGuardPx = 1.0f;
+    constexpr float kPxNdcX = 2.0f / W;
 
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), W / H, 0.1f);
-	proj[1][1] *= -1.0f; // app Vulkan Y-flip (cf. UpdateFrameUniforms)
-	const glm::mat4 view = glm::mat4(1.0f); // camera at origin, looking -Z
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), W / H, 0.1f);
+    proj[1][1] *= -1.0f;                    // app Vulkan Y-flip (cf. UpdateFrameUniforms)
+    const glm::mat4 view = glm::mat4(1.0f); // camera at origin, looking -Z
 
-	// App T2x phases, measured in render (internal) pixels.
-	const glm::mat4 vpA = JitteredProjForTest(proj, +0.25f, +0.25f, W, H) * view;
-	const glm::mat4 vpB = JitteredProjForTest(proj, -0.25f, -0.25f, W, H) * view;
+    // App T2x phases, measured in render (internal) pixels.
+    const glm::mat4 vpA = JitteredProjForTest(proj, +0.25f, +0.25f, W, H) * view;
+    const glm::mat4 vpB = JitteredProjForTest(proj, -0.25f, -0.25f, W, H) * view;
 
-	auto keepsSphere = [](const glm::mat4& vp, const glm::vec3& c, float r, float guardPx) {
-		smvk::RenderViewSet views;
-		views.NewFrame();
-		const uint32_t rv = views.AllocateMainView(vp, { W, H }, guardPx);
-		return smvk::RenderViewIntersectsSphere(views.Get(rv), c, r);
-	};
+    auto keepsSphere = [](const glm::mat4& vp, const glm::vec3& c, float r, float guardPx) {
+        smvk::RenderViewSet views;
+        views.NewFrame();
+        const uint32_t rv = views.AllocateMainView(vp, {W, H}, guardPx);
+        return smvk::RenderViewIntersectsSphere(views.Get(rv), c, r);
+    };
 
-	// Small sphere (~1 px at depth 5) swept across the right edge.
-	// A 1 px guard cannot remove the keep/cull boundary itself (it moves it
-	// outward); what it guarantees is VISIBLE stability: anything the exact
-	// test keeps in either phase (hence potentially rasterized) is kept by
-	// the guarded test in both phases. Guarded-only disagreements live
-	// fully outside both nominal frusta and are rasterizer-clipped in every
-	// phase, i.e. identical (invisible) images.
-	const float fx = std::abs(proj[0][0]);
-	const float d = 5.0f;
-	const float r = 0.01f;
-	uint32_t exactDisagree = 0, visibleFlicker = 0, guardOverCull = 0;
-	constexpr int kSteps = 6001;
-	for (int i = 0; i < kSteps; ++i) {
-		const float xNdc = 1.0f + (float(i) / float(kSteps - 1) * 6.0f - 3.0f) * kPxNdcX;
-		const glm::vec3 c(xNdc * d / fx, 0.0f, -d);
-		const bool eA = keepsSphere(vpA, c, r, 0.0f);
-		const bool eB = keepsSphere(vpB, c, r, 0.0f);
-		const bool gA = keepsSphere(vpA, c, r, kGuardPx);
-		const bool gB = keepsSphere(vpB, c, r, kGuardPx);
-		if (eA != eB)
-			++exactDisagree;
-		if ((eA || eB) && !(gA && gB))
-			++visibleFlicker; // visible in a phase, dropped in another
-		if ((!gA && eA) || (!gB && eB))
-			++guardOverCull; // guard must only ever keep more
-	}
+    // Small sphere (~1 px at depth 5) swept across the right edge.
+    // A 1 px guard cannot remove the keep/cull boundary itself (it moves it
+    // outward); what it guarantees is VISIBLE stability: anything the exact
+    // test keeps in either phase (hence potentially rasterized) is kept by
+    // the guarded test in both phases. Guarded-only disagreements live
+    // fully outside both nominal frusta and are rasterizer-clipped in every
+    // phase, i.e. identical (invisible) images.
+    const float fx = std::abs(proj[0][0]);
+    const float d = 5.0f;
+    const float r = 0.01f;
+    uint32_t exactDisagree = 0, visibleFlicker = 0, guardOverCull = 0;
+    constexpr int kSteps = 6001;
+    for (int i = 0; i < kSteps; ++i) {
+        const float xNdc = 1.0f + (float(i) / float(kSteps - 1) * 6.0f - 3.0f) * kPxNdcX;
+        const glm::vec3 c(xNdc * d / fx, 0.0f, -d);
+        const bool eA = keepsSphere(vpA, c, r, 0.0f);
+        const bool eB = keepsSphere(vpB, c, r, 0.0f);
+        const bool gA = keepsSphere(vpA, c, r, kGuardPx);
+        const bool gB = keepsSphere(vpB, c, r, kGuardPx);
+        if (eA != eB)
+            ++exactDisagree;
+        if ((eA || eB) && !(gA && gB))
+            ++visibleFlicker; // visible in a phase, dropped in another
+        if ((!gA && eA) || (!gB && eB))
+            ++guardOverCull; // guard must only ever keep more
+    }
 #ifndef NDEBUG
-	std::cout << "[gfx.jitter] exact-disagree=" << exactDisagree
-		<< " visible-flicker=" << visibleFlicker
-		<< " guard-overcull=" << guardOverCull << "\n";
+    std::cout << "[gfx.jitter] exact-disagree=" << exactDisagree
+              << " visible-flicker=" << visibleFlicker << " guard-overcull=" << guardOverCull
+              << "\n";
 #endif
-	Check(exactDisagree > 0, "gfx.jitter.setup-reproduces-flicker");
-	Check(visibleFlicker == 0, "gfx.jitter.guard-kills-visible-flicker");
-	Check(guardOverCull == 0, "gfx.jitter.guard-conservative");
+    Check(exactDisagree > 0, "gfx.jitter.setup-reproduces-flicker");
+    Check(visibleFlicker == 0, "gfx.jitter.guard-kills-visible-flicker");
+    Check(guardOverCull == 0, "gfx.jitter.guard-conservative");
 
-	// Far-outside geometry still culls with the guard on (both phases).
-	// (Named farOut, not far: windows.h's legacy empty `far` macro would
-	// expand the identifier away and turn the calls below into syntax
-	// errors — latent since this test landed; surfaced by the first test
-	// rebuild since.)
-	const glm::vec3 farOut(1.5f * d / fx, 0.0f, -d);
-	Check(!keepsSphere(vpA, farOut, r, kGuardPx), "gfx.jitter.guard-still-culls-a");
-	Check(!keepsSphere(vpB, farOut, r, kGuardPx), "gfx.jitter.guard-still-culls-b");
-	// Deep-inside geometry still keeps without the guard (sanity).
-	const glm::vec3 inside(0.0f, 0.0f, -d);
-	Check(keepsSphere(vpA, inside, r, 0.0f), "gfx.jitter.exact-keeps-inside-a");
-	Check(keepsSphere(vpB, inside, r, 0.0f), "gfx.jitter.exact-keeps-inside-b");
+    // Far-outside geometry still culls with the guard on (both phases).
+    // (Named farOut, not far: windows.h's legacy empty `far` macro would
+    // expand the identifier away and turn the calls below into syntax
+    // errors — latent since this test landed; surfaced by the first test
+    // rebuild since.)
+    const glm::vec3 farOut(1.5f * d / fx, 0.0f, -d);
+    Check(!keepsSphere(vpA, farOut, r, kGuardPx), "gfx.jitter.guard-still-culls-a");
+    Check(!keepsSphere(vpB, farOut, r, kGuardPx), "gfx.jitter.guard-still-culls-b");
+    // Deep-inside geometry still keeps without the guard (sanity).
+    const glm::vec3 inside(0.0f, 0.0f, -d);
+    Check(keepsSphere(vpA, inside, r, 0.0f), "gfx.jitter.exact-keeps-inside-a");
+    Check(keepsSphere(vpB, inside, r, 0.0f), "gfx.jitter.exact-keeps-inside-b");
 }
 
 // ---------------------------------------------------------------------------
@@ -2254,118 +2254,117 @@ void TestJitterCullStability() {
 // ---------------------------------------------------------------------------
 
 void TestGpuCandidateBuild() {
-	using namespace smvk::gfx;
-	State s{};
-	// Four single-triangle meshes (each cooks to exactly 1 cluster) so
-	// candidateBase walks 0,1,2,... across the sorted draws.
-	const glm::mat4 ident(1.0f);
-	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
-	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
-	const uint32_t m2 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(4, 0, 0), glm::vec3(5, 0, 0), glm::vec3(4, 1, 0)), 6);
-	const uint32_t m3 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(6, 0, 0), glm::vec3(7, 0, 0), glm::vec3(6, 1, 0)), 9);
-	Check(m0 != UINT32_MAX && m1 != UINT32_MAX
-		&& m2 != UINT32_MAX && m3 != UINT32_MAX, "gfx.gpu.mesh-ids");
+    using namespace smvk::gfx;
+    State s{};
+    // Four single-triangle meshes (each cooks to exactly 1 cluster) so
+    // candidateBase walks 0,1,2,... across the sorted draws.
+    const glm::mat4 ident(1.0f);
+    const uint32_t m0 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+    const uint32_t m1 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+    const uint32_t m2 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(4, 0, 0), glm::vec3(5, 0, 0), glm::vec3(4, 1, 0)), 6);
+    const uint32_t m3 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(6, 0, 0), glm::vec3(7, 0, 0), glm::vec3(6, 1, 0)), 9);
+    Check(m0 != UINT32_MAX && m1 != UINT32_MAX && m2 != UINT32_MAX && m3 != UINT32_MAX,
+          "gfx.gpu.mesh-ids");
 
-	// One camera; m3's draw sits far OUTSIDE the frustum to prove the GPU
-	// build never runs a CPU cull (the legacy build would drop it).
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(3.5f, 0.5f, 50.0f);
-	const glm::mat4 view =
-		glm::lookAt(eye, glm::vec3(3.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(30.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+    // One camera; m3's draw sits far OUTSIDE the frustum to prove the GPU
+    // build never runs a CPU cull (the legacy build would drop it).
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(3.5f, 0.5f, 50.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(3.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(30.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
 
-	View v{};
-	v.renderView = &views.Get(rv);
-	v.eye = eye;
-	v.width = 800;
-	v.height = 600;
-	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-	v.cullFlags = CullFlagBit_Frustum | CullFlagBit_Backface | CullFlagBit_FlipWinding;
-	s.views.push_back(std::move(v));
-	s.viewCount = 1;
+    View v{};
+    v.renderView = &views.Get(rv);
+    v.eye = eye;
+    v.width = 800;
+    v.height = 600;
+    v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+    v.cullFlags = CullFlagBit_Frustum | CullFlagBit_Backface | CullFlagBit_FlipWinding;
+    s.views.push_back(std::move(v));
+    s.viewCount = 1;
 
-	// Mixed buckets + materials, shuffled push order (the sort must group
-	// bucket-major then material): masked material 9 first in push order,
-	// opaque materials 3/7 after.
-	PushDraw(s, 0, m3, ident, 9, 0, DrawSetBit_Masked);
-	PushDraw(s, 0, m1, ident, 7, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m2, ident, 7, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m0, ident, 3, 0, DrawSetBit_Opaque);
-	BuildBatches(s, 0);
+    // Mixed buckets + materials, shuffled push order (the sort must group
+    // bucket-major then material): masked material 9 first in push order,
+    // opaque materials 3/7 after.
+    PushDraw(s, 0, m3, ident, 9, 0, DrawSetBit_Masked);
+    PushDraw(s, 0, m1, ident, 7, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m2, ident, 7, 0, DrawSetBit_Opaque);
+    PushDraw(s, 0, m0, ident, 3, 0, DrawSetBit_Opaque);
+    BuildBatches(s, 0);
 
-	const View& out = s.views[0];
-	// ALL four draws' clusters are candidates (m3 is far outside the
-	// frustum — the GPU batch cull owns that verdict now).
-	Check(out.batchCount == 4, "gfx.gpu.candidates-all");
-	Check(out.stats.clustersProcessed == 4, "gfx.gpu.candidates-counted");
-	Check(out.stats.clustersCulled == 0, "gfx.gpu.no-cpu-cull");
-	// Candidate bases walk the sorted order 0,1,2,3; publisher flags are
-	// the GPU batch cull's (first KEPT slot) — never CPU-set here.
-	bool basesOk = true, flagsZero = true, outputZero = true;
-	for (uint32_t d = 0; d < (uint32_t)out.drawConstants.size(); ++d) {
-		if (out.drawConstants[d].candidateBase != d)
-			basesOk = false;
-	}
-	for (uint32_t b = 0; b < out.batchCount; ++b) {
-		if (out.batches[b].flags != 0)
-			flagsZero = false;
-		if (out.batches[b].outputOffset != 0)
-			outputZero = false;
-	}
-	Check(basesOk, "gfx.gpu.candidate-bases");
-	Check(flagsZero, "gfx.gpu.publisher-gpu-assigned");
-	Check(outputZero, "gfx.gpu.atomic-offsets");
+    const View& out = s.views[0];
+    // ALL four draws' clusters are candidates (m3 is far outside the
+    // frustum — the GPU batch cull owns that verdict now).
+    Check(out.batchCount == 4, "gfx.gpu.candidates-all");
+    Check(out.stats.clustersProcessed == 4, "gfx.gpu.candidates-counted");
+    Check(out.stats.clustersCulled == 0, "gfx.gpu.no-cpu-cull");
+    // Candidate bases walk the sorted order 0,1,2,3; publisher flags are
+    // the GPU batch cull's (first KEPT slot) — never CPU-set here.
+    bool basesOk = true, flagsZero = true, outputZero = true;
+    for (uint32_t d = 0; d < (uint32_t)out.drawConstants.size(); ++d) {
+        if (out.drawConstants[d].candidateBase != d)
+            basesOk = false;
+    }
+    for (uint32_t b = 0; b < out.batchCount; ++b) {
+        if (out.batches[b].flags != 0)
+            flagsZero = false;
+        if (out.batches[b].outputOffset != 0)
+            outputZero = false;
+    }
+    Check(basesOk, "gfx.gpu.candidate-bases");
+    Check(flagsZero, "gfx.gpu.publisher-gpu-assigned");
+    Check(outputZero, "gfx.gpu.atomic-offsets");
 
-	// Material ranges cover the candidates contiguously (the Main indexed
-	// leg's positional contract). Bucket-major order: opaque (3, 7) first,
-	// masked (9) last.
-	uint32_t covered = 0;
-	bool contig = true, orderOk = !out.materialRanges.empty();
-	uint32_t prevSet = 0, prevMat = 0;
-	for (size_t i = 0; i < out.materialRanges.size(); ++i) {
-		const MaterialRange& r = out.materialRanges[i];
-		if (r.firstCommand != covered)
-			contig = false;
-		covered += r.commandCount;
-		const uint32_t drawSet = out.drawConstants[out.batches[r.firstCommand].draw].drawSet;
-		if (i > 0 && (drawSet < prevSet || (drawSet == prevSet && r.material < prevMat)))
-			orderOk = false;
-		prevSet = drawSet;
-		prevMat = r.material;
-	}
-	Check(contig, "gfx.gpu.material-ranges-contiguous");
-	Check(covered == out.batchCount, "gfx.gpu.material-ranges-cover");
-	Check(orderOk, "gfx.gpu.material-ranges-bucket-major");
-	Check(out.materialRanges.size() == 3, "gfx.gpu.material-ranges-count");
+    // Material ranges cover the candidates contiguously (the Main indexed
+    // leg's positional contract). Bucket-major order: opaque (3, 7) first,
+    // masked (9) last.
+    uint32_t covered = 0;
+    bool contig = true, orderOk = !out.materialRanges.empty();
+    uint32_t prevSet = 0, prevMat = 0;
+    for (size_t i = 0; i < out.materialRanges.size(); ++i) {
+        const MaterialRange& r = out.materialRanges[i];
+        if (r.firstCommand != covered)
+            contig = false;
+        covered += r.commandCount;
+        const uint32_t drawSet = out.drawConstants[out.batches[r.firstCommand].draw].drawSet;
+        if (i > 0 && (drawSet < prevSet || (drawSet == prevSet && r.material < prevMat)))
+            orderOk = false;
+        prevSet = drawSet;
+        prevMat = r.material;
+    }
+    Check(contig, "gfx.gpu.material-ranges-contiguous");
+    Check(covered == out.batchCount, "gfx.gpu.material-ranges-cover");
+    Check(orderOk, "gfx.gpu.material-ranges-bucket-major");
+    Check(out.materialRanges.size() == 3, "gfx.gpu.material-ranges-count");
 
-	// Seed/remainder ranges: the positional candidate layout, bucket-major
-	// (opaque first) and coalesced per (bucket, material) across lmChunk;
-	// the opaque span is exactly the leading opaque candidates.
-	bool cullOk = !out.cullRanges.empty();
-	uint32_t cullCover = 0, cullOpaque = 0;
-	for (size_t i = 0; i < out.cullRanges.size(); ++i) {
-		const SeedRange& r = out.cullRanges[i];
-		if (r.firstCommand != cullCover)
-			cullOk = false;
-		if (i == 0 && r.drawSet != DrawSetBit_Opaque)
-			cullOk = false;
-		if (i > 0 && r.drawSet < out.cullRanges[i - 1].drawSet)
-			cullOk = false; // opaque runs before masked
-		cullCover += r.commandCount;
-		if (r.drawSet == DrawSetBit_Opaque)
-			cullOpaque += r.commandCount;
-	}
-	Check(cullOk, "gfx.gpu.cull-ranges-bucket-major");
-	Check(cullCover == out.batchCount, "gfx.gpu.cull-ranges-cover");
-	Check(out.cullOpaqueCommands == cullOpaque, "gfx.gpu.cull-opaque-span");
-	Check(out.cullOpaqueCommands == 3, "gfx.gpu.cull-opaque-count");
+    // Seed/remainder ranges: the positional candidate layout, bucket-major
+    // (opaque first) and coalesced per (bucket, material) across lmChunk;
+    // the opaque span is exactly the leading opaque candidates.
+    bool cullOk = !out.cullRanges.empty();
+    uint32_t cullCover = 0, cullOpaque = 0;
+    for (size_t i = 0; i < out.cullRanges.size(); ++i) {
+        const SeedRange& r = out.cullRanges[i];
+        if (r.firstCommand != cullCover)
+            cullOk = false;
+        if (i == 0 && r.drawSet != DrawSetBit_Opaque)
+            cullOk = false;
+        if (i > 0 && r.drawSet < out.cullRanges[i - 1].drawSet)
+            cullOk = false; // opaque runs before masked
+        cullCover += r.commandCount;
+        if (r.drawSet == DrawSetBit_Opaque)
+            cullOpaque += r.commandCount;
+    }
+    Check(cullOk, "gfx.gpu.cull-ranges-bucket-major");
+    Check(cullCover == out.batchCount, "gfx.gpu.cull-ranges-cover");
+    Check(out.cullOpaqueCommands == cullOpaque, "gfx.gpu.cull-opaque-span");
+    Check(out.cullOpaqueCommands == 3, "gfx.gpu.cull-opaque-count");
 }
 
 // ---------------------------------------------------------------------------
@@ -2376,58 +2375,56 @@ void TestGpuCandidateBuild() {
 // ---------------------------------------------------------------------------
 
 void TestShadowMeshGate() {
-	using namespace smvk::gfx;
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	// Main camera at the origin looking -Z (fov 90: half-width == depth);
-	// the shadow view shares the axis but sits 10 units back (z=10), also
-	// looking -Z — a superset frustum in front of it. On-axis bounds are
-	// inside both; z in (0, 10) is behind the MAIN camera but inside the
-	// shadow view (the contribution-gate case); z > 10 is behind both.
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(90.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const glm::vec3 eyeA(0.0f, 0.0f, 0.0f);
-	const glm::mat4 viewA =
-		glm::lookAt(eyeA, glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0, 1, 0));
-	const uint32_t rvA = views.AllocateMainView(proj * viewA, { 800.0f, 600.0f });
-	const glm::vec3 eyeB(0.0f, 0.0f, 10.0f);
-	const glm::mat4 viewB =
-		glm::lookAt(eyeB, glm::vec3(0.0f, 0.0f, 9.0f), glm::vec3(0, 1, 0));
-	const uint32_t rvB = views.AllocateView(proj * viewB, { 800.0f, 600.0f },
-		smvk::RenderViewFlagBit_Custom);
-	const smvk::RenderView& mainView = views.Get(rvA);
-	const smvk::RenderView& shadowView = views.Get(rvB);
+    using namespace smvk::gfx;
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    // Main camera at the origin looking -Z (fov 90: half-width == depth);
+    // the shadow view shares the axis but sits 10 units back (z=10), also
+    // looking -Z — a superset frustum in front of it. On-axis bounds are
+    // inside both; z in (0, 10) is behind the MAIN camera but inside the
+    // shadow view (the contribution-gate case); z > 10 is behind both.
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(90.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const glm::vec3 eyeA(0.0f, 0.0f, 0.0f);
+    const glm::mat4 viewA = glm::lookAt(eyeA, glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0, 1, 0));
+    const uint32_t rvA = views.AllocateMainView(proj * viewA, {800.0f, 600.0f});
+    const glm::vec3 eyeB(0.0f, 0.0f, 10.0f);
+    const glm::mat4 viewB = glm::lookAt(eyeB, glm::vec3(0.0f, 0.0f, 9.0f), glm::vec3(0, 1, 0));
+    const uint32_t rvB =
+        views.AllocateView(proj * viewB, {800.0f, 600.0f}, smvk::RenderViewFlagBit_Custom);
+    const smvk::RenderView& mainView = views.Get(rvA);
+    const smvk::RenderView& shadowView = views.Get(rvB);
 
-	const glm::mat4 ident(1.0f);
-	// On-axis, in front of both: kept either way.
-	const glm::vec4 between(0.0f, 0.0f, -5.0f, 1.0f);
-	Check(!CullShadowMeshBound(between, ident, shadowView, nullptr),
-		"gfx.shadow-gate.inside-both-keeps");
-	Check(!CullShadowMeshBound(between, ident, shadowView, &mainView),
-		"gfx.shadow-gate.contribution-inside-keeps");
-	// Behind the MAIN camera, inside the shadow view: kept without the
-	// contribution gate, dropped with it (a caster the main view cannot
-	// see cannot contribute to it).
-	const glm::vec4 behindMain(0.0f, 0.0f, 5.0f, 1.0f);
-	Check(!CullShadowMeshBound(behindMain, ident, shadowView, nullptr),
-		"gfx.shadow-gate.no-contribution-view-keeps");
-	Check(CullShadowMeshBound(behindMain, ident, shadowView, &mainView),
-		"gfx.shadow-gate.contribution-drops");
-	// Behind the shadow camera too: dropped with or without the gate.
-	const glm::vec4 outsideShadow(0.0f, 0.0f, 15.0f, 1.0f);
-	Check(CullShadowMeshBound(outsideShadow, ident, shadowView, nullptr),
-		"gfx.shadow-gate.shadow-frustum-drops");
-	Check(CullShadowMeshBound(outsideShadow, ident, shadowView, &mainView),
-		"gfx.shadow-gate.both-drops");
-	// Far off-axis (well past the 45-degree half-angle at depth 5): gone.
-	const glm::vec4 tiny(40.0f, 0.0f, -5.0f, 0.25f);
-	Check(CullShadowMeshBound(tiny, ident, shadowView, &mainView),
-		"gfx.shadow-gate.tiny-bound-drops");
-	// Conservative under scale: an inside bound with uniform scale 2 (the
-	// world center moves to z=-10, the radius doubles) stays kept.
-	const glm::mat4 scale2 = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f));
-	Check(!CullShadowMeshBound(between, scale2, shadowView, &mainView),
-		"gfx.shadow-gate.scaled-bound-conservative");
+    const glm::mat4 ident(1.0f);
+    // On-axis, in front of both: kept either way.
+    const glm::vec4 between(0.0f, 0.0f, -5.0f, 1.0f);
+    Check(!CullShadowMeshBound(between, ident, shadowView, nullptr),
+          "gfx.shadow-gate.inside-both-keeps");
+    Check(!CullShadowMeshBound(between, ident, shadowView, &mainView),
+          "gfx.shadow-gate.contribution-inside-keeps");
+    // Behind the MAIN camera, inside the shadow view: kept without the
+    // contribution gate, dropped with it (a caster the main view cannot
+    // see cannot contribute to it).
+    const glm::vec4 behindMain(0.0f, 0.0f, 5.0f, 1.0f);
+    Check(!CullShadowMeshBound(behindMain, ident, shadowView, nullptr),
+          "gfx.shadow-gate.no-contribution-view-keeps");
+    Check(CullShadowMeshBound(behindMain, ident, shadowView, &mainView),
+          "gfx.shadow-gate.contribution-drops");
+    // Behind the shadow camera too: dropped with or without the gate.
+    const glm::vec4 outsideShadow(0.0f, 0.0f, 15.0f, 1.0f);
+    Check(CullShadowMeshBound(outsideShadow, ident, shadowView, nullptr),
+          "gfx.shadow-gate.shadow-frustum-drops");
+    Check(CullShadowMeshBound(outsideShadow, ident, shadowView, &mainView),
+          "gfx.shadow-gate.both-drops");
+    // Far off-axis (well past the 45-degree half-angle at depth 5): gone.
+    const glm::vec4 tiny(40.0f, 0.0f, -5.0f, 0.25f);
+    Check(CullShadowMeshBound(tiny, ident, shadowView, &mainView),
+          "gfx.shadow-gate.tiny-bound-drops");
+    // Conservative under scale: an inside bound with uniform scale 2 (the
+    // world center moves to z=-10, the radius doubles) stays kept.
+    const glm::mat4 scale2 = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f));
+    Check(!CullShadowMeshBound(between, scale2, shadowView, &mainView),
+          "gfx.shadow-gate.scaled-bound-conservative");
 }
 
 // ---------------------------------------------------------------------------
@@ -2442,67 +2439,66 @@ void TestShadowMeshGate() {
 // ---------------------------------------------------------------------------
 
 void TestCasterContributionView() {
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	// Main camera at the origin looking -Z, fov 90 (half-width == depth),
-	// reversed-Z infinite far (the engine's main-view projection).
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(90.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const glm::mat4 view =
-		glm::lookAt(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0, 1, 0));
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
-	const smvk::RenderView& mainView = views.Get(rv);
-	// Straight-down sun (lightDir points from the sun INTO the scene).
-	const smvk::RenderView swept =
-		smvk::MakeCasterContributionView(mainView, glm::vec3(0.0f, -1.0f, 0.0f));
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    // Main camera at the origin looking -Z, fov 90 (half-width == depth),
+    // reversed-Z infinite far (the engine's main-view projection).
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(90.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const glm::mat4 view =
+        glm::lookAt(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0, 1, 0));
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
+    const smvk::RenderView& mainView = views.Get(rv);
+    // Straight-down sun (lightDir points from the sun INTO the scene).
+    const smvk::RenderView swept =
+        smvk::MakeCasterContributionView(mainView, glm::vec3(0.0f, -1.0f, 0.0f));
 
-	// Caster ABOVE the frustum top, on-axis ahead: the raw view drops it
-	// (outside the top plane); the swept view keeps it - a roof over the
-	// camera casts straight down INTO the view.
-	const glm::vec3 roofAbove(0.0f, 50.0f, -5.0f);
-	Check(!smvk::RenderViewIntersectsSphere(mainView, roofAbove, 1.0f),
-		"gfx.contribution.raw-drops-above-top");
-	Check(smvk::RenderViewIntersectsSphere(swept, roofAbove, 1.0f),
-		"gfx.contribution.swept-keeps-above-top");
+    // Caster ABOVE the frustum top, on-axis ahead: the raw view drops it
+    // (outside the top plane); the swept view keeps it - a roof over the
+    // camera casts straight down INTO the view.
+    const glm::vec3 roofAbove(0.0f, 50.0f, -5.0f);
+    Check(!smvk::RenderViewIntersectsSphere(mainView, roofAbove, 1.0f),
+          "gfx.contribution.raw-drops-above-top");
+    Check(smvk::RenderViewIntersectsSphere(swept, roofAbove, 1.0f),
+          "gfx.contribution.swept-keeps-above-top");
 
-	// Caster BELOW the frustum bottom: both drop it (down-sun - its shadow
-	// travels away from the view; the bottom plane survives the sweep).
-	const glm::vec3 below(0.0f, -50.0f, -5.0f);
-	Check(!smvk::RenderViewIntersectsSphere(mainView, below, 1.0f),
-		"gfx.contribution.raw-drops-below-bottom");
-	Check(!smvk::RenderViewIntersectsSphere(swept, below, 1.0f),
-		"gfx.contribution.swept-drops-below-bottom");
+    // Caster BELOW the frustum bottom: both drop it (down-sun - its shadow
+    // travels away from the view; the bottom plane survives the sweep).
+    const glm::vec3 below(0.0f, -50.0f, -5.0f);
+    Check(!smvk::RenderViewIntersectsSphere(mainView, below, 1.0f),
+          "gfx.contribution.raw-drops-below-bottom");
+    Check(!smvk::RenderViewIntersectsSphere(swept, below, 1.0f),
+          "gfx.contribution.swept-drops-below-bottom");
 
-	// Far off-axis sideways: the swept view still drops it (the side
-	// planes survive a straight-down sweep - a sideways caster's shadow
-	// cannot reach the view).
-	const glm::vec3 sideways(40.0f, 0.0f, -5.0f);
-	Check(!smvk::RenderViewIntersectsSphere(swept, sideways, 1.0f),
-		"gfx.contribution.swept-drops-sideways");
+    // Far off-axis sideways: the swept view still drops it (the side
+    // planes survive a straight-down sweep - a sideways caster's shadow
+    // cannot reach the view).
+    const glm::vec3 sideways(40.0f, 0.0f, -5.0f);
+    Check(!smvk::RenderViewIntersectsSphere(swept, sideways, 1.0f),
+          "gfx.contribution.swept-drops-sideways");
 
-	// Oblique sun (lightDir = normalize(-0.7, -1, 0): the sun sits up at
-	// +x): the sweep opens the RIGHT + TOP planes. An off-screen-RIGHT,
-	// high caster is up-sun - the raw view drops it, the swept view keeps
-	// it (its shadow crosses the view: the screen-edge pop case). The
-	// down-sun LEFT side keeps culling under the same sun.
-	const glm::vec3 obliqueSun = glm::normalize(glm::vec3(-0.7f, -1.0f, 0.0f));
-	const smvk::RenderView sweptOblique =
-		smvk::MakeCasterContributionView(mainView, obliqueSun);
-	const glm::vec3 upSunRight(40.0f, 20.0f, -5.0f);
-	Check(!smvk::RenderViewIntersectsSphere(mainView, upSunRight, 1.0f),
-		"gfx.contribution.raw-drops-up-sun-right");
-	Check(smvk::RenderViewIntersectsSphere(sweptOblique, upSunRight, 1.0f),
-		"gfx.contribution.oblique-swept-keeps-up-sun-right");
-	const glm::vec3 downSunLeft(-40.0f, -20.0f, -5.0f);
-	Check(!smvk::RenderViewIntersectsSphere(sweptOblique, downSunLeft, 1.0f),
-		"gfx.contribution.oblique-swept-drops-down-sun-left");
+    // Oblique sun (lightDir = normalize(-0.7, -1, 0): the sun sits up at
+    // +x): the sweep opens the RIGHT + TOP planes. An off-screen-RIGHT,
+    // high caster is up-sun - the raw view drops it, the swept view keeps
+    // it (its shadow crosses the view: the screen-edge pop case). The
+    // down-sun LEFT side keeps culling under the same sun.
+    const glm::vec3 obliqueSun = glm::normalize(glm::vec3(-0.7f, -1.0f, 0.0f));
+    const smvk::RenderView sweptOblique = smvk::MakeCasterContributionView(mainView, obliqueSun);
+    const glm::vec3 upSunRight(40.0f, 20.0f, -5.0f);
+    Check(!smvk::RenderViewIntersectsSphere(mainView, upSunRight, 1.0f),
+          "gfx.contribution.raw-drops-up-sun-right");
+    Check(smvk::RenderViewIntersectsSphere(sweptOblique, upSunRight, 1.0f),
+          "gfx.contribution.oblique-swept-keeps-up-sun-right");
+    const glm::vec3 downSunLeft(-40.0f, -20.0f, -5.0f);
+    Check(!smvk::RenderViewIntersectsSphere(sweptOblique, downSunLeft, 1.0f),
+          "gfx.contribution.oblique-swept-drops-down-sun-left");
 
-	// Degenerate light direction: the swept view keeps the raw planes
-	// (never worse than the raw frustum).
-	const smvk::RenderView sweptDegenerate =
-		smvk::MakeCasterContributionView(mainView, glm::vec3(0.0f));
-	Check(!smvk::RenderViewIntersectsSphere(sweptDegenerate, roofAbove, 1.0f),
-		"gfx.contribution.degenerate-keeps-raw-planes");
+    // Degenerate light direction: the swept view keeps the raw planes
+    // (never worse than the raw frustum).
+    const smvk::RenderView sweptDegenerate =
+        smvk::MakeCasterContributionView(mainView, glm::vec3(0.0f));
+    Check(!smvk::RenderViewIntersectsSphere(sweptDegenerate, roofAbove, 1.0f),
+          "gfx.contribution.degenerate-keeps-raw-planes");
 }
 
 // ---------------------------------------------------------------------------
@@ -2514,91 +2510,113 @@ void TestCasterContributionView() {
 // ---------------------------------------------------------------------------
 
 void TestUserData() {
-	using namespace smvk::gfx;
-	State s{};
-	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
-	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
-		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+    using namespace smvk::gfx;
+    State s{};
+    const uint32_t m0 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+    const uint32_t m1 = RegisterMeshFromUpload(
+        s, MakeTri(glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
 
-	smvk::RenderViewSet views;
-	views.NewFrame();
-	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
-	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
-	proj[1][1] *= -1.0f;
-	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
-	View v{};
-	v.renderView = &views.Get(rv);
-	v.eye = eye;
-	v.width = 800;
-	v.height = 600;
-	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
-	v.cullFlags = CullFlagBit_Degenerate;
-	s.views.push_back(std::move(v));
-	s.viewCount = 1;
+    smvk::RenderViewSet views;
+    views.NewFrame();
+    const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+    glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+    proj[1][1] *= -1.0f;
+    const uint32_t rv = views.AllocateMainView(proj * view, {800.0f, 600.0f});
+    View v{};
+    v.renderView = &views.Get(rv);
+    v.eye = eye;
+    v.width = 800;
+    v.height = 600;
+    v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+    v.cullFlags = CullFlagBit_Degenerate;
+    s.views.push_back(std::move(v));
+    s.viewCount = 1;
 
-	// Same material, two DIFFERENT userdata values + one defaulted push.
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque,
-		0xFFFFFFFFu, 0, 0xFFFFFFFFu, 0xAABBCCDDu);
-	PushDraw(s, 0, m1, glm::mat4(1.0f), 3);
-	PushDraw(s, 0, m1, glm::translate(glm::mat4(1.0f), glm::vec3(0, 0.2f, 0)),
-		3, 0, DrawSetBit_Opaque, 0xFFFFFFFFu, 0, 0xFFFFFFFFu, 0x11223344u);
-	BuildBatches(s, 0);
+    // Same material, two DIFFERENT userdata values + one defaulted push.
+    PushDraw(s,
+             0,
+             m0,
+             glm::mat4(1.0f),
+             3,
+             0,
+             DrawSetBit_Opaque,
+             0xFFFFFFFFu,
+             0,
+             0xFFFFFFFFu,
+             0xAABBCCDDu);
+    PushDraw(s, 0, m1, glm::mat4(1.0f), 3);
+    PushDraw(s,
+             0,
+             m1,
+             glm::translate(glm::mat4(1.0f), glm::vec3(0, 0.2f, 0)),
+             3,
+             0,
+             DrawSetBit_Opaque,
+             0xFFFFFFFFu,
+             0,
+             0xFFFFFFFFu,
+             0x11223344u);
+    BuildBatches(s, 0);
 
-	const View& out = s.views[0];
-	Check(out.drawConstants.size() == 3, "gfx.userdata.drawconsts");
-	// The word rides into the ring verbatim (the resolved value is the
-	// CPU's truth; the GPU forwards it flat, never interprets it).
-	bool rideOk = true;
-	uint32_t seenWords = 0;
-	for (const Draw& d : out.drawConstants) {
-		rideOk = rideOk && (d.userData == 0xAABBCCDDu
-			|| d.userData == 0u || d.userData == 0x11223344u);
-		if (d.userData == 0xAABBCCDDu) ++seenWords;
-		if (d.userData == 0x11223344u) ++seenWords;
-		if (d.userData == 0u) ++seenWords;
-	}
-	Check(rideOk && seenWords == 3, "gfx.userdata.rides-ring");
-	// Each value lands on its OWN draw (m0's draw carries the first
-	// word; the two m1 draws carry the third + the default 0).
-	const Draw* d0 = nullptr;
-	const Draw* d1 = nullptr;
-	const Draw* d2 = nullptr;
-	for (const Draw& d : out.drawConstants) {
-		if (d.mesh == m0) d0 = &d;
-		else if (!d1) d1 = &d;
-		else d2 = &d;
-	}
-	Check(d0 && d0->userData == 0xAABBCCDDu, "gfx.userdata.draw0");
-	Check(d1 && d2 && ((d1->userData == 0u && d2->userData == 0x11223344u)
-		|| (d1->userData == 0x11223344u && d2->userData == 0u)),
-		"gfx.userdata.draw1-2");
-	// No batch split: one material => one range covering all three
-	// draws whatever their userdata values.
-	Check(out.materialRanges.size() == 1
-		&& out.materialRanges[0].material == 3
-		&& out.materialRanges[0].commandCount == out.batchCount,
-		"gfx.userdata.no-batch-split");
+    const View& out = s.views[0];
+    Check(out.drawConstants.size() == 3, "gfx.userdata.drawconsts");
+    // The word rides into the ring verbatim (the resolved value is the
+    // CPU's truth; the GPU forwards it flat, never interprets it).
+    bool rideOk = true;
+    uint32_t seenWords = 0;
+    for (const Draw& d : out.drawConstants) {
+        rideOk =
+            rideOk && (d.userData == 0xAABBCCDDu || d.userData == 0u || d.userData == 0x11223344u);
+        if (d.userData == 0xAABBCCDDu)
+            ++seenWords;
+        if (d.userData == 0x11223344u)
+            ++seenWords;
+        if (d.userData == 0u)
+            ++seenWords;
+    }
+    Check(rideOk && seenWords == 3, "gfx.userdata.rides-ring");
+    // Each value lands on its OWN draw (m0's draw carries the first
+    // word; the two m1 draws carry the third + the default 0).
+    const Draw* d0 = nullptr;
+    const Draw* d1 = nullptr;
+    const Draw* d2 = nullptr;
+    for (const Draw& d : out.drawConstants) {
+        if (d.mesh == m0)
+            d0 = &d;
+        else if (!d1)
+            d1 = &d;
+        else
+            d2 = &d;
+    }
+    Check(d0 && d0->userData == 0xAABBCCDDu, "gfx.userdata.draw0");
+    Check(d1 && d2 &&
+              ((d1->userData == 0u && d2->userData == 0x11223344u) ||
+               (d1->userData == 0x11223344u && d2->userData == 0u)),
+          "gfx.userdata.draw1-2");
+    // No batch split: one material => one range covering all three
+    // draws whatever their userdata values.
+    Check(out.materialRanges.size() == 1 && out.materialRanges[0].material == 3 &&
+              out.materialRanges[0].commandCount == out.batchCount,
+          "gfx.userdata.no-batch-split");
 
-	// The shadow ring: the word rides for record consistency even
-	// though the depth/shadow legs never read it.
-	ShadowView sv{};
-	sv.renderView = &views.Get(rv);
-	sv.cullFlags = CullFlagBit_Degenerate;
-	sv.width = 800;
-	sv.height = 600;
-	s.shadowViews.push_back(std::move(sv));
-	s.shadowViewCount = 1;
-	PushShadowDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque,
-		0xCAFEBABEu);
-	PushShadowDraw(s, 0, m1, glm::mat4(1.0f), 3);
-	BuildShadowList(s, 0);
-	const ShadowView& sout = s.shadowViews[0];
-	Check(sout.drawConstants.size() == 2
-		&& sout.drawConstants[0].userData == 0xCAFEBABEu
-		&& sout.drawConstants[1].userData == 0u,
-		"gfx.userdata.shadow-ring");
+    // The shadow ring: the word rides for record consistency even
+    // though the depth/shadow legs never read it.
+    ShadowView sv{};
+    sv.renderView = &views.Get(rv);
+    sv.cullFlags = CullFlagBit_Degenerate;
+    sv.width = 800;
+    sv.height = 600;
+    s.shadowViews.push_back(std::move(sv));
+    s.shadowViewCount = 1;
+    PushShadowDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 0xCAFEBABEu);
+    PushShadowDraw(s, 0, m1, glm::mat4(1.0f), 3);
+    BuildShadowList(s, 0);
+    const ShadowView& sout = s.shadowViews[0];
+    Check(sout.drawConstants.size() == 2 && sout.drawConstants[0].userData == 0xCAFEBABEu &&
+              sout.drawConstants[1].userData == 0u,
+          "gfx.userdata.shadow-ring");
 }
 
 } // namespace
@@ -2612,133 +2630,123 @@ void TestUserData() {
 // ---------------------------------------------------------------------------
 
 void TestMaterialFamilyPrograms() {
-	engine::GfxRenderer r;
-	using namespace smvk;
+    engine::GfxRenderer r;
+    using namespace smvk;
 
-	// Nothing forged at all: the family pickers fall back to the STOCK
-	// picks (a project that compiled no family — the fail-safe leg the
-	// WorldRenderer's consult reports loudly).
-	r.filteredProgram.shaderCount = 2;
-	Check(&r.FilteredProjectProgramGi(2, true) == &r.FilteredProgramGi(2, true),
-		"gfx.family-empty-gi-falls-to-stock");
-	Check(&r.FilteredProjectLitProgram(6, true)
-			== &r.FilteredLitProgram(6, true),
-		"gfx.family-empty-lobe-falls-to-stock");
-	Check(r.FilteredProjectProgramA2C().shaderCount == 0,
-		"gfx.family-empty-a2c-invalid");
+    // Nothing forged at all: the family pickers fall back to the STOCK
+    // picks (a project that compiled no family — the fail-safe leg the
+    // WorldRenderer's consult reports loudly).
+    r.filteredProgram.shaderCount = 2;
+    Check(&r.FilteredProjectProgramGi(2, true) == &r.FilteredProgramGi(2, true),
+          "gfx.family-empty-gi-falls-to-stock");
+    Check(&r.FilteredProjectLitProgram(6, true) == &r.FilteredLitProgram(6, true),
+          "gfx.family-empty-lobe-falls-to-stock");
+    Check(r.FilteredProjectProgramA2C().shaderCount == 0, "gfx.family-empty-a2c-invalid");
 
-	// The family base + variants forged: the family pick mirrors the
-	// stock ladder over the family twins (GI twin > family std for
-	// non-layered > family base; missing family GI variant -> family
-	// base, NEVER the stock module while the family base exists).
-	r.filteredProjectProgram.shaderCount = 2;
-	r.filteredProjectProgramStd.shaderCount = 2;
-	r.filteredProjectProgramGi_[2].shaderCount = 2;
-	r.filteredProjectProgramGiStd_[2].shaderCount = 2;
-	Check(&r.FilteredProjectProgramGi(2, true) == &r.filteredProjectProgramGi_[2],
-		"gfx.family-gi-picks-family-gi");
-	Check(&r.FilteredProjectProgramGi(2, false)
-			== &r.filteredProjectProgramGiStd_[2],
-		"gfx.family-gi-std-refinement");
-	Check(&r.FilteredProjectProgramGi(0, true) == &r.filteredProjectProgram,
-		"gfx.family-missing-gi-variant-falls-to-family-base");
-	Check(&r.FilteredProjectProgramGi(0, false) == &r.filteredProjectProgramStd,
-		"gfx.family-missing-gi-variant-std");
-	// The lobe-count pick: the family sg twin when built, else the
-	// family base/std (never stock while the family base exists).
-	r.filteredProjectLitSg_[1].shaderCount = 2; // lobe count 6
-	Check(&r.FilteredProjectLitProgram(6, true) == &r.filteredProjectLitSg_[1],
-		"gfx.family-lobe-picks-family-sg");
-	Check(&r.FilteredProjectLitProgram(5, true) == &r.filteredProjectProgram,
-		"gfx.family-missing-lobe-falls-to-family-base");
-	Check(&r.FilteredProjectLitProgram(5, false)
-			== &r.filteredProjectProgramStd,
-		"gfx.family-missing-lobe-std");
+    // The family base + variants forged: the family pick mirrors the
+    // stock ladder over the family twins (GI twin > family std for
+    // non-layered > family base; missing family GI variant -> family
+    // base, NEVER the stock module while the family base exists).
+    r.filteredProjectProgram.shaderCount = 2;
+    r.filteredProjectProgramStd.shaderCount = 2;
+    r.filteredProjectProgramGi_[2].shaderCount = 2;
+    r.filteredProjectProgramGiStd_[2].shaderCount = 2;
+    Check(&r.FilteredProjectProgramGi(2, true) == &r.filteredProjectProgramGi_[2],
+          "gfx.family-gi-picks-family-gi");
+    Check(&r.FilteredProjectProgramGi(2, false) == &r.filteredProjectProgramGiStd_[2],
+          "gfx.family-gi-std-refinement");
+    Check(&r.FilteredProjectProgramGi(0, true) == &r.filteredProjectProgram,
+          "gfx.family-missing-gi-variant-falls-to-family-base");
+    Check(&r.FilteredProjectProgramGi(0, false) == &r.filteredProjectProgramStd,
+          "gfx.family-missing-gi-variant-std");
+    // The lobe-count pick: the family sg twin when built, else the
+    // family base/std (never stock while the family base exists).
+    r.filteredProjectLitSg_[1].shaderCount = 2; // lobe count 6
+    Check(&r.FilteredProjectLitProgram(6, true) == &r.filteredProjectLitSg_[1],
+          "gfx.family-lobe-picks-family-sg");
+    Check(&r.FilteredProjectLitProgram(5, true) == &r.filteredProjectProgram,
+          "gfx.family-missing-lobe-falls-to-family-base");
+    Check(&r.FilteredProjectLitProgram(5, false) == &r.filteredProjectProgramStd,
+          "gfx.family-missing-lobe-std");
 
-	// The resolver: unset = StandardLit; set = per-material.
-	Check(!r.MaterialProjectFamily(7), "gfx.family-resolver-unset-standard");
-	bool asked = false;
-	r.ConfigureMaterialFamily([&asked](uint32_t) {
-		asked = true;
-		return true;
-	});
-	Check(r.MaterialProjectFamily(7), "gfx.family-resolver-set-project");
-	Check(asked, "gfx.family-resolver-consulted");
+    // The resolver: unset = StandardLit; set = per-material.
+    Check(!r.MaterialProjectFamily(7), "gfx.family-resolver-unset-standard");
+    bool asked = false;
+    r.ConfigureMaterialFamily([&asked](uint32_t) {
+        asked = true;
+        return true;
+    });
+    Check(r.MaterialProjectFamily(7), "gfx.family-resolver-set-project");
+    Check(asked, "gfx.family-resolver-consulted");
 
-	// The mesh eligibility contract (design §9): a MISSING family mesh
-	// base makes the family leg return NULL — the range stays INDEXED
-	// (drawn by the family's indexed program), never a stock mesh FS.
-	// Holders forged with the cook-only Mint + a null ResourceManager
-	// ctx (the dtor no-ops on a null ctx — nothing to destroy, the
-	// test owns no GPU state; the deleter still needs the real destroy
-	// overload, hence the typed null).
-	{
-		using ModH = smvk::Holder<smvk::ShaderModuleHandle>;
-		auto forged = []() -> ModH {
-			return ModH(static_cast<smvk::ResourceManager*>(nullptr),
-				smvk::ShaderModuleHandle::Mint(1));
-		};
-		r.meshProgram.shaderCount = 2; // the stock mesh system is up
-		r.meshMsModule = forged();
-		r.meshFsModule = forged();
-		Check(r.MeshProgramFor(false, 0, 6, true, true) == nullptr,
-			"gfx.family-mesh-missing-base-not-eligible");
-		Check(r.MeshProgramFor(false, 0, 6, true, false) != nullptr,
-			"gfx.stock-mesh-still-eligible");
-		// The family mesh base forged: the family leg picks the family
-		// twins (base when no variant matches), never the stock mesh FS.
-		r.meshProjectProgram.shaderCount = 2;
-		r.meshProjectFsModule = forged();
-		Check(r.MeshProgramFor(false, 0, 6, true, true)
-				== &r.meshProjectProgram,
-			"gfx.family-mesh-picks-family-base");
-		r.meshProjectProgramGi_[3].shaderCount = 2;
-		Check(r.MeshProgramFor(true, 3, 6, true, true)
-				== &r.meshProjectProgramGi_[3],
-			"gfx.family-mesh-gi-twin");
-		Check(r.MeshProgramFor(true, 3, 6, false, true)
-				== &r.meshProjectProgramGi_[3],
-			"gfx.family-mesh-gi-missing-std-falls-to-gi-twin");
-		Check(r.MeshProgramFor(true, 0, 6, true, true)
-				== &r.meshProjectProgram,
-			"gfx.family-mesh-gi-missing-variant-falls-to-base");
-	}
-	// IsFilteredLitProgram covers the family twins (the wireframe
-	// override resolves them to the flat twin, not the shaded FS).
-	Check(r.IsFilteredLitProgram(r.filteredProjectProgram),
-		"gfx.family-wire-twin-identity-base");
-	Check(r.IsFilteredLitProgram(r.filteredProjectProgramA2C),
-		"gfx.family-wire-twin-identity-a2c");
-	Check(r.IsFilteredLitProgram(r.filteredProjectProgramGi_[2]),
-		"gfx.family-wire-twin-identity-gi");
+    // The mesh eligibility contract (design §9): a MISSING family mesh
+    // base makes the family leg return NULL — the range stays INDEXED
+    // (drawn by the family's indexed program), never a stock mesh FS.
+    // Holders forged with the cook-only Mint + a null ResourceManager
+    // ctx (the dtor no-ops on a null ctx — nothing to destroy, the
+    // test owns no GPU state; the deleter still needs the real destroy
+    // overload, hence the typed null).
+    {
+        using ModH = smvk::Holder<smvk::ShaderModuleHandle>;
+        auto forged = []() -> ModH {
+            return ModH(static_cast<smvk::ResourceManager*>(nullptr),
+                        smvk::ShaderModuleHandle::Mint(1));
+        };
+        r.meshProgram.shaderCount = 2; // the stock mesh system is up
+        r.meshMsModule = forged();
+        r.meshFsModule = forged();
+        Check(r.MeshProgramFor(false, 0, 6, true, true) == nullptr,
+              "gfx.family-mesh-missing-base-not-eligible");
+        Check(r.MeshProgramFor(false, 0, 6, true, false) != nullptr,
+              "gfx.stock-mesh-still-eligible");
+        // The family mesh base forged: the family leg picks the family
+        // twins (base when no variant matches), never the stock mesh FS.
+        r.meshProjectProgram.shaderCount = 2;
+        r.meshProjectFsModule = forged();
+        Check(r.MeshProgramFor(false, 0, 6, true, true) == &r.meshProjectProgram,
+              "gfx.family-mesh-picks-family-base");
+        r.meshProjectProgramGi_[3].shaderCount = 2;
+        Check(r.MeshProgramFor(true, 3, 6, true, true) == &r.meshProjectProgramGi_[3],
+              "gfx.family-mesh-gi-twin");
+        Check(r.MeshProgramFor(true, 3, 6, false, true) == &r.meshProjectProgramGi_[3],
+              "gfx.family-mesh-gi-missing-std-falls-to-gi-twin");
+        Check(r.MeshProgramFor(true, 0, 6, true, true) == &r.meshProjectProgram,
+              "gfx.family-mesh-gi-missing-variant-falls-to-base");
+    }
+    // IsFilteredLitProgram covers the family twins (the wireframe
+    // override resolves them to the flat twin, not the shaded FS).
+    Check(r.IsFilteredLitProgram(r.filteredProjectProgram), "gfx.family-wire-twin-identity-base");
+    Check(r.IsFilteredLitProgram(r.filteredProjectProgramA2C), "gfx.family-wire-twin-identity-a2c");
+    Check(r.IsFilteredLitProgram(r.filteredProjectProgramGi_[2]),
+          "gfx.family-wire-twin-identity-gi");
 }
 
 int main() {
-	TestWindingSign();
-	TestRegistration();
-	TestBatching();
-	TestLobeGrouping();
-	TestDemandPlumbing();
-	TestPreCull();
-	TestConeCull();
-	TestDeformedConeFit();
-	TestMeshletIntegrity();
-	TestTemporalSnapshot();
-	TestHizLayout();
-	TestSeedCommands();
-	TestSeedIntersection();
-	TestHzbOcclusion();
-	TestHzbSpawnView();
-	TestGpuMirrorAgreement();
-	TestRemainderCommands();
-	TestVisKeyMerge();
-	TestSeedDuplicateBatches();
-	TestJitterCullStability();
-	TestGpuCandidateBuild();
-	TestShadowMeshGate();
-	TestCasterContributionView();
-	TestUserData();
-	TestMaterialFamilyPrograms();
-	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
-	return g_failures == 0 ? 0 : 1;
+    TestWindingSign();
+    TestRegistration();
+    TestBatching();
+    TestLobeGrouping();
+    TestDemandPlumbing();
+    TestPreCull();
+    TestConeCull();
+    TestDeformedConeFit();
+    TestMeshletIntegrity();
+    TestTemporalSnapshot();
+    TestHizLayout();
+    TestSeedCommands();
+    TestSeedIntersection();
+    TestHzbOcclusion();
+    TestHzbSpawnView();
+    TestGpuMirrorAgreement();
+    TestRemainderCommands();
+    TestVisKeyMerge();
+    TestSeedDuplicateBatches();
+    TestJitterCullStability();
+    TestGpuCandidateBuild();
+    TestShadowMeshGate();
+    TestCasterContributionView();
+    TestUserData();
+    TestMaterialFamilyPrograms();
+    std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
+    return g_failures == 0 ? 0 : 1;
 }

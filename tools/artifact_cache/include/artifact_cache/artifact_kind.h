@@ -39,10 +39,9 @@ inline constexpr const char* kKindGi = "gi";
 
 // Closed-vocabulary check (registry + store fail closed on unknown).
 inline bool IsValidArtifactKind(const std::string& klass) {
-	return klass == kKindTexture || klass == kKindMesh
-		|| klass == kKindMaterial || klass == kKindAnimation
-		|| klass == kKindLight || klass == kKindCamera
-		|| klass == kKindScene || klass == kKindGi;
+    return klass == kKindTexture || klass == kKindMesh || klass == kKindMaterial ||
+           klass == kKindAnimation || klass == kKindLight || klass == kKindCamera ||
+           klass == kKindScene || klass == kKindGi;
 }
 
 // klass -> the class pak's TOC kind (decides what a PakBackend mount
@@ -50,23 +49,46 @@ inline bool IsValidArtifactKind(const std::string& klass) {
 // MUST be Texture for the same reason. Animation has no dedicated TOC
 // kind and no path-serving consumer yet: Texture keeps the bytes opaque
 // and mountable; revisit with a real PakAssetKind when one exists.
-inline bool ArtifactKindToPakKind(const std::string& klass,
-	smvk::PakAssetKind& out) {
-	if (klass == kKindTexture) { out = smvk::PakAssetKind::Texture; return true; }
-	if (klass == kKindMesh) { out = smvk::PakAssetKind::Mesh; return true; }
-	if (klass == kKindMaterial) { out = smvk::PakAssetKind::Material; return true; }
-	if (klass == kKindAnimation) { out = smvk::PakAssetKind::Texture; return true; }
-	if (klass == kKindLight) { out = smvk::PakAssetKind::Light; return true; }
-	if (klass == kKindCamera) { out = smvk::PakAssetKind::Camera; return true; }
-	if (klass == kKindScene) { out = smvk::PakAssetKind::Scene; return true; }
-	if (klass == kKindGi) { out = smvk::PakAssetKind::Texture; return true; }
-	return false;
+inline bool ArtifactKindToPakKind(const std::string& klass, smvk::PakAssetKind& out) {
+    if (klass == kKindTexture) {
+        out = smvk::PakAssetKind::Texture;
+        return true;
+    }
+    if (klass == kKindMesh) {
+        out = smvk::PakAssetKind::Mesh;
+        return true;
+    }
+    if (klass == kKindMaterial) {
+        out = smvk::PakAssetKind::Material;
+        return true;
+    }
+    if (klass == kKindAnimation) {
+        out = smvk::PakAssetKind::Texture;
+        return true;
+    }
+    if (klass == kKindLight) {
+        out = smvk::PakAssetKind::Light;
+        return true;
+    }
+    if (klass == kKindCamera) {
+        out = smvk::PakAssetKind::Camera;
+        return true;
+    }
+    if (klass == kKindScene) {
+        out = smvk::PakAssetKind::Scene;
+        return true;
+    }
+    if (klass == kKindGi) {
+        out = smvk::PakAssetKind::Texture;
+        return true;
+    }
+    return false;
 }
 
 // Per-class pak file path under a store root (the folders-for-schema:
 // <root>/pak/<klass>.pak — exactly one file per frozen kind).
 inline std::string ArtifactPakFileName(const std::string& klass) {
-	return std::string("pak/") + klass + ".pak";
+    return std::string("pak/") + klass + ".pak";
 }
 
 } // namespace smvk::cache

@@ -31,36 +31,35 @@ namespace smvk::assets {
 // (a DCC saving "X.GLB" is the same source — callers that pre-lower
 // via LowerExtension pay nothing, callers that don't stay correct).
 [[nodiscard]] inline bool IsMeshSourceExtension(std::string_view ext) {
-	auto eq = [ext](const char* lit) {
-		const size_t n = std::char_traits<char>::length(lit);
-		if (ext.size() != n)
-			return false;
-		for (size_t i = 0; i < n; ++i)
-			if (std::tolower(static_cast<unsigned char>(ext[i]))
-					!= lit[i]) // the literals are already lowercase
-				return false;
-		return true;
-	};
-	return eq(".gltf") || eq(".glb") || eq(".obj")
+    auto eq = [ext](const char* lit) {
+        const size_t n = std::char_traits<char>::length(lit);
+        if (ext.size() != n)
+            return false;
+        for (size_t i = 0; i < n; ++i)
+            if (std::tolower(static_cast<unsigned char>(ext[i])) !=
+                lit[i]) // the literals are already lowercase
+                return false;
+        return true;
+    };
+    return eq(".gltf") || eq(".glb") || eq(".obj")
 #ifdef TOURMALINE_WITH_USD
-        || eq(".usd") || eq(".usda") || eq(".usdc") || eq(".usdz")
+           || eq(".usd") || eq(".usda") || eq(".usdc") || eq(".usdz")
 #endif
         ;
 }
 
 // The lowercase extension of `p` ("" when none) — the helper for
 // path-based gates.
-[[nodiscard]] inline std::string LowerExtension(
-	const std::filesystem::path& p) {
-	std::string e = p.extension().string();
-	std::transform(e.begin(), e.end(), e.begin(),
-		[](unsigned char c) { return char(std::tolower(c)); });
-	return e;
+[[nodiscard]] inline std::string LowerExtension(const std::filesystem::path& p) {
+    std::string e = p.extension().string();
+    std::transform(
+        e.begin(), e.end(), e.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return e;
 }
 
 // TRUE when `p` is a model source file (see the header comment).
 [[nodiscard]] inline bool IsMeshSourceFile(const std::filesystem::path& p) {
-	return IsMeshSourceExtension(LowerExtension(p));
+    return IsMeshSourceExtension(LowerExtension(p));
 }
 
 // TRUE for a FILE NAME (not a path) that is a model source's identity
@@ -70,21 +69,20 @@ namespace smvk::assets {
 // delete-planning and the publish/replace flows must recognize every
 // source format's ledger, not just the glTF one.
 [[nodiscard]] inline bool IsMeshSourceMetaSidecar(const std::string& name) {
-	static constexpr std::string_view kMeta = ".meta";
-	if (name.size() <= kMeta.size()
-			|| name.compare(name.size() - kMeta.size(), kMeta.size(),
-				kMeta) != 0)
-		return false;
-	// The extension of the file the sidecar belongs to: everything up
-	// to the ".meta" suffix, e.g. "knight.gltf.meta" -> ".gltf".
-	const size_t cut = name.size() - kMeta.size();
-	const size_t dot = name.find_last_of('.', cut - 1);
-	if (dot == std::string::npos)
-		return false;
-	std::string ext = name.substr(dot, cut - dot);
-	std::transform(ext.begin(), ext.end(), ext.begin(),
-		[](unsigned char c) { return char(std::tolower(c)); });
-	return IsMeshSourceExtension(ext);
+    static constexpr std::string_view kMeta = ".meta";
+    if (name.size() <= kMeta.size() ||
+        name.compare(name.size() - kMeta.size(), kMeta.size(), kMeta) != 0)
+        return false;
+    // The extension of the file the sidecar belongs to: everything up
+    // to the ".meta" suffix, e.g. "knight.gltf.meta" -> ".gltf".
+    const size_t cut = name.size() - kMeta.size();
+    const size_t dot = name.find_last_of('.', cut - 1);
+    if (dot == std::string::npos)
+        return false;
+    std::string ext = name.substr(dot, cut - dot);
+    std::transform(
+        ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return IsMeshSourceExtension(ext);
 }
 
 } // namespace smvk::assets

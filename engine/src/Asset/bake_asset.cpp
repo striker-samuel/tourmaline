@@ -12,18 +12,18 @@ namespace smvk::bake {
 namespace {
 
 bool IsHexLower(char c) {
-	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
 }
 
 } // namespace
 
 bool IsBakeAssetGuid(std::string_view s) {
-	if (s.size() != 32)
-		return false;
-	for (char c : s)
-		if (!IsHexLower(c))
-			return false;
-	return true;
+    if (s.size() != 32)
+        return false;
+    for (char c : s)
+        if (!IsHexLower(c))
+            return false;
+    return true;
 }
 
 } // namespace smvk::bake

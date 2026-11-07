@@ -22,8 +22,10 @@ namespace terraincook {
 // Both sides of a triangle count; the highest intersection at each texel
 // center wins. B/A are preserved. Returns the number of raised texels.
 inline uint64_t RasterPlacedHeight(const smvk::terrain::TerrainMeta& meta,
-    uint32_t tx, uint32_t tz, const std::vector<const smvk::Cluster*>& scenes,
-    std::vector<uint8_t>& pixels) {
+                                   uint32_t tx,
+                                   uint32_t tz,
+                                   const std::vector<const smvk::Cluster*>& scenes,
+                                   std::vector<uint8_t>& pixels) {
     const int res = int(meta.hRes);
     if (res <= 0 || pixels.size() != size_t(res) * size_t(res) * 4)
         return 0;
@@ -56,13 +58,13 @@ inline uint64_t RasterPlacedHeight(const smvk::terrain::TerrainMeta& meta,
                 const uint32_t ia = upload->indices[tri];
                 const uint32_t ib = upload->indices[tri + 1];
                 const uint32_t ic = upload->indices[tri + 2];
-                if (ia >= upload->vertices.size() || ib >= upload->vertices.size()
-                    || ic >= upload->vertices.size())
+                if (ia >= upload->vertices.size() || ib >= upload->vertices.size() ||
+                    ic >= upload->vertices.size())
                     continue;
                 const glm::vec3 a = vertex(ia), b = vertex(ib), c = vertex(ic);
-                if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(a.z)
-                    || !std::isfinite(b.x) || !std::isfinite(b.y) || !std::isfinite(b.z)
-                    || !std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.z))
+                if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(a.z) ||
+                    !std::isfinite(b.x) || !std::isfinite(b.y) || !std::isfinite(b.z) ||
+                    !std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.z))
                     continue;
                 const float abX = b.x - a.x, abZ = b.z - a.z;
                 const float acX = c.x - a.x, acZ = c.z - a.z;
@@ -71,12 +73,12 @@ inline uint64_t RasterPlacedHeight(const smvk::terrain::TerrainMeta& meta,
                 // is not representable in a top-down heightfield.
                 if (std::abs(det) < 1e-10f)
                     continue;
-                const float loX = std::min({ a.x, b.x, c.x });
-                const float hiX = std::max({ a.x, b.x, c.x });
-                const float loZ = std::min({ a.z, b.z, c.z });
-                const float hiZ = std::max({ a.z, b.z, c.z });
-                if (hiX < minX || loX >= minX + meta.hTileSize
-                    || hiZ < minZ || loZ >= minZ + meta.hTileSize)
+                const float loX = std::min({a.x, b.x, c.x});
+                const float hiX = std::max({a.x, b.x, c.x});
+                const float loZ = std::min({a.z, b.z, c.z});
+                const float hiZ = std::max({a.z, b.z, c.z});
+                if (hiX < minX || loX >= minX + meta.hTileSize || hiZ < minZ ||
+                    loZ >= minZ + meta.hTileSize)
                     continue;
                 const int x0 = std::max(0, int(std::ceil((loX - minX) / step - 0.5f)));
                 const int x1 = std::min(res - 1, int(std::floor((hiX - minX) / step - 0.5f)));
@@ -97,12 +99,11 @@ inline uint64_t RasterPlacedHeight(const smvk::terrain::TerrainMeta& meta,
                         if (h01 <= 0.0f)
                             continue;
                         const size_t offset = (size_t(z) * size_t(res) + size_t(x)) * 4;
-                        const float old = smvk::terrain::DecodeH01(
-                            pixels[offset], pixels[offset + 1]);
+                        const float old =
+                            smvk::terrain::DecodeH01(pixels[offset], pixels[offset + 1]);
                         if (h01 <= old)
                             continue;
-                        smvk::terrain::EncodeRG16(h01,
-                            pixels[offset], pixels[offset + 1]);
+                        smvk::terrain::EncodeRG16(h01, pixels[offset], pixels[offset + 1]);
                         ++raised;
                     }
                 }

@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 // Headless contracts for the GPUIR World -> GPU scene bridge.
-#include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/gpu_scene_instancing.h>
+#include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Scene/scene.h>
 #include <cstdio>
 #include <span>
@@ -12,10 +12,18 @@
 // whose NDEBUG no-op makes Release runs vacuous - and any side effect
 // inside an assert (see test_gpu_scene_candidates.cpp:
 // assert(leaves.Flush(db))) was silently skipped, crashing the run.
-#define CHECK(cond) do { ++g_checks; if (!(cond)) { ++g_failures; \
-    std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } \
-    while (0)
-namespace { int g_checks = 0; int g_failures = 0; }
+#define CHECK(cond)                                                                                \
+    do {                                                                                           \
+        ++g_checks;                                                                                \
+        if (!(cond)) {                                                                             \
+            ++g_failures;                                                                          \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                   \
+        }                                                                                          \
+    } while (0)
+namespace {
+int g_checks = 0;
+int g_failures = 0;
+} // namespace
 
 using namespace tour::gpu_scene;
 
@@ -50,8 +58,7 @@ int main() {
     CHECK(!bridge.UpdateGlobal(a.instance, moved, db));
     CHECK(db.instances.Get(ida)->worldPosition.high.x == 42.0f);
     CHECK(db.instances.PendingRows(0) == 2);
-    CHECK(db.instances.Publish(0, true,
-        [](size_t, const void*, size_t) { return true; }));
+    CHECK(db.instances.Publish(0, true, [](size_t, const void*, size_t) { return true; }));
     CHECK(db.instances.PendingRows(0) == 0);
     CHECK(!bridge.UpdateGlobal(a.instance, moved, db));
     CHECK(db.instances.PendingRows(0) == 0);
@@ -83,12 +90,10 @@ int main() {
     const auto meshKey = bridge.FindMesh(reloaded.mesh);
     CHECK(!InstanceDrawReady(db, current));
     const LevelSource missingBounds{0.0f, 7u, true, false};
-    CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&missingBounds, 1),
-                             false, db));
+    CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&missingBounds, 1), false, db));
     CHECK(!InstanceDrawReady(db, current));
     const LevelSource readyLevel{0.0f, 7u, true, true};
-    CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&readyLevel, 1),
-                             true, db));
+    CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&readyLevel, 1), true, db));
     CHECK(InstanceDrawReady(db, current));
     auto corrupted = *db.instances.Get(current);
     corrupted.refs.y += 1; // stale mesh generation
@@ -98,8 +103,7 @@ int main() {
     CHECK(db.instances.Update(current, corrupted));
     CHECK(InstanceDrawReady(db, current));
     const LevelSource evicted{0.0f, InvalidIndex, false, true};
-    CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&evicted, 1),
-                             true, db));
+    CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&evicted, 1), true, db));
     CHECK(!InstanceDrawReady(db, current));
 
     bridge.Clear(db);
@@ -114,17 +118,14 @@ int main() {
     large.mesh = {900, 2, 1};
     large.globalModel = glm::dmat4(1.0);
     const glm::dvec3 largeOrigin(1.0e12, -1.0e12, 1.0e12);
-    large.globalModel[3] = glm::dvec4(
-        largeOrigin + glm::dvec3(0.25, -0.125, 0.5), 1.0);
-    const auto added = largeBridge.Reconcile(
-        std::span<const SourceRecord>(&large, 1), largeDb);
+    large.globalModel[3] = glm::dvec4(largeOrigin + glm::dvec3(0.25, -0.125, 0.5), 1.0);
+    const auto added = largeBridge.Reconcile(std::span<const SourceRecord>(&large, 1), largeDb);
     CHECK(added.created == 1);
     const auto largeId = largeBridge.Find(large.instance);
     CHECK(largeId);
     const auto worldPosition =
         tour::math::JoinDoubleFloat(largeDb.instances.Get(largeId)->worldPosition);
-    CHECK(glm::length(worldPosition -
-        glm::dvec3(large.globalModel[3])) < 0.01);
+    CHECK(glm::length(worldPosition - glm::dvec3(large.globalModel[3])) < 0.01);
     glm::dmat4 movedDouble = large.globalModel;
     movedDouble[3].x += 0.125;
     CHECK(largeBridge.UpdateGlobal(large.instance, movedDouble, largeDb));
@@ -152,12 +153,14 @@ int main() {
     const auto h0 = planRegistry.Find(i0.instance);
     const auto h1 = planRegistry.Find(i1.instance);
     const auto h2 = planRegistry.Find(i2.instance);
-    const LevelSource twoLods[2] = {
-        {0.0f, 31u, true, true}, {0.5f, 32u, true, true}};
+    const LevelSource twoLods[2] = {{0.0f, 31u, true, true}, {0.5f, 32u, true, true}};
     CHECK(planRegistry.PublishMesh(i0.mesh, std::span(twoLods), true, planDb));
-    const InstanceDrawCandidate chosen[] = {
-        {h1, 0u}, {h2, 0u}, {h0, 0u}, {h0, 1u},
-        {Handle<Instance>{h0.slot, h0.generation + 1u}, 0u}, {h1, 9u}};
+    const InstanceDrawCandidate chosen[] = {{h1, 0u},
+                                            {h2, 0u},
+                                            {h0, 0u},
+                                            {h0, 1u},
+                                            {Handle<Instance>{h0.slot, h0.generation + 1u}, 0u},
+                                            {h1, 9u}};
     const auto plan = BuildInstanceDrawPlan(planDb, chosen);
     CHECK(plan.rejected == 2u);
     CHECK(plan.refs.size() == 4u && plan.ranges.size() == 3u);
@@ -169,8 +172,7 @@ int main() {
     CHECK(plan.ranges[2].instanceCount == 1u && plan.ranges[2].key.lod == 1u);
     // Eviction and stale generations are rejected; the direct fallback
     // continues to own anything that is not ready for GPU-scene raster.
-    const LevelSource oneEvicted[2] = {
-        {0.0f, 31u, true, true}, {0.5f, InvalidIndex, false, true}};
+    const LevelSource oneEvicted[2] = {{0.0f, 31u, true, true}, {0.5f, InvalidIndex, false, true}};
     CHECK(planRegistry.PublishMesh(i0.mesh, std::span(oneEvicted), true, planDb));
     const auto evictedPlan = BuildInstanceDrawPlan(planDb, chosen);
     CHECK(evictedPlan.rejected == 3u);
@@ -189,8 +191,10 @@ int main() {
     CHECK(recalculateGlobalTransforms(scene));
     bool sawParent = false, sawChild = false;
     for (NodeId n : scene.gpuSceneGlobalChanges) {
-        if (n == uint32_t(parent)) sawParent = true;
-        if (n == uint32_t(child)) sawChild = true;
+        if (n == uint32_t(parent))
+            sawParent = true;
+        if (n == uint32_t(child))
+            sawChild = true;
     }
     CHECK(sawParent && sawChild);
     const size_t pendingBefore = scene.gpuSceneGlobalChanges.size();

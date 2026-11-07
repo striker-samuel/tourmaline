@@ -14,9 +14,11 @@
 #include <Engine/Memory/string_view.h>
 #include <Engine/Renderer/mesh.h>
 
-namespace tour { struct Cluster; }
+namespace tour {
+struct Cluster;
+}
 namespace smvk {
-	using ::tour::Cluster;
+using ::tour::Cluster;
 
 struct MeshletConfig;
 
@@ -42,10 +44,9 @@ struct MeshletConfig;
 // as Kind_Seam (collapsible), not Kind_Border (locked).
 // ---------------------------------------------------------------------------
 enum class LodSeamLock {
-	Attribute,
-	Hard,
+    Attribute,
+    Hard,
 };
-
 
 // ---------------------------------------------------------------------------
 // Cook-time mesh optimization (meshoptimizer). Runs offline in the pak
@@ -53,63 +54,63 @@ enum class LodSeamLock {
 // ---------------------------------------------------------------------------
 
 struct MeshOptConfig {
-	bool enabled = true;
-	bool weld = true;        // vertex dedup (generateVertexRemap)
-	bool vertexCache = true; // optimizeVertexCache
-	bool overdraw = true;    // optimizeOverdraw (auto-skipped for Blend/Mask)
-	bool vertexFetch = true; // optimizeVertexFetch (runs last)
-	float overdrawThreshold = 1.05f;
+    bool enabled = true;
+    bool weld = true;        // vertex dedup (generateVertexRemap)
+    bool vertexCache = true; // optimizeVertexCache
+    bool overdraw = true;    // optimizeOverdraw (auto-skipped for Blend/Mask)
+    bool vertexFetch = true; // optimizeVertexFetch (runs last)
+    float overdrawThreshold = 1.05f;
 
-	// LOD instrumentation (see LodInfo below).
-	bool recordLodCandidates = true;
+    // LOD instrumentation (see LodInfo below).
+    bool recordLodCandidates = true;
 
-	// Cooked LOD chain (meshopt_simplify, cook-time only). When true,
-	// the importer emits sibling blobs "<base>/lodN" (N >= 1) sharing the
-	// base groupId; the scene keeps referencing LOD0. The renderer selects
-	// siblings at draw time from LodInfo::simplifyError (see below).
-	bool generateLods = false;
-	// Triangle-count ratios vs LOD0, coarsest-last. Default
-	// 75/50/30/15%: gentle steps + one extra level (the runtime pick is
-	// ERROR-driven per pixel budget, so the chain wants many fine
-	// siblings, not a few coarse jumps — the old 60/30/12 steps lost
-	// visible ornament detail one full level early).
-	std::vector<float> lodRatios{ 0.75f, 0.5f, 0.3f, 0.15f };
-	// Relative error budget per meshopt_simplify call (fraction of extents,
-	// [0..1]). 1%: the recorded sibling error feeds the runtime's projected
-	// pixel-error pick, so a 2% budget let siblings drift two pixels of
-	// shape before the picker ever got a say — tightened to 1% (the ratio
-	// chain stays the binding constraint for reduction).
-	float lodTargetError = 0.01f;
-	// Bitmask of meshopt_SimplifyX options (0 = safe default).
-	unsigned lodSimplifyOptions = 0;
-	// Error-driven filter ("drop tiny + broken"): a candidate is kept only
-	// when it has >= lodMinTriangles tris, finite error, and reduces the
-	// triangle count vs the last kept LOD by >= lodMinReduction.
-	uint32_t lodMinTriangles = 8;
-	float lodMinReduction = 0.10f;
-	// Chart-seam protection for lightmapped sibling simplify (see
-	// LodSeamLock above; only consulted when a lightmap chart table is
-	// passed to BuildLodChainForUpload).
-	LodSeamLock lodSeamLock = LodSeamLock::Attribute;
-	// Albedo-UV awareness for the default sibling path (see
-	// BuildLodChainForUpload). Carrying texCoord in the error metric
-	// protects UV-seam topology (split verts at identical positions, where
-	// the field genuinely disagrees) and penalizes parameterization
-	// distortion there; smooth mappings are largely unaffected by design
-	// (the metric preserves the attribute function). Untextured meshes
-	// (zero UVs) are unaffected. Set false to force positions-only.
-	bool lodUvAware = true;
+    // Cooked LOD chain (meshopt_simplify, cook-time only). When true,
+    // the importer emits sibling blobs "<base>/lodN" (N >= 1) sharing the
+    // base groupId; the scene keeps referencing LOD0. The renderer selects
+    // siblings at draw time from LodInfo::simplifyError (see below).
+    bool generateLods = false;
+    // Triangle-count ratios vs LOD0, coarsest-last. Default
+    // 75/50/30/15%: gentle steps + one extra level (the runtime pick is
+    // ERROR-driven per pixel budget, so the chain wants many fine
+    // siblings, not a few coarse jumps — the old 60/30/12 steps lost
+    // visible ornament detail one full level early).
+    std::vector<float> lodRatios{0.75f, 0.5f, 0.3f, 0.15f};
+    // Relative error budget per meshopt_simplify call (fraction of extents,
+    // [0..1]). 1%: the recorded sibling error feeds the runtime's projected
+    // pixel-error pick, so a 2% budget let siblings drift two pixels of
+    // shape before the picker ever got a say — tightened to 1% (the ratio
+    // chain stays the binding constraint for reduction).
+    float lodTargetError = 0.01f;
+    // Bitmask of meshopt_SimplifyX options (0 = safe default).
+    unsigned lodSimplifyOptions = 0;
+    // Error-driven filter ("drop tiny + broken"): a candidate is kept only
+    // when it has >= lodMinTriangles tris, finite error, and reduces the
+    // triangle count vs the last kept LOD by >= lodMinReduction.
+    uint32_t lodMinTriangles = 8;
+    float lodMinReduction = 0.10f;
+    // Chart-seam protection for lightmapped sibling simplify (see
+    // LodSeamLock above; only consulted when a lightmap chart table is
+    // passed to BuildLodChainForUpload).
+    LodSeamLock lodSeamLock = LodSeamLock::Attribute;
+    // Albedo-UV awareness for the default sibling path (see
+    // BuildLodChainForUpload). Carrying texCoord in the error metric
+    // protects UV-seam topology (split verts at identical positions, where
+    // the field genuinely disagrees) and penalizes parameterization
+    // distortion there; smooth mappings are largely unaffected by design
+    // (the metric preserves the attribute function). Untextured meshes
+    // (zero UVs) are unaffected. Set false to force positions-only.
+    bool lodUvAware = true;
 };
 
 struct MeshOptStats {
-	uint32_t inVertices = 0;
-	uint32_t outVertices = 0;
-	uint32_t triangles = 0;
-	float acmrBefore = 0.0f; // average cache miss ratio, worst case 3.0
-	float acmrAfter = 0.0f;
-	float overdrawBefore = 0.0f; // shaded/covered px, best case 1.0
-	float overdrawAfter = 0.0f;
-	uint32_t lodGroupId = 0;
+    uint32_t inVertices = 0;
+    uint32_t outVertices = 0;
+    uint32_t triangles = 0;
+    float acmrBefore = 0.0f; // average cache miss ratio, worst case 3.0
+    float acmrAfter = 0.0f;
+    float overdrawBefore = 0.0f; // shaded/covered px, best case 1.0
+    float overdrawAfter = 0.0f;
+    uint32_t lodGroupId = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -135,23 +136,23 @@ struct MeshOptStats {
 // ---------------------------------------------------------------------------
 
 struct LodInfo {
-	uint32_t groupId = 0;        // source mesh index (LOD grouping key)
-	uint32_t lodIndex = 0;       // 0 = full mesh, N >= 1 = cooked siblings
-	uint32_t candidateCount = 0; // kept chain size incl. LOD0 (siblings agree)
-	float simplifyError = 0.0f;  // mesh-LOCAL absolute error (0 for LOD0)
-	float screenThreshold = -1.0f; // reserved selection hook, renderer ignores
-	uint32_t triCount = 0;
-	float acmr = 0.0f;
+    uint32_t groupId = 0;          // source mesh index (LOD grouping key)
+    uint32_t lodIndex = 0;         // 0 = full mesh, N >= 1 = cooked siblings
+    uint32_t candidateCount = 0;   // kept chain size incl. LOD0 (siblings agree)
+    float simplifyError = 0.0f;    // mesh-LOCAL absolute error (0 for LOD0)
+    float screenThreshold = -1.0f; // reserved selection hook, renderer ignores
+    uint32_t triCount = 0;
+    float acmr = 0.0f;
 };
 
 // One kept LOD candidate: compacted upload + error metrics. localError is
 // in mesh-local units (relativeError * meshopt_simplifyScale); the caller
 // scales it by node world scale to obtain LodInfo::simplifyError.
 struct CookedLod {
-	StaticMeshUpload upload;
-	float relativeError = 0.0f;
-	float localError = 0.0f;
-	uint32_t triCount = 0;
+    StaticMeshUpload upload;
+    float relativeError = 0.0f;
+    float localError = 0.0f;
+    uint32_t triCount = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -181,12 +182,11 @@ void GenerateTangents(StaticMeshUpload& upload);
 // + outLod for the MeshBlob. Returns false when the input is degenerate
 // (0 verts / <3 indices / non-triangle count) and leaves the upload
 // untouched (still fills outStats/outLod markers).
-bool OptimizeStaticMeshUpload(
-	StaticMeshUpload& upload,
-	const MeshOptConfig& config,
-	uint32_t lodGroupId,
-	MeshOptStats* outStats = nullptr,
-	LodInfo* outLod = nullptr);
+bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
+                              const MeshOptConfig& config,
+                              uint32_t lodGroupId,
+                              MeshOptStats* outStats = nullptr,
+                              LodInfo* outLod = nullptr);
 
 // Builds the cooked LOD chain for an already-optimized LOD0 upload via
 // meshopt_simplify (+ vertex-cache/fetch cleanup). Each lodRatios entry is
@@ -216,17 +216,16 @@ bool OptimizeStaticMeshUpload(
 // preserveCoverage in practice (Blend/MASK meshes are never lightmapped;
 // coverage wins if both are set).
 //
- // Otherwise — the common case, including the frostbite pre-bake cook where
- // lightmap charts don't exist yet — the albedo texCoord rides the error
- // metric when MeshOptConfig::lodUvAware (default true), protecting UV-seam
- // topology and biasing collapses toward UV-preserving ones. Untextured
- // (zero-UV) meshes are unaffected.
-bool BuildLodChainForUpload(
-	const StaticMeshUpload& lod0,
-	const MeshOptConfig& config,
-	std::vector<CookedLod>& out,
-	bool preserveCoverage = false,
-	const uint32_t* lmVertexChart = nullptr);
+// Otherwise — the common case, including the frostbite pre-bake cook where
+// lightmap charts don't exist yet — the albedo texCoord rides the error
+// metric when MeshOptConfig::lodUvAware (default true), protecting UV-seam
+// topology and biasing collapses toward UV-preserving ones. Untextured
+// (zero-UV) meshes are unaffected.
+bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
+                            const MeshOptConfig& config,
+                            std::vector<CookedLod>& out,
+                            bool preserveCoverage = false,
+                            const uint32_t* lmVertexChart = nullptr);
 
 // Max world scale of a node matrix: max length of the three basis columns.
 // Matches gltfpack's getScale() (max abs scale axis); conservative for
@@ -236,8 +235,9 @@ float MaxScaleOfMatrix(const glm::mat4& m);
 // Sibling URI helpers: "<base>/lodN" for N >= 1 (composed into `scratch`,
 // default the frame arena — never stored); base extraction strips that
 // suffix as a pure view slice (returns the input unchanged otherwise).
-[[nodiscard]] StringViewT LodSiblingUri(StringViewT baseUri, uint32_t lodIndex,
-	Arena& scratch = FrameArena());
+[[nodiscard]] StringViewT LodSiblingUri(StringViewT baseUri,
+                                        uint32_t lodIndex,
+                                        Arena& scratch = FrameArena());
 [[nodiscard]] StringViewT BaseMeshUriForLod(StringViewT uri);
 
 // ---------------------------------------------------------------------------
@@ -260,33 +260,37 @@ float MaxScaleOfMatrix(const glm::mat4& m);
 // ---------------------------------------------------------------------------
 
 // Projected screen-space error in pixels for a world-space geometric error.
-inline float LodProjectedPixelError(float simplifyErrorWorld, float distance,
-	float viewportHeightPx, float fovYRadians) {
-	// LOD0 (zero error) never projects; degenerate views never select.
-	if (!(simplifyErrorWorld > 0.0f))
-		return 0.0f;
-	if (!(distance > 0.0f) || !(viewportHeightPx > 0.0f) || !(fovYRadians > 0.0f))
-		return 0.0f;
-	const float half = fovYRadians * 0.5f;
-	const float t = tanf(half);
-	if (!(t > 0.0f))
-		return 0.0f;
-	return simplifyErrorWorld * viewportHeightPx / (2.0f * t * distance);
+inline float LodProjectedPixelError(float simplifyErrorWorld,
+                                    float distance,
+                                    float viewportHeightPx,
+                                    float fovYRadians) {
+    // LOD0 (zero error) never projects; degenerate views never select.
+    if (!(simplifyErrorWorld > 0.0f))
+        return 0.0f;
+    if (!(distance > 0.0f) || !(viewportHeightPx > 0.0f) || !(fovYRadians > 0.0f))
+        return 0.0f;
+    const float half = fovYRadians * 0.5f;
+    const float t = tanf(half);
+    if (!(t > 0.0f))
+        return 0.0f;
+    return simplifyErrorWorld * viewportHeightPx / (2.0f * t * distance);
 }
 
 // View distance at which `simplifyErrorWorld` projects to exactly
 // `maxPixelError`. Beyond this distance the LOD is within budget.
-inline float LodSwitchDistance(float simplifyErrorWorld, float viewportHeightPx,
-	float fovYRadians, float maxPixelError) {
-	if (!(simplifyErrorWorld > 0.0f) || !(maxPixelError > 0.0f))
-		return 0.0f;
-	if (!(viewportHeightPx > 0.0f) || !(fovYRadians > 0.0f))
-		return 0.0f;
-	const float half = fovYRadians * 0.5f;
-	const float t = tanf(half);
-	if (!(t > 0.0f))
-		return 0.0f;
-	return simplifyErrorWorld * viewportHeightPx / (2.0f * t * maxPixelError);
+inline float LodSwitchDistance(float simplifyErrorWorld,
+                               float viewportHeightPx,
+                               float fovYRadians,
+                               float maxPixelError) {
+    if (!(simplifyErrorWorld > 0.0f) || !(maxPixelError > 0.0f))
+        return 0.0f;
+    if (!(viewportHeightPx > 0.0f) || !(fovYRadians > 0.0f))
+        return 0.0f;
+    const float half = fovYRadians * 0.5f;
+    const float t = tanf(half);
+    if (!(t > 0.0f))
+        return 0.0f;
+    return simplifyErrorWorld * viewportHeightPx / (2.0f * t * maxPixelError);
 }
 
 // Hysteresis band around the pixel budget for LOD switching: coarsen only
@@ -313,44 +317,47 @@ inline constexpr uint32_t kLodDemandPrefetchLevels = 1;
 // tight budget, refining needs the loose one. hysteresis = 0 (any
 // currentLod) is bit-identical to the stateless threshold walk, so cook
 // tooling and one-shot queries keep the old semantics by default.
-inline uint32_t SelectLodIndexForDistance(const float* errorsByLod, uint32_t count,
-	float distance, float viewportHeightPx, float fovYRadians, float maxPixelError,
-	uint32_t currentLod = 0, float hysteresis = 0.0f) {
-	if (!errorsByLod || count == 0)
-		return 0;
-	if (!(distance > 0.0f) || !(maxPixelError >= 0.0f))
-		return 0;
-	if (currentLod >= count)
-		currentLod = 0; // stale level beyond the chain (post-edit): fresh pick
-	const float tightBudget = maxPixelError * (1.0f - hysteresis);
-	const float looseBudget = maxPixelError * (1.0f + hysteresis);
-	uint32_t tight = 0; // last level safely inside the coarsen budget
-	uint32_t loose = 0; // last level inside the refine budget
-	for (uint32_t i = 1; i < count; ++i) {
-		const float e = errorsByLod[i];
-		if (!(e >= 0.0f) || !std::isfinite(e))
-			break; // broken chain: stop at the last good LOD
-		if (e <= 0.0f) {
-			tight = i; // zero-error sibling: always safe, keep going coarser
-			loose = i;
-			continue;
-		}
-		const float px = LodProjectedPixelError(e, distance, viewportHeightPx, fovYRadians);
-		if (px <= tightBudget) {
-			tight = i;
-			loose = i;
-		}
-		else if (px <= looseBudget) {
-			loose = i;
-		}
-		else
-			break; // errors grow coarser; further LODs only project larger
-	}
-	if (loose < currentLod)
-		return loose;   // current clearly out of budget: refine off it
-	if (tight > currentLod)
-		return tight;   // a strictly safer coarse level exists: coarsen onto it
-	return currentLod; // inside the hysteresis band (or no move): sticky
+inline uint32_t SelectLodIndexForDistance(const float* errorsByLod,
+                                          uint32_t count,
+                                          float distance,
+                                          float viewportHeightPx,
+                                          float fovYRadians,
+                                          float maxPixelError,
+                                          uint32_t currentLod = 0,
+                                          float hysteresis = 0.0f) {
+    if (!errorsByLod || count == 0)
+        return 0;
+    if (!(distance > 0.0f) || !(maxPixelError >= 0.0f))
+        return 0;
+    if (currentLod >= count)
+        currentLod = 0; // stale level beyond the chain (post-edit): fresh pick
+    const float tightBudget = maxPixelError * (1.0f - hysteresis);
+    const float looseBudget = maxPixelError * (1.0f + hysteresis);
+    uint32_t tight = 0; // last level safely inside the coarsen budget
+    uint32_t loose = 0; // last level inside the refine budget
+    for (uint32_t i = 1; i < count; ++i) {
+        const float e = errorsByLod[i];
+        if (!(e >= 0.0f) || !std::isfinite(e))
+            break; // broken chain: stop at the last good LOD
+        if (e <= 0.0f) {
+            tight = i; // zero-error sibling: always safe, keep going coarser
+            loose = i;
+            continue;
+        }
+        const float px = LodProjectedPixelError(e, distance, viewportHeightPx, fovYRadians);
+        if (px <= tightBudget) {
+            tight = i;
+            loose = i;
+        } else if (px <= looseBudget) {
+            loose = i;
+        } else
+            break; // errors grow coarser; further LODs only project larger
+    }
+    if (loose < currentLod)
+        return loose; // current clearly out of budget: refine off it
+    if (tight > currentLod)
+        return tight;  // a strictly safer coarse level exists: coarsen onto it
+    return currentLod; // inside the hysteresis band (or no move): sticky
 }
 
 // (FinalizeLodWorldErrors is REMOVED - see the removal note in
@@ -371,25 +378,24 @@ inline uint32_t SelectLodIndexForDistance(const float* errorsByLod, uint32_t cou
 // ---------------------------------------------------------------------------
 
 struct CookLodSiblingsOptions {
-	// Lightmap provenance from a completed bake: mesh pool index ->
-	// per-vertex chart id over the STAMPED retained upload (0xFFFFFFFF =
-	// uncharted). Meshes without an entry (or without a valid lmChunk)
-	// take the positions-only path. Null/empty = no lightmaps at all.
-	const std::unordered_map<uint32_t, std::vector<uint32_t>>* vertexCharts
-		= nullptr;
-	// Per-level lightmap-safety audit for lightmapped meshes (log-only
-	// unless auditGate). Requires non-zero atlas dims.
-	bool audit = false;
-	uint32_t atlasWidth = 0;
-	uint32_t atlasHeight = 0;
-	// Texel-error threshold for the over-threshold counter (and the gate).
-	float auditThresholdTexels = 2.0f;
-	// false (default) = audit failures only log; true = the chain is
-	// truncated at the first failing level (coarser levels only
-	// interpolate more, so they cannot recover).
-	bool auditGate = false;
-	// Per-level triangle subsample cap for the projection audit.
-	uint32_t auditMaxTris = 1024;
+    // Lightmap provenance from a completed bake: mesh pool index ->
+    // per-vertex chart id over the STAMPED retained upload (0xFFFFFFFF =
+    // uncharted). Meshes without an entry (or without a valid lmChunk)
+    // take the positions-only path. Null/empty = no lightmaps at all.
+    const std::unordered_map<uint32_t, std::vector<uint32_t>>* vertexCharts = nullptr;
+    // Per-level lightmap-safety audit for lightmapped meshes (log-only
+    // unless auditGate). Requires non-zero atlas dims.
+    bool audit = false;
+    uint32_t atlasWidth = 0;
+    uint32_t atlasHeight = 0;
+    // Texel-error threshold for the over-threshold counter (and the gate).
+    float auditThresholdTexels = 2.0f;
+    // false (default) = audit failures only log; true = the chain is
+    // truncated at the first failing level (coarser levels only
+    // interpolate more, so they cannot recover).
+    bool auditGate = false;
+    // Per-level triangle subsample cap for the projection audit.
+    uint32_t auditMaxTris = 1024;
 };
 
 // Generates + registers the cooked LOD siblings ("<base>/lodN") for every
@@ -400,9 +406,10 @@ struct CookLodSiblingsOptions {
 // the instance's world scale at pick time). Returns false only on
 // invalid input arguments (individual mesh failures are skipped with a
 // log). Prints per-mesh chain lines + per-level audit lines to stdout.
-bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
-	const MeshletConfig& meshletConfig,
-	const CookLodSiblingsOptions& options = {});
+bool CookLodSiblings(Cluster& cluster,
+                     const MeshOptConfig& config,
+                     const MeshletConfig& meshletConfig,
+                     const CookLodSiblingsOptions& options = {});
 
 // ---------------------------------------------------------------------------
 // Lightmap-safety audit: would this simplification visibly damage the
@@ -425,15 +432,16 @@ bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
 inline constexpr float kLodCrossChartUvSpan = 0.45f;
 
 struct LodLightmapAuditReport {
-	uint32_t trisTotal = 0;     // sibling triangles
-	uint32_t trisAudited = 0;   // sampled by the projection audit
-	uint32_t samples = 0;       // resolved interior samples
-	uint32_t unresolved = 0;    // projection failed (counted, not scored)
-	float maxTexels = 0.0f;
-	float meanTexels = 0.0f;
-	float p95Texels = 0.0f;
-	uint32_t overThreshold = 0; // resolved samples over thresholdTexels
-	uint32_t crossChartTris = 0; // chart-id mismatch or atlas span > kLodCrossChartUvSpan (all tris)
+    uint32_t trisTotal = 0;   // sibling triangles
+    uint32_t trisAudited = 0; // sampled by the projection audit
+    uint32_t samples = 0;     // resolved interior samples
+    uint32_t unresolved = 0;  // projection failed (counted, not scored)
+    float maxTexels = 0.0f;
+    float meanTexels = 0.0f;
+    float p95Texels = 0.0f;
+    uint32_t overThreshold = 0; // resolved samples over thresholdTexels
+    uint32_t crossChartTris =
+        0; // chart-id mismatch or atlas span > kLodCrossChartUvSpan (all tris)
 };
 
 // `world` places both uploads in the same space (siblings share LOD0's
@@ -446,10 +454,14 @@ struct LodLightmapAuditReport {
 // stride (cross-chart counting always covers all tris).
 // Returns false on degenerate input (report zeroed).
 bool AuditLodLightmap(const StaticMeshUpload& lod0,
-	const StaticMeshUpload& sibling, const glm::mat4& world,
-	const std::vector<glm::vec4>& chartXforms,
-	uint32_t atlasWidth, uint32_t atlasHeight,
-	float thresholdTexels, float searchDist, uint32_t maxTris,
-	LodLightmapAuditReport& out);
+                      const StaticMeshUpload& sibling,
+                      const glm::mat4& world,
+                      const std::vector<glm::vec4>& chartXforms,
+                      uint32_t atlasWidth,
+                      uint32_t atlasHeight,
+                      float thresholdTexels,
+                      float searchDist,
+                      uint32_t maxTris,
+                      LodLightmapAuditReport& out);
 
 } // namespace smvk

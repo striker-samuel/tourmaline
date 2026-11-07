@@ -1,17 +1,17 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
-#include <Engine/Renderer/benchmark_scenario.h>
 #include <Engine/Renderer/WorldRenderer.h>
+#include <Engine/Renderer/benchmark_scenario.h>
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
-#include <cmath>
 #include <system_error>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -29,15 +29,18 @@ std::string Slug(const std::string& label) {
     bool dash = false;
     for (unsigned char c : label) {
         if (std::isalnum(c) && c < 128) {
-            if (dash && !id.empty()) id.push_back('-');
+            if (dash && !id.empty())
+                id.push_back('-');
             dash = false;
             id.push_back(char(std::tolower(c)));
         } else {
             dash = true;
         }
     }
-    if (id.size() > 64) id.resize(64);
-    while (!id.empty() && id.back() == '-') id.pop_back();
+    if (id.size() > 64)
+        id.resize(64);
+    while (!id.empty() && id.back() == '-')
+        id.pop_back();
     return id;
 }
 
@@ -48,7 +51,8 @@ fs::path FindCatalog() {
         if (fs::exists(dir / "CMakeLists.txt") && fs::exists(candidate))
             return candidate;
         const fs::path parent = dir.parent_path();
-        if (parent == dir || parent.empty()) break;
+        if (parent == dir || parent.empty())
+            break;
         dir = parent;
     }
     return {};
@@ -64,7 +68,8 @@ bool Save(const Scenario& scenario, std::string& message) {
     }
     const fs::path catalog = FindCatalog();
     if (catalog.empty()) {
-        message = "benchmarks/scenarios.json not found: launch from the source checkout/build tree.";
+        message =
+            "benchmarks/scenarios.json not found: launch from the source checkout/build tree.";
         return false;
     }
     try {
@@ -92,7 +97,8 @@ bool Save(const Scenario& scenario, std::string& message) {
                     return true;
             return false;
         };
-        while (occupied(id)) id = baseId + "-" + std::to_string(suffix++);
+        while (occupied(id))
+            id = baseId + "-" + std::to_string(suffix++);
 
         nlohmann::json entry = {
             {"id", id},
@@ -102,12 +108,8 @@ bool Save(const Scenario& scenario, std::string& message) {
             {"source_args", scenario.sourceArgs},
             {"app_args", scenario.appArgs},
             {"environment", scenario.environment},
-            {"camera", {
-                {"position", scenario.position},
-                {"forward", scenario.forward}
-            }},
-            {"frames", scenario.frames}
-        };
+            {"camera", {{"position", scenario.position}, {"forward", scenario.forward}}},
+            {"frames", scenario.frames}};
         root["scenarios"].push_back(std::move(entry));
 
         // Write the candidate first. Keep the original if writing fails.
@@ -128,8 +130,9 @@ bool Save(const Scenario& scenario, std::string& message) {
         // Windows won't rename across an existing file. The temporary file
         // is complete before replacing the git-tracked catalog.
 #ifdef _WIN32
-        if (!MoveFileExW(temp.c_str(), catalog.c_str(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        if (!MoveFileExW(temp.c_str(),
+                         catalog.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             message = "Could not replace scenario catalog (is it locked?).";
             return false;
         }
@@ -137,7 +140,7 @@ bool Save(const Scenario& scenario, std::string& message) {
         fs::rename(temp, catalog);
 #endif
         message = "Saved '" + id + "' to " + catalog.generic_string() +
-            " (commit benchmarks/scenarios.json).";
+                  " (commit benchmarks/scenarios.json).";
         return true;
     } catch (const std::exception& e) {
         message = std::string("Scenario export failed: ") + e.what();
@@ -173,27 +176,43 @@ void WorldRenderer::ExportBenchmarkScenario() {
     auto vec = [&](const glm::vec3& v) {
         return scalar(v.x) + "," + scalar(v.y) + "," + scalar(v.z);
     };
-    auto pin = [&](const char* name, bool v) {
-        s.environment[name] = v ? "1" : "0";
-    };
+    auto pin = [&](const char* name, bool v) { s.environment[name] = v ? "1" : "0"; };
     s.environment["TOURMALINE_CAM_POS"] = vec(pos);
     s.environment["TOURMALINE_CAM_FWD"] = vec(fwd);
     s.environment["TOURMALINE_RENDER_SCALE"] = scalar(m_renderScale);
     switch (m_aaMode) {
-    case AaMode::Off: s.environment["TOURMALINE_AA"] = "off"; break;
-    case AaMode::Msaa2x: s.environment["TOURMALINE_AA"] = "msaa2x"; break;
-    case AaMode::Smaa1x: s.environment["TOURMALINE_AA"] = "smaa1x"; break;
-    case AaMode::SmaaT2x: s.environment["TOURMALINE_AA"] = "smaat2x"; break;
+    case AaMode::Off:
+        s.environment["TOURMALINE_AA"] = "off";
+        break;
+    case AaMode::Msaa2x:
+        s.environment["TOURMALINE_AA"] = "msaa2x";
+        break;
+    case AaMode::Smaa1x:
+        s.environment["TOURMALINE_AA"] = "smaa1x";
+        break;
+    case AaMode::SmaaT2x:
+        s.environment["TOURMALINE_AA"] = "smaat2x";
+        break;
     }
-    s.environment["TOURMALINE_AO"] =
-        m_aoMode == AoMode::None ? "off" :
-        m_aoMode == AoMode::Ssao ? "ssao" : "sao";
+    s.environment["TOURMALINE_AO"] = m_aoMode == AoMode::None   ? "off"
+                                     : m_aoMode == AoMode::Ssao ? "ssao"
+                                                                : "sao";
     switch (m_textureFiltering) {
-    case TextureFiltering::Trilinear: s.environment["TOURMALINE_TEXTURE_FILTER"] = "trilinear"; break;
-    case TextureFiltering::Anisotropic2x: s.environment["TOURMALINE_TEXTURE_FILTER"] = "2x"; break;
-    case TextureFiltering::Anisotropic4x: s.environment["TOURMALINE_TEXTURE_FILTER"] = "4x"; break;
-    case TextureFiltering::Anisotropic8x: s.environment["TOURMALINE_TEXTURE_FILTER"] = "8x"; break;
-    case TextureFiltering::Anisotropic16x: s.environment["TOURMALINE_TEXTURE_FILTER"] = "16x"; break;
+    case TextureFiltering::Trilinear:
+        s.environment["TOURMALINE_TEXTURE_FILTER"] = "trilinear";
+        break;
+    case TextureFiltering::Anisotropic2x:
+        s.environment["TOURMALINE_TEXTURE_FILTER"] = "2x";
+        break;
+    case TextureFiltering::Anisotropic4x:
+        s.environment["TOURMALINE_TEXTURE_FILTER"] = "4x";
+        break;
+    case TextureFiltering::Anisotropic8x:
+        s.environment["TOURMALINE_TEXTURE_FILTER"] = "8x";
+        break;
+    case TextureFiltering::Anisotropic16x:
+        s.environment["TOURMALINE_TEXTURE_FILTER"] = "16x";
+        break;
     }
     pin("TOURMALINE_SSR", m_ssrEnabled);
     pin("TOURMALINE_SSGI", m_ssgiDiffuseEnabled);
@@ -204,19 +223,14 @@ void WorldRenderer::ExportBenchmarkScenario() {
     pin("TOURMALINE_CUBEMAP", m_cubemapEnabled);
     pin("TOURMALINE_LIGHTMAP", m_lmEnabled);
     pin("TOURMALINE_CONTACT_SHADOWS", m_contactShadowsEnabled);
-    s.environment["TOURMALINE_CONTACT_SHADOWS_STEPS"] =
-        std::to_string(m_contactShadowSteps);
-    s.environment["TOURMALINE_CONTACT_SHADOWS_DIST"] =
-        scalar(m_contactShadowMaxDistance);
-    s.environment["TOURMALINE_CONTACT_SHADOWS_THICKNESS"] =
-        scalar(m_contactShadowThickness);
+    s.environment["TOURMALINE_CONTACT_SHADOWS_STEPS"] = std::to_string(m_contactShadowSteps);
+    s.environment["TOURMALINE_CONTACT_SHADOWS_DIST"] = scalar(m_contactShadowMaxDistance);
+    s.environment["TOURMALINE_CONTACT_SHADOWS_THICKNESS"] = scalar(m_contactShadowThickness);
     s.environment["TOURMALINE_CONTACT_SHADOWS_RES"] =
         std::to_string(m_contactShadowResolutionDivisor);
     pin("TOURMALINE_VOLUMETRIC", m_volumetricEnabled);
-    s.environment["TOURMALINE_VOLUMETRIC_STEPS"] =
-        std::to_string(m_volumetricSteps);
-    s.environment["TOURMALINE_VOLUMETRIC_INTENSITY"] =
-        scalar(m_volumetricIntensity);
+    s.environment["TOURMALINE_VOLUMETRIC_STEPS"] = std::to_string(m_volumetricSteps);
+    s.environment["TOURMALINE_VOLUMETRIC_INTENSITY"] = scalar(m_volumetricIntensity);
     s.environment["TOURMALINE_VOLUMETRIC_SUN"] = scalar(m_volumetricSun);
     s.environment["TOURMALINE_VOLUMETRIC_GI"] = scalar(m_volumetricGi);
     s.environment["TOURMALINE_GI_INTENSITY"] = scalar(m_giIntensity);
@@ -227,13 +241,27 @@ void WorldRenderer::ExportBenchmarkScenario() {
     s.environment["TOURMALINE_AUTO_EXPOSURE"] = "0";
 
     switch (m_dlssMode) {
-    case smvk::DlssMode::Off: s.environment["TOURMALINE_DLSS"] = "off"; break;
-    case smvk::DlssMode::UltraPerformance: s.environment["TOURMALINE_DLSS"] = "ultraperf"; break;
-    case smvk::DlssMode::MaxPerformance: s.environment["TOURMALINE_DLSS"] = "perf"; break;
-    case smvk::DlssMode::Balanced: s.environment["TOURMALINE_DLSS"] = "balanced"; break;
-    case smvk::DlssMode::MaxQuality: s.environment["TOURMALINE_DLSS"] = "quality"; break;
-    case smvk::DlssMode::UltraQuality: s.environment["TOURMALINE_DLSS"] = "ultraquality"; break;
-    case smvk::DlssMode::DLAA: s.environment["TOURMALINE_DLSS"] = "dlaa"; break;
+    case smvk::DlssMode::Off:
+        s.environment["TOURMALINE_DLSS"] = "off";
+        break;
+    case smvk::DlssMode::UltraPerformance:
+        s.environment["TOURMALINE_DLSS"] = "ultraperf";
+        break;
+    case smvk::DlssMode::MaxPerformance:
+        s.environment["TOURMALINE_DLSS"] = "perf";
+        break;
+    case smvk::DlssMode::Balanced:
+        s.environment["TOURMALINE_DLSS"] = "balanced";
+        break;
+    case smvk::DlssMode::MaxQuality:
+        s.environment["TOURMALINE_DLSS"] = "quality";
+        break;
+    case smvk::DlssMode::UltraQuality:
+        s.environment["TOURMALINE_DLSS"] = "ultraquality";
+        break;
+    case smvk::DlssMode::DLAA:
+        s.environment["TOURMALINE_DLSS"] = "dlaa";
+        break;
     }
     // Recreate the pass graph as well as its runtime enable pins.
     // The csv is one --with and one --without (the CLI parser stores only
@@ -242,7 +270,8 @@ void WorldRenderer::ExportBenchmarkScenario() {
     std::string enabled, disabled;
     auto pass = [&](const char* token, bool on) {
         std::string& csv = on ? enabled : disabled;
-        if (!csv.empty()) csv += ",";
+        if (!csv.empty())
+            csv += ",";
         csv += token;
     };
     pass("deferred", m_passes.deferredShadows);
@@ -263,8 +292,10 @@ void WorldRenderer::ExportBenchmarkScenario() {
     pass("ssgi", m_passes.ssgiDiffuse && m_ssgiDiffuseEnabled);
     pass("volumetric", m_passes.volumetric && m_volumetricEnabled);
     pass("contact", m_passes.contactShadows && m_contactShadowsEnabled);
-    if (!enabled.empty()) s.appArgs.push_back("--with=" + enabled);
-    if (!disabled.empty()) s.appArgs.push_back("--without=" + disabled);
+    if (!enabled.empty())
+        s.appArgs.push_back("--with=" + enabled);
+    if (!disabled.empty())
+        s.appArgs.push_back("--without=" + disabled);
     // Live-only tweak sliders have no RunConfig equivalent and are not
     // falsely advertised as replayable.
     benchmark::Save(s, m_benchmarkExportMessage);

@@ -61,11 +61,10 @@ namespace engine::worldpartition {
 // The env-tile record: one zone's blendable LOOK (the old EnvZoneGpu's
 // sky/fog/vol payload — the OBB fields are gone, the tile carries the
 // shape). HLSL mirror: EnvTileRecord (common.hlsli), 48 B.
-struct EnvTileRecord
-{
-	glm::vec4 sky{}; // rgb skyTint, a ambientI
-	glm::vec4 fog{}; // rgb fogColor, a fogDensity
-	glm::vec4 vol{}; // x volumetrics ratio, y volumetricDensity, zw reserved
+struct EnvTileRecord {
+    glm::vec4 sky{}; // rgb skyTint, a ambientI
+    glm::vec4 fog{}; // rgb fogColor, a fogDensity
+    glm::vec4 vol{}; // x volumetrics ratio, y volumetricDensity, zw reserved
 };
 static_assert(sizeof(EnvTileRecord) == 48, "EnvTileRecord: HLSL mirror");
 
@@ -78,19 +77,18 @@ static_assert(sizeof(EnvTileRecord) == 48, "EnvTileRecord: HLSL mirror");
 // room -> base, or a stacked pair) fills the band fields. lower/mid/
 // upperWeight = the zone's blendWeight*falloff sampled at each slot's
 // interval mid; the base (record 0) tiles carry weight 1.
-struct EnvTileCell
-{
-	uint32_t lowerRecord = 0;
-	uint32_t upperRecord = 0;
-	float splitY = -3.402823466e+38f; // -FLT_MAX: no vertical split
-	float lowerWeight = 0.0f;
-	float upperWeight = 0.0f;
-	// The mid BAND (three-record columns): midRecord = 0xFFFFFFFF means
-	// no band (the two-record/no-split shapes above); otherwise the band
-	// covers splitY <= y <= midHiY.
-	uint32_t midRecord = 0xFFFFFFFFu;
-	float midHiY = -3.402823466e+38f;
-	float midWeight = 0.0f;
+struct EnvTileCell {
+    uint32_t lowerRecord = 0;
+    uint32_t upperRecord = 0;
+    float splitY = -3.402823466e+38f; // -FLT_MAX: no vertical split
+    float lowerWeight = 0.0f;
+    float upperWeight = 0.0f;
+    // The mid BAND (three-record columns): midRecord = 0xFFFFFFFF means
+    // no band (the two-record/no-split shapes above); otherwise the band
+    // covers splitY <= y <= midHiY.
+    uint32_t midRecord = 0xFFFFFFFFu;
+    float midHiY = -3.402823466e+38f;
+    float midWeight = 0.0f;
 };
 static_assert(sizeof(EnvTileCell) == 32, "EnvTileCell: HLSL mirror");
 
@@ -110,90 +108,104 @@ inline constexpr float kEnvTileSize = float(engine::limits::WorldSubcellSizeMete
 // world edge). The VERTICAL range never extends for infinite axes — an
 // infinite-Y zone wins at every ladder height, and stretching the
 // ladder would tank the whole scene's vertical resolution.
-struct EnvGridExtent
-{
-	glm::vec2 gridMin{ 0.0f };
-	uint32_t dimX = 0, dimZ = 0;
-	float yMin = 0.0f, yMax = 0.0f;
+struct EnvGridExtent {
+    glm::vec2 gridMin{0.0f};
+    uint32_t dimX = 0, dimZ = 0;
+    float yMin = 0.0f, yMax = 0.0f;
 };
 // The seed bounds (the caller's ::tour::Aabb flattened — no Utils/bvh.h
 // dependency in this header).
-struct EnvGridBounds
-{
-	glm::vec3 mn{};
-	glm::vec3 mx{};
+struct EnvGridBounds {
+    glm::vec3 mn{};
+    glm::vec3 mx{};
 };
-EnvGridExtent ComputeEnvGridExtent(const Scene& scene,
-	const EnvGridBounds& sceneBounds);
+EnvGridExtent ComputeEnvGridExtent(const Scene& scene, const EnvGridBounds& sceneBounds);
 
 // The bake. Rebuildable; the caller drives dirtiness (the renderer hashes
 // the zone tables + transforms per frame — cheap — and rebuilds on
 // change). CPU queries via At() are the shader mirror's reference (the
 // tests pin both sides of the contract).
-class WorldEnvTiles
-{
-public:
-	// Grid extent: gridMin = the min corner (XZ, tile-aligned); dimX/dimZ
-	// the tile counts (clamped to kEnvTileMaxDim). yMin/yMax frame the
-	// vertical split search (the scene bounds). Returns false for invalid
-	// extents; a scene with no env entities bakes the pure-base grid.
-	bool Build(const Scene& scene, glm::vec2 gridMin,
-		uint32_t dimX, uint32_t dimZ, float yMin, float yMax);
+class WorldEnvTiles {
+  public:
+    // Grid extent: gridMin = the min corner (XZ, tile-aligned); dimX/dimZ
+    // the tile counts (clamped to kEnvTileMaxDim). yMin/yMax frame the
+    // vertical split search (the scene bounds). Returns false for invalid
+    // extents; a scene with no env entities bakes the pure-base grid.
+    bool Build(const Scene& scene,
+               glm::vec2 gridMin,
+               uint32_t dimX,
+               uint32_t dimZ,
+               float yMin,
+               float yMax);
 
-	// The shader mirror's reference (tests/editor/tooling).
-	struct Lookup
-	{
-		uint32_t record = 0; // into Records(); 0 = the base
-		float weight = 1.0f; // blendWeight*falloff at the slot sample
-		bool valid = false; // false = the plain env path (no tiles built)
-	};
-	Lookup At(glm::vec3 pos) const;
+    // The shader mirror's reference (tests/editor/tooling).
+    struct Lookup {
+        uint32_t record = 0; // into Records(); 0 = the base
+        float weight = 1.0f; // blendWeight*falloff at the slot sample
+        bool valid = false;  // false = the plain env path (no tiles built)
+    };
+    Lookup At(glm::vec3 pos) const;
 
-	// ---- pointer + count accessors (the FrameUniforms publication) ----
-	const EnvTileRecord* Records() const { return records_.data(); }
-	uint32_t RecordCount() const { return recordCount_; }
-	// Zone-authored volumetric fog present: ANY live record (the base
-	// [0] included — it carries the scene env's own volumetrics pair)
-	// with a positive ABSOLUTE volumetricDensity. Only the absolute
-	// density can raise extinction from a zero pass density (the
-	// volOn gates' zone leg + the shader's zone early-out bit — the
-	// pair must stay in sync); the volumetrics RATIO alone is
-	// multiplicative over the pass intensity the gates already require
-	// positive, so a ratio-only record with no density anywhere
-	// contributes nothing. The base record's density is SceneEnv's
-	// default 0.015, so a published bake virtually always passes this
-	// scan — by design: the scene env (the base block) IS a zone
-	// author, and the env table owns the look.
-	bool AnyVolumetricFog() const;
-	const EnvTileCell* Cells() const { return cells_.data(); }
-	uint32_t CellCount() const { return uint32_t(cells_.size()); }
-	glm::vec2 GridMin() const { return gridMin_; }
-	uint32_t DimX() const { return dimX_; }
-	uint32_t DimZ() const { return dimZ_; }
-	bool Valid() const { return built_; }
+    // ---- pointer + count accessors (the FrameUniforms publication) ----
+    const EnvTileRecord* Records() const {
+        return records_.data();
+    }
+    uint32_t RecordCount() const {
+        return recordCount_;
+    }
+    // Zone-authored volumetric fog present: ANY live record (the base
+    // [0] included — it carries the scene env's own volumetrics pair)
+    // with a positive ABSOLUTE volumetricDensity. Only the absolute
+    // density can raise extinction from a zero pass density (the
+    // volOn gates' zone leg + the shader's zone early-out bit — the
+    // pair must stay in sync); the volumetrics RATIO alone is
+    // multiplicative over the pass intensity the gates already require
+    // positive, so a ratio-only record with no density anywhere
+    // contributes nothing. The base record's density is SceneEnv's
+    // default 0.015, so a published bake virtually always passes this
+    // scan — by design: the scene env (the base block) IS a zone
+    // author, and the env table owns the look.
+    bool AnyVolumetricFog() const;
+    const EnvTileCell* Cells() const {
+        return cells_.data();
+    }
+    uint32_t CellCount() const {
+        return uint32_t(cells_.size());
+    }
+    glm::vec2 GridMin() const {
+        return gridMin_;
+    }
+    uint32_t DimX() const {
+        return dimX_;
+    }
+    uint32_t DimZ() const {
+        return dimZ_;
+    }
+    bool Valid() const {
+        return built_;
+    }
 
-private:
-	struct Candidate
-	{
-		smvk::envzones::EnvZoneGpu zone{}; // the sanitized OBB + look
-		uint32_t record = 0; // the assigned record index
-		double boundedVolume = 0.0; // finite product; +inf for any unbounded face
-		uint32_t nodeId = 0;
-		float priority = 0.0f;
-	};
-	// The winner (record + weight) among the sorted candidates at a
-	// position; record 0 (the base, an all-infinite candidate) at weight
-	// 1 when nothing covers.
-	Lookup Evaluate(const glm::vec3& p) const;
+  private:
+    struct Candidate {
+        smvk::envzones::EnvZoneGpu zone{}; // the sanitized OBB + look
+        uint32_t record = 0;               // the assigned record index
+        double boundedVolume = 0.0;        // finite product; +inf for any unbounded face
+        uint32_t nodeId = 0;
+        float priority = 0.0f;
+    };
+    // The winner (record + weight) among the sorted candidates at a
+    // position; record 0 (the base, an all-infinite candidate) at weight
+    // 1 when nothing covers.
+    Lookup Evaluate(const glm::vec3& p) const;
 
-	std::vector<EnvTileRecord> records_; // [0] = the base
-	uint32_t recordCount_ = 0;
-	std::vector<EnvTileCell> cells_; // dimX * dimZ
-	std::vector<Candidate> candidates_; // sorted, includes the base at [0]
-	glm::vec2 gridMin_{ 0.0f, 0.0f };
-	uint32_t dimX_ = 0;
-	uint32_t dimZ_ = 0;
-	bool built_ = false;
+    std::vector<EnvTileRecord> records_; // [0] = the base
+    uint32_t recordCount_ = 0;
+    std::vector<EnvTileCell> cells_;    // dimX * dimZ
+    std::vector<Candidate> candidates_; // sorted, includes the base at [0]
+    glm::vec2 gridMin_{0.0f, 0.0f};
+    uint32_t dimX_ = 0;
+    uint32_t dimZ_ = 0;
+    bool built_ = false;
 };
 
 } // namespace engine::worldpartition

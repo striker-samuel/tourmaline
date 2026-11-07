@@ -7,9 +7,13 @@
 using namespace tour::asset;
 int main() {
     std::string error;
-    for (ShapeKind kind : {ShapeKind::Spline, ShapeKind::PointCloud,
-         ShapeKind::Plane, ShapeKind::Box, ShapeKind::Sphere,
-         ShapeKind::Cylinder, ShapeKind::Cone}) {
+    for (ShapeKind kind : {ShapeKind::Spline,
+                           ShapeKind::PointCloud,
+                           ShapeKind::Plane,
+                           ShapeKind::Box,
+                           ShapeKind::Sphere,
+                           ShapeKind::Cylinder,
+                           ShapeKind::Cone}) {
         const ShapeAsset initial = DefaultShapeAsset(kind);
         ShapeAsset parsed;
         assert(ParseShapeAsset(SerializeShapeAsset(initial), parsed, error));
@@ -39,7 +43,8 @@ int main() {
         assert(!ShapeToObj(DefaultShapeAsset(ShapeKind::Spline), obj, error));
     }
     ShapeAsset loop = DefaultShapeAsset(ShapeKind::Spline);
-    loop.closed = true; loop.segments = 5;
+    loop.closed = true;
+    loop.segments = 5;
     ShapeGeometry curve;
     assert(TessellateShape(loop, curve, error));
     assert(curve.vertices.size() == 15 && curve.indices.size() == 30);

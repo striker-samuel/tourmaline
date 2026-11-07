@@ -5,9 +5,9 @@
 
 #include <iostream>
 
-#include <Engine/core.h>
-#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Renderer/dxc_integration.h>
+#include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/core.h>
 
 static constexpr const char* kTriangleVertShader = R"(
 
@@ -67,132 +67,99 @@ float4 mainPS(
 )";
 
 class TriangleApp : public smvk::App {
-	using Super = smvk::App;
+    using Super = smvk::App;
 
-public:
-	TriangleApp() = default;
-	~TriangleApp() {
-		for (int i = 0; i < m_program.shaderCount; i++) {
-			smvk::destroy(m_context.get(), m_program.shaders[i].module);
-		}
-	}
-private:
-	bool Initialize() override {
-		if (!Super::Initialize())
-			return false;
+  public:
+    TriangleApp() = default;
+    ~TriangleApp() {
+        for (int i = 0; i < m_program.shaderCount; i++) {
+            smvk::destroy(m_context.get(), m_program.shaders[i].module);
+        }
+    }
 
-		//void CreateResources();
-		auto vertCode = tour::dxc::CompileHLSLToSPIRV(
-			kTriangleVertShader,
-			tour::dxc::DxcShaderStage::Vertex,
-			L"mainVS"
-		);
+  private:
+    bool Initialize() override {
+        if (!Super::Initialize())
+            return false;
 
-		auto fragCode = tour::dxc::CompileHLSLToSPIRV(
-			kTriangleFragShader,
-			tour::dxc::DxcShaderStage::Fragment,
-			L"mainPS"
-		);
+        // void CreateResources();
+        auto vertCode = tour::dxc::CompileHLSLToSPIRV(
+            kTriangleVertShader, tour::dxc::DxcShaderStage::Vertex, L"mainVS");
 
-		smvk::Shader vert = {
-			.module = m_context->CreateShaderModule(vertCode).release(),
-			.entryPoint = "mainVS",
-			.stage = smvk::ShaderStage::Vertex
-		};
-		smvk::Shader frag = {
-			.module = m_context->CreateShaderModule(fragCode).release(),
-			.entryPoint = "mainPS",
-			.stage = smvk::ShaderStage::Fragment
-		};
+        auto fragCode = tour::dxc::CompileHLSLToSPIRV(
+            kTriangleFragShader, tour::dxc::DxcShaderStage::Fragment, L"mainPS");
 
-		m_program = {
-			.shaders = {vert, frag},
-			.shaderCount = 2
-		};
+        smvk::Shader vert = {.module = m_context->CreateShaderModule(vertCode).release(),
+                             .entryPoint = "mainVS",
+                             .stage = smvk::ShaderStage::Vertex};
+        smvk::Shader frag = {.module = m_context->CreateShaderModule(fragCode).release(),
+                             .entryPoint = "mainPS",
+                             .stage = smvk::ShaderStage::Fragment};
 
-		swapViews.clear();
-		for (int i = 0; i < m_swapchain->GetImageCount(); i++) {
-			swapViews.push_back(
-				m_rendergraph->AddExternalImageView(
-					m_swapchain->GetImageViewHandle(i),
-					m_swapchain->GetSurfaceFormat()
-				)
-			);
-		}
-		return true;
-	}
+        m_program = {.shaders = {vert, frag}, .shaderCount = 2};
 
-	void DrawFrame() {
-		auto fb = m_swapchain->AcquireFramebuffer();
-		RenderFrame(fb);
-		m_swapchain->EndAndPresentFramebuffer(fb);
-	}
+        swapViews.clear();
+        for (int i = 0; i < m_swapchain->GetImageCount(); i++) {
+            swapViews.push_back(m_rendergraph->AddExternalImageView(
+                m_swapchain->GetImageViewHandle(i), m_swapchain->GetSurfaceFormat()));
+        }
+        return true;
+    }
 
-	void RenderFrame(smvk::Framebuffer fb) {
-		m_rendergraph->NewFrame();
-		std::vector<smvk::LogicalImageViewHandle> colors{
-			swapViews[fb.imageIndex]
-		};
+    void DrawFrame() {
+        auto fb = m_swapchain->AcquireFramebuffer();
+        RenderFrame(fb);
+        m_swapchain->EndAndPresentFramebuffer(fb);
+    }
 
-		m_rendergraph->AddPass()
-			.SetOffset(0, 0)
-			.SetExtent(
-				{
-					fb.swapchain->GetExtent().width,
-					fb.swapchain->GetExtent().height
-				}
-				//fb.swapchain.extent_
-			)
-			.SetColor(
-				colors,
-				smvk::AttachmentLoadOp::Clear,
-				smvk::AttachmentStoreOp::Store,
-				smvk::ClearColor(0, 0, 0, 1)
-			)
-			.SetRecordingFunc(
-				[this](smvk::CommandBuffer& cmd)
-		{ //recording
-			cmd.BindRenderPipeline(
-				m_program,
-				smvk::VertexLayoutId::Empty
-			)
-				;
-			cmd.Draw(
-				3,  // vertex count
-				1,  // instance count
-				0,  // first vertex
-				0   // first instance
-			);
-		} //end recording
-			);
+    void RenderFrame(smvk::Framebuffer fb) {
+        m_rendergraph->NewFrame();
+        std::vector<smvk::LogicalImageViewHandle> colors{swapViews[fb.imageIndex]};
 
-		m_rendergraph->Execute(fb);
-		m_context->ProcessDeferrredTasks(); // Not needed here
-	}
+        m_rendergraph->AddPass()
+            .SetOffset(0, 0)
+            .SetExtent({fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height}
+                       // fb.swapchain.extent_
+                       )
+            .SetColor(colors,
+                      smvk::AttachmentLoadOp::Clear,
+                      smvk::AttachmentStoreOp::Store,
+                      smvk::ClearColor(0, 0, 0, 1))
+            .SetRecordingFunc([this](smvk::CommandBuffer& cmd) { // recording
+                cmd.BindRenderPipeline(m_program, smvk::VertexLayoutId::Empty);
+                cmd.Draw(3, // vertex count
+                         1, // instance count
+                         0, // first vertex
+                         0  // first instance
+                );
+            } // end recording
+            );
 
-private:
-	std::vector<smvk::LogicalImageViewHandle> swapViews;
-	smvk::ShaderProgram m_program{};
+        m_rendergraph->Execute(fb);
+        m_context->ProcessDeferrredTasks(); // Not needed here
+    }
+
+  private:
+    std::vector<smvk::LogicalImageViewHandle> swapViews;
+    smvk::ShaderProgram m_program{};
 };
 
-
 int main(int argc, const char* argv[]) {
-	if (argc > 1) {
-		std::cout << argv[0];
-	}
+    if (argc > 1) {
+        std::cout << argv[0];
+    }
 
-	TriangleApp app = TriangleApp();
-	try {
-		app.Run();
-	}
-	catch (const std::exception& e) {
-		std::cerr << "\nERROR: " << e.what() << std::endl;
+    TriangleApp app = TriangleApp();
+    try {
+        app.Run();
+    } catch (const std::exception& e) {
+        std::cerr << "\nERROR: " << e.what() << std::endl;
 
-		std::cerr << "\nPress Enter to exit...";
-		std::cin.get();
+        std::cerr << "\nPress Enter to exit...";
+        std::cin.get();
 
-		return EXIT_FAILURE;
-	}
+        return EXIT_FAILURE;
+    }
 
-	return EXIT_SUCCESS;
+    return EXIT_SUCCESS;
 }

@@ -28,63 +28,69 @@
 #include <string>
 #include <vector>
 
-#include <Engine/smvk.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/WorldFields/WorldFieldTypes.h>
+#include <Engine/smvk.h>
 
 namespace engine::worldfields {
 
-class WorldFieldAtlasPool
-{
-public:
-	struct Desc
-	{
-		smvk::Format format = smvk::Format::R8_UNorm;
-		uint32_t storedBrickSize = kBrickStoredRes; // texels per axis per slot
-		uint32_t slotsX = 1;
-		uint32_t slotsY = 1;
-		uint32_t slotsZ = 1;
-		// Owned copy — the source WorldFieldDesc (and its std::string)
-		// dies at RegisterField return; the debug name must outlive it
-		// until the lazy EnsureGpu.
-		std::string name = "world field atlas";
-	};
+class WorldFieldAtlasPool {
+  public:
+    struct Desc {
+        smvk::Format format = smvk::Format::R8_UNorm;
+        uint32_t storedBrickSize = kBrickStoredRes; // texels per axis per slot
+        uint32_t slotsX = 1;
+        uint32_t slotsY = 1;
+        uint32_t slotsZ = 1;
+        // Owned copy — the source WorldFieldDesc (and its std::string)
+        // dies at RegisterField return; the debug name must outlive it
+        // until the lazy EnsureGpu.
+        std::string name = "world field atlas";
+    };
 
-	explicit WorldFieldAtlasPool(const Desc& desc);
+    explicit WorldFieldAtlasPool(const Desc& desc);
 
-	// ---- CPU bookkeeping (headless) ----
-	uint32_t SlotCount() const { return slotTotal_; }
-	uint32_t FreeSlotCount() const { return static_cast<uint32_t>(freeSlots_.size()); }
-	bool SlotFree(uint32_t slot) const;
-	// Pop a free slot and bind it to `owner` (false = pool exhausted —
-	// the caller skips the request gracefully; never evicts here).
-	bool TryAcquireSlot(const WorldBrickKey& owner, uint32_t& outSlot);
-	// Free a slot (asserts the current owner matches — a mismatched
-	// release is a pager bookkeeping bug, programmer error).
-	void ReleaseSlot(uint32_t slot, const WorldBrickKey& owner);
-	const WorldBrickKey& SlotOwner(uint32_t slot) const; // kFreeSlotKey when free
+    // ---- CPU bookkeeping (headless) ----
+    uint32_t SlotCount() const {
+        return slotTotal_;
+    }
+    uint32_t FreeSlotCount() const {
+        return static_cast<uint32_t>(freeSlots_.size());
+    }
+    bool SlotFree(uint32_t slot) const;
+    // Pop a free slot and bind it to `owner` (false = pool exhausted —
+    // the caller skips the request gracefully; never evicts here).
+    bool TryAcquireSlot(const WorldBrickKey& owner, uint32_t& outSlot);
+    // Free a slot (asserts the current owner matches — a mismatched
+    // release is a pager bookkeeping bug, programmer error).
+    void ReleaseSlot(uint32_t slot, const WorldBrickKey& owner);
+    const WorldBrickKey& SlotOwner(uint32_t slot) const; // kFreeSlotKey when free
 
-	// ---- layout math ----
-	uint32_t StoredBrickBytes() const; // tight stored-brick payload bytes
-	smvk::Extent3D AtlasExtent() const; // slots * stored, per axis
-	smvk::ImageRegion3D SlotRegion(uint32_t slot) const; // the upload region
-	void SlotOrigin(uint32_t slot, uint32_t outXYZ[3]) const; // slot grid pos
+    // ---- layout math ----
+    uint32_t StoredBrickBytes() const;                        // tight stored-brick payload bytes
+    smvk::Extent3D AtlasExtent() const;                       // slots * stored, per axis
+    smvk::ImageRegion3D SlotRegion(uint32_t slot) const;      // the upload region
+    void SlotOrigin(uint32_t slot, uint32_t outXYZ[3]) const; // slot grid pos
 
-	// ---- GPU (lazy; headless pools skip this entirely) ----
-	bool EnsureGpu(smvk::ResourceManager& ctx);
-	bool GpuReady() const { return bindlessIndex_ != UINT32_MAX; }
-	uint32_t BindlessIndex() const { return bindlessIndex_; }
-	smvk::ImageHandle Image() const; // empty until EnsureGpu
-	uint64_t AtlasBytes() const; // committed payload estimate
+    // ---- GPU (lazy; headless pools skip this entirely) ----
+    bool EnsureGpu(smvk::ResourceManager& ctx);
+    bool GpuReady() const {
+        return bindlessIndex_ != UINT32_MAX;
+    }
+    uint32_t BindlessIndex() const {
+        return bindlessIndex_;
+    }
+    smvk::ImageHandle Image() const; // empty until EnsureGpu
+    uint64_t AtlasBytes() const;     // committed payload estimate
 
-private:
-	Desc desc_;
-	uint32_t slotTotal_ = 0;
-	std::vector<uint32_t> freeSlots_; // LIFO free list
-	std::vector<WorldBrickKey> slotOwners_; // slotTotal_ entries
-	smvk::Holder<smvk::TextureHandle> atlas_; // image+view+bindless record
-	smvk::ImageHandle image_{}; // the atlas VkImage (region-upload target)
-	uint32_t bindlessIndex_ = UINT32_MAX;
+  private:
+    Desc desc_;
+    uint32_t slotTotal_ = 0;
+    std::vector<uint32_t> freeSlots_;         // LIFO free list
+    std::vector<WorldBrickKey> slotOwners_;   // slotTotal_ entries
+    smvk::Holder<smvk::TextureHandle> atlas_; // image+view+bindless record
+    smvk::ImageHandle image_{};               // the atlas VkImage (region-upload target)
+    uint32_t bindlessIndex_ = UINT32_MAX;
 };
 
 } // namespace engine::worldfields

@@ -19,11 +19,7 @@ namespace tour {
 // Region IDs are monotonic and are never recycled by this registry.
 // This registry does NOT own GPU assets, pak images, or node memory;
 // those lifetimes are tracked separately.
-enum class RegionKind : uint8_t {
-    Scene,
-    PrefabInstance,
-    Runtime
-};
+enum class RegionKind : uint8_t { Scene, PrefabInstance, Runtime };
 
 struct SceneRegion {
     uint64_t id = 0;
@@ -32,7 +28,7 @@ struct SceneRegion {
 };
 
 class RegionRegistry {
-public:
+  public:
     // Register an existing node as an ownership boundary. Returns 0 for an
     // invalid node or a root already registered with a live generation.
     // No scene topology is modified by this operation.
@@ -117,10 +113,14 @@ public:
         }
     }
 
-    const std::vector<SceneRegion>& All() const { return regions_; }
-    bool Empty() const { return regions_.empty(); }
+    const std::vector<SceneRegion>& All() const {
+        return regions_;
+    }
+    bool Empty() const {
+        return regions_.empty();
+    }
 
-private:
+  private:
     void EraseAt(size_t index) {
         byRoot_.erase(NodeHandleSlot(regions_[index].root));
         const size_t last = regions_.size() - 1;

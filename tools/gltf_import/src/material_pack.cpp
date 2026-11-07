@@ -23,8 +23,8 @@
 namespace smvk::assets {
 
 bool ComposeMaterialImage(const std::filesystem::path& output,
-    const std::array<PackedImageChannel, 4>& channels,
-    std::string& err) {
+                          const std::array<PackedImageChannel, 4>& channels,
+                          std::string& err) {
     err.clear();
     struct Source {
         std::vector<uint8_t> rgba;
@@ -45,12 +45,16 @@ bool ComposeMaterialImage(const std::filesystem::path& output,
         const std::string filename = input.path.string();
         stbi_uc* decoded = stbi_load(filename.c_str(), &w, &h, &n, 4);
         if (!decoded || w <= 0 || h <= 0) {
-            err = "cannot decode material texture '" + filename + "': " +
-                (stbi_failure_reason() ? stbi_failure_reason() : "unknown error");
-            if (decoded) stbi_image_free(decoded);
+            err = "cannot decode material texture '" + filename +
+                  "': " + (stbi_failure_reason() ? stbi_failure_reason() : "unknown error");
+            if (decoded)
+                stbi_image_free(decoded);
             return false;
         }
-        if (width == 0) { width = w; height = h; }
+        if (width == 0) {
+            width = w;
+            height = h;
+        }
         if (w != width || h != height) {
             stbi_image_free(decoded);
             err = "packed material source dimensions differ: " + filename;
@@ -67,7 +71,10 @@ bool ComposeMaterialImage(const std::filesystem::path& output,
         sources[i].height = h;
         stbi_image_free(decoded);
     }
-    if (width == 0) { width = 1; height = 1; }
+    if (width == 0) {
+        width = 1;
+        height = 1;
+    }
     if (width > std::numeric_limits<int>::max() / 4) {
         err = "packed material image row is too wide";
         return false;
@@ -81,16 +88,15 @@ bool ComposeMaterialImage(const std::filesystem::path& output,
     for (size_t pixel = 0; pixel < pixelCount; ++pixel)
         for (size_t c = 0; c < 4; ++c)
             out[pixel * 4 + c] = channels[c].path.empty()
-                ? channels[c].constant
-                : sources[c].rgba[pixel * 4 + size_t(channels[c].component)];
+                                     ? channels[c].constant
+                                     : sources[c].rgba[pixel * 4 + size_t(channels[c].component)];
     std::error_code ec;
     std::filesystem::create_directories(output.parent_path(), ec);
     if (ec) {
         err = "cannot create packed material directory: " + ec.message();
         return false;
     }
-    if (!stbi_write_png(output.string().c_str(), width, height, 4,
-            out.data(), width * 4)) {
+    if (!stbi_write_png(output.string().c_str(), width, height, 4, out.data(), width * 4)) {
         err = "could not write packed material PNG: " + output.string();
         return false;
     }

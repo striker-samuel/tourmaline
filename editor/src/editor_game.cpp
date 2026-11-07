@@ -6,19 +6,21 @@
 
 namespace editor {
 void EditorApp::ApplyGamePlayRequest() {
-    if (!m_gamePlayRequest) return;
+    if (!m_gamePlayRequest)
+        return;
     const bool start = *m_gamePlayRequest;
     m_gamePlayRequest.reset();
     if (!start) {
         StopGamePlay();
         return;
     }
-    if (!m_world || m_gameSession.Active()) return;
+    if (!m_world || m_gameSession.Active())
+        return;
 #if defined(TOURMALINE_EDITOR_GAME_LINKED)
     // Don't call standalone RunGame/onStart: that path may load cooked
     // scenes instead of using this live authored scene.
     try {
-        const GameEntryContext ctx{ *m_world, *this, m_projectRoot };
+        const GameEntryContext ctx{*m_world, *this, m_projectRoot};
         if (m_gameSession.Start(::TourmalineEditorEntry(ctx)))
             Log("Linked game code started (authoring world is read-only).");
     } catch (const std::exception& e) {
@@ -30,7 +32,8 @@ void EditorApp::ApplyGamePlayRequest() {
 }
 void EditorApp::StopGamePlay() {
     m_gamePlayRequest.reset();
-    if (!m_gameSession.Active()) return;
+    if (!m_gameSession.Active())
+        return;
     try {
         m_gameSession.Stop();
         Log("Linked game code stopped.");

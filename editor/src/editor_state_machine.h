@@ -14,17 +14,26 @@ namespace editor {
 // renderer, or the placement graph. The window can edit an external
 // .statemachine source selected in the content browser.
 class StateMachineGraphEditor {
-public:
+  public:
     bool show = false;
     bool Open(const std::string& file, bool discard = false);
     void New(bool discard = false);
     bool Save();
     void Draw();
-    [[nodiscard]] bool Dirty() const { return m_dirty; }
-    [[nodiscard]] bool Focused() const { return m_focused; }
-    [[nodiscard]] const std::string& Path() const { return m_path; }
-    [[nodiscard]] const std::string& Error() const { return m_error; }
-private:
+    [[nodiscard]] bool Dirty() const {
+        return m_dirty;
+    }
+    [[nodiscard]] bool Focused() const {
+        return m_focused;
+    }
+    [[nodiscard]] const std::string& Path() const {
+        return m_path;
+    }
+    [[nodiscard]] const std::string& Error() const {
+        return m_error;
+    }
+
+  private:
     struct Snapshot {
         tour::asset::StateMachineAsset doc;
         graphui::CanvasState canvas;
@@ -40,10 +49,10 @@ private:
     tour::asset::StateMachineAsset m_doc;
     graphui::CanvasState m_canvas;
     std::string m_path, m_error;
-    std::array<char,1024> m_pathField{};
-    std::array<char,96> m_newState{'i','d','l','e','\0'};
-    std::array<char,96> m_newParam{'s','p','e','e','d','\0'};
-    std::array<char,96> m_renameField{};
+    std::array<char, 1024> m_pathField{};
+    std::array<char, 96> m_newState{'i', 'd', 'l', 'e', '\0'};
+    std::array<char, 96> m_newParam{'s', 'p', 'e', 'e', 'd', '\0'};
+    std::array<char, 96> m_renameField{};
     int m_renameTarget = -1;
     int m_newParamKind = 2; // float
     bool m_dirty = false;

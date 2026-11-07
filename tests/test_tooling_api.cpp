@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 // GPU-free contracts for the composable native tooling library.
-#include <tourmaline/tooling.h>
-#include <project_pipeline/project.h>
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/pak.h>
+#include <project_pipeline/project.h>
+#include <tourmaline/tooling.h>
 
 #include <array>
 #include <chrono>
@@ -26,18 +26,21 @@ void Check(bool ok, const char* description) {
         ++failures;
     }
 }
-}
+} // namespace
 
 int main() {
     using namespace tourmaline::tooling;
     std::string error;
 
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    const fs::path root = fs::temp_directory_path()
-        / ("tourmaline-tooling-" + std::to_string(nonce));
+    const fs::path root =
+        fs::temp_directory_path() / ("tourmaline-tooling-" + std::to_string(nonce));
     struct Cleanup {
         fs::path path;
-        ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); }
+        ~Cleanup() {
+            std::error_code ec;
+            fs::remove_all(path, ec);
+        }
     } cleanup{root};
 
     ProjectInitOptions opts;
@@ -53,41 +56,41 @@ int main() {
 
     opts.dryRun = false;
     Check(InitializeProject(opts, result, error), "project initialized");
-    Check(result.created && result.guid.size() == 32,
-          "canonical marker GUID minted exactly once");
+    Check(result.created && result.guid.size() == 32, "canonical marker GUID minted exactly once");
     Check(fs::is_regular_file(root / "project.tourproj"), "project marker exists");
     Check(fs::is_regular_file(root / "sandbox.tourrecipe"), "recipe exists");
     Check(fs::is_directory(root / "content/scenes"), "content directories created");
     Check(!result.readyToBuild, "does not invent a non-existent scene");
 
     const std::string originalGuid = result.guid;
-    const std::string originalRecipe = [] (const fs::path& path) {
+    const std::string originalRecipe = [](const fs::path& path) {
         std::ifstream in(path, std::ios::binary);
-        return std::string(std::istreambuf_iterator<char>(in),
-                           std::istreambuf_iterator<char>());
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     }(root / "sandbox.tourrecipe");
     Check(!InitializeProject(opts, result, error), "unapproved re-init refused");
     opts.adoptExisting = true;
     Check(InitializeProject(opts, result, error), "explicit adopt allowed");
     Check(!result.created && originalGuid == result.guid, "adopt preserves identity");
     Check(!result.recipeWritten, "adopt does not overwrite recipe");
-    Check(originalRecipe == [] (const fs::path& path) {
-        std::ifstream in(path, std::ios::binary);
-        return std::string(std::istreambuf_iterator<char>(in),
-                           std::istreambuf_iterator<char>());
-    }(root / "sandbox.tourrecipe"), "recipe bytes preserved");
+    Check(
+        originalRecipe ==
+            [](const fs::path& path) {
+                std::ifstream in(path, std::ios::binary);
+                return std::string(std::istreambuf_iterator<char>(in),
+                                   std::istreambuf_iterator<char>());
+            }(root / "sandbox.tourrecipe"),
+        "recipe bytes preserved");
 
     // Real file-backed SMP8 reader smoke test: this checks the shared
     // engine's TOC parsing and the #ids parser, not a duplicate reader.
     tour::asset::PakWriter writer;
     const std::vector<tour::asset::PakAssetIdRow> ids = {
-        {0x1001, 1, "content/scenes/main.tour", "main"}
-    };
-    Check(writer.AddBlob(tour::asset::PakAssetKind::Identity,
-                         "#ids", tour::asset::WriteAssetIdsBlob(ids)),
+        {0x1001, 1, "content/scenes/main.tour", "main"}};
+    Check(writer.AddBlob(
+              tour::asset::PakAssetKind::Identity, "#ids", tour::asset::WriteAssetIdsBlob(ids)),
           "identity page added to synthetic SMP8 pak");
-    Check(writer.AddBlob(tour::asset::PakAssetKind::Sound,
-                         "content/audio/tone.wav", {82, 73, 70, 70}),
+    Check(writer.AddBlob(
+              tour::asset::PakAssetKind::Sound, "content/audio/tone.wav", {82, 73, 70, 70}),
           "sound page added to synthetic SMP8 pak");
     const fs::path pakPath = root / "world-1234.pak";
     const auto bytes = writer.Finalize();
@@ -126,9 +129,8 @@ int main() {
           "content-addressed filename changes do not count");
     after.pages[0].contentCrc = 999;
     auto differences = DiffPackageSnapshots(before, after);
-    Check(differences.size() == 1 &&
-          differences[0].kind == DiffKind::Page &&
-          differences[0].status == DiffStatus::Modified,
+    Check(differences.size() == 1 && differences[0].kind == DiffKind::Page &&
+              differences[0].status == DiffStatus::Modified,
           "page CRC metadata differences");
     DiffOptions assetsOnly;
     assetsOnly.pages = false;
@@ -147,8 +149,7 @@ int main() {
     capture.cameraForward = "0,0,1";
     CapturePlan plan;
     Check(BuildCapturePlan(capture, plan, error), "capture launch plan built");
-    Check(plan.environment.at("TOURMALINE_CAPTURE") == "48",
-          "capture frame pinned");
+    Check(plan.environment.at("TOURMALINE_CAPTURE") == "48", "capture frame pinned");
     capture.captureFrame = 64;
     Check(!BuildCapturePlan(capture, plan, error), "out-of-budget frame refused");
 
@@ -156,10 +157,9 @@ int main() {
     std::array<uint8_t, 12> changed{};
     changed[3] = 255;
     PixelDifference stats;
-    Check(CompareRgb8(black, changed, 2, 2, 6, 1, stats, error),
-          "RGB8 comparison accepted");
-    Check(stats.sampled == 4 && stats.differing == 1 &&
-          stats.fraction == 0.25, "RGB8 threshold statistics");
+    Check(CompareRgb8(black, changed, 2, 2, 6, 1, stats, error), "RGB8 comparison accepted");
+    Check(stats.sampled == 4 && stats.differing == 1 && stats.fraction == 0.25,
+          "RGB8 threshold statistics");
 
     if (failures) {
         std::cerr << failures << " tooling checks failed\n";

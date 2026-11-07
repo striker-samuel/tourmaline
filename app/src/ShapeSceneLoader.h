@@ -16,11 +16,11 @@
 
 namespace app {
 
-inline bool LoadPackedShapePlacements(
-    const std::string& placementText,
-    ProjectRuntime& runtime, tour::renderer::ShapeScene& shapes,
-    std::string& error,
-    const glm::mat4& sceneFrame = glm::mat4(1.0f)) {
+inline bool LoadPackedShapePlacements(const std::string& placementText,
+                                      ProjectRuntime& runtime,
+                                      tour::renderer::ShapeScene& shapes,
+                                      std::string& error,
+                                      const glm::mat4& sceneFrame = glm::mat4(1.0f)) {
     tour::asset::Doc doc;
     if (!tour::asset::LoadTourFromString(placementText, doc, error)) {
         error = "invalid packed shape placements: " + error;
@@ -28,23 +28,23 @@ inline bool LoadPackedShapePlacements(
     }
     std::vector<tour::renderer::ShapeInstanceHandle> created;
     for (const auto& placement : doc.shapePlacements) {
-        if (!placement.enabled) continue;
+        if (!placement.enabled)
+            continue;
         std::string shapeError;
-        auto bytes = runtime.ReadAssetByPath(
-            smvk::kCatalogKindShape, placement.source, shapeError);
+        auto bytes = runtime.ReadAssetByPath(smvk::kCatalogKindShape, placement.source, shapeError);
         if (bytes && !bytes->empty()) {
-            const auto local = glm::translate(glm::mat4(1.0f),
-                placement.position);
-            auto handle = shapes.LoadText(
-                std::string(bytes->begin(), bytes->end()),
-                sceneFrame * local, placement.color, shapeError);
+            const auto local = glm::translate(glm::mat4(1.0f), placement.position);
+            auto handle = shapes.LoadText(std::string(bytes->begin(), bytes->end()),
+                                          sceneFrame * local,
+                                          placement.color,
+                                          shapeError);
             if (handle) {
                 created.push_back(handle);
                 continue;
             }
         }
-        error = "shape placement '" + placement.name
-            + "' could not resolve '" + placement.source + "': " + shapeError;
+        error = "shape placement '" + placement.name + "' could not resolve '" + placement.source +
+                "': " + shapeError;
         for (auto handle : created)
             shapes.Remove(handle);
         return false;

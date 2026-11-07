@@ -28,9 +28,9 @@
 // non-cluster owner can hold them and free them through the same
 // retirement-ordered helpers.
 
-#include <Engine/smvk.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/static_vertex_heap.h>
+#include <Engine/smvk.h>
 
 #include <span>
 #include <vector>
@@ -43,14 +43,14 @@ namespace smvk {
 // conversion. (Moved out of Cluster's nested StaticMeshDirectSource —
 // RENAMED here; the old nested name is gone, no compat alias.)
 struct StaticGeometrySource {
-	uint64_t posSrc = 0;   // content-relative stream offsets
-	uint64_t shadeSrc = 0;
-	uint64_t lmSrc = 0;    // lightmap stream (0 = none)
-	uint64_t idxSrc = 0;
-	uint32_t vertexCount = 0;
-	uint32_t indexCount = 0;
-	glm::vec3 aabbMin{};
-	glm::vec3 aabbMax{};
+    uint64_t posSrc = 0; // content-relative stream offsets
+    uint64_t shadeSrc = 0;
+    uint64_t lmSrc = 0; // lightmap stream (0 = none)
+    uint64_t idxSrc = 0;
+    uint32_t vertexCount = 0;
+    uint32_t indexCount = 0;
+    glm::vec3 aabbMin{};
+    glm::vec3 aabbMax{};
 };
 
 // One uploaded mesh: the pool-ready StaticMesh VALUE (surfaces
@@ -60,8 +60,8 @@ struct StaticGeometrySource {
 // and frees the tokens through the helpers below — the service holds
 // nothing after the call returns.
 struct StaticGeometryUpload {
-	StaticMesh mesh;
-	StaticMeshAllocation alloc{};
+    StaticMesh mesh;
+    StaticMeshAllocation alloc{};
 };
 
 // The shared upload core. Carves the vertex/index/(optional)
@@ -72,8 +72,9 @@ struct StaticGeometryUpload {
 // context (the deserializer's fast path — never offline mode).
 // Empty result = failure.
 std::vector<StaticGeometryUpload> UploadStaticGeometry(
-	ResourceManager& ctx, const void* content,
-	std::span<const StaticGeometrySource> sources);
+    ResourceManager& ctx,
+    const void* content,
+    std::span<const StaticGeometrySource> sources);
 
 // -----------------------------------------------------------------------------
 // Mesh heap-range retirement (the deferred-destruction contract — the
@@ -98,14 +99,12 @@ std::vector<StaticGeometryUpload> UploadStaticGeometry(
 // uploads happen only after every range is carved). Everything a
 // draw could have touched must use the deferred form.
 // -----------------------------------------------------------------------------
-void FreeStaticMeshRangesNow(
-	StaticHeapArena::AllocId vertexAllocation,
-	StaticHeapArena::AllocId indexAllocation,
-	StaticHeapArena::AllocId lightmapAllocation);
-void DeferFreeStaticMeshRanges(
-	ResourceManager* ctx,
-	StaticHeapArena::AllocId vertexAllocation,
-	StaticHeapArena::AllocId indexAllocation,
-	StaticHeapArena::AllocId lightmapAllocation);
+void FreeStaticMeshRangesNow(StaticHeapArena::AllocId vertexAllocation,
+                             StaticHeapArena::AllocId indexAllocation,
+                             StaticHeapArena::AllocId lightmapAllocation);
+void DeferFreeStaticMeshRanges(ResourceManager* ctx,
+                               StaticHeapArena::AllocId vertexAllocation,
+                               StaticHeapArena::AllocId indexAllocation,
+                               StaticHeapArena::AllocId lightmapAllocation);
 
 } // namespace smvk

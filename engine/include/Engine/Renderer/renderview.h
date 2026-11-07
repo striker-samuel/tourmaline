@@ -41,24 +41,24 @@ namespace smvk {
 
 // What a view is used for (mirrors RENDERVIEW_FLAG_* in renderview.hlsli).
 typedef enum RenderViewFlagBits {
-	RenderViewFlagBit_None = 0,
-	RenderViewFlagBit_MainView = 1u << 0,      // game camera
-	RenderViewFlagBit_ShadowCascade = 1u << 1, // directional light CSM cascade
-	RenderViewFlagBit_SpotShadow = 1u << 2,    // spot light shadow tile
-	RenderViewFlagBit_Custom = 1u << 3,        // reflection/mini-map/other
-	RenderViewFlagBit_PointShadow = 1u << 4,   // point light shadow face tile
+    RenderViewFlagBit_None = 0,
+    RenderViewFlagBit_MainView = 1u << 0,      // game camera
+    RenderViewFlagBit_ShadowCascade = 1u << 1, // directional light CSM cascade
+    RenderViewFlagBit_SpotShadow = 1u << 2,    // spot light shadow tile
+    RenderViewFlagBit_Custom = 1u << 3,        // reflection/mini-map/other
+    RenderViewFlagBit_PointShadow = 1u << 4,   // point light shadow face tile
 } RenderViewFlagBits;
 typedef uint32_t RenderViewFlags;
 
 // One virtual camera + its render target (256 bytes).
 // Layout must match HLSL renderview.hlsli::RenderView byte-for-byte.
 struct HLSL_ALIGN_STRUCT RenderView {
-	glm::mat4 m_viewProjectionMatrix;        // 0
-	glm::mat4 m_inverseViewProjectionMatrix; // 64
-	glm::vec4 m_viewPlanes[6];               // 128: inward frustum planes (xyz normal, w distance)
-	glm::vec4 m_renderTargetSize;           // 224: xy = target size (px), zw = 1/size
-	uint32_t  m_renderViewFlags = RenderViewFlagBit_None; // 240
-	glm::uvec3 m_padding0 = {};             // 244
+    glm::mat4 m_viewProjectionMatrix;        // 0
+    glm::mat4 m_inverseViewProjectionMatrix; // 64
+    glm::vec4 m_viewPlanes[6];               // 128: inward frustum planes (xyz normal, w distance)
+    glm::vec4 m_renderTargetSize;            // 224: xy = target size (px), zw = 1/size
+    uint32_t m_renderViewFlags = RenderViewFlagBit_None; // 240
+    glm::uvec3 m_padding0 = {};                          // 244
 };
 static_assert(sizeof(RenderView) == 256, "RenderView must match HLSL renderview.hlsli");
 static_assert(sizeof(RenderView) % 16 == 0);
@@ -81,63 +81,57 @@ static_assert(sizeof(RenderView) % 16 == 0);
 // swings the frustum by +/-0.25 px each frame): without a guard,
 // boundary clusters flicker in/out on alternating frames. Near/far stay
 // exact (subpixel jitter never moves depth).
-inline void ExtractViewPlanes(const glm::mat4& vp, glm::vec4 outPlanes[6],
-	float guardNdcX = 0.0f, float guardNdcY = 0.0f)
-{
-	const auto row = [&vp](int r) {
-		return glm::vec4(vp[0][r], vp[1][r], vp[2][r], vp[3][r]);
-	};
-	const glm::vec4 row0 = row(0);
-	const glm::vec4 row1 = row(1);
-	const glm::vec4 row2 = row(2);
-	const glm::vec4 row3 = row(3);
+inline void ExtractViewPlanes(const glm::mat4& vp,
+                              glm::vec4 outPlanes[6],
+                              float guardNdcX = 0.0f,
+                              float guardNdcY = 0.0f) {
+    const auto row = [&vp](int r) { return glm::vec4(vp[0][r], vp[1][r], vp[2][r], vp[3][r]); };
+    const glm::vec4 row0 = row(0);
+    const glm::vec4 row1 = row(1);
+    const glm::vec4 row2 = row(2);
+    const glm::vec4 row3 = row(3);
 
-	glm::vec4 planes[6] = {
-		row3 * (1.0f + guardNdcX) + row0, // left   (x_ndc = -1)
-		row3 * (1.0f + guardNdcX) - row0, // right  (x_ndc = +1)
-		row3 * (1.0f + guardNdcY) + row1, // bottom (y_ndc = -1)
-		row3 * (1.0f + guardNdcY) - row1, // top    (y_ndc = +1)
-		row2,        // z_ndc = 0 (near for ZO, far for reversed-Z)
-		row3 - row2, // z_ndc = 1 (far for ZO, near for reversed-Z)
-	};
-	for (glm::vec4& p : planes) {
-		const float len = glm::length(glm::vec3(p));
-		if (len > 1e-8f)
-			p /= len;
-	}
-	std::memcpy(outPlanes, planes, sizeof(planes));
+    glm::vec4 planes[6] = {
+        row3 * (1.0f + guardNdcX) + row0, // left   (x_ndc = -1)
+        row3 * (1.0f + guardNdcX) - row0, // right  (x_ndc = +1)
+        row3 * (1.0f + guardNdcY) + row1, // bottom (y_ndc = -1)
+        row3 * (1.0f + guardNdcY) - row1, // top    (y_ndc = +1)
+        row2,                             // z_ndc = 0 (near for ZO, far for reversed-Z)
+        row3 - row2,                      // z_ndc = 1 (far for ZO, near for reversed-Z)
+    };
+    for (glm::vec4& p : planes) {
+        const float len = glm::length(glm::vec3(p));
+        if (len > 1e-8f)
+            p /= len;
+    }
+    std::memcpy(outPlanes, planes, sizeof(planes));
 }
 
 // Conservative world-space bounding sphere of a mesh AABB under `model`.
-inline void MeshBoundsToWorld(
-	const glm::mat4& model,
-	const glm::vec3& aabbMin,
-	const glm::vec3& aabbMax,
-	glm::vec3& outCenter,
-	float& outRadius)
-{
-	outCenter = glm::vec3(model * glm::vec4((aabbMin + aabbMax) * 0.5f, 1.0f));
-	const glm::vec3 halfDiagonal = (aabbMax - aabbMin) * 0.5f;
-	const float maxScale = std::max({
-		glm::length(glm::vec3(model[0])),
-		glm::length(glm::vec3(model[1])),
-		glm::length(glm::vec3(model[2])) });
-	outRadius = glm::length(halfDiagonal) * maxScale;
+inline void MeshBoundsToWorld(const glm::mat4& model,
+                              const glm::vec3& aabbMin,
+                              const glm::vec3& aabbMax,
+                              glm::vec3& outCenter,
+                              float& outRadius) {
+    outCenter = glm::vec3(model * glm::vec4((aabbMin + aabbMax) * 0.5f, 1.0f));
+    const glm::vec3 halfDiagonal = (aabbMax - aabbMin) * 0.5f;
+    const float maxScale = std::max({glm::length(glm::vec3(model[0])),
+                                     glm::length(glm::vec3(model[1])),
+                                     glm::length(glm::vec3(model[2]))});
+    outRadius = glm::length(halfDiagonal) * maxScale;
 }
 
 // Sphere-vs-view-planes test (world space). True when the sphere may be
 // visible in the view; false only when fully outside one plane.
-inline bool RenderViewIntersectsSphere(
-	const RenderView& view,
-	const glm::vec3& center,
-	float radius)
-{
-	for (uint32_t i = 0; i < 6; ++i) {
-		const glm::vec4& p = view.m_viewPlanes[i];
-		if (glm::dot(glm::vec3(p), center) + p.w < -radius)
-			return false;
-	}
-	return true;
+inline bool RenderViewIntersectsSphere(const RenderView& view,
+                                       const glm::vec3& center,
+                                       float radius) {
+    for (uint32_t i = 0; i < 6; ++i) {
+        const glm::vec4& p = view.m_viewPlanes[i];
+        if (glm::dot(glm::vec3(p), center) + p.w < -radius)
+            return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,20 +165,18 @@ inline bool RenderViewIntersectsSphere(
 // matrices are copied from the source view but never read - only the
 // planes matter. A degenerate lightDir keeps the raw planes (never worse
 // than the raw frustum).
-inline RenderView MakeCasterContributionView(
-	const RenderView& mainView,
-	const glm::vec3& lightDir)
-{
-	RenderView out = mainView;
-	if (glm::length(lightDir) < 1e-4f)
-		return out;
-	const glm::vec3 d = glm::normalize(lightDir);
-	for (uint32_t i = 0; i < 6; ++i) {
-		const glm::vec3 n(out.m_viewPlanes[i]);
-		if (glm::dot(n, d) > 0.0f)
-			out.m_viewPlanes[i] = glm::vec4(0.0f);
-	}
-	return out;
+inline RenderView MakeCasterContributionView(const RenderView& mainView,
+                                             const glm::vec3& lightDir) {
+    RenderView out = mainView;
+    if (glm::length(lightDir) < 1e-4f)
+        return out;
+    const glm::vec3 d = glm::normalize(lightDir);
+    for (uint32_t i = 0; i < 6; ++i) {
+        const glm::vec3 n(out.m_viewPlanes[i]);
+        if (glm::dot(n, d) > 0.0f)
+            out.m_viewPlanes[i] = glm::vec4(0.0f);
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,205 +192,225 @@ static constexpr uint32_t kMaxShadowCascadesPerLight = 4;
 // custom views) -> Upload() -> DeviceAddress()/MainViewIndex() feed the push
 // constants. Indices stay stable until the next NewFrame().
 class RenderViewSet {
-public:
-	static constexpr uint32_t kInvalidIndex = UINT32_MAX;
+  public:
+    static constexpr uint32_t kInvalidIndex = UINT32_MAX;
 
-	// Creates the GPU slab (kMaxRenderViews * framesInFlight). Idempotent.
-	bool Ensure(ResourceManager& ctx, uint32_t framesInFlight, const char* name = "render views") {
-		if (Valid() && framesInFlight_ == framesInFlight)
-			return true;
-		buffer_ = ctx.CreateBuffer(
-			sizeof(RenderView) * kMaxRenderViews * framesInFlight,
-			BufferType_Storage,
-			name);
-		framesInFlight_ = buffer_.empty() ? 0u : framesInFlight;
-		if (!Valid())
-			count_ = 0;
-		return Valid();
-	}
+    // Creates the GPU slab (kMaxRenderViews * framesInFlight). Idempotent.
+    bool Ensure(ResourceManager& ctx, uint32_t framesInFlight, const char* name = "render views") {
+        if (Valid() && framesInFlight_ == framesInFlight)
+            return true;
+        buffer_ = ctx.CreateBuffer(
+            sizeof(RenderView) * kMaxRenderViews * framesInFlight, BufferType_Storage, name);
+        framesInFlight_ = buffer_.empty() ? 0u : framesInFlight;
+        if (!Valid())
+            count_ = 0;
+        return Valid();
+    }
 
-	void Destroy() {
-		buffer_ = {};
-		framesInFlight_ = 0;
-		NewFrame();
-	}
+    void Destroy() {
+        buffer_ = {};
+        framesInFlight_ = 0;
+        NewFrame();
+    }
 
-	[[nodiscard]] bool Valid() const { return !buffer_.empty(); }
-	// Allows GPU placement and other compute consumers to import the
-	// persistent view slab as a rendergraph dependency (no hidden BDA read).
-	[[nodiscard]] BufferHandle Buffer() const { return buffer_; }
+    [[nodiscard]] bool Valid() const {
+        return !buffer_.empty();
+    }
+    // Allows GPU placement and other compute consumers to import the
+    // persistent view slab as a rendergraph dependency (no hidden BDA read).
+    [[nodiscard]] BufferHandle Buffer() const {
+        return buffer_;
+    }
 
-	// ---------------------------------------------------------------
-	// CPU-side per-frame allocation
-	// ---------------------------------------------------------------
+    // ---------------------------------------------------------------
+    // CPU-side per-frame allocation
+    // ---------------------------------------------------------------
 
-	void NewFrame() {
-		count_ = 0;
-		mainView_ = kInvalidIndex;
-	}
+    void NewFrame() {
+        count_ = 0;
+        mainView_ = kInvalidIndex;
+    }
 
-	[[nodiscard]] uint32_t Count() const { return count_; }
-	[[nodiscard]] uint32_t MainViewIndex() const { return mainView_; }
+    [[nodiscard]] uint32_t Count() const {
+        return count_;
+    }
+    [[nodiscard]] uint32_t MainViewIndex() const {
+        return mainView_;
+    }
 
-	[[nodiscard]] const RenderView& Get(uint32_t index) const {
-		assert(index < count_);
-		return views_[index];
-	}
+    [[nodiscard]] const RenderView& Get(uint32_t index) const {
+        assert(index < count_);
+        return views_[index];
+    }
 
-	// Generic allocation (world-space viewProj + target size in pixels).
-	// cullingGuardPx dilates the frustum planes by that many target pixels
-	// (see ExtractViewPlanes): pass > 0 for views whose projection jitters
-	// per frame (main camera under SMAA T2x), 0 for exact views (shadows).
-	uint32_t AllocateView(
-		const glm::mat4& viewProj,
-		const glm::vec2& targetSize,
-		RenderViewFlags flags,
-		float cullingGuardPx = 0.0f) {
-		if (count_ >= kMaxRenderViews)
-			return kInvalidIndex;
-		RenderView v;
-		std::memset(&v, 0, sizeof(v));
-		v.m_viewProjectionMatrix = viewProj;
-		v.m_inverseViewProjectionMatrix = glm::inverse(viewProj);
-		const float guardNdcX = (targetSize.x > 0.0f && cullingGuardPx > 0.0f)
-			? 2.0f * cullingGuardPx / targetSize.x : 0.0f;
-		const float guardNdcY = (targetSize.y > 0.0f && cullingGuardPx > 0.0f)
-			? 2.0f * cullingGuardPx / targetSize.y : 0.0f;
-		ExtractViewPlanes(viewProj, v.m_viewPlanes, guardNdcX, guardNdcY);
-		v.m_renderTargetSize = glm::vec4(
-			targetSize.x, targetSize.y,
-			targetSize.x > 0.0f ? 1.0f / targetSize.x : 0.0f,
-			targetSize.y > 0.0f ? 1.0f / targetSize.y : 0.0f);
-		v.m_renderViewFlags = flags;
-		views_[count_] = v;
-		return count_++;
-	}
+    // Generic allocation (world-space viewProj + target size in pixels).
+    // cullingGuardPx dilates the frustum planes by that many target pixels
+    // (see ExtractViewPlanes): pass > 0 for views whose projection jitters
+    // per frame (main camera under SMAA T2x), 0 for exact views (shadows).
+    uint32_t AllocateView(const glm::mat4& viewProj,
+                          const glm::vec2& targetSize,
+                          RenderViewFlags flags,
+                          float cullingGuardPx = 0.0f) {
+        if (count_ >= kMaxRenderViews)
+            return kInvalidIndex;
+        RenderView v;
+        std::memset(&v, 0, sizeof(v));
+        v.m_viewProjectionMatrix = viewProj;
+        v.m_inverseViewProjectionMatrix = glm::inverse(viewProj);
+        const float guardNdcX = (targetSize.x > 0.0f && cullingGuardPx > 0.0f)
+                                    ? 2.0f * cullingGuardPx / targetSize.x
+                                    : 0.0f;
+        const float guardNdcY = (targetSize.y > 0.0f && cullingGuardPx > 0.0f)
+                                    ? 2.0f * cullingGuardPx / targetSize.y
+                                    : 0.0f;
+        ExtractViewPlanes(viewProj, v.m_viewPlanes, guardNdcX, guardNdcY);
+        v.m_renderTargetSize = glm::vec4(targetSize.x,
+                                         targetSize.y,
+                                         targetSize.x > 0.0f ? 1.0f / targetSize.x : 0.0f,
+                                         targetSize.y > 0.0f ? 1.0f / targetSize.y : 0.0f);
+        v.m_renderViewFlags = flags;
+        views_[count_] = v;
+        return count_++;
+    }
 
-	// Main game camera -> exactly 1 view (first allocation wins MainViewIndex).
-	uint32_t AllocateMainView(
-		const glm::mat4& viewProj,
-		const glm::vec2& targetSize,
-		float cullingGuardPx = 0.0f) {
-		const uint32_t index = AllocateView(viewProj, targetSize, RenderViewFlagBit_MainView, cullingGuardPx);
-		if (mainView_ == kInvalidIndex)
-			mainView_ = index;
-		return index;
-	}
+    // Main game camera -> exactly 1 view (first allocation wins MainViewIndex).
+    uint32_t AllocateMainView(const glm::mat4& viewProj,
+                              const glm::vec2& targetSize,
+                              float cullingGuardPx = 0.0f) {
+        const uint32_t index =
+            AllocateView(viewProj, targetSize, RenderViewFlagBit_MainView, cullingGuardPx);
+        if (mainView_ == kInvalidIndex)
+            mainView_ = index;
+        return index;
+    }
 
-	// One directional light -> 1 view per shadow cascade. VPs come from the
-	// built GpuDirectionalLightDescription (same matrices the shadow passes
-	// and the receiver sampling use). Returns the first cascade view index
-	// (cascade i at base + i), kInvalidIndex when the light has no cascades.
-	uint32_t AllocateDirectionalLightViews(
-		const GpuDirectionalLightDescription& dir,
-		const glm::vec2& tileSize) {
-		const uint32_t cascadeCount = std::min<uint32_t>(
-			std::max<uint32_t>(static_cast<uint32_t>(dir.numCascades), 0u),
-			kMaxShadowCascadesPerLight);
-		if (cascadeCount == 0)
-			return kInvalidIndex;
-		const uint32_t base = AllocateView(
-			glm::make_mat4(dir.cascades[0].lightVP), tileSize, RenderViewFlagBit_ShadowCascade);
-		for (uint32_t i = 1; i < cascadeCount; ++i) {
-			AllocateView(
-				glm::make_mat4(dir.cascades[i].lightVP), tileSize, RenderViewFlagBit_ShadowCascade);
-		}
-		return base;
-	}
+    // One directional light -> 1 view per shadow cascade. VPs come from the
+    // built GpuDirectionalLightDescription (same matrices the shadow passes
+    // and the receiver sampling use). Returns the first cascade view index
+    // (cascade i at base + i), kInvalidIndex when the light has no cascades.
+    uint32_t AllocateDirectionalLightViews(const GpuDirectionalLightDescription& dir,
+                                           const glm::vec2& tileSize) {
+        const uint32_t cascadeCount =
+            std::min<uint32_t>(std::max<uint32_t>(static_cast<uint32_t>(dir.numCascades), 0u),
+                               kMaxShadowCascadesPerLight);
+        if (cascadeCount == 0)
+            return kInvalidIndex;
+        const uint32_t base = AllocateView(
+            glm::make_mat4(dir.cascades[0].lightVP), tileSize, RenderViewFlagBit_ShadowCascade);
+        for (uint32_t i = 1; i < cascadeCount; ++i) {
+            AllocateView(
+                glm::make_mat4(dir.cascades[i].lightVP), tileSize, RenderViewFlagBit_ShadowCascade);
+        }
+        return base;
+    }
 
-	// One shadowed spot light -> 1 view (VP from its atlas tile descriptor).
-	uint32_t AllocateSpotShadowView(
-		const GpuCascadeDescription& tile,
-		const glm::vec2& tileSize) {
-		return AllocateView(
-			glm::make_mat4(tile.lightVP), tileSize, RenderViewFlagBit_SpotShadow);
-	}
+    // One shadowed spot light -> 1 view (VP from its atlas tile descriptor).
+    uint32_t AllocateSpotShadowView(const GpuCascadeDescription& tile, const glm::vec2& tileSize) {
+        return AllocateView(glm::make_mat4(tile.lightVP), tileSize, RenderViewFlagBit_SpotShadow);
+    }
 
-	// One shadowed point light -> 6 views (one per cube-face tile; the
-	// caller allocates them back-to-back so face f is base + f, matching
-	// the frame's consecutive tile numbering - see spotshadow.h).
-	uint32_t AllocatePointShadowFaceView(
-		const GpuCascadeDescription& tile,
-		const glm::vec2& tileSize) {
-		return AllocateView(
-			glm::make_mat4(tile.lightVP), tileSize, RenderViewFlagBit_PointShadow);
-	}
+    // One shadowed point light -> 6 views (one per cube-face tile; the
+    // caller allocates them back-to-back so face f is base + f, matching
+    // the frame's consecutive tile numbering - see spotshadow.h).
+    uint32_t AllocatePointShadowFaceView(const GpuCascadeDescription& tile,
+                                         const glm::vec2& tileSize) {
+        return AllocateView(glm::make_mat4(tile.lightVP), tileSize, RenderViewFlagBit_PointShadow);
+    }
 
-	// Any other custom pass.
-	uint32_t AllocateCustomView(
-		const glm::mat4& viewProj,
-		const glm::vec2& targetSize,
-		float cullingGuardPx = 0.0f) {
-		return AllocateView(
-			viewProj, targetSize, RenderViewFlagBit_Custom, cullingGuardPx);
-	}
+    // Any other custom pass.
+    uint32_t AllocateCustomView(const glm::mat4& viewProj,
+                                const glm::vec2& targetSize,
+                                float cullingGuardPx = 0.0f) {
+        return AllocateView(viewProj, targetSize, RenderViewFlagBit_Custom, cullingGuardPx);
+    }
 
-	// ---------------------------------------------------------------
-	// GPU upload / access
-	// ---------------------------------------------------------------
+    // ---------------------------------------------------------------
+    // GPU upload / access
+    // ---------------------------------------------------------------
 
-	// Uploads the full frame slice (unused slots zeroed) so stale indices
-	// never observe garbage.
-	void Upload(ResourceManager& ctx, uint32_t frameIndex) {
-		assert(Valid());
-		RenderView slab[kMaxRenderViews];
-		std::memset(slab, 0, sizeof(slab));
-		std::memcpy(slab, views_.data(), sizeof(RenderView) * count_);
-		constexpr size_t frameStride = sizeof(RenderView) * kMaxRenderViews;
-		ctx.UploadDataToBuffer(
-			buffer_,
-			slab,
-			frameStride,
-			PipelineStage(PipelineStageBit_Compute | PipelineStageBit_Vertex | PipelineStageBit_Fragment),
-			AccessFlags::ShaderRead,
-			0,
-			frameIndex * frameStride);
-	}
+    // Uploads the full frame slice (unused slots zeroed) so stale indices
+    // never observe garbage.
+    void Upload(ResourceManager& ctx, uint32_t frameIndex) {
+        assert(Valid());
+        RenderView slab[kMaxRenderViews];
+        std::memset(slab, 0, sizeof(slab));
+        std::memcpy(slab, views_.data(), sizeof(RenderView) * count_);
+        constexpr size_t frameStride = sizeof(RenderView) * kMaxRenderViews;
+        ctx.UploadDataToBuffer(buffer_,
+                               slab,
+                               frameStride,
+                               PipelineStage(PipelineStageBit_Compute | PipelineStageBit_Vertex |
+                                             PipelineStageBit_Fragment),
+                               AccessFlags::ShaderRead,
+                               0,
+                               frameIndex * frameStride);
+    }
 
-	// Device address of the frame's slice (for PushConstants::renderViews).
-	[[nodiscard]] uint64_t DeviceAddress(ResourceManager& ctx, uint32_t frameIndex) const {
-		assert(Valid());
-		constexpr size_t frameStride = sizeof(RenderView) * kMaxRenderViews;
-		return ctx.GetBufferDeviceAddress(buffer_) + frameIndex * frameStride;
-	}
+    // Device address of the frame's slice (for PushConstants::renderViews).
+    [[nodiscard]] uint64_t DeviceAddress(ResourceManager& ctx, uint32_t frameIndex) const {
+        assert(Valid());
+        constexpr size_t frameStride = sizeof(RenderView) * kMaxRenderViews;
+        return ctx.GetBufferDeviceAddress(buffer_) + frameIndex * frameStride;
+    }
 
-	// Debug: GPU slab download + view-matrix dump (z-row) for the given
-	// frame slice. Useful to verify the uploaded views match the CPU side.
-	void DumpSlabViews(ResourceManager& ctx, uint32_t frameIndex,
-		uint32_t first, uint32_t count) const {
-		constexpr size_t frameStride = sizeof(RenderView) * kMaxRenderViews;
-		std::vector<uint8_t> bytes(sizeof(RenderView) * kMaxRenderViews, 0);
-		if (!ctx.DownloadDataFromBuffer(buffer_, bytes.data(), bytes.size(),
-				frameIndex * frameStride)) {
-			std::fprintf(stderr, "[slab-gpu] download failed\n");
-			return;
-		}
-		for (uint32_t i = first; i < first + count; ++i) {
-			const float* m = reinterpret_cast<const float*>(
-				bytes.data() + i * sizeof(RenderView));
-			std::fprintf(stderr,
-				"[slab-gpu %u] vp row2=[%.4g %.4g %.4g %.4g]\n",
-				i, m[2], m[6], m[10], m[14]);
-		}
-	}
+    // Debug: GPU slab download + view-matrix dump (z-row) for the given
+    // frame slice. Useful to verify the uploaded views match the CPU side.
+    void DumpSlabViews(ResourceManager& ctx,
+                       uint32_t frameIndex,
+                       uint32_t first,
+                       uint32_t count) const {
+        constexpr size_t frameStride = sizeof(RenderView) * kMaxRenderViews;
+        std::vector<uint8_t> bytes(sizeof(RenderView) * kMaxRenderViews, 0);
+        if (!ctx.DownloadDataFromBuffer(
+                buffer_, bytes.data(), bytes.size(), frameIndex * frameStride)) {
+            std::fprintf(stderr, "[slab-gpu] download failed\n");
+            return;
+        }
+        for (uint32_t i = first; i < first + count; ++i) {
+            const float* m = reinterpret_cast<const float*>(bytes.data() + i * sizeof(RenderView));
+            std::fprintf(stderr,
+                         "[slab-gpu %u] vp row2=[%.4g %.4g %.4g %.4g]\n",
+                         i,
+                         m[2],
+                         m[6],
+                         m[10],
+                         m[14]);
+        }
+    }
 
-	// Debug: CPU-side view matrix dump.
-	void DumpViews(uint32_t first, uint32_t count) const {
-		for (uint32_t i = first; i < first + count && i < count_; ++i) {
-			const float* m = glm::value_ptr(views_[i].m_viewProjectionMatrix);
-			std::fprintf(stderr,
-				"[views cpu %u] vp=[%.4g %.4g %.4g %.4g / %.4g %.4g %.4g %.4g / %.4g %.4g %.4g %.4g / %.4g %.4g %.4g %.4g]\n",
-				i, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
-				m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
-		}
-	}
+    // Debug: CPU-side view matrix dump.
+    void DumpViews(uint32_t first, uint32_t count) const {
+        for (uint32_t i = first; i < first + count && i < count_; ++i) {
+            const float* m = glm::value_ptr(views_[i].m_viewProjectionMatrix);
+            std::fprintf(stderr,
+                         "[views cpu %u] vp=[%.4g %.4g %.4g %.4g / %.4g %.4g %.4g %.4g / %.4g %.4g "
+                         "%.4g %.4g / %.4g %.4g %.4g %.4g]\n",
+                         i,
+                         m[0],
+                         m[1],
+                         m[2],
+                         m[3],
+                         m[4],
+                         m[5],
+                         m[6],
+                         m[7],
+                         m[8],
+                         m[9],
+                         m[10],
+                         m[11],
+                         m[12],
+                         m[13],
+                         m[14],
+                         m[15]);
+        }
+    }
 
-private:
-	Holder<BufferHandle> buffer_;
-	std::vector<RenderView> views_ = std::vector<RenderView>(kMaxRenderViews);
-	uint32_t framesInFlight_ = 0;
-	uint32_t count_ = 0;
-	uint32_t mainView_ = kInvalidIndex;
+  private:
+    Holder<BufferHandle> buffer_;
+    std::vector<RenderView> views_ = std::vector<RenderView>(kMaxRenderViews);
+    uint32_t framesInFlight_ = 0;
+    uint32_t count_ = 0;
+    uint32_t mainView_ = kInvalidIndex;
 };
 
 } // namespace smvk

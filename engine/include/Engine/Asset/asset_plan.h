@@ -48,9 +48,9 @@ namespace tour::asset {
 // .geometry identity (the compiled key — a static literal, never a
 // runtime-computed join).
 struct MeshPlanRef {
-	uint32_t pakIndex = 0;
-	uint32_t baseSlot = 0;
-	const char* familyPath = "";
+    uint32_t pakIndex = 0;
+    uint32_t baseSlot = 0;
+    const char* familyPath = "";
 };
 
 // The LAYOUT fingerprint of one pak: everything a compiled read
@@ -65,14 +65,14 @@ struct MeshPlanRef {
 // mount-ordered pak names + their per-pak layout fingerprints. The
 // names are the MANIFEST's logical pak ids (never the
 // content-addressed file names — those are the publication layer).
-[[nodiscard]] std::string FoldPakLayouts(
-	const std::string* pakNames, const std::string* pakFingerprints,
-	size_t pakCount);
+[[nodiscard]] std::string FoldPakLayouts(const std::string* pakNames,
+                                         const std::string* pakFingerprints,
+                                         size_t pakCount);
 
 } // namespace tour::asset
 
 namespace smvk {
+using ::tour::asset::FoldPakLayouts;
 using ::tour::asset::MeshPlanRef;
 using ::tour::asset::PakLayoutFingerprint;
-using ::tour::asset::FoldPakLayouts;
 } // namespace smvk

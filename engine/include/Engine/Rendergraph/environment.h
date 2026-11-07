@@ -41,9 +41,9 @@
 //   cmd.PushConstants(... pc ...);
 //   cmd.Draw(3, 1, 0, 0);
 
-#include <Engine/Rendergraph/rendergraph.h>
-#include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Rendergraph/ShaderSwap.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
 #include <glm/glm.hpp>
@@ -56,14 +56,14 @@ namespace smvk {
 
 // Must match HLSL EnvironmentFrameData in common.hlsli (field order + size).
 struct alignas(16) EnvironmentFrameData {
-	glm::vec4 skyZenith{ 0.25f, 0.45f, 0.90f, 600.0f };
-	glm::vec4 skyHorizon{ 0.65f, 0.75f, 0.90f, 2.0f };
-	glm::vec4 ground{ 0.20f, 0.18f, 0.15f, 20.0f };
-	glm::vec4 sunDirection{ 0.0f, 1.0f, 0.0f, 0.9998f };
-	glm::vec4 sunColor{ 1.0f, 0.95f, 0.90f, 10000.0f };
-	glm::vec4 fogColor{ 0.65f, 0.75f, 0.90f, 600.0f };
-	glm::vec4 fogDensityHeight{ 0.01f, 0.0f, 0.0f, 10.0f };
-	glm::vec4 fogEndAndFlags{ 80.0f, 1.0f, 0.0f, 1.0f };
+    glm::vec4 skyZenith{0.25f, 0.45f, 0.90f, 600.0f};
+    glm::vec4 skyHorizon{0.65f, 0.75f, 0.90f, 2.0f};
+    glm::vec4 ground{0.20f, 0.18f, 0.15f, 20.0f};
+    glm::vec4 sunDirection{0.0f, 1.0f, 0.0f, 0.9998f};
+    glm::vec4 sunColor{1.0f, 0.95f, 0.90f, 10000.0f};
+    glm::vec4 fogColor{0.65f, 0.75f, 0.90f, 600.0f};
+    glm::vec4 fogDensityHeight{0.01f, 0.0f, 0.0f, 10.0f};
+    glm::vec4 fogEndAndFlags{80.0f, 1.0f, 0.0f, 1.0f};
 };
 static_assert(sizeof(EnvironmentFrameData) == 128);
 static_assert(sizeof(EnvironmentFrameData) % 16 == 0);
@@ -77,67 +77,66 @@ inline constexpr float kFogLinear = 2.0f;
 
 // CPU-editable settings. ImGui writes these; ToFrameData() packs the GPU form.
 struct EnvironmentSettings {
-	bool skyEnabled = true;
-	bool iblEnabled = true;
+    bool skyEnabled = true;
+    bool iblEnabled = true;
 
-	glm::vec3 skyZenithColor{ 0.25f, 0.45f, 0.90f };
-	float skyIntensity = 600.0f; // HDR multiplier for the visible dome
-	float skyExponent = 2.0f;    // horizon->zenith gradient pow
+    glm::vec3 skyZenithColor{0.25f, 0.45f, 0.90f};
+    float skyIntensity = 600.0f; // HDR multiplier for the visible dome
+    float skyExponent = 2.0f;    // horizon->zenith gradient pow
 
-	glm::vec3 skyHorizonColor{ 0.65f, 0.75f, 0.90f };
-	glm::vec3 groundColor{ 0.20f, 0.18f, 0.15f };
-	float iblIntensity = 20.0f; // HDR multiplier for diffuse/spec IBL
+    glm::vec3 skyHorizonColor{0.65f, 0.75f, 0.90f};
+    glm::vec3 groundColor{0.20f, 0.18f, 0.15f};
+    float iblIntensity = 20.0f; // HDR multiplier for diffuse/spec IBL
 
-	// Sun: also drives the directional light when the app links them.
-	float sunAzimuthDeg = 30.0f;   // compass around Y, 0 = +Z
-	float sunElevationDeg = 55.0f; // above horizon
-	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
-	float sunIntensity = 10000.0f; // lux-like, matches directional light
-	float sunDiscSizeDeg = 1.5f;   // angular radius for the visible disc
-	bool sunDiscEnabled = true;
+    // Sun: also drives the directional light when the app links them.
+    float sunAzimuthDeg = 30.0f;   // compass around Y, 0 = +Z
+    float sunElevationDeg = 55.0f; // above horizon
+    glm::vec3 sunColor{1.0f, 0.95f, 0.90f};
+    float sunIntensity = 10000.0f; // lux-like, matches directional light
+    float sunDiscSizeDeg = 1.5f;   // angular radius for the visible disc
+    bool sunDiscEnabled = true;
 
-	glm::vec3 fogColor{ 0.65f, 0.75f, 0.90f };
-	float fogIntensity = 600.0f; // HDR multiplier; default matches sky horizon
-	int fogMode = 0;             // 0=off, 1=exp2, 2=linear
-	float fogDensity = 0.01f;    // exp2 mode
-	float fogStart = 10.0f;      // linear mode
-	float fogEnd = 80.0f;        // linear mode
-	float fogHeight = 0.0f;      // height fog reference
-	float fogHeightFalloff = 0.0f; // 0 = disabled
+    glm::vec3 fogColor{0.65f, 0.75f, 0.90f};
+    float fogIntensity = 600.0f;   // HDR multiplier; default matches sky horizon
+    int fogMode = 0;               // 0=off, 1=exp2, 2=linear
+    float fogDensity = 0.01f;      // exp2 mode
+    float fogStart = 10.0f;        // linear mode
+    float fogEnd = 80.0f;          // linear mode
+    float fogHeight = 0.0f;        // height fog reference
+    float fogHeightFalloff = 0.0f; // 0 = disabled
 
-	glm::vec3 SunDirectionToSun() const {
-		const float az = glm::radians(sunAzimuthDeg);
-		const float el = glm::radians(sunElevationDeg);
-		const float ce = std::cos(el);
-		glm::vec3 d{ std::sin(az) * ce, std::sin(el), std::cos(az) * ce };
-		const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
-		if (len < 1e-6f)
-			return glm::vec3(0.0f, 1.0f, 0.0f);
-		return d / len;
-	}
+    glm::vec3 SunDirectionToSun() const {
+        const float az = glm::radians(sunAzimuthDeg);
+        const float el = glm::radians(sunElevationDeg);
+        const float ce = std::cos(el);
+        glm::vec3 d{std::sin(az) * ce, std::sin(el), std::cos(az) * ce};
+        const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        if (len < 1e-6f)
+            return glm::vec3(0.0f, 1.0f, 0.0f);
+        return d / len;
+    }
 
-	EnvironmentFrameData ToFrameData() const {
-		EnvironmentFrameData f{};
-		f.skyZenith = glm::vec4(skyZenithColor, skyIntensity);
-		f.skyHorizon = glm::vec4(skyHorizonColor, skyExponent);
-		f.ground = glm::vec4(groundColor, iblEnabled ? iblIntensity : 0.0f);
-		const glm::vec3 toSun = SunDirectionToSun();
-		float discCos = -1.0f; // disabled sentinel (dot < discCos never true)
-		if (sunDiscEnabled) {
-			const float r = glm::radians(glm::clamp(sunDiscSizeDeg, 0.05f, 45.0f));
-			discCos = std::cos(r);
-		}
-		f.sunDirection = glm::vec4(toSun, discCos);
-		f.sunColor = glm::vec4(sunColor, sunIntensity);
-		f.fogColor = glm::vec4(fogColor, fogIntensity);
-		f.fogDensityHeight = glm::vec4(fogDensity, fogHeight, fogHeightFalloff, fogStart);
-		f.fogEndAndFlags = glm::vec4(
-			fogEnd,
-			skyEnabled ? kSkyGradient : kSkyOff,
-			static_cast<float>(fogMode),
-			iblEnabled ? 1.0f : 0.0f);
-		return f;
-	}
+    EnvironmentFrameData ToFrameData() const {
+        EnvironmentFrameData f{};
+        f.skyZenith = glm::vec4(skyZenithColor, skyIntensity);
+        f.skyHorizon = glm::vec4(skyHorizonColor, skyExponent);
+        f.ground = glm::vec4(groundColor, iblEnabled ? iblIntensity : 0.0f);
+        const glm::vec3 toSun = SunDirectionToSun();
+        float discCos = -1.0f; // disabled sentinel (dot < discCos never true)
+        if (sunDiscEnabled) {
+            const float r = glm::radians(glm::clamp(sunDiscSizeDeg, 0.05f, 45.0f));
+            discCos = std::cos(r);
+        }
+        f.sunDirection = glm::vec4(toSun, discCos);
+        f.sunColor = glm::vec4(sunColor, sunIntensity);
+        f.fogColor = glm::vec4(fogColor, fogIntensity);
+        f.fogDensityHeight = glm::vec4(fogDensity, fogHeight, fogHeightFalloff, fogStart);
+        f.fogEndAndFlags = glm::vec4(fogEnd,
+                                     skyEnabled ? kSkyGradient : kSkyOff,
+                                     static_cast<float>(fogMode),
+                                     iblEnabled ? 1.0f : 0.0f);
+        return f;
+    }
 };
 
 inline constexpr const char* kSkyVsPath = "content/shaders/sky.vert.hlsl.spv";
@@ -147,64 +146,64 @@ inline constexpr const char* kSkyPsPath = "content/shaders/sky.frag.hlsl.spv";
 // Reads FrameUniforms via the shared PushConstants (frameUniforms pointer),
 // so the app just pushes its usual PC before drawing.
 struct Skydome {
-	Holder<ShaderModuleHandle> vsModule;
-	Holder<ShaderModuleHandle> fragModule;
-	ShaderProgram program{};
+    Holder<ShaderModuleHandle> vsModule;
+    Holder<ShaderModuleHandle> fragModule;
+    ShaderProgram program{};
 
-	[[nodiscard]] bool ShadersValid() const {
-		return program.shaderCount != 0 && !vsModule.empty() && !fragModule.empty();
-	}
+    [[nodiscard]] bool ShadersValid() const {
+        return program.shaderCount != 0 && !vsModule.empty() && !fragModule.empty();
+    }
 
-	bool EnsureShaders(ResourceManager& ctx,
-		const char* vsPath = kSkyVsPath,
-		const char* psPath = kSkyPsPath) {
-		if (ShadersValid())
-			return true;
-		try {
-			const std::string vs = vsPath ? vsPath : kSkyVsPath;
-			const std::string ps = psPath ? psPath : kSkyPsPath;
-			if (vsModule.empty())
-				vsModule = ctx.CreateShaderModule(readFile(vs), "skyVert");
-			if (fragModule.empty())
-				fragModule = ctx.CreateShaderModule(readFile(ps), "skyFrag");
-		} catch (...) {
-			return false;
-		}
-		if (vsModule.empty() || fragModule.empty())
-			return false;
-		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
-		Shader ps{ .module = fragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
-		program = { .shaders = { vs, ps }, .shaderCount = 2 };
-		return true;
-	}
+    bool EnsureShaders(ResourceManager& ctx,
+                       const char* vsPath = kSkyVsPath,
+                       const char* psPath = kSkyPsPath) {
+        if (ShadersValid())
+            return true;
+        try {
+            const std::string vs = vsPath ? vsPath : kSkyVsPath;
+            const std::string ps = psPath ? psPath : kSkyPsPath;
+            if (vsModule.empty())
+                vsModule = ctx.CreateShaderModule(readFile(vs), "skyVert");
+            if (fragModule.empty())
+                fragModule = ctx.CreateShaderModule(readFile(ps), "skyFrag");
+        } catch (...) {
+            return false;
+        }
+        if (vsModule.empty() || fragModule.empty())
+            return false;
+        Shader vs{.module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex};
+        Shader ps{.module = fragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment};
+        program = {.shaders = {vs, ps}, .shaderCount = 2};
+        return true;
+    }
 
-	bool Ensure(ResourceManager& ctx,
-		const char* vsPath = kSkyVsPath,
-		const char* psPath = kSkyPsPath) {
-		return EnsureShaders(ctx, vsPath, psPath);
-	}
+    bool Ensure(ResourceManager& ctx,
+                const char* vsPath = kSkyVsPath,
+                const char* psPath = kSkyPsPath) {
+        return EnsureShaders(ctx, vsPath, psPath);
+    }
 
-	void DestroyShaders() {
-		program = ShaderProgram();
-		vsModule = {};
-		fragModule = {};
-	}
+    void DestroyShaders() {
+        program = ShaderProgram();
+        vsModule = {};
+        fragModule = {};
+    }
 
-	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
-	// module swap (a failed read keeps the standing module), zero the
-	// program, re-Ensure. Returns true when anything moved; the released
-	// old handles ride `retired` for the caller's retirement pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-		std::vector<ShaderModuleHandle>& retired) {
-		bool any = false;
-		any |= SwapShaderModule(ctx, kSkyVsPath, "skyVert", vsModule, retired);
-		any |= SwapShaderModule(ctx, kSkyPsPath, "skyFrag", fragModule, retired);
-		if (!any)
-			return false;
-		program = ShaderProgram();
-		EnsureShaders(ctx);
-		return true;
-	}
+    // HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+    // module swap (a failed read keeps the standing module), zero the
+    // program, re-Ensure. Returns true when anything moved; the released
+    // old handles ride `retired` for the caller's retirement pass.
+    [[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+                                     std::vector<ShaderModuleHandle>& retired) {
+        bool any = false;
+        any |= SwapShaderModule(ctx, kSkyVsPath, "skyVert", vsModule, retired);
+        any |= SwapShaderModule(ctx, kSkyPsPath, "skyFrag", fragModule, retired);
+        if (!any)
+            return false;
+        program = ShaderProgram();
+        EnsureShaders(ctx);
+        return true;
+    }
 };
 
 } // namespace smvk

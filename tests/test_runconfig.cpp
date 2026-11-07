@@ -6,9 +6,9 @@
 // Does not depend on GPU. Each case saves/restores the vars it touches so
 // ctest stays hermetic when run in one process list.
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include <cmath>
 #include <iostream>
 #include <string>
 
@@ -20,345 +20,335 @@ int g_failures = 0;
 int g_checks = 0;
 
 void Check(bool cond, const char* name) {
-	if (++g_checks, cond)
-		std::cout << "PASS " << name << "\n";
-	else {
-		++g_failures;
-		std::cout << "FAIL " << name << "\n";
-	}
+    if (++g_checks, cond)
+        std::cout << "PASS " << name << "\n";
+    else {
+        ++g_failures;
+        std::cout << "FAIL " << name << "\n";
+    }
 }
 
 #if defined(_WIN32)
-void SetVar(const char* n, const char* v) { _putenv_s(n, v); }
-void UnsetVar(const char* n) { _putenv_s(n, ""); }
+void SetVar(const char* n, const char* v) {
+    _putenv_s(n, v);
+}
+void UnsetVar(const char* n) {
+    _putenv_s(n, "");
+}
 #else
-void SetVar(const char* n, const char* v) { setenv(n, v, 1); }
-void UnsetVar(const char* n) { unsetenv(n); }
+void SetVar(const char* n, const char* v) {
+    setenv(n, v, 1);
+}
+void UnsetVar(const char* n) {
+    unsetenv(n);
+}
 #endif
 
 } // namespace
 
 int main() {
-	// Helpers preserve historical semantics exactly.
-	Check(engine::EnvBoolAtoi("1") && engine::EnvBoolAtoi("7")
-		&& !engine::EnvBoolAtoi("0") && !engine::EnvBoolAtoi(nullptr),
-		"runconfig.helper-bool-atoi");
-	Check(engine::EnvExactZeroKill("0") && !engine::EnvExactZeroKill("off")
-		&& !engine::EnvExactZeroKill(nullptr),
-		"runconfig.helper-exact-zero");
-	float x = 0, y = 0, z = 0;
-	Check(engine::ParseVec3("1.5,-2.0,3.25", x, y, z) && x == 1.5f && y == -2.0f
-		&& z == 3.25f,
-		"runconfig.helper-vec3");
-	Check(!engine::ParseVec3("bogus", x, y, z), "runconfig.helper-vec3-reject");
+    // Helpers preserve historical semantics exactly.
+    Check(engine::EnvBoolAtoi("1") && engine::EnvBoolAtoi("7") && !engine::EnvBoolAtoi("0") &&
+              !engine::EnvBoolAtoi(nullptr),
+          "runconfig.helper-bool-atoi");
+    Check(engine::EnvExactZeroKill("0") && !engine::EnvExactZeroKill("off") &&
+              !engine::EnvExactZeroKill(nullptr),
+          "runconfig.helper-exact-zero");
+    float x = 0, y = 0, z = 0;
+    Check(engine::ParseVec3("1.5,-2.0,3.25", x, y, z) && x == 1.5f && y == -2.0f && z == 3.25f,
+          "runconfig.helper-vec3");
+    Check(!engine::ParseVec3("bogus", x, y, z), "runconfig.helper-vec3-reject");
 
-	// Defaults with a clean slate for the touched vars.
-	const char* kTouched[] = {"TOURMALINE_AA", "TOURMALINE_MESH", "TOURMALINE_CAPTURE",
-		"TOURMALINE_CAM_YAW", "TOURMALINE_TERRAIN"};
-	for (const char* n : kTouched)
-		UnsetVar(n);
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(!c.aa.has_value(), "runconfig.default-aa-empty");
-		Check(!c.meshSet && c.mesh, "runconfig.default-mesh-on");
-		Check(c.capture < 0, "runconfig.default-capture-off");
-		Check(!c.terrainPinned, "runconfig.default-terrain-unpinned");
-	}
+    // Defaults with a clean slate for the touched vars.
+    const char* kTouched[] = {"TOURMALINE_AA",
+                              "TOURMALINE_MESH",
+                              "TOURMALINE_CAPTURE",
+                              "TOURMALINE_CAM_YAW",
+                              "TOURMALINE_TERRAIN"};
+    for (const char* n : kTouched)
+        UnsetVar(n);
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(!c.aa.has_value(), "runconfig.default-aa-empty");
+        Check(!c.meshSet && c.mesh, "runconfig.default-mesh-on");
+        Check(c.capture < 0, "runconfig.default-capture-off");
+        Check(!c.terrainPinned, "runconfig.default-terrain-unpinned");
+    }
 
-	// The gameplay seed is a strict unsigned 64-bit decimal, including zero.
-	UnsetVar("TOURMALINE_RNG_SEED");
-	Check(!engine::RunConfig::Parse().rngSeed.has_value(),
-		"runconfig.default-rng-seed-unset");
-	SetVar("TOURMALINE_RNG_SEED", "0");
-	Check(engine::RunConfig::Parse().rngSeed == 0,
-		"runconfig.rng-zero-valid");
-	SetVar("TOURMALINE_RNG_SEED", "18446744073709551615");
-	Check(engine::RunConfig::Parse().rngSeed == UINT64_MAX,
-		"runconfig.rng-max-uint64-valid");
-	for (const char* invalid : {"18446744073709551616", "-1", "12oops", ""}) {
-		SetVar("TOURMALINE_RNG_SEED", invalid);
-		Check(!engine::RunConfig::Parse().rngSeed.has_value(),
-			"runconfig.rng-invalid-rejected");
-	}
-	UnsetVar("TOURMALINE_RNG_SEED");
+    // The gameplay seed is a strict unsigned 64-bit decimal, including zero.
+    UnsetVar("TOURMALINE_RNG_SEED");
+    Check(!engine::RunConfig::Parse().rngSeed.has_value(), "runconfig.default-rng-seed-unset");
+    SetVar("TOURMALINE_RNG_SEED", "0");
+    Check(engine::RunConfig::Parse().rngSeed == 0, "runconfig.rng-zero-valid");
+    SetVar("TOURMALINE_RNG_SEED", "18446744073709551615");
+    Check(engine::RunConfig::Parse().rngSeed == UINT64_MAX, "runconfig.rng-max-uint64-valid");
+    for (const char* invalid : {"18446744073709551616", "-1", "12oops", ""}) {
+        SetVar("TOURMALINE_RNG_SEED", invalid);
+        Check(!engine::RunConfig::Parse().rngSeed.has_value(), "runconfig.rng-invalid-rejected");
+    }
+    UnsetVar("TOURMALINE_RNG_SEED");
 
-	// Validated pin parsing (authored scene wins invalid values).
-	SetVar("TOURMALINE_AA", "msaa2xcustom");
-	{
-		const engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.aa.has_value() && *c.aa == engine::AaPin::Msaa2xCustom,
-			"runconfig.parse-aa-custom");
-	}
-	SetVar("TOURMALINE_AA", "msaa2x");
-	SetVar("TOURMALINE_MESH", "0");
-	SetVar("TOURMALINE_CAPTURE", "48");
-	SetVar("TOURMALINE_CAM_YAW", "90.0");
-	SetVar("TOURMALINE_TERRAIN", "1");
-	SetVar("TOURMALINE_SSR", "off");
-	SetVar("TOURMALINE_AO", "ssao");
-	SetVar("TOURMALINE_VOLUMETRIC", "1");
-	SetVar("TOURMALINE_VOLUMETRIC_STEPS", "64");
-	SetVar("TOURMALINE_BLOOM_THRESHOLD", "400");
-	SetVar("TOURMALINE_AUTO_EXPOSURE", "0");
-	SetVar("TOURMALINE_CUBEMAP", "0");
-	SetVar("TOURMALINE_CONTACT_SHADOWS", "0");
-	SetVar("TOURMALINE_CONTACT_SHADOWS_STEPS", "24");
-	SetVar("TOURMALINE_CONTACT_SHADOWS_RES", "1");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.aa.has_value() && *c.aa == engine::AaPin::Msaa2x,
-			"runconfig.parse-aa");
-		Check(c.meshSet && !c.mesh && c.meshDeviceKilled, "runconfig.parse-mesh-kill");
-		Check(c.capture == 48, "runconfig.parse-capture");
-		Check(c.camYawDeg.has_value() && *c.camYawDeg == 90.0f,
-			"runconfig.parse-yaw");
-		Check(c.terrainPinned && c.terrain, "runconfig.parse-terrain");
-		Check(c.ssr.has_value() && *c.ssr == engine::OnOffPin::Off,
-			"runconfig.parse-ssr-pin");
-		Check(c.ao.has_value() && *c.ao == engine::AoPin::Ssao,
-			"runconfig.parse-ao-pin");
-		Check(c.volumetric.has_value() && *c.volumetric == engine::OnOffPin::On,
-			"runconfig.parse-vol-pin");
-		Check(c.volumetricSteps.has_value() && *c.volumetricSteps == 64,
-			"runconfig.parse-vol-steps");
-		Check(c.bloomThreshold.has_value() && *c.bloomThreshold == 400.0f,
-			"runconfig.parse-bloom-thr");
-		Check(c.autoExposure.has_value() && !*c.autoExposure,
-			"runconfig.parse-autoexp-pin");
-		Check(c.cubemap.has_value() && !*c.cubemap, "runconfig.parse-cubemap-kill");
-		Check(c.contactShadows.has_value() && *c.contactShadows == engine::OnOffPin::Off,
-			"runconfig.parse-contact-pin");
-		Check(c.contactShadowSteps.has_value() && *c.contactShadowSteps == 24,
-			"runconfig.parse-contact-steps");
-		Check(c.contactShadowRes.has_value() && *c.contactShadowRes == 1,
-			"runconfig.parse-contact-res");
-	}
-	for (const char* n : kTouched)
-		UnsetVar(n);
-	UnsetVar("TOURMALINE_SSR");
-	UnsetVar("TOURMALINE_AO");
-	UnsetVar("TOURMALINE_VOLUMETRIC");
-	UnsetVar("TOURMALINE_VOLUMETRIC_STEPS");
-	UnsetVar("TOURMALINE_BLOOM_THRESHOLD");
-	UnsetVar("TOURMALINE_AUTO_EXPOSURE");
-	UnsetVar("TOURMALINE_CUBEMAP");
+    // Validated pin parsing (authored scene wins invalid values).
+    SetVar("TOURMALINE_AA", "msaa2xcustom");
+    {
+        const engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.aa.has_value() && *c.aa == engine::AaPin::Msaa2xCustom,
+              "runconfig.parse-aa-custom");
+    }
+    SetVar("TOURMALINE_AA", "msaa2x");
+    SetVar("TOURMALINE_MESH", "0");
+    SetVar("TOURMALINE_CAPTURE", "48");
+    SetVar("TOURMALINE_CAM_YAW", "90.0");
+    SetVar("TOURMALINE_TERRAIN", "1");
+    SetVar("TOURMALINE_SSR", "off");
+    SetVar("TOURMALINE_AO", "ssao");
+    SetVar("TOURMALINE_VOLUMETRIC", "1");
+    SetVar("TOURMALINE_VOLUMETRIC_STEPS", "64");
+    SetVar("TOURMALINE_BLOOM_THRESHOLD", "400");
+    SetVar("TOURMALINE_AUTO_EXPOSURE", "0");
+    SetVar("TOURMALINE_CUBEMAP", "0");
+    SetVar("TOURMALINE_CONTACT_SHADOWS", "0");
+    SetVar("TOURMALINE_CONTACT_SHADOWS_STEPS", "24");
+    SetVar("TOURMALINE_CONTACT_SHADOWS_RES", "1");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.aa.has_value() && *c.aa == engine::AaPin::Msaa2x, "runconfig.parse-aa");
+        Check(c.meshSet && !c.mesh && c.meshDeviceKilled, "runconfig.parse-mesh-kill");
+        Check(c.capture == 48, "runconfig.parse-capture");
+        Check(c.camYawDeg.has_value() && *c.camYawDeg == 90.0f, "runconfig.parse-yaw");
+        Check(c.terrainPinned && c.terrain, "runconfig.parse-terrain");
+        Check(c.ssr.has_value() && *c.ssr == engine::OnOffPin::Off, "runconfig.parse-ssr-pin");
+        Check(c.ao.has_value() && *c.ao == engine::AoPin::Ssao, "runconfig.parse-ao-pin");
+        Check(c.volumetric.has_value() && *c.volumetric == engine::OnOffPin::On,
+              "runconfig.parse-vol-pin");
+        Check(c.volumetricSteps.has_value() && *c.volumetricSteps == 64,
+              "runconfig.parse-vol-steps");
+        Check(c.bloomThreshold.has_value() && *c.bloomThreshold == 400.0f,
+              "runconfig.parse-bloom-thr");
+        Check(c.autoExposure.has_value() && !*c.autoExposure, "runconfig.parse-autoexp-pin");
+        Check(c.cubemap.has_value() && !*c.cubemap, "runconfig.parse-cubemap-kill");
+        Check(c.contactShadows.has_value() && *c.contactShadows == engine::OnOffPin::Off,
+              "runconfig.parse-contact-pin");
+        Check(c.contactShadowSteps.has_value() && *c.contactShadowSteps == 24,
+              "runconfig.parse-contact-steps");
+        Check(c.contactShadowRes.has_value() && *c.contactShadowRes == 1,
+              "runconfig.parse-contact-res");
+    }
+    for (const char* n : kTouched)
+        UnsetVar(n);
+    UnsetVar("TOURMALINE_SSR");
+    UnsetVar("TOURMALINE_AO");
+    UnsetVar("TOURMALINE_VOLUMETRIC");
+    UnsetVar("TOURMALINE_VOLUMETRIC_STEPS");
+    UnsetVar("TOURMALINE_BLOOM_THRESHOLD");
+    UnsetVar("TOURMALINE_AUTO_EXPOSURE");
+    UnsetVar("TOURMALINE_CUBEMAP");
 
-	// Contact-shadow pins: bad/out-of-range values warn and leave the
-	// authored scene winning (RES only takes 1 full | 2 half).
-	SetVar("TOURMALINE_CONTACT_SHADOWS", "maybe");
-	SetVar("TOURMALINE_CONTACT_SHADOWS_STEPS", "99");
-	SetVar("TOURMALINE_CONTACT_SHADOWS_DIST", "0.001");
-	SetVar("TOURMALINE_CONTACT_SHADOWS_THICKNESS", "5.0");
-	SetVar("TOURMALINE_CONTACT_SHADOWS_RES", "3");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(!c.contactShadows.has_value(), "runconfig.invalid-contact-unset");
-		Check(!c.contactShadowSteps.has_value(), "runconfig.invalid-contact-steps-unset");
-		Check(!c.contactShadowDist.has_value(), "runconfig.invalid-contact-dist-unset");
-		Check(!c.contactShadowThickness.has_value(), "runconfig.invalid-contact-thickness-unset");
-		Check(!c.contactShadowRes.has_value(), "runconfig.invalid-contact-res-unset");
-	}
-	UnsetVar("TOURMALINE_CONTACT_SHADOWS");
-	UnsetVar("TOURMALINE_CONTACT_SHADOWS_STEPS");
-	UnsetVar("TOURMALINE_CONTACT_SHADOWS_DIST");
-	UnsetVar("TOURMALINE_CONTACT_SHADOWS_THICKNESS");
-	UnsetVar("TOURMALINE_CONTACT_SHADOWS_RES");
+    // Contact-shadow pins: bad/out-of-range values warn and leave the
+    // authored scene winning (RES only takes 1 full | 2 half).
+    SetVar("TOURMALINE_CONTACT_SHADOWS", "maybe");
+    SetVar("TOURMALINE_CONTACT_SHADOWS_STEPS", "99");
+    SetVar("TOURMALINE_CONTACT_SHADOWS_DIST", "0.001");
+    SetVar("TOURMALINE_CONTACT_SHADOWS_THICKNESS", "5.0");
+    SetVar("TOURMALINE_CONTACT_SHADOWS_RES", "3");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(!c.contactShadows.has_value(), "runconfig.invalid-contact-unset");
+        Check(!c.contactShadowSteps.has_value(), "runconfig.invalid-contact-steps-unset");
+        Check(!c.contactShadowDist.has_value(), "runconfig.invalid-contact-dist-unset");
+        Check(!c.contactShadowThickness.has_value(), "runconfig.invalid-contact-thickness-unset");
+        Check(!c.contactShadowRes.has_value(), "runconfig.invalid-contact-res-unset");
+    }
+    UnsetVar("TOURMALINE_CONTACT_SHADOWS");
+    UnsetVar("TOURMALINE_CONTACT_SHADOWS_STEPS");
+    UnsetVar("TOURMALINE_CONTACT_SHADOWS_DIST");
+    UnsetVar("TOURMALINE_CONTACT_SHADOWS_THICKNESS");
+    UnsetVar("TOURMALINE_CONTACT_SHADOWS_RES");
 
-	// Geometry-streaming pin: parse + log plumbing only (the serializer
-	// reads the env directly - see the field's note).
-	SetVar("TOURMALINE_GEOMETRY_STREAMING", "on");
-	SetVar("TOURMALINE_GEOMETRY_BUDGET_MB", "8");
-	SetVar("TOURMALINE_GEOMETRY_EVICT_IDLE", "16");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.geometryStreaming.has_value()
-			&& *c.geometryStreaming == engine::OnOffPin::On,
-			"runconfig.parse-geo-streaming");
-		Check(c.geometryBudgetMb.has_value() && *c.geometryBudgetMb == 8,
-			"runconfig.parse-geo-budget");
-		Check(c.geometryEvictIdle.has_value() && *c.geometryEvictIdle == 16,
-			"runconfig.parse-geo-evict-idle");
-	}
-	SetVar("TOURMALINE_GEOMETRY_STREAMING", "maybe");
-	SetVar("TOURMALINE_GEOMETRY_BUDGET_MB", "0");
-	SetVar("TOURMALINE_GEOMETRY_EVICT_IDLE", "-4");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(!c.geometryStreaming.has_value(),
-			"runconfig.invalid-geo-streaming-unset");
-		Check(!c.geometryBudgetMb.has_value(),
-			"runconfig.invalid-geo-budget-unset");
-		Check(!c.geometryEvictIdle.has_value(),
-			"runconfig.invalid-geo-evict-idle-unset");
-	}
-	UnsetVar("TOURMALINE_GEOMETRY_STREAMING");
-	UnsetVar("TOURMALINE_GEOMETRY_BUDGET_MB");
-	UnsetVar("TOURMALINE_GEOMETRY_EVICT_IDLE");
+    // Geometry-streaming pin: parse + log plumbing only (the serializer
+    // reads the env directly - see the field's note).
+    SetVar("TOURMALINE_GEOMETRY_STREAMING", "on");
+    SetVar("TOURMALINE_GEOMETRY_BUDGET_MB", "8");
+    SetVar("TOURMALINE_GEOMETRY_EVICT_IDLE", "16");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.geometryStreaming.has_value() && *c.geometryStreaming == engine::OnOffPin::On,
+              "runconfig.parse-geo-streaming");
+        Check(c.geometryBudgetMb.has_value() && *c.geometryBudgetMb == 8,
+              "runconfig.parse-geo-budget");
+        Check(c.geometryEvictIdle.has_value() && *c.geometryEvictIdle == 16,
+              "runconfig.parse-geo-evict-idle");
+    }
+    SetVar("TOURMALINE_GEOMETRY_STREAMING", "maybe");
+    SetVar("TOURMALINE_GEOMETRY_BUDGET_MB", "0");
+    SetVar("TOURMALINE_GEOMETRY_EVICT_IDLE", "-4");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(!c.geometryStreaming.has_value(), "runconfig.invalid-geo-streaming-unset");
+        Check(!c.geometryBudgetMb.has_value(), "runconfig.invalid-geo-budget-unset");
+        Check(!c.geometryEvictIdle.has_value(), "runconfig.invalid-geo-evict-idle-unset");
+    }
+    UnsetVar("TOURMALINE_GEOMETRY_STREAMING");
+    UnsetVar("TOURMALINE_GEOMETRY_BUDGET_MB");
+    UnsetVar("TOURMALINE_GEOMETRY_EVICT_IDLE");
 
-	// Invalid pins warn (stderr) and leave the authored scene winning.
-	SetVar("TOURMALINE_AA", "bogus");
-	SetVar("TOURMALINE_SSR", "maybe");
-	SetVar("TOURMALINE_AO", "xx");
-	SetVar("TOURMALINE_VOLUMETRIC_STEPS", "7"); // below range... valid? 7 in 4..128!
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(!c.aa.has_value(), "runconfig.invalid-aa-unset");
-		Check(!c.ssr.has_value(), "runconfig.invalid-ssr-unset");
-		Check(!c.ao.has_value(), "runconfig.invalid-ao-unset");
-		Check(c.volumetricSteps.has_value() && *c.volumetricSteps == 7,
-			"runconfig.inrange-steps-set");
-	}
-	UnsetVar("TOURMALINE_AA");
-	UnsetVar("TOURMALINE_SSR");
-	UnsetVar("TOURMALINE_AO");
-	SetVar("TOURMALINE_VOLUMETRIC_STEPS", "2"); // below 4: rejected
-	SetVar("TOURMALINE_BLOOM_INTENSITY", "99"); // above 4: rejected
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(!c.volumetricSteps.has_value(), "runconfig.oorange-steps-unset");
-		Check(!c.bloomIntensity.has_value(), "runconfig.oorange-bloom-unset");
-	}
-	UnsetVar("TOURMALINE_VOLUMETRIC_STEPS");
-	UnsetVar("TOURMALINE_BLOOM_INTENSITY");
-	// Legacy AA spellings still accepted (both call sites unified).
-	SetVar("TOURMALINE_AA", "t2x");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.aa.has_value() && *c.aa == engine::AaPin::SmaaT2x,
-			"runconfig.parse-aa-legacy-t2x");
-	}
-	UnsetVar("TOURMALINE_AA");
+    // Invalid pins warn (stderr) and leave the authored scene winning.
+    SetVar("TOURMALINE_AA", "bogus");
+    SetVar("TOURMALINE_SSR", "maybe");
+    SetVar("TOURMALINE_AO", "xx");
+    SetVar("TOURMALINE_VOLUMETRIC_STEPS", "7"); // below range... valid? 7 in 4..128!
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(!c.aa.has_value(), "runconfig.invalid-aa-unset");
+        Check(!c.ssr.has_value(), "runconfig.invalid-ssr-unset");
+        Check(!c.ao.has_value(), "runconfig.invalid-ao-unset");
+        Check(c.volumetricSteps.has_value() && *c.volumetricSteps == 7,
+              "runconfig.inrange-steps-set");
+    }
+    UnsetVar("TOURMALINE_AA");
+    UnsetVar("TOURMALINE_SSR");
+    UnsetVar("TOURMALINE_AO");
+    SetVar("TOURMALINE_VOLUMETRIC_STEPS", "2"); // below 4: rejected
+    SetVar("TOURMALINE_BLOOM_INTENSITY", "99"); // above 4: rejected
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(!c.volumetricSteps.has_value(), "runconfig.oorange-steps-unset");
+        Check(!c.bloomIntensity.has_value(), "runconfig.oorange-bloom-unset");
+    }
+    UnsetVar("TOURMALINE_VOLUMETRIC_STEPS");
+    UnsetVar("TOURMALINE_BLOOM_INTENSITY");
+    // Legacy AA spellings still accepted (both call sites unified).
+    SetVar("TOURMALINE_AA", "t2x");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.aa.has_value() && *c.aa == engine::AaPin::SmaaT2x, "runconfig.parse-aa-legacy-t2x");
+    }
+    UnsetVar("TOURMALINE_AA");
 
-	// Log + unknown-var warn never crash (output goes to stderr).
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		c.Log();
-		engine::RunConfig::WarnUnknown();
-		Check(true, "runconfig.log-no-crash");
-	}
+    // Log + unknown-var warn never crash (output goes to stderr).
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        c.Log();
+        engine::RunConfig::WarnUnknown();
+        Check(true, "runconfig.log-no-crash");
+    }
 
-	// ---- The three pin re-application regressions (the review batch) ----
-	// (1) TOURMALINE_AMBIENT with trailing whitespace: the Parse snapshot
-	// must TRIM so the re-application path (ApplyHeadlessPostfxOverrides,
-	// which reads c.ambient/c.gi verbatim) sees the same value the startup
-	// getenv site trims — "baked " must parse IDENTICALLY on both paths.
-	SetVar("TOURMALINE_AMBIENT", "baked ");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.ambient.has_value() && *c.ambient == "baked",
-			"runconfig.ambient-trimmed (re-application parity)");
-	}
-	SetVar("TOURMALINE_AMBIENT", " baked");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.ambient.has_value() && *c.ambient == "baked",
-			"runconfig.ambient-trimmed-lead");
-	}
-	UnsetVar("TOURMALINE_AMBIENT");
+    // ---- The three pin re-application regressions (the review batch) ----
+    // (1) TOURMALINE_AMBIENT with trailing whitespace: the Parse snapshot
+    // must TRIM so the re-application path (ApplyHeadlessPostfxOverrides,
+    // which reads c.ambient/c.gi verbatim) sees the same value the startup
+    // getenv site trims — "baked " must parse IDENTICALLY on both paths.
+    SetVar("TOURMALINE_AMBIENT", "baked ");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.ambient.has_value() && *c.ambient == "baked",
+              "runconfig.ambient-trimmed (re-application parity)");
+    }
+    SetVar("TOURMALINE_AMBIENT", " baked");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.ambient.has_value() && *c.ambient == "baked", "runconfig.ambient-trimmed-lead");
+    }
+    UnsetVar("TOURMALINE_AMBIENT");
 
-	// (2) TOURMALINE_GI_VOLUMES=0 sets the kill pin (the re-application
-	// path must re-apply it AFTER the render-settings seed — an authored
-	// scene with volumes enabled must never silently re-enable them).
-	SetVar("TOURMALINE_GI_VOLUMES", "0");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.giVolumesKilled, "runconfig.gi-volumes-kill-pin");
-	}
-	SetVar("TOURMALINE_GI_VOLUMES", "1");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(!c.giVolumesKilled, "runconfig.gi-volumes-kill-pin-off");
-	}
-	UnsetVar("TOURMALINE_GI_VOLUMES");
+    // (2) TOURMALINE_GI_VOLUMES=0 sets the kill pin (the re-application
+    // path must re-apply it AFTER the render-settings seed — an authored
+    // scene with volumes enabled must never silently re-enable them).
+    SetVar("TOURMALINE_GI_VOLUMES", "0");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.giVolumesKilled, "runconfig.gi-volumes-kill-pin");
+    }
+    SetVar("TOURMALINE_GI_VOLUMES", "1");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(!c.giVolumesKilled, "runconfig.gi-volumes-kill-pin-off");
+    }
+    UnsetVar("TOURMALINE_GI_VOLUMES");
 
-	// (3) TOURMALINE_GI=0 with TOURMALINE_AMBIENT=off: a valid no-op pair
-	// (the legacy pin sees an already-non-baked mode and keeps it). The
-	// Parse snapshot stores both; the re-application path's
-	// LegacyGiAmbientPin must return the CURRENT mode (not nullopt) for a
-	// valid no-op — the false "unknown value" warning was the bug.
-	SetVar("TOURMALINE_AMBIENT", "off");
-	SetVar("TOURMALINE_GI", "0");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.ambient.has_value() && *c.ambient == "off",
-			"runconfig.gi-noop-pair-ambient");
-		Check(c.gi.has_value() && *c.gi == "0",
-			"runconfig.gi-noop-pair-gi");
-	}
-	UnsetVar("TOURMALINE_AMBIENT");
-	UnsetVar("TOURMALINE_GI");
+    // (3) TOURMALINE_GI=0 with TOURMALINE_AMBIENT=off: a valid no-op pair
+    // (the legacy pin sees an already-non-baked mode and keeps it). The
+    // Parse snapshot stores both; the re-application path's
+    // LegacyGiAmbientPin must return the CURRENT mode (not nullopt) for a
+    // valid no-op — the false "unknown value" warning was the bug.
+    SetVar("TOURMALINE_AMBIENT", "off");
+    SetVar("TOURMALINE_GI", "0");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.ambient.has_value() && *c.ambient == "off", "runconfig.gi-noop-pair-ambient");
+        Check(c.gi.has_value() && *c.gi == "0", "runconfig.gi-noop-pair-gi");
+    }
+    UnsetVar("TOURMALINE_AMBIENT");
+    UnsetVar("TOURMALINE_GI");
 
-	// (4) JHFAA-style shading-normal validity correction pins: default
-	// unset (experimental, OFF), valid on/off parse, invalid warns and
-	// stays unset. The debug overlay pin parses independently of the
-	// correction pin (the overlay must work with the correction off).
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(!c.normalFix.has_value(), "runconfig.default-normal-fix-unset");
-		Check(!c.normalFixDebug.has_value(), "runconfig.default-normal-fix-debug-unset");
-	}
-	SetVar("TOURMALINE_NORMAL_FIX", "1");
-	SetVar("TOURMALINE_NORMAL_FIX_DEBUG", "on");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.normalFix.has_value() && *c.normalFix == engine::OnOffPin::On,
-			"runconfig.parse-normal-fix-on");
-		Check(c.normalFixDebug.has_value() && *c.normalFixDebug == engine::OnOffPin::On,
-			"runconfig.parse-normal-fix-debug-on");
-	}
-	SetVar("TOURMALINE_NORMAL_FIX", "maybe");
-	SetVar("TOURMALINE_NORMAL_FIX_DEBUG", "0");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(!c.normalFix.has_value(), "runconfig.invalid-normal-fix-unset");
-		Check(c.normalFixDebug.has_value() && *c.normalFixDebug == engine::OnOffPin::Off,
-			"runconfig.parse-normal-fix-debug-off");
-	}
-	UnsetVar("TOURMALINE_NORMAL_FIX");
-	UnsetVar("TOURMALINE_NORMAL_FIX_DEBUG");
+    // (4) JHFAA-style shading-normal validity correction pins: default
+    // unset (experimental, OFF), valid on/off parse, invalid warns and
+    // stays unset. The debug overlay pin parses independently of the
+    // correction pin (the overlay must work with the correction off).
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(!c.normalFix.has_value(), "runconfig.default-normal-fix-unset");
+        Check(!c.normalFixDebug.has_value(), "runconfig.default-normal-fix-debug-unset");
+    }
+    SetVar("TOURMALINE_NORMAL_FIX", "1");
+    SetVar("TOURMALINE_NORMAL_FIX_DEBUG", "on");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.normalFix.has_value() && *c.normalFix == engine::OnOffPin::On,
+              "runconfig.parse-normal-fix-on");
+        Check(c.normalFixDebug.has_value() && *c.normalFixDebug == engine::OnOffPin::On,
+              "runconfig.parse-normal-fix-debug-on");
+    }
+    SetVar("TOURMALINE_NORMAL_FIX", "maybe");
+    SetVar("TOURMALINE_NORMAL_FIX_DEBUG", "0");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(!c.normalFix.has_value(), "runconfig.invalid-normal-fix-unset");
+        Check(c.normalFixDebug.has_value() && *c.normalFixDebug == engine::OnOffPin::Off,
+              "runconfig.parse-normal-fix-debug-off");
+    }
+    UnsetVar("TOURMALINE_NORMAL_FIX");
+    UnsetVar("TOURMALINE_NORMAL_FIX_DEBUG");
 
-	// (5) Texture-streaming mip bias (the resolution-scaling study's
-	// asset-quality pin): default 0, valid float parse, out-of-range
-	// warns and falls back to 0 (the demand stays un-biased).
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.texstreamMipBias == 0.0f,
-			"runconfig.default-texstream-mip-bias-zero");
-	}
-	SetVar("TOURMALINE_TEXSTREAM_MIP_BIAS", "0.585");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(std::abs(c.texstreamMipBias - 0.585f) < 1e-4f,
-			"runconfig.parse-texstream-mip-bias");
-	}
-	SetVar("TOURMALINE_TEXSTREAM_MIP_BIAS", "42");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.texstreamMipBias == 0.0f,
-			"runconfig.invalid-texstream-mip-bias-falls-back");
-	}
-	UnsetVar("TOURMALINE_TEXSTREAM_MIP_BIAS");
+    // (5) Texture-streaming mip bias (the resolution-scaling study's
+    // asset-quality pin): default 0, valid float parse, out-of-range
+    // warns and falls back to 0 (the demand stays un-biased).
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.texstreamMipBias == 0.0f, "runconfig.default-texstream-mip-bias-zero");
+    }
+    SetVar("TOURMALINE_TEXSTREAM_MIP_BIAS", "0.585");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(std::abs(c.texstreamMipBias - 0.585f) < 1e-4f, "runconfig.parse-texstream-mip-bias");
+    }
+    SetVar("TOURMALINE_TEXSTREAM_MIP_BIAS", "42");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.texstreamMipBias == 0.0f, "runconfig.invalid-texstream-mip-bias-falls-back");
+    }
+    UnsetVar("TOURMALINE_TEXSTREAM_MIP_BIAS");
 
-	// (6) GPU-cull baseline dump frame (TOURMALINE_CULL_DUMP): default
-	// off (-1), a valid frame parses, and a frame below 2 warns and
-	// stays off (the verdict readback accepts one flight of staleness —
-	// frame 1 would read a buffer the cull chain has not seeded twice).
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.cullDump == -1, "runconfig.default-cull-dump-off");
-	}
-	SetVar("TOURMALINE_CULL_DUMP", "12");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.cullDump == 12, "runconfig.parse-cull-dump");
-	}
-	SetVar("TOURMALINE_CULL_DUMP", "1");
-	{
-		engine::RunConfig c = engine::RunConfig::Parse();
-		Check(c.cullDump == -1, "runconfig.invalid-cull-dump-falls-back");
-	}
-	UnsetVar("TOURMALINE_CULL_DUMP");
+    // (6) GPU-cull baseline dump frame (TOURMALINE_CULL_DUMP): default
+    // off (-1), a valid frame parses, and a frame below 2 warns and
+    // stays off (the verdict readback accepts one flight of staleness —
+    // frame 1 would read a buffer the cull chain has not seeded twice).
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.cullDump == -1, "runconfig.default-cull-dump-off");
+    }
+    SetVar("TOURMALINE_CULL_DUMP", "12");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.cullDump == 12, "runconfig.parse-cull-dump");
+    }
+    SetVar("TOURMALINE_CULL_DUMP", "1");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.cullDump == -1, "runconfig.invalid-cull-dump-falls-back");
+    }
+    UnsetVar("TOURMALINE_CULL_DUMP");
 
-	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
-	return g_failures == 0 ? 0 : 1;
+    std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
+    return g_failures == 0 ? 0 : 1;
 }

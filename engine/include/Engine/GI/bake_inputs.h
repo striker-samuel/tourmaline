@@ -58,9 +58,9 @@
 
 #pragma once
 
-#include <Engine/Renderer/mesh.h> // StaticMeshUpload
 #include <Engine/App/cluster.h>
 #include <Engine/GI/bake.h>       // GiTraceScene (the reach sweep)
+#include <Engine/Renderer/mesh.h> // StaticMeshUpload
 #include <Engine/Scene/scene.h>
 
 #include <array>
@@ -77,7 +77,7 @@ namespace tour::gi {
 // hex). Self-contained: the engine does not link the cache tool lib.
 std::string BakeInputHash(const void* data, size_t size);
 inline std::string BakeInputHash(const std::string& s) {
-	return BakeInputHash(s.data(), s.size());
+    return BakeInputHash(s.data(), s.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -102,19 +102,19 @@ inline constexpr uint32_t kBakeAlgorithmRevision = 2;
 // ---------------------------------------------------------------------------
 
 struct BakeCellGrid {
-	// The tile lower bound (see the header comment for the case).
-	static constexpr float kCell = 1.0f;
-	// The reach margin ring (cells beyond a unit's region; the bounce
-	// approximation — see the header comment).
-	static constexpr int32_t kMargin = 2;
+    // The tile lower bound (see the header comment for the case).
+    static constexpr float kCell = 1.0f;
+    // The reach margin ring (cells beyond a unit's region; the bounce
+    // approximation — see the header comment).
+    static constexpr int32_t kMargin = 2;
 
-	// (x,y,z) cell index -> the member-set hash.
-	std::map<std::array<int32_t, 3>, std::string> cells;
-	// The global fold over every cell (the world-field view — ANY
-	// geometry change flips it, matching the octree bake's global path
-	// trace).
-	std::string root;
-	size_t meshCount = 0; // members included (the trace-scene set)
+    // (x,y,z) cell index -> the member-set hash.
+    std::map<std::array<int32_t, 3>, std::string> cells;
+    // The global fold over every cell (the world-field view — ANY
+    // geometry change flips it, matching the octree bake's global path
+    // trace).
+    std::string root;
+    size_t meshCount = 0; // members included (the trace-scene set)
 };
 
 // Hashes the scene's traced static geometry into the grid. Mirrors
@@ -153,35 +153,36 @@ std::string BakeLightsHash(const Cluster& cluster);
 // The ordered fold over the cells overlapping an AABB (empty geometry
 // cells fold a stable marker, so new content in a formerly-empty region
 // changes the fold).
-std::string BakeRegionHash(const BakeCellGrid& grid,
-	const glm::vec3& mn, const glm::vec3& mx);
+std::string BakeRegionHash(const BakeCellGrid& grid, const glm::vec3& mn, const glm::vec3& mx);
 
 // A convex-volume unit hash: env + lights + the volume definition's
 // bake-relevant fields (priority/spacing/fades — the shape rides the
 // node global, folded) + the bake config scalar set + the cells
 // overlapping the volume's OBB (+ the margin ring).
 struct GiVolumeBakeConfigHashInputs {
-	uint32_t captureDirs = 0;    // 0 = the engine default (GiVolumeBakeConfig{})
-	uint32_t maxBounces = 0;     // 0 = default
-	float captureSpacing = 0.0f; // 0 = auto (spec-derived)
-	uint32_t smoothingPasses = 0;
-	bool maskTransmission = false;
-	// The firefly clamp ratio (GiVolumeBakeConfig::clampRatio — MUST
-	// mirror the bake default so an unset input hashes like a default
-	// bake). 0 = the off A/B.
-	float clampRatio = 8.0f;
-	// The trace scene's albedo mode (GiSceneBuildOptions): the
-	// --uniform-albedo white-world override changes every traced value,
-	// so it must refuse stale records (the gap the commit review found:
-	// a 0.7 <-> off flip kept matching old volumes — the A/B silently
-	// compared a stale white-world bake). Defaults mirror the canonical
-	// un-flagged GiBaker run (Args.uniformAlbedo = "0.7").
-	bool albedoUniform = true;
-	glm::vec3 albedoValue{ 0.7f };
+    uint32_t captureDirs = 0;    // 0 = the engine default (GiVolumeBakeConfig{})
+    uint32_t maxBounces = 0;     // 0 = default
+    float captureSpacing = 0.0f; // 0 = auto (spec-derived)
+    uint32_t smoothingPasses = 0;
+    bool maskTransmission = false;
+    // The firefly clamp ratio (GiVolumeBakeConfig::clampRatio — MUST
+    // mirror the bake default so an unset input hashes like a default
+    // bake). 0 = the off A/B.
+    float clampRatio = 8.0f;
+    // The trace scene's albedo mode (GiSceneBuildOptions): the
+    // --uniform-albedo white-world override changes every traced value,
+    // so it must refuse stale records (the gap the commit review found:
+    // a 0.7 <-> off flip kept matching old volumes — the A/B silently
+    // compared a stale white-world bake). Defaults mirror the canonical
+    // un-flagged GiBaker run (Args.uniformAlbedo = "0.7").
+    bool albedoUniform = true;
+    glm::vec3 albedoValue{0.7f};
 };
 std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
-	const Cluster& cluster, const SceneGiVolume& def,
-	const glm::mat4& nodeGlobal, const GiVolumeBakeConfigHashInputs& cfg);
+                                 const Cluster& cluster,
+                                 const SceneGiVolume& def,
+                                 const glm::mat4& nodeGlobal,
+                                 const GiVolumeBakeConfigHashInputs& cfg);
 
 // A cubemap-capture unit hash: env + lights + the capture definition
 // (position/influence/fade/box/pinned) + the bake config scalar set +
@@ -191,27 +192,31 @@ std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
 // both a changed seen cell AND new content in a formerly-empty
 // traversed cell dirty the capture.
 struct CubemapBakeConfigHashInputs {
-	uint32_t size = 128;
-	uint32_t rays = 128;
-	uint32_t spp = 32; // transport paths per texel (bumping this re-captures)
-	bool maskTransmission = false;
-	// The capture transport depth (--cubemap-bounces; the review-found
-	// gap: the fold missed it, so a bounce change left stale captures).
-	// Default = the cook's capture-stage default.
-	uint32_t maxBounces = 5;
-	// The trace scene's albedo mode (GiVolumeBakeConfigHashInputs's
-	// twin; the capture bake bakes TEXTURED by design — the canonical
-	// value is false).
-	bool albedoUniform = false;
-	glm::vec3 albedoValue{ 0.7f };
+    uint32_t size = 128;
+    uint32_t rays = 128;
+    uint32_t spp = 32; // transport paths per texel (bumping this re-captures)
+    bool maskTransmission = false;
+    // The capture transport depth (--cubemap-bounces; the review-found
+    // gap: the fold missed it, so a bounce change left stale captures).
+    // Default = the cook's capture-stage default.
+    uint32_t maxBounces = 5;
+    // The trace scene's albedo mode (GiVolumeBakeConfigHashInputs's
+    // twin; the capture bake bakes TEXTURED by design — the canonical
+    // value is false).
+    bool albedoUniform = false;
+    glm::vec3 albedoValue{0.7f};
 };
 using CellId = std::array<int32_t, 3>;
 std::string CubemapBakeUnitHash(const BakeCellGrid& grid,
-	const Cluster& cluster, const glm::vec3& position,
-	float influenceRadius, float fadeRadius, const glm::vec3& boxMin,
-	const glm::vec3& boxMax, bool pinned,
-	const CubemapBakeConfigHashInputs& cfg,
-	const std::vector<CellId>& reachCells);
+                                const Cluster& cluster,
+                                const glm::vec3& position,
+                                float influenceRadius,
+                                float fadeRadius,
+                                const glm::vec3& boxMin,
+                                const glm::vec3& boxMax,
+                                bool pinned,
+                                const CubemapBakeConfigHashInputs& cfg,
+                                const std::vector<CellId>& reachCells);
 
 // The observed-reach sweep for one capture: casts a deterministic
 // Fibonacci-sphere ray set from the position through the trace scene
@@ -220,7 +225,8 @@ std::string CubemapBakeUnitHash(const BakeCellGrid& grid,
 // One BVH traversal per ray; the sweep is the cheap part of a capture
 // bake (the bake itself shades thousands of rays per face).
 std::vector<CellId> RecordCaptureReach(const GiTraceScene& trace,
-	const glm::vec3& position, uint32_t dirCount);
+                                       const glm::vec3& position,
+                                       uint32_t dirCount);
 
 // The .reach sidecar (the manifest-adjacent bake bookkeeping, named
 // from the BOUND set uuid — not a stem guess): the per-capture recorded
@@ -229,17 +235,15 @@ std::vector<CellId> RecordCaptureReach(const GiTraceScene& trace,
 // NO VERSION SCHEME (the repo data rule) - the magic is the identity;
 // the old versioned layout refused at the magic, re-record.
 struct CaptureReachFile {
-	static constexpr uint32_t kMagic = 0x52454158u; // 'REAX'
-	struct Entry {
-		uint32_t rowIndex = 0;
-		std::vector<CellId> cells;
-	};
-	std::vector<Entry> entries;
+    static constexpr uint32_t kMagic = 0x52454158u; // 'REAX'
+    struct Entry {
+        uint32_t rowIndex = 0;
+        std::vector<CellId> cells;
+    };
+    std::vector<Entry> entries;
 };
-bool SerializeCaptureReach(const CaptureReachFile& reach,
-	std::vector<uint8_t>& out);
-bool ParseCaptureReach(const uint8_t* data, size_t size,
-	CaptureReachFile& out);
+bool SerializeCaptureReach(const CaptureReachFile& reach, std::vector<uint8_t>& out);
+bool ParseCaptureReach(const uint8_t* data, size_t size, CaptureReachFile& out);
 
 // (The WORLD-FIELD unit hash + its config inputs
 // (WorldBakeConfigHashInputs / WorldBakeUnitHash) are DELETED with the
@@ -260,18 +264,17 @@ bool ParseCaptureReach(const uint8_t* data, size_t size,
 // The GI-volume bake config an un-flagged GiBaker run uses (Args
 // defaults: 1536 capture dirs, 3 bounces, auto capture spacing, 3
 // smoothing passes, clamp 8x, white-world 0.7 — the SG-fit convention).
-inline GiVolumeBakeConfigHashInputs CanonicalGiVolumeCfgHash(
-	bool maskTransmission) {
-	GiVolumeBakeConfigHashInputs c{};
-	c.captureDirs = 1536;
-	c.maxBounces = 3;
-	c.captureSpacing = 0.0f;
-	c.smoothingPasses = 3;
-	c.maskTransmission = maskTransmission;
-	c.clampRatio = 8.0f;
-	c.albedoUniform = true;   // Args.uniformAlbedo = "0.7" (the tool default)
-	c.albedoValue = glm::vec3(0.7f);
-	return c;
+inline GiVolumeBakeConfigHashInputs CanonicalGiVolumeCfgHash(bool maskTransmission) {
+    GiVolumeBakeConfigHashInputs c{};
+    c.captureDirs = 1536;
+    c.maxBounces = 3;
+    c.captureSpacing = 0.0f;
+    c.smoothingPasses = 3;
+    c.maskTransmission = maskTransmission;
+    c.clampRatio = 8.0f;
+    c.albedoUniform = true; // Args.uniformAlbedo = "0.7" (the tool default)
+    c.albedoValue = glm::vec3(0.7f);
+    return c;
 }
 
 // (CanonicalWorldCfgHash — the world-field config derivation — is deleted
@@ -282,41 +285,39 @@ inline GiVolumeBakeConfigHashInputs CanonicalGiVolumeCfgHash(
 // cubemapSize/cubemapRays are the authoring surface; the cook's capture
 // stage bakes with the merged node values). Bounces + albedo are the
 // capture-stage defaults (textured transport, --cubemap-bounces 5).
-inline CubemapBakeConfigHashInputs CanonicalCubemapCfgHash(
-	const SceneExportSettings& es) {
-	CubemapBakeConfigHashInputs c{};
-	c.size = es.cubemapSize;
-	c.rays = es.cubemapRays;
-	c.maskTransmission = es.maskTransmission;
-	c.maxBounces = 5;
-	c.albedoUniform = false; // captures bake textured (the cook's design)
-	c.albedoValue = glm::vec3(0.7f);
-	return c;
+inline CubemapBakeConfigHashInputs CanonicalCubemapCfgHash(const SceneExportSettings& es) {
+    CubemapBakeConfigHashInputs c{};
+    c.size = es.cubemapSize;
+    c.rays = es.cubemapRays;
+    c.maskTransmission = es.maskTransmission;
+    c.maxBounces = 5;
+    c.albedoUniform = false; // captures bake textured (the cook's design)
+    c.albedoValue = glm::vec3(0.7f);
+    return c;
 }
 
 } // namespace tour::gi
-
 
 // COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
 // header's declarations live in tour::gi; the smvk::gi aliases keep the
 // existing call sites compiling through the consumer migration.
 namespace smvk::gi {
-	using ::tour::gi::BakeCellGrid;
-	using ::tour::gi::BakeEnvHash;
-	using ::tour::gi::BakeInputHash;
-	using ::tour::gi::BakeLightsHash;
-	using ::tour::gi::BakeRegionHash;
-	using ::tour::gi::BuildBakeCellGrid;
-	using ::tour::gi::CanonicalCubemapCfgHash;
-	using ::tour::gi::CanonicalGiVolumeCfgHash;
-	using ::tour::gi::CaptureReachFile;
-	using ::tour::gi::CellId;
-	using ::tour::gi::CubemapBakeConfigHashInputs;
-	using ::tour::gi::CubemapBakeUnitHash;
-	using ::tour::gi::GiVolumeBakeConfigHashInputs;
-	using ::tour::gi::GiVolumeBakeUnitHash;
-	using ::tour::gi::kBakeAlgorithmRevision;
-	using ::tour::gi::ParseCaptureReach;
-	using ::tour::gi::RecordCaptureReach;
-	using ::tour::gi::SerializeCaptureReach;
-}
+using ::tour::gi::BakeCellGrid;
+using ::tour::gi::BakeEnvHash;
+using ::tour::gi::BakeInputHash;
+using ::tour::gi::BakeLightsHash;
+using ::tour::gi::BakeRegionHash;
+using ::tour::gi::BuildBakeCellGrid;
+using ::tour::gi::CanonicalCubemapCfgHash;
+using ::tour::gi::CanonicalGiVolumeCfgHash;
+using ::tour::gi::CaptureReachFile;
+using ::tour::gi::CellId;
+using ::tour::gi::CubemapBakeConfigHashInputs;
+using ::tour::gi::CubemapBakeUnitHash;
+using ::tour::gi::GiVolumeBakeConfigHashInputs;
+using ::tour::gi::GiVolumeBakeUnitHash;
+using ::tour::gi::kBakeAlgorithmRevision;
+using ::tour::gi::ParseCaptureReach;
+using ::tour::gi::RecordCaptureReach;
+using ::tour::gi::SerializeCaptureReach;
+} // namespace smvk::gi

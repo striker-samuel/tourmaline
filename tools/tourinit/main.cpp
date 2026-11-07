@@ -31,30 +31,29 @@ std::string QuoteJson(std::string_view text) {
 }
 
 void Usage() {
-    std::cout <<
-        "Usage: tourinit --name <display-name> [--path <directory>] [options]\n"
-        "       tourinit --path <directory> [options]\n\n"
-        "Creates project.tourproj via the canonical Project::Init API, a\n"
-        "starter .tourrecipe, default build settings and a README. The\n"
-        "project root is ./<name> when --path is omitted.\n\n"
-        "Options:\n"
-        "  --name <name>          Display name (spaces allowed)\n"
-        "  --path <directory>     Target project root (absolute or relative)\n"
-        "  --recipe <stem>        Starter recipe basename (default game)\n"
-        "  --pak <stem>           Entry package basename (default world)\n"
-        "  --entry <path>         Project-relative content/scenes/*.tour entry\n"
-        "  --from-gltf <file>     Import an existing .gltf or .glb source\n"
-        "  --from-scene <file>    Seed an authored .tour (requires --from-gltf)\n"
-        "  --bake-gi             Enable GI bake in starter recipe\n"
-        "  --bake-cubemaps       Enable cubemap bake in starter recipe\n"
-        "  --adopt               Allow existing directory/project, preserve files\n"
-        "  --no-gitignore        Do not write a .gitignore\n"
-        "  --dry-run             Validate/preview without changing disk\n"
-        "  --json                Structured one-line report to stdout\n"
-        "  --help                Print this help\n\n"
-        "Exit 0 = initialized or planned; 1 = failed; 2 = bad arguments.\n"
-        "A starter recipe is syntactically valid but not cookable until\n"
-        "the referenced authored .tour scene and source asset exist.\n";
+    std::cout << "Usage: tourinit --name <display-name> [--path <directory>] [options]\n"
+                 "       tourinit --path <directory> [options]\n\n"
+                 "Creates project.tourproj via the canonical Project::Init API, a\n"
+                 "starter .tourrecipe, default build settings and a README. The\n"
+                 "project root is ./<name> when --path is omitted.\n\n"
+                 "Options:\n"
+                 "  --name <name>          Display name (spaces allowed)\n"
+                 "  --path <directory>     Target project root (absolute or relative)\n"
+                 "  --recipe <stem>        Starter recipe basename (default game)\n"
+                 "  --pak <stem>           Entry package basename (default world)\n"
+                 "  --entry <path>         Project-relative content/scenes/*.tour entry\n"
+                 "  --from-gltf <file>     Import an existing .gltf or .glb source\n"
+                 "  --from-scene <file>    Seed an authored .tour (requires --from-gltf)\n"
+                 "  --bake-gi             Enable GI bake in starter recipe\n"
+                 "  --bake-cubemaps       Enable cubemap bake in starter recipe\n"
+                 "  --adopt               Allow existing directory/project, preserve files\n"
+                 "  --no-gitignore        Do not write a .gitignore\n"
+                 "  --dry-run             Validate/preview without changing disk\n"
+                 "  --json                Structured one-line report to stdout\n"
+                 "  --help                Print this help\n\n"
+                 "Exit 0 = initialized or planned; 1 = failed; 2 = bad arguments.\n"
+                 "A starter recipe is syntactically valid but not cookable until\n"
+                 "the referenced authored .tour scene and source asset exist.\n";
 }
 
 } // namespace
@@ -80,19 +79,32 @@ int main(int argc, char** argv) {
             }
             return argv[i];
         };
-        if (arg == "--name") options.name = take();
-        else if (arg == "--path") options.root = take();
-        else if (arg == "--recipe") options.recipeName = take();
-        else if (arg == "--pak") options.pakName = take();
-        else if (arg == "--entry") options.entryScene = take();
-        else if (arg == "--from-gltf") options.fromGltf = take();
-        else if (arg == "--from-scene") options.fromScene = take();
-        else if (arg == "--bake-gi") options.bakeGi = true;
-        else if (arg == "--bake-cubemaps") options.bakeCubemaps = true;
-        else if (arg == "--adopt") options.adoptExisting = true;
-        else if (arg == "--no-gitignore") options.writeGitignore = false;
-        else if (arg == "--dry-run") options.dryRun = true;
-        else if (arg == "--json") json = true;
+        if (arg == "--name")
+            options.name = take();
+        else if (arg == "--path")
+            options.root = take();
+        else if (arg == "--recipe")
+            options.recipeName = take();
+        else if (arg == "--pak")
+            options.pakName = take();
+        else if (arg == "--entry")
+            options.entryScene = take();
+        else if (arg == "--from-gltf")
+            options.fromGltf = take();
+        else if (arg == "--from-scene")
+            options.fromScene = take();
+        else if (arg == "--bake-gi")
+            options.bakeGi = true;
+        else if (arg == "--bake-cubemaps")
+            options.bakeCubemaps = true;
+        else if (arg == "--adopt")
+            options.adoptExisting = true;
+        else if (arg == "--no-gitignore")
+            options.writeGitignore = false;
+        else if (arg == "--dry-run")
+            options.dryRun = true;
+        else if (arg == "--json")
+            json = true;
         else {
             std::cerr << "tourinit: unknown option " << arg << "\n";
             return 2;
@@ -111,8 +123,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (json) {
-        std::cout << "{\"schema_version\":1,\"root\":"
-                  << QuoteJson(result.root) << ",\"name\":" << QuoteJson(result.name)
+        std::cout << "{\"schema_version\":1,\"root\":" << QuoteJson(result.root)
+                  << ",\"name\":" << QuoteJson(result.name)
                   << ",\"guid\":" << QuoteJson(result.guid)
                   << ",\"recipe\":" << QuoteJson(result.recipe)
                   << ",\"entry_scene\":" << QuoteJson(result.entryScene)
@@ -121,17 +133,19 @@ int main(int argc, char** argv) {
                   << ",\"seeded_scene\":" << (result.seededScene ? "true" : "false")
                   << ",\"recipe_written\":" << (result.recipeWritten ? "true" : "false")
                   << ",\"ready_to_build\":" << (result.readyToBuild ? "true" : "false")
-                  << ",\"dry_run\":" << (result.dryRun ? "true" : "false")
-                  << "}\n";
+                  << ",\"dry_run\":" << (result.dryRun ? "true" : "false") << "}\n";
     } else {
-        std::cout << "tourinit: " << (result.dryRun ? "would create " :
-                       result.created ? "created " : "adopted ")
+        std::cout << "tourinit: "
+                  << (result.dryRun    ? "would create "
+                      : result.created ? "created "
+                                       : "adopted ")
                   << result.root << "\n"
                   << "  name: " << result.name << "\n"
                   << "  recipe: " << result.recipe << "\n"
                   << "  entry: " << result.entryScene << "\n"
-                  << "  build-ready: " << (result.readyToBuild ? "entry scene exists" :
-                      "needs an authored scene/source") << "\n";
+                  << "  build-ready: "
+                  << (result.readyToBuild ? "entry scene exists" : "needs an authored scene/source")
+                  << "\n";
     }
     return 0;
 }

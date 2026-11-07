@@ -41,8 +41,8 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -72,44 +72,42 @@ int g_checks = 0;
 const char* g_argv0 = "";
 
 void Check(bool cond, const char* name) {
-	++g_checks;
-	if (cond) {
-		std::cout << "PASS " << name << "\n";
-	}
-	else {
-		++g_failures;
-		std::cout << "FAIL " << name << "\n";
-	}
+    ++g_checks;
+    if (cond) {
+        std::cout << "PASS " << name << "\n";
+    } else {
+        ++g_failures;
+        std::cout << "FAIL " << name << "\n";
+    }
 }
 
 // Repo root: walk up from the test exe (it lives at the build root,
 // <root>/out/build/<cfg>) until the sample marker is visible. Never
 // CWD — ctest launches from anywhere.
 fs::path FindRepoRoot() {
-	fs::path dir = fs::path(g_argv0).parent_path();
-	for (int i = 0; i < 10; ++i) {
-		const fs::path probe = dir
-			/ "samples/04_project_game/project/project.tourproj";
-		std::error_code ec;
-		if (fs::exists(probe, ec)) {
-			return dir;
-		}
-		fs::path parent = dir.parent_path();
-		if (parent == dir) {
-			break;
-		}
-		dir = std::move(parent);
-	}
-	return {};
+    fs::path dir = fs::path(g_argv0).parent_path();
+    for (int i = 0; i < 10; ++i) {
+        const fs::path probe = dir / "samples/04_project_game/project/project.tourproj";
+        std::error_code ec;
+        if (fs::exists(probe, ec)) {
+            return dir;
+        }
+        fs::path parent = dir.parent_path();
+        if (parent == dir) {
+            break;
+        }
+        dir = std::move(parent);
+    }
+    return {};
 }
 
 std::vector<uint8_t> ReadFileBytes(const fs::path& p) {
-	std::ifstream f(p, std::ios::binary);
-	if (!f) {
-		return {};
-	}
-	return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
-		std::istreambuf_iterator<char>());
+    std::ifstream f(p, std::ios::binary);
+    if (!f) {
+        return {};
+    }
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
+                                std::istreambuf_iterator<char>());
 }
 
 #ifdef _WIN32
@@ -121,41 +119,46 @@ std::vector<uint8_t> ReadFileBytes(const fs::path& p) {
 // cmd.exe quoting minefield (std::system's leading-quote stripping
 // mangles "C:\path with spaces\tool.exe" ... commands). Returns the
 // process exit code (-1 on a launch failure, err filled).
-int RunToolCapture(const fs::path& exe, const std::string& args,
-	const fs::path& log, std::string& err) {
-	const fs::path logAbs = fs::absolute(log);
-	HANDLE out = CreateFileW(logAbs.wstring().c_str(), GENERIC_WRITE,
-		0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (out == INVALID_HANDLE_VALUE) {
-		err = "CreateFileW(log) failed";
-		return -1;
-	}
-	SetHandleInformation(out, HANDLE_FLAG_INHERIT,
-		HANDLE_FLAG_INHERIT);
-	STARTUPINFOW si{};
-	si.cb = sizeof(si);
-	si.dwFlags = STARTF_USESTDHANDLES;
-	si.hStdOutput = out;
-	si.hStdError = out;
-	si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-	PROCESS_INFORMATION pi{};
-	// lpCommandLine: quoted exe + args exactly as typed (no shell
-	// reinterpretation — the whole reason this exists).
-	std::wstring cmd = L"\"" + exe.wstring() + L"\" "
-		+ std::wstring(args.begin(), args.end());
-	if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
-			0, nullptr, nullptr, &si, &pi)) {
-		CloseHandle(out);
-		err = "CreateProcessW failed";
-		return -1;
-	}
-	CloseHandle(out); // the child holds its inherited copy
-	WaitForSingleObject(pi.hProcess, 15 * 60 * 1000);
-	DWORD code = static_cast<DWORD>(-1);
-	GetExitCodeProcess(pi.hProcess, &code);
-	CloseHandle(pi.hProcess);
-	CloseHandle(pi.hThread);
-	return int(code);
+int RunToolCapture(const fs::path& exe,
+                   const std::string& args,
+                   const fs::path& log,
+                   std::string& err) {
+    const fs::path logAbs = fs::absolute(log);
+    HANDLE out = CreateFileW(logAbs.wstring().c_str(),
+                             GENERIC_WRITE,
+                             0,
+                             nullptr,
+                             CREATE_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL,
+                             nullptr);
+    if (out == INVALID_HANDLE_VALUE) {
+        err = "CreateFileW(log) failed";
+        return -1;
+    }
+    SetHandleInformation(out, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = out;
+    si.hStdError = out;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi{};
+    // lpCommandLine: quoted exe + args exactly as typed (no shell
+    // reinterpretation — the whole reason this exists).
+    std::wstring cmd = L"\"" + exe.wstring() + L"\" " + std::wstring(args.begin(), args.end());
+    if (!CreateProcessW(
+            nullptr, cmd.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(out);
+        err = "CreateProcessW failed";
+        return -1;
+    }
+    CloseHandle(out); // the child holds its inherited copy
+    WaitForSingleObject(pi.hProcess, 15 * 60 * 1000);
+    DWORD code = static_cast<DWORD>(-1);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return int(code);
 }
 #else
 #include <sys/wait.h>
@@ -163,382 +166,349 @@ int RunToolCapture(const fs::path& exe, const std::string& args,
 // POSIX: /bin/sh handles the quoting correctly, so the plain system()
 // capture form is fine (the command is fully quoted; output redirects
 // to the log).
-int RunToolCapture(const fs::path& exe, const std::string& args,
-	const fs::path& log, std::string& err) {
-	const std::string cmd = "\"" + exe.string() + "\" " + args
-		+ " > \"" + fs::absolute(log).string() + "\" 2>&1";
-	const int rc = std::system(cmd.c_str());
-	if (rc == -1) {
-		err = "system() failed";
-		return -1;
-	}
-	return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+int RunToolCapture(const fs::path& exe,
+                   const std::string& args,
+                   const fs::path& log,
+                   std::string& err) {
+    const std::string cmd =
+        "\"" + exe.string() + "\" " + args + " > \"" + fs::absolute(log).string() + "\" 2>&1";
+    const int rc = std::system(cmd.c_str());
+    if (rc == -1) {
+        err = "system() failed";
+        return -1;
+    }
+    return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
 }
 #endif
 
 } // namespace
 
 int main(int argc, char** argv) {
-	if (argc > 0) {
-		g_argv0 = argv[0];
-	}
+    if (argc > 0) {
+        g_argv0 = argv[0];
+    }
 
-	// ---- 0) locate the checked-in sample + the CLI tool beside us ----
-	const fs::path root = FindRepoRoot();
-	Check(!root.empty(), "e2e.repo-root-found");
-	const fs::path sample = root / "samples/04_project_game/project";
-	Check(fs::exists(sample / "project.tourproj"), "e2e.sample-present");
+    // ---- 0) locate the checked-in sample + the CLI tool beside us ----
+    const fs::path root = FindRepoRoot();
+    Check(!root.empty(), "e2e.repo-root-found");
+    const fs::path sample = root / "samples/04_project_game/project";
+    Check(fs::exists(sample / "project.tourproj"), "e2e.sample-present");
 #ifdef _WIN32
-	const char* kProjectTool = "Project.exe";
+    const char* kProjectTool = "Project.exe";
 #else
-	const char* kProjectTool = "Project";
+    const char* kProjectTool = "Project";
 #endif
-	const fs::path projectExe =
-		fs::path(g_argv0).parent_path() / kProjectTool;
-	Check(fs::exists(projectExe), "e2e.project-tool-built");
-	if (root.empty() || !fs::exists(sample / "project.tourproj")
-		|| !fs::exists(projectExe)) {
-		std::cout << "checks=" << g_checks << " failures=" << g_failures
-			<< "\n";
-		return g_failures ? 1 : 0;
-	}
+    const fs::path projectExe = fs::path(g_argv0).parent_path() / kProjectTool;
+    Check(fs::exists(projectExe), "e2e.project-tool-built");
+    if (root.empty() || !fs::exists(sample / "project.tourproj") || !fs::exists(projectExe)) {
+        std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
+        return g_failures ? 1 : 0;
+    }
 
-	// ---- 1) the self-contained copy (the deployment subject) --------
-	const fs::path tmp = fs::temp_directory_path() / "tourmaline_e2e";
-	std::error_code ec;
-	fs::remove_all(tmp, ec);
-	fs::create_directories(tmp, ec);
-	const fs::path proj = tmp / "project";
-	fs::copy(sample, proj, fs::copy_options::recursive, ec);
-	Check(!ec, "e2e.sample-copied");
-	const fs::path publish = tmp / "publish";
+    // ---- 1) the self-contained copy (the deployment subject) --------
+    const fs::path tmp = fs::temp_directory_path() / "tourmaline_e2e";
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp, ec);
+    const fs::path proj = tmp / "project";
+    fs::copy(sample, proj, fs::copy_options::recursive, ec);
+    Check(!ec, "e2e.sample-copied");
+    const fs::path publish = tmp / "publish";
 
-	// ---- 2) the CONTRIBUTOR build: Project.exe build -----------------
-	// (the real CLI + the same subprocess stage adapter a contributor's
-	// machine runs — Cook/GiBaker/Pak spawn from the tool's own dir;
-	// stdout lands in the log so a failure carries the tool's own
-	// diagnostics into the ctest output.)
-	const fs::path buildLog = tmp / "build.log";
-	{
-		const std::string args = "build --project \""
-			+ proj.string() + "\" --recipe \""
-			+ (proj / "game.tourrecipe").string()
-			+ "\" --publish \"" + publish.string()
-			+ "\" --manifest-name game";  // the tool appends .tapp
-		std::string sysErr;
-		const int rc = RunToolCapture(projectExe, args, buildLog,
-			sysErr);
-		Check(rc == 0, "e2e.build-exit-clean");
-		if (rc != 0) {
-			std::cout << "  build rc=" << rc;
-			if (!sysErr.empty()) {
-				std::cout << " (" << sysErr << ")";
-			}
-			std::cout << "\n";
-		}
-	}
-	{
-		// Echo the log tail regardless (the diagnostics ARE the value
-		// when this leg fails).
-		std::ifstream f(buildLog);
-		std::string text((std::istreambuf_iterator<char>(f)),
-			std::istreambuf_iterator<char>());
-		const size_t tail = text.size() > 2000 ? text.size() - 2000 : 0;
-		std::cout << "[build.log tail]\n" << text.substr(tail)
-			<< "[/build.log tail]\n";
-	}
+    // ---- 2) the CONTRIBUTOR build: Project.exe build -----------------
+    // (the real CLI + the same subprocess stage adapter a contributor's
+    // machine runs — Cook/GiBaker/Pak spawn from the tool's own dir;
+    // stdout lands in the log so a failure carries the tool's own
+    // diagnostics into the ctest output.)
+    const fs::path buildLog = tmp / "build.log";
+    {
+        const std::string args = "build --project \"" + proj.string() + "\" --recipe \"" +
+                                 (proj / "game.tourrecipe").string() + "\" --publish \"" +
+                                 publish.string() +
+                                 "\" --manifest-name game"; // the tool appends .tapp
+        std::string sysErr;
+        const int rc = RunToolCapture(projectExe, args, buildLog, sysErr);
+        Check(rc == 0, "e2e.build-exit-clean");
+        if (rc != 0) {
+            std::cout << "  build rc=" << rc;
+            if (!sysErr.empty()) {
+                std::cout << " (" << sysErr << ")";
+            }
+            std::cout << "\n";
+        }
+    }
+    {
+        // Echo the log tail regardless (the diagnostics ARE the value
+        // when this leg fails).
+        std::ifstream f(buildLog);
+        std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        const size_t tail = text.size() > 2000 ? text.size() - 2000 : 0;
+        std::cout << "[build.log tail]\n" << text.substr(tail) << "[/build.log tail]\n";
+    }
 
-	// The published products: the .tapp manifest + the content-addressed
-	// paks (<stem>-<fnv1a64>.pak — a digest in the name proves the
-	// publish actually policed bytes, not just wrote files).
-	std::vector<fs::path> paks;
-	for (const auto& e : fs::directory_iterator(publish, ec)) {
-		if (e.path().extension() == ".pak") {
-			paks.push_back(e.path());
-		}
-	}
-	std::sort(paks.begin(), paks.end());
-	Check(paks.size() >= 2, "e2e.published-pak-count"); // game + shared
-	int addressed = 0;
-	for (const fs::path& p : paks) {
-		const std::string stem = p.stem().string();
-		// <stem>-<16 hex>: a dash + a 16-hex digest tail.
-		const size_t dash = stem.rfind('-');
-		if (dash != std::string::npos
-			&& stem.size() - dash - 1 == 16) {
-			bool hex = true;
-			for (size_t i = dash + 1; i < stem.size(); ++i) {
-				const char c = stem[i];
-				if (!std::isxdigit(static_cast<unsigned char>(c))) {
-					hex = false;
-					break;
-				}
-			}
-			if (hex) {
-				++addressed;
-			}
-		}
-	}
-	Check(addressed == int(paks.size()) && !paks.empty(),
-		"e2e.paks-content-addressed");
-	const fs::path tapp = publish / "game.tapp";
-	Check(fs::exists(tapp), "e2e.manifest-published");
+    // The published products: the .tapp manifest + the content-addressed
+    // paks (<stem>-<fnv1a64>.pak — a digest in the name proves the
+    // publish actually policed bytes, not just wrote files).
+    std::vector<fs::path> paks;
+    for (const auto& e : fs::directory_iterator(publish, ec)) {
+        if (e.path().extension() == ".pak") {
+            paks.push_back(e.path());
+        }
+    }
+    std::sort(paks.begin(), paks.end());
+    Check(paks.size() >= 2, "e2e.published-pak-count"); // game + shared
+    int addressed = 0;
+    for (const fs::path& p : paks) {
+        const std::string stem = p.stem().string();
+        // <stem>-<16 hex>: a dash + a 16-hex digest tail.
+        const size_t dash = stem.rfind('-');
+        if (dash != std::string::npos && stem.size() - dash - 1 == 16) {
+            bool hex = true;
+            for (size_t i = dash + 1; i < stem.size(); ++i) {
+                const char c = stem[i];
+                if (!std::isxdigit(static_cast<unsigned char>(c))) {
+                    hex = false;
+                    break;
+                }
+            }
+            if (hex) {
+                ++addressed;
+            }
+        }
+    }
+    Check(addressed == int(paks.size()) && !paks.empty(), "e2e.paks-content-addressed");
+    const fs::path tapp = publish / "game.tapp";
+    Check(fs::exists(tapp), "e2e.manifest-published");
 
-	// ---- 3) the DEPLOYMENT VALIDATION GATE (DeployCheck, headless) --
-	smvk::AppManifest manifest;
-	std::string err;
-	Check(smvk::LoadAppManifest(tapp.string(), manifest, err) && err.empty(),
-		"e2e.manifest-parses");
-	if (!err.empty()) {
-		std::cout << "  manifest err: " << err << "\n";
-	}
-	Check(!manifest.paks.empty() && !manifest.entryPak.empty(),
-		"e2e.manifest-has-entry");
-	bool entryListed = false;
-	for (const std::string& p : manifest.paks) {
-		if (p == manifest.entryPak) {
-			entryListed = true;
-		}
-	}
-	Check(entryListed, "e2e.entry-pak-listed");
-	int validated = 0;
-	for (const std::string& pak : manifest.paks) {
-		std::string vErr;
-		if (app::ValidatePakFile((publish / pak).string(), vErr)) {
-			++validated;
-		}
-		else {
-			std::cout << "  pak " << pak << ": " << vErr << "\n";
-		}
-	}
-	Check(!manifest.paks.empty()
-		&& validated == int(manifest.paks.size()),
-		"e2e.deploycheck-paks-valid");
-	{
-		std::string sErr;
-		Check(app::ValidateEngineShaderSource(sErr) && sErr.empty(),
-			"e2e.deploycheck-shader-source");
-		if (!sErr.empty()) {
-			std::cout << "  shader source err: " << sErr << "\n";
-		}
-	}
+    // ---- 3) the DEPLOYMENT VALIDATION GATE (DeployCheck, headless) --
+    smvk::AppManifest manifest;
+    std::string err;
+    Check(smvk::LoadAppManifest(tapp.string(), manifest, err) && err.empty(),
+          "e2e.manifest-parses");
+    if (!err.empty()) {
+        std::cout << "  manifest err: " << err << "\n";
+    }
+    Check(!manifest.paks.empty() && !manifest.entryPak.empty(), "e2e.manifest-has-entry");
+    bool entryListed = false;
+    for (const std::string& p : manifest.paks) {
+        if (p == manifest.entryPak) {
+            entryListed = true;
+        }
+    }
+    Check(entryListed, "e2e.entry-pak-listed");
+    int validated = 0;
+    for (const std::string& pak : manifest.paks) {
+        std::string vErr;
+        if (app::ValidatePakFile((publish / pak).string(), vErr)) {
+            ++validated;
+        } else {
+            std::cout << "  pak " << pak << ": " << vErr << "\n";
+        }
+    }
+    Check(!manifest.paks.empty() && validated == int(manifest.paks.size()),
+          "e2e.deploycheck-paks-valid");
+    {
+        std::string sErr;
+        Check(app::ValidateEngineShaderSource(sErr) && sErr.empty(),
+              "e2e.deploycheck-shader-source");
+        if (!sErr.empty()) {
+            std::cout << "  shader source err: " << sErr << "\n";
+        }
+    }
 
-	// ---- 4) the RUNTIME half (the launch contract, GPU-less) ---------
-	auto rtOpt = app::ProjectRuntime::Load(tapp.string(), err);
-	if (!rtOpt && !err.empty())
-		std::cout << "  (Load err: " << err << ")\n";
-	Check(bool(rtOpt) && err.empty(), "e2e.runtime-loads-manifest");
-	if (!rtOpt) {
-		std::cout << "checks=" << g_checks << " failures=" << g_failures
-			<< "\n";
-		return 1;
-	}
-	app::ProjectRuntime& rt = *rtOpt;
-	Check(!rt.Registry().Records().empty()
-		&& !rt.Manifest().paks.empty(),
-		"e2e.release-pointer-loads-records");
+    // ---- 4) the RUNTIME half (the launch contract, GPU-less) ---------
+    auto rtOpt = app::ProjectRuntime::Load(tapp.string(), err);
+    if (!rtOpt && !err.empty())
+        std::cout << "  (Load err: " << err << ")\n";
+    Check(bool(rtOpt) && err.empty(), "e2e.runtime-loads-manifest");
+    if (!rtOpt) {
+        std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
+        return 1;
+    }
+    app::ProjectRuntime& rt = *rtOpt;
+    Check(!rt.Registry().Records().empty() && !rt.Manifest().paks.empty(),
+          "e2e.release-pointer-loads-records");
 
-	// The compiled-catalog contract, reconstructed from THE REGISTRY's
-	// records (the deployed authority — the paks' own identity tables,
-	// read through the release pointer's listed paks). The compiled
-	// fingerprint must equal the registry's canonical fold, and the
-	// gate's row-by-row proof must pass (GameProject.exe attaches the
-	// same at boot).
-	{
-		std::vector<app::ProjectRuntime::CompiledAssetDesc> descs;
-		for (const tour::asset::ContentRecord& rec :
-				rt.Registry().Records())
-			descs.push_back({ rec.id, rec.kind, rec.path,
-				rec.sceneName });
-		Check(!descs.empty(), "e2e.catalog-rows-present");
-		const uint64_t fold = rt.Registry().RecordFingerprint();
-		Check(fold != 0, "e2e.catalog-fingerprint-folded");
-		std::string aErr;
-		Check(rt.AttachCompiledCatalog(descs.data(), descs.size(), fold,
-				aErr)
-			&& aErr.empty() && rt.CompiledCatalogAttached(),
-			"e2e.compiled-catalog-attaches");
-		if (!aErr.empty()) {
-			std::cout << "  attach err: " << aErr << "\n";
-		}
-	}
+    // The compiled-catalog contract, reconstructed from THE REGISTRY's
+    // records (the deployed authority — the paks' own identity tables,
+    // read through the release pointer's listed paks). The compiled
+    // fingerprint must equal the registry's canonical fold, and the
+    // gate's row-by-row proof must pass (GameProject.exe attaches the
+    // same at boot).
+    {
+        std::vector<app::ProjectRuntime::CompiledAssetDesc> descs;
+        for (const tour::asset::ContentRecord& rec : rt.Registry().Records())
+            descs.push_back({rec.id, rec.kind, rec.path, rec.sceneName});
+        Check(!descs.empty(), "e2e.catalog-rows-present");
+        const uint64_t fold = rt.Registry().RecordFingerprint();
+        Check(fold != 0, "e2e.catalog-fingerprint-folded");
+        std::string aErr;
+        Check(rt.AttachCompiledCatalog(descs.data(), descs.size(), fold, aErr) && aErr.empty() &&
+                  rt.CompiledCatalogAttached(),
+              "e2e.compiled-catalog-attaches");
+        if (!aErr.empty()) {
+            std::cout << "  attach err: " << aErr << "\n";
+        }
+    }
 
-	// Every VFS-servable row reads its bytes through its pak; the SOUND
-	// row byte-compares against the checked-in source (raw .wav at the
-	// VFS path — no container wrapping on that kind).
-	{
-		const std::vector<uint8_t> source =
-			ReadFileBytes(proj / "content/audio/bells.wav");
-		bool readAll = true, sawSound = false, sawTexture = false;
-		bool soundMatches = false;
-		for (const tour::asset::ContentRecord& row :
-				rt.Registry().Records()) {
-			if (row.kind != smvk::kCatalogKindTexture
-				&& row.kind != smvk::kCatalogKindSound
-				&& row.kind != smvk::kCatalogKindShader
-				&& row.kind != smvk::kCatalogKindGi) {
-				continue; // scenes/meshes load by identity, not ReadAsset
-			}
-			std::string rErr;
-			auto bytes = rt.ReadAsset(row.id, rErr);
-			if (!bytes || bytes->empty() || !rErr.empty()) {
-				readAll = false;
-				std::cout << "  read " << row.path << ": " << rErr
-					<< "\n";
-				continue;
-			}
-			if (row.kind == smvk::kCatalogKindSound) {
-				sawSound = true;
-				soundMatches = (*bytes == source);
-			}
-			if (row.kind == smvk::kCatalogKindTexture) {
-				sawTexture = true;
-			}
-		}
-		Check(readAll, "e2e.assets-serve-through-paks");
-		Check(sawTexture, "e2e.texture-row-served");
-		Check(sawSound && soundMatches, "e2e.sound-bytes-match-source");
-	}
+    // Every VFS-servable row reads its bytes through its pak; the SOUND
+    // row byte-compares against the checked-in source (raw .wav at the
+    // VFS path — no container wrapping on that kind).
+    {
+        const std::vector<uint8_t> source = ReadFileBytes(proj / "content/audio/bells.wav");
+        bool readAll = true, sawSound = false, sawTexture = false;
+        bool soundMatches = false;
+        for (const tour::asset::ContentRecord& row : rt.Registry().Records()) {
+            if (row.kind != smvk::kCatalogKindTexture && row.kind != smvk::kCatalogKindSound &&
+                row.kind != smvk::kCatalogKindShader && row.kind != smvk::kCatalogKindGi) {
+                continue; // scenes/meshes load by identity, not ReadAsset
+            }
+            std::string rErr;
+            auto bytes = rt.ReadAsset(row.id, rErr);
+            if (!bytes || bytes->empty() || !rErr.empty()) {
+                readAll = false;
+                std::cout << "  read " << row.path << ": " << rErr << "\n";
+                continue;
+            }
+            if (row.kind == smvk::kCatalogKindSound) {
+                sawSound = true;
+                soundMatches = (*bytes == source);
+            }
+            if (row.kind == smvk::kCatalogKindTexture) {
+                sawTexture = true;
+            }
+        }
+        Check(readAll, "e2e.assets-serve-through-paks");
+        Check(sawTexture, "e2e.texture-row-served");
+        Check(sawSound && soundMatches, "e2e.sound-bytes-match-source");
+    }
 
-	// ---- THE DISCOVERY LANE (the .tapp-free deployment acceptance) ----
-	// Every published pak carries its OWN identity table (the "#ids"
-	// registry blob the build appends post-cook): a FRESH registry —
-	// NO manifest — discovers the paks (light mounts + one page read
-	// each) and must reach the SAME identities the release-pointer
-	// session carries, row for row, and a byte read through the
-	// discovered providers (the pager lane — no backends adopted)
-	// matches the session's.
-	{
-		tour::asset::ContentRegistry disc;
-		bool allDiscovered = true;
-		for (const fs::path& p : paks) {
-			std::string dErr;
-			if (!disc.DiscoverPak(p.filename().generic_string(),
-					p.generic_string(), dErr)) {
-				allDiscovered = false;
-				std::cout << "  discover " << p.filename().string()
-					<< ": " << dErr << "\n";
-			}
-		}
-		Check(allDiscovered, "e2e.paks-discover-without-manifest");
-		{
-			// Row-for-row identity parity with the SESSION's records
-			// (both sides discovery over the same paks — the
-			// release-pointer lane and the no-manifest lane are ONE
-			// architecture).
-			bool allMatch = true;
-			for (const tour::asset::ContentRecord& row :
-					rt.Registry().Records()) {
-				const tour::asset::ContentRecord* rec =
-					disc.Find(row.id);
-				if (!rec || rec->kind != row.kind
-						|| rec->path != row.path
-						|| rec->sceneName != row.sceneName) {
-					allMatch = false;
-					std::cout << "  identity mismatch: session "
-						<< row.id << " '" << row.path
-						<< "' vs discovered "
-						<< (rec ? "row" : "<missing>") << "\n";
-				}
-			}
-			Check(allMatch
-				&& disc.RecordCount()
-					== rt.Registry().RecordCount(),
-				"e2e.discovery-matches-manifest-identities");
-		}
-		{
-			uint64_t textureId = 0;
-			std::string texturePath;
-			for (const tour::asset::ContentRecord& row :
-					rt.Registry().Records())
-				if (row.kind == smvk::kCatalogKindTexture) {
-					textureId = row.id;
-					texturePath = row.path;
-					break;
-				}
-			std::string dErr, tErr;
-			auto discBytes = disc.Read(textureId, dErr);
-			auto tappBytes = rt.ReadAsset(textureId, tErr);
-			Check(discBytes && tappBytes && *discBytes == *tappBytes
-				&& dErr.empty() && tErr.empty(),
-				"e2e.discovery-reads-match-session");
-			std::string pErr;
-			auto pathBytes = disc.Read(smvk::kCatalogKindTexture,
-				texturePath, pErr);
-			Check(pathBytes && discBytes
-				&& *pathBytes == *discBytes,
-				"e2e.discovery-forms-agree");
-		}
-	}
+    // ---- THE DISCOVERY LANE (the .tapp-free deployment acceptance) ----
+    // Every published pak carries its OWN identity table (the "#ids"
+    // registry blob the build appends post-cook): a FRESH registry —
+    // NO manifest — discovers the paks (light mounts + one page read
+    // each) and must reach the SAME identities the release-pointer
+    // session carries, row for row, and a byte read through the
+    // discovered providers (the pager lane — no backends adopted)
+    // matches the session's.
+    {
+        tour::asset::ContentRegistry disc;
+        bool allDiscovered = true;
+        for (const fs::path& p : paks) {
+            std::string dErr;
+            if (!disc.DiscoverPak(p.filename().generic_string(), p.generic_string(), dErr)) {
+                allDiscovered = false;
+                std::cout << "  discover " << p.filename().string() << ": " << dErr << "\n";
+            }
+        }
+        Check(allDiscovered, "e2e.paks-discover-without-manifest");
+        {
+            // Row-for-row identity parity with the SESSION's records
+            // (both sides discovery over the same paks — the
+            // release-pointer lane and the no-manifest lane are ONE
+            // architecture).
+            bool allMatch = true;
+            for (const tour::asset::ContentRecord& row : rt.Registry().Records()) {
+                const tour::asset::ContentRecord* rec = disc.Find(row.id);
+                if (!rec || rec->kind != row.kind || rec->path != row.path ||
+                    rec->sceneName != row.sceneName) {
+                    allMatch = false;
+                    std::cout << "  identity mismatch: session " << row.id << " '" << row.path
+                              << "' vs discovered " << (rec ? "row" : "<missing>") << "\n";
+                }
+            }
+            Check(allMatch && disc.RecordCount() == rt.Registry().RecordCount(),
+                  "e2e.discovery-matches-manifest-identities");
+        }
+        {
+            uint64_t textureId = 0;
+            std::string texturePath;
+            for (const tour::asset::ContentRecord& row : rt.Registry().Records())
+                if (row.kind == smvk::kCatalogKindTexture) {
+                    textureId = row.id;
+                    texturePath = row.path;
+                    break;
+                }
+            std::string dErr, tErr;
+            auto discBytes = disc.Read(textureId, dErr);
+            auto tappBytes = rt.ReadAsset(textureId, tErr);
+            Check(discBytes && tappBytes && *discBytes == *tappBytes && dErr.empty() &&
+                      tErr.empty(),
+                  "e2e.discovery-reads-match-session");
+            std::string pErr;
+            auto pathBytes = disc.Read(smvk::kCatalogKindTexture, texturePath, pErr);
+            Check(pathBytes && discBytes && *pathBytes == *discBytes, "e2e.discovery-forms-agree");
+        }
+    }
 
-	// The scene leg: the id->scene join over the session's records,
-	// then a headless LOAD through the public clusterLoader seam (the
-	// GPU-less offline cluster the pak_host tests use; the real
-	// deserialize runs on every cooked project launch).
-	{
-		smvk::OverlayVfs vfs;
-		app::ProjectScenes scenes(rt, vfs);
-		Check(scenes.Valid() && vfs.Mounts().size() >= paks.size(),
-			"e2e.scenes-ctor-opens-paks");
-		if (!scenes.Valid()) {
-			std::cout << "  scenes err: " << scenes.OpenError() << "\n";
-		}
-		// The scene record (the recipe's entry: content/scenes/game.tour).
-		uint64_t sceneId = 0;
-		bool sawScene = false;
-		for (const tour::asset::ContentRecord& row :
-				rt.Registry().Records()) {
-			if (row.kind == smvk::kCatalogKindScene) {
-				sceneId = row.id;
-				sawScene = true;
-				break;
-			}
-		}
-		Check(sawScene, "e2e.scene-row-present");
-		std::string tErr;
-		auto target = scenes.ResolveSceneTarget(sceneId, tErr);
-		Check(bool(target) && tErr.empty() && !target->sceneName.empty(),
-			"e2e.scene-target-recorded-name");
-		if (target) {
-			std::cout << "  scene " << target->pak << " / \""
-				<< target->sceneName << "\" @ " << target->sceneIndex
-				<< "\n";
-		}
-		// The offline loader seam: a hand-built cluster registered into
-		// the world (the GPU deserialize is the dev-launch lane).
-		scenes.clusterLoader =
-			[](smvk::World& world, smvk::ResourceManager* ctx,
-				const smvk::PakReader& reader, uint32_t sceneIndex,
-				smvk::TextureStreamer* streamer,
-				std::shared_ptr<const std::vector<uint8_t>> imagePin,
-				const smvk::ExternalTextureResolver* externalTexture,
-				std::string& loadErr) -> smvk::Cluster* {
-			(void)ctx; (void)reader; (void)sceneIndex; (void)streamer;
-			(void)imagePin; (void)externalTexture; (void)loadErr;
-			auto c = std::make_unique<smvk::Cluster>(nullptr);
-			const int node = addNode(c->scene, -1, 0);
-			(void)node; // one root node: the fold witness
-			smvk::Cluster* raw = c.get();
-			world.RegisterCluster(std::move(c));
-			return raw;
-		};
-		smvk::World world;
-		std::string lErr;
-		app::SceneHandle h = scenes.LoadSceneAdditive(world, nullptr,
-			nullptr, sceneId, lErr);
-		Check(bool(h) && lErr.empty(), "e2e.scene-loads");
-		Check(scenes.IsLoaded(h) && scenes.FindScene(sceneId) == h
-			&& scenes.SceneContentId(h) == sceneId,
-			"e2e.scene-instance-tracked");
-		std::string rErr;
-		std::vector<uint64_t> released;
-		Check(scenes.RemoveScene(h, world, rErr, &released) && rErr.empty(),
-			"e2e.scene-removes");
-		Check(!scenes.IsLoaded(h), "e2e.scene-handle-stale-after-remove");
-	}
+    // The scene leg: the id->scene join over the session's records,
+    // then a headless LOAD through the public clusterLoader seam (the
+    // GPU-less offline cluster the pak_host tests use; the real
+    // deserialize runs on every cooked project launch).
+    {
+        smvk::OverlayVfs vfs;
+        app::ProjectScenes scenes(rt, vfs);
+        Check(scenes.Valid() && vfs.Mounts().size() >= paks.size(), "e2e.scenes-ctor-opens-paks");
+        if (!scenes.Valid()) {
+            std::cout << "  scenes err: " << scenes.OpenError() << "\n";
+        }
+        // The scene record (the recipe's entry: content/scenes/game.tour).
+        uint64_t sceneId = 0;
+        bool sawScene = false;
+        for (const tour::asset::ContentRecord& row : rt.Registry().Records()) {
+            if (row.kind == smvk::kCatalogKindScene) {
+                sceneId = row.id;
+                sawScene = true;
+                break;
+            }
+        }
+        Check(sawScene, "e2e.scene-row-present");
+        std::string tErr;
+        auto target = scenes.ResolveSceneTarget(sceneId, tErr);
+        Check(bool(target) && tErr.empty() && !target->sceneName.empty(),
+              "e2e.scene-target-recorded-name");
+        if (target) {
+            std::cout << "  scene " << target->pak << " / \"" << target->sceneName << "\" @ "
+                      << target->sceneIndex << "\n";
+        }
+        // The offline loader seam: a hand-built cluster registered into
+        // the world (the GPU deserialize is the dev-launch lane).
+        scenes.clusterLoader = [](smvk::World& world,
+                                  smvk::ResourceManager* ctx,
+                                  const smvk::PakReader& reader,
+                                  uint32_t sceneIndex,
+                                  smvk::TextureStreamer* streamer,
+                                  std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                                  const smvk::ExternalTextureResolver* externalTexture,
+                                  std::string& loadErr) -> smvk::Cluster* {
+            (void)ctx;
+            (void)reader;
+            (void)sceneIndex;
+            (void)streamer;
+            (void)imagePin;
+            (void)externalTexture;
+            (void)loadErr;
+            auto c = std::make_unique<smvk::Cluster>(nullptr);
+            const int node = addNode(c->scene, -1, 0);
+            (void)node; // one root node: the fold witness
+            smvk::Cluster* raw = c.get();
+            world.RegisterCluster(std::move(c));
+            return raw;
+        };
+        smvk::World world;
+        std::string lErr;
+        app::SceneHandle h = scenes.LoadSceneAdditive(world, nullptr, nullptr, sceneId, lErr);
+        Check(bool(h) && lErr.empty(), "e2e.scene-loads");
+        Check(scenes.IsLoaded(h) && scenes.FindScene(sceneId) == h &&
+                  scenes.SceneContentId(h) == sceneId,
+              "e2e.scene-instance-tracked");
+        std::string rErr;
+        std::vector<uint64_t> released;
+        Check(scenes.RemoveScene(h, world, rErr, &released) && rErr.empty(), "e2e.scene-removes");
+        Check(!scenes.IsLoaded(h), "e2e.scene-handle-stale-after-remove");
+    }
 
-	fs::remove_all(tmp, ec);
-	std::cout << "checks=" << g_checks << " failures=" << g_failures
-		<< "\n";
-	return g_failures ? 1 : 0;
+    fs::remove_all(tmp, ec);
+    std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
+    return g_failures ? 1 : 0;
 }

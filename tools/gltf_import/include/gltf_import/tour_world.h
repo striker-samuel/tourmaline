@@ -17,11 +17,14 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 
-namespace tour { struct Cluster; struct World; }
+namespace tour {
+struct Cluster;
+struct World;
+} // namespace tour
 namespace smvk {
-	using ::tour::Cluster;
-	using ::tour::World;
-	struct MeshletConfig;
+using ::tour::Cluster;
+using ::tour::World;
+struct MeshletConfig;
 } // namespace smvk
 
 struct GltfArtifactCache;
@@ -30,29 +33,30 @@ struct MeshOptConfig;
 namespace tourworld {
 
 struct BuildOptions {
-	std::string contentDir; // record resolution root (may be empty)
-	bool importTextureAssets = false;  // tour.textureAssets records
-	bool importMaterialAssets = false; // tour.materialAssets records
-	bool autoKtx = true;
-	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr;
-	GltfArtifactCache* artifactCache = nullptr; // scratch hook, nullable
-	smvk::MeshOptConfig meshOpt{};
-	smvk::MeshletConfig meshlets{};
+    std::string contentDir;            // record resolution root (may be empty)
+    bool importTextureAssets = false;  // tour.textureAssets records
+    bool importMaterialAssets = false; // tour.materialAssets records
+    bool autoKtx = true;
+    const std::vector<smvk::tour::FileNode>* fileNodes = nullptr;
+    GltfArtifactCache* artifactCache = nullptr; // scratch hook, nullable
+    smvk::MeshOptConfig meshOpt{};
+    smvk::MeshletConfig meshlets{};
 };
 
 struct BuiltWorld {
-	std::unique_ptr<smvk::World> world;
-	size_t commands = 0; // tour commands replayed
-	size_t refsApplied = 0; // reference subtrees bound
-	size_t refsTopLevel = 0; // top-level references in the doc
+    std::unique_ptr<smvk::World> world;
+    size_t commands = 0;     // tour commands replayed
+    size_t refsApplied = 0;  // reference subtrees bound
+    size_t refsTopLevel = 0; // top-level references in the doc
 };
 
 // Replays doc into a fresh offline World (single cluster, unresolved —
 // cluster-space ids, exactly what bakers consume). Prints the legacy
 // definition lines through tool::out()/tool::err() (console by default,
 // editor feed when sunk). Null on failure (warnings appended).
-std::unique_ptr<BuiltWorld> BuildWorldFromDoc(
-	const smvk::tour::Doc& doc, const BuildOptions& opt,
-	std::vector<std::string>& warnings, std::string& err);
+std::unique_ptr<BuiltWorld> BuildWorldFromDoc(const smvk::tour::Doc& doc,
+                                              const BuildOptions& opt,
+                                              std::vector<std::string>& warnings,
+                                              std::string& err);
 
 } // namespace tourworld

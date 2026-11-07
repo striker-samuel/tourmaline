@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-#include <Engine/smvk.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/smvk.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,7 +41,7 @@ struct Framebuffer {
 };
 
 class Swapchain {
-public:
+  public:
     Swapchain(ResourceManager& ctx, SDL_Window* window);
     ~Swapchain();
 
@@ -109,7 +109,7 @@ public:
     void* GetVulkanOpaque();
     const void* GetVulkanOpaque() const;
 
-private:
+  private:
     std::unique_ptr<Impl> impl_;
 };
 

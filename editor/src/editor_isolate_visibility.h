@@ -11,8 +11,10 @@
 namespace editor {
 
 class IsolateVisibility {
-public:
-    bool active() const { return active_; }
+  public:
+    bool active() const {
+        return active_;
+    }
 
     void restore(std::vector<uint8_t>& hidden) {
         if (!active_)
@@ -30,8 +32,9 @@ public:
         active_ = false;
     }
 
-    bool begin(std::vector<uint8_t>& hidden, const std::vector<int>& parent,
-        const std::vector<uint32_t>& selected) {
+    bool begin(std::vector<uint8_t>& hidden,
+               const std::vector<int>& parent,
+               const std::vector<uint32_t>& selected) {
         if (active_)
             restore(hidden);
         const size_t count = parent.size();
@@ -46,8 +49,7 @@ public:
             // The selected subtree (including mesh descendants) is visible.
             for (size_t i = 0; i < count; ++i) {
                 int n = int(i);
-                for (size_t hops = 0; n >= 0 && size_t(n) < count
-                    && hops < count; ++hops) {
+                for (size_t hops = 0; n >= 0 && size_t(n) < count && hops < count; ++hops) {
                     if (uint32_t(n) == node) {
                         keep[i] = 1;
                         break;
@@ -57,8 +59,8 @@ public:
             }
             // Keep ancestors unmasked so selected descendants can render.
             int ancestor = int(node);
-            for (size_t hops = 0; ancestor >= 0
-                && size_t(ancestor) < count && hops < count; ++hops) {
+            for (size_t hops = 0; ancestor >= 0 && size_t(ancestor) < count && hops < count;
+                 ++hops) {
                 keep[size_t(ancestor)] = 1;
                 ancestor = parent[size_t(ancestor)];
             }
@@ -76,7 +78,7 @@ public:
         return true;
     }
 
-private:
+  private:
     bool active_ = false;
     std::vector<uint8_t> authored_;
 };

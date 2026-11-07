@@ -37,7 +37,9 @@
 // The GLOBAL compat re-export that lived here is RETIRED (item 2, the
 // compat-layer cleanup): consumers spell ::tour::scene::SceneEnv
 // explicitly, and envzones' own signatures do too.
-namespace tour::scene { struct SceneEnv; }
+namespace tour::scene {
+struct SceneEnv;
+}
 
 namespace smvk::envzones {
 
@@ -47,20 +49,20 @@ inline constexpr uint32_t kEnvZoneMaxZones = 64;
 // One zone's blendable look (the env subset zones own; the sun stays
 // global - one sun everywhere). Matches the shader-side EnvZoneLook.
 struct EnvZone {
-	// Sky tint (linear 0..1, multiplies the env zenith/horizon/ground
-	// colors) + the zone's ambient intensity (the iblIntensity analog -
-	// pre-exposure HDR radiance scale for the analytic ambient).
-	glm::vec3 skyTint{ 1.0f, 1.0f, 1.0f };
-	float ambientI = 20.0f;
-	// Fog (blended into the analytic fog color/density).
-	glm::vec3 fogColor{ 0.6f, 0.7f, 0.8f };
-	float fogDensity = 0.01f;
-	// Volumetric fog (the raymarched pass: scattering scale over the
-	// pass base (0 = off, 1 = the global intensity) + extinction
-	// density, blended at the ray midpoint).
-	float volumetrics = 0.0f;
-	float volumetricDensity = 0.015f;
-	float pad[2]{};
+    // Sky tint (linear 0..1, multiplies the env zenith/horizon/ground
+    // colors) + the zone's ambient intensity (the iblIntensity analog -
+    // pre-exposure HDR radiance scale for the analytic ambient).
+    glm::vec3 skyTint{1.0f, 1.0f, 1.0f};
+    float ambientI = 20.0f;
+    // Fog (blended into the analytic fog color/density).
+    glm::vec3 fogColor{0.6f, 0.7f, 0.8f};
+    float fogDensity = 0.01f;
+    // Volumetric fog (the raymarched pass: scattering scale over the
+    // pass base (0 = off, 1 = the global intensity) + extinction
+    // density, blended at the ray midpoint).
+    float volumetrics = 0.0f;
+    float volumetricDensity = 0.015f;
+    float pad[2]{};
 };
 
 // GPU zone record (BDA storage buffer, 144 B; HLSL mirror in
@@ -70,12 +72,12 @@ struct EnvZone {
 // extents), .w = the EnvVolume inf-mask bits. shape = (priority,
 // blendWeight, blendRadius, reserved). sky/fog/vol mirror EnvZone.
 struct EnvZoneGpu {
-	glm::vec4 worldToLocal[4]{};
-	glm::uvec4 halfAndMask{};
-	glm::vec4 shape{};
-	glm::vec4 sky{};
-	glm::vec4 fog{};
-	glm::vec4 vol{};
+    glm::vec4 worldToLocal[4]{};
+    glm::uvec4 halfAndMask{};
+    glm::vec4 shape{};
+    glm::vec4 sky{};
+    glm::vec4 fog{};
+    glm::vec4 vol{};
 };
 static_assert(sizeof(EnvZoneGpu) == 144, "EnvZoneGpu: HLSL mirror");
 
@@ -84,9 +86,13 @@ static_assert(sizeof(EnvZoneGpu) == 144, "EnvZoneGpu: HLSL mirror");
 // sanitized exactly like ZoneCovers: fully unbounded axes get unit columns
 // before the inverse (INF entries would poison it). Called by the
 // renderer's per-frame zone upload; also the unit-testable core.
-bool MakeEnvZoneGpu(const glm::mat4& transform, uint32_t infMask,
-	const EnvZone& look, float priority, float blendWeight,
-	float blendRadius, EnvZoneGpu& out);
+bool MakeEnvZoneGpu(const glm::mat4& transform,
+                    uint32_t infMask,
+                    const EnvZone& look,
+                    float priority,
+                    float blendWeight,
+                    float blendRadius,
+                    EnvZoneGpu& out);
 
 // Soft falloff in 0..1 at world position p: 1 inside the OBB, fading to
 // 0 at blendRadius metres outside the bounded faces (Euclidean distance;
@@ -99,8 +105,10 @@ float EnvZoneFalloff(const EnvZoneGpu& zone, const glm::vec3& p);
 // blendWeight * falloff. Returns false when no zone influences p (the
 // caller keeps the plain resolved env look). The bake's evaluation core;
 // the shader-side mirror is the TILE lookup now.
-bool EnvZoneAt(const std::vector<EnvZoneGpu>& zones, const glm::vec3& p,
-	float& weight, EnvZone& look);
+bool EnvZoneAt(const std::vector<EnvZoneGpu>& zones,
+               const glm::vec3& p,
+               float& weight,
+               EnvZone& look);
 
 // Derives a zone's blendable look from an authored SceneEnv block
 // RELATIVE to the resolved base (the base = scene.environment, the
@@ -110,7 +118,6 @@ bool EnvZoneAt(const std::vector<EnvZoneGpu>& zones, const glm::vec3& p,
 // volumetric extinction are absolute, volumetrics is a RATIO over the
 // pass base intensity (1 = global, 0 = off). The DEFAULT block derives
 // against ITSELF (the neutral base record).
-EnvZone DeriveZoneLook(const ::tour::scene::SceneEnv& env,
-	const ::tour::scene::SceneEnv& base);
+EnvZone DeriveZoneLook(const ::tour::scene::SceneEnv& env, const ::tour::scene::SceneEnv& base);
 
 } // namespace smvk::envzones

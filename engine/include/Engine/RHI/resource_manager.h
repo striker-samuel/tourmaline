@@ -2,18 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-#include <Engine/smvk.h>
 #include <Engine/RHI/gpu_memory_spill.h>
+#include <Engine/smvk.h>
 // Windowing is SDL3 (see App/app.h). Forward-declared so RHI headers stay
 // light; .cpp files include <SDL3/SDL_video.h>.
 struct SDL_Window;
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Renderer/spirv_reflection.h>
-#include <memory>
 #include <array>
-#include <vector>
+#include <memory>
 #include <span>
+#include <vector>
 
 struct ktxTexture2;
 
@@ -58,7 +58,7 @@ bool SupportsMeshShaders();
 const char* ActiveDeviceName();
 
 class ResourceManager {
-public:
+  public:
     // Creates Vulkan core + allocator. window is currently REQUIRED (the
     // core's device pick + queue selection are surface-based - see
     // CreateVulkanCoreWithWindow, which asserts it). Offscreen hosts pass a
@@ -75,7 +75,9 @@ public:
     // Resource creation (RHI-only types, no Vk)
     Holder<ImageHandle> CreateImage(const ImageCreateInfo& ci, const void* data = nullptr);
     Holder<TextureHandle> CreateTexture(const ImageCreateInfo& ci, const void* data = nullptr);
-     Holder<TextureHandle> CreateTexture(ktxTexture2& texture, const char* debugName = "Texture", ImageCreateInfo imageCreateInfo = {});
+    Holder<TextureHandle> CreateTexture(ktxTexture2& texture,
+                                        const char* debugName = "Texture",
+                                        ImageCreateInfo imageCreateInfo = {});
     // Texture-streaming path: uploads only the mip subrange
     // [firstMip, firstMip + mipCount) of an already-transcoded KTX2 object.
     // The VkImage is allocated at the subrange resolution (base extent >>
@@ -83,8 +85,11 @@ public:
     // the image is full-chain mip firstMip. Normalized-UV sampling is
     // unaffected; the image simply carries less detail. firstMip +
     // mipCount must be <= texture.numLevels after transcoding.
-    Holder<TextureHandle> CreateStreamingTexture(ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount,
-                                                 const char* debugName = "Texture", ImageCreateInfo imageCreateInfo = {});
+    Holder<TextureHandle> CreateStreamingTexture(ktxTexture2& texture,
+                                                 uint32_t firstMip,
+                                                 uint32_t mipCount,
+                                                 const char* debugName = "Texture",
+                                                 ImageCreateInfo imageCreateInfo = {});
     // In-place residency change for a streamed texture: reallocates the
     // backing VkImage for the new subrange and re-uploads from `texture`
     // (same transcode requirement as CreateStreamingTexture). Handles stay
@@ -98,18 +103,31 @@ public:
     // this with its cooked/authoring policy (cooked runs refuse Basis
     // payloads up front with the pink error texture; the editor allows
     // the transcode).
-    void RetargetStreamingTexture(TextureHandle handle, ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount,
+    void RetargetStreamingTexture(TextureHandle handle,
+                                  ktxTexture2& texture,
+                                  uint32_t firstMip,
+                                  uint32_t mipCount,
                                   const char* debugName = "Texture");
-    Holder<BindlessImageHandle> CreateBindlessImage(ImageViewHandle viewHandle, ImageLayout readLayout);
+    Holder<BindlessImageHandle> CreateBindlessImage(ImageViewHandle viewHandle,
+                                                    ImageLayout readLayout);
     Holder<ImageViewHandle> CreateImageView(ImageHandle image, const ImageViewCreateInfo& ci);
     // Recreate helpers (kept for swapchain)
     void SetImageViewVkView(ImageViewHandle handle, void* vkViewOpaque);
-    ImageViewHandle RecreateImageView(ImageViewHandle handle, ImageHandle image, const ImageViewCreateInfo& ci);
-    ImageHandle RecreateImage(ImageHandle handle, const ImageCreateInfo& ci, const void* data = nullptr);
+    ImageViewHandle RecreateImageView(ImageViewHandle handle,
+                                      ImageHandle image,
+                                      const ImageViewCreateInfo& ci);
+    ImageHandle RecreateImage(ImageHandle handle,
+                              const ImageCreateInfo& ci,
+                              const void* data = nullptr);
 
-    Holder<BufferHandle> CreateBuffer(size_t size, BufferType bufferType, const char* debugName = "Buffer");
-    Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = "ShaderModule");
-    Holder<DescriptorPoolHandle> CreateDescriptorPool(const std::vector<std::pair<uint32_t,uint32_t>>& poolSizes, const char* debugName = "DescriptorPool");
+    Holder<BufferHandle> CreateBuffer(size_t size,
+                                      BufferType bufferType,
+                                      const char* debugName = "Buffer");
+    Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code,
+                                                  const char* debugName = "ShaderModule");
+    Holder<DescriptorPoolHandle> CreateDescriptorPool(
+        const std::vector<std::pair<uint32_t, uint32_t>>& poolSizes,
+        const char* debugName = "DescriptorPool");
 
     // Content refresh of a texture by RECREATION: creates a fresh texture
     // from (ci, data) and reseats `holder` — releasing the old record, so
@@ -121,7 +139,8 @@ public:
     // here and callers re-read it per use (e.g. per-frame frame-uniform
     // fills). Returns UINT32_MAX on failure (the holder is left empty).
     uint32_t UpdateTexture(Holder<TextureHandle>& holder,
-                           const ImageCreateInfo& ci, const void* data);
+                           const ImageCreateInfo& ci,
+                           const void* data);
 
     // SPIR-V readback (CPU-only, headless-safe). Retained bytes per module
     // feed ReflectSpirv*; program helper merges push ranges across stages.
@@ -133,9 +152,13 @@ public:
     void UnmapBuffer(BufferHandle handle);
 
     // RHI barrier enums (no Vk)
-    void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize,
-                            PipelineStage dstStages, AccessFlags dstAccess,
-                            size_t src_offset = 0, size_t dest_offset = 0);
+    void UploadDataToBuffer(BufferHandle buffer,
+                            const void* data,
+                            size_t dataSize,
+                            PipelineStage dstStages,
+                            AccessFlags dstAccess,
+                            size_t src_offset = 0,
+                            size_t dest_offset = 0);
     // Bulk table-driven staged copy (the load-time batched counterpart of
     // UploadDataToBuffer): ONE content blob + a table of {srcOffset,
     // dstOffset, size} entries (BufferBulkCopy, smvk.h). The backend stages
@@ -145,14 +168,15 @@ public:
     // valid until it returns. The table itself is caller-trusted (bounds
     // cannot be checked against an opaque blob). Returns false only for an
     // invalid dst/content.
-    bool BulkCopyBuffer(BufferHandle dst, const void* content,
+    bool BulkCopyBuffer(BufferHandle dst,
+                        const void* content,
                         std::span<const BufferBulkCopy> copies,
-                        PipelineStage dstStages, AccessFlags dstAccess);
+                        PipelineStage dstStages,
+                        AccessFlags dstAccess);
     // Debug readback: GPU buffer -> CPU memory (staging copy + fence wait;
     // stalls, debug-only). Call only when the device is idle-ish (e.g.
     // after WaitForDeviceIdle) or accept one-frame staleness.
-    bool DownloadDataFromBuffer(BufferHandle src, void* out, size_t size,
-                                size_t srcOffset = 0);
+    bool DownloadDataFromBuffer(BufferHandle src, void* out, size_t size, size_t srcOffset = 0);
     // Batched readback: N buffer copies through the shared persistent
     // staging with ONE submit + ONE wait (instead of one per copy).
     // Copies land back-to-back in staging; each `out` gets its own bytes.
@@ -168,7 +192,8 @@ public:
     // which previously locked the render thread on the graphics-queue
     // backlog with a blocking wait.
     uint64_t SubmitAsyncDownloadDataFromBuffers(std::span<const BufferDownload> downloads);
-    bool PollAsyncDownloadDataFromBuffers(uint64_t ticket, std::span<const BufferDownload> downloads);
+    bool PollAsyncDownloadDataFromBuffers(uint64_t ticket,
+                                          std::span<const BufferDownload> downloads);
     bool HasAsyncDownloadInFlight() const;
     // Debug readback: GPU color image (layer 0, mip 0, tightly packed) ->
     // CPU memory. currentLayout must be the image's ACTUAL layout (the
@@ -176,18 +201,23 @@ public:
     // would discard the contents on transition). The copy transitions to
     // TRANSFER_SRC and back, so the layout is preserved. out must hold
     // width * height * bytes-per-texel bytes.
-    bool DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout,
-                               void* out, size_t size);
+    bool DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout, void* out, size_t size);
     // Scoped snapshot capture (#148): record a NON-BLOCKING RGBA8
     // image -> device-local capture-buffer copy into the rendergraph's
     // own command buffer (nativeCmd). The caller declares the
     // TransferSrcOptimal/TransferRead sync on the image through graph
     // hints; the GPU buffer is neither mapped nor downloaded by this
     // call - the batch boundary owns the single staging transfer.
-    bool RecordSnapshotImageCopy(void* nativeCmd, ImageHandle src,
-        BufferHandle dst, uint64_t dstOffset, Extent2D extent);
-    void UploadDataToImage2D(const struct Image& image, const void* data,
-                             PipelineStage dstStages, AccessFlags dstAccess, size_t src_offset);
+    bool RecordSnapshotImageCopy(void* nativeCmd,
+                                 ImageHandle src,
+                                 BufferHandle dst,
+                                 uint64_t dstOffset,
+                                 Extent2D extent);
+    void UploadDataToImage2D(const struct Image& image,
+                             const void* data,
+                             PipelineStage dstStages,
+                             AccessFlags dstAccess,
+                             size_t src_offset);
     // BATCHED partial upload into a persistent 3D image — the world-field
     // atlas pager's frame form (Engine/WorldFields): ONE packed blob +
     // a {srcOffset, region} table (ImageRegionCopy3D, smvk.h — the
@@ -208,14 +238,20 @@ public:
     // discipline); a cross-thread publisher needs the completion-ticket
     // work first.
     void UploadDataToImage3DRegions(ImageHandle image,
-                                   const ImageRegionCopy3D* copies, size_t copyCount,
-                                   const void* blob, size_t blobBytes,
-                                   PipelineStage dstStages, AccessFlags dstAccess);
+                                    const ImageRegionCopy3D* copies,
+                                    size_t copyCount,
+                                    const void* blob,
+                                    size_t blobBytes,
+                                    PipelineStage dstStages,
+                                    AccessFlags dstAccess);
     // The 1-entry convenience of the batch above (single region; `data`
     // is the region's tight payload).
-    void UploadDataToImage3DRegion(ImageHandle image, const ImageRegion3D& region,
-                                   const void* data, size_t dataSize,
-                                   PipelineStage dstStages, AccessFlags dstAccess);
+    void UploadDataToImage3DRegion(ImageHandle image,
+                                   const ImageRegion3D& region,
+                                   const void* data,
+                                   size_t dataSize,
+                                   PipelineStage dstStages,
+                                   AccessFlags dstAccess);
 
     void UpdateDescriptors(uint32_t frameIndex = 0);
     uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
@@ -250,10 +286,10 @@ public:
     //     destroy in the deferred FIFO).
     //   ReleaseTargetHeapClaim: the LAST user's release frees the range
     //     retirement-ordered. No-op on an empty/dead claim handle.
-    [[nodiscard]] Holder<ImageHandle> CreateHeapImage(
-        const ImageCreateInfo& ci);
-    [[nodiscard]] Holder<TargetHeapClaimHandle> ClaimTargetHeapRange(
-        ImageHandle image, TargetPhase firstPhase, TargetPhase lastPhase);
+    [[nodiscard]] Holder<ImageHandle> CreateHeapImage(const ImageCreateInfo& ci);
+    [[nodiscard]] Holder<TargetHeapClaimHandle> ClaimTargetHeapRange(ImageHandle image,
+                                                                     TargetPhase firstPhase,
+                                                                     TargetPhase lastPhase);
     void ReleaseTargetHeapClaim(TargetHeapClaimHandle claim);
     uint32_t GetTextureMipLevels(TextureHandle handle) const;
     // Raw Vulkan interop (opaque native handles for external UI/render
@@ -340,15 +376,23 @@ public:
 
     // Internal helpers for PIMPL firewall – used by Swapchain/RenderGraph private TUs
     struct Impl;
-    Impl* GetImpl() { return impl_.get(); }
-    const Impl* GetImpl() const { return impl_.get(); }
+    Impl* GetImpl() {
+        return impl_.get();
+    }
+    const Impl* GetImpl() const {
+        return impl_.get();
+    }
     void* GetVulkanOpaque();
     const void* GetVulkanOpaque() const;
 
     // Deferred task support
-    void AddDeferredTask(std::packaged_task<void()>&& task, uint32_t handleIndex = 0, uint32_t handleGen = 0);
+    void AddDeferredTask(std::packaged_task<void()>&& task,
+                         uint32_t handleIndex = 0,
+                         uint32_t handleGen = 0);
     void ProcessDeferredTasks();
-    void ProcessDeferrredTasks() { ProcessDeferredTasks(); }
+    void ProcessDeferrredTasks() {
+        ProcessDeferredTasks();
+    }
 
     // Retire-ordered destruction: queues the task until ALL graphics work
     // submitted so far has retired (backend-defined — the Vulkan timeline
@@ -369,20 +413,41 @@ public:
     void DestroyDescriptorPool(DescriptorPoolHandle h);
     void DestroyShaderModule(ShaderModuleHandle h);
 
-private:
+  private:
     GpuMemorySpillDetector gpuMemorySpillDetector_;
 
     std::unique_ptr<Impl> impl_;
 };
 
 // Free destroy overloads – called by Holder
-inline void destroy(ResourceManager* ctx, ImageHandle handle) { if(ctx && !handle.empty()) ctx->DestroyImage(handle); }
-inline void destroy(ResourceManager* ctx, ImageViewHandle handle) { if(ctx && !handle.empty()) ctx->DestroyImageView(handle); }
-inline void destroy(ResourceManager* ctx, BufferHandle handle) { if(ctx && !handle.empty()) ctx->DestroyBuffer(handle); }
-inline void destroy(ResourceManager* ctx, TextureHandle handle) { if(ctx && !handle.empty()) ctx->DestroyTexture(handle); }
-inline void destroy(ResourceManager* ctx, BindlessImageHandle handle) { if(ctx && !handle.empty()) ctx->DestroyBindlessImage(handle); }
+inline void destroy(ResourceManager* ctx, ImageHandle handle) {
+    if (ctx && !handle.empty())
+        ctx->DestroyImage(handle);
+}
+inline void destroy(ResourceManager* ctx, ImageViewHandle handle) {
+    if (ctx && !handle.empty())
+        ctx->DestroyImageView(handle);
+}
+inline void destroy(ResourceManager* ctx, BufferHandle handle) {
+    if (ctx && !handle.empty())
+        ctx->DestroyBuffer(handle);
+}
+inline void destroy(ResourceManager* ctx, TextureHandle handle) {
+    if (ctx && !handle.empty())
+        ctx->DestroyTexture(handle);
+}
+inline void destroy(ResourceManager* ctx, BindlessImageHandle handle) {
+    if (ctx && !handle.empty())
+        ctx->DestroyBindlessImage(handle);
+}
 inline void destroy(ResourceManager* ctx, SamplerHandle) {}
-inline void destroy(ResourceManager* ctx, DescriptorPoolHandle handle) { if(ctx && !handle.empty()) ctx->DestroyDescriptorPool(handle); }
-inline void destroy(ResourceManager* ctx, ShaderModuleHandle handle) { if(ctx && !handle.empty()) ctx->DestroyShaderModule(handle); }
+inline void destroy(ResourceManager* ctx, DescriptorPoolHandle handle) {
+    if (ctx && !handle.empty())
+        ctx->DestroyDescriptorPool(handle);
+}
+inline void destroy(ResourceManager* ctx, ShaderModuleHandle handle) {
+    if (ctx && !handle.empty())
+        ctx->DestroyShaderModule(handle);
+}
 
 } // namespace smvk

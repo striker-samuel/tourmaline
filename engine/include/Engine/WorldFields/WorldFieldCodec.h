@@ -38,13 +38,18 @@ namespace engine::worldfields {
 // into BC4_UNORM blocks. outCapacity must be >= StoredBrickBlockBytes()
 // (= (stored/4)^2 * stored * 8). Returns the bytes written, 0 on a
 // capacity/size mismatch.
-size_t Bc4EncodeBrick(const uint8_t* storedTexels, uint32_t storedSize,
-	std::byte* outBlocks, size_t outCapacity);
+size_t Bc4EncodeBrick(const uint8_t* storedTexels,
+                      uint32_t storedSize,
+                      std::byte* outBlocks,
+                      size_t outCapacity);
 
 // Software decode (the vendored DirectXTex BC4 decoder) — fidelity
 // checks and tooling. Returns the bytes decoded, 0 on mismatch.
-size_t Bc4DecodeBrick(const std::byte* blocks, size_t blockBytes,
-	uint32_t storedSize, uint8_t* outTexels, size_t outCapacity);
+size_t Bc4DecodeBrick(const std::byte* blocks,
+                      size_t blockBytes,
+                      uint32_t storedSize,
+                      uint8_t* outTexels,
+                      size_t outCapacity);
 
 // ---------------------------------------------------------------------------
 // BC6H codecs (the fog-GI radiance format: RGB half-float, 16 B per
@@ -58,23 +63,29 @@ size_t Bc4DecodeBrick(const std::byte* blocks, size_t blockBytes,
 // Encode one stored brick's fp16 RGB texels (68^3, 3 halves per texel,
 // tight z/y/x layout) into BC6H_UFloat blocks (the reference-quality
 // multi-mode encoder via the vendored DirectXTex D3DXEncodeBC6HU).
-size_t Bc6hEncodeBrick(const uint16_t* halves, uint32_t storedSize,
-	std::byte* outBlocks, size_t outCapacity);
+size_t Bc6hEncodeBrick(const uint16_t* halves,
+                       uint32_t storedSize,
+                       std::byte* outBlocks,
+                       size_t outCapacity);
 
 // Software decode (DirectTex's BC6H decoder) — fidelity checks/tooling.
-size_t Bc6hDecodeBrick(const std::byte* blocks, size_t blockBytes,
-	uint32_t storedSize, uint16_t* outHalves, size_t outCapacity);
+size_t Bc6hDecodeBrick(const std::byte* blocks,
+                       size_t blockBytes,
+                       uint32_t storedSize,
+                       uint16_t* outHalves,
+                       size_t outCapacity);
 
 // ---------------------------------------------------------------------------
 // Shared block math (BC4: 4x4x1 of 8 B; BC6H: 4x4x1 of 16 B)
 // ---------------------------------------------------------------------------
 
 constexpr size_t StoredBrickBlockBytes(uint32_t storedSize,
-	uint32_t blockWidth, uint32_t blockHeight, uint32_t bytesPerBlock)
-{
-	const uint32_t bx = storedSize / blockWidth;
-	const uint32_t by = storedSize / blockHeight;
-	return size_t(bx) * by * storedSize * bytesPerBlock;
+                                       uint32_t blockWidth,
+                                       uint32_t blockHeight,
+                                       uint32_t bytesPerBlock) {
+    const uint32_t bx = storedSize / blockWidth;
+    const uint32_t by = storedSize / blockHeight;
+    return size_t(bx) * by * storedSize * bytesPerBlock;
 }
 
 // Attribute in [0,1] -> UNORM8 (the Linear packing half).

@@ -31,8 +31,8 @@
 //      scene HDR into the slice via groupshared combine + global atomics.
 //   3. At the next frame's record time, the app downloads the slice's
 //      256-byte buffer (DownloadDataFromBuffer; the slot retired at Acquire
-//      so no extra stall — natural ~2-frame lag), finds the percentile luminance on the CPU and exponentially
-//      damps the smoothed exposure toward keyValue * 2^evBias / meteredLum.
+//      so no extra stall — natural ~2-frame lag), finds the percentile luminance on the CPU and
+//      exponentially damps the smoothed exposure toward keyValue * 2^evBias / meteredLum.
 //   4. The smoothed exposure feeds the tonemap push next frame, and the
 //      bloom threshold/knee are scaled exposure-relative so bloom strength
 //      stays constant as exposure shifts.
@@ -43,8 +43,8 @@
 //   meter.AddHistogramPass(rg, hdrLogical, hdrBindless, linearExtent...);
 //   ... after Execute: meter.Download + Adapt on the CPU (app side).
 
-#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
 #include <array>
@@ -58,262 +58,260 @@ namespace smvk {
 // Fixed bin count: must match EXPOSURE_BINS in exposure_histogram.cs.hlsl
 // and the groupshared tileBins[64] there.
 inline constexpr uint32_t kExposureBinCount = 64;
-inline constexpr size_t kExposureHistogramBytes =
-	sizeof(uint32_t) * kExposureBinCount;
+inline constexpr size_t kExposureHistogramBytes = sizeof(uint32_t) * kExposureBinCount;
 
 struct ExposureDesc {
-	uint32_t bins = kExposureBinCount; // <= kExposureBinCount (shader cap)
-	float minLogLum = -10.0f;          // log2 luminance of bin 0
-	float maxLogLum = 12.0f;           // log2 luminance of bin N (exclusive)
-	uint32_t sampleStep = 4;           // sample every Nth pixel per axis
-	float keyValue = 0.18f;            // target middle-grey luminance
-	float percentile = 0.6f;           // histogram percentile driving exposure
-	const char* name = "exposure";
+    uint32_t bins = kExposureBinCount; // <= kExposureBinCount (shader cap)
+    float minLogLum = -10.0f;          // log2 luminance of bin 0
+    float maxLogLum = 12.0f;           // log2 luminance of bin N (exclusive)
+    uint32_t sampleStep = 4;           // sample every Nth pixel per axis
+    float keyValue = 0.18f;            // target middle-grey luminance
+    float percentile = 0.6f;           // histogram percentile driving exposure
+    const char* name = "exposure";
 };
 
 // Must match exposure_histogram.cs.hlsl ExposureHistogramPush (40 bytes).
 struct ExposureHistogramPush {
-	uint64_t histogramAddress = 0; // BDA of ExposureHistogramBuffer
-	uint32_t hdrTextureIndex = UINT32_MAX;
-	uint32_t width = 0;
-	uint32_t height = 0;
-	float minLogLum = -10.0f;
-	float maxLogLum = 12.0f;
-	uint32_t binCount = kExposureBinCount;
-	uint32_t sampleStep = 4;
-	uint32_t pad = 0;
+    uint64_t histogramAddress = 0; // BDA of ExposureHistogramBuffer
+    uint32_t hdrTextureIndex = UINT32_MAX;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    float minLogLum = -10.0f;
+    float maxLogLum = 12.0f;
+    uint32_t binCount = kExposureBinCount;
+    uint32_t sampleStep = 4;
+    uint32_t pad = 0;
 };
 static_assert(sizeof(ExposureHistogramPush) == 40);
 
 // Default SPV (histogram builder CS).
 inline constexpr const char* kExposureHistogramCsPath =
-	"content/shaders/exposure_histogram.cs.hlsl.spv";
+    "content/shaders/exposure_histogram.cs.hlsl.spv";
 
 struct ExposureMeter {
-	// Histogram storage, ringed per frame in flight (see pipeline note
-	// above): frames overlap (the swapchain only retires the same slot),
-	// and the zero-fill is an immediate transfer submit at record time, so
-	// any single-copy buffer would be clobbered by the next frame while the
-	// current one still accumulates. Same rule as the gfx filter's per-view
-	// ring slices and RenderViewSet's slab.
-	Holder<BufferHandle> histogramBuffers[smvk::limits::MaxFramesInFlight];
-	LogicalBufferHandle histogramLogicals[smvk::limits::MaxFramesInFlight]{};
-	ExposureDesc desc{};
+    // Histogram storage, ringed per frame in flight (see pipeline note
+    // above): frames overlap (the swapchain only retires the same slot),
+    // and the zero-fill is an immediate transfer submit at record time, so
+    // any single-copy buffer would be clobbered by the next frame while the
+    // current one still accumulates. Same rule as the gfx filter's per-view
+    // ring slices and RenderViewSet's slab.
+    Holder<BufferHandle> histogramBuffers[smvk::limits::MaxFramesInFlight];
+    LogicalBufferHandle histogramLogicals[smvk::limits::MaxFramesInFlight]{};
+    ExposureDesc desc{};
 
-	Holder<ShaderModuleHandle> histogramModule;
-	ShaderProgram histogramProgram{};
+    Holder<ShaderModuleHandle> histogramModule;
+    ShaderProgram histogramProgram{};
 
-	// Last downloaded bins (CPU copy for adaptation + ImGui plot).
-	std::array<uint32_t, kExposureBinCount> lastBins{};
-	uint32_t lastTotal = 0;
+    // Last downloaded bins (CPU copy for adaptation + ImGui plot).
+    std::array<uint32_t, kExposureBinCount> lastBins{};
+    uint32_t lastTotal = 0;
 
-	[[nodiscard]] bool Valid() const {
-		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
-			if (histogramBuffers[f].empty() || histogramLogicals[f].empty())
-				return false;
-		}
-		return true;
-	}
-	[[nodiscard]] BufferHandle HistogramBuffer(uint32_t frameIndex) const {
-		assert(frameIndex < smvk::limits::MaxFramesInFlight);
-		return histogramBuffers[frameIndex];
-	}
-	[[nodiscard]] LogicalBufferHandle HistogramLogical(uint32_t frameIndex) const {
-		assert(frameIndex < smvk::limits::MaxFramesInFlight);
-		return histogramLogicals[frameIndex];
-	}
-	[[nodiscard]] bool ShadersValid() const {
-		return histogramProgram.shaderCount != 0 && !histogramModule.empty();
-	}
+    [[nodiscard]] bool Valid() const {
+        for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+            if (histogramBuffers[f].empty() || histogramLogicals[f].empty())
+                return false;
+        }
+        return true;
+    }
+    [[nodiscard]] BufferHandle HistogramBuffer(uint32_t frameIndex) const {
+        assert(frameIndex < smvk::limits::MaxFramesInFlight);
+        return histogramBuffers[frameIndex];
+    }
+    [[nodiscard]] LogicalBufferHandle HistogramLogical(uint32_t frameIndex) const {
+        assert(frameIndex < smvk::limits::MaxFramesInFlight);
+        return histogramLogicals[frameIndex];
+    }
+    [[nodiscard]] bool ShadersValid() const {
+        return histogramProgram.shaderCount != 0 && !histogramModule.empty();
+    }
 
-	bool EnsureShaders(ResourceManager& ctx,
-		const char* csPath = kExposureHistogramCsPath) {
-		if (ShadersValid())
-			return true;
-		try {
-			const std::string cs = csPath ? csPath : kExposureHistogramCsPath;
-			if (histogramModule.empty())
-				histogramModule = ctx.CreateShaderModule(
-					readFile(cs), "exposureHistogramCS");
-		} catch (...) {
-			return false;
-		}
-		if (histogramModule.empty())
-			return false;
-		Shader cs{
-			.module = histogramModule,
-			.entryPoint = "mainCS",
-			.stage = ShaderStage::Compute };
-		histogramProgram = { .shaders = { cs }, .shaderCount = 1 };
-		return true;
-	}
+    bool EnsureShaders(ResourceManager& ctx, const char* csPath = kExposureHistogramCsPath) {
+        if (ShadersValid())
+            return true;
+        try {
+            const std::string cs = csPath ? csPath : kExposureHistogramCsPath;
+            if (histogramModule.empty())
+                histogramModule = ctx.CreateShaderModule(readFile(cs), "exposureHistogramCS");
+        } catch (...) {
+            return false;
+        }
+        if (histogramModule.empty())
+            return false;
+        Shader cs{.module = histogramModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+        histogramProgram = {.shaders = {cs}, .shaderCount = 1};
+        return true;
+    }
 
-	void DestroyShaders() {
-		histogramProgram = ShaderProgram();
-		histogramModule = {};
-	}
+    void DestroyShaders() {
+        histogramProgram = ShaderProgram();
+        histogramModule = {};
+    }
 
-	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
-	// module swap (a failed read keeps the standing module), zero the
-	// program, re-Ensure. Returns true when anything moved; the released
-	// old handle rides `retired` for the caller's retirement pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-		std::vector<ShaderModuleHandle>& retired) {
-		if (!SwapShaderModule(ctx, kExposureHistogramCsPath,
-				"exposureHistogramCS", histogramModule, retired))
-			return false;
-		histogramProgram = ShaderProgram();
-		EnsureShaders(ctx);
-		return true;
-	}
+    // HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+    // module swap (a failed read keeps the standing module), zero the
+    // program, re-Ensure. Returns true when anything moved; the released
+    // old handle rides `retired` for the caller's retirement pass.
+    [[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+                                     std::vector<ShaderModuleHandle>& retired) {
+        if (!SwapShaderModule(
+                ctx, kExposureHistogramCsPath, "exposureHistogramCS", histogramModule, retired))
+            return false;
+        histogramProgram = ShaderProgram();
+        EnsureShaders(ctx);
+        return true;
+    }
 
-	// Extent-independent (each slice is always 64 uints); creates all
-	// flight slices once.
-	bool Create(ResourceManager& ctx, RenderGraph& rg, const ExposureDesc& d,
-		const char* csPath = kExposureHistogramCsPath) {
-		if (d.bins == 0 || d.bins > kExposureBinCount)
-			return false;
-		Destroy(rg);
-		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
-			Holder<BufferHandle> buf = ctx.CreateBuffer(
-				kExposureHistogramBytes, BufferType_Storage, "exposure histogram");
-			if (buf.empty()) {
-				Destroy(rg);
-				return false;
-			}
-			LogicalBufferHandle logical = rg.AddExternalBuffer(buf, "exposure histogram");
-			if (logical.empty()) {
-				Destroy(rg);
-				return false;
-			}
-			histogramBuffers[f] = std::move(buf);
-			histogramLogicals[f] = logical;
-			// No zero-fill here: every slice is zeroed at record time
-			// before its frame's histogram pass runs (same ordering
-			// argument as the ds-counters Create zero in
-			// deferredshadow.h); a Create-time copy would join the same
-			// transfer batch and trip sync validation the same way.
-		}
-		desc = d;
-		// Zero so the first adaptation (before any GPU write lands) sees
-		// total == 0 and holds the seed exposure instead of garbage.
-		lastBins.fill(0);
-		lastTotal = 0;
-		return EnsureShaders(ctx, csPath);
-	}
+    // Extent-independent (each slice is always 64 uints); creates all
+    // flight slices once.
+    bool Create(ResourceManager& ctx,
+                RenderGraph& rg,
+                const ExposureDesc& d,
+                const char* csPath = kExposureHistogramCsPath) {
+        if (d.bins == 0 || d.bins > kExposureBinCount)
+            return false;
+        Destroy(rg);
+        for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+            Holder<BufferHandle> buf =
+                ctx.CreateBuffer(kExposureHistogramBytes, BufferType_Storage, "exposure histogram");
+            if (buf.empty()) {
+                Destroy(rg);
+                return false;
+            }
+            LogicalBufferHandle logical = rg.AddExternalBuffer(buf, "exposure histogram");
+            if (logical.empty()) {
+                Destroy(rg);
+                return false;
+            }
+            histogramBuffers[f] = std::move(buf);
+            histogramLogicals[f] = logical;
+            // No zero-fill here: every slice is zeroed at record time
+            // before its frame's histogram pass runs (same ordering
+            // argument as the ds-counters Create zero in
+            // deferredshadow.h); a Create-time copy would join the same
+            // transfer batch and trip sync validation the same way.
+        }
+        desc = d;
+        // Zero so the first adaptation (before any GPU write lands) sees
+        // total == 0 and holds the seed exposure instead of garbage.
+        lastBins.fill(0);
+        lastTotal = 0;
+        return EnsureShaders(ctx, csPath);
+    }
 
-	void Destroy(RenderGraph& rg) {
-		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
-			if (!histogramLogicals[f].empty())
-				rg.FreeBuffer(histogramLogicals[f]);
-			histogramLogicals[f] = {};
-			histogramBuffers[f] = {};
-		}
-		lastBins.fill(0);
-		lastTotal = 0;
-	}
+    void Destroy(RenderGraph& rg) {
+        for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+            if (!histogramLogicals[f].empty())
+                rg.FreeBuffer(histogramLogicals[f]);
+            histogramLogicals[f] = {};
+            histogramBuffers[f] = {};
+        }
+        lastBins.fill(0);
+        lastTotal = 0;
+    }
 
-	bool Ensure(ResourceManager& ctx, RenderGraph& rg, const ExposureDesc& d,
-		const char* csPath = kExposureHistogramCsPath) {
-		if (Valid()) {
-			desc = d; // live-update metering range without realloc
-			return EnsureShaders(ctx, csPath);
-		}
-		return Create(ctx, rg, d, csPath);
-	}
+    bool Ensure(ResourceManager& ctx,
+                RenderGraph& rg,
+                const ExposureDesc& d,
+                const char* csPath = kExposureHistogramCsPath) {
+        if (Valid()) {
+            desc = d; // live-update metering range without realloc
+            return EnsureShaders(ctx, csPath);
+        }
+        return Create(ctx, rg, d, csPath);
+    }
 
-	uint64_t HistogramAddress(ResourceManager& ctx, uint32_t frameIndex) const {
-		return ctx.GetBufferDeviceAddress(HistogramBuffer(frameIndex));
-	}
+    uint64_t HistogramAddress(ResourceManager& ctx, uint32_t frameIndex) const {
+        return ctx.GetBufferDeviceAddress(HistogramBuffer(frameIndex));
+    }
 
-	// Dispatch dimensions for the current desc/extent (16x16 threads,
-	// each covering a sampleStep-spaced pixel).
-	static uint32_t DispatchXFor(Extent2D extent, uint32_t sampleStep) {
-		const uint32_t tile = 16 * (sampleStep == 0 ? 4 : sampleStep);
-		return (extent.width + tile - 1) / tile;
-	}
-	static uint32_t DispatchYFor(Extent2D extent, uint32_t sampleStep) {
-		const uint32_t tile = 16 * (sampleStep == 0 ? 4 : sampleStep);
-		return (extent.height + tile - 1) / tile;
-	}
+    // Dispatch dimensions for the current desc/extent (16x16 threads,
+    // each covering a sampleStep-spaced pixel).
+    static uint32_t DispatchXFor(Extent2D extent, uint32_t sampleStep) {
+        const uint32_t tile = 16 * (sampleStep == 0 ? 4 : sampleStep);
+        return (extent.width + tile - 1) / tile;
+    }
+    static uint32_t DispatchYFor(Extent2D extent, uint32_t sampleStep) {
+        const uint32_t tile = 16 * (sampleStep == 0 ? 4 : sampleStep);
+        return (extent.height + tile - 1) / tile;
+    }
 
-	// Compute pass shell for one flight slice: caller zeroes the slice
-	// first (CPU upload above), then sets the recording func (bind program,
-	// push, dispatch). Captures only copyable handles/values, safe once
-	// this returns.
-	RenderPass& AddHistogramPass(RenderGraph& rg,
-		LogicalImageViewHandle hdrView,
-		const ExposureHistogramPush& push,
-		uint32_t frameIndex,
-		const char* name = "ExposureHistogram") const {
-		assert(Valid());
-		assert(!hdrView.empty());
-		assert(frameIndex < smvk::limits::MaxFramesInFlight);
-		RenderPass& pass = rg.AddComputePass(name);
-		ImageSyncRequest hdrReq{};
-		hdrReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		hdrReq.barrierMasks.stageMask = PipelineStageBit_Compute;
-		hdrReq.layout = ImageLayout::ShaderReadOnlyOptimal;
-		pass.AddImageHint(hdrView, hdrReq);
-		BufferSyncRequest histReq{};
-		histReq.barrierMasks.accessMask =
-			AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		histReq.barrierMasks.stageMask = PipelineStageBit_Compute;
-		pass.AddBufferHint(histogramLogicals[frameIndex], histReq);
-		// Recording func is set by the caller (needs program + dispatch).
-		(void)push;
-		return pass;
-	}
+    // Compute pass shell for one flight slice: caller zeroes the slice
+    // first (CPU upload above), then sets the recording func (bind program,
+    // push, dispatch). Captures only copyable handles/values, safe once
+    // this returns.
+    RenderPass& AddHistogramPass(RenderGraph& rg,
+                                 LogicalImageViewHandle hdrView,
+                                 const ExposureHistogramPush& push,
+                                 uint32_t frameIndex,
+                                 const char* name = "ExposureHistogram") const {
+        assert(Valid());
+        assert(!hdrView.empty());
+        assert(frameIndex < smvk::limits::MaxFramesInFlight);
+        RenderPass& pass = rg.AddComputePass(name);
+        ImageSyncRequest hdrReq{};
+        hdrReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
+        hdrReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+        hdrReq.layout = ImageLayout::ShaderReadOnlyOptimal;
+        pass.AddImageHint(hdrView, hdrReq);
+        BufferSyncRequest histReq{};
+        histReq.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+        histReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+        pass.AddBufferHint(histogramLogicals[frameIndex], histReq);
+        // Recording func is set by the caller (needs program + dispatch).
+        (void)push;
+        return pass;
+    }
 
-	// ---- CPU adaptation ----
-	// Percentile luminance of the last downloaded histogram (exposure-
-	// independent: the HDR buffer is pre-exposure). Returns <= 0 when the
-	// histogram is empty (caller must hold the current exposure).
-	[[nodiscard]] float PercentileLuminance() const {
-		if (lastTotal == 0)
-			return 0.0f;
-		const uint32_t bins = desc.bins == 0 ? kExposureBinCount : desc.bins;
-		const uint64_t want = static_cast<uint64_t>(
-			static_cast<double>(lastTotal) * static_cast<double>(desc.percentile));
-		uint64_t accum = 0;
-		for (uint32_t i = 0; i < bins; ++i) {
-			accum += lastBins[i];
-			if (accum >= want) {
-				// Bin-center inversion MUST mirror the shader's binning
-				// (exposure_histogram.cs.hlsl: bin = saturate(t) * (bins-1)),
-				// so bin i covers t in [i/(bins-1), (i+1)/(bins-1)) and its
-				// center is (i+0.5)/(bins-1). The old /bins denominator was a
-				// consistent ~half-bin low bias in metered luminance (~0.17 EV
-				// over the default range) — every scene metered slightly
-				// darker than authored.
-				const float t = bins > 1
-					? (static_cast<float>(i) + 0.5f)
-						/ static_cast<float>(bins - 1)
-					: 0.5f;
-				const float logLum =
-					desc.minLogLum + t * (desc.maxLogLum - desc.minLogLum);
-				return exp2f(logLum);
-			}
-		}
-		return exp2f(desc.maxLogLum);
-	}
+    // ---- CPU adaptation ----
+    // Percentile luminance of the last downloaded histogram (exposure-
+    // independent: the HDR buffer is pre-exposure). Returns <= 0 when the
+    // histogram is empty (caller must hold the current exposure).
+    [[nodiscard]] float PercentileLuminance() const {
+        if (lastTotal == 0)
+            return 0.0f;
+        const uint32_t bins = desc.bins == 0 ? kExposureBinCount : desc.bins;
+        const uint64_t want = static_cast<uint64_t>(static_cast<double>(lastTotal) *
+                                                    static_cast<double>(desc.percentile));
+        uint64_t accum = 0;
+        for (uint32_t i = 0; i < bins; ++i) {
+            accum += lastBins[i];
+            if (accum >= want) {
+                // Bin-center inversion MUST mirror the shader's binning
+                // (exposure_histogram.cs.hlsl: bin = saturate(t) * (bins-1)),
+                // so bin i covers t in [i/(bins-1), (i+1)/(bins-1)) and its
+                // center is (i+0.5)/(bins-1). The old /bins denominator was a
+                // consistent ~half-bin low bias in metered luminance (~0.17 EV
+                // over the default range) — every scene metered slightly
+                // darker than authored.
+                const float t =
+                    bins > 1 ? (static_cast<float>(i) + 0.5f) / static_cast<float>(bins - 1) : 0.5f;
+                const float logLum = desc.minLogLum + t * (desc.maxLogLum - desc.minLogLum);
+                return exp2f(logLum);
+            }
+        }
+        return exp2f(desc.maxLogLum);
+    }
 
-	// Damped exposure step: target = key * 2^evBias / meteredLum, clamped,
-	// approached exponentially with separate to-dark / to-bright rates.
-	// Returns the new smoothed exposure (== current when no measurement).
-	[[nodiscard]] float Adapt(float currentExposure, float evBias,
-		float speedToDark, float speedToBright, float minExposure,
-		float maxExposure, float dt) const {
-		const float metered = PercentileLuminance();
-		if (!(metered > 0.0f) || !(dt > 0.0f))
-			return currentExposure;
-		float target = desc.keyValue * exp2f(evBias) / metered;
-		target = target < minExposure ? minExposure : target;
-		target = target > maxExposure ? maxExposure : target;
-		const float rate = target > currentExposure ? speedToDark : speedToBright;
-		const float blend = 1.0f - expf(-rate * dt);
-		return currentExposure + (target - currentExposure) * blend;
-	}
+    // Damped exposure step: target = key * 2^evBias / meteredLum, clamped,
+    // approached exponentially with separate to-dark / to-bright rates.
+    // Returns the new smoothed exposure (== current when no measurement).
+    [[nodiscard]] float Adapt(float currentExposure,
+                              float evBias,
+                              float speedToDark,
+                              float speedToBright,
+                              float minExposure,
+                              float maxExposure,
+                              float dt) const {
+        const float metered = PercentileLuminance();
+        if (!(metered > 0.0f) || !(dt > 0.0f))
+            return currentExposure;
+        float target = desc.keyValue * exp2f(evBias) / metered;
+        target = target < minExposure ? minExposure : target;
+        target = target > maxExposure ? maxExposure : target;
+        const float rate = target > currentExposure ? speedToDark : speedToBright;
+        const float blend = 1.0f - expf(-rate * dt);
+        return currentExposure + (target - currentExposure) * blend;
+    }
 };
 
 } // namespace smvk

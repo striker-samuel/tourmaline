@@ -25,8 +25,8 @@
 // The app owns GPU buffers and LOD/material resolution. Placement stays
 // World-free; Scene is never touched.
 
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <vector>
 
@@ -53,22 +53,23 @@ inline constexpr uint32_t kPlacementCullDebugRetest = 8;
 // -> instance. The old `alive` BDA is gone (the cull kernel owns
 // liveness now); the fetch itself is a load, no per-instance test.
 struct PlacementVsPush {
-	uint64_t visible = 0;     // BDA of the (slot, view) visible-index list
-	uint64_t instances = 0;   // BDA of the tile's PlacementInstanceBuffer
-	uint64_t renderViews = 0; // BDA of the RenderView slab
-	uint32_t renderViewIndex = 0;
-	uint32_t cullFlags = 0;   // 0 = trust the chain; DEBUG_RETEST = legacy compare
+    uint64_t visible = 0;     // BDA of the (slot, view) visible-index list
+    uint64_t instances = 0;   // BDA of the tile's PlacementInstanceBuffer
+    uint64_t renderViews = 0; // BDA of the RenderView slab
+    uint32_t renderViewIndex = 0;
+    uint32_t cullFlags = 0; // 0 = trust the chain; DEBUG_RETEST = legacy compare
 };
-static_assert(sizeof(PlacementVsPush) == 32, "PlacementVsPush moved — update placement_instanced.vert.hlsl");
+static_assert(sizeof(PlacementVsPush) == 32,
+              "PlacementVsPush moved — update placement_instanced.vert.hlsl");
 
 inline constexpr const char* kPlacementInstancedVsPath =
-	"content/shaders/placement_instanced.vert.hlsl.spv";
+    "content/shaders/placement_instanced.vert.hlsl.spv";
 
 // The DIAGNOSTIC unlit fragment (the draw chain's independent proof
 // path — the production path binds the material system's lit
 // fragments through the same interface).
 inline constexpr const char* kPlacementUnlitPsPath =
-	"content/shaders/placement_unlit.frag.hlsl.spv";
+    "content/shaders/placement_unlit.frag.hlsl.spv";
 
 // ---------------------------------------------------------------------------
 // The DRAW recording contract (the app's graphics pass). The program
@@ -95,52 +96,51 @@ inline constexpr const char* kPlacementUnlitPsPath =
 
 // One contiguous prototype run inside a tile's sorted instance buffer.
 struct ProtoRun {
-	uint32_t prototypeId = 0;
-	uint32_t start = 0; // first index in the tile buffer
-	uint32_t count = 0; // includes VS-culled instances (degenerate collapse)
+    uint32_t prototypeId = 0;
+    uint32_t start = 0; // first index in the tile buffer
+    uint32_t count = 0; // includes VS-culled instances (degenerate collapse)
 };
 
 // Everything the app needs to emit indirect commands for one tile.
 struct TileDrawSet {
-	TileKey key;
-	glm::vec3 center{ 0.0f };
-	float radius = 0.0f;
-	uint64_t aliveBDA = 0; // 0 = CPU tile (all alive), else GPU flag2 buffer
-	std::vector<ProtoRun> runs;
+    TileKey key;
+    glm::vec3 center{0.0f};
+    float radius = 0.0f;
+    uint64_t aliveBDA = 0; // 0 = CPU tile (all alive), else GPU flag2 buffer
+    std::vector<ProtoRun> runs;
 };
 
 // Model matrix convention shared with the VS (T * RotY * S, column-major).
 // CPU-side uses: exact range/LOD math, debug views, transient draws.
 inline glm::mat4 ComposeInstanceMatrix(const glm::vec3& pos, float yaw, const glm::vec3& scale) {
-	const float c = std::cos(yaw), s = std::sin(yaw);
-	const float sx = scale.x; // uniform by construction
-	return glm::mat4(
-		glm::vec4(c * sx, 0.0f, -s * sx, 0.0f),
-		glm::vec4(0.0f, scale.y, 0.0f, 0.0f),
-		glm::vec4(s * sx, 0.0f, c * sx, 0.0f),
-		glm::vec4(pos, 1.0f));
+    const float c = std::cos(yaw), s = std::sin(yaw);
+    const float sx = scale.x; // uniform by construction
+    return glm::mat4(glm::vec4(c * sx, 0.0f, -s * sx, 0.0f),
+                     glm::vec4(0.0f, scale.y, 0.0f, 0.0f),
+                     glm::vec4(s * sx, 0.0f, c * sx, 0.0f),
+                     glm::vec4(pos, 1.0f));
 }
 
 // Collects coarse-visible tiles (bounds test only) with their runs.
 // Empty tiles are skipped. Output order is tile-map order (unspecified);
 // runs within a set are prototype-ascending.
-void CollectTileDrawSets(const PlacementSystem& sys, uint64_t programId,
-	const std::function<bool(const glm::vec3&, float)>& frustumTest,
-	std::vector<TileDrawSet>& out);
+void CollectTileDrawSets(const PlacementSystem& sys,
+                         uint64_t programId,
+                         const std::function<bool(const glm::vec3&, float)>& frustumTest,
+                         std::vector<TileDrawSet>& out);
 
 } // namespace tour::placement
-
 
 // COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
 // placement header's declarations live in tour::placement; the smvk::
 // placement aliases keep the existing call sites compiling through the
 // consumer migration.
 namespace smvk::placement {
-	using ::tour::placement::CollectTileDrawSets;
-	using ::tour::placement::ComposeInstanceMatrix;
-	using ::tour::placement::kPlacementCullDebugRetest;
-	using ::tour::placement::kPlacementVsPushOffset;
-	using ::tour::placement::PlacementVsPush;
-	using ::tour::placement::ProtoRun;
-	using ::tour::placement::TileDrawSet;
-}
+using ::tour::placement::CollectTileDrawSets;
+using ::tour::placement::ComposeInstanceMatrix;
+using ::tour::placement::kPlacementCullDebugRetest;
+using ::tour::placement::kPlacementVsPushOffset;
+using ::tour::placement::PlacementVsPush;
+using ::tour::placement::ProtoRun;
+using ::tour::placement::TileDrawSet;
+} // namespace smvk::placement

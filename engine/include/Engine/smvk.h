@@ -8,19 +8,19 @@
 #include <Engine/RHI/DescriptorLimits.h>
 #include <Engine/RHI/FrameConfig.h>
 
-#include <cassert>
-#include <array>
-#include <cstring>
-#include <cstdint>
-#include <memory>
-#include <type_traits>
-#include <tuple>
-#include <map>
-#include <future>
 #include <algorithm>
+#include <array>
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <future>
+#include <map>
+#include <memory>
 #include <optional>
-#include <vector>
 #include <set>
+#include <tuple>
+#include <type_traits>
+#include <vector>
 
 // ENGINE LIMITS no longer live here — they are ownership-scoped:
 //   smvk::limits (RHI-owned: bindless descriptor budgets, frame
@@ -53,1972 +53,1894 @@ void SetStrictResources(bool on);
 bool StrictResources();
 void OnResourceExhaustion(const char* site);
 
-	struct Image;
-
-	// ============================================================================
-	// Basic geometry / resource dimensions
-	// ============================================================================
-
-	struct Extent2D
-	{
-		uint32_t width = 1;
-		uint32_t height = 1;
-	};
-
-	struct Extent3D
-	{
-		uint32_t width = 1;
-		uint32_t height = 1;
-		uint32_t depth = 1;
-	};
-
-	struct Offset3D
-	{
-		int32_t x = 0;
-		int32_t y = 0;
-		int32_t z = 0;
-	};
-
-	// Swapchain presentation mode (VSync control).
-	//   Fifo        = strict VSync (waits for vertical blank, no tearing, but
-	//                 any frame over budget locks to half refresh: 30fps on 60Hz).
-	//   Mailbox     = tear-free VSync without the halving (latest ready image
-	//                 each blank; may drop frames under load, never tears).
-	//   Immediate   = no VSync, tearing allowed (lowest latency).
-	//   FifoRelaxed = VSync that presents IMMEDIATELY on the next blank when
-	//                 a frame ran late (one tear possible) instead of locking
-	//                 to every-other-blank like strict Fifo. The 60fps-not-30
-	//                 mode when the driver/display lacks Mailbox.
-	enum class PresentMode : uint8_t
-	{
-		Fifo = 0,
-		Mailbox = 1,
-		Immediate = 2,
-		FifoRelaxed = 3,
-	};
-
-	inline const char* ToString(PresentMode mode) {
-		switch (mode) {
-		case PresentMode::Fifo: return "VSync FIFO (strict)";
-		case PresentMode::Mailbox: return "VSync Mailbox (smooth)";
-		case PresentMode::Immediate: return "Uncapped Immediate";
-		case PresentMode::FifoRelaxed: return "VSync FIFO relaxed (no 30fps lock)";
-		default: return "Unknown";
-		}
-	}
-
-	inline bool IsVSync(PresentMode mode) { return mode != PresentMode::Immediate; }
-
-	// ============================================================================
-	// Formats
-	// ============================================================================
-
-	enum class Format : uint16_t
-	{
-		Undefined,
-
-		// 8-bit
-		R8_UNorm,
-		R8_SNorm,
-		R8_UInt,
-		R8_SInt,
-
-		RG8_UNorm,
-		RG8_SNorm,
-		RG8_UInt,
-		RG8_SInt,
-
-		RGBA8_UNorm,
-		RGBA8_SNorm,
-		RGBA8_UInt,
-		RGBA8_SInt,
-		RGBA8_SRGB,
-
-		BGRA8_UNorm,
-		BGRA8_SRGB,
-
-		// 16-bit
-		R16_UNorm,
-		R16_SNorm,
-		R16_UInt,
-		R16_SInt,
-		R16_Float,
-
-		RG16_UNorm,
-		RG16_SNorm,
-		RG16_UInt,
-		RG16_SInt,
-		RG16_Float,
-
-		RGBA16_UNorm,
-		RGBA16_SNorm,
-		RGBA16_UInt,
-		RGBA16_SInt,
-		RGBA16_Float,
-
-		// 32-bit
-		R32_UInt,
-		R32_SInt,
-		R32_Float,
-
-		RG32_UInt,
-		RG32_SInt,
-		RG32_Float,
-
-		RGB32_UInt,
-		RGB32_SInt,
-		RGB32_Float,
-
-		RGBA32_UInt,
-		RGBA32_SInt,
-		RGBA32_Float,
-
-		// packed
-		RGB10A2_UNorm,
-		RGB10A2_UInt,
-
-		R11G11B10_Float,
-
-		// depth / stencil
-		D16_UNorm,
-		D24_UNorm_S8_UInt,
-		D32_Float,
-		D32_Float_S8_UInt,
-		// Stencil-only view format of a combined depth/stencil image
-		// (the aspect-isolated sampling view for stencil readers).
-		S8_UInt,
-
-		// compressed
-		BC1_RGB_UNorm,
-		BC1_RGB_SRGB,
-		BC1_RGBA_UNorm,
-		BC1_RGBA_SRGB,
-		BC2_UNorm,
-		BC2_SRGB,
-		BC3_UNorm,
-		BC3_SRGB,
-		BC4_UNorm,
-		BC4_SNorm,
-		BC5_UNorm,
-		BC5_SNorm,
-		BC6H_UFloat,
-		BC6H_SFloat,
-		BC7_UNorm,
-		BC7_SRGB,
-	};
-	enum class ColorSpace : uint8_t
-	{
-		Undefined,
-
-		SRGB_Nonlinear,
-
-		DisplayP3_Nonlinear,
-		DisplayP3_Linear,
-
-		ExtendedSRGB_Linear,
-		ExtendedSRGB_Nonlinear,
-
-		DCI_P3_Nonlinear,
-
-		BT709_Linear,
-		BT709_Nonlinear,
-
-		BT2020_Linear,
-
-		HDR10_ST2084,
-		HDR10_HLG,
-
-		DolbyVision,
-
-		AdobeRGB_Linear,
-		AdobeRGB_Nonlinear,
-
-		PassThrough,
-	};
-
-	// Block/texel geometry of a Format — the CPU-visible half of the
-	// backend's getFormatInfo table (impl.cpp keeps its own copy for the
-	// copy-region math; both derive from the same spec numbers). The
-	// world-field atlas / cook brick-layout math uses this: a stored
-	// brick's tightly packed payload is
-	//   blocksX = ceil(storedW / blockWidth)
-	//   blocksY = ceil(storedH / blockHeight)
-	//   bytes   = blocksX * blocksY * storedD * bytesPerBlock
-	// (blocks are 4x4x1 for BCn: Z stays per-texel). Compressed formats
-	// require offsets/extents divisible by the block footprint — the
-	// 68-texel stored brick (64 interior + 2 halo per side) is
-	// deliberately 4-divisible for exactly that.
-	struct FormatBlockInfo
-	{
-		uint32_t blockWidth = 1;
-		uint32_t blockHeight = 1;
-		uint32_t bytesPerBlock = 1;
-		bool compressed = false;
-	};
-	constexpr FormatBlockInfo GetFormatBlockInfo(Format f)
-	{
-		switch (f)
-		{
-		case Format::R8_UNorm: case Format::R8_SNorm:
-		case Format::R8_UInt: case Format::R8_SInt:
-			return { 1, 1, 1, false };
-		case Format::RG8_UNorm: case Format::RG8_SNorm:
-		case Format::RG8_UInt: case Format::RG8_SInt:
-			return { 1, 1, 2, false };
-		case Format::RGBA8_UNorm: case Format::RGBA8_SNorm:
-		case Format::RGBA8_UInt: case Format::RGBA8_SInt:
-		case Format::RGBA8_SRGB: case Format::BGRA8_UNorm:
-		case Format::BGRA8_SRGB:
-			return { 1, 1, 4, false };
-		case Format::R16_UNorm: case Format::R16_SNorm:
-		case Format::R16_UInt: case Format::R16_SInt: case Format::R16_Float:
-			return { 1, 1, 2, false };
-		case Format::RG16_UNorm: case Format::RG16_SNorm:
-		case Format::RG16_UInt: case Format::RG16_SInt: case Format::RG16_Float:
-		case Format::R32_UInt: case Format::R32_SInt: case Format::R32_Float:
-		case Format::RGB10A2_UNorm: case Format::RGB10A2_UInt:
-		case Format::R11G11B10_Float:
-			return { 1, 1, 4, false };
-		case Format::RGBA16_UNorm: case Format::RGBA16_SNorm:
-		case Format::RGBA16_UInt: case Format::RGBA16_SInt: case Format::RGBA16_Float:
-		case Format::RG32_UInt: case Format::RG32_SInt: case Format::RG32_Float:
-			return { 1, 1, 8, false };
-		case Format::RGB32_UInt: case Format::RGB32_SInt: case Format::RGB32_Float:
-			return { 1, 1, 12, false };
-		case Format::RGBA32_UInt: case Format::RGBA32_SInt:
-		case Format::RGBA32_Float:
-			return { 1, 1, 16, false };
-		case Format::BC1_RGB_UNorm: case Format::BC1_RGB_SRGB:
-		case Format::BC1_RGBA_UNorm: case Format::BC1_RGBA_SRGB:
-		case Format::BC2_UNorm: case Format::BC2_SRGB:
-		case Format::BC3_UNorm: case Format::BC3_SRGB:
-		case Format::BC4_UNorm: case Format::BC4_SNorm:
-		case Format::BC5_UNorm: case Format::BC5_SNorm:
-		case Format::BC6H_UFloat: case Format::BC6H_SFloat:
-		case Format::BC7_UNorm: case Format::BC7_SRGB:
-			return { 4, 4, 8, true };
-		default:
-			return { 1, 1, 0, false }; // Undefined/depth/stencil: not atlas payload formats
-		}
-	}
-
-	// Scalar components a Format's texel carries (the vertex-layout
-	// validation's shader-side compatibility check: a vertex shader
-	// input at location N consumes <= this many components out of the
-	// bound attribute's format — consuming MORE reads undefined data,
-	// and the pipeline builder flags it). Compressed formats are not
-	// vertex-attribute formats (returns 0 = unusable).
-	constexpr uint32_t GetFormatComponentCount(Format f)
-	{
-		switch (f)
-		{
-		case Format::R8_UNorm: case Format::R8_SNorm:
-		case Format::R8_UInt: case Format::R8_SInt:
-		case Format::R16_UNorm: case Format::R16_SNorm:
-		case Format::R16_UInt: case Format::R16_SInt:
-		case Format::R16_Float:
-		case Format::R32_UInt: case Format::R32_SInt:
-		case Format::R32_Float:
-			return 1;
-		case Format::RG8_UNorm: case Format::RG8_SNorm:
-		case Format::RG8_UInt: case Format::RG8_SInt:
-		case Format::RG16_UNorm: case Format::RG16_SNorm:
-		case Format::RG16_UInt: case Format::RG16_SInt:
-		case Format::RG16_Float:
-		case Format::RG32_UInt: case Format::RG32_SInt:
-		case Format::RG32_Float:
-			return 2;
-		case Format::RGB32_UInt: case Format::RGB32_SInt:
-		case Format::RGB32_Float:
-			return 3;
-		case Format::RGBA8_UNorm: case Format::RGBA8_SNorm:
-		case Format::RGBA8_UInt: case Format::RGBA8_SInt:
-		case Format::RGBA8_SRGB: case Format::BGRA8_UNorm:
-		case Format::BGRA8_SRGB:
-		case Format::RGBA16_UNorm: case Format::RGBA16_SNorm:
-		case Format::RGBA16_UInt: case Format::RGBA16_SInt:
-		case Format::RGBA16_Float:
-		case Format::RGB10A2_UNorm: case Format::RGB10A2_UInt:
-		case Format::R11G11B10_Float:
-		case Format::RGBA32_UInt: case Format::RGBA32_SInt:
-		case Format::RGBA32_Float:
-			return 4;
-		default:
-			return 0;
-		}
-	}
-
-	// ============================================================================
-	// Resource access
-	// ============================================================================
-
-	enum class AccessFlags : uint32_t
-	{
-		None = 0,
-
-		IndirectCommandRead = 1u << 0,
-		IndexRead = 1u << 1,
-		VertexAttributeRead = 1u << 2,
-		UniformRead = 1u << 3,
-		InputAttachmentRead = 1u << 4,
-		ShaderRead = 1u << 5,
-		ShaderWrite = 1u << 6,
-		ColorAttachmentRead = 1u << 7,
-		ColorAttachmentWrite = 1u << 8,
-		DepthStencilAttachmentRead = 1u << 9,
-		DepthStencilAttachmentWrite = 1u << 10,
-		TransferRead = 1u << 11,
-		TransferWrite = 1u << 12,
-		HostRead = 1u << 13,
-		HostWrite = 1u << 14,
-		MemoryRead = 1u << 15,
-		MemoryWrite = 1u << 16,
-
-		CommandPreprocessRead = 1u << 17,
-		CommandPreprocessWrite = 1u << 18,
-		ColorAttachmentReadNoncoherent = 1u << 19,
-		ConditionalRenderingRead = 1u << 20,
-		AccelerationStructureRead = 1u << 21,
-		AccelerationStructureWrite = 1u << 22,
-		FragmentShadingRateAttachmentRead = 1u << 23,
-		FragmentDensityMapRead = 1u << 24,
-		TransformFeedbackWrite = 1u << 25,
-		TransformFeedbackCounterRead = 1u << 26,
-		TransformFeedbackCounterWrite = 1u << 27,
-	};
-
-	constexpr AccessFlags operator|(AccessFlags a, AccessFlags b)
-	{
-		return static_cast<AccessFlags>(
-			static_cast<uint32_t>(a) |
-			static_cast<uint32_t>(b));
-	}
-
-	constexpr AccessFlags operator&(AccessFlags a, AccessFlags b)
-	{
-		return static_cast<AccessFlags>(
-			static_cast<uint32_t>(a) &
-			static_cast<uint32_t>(b));
-	}
-
-	constexpr AccessFlags& operator|=(AccessFlags& a, AccessFlags b)
-	{
-		a = a | b;
-		return a;
-	}
-
-	constexpr bool HasAnyFlag(AccessFlags value, AccessFlags flags)
-	{
-		return (value & flags) != AccessFlags::None;
-	}
-	constexpr AccessFlags operator~(AccessFlags a) {
-		return static_cast<AccessFlags>(~static_cast<uint32_t>(a));
-	}
-	constexpr AccessFlags operator^(AccessFlags a, AccessFlags b) {
-		return static_cast<AccessFlags>(static_cast<uint32_t>(a) ^ static_cast<uint32_t>(b));
-	}
-	constexpr AccessFlags& operator^=(AccessFlags& a, AccessFlags b) { a = a ^ b; return a; }
-	constexpr AccessFlags& operator&=(AccessFlags& a, AccessFlags b) { a = a & b; return a; }
-
-	// ============================================================================
-	// Primitive / vertex input
-	// ============================================================================
-
-	enum class PrimitiveTopology : uint8_t
-	{
-		PointList,
-
-		LineList,
-		LineStrip,
-
-		TriangleList,
-		TriangleStrip,
-		TriangleFan,
-	};
-
-	enum class VertexInputRate : uint8_t
-	{
-		Vertex,
-		Instance,
-	};
-
-	enum class VertexSemantic : uint8_t
-	{
-		Position,
-		Normal,
-		Tangent,
-		Color,
-
-		TexCoord0,
-		TexCoord1,
-
-		// Lightmap chart index (R32_UInt per vertex; 0xFFFFFFFF = uncharted).
-		// Pairs with TexCoord1, which carries the CHART-LOCAL uv: the vertex
-		// shader resolves the atlas uv as chartUv * xform.scale + xform.offset
-		// via the per-draw chart offset (see GfxDraw).
-		ChartId,
-
-		// Terrain tangent + bitangent-flip handedness (R16G16B16A16_Float:
-		// xyz = tangent, w = the bitangent flip sign, +1/-1 — the bitangent
-		// itself is never stored, B = cross(N, T) * flip in the shader).
-		// The terrain format's own attribute (RGBA16 halves instead of the
-		// static stream's oct32 packing — generated geometry, no chart data).
-		TangentBFlip,
-
-		JointIndices,
-		JointWeights,
-	};
-
-	struct VertexAttribute
-	{
-		VertexSemantic semantic = VertexSemantic::Position;
-		// The shader input location this attribute binds. EXPLICIT, not
-		// derived from declaration order (the pre-fix counter assigned
-		// locations by list position, so reordering the vector silently
-		// re-bound every shader input while the semantic names looked
-		// unchanged). Must be unique within the format and match the
-		// consuming vertex shader's reflected stage-input location
-		// (the pipeline builder pairs the two by this number and
-		// validates component compatibility; see
-		// getVkVertexAttributeDescriptions + the spirv reflection).
-		uint32_t location = 0;
-		Format format = Format::Undefined;
-		uint32_t offset = 0;
-
-		bool operator==(const VertexAttribute&) const = default;
-	};
-
-	struct VertexBinding
-	{
-		uint32_t binding = 0;
-		uint32_t stride = 0;
-
-		VertexInputRate inputRate = VertexInputRate::Vertex;
-
-		std::vector<VertexAttribute> attributes;
-
-		bool operator==(const VertexBinding&) const = default;
-	};
-
-	struct VertexLayoutDesc
-	{
-		std::vector<VertexBinding> bindings;
-
-		bool operator==(const VertexLayoutDesc&) const = default;
-	};
-
-	// ============================================================================
-	// Sample counts
-	// ============================================================================
-
-	enum class SampleCount : uint8_t
-	{
-		Count1 = 1,
-		Count2 = 2,
-		Count4 = 4,
-		Count8 = 8,
-		Count16 = 16,
-		Count32 = 32,
-		Count64 = 64,
-	};
-
-	struct MSAASettings {
-		SampleCount samples = SampleCount::Count1;
-		// Alpha-to-coverage: fragment alpha drives the sample coverage mask
-		// instead of a shader discard (masked cutout foliage in MSAA mode).
-		// Ignored when samples == Count1 (A2C degenerates to a hard 0.5
-		// threshold at one sample — keep the discard path there).
-		bool alphaToCoverage = false;
-
-		static MSAASettings Count1() { return { SampleCount::Count1, false }; }
-		static MSAASettings Count2() { return { SampleCount::Count2, false }; }
-		// 2x MSAA + alpha-to-coverage (Main masked cutout leg).
-		static MSAASettings Count2A2C() { return { SampleCount::Count2, true }; }
-		static MSAASettings Count4() { return { SampleCount::Count4 }; }
-		static MSAASettings Count8() { return { SampleCount::Count8 }; }
-		static MSAASettings Count16() { return { SampleCount::Count16 }; }
-		static MSAASettings Count32() { return { SampleCount::Count32 }; }
-		static MSAASettings Count64() { return { SampleCount::Count64 }; }
-	};
-
-	// ============================================================================
-	// Buffer
-	// ============================================================================
-
-
-	// BufferType encapsulates mmeoryUsage, locality and more.
-	// This is a higher level abstraction than the rest of the rhi but reality is
-	// we need to cover X uses for 99% of apps. No need to provideo MemoryUsage or Locality and expose them to user
-
-	typedef enum BufferType {
-		BufferType_Index = 0,
-		BufferType_Vertex,
-		BufferType_Uniform,
-		BufferType_Storage,
-		BufferType_Indirect,
-		BufferType_TransferSrc,
-		BufferType_TransferDst,
-		BufferType_Staging,
-		BufferType_Count,
-	} BufferType;
-
-	struct BufferCreateInfo {
-		size_t size = 0;
-		BufferType bufferType;
-		const char* name = nullptr;
-	};
-
-	// ============================================================================
-	// Image
-	// ============================================================================
-
-	enum class ImageType : uint8_t
-	{
-		Image1D,
-		Image2D,
-		Image3D,
-	};
-
-	enum class ImageUsage : uint32_t
-	{
-		None = 0,
-
-		TransferSrc = 1u << 0,
-		TransferDst = 1u << 1,
-
-		Sampled = 1u << 2,
-		Storage = 1u << 3,
-
-		ColorAttachment = 1u << 4,
-		DepthStencilAttachment = 1u << 5,
-
-		InputAttachment = 1u << 6,
-	};
-
-	constexpr ImageUsage operator|(ImageUsage a, ImageUsage b)
-	{
-		return static_cast<ImageUsage>(
-			static_cast<uint32_t>(a) |
-			static_cast<uint32_t>(b)
-			);
-	}
-	constexpr ImageUsage& operator|=(ImageUsage& a, ImageUsage b)
-	{
-		a = a | b;
-		return a;
-	}
-
-	constexpr ImageUsage operator&(ImageUsage a, ImageUsage b)
-	{
-		return static_cast<ImageUsage>(
-			static_cast<uint32_t>(a) &
-			static_cast<uint32_t>(b)
-			);
-	}
-
-	constexpr ImageUsage& operator&=(ImageUsage& a, ImageUsage b)
-	{
-		a = a & b;
-		return a;
-	}
-
-	enum class ImageViewType : uint8_t
-	{
-		View1D,
-		View2D,
-		View3D,
-
-		ViewCube,
-
-		View1DArray,
-		View2DArray,
-		ViewCubeArray,
-	};
-
-	enum class ImageAspect : uint8_t
-	{
-		None = 0,
-		Color = 1u << 0,
-		Depth = 1u << 1,
-		Stencil = 1u << 2,
-	};
-
-	constexpr ImageAspect operator&(
-		ImageAspect a,
-		ImageAspect b)
-	{
-		return static_cast<ImageAspect>(
-			static_cast<uint32_t>(a) &
-			static_cast<uint32_t>(b)
-			);
-	}
-
-	constexpr ImageAspect operator|(
-		ImageAspect a,
-		ImageAspect b)
-	{
-		return static_cast<ImageAspect>(
-			static_cast<uint32_t>(a) |
-			static_cast<uint32_t>(b)
-			);
-	}
-
-	static constexpr uint32_t RemainingSubresources =
-		UINT32_MAX;
-
-	struct ImageSubresourceRange
-	{
-		ImageAspect aspect = ImageAspect::Color;
-
-		uint32_t baseMipLevel = 0;
-		uint32_t mipLevelCount = RemainingSubresources;
-
-		uint32_t baseArrayLayer = 0;
-		uint32_t arrayLayerCount = RemainingSubresources;
-	};
-
-	struct ClearColor
-	{
-		float r = 0.0f;
-		float g = 0.0f;
-		float b = 0.0f;
-		float a = 0.0f;
-	};
-
-	struct ClearDepthStencil
-	{
-		float depth = 1.0f;
-		uint32_t stencil = 0;
-	};
-
-	enum class AttachmentLoadOp : uint8_t
-	{
-		Load,
-		Clear,
-		DontCare
-	};
-
-	enum class AttachmentStoreOp : uint8_t
-	{
-		Store,
-		DontCare
-	};
-
-	enum class Filter : uint8_t
-	{
-		Nearest,
-		Linear,
-	};
-
-	enum class MipmapMode : uint8_t
-	{
-		Nearest,
-		Linear,
-	};
-
-	enum class AddressMode : uint8_t
-	{
-		Repeat,
-		MirroredRepeat,
-		ClampToEdge
-
-	};
-
-	enum class CompareOp : uint8_t
-	{
-		Never,
-		Less,
-		Equal,
-		LessEqual,
-		Greater,
-		NotEqual,
-		GreaterEqual,
-		Always,
-	};
-
-	struct SamplerCreateInfo
-	{
-		Filter magFilter = Filter::Linear;
-		Filter minFilter = Filter::Linear;
-		MipmapMode mipmapMode = MipmapMode::Linear;
-
-		AddressMode addressU = AddressMode::Repeat;
-		AddressMode addressV = AddressMode::Repeat;
-		AddressMode addressW = AddressMode::Repeat;
-
-		float mipLodBias = 0.0f;
-
-		float minLod = 0.0f;
-		float maxLod = 1000.0f;
-
-		float maxAnisotropy = 1.0f;
-
-		CompareOp compareOp = CompareOp::Always;
-		bool compareEnable = false;
-
-		bool operator<(const SamplerCreateInfo& other) const noexcept
-		{
-			return std::tie(
-				magFilter,
-				minFilter,
-				mipmapMode,
-
-				addressU,
-				addressV,
-				addressW,
-
-				mipLodBias,
-				minLod,
-				maxLod,
-				maxAnisotropy,
-
-				compareOp,
-				compareEnable
-			) <
-				std::tie(
-					other.magFilter,
-					other.minFilter,
-					other.mipmapMode,
-
-					other.addressU,
-					other.addressV,
-					other.addressW,
-
-					other.mipLodBias,
-					other.minLod,
-					other.maxLod,
-					other.maxAnisotropy,
-
-					other.compareOp,
-					other.compareEnable
-				);
-		}
-		bool operator==(const SamplerCreateInfo& other) const noexcept
-		{
-			return !(*this < other) && !(other < *this);
-		}
-	};
-
-	struct SamplerCreateInfoHash {
-		static void hashCombine(size_t& seed, size_t v) noexcept {
-			seed ^= v + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-		}
-		size_t operator()(SamplerCreateInfo const& k) const noexcept {
-			size_t h = 0;
-			hashCombine(h, std::hash<int>{}(static_cast<int>(k.magFilter)));
-			hashCombine(h, std::hash<int>{}(static_cast<int>(k.minFilter)));
-			hashCombine(h, std::hash<int>{}(static_cast<int>(k.mipmapMode)));
-			hashCombine(h, std::hash<int>{}(static_cast<int>(k.addressU)));
-			hashCombine(h, std::hash<int>{}(static_cast<int>(k.addressV)));
-			hashCombine(h, std::hash<int>{}(static_cast<int>(k.addressW)));
-			hashCombine(h, std::hash<float>{}(k.mipLodBias));
-			hashCombine(h, std::hash<float>{}(k.minLod));
-			hashCombine(h, std::hash<float>{}(k.maxLod));
-			hashCombine(h, std::hash<float>{}(k.maxAnisotropy));
-			hashCombine(h, std::hash<int>{}(static_cast<int>(k.compareOp)));
-			hashCombine(h, std::hash<bool>{}(k.compareEnable));
-			return h;
-		}
-	};
-
-	// ============================================================================
-	// Shader
-	// ============================================================================
-
-	enum class ShaderStage : uint32_t
-	{
-		None = 0,
-
-		Vertex = 1u << 0, // 0x01
-		TessControl = 1u << 1, // 0x02
-		TessEvaluation = 1u << 2, // 0x04
-		Geometry = 1u << 3, // 0x08
-		Fragment = 1u << 4, // 0x10
-		Compute = 1u << 5, // 0x20
-		Task = 1u << 6, // 0x40, VK_SHADER_STAGE_TASK_BIT_EXT
-		Mesh = 1u << 7, // 0x80, VK_SHADER_STAGE_MESH_BIT_EXT
-
-		AllGraphics = (1u << 8) - 1u, // 0xFF (VS..Mesh)
-		All = 0x7FFFFFFF,
-		// Future:
-		// RayGen
-		// AnyHit
-		// ClosestHit
-		// Miss
-		// Intersection
-		// Callable
-	};
-
-	using ShaderStageFlags = ShaderStage;
-
-	constexpr ShaderStage operator|(ShaderStage lhs, ShaderStage rhs)
-	{
-		return static_cast<ShaderStage>(
-			static_cast<uint32_t>(lhs) |
-			static_cast<uint32_t>(rhs)
-			);
-	}
-
-	constexpr ShaderStage operator&(ShaderStage lhs, ShaderStage rhs)
-	{
-		return static_cast<ShaderStage>(
-			static_cast<uint32_t>(lhs) &
-			static_cast<uint32_t>(rhs)
-			);
-	}
-
-	constexpr ShaderStage& operator|=(ShaderStage& lhs, ShaderStage rhs)
-	{
-		lhs = lhs | rhs;
-		return lhs;
-	}
-
-	constexpr ShaderStage& operator&=(ShaderStage& lhs, ShaderStage rhs)
-	{
-		lhs = lhs & rhs;
-		return lhs;
-	}
-
-	// ============================================================================
-	// Shader program
-	// ============================================================================
-
-	// Mirrors VkSpecializationMapEntry without leaking Vk into the RHI.
-	struct SpecializationEntry
-	{
-		uint32_t constantID = 0;
-		uint32_t offset = 0;
-		uint32_t size = 0;
-		bool operator==(const SpecializationEntry&) const = default;
-	};
-
-	// Owned specialization payload for one Shader stage.
-	// Entries describe (constantID -> byte range in data); data holds the
-	// raw little-endian values. Use Set() helpers to append typed values.
-	struct ShaderSpecialization
-	{
-		std::vector<SpecializationEntry> entries;
-		std::vector<uint8_t> data;
-
-		bool operator==(const ShaderSpecialization& other) const noexcept
-		{
-			return entries == other.entries && data == other.data;
-		}
-
-		template<typename T>
-		void Set(uint32_t constantID, const T& value)
-		{
-			static_assert(std::is_trivially_copyable_v<T>);
-			SpecializationEntry e{};
-			e.constantID = constantID;
-			e.offset = static_cast<uint32_t>(data.size());
-			e.size = static_cast<uint32_t>(sizeof(T));
-			const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&value);
-			data.insert(data.end(), bytes, bytes + sizeof(T));
-			entries.push_back(e);
-		}
-
-		void SetBool(uint32_t constantID, bool value)
-		{
-			// Vulkan expects VkBool32 for bool spec constants.
-			uint32_t v = value ? 1u : 0u;
-			Set(constantID, v);
-		}
-	};
-
-	// RHI push-constant range (mirrors VkPushConstantRange without Vk).
-	struct PushConstantRange
-	{
-		uint32_t offset = 0;
-		uint32_t size = 0;
-		ShaderStage stages = ShaderStage::None;
-		bool operator==(const PushConstantRange&) const = default;
-	};
-
-	// Engine-wide push-constant budget. The global pipeline layout declares a
-	// single range [0, kEnginePushConstantSize) with ALL stages; every
-	// vkCmdPushConstants call must cover it (see VUID-vkCmdPushConstants-01796).
-	// Note: Vulkan only guarantees maxPushConstantsSize >= 128, so 256 needs
-	// a capable device; startup throws "unsupported ..." otherwise.
-	inline constexpr uint32_t kEnginePushConstantSize = 256;
-
-	struct ShaderModuleTag;
-	using ShaderModuleHandle = Handle<ShaderModuleTag>;
-	struct Shader
-	{
-		ShaderModuleHandle module;
-		const char* entryPoint = "main";
-		ShaderStage stage = ShaderStage::None;
-		// Optional per-stage specialization constants. Shared ownership so
-		// Shader stays copyable and PipelineKey can hold it by value.
-		std::shared_ptr<const ShaderSpecialization> specialization;
-		bool operator==(const Shader& other) const noexcept
-		{
-			const char* a = entryPoint ? entryPoint : "";
-			const char* b = other.entryPoint ? other.entryPoint : "";
-			if (std::strcmp(a, b) != 0)
-				return false;
-			if (!(stage == other.stage && module == other.module))
-				return false;
-			if (specialization == other.specialization)
-				return true;
-			if (!specialization || !other.specialization)
-				return false;
-			return *specialization == *other.specialization;
-		}
-	};
-
-	struct ShaderProgram
-	{
-		// NOTE on the codebase's `= ShaderProgram()` spelling (never
-		// `= ShaderProgram{}`): GCC 13's gimplify ICEs on value-init
-		// TEMPORARIES of this aggregate (the array member's NSDMI +
-		// brace-init-list, gimplify.cc:3059); the paren form is
-		// semantically identical on every compiler. Local declarations
-		// use plain default-init (`ShaderProgram p;` - every member
-		// carries an NSDMI) for the same reason (see
-		// GfxRenderer::FilteredProgramWith).
-		Shader shaders[8]{};
-		size_t shaderCount = 0;
-
-		bool operator==(const ShaderProgram& other) const noexcept
-		{
-			if (shaderCount != other.shaderCount)
-				return false;
-
-			for (size_t i = 0; i < shaderCount; ++i)
-			{
-				if (!(shaders[i] == other.shaders[i]))
-					return false;
-			}
-
-			return true;
-		}
-	};
-
-	// ============================================================================
-	// Stencil
-	// ============================================================================
-
-	enum StencilOp : uint8_t
-	{
-		STENCIL_OP_KEEP = 0,
-		STENCIL_OP_ZERO,
-		STENCIL_OP_REPLACE,
-		STENCIL_OP_INCREMENT_AND_CLAMP,
-		STENCIL_OP_DECREMENT_AND_CLAMP,
-		STENCIL_OP_INVERT,
-		STENCIL_OP_INCREMENT_AND_WRAP,
-		STENCIL_OP_DECREMENT_AND_WRAP,
-	};
-
-	enum class StencilFace : uint8_t
-	{
-		Front,
-		Back,
-		FrontAndBack,
-	};
-
-	struct StencilSettings {
-		CompareOp frontCompareOp = CompareOp::Always;
-		CompareOp backCompareOp = CompareOp::Always;
-		uint8_t frontFailOp = STENCIL_OP_KEEP;
-		uint8_t backFailOp = STENCIL_OP_KEEP;
-		uint8_t frontPassOp = STENCIL_OP_KEEP;
-		uint8_t backPassOp = STENCIL_OP_KEEP;
-		StencilFace frontFace = StencilFace::Front;
-		StencilFace backFace = StencilFace::Back;
-		bool frontTestEnable = false;
-		bool backTestEnable = false;
-		bool frontWriteEnable = false;
-		bool backWriteEnable = false;
-
-		// Static helpers
-		static StencilSettings DefaultDisabled();
-		static StencilSettings DefaultEnabled();
-		static StencilSettings TwoSided(CompareOp frontCompareOp, CompareOp backCompareOp, ...);
-
-		// Comparison operators for caching
-		bool operator<(const StencilSettings& other) const noexcept;
-	};
-
-
-	// ============================================================================
-	// Depth settings for pipeline state
-	// ============================================================================
-
-	struct DepthSettings {
-		CompareOp depthFunc = CompareOp::Less;
-		bool writeEnable = true;
-		bool depthTestEnable = true;
-		bool depthBiasEnable = false;
-		float depthBiasConstantFactor = 0.0f;
-		float depthBiasClamp = 0.0f;
-		float depthBiasSlopeFactor = 0.0f;
-
-		static DepthSettings DepthTest()
-		{
-			DepthSettings s;
-			s.depthFunc = CompareOp::Less;
-			s.writeEnable = true;
-			s.depthTestEnable = true;
-			s.depthBiasEnable = false;
-			return s;
-		}
-
-		static DepthSettings Disabled()
-		{
-			DepthSettings s;
-			s.depthFunc = CompareOp::Always;
-			s.writeEnable = false;
-			s.depthTestEnable = true;
-			s.depthBiasEnable = false;
-			return s;
-		}
-
-		static DepthSettings Always()
-		{
-			DepthSettings s;
-			s.depthFunc = CompareOp::Always;
-			s.writeEnable = true;
-			s.depthTestEnable = true;
-			s.depthBiasEnable = false;
-			return s;
-		}
-
-		static DepthSettings WithSlopeBias(
-			CompareOp depthFunc,
-			bool writeEnable,
-			bool depthTestEnable = true,
-			float slopeFactor = 1.0f,
-			float constantFactor = 0.0f,
-			float clamp = 0.0f
-		)
-		{
-			DepthSettings s;
-			s.depthFunc = depthFunc;
-			s.writeEnable = writeEnable;
-			s.depthTestEnable = depthTestEnable;
-			s.depthBiasEnable = true;
-			s.depthBiasSlopeFactor = slopeFactor;
-			s.depthBiasConstantFactor = constantFactor;
-			s.depthBiasClamp = clamp;
-			return s;
-		}
-
-		bool operator<(const DepthSettings& other) const noexcept
-		{
-			return std::tie(depthFunc, writeEnable, depthTestEnable,
-				depthBiasEnable, depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor) <
-				std::tie(other.depthFunc, other.writeEnable, other.depthTestEnable,
-					other.depthBiasEnable, other.depthBiasConstantFactor, other.depthBiasClamp, other.depthBiasSlopeFactor);
-		}
-	};
-
-	// ============================================================================
-	// Blend settings for pipeline state
-	// ============================================================================
-
-	struct BlendAttachmentState {
-		bool blendEnable = false;
-		// Color blend factors
-		enum class SrcColorBlendFactor : uint8_t {
-			Zero = 0,
-			One = 1,
-			SrcAlpha = 2,
-			OneMinusSrcAlpha = 3,
-			// ... other factors as needed
-		};
-		enum class DstColorBlendFactor : uint8_t {
-			Zero = 0,
-			One = 1,
-			OneMinusSrcAlpha = 2,
-			// ... other factors as needed
-		};
-		// Color blend operation
-		enum class ColorBlendOp : uint8_t {
-			Add = 0,
-			Subtract = 1,
-			ReverseSubtract = 2,
-			Min = 3,
-			Max = 4,
-		};
-		// Alpha blend operation
-		enum class AlphaBlendOp : uint8_t {
-			Add = 0,
-			Subtract = 1,
-			ReverseSubtract = 2,
-			Min = 3,
-			Max = 4,
-		};
-		// Color write mask bits
-		enum class ColorComponentFlag : uint8_t {
-			R = 1u << 0,
-			G = 1u << 1,
-			B = 1u << 2,
-			A = 1u << 3,
-		};
-
-		SrcColorBlendFactor srcColorBlendFactor = SrcColorBlendFactor::One;
-		DstColorBlendFactor dstColorBlendFactor = DstColorBlendFactor::One;
-		ColorBlendOp colorBlendOp = ColorBlendOp::Add;
-		AlphaBlendOp alphaBlendOp = AlphaBlendOp::Add;
-		uint8_t colorWriteMask =
-			static_cast<uint8_t>(ColorComponentFlag::R) |
-			static_cast<uint8_t>(ColorComponentFlag::G) |
-			static_cast<uint8_t>(ColorComponentFlag::B) |
-			static_cast<uint8_t>(ColorComponentFlag::A);
-	};
-
-	struct BlendState {
-		bool blendEnable = false;
-		BlendAttachmentState attachment[4]{}; // max 4 color attachments
-	};
-
-	struct BlendSettings {
-		BlendState blendState{};
-
-		static BlendSettings Opaque()
-		{
-			BlendSettings s;
-			s.blendState.blendEnable = false;
-			s.blendState.attachment[0].srcColorBlendFactor = BlendAttachmentState::SrcColorBlendFactor::One;
-			s.blendState.attachment[0].dstColorBlendFactor = BlendAttachmentState::DstColorBlendFactor::One;
-			s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
-			s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
-			s.blendState.attachment[0].colorWriteMask =
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
-			return s;
-		}
-
-		static BlendSettings Add()
-		{
-			BlendSettings s;
-			s.blendState.blendEnable = true;
-			s.blendState.attachment[0].srcColorBlendFactor = BlendAttachmentState::SrcColorBlendFactor::One;
-			s.blendState.attachment[0].dstColorBlendFactor = BlendAttachmentState::DstColorBlendFactor::One;
-			s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
-			s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
-			s.blendState.attachment[0].colorWriteMask =
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
-			return s;
-		}
-
-		static BlendSettings Mixed()
-		{
-			BlendSettings s;
-			s.blendState.blendEnable = true;
-			s.blendState.attachment[0].srcColorBlendFactor = BlendAttachmentState::SrcColorBlendFactor::One;
-			s.blendState.attachment[0].dstColorBlendFactor = BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
-			s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
-			s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
-			s.blendState.attachment[0].colorWriteMask =
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
-			return s;
-		}
-
-		static BlendSettings AlphaBlend()
-		{
-			BlendSettings s;
-			s.blendState.blendEnable = true;
-			s.blendState.attachment[0].srcColorBlendFactor = BlendAttachmentState::SrcColorBlendFactor::SrcAlpha;
-			s.blendState.attachment[0].dstColorBlendFactor = BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
-			s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
-			s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
-			s.blendState.attachment[0].colorWriteMask =
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
-				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
-			return s;
-		}
-
-		bool operator<(const BlendSettings& other) const noexcept
-		{
-			return std::tie(blendState.blendEnable,
-				blendState.attachment[0].alphaBlendOp,
-				blendState.attachment[0].colorBlendOp,
-				blendState.attachment[0].srcColorBlendFactor,
-				blendState.attachment[0].dstColorBlendFactor) <
-				std::tie(other.blendState.blendEnable,
-					other.blendState.attachment[0].alphaBlendOp,
-					other.blendState.attachment[0].colorBlendOp,
-					other.blendState.attachment[0].srcColorBlendFactor,
-					other.blendState.attachment[0].dstColorBlendFactor);
-		}
-	};
-
- typedef uint64_t BufferDeviceAddress;
-
- // GPU memory heap snapshot (RHI-opaque, no Vk leakage).
- // Sourced from VMA (vmaGetHeapBudgets, VK_EXT_memory_budget) +
- // VkPhysicalDeviceMemoryProperties heap sizes.
- struct GpuMemoryHeap {
- uint64_t heapSizeBytes = 0; // VkMemoryHeap::size (total heap)
- uint64_t budgetBytes = 0; // VMA budget (OS-reported usable budget)
- uint64_t usageBytes = 0; // VMA usage (all Vulkan allocations on heap)
- uint64_t allocationBytes = 0; // VMA stats: committed VkDeviceMemory
- uint64_t blockBytes = 0; // VMA stats: block bytes (incl. free inside blocks)
- bool deviceLocal = false; // heap is DEVICE_LOCAL (likely VRAM)
- };
-
- // ---- Allocation ledger (exact per-resource device bytes) -----------
- // EXACT VMA committed bytes, captured from VmaAllocationInfo::size at
- // every create (no estimation) and stored ON the pool entries — the
- // queries below are immediate-mode pool walks (the ListTextureInfos
- // contract: render thread, unsynchronized, zero cost when not called).
- // Destroy needs no bookkeeping: the bytes die with the entry. NOT
- // tracked (0 bytes, they land in the viewer's "untracked" remainder):
- // heap-placed design-B targets (graph-owned VkDeviceMemory), external
- // images, and the raw upload/staging rings created outside
- // CreateBuffer. See the VRAM viewer (Ctrl+M).
- enum class MemoryCategory : uint32_t {
-     ImageContent = 0, // sampled content images (textures, skyboxes)
-     ImageTarget,      // attachment-usage images (color/depth/storage)
-     Vertex,           // static/vertex heaps (CreateBuffer Vertex)
-     Index,            // index buffers
-     Uniform,          // uniform/frame constant buffers
-     Storage,          // compute storage (gfx rings, HZB, draws)
-     Indirect,         // indirect command buffers
-     Staging,          // staging/transfer (CreateBuffer-typed)
-     Count,
- };
- inline constexpr uint32_t kMemoryCategoryCount =
-     uint32_t(MemoryCategory::Count);
- // One per-item ledger row (GetMemoryAllocInfos): the exact bytes + the
- // entry's arena-owned debug name + its category. Images carry their
- // geometry (the map/display fields; zeros for buffers); bytes == 0 on
- // an image = UNTRACKED backing (heap-placed design-B target / external
- // — display it with a computed estimate).
- struct MemoryAllocInfo {
-     StringViewT name{};
-     MemoryCategory category = MemoryCategory::ImageContent;
-     uint64_t bytes = 0;     // exact VMA committed bytes
-     bool isImage = true;
-     Extent3D extent{ 0, 0, 0 };
-     Format format = Format::Undefined;
-     SampleCount samples = SampleCount::Count1;
-     uint32_t mipLevels = 0;
-     uint32_t arrayLayers = 0;
- };
-
-
- typedef enum PipelineStageBits {
-		PipelineStageBit_None = 0,
-
-		PipelineStageBit_Vertex = 1u << 0,
-		PipelineStageBit_Fragment = 1u << 1,
-		PipelineStageBit_Compute = 1u << 2,
-		PipelineStageBit_Geometry = 1u << 3,
-		PipelineStageBit_TessellationControl = 1u << 4,
-		PipelineStageBit_TessellationEvaluation = 1u << 5,
-		PipelineStageBit_Task = 1u << 6,
-		PipelineStageBit_Mesh = 1u << 7,
-
-		// Ray tracing stages
-		PipelineStageBit_RayGeneration = 1u << 8,
-		PipelineStageBit_AnyHit = 1u << 9,
-		PipelineStageBit_ClosestHit = 1u << 10,
-		PipelineStageBit_Miss = 1u << 11,
-		PipelineStageBit_Intersection = 1u << 12,
-		PipelineStageBit_Callable = 1u << 13,
-
-		PipelineStageBit_Transfer = 1u << 14,
-
-		// Draw-indirect argument reads. MUST pair with
-		// AccessFlags::IndirectCommandRead: the Vulkan VUIDs reject that
-		// access under any shader stage (e.g. Vertex), it requires
-		// DRAW_INDIRECT (or ALL_GRAPHICS/ALL_COMMANDS).
-		PipelineStageBit_DrawIndirect = 1u << 15,
-
-		// Convenience masks
-		PipelineStageBit_AllGraphics =
-		PipelineStageBit_Vertex |
-		PipelineStageBit_Fragment |
-		PipelineStageBit_Geometry |
-		PipelineStageBit_TessellationControl |
-		PipelineStageBit_TessellationEvaluation |
-		PipelineStageBit_Task |
-		PipelineStageBit_Mesh,
-
-		PipelineStageBit_AllRayTracing =
-		PipelineStageBit_RayGeneration |
-		PipelineStageBit_AnyHit |
-		PipelineStageBit_ClosestHit |
-		PipelineStageBit_Miss |
-		PipelineStageBit_Intersection |
-		PipelineStageBit_Callable,
-
-		PipelineStageBit_All =
-		PipelineStageBit_AllGraphics |
-		PipelineStageBit_Compute |
-		PipelineStageBit_AllRayTracing,
-
-	} PipelineStageBits;
-	typedef uint32_t PipelineStage;
-
-	// Engine-wide per-frame globals (time / deltaTime / frameIndex / fps).
-	// Computed and uploaded entirely engine-side (VulkanResourceManager::
-	// FlushEngineGlobals, driven by the swapchain's AcquireFramebuffer) and
-	// exposed to every shader through bindless set 0, binding
-	// kBinding_EngineGlobals:
-	//   [[vk::binding(3, 0)]] StructuredBuffer<EngineGlobals> g_engineGlobals;
-	// Must be mirrored by HLSL 'EngineGlobals' in content/shaders/globals.hlsli.
-	struct EngineGlobals
-	{
-		float time;        // seconds since app start
-		float deltaTime;   // last frame delta (seconds)
-		uint32_t frameIndex; // absolute frame counter (wraps at 2^32)
-		float fps;         // smoothed (EMA) frames per second
-	};
-	static_assert(sizeof(EngineGlobals) == 16, "EngineGlobals must stay 16 bytes (HLSL mirror relies on it)");
-
-	// GPU stage timers — shadow-path instrumentation for BOTH shadow
-	// representations (PCF + EVSM), so A/B runs measure the real GPU cost
-	// of each stage. Written by the shadow pass recording funcs
-	// (CommandBuffer::WriteStageTimestamp) and by RenderGraph::Execute
-	// around the async compute stream; the per-flight frame-timer query
-	// pools carry the query pairs (2+2s / 3+2s), and the swapchain reports
-	// the per-stage ms of the last retired frame (Swapchain::
-	// GetGpuStageTimings). A stage that never ran stays invalid (queries
-	// reset, never written — per-pair NOT_READY), not zero.
-	//
-	// Per-async-pass timers (kGpuStageAsyncPassBase + i): true-async
-	// compute pass i (sorted order) gets its own timestamp pair, written
-	// BOTTOM_OF_PIPE on the compute queue — a stage that is legal there,
-	// unlike the ALL_GRAPHICS stage the Optick Vulkan backend uses (the
-	// reason async passes get CPU-only Optick scopes). The pair measures
-	// the pass's own GPU cost; the GAP between pass k's end and pass k+1's
-	// begin is the queue handoff + timeline-semaphore sync overhead.
-	// EVSM's H->V blur chain is the canonical 2-pass user. Frames with
-	// more async passes than slots keep the aggregate kGpuStageEvsmBlur
-	// (only the first kGpuAsyncPassMaxTimers passes get pairs); the
-	// emulated (single-queue) path writes none of them — the inline
-	// passes are covered by the ordinary per-pass Optick GPU scopes.
-	static constexpr uint32_t kGpuAsyncPassMaxTimers = 4;
-	enum GpuStageTimer : uint32_t {
-		kGpuStagePcfRaster = 0, // PCF shadow raster (cascade + spot tiles)
-		kGpuStageEvsmCasters,  // EVSM moment (depth-only caster) passes
-		kGpuStageEvsmResolve,  // EVSM per-sample MSAA depth -> moments resolve
-		kGpuStageEvsmBlur,     // EVSM async blur stream (the whole C chain)
-		kGpuStageAsyncPassBase, // per-pass C-stream pairs start here
-		kGpuStageCount = kGpuStageAsyncPassBase + kGpuAsyncPassMaxTimers
-	};
-
-	enum Bindings {
-		kBinding_Textures = 0, // position 0
-		kBinding_Samplers = 1, // I thought better to alias samplers with comparisonSamplers HLSLside.
-		kBinding_StorageImages = 2,
-		kBinding_EngineGlobals = 3, // read-only StructuredBuffer<EngineGlobals>, one slice per frame in flight
-		// 3D volume textures (SG probe grids): sampled-image array whose
-		// descriptors mirror the SAME bindless slots as kBinding_Textures
-		// — a Texture3D view is reachable through either binding at its
-		// slot index. HLSL: Texture3D volumeTextures[] (common.hlsli).
-		// Kept a separate binding so Texture2D[]-typed code keeps
-		// compiling with 3D views in the pool.
-		kBinding_VolumeTextures = 4,
-		// Reflection cubemaps for specular IBL: sampled-image array whose
-		// descriptors mirror the SAME bindless slots as kBinding_Textures
-		// — a TextureCube view is reachable through either binding at its
-		// slot index. HLSL: TextureCube cubemaps[] (common.hlsli).
-		kBinding_Cubemaps = 5,
-		// Multisampled 2D textures (EVSM per-sample depth resolve, see
-		// evsm_resolve.cs.hlsl): sampled-image array whose descriptors
-		// mirror the SAME bindless slots as kBinding_Textures — only MSAA
-		// views get mirrored, and Texture2D[]-typed code never indexes
-		// those slots. HLSL: Texture2DMS<float4> texturesMS[] (common.hlsli).
-		kBinding_MsaaTextures = 6,
-		// Immutable optional lightmap storage heap for indexed vertex pulling.
-		kBinding_VertexLightmap = 7,
-		// Optional hardware ray-query TLAS, one scene per RHI context.
-		kBinding_RayTracingScene = 8,
-		kBinding_NumBindings = 9 // this should be # of all other
-	};
-
-	struct QueueFamilyIndices {
-		std::optional<uint32_t> graphicsFamily;
-		std::optional<uint32_t> presentFamily;
-		std::optional<uint32_t> transferFamily;
-		// Dedicated async-compute family. Empty/aliased to graphics when the
-		// device has no compute-only queue (single-queue fallback: EVSM blur
-		// still records as compute passes, just without overlap).
-		std::optional<uint32_t> computeFamily;
-
-		bool isComplete() const {
-			return graphicsFamily.has_value() && presentFamily.has_value();
-		}
-		[[nodiscard]] uint32_t ComputeOrGraphics() const {
-			return computeFamily.value_or(graphicsFamily.value_or(0));
-		}
-		[[nodiscard]] bool HasDedicatedCompute() const {
-			return computeFamily.has_value() && graphicsFamily.has_value()
-				&& *computeFamily != *graphicsFamily;
-		}
-	};
-
-	enum class PolygonMode : uint8_t
-	{
-		Fill,
-		Line,
-		Point,
-	};
-
-	enum class CullMode : uint8_t
-	{
-		None,
-		Front,
-		Back,
-		FrontAndBack,
-	};
-
-	enum class FrontFace : uint8_t
-	{
-		CounterClockwise,
-		Clockwise,
-	};
-
-	struct RasterSettings
-	{
-		PolygonMode polygonMode = PolygonMode::Fill;
-		CullMode cullMode = CullMode::Back;
-		FrontFace frontFace = FrontFace::CounterClockwise;
-
-		bool depthClampEnable = false;
-		bool rasterizerDiscardEnable = false;
-
-		float lineWidth = 1.0f;
-
-		bool operator<(const RasterSettings& rhs) const noexcept
-		{
-			return std::tie(
-				polygonMode,
-				cullMode,
-				frontFace,
-				depthClampEnable,
-				rasterizerDiscardEnable,
-				lineWidth
-			) <
-				std::tie(
-					rhs.polygonMode,
-					rhs.cullMode,
-					rhs.frontFace,
-					rhs.depthClampEnable,
-					rhs.rasterizerDiscardEnable,
-					rhs.lineWidth
-				);
-		}
-	};
-
-
-
-	struct PipelineKey
-	{
-		ShaderProgram program{};
-		VertexLayoutDesc vertexFormat{};
-		std::vector<Format> colorFormats;
-		Format depthFormat = Format::Undefined;
-		Format stencilFormat = Format::Undefined;
-		PrimitiveTopology topology = PrimitiveTopology::TriangleList;
-		RasterSettings raster{};
-		DepthSettings depth{};
-		StencilSettings stencil{};
-		BlendSettings blend{};
-		MSAASettings msaa{};
-
-		bool operator==(const PipelineKey& rhs) const noexcept
-		{
-			return
-				program == rhs.program &&
-				vertexFormat == rhs.vertexFormat &&
-				colorFormats == rhs.colorFormats &&
-				depthFormat == rhs.depthFormat &&
-				stencilFormat == rhs.stencilFormat &&
-				topology == rhs.topology &&
-
-				!(raster < rhs.raster) &&
-				!(rhs.raster < raster) &&
-
-				!(depth < rhs.depth) &&
-				!(rhs.depth < depth) &&
-
-				!(stencil < rhs.stencil) &&
-				!(rhs.stencil < stencil) &&
-
-				!(blend < rhs.blend) &&
-				!(rhs.blend < blend) &&
-
-				msaa.samples == rhs.msaa.samples &&
-			msaa.alphaToCoverage == rhs.msaa.alphaToCoverage;
-		}
-	};
-
-struct ImageCreateInfo
-{
-		ImageType type = ImageType::Image2D;
-		Extent3D extent{};
-		Format format = Format::Undefined;
-		ImageUsage usage =
-			ImageUsage::Sampled |
-			ImageUsage::TransferDst;
-		SampleCount samples = SampleCount::Count1;
-		uint32_t mipLevels = 1;
-		uint32_t arrayLayers = 1;
-		//ImageCreateFlags flags = ImageCreateFlags::None;
-		// Cube-compatible 2D image (VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT).
-		// Requires type == Image2D, samples == Count1, width == height,
-		// and arrayLayers == 6 (single cubemap) or a multiple of 6
-		// (cube array, sampled through ViewCubeArray). Pair with a
-		// ViewCube / ViewCubeArray view (CreateTexture picks it
-		// automatically). KTX2 cubemap uploads set the flag internally;
-		// this flag is the manual (procedural / render-target) path.
-		bool isCubemap = false;
-		const char* name = nullptr;
-		bool hostTransfer = false;
-		// Share the image CONCURRENTLY between graphics + dedicated compute
-		// (no queue-family ownership transfers; cross-queue sync is events
-		// + layout barriers). For EVSM moment/blur images ping-ponged
-		// between the graphics moment passes and the async prefilter.
-		// Ignored on single-queue devices (falls back to EXCLUSIVE).
-		bool concurrentCompute = false;
-	};
-
-	// Sub-region of an image for targeted (partial) uploads — the world
-	// field atlas pagers write individual brick slots into a persistent
-	// 3D atlas with this (see ResourceManager::UploadDataToImage3DRegion).
-	// mipLevel/arrayLayer select the subresource; offset/extent are
-	// texel (block) units relative to that subresource.
-	struct ImageRegion3D
-	{
-		uint32_t mipLevel = 0;
-		uint32_t baseArrayLayer = 0;
-		Offset3D offset{};
-		Extent3D extent{};
-	};
-
-	// One entry of a BATCHED region upload (the BulkCopyBuffer pattern,
-	// image edition): `srcOffset` indexes into the caller's single packed
-	// blob; the region says where in the image those bytes land. The
-	// batch (UploadDataToImage3DRegions) stages the blob ONCE and records
-	// ONE layout-transition pair around all the copies — N per-brick
-	// uploads cost one barrier pair + one ring allocation + one memcpy
-	// pass + one copy command, not N of each.
-	struct ImageRegionCopy3D
-	{
-		ImageRegion3D region{};
-		size_t srcOffset = 0; // byte offset into the upload blob
-	};
-
-	enum class ResourceOwnership : uint8_t
-	{
-		Owned,
-		External
-	};
-
-	// Canonical frame phase order (design-A target-heap aliasing, see
-	// ResourceManager::ClaimTargetHeapRange): the monotonic keyspace the
-	// target-heap interval scheduling keys on. The values mirror the frame's
-	// DATAFLOW order (the rendergraph's topological order - shadow legs,
-	// the occluder depth + HZB pyramid, the temporal seed, the mesh-shader
-	// filter, prepass, motion, Main, the post chain, UI, the composite).
-	// Targets declare a [firstPhase, lastPhase] use window; same-shape
-	// targets with disjoint windows share a packed memory range. WINDOWS
-	// ONLY CONSTRAIN SHARING: a too-wide window just loses sharing, a
-	// too-narrow window CORRUPTS (two live targets on one range) - declare
-	// conservatively (the last REAL consumer, plus slack when unsure).
-	// The depth pair's key order (OccluderPrepass < Hzb < Seed): the seed
-	// pass (the temporal prev-visible draw into renderDepth) appends inside
-	// the filter dispatch - AFTER the HZB pass - and the stable Kahn sort
-	// preserves append order between the (edge-free) HZB and the seed, so
-	// hizDepth [OccluderPrepass..Hzb] and renderDepth [Seed..] are genuinely
-	// sequential. Any change that lets the seed sort before the pyramid
-	// build must revisit the depth windows.
-	enum class TargetPhase : uint32_t {
-		Shadows = 0,        // SDSM fit + dir/spot casts + EVSM moments/blur
-		OccluderPrepass = 1,// occluder-only depth (hizDepth write)
-		Hzb = 2,            // HZB pyramid build (reads hizDepth)
-		Seed = 3,           // temporal seed draw (renderDepth write)
-		GfxFilter = 4,      // mesh-shader filter dispatch (reads the pyramid)
-		DepthPrepass = 5,   // depth prepass / remainder (renderDepth)
-		TileCull = 6,       // forward+ tile/light cull
-		Motion = 7,        // motion vectors
-		Main = 8,           // main scene raster (+MSAA, resolve -> hdr)
-		ProbeBalls = 9,     // chrome-ball cubemap debug
-		Ssgi = 10,           // SSGI AO chain (Main MRTs + compose)
-		Ssr = 11,           // SSR prep (stencil/depth views) + composite
-		Volumetric = 12,    // GI-probe raymarched fog
-		Exposure = 13,      // exposure histogram compute
-		Bloom = 14,         // bloom down/up chain
-		Dof = 15,           // depth of field
-		MotionBlur = 16,    // motion blur gather
-		Tonemap = 17,       // tonemap -> LDR
-		Ui = 18,            // ImGui overlay
-		PostAA = 19,        // SMAA / DLSS
-		Composite = 20,     // UI composite to the swapchain
-		Count = 21
-	};
-
-	// Target-heap aliasing MASTER GATE (default OFF): when off,
-	// ClaimTargetHeapRange forces every window to the full frame - no
-	// range ever shares (targets pack to DISJOINT ranges in the same
-	// blocks, which is plain multi-bind placement, always sound). When
-	// on, declared windows are honored (same-shape disjoint-window
-	// targets share ranges). The regression that forced the gate: the
-	// SDSM cascade fit reads renderDepth at TargetPhase::Shadows - a
-	// cross-frame HISTORY read (the previous frame's depth through the
-	// shared range) that races the previous frame's late writes under
-	// submit overlap - the cascades jumped frame to frame. The env pin
-	// (TOURMALINE_ALIASING=1) parses once at first use; the setter is the
-	// UI's live toggle (affects FUTURE claims - existing ranges stand
-	// until their targets rebuild).
-	[[nodiscard]] bool TargetHeapAliasingEnabled();
-	void SetTargetHeapAliasing(bool on);
-
-	struct ImageViewCreateInfo
-	{
-		ImageViewType viewType = ImageViewType::View2D;
-		Format format = Format::Undefined; // Undefined = inherit from underlying Image.
-		ImageSubresourceRange subresourceRange{};
-		const char* name = nullptr;
-	};
-
-	// One cubemap = 6 layers (one per face); N cubemaps = 6*N layers.
-	inline constexpr uint32_t kCubemapFaceCount = 6;
-
-	[[nodiscard]] constexpr bool IsCubemapLayerCount(uint32_t layers) noexcept {
-		return layers >= 6 && (layers % 6u) == 0u;
-	}
-
-	// Convenience builder for a manual (non-KTX) cube-compatible texture.
-	// extent.width must equal extent.height; layers = 6 (cube) or 6*N
-	// (cube array). mipLevels may exceed 1 for prefiltered / mip-mapped
-	// environment maps.
-	[[nodiscard]] inline ImageCreateInfo MakeCubemapCreateInfo(
-		uint32_t size, Format format, uint32_t mipLevels = 1,
-		uint32_t cubeCount = 1,
-		ImageUsage usage = ImageUsage::Sampled | ImageUsage::TransferDst,
-		const char* name = nullptr) {
-		ImageCreateInfo ci{};
-		ci.type = ImageType::Image2D;
-		ci.extent = { size, size, 1u };
-		ci.format = format;
-		ci.usage = usage;
-		ci.samples = SampleCount::Count1;
-		ci.mipLevels = mipLevels;
-		ci.arrayLayers = 6u * (cubeCount ? cubeCount : 1u);
-		ci.isCubemap = true;
-		ci.name = name;
-		return ci;
-	}
-
- 	struct ImageTag;
-	struct ImageViewTag;
-	struct BufferTag;
-	struct TextureTag;
-	struct SamplerTag;
-	struct BindlessImageTag;
-	struct DescriptorPoolTag;
-	// Target-heap claim (design-A aliasing, see
-	// ResourceManager::ClaimTargetHeapRange): one packed-range lease.
-	struct TargetHeapClaimTag;
-
-	using ImageHandle = Handle<ImageTag>;
-	using ImageViewHandle = Handle<ImageViewTag>;
-	using BufferHandle = Handle<BufferTag>;
-	using TextureHandle = Handle<TextureTag>;
-	using SamplerHandle = Handle<SamplerTag>;
-	using BindlessImageHandle = Handle<BindlessImageTag>;
-	using DescriptorPoolHandle = Handle<DescriptorPoolTag>;
-	using TargetHeapClaimHandle = Handle<TargetHeapClaimTag>;
-
-	// One GPU->CPU buffer copy for a batched readback (see
-	// ResourceManager::DownloadDataFromBuffers): multiple sources share one
-	// staging allocation, one submit and one wait instead of one per copy.
-	struct BufferDownload {
-		BufferHandle src{};
-		void* out = nullptr;
-		size_t size = 0;
-		size_t srcOffset = 0;
-	};
-
-	// One LIVE texture's listing metadata (ResourceManager::
-	// ListTextureInfos — the debug panels' texture inspector). `name` is
-	// the image's ARENA-OWNED debug name (copied at creation - caller
-	// strings carry no lifetime contract; see VulkanResourceManager's
-	// nameArena_): engine/auxiliary textures carry their creation names
-	// ("env zone map", "gi volume layer", ...), content/material textures
-	// carry their load paths (they contain a '/'). NUL-terminated
-	// (arena copies) for %s interop; empty view = unnamed. The inspector
-	// lists everything - no filter. bindless = the sampled bindless slot
-	// (-1 = not registered).
-	struct TextureInfo {
-		TextureHandle handle{};
-		StringViewT name{};
-		Format format = Format::Undefined;
-		ImageType type = ImageType::Image2D;
-		Extent3D extent{ 0, 0, 0 };
-		uint32_t mipLevels = 1;
-		uint32_t arrayLayers = 1;
-		bool isCubemap = false;
-		int32_t bindless = -1;
-		// EXACT device bytes of the backing image (VmaAllocationInfo::size
-		// captured at create — see the allocation ledger); 0 = untracked
-		// (external/heap-placed backing).
-		uint64_t allocBytes = 0;
-	};
-
-	// One CPU->GPU staged copy for the bulk table-driven upload (see
-	// ResourceManager::BulkCopyBuffer): the caller supplies ONE content
-	// blob plus a table of {srcOffset, dstOffset, size} entries; the RHI
-	// stages them in 512 MB blobs — one memcpy pass, one command buffer,
-	// one submit and one barrier set per blob — instead of one ring alloc
-	// + barrier per copy. Bytes are staged during the call, so `content`
-	// only has to stay valid until it returns.
-	struct BufferBulkCopy {
-		size_t srcOffset = 0;
-		size_t dstOffset = 0;
-		size_t size = 0;
-	};
-
-	// Digest-form tail marker for a pak texture (cooked into the texture
-	// blob's payload header by the serializer): the loader uploads only
-	// the coarse-mip tail [tailFirstMip, end) through the normal ktx path
-	// (parse + transcode-if-needed + CreateStreamingTexture subrange) and
-	// registers the handle for demand upgrades — digest-less blobs take
-	// the full-resident path. The embedded ktx bytes are untouched by the
-	// digest (same payload the legacy path would upload whole).
-	struct TextureStreamMeta {
-		uint32_t tailFirstMip = 0;
-	};
-
-	// Forward declaration for PIMPL firewall – concrete type lives in RHI/resource_manager.h
-	class ResourceManager;
-
-	// RHI barrier / layout enums (opaque, no Vk leakage)
-	enum class ImageLayout : uint8_t {
-		Undefined = 0,
-		General,
-		ColorAttachmentOptimal,
-		DepthStencilAttachmentOptimal,
-		DepthStencilReadOnlyOptimal,
-		DepthReadOnlyOptimal,
-		ShaderReadOnlyOptimal,
-		TransferSrcOptimal,
-		TransferDstOptimal,
-		PresentSrc
-	};
-
-	void destroy(ResourceManager* ctx, ImageHandle handle);
-	void destroy(ResourceManager* ctx, TextureHandle handle);
-	void destroy(ResourceManager* ctx, BufferHandle handle);
-	void destroy(ResourceManager* ctx, SamplerHandle handle);
-	void destroy(ResourceManager* ctx, BindlessImageHandle handle);
-	void destroy(ResourceManager* ctx, ImageViewHandle handle);
-	void destroy(ResourceManager* ctx, DescriptorPoolHandle handle);
-	void destroy(ResourceManager* ctx, ShaderModuleHandle handle); // will be removed in 1.4. transition
-
-	 // Sync types translated from nicegraf. RHI-opaque, no Vk leakage.
-	struct SyncBarrierMasks
-	{
-		AccessFlags accessMask = AccessFlags::None;
-		PipelineStage stageMask = PipelineStageBit_None;
-		bool operator==(const SyncBarrierMasks&) const = default;
-	};
-	struct ImageSyncRequest {
-		SyncBarrierMasks barrierMasks{};
-		ImageLayout layout = ImageLayout::Undefined;
-		bool operator==(const ImageSyncRequest&) const = default;
-	};
-	struct BufferSyncRequest {
-		SyncBarrierMasks barrierMasks{};
-		bool operator==(const BufferSyncRequest&) const = default;
-	};
-	using SyncRequest = ImageSyncRequest;
-
-	constexpr bool IsWriteAccess(AccessFlags a) {
-		constexpr AccessFlags writeMask =
-			AccessFlags::ShaderWrite |
-			AccessFlags::ColorAttachmentWrite |
-			AccessFlags::DepthStencilAttachmentWrite |
-			AccessFlags::TransferWrite |
-			AccessFlags::HostWrite |
-			AccessFlags::MemoryWrite |
-			AccessFlags::AccelerationStructureWrite;
-		return (a & writeMask) != AccessFlags::None;
-	}
-	constexpr bool IsReadAccess(AccessFlags a) {
-		return a != AccessFlags::None && !IsWriteAccess(a);
-	}
-
-	inline PipelineStage DerivePipelineStage(AccessFlags access, PipelineStage hint = PipelineStageBit_None) {
-		if (hint != PipelineStageBit_None) return hint;
-		if ((access & AccessFlags::ColorAttachmentWrite) != AccessFlags::None ||
-			(access & AccessFlags::ColorAttachmentRead) != AccessFlags::None)
-			return PipelineStageBit_Fragment;
-		if ((access & AccessFlags::DepthStencilAttachmentWrite) != AccessFlags::None ||
-			(access & AccessFlags::DepthStencilAttachmentRead) != AccessFlags::None)
-			return PipelineStageBit_Fragment;
-		if ((access & AccessFlags::ShaderRead) != AccessFlags::None ||
-			(access & AccessFlags::ShaderWrite) != AccessFlags::None ||
-			(access & AccessFlags::UniformRead) != AccessFlags::None)
-			return PipelineStageBit_Fragment | PipelineStageBit_Vertex | PipelineStageBit_Compute
-				| PipelineStageBit_Task | PipelineStageBit_Mesh;
-		if ((access & AccessFlags::TransferRead) != AccessFlags::None ||
-			(access & AccessFlags::TransferWrite) != AccessFlags::None)
-			return PipelineStageBit_Transfer;
-		if ((access & AccessFlags::IndirectCommandRead) != AccessFlags::None)
-			return PipelineStageBit_DrawIndirect;
-		// INDEX_READ requires INDEX_INPUT/VERTEX_INPUT/ALL_GRAPHICS/
-		// ALL_COMMANDS (VUID-03901): the RHI Vertex bit expands to
-		// VERTEX_SHADER|VERTEX_INPUT in both Vk translators.
-		if ((access & AccessFlags::IndexRead) != AccessFlags::None)
-			return PipelineStageBit_Vertex;
-		return PipelineStageBit_Fragment;
-	}
-
-	// ---------------------------------------------------------------------
-	// (stage x access) pairing contract - debug validation.
-	//
-	// Vulkan requires every access bit in a barrier to be SUPPORTED by at
-	// least one stage in the same barrier's stage mask (the VUIDs reject
-	// e.g. INDIRECT_COMMAND_READ under any shader stage - it needs
-	// DRAW_INDIRECT). The engine's translators make this sharp:
-	// PipelineStageBit_AllGraphics maps to the SHADER-stage union ONLY
-	// (ToVkStage never emits VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT), so
-	// AccessFlags::IndirectCommandRead paired with AllGraphics (or any
-	// shader stage) compiles into a barrier whose dst stage EXCLUDES the
-	// fixed-function command fetch - the fetch runs unsynchronized no
-	// matter who wrote the buffer (the stranded-upload investigation's
-	// second defect; see todo.txt). DerivePipelineStage produces valid
-	// pairs by construction; the DANGER is hand-written stage masks, so
-	// the rendergraph's hint ingestion asserts every declared pair.
-	//
-	// SupportingStagesFor: the engine stage bits whose Vk translation
-	// supports ONE access bit. 0 = the engine stage set cannot express
-	// that access's stages (Host/CommandPreprocess/ConditionalRendering/
-	// TransformFeedback/... - never validatable here, never used through
-	// graph hints). MemoryRead/MemoryWrite are stage-agnostic and skip
-	// validation on purpose.
-	// ---------------------------------------------------------------------
-	constexpr PipelineStage SupportingStagesFor(AccessFlags access) {
-		switch (access) {
-		case AccessFlags::IndirectCommandRead:
-			return PipelineStageBit_DrawIndirect;
-		case AccessFlags::IndexRead:
-		case AccessFlags::VertexAttributeRead:
-			// The Vertex bit expands VERTEX_SHADER|VERTEX_INPUT in both Vk
-			// translators (VUID-03901 - see DerivePipelineStage's note).
-			return PipelineStageBit_Vertex;
-		case AccessFlags::InputAttachmentRead:
-		case AccessFlags::ColorAttachmentRead:
-		case AccessFlags::ColorAttachmentWrite:
-		case AccessFlags::DepthStencilAttachmentRead:
-		case AccessFlags::DepthStencilAttachmentWrite:
-			return PipelineStageBit_Fragment;
-		case AccessFlags::UniformRead:
-		case AccessFlags::ShaderRead:
-		case AccessFlags::ShaderWrite:
-			return PipelineStageBit_AllGraphics | PipelineStageBit_Compute
-				| PipelineStageBit_AllRayTracing;
-		case AccessFlags::TransferRead:
-		case AccessFlags::TransferWrite:
-			return PipelineStageBit_Transfer;
-		case AccessFlags::AccelerationStructureRead:
-		case AccessFlags::AccelerationStructureWrite:
-			return PipelineStageBit_AllRayTracing | PipelineStageBit_Compute;
-		default:
-			return 0;
-		}
-	}
-
-	// Fires when `stage` supports NONE of one of `access`'s bits - the
-	// declared barrier would be invalid Vulkan (or, for the indirect
-	// case, silently leave the fixed-function fetch unsynchronized).
-	// Debug builds only (NDEBUG ships it out); the site string rides the
-	// assert expression so the report names the declaring call site.
-	inline void AssertStageAccessSupported(PipelineStage stage,
-		AccessFlags access, const char* site) {
-		uint32_t remaining = static_cast<uint32_t>(access);
-		while (remaining != 0) {
-			const uint32_t bit = remaining & (0u - remaining);
-			remaining ^= bit;
-			const PipelineStage support =
-				SupportingStagesFor(static_cast<AccessFlags>(bit));
-			if (support == 0)
-				continue; // not expressible in the engine stage set
-			assert((stage & support) != 0
-				&& "stage mask supports none of this access bit's stages"
-				&& site);
-		}
-	}
-
-
-
-	[[nodiscard]] constexpr ImageAspect DefaultViewAspect(Format format)
-	{
-		switch (format)
-		{
-		case Format::D16_UNorm:
-		case Format::D32_Float:
-			return ImageAspect::Depth;
-
-		case Format::D24_UNorm_S8_UInt:
-		case Format::D32_Float_S8_UInt:
-			// Policy decision: default DS views to depth.
-			return ImageAspect::Depth;
-
-		case Format::S8_UInt:
-			return ImageAspect::Stencil;
-
-		case Format::Undefined:
-			return ImageAspect::None;
-
-		default:
-			return ImageAspect::Color;
-		}
-	}
-
-	// True when the format carries a stencil aspect (combined or
-	// stencil-only). Targets created with such a format can expose a
-	// stencil sampling view; SSR's receiver-material layer keys on it.
-	[[nodiscard]] constexpr bool FormatHasStencilAspect(Format format)
-	{
-		switch (format)
-		{
-		case Format::S8_UInt:
-		case Format::D24_UNorm_S8_UInt:
-		case Format::D32_Float_S8_UInt:
-			return true;
-
-		default:
-			return false;
-		}
-	}
-	inline  StencilSettings StencilSettings::DefaultDisabled()
-	{
-		StencilSettings s{};
-		s.frontTestEnable = false;
-		s.backTestEnable = false;
-		s.frontWriteEnable = false;
-		s.backWriteEnable = false;
-		return s;
-	}
-	inline  StencilSettings StencilSettings::DefaultEnabled()
-	{
-		StencilSettings s{};
-		s.frontTestEnable = true;
-		s.backTestEnable = true;
-		s.frontWriteEnable = true;
-		s.backWriteEnable = true;
-		return s;
-	}
+struct Image;
+
+// ============================================================================
+// Basic geometry / resource dimensions
+// ============================================================================
+
+struct Extent2D {
+    uint32_t width = 1;
+    uint32_t height = 1;
+};
+
+struct Extent3D {
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t depth = 1;
+};
+
+struct Offset3D {
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t z = 0;
+};
+
+// Swapchain presentation mode (VSync control).
+//   Fifo        = strict VSync (waits for vertical blank, no tearing, but
+//                 any frame over budget locks to half refresh: 30fps on 60Hz).
+//   Mailbox     = tear-free VSync without the halving (latest ready image
+//                 each blank; may drop frames under load, never tears).
+//   Immediate   = no VSync, tearing allowed (lowest latency).
+//   FifoRelaxed = VSync that presents IMMEDIATELY on the next blank when
+//                 a frame ran late (one tear possible) instead of locking
+//                 to every-other-blank like strict Fifo. The 60fps-not-30
+//                 mode when the driver/display lacks Mailbox.
+enum class PresentMode : uint8_t {
+    Fifo = 0,
+    Mailbox = 1,
+    Immediate = 2,
+    FifoRelaxed = 3,
+};
+
+inline const char* ToString(PresentMode mode) {
+    switch (mode) {
+    case PresentMode::Fifo:
+        return "VSync FIFO (strict)";
+    case PresentMode::Mailbox:
+        return "VSync Mailbox (smooth)";
+    case PresentMode::Immediate:
+        return "Uncapped Immediate";
+    case PresentMode::FifoRelaxed:
+        return "VSync FIFO relaxed (no 30fps lock)";
+    default:
+        return "Unknown";
+    }
+}
+
+inline bool IsVSync(PresentMode mode) {
+    return mode != PresentMode::Immediate;
+}
+
+// ============================================================================
+// Formats
+// ============================================================================
+
+enum class Format : uint16_t {
+    Undefined,
+
+    // 8-bit
+    R8_UNorm,
+    R8_SNorm,
+    R8_UInt,
+    R8_SInt,
+
+    RG8_UNorm,
+    RG8_SNorm,
+    RG8_UInt,
+    RG8_SInt,
+
+    RGBA8_UNorm,
+    RGBA8_SNorm,
+    RGBA8_UInt,
+    RGBA8_SInt,
+    RGBA8_SRGB,
+
+    BGRA8_UNorm,
+    BGRA8_SRGB,
+
+    // 16-bit
+    R16_UNorm,
+    R16_SNorm,
+    R16_UInt,
+    R16_SInt,
+    R16_Float,
+
+    RG16_UNorm,
+    RG16_SNorm,
+    RG16_UInt,
+    RG16_SInt,
+    RG16_Float,
+
+    RGBA16_UNorm,
+    RGBA16_SNorm,
+    RGBA16_UInt,
+    RGBA16_SInt,
+    RGBA16_Float,
+
+    // 32-bit
+    R32_UInt,
+    R32_SInt,
+    R32_Float,
+
+    RG32_UInt,
+    RG32_SInt,
+    RG32_Float,
+
+    RGB32_UInt,
+    RGB32_SInt,
+    RGB32_Float,
+
+    RGBA32_UInt,
+    RGBA32_SInt,
+    RGBA32_Float,
+
+    // packed
+    RGB10A2_UNorm,
+    RGB10A2_UInt,
+
+    R11G11B10_Float,
+
+    // depth / stencil
+    D16_UNorm,
+    D24_UNorm_S8_UInt,
+    D32_Float,
+    D32_Float_S8_UInt,
+    // Stencil-only view format of a combined depth/stencil image
+    // (the aspect-isolated sampling view for stencil readers).
+    S8_UInt,
+
+    // compressed
+    BC1_RGB_UNorm,
+    BC1_RGB_SRGB,
+    BC1_RGBA_UNorm,
+    BC1_RGBA_SRGB,
+    BC2_UNorm,
+    BC2_SRGB,
+    BC3_UNorm,
+    BC3_SRGB,
+    BC4_UNorm,
+    BC4_SNorm,
+    BC5_UNorm,
+    BC5_SNorm,
+    BC6H_UFloat,
+    BC6H_SFloat,
+    BC7_UNorm,
+    BC7_SRGB,
+};
+enum class ColorSpace : uint8_t {
+    Undefined,
+
+    SRGB_Nonlinear,
+
+    DisplayP3_Nonlinear,
+    DisplayP3_Linear,
+
+    ExtendedSRGB_Linear,
+    ExtendedSRGB_Nonlinear,
+
+    DCI_P3_Nonlinear,
+
+    BT709_Linear,
+    BT709_Nonlinear,
+
+    BT2020_Linear,
+
+    HDR10_ST2084,
+    HDR10_HLG,
+
+    DolbyVision,
+
+    AdobeRGB_Linear,
+    AdobeRGB_Nonlinear,
+
+    PassThrough,
+};
+
+// Block/texel geometry of a Format — the CPU-visible half of the
+// backend's getFormatInfo table (impl.cpp keeps its own copy for the
+// copy-region math; both derive from the same spec numbers). The
+// world-field atlas / cook brick-layout math uses this: a stored
+// brick's tightly packed payload is
+//   blocksX = ceil(storedW / blockWidth)
+//   blocksY = ceil(storedH / blockHeight)
+//   bytes   = blocksX * blocksY * storedD * bytesPerBlock
+// (blocks are 4x4x1 for BCn: Z stays per-texel). Compressed formats
+// require offsets/extents divisible by the block footprint — the
+// 68-texel stored brick (64 interior + 2 halo per side) is
+// deliberately 4-divisible for exactly that.
+struct FormatBlockInfo {
+    uint32_t blockWidth = 1;
+    uint32_t blockHeight = 1;
+    uint32_t bytesPerBlock = 1;
+    bool compressed = false;
+};
+constexpr FormatBlockInfo GetFormatBlockInfo(Format f) {
+    switch (f) {
+    case Format::R8_UNorm:
+    case Format::R8_SNorm:
+    case Format::R8_UInt:
+    case Format::R8_SInt:
+        return {1, 1, 1, false};
+    case Format::RG8_UNorm:
+    case Format::RG8_SNorm:
+    case Format::RG8_UInt:
+    case Format::RG8_SInt:
+        return {1, 1, 2, false};
+    case Format::RGBA8_UNorm:
+    case Format::RGBA8_SNorm:
+    case Format::RGBA8_UInt:
+    case Format::RGBA8_SInt:
+    case Format::RGBA8_SRGB:
+    case Format::BGRA8_UNorm:
+    case Format::BGRA8_SRGB:
+        return {1, 1, 4, false};
+    case Format::R16_UNorm:
+    case Format::R16_SNorm:
+    case Format::R16_UInt:
+    case Format::R16_SInt:
+    case Format::R16_Float:
+        return {1, 1, 2, false};
+    case Format::RG16_UNorm:
+    case Format::RG16_SNorm:
+    case Format::RG16_UInt:
+    case Format::RG16_SInt:
+    case Format::RG16_Float:
+    case Format::R32_UInt:
+    case Format::R32_SInt:
+    case Format::R32_Float:
+    case Format::RGB10A2_UNorm:
+    case Format::RGB10A2_UInt:
+    case Format::R11G11B10_Float:
+        return {1, 1, 4, false};
+    case Format::RGBA16_UNorm:
+    case Format::RGBA16_SNorm:
+    case Format::RGBA16_UInt:
+    case Format::RGBA16_SInt:
+    case Format::RGBA16_Float:
+    case Format::RG32_UInt:
+    case Format::RG32_SInt:
+    case Format::RG32_Float:
+        return {1, 1, 8, false};
+    case Format::RGB32_UInt:
+    case Format::RGB32_SInt:
+    case Format::RGB32_Float:
+        return {1, 1, 12, false};
+    case Format::RGBA32_UInt:
+    case Format::RGBA32_SInt:
+    case Format::RGBA32_Float:
+        return {1, 1, 16, false};
+    case Format::BC1_RGB_UNorm:
+    case Format::BC1_RGB_SRGB:
+    case Format::BC1_RGBA_UNorm:
+    case Format::BC1_RGBA_SRGB:
+    case Format::BC2_UNorm:
+    case Format::BC2_SRGB:
+    case Format::BC3_UNorm:
+    case Format::BC3_SRGB:
+    case Format::BC4_UNorm:
+    case Format::BC4_SNorm:
+    case Format::BC5_UNorm:
+    case Format::BC5_SNorm:
+    case Format::BC6H_UFloat:
+    case Format::BC6H_SFloat:
+    case Format::BC7_UNorm:
+    case Format::BC7_SRGB:
+        return {4, 4, 8, true};
+    default:
+        return {1, 1, 0, false}; // Undefined/depth/stencil: not atlas payload formats
+    }
+}
+
+// Scalar components a Format's texel carries (the vertex-layout
+// validation's shader-side compatibility check: a vertex shader
+// input at location N consumes <= this many components out of the
+// bound attribute's format — consuming MORE reads undefined data,
+// and the pipeline builder flags it). Compressed formats are not
+// vertex-attribute formats (returns 0 = unusable).
+constexpr uint32_t GetFormatComponentCount(Format f) {
+    switch (f) {
+    case Format::R8_UNorm:
+    case Format::R8_SNorm:
+    case Format::R8_UInt:
+    case Format::R8_SInt:
+    case Format::R16_UNorm:
+    case Format::R16_SNorm:
+    case Format::R16_UInt:
+    case Format::R16_SInt:
+    case Format::R16_Float:
+    case Format::R32_UInt:
+    case Format::R32_SInt:
+    case Format::R32_Float:
+        return 1;
+    case Format::RG8_UNorm:
+    case Format::RG8_SNorm:
+    case Format::RG8_UInt:
+    case Format::RG8_SInt:
+    case Format::RG16_UNorm:
+    case Format::RG16_SNorm:
+    case Format::RG16_UInt:
+    case Format::RG16_SInt:
+    case Format::RG16_Float:
+    case Format::RG32_UInt:
+    case Format::RG32_SInt:
+    case Format::RG32_Float:
+        return 2;
+    case Format::RGB32_UInt:
+    case Format::RGB32_SInt:
+    case Format::RGB32_Float:
+        return 3;
+    case Format::RGBA8_UNorm:
+    case Format::RGBA8_SNorm:
+    case Format::RGBA8_UInt:
+    case Format::RGBA8_SInt:
+    case Format::RGBA8_SRGB:
+    case Format::BGRA8_UNorm:
+    case Format::BGRA8_SRGB:
+    case Format::RGBA16_UNorm:
+    case Format::RGBA16_SNorm:
+    case Format::RGBA16_UInt:
+    case Format::RGBA16_SInt:
+    case Format::RGBA16_Float:
+    case Format::RGB10A2_UNorm:
+    case Format::RGB10A2_UInt:
+    case Format::R11G11B10_Float:
+    case Format::RGBA32_UInt:
+    case Format::RGBA32_SInt:
+    case Format::RGBA32_Float:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+// ============================================================================
+// Resource access
+// ============================================================================
+
+enum class AccessFlags : uint32_t {
+    None = 0,
+
+    IndirectCommandRead = 1u << 0,
+    IndexRead = 1u << 1,
+    VertexAttributeRead = 1u << 2,
+    UniformRead = 1u << 3,
+    InputAttachmentRead = 1u << 4,
+    ShaderRead = 1u << 5,
+    ShaderWrite = 1u << 6,
+    ColorAttachmentRead = 1u << 7,
+    ColorAttachmentWrite = 1u << 8,
+    DepthStencilAttachmentRead = 1u << 9,
+    DepthStencilAttachmentWrite = 1u << 10,
+    TransferRead = 1u << 11,
+    TransferWrite = 1u << 12,
+    HostRead = 1u << 13,
+    HostWrite = 1u << 14,
+    MemoryRead = 1u << 15,
+    MemoryWrite = 1u << 16,
+
+    CommandPreprocessRead = 1u << 17,
+    CommandPreprocessWrite = 1u << 18,
+    ColorAttachmentReadNoncoherent = 1u << 19,
+    ConditionalRenderingRead = 1u << 20,
+    AccelerationStructureRead = 1u << 21,
+    AccelerationStructureWrite = 1u << 22,
+    FragmentShadingRateAttachmentRead = 1u << 23,
+    FragmentDensityMapRead = 1u << 24,
+    TransformFeedbackWrite = 1u << 25,
+    TransformFeedbackCounterRead = 1u << 26,
+    TransformFeedbackCounterWrite = 1u << 27,
+};
+
+constexpr AccessFlags operator|(AccessFlags a, AccessFlags b) {
+    return static_cast<AccessFlags>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
+}
+
+constexpr AccessFlags operator&(AccessFlags a, AccessFlags b) {
+    return static_cast<AccessFlags>(static_cast<uint32_t>(a) & static_cast<uint32_t>(b));
+}
+
+constexpr AccessFlags& operator|=(AccessFlags& a, AccessFlags b) {
+    a = a | b;
+    return a;
+}
+
+constexpr bool HasAnyFlag(AccessFlags value, AccessFlags flags) {
+    return (value & flags) != AccessFlags::None;
+}
+constexpr AccessFlags operator~(AccessFlags a) {
+    return static_cast<AccessFlags>(~static_cast<uint32_t>(a));
+}
+constexpr AccessFlags operator^(AccessFlags a, AccessFlags b) {
+    return static_cast<AccessFlags>(static_cast<uint32_t>(a) ^ static_cast<uint32_t>(b));
+}
+constexpr AccessFlags& operator^=(AccessFlags& a, AccessFlags b) {
+    a = a ^ b;
+    return a;
+}
+constexpr AccessFlags& operator&=(AccessFlags& a, AccessFlags b) {
+    a = a & b;
+    return a;
+}
+
+// ============================================================================
+// Primitive / vertex input
+// ============================================================================
+
+enum class PrimitiveTopology : uint8_t {
+    PointList,
+
+    LineList,
+    LineStrip,
+
+    TriangleList,
+    TriangleStrip,
+    TriangleFan,
+};
+
+enum class VertexInputRate : uint8_t {
+    Vertex,
+    Instance,
+};
+
+enum class VertexSemantic : uint8_t {
+    Position,
+    Normal,
+    Tangent,
+    Color,
+
+    TexCoord0,
+    TexCoord1,
+
+    // Lightmap chart index (R32_UInt per vertex; 0xFFFFFFFF = uncharted).
+    // Pairs with TexCoord1, which carries the CHART-LOCAL uv: the vertex
+    // shader resolves the atlas uv as chartUv * xform.scale + xform.offset
+    // via the per-draw chart offset (see GfxDraw).
+    ChartId,
+
+    // Terrain tangent + bitangent-flip handedness (R16G16B16A16_Float:
+    // xyz = tangent, w = the bitangent flip sign, +1/-1 — the bitangent
+    // itself is never stored, B = cross(N, T) * flip in the shader).
+    // The terrain format's own attribute (RGBA16 halves instead of the
+    // static stream's oct32 packing — generated geometry, no chart data).
+    TangentBFlip,
+
+    JointIndices,
+    JointWeights,
+};
+
+struct VertexAttribute {
+    VertexSemantic semantic = VertexSemantic::Position;
+    // The shader input location this attribute binds. EXPLICIT, not
+    // derived from declaration order (the pre-fix counter assigned
+    // locations by list position, so reordering the vector silently
+    // re-bound every shader input while the semantic names looked
+    // unchanged). Must be unique within the format and match the
+    // consuming vertex shader's reflected stage-input location
+    // (the pipeline builder pairs the two by this number and
+    // validates component compatibility; see
+    // getVkVertexAttributeDescriptions + the spirv reflection).
+    uint32_t location = 0;
+    Format format = Format::Undefined;
+    uint32_t offset = 0;
+
+    bool operator==(const VertexAttribute&) const = default;
+};
+
+struct VertexBinding {
+    uint32_t binding = 0;
+    uint32_t stride = 0;
+
+    VertexInputRate inputRate = VertexInputRate::Vertex;
+
+    std::vector<VertexAttribute> attributes;
+
+    bool operator==(const VertexBinding&) const = default;
+};
+
+struct VertexLayoutDesc {
+    std::vector<VertexBinding> bindings;
+
+    bool operator==(const VertexLayoutDesc&) const = default;
+};
+
+// ============================================================================
+// Sample counts
+// ============================================================================
+
+enum class SampleCount : uint8_t {
+    Count1 = 1,
+    Count2 = 2,
+    Count4 = 4,
+    Count8 = 8,
+    Count16 = 16,
+    Count32 = 32,
+    Count64 = 64,
+};
+
+struct MSAASettings {
+    SampleCount samples = SampleCount::Count1;
+    // Alpha-to-coverage: fragment alpha drives the sample coverage mask
+    // instead of a shader discard (masked cutout foliage in MSAA mode).
+    // Ignored when samples == Count1 (A2C degenerates to a hard 0.5
+    // threshold at one sample — keep the discard path there).
+    bool alphaToCoverage = false;
+
+    static MSAASettings Count1() {
+        return {SampleCount::Count1, false};
+    }
+    static MSAASettings Count2() {
+        return {SampleCount::Count2, false};
+    }
+    // 2x MSAA + alpha-to-coverage (Main masked cutout leg).
+    static MSAASettings Count2A2C() {
+        return {SampleCount::Count2, true};
+    }
+    static MSAASettings Count4() {
+        return {SampleCount::Count4};
+    }
+    static MSAASettings Count8() {
+        return {SampleCount::Count8};
+    }
+    static MSAASettings Count16() {
+        return {SampleCount::Count16};
+    }
+    static MSAASettings Count32() {
+        return {SampleCount::Count32};
+    }
+    static MSAASettings Count64() {
+        return {SampleCount::Count64};
+    }
+};
+
+// ============================================================================
+// Buffer
+// ============================================================================
+
+// BufferType encapsulates mmeoryUsage, locality and more.
+// This is a higher level abstraction than the rest of the rhi but reality is
+// we need to cover X uses for 99% of apps. No need to provideo MemoryUsage or Locality and expose
+// them to user
+
+typedef enum BufferType {
+    BufferType_Index = 0,
+    BufferType_Vertex,
+    BufferType_Uniform,
+    BufferType_Storage,
+    BufferType_Indirect,
+    BufferType_TransferSrc,
+    BufferType_TransferDst,
+    BufferType_Staging,
+    BufferType_Count,
+} BufferType;
+
+struct BufferCreateInfo {
+    size_t size = 0;
+    BufferType bufferType;
+    const char* name = nullptr;
+};
+
+// ============================================================================
+// Image
+// ============================================================================
+
+enum class ImageType : uint8_t {
+    Image1D,
+    Image2D,
+    Image3D,
+};
+
+enum class ImageUsage : uint32_t {
+    None = 0,
+
+    TransferSrc = 1u << 0,
+    TransferDst = 1u << 1,
+
+    Sampled = 1u << 2,
+    Storage = 1u << 3,
+
+    ColorAttachment = 1u << 4,
+    DepthStencilAttachment = 1u << 5,
+
+    InputAttachment = 1u << 6,
+};
+
+constexpr ImageUsage operator|(ImageUsage a, ImageUsage b) {
+    return static_cast<ImageUsage>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
+}
+constexpr ImageUsage& operator|=(ImageUsage& a, ImageUsage b) {
+    a = a | b;
+    return a;
+}
+
+constexpr ImageUsage operator&(ImageUsage a, ImageUsage b) {
+    return static_cast<ImageUsage>(static_cast<uint32_t>(a) & static_cast<uint32_t>(b));
+}
+
+constexpr ImageUsage& operator&=(ImageUsage& a, ImageUsage b) {
+    a = a & b;
+    return a;
+}
+
+enum class ImageViewType : uint8_t {
+    View1D,
+    View2D,
+    View3D,
+
+    ViewCube,
+
+    View1DArray,
+    View2DArray,
+    ViewCubeArray,
+};
+
+enum class ImageAspect : uint8_t {
+    None = 0,
+    Color = 1u << 0,
+    Depth = 1u << 1,
+    Stencil = 1u << 2,
+};
+
+constexpr ImageAspect operator&(ImageAspect a, ImageAspect b) {
+    return static_cast<ImageAspect>(static_cast<uint32_t>(a) & static_cast<uint32_t>(b));
+}
+
+constexpr ImageAspect operator|(ImageAspect a, ImageAspect b) {
+    return static_cast<ImageAspect>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
+}
+
+static constexpr uint32_t RemainingSubresources = UINT32_MAX;
+
+struct ImageSubresourceRange {
+    ImageAspect aspect = ImageAspect::Color;
+
+    uint32_t baseMipLevel = 0;
+    uint32_t mipLevelCount = RemainingSubresources;
+
+    uint32_t baseArrayLayer = 0;
+    uint32_t arrayLayerCount = RemainingSubresources;
+};
+
+struct ClearColor {
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+    float a = 0.0f;
+};
+
+struct ClearDepthStencil {
+    float depth = 1.0f;
+    uint32_t stencil = 0;
+};
+
+enum class AttachmentLoadOp : uint8_t { Load, Clear, DontCare };
+
+enum class AttachmentStoreOp : uint8_t { Store, DontCare };
+
+enum class Filter : uint8_t {
+    Nearest,
+    Linear,
+};
+
+enum class MipmapMode : uint8_t {
+    Nearest,
+    Linear,
+};
+
+enum class AddressMode : uint8_t {
+    Repeat,
+    MirroredRepeat,
+    ClampToEdge
+
+};
+
+enum class CompareOp : uint8_t {
+    Never,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    NotEqual,
+    GreaterEqual,
+    Always,
+};
+
+struct SamplerCreateInfo {
+    Filter magFilter = Filter::Linear;
+    Filter minFilter = Filter::Linear;
+    MipmapMode mipmapMode = MipmapMode::Linear;
+
+    AddressMode addressU = AddressMode::Repeat;
+    AddressMode addressV = AddressMode::Repeat;
+    AddressMode addressW = AddressMode::Repeat;
+
+    float mipLodBias = 0.0f;
+
+    float minLod = 0.0f;
+    float maxLod = 1000.0f;
+
+    float maxAnisotropy = 1.0f;
+
+    CompareOp compareOp = CompareOp::Always;
+    bool compareEnable = false;
+
+    bool operator<(const SamplerCreateInfo& other) const noexcept {
+        return std::tie(magFilter,
+                        minFilter,
+                        mipmapMode,
+
+                        addressU,
+                        addressV,
+                        addressW,
+
+                        mipLodBias,
+                        minLod,
+                        maxLod,
+                        maxAnisotropy,
+
+                        compareOp,
+                        compareEnable) < std::tie(other.magFilter,
+                                                  other.minFilter,
+                                                  other.mipmapMode,
+
+                                                  other.addressU,
+                                                  other.addressV,
+                                                  other.addressW,
+
+                                                  other.mipLodBias,
+                                                  other.minLod,
+                                                  other.maxLod,
+                                                  other.maxAnisotropy,
+
+                                                  other.compareOp,
+                                                  other.compareEnable);
+    }
+    bool operator==(const SamplerCreateInfo& other) const noexcept {
+        return !(*this < other) && !(other < *this);
+    }
+};
+
+struct SamplerCreateInfoHash {
+    static void hashCombine(size_t& seed, size_t v) noexcept {
+        seed ^= v + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+    }
+    size_t operator()(SamplerCreateInfo const& k) const noexcept {
+        size_t h = 0;
+        hashCombine(h, std::hash<int>{}(static_cast<int>(k.magFilter)));
+        hashCombine(h, std::hash<int>{}(static_cast<int>(k.minFilter)));
+        hashCombine(h, std::hash<int>{}(static_cast<int>(k.mipmapMode)));
+        hashCombine(h, std::hash<int>{}(static_cast<int>(k.addressU)));
+        hashCombine(h, std::hash<int>{}(static_cast<int>(k.addressV)));
+        hashCombine(h, std::hash<int>{}(static_cast<int>(k.addressW)));
+        hashCombine(h, std::hash<float>{}(k.mipLodBias));
+        hashCombine(h, std::hash<float>{}(k.minLod));
+        hashCombine(h, std::hash<float>{}(k.maxLod));
+        hashCombine(h, std::hash<float>{}(k.maxAnisotropy));
+        hashCombine(h, std::hash<int>{}(static_cast<int>(k.compareOp)));
+        hashCombine(h, std::hash<bool>{}(k.compareEnable));
+        return h;
+    }
+};
+
+// ============================================================================
+// Shader
+// ============================================================================
+
+enum class ShaderStage : uint32_t {
+    None = 0,
+
+    Vertex = 1u << 0,         // 0x01
+    TessControl = 1u << 1,    // 0x02
+    TessEvaluation = 1u << 2, // 0x04
+    Geometry = 1u << 3,       // 0x08
+    Fragment = 1u << 4,       // 0x10
+    Compute = 1u << 5,        // 0x20
+    Task = 1u << 6,           // 0x40, VK_SHADER_STAGE_TASK_BIT_EXT
+    Mesh = 1u << 7,           // 0x80, VK_SHADER_STAGE_MESH_BIT_EXT
+
+    AllGraphics = (1u << 8) - 1u, // 0xFF (VS..Mesh)
+    All = 0x7FFFFFFF,
+    // Future:
+    // RayGen
+    // AnyHit
+    // ClosestHit
+    // Miss
+    // Intersection
+    // Callable
+};
+
+using ShaderStageFlags = ShaderStage;
+
+constexpr ShaderStage operator|(ShaderStage lhs, ShaderStage rhs) {
+    return static_cast<ShaderStage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr ShaderStage operator&(ShaderStage lhs, ShaderStage rhs) {
+    return static_cast<ShaderStage>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
+}
+
+constexpr ShaderStage& operator|=(ShaderStage& lhs, ShaderStage rhs) {
+    lhs = lhs | rhs;
+    return lhs;
+}
+
+constexpr ShaderStage& operator&=(ShaderStage& lhs, ShaderStage rhs) {
+    lhs = lhs & rhs;
+    return lhs;
+}
+
+// ============================================================================
+// Shader program
+// ============================================================================
+
+// Mirrors VkSpecializationMapEntry without leaking Vk into the RHI.
+struct SpecializationEntry {
+    uint32_t constantID = 0;
+    uint32_t offset = 0;
+    uint32_t size = 0;
+    bool operator==(const SpecializationEntry&) const = default;
+};
+
+// Owned specialization payload for one Shader stage.
+// Entries describe (constantID -> byte range in data); data holds the
+// raw little-endian values. Use Set() helpers to append typed values.
+struct ShaderSpecialization {
+    std::vector<SpecializationEntry> entries;
+    std::vector<uint8_t> data;
+
+    bool operator==(const ShaderSpecialization& other) const noexcept {
+        return entries == other.entries && data == other.data;
+    }
+
+    template <typename T> void Set(uint32_t constantID, const T& value) {
+        static_assert(std::is_trivially_copyable_v<T>);
+        SpecializationEntry e{};
+        e.constantID = constantID;
+        e.offset = static_cast<uint32_t>(data.size());
+        e.size = static_cast<uint32_t>(sizeof(T));
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&value);
+        data.insert(data.end(), bytes, bytes + sizeof(T));
+        entries.push_back(e);
+    }
+
+    void SetBool(uint32_t constantID, bool value) {
+        // Vulkan expects VkBool32 for bool spec constants.
+        uint32_t v = value ? 1u : 0u;
+        Set(constantID, v);
+    }
+};
+
+// RHI push-constant range (mirrors VkPushConstantRange without Vk).
+struct PushConstantRange {
+    uint32_t offset = 0;
+    uint32_t size = 0;
+    ShaderStage stages = ShaderStage::None;
+    bool operator==(const PushConstantRange&) const = default;
+};
+
+// Engine-wide push-constant budget. The global pipeline layout declares a
+// single range [0, kEnginePushConstantSize) with ALL stages; every
+// vkCmdPushConstants call must cover it (see VUID-vkCmdPushConstants-01796).
+// Note: Vulkan only guarantees maxPushConstantsSize >= 128, so 256 needs
+// a capable device; startup throws "unsupported ..." otherwise.
+inline constexpr uint32_t kEnginePushConstantSize = 256;
+
+struct ShaderModuleTag;
+using ShaderModuleHandle = Handle<ShaderModuleTag>;
+struct Shader {
+    ShaderModuleHandle module;
+    const char* entryPoint = "main";
+    ShaderStage stage = ShaderStage::None;
+    // Optional per-stage specialization constants. Shared ownership so
+    // Shader stays copyable and PipelineKey can hold it by value.
+    std::shared_ptr<const ShaderSpecialization> specialization;
+    bool operator==(const Shader& other) const noexcept {
+        const char* a = entryPoint ? entryPoint : "";
+        const char* b = other.entryPoint ? other.entryPoint : "";
+        if (std::strcmp(a, b) != 0)
+            return false;
+        if (!(stage == other.stage && module == other.module))
+            return false;
+        if (specialization == other.specialization)
+            return true;
+        if (!specialization || !other.specialization)
+            return false;
+        return *specialization == *other.specialization;
+    }
+};
+
+struct ShaderProgram {
+    // NOTE on the codebase's `= ShaderProgram()` spelling (never
+    // `= ShaderProgram{}`): GCC 13's gimplify ICEs on value-init
+    // TEMPORARIES of this aggregate (the array member's NSDMI +
+    // brace-init-list, gimplify.cc:3059); the paren form is
+    // semantically identical on every compiler. Local declarations
+    // use plain default-init (`ShaderProgram p;` - every member
+    // carries an NSDMI) for the same reason (see
+    // GfxRenderer::FilteredProgramWith).
+    Shader shaders[8]{};
+    size_t shaderCount = 0;
+
+    bool operator==(const ShaderProgram& other) const noexcept {
+        if (shaderCount != other.shaderCount)
+            return false;
+
+        for (size_t i = 0; i < shaderCount; ++i) {
+            if (!(shaders[i] == other.shaders[i]))
+                return false;
+        }
+
+        return true;
+    }
+};
+
+// ============================================================================
+// Stencil
+// ============================================================================
+
+enum StencilOp : uint8_t {
+    STENCIL_OP_KEEP = 0,
+    STENCIL_OP_ZERO,
+    STENCIL_OP_REPLACE,
+    STENCIL_OP_INCREMENT_AND_CLAMP,
+    STENCIL_OP_DECREMENT_AND_CLAMP,
+    STENCIL_OP_INVERT,
+    STENCIL_OP_INCREMENT_AND_WRAP,
+    STENCIL_OP_DECREMENT_AND_WRAP,
+};
+
+enum class StencilFace : uint8_t {
+    Front,
+    Back,
+    FrontAndBack,
+};
+
+struct StencilSettings {
+    CompareOp frontCompareOp = CompareOp::Always;
+    CompareOp backCompareOp = CompareOp::Always;
+    uint8_t frontFailOp = STENCIL_OP_KEEP;
+    uint8_t backFailOp = STENCIL_OP_KEEP;
+    uint8_t frontPassOp = STENCIL_OP_KEEP;
+    uint8_t backPassOp = STENCIL_OP_KEEP;
+    StencilFace frontFace = StencilFace::Front;
+    StencilFace backFace = StencilFace::Back;
+    bool frontTestEnable = false;
+    bool backTestEnable = false;
+    bool frontWriteEnable = false;
+    bool backWriteEnable = false;
+
+    // Static helpers
+    static StencilSettings DefaultDisabled();
+    static StencilSettings DefaultEnabled();
+    static StencilSettings TwoSided(CompareOp frontCompareOp, CompareOp backCompareOp, ...);
+
+    // Comparison operators for caching
+    bool operator<(const StencilSettings& other) const noexcept;
+};
+
+// ============================================================================
+// Depth settings for pipeline state
+// ============================================================================
+
+struct DepthSettings {
+    CompareOp depthFunc = CompareOp::Less;
+    bool writeEnable = true;
+    bool depthTestEnable = true;
+    bool depthBiasEnable = false;
+    float depthBiasConstantFactor = 0.0f;
+    float depthBiasClamp = 0.0f;
+    float depthBiasSlopeFactor = 0.0f;
+
+    static DepthSettings DepthTest() {
+        DepthSettings s;
+        s.depthFunc = CompareOp::Less;
+        s.writeEnable = true;
+        s.depthTestEnable = true;
+        s.depthBiasEnable = false;
+        return s;
+    }
+
+    static DepthSettings Disabled() {
+        DepthSettings s;
+        s.depthFunc = CompareOp::Always;
+        s.writeEnable = false;
+        s.depthTestEnable = true;
+        s.depthBiasEnable = false;
+        return s;
+    }
+
+    static DepthSettings Always() {
+        DepthSettings s;
+        s.depthFunc = CompareOp::Always;
+        s.writeEnable = true;
+        s.depthTestEnable = true;
+        s.depthBiasEnable = false;
+        return s;
+    }
+
+    static DepthSettings WithSlopeBias(CompareOp depthFunc,
+                                       bool writeEnable,
+                                       bool depthTestEnable = true,
+                                       float slopeFactor = 1.0f,
+                                       float constantFactor = 0.0f,
+                                       float clamp = 0.0f) {
+        DepthSettings s;
+        s.depthFunc = depthFunc;
+        s.writeEnable = writeEnable;
+        s.depthTestEnable = depthTestEnable;
+        s.depthBiasEnable = true;
+        s.depthBiasSlopeFactor = slopeFactor;
+        s.depthBiasConstantFactor = constantFactor;
+        s.depthBiasClamp = clamp;
+        return s;
+    }
+
+    bool operator<(const DepthSettings& other) const noexcept {
+        return std::tie(depthFunc,
+                        writeEnable,
+                        depthTestEnable,
+                        depthBiasEnable,
+                        depthBiasConstantFactor,
+                        depthBiasClamp,
+                        depthBiasSlopeFactor) < std::tie(other.depthFunc,
+                                                         other.writeEnable,
+                                                         other.depthTestEnable,
+                                                         other.depthBiasEnable,
+                                                         other.depthBiasConstantFactor,
+                                                         other.depthBiasClamp,
+                                                         other.depthBiasSlopeFactor);
+    }
+};
+
+// ============================================================================
+// Blend settings for pipeline state
+// ============================================================================
+
+struct BlendAttachmentState {
+    bool blendEnable = false;
+    // Color blend factors
+    enum class SrcColorBlendFactor : uint8_t {
+        Zero = 0,
+        One = 1,
+        SrcAlpha = 2,
+        OneMinusSrcAlpha = 3,
+        // ... other factors as needed
+    };
+    enum class DstColorBlendFactor : uint8_t {
+        Zero = 0,
+        One = 1,
+        OneMinusSrcAlpha = 2,
+        // ... other factors as needed
+    };
+    // Color blend operation
+    enum class ColorBlendOp : uint8_t {
+        Add = 0,
+        Subtract = 1,
+        ReverseSubtract = 2,
+        Min = 3,
+        Max = 4,
+    };
+    // Alpha blend operation
+    enum class AlphaBlendOp : uint8_t {
+        Add = 0,
+        Subtract = 1,
+        ReverseSubtract = 2,
+        Min = 3,
+        Max = 4,
+    };
+    // Color write mask bits
+    enum class ColorComponentFlag : uint8_t {
+        R = 1u << 0,
+        G = 1u << 1,
+        B = 1u << 2,
+        A = 1u << 3,
+    };
+
+    SrcColorBlendFactor srcColorBlendFactor = SrcColorBlendFactor::One;
+    DstColorBlendFactor dstColorBlendFactor = DstColorBlendFactor::One;
+    ColorBlendOp colorBlendOp = ColorBlendOp::Add;
+    AlphaBlendOp alphaBlendOp = AlphaBlendOp::Add;
+    uint8_t colorWriteMask =
+        static_cast<uint8_t>(ColorComponentFlag::R) | static_cast<uint8_t>(ColorComponentFlag::G) |
+        static_cast<uint8_t>(ColorComponentFlag::B) | static_cast<uint8_t>(ColorComponentFlag::A);
+};
+
+struct BlendState {
+    bool blendEnable = false;
+    BlendAttachmentState attachment[4]{}; // max 4 color attachments
+};
+
+struct BlendSettings {
+    BlendState blendState{};
+
+    static BlendSettings Opaque() {
+        BlendSettings s;
+        s.blendState.blendEnable = false;
+        s.blendState.attachment[0].srcColorBlendFactor =
+            BlendAttachmentState::SrcColorBlendFactor::One;
+        s.blendState.attachment[0].dstColorBlendFactor =
+            BlendAttachmentState::DstColorBlendFactor::One;
+        s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
+        s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
+        s.blendState.attachment[0].colorWriteMask =
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
+        return s;
+    }
+
+    static BlendSettings Add() {
+        BlendSettings s;
+        s.blendState.blendEnable = true;
+        s.blendState.attachment[0].srcColorBlendFactor =
+            BlendAttachmentState::SrcColorBlendFactor::One;
+        s.blendState.attachment[0].dstColorBlendFactor =
+            BlendAttachmentState::DstColorBlendFactor::One;
+        s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
+        s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
+        s.blendState.attachment[0].colorWriteMask =
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
+        return s;
+    }
+
+    static BlendSettings Mixed() {
+        BlendSettings s;
+        s.blendState.blendEnable = true;
+        s.blendState.attachment[0].srcColorBlendFactor =
+            BlendAttachmentState::SrcColorBlendFactor::One;
+        s.blendState.attachment[0].dstColorBlendFactor =
+            BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
+        s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
+        s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
+        s.blendState.attachment[0].colorWriteMask =
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
+        return s;
+    }
+
+    static BlendSettings AlphaBlend() {
+        BlendSettings s;
+        s.blendState.blendEnable = true;
+        s.blendState.attachment[0].srcColorBlendFactor =
+            BlendAttachmentState::SrcColorBlendFactor::SrcAlpha;
+        s.blendState.attachment[0].dstColorBlendFactor =
+            BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
+        s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
+        s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
+        s.blendState.attachment[0].colorWriteMask =
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
+            static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
+        return s;
+    }
+
+    bool operator<(const BlendSettings& other) const noexcept {
+        return std::tie(blendState.blendEnable,
+                        blendState.attachment[0].alphaBlendOp,
+                        blendState.attachment[0].colorBlendOp,
+                        blendState.attachment[0].srcColorBlendFactor,
+                        blendState.attachment[0].dstColorBlendFactor) <
+               std::tie(other.blendState.blendEnable,
+                        other.blendState.attachment[0].alphaBlendOp,
+                        other.blendState.attachment[0].colorBlendOp,
+                        other.blendState.attachment[0].srcColorBlendFactor,
+                        other.blendState.attachment[0].dstColorBlendFactor);
+    }
+};
+
+typedef uint64_t BufferDeviceAddress;
+
+// GPU memory heap snapshot (RHI-opaque, no Vk leakage).
+// Sourced from VMA (vmaGetHeapBudgets, VK_EXT_memory_budget) +
+// VkPhysicalDeviceMemoryProperties heap sizes.
+struct GpuMemoryHeap {
+    uint64_t heapSizeBytes = 0;   // VkMemoryHeap::size (total heap)
+    uint64_t budgetBytes = 0;     // VMA budget (OS-reported usable budget)
+    uint64_t usageBytes = 0;      // VMA usage (all Vulkan allocations on heap)
+    uint64_t allocationBytes = 0; // VMA stats: committed VkDeviceMemory
+    uint64_t blockBytes = 0;      // VMA stats: block bytes (incl. free inside blocks)
+    bool deviceLocal = false;     // heap is DEVICE_LOCAL (likely VRAM)
+};
+
+// ---- Allocation ledger (exact per-resource device bytes) -----------
+// EXACT VMA committed bytes, captured from VmaAllocationInfo::size at
+// every create (no estimation) and stored ON the pool entries — the
+// queries below are immediate-mode pool walks (the ListTextureInfos
+// contract: render thread, unsynchronized, zero cost when not called).
+// Destroy needs no bookkeeping: the bytes die with the entry. NOT
+// tracked (0 bytes, they land in the viewer's "untracked" remainder):
+// heap-placed design-B targets (graph-owned VkDeviceMemory), external
+// images, and the raw upload/staging rings created outside
+// CreateBuffer. See the VRAM viewer (Ctrl+M).
+enum class MemoryCategory : uint32_t {
+    ImageContent = 0, // sampled content images (textures, skyboxes)
+    ImageTarget,      // attachment-usage images (color/depth/storage)
+    Vertex,           // static/vertex heaps (CreateBuffer Vertex)
+    Index,            // index buffers
+    Uniform,          // uniform/frame constant buffers
+    Storage,          // compute storage (gfx rings, HZB, draws)
+    Indirect,         // indirect command buffers
+    Staging,          // staging/transfer (CreateBuffer-typed)
+    Count,
+};
+inline constexpr uint32_t kMemoryCategoryCount = uint32_t(MemoryCategory::Count);
+// One per-item ledger row (GetMemoryAllocInfos): the exact bytes + the
+// entry's arena-owned debug name + its category. Images carry their
+// geometry (the map/display fields; zeros for buffers); bytes == 0 on
+// an image = UNTRACKED backing (heap-placed design-B target / external
+// — display it with a computed estimate).
+struct MemoryAllocInfo {
+    StringViewT name{};
+    MemoryCategory category = MemoryCategory::ImageContent;
+    uint64_t bytes = 0; // exact VMA committed bytes
+    bool isImage = true;
+    Extent3D extent{0, 0, 0};
+    Format format = Format::Undefined;
+    SampleCount samples = SampleCount::Count1;
+    uint32_t mipLevels = 0;
+    uint32_t arrayLayers = 0;
+};
+
+typedef enum PipelineStageBits {
+    PipelineStageBit_None = 0,
+
+    PipelineStageBit_Vertex = 1u << 0,
+    PipelineStageBit_Fragment = 1u << 1,
+    PipelineStageBit_Compute = 1u << 2,
+    PipelineStageBit_Geometry = 1u << 3,
+    PipelineStageBit_TessellationControl = 1u << 4,
+    PipelineStageBit_TessellationEvaluation = 1u << 5,
+    PipelineStageBit_Task = 1u << 6,
+    PipelineStageBit_Mesh = 1u << 7,
+
+    // Ray tracing stages
+    PipelineStageBit_RayGeneration = 1u << 8,
+    PipelineStageBit_AnyHit = 1u << 9,
+    PipelineStageBit_ClosestHit = 1u << 10,
+    PipelineStageBit_Miss = 1u << 11,
+    PipelineStageBit_Intersection = 1u << 12,
+    PipelineStageBit_Callable = 1u << 13,
+
+    PipelineStageBit_Transfer = 1u << 14,
+
+    // Draw-indirect argument reads. MUST pair with
+    // AccessFlags::IndirectCommandRead: the Vulkan VUIDs reject that
+    // access under any shader stage (e.g. Vertex), it requires
+    // DRAW_INDIRECT (or ALL_GRAPHICS/ALL_COMMANDS).
+    PipelineStageBit_DrawIndirect = 1u << 15,
+
+    // Convenience masks
+    PipelineStageBit_AllGraphics =
+        PipelineStageBit_Vertex | PipelineStageBit_Fragment | PipelineStageBit_Geometry |
+        PipelineStageBit_TessellationControl | PipelineStageBit_TessellationEvaluation |
+        PipelineStageBit_Task | PipelineStageBit_Mesh,
+
+    PipelineStageBit_AllRayTracing = PipelineStageBit_RayGeneration | PipelineStageBit_AnyHit |
+                                     PipelineStageBit_ClosestHit | PipelineStageBit_Miss |
+                                     PipelineStageBit_Intersection | PipelineStageBit_Callable,
+
+    PipelineStageBit_All =
+        PipelineStageBit_AllGraphics | PipelineStageBit_Compute | PipelineStageBit_AllRayTracing,
+
+} PipelineStageBits;
+typedef uint32_t PipelineStage;
+
+// Engine-wide per-frame globals (time / deltaTime / frameIndex / fps).
+// Computed and uploaded entirely engine-side (VulkanResourceManager::
+// FlushEngineGlobals, driven by the swapchain's AcquireFramebuffer) and
+// exposed to every shader through bindless set 0, binding
+// kBinding_EngineGlobals:
+//   [[vk::binding(3, 0)]] StructuredBuffer<EngineGlobals> g_engineGlobals;
+// Must be mirrored by HLSL 'EngineGlobals' in content/shaders/globals.hlsli.
+struct EngineGlobals {
+    float time;          // seconds since app start
+    float deltaTime;     // last frame delta (seconds)
+    uint32_t frameIndex; // absolute frame counter (wraps at 2^32)
+    float fps;           // smoothed (EMA) frames per second
+};
+static_assert(sizeof(EngineGlobals) == 16,
+              "EngineGlobals must stay 16 bytes (HLSL mirror relies on it)");
+
+// GPU stage timers — shadow-path instrumentation for BOTH shadow
+// representations (PCF + EVSM), so A/B runs measure the real GPU cost
+// of each stage. Written by the shadow pass recording funcs
+// (CommandBuffer::WriteStageTimestamp) and by RenderGraph::Execute
+// around the async compute stream; the per-flight frame-timer query
+// pools carry the query pairs (2+2s / 3+2s), and the swapchain reports
+// the per-stage ms of the last retired frame (Swapchain::
+// GetGpuStageTimings). A stage that never ran stays invalid (queries
+// reset, never written — per-pair NOT_READY), not zero.
+//
+// Per-async-pass timers (kGpuStageAsyncPassBase + i): true-async
+// compute pass i (sorted order) gets its own timestamp pair, written
+// BOTTOM_OF_PIPE on the compute queue — a stage that is legal there,
+// unlike the ALL_GRAPHICS stage the Optick Vulkan backend uses (the
+// reason async passes get CPU-only Optick scopes). The pair measures
+// the pass's own GPU cost; the GAP between pass k's end and pass k+1's
+// begin is the queue handoff + timeline-semaphore sync overhead.
+// EVSM's H->V blur chain is the canonical 2-pass user. Frames with
+// more async passes than slots keep the aggregate kGpuStageEvsmBlur
+// (only the first kGpuAsyncPassMaxTimers passes get pairs); the
+// emulated (single-queue) path writes none of them — the inline
+// passes are covered by the ordinary per-pass Optick GPU scopes.
+static constexpr uint32_t kGpuAsyncPassMaxTimers = 4;
+enum GpuStageTimer : uint32_t {
+    kGpuStagePcfRaster = 0, // PCF shadow raster (cascade + spot tiles)
+    kGpuStageEvsmCasters,   // EVSM moment (depth-only caster) passes
+    kGpuStageEvsmResolve,   // EVSM per-sample MSAA depth -> moments resolve
+    kGpuStageEvsmBlur,      // EVSM async blur stream (the whole C chain)
+    kGpuStageAsyncPassBase, // per-pass C-stream pairs start here
+    kGpuStageCount = kGpuStageAsyncPassBase + kGpuAsyncPassMaxTimers
+};
+
+enum Bindings {
+    kBinding_Textures = 0, // position 0
+    kBinding_Samplers = 1, // I thought better to alias samplers with comparisonSamplers HLSLside.
+    kBinding_StorageImages = 2,
+    kBinding_EngineGlobals =
+        3, // read-only StructuredBuffer<EngineGlobals>, one slice per frame in flight
+    // 3D volume textures (SG probe grids): sampled-image array whose
+    // descriptors mirror the SAME bindless slots as kBinding_Textures
+    // — a Texture3D view is reachable through either binding at its
+    // slot index. HLSL: Texture3D volumeTextures[] (common.hlsli).
+    // Kept a separate binding so Texture2D[]-typed code keeps
+    // compiling with 3D views in the pool.
+    kBinding_VolumeTextures = 4,
+    // Reflection cubemaps for specular IBL: sampled-image array whose
+    // descriptors mirror the SAME bindless slots as kBinding_Textures
+    // — a TextureCube view is reachable through either binding at its
+    // slot index. HLSL: TextureCube cubemaps[] (common.hlsli).
+    kBinding_Cubemaps = 5,
+    // Multisampled 2D textures (EVSM per-sample depth resolve, see
+    // evsm_resolve.cs.hlsl): sampled-image array whose descriptors
+    // mirror the SAME bindless slots as kBinding_Textures — only MSAA
+    // views get mirrored, and Texture2D[]-typed code never indexes
+    // those slots. HLSL: Texture2DMS<float4> texturesMS[] (common.hlsli).
+    kBinding_MsaaTextures = 6,
+    // Immutable optional lightmap storage heap for indexed vertex pulling.
+    kBinding_VertexLightmap = 7,
+    // Optional hardware ray-query TLAS, one scene per RHI context.
+    kBinding_RayTracingScene = 8,
+    kBinding_NumBindings = 9 // this should be # of all other
+};
+
+struct QueueFamilyIndices {
+    std::optional<uint32_t> graphicsFamily;
+    std::optional<uint32_t> presentFamily;
+    std::optional<uint32_t> transferFamily;
+    // Dedicated async-compute family. Empty/aliased to graphics when the
+    // device has no compute-only queue (single-queue fallback: EVSM blur
+    // still records as compute passes, just without overlap).
+    std::optional<uint32_t> computeFamily;
+
+    bool isComplete() const {
+        return graphicsFamily.has_value() && presentFamily.has_value();
+    }
+    [[nodiscard]] uint32_t ComputeOrGraphics() const {
+        return computeFamily.value_or(graphicsFamily.value_or(0));
+    }
+    [[nodiscard]] bool HasDedicatedCompute() const {
+        return computeFamily.has_value() && graphicsFamily.has_value() &&
+               *computeFamily != *graphicsFamily;
+    }
+};
+
+enum class PolygonMode : uint8_t {
+    Fill,
+    Line,
+    Point,
+};
+
+enum class CullMode : uint8_t {
+    None,
+    Front,
+    Back,
+    FrontAndBack,
+};
+
+enum class FrontFace : uint8_t {
+    CounterClockwise,
+    Clockwise,
+};
+
+struct RasterSettings {
+    PolygonMode polygonMode = PolygonMode::Fill;
+    CullMode cullMode = CullMode::Back;
+    FrontFace frontFace = FrontFace::CounterClockwise;
+
+    bool depthClampEnable = false;
+    bool rasterizerDiscardEnable = false;
+
+    float lineWidth = 1.0f;
+
+    bool operator<(const RasterSettings& rhs) const noexcept {
+        return std::tie(polygonMode,
+                        cullMode,
+                        frontFace,
+                        depthClampEnable,
+                        rasterizerDiscardEnable,
+                        lineWidth) < std::tie(rhs.polygonMode,
+                                              rhs.cullMode,
+                                              rhs.frontFace,
+                                              rhs.depthClampEnable,
+                                              rhs.rasterizerDiscardEnable,
+                                              rhs.lineWidth);
+    }
+};
+
+struct PipelineKey {
+    ShaderProgram program{};
+    VertexLayoutDesc vertexFormat{};
+    std::vector<Format> colorFormats;
+    Format depthFormat = Format::Undefined;
+    Format stencilFormat = Format::Undefined;
+    PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+    RasterSettings raster{};
+    DepthSettings depth{};
+    StencilSettings stencil{};
+    BlendSettings blend{};
+    MSAASettings msaa{};
+
+    bool operator==(const PipelineKey& rhs) const noexcept {
+        return program == rhs.program && vertexFormat == rhs.vertexFormat &&
+               colorFormats == rhs.colorFormats && depthFormat == rhs.depthFormat &&
+               stencilFormat == rhs.stencilFormat && topology == rhs.topology &&
+
+               !(raster < rhs.raster) && !(rhs.raster < raster) &&
+
+               !(depth < rhs.depth) && !(rhs.depth < depth) &&
+
+               !(stencil < rhs.stencil) && !(rhs.stencil < stencil) &&
+
+               !(blend < rhs.blend) && !(rhs.blend < blend) &&
+
+               msaa.samples == rhs.msaa.samples && msaa.alphaToCoverage == rhs.msaa.alphaToCoverage;
+    }
+};
+
+struct ImageCreateInfo {
+    ImageType type = ImageType::Image2D;
+    Extent3D extent{};
+    Format format = Format::Undefined;
+    ImageUsage usage = ImageUsage::Sampled | ImageUsage::TransferDst;
+    SampleCount samples = SampleCount::Count1;
+    uint32_t mipLevels = 1;
+    uint32_t arrayLayers = 1;
+    // ImageCreateFlags flags = ImageCreateFlags::None;
+    //  Cube-compatible 2D image (VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT).
+    //  Requires type == Image2D, samples == Count1, width == height,
+    //  and arrayLayers == 6 (single cubemap) or a multiple of 6
+    //  (cube array, sampled through ViewCubeArray). Pair with a
+    //  ViewCube / ViewCubeArray view (CreateTexture picks it
+    //  automatically). KTX2 cubemap uploads set the flag internally;
+    //  this flag is the manual (procedural / render-target) path.
+    bool isCubemap = false;
+    const char* name = nullptr;
+    bool hostTransfer = false;
+    // Share the image CONCURRENTLY between graphics + dedicated compute
+    // (no queue-family ownership transfers; cross-queue sync is events
+    // + layout barriers). For EVSM moment/blur images ping-ponged
+    // between the graphics moment passes and the async prefilter.
+    // Ignored on single-queue devices (falls back to EXCLUSIVE).
+    bool concurrentCompute = false;
+};
+
+// Sub-region of an image for targeted (partial) uploads — the world
+// field atlas pagers write individual brick slots into a persistent
+// 3D atlas with this (see ResourceManager::UploadDataToImage3DRegion).
+// mipLevel/arrayLayer select the subresource; offset/extent are
+// texel (block) units relative to that subresource.
+struct ImageRegion3D {
+    uint32_t mipLevel = 0;
+    uint32_t baseArrayLayer = 0;
+    Offset3D offset{};
+    Extent3D extent{};
+};
+
+// One entry of a BATCHED region upload (the BulkCopyBuffer pattern,
+// image edition): `srcOffset` indexes into the caller's single packed
+// blob; the region says where in the image those bytes land. The
+// batch (UploadDataToImage3DRegions) stages the blob ONCE and records
+// ONE layout-transition pair around all the copies — N per-brick
+// uploads cost one barrier pair + one ring allocation + one memcpy
+// pass + one copy command, not N of each.
+struct ImageRegionCopy3D {
+    ImageRegion3D region{};
+    size_t srcOffset = 0; // byte offset into the upload blob
+};
+
+enum class ResourceOwnership : uint8_t { Owned, External };
+
+// Canonical frame phase order (design-A target-heap aliasing, see
+// ResourceManager::ClaimTargetHeapRange): the monotonic keyspace the
+// target-heap interval scheduling keys on. The values mirror the frame's
+// DATAFLOW order (the rendergraph's topological order - shadow legs,
+// the occluder depth + HZB pyramid, the temporal seed, the mesh-shader
+// filter, prepass, motion, Main, the post chain, UI, the composite).
+// Targets declare a [firstPhase, lastPhase] use window; same-shape
+// targets with disjoint windows share a packed memory range. WINDOWS
+// ONLY CONSTRAIN SHARING: a too-wide window just loses sharing, a
+// too-narrow window CORRUPTS (two live targets on one range) - declare
+// conservatively (the last REAL consumer, plus slack when unsure).
+// The depth pair's key order (OccluderPrepass < Hzb < Seed): the seed
+// pass (the temporal prev-visible draw into renderDepth) appends inside
+// the filter dispatch - AFTER the HZB pass - and the stable Kahn sort
+// preserves append order between the (edge-free) HZB and the seed, so
+// hizDepth [OccluderPrepass..Hzb] and renderDepth [Seed..] are genuinely
+// sequential. Any change that lets the seed sort before the pyramid
+// build must revisit the depth windows.
+enum class TargetPhase : uint32_t {
+    Shadows = 0,         // SDSM fit + dir/spot casts + EVSM moments/blur
+    OccluderPrepass = 1, // occluder-only depth (hizDepth write)
+    Hzb = 2,             // HZB pyramid build (reads hizDepth)
+    Seed = 3,            // temporal seed draw (renderDepth write)
+    GfxFilter = 4,       // mesh-shader filter dispatch (reads the pyramid)
+    DepthPrepass = 5,    // depth prepass / remainder (renderDepth)
+    TileCull = 6,        // forward+ tile/light cull
+    Motion = 7,          // motion vectors
+    Main = 8,            // main scene raster (+MSAA, resolve -> hdr)
+    ProbeBalls = 9,      // chrome-ball cubemap debug
+    Ssgi = 10,           // SSGI AO chain (Main MRTs + compose)
+    Ssr = 11,            // SSR prep (stencil/depth views) + composite
+    Volumetric = 12,     // GI-probe raymarched fog
+    Exposure = 13,       // exposure histogram compute
+    Bloom = 14,          // bloom down/up chain
+    Dof = 15,            // depth of field
+    MotionBlur = 16,     // motion blur gather
+    Tonemap = 17,        // tonemap -> LDR
+    Ui = 18,             // ImGui overlay
+    PostAA = 19,         // SMAA / DLSS
+    Composite = 20,      // UI composite to the swapchain
+    Count = 21
+};
+
+// Target-heap aliasing MASTER GATE (default OFF): when off,
+// ClaimTargetHeapRange forces every window to the full frame - no
+// range ever shares (targets pack to DISJOINT ranges in the same
+// blocks, which is plain multi-bind placement, always sound). When
+// on, declared windows are honored (same-shape disjoint-window
+// targets share ranges). The regression that forced the gate: the
+// SDSM cascade fit reads renderDepth at TargetPhase::Shadows - a
+// cross-frame HISTORY read (the previous frame's depth through the
+// shared range) that races the previous frame's late writes under
+// submit overlap - the cascades jumped frame to frame. The env pin
+// (TOURMALINE_ALIASING=1) parses once at first use; the setter is the
+// UI's live toggle (affects FUTURE claims - existing ranges stand
+// until their targets rebuild).
+[[nodiscard]] bool TargetHeapAliasingEnabled();
+void SetTargetHeapAliasing(bool on);
+
+struct ImageViewCreateInfo {
+    ImageViewType viewType = ImageViewType::View2D;
+    Format format = Format::Undefined; // Undefined = inherit from underlying Image.
+    ImageSubresourceRange subresourceRange{};
+    const char* name = nullptr;
+};
+
+// One cubemap = 6 layers (one per face); N cubemaps = 6*N layers.
+inline constexpr uint32_t kCubemapFaceCount = 6;
+
+[[nodiscard]] constexpr bool IsCubemapLayerCount(uint32_t layers) noexcept {
+    return layers >= 6 && (layers % 6u) == 0u;
+}
+
+// Convenience builder for a manual (non-KTX) cube-compatible texture.
+// extent.width must equal extent.height; layers = 6 (cube) or 6*N
+// (cube array). mipLevels may exceed 1 for prefiltered / mip-mapped
+// environment maps.
+[[nodiscard]] inline ImageCreateInfo MakeCubemapCreateInfo(
+    uint32_t size,
+    Format format,
+    uint32_t mipLevels = 1,
+    uint32_t cubeCount = 1,
+    ImageUsage usage = ImageUsage::Sampled | ImageUsage::TransferDst,
+    const char* name = nullptr) {
+    ImageCreateInfo ci{};
+    ci.type = ImageType::Image2D;
+    ci.extent = {size, size, 1u};
+    ci.format = format;
+    ci.usage = usage;
+    ci.samples = SampleCount::Count1;
+    ci.mipLevels = mipLevels;
+    ci.arrayLayers = 6u * (cubeCount ? cubeCount : 1u);
+    ci.isCubemap = true;
+    ci.name = name;
+    return ci;
+}
+
+struct ImageTag;
+struct ImageViewTag;
+struct BufferTag;
+struct TextureTag;
+struct SamplerTag;
+struct BindlessImageTag;
+struct DescriptorPoolTag;
+// Target-heap claim (design-A aliasing, see
+// ResourceManager::ClaimTargetHeapRange): one packed-range lease.
+struct TargetHeapClaimTag;
+
+using ImageHandle = Handle<ImageTag>;
+using ImageViewHandle = Handle<ImageViewTag>;
+using BufferHandle = Handle<BufferTag>;
+using TextureHandle = Handle<TextureTag>;
+using SamplerHandle = Handle<SamplerTag>;
+using BindlessImageHandle = Handle<BindlessImageTag>;
+using DescriptorPoolHandle = Handle<DescriptorPoolTag>;
+using TargetHeapClaimHandle = Handle<TargetHeapClaimTag>;
+
+// One GPU->CPU buffer copy for a batched readback (see
+// ResourceManager::DownloadDataFromBuffers): multiple sources share one
+// staging allocation, one submit and one wait instead of one per copy.
+struct BufferDownload {
+    BufferHandle src{};
+    void* out = nullptr;
+    size_t size = 0;
+    size_t srcOffset = 0;
+};
+
+// One LIVE texture's listing metadata (ResourceManager::
+// ListTextureInfos — the debug panels' texture inspector). `name` is
+// the image's ARENA-OWNED debug name (copied at creation - caller
+// strings carry no lifetime contract; see VulkanResourceManager's
+// nameArena_): engine/auxiliary textures carry their creation names
+// ("env zone map", "gi volume layer", ...), content/material textures
+// carry their load paths (they contain a '/'). NUL-terminated
+// (arena copies) for %s interop; empty view = unnamed. The inspector
+// lists everything - no filter. bindless = the sampled bindless slot
+// (-1 = not registered).
+struct TextureInfo {
+    TextureHandle handle{};
+    StringViewT name{};
+    Format format = Format::Undefined;
+    ImageType type = ImageType::Image2D;
+    Extent3D extent{0, 0, 0};
+    uint32_t mipLevels = 1;
+    uint32_t arrayLayers = 1;
+    bool isCubemap = false;
+    int32_t bindless = -1;
+    // EXACT device bytes of the backing image (VmaAllocationInfo::size
+    // captured at create — see the allocation ledger); 0 = untracked
+    // (external/heap-placed backing).
+    uint64_t allocBytes = 0;
+};
+
+// One CPU->GPU staged copy for the bulk table-driven upload (see
+// ResourceManager::BulkCopyBuffer): the caller supplies ONE content
+// blob plus a table of {srcOffset, dstOffset, size} entries; the RHI
+// stages them in 512 MB blobs — one memcpy pass, one command buffer,
+// one submit and one barrier set per blob — instead of one ring alloc
+// + barrier per copy. Bytes are staged during the call, so `content`
+// only has to stay valid until it returns.
+struct BufferBulkCopy {
+    size_t srcOffset = 0;
+    size_t dstOffset = 0;
+    size_t size = 0;
+};
+
+// Digest-form tail marker for a pak texture (cooked into the texture
+// blob's payload header by the serializer): the loader uploads only
+// the coarse-mip tail [tailFirstMip, end) through the normal ktx path
+// (parse + transcode-if-needed + CreateStreamingTexture subrange) and
+// registers the handle for demand upgrades — digest-less blobs take
+// the full-resident path. The embedded ktx bytes are untouched by the
+// digest (same payload the legacy path would upload whole).
+struct TextureStreamMeta {
+    uint32_t tailFirstMip = 0;
+};
+
+// Forward declaration for PIMPL firewall – concrete type lives in RHI/resource_manager.h
+class ResourceManager;
+
+// RHI barrier / layout enums (opaque, no Vk leakage)
+enum class ImageLayout : uint8_t {
+    Undefined = 0,
+    General,
+    ColorAttachmentOptimal,
+    DepthStencilAttachmentOptimal,
+    DepthStencilReadOnlyOptimal,
+    DepthReadOnlyOptimal,
+    ShaderReadOnlyOptimal,
+    TransferSrcOptimal,
+    TransferDstOptimal,
+    PresentSrc
+};
+
+void destroy(ResourceManager* ctx, ImageHandle handle);
+void destroy(ResourceManager* ctx, TextureHandle handle);
+void destroy(ResourceManager* ctx, BufferHandle handle);
+void destroy(ResourceManager* ctx, SamplerHandle handle);
+void destroy(ResourceManager* ctx, BindlessImageHandle handle);
+void destroy(ResourceManager* ctx, ImageViewHandle handle);
+void destroy(ResourceManager* ctx, DescriptorPoolHandle handle);
+void destroy(ResourceManager* ctx, ShaderModuleHandle handle); // will be removed in 1.4. transition
+
+// Sync types translated from nicegraf. RHI-opaque, no Vk leakage.
+struct SyncBarrierMasks {
+    AccessFlags accessMask = AccessFlags::None;
+    PipelineStage stageMask = PipelineStageBit_None;
+    bool operator==(const SyncBarrierMasks&) const = default;
+};
+struct ImageSyncRequest {
+    SyncBarrierMasks barrierMasks{};
+    ImageLayout layout = ImageLayout::Undefined;
+    bool operator==(const ImageSyncRequest&) const = default;
+};
+struct BufferSyncRequest {
+    SyncBarrierMasks barrierMasks{};
+    bool operator==(const BufferSyncRequest&) const = default;
+};
+using SyncRequest = ImageSyncRequest;
+
+constexpr bool IsWriteAccess(AccessFlags a) {
+    constexpr AccessFlags writeMask =
+        AccessFlags::ShaderWrite | AccessFlags::ColorAttachmentWrite |
+        AccessFlags::DepthStencilAttachmentWrite | AccessFlags::TransferWrite |
+        AccessFlags::HostWrite | AccessFlags::MemoryWrite | AccessFlags::AccelerationStructureWrite;
+    return (a & writeMask) != AccessFlags::None;
+}
+constexpr bool IsReadAccess(AccessFlags a) {
+    return a != AccessFlags::None && !IsWriteAccess(a);
+}
+
+inline PipelineStage DerivePipelineStage(AccessFlags access,
+                                         PipelineStage hint = PipelineStageBit_None) {
+    if (hint != PipelineStageBit_None)
+        return hint;
+    if ((access & AccessFlags::ColorAttachmentWrite) != AccessFlags::None ||
+        (access & AccessFlags::ColorAttachmentRead) != AccessFlags::None)
+        return PipelineStageBit_Fragment;
+    if ((access & AccessFlags::DepthStencilAttachmentWrite) != AccessFlags::None ||
+        (access & AccessFlags::DepthStencilAttachmentRead) != AccessFlags::None)
+        return PipelineStageBit_Fragment;
+    if ((access & AccessFlags::ShaderRead) != AccessFlags::None ||
+        (access & AccessFlags::ShaderWrite) != AccessFlags::None ||
+        (access & AccessFlags::UniformRead) != AccessFlags::None)
+        return PipelineStageBit_Fragment | PipelineStageBit_Vertex | PipelineStageBit_Compute |
+               PipelineStageBit_Task | PipelineStageBit_Mesh;
+    if ((access & AccessFlags::TransferRead) != AccessFlags::None ||
+        (access & AccessFlags::TransferWrite) != AccessFlags::None)
+        return PipelineStageBit_Transfer;
+    if ((access & AccessFlags::IndirectCommandRead) != AccessFlags::None)
+        return PipelineStageBit_DrawIndirect;
+    // INDEX_READ requires INDEX_INPUT/VERTEX_INPUT/ALL_GRAPHICS/
+    // ALL_COMMANDS (VUID-03901): the RHI Vertex bit expands to
+    // VERTEX_SHADER|VERTEX_INPUT in both Vk translators.
+    if ((access & AccessFlags::IndexRead) != AccessFlags::None)
+        return PipelineStageBit_Vertex;
+    return PipelineStageBit_Fragment;
+}
+
+// ---------------------------------------------------------------------
+// (stage x access) pairing contract - debug validation.
+//
+// Vulkan requires every access bit in a barrier to be SUPPORTED by at
+// least one stage in the same barrier's stage mask (the VUIDs reject
+// e.g. INDIRECT_COMMAND_READ under any shader stage - it needs
+// DRAW_INDIRECT). The engine's translators make this sharp:
+// PipelineStageBit_AllGraphics maps to the SHADER-stage union ONLY
+// (ToVkStage never emits VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT), so
+// AccessFlags::IndirectCommandRead paired with AllGraphics (or any
+// shader stage) compiles into a barrier whose dst stage EXCLUDES the
+// fixed-function command fetch - the fetch runs unsynchronized no
+// matter who wrote the buffer (the stranded-upload investigation's
+// second defect; see todo.txt). DerivePipelineStage produces valid
+// pairs by construction; the DANGER is hand-written stage masks, so
+// the rendergraph's hint ingestion asserts every declared pair.
+//
+// SupportingStagesFor: the engine stage bits whose Vk translation
+// supports ONE access bit. 0 = the engine stage set cannot express
+// that access's stages (Host/CommandPreprocess/ConditionalRendering/
+// TransformFeedback/... - never validatable here, never used through
+// graph hints). MemoryRead/MemoryWrite are stage-agnostic and skip
+// validation on purpose.
+// ---------------------------------------------------------------------
+constexpr PipelineStage SupportingStagesFor(AccessFlags access) {
+    switch (access) {
+    case AccessFlags::IndirectCommandRead:
+        return PipelineStageBit_DrawIndirect;
+    case AccessFlags::IndexRead:
+    case AccessFlags::VertexAttributeRead:
+        // The Vertex bit expands VERTEX_SHADER|VERTEX_INPUT in both Vk
+        // translators (VUID-03901 - see DerivePipelineStage's note).
+        return PipelineStageBit_Vertex;
+    case AccessFlags::InputAttachmentRead:
+    case AccessFlags::ColorAttachmentRead:
+    case AccessFlags::ColorAttachmentWrite:
+    case AccessFlags::DepthStencilAttachmentRead:
+    case AccessFlags::DepthStencilAttachmentWrite:
+        return PipelineStageBit_Fragment;
+    case AccessFlags::UniformRead:
+    case AccessFlags::ShaderRead:
+    case AccessFlags::ShaderWrite:
+        return PipelineStageBit_AllGraphics | PipelineStageBit_Compute |
+               PipelineStageBit_AllRayTracing;
+    case AccessFlags::TransferRead:
+    case AccessFlags::TransferWrite:
+        return PipelineStageBit_Transfer;
+    case AccessFlags::AccelerationStructureRead:
+    case AccessFlags::AccelerationStructureWrite:
+        return PipelineStageBit_AllRayTracing | PipelineStageBit_Compute;
+    default:
+        return 0;
+    }
+}
+
+// Fires when `stage` supports NONE of one of `access`'s bits - the
+// declared barrier would be invalid Vulkan (or, for the indirect
+// case, silently leave the fixed-function fetch unsynchronized).
+// Debug builds only (NDEBUG ships it out); the site string rides the
+// assert expression so the report names the declaring call site.
+inline void AssertStageAccessSupported(PipelineStage stage, AccessFlags access, const char* site) {
+    uint32_t remaining = static_cast<uint32_t>(access);
+    while (remaining != 0) {
+        const uint32_t bit = remaining & (0u - remaining);
+        remaining ^= bit;
+        const PipelineStage support = SupportingStagesFor(static_cast<AccessFlags>(bit));
+        if (support == 0)
+            continue; // not expressible in the engine stage set
+        assert((stage & support) != 0 && "stage mask supports none of this access bit's stages" &&
+               site);
+    }
+}
+
+[[nodiscard]] constexpr ImageAspect DefaultViewAspect(Format format) {
+    switch (format) {
+    case Format::D16_UNorm:
+    case Format::D32_Float:
+        return ImageAspect::Depth;
+
+    case Format::D24_UNorm_S8_UInt:
+    case Format::D32_Float_S8_UInt:
+        // Policy decision: default DS views to depth.
+        return ImageAspect::Depth;
+
+    case Format::S8_UInt:
+        return ImageAspect::Stencil;
+
+    case Format::Undefined:
+        return ImageAspect::None;
+
+    default:
+        return ImageAspect::Color;
+    }
+}
+
+// True when the format carries a stencil aspect (combined or
+// stencil-only). Targets created with such a format can expose a
+// stencil sampling view; SSR's receiver-material layer keys on it.
+[[nodiscard]] constexpr bool FormatHasStencilAspect(Format format) {
+    switch (format) {
+    case Format::S8_UInt:
+    case Format::D24_UNorm_S8_UInt:
+    case Format::D32_Float_S8_UInt:
+        return true;
+
+    default:
+        return false;
+    }
+}
+inline StencilSettings StencilSettings::DefaultDisabled() {
+    StencilSettings s{};
+    s.frontTestEnable = false;
+    s.backTestEnable = false;
+    s.frontWriteEnable = false;
+    s.backWriteEnable = false;
+    return s;
+}
+inline StencilSettings StencilSettings::DefaultEnabled() {
+    StencilSettings s{};
+    s.frontTestEnable = true;
+    s.backTestEnable = true;
+    s.frontWriteEnable = true;
+    s.backWriteEnable = true;
+    return s;
+}
 
 } // namespace smvk

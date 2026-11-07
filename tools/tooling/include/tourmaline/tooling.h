@@ -23,7 +23,7 @@ struct ProjectInitOptions {
     std::filesystem::path root;
     std::string name;
     std::string recipeName = "game"; // basename, without .tourrecipe
-    std::string pakName = "world"; // basename, without .pak
+    std::string pakName = "world";   // basename, without .pak
     std::string entryScene = "content/scenes/main.tour";
     bool bakeGi = false;
     bool bakeCubemaps = false;
@@ -37,7 +37,7 @@ struct ProjectInitOptions {
 struct ProjectInitResult {
     std::string root;
     std::string name;
-    std::string guid; // empty for dry runs
+    std::string guid;   // empty for dry runs
     std::string recipe; // absolute path
     std::string entryScene;
     bool created = false;
@@ -51,7 +51,8 @@ struct ProjectInitResult {
 // Refuses existing roots by default and never overwrites user-authored files.
 // Uses project_pipeline's canonical Project::Init and import / scene seeding.
 bool InitializeProject(const ProjectInitOptions& options,
-                       ProjectInitResult& out, std::string& error);
+                       ProjectInitResult& out,
+                       std::string& error);
 
 struct AssetRecord {
     uint64_t id = 0;
@@ -85,7 +86,8 @@ struct PackageSnapshot {
 // Opens only the SMP8 header/footer/TOC and the #ids page for each pak.
 // No GPU and no whole-pak read. deepVerify hashes every stored page.
 bool ReadPackageSnapshot(const std::filesystem::path& source,
-                         PackageSnapshot& out, std::string& error,
+                         PackageSnapshot& out,
+                         std::string& error,
                          bool deepVerify = false);
 
 enum class DiffKind { Asset, Page, Entry };
@@ -94,7 +96,7 @@ enum class DiffStatus { Added, Removed, Modified };
 struct Difference {
     DiffKind kind = DiffKind::Page;
     DiffStatus status = DiffStatus::Modified;
-    std::string key; // asset: hex ID; page: <mount>/<kind>/<path>; entry: "entry"
+    std::string key;  // asset: hex ID; page: <mount>/<kind>/<path>; entry: "entry"
     std::string path; // logical path (empty for entry)
     std::optional<AssetRecord> assetBefore, assetAfter;
     std::optional<PageRecord> pageBefore, pageAfter;
@@ -108,9 +110,9 @@ struct DiffOptions {
 };
 
 // Pure in-memory comparison; physical pak filenames are deliberately ignored.
-std::vector<Difference> DiffPackageSnapshots(
-    const PackageSnapshot& before, const PackageSnapshot& after,
-    const DiffOptions& options = {});
+std::vector<Difference> DiffPackageSnapshots(const PackageSnapshot& before,
+                                             const PackageSnapshot& after,
+                                             const DiffOptions& options = {});
 
 // Rendering orchestration can use this reusable plan. This function does NOT
 // launch a renderer or write files. Live execution remains a host decision.
@@ -131,8 +133,7 @@ struct CapturePlan {
     std::map<std::string, std::string> environment; // overrides
 };
 
-bool BuildCapturePlan(const CaptureOptions& options,
-                      CapturePlan& out, std::string& error);
+bool BuildCapturePlan(const CaptureOptions& options, CapturePlan& out, std::string& error);
 
 // Decoded RGB pixel comparison kernel for host- or stb-decoded image buffers.
 // 'stride' samples every N pixels horizontally and vertically.
@@ -142,8 +143,13 @@ struct PixelDifference {
     double fraction = 0;
     double averageRgbChannelSum = 0;
 };
-bool CompareRgb8(std::span<const uint8_t> before, std::span<const uint8_t> after,
-                 uint32_t width, uint32_t height, uint32_t threshold,
-                 uint32_t stride, PixelDifference& out, std::string& error);
+bool CompareRgb8(std::span<const uint8_t> before,
+                 std::span<const uint8_t> after,
+                 uint32_t width,
+                 uint32_t height,
+                 uint32_t threshold,
+                 uint32_t stride,
+                 PixelDifference& out,
+                 std::string& error);
 
 } // namespace tourmaline::tooling

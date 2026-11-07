@@ -1,16 +1,16 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-#include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Memory/linear_vector.h>
-#include <Engine/Rendergraph/FrameContext.h>
+#include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Renderer/Renderer.h>
+#include <Engine/Rendergraph/FrameContext.h>
 
+#include <Engine/Profile/profile.h>
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <Engine/debug_log.h>
 #include <Engine/platform.h>
-#include <Engine/Profile/profile.h>
-#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
 #include <chrono>
@@ -20,1284 +20,1391 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
-#include <tuple>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
 namespace engine {
 
-	static constexpr const char* kGfxSeedVsPath = "content/shaders/gfxseed.vert.hlsl.spv";
-	static constexpr const char* kGfxSeedMaskedVsPath = "content/shaders/gfxseedmasked.vert.hlsl.spv";
-	static constexpr const char* kGfxShadowSeedVsPath = "content/shaders/gfxshadowseed.vert.hlsl.spv";
-	static constexpr const char* kGfxShadowSeedMaskedVsPath = "content/shaders/gfxshadowseedmasked.vert.hlsl.spv";
-	static constexpr const char* kFilteredMotionVsPath = "content/shaders/gfxfilteredmotion.vert.hlsl.spv";
-	// Byte offset of the FrameUniforms BDA in the filtered-motion push (free
-	// prevModel scratch at 192..256: 192..216 is the 24B filtered VS tail,
-	// 216..224 carries frameUniforms; the motion FS never reads prevModel).
-	static constexpr uint32_t kFilteredMotionFrameUniformsOffset = 216;
-	static constexpr const char* kMeshDebugVsPath = "content/shaders/meshdebug.vert.hlsl.spv";
-	static constexpr const char* kMeshDebugFragPath = "content/shaders/meshdebug.frag.hlsl.spv";
-	static constexpr const char* kLineVsPath = "content/shaders/debugline.vert.hlsl.spv";
-	static constexpr const char* kLineFragPath = "content/shaders/debugline.frag.hlsl.spv";
+static constexpr const char* kGfxSeedVsPath = "content/shaders/gfxseed.vert.hlsl.spv";
+static constexpr const char* kGfxSeedMaskedVsPath = "content/shaders/gfxseedmasked.vert.hlsl.spv";
+static constexpr const char* kGfxShadowSeedVsPath = "content/shaders/gfxshadowseed.vert.hlsl.spv";
+static constexpr const char* kGfxShadowSeedMaskedVsPath =
+    "content/shaders/gfxshadowseedmasked.vert.hlsl.spv";
+static constexpr const char* kFilteredMotionVsPath =
+    "content/shaders/gfxfilteredmotion.vert.hlsl.spv";
+// Byte offset of the FrameUniforms BDA in the filtered-motion push (free
+// prevModel scratch at 192..256: 192..216 is the 24B filtered VS tail,
+// 216..224 carries frameUniforms; the motion FS never reads prevModel).
+static constexpr uint32_t kFilteredMotionFrameUniformsOffset = 216;
+static constexpr const char* kMeshDebugVsPath = "content/shaders/meshdebug.vert.hlsl.spv";
+static constexpr const char* kMeshDebugFragPath = "content/shaders/meshdebug.frag.hlsl.spv";
+static constexpr const char* kLineVsPath = "content/shaders/debugline.vert.hlsl.spv";
+static constexpr const char* kLineFragPath = "content/shaders/debugline.frag.hlsl.spv";
 
-	void GfxRenderer::DebugClusterColor(uint32_t cluster, float coneCutoff, int mode, float outRgba[4]) {
-		if (mode == 1) {
-			// Cone heat: cutoff ~1 (degenerate/wide, never culls) -> red,
-			// tight useful cones -> green/cyan.
-			float t = std::clamp((coneCutoff + 1.0f) * 0.5f, 0.0f, 1.0f);
-			outRgba[0] = t;
-			outRgba[1] = 1.0f - std::abs(t - 0.5f) * 2.0f * 0.5f;
-			outRgba[2] = 1.0f - t;
-			outRgba[3] = 1.0f;
-			return;
-		}
-		// Stable hash hue per cluster (golden-ratio scramble), full saturation.
-		uint32_t h = cluster * 2654435761u;
-		h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
-		const float hue = (h % 1024) / 1024.0f;
-		const float s = 0.85f, v = 0.95f;
-		const float c = v * s;
-		const float hh = hue * 6.0f;
-		const float x = c * (1.0f - std::fabs(std::fmod(hh, 2.0f) - 1.0f));
-		float r = 0.0f, g = 0.0f, b = 0.0f;
-		if (hh < 1.0f) { r = c; g = x; }
-		else if (hh < 2.0f) { r = x; g = c; }
-		else if (hh < 3.0f) { g = c; b = x; }
-		else if (hh < 4.0f) { g = x; b = c; }
-		else if (hh < 5.0f) { r = x; b = c; }
-		else { r = c; b = x; }
-		const float m = v - c;
-		outRgba[0] = r + m; outRgba[1] = g + m; outRgba[2] = b + m; outRgba[3] = 1.0f;
-	}
+void GfxRenderer::DebugClusterColor(uint32_t cluster,
+                                    float coneCutoff,
+                                    int mode,
+                                    float outRgba[4]) {
+    if (mode == 1) {
+        // Cone heat: cutoff ~1 (degenerate/wide, never culls) -> red,
+        // tight useful cones -> green/cyan.
+        float t = std::clamp((coneCutoff + 1.0f) * 0.5f, 0.0f, 1.0f);
+        outRgba[0] = t;
+        outRgba[1] = 1.0f - std::abs(t - 0.5f) * 2.0f * 0.5f;
+        outRgba[2] = 1.0f - t;
+        outRgba[3] = 1.0f;
+        return;
+    }
+    // Stable hash hue per cluster (golden-ratio scramble), full saturation.
+    uint32_t h = cluster * 2654435761u;
+    h ^= h >> 15;
+    h *= 2246822519u;
+    h ^= h >> 13;
+    const float hue = (h % 1024) / 1024.0f;
+    const float s = 0.85f, v = 0.95f;
+    const float c = v * s;
+    const float hh = hue * 6.0f;
+    const float x = c * (1.0f - std::fabs(std::fmod(hh, 2.0f) - 1.0f));
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+    if (hh < 1.0f) {
+        r = c;
+        g = x;
+    } else if (hh < 2.0f) {
+        r = x;
+        g = c;
+    } else if (hh < 3.0f) {
+        g = c;
+        b = x;
+    } else if (hh < 4.0f) {
+        g = x;
+        b = c;
+    } else if (hh < 5.0f) {
+        r = x;
+        b = c;
+    } else {
+        r = c;
+        b = x;
+    }
+    const float m = v - c;
+    outRgba[0] = r + m;
+    outRgba[1] = g + m;
+    outRgba[2] = b + m;
+    outRgba[3] = 1.0f;
+}
 
-	bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
-		const char* vsPath = smvk::gfx::kGfxFilteredVsPath;
-		if (!smvk::gfx::Ensure(gfx, ctx, rg))
-			return false;
-		// HZB SPD A/B + verify switches (TOURMALINE_HIZ_SPD /
-		// TOURMALINE_HIZ_SPD_VERIFY — the TOURMALINE_HIZ family names the
-		// CULLING pyramid; the SSGI MAX twin is TOURMALINE_HZB_SPD_*).
-		// Read ONCE here so the headless bench matrix can pin them; both
-		// default OFF (per-mip) until the verify gate runs green — a wrong
-		// MIN pyramid over-culls, geometry disappears.
-		{
-			bool live = false, verify = false;
-			if (const char* e = std::getenv("TOURMALINE_HIZ_SPD"))
-				live = std::atoi(e) != 0;
-			if (const char* e = std::getenv("TOURMALINE_HIZ_SPD_VERIFY"))
-				verify = std::atoi(e) != 0;
-			smvk::gfx::SetHizSpd(gfx, live, verify);
-			if (live || verify)
-				std::cerr << "[GfxRenderer] HZB SPD (culling): live="
-					<< live << " verify=" << verify << "\n";
-		}
-		if (filteredProgram.shaderCount == 0 || filteredVsModule.empty()) {
-			try {
-				if (filteredVsModule.empty())
-					filteredVsModule = ctx.CreateShaderModule(
-						smvk::shaders::Read(vsPath), "gfxFilteredVS");
-			}
-			catch (...) {
-				return false;
-			}
-			if (filteredVsModule.empty() || mainFrag_.empty())
-				return false;
-			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-			smvk::Shader fs{ .module = mainFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-			filteredProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
-		}
-		// A2C twin (same filtered VS + the alpha-to-coverage lit FS): built
-		// only when the app configured the module; Main falls back to the
-		// discard variant otherwise.
-		if (filteredProgramA2C.shaderCount == 0
-			&& !filteredVsModule.empty() && !mainA2CFrag_.empty()) {
-			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-			smvk::Shader fs{ .module = mainA2CFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-			filteredProgramA2C = { .shaders = { vs, fs }, .shaderCount = 2 };
-		}
-		// Wireframe twin (same filtered VS + the flat-line FS): built only when
-		// the app configured the module; Main falls back to the shaded filtered
-		// program otherwise.
-		if (filteredWireProgram.shaderCount == 0
-			&& !filteredVsModule.empty() && !wireFrag_.empty()) {
-			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-			smvk::Shader fs{ .module = wireFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-			filteredWireProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
-		}
-		// Fixed-lobe lit twins (same filtered VS + the SG-permuted lit FS):
-		// built only for configured modules; Main falls back to the generic
-		// filtered program per missing range class.
-		for (uint32_t li = 0; li < 4; ++li) {
-			if (filteredLitSg_[li].shaderCount == 0
-				&& !filteredVsModule.empty() && !litFragSgModules_[li].empty()) {
-				smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-				smvk::Shader fs{ .module = litFragSgModules_[li], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				filteredLitSg_[li] = { .shaders = { vs, fs }, .shaderCount = 2 };
-			}
-		}
-		// GI permutation twins (same filtered VS + the .giN lit FS — the
-		// same modules the direct draws bind as mainProgramGi). Built only
-		// for configured modules; the batch bind falls back to the generic
-		// filtered program per missing variant, which compiles the GI
-		// branches out (see FilteredProgramGi).
-		for (uint32_t gi = 0; gi < 4; ++gi) {
-			if (filteredProgramGi_[gi].shaderCount == 0
-				&& !filteredVsModule.empty() && !litFragGiModules_[gi].empty()) {
-				smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-				smvk::Shader fs{ .module = litFragGiModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				filteredProgramGi_[gi] = { .shaders = { vs, fs }, .shaderCount = 2 };
-			}
-		}
-		// Standard-material twins (same filtered VS + the .std/.giNstd lit
-		// FS — MAT_STANDARD, the layered machinery compiled out). Best-effort
-		// per module: missing variants fall back to the monolith twins
-		// (FilteredProgramGi/FilteredLitProgram pick per layered-ness).
-		if (filteredProgramStd.shaderCount == 0
-			&& !filteredVsModule.empty() && !mainFragStd_.empty()) {
-			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-			smvk::Shader fs{ .module = mainFragStd_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-			filteredProgramStd = { .shaders = { vs, fs }, .shaderCount = 2 };
-		}
-		for (uint32_t gi = 0; gi < 4; ++gi) {
-			if (filteredProgramGiStd_[gi].shaderCount == 0
-				&& !filteredVsModule.empty() && !litFragGiStdModules_[gi].empty()) {
-				smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-				smvk::Shader fs{ .module = litFragGiStdModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				filteredProgramGiStd_[gi] = { .shaders = { vs, fs }, .shaderCount = 2 };
-			}
-		}
-		// PROJECT-LIT family twins (the project-authored lit FS modules
-		// the app configured — the same modules the direct draws bind as
-		// the mainProject* family programs). Built only for configured
-		// modules; the family picks fall back to the stock picks when a
-		// twin is missing (a project that compiled no family at all).
-		if (filteredProjectProgram.shaderCount == 0
-			&& !filteredVsModule.empty() && !projectFrag_.empty()) {
-			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-			smvk::Shader fs{ .module = projectFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-			filteredProjectProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
-		}
-		if (filteredProjectProgramA2C.shaderCount == 0
-			&& !filteredVsModule.empty() && !projectA2CFrag_.empty()) {
-			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-			smvk::Shader fs{ .module = projectA2CFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-			filteredProjectProgramA2C = { .shaders = { vs, fs }, .shaderCount = 2 };
-		}
-		for (uint32_t li = 0; li < 4; ++li) {
-			if (filteredProjectLitSg_[li].shaderCount == 0
-				&& !filteredVsModule.empty() && !projectLitFragSgModules_[li].empty()) {
-				smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-				smvk::Shader fs{ .module = projectLitFragSgModules_[li], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				filteredProjectLitSg_[li] = { .shaders = { vs, fs }, .shaderCount = 2 };
-			}
-		}
-		for (uint32_t gi = 0; gi < 4; ++gi) {
-			if (filteredProjectProgramGi_[gi].shaderCount == 0
-				&& !filteredVsModule.empty() && !projectLitFragGiModules_[gi].empty()) {
-				smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-				smvk::Shader fs{ .module = projectLitFragGiModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				filteredProjectProgramGi_[gi] = { .shaders = { vs, fs }, .shaderCount = 2 };
-			}
-		}
-		if (filteredProjectProgramStd.shaderCount == 0
-			&& !filteredVsModule.empty() && !projectFragStd_.empty()) {
-			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-			smvk::Shader fs{ .module = projectFragStd_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-			filteredProjectProgramStd = { .shaders = { vs, fs }, .shaderCount = 2 };
-		}
-		for (uint32_t gi = 0; gi < 4; ++gi) {
-			if (filteredProjectProgramGiStd_[gi].shaderCount == 0
-				&& !filteredVsModule.empty() && !projectLitFragGiStdModules_[gi].empty()) {
-				smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-				smvk::Shader fs{ .module = projectLitFragGiStdModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				filteredProjectProgramGiStd_[gi] = { .shaders = { vs, fs }, .shaderCount = 2 };
-			}
-		}
-		// Seed-depth programs (T3). One SPIR-V per phase (the shader build
-		// emits a single entry point per file). Missing seed frag
-		// (ConfigureSeedFrag not called) disables seeding but leaves the
-		// filter path intact.
-		if (seedOpaqueProgram.shaderCount == 0 || seedMaskedProgram.shaderCount == 0) {
-			smvk::Holder<smvk::ShaderModuleHandle> seedMaskedVsModule;
-			try {
-				if (seedVsModule.empty())
-					seedVsModule = ctx.CreateShaderModule(
-						smvk::shaders::Read(kGfxSeedVsPath), "gfxSeedVS");
-				seedMaskedVsModule = ctx.CreateShaderModule(
-					smvk::shaders::Read(kGfxSeedMaskedVsPath), "gfxSeedMaskedVS");
-			}
-			catch (...) {
-				return true; // filter works; seed stays off
-			}
-			if (!seedVsModule.empty()) {
-				smvk::Shader seedVs{ .module = seedVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-				seedOpaqueProgram = { .shaders = { seedVs }, .shaderCount = 1 };
-			}
-			if (!seedMaskedVsModule.empty() && !seedFrag_.empty()) {
-				smvk::Shader seedVsMasked{ .module = seedMaskedVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-				smvk::Shader seedFs{ .module = seedFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				seedMaskedProgram = { .shaders = { seedVsMasked, seedFs }, .shaderCount = 2 };
-				seedMaskedVsModule_ = std::move(seedMaskedVsModule);
-			}
-		}
-		// Debug programs (self-contained; failure only disables debug views).
-		if (meshDebugProgram.shaderCount == 0 || lineProgram.shaderCount == 0) {
-			try {
-				if (meshDebugVsModule.empty())
-					meshDebugVsModule = ctx.CreateShaderModule(
-						smvk::shaders::Read(kMeshDebugVsPath), "meshDebugVS");
-				if (meshDebugFragModule.empty())
-					meshDebugFragModule = ctx.CreateShaderModule(
-						smvk::shaders::Read(kMeshDebugFragPath), "meshDebugFS");
-				if (lineVsModule.empty())
-					lineVsModule = ctx.CreateShaderModule(
-						smvk::shaders::Read(kLineVsPath), "debugLineVS");
-				if (lineFragModule.empty())
-					lineFragModule = ctx.CreateShaderModule(
-						smvk::shaders::Read(kLineFragPath), "debugLineFS");
-			}
-			catch (...) {
-				return true; // filter works; debug views stay off
-			}
-			if (!meshDebugVsModule.empty() && !meshDebugFragModule.empty()) {
-				smvk::Shader vs{ .module = meshDebugVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-				smvk::Shader fs{ .module = meshDebugFragModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				meshDebugProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
-			}
-			if (!lineVsModule.empty() && !lineFragModule.empty()) {
-				smvk::Shader vs{ .module = lineVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-				smvk::Shader fs{ .module = lineFragModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				lineProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
-			}
-		}
-		// Task-less mesh twin (mesh mainMS + mesh FS twin): best-effort —
-		// failure only disables the mesh record, the indexed path stays.
-		EnsureMeshPrograms(ctx, rg);
-		// Deformed cluster bounds (skinned cull fix): the per-flight
-		// skinBounds ring + the GfxSkinBounds compute program. Best-effort —
-		// a missing .spv only disables the pass, and the batch cull then
-		// reads the static (bind-pose) table as before.
-		(void)smvk::gfx::EnsureSkinBounds(gfx, ctx, rg);
-		return true;
-	}
+bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
+    const char* vsPath = smvk::gfx::kGfxFilteredVsPath;
+    if (!smvk::gfx::Ensure(gfx, ctx, rg))
+        return false;
+    // HZB SPD A/B + verify switches (TOURMALINE_HIZ_SPD /
+    // TOURMALINE_HIZ_SPD_VERIFY — the TOURMALINE_HIZ family names the
+    // CULLING pyramid; the SSGI MAX twin is TOURMALINE_HZB_SPD_*).
+    // Read ONCE here so the headless bench matrix can pin them; both
+    // default OFF (per-mip) until the verify gate runs green — a wrong
+    // MIN pyramid over-culls, geometry disappears.
+    {
+        bool live = false, verify = false;
+        if (const char* e = std::getenv("TOURMALINE_HIZ_SPD"))
+            live = std::atoi(e) != 0;
+        if (const char* e = std::getenv("TOURMALINE_HIZ_SPD_VERIFY"))
+            verify = std::atoi(e) != 0;
+        smvk::gfx::SetHizSpd(gfx, live, verify);
+        if (live || verify)
+            std::cerr << "[GfxRenderer] HZB SPD (culling): live=" << live << " verify=" << verify
+                      << "\n";
+    }
+    if (filteredProgram.shaderCount == 0 || filteredVsModule.empty()) {
+        try {
+            if (filteredVsModule.empty())
+                filteredVsModule =
+                    ctx.CreateShaderModule(smvk::shaders::Read(vsPath), "gfxFilteredVS");
+        } catch (...) {
+            return false;
+        }
+        if (filteredVsModule.empty() || mainFrag_.empty())
+            return false;
+        smvk::Shader vs{
+            .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+        smvk::Shader fs{
+            .module = mainFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+        filteredProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+    }
+    // A2C twin (same filtered VS + the alpha-to-coverage lit FS): built
+    // only when the app configured the module; Main falls back to the
+    // discard variant otherwise.
+    if (filteredProgramA2C.shaderCount == 0 && !filteredVsModule.empty() && !mainA2CFrag_.empty()) {
+        smvk::Shader vs{
+            .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+        smvk::Shader fs{
+            .module = mainA2CFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+        filteredProgramA2C = {.shaders = {vs, fs}, .shaderCount = 2};
+    }
+    // Wireframe twin (same filtered VS + the flat-line FS): built only when
+    // the app configured the module; Main falls back to the shaded filtered
+    // program otherwise.
+    if (filteredWireProgram.shaderCount == 0 && !filteredVsModule.empty() && !wireFrag_.empty()) {
+        smvk::Shader vs{
+            .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+        smvk::Shader fs{
+            .module = wireFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+        filteredWireProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+    }
+    // Fixed-lobe lit twins (same filtered VS + the SG-permuted lit FS):
+    // built only for configured modules; Main falls back to the generic
+    // filtered program per missing range class.
+    for (uint32_t li = 0; li < 4; ++li) {
+        if (filteredLitSg_[li].shaderCount == 0 && !filteredVsModule.empty() &&
+            !litFragSgModules_[li].empty()) {
+            smvk::Shader vs{.module = filteredVsModule,
+                            .entryPoint = "mainVS",
+                            .stage = smvk::ShaderStage::Vertex};
+            smvk::Shader fs{.module = litFragSgModules_[li],
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            filteredLitSg_[li] = {.shaders = {vs, fs}, .shaderCount = 2};
+        }
+    }
+    // GI permutation twins (same filtered VS + the .giN lit FS — the
+    // same modules the direct draws bind as mainProgramGi). Built only
+    // for configured modules; the batch bind falls back to the generic
+    // filtered program per missing variant, which compiles the GI
+    // branches out (see FilteredProgramGi).
+    for (uint32_t gi = 0; gi < 4; ++gi) {
+        if (filteredProgramGi_[gi].shaderCount == 0 && !filteredVsModule.empty() &&
+            !litFragGiModules_[gi].empty()) {
+            smvk::Shader vs{.module = filteredVsModule,
+                            .entryPoint = "mainVS",
+                            .stage = smvk::ShaderStage::Vertex};
+            smvk::Shader fs{.module = litFragGiModules_[gi],
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            filteredProgramGi_[gi] = {.shaders = {vs, fs}, .shaderCount = 2};
+        }
+    }
+    // Standard-material twins (same filtered VS + the .std/.giNstd lit
+    // FS — MAT_STANDARD, the layered machinery compiled out). Best-effort
+    // per module: missing variants fall back to the monolith twins
+    // (FilteredProgramGi/FilteredLitProgram pick per layered-ness).
+    if (filteredProgramStd.shaderCount == 0 && !filteredVsModule.empty() && !mainFragStd_.empty()) {
+        smvk::Shader vs{
+            .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+        smvk::Shader fs{
+            .module = mainFragStd_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+        filteredProgramStd = {.shaders = {vs, fs}, .shaderCount = 2};
+    }
+    for (uint32_t gi = 0; gi < 4; ++gi) {
+        if (filteredProgramGiStd_[gi].shaderCount == 0 && !filteredVsModule.empty() &&
+            !litFragGiStdModules_[gi].empty()) {
+            smvk::Shader vs{.module = filteredVsModule,
+                            .entryPoint = "mainVS",
+                            .stage = smvk::ShaderStage::Vertex};
+            smvk::Shader fs{.module = litFragGiStdModules_[gi],
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            filteredProgramGiStd_[gi] = {.shaders = {vs, fs}, .shaderCount = 2};
+        }
+    }
+    // PROJECT-LIT family twins (the project-authored lit FS modules
+    // the app configured — the same modules the direct draws bind as
+    // the mainProject* family programs). Built only for configured
+    // modules; the family picks fall back to the stock picks when a
+    // twin is missing (a project that compiled no family at all).
+    if (filteredProjectProgram.shaderCount == 0 && !filteredVsModule.empty() &&
+        !projectFrag_.empty()) {
+        smvk::Shader vs{
+            .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+        smvk::Shader fs{
+            .module = projectFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+        filteredProjectProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+    }
+    if (filteredProjectProgramA2C.shaderCount == 0 && !filteredVsModule.empty() &&
+        !projectA2CFrag_.empty()) {
+        smvk::Shader vs{
+            .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+        smvk::Shader fs{.module = projectA2CFrag_,
+                        .entryPoint = "mainPS",
+                        .stage = smvk::ShaderStage::Fragment};
+        filteredProjectProgramA2C = {.shaders = {vs, fs}, .shaderCount = 2};
+    }
+    for (uint32_t li = 0; li < 4; ++li) {
+        if (filteredProjectLitSg_[li].shaderCount == 0 && !filteredVsModule.empty() &&
+            !projectLitFragSgModules_[li].empty()) {
+            smvk::Shader vs{.module = filteredVsModule,
+                            .entryPoint = "mainVS",
+                            .stage = smvk::ShaderStage::Vertex};
+            smvk::Shader fs{.module = projectLitFragSgModules_[li],
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            filteredProjectLitSg_[li] = {.shaders = {vs, fs}, .shaderCount = 2};
+        }
+    }
+    for (uint32_t gi = 0; gi < 4; ++gi) {
+        if (filteredProjectProgramGi_[gi].shaderCount == 0 && !filteredVsModule.empty() &&
+            !projectLitFragGiModules_[gi].empty()) {
+            smvk::Shader vs{.module = filteredVsModule,
+                            .entryPoint = "mainVS",
+                            .stage = smvk::ShaderStage::Vertex};
+            smvk::Shader fs{.module = projectLitFragGiModules_[gi],
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            filteredProjectProgramGi_[gi] = {.shaders = {vs, fs}, .shaderCount = 2};
+        }
+    }
+    if (filteredProjectProgramStd.shaderCount == 0 && !filteredVsModule.empty() &&
+        !projectFragStd_.empty()) {
+        smvk::Shader vs{
+            .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+        smvk::Shader fs{.module = projectFragStd_,
+                        .entryPoint = "mainPS",
+                        .stage = smvk::ShaderStage::Fragment};
+        filteredProjectProgramStd = {.shaders = {vs, fs}, .shaderCount = 2};
+    }
+    for (uint32_t gi = 0; gi < 4; ++gi) {
+        if (filteredProjectProgramGiStd_[gi].shaderCount == 0 && !filteredVsModule.empty() &&
+            !projectLitFragGiStdModules_[gi].empty()) {
+            smvk::Shader vs{.module = filteredVsModule,
+                            .entryPoint = "mainVS",
+                            .stage = smvk::ShaderStage::Vertex};
+            smvk::Shader fs{.module = projectLitFragGiStdModules_[gi],
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            filteredProjectProgramGiStd_[gi] = {.shaders = {vs, fs}, .shaderCount = 2};
+        }
+    }
+    // Seed-depth programs (T3). One SPIR-V per phase (the shader build
+    // emits a single entry point per file). Missing seed frag
+    // (ConfigureSeedFrag not called) disables seeding but leaves the
+    // filter path intact.
+    if (seedOpaqueProgram.shaderCount == 0 || seedMaskedProgram.shaderCount == 0) {
+        smvk::Holder<smvk::ShaderModuleHandle> seedMaskedVsModule;
+        try {
+            if (seedVsModule.empty())
+                seedVsModule =
+                    ctx.CreateShaderModule(smvk::shaders::Read(kGfxSeedVsPath), "gfxSeedVS");
+            seedMaskedVsModule = ctx.CreateShaderModule(smvk::shaders::Read(kGfxSeedMaskedVsPath),
+                                                        "gfxSeedMaskedVS");
+        } catch (...) {
+            return true; // filter works; seed stays off
+        }
+        if (!seedVsModule.empty()) {
+            smvk::Shader seedVs{
+                .module = seedVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+            seedOpaqueProgram = {.shaders = {seedVs}, .shaderCount = 1};
+        }
+        if (!seedMaskedVsModule.empty() && !seedFrag_.empty()) {
+            smvk::Shader seedVsMasked{.module = seedMaskedVsModule,
+                                      .entryPoint = "mainVS",
+                                      .stage = smvk::ShaderStage::Vertex};
+            smvk::Shader seedFs{
+                .module = seedFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+            seedMaskedProgram = {.shaders = {seedVsMasked, seedFs}, .shaderCount = 2};
+            seedMaskedVsModule_ = std::move(seedMaskedVsModule);
+        }
+    }
+    // Debug programs (self-contained; failure only disables debug views).
+    if (meshDebugProgram.shaderCount == 0 || lineProgram.shaderCount == 0) {
+        try {
+            if (meshDebugVsModule.empty())
+                meshDebugVsModule =
+                    ctx.CreateShaderModule(smvk::shaders::Read(kMeshDebugVsPath), "meshDebugVS");
+            if (meshDebugFragModule.empty())
+                meshDebugFragModule =
+                    ctx.CreateShaderModule(smvk::shaders::Read(kMeshDebugFragPath), "meshDebugFS");
+            if (lineVsModule.empty())
+                lineVsModule =
+                    ctx.CreateShaderModule(smvk::shaders::Read(kLineVsPath), "debugLineVS");
+            if (lineFragModule.empty())
+                lineFragModule =
+                    ctx.CreateShaderModule(smvk::shaders::Read(kLineFragPath), "debugLineFS");
+        } catch (...) {
+            return true; // filter works; debug views stay off
+        }
+        if (!meshDebugVsModule.empty() && !meshDebugFragModule.empty()) {
+            smvk::Shader vs{.module = meshDebugVsModule,
+                            .entryPoint = "mainVS",
+                            .stage = smvk::ShaderStage::Vertex};
+            smvk::Shader fs{.module = meshDebugFragModule,
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            meshDebugProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+        }
+        if (!lineVsModule.empty() && !lineFragModule.empty()) {
+            smvk::Shader vs{
+                .module = lineVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+            smvk::Shader fs{.module = lineFragModule,
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            lineProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+        }
+    }
+    // Task-less mesh twin (mesh mainMS + mesh FS twin): best-effort —
+    // failure only disables the mesh record, the indexed path stays.
+    EnsureMeshPrograms(ctx, rg);
+    // Deformed cluster bounds (skinned cull fix): the per-flight
+    // skinBounds ring + the GfxSkinBounds compute program. Best-effort —
+    // a missing .spv only disables the pass, and the batch cull then
+    // reads the static (bind-pose) table as before.
+    (void)smvk::gfx::EnsureSkinBounds(gfx, ctx, rg);
+    return true;
+}
 
-	smvk::ShaderProgram GfxRenderer::FilteredProgramWith(
-		smvk::ResourceManager& ctx,
-		const smvk::Holder<smvk::ShaderModuleHandle>& frag) {
-		// Default-init, not value-init: ShaderProgram is a fully
-		// defaulted aggregate (every member carries an NSDMI), so both
-		// spellings are semantically identical - but GCC 13 ICEs in
-		// gimplify on the explicit `p{}` (array NSDMI + empty
-		// brace-init-list, gimplify.cc:3059). MSVC/Clang take either.
-		smvk::ShaderProgram p;
-		if (frag.empty())
-			return p;
-		// On-demand VS load (best-effort, cached — the lit path may not
-		// have needed the module yet): a failure leaves shaderCount 0 and
-		// the caller falls back.
-		if (filteredVsModule.empty()) {
-			try {
-				filteredVsModule = ctx.CreateShaderModule(
-					smvk::shaders::Read(smvk::gfx::kGfxFilteredVsPath), "gfxFilteredVS");
-			}
-			catch (...) {
-				return p;
-			}
-		}
-		if (filteredVsModule.empty())
-			return p;
-		smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-		smvk::Shader fs{ .module = frag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-		return { .shaders = { vs, fs }, .shaderCount = 2 };
-	}
+smvk::ShaderProgram GfxRenderer::FilteredProgramWith(
+    smvk::ResourceManager& ctx,
+    const smvk::Holder<smvk::ShaderModuleHandle>& frag) {
+    // Default-init, not value-init: ShaderProgram is a fully
+    // defaulted aggregate (every member carries an NSDMI), so both
+    // spellings are semantically identical - but GCC 13 ICEs in
+    // gimplify on the explicit `p{}` (array NSDMI + empty
+    // brace-init-list, gimplify.cc:3059). MSVC/Clang take either.
+    smvk::ShaderProgram p;
+    if (frag.empty())
+        return p;
+    // On-demand VS load (best-effort, cached — the lit path may not
+    // have needed the module yet): a failure leaves shaderCount 0 and
+    // the caller falls back.
+    if (filteredVsModule.empty()) {
+        try {
+            filteredVsModule = ctx.CreateShaderModule(
+                smvk::shaders::Read(smvk::gfx::kGfxFilteredVsPath), "gfxFilteredVS");
+        } catch (...) {
+            return p;
+        }
+    }
+    if (filteredVsModule.empty())
+        return p;
+    smvk::Shader vs{
+        .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+    smvk::Shader fs{.module = frag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+    return {.shaders = {vs, fs}, .shaderCount = 2};
+}
 
-	void GfxRenderer::EnsureMeshPrograms(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
-		if (meshProgram.shaderCount == 0) {
-			try {
-				if (meshMsModule.empty())
-					meshMsModule = ctx.CreateShaderModule(
-						smvk::shaders::Read(smvk::gfx::kGfxMeshMsPath), "gfxMeshMS");
-				if (meshFsModule.empty())
-					meshFsModule = ctx.CreateShaderModule(
-						smvk::shaders::Read(smvk::gfx::kGfxMeshFsPath), "gfxMeshFS");
-			}
-			catch (...) {
-			}
-			if (!meshMsModule.empty() && !meshFsModule.empty()) {
-				smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
-				smvk::Shader fs{ .module = meshFsModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				meshProgram = { .shaders = { ms, fs }, .shaderCount = 2 };
-			}
-		}
-		// Mesh FS variant twins (same SG/GI permutation scheme as the
-		// indexed leg, on the mesh FS twin): built only for configured
-		// modules; MeshProgramFor falls back per missing variant.
-		static const char* kSgSuffix[4] = { ".sg5", ".sg6", ".sg9", ".sg12" };
-		for (uint32_t li = 0; li < 4; ++li) {
-			if (meshLitSg_[li].shaderCount != 0 || meshMsModule.empty())
-				continue;
-			try {
-				// kGfxMeshFsPath already ends in .spv: strip it, add the
-				// variant suffix (same layout as the default_lit twins).
-				const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
-				const std::string variant = base.substr(0, base.size() - 4)
-					+ kSgSuffix[li] + ".spv";
-				meshFsSgModules_[li] = ctx.CreateShaderModule(
-					smvk::shaders::Read(variant), "gfxMeshFsSg");
-			}
-			catch (...) {
-			}
-			if (!meshFsSgModules_[li].empty()) {
-				smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
-				smvk::Shader fs{ .module = meshFsSgModules_[li], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				meshLitSg_[li] = { .shaders = { ms, fs }, .shaderCount = 2 };
-			}
-		}
-		for (uint32_t gi = 0; gi < 4; ++gi) {
-			if (meshProgramGi_[gi].shaderCount != 0 || meshMsModule.empty())
-				continue;
-			try {
-				const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
-				const std::string variant = base.substr(0, base.size() - 4)
-					+ ".gi" + std::to_string(gi) + ".spv";
-				meshFsGiModules_[gi] = ctx.CreateShaderModule(
-					smvk::shaders::Read(variant), "gfxMeshFsGi");
-			}
-			catch (...) {
-			}
-			if (!meshFsGiModules_[gi].empty()) {
-				smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
-				smvk::Shader fs{ .module = meshFsGiModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				meshProgramGi_[gi] = { .shaders = { ms, fs }, .shaderCount = 2 };
-			}
-		}
-		// Mesh std twins (MAT_STANDARD on the mesh FS twin): best-effort,
-		// missing modules fall back to the monolith twins (MeshProgramFor).
-		if (meshProgramStd.shaderCount == 0 && !meshMsModule.empty()) {
-			try {
-				const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
-				const std::string variant = base.substr(0, base.size() - 4) + ".std.spv";
-				meshFsStdModule = ctx.CreateShaderModule(
-					smvk::shaders::Read(variant), "gfxMeshFsStd");
-			}
-			catch (...) {
-			}
-			if (!meshFsStdModule.empty()) {
-				smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
-				smvk::Shader fs{ .module = meshFsStdModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				meshProgramStd = { .shaders = { ms, fs }, .shaderCount = 2 };
-			}
-		}
-		for (uint32_t gi = 0; gi < 4; ++gi) {
-			if (meshProgramGiStd_[gi].shaderCount != 0 || meshMsModule.empty())
-				continue;
-			try {
-				const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
-				const std::string variant = base.substr(0, base.size() - 4)
-					+ ".gi" + std::to_string(gi) + "std.spv";
-				meshFsGiStdModules_[gi] = ctx.CreateShaderModule(
-					smvk::shaders::Read(variant), "gfxMeshFsGiStd");
-			}
-			catch (...) {
-			}
-			if (!meshFsGiStdModules_[gi].empty()) {
-				smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
-				smvk::Shader fs{ .module = meshFsGiStdModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-				meshProgramGiStd_[gi] = { .shaders = { ms, fs }, .shaderCount = 2 };
-			}
-		}
-		// PROJECT-LIT family mesh twins (gfxmesh_project_lit.*.spv):
-		// same permutation scheme on the family's mesh FS. Best-effort —
-		// a missing family BASE leaves MeshProjectProgramsValid() false
-		// and every ProjectLit range indexed-drawn (the design §9
-		// fallback); missing VARIANTS fall back inside the family.
-		{
-			const std::string familyBase = std::string(smvk::gfx::kProjectMeshFsPath);
-			const std::string familyStem =
-				familyBase.substr(0, familyBase.size() - 4);
-			if (meshProjectProgram.shaderCount == 0 && !meshMsModule.empty()) {
-				try {
-					meshProjectFsModule = ctx.CreateShaderModule(
-						smvk::shaders::Read(familyBase), "gfxMeshProjectFS");
-				}
-				catch (...) {
-				}
-				if (!meshProjectFsModule.empty()) {
-					smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
-					smvk::Shader fs{ .module = meshProjectFsModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-					meshProjectProgram = { .shaders = { ms, fs }, .shaderCount = 2 };
-				}
-			}
-			static const char* kSgSuffixF[4] = { ".sg5", ".sg6", ".sg9", ".sg12" };
-			for (uint32_t li = 0; li < 4; ++li) {
-				if (meshProjectLitSg_[li].shaderCount != 0
-						|| meshMsModule.empty() || meshProjectFsModule.empty())
-					continue;
-				try {
-					meshProjectFsSgModules_[li] = ctx.CreateShaderModule(
-						smvk::shaders::Read(familyStem + kSgSuffixF[li] + ".spv"),
-						"gfxMeshProjectFsSg");
-				}
-				catch (...) {
-				}
-				if (!meshProjectFsSgModules_[li].empty()) {
-					smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
-					smvk::Shader fs{ .module = meshProjectFsSgModules_[li], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-					meshProjectLitSg_[li] = { .shaders = { ms, fs }, .shaderCount = 2 };
-				}
-			}
-			for (uint32_t gi = 0; gi < 4; ++gi) {
-				if (meshProjectProgramGi_[gi].shaderCount != 0
-						|| meshMsModule.empty() || meshProjectFsModule.empty())
-					continue;
-				try {
-					meshProjectFsGiModules_[gi] = ctx.CreateShaderModule(
-						smvk::shaders::Read(familyStem + ".gi" + std::to_string(gi) + ".spv"),
-						"gfxMeshProjectFsGi");
-				}
-				catch (...) {
-				}
-				if (!meshProjectFsGiModules_[gi].empty()) {
-					smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
-					smvk::Shader fs{ .module = meshProjectFsGiModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-					meshProjectProgramGi_[gi] = { .shaders = { ms, fs }, .shaderCount = 2 };
-				}
-			}
-			if (meshProjectProgramStd.shaderCount == 0
-					&& !meshMsModule.empty() && !meshProjectFsModule.empty()) {
-				try {
-					meshProjectFsStdModule = ctx.CreateShaderModule(
-						smvk::shaders::Read(familyStem + ".std.spv"), "gfxMeshProjectFsStd");
-				}
-				catch (...) {
-				}
-				if (!meshProjectFsStdModule.empty()) {
-					smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
-					smvk::Shader fs{ .module = meshProjectFsStdModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-					meshProjectProgramStd = { .shaders = { ms, fs }, .shaderCount = 2 };
-				}
-			}
-			for (uint32_t gi = 0; gi < 4; ++gi) {
-				if (meshProjectProgramGiStd_[gi].shaderCount != 0
-						|| meshMsModule.empty() || meshProjectFsModule.empty())
-					continue;
-				try {
-					meshProjectFsGiStdModules_[gi] = ctx.CreateShaderModule(
-						smvk::shaders::Read(familyStem + ".gi" + std::to_string(gi) + "std.spv"),
-						"gfxMeshProjectFsGiStd");
-				}
-				catch (...) {
-				}
-				if (!meshProjectFsGiStdModules_[gi].empty()) {
-					smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
-					smvk::Shader fs{ .module = meshProjectFsGiStdModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-					meshProjectProgramGiStd_[gi] = { .shaders = { ms, fs }, .shaderCount = 2 };
-				}
-			}
-		}
-		smvk::gfx::EnsureMeshParams(gfx, ctx, rg);
-	}
+void GfxRenderer::EnsureMeshPrograms(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
+    if (meshProgram.shaderCount == 0) {
+        try {
+            if (meshMsModule.empty())
+                meshMsModule = ctx.CreateShaderModule(
+                    smvk::shaders::Read(smvk::gfx::kGfxMeshMsPath), "gfxMeshMS");
+            if (meshFsModule.empty())
+                meshFsModule = ctx.CreateShaderModule(
+                    smvk::shaders::Read(smvk::gfx::kGfxMeshFsPath), "gfxMeshFS");
+        } catch (...) {
+        }
+        if (!meshMsModule.empty() && !meshFsModule.empty()) {
+            smvk::Shader ms{
+                .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh};
+            smvk::Shader fs{.module = meshFsModule,
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            meshProgram = {.shaders = {ms, fs}, .shaderCount = 2};
+        }
+    }
+    // Mesh FS variant twins (same SG/GI permutation scheme as the
+    // indexed leg, on the mesh FS twin): built only for configured
+    // modules; MeshProgramFor falls back per missing variant.
+    static const char* kSgSuffix[4] = {".sg5", ".sg6", ".sg9", ".sg12"};
+    for (uint32_t li = 0; li < 4; ++li) {
+        if (meshLitSg_[li].shaderCount != 0 || meshMsModule.empty())
+            continue;
+        try {
+            // kGfxMeshFsPath already ends in .spv: strip it, add the
+            // variant suffix (same layout as the default_lit twins).
+            const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
+            const std::string variant = base.substr(0, base.size() - 4) + kSgSuffix[li] + ".spv";
+            meshFsSgModules_[li] =
+                ctx.CreateShaderModule(smvk::shaders::Read(variant), "gfxMeshFsSg");
+        } catch (...) {
+        }
+        if (!meshFsSgModules_[li].empty()) {
+            smvk::Shader ms{
+                .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh};
+            smvk::Shader fs{.module = meshFsSgModules_[li],
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            meshLitSg_[li] = {.shaders = {ms, fs}, .shaderCount = 2};
+        }
+    }
+    for (uint32_t gi = 0; gi < 4; ++gi) {
+        if (meshProgramGi_[gi].shaderCount != 0 || meshMsModule.empty())
+            continue;
+        try {
+            const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
+            const std::string variant =
+                base.substr(0, base.size() - 4) + ".gi" + std::to_string(gi) + ".spv";
+            meshFsGiModules_[gi] =
+                ctx.CreateShaderModule(smvk::shaders::Read(variant), "gfxMeshFsGi");
+        } catch (...) {
+        }
+        if (!meshFsGiModules_[gi].empty()) {
+            smvk::Shader ms{
+                .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh};
+            smvk::Shader fs{.module = meshFsGiModules_[gi],
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            meshProgramGi_[gi] = {.shaders = {ms, fs}, .shaderCount = 2};
+        }
+    }
+    // Mesh std twins (MAT_STANDARD on the mesh FS twin): best-effort,
+    // missing modules fall back to the monolith twins (MeshProgramFor).
+    if (meshProgramStd.shaderCount == 0 && !meshMsModule.empty()) {
+        try {
+            const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
+            const std::string variant = base.substr(0, base.size() - 4) + ".std.spv";
+            meshFsStdModule = ctx.CreateShaderModule(smvk::shaders::Read(variant), "gfxMeshFsStd");
+        } catch (...) {
+        }
+        if (!meshFsStdModule.empty()) {
+            smvk::Shader ms{
+                .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh};
+            smvk::Shader fs{.module = meshFsStdModule,
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            meshProgramStd = {.shaders = {ms, fs}, .shaderCount = 2};
+        }
+    }
+    for (uint32_t gi = 0; gi < 4; ++gi) {
+        if (meshProgramGiStd_[gi].shaderCount != 0 || meshMsModule.empty())
+            continue;
+        try {
+            const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
+            const std::string variant =
+                base.substr(0, base.size() - 4) + ".gi" + std::to_string(gi) + "std.spv";
+            meshFsGiStdModules_[gi] =
+                ctx.CreateShaderModule(smvk::shaders::Read(variant), "gfxMeshFsGiStd");
+        } catch (...) {
+        }
+        if (!meshFsGiStdModules_[gi].empty()) {
+            smvk::Shader ms{
+                .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh};
+            smvk::Shader fs{.module = meshFsGiStdModules_[gi],
+                            .entryPoint = "mainPS",
+                            .stage = smvk::ShaderStage::Fragment};
+            meshProgramGiStd_[gi] = {.shaders = {ms, fs}, .shaderCount = 2};
+        }
+    }
+    // PROJECT-LIT family mesh twins (gfxmesh_project_lit.*.spv):
+    // same permutation scheme on the family's mesh FS. Best-effort —
+    // a missing family BASE leaves MeshProjectProgramsValid() false
+    // and every ProjectLit range indexed-drawn (the design §9
+    // fallback); missing VARIANTS fall back inside the family.
+    {
+        const std::string familyBase = std::string(smvk::gfx::kProjectMeshFsPath);
+        const std::string familyStem = familyBase.substr(0, familyBase.size() - 4);
+        if (meshProjectProgram.shaderCount == 0 && !meshMsModule.empty()) {
+            try {
+                meshProjectFsModule =
+                    ctx.CreateShaderModule(smvk::shaders::Read(familyBase), "gfxMeshProjectFS");
+            } catch (...) {
+            }
+            if (!meshProjectFsModule.empty()) {
+                smvk::Shader ms{.module = meshMsModule,
+                                .entryPoint = "mainMS",
+                                .stage = smvk::ShaderStage::Mesh};
+                smvk::Shader fs{.module = meshProjectFsModule,
+                                .entryPoint = "mainPS",
+                                .stage = smvk::ShaderStage::Fragment};
+                meshProjectProgram = {.shaders = {ms, fs}, .shaderCount = 2};
+            }
+        }
+        static const char* kSgSuffixF[4] = {".sg5", ".sg6", ".sg9", ".sg12"};
+        for (uint32_t li = 0; li < 4; ++li) {
+            if (meshProjectLitSg_[li].shaderCount != 0 || meshMsModule.empty() ||
+                meshProjectFsModule.empty())
+                continue;
+            try {
+                meshProjectFsSgModules_[li] = ctx.CreateShaderModule(
+                    smvk::shaders::Read(familyStem + kSgSuffixF[li] + ".spv"),
+                    "gfxMeshProjectFsSg");
+            } catch (...) {
+            }
+            if (!meshProjectFsSgModules_[li].empty()) {
+                smvk::Shader ms{.module = meshMsModule,
+                                .entryPoint = "mainMS",
+                                .stage = smvk::ShaderStage::Mesh};
+                smvk::Shader fs{.module = meshProjectFsSgModules_[li],
+                                .entryPoint = "mainPS",
+                                .stage = smvk::ShaderStage::Fragment};
+                meshProjectLitSg_[li] = {.shaders = {ms, fs}, .shaderCount = 2};
+            }
+        }
+        for (uint32_t gi = 0; gi < 4; ++gi) {
+            if (meshProjectProgramGi_[gi].shaderCount != 0 || meshMsModule.empty() ||
+                meshProjectFsModule.empty())
+                continue;
+            try {
+                meshProjectFsGiModules_[gi] = ctx.CreateShaderModule(
+                    smvk::shaders::Read(familyStem + ".gi" + std::to_string(gi) + ".spv"),
+                    "gfxMeshProjectFsGi");
+            } catch (...) {
+            }
+            if (!meshProjectFsGiModules_[gi].empty()) {
+                smvk::Shader ms{.module = meshMsModule,
+                                .entryPoint = "mainMS",
+                                .stage = smvk::ShaderStage::Mesh};
+                smvk::Shader fs{.module = meshProjectFsGiModules_[gi],
+                                .entryPoint = "mainPS",
+                                .stage = smvk::ShaderStage::Fragment};
+                meshProjectProgramGi_[gi] = {.shaders = {ms, fs}, .shaderCount = 2};
+            }
+        }
+        if (meshProjectProgramStd.shaderCount == 0 && !meshMsModule.empty() &&
+            !meshProjectFsModule.empty()) {
+            try {
+                meshProjectFsStdModule = ctx.CreateShaderModule(
+                    smvk::shaders::Read(familyStem + ".std.spv"), "gfxMeshProjectFsStd");
+            } catch (...) {
+            }
+            if (!meshProjectFsStdModule.empty()) {
+                smvk::Shader ms{.module = meshMsModule,
+                                .entryPoint = "mainMS",
+                                .stage = smvk::ShaderStage::Mesh};
+                smvk::Shader fs{.module = meshProjectFsStdModule,
+                                .entryPoint = "mainPS",
+                                .stage = smvk::ShaderStage::Fragment};
+                meshProjectProgramStd = {.shaders = {ms, fs}, .shaderCount = 2};
+            }
+        }
+        for (uint32_t gi = 0; gi < 4; ++gi) {
+            if (meshProjectProgramGiStd_[gi].shaderCount != 0 || meshMsModule.empty() ||
+                meshProjectFsModule.empty())
+                continue;
+            try {
+                meshProjectFsGiStdModules_[gi] = ctx.CreateShaderModule(
+                    smvk::shaders::Read(familyStem + ".gi" + std::to_string(gi) + "std.spv"),
+                    "gfxMeshProjectFsGiStd");
+            } catch (...) {
+            }
+            if (!meshProjectFsGiStdModules_[gi].empty()) {
+                smvk::Shader ms{.module = meshMsModule,
+                                .entryPoint = "mainMS",
+                                .stage = smvk::ShaderStage::Mesh};
+                smvk::Shader fs{.module = meshProjectFsGiStdModules_[gi],
+                                .entryPoint = "mainPS",
+                                .stage = smvk::ShaderStage::Fragment};
+                meshProjectProgramGiStd_[gi] = {.shaders = {ms, fs}, .shaderCount = 2};
+            }
+        }
+    }
+    smvk::gfx::EnsureMeshParams(gfx, ctx, rg);
+}
 
-	std::vector<smvk::ShaderModuleHandle> GfxRenderer::ReleaseSelfModules(
-		const SelfModuleSet& which) {
-		std::vector<smvk::ShaderModuleHandle> retired;
-		auto release =
-			[&retired](smvk::Holder<smvk::ShaderModuleHandle>& holder) {
-			if (!holder.empty())
-				retired.push_back(holder.release());
-		};
-		if (which.filteredVs)
-			release(filteredVsModule);
-		if (which.meshMs)
-			release(meshMsModule);
-		if (which.meshFs) {
-			release(meshFsModule);
-			for (auto& m : meshFsSgModules_) release(m);
-			for (auto& m : meshFsGiModules_) release(m);
-			release(meshFsStdModule);
-			for (auto& m : meshFsGiStdModules_) release(m);
-			release(meshProjectFsModule);
-			for (auto& m : meshProjectFsSgModules_) release(m);
-			for (auto& m : meshProjectFsGiModules_) release(m);
-			release(meshProjectFsStdModule);
-			for (auto& m : meshProjectFsGiStdModules_) release(m);
-		}
-		return retired;
-	}
+std::vector<smvk::ShaderModuleHandle> GfxRenderer::ReleaseSelfModules(const SelfModuleSet& which) {
+    std::vector<smvk::ShaderModuleHandle> retired;
+    auto release = [&retired](smvk::Holder<smvk::ShaderModuleHandle>& holder) {
+        if (!holder.empty())
+            retired.push_back(holder.release());
+    };
+    if (which.filteredVs)
+        release(filteredVsModule);
+    if (which.meshMs)
+        release(meshMsModule);
+    if (which.meshFs) {
+        release(meshFsModule);
+        for (auto& m : meshFsSgModules_)
+            release(m);
+        for (auto& m : meshFsGiModules_)
+            release(m);
+        release(meshFsStdModule);
+        for (auto& m : meshFsGiStdModules_)
+            release(m);
+        release(meshProjectFsModule);
+        for (auto& m : meshProjectFsSgModules_)
+            release(m);
+        for (auto& m : meshProjectFsGiModules_)
+            release(m);
+        release(meshProjectFsStdModule);
+        for (auto& m : meshProjectFsGiStdModules_)
+            release(m);
+    }
+    return retired;
+}
 
-	smvk::ShaderProgram* GfxRenderer::MeshProgramFor(bool giActive,
-		uint32_t giVariant, uint32_t lobeCount, bool layered,
-		bool projectLit) {		// The PROJECT-LIT family leg: the family's own mesh twins only.
-		// A missing family mesh BASE is not mesh-eligible (null) — the
-		// indexed leg draws the range with the family's indexed program
-		// (design §9: never the stock mesh FS, never a lost effect).
-		// Missing family VARIANTS fall back inside the family exactly
-		// like the stock picks below fall back inside theirs.
-		if (projectLit) {
-			if (!MeshProjectProgramsValid())
-				return nullptr;
-			if (giActive) {
-				if (giVariant <= 3u
-						&& meshProjectProgramGi_[giVariant].shaderCount == 2) {
-					if (!layered
-							&& meshProjectProgramGiStd_[giVariant].shaderCount == 2)
-						return &meshProjectProgramGiStd_[giVariant];
-					return &meshProjectProgramGi_[giVariant];
-				}
-				if (!layered && meshProjectProgramStd.shaderCount == 2)
-					return &meshProjectProgramStd;
-				return &meshProjectProgram;
-			}
-			const uint32_t li = lobeCount == 5u ? 0u : lobeCount == 6u ? 1u
-				: lobeCount == 9u ? 2u : lobeCount == 12u ? 3u : UINT32_MAX;
-			if (li <= 3 && meshProjectLitSg_[li].shaderCount == 2)
-				return &meshProjectLitSg_[li];
-			if (!layered && meshProjectProgramStd.shaderCount == 2)
-				return &meshProjectProgramStd;
-			return &meshProjectProgram;
-		}
-		if (!MeshProgramsValid())
-			return nullptr;
-		// Mirrors the indexed leg's program selection exactly (GI twin
-		// when active, else the sg twin for the lobe count, else generic —
-		// same fallbacks as FilteredProgramGi/FilteredLitProgram; the std
-		// twins replace the generic/gi picks for non-layered materials).
-		if (giActive) {
-			if (giVariant <= 3u && meshProgramGi_[giVariant].shaderCount == 2) {
-				if (!layered && meshProgramGiStd_[giVariant].shaderCount == 2)
-					return &meshProgramGiStd_[giVariant];
-				return &meshProgramGi_[giVariant];
-			}
-			return layered ? &meshProgram
-				: (meshProgramStd.shaderCount == 2 ? &meshProgramStd : &meshProgram);
-		}
-		const uint32_t li = lobeCount == 5u ? 0u : lobeCount == 6u ? 1u
-			: lobeCount == 9u ? 2u : lobeCount == 12u ? 3u : UINT32_MAX;
-		if (li <= 3 && meshLitSg_[li].shaderCount == 2 && layered)
-			return &meshLitSg_[li];
-		if (!layered && meshProgramStd.shaderCount == 2)
-			return &meshProgramStd;
-		if (li <= 3 && meshLitSg_[li].shaderCount == 2)
-			return &meshLitSg_[li];
-		return &meshProgram;
-	}
+smvk::ShaderProgram* GfxRenderer::MeshProgramFor(
+    bool giActive,
+    uint32_t giVariant,
+    uint32_t lobeCount,
+    bool layered,
+    bool projectLit) { // The PROJECT-LIT family leg: the family's own mesh twins only.
+    // A missing family mesh BASE is not mesh-eligible (null) — the
+    // indexed leg draws the range with the family's indexed program
+    // (design §9: never the stock mesh FS, never a lost effect).
+    // Missing family VARIANTS fall back inside the family exactly
+    // like the stock picks below fall back inside theirs.
+    if (projectLit) {
+        if (!MeshProjectProgramsValid())
+            return nullptr;
+        if (giActive) {
+            if (giVariant <= 3u && meshProjectProgramGi_[giVariant].shaderCount == 2) {
+                if (!layered && meshProjectProgramGiStd_[giVariant].shaderCount == 2)
+                    return &meshProjectProgramGiStd_[giVariant];
+                return &meshProjectProgramGi_[giVariant];
+            }
+            if (!layered && meshProjectProgramStd.shaderCount == 2)
+                return &meshProjectProgramStd;
+            return &meshProjectProgram;
+        }
+        const uint32_t li = lobeCount == 5u    ? 0u
+                            : lobeCount == 6u  ? 1u
+                            : lobeCount == 9u  ? 2u
+                            : lobeCount == 12u ? 3u
+                                               : UINT32_MAX;
+        if (li <= 3 && meshProjectLitSg_[li].shaderCount == 2)
+            return &meshProjectLitSg_[li];
+        if (!layered && meshProjectProgramStd.shaderCount == 2)
+            return &meshProjectProgramStd;
+        return &meshProjectProgram;
+    }
+    if (!MeshProgramsValid())
+        return nullptr;
+    // Mirrors the indexed leg's program selection exactly (GI twin
+    // when active, else the sg twin for the lobe count, else generic —
+    // same fallbacks as FilteredProgramGi/FilteredLitProgram; the std
+    // twins replace the generic/gi picks for non-layered materials).
+    if (giActive) {
+        if (giVariant <= 3u && meshProgramGi_[giVariant].shaderCount == 2) {
+            if (!layered && meshProgramGiStd_[giVariant].shaderCount == 2)
+                return &meshProgramGiStd_[giVariant];
+            return &meshProgramGi_[giVariant];
+        }
+        return layered ? &meshProgram
+                       : (meshProgramStd.shaderCount == 2 ? &meshProgramStd : &meshProgram);
+    }
+    const uint32_t li = lobeCount == 5u    ? 0u
+                        : lobeCount == 6u  ? 1u
+                        : lobeCount == 9u  ? 2u
+                        : lobeCount == 12u ? 3u
+                                           : UINT32_MAX;
+    if (li <= 3 && meshLitSg_[li].shaderCount == 2 && layered)
+        return &meshLitSg_[li];
+    if (!layered && meshProgramStd.shaderCount == 2)
+        return &meshProgramStd;
+    if (li <= 3 && meshLitSg_[li].shaderCount == 2)
+        return &meshLitSg_[li];
+    return &meshProgram;
+}
 
-	bool GfxRenderer::RangeMeshEligible(uint32_t slot, uint32_t rangeIdx,
-		bool giActive, uint32_t giVariant) {
-		if (slot >= gfx.views.size())
-			return false;
-		const std::vector<smvk::gfx::MaterialRange>& ranges =
-			smvk::gfx::MaterialRanges(gfx, slot);
-		if (rangeIdx >= ranges.size())
-			return false;
-		const smvk::gfx::MaterialRange& r = ranges[rangeIdx];
-		if (r.commandCount == 0)
-			return false;
-		// A mesh twin must exist for the range's variant (same selection
-		// as the indexed bind would use; the std twin exists whenever the
-		// base does, so layered-ness cannot flip eligibility). ProjectLit
-		// ranges need the FAMILY mesh twins — a missing family base makes
-		// them not mesh-eligible (the indexed family program draws them).
-		if (MeshProgramFor(giActive, giVariant, r.lobeCount,
-				MaterialLayered(r.material),
-				MaterialProjectFamily(r.material)) == nullptr)
-			return false;
-		// Every batch's draw opaque (a mixed range stays
-		// fully indexed, never split — the record partitions exactly the
-		// batches of eligible ranges).
-		const smvk::gfx::View& v = gfx.views[slot];
-		for (uint32_t i = 0; i < r.commandCount; ++i) {
-			const uint32_t batchIdx = r.firstCommand + i;
-			if (batchIdx >= (uint32_t)v.batches.size())
-				return false;
-			const smvk::gfx::Batch& b = v.batches[batchIdx];
-			if (b.draw >= (uint32_t)v.drawConstants.size())
-				return false;
-			const smvk::gfx::Draw& d = v.drawConstants[b.draw];
-			if (!smvk::gfx::MeshDrawEligible(d.drawSet, d.flags))
-				return false;
-		}
-		return true;
-	}
+bool GfxRenderer::RangeMeshEligible(uint32_t slot,
+                                    uint32_t rangeIdx,
+                                    bool giActive,
+                                    uint32_t giVariant) {
+    if (slot >= gfx.views.size())
+        return false;
+    const std::vector<smvk::gfx::MaterialRange>& ranges = smvk::gfx::MaterialRanges(gfx, slot);
+    if (rangeIdx >= ranges.size())
+        return false;
+    const smvk::gfx::MaterialRange& r = ranges[rangeIdx];
+    if (r.commandCount == 0)
+        return false;
+    // A mesh twin must exist for the range's variant (same selection
+    // as the indexed bind would use; the std twin exists whenever the
+    // base does, so layered-ness cannot flip eligibility). ProjectLit
+    // ranges need the FAMILY mesh twins — a missing family base makes
+    // them not mesh-eligible (the indexed family program draws them).
+    if (MeshProgramFor(giActive,
+                       giVariant,
+                       r.lobeCount,
+                       MaterialLayered(r.material),
+                       MaterialProjectFamily(r.material)) == nullptr)
+        return false;
+    // Every batch's draw opaque (a mixed range stays
+    // fully indexed, never split — the record partitions exactly the
+    // batches of eligible ranges).
+    const smvk::gfx::View& v = gfx.views[slot];
+    for (uint32_t i = 0; i < r.commandCount; ++i) {
+        const uint32_t batchIdx = r.firstCommand + i;
+        if (batchIdx >= (uint32_t)v.batches.size())
+            return false;
+        const smvk::gfx::Batch& b = v.batches[batchIdx];
+        if (b.draw >= (uint32_t)v.drawConstants.size())
+            return false;
+        const smvk::gfx::Draw& d = v.drawConstants[b.draw];
+        if (!smvk::gfx::MeshDrawEligible(d.drawSet, d.flags))
+            return false;
+    }
+    return true;
+}
 
-	void GfxRenderer::AddMeshConsumeHints(smvk::RenderPass& pass, uint32_t slot) {
-		using namespace smvk::gfx;
-		if (slot >= gfx.views.size())
-			return;
-		const uint32_t f = gfx.views[slot].frameIndex;
-		// Mesh-shader reads (compute-written this frame).
-		smvk::BufferSyncRequest meshRead{};
-		meshRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
-		meshRead.barrierMasks.stageMask = smvk::PipelineStageBit_Mesh;
-		pass.AddBufferHint(BatchLogical(gfx, slot), meshRead);
-		pass.AddBufferHint(gfx.clusterLogical, meshRead);
-		pass.AddBufferHint(gfx.meshParamsLogicals[f], meshRead);
-		pass.AddBufferHint(gfx.meshBatchListLogicals[f], meshRead);
-		// Draws merge Vertex|Mesh: indexed ranges in the same pass still
-		// resolve models in the VS (Replace-semantics: one merged hint).
-		smvk::BufferSyncRequest drawsRead{};
-		drawsRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
-		drawsRead.barrierMasks.stageMask =
-			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Mesh;
-		pass.AddBufferHint(DrawLogical(gfx, slot), drawsRead);
-		// Indirect commands merge ShaderRead@Mesh|IndirectRead@DrawIndirect:
-		// the mesh shader gates fully-dropped clusters on the filter's
-		// indexCount == 0 (a STORAGE read), while the indexed multi-draws in
-		// the same pass consume the same buffer through the indirect
-		// mechanism (AddMainConsumeHints' hint — Replace-semantics: this
-		// unioned hint must be added AFTER it, which the Main pass does).
-		smvk::BufferSyncRequest indirectRead{};
-		indirectRead.barrierMasks.accessMask =
-			smvk::AccessFlags::ShaderRead | smvk::AccessFlags::IndirectCommandRead;
-		indirectRead.barrierMasks.stageMask =
-			smvk::PipelineStageBit_Mesh | smvk::PipelineStageBit_DrawIndirect;
-		pass.AddBufferHint(IndirectLogical(gfx, slot), indirectRead);
-	}
+void GfxRenderer::AddMeshConsumeHints(smvk::RenderPass& pass, uint32_t slot) {
+    using namespace smvk::gfx;
+    if (slot >= gfx.views.size())
+        return;
+    const uint32_t f = gfx.views[slot].frameIndex;
+    // Mesh-shader reads (compute-written this frame).
+    smvk::BufferSyncRequest meshRead{};
+    meshRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+    meshRead.barrierMasks.stageMask = smvk::PipelineStageBit_Mesh;
+    pass.AddBufferHint(BatchLogical(gfx, slot), meshRead);
+    pass.AddBufferHint(gfx.clusterLogical, meshRead);
+    pass.AddBufferHint(gfx.meshParamsLogicals[f], meshRead);
+    pass.AddBufferHint(gfx.meshBatchListLogicals[f], meshRead);
+    // Draws merge Vertex|Mesh: indexed ranges in the same pass still
+    // resolve models in the VS (Replace-semantics: one merged hint).
+    smvk::BufferSyncRequest drawsRead{};
+    drawsRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+    drawsRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Mesh;
+    pass.AddBufferHint(DrawLogical(gfx, slot), drawsRead);
+    // Indirect commands merge ShaderRead@Mesh|IndirectRead@DrawIndirect:
+    // the mesh shader gates fully-dropped clusters on the filter's
+    // indexCount == 0 (a STORAGE read), while the indexed multi-draws in
+    // the same pass consume the same buffer through the indirect
+    // mechanism (AddMainConsumeHints' hint — Replace-semantics: this
+    // unioned hint must be added AFTER it, which the Main pass does).
+    smvk::BufferSyncRequest indirectRead{};
+    indirectRead.barrierMasks.accessMask =
+        smvk::AccessFlags::ShaderRead | smvk::AccessFlags::IndirectCommandRead;
+    indirectRead.barrierMasks.stageMask =
+        smvk::PipelineStageBit_Mesh | smvk::PipelineStageBit_DrawIndirect;
+    pass.AddBufferHint(IndirectLogical(gfx, slot), indirectRead);
+}
 
-	void GfxRenderer::RecordMeshMain(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
-		bool giActive, uint32_t giVariant, const glm::mat4& liveViewProj,
-		const smvk::DepthSettings& depth, const smvk::MSAASettings& msaa) {
-		if (!MeshProgramsValid() || slot >= gfx.views.size())
-			return;
-		smvk::gfx::View& v = gfx.views[slot];
-		if (v.batchCount == 0)
-			return;
-		const uint32_t f = v.frameIndex;
-		if (gfx.meshParamsBuffers[f].empty() || gfx.meshBatchLists[f].empty())
-			return; // EnsureMeshParams failed: indexed loop covers the frame
-		// Compact eligible ranges' batches (ranges are contiguous batch
-		// spans; one span per eligible range, same 1:1 shape as the
-		// indexed multi-draw loop).
-		struct Span { smvk::ShaderProgram* prog; uint32_t base; uint32_t count; };
-		// Recording-only scratch; destroyed before the next frame allocator reset.
-		tour::mem::FrameVector<Span> spans{
-			tour::mem::LinearAllocatorSTL<Span>{&tour::mem::FrameAllocator()}};
-		auto& list = v.meshListScratch;
-		list.clear();
-		const std::vector<smvk::gfx::MaterialRange>& ranges =
-			smvk::gfx::MaterialRanges(gfx, slot);
-		for (uint32_t ri = 0; ri < (uint32_t)ranges.size(); ++ri) {
-			if (!RangeMeshEligible(slot, ri, giActive, giVariant))
-				continue;
-			smvk::ShaderProgram* prog = MeshProgramFor(giActive, giVariant,
-				ranges[ri].lobeCount, MaterialLayered(ranges[ri].material),
-				MaterialProjectFamily(ranges[ri].material));
-			if (prog == nullptr || ranges[ri].commandCount == 0)
-				continue; // belt (eligibility already resolved the program)
-			Span sp{ prog, (uint32_t)list.size(), ranges[ri].commandCount };
-			for (uint32_t i = 0; i < ranges[ri].commandCount; ++i)
-				list.push_back(ranges[ri].firstCommand + i);
-			spans.push_back(sp);
-		}
-		if (spans.empty())
-			return;
-		ctx.UploadDataToBuffer(gfx.meshBatchLists[f],
-			list.data(), list.size() * sizeof(uint32_t),
-			smvk::PipelineStage(smvk::PipelineStageBit_Mesh),
-			smvk::AccessFlags::ShaderRead);
-		const uint64_t listBDA =
-			ctx.GetBufferDeviceAddress(gfx.meshBatchLists[f]);
-		if (listBDA == 0)
-			return; // indexed loop covers the frame
-		// One params upload shared by all spans (per-span uploads to the
-		// same buffer race transfer writes against graphics reads). The
-		// liveViewProj carries the OUTPUT projection (the view record's
-		// matrix in the blob is the CULL one — they differ under freeze).
-		const uint64_t paramsBDA = smvk::gfx::UploadMeshParams(gfx, ctx, slot,
-			listBDA, ChartXformsAddress(), liveViewProj);
-		if (paramsBDA == 0)
-			return;
-		for (const Span& sp : spans) {
-			smvk::gfx::RecordMeshVariant(gfx, cmd, ctx, slot, *sp.prog,
-				paramsBDA, sp.base, sp.count,
-				renderViewsAddr, renderViewIndex, ChartXformsAddress(),
-				depth, msaa);
-		}
-	}
+void GfxRenderer::RecordMeshMain(smvk::CommandBuffer& cmd,
+                                 smvk::ResourceManager& ctx,
+                                 uint32_t slot,
+                                 uint64_t renderViewsAddr,
+                                 uint32_t renderViewIndex,
+                                 bool giActive,
+                                 uint32_t giVariant,
+                                 const glm::mat4& liveViewProj,
+                                 const smvk::DepthSettings& depth,
+                                 const smvk::MSAASettings& msaa) {
+    if (!MeshProgramsValid() || slot >= gfx.views.size())
+        return;
+    smvk::gfx::View& v = gfx.views[slot];
+    if (v.batchCount == 0)
+        return;
+    const uint32_t f = v.frameIndex;
+    if (gfx.meshParamsBuffers[f].empty() || gfx.meshBatchLists[f].empty())
+        return; // EnsureMeshParams failed: indexed loop covers the frame
+    // Compact eligible ranges' batches (ranges are contiguous batch
+    // spans; one span per eligible range, same 1:1 shape as the
+    // indexed multi-draw loop).
+    struct Span {
+        smvk::ShaderProgram* prog;
+        uint32_t base;
+        uint32_t count;
+    };
+    // Recording-only scratch; destroyed before the next frame allocator reset.
+    tour::mem::FrameVector<Span> spans{
+        tour::mem::LinearAllocatorSTL<Span>{&tour::mem::FrameAllocator()}};
+    auto& list = v.meshListScratch;
+    list.clear();
+    const std::vector<smvk::gfx::MaterialRange>& ranges = smvk::gfx::MaterialRanges(gfx, slot);
+    for (uint32_t ri = 0; ri < (uint32_t)ranges.size(); ++ri) {
+        if (!RangeMeshEligible(slot, ri, giActive, giVariant))
+            continue;
+        smvk::ShaderProgram* prog = MeshProgramFor(giActive,
+                                                   giVariant,
+                                                   ranges[ri].lobeCount,
+                                                   MaterialLayered(ranges[ri].material),
+                                                   MaterialProjectFamily(ranges[ri].material));
+        if (prog == nullptr || ranges[ri].commandCount == 0)
+            continue; // belt (eligibility already resolved the program)
+        Span sp{prog, (uint32_t)list.size(), ranges[ri].commandCount};
+        for (uint32_t i = 0; i < ranges[ri].commandCount; ++i)
+            list.push_back(ranges[ri].firstCommand + i);
+        spans.push_back(sp);
+    }
+    if (spans.empty())
+        return;
+    ctx.UploadDataToBuffer(gfx.meshBatchLists[f],
+                           list.data(),
+                           list.size() * sizeof(uint32_t),
+                           smvk::PipelineStage(smvk::PipelineStageBit_Mesh),
+                           smvk::AccessFlags::ShaderRead);
+    const uint64_t listBDA = ctx.GetBufferDeviceAddress(gfx.meshBatchLists[f]);
+    if (listBDA == 0)
+        return; // indexed loop covers the frame
+    // One params upload shared by all spans (per-span uploads to the
+    // same buffer race transfer writes against graphics reads). The
+    // liveViewProj carries the OUTPUT projection (the view record's
+    // matrix in the blob is the CULL one — they differ under freeze).
+    const uint64_t paramsBDA =
+        smvk::gfx::UploadMeshParams(gfx, ctx, slot, listBDA, ChartXformsAddress(), liveViewProj);
+    if (paramsBDA == 0)
+        return;
+    for (const Span& sp : spans) {
+        smvk::gfx::RecordMeshVariant(gfx,
+                                     cmd,
+                                     ctx,
+                                     slot,
+                                     *sp.prog,
+                                     paramsBDA,
+                                     sp.base,
+                                     sp.count,
+                                     renderViewsAddr,
+                                     renderViewIndex,
+                                     ChartXformsAddress(),
+                                     depth,
+                                     msaa);
+    }
+}
 
-	void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-		uint32_t slot,
-		bool remainder,
-		uint64_t drawsAddr,
-		uint64_t renderViewsAddr,
-		uint32_t renderViewIndex,
-		const IRenderer::PushConstants& depthPC
-	) {
-		const std::vector<smvk::gfx::SeedRange>& ranges = remainder
-			? smvk::gfx::RemainderRanges(gfx, slot)
-			: smvk::gfx::SeedRanges(gfx, slot);
-		const uint32_t opaqueCount = remainder
-			? smvk::gfx::RemainderOpaqueCommands(gfx, slot)
-			: smvk::gfx::SeedOpaqueCommands(gfx, slot);
-		const smvk::BufferHandle indirectBuf = remainder
-			? smvk::gfx::RemainderIndirectBuffer(gfx, slot)
-			: smvk::gfx::SeedIndirectBuffer(gfx, slot);
-		cmd.BindStaticVertexFmt();
-		// NOTE: no push constants before the first BindRenderPipeline below —
-		// PushConstants asserts on a bound pipeline layout (impl.cpp).
-		// No index binding anywhere here: mesh, cluster-ordered and filtered
-		// index regions share the static index monoblock with absolute
-		// firstIndex, so the offset-0 binding from BindStaticVertexFmt (run by
-		// every BindRenderPipeline) is correct for every draw below.
-		// Phase 1: opaque (VS-only, back-culled like the prepass).
-		if (opaqueCount > 0) {
-			cmd.BindRenderPipeline(
-				seedOpaqueProgram,
-				smvk::VertexLayoutId::Static,
-				smvk::DepthSettings{
-					.depthFunc = smvk::CompareOp::GreaterEqual,
-					.writeEnable = true,
-					.depthTestEnable = true,
-				},
-				smvk::StencilSettings{},
-				smvk::BlendSettings{},
-				smvk::MSAASettings{},
-				smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
-				);
-			cmd.PushConstants(0, sizeof(depthPC), &depthPC, smvk::ShaderStage::All);
-			PushSeedConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex, drawsAddr);
-			cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
-		}
-		// Phase 2: MASK cutout (alpha-tested FS). Cull follows the material
-		// raster (always back-face cull now): cutout must not write
-		// backface depth the shaded pass never draws.
-		for (size_t ri = 0; ri < ranges.size(); ++ri) {
-			const smvk::gfx::SeedRange& r = ranges[ri];
-			if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
-				continue;
-			if (r.material == UINT32_MAX)
-				continue; // unknown material: no valid materialId push;
-			// the full prepass still depths these clusters (T3)
-			cmd.BindRenderPipeline(
-				seedMaskedProgram,
-				smvk::VertexLayoutId::Static,
-				smvk::DepthSettings{
-					.depthFunc = smvk::CompareOp::GreaterEqual,
-					.writeEnable = true,
-					.depthTestEnable = true,
-				},
-				smvk::StencilSettings{},
-				smvk::BlendSettings{},
-				smvk::MSAASettings{},
-				smvk::RasterSettings{
-					.cullMode = MaterialDepth(r.material).cullMode }
-					);
-			IRenderer::PushConstants matPC{};
-			matPC.materialId = r.material;
-			cmd.PushConstants(
-				offsetof(IRenderer::PushConstants, materialId),
-				sizeof(matPC.materialId),
-				&matPC.materialId,
-				smvk::ShaderStage::All
-			);
-			cmd.PushConstants(
-				0,
-				offsetof(IRenderer::PushConstants, frameUniforms),
-				&depthPC,
-				smvk::ShaderStage::All
-			);
-			PushSeedConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex, drawsAddr);
-			if (remainder)
-				DrawRemainderRange(cmd, slot, (uint32_t)ri);
-			else
-				DrawSeedRange(cmd, slot, (uint32_t)ri);
-		}
-	}
+void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd,
+                                  smvk::ResourceManager& ctx,
+                                  uint32_t slot,
+                                  bool remainder,
+                                  uint64_t drawsAddr,
+                                  uint64_t renderViewsAddr,
+                                  uint32_t renderViewIndex,
+                                  const IRenderer::PushConstants& depthPC) {
+    const std::vector<smvk::gfx::SeedRange>& ranges =
+        remainder ? smvk::gfx::RemainderRanges(gfx, slot) : smvk::gfx::SeedRanges(gfx, slot);
+    const uint32_t opaqueCount = remainder ? smvk::gfx::RemainderOpaqueCommands(gfx, slot)
+                                           : smvk::gfx::SeedOpaqueCommands(gfx, slot);
+    const smvk::BufferHandle indirectBuf = remainder ? smvk::gfx::RemainderIndirectBuffer(gfx, slot)
+                                                     : smvk::gfx::SeedIndirectBuffer(gfx, slot);
+    cmd.BindStaticVertexFmt();
+    // NOTE: no push constants before the first BindRenderPipeline below —
+    // PushConstants asserts on a bound pipeline layout (impl.cpp).
+    // No index binding anywhere here: mesh, cluster-ordered and filtered
+    // index regions share the static index monoblock with absolute
+    // firstIndex, so the offset-0 binding from BindStaticVertexFmt (run by
+    // every BindRenderPipeline) is correct for every draw below.
+    // Phase 1: opaque (VS-only, back-culled like the prepass).
+    if (opaqueCount > 0) {
+        cmd.BindRenderPipeline(seedOpaqueProgram,
+                               smvk::VertexLayoutId::Static,
+                               smvk::DepthSettings{
+                                   .depthFunc = smvk::CompareOp::GreaterEqual,
+                                   .writeEnable = true,
+                                   .depthTestEnable = true,
+                               },
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings{},
+                               smvk::MSAASettings{},
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+        cmd.PushConstants(0, sizeof(depthPC), &depthPC, smvk::ShaderStage::All);
+        PushSeedConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex, drawsAddr);
+        cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
+    }
+    // Phase 2: MASK cutout (alpha-tested FS). Cull follows the material
+    // raster (always back-face cull now): cutout must not write
+    // backface depth the shaded pass never draws.
+    for (size_t ri = 0; ri < ranges.size(); ++ri) {
+        const smvk::gfx::SeedRange& r = ranges[ri];
+        if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
+            continue;
+        if (r.material == UINT32_MAX)
+            continue; // unknown material: no valid materialId push;
+        // the full prepass still depths these clusters (T3)
+        cmd.BindRenderPipeline(
+            seedMaskedProgram,
+            smvk::VertexLayoutId::Static,
+            smvk::DepthSettings{
+                .depthFunc = smvk::CompareOp::GreaterEqual,
+                .writeEnable = true,
+                .depthTestEnable = true,
+            },
+            smvk::StencilSettings{},
+            smvk::BlendSettings{},
+            smvk::MSAASettings{},
+            smvk::RasterSettings{.cullMode = MaterialDepth(r.material).cullMode});
+        IRenderer::PushConstants matPC{};
+        matPC.materialId = r.material;
+        cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
+                          sizeof(matPC.materialId),
+                          &matPC.materialId,
+                          smvk::ShaderStage::All);
+        cmd.PushConstants(
+            0, offsetof(IRenderer::PushConstants, frameUniforms), &depthPC, smvk::ShaderStage::All);
+        PushSeedConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex, drawsAddr);
+        if (remainder)
+            DrawRemainderRange(cmd, slot, (uint32_t)ri);
+        else
+            DrawSeedRange(cmd, slot, (uint32_t)ri);
+    }
+}
 
-	void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
-		AppFrameContext& fc = static_cast<AppFrameContext&>(base);
-		lastSlot_ = UINT32_MAX;
-		seededThisFrame_ = false;
-		remainderPending_ = false;
-		if (!fc.world || !fc.views || fc.mainViewIndex == smvk::RenderViewSet::kInvalidIndex)
-			return;
+void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
+    AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+    lastSlot_ = UINT32_MAX;
+    seededThisFrame_ = false;
+    remainderPending_ = false;
+    if (!fc.world || !fc.views || fc.mainViewIndex == smvk::RenderViewSet::kInvalidIndex)
+        return;
 
-		SMVK_PROFILE_RENDER("GfxAppendPasses");
-		// NOTE: the seed pass below captures fc.pc (frame addresses for the
-		// masked FS) by value, so main must call AppendPasses after fc.pc is
-		// built but before the Forward+ prepass (seed writes depth first).
-		// Debug culling freeze: batch expansion (+ the filter CS downstream)
-		// runs against the override view/eye when set. Everything that writes
-		// the live depth buffer (seed, remainder) deliberately stays on the
-		// live main view.
-		uint32_t cullView = fc.mainViewIndex;
-		glm::vec3 cullEye = fc.eye;
-		if (cullOverride_ && fc.views && cullView_ < fc.views->Count())
-		{
-			cullView = cullView_;
-			cullEye = cullEye_;
-		}
-		// Cull chain program gate: the batch/draw-cull shaders must exist
-		// (build-synced .spv). A missing piece fails the chain's passes
-		// loudly at record time — there is no fallback path, so a broken
-		// install draws holes, not silently-uncalled geometry. Must land
-		// BEFORE FilterMainView.
-		if (!smvk::gfx::EnsureBatchCullShaders(gfx, *fc.ctx)
-			|| !smvk::gfx::EnsureDrawCullShaders(gfx, *fc.ctx)) {
-			std::fprintf(stderr,
-				"[GfxFilter] cull chain shaders missing - frame draws holes\n");
-		}
-		lastSlot_ = FilterMainView(*fc.ctx, *fc.rg, fc.frameIndex, *fc.world,
-			*fc.views, cullView, cullEye,
-			{ fc.extent.width, fc.extent.height }, config.cullFlags,
-			fc.lodEnabled ? &fc.lodInputs : nullptr, fc.lodShaderEnabled);
-		if (lastSlot_ == UINT32_MAX)
-			return;
-		const uint32_t slot = lastSlot_;
-		// Extent drift vs. the armed history (SnapshotVisible stamps the filter
-		// extent into the temporal below, in FilterMainView's rotation step).
-		{
-			smvk::gfx::TemporalView& t = smvk::gfx::Temporal(gfx, slot);
-			if ((t.width != 0 || t.height != 0)
-				&& (t.width != fc.extent.width || t.height != fc.extent.height))
-				smvk::gfx::InvalidateHistory(gfx, slot);
-		}
-		// HZB sizing (steady-state early-out; rebuilds disarm history).
-		{
-			SMVK_PROFILE_SCOPE("GfxEnsureHiz");
-			smvk::gfx::EnsureHiz(gfx, *fc.ctx, *fc.rg, slot,
-				fc.extent.width, fc.extent.height);
-		}
-		// ---- Temporal seed (T3) + remainder (T5) source ----
-		// Deformed cluster bounds (skinned cull fix): only when this frame's
-		// skinning pass wrote a deformed heap. Rebuilds each skinned
-		// cluster's sphere + normal cone (the meshopt convention, on the
-		// deformed FACE normals) and the per-draw deformed union bound
-		// into the skinBounds table the batch cull / draw cull below read.
-		// Runs AFTER the skinning pass (added earlier this frame by the
-		// skinning driver; its trailing ALL_COMMANDS barrier orders this
-		// compute read) and BEFORE GfxBatchCull (the skinBounds write ->
-		// read hint pair orders them).
-		if (gfx.skinDeformedBda != 0 && gfx.skinBoundsReady) {
-			smvk::RenderPass& boundsPass =
-				smvk::gfx::AddSkinBoundsPass(gfx, *fc.rg, slot);
-			GfxRenderer* self = this;
-			smvk::ResourceManager* ctx = fc.ctx;
-			boundsPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
-			{
-				smvk::gfx::PushAndDispatchSkinBounds(self->gfx, cmd, *ctx, slot);
-			});
-		}
-		// Cone-axis overlay lines (the debug toggle armed the buffer —
-		// SetConeDebug): writes the DebugLineVertex pairs Main's overlay
-		// Draws — the ACTUAL cull cones, baked bind-pose for static draws +
-		// this frame's deformed cones for skinned ones (GPU-driven end to
-		// end; the retired CPU readback path corrupted the host heap).
-		// Ordered after GfxSkinBounds by the skinBounds read-hint pair.
-		if (smvk::gfx::ConeDebugReady(gfx)) {
-			smvk::RenderPass& coneDbgPass =
-				smvk::gfx::AddConeDebugPass(gfx, *fc.rg, slot);
-			GfxRenderer* self = this;
-			smvk::ResourceManager* ctx = fc.ctx;
-			coneDbgPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
-			{
-				smvk::gfx::PushAndDispatchConeDebug(self->gfx, cmd, *ctx, slot);
-			});
-		}
-		// Cull chain: GfxBatchCull FIRST — its outputs gate the seed
-		// pass (the seed commands + the draws the seed VS resolves are
-		// written here, GPU-side; the rendergraph orders this before the
-		// seed through the seedIndirect write -> indirect-read hints).
-		// Recorded even when the seed programs are missing (the filter
-		// still consumes the batches/kept/indirect statics).
-			{
-				smvk::RenderPass& cullPass =
-					smvk::gfx::AddBatchCullPass(gfx, *fc.rg, slot);
-				GfxRenderer* self = this;
-				smvk::ResourceManager* ctx = fc.ctx;
-				cullPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
-				{
-					// GPU context + pass scope come from RenderGraph::Execute.
-					smvk::gfx::PushAndDispatchBatchCull(self->gfx, cmd, *ctx, slot);
-				});
-			}
-			// Seed depth over the GPU-written temporal commands. Always
-			// armed — the kept-bit parity rings self-arm (creation zeroes:
-			// the first frames seed nothing, remainder = all kept) and no
-			// CPU rotation exists. firstInstance = CURRENT draw index (the
-			// batch cull writes it against this frame's draws).
-			if (seedOpaqueProgram.shaderCount != 0
-				&& seedMaskedProgram.shaderCount != 0
-				&& !std::getenv("TOURMALINE_KD_NOSEED")) {
-				const auto& ranges = smvk::gfx::SeedRanges(gfx, slot);
-				if (!ranges.empty()) {
-					smvk::RenderPass& seedPass = smvk::gfx::AddSeedPass(
-						gfx, *fc.rg, slot, fc.depthView);
-					smvk::gfx::AddSeedConsumeHints(seedPass,
-						smvk::gfx::IndexHeapLogical(gfx),
-						smvk::gfx::DrawLogical(gfx, slot),
-						smvk::gfx::SeedIndirectLogical(gfx, slot));
-					GfxRenderer* self = this;
-					smvk::ResourceManager* ctx = fc.ctx;
-					const IRenderer::PushConstants depthPC = fc.pc;
-					const uint64_t renderViewsAddr =
-						fc.views->DeviceAddress(*fc.ctx, fc.frameIndex);
-					const uint32_t renderViewIndex = fc.mainViewIndex;
-					const uint64_t drawsAddr =
-						ctx->GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
-					seedPass.SetRecordingFunc([self, ctx, slot, depthPC, renderViewsAddr, renderViewIndex, drawsAddr](smvk::CommandBuffer& cmd)
-					{
-						self->RecordDepthList(cmd, *ctx, slot, false, drawsAddr,
-							renderViewsAddr, renderViewIndex, depthPC);
-					});
-					seededThisFrame_ = true;
-				}
-			}
-			// Remainder (T5): the GPU-written disocclusion commands over
-			// the seeded depth. The positional candidate ranges serve both
-			// passes (the instanceCounts gate the actual draws).
-			remainderPending_ = seededThisFrame_
-				&& !smvk::gfx::RemainderRanges(gfx, slot).empty();
-			// The kept-bit parity rings ARE the history (no CPU rotation).
-	}
+    SMVK_PROFILE_RENDER("GfxAppendPasses");
+    // NOTE: the seed pass below captures fc.pc (frame addresses for the
+    // masked FS) by value, so main must call AppendPasses after fc.pc is
+    // built but before the Forward+ prepass (seed writes depth first).
+    // Debug culling freeze: batch expansion (+ the filter CS downstream)
+    // runs against the override view/eye when set. Everything that writes
+    // the live depth buffer (seed, remainder) deliberately stays on the
+    // live main view.
+    uint32_t cullView = fc.mainViewIndex;
+    glm::vec3 cullEye = fc.eye;
+    if (cullOverride_ && fc.views && cullView_ < fc.views->Count()) {
+        cullView = cullView_;
+        cullEye = cullEye_;
+    }
+    // Cull chain program gate: the batch/draw-cull shaders must exist
+    // (build-synced .spv). A missing piece fails the chain's passes
+    // loudly at record time — there is no fallback path, so a broken
+    // install draws holes, not silently-uncalled geometry. Must land
+    // BEFORE FilterMainView.
+    if (!smvk::gfx::EnsureBatchCullShaders(gfx, *fc.ctx) ||
+        !smvk::gfx::EnsureDrawCullShaders(gfx, *fc.ctx)) {
+        std::fprintf(stderr, "[GfxFilter] cull chain shaders missing - frame draws holes\n");
+    }
+    lastSlot_ = FilterMainView(*fc.ctx,
+                               *fc.rg,
+                               fc.frameIndex,
+                               *fc.world,
+                               *fc.views,
+                               cullView,
+                               cullEye,
+                               {fc.extent.width, fc.extent.height},
+                               config.cullFlags,
+                               fc.lodEnabled ? &fc.lodInputs : nullptr,
+                               fc.lodShaderEnabled);
+    if (lastSlot_ == UINT32_MAX)
+        return;
+    const uint32_t slot = lastSlot_;
+    // Extent drift vs. the armed history (SnapshotVisible stamps the filter
+    // extent into the temporal below, in FilterMainView's rotation step).
+    {
+        smvk::gfx::TemporalView& t = smvk::gfx::Temporal(gfx, slot);
+        if ((t.width != 0 || t.height != 0) &&
+            (t.width != fc.extent.width || t.height != fc.extent.height))
+            smvk::gfx::InvalidateHistory(gfx, slot);
+    }
+    // HZB sizing (steady-state early-out; rebuilds disarm history).
+    {
+        SMVK_PROFILE_SCOPE("GfxEnsureHiz");
+        smvk::gfx::EnsureHiz(gfx, *fc.ctx, *fc.rg, slot, fc.extent.width, fc.extent.height);
+    }
+    // ---- Temporal seed (T3) + remainder (T5) source ----
+    // Deformed cluster bounds (skinned cull fix): only when this frame's
+    // skinning pass wrote a deformed heap. Rebuilds each skinned
+    // cluster's sphere + normal cone (the meshopt convention, on the
+    // deformed FACE normals) and the per-draw deformed union bound
+    // into the skinBounds table the batch cull / draw cull below read.
+    // Runs AFTER the skinning pass (added earlier this frame by the
+    // skinning driver; its trailing ALL_COMMANDS barrier orders this
+    // compute read) and BEFORE GfxBatchCull (the skinBounds write ->
+    // read hint pair orders them).
+    if (gfx.skinDeformedBda != 0 && gfx.skinBoundsReady) {
+        smvk::RenderPass& boundsPass = smvk::gfx::AddSkinBoundsPass(gfx, *fc.rg, slot);
+        GfxRenderer* self = this;
+        smvk::ResourceManager* ctx = fc.ctx;
+        boundsPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd) {
+            smvk::gfx::PushAndDispatchSkinBounds(self->gfx, cmd, *ctx, slot);
+        });
+    }
+    // Cone-axis overlay lines (the debug toggle armed the buffer —
+    // SetConeDebug): writes the DebugLineVertex pairs Main's overlay
+    // Draws — the ACTUAL cull cones, baked bind-pose for static draws +
+    // this frame's deformed cones for skinned ones (GPU-driven end to
+    // end; the retired CPU readback path corrupted the host heap).
+    // Ordered after GfxSkinBounds by the skinBounds read-hint pair.
+    if (smvk::gfx::ConeDebugReady(gfx)) {
+        smvk::RenderPass& coneDbgPass = smvk::gfx::AddConeDebugPass(gfx, *fc.rg, slot);
+        GfxRenderer* self = this;
+        smvk::ResourceManager* ctx = fc.ctx;
+        coneDbgPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd) {
+            smvk::gfx::PushAndDispatchConeDebug(self->gfx, cmd, *ctx, slot);
+        });
+    }
+    // Cull chain: GfxBatchCull FIRST — its outputs gate the seed
+    // pass (the seed commands + the draws the seed VS resolves are
+    // written here, GPU-side; the rendergraph orders this before the
+    // seed through the seedIndirect write -> indirect-read hints).
+    // Recorded even when the seed programs are missing (the filter
+    // still consumes the batches/kept/indirect statics).
+    {
+        smvk::RenderPass& cullPass = smvk::gfx::AddBatchCullPass(gfx, *fc.rg, slot);
+        GfxRenderer* self = this;
+        smvk::ResourceManager* ctx = fc.ctx;
+        cullPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd) {
+            // GPU context + pass scope come from RenderGraph::Execute.
+            smvk::gfx::PushAndDispatchBatchCull(self->gfx, cmd, *ctx, slot);
+        });
+    }
+    // Seed depth over the GPU-written temporal commands. Always
+    // armed — the kept-bit parity rings self-arm (creation zeroes:
+    // the first frames seed nothing, remainder = all kept) and no
+    // CPU rotation exists. firstInstance = CURRENT draw index (the
+    // batch cull writes it against this frame's draws).
+    if (seedOpaqueProgram.shaderCount != 0 && seedMaskedProgram.shaderCount != 0 &&
+        !std::getenv("TOURMALINE_KD_NOSEED")) {
+        const auto& ranges = smvk::gfx::SeedRanges(gfx, slot);
+        if (!ranges.empty()) {
+            smvk::RenderPass& seedPass = smvk::gfx::AddSeedPass(gfx, *fc.rg, slot, fc.depthView);
+            smvk::gfx::AddSeedConsumeHints(seedPass,
+                                           smvk::gfx::IndexHeapLogical(gfx),
+                                           smvk::gfx::DrawLogical(gfx, slot),
+                                           smvk::gfx::SeedIndirectLogical(gfx, slot));
+            GfxRenderer* self = this;
+            smvk::ResourceManager* ctx = fc.ctx;
+            const IRenderer::PushConstants depthPC = fc.pc;
+            const uint64_t renderViewsAddr = fc.views->DeviceAddress(*fc.ctx, fc.frameIndex);
+            const uint32_t renderViewIndex = fc.mainViewIndex;
+            const uint64_t drawsAddr =
+                ctx->GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
+            seedPass.SetRecordingFunc([self,
+                                       ctx,
+                                       slot,
+                                       depthPC,
+                                       renderViewsAddr,
+                                       renderViewIndex,
+                                       drawsAddr](smvk::CommandBuffer& cmd) {
+                self->RecordDepthList(
+                    cmd, *ctx, slot, false, drawsAddr, renderViewsAddr, renderViewIndex, depthPC);
+            });
+            seededThisFrame_ = true;
+        }
+    }
+    // Remainder (T5): the GPU-written disocclusion commands over
+    // the seeded depth. The positional candidate ranges serve both
+    // passes (the instanceCounts gate the actual draws).
+    remainderPending_ = seededThisFrame_ && !smvk::gfx::RemainderRanges(gfx, slot).empty();
+    // The kept-bit parity rings ARE the history (no CPU rotation).
+}
 
-	bool GfxRenderer::EnsureShadowSeeds(smvk::ResourceManager& ctx) {
-		if (ShadowSeedsValid())
-			return true;
-		// Normal-Z shadow.frag (conservative DepthGreater): the atlas clears
-		// to 1.0 and tests LessEqual, unlike the reversed-Z main-view seed.
-		if (shadowSeedFrag_.empty())
-			return false;
-		try {
-			if (shadowSeedVsModule.empty())
-				shadowSeedVsModule = ctx.CreateShaderModule(
-					smvk::shaders::Read(kGfxShadowSeedVsPath), "gfxShadowSeedVS");
-			if (shadowSeedMaskedVsModule.empty())
-				shadowSeedMaskedVsModule = ctx.CreateShaderModule(
-					smvk::shaders::Read(kGfxShadowSeedMaskedVsPath), "gfxShadowSeedMaskedVS");
-		}
-		catch (...) {
-			return false;
-		}
-		if (shadowSeedVsModule.empty() || shadowSeedMaskedVsModule.empty())
-			return false;
-		if (shadowSeedOpaqueProgram.shaderCount == 0) {
-			smvk::Shader vs{ .module = shadowSeedVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-			shadowSeedOpaqueProgram = { .shaders = { vs }, .shaderCount = 1 };
-		}
-		if (shadowSeedMaskedProgram.shaderCount == 0) {
-			smvk::Shader vs{ .module = shadowSeedMaskedVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-			smvk::Shader fs{ .module = shadowSeedFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-			shadowSeedMaskedProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
-		}
-		return ShadowSeedsValid();
-	}
+bool GfxRenderer::EnsureShadowSeeds(smvk::ResourceManager& ctx) {
+    if (ShadowSeedsValid())
+        return true;
+    // Normal-Z shadow.frag (conservative DepthGreater): the atlas clears
+    // to 1.0 and tests LessEqual, unlike the reversed-Z main-view seed.
+    if (shadowSeedFrag_.empty())
+        return false;
+    try {
+        if (shadowSeedVsModule.empty())
+            shadowSeedVsModule = ctx.CreateShaderModule(smvk::shaders::Read(kGfxShadowSeedVsPath),
+                                                        "gfxShadowSeedVS");
+        if (shadowSeedMaskedVsModule.empty())
+            shadowSeedMaskedVsModule = ctx.CreateShaderModule(
+                smvk::shaders::Read(kGfxShadowSeedMaskedVsPath), "gfxShadowSeedMaskedVS");
+    } catch (...) {
+        return false;
+    }
+    if (shadowSeedVsModule.empty() || shadowSeedMaskedVsModule.empty())
+        return false;
+    if (shadowSeedOpaqueProgram.shaderCount == 0) {
+        smvk::Shader vs{.module = shadowSeedVsModule,
+                        .entryPoint = "mainVS",
+                        .stage = smvk::ShaderStage::Vertex};
+        shadowSeedOpaqueProgram = {.shaders = {vs}, .shaderCount = 1};
+    }
+    if (shadowSeedMaskedProgram.shaderCount == 0) {
+        smvk::Shader vs{.module = shadowSeedMaskedVsModule,
+                        .entryPoint = "mainVS",
+                        .stage = smvk::ShaderStage::Vertex};
+        smvk::Shader fs{.module = shadowSeedFrag_,
+                        .entryPoint = "mainPS",
+                        .stage = smvk::ShaderStage::Fragment};
+        shadowSeedMaskedProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+    }
+    return ShadowSeedsValid();
+}
 
-	void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-		uint32_t sview,
-		uint64_t renderViewsAddr,
-		uint32_t renderViewIndex,
-		const IRenderer::PushConstants& shadowPC
-	) {
-		const std::vector<smvk::gfx::SeedRange>& ranges = smvk::gfx::ShadowRanges(gfx, sview);
-		const uint32_t opaqueCount = smvk::gfx::ShadowOpaqueCommands(gfx, sview);
-		const smvk::BufferHandle indirectBuf =
-			smvk::gfx::ShadowIndirectBuffer(gfx, sview);
-		const uint64_t drawsAddr =
-			ctx.GetBufferDeviceAddress(smvk::gfx::ShadowDrawBuffer(gfx, sview));
-		// TMP-DIAG (TOURMALINE_KD, once): what the shadow seed actually
-		// records — the skin tail state + the skinned-flagged draws in the
-		// shadow view's ring (bind-pose shadows hunt). Remove later.
-		{
-			static bool noted = false;
-			const char* kdEnv = std::getenv("TOURMALINE_KD");
-			if (!noted && kdEnv && *kdEnv && *kdEnv != '0') {
-				noted = true;
-				uint32_t skinnedDraws = 0, drawTotal = 0;
-				const std::vector<smvk::gfx::Draw>& sdc =
-					smvk::gfx::ShadowDrawConstants(gfx, sview);
-				for (const smvk::gfx::Draw& d : sdc) {
-					++drawTotal;
-					if (d.flags & smvk::gfx::DrawFlagBit_Skinned)
-						++skinnedDraws;
-				}
-				std::fprintf(stderr,
-					"[KD] shadowSeed sview=%u ranges=%zu opaque=%u draws=%u skinnedDraws=%u "
-					"vsDeformed=%llu base=%u flagsValid=%d\n",
-					sview, ranges.size(), opaqueCount, drawTotal, skinnedDraws,
-					(unsigned long long)gfx.skinDeformedBda, gfx.skinDeformedBase,
-					(gfx.skinDeformedBda != 0
-						&& gfx.skinDeformedBase != UINT32_MAX) ? 1 : 0);
-			}
-		}
-		cmd.BindStaticVertexFmt();
-		// Shadow atlas is normal-Z (clear 1.0, LessEqual) — unlike the seed
-		// path's reversed-Z GreaterEqual. No index bind: commands address the
-		// static index monoblock absolutely (the offset-0 binding from
-		// BindStaticVertexFmt is correct for every draw below).
-		// Phase 1: opaque casters (VS-only, FRONT-culled like the direct path —
-		// back faces only, the shadow anti-acne classic).
-		if (opaqueCount > 0) {
-			cmd.BindRenderPipeline(
-				shadowSeedOpaqueProgram,
-				smvk::VertexLayoutId::Static,
-				smvk::DepthSettings{
-					.depthFunc = smvk::CompareOp::LessEqual,
-					.writeEnable = true,
-					.depthTestEnable = true,
-					.depthBiasEnable = false,
-					.depthBiasConstantFactor = 0.0f,
-					.depthBiasClamp = 0.0f,
-					.depthBiasSlopeFactor = 0.0f
-				},
-				smvk::StencilSettings{},
-				smvk::BlendSettings{},
-				smvk::MSAASettings{},
-				smvk::RasterSettings{ .cullMode = smvk::CullMode::Front }
-			);
-			cmd.PushConstants(0, sizeof(shadowPC), &shadowPC, smvk::ShaderStage::All);
-			PushSeedConstants(cmd, ctx, sview, renderViewsAddr, renderViewIndex, drawsAddr);
-			cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
-		}
-		// Phase 2: MASK cutout casters (alpha-tested FS — masked cutout casts
-		// leaf-shaped shadows). Cull follows the material raster, matching
-		// the main view (cutout has no backface depth anywhere).
-		for (const smvk::gfx::SeedRange& r : ranges) {
-			if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
-				continue;
-			if (r.material == UINT32_MAX)
-				continue; // unknown material: no valid materialId push
-			cmd.BindRenderPipeline(
-				shadowSeedMaskedProgram,
-				smvk::VertexLayoutId::Static,
-				smvk::DepthSettings{
-					.depthFunc = smvk::CompareOp::LessEqual,
-					.writeEnable = true,
-					.depthTestEnable = true,
-					.depthBiasEnable = false,
-					.depthBiasConstantFactor = 0.0f,
-					.depthBiasClamp = 0.0f,
-					.depthBiasSlopeFactor = 0.0f
-				},
-				smvk::StencilSettings{},
-				smvk::BlendSettings{},
-				smvk::MSAASettings{},
-				smvk::RasterSettings{
-					.cullMode = MaterialDepth(r.material).cullMode }
-					);
-			IRenderer::PushConstants matPC{};
-			matPC.materialId = r.material;
-			cmd.PushConstants(
-				offsetof(IRenderer::PushConstants, materialId),
-				sizeof(matPC.materialId),
-				&matPC.materialId,
-				smvk::ShaderStage::All
-			);
-			// Frame addresses for the masked FS (same head-only re-push the
-			// seed path does; the VS tail rides bytes 192..216).
-			cmd.PushConstants(
-				0,
-				offsetof(IRenderer::PushConstants, frameUniforms),
-				&shadowPC,
-				smvk::ShaderStage::All
-			);
-			PushSeedConstants(cmd, ctx, sview, renderViewsAddr, renderViewIndex, drawsAddr);
-			cmd.DrawIndexedIndirect(indirectBuf, (uint64_t)r.firstCommand * 20,
-				r.commandCount, 20);
-		}
-	}
+void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd,
+                                   smvk::ResourceManager& ctx,
+                                   uint32_t sview,
+                                   uint64_t renderViewsAddr,
+                                   uint32_t renderViewIndex,
+                                   const IRenderer::PushConstants& shadowPC) {
+    const std::vector<smvk::gfx::SeedRange>& ranges = smvk::gfx::ShadowRanges(gfx, sview);
+    const uint32_t opaqueCount = smvk::gfx::ShadowOpaqueCommands(gfx, sview);
+    const smvk::BufferHandle indirectBuf = smvk::gfx::ShadowIndirectBuffer(gfx, sview);
+    const uint64_t drawsAddr = ctx.GetBufferDeviceAddress(smvk::gfx::ShadowDrawBuffer(gfx, sview));
+    // TMP-DIAG (TOURMALINE_KD, once): what the shadow seed actually
+    // records — the skin tail state + the skinned-flagged draws in the
+    // shadow view's ring (bind-pose shadows hunt). Remove later.
+    {
+        static bool noted = false;
+        const char* kdEnv = std::getenv("TOURMALINE_KD");
+        if (!noted && kdEnv && *kdEnv && *kdEnv != '0') {
+            noted = true;
+            uint32_t skinnedDraws = 0, drawTotal = 0;
+            const std::vector<smvk::gfx::Draw>& sdc = smvk::gfx::ShadowDrawConstants(gfx, sview);
+            for (const smvk::gfx::Draw& d : sdc) {
+                ++drawTotal;
+                if (d.flags & smvk::gfx::DrawFlagBit_Skinned)
+                    ++skinnedDraws;
+            }
+            std::fprintf(stderr,
+                         "[KD] shadowSeed sview=%u ranges=%zu opaque=%u draws=%u skinnedDraws=%u "
+                         "vsDeformed=%llu base=%u flagsValid=%d\n",
+                         sview,
+                         ranges.size(),
+                         opaqueCount,
+                         drawTotal,
+                         skinnedDraws,
+                         (unsigned long long)gfx.skinDeformedBda,
+                         gfx.skinDeformedBase,
+                         (gfx.skinDeformedBda != 0 && gfx.skinDeformedBase != UINT32_MAX) ? 1 : 0);
+        }
+    }
+    cmd.BindStaticVertexFmt();
+    // Shadow atlas is normal-Z (clear 1.0, LessEqual) — unlike the seed
+    // path's reversed-Z GreaterEqual. No index bind: commands address the
+    // static index monoblock absolutely (the offset-0 binding from
+    // BindStaticVertexFmt is correct for every draw below).
+    // Phase 1: opaque casters (VS-only, FRONT-culled like the direct path —
+    // back faces only, the shadow anti-acne classic).
+    if (opaqueCount > 0) {
+        cmd.BindRenderPipeline(shadowSeedOpaqueProgram,
+                               smvk::VertexLayoutId::Static,
+                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::LessEqual,
+                                                   .writeEnable = true,
+                                                   .depthTestEnable = true,
+                                                   .depthBiasEnable = false,
+                                                   .depthBiasConstantFactor = 0.0f,
+                                                   .depthBiasClamp = 0.0f,
+                                                   .depthBiasSlopeFactor = 0.0f},
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings{},
+                               smvk::MSAASettings{},
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::Front});
+        cmd.PushConstants(0, sizeof(shadowPC), &shadowPC, smvk::ShaderStage::All);
+        PushSeedConstants(cmd, ctx, sview, renderViewsAddr, renderViewIndex, drawsAddr);
+        cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
+    }
+    // Phase 2: MASK cutout casters (alpha-tested FS — masked cutout casts
+    // leaf-shaped shadows). Cull follows the material raster, matching
+    // the main view (cutout has no backface depth anywhere).
+    for (const smvk::gfx::SeedRange& r : ranges) {
+        if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
+            continue;
+        if (r.material == UINT32_MAX)
+            continue; // unknown material: no valid materialId push
+        cmd.BindRenderPipeline(
+            shadowSeedMaskedProgram,
+            smvk::VertexLayoutId::Static,
+            smvk::DepthSettings{.depthFunc = smvk::CompareOp::LessEqual,
+                                .writeEnable = true,
+                                .depthTestEnable = true,
+                                .depthBiasEnable = false,
+                                .depthBiasConstantFactor = 0.0f,
+                                .depthBiasClamp = 0.0f,
+                                .depthBiasSlopeFactor = 0.0f},
+            smvk::StencilSettings{},
+            smvk::BlendSettings{},
+            smvk::MSAASettings{},
+            smvk::RasterSettings{.cullMode = MaterialDepth(r.material).cullMode});
+        IRenderer::PushConstants matPC{};
+        matPC.materialId = r.material;
+        cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
+                          sizeof(matPC.materialId),
+                          &matPC.materialId,
+                          smvk::ShaderStage::All);
+        // Frame addresses for the masked FS (same head-only re-push the
+        // seed path does; the VS tail rides bytes 192..216).
+        cmd.PushConstants(0,
+                          offsetof(IRenderer::PushConstants, frameUniforms),
+                          &shadowPC,
+                          smvk::ShaderStage::All);
+        PushSeedConstants(cmd, ctx, sview, renderViewsAddr, renderViewIndex, drawsAddr);
+        cmd.DrawIndexedIndirect(indirectBuf, (uint64_t)r.firstCommand * 20, r.commandCount, 20);
+    }
+}
 
-	void GfxRenderer::AddShadowConsumeHints(smvk::RenderPass& pass, uint32_t sview) {
-		smvk::gfx::AddSeedConsumeHints(pass,
-			smvk::gfx::IndexHeapLogical(gfx),
-			smvk::gfx::ShadowDrawLogical(gfx, sview),
-			smvk::gfx::ShadowIndirectLogical(gfx, sview));
-	}
+void GfxRenderer::AddShadowConsumeHints(smvk::RenderPass& pass, uint32_t sview) {
+    smvk::gfx::AddSeedConsumeHints(pass,
+                                   smvk::gfx::IndexHeapLogical(gfx),
+                                   smvk::gfx::ShadowDrawLogical(gfx, sview),
+                                   smvk::gfx::ShadowIndirectLogical(gfx, sview));
+}
 
-	void GfxRenderer::AppendRemainderPass(smvk::FrameContext& base) {
-		AppFrameContext& fc = static_cast<AppFrameContext&>(base);
-		if (lastSlot_ == UINT32_MAX || !remainderPending_)
-			return;
-		const uint32_t slot = lastSlot_;
-		smvk::RenderPass& pass = smvk::gfx::AddRemainderPass(gfx, *fc.rg, slot, fc.depthView);
-		smvk::gfx::AddSeedConsumeHints(pass,
-			smvk::gfx::IndexHeapLogical(gfx),
-			smvk::gfx::DrawLogical(gfx, slot),
-			smvk::gfx::RemainderIndirectLogical(gfx, slot));
-		GfxRenderer* self = this;
-		smvk::ResourceManager* ctx = fc.ctx;
-		const IRenderer::PushConstants depthPC = fc.pc;
-		const uint64_t renderViewsAddr =
-			fc.views->DeviceAddress(*fc.ctx, fc.frameIndex);
-		const uint32_t renderViewIndex = fc.mainViewIndex;
-		const uint64_t drawsAddr =
-			ctx->GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
-		pass.SetRecordingFunc([self, ctx, slot, depthPC, renderViewsAddr, renderViewIndex, drawsAddr](smvk::CommandBuffer& cmd)
-		{
-			// GPU context + pass scope come from RenderGraph::Execute.
-			self->RecordDepthList(cmd, *ctx, slot, true, drawsAddr,
-				renderViewsAddr, renderViewIndex, depthPC);
-		});
-		// Counts ride on the [GfxFilter] hist: line (FilterMainView).
-	}
+void GfxRenderer::AppendRemainderPass(smvk::FrameContext& base) {
+    AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+    if (lastSlot_ == UINT32_MAX || !remainderPending_)
+        return;
+    const uint32_t slot = lastSlot_;
+    smvk::RenderPass& pass = smvk::gfx::AddRemainderPass(gfx, *fc.rg, slot, fc.depthView);
+    smvk::gfx::AddSeedConsumeHints(pass,
+                                   smvk::gfx::IndexHeapLogical(gfx),
+                                   smvk::gfx::DrawLogical(gfx, slot),
+                                   smvk::gfx::RemainderIndirectLogical(gfx, slot));
+    GfxRenderer* self = this;
+    smvk::ResourceManager* ctx = fc.ctx;
+    const IRenderer::PushConstants depthPC = fc.pc;
+    const uint64_t renderViewsAddr = fc.views->DeviceAddress(*fc.ctx, fc.frameIndex);
+    const uint32_t renderViewIndex = fc.mainViewIndex;
+    const uint64_t drawsAddr = ctx->GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
+    pass.SetRecordingFunc([self, ctx, slot, depthPC, renderViewsAddr, renderViewIndex, drawsAddr](
+                              smvk::CommandBuffer& cmd) {
+        // GPU context + pass scope come from RenderGraph::Execute.
+        self->RecordDepthList(
+            cmd, *ctx, slot, true, drawsAddr, renderViewsAddr, renderViewIndex, depthPC);
+    });
+    // Counts ride on the [GfxFilter] hist: line (FilterMainView).
+}
 
-	void GfxRenderer::AppendFilterDispatch(smvk::FrameContext& fc) {
-		if (lastSlot_ == UINT32_MAX)
-			return;
-		const uint32_t slot = lastSlot_;
+void GfxRenderer::AppendFilterDispatch(smvk::FrameContext& fc) {
+    if (lastSlot_ == UINT32_MAX)
+        return;
+    const uint32_t slot = lastSlot_;
 
-		SMVK_PROFILE_RENDER("GfxAppendFilterDispatch");
-		SMVK_PROFILE_TAG("slot", slot);
+    SMVK_PROFILE_RENDER("GfxAppendFilterDispatch");
+    SMVK_PROFILE_TAG("slot", slot);
 
-		GfxRenderer* self = this;
-		smvk::ResourceManager* ctx = fc.ctx;
-		// Cull chain: the draw-level fast discard (mesh-bound frustum on
-		// the FROZEN view + HZB draw-bound occlusion) runs between the HZB
-		// build and the filter — the rendergraph orders it after GfxHiz
-		// (the pyramid read hint) and before GfxFilter (the verdict-write ->
-		// verdict-read hints).
-		smvk::RenderPass& drawCullPass =
-			smvk::gfx::AddDrawCullPass(gfx, *fc.rg, slot);
-		drawCullPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
-		{
-			// GPU context + pass scope come from RenderGraph::Execute.
-			smvk::gfx::PushAndDispatchDrawCull(self->gfx, cmd, *ctx, slot);
-		});
-		smvk::RenderPass& pass = AddFilterPass(*fc.rg, slot);
-		pass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
-		{
-			// GPU context + pass scope come from RenderGraph::Execute.
-			smvk::gfx::PushAndDispatch(self->gfx, cmd, *ctx, slot);
-		});
-	}
+    GfxRenderer* self = this;
+    smvk::ResourceManager* ctx = fc.ctx;
+    // Cull chain: the draw-level fast discard (mesh-bound frustum on
+    // the FROZEN view + HZB draw-bound occlusion) runs between the HZB
+    // build and the filter — the rendergraph orders it after GfxHiz
+    // (the pyramid read hint) and before GfxFilter (the verdict-write ->
+    // verdict-read hints).
+    smvk::RenderPass& drawCullPass = smvk::gfx::AddDrawCullPass(gfx, *fc.rg, slot);
+    drawCullPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd) {
+        // GPU context + pass scope come from RenderGraph::Execute.
+        smvk::gfx::PushAndDispatchDrawCull(self->gfx, cmd, *ctx, slot);
+    });
+    smvk::RenderPass& pass = AddFilterPass(*fc.rg, slot);
+    pass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd) {
+        // GPU context + pass scope come from RenderGraph::Execute.
+        smvk::gfx::PushAndDispatch(self->gfx, cmd, *ctx, slot);
+    });
+}
 
-	void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
-		smvk::LogicalImageViewHandle depthLogical, uint32_t depthBindlessIndex,
-		const char* passName) {
-		AppFrameContext& fc = static_cast<AppFrameContext&>(base);
-		if (lastSlot_ == UINT32_MAX || lastSlot_ >= smvk::gfx::ViewCount(gfx))
-			return;
-		const uint32_t slot = lastSlot_;
-		const smvk::gfx::TemporalView& t = smvk::gfx::Temporal(gfx, slot);
-		// Current flight's pyramid (same rule as every other ringed buffer;
-		// slices can disagree briefly across a resize before all rebuild).
-		if (t.hiz[fc.frameIndex].mipCount == 0)
-			return;
+void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
+                                  smvk::LogicalImageViewHandle depthLogical,
+                                  uint32_t depthBindlessIndex,
+                                  const char* passName) {
+    AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+    if (lastSlot_ == UINT32_MAX || lastSlot_ >= smvk::gfx::ViewCount(gfx))
+        return;
+    const uint32_t slot = lastSlot_;
+    const smvk::gfx::TemporalView& t = smvk::gfx::Temporal(gfx, slot);
+    // Current flight's pyramid (same rule as every other ringed buffer;
+    // slices can disagree briefly across a resize before all rebuild).
+    if (t.hiz[fc.frameIndex].mipCount == 0)
+        return;
 
-		SMVK_PROFILE_RENDER("GfxAppendHizPasses");
-		SMVK_PROFILE_TAG("mipCount", t.hiz[fc.frameIndex].mipCount);
+    SMVK_PROFILE_RENDER("GfxAppendHizPasses");
+    SMVK_PROFILE_TAG("mipCount", t.hiz[fc.frameIndex].mipCount);
 
-		GfxRenderer* self = this;
-		smvk::ResourceManager* ctx = fc.ctx;
-		// SPD path selection (hzb_spd .min — the single-dispatch twin).
-		// Extents beyond 4096 exceed the tested 64x64-tile upper-level
-		// capacity (AMD SPD's documented limit) — always the per-mip path.
-		// Verify mode forces the CULL CHAIN onto the proven per-mip
-		// pyramid and runs SPD into the hizVerify shadow: a wrong MIN
-		// pyramid must not eat geometry while it is being validated.
-		const uint32_t hizW = t.hiz[fc.frameIndex].width;
-		const uint32_t hizH = t.hiz[fc.frameIndex].height;
-		const bool spdExtentOk = hizW <= 4096u && hizH <= 4096u;
-		const bool spdProgramOk = gfx.hizSpdProgram.shaderCount == 1;
-		const bool spdCounterOk = !t.hizSpdCounter.empty()
-			&& !t.hizSpdCounterLogical.empty();
-		const bool spdLive = gfx.hizSpd && !gfx.hizSpdVerify
-			&& spdProgramOk && spdExtentOk && spdCounterOk;
-		if (spdLive) {
-			// ONE dispatch replaces the per-mip loop; the node keeps the
-			// caller's name (GfxHiz / GfxHizRefresh) so the two build
-			// sites stay distinguishable — the NODE COUNT (1 vs ~12) is
-			// the A/B signal in framegraph timings.
-			smvk::RenderPass& spdPass = smvk::gfx::AddHizSpdPass(gfx, *fc.rg,
-				slot, depthLogical, passName ? passName : "GfxHiz");
-			spdPass.SetRecordingFunc(
-				[self, ctx, slot, depthBindlessIndex](smvk::CommandBuffer& cmd)
-			{
-				::smvk::profiler::GpuPassScope hizSpdScope(
-					"GfxHizSpd", __FILE__, __LINE__);
-				SMVK_PROFILE_TAG("spd", 1);
-				smvk::gfx::PushAndDispatchHizSpd(self->gfx, cmd, *ctx, slot,
-					depthBindlessIndex, /*shadow=*/false);
-			});
-		}
-		else {
-			for (uint32_t m = 0; m < t.hiz[fc.frameIndex].mipCount; ++m) {
-				const bool fromDepth = (m == 0);
-				smvk::RenderPass& hizPass = smvk::gfx::AddHizPass(gfx, *fc.rg, slot, m,
-					fromDepth ? depthLogical : smvk::LogicalImageViewHandle{},
-					passName ? passName : "GfxHiz");
-				hizPass.SetRecordingFunc([self, ctx, slot, m, depthBindlessIndex, fromDepth](smvk::CommandBuffer& cmd)
-				{
-					// Per-mip GPU scope (the pass-level scope uses the shared
-					// "GfxHiz" name). Static literals: Optick stores the name
-					// pointer, so run-time names must have static storage.
-					static const char* const kHizMipGpuNames[16] = {
-						"GfxHizMip0", "GfxHizMip1", "GfxHizMip2", "GfxHizMip3",
-						"GfxHizMip4", "GfxHizMip5", "GfxHizMip6", "GfxHizMip7",
-						"GfxHizMip8", "GfxHizMip9", "GfxHizMip10", "GfxHizMip11",
-						"GfxHizMip12", "GfxHizMip13", "GfxHizMip14", "GfxHizMip15",
-					};
-					::smvk::profiler::GpuPassScope hizMipScope(
-						kHizMipGpuNames[m < 16 ? m : 15], __FILE__, __LINE__);
-					SMVK_PROFILE_TAG("mip", m);
-					smvk::gfx::PushAndDispatchHiz(self->gfx, cmd, *ctx, slot, m,
-						fromDepth ? depthBindlessIndex : UINT32_MAX);
-				});
-			}
-		}
-		// Verify shadow (TOURMALINE_HIZ_SPD_VERIFY): the SPD twin into
-		// this flight's hizVerify slice from the SAME seed depth the
-		// per-mip path above consumed; gfx::VerifyHizSpd byte-compares
-		// the two post-Execute. Both builds read the depth view and
-		// write disjoint buffers — the graph orders them freely.
-		if (gfx.hizSpdVerify && spdProgramOk && spdExtentOk && spdCounterOk
-			&& t.hizVerify[fc.frameIndex].mipCount != 0) {
-			smvk::RenderPass& vPass = smvk::gfx::AddHizSpdPass(gfx, *fc.rg,
-				slot, depthLogical, "GfxHizSpdVerify", /*shadow=*/true);
-			vPass.SetRecordingFunc(
-				[self, ctx, slot, depthBindlessIndex](smvk::CommandBuffer& cmd)
-			{
-				::smvk::profiler::GpuPassScope hizSpdVScope(
-					"GfxHizSpdVerify", __FILE__, __LINE__);
-				smvk::gfx::PushAndDispatchHizSpd(self->gfx, cmd, *ctx, slot,
-					depthBindlessIndex, /*shadow=*/true);
-			});
-			gfx.hizSpdVerifyArmed = true;
-		}
-	}
+    GfxRenderer* self = this;
+    smvk::ResourceManager* ctx = fc.ctx;
+    // SPD path selection (hzb_spd .min — the single-dispatch twin).
+    // Extents beyond 4096 exceed the tested 64x64-tile upper-level
+    // capacity (AMD SPD's documented limit) — always the per-mip path.
+    // Verify mode forces the CULL CHAIN onto the proven per-mip
+    // pyramid and runs SPD into the hizVerify shadow: a wrong MIN
+    // pyramid must not eat geometry while it is being validated.
+    const uint32_t hizW = t.hiz[fc.frameIndex].width;
+    const uint32_t hizH = t.hiz[fc.frameIndex].height;
+    const bool spdExtentOk = hizW <= 4096u && hizH <= 4096u;
+    const bool spdProgramOk = gfx.hizSpdProgram.shaderCount == 1;
+    const bool spdCounterOk = !t.hizSpdCounter.empty() && !t.hizSpdCounterLogical.empty();
+    const bool spdLive =
+        gfx.hizSpd && !gfx.hizSpdVerify && spdProgramOk && spdExtentOk && spdCounterOk;
+    if (spdLive) {
+        // ONE dispatch replaces the per-mip loop; the node keeps the
+        // caller's name (GfxHiz / GfxHizRefresh) so the two build
+        // sites stay distinguishable — the NODE COUNT (1 vs ~12) is
+        // the A/B signal in framegraph timings.
+        smvk::RenderPass& spdPass = smvk::gfx::AddHizSpdPass(
+            gfx, *fc.rg, slot, depthLogical, passName ? passName : "GfxHiz");
+        spdPass.SetRecordingFunc([self, ctx, slot, depthBindlessIndex](smvk::CommandBuffer& cmd) {
+            ::smvk::profiler::GpuPassScope hizSpdScope("GfxHizSpd", __FILE__, __LINE__);
+            SMVK_PROFILE_TAG("spd", 1);
+            smvk::gfx::PushAndDispatchHizSpd(
+                self->gfx, cmd, *ctx, slot, depthBindlessIndex, /*shadow=*/false);
+        });
+    } else {
+        for (uint32_t m = 0; m < t.hiz[fc.frameIndex].mipCount; ++m) {
+            const bool fromDepth = (m == 0);
+            smvk::RenderPass& hizPass =
+                smvk::gfx::AddHizPass(gfx,
+                                      *fc.rg,
+                                      slot,
+                                      m,
+                                      fromDepth ? depthLogical : smvk::LogicalImageViewHandle{},
+                                      passName ? passName : "GfxHiz");
+            hizPass.SetRecordingFunc(
+                [self, ctx, slot, m, depthBindlessIndex, fromDepth](smvk::CommandBuffer& cmd) {
+                    // Per-mip GPU scope (the pass-level scope uses the shared
+                    // "GfxHiz" name). Static literals: Optick stores the name
+                    // pointer, so run-time names must have static storage.
+                    static const char* const kHizMipGpuNames[16] = {
+                        "GfxHizMip0",
+                        "GfxHizMip1",
+                        "GfxHizMip2",
+                        "GfxHizMip3",
+                        "GfxHizMip4",
+                        "GfxHizMip5",
+                        "GfxHizMip6",
+                        "GfxHizMip7",
+                        "GfxHizMip8",
+                        "GfxHizMip9",
+                        "GfxHizMip10",
+                        "GfxHizMip11",
+                        "GfxHizMip12",
+                        "GfxHizMip13",
+                        "GfxHizMip14",
+                        "GfxHizMip15",
+                    };
+                    ::smvk::profiler::GpuPassScope hizMipScope(
+                        kHizMipGpuNames[m < 16 ? m : 15], __FILE__, __LINE__);
+                    SMVK_PROFILE_TAG("mip", m);
+                    smvk::gfx::PushAndDispatchHiz(
+                        self->gfx, cmd, *ctx, slot, m, fromDepth ? depthBindlessIndex : UINT32_MAX);
+                });
+        }
+    }
+    // Verify shadow (TOURMALINE_HIZ_SPD_VERIFY): the SPD twin into
+    // this flight's hizVerify slice from the SAME seed depth the
+    // per-mip path above consumed; gfx::VerifyHizSpd byte-compares
+    // the two post-Execute. Both builds read the depth view and
+    // write disjoint buffers — the graph orders them freely.
+    if (gfx.hizSpdVerify && spdProgramOk && spdExtentOk && spdCounterOk &&
+        t.hizVerify[fc.frameIndex].mipCount != 0) {
+        smvk::RenderPass& vPass = smvk::gfx::AddHizSpdPass(
+            gfx, *fc.rg, slot, depthLogical, "GfxHizSpdVerify", /*shadow=*/true);
+        vPass.SetRecordingFunc([self, ctx, slot, depthBindlessIndex](smvk::CommandBuffer& cmd) {
+            ::smvk::profiler::GpuPassScope hizSpdVScope("GfxHizSpdVerify", __FILE__, __LINE__);
+            smvk::gfx::PushAndDispatchHizSpd(
+                self->gfx, cmd, *ctx, slot, depthBindlessIndex, /*shadow=*/true);
+        });
+        gfx.hizSpdVerifyArmed = true;
+    }
+}
 
-	void GfxRenderer::VerifyHizSpd(smvk::ResourceManager& ctx) {
-		if (lastSlot_ == UINT32_MAX || lastSlot_ >= smvk::gfx::ViewCount(gfx))
-			return;
-		smvk::gfx::VerifyHizSpd(gfx, ctx, lastSlot_);
-	}
+void GfxRenderer::VerifyHizSpd(smvk::ResourceManager& ctx) {
+    if (lastSlot_ == UINT32_MAX || lastSlot_ >= smvk::gfx::ViewCount(gfx))
+        return;
+    smvk::gfx::VerifyHizSpd(gfx, ctx, lastSlot_);
+}
 
-	void GfxRenderer::RegisterWorldMeshes(smvk::World& world) {
-		meshMap_.assign(world.meshLocations.size(), UINT32_MAX);
-		lodMeshMap_.clear();
-		lodMeshMap_.resize(world.meshLocations.size());
-		uint32_t fromCooked = 0, fromUpload = 0, skipped = 0;
-		uint64_t skippedTris = 0;
-		// Dedupe: distinct base meshes can share one LOD sibling URI, and the
-		// same base mesh is never registered twice. Key = owning cluster +
-		// pool index (stable for the register pass; all clusters are alive).
-		struct LocKey {
-			const void* cluster = nullptr;
-			uint32_t index = 0;
-			bool operator==(const LocKey& o) const {
-				return cluster == o.cluster && index == o.index;
-			}
-		};
-		struct LocHash {
-			size_t operator()(const LocKey& k) const noexcept {
-				return std::hash<const void*>{}(k.cluster) * 31u + k.index;
-			}
-		};
-		std::unordered_map<LocKey, uint32_t, LocHash> done;
-		auto registerOne = [&](const smvk::World::MeshLocation& loc) -> uint32_t {
-			if (!loc.cluster || !loc.handle.valid())
-				return UINT32_MAX;
-			const LocKey key{ loc.cluster, loc.handle.index() };
-			if (auto it = done.find(key); it != done.end())
-				return it->second;
-			const smvk::StaticMesh* mesh = loc.cluster->staticMeshes.get(loc.handle);
-			if (!mesh || mesh->geometry.surfaces.empty())
-				return UINT32_MAX;
-			const uint32_t baseVertex =
-				(uint32_t)std::max<int32_t>(mesh->geometry.surfaces[0].baseVertex, 0);
-#if 0 // TMP-DIAG scanlands hunt (disabled): per-mesh registration + meshlet validation dumps. Remove later.
+void GfxRenderer::RegisterWorldMeshes(smvk::World& world) {
+    meshMap_.assign(world.meshLocations.size(), UINT32_MAX);
+    lodMeshMap_.clear();
+    lodMeshMap_.resize(world.meshLocations.size());
+    uint32_t fromCooked = 0, fromUpload = 0, skipped = 0;
+    uint64_t skippedTris = 0;
+    // Dedupe: distinct base meshes can share one LOD sibling URI, and the
+    // same base mesh is never registered twice. Key = owning cluster +
+    // pool index (stable for the register pass; all clusters are alive).
+    struct LocKey {
+        const void* cluster = nullptr;
+        uint32_t index = 0;
+        bool operator==(const LocKey& o) const {
+            return cluster == o.cluster && index == o.index;
+        }
+    };
+    struct LocHash {
+        size_t operator()(const LocKey& k) const noexcept {
+            return std::hash<const void*>{}(k.cluster) * 31u + k.index;
+        }
+    };
+    std::unordered_map<LocKey, uint32_t, LocHash> done;
+    auto registerOne = [&](const smvk::World::MeshLocation& loc) -> uint32_t {
+        if (!loc.cluster || !loc.handle.valid())
+            return UINT32_MAX;
+        const LocKey key{loc.cluster, loc.handle.index()};
+        if (auto it = done.find(key); it != done.end())
+            return it->second;
+        const smvk::StaticMesh* mesh = loc.cluster->staticMeshes.get(loc.handle);
+        if (!mesh || mesh->geometry.surfaces.empty())
+            return UINT32_MAX;
+        const uint32_t baseVertex =
+            (uint32_t)std::max<int32_t>(mesh->geometry.surfaces[0].baseVertex, 0);
+#if 0 // TMP-DIAG scanlands hunt (disabled): per-mesh registration + meshlet validation dumps.
+      // Remove later.
 			{
 				std::string uri;
 				if (loc.cluster)
@@ -1349,239 +1456,272 @@ namespace engine {
 				}
 			}
 #endif
-			uint32_t gfxMesh = UINT32_MAX;
-			if (mesh->meshlets && !mesh->meshlets->empty()) {
-				gfxMesh = smvk::gfx::RegisterMeshFromCooked(gfx, *mesh->meshlets, baseVertex);
-				if (gfxMesh != UINT32_MAX)
-					++fromCooked;
-			}
-			else if (const smvk::StaticMeshUpload* retained =
-				loc.cluster->GetRetainedUpload(loc.handle)) {
-				gfxMesh = smvk::gfx::RegisterMeshFromUpload(gfx, *retained, baseVertex);
-				if (gfxMesh != UINT32_MAX)
-					++fromUpload;
-			}
-		if (gfxMesh == UINT32_MAX)
-			skippedTris += mesh->geometry.indexCount / 3;
-		// TMP-DIAG (TOURMALINE_DUMPGFX, the LOD-sibling draw-drop hunt): the
-		// runtime vertex window vs the cooked-meshlet lifted-id coverage per
-		// registered gfx mesh. The CPU/GPU cull chains and the filter CS all
-		// consume the lifted global ids (RegisterMeshFromCooked lifts
-		// window[tri] by surfaces[0].baseVertex); ids that fall outside
-		// [baseVertex, baseVertex + vertexCount) fetch OTHER meshes'
-		// positions/attributes — triangles that pass every cull (bounds are
-		// cooked from the local geometry, still correct) yet rasterize
-		// nowhere near the object (the distant-sibling black band). The
-		// window-id audit catches it at the source: cooked.vertices[] must
-		// stay under the MESH's vertexCount. Remove later.
-		if (gfxMesh != UINT32_MAX && std::getenv("TOURMALINE_DUMPGFX")) {
-			std::string uri = loc.cluster
-				? loc.cluster->GetMeshUri(loc.handle).Str() : std::string{};
-			const uint32_t vcount = mesh->geometry.vertexCount;
-			const int32_t baseVertexI = mesh->geometry.surfaces.empty()
-				? -1 : mesh->geometry.surfaces[0].baseVertex;
-			uint32_t idMin = UINT32_MAX, idMax = 0;
-			uint32_t kept = 0, skippedMl = 0;
-			size_t badWindow = 0, badTri = 0;
-			if (mesh->meshlets && !mesh->meshlets->empty()) {
-				const smvk::CookedMeshlets& cm = *mesh->meshlets;
-				for (const smvk::Meshlet& m : cm.meshlets) {
-					if (m.triangleCount == 0 || m.triangleCount > 64
-						|| m.vertexCount == 0
-						|| m.vertexOffset + m.vertexCount > cm.vertices.size()
-						|| m.triangleOffset + m.triangleCount * 3u > cm.triangles.size()) {
-						++skippedMl;
-						continue;
-					}
-					++kept;
-					for (uint32_t v = 0; v < m.vertexCount; ++v)
-						if (cm.vertices[m.vertexOffset + v] >= vcount)
-							++badWindow;
-					for (uint32_t t = 0; t < m.triangleCount * 3u; ++t) {
-						const uint8_t local = cm.triangles[m.triangleOffset + t];
-						if (local >= m.vertexCount) {
-							++badTri;
-							continue;
-						}
-						const uint32_t id = (uint32_t)std::max<int32_t>(baseVertexI, 0)
-							+ cm.vertices[m.vertexOffset + local];
-						idMin = std::min(idMin, id);
-						idMax = std::max(idMax, id);
-					}
-				}
-			}
-			const auto& mb = gfx.meshBounds[gfxMesh];
-			const auto& me = gfx.meshes[gfxMesh];
-			std::fprintf(stderr,
-				"[TMP-DIAG] gfx=%u uri=%s baseVertex=%d vcount=%u "
-				"meshlets=%u/%u ids=[%u..%u] badWindow=%zu badTri=%zu "
-				"clusters=%u union=(%.2f,%.2f,%.2f r=%.2f) "
-				"aabb=[%.2f,%.2f,%.2f..%.2f,%.2f,%.2f]\n",
-				gfxMesh, uri.c_str(), baseVertexI, vcount,
-				kept, kept + skippedMl, idMin, idMax, badWindow, badTri,
-				me.clusterCount, mb.x, mb.y, mb.z, mb.w,
-				mesh->geometry.aabbMin.x, mesh->geometry.aabbMin.y,
-				mesh->geometry.aabbMin.z, mesh->geometry.aabbMax.x,
-				mesh->geometry.aabbMax.y, mesh->geometry.aabbMax.z);
-			// TMP-DIAG (extends DUMPGFX): per-cluster shape summary for
-			// skinned meshes (the knight) — the RUNTIME cluster table's
-			// radii vs the cook's dashboard (a scrambled round-trip shows
-			// maxR/meanR ~ the whole mesh; tiny split fragments show small
-			// radii with many clusters). Remove later.
-			if (mesh->skinned) {
-				float rMin = 1e30f, rMax = 0.0f;
-				double rSum = 0.0;
-				uint32_t rN = 0, tMin = 4096, tMax = 0;
-				double tSum = 0.0;
-				for (uint32_t ci = 0; ci < me.clusterCount; ++ci) {
-					const smvk::gfx::Cluster& c =
-						gfx.clusters[me.clusterStart + ci];
-					rMin = std::min(rMin, c.boundRadius);
-					rMax = std::max(rMax, c.boundRadius);
-					rSum += (double)c.boundRadius;
-					++rN;
-					tMin = std::min(tMin, c.triCount);
-					tMax = std::max(tMax, c.triCount);
-					tSum += (double)c.triCount;
-				}
-				if (rN > 0)
-					std::fprintf(stderr,
-						"[TMP-DIAG] gfx=%u runtimeClusters=%u "
-						"R[min=%.3f mean=%.3f max=%.3f] "
-						"tris[min=%u mean=%.1f max=%u]\n",
-						gfxMesh, rN, rMin, rSum / (double)rN, rMax,
-						tMin, tSum / (double)rN, tMax);
-			}
-		}
-		done.emplace(key, gfxMesh);
-		return gfxMesh;
-	};
-		// Every LOD sibling gets its own gfx mesh so FilterMainView can push
-		// the selected LOD into the HZB-culled indirect ranges (previously
-		// only LOD0 was registered and LOD>0 drew direct, unculled).
-		// TMP-DIAG (TOURMALINE_DUMPGFX): chain length + per-level world
-		// error for the first meshes (the LOD-selection inputs: zero
-		// errors pin everything at LOD0 regardless of budget). Remove later.
-		if (std::getenv("TOURMALINE_DUMPGFX")) {
-			for (size_t i = 0; i < world.meshLocations.size() && i < 8; ++i) {
-				const uint32_t cl = world.LodChainLength((uint32_t)i);
-				std::string es;
-				for (uint32_t l = 0; l < cl && l < 8; ++l) {
-					char b[64];
-					std::snprintf(b, sizeof(b), " %.4g",
-						(double)world.LodErrorAt((uint32_t)i, l));
-					es += b;
-				}
-				std::fprintf(stderr,
-					"[TMP-DIAG] chain worldMesh=%zu len=%u err=[%s ]\n",
-					i, cl, es.c_str());
-			}
-		}
-		for (size_t i = 0; i < world.meshLocations.size(); ++i) {
-			const uint32_t chainLen = world.LodChainLength((uint32_t)i);
-			if (chainLen <= 1) {
-				const uint32_t g = registerOne(world.meshLocations[i]);
-				if (g == UINT32_MAX)
-					++skipped;
-				meshMap_[i] = g;
-				lodMeshMap_[i] = { g };
-				continue;
-			}
-			std::vector<uint32_t> perLod;
-			perLod.reserve(chainLen);
-			for (uint32_t l = 0; l < chainLen; ++l) {
-				auto hit = world.ResolveLodMesh((uint32_t)i, l);
-				const uint32_t g = hit ? registerOne(*hit) : UINT32_MAX;
-				if (g == UINT32_MAX)
-					++skipped;
-				perLod.push_back(g);
-			}
-			meshMap_[i] = perLod.empty() ? UINT32_MAX : perLod[0];
-			lodMeshMap_[i] = std::move(perLod);
-		}
-		SMVK_DEBUG_LOG(
-			"[GfxFilter] meshes: %u cooked + %u runtime-cooked = %u filtered, %u direct (%llu tris)\n",
-			fromCooked, fromUpload, fromCooked + fromUpload, skipped,
-			(unsigned long long)skippedTris);
-		SMVK_DEBUG_LOG(
-			"[GfxFilter] clusters: %u, filter indices: %llu\n",
-			smvk::gfx::ClusterCount(gfx),
-			(unsigned long long)gfx.filterIndices.size());
-	}
+        uint32_t gfxMesh = UINT32_MAX;
+        if (mesh->meshlets && !mesh->meshlets->empty()) {
+            gfxMesh = smvk::gfx::RegisterMeshFromCooked(gfx, *mesh->meshlets, baseVertex);
+            if (gfxMesh != UINT32_MAX)
+                ++fromCooked;
+        } else if (const smvk::StaticMeshUpload* retained =
+                       loc.cluster->GetRetainedUpload(loc.handle)) {
+            gfxMesh = smvk::gfx::RegisterMeshFromUpload(gfx, *retained, baseVertex);
+            if (gfxMesh != UINT32_MAX)
+                ++fromUpload;
+        }
+        if (gfxMesh == UINT32_MAX)
+            skippedTris += mesh->geometry.indexCount / 3;
+        // TMP-DIAG (TOURMALINE_DUMPGFX, the LOD-sibling draw-drop hunt): the
+        // runtime vertex window vs the cooked-meshlet lifted-id coverage per
+        // registered gfx mesh. The CPU/GPU cull chains and the filter CS all
+        // consume the lifted global ids (RegisterMeshFromCooked lifts
+        // window[tri] by surfaces[0].baseVertex); ids that fall outside
+        // [baseVertex, baseVertex + vertexCount) fetch OTHER meshes'
+        // positions/attributes — triangles that pass every cull (bounds are
+        // cooked from the local geometry, still correct) yet rasterize
+        // nowhere near the object (the distant-sibling black band). The
+        // window-id audit catches it at the source: cooked.vertices[] must
+        // stay under the MESH's vertexCount. Remove later.
+        if (gfxMesh != UINT32_MAX && std::getenv("TOURMALINE_DUMPGFX")) {
+            std::string uri =
+                loc.cluster ? loc.cluster->GetMeshUri(loc.handle).Str() : std::string{};
+            const uint32_t vcount = mesh->geometry.vertexCount;
+            const int32_t baseVertexI =
+                mesh->geometry.surfaces.empty() ? -1 : mesh->geometry.surfaces[0].baseVertex;
+            uint32_t idMin = UINT32_MAX, idMax = 0;
+            uint32_t kept = 0, skippedMl = 0;
+            size_t badWindow = 0, badTri = 0;
+            if (mesh->meshlets && !mesh->meshlets->empty()) {
+                const smvk::CookedMeshlets& cm = *mesh->meshlets;
+                for (const smvk::Meshlet& m : cm.meshlets) {
+                    if (m.triangleCount == 0 || m.triangleCount > 64 || m.vertexCount == 0 ||
+                        m.vertexOffset + m.vertexCount > cm.vertices.size() ||
+                        m.triangleOffset + m.triangleCount * 3u > cm.triangles.size()) {
+                        ++skippedMl;
+                        continue;
+                    }
+                    ++kept;
+                    for (uint32_t v = 0; v < m.vertexCount; ++v)
+                        if (cm.vertices[m.vertexOffset + v] >= vcount)
+                            ++badWindow;
+                    for (uint32_t t = 0; t < m.triangleCount * 3u; ++t) {
+                        const uint8_t local = cm.triangles[m.triangleOffset + t];
+                        if (local >= m.vertexCount) {
+                            ++badTri;
+                            continue;
+                        }
+                        const uint32_t id = (uint32_t)std::max<int32_t>(baseVertexI, 0) +
+                                            cm.vertices[m.vertexOffset + local];
+                        idMin = std::min(idMin, id);
+                        idMax = std::max(idMax, id);
+                    }
+                }
+            }
+            const auto& mb = gfx.meshBounds[gfxMesh];
+            const auto& me = gfx.meshes[gfxMesh];
+            std::fprintf(stderr,
+                         "[TMP-DIAG] gfx=%u uri=%s baseVertex=%d vcount=%u "
+                         "meshlets=%u/%u ids=[%u..%u] badWindow=%zu badTri=%zu "
+                         "clusters=%u union=(%.2f,%.2f,%.2f r=%.2f) "
+                         "aabb=[%.2f,%.2f,%.2f..%.2f,%.2f,%.2f]\n",
+                         gfxMesh,
+                         uri.c_str(),
+                         baseVertexI,
+                         vcount,
+                         kept,
+                         kept + skippedMl,
+                         idMin,
+                         idMax,
+                         badWindow,
+                         badTri,
+                         me.clusterCount,
+                         mb.x,
+                         mb.y,
+                         mb.z,
+                         mb.w,
+                         mesh->geometry.aabbMin.x,
+                         mesh->geometry.aabbMin.y,
+                         mesh->geometry.aabbMin.z,
+                         mesh->geometry.aabbMax.x,
+                         mesh->geometry.aabbMax.y,
+                         mesh->geometry.aabbMax.z);
+            // TMP-DIAG (extends DUMPGFX): per-cluster shape summary for
+            // skinned meshes (the knight) — the RUNTIME cluster table's
+            // radii vs the cook's dashboard (a scrambled round-trip shows
+            // maxR/meanR ~ the whole mesh; tiny split fragments show small
+            // radii with many clusters). Remove later.
+            if (mesh->skinned) {
+                float rMin = 1e30f, rMax = 0.0f;
+                double rSum = 0.0;
+                uint32_t rN = 0, tMin = 4096, tMax = 0;
+                double tSum = 0.0;
+                for (uint32_t ci = 0; ci < me.clusterCount; ++ci) {
+                    const smvk::gfx::Cluster& c = gfx.clusters[me.clusterStart + ci];
+                    rMin = std::min(rMin, c.boundRadius);
+                    rMax = std::max(rMax, c.boundRadius);
+                    rSum += (double)c.boundRadius;
+                    ++rN;
+                    tMin = std::min(tMin, c.triCount);
+                    tMax = std::max(tMax, c.triCount);
+                    tSum += (double)c.triCount;
+                }
+                if (rN > 0)
+                    std::fprintf(stderr,
+                                 "[TMP-DIAG] gfx=%u runtimeClusters=%u "
+                                 "R[min=%.3f mean=%.3f max=%.3f] "
+                                 "tris[min=%u mean=%.1f max=%u]\n",
+                                 gfxMesh,
+                                 rN,
+                                 rMin,
+                                 rSum / (double)rN,
+                                 rMax,
+                                 tMin,
+                                 tSum / (double)rN,
+                                 tMax);
+            }
+        }
+        done.emplace(key, gfxMesh);
+        return gfxMesh;
+    };
+    // Every LOD sibling gets its own gfx mesh so FilterMainView can push
+    // the selected LOD into the HZB-culled indirect ranges (previously
+    // only LOD0 was registered and LOD>0 drew direct, unculled).
+    // TMP-DIAG (TOURMALINE_DUMPGFX): chain length + per-level world
+    // error for the first meshes (the LOD-selection inputs: zero
+    // errors pin everything at LOD0 regardless of budget). Remove later.
+    if (std::getenv("TOURMALINE_DUMPGFX")) {
+        for (size_t i = 0; i < world.meshLocations.size() && i < 8; ++i) {
+            const uint32_t cl = world.LodChainLength((uint32_t)i);
+            std::string es;
+            for (uint32_t l = 0; l < cl && l < 8; ++l) {
+                char b[64];
+                std::snprintf(b, sizeof(b), " %.4g", (double)world.LodErrorAt((uint32_t)i, l));
+                es += b;
+            }
+            std::fprintf(
+                stderr, "[TMP-DIAG] chain worldMesh=%zu len=%u err=[%s ]\n", i, cl, es.c_str());
+        }
+    }
+    for (size_t i = 0; i < world.meshLocations.size(); ++i) {
+        const uint32_t chainLen = world.LodChainLength((uint32_t)i);
+        if (chainLen <= 1) {
+            const uint32_t g = registerOne(world.meshLocations[i]);
+            if (g == UINT32_MAX)
+                ++skipped;
+            meshMap_[i] = g;
+            lodMeshMap_[i] = {g};
+            continue;
+        }
+        std::vector<uint32_t> perLod;
+        perLod.reserve(chainLen);
+        for (uint32_t l = 0; l < chainLen; ++l) {
+            auto hit = world.ResolveLodMesh((uint32_t)i, l);
+            const uint32_t g = hit ? registerOne(*hit) : UINT32_MAX;
+            if (g == UINT32_MAX)
+                ++skipped;
+            perLod.push_back(g);
+        }
+        meshMap_[i] = perLod.empty() ? UINT32_MAX : perLod[0];
+        lodMeshMap_[i] = std::move(perLod);
+    }
+    SMVK_DEBUG_LOG(
+        "[GfxFilter] meshes: %u cooked + %u runtime-cooked = %u filtered, %u direct (%llu tris)\n",
+        fromCooked,
+        fromUpload,
+        fromCooked + fromUpload,
+        skipped,
+        (unsigned long long)skippedTris);
+    SMVK_DEBUG_LOG("[GfxFilter] clusters: %u, filter indices: %llu\n",
+                   smvk::gfx::ClusterCount(gfx),
+                   (unsigned long long)gfx.filterIndices.size());
+}
 
-	void GfxRenderer::UploadStaticData(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
-		smvk::gfx::UploadStaticData(gfx, ctx, rg);
-	}
+void GfxRenderer::UploadStaticData(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
+    smvk::gfx::UploadStaticData(gfx, ctx, rg);
+}
 
-	// CULL BASELINE DUMP (TOURMALINE_CULL_DUMP): reads the main view's
-	// draw-cull verdict buffer back (word i = 1 visible / 0 culled, see
-	// gfxdrawcull.cs.hlsl) plus the finalized filter stats and writes the
-	// canonical camera-locked JSON the perf harness compares against its
-	// tracked baselines (the correctness gate for GPU-driven renderer
-	// changes). Debug one-shot download: accepts one flight of staleness —
-	// the pinned bench camera is static, so the verdicts are identical.
-	static void DumpCullBaseline(smvk::gfx::State& s, uint32_t view,
-			uint32_t frameIndex, smvk::ResourceManager& ctx,
-			uint64_t appFrame) {
-		smvk::gfx::View& v = s.views[view];
-		const uint32_t drawCount = v.stats.draws;
-		std::vector<uint32_t> words(smvk::gfx::kCullStateWords, 0u);
-		if (drawCount == 0 || drawCount > smvk::gfx::kMaxDraws
-				|| v.cullStateBuffers[frameIndex].empty()
-				|| !ctx.DownloadDataFromBuffer(
-					v.cullStateBuffers[frameIndex], words.data(),
-					smvk::gfx::kCullStateWords * sizeof(uint32_t))) {
-			std::fprintf(stderr,
-				"[CullDump] FAILED: verdict readback unavailable "
-				"(drawCount=%u)\n", drawCount);
-			return;
-		}
-		std::error_code ec;
-		std::filesystem::create_directories("exports", ec);
-		char name[64];
-		std::snprintf(name, sizeof(name), "exports/cull_dump_%llu.json",
-			(unsigned long long)appFrame);
-		FILE* f = std::fopen(name, "wb");
-		if (!f) {
-			std::fprintf(stderr, "[CullDump] FAILED: cannot open %s\n", name);
-			return;
-		}
-		uint32_t visible = 0;
-		std::fprintf(f, "{\"schema_version\":1,\"frame\":%llu,\"view\":%u,"
-			"\"draw_count\":%u,\"visible_draws\":[",
-			(unsigned long long)appFrame, (unsigned)view, drawCount);
-		for (uint32_t i = 0; i < drawCount; ++i)
-			if (words[i] != 0u) {
-				std::fprintf(f, "%s%u", visible ? "," : "", i);
-				++visible;
-			}
-		std::fprintf(f, "],\"culled_draws\":[");
-		bool first = true;
-		for (uint32_t i = 0; i < drawCount; ++i)
-			if (words[i] == 0u) {
-				std::fprintf(f, "%s%u", first ? "" : ",", i);
-				first = false;
-			}
-		std::fprintf(f, "],\"stats\":{\"draws\":%u,\"commands\":%u,"
-			"\"triangles_processed\":%u,\"clusters_processed\":%u,"
-			"\"clusters_culled\":%u}}\n",
-			v.stats.draws, v.stats.commands, v.stats.trianglesProcessed,
-			v.stats.clustersProcessed, v.stats.clustersCulled);
-		std::fclose(f);
-		std::fprintf(stderr, "[CullDump] wrote %s (%u draws, %u visible)\n",
-			name, drawCount, visible);
-	}
+// CULL BASELINE DUMP (TOURMALINE_CULL_DUMP): reads the main view's
+// draw-cull verdict buffer back (word i = 1 visible / 0 culled, see
+// gfxdrawcull.cs.hlsl) plus the finalized filter stats and writes the
+// canonical camera-locked JSON the perf harness compares against its
+// tracked baselines (the correctness gate for GPU-driven renderer
+// changes). Debug one-shot download: accepts one flight of staleness —
+// the pinned bench camera is static, so the verdicts are identical.
+static void DumpCullBaseline(smvk::gfx::State& s,
+                             uint32_t view,
+                             uint32_t frameIndex,
+                             smvk::ResourceManager& ctx,
+                             uint64_t appFrame) {
+    smvk::gfx::View& v = s.views[view];
+    const uint32_t drawCount = v.stats.draws;
+    std::vector<uint32_t> words(smvk::gfx::kCullStateWords, 0u);
+    if (drawCount == 0 || drawCount > smvk::gfx::kMaxDraws ||
+        v.cullStateBuffers[frameIndex].empty() ||
+        !ctx.DownloadDataFromBuffer(v.cullStateBuffers[frameIndex],
+                                    words.data(),
+                                    smvk::gfx::kCullStateWords * sizeof(uint32_t))) {
+        std::fprintf(stderr,
+                     "[CullDump] FAILED: verdict readback unavailable "
+                     "(drawCount=%u)\n",
+                     drawCount);
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories("exports", ec);
+    char name[64];
+    std::snprintf(name, sizeof(name), "exports/cull_dump_%llu.json", (unsigned long long)appFrame);
+    FILE* f = std::fopen(name, "wb");
+    if (!f) {
+        std::fprintf(stderr, "[CullDump] FAILED: cannot open %s\n", name);
+        return;
+    }
+    uint32_t visible = 0;
+    std::fprintf(f,
+                 "{\"schema_version\":1,\"frame\":%llu,\"view\":%u,"
+                 "\"draw_count\":%u,\"visible_draws\":[",
+                 (unsigned long long)appFrame,
+                 (unsigned)view,
+                 drawCount);
+    for (uint32_t i = 0; i < drawCount; ++i)
+        if (words[i] != 0u) {
+            std::fprintf(f, "%s%u", visible ? "," : "", i);
+            ++visible;
+        }
+    std::fprintf(f, "],\"culled_draws\":[");
+    bool first = true;
+    for (uint32_t i = 0; i < drawCount; ++i)
+        if (words[i] == 0u) {
+            std::fprintf(f, "%s%u", first ? "" : ",", i);
+            first = false;
+        }
+    std::fprintf(f,
+                 "],\"stats\":{\"draws\":%u,\"commands\":%u,"
+                 "\"triangles_processed\":%u,\"clusters_processed\":%u,"
+                 "\"clusters_culled\":%u}}\n",
+                 v.stats.draws,
+                 v.stats.commands,
+                 v.stats.trianglesProcessed,
+                 v.stats.clustersProcessed,
+                 v.stats.clustersCulled);
+    std::fclose(f);
+    std::fprintf(stderr, "[CullDump] wrote %s (%u draws, %u visible)\n", name, drawCount, visible);
+}
 
-	uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
-		uint32_t frameIndex, smvk::World& world, const smvk::RenderViewSet& views,
-		uint32_t mainViewIdx, const glm::vec3& eye, const smvk::Extent2D& extent,
-		smvk::gfx::CullFlags flags, const smvk::LodFrameInputs* lod,
-		bool lodShaderVertexLit) {
+uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx,
+                                     smvk::RenderGraph& rg,
+                                     uint32_t frameIndex,
+                                     smvk::World& world,
+                                     const smvk::RenderViewSet& views,
+                                     uint32_t mainViewIdx,
+                                     const glm::vec3& eye,
+                                     const smvk::Extent2D& extent,
+                                     smvk::gfx::CullFlags flags,
+                                     const smvk::LodFrameInputs* lod,
+                                     bool lodShaderVertexLit) {
 
-		SMVK_PROFILE_RENDER("GfxFilterMainView");
-		SMVK_PROFILE_TAG("extentWidth", extent.width);
-		SMVK_PROFILE_TAG("extentHeight", extent.height);
-#if 0 // TMP-DIAG scanlands hunt (disabled): dump worldMesh->group(pool)->URI map once. Remove later.
+    SMVK_PROFILE_RENDER("GfxFilterMainView");
+    SMVK_PROFILE_TAG("extentWidth", extent.width);
+    SMVK_PROFILE_TAG("extentHeight", extent.height);
+#if 0 // TMP-DIAG scanlands hunt (disabled): dump worldMesh->group(pool)->URI map once. Remove
+      // later.
 		{
 			static bool kMapDone = false;
 			if (!kMapDone && std::getenv("TOURMALINE_DUMPMAP")) {
@@ -1600,62 +1740,65 @@ namespace engine {
 		}
 #endif
 
-		smvk::gfx::BeginFrame(gfx);
-		if (mainViewIdx == smvk::RenderViewSet::kInvalidIndex)
-			return UINT32_MAX;
-		const smvk::RenderView& view = views.Get(mainViewIdx);
-		const uint32_t slot = smvk::gfx::BeginView(gfx, ctx, rg, view, eye,
-			flags, extent.width, extent.height);
-		if (slot == UINT32_MAX)
-			return UINT32_MAX;
-		// Chart transform table for the filtered VS unpack (uploaded once per
-		// scene version; PushViewConstants reads the cached BDA below).
-		EnsureChartXforms(world, ctx);
+    smvk::gfx::BeginFrame(gfx);
+    if (mainViewIdx == smvk::RenderViewSet::kInvalidIndex)
+        return UINT32_MAX;
+    const smvk::RenderView& view = views.Get(mainViewIdx);
+    const uint32_t slot =
+        smvk::gfx::BeginView(gfx, ctx, rg, view, eye, flags, extent.width, extent.height);
+    if (slot == UINT32_MAX)
+        return UINT32_MAX;
+    // Chart transform table for the filtered VS unpack (uploaded once per
+    // scene version; PushViewConstants reads the cached BDA below).
+    EnsureChartXforms(world, ctx);
 
-		SMVK_PROFILE_SCOPE("GfxFilterPushDraws");
-		// Aggregate per-item stage costs into Optick tags rather than creating
-		// thousands of timeline events. Only sample clocks during CPU captures.
-		using PushClock = std::chrono::steady_clock;
-		struct PushStageTimer {
-			uint64_t& nanoseconds;
-			bool enabled;
-			PushClock::time_point start;
-			PushStageTimer(uint64_t& sum, bool on)
-				: nanoseconds(sum), enabled(on), start(on ? PushClock::now() : PushClock::time_point{}) {}
-			~PushStageTimer() {
-				if (enabled)
-					nanoseconds += static_cast<uint64_t>(
-						std::chrono::duration_cast<std::chrono::nanoseconds>(
-								PushClock::now() - start).count());
-			}
-		};
-		const bool profilePushStages = smvk::profiler::Enabled();
-		uint64_t lodNs = 0, boundsNs = 0, lightmapNs = 0, pushNs = 0;
-		const auto traversalStart = profilePushStages ? PushClock::now() : PushClock::time_point{};
-		// TMP-DIAG (TOURMALINE_DUMPGFX): per-gate push counters, first frame
-		// only. Remove later (folds into the draw dump above).
-		struct PushGates { uint64_t items = 0, badMat = 0, unknownMesh = 0;
-			uint64_t ditherHidden = 0, shaderLod = 0, unreg = 0, preculled = 0,
-				pushed = 0; uint32_t lodHist[8] = {}; };
-		static PushGates s_gates{};
-		static bool s_gatesDone = false;
-		const bool dumpGates = std::getenv("TOURMALINE_DUMPGFX") != nullptr
-			&& !s_gatesDone;
-		world.forEachRenderItem(
-			smvk::IteratorFlagBit_Renderable
-			| smvk::IteratorFlagBit_Opaque
-			| smvk::IteratorFlagBit_StaticVertexFmt,
-			[&](const smvk::World::RenderItem& item) {
-			if (dumpGates) ++s_gates.items;
-			if (item.material == smvk::World::kInvalidIndex) {
-				if (dumpGates) ++s_gates.badMat;
-				return;
-			}
-			const uint32_t worldMesh = item.mesh;
+    SMVK_PROFILE_SCOPE("GfxFilterPushDraws");
+    // Aggregate per-item stage costs into Optick tags rather than creating
+    // thousands of timeline events. Only sample clocks during CPU captures.
+    using PushClock = std::chrono::steady_clock;
+    struct PushStageTimer {
+        uint64_t& nanoseconds;
+        bool enabled;
+        PushClock::time_point start;
+        PushStageTimer(uint64_t& sum, bool on)
+            : nanoseconds(sum), enabled(on),
+              start(on ? PushClock::now() : PushClock::time_point{}) {}
+        ~PushStageTimer() {
+            if (enabled)
+                nanoseconds += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(PushClock::now() - start)
+                        .count());
+        }
+    };
+    const bool profilePushStages = smvk::profiler::Enabled();
+    uint64_t lodNs = 0, boundsNs = 0, lightmapNs = 0, pushNs = 0;
+    const auto traversalStart = profilePushStages ? PushClock::now() : PushClock::time_point{};
+    // TMP-DIAG (TOURMALINE_DUMPGFX): per-gate push counters, first frame
+    // only. Remove later (folds into the draw dump above).
+    struct PushGates {
+        uint64_t items = 0, badMat = 0, unknownMesh = 0;
+        uint64_t ditherHidden = 0, shaderLod = 0, unreg = 0, preculled = 0, pushed = 0;
+        uint32_t lodHist[8] = {};
+    };
+    static PushGates s_gates{};
+    static bool s_gatesDone = false;
+    const bool dumpGates = std::getenv("TOURMALINE_DUMPGFX") != nullptr && !s_gatesDone;
+    world.forEachRenderItem(
+        smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+            smvk::IteratorFlagBit_StaticVertexFmt,
+        [&](const smvk::World::RenderItem& item) {
+            if (dumpGates)
+                ++s_gates.items;
+            if (item.material == smvk::World::kInvalidIndex) {
+                if (dumpGates)
+                    ++s_gates.badMat;
+                return;
+            }
+            const uint32_t worldMesh = item.mesh;
 #if 0 // TMP-DIAG scanlands hunt (disabled): mesh hide/show + model-matrix dump. Remove later.
-			// Hide glTF mesh groupIds in TOURMALINE_HIDEGROUP="lo-hi".
-			// TOURMALINE_SHOWGROUP="n" shows ONLY group n.
-			// TOURMALINE_DUMPMAT dumps the model matrix for group-53 pushes.
+      // Hide glTF mesh groupIds in TOURMALINE_HIDEGROUP="lo-hi".
+      // TOURMALINE_SHOWGROUP="n" shows ONLY group n.
+      // TOURMALINE_DUMPMAT dumps the model matrix for group-53 pushes.
 			static int kHideLo = INT_MAX, kHideHi = INT_MIN;
 			static int kShowOnly = INT_MAX;
 			static bool kHideInit = false;
@@ -1700,835 +1843,996 @@ namespace engine {
 				}
 			}
 #endif
-			if (worldMesh >= meshMap_.size()) {
-				if (dumpGates) ++s_gates.unknownMesh;
-				return; // unknown mesh: the direct path still draws it
-			}
-			const glm::mat4& model = world.scene.globalTransform[item.node];
-			// Dither-on-closeup (Scene::ditherCloseup; per frame, per
-			// draw): Hidden draws drop out of the frame's filtered set
-			// entirely (the CPU cull — no leg sees them); Fade draws
-			// carry the ring flag (GFX_DRAW_DITHER_CLOSEUP -> the
-			// filtered VS / mesh MS forward it flat to the lit FS
-			// family) and route into the MASKED bucket so the seed /
-			// remainder depth legs bind their alpha-tested FSs — the
-			// depth screen-doors with the lit pixels (solid depth
-			// would leave black holes through the fading subtree).
-			// The direct legs make the same per-frame decision inline
-			// (ForwardPlusRenderer prepass, RecordShadowCastersDirect,
-			// the Main direct fallback) so both paths agree per draw.
-			const DitherCloseupState ditherState =
-				DitherCloseupStateFor(world.scene, int(item.node), eye);
-			if (ditherState == DitherCloseupState::Hidden) {
-				if (dumpGates) ++s_gates.ditherHidden;
-				return;
-			}
-			// LOD-aware push (World::LodIndexForNode shares the halfrate
-			// cache with every direct-draw consumer, so both sides agree
-			// per node per frame): the selected sibling's gfx mesh goes
-			// into the HZB-culled indirect ranges. Only a sibling whose
-			// registration failed falls through to the direct fallback,
-			// so each instance still rasterizes exactly once.
-			uint32_t lodIdx = 0;
-			uint32_t gfxMesh = UINT32_MAX;
-			{
-				PushStageTimer timer(lodNs, profilePushStages);
-			if (lod && world.LodChainLength(worldMesh) > 1)
-				lodIdx = world.LodIndexForNode(item.node, worldMesh, *lod);
-			if (dumpGates && lodIdx < 8)
-				++s_gates.lodHist[lodIdx];
-			// Shader LODs: levels shading vertex-lit (farthest level) skip
-			// the filtered indirect ranges — the filtered VS is lit-only,
-			// so the Main direct leg draws them with the cheap program.
-			// Same halfrate cache read as the Main leg: both sides agree
-			// per node per frame, so each instance rasterizes exactly once.
-			if (lodShaderVertexLit
-				&& !world.FarShadingAt(worldMesh, lodIdx,
-					item.material).isDefault()) {
-				if (dumpGates) ++s_gates.shaderLod;
-				return;
-			}
-			if (worldMesh < lodMeshMap_.size()
-				&& lodIdx < lodMeshMap_[worldMesh].size())
-				gfxMesh = lodMeshMap_[worldMesh][lodIdx];
-			if (gfxMesh == UINT32_MAX) {
-				if (dumpGates) ++s_gates.unreg;
-				return;
-			} // not filterable at this LOD (unregistered, or the
-			// runtime chain outgrew the registered one): the direct
-			// path draws it. GfxMeshForLod reports the same value for
-			// the same (mesh, lodIdx), so the filtered and direct
-			// legs agree — the instance rasterizes exactly once.
-			// (The old meshMap_ fallback pushed LOD0's gfx mesh here
-			// while the direct legs skipped on the selected sibling:
-			// double-draw of mismatched geometry.)
-			} // LOD/registration stage
-		// Mesh-level sphere pre-cull on CONSERVATIVE bounds: LOD
-		// siblings may have tighter/smaller AABBs than LOD0, so
-		// culling on the selected sibling alone drops instances the
-		// direct path skips (it sees GfxMeshForLod != UINT32_MAX) and
-		// neither path draws -> 1-frame holes while the camera moves
-		// and the halfrate cache flips siblings. Keep the instance
-		// when EITHER the base or the selected sibling intersects;
-		// per-cluster GPU culling still rejects truly hidden meshlets.
-			{
-				PushStageTimer timer(boundsNs, profilePushStages);
-				smvk::StaticMesh* baseDesc = world.GetMesh(worldMesh);
-				smvk::StaticMesh* selDesc = world.GetLodMesh(worldMesh, lodIdx);
-				bool baseHit = true, selHit = true;
-				glm::vec3 baseC{ 0.0f }; float baseR = 0.0f;
-				glm::vec3 selC{ 0.0f }; float selR = 0.0f;
-				if (baseDesc) {
-					smvk::MeshBoundsToWorld(model, baseDesc->geometry.aabbMin,
-						baseDesc->geometry.aabbMax, baseC, baseR);
-					baseHit = smvk::RenderViewIntersectsSphere(view, baseC, baseR);
-				}
-				if (selDesc && selDesc != baseDesc) {
-					smvk::MeshBoundsToWorld(model, selDesc->geometry.aabbMin,
-						selDesc->geometry.aabbMax, selC, selR);
-					selHit = smvk::RenderViewIntersectsSphere(view, selC, selR);
-				}
-				else if (selDesc) {
-					selC = baseC; selR = baseR; selHit = baseHit;
-				}
-				if (!baseHit && !selHit) {
-					if (dumpGates) ++s_gates.preculled;
-					return;
-				}
-				if (baseHit != selHit) {
-					static uint64_t s_lodBoundsDisagree = 0;
-					if ((++s_lodBoundsDisagree % 512) == 1) {
-						SMVK_DEBUG_LOG("[GfxFilter] LOD bounds disagree mesh=%u lod=%u baseHit=%d selHit=%d\n",
-							worldMesh, lodIdx, baseHit ? 1 : 0, selHit ? 1 : 0);
-					}
-				}
-			}
-			// The draw-set bucket (opaque vs. alpha-tested) selects the
-			// seed depth PSO in T3.
-			smvk::gfx::DrawFlags drawFlags = 0;
-			smvk::gfx::DrawSetMask drawSet = smvk::gfx::DrawSetBit_Opaque;
-			uint32_t lmChunk = 0xFFFFFFFFu;
-			if (const smvk::Material* mat = world.GetMaterial(item.material)) {
-				if (mat->shadingModel == smvk::ShadingModel::Masked)
-					drawSet = smvk::gfx::DrawSetBit_Masked;
-			}
-			// Dither-on-closeup Fade band (see the state check above): the
-			// ring flag forwards flat (VS location 8) into the lit FS
-			// family, and the MASKED bucket routes the seed/remainder depth
-			// legs through their alpha-tested FSs so the depth screen-doors
-			// in step with the lit pixels (solid depth would leave black
-			// holes through the fading subtree).
-			if (ditherState == DitherCloseupState::Fade) {
-				drawFlags |= smvk::gfx::DrawFlagBit_DitherCloseup;
-				drawSet = smvk::gfx::DrawSetBit_Masked;
-			}
-			// SKINNED draws (the Northlight compute path): the flag is
-			// set ONLY when the frame carries a valid deformed buffer (the
-			// renderer's skinning driver filled gfx.skinDeformedBda - the
-			// deformed heap exists + the skinning pass ran); a skinned
-			// mesh WITHOUT animation data keeps the static bind-pose
-			// fetches (no deformed heap, no swap).
-			if ((gfx.skinDeformedBda != 0)
-				&& world.GetMesh(worldMesh)
-				&& world.GetMesh(worldMesh)->skinned
-				&& !std::getenv("TOURMALINE_KD_NOSKIN")) {
-				drawFlags |= smvk::gfx::DrawFlagBit_Skinned;
-				if (std::getenv("TOURMALINE_KD")) {
-					static uint32_t s_c = 0;
-					if (s_c++ < 6)
-						std::fprintf(stderr, "[KD] skinned draw pushed node=%u worldMesh=%u gfxMesh=%u flags=0x%x drawSet=0x%x meshElig=%d\n",
-							(unsigned)item.node, worldMesh, gfxMesh,
-							(unsigned)drawFlags, (unsigned)drawSet,
-							(int)smvk::gfx::MeshDrawEligible(drawSet, drawFlags));
-				}
-			} else if (std::getenv("TOURMALINE_KD")
-				&& world.GetMesh(worldMesh)
-				&& world.GetMesh(worldMesh)->skinned) {
-				static uint32_t s_c2 = 0;
-				if (s_c2++ < 6)
-					std::fprintf(stderr, "[KD] skinned mesh NOT flagged node=%u worldMesh=%u bda=%llu skinned=%d\n",
-						(unsigned)item.node, worldMesh,
-						(unsigned long long)gfx.skinDeformedBda,
-						(int)world.GetMesh(worldMesh)->skinned);
-			}
-			// Lightmap chunk rides the draw: resolved from the SELECTED LOD
-			// sibling, whose own texCoord2 addresses its own atlas rects.
-			// The frostbite cook transfers LOD0's parameterization to every
-			// sibling (same count everywhere), so each level pairs its own
-			// geometry with its own count here. GetLodMesh
-			// falls back to LOD0 for missing siblings. Unlightmapped meshes
-			// carry 0xFFFFFFFF and the FS falls back to probe/grid ambient.
-			uint32_t chartOffset = 0;
-			uint32_t lmDelta = 0u;
-			{
-			PushStageTimer timer(lightmapNs, profilePushStages);
-			if (const smvk::StaticMesh* mesh = world.GetLodMesh(worldMesh, lodIdx))
-				lmChunk = mesh->lmChunk;
-			// Per-draw chart offset: base into the scene-wide transform
-			// table for the SELECTED LOD sibling (each level owns its chart
-			// list; unlightmapped meshes resolve 0 and gate on lmChunk).
-			chartOffset = world.ChartOffsetFor(worldMesh, lodIdx);
-			// The per-draw unsigned lightmap-heap delta is NOT a presence
-			// sentinel: -1 in modular arithmetic equals UINT32_MAX and
-			// is a valid offset. Publish stream presence via lmChunk.
-			bool lmResident = false;
-			// No chart-transform BDA means the vertex shader must not
-			// dereference xforms. Keep the lobe sentinel and dynamic GI.
-			if (ChartXformsAddress() != 0 && !world.lmChartTable.empty()) {
-				if (auto lmLoc = world.ResolveLodMesh(worldMesh, lodIdx)) {
-					const smvk::ClusterStaticMeshHandle h = lmLoc->handle;
-					if (const smvk::StaticMesh* m
-						= lmLoc->cluster->staticMeshes.get(h);
-						m && !m->skinned // baked charts are STATIC-only
-						&& m->lightmapBase != UINT32_MAX
-						&& !m->lmChartXforms.empty()) {
-						const uint32_t vb =
-							lmLoc->cluster->GetMeshHeapVertexBase(h);
-						if (vb != UINT32_MAX) {
-							lmDelta = m->lightmapBase - vb;
-							lmResident = true;
-						}
-					}
-				}
-			}
-			if (!lmResident)
-				lmChunk = UINT32_MAX;
-			} // Lightmap lookup stage
-			{
-			PushStageTimer timer(pushNs, profilePushStages);
-			smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
-				item.material, drawFlags, drawSet, lmChunk, chartOffset,
-				lmDelta,
-				// The resolved material userdata (the instance override
-				// or the base default — the lit hooks' runtime input).
-				world.ResolvedItemUserData(item));
-			} // PushDraw stage (includes userdata resolution)
-			if (dumpGates) ++s_gates.pushed;
-			// TMP-DIAG (TOURMALINE_DUMPGFX, the LOD-sibling draw-drop hunt):
-			// the pushed draw list, once per process (the camera is static
-			// in the headless repro, so the first frame is the repro frame).
-			// Maps the pushed (worldMesh -> selected LOD -> gfx mesh) chain
-			// to the registration dump above. Remove later.
-			if (std::getenv("TOURMALINE_DUMPGFX")) {
-				static bool s_dumpedDraws = false;
-				if (!s_dumpedDraws) {
-					s_dumpedDraws = true;
-					fprintf(stderr, "[TMP-DIAG] pushed draws (first frame):\n");
-				}
-				std::string uri;
-				if (auto hit = world.ResolveLodMesh(worldMesh, lodIdx))
-					uri = hit->cluster
-						? hit->cluster->GetMeshUri(hit->handle).Str() : std::string{};
-				fprintf(stderr,
-					"[TMP-DIAG] draw worldMesh=%u node=%u lod=%u gfx=%u uri=%s\n",
-					worldMesh, (unsigned)item.node, lodIdx, gfxMesh, uri.c_str());
-			}
-		});
-		if (profilePushStages) {
-			const uint64_t totalNs = static_cast<uint64_t>(
-				std::chrono::duration_cast<std::chrono::nanoseconds>(
-					PushClock::now() - traversalStart).count());
-			const uint64_t stagesNs = lodNs + boundsNs + lightmapNs + pushNs;
-			// Residual includes iterator traversal, other callback logic and
-			// timer overhead; do not interpret it as pure iterator cost.
-			SMVK_PROFILE_TAG("traversalOtherUs", (totalNs - std::min(totalNs, stagesNs)) / 1000);
-			SMVK_PROFILE_TAG("lodUs", lodNs / 1000);
-			SMVK_PROFILE_TAG("boundsFrustumUs", boundsNs / 1000);
-			SMVK_PROFILE_TAG("lightmapUs", lightmapNs / 1000);
-			SMVK_PROFILE_TAG("pushDrawUs", pushNs / 1000);
-		}
-		if (dumpGates && !s_gatesDone) {
-			s_gatesDone = true;
-			std::fprintf(stderr,
-				"[TMP-DIAG] push gates: items=%llu badMat=%llu unknownMesh=%llu "
-				"ditherHidden=%llu shaderLod=%llu unreg=%llu preculled=%llu "
-				"pushed=%llu lodHist=[%u %u %u %u %u %u %u %u]\n",
-				(unsigned long long)s_gates.items,
-				(unsigned long long)s_gates.badMat,
-				(unsigned long long)s_gates.unknownMesh,
-				(unsigned long long)s_gates.ditherHidden,
-				(unsigned long long)s_gates.shaderLod,
-				(unsigned long long)s_gates.unreg,
-				(unsigned long long)s_gates.preculled,
-				(unsigned long long)s_gates.pushed,
-				s_gates.lodHist[0], s_gates.lodHist[1], s_gates.lodHist[2],
-				s_gates.lodHist[3], s_gates.lodHist[4], s_gates.lodHist[5],
-				s_gates.lodHist[6], s_gates.lodHist[7]);
-		}
-		// Opt-in CPU candidate census for deciding whether repeated filtered
-		// draws warrant promotion to instanced indirect commands. This samples
-		// BEFORE GPU occlusion; it is an upper bound, never a visible-instance
-		// count or an estimate of actual command savings after GPU culling.
-		// No GPU scene DB rows, generations, or draw buffers are modified.
-		if (std::getenv("TOURMALINE_INSTANCE_METRICS") && (frameCounter_ % 300) == 0) {
-			const auto measureStart = std::chrono::steady_clock::now();
-			const auto& candidates = gfx.views[slot].draws;
-			using InstanceKey = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t,
-				uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
-			std::map<InstanceKey, uint32_t> groups;
-			for (const smvk::gfx::DrawRequest& draw : candidates) {
-				// Match mesh, material, shader state and per-draw resource
-				// values. Transforms deliberately differ between instances.
-				const InstanceKey key{draw.mesh, draw.material, draw.flags,
-					draw.drawSet, draw.lmChunk, draw.lmChartOffset,
-					draw.lmDelta, draw.userData, 0u};
-				++groups[key];
-			}
-			uint32_t repeatedCandidates = 0;
-			uint32_t repeatedGroups = 0;
-			uint32_t largestGroup = 0;
-			for (const auto& [key, count] : groups) {
-				(void)key;
-				largestGroup = std::max(largestGroup, count);
-				if (count > 1) {
-					repeatedCandidates += count;
-					++repeatedGroups;
-				}
-			}
-			const auto measureUs = std::chrono::duration_cast<std::chrono::microseconds>(
-				std::chrono::steady_clock::now() - measureStart).count();
-			SMVK_TRACE_LOG(
-				"[InstanceMetrics] filtered candidates=%zu groups=%zu repeated_candidates=%u "
-				"repeated_groups=%u largest_group=%u candidate_command_upper_bound=%zu "
-				"census_us=%lld (pre-GPU-cull; NOT actual draw commands or visible instances)\\n",
-				candidates.size(), groups.size(), repeatedCandidates,
-				repeatedGroups, largestGroup, candidates.size() - groups.size(),
-				static_cast<long long>(measureUs));
-		}
-		const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
-		// NOTE: Release-visible trace (not SMVK_DEBUG_LOG): this is the only
-		// per-run visibility into filter load (draws/batches vs
-		// kMaxDraws/kMaxBatches) — muted at runtime by the interactive
-		// EDITOR (SMVK_TRACE_LOG; the App/bench flows keep it).
-		if ((frameCounter_++ % 300) == 0) {
-			SMVK_TRACE_LOG(
-				"[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
-				stats.draws, stats.commands, stats.trianglesProcessed,
-				stats.clustersCulled, stats.clustersProcessed);
-			// Temporal dashboard: prev* holds LAST frame's snapshot here (this
-			// frame's rotation runs later in AppendPasses), so the seed /
-			// remainder / HZB figures describe what the temporal loop did.
-			const smvk::gfx::TemporalView& ht = smvk::gfx::Temporal(gfx, slot);
-			const smvk::gfx::HizResources& hh = ht.hiz[frameIndex];
-			SMVK_DEBUG_LOG(
-				"[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
-				stats.draws, stats.commands, stats.trianglesProcessed,
-				stats.clustersCulled, stats.clustersProcessed);
-			SMVK_DEBUG_LOG(
-				"[GfxFilter] hist: valid=%d prev=%u seed=%u/%u rem=%u/%u hiz=%umips %ux%u minContrib=%.2f\n",
-				ht.historyValid ? 1 : 0, ht.prevBatchCount,
-				(unsigned)ht.seedCommands.size(), (unsigned)ht.seedRanges.size(),
-				(unsigned)ht.remainderCommands.size(), (unsigned)ht.remainderRanges.size(),
-				hh.mipCount, hh.width, hh.height, ht.minimumContribution);
-		}
-		// CULL BASELINE DUMP (TOURMALINE_CULL_DUMP, one shot; frameCounter_
-		// was just incremented, so it holds the 1-based app frame). The >=
-		// comparison tolerates a pin that names an already-passed frame.
-		if (cullDumpFrame_ >= 0 && !cullDumpDone_
-				&& frameCounter_ >= uint64_t(cullDumpFrame_)) {
-			cullDumpDone_ = true;
-			DumpCullBaseline(gfx, slot, frameIndex, ctx, frameCounter_);
-		}
-		return slot;
-	}
+            if (worldMesh >= meshMap_.size()) {
+                if (dumpGates)
+                    ++s_gates.unknownMesh;
+                return; // unknown mesh: the direct path still draws it
+            }
+            const glm::mat4& model = world.scene.globalTransform[item.node];
+            // Dither-on-closeup (Scene::ditherCloseup; per frame, per
+            // draw): Hidden draws drop out of the frame's filtered set
+            // entirely (the CPU cull — no leg sees them); Fade draws
+            // carry the ring flag (GFX_DRAW_DITHER_CLOSEUP -> the
+            // filtered VS / mesh MS forward it flat to the lit FS
+            // family) and route into the MASKED bucket so the seed /
+            // remainder depth legs bind their alpha-tested FSs — the
+            // depth screen-doors with the lit pixels (solid depth
+            // would leave black holes through the fading subtree).
+            // The direct legs make the same per-frame decision inline
+            // (ForwardPlusRenderer prepass, RecordShadowCastersDirect,
+            // the Main direct fallback) so both paths agree per draw.
+            const DitherCloseupState ditherState =
+                DitherCloseupStateFor(world.scene, int(item.node), eye);
+            if (ditherState == DitherCloseupState::Hidden) {
+                if (dumpGates)
+                    ++s_gates.ditherHidden;
+                return;
+            }
+            // LOD-aware push (World::LodIndexForNode shares the halfrate
+            // cache with every direct-draw consumer, so both sides agree
+            // per node per frame): the selected sibling's gfx mesh goes
+            // into the HZB-culled indirect ranges. Only a sibling whose
+            // registration failed falls through to the direct fallback,
+            // so each instance still rasterizes exactly once.
+            uint32_t lodIdx = 0;
+            uint32_t gfxMesh = UINT32_MAX;
+            {
+                PushStageTimer timer(lodNs, profilePushStages);
+                if (lod && world.LodChainLength(worldMesh) > 1)
+                    lodIdx = world.LodIndexForNode(item.node, worldMesh, *lod);
+                if (dumpGates && lodIdx < 8)
+                    ++s_gates.lodHist[lodIdx];
+                // Shader LODs: levels shading vertex-lit (farthest level) skip
+                // the filtered indirect ranges — the filtered VS is lit-only,
+                // so the Main direct leg draws them with the cheap program.
+                // Same halfrate cache read as the Main leg: both sides agree
+                // per node per frame, so each instance rasterizes exactly once.
+                if (lodShaderVertexLit &&
+                    !world.FarShadingAt(worldMesh, lodIdx, item.material).isDefault()) {
+                    if (dumpGates)
+                        ++s_gates.shaderLod;
+                    return;
+                }
+                if (worldMesh < lodMeshMap_.size() && lodIdx < lodMeshMap_[worldMesh].size())
+                    gfxMesh = lodMeshMap_[worldMesh][lodIdx];
+                if (gfxMesh == UINT32_MAX) {
+                    if (dumpGates)
+                        ++s_gates.unreg;
+                    return;
+                } // not filterable at this LOD (unregistered, or the
+                // runtime chain outgrew the registered one): the direct
+                // path draws it. GfxMeshForLod reports the same value for
+                // the same (mesh, lodIdx), so the filtered and direct
+                // legs agree — the instance rasterizes exactly once.
+                // (The old meshMap_ fallback pushed LOD0's gfx mesh here
+                // while the direct legs skipped on the selected sibling:
+                // double-draw of mismatched geometry.)
+            } // LOD/registration stage
+            // Mesh-level sphere pre-cull on CONSERVATIVE bounds: LOD
+            // siblings may have tighter/smaller AABBs than LOD0, so
+            // culling on the selected sibling alone drops instances the
+            // direct path skips (it sees GfxMeshForLod != UINT32_MAX) and
+            // neither path draws -> 1-frame holes while the camera moves
+            // and the halfrate cache flips siblings. Keep the instance
+            // when EITHER the base or the selected sibling intersects;
+            // per-cluster GPU culling still rejects truly hidden meshlets.
+            {
+                PushStageTimer timer(boundsNs, profilePushStages);
+                smvk::StaticMesh* baseDesc = world.GetMesh(worldMesh);
+                smvk::StaticMesh* selDesc = world.GetLodMesh(worldMesh, lodIdx);
+                bool baseHit = true, selHit = true;
+                glm::vec3 baseC{0.0f};
+                float baseR = 0.0f;
+                glm::vec3 selC{0.0f};
+                float selR = 0.0f;
+                if (baseDesc) {
+                    smvk::MeshBoundsToWorld(model,
+                                            baseDesc->geometry.aabbMin,
+                                            baseDesc->geometry.aabbMax,
+                                            baseC,
+                                            baseR);
+                    baseHit = smvk::RenderViewIntersectsSphere(view, baseC, baseR);
+                }
+                if (selDesc && selDesc != baseDesc) {
+                    smvk::MeshBoundsToWorld(
+                        model, selDesc->geometry.aabbMin, selDesc->geometry.aabbMax, selC, selR);
+                    selHit = smvk::RenderViewIntersectsSphere(view, selC, selR);
+                } else if (selDesc) {
+                    selC = baseC;
+                    selR = baseR;
+                    selHit = baseHit;
+                }
+                if (!baseHit && !selHit) {
+                    if (dumpGates)
+                        ++s_gates.preculled;
+                    return;
+                }
+                if (baseHit != selHit) {
+                    static uint64_t s_lodBoundsDisagree = 0;
+                    if ((++s_lodBoundsDisagree % 512) == 1) {
+                        SMVK_DEBUG_LOG(
+                            "[GfxFilter] LOD bounds disagree mesh=%u lod=%u baseHit=%d selHit=%d\n",
+                            worldMesh,
+                            lodIdx,
+                            baseHit ? 1 : 0,
+                            selHit ? 1 : 0);
+                    }
+                }
+            }
+            // The draw-set bucket (opaque vs. alpha-tested) selects the
+            // seed depth PSO in T3.
+            smvk::gfx::DrawFlags drawFlags = 0;
+            smvk::gfx::DrawSetMask drawSet = smvk::gfx::DrawSetBit_Opaque;
+            uint32_t lmChunk = 0xFFFFFFFFu;
+            if (const smvk::Material* mat = world.GetMaterial(item.material)) {
+                if (mat->shadingModel == smvk::ShadingModel::Masked)
+                    drawSet = smvk::gfx::DrawSetBit_Masked;
+            }
+            // Dither-on-closeup Fade band (see the state check above): the
+            // ring flag forwards flat (VS location 8) into the lit FS
+            // family, and the MASKED bucket routes the seed/remainder depth
+            // legs through their alpha-tested FSs so the depth screen-doors
+            // in step with the lit pixels (solid depth would leave black
+            // holes through the fading subtree).
+            if (ditherState == DitherCloseupState::Fade) {
+                drawFlags |= smvk::gfx::DrawFlagBit_DitherCloseup;
+                drawSet = smvk::gfx::DrawSetBit_Masked;
+            }
+            // SKINNED draws (the Northlight compute path): the flag is
+            // set ONLY when the frame carries a valid deformed buffer (the
+            // renderer's skinning driver filled gfx.skinDeformedBda - the
+            // deformed heap exists + the skinning pass ran); a skinned
+            // mesh WITHOUT animation data keeps the static bind-pose
+            // fetches (no deformed heap, no swap).
+            if ((gfx.skinDeformedBda != 0) && world.GetMesh(worldMesh) &&
+                world.GetMesh(worldMesh)->skinned && !std::getenv("TOURMALINE_KD_NOSKIN")) {
+                drawFlags |= smvk::gfx::DrawFlagBit_Skinned;
+                if (std::getenv("TOURMALINE_KD")) {
+                    static uint32_t s_c = 0;
+                    if (s_c++ < 6)
+                        std::fprintf(stderr,
+                                     "[KD] skinned draw pushed node=%u worldMesh=%u gfxMesh=%u "
+                                     "flags=0x%x drawSet=0x%x meshElig=%d\n",
+                                     (unsigned)item.node,
+                                     worldMesh,
+                                     gfxMesh,
+                                     (unsigned)drawFlags,
+                                     (unsigned)drawSet,
+                                     (int)smvk::gfx::MeshDrawEligible(drawSet, drawFlags));
+                }
+            } else if (std::getenv("TOURMALINE_KD") && world.GetMesh(worldMesh) &&
+                       world.GetMesh(worldMesh)->skinned) {
+                static uint32_t s_c2 = 0;
+                if (s_c2++ < 6)
+                    std::fprintf(
+                        stderr,
+                        "[KD] skinned mesh NOT flagged node=%u worldMesh=%u bda=%llu skinned=%d\n",
+                        (unsigned)item.node,
+                        worldMesh,
+                        (unsigned long long)gfx.skinDeformedBda,
+                        (int)world.GetMesh(worldMesh)->skinned);
+            }
+            // Lightmap chunk rides the draw: resolved from the SELECTED LOD
+            // sibling, whose own texCoord2 addresses its own atlas rects.
+            // The frostbite cook transfers LOD0's parameterization to every
+            // sibling (same count everywhere), so each level pairs its own
+            // geometry with its own count here. GetLodMesh
+            // falls back to LOD0 for missing siblings. Unlightmapped meshes
+            // carry 0xFFFFFFFF and the FS falls back to probe/grid ambient.
+            uint32_t chartOffset = 0;
+            uint32_t lmDelta = 0u;
+            {
+                PushStageTimer timer(lightmapNs, profilePushStages);
+                if (const smvk::StaticMesh* mesh = world.GetLodMesh(worldMesh, lodIdx))
+                    lmChunk = mesh->lmChunk;
+                // Per-draw chart offset: base into the scene-wide transform
+                // table for the SELECTED LOD sibling (each level owns its chart
+                // list; unlightmapped meshes resolve 0 and gate on lmChunk).
+                chartOffset = world.ChartOffsetFor(worldMesh, lodIdx);
+                // The per-draw unsigned lightmap-heap delta is NOT a presence
+                // sentinel: -1 in modular arithmetic equals UINT32_MAX and
+                // is a valid offset. Publish stream presence via lmChunk.
+                bool lmResident = false;
+                // No chart-transform BDA means the vertex shader must not
+                // dereference xforms. Keep the lobe sentinel and dynamic GI.
+                if (ChartXformsAddress() != 0 && !world.lmChartTable.empty()) {
+                    if (auto lmLoc = world.ResolveLodMesh(worldMesh, lodIdx)) {
+                        const smvk::ClusterStaticMeshHandle h = lmLoc->handle;
+                        if (const smvk::StaticMesh* m = lmLoc->cluster->staticMeshes.get(h);
+                            m && !m->skinned // baked charts are STATIC-only
+                            && m->lightmapBase != UINT32_MAX && !m->lmChartXforms.empty()) {
+                            const uint32_t vb = lmLoc->cluster->GetMeshHeapVertexBase(h);
+                            if (vb != UINT32_MAX) {
+                                lmDelta = m->lightmapBase - vb;
+                                lmResident = true;
+                            }
+                        }
+                    }
+                }
+                if (!lmResident)
+                    lmChunk = UINT32_MAX;
+            } // Lightmap lookup stage
+            {
+                PushStageTimer timer(pushNs, profilePushStages);
+                smvk::gfx::PushDraw(gfx,
+                                    slot,
+                                    gfxMesh,
+                                    model,
+                                    item.material,
+                                    drawFlags,
+                                    drawSet,
+                                    lmChunk,
+                                    chartOffset,
+                                    lmDelta,
+                                    // The resolved material userdata (the instance override
+                                    // or the base default — the lit hooks' runtime input).
+                                    world.ResolvedItemUserData(item));
+            } // PushDraw stage (includes userdata resolution)
+            if (dumpGates)
+                ++s_gates.pushed;
+            // TMP-DIAG (TOURMALINE_DUMPGFX, the LOD-sibling draw-drop hunt):
+            // the pushed draw list, once per process (the camera is static
+            // in the headless repro, so the first frame is the repro frame).
+            // Maps the pushed (worldMesh -> selected LOD -> gfx mesh) chain
+            // to the registration dump above. Remove later.
+            if (std::getenv("TOURMALINE_DUMPGFX")) {
+                static bool s_dumpedDraws = false;
+                if (!s_dumpedDraws) {
+                    s_dumpedDraws = true;
+                    fprintf(stderr, "[TMP-DIAG] pushed draws (first frame):\n");
+                }
+                std::string uri;
+                if (auto hit = world.ResolveLodMesh(worldMesh, lodIdx))
+                    uri =
+                        hit->cluster ? hit->cluster->GetMeshUri(hit->handle).Str() : std::string{};
+                fprintf(stderr,
+                        "[TMP-DIAG] draw worldMesh=%u node=%u lod=%u gfx=%u uri=%s\n",
+                        worldMesh,
+                        (unsigned)item.node,
+                        lodIdx,
+                        gfxMesh,
+                        uri.c_str());
+            }
+        });
+    if (profilePushStages) {
+        const uint64_t totalNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(PushClock::now() - traversalStart)
+                .count());
+        const uint64_t stagesNs = lodNs + boundsNs + lightmapNs + pushNs;
+        // Residual includes iterator traversal, other callback logic and
+        // timer overhead; do not interpret it as pure iterator cost.
+        SMVK_PROFILE_TAG("traversalOtherUs", (totalNs - std::min(totalNs, stagesNs)) / 1000);
+        SMVK_PROFILE_TAG("lodUs", lodNs / 1000);
+        SMVK_PROFILE_TAG("boundsFrustumUs", boundsNs / 1000);
+        SMVK_PROFILE_TAG("lightmapUs", lightmapNs / 1000);
+        SMVK_PROFILE_TAG("pushDrawUs", pushNs / 1000);
+    }
+    if (dumpGates && !s_gatesDone) {
+        s_gatesDone = true;
+        std::fprintf(stderr,
+                     "[TMP-DIAG] push gates: items=%llu badMat=%llu unknownMesh=%llu "
+                     "ditherHidden=%llu shaderLod=%llu unreg=%llu preculled=%llu "
+                     "pushed=%llu lodHist=[%u %u %u %u %u %u %u %u]\n",
+                     (unsigned long long)s_gates.items,
+                     (unsigned long long)s_gates.badMat,
+                     (unsigned long long)s_gates.unknownMesh,
+                     (unsigned long long)s_gates.ditherHidden,
+                     (unsigned long long)s_gates.shaderLod,
+                     (unsigned long long)s_gates.unreg,
+                     (unsigned long long)s_gates.preculled,
+                     (unsigned long long)s_gates.pushed,
+                     s_gates.lodHist[0],
+                     s_gates.lodHist[1],
+                     s_gates.lodHist[2],
+                     s_gates.lodHist[3],
+                     s_gates.lodHist[4],
+                     s_gates.lodHist[5],
+                     s_gates.lodHist[6],
+                     s_gates.lodHist[7]);
+    }
+    // Opt-in CPU candidate census for deciding whether repeated filtered
+    // draws warrant promotion to instanced indirect commands. This samples
+    // BEFORE GPU occlusion; it is an upper bound, never a visible-instance
+    // count or an estimate of actual command savings after GPU culling.
+    // No GPU scene DB rows, generations, or draw buffers are modified.
+    if (std::getenv("TOURMALINE_INSTANCE_METRICS") && (frameCounter_ % 300) == 0) {
+        const auto measureStart = std::chrono::steady_clock::now();
+        const auto& candidates = gfx.views[slot].draws;
+        using InstanceKey = std::tuple<uint32_t,
+                                       uint32_t,
+                                       uint32_t,
+                                       uint32_t,
+                                       uint32_t,
+                                       uint32_t,
+                                       uint32_t,
+                                       uint32_t,
+                                       uint32_t>;
+        std::map<InstanceKey, uint32_t> groups;
+        for (const smvk::gfx::DrawRequest& draw : candidates) {
+            // Match mesh, material, shader state and per-draw resource
+            // values. Transforms deliberately differ between instances.
+            const InstanceKey key{draw.mesh,
+                                  draw.material,
+                                  draw.flags,
+                                  draw.drawSet,
+                                  draw.lmChunk,
+                                  draw.lmChartOffset,
+                                  draw.lmDelta,
+                                  draw.userData,
+                                  0u};
+            ++groups[key];
+        }
+        uint32_t repeatedCandidates = 0;
+        uint32_t repeatedGroups = 0;
+        uint32_t largestGroup = 0;
+        for (const auto& [key, count] : groups) {
+            (void)key;
+            largestGroup = std::max(largestGroup, count);
+            if (count > 1) {
+                repeatedCandidates += count;
+                ++repeatedGroups;
+            }
+        }
+        const auto measureUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                   std::chrono::steady_clock::now() - measureStart)
+                                   .count();
+        SMVK_TRACE_LOG(
+            "[InstanceMetrics] filtered candidates=%zu groups=%zu repeated_candidates=%u "
+            "repeated_groups=%u largest_group=%u candidate_command_upper_bound=%zu "
+            "census_us=%lld (pre-GPU-cull; NOT actual draw commands or visible instances)\\n",
+            candidates.size(),
+            groups.size(),
+            repeatedCandidates,
+            repeatedGroups,
+            largestGroup,
+            candidates.size() - groups.size(),
+            static_cast<long long>(measureUs));
+    }
+    const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
+    // NOTE: Release-visible trace (not SMVK_DEBUG_LOG): this is the only
+    // per-run visibility into filter load (draws/batches vs
+    // kMaxDraws/kMaxBatches) — muted at runtime by the interactive
+    // EDITOR (SMVK_TRACE_LOG; the App/bench flows keep it).
+    if ((frameCounter_++ % 300) == 0) {
+        SMVK_TRACE_LOG(
+            "[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
+            stats.draws,
+            stats.commands,
+            stats.trianglesProcessed,
+            stats.clustersCulled,
+            stats.clustersProcessed);
+        // Temporal dashboard: prev* holds LAST frame's snapshot here (this
+        // frame's rotation runs later in AppendPasses), so the seed /
+        // remainder / HZB figures describe what the temporal loop did.
+        const smvk::gfx::TemporalView& ht = smvk::gfx::Temporal(gfx, slot);
+        const smvk::gfx::HizResources& hh = ht.hiz[frameIndex];
+        SMVK_DEBUG_LOG(
+            "[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
+            stats.draws,
+            stats.commands,
+            stats.trianglesProcessed,
+            stats.clustersCulled,
+            stats.clustersProcessed);
+        SMVK_DEBUG_LOG("[GfxFilter] hist: valid=%d prev=%u seed=%u/%u rem=%u/%u hiz=%umips %ux%u "
+                       "minContrib=%.2f\n",
+                       ht.historyValid ? 1 : 0,
+                       ht.prevBatchCount,
+                       (unsigned)ht.seedCommands.size(),
+                       (unsigned)ht.seedRanges.size(),
+                       (unsigned)ht.remainderCommands.size(),
+                       (unsigned)ht.remainderRanges.size(),
+                       hh.mipCount,
+                       hh.width,
+                       hh.height,
+                       ht.minimumContribution);
+    }
+    // CULL BASELINE DUMP (TOURMALINE_CULL_DUMP, one shot; frameCounter_
+    // was just incremented, so it holds the 1-based app frame). The >=
+    // comparison tolerates a pin that names an already-passed frame.
+    if (cullDumpFrame_ >= 0 && !cullDumpDone_ && frameCounter_ >= uint64_t(cullDumpFrame_)) {
+        cullDumpDone_ = true;
+        DumpCullBaseline(gfx, slot, frameIndex, ctx, frameCounter_);
+    }
+    return slot;
+}
 
-	smvk::RenderPass& GfxRenderer::AddFilterPass(smvk::RenderGraph& rg, uint32_t slot) {
-		return smvk::gfx::AddFilterPass(gfx, rg, slot);
-	}
+smvk::RenderPass& GfxRenderer::AddFilterPass(smvk::RenderGraph& rg, uint32_t slot) {
+    return smvk::gfx::AddFilterPass(gfx, rg, slot);
+}
 
-	uint64_t GfxRenderer::EnsureChartXforms(smvk::World& world,
-		smvk::ResourceManager& ctx) {
-		// A new world can have the same revision as an older one. Never
-		// reuse chart data uploaded for a different scene.
-		const bool tableChanged = lmXformsWorld_ != &world
-			|| world.lmChartVersion != lmXformsVersion_;
-		if (!tableChanged && !lmXformsBuf_.empty())
-			return lmXformsAddr_;
-		lmXformsWorld_ = &world;
-		lmXformsVersion_ = world.lmChartVersion;
-		const size_t count = std::max<size_t>(world.lmChartTable.size(), 1);
-		const size_t bytes = count * sizeof(glm::vec4);
-		// Allocate a fresh buffer when chart data changes. In-place uploads
-		// can overwrite transforms still read by in-flight GPU frames.
-		// The prior holder retires through the resource manager.
-		if (tableChanged || lmXformsBuf_.empty() || lmXformsCap_ < bytes) {
-			lmXformsBuf_ = ctx.CreateBuffer(bytes,
-				smvk::BufferType_Storage, "lm chart xforms");
-			lmXformsCap_ = bytes;
-		}
-		if (lmXformsBuf_.empty()) {
-			lmXformsAddr_ = 0;
-			return 0;
-		}
-		if (!world.lmChartTable.empty()) {
-			ctx.UploadDataToBuffer(lmXformsBuf_, world.lmChartTable.data(), bytes,
-				smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
-				smvk::AccessFlags::ShaderRead);
-		}
-		lmXformsAddr_ = ctx.GetBufferDeviceAddress(lmXformsBuf_);
-		return lmXformsAddr_;
-	}
+uint64_t GfxRenderer::EnsureChartXforms(smvk::World& world, smvk::ResourceManager& ctx) {
+    // A new world can have the same revision as an older one. Never
+    // reuse chart data uploaded for a different scene.
+    const bool tableChanged = lmXformsWorld_ != &world || world.lmChartVersion != lmXformsVersion_;
+    if (!tableChanged && !lmXformsBuf_.empty())
+        return lmXformsAddr_;
+    lmXformsWorld_ = &world;
+    lmXformsVersion_ = world.lmChartVersion;
+    const size_t count = std::max<size_t>(world.lmChartTable.size(), 1);
+    const size_t bytes = count * sizeof(glm::vec4);
+    // Allocate a fresh buffer when chart data changes. In-place uploads
+    // can overwrite transforms still read by in-flight GPU frames.
+    // The prior holder retires through the resource manager.
+    if (tableChanged || lmXformsBuf_.empty() || lmXformsCap_ < bytes) {
+        lmXformsBuf_ = ctx.CreateBuffer(bytes, smvk::BufferType_Storage, "lm chart xforms");
+        lmXformsCap_ = bytes;
+    }
+    if (lmXformsBuf_.empty()) {
+        lmXformsAddr_ = 0;
+        return 0;
+    }
+    if (!world.lmChartTable.empty()) {
+        ctx.UploadDataToBuffer(lmXformsBuf_,
+                               world.lmChartTable.data(),
+                               bytes,
+                               smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
+                               smvk::AccessFlags::ShaderRead);
+    }
+    lmXformsAddr_ = ctx.GetBufferDeviceAddress(lmXformsBuf_);
+    return lmXformsAddr_;
+}
 
-	void GfxRenderer::PushViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex) {
-		smvk::gfx::FilteredVsPush tail{};
-		tail.draws = ctx.GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
-		tail.renderViews = renderViewsAddr;
-		tail.renderViewIndex = renderViewIndex;
-		tail.lmXforms = lmXformsAddr_;
-		// The VS-skin tail fields (bytes 224..240, the tail's trailing 16B):
-		// the SKINNED fetch
-		// swap's inputs, carried DIRECTLY (never through a
-		// GfxMeshParamsData pointer - the chain wedges the NV pipeline
-		// compiler; see FilteredVsPush's comment).
-		smvk::gfx::FillVsSkinTail(tail, gfx);
-		cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
-			smvk::ShaderStage::All);
-	}
+void GfxRenderer::PushViewConstants(smvk::CommandBuffer& cmd,
+                                    smvk::ResourceManager& ctx,
+                                    uint32_t slot,
+                                    uint64_t renderViewsAddr,
+                                    uint32_t renderViewIndex) {
+    smvk::gfx::FilteredVsPush tail{};
+    tail.draws = ctx.GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
+    tail.renderViews = renderViewsAddr;
+    tail.renderViewIndex = renderViewIndex;
+    tail.lmXforms = lmXformsAddr_;
+    // The VS-skin tail fields (bytes 224..240, the tail's trailing 16B):
+    // the SKINNED fetch
+    // swap's inputs, carried DIRECTLY (never through a
+    // GfxMeshParamsData pointer - the chain wedges the NV pipeline
+    // compiler; see FilteredVsPush's comment).
+    smvk::gfx::FillVsSkinTail(tail, gfx);
+    cmd.PushConstants(
+        smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
+}
 
-	bool GfxRenderer::EnsureFilteredMotion(smvk::ResourceManager& ctx,
-		smvk::ShaderModuleHandle motionFrag) {
-		if (FilteredMotionValid())
-			return true;
-		if (motionFrag.empty())
-			return false;
-		try {
-			if (filteredMotionVsModule.empty())
-				filteredMotionVsModule = ctx.CreateShaderModule(
-					smvk::shaders::Read(kFilteredMotionVsPath), "gfxFilteredMotionVS");
-		}
-		catch (...) {
-			return false;
-		}
-		if (filteredMotionVsModule.empty())
-			return false;
-		smvk::Shader vs{ .module = filteredMotionVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-		smvk::Shader fs{ .module = motionFrag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-		filteredMotionProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
-		return true;
-	}
+bool GfxRenderer::EnsureFilteredMotion(smvk::ResourceManager& ctx,
+                                       smvk::ShaderModuleHandle motionFrag) {
+    if (FilteredMotionValid())
+        return true;
+    if (motionFrag.empty())
+        return false;
+    try {
+        if (filteredMotionVsModule.empty())
+            filteredMotionVsModule = ctx.CreateShaderModule(
+                smvk::shaders::Read(kFilteredMotionVsPath), "gfxFilteredMotionVS");
+    } catch (...) {
+        return false;
+    }
+    if (filteredMotionVsModule.empty())
+        return false;
+    smvk::Shader vs{.module = filteredMotionVsModule,
+                    .entryPoint = "mainVS",
+                    .stage = smvk::ShaderStage::Vertex};
+    smvk::Shader fs{
+        .module = motionFrag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+    filteredMotionProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+    return true;
+}
 
-	void GfxRenderer::PushMotionViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
-		uint64_t frameUniformsAddr) {
-		PushViewConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex);
-		cmd.PushConstants(kFilteredMotionFrameUniformsOffset, sizeof(frameUniformsAddr),
-			&frameUniformsAddr, smvk::ShaderStage::All);
-		// The motion leg's PREV tail (bytes 240..256, past the
-		// FilteredVsPush tail the call above pushed at 192..240 — the
-		// motion VS reads the cur pair from THERE and its own prev pair
-		// from here): last frame's deformed half for the skinned motion
-		// vectors. Nothing else claims 240..256 in the motion pass (the
-		// direct motion legs push model/materialId/prevModel only, and
-		// the mesh legs never run a VS here).
-		smvk::gfx::FilteredMotionPrevTail prevTail{};
-		smvk::gfx::FillMotionPrevTail(prevTail, gfx);
-		cmd.PushConstants(smvk::gfx::kFilteredMotionPrevTailOffset,
-			sizeof(prevTail), &prevTail, smvk::ShaderStage::All);
-	}
+void GfxRenderer::PushMotionViewConstants(smvk::CommandBuffer& cmd,
+                                          smvk::ResourceManager& ctx,
+                                          uint32_t slot,
+                                          uint64_t renderViewsAddr,
+                                          uint32_t renderViewIndex,
+                                          uint64_t frameUniformsAddr) {
+    PushViewConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex);
+    cmd.PushConstants(kFilteredMotionFrameUniformsOffset,
+                      sizeof(frameUniformsAddr),
+                      &frameUniformsAddr,
+                      smvk::ShaderStage::All);
+    // The motion leg's PREV tail (bytes 240..256, past the
+    // FilteredVsPush tail the call above pushed at 192..240 — the
+    // motion VS reads the cur pair from THERE and its own prev pair
+    // from here): last frame's deformed half for the skinned motion
+    // vectors. Nothing else claims 240..256 in the motion pass (the
+    // direct motion legs push model/materialId/prevModel only, and
+    // the mesh legs never run a VS here).
+    smvk::gfx::FilteredMotionPrevTail prevTail{};
+    smvk::gfx::FillMotionPrevTail(prevTail, gfx);
+    cmd.PushConstants(smvk::gfx::kFilteredMotionPrevTailOffset,
+                      sizeof(prevTail),
+                      &prevTail,
+                      smvk::ShaderStage::All);
+}
 
-	void GfxRenderer::PushSeedConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
-		uint64_t drawsAddr) {
-		(void)slot; // the caller's view slot (main or SHADOW view): the
-		// VS-skin fields below are view-independent STATE data (the
-		// eternal heaps + the frame's deformed pair), so the shadow
-		// views need no ring-slot resolution.
-		(void)ctx;
-		smvk::gfx::FilteredVsPush tail{};
-		tail.draws = drawsAddr;
-		tail.renderViews = renderViewsAddr;
-		tail.renderViewIndex = renderViewIndex;
-		// The VS-skin tail fields (bytes 224..240, the tail's trailing 16B),
-		// shared with the lit
-		// leg (gfxseed.hlsli's SeedVsMainPush mirrors the layout): the
-		// SKINNED depth/shadow fetch swap reads the deformed pos through
-		// them. The fields are view-independent (the eternal heaps + the
-		// frame's deformed pair), so the shadow views resolve them through
-		// the STATE, not any view's ring slot.
-		smvk::gfx::FillVsSkinTail(tail, gfx);
-		cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
-			smvk::ShaderStage::All);
-	}
+void GfxRenderer::PushSeedConstants(smvk::CommandBuffer& cmd,
+                                    smvk::ResourceManager& ctx,
+                                    uint32_t slot,
+                                    uint64_t renderViewsAddr,
+                                    uint32_t renderViewIndex,
+                                    uint64_t drawsAddr) {
+    (void)slot; // the caller's view slot (main or SHADOW view): the
+    // VS-skin fields below are view-independent STATE data (the
+    // eternal heaps + the frame's deformed pair), so the shadow
+    // views need no ring-slot resolution.
+    (void)ctx;
+    smvk::gfx::FilteredVsPush tail{};
+    tail.draws = drawsAddr;
+    tail.renderViews = renderViewsAddr;
+    tail.renderViewIndex = renderViewIndex;
+    // The VS-skin tail fields (bytes 224..240, the tail's trailing 16B),
+    // shared with the lit
+    // leg (gfxseed.hlsli's SeedVsMainPush mirrors the layout): the
+    // SKINNED depth/shadow fetch swap reads the deformed pos through
+    // them. The fields are view-independent (the eternal heaps + the
+    // frame's deformed pair), so the shadow views resolve them through
+    // the STATE, not any view's ring slot.
+    smvk::gfx::FillVsSkinTail(tail, gfx);
+    cmd.PushConstants(
+        smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
+}
 
-	void GfxRenderer::DrawRemainderRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx) {
-		const std::vector<smvk::gfx::SeedRange>& ranges =
-			smvk::gfx::RemainderRanges(gfx, slot);
-		assert(rangeIdx < ranges.size());
-		const smvk::gfx::SeedRange& r = ranges[rangeIdx];
-		if (r.commandCount == 0)
-			return;
-		// No index bind: seed commands address the static index monoblock
-		// absolutely (offset-0 binding from BindStaticVertexFmt is correct).
-		cmd.DrawIndexedIndirect(smvk::gfx::RemainderIndirectBuffer(gfx, slot),
-			(uint64_t)r.firstCommand * 20, r.commandCount, 20);
-	}
+void GfxRenderer::DrawRemainderRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx) {
+    const std::vector<smvk::gfx::SeedRange>& ranges = smvk::gfx::RemainderRanges(gfx, slot);
+    assert(rangeIdx < ranges.size());
+    const smvk::gfx::SeedRange& r = ranges[rangeIdx];
+    if (r.commandCount == 0)
+        return;
+    // No index bind: seed commands address the static index monoblock
+    // absolutely (offset-0 binding from BindStaticVertexFmt is correct).
+    cmd.DrawIndexedIndirect(smvk::gfx::RemainderIndirectBuffer(gfx, slot),
+                            (uint64_t)r.firstCommand * 20,
+                            r.commandCount,
+                            20);
+}
 
-	void GfxRenderer::DrawSeedRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx) {
-		const std::vector<smvk::gfx::SeedRange>& ranges =
-			smvk::gfx::SeedRanges(gfx, slot);
-		assert(rangeIdx < ranges.size());
-		const smvk::gfx::SeedRange& r = ranges[rangeIdx];
-		if (r.commandCount == 0)
-			return;
-		// No index bind: see DrawRemainderRange.
-		cmd.DrawIndexedIndirect(smvk::gfx::SeedIndirectBuffer(gfx, slot),
-			(uint64_t)r.firstCommand * 20, r.commandCount, 20);
-	}
+void GfxRenderer::DrawSeedRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx) {
+    const std::vector<smvk::gfx::SeedRange>& ranges = smvk::gfx::SeedRanges(gfx, slot);
+    assert(rangeIdx < ranges.size());
+    const smvk::gfx::SeedRange& r = ranges[rangeIdx];
+    if (r.commandCount == 0)
+        return;
+    // No index bind: see DrawRemainderRange.
+    cmd.DrawIndexedIndirect(smvk::gfx::SeedIndirectBuffer(gfx, slot),
+                            (uint64_t)r.firstCommand * 20,
+                            r.commandCount,
+                            20);
+}
 
-	void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
-		using namespace smvk::gfx;
-		if (slot >= gfx.views.size() || slot >= gfx.temporals.size()) {
-			SMVK_DEBUG_LOG("[GfxAudit] bad slot %u.\n", slot);
-			return;
-		}
-		const View& v = gfx.views[slot];
-		const TemporalView& t = gfx.temporals[slot];
-		// Audit the current flight's HZB slice (same rule as every other ringed
-		// buffer: the GPU wrote this frame's slice).
-		const smvk::gfx::HizResources& hz = t.hiz[v.frameIndex];
-		if (v.batchCount == 0 || v.batches.empty()) {
-			SMVK_DEBUG_LOG("[GfxAudit] slot %u: no batches.\n", slot);
-			return;
-		}
-		// GPU indirect commands (one per batch; zero indexCount = GPU kill).
-		std::vector<SeedCommand> cmds(v.batchCount);
-		if (!ctx.DownloadDataFromBuffer(IndirectBuffer(gfx, slot),
-			cmds.data(), cmds.size() * sizeof(SeedCommand))) {
-			SMVK_DEBUG_LOG("[GfxAudit] slot %u: indirect download failed.\n", slot);
-			return;
-		}
-		// Filter outcome counters: one update per candidate batch.
-		// A nonzero overflow count proves a capacity drop; empty batches
-		// need a second (per-clip-plane) experiment to identify why.
-		uint32_t filterDiag[5] = {};
-		if (ctx.DownloadDataFromBuffer(v.cullStateBuffers[v.frameIndex],
-			filterDiag, sizeof(filterDiag),
-			size_t(kCullStateCounterWord) * sizeof(uint32_t))) {
-			std::fprintf(stderr,
-				"[GfxAudit] filter slot=%u allocatedIndices=%u empty=%u "
-				"overflow=%u allocatedBatches=%u gated=%u (total=%u/%u)\n",
-				slot, filterDiag[0], filterDiag[1], filterDiag[2],
-				filterDiag[3], filterDiag[4],
-				filterDiag[1] + filterDiag[2] + filterDiag[3] + filterDiag[4],
-				v.batchCount);
-		}
-		// Release-visible compact summary (the detailed lines below are
-		// SMVK_DEBUG_LOG = Debug-only): killed/kept counts split by draw-set
-		// bucket, so headless A/B runs can diff the GPU verdicts.
-		{
-			uint32_t killedOpaque = 0, keptOpaque = 0;
-			uint32_t killedMasked = 0, keptMasked = 0;
-			uint32_t keptMaskedTris = 0;
-			for (uint32_t i = 0; i < v.batchCount && i < v.batches.size(); ++i) {
-				const Batch& b = v.batches[i];
-				if (b.draw >= v.drawConstants.size())
-					continue;
-				const bool masked =
-					(v.drawConstants[b.draw].drawSet & DrawSetBit_Masked) != 0;
-				const bool killed = (cmds[i].indexCount == 0);
-				if (masked) {
-					if (killed) ++killedMasked; else {
-						++keptMasked;
-						keptMaskedTris += cmds[i].indexCount / 3;
-					}
-				}
-				else {
-					if (killed) ++killedOpaque; else ++keptOpaque;
-				}
-			}
-			std::fprintf(stderr,
-				"[GfxAudit] summary slot=%u batches=%u | opaque kept=%u killed=%u | "
-				"masked kept=%u killed=%u (keptTris=%u)\n",
-				slot, v.batchCount, keptOpaque, killedOpaque,
-				keptMasked, killedMasked, keptMaskedTris);
-		}
-		// GPU HZB pyramid for the CPU mirror.
-		std::vector<float> hzb;
-		bool haveHzb = false;
-		if (hz.mipCount > 0 && hz.width > 0 && hz.height > 0 &&
-			!hz.buffer.empty()) {
-			hzb.assign(HzbTotalFloats(hz.width, hz.height), 0.0f);
-			haveHzb = ctx.DownloadDataFromBuffer(hz.buffer,
-				hzb.data(), hzb.size() * sizeof(float));
-		}
-		// Material per batch (ranges span batches in order).
-		std::vector<uint32_t> batchMat(v.batches.size(), UINT32_MAX);
-		for (const MaterialRange& r : v.materialRanges) {
-			for (uint32_t k = 0; k < r.commandCount; ++k) {
-				if (r.firstCommand + k < (uint32_t)batchMat.size())
-					batchMat[r.firstCommand + k] = r.material;
-			}
-		}
-		SMVK_DEBUG_LOG(
-			"[GfxAudit] slot %u: batches=%u flags=0x%x hiz=%ux%u/%u haveHzb=%d\n",
-			slot, v.batchCount, v.cullFlags,
-			hz.width, hz.height, hz.mipCount, haveHzb ? 1 : 0);
-		uint32_t zeroTotal = 0, cpuOcc = 0, cpuKeep = 0;
-		uint32_t printedOcc = 0, printedKeep = 0;
-		// Per-class budgets: occlusion-agreeing kills used to hide behind the
-		// single 48-line cap (the first kills are usually off-screen frustum
-		// kills), making occlusion look permanently silent. Occluded and keep
-		// kills each get their own budget so both classes stay visible.
-		static constexpr uint32_t kAuditPrintPerClass = 24;
-		static constexpr uint32_t kAuditMissCap = 16;
-		// gfx mesh -> world mesh (first match) for traceability; -1 = none.
-		// Lets a "mesh X still renders" report map to the scene graph.
-		std::vector<int> gfxToWorld(gfx.meshes.size(), -1);
-		for (uint32_t w = 0; w < (uint32_t)lodMeshMap_.size(); ++w) {
-			for (uint32_t g : lodMeshMap_[w]) {
-				if (g < gfxToWorld.size() && gfxToWorld[g] < 0)
-					gfxToWorld[g] = (int)w;
-			}
-		}
-		for (uint32_t w = 0; w < (uint32_t)meshMap_.size(); ++w) {
-			const uint32_t g = meshMap_[w];
-			if (g < gfxToWorld.size() && gfxToWorld[g] < 0)
-				gfxToWorld[g] = (int)w;
-		}
-		struct MeshAudit {
-			uint32_t batches = 0, tris = 0, gpuKill = 0;
-			uint32_t occKill = 0, missed = 0, aliveTris = 0;
-		};
-		std::vector<MeshAudit> meshStats(gfx.meshes.size());
-		struct MissDetail {
-			uint32_t b, cl, draw, mesh, mat, tris, alive, level;
-			float cx, cy, rx, ry, dn, stored;
-			const char* screenTag;
-		};
-		std::vector<MissDetail> misses;
-		misses.reserve(kAuditMissCap);
-		for (uint32_t i = 0; i < v.batchCount && i < (uint32_t)v.batches.size(); ++i) {
-			const Batch& b = v.batches[i];
-			uint32_t mat = batchMat[i];
-			uint32_t tris = 0, mesh = UINT32_MAX;
-			float cx = 0.0f, cy = 0.0f, rx = 0.0f, ry = 0.0f, dn = 0.0f;
-			float stored = -1.0f;
-			uint32_t level = 0;
-			bool mirrorOk = false, behind = false, verdict = false;
-			if (b.draw < v.drawConstants.size() && b.cluster < gfx.clusters.size()) {
-				const Draw& dc = v.drawConstants[b.draw];
-				const smvk::gfx::Cluster& c = gfx.clusters[b.cluster];
-				// Mirror the GPU's MASK exclusion (GFX_CULL_HZBSKIPMASKED):
-				// with the flag on, masked batches never test the pyramid, so
-				// the audit must not report them as occlusion kills/misses.
-				const bool occExcluded = (v.cullFlags & CullFlagBit_HzbSkipMasked) != 0
-					&& (dc.drawSet & DrawSetBit_Masked) != 0;
-				tris = c.triCount;
-				mesh = dc.mesh;
-				const float bs = std::max({
-					glm::length(glm::vec3(dc.model[0])),
-					glm::length(glm::vec3(dc.model[1])),
-					glm::length(glm::vec3(dc.model[2])) });
-				const glm::vec3 wc = glm::vec3(dc.model * glm::vec4(c.boundCenter, 1.0f));
-				const float wr = c.boundRadius * bs;
-				ClusterFootprint f = ProjectClusterFootprint(
-					wc, wr, v.eye, v.viewProj, v.width, v.height);
-				// Match the GPU jitter guard (GFX_CULL_GUARD_PX): the filter
-				// widens the tested rect by a pixel each side, so the mirror
-				// must too or every guarded keep reads as a CPU/GPU "miss".
-				f.radiusX += 1.0f;
-				f.radiusY += 1.0f;
-				cx = f.centerX; cy = f.centerY; rx = f.radiusX; ry = f.radiusY;
-				dn = f.nearestDepth;
-				behind = f.behindCamera;
-				if (!f.behindCamera && haveHzb)
-					level = HzbMipForRect(rx * 2.0f, ry * 2.0f, hz.mipCount);
-				mirrorOk = true;
-				verdict = haveHzb && !occExcluded && HzbOccluded(hzb.data(),
-					hz.width, hz.height, hz.mipCount, f, &stored);
-			}
-			const bool killed = (cmds[i].indexCount == 0);
-			if (killed) ++zeroTotal;
-			if (verdict) ++cpuOcc; else ++cpuKeep;
-			const int world = (mesh < gfxToWorld.size()) ? gfxToWorld[mesh] : -1;
-			// Screen tag: separates occlusion hiding visible geometry from
-			// pre-empting the frustum stages (same outcome there). Mirrors the
-			// off-target condition in HzbOccluded.
-			const char* screenTag = "unresolved";
-			if (mirrorOk) {
-				const float w = (float)v.width, h = (float)v.height;
-				const bool offscreen = behind
-					|| cx + rx < 0.0f || cx - rx > w || cy + ry < 0.0f || cy - ry > h;
-				screenTag = behind ? "behindcam" : (offscreen ? "offscreen" : "screen");
-			}
-			// Per-mesh summary over kills AND survivors: answers "mesh X still
-			// renders — what did the filter think of its batches?" missed =
-			// CPU says occluded but the GPU kept the batch.
-			if (mesh < meshStats.size()) {
-				MeshAudit& ms = meshStats[mesh];
-				++ms.batches;
-				ms.tris += tris;
-				if (killed) {
-					++ms.gpuKill;
-					if (verdict) ++ms.occKill;
-				}
-				else {
-					ms.aliveTris += cmds[i].indexCount / 3;
-					if (verdict) {
-						++ms.missed;
-						if (mirrorOk && misses.size() < kAuditMissCap) {
-							MissDetail d{};
-							d.b = i; d.cl = b.cluster; d.draw = b.draw;
-							d.mesh = mesh; d.mat = mat; d.tris = tris;
-							d.alive = cmds[i].indexCount / 3; d.level = level;
-							d.cx = cx; d.cy = cy; d.rx = rx; d.ry = ry;
-							d.dn = dn; d.stored = stored; d.screenTag = screenTag;
-							misses.push_back(d);
-						}
-					}
-				}
-			}
-			if (!killed)
-				continue;
-			uint32_t& budget = verdict ? printedOcc : printedKeep;
-			if (budget < kAuditPrintPerClass) {
-				++budget;
-				if (verdict) {
-					SMVK_DEBUG_LOG(
-						"[GfxAudit] kill b=%u cl=%u draw=%u mesh=%u world=%d mat=%u tris=%u | "
-						"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
-						"margin=%+.5f %s cpu=OCCLUDED%s\n",
-						i, b.cluster, b.draw, mesh, world, mat, tris, cx, cy, rx, ry,
-						level, dn, stored, stored - dn, screenTag,
-						mirrorOk ? "" : " (unresolved)");
-				}
-				else {
-					SMVK_DEBUG_LOG(
-						"[GfxAudit] kill b=%u cl=%u draw=%u mesh=%u world=%d mat=%u tris=%u | "
-						"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
-						"%s cpu=keep%s\n",
-						i, b.cluster, b.draw, mesh, world, mat, tris, cx, cy, rx, ry,
-						level, dn, stored, screenTag,
-						mirrorOk ? "" : " (unresolved)");
-				}
-			}
-		}
-		// Misses first: CPU says occluded but the GPU kept the batch — the
-		// exact "mesh behind still renders" cases, with margins.
-		for (const MissDetail& d : misses) {
-			SMVK_DEBUG_LOG(
-				"[GfxAudit] miss b=%u cl=%u draw=%u mesh=%u mat=%u tris=%u aliveTris=%u | "
-				"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
-				"margin=%+.5f %s cpu=OCCLUDED-MISS\n",
-				d.b, d.cl, d.draw, d.mesh, d.mat, d.tris, d.alive,
-				d.cx, d.cy, d.rx, d.ry, d.level, d.dn, d.stored,
-				d.stored - d.dn, d.screenTag);
-		}
-		if (misses.size() == kAuditMissCap)
-			SMVK_DEBUG_LOG("[GfxAudit] miss list capped at %u (more unprinted)\n",
-				kAuditMissCap);
-		uint32_t missedTotal = 0;
-		for (uint32_t m = 0; m < (uint32_t)meshStats.size(); ++m) {
-			const MeshAudit& ms = meshStats[m];
-			if (ms.batches == 0)
-				continue;
-			missedTotal += ms.missed;
-			SMVK_DEBUG_LOG(
-				"[GfxAudit] mesh=%u world=%d batches=%u tris=%u gpuKill=%u occKill=%u missed=%u aliveTris=%u\n",
-				m, gfxToWorld[m], ms.batches, ms.tris, ms.gpuKill, ms.occKill,
-				ms.missed, ms.aliveTris);
-		}
-		SMVK_DEBUG_LOG(
-			"[GfxAudit] zero=%u/%u cpuOccluded=%u cpuKeep=%u missed=%u%s (keep = triangle kill or shader divergence; "
-			"bisect backface/frustum/smallprim to split)\n",
-			zeroTotal, v.batchCount, cpuOcc, cpuKeep, missedTotal,
-			(v.batchCount > 0 && zeroTotal == v.batchCount)
-			? " WARNING: every batch killed (degenerate view or stale slice?)"
-			: "");
-	}
+void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
+    using namespace smvk::gfx;
+    if (slot >= gfx.views.size() || slot >= gfx.temporals.size()) {
+        SMVK_DEBUG_LOG("[GfxAudit] bad slot %u.\n", slot);
+        return;
+    }
+    const View& v = gfx.views[slot];
+    const TemporalView& t = gfx.temporals[slot];
+    // Audit the current flight's HZB slice (same rule as every other ringed
+    // buffer: the GPU wrote this frame's slice).
+    const smvk::gfx::HizResources& hz = t.hiz[v.frameIndex];
+    if (v.batchCount == 0 || v.batches.empty()) {
+        SMVK_DEBUG_LOG("[GfxAudit] slot %u: no batches.\n", slot);
+        return;
+    }
+    // GPU indirect commands (one per batch; zero indexCount = GPU kill).
+    std::vector<SeedCommand> cmds(v.batchCount);
+    if (!ctx.DownloadDataFromBuffer(
+            IndirectBuffer(gfx, slot), cmds.data(), cmds.size() * sizeof(SeedCommand))) {
+        SMVK_DEBUG_LOG("[GfxAudit] slot %u: indirect download failed.\n", slot);
+        return;
+    }
+    // Filter outcome counters: one update per candidate batch.
+    // A nonzero overflow count proves a capacity drop; empty batches
+    // need a second (per-clip-plane) experiment to identify why.
+    uint32_t filterDiag[5] = {};
+    if (ctx.DownloadDataFromBuffer(v.cullStateBuffers[v.frameIndex],
+                                   filterDiag,
+                                   sizeof(filterDiag),
+                                   size_t(kCullStateCounterWord) * sizeof(uint32_t))) {
+        std::fprintf(stderr,
+                     "[GfxAudit] filter slot=%u allocatedIndices=%u empty=%u "
+                     "overflow=%u allocatedBatches=%u gated=%u (total=%u/%u)\n",
+                     slot,
+                     filterDiag[0],
+                     filterDiag[1],
+                     filterDiag[2],
+                     filterDiag[3],
+                     filterDiag[4],
+                     filterDiag[1] + filterDiag[2] + filterDiag[3] + filterDiag[4],
+                     v.batchCount);
+    }
+    // Release-visible compact summary (the detailed lines below are
+    // SMVK_DEBUG_LOG = Debug-only): killed/kept counts split by draw-set
+    // bucket, so headless A/B runs can diff the GPU verdicts.
+    {
+        uint32_t killedOpaque = 0, keptOpaque = 0;
+        uint32_t killedMasked = 0, keptMasked = 0;
+        uint32_t keptMaskedTris = 0;
+        for (uint32_t i = 0; i < v.batchCount && i < v.batches.size(); ++i) {
+            const Batch& b = v.batches[i];
+            if (b.draw >= v.drawConstants.size())
+                continue;
+            const bool masked = (v.drawConstants[b.draw].drawSet & DrawSetBit_Masked) != 0;
+            const bool killed = (cmds[i].indexCount == 0);
+            if (masked) {
+                if (killed)
+                    ++killedMasked;
+                else {
+                    ++keptMasked;
+                    keptMaskedTris += cmds[i].indexCount / 3;
+                }
+            } else {
+                if (killed)
+                    ++killedOpaque;
+                else
+                    ++keptOpaque;
+            }
+        }
+        std::fprintf(stderr,
+                     "[GfxAudit] summary slot=%u batches=%u | opaque kept=%u killed=%u | "
+                     "masked kept=%u killed=%u (keptTris=%u)\n",
+                     slot,
+                     v.batchCount,
+                     keptOpaque,
+                     killedOpaque,
+                     keptMasked,
+                     killedMasked,
+                     keptMaskedTris);
+    }
+    // GPU HZB pyramid for the CPU mirror.
+    std::vector<float> hzb;
+    bool haveHzb = false;
+    if (hz.mipCount > 0 && hz.width > 0 && hz.height > 0 && !hz.buffer.empty()) {
+        hzb.assign(HzbTotalFloats(hz.width, hz.height), 0.0f);
+        haveHzb = ctx.DownloadDataFromBuffer(hz.buffer, hzb.data(), hzb.size() * sizeof(float));
+    }
+    // Material per batch (ranges span batches in order).
+    std::vector<uint32_t> batchMat(v.batches.size(), UINT32_MAX);
+    for (const MaterialRange& r : v.materialRanges) {
+        for (uint32_t k = 0; k < r.commandCount; ++k) {
+            if (r.firstCommand + k < (uint32_t)batchMat.size())
+                batchMat[r.firstCommand + k] = r.material;
+        }
+    }
+    SMVK_DEBUG_LOG("[GfxAudit] slot %u: batches=%u flags=0x%x hiz=%ux%u/%u haveHzb=%d\n",
+                   slot,
+                   v.batchCount,
+                   v.cullFlags,
+                   hz.width,
+                   hz.height,
+                   hz.mipCount,
+                   haveHzb ? 1 : 0);
+    uint32_t zeroTotal = 0, cpuOcc = 0, cpuKeep = 0;
+    uint32_t printedOcc = 0, printedKeep = 0;
+    // Per-class budgets: occlusion-agreeing kills used to hide behind the
+    // single 48-line cap (the first kills are usually off-screen frustum
+    // kills), making occlusion look permanently silent. Occluded and keep
+    // kills each get their own budget so both classes stay visible.
+    static constexpr uint32_t kAuditPrintPerClass = 24;
+    static constexpr uint32_t kAuditMissCap = 16;
+    // gfx mesh -> world mesh (first match) for traceability; -1 = none.
+    // Lets a "mesh X still renders" report map to the scene graph.
+    std::vector<int> gfxToWorld(gfx.meshes.size(), -1);
+    for (uint32_t w = 0; w < (uint32_t)lodMeshMap_.size(); ++w) {
+        for (uint32_t g : lodMeshMap_[w]) {
+            if (g < gfxToWorld.size() && gfxToWorld[g] < 0)
+                gfxToWorld[g] = (int)w;
+        }
+    }
+    for (uint32_t w = 0; w < (uint32_t)meshMap_.size(); ++w) {
+        const uint32_t g = meshMap_[w];
+        if (g < gfxToWorld.size() && gfxToWorld[g] < 0)
+            gfxToWorld[g] = (int)w;
+    }
+    struct MeshAudit {
+        uint32_t batches = 0, tris = 0, gpuKill = 0;
+        uint32_t occKill = 0, missed = 0, aliveTris = 0;
+    };
+    std::vector<MeshAudit> meshStats(gfx.meshes.size());
+    struct MissDetail {
+        uint32_t b, cl, draw, mesh, mat, tris, alive, level;
+        float cx, cy, rx, ry, dn, stored;
+        const char* screenTag;
+    };
+    std::vector<MissDetail> misses;
+    misses.reserve(kAuditMissCap);
+    for (uint32_t i = 0; i < v.batchCount && i < (uint32_t)v.batches.size(); ++i) {
+        const Batch& b = v.batches[i];
+        uint32_t mat = batchMat[i];
+        uint32_t tris = 0, mesh = UINT32_MAX;
+        float cx = 0.0f, cy = 0.0f, rx = 0.0f, ry = 0.0f, dn = 0.0f;
+        float stored = -1.0f;
+        uint32_t level = 0;
+        bool mirrorOk = false, behind = false, verdict = false;
+        if (b.draw < v.drawConstants.size() && b.cluster < gfx.clusters.size()) {
+            const Draw& dc = v.drawConstants[b.draw];
+            const smvk::gfx::Cluster& c = gfx.clusters[b.cluster];
+            // Mirror the GPU's MASK exclusion (GFX_CULL_HZBSKIPMASKED):
+            // with the flag on, masked batches never test the pyramid, so
+            // the audit must not report them as occlusion kills/misses.
+            const bool occExcluded = (v.cullFlags & CullFlagBit_HzbSkipMasked) != 0 &&
+                                     (dc.drawSet & DrawSetBit_Masked) != 0;
+            tris = c.triCount;
+            mesh = dc.mesh;
+            const float bs = std::max({glm::length(glm::vec3(dc.model[0])),
+                                       glm::length(glm::vec3(dc.model[1])),
+                                       glm::length(glm::vec3(dc.model[2]))});
+            const glm::vec3 wc = glm::vec3(dc.model * glm::vec4(c.boundCenter, 1.0f));
+            const float wr = c.boundRadius * bs;
+            ClusterFootprint f =
+                ProjectClusterFootprint(wc, wr, v.eye, v.viewProj, v.width, v.height);
+            // Match the GPU jitter guard (GFX_CULL_GUARD_PX): the filter
+            // widens the tested rect by a pixel each side, so the mirror
+            // must too or every guarded keep reads as a CPU/GPU "miss".
+            f.radiusX += 1.0f;
+            f.radiusY += 1.0f;
+            cx = f.centerX;
+            cy = f.centerY;
+            rx = f.radiusX;
+            ry = f.radiusY;
+            dn = f.nearestDepth;
+            behind = f.behindCamera;
+            if (!f.behindCamera && haveHzb)
+                level = HzbMipForRect(rx * 2.0f, ry * 2.0f, hz.mipCount);
+            mirrorOk = true;
+            verdict = haveHzb && !occExcluded &&
+                      HzbOccluded(hzb.data(), hz.width, hz.height, hz.mipCount, f, &stored);
+        }
+        const bool killed = (cmds[i].indexCount == 0);
+        if (killed)
+            ++zeroTotal;
+        if (verdict)
+            ++cpuOcc;
+        else
+            ++cpuKeep;
+        const int world = (mesh < gfxToWorld.size()) ? gfxToWorld[mesh] : -1;
+        // Screen tag: separates occlusion hiding visible geometry from
+        // pre-empting the frustum stages (same outcome there). Mirrors the
+        // off-target condition in HzbOccluded.
+        const char* screenTag = "unresolved";
+        if (mirrorOk) {
+            const float w = (float)v.width, h = (float)v.height;
+            const bool offscreen =
+                behind || cx + rx < 0.0f || cx - rx > w || cy + ry < 0.0f || cy - ry > h;
+            screenTag = behind ? "behindcam" : (offscreen ? "offscreen" : "screen");
+        }
+        // Per-mesh summary over kills AND survivors: answers "mesh X still
+        // renders — what did the filter think of its batches?" missed =
+        // CPU says occluded but the GPU kept the batch.
+        if (mesh < meshStats.size()) {
+            MeshAudit& ms = meshStats[mesh];
+            ++ms.batches;
+            ms.tris += tris;
+            if (killed) {
+                ++ms.gpuKill;
+                if (verdict)
+                    ++ms.occKill;
+            } else {
+                ms.aliveTris += cmds[i].indexCount / 3;
+                if (verdict) {
+                    ++ms.missed;
+                    if (mirrorOk && misses.size() < kAuditMissCap) {
+                        MissDetail d{};
+                        d.b = i;
+                        d.cl = b.cluster;
+                        d.draw = b.draw;
+                        d.mesh = mesh;
+                        d.mat = mat;
+                        d.tris = tris;
+                        d.alive = cmds[i].indexCount / 3;
+                        d.level = level;
+                        d.cx = cx;
+                        d.cy = cy;
+                        d.rx = rx;
+                        d.ry = ry;
+                        d.dn = dn;
+                        d.stored = stored;
+                        d.screenTag = screenTag;
+                        misses.push_back(d);
+                    }
+                }
+            }
+        }
+        if (!killed)
+            continue;
+        uint32_t& budget = verdict ? printedOcc : printedKeep;
+        if (budget < kAuditPrintPerClass) {
+            ++budget;
+            if (verdict) {
+                SMVK_DEBUG_LOG(
+                    "[GfxAudit] kill b=%u cl=%u draw=%u mesh=%u world=%d mat=%u tris=%u | "
+                    "c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
+                    "margin=%+.5f %s cpu=OCCLUDED%s\n",
+                    i,
+                    b.cluster,
+                    b.draw,
+                    mesh,
+                    world,
+                    mat,
+                    tris,
+                    cx,
+                    cy,
+                    rx,
+                    ry,
+                    level,
+                    dn,
+                    stored,
+                    stored - dn,
+                    screenTag,
+                    mirrorOk ? "" : " (unresolved)");
+            } else {
+                SMVK_DEBUG_LOG(
+                    "[GfxAudit] kill b=%u cl=%u draw=%u mesh=%u world=%d mat=%u tris=%u | "
+                    "c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
+                    "%s cpu=keep%s\n",
+                    i,
+                    b.cluster,
+                    b.draw,
+                    mesh,
+                    world,
+                    mat,
+                    tris,
+                    cx,
+                    cy,
+                    rx,
+                    ry,
+                    level,
+                    dn,
+                    stored,
+                    screenTag,
+                    mirrorOk ? "" : " (unresolved)");
+            }
+        }
+    }
+    // Misses first: CPU says occluded but the GPU kept the batch — the
+    // exact "mesh behind still renders" cases, with margins.
+    for (const MissDetail& d : misses) {
+        SMVK_DEBUG_LOG("[GfxAudit] miss b=%u cl=%u draw=%u mesh=%u mat=%u tris=%u aliveTris=%u | "
+                       "c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
+                       "margin=%+.5f %s cpu=OCCLUDED-MISS\n",
+                       d.b,
+                       d.cl,
+                       d.draw,
+                       d.mesh,
+                       d.mat,
+                       d.tris,
+                       d.alive,
+                       d.cx,
+                       d.cy,
+                       d.rx,
+                       d.ry,
+                       d.level,
+                       d.dn,
+                       d.stored,
+                       d.stored - d.dn,
+                       d.screenTag);
+    }
+    if (misses.size() == kAuditMissCap)
+        SMVK_DEBUG_LOG("[GfxAudit] miss list capped at %u (more unprinted)\n", kAuditMissCap);
+    uint32_t missedTotal = 0;
+    for (uint32_t m = 0; m < (uint32_t)meshStats.size(); ++m) {
+        const MeshAudit& ms = meshStats[m];
+        if (ms.batches == 0)
+            continue;
+        missedTotal += ms.missed;
+        SMVK_DEBUG_LOG("[GfxAudit] mesh=%u world=%d batches=%u tris=%u gpuKill=%u occKill=%u "
+                       "missed=%u aliveTris=%u\n",
+                       m,
+                       gfxToWorld[m],
+                       ms.batches,
+                       ms.tris,
+                       ms.gpuKill,
+                       ms.occKill,
+                       ms.missed,
+                       ms.aliveTris);
+    }
+    SMVK_DEBUG_LOG("[GfxAudit] zero=%u/%u cpuOccluded=%u cpuKeep=%u missed=%u%s (keep = triangle "
+                   "kill or shader divergence; "
+                   "bisect backface/frustum/smallprim to split)\n",
+                   zeroTotal,
+                   v.batchCount,
+                   cpuOcc,
+                   cpuKeep,
+                   missedTotal,
+                   (v.batchCount > 0 && zeroTotal == v.batchCount)
+                       ? " WARNING: every batch killed (degenerate view or stale slice?)"
+                       : "");
+}
 
-	void GfxRenderer::AddMainConsumeHints(smvk::RenderPass& pass, uint32_t slot) {
-		using namespace smvk::gfx;
-		if (slot >= gfx.views.size())
-			return;
-		// Filtered index region (in the static index monoblock, bound at
-		// offset 0 by BindStaticVertexFmt) + the GPU-written indirect commands.
-		// Engine helper covers IndexRead@Vertex and IndirectCommandRead@DrawIndirect.
-		AddConsumeHints(pass, IndexHeapLogical(gfx), IndirectLogical(gfx, slot));
-		// gfxfiltered.vert resolves model matrices from the draws ring slice
-		// via BDA — compute/transfer-written, vertex-read.
-		smvk::BufferSyncRequest drawsRead{};
-		drawsRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
-		drawsRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
-		pass.AddBufferHint(DrawLogical(gfx, slot), drawsRead);
-		// The meshlet debug view draws cluster regions of the same monoblock
-		// (the seed/remainder passes hint it too; Main needs the transition
-		// whenever the debug branch runs).
-		smvk::BufferSyncRequest indexRead{};
-		indexRead.barrierMasks.accessMask = smvk::AccessFlags::IndexRead;
-		indexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
-		pass.AddBufferHint(IndexHeapLogical(gfx), indexRead);
-	}
+void GfxRenderer::AddMainConsumeHints(smvk::RenderPass& pass, uint32_t slot) {
+    using namespace smvk::gfx;
+    if (slot >= gfx.views.size())
+        return;
+    // Filtered index region (in the static index monoblock, bound at
+    // offset 0 by BindStaticVertexFmt) + the GPU-written indirect commands.
+    // Engine helper covers IndexRead@Vertex and IndirectCommandRead@DrawIndirect.
+    AddConsumeHints(pass, IndexHeapLogical(gfx), IndirectLogical(gfx, slot));
+    // gfxfiltered.vert resolves model matrices from the draws ring slice
+    // via BDA — compute/transfer-written, vertex-read.
+    smvk::BufferSyncRequest drawsRead{};
+    drawsRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+    drawsRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+    pass.AddBufferHint(DrawLogical(gfx, slot), drawsRead);
+    // The meshlet debug view draws cluster regions of the same monoblock
+    // (the seed/remainder passes hint it too; Main needs the transition
+    // whenever the debug branch runs).
+    smvk::BufferSyncRequest indexRead{};
+    indexRead.barrierMasks.accessMask = smvk::AccessFlags::IndexRead;
+    indexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+    pass.AddBufferHint(IndexHeapLogical(gfx), indexRead);
+}
 
-	void GfxRenderer::DrawRange(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-		uint32_t slot, uint32_t rangeIdx) {
-		(void)ctx;
-		const std::vector<smvk::gfx::MaterialRange>& ranges =
-			smvk::gfx::MaterialRanges(gfx, slot);
-		assert(rangeIdx < ranges.size());
-		const smvk::gfx::MaterialRange& r = ranges[rangeIdx];
-		if (r.commandCount == 0)
-			return;
-		// TMP-DIAG (the distant-view color-kill hunt, first 3 calls): read
-		// back the FIRST indirect args of this range from the GPU - if the
-		// compute-written command carries instanceCount 0 / garbage, the
-		// draw records but rasterizes nothing. One-frame-stale is fine.
-		{
-			static int s_calls = 0;
-			++s_calls;
-			// ~25 DrawRange calls per frame: calls 400-402 land around
-			// frame 16 - post-warmup, temporal loop settled.
-			if (s_calls >= 400 && s_calls <= 402 && rangeIdx == 0u) {
-				const smvk::BufferHandle buf =
-					smvk::gfx::IndirectBuffer(gfx, slot);
-				uint32_t words[10] = {};
-				const size_t at = size_t(r.firstCommand) * 20;
-				if (ctx.DownloadDataFromBuffer(buf, words, sizeof(words), at)) {
-					std::fprintf(stderr,
-						"[maindiag] indirect[%d] idx=%u inst=%u firstIdx=%u "
-						"baseVtx=%u firstInst=%u (want cmds=%u)\n",
-						s_calls, words[0], words[1], words[2], words[3],
-						words[4], r.commandCount);
-					std::fflush(stderr);
-				}
-				else {
-					std::fprintf(stderr,
-						"[maindiag] indirect readback FAILED\n");
-					std::fflush(stderr);
-				}
-			}
-		}
-		// No index bind: indirect firstIndex is absolute into the static index
-		// monoblock (offset-0 binding from BindStaticVertexFmt is correct).
-		cmd.DrawIndexedIndirect(smvk::gfx::IndirectBuffer(gfx, slot),
-			(uint64_t)r.firstCommand * 20, r.commandCount, 20);
-	}
+void GfxRenderer::DrawRange(smvk::CommandBuffer& cmd,
+                            smvk::ResourceManager& ctx,
+                            uint32_t slot,
+                            uint32_t rangeIdx) {
+    (void)ctx;
+    const std::vector<smvk::gfx::MaterialRange>& ranges = smvk::gfx::MaterialRanges(gfx, slot);
+    assert(rangeIdx < ranges.size());
+    const smvk::gfx::MaterialRange& r = ranges[rangeIdx];
+    if (r.commandCount == 0)
+        return;
+    // TMP-DIAG (the distant-view color-kill hunt, first 3 calls): read
+    // back the FIRST indirect args of this range from the GPU - if the
+    // compute-written command carries instanceCount 0 / garbage, the
+    // draw records but rasterizes nothing. One-frame-stale is fine.
+    {
+        static int s_calls = 0;
+        ++s_calls;
+        // ~25 DrawRange calls per frame: calls 400-402 land around
+        // frame 16 - post-warmup, temporal loop settled.
+        if (s_calls >= 400 && s_calls <= 402 && rangeIdx == 0u) {
+            const smvk::BufferHandle buf = smvk::gfx::IndirectBuffer(gfx, slot);
+            uint32_t words[10] = {};
+            const size_t at = size_t(r.firstCommand) * 20;
+            if (ctx.DownloadDataFromBuffer(buf, words, sizeof(words), at)) {
+                std::fprintf(stderr,
+                             "[maindiag] indirect[%d] idx=%u inst=%u firstIdx=%u "
+                             "baseVtx=%u firstInst=%u (want cmds=%u)\n",
+                             s_calls,
+                             words[0],
+                             words[1],
+                             words[2],
+                             words[3],
+                             words[4],
+                             r.commandCount);
+                std::fflush(stderr);
+            } else {
+                std::fprintf(stderr, "[maindiag] indirect readback FAILED\n");
+                std::fflush(stderr);
+            }
+        }
+    }
+    // No index bind: indirect firstIndex is absolute into the static index
+    // monoblock (offset-0 binding from BindStaticVertexFmt is correct).
+    cmd.DrawIndexedIndirect(
+        smvk::gfx::IndirectBuffer(gfx, slot), (uint64_t)r.firstCommand * 20, r.commandCount, 20);
+}
 
-	void GfxRenderer::DebugReadMainIndirect(smvk::ResourceManager& ctx,
-		uint32_t slot) {
-		// TMP-DIAG (the distant-view color-kill hunt): read the first
-		// three main-pass indirect commands (the filter compute's output).
-		// The seed/depth leg's buffer works, so zero args here name the
-		// filter's arg writes as the dead piece.
-		const smvk::BufferHandle buf = smvk::gfx::IndirectBuffer(gfx, slot);
-		uint32_t words[15] = {};
-		if (!ctx.DownloadDataFromBuffer(buf, words, sizeof(words), 0)) {
-			std::fprintf(stderr, "[maindiag] main-indirect readback FAILED\n");
-			std::fflush(stderr);
-			return;
-		}
-		for (int i = 0; i < 3; ++i)
-			std::fprintf(stderr,
-				"[maindiag] main-indirect[%d] idx=%u inst=%u firstIdx=%u "
-				"baseVtx=%u firstInst=%u\n",
-				i, words[i*5], words[i*5+1], words[i*5+2], words[i*5+3],
-				words[i*5+4]);
-		std::fflush(stderr);
-	}
+void GfxRenderer::DebugReadMainIndirect(smvk::ResourceManager& ctx, uint32_t slot) {
+    // TMP-DIAG (the distant-view color-kill hunt): read the first
+    // three main-pass indirect commands (the filter compute's output).
+    // The seed/depth leg's buffer works, so zero args here name the
+    // filter's arg writes as the dead piece.
+    const smvk::BufferHandle buf = smvk::gfx::IndirectBuffer(gfx, slot);
+    uint32_t words[15] = {};
+    if (!ctx.DownloadDataFromBuffer(buf, words, sizeof(words), 0)) {
+        std::fprintf(stderr, "[maindiag] main-indirect readback FAILED\n");
+        std::fflush(stderr);
+        return;
+    }
+    for (int i = 0; i < 3; ++i)
+        std::fprintf(stderr,
+                     "[maindiag] main-indirect[%d] idx=%u inst=%u firstIdx=%u "
+                     "baseVtx=%u firstInst=%u\n",
+                     i,
+                     words[i * 5],
+                     words[i * 5 + 1],
+                     words[i * 5 + 2],
+                     words[i * 5 + 3],
+                     words[i * 5 + 4]);
+    std::fflush(stderr);
+}
 
-	void GfxRenderer::DumpHzb(smvk::ResourceManager& ctx, uint32_t slot) {
-		smvk::gfx::DumpHzb(gfx, ctx, slot);
-	}
+void GfxRenderer::DumpHzb(smvk::ResourceManager& ctx, uint32_t slot) {
+    smvk::gfx::DumpHzb(gfx, ctx, slot);
+}
 
 } // namespace engine

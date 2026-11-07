@@ -45,15 +45,24 @@ glm::vec3 CubemapCaptureMean(const smvk::CubemapMipChains& chains, uint32_t size
 // Mean luminance (Rec.709) of a linear RGB mean, for one-line cook logs.
 float CubemapMeanLuma(const glm::vec3& mean);
 
-bool WriteCubemapFacesPng(const smvk::CubemapMipChains& chains, uint32_t size,
-	float exposure, const std::string& path, std::string& err);
+bool WriteCubemapFacesPng(const smvk::CubemapMipChains& chains,
+                          uint32_t size,
+                          float exposure,
+                          const std::string& path,
+                          std::string& err);
 
-bool WriteCubemapMipsPng(const smvk::CubemapMipChains& chains, uint32_t size,
-	float exposure, const std::string& path, std::string& err);
+bool WriteCubemapMipsPng(const smvk::CubemapMipChains& chains,
+                         uint32_t size,
+                         float exposure,
+                         const std::string& path,
+                         std::string& err);
 
 bool WriteCubemapProbesPng(const std::vector<glm::vec3>& positions,
-	const std::vector<glm::vec3>& means, const std::vector<float>& influences,
-	const glm::vec3& bmin, const glm::vec3& bmax,
-	const std::string& path, std::string& err);
+                           const std::vector<glm::vec3>& means,
+                           const std::vector<float>& influences,
+                           const glm::vec3& bmin,
+                           const glm::vec3& bmax,
+                           const std::string& path,
+                           std::string& err);
 
 } // namespace pakcook

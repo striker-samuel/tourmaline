@@ -44,14 +44,13 @@ using CubemapMipChains = std::vector<std::vector<std::vector<float>>>;
 bool DirectionToFaceUv(const glm::vec3& dir, CubemapFace& face, float& u, float& v);
 
 // Bilinear HDR fetch of the base capture along dir (rgb; alpha reads 1).
-glm::vec3 SampleCubemapBilinear(const CubemapBaseFaces& base, uint32_t size,
-	const glm::vec3& dir);
+glm::vec3 SampleCubemapBilinear(const CubemapBaseFaces& base, uint32_t size, const glm::vec3& dir);
 
 // Roughness carried by mip level m of an L-level chain (0 = sharp).
 inline float CubemapPrefilterRoughness(uint32_t level, uint32_t levels) {
-	if (levels <= 1)
-		return 0.0f;
-	return float(level) / float(levels - 1);
+    if (levels <= 1)
+        return 0.0f;
+    return float(level) / float(levels - 1);
 }
 
 // Mip-level count of a full chain for a size x size base (size, size/2, ...,
@@ -61,13 +60,19 @@ uint32_t CubemapFullMipCount(uint32_t size);
 // Prefilters ONE face of the base capture into its full (or truncated)
 // chain. levels == 0 means the full chain; otherwise exactly levels entries
 // (level 0 first). Thread-safe: reads base only, writes outLevels only.
-void PrefilterCubemapFaceGGX(const CubemapBaseFaces& base, uint32_t size,
-	CubemapFace face, uint32_t levels, uint32_t samplesPerTexel,
-	std::vector<std::vector<float>>& outLevels);
+void PrefilterCubemapFaceGGX(const CubemapBaseFaces& base,
+                             uint32_t size,
+                             CubemapFace face,
+                             uint32_t levels,
+                             uint32_t samplesPerTexel,
+                             std::vector<std::vector<float>>& outLevels);
 
 // All six faces (single-threaded loop over PrefilterCubemapFaceGGX).
 // outChains is resized to [6][levels] on return.
-void PrefilterCubemapGGX(const CubemapBaseFaces& base, uint32_t size,
-	uint32_t levels, uint32_t samplesPerTexel, CubemapMipChains& outChains);
+void PrefilterCubemapGGX(const CubemapBaseFaces& base,
+                         uint32_t size,
+                         uint32_t levels,
+                         uint32_t samplesPerTexel,
+                         CubemapMipChains& outChains);
 
 } // namespace smvk

@@ -75,8 +75,8 @@
 // ONLY in 'include'. No scripting, no environment expansion, no
 // expressions — a recipe is data, never a program.
 
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -90,30 +90,31 @@ inline constexpr uint32_t kRecipeGrammarVersion = 1;
 // One [pak <id>] section, verbatim from the authored recipe (authored
 // order preserved — resolution topo-sorts for the plan).
 struct RecipePak {
-	std::string id;
-	std::string output;                // authored output file name
-	std::string scene;                 // project-relative tour ("" = none)
-	std::string map;                   // optional authored .map world distribution
-	std::vector<std::string> includes; // project-relative globs, authored order
-	std::vector<std::string> depends;  // pak ids, authored order
-	bool dependenciesTransitive = false;
-	// Per-pak bake overrides: unset = inherit the recipe-level 'bake'
-	// switches. A pak shipping a stress scene beside a fully baked
-	// demo pak (the sponza_10 grid paks) turns ITS capture/GI bakes
-	// off without demoting the recipe for every other pak. 'sdf' is a
-	// geometry-family-wide bake and stays recipe-level only.
-	std::optional<bool> bakeGi;
-	std::optional<bool> bakeCubemaps;
-	size_t line = 0;                   // the [pak] header's 1-based line
+    std::string id;
+    std::string output;                // authored output file name
+    std::string scene;                 // project-relative tour ("" = none)
+    std::string map;                   // optional authored .map world distribution
+    std::vector<std::string> includes; // project-relative globs, authored order
+    std::vector<std::string> depends;  // pak ids, authored order
+    bool dependenciesTransitive = false;
+    // Per-pak bake overrides: unset = inherit the recipe-level 'bake'
+    // switches. A pak shipping a stress scene beside a fully baked
+    // demo pak (the sponza_10 grid paks) turns ITS capture/GI bakes
+    // off without demoting the recipe for every other pak. 'sdf' is a
+    // geometry-family-wide bake and stays recipe-level only.
+    std::optional<bool> bakeGi;
+    std::optional<bool> bakeCubemaps;
+    size_t line = 0; // the [pak] header's 1-based line
 
-	[[nodiscard]] bool HasContentSource() const {
-		return !scene.empty() || !map.empty() || !includes.empty();
-	}
+    [[nodiscard]] bool HasContentSource() const {
+        return !scene.empty() || !map.empty() || !includes.empty();
+    }
 };
 
 // Authored only in the project .tourrecipe, never in a scene .tour.
 struct MaterialChannelRule {
-    std::string target; // AO, cavity, roughness, metallic, baseColor.r..a, normal.r..b, emissive.r..b
+    std::string
+        target; // AO, cavity, roughness, metallic, baseColor.r..a, normal.r..b, emissive.r..b
     std::string source; // source material texture slot or constant one/zero
     char channel = 'r'; // r/g/b/a, ignored for constants
     bool operator==(const MaterialChannelRule& other) const {
@@ -123,7 +124,7 @@ struct MaterialChannelRule {
 
 struct MaterialPackingRule {
     std::vector<MaterialChannelRule> channels; // canonical output textures assembled at import
-    std::array<std::string, 4> encodings{}; // baseColor, normal, emissive, scalar; empty=default
+    std::array<std::string, 4> encodings{};    // baseColor, normal, emissive, scalar; empty=default
     std::string Signature() const {
         std::string result;
         for (const auto& c : channels)
@@ -137,23 +138,26 @@ struct MaterialPackingRule {
     }
     std::string source; // metallicRoughness or occlusion; empty = native glTF
     int ao = 0, cavity = 0, roughness = 1, metallic = 2;
-    int PackedWord() const { return ao | (cavity << 2) | (roughness << 4) | (metallic << 6); }
+    int PackedWord() const {
+        return ao | (cavity << 2) | (roughness << 4) | (metallic << 6);
+    }
     bool operator==(const MaterialPackingRule& rhs) const {
-        return channels == rhs.channels && encodings == rhs.encodings && source == rhs.source && ao == rhs.ao && cavity == rhs.cavity &&
-            roughness == rhs.roughness && metallic == rhs.metallic;
+        return channels == rhs.channels && encodings == rhs.encodings && source == rhs.source &&
+               ao == rhs.ao && cavity == rhs.cavity && roughness == rhs.roughness &&
+               metallic == rhs.metallic;
     }
 };
 struct ProjectRecipe {
-	uint32_t version = 0; // 0 = unparsed (a valid parse always records 1)
-	std::string projectName;
-	std::string entry;    // project-relative entry scene tour
-	bool bakeGi = false;
-	bool bakeCubemaps = false;
-	bool bakeSdf = false;
-	MaterialPackingRule materialPacking;
-	std::vector<RecipePak> paks; // authored order
+    uint32_t version = 0; // 0 = unparsed (a valid parse always records 1)
+    std::string projectName;
+    std::string entry; // project-relative entry scene tour
+    bool bakeGi = false;
+    bool bakeCubemaps = false;
+    bool bakeSdf = false;
+    MaterialPackingRule materialPacking;
+    std::vector<RecipePak> paks; // authored order
 
-	[[nodiscard]] const RecipePak* FindPak(const std::string& id) const;
+    [[nodiscard]] const RecipePak* FindPak(const std::string& id) const;
 };
 
 // A parse failure: WHERE (1-based line; 0 = not line-specific, e.g. a
@@ -161,23 +165,21 @@ struct ProjectRecipe {
 // WHY. Format() renders the caller-facing single line — the parser
 // works on text, so the FILENAME is the caller's contribution.
 struct RecipeDiagnostic {
-	size_t line = 0;
-	std::string directive;
-	std::string message;
+    size_t line = 0;
+    std::string directive;
+    std::string message;
 
-	[[nodiscard]] std::string Format(const std::string& file) const;
+    [[nodiscard]] std::string Format(const std::string& file) const;
 };
 
 // Parse a recipe file. False + err on the FIRST offending line; `out`
 // is untouched on failure (parse-into-temp, publish on success is the
 // caller's pattern — a failed parse never half-populates a recipe).
-bool ParseProjectRecipe(const std::string& path, ProjectRecipe& out,
-	RecipeDiagnostic& err);
+bool ParseProjectRecipe(const std::string& path, ProjectRecipe& out, RecipeDiagnostic& err);
 
 // The same grammar over in-memory text (tests; the editor's unsaved
 // buffers later). Identical diagnostics — the line numbers are the
 // text's own.
-bool ParseProjectRecipeText(const std::string& text, ProjectRecipe& out,
-	RecipeDiagnostic& err);
+bool ParseProjectRecipeText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& err);
 
 } // namespace smvk::project

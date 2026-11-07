@@ -12,17 +12,23 @@
 // whose NDEBUG no-op makes Release runs vacuous - and any side effect
 // inside an assert (see test_gpu_scene_candidates.cpp:
 // assert(leaves.Flush(db))) was silently skipped, crashing the run.
-#define CHECK(cond) do { ++g_checks; if (!(cond)) { ++g_failures; \
-    std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } \
-    while (0)
-namespace { int g_checks = 0; int g_failures = 0; }
+#define CHECK(cond)                                                                                \
+    do {                                                                                           \
+        ++g_checks;                                                                                \
+        if (!(cond)) {                                                                             \
+            ++g_failures;                                                                          \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                   \
+        }                                                                                          \
+    } while (0)
+namespace {
+int g_checks = 0;
+int g_failures = 0;
+} // namespace
 
 using namespace tour::gpu_scene;
 namespace {
-template<typename T>
-void Ack(Table<T, smvk::limits::MaxFramesInFlight>& table, uint32_t flight) {
-    CHECK(table.Publish(flight, true,
-        [](size_t, const void*, size_t) { return true; }));
+template <typename T> void Ack(Table<T, smvk::limits::MaxFramesInFlight>& table, uint32_t flight) {
+    CHECK(table.Publish(flight, true, [](size_t, const void*, size_t) { return true; }));
     CHECK(table.PendingRows(flight) == 0);
 }
 void CheckContiguousAllocations() {
@@ -66,9 +72,9 @@ void CheckMeshResidency() {
     CHECK(meshId && instanceId);
     CHECK(db.instances.Get(instanceId)->refs.y == meshId.generation);
     std::array<LevelSource, 3> chain{{
-        {0.0f, 4u, true, true},              // LOD0: resident and filterable
-        {0.25f, InvalidIndex, false, true},  // LOD1 deferred, metadata known
-        {1.5f, InvalidIndex, true, true}     // LOD2 direct-draw only
+        {0.0f, 4u, true, true},             // LOD0: resident and filterable
+        {0.25f, InvalidIndex, false, true}, // LOD1 deferred, metadata known
+        {1.5f, InvalidIndex, true, true}    // LOD2 direct-draw only
     }};
     CHECK(registry.PublishMesh(r.mesh, chain, true, db));
     const Mesh* mesh = db.meshes.Get(meshId);
@@ -79,16 +85,18 @@ void CheckMeshResidency() {
     const auto& subRows = db.submeshes.Rows();
     CHECK(lodRows[base].identity.y == 1);
     CHECK((lodRows[base].value.flags & LodFlagFilterable) != 0);
-    CHECK((lodRows[base+1].value.flags & LodFlagResident) == 0);
-    CHECK((lodRows[base+1].value.flags & LodFlagBoundsKnown) != 0);
-    CHECK(lodRows[base+1].value.simplifyError == 0.25f);
-    CHECK((lodRows[base+2].value.flags & LodFlagResident) != 0);
-    CHECK((lodRows[base+2].value.flags & LodFlagFilterable) == 0);
+    CHECK((lodRows[base + 1].value.flags & LodFlagResident) == 0);
+    CHECK((lodRows[base + 1].value.flags & LodFlagBoundsKnown) != 0);
+    CHECK(lodRows[base + 1].value.simplifyError == 0.25f);
+    CHECK((lodRows[base + 2].value.flags & LodFlagResident) != 0);
+    CHECK((lodRows[base + 2].value.flags & LodFlagFilterable) == 0);
     CHECK(subRows[lodRows[base].value.firstSubmesh].value.geometryId == 4u);
-    CHECK(subRows[lodRows[base+1].value.firstSubmesh].value.geometryId == InvalidIndex);
-    CHECK(subRows[lodRows[base+2].value.firstSubmesh].value.geometryId == InvalidIndex);
+    CHECK(subRows[lodRows[base + 1].value.firstSubmesh].value.geometryId == InvalidIndex);
+    CHECK(subRows[lodRows[base + 2].value.firstSubmesh].value.geometryId == InvalidIndex);
 
-    Ack(db.meshes, 0); Ack(db.lods, 0); Ack(db.submeshes, 0);
+    Ack(db.meshes, 0);
+    Ack(db.lods, 0);
+    Ack(db.submeshes, 0);
     // No material sort, camera, or time-driven dirty writes.
     CHECK(registry.PublishMesh(r.mesh, chain, true, db));
     CHECK(db.meshes.PendingRows(0) == 0);
@@ -105,7 +113,9 @@ void CheckMeshResidency() {
     CHECK(db.meshes.PendingRows(0) == 1);
     CHECK(db.lods.PendingRows(0) == 1);
     CHECK(db.submeshes.PendingRows(0) == 1);
-    Ack(db.meshes, 0); Ack(db.lods, 0); Ack(db.submeshes, 0);
+    Ack(db.meshes, 0);
+    Ack(db.lods, 0);
+    Ack(db.submeshes, 0);
     // A registration-table rebuild can remap geometry IDs without
     // changing physical residency or the persistent mesh handle.
     chain[0].gfxMesh = 77u;
@@ -121,8 +131,7 @@ void CheckMeshResidency() {
     chain[1].gfxMesh = InvalidIndex;
     CHECK(registry.PublishMesh(r.mesh, chain, true, db));
     CHECK(db.meshes.Get(meshId)->residentMask == 0b101u);
-    CHECK(db.lods.Rows()[base+1].value.firstSubmesh ==
-           lodRows[base+1].value.firstSubmesh);
+    CHECK(db.lods.Rows()[base + 1].value.firstSubmesh == lodRows[base + 1].value.firstSubmesh);
     CHECK(db.instances.Contains(instanceId));
     CHECK(db.instances.Get(instanceId)->refs.x == meshId.slot);
 
@@ -130,7 +139,7 @@ void CheckMeshResidency() {
     chain[1].boundsKnown = false;
     CHECK(registry.PublishMesh(r.mesh, chain, false, db));
     CHECK((db.meshes.Get(meshId)->flags & MeshFlagCompleteBounds) == 0);
-    CHECK((db.lods.Rows()[base+1].value.flags & LodFlagBoundsKnown) == 0);
+    CHECK((db.lods.Rows()[base + 1].value.flags & LodFlagBoundsKnown) == 0);
 
     // Reshaping a chain replaces its child rows but retains the mesh
     // slot/generation referenced by EVERY instance.
@@ -147,7 +156,7 @@ void CheckMeshResidency() {
     CHECK(db.lods.LiveCount() == 0 && db.submeshes.LiveCount() == 0);
     CHECK(db.meshes.PendingRows(0) > 0);
 }
-}
+} // namespace
 int main() {
     CheckContiguousAllocations();
     CheckMeshResidency();

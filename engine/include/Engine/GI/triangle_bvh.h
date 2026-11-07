@@ -34,120 +34,126 @@ namespace tour::gi {
 // it also owns ClosestDistance, which stays builtin either way — cold
 // placement/relocation path).
 enum class TraceBackend {
-	Builtin, // DEPRECATED for the bake transport (deletion target)
-	Embree,
+    Builtin, // DEPRECATED for the bake transport (deletion target)
+    Embree,
 };
 
 class TriangleBvh {
-public:
-	// All five specials declared here, defined out-of-line (triangle_bvh.cpp):
-	// the unique_ptr<EmbreeContext> member is incomplete in this header,
-	// and an inline-defaulted special (MSVC instantiates a defaulted ctor
-	// with its exception-cleanup path in every using TU) drags
-	// ~unique_ptr — and its incomplete-type delete — into foreign TUs.
-	TriangleBvh();
-	~TriangleBvh();
-	TriangleBvh(const TriangleBvh&) = delete;
-	TriangleBvh& operator=(const TriangleBvh&) = delete;
-	TriangleBvh(TriangleBvh&&) noexcept;
-	TriangleBvh& operator=(TriangleBvh&&) noexcept;
+  public:
+    // All five specials declared here, defined out-of-line (triangle_bvh.cpp):
+    // the unique_ptr<EmbreeContext> member is incomplete in this header,
+    // and an inline-defaulted special (MSVC instantiates a defaulted ctor
+    // with its exception-cleanup path in every using TU) drags
+    // ~unique_ptr — and its incomplete-type delete — into foreign TUs.
+    TriangleBvh();
+    ~TriangleBvh();
+    TriangleBvh(const TriangleBvh&) = delete;
+    TriangleBvh& operator=(const TriangleBvh&) = delete;
+    TriangleBvh(TriangleBvh&&) noexcept;
+    TriangleBvh& operator=(TriangleBvh&&) noexcept;
 
-	struct Hit {
-		float t = 0.0f;
-		uint32_t tri = 0;      // triangle index (into the build triangle list)
-		glm::vec2 baryUV{};    // barycentric (v, w); u = 1 - v - w
-	};
+    struct Hit {
+        float t = 0.0f;
+        uint32_t tri = 0;   // triangle index (into the build triangle list)
+        glm::vec2 baryUV{}; // barycentric (v, w); u = 1 - v - w
+    };
 
-	// Triangles are consumed as a prebuilt vertex + index soup; `triCount`
-	// is indices.size() / 3. Triangle k uses indices[3k..3k+2].
-	void Build(std::span<const glm::vec3> positions, std::span<const uint32_t> indices,
-		TraceBackend backend = TraceBackend::Builtin);
+    // Triangles are consumed as a prebuilt vertex + index soup; `triCount`
+    // is indices.size() / 3. Triangle k uses indices[3k..3k+2].
+    void Build(std::span<const glm::vec3> positions,
+               std::span<const uint32_t> indices,
+               TraceBackend backend = TraceBackend::Builtin);
 
-	TraceBackend Backend() const { return backend_; }
+    TraceBackend Backend() const {
+        return backend_;
+    }
 
-	bool Empty() const { return triCount_ == 0; }
-	uint32_t TriangleCount() const { return triCount_; }
+    bool Empty() const {
+        return triCount_ == 0;
+    }
+    uint32_t TriangleCount() const {
+        return triCount_;
+    }
 
-	// Vertex positions of triangle k (k = original triangle index into
-	// the build soup; the BVH reorder table triIndices_ is resolved by
-	// the CALLER — traversal passes triIndices_[slot], direct users pass
-	// k itself. Never index triIndices_ here: doing so applies the
-	// reorder twice and shades/traces the wrong triangle).
-	void TriangleVertices(uint32_t k, glm::vec3& v0, glm::vec3& v1, glm::vec3& v2) const {
-		const uint32_t i = k * 3;
-		v0 = positions_[indices_[i + 0]];
-		v1 = positions_[indices_[i + 1]];
-		v2 = positions_[indices_[i + 2]];
-	}
+    // Vertex positions of triangle k (k = original triangle index into
+    // the build soup; the BVH reorder table triIndices_ is resolved by
+    // the CALLER — traversal passes triIndices_[slot], direct users pass
+    // k itself. Never index triIndices_ here: doing so applies the
+    // reorder twice and shades/traces the wrong triangle).
+    void TriangleVertices(uint32_t k, glm::vec3& v0, glm::vec3& v1, glm::vec3& v2) const {
+        const uint32_t i = k * 3;
+        v0 = positions_[indices_[i + 0]];
+        v1 = positions_[indices_[i + 1]];
+        v2 = positions_[indices_[i + 2]];
+    }
 
-	glm::vec3 TriangleNormal(uint32_t k) const {
-		glm::vec3 v0, v1, v2;
-		TriangleVertices(k, v0, v1, v2);
-		// Degenerate (zero-area) triangles normalize to NaN; one NaN
-		// shading normal poisons the whole probe fit (rhs -> NaN amps),
-		// the error metric (NaN error subdivides forever) and the
-		// smoothing passes (NaN spreads to neighbors). Fall back to +Y.
-		const glm::vec3 c = glm::cross(v1 - v0, v2 - v0);
-		const float l2 = glm::dot(c, c);
-		if (!(l2 > 1e-20f))
-			return glm::vec3(0.0f, 1.0f, 0.0f);
-		return c * (1.0f / std::sqrt(l2));
-	}
+    glm::vec3 TriangleNormal(uint32_t k) const {
+        glm::vec3 v0, v1, v2;
+        TriangleVertices(k, v0, v1, v2);
+        // Degenerate (zero-area) triangles normalize to NaN; one NaN
+        // shading normal poisons the whole probe fit (rhs -> NaN amps),
+        // the error metric (NaN error subdivides forever) and the
+        // smoothing passes (NaN spreads to neighbors). Fall back to +Y.
+        const glm::vec3 c = glm::cross(v1 - v0, v2 - v0);
+        const float l2 = glm::dot(c, c);
+        if (!(l2 > 1e-20f))
+            return glm::vec3(0.0f, 1.0f, 0.0f);
+        return c * (1.0f / std::sqrt(l2));
+    }
 
-	// Closest hit along the ray (origin + t * dir). Returns false on miss.
-	bool Raycast(const glm::vec3& origin, const glm::vec3& dir, float maxDist, Hit& out) const;
+    // Closest hit along the ray (origin + t * dir). Returns false on miss.
+    bool Raycast(const glm::vec3& origin, const glm::vec3& dir, float maxDist, Hit& out) const;
 
-	// Occlusion query with early-out: true when any triangle is hit before
-	// maxDist. Cheaper than Raycast (no closest tracking, no bookkeeping).
-	bool AnyHit(const glm::vec3& origin, const glm::vec3& dir, float maxDist) const;
+    // Occlusion query with early-out: true when any triangle is hit before
+    // maxDist. Cheaper than Raycast (no closest tracking, no bookkeeping).
+    bool AnyHit(const glm::vec3& origin, const glm::vec3& dir, float maxDist) const;
 
-	// Unsigned distance from point to the closest triangle surface, plus the
-	// closest point itself (optional out). Returns a large value when the
-	// BVH is empty. Best-first traversal over node AABB lower bounds.
-	float ClosestDistance(const glm::vec3& point, glm::vec3* outClosestPoint = nullptr) const;
+    // Unsigned distance from point to the closest triangle surface, plus the
+    // closest point itself (optional out). Returns a large value when the
+    // BVH is empty. Best-first traversal over node AABB lower bounds.
+    float ClosestDistance(const glm::vec3& point, glm::vec3* outClosestPoint = nullptr) const;
 
-private:
-	// 40-byte node: padded float[4] AABB rows. Leaf: leftFirst = first
-	// triangle index, triCount > 0. Inner: leftFirst = left child index
-	// (right = left + 1), triCount = 0.
-	struct Node {
-		float aabbMin[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-		float aabbMax[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-		uint32_t leftFirst = 0;
-		uint32_t triCount = 0;
-	};
-	static_assert(sizeof(Node) == 40);
+  private:
+    // 40-byte node: padded float[4] AABB rows. Leaf: leftFirst = first
+    // triangle index, triCount > 0. Inner: leftFirst = left child index
+    // (right = left + 1), triCount = 0.
+    struct Node {
+        float aabbMin[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        float aabbMax[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        uint32_t leftFirst = 0;
+        uint32_t triCount = 0;
+    };
+    static_assert(sizeof(Node) == 40);
 
-	void BuildNode(uint32_t nodeIndex, uint32_t first, uint32_t count, uint32_t depth);
-	bool Split(uint32_t first, uint32_t count, uint32_t& axis, float& splitPos, uint32_t& mid);
-	void UpdateNodeBounds(Node& node, uint32_t first, uint32_t count);
+    void BuildNode(uint32_t nodeIndex, uint32_t first, uint32_t count, uint32_t depth);
+    bool Split(uint32_t first, uint32_t count, uint32_t& axis, float& splitPos, uint32_t& mid);
+    void UpdateNodeBounds(Node& node, uint32_t first, uint32_t count);
 
-	std::vector<glm::vec3> positions_;
-	std::vector<uint32_t> indices_;   // original soup
-	std::vector<uint32_t> triIndices_; // BVH-ordered triangle indirections
-	std::vector<Node> nodes_;
-	uint32_t usedNodes_ = 0;
-	uint32_t triCount_ = 0;
-	glm::vec3 boundsMin_{ 0.0f };
-	glm::vec3 boundsMax_{ 0.0f };
-	// Embree traversal state (backend == Embree only): shares positions_/
-	// indices_ zero-copy (rtcSetSharedGeometryBuffer — the vectors are
-	// stable after Build, so the device pointers stay valid for the
-	// BVH's lifetime). Forward-declared so this header never includes
-	// embree.h (engine targets build without it).
-	struct EmbreeContext;
-	std::unique_ptr<EmbreeContext> embree_;
-	TraceBackend backend_ = TraceBackend::Builtin;
+    std::vector<glm::vec3> positions_;
+    std::vector<uint32_t> indices_;    // original soup
+    std::vector<uint32_t> triIndices_; // BVH-ordered triangle indirections
+    std::vector<Node> nodes_;
+    uint32_t usedNodes_ = 0;
+    uint32_t triCount_ = 0;
+    glm::vec3 boundsMin_{0.0f};
+    glm::vec3 boundsMax_{0.0f};
+    // Embree traversal state (backend == Embree only): shares positions_/
+    // indices_ zero-copy (rtcSetSharedGeometryBuffer — the vectors are
+    // stable after Build, so the device pointers stay valid for the
+    // BVH's lifetime). Forward-declared so this header never includes
+    // embree.h (engine targets build without it).
+    struct EmbreeContext;
+    std::unique_ptr<EmbreeContext> embree_;
+    TraceBackend backend_ = TraceBackend::Builtin;
 };
 
 } // namespace tour::gi
 
-
 // COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
 // header's declarations live in tour::gi; the smvk::gi aliases keep the
 // existing call sites compiling through the consumer migration.
-namespace smvk {} // (declare the namespace so the compat alias below compiles standalone)
+namespace smvk {} // namespace smvk
 namespace smvk::gi {
-	using ::tour::gi::TriangleBvh;
-	using ::tour::gi::TraceBackend;
-}
+using ::tour::gi::TraceBackend;
+using ::tour::gi::TriangleBvh;
+} // namespace smvk::gi

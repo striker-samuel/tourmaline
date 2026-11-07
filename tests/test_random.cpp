@@ -15,13 +15,13 @@ void Check(bool pass, const char* name) {
         std::cerr << "FAIL " << name << '\n';
     }
 }
-}
+} // namespace
 
 int main() {
     // PCG32 reference vector: seed=42, sequence=54.
     tour::RandomStream reference(42, 54);
-    constexpr uint32_t expected[] = {0xa15c02b7u, 0x7b47f409u, 0xba1d3330u,
-        0x83d2f293u, 0xbfa4784bu};
+    constexpr uint32_t expected[] = {
+        0xa15c02b7u, 0x7b47f409u, 0xba1d3330u, 0x83d2f293u, 0xbfa4784bu};
     for (uint32_t value : expected)
         Check(reference.NextU32() == value, "rng.pcg32-golden-vector");
 
@@ -36,12 +36,13 @@ int main() {
     }
     tour::RandomService different(987654321), original(123456789);
     Check(different.Stream("loot").NextU32() != original.Stream("loot").NextU32(),
-        "rng.different-master-seeds");
+          "rng.different-master-seeds");
     Check(a.MakeStream("loot").NextU32() == original.MakeStream("loot").NextU32(),
-        "rng.fresh-stream-independent-of-consumption");
+          "rng.fresh-stream-independent-of-consumption");
 
     tour::RandomStream stream(42, 54);
-    for (int i = 0; i < 9; ++i) (void)stream.NextU32();
+    for (int i = 0; i < 9; ++i)
+        (void)stream.NextU32();
     const auto checkpoint = stream.Save();
     const uint32_t next = stream.NextU32();
     stream.Restore(checkpoint);
@@ -67,8 +68,7 @@ int main() {
         Check(true, "rng.reject-zero-bound");
     }
     a.Reseed(123456789);
-    Check(a.Gameplay().NextU32() == b.Gameplay().NextU32(),
-        "rng.reseed-resets-streams");
+    Check(a.Gameplay().NextU32() == b.Gameplay().NextU32(), "rng.reseed-resets-streams");
     Check(a.Seed() == 123456789, "rng.exposes-effective-seed");
 
     std::cout << "rng failures=" << failures << '\n';

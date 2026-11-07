@@ -6,267 +6,291 @@
 // Covers: stable-ID determinism, channel independence, prototype selection,
 // SoA point storage, RenderInstance ABI vs HLSL mirror.
 
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <iostream>
 #include <limits>
 #include <vector>
 
-#include <Engine/Placement/placement_ids.h>
-#include <Engine/Placement/placement_point.h>
-#include <Engine/Placement/placement_prototype.h>
 #include <Engine/Placement/placement_cache.h>
 #include <Engine/Placement/placement_domain.h>
 #include <Engine/Placement/placement_draw.h>
 #include <Engine/Placement/placement_eval.h>
 #include <Engine/Placement/placement_gpu.h>
+#include <Engine/Placement/placement_ids.h>
 #include <Engine/Placement/placement_ir.h>
 #include <Engine/Placement/placement_override.h>
 #include <Engine/Placement/placement_physics.h>
-#include <Engine/Placement/placement_tile.h>
+#include <Engine/Placement/placement_point.h>
+#include <Engine/Placement/placement_prototype.h>
 #include <Engine/Placement/placement_terrain.h>
+#include <Engine/Placement/placement_tile.h>
 #include <Engine/Rendergraph/placement_pass.h>
 
 namespace {
 int g_failures = 0;
 int g_checks = 0;
 void Check(bool cond, const char* name) {
-	++g_checks;
-	if (cond) std::cout << "PASS " << name << "\n";
-	else { ++g_failures; std::cout << "FAIL " << name << "\n"; }
+    ++g_checks;
+    if (cond)
+        std::cout << "PASS " << name << "\n";
+    else {
+        ++g_failures;
+        std::cout << "FAIL " << name << "\n";
+    }
 }
 using smvk::placement::RandomChannel;
 using smvk::placement::StableID;
 using smvk::placement::TileID;
-}
+} // namespace
 
 void TestPaintedPointCloud() {
-	using namespace smvk::placement;
-	PlacementPointCloudData cloud;
-	cloud.positions = { {2, 3, 4}, {5, 6, 7}, {-1, 9, 0} };
-	cloud.normals = { {0, 1, 0}, {1, 0, 0}, {0, 1, 0} };
-	Check(cloud.valid() && cloud.pointCount() == 3,
-		"place.pointcloud.valid-count");
-	Check(glm::distance(cloud.sample(1).p, glm::vec3(5, 6, 7)) < 1e-6f &&
-		cloud.sample(1).n.x == 1.0f && cloud.sample(1).primitiveId == 1,
-		"place.pointcloud.exact-index-normal");
-	cloud.normals.clear();
-	Check(cloud.sample(1).n == glm::vec3(0, 1, 0),
-		"place.pointcloud.default-up-normal");
-	cloud.normals = { {0, 1, 0} };
-	Check(!cloud.valid(), "place.pointcloud.reject-mismatched-normals");
-	cloud.normals.clear();
+    using namespace smvk::placement;
+    PlacementPointCloudData cloud;
+    cloud.positions = {{2, 3, 4}, {5, 6, 7}, {-1, 9, 0}};
+    cloud.normals = {{0, 1, 0}, {1, 0, 0}, {0, 1, 0}};
+    Check(cloud.valid() && cloud.pointCount() == 3, "place.pointcloud.valid-count");
+    Check(glm::distance(cloud.sample(1).p, glm::vec3(5, 6, 7)) < 1e-6f &&
+              cloud.sample(1).n.x == 1.0f && cloud.sample(1).primitiveId == 1,
+          "place.pointcloud.exact-index-normal");
+    cloud.normals.clear();
+    Check(cloud.sample(1).n == glm::vec3(0, 1, 0), "place.pointcloud.default-up-normal");
+    cloud.normals = {{0, 1, 0}};
+    Check(!cloud.valid(), "place.pointcloud.reject-mismatched-normals");
+    cloud.normals.clear();
 
-	PlacementSystem::LayerBinding lb;
-	lb.programId = 44;
-	lb.domainKind = DomainKind::PointCloud;
-	lb.pointCloud = &cloud;
-	lb.program.graphSeed = 4321;
-	lb.program.nodeId = 3;
-	lb.program.instrs = { OpConst(1.0f) };
-	lb.program.acceptIndex = 0;
-	lb.config.candidatesPerTile = 1; // intentionally not the source count
-	lb.config.minSpacing = 0.0f;
-	lb.config.minScale = lb.config.maxScale = 1.0f;
-	auto instances = EvaluateTile(lb, TileID{});
-	Check(instances.size() == cloud.pointCount(),
-		"place.pointcloud.candidates-follow-source-count");
-	bool exact = true;
-	for (const RenderInstance& p : instances)
-		exact &= p.customB < cloud.pointCount() &&
-			glm::distance(p.position, cloud.positions[p.customB]) < 1e-6f;
-	Check(exact, "place.pointcloud.one-candidate-per-point");
-	Check(EvaluateTile(lb, TileID{ 2, 0, 0 }).empty(),
-		"place.pointcloud.no-replication-in-other-tiles");
+    PlacementSystem::LayerBinding lb;
+    lb.programId = 44;
+    lb.domainKind = DomainKind::PointCloud;
+    lb.pointCloud = &cloud;
+    lb.program.graphSeed = 4321;
+    lb.program.nodeId = 3;
+    lb.program.instrs = {OpConst(1.0f)};
+    lb.program.acceptIndex = 0;
+    lb.config.candidatesPerTile = 1; // intentionally not the source count
+    lb.config.minSpacing = 0.0f;
+    lb.config.minScale = lb.config.maxScale = 1.0f;
+    auto instances = EvaluateTile(lb, TileID{});
+    Check(instances.size() == cloud.pointCount(),
+          "place.pointcloud.candidates-follow-source-count");
+    bool exact = true;
+    for (const RenderInstance& p : instances)
+        exact &= p.customB < cloud.pointCount() &&
+                 glm::distance(p.position, cloud.positions[p.customB]) < 1e-6f;
+    Check(exact, "place.pointcloud.one-candidate-per-point");
+    Check(EvaluateTile(lb, TileID{2, 0, 0}).empty(),
+          "place.pointcloud.no-replication-in-other-tiles");
 
-	PlacementProgramView program{ 0x100, 1, 0 };
-	PlacementDomainParams params{};
-	ScatterBDAs bda{ };
-	bda.pos = 0x200;
-	Check(FillScatterParams(lb, program, PlacementEcoView{}, bda, params) &&
-		params.domainKind == kPlacementScatterDomain_PointCloud &&
-		params.vertCount == 3 && params.posBDA == 0x200,
-		"place.pointcloud.gpu-params");
-	PlacementScatterPush push{};
-	Check(BuildScatterPush(lb, TileID{}, 0xAA, 0xBB, 0xCC, push) &&
-		push.candidateCount == 3, "place.pointcloud.gpu-dispatch-count");
-	Check(BuildScatterPush(lb, TileID{ 1, 0, 0 }, 0xAA, 0xBB, 0xCC, push)
-		&& push.candidateCount == 0, "place.pointcloud.gpu-other-tile-empty");
-	cloud.normals = { {0, 1, 0}, {1, 0, 0}, {0, 1, 0} };
-	Check(!FillScatterParams(lb, program, PlacementEcoView{}, bda, params),
-		"place.pointcloud.normals-require-device-buffer");
-	bda.nrm = 0x300;
-	Check(FillScatterParams(lb, program, PlacementEcoView{}, bda, params) &&
-		(params.flags & kPlacementFlag_HasNormals) != 0,
-		"place.pointcloud.optional-normals");
+    PlacementProgramView program{0x100, 1, 0};
+    PlacementDomainParams params{};
+    ScatterBDAs bda{};
+    bda.pos = 0x200;
+    Check(FillScatterParams(lb, program, PlacementEcoView{}, bda, params) &&
+              params.domainKind == kPlacementScatterDomain_PointCloud && params.vertCount == 3 &&
+              params.posBDA == 0x200,
+          "place.pointcloud.gpu-params");
+    PlacementScatterPush push{};
+    Check(BuildScatterPush(lb, TileID{}, 0xAA, 0xBB, 0xCC, push) && push.candidateCount == 3,
+          "place.pointcloud.gpu-dispatch-count");
+    Check(BuildScatterPush(lb, TileID{1, 0, 0}, 0xAA, 0xBB, 0xCC, push) && push.candidateCount == 0,
+          "place.pointcloud.gpu-other-tile-empty");
+    cloud.normals = {{0, 1, 0}, {1, 0, 0}, {0, 1, 0}};
+    Check(!FillScatterParams(lb, program, PlacementEcoView{}, bda, params),
+          "place.pointcloud.normals-require-device-buffer");
+    bda.nrm = 0x300;
+    Check(FillScatterParams(lb, program, PlacementEcoView{}, bda, params) &&
+              (params.flags & kPlacementFlag_HasNormals) != 0,
+          "place.pointcloud.optional-normals");
 }
 
 void TestStableDeterminism() {
-	TileID t{ 3, -1, 7 };
-	StableID a = smvk::placement::MakeStableID(1234, 5, t, 9, 42);
-	StableID b = smvk::placement::MakeStableID(1234, 5, t, 9, 42);
-	Check(a == b, "place.id.deterministic");
-	StableID c = smvk::placement::MakeStableID(1234, 5, t, 9, 43);
-	Check(a != c, "place.id.candidate-varies");
-	StableID d = smvk::placement::MakeStableID(1235, 5, t, 9, 42);
-	Check(a != d, "place.id.seed-varies");
-	TileID t2{ 4, -1, 7 };
-	StableID e = smvk::placement::MakeStableID(1234, 5, t2, 9, 42);
-	Check(a != e, "place.id.tile-varies");
-	// lanes uncorrelated for neighbours
-	Check(a.w[0] != a.w[1] || a.w[2] != a.w[3], "place.id.lanes-split");
+    TileID t{3, -1, 7};
+    StableID a = smvk::placement::MakeStableID(1234, 5, t, 9, 42);
+    StableID b = smvk::placement::MakeStableID(1234, 5, t, 9, 42);
+    Check(a == b, "place.id.deterministic");
+    StableID c = smvk::placement::MakeStableID(1234, 5, t, 9, 43);
+    Check(a != c, "place.id.candidate-varies");
+    StableID d = smvk::placement::MakeStableID(1235, 5, t, 9, 42);
+    Check(a != d, "place.id.seed-varies");
+    TileID t2{4, -1, 7};
+    StableID e = smvk::placement::MakeStableID(1234, 5, t2, 9, 42);
+    Check(a != e, "place.id.tile-varies");
+    // lanes uncorrelated for neighbours
+    Check(a.w[0] != a.w[1] || a.w[2] != a.w[3], "place.id.lanes-split");
 }
 
 void TestChannels() {
-	TileID t{ 0, 0, 0 };
-	StableID id = smvk::placement::MakeStableID(77, 1, t, 0, 0);
-	float rPos = smvk::placement::Random01(id, RandomChannel::Position);
-	float rVar = smvk::placement::Random01(id, RandomChannel::Variant);
-	float rDen = smvk::placement::Random01(id, RandomChannel::Density);
-	Check(rPos >= 0.0f && rPos < 1.0f, "place.rng.range-pos");
-	Check(rVar >= 0.0f && rVar < 1.0f, "place.rng.range-var");
-	Check(!(rPos == rVar && rVar == rDen), "place.rng.channels-independent");
-	// Repeatability
-	float rPos2 = smvk::placement::Random01(id, RandomChannel::Position);
-	Check(rPos == rPos2, "place.rng.repeatable");
-	// 24-bit quantization: value * 2^24 is integral
-	float scaled = rPos * 16777216.0f;
-	Check(scaled == (float)(uint32_t)scaled, "place.rng.24bit-exact");
-	// Priority is integer, deterministic
-	Check(smvk::placement::PriorityOf(id) == smvk::placement::PriorityOf(id),
-		"place.rng.priority-deterministic");
+    TileID t{0, 0, 0};
+    StableID id = smvk::placement::MakeStableID(77, 1, t, 0, 0);
+    float rPos = smvk::placement::Random01(id, RandomChannel::Position);
+    float rVar = smvk::placement::Random01(id, RandomChannel::Variant);
+    float rDen = smvk::placement::Random01(id, RandomChannel::Density);
+    Check(rPos >= 0.0f && rPos < 1.0f, "place.rng.range-pos");
+    Check(rVar >= 0.0f && rVar < 1.0f, "place.rng.range-var");
+    Check(!(rPos == rVar && rVar == rDen), "place.rng.channels-independent");
+    // Repeatability
+    float rPos2 = smvk::placement::Random01(id, RandomChannel::Position);
+    Check(rPos == rPos2, "place.rng.repeatable");
+    // 24-bit quantization: value * 2^24 is integral
+    float scaled = rPos * 16777216.0f;
+    Check(scaled == (float)(uint32_t)scaled, "place.rng.24bit-exact");
+    // Priority is integer, deterministic
+    Check(smvk::placement::PriorityOf(id) == smvk::placement::PriorityOf(id),
+          "place.rng.priority-deterministic");
 }
 
 void TestPrototypeSelect() {
-	smvk::placement::PrototypeTable table;
-	Check(!table.select(0.5f).has_value(), "place.proto.empty-nullopt");
-	smvk::placement::Prototype oak; oak.assetUri = "oak"; oak.weight = 50.0f;
-	smvk::placement::Prototype pine; pine.assetUri = "pine"; pine.weight = 30.0f;
-	smvk::placement::Prototype birch; birch.assetUri = "birch"; birch.weight = 20.0f;
-	table.add(oak); table.add(pine); table.add(birch);
-	Check(table.totalWeight() == 100.0f, "place.proto.total");
-	Check(table.select(0.0f).value() == 0, "place.proto.first-bucket");
-	Check(table.select(0.49f).value() == 0, "place.proto.oak-range");
-	Check(table.select(0.5f).value() == 1, "place.proto.pine-range");
-	Check(table.select(0.799f).value() == 1, "place.proto.pine-edge");
-	Check(table.select(0.8f).value() == 2, "place.proto.birch-range");
-	Check(table.select(0.999f).value() == 2, "place.proto.last-bucket");
-	// Zero-weight entry never selected
-	smvk::placement::PrototypeTable t2;
-	smvk::placement::Prototype z; z.assetUri = "z"; z.weight = 0.0f;
-	smvk::placement::Prototype nz; nz.assetUri = "nz"; nz.weight = 1.0f;
-	t2.add(z); t2.add(nz);
-	bool onlySecond = true;
-	for (int i = 0; i < 16; ++i)
-		onlySecond = onlySecond && (t2.select(i / 16.0f).value() == 1);
-	Check(onlySecond, "place.proto.zero-weight-skipped");
+    smvk::placement::PrototypeTable table;
+    Check(!table.select(0.5f).has_value(), "place.proto.empty-nullopt");
+    smvk::placement::Prototype oak;
+    oak.assetUri = "oak";
+    oak.weight = 50.0f;
+    smvk::placement::Prototype pine;
+    pine.assetUri = "pine";
+    pine.weight = 30.0f;
+    smvk::placement::Prototype birch;
+    birch.assetUri = "birch";
+    birch.weight = 20.0f;
+    table.add(oak);
+    table.add(pine);
+    table.add(birch);
+    Check(table.totalWeight() == 100.0f, "place.proto.total");
+    Check(table.select(0.0f).value() == 0, "place.proto.first-bucket");
+    Check(table.select(0.49f).value() == 0, "place.proto.oak-range");
+    Check(table.select(0.5f).value() == 1, "place.proto.pine-range");
+    Check(table.select(0.799f).value() == 1, "place.proto.pine-edge");
+    Check(table.select(0.8f).value() == 2, "place.proto.birch-range");
+    Check(table.select(0.999f).value() == 2, "place.proto.last-bucket");
+    // Zero-weight entry never selected
+    smvk::placement::PrototypeTable t2;
+    smvk::placement::Prototype z;
+    z.assetUri = "z";
+    z.weight = 0.0f;
+    smvk::placement::Prototype nz;
+    nz.assetUri = "nz";
+    nz.weight = 1.0f;
+    t2.add(z);
+    t2.add(nz);
+    bool onlySecond = true;
+    for (int i = 0; i < 16; ++i)
+        onlySecond = onlySecond && (t2.select(i / 16.0f).value() == 1);
+    Check(onlySecond, "place.proto.zero-weight-skipped");
 }
 
 void TestPointsSoA() {
-	smvk::placement::PlacementPoints pts;
-	pts.reserve(4);
-	TileID t{ 1, 2, 3 };
-	for (uint32_t i = 0; i < 3; ++i) {
-		StableID id = smvk::placement::MakeStableID(9, 2, t, 0, i);
-		pts.push(glm::vec3((float)i, 0, 0), glm::quat(1, 0, 0, 0),
-			glm::vec3(1), i % 2, id);
-	}
-	Check(pts.size() == 3, "place.soa.size");
-	Check(pts.position.size() == pts.stableId.size(), "place.soa.parallel");
-	Check(pts.stableId[0] != pts.stableId[1], "place.soa.stable-unique");
-	pts.clear();
-	Check(pts.size() == 0, "place.soa.clear");
+    smvk::placement::PlacementPoints pts;
+    pts.reserve(4);
+    TileID t{1, 2, 3};
+    for (uint32_t i = 0; i < 3; ++i) {
+        StableID id = smvk::placement::MakeStableID(9, 2, t, 0, i);
+        pts.push(glm::vec3((float)i, 0, 0), glm::quat(1, 0, 0, 0), glm::vec3(1), i % 2, id);
+    }
+    Check(pts.size() == 3, "place.soa.size");
+    Check(pts.position.size() == pts.stableId.size(), "place.soa.parallel");
+    Check(pts.stableId[0] != pts.stableId[1], "place.soa.stable-unique");
+    pts.clear();
+    Check(pts.size() == 0, "place.soa.clear");
 }
 
 void TestRenderInstanceAbi() {
-	Check(sizeof(smvk::placement::RenderInstance) == 40, "place.abi.instance-40B");
-	Check(offsetof(smvk::placement::RenderInstance, yaw) == 12, "place.abi.yaw-offset");
-	Check(offsetof(smvk::placement::RenderInstance, scale) == 16, "place.abi.scale-offset");
-	Check(offsetof(smvk::placement::RenderInstance, prototypeId) == 28, "place.abi.proto-offset");
-	Check(offsetof(smvk::placement::RenderInstance, stableLow) == 32, "place.abi.stable-offset");
-	Check(offsetof(smvk::placement::RenderInstance, customB) == 36, "place.abi.custom-offset");
-	// PlacementRef is params-only: no per-instance data
-	smvk::placement::PlacementRef ref;
-	Check(ref.densityScale == 1.0f && ref.tileSize == 64.0f, "place.ref.defaults");
+    Check(sizeof(smvk::placement::RenderInstance) == 40, "place.abi.instance-40B");
+    Check(offsetof(smvk::placement::RenderInstance, yaw) == 12, "place.abi.yaw-offset");
+    Check(offsetof(smvk::placement::RenderInstance, scale) == 16, "place.abi.scale-offset");
+    Check(offsetof(smvk::placement::RenderInstance, prototypeId) == 28, "place.abi.proto-offset");
+    Check(offsetof(smvk::placement::RenderInstance, stableLow) == 32, "place.abi.stable-offset");
+    Check(offsetof(smvk::placement::RenderInstance, customB) == 36, "place.abi.custom-offset");
+    // PlacementRef is params-only: no per-instance data
+    smvk::placement::PlacementRef ref;
+    Check(ref.densityScale == 1.0f && ref.tileSize == 64.0f, "place.ref.defaults");
 }
 
 void TestGridDomain() {
-	smvk::placement::GridDomain grid;
-	grid.origin = glm::vec3(0, 5, 0);
-	grid.extent = glm::vec2(64.0f, 64.0f);
-	grid.cellsX = 8; grid.cellsZ = 8;
-	smvk::placement::TileID t{ 0, 0, 0 };
-	// Deterministic: same candidate -> same sample
-	smvk::placement::StableID id = smvk::placement::MakeStableID(1, 0, t, 0, 0);
-	auto a = grid.sample(id, 0);
-	auto b = grid.sample(id, 0);
-	Check(a.p == b.p, "place.grid.deterministic");
-	// Inside the tile rect, on the base plane
-	Check(a.p.x >= 0.0f && a.p.x < 64.0f && a.p.z >= 0.0f && a.p.z < 64.0f,
-		"place.grid.in-bounds");
-	Check(a.p.y == 5.0f, "place.grid.base-height");
-	Check(a.n == glm::vec3(0, 1, 0), "place.grid.up-normal");
-	// Different cells land in different 8m bins
-	auto c = grid.sample(smvk::placement::MakeStableID(1, 0, t, 0, 9), 9);
-	Check((int)(a.p.x / 8.0f) != (int)(c.p.x / 8.0f) || (int)(a.p.z / 8.0f) != (int)(c.p.z / 8.0f),
-		"place.grid.cell-spread");
+    smvk::placement::GridDomain grid;
+    grid.origin = glm::vec3(0, 5, 0);
+    grid.extent = glm::vec2(64.0f, 64.0f);
+    grid.cellsX = 8;
+    grid.cellsZ = 8;
+    smvk::placement::TileID t{0, 0, 0};
+    // Deterministic: same candidate -> same sample
+    smvk::placement::StableID id = smvk::placement::MakeStableID(1, 0, t, 0, 0);
+    auto a = grid.sample(id, 0);
+    auto b = grid.sample(id, 0);
+    Check(a.p == b.p, "place.grid.deterministic");
+    // Inside the tile rect, on the base plane
+    Check(a.p.x >= 0.0f && a.p.x < 64.0f && a.p.z >= 0.0f && a.p.z < 64.0f, "place.grid.in-bounds");
+    Check(a.p.y == 5.0f, "place.grid.base-height");
+    Check(a.n == glm::vec3(0, 1, 0), "place.grid.up-normal");
+    // Different cells land in different 8m bins
+    auto c = grid.sample(smvk::placement::MakeStableID(1, 0, t, 0, 9), 9);
+    Check((int)(a.p.x / 8.0f) != (int)(c.p.x / 8.0f) || (int)(a.p.z / 8.0f) != (int)(c.p.z / 8.0f),
+          "place.grid.cell-spread");
 }
 
 void TestMeshAlias() {
-	// Two triangles: big (area 50) + small (area 0.5). Alias table must
-	// route ~99% of picks to the big one.
-	smvk::placement::PlacementMeshData mesh;
-	mesh.positions = { glm::vec3(0,0,0), glm::vec3(10,0,0), glm::vec3(0,0,10),
-		glm::vec3(20,0,0), glm::vec3(21,0,0), glm::vec3(20,0,1) };
-	mesh.indices = { 0, 1, 2, 3, 4, 5 };
-	smvk::placement::BuildMeshAliasTable(mesh);
-	Check(mesh.hasAlias(), "place.mesh.alias-built");
-	Check(mesh.triangleCount() == 2, "place.mesh.tri-count");
-	int bigHits = 0;
-	const int N = 2000;
-	for (int i = 0; i < N; ++i) {
-		smvk::placement::StableID id =
-			smvk::placement::MakeStableID(3, 0, smvk::placement::TileID{0,0,0}, 0, (uint32_t)i);
-		auto s = smvk::placement::SampleMeshSurface(mesh, id);
-		if (s.primitiveId == 0) ++bigHits;
-		// Point must lie on the triangle plane (y==0) and inside bounds
-		if (!(s.p.y == 0.0f)) { Check(false, "place.mesh.on-plane"); break; }
-	}
-	Check(bigHits > N * 95 / 100, "place.mesh.area-weighted");
-	// Degenerate mesh: uniform fallback, no crash
-	smvk::placement::PlacementMeshData deg;
-	deg.positions = { glm::vec3(0), glm::vec3(0), glm::vec3(0) };
-	deg.indices = { 0, 0, 0 };
-	smvk::placement::BuildMeshAliasTable(deg);
-	auto ds = smvk::placement::SampleMeshSurface(deg,
-		smvk::placement::MakeStableID(1, 0, smvk::placement::TileID{}, 0, 0));
-	Check(ds.primitiveId == 0, "place.mesh.degenerate-fallback");
+    // Two triangles: big (area 50) + small (area 0.5). Alias table must
+    // route ~99% of picks to the big one.
+    smvk::placement::PlacementMeshData mesh;
+    mesh.positions = {glm::vec3(0, 0, 0),
+                      glm::vec3(10, 0, 0),
+                      glm::vec3(0, 0, 10),
+                      glm::vec3(20, 0, 0),
+                      glm::vec3(21, 0, 0),
+                      glm::vec3(20, 0, 1)};
+    mesh.indices = {0, 1, 2, 3, 4, 5};
+    smvk::placement::BuildMeshAliasTable(mesh);
+    Check(mesh.hasAlias(), "place.mesh.alias-built");
+    Check(mesh.triangleCount() == 2, "place.mesh.tri-count");
+    int bigHits = 0;
+    const int N = 2000;
+    for (int i = 0; i < N; ++i) {
+        smvk::placement::StableID id =
+            smvk::placement::MakeStableID(3, 0, smvk::placement::TileID{0, 0, 0}, 0, (uint32_t)i);
+        auto s = smvk::placement::SampleMeshSurface(mesh, id);
+        if (s.primitiveId == 0)
+            ++bigHits;
+        // Point must lie on the triangle plane (y==0) and inside bounds
+        if (!(s.p.y == 0.0f)) {
+            Check(false, "place.mesh.on-plane");
+            break;
+        }
+    }
+    Check(bigHits > N * 95 / 100, "place.mesh.area-weighted");
+    // Degenerate mesh: uniform fallback, no crash
+    smvk::placement::PlacementMeshData deg;
+    deg.positions = {glm::vec3(0), glm::vec3(0), glm::vec3(0)};
+    deg.indices = {0, 0, 0};
+    smvk::placement::BuildMeshAliasTable(deg);
+    auto ds = smvk::placement::SampleMeshSurface(
+        deg, smvk::placement::MakeStableID(1, 0, smvk::placement::TileID{}, 0, 0));
+    Check(ds.primitiveId == 0, "place.mesh.degenerate-fallback");
 }
 
 void TestHeightfield() {
-	smvk::placement::HeightfieldData hf;
-	hf.width = 4; hf.height = 4;
-	hf.origin = glm::vec3(0, 0, 0);
-	hf.spacing = glm::vec2(1.0f, 1.0f);
-	// Plane h = x + 2z
-	hf.heights.resize(16);
-	for (uint32_t z = 0; z < 4; ++z)
-		for (uint32_t x = 0; x < 4; ++x)
-			hf.heights[z * 4 + x] = (float)x + 2.0f * (float)z;
-	Check(hf.valid(), "place.hf.valid");
-	Check(hf.sampleHeight(1.0f, 1.0f) == 3.0f, "place.hf.exact-texel");
-	Check(std::abs(hf.sampleHeight(0.5f, 0.0f) - 0.5f) < 1e-5f, "place.hf.bilinear");
-	glm::vec3 n = hf.sampleNormal(1.5f, 1.5f);
-	// Plane normal: normalize(-1, 1, -2)
-	glm::vec3 expect = glm::normalize(glm::vec3(-1, 1, -2));
-	Check(glm::length(n - expect) < 1e-4f, "place.hf.normal");
-	smvk::placement::HeightfieldDomain dom;
-	dom.field = &hf;
-	dom.extentMin = glm::vec2(0, 0); dom.extentMax = glm::vec2(3, 3);
-	auto s = dom.sample(smvk::placement::MakeStableID(5, 0, smvk::placement::TileID{}, 0, 0));
-	Check(s.p.x >= 0 && s.p.x <= 3 && s.p.z >= 0 && s.p.z <= 3, "place.hf.domain-bounds");
-	Check(std::abs(s.p.y - hf.sampleHeight(s.p.x, s.p.z)) < 1e-5f, "place.hf.domain-height");
+    smvk::placement::HeightfieldData hf;
+    hf.width = 4;
+    hf.height = 4;
+    hf.origin = glm::vec3(0, 0, 0);
+    hf.spacing = glm::vec2(1.0f, 1.0f);
+    // Plane h = x + 2z
+    hf.heights.resize(16);
+    for (uint32_t z = 0; z < 4; ++z)
+        for (uint32_t x = 0; x < 4; ++x)
+            hf.heights[z * 4 + x] = (float)x + 2.0f * (float)z;
+    Check(hf.valid(), "place.hf.valid");
+    Check(hf.sampleHeight(1.0f, 1.0f) == 3.0f, "place.hf.exact-texel");
+    Check(std::abs(hf.sampleHeight(0.5f, 0.0f) - 0.5f) < 1e-5f, "place.hf.bilinear");
+    glm::vec3 n = hf.sampleNormal(1.5f, 1.5f);
+    // Plane normal: normalize(-1, 1, -2)
+    glm::vec3 expect = glm::normalize(glm::vec3(-1, 1, -2));
+    Check(glm::length(n - expect) < 1e-4f, "place.hf.normal");
+    smvk::placement::HeightfieldDomain dom;
+    dom.field = &hf;
+    dom.extentMin = glm::vec2(0, 0);
+    dom.extentMax = glm::vec2(3, 3);
+    auto s = dom.sample(smvk::placement::MakeStableID(5, 0, smvk::placement::TileID{}, 0, 0));
+    Check(s.p.x >= 0 && s.p.x <= 3 && s.p.z >= 0 && s.p.z <= 3, "place.hf.domain-bounds");
+    Check(std::abs(s.p.y - hf.sampleHeight(s.p.x, s.p.z)) < 1e-5f, "place.hf.domain-height");
 }
 
 void TestFieldEval();
@@ -317,213 +341,261 @@ void TestWorldBridge();
 // ---------------------------------------------------------------------------
 void TestWorldResidency();
 void TestFieldEval() {
-	using namespace smvk::placement;
-	// density = 0.5 * slopeMask(flat=0deg, steep=40deg)
-	PlacementProgram prog;
-	prog.graphSeed = 11;
-	FieldInstr c; c.op = FieldOp::Const; c.params[0] = 0.5f;
-	FieldInstr sm; sm.op = FieldOp::SlopeMask; sm.params[0] = 0.0f; sm.params[1] = 40.0f;
-	FieldInstr mul; mul.op = FieldOp::Mul; mul.a = 0; mul.b = 1;
-	prog.instrs = { c, sm, mul };
-	prog.acceptIndex = 2;
-	Check(prog.valid(), "place.ir.valid");
-	DomainSample flat; flat.p = glm::vec3(0, 10, 0); flat.n = glm::vec3(0, 1, 0);
-	auto v = EvaluateProgram(prog, flat);
-	Check(std::abs(v[2] - 0.5f) < 1e-5f, "place.eval.flat-density");
-	DomainSample wall; wall.p = glm::vec3(0, 10, 0); wall.n = glm::vec3(1, 0, 0);
-	auto v2 = EvaluateProgram(prog, wall);
-	Check(v2[2] < 1e-5f, "place.eval.steep-rejected");
-	// Remap + smoothstep sanity: remap(0.5 from [0,1] to [10,20]) = 15
-	PlacementProgram p2;
-	FieldInstr c2 = OpConst(0.5f);
-	FieldInstr r; r.op = FieldOp::Remap; r.a = 0;
-	r.params[0] = 0; r.params[1] = 1; r.params[2] = 10; r.params[3] = 20;
-	p2.instrs = { c2, r }; p2.acceptIndex = 1;
-	auto v3 = EvaluateProgram(p2, flat);
-	Check(std::abs(v3[1] - 15.0f) < 1e-4f, "place.eval.remap");
-	// AltitudeMask: y=10 inside [0,5]x[15,25] band -> ~1; y=100 -> 0
-	PlacementProgram p3;
-	FieldInstr am; am.op = FieldOp::AltitudeMask;
-	am.params[0] = 0; am.params[1] = 5; am.params[2] = 15; am.params[3] = 25;
-	p3.instrs = { am }; p3.acceptIndex = 0;
-	DomainSample mid; mid.p = glm::vec3(0, 10, 0); mid.n = glm::vec3(0, 1, 0);
-	DomainSample high; high.p = glm::vec3(0, 100, 0); high.n = glm::vec3(0, 1, 0);
-	Check(EvaluateProgram(p3, mid)[0] > 0.99f, "place.eval.alt-inside");
-	Check(EvaluateProgram(p3, high)[0] < 1e-5f, "place.eval.alt-outside");
-	// EcotopeMask (PR04): the painted weight at world XZ. The mask is a
-	// 2-channel grid: channel 0 = a west->east ramp, channel 1 = constant
-	// 0.25. Outside the grid, the edge clamp pins the border texels; a
-	// maskless layer reads 0 (the GPU gate refuses such programs).
-	{
-		EcotopeMaskData eco;
-		eco.width = 4; eco.height = 4; eco.channels = 2;
-		eco.origin = glm::vec2(0.0f, 0.0f);
-		eco.spacing = glm::vec2(8.0f, 8.0f);
-		eco.weights.assign(2 * 16, 0.0f);
-		for (uint32_t z = 0; z < 4; ++z)
-			for (uint32_t x = 0; x < 4; ++x)
-				eco.weights[z * 4 + x] = float(x) / 3.0f;       // ch0 ramp
-		for (uint32_t i = 16; i < 32; ++i) eco.weights[i] = 0.25f; // ch1 const
-		Check(eco.valid(), "place.eco.valid");
-		// Grid-coordinate k lands EXACTLY on texel k (fx=0): world x=8 is
-		// grid 1 -> 1/3; x=16 -> 2/3. (Texel CENTERS in world space —
-		// grid k+0.5 — bilinear straddle the next texel: the heightfield
-		// sampling contract.)
-		Check(std::abs(eco.Sample(0, 8.0f, 8.0f) - 1.0f / 3.0f) < 1e-6f,
-			"place.eco.texel-center");
-		Check(std::abs(eco.Sample(0, 16.0f, 0.0f) - 2.0f / 3.0f) < 1e-6f,
-			"place.eco.texel-center2");
-		Check(std::abs(eco.Sample(1, 5.0f, 30.0f) - 0.25f) < 1e-6f,
-			"place.eco.channel1");
-		// Midpoint bilinear: (0 + 1/3)/2 = 1/6 at x=4 between texels 0,1.
-		Check(std::abs(eco.Sample(0, 4.0f, 4.0f) - 1.0f / 6.0f) < 1e-6f,
-			"place.eco.bilinear-mid");
-		// Edge clamp: the min edge pins exactly to texel 0 (0.0); the max
-		// edge pins to 2.999 (the w-1.001 form) — ~1.0 but not exact.
-		Check(eco.Sample(0, -500.0f, 4.0f) == 0.0f, "place.eco.edge-clamp-min");
-		Check(eco.Sample(0, 500.0f, 4.0f) > 0.9995f, "place.eco.edge-clamp-max");
-		// The op through the evaluator: meadow = ecoMask * altitude.
-		PlacementProgram p4;
-		FieldInstr em; em.op = FieldOp::EcotopeMask; em.params[0] = 0.0f;
-		FieldInstr alt; alt.op = FieldOp::AltitudeMask;
-		alt.params[0] = 0; alt.params[1] = 5; alt.params[2] = 15; alt.params[3] = 25;
-		FieldInstr mm; mm.op = FieldOp::Mul; mm.a = 0; mm.b = 1;
-		p4.instrs = { em, alt, mm }; p4.acceptIndex = 2;
-		DomainSample at24; at24.p = glm::vec3(24.0f, 10.0f, 24.0f);
-		DomainSample at4; at4.p = glm::vec3(4.0f, 10.0f, 4.0f);
-		Check(std::abs(EvaluateProgram(p4, at24, &eco)[2] - 1.0f) < 1e-3f,
-			"place.eco.eval-full-weight");
-		Check(std::abs(EvaluateProgram(p4, at4, &eco)[2] - 1.0f / 6.0f) < 1e-5f,
-			"place.eco.eval-mid-weight");
-		// No mask bound: reads 0 (the GPU gate refuses loudly).
-		Check(EvaluateProgram(p4, at24)[2] == 0.0f, "place.eco.eval-maskless-zero");
-	}
-	// Transform helpers use own channels: yaw in [-pi,pi], scale in range
-	StableID id = MakeStableID(1, 0, TileID{}, 0, 0);
-	float yaw = YawFromId(id);
-	Check(yaw >= -3.14159265f && yaw <= 3.14159265f, "place.eval.yaw-range");
-	float s = UniformScaleFromId(id, 0.8f, 1.2f);
-	Check(s >= 0.8f && s < 1.2001f, "place.eval.scale-range");
+    using namespace smvk::placement;
+    // density = 0.5 * slopeMask(flat=0deg, steep=40deg)
+    PlacementProgram prog;
+    prog.graphSeed = 11;
+    FieldInstr c;
+    c.op = FieldOp::Const;
+    c.params[0] = 0.5f;
+    FieldInstr sm;
+    sm.op = FieldOp::SlopeMask;
+    sm.params[0] = 0.0f;
+    sm.params[1] = 40.0f;
+    FieldInstr mul;
+    mul.op = FieldOp::Mul;
+    mul.a = 0;
+    mul.b = 1;
+    prog.instrs = {c, sm, mul};
+    prog.acceptIndex = 2;
+    Check(prog.valid(), "place.ir.valid");
+    DomainSample flat;
+    flat.p = glm::vec3(0, 10, 0);
+    flat.n = glm::vec3(0, 1, 0);
+    auto v = EvaluateProgram(prog, flat);
+    Check(std::abs(v[2] - 0.5f) < 1e-5f, "place.eval.flat-density");
+    DomainSample wall;
+    wall.p = glm::vec3(0, 10, 0);
+    wall.n = glm::vec3(1, 0, 0);
+    auto v2 = EvaluateProgram(prog, wall);
+    Check(v2[2] < 1e-5f, "place.eval.steep-rejected");
+    // Remap + smoothstep sanity: remap(0.5 from [0,1] to [10,20]) = 15
+    PlacementProgram p2;
+    FieldInstr c2 = OpConst(0.5f);
+    FieldInstr r;
+    r.op = FieldOp::Remap;
+    r.a = 0;
+    r.params[0] = 0;
+    r.params[1] = 1;
+    r.params[2] = 10;
+    r.params[3] = 20;
+    p2.instrs = {c2, r};
+    p2.acceptIndex = 1;
+    auto v3 = EvaluateProgram(p2, flat);
+    Check(std::abs(v3[1] - 15.0f) < 1e-4f, "place.eval.remap");
+    // AltitudeMask: y=10 inside [0,5]x[15,25] band -> ~1; y=100 -> 0
+    PlacementProgram p3;
+    FieldInstr am;
+    am.op = FieldOp::AltitudeMask;
+    am.params[0] = 0;
+    am.params[1] = 5;
+    am.params[2] = 15;
+    am.params[3] = 25;
+    p3.instrs = {am};
+    p3.acceptIndex = 0;
+    DomainSample mid;
+    mid.p = glm::vec3(0, 10, 0);
+    mid.n = glm::vec3(0, 1, 0);
+    DomainSample high;
+    high.p = glm::vec3(0, 100, 0);
+    high.n = glm::vec3(0, 1, 0);
+    Check(EvaluateProgram(p3, mid)[0] > 0.99f, "place.eval.alt-inside");
+    Check(EvaluateProgram(p3, high)[0] < 1e-5f, "place.eval.alt-outside");
+    // EcotopeMask (PR04): the painted weight at world XZ. The mask is a
+    // 2-channel grid: channel 0 = a west->east ramp, channel 1 = constant
+    // 0.25. Outside the grid, the edge clamp pins the border texels; a
+    // maskless layer reads 0 (the GPU gate refuses such programs).
+    {
+        EcotopeMaskData eco;
+        eco.width = 4;
+        eco.height = 4;
+        eco.channels = 2;
+        eco.origin = glm::vec2(0.0f, 0.0f);
+        eco.spacing = glm::vec2(8.0f, 8.0f);
+        eco.weights.assign(2 * 16, 0.0f);
+        for (uint32_t z = 0; z < 4; ++z)
+            for (uint32_t x = 0; x < 4; ++x)
+                eco.weights[z * 4 + x] = float(x) / 3.0f; // ch0 ramp
+        for (uint32_t i = 16; i < 32; ++i)
+            eco.weights[i] = 0.25f; // ch1 const
+        Check(eco.valid(), "place.eco.valid");
+        // Grid-coordinate k lands EXACTLY on texel k (fx=0): world x=8 is
+        // grid 1 -> 1/3; x=16 -> 2/3. (Texel CENTERS in world space —
+        // grid k+0.5 — bilinear straddle the next texel: the heightfield
+        // sampling contract.)
+        Check(std::abs(eco.Sample(0, 8.0f, 8.0f) - 1.0f / 3.0f) < 1e-6f, "place.eco.texel-center");
+        Check(std::abs(eco.Sample(0, 16.0f, 0.0f) - 2.0f / 3.0f) < 1e-6f,
+              "place.eco.texel-center2");
+        Check(std::abs(eco.Sample(1, 5.0f, 30.0f) - 0.25f) < 1e-6f, "place.eco.channel1");
+        // Midpoint bilinear: (0 + 1/3)/2 = 1/6 at x=4 between texels 0,1.
+        Check(std::abs(eco.Sample(0, 4.0f, 4.0f) - 1.0f / 6.0f) < 1e-6f, "place.eco.bilinear-mid");
+        // Edge clamp: the min edge pins exactly to texel 0 (0.0); the max
+        // edge pins to 2.999 (the w-1.001 form) — ~1.0 but not exact.
+        Check(eco.Sample(0, -500.0f, 4.0f) == 0.0f, "place.eco.edge-clamp-min");
+        Check(eco.Sample(0, 500.0f, 4.0f) > 0.9995f, "place.eco.edge-clamp-max");
+        // The op through the evaluator: meadow = ecoMask * altitude.
+        PlacementProgram p4;
+        FieldInstr em;
+        em.op = FieldOp::EcotopeMask;
+        em.params[0] = 0.0f;
+        FieldInstr alt;
+        alt.op = FieldOp::AltitudeMask;
+        alt.params[0] = 0;
+        alt.params[1] = 5;
+        alt.params[2] = 15;
+        alt.params[3] = 25;
+        FieldInstr mm;
+        mm.op = FieldOp::Mul;
+        mm.a = 0;
+        mm.b = 1;
+        p4.instrs = {em, alt, mm};
+        p4.acceptIndex = 2;
+        DomainSample at24;
+        at24.p = glm::vec3(24.0f, 10.0f, 24.0f);
+        DomainSample at4;
+        at4.p = glm::vec3(4.0f, 10.0f, 4.0f);
+        Check(std::abs(EvaluateProgram(p4, at24, &eco)[2] - 1.0f) < 1e-3f,
+              "place.eco.eval-full-weight");
+        Check(std::abs(EvaluateProgram(p4, at4, &eco)[2] - 1.0f / 6.0f) < 1e-5f,
+              "place.eco.eval-mid-weight");
+        // No mask bound: reads 0 (the GPU gate refuses loudly).
+        Check(EvaluateProgram(p4, at24)[2] == 0.0f, "place.eco.eval-maskless-zero");
+    }
+    // Transform helpers use own channels: yaw in [-pi,pi], scale in range
+    StableID id = MakeStableID(1, 0, TileID{}, 0, 0);
+    float yaw = YawFromId(id);
+    Check(yaw >= -3.14159265f && yaw <= 3.14159265f, "place.eval.yaw-range");
+    float s = UniformScaleFromId(id, 0.8f, 1.2f);
+    Check(s >= 0.8f && s < 1.2001f, "place.eval.scale-range");
 }
 
 void TestAcceptance() {
-	using namespace smvk::placement;
-	TileID t{ 0, 0, 0 };
-	// Stability: accepted(0.3) ⊆ accepted(0.4) — raising density only reveals.
-	int lowCount = 0, highCount = 0, violations = 0;
-	for (uint32_t i = 0; i < 2000; ++i) {
-		StableID id = MakeStableID(9, 1, t, 0, i);
-		bool low = AcceptCandidate(0.3f, id);
-		bool high = AcceptCandidate(0.4f, id);
-		lowCount += low; highCount += high;
-		if (low && !high) ++violations;
-	}
-	Check(violations == 0, "place.accept.stable-reveal");
-	Check(lowCount > 400 && lowCount < 800, "place.accept.low-rate");
-	Check(highCount > lowCount, "place.accept.high-grows");
-	// Edges
-	StableID id = MakeStableID(1, 0, t, 0, 0);
-	Check(!AcceptCandidate(0.0f, id), "place.accept.zero");
-	Check(AcceptCandidate(1.0f, id), "place.accept.one");
-	// Quantization: tiny float wobble cannot flip the decision
-	float d = 0.374f;
-	bool a1 = AcceptCandidate(d, id);
-	bool a2 = AcceptCandidate(d + 1e-7f, id);
-	Check(a1 == a2, "place.accept.quant-stable");
+    using namespace smvk::placement;
+    TileID t{0, 0, 0};
+    // Stability: accepted(0.3) ⊆ accepted(0.4) — raising density only reveals.
+    int lowCount = 0, highCount = 0, violations = 0;
+    for (uint32_t i = 0; i < 2000; ++i) {
+        StableID id = MakeStableID(9, 1, t, 0, i);
+        bool low = AcceptCandidate(0.3f, id);
+        bool high = AcceptCandidate(0.4f, id);
+        lowCount += low;
+        highCount += high;
+        if (low && !high)
+            ++violations;
+    }
+    Check(violations == 0, "place.accept.stable-reveal");
+    Check(lowCount > 400 && lowCount < 800, "place.accept.low-rate");
+    Check(highCount > lowCount, "place.accept.high-grows");
+    // Edges
+    StableID id = MakeStableID(1, 0, t, 0, 0);
+    Check(!AcceptCandidate(0.0f, id), "place.accept.zero");
+    Check(AcceptCandidate(1.0f, id), "place.accept.one");
+    // Quantization: tiny float wobble cannot flip the decision
+    float d = 0.374f;
+    bool a1 = AcceptCandidate(d, id);
+    bool a2 = AcceptCandidate(d + 1e-7f, id);
+    Check(a1 == a2, "place.accept.quant-stable");
 }
 
 void TestNoise() {
-	using namespace smvk::placement;
-	float n0 = ValueNoise2D(3.25f, 7.75f, 42);
-	Check(n0 >= 0.0f && n0 <= 1.0f, "place.noise.range");
-	Check(ValueNoise2D(3.25f, 7.75f, 42) == n0, "place.noise.deterministic");
-	Check(ValueNoise2D(3.25f, 7.75f, 43) != n0, "place.noise.seed-varies");
-	// Lattice points interpolate exactly to the hashed corner
-	float corner = ValueNoise2D(2.0f, 5.0f, 42);
-	Check(corner >= 0.0f && corner <= 1.0f, "place.noise.corner-range");
-	// Negative coords don't crash / stay in range (HLSL parity path)
-	float neg = ValueNoise2D(-12.5f, -3.25f, 42);
-	Check(neg >= 0.0f && neg <= 1.0f, "place.noise.negative-range");
+    using namespace smvk::placement;
+    float n0 = ValueNoise2D(3.25f, 7.75f, 42);
+    Check(n0 >= 0.0f && n0 <= 1.0f, "place.noise.range");
+    Check(ValueNoise2D(3.25f, 7.75f, 42) == n0, "place.noise.deterministic");
+    Check(ValueNoise2D(3.25f, 7.75f, 43) != n0, "place.noise.seed-varies");
+    // Lattice points interpolate exactly to the hashed corner
+    float corner = ValueNoise2D(2.0f, 5.0f, 42);
+    Check(corner >= 0.0f && corner <= 1.0f, "place.noise.corner-range");
+    // Negative coords don't crash / stay in range (HLSL parity path)
+    float neg = ValueNoise2D(-12.5f, -3.25f, 42);
+    Check(neg >= 0.0f && neg <= 1.0f, "place.noise.negative-range");
 }
 
 namespace {
 // Builds a constant-density grid layer for tile tests. Caller owns grid.
-smvk::placement::PlacementSystem::LayerBinding MakeGridLayer(
-	smvk::placement::GridDomain& grid, float density, uint32_t candidates) {
-	using namespace smvk::placement;
-	PlacementSystem::LayerBinding lb;
-	lb.programId = 101;
-	lb.program.graphSeed = 2024;
-	lb.program.nodeId = 7;
-	lb.program.instrs = { OpConst(density) };
-	lb.program.acceptIndex = 0;
-	lb.domainKind = DomainKind::Grid;
-	lb.grid = &grid;
-	lb.config.candidatesPerTile = candidates;
-	return lb;
+smvk::placement::PlacementSystem::LayerBinding MakeGridLayer(smvk::placement::GridDomain& grid,
+                                                             float density,
+                                                             uint32_t candidates) {
+    using namespace smvk::placement;
+    PlacementSystem::LayerBinding lb;
+    lb.programId = 101;
+    lb.program.graphSeed = 2024;
+    lb.program.nodeId = 7;
+    lb.program.instrs = {OpConst(density)};
+    lb.program.acceptIndex = 0;
+    lb.domainKind = DomainKind::Grid;
+    lb.grid = &grid;
+    lb.config.candidatesPerTile = candidates;
+    return lb;
 }
-}
+} // namespace
 
 void TestTileDeterminism() {
-	using namespace smvk::placement;
-	GridDomain grid;
-	grid.origin = glm::vec3(0, 0, 0);
-	grid.extent = glm::vec2(64, 64);
-	grid.cellsX = 16; grid.cellsZ = 16;
-	PlacementSystem sys;
-	sys.registerLayer(MakeGridLayer(grid, 0.5f, 1024));
-	TileID t{ 2, 0, 3 };
-	DependencyVersions deps;
-	Check(sys.generateTile(101, t, deps) > 0, "place.tile.nonempty");
-	const PlacementTile* a = sys.findTile(101, t);
-	size_t n0 = a ? a->instances.size() : 0;
-	// Regenerate in place: bit-identical positions + prototypes.
-	sys.generateTile(101, t, deps);
-	const PlacementTile* b = sys.findTile(101, t);
-	bool identical = b && b->instances.size() == n0;
-	if (identical) {
-		for (size_t i = 0; i < n0; ++i) {
-			if (a->instances[i].position != b->instances[i].position ||
-				a->instances[i].prototypeId != b->instances[i].prototypeId) {
-				identical = false; break;
-			}
-		}
-	}
-	Check(identical, "place.tile.regen-identical");
-	// Fresh system, same inputs: identical too (no hidden global RNG).
-	PlacementSystem sys2;
-	GridDomain grid2 = grid;
-	sys2.registerLayer(MakeGridLayer(grid2, 0.5f, 1024));
-	sys2.generateTile(101, t, deps);
-	const PlacementTile* c = sys2.findTile(101, t);
-	Check(c && c->instances.size() == n0, "place.tile.fresh-identical-count");
+    using namespace smvk::placement;
+    GridDomain grid;
+    grid.origin = glm::vec3(0, 0, 0);
+    grid.extent = glm::vec2(64, 64);
+    grid.cellsX = 16;
+    grid.cellsZ = 16;
+    PlacementSystem sys;
+    sys.registerLayer(MakeGridLayer(grid, 0.5f, 1024));
+    TileID t{2, 0, 3};
+    DependencyVersions deps;
+    Check(sys.generateTile(101, t, deps) > 0, "place.tile.nonempty");
+    const PlacementTile* a = sys.findTile(101, t);
+    size_t n0 = a ? a->instances.size() : 0;
+    // Regenerate in place: bit-identical positions + prototypes.
+    sys.generateTile(101, t, deps);
+    const PlacementTile* b = sys.findTile(101, t);
+    bool identical = b && b->instances.size() == n0;
+    if (identical) {
+        for (size_t i = 0; i < n0; ++i) {
+            if (a->instances[i].position != b->instances[i].position ||
+                a->instances[i].prototypeId != b->instances[i].prototypeId) {
+                identical = false;
+                break;
+            }
+        }
+    }
+    Check(identical, "place.tile.regen-identical");
+    // Fresh system, same inputs: identical too (no hidden global RNG).
+    PlacementSystem sys2;
+    GridDomain grid2 = grid;
+    sys2.registerLayer(MakeGridLayer(grid2, 0.5f, 1024));
+    sys2.generateTile(101, t, deps);
+    const PlacementTile* c = sys2.findTile(101, t);
+    Check(c && c->instances.size() == n0, "place.tile.fresh-identical-count");
 }
 
 void TestTileStreamingOrder() {
-	using namespace smvk::placement;
-	GridDomain grid;
-	grid.cellsX = 8; grid.cellsZ = 8;
-	PlacementSystem a, b;
-	GridDomain g2 = grid;
-	a.registerLayer(MakeGridLayer(grid, 0.6f, 512));
-	b.registerLayer(MakeGridLayer(g2, 0.6f, 512));
-	DependencyVersions deps;
-	TileID t1{ 0, 0, 0 }, t2{ 1, 0, 0 }, t3{ 0, 0, 1 };
-	a.generateTile(101, t1, deps);
-	a.generateTile(101, t2, deps);
-	a.generateTile(101, t3, deps);
-	b.generateTile(101, t3, deps);
-	b.generateTile(101, t1, deps);
-	b.generateTile(101, t2, deps);
-	// Tile t1 identical regardless of generation order (stable hashing).
-	const PlacementTile* ta = a.findTile(101, t1);
-	const PlacementTile* tb = b.findTile(101, t1);
-	bool same = ta && tb && ta->instances.size() == tb->instances.size();
-	if (same) {
-		for (size_t i = 0; i < ta->instances.size(); ++i)
-			if (ta->instances[i].position != tb->instances[i].position) { same = false; break; }
-	}
-	Check(same, "place.tile.order-independent");
+    using namespace smvk::placement;
+    GridDomain grid;
+    grid.cellsX = 8;
+    grid.cellsZ = 8;
+    PlacementSystem a, b;
+    GridDomain g2 = grid;
+    a.registerLayer(MakeGridLayer(grid, 0.6f, 512));
+    b.registerLayer(MakeGridLayer(g2, 0.6f, 512));
+    DependencyVersions deps;
+    TileID t1{0, 0, 0}, t2{1, 0, 0}, t3{0, 0, 1};
+    a.generateTile(101, t1, deps);
+    a.generateTile(101, t2, deps);
+    a.generateTile(101, t3, deps);
+    b.generateTile(101, t3, deps);
+    b.generateTile(101, t1, deps);
+    b.generateTile(101, t2, deps);
+    // Tile t1 identical regardless of generation order (stable hashing).
+    const PlacementTile* ta = a.findTile(101, t1);
+    const PlacementTile* tb = b.findTile(101, t1);
+    bool same = ta && tb && ta->instances.size() == tb->instances.size();
+    if (same) {
+        for (size_t i = 0; i < ta->instances.size(); ++i)
+            if (ta->instances[i].position != tb->instances[i].position) {
+                same = false;
+                break;
+            }
+    }
+    Check(same, "place.tile.order-independent");
 }
 
 // Phase-0 oracle edges: the CPU oracle's degenerate/limit inputs the GPU
@@ -531,753 +603,794 @@ void TestTileStreamingOrder() {
 // density, full density, 0/1/8 prototypes, negative tile coordinates,
 // multi-tile separation.
 void TestOracleEdges() {
-	using namespace smvk::placement;
-	DependencyVersions deps;
+    using namespace smvk::placement;
+    DependencyVersions deps;
 
-	// Zero candidates per tile: empty, no crash.
-	{
-		GridDomain grid;
-		PlacementSystem sys;
-		sys.registerLayer(MakeGridLayer(grid, 0.5f, 0));
-		Check(sys.generateTile(101, TileID{ 0, 0, 0 }, deps) == 0,
-			"place.edge.zero-candidates");
-	}
+    // Zero candidates per tile: empty, no crash.
+    {
+        GridDomain grid;
+        PlacementSystem sys;
+        sys.registerLayer(MakeGridLayer(grid, 0.5f, 0));
+        Check(sys.generateTile(101, TileID{0, 0, 0}, deps) == 0, "place.edge.zero-candidates");
+    }
 
-	// Zero density: nobody accepted; full density: everyone accepted.
-	{
-		GridDomain grid;
-		PlacementSystem sys;
-		sys.registerLayer(MakeGridLayer(grid, 0.0f, 256));
-		Check(sys.generateTile(101, TileID{ 0, 0, 0 }, deps) == 0,
-			"place.edge.zero-density");
-	}
-	{
-		GridDomain grid;
-		PlacementSystem sys;
-		sys.registerLayer(MakeGridLayer(grid, 1.0f, 256));
-		Check(sys.generateTile(101, TileID{ 0, 0, 0 }, deps) == 256,
-			"place.edge.full-density");
-	}
+    // Zero density: nobody accepted; full density: everyone accepted.
+    {
+        GridDomain grid;
+        PlacementSystem sys;
+        sys.registerLayer(MakeGridLayer(grid, 0.0f, 256));
+        Check(sys.generateTile(101, TileID{0, 0, 0}, deps) == 0, "place.edge.zero-density");
+    }
+    {
+        GridDomain grid;
+        PlacementSystem sys;
+        sys.registerLayer(MakeGridLayer(grid, 1.0f, 256));
+        Check(sys.generateTile(101, TileID{0, 0, 0}, deps) == 256, "place.edge.full-density");
+    }
 
-	// 0/1/8 prototypes: empty table defaults to proto 0; a full 8-slot
-	// table never escapes the kernel's bound and spreads across bins.
-	{
-		GridDomain grid;
-		PlacementSystem sys;
-		auto lb = MakeGridLayer(grid, 1.0f, 512);
-		lb.prototypes.clear();
-		sys.registerLayer(lb);
-		sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
-		const PlacementTile* t = sys.findTile(101, TileID{ 0, 0, 0 });
-		bool allZero = t && !t->instances.empty();
-		for (const RenderInstance& in : t->instances)
-			if (in.prototypeId != 0) { allZero = false; break; }
-		Check(allZero, "place.edge.no-protos-default-zero");
-	}
-	{
-		GridDomain grid;
-		PlacementSystem sys;
-		auto lb = MakeGridLayer(grid, 1.0f, 512);
-		Prototype only; only.weight = 1.0f;
-		lb.prototypes.add(only);
-		sys.registerLayer(lb);
-		sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
-		const PlacementTile* t = sys.findTile(101, TileID{ 0, 0, 0 });
-		bool allZero = t && !t->instances.empty();
-		for (const RenderInstance& in : t->instances)
-			if (in.prototypeId != 0) { allZero = false; break; }
-		Check(allZero, "place.edge.one-proto");
-	}
-	{
-		GridDomain grid;
-		PlacementSystem sys;
-		auto lb = MakeGridLayer(grid, 1.0f, 2048);
-		for (int i = 0; i < 8; ++i) {
-			Prototype p; p.weight = 1.0f;
-			lb.prototypes.add(p);
-		}
-		sys.registerLayer(lb);
-		sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
-		const PlacementTile* t = sys.findTile(101, TileID{ 0, 0, 0 });
-		bool inBounds = t && t->instances.size() == 2048;
-		bool seen[8] = {};
-		int distinct = 0;
-		for (const RenderInstance& in : t->instances) {
-			if (in.prototypeId >= 8) { inBounds = false; break; }
-			if (!seen[in.prototypeId]) { seen[in.prototypeId] = true; ++distinct; }
-		}
-		Check(inBounds, "place.edge.eight-protos-bounded");
-		Check(distinct >= 2, "place.edge.eight-protos-spread");
-	}
+    // 0/1/8 prototypes: empty table defaults to proto 0; a full 8-slot
+    // table never escapes the kernel's bound and spreads across bins.
+    {
+        GridDomain grid;
+        PlacementSystem sys;
+        auto lb = MakeGridLayer(grid, 1.0f, 512);
+        lb.prototypes.clear();
+        sys.registerLayer(lb);
+        sys.generateTile(101, TileID{0, 0, 0}, deps);
+        const PlacementTile* t = sys.findTile(101, TileID{0, 0, 0});
+        bool allZero = t && !t->instances.empty();
+        for (const RenderInstance& in : t->instances)
+            if (in.prototypeId != 0) {
+                allZero = false;
+                break;
+            }
+        Check(allZero, "place.edge.no-protos-default-zero");
+    }
+    {
+        GridDomain grid;
+        PlacementSystem sys;
+        auto lb = MakeGridLayer(grid, 1.0f, 512);
+        Prototype only;
+        only.weight = 1.0f;
+        lb.prototypes.add(only);
+        sys.registerLayer(lb);
+        sys.generateTile(101, TileID{0, 0, 0}, deps);
+        const PlacementTile* t = sys.findTile(101, TileID{0, 0, 0});
+        bool allZero = t && !t->instances.empty();
+        for (const RenderInstance& in : t->instances)
+            if (in.prototypeId != 0) {
+                allZero = false;
+                break;
+            }
+        Check(allZero, "place.edge.one-proto");
+    }
+    {
+        GridDomain grid;
+        PlacementSystem sys;
+        auto lb = MakeGridLayer(grid, 1.0f, 2048);
+        for (int i = 0; i < 8; ++i) {
+            Prototype p;
+            p.weight = 1.0f;
+            lb.prototypes.add(p);
+        }
+        sys.registerLayer(lb);
+        sys.generateTile(101, TileID{0, 0, 0}, deps);
+        const PlacementTile* t = sys.findTile(101, TileID{0, 0, 0});
+        bool inBounds = t && t->instances.size() == 2048;
+        bool seen[8] = {};
+        int distinct = 0;
+        for (const RenderInstance& in : t->instances) {
+            if (in.prototypeId >= 8) {
+                inBounds = false;
+                break;
+            }
+            if (!seen[in.prototypeId]) {
+                seen[in.prototypeId] = true;
+                ++distinct;
+            }
+        }
+        Check(inBounds, "place.edge.eight-protos-bounded");
+        Check(distinct >= 2, "place.edge.eight-protos-spread");
+    }
 
-	// Negative tile coordinates: deterministic, non-empty, and a
-	// DIFFERENT population than the origin tile (the tile id feeds the
-	// StableID lanes).
-	{
-		GridDomain grid;
-		PlacementSystem sys;
-		sys.registerLayer(MakeGridLayer(grid, 0.6f, 512));
-		const TileID neg{ -3, -1, -7 };
-		const size_t n = sys.generateTile(101, neg, deps);
-		const size_t n0 = sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
-		const PlacementTile* a = sys.findTile(101, neg);
-		const size_t nAgain = sys.generateTile(101, neg, deps);
-		const PlacementTile* b = sys.findTile(101, neg);
-		bool identical = a && b && a->instances.size() == b->instances.size();
-		if (identical) {
-			for (size_t i = 0; i < a->instances.size(); ++i)
-				if (a->instances[i].position != b->instances[i].position
-					|| a->instances[i].prototypeId != b->instances[i].prototypeId
-					|| a->instances[i].stableLow != b->instances[i].stableLow) {
-					identical = false; break;
-				}
-		}
-		Check(n > 0, "place.edge.negative-tile-nonempty");
-		Check(identical, "place.edge.negative-tile-regen-identical");
-		Check(a->instances[0].stableLow != sys.findTile(101, TileID{ 0, 0, 0 })->instances[0].stableLow
-			|| n != n0, "place.edge.tile-id-separates");
-	}
+    // Negative tile coordinates: deterministic, non-empty, and a
+    // DIFFERENT population than the origin tile (the tile id feeds the
+    // StableID lanes).
+    {
+        GridDomain grid;
+        PlacementSystem sys;
+        sys.registerLayer(MakeGridLayer(grid, 0.6f, 512));
+        const TileID neg{-3, -1, -7};
+        const size_t n = sys.generateTile(101, neg, deps);
+        const size_t n0 = sys.generateTile(101, TileID{0, 0, 0}, deps);
+        const PlacementTile* a = sys.findTile(101, neg);
+        const size_t nAgain = sys.generateTile(101, neg, deps);
+        const PlacementTile* b = sys.findTile(101, neg);
+        bool identical = a && b && a->instances.size() == b->instances.size();
+        if (identical) {
+            for (size_t i = 0; i < a->instances.size(); ++i)
+                if (a->instances[i].position != b->instances[i].position ||
+                    a->instances[i].prototypeId != b->instances[i].prototypeId ||
+                    a->instances[i].stableLow != b->instances[i].stableLow) {
+                    identical = false;
+                    break;
+                }
+        }
+        Check(n > 0, "place.edge.negative-tile-nonempty");
+        Check(identical, "place.edge.negative-tile-regen-identical");
+        Check(a->instances[0].stableLow !=
+                      sys.findTile(101, TileID{0, 0, 0})->instances[0].stableLow ||
+                  n != n0,
+              "place.edge.tile-id-separates");
+    }
 
-	// Multiple adjacent tiles in one system: all resident, none empty at
-	// full density, and the aggregate is the per-tile sum.
-	{
-		GridDomain grid;
-		PlacementSystem sys;
-		sys.registerLayer(MakeGridLayer(grid, 1.0f, 128));
-		size_t total = 0;
-		for (int32_t x = -1; x <= 1; ++x)
-			for (int32_t z = -1; z <= 1; ++z)
-				total += sys.generateTile(101, TileID{ x, 0, z }, deps);
-		Check(sys.residentTileCount() == 9 && total == 9 * 128,
-			"place.edge.multi-tile-aggregate");
-		Check(sys.residentInstanceCount(101) == total,
-			"place.edge.multi-tile-instance-count");
-	}
+    // Multiple adjacent tiles in one system: all resident, none empty at
+    // full density, and the aggregate is the per-tile sum.
+    {
+        GridDomain grid;
+        PlacementSystem sys;
+        sys.registerLayer(MakeGridLayer(grid, 1.0f, 128));
+        size_t total = 0;
+        for (int32_t x = -1; x <= 1; ++x)
+            for (int32_t z = -1; z <= 1; ++z)
+                total += sys.generateTile(101, TileID{x, 0, z}, deps);
+        Check(sys.residentTileCount() == 9 && total == 9 * 128, "place.edge.multi-tile-aggregate");
+        Check(sys.residentInstanceCount(101) == total, "place.edge.multi-tile-instance-count");
+    }
 }
 
 void TestMinDistance() {
-	using namespace smvk::placement;
-	GridDomain grid;
-	grid.cellsX = 32; grid.cellsZ = 32;
-	PlacementSystem sys;
-	auto lb = MakeGridLayer(grid, 1.0f, 2048); // accept-all: maximum conflict
-	lb.config.minSpacing = 4.0f;
-	sys.registerLayer(lb);
-	DependencyVersions deps;
-	size_t n = sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
-	Check(n > 0 && n < 2048, "place.mindist.thins");
-	const PlacementTile* t = sys.findTile(101, TileID{ 0, 0, 0 });
-	bool ok = true;
-	if (t) {
-		for (size_t i = 0; i < t->instances.size() && ok; ++i)
-			for (size_t j = i + 1; j < t->instances.size(); ++j) {
-				glm::vec3 d = t->instances[i].position - t->instances[j].position;
-				if (glm::dot(d, d) < 4.0f * 4.0f * 0.999f) { ok = false; break; }
-			}
-	}
-	Check(ok, "place.mindist.spacing-holds");
-	// Deterministic across regens.
-	sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
-	Check(sys.findTile(101, TileID{ 0, 0, 0 })->instances.size() == n,
-		"place.mindist.regen-stable");
+    using namespace smvk::placement;
+    GridDomain grid;
+    grid.cellsX = 32;
+    grid.cellsZ = 32;
+    PlacementSystem sys;
+    auto lb = MakeGridLayer(grid, 1.0f, 2048); // accept-all: maximum conflict
+    lb.config.minSpacing = 4.0f;
+    sys.registerLayer(lb);
+    DependencyVersions deps;
+    size_t n = sys.generateTile(101, TileID{0, 0, 0}, deps);
+    Check(n > 0 && n < 2048, "place.mindist.thins");
+    const PlacementTile* t = sys.findTile(101, TileID{0, 0, 0});
+    bool ok = true;
+    if (t) {
+        for (size_t i = 0; i < t->instances.size() && ok; ++i)
+            for (size_t j = i + 1; j < t->instances.size(); ++j) {
+                glm::vec3 d = t->instances[i].position - t->instances[j].position;
+                if (glm::dot(d, d) < 4.0f * 4.0f * 0.999f) {
+                    ok = false;
+                    break;
+                }
+            }
+    }
+    Check(ok, "place.mindist.spacing-holds");
+    // Deterministic across regens.
+    sys.generateTile(101, TileID{0, 0, 0}, deps);
+    Check(sys.findTile(101, TileID{0, 0, 0})->instances.size() == n, "place.mindist.regen-stable");
 }
 
 void TestMinDistanceVolume() {
-	using namespace smvk::placement;
-	auto mk = [](std::vector<glm::vec3> pos) {
-		std::vector<RenderInstance> inst;
-		std::vector<StableID> ids;
-		for (size_t i = 0; i < pos.size(); ++i) {
-			RenderInstance in;
-			in.position = pos[i];
-			in.scale = glm::vec3(1);
-			inst.push_back(in);
-			ids.push_back(MakeStableID(11, 0, TileID{}, 0, (uint32_t)i));
-		}
-		return std::pair(inst, ids);
-	};
-	// Unbounded path: two conflicts 1m apart at spacing 4 -> one survives.
-	{
-		auto [inst, ids] = mk({ glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(50, 0, 0) });
-		ConstraintVolume vol; // all-zero dims = unbounded
-		ApplyMinDistance(inst, ids, 4.0f, vol);
-		Check(inst.size() == 2, "place.mindist.unbounded-thins");
-	}
-	// Bounded skip rule: outsider at the same spot as a survivor neither
-	// kills nor dies.
-	{
-		auto [inst, ids] = mk({ glm::vec3(1, 0, 1), glm::vec3(1.5f, 0, 1), glm::vec3(500, 0, 500) });
-		ConstraintVolume vol;
-		vol.origin = glm::vec3(0, -64, 0);
-		vol.dimX = 32; vol.dimY = 64; vol.dimZ = 32;
-		vol.spacing = 2.0f;
-		ApplyMinDistance(inst, ids, 2.0f, vol);
-		// Inside pair conflicts (0.5m < 2m): one dies; outsider survives.
-		Check(inst.size() == 2, "place.mindist.skip-survives");
-		bool outsiderKept = false;
-		for (auto& in : inst)
-			if (in.position.x == 500.0f) outsiderKept = true;
-		Check(outsiderKept, "place.mindist.skip-kept");
-	}
-	// Snapshot order-freedom: shuffling INPUT order changes nothing about
-	// the surviving SET (output is index-ordered, so compare positions).
-	{
-		auto [a, aids] = mk({ glm::vec3(0,0,0), glm::vec3(1,0,0), glm::vec3(2,0,0),
-			glm::vec3(30,0,0), glm::vec3(31,0,0) });
-		auto [b, bids] = mk({ glm::vec3(31,0,0), glm::vec3(2,0,0), glm::vec3(30,0,0),
-			glm::vec3(1,0,0), glm::vec3(0,0,0) });
-		ConstraintVolume vol;
-		ApplyMinDistance(a, aids, 4.0f, vol);
-		ApplyMinDistance(b, bids, 4.0f, vol);
-		// Same survivor POSITION set regardless of input order (priorities
-		// ride the StableIDs, which were built per-position above... note
-		// ids differ per order here, so only assert spacing + determinism).
-		bool okA = true, okB = true;
-		for (size_t i = 0; i < a.size(); ++i)
-			for (size_t j = i + 1; j < a.size(); ++j) {
-				glm::vec3 d = a[i].position - a[j].position;
-				if (glm::dot(d, d) < 16.0f * 0.999f) okA = false;
-			}
-		for (size_t i = 0; i < b.size(); ++i)
-			for (size_t j = i + 1; j < b.size(); ++j) {
-				glm::vec3 d = b[i].position - b[j].position;
-				if (glm::dot(d, d) < 16.0f * 0.999f) okB = false;
-			}
-		Check(okA && okB, "place.mindist.order-spacing-holds");
-	}
+    using namespace smvk::placement;
+    auto mk = [](std::vector<glm::vec3> pos) {
+        std::vector<RenderInstance> inst;
+        std::vector<StableID> ids;
+        for (size_t i = 0; i < pos.size(); ++i) {
+            RenderInstance in;
+            in.position = pos[i];
+            in.scale = glm::vec3(1);
+            inst.push_back(in);
+            ids.push_back(MakeStableID(11, 0, TileID{}, 0, (uint32_t)i));
+        }
+        return std::pair(inst, ids);
+    };
+    // Unbounded path: two conflicts 1m apart at spacing 4 -> one survives.
+    {
+        auto [inst, ids] = mk({glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(50, 0, 0)});
+        ConstraintVolume vol; // all-zero dims = unbounded
+        ApplyMinDistance(inst, ids, 4.0f, vol);
+        Check(inst.size() == 2, "place.mindist.unbounded-thins");
+    }
+    // Bounded skip rule: outsider at the same spot as a survivor neither
+    // kills nor dies.
+    {
+        auto [inst, ids] = mk({glm::vec3(1, 0, 1), glm::vec3(1.5f, 0, 1), glm::vec3(500, 0, 500)});
+        ConstraintVolume vol;
+        vol.origin = glm::vec3(0, -64, 0);
+        vol.dimX = 32;
+        vol.dimY = 64;
+        vol.dimZ = 32;
+        vol.spacing = 2.0f;
+        ApplyMinDistance(inst, ids, 2.0f, vol);
+        // Inside pair conflicts (0.5m < 2m): one dies; outsider survives.
+        Check(inst.size() == 2, "place.mindist.skip-survives");
+        bool outsiderKept = false;
+        for (auto& in : inst)
+            if (in.position.x == 500.0f)
+                outsiderKept = true;
+        Check(outsiderKept, "place.mindist.skip-kept");
+    }
+    // Snapshot order-freedom: shuffling INPUT order changes nothing about
+    // the surviving SET (output is index-ordered, so compare positions).
+    {
+        auto [a, aids] = mk({glm::vec3(0, 0, 0),
+                             glm::vec3(1, 0, 0),
+                             glm::vec3(2, 0, 0),
+                             glm::vec3(30, 0, 0),
+                             glm::vec3(31, 0, 0)});
+        auto [b, bids] = mk({glm::vec3(31, 0, 0),
+                             glm::vec3(2, 0, 0),
+                             glm::vec3(30, 0, 0),
+                             glm::vec3(1, 0, 0),
+                             glm::vec3(0, 0, 0)});
+        ConstraintVolume vol;
+        ApplyMinDistance(a, aids, 4.0f, vol);
+        ApplyMinDistance(b, bids, 4.0f, vol);
+        // Same survivor POSITION set regardless of input order (priorities
+        // ride the StableIDs, which were built per-position above... note
+        // ids differ per order here, so only assert spacing + determinism).
+        bool okA = true, okB = true;
+        for (size_t i = 0; i < a.size(); ++i)
+            for (size_t j = i + 1; j < a.size(); ++j) {
+                glm::vec3 d = a[i].position - a[j].position;
+                if (glm::dot(d, d) < 16.0f * 0.999f)
+                    okA = false;
+            }
+        for (size_t i = 0; i < b.size(); ++i)
+            for (size_t j = i + 1; j < b.size(); ++j) {
+                glm::vec3 d = b[i].position - b[j].position;
+                if (glm::dot(d, d) < 16.0f * 0.999f)
+                    okB = false;
+            }
+        Check(okA && okB, "place.mindist.order-spacing-holds");
+    }
 }
 
 void TestTileCache() {
-	using namespace smvk::placement;
-	GridDomain grid;
-	grid.cellsX = 4; grid.cellsZ = 4;
-	PlacementSystem sys;
-	sys.registerLayer(MakeGridLayer(grid, 0.9f, 128));
-	DependencyVersions deps;
-	sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
-	sys.generateTile(101, TileID{ 1, 0, 0 }, deps);
-	sys.generateTile(101, TileID{ 2, 0, 0 }, deps);
-	Check(sys.residentTileCount() == 3, "place.cache.three-resident");
-	Check(sys.residentInstanceCount(101) > 0, "place.cache.instances-counted");
-	sys.invalidateLayer(101);
-	Check(sys.findTile(101, TileID{ 0, 0, 0 })->state == TileState::Dirty,
-		"place.cache.invalidate-dirty");
-	sys.generateTile(101, TileID{ 0, 0, 0 }, deps); // refresh clears dirty
-	Check(sys.findTile(101, TileID{ 0, 0, 0 })->state == TileState::Resident,
-		"place.cache.refresh-resident");
-	sys.evictBeyond(1);
-	Check(sys.residentTileCount() == 1, "place.cache.evict-budget");
+    using namespace smvk::placement;
+    GridDomain grid;
+    grid.cellsX = 4;
+    grid.cellsZ = 4;
+    PlacementSystem sys;
+    sys.registerLayer(MakeGridLayer(grid, 0.9f, 128));
+    DependencyVersions deps;
+    sys.generateTile(101, TileID{0, 0, 0}, deps);
+    sys.generateTile(101, TileID{1, 0, 0}, deps);
+    sys.generateTile(101, TileID{2, 0, 0}, deps);
+    Check(sys.residentTileCount() == 3, "place.cache.three-resident");
+    Check(sys.residentInstanceCount(101) > 0, "place.cache.instances-counted");
+    sys.invalidateLayer(101);
+    Check(sys.findTile(101, TileID{0, 0, 0})->state == TileState::Dirty,
+          "place.cache.invalidate-dirty");
+    sys.generateTile(101, TileID{0, 0, 0}, deps); // refresh clears dirty
+    Check(sys.findTile(101, TileID{0, 0, 0})->state == TileState::Resident,
+          "place.cache.refresh-resident");
+    sys.evictBeyond(1);
+    Check(sys.residentTileCount() == 1, "place.cache.evict-budget");
 }
 
 void TestTransientDraws() {
-	using namespace smvk::placement;
-	GridDomain grid;
-	grid.origin = glm::vec3(0, 0, 0);
-	grid.extent = glm::vec2(64, 64);
-	grid.cellsX = 8; grid.cellsZ = 8;
-	PlacementSystem sys;
-	sys.registerLayer(MakeGridLayer(grid, 1.0f, 256));
-	DependencyVersions deps;
-	sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
-	size_t total = sys.residentInstanceCount(101);
-	std::vector<TransientDraw> all;
-	sys.pushVisibleDraws(101, nullptr, all); // no cull: everything
-	Check(all.size() == total, "place.draws.no-cull-all");
-	std::vector<TransientDraw> none;
-	sys.pushVisibleDraws(101, [](const glm::vec3&, float) { return false; }, none);
-	Check(none.empty(), "place.draws.full-cull-empty");
-	// Half-space cull keeps a strict subset with matching prototype IDs.
-	std::vector<TransientDraw> half;
-	sys.pushVisibleDraws(101,
-		[](const glm::vec3& c, float) { return c.x < 32.0f; }, half);
-	Check(!half.empty() && half.size() < all.size(), "place.draws.partial-cull");
-	bool protoOk = true;
-	for (auto& d : half) if (d.prototypeId != 0) { protoOk = false; break; }
-	Check(protoOk, "place.draws.proto-passthrough");
+    using namespace smvk::placement;
+    GridDomain grid;
+    grid.origin = glm::vec3(0, 0, 0);
+    grid.extent = glm::vec2(64, 64);
+    grid.cellsX = 8;
+    grid.cellsZ = 8;
+    PlacementSystem sys;
+    sys.registerLayer(MakeGridLayer(grid, 1.0f, 256));
+    DependencyVersions deps;
+    sys.generateTile(101, TileID{0, 0, 0}, deps);
+    size_t total = sys.residentInstanceCount(101);
+    std::vector<TransientDraw> all;
+    sys.pushVisibleDraws(101, nullptr, all); // no cull: everything
+    Check(all.size() == total, "place.draws.no-cull-all");
+    std::vector<TransientDraw> none;
+    sys.pushVisibleDraws(101, [](const glm::vec3&, float) { return false; }, none);
+    Check(none.empty(), "place.draws.full-cull-empty");
+    // Half-space cull keeps a strict subset with matching prototype IDs.
+    std::vector<TransientDraw> half;
+    sys.pushVisibleDraws(101, [](const glm::vec3& c, float) { return c.x < 32.0f; }, half);
+    Check(!half.empty() && half.size() < all.size(), "place.draws.partial-cull");
+    bool protoOk = true;
+    for (auto& d : half)
+        if (d.prototypeId != 0) {
+            protoOk = false;
+            break;
+        }
+    Check(protoOk, "place.draws.proto-passthrough");
 }
 
 void TestGpuPushAbi() {
-	using namespace smvk::placement;
-	Check(sizeof(PlacementTilePush) == 208, "place.gpu.push-208B");
-	Check(offsetof(PlacementTilePush, candidateCount) == 28, "place.gpu.count-offset");
-	Check(offsetof(PlacementTilePush, gridOrigin) == 48, "place.gpu.grid-offset");
-	Check(offsetof(PlacementTilePush, densityScale) == 80, "place.gpu.density-scale-offset");
-	Check(offsetof(PlacementTilePush, weightsA) == 112, "place.gpu.weights-offset");
-	Check(offsetof(PlacementTilePush, instrBDA) == 144, "place.gpu.instr-bda-offset");
-	Check(offsetof(PlacementTilePush, instrCount) == 152, "place.gpu.instr-count-offset");
-	Check(offsetof(PlacementTilePush, acceptIndex) == 156, "place.gpu.accept-offset");
-	Check(offsetof(PlacementTilePush, ecoBDA) == 168, "place.gpu.eco-bda-offset");
-	Check(offsetof(PlacementTilePush, ecoChannels) == 184, "place.gpu.eco-channels-offset");
-	Check(sizeof(GpuFieldInstr) == 32, "place.gpu.instr-32B");
-	Check(offsetof(GpuFieldInstr, params) == 16, "place.gpu.instr-params-offset");
-	Check(PlacementDispatchGroups(64) == 1, "place.gpu.dispatch-exact");
-	Check(PlacementDispatchGroups(65) == 2, "place.gpu.dispatch-roundup");
-	Check(PlacementDispatchGroups(4096) == 64, "place.gpu.dispatch-4k");
+    using namespace smvk::placement;
+    Check(sizeof(PlacementTilePush) == 208, "place.gpu.push-208B");
+    Check(offsetof(PlacementTilePush, candidateCount) == 28, "place.gpu.count-offset");
+    Check(offsetof(PlacementTilePush, gridOrigin) == 48, "place.gpu.grid-offset");
+    Check(offsetof(PlacementTilePush, densityScale) == 80, "place.gpu.density-scale-offset");
+    Check(offsetof(PlacementTilePush, weightsA) == 112, "place.gpu.weights-offset");
+    Check(offsetof(PlacementTilePush, instrBDA) == 144, "place.gpu.instr-bda-offset");
+    Check(offsetof(PlacementTilePush, instrCount) == 152, "place.gpu.instr-count-offset");
+    Check(offsetof(PlacementTilePush, acceptIndex) == 156, "place.gpu.accept-offset");
+    Check(offsetof(PlacementTilePush, ecoBDA) == 168, "place.gpu.eco-bda-offset");
+    Check(offsetof(PlacementTilePush, ecoChannels) == 184, "place.gpu.eco-channels-offset");
+    Check(sizeof(GpuFieldInstr) == 32, "place.gpu.instr-32B");
+    Check(offsetof(GpuFieldInstr, params) == 16, "place.gpu.instr-params-offset");
+    Check(PlacementDispatchGroups(64) == 1, "place.gpu.dispatch-exact");
+    Check(PlacementDispatchGroups(65) == 2, "place.gpu.dispatch-roundup");
+    Check(PlacementDispatchGroups(4096) == 64, "place.gpu.dispatch-4k");
 }
 
 void TestOverrides() {
-	using namespace smvk::placement;
-	// Three instances with known IDs; move one, delete one, swap one's proto.
-	std::vector<RenderInstance> inst(3);
-	std::vector<StableID> ids;
-	for (int i = 0; i < 3; ++i) {
-		inst[i].position = glm::vec3((float)i, 0, 0);
-		inst[i].prototypeId = 0;
-		ids.push_back(MakeStableID(1, 0, TileID{}, 0, (uint32_t)i));
-	}
-	OverrideLayer layer;
-	PlacementOverride mv; mv.target = ids[0]; mv.position = glm::vec3(99, 0, 0);
-	layer.set(mv);
-	PlacementOverride del; del.target = ids[1]; del.deleted = true;
-	layer.set(del);
-	PlacementOverride sw; sw.target = ids[2]; sw.prototype = 5;
-	layer.set(sw);
-	Check(layer.size() == 3, "place.override.count");
-	layer.apply(inst, ids);
-	Check(inst.size() == 2 && ids.size() == 2, "place.override.delete-compacts");
-	Check(inst[0].position.x == 99.0f, "place.override.move");
-	Check(ids[0] == MakeStableID(1, 0, TileID{}, 0, 0), "place.override.keeps-stable-id");
-	Check(inst[1].prototypeId == 5, "place.override.proto-swap");
-	// Regen safety: override addresses the same StableID after regen because
-	// IDs derive from seed/node/tile/prim/index, not array position.
-	Check(ids[1] == MakeStableID(1, 0, TileID{}, 0, 2), "place.override.regen-safe");
-	// Empty layer is a no-op.
-	OverrideLayer empty;
-	size_t n = inst.size();
-	empty.apply(inst, ids);
-	Check(inst.size() == n, "place.override.empty-noop");
+    using namespace smvk::placement;
+    // Three instances with known IDs; move one, delete one, swap one's proto.
+    std::vector<RenderInstance> inst(3);
+    std::vector<StableID> ids;
+    for (int i = 0; i < 3; ++i) {
+        inst[i].position = glm::vec3((float)i, 0, 0);
+        inst[i].prototypeId = 0;
+        ids.push_back(MakeStableID(1, 0, TileID{}, 0, (uint32_t)i));
+    }
+    OverrideLayer layer;
+    PlacementOverride mv;
+    mv.target = ids[0];
+    mv.position = glm::vec3(99, 0, 0);
+    layer.set(mv);
+    PlacementOverride del;
+    del.target = ids[1];
+    del.deleted = true;
+    layer.set(del);
+    PlacementOverride sw;
+    sw.target = ids[2];
+    sw.prototype = 5;
+    layer.set(sw);
+    Check(layer.size() == 3, "place.override.count");
+    layer.apply(inst, ids);
+    Check(inst.size() == 2 && ids.size() == 2, "place.override.delete-compacts");
+    Check(inst[0].position.x == 99.0f, "place.override.move");
+    Check(ids[0] == MakeStableID(1, 0, TileID{}, 0, 0), "place.override.keeps-stable-id");
+    Check(inst[1].prototypeId == 5, "place.override.proto-swap");
+    // Regen safety: override addresses the same StableID after regen because
+    // IDs derive from seed/node/tile/prim/index, not array position.
+    Check(ids[1] == MakeStableID(1, 0, TileID{}, 0, 2), "place.override.regen-safe");
+    // Empty layer is a no-op.
+    OverrideLayer empty;
+    size_t n = inst.size();
+    empty.apply(inst, ids);
+    Check(inst.size() == n, "place.override.empty-noop");
 }
 
 void TestOverrideAllAttrs() {
-	using namespace smvk::placement;
-	// Every mutable RenderInstance field is overridable through one
-	// exact rule: position, yaw, scale, prototypeId AND customB.
-	// (stableLow is identity, deliberately not overridable.)
-	std::vector<RenderInstance> inst(1);
-	std::vector<StableID> ids;
-	inst[0].position = glm::vec3(1, 2, 3);
-	inst[0].yaw = 0.25f;
-	inst[0].scale = glm::vec3(1);
-	inst[0].prototypeId = 0;
-	inst[0].customB = 7;
-	inst[0].stableLow = 1234;
-	ids.push_back(MakeStableID(1, 0, TileID{}, 0, 0));
-	OverrideLayer layer;
-	PlacementOverride o;
-	o.target = ids[0];
-	o.position = glm::vec3(9, 8, 7);
-	o.yaw = 1.5f;
-	o.scale = glm::vec3(2, 3, 4);
-	o.prototype = 11;
-	o.customB = 99;
-	layer.set(o);
-	layer.apply(inst, ids);
-	Check(inst.size() == 1, "place.override-all.kept");
-	Check(inst[0].position == glm::vec3(9, 8, 7), "place.override-all.position");
-	Check(inst[0].yaw == 1.5f, "place.override-all.yaw");
-	Check(inst[0].scale == glm::vec3(2, 3, 4), "place.override-all.scale");
-	Check(inst[0].prototypeId == 11, "place.override-all.proto");
-	Check(inst[0].customB == 99, "place.override-all.customB");
-	Check(inst[0].stableLow == 1234, "place.override-all.stableLow-kept");
-	Check(ids[0] == MakeStableID(1, 0, TileID{}, 0, 0), "place.override-all.id-kept");
+    using namespace smvk::placement;
+    // Every mutable RenderInstance field is overridable through one
+    // exact rule: position, yaw, scale, prototypeId AND customB.
+    // (stableLow is identity, deliberately not overridable.)
+    std::vector<RenderInstance> inst(1);
+    std::vector<StableID> ids;
+    inst[0].position = glm::vec3(1, 2, 3);
+    inst[0].yaw = 0.25f;
+    inst[0].scale = glm::vec3(1);
+    inst[0].prototypeId = 0;
+    inst[0].customB = 7;
+    inst[0].stableLow = 1234;
+    ids.push_back(MakeStableID(1, 0, TileID{}, 0, 0));
+    OverrideLayer layer;
+    PlacementOverride o;
+    o.target = ids[0];
+    o.position = glm::vec3(9, 8, 7);
+    o.yaw = 1.5f;
+    o.scale = glm::vec3(2, 3, 4);
+    o.prototype = 11;
+    o.customB = 99;
+    layer.set(o);
+    layer.apply(inst, ids);
+    Check(inst.size() == 1, "place.override-all.kept");
+    Check(inst[0].position == glm::vec3(9, 8, 7), "place.override-all.position");
+    Check(inst[0].yaw == 1.5f, "place.override-all.yaw");
+    Check(inst[0].scale == glm::vec3(2, 3, 4), "place.override-all.scale");
+    Check(inst[0].prototypeId == 11, "place.override-all.proto");
+    Check(inst[0].customB == 99, "place.override-all.customB");
+    Check(inst[0].stableLow == 1234, "place.override-all.stableLow-kept");
+    Check(ids[0] == MakeStableID(1, 0, TileID{}, 0, 0), "place.override-all.id-kept");
 }
 
 namespace {
-std::pair<std::vector<smvk::placement::RenderInstance>,
-	std::vector<smvk::placement::StableID>> MakeOverrideTile() {
-	using namespace smvk::placement;
-	std::vector<RenderInstance> inst(3);
-	std::vector<StableID> ids;
-	for (int i = 0; i < 3; ++i) {
-		inst[i].position = glm::vec3((float)i, 0, 0);
-		inst[i].prototypeId = 0;
-		inst[i].customB = (uint32_t)i;
-		ids.push_back(MakeStableID(77, 5, TileID{}, 0, (uint32_t)i));
-	}
-	return { inst, ids };
+std::pair<std::vector<smvk::placement::RenderInstance>, std::vector<smvk::placement::StableID>>
+MakeOverrideTile() {
+    using namespace smvk::placement;
+    std::vector<RenderInstance> inst(3);
+    std::vector<StableID> ids;
+    for (int i = 0; i < 3; ++i) {
+        inst[i].position = glm::vec3((float)i, 0, 0);
+        inst[i].prototypeId = 0;
+        inst[i].customB = (uint32_t)i;
+        ids.push_back(MakeStableID(77, 5, TileID{}, 0, (uint32_t)i));
+    }
+    return {inst, ids};
 }
-}
+} // namespace
 
 void TestOverrideNodeFilter() {
-	using namespace smvk::placement;
-	// Scoped bulk rule: only tiles from (seed 77, node 5) are touched.
-	{
-		auto [inst, ids] = MakeOverrideTile();
-		OverrideLayer layer;
-		NodeOverride nr;
-		nr.scope.graphSeed = 77;
-		nr.scope.nodeId = 5;
-		nr.scale = glm::vec3(3.0f);
-		layer.addNodeRule(nr);
-		Check(layer.nodeRuleCount() == 1, "place.override-node.count");
-		// Legacy apply (no context): scoped rule is skipped, never
-		// misapplied to an unknown tile.
-		layer.apply(inst, ids);
-		Check(inst[0].scale == glm::vec3(1.0f), "place.override-node.legacy-skips-scoped");
-		// Matching context: all three instances scaled.
-		layer.apply(inst, ids, 77, 5);
-		Check(inst[0].scale == glm::vec3(3.0f) && inst[2].scale == glm::vec3(3.0f),
-			"place.override-node.match-applies");
-	}
-	// Wrong seed / wrong node: no touch.
-	{
-		auto [inst, ids] = MakeOverrideTile();
-		OverrideLayer layer;
-		NodeOverride nr;
-		nr.scope.graphSeed = 77;
-		nr.scope.nodeId = 5;
-		nr.prototype = 4;
-		layer.addNodeRule(nr);
-		layer.apply(inst, ids, 78, 5);
-		layer.apply(inst, ids, 77, 6);
-		Check(inst[0].prototypeId == 0, "place.override-node.mismatch-skips");
-	}
-	// Later bulk rules win; exact rules win over all bulk rules.
-	{
-		auto [inst, ids] = MakeOverrideTile();
-		OverrideLayer layer;
-		NodeOverride a; a.scope.nodeId = 5; a.prototype = 1;
-		NodeOverride b; b.scope.nodeId = 5; b.prototype = 2;
-		layer.addNodeRule(a);
-		layer.addNodeRule(b);
-		PlacementOverride exact;
-		exact.target = ids[0];
-		exact.prototype = 9;
-		layer.set(exact);
-		layer.apply(inst, ids, 1, 5);
-		Check(inst[1].prototypeId == 2, "place.override-node.later-wins");
-		Check(inst[0].prototypeId == 9, "place.override-node.exact-wins");
-	}
-	// Global (unscoped) bulk rules apply even through the legacy call.
-	{
-		auto [inst, ids] = MakeOverrideTile();
-		OverrideLayer layer;
-		NodeOverride g; // empty scope = every tile
-		g.yaw = 0.5f;
-		layer.addNodeRule(g);
-		layer.apply(inst, ids);
-		Check(inst[0].yaw == 0.5f && inst[2].yaw == 0.5f,
-			"place.override-node.global-legacy");
-	}
-	// Bulk delete clears the scope; exact delete still works.
-	{
-		auto [inst, ids] = MakeOverrideTile();
-		OverrideLayer layer;
-		NodeOverride del;
-		del.scope.nodeId = 5;
-		del.deleted = true;
-		layer.addNodeRule(del);
-		layer.apply(inst, ids, 77, 5);
-		Check(inst.empty() && ids.empty(), "place.override-node.bulk-delete");
-		Check(layer.removeNodeRule(0), "place.override-node.remove");
-		Check(layer.nodeRuleCount() == 0, "place.override-node.remove-count");
-		Check(!layer.removeNodeRule(7), "place.override-node.remove-bad");
-	}
-	// clear() drops exact and bulk rules together.
-	{
-		auto [inst, ids] = MakeOverrideTile();
-		OverrideLayer layer;
-		NodeOverride g;
-		g.prototype = 3;
-		layer.addNodeRule(g);
-		PlacementOverride exact;
-		exact.target = ids[0];
-		exact.prototype = 8;
-		layer.set(exact);
-		layer.clear();
-		layer.apply(inst, ids, 77, 5);
-		Check(inst[0].prototypeId == 0 && layer.size() == 0
-			&& layer.nodeRuleCount() == 0, "place.override-node.clear-all");
-	}
+    using namespace smvk::placement;
+    // Scoped bulk rule: only tiles from (seed 77, node 5) are touched.
+    {
+        auto [inst, ids] = MakeOverrideTile();
+        OverrideLayer layer;
+        NodeOverride nr;
+        nr.scope.graphSeed = 77;
+        nr.scope.nodeId = 5;
+        nr.scale = glm::vec3(3.0f);
+        layer.addNodeRule(nr);
+        Check(layer.nodeRuleCount() == 1, "place.override-node.count");
+        // Legacy apply (no context): scoped rule is skipped, never
+        // misapplied to an unknown tile.
+        layer.apply(inst, ids);
+        Check(inst[0].scale == glm::vec3(1.0f), "place.override-node.legacy-skips-scoped");
+        // Matching context: all three instances scaled.
+        layer.apply(inst, ids, 77, 5);
+        Check(inst[0].scale == glm::vec3(3.0f) && inst[2].scale == glm::vec3(3.0f),
+              "place.override-node.match-applies");
+    }
+    // Wrong seed / wrong node: no touch.
+    {
+        auto [inst, ids] = MakeOverrideTile();
+        OverrideLayer layer;
+        NodeOverride nr;
+        nr.scope.graphSeed = 77;
+        nr.scope.nodeId = 5;
+        nr.prototype = 4;
+        layer.addNodeRule(nr);
+        layer.apply(inst, ids, 78, 5);
+        layer.apply(inst, ids, 77, 6);
+        Check(inst[0].prototypeId == 0, "place.override-node.mismatch-skips");
+    }
+    // Later bulk rules win; exact rules win over all bulk rules.
+    {
+        auto [inst, ids] = MakeOverrideTile();
+        OverrideLayer layer;
+        NodeOverride a;
+        a.scope.nodeId = 5;
+        a.prototype = 1;
+        NodeOverride b;
+        b.scope.nodeId = 5;
+        b.prototype = 2;
+        layer.addNodeRule(a);
+        layer.addNodeRule(b);
+        PlacementOverride exact;
+        exact.target = ids[0];
+        exact.prototype = 9;
+        layer.set(exact);
+        layer.apply(inst, ids, 1, 5);
+        Check(inst[1].prototypeId == 2, "place.override-node.later-wins");
+        Check(inst[0].prototypeId == 9, "place.override-node.exact-wins");
+    }
+    // Global (unscoped) bulk rules apply even through the legacy call.
+    {
+        auto [inst, ids] = MakeOverrideTile();
+        OverrideLayer layer;
+        NodeOverride g; // empty scope = every tile
+        g.yaw = 0.5f;
+        layer.addNodeRule(g);
+        layer.apply(inst, ids);
+        Check(inst[0].yaw == 0.5f && inst[2].yaw == 0.5f, "place.override-node.global-legacy");
+    }
+    // Bulk delete clears the scope; exact delete still works.
+    {
+        auto [inst, ids] = MakeOverrideTile();
+        OverrideLayer layer;
+        NodeOverride del;
+        del.scope.nodeId = 5;
+        del.deleted = true;
+        layer.addNodeRule(del);
+        layer.apply(inst, ids, 77, 5);
+        Check(inst.empty() && ids.empty(), "place.override-node.bulk-delete");
+        Check(layer.removeNodeRule(0), "place.override-node.remove");
+        Check(layer.nodeRuleCount() == 0, "place.override-node.remove-count");
+        Check(!layer.removeNodeRule(7), "place.override-node.remove-bad");
+    }
+    // clear() drops exact and bulk rules together.
+    {
+        auto [inst, ids] = MakeOverrideTile();
+        OverrideLayer layer;
+        NodeOverride g;
+        g.prototype = 3;
+        layer.addNodeRule(g);
+        PlacementOverride exact;
+        exact.target = ids[0];
+        exact.prototype = 8;
+        layer.set(exact);
+        layer.clear();
+        layer.apply(inst, ids, 77, 5);
+        Check(inst[0].prototypeId == 0 && layer.size() == 0 && layer.nodeRuleCount() == 0,
+              "place.override-node.clear-all");
+    }
 }
 
 void TestExclusions() {
-	using namespace smvk::placement;
-	std::vector<RenderInstance> inst(4);
-	std::vector<StableID> ids;
-	for (int i = 0; i < 4; ++i) {
-		inst[i].position = glm::vec3((float)(i * 10), 0, 0);
-		ids.push_back(MakeStableID(2, 0, TileID{}, 0, (uint32_t)i));
-	}
-	// Disc at x=10 r=6 kills instance 1 only (x=0,20,30 survive).
-	size_t kept = ApplyExclusions(inst, ids, { ExclusionDisc{ glm::vec2(10, 0), 6.0f } });
-	Check(kept == 3, "place.excl.disc-kills-one");
-	Check(inst[1].position.x == 20.0f, "place.excl.compact-order");
-	Check(ids[1] == MakeStableID(2, 0, TileID{}, 0, 2), "place.excl.ids-track");
-	Check(ApplyExclusions(inst, ids, {}) == 3, "place.excl.empty-noop");
+    using namespace smvk::placement;
+    std::vector<RenderInstance> inst(4);
+    std::vector<StableID> ids;
+    for (int i = 0; i < 4; ++i) {
+        inst[i].position = glm::vec3((float)(i * 10), 0, 0);
+        ids.push_back(MakeStableID(2, 0, TileID{}, 0, (uint32_t)i));
+    }
+    // Disc at x=10 r=6 kills instance 1 only (x=0,20,30 survive).
+    size_t kept = ApplyExclusions(inst, ids, {ExclusionDisc{glm::vec2(10, 0), 6.0f}});
+    Check(kept == 3, "place.excl.disc-kills-one");
+    Check(inst[1].position.x == 20.0f, "place.excl.compact-order");
+    Check(ids[1] == MakeStableID(2, 0, TileID{}, 0, 2), "place.excl.ids-track");
+    Check(ApplyExclusions(inst, ids, {}) == 3, "place.excl.empty-noop");
 }
 
 void TestCacheRoundTrip() {
-	using namespace smvk::placement;
-	std::vector<RenderInstance> inst(2);
-	std::vector<StableID> ids;
-	inst[0].position = glm::vec3(1, 2, 3); inst[0].prototypeId = 4; inst[0].stableLow = 77;
-	ids.push_back(MakeStableID(3, 1, TileID{ 5, 0, 6 }, 0, 0));
-	ids.push_back(MakeStableID(3, 1, TileID{ 5, 0, 6 }, 0, 1));
-	TileID t{ 5, 0, 6 };
-	auto blob = SerializeCache(0xAAAA, 0xBBBB, t, inst, ids);
-	Check(!blob.empty(), "place.cache.serialize");
-	std::vector<RenderInstance> out;
-	std::vector<StableID> outIds;
-	Check(DeserializeCache(blob.data(), blob.size(), 0xAAAA, 0xBBBB, t, out, outIds),
-		"place.cache.deserialize-ok");
-	Check(out.size() == 2 && out[0].position == glm::vec3(1, 2, 3)
-		&& out[0].prototypeId == 4 && outIds[0] == ids[0], "place.cache.bit-roundtrip");
-	// Stale keys rejected: wrong graph hash, resource hash, tile, truncation.
-	Check(!DeserializeCache(blob.data(), blob.size(), 0xAAAB, 0xBBBB, t, out, outIds),
-		"place.cache.graph-mismatch");
-	Check(!DeserializeCache(blob.data(), blob.size(), 0xAAAA, 0xBBBC, t, out, outIds),
-		"place.cache.resource-mismatch");
-	Check(!DeserializeCache(blob.data(), blob.size(), 0xAAAA, 0xBBBB, TileID{ 0, 0, 0 }, out, outIds),
-		"place.cache.tile-mismatch");
-	Check(!DeserializeCache(blob.data(), blob.size() - 1, 0xAAAA, 0xBBBB, t, out, outIds),
-		"place.cache.truncation-rejected");
-	Check(!DeserializeCache(nullptr, 0, 0xAAAA, 0xBBBB, t, out, outIds),
-		"place.cache.null-rejected");
-	uint64_t k = HashCombine64(HashCombine64(0, 0xAAAA), 0xBBBB);
-	Check(k != 0, "place.cache.key-combines");
+    using namespace smvk::placement;
+    std::vector<RenderInstance> inst(2);
+    std::vector<StableID> ids;
+    inst[0].position = glm::vec3(1, 2, 3);
+    inst[0].prototypeId = 4;
+    inst[0].stableLow = 77;
+    ids.push_back(MakeStableID(3, 1, TileID{5, 0, 6}, 0, 0));
+    ids.push_back(MakeStableID(3, 1, TileID{5, 0, 6}, 0, 1));
+    TileID t{5, 0, 6};
+    auto blob = SerializeCache(0xAAAA, 0xBBBB, t, inst, ids);
+    Check(!blob.empty(), "place.cache.serialize");
+    std::vector<RenderInstance> out;
+    std::vector<StableID> outIds;
+    Check(DeserializeCache(blob.data(), blob.size(), 0xAAAA, 0xBBBB, t, out, outIds),
+          "place.cache.deserialize-ok");
+    Check(out.size() == 2 && out[0].position == glm::vec3(1, 2, 3) && out[0].prototypeId == 4 &&
+              outIds[0] == ids[0],
+          "place.cache.bit-roundtrip");
+    // Stale keys rejected: wrong graph hash, resource hash, tile, truncation.
+    Check(!DeserializeCache(blob.data(), blob.size(), 0xAAAB, 0xBBBB, t, out, outIds),
+          "place.cache.graph-mismatch");
+    Check(!DeserializeCache(blob.data(), blob.size(), 0xAAAA, 0xBBBC, t, out, outIds),
+          "place.cache.resource-mismatch");
+    Check(!DeserializeCache(blob.data(), blob.size(), 0xAAAA, 0xBBBB, TileID{0, 0, 0}, out, outIds),
+          "place.cache.tile-mismatch");
+    Check(!DeserializeCache(blob.data(), blob.size() - 1, 0xAAAA, 0xBBBB, t, out, outIds),
+          "place.cache.truncation-rejected");
+    Check(!DeserializeCache(nullptr, 0, 0xAAAA, 0xBBBB, t, out, outIds),
+          "place.cache.null-rejected");
+    uint64_t k = HashCombine64(HashCombine64(0, 0xAAAA), 0xBBBB);
+    Check(k != 0, "place.cache.key-combines");
 }
 
 void TestPhysicsQuery() {
-	using namespace smvk::placement;
-	PrototypeTable protos;
-	Prototype tree; tree.assetUri = "tree"; tree.collisionRadius = 1.0f;
-	protos.add(tree);
-	std::vector<RenderInstance> inst(2);
-	inst[0].position = glm::vec3(0, 0, 10); inst[0].scale = glm::vec3(1);
-	inst[1].position = glm::vec3(0, 0, 20); inst[1].scale = glm::vec3(1);
-	std::vector<StableID> ids = { MakeStableID(4, 0, TileID{}, 0, 0),
-		MakeStableID(4, 0, TileID{}, 0, 1) };
-	PlacementQuerySource src{ &inst, &ids, &protos, 0.5f };
-	auto hit = RaycastPlacements(src, glm::vec3(0, 0, 0), glm::vec3(0, 0, 1), 100.0f);
-	Check(hit.has_value(), "place.phys.ray-hit");
-	if (hit) {
-		Check(hit->id == ids[0], "place.phys.ray-nearest");
-		Check(hit->distance < 10.0f && hit->distance > 8.0f, "place.phys.ray-t");
-	}
-	auto miss = RaycastPlacements(src, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0), 100.0f);
-	Check(!miss.has_value(), "place.phys.ray-miss");
-	auto box = QueryPlacementsAABB(src, glm::vec3(-2, -2, 8), glm::vec3(2, 2, 12));
-	Check(box.size() == 1 && box[0].id == ids[0], "place.phys.aabb-one");
-	auto boxAll = QueryPlacementsAABB(src, glm::vec3(-50, -50, -50), glm::vec3(50, 50, 50));
-	Check(boxAll.size() == 2, "place.phys.aabb-all");
+    using namespace smvk::placement;
+    PrototypeTable protos;
+    Prototype tree;
+    tree.assetUri = "tree";
+    tree.collisionRadius = 1.0f;
+    protos.add(tree);
+    std::vector<RenderInstance> inst(2);
+    inst[0].position = glm::vec3(0, 0, 10);
+    inst[0].scale = glm::vec3(1);
+    inst[1].position = glm::vec3(0, 0, 20);
+    inst[1].scale = glm::vec3(1);
+    std::vector<StableID> ids = {MakeStableID(4, 0, TileID{}, 0, 0),
+                                 MakeStableID(4, 0, TileID{}, 0, 1)};
+    PlacementQuerySource src{&inst, &ids, &protos, 0.5f};
+    auto hit = RaycastPlacements(src, glm::vec3(0, 0, 0), glm::vec3(0, 0, 1), 100.0f);
+    Check(hit.has_value(), "place.phys.ray-hit");
+    if (hit) {
+        Check(hit->id == ids[0], "place.phys.ray-nearest");
+        Check(hit->distance < 10.0f && hit->distance > 8.0f, "place.phys.ray-t");
+    }
+    auto miss = RaycastPlacements(src, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0), 100.0f);
+    Check(!miss.has_value(), "place.phys.ray-miss");
+    auto box = QueryPlacementsAABB(src, glm::vec3(-2, -2, 8), glm::vec3(2, 2, 12));
+    Check(box.size() == 1 && box[0].id == ids[0], "place.phys.aabb-one");
+    auto boxAll = QueryPlacementsAABB(src, glm::vec3(-50, -50, -50), glm::vec3(50, 50, 50));
+    Check(boxAll.size() == 2, "place.phys.aabb-all");
 }
 
 void TestPromotion() {
-	using namespace smvk::placement;
-	PromotionRegistry reg;
-	StableID id = MakeStableID(5, 0, TileID{}, 0, 9);
-	Check(!reg.isSuppressed(id), "place.promo.clean");
-	Check(reg.promote(id, 1001) == 1001, "place.promo.promote");
-	Check(reg.isSuppressed(id), "place.promo.suppressed");
-	Check(reg.promote(id, 9999) == 1001, "place.promo.idempotent");
-	Check(reg.entityFor(id).value() == 1001, "place.promo.lookup");
-	Check(reg.promotedCount() == 1, "place.promo.count");
-	Check(reg.demoteByEntity(1001), "place.promo.demote-entity");
-	Check(!reg.isSuppressed(id), "place.promo.restored");
-	Check(!reg.demote(id), "place.promo.double-demote-false");
-	reg.promote(id, 7);
-	reg.clear();
-	Check(reg.promotedCount() == 0, "place.promo.clear");
+    using namespace smvk::placement;
+    PromotionRegistry reg;
+    StableID id = MakeStableID(5, 0, TileID{}, 0, 9);
+    Check(!reg.isSuppressed(id), "place.promo.clean");
+    Check(reg.promote(id, 1001) == 1001, "place.promo.promote");
+    Check(reg.isSuppressed(id), "place.promo.suppressed");
+    Check(reg.promote(id, 9999) == 1001, "place.promo.idempotent");
+    Check(reg.entityFor(id).value() == 1001, "place.promo.lookup");
+    Check(reg.promotedCount() == 1, "place.promo.count");
+    Check(reg.demoteByEntity(1001), "place.promo.demote-entity");
+    Check(!reg.isSuppressed(id), "place.promo.restored");
+    Check(!reg.demote(id), "place.promo.double-demote-false");
+    reg.promote(id, 7);
+    reg.clear();
+    Check(reg.promotedCount() == 0, "place.promo.clear");
 }
 
 void TestPushBridge() {
-	using namespace smvk::placement;
-	GridDomain grid;
-	grid.origin = glm::vec3(10, 2, 30);
-	grid.extent = glm::vec2(64, 64);
-	grid.cellsX = 16; grid.cellsZ = 8;
-	PlacementSystem::LayerBinding lb;
-	lb.programId = 7;
-	lb.program.graphSeed = 0x123456789ABCull;
-	lb.program.nodeId = 3;
-	// PR02: a COMPOUND program (noise * slope, no const extraction) — the
-	// kernels evaluate the actual SSA; the push carries the program view.
-	lb.program.instrs = { FieldInstr{ .op = FieldOp::Noise2,
-			.params = { 0.02f, 0.0f, 0.0f, 0.0f } },
-		FieldInstr{ .op = FieldOp::SlopeMask,
-			.params = { 10.0f, 40.0f, 0.0f, 0.0f } },
-		FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 } };
-	lb.program.acceptIndex = 2;
-	lb.config.densityScale = 1.5f;
-	lb.domainKind = DomainKind::Grid;
-	lb.grid = &grid;
-	lb.config.candidatesPerTile = 2048;
-	Prototype oak; oak.weight = 3.0f;
-	Prototype pine; pine.weight = 1.0f;
-	lb.prototypes.add(oak); lb.prototypes.add(pine);
-	PlacementProgramView view{ 0x3000, 3, 2 };
-	PlacementEcoView ecoView{}; // no mask: this program uses none
-	PlacementTilePush push;
-	Check(PlacementPass::BuildTilePush(lb, TileID{ 1, 2, 3 }, view, ecoView,
-		0x1000, 0x2000, push), "place.bridge.build-ok");
-	Check(push.seedLo == 0x56789ABCul && push.seedHi == 0x1234u, "place.bridge.seed-split");
-	Check(push.nodeId == 3 && push.candidateCount == 2048, "place.bridge.ids");
-	Check(push.tileX == 1 && push.tileY == 2 && push.tileZ == 3, "place.bridge.tile");
-	Check(push.gridOrigin == glm::vec3(10, 2, 30) && push.cellsX == 16 && push.cellsZ == 8,
-		"place.bridge.grid");
-	Check(push.densityScale == 1.5f
-		&& push.noiseAmpRetired == 0.0f && push.noiseFreqRetired == 0.0f,
-		"place.bridge.density-scale");
-	Check(push.instrBDA == 0x3000 && push.instrCount == 3 && push.acceptIndex == 2,
-		"place.bridge.program-tail");
-	Check(push.protoCount == 2 && push.weightsA.x == 3.0f && push.weightsA.y == 1.0f,
-		"place.bridge.weights");
-	lb.config.slopeToRock = true;
-	lb.config.slopeThresholdDeg = 37.0f;
-	Check(PlacementPass::BuildTilePush(lb, TileID{}, view, ecoView,
-		0x1000, 0x2000, push) && push.slopeToRock == 1
-		&& push.slopeThresholdDeg == 37.0f,
-		"place.bridge.slope-rule-upload");
-	lb.config.slopeToRock = false;
-	Check(push.outInstances == 0x1000 && push.outCount == 0x2000, "place.bridge.bda");
-	// An empty program view refuses honestly (invalid-for-GPU layers run
-	// the CPU oracle — never a silent approximation).
-	Check(!PlacementPass::BuildTilePush(lb, TileID{}, PlacementProgramView{},
-		ecoView, 0, 0, push), "place.bridge.no-program-refuses");
-	// A program that READS the painted layer refuses without a mask.
-	{
-		EcotopeMaskData eco; // 2 channels, minimal valid grid
-		eco.width = 8; eco.height = 8; eco.channels = 2;
-		eco.weights.assign(2 * 64, 0.5f);
-		auto ecoLb = lb;
-		ecoLb.ecotope = &eco;
-		ecoLb.program.instrs = { FieldInstr{ .op = FieldOp::EcotopeMask,
-				.params = { 0.0f, 0, 0, 0 } } };
-		ecoLb.program.acceptIndex = 0;
-		Check(!PlacementPass::BuildTilePush(ecoLb, TileID{}, view,
-			PlacementEcoView{}, 0, 0, push), "place.bridge.eco-without-mask-refuses");
-		PlacementEcoView okEco{ 0x777, 8, 8, 2, 0, 0, 1, 1 };
-		Check(PlacementPass::BuildTilePush(ecoLb, TileID{}, view, okEco,
-			0, 0, push) && push.ecoBDA == 0x777 && push.ecoChannels == 2
-			&& push.ecoW == 8 && push.ecoH == 8,
-			"place.bridge.eco-tail-filled");
-		// The layer's own mask binding is part of the gate.
-		auto unbound = ecoLb;
-		unbound.ecotope = nullptr;
-		Check(!PlacementPass::BuildTilePush(unbound, TileID{}, view, okEco,
-			0, 0, push), "place.bridge.eco-layer-unbound-refuses");
-	}
-	// Mesh layer (no kernel for the grid push) refuses honestly.
-	PlacementSystem::LayerBinding mlb = lb;
-	mlb.domainKind = DomainKind::MeshSurface;
-	mlb.grid = nullptr;
-	Check(!PlacementPass::BuildTilePush(mlb, TileID{}, view, ecoView, 0, 0, push),
-		"place.bridge.mesh-refuses");
-	// Empty prototype table -> single default weight.
-	PlacementSystem::LayerBinding elb = lb;
-	elb.prototypes.clear();
-	Check(PlacementPass::BuildTilePush(elb, TileID{}, view, ecoView, 0, 0, push)
-		&& push.protoCount == 1 && push.weightsA.x == 1.0f, "place.bridge.empty-proto");
+    using namespace smvk::placement;
+    GridDomain grid;
+    grid.origin = glm::vec3(10, 2, 30);
+    grid.extent = glm::vec2(64, 64);
+    grid.cellsX = 16;
+    grid.cellsZ = 8;
+    PlacementSystem::LayerBinding lb;
+    lb.programId = 7;
+    lb.program.graphSeed = 0x123456789ABCull;
+    lb.program.nodeId = 3;
+    // PR02: a COMPOUND program (noise * slope, no const extraction) — the
+    // kernels evaluate the actual SSA; the push carries the program view.
+    lb.program.instrs = {FieldInstr{.op = FieldOp::Noise2, .params = {0.02f, 0.0f, 0.0f, 0.0f}},
+                         FieldInstr{.op = FieldOp::SlopeMask, .params = {10.0f, 40.0f, 0.0f, 0.0f}},
+                         FieldInstr{.op = FieldOp::Mul, .a = 0, .b = 1}};
+    lb.program.acceptIndex = 2;
+    lb.config.densityScale = 1.5f;
+    lb.domainKind = DomainKind::Grid;
+    lb.grid = &grid;
+    lb.config.candidatesPerTile = 2048;
+    Prototype oak;
+    oak.weight = 3.0f;
+    Prototype pine;
+    pine.weight = 1.0f;
+    lb.prototypes.add(oak);
+    lb.prototypes.add(pine);
+    PlacementProgramView view{0x3000, 3, 2};
+    PlacementEcoView ecoView{}; // no mask: this program uses none
+    PlacementTilePush push;
+    Check(PlacementPass::BuildTilePush(lb, TileID{1, 2, 3}, view, ecoView, 0x1000, 0x2000, push),
+          "place.bridge.build-ok");
+    Check(push.seedLo == 0x56789ABCul && push.seedHi == 0x1234u, "place.bridge.seed-split");
+    Check(push.nodeId == 3 && push.candidateCount == 2048, "place.bridge.ids");
+    Check(push.tileX == 1 && push.tileY == 2 && push.tileZ == 3, "place.bridge.tile");
+    Check(push.gridOrigin == glm::vec3(10, 2, 30) && push.cellsX == 16 && push.cellsZ == 8,
+          "place.bridge.grid");
+    Check(push.densityScale == 1.5f && push.noiseAmpRetired == 0.0f &&
+              push.noiseFreqRetired == 0.0f,
+          "place.bridge.density-scale");
+    Check(push.instrBDA == 0x3000 && push.instrCount == 3 && push.acceptIndex == 2,
+          "place.bridge.program-tail");
+    Check(push.protoCount == 2 && push.weightsA.x == 3.0f && push.weightsA.y == 1.0f,
+          "place.bridge.weights");
+    lb.config.slopeToRock = true;
+    lb.config.slopeThresholdDeg = 37.0f;
+    Check(PlacementPass::BuildTilePush(lb, TileID{}, view, ecoView, 0x1000, 0x2000, push) &&
+              push.slopeToRock == 1 && push.slopeThresholdDeg == 37.0f,
+          "place.bridge.slope-rule-upload");
+    lb.config.slopeToRock = false;
+    Check(push.outInstances == 0x1000 && push.outCount == 0x2000, "place.bridge.bda");
+    // An empty program view refuses honestly (invalid-for-GPU layers run
+    // the CPU oracle — never a silent approximation).
+    Check(!PlacementPass::BuildTilePush(lb, TileID{}, PlacementProgramView{}, ecoView, 0, 0, push),
+          "place.bridge.no-program-refuses");
+    // A program that READS the painted layer refuses without a mask.
+    {
+        EcotopeMaskData eco; // 2 channels, minimal valid grid
+        eco.width = 8;
+        eco.height = 8;
+        eco.channels = 2;
+        eco.weights.assign(2 * 64, 0.5f);
+        auto ecoLb = lb;
+        ecoLb.ecotope = &eco;
+        ecoLb.program.instrs = {FieldInstr{.op = FieldOp::EcotopeMask, .params = {0.0f, 0, 0, 0}}};
+        ecoLb.program.acceptIndex = 0;
+        Check(!PlacementPass::BuildTilePush(ecoLb, TileID{}, view, PlacementEcoView{}, 0, 0, push),
+              "place.bridge.eco-without-mask-refuses");
+        PlacementEcoView okEco{0x777, 8, 8, 2, 0, 0, 1, 1};
+        Check(PlacementPass::BuildTilePush(ecoLb, TileID{}, view, okEco, 0, 0, push) &&
+                  push.ecoBDA == 0x777 && push.ecoChannels == 2 && push.ecoW == 8 && push.ecoH == 8,
+              "place.bridge.eco-tail-filled");
+        // The layer's own mask binding is part of the gate.
+        auto unbound = ecoLb;
+        unbound.ecotope = nullptr;
+        Check(!PlacementPass::BuildTilePush(unbound, TileID{}, view, okEco, 0, 0, push),
+              "place.bridge.eco-layer-unbound-refuses");
+    }
+    // Mesh layer (no kernel for the grid push) refuses honestly.
+    PlacementSystem::LayerBinding mlb = lb;
+    mlb.domainKind = DomainKind::MeshSurface;
+    mlb.grid = nullptr;
+    Check(!PlacementPass::BuildTilePush(mlb, TileID{}, view, ecoView, 0, 0, push),
+          "place.bridge.mesh-refuses");
+    // Empty prototype table -> single default weight.
+    PlacementSystem::LayerBinding elb = lb;
+    elb.prototypes.clear();
+    Check(PlacementPass::BuildTilePush(elb, TileID{}, view, ecoView, 0, 0, push) &&
+              push.protoCount == 1 && push.weightsA.x == 1.0f,
+          "place.bridge.empty-proto");
 }
 
 // PR02: the GPU-program gate — validation refusals are the difference
 // between a loud CPU fallback and a silently mis-evaluated forest.
 void TestProgramValidation() {
-	using namespace smvk::placement;
-	// A valid compound program (every op class): passes.
-	{
-		PlacementProgram p;
-		p.instrs = {
-			FieldInstr{ .op = FieldOp::Noise2, .params = { 0.02f, 0, 0, 0 } },
-			FieldInstr{ .op = FieldOp::SlopeMask, .params = { 10, 40, 0, 0 } },
-			FieldInstr{ .op = FieldOp::AltitudeMask, .params = { 0, 5, 15, 25 } },
-			FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
-			FieldInstr{ .op = FieldOp::Mul, .a = 3, .b = 2 },
-			FieldInstr{ .op = FieldOp::Remap, .a = 4, .params = { 0, 1, 0.1f, 0.9f } },
-		};
-		p.acceptIndex = 5;
-		const char* err = nullptr;
-		Check(ValidateProgramForGpu(p, err) && err == nullptr,
-			"place.prog.valid-compound");
-	}
-	// Empty program refuses.
-	{
-		PlacementProgram p;
-		const char* err = nullptr;
-		Check(!ValidateProgramForGpu(p, err) && err != nullptr,
-			"place.prog.empty-refuses");
-	}
-	// Instruction cap.
-	{
-		PlacementProgram p;
-		p.instrs.assign(kPlacementMaxFieldInstrs + 1, OpConst(0.5f));
-		p.acceptIndex = 0;
-		const char* err = nullptr;
-		Check(!ValidateProgramForGpu(p, err) && err != nullptr,
-			"place.prog.instr-cap-refuses");
-	}
-	// acceptIndex out of range.
-	{
-		PlacementProgram p;
-		p.instrs = { OpConst(0.5f) };
-		p.acceptIndex = 1;
-		const char* err = nullptr;
-		Check(!ValidateProgramForGpu(p, err), "place.prog.accept-oob-refuses");
-	}
-	// SSA violations: forward/self references refuse.
-	{
-		PlacementProgram p;
-		p.instrs = { OpConst(0.5f),
-			FieldInstr{ .op = FieldOp::Mul, .a = 1, .b = 0 } }; // a == i (self)
-		p.acceptIndex = 1;
-		const char* err = nullptr;
-		Check(!ValidateProgramForGpu(p, err), "place.prog.ssa-self-refuses");
-		p.instrs[1].a = 2; // forward
-		Check(!ValidateProgramForGpu(p, err), "place.prog.ssa-forward-refuses");
-		p.instrs[1].a = 0; p.instrs[1].b = 5; // forward b
-		Check(!ValidateProgramForGpu(p, err), "place.prog.ssa-forward-b-refuses");
-	}
-	// Unknown opcode refuses (no HLSL evaluator form).
-	{
-		PlacementProgram p;
-		p.instrs = { OpConst(0.5f) };
-		p.instrs[0].op = static_cast<FieldOp>(18);
-		p.acceptIndex = 0;
-		const char* err = nullptr;
-		Check(!ValidateProgramForGpu(p, err), "place.prog.unknown-op-refuses");
-	}
-	// EcotopeMask: the channel gate — no mask refuses, out-of-range
-	// channel refuses, a valid channel passes.
-	{
-		PlacementProgram p;
-		p.instrs = { FieldInstr{ .op = FieldOp::EcotopeMask,
-				.params = { 0.0f, 0, 0, 0 } } };
-		p.acceptIndex = 0;
-		const char* err = nullptr;
-		Check(!ValidateProgramForGpu(p, 0, err) && err != nullptr,
-			"place.prog.eco-no-mask-refuses");
-		Check(ValidateProgramForGpu(p, 1, err),
-			"place.prog.eco-channel0-with-1-channel-ok");
-		p.instrs[0].params[0] = 1.0f; // channel 1
-		Check(ValidateProgramForGpu(p, 2, err),
-			"place.prog.eco-channel1-with-2-channels-ok");
-		Check(!ValidateProgramForGpu(p, 1, err),
-			"place.prog.eco-channel1-with-1-channel-refuses");
-		p.instrs[0].params[0] = -0.5f; // negative
-		Check(!ValidateProgramForGpu(p, 2, err),
-			"place.prog.eco-negative-channel-refuses");
-	}
-	// Non-finite constants refuse.
-	{
-		PlacementProgram p;
-		p.instrs = { OpConst(0.5f) };
-		p.instrs[0].params[2] = std::numeric_limits<float>::infinity();
-		p.acceptIndex = 0;
-		const char* err = nullptr;
-		Check(!ValidateProgramForGpu(p, err), "place.prog.nonfinite-refuses");
-	}
-	// The quiet query form agrees with the diagnostic form.
-	{
-		PlacementProgram ok2;
-		ok2.instrs = { OpConst(0.5f) };
-		ok2.acceptIndex = 0;
-		Check(ProgramIsGpuEvaluable(ok2), "place.prog.quiet-valid");
-		PlacementProgram bad;
-		bad.instrs = { OpConst(0.5f) };
-		bad.acceptIndex = 9;
-		Check(!ProgramIsGpuEvaluable(bad), "place.prog.quiet-invalid");
-	}
+    using namespace smvk::placement;
+    // A valid compound program (every op class): passes.
+    {
+        PlacementProgram p;
+        p.instrs = {
+            FieldInstr{.op = FieldOp::Noise2, .params = {0.02f, 0, 0, 0}},
+            FieldInstr{.op = FieldOp::SlopeMask, .params = {10, 40, 0, 0}},
+            FieldInstr{.op = FieldOp::AltitudeMask, .params = {0, 5, 15, 25}},
+            FieldInstr{.op = FieldOp::Mul, .a = 0, .b = 1},
+            FieldInstr{.op = FieldOp::Mul, .a = 3, .b = 2},
+            FieldInstr{.op = FieldOp::Remap, .a = 4, .params = {0, 1, 0.1f, 0.9f}},
+        };
+        p.acceptIndex = 5;
+        const char* err = nullptr;
+        Check(ValidateProgramForGpu(p, err) && err == nullptr, "place.prog.valid-compound");
+    }
+    // Empty program refuses.
+    {
+        PlacementProgram p;
+        const char* err = nullptr;
+        Check(!ValidateProgramForGpu(p, err) && err != nullptr, "place.prog.empty-refuses");
+    }
+    // Instruction cap.
+    {
+        PlacementProgram p;
+        p.instrs.assign(kPlacementMaxFieldInstrs + 1, OpConst(0.5f));
+        p.acceptIndex = 0;
+        const char* err = nullptr;
+        Check(!ValidateProgramForGpu(p, err) && err != nullptr, "place.prog.instr-cap-refuses");
+    }
+    // acceptIndex out of range.
+    {
+        PlacementProgram p;
+        p.instrs = {OpConst(0.5f)};
+        p.acceptIndex = 1;
+        const char* err = nullptr;
+        Check(!ValidateProgramForGpu(p, err), "place.prog.accept-oob-refuses");
+    }
+    // SSA violations: forward/self references refuse.
+    {
+        PlacementProgram p;
+        p.instrs = {OpConst(0.5f), FieldInstr{.op = FieldOp::Mul, .a = 1, .b = 0}}; // a == i (self)
+        p.acceptIndex = 1;
+        const char* err = nullptr;
+        Check(!ValidateProgramForGpu(p, err), "place.prog.ssa-self-refuses");
+        p.instrs[1].a = 2; // forward
+        Check(!ValidateProgramForGpu(p, err), "place.prog.ssa-forward-refuses");
+        p.instrs[1].a = 0;
+        p.instrs[1].b = 5; // forward b
+        Check(!ValidateProgramForGpu(p, err), "place.prog.ssa-forward-b-refuses");
+    }
+    // Unknown opcode refuses (no HLSL evaluator form).
+    {
+        PlacementProgram p;
+        p.instrs = {OpConst(0.5f)};
+        p.instrs[0].op = static_cast<FieldOp>(18);
+        p.acceptIndex = 0;
+        const char* err = nullptr;
+        Check(!ValidateProgramForGpu(p, err), "place.prog.unknown-op-refuses");
+    }
+    // EcotopeMask: the channel gate — no mask refuses, out-of-range
+    // channel refuses, a valid channel passes.
+    {
+        PlacementProgram p;
+        p.instrs = {FieldInstr{.op = FieldOp::EcotopeMask, .params = {0.0f, 0, 0, 0}}};
+        p.acceptIndex = 0;
+        const char* err = nullptr;
+        Check(!ValidateProgramForGpu(p, 0, err) && err != nullptr,
+              "place.prog.eco-no-mask-refuses");
+        Check(ValidateProgramForGpu(p, 1, err), "place.prog.eco-channel0-with-1-channel-ok");
+        p.instrs[0].params[0] = 1.0f; // channel 1
+        Check(ValidateProgramForGpu(p, 2, err), "place.prog.eco-channel1-with-2-channels-ok");
+        Check(!ValidateProgramForGpu(p, 1, err), "place.prog.eco-channel1-with-1-channel-refuses");
+        p.instrs[0].params[0] = -0.5f; // negative
+        Check(!ValidateProgramForGpu(p, 2, err), "place.prog.eco-negative-channel-refuses");
+    }
+    // Non-finite constants refuse.
+    {
+        PlacementProgram p;
+        p.instrs = {OpConst(0.5f)};
+        p.instrs[0].params[2] = std::numeric_limits<float>::infinity();
+        p.acceptIndex = 0;
+        const char* err = nullptr;
+        Check(!ValidateProgramForGpu(p, err), "place.prog.nonfinite-refuses");
+    }
+    // The quiet query form agrees with the diagnostic form.
+    {
+        PlacementProgram ok2;
+        ok2.instrs = {OpConst(0.5f)};
+        ok2.acceptIndex = 0;
+        Check(ProgramIsGpuEvaluable(ok2), "place.prog.quiet-valid");
+        PlacementProgram bad;
+        bad.instrs = {OpConst(0.5f)};
+        bad.acceptIndex = 9;
+        Check(!ProgramIsGpuEvaluable(bad), "place.prog.quiet-invalid");
+    }
 }
 
 // From-scratch reimplementation of placement_tile.cs.hlsl's documented
@@ -1286,378 +1399,403 @@ void TestProgramValidation() {
 // HLSL-vs-C++ hash bit-parity itself needs on-device readback via
 // PlacementPass::DownloadTile (exists, not runnable headless).
 void TestKernelAlgorithmParity() {
-	using namespace smvk::placement;
-	GridDomain grid;
-	grid.origin = glm::vec3(0, 0, 0);
-	grid.extent = glm::vec2(64, 64);
-	grid.cellsX = 16; grid.cellsZ = 16;
-	PlacementSystem::LayerBinding lb;
-	lb.programId = 9;
-	lb.program.graphSeed = 777;
-	lb.program.nodeId = 2;
-	lb.program.instrs = { OpConst(0.45f) };
-	lb.program.acceptIndex = 0;
-	lb.domainKind = DomainKind::Grid;
-	lb.grid = &grid;
-	lb.config.candidatesPerTile = 1500;
-	lb.config.minScale = 0.7f; lb.config.maxScale = 1.3f;
-	Prototype a; a.weight = 2.0f;
-	Prototype b; b.weight = 1.0f;
-	Prototype c; c.weight = 1.0f;
-	lb.prototypes.add(a); lb.prototypes.add(b); lb.prototypes.add(c);
+    using namespace smvk::placement;
+    GridDomain grid;
+    grid.origin = glm::vec3(0, 0, 0);
+    grid.extent = glm::vec2(64, 64);
+    grid.cellsX = 16;
+    grid.cellsZ = 16;
+    PlacementSystem::LayerBinding lb;
+    lb.programId = 9;
+    lb.program.graphSeed = 777;
+    lb.program.nodeId = 2;
+    lb.program.instrs = {OpConst(0.45f)};
+    lb.program.acceptIndex = 0;
+    lb.domainKind = DomainKind::Grid;
+    lb.grid = &grid;
+    lb.config.candidatesPerTile = 1500;
+    lb.config.minScale = 0.7f;
+    lb.config.maxScale = 1.3f;
+    Prototype a;
+    a.weight = 2.0f;
+    Prototype b;
+    b.weight = 1.0f;
+    Prototype c;
+    c.weight = 1.0f;
+    lb.prototypes.add(a);
+    lb.prototypes.add(b);
+    lb.prototypes.add(c);
 
-	auto oracle = EvaluateTile(lb, TileID{ 4, 0, 5 });
+    auto oracle = EvaluateTile(lb, TileID{4, 0, 5});
 
-	// Kernel mirror (same steps as mainCS, written independently).
-	std::vector<RenderInstance> mirror;
-	const uint32_t N = lb.config.candidatesPerTile;
-	for (uint32_t i = 0; i < N; ++i) {
-		StableID id = MakeStableID(777, 2, TileID{ 4, 0, 5 }, 0, i);
-		DomainSample s = grid.sample(id, i);
-		float q = QuantizeDensity(0.45f);
-		bool keep = (q >= 1.0f) || (Random01(id, RandomChannel::Density) < q);
-		if (!keep) continue;
-		float rv = Random01(id, RandomChannel::Variant);
-		uint32_t proto = lb.prototypes.select(rv).value_or(0);
-		RenderInstance in;
-		in.position = s.p;
-		in.yaw = YawFromId(id);
-		float sc = UniformScaleFromId(id, 0.7f, 1.3f);
-		in.scale = glm::vec3(sc);
-		in.prototypeId = proto;
-		in.stableLow = id.w[0];
-		in.customB = i; // candidate index (mirrors EvaluateTile + mainCS)
-		mirror.push_back(in);
-	}
-	bool same = oracle.size() == mirror.size();
-	if (same) {
-		for (size_t i = 0; i < oracle.size(); ++i) {
-			if (oracle[i].position != mirror[i].position
-				|| oracle[i].yaw != mirror[i].yaw
-				|| oracle[i].scale != mirror[i].scale
-				|| oracle[i].prototypeId != mirror[i].prototypeId
-				|| oracle[i].stableLow != mirror[i].stableLow
-				|| oracle[i].customB != mirror[i].customB) {
-				same = false; break;
-			}
-		}
-	}
-	Check(same, "place.kernel.algorithm-parity");
-	Check(!oracle.empty(), "place.kernel.nonempty");
+    // Kernel mirror (same steps as mainCS, written independently).
+    std::vector<RenderInstance> mirror;
+    const uint32_t N = lb.config.candidatesPerTile;
+    for (uint32_t i = 0; i < N; ++i) {
+        StableID id = MakeStableID(777, 2, TileID{4, 0, 5}, 0, i);
+        DomainSample s = grid.sample(id, i);
+        float q = QuantizeDensity(0.45f);
+        bool keep = (q >= 1.0f) || (Random01(id, RandomChannel::Density) < q);
+        if (!keep)
+            continue;
+        float rv = Random01(id, RandomChannel::Variant);
+        uint32_t proto = lb.prototypes.select(rv).value_or(0);
+        RenderInstance in;
+        in.position = s.p;
+        in.yaw = YawFromId(id);
+        float sc = UniformScaleFromId(id, 0.7f, 1.3f);
+        in.scale = glm::vec3(sc);
+        in.prototypeId = proto;
+        in.stableLow = id.w[0];
+        in.customB = i; // candidate index (mirrors EvaluateTile + mainCS)
+        mirror.push_back(in);
+    }
+    bool same = oracle.size() == mirror.size();
+    if (same) {
+        for (size_t i = 0; i < oracle.size(); ++i) {
+            if (oracle[i].position != mirror[i].position || oracle[i].yaw != mirror[i].yaw ||
+                oracle[i].scale != mirror[i].scale ||
+                oracle[i].prototypeId != mirror[i].prototypeId ||
+                oracle[i].stableLow != mirror[i].stableLow ||
+                oracle[i].customB != mirror[i].customB) {
+                same = false;
+                break;
+            }
+        }
+    }
+    Check(same, "place.kernel.algorithm-parity");
+    Check(!oracle.empty(), "place.kernel.nonempty");
 }
 
 void TestScatterParams() {
-	using namespace smvk::placement;
-	Check(sizeof(PlacementDomainParams) == 232, "place.scatter.params-232B");
-	Check(offsetof(PlacementDomainParams, instrBDA) == 176
-		&& offsetof(PlacementDomainParams, instrCount) == 184
-		&& offsetof(PlacementDomainParams, acceptIndex) == 188,
-		"place.scatter.program-tail");
-	Check(offsetof(PlacementDomainParams, slopeToRock) == 24
-		&& offsetof(PlacementDomainParams, slopeThresholdDeg) == 212,
-		"place.scatter.slope-reuses-reserved-slots");
-	Check(offsetof(PlacementDomainParams, ecoBDA) == 192
-		&& offsetof(PlacementDomainParams, ecoW) == 200
-		&& offsetof(PlacementDomainParams, ecoChannels) == 208
-		&& offsetof(PlacementDomainParams, ecoOX) == 216,
-		"place.scatter.eco-tail");
-	Check(sizeof(PlacementScatterPush) == 64, "place.scatter.push-64B");
-	// The append-counter triple ABI (the capacity-guard contract).
-	Check(sizeof(PlacementCountGpu) == 16, "place.count.16B");
-	Check(offsetof(PlacementCountGpu, count) == 0
-		&& offsetof(PlacementCountGpu, overflow) == 4
-		&& offsetof(PlacementCountGpu, capacity) == 8,
-		"place.count.fields");
-	Check(offsetof(PlacementScatterPush, params) == 16, "place.scatter.params-bda");
-	Check(offsetof(PlacementScatterPush, candidateCount) == 44, "place.scatter.count");
-	// Mesh mapping.
-	PlacementMeshData mesh;
-	mesh.positions = { glm::vec3(0,0,0), glm::vec3(1,0,0), glm::vec3(0,0,1) };
-	mesh.normals = { glm::vec3(0,1,0), glm::vec3(0,1,0), glm::vec3(0,1,0) };
-	mesh.indices = { 0, 1, 2 };
-	BuildMeshAliasTable(mesh);
-	PlacementSystem::LayerBinding mlb;
-	mlb.programId = 21;
-	mlb.program.graphSeed = 5;
-	mlb.program.instrs = { OpConst(0.7f) };
-	mlb.program.acceptIndex = 0;
-	mlb.domainKind = DomainKind::MeshSurface;
-	mlb.mesh = &mesh;
-	mlb.config.candidatesPerTile = 64;
-	mlb.config.densityScale = 1.25f;
-	ScatterBDAs b{ 11, 22, 0, 33, 44, 55, 0 };
-	PlacementProgramView view{ 0x500, 1, 0 };
-	PlacementEcoView ecoView{}; // this program uses no mask
-	PlacementDomainParams prm;
-	Check(FillScatterParams(mlb, view, ecoView, b, prm), "place.scatter.mesh-ok");
-	Check(prm.domainKind == kPlacementScatterDomain_Mesh, "place.scatter.mesh-kind");
-	Check(prm.triCount == 1 && prm.vertCount == 3, "place.scatter.mesh-counts");
-	Check((prm.flags & kPlacementFlag_HasNormals) != 0, "place.scatter.mesh-normals");
-	Check((prm.flags & kPlacementFlag_HasUVs) == 0, "place.scatter.mesh-no-uvs");
-	Check(prm.posBDA == 11 && prm.idxBDA == 33 && prm.probBDA == 44, "place.scatter.mesh-bda");
-	Check(prm.densityScale == 1.25f, "place.scatter.mesh-density-scale");
-	mlb.config.slopeToRock = true;
-	mlb.config.slopeThresholdDeg = 42.0f;
-	Check(FillScatterParams(mlb, view, ecoView, b, prm)
-		&& prm.slopeToRock == 1 && prm.slopeThresholdDeg == 42.0f,
-		"place.scatter.mesh-slope-rule-upload");
-	Check(prm.instrBDA == 0x500 && prm.instrCount == 1 && prm.acceptIndex == 0,
-		"place.scatter.program-fields");
-	// An empty program view refuses (explicit CPU fallback).
-	Check(!FillScatterParams(mlb, PlacementProgramView{}, ecoView, b, prm),
-		"place.scatter.no-program-refuses");
-	// Heightfield mapping.
-	HeightfieldData hf;
-	hf.width = 3; hf.height = 3;
-	hf.origin = glm::vec3(100, 0, 200);
-	hf.spacing = glm::vec2(2.0f, 2.0f);
-	hf.heights.assign(9, 1.0f);
-	HeightfieldDomain hdom;
-	hdom.field = &hf;
-	hdom.extentMin = glm::vec2(100, 200);
-	hdom.extentMax = glm::vec2(104, 204);
-	PlacementSystem::LayerBinding hlb;
-	hlb.program.graphSeed = 6;
-	hlb.program.instrs = { OpConst(0.4f) };
-	hlb.program.acceptIndex = 0;
-	hlb.domainKind = DomainKind::Heightfield;
-	hlb.heightfield = &hdom;
-	hlb.config.candidatesPerTile = 32;
-	ScatterBDAs hb{ 0, 0, 0, 0, 0, 0, 77 };
-	PlacementDomainParams hprm;
-	Check(FillScatterParams(hlb, view, ecoView, hb, hprm), "place.scatter.hf-ok");
-	Check(hprm.domainKind == kPlacementScatterDomain_Heightfield, "place.scatter.hf-kind");
-	Check(hprm.hfW == 3 && hprm.hfH == 3, "place.scatter.hf-dims");
-	Check(hprm.hfOX == 100.0f && hprm.hfOZ == 200.0f, "place.scatter.hf-origin");
-	Check(hprm.hfSX == 2.0f && hprm.extMaxX == 104.0f, "place.scatter.hf-extent");
-	Check(hprm.heightsBDA == 77, "place.scatter.hf-bda");
-	hlb.config.slopeToRock = true;
-	hlb.config.slopeThresholdDeg = 31.0f;
-	Check(FillScatterParams(hlb, view, ecoView, hb, hprm)
-		&& hprm.slopeToRock == 1 && hprm.slopeThresholdDeg == 31.0f,
-		"place.scatter.hf-slope-rule-upload");
-	// Grid layer refuses scatter params (has its own kernel+push).
-	GridDomain grid;
-	PlacementSystem::LayerBinding glb;
-	glb.domainKind = DomainKind::Grid;
-	glb.grid = &grid;
-	glb.program.instrs = { OpConst(0.5f) };
-	glb.program.acceptIndex = 0;
-	PlacementDomainParams gprm;
-	Check(!FillScatterParams(glb, view, ecoView, hb, gprm), "place.scatter.grid-refuses");
-	// A program that READS the painted layer refuses without a mask.
-	{
-		EcotopeMaskData eco; // 2 channels, minimal valid grid
-		eco.width = 16; eco.height = 16; eco.channels = 2;
-		eco.weights.assign(2 * 256, 0.5f);
-		auto ecoLb = mlb;
-		ecoLb.ecotope = &eco;
-		ecoLb.program.instrs = { FieldInstr{ .op = FieldOp::EcotopeMask,
-				.params = { 1.0f, 0, 0, 0 } } };
-		ecoLb.program.acceptIndex = 0;
-		PlacementDomainParams eprm;
-		Check(!FillScatterParams(ecoLb, view, PlacementEcoView{}, b, eprm),
-			"place.scatter.eco-without-mask-refuses");
-		PlacementEcoView okEco{ 0x999, 16, 16, 2, 4.0f, 6.0f, 1.0f, 2.0f };
-		Check(FillScatterParams(ecoLb, view, okEco, b, eprm)
-			&& eprm.ecoBDA == 0x999 && eprm.ecoChannels == 2
-			&& eprm.ecoW == 16 && eprm.ecoH == 16
-			&& eprm.ecoOX == 4.0f && eprm.ecoSZ == 2.0f,
-			"place.scatter.eco-tail-filled");
-	}
-	// Push build.
-	PlacementScatterPush push;
-	Check(BuildScatterPush(mlb, TileID{ 7, 0, 8 }, 0xAAA, 0xBBB, 0xCCC, push),
-		"place.scatter.push-ok");
-	Check(push.params == 0xCCC && push.outInstances == 0xAAA && push.outCount == 0xBBB,
-		"place.scatter.push-bda");
-	Check(push.seedLo == 5 && push.nodeId == 0 && push.candidateCount == 64,
-		"place.scatter.push-ids");
-	Check(push.tileX == 7 && push.tileZ == 8, "place.scatter.push-tile");
+    using namespace smvk::placement;
+    Check(sizeof(PlacementDomainParams) == 232, "place.scatter.params-232B");
+    Check(offsetof(PlacementDomainParams, instrBDA) == 176 &&
+              offsetof(PlacementDomainParams, instrCount) == 184 &&
+              offsetof(PlacementDomainParams, acceptIndex) == 188,
+          "place.scatter.program-tail");
+    Check(offsetof(PlacementDomainParams, slopeToRock) == 24 &&
+              offsetof(PlacementDomainParams, slopeThresholdDeg) == 212,
+          "place.scatter.slope-reuses-reserved-slots");
+    Check(offsetof(PlacementDomainParams, ecoBDA) == 192 &&
+              offsetof(PlacementDomainParams, ecoW) == 200 &&
+              offsetof(PlacementDomainParams, ecoChannels) == 208 &&
+              offsetof(PlacementDomainParams, ecoOX) == 216,
+          "place.scatter.eco-tail");
+    Check(sizeof(PlacementScatterPush) == 64, "place.scatter.push-64B");
+    // The append-counter triple ABI (the capacity-guard contract).
+    Check(sizeof(PlacementCountGpu) == 16, "place.count.16B");
+    Check(offsetof(PlacementCountGpu, count) == 0 && offsetof(PlacementCountGpu, overflow) == 4 &&
+              offsetof(PlacementCountGpu, capacity) == 8,
+          "place.count.fields");
+    Check(offsetof(PlacementScatterPush, params) == 16, "place.scatter.params-bda");
+    Check(offsetof(PlacementScatterPush, candidateCount) == 44, "place.scatter.count");
+    // Mesh mapping.
+    PlacementMeshData mesh;
+    mesh.positions = {glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 0, 1)};
+    mesh.normals = {glm::vec3(0, 1, 0), glm::vec3(0, 1, 0), glm::vec3(0, 1, 0)};
+    mesh.indices = {0, 1, 2};
+    BuildMeshAliasTable(mesh);
+    PlacementSystem::LayerBinding mlb;
+    mlb.programId = 21;
+    mlb.program.graphSeed = 5;
+    mlb.program.instrs = {OpConst(0.7f)};
+    mlb.program.acceptIndex = 0;
+    mlb.domainKind = DomainKind::MeshSurface;
+    mlb.mesh = &mesh;
+    mlb.config.candidatesPerTile = 64;
+    mlb.config.densityScale = 1.25f;
+    ScatterBDAs b{11, 22, 0, 33, 44, 55, 0};
+    PlacementProgramView view{0x500, 1, 0};
+    PlacementEcoView ecoView{}; // this program uses no mask
+    PlacementDomainParams prm;
+    Check(FillScatterParams(mlb, view, ecoView, b, prm), "place.scatter.mesh-ok");
+    Check(prm.domainKind == kPlacementScatterDomain_Mesh, "place.scatter.mesh-kind");
+    Check(prm.triCount == 1 && prm.vertCount == 3, "place.scatter.mesh-counts");
+    Check((prm.flags & kPlacementFlag_HasNormals) != 0, "place.scatter.mesh-normals");
+    Check((prm.flags & kPlacementFlag_HasUVs) == 0, "place.scatter.mesh-no-uvs");
+    Check(prm.posBDA == 11 && prm.idxBDA == 33 && prm.probBDA == 44, "place.scatter.mesh-bda");
+    Check(prm.densityScale == 1.25f, "place.scatter.mesh-density-scale");
+    mlb.config.slopeToRock = true;
+    mlb.config.slopeThresholdDeg = 42.0f;
+    Check(FillScatterParams(mlb, view, ecoView, b, prm) && prm.slopeToRock == 1 &&
+              prm.slopeThresholdDeg == 42.0f,
+          "place.scatter.mesh-slope-rule-upload");
+    Check(prm.instrBDA == 0x500 && prm.instrCount == 1 && prm.acceptIndex == 0,
+          "place.scatter.program-fields");
+    // An empty program view refuses (explicit CPU fallback).
+    Check(!FillScatterParams(mlb, PlacementProgramView{}, ecoView, b, prm),
+          "place.scatter.no-program-refuses");
+    // Heightfield mapping.
+    HeightfieldData hf;
+    hf.width = 3;
+    hf.height = 3;
+    hf.origin = glm::vec3(100, 0, 200);
+    hf.spacing = glm::vec2(2.0f, 2.0f);
+    hf.heights.assign(9, 1.0f);
+    HeightfieldDomain hdom;
+    hdom.field = &hf;
+    hdom.extentMin = glm::vec2(100, 200);
+    hdom.extentMax = glm::vec2(104, 204);
+    PlacementSystem::LayerBinding hlb;
+    hlb.program.graphSeed = 6;
+    hlb.program.instrs = {OpConst(0.4f)};
+    hlb.program.acceptIndex = 0;
+    hlb.domainKind = DomainKind::Heightfield;
+    hlb.heightfield = &hdom;
+    hlb.config.candidatesPerTile = 32;
+    ScatterBDAs hb{0, 0, 0, 0, 0, 0, 77};
+    PlacementDomainParams hprm;
+    Check(FillScatterParams(hlb, view, ecoView, hb, hprm), "place.scatter.hf-ok");
+    Check(hprm.domainKind == kPlacementScatterDomain_Heightfield, "place.scatter.hf-kind");
+    Check(hprm.hfW == 3 && hprm.hfH == 3, "place.scatter.hf-dims");
+    Check(hprm.hfOX == 100.0f && hprm.hfOZ == 200.0f, "place.scatter.hf-origin");
+    Check(hprm.hfSX == 2.0f && hprm.extMaxX == 104.0f, "place.scatter.hf-extent");
+    Check(hprm.heightsBDA == 77, "place.scatter.hf-bda");
+    hlb.config.slopeToRock = true;
+    hlb.config.slopeThresholdDeg = 31.0f;
+    Check(FillScatterParams(hlb, view, ecoView, hb, hprm) && hprm.slopeToRock == 1 &&
+              hprm.slopeThresholdDeg == 31.0f,
+          "place.scatter.hf-slope-rule-upload");
+    // Grid layer refuses scatter params (has its own kernel+push).
+    GridDomain grid;
+    PlacementSystem::LayerBinding glb;
+    glb.domainKind = DomainKind::Grid;
+    glb.grid = &grid;
+    glb.program.instrs = {OpConst(0.5f)};
+    glb.program.acceptIndex = 0;
+    PlacementDomainParams gprm;
+    Check(!FillScatterParams(glb, view, ecoView, hb, gprm), "place.scatter.grid-refuses");
+    // A program that READS the painted layer refuses without a mask.
+    {
+        EcotopeMaskData eco; // 2 channels, minimal valid grid
+        eco.width = 16;
+        eco.height = 16;
+        eco.channels = 2;
+        eco.weights.assign(2 * 256, 0.5f);
+        auto ecoLb = mlb;
+        ecoLb.ecotope = &eco;
+        ecoLb.program.instrs = {FieldInstr{.op = FieldOp::EcotopeMask, .params = {1.0f, 0, 0, 0}}};
+        ecoLb.program.acceptIndex = 0;
+        PlacementDomainParams eprm;
+        Check(!FillScatterParams(ecoLb, view, PlacementEcoView{}, b, eprm),
+              "place.scatter.eco-without-mask-refuses");
+        PlacementEcoView okEco{0x999, 16, 16, 2, 4.0f, 6.0f, 1.0f, 2.0f};
+        Check(FillScatterParams(ecoLb, view, okEco, b, eprm) && eprm.ecoBDA == 0x999 &&
+                  eprm.ecoChannels == 2 && eprm.ecoW == 16 && eprm.ecoH == 16 &&
+                  eprm.ecoOX == 4.0f && eprm.ecoSZ == 2.0f,
+              "place.scatter.eco-tail-filled");
+    }
+    // Push build.
+    PlacementScatterPush push;
+    Check(BuildScatterPush(mlb, TileID{7, 0, 8}, 0xAAA, 0xBBB, 0xCCC, push),
+          "place.scatter.push-ok");
+    Check(push.params == 0xCCC && push.outInstances == 0xAAA && push.outCount == 0xBBB,
+          "place.scatter.push-bda");
+    Check(push.seedLo == 5 && push.nodeId == 0 && push.candidateCount == 64,
+          "place.scatter.push-ids");
+    Check(push.tileX == 7 && push.tileZ == 8, "place.scatter.push-tile");
 }
 
 void TestMeshKernelParity() {
-	using namespace smvk::placement;
-	// Independent reimplementation of placement_mesh_tile.cs.hlsl mainCS.
-	PlacementMeshData mesh;
-	mesh.positions = { glm::vec3(0,0,0), glm::vec3(10,0,0), glm::vec3(0,0,10),
-		glm::vec3(20,0,0), glm::vec3(21,0,0), glm::vec3(20,0,1) };
-	mesh.indices = { 0, 1, 2, 3, 4, 5 };
-	BuildMeshAliasTable(mesh);
-	PlacementSystem::LayerBinding lb;
-	lb.programId = 31;
-	lb.program.graphSeed = 4242;
-	lb.program.nodeId = 1;
-	lb.program.instrs = { OpConst(0.6f) };
-	lb.program.acceptIndex = 0;
-	lb.domainKind = DomainKind::MeshSurface;
-	lb.mesh = &mesh;
-	lb.config.candidatesPerTile = 800;
-	lb.config.minScale = 0.9f; lb.config.maxScale = 1.1f;
-	Prototype p; p.weight = 1.0f;
-	lb.prototypes.add(p);
-	auto oracle = EvaluateTile(lb, TileID{ 0, 0, 0 });
-	std::vector<RenderInstance> mirror;
-	for (uint32_t i = 0; i < 800; ++i) {
-		StableID id = MakeStableID(4242, 1, TileID{ 0, 0, 0 }, 0, i);
-		DomainSample s = SampleMeshSurface(mesh, id);
-		float q = QuantizeDensity(0.6f);
-		if (q < 1.0f && !(Random01(id, RandomChannel::Density) < q)) continue;
-		RenderInstance in;
-		in.position = s.p;
-		in.yaw = YawFromId(id);
-		float sc = UniformScaleFromId(id, 0.9f, 1.1f);
-		in.scale = glm::vec3(sc);
-		in.prototypeId = 0;
-		in.stableLow = id.w[0];
-		in.customB = i;
-		mirror.push_back(in);
-	}
-	bool same = oracle.size() == mirror.size();
-	if (same) {
-		for (size_t i = 0; i < oracle.size(); ++i)
-			if (oracle[i].position != mirror[i].position
-				|| oracle[i].yaw != mirror[i].yaw
-				|| oracle[i].stableLow != mirror[i].stableLow
-				|| oracle[i].customB != mirror[i].customB) { same = false; break; }
-	}
-	Check(same, "place.meshkernel.parity");
-	Check(!oracle.empty(), "place.meshkernel.nonempty");
+    using namespace smvk::placement;
+    // Independent reimplementation of placement_mesh_tile.cs.hlsl mainCS.
+    PlacementMeshData mesh;
+    mesh.positions = {glm::vec3(0, 0, 0),
+                      glm::vec3(10, 0, 0),
+                      glm::vec3(0, 0, 10),
+                      glm::vec3(20, 0, 0),
+                      glm::vec3(21, 0, 0),
+                      glm::vec3(20, 0, 1)};
+    mesh.indices = {0, 1, 2, 3, 4, 5};
+    BuildMeshAliasTable(mesh);
+    PlacementSystem::LayerBinding lb;
+    lb.programId = 31;
+    lb.program.graphSeed = 4242;
+    lb.program.nodeId = 1;
+    lb.program.instrs = {OpConst(0.6f)};
+    lb.program.acceptIndex = 0;
+    lb.domainKind = DomainKind::MeshSurface;
+    lb.mesh = &mesh;
+    lb.config.candidatesPerTile = 800;
+    lb.config.minScale = 0.9f;
+    lb.config.maxScale = 1.1f;
+    Prototype p;
+    p.weight = 1.0f;
+    lb.prototypes.add(p);
+    auto oracle = EvaluateTile(lb, TileID{0, 0, 0});
+    std::vector<RenderInstance> mirror;
+    for (uint32_t i = 0; i < 800; ++i) {
+        StableID id = MakeStableID(4242, 1, TileID{0, 0, 0}, 0, i);
+        DomainSample s = SampleMeshSurface(mesh, id);
+        float q = QuantizeDensity(0.6f);
+        if (q < 1.0f && !(Random01(id, RandomChannel::Density) < q))
+            continue;
+        RenderInstance in;
+        in.position = s.p;
+        in.yaw = YawFromId(id);
+        float sc = UniformScaleFromId(id, 0.9f, 1.1f);
+        in.scale = glm::vec3(sc);
+        in.prototypeId = 0;
+        in.stableLow = id.w[0];
+        in.customB = i;
+        mirror.push_back(in);
+    }
+    bool same = oracle.size() == mirror.size();
+    if (same) {
+        for (size_t i = 0; i < oracle.size(); ++i)
+            if (oracle[i].position != mirror[i].position || oracle[i].yaw != mirror[i].yaw ||
+                oracle[i].stableLow != mirror[i].stableLow ||
+                oracle[i].customB != mirror[i].customB) {
+                same = false;
+                break;
+            }
+    }
+    Check(same, "place.meshkernel.parity");
+    Check(!oracle.empty(), "place.meshkernel.nonempty");
 }
 
 void TestHfKernelParity() {
-	using namespace smvk::placement;
-	HeightfieldData hf;
-	hf.width = 5; hf.height = 5;
-	hf.origin = glm::vec3(0, 0, 0);
-	hf.spacing = glm::vec2(1.0f, 1.0f);
-	hf.heights.resize(25);
-	for (uint32_t z = 0; z < 5; ++z)
-		for (uint32_t x = 0; x < 5; ++x)
-			hf.heights[z * 5 + x] = (float)(x * x) * 0.1f + (float)z * 0.3f;
-	HeightfieldDomain dom;
-	dom.field = &hf;
-	dom.extentMin = glm::vec2(0, 0);
-	dom.extentMax = glm::vec2(4, 4);
-	PlacementSystem::LayerBinding lb;
-	lb.programId = 32;
-	lb.program.graphSeed = 99;
-	lb.program.nodeId = 4;
-	lb.program.instrs = { OpConst(0.8f) };
-	lb.program.acceptIndex = 0;
-	lb.domainKind = DomainKind::Heightfield;
-	lb.heightfield = &dom;
-	lb.config.candidatesPerTile = 500;
-	Prototype p; p.weight = 1.0f;
-	lb.prototypes.add(p);
-	auto oracle = EvaluateTile(lb, TileID{ 1, 0, 1 });
-	std::vector<RenderInstance> mirror;
-	for (uint32_t i = 0; i < 500; ++i) {
-		StableID id = MakeStableID(99, 4, TileID{ 1, 0, 1 }, 0, i);
-		DomainSample s = dom.sample(id);
-		float q = QuantizeDensity(0.8f);
-		if (q < 1.0f && !(Random01(id, RandomChannel::Density) < q)) continue;
-		RenderInstance in;
-		in.position = s.p;
-		in.yaw = YawFromId(id);
-		float sc = UniformScaleFromId(id, 0.8f, 1.2f);
-		in.scale = glm::vec3(sc);
-		in.prototypeId = 0;
-		in.stableLow = id.w[0];
-		in.customB = i;
-		mirror.push_back(in);
-	}
-	bool same = oracle.size() == mirror.size();
-	if (same) {
-		for (size_t i = 0; i < oracle.size(); ++i)
-			if (oracle[i].position != mirror[i].position
-				|| oracle[i].yaw != mirror[i].yaw
-				|| oracle[i].stableLow != mirror[i].stableLow) { same = false; break; }
-	}
-	Check(same, "place.hfkernel.parity");
-	Check(!oracle.empty(), "place.hfkernel.nonempty");
+    using namespace smvk::placement;
+    HeightfieldData hf;
+    hf.width = 5;
+    hf.height = 5;
+    hf.origin = glm::vec3(0, 0, 0);
+    hf.spacing = glm::vec2(1.0f, 1.0f);
+    hf.heights.resize(25);
+    for (uint32_t z = 0; z < 5; ++z)
+        for (uint32_t x = 0; x < 5; ++x)
+            hf.heights[z * 5 + x] = (float)(x * x) * 0.1f + (float)z * 0.3f;
+    HeightfieldDomain dom;
+    dom.field = &hf;
+    dom.extentMin = glm::vec2(0, 0);
+    dom.extentMax = glm::vec2(4, 4);
+    PlacementSystem::LayerBinding lb;
+    lb.programId = 32;
+    lb.program.graphSeed = 99;
+    lb.program.nodeId = 4;
+    lb.program.instrs = {OpConst(0.8f)};
+    lb.program.acceptIndex = 0;
+    lb.domainKind = DomainKind::Heightfield;
+    lb.heightfield = &dom;
+    lb.config.candidatesPerTile = 500;
+    Prototype p;
+    p.weight = 1.0f;
+    lb.prototypes.add(p);
+    auto oracle = EvaluateTile(lb, TileID{1, 0, 1});
+    std::vector<RenderInstance> mirror;
+    for (uint32_t i = 0; i < 500; ++i) {
+        StableID id = MakeStableID(99, 4, TileID{1, 0, 1}, 0, i);
+        DomainSample s = dom.sample(id);
+        float q = QuantizeDensity(0.8f);
+        if (q < 1.0f && !(Random01(id, RandomChannel::Density) < q))
+            continue;
+        RenderInstance in;
+        in.position = s.p;
+        in.yaw = YawFromId(id);
+        float sc = UniformScaleFromId(id, 0.8f, 1.2f);
+        in.scale = glm::vec3(sc);
+        in.prototypeId = 0;
+        in.stableLow = id.w[0];
+        in.customB = i;
+        mirror.push_back(in);
+    }
+    bool same = oracle.size() == mirror.size();
+    if (same) {
+        for (size_t i = 0; i < oracle.size(); ++i)
+            if (oracle[i].position != mirror[i].position || oracle[i].yaw != mirror[i].yaw ||
+                oracle[i].stableLow != mirror[i].stableLow) {
+                same = false;
+                break;
+            }
+    }
+    Check(same, "place.hfkernel.parity");
+    Check(!oracle.empty(), "place.hfkernel.nonempty");
 }
 
 void TestConBridge() {
-	using namespace smvk::placement;
-	Check(sizeof(PlacementConParams) == 64, "place.con.params-64B");
-	Check(sizeof(PlacementConPush) == 64, "place.con.push-64B");
-	Check(offsetof(PlacementConPush, flag2) == 24, "place.con.flag2-offset");
-	Check(offsetof(PlacementConPush, countBuf) == 40, "place.con.count-offset");
-	Check(kPlacementConMaxCells == 262144, "place.con.max-cells");
-	// Volume eligibility.
-	ConstraintVolume ok;
-	ok.origin = glm::vec3(0, -64, 0);
-	ok.dimX = 18; ok.dimY = 34; ok.dimZ = 18;
-	ok.spacing = 4.0f;
-	Check(PlacementConstraint::VolumeFitsGpu(ok), "place.con.fits");
-	ConstraintVolume unbounded; // zero dims
-	unbounded.spacing = 4.0f;
-	Check(!PlacementConstraint::VolumeFitsGpu(unbounded), "place.con.unbounded-refuses");
-	ConstraintVolume huge = ok;
-	huge.dimX = 65; // flattened grid: X may exceed 64 when total fits
-	Check(PlacementConstraint::VolumeFitsGpu(huge),
-		"place.con.rectangular-axis-fits");
-	huge.dimX = 9999;
-	Check(!PlacementConstraint::VolumeFitsGpu(huge),
-		"place.con.oversized-axis-refuses");
-	ConstraintVolume cells = ok;
-	cells.dimX = 64; cells.dimY = 64; cells.dimZ = 64; // 262144 cells exactly
-	Check(PlacementConstraint::VolumeFitsGpu(cells), "place.con.max-exact-fits");
-	cells.dimZ = 65; // 266240 > max
-	Check(!PlacementConstraint::VolumeFitsGpu(cells), "place.con.cellcount-refuses");
-	// Params fill + push build.
-	PlacementSystem::LayerBinding lb;
-	lb.program.graphSeed = 0xFEDCBA9876543210ull;
-	lb.program.nodeId = 9;
-	PlacementConParams prm;
-	Check(PlacementConstraint::FillConParams(lb, TileID{ 5, -2, 7 }, ok, prm), "place.con.fill-ok");
-	Check(prm.seedLo == 0x76543210ul && prm.seedHi == 0xFEDCBA98ul, "place.con.fill-seed");
-	Check(prm.nodeId == 9 && prm.spacing == 4.0f, "place.con.fill-ids");
-	Check(prm.dimX == 18 && prm.dimY == 34 && prm.dimZ == 18, "place.con.fill-dims");
-	Check(prm.tileX == 5 && prm.tileY == -2 && prm.tileZ == 7, "place.con.fill-tile-roundtrip");
-	Check(!PlacementConstraint::FillConParams(lb, TileID{ 5, -2, 7 }, unbounded, prm), "place.con.fill-refuses");
-	PlacementConPush push;
-	Check(PlacementConstraint::BuildConPush(1, 2, 3, 4, 5, 6, push), "place.con.push-ok");
-	Check(push.instances == 1 && push.head == 2 && push.next == 3 && push.flag2 == 4
-		&& push.params == 5 && push.countBuf == 6, "place.con.push-bda");
-	// Layer volume helper: grid bounded, mesh unbounded.
-	GridDomain grid;
-	grid.origin = glm::vec3(0, 0, 0);
-	grid.extent = glm::vec2(64, 64);
-	PlacementSystem::LayerBinding glb;
-	glb.domainKind = DomainKind::Grid;
-	glb.grid = &grid;
-	glb.config.minSpacing = 4.0f;
-	ConstraintVolume gv = ConstraintVolumeForLayer(glb);
-	Check(gv.dimX == 18 && gv.dimZ == 18 && gv.spacing == 4.0f, "place.con.layer-grid-vol");
-	Check(PlacementConstraint::VolumeFitsGpu(gv), "place.con.layer-grid-fits");
-	PlacementMeshData mesh;
-	PlacementSystem::LayerBinding mlb;
-	mlb.domainKind = DomainKind::MeshSurface;
-	mlb.mesh = &mesh;
-	mlb.config.minSpacing = 4.0f;
-	ConstraintVolume mv = ConstraintVolumeForLayer(mlb);
-	Check(mv.dimX == 0 && mv.spacing == 4.0f, "place.con.layer-mesh-unbounded");
-	HeightfieldData hf;
-	hf.width = 4; hf.height = 4;
-	hf.origin = glm::vec3(0.0f);
-	hf.spacing = glm::vec2(1.0f);
-	hf.heights.assign(16, 10.0f);
-	HeightfieldDomain hd;
-	hd.field = &hf;
-	hd.extentMin = glm::vec2(0.0f);
-	hd.extentMax = glm::vec2(64.0f);
-	PlacementSystem::LayerBinding hlb;
-	hlb.domainKind = DomainKind::Heightfield;
-	hlb.heightfield = &hd;
-	hlb.config.minSpacing = 1.0f;
-	const ConstraintVolume hv = ConstraintVolumeForLayer(hlb);
-	Check(hv.dimX == 66 && hv.dimY == 3 && hv.dimZ == 66
-		&& hv.origin.y == 9.0f,
-		"place.con.heightfield-tight-vertical-band");
-	Check(PlacementConstraint::VolumeFitsGpu(hv),
-		"place.con.heightfield-one-meter-fits");
+    using namespace smvk::placement;
+    Check(sizeof(PlacementConParams) == 64, "place.con.params-64B");
+    Check(sizeof(PlacementConPush) == 64, "place.con.push-64B");
+    Check(offsetof(PlacementConPush, flag2) == 24, "place.con.flag2-offset");
+    Check(offsetof(PlacementConPush, countBuf) == 40, "place.con.count-offset");
+    Check(kPlacementConMaxCells == 262144, "place.con.max-cells");
+    // Volume eligibility.
+    ConstraintVolume ok;
+    ok.origin = glm::vec3(0, -64, 0);
+    ok.dimX = 18;
+    ok.dimY = 34;
+    ok.dimZ = 18;
+    ok.spacing = 4.0f;
+    Check(PlacementConstraint::VolumeFitsGpu(ok), "place.con.fits");
+    ConstraintVolume unbounded; // zero dims
+    unbounded.spacing = 4.0f;
+    Check(!PlacementConstraint::VolumeFitsGpu(unbounded), "place.con.unbounded-refuses");
+    ConstraintVolume huge = ok;
+    huge.dimX = 65; // flattened grid: X may exceed 64 when total fits
+    Check(PlacementConstraint::VolumeFitsGpu(huge), "place.con.rectangular-axis-fits");
+    huge.dimX = 9999;
+    Check(!PlacementConstraint::VolumeFitsGpu(huge), "place.con.oversized-axis-refuses");
+    ConstraintVolume cells = ok;
+    cells.dimX = 64;
+    cells.dimY = 64;
+    cells.dimZ = 64; // 262144 cells exactly
+    Check(PlacementConstraint::VolumeFitsGpu(cells), "place.con.max-exact-fits");
+    cells.dimZ = 65; // 266240 > max
+    Check(!PlacementConstraint::VolumeFitsGpu(cells), "place.con.cellcount-refuses");
+    // Params fill + push build.
+    PlacementSystem::LayerBinding lb;
+    lb.program.graphSeed = 0xFEDCBA9876543210ull;
+    lb.program.nodeId = 9;
+    PlacementConParams prm;
+    Check(PlacementConstraint::FillConParams(lb, TileID{5, -2, 7}, ok, prm), "place.con.fill-ok");
+    Check(prm.seedLo == 0x76543210ul && prm.seedHi == 0xFEDCBA98ul, "place.con.fill-seed");
+    Check(prm.nodeId == 9 && prm.spacing == 4.0f, "place.con.fill-ids");
+    Check(prm.dimX == 18 && prm.dimY == 34 && prm.dimZ == 18, "place.con.fill-dims");
+    Check(prm.tileX == 5 && prm.tileY == -2 && prm.tileZ == 7, "place.con.fill-tile-roundtrip");
+    Check(!PlacementConstraint::FillConParams(lb, TileID{5, -2, 7}, unbounded, prm),
+          "place.con.fill-refuses");
+    PlacementConPush push;
+    Check(PlacementConstraint::BuildConPush(1, 2, 3, 4, 5, 6, push), "place.con.push-ok");
+    Check(push.instances == 1 && push.head == 2 && push.next == 3 && push.flag2 == 4 &&
+              push.params == 5 && push.countBuf == 6,
+          "place.con.push-bda");
+    // Layer volume helper: grid bounded, mesh unbounded.
+    GridDomain grid;
+    grid.origin = glm::vec3(0, 0, 0);
+    grid.extent = glm::vec2(64, 64);
+    PlacementSystem::LayerBinding glb;
+    glb.domainKind = DomainKind::Grid;
+    glb.grid = &grid;
+    glb.config.minSpacing = 4.0f;
+    ConstraintVolume gv = ConstraintVolumeForLayer(glb);
+    Check(gv.dimX == 18 && gv.dimZ == 18 && gv.spacing == 4.0f, "place.con.layer-grid-vol");
+    Check(PlacementConstraint::VolumeFitsGpu(gv), "place.con.layer-grid-fits");
+    PlacementMeshData mesh;
+    PlacementSystem::LayerBinding mlb;
+    mlb.domainKind = DomainKind::MeshSurface;
+    mlb.mesh = &mesh;
+    mlb.config.minSpacing = 4.0f;
+    ConstraintVolume mv = ConstraintVolumeForLayer(mlb);
+    Check(mv.dimX == 0 && mv.spacing == 4.0f, "place.con.layer-mesh-unbounded");
+    HeightfieldData hf;
+    hf.width = 4;
+    hf.height = 4;
+    hf.origin = glm::vec3(0.0f);
+    hf.spacing = glm::vec2(1.0f);
+    hf.heights.assign(16, 10.0f);
+    HeightfieldDomain hd;
+    hd.field = &hf;
+    hd.extentMin = glm::vec2(0.0f);
+    hd.extentMax = glm::vec2(64.0f);
+    PlacementSystem::LayerBinding hlb;
+    hlb.domainKind = DomainKind::Heightfield;
+    hlb.heightfield = &hd;
+    hlb.config.minSpacing = 1.0f;
+    const ConstraintVolume hv = ConstraintVolumeForLayer(hlb);
+    Check(hv.dimX == 66 && hv.dimY == 3 && hv.dimZ == 66 && hv.origin.y == 9.0f,
+          "place.con.heightfield-tight-vertical-band");
+    Check(PlacementConstraint::VolumeFitsGpu(hv), "place.con.heightfield-one-meter-fits");
 }
 
 namespace {
@@ -1665,650 +1803,723 @@ namespace {
 // no shared code with ApplyMinDistance. Bounded volumes use an explicit
 // linear key; unbounded uses raw cell coords.
 std::vector<uint32_t> BruteForceSurvivors(const std::vector<glm::vec3>& pos,
-	const std::vector<smvk::placement::StableID>& ids, float spacing,
-	const smvk::placement::ConstraintVolume& vol) {
-	using namespace smvk::placement;
-	const size_t n = pos.size();
-	const bool bounded = vol.dimX > 0 && vol.dimY > 0 && vol.dimZ > 0 && vol.spacing > 0.0f;
-	const float cs = bounded ? vol.spacing : spacing;
-	struct Cell { int64_t x, y, z; };
-	std::vector<Cell> cells(n);
-	std::vector<uint8_t> inVol(n, 1);
-	for (size_t i = 0; i < n; ++i) {
-		if (bounded) {
-			int64_t ix = (int64_t)std::floor((pos[i].x - vol.origin.x) / vol.spacing);
-			int64_t iy = (int64_t)std::floor((pos[i].y - vol.origin.y) / vol.spacing);
-			int64_t iz = (int64_t)std::floor((pos[i].z - vol.origin.z) / vol.spacing);
-			cells[i] = { ix, iy, iz };
-			if (ix < 0 || iy < 0 || iz < 0 || ix >= vol.dimX || iy >= vol.dimY || iz >= vol.dimZ)
-				inVol[i] = 0;
-		} else {
-			cells[i] = { (int64_t)std::floor(pos[i].x / cs),
-				(int64_t)std::floor(pos[i].y / cs),
-				(int64_t)std::floor(pos[i].z / cs) };
-		}
-	}
-	auto beats = [&](size_t a, size_t b) { // true when b beats a
-		uint64_t pa = PriorityOf(ids[a]), pb = PriorityOf(ids[b]);
-		return pb > pa || (pb == pa && b < a);
-	};
-	std::vector<uint8_t> winner(n, 0);
-	for (size_t i = 0; i < n; ++i) {
-		if (!inVol[i]) continue;
-		bool win = true;
-		for (size_t j = 0; j < n; ++j) {
-			if (j == i || !inVol[j]) continue;
-			if (cells[j].x == cells[i].x && cells[j].y == cells[i].y && cells[j].z == cells[i].z
-				&& beats(i, j)) { win = false; break; }
-		}
-		winner[i] = win ? 1 : 0;
-	}
-	std::vector<uint8_t> alive(n, 0);
-	const float minD2 = spacing * spacing;
-	for (size_t i = 0; i < n; ++i) {
-		if (!winner[i]) continue;
-		bool live = true;
-		for (size_t j = 0; j < n; ++j) {
-			if (j == i || !winner[j]) continue;
-			glm::vec3 d = pos[i] - pos[j];
-			if (glm::dot(d, d) < minD2 && beats(i, j)) { live = false; break; }
-		}
-		alive[i] = live ? 1 : 0;
-	}
-	std::vector<uint32_t> out;
-	for (size_t i = 0; i < n; ++i)
-		if (alive[i] || !inVol[i]) out.push_back((uint32_t)i);
-	return out;
+                                          const std::vector<smvk::placement::StableID>& ids,
+                                          float spacing,
+                                          const smvk::placement::ConstraintVolume& vol) {
+    using namespace smvk::placement;
+    const size_t n = pos.size();
+    const bool bounded = vol.dimX > 0 && vol.dimY > 0 && vol.dimZ > 0 && vol.spacing > 0.0f;
+    const float cs = bounded ? vol.spacing : spacing;
+    struct Cell {
+        int64_t x, y, z;
+    };
+    std::vector<Cell> cells(n);
+    std::vector<uint8_t> inVol(n, 1);
+    for (size_t i = 0; i < n; ++i) {
+        if (bounded) {
+            int64_t ix = (int64_t)std::floor((pos[i].x - vol.origin.x) / vol.spacing);
+            int64_t iy = (int64_t)std::floor((pos[i].y - vol.origin.y) / vol.spacing);
+            int64_t iz = (int64_t)std::floor((pos[i].z - vol.origin.z) / vol.spacing);
+            cells[i] = {ix, iy, iz};
+            if (ix < 0 || iy < 0 || iz < 0 || ix >= vol.dimX || iy >= vol.dimY || iz >= vol.dimZ)
+                inVol[i] = 0;
+        } else {
+            cells[i] = {(int64_t)std::floor(pos[i].x / cs),
+                        (int64_t)std::floor(pos[i].y / cs),
+                        (int64_t)std::floor(pos[i].z / cs)};
+        }
+    }
+    auto beats = [&](size_t a, size_t b) { // true when b beats a
+        uint64_t pa = PriorityOf(ids[a]), pb = PriorityOf(ids[b]);
+        return pb > pa || (pb == pa && b < a);
+    };
+    std::vector<uint8_t> winner(n, 0);
+    for (size_t i = 0; i < n; ++i) {
+        if (!inVol[i])
+            continue;
+        bool win = true;
+        for (size_t j = 0; j < n; ++j) {
+            if (j == i || !inVol[j])
+                continue;
+            if (cells[j].x == cells[i].x && cells[j].y == cells[i].y && cells[j].z == cells[i].z &&
+                beats(i, j)) {
+                win = false;
+                break;
+            }
+        }
+        winner[i] = win ? 1 : 0;
+    }
+    std::vector<uint8_t> alive(n, 0);
+    const float minD2 = spacing * spacing;
+    for (size_t i = 0; i < n; ++i) {
+        if (!winner[i])
+            continue;
+        bool live = true;
+        for (size_t j = 0; j < n; ++j) {
+            if (j == i || !winner[j])
+                continue;
+            glm::vec3 d = pos[i] - pos[j];
+            if (glm::dot(d, d) < minD2 && beats(i, j)) {
+                live = false;
+                break;
+            }
+        }
+        alive[i] = live ? 1 : 0;
+    }
+    std::vector<uint32_t> out;
+    for (size_t i = 0; i < n; ++i)
+        if (alive[i] || !inVol[i])
+            out.push_back((uint32_t)i);
+    return out;
 }
-}
+} // namespace
 
 void TestConBruteForce() {
-	using namespace smvk::placement;
-	// Seeded pseudo-random point sets (SplitMix32 chain — hermetic, no <random>).
-	for (uint32_t trial = 0; trial < 6; ++trial) {
-		uint32_t s = 0xC0FFEEu + trial * 0x9e3779b9u;
-		auto rnd = [&]() { s = SplitMix32(s + 0x85ebca6bu); return (s >> 8) * (1.0f / 16777216.0f); };
-		const size_t N = 120 + trial * 40;
-		std::vector<glm::vec3> pos;
-		std::vector<StableID> ids;
-		for (size_t i = 0; i < N; ++i) {
-			float x = rnd() * 40.0f, z = rnd() * 40.0f;
-			if (trial % 2 == 1 && i % 7 == 0) { x += 500.0f; z += 500.0f; } // outsiders
-			pos.push_back(glm::vec3(x, 0.0f, z));
-			ids.push_back(MakeStableID(1000 + trial, 3, TileID{ 0, 0, 0 }, 0, (uint32_t)i));
-		}
-		// Bounded.
-		ConstraintVolume vol;
-		vol.origin = glm::vec3(0, -64, 0);
-		vol.dimX = 22; vol.dimY = 66; vol.dimZ = 22;
-		vol.spacing = 2.0f;
-		std::vector<RenderInstance> inst;
-		for (auto& p : pos) { RenderInstance in; in.position = p; in.scale = glm::vec3(1); inst.push_back(in); }
-		std::vector<RenderInstance> instCopy = inst;
-		std::vector<StableID> idsCopy = ids; // ApplyMinDistance compacts ids in parallel
-		ApplyMinDistance(inst, ids, 2.0f, vol);
-		std::vector<uint32_t> ref = BruteForceSurvivors(pos, idsCopy, 2.0f, vol);
-		bool same = inst.size() == ref.size();
-		if (same) {
-			// Both ascending-index ordered: compare positions directly.
-			size_t ri = 0;
-			for (size_t i = 0; i < pos.size() && same; ++i) {
-				bool kept = (ri < ref.size() && ref[ri] == i);
-				if (kept) {
-					if (inst[ri].position != pos[i]) same = false;
-					++ri;
-				}
-			}
-		}
-		char name[64];
-		snprintf(name, sizeof(name), "place.con.brute-bounded-%u", trial);
-		Check(same, name);
-		// Unbounded.
-		ConstraintVolume unvol;
-		unvol.spacing = 2.0f;
-		std::vector<RenderInstance> inst2 = instCopy;
-		std::vector<StableID> ids2 = idsCopy;
-		ApplyMinDistance(inst2, ids2, 2.0f, unvol);
-		std::vector<uint32_t> ref2 = BruteForceSurvivors(pos, idsCopy, 2.0f, unvol);
-		bool same2 = inst2.size() == ref2.size();
-		if (same2) {
-			size_t ri = 0;
-			for (size_t i = 0; i < pos.size() && same2; ++i) {
-				if (ri < ref2.size() && ref2[ri] == i) {
-					if (inst2[ri].position != pos[i]) same2 = false;
-					++ri;
-				}
-			}
-		}
-		snprintf(name, sizeof(name), "place.con.brute-unbounded-%u", trial);
-		Check(same2, name);
-	}
-	// Degenerate inputs.
-	{
-		std::vector<RenderInstance> empty;
-		std::vector<StableID> emptyIds;
-		ConstraintVolume vol;
-		ApplyMinDistance(empty, emptyIds, 2.0f, vol);
-		Check(empty.empty(), "place.con.brute-empty");
-	}
+    using namespace smvk::placement;
+    // Seeded pseudo-random point sets (SplitMix32 chain — hermetic, no <random>).
+    for (uint32_t trial = 0; trial < 6; ++trial) {
+        uint32_t s = 0xC0FFEEu + trial * 0x9e3779b9u;
+        auto rnd = [&]() {
+            s = SplitMix32(s + 0x85ebca6bu);
+            return (s >> 8) * (1.0f / 16777216.0f);
+        };
+        const size_t N = 120 + trial * 40;
+        std::vector<glm::vec3> pos;
+        std::vector<StableID> ids;
+        for (size_t i = 0; i < N; ++i) {
+            float x = rnd() * 40.0f, z = rnd() * 40.0f;
+            if (trial % 2 == 1 && i % 7 == 0) {
+                x += 500.0f;
+                z += 500.0f;
+            } // outsiders
+            pos.push_back(glm::vec3(x, 0.0f, z));
+            ids.push_back(MakeStableID(1000 + trial, 3, TileID{0, 0, 0}, 0, (uint32_t)i));
+        }
+        // Bounded.
+        ConstraintVolume vol;
+        vol.origin = glm::vec3(0, -64, 0);
+        vol.dimX = 22;
+        vol.dimY = 66;
+        vol.dimZ = 22;
+        vol.spacing = 2.0f;
+        std::vector<RenderInstance> inst;
+        for (auto& p : pos) {
+            RenderInstance in;
+            in.position = p;
+            in.scale = glm::vec3(1);
+            inst.push_back(in);
+        }
+        std::vector<RenderInstance> instCopy = inst;
+        std::vector<StableID> idsCopy = ids; // ApplyMinDistance compacts ids in parallel
+        ApplyMinDistance(inst, ids, 2.0f, vol);
+        std::vector<uint32_t> ref = BruteForceSurvivors(pos, idsCopy, 2.0f, vol);
+        bool same = inst.size() == ref.size();
+        if (same) {
+            // Both ascending-index ordered: compare positions directly.
+            size_t ri = 0;
+            for (size_t i = 0; i < pos.size() && same; ++i) {
+                bool kept = (ri < ref.size() && ref[ri] == i);
+                if (kept) {
+                    if (inst[ri].position != pos[i])
+                        same = false;
+                    ++ri;
+                }
+            }
+        }
+        char name[64];
+        snprintf(name, sizeof(name), "place.con.brute-bounded-%u", trial);
+        Check(same, name);
+        // Unbounded.
+        ConstraintVolume unvol;
+        unvol.spacing = 2.0f;
+        std::vector<RenderInstance> inst2 = instCopy;
+        std::vector<StableID> ids2 = idsCopy;
+        ApplyMinDistance(inst2, ids2, 2.0f, unvol);
+        std::vector<uint32_t> ref2 = BruteForceSurvivors(pos, idsCopy, 2.0f, unvol);
+        bool same2 = inst2.size() == ref2.size();
+        if (same2) {
+            size_t ri = 0;
+            for (size_t i = 0; i < pos.size() && same2; ++i) {
+                if (ri < ref2.size() && ref2[ri] == i) {
+                    if (inst2[ri].position != pos[i])
+                        same2 = false;
+                    ++ri;
+                }
+            }
+        }
+        snprintf(name, sizeof(name), "place.con.brute-unbounded-%u", trial);
+        Check(same2, name);
+    }
+    // Degenerate inputs.
+    {
+        std::vector<RenderInstance> empty;
+        std::vector<StableID> emptyIds;
+        ConstraintVolume vol;
+        ApplyMinDistance(empty, emptyIds, 2.0f, vol);
+        Check(empty.empty(), "place.con.brute-empty");
+    }
 }
 
 void TestDrawFeed() {
-	using namespace smvk::placement;
-	Check(sizeof(PlacementVsPush) == 32, "place.draw.push-32B");
-	Check(offsetof(PlacementVsPush, visible) == 0, "place.draw.visible-offset");
-	Check(offsetof(PlacementVsPush, instances) == 8, "place.draw.instances-offset");
-	Check(offsetof(PlacementVsPush, cullFlags) == 28, "place.draw.flags-offset");
-	Check(kPlacementVsPushOffset == 192, "place.draw.tail-offset");
-	// PR03 chain ABI: the bins slab, the indirect command, the cull push.
-	Check(sizeof(PlacementBinsGpu) == 128, "place.draw.bins-128B");
-	Check(sizeof(PlacementIndirectCmd) == 20
-		&& kPlacementIndirectStride == 20, "place.draw.indirect-20B");
-	Check(sizeof(PlacementCullPush) == 240, "place.draw.cull-push-240B");
-	Check(offsetof(PlacementCullPush, protoBounds) == 64
-		&& offsetof(PlacementCullPush, protoDist) == 192
-		&& offsetof(PlacementCullPush, camPos) == 224,
-		"place.draw.cull-push-tail");
-	Check(sizeof(PlacementScatterVisPush) == 48, "place.draw.scatter-vis-48B");
-	// The push-carried prototype table (PR1: draw-build owns the
-	// COMPLETE command - the immutable halves ride the push).
-	Check(sizeof(PlacementDrawBuildPush) == 128, "place.draw.build-push-128B");
-	Check(offsetof(PlacementDrawBuildPush, indexCount) == 32
-		&& offsetof(PlacementDrawBuildPush, firstIndex) == 64
-		&& offsetof(PlacementDrawBuildPush, vertexOffset) == 96,
-		"place.draw.build-push-table-offsets");
-	// FillCullPush: the cooked-mesh bounds -> conservative spheres, the
-	// species distances, the layer's scale bound.
-	{
-		PlacementSystem::LayerBinding lb;
-		lb.config.maxScale = 2.5f;
-		Prototype a; a.boundsMin = glm::vec3(-1, 0, -1); a.boundsMax = glm::vec3(1, 2, 1);
-		a.maxDrawDistance = 40.0f;
-		Prototype b; b.boundsMin = glm::vec3(-0.5f); b.boundsMax = glm::vec3(0.5f);
-		Prototype c; c.boundsMin = glm::vec3(-2, -2, -2); c.boundsMax = glm::vec3(2, 2, 2);
-		c.maxDrawDistance = 120.0f;
-		lb.prototypes.add(a); lb.prototypes.add(b); lb.prototypes.add(c);
-		PlacementCullPush cp;
-		FillCullPush(lb, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 2,
-			glm::vec3(7, 8, 9), kPlacementCullFrustum | kPlacementCullAlive, cp);
-		Check(cp.instances == 0x11 && cp.count == 0x22 && cp.mask == 0x33
-			&& cp.bins == 0x44 && cp.alive == 0x55 && cp.renderViews == 0x66,
-			"place.draw.cull-fill-bdas");
-		Check(cp.protoCount == 3 && cp.renderViewIndex == 2
-			&& cp.cullFlags == (kPlacementCullFrustum | kPlacementCullAlive),
-			"place.draw.cull-fill-flags");
-		Check(cp.protoBounds[0] == glm::vec4(0, 1, 0, glm::length(glm::vec3(1, 1, 1))),
-			"place.draw.cull-fill-sphere0");
-		Check(cp.protoBounds[1] == glm::vec4(0, 0, 0, glm::length(glm::vec3(0.5f))),
-			"place.draw.cull-fill-sphere1");
-		Check(cp.protoDist[0] == 40.0f && cp.protoDist[1] == 0.0f
-			&& cp.protoDist[2] == 120.0f, "place.draw.cull-fill-distances");
-		Check(cp.camPos == glm::vec3(7, 8, 9) && cp.maxInstanceScale == 2.5f,
-			"place.draw.cull-fill-view");
-	}
-	// Matrix convention: yaw=0 -> identity rotation + translation.
-	glm::mat4 m0 = ComposeInstanceMatrix(glm::vec3(1, 2, 3), 0.0f, glm::vec3(2));
-	Check(m0[3] == glm::vec4(1, 2, 3, 1), "place.draw.matrix-translation");
-	Check(std::abs(m0[0].x - 2.0f) < 1e-6f && std::abs(m0[1].y - 2.0f) < 1e-6f,
-		"place.draw.matrix-scale");
-	Check(std::abs(m0[0].z) < 1e-6f && std::abs(m0[2].x) < 1e-6f, "place.draw.matrix-yaw0");
-	// yaw=pi/2 rotates +X to -Z (right-handed RotY, matches the VS).
-	glm::mat4 m1 = ComposeInstanceMatrix(glm::vec3(0), 1.5707963f, glm::vec3(1));
-	Check(std::abs(m1[0].x) < 1e-5f && std::abs(m1[0].z + 1.0f) < 1e-5f,
-		"place.draw.matrix-yaw90");
-	// Round-trip through the VS formula implicitly: column-major layout.
-	Check(m1[3] == glm::vec4(0, 0, 0, 1), "place.draw.matrix-origin");
+    using namespace smvk::placement;
+    Check(sizeof(PlacementVsPush) == 32, "place.draw.push-32B");
+    Check(offsetof(PlacementVsPush, visible) == 0, "place.draw.visible-offset");
+    Check(offsetof(PlacementVsPush, instances) == 8, "place.draw.instances-offset");
+    Check(offsetof(PlacementVsPush, cullFlags) == 28, "place.draw.flags-offset");
+    Check(kPlacementVsPushOffset == 192, "place.draw.tail-offset");
+    // PR03 chain ABI: the bins slab, the indirect command, the cull push.
+    Check(sizeof(PlacementBinsGpu) == 128, "place.draw.bins-128B");
+    Check(sizeof(PlacementIndirectCmd) == 20 && kPlacementIndirectStride == 20,
+          "place.draw.indirect-20B");
+    Check(sizeof(PlacementCullPush) == 240, "place.draw.cull-push-240B");
+    Check(offsetof(PlacementCullPush, protoBounds) == 64 &&
+              offsetof(PlacementCullPush, protoDist) == 192 &&
+              offsetof(PlacementCullPush, camPos) == 224,
+          "place.draw.cull-push-tail");
+    Check(sizeof(PlacementScatterVisPush) == 48, "place.draw.scatter-vis-48B");
+    // The push-carried prototype table (PR1: draw-build owns the
+    // COMPLETE command - the immutable halves ride the push).
+    Check(sizeof(PlacementDrawBuildPush) == 128, "place.draw.build-push-128B");
+    Check(offsetof(PlacementDrawBuildPush, indexCount) == 32 &&
+              offsetof(PlacementDrawBuildPush, firstIndex) == 64 &&
+              offsetof(PlacementDrawBuildPush, vertexOffset) == 96,
+          "place.draw.build-push-table-offsets");
+    // FillCullPush: the cooked-mesh bounds -> conservative spheres, the
+    // species distances, the layer's scale bound.
+    {
+        PlacementSystem::LayerBinding lb;
+        lb.config.maxScale = 2.5f;
+        Prototype a;
+        a.boundsMin = glm::vec3(-1, 0, -1);
+        a.boundsMax = glm::vec3(1, 2, 1);
+        a.maxDrawDistance = 40.0f;
+        Prototype b;
+        b.boundsMin = glm::vec3(-0.5f);
+        b.boundsMax = glm::vec3(0.5f);
+        Prototype c;
+        c.boundsMin = glm::vec3(-2, -2, -2);
+        c.boundsMax = glm::vec3(2, 2, 2);
+        c.maxDrawDistance = 120.0f;
+        lb.prototypes.add(a);
+        lb.prototypes.add(b);
+        lb.prototypes.add(c);
+        PlacementCullPush cp;
+        FillCullPush(lb,
+                     0x11,
+                     0x22,
+                     0x33,
+                     0x44,
+                     0x55,
+                     0x66,
+                     2,
+                     glm::vec3(7, 8, 9),
+                     kPlacementCullFrustum | kPlacementCullAlive,
+                     cp);
+        Check(cp.instances == 0x11 && cp.count == 0x22 && cp.mask == 0x33 && cp.bins == 0x44 &&
+                  cp.alive == 0x55 && cp.renderViews == 0x66,
+              "place.draw.cull-fill-bdas");
+        Check(cp.protoCount == 3 && cp.renderViewIndex == 2 &&
+                  cp.cullFlags == (kPlacementCullFrustum | kPlacementCullAlive),
+              "place.draw.cull-fill-flags");
+        Check(cp.protoBounds[0] == glm::vec4(0, 1, 0, glm::length(glm::vec3(1, 1, 1))),
+              "place.draw.cull-fill-sphere0");
+        Check(cp.protoBounds[1] == glm::vec4(0, 0, 0, glm::length(glm::vec3(0.5f))),
+              "place.draw.cull-fill-sphere1");
+        Check(cp.protoDist[0] == 40.0f && cp.protoDist[1] == 0.0f && cp.protoDist[2] == 120.0f,
+              "place.draw.cull-fill-distances");
+        Check(cp.camPos == glm::vec3(7, 8, 9) && cp.maxInstanceScale == 2.5f,
+              "place.draw.cull-fill-view");
+    }
+    // Matrix convention: yaw=0 -> identity rotation + translation.
+    glm::mat4 m0 = ComposeInstanceMatrix(glm::vec3(1, 2, 3), 0.0f, glm::vec3(2));
+    Check(m0[3] == glm::vec4(1, 2, 3, 1), "place.draw.matrix-translation");
+    Check(std::abs(m0[0].x - 2.0f) < 1e-6f && std::abs(m0[1].y - 2.0f) < 1e-6f,
+          "place.draw.matrix-scale");
+    Check(std::abs(m0[0].z) < 1e-6f && std::abs(m0[2].x) < 1e-6f, "place.draw.matrix-yaw0");
+    // yaw=pi/2 rotates +X to -Z (right-handed RotY, matches the VS).
+    glm::mat4 m1 = ComposeInstanceMatrix(glm::vec3(0), 1.5707963f, glm::vec3(1));
+    Check(std::abs(m1[0].x) < 1e-5f && std::abs(m1[0].z + 1.0f) < 1e-5f, "place.draw.matrix-yaw90");
+    // Round-trip through the VS formula implicitly: column-major layout.
+    Check(m1[3] == glm::vec4(0, 0, 0, 1), "place.draw.matrix-origin");
 
-	// Multi-prototype tile: sorted runs, bounds, coarse cull.
-	GridDomain grid;
-	grid.origin = glm::vec3(0, 0, 0);
-	grid.extent = glm::vec2(64, 64);
-	grid.cellsX = 16; grid.cellsZ = 16;
-	PlacementSystem sys;
-	PlacementSystem::LayerBinding lb;
-	lb.programId = 55;
-	lb.program.graphSeed = 31337;
-	lb.program.nodeId = 1;
-	lb.program.instrs = { OpConst(0.9f) };
-	lb.program.acceptIndex = 0;
-	lb.domainKind = DomainKind::Grid;
-	lb.grid = &grid;
-	lb.config.candidatesPerTile = 1024;
-	Prototype p0; p0.weight = 1.0f;
-	Prototype p1; p1.weight = 1.0f;
-	Prototype p2; p2.weight = 1.0f;
-	lb.prototypes.add(p0); lb.prototypes.add(p1); lb.prototypes.add(p2);
-	sys.registerLayer(lb);
-	DependencyVersions deps;
-	TileID t{ 0, 0, 0 };
-	sys.generateTile(55, t, deps);
-	const PlacementTile* tile = sys.findTile(55, t);
-	Check(tile && !tile->instances.empty(), "place.draw.tile-nonempty");
-	// Sorted by (proto, StableID): protos non-decreasing.
-	bool sorted = true;
-	if (tile) {
-		for (size_t i = 1; i < tile->instances.size(); ++i)
-			if (tile->instances[i].prototypeId < tile->instances[i - 1].prototypeId)
-				{ sorted = false; break; }
-	}
-	Check(sorted, "place.draw.sorted-by-proto");
-	// Bounds enclose everything.
-	bool enclosed = true;
-	if (tile) {
-		for (auto& in : tile->instances) {
-			if (in.position.x < tile->boundsMin.x || in.position.x > tile->boundsMax.x
-				|| in.position.y < tile->boundsMin.y || in.position.y > tile->boundsMax.y
-				|| in.position.z < tile->boundsMin.z || in.position.z > tile->boundsMax.z)
-				{ enclosed = false; break; }
-		}
-	}
-	Check(enclosed, "place.draw.bounds-enclose");
-	// Collect: runs cover all instances, contiguous, proto-matching.
-	std::vector<TileDrawSet> sets;
-	CollectTileDrawSets(sys, 55, nullptr, sets);
-	Check(sets.size() == 1, "place.draw.one-set");
-	bool runsOk = false;
-	if (!sets.empty()) {
-		size_t total = 0;
-		runsOk = true;
-		for (auto& r : sets[0].runs) {
-			total += r.count;
-			for (uint32_t k = 0; k < r.count; ++k)
-				if (tile->instances[r.start + k].prototypeId != r.prototypeId)
-					runsOk = false;
-		}
-		runsOk = runsOk && total == tile->instances.size();
-		// Proto-ascending across runs.
-		for (size_t k = 1; k < sets[0].runs.size(); ++k)
-			if (sets[0].runs[k].prototypeId <= sets[0].runs[k - 1].prototypeId)
-				runsOk = false;
-	}
-	Check(runsOk, "place.draw.runs-cover");
-	// Coarse cull: rejecting test yields nothing; accepting yields the set.
-	std::vector<TileDrawSet> culled;
-	CollectTileDrawSets(sys, 55,
-		[](const glm::vec3&, float) { return false; }, culled);
-	Check(culled.empty(), "place.draw.coarse-cull-empty");
-	// aliveBDA passthrough (white-box: GPU-constrained tiles carry flag2).
-	const_cast<PlacementTile*>(tile)->aliveBDA = 0xDEAD;
-	std::vector<TileDrawSet> alive;
-	CollectTileDrawSets(sys, 55, nullptr, alive);
-	Check(!alive.empty() && alive[0].aliveBDA == 0xDEAD, "place.draw.alive-passthrough");
-	const_cast<PlacementTile*>(tile)->aliveBDA = 0;
-	// Radius sane: covers the 64m tile, not absurd.
-	Check(!alive.empty() && alive[0].radius > 30.0f && alive[0].radius < 100.0f,
-		"place.draw.radius-sane");
+    // Multi-prototype tile: sorted runs, bounds, coarse cull.
+    GridDomain grid;
+    grid.origin = glm::vec3(0, 0, 0);
+    grid.extent = glm::vec2(64, 64);
+    grid.cellsX = 16;
+    grid.cellsZ = 16;
+    PlacementSystem sys;
+    PlacementSystem::LayerBinding lb;
+    lb.programId = 55;
+    lb.program.graphSeed = 31337;
+    lb.program.nodeId = 1;
+    lb.program.instrs = {OpConst(0.9f)};
+    lb.program.acceptIndex = 0;
+    lb.domainKind = DomainKind::Grid;
+    lb.grid = &grid;
+    lb.config.candidatesPerTile = 1024;
+    Prototype p0;
+    p0.weight = 1.0f;
+    Prototype p1;
+    p1.weight = 1.0f;
+    Prototype p2;
+    p2.weight = 1.0f;
+    lb.prototypes.add(p0);
+    lb.prototypes.add(p1);
+    lb.prototypes.add(p2);
+    sys.registerLayer(lb);
+    DependencyVersions deps;
+    TileID t{0, 0, 0};
+    sys.generateTile(55, t, deps);
+    const PlacementTile* tile = sys.findTile(55, t);
+    Check(tile && !tile->instances.empty(), "place.draw.tile-nonempty");
+    // Sorted by (proto, StableID): protos non-decreasing.
+    bool sorted = true;
+    if (tile) {
+        for (size_t i = 1; i < tile->instances.size(); ++i)
+            if (tile->instances[i].prototypeId < tile->instances[i - 1].prototypeId) {
+                sorted = false;
+                break;
+            }
+    }
+    Check(sorted, "place.draw.sorted-by-proto");
+    // Bounds enclose everything.
+    bool enclosed = true;
+    if (tile) {
+        for (auto& in : tile->instances) {
+            if (in.position.x < tile->boundsMin.x || in.position.x > tile->boundsMax.x ||
+                in.position.y < tile->boundsMin.y || in.position.y > tile->boundsMax.y ||
+                in.position.z < tile->boundsMin.z || in.position.z > tile->boundsMax.z) {
+                enclosed = false;
+                break;
+            }
+        }
+    }
+    Check(enclosed, "place.draw.bounds-enclose");
+    // Collect: runs cover all instances, contiguous, proto-matching.
+    std::vector<TileDrawSet> sets;
+    CollectTileDrawSets(sys, 55, nullptr, sets);
+    Check(sets.size() == 1, "place.draw.one-set");
+    bool runsOk = false;
+    if (!sets.empty()) {
+        size_t total = 0;
+        runsOk = true;
+        for (auto& r : sets[0].runs) {
+            total += r.count;
+            for (uint32_t k = 0; k < r.count; ++k)
+                if (tile->instances[r.start + k].prototypeId != r.prototypeId)
+                    runsOk = false;
+        }
+        runsOk = runsOk && total == tile->instances.size();
+        // Proto-ascending across runs.
+        for (size_t k = 1; k < sets[0].runs.size(); ++k)
+            if (sets[0].runs[k].prototypeId <= sets[0].runs[k - 1].prototypeId)
+                runsOk = false;
+    }
+    Check(runsOk, "place.draw.runs-cover");
+    // Coarse cull: rejecting test yields nothing; accepting yields the set.
+    std::vector<TileDrawSet> culled;
+    CollectTileDrawSets(sys, 55, [](const glm::vec3&, float) { return false; }, culled);
+    Check(culled.empty(), "place.draw.coarse-cull-empty");
+    // aliveBDA passthrough (white-box: GPU-constrained tiles carry flag2).
+    const_cast<PlacementTile*>(tile)->aliveBDA = 0xDEAD;
+    std::vector<TileDrawSet> alive;
+    CollectTileDrawSets(sys, 55, nullptr, alive);
+    Check(!alive.empty() && alive[0].aliveBDA == 0xDEAD, "place.draw.alive-passthrough");
+    const_cast<PlacementTile*>(tile)->aliveBDA = 0;
+    // Radius sane: covers the 64m tile, not absurd.
+    Check(!alive.empty() && alive[0].radius > 30.0f && alive[0].radius < 100.0f,
+          "place.draw.radius-sane");
 }
 
-void TestTerrainUpload() {	using namespace smvk::placement;
-	TerrainParams p;
-	p.origin = glm::vec2(10, 20);
-	p.size = 32.0f;
-	p.res = 9;
-	p.height = 5.0f;
-	p.freq = 0.05f;
-	p.seed = 42;
-	smvk::StaticMeshUpload up;
-	Check(BuildTerrainUpload(p, up), "place.terr.upload-ok");
-	Check(up.vertices.size() == 81, "place.terr.vert-count");
-	Check(up.indices.size() == 8u * 8u * 6u, "place.terr.index-count");
-	Check(up.surfaces.size() == 1, "place.terr.single-surface");
-	Check(up.surfaces[0].firstIndex == 0 && up.surfaces[0].baseVertex == 0
-		&& up.surfaces[0].indexCount == up.indices.size(), "place.terr.surface-range");
-	// Local frame: x/z in [0,size].
-	bool frameOk = up.aabbMin.x == 0.0f && up.aabbMin.z == 0.0f
-		&& up.aabbMax.x == 32.0f && up.aabbMax.z == 32.0f;
-	Check(frameOk, "place.terr.local-frame");
-	Check(up.aabbMin.y >= 0.0f && up.aabbMax.y <= 5.0f, "place.terr.height-range");
-	// Normals unit, indices in range, UVs in [0,1].
-	bool blobOk = true;
-	for (const smvk::ImportStaticVertex& v : up.vertices) {
-		if (std::abs(glm::length(v.normal) - 1.0f) > 1e-4f) { blobOk = false; break; }
-		if (v.texCoord.x < 0.0f || v.texCoord.x > 1.0f
-			|| v.texCoord.y < 0.0f || v.texCoord.y > 1.0f) { blobOk = false; break; }
-	}
-	for (uint32_t ix : up.indices)
-		if (ix >= up.vertices.size()) { blobOk = false; break; }
-	Check(blobOk, "place.terr.blob-valid");
-	// Winding: first triangle's geometric normal points +Y (front from above).
-	{
-		const glm::vec3& a = up.vertices[up.indices[0]].pos;
-		const glm::vec3& b = up.vertices[up.indices[1]].pos;
-		const glm::vec3& c = up.vertices[up.indices[2]].pos;
-		const glm::vec3 fn = glm::cross(b - a, c - a);
-		Check(fn.y > 0.0f, "place.terr.winding-up");
-	}
-	// Determinism: identical positions on rebuild.
-	smvk::StaticMeshUpload up2;
-	Check(BuildTerrainUpload(p, up2), "place.terrain.rebuild-ok");
-	bool same = up2.vertices.size() == up.vertices.size();
-	if (same) {
-		for (size_t k = 0; k < up.vertices.size(); ++k)
-			if (up2.vertices[k].pos != up.vertices[k].pos) { same = false; break; }
-	}
-	Check(same, "place.terr.deterministic");
-	// Vertex heights match the heightfield at absolute coords (interior
-	// verts; the far edge clamps to avoid OOB reads by design).
-	HeightfieldData hf = BuildTerrainHeights(p);
-	bool match = true;
-	for (uint32_t z = 0; z + 1 < 9; ++z)
-		for (uint32_t x = 0; x + 1 < 9; ++x) {
-			const smvk::ImportStaticVertex& v = up.vertices[z * 9 + x];
-			const float h = hf.sampleHeight(10.0f + v.pos.x, 20.0f + v.pos.z);
-			if (std::abs(h - v.pos.y) > 1e-4f) { match = false; break; }
-		}
-	Check(match, "place.terr.matches-field");
+void TestTerrainUpload() {
+    using namespace smvk::placement;
+    TerrainParams p;
+    p.origin = glm::vec2(10, 20);
+    p.size = 32.0f;
+    p.res = 9;
+    p.height = 5.0f;
+    p.freq = 0.05f;
+    p.seed = 42;
+    smvk::StaticMeshUpload up;
+    Check(BuildTerrainUpload(p, up), "place.terr.upload-ok");
+    Check(up.vertices.size() == 81, "place.terr.vert-count");
+    Check(up.indices.size() == 8u * 8u * 6u, "place.terr.index-count");
+    Check(up.surfaces.size() == 1, "place.terr.single-surface");
+    Check(up.surfaces[0].firstIndex == 0 && up.surfaces[0].baseVertex == 0 &&
+              up.surfaces[0].indexCount == up.indices.size(),
+          "place.terr.surface-range");
+    // Local frame: x/z in [0,size].
+    bool frameOk = up.aabbMin.x == 0.0f && up.aabbMin.z == 0.0f && up.aabbMax.x == 32.0f &&
+                   up.aabbMax.z == 32.0f;
+    Check(frameOk, "place.terr.local-frame");
+    Check(up.aabbMin.y >= 0.0f && up.aabbMax.y <= 5.0f, "place.terr.height-range");
+    // Normals unit, indices in range, UVs in [0,1].
+    bool blobOk = true;
+    for (const smvk::ImportStaticVertex& v : up.vertices) {
+        if (std::abs(glm::length(v.normal) - 1.0f) > 1e-4f) {
+            blobOk = false;
+            break;
+        }
+        if (v.texCoord.x < 0.0f || v.texCoord.x > 1.0f || v.texCoord.y < 0.0f ||
+            v.texCoord.y > 1.0f) {
+            blobOk = false;
+            break;
+        }
+    }
+    for (uint32_t ix : up.indices)
+        if (ix >= up.vertices.size()) {
+            blobOk = false;
+            break;
+        }
+    Check(blobOk, "place.terr.blob-valid");
+    // Winding: first triangle's geometric normal points +Y (front from above).
+    {
+        const glm::vec3& a = up.vertices[up.indices[0]].pos;
+        const glm::vec3& b = up.vertices[up.indices[1]].pos;
+        const glm::vec3& c = up.vertices[up.indices[2]].pos;
+        const glm::vec3 fn = glm::cross(b - a, c - a);
+        Check(fn.y > 0.0f, "place.terr.winding-up");
+    }
+    // Determinism: identical positions on rebuild.
+    smvk::StaticMeshUpload up2;
+    Check(BuildTerrainUpload(p, up2), "place.terrain.rebuild-ok");
+    bool same = up2.vertices.size() == up.vertices.size();
+    if (same) {
+        for (size_t k = 0; k < up.vertices.size(); ++k)
+            if (up2.vertices[k].pos != up.vertices[k].pos) {
+                same = false;
+                break;
+            }
+    }
+    Check(same, "place.terr.deterministic");
+    // Vertex heights match the heightfield at absolute coords (interior
+    // verts; the far edge clamps to avoid OOB reads by design).
+    HeightfieldData hf = BuildTerrainHeights(p);
+    bool match = true;
+    for (uint32_t z = 0; z + 1 < 9; ++z)
+        for (uint32_t x = 0; x + 1 < 9; ++x) {
+            const smvk::ImportStaticVertex& v = up.vertices[z * 9 + x];
+            const float h = hf.sampleHeight(10.0f + v.pos.x, 20.0f + v.pos.z);
+            if (std::abs(h - v.pos.y) > 1e-4f) {
+                match = false;
+                break;
+            }
+        }
+    Check(match, "place.terr.matches-field");
 }
 
 void TestTerrainGroups() {
-	using namespace smvk::placement;
-	// 64m, 65 samples, 2x2 tiles: each tile spans 32 intervals; tile 0
-	// covers samples [0..32], tile 1 [32..64] — shared edge sample.
-	TerrainGroupData g;
-	g.params.origin = glm::vec2(10, 20);
-	g.params.size = 64.0f;
-	g.params.res = 65;
-	g.params.height = 5.0f;
-	g.params.freq = 0.05f;
-	g.params.seed = 42;
-	g.tilesX = 2;
-	g.tilesZ = 2;
-	g.heights = BuildTerrainHeights(g.params);
-	uint32_t x0, x1, z0, z1;
-	TerrainTileRange(g, 0, 0, x0, x1, z0, z1);
-	Check(x0 == 0 && x1 == 32 && z0 == 0 && z1 == 32, "place.tgroup.range00");
-	TerrainTileRange(g, 1, 1, x0, x1, z0, z1);
-	Check(x0 == 32 && x1 == 64 && z0 == 32 && z1 == 64, "place.tgroup.range11");
-	// Edge continuity: tile00's last COLUMN (global x=32) matches tile
-	// (1,0)'s first column — same global samples => identical heights
-	// and normals across the shared border.
-	smvk::StaticMeshUpload t00, t10;
-	Check(BuildTerrainTileUpload(g, 0, 0, t00), "place.tgroup.upload00");
-	Check(BuildTerrainTileUpload(g, 1, 0, t10), "place.tgroup.upload10");
-	Check(t00.vertices.size() == 33u * 33u, "place.tgroup.tile-verts");
-	Check(t00.aabbMin.x == 0.0f && t00.aabbMax.x == 32.0f
-		&& t00.aabbMin.z == 0.0f && t00.aabbMax.z == 32.0f,
-		"place.tgroup.tile-frame");
-	bool edge = true;
-	for (uint32_t k = 0; k < 33; ++k) {
-		const auto& a = t00.vertices[k * 33 + 32]; // x=32 edge of tile00
-		const auto& b = t10.vertices[k * 33 + 0];  // x=32 edge of tile10
-		if (a.pos.y != b.pos.y || a.normal != b.normal) { edge = false; break; }
-	}
-	Check(edge, "place.tgroup.edge-continuity");
-	// Degenerate tile index rejected.
-	smvk::StaticMeshUpload dummy;
-	Check(!BuildTerrainTileUpload(g, 2, 0, dummy), "place.tgroup.bad-tile");
-	// 1x1 group == legacy single-node upload (same vertex count/AABB).
-	smvk::StaticMeshUpload single, t11;
-	Check(BuildTerrainTileUpload(g, 1, 1, t11), "place.tgroup.upload11");
-	Check(BuildTerrainUpload(g.params, single), "place.tgroup.single-ok");
-	Check(single.vertices.size() == 65u * 65u, "place.tgroup.single-verts");
+    using namespace smvk::placement;
+    // 64m, 65 samples, 2x2 tiles: each tile spans 32 intervals; tile 0
+    // covers samples [0..32], tile 1 [32..64] — shared edge sample.
+    TerrainGroupData g;
+    g.params.origin = glm::vec2(10, 20);
+    g.params.size = 64.0f;
+    g.params.res = 65;
+    g.params.height = 5.0f;
+    g.params.freq = 0.05f;
+    g.params.seed = 42;
+    g.tilesX = 2;
+    g.tilesZ = 2;
+    g.heights = BuildTerrainHeights(g.params);
+    uint32_t x0, x1, z0, z1;
+    TerrainTileRange(g, 0, 0, x0, x1, z0, z1);
+    Check(x0 == 0 && x1 == 32 && z0 == 0 && z1 == 32, "place.tgroup.range00");
+    TerrainTileRange(g, 1, 1, x0, x1, z0, z1);
+    Check(x0 == 32 && x1 == 64 && z0 == 32 && z1 == 64, "place.tgroup.range11");
+    // Edge continuity: tile00's last COLUMN (global x=32) matches tile
+    // (1,0)'s first column — same global samples => identical heights
+    // and normals across the shared border.
+    smvk::StaticMeshUpload t00, t10;
+    Check(BuildTerrainTileUpload(g, 0, 0, t00), "place.tgroup.upload00");
+    Check(BuildTerrainTileUpload(g, 1, 0, t10), "place.tgroup.upload10");
+    Check(t00.vertices.size() == 33u * 33u, "place.tgroup.tile-verts");
+    Check(t00.aabbMin.x == 0.0f && t00.aabbMax.x == 32.0f && t00.aabbMin.z == 0.0f &&
+              t00.aabbMax.z == 32.0f,
+          "place.tgroup.tile-frame");
+    bool edge = true;
+    for (uint32_t k = 0; k < 33; ++k) {
+        const auto& a = t00.vertices[k * 33 + 32]; // x=32 edge of tile00
+        const auto& b = t10.vertices[k * 33 + 0];  // x=32 edge of tile10
+        if (a.pos.y != b.pos.y || a.normal != b.normal) {
+            edge = false;
+            break;
+        }
+    }
+    Check(edge, "place.tgroup.edge-continuity");
+    // Degenerate tile index rejected.
+    smvk::StaticMeshUpload dummy;
+    Check(!BuildTerrainTileUpload(g, 2, 0, dummy), "place.tgroup.bad-tile");
+    // 1x1 group == legacy single-node upload (same vertex count/AABB).
+    smvk::StaticMeshUpload single, t11;
+    Check(BuildTerrainTileUpload(g, 1, 1, t11), "place.tgroup.upload11");
+    Check(BuildTerrainUpload(g.params, single), "place.tgroup.single-ok");
+    Check(single.vertices.size() == 65u * 65u, "place.tgroup.single-verts");
 
-	// ---- the NON-DIVISIBLE split: 64 samples / 64 m / 4x4 tiles ----
-	// 63 intervals do NOT divide by 4: the integer sample split puts
-	// tile 0's edge at sample 15 (= 15.238 m) while the even metric
-	// split would put tile 1 at 16 m — a 0.76 m GAP. TerrainTileOrigin
-	// (position by actual first sample) must seam every border exactly.
-	TerrainGroupData g4;
-	g4.params.origin = glm::vec2(10, 20);
-	g4.params.size = 64.0f;
-	g4.params.res = 64;
-	g4.params.height = 5.0f;
-	g4.params.freq = 0.05f;
-	g4.params.seed = 43;
-	g4.tilesX = 4;
-	g4.tilesZ = 4;
-	g4.heights = BuildTerrainHeights(g4.params);
-	const float sp4 = g4.heights.spacing.x; // 64/63
-	TerrainTileRange(g4, 0, 0, x0, x1, z0, z1);
-	Check(x0 == 0 && x1 == 15, "place.tgroup.nondiv-range0"); // 63/4=15
-	TerrainTileRange(g4, 1, 0, x0, x1, z0, z1);
-	Check(x0 == 15 && x1 == 31, "place.tgroup.nondiv-range1"); // 126/4=31
-	TerrainTileRange(g4, 3, 3, x0, x1, z0, z1);
-	Check(x0 == 47 && x1 == 63 && z0 == 47 && z1 == 63,
-		"place.tgroup.nondiv-range3");
-	const uint32_t hz4 = 15u - 0u + 1u; // every tz=0 tile spans z [0..15]
-	// World-space seam contract: for every internal border, tile tx's
-	// RIGHT edge coincides EXACTLY with tile tx+1's LEFT edge (no gap,
-	// no overlap), and the shared boundary VERTICES match (height +
-	// normal + world XZ). Vertex world pos = groupOrigin + tileOrigin
-	// + local — the caller positioning contract.
-	{
-		smvk::StaticMeshUpload t[4];
-		glm::vec2 org[4];
-		uint32_t w[4];
-		bool built = true;
-		for (uint32_t tx = 0; tx < 4; ++tx) {
-			built = built && BuildTerrainTileUpload(g4, tx, 0, t[tx]);
-			org[tx] = TerrainTileOrigin(g4, tx, 0);
-			uint32_t rx0, rx1, rz0, rz1;
-			TerrainTileRange(g4, tx, 0, rx0, rx1, rz0, rz1);
-			w[tx] = rx1 - rx0 + 1;
-		}
-		Check(built, "place.tgroup.nondiv-builds");
-		Check(org[0] == glm::vec2(0.0f, 0.0f), "place.tgroup.nondiv-origin0");
-		// The seam-gap regression: the even split would be 16 m; the
-		// sample-true offset is 15 * 64/63 ~= 15.238 m.
-		Check(std::abs(org[1].x - 15.0f * sp4) < 1e-5f
-			&& std::abs(org[1].x - 16.0f) > 0.5f,
-			"place.tgroup.nondiv-origin-sample-true");
-		bool seam = true;
-		for (uint32_t tx = 0; tx + 1 < 4 && seam; ++tx) {
-			// Edge coincidence: prev tile's max X == next tile's origin.
-			if (std::abs((org[tx].x + t[tx].aabbMax.x) - org[tx + 1].x)
-				> 1e-5f) {
-				seam = false; break;
-			}
-			// Boundary vertices: prev's last column vs next's first
-			// column (same global samples -> identical heights/normals,
-			// identical world XZ after the origin offset).
-			for (uint32_t k = 0; k < hz4; ++k) {
-				const auto& a = t[tx].vertices[size_t(k) * w[tx] + w[tx] - 1];
-				const auto& b = t[tx + 1].vertices[size_t(k) * w[tx + 1]];
-				if (a.pos.y != b.pos.y || a.normal != b.normal
-					|| std::abs((org[tx].x + a.pos.x)
-						- (org[tx + 1].x + b.pos.x)) > 1e-5f) {
-					seam = false; break;
-				}
-			}
-		}
-		Check(seam, "place.tgroup.nondiv-x-seam");
-		// Same contract along Z (tiles (0,tz) vs (0,tz+1)).
-		bool seamZ = true;
-		for (uint32_t tz = 0; tz + 1 < 4 && seamZ; ++tz) {
-			smvk::StaticMeshUpload za, zb;
-			if (!BuildTerrainTileUpload(g4, 0, tz, za)
-				|| !BuildTerrainTileUpload(g4, 0, tz + 1, zb)) {
-				seamZ = false; break;
-			}
-			const glm::vec2 oa = TerrainTileOrigin(g4, 0, tz);
-			const glm::vec2 ob = TerrainTileOrigin(g4, 0, tz + 1);
-			if (std::abs((oa.y + za.aabbMax.z) - ob.y) > 1e-5f) {
-				seamZ = false; break;
-			}
-		}
-		Check(seamZ, "place.tgroup.nondiv-z-seam");
-		// The full group span is covered exactly: [0, size] on both axes.
-		smvk::StaticMeshUpload last;
-		Check(BuildTerrainTileUpload(g4, 3, 3, last), "place.tgroup.nondiv-last");
-		const glm::vec2 lastOrg = TerrainTileOrigin(g4, 3, 3);
-		Check(std::abs(lastOrg.x + last.aabbMax.x - 64.0f) < 1e-4f
-			&& std::abs(lastOrg.y + last.aabbMax.z - 64.0f) < 1e-4f,
-			"place.tgroup.nondiv-full-span");
-	}
+    // ---- the NON-DIVISIBLE split: 64 samples / 64 m / 4x4 tiles ----
+    // 63 intervals do NOT divide by 4: the integer sample split puts
+    // tile 0's edge at sample 15 (= 15.238 m) while the even metric
+    // split would put tile 1 at 16 m — a 0.76 m GAP. TerrainTileOrigin
+    // (position by actual first sample) must seam every border exactly.
+    TerrainGroupData g4;
+    g4.params.origin = glm::vec2(10, 20);
+    g4.params.size = 64.0f;
+    g4.params.res = 64;
+    g4.params.height = 5.0f;
+    g4.params.freq = 0.05f;
+    g4.params.seed = 43;
+    g4.tilesX = 4;
+    g4.tilesZ = 4;
+    g4.heights = BuildTerrainHeights(g4.params);
+    const float sp4 = g4.heights.spacing.x; // 64/63
+    TerrainTileRange(g4, 0, 0, x0, x1, z0, z1);
+    Check(x0 == 0 && x1 == 15, "place.tgroup.nondiv-range0"); // 63/4=15
+    TerrainTileRange(g4, 1, 0, x0, x1, z0, z1);
+    Check(x0 == 15 && x1 == 31, "place.tgroup.nondiv-range1"); // 126/4=31
+    TerrainTileRange(g4, 3, 3, x0, x1, z0, z1);
+    Check(x0 == 47 && x1 == 63 && z0 == 47 && z1 == 63, "place.tgroup.nondiv-range3");
+    const uint32_t hz4 = 15u - 0u + 1u; // every tz=0 tile spans z [0..15]
+    // World-space seam contract: for every internal border, tile tx's
+    // RIGHT edge coincides EXACTLY with tile tx+1's LEFT edge (no gap,
+    // no overlap), and the shared boundary VERTICES match (height +
+    // normal + world XZ). Vertex world pos = groupOrigin + tileOrigin
+    // + local — the caller positioning contract.
+    {
+        smvk::StaticMeshUpload t[4];
+        glm::vec2 org[4];
+        uint32_t w[4];
+        bool built = true;
+        for (uint32_t tx = 0; tx < 4; ++tx) {
+            built = built && BuildTerrainTileUpload(g4, tx, 0, t[tx]);
+            org[tx] = TerrainTileOrigin(g4, tx, 0);
+            uint32_t rx0, rx1, rz0, rz1;
+            TerrainTileRange(g4, tx, 0, rx0, rx1, rz0, rz1);
+            w[tx] = rx1 - rx0 + 1;
+        }
+        Check(built, "place.tgroup.nondiv-builds");
+        Check(org[0] == glm::vec2(0.0f, 0.0f), "place.tgroup.nondiv-origin0");
+        // The seam-gap regression: the even split would be 16 m; the
+        // sample-true offset is 15 * 64/63 ~= 15.238 m.
+        Check(std::abs(org[1].x - 15.0f * sp4) < 1e-5f && std::abs(org[1].x - 16.0f) > 0.5f,
+              "place.tgroup.nondiv-origin-sample-true");
+        bool seam = true;
+        for (uint32_t tx = 0; tx + 1 < 4 && seam; ++tx) {
+            // Edge coincidence: prev tile's max X == next tile's origin.
+            if (std::abs((org[tx].x + t[tx].aabbMax.x) - org[tx + 1].x) > 1e-5f) {
+                seam = false;
+                break;
+            }
+            // Boundary vertices: prev's last column vs next's first
+            // column (same global samples -> identical heights/normals,
+            // identical world XZ after the origin offset).
+            for (uint32_t k = 0; k < hz4; ++k) {
+                const auto& a = t[tx].vertices[size_t(k) * w[tx] + w[tx] - 1];
+                const auto& b = t[tx + 1].vertices[size_t(k) * w[tx + 1]];
+                if (a.pos.y != b.pos.y || a.normal != b.normal ||
+                    std::abs((org[tx].x + a.pos.x) - (org[tx + 1].x + b.pos.x)) > 1e-5f) {
+                    seam = false;
+                    break;
+                }
+            }
+        }
+        Check(seam, "place.tgroup.nondiv-x-seam");
+        // Same contract along Z (tiles (0,tz) vs (0,tz+1)).
+        bool seamZ = true;
+        for (uint32_t tz = 0; tz + 1 < 4 && seamZ; ++tz) {
+            smvk::StaticMeshUpload za, zb;
+            if (!BuildTerrainTileUpload(g4, 0, tz, za) ||
+                !BuildTerrainTileUpload(g4, 0, tz + 1, zb)) {
+                seamZ = false;
+                break;
+            }
+            const glm::vec2 oa = TerrainTileOrigin(g4, 0, tz);
+            const glm::vec2 ob = TerrainTileOrigin(g4, 0, tz + 1);
+            if (std::abs((oa.y + za.aabbMax.z) - ob.y) > 1e-5f) {
+                seamZ = false;
+                break;
+            }
+        }
+        Check(seamZ, "place.tgroup.nondiv-z-seam");
+        // The full group span is covered exactly: [0, size] on both axes.
+        smvk::StaticMeshUpload last;
+        Check(BuildTerrainTileUpload(g4, 3, 3, last), "place.tgroup.nondiv-last");
+        const glm::vec2 lastOrg = TerrainTileOrigin(g4, 3, 3);
+        Check(std::abs(lastOrg.x + last.aabbMax.x - 64.0f) < 1e-4f &&
+                  std::abs(lastOrg.y + last.aabbMax.z - 64.0f) < 1e-4f,
+              "place.tgroup.nondiv-full-span");
+    }
 
-	// ---- UNEQUAL X/Z tile counts: 2x3 over 65 samples ----
-	{
-		TerrainGroupData gu;
-		gu.params = g.params; // 64 m, 65 samples, seed 42
-		gu.heights = BuildTerrainHeights(gu.params);
-		gu.tilesX = 2; // 64/2 = 32 (divisible)
-		gu.tilesZ = 3; // 64/3 -> 21|21|22 intervals (NOT divisible)
-		bool seam = true;
-		for (uint32_t tz = 0; tz + 1 < 3 && seam; ++tz) {
-			smvk::StaticMeshUpload za, zb;
-			if (!BuildTerrainTileUpload(gu, 0, tz, za)
-				|| !BuildTerrainTileUpload(gu, 0, tz + 1, zb)) {
-				seam = false; break;
-			}
-			const glm::vec2 oa = TerrainTileOrigin(gu, 0, tz);
-			const glm::vec2 ob = TerrainTileOrigin(gu, 0, tz + 1);
-			if (std::abs((oa.y + za.aabbMax.z) - ob.y) > 1e-5f)
-				seam = false;
-		}
-		Check(seam, "place.tgroup.unequal-z-seam");
-	}
+    // ---- UNEQUAL X/Z tile counts: 2x3 over 65 samples ----
+    {
+        TerrainGroupData gu;
+        gu.params = g.params; // 64 m, 65 samples, seed 42
+        gu.heights = BuildTerrainHeights(gu.params);
+        gu.tilesX = 2; // 64/2 = 32 (divisible)
+        gu.tilesZ = 3; // 64/3 -> 21|21|22 intervals (NOT divisible)
+        bool seam = true;
+        for (uint32_t tz = 0; tz + 1 < 3 && seam; ++tz) {
+            smvk::StaticMeshUpload za, zb;
+            if (!BuildTerrainTileUpload(gu, 0, tz, za) ||
+                !BuildTerrainTileUpload(gu, 0, tz + 1, zb)) {
+                seam = false;
+                break;
+            }
+            const glm::vec2 oa = TerrainTileOrigin(gu, 0, tz);
+            const glm::vec2 ob = TerrainTileOrigin(gu, 0, tz + 1);
+            if (std::abs((oa.y + za.aabbMax.z) - ob.y) > 1e-5f)
+                seam = false;
+        }
+        Check(seam, "place.tgroup.unequal-z-seam");
+    }
 
-	// ---- MINIMUM resolutions: degenerate splits are rejected ----
-	{
-		TerrainGroupData gm;
-		gm.params.size = 64.0f;
-		gm.params.res = 2; // ONE interval: only a 1x1 split is valid
-		gm.heights = BuildTerrainHeights(gm.params);
-		smvk::StaticMeshUpload up;
-		gm.tilesX = 1; gm.tilesZ = 1;
-		Check(BuildTerrainTileUpload(gm, 0, 0, up)
-			&& up.vertices.size() == 4u, "place.tgroup.min-res-1x1");
-		Check(up.vertices[0].texCoord == glm::vec2(0.0f, 0.0f)
-			&& up.vertices[3].texCoord == glm::vec2(1.0f, 1.0f),
-			"place.tgroup.min-res-uvs");
-		gm.tilesX = 2; // 2 tiles > 1 interval
-		Check(!BuildTerrainTileUpload(gm, 0, 0, up),
-			"place.tgroup.min-res-reject-2x");
-		gm.tilesX = 1; gm.tilesZ = 2;
-		Check(!BuildTerrainTileUpload(gm, 0, 0, up),
-			"place.tgroup.min-res-reject-2z");
-		// 16 tiles need >= 16 intervals: res 16 (15) rejects, res 17 fits.
-		TerrainGroupData g16;
-		g16.params.size = 64.0f;
-		g16.params.res = 16;
-		g16.heights = BuildTerrainHeights(g16.params);
-		g16.tilesX = 16; g16.tilesZ = 1;
-		Check(!BuildTerrainTileUpload(g16, 0, 0, up),
-			"place.tgroup.tiles-exceed-intervals");
-		g16.params.res = 17;
-		g16.heights = BuildTerrainHeights(g16.params);
-		Check(BuildTerrainTileUpload(g16, 0, 0, up),
-			"place.tgroup.tiles-fit-intervals");
-	}
+    // ---- MINIMUM resolutions: degenerate splits are rejected ----
+    {
+        TerrainGroupData gm;
+        gm.params.size = 64.0f;
+        gm.params.res = 2; // ONE interval: only a 1x1 split is valid
+        gm.heights = BuildTerrainHeights(gm.params);
+        smvk::StaticMeshUpload up;
+        gm.tilesX = 1;
+        gm.tilesZ = 1;
+        Check(BuildTerrainTileUpload(gm, 0, 0, up) && up.vertices.size() == 4u,
+              "place.tgroup.min-res-1x1");
+        Check(up.vertices[0].texCoord == glm::vec2(0.0f, 0.0f) &&
+                  up.vertices[3].texCoord == glm::vec2(1.0f, 1.0f),
+              "place.tgroup.min-res-uvs");
+        gm.tilesX = 2; // 2 tiles > 1 interval
+        Check(!BuildTerrainTileUpload(gm, 0, 0, up), "place.tgroup.min-res-reject-2x");
+        gm.tilesX = 1;
+        gm.tilesZ = 2;
+        Check(!BuildTerrainTileUpload(gm, 0, 0, up), "place.tgroup.min-res-reject-2z");
+        // 16 tiles need >= 16 intervals: res 16 (15) rejects, res 17 fits.
+        TerrainGroupData g16;
+        g16.params.size = 64.0f;
+        g16.params.res = 16;
+        g16.heights = BuildTerrainHeights(g16.params);
+        g16.tilesX = 16;
+        g16.tilesZ = 1;
+        Check(!BuildTerrainTileUpload(g16, 0, 0, up), "place.tgroup.tiles-exceed-intervals");
+        g16.params.res = 17;
+        g16.heights = BuildTerrainHeights(g16.params);
+        Check(BuildTerrainTileUpload(g16, 0, 0, up), "place.tgroup.tiles-fit-intervals");
+    }
 }
 
 void TestTerrainBrush() {
-	using namespace smvk::placement;
-	// Flat field: deterministic raise/flatten/smooth checks.
-	TerrainGroupData g;
-	g.params.origin = glm::vec2(0, 0);
-	g.params.size = 64.0f;
-	g.params.res = 65;
-	g.tilesX = 2;
-	g.tilesZ = 2;
-	g.heights.width = 65;
-	g.heights.height = 65;
-	g.heights.origin = glm::vec3(0, 0, 0);
-	g.heights.spacing = glm::vec2(1.0f, 1.0f);
-	g.heights.heights.assign(65 * 65, 0.0f);
-	// Raise at center: center rises by strength, far samples untouched.
-	TerrainBrushStamp(g, TerrainBrushOp::Raise, 32.0f, 32.0f, 4.0f, 1.0f, 0.0f);
-	Check(g.heights.heights[32 * 65 + 32] == 1.0f, "place.brush.raise-center");
-	Check(g.heights.heights[0] == 0.0f, "place.brush.raise-far-untouched");
-	// Undo box round-trip restores the pre-stamp state exactly.
-	uint32_t x0, x1, z0, z1;
-	TerrainBrushBox(g, 32.0f, 32.0f, 4.0f, x0, x1, z0, z1);
-	std::vector<float> box;
-	uint32_t bw, bh;
-	TerrainCopyBox(g, x0, x1, z0, z1, box, bw, bh);
-	for (float& v : box) v = 0.0f; // "before" was all-zero
-	TerrainWriteBox(g, x0, x1, z0, z1, box, bw);
-	Check(g.heights.heights[32 * 65 + 32] == 0.0f, "place.brush.undo-restores");
-	// Determinism: identical stamps from identical starts.
-	TerrainGroupData a = g, b = g;
-	TerrainBrushStamp(a, TerrainBrushOp::Raise, 10.5f, 12.25f, 6.0f, 2.0f, 0.0f);
-	TerrainBrushStamp(b, TerrainBrushOp::Raise, 10.5f, 12.25f, 6.0f, 2.0f, 0.0f);
-	bool same = a.heights.heights == b.heights.heights;
-	Check(same, "place.brush.deterministic");
-	// Flatten pulls toward the target.
-	TerrainBrushStamp(a, TerrainBrushOp::Flatten, 10.5f, 12.25f, 6.0f, 1.0f, 0.0f);
-	const float after = a.heights.heights[12 * 65 + 10];
-	Check(after > 0.0f && after < 2.0f, "place.brush.flatten-blends");
-	// Smooth reduces the max slope magnitude (3x3 averaging).
-	TerrainGroupData s;
-	s.params = g.params;
-	s.heights = g.heights;
-	s.heights.heights.assign(65 * 65, 0.0f);
-	s.heights.heights[32 * 65 + 32] = 10.0f; // spike
-	TerrainBrushStamp(s, TerrainBrushOp::Smooth, 32.0f, 32.0f, 3.0f, 1.0f, 0.0f);
-	Check(s.heights.heights[32 * 65 + 32] < 10.0f, "place.brush.smooth-softens");
-	Check(s.heights.heights[32 * 65 + 31] > 0.0f, "place.brush.smooth-spreads");
-	// Touched tiles: a stamp in the NW quadrant of a 2x2 split touches
-	// exactly tile (0,0).
-	std::vector<uint32_t> tiles;
-	TerrainBrushTouchedTiles(0, 8, 0, 8, 65, 2, 2, tiles);
-	Check(tiles.size() == 1 && tiles[0] == 0u, "place.brush.tiles-one");
-	// Across both shared edges: touches all four tiles of the 2x2 split.
-	TerrainBrushTouchedTiles(30, 34, 30, 34, 65, 2, 2, tiles);
-	Check(tiles.size() == 4, "place.brush.tiles-across-edge");
-	bool hasAll = tiles[0] == 0u
-		&& tiles[1] == (1u | (0u << 16))
-		&& tiles[2] == (0u | (1u << 16))
-		&& tiles[3] == (1u | (1u << 16));
-	Check(hasAll, "place.brush.tiles-packed");
+    using namespace smvk::placement;
+    // Flat field: deterministic raise/flatten/smooth checks.
+    TerrainGroupData g;
+    g.params.origin = glm::vec2(0, 0);
+    g.params.size = 64.0f;
+    g.params.res = 65;
+    g.tilesX = 2;
+    g.tilesZ = 2;
+    g.heights.width = 65;
+    g.heights.height = 65;
+    g.heights.origin = glm::vec3(0, 0, 0);
+    g.heights.spacing = glm::vec2(1.0f, 1.0f);
+    g.heights.heights.assign(65 * 65, 0.0f);
+    // Raise at center: center rises by strength, far samples untouched.
+    TerrainBrushStamp(g, TerrainBrushOp::Raise, 32.0f, 32.0f, 4.0f, 1.0f, 0.0f);
+    Check(g.heights.heights[32 * 65 + 32] == 1.0f, "place.brush.raise-center");
+    Check(g.heights.heights[0] == 0.0f, "place.brush.raise-far-untouched");
+    // Undo box round-trip restores the pre-stamp state exactly.
+    uint32_t x0, x1, z0, z1;
+    TerrainBrushBox(g, 32.0f, 32.0f, 4.0f, x0, x1, z0, z1);
+    std::vector<float> box;
+    uint32_t bw, bh;
+    TerrainCopyBox(g, x0, x1, z0, z1, box, bw, bh);
+    for (float& v : box)
+        v = 0.0f; // "before" was all-zero
+    TerrainWriteBox(g, x0, x1, z0, z1, box, bw);
+    Check(g.heights.heights[32 * 65 + 32] == 0.0f, "place.brush.undo-restores");
+    // Determinism: identical stamps from identical starts.
+    TerrainGroupData a = g, b = g;
+    TerrainBrushStamp(a, TerrainBrushOp::Raise, 10.5f, 12.25f, 6.0f, 2.0f, 0.0f);
+    TerrainBrushStamp(b, TerrainBrushOp::Raise, 10.5f, 12.25f, 6.0f, 2.0f, 0.0f);
+    bool same = a.heights.heights == b.heights.heights;
+    Check(same, "place.brush.deterministic");
+    // Flatten pulls toward the target.
+    TerrainBrushStamp(a, TerrainBrushOp::Flatten, 10.5f, 12.25f, 6.0f, 1.0f, 0.0f);
+    const float after = a.heights.heights[12 * 65 + 10];
+    Check(after > 0.0f && after < 2.0f, "place.brush.flatten-blends");
+    // Smooth reduces the max slope magnitude (3x3 averaging).
+    TerrainGroupData s;
+    s.params = g.params;
+    s.heights = g.heights;
+    s.heights.heights.assign(65 * 65, 0.0f);
+    s.heights.heights[32 * 65 + 32] = 10.0f; // spike
+    TerrainBrushStamp(s, TerrainBrushOp::Smooth, 32.0f, 32.0f, 3.0f, 1.0f, 0.0f);
+    Check(s.heights.heights[32 * 65 + 32] < 10.0f, "place.brush.smooth-softens");
+    Check(s.heights.heights[32 * 65 + 31] > 0.0f, "place.brush.smooth-spreads");
+    // Touched tiles: a stamp in the NW quadrant of a 2x2 split touches
+    // exactly tile (0,0).
+    std::vector<uint32_t> tiles;
+    TerrainBrushTouchedTiles(0, 8, 0, 8, 65, 2, 2, tiles);
+    Check(tiles.size() == 1 && tiles[0] == 0u, "place.brush.tiles-one");
+    // Across both shared edges: touches all four tiles of the 2x2 split.
+    TerrainBrushTouchedTiles(30, 34, 30, 34, 65, 2, 2, tiles);
+    Check(tiles.size() == 4, "place.brush.tiles-across-edge");
+    bool hasAll = tiles[0] == 0u && tiles[1] == (1u | (0u << 16)) &&
+                  tiles[2] == (0u | (1u << 16)) && tiles[3] == (1u | (1u << 16));
+    Check(hasAll, "place.brush.tiles-packed");
 }
 
 void TestTerrainRaycast() {
-	using namespace smvk::placement;
-	HeightfieldData hf;
-	hf.width = 65;
-	hf.height = 65;
-	hf.origin = glm::vec3(0, 0, 0);
-	hf.spacing = glm::vec2(1.0f, 1.0f);
-	hf.heights.assign(65 * 65, 5.0f); // flat plateau at y=5
-	float t = 0.0f;
-	// Straight down from above: hits the plateau.
-	Check(TerrainRaycast(hf, glm::vec3(32, 50, 32), glm::vec3(0, -1, 0),
-		100.0f, t), "place.raycast.hits");
-	Check(std::abs(t - 45.0f) < 0.05f, "place.raycast.t");
-	// Above the plateau looking up: miss.
-	Check(!TerrainRaycast(hf, glm::vec3(32, 50, 32), glm::vec3(0, 1, 0),
-		100.0f, t), "place.raycast.miss");
-	// Grazing ray beyond maxDist: miss.
-	Check(!TerrainRaycast(hf, glm::vec3(-500, 6, 0), glm::vec3(0, 0, 1),
-		10.0f, t), "place.raycast.maxdist");
-	// Origin below the surface: immediate hit at t=0.
-	Check(TerrainRaycast(hf, glm::vec3(32, 1, 32), glm::vec3(0, 1, 0),
-		100.0f, t) && t == 0.0f, "place.raycast.start-under");
-	// ---- the domain-clip regressions ----
-	// Origin OUTSIDE horizontally but BELOW the boundary height: the
-	// clamped sampler used to fabricate a hit at t=0 (the boundary wall
-	// extruded to infinity). The XZ-domain clip must refuse.
-	Check(!TerrainRaycast(hf, glm::vec3(100.0f, 1.0f, 32.0f),
-		glm::vec3(0, -1, 0), 10.0f, t), "place.raycast.no-false-hit-outside");
-	Check(!TerrainRaycast(hf, glm::vec3(-500.0f, 1.0f, 32.0f),
-		glm::vec3(1, 0, 0), 10.0f, t),
-		"place.raycast.outside-march-misses");
-	// A ray that never enters the domain sideways: miss.
-	Check(!TerrainRaycast(hf, glm::vec3(-10.0f, 6.0f, 32.0f),
-		glm::vec3(-1, 0, 0), 50.0f, t), "place.raycast.never-enters");
-	// A ray ENTERING the domain from outside: the march starts at the
-	// entry param (hit t stays along the original ray). This ray enters
-	// at x=0 (t=10) already below the plateau -> hit exactly at entry.
-	Check(TerrainRaycast(hf, glm::vec3(-10.0f, 5.5f, 32.0f),
-		glm::vec3(1.0f, -0.1f, 0.0f), 100.0f, t)
-		&& std::abs(t - 10.0f) < 1e-3f, "place.raycast.entry-clip");
-	// ---- the endpoint regressions ----
-	// SHORT ray (maxDist < one step, step = 0.5): the final endpoint is
-	// still evaluated (the old loop broke on ti > maxDist before ever
-	// sampling it). From 5.2 down 0.3 -> 4.9 crosses the plateau at 0.2.
-	Check(TerrainRaycast(hf, glm::vec3(32, 5.2f, 32), glm::vec3(0, -1, 0),
-		0.3f, t) && std::abs(t - 0.2f) < 0.05f,
-		"place.raycast.short-ray-endpoint");
-	Check(!TerrainRaycast(hf, glm::vec3(32, 6.0f, 32), glm::vec3(0, -1, 0),
-		0.3f, t), "place.raycast.short-ray-clean-miss");
-	// maxDist NOT a step multiple (2.25 vs step 0.5): the crossing in
-	// the final partial interval [2.0, 2.25] is found.
-	Check(TerrainRaycast(hf, glm::vec3(32, 7.2f, 32), glm::vec3(0, -1, 0),
-		2.25f, t) && std::abs(t - 2.2f) < 0.05f,
-		"place.raycast.partial-step-endpoint");
+    using namespace smvk::placement;
+    HeightfieldData hf;
+    hf.width = 65;
+    hf.height = 65;
+    hf.origin = glm::vec3(0, 0, 0);
+    hf.spacing = glm::vec2(1.0f, 1.0f);
+    hf.heights.assign(65 * 65, 5.0f); // flat plateau at y=5
+    float t = 0.0f;
+    // Straight down from above: hits the plateau.
+    Check(TerrainRaycast(hf, glm::vec3(32, 50, 32), glm::vec3(0, -1, 0), 100.0f, t),
+          "place.raycast.hits");
+    Check(std::abs(t - 45.0f) < 0.05f, "place.raycast.t");
+    // Above the plateau looking up: miss.
+    Check(!TerrainRaycast(hf, glm::vec3(32, 50, 32), glm::vec3(0, 1, 0), 100.0f, t),
+          "place.raycast.miss");
+    // Grazing ray beyond maxDist: miss.
+    Check(!TerrainRaycast(hf, glm::vec3(-500, 6, 0), glm::vec3(0, 0, 1), 10.0f, t),
+          "place.raycast.maxdist");
+    // Origin below the surface: immediate hit at t=0.
+    Check(TerrainRaycast(hf, glm::vec3(32, 1, 32), glm::vec3(0, 1, 0), 100.0f, t) && t == 0.0f,
+          "place.raycast.start-under");
+    // ---- the domain-clip regressions ----
+    // Origin OUTSIDE horizontally but BELOW the boundary height: the
+    // clamped sampler used to fabricate a hit at t=0 (the boundary wall
+    // extruded to infinity). The XZ-domain clip must refuse.
+    Check(!TerrainRaycast(hf, glm::vec3(100.0f, 1.0f, 32.0f), glm::vec3(0, -1, 0), 10.0f, t),
+          "place.raycast.no-false-hit-outside");
+    Check(!TerrainRaycast(hf, glm::vec3(-500.0f, 1.0f, 32.0f), glm::vec3(1, 0, 0), 10.0f, t),
+          "place.raycast.outside-march-misses");
+    // A ray that never enters the domain sideways: miss.
+    Check(!TerrainRaycast(hf, glm::vec3(-10.0f, 6.0f, 32.0f), glm::vec3(-1, 0, 0), 50.0f, t),
+          "place.raycast.never-enters");
+    // A ray ENTERING the domain from outside: the march starts at the
+    // entry param (hit t stays along the original ray). This ray enters
+    // at x=0 (t=10) already below the plateau -> hit exactly at entry.
+    Check(TerrainRaycast(
+              hf, glm::vec3(-10.0f, 5.5f, 32.0f), glm::vec3(1.0f, -0.1f, 0.0f), 100.0f, t) &&
+              std::abs(t - 10.0f) < 1e-3f,
+          "place.raycast.entry-clip");
+    // ---- the endpoint regressions ----
+    // SHORT ray (maxDist < one step, step = 0.5): the final endpoint is
+    // still evaluated (the old loop broke on ti > maxDist before ever
+    // sampling it). From 5.2 down 0.3 -> 4.9 crosses the plateau at 0.2.
+    Check(TerrainRaycast(hf, glm::vec3(32, 5.2f, 32), glm::vec3(0, -1, 0), 0.3f, t) &&
+              std::abs(t - 0.2f) < 0.05f,
+          "place.raycast.short-ray-endpoint");
+    Check(!TerrainRaycast(hf, glm::vec3(32, 6.0f, 32), glm::vec3(0, -1, 0), 0.3f, t),
+          "place.raycast.short-ray-clean-miss");
+    // maxDist NOT a step multiple (2.25 vs step 0.5): the crossing in
+    // the final partial interval [2.0, 2.25] is found.
+    Check(TerrainRaycast(hf, glm::vec3(32, 7.2f, 32), glm::vec3(0, -1, 0), 2.25f, t) &&
+              std::abs(t - 2.2f) < 0.05f,
+          "place.raycast.partial-step-endpoint");
 }
 
 // ---------------------------------------------------------------------------
@@ -2320,157 +2531,161 @@ void TestTerrainRaycast() {
 // mask's 4 channels (the "ride" contract).
 // ---------------------------------------------------------------------------
 void TestWorldBridge() {
-	using namespace smvk::placement;
-	using namespace smvk::terrain;
+    using namespace smvk::placement;
+    using namespace smvk::terrain;
 
-	// ---- the fake world: 4x4 H-tiles x 4 texels (16m world) ----
-	TerrainHField field;
-	field.meta.worldSize = 16.0f;
-	field.meta.originX = -8.0f;
-	field.meta.originZ = -8.0f;
-	field.meta.hTileSize = 4.0f;
-	field.meta.hRes = 4;            // 1m/texel
-	field.meta.baseY = -40.0f;
-	field.meta.range = 420.0f;
-	const uint32_t nH = field.tilesPerAxis(); // worldSize/hTileSize = 4
-	field.tiles.assign(size_t(nH) * nH,
-		std::vector<uint8_t>(size_t(field.meta.hRes) * field.meta.hRes * 4, 0));
-	// Paint h01 = a deterministic ramp by world texel index so the
-	// decode path is verifiable: world texel (ix, iz) at 1m ->
-	// h01 = (ix + iz) / 30 (kept in 0..1).
-	auto worldTexelH01 = [&](int32_t ix, int32_t iz) {
-		return float((uint32_t(ix) % 32u) + (uint32_t(iz) % 32u)) / 450.0f;
-	};
-	for (uint32_t tz = 0; tz < nH; ++tz)
-		for (uint32_t tx = 0; tx < nH; ++tx) {
-			auto& tile = field.tiles[size_t(tz) * nH + tx];
-			for (uint32_t py = 0; py < field.meta.hRes; ++py)
-				for (uint32_t pxx = 0; pxx < field.meta.hRes; ++pxx) {
-					const int32_t ix = int32_t(tx * field.meta.hRes + pxx);
-					const int32_t iz = int32_t(tz * field.meta.hRes + py);
-					uint8_t r, g;
-					EncodeRG16(worldTexelH01(ix, iz), r, g);
-					const size_t o = (size_t(py) * field.meta.hRes + pxx) * 4;
-					tile[o] = r; tile[o + 1] = g;
-				}
-		}
-	Check(field.valid(), "place.world.field-valid");
+    // ---- the fake world: 4x4 H-tiles x 4 texels (16m world) ----
+    TerrainHField field;
+    field.meta.worldSize = 16.0f;
+    field.meta.originX = -8.0f;
+    field.meta.originZ = -8.0f;
+    field.meta.hTileSize = 4.0f;
+    field.meta.hRes = 4; // 1m/texel
+    field.meta.baseY = -40.0f;
+    field.meta.range = 420.0f;
+    const uint32_t nH = field.tilesPerAxis(); // worldSize/hTileSize = 4
+    field.tiles.assign(size_t(nH) * nH,
+                       std::vector<uint8_t>(size_t(field.meta.hRes) * field.meta.hRes * 4, 0));
+    // Paint h01 = a deterministic ramp by world texel index so the
+    // decode path is verifiable: world texel (ix, iz) at 1m ->
+    // h01 = (ix + iz) / 30 (kept in 0..1).
+    auto worldTexelH01 = [&](int32_t ix, int32_t iz) {
+        return float((uint32_t(ix) % 32u) + (uint32_t(iz) % 32u)) / 450.0f;
+    };
+    for (uint32_t tz = 0; tz < nH; ++tz)
+        for (uint32_t tx = 0; tx < nH; ++tx) {
+            auto& tile = field.tiles[size_t(tz) * nH + tx];
+            for (uint32_t py = 0; py < field.meta.hRes; ++py)
+                for (uint32_t pxx = 0; pxx < field.meta.hRes; ++pxx) {
+                    const int32_t ix = int32_t(tx * field.meta.hRes + pxx);
+                    const int32_t iz = int32_t(tz * field.meta.hRes + py);
+                    uint8_t r, g;
+                    EncodeRG16(worldTexelH01(ix, iz), r, g);
+                    const size_t o = (size_t(py) * field.meta.hRes + pxx) * 4;
+                    tile[o] = r;
+                    tile[o + 1] = g;
+                }
+        }
+    Check(field.valid(), "place.world.field-valid");
 
-	// ---- the fake paint: 2x2 S-tiles x 8 texels (gBlock 8m -> 1m) ----
-	std::vector<std::vector<uint8_t>> sTiles(2 * 2);
-	const uint32_t sRes = 8;
-	for (uint32_t tz = 0; tz < 2; ++tz)
-		for (uint32_t tx = 0; tx < 2; ++tx) {
-			auto& tile = sTiles[size_t(tz) * 2 + tx];
-			tile.assign(size_t(sRes) * sRes * 4, 0);
-			for (uint32_t py = 0; py < sRes; ++py)
-				for (uint32_t pxx = 0; pxx < sRes; ++pxx) {
-					const size_t o = (size_t(py) * sRes + pxx) * 4;
-					tile[o + 0] = uint8_t((pxx * 16 + py * 4) % 256); // ch0 paint
-					tile[o + 1] = 77;  // ch1 constant
-					tile[o + 2] = 200; // ch2 constant
-					tile[o + 3] = 255; // ch3 full
-				}
-		}
+    // ---- the fake paint: 2x2 S-tiles x 8 texels (gBlock 8m -> 1m) ----
+    std::vector<std::vector<uint8_t>> sTiles(2 * 2);
+    const uint32_t sRes = 8;
+    for (uint32_t tz = 0; tz < 2; ++tz)
+        for (uint32_t tx = 0; tx < 2; ++tx) {
+            auto& tile = sTiles[size_t(tz) * 2 + tx];
+            tile.assign(size_t(sRes) * sRes * 4, 0);
+            for (uint32_t py = 0; py < sRes; ++py)
+                for (uint32_t pxx = 0; pxx < sRes; ++pxx) {
+                    const size_t o = (size_t(py) * sRes + pxx) * 4;
+                    tile[o + 0] = uint8_t((pxx * 16 + py * 4) % 256); // ch0 paint
+                    tile[o + 1] = 77;                                 // ch1 constant
+                    tile[o + 2] = 200;                                // ch2 constant
+                    tile[o + 3] = 255;                                // ch3 full
+                }
+        }
 
-	// ---- heights: a 6m window with a 1-texel halo ----
-	HeightfieldData hf;
-	Check(HarvestWorldHeightfield(field, glm::vec2(-2.0f, 0.0f),
-		glm::vec2(4.0f, 6.0f), 1, hf), "place.world.hf-harvest-ok");
-	Check(hf.valid(), "place.world.hf-valid");
-	// The window: x texels [5..12], z texels [7..14] (rect + halo,
-	// world-clamped); origin = the base texel's CENTER (+0.5 — the
-	// convention bridge).
-	Check(hf.width == 8 && hf.height == 8, "place.world.hf-window");
-	Check(hf.origin.x == -8.0f + 5.5f && hf.origin.z == -8.0f + 7.5f,
-		"place.world.hf-origin-half-texel");
-	Check(hf.spacing.x == 1.0f && hf.spacing.y == 1.0f, "place.world.hf-spacing");
-	// Placement texel (0,0) == world texel (5,7)'s center: the height at
-	// the placement origin equals the RG16-quantized h01 of that texel.
-	{
-		uint8_t r, g;
-		EncodeRG16(worldTexelH01(5, 7), r, g);
-		Check(std::abs(hf.sampleHeight(hf.origin.x, hf.origin.z)
-			- HeightToWorld(DecodeH01(r, g))) < 1e-5f,
-			"place.world.hf-texel-center-identity");
-	}
-	// Interior bilinear AGREES with the world sampler: the world's own
-	// SampleH01 at a world point inside the window (meters via the meta).
-	{
-		const glm::vec2 worldPt(-1.25f, 2.75f);
-		const float worldMeters = HeightToWorld(SampleH01(field, worldPt.x, worldPt.y));
-		const float placementMeters = hf.sampleHeight(worldPt.x, worldPt.y);
-		Check(std::abs(worldMeters - placementMeters) < 1e-3f,
-			"place.world.hf-matches-world-sampler");
-	}
-	// An out-of-world rect refuses.
-	HeightfieldData bad;
-	Check(!HarvestWorldHeightfield(field, glm::vec2(100.0f, 100.0f),
-		glm::vec2(120.0f, 120.0f), 0, bad), "place.world.hf-outside-refuses");
+    // ---- heights: a 6m window with a 1-texel halo ----
+    HeightfieldData hf;
+    Check(HarvestWorldHeightfield(field, glm::vec2(-2.0f, 0.0f), glm::vec2(4.0f, 6.0f), 1, hf),
+          "place.world.hf-harvest-ok");
+    Check(hf.valid(), "place.world.hf-valid");
+    // The window: x texels [5..12], z texels [7..14] (rect + halo,
+    // world-clamped); origin = the base texel's CENTER (+0.5 — the
+    // convention bridge).
+    Check(hf.width == 8 && hf.height == 8, "place.world.hf-window");
+    Check(hf.origin.x == -8.0f + 5.5f && hf.origin.z == -8.0f + 7.5f,
+          "place.world.hf-origin-half-texel");
+    Check(hf.spacing.x == 1.0f && hf.spacing.y == 1.0f, "place.world.hf-spacing");
+    // Placement texel (0,0) == world texel (5,7)'s center: the height at
+    // the placement origin equals the RG16-quantized h01 of that texel.
+    {
+        uint8_t r, g;
+        EncodeRG16(worldTexelH01(5, 7), r, g);
+        Check(std::abs(hf.sampleHeight(hf.origin.x, hf.origin.z) - HeightToWorld(DecodeH01(r, g))) <
+                  1e-5f,
+              "place.world.hf-texel-center-identity");
+    }
+    // Interior bilinear AGREES with the world sampler: the world's own
+    // SampleH01 at a world point inside the window (meters via the meta).
+    {
+        const glm::vec2 worldPt(-1.25f, 2.75f);
+        const float worldMeters = HeightToWorld(SampleH01(field, worldPt.x, worldPt.y));
+        const float placementMeters = hf.sampleHeight(worldPt.x, worldPt.y);
+        Check(std::abs(worldMeters - placementMeters) < 1e-3f,
+              "place.world.hf-matches-world-sampler");
+    }
+    // An out-of-world rect refuses.
+    HeightfieldData bad;
+    Check(!HarvestWorldHeightfield(
+              field, glm::vec2(100.0f, 100.0f), glm::vec2(120.0f, 120.0f), 0, bad),
+          "place.world.hf-outside-refuses");
 
-	// ---- ecotope: the same window, no halo ----
-	WorldMaskGrid grid{ &sTiles, 2, sRes };
-	// The mask grid's gBlock: worldSize/tilesPerAxis = 8m per S-tile.
-	// The bridge derives texel = gBlock/tileRes from the META, so give
-	// the meta the matching gBlock (production: 256/256).
-	field.meta.gBlock = 8.0f;
-	EcotopeMaskData eco;
-	Check(HarvestWorldEcotope(field.meta, grid, glm::vec2(-2.0f, 0.0f),
-		glm::vec2(4.0f, 6.0f), eco), "place.world.eco-harvest-ok");
-	Check(eco.valid() && eco.channels == 4, "place.world.eco-valid");
-	// The eco window: x texels [6..11], z texels [8..13]; origin = the
-	// base texel's center.
-	Check(eco.width == 6 && eco.height == 6, "place.world.eco-window");
-	Check(eco.origin.x == -8.0f + 6.5f && eco.origin.y == -8.0f + 8.5f,
-		"place.world.eco-origin-half-texel");
-	// The paint lands: world texel (7,9) is placement texel (1,1) —
-	// its ch0 paint (S-tile pixel (7,1): (7*16 + 1*4) % 256 = 116/255).
-	{
-		const float want = float((7u * 16u + 1u * 4u) % 256u) / 255.0f;
-		Check(std::abs(eco.Sample(0, eco.origin.x + 1.0f, eco.origin.y + 1.0f)
-			- want) < 1e-5f, "place.world.eco-paint-identity");
-	}
-	// Channels 1..3 constants survive the ride.
-	Check(std::abs(eco.Sample(1, eco.origin.x + 2.0f, eco.origin.y + 2.0f)
-		- 77.0f / 255.0f) < 1e-5f, "place.world.eco-ch1");
-	Check(eco.Sample(3, eco.origin.x + 2.0f, eco.origin.y + 2.0f) > 0.99f,
-		"place.world.eco-ch3-full");
-	// THE RIDE: the harvested heights + mask compose as a placement layer
-	// — the ecotope program over the harvested heightfield produces a
-	// deterministic population (the PR05 world-tile residency shape).
-	{
-		HeightfieldDomain hdom;
-		hdom.field = &hf;
-		hdom.extentMin = glm::vec2(-2.0f, 0.0f);
-		hdom.extentMax = glm::vec2(4.0f, 6.0f);
-		PlacementSystem::LayerBinding lb;
-		lb.programId = 77;
-		lb.program.graphSeed = 4242;
-		lb.program.nodeId = 1;
-		lb.program.instrs = {
-			FieldInstr{ .op = FieldOp::EcotopeMask, .params = { 0.0f, 0, 0, 0 } },
-			FieldInstr{ .op = FieldOp::SlopeMask, .params = { 30.0f, 70.0f, 0, 0 } },
-			FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
-		};
-		lb.program.acceptIndex = 2;
-		lb.domainKind = DomainKind::Heightfield;
-		lb.heightfield = &hdom;
-		lb.ecotope = &eco; // THE PAINTED LAYER RIDES THE WORLD TILE
-		lb.config.candidatesPerTile = 512;
-		Prototype p; p.weight = 1.0f;
-		lb.prototypes.add(p);
-		const TileID tile{ 0, 0, 0 };
-		std::vector<RenderInstance> a = EvaluateTile(lb, tile);
-		std::vector<RenderInstance> b = EvaluateTile(lb, tile);
-		bool identical = a.size() == b.size() && !a.empty();
-		if (identical)
-			for (size_t i = 0; i < a.size(); ++i)
-				if (a[i].position != b[i].position
-					|| a[i].prototypeId != b[i].prototypeId) {
-					identical = false; break;
-				}
-		Check(identical, "place.world.eco-rides-heightfield-deterministic");
-	}
+    // ---- ecotope: the same window, no halo ----
+    WorldMaskGrid grid{&sTiles, 2, sRes};
+    // The mask grid's gBlock: worldSize/tilesPerAxis = 8m per S-tile.
+    // The bridge derives texel = gBlock/tileRes from the META, so give
+    // the meta the matching gBlock (production: 256/256).
+    field.meta.gBlock = 8.0f;
+    EcotopeMaskData eco;
+    Check(HarvestWorldEcotope(field.meta, grid, glm::vec2(-2.0f, 0.0f), glm::vec2(4.0f, 6.0f), eco),
+          "place.world.eco-harvest-ok");
+    Check(eco.valid() && eco.channels == 4, "place.world.eco-valid");
+    // The eco window: x texels [6..11], z texels [8..13]; origin = the
+    // base texel's center.
+    Check(eco.width == 6 && eco.height == 6, "place.world.eco-window");
+    Check(eco.origin.x == -8.0f + 6.5f && eco.origin.y == -8.0f + 8.5f,
+          "place.world.eco-origin-half-texel");
+    // The paint lands: world texel (7,9) is placement texel (1,1) —
+    // its ch0 paint (S-tile pixel (7,1): (7*16 + 1*4) % 256 = 116/255).
+    {
+        const float want = float((7u * 16u + 1u * 4u) % 256u) / 255.0f;
+        Check(std::abs(eco.Sample(0, eco.origin.x + 1.0f, eco.origin.y + 1.0f) - want) < 1e-5f,
+              "place.world.eco-paint-identity");
+    }
+    // Channels 1..3 constants survive the ride.
+    Check(std::abs(eco.Sample(1, eco.origin.x + 2.0f, eco.origin.y + 2.0f) - 77.0f / 255.0f) <
+              1e-5f,
+          "place.world.eco-ch1");
+    Check(eco.Sample(3, eco.origin.x + 2.0f, eco.origin.y + 2.0f) > 0.99f,
+          "place.world.eco-ch3-full");
+    // THE RIDE: the harvested heights + mask compose as a placement layer
+    // — the ecotope program over the harvested heightfield produces a
+    // deterministic population (the PR05 world-tile residency shape).
+    {
+        HeightfieldDomain hdom;
+        hdom.field = &hf;
+        hdom.extentMin = glm::vec2(-2.0f, 0.0f);
+        hdom.extentMax = glm::vec2(4.0f, 6.0f);
+        PlacementSystem::LayerBinding lb;
+        lb.programId = 77;
+        lb.program.graphSeed = 4242;
+        lb.program.nodeId = 1;
+        lb.program.instrs = {
+            FieldInstr{.op = FieldOp::EcotopeMask, .params = {0.0f, 0, 0, 0}},
+            FieldInstr{.op = FieldOp::SlopeMask, .params = {30.0f, 70.0f, 0, 0}},
+            FieldInstr{.op = FieldOp::Mul, .a = 0, .b = 1},
+        };
+        lb.program.acceptIndex = 2;
+        lb.domainKind = DomainKind::Heightfield;
+        lb.heightfield = &hdom;
+        lb.ecotope = &eco; // THE PAINTED LAYER RIDES THE WORLD TILE
+        lb.config.candidatesPerTile = 512;
+        Prototype p;
+        p.weight = 1.0f;
+        lb.prototypes.add(p);
+        const TileID tile{0, 0, 0};
+        std::vector<RenderInstance> a = EvaluateTile(lb, tile);
+        std::vector<RenderInstance> b = EvaluateTile(lb, tile);
+        bool identical = a.size() == b.size() && !a.empty();
+        if (identical)
+            for (size_t i = 0; i < a.size(); ++i)
+                if (a[i].position != b[i].position || a[i].prototypeId != b[i].prototypeId) {
+                    identical = false;
+                    break;
+                }
+        Check(identical, "place.world.eco-rides-heightfield-deterministic");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2480,467 +2695,456 @@ void TestWorldBridge() {
 // world meadow flow over the bridge.
 // ---------------------------------------------------------------------------
 void TestWorldResidency() {
-	using namespace smvk::placement;
-	DependencyVersions deps;
+    using namespace smvk::placement;
+    DependencyVersions deps;
 
-	// ---- the CPU residency tick (a plain grid layer over 64m tiles). ----
-	GridDomain grid; // the domain binding (per-tile origins are derived)
-	grid.extent = glm::vec2(64.0f, 64.0f);
-	grid.cellsX = 16; grid.cellsZ = 16;
-	PlacementSystem sys;
-	sys.registerLayer(MakeGridLayer(grid, 0.5f, 512));
+    // ---- the CPU residency tick (a plain grid layer over 64m tiles). ----
+    GridDomain grid; // the domain binding (per-tile origins are derived)
+    grid.extent = glm::vec2(64.0f, 64.0f);
+    grid.cellsX = 16;
+    grid.cellsZ = 16;
+    PlacementSystem sys;
+    sys.registerLayer(MakeGridLayer(grid, 0.5f, 512));
 
-	// Fresh interest: ONE rect covering [0,128) x [0,64) activates the
-	// tiles {0,0} and {1,0} — the HALF-OPEN rule (128 lands exactly on
-	// the 2-tile boundary; the third tile must NOT activate).
-	std::vector<PlacementSystem::ActivationRequest> acts;
-	const glm::vec4 rects[1] = { glm::vec4(0.0f, 0.0f, 128.0f, 64.0f) };
-	sys.UpdateResidency(101, 64.0f, rects, 1, deps, 16, acts);
-	Check(acts.size() == 2, "place.res.fresh-two-tiles");
-	bool tileKeysOk = acts.size() == 2
-		&& acts[0].key.tile == TileID{ 0, 0, 0 }
-		&& acts[1].key.tile == TileID{ 1, 0, 0 }
-		&& !acts[0].regenerate && !acts[1].regenerate;
-	Check(tileKeysOk, "place.res.half-open-tile-math");
+    // Fresh interest: ONE rect covering [0,128) x [0,64) activates the
+    // tiles {0,0} and {1,0} — the HALF-OPEN rule (128 lands exactly on
+    // the 2-tile boundary; the third tile must NOT activate).
+    std::vector<PlacementSystem::ActivationRequest> acts;
+    const glm::vec4 rects[1] = {glm::vec4(0.0f, 0.0f, 128.0f, 64.0f)};
+    sys.UpdateResidency(101, 64.0f, rects, 1, deps, 16, acts);
+    Check(acts.size() == 2, "place.res.fresh-two-tiles");
+    bool tileKeysOk = acts.size() == 2 && acts[0].key.tile == TileID{0, 0, 0} &&
+                      acts[1].key.tile == TileID{1, 0, 0} && !acts[0].regenerate &&
+                      !acts[1].regenerate;
+    Check(tileKeysOk, "place.res.half-open-tile-math");
 
-	// The synchronous publish flow: pending-generate then publish.
-	for (const auto& a : acts) {
-		uint64_t gen = 0;
-		Check(sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen)
-			&& gen == a.generation, "place.res.pending-gen");
-		Check(sys.PublishActivation(a.key, a.generation), "place.res.publish-ok");
-	}
-	Check(sys.residentTileCount() == 2, "place.res.two-resident");
+    // The synchronous publish flow: pending-generate then publish.
+    for (const auto& a : acts) {
+        uint64_t gen = 0;
+        Check(sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen) &&
+                  gen == a.generation,
+              "place.res.pending-gen");
+        Check(sys.PublishActivation(a.key, a.generation), "place.res.publish-ok");
+    }
+    Check(sys.residentTileCount() == 2, "place.res.two-resident");
 
-	// A second tick with UNCHANGED deps + the same interest: NO new
-	// activations (camera-idle never regenerates).
-	sys.UpdateResidency(101, 64.0f, rects, 1, deps, 16, acts);
-	Check(acts.empty(), "place.res.idle-no-regen");
+    // A second tick with UNCHANGED deps + the same interest: NO new
+    // activations (camera-idle never regenerates).
+    sys.UpdateResidency(101, 64.0f, rects, 1, deps, 16, acts);
+    Check(acts.empty(), "place.res.idle-no-regen");
 
-	// Deps change (a paint under the residents): both regenerate.
-	DependencyVersions deps2;
-	deps2.terrain = 7;
-	sys.UpdateResidency(101, 64.0f, rects, 1, deps2, 16, acts);
-	Check(acts.size() == 2 && acts[0].regenerate && acts[1].regenerate,
-		"place.res.deps-changed-regen");
-	// Complete the regeneration for both.
-	for (const auto& a : acts) {
-		uint64_t gen = 0;
-		Check(sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen),
-			"place.res.regen-pending");
-		Check(sys.PublishActivation(a.key, a.generation), "place.res.regen-publish");
-	}
+    // Deps change (a paint under the residents): both regenerate.
+    DependencyVersions deps2;
+    deps2.terrain = 7;
+    sys.UpdateResidency(101, 64.0f, rects, 1, deps2, 16, acts);
+    Check(acts.size() == 2 && acts[0].regenerate && acts[1].regenerate,
+          "place.res.deps-changed-regen");
+    // Complete the regeneration for both.
+    for (const auto& a : acts) {
+        uint64_t gen = 0;
+        Check(sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen),
+              "place.res.regen-pending");
+        Check(sys.PublishActivation(a.key, a.generation), "place.res.regen-publish");
+    }
 
-	// THE STALE-TOKEN REFUSAL: a delayed publish after a re-activation.
-	{
-		DependencyVersions deps3;   // a paint under tile A
-		deps3.terrain = 11;
-		sys.UpdateResidency(101, 64.0f, rects, 1, deps3, 16, acts);
-		Check(acts.size() == 2 && acts[0].regenerate,
-			"place.res.stale-setup-regen");
-		const uint64_t staleGen = acts[0].generation; // tile A's claim
-		// The delayed job is still running when ANOTHER paint lands:
-		// the tick re-activates A with a NEW token (the in-flight result
-		// evaluated the older deps — its publish must be refused).
-		DependencyVersions deps4;
-		deps4.terrain = 12;
-		sys.UpdateResidency(101, 64.0f, rects, 1, deps4, 16, acts);
-		Check(acts.size() >= 1, "place.res.stale-reactivation");
-		bool aReactivated = false;
-		uint64_t freshGen = 0;
-		for (const auto& a : acts)
-			if (a.key.tile == TileID{ 0, 0, 0 } && a.regenerate) {
-				aReactivated = true;
-				freshGen = a.generation;
-			}
-		Check(aReactivated && freshGen > staleGen,
-			"place.res.region-dirty-regen");
-		// The delayed publish with the OLD token refuses.
-		Check(!sys.PublishActivation(TileKey{ TileID{ 0, 0, 0 }, 101 }, staleGen),
-			"place.res.stale-token-refused");
-		// The fresh flow generates + publishes cleanly.
-		uint64_t gen = 0;
-		Check(sys.GenerateTilePending(101, TileID{ 0, 0, 0 }, deps4, gen)
-			&& gen == freshGen, "place.res.new-pending");
-		Check(sys.PublishActivation(TileKey{ TileID{ 0, 0, 0 }, 101 }, gen),
-			"place.res.new-publish");
-		// Complete tile B's pending flow too (it was also re-activated).
-		for (const auto& a : acts)
-			if (a.key.tile == TileID{ 1, 0, 0 }) {
-				uint64_t g = 0;
-				sys.GenerateTilePending(101, a.key.tile, deps4, g);
-				sys.PublishActivation(a.key, g);
-			}
-	}
+    // THE STALE-TOKEN REFUSAL: a delayed publish after a re-activation.
+    {
+        DependencyVersions deps3; // a paint under tile A
+        deps3.terrain = 11;
+        sys.UpdateResidency(101, 64.0f, rects, 1, deps3, 16, acts);
+        Check(acts.size() == 2 && acts[0].regenerate, "place.res.stale-setup-regen");
+        const uint64_t staleGen = acts[0].generation; // tile A's claim
+        // The delayed job is still running when ANOTHER paint lands:
+        // the tick re-activates A with a NEW token (the in-flight result
+        // evaluated the older deps — its publish must be refused).
+        DependencyVersions deps4;
+        deps4.terrain = 12;
+        sys.UpdateResidency(101, 64.0f, rects, 1, deps4, 16, acts);
+        Check(acts.size() >= 1, "place.res.stale-reactivation");
+        bool aReactivated = false;
+        uint64_t freshGen = 0;
+        for (const auto& a : acts)
+            if (a.key.tile == TileID{0, 0, 0} && a.regenerate) {
+                aReactivated = true;
+                freshGen = a.generation;
+            }
+        Check(aReactivated && freshGen > staleGen, "place.res.region-dirty-regen");
+        // The delayed publish with the OLD token refuses.
+        Check(!sys.PublishActivation(TileKey{TileID{0, 0, 0}, 101}, staleGen),
+              "place.res.stale-token-refused");
+        // The fresh flow generates + publishes cleanly.
+        uint64_t gen = 0;
+        Check(sys.GenerateTilePending(101, TileID{0, 0, 0}, deps4, gen) && gen == freshGen,
+              "place.res.new-pending");
+        Check(sys.PublishActivation(TileKey{TileID{0, 0, 0}, 101}, gen), "place.res.new-publish");
+        // Complete tile B's pending flow too (it was also re-activated).
+        for (const auto& a : acts)
+            if (a.key.tile == TileID{1, 0, 0}) {
+                uint64_t g = 0;
+                sys.GenerateTilePending(101, a.key.tile, deps4, g);
+                sys.PublishActivation(a.key, g);
+            }
+    }
 
-	// THE EDIT-DURING-GENERATION SEQUENCE (the height-paint regression):
-	// request tile -> edit terrain (region invalidation while the job is
-	// in flight, deps UNCHANGED) -> finish the old request -> the stale
-	// result must be REFUSED and the tile re-requested with a fresh
-	// token. UpdateResidency keeps a Generating tile's token when the
-	// deps match, so the invalidation itself must retire it.
-	{
-		PlacementSystem sysE;
-		GridDomain gridE;
-		gridE.extent = glm::vec2(64.0f, 64.0f);
-		gridE.cellsX = 16; gridE.cellsZ = 16;
-		sysE.registerLayer(MakeGridLayer(gridE, 0.5f, 512));
-		const glm::vec4 rectE[1] = { glm::vec4(0.0f, 0.0f, 64.0f, 64.0f) };
-		std::vector<PlacementSystem::ActivationRequest> actsE;
-		sysE.UpdateResidency(101, 64.0f, rectE, 1, deps, 16, actsE);
-		Check(actsE.size() == 1, "place.res.edits-setup");
-		const uint64_t inFlightGen = actsE[0].generation;
-		// The terrain edit lands while the job runs (deps stay EQUAL —
-		// the invalidation, not a version bump, is what must stale it).
-		sysE.InvalidateRegion(101, 64.0f, glm::vec2(30.0f, 30.0f),
-			glm::vec2(34.0f, 34.0f), 4.0f);
-		// The next tick re-activates with a NEW token (the old code kept
-		// the in-flight claim — the stale result would publish as fresh).
-		sysE.UpdateResidency(101, 64.0f, rectE, 1, deps, 16, actsE);
-		Check(actsE.size() == 1 && actsE[0].regenerate
-			&& actsE[0].generation > inFlightGen,
-			"place.res.edits-retires-inflight-token");
-		// The delayed OLD job's publish refuses.
-		Check(!sysE.PublishActivation(TileKey{ TileID{ 0, 0, 0 }, 101 },
-			inFlightGen), "place.res.edits-stale-publish-refused");
-		// The fresh flow completes and the tile serves.
-		uint64_t genE = 0;
-		Check(sysE.GenerateTilePending(101, TileID{ 0, 0, 0 }, deps, genE)
-			&& genE == actsE[0].generation, "place.res.edits-new-pending");
-		Check(sysE.PublishActivation(TileKey{ TileID{ 0, 0, 0 }, 101 }, genE),
-			"place.res.edits-new-publish");
-		Check(sysE.residentTileCount() == 1, "place.res.edits-resident");
-	}
+    // THE EDIT-DURING-GENERATION SEQUENCE (the height-paint regression):
+    // request tile -> edit terrain (region invalidation while the job is
+    // in flight, deps UNCHANGED) -> finish the old request -> the stale
+    // result must be REFUSED and the tile re-requested with a fresh
+    // token. UpdateResidency keeps a Generating tile's token when the
+    // deps match, so the invalidation itself must retire it.
+    {
+        PlacementSystem sysE;
+        GridDomain gridE;
+        gridE.extent = glm::vec2(64.0f, 64.0f);
+        gridE.cellsX = 16;
+        gridE.cellsZ = 16;
+        sysE.registerLayer(MakeGridLayer(gridE, 0.5f, 512));
+        const glm::vec4 rectE[1] = {glm::vec4(0.0f, 0.0f, 64.0f, 64.0f)};
+        std::vector<PlacementSystem::ActivationRequest> actsE;
+        sysE.UpdateResidency(101, 64.0f, rectE, 1, deps, 16, actsE);
+        Check(actsE.size() == 1, "place.res.edits-setup");
+        const uint64_t inFlightGen = actsE[0].generation;
+        // The terrain edit lands while the job runs (deps stay EQUAL —
+        // the invalidation, not a version bump, is what must stale it).
+        sysE.InvalidateRegion(101, 64.0f, glm::vec2(30.0f, 30.0f), glm::vec2(34.0f, 34.0f), 4.0f);
+        // The next tick re-activates with a NEW token (the old code kept
+        // the in-flight claim — the stale result would publish as fresh).
+        sysE.UpdateResidency(101, 64.0f, rectE, 1, deps, 16, actsE);
+        Check(actsE.size() == 1 && actsE[0].regenerate && actsE[0].generation > inFlightGen,
+              "place.res.edits-retires-inflight-token");
+        // The delayed OLD job's publish refuses.
+        Check(!sysE.PublishActivation(TileKey{TileID{0, 0, 0}, 101}, inFlightGen),
+              "place.res.edits-stale-publish-refused");
+        // The fresh flow completes and the tile serves.
+        uint64_t genE = 0;
+        Check(sysE.GenerateTilePending(101, TileID{0, 0, 0}, deps, genE) &&
+                  genE == actsE[0].generation,
+              "place.res.edits-new-pending");
+        Check(sysE.PublishActivation(TileKey{TileID{0, 0, 0}, 101}, genE),
+              "place.res.edits-new-publish");
+        Check(sysE.residentTileCount() == 1, "place.res.edits-resident");
+    }
 
-	// Region invalidation + the neighbor HALO: a stamp at the exact
-	// tile corner dirties all sharing tiles within the halo.
-	{
-		// Re-resident everything first.
-		sys.UpdateResidency(101, 64.0f, rects, 1, deps2, 16, acts);
-		for (const auto& a : acts) {
-			uint64_t gen = 0;
-			sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen);
-			sys.PublishActivation(a.key, a.generation);
-		}
-		Check(sys.residentTileCount() == 2, "place.res.pre-halo-resident");
-		// A stamp at (64, 32) — ON the shared boundary x=64 — with a 4m
-		// halo: BOTH tiles dirty.
-		sys.InvalidateRegion(101, 64.0f, glm::vec2(63.5f, 31.5f),
-			glm::vec2(64.5f, 32.5f), 4.0f);
-		sys.UpdateResidency(101, 64.0f, rects, 1, deps2, 16, acts);
-		Check(acts.size() == 2, "place.res.halo-dirties-both");
-		for (const auto& a : acts) {
-			uint64_t gen = 0;
-			sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen);
-			sys.PublishActivation(a.key, a.generation);
-		}
-	}
+    // Region invalidation + the neighbor HALO: a stamp at the exact
+    // tile corner dirties all sharing tiles within the halo.
+    {
+        // Re-resident everything first.
+        sys.UpdateResidency(101, 64.0f, rects, 1, deps2, 16, acts);
+        for (const auto& a : acts) {
+            uint64_t gen = 0;
+            sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen);
+            sys.PublishActivation(a.key, a.generation);
+        }
+        Check(sys.residentTileCount() == 2, "place.res.pre-halo-resident");
+        // A stamp at (64, 32) — ON the shared boundary x=64 — with a 4m
+        // halo: BOTH tiles dirty.
+        sys.InvalidateRegion(101, 64.0f, glm::vec2(63.5f, 31.5f), glm::vec2(64.5f, 32.5f), 4.0f);
+        sys.UpdateResidency(101, 64.0f, rects, 1, deps2, 16, acts);
+        Check(acts.size() == 2, "place.res.halo-dirties-both");
+        for (const auto& a : acts) {
+            uint64_t gen = 0;
+            sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen);
+            sys.PublishActivation(a.key, a.generation);
+        }
+    }
 
-	// LRU eviction: the interest MOVES to a new tile; the old residents
-	// (outside the interest) evict beyond budget.
-	{
-		// Boundary-aligned far rect: EXACTLY tile {16, 16} (the
-		// half-open rule keeps it a single activation).
-		const glm::vec4 far1[1] = { glm::vec4(1024.0f, 1024.0f, 1088.0f, 1088.0f) };
-		sys.UpdateResidency(101, 64.0f, far1, 1, deps2, 2, acts); // budget 2
-		Check(acts.size() == 1 && acts[0].key.tile == TileID{ 16, 0, 16 },
-			"place.res.new-interest-activates");
-		uint64_t gen = 0;
-		sys.GenerateTilePending(101, acts[0].key.tile, deps2, gen);
-		sys.PublishActivation(acts[0].key, acts[0].generation);
-		// Old non-interest residents evicted (3 residents, budget 2).
-		Check(sys.residentTileCount() == 2, "place.res.evict-beyond-budget");
-		// A GPU slot eviction must also forget the CPU mirror: neither
-		// the stale activation nor a cache hit may resurrect that tenant.
-		const TileKey evicted = acts[0].key;
-		const uint64_t oldGeneration = acts[0].generation;
-		sys.ForgetTile(evicted);
-		Check(sys.findTile(evicted.programId, evicted.tile) == nullptr,
-			"place.res.gpu-eviction-removes-cpu-mirror");
-		Check(!sys.PublishActivation(evicted, oldGeneration),
-			"place.res.gpu-eviction-stale-token-refuses");
-		sys.UpdateResidency(101, 64.0f, far1, 1, deps2, 2, acts);
-		Check(acts.size() == 1 && acts[0].key == evicted
-			&& acts[0].generation != oldGeneration,
-			"place.res.gpu-eviction-reactivates");
-	}
+    // LRU eviction: the interest MOVES to a new tile; the old residents
+    // (outside the interest) evict beyond budget.
+    {
+        // Boundary-aligned far rect: EXACTLY tile {16, 16} (the
+        // half-open rule keeps it a single activation).
+        const glm::vec4 far1[1] = {glm::vec4(1024.0f, 1024.0f, 1088.0f, 1088.0f)};
+        sys.UpdateResidency(101, 64.0f, far1, 1, deps2, 2, acts); // budget 2
+        Check(acts.size() == 1 && acts[0].key.tile == TileID{16, 0, 16},
+              "place.res.new-interest-activates");
+        uint64_t gen = 0;
+        sys.GenerateTilePending(101, acts[0].key.tile, deps2, gen);
+        sys.PublishActivation(acts[0].key, acts[0].generation);
+        // Old non-interest residents evicted (3 residents, budget 2).
+        Check(sys.residentTileCount() == 2, "place.res.evict-beyond-budget");
+        // A GPU slot eviction must also forget the CPU mirror: neither
+        // the stale activation nor a cache hit may resurrect that tenant.
+        const TileKey evicted = acts[0].key;
+        const uint64_t oldGeneration = acts[0].generation;
+        sys.ForgetTile(evicted);
+        Check(sys.findTile(evicted.programId, evicted.tile) == nullptr,
+              "place.res.gpu-eviction-removes-cpu-mirror");
+        Check(!sys.PublishActivation(evicted, oldGeneration),
+              "place.res.gpu-eviction-stale-token-refuses");
+        sys.UpdateResidency(101, 64.0f, far1, 1, deps2, 2, acts);
+        Check(acts.size() == 1 && acts[0].key == evicted && acts[0].generation != oldGeneration,
+              "place.res.gpu-eviction-reactivates");
+    }
 
-	// A 64m-radius camera rect off a tile boundary covers 3x3 world
-	// tiles. The GPU runtime defaults to eight resident slots: request
-	// exactly eight distinct nearest tiles, not nine competing tenants.
-	{
-		std::vector<glm::vec4> bounded;
-		const glm::vec4 nine(10.0f - 64.0f, 10.0f - 64.0f,
-			10.0f + 64.0f, 10.0f + 64.0f);
-		PlacementWorldRuntime::BudgetTileInterests(&nine, 1, 64.0f, 8, bounded);
-		Check(bounded.size() == 8, "place.res.budget-eight-not-nine");
-		bool unique = true;
-		for (size_t i = 0; i < bounded.size(); ++i) {
-			Check(bounded[i].z - bounded[i].x == 64.0f
-				&& bounded[i].w - bounded[i].y == 64.0f,
-				"place.res.budget-rect-is-one-tile");
-			for (size_t j = i + 1; j < bounded.size(); ++j)
-				if (bounded[i] == bounded[j]) unique = false;
-		}
-		Check(unique, "place.res.budget-no-duplicates");
-		std::vector<glm::vec4> repeat;
-		PlacementWorldRuntime::BudgetTileInterests(&nine, 1, 64.0f, 8, repeat);
-		Check(repeat == bounded, "place.res.budget-deterministic");
-		const glm::vec4 second(128.0f, 0.0f, 192.0f, 64.0f);
-		const glm::vec4 prioritized[2]{ second, nine };
-		PlacementWorldRuntime::BudgetTileInterests(prioritized, 2, 64.0f, 1, bounded);
-		Check(bounded.size() == 1 && bounded[0] == second,
-			"place.res.budget-priority-before-nearness");
-		PlacementWorldRuntime::BudgetTileInterests(&nine, 1, 64.0f, 0, bounded);
-		Check(bounded.empty(), "place.res.budget-zero");
-	}
+    // A 64m-radius camera rect off a tile boundary covers 3x3 world
+    // tiles. The GPU runtime defaults to eight resident slots: request
+    // exactly eight distinct nearest tiles, not nine competing tenants.
+    {
+        std::vector<glm::vec4> bounded;
+        const glm::vec4 nine(10.0f - 64.0f, 10.0f - 64.0f, 10.0f + 64.0f, 10.0f + 64.0f);
+        PlacementWorldRuntime::BudgetTileInterests(&nine, 1, 64.0f, 8, bounded);
+        Check(bounded.size() == 8, "place.res.budget-eight-not-nine");
+        bool unique = true;
+        for (size_t i = 0; i < bounded.size(); ++i) {
+            Check(bounded[i].z - bounded[i].x == 64.0f && bounded[i].w - bounded[i].y == 64.0f,
+                  "place.res.budget-rect-is-one-tile");
+            for (size_t j = i + 1; j < bounded.size(); ++j)
+                if (bounded[i] == bounded[j])
+                    unique = false;
+        }
+        Check(unique, "place.res.budget-no-duplicates");
+        std::vector<glm::vec4> repeat;
+        PlacementWorldRuntime::BudgetTileInterests(&nine, 1, 64.0f, 8, repeat);
+        Check(repeat == bounded, "place.res.budget-deterministic");
+        const glm::vec4 second(128.0f, 0.0f, 192.0f, 64.0f);
+        const glm::vec4 prioritized[2]{second, nine};
+        PlacementWorldRuntime::BudgetTileInterests(prioritized, 2, 64.0f, 1, bounded);
+        Check(bounded.size() == 1 && bounded[0] == second,
+              "place.res.budget-priority-before-nearness");
+        PlacementWorldRuntime::BudgetTileInterests(&nine, 1, 64.0f, 0, bounded);
+        Check(bounded.empty(), "place.res.budget-zero");
+    }
 
-	// ---- the GPU slot map. ----
-	{
-		PlacementGpuTiles gpuTiles;
-		gpuTiles.Init(2);
-		Check(gpuTiles.Valid(), "place.gpu-tiles-init");
-		const TileKey kA{ TileID{ 0, 0, 0 }, 101 };
-		const TileKey kB{ TileID{ 1, 0, 0 }, 101 };
-		int32_t sa = gpuTiles.Claim(kA);
-		int32_t sb = gpuTiles.Claim(kB);
-		Check(sa == 0 && sb == 1, "place.gpu-tiles-claim-free");
-		// All slots mid-generation: a third claim refuses.
-		Check(gpuTiles.Claim(TileKey{ TileID{ 2, 0, 0 }, 101 }) == -1,
-			"place.gpu-tiles-full-refuses");
-		// Publish A; find A back; a stale finish refuses.
-		Check(gpuTiles.Finish(sa, kA, gpuTiles.slots[size_t(sa)].generation),
-			"place.gpu-tiles-finish-ok");
-		Check(gpuTiles.Find(kA) == sa, "place.gpu-tiles-find");
-		const uint64_t staleGen = gpuTiles.slots[size_t(sa)].generation + 999;
-		Check(!gpuTiles.Finish(sa, kA, staleGen), "place.gpu-tiles-stale-refuses");
-		// Claim C reassigns the PUBLISHED slot (LRU) — A's generation
-		// bumped; B (still generating) stays.
-		const TileKey kC{ TileID{ 2, 0, 0 }, 101 };
-		int32_t sc = gpuTiles.Claim(kC);
-		Check(sc == sa, "place.gpu-tiles-evict-published-lru");
-		Check(gpuTiles.Find(kA) == -1, "place.gpu-tiles-evicted-not-found");
-		// A stale FINISH for the EVICTED tenant (delayed) refuses.
-		Check(!gpuTiles.Finish(sc, kA, 1), "place.gpu-tiles-evicted-finish-refuses");
-		Check(gpuTiles.Finish(sc, kC, gpuTiles.slots[size_t(sc)].generation),
-			"place.gpu-tiles-new-tenant-finish");
-		// Release + re-find.
-		gpuTiles.Release(sc);
-		Check(gpuTiles.Find(kC) == -1, "place.gpu-tiles-released");
-	}
+    // ---- the GPU slot map. ----
+    {
+        PlacementGpuTiles gpuTiles;
+        gpuTiles.Init(2);
+        Check(gpuTiles.Valid(), "place.gpu-tiles-init");
+        const TileKey kA{TileID{0, 0, 0}, 101};
+        const TileKey kB{TileID{1, 0, 0}, 101};
+        int32_t sa = gpuTiles.Claim(kA);
+        int32_t sb = gpuTiles.Claim(kB);
+        Check(sa == 0 && sb == 1, "place.gpu-tiles-claim-free");
+        // All slots mid-generation: a third claim refuses.
+        Check(gpuTiles.Claim(TileKey{TileID{2, 0, 0}, 101}) == -1, "place.gpu-tiles-full-refuses");
+        // Publish A; find A back; a stale finish refuses.
+        Check(gpuTiles.Finish(sa, kA, gpuTiles.slots[size_t(sa)].generation),
+              "place.gpu-tiles-finish-ok");
+        Check(gpuTiles.Find(kA) == sa, "place.gpu-tiles-find");
+        const uint64_t staleGen = gpuTiles.slots[size_t(sa)].generation + 999;
+        Check(!gpuTiles.Finish(sa, kA, staleGen), "place.gpu-tiles-stale-refuses");
+        // Claim C reassigns the PUBLISHED slot (LRU) — A's generation
+        // bumped; B (still generating) stays.
+        const TileKey kC{TileID{2, 0, 0}, 101};
+        int32_t sc = gpuTiles.Claim(kC);
+        Check(sc == sa, "place.gpu-tiles-evict-published-lru");
+        Check(gpuTiles.Find(kA) == -1, "place.gpu-tiles-evicted-not-found");
+        // A stale FINISH for the EVICTED tenant (delayed) refuses.
+        Check(!gpuTiles.Finish(sc, kA, 1), "place.gpu-tiles-evicted-finish-refuses");
+        Check(gpuTiles.Finish(sc, kC, gpuTiles.slots[size_t(sc)].generation),
+              "place.gpu-tiles-new-tenant-finish");
+        // Release + re-find.
+        gpuTiles.Release(sc);
+        Check(gpuTiles.Find(kC) == -1, "place.gpu-tiles-released");
+    }
 
-	// Runtime revision invalidates live tile generation on scalar and
-	// prototype-weight edits even when the caller's dependency counter
-	// is unchanged (the old revision only hashed SSA instructions).
-	{
-		PlacementSystem::LayerBinding versioned;
-		versioned.programId = 202;
-		versioned.program.graphSeed = 6;
-		versioned.program.instrs = { OpConst(1.0f) };
-		versioned.program.acceptIndex = 0;
-		DependencyVersions ver{};
-		const uint64_t base =
-			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
-		versioned.config.densityScale = 0.25f;
-		const uint64_t density =
-			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
-		versioned.config.slopeToRock = true;
-		const uint64_t slope =
-			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
-		Prototype proto;
-		versioned.prototypes.add(proto);
-		const uint64_t prototype =
-			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
-		Check(base != density && density != slope && slope != prototype,
-			"place.res.gpu-program-revision-includes-scalar-and-proto-edits");
-	}
+    // Runtime revision invalidates live tile generation on scalar and
+    // prototype-weight edits even when the caller's dependency counter
+    // is unchanged (the old revision only hashed SSA instructions).
+    {
+        PlacementSystem::LayerBinding versioned;
+        versioned.programId = 202;
+        versioned.program.graphSeed = 6;
+        versioned.program.instrs = {OpConst(1.0f)};
+        versioned.program.acceptIndex = 0;
+        DependencyVersions ver{};
+        const uint64_t base = PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+        versioned.config.densityScale = 0.25f;
+        const uint64_t density = PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+        versioned.config.slopeToRock = true;
+        const uint64_t slope = PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+        Prototype proto;
+        versioned.prototypes.add(proto);
+        const uint64_t prototype = PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+        Check(base != density && density != slope && slope != prototype,
+              "place.res.gpu-program-revision-includes-scalar-and-proto-edits");
+    }
 
-	// ---- the full world flow: fake world -> tile domain -> meadow. ----
-	{
-		using namespace smvk::terrain;
-		// A 16m world (4x4 H-tiles x 4 texels, 1m/texel) + 2x2 S-tiles
-		// (8 texels). Tiles of 8m -> a 2x2 placement-tile grid.
-		TerrainHField field;
-		// The LOCKED pack contract: worldY = kTerrainBaseY + h01 *
-		// kTerrainRange (terrain_pack.h) — the meta mirrors the same
-		// values in production; the harvest decodes through the
-		// constants. Design the ramp for ~30deg slopes under them.
-		field.meta.worldSize = 16.0f;
-		field.meta.originX = -8.0f;
-		field.meta.originZ = -8.0f;
-		field.meta.hTileSize = 4.0f;
-		field.meta.hRes = 4;
-		field.meta.gBlock = 8.0f;
-		field.meta.baseY = smvk::terrain::kTerrainBaseY;
-		field.meta.range = smvk::terrain::kTerrainRange;
-		const uint32_t nH = field.tilesPerAxis();
-		field.tiles.assign(size_t(nH) * nH,
-			std::vector<uint8_t>(size_t(field.meta.hRes) * field.meta.hRes * 4, 0));
-		for (uint32_t tz = 0; tz < nH; ++tz)
-			for (uint32_t tx = 0; tx < nH; ++tx) {
-				auto& tile = field.tiles[size_t(tz) * nH + tx];
-				for (uint32_t py = 0; py < field.meta.hRes; ++py)
-					for (uint32_t pxx = 0; pxx < field.meta.hRes; ++pxx) {
-						// World texel (tx*4+pxx, tz*4+py): a smooth plane —
-						// ~30deg under the LOCKED range (420m), so the
-						// SlopeMask(20,60) band gates meaningfully.
-						const float h01 =
-							(float)(tx * 4 + pxx + tz * 4 + py) / 1024.0f;
-						uint8_t r, g;
-						EncodeRG16(h01, r, g);
-						const size_t o = (size_t(py) * field.meta.hRes + pxx) * 4;
-						tile[o] = r; tile[o + 1] = g;
-					}
-			}
-		std::vector<std::vector<uint8_t>> sTiles(2 * 2);
-		const uint32_t sRes = 8;
-		for (auto& t : sTiles)
-			t.assign(size_t(sRes) * sRes * 4, 0);
-		for (uint32_t tz = 0; tz < 2; ++tz)
-			for (uint32_t tx = 0; tx < 2; ++tx) {
-				auto& tile = sTiles[size_t(tz) * 2 + tx];
-				for (uint32_t py = 0; py < sRes; ++py)
-					for (uint32_t pxx = 0; pxx < sRes; ++pxx) {
-						const size_t o = (size_t(py) * sRes + pxx) * 4;
-						tile[o + 0] = uint8_t((pxx * 24 + py * 8) % 256); // ch0 paint
-						tile[o + 3] = 255;                              // ch3 full
-					}
-			}
-		WorldMaskGrid grid2{ &sTiles, 2, sRes };
+    // ---- the full world flow: fake world -> tile domain -> meadow. ----
+    {
+        using namespace smvk::terrain;
+        // A 16m world (4x4 H-tiles x 4 texels, 1m/texel) + 2x2 S-tiles
+        // (8 texels). Tiles of 8m -> a 2x2 placement-tile grid.
+        TerrainHField field;
+        // The LOCKED pack contract: worldY = kTerrainBaseY + h01 *
+        // kTerrainRange (terrain_pack.h) — the meta mirrors the same
+        // values in production; the harvest decodes through the
+        // constants. Design the ramp for ~30deg slopes under them.
+        field.meta.worldSize = 16.0f;
+        field.meta.originX = -8.0f;
+        field.meta.originZ = -8.0f;
+        field.meta.hTileSize = 4.0f;
+        field.meta.hRes = 4;
+        field.meta.gBlock = 8.0f;
+        field.meta.baseY = smvk::terrain::kTerrainBaseY;
+        field.meta.range = smvk::terrain::kTerrainRange;
+        const uint32_t nH = field.tilesPerAxis();
+        field.tiles.assign(size_t(nH) * nH,
+                           std::vector<uint8_t>(size_t(field.meta.hRes) * field.meta.hRes * 4, 0));
+        for (uint32_t tz = 0; tz < nH; ++tz)
+            for (uint32_t tx = 0; tx < nH; ++tx) {
+                auto& tile = field.tiles[size_t(tz) * nH + tx];
+                for (uint32_t py = 0; py < field.meta.hRes; ++py)
+                    for (uint32_t pxx = 0; pxx < field.meta.hRes; ++pxx) {
+                        // World texel (tx*4+pxx, tz*4+py): a smooth plane —
+                        // ~30deg under the LOCKED range (420m), so the
+                        // SlopeMask(20,60) band gates meaningfully.
+                        const float h01 = (float)(tx * 4 + pxx + tz * 4 + py) / 1024.0f;
+                        uint8_t r, g;
+                        EncodeRG16(h01, r, g);
+                        const size_t o = (size_t(py) * field.meta.hRes + pxx) * 4;
+                        tile[o] = r;
+                        tile[o + 1] = g;
+                    }
+            }
+        std::vector<std::vector<uint8_t>> sTiles(2 * 2);
+        const uint32_t sRes = 8;
+        for (auto& t : sTiles)
+            t.assign(size_t(sRes) * sRes * 4, 0);
+        for (uint32_t tz = 0; tz < 2; ++tz)
+            for (uint32_t tx = 0; tx < 2; ++tx) {
+                auto& tile = sTiles[size_t(tz) * 2 + tx];
+                for (uint32_t py = 0; py < sRes; ++py)
+                    for (uint32_t pxx = 0; pxx < sRes; ++pxx) {
+                        const size_t o = (size_t(py) * sRes + pxx) * 4;
+                        tile[o + 0] = uint8_t((pxx * 24 + py * 8) % 256); // ch0 paint
+                        tile[o + 3] = 255;                                // ch3 full
+                    }
+            }
+        WorldMaskGrid grid2{&sTiles, 2, sRes};
 
-		// Build ONE tile's domain (tile (0,0) covers [0,8) x [0,8) —
-		// inside the world's [-8,8] span; the world-covering 8m tiles are
-		// (-1,-1)..(0,0), so this exercises NEGATIVE-adjacent coords).
-		WorldTileData td;
-		const float halo = WorldTileHaloMeters(2.0f, 1.0f);
-		Check(halo == 2.0f, "place.res.halo-math");
-		Check(BuildWorldTileDomain(field, grid2, 8.0f, 0, 0, halo, td),
-			"place.res.tile-domain-built");
-		// The tile rect (world): [8-8, 16-8) = [0, 8] — the extent.
-		Check(td.domain.extentMin == glm::vec2(0.0f, 0.0f)
-			&& td.domain.extentMax == glm::vec2(8.0f, 8.0f),
-			"place.res.tile-extent");
-		Check(td.heights.valid() && td.eco.valid() && td.eco.channels == 4,
-			"place.res.tile-data-valid");
-		Check(td.eco.width > 8 && td.eco.height > 8,
-			"place.res.tile-ecotope-halo");
-		// The halo grew the heights window past the 8m tile.
-		Check(td.heights.width > 8 && td.heights.height > 8,
-			"place.res.tile-window-halo");
+        // Build ONE tile's domain (tile (0,0) covers [0,8) x [0,8) —
+        // inside the world's [-8,8] span; the world-covering 8m tiles are
+        // (-1,-1)..(0,0), so this exercises NEGATIVE-adjacent coords).
+        WorldTileData td;
+        const float halo = WorldTileHaloMeters(2.0f, 1.0f);
+        Check(halo == 2.0f, "place.res.halo-math");
+        Check(BuildWorldTileDomain(field, grid2, 8.0f, 0, 0, halo, td),
+              "place.res.tile-domain-built");
+        // The tile rect (world): [8-8, 16-8) = [0, 8] — the extent.
+        Check(td.domain.extentMin == glm::vec2(0.0f, 0.0f) &&
+                  td.domain.extentMax == glm::vec2(8.0f, 8.0f),
+              "place.res.tile-extent");
+        Check(td.heights.valid() && td.eco.valid() && td.eco.channels == 4,
+              "place.res.tile-data-valid");
+        Check(td.eco.width > 8 && td.eco.height > 8, "place.res.tile-ecotope-halo");
+        // The halo grew the heights window past the 8m tile.
+        Check(td.heights.width > 8 && td.heights.height > 8, "place.res.tile-window-halo");
 
-		// The meadow layer OVER the tile: the binding REPOINTS at the
-		// per-tile data, then the pending/publish residency flow.
-		PlacementSystem sys2;
-		PlacementSystem::LayerBinding lb;
-		lb.programId = 202;
-		lb.program.graphSeed = 99;
-		lb.program.nodeId = 5;
-		lb.program.instrs = {
-			FieldInstr{ .op = FieldOp::EcotopeMask, .params = { 0.0f, 0, 0, 0 } },
-			FieldInstr{ .op = FieldOp::SlopeMask, .params = { 20.0f, 60.0f, 0, 0 } },
-			FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
-		};
-		lb.program.acceptIndex = 2;
-		lb.domainKind = DomainKind::Heightfield;
-		lb.heightfield = &td.domain;
-		lb.ecotope = &td.eco;
-		lb.config.candidatesPerTile = 256;
-		Prototype p; p.weight = 1.0f;
-		lb.prototypes.add(p);
-		sys2.registerLayer(lb);
-		// Map the WORLD tile (0,0) onto the placement TileID (0,0) via
-		// the residency tick (interest = the tile rect).
-		const glm::vec4 tRect[1] = { glm::vec4(0.0f, 0.0f, 8.0f, 8.0f) };
-		std::vector<PlacementSystem::ActivationRequest> acts2;
-		sys2.UpdateResidency(202, 8.0f, tRect, 1, deps, 4, acts2);
-		Check(acts2.size() == 1 && acts2[0].key.tile == TileID{ 0, 0, 0 },
-			"place.res.world-tile-activation");
-		uint64_t gen = 0;
-		Check(sys2.GenerateTilePending(202, acts2[0].key.tile, deps, gen),
-			"place.res.world-meadow-pending");
-		Check(sys2.PublishActivation(acts2[0].key, acts2[0].generation),
-			"place.res.world-meadow-publish");
-		const PlacementTile* tile =
-			sys2.findTile(202, acts2[0].key.tile);
-		Check(tile && !tile->instances.empty(), "place.res.world-meadow-populated");
-		// Every instance lives INSIDE the tile's half-open rect (the
-		// seam rule: neighbors never duplicate borders).
-		bool inside = tile && !tile->instances.empty();
-		if (inside)
-			for (const RenderInstance& in : tile->instances)
-				if (in.position.x < td.domain.extentMin.x
-					|| in.position.x >= td.domain.extentMax.x
-					|| in.position.z < td.domain.extentMin.y
-					|| in.position.z >= td.domain.extentMax.y) {
-					inside = false; break;
-				}
-		Check(inside, "place.res.instances-inside-half-open-tile");
-		// Regeneration determinism (unload/reload stability): a repaint
-		// stamp INSIDE the tile + the halo dirties + regenerates.
-		const size_t n0 = tile ? tile->instances.size() : 0;
-		sys2.InvalidateRegion(202, 8.0f, glm::vec2(3.0f, 3.0f),
-			glm::vec2(5.0f, 5.0f), halo);
-		sys2.UpdateResidency(202, 8.0f, tRect, 1, deps, 4, acts2);
-		Check(acts2.size() == 1 && acts2[0].regenerate,
-			"place.res.world-repaint-regen");
-		uint64_t gen2 = 0;
-		sys2.GenerateTilePending(202, acts2[0].key.tile, deps, gen2);
-		sys2.PublishActivation(acts2[0].key, acts2[0].generation);
-		const PlacementTile* tile2 = sys2.findTile(202, acts2[0].key.tile);
-		bool stable = tile2 && tile2->instances.size() == n0;
-		if (stable)
-			for (size_t i = 0; i < n0; ++i)
-				if (tile2->instances[i].position != tile->instances[i].position
-					|| tile2->instances[i].prototypeId != tile->instances[i].prototypeId
-					|| tile2->instances[i].stableLow != tile->instances[i].stableLow) {
-					stable = false; break;
-				}
-		Check(stable, "place.res.world-repaint-stable");
-	}
+        // The meadow layer OVER the tile: the binding REPOINTS at the
+        // per-tile data, then the pending/publish residency flow.
+        PlacementSystem sys2;
+        PlacementSystem::LayerBinding lb;
+        lb.programId = 202;
+        lb.program.graphSeed = 99;
+        lb.program.nodeId = 5;
+        lb.program.instrs = {
+            FieldInstr{.op = FieldOp::EcotopeMask, .params = {0.0f, 0, 0, 0}},
+            FieldInstr{.op = FieldOp::SlopeMask, .params = {20.0f, 60.0f, 0, 0}},
+            FieldInstr{.op = FieldOp::Mul, .a = 0, .b = 1},
+        };
+        lb.program.acceptIndex = 2;
+        lb.domainKind = DomainKind::Heightfield;
+        lb.heightfield = &td.domain;
+        lb.ecotope = &td.eco;
+        lb.config.candidatesPerTile = 256;
+        Prototype p;
+        p.weight = 1.0f;
+        lb.prototypes.add(p);
+        sys2.registerLayer(lb);
+        // Map the WORLD tile (0,0) onto the placement TileID (0,0) via
+        // the residency tick (interest = the tile rect).
+        const glm::vec4 tRect[1] = {glm::vec4(0.0f, 0.0f, 8.0f, 8.0f)};
+        std::vector<PlacementSystem::ActivationRequest> acts2;
+        sys2.UpdateResidency(202, 8.0f, tRect, 1, deps, 4, acts2);
+        Check(acts2.size() == 1 && acts2[0].key.tile == TileID{0, 0, 0},
+              "place.res.world-tile-activation");
+        uint64_t gen = 0;
+        Check(sys2.GenerateTilePending(202, acts2[0].key.tile, deps, gen),
+              "place.res.world-meadow-pending");
+        Check(sys2.PublishActivation(acts2[0].key, acts2[0].generation),
+              "place.res.world-meadow-publish");
+        const PlacementTile* tile = sys2.findTile(202, acts2[0].key.tile);
+        Check(tile && !tile->instances.empty(), "place.res.world-meadow-populated");
+        // Every instance lives INSIDE the tile's half-open rect (the
+        // seam rule: neighbors never duplicate borders).
+        bool inside = tile && !tile->instances.empty();
+        if (inside)
+            for (const RenderInstance& in : tile->instances)
+                if (in.position.x < td.domain.extentMin.x ||
+                    in.position.x >= td.domain.extentMax.x ||
+                    in.position.z < td.domain.extentMin.y ||
+                    in.position.z >= td.domain.extentMax.y) {
+                    inside = false;
+                    break;
+                }
+        Check(inside, "place.res.instances-inside-half-open-tile");
+        // Regeneration determinism (unload/reload stability): a repaint
+        // stamp INSIDE the tile + the halo dirties + regenerates.
+        const size_t n0 = tile ? tile->instances.size() : 0;
+        sys2.InvalidateRegion(202, 8.0f, glm::vec2(3.0f, 3.0f), glm::vec2(5.0f, 5.0f), halo);
+        sys2.UpdateResidency(202, 8.0f, tRect, 1, deps, 4, acts2);
+        Check(acts2.size() == 1 && acts2[0].regenerate, "place.res.world-repaint-regen");
+        uint64_t gen2 = 0;
+        sys2.GenerateTilePending(202, acts2[0].key.tile, deps, gen2);
+        sys2.PublishActivation(acts2[0].key, acts2[0].generation);
+        const PlacementTile* tile2 = sys2.findTile(202, acts2[0].key.tile);
+        bool stable = tile2 && tile2->instances.size() == n0;
+        if (stable)
+            for (size_t i = 0; i < n0; ++i)
+                if (tile2->instances[i].position != tile->instances[i].position ||
+                    tile2->instances[i].prototypeId != tile->instances[i].prototypeId ||
+                    tile2->instances[i].stableLow != tile->instances[i].stableLow) {
+                    stable = false;
+                    break;
+                }
+        Check(stable, "place.res.world-repaint-stable");
+    }
 }
 
 int main() {
-	TestPaintedPointCloud();
-	TestStableDeterminism();	TestChannels();
-	TestPrototypeSelect();
-	TestPointsSoA();
-	TestRenderInstanceAbi();
-	TestGridDomain();
-	TestMeshAlias();
-	TestHeightfield();
-	TestFieldEval();
-	TestAcceptance();
-	TestNoise();
-	TestTileDeterminism();
-	TestTileStreamingOrder();
-	TestOracleEdges();
-	TestMinDistance();
-	TestTileCache();
-	TestTransientDraws();
-	TestGpuPushAbi();
-	TestMinDistanceVolume();
-	TestOverrides();
-	TestOverrideAllAttrs();
-	TestOverrideNodeFilter();
-	TestExclusions();
-	TestCacheRoundTrip();
-	TestPhysicsQuery();
-	TestPromotion();
-	TestPushBridge();
-	TestProgramValidation();
-	TestKernelAlgorithmParity();
-	TestScatterParams();
-	TestMeshKernelParity();
-	TestHfKernelParity();
-	TestConBridge();
-	TestConBruteForce();
-	TestDrawFeed();
-	TestTerrainUpload();
-	TestTerrainGroups();
-	TestTerrainBrush();
-	TestTerrainRaycast();
-	TestWorldBridge();
-	TestWorldResidency();
-	std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
-	return g_failures == 0 ? 0 : 1;
+    TestPaintedPointCloud();
+    TestStableDeterminism();
+    TestChannels();
+    TestPrototypeSelect();
+    TestPointsSoA();
+    TestRenderInstanceAbi();
+    TestGridDomain();
+    TestMeshAlias();
+    TestHeightfield();
+    TestFieldEval();
+    TestAcceptance();
+    TestNoise();
+    TestTileDeterminism();
+    TestTileStreamingOrder();
+    TestOracleEdges();
+    TestMinDistance();
+    TestTileCache();
+    TestTransientDraws();
+    TestGpuPushAbi();
+    TestMinDistanceVolume();
+    TestOverrides();
+    TestOverrideAllAttrs();
+    TestOverrideNodeFilter();
+    TestExclusions();
+    TestCacheRoundTrip();
+    TestPhysicsQuery();
+    TestPromotion();
+    TestPushBridge();
+    TestProgramValidation();
+    TestKernelAlgorithmParity();
+    TestScatterParams();
+    TestMeshKernelParity();
+    TestHfKernelParity();
+    TestConBridge();
+    TestConBruteForce();
+    TestDrawFeed();
+    TestTerrainUpload();
+    TestTerrainGroups();
+    TestTerrainBrush();
+    TestTerrainRaycast();
+    TestWorldBridge();
+    TestWorldResidency();
+    std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
+    return g_failures == 0 ? 0 : 1;
 }

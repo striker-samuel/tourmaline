@@ -12,14 +12,37 @@
 
 namespace editor::plugs {
 
-enum class Kind { Boolean, Integer, Float, Enum, VectorComponent, ColorComponent,
-    Resource, String };
-enum class NodeType { Transform, Mesh, Material, Light, GiVolume,
-    Cubemap, Camera, AudioSource, AudioRoom, PhysicsBody, TriggerVolume,
-    Terrain, Environment, ExportSettings, Image, Locator };
+enum class Kind {
+    Boolean,
+    Integer,
+    Float,
+    Enum,
+    VectorComponent,
+    ColorComponent,
+    Resource,
+    String
+};
+enum class NodeType {
+    Transform,
+    Mesh,
+    Material,
+    Light,
+    GiVolume,
+    Cubemap,
+    Camera,
+    AudioSource,
+    AudioRoom,
+    PhysicsBody,
+    TriggerVolume,
+    Terrain,
+    Environment,
+    ExportSettings,
+    Image,
+    Locator
+};
 
 struct Descriptor {
-    std::string_view path; // persistent, machine-readable ("transform.scale.x")
+    std::string_view path;  // persistent, machine-readable ("transform.scale.x")
     std::string_view label; // editor presentation ("Scale X")
     Kind kind;
     bool overridable = true;
@@ -127,21 +150,26 @@ inline constexpr std::array types = {
 
 inline const Type* FindType(NodeType type) {
     for (const Type& t : types)
-        if (t.id == type) return &t;
+        if (t.id == type)
+            return &t;
     return nullptr;
 }
 inline const Descriptor* Find(NodeType type, std::string_view path) {
     const Type* t = FindType(type);
-    if (!t) return nullptr;
+    if (!t)
+        return nullptr;
     for (const Descriptor& p : t->properties)
-        if (p.path == path) return &p;
+        if (p.path == path)
+            return &p;
     return nullptr;
 }
 inline const Descriptor* FindByLabel(NodeType type, std::string_view label) {
     const Type* t = FindType(type);
-    if (!t) return nullptr;
+    if (!t)
+        return nullptr;
     for (const Descriptor& p : t->properties)
-        if (p.label == label) return &p;
+        if (p.label == label)
+            return &p;
     return nullptr;
 }
 } // namespace editor::plugs

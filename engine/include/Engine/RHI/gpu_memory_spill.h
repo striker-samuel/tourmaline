@@ -9,9 +9,7 @@ namespace smvk {
 
 // Advisory state only: a nonlocal heap increase is NOT proof of OS eviction.
 // VMA sees allocations and estimated heap budgets, not WDDM residency moves.
-enum class GpuMemoryWarning : uint8_t {
-    Unavailable, Healthy, Pressure, Critical, SpillSuspected
-};
+enum class GpuMemoryWarning : uint8_t { Unavailable, Healthy, Pressure, Critical, SpillSuspected };
 
 struct GpuMemoryPressureSample {
     uint64_t localUsageBytes = 0;
@@ -28,11 +26,10 @@ struct GpuMemoryWarningResult {
 };
 
 class GpuMemorySpillDetector {
-public:
+  public:
     // Call at a low fixed cadence (shipping: roughly once a second).
     // seconds is time elapsed since the previous observation.
-    GpuMemoryWarningResult Update(const GpuMemoryPressureSample& sample,
-                                  double seconds) noexcept {
+    GpuMemoryWarningResult Update(const GpuMemoryPressureSample& sample, double seconds) noexcept {
         if (sample.localBudgetBytes == 0) {
             const bool changed = state_ != GpuMemoryWarning::Unavailable;
             Reset();
@@ -48,16 +45,16 @@ public:
         if (sample.nonlocalAvailable && baselineSet_)
             nonlocalBaseline_ = std::min(nonlocalBaseline_, sample.nonlocalUsageBytes);
         const uint64_t growth = sample.nonlocalAvailable && baselineSet_ &&
-                                sample.nonlocalUsageBytes > nonlocalBaseline_
-            ? sample.nonlocalUsageBytes - nonlocalBaseline_ : 0;
+                                        sample.nonlocalUsageBytes > nonlocalBaseline_
+                                    ? sample.nonlocalUsageBytes - nonlocalBaseline_
+                                    : 0;
 
         const double dt = seconds > 0.0 && seconds < 60.0 ? seconds : 0.0;
         pressureSeconds_ = ratio >= 0.85 ? pressureSeconds_ + dt : 0.0;
         clearSeconds_ = ratio < 0.80 ? clearSeconds_ + dt : 0.0;
 
         GpuMemoryWarning next = state_;
-        if (ratio >= 0.85 && growth >= 64ull * 1024ull * 1024ull &&
-            pressureSeconds_ >= 2.0) {
+        if (ratio >= 0.85 && growth >= 64ull * 1024ull * 1024ull && pressureSeconds_ >= 2.0) {
             next = GpuMemoryWarning::SpillSuspected;
         } else if (ratio >= 0.95) {
             next = GpuMemoryWarning::Critical;
@@ -72,8 +69,9 @@ public:
         // De-escalate suspected spill when the growth disappears even if
         // local usage remains pressured; never claim a confirmed eviction.
         if (next == GpuMemoryWarning::SpillSuspected && growth < 64ull * 1024ull * 1024ull) {
-            next = ratio >= 0.95 ? GpuMemoryWarning::Critical :
-                   ratio >= 0.85 ? GpuMemoryWarning::Pressure : GpuMemoryWarning::Healthy;
+            next = ratio >= 0.95   ? GpuMemoryWarning::Critical
+                   : ratio >= 0.85 ? GpuMemoryWarning::Pressure
+                                   : GpuMemoryWarning::Healthy;
         }
         const bool changed = next != state_;
         state_ = next;
@@ -87,7 +85,7 @@ public:
         pressureSeconds_ = clearSeconds_ = 0.0;
     }
 
-private:
+  private:
     GpuMemoryWarning state_ = GpuMemoryWarning::Unavailable;
     uint64_t nonlocalBaseline_ = 0;
     bool baselineSet_ = false;

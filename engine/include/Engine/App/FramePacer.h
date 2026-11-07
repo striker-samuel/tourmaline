@@ -15,7 +15,7 @@ namespace tour {
 // Deadline cadence is absolute (not sleep-for-after-work), and skipped
 // deadlines are discarded after a hitch rather than run as catch-up frames.
 class FramePacer {
-public:
+  public:
     using Clock = std::chrono::steady_clock;
     using Duration = Clock::duration;
     using TimePoint = Clock::time_point;
@@ -26,8 +26,12 @@ public:
             Reset();
         }
     }
-    uint32_t GetTargetFps() const { return targetFps_; }
-    void Reset() { armed_ = false; }
+    uint32_t GetTargetFps() const {
+        return targetFps_;
+    }
+    void Reset() {
+        armed_ = false;
+    }
 
     // Leave room below the VRR ceiling so FIFO VSync does not start
     // queueing frames at the fixed-refresh boundary. Unknown refresh
@@ -42,8 +46,9 @@ public:
     static Duration PeriodForFps(uint32_t fps) {
         if (fps == 0)
             return Duration::zero();
-        return std::max(Duration{1}, std::chrono::duration_cast<Duration>(
-            std::chrono::duration<double>(1.0 / double(fps))));
+        return std::max(
+            Duration{1},
+            std::chrono::duration_cast<Duration>(std::chrono::duration<double>(1.0 / double(fps))));
     }
 
     // Return the first deadline strictly after 'now', or the outstanding
@@ -72,11 +77,12 @@ public:
         const auto coarseDeadline = nextDeadline_ - spinWindow;
         if (Clock::now() < coarseDeadline)
             std::this_thread::sleep_until(coarseDeadline);
-        while (Clock::now() < nextDeadline_) { }
+        while (Clock::now() < nextDeadline_) {
+        }
         nextDeadline_ = NextDeadline(nextDeadline_, Clock::now(), PeriodForFps(targetFps_));
     }
 
-private:
+  private:
     uint32_t targetFps_ = 0; // 0 = no CPU cap; swapchain may still throttle.
     bool armed_ = false;
     TimePoint nextDeadline_{};

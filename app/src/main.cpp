@@ -6,8 +6,8 @@
 // this target — PakApp.cpp / PakWorldLoader.cpp / PakAppArgs.cpp /
 // PakPreload.cpp / Host.h — NOT in the engine; the engine's WorldRenderer
 // renders whatever world the host hands it.
-#include "Host.h"
 #include "AudioRuntime.h"
+#include "Host.h"
 
 #include <filesystem>
 #include <iostream>
@@ -17,73 +17,67 @@
 #include <Engine/Utils/shader_library.h>
 
 int main(int argc, const char* argv[]) {
-	// Central run config: parse ALL TOURMALINE_* once, log one line, warn
-	// on unknown names (typos silently no-op'd before). Subsystems read
-	// their slab from here; legacy getenv sites migrate incrementally.
-	const engine::RunConfig runCfg = engine::RunConfig::Parse();
-	runCfg.Log();
-	engine::RunConfig::WarnUnknown();
-	// The engine shader library mounts BEFORE any graphics
-	// initialization: the exe-relative engine-shaders.pak (the
-	// mandatory production source) + the dev content/shaders/
-	// override. Every later shader read (renderer, render-graph,
-	// debug views) serves through it.
-	tour::shaders::Init();
-	// TOURMALINE_SHADER_RELOAD=1 (dev): arm the watched recompile
-	// service — engine/shaders/ edits recompile in-process and land
-	// in the dev override tree; the renderer's frame tick consumes
-	// the change log. Never on by default (production never pays).
-	if (std::getenv("TOURMALINE_SHADER_RELOAD")) {
-		namespace fs = std::filesystem;
-		// (the dev-tree source: the standard repo layout —
-		// out/build/<cfg>/ -> <repo>/engine/shaders; an explicit
-		// override for unusual trees)
-		fs::path srcDir;
-		if (const char* src =
-				std::getenv("TOURMALINE_SHADER_RELOAD_SRC"))
-			srcDir = fs::path(src);
-		else
-			srcDir = (fs::current_path() / ".." / ".." / ".."
-				/ "engine" / "shaders").lexically_normal();
-		const std::string outDir = (fs::current_path() / "content"
-			/ "shaders").lexically_normal().generic_string();
-		std::string rErr;
-		if (!smvk::shader_reload::Start(
-				srcDir.lexically_normal().generic_string(), outDir,
-				rErr))
-			std::cerr << "[shader-reload] not armed: " << rErr
-				<< "\n";
-	}
-	// The CLI parse fills the dedicated options object ONLY — the
-	// host-supplied state below is assembled after it and can never be
-	// reset or erased by the parser.
-	app::PakAppConfig cfg;
-	cfg.run = runCfg;
-	// ---- THE SCENE-AWARE AUDIO SERVICE ---------------------------------
-	// Authored audio is CONTENT: a viewer that shows the scene without
-	// its bells misrepresents the package. The element stacks over the
-	// renderer (the world loaded), borrowing the launch's SHARED
-	// content session — every lane builds one (--project, the
-	// multi-pak discovery lane, the legacy single-pak lane), so the
-	// clip decodes ride the same provider selection as every other
-	// content read. The clean-viewer discipline was about GAME content
-	// (demo seeding), never about authored scene audio; a null session
-	// (no lane carried one) skips the service.
-	// Bench determinism holds: RunPakApp gates extraElements off during
-	// bench (TOURMALINE_EXTRA_ELEMENT_BENCH=1 re-enables).
-	cfg.extraElements.push_back(
-		[](tour::App& host,
-			engine::WorldRenderer& renderer,
-			std::shared_ptr<tour::World*> worldHandle,
-			const std::shared_ptr<app::ProjectRuntime>& session)
-		-> std::shared_ptr<engine::IAppElement> {
-		if (!session)
-			return nullptr; // no session: no authored audio to serve
-		return app::MakeAudioRuntime(host, session,
-			std::move(worldHandle), &renderer);
-	});
-	int exitCode = 0;
-	if (!app::ParsePakAppArgs(argc, argv, cfg.cli, exitCode))
-		return exitCode;
-	return app::RunPakApp(cfg);
+    // Central run config: parse ALL TOURMALINE_* once, log one line, warn
+    // on unknown names (typos silently no-op'd before). Subsystems read
+    // their slab from here; legacy getenv sites migrate incrementally.
+    const engine::RunConfig runCfg = engine::RunConfig::Parse();
+    runCfg.Log();
+    engine::RunConfig::WarnUnknown();
+    // The engine shader library mounts BEFORE any graphics
+    // initialization: the exe-relative engine-shaders.pak (the
+    // mandatory production source) + the dev content/shaders/
+    // override. Every later shader read (renderer, render-graph,
+    // debug views) serves through it.
+    tour::shaders::Init();
+    // TOURMALINE_SHADER_RELOAD=1 (dev): arm the watched recompile
+    // service — engine/shaders/ edits recompile in-process and land
+    // in the dev override tree; the renderer's frame tick consumes
+    // the change log. Never on by default (production never pays).
+    if (std::getenv("TOURMALINE_SHADER_RELOAD")) {
+        namespace fs = std::filesystem;
+        // (the dev-tree source: the standard repo layout —
+        // out/build/<cfg>/ -> <repo>/engine/shaders; an explicit
+        // override for unusual trees)
+        fs::path srcDir;
+        if (const char* src = std::getenv("TOURMALINE_SHADER_RELOAD_SRC"))
+            srcDir = fs::path(src);
+        else
+            srcDir =
+                (fs::current_path() / ".." / ".." / ".." / "engine" / "shaders").lexically_normal();
+        const std::string outDir =
+            (fs::current_path() / "content" / "shaders").lexically_normal().generic_string();
+        std::string rErr;
+        if (!smvk::shader_reload::Start(srcDir.lexically_normal().generic_string(), outDir, rErr))
+            std::cerr << "[shader-reload] not armed: " << rErr << "\n";
+    }
+    // The CLI parse fills the dedicated options object ONLY — the
+    // host-supplied state below is assembled after it and can never be
+    // reset or erased by the parser.
+    app::PakAppConfig cfg;
+    cfg.run = runCfg;
+    // ---- THE SCENE-AWARE AUDIO SERVICE ---------------------------------
+    // Authored audio is CONTENT: a viewer that shows the scene without
+    // its bells misrepresents the package. The element stacks over the
+    // renderer (the world loaded), borrowing the launch's SHARED
+    // content session — every lane builds one (--project, the
+    // multi-pak discovery lane, the legacy single-pak lane), so the
+    // clip decodes ride the same provider selection as every other
+    // content read. The clean-viewer discipline was about GAME content
+    // (demo seeding), never about authored scene audio; a null session
+    // (no lane carried one) skips the service.
+    // Bench determinism holds: RunPakApp gates extraElements off during
+    // bench (TOURMALINE_EXTRA_ELEMENT_BENCH=1 re-enables).
+    cfg.extraElements.push_back([](tour::App& host,
+                                   engine::WorldRenderer& renderer,
+                                   std::shared_ptr<tour::World*> worldHandle,
+                                   const std::shared_ptr<app::ProjectRuntime>& session)
+                                    -> std::shared_ptr<engine::IAppElement> {
+        if (!session)
+            return nullptr; // no session: no authored audio to serve
+        return app::MakeAudioRuntime(host, session, std::move(worldHandle), &renderer);
+    });
+    int exitCode = 0;
+    if (!app::ParsePakAppArgs(argc, argv, cfg.cli, exitCode))
+        return exitCode;
+    return app::RunPakApp(cfg);
 }

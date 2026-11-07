@@ -11,7 +11,9 @@
 #include <cstdint>
 #include <memory>
 
-namespace smvk { class ResourceManager; }
+namespace smvk {
+class ResourceManager;
+}
 
 namespace tour::gpu_scene {
 
@@ -27,7 +29,7 @@ struct Addresses {
 };
 
 class Uploader {
-public:
+  public:
     Uploader();
     ~Uploader();
 
@@ -38,13 +40,12 @@ public:
     // consuming passes. UploadDataToBuffer queues transfers; the caller
     // must arrange FlushUploads + appropriate resource hazards.
     // On allocation failure returns false; dirty rows remain retryable.
-    [[nodiscard]] bool Publish(smvk::ResourceManager& ctx,
-                               RenderDatabase& scene, uint32_t flight);
+    [[nodiscard]] bool Publish(smvk::ResourceManager& ctx, RenderDatabase& scene, uint32_t flight);
 
-    [[nodiscard]] Addresses DeviceAddresses(
-        const smvk::ResourceManager& ctx, uint32_t flight) const;
+    [[nodiscard]] Addresses DeviceAddresses(const smvk::ResourceManager& ctx,
+                                            uint32_t flight) const;
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

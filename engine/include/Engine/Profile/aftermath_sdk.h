@@ -3,4 +3,4 @@
 namespace tour::aftermath {
 void Initialize(); // Before Vulkan instance/device creation; no-op unless linked.
 void Shutdown();   // On normal shutdown; no-op unless linked.
-}
+} // namespace tour::aftermath

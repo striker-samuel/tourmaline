@@ -35,8 +35,8 @@
 #include <string>
 #include <vector>
 
-#include <artifact_cache/assetdb.h>
 #include <Engine/Scene/node_schema.h>
+#include <artifact_cache/assetdb.h>
 
 #include "build_plan.h"
 #include "project.h"
@@ -44,79 +44,79 @@
 namespace smvk::project {
 
 struct CatalogEntry {
-	uint64_t id = 0;
-	std::string symbol; // the C++ identifier (stable from first assign)
-	std::string path;   // project-relative (the plan's identity — the
-	                    // runtime pairs it with the pak + the manifest)
-	std::string pak;    // the owning pak id
-	std::string kind;   // "scene"|"texture"|"mesh"|"sound" (the retired
-	                    // table's typed keys; empty on active rows is
-	                    // NOT valid — the generator always fills it)
+    uint64_t id = 0;
+    std::string symbol; // the C++ identifier (stable from first assign)
+    std::string path;   // project-relative (the plan's identity — the
+                        // runtime pairs it with the pak + the manifest)
+    std::string pak;    // the owning pak id
+    std::string kind;   // "scene"|"texture"|"mesh"|"sound" (the retired
+                        // table's typed keys; empty on active rows is
+                        // NOT valid — the generator always fills it)
 };
 
 struct ProjectCatalog {
-	std::string projectName;
-	uint64_t projectId = 0; // stable from the project identity
-	// The namespaces (the registry's kind ranges): scenes 0x1xxx,
-	// textures 0x2xxx, meshes 0x3xxx, sounds 0x4xxx — sorted by id,
-	// deterministic.
-	std::vector<CatalogEntry> scenes;
-	std::vector<CatalogEntry> textures;
-	std::vector<CatalogEntry> meshes;
-	std::vector<CatalogEntry> sounds;
-	// PROJECT-AUTHORED SHADER assets (the 0x5xxx range — compiled .spv
-	// the project owns; the ENGINE-NATIVE set never appears here: it
-	// rides engine-shaders.pak, build-owned, outside every recipe).
-	std::vector<CatalogEntry> shaders;
-	// GI bake SETS (the 0x6xxx range — .givolumemanifest files: a
-	// baked lighting set of one or more GI volumes; the runtime loads
-	// them by GiKey through AssetManager::LoadGI and can blend two
-	// resident sets — see docs/content_as_code.md).
-	std::vector<CatalogEntry> gi;
-	// AUTHORED AUDIO GRAPHS (the 0x7xxx range — .audiograph files: the
-	// audio system's node-graph + cue asset, docs/audio_graph.md). The
-	// header emits project::audiographs::* AudioGraphKey constants
-	// PLUS per-cue constants (project::audiocues::<graph>_<cue>,
-	// bundling (graph id, cue ordinal) — parsed at catalog time from
-	// the authored text, OUTSIDE the catalog ABI like the query
-	// metadata).
-	std::vector<CatalogEntry> audiographs;
-	std::vector<CatalogEntry> spritesets;
-	std::vector<CatalogEntry> statemachines; // 0x9xxx
-	std::vector<CatalogEntry> navmeshes;      // 0xAxxx
-	std::vector<CatalogEntry> shapes;         // 0xBxxx
-	// The per-graph CUE tables (parsed from the authored text at
-	// catalog time — the same loud-validation discipline as the schema
-	// collection): cue names in authored (ordinal) order, id-sorted
-	// with the bucket. The header's project::audiocues constants ride
-	// these; a malformed graph fails the ids pass, never packs.
-	struct AudioGraphCueTable {
-		uint64_t id = 0;               // the graph asset's catalog id
-		std::string symbol;            // the graph's emitted symbol
-		std::vector<std::string> cues; // cue names, authored order
-	};
-	std::vector<AudioGraphCueTable> audiographCues;
-	// (id, file) in plan (mount) order — paks are named entities, not
-	// id carriers: renaming a package updates this table; asset ids
-	// stay.
-	std::vector<std::pair<std::string, std::string>> paks;
-	// The TOMBSTONED identities (assets.db rows the plan no longer
-	// carries — deleted assets; active=0, ids+symbols reserved
-	// forever, never reused). The header emits them as the `retired`
-	// namespace (historical typed symbols, values preserved) + the
-	// compile-time IsRetired/IsActive queries; they stay OUT of the
-	// active namespaces and the published manifests. Re-adding the
-	// asset with its original GUID re-activates the SAME id+symbol.
-	std::vector<CatalogEntry> retired;
-	// THE PROJECT'S NODE SCHEMAS (Engine/Scene/node_schema.h — the
-	// authored .nodeschema files under the project's content tree):
-	// the header emits them as `project::types` PODs whose layout is
-	// ASSERTED equal to the cooked value blocks the scene's v19
-	// schema-association rows carry ("compile types; cook values").
-	// A schema edit is catalog SEMANTICS — the content hash folds it
-	// (a generation event, never a silent re-emit).
-	std::vector<NodeSchema> schemas;
-	uint64_t entryScene = 0; // the scenes:: namespace id (0 = none)
+    std::string projectName;
+    uint64_t projectId = 0; // stable from the project identity
+    // The namespaces (the registry's kind ranges): scenes 0x1xxx,
+    // textures 0x2xxx, meshes 0x3xxx, sounds 0x4xxx — sorted by id,
+    // deterministic.
+    std::vector<CatalogEntry> scenes;
+    std::vector<CatalogEntry> textures;
+    std::vector<CatalogEntry> meshes;
+    std::vector<CatalogEntry> sounds;
+    // PROJECT-AUTHORED SHADER assets (the 0x5xxx range — compiled .spv
+    // the project owns; the ENGINE-NATIVE set never appears here: it
+    // rides engine-shaders.pak, build-owned, outside every recipe).
+    std::vector<CatalogEntry> shaders;
+    // GI bake SETS (the 0x6xxx range — .givolumemanifest files: a
+    // baked lighting set of one or more GI volumes; the runtime loads
+    // them by GiKey through AssetManager::LoadGI and can blend two
+    // resident sets — see docs/content_as_code.md).
+    std::vector<CatalogEntry> gi;
+    // AUTHORED AUDIO GRAPHS (the 0x7xxx range — .audiograph files: the
+    // audio system's node-graph + cue asset, docs/audio_graph.md). The
+    // header emits project::audiographs::* AudioGraphKey constants
+    // PLUS per-cue constants (project::audiocues::<graph>_<cue>,
+    // bundling (graph id, cue ordinal) — parsed at catalog time from
+    // the authored text, OUTSIDE the catalog ABI like the query
+    // metadata).
+    std::vector<CatalogEntry> audiographs;
+    std::vector<CatalogEntry> spritesets;
+    std::vector<CatalogEntry> statemachines; // 0x9xxx
+    std::vector<CatalogEntry> navmeshes;     // 0xAxxx
+    std::vector<CatalogEntry> shapes;        // 0xBxxx
+    // The per-graph CUE tables (parsed from the authored text at
+    // catalog time — the same loud-validation discipline as the schema
+    // collection): cue names in authored (ordinal) order, id-sorted
+    // with the bucket. The header's project::audiocues constants ride
+    // these; a malformed graph fails the ids pass, never packs.
+    struct AudioGraphCueTable {
+        uint64_t id = 0;               // the graph asset's catalog id
+        std::string symbol;            // the graph's emitted symbol
+        std::vector<std::string> cues; // cue names, authored order
+    };
+    std::vector<AudioGraphCueTable> audiographCues;
+    // (id, file) in plan (mount) order — paks are named entities, not
+    // id carriers: renaming a package updates this table; asset ids
+    // stay.
+    std::vector<std::pair<std::string, std::string>> paks;
+    // The TOMBSTONED identities (assets.db rows the plan no longer
+    // carries — deleted assets; active=0, ids+symbols reserved
+    // forever, never reused). The header emits them as the `retired`
+    // namespace (historical typed symbols, values preserved) + the
+    // compile-time IsRetired/IsActive queries; they stay OUT of the
+    // active namespaces and the published manifests. Re-adding the
+    // asset with its original GUID re-activates the SAME id+symbol.
+    std::vector<CatalogEntry> retired;
+    // THE PROJECT'S NODE SCHEMAS (Engine/Scene/node_schema.h — the
+    // authored .nodeschema files under the project's content tree):
+    // the header emits them as `project::types` PODs whose layout is
+    // ASSERTED equal to the cooked value blocks the scene's v19
+    // schema-association rows carry ("compile types; cook values").
+    // A schema edit is catalog SEMANTICS — the content hash folds it
+    // (a generation event, never a silent re-emit).
+    std::vector<NodeSchema> schemas;
+    uint64_t entryScene = 0; // the scenes:: namespace id (0 = none)
 };
 
 // Collects + parses every .nodeschema file under the project's root
@@ -124,7 +124,8 @@ struct ProjectCatalog {
 // False + err (with the file + line) on any malformed file — the ids
 // pass fails LOUDLY, never skips a schema.
 [[nodiscard]] bool CollectNodeSchemas(const std::string& projectRoot,
-	std::vector<NodeSchema>& out, std::string& err);
+                                      std::vector<NodeSchema>& out,
+                                      std::string& err);
 
 // ---- THE COMPILED STATIC PLANS (Phase 6; the private header) --------
 // Emits `project_plans.h` (the HEADER_DIR beside project.h — PRIVATE,
@@ -146,7 +147,9 @@ struct ProjectCatalog {
 // A catalog mesh whose family the pak's mesh plan does not carry
 // fails loudly (a version skew — never a silent skip).
 [[nodiscard]] bool EmitPlansHeader(const ProjectCatalog& c,
-	const std::string& pakDir, std::string& text, std::string& err);
+                                   const std::string& pakDir,
+                                   std::string& text,
+                                   std::string& err);
 
 // ---- the generation stamp + the EOF metadata -----------------------
 // project.h is TWO artifacts in one file: the constexpr C++ catalog
@@ -160,23 +163,23 @@ struct ProjectCatalog {
 // probe compares, NEVER a carry that skips rehashing: metadata hints
 // do not prove byte equality).
 struct GenerationStamp {
-	uint64_t generation = 0; // 1-based; increments every generation event
-	uint64_t timestamp = 0;  // unix seconds of the generation event
-	// fnv1a64, 16 hex — the CATALOG SEMANTICS only (name, project id,
-	// ids, symbols, paths, pak table, entry scene). A texture repixel
-	// keeps this hash; the EOF asset record carries the new file hash.
-	std::string contentHash;
+    uint64_t generation = 0; // 1-based; increments every generation event
+    uint64_t timestamp = 0;  // unix seconds of the generation event
+    // fnv1a64, 16 hex — the CATALOG SEMANTICS only (name, project id,
+    // ids, symbols, paths, pak table, entry scene). A texture repixel
+    // keeps this hash; the EOF asset record carries the new file hash.
+    std::string contentHash;
 };
 
 // One asset source's fingerprint (the EOF [assets] record, keyed by
 // the STABLE content id — never array position).
 struct AssetFingerprint {
-	uint64_t id = 0;
-	std::string path;   // project-relative (the catalog identity)
-	std::string pak;    // the owning pak id
-	int64_t mtime = -1; // unix seconds (-1 = the source is missing)
-	uint64_t size = 0;
-	std::string hash;   // "fnv1a64:<16hex>"; empty when missing
+    uint64_t id = 0;
+    std::string path;   // project-relative (the catalog identity)
+    std::string pak;    // the owning pak id
+    int64_t mtime = -1; // unix seconds (-1 = the source is missing)
+    uint64_t size = 0;
+    std::string hash; // "fnv1a64:<16hex>"; empty when missing
 };
 
 // One published pak's fingerprint (the EOF [paks] record). `state` is
@@ -188,11 +191,11 @@ struct AssetFingerprint {
 //              last generation, or newer than the pak file
 //   missing  — no published pak file found for the pak id
 struct PakFingerprint {
-	std::string file;   // the published (content-addressed) file name
-	int64_t mtime = -1;
-	uint64_t size = 0;
-	std::string hash;   // "fnv1a64:<16hex>"; empty when missing
-	std::string state;  // verified | stale | missing
+    std::string file; // the published (content-addressed) file name
+    int64_t mtime = -1;
+    uint64_t size = 0;
+    std::string hash;  // "fnv1a64:<16hex>"; empty when missing
+    std::string state; // verified | stale | missing
 };
 
 // The previous header's EOF metadata (the generator's generation
@@ -203,12 +206,12 @@ struct PakFingerprint {
 // witnesses, never freshness proof — freshness is the CONTENT HASH
 // (see FingerprintFile), recomputed from bytes on every run.
 struct HeaderMetadata {
-	bool present = false;
-	uint64_t generation = 0;
-	uint64_t timestamp = 0;
-	std::string contentHash;
-	std::map<uint64_t, AssetFingerprint> assets; // keyed by content id
-	std::map<std::string, PakFingerprint> paks;  // keyed by file name
+    bool present = false;
+    uint64_t generation = 0;
+    uint64_t timestamp = 0;
+    std::string contentHash;
+    std::map<uint64_t, AssetFingerprint> assets; // keyed by content id
+    std::map<std::string, PakFingerprint> paks;  // keyed by file name
 };
 
 // Builds the catalog from the resolved plan against the registry:
@@ -218,13 +221,15 @@ struct HeaderMetadata {
 // records the pak table. `contentDeps` collects every content file the
 // generation touched (the CMake DEPFILE feed — rebuild the header when
 // the content set changes).
-bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
-	smvk::cache::AssetDatabase& db, ProjectCatalog& out,
-	std::vector<std::string>& contentDeps, std::string& err);
+bool GenerateProjectCatalog(const Project& project,
+                            const BuildPlan& plan,
+                            smvk::cache::AssetDatabase& db,
+                            ProjectCatalog& out,
+                            std::vector<std::string>& contentDeps,
+                            std::string& err);
 
 // The catalog semantics fingerprint (see GenerationStamp::contentHash).
-[[nodiscard]] std::string ComputeCatalogContentHash(
-	const ProjectCatalog& c);
+[[nodiscard]] std::string ComputeCatalogContentHash(const ProjectCatalog& c);
 
 // The catalog IDENTITY fingerprint (the shared fold, appmanifest.h's
 // ComputeCatalogFingerprint): over the entries in emission order,
@@ -241,24 +246,21 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 // C11 companion to the generated project.h. Uses the same ProjectCatalog
 // rows, IDs, package ordering and CatalogFingerprintOf; no C++ types in
 // the output. Its GenerationStamp comes from ComposeProjectHeader.
-[[nodiscard]] std::string EmitProjectCHeader(const ProjectCatalog& c,
-    const GenerationStamp& stamp);
+[[nodiscard]] std::string EmitProjectCHeader(const ProjectCatalog& c, const GenerationStamp& stamp);
 
 [[nodiscard]] std::string EmitProjectHeader(const ProjectCatalog& c,
-	const GenerationStamp& stamp,
-	const std::vector<AssetFingerprint>& assets,
-	const std::vector<PakFingerprint>& paks);
+                                            const GenerationStamp& stamp,
+                                            const std::vector<AssetFingerprint>& assets,
+                                            const std::vector<PakFingerprint>& paks);
 
 // Read a header file's EOF metadata (a missing file is NOT an error:
 // out.present stays false). An unknown metadata version also reads as
 // absent — a fresh scan, never a stale-cache reuse.
-bool ReadProjectHeaderMetadata(const std::string& path,
-	HeaderMetadata& out, std::string& err);
+bool ReadProjectHeaderMetadata(const std::string& path, HeaderMetadata& out, std::string& err);
 
 // stat one file (unix-seconds mtime + size). A missing file is not an
 // error (mtime=-1, size=0); false is a real stat failure only.
-bool StatFile(const std::string& absPath, int64_t& mtime,
-	uint64_t& size, std::string& err);
+bool StatFile(const std::string& absPath, int64_t& mtime, uint64_t& size, std::string& err);
 
 // stat + hash one file: the VERIFIED content fingerprint. The hash is
 // ALWAYS computed from the file's bytes — matching size + mtime is
@@ -268,14 +270,17 @@ bool StatFile(const std::string& absPath, int64_t& mtime,
 // freshness). A missing file is not an error (mtime=-1, size=0, hash
 // empty).
 bool FingerprintFile(const std::string& absPath,
-	int64_t& mtime, uint64_t& size, std::string& hash,
-	std::string& err);
+                     int64_t& mtime,
+                     uint64_t& size,
+                     std::string& hash,
+                     std::string& err);
 
 // The catalog's asset fingerprints (kind order, id-sorted — the
 // emission order), every source hashed from bytes.
 bool CollectAssetFingerprints(const Project& project,
-	const ProjectCatalog& catalog,
-	std::vector<AssetFingerprint>& out, std::string& err);
+                              const ProjectCatalog& catalog,
+                              std::vector<AssetFingerprint>& out,
+                              std::string& err);
 
 // The ids pass's pak discovery in `pakDir` (the publish dir): the
 // published appmanifest(s) name the live content-addressed pak files,
@@ -284,10 +289,11 @@ bool CollectAssetFingerprints(const Project& project,
 // asset fingerprints (the staleness witness). Computes the cook state
 // per the PakFingerprint rules.
 bool DiscoverPakFingerprints(const std::string& pakDir,
-	const ProjectCatalog& catalog,
-	const std::vector<AssetFingerprint>& assets,
-	const HeaderMetadata& prev, std::vector<PakFingerprint>& out,
-	std::string& err);
+                             const ProjectCatalog& catalog,
+                             const std::vector<AssetFingerprint>& assets,
+                             const HeaderMetadata& prev,
+                             std::vector<PakFingerprint>& out,
+                             std::string& err);
 
 // THE stamp-policy entry — both writers (the ids command and the
 // recipe build) go through here. Composes the new header text against
@@ -298,16 +304,21 @@ bool DiscoverPakFingerprints(const std::string& pakDir,
 //   any change, or forceStamp (the <Name>_stamp target)
 //     -> a NEW GENERATION: timestamp=now, generation=prev+1
 void ComposeProjectHeader(const ProjectCatalog& c,
-	const std::vector<AssetFingerprint>& assets,
-	const std::vector<PakFingerprint>& paks, const std::string& path,
-	bool forceStamp, std::string& text, GenerationStamp& stamp,
-	bool& changed);
+                          const std::vector<AssetFingerprint>& assets,
+                          const std::vector<PakFingerprint>& paks,
+                          const std::string& path,
+                          bool forceStamp,
+                          std::string& text,
+                          GenerationStamp& stamp,
+                          bool& changed);
 
 // Write-only-on-change: reads the existing file and writes only when
 // the text differs (an unchanged catalog never touches the mtime, so
 // nothing that includes the header recompiles). True + wrote=false
 // when the file already matched.
 bool WriteProjectHeaderIfChanged(const std::string& path,
-	const std::string& text, bool& wrote, std::string& err);
+                                 const std::string& text,
+                                 bool& wrote,
+                                 std::string& err);
 
 } // namespace smvk::project

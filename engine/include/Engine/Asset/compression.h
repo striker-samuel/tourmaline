@@ -26,8 +26,8 @@ namespace smvk {
 // ---------------------------------------------------------------------------
 
 enum class PakCompression : uint8_t {
-	None = 0,
-	Lz4 = 1,
+    None = 0,
+    Lz4 = 1,
 };
 
 // Upper bound for a single blob accepted by the codec. LZ4 itself caps at
@@ -46,25 +46,29 @@ int Lz4MaxCompressedSize(size_t srcSize);
 // src is empty/oversize or the output does not fit (should not happen when
 // dst is sized via Lz4MaxCompressedSize). acceleration==1 is best ratio,
 // higher values trade ratio for speed.
-bool Lz4Compress(
-	std::span<const uint8_t> src, std::vector<uint8_t>& outCompressed, int acceleration = 1);
+bool Lz4Compress(std::span<const uint8_t> src,
+                 std::vector<uint8_t>& outCompressed,
+                 int acceleration = 1);
 
 // Decompresses an LZ4 block into out (resized to uncompressedSize).
 // Returns false on malformed input, size mismatch, or oversize requests.
-bool Lz4Decompress(
-	std::span<const uint8_t> compressed, size_t uncompressedSize, std::vector<uint8_t>& out);
+bool Lz4Decompress(std::span<const uint8_t> compressed,
+                   size_t uncompressedSize,
+                   std::vector<uint8_t>& out);
 
 // Compresses a full pak blob payload into its stored form:
 //   - returns {stored, true} when LZ4 shrinks the payload (stored = u64 LE
 //     size prefix + compressed bytes),
 //   - returns {raw copy, false} when compression is disabled, too small, or
 //     not beneficial (caller stores verbatim with flags == None).
-std::pair<std::vector<uint8_t>, bool> CompressPakBlob(
-	std::span<const uint8_t> raw, PakCompression mode, int lz4Acceleration = 1);
+std::pair<std::vector<uint8_t>, bool> CompressPakBlob(std::span<const uint8_t> raw,
+                                                      PakCompression mode,
+                                                      int lz4Acceleration = 1);
 
 // Inverse of CompressPakBlob for a stored blob with known flags.
 // isCompressed mirrors PakEntryFlag_Lz4. Returns false on corrupt input.
-bool DecompressPakBlob(
-	std::span<const uint8_t> stored, bool isCompressed, std::vector<uint8_t>& outRaw);
+bool DecompressPakBlob(std::span<const uint8_t> stored,
+                       bool isCompressed,
+                       std::vector<uint8_t>& outRaw);
 
 } // namespace smvk

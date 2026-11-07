@@ -16,11 +16,11 @@
 // Migration is incremental: passes that still need app-local push structs
 // stay in main until their push data moves into the context.
 
-#include <Engine/Memory/pool.h>
-#include <Engine/Rendergraph/rendergraph.h>
-#include <Engine/RHI/resource_manager.h>
 #include <Engine/App/world.h>
+#include <Engine/Memory/pool.h>
+#include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/renderview.h>
+#include <Engine/Rendergraph/rendergraph.h>
 
 #include <glm/glm.hpp>
 
@@ -31,26 +31,26 @@ namespace smvk {
 // with pass-specific addresses/handles; renderers static_cast to what they
 // need.
 struct FrameContext {
-	ResourceManager* ctx = nullptr;
-	RenderGraph* rg = nullptr;
-	World* world = nullptr;
-	const RenderViewSet* views = nullptr;
-	uint32_t frameIndex = 0;
-	uint32_t mainViewIndex = RenderViewSet::kInvalidIndex;
-	glm::vec3 eye{ 0.0f }; // camera world position
-	Extent2D extent{ 0, 0 }; // internal render extent (px)
+    ResourceManager* ctx = nullptr;
+    RenderGraph* rg = nullptr;
+    World* world = nullptr;
+    const RenderViewSet* views = nullptr;
+    uint32_t frameIndex = 0;
+    uint32_t mainViewIndex = RenderViewSet::kInvalidIndex;
+    glm::vec3 eye{0.0f};   // camera world position
+    Extent2D extent{0, 0}; // internal render extent (px)
 };
 
 struct IFrameRenderer {
-	virtual ~IFrameRenderer() = default;
-	virtual const char* Name() const = 0;
-	// Persistent resources (buffers, programs). Called once; must be
-	// idempotent. Per-frame resizing happens in AppendPasses.
-	virtual bool Ensure(ResourceManager& ctx, RenderGraph& rg) = 0;
-	virtual void Destroy(RenderGraph& rg) = 0;
-	// CPU work + pass shells for this frame. Recording lambdas capture
-	// frame data by value (frameIndex-ringed buffers make this safe).
-	virtual void AppendPasses(FrameContext& fc) = 0;
+    virtual ~IFrameRenderer() = default;
+    virtual const char* Name() const = 0;
+    // Persistent resources (buffers, programs). Called once; must be
+    // idempotent. Per-frame resizing happens in AppendPasses.
+    virtual bool Ensure(ResourceManager& ctx, RenderGraph& rg) = 0;
+    virtual void Destroy(RenderGraph& rg) = 0;
+    // CPU work + pass shells for this frame. Recording lambdas capture
+    // frame data by value (frameIndex-ringed buffers make this safe).
+    virtual void AppendPasses(FrameContext& fc) = 0;
 };
 
 } // namespace smvk

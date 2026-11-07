@@ -10,7 +10,9 @@
 
 namespace editor::numeric {
 
-inline bool Finite(float value) { return std::isfinite(value); }
+inline bool Finite(float value) {
+    return std::isfinite(value);
+}
 
 inline float Display(float value, float fallback = 0.0f) {
     return Finite(value) ? value : fallback;
@@ -20,8 +22,7 @@ inline float Display(float value, float fallback = 0.0f) {
 // negative number that rounds to zero must show +0.000, never -0.000.
 // Only the *candidate* sent to ImGui is normalized; scene data is not
 // quantized merely by drawing an inspector row.
-inline float DisplayFixed(float value, unsigned decimals = 3,
-    float fallback = 0.0f) {
+inline float DisplayFixed(float value, unsigned decimals = 3, float fallback = 0.0f) {
     value = Display(value, fallback);
     const float halfUnit = 0.5f * std::pow(10.0f, -float(decimals));
     return std::abs(value) < halfUnit ? 0.0f : value;

@@ -11,10 +11,9 @@
 
 namespace {
 
-#define TL_ASSERT_KEY(engineName, sdlName)                                    \
-    static_assert(static_cast<uint16_t>(input::Key::engineName)               \
-            == SDL_SCANCODE_##sdlName,                                        \
-        "input::Key::" #engineName " must match SDL_SCANCODE_" #sdlName)
+#define TL_ASSERT_KEY(engineName, sdlName)                                                         \
+    static_assert(static_cast<uint16_t>(input::Key::engineName) == SDL_SCANCODE_##sdlName,         \
+                  "input::Key::" #engineName " must match SDL_SCANCODE_" #sdlName)
 
 TL_ASSERT_KEY(A, A);
 TL_ASSERT_KEY(B, B);
@@ -124,10 +123,10 @@ TL_ASSERT_KEY(RightSuper, RGUI);
 
 #undef TL_ASSERT_KEY
 
-#define TL_ASSERT_PAD_BUTTON(engineName, sdlName)                             \
-    static_assert(static_cast<int>(input::GamepadButton::engineName)          \
-            == SDL_GAMEPAD_BUTTON_##sdlName,                                  \
-        "input::GamepadButton::" #engineName " must match SDL's layout")
+#define TL_ASSERT_PAD_BUTTON(engineName, sdlName)                                                  \
+    static_assert(static_cast<int>(input::GamepadButton::engineName) ==                            \
+                      SDL_GAMEPAD_BUTTON_##sdlName,                                                \
+                  "input::GamepadButton::" #engineName " must match SDL's layout")
 
 TL_ASSERT_PAD_BUTTON(South, SOUTH);
 TL_ASSERT_PAD_BUTTON(East, EAST);
@@ -158,10 +157,9 @@ TL_ASSERT_PAD_BUTTON(Misc6, MISC6);
 
 #undef TL_ASSERT_PAD_BUTTON
 
-#define TL_ASSERT_PAD_AXIS(engineName, sdlName)                               \
-    static_assert(static_cast<int>(input::GamepadAxis::engineName)            \
-            == SDL_GAMEPAD_AXIS_##sdlName,                                    \
-        "input::GamepadAxis::" #engineName " must match SDL's layout")
+#define TL_ASSERT_PAD_AXIS(engineName, sdlName)                                                    \
+    static_assert(static_cast<int>(input::GamepadAxis::engineName) == SDL_GAMEPAD_AXIS_##sdlName,  \
+                  "input::GamepadAxis::" #engineName " must match SDL's layout")
 
 TL_ASSERT_PAD_AXIS(LeftX, LEFTX);
 TL_ASSERT_PAD_AXIS(LeftY, LEFTY);
@@ -252,14 +250,14 @@ bool smvk::SdlInputBackend::Translate(const SDL_Event& src, input::Event& out) {
         return true;
     case SDL_EVENT_PEN_PROXIMITY_IN:
     case SDL_EVENT_PEN_PROXIMITY_OUT:
-        out.type = src.type == SDL_EVENT_PEN_PROXIMITY_IN
-            ? input::EventType::PenProximityIn : input::EventType::PenProximityOut;
+        out.type = src.type == SDL_EVENT_PEN_PROXIMITY_IN ? input::EventType::PenProximityIn
+                                                          : input::EventType::PenProximityOut;
         out.penId = static_cast<input::PenId>(src.pproximity.which);
         return true;
     case SDL_EVENT_PEN_DOWN:
     case SDL_EVENT_PEN_UP:
-        out.type = src.type == SDL_EVENT_PEN_DOWN
-            ? input::EventType::PenDown : input::EventType::PenUp;
+        out.type =
+            src.type == SDL_EVENT_PEN_DOWN ? input::EventType::PenDown : input::EventType::PenUp;
         out.penId = static_cast<input::PenId>(src.ptouch.which);
         out.x = src.ptouch.x;
         out.y = src.ptouch.y;
@@ -279,8 +277,8 @@ bool smvk::SdlInputBackend::Translate(const SDL_Event& src, input::Event& out) {
         return true;
     case SDL_EVENT_PEN_BUTTON_DOWN:
     case SDL_EVENT_PEN_BUTTON_UP:
-        out.type = src.type == SDL_EVENT_PEN_BUTTON_DOWN
-            ? input::EventType::PenButtonDown : input::EventType::PenButtonUp;
+        out.type = src.type == SDL_EVENT_PEN_BUTTON_DOWN ? input::EventType::PenButtonDown
+                                                         : input::EventType::PenButtonUp;
         out.penId = static_cast<input::PenId>(src.pbutton.which);
         out.x = src.pbutton.x;
         out.y = src.pbutton.y;

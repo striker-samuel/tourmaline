@@ -11,7 +11,7 @@
 namespace tour {
 class App;
 struct World;
-}
+} // namespace tour
 namespace editor {
 
 // Authored state, including unsaved edits, is borrowed READ-ONLY.
@@ -29,26 +29,32 @@ struct GameSession {
 
 // Lifecycle is CPU-only and independently testable.
 class GameSessionRunner {
-public:
+  public:
     bool Start(GameSession session) {
-        if (m_active) return false;
+        if (m_active)
+            return false;
         m_session = std::move(session);
         m_active = true;
         return true;
     }
     void Tick(float dt) {
-        if (m_active && m_session.onUpdate) m_session.onUpdate(dt);
+        if (m_active && m_session.onUpdate)
+            m_session.onUpdate(dt);
     }
     void Stop() {
-        if (!m_active) return;
+        if (!m_active)
+            return;
         m_active = false;
         GameSession previous = std::move(m_session);
         m_session = {};
-        if (previous.onStop) previous.onStop();
+        if (previous.onStop)
+            previous.onStop();
     }
-    [[nodiscard]] bool Active() const { return m_active; }
+    [[nodiscard]] bool Active() const {
+        return m_active;
+    }
 
-private:
+  private:
     bool m_active = false;
     GameSession m_session;
 };
@@ -80,5 +86,4 @@ private:
 //   }
 //
 // The implementation file needs <memory> and <string> for this example.
-editor::GameSession TourmalineEditorEntry(
-    const editor::GameEntryContext& context);
+editor::GameSession TourmalineEditorEntry(const editor::GameEntryContext& context);

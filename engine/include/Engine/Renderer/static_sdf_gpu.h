@@ -19,7 +19,9 @@
 
 #include <Engine/RHI/resource_manager.h>
 
-namespace tour { struct World; }
+namespace tour {
+struct World;
+}
 
 namespace smvk {
 
@@ -27,12 +29,12 @@ namespace smvk {
 // Explicit float4 inverse rows avoid cross-compiler matrix packing.
 // meta: x=resolution, y=packed-word offset, z=signed, w=maxDistance bits.
 struct StaticSdfGpuInstance {
-	glm::vec4 inverseRow0{0.0f};
-	glm::vec4 inverseRow1{0.0f};
-	glm::vec4 inverseRow2{0.0f};
-	glm::vec4 originVoxel{0.0f}; // xyz=voxel zero CENTER, w=voxel edge
-	glm::vec4 surface{0.0f};     // rgb=base color factor, w=roughness
-	glm::uvec4 meta{0u};
+    glm::vec4 inverseRow0{0.0f};
+    glm::vec4 inverseRow1{0.0f};
+    glm::vec4 inverseRow2{0.0f};
+    glm::vec4 originVoxel{0.0f}; // xyz=voxel zero CENTER, w=voxel edge
+    glm::vec4 surface{0.0f};     // rgb=base color factor, w=roughness
+    glm::uvec4 meta{0u};
 };
 static_assert(sizeof(StaticSdfGpuInstance) == 96);
 static_assert(offsetof(StaticSdfGpuInstance, surface) == 64);
@@ -42,12 +44,12 @@ static_assert(offsetof(StaticSdfGpuInstance, meta) == 80);
 // Publishing the descriptor through one BDA keeps the SSR push
 // constants within Vulkan's guaranteed 128-byte minimum.
 struct StaticSdfSceneHeader {
-	uint64_t instancesAddress = 0;
-	uint64_t samplesAddress = 0;
-	uint32_t instanceCount = 0;
-	uint32_t maxSteps = 64;
-	float epsilon = 0.02f;
-	float originBias = 0.05f;
+    uint64_t instancesAddress = 0;
+    uint64_t samplesAddress = 0;
+    uint32_t instanceCount = 0;
+    uint32_t maxSteps = 64;
+    float epsilon = 0.02f;
+    float originBias = 0.05f;
 };
 static_assert(sizeof(StaticSdfSceneHeader) == 32);
 static_assert(offsetof(StaticSdfSceneHeader, instanceCount) == 16);
@@ -65,29 +67,35 @@ std::vector<uint32_t> PackStaticSdfWords(std::span<const int16_t> samples);
 // after publication; editors can call Invalidate() to republish an
 // explicitly edited frozen scene. Failed/missing uploads degrade to SSR.
 class StaticSdfGpuScene {
-public:
-	bool Update(ResourceManager& ctx, const ::tour::World& world, const glm::vec3& cameraWorldPos);
-	void Invalidate() { m_worldRevision = std::numeric_limits<uint64_t>::max(); }
-	void Clear();
+  public:
+    bool Update(ResourceManager& ctx, const ::tour::World& world, const glm::vec3& cameraWorldPos);
+    void Invalidate() {
+        m_worldRevision = std::numeric_limits<uint64_t>::max();
+    }
+    void Clear();
 
-	uint32_t InstanceCount() const { return m_instanceCount; }
-	uint64_t Generation() const { return m_generation; }
-	uint64_t SceneAddress(ResourceManager& ctx) const;
-	bool Ready() const {
-		return m_instanceCount != 0 &&
-			!m_header.empty() && !m_instances.empty() && !m_samples.empty();
-	}
+    uint32_t InstanceCount() const {
+        return m_instanceCount;
+    }
+    uint64_t Generation() const {
+        return m_generation;
+    }
+    uint64_t SceneAddress(ResourceManager& ctx) const;
+    bool Ready() const {
+        return m_instanceCount != 0 && !m_header.empty() && !m_instances.empty() &&
+               !m_samples.empty();
+    }
 
-private:
-	Holder<BufferHandle> m_header;
-	Holder<BufferHandle> m_instances;
-	Holder<BufferHandle> m_samples;
-	uint32_t m_instanceCount = 0;
-	uint64_t m_generation = 0; // republished static SDF scene generation
-	const ::tour::World* m_world = nullptr;
-	uint64_t m_worldRevision = std::numeric_limits<uint64_t>::max();
-	glm::vec3 m_cachedEye{0.0f};
-	bool m_cachedEyeValid = false;
+  private:
+    Holder<BufferHandle> m_header;
+    Holder<BufferHandle> m_instances;
+    Holder<BufferHandle> m_samples;
+    uint32_t m_instanceCount = 0;
+    uint64_t m_generation = 0; // republished static SDF scene generation
+    const ::tour::World* m_world = nullptr;
+    uint64_t m_worldRevision = std::numeric_limits<uint64_t>::max();
+    glm::vec3 m_cachedEye{0.0f};
+    bool m_cachedEyeValid = false;
 };
 
 } // namespace smvk

@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #pragma once
+#include <Engine/App/Element.h>
 #include <Engine/App/app.h>
 #include <Engine/App/world.h>
-#include <Engine/App/Element.h>
 #include <Engine/Renderer/WorldRenderer.h>
 #include <memory>
 #include <utility>
@@ -11,19 +11,25 @@
 namespace app {
 // App-only procedural fixture lab. All mutation goes through the World.
 class RuntimeProcedurals final : public engine::IAppElement {
-public:
-    RuntimeProcedurals(tour::App& host, engine::WorldRenderer& renderer,
-        std::shared_ptr<tour::World*> world)
+  public:
+    RuntimeProcedurals(tour::App& host,
+                       engine::WorldRenderer& renderer,
+                       std::shared_ptr<tour::World*> world)
         : m_host(host), m_renderer(renderer), m_world(std::move(world)) {}
-    const char* ElementName() const override { return "RuntimeProcedurals"; }
+    const char* ElementName() const override {
+        return "RuntimeProcedurals";
+    }
     void onDetach() override;
     void onUpdate(float) override;
     void onRender(engine::ElementFrame&) override {}
     void DrawRuntimeProceduralsTab();
-private:
+
+  private:
     void ApplyRuntimeProceduralRequest();
     void RetireResources();
-    tour::World* World() const { return m_world ? *m_world : nullptr; }
+    tour::World* World() const {
+        return m_world ? *m_world : nullptr;
+    }
     tour::App& m_host;
     engine::WorldRenderer& m_renderer;
     std::shared_ptr<tour::World*> m_world;

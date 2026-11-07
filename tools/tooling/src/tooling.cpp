@@ -31,8 +31,7 @@ std::string AssetKey(uint64_t id) {
 }
 
 std::string PageKey(const PageRecord& row) {
-    return std::to_string(row.mount) + "/" + std::to_string(row.kind) +
-           "/" + row.path;
+    return std::to_string(row.mount) + "/" + std::to_string(row.kind) + "/" + row.path;
 }
 
 bool ValidVector(const std::string& text) {
@@ -53,8 +52,10 @@ bool ValidVector(const std::string& text) {
 
 } // namespace
 
-bool ReadPackageSnapshot(const fs::path& source, PackageSnapshot& out,
-                         std::string& error, bool deepVerify) {
+bool ReadPackageSnapshot(const fs::path& source,
+                         PackageSnapshot& out,
+                         std::string& error,
+                         bool deepVerify) {
     error.clear();
     PackageSnapshot result;
     std::error_code ec;
@@ -100,19 +101,17 @@ bool ReadPackageSnapshot(const fs::path& source, PackageSnapshot& out,
         }
 
         for (const tour::asset::PakTocEntry& entry : reader->Entries()) {
-            result.pages.push_back(PageRecord{
-                mount,
-                static_cast<uint32_t>(entry.kind),
-                entry.path,
-                entry.slot,
-                entry.size,
-                entry.flags,
-                entry.contentCrc
-            });
+            result.pages.push_back(PageRecord{mount,
+                                              static_cast<uint32_t>(entry.kind),
+                                              entry.path,
+                                              entry.slot,
+                                              entry.size,
+                                              entry.flags,
+                                              entry.contentCrc});
         }
 
-        const auto* ids = reader->Find(tour::asset::PakAssetKind::Identity,
-                                        tour::asset::kPakAssetIdsPath);
+        const auto* ids =
+            reader->Find(tour::asset::PakAssetKind::Identity, tour::asset::kPakAssetIdsPath);
         if (ids) {
             std::span<const uint8_t> blob;
             try {
@@ -137,9 +136,8 @@ bool ReadPackageSnapshot(const fs::path& source, PackageSnapshot& out,
                     return false;
                 }
                 seenAssets.emplace(row.id, mount);
-                result.assets.push_back(AssetRecord{
-                    row.id, row.kind, row.path, row.sceneName, mount
-                });
+                result.assets.push_back(
+                    AssetRecord{row.id, row.kind, row.path, row.sceneName, mount});
             }
         } else if (isManifest) {
             error = path.generic_string() + ": appmanifest 2 requires #ids";
@@ -151,27 +149,27 @@ bool ReadPackageSnapshot(const fs::path& source, PackageSnapshot& out,
             return false;
         }
     }
-    std::sort(result.assets.begin(), result.assets.end(),
-              [](const AssetRecord& a, const AssetRecord& b) {
-                  return a.id < b.id;
-              });
-    std::sort(result.pages.begin(), result.pages.end(),
-              [](const PageRecord& a, const PageRecord& b) {
-                  return std::tie(a.mount, a.kind, a.path) <
-                         std::tie(b.mount, b.kind, b.path);
-              });
+    std::sort(result.assets.begin(),
+              result.assets.end(),
+              [](const AssetRecord& a, const AssetRecord& b) { return a.id < b.id; });
+    std::sort(
+        result.pages.begin(), result.pages.end(), [](const PageRecord& a, const PageRecord& b) {
+            return std::tie(a.mount, a.kind, a.path) < std::tie(b.mount, b.kind, b.path);
+        });
     out = std::move(result); // publish only after the entire release opens
     return true;
 }
 
 std::vector<Difference> DiffPackageSnapshots(const PackageSnapshot& before,
-                                              const PackageSnapshot& after,
-                                              const DiffOptions& options) {
+                                             const PackageSnapshot& after,
+                                             const DiffOptions& options) {
     std::vector<Difference> result;
     if (options.assets) {
         std::map<uint64_t, AssetRecord> left, right;
-        for (const auto& asset : before.assets) left[asset.id] = asset;
-        for (const auto& asset : after.assets) right[asset.id] = asset;
+        for (const auto& asset : before.assets)
+            left[asset.id] = asset;
+        for (const auto& asset : after.assets)
+            right[asset.id] = asset;
         for (const auto& [id, old] : left) {
             auto found = right.find(id);
             if (found == right.end() || !(old == found->second)) {
@@ -189,7 +187,8 @@ std::vector<Difference> DiffPackageSnapshots(const PackageSnapshot& before,
             }
         }
         for (const auto& [id, asset] : right) {
-            if (left.count(id)) continue;
+            if (left.count(id))
+                continue;
             Difference row;
             row.kind = DiffKind::Asset;
             row.status = DiffStatus::Added;
@@ -201,11 +200,11 @@ std::vector<Difference> DiffPackageSnapshots(const PackageSnapshot& before,
     }
     if (options.pages) {
         std::map<Key, PageRecord> left, right;
-        const auto key = [](const PageRecord& p) {
-            return Key(p.mount, p.kind, p.path);
-        };
-        for (const auto& page : before.pages) left[key(page)] = page;
-        for (const auto& page : after.pages) right[key(page)] = page;
+        const auto key = [](const PageRecord& p) { return Key(p.mount, p.kind, p.path); };
+        for (const auto& page : before.pages)
+            left[key(page)] = page;
+        for (const auto& page : after.pages)
+            right[key(page)] = page;
         for (const auto& [pageKey, old] : left) {
             auto found = right.find(pageKey);
             if (found == right.end() || !(old == found->second)) {
@@ -215,12 +214,14 @@ std::vector<Difference> DiffPackageSnapshots(const PackageSnapshot& before,
                 row.key = PageKey(old);
                 row.path = old.path;
                 row.pageBefore = old;
-                if (found != right.end()) row.pageAfter = found->second;
+                if (found != right.end())
+                    row.pageAfter = found->second;
                 result.push_back(std::move(row));
             }
         }
         for (const auto& [pageKey, page] : right) {
-            if (left.count(pageKey)) continue;
+            if (left.count(pageKey))
+                continue;
             Difference row;
             row.kind = DiffKind::Page;
             row.status = DiffStatus::Added;
@@ -231,15 +232,14 @@ std::vector<Difference> DiffPackageSnapshots(const PackageSnapshot& before,
         }
     }
     if (options.entry &&
-            (before.entryMount != after.entryMount || before.entryScene != after.entryScene)) {
+        (before.entryMount != after.entryMount || before.entryScene != after.entryScene)) {
         Difference row;
         row.kind = DiffKind::Entry;
         row.status = DiffStatus::Modified;
         row.key = "entry";
         auto entryText = [](const PackageSnapshot& s) {
-            return s.entryMount
-                ? std::to_string(*s.entryMount) + "/" + s.entryScene
-                : std::string("none");
+            return s.entryMount ? std::to_string(*s.entryMount) + "/" + s.entryScene
+                                : std::string("none");
         };
         row.entryBefore = entryText(before);
         row.entryAfter = entryText(after);
@@ -248,15 +248,13 @@ std::vector<Difference> DiffPackageSnapshots(const PackageSnapshot& before,
     return result;
 }
 
-bool BuildCapturePlan(const CaptureOptions& options,
-                      CapturePlan& out, std::string& error) {
+bool BuildCapturePlan(const CaptureOptions& options, CapturePlan& out, std::string& error) {
     error.clear();
     if (options.executable.empty() || options.source.empty()) {
         error = "capture requires executable and .pak/.tapp source";
         return false;
     }
-    if (options.frames < 2 || options.captureFrame == 0 ||
-        options.captureFrame >= options.frames) {
+    if (options.frames < 2 || options.captureFrame == 0 || options.captureFrame >= options.frames) {
         error = "require 1 <= captureFrame < frames";
         return false;
     }
@@ -282,21 +280,24 @@ bool BuildCapturePlan(const CaptureOptions& options,
     }
     CapturePlan plan;
     plan.workingDirectory = options.workingDirectory.empty()
-        ? exe.parent_path() : fs::absolute(options.workingDirectory, ec).lexically_normal();
+                                ? exe.parent_path()
+                                : fs::absolute(options.workingDirectory, ec).lexically_normal();
     if (ec) {
         error = "cannot resolve capture working directory: " + ec.message();
         return false;
     }
     plan.argv = {exe.generic_string(),
                  source.extension() == ".pak" ? "--pak" : "--project",
-                 options.source, "--disable_control",
-                 "--bench", std::to_string(options.frames),
-                 "--present", "immediate"};
+                 options.source,
+                 "--disable_control",
+                 "--bench",
+                 std::to_string(options.frames),
+                 "--present",
+                 "immediate"};
     const std::regex allowed(R"(^TOURMALINE_[A-Z0-9_]+$)");
     for (const auto& [name, value] : options.environment) {
         if (!std::regex_match(name, allowed) || name == "TOURMALINE_CAPTURE" ||
-            value.find('\0') != std::string::npos ||
-            value.find('\n') != std::string::npos) {
+            value.find('\0') != std::string::npos || value.find('\n') != std::string::npos) {
             error = "invalid or reserved capture environment variable: " + name;
             return false;
         }
@@ -314,17 +315,22 @@ bool BuildCapturePlan(const CaptureOptions& options,
     return true;
 }
 
-bool CompareRgb8(std::span<const uint8_t> before, std::span<const uint8_t> after,
-                 uint32_t width, uint32_t height, uint32_t threshold,
-                 uint32_t stride, PixelDifference& out, std::string& error) {
+bool CompareRgb8(std::span<const uint8_t> before,
+                 std::span<const uint8_t> after,
+                 uint32_t width,
+                 uint32_t height,
+                 uint32_t threshold,
+                 uint32_t stride,
+                 PixelDifference& out,
+                 std::string& error) {
     error.clear();
     if (width == 0 || height == 0 || stride == 0 || threshold > 765) {
         error = "invalid dimensions, stride, or threshold";
         return false;
     }
     const uint64_t pixels = uint64_t(width) * height;
-    if (pixels > std::numeric_limits<std::size_t>::max() / 3 ||
-        before.size() != pixels * 3 || after.size() != pixels * 3) {
+    if (pixels > std::numeric_limits<std::size_t>::max() / 3 || before.size() != pixels * 3 ||
+        after.size() != pixels * 3) {
         error = "expected identical RGB8 images of width*height*3 bytes";
         return false;
     }
@@ -338,12 +344,15 @@ bool CompareRgb8(std::span<const uint8_t> before, std::span<const uint8_t> after
                 delta += std::abs(int(before[offset + c]) - int(after[offset + c]));
             }
             ++result.sampled;
-            if (uint32_t(delta) > threshold) ++result.differing;
+            if (uint32_t(delta) > threshold)
+                ++result.differing;
             sum += uint64_t(delta);
             // Avoid overflow on strides near uint32_t max.
-            if (stride > width - 1 - x) break;
+            if (stride > width - 1 - x)
+                break;
         }
-        if (stride > height - 1 - y) break;
+        if (stride > height - 1 - y)
+            break;
     }
     result.fraction = double(result.differing) / result.sampled;
     result.averageRgbChannelSum = double(sum) / result.sampled;

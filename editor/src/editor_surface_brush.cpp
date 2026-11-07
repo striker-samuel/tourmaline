@@ -1,15 +1,15 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-#include "editor_app.h"
 #include "editor_surface_brush.h"
+#include "editor_app.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <sstream>
-#include <map>
 #include <limits>
+#include <map>
+#include <sstream>
 
 #include <glm/gtc/matrix_inverse.hpp>
 
@@ -23,15 +23,14 @@ uint32_t ResolveStrokeParent(const Scene& scene, const surface::Stroke& stroke) 
             return i;
     return UINT32_MAX;
 }
-}
+} // namespace
 
 void EditorApp::SurfaceBrushSample(int viewport, float x, float y) {
     if (!m_world || viewport < 0 || viewport >= ViewportCount())
         return;
     const EditorViewport& vp = m_viewports[viewport];
     const smvk::Extent2D ext{uint32_t(vp.rect.w), uint32_t(vp.rect.h)};
-    if (!ext.width || !ext.height || x < 0 || y < 0 ||
-        x >= vp.rect.w || y >= vp.rect.h)
+    if (!ext.width || !ext.height || x < 0 || y < 0 || x >= vp.rect.w || y >= vp.rect.h)
         return;
     // The renderer's depth is reversed-Z. Existing PickNode uses the
     // same camera convention and returns the frontmost visible triangle,
@@ -77,8 +76,12 @@ void EditorApp::SurfaceBrushFinish() {
     m_surfaceLastPx = glm::vec2(-1e9f);
 }
 
-void EditorApp::SurfaceBrushInput(int viewport, float x, float y,
-                                  bool pressed, bool held, bool allowed) {
+void EditorApp::SurfaceBrushInput(int viewport,
+                                  float x,
+                                  float y,
+                                  bool pressed,
+                                  bool held,
+                                  bool allowed) {
     if (!m_surfaceBrushEnabled || !m_world)
         return;
     if (!held) {
@@ -114,9 +117,11 @@ void EditorApp::DrawSurfaceBrushPanel() {
     ImGui::SetNextWindowSize(ImVec2(315, 180), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Surface Brush", &open)) {
         int mode = int(m_surfaceMode);
-        if (ImGui::RadioButton("Points", mode == 0)) mode = 0;
+        if (ImGui::RadioButton("Points", mode == 0))
+            mode = 0;
         ImGui::SameLine();
-        if (ImGui::RadioButton("Spline", mode == 1)) mode = 1;
+        if (ImGui::RadioButton("Spline", mode == 1))
+            mode = 1;
         m_surfaceMode = surface::Mode(mode);
         ImGui::SliderFloat("Spacing (px)", &m_surfaceSpacingPx, 2.0f, 64.0f, "%.0f");
         ImGui::TextDisabled("LMB: paint visible meshes | Alt: orbit | Esc: exit");
@@ -134,8 +139,7 @@ void EditorApp::DrawSurfaceBrushPanel() {
             MarkPlacementDirty();
             AutosaveTour();
         }
-        if (ImGui::Button("Use cloud in Placement Graph") &&
-            !m_surfaceStrokes.empty()) {
+        if (ImGui::Button("Use cloud in Placement Graph") && !m_surfaceStrokes.empty()) {
             // One-click path: paint -> PointCloud domain -> existing
             // density/prototype/scale/min-spacing placement pipeline.
             // Make a fresh graph so we never overwrite an authored one.
@@ -147,8 +151,7 @@ void EditorApp::DrawSurfaceBrushPanel() {
                     if (node.kind == placement::NodeKind::Layer)
                         layer = id;
                 if (layer != 0) {
-                    if (const placement::PLink* old =
-                            graph->inputLink(layer, "domain")) {
+                    if (const placement::PLink* old = graph->inputLink(layer, "domain")) {
                         const uint32_t oldLink = old->id;
                         graph->removeLink(oldLink);
                     }
@@ -183,8 +186,7 @@ void EditorApp::DrawSurfaceBrushPanel() {
                     ++created;
                 }
             }
-            Log("Surface brush: baked " + std::to_string(created) +
-                " parented locator(s).");
+            Log("Surface brush: baked " + std::to_string(created) + " parented locator(s).");
         }
         // Particle source graph: same parented brush data as PlacementGraph,
         // but a separate typed points -> filter -> emitter evaluation chain.
@@ -212,7 +214,8 @@ void EditorApp::DrawSurfaceBrushPanel() {
         }
         for (const auto& [id, node] : m_particleSourceGraph.topology.nodes) {
             if (ImGui::RadioButton((std::to_string(id) + ": " + node.type).c_str(),
-                m_particleSourceSelected == id)) m_particleSourceSelected = id;
+                                   m_particleSourceSelected == id))
+                m_particleSourceSelected = id;
         }
         if (auto it = m_particleSourceGraph.attrs.find(m_particleSourceSelected);
             it != m_particleSourceGraph.attrs.end()) {
@@ -229,7 +232,8 @@ void EditorApp::DrawSurfaceBrushPanel() {
                          link != m_particleSourceGraph.topology.links.end();) {
                         if (link->second.from == src && link->second.to == 2)
                             link = m_particleSourceGraph.topology.links.erase(link);
-                        else ++link;
+                        else
+                            ++link;
                     }
                     m_particleSourceGraph.Connect(src, filter, "points");
                     m_particleSourceGraph.Connect(filter, 2);
@@ -241,19 +245,22 @@ void EditorApp::DrawSurfaceBrushPanel() {
                 edited |= ImGui::DragFloat("Maximum world Y", &a.maxY, 0.1f);
             } else if (type == tour::particles::kEmitter) {
                 int renderMode = int(a.renderMode);
-                if (ImGui::Combo("Particle render type", &renderMode,
-                    "Billboard\0Mesh instances\0")) {
+                if (ImGui::Combo(
+                        "Particle render type", &renderMode, "Billboard\0Mesh instances\0")) {
                     a.renderMode = uint32_t(renderMode);
                     edited = true;
                 }
                 if (a.renderMode == tour::particles::kMeshRender) {
                     int meshBin = int(a.meshId);
-                    if (ImGui::SliderInt("Mesh prototype bin", &meshBin, 0,
-                        int(smvk::kMeshParticlesMaxBins) - 1)) {
+                    if (ImGui::SliderInt("Mesh prototype bin",
+                                         &meshBin,
+                                         0,
+                                         int(smvk::kMeshParticlesMaxBins) - 1)) {
                         a.meshId = uint32_t(meshBin);
                         edited = true;
                     }
-                    ImGui::TextDisabled("Uses indexed mesh prototypes registered with GPU Placement.");
+                    ImGui::TextDisabled(
+                        "Uses indexed mesh prototypes registered with GPU Placement.");
                 }
                 edited |= ImGui::DragFloat("Total spawn rate (/s)", &a.rate, 0.1f, 0.0f, 500.0f);
                 edited |= ImGui::DragFloat("Start size (m)", &a.sizeStart, 0.01f, 0.001f, 5.0f);
@@ -262,7 +269,8 @@ void EditorApp::DrawSurfaceBrushPanel() {
                 edited |= ImGui::DragFloat("Wind speed", &a.speed, 0.01f, 0.0f, 10.0f);
                 edited |= ImGui::ColorEdit3("Dust tint", &a.color.x);
             }
-            if (edited) AutosaveTour();
+            if (edited)
+                AutosaveTour();
             if (m_particleSourceSelected > 2 && ImGui::Button("Remove selected node")) {
                 m_particleSourceGraph.Remove(m_particleSourceSelected);
                 m_particleSourceSelected = 1;
@@ -270,8 +278,8 @@ void EditorApp::DrawSurfaceBrushPanel() {
             }
         }
         for (const auto& [id, link] : m_particleSourceGraph.topology.links)
-            ImGui::TextDisabled("#%u.%s -> #%u.%s", link.from,
-                link.output.c_str(), link.to, link.input.c_str());
+            ImGui::TextDisabled(
+                "#%u.%s -> #%u.%s", link.from, link.output.c_str(), link.to, link.input.c_str());
         if (!m_particleSourceError.empty())
             ImGui::TextWrapped("Particle graph: %s", m_particleSourceError.c_str());
         ImGui::TextDisabled("PlacementGraph accepts points as GPU scatter candidates.");
@@ -285,15 +293,21 @@ void EditorApp::DrawSurfaceBrushPanel() {
 }
 
 void EditorApp::UpdateParticleSourcePreview() {
-    if (!m_wysiwyg || !m_wysiwygValid || !m_world) return;
+    if (!m_wysiwyg || !m_wysiwygValid || !m_world)
+        return;
     using namespace tour::particles;
-    auto provider = [this](const std::string& type, int selector,
-        std::vector<Point>& points, std::string& error) -> bool {
+    auto provider = [this](const std::string& type,
+                           int selector,
+                           std::vector<Point>& points,
+                           std::string& error) -> bool {
         if (type == kPainted) {
-            if (m_surfaceStrokes.empty()) return true;
+            if (m_surfaceStrokes.empty())
+                return true;
             smvk::placement::PlacementPointCloudData cloud;
-            if (!BuildPlacementPointCloud(selector, cloud, error)) return false;
-            for (const auto& p : cloud.positions) points.push_back({p});
+            if (!BuildPlacementPointCloud(selector, cloud, error))
+                return false;
+            for (const auto& p : cloud.positions)
+                points.push_back({p});
             return true;
         }
         if (type == kHeightfield) {
@@ -303,7 +317,8 @@ void EditorApp::UpdateParticleSourcePreview() {
             uint32_t selectedGroup = UINT32_MAX;
             for (const auto& [id, group] : m_terrainGroups) {
                 if (group.deleted || !group.data.heights.valid() ||
-                    (selector >= 0 && uint32_t(selector) != id)) continue;
+                    (selector >= 0 && uint32_t(selector) != id))
+                    continue;
                 // Unordered-map iteration is not an authoring order; use
                 // the smallest stable world-node ID when selector == -1.
                 if (id < selectedGroup) {
@@ -312,16 +327,18 @@ void EditorApp::UpdateParticleSourcePreview() {
                 }
             }
             if (!field) {
-                error = "Heightfield source requires a live terrain group"; return false;
+                error = "Heightfield source requires a live terrain group";
+                return false;
             }
             // Representative 4x4 grid: bounded by the GPU emitter budget.
-            for (int z = 0; z < 4; ++z) for (int x = 0; x < 4; ++x) {
-                const float wx = field->origin.x +
-                    field->spacing.x * float(field->width - 1) * (float(x) + 0.5f) / 4.0f;
-                const float wz = field->origin.z +
-                    field->spacing.y * float(field->height - 1) * (float(z) + 0.5f) / 4.0f;
-                points.push_back({glm::vec3(wx, field->sampleHeight(wx, wz) + 0.35f, wz)});
-            }
+            for (int z = 0; z < 4; ++z)
+                for (int x = 0; x < 4; ++x) {
+                    const float wx = field->origin.x + field->spacing.x * float(field->width - 1) *
+                                                           (float(x) + 0.5f) / 4.0f;
+                    const float wz = field->origin.z + field->spacing.y * float(field->height - 1) *
+                                                           (float(z) + 0.5f) / 4.0f;
+                    points.push_back({glm::vec3(wx, field->sampleHeight(wx, wz) + 0.35f, wz)});
+                }
             return true;
         }
         if (type == kPlacement) {
@@ -341,22 +358,22 @@ void EditorApp::UpdateParticleSourcePreview() {
     // remaining rows rather than silently exceeding MAX_PARTICLE_EMITTERS.
     const auto evaluated = Evaluate(m_particleSourceGraph, provider, 11);
     m_particleSourceError = evaluated.ok ? evaluated.warning : evaluated.error;
-    m_wysiwyg->SetExternalParticleEmitters(evaluated.ok
-        ? evaluated.emitters : std::vector<smvk::ParticleEmitterGpu>{});
-    m_wysiwyg->SetExternalMeshParticleEmitters(evaluated.ok
-        ? evaluated.meshEmitters : std::vector<smvk::MeshParticleEmitterGpu>{});
+    m_wysiwyg->SetExternalParticleEmitters(evaluated.ok ? evaluated.emitters
+                                                        : std::vector<smvk::ParticleEmitterGpu>{});
+    m_wysiwyg->SetExternalMeshParticleEmitters(
+        evaluated.ok ? evaluated.meshEmitters : std::vector<smvk::MeshParticleEmitterGpu>{});
 }
 
 void EditorApp::SaveSurfaceBrushToDoc(smvk::tour::Doc& doc) const {
     for (const auto& [id, node] : m_particleSourceGraph.topology.nodes) {
         const auto& a = m_particleSourceGraph.attrs.at(id);
         doc.editorSettings.emplace_back("particle.source.node." + std::to_string(id),
-            tour::particles::SerializeAttributes(node.type, a));
+                                        tour::particles::SerializeAttributes(node.type, a));
     }
     for (const auto& [id, link] : m_particleSourceGraph.topology.links) {
         doc.editorSettings.emplace_back("particle.source.link." + std::to_string(id),
-            std::to_string(link.from) + " " + link.output + " " +
-            std::to_string(link.to) + " " + link.input);
+                                        std::to_string(link.from) + " " + link.output + " " +
+                                            std::to_string(link.to) + " " + link.input);
     }
     for (size_t i = 0; i < m_surfaceStrokes.size(); ++i) {
         const auto& stroke = m_surfaceStrokes[i];
@@ -365,9 +382,8 @@ void EditorApp::SaveSurfaceBrushToDoc(smvk::tour::Doc& doc) const {
         const std::string base = "surface.stroke." + std::to_string(i);
         doc.editorSettings.emplace_back(base + ".meta", surface::SerializeMeta(stroke));
         for (size_t j = 0; j < stroke.points.size(); ++j)
-            doc.editorSettings.emplace_back(
-                base + ".point." + std::to_string(j),
-                surface::SerializePoint(stroke.points[j]));
+            doc.editorSettings.emplace_back(base + ".point." + std::to_string(j),
+                                            surface::SerializePoint(stroke.points[j]));
     }
 }
 
@@ -390,7 +406,8 @@ void EditorApp::LoadSurfaceBrushFromDoc(const smvk::tour::Doc& doc) {
                 uint32_t id = uint32_t(std::stoul(key.substr(nodePrefix.size())));
                 std::string type;
                 tour::particles::Attributes a;
-                if (!id || !tour::particles::ParseAttributes(value, type, a)) continue;
+                if (!id || !tour::particles::ParseAttributes(value, type, a))
+                    continue;
                 loaded.topology.nodes[id] = tour::particles::Graph::MakeNode(id, type);
                 loaded.attrs[id] = a;
                 foundGraph = true;
@@ -399,18 +416,21 @@ void EditorApp::LoadSurfaceBrushFromDoc(const smvk::tour::Doc& doc) {
                 std::istringstream in(value);
                 tour::graph::Link l{};
                 std::string extra;
-                if (!id || !(in >> l.from >> l.output >> l.to >> l.input) ||
-                    (in >> extra)) continue;
+                if (!id || !(in >> l.from >> l.output >> l.to >> l.input) || (in >> extra))
+                    continue;
                 l.id = id;
                 loaded.topology.links[id] = l;
             }
-        } catch (...) { continue; }
+        } catch (...) {
+            continue;
+        }
     }
     if (foundGraph && tour::graph::Validate(loaded.topology).ok) {
         bool complete = true;
         for (const auto& [id, node] : loaded.topology.nodes)
             complete &= loaded.attrs.contains(id);
-        if (complete) m_particleSourceGraph = std::move(loaded);
+        if (complete)
+            m_particleSourceGraph = std::move(loaded);
     }
     // A temporary sparse map protects against out-of-order editorSettings.
     std::map<size_t, surface::Stroke> strokes;
@@ -429,7 +449,9 @@ void EditorApp::LoadSurfaceBrushFromDoc(const smvk::tour::Doc& doc) {
             if (number.empty() || number.find_first_not_of("0123456789") != std::string::npos)
                 continue;
             idx = std::stoull(number);
-        } catch (...) { continue; }
+        } catch (...) {
+            continue;
+        }
         if (idx >= surface::kMaxStrokes)
             continue;
         const std::string field = suffix.substr(dot + 1);
@@ -444,7 +466,9 @@ void EditorApp::LoadSurfaceBrushFromDoc(const smvk::tour::Doc& doc) {
                 if (number.empty() || number.find_first_not_of("0123456789") != std::string::npos)
                     continue;
                 pointIdx = std::stoull(number);
-            } catch (...) { continue; }
+            } catch (...) {
+                continue;
+            }
             if (pointIdx >= surface::kMaxPointsPerStroke)
                 continue;
             glm::vec3 p;
@@ -469,7 +493,8 @@ void EditorApp::DrawSurfaceBrushOverlay() {
     for (int vpIndex = 0; vpIndex < ViewportCount(); ++vpIndex) {
         const EditorViewport& vp = m_viewports[vpIndex];
         dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
-            ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
+                         ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h),
+                         true);
         auto project = [&](const glm::vec3& p, ImVec2& out) {
             const glm::vec4 clip = vp.viewProj * glm::vec4(p, 1.0f);
             if (clip.w <= 1e-6f || clip.z < 0 || clip.z > clip.w)
@@ -491,7 +516,8 @@ void EditorApp::DrawSurfaceBrushOverlay() {
                 ImVec2 screen{};
                 bool valid = project(glm::vec3(transform * glm::vec4(local, 1.0f)), screen);
                 if (valid) {
-                    dl->AddCircleFilled(screen, stroke.mode == surface::Mode::Points ? 3.0f : 2.0f, color);
+                    dl->AddCircleFilled(
+                        screen, stroke.mode == surface::Mode::Points ? 3.0f : 2.0f, color);
                     if (stroke.mode == surface::Mode::Spline && lastValid)
                         dl->AddLine(last, screen, color, 2.0f);
                 }

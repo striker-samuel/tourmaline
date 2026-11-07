@@ -19,9 +19,8 @@
 // render pipeline — no manual staging, no global cache.
 
 #include "editor_app.h"
-#include "editor_hot_reload_targets.h"
 #include "editor_asset_creation.h"
-
+#include "editor_hot_reload_targets.h"
 
 #include <artifact_cache/artifact_kind.h>
 #include <artifact_cache/assetdb.h>
@@ -47,262 +46,247 @@ constexpr const char* kProjVersion = "2";
 constexpr const char* kLegacyOutPak = "content/paks/edited.pak";
 
 std::string Normalized(const std::string& p) {
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	fs::path abs = fs::absolute(fs::path(p), ec);
-	if (ec)
-		abs = fs::path(p);
-	return abs.lexically_normal().generic_string();
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path abs = fs::absolute(fs::path(p), ec);
+    if (ec)
+        abs = fs::path(p);
+    return abs.lexically_normal().generic_string();
 }
 
 bool HasModelExtension(const std::string& path) {
-	// The shared mesh-source gate (.gltf/.glb/.obj — one row in
-	// source_formats.h lights up editor + pipelines + CLI together).
-	return smvk::assets::IsMeshSourceFile(std::filesystem::path(path));
+    // The shared mesh-source gate (.gltf/.glb/.obj — one row in
+    // source_formats.h lights up editor + pipelines + CLI together).
+    return smvk::assets::IsMeshSourceFile(std::filesystem::path(path));
 }
 
 } // namespace
 
-std::string EditorApp::ProjectArtifactDir() const {	if (m_projectRoot.empty())
-		return {};
-	return (std::filesystem::path(m_projectRoot) / ".tourmaline")
-		.generic_string();
+std::string EditorApp::ProjectArtifactDir() const {
+    if (m_projectRoot.empty())
+        return {};
+    return (std::filesystem::path(m_projectRoot) / ".tourmaline").generic_string();
 }
 
 bool EditorApp::InProjectDir(const std::string& absPath) const {
-	if (m_projectRoot.empty() || absPath.empty())
-		return false;
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	const std::string norm = fs::absolute(fs::path(absPath), ec)
-		.lexically_normal().generic_string();
-	if (ec)
-		return false;
-	std::string root = fs::path(m_projectRoot).lexically_normal()
-		.generic_string();
-	if (!root.empty() && root.back() != '/')
-		root += '/';
-	return norm.size() > root.size()
-		&& norm.compare(0, root.size(), root) == 0;
+    if (m_projectRoot.empty() || absPath.empty())
+        return false;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const std::string norm =
+        fs::absolute(fs::path(absPath), ec).lexically_normal().generic_string();
+    if (ec)
+        return false;
+    std::string root = fs::path(m_projectRoot).lexically_normal().generic_string();
+    if (!root.empty() && root.back() != '/')
+        root += '/';
+    return norm.size() > root.size() && norm.compare(0, root.size(), root) == 0;
 }
 
-std::string EditorApp::ProjectRelativePath(
-	const std::string& absPath) const {
-	if (!InProjectDir(absPath))
-		return {};
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	fs::path rel = fs::relative(fs::path(absPath),
-		fs::path(m_projectRoot), ec);
-	if (ec || rel.empty())
-		return {};
-	std::string posix = rel.generic_string();
-	// Belt-and-suspenders (InProjectDir already guarantees
-	// containment): never emit an escaping relative path.
-	if (posix == ".." || posix.compare(0, 3, "../") == 0
-		|| posix.find("/../") != std::string::npos)
-		return {};
-	return posix;
+std::string EditorApp::ProjectRelativePath(const std::string& absPath) const {
+    if (!InProjectDir(absPath))
+        return {};
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path rel = fs::relative(fs::path(absPath), fs::path(m_projectRoot), ec);
+    if (ec || rel.empty())
+        return {};
+    std::string posix = rel.generic_string();
+    // Belt-and-suspenders (InProjectDir already guarantees
+    // containment): never emit an escaping relative path.
+    if (posix == ".." || posix.compare(0, 3, "../") == 0 || posix.find("/../") != std::string::npos)
+        return {};
+    return posix;
 }
 
-std::string EditorApp::ProjectCookOutPak(
-	const std::string& sceneStem) const {
-	if (m_projectRoot.empty() || sceneStem.empty())
-		return {};
-	return (std::filesystem::path(m_projectRoot) / "paks"
-		/ (sceneStem + ".pak")).generic_string();
+std::string EditorApp::ProjectCookOutPak(const std::string& sceneStem) const {
+    if (m_projectRoot.empty() || sceneStem.empty())
+        return {};
+    return (std::filesystem::path(m_projectRoot) / "paks" / (sceneStem + ".pak")).generic_string();
 }
 
 bool EditorApp::IsProjectDir(const std::string& dir) {
-	if (dir.empty())
-		return false;
-	std::error_code ec;
-	return std::filesystem::is_regular_file(
-		std::filesystem::path(dir) / kProjMarker, ec);
+    if (dir.empty())
+        return false;
+    std::error_code ec;
+    return std::filesystem::is_regular_file(std::filesystem::path(dir) / kProjMarker, ec);
 }
 
 std::string EditorApp::ReadProjectName(const std::string& dir) {
-	std::ifstream in(
-		std::filesystem::path(dir) / kProjMarker, std::ios::binary);
-	std::string line;
-	while (std::getline(in, line)) {
-		if (!line.empty() && line.back() == '\r')
-			line.pop_back();
-		const size_t eq = line.find('=');
-		if (eq == std::string::npos)
-			continue;
-		if (line.substr(0, eq) == "name")
-			return line.substr(eq + 1);
-	}
-	return {};
+    std::ifstream in(std::filesystem::path(dir) / kProjMarker, std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        if (line.substr(0, eq) == "name")
+            return line.substr(eq + 1);
+    }
+    return {};
 }
 
 std::string EditorApp::ReadProjectGuid(const std::string& dir) {
-	// The persistent identity row (the pipeline's Project::Open agrees
-	// on the same parse — the marker format is shared contract).
-	std::ifstream in(
-		std::filesystem::path(dir) / kProjMarker, std::ios::binary);
-	std::string line;
-	while (std::getline(in, line)) {
-		if (!line.empty() && line.back() == '\r')
-			line.pop_back();
-		const size_t eq = line.find('=');
-		if (eq == std::string::npos)
-			continue;
-		if (line.substr(0, eq) == "guid")
-			return line.substr(eq + 1);
-	}
-	return {};
+    // The persistent identity row (the pipeline's Project::Open agrees
+    // on the same parse — the marker format is shared contract).
+    std::ifstream in(std::filesystem::path(dir) / kProjMarker, std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        if (line.substr(0, eq) == "guid")
+            return line.substr(eq + 1);
+    }
+    return {};
 }
 
 void EditorApp::PushRecentProject(const std::string& dir) {
-	// Most-recent-first, deduped, capped (the startup dialog lists it).
-	auto it = std::find(m_recentProjects.begin(), m_recentProjects.end(),
-		dir);
-	if (it != m_recentProjects.end())
-		m_recentProjects.erase(it);
-	m_recentProjects.insert(m_recentProjects.begin(), dir);
-	if (m_recentProjects.size() > 8)
-		m_recentProjects.resize(8);
+    // Most-recent-first, deduped, capped (the startup dialog lists it).
+    auto it = std::find(m_recentProjects.begin(), m_recentProjects.end(), dir);
+    if (it != m_recentProjects.end())
+        m_recentProjects.erase(it);
+    m_recentProjects.insert(m_recentProjects.begin(), dir);
+    if (m_recentProjects.size() > 8)
+        m_recentProjects.resize(8);
 }
 
 bool EditorApp::OpenProject(const std::string& dir) {
-	StopGamePlay();
-	const std::string root = Normalized(dir);
-	if (!IsProjectDir(root)) {
-		Log("Not a project (no " + std::string(kProjMarker) + "): "
-			+ root);
-		return false;
-	}
-	// The identity contract (current-format policy — the pipeline's
-	// Project::Open enforces the same row): no valid guid, no project.
-	// Actionable, never a silent name-derived fallback.
-	{
-		const std::string guid = ReadProjectGuid(root);
-		if (guid.empty()
-				|| !smvk::cache::IsValidAssetGuid(guid)) {
-			Log("Project '" + root + "' has no valid identity"
-				" (guid= row missing or malformed in "
-				+ std::string(kProjMarker) + ") — the current"
-				" project format requires one. Recreate the"
-				" project (or run 'Project.exe init' on it once)"
-				" to mint its identity.");
-			return false;
-		}
-		m_projectGuid = guid;
-	}
-	PushRecentProject(root);
-	if (root == m_projectRoot) {
-		Log("Project already open: " + m_projectName);
-		return true;
-	}
-	// A recipe configuration belongs to one project root. Never keep
-	// the prior project's editable recipe pointed at the new root.
-	if (m_showProjectExportWindow && m_projectExportDirty)
-		Log("Export Project: closing unsaved recipe draft on project switch.");
-	m_showProjectExportWindow = false;
-	m_projectExportRecipes.clear();
-	m_projectExportRecipeText.fill('\0');
-	m_projectExportDirty = false;
-	m_projectExportStatus.clear();
-	// A project switch drops the live scene (its live view dies with
-	// it — CloseScene suspends + retires safely; the tour autosave
-	// contract in CloseScene keeps edits safe).
-	CloseScene();
-	m_projectRoot = root;
-	m_projectName = ReadProjectName(root);
-	if (m_projectName.empty())
-		m_projectName = std::filesystem::path(root).filename().string();
-	// Per-scene cook outputs live in the project now; drop any stale
-	// default so the next open/import re-derives into project paks/.
-	m_cook.outPak.clear();
-	m_cookOutPakBuf[0] = '\0';
-	// The project OWNS its artifact cache: reopen cache.db + the
-	// asset directory there (a missing or unwritable dir degrades to
-	// cache-off — the cache only accelerates processing).
-	{
-		// One-time migration: the owned dir used to be <root>/scratch.
-		// Move it aside when <root>/artifacts does not exist yet so
-		// existing projects keep their registry + payloads.
-		namespace fs = std::filesystem;
-		std::error_code ec;
-		const fs::path oldDir = fs::path(root) / "scratch";
-		const fs::path newDir = fs::path(root) / "artifacts";
-		if (fs::is_directory(oldDir, ec) && !fs::exists(newDir, ec)) {
-			fs::rename(oldDir, newDir, ec);
-			if (!ec)
-				Log("Project: migrated 'scratch/' -> 'artifacts/'.");
-			else
-				Log("Project: cannot migrate 'scratch/' -> "
-					"'artifacts/': " + ec.message());
-		}
-	}
-	if (!OpenCacheDb())
-		Log("Project '" + m_projectName + "' open, but its artifact "
-			"cache is unusable — cache disabled for this session.");
-	// Source-asset directory over the project (Explorer-side
-	// moves/renames heal through the sidecars on rescan).
-	m_assetDb.Close();
-	if (m_store) {
-		std::string dberr;
-		if (m_assetDb.Open(m_store->Root(), m_projectRoot, dberr)) {
-			smvk::cache::RescanStats stats;
-		if (m_assetDb.RescanProject(stats, dberr))
-			Log("Asset directory: "
-				+ std::to_string(stats.adopted) + " adopted, "
-				+ std::to_string(stats.moved) + " re-pointed, "
-				+ std::to_string(stats.derived) + " derived, "
-				+ std::to_string(stats.missing) + " missing.");
-			else
-				Log("Asset directory rescan failed: " + dberr);
-		}
-		else {
-			Log("Asset directory unavailable: " + dberr);
-		}
-	}
-	SavePrefs();
-	UpdateWindowTitle();
-	ArmProjectWatcher();
-	Log("Project open: '" + m_projectName + "' (" + m_projectRoot
-		+ ") — artifact\ cache\ and\ cooks\ live\ here\ now.");
-	return true;
+    StopGamePlay();
+    const std::string root = Normalized(dir);
+    if (!IsProjectDir(root)) {
+        Log("Not a project (no " + std::string(kProjMarker) + "): " + root);
+        return false;
+    }
+    // The identity contract (current-format policy — the pipeline's
+    // Project::Open enforces the same row): no valid guid, no project.
+    // Actionable, never a silent name-derived fallback.
+    {
+        const std::string guid = ReadProjectGuid(root);
+        if (guid.empty() || !smvk::cache::IsValidAssetGuid(guid)) {
+            Log("Project '" + root +
+                "' has no valid identity"
+                " (guid= row missing or malformed in " +
+                std::string(kProjMarker) +
+                ") — the current"
+                " project format requires one. Recreate the"
+                " project (or run 'Project.exe init' on it once)"
+                " to mint its identity.");
+            return false;
+        }
+        m_projectGuid = guid;
+    }
+    PushRecentProject(root);
+    if (root == m_projectRoot) {
+        Log("Project already open: " + m_projectName);
+        return true;
+    }
+    // A recipe configuration belongs to one project root. Never keep
+    // the prior project's editable recipe pointed at the new root.
+    if (m_showProjectExportWindow && m_projectExportDirty)
+        Log("Export Project: closing unsaved recipe draft on project switch.");
+    m_showProjectExportWindow = false;
+    m_projectExportRecipes.clear();
+    m_projectExportRecipeText.fill('\0');
+    m_projectExportDirty = false;
+    m_projectExportStatus.clear();
+    // A project switch drops the live scene (its live view dies with
+    // it — CloseScene suspends + retires safely; the tour autosave
+    // contract in CloseScene keeps edits safe).
+    CloseScene();
+    m_projectRoot = root;
+    m_projectName = ReadProjectName(root);
+    if (m_projectName.empty())
+        m_projectName = std::filesystem::path(root).filename().string();
+    // Per-scene cook outputs live in the project now; drop any stale
+    // default so the next open/import re-derives into project paks/.
+    m_cook.outPak.clear();
+    m_cookOutPakBuf[0] = '\0';
+    // The project OWNS its artifact cache: reopen cache.db + the
+    // asset directory there (a missing or unwritable dir degrades to
+    // cache-off — the cache only accelerates processing).
+    {
+        // One-time migration: the owned dir used to be <root>/scratch.
+        // Move it aside when <root>/artifacts does not exist yet so
+        // existing projects keep their registry + payloads.
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path oldDir = fs::path(root) / "scratch";
+        const fs::path newDir = fs::path(root) / "artifacts";
+        if (fs::is_directory(oldDir, ec) && !fs::exists(newDir, ec)) {
+            fs::rename(oldDir, newDir, ec);
+            if (!ec)
+                Log("Project: migrated 'scratch/' -> 'artifacts/'.");
+            else
+                Log("Project: cannot migrate 'scratch/' -> "
+                    "'artifacts/': " +
+                    ec.message());
+        }
+    }
+    if (!OpenCacheDb())
+        Log("Project '" + m_projectName +
+            "' open, but its artifact "
+            "cache is unusable — cache disabled for this session.");
+    // Source-asset directory over the project (Explorer-side
+    // moves/renames heal through the sidecars on rescan).
+    m_assetDb.Close();
+    if (m_store) {
+        std::string dberr;
+        if (m_assetDb.Open(m_store->Root(), m_projectRoot, dberr)) {
+            smvk::cache::RescanStats stats;
+            if (m_assetDb.RescanProject(stats, dberr))
+                Log("Asset directory: " + std::to_string(stats.adopted) + " adopted, " +
+                    std::to_string(stats.moved) + " re-pointed, " + std::to_string(stats.derived) +
+                    " derived, " + std::to_string(stats.missing) + " missing.");
+            else
+                Log("Asset directory rescan failed: " + dberr);
+        } else {
+            Log("Asset directory unavailable: " + dberr);
+        }
+    }
+    SavePrefs();
+    UpdateWindowTitle();
+    ArmProjectWatcher();
+    Log("Project open: '" + m_projectName + "' (" + m_projectRoot +
+        ") — artifact\ cache\ and\ cooks\ live\ here\ now.");
+    return true;
 }
 
 bool EditorApp::NewProjectOrOpen(const std::string& dir) {
-	const std::string root = Normalized(dir);
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	if (IsProjectDir(root))
-		return OpenProject(root); // already a project: just open it
-	// Scaffold the Unity-style tree (.tourmaline/ itself is created by
-	// EnsureRegistryRoot when the cache opens).
-	fs::create_directories(fs::path(root) / "content" / "models", ec);
-	fs::create_directories(fs::path(root) / "content" / "scenes", ec);
-	fs::create_directories(fs::path(root) / "paks", ec);
-	fs::create_directories(fs::path(root) / "gi", ec);
-	if (ec) {
-		Log("Project: cannot scaffold '" + root + "': "
-			+ ec.message());
-		return false;
-	}
-	{
-		std::ofstream out(fs::path(root) / kProjMarker,
-			std::ios::binary | std::ios::trunc);
-		if (!out) {
-			Log("Project: cannot write " + std::string(kProjMarker)
-				+ " in '" + root + "'.");
-			return false;
-		}
-		// The identity is minted ONCE here (creation); every later
-		// open just reads it (OpenProject's rejection is the
-		// actionable gate for pre-identity markers).
-		const std::string guid = smvk::tour::GenerateUuid();
-		out << "# Tourmaline project (name + identity + format version)\n";
-		out << "name=" << fs::path(root).filename().string() << "\n";
-		out << "guid=" << guid << "\n";
-		out << "version=" << kProjVersion << "\n";
-	}
-	return OpenProject(root);
+    const std::string root = Normalized(dir);
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (IsProjectDir(root))
+        return OpenProject(root); // already a project: just open it
+    // Scaffold the Unity-style tree (.tourmaline/ itself is created by
+    // EnsureRegistryRoot when the cache opens).
+    fs::create_directories(fs::path(root) / "content" / "models", ec);
+    fs::create_directories(fs::path(root) / "content" / "scenes", ec);
+    fs::create_directories(fs::path(root) / "paks", ec);
+    fs::create_directories(fs::path(root) / "gi", ec);
+    if (ec) {
+        Log("Project: cannot scaffold '" + root + "': " + ec.message());
+        return false;
+    }
+    {
+        std::ofstream out(fs::path(root) / kProjMarker, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            Log("Project: cannot write " + std::string(kProjMarker) + " in '" + root + "'.");
+            return false;
+        }
+        // The identity is minted ONCE here (creation); every later
+        // open just reads it (OpenProject's rejection is the
+        // actionable gate for pre-identity markers).
+        const std::string guid = smvk::tour::GenerateUuid();
+        out << "# Tourmaline project (name + identity + format version)\n";
+        out << "name=" << fs::path(root).filename().string() << "\n";
+        out << "guid=" << guid << "\n";
+        out << "version=" << kProjVersion << "\n";
+    }
+    return OpenProject(root);
 }
 
 std::string EditorApp::CreateSceneAsset(const std::string& dir) {
@@ -311,8 +295,7 @@ std::string EditorApp::CreateSceneAsset(const std::string& dir) {
         return {};
     }
     namespace fs = std::filesystem;
-    const fs::path folder = AssetCreateDirectory(
-        m_projectRoot, dir, "scenes");
+    const fs::path folder = AssetCreateDirectory(m_projectRoot, dir, "scenes");
     if (folder.empty()) {
         Log("New scene: could not resolve a safe project directory.");
         return {};
@@ -323,8 +306,7 @@ std::string EditorApp::CreateSceneAsset(const std::string& dir) {
         Log("New scene: cannot create directory: " + ec.message());
         return {};
     }
-    const fs::path path = UniqueAssetCreatePath(
-        folder, "New Scene", ".tour");
+    const fs::path path = UniqueAssetCreatePath(folder, "New Scene", ".tour");
     if (path.empty()) {
         Log("New scene: could not allocate a unique filename.");
         return {};
@@ -343,8 +325,7 @@ std::string EditorApp::CreateSceneAsset(const std::string& dir) {
         Log("New scene: current scene/prefab has unsaved work; created and "
             "selected the new scene without switching. Save the current "
             "scene before opening it.");
-    }
-    else if (!OpenTourFile(path.generic_string())) {
+    } else if (!OpenTourFile(path.generic_string())) {
         Log("New scene: created on disk, but the editor could not open it.");
     }
     return path.generic_string();
@@ -356,8 +337,7 @@ std::string EditorApp::CreateAssetFolder(const std::string& dir) {
         return {};
     }
     namespace fs = std::filesystem;
-    const fs::path folder = AssetCreateDirectory(
-        m_projectRoot, dir);
+    const fs::path folder = AssetCreateDirectory(m_projectRoot, dir);
     if (folder.empty()) {
         Log("New folder: could not resolve a safe content directory.");
         return {};
@@ -382,362 +362,336 @@ std::string EditorApp::CreateAssetFolder(const std::string& dir) {
 }
 
 void EditorApp::PrimeProjectCookDefaults() {
-	// Per-scene outputs land in the project when the user hasn't
-	// customized them (empty, or the baked-in legacy default). Both
-	// the dialog-less cook (m_cook.outPak) and the cook dialog buffer
-	// agree afterwards.
-	if (m_projectRoot.empty() || m_gltfPath.empty())
-		return;
-	if (!m_cook.outPak.empty() && m_cook.outPak != kLegacyOutPak)
-		return; // user (or --out-pak) chose: keep it
-	const std::string stem =
-		std::filesystem::path(m_gltfPath).stem().string();
-	const std::string outPak = ProjectCookOutPak(stem);
-	if (outPak.empty())
-		return;
-	m_cook.outPak = outPak;
-	std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
-		outPak.c_str());
+    // Per-scene outputs land in the project when the user hasn't
+    // customized them (empty, or the baked-in legacy default). Both
+    // the dialog-less cook (m_cook.outPak) and the cook dialog buffer
+    // agree afterwards.
+    if (m_projectRoot.empty() || m_gltfPath.empty())
+        return;
+    if (!m_cook.outPak.empty() && m_cook.outPak != kLegacyOutPak)
+        return; // user (or --out-pak) chose: keep it
+    const std::string stem = std::filesystem::path(m_gltfPath).stem().string();
+    const std::string outPak = ProjectCookOutPak(stem);
+    if (outPak.empty())
+        return;
+    m_cook.outPak = outPak;
+    std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s", outPak.c_str());
 }
 
-void EditorApp::AdoptProjectAsset(const std::string& assetPath,
-	const std::string& importer) {
-	if (m_projectRoot.empty() || !m_assetDb.IsOpen()
-		|| assetPath.empty())
-		return;
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	if (!fs::is_regular_file(assetPath, ec))
-		return;
-	// A copied-along sidecar keeps its GUID (moves preserve identity);
-	// otherwise a fresh one is issued and written.
-	std::string guid, err;
-	if (smvk::cache::ReadAssetMeta(assetPath, guid, err)) {
-		if (!m_assetDb.AdoptFile(assetPath, guid, importer, err))
-			Log("Asset directory: cannot adopt '" + assetPath + "': "
-				+ err);
-		return;
-	}
-	if (err != "no .meta")
-		Log("Asset directory: " + err + " — issuing a fresh GUID.");
-	guid = smvk::tour::GenerateUuid();
-	if (!smvk::cache::WriteAssetMeta(assetPath, guid, importer, err)) {
-		Log("Asset directory: cannot write .meta for '" + assetPath
-			+ "': " + err);
-		return;
-	}
-	if (!m_assetDb.AdoptFile(assetPath, guid, importer, err))
-		Log("Asset directory: cannot adopt '" + assetPath + "': "
-			+ err);
-	else
-		Log("Asset directory: new GUID " + guid + " for '"
-			+ assetPath + "'.");
+void EditorApp::AdoptProjectAsset(const std::string& assetPath, const std::string& importer) {
+    if (m_projectRoot.empty() || !m_assetDb.IsOpen() || assetPath.empty())
+        return;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_regular_file(assetPath, ec))
+        return;
+    // A copied-along sidecar keeps its GUID (moves preserve identity);
+    // otherwise a fresh one is issued and written.
+    std::string guid, err;
+    if (smvk::cache::ReadAssetMeta(assetPath, guid, err)) {
+        if (!m_assetDb.AdoptFile(assetPath, guid, importer, err))
+            Log("Asset directory: cannot adopt '" + assetPath + "': " + err);
+        return;
+    }
+    if (err != "no .meta")
+        Log("Asset directory: " + err + " — issuing a fresh GUID.");
+    guid = smvk::tour::GenerateUuid();
+    if (!smvk::cache::WriteAssetMeta(assetPath, guid, importer, err)) {
+        Log("Asset directory: cannot write .meta for '" + assetPath + "': " + err);
+        return;
+    }
+    if (!m_assetDb.AdoptFile(assetPath, guid, importer, err))
+        Log("Asset directory: cannot adopt '" + assetPath + "': " + err);
+    else
+        Log("Asset directory: new GUID " + guid + " for '" + assetPath + "'.");
 }
 
 std::string EditorApp::ProjectAssetGuid(const std::string& assetPath) {
-	AdoptProjectAsset(assetPath);
-	if (m_projectRoot.empty() || !m_assetDb.IsOpen()
-		|| assetPath.empty())
-		return {};
-	std::string guid;
-	if (!m_assetDb.GuidForPath(assetPath, guid))
-		return {};
-	return guid;
+    AdoptProjectAsset(assetPath);
+    if (m_projectRoot.empty() || !m_assetDb.IsOpen() || assetPath.empty())
+        return {};
+    std::string guid;
+    if (!m_assetDb.GuidForPath(assetPath, guid))
+        return {};
+    return guid;
 }
 
 std::string EditorApp::ImportAssetFile(const std::string& srcPath) {
-	if (m_projectRoot.empty()) {
-		Log("Import: open or create a project first (File > New / Open "
-			"Project...) — imports live inside the project.");
-		return {};
-	}
-	if (!HasModelExtension(srcPath)) {
-		Log("Import: only .gltf/.glb/.obj sources in this version: "
-			+ srcPath);
-		return {};
-	}
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	if (!fs::is_regular_file(srcPath, ec)) {
-		Log("Import: source not found: " + srcPath);
-		return {};
-	}
-	const fs::path src(srcPath);
-	const std::string stem = src.stem().string();
-	const fs::path destDir =
-		fs::path(m_projectRoot) / "content" / "models" / stem;
-	fs::create_directories(destDir, ec);
-	if (ec) {
-		Log("Import: cannot create '" + destDir.generic_string()
-			+ "': " + ec.message());
-		return {};
-	}
-	// DEPENDENCY CLOSURE (structure-preserving): parse the source
-	// once here and copy every external buffer + image URI at its
-	// URI-relative path under the destination — the model's relative
-	// links keep resolving IN the project (subfolder textures
-	// included; the old flat sibling copy missed them and the links
-	// broke, with no way for the path editor to relink a source that
-	// never came along). `.ktx2` sidecars ride their images (same
-	// dir, same stem — the auto-ktx convention), the source's own
-	// .meta keeps its GUID. Unreferenced files stay behind (no
-	// folder dump); stale .tour files never come (they pin the OLD
-	// source path). Same-dir import adopts in place.
-	const fs::path srcDir = src.parent_path();
-	uint64_t copiedBytes = 0;
-	size_t copiedFiles = 0;
-	auto copyIn = [&](const fs::path& from, const fs::path& to)
-		-> bool {
-		std::error_code cec;
-		if (fs::equivalent(from, to, cec) && !cec)
-			return true; // same file (safety net)
-		fs::create_directories(to.parent_path(), cec);
-		if (cec) {
-			Log("Import: cannot create '"
-				+ to.parent_path().generic_string() + "': "
-				+ cec.message());
-			return false;
-		}
-		fs::copy_file(from, to, fs::copy_options::overwrite_existing,
-			cec);
-		if (cec) {
-			Log("Import: copy failed '" + from.generic_string()
-				+ "': " + cec.message());
-			return false;
-		}
-		++copiedFiles;
-		std::error_code sec;
-		copiedBytes += fs::file_size(from, sec);
-		return true;
-	};
-	if (fs::equivalent(srcDir, destDir, ec) && !ec) {
-		Log("Import: source already inside the project — adopting '"
-			+ srcPath + "' in place.");
-	}
-	else {
-		// The model file first (dependencies may point back at it).
-		if (!copyIn(src, destDir / src.filename()))
-			return {};
-		// External dependencies: buffers + images with URIs, plus the
-		// .mtl libraries of an OBJ source (LoadModelFromSourceFile's
-		// extraDeps; embedded images arrive as their extracted sidecar
-		// URIs).
-		std::vector<std::string> uris;
-		{
-			tinygltf::Model deps;
-			std::vector<std::string> extraDeps;
-			if (!LoadModelFromSourceFile(deps, srcPath.c_str(),
-					&extraDeps)) {
-				Log("Import: source parse failed — copied the model "
-					"file only (dependencies may dangle; the Path "
-					"editor can relink).");
-			}
-			else {
-				for (const auto& b : deps.buffers)
-					if (!b.uri.empty() && b.uri.rfind("data:", 0) != 0)
-						uris.push_back(b.uri);
-				for (const auto& im : deps.images)
-					if (!im.uri.empty() && im.uri.rfind("data:", 0) != 0)
-						uris.push_back(im.uri);
-				for (const std::string& dep : extraDeps)
-					uris.push_back(dep);
-			}
-		}
-		size_t missing = 0, flattened = 0;
-		for (const std::string& uri : uris) {
-			const fs::path rel(uri);
-			const fs::path from = (srcDir / rel).lexically_normal();
-			std::error_code fec;
-			if (!fs::is_regular_file(from, fec)) {
-				++missing;
-				Log("Import: dependency missing at the source: '"
-					+ uri + "' (" + from.generic_string() + ").");
-				continue;
-			}
-			fs::path to = (destDir / rel).lexically_normal();
-			// Escaping URIs ("../x") would land outside the project:
-			// flatten into the asset dir — the link stays broken;
-			// the Path editor relinks those.
-			if (!InProjectDir(to.generic_string())) {
-				to = destDir / from.filename();
-				++flattened;
-			}
-			if (!copyIn(from, to))
-				return {};
-			// `.ktx2` sidecar (same dir, same stem): best-effort ride.
-			fs::path side = from;
-			side.replace_extension(".ktx2");
-			if (fs::is_regular_file(side, fec)) {
-				fs::path sideTo = to;
-				sideTo.replace_extension(".ktx2");
-				(void)copyIn(side, sideTo);
-			}
-		}
-		// The source's own .meta sidecar (GUID identity) rides along.
-		std::error_code mec;
-		const fs::path srcMeta = srcDir
-			/ (src.filename().string() + ".meta");
-		if (fs::is_regular_file(srcMeta, mec))
-			(void)copyIn(srcMeta,
-				destDir / (src.filename().string() + ".meta"));
-		char buf[160];
-		std::snprintf(buf, sizeof(buf), "%zu file(s), %.1f MiB",
-			copiedFiles, double(copiedBytes) / (1024.0 * 1024.0));
-		Log("Import: '" + src.filename().string() + "' + dependency "
-			"closure -> '" + destDir.generic_string() + "' (" + buf
-			+ (missing ? std::string(", ") + std::to_string(missing)
-				+ " missing" : "")
-			+ (flattened ? std::string(", ")
-				+ std::to_string(flattened)
-				+ " flattened (../)" : "")
-			+ ").");
-	}
-	const fs::path dest = destDir / src.filename();
-	// The copied-along .meta (if any) keeps the asset's GUID; a fresh
-	// one is issued otherwise — the file is addressable by UUID from
-	// here on (tours reference it via -guid).
-	AdoptProjectAsset(dest.generic_string());
-	return dest.generic_string();
+    if (m_projectRoot.empty()) {
+        Log("Import: open or create a project first (File > New / Open "
+            "Project...) — imports live inside the project.");
+        return {};
+    }
+    if (!HasModelExtension(srcPath)) {
+        Log("Import: only .gltf/.glb/.obj sources in this version: " + srcPath);
+        return {};
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_regular_file(srcPath, ec)) {
+        Log("Import: source not found: " + srcPath);
+        return {};
+    }
+    const fs::path src(srcPath);
+    const std::string stem = src.stem().string();
+    const fs::path destDir = fs::path(m_projectRoot) / "content" / "models" / stem;
+    fs::create_directories(destDir, ec);
+    if (ec) {
+        Log("Import: cannot create '" + destDir.generic_string() + "': " + ec.message());
+        return {};
+    }
+    // DEPENDENCY CLOSURE (structure-preserving): parse the source
+    // once here and copy every external buffer + image URI at its
+    // URI-relative path under the destination — the model's relative
+    // links keep resolving IN the project (subfolder textures
+    // included; the old flat sibling copy missed them and the links
+    // broke, with no way for the path editor to relink a source that
+    // never came along). `.ktx2` sidecars ride their images (same
+    // dir, same stem — the auto-ktx convention), the source's own
+    // .meta keeps its GUID. Unreferenced files stay behind (no
+    // folder dump); stale .tour files never come (they pin the OLD
+    // source path). Same-dir import adopts in place.
+    const fs::path srcDir = src.parent_path();
+    uint64_t copiedBytes = 0;
+    size_t copiedFiles = 0;
+    auto copyIn = [&](const fs::path& from, const fs::path& to) -> bool {
+        std::error_code cec;
+        if (fs::equivalent(from, to, cec) && !cec)
+            return true; // same file (safety net)
+        fs::create_directories(to.parent_path(), cec);
+        if (cec) {
+            Log("Import: cannot create '" + to.parent_path().generic_string() +
+                "': " + cec.message());
+            return false;
+        }
+        fs::copy_file(from, to, fs::copy_options::overwrite_existing, cec);
+        if (cec) {
+            Log("Import: copy failed '" + from.generic_string() + "': " + cec.message());
+            return false;
+        }
+        ++copiedFiles;
+        std::error_code sec;
+        copiedBytes += fs::file_size(from, sec);
+        return true;
+    };
+    if (fs::equivalent(srcDir, destDir, ec) && !ec) {
+        Log("Import: source already inside the project — adopting '" + srcPath + "' in place.");
+    } else {
+        // The model file first (dependencies may point back at it).
+        if (!copyIn(src, destDir / src.filename()))
+            return {};
+        // External dependencies: buffers + images with URIs, plus the
+        // .mtl libraries of an OBJ source (LoadModelFromSourceFile's
+        // extraDeps; embedded images arrive as their extracted sidecar
+        // URIs).
+        std::vector<std::string> uris;
+        {
+            tinygltf::Model deps;
+            std::vector<std::string> extraDeps;
+            if (!LoadModelFromSourceFile(deps, srcPath.c_str(), &extraDeps)) {
+                Log("Import: source parse failed — copied the model "
+                    "file only (dependencies may dangle; the Path "
+                    "editor can relink).");
+            } else {
+                for (const auto& b : deps.buffers)
+                    if (!b.uri.empty() && b.uri.rfind("data:", 0) != 0)
+                        uris.push_back(b.uri);
+                for (const auto& im : deps.images)
+                    if (!im.uri.empty() && im.uri.rfind("data:", 0) != 0)
+                        uris.push_back(im.uri);
+                for (const std::string& dep : extraDeps)
+                    uris.push_back(dep);
+            }
+        }
+        size_t missing = 0, flattened = 0;
+        for (const std::string& uri : uris) {
+            const fs::path rel(uri);
+            const fs::path from = (srcDir / rel).lexically_normal();
+            std::error_code fec;
+            if (!fs::is_regular_file(from, fec)) {
+                ++missing;
+                Log("Import: dependency missing at the source: '" + uri + "' (" +
+                    from.generic_string() + ").");
+                continue;
+            }
+            fs::path to = (destDir / rel).lexically_normal();
+            // Escaping URIs ("../x") would land outside the project:
+            // flatten into the asset dir — the link stays broken;
+            // the Path editor relinks those.
+            if (!InProjectDir(to.generic_string())) {
+                to = destDir / from.filename();
+                ++flattened;
+            }
+            if (!copyIn(from, to))
+                return {};
+            // `.ktx2` sidecar (same dir, same stem): best-effort ride.
+            fs::path side = from;
+            side.replace_extension(".ktx2");
+            if (fs::is_regular_file(side, fec)) {
+                fs::path sideTo = to;
+                sideTo.replace_extension(".ktx2");
+                (void)copyIn(side, sideTo);
+            }
+        }
+        // The source's own .meta sidecar (GUID identity) rides along.
+        std::error_code mec;
+        const fs::path srcMeta = srcDir / (src.filename().string() + ".meta");
+        if (fs::is_regular_file(srcMeta, mec))
+            (void)copyIn(srcMeta, destDir / (src.filename().string() + ".meta"));
+        char buf[160];
+        std::snprintf(buf,
+                      sizeof(buf),
+                      "%zu file(s), %.1f MiB",
+                      copiedFiles,
+                      double(copiedBytes) / (1024.0 * 1024.0));
+        Log("Import: '" + src.filename().string() +
+            "' + dependency "
+            "closure -> '" +
+            destDir.generic_string() + "' (" + buf +
+            (missing ? std::string(", ") + std::to_string(missing) + " missing" : "") +
+            (flattened ? std::string(", ") + std::to_string(flattened) + " flattened (../)" : "") +
+            ").");
+    }
+    const fs::path dest = destDir / src.filename();
+    // The copied-along .meta (if any) keeps the asset's GUID; a fresh
+    // one is issued otherwise — the file is addressable by UUID from
+    // here on (tours reference it via -guid).
+    AdoptProjectAsset(dest.generic_string());
+    return dest.generic_string();
 }
 
-std::string EditorApp::CreateTextureAsset(const std::string& srcPath,
-	const std::string& dir) {
-	// TEXTURE-ASSET creation (see the header): copy the source image in,
-	// write <stem>.texture + identity (.meta sidecar + assetdb row), select.
-	if (m_projectRoot.empty()) {
-		Log("Create texture: open or create a project first (File > New / "
-			"Open Project...).");
-		return {};
-	}
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	fs::path src(srcPath);
-	if (!fs::is_regular_file(src, ec)) {
-		Log("Create texture: source not found: " + srcPath);
-		return {};
-	}
-	std::string ext = src.extension().string();
-	for (char& c : ext)
-		c = char(std::tolower((unsigned char)c));
-	if (ext != ".png" && ext != ".jpg" && ext != ".jpeg"
-		&& ext != ".tga" && ext != ".bmp" && ext != ".ktx2") {
-		Log("Create texture: unsupported source '" + ext
-			+ "' (want png/jpg/jpeg/tga/bmp/ktx2): " + srcPath);
-		return {};
-	}
-	// The browsed dir (fallback: <root>/content — the browser heals
-	// m_assetsDir on the next draw).
-	std::string destDir = dir;
-	if (destDir.empty() || !IsProjectDir(destDir))
-		destDir = (fs::path(m_projectRoot) / "content").generic_string();
-	fs::create_directories(destDir, ec);
-	if (ec) {
-		Log("Create texture: cannot create '" + destDir + "': "
-			+ ec.message());
-		return {};
-	}
-	// Copy the source in (skip when already there).
-	fs::path srcIn = fs::path(destDir) / src.filename();
-	if (!fs::equivalent(src, srcIn, ec)) {
-		fs::copy_file(src, srcIn, fs::copy_options::overwrite_existing, ec);
-		if (ec) {
-			Log("Create texture: copy failed '" + srcPath + "': "
-				+ ec.message());
-			return {};
-		}
-	}
-	// Existing .texture for the stem: select it (delete it to re-create
-	// — the import dedupes by the .texture path, so a re-create is the
-	// settings-reset path).
-	const std::string stem = src.filename().stem().string();
-	fs::path texPath = fs::path(destDir) / (stem + ".texture");
-	if (fs::is_regular_file(texPath, ec)) {
-		m_assetsSel = texPath.generic_string();
-		Log("Create texture: '" + stem + ".texture' already exists — "
-			"selected (delete it to re-create).");
-		return texPath.generic_string();
-	}
-	// Defaults: sRGB color, rgba8, full chain, linear/repeat (edit them
-	// in the Inspector; a KTX2 source reads colorSpace/format/mipLevels
-	// read-only from its header).
-	smvk::assets::TextureAsset t{};
-	t.guid = smvk::tour::GenerateUuid();
-	t.name = stem;
-	t.source = src.filename().string();
-	std::string err;
-	if (!smvk::assets::SaveTextureAsset(texPath, t, err)) {
-		Log("Create texture: cannot write '" + texPath.generic_string()
-			+ "': " + err);
-		return {};
-	}
-	// Identity: the guid rides the file (inline) AND the sidecar (the
-	// assetdb's adoption path) — one guid, both views.
-	{
-		std::string merr;
-		if (!smvk::cache::WriteAssetMeta(texPath.generic_string(),
-				t.guid, "texture", merr))
-			Log("Create texture: cannot write .meta for '"
-				+ texPath.generic_string() + "': " + merr);
-	}
-	AdoptProjectAsset(texPath.generic_string(), "texture");
-	m_assetsSel = texPath.generic_string();
-	Log("Create texture: '" + texPath.filename().string() + "' from '"
-		+ src.filename().string() + "' (edit the import settings in the "
-		"Inspector; materials reference it as tex.<slot>="
-		+ stem + ".texture).");
-	return texPath.generic_string();
+std::string EditorApp::CreateTextureAsset(const std::string& srcPath, const std::string& dir) {
+    // TEXTURE-ASSET creation (see the header): copy the source image in,
+    // write <stem>.texture + identity (.meta sidecar + assetdb row), select.
+    if (m_projectRoot.empty()) {
+        Log("Create texture: open or create a project first (File > New / "
+            "Open Project...).");
+        return {};
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path src(srcPath);
+    if (!fs::is_regular_file(src, ec)) {
+        Log("Create texture: source not found: " + srcPath);
+        return {};
+    }
+    std::string ext = src.extension().string();
+    for (char& c : ext)
+        c = char(std::tolower((unsigned char)c));
+    if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".tga" && ext != ".bmp" &&
+        ext != ".ktx2") {
+        Log("Create texture: unsupported source '" + ext +
+            "' (want png/jpg/jpeg/tga/bmp/ktx2): " + srcPath);
+        return {};
+    }
+    // The browsed dir (fallback: <root>/content — the browser heals
+    // m_assetsDir on the next draw).
+    std::string destDir = dir;
+    if (destDir.empty() || !IsProjectDir(destDir))
+        destDir = (fs::path(m_projectRoot) / "content").generic_string();
+    fs::create_directories(destDir, ec);
+    if (ec) {
+        Log("Create texture: cannot create '" + destDir + "': " + ec.message());
+        return {};
+    }
+    // Copy the source in (skip when already there).
+    fs::path srcIn = fs::path(destDir) / src.filename();
+    if (!fs::equivalent(src, srcIn, ec)) {
+        fs::copy_file(src, srcIn, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            Log("Create texture: copy failed '" + srcPath + "': " + ec.message());
+            return {};
+        }
+    }
+    // Existing .texture for the stem: select it (delete it to re-create
+    // — the import dedupes by the .texture path, so a re-create is the
+    // settings-reset path).
+    const std::string stem = src.filename().stem().string();
+    fs::path texPath = fs::path(destDir) / (stem + ".texture");
+    if (fs::is_regular_file(texPath, ec)) {
+        m_assetsSel = texPath.generic_string();
+        Log("Create texture: '" + stem +
+            ".texture' already exists — "
+            "selected (delete it to re-create).");
+        return texPath.generic_string();
+    }
+    // Defaults: sRGB color, rgba8, full chain, linear/repeat (edit them
+    // in the Inspector; a KTX2 source reads colorSpace/format/mipLevels
+    // read-only from its header).
+    smvk::assets::TextureAsset t{};
+    t.guid = smvk::tour::GenerateUuid();
+    t.name = stem;
+    t.source = src.filename().string();
+    std::string err;
+    if (!smvk::assets::SaveTextureAsset(texPath, t, err)) {
+        Log("Create texture: cannot write '" + texPath.generic_string() + "': " + err);
+        return {};
+    }
+    // Identity: the guid rides the file (inline) AND the sidecar (the
+    // assetdb's adoption path) — one guid, both views.
+    {
+        std::string merr;
+        if (!smvk::cache::WriteAssetMeta(texPath.generic_string(), t.guid, "texture", merr))
+            Log("Create texture: cannot write .meta for '" + texPath.generic_string() +
+                "': " + merr);
+    }
+    AdoptProjectAsset(texPath.generic_string(), "texture");
+    m_assetsSel = texPath.generic_string();
+    Log("Create texture: '" + texPath.filename().string() + "' from '" + src.filename().string() +
+        "' (edit the import settings in the "
+        "Inspector; materials reference it as tex.<slot>=" +
+        stem + ".texture).");
+    return texPath.generic_string();
 }
 
 void EditorApp::OnInputEvent(const input::Event& e) {
-	// OS drag-and-drop (Windows Explorer -> the asset browser): collect
-	// the FileDrop batch + the drop point (window coords; the LAST file's
-	// point is the release point). The normalized event owns its path
-	// string (the bridge copies it out of the native event); keep the copy
-	// anyway — DrawAssetsPanel routes the batch next frame against its
-	// rect (the only drop target — see HandleDroppedFiles).
-	if (e.type == input::EventType::FileDrop && !e.text.empty()) {
-		m_pendingDropX = e.x;
-		m_pendingDropY = e.y;
-		m_pendingDropFiles.push_back(e.text);
-	}
+    // OS drag-and-drop (Windows Explorer -> the asset browser): collect
+    // the FileDrop batch + the drop point (window coords; the LAST file's
+    // point is the release point). The normalized event owns its path
+    // string (the bridge copies it out of the native event); keep the copy
+    // anyway — DrawAssetsPanel routes the batch next frame against its
+    // rect (the only drop target — see HandleDroppedFiles).
+    if (e.type == input::EventType::FileDrop && !e.text.empty()) {
+        m_pendingDropX = e.x;
+        m_pendingDropY = e.y;
+        m_pendingDropFiles.push_back(e.text);
+    }
 }
 
 void EditorApp::HandleDroppedFiles(const std::vector<std::string>& files) {
-	// Drop routing (the asset browser's drop target): images become
-	// .texture assets in the browsed dir; mesh sources (.gltf/.glb/.obj)
-	// run the full import (copy + derive + open). Everything else drops
-	// with a log — never silently.
-	if (m_projectRoot.empty()) {
-		Log("Drop: open a project first (File > New / Open Project...).");
-		return;
-	}
-	if (files.empty())
-		return;
-	int imported = 0;
-	int unsupported = 0;
-	for (const std::string& p : files) {
-		std::string ext =
-			std::filesystem::path(p).extension().string();
-		for (char& c : ext)
-			c = char(std::tolower((unsigned char)c));
-		if (ext == ".png" || ext == ".jpg" || ext == ".jpeg"
-			|| ext == ".tga" || ext == ".bmp" || ext == ".ktx2") {
-			if (!CreateTextureAsset(p, m_assetsDir).empty())
-				++imported;
-		}
-		else if (smvk::assets::IsMeshSourceExtension(ext)) {
-			if (ImportAsset(p))
-				++imported;
-		}
-		else {
-			++unsupported;
-			Log("Drop: unsupported format '" + p + "' (want png/jpg/jpeg/"
-				"tga/bmp/ktx2/gltf/glb/obj).");
-		}
-	}
-	if (imported > 0)
-		Log("Drop: imported " + std::to_string(imported) + " file"
-			+ (imported > 1 ? "s" : "") + ".");
+    // Drop routing (the asset browser's drop target): images become
+    // .texture assets in the browsed dir; mesh sources (.gltf/.glb/.obj)
+    // run the full import (copy + derive + open). Everything else drops
+    // with a log — never silently.
+    if (m_projectRoot.empty()) {
+        Log("Drop: open a project first (File > New / Open Project...).");
+        return;
+    }
+    if (files.empty())
+        return;
+    int imported = 0;
+    int unsupported = 0;
+    for (const std::string& p : files) {
+        std::string ext = std::filesystem::path(p).extension().string();
+        for (char& c : ext)
+            c = char(std::tolower((unsigned char)c));
+        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".bmp" ||
+            ext == ".ktx2") {
+            if (!CreateTextureAsset(p, m_assetsDir).empty())
+                ++imported;
+        } else if (smvk::assets::IsMeshSourceExtension(ext)) {
+            if (ImportAsset(p))
+                ++imported;
+        } else {
+            ++unsupported;
+            Log("Drop: unsupported format '" + p +
+                "' (want png/jpg/jpeg/"
+                "tga/bmp/ktx2/gltf/glb/obj).");
+        }
+    }
+    if (imported > 0)
+        Log("Drop: imported " + std::to_string(imported) + " file" + (imported > 1 ? "s" : "") +
+            ".");
 }
 
 // THE MESH IMPORTER drive (editor side): glTF is IMPORT-ONLY — parse +
@@ -748,112 +702,102 @@ void EditorApp::HandleDroppedFiles(const std::vector<std::string>& files) {
 // the SINGLE place a .gltf turns into a session: opens (direct or
 // tour-recorded), drops and the project import all land here.
 std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath,
-	bool* rederived, bool force) {
-	namespace fs = std::filesystem;
-	if (rederived)
-		*rederived = false;
-	if (gltfPath.empty())
-		return {};
-	const fs::path geometry =
-		fs::path(gltfPath).replace_extension(".geometry");
-	// The settings FIRST: the stale gate compares the recorded import
-	// fingerprint against THIS config (a settings/revision drift
-	// re-derives — see ImportFingerprintFor/MeshArtifactStale).
-	smvk::assets::DeriveConfig cfg{};
-	if (const char* e = std::getenv("TOURMALINE_EDITOR_MESHLETS"))
-		cfg.meshlets = std::atoi(e) != 0;
-	if (const char* e = std::getenv("TOURMALINE_EDITOR_LODS"))
-		cfg.lods = std::atoi(e) != 0;
-	// Far-shading derivation (default OFF — see DeriveConfig::shaderLods):
-	// opt-in only; the ShaderLodPolicy default keeps vertex-lit off.
-	if (const char* e = std::getenv("TOURMALINE_EDITOR_SHADERLODS"))
-		cfg.shaderLods = std::atoi(e) != 0;
-	if (!force && !smvk::assets::MeshArtifactStale(gltfPath, cfg)) {
-		Log("Import: artifact current — opening '" + geometry.generic_string()
-			+ "' (no re-import).");
-		return geometry.generic_string();
-	}
-	if (rederived)
-		*rederived = true;
-	// NO explicit guid: the derivation consumes the .gltf.meta BESIDE
-	// the source as the identity ledger (a re-import over changed
-	// content CARRIES the family + subasset identities; a first import
-	// mints the deterministic from-zero identity — see asset_export.h).
-	// The project DB still adopts the file for its own bookkeeping
-	// (ProjectAssetGuid elsewhere); the ARTIFACT identity is the
-	// ledger's.
-	const std::string guid;
-	smvk::assets::AssetManifest manifest;
-	smvk::assets::DeriveStats stats;
-	std::string derr;
-	Log("Import: deriving the mesh artifact from '"
-		+ fs::path(gltfPath).filename().generic_string() + "'...");
-	if (!smvk::assets::ImportMeshSource(gltfPath, guid, nullptr, cfg,
-			manifest, &stats, &derr)) {
-		Log("Import: mesh importer failed: " + derr
-			+ " — the scene does NOT open from the glTF (glTF is "
-			"import-only; fix the source and re-import).");
-		return {};
-	}
-	Log("Import: derived assets ("
-		+ std::to_string(stats.geometryBlobs) + " geometry, "
-		+ std::to_string(stats.materials) + " materials, "
-		+ std::to_string(stats.anims) + " anims, "
-		+ std::to_string(stats.instances) + " instances"
-		+ (stats.newGuids ? ", " + std::to_string(stats.newGuids)
-			+ " new GUID(s)" : "")
-		+ (stats.keptGuids ? ", " + std::to_string(stats.keptGuids)
-			+ " kept GUID(s)" : "") + ").");
-	// Funnel registration (the artifact DB is the pipeline entry
-	// point): every manifest entry becomes a (klass, uuid) identity
-	// row — no payload yet (derivations live loose beside the source;
-	// payloads stage on cook). Skipped when the cache is off (project-
-	// less sessions); identity still resolves through the manifest.
-	if (m_cacheDb.IsOpen() && !m_projectRoot.empty()) {
-		const auto kindOf =
-			[](smvk::assets::AssetKind k) -> const char* {
-			switch (k) {
-			case smvk::assets::AssetKind::Geometry:
-				return smvk::cache::kKindMesh;
-			case smvk::assets::AssetKind::Material:
-				return smvk::cache::kKindMaterial;
-			case smvk::assets::AssetKind::Anim:
-				return smvk::cache::kKindAnimation;
-			}
-			return "";
-		};
-		const fs::path gltfDir = fs::path(gltfPath).parent_path();
-		const std::string root = fs::path(m_projectRoot)
-			.lexically_normal().generic_string();
-		size_t registered = 0;
-		for (const smvk::assets::AssetEntry& e : manifest.entries) {
-			const char* klass = kindOf(e.kind);
-			if (!klass || !*klass || e.guid.empty() || e.file.empty())
-				continue;
-			std::error_code ec2;
-			std::string uri = fs::absolute(gltfDir / e.file, ec2)
-				.lexically_normal().generic_string();
-			if (!ec2 && uri.size() > root.size()
-				&& uri.compare(0, root.size(), root) == 0
-				&& uri[root.size()] == '/')
-				uri = uri.substr(root.size() + 1);
-			// Staleness key: the manifest's source digest when the
-			// derivation carries one, else the entry GUID (stable
-			// across reimports either way — equality is all Has
-			// needs).
-			const std::string hash = manifest.sourceDigest.empty()
-				? e.guid : manifest.sourceDigest;
-			std::string rerr;
-			if (m_cacheDb.Register(klass, e.guid, uri, hash, "", rerr))
-				++registered;
-			else
-				Log("Import: artifact registration skipped for '"
-					+ e.file + "': " + rerr);
-		}
-		Log("Import: registered " + std::to_string(registered)
-			+ " derived artifact(s) in the artifact DB.");
-	}
-	return geometry.generic_string();
+                                             bool* rederived,
+                                             bool force) {
+    namespace fs = std::filesystem;
+    if (rederived)
+        *rederived = false;
+    if (gltfPath.empty())
+        return {};
+    const fs::path geometry = fs::path(gltfPath).replace_extension(".geometry");
+    // The settings FIRST: the stale gate compares the recorded import
+    // fingerprint against THIS config (a settings/revision drift
+    // re-derives — see ImportFingerprintFor/MeshArtifactStale).
+    smvk::assets::DeriveConfig cfg{};
+    if (const char* e = std::getenv("TOURMALINE_EDITOR_MESHLETS"))
+        cfg.meshlets = std::atoi(e) != 0;
+    if (const char* e = std::getenv("TOURMALINE_EDITOR_LODS"))
+        cfg.lods = std::atoi(e) != 0;
+    // Far-shading derivation (default OFF — see DeriveConfig::shaderLods):
+    // opt-in only; the ShaderLodPolicy default keeps vertex-lit off.
+    if (const char* e = std::getenv("TOURMALINE_EDITOR_SHADERLODS"))
+        cfg.shaderLods = std::atoi(e) != 0;
+    if (!force && !smvk::assets::MeshArtifactStale(gltfPath, cfg)) {
+        Log("Import: artifact current — opening '" + geometry.generic_string() +
+            "' (no re-import).");
+        return geometry.generic_string();
+    }
+    if (rederived)
+        *rederived = true;
+    // NO explicit guid: the derivation consumes the .gltf.meta BESIDE
+    // the source as the identity ledger (a re-import over changed
+    // content CARRIES the family + subasset identities; a first import
+    // mints the deterministic from-zero identity — see asset_export.h).
+    // The project DB still adopts the file for its own bookkeeping
+    // (ProjectAssetGuid elsewhere); the ARTIFACT identity is the
+    // ledger's.
+    const std::string guid;
+    smvk::assets::AssetManifest manifest;
+    smvk::assets::DeriveStats stats;
+    std::string derr;
+    Log("Import: deriving the mesh artifact from '" +
+        fs::path(gltfPath).filename().generic_string() + "'...");
+    if (!smvk::assets::ImportMeshSource(gltfPath, guid, nullptr, cfg, manifest, &stats, &derr)) {
+        Log("Import: mesh importer failed: " + derr +
+            " — the scene does NOT open from the glTF (glTF is "
+            "import-only; fix the source and re-import).");
+        return {};
+    }
+    Log("Import: derived assets (" + std::to_string(stats.geometryBlobs) + " geometry, " +
+        std::to_string(stats.materials) + " materials, " + std::to_string(stats.anims) +
+        " anims, " + std::to_string(stats.instances) + " instances" +
+        (stats.newGuids ? ", " + std::to_string(stats.newGuids) + " new GUID(s)" : "") +
+        (stats.keptGuids ? ", " + std::to_string(stats.keptGuids) + " kept GUID(s)" : "") + ").");
+    // Funnel registration (the artifact DB is the pipeline entry
+    // point): every manifest entry becomes a (klass, uuid) identity
+    // row — no payload yet (derivations live loose beside the source;
+    // payloads stage on cook). Skipped when the cache is off (project-
+    // less sessions); identity still resolves through the manifest.
+    if (m_cacheDb.IsOpen() && !m_projectRoot.empty()) {
+        const auto kindOf = [](smvk::assets::AssetKind k) -> const char* {
+            switch (k) {
+            case smvk::assets::AssetKind::Geometry:
+                return smvk::cache::kKindMesh;
+            case smvk::assets::AssetKind::Material:
+                return smvk::cache::kKindMaterial;
+            case smvk::assets::AssetKind::Anim:
+                return smvk::cache::kKindAnimation;
+            }
+            return "";
+        };
+        const fs::path gltfDir = fs::path(gltfPath).parent_path();
+        const std::string root = fs::path(m_projectRoot).lexically_normal().generic_string();
+        size_t registered = 0;
+        for (const smvk::assets::AssetEntry& e : manifest.entries) {
+            const char* klass = kindOf(e.kind);
+            if (!klass || !*klass || e.guid.empty() || e.file.empty())
+                continue;
+            std::error_code ec2;
+            std::string uri =
+                fs::absolute(gltfDir / e.file, ec2).lexically_normal().generic_string();
+            if (!ec2 && uri.size() > root.size() && uri.compare(0, root.size(), root) == 0 &&
+                uri[root.size()] == '/')
+                uri = uri.substr(root.size() + 1);
+            // Staleness key: the manifest's source digest when the
+            // derivation carries one, else the entry GUID (stable
+            // across reimports either way — equality is all Has
+            // needs).
+            const std::string hash = manifest.sourceDigest.empty() ? e.guid : manifest.sourceDigest;
+            std::string rerr;
+            if (m_cacheDb.Register(klass, e.guid, uri, hash, "", rerr))
+                ++registered;
+            else
+                Log("Import: artifact registration skipped for '" + e.file + "': " + rerr);
+        }
+        Log("Import: registered " + std::to_string(registered) +
+            " derived artifact(s) in the artifact DB.");
+    }
+    return geometry.generic_string();
 }
 
 void EditorApp::ReimportAsset(const std::string& path) {
@@ -886,8 +830,7 @@ void EditorApp::ReimportAsset(const std::string& path) {
         }
         TaskWindowStage("Refreshing references...", 0.85f);
         Log("Reimport: rebuilt mesh assets for '" + path + "'.");
-        bool bound = m_world && !m_gltfPath.empty()
-            && IsPublishedMeshBound(path, m_gltfPath);
+        bool bound = m_world && !m_gltfPath.empty() && IsPublishedMeshBound(path, m_gltfPath);
         if (m_world && !bound)
             for (const std::string& ref : m_refResolved)
                 if (IsPublishedMeshBound(path, ref)) {
@@ -933,47 +876,46 @@ void EditorApp::ReimportAsset(const std::string& path) {
 }
 
 bool EditorApp::ImportAsset(const std::string& srcPath, bool openAfter) {
-	if (m_cookRunning) {
-		Log("Import: a cook is already running — wait for it to finish.");
-		return false;
-	}
-	// Copy + adopt (no scene switch inside): the asset lands in the
-	// project with its UUID, then opens below.
-	const std::string dest = ImportAssetFile(srcPath);
-	if (dest.empty())
-		return false;
-	// THE MESH IMPORTER (Unity-style preprocessed assets): the glTF ->
-	// <stem>.geometry (the data blob) + <stem>.mat<N>_*.material +
-	// <stem>.anim<N_>*.anim + the <stem>.gltf.meta manifest (stable GUIDs)
-	// — cameras, materials, lights, geometry, anims: ALL of it rides the
-	// artifacts; the session (and the tour it saves) references the
-	// .geometry, and the glTF NEVER opens as a scene (import-only, see
-	// ImportMeshArtifactFor). A failed import FAILS here — no glTF
-	// session fallback.
-	const std::string artifact = ImportMeshArtifactFor(dest);
-	if (artifact.empty()) {
-		Log("Import: could not derive the mesh artifact — aborting "
-			"(the copied glTF stays for a fixed re-import).");
-		return false;
-	}
-	if (openAfter && !OpenScene(artifact)) {
-		Log("Import: could not open the derived artifact.");
-		return false;
-	}
-	const std::string stem =
-		std::filesystem::path(dest).stem().string();
-	// Imported assets should not unexpectedly replace the working scene.
-	// Only an explicit "Open after import" updates the editor cook target.
-	if (openAfter) {
-		m_cook.outPak = ProjectCookOutPak(stem);
-		std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
-			m_cook.outPak.c_str());
-		Log("Import: '" + stem + "' opened in the editor.");
-	} else {
-		Log("Import: '" + stem + "' derived in project assets; current "
-			"scene remains loaded.");
-	}
-	return true;
+    if (m_cookRunning) {
+        Log("Import: a cook is already running — wait for it to finish.");
+        return false;
+    }
+    // Copy + adopt (no scene switch inside): the asset lands in the
+    // project with its UUID, then opens below.
+    const std::string dest = ImportAssetFile(srcPath);
+    if (dest.empty())
+        return false;
+    // THE MESH IMPORTER (Unity-style preprocessed assets): the glTF ->
+    // <stem>.geometry (the data blob) + <stem>.mat<N>_*.material +
+    // <stem>.anim<N_>*.anim + the <stem>.gltf.meta manifest (stable GUIDs)
+    // — cameras, materials, lights, geometry, anims: ALL of it rides the
+    // artifacts; the session (and the tour it saves) references the
+    // .geometry, and the glTF NEVER opens as a scene (import-only, see
+    // ImportMeshArtifactFor). A failed import FAILS here — no glTF
+    // session fallback.
+    const std::string artifact = ImportMeshArtifactFor(dest);
+    if (artifact.empty()) {
+        Log("Import: could not derive the mesh artifact — aborting "
+            "(the copied glTF stays for a fixed re-import).");
+        return false;
+    }
+    if (openAfter && !OpenScene(artifact)) {
+        Log("Import: could not open the derived artifact.");
+        return false;
+    }
+    const std::string stem = std::filesystem::path(dest).stem().string();
+    // Imported assets should not unexpectedly replace the working scene.
+    // Only an explicit "Open after import" updates the editor cook target.
+    if (openAfter) {
+        m_cook.outPak = ProjectCookOutPak(stem);
+        std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s", m_cook.outPak.c_str());
+        Log("Import: '" + stem + "' opened in the editor.");
+    } else {
+        Log("Import: '" + stem +
+            "' derived in project assets; current "
+            "scene remains loaded.");
+    }
+    return true;
 }
 
 // ---- the project-scoped watcher (item 10's editor leg) ---------------
@@ -983,22 +925,23 @@ bool EditorApp::ImportAsset(const std::string& srcPath, bool openAfter) {
 // our own writes back). TOURMALINE_EDITOR_WATCH=0 disables (the
 // manual Rescan + re-import paths stand).
 void EditorApp::ArmProjectWatcher() {
-	m_projectWatcherEnabled = true;
-	if (const char* e = std::getenv("TOURMALINE_EDITOR_WATCH"))
-		m_projectWatcherEnabled = std::atoi(e) != 0;
-	m_contentServer.reset(); // Stop old roots on project switches.
-	if (!m_projectWatcherEnabled || m_projectRoot.empty())
-		return;
-	auto server = std::make_unique<EditorContentServer>();
-	std::string err;
-	if (!server->Start(m_projectRoot, err)) {
-		Log("Content server: not armed (" + err + ") — the manual "
-			"Rescan + re-import paths remain available.");
-		return;
-	}
-	m_contentServer = std::move(server);
-	Log("Content server armed (authoritative sources only; "
-		"generated output excluded).");
+    m_projectWatcherEnabled = true;
+    if (const char* e = std::getenv("TOURMALINE_EDITOR_WATCH"))
+        m_projectWatcherEnabled = std::atoi(e) != 0;
+    m_contentServer.reset(); // Stop old roots on project switches.
+    if (!m_projectWatcherEnabled || m_projectRoot.empty())
+        return;
+    auto server = std::make_unique<EditorContentServer>();
+    std::string err;
+    if (!server->Start(m_projectRoot, err)) {
+        Log("Content server: not armed (" + err +
+            ") — the manual "
+            "Rescan + re-import paths remain available.");
+        return;
+    }
+    m_contentServer = std::move(server);
+    Log("Content server armed (authoritative sources only; "
+        "generated output excluded).");
 }
 
 // Consume: drain SETTLED changes + route them through the EXISTING
@@ -1027,102 +970,102 @@ void EditorApp::ArmProjectWatcher() {
 //                 contract) — reload the scene to apply it
 //   anything else -> the log
 void EditorApp::ConsumeWatchedProjectChanges() {
-	if (!m_contentServer || !m_contentServer->Running())
-		return;
-	const EditorContentServer::Batch batch = m_contentServer->Poll(150);
-	if (!batch.warning.empty())
-		Log("Content server: " + batch.warning);
-	if (batch.recoveredOverflow)
-		Log("Content server: recovered missed source events after overflow.");
-	for (const EditorContentServer::Change& c : batch.changes) {
-		const std::string name =
-			std::filesystem::path(c.path).filename().generic_string();
-		// A removed source keeps its rows (the registry heals on the
-		// next rescan; a log line is enough) — the event check comes
-		// BEFORE the path classification (a delete routes by event,
-		// never by extension).
-		if (c.event == smvk::FileWatcher::Event::Removed) {
-			Log("Watcher: '" + name + "' removed — the next Rescan "
-				"reconciles the registry.");
-			continue;
-		}
-		switch (c.route) {
-		case editor::WatchRoute::Removed:
-			// Unreachable (the event check above owns removals); kept
-			// so the switch is exhaustive over the classifier.
-			break;
-		case editor::WatchRoute::MetaSidecar:
-			// Identity sidecars (incl. the .gltf.meta ledger): rescan.
-			{
-				smvk::cache::RescanStats stats;
-				std::string rerr;
-				if (m_assetDb.RescanProject(stats, rerr))
-					Log("Watcher: identity sidecar '" + name + "' — "
-						"rescanned (" + std::to_string(stats.adopted)
-						+ " adopted, " + std::to_string(stats.moved)
-						+ " re-pointed).");
-				else
-					Log("Watcher: rescan failed (" + rerr + ").");
-			}
-			break;
-		case editor::WatchRoute::GltfSource: {
-			Log("Watcher: published mesh source '" + name
-				+ "' changed — checking the artifact.");
-			bool rederived = false;
-			const std::string artifact = ImportMeshArtifactFor(c.path, &rederived);
-			if (artifact.empty()) {
-				Log("Watcher: mesh import failed — keeping the live world.");
-				break;
-			}
-			if (!rederived) {
-				Log("Watcher: artifact already current — no reload needed.");
-				break;
-			}
-			// The scene points at DERIVED .geometry, not the .gltf/.obj
-			// that triggered the source event. Include bound asset
-			// references so DCC-published geometry updates visibly.
-			bool bound = m_world && !m_gltfPath.empty()
-				&& IsPublishedMeshBound(c.path, m_gltfPath);
-			if (m_world && !bound) {
-				for (const std::string& ref : m_refResolved) {
-					if (IsPublishedMeshBound(c.path, ref)) {
-						bound = true;
-						break;
-					}
-				}
-			}
-			if (bound) {
-				if (ReloadReferencesViaTemp())
-					Log("Watcher: published geometry refreshed LIVE "
-						"(working .tour changes preserved).");
-				else
-					Log("Watcher: geometry rebind failed — old world "
-						"retained where possible; reopen scene to retry.");
-			}
-			else {
-				Log("Watcher: new geometry derived; will bind on the "
-					"next scene/reference load.");
-			}
-			break;
-		}
-		case editor::WatchRoute::TourDoc:
-			// Authored scenes: NEVER auto-replay (an external edit must
-			// not silently overwrite unsaved editor work).
-			Log("Watcher: '" + name + "' changed on disk — reload it "
-				"to apply (external edits never overwrite unsaved "
-				"editor work).");
-			break;
-		case editor::WatchRoute::TextureSource:
-			LiveRefreshTextureAsset(c.path);
-			break;
-		case editor::WatchRoute::Other:
-			Log("Watcher: '" + name + "' changed on disk (no live "
-				"refresh for this kind — a glTF source image rides the "
-				"artifact's content digest; everything else is a "
-				"follow-up).");
-			break;
-		}
-	}
+    if (!m_contentServer || !m_contentServer->Running())
+        return;
+    const EditorContentServer::Batch batch = m_contentServer->Poll(150);
+    if (!batch.warning.empty())
+        Log("Content server: " + batch.warning);
+    if (batch.recoveredOverflow)
+        Log("Content server: recovered missed source events after overflow.");
+    for (const EditorContentServer::Change& c : batch.changes) {
+        const std::string name = std::filesystem::path(c.path).filename().generic_string();
+        // A removed source keeps its rows (the registry heals on the
+        // next rescan; a log line is enough) — the event check comes
+        // BEFORE the path classification (a delete routes by event,
+        // never by extension).
+        if (c.event == smvk::FileWatcher::Event::Removed) {
+            Log("Watcher: '" + name +
+                "' removed — the next Rescan "
+                "reconciles the registry.");
+            continue;
+        }
+        switch (c.route) {
+        case editor::WatchRoute::Removed:
+            // Unreachable (the event check above owns removals); kept
+            // so the switch is exhaustive over the classifier.
+            break;
+        case editor::WatchRoute::MetaSidecar:
+            // Identity sidecars (incl. the .gltf.meta ledger): rescan.
+            {
+                smvk::cache::RescanStats stats;
+                std::string rerr;
+                if (m_assetDb.RescanProject(stats, rerr))
+                    Log("Watcher: identity sidecar '" + name +
+                        "' — "
+                        "rescanned (" +
+                        std::to_string(stats.adopted) + " adopted, " + std::to_string(stats.moved) +
+                        " re-pointed).");
+                else
+                    Log("Watcher: rescan failed (" + rerr + ").");
+            }
+            break;
+        case editor::WatchRoute::GltfSource: {
+            Log("Watcher: published mesh source '" + name + "' changed — checking the artifact.");
+            bool rederived = false;
+            const std::string artifact = ImportMeshArtifactFor(c.path, &rederived);
+            if (artifact.empty()) {
+                Log("Watcher: mesh import failed — keeping the live world.");
+                break;
+            }
+            if (!rederived) {
+                Log("Watcher: artifact already current — no reload needed.");
+                break;
+            }
+            // The scene points at DERIVED .geometry, not the .gltf/.obj
+            // that triggered the source event. Include bound asset
+            // references so DCC-published geometry updates visibly.
+            bool bound = m_world && !m_gltfPath.empty() && IsPublishedMeshBound(c.path, m_gltfPath);
+            if (m_world && !bound) {
+                for (const std::string& ref : m_refResolved) {
+                    if (IsPublishedMeshBound(c.path, ref)) {
+                        bound = true;
+                        break;
+                    }
+                }
+            }
+            if (bound) {
+                if (ReloadReferencesViaTemp())
+                    Log("Watcher: published geometry refreshed LIVE "
+                        "(working .tour changes preserved).");
+                else
+                    Log("Watcher: geometry rebind failed — old world "
+                        "retained where possible; reopen scene to retry.");
+            } else {
+                Log("Watcher: new geometry derived; will bind on the "
+                    "next scene/reference load.");
+            }
+            break;
+        }
+        case editor::WatchRoute::TourDoc:
+            // Authored scenes: NEVER auto-replay (an external edit must
+            // not silently overwrite unsaved editor work).
+            Log("Watcher: '" + name +
+                "' changed on disk — reload it "
+                "to apply (external edits never overwrite unsaved "
+                "editor work).");
+            break;
+        case editor::WatchRoute::TextureSource:
+            LiveRefreshTextureAsset(c.path);
+            break;
+        case editor::WatchRoute::Other:
+            Log("Watcher: '" + name +
+                "' changed on disk (no live "
+                "refresh for this kind — a glTF source image rides the "
+                "artifact's content digest; everything else is a "
+                "follow-up).");
+            break;
+        }
+    }
 }
 
 // The TEXTURE leg (item 16): an image edited beside its .texture
@@ -1131,112 +1074,111 @@ void EditorApp::ConsumeWatchedProjectChanges() {
 // the fresh pixels with NO reload, NO relaunch (the borrowed-world
 // contract: the WYSIWYG renderer reads the same World object).
 void EditorApp::LiveRefreshTextureAsset(const std::string& changedImagePath) {
-	namespace fs = std::filesystem;
-	const std::string name =
-		fs::path(changedImagePath).filename().generic_string();
-	if (!m_world) {
-		Log("Watcher: texture '" + name + "' — no session world, the "
-			"next import picks the edit up.");
-		return;
-	}
-	// The asset sits beside the source (the CreateTextureAsset
-	// convention); find the OWNER cluster through the registered uri
-	// (the import-time path spelling — the exact string first, then a
-	// filename match like RelinkTextureLive's, healing
-	// absolute/relative spelling drift).
-	fs::path asset = fs::path(changedImagePath);
-	asset.replace_extension(".texture");
-	std::error_code ec;
-	if (!fs::exists(asset, ec)) {
-		Log("Watcher: texture '" + name + "' — no .texture asset "
-			"beside it (nothing to refresh).");
-		return;
-	}
-	tour::Cluster* owner = nullptr;
-	std::string ownerUri;
-	const std::string exact = asset.lexically_normal().generic_string();
-	for (const auto& clusterPtr : m_world->clusters) {
-		if (!clusterPtr)
-			continue;
-		if (clusterPtr->FindTextureByUri(exact)) {
-			owner = clusterPtr.get();
-			ownerUri = exact;
-			break;
-		}
-	}
-	if (!owner) {
-		for (const auto& clusterPtr : m_world->clusters) {
-			if (!clusterPtr)
-				continue;
-			for (const auto& [uri, h] : clusterPtr->ListTextureUris()) {
-				(void)h;
-				const std::string u(uri.data(), uri.size());
-				if (fs::path(u).filename() == asset.filename()
-						&& fs::exists(fs::path(u), ec)) {
-					owner = clusterPtr.get();
-					ownerUri = u;
-					break;
-				}
-			}
-			if (owner)
-				break;
-		}
-	}
-	if (!owner) {
-		Log("Watcher: texture '" + name + "' changed — not imported in "
-			"this session (the next import picks the edit up).");
-		return;
-	}
-	// The FORCE re-import: fresh pixels under the SAME uri, the old
-	// pool row destroyed (its image releases deferred — in-flight
-	// frames sampling the old texture finish first).
-	smvk::TextureHandle replaced{};
-	std::string err;
-	const smvk::TextureHandle h = smvk::assets::ImportTextureAssetToCluster(
-		*owner, fs::path(ownerUri), m_context.get(), err,
-		/*force=*/true, &replaced);
-	if (h.empty()) {
-		Log("Watcher: texture refresh failed for '" + name + "': "
-			+ (err.empty() ? "import failed" : err));
-		return;
-	}
-	if (!replaced.empty()) {
-		RewireTextureSlots(replaced.index(), h.index());
-		RebuildTexHandleMap();
-		Log("Watcher: texture '" + name + "' refreshed LIVE (pool entry "
-			"replaced, material slots rewired — no reload).");
-	}
-	else {
-		RebuildTexHandleMap();
-		Log("Watcher: texture '" + name + "' imported LIVE (no standing "
-			"entry to replace).");
-	}
+    namespace fs = std::filesystem;
+    const std::string name = fs::path(changedImagePath).filename().generic_string();
+    if (!m_world) {
+        Log("Watcher: texture '" + name +
+            "' — no session world, the "
+            "next import picks the edit up.");
+        return;
+    }
+    // The asset sits beside the source (the CreateTextureAsset
+    // convention); find the OWNER cluster through the registered uri
+    // (the import-time path spelling — the exact string first, then a
+    // filename match like RelinkTextureLive's, healing
+    // absolute/relative spelling drift).
+    fs::path asset = fs::path(changedImagePath);
+    asset.replace_extension(".texture");
+    std::error_code ec;
+    if (!fs::exists(asset, ec)) {
+        Log("Watcher: texture '" + name +
+            "' — no .texture asset "
+            "beside it (nothing to refresh).");
+        return;
+    }
+    tour::Cluster* owner = nullptr;
+    std::string ownerUri;
+    const std::string exact = asset.lexically_normal().generic_string();
+    for (const auto& clusterPtr : m_world->clusters) {
+        if (!clusterPtr)
+            continue;
+        if (clusterPtr->FindTextureByUri(exact)) {
+            owner = clusterPtr.get();
+            ownerUri = exact;
+            break;
+        }
+    }
+    if (!owner) {
+        for (const auto& clusterPtr : m_world->clusters) {
+            if (!clusterPtr)
+                continue;
+            for (const auto& [uri, h] : clusterPtr->ListTextureUris()) {
+                (void)h;
+                const std::string u(uri.data(), uri.size());
+                if (fs::path(u).filename() == asset.filename() && fs::exists(fs::path(u), ec)) {
+                    owner = clusterPtr.get();
+                    ownerUri = u;
+                    break;
+                }
+            }
+            if (owner)
+                break;
+        }
+    }
+    if (!owner) {
+        Log("Watcher: texture '" + name +
+            "' changed — not imported in "
+            "this session (the next import picks the edit up).");
+        return;
+    }
+    // The FORCE re-import: fresh pixels under the SAME uri, the old
+    // pool row destroyed (its image releases deferred — in-flight
+    // frames sampling the old texture finish first).
+    smvk::TextureHandle replaced{};
+    std::string err;
+    const smvk::TextureHandle h = smvk::assets::ImportTextureAssetToCluster(*owner,
+                                                                            fs::path(ownerUri),
+                                                                            m_context.get(),
+                                                                            err,
+                                                                            /*force=*/true,
+                                                                            &replaced);
+    if (h.empty()) {
+        Log("Watcher: texture refresh failed for '" + name +
+            "': " + (err.empty() ? "import failed" : err));
+        return;
+    }
+    if (!replaced.empty()) {
+        RewireTextureSlots(replaced.index(), h.index());
+        RebuildTexHandleMap();
+        Log("Watcher: texture '" + name +
+            "' refreshed LIVE (pool entry "
+            "replaced, material slots rewired — no reload).");
+    } else {
+        RebuildTexHandleMap();
+        Log("Watcher: texture '" + name +
+            "' imported LIVE (no standing "
+            "entry to replace).");
+    }
 }
 
-void EditorApp::RewireTextureSlots(uint32_t oldRhiIndex,
-	uint32_t newRhiIndex) {
-	if (!m_world || oldRhiIndex == newRhiIndex)
-		return;
-	// MaterialValues::textures/textures2 store GLOBAL RHI texture pool
-	// indices (one pool per context — BuildPoolToBindlessMap's
-	// contract), so the rewire walks EVERY cluster's material pool.
-	// -1 slots (no texture) never match (oldRhiIndex is a valid index).
-	for (const auto& clusterPtr : m_world->clusters) {
-		if (!clusterPtr)
-			continue;
-		clusterPtr->materials.forEach(
-			[&](smvk::Material& mat) {
-			for (int i = 0; i < 4; ++i)
-				if (mat.values.textures[i]
-						== static_cast<int>(oldRhiIndex))
-					mat.values.textures[i]
-						= static_cast<int>(newRhiIndex);
-			if (mat.values.textures2[0]
-					== static_cast<int>(oldRhiIndex))
-				mat.values.textures2[0]
-					= static_cast<int>(newRhiIndex);
-		});
-	}
+void EditorApp::RewireTextureSlots(uint32_t oldRhiIndex, uint32_t newRhiIndex) {
+    if (!m_world || oldRhiIndex == newRhiIndex)
+        return;
+    // MaterialValues::textures/textures2 store GLOBAL RHI texture pool
+    // indices (one pool per context — BuildPoolToBindlessMap's
+    // contract), so the rewire walks EVERY cluster's material pool.
+    // -1 slots (no texture) never match (oldRhiIndex is a valid index).
+    for (const auto& clusterPtr : m_world->clusters) {
+        if (!clusterPtr)
+            continue;
+        clusterPtr->materials.forEach([&](smvk::Material& mat) {
+            for (int i = 0; i < 4; ++i)
+                if (mat.values.textures[i] == static_cast<int>(oldRhiIndex))
+                    mat.values.textures[i] = static_cast<int>(newRhiIndex);
+            if (mat.values.textures2[0] == static_cast<int>(oldRhiIndex))
+                mat.values.textures2[0] = static_cast<int>(newRhiIndex);
+        });
+    }
 }
 
 } // namespace editor

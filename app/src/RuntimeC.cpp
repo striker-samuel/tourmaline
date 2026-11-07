@@ -15,30 +15,30 @@
 #include <vector>
 
 struct tour_c_runtime {
-    explicit tour_c_runtime(app::ProjectRuntime&& session)
-        : session(std::move(session)) {}
+    explicit tour_c_runtime(app::ProjectRuntime&& session) : session(std::move(session)) {}
     app::ProjectRuntime session;
 };
 
 namespace {
 
 void SetError(const std::string& message, char* buffer, size_t capacity) noexcept {
-    if (!buffer || capacity == 0) return;
+    if (!buffer || capacity == 0)
+        return;
     const size_t n = std::min(message.size(), capacity - 1);
     std::memcpy(buffer, message.data(), n);
     buffer[n] = '\0';
 }
 
 void ClearError(char* buffer, size_t capacity) noexcept {
-    if (buffer && capacity) buffer[0] = '\0';
+    if (buffer && capacity)
+        buffer[0] = '\0';
 }
 
 } // namespace
 
 extern "C" {
 
-tour_c_runtime* tour_c_runtime_open(const char* tapp_path,
-    char* error, size_t error_capacity) {
+tour_c_runtime* tour_c_runtime_open(const char* tapp_path, char* error, size_t error_capacity) {
     ClearError(error, error_capacity);
     if (!tapp_path || !*tapp_path) {
         SetError("a non-empty .tapp path is required", error, error_capacity);
@@ -65,7 +65,9 @@ void tour_c_runtime_close(tour_c_runtime* runtime) {
 }
 
 int tour_c_runtime_attach_catalog(tour_c_runtime* runtime,
-    const tour_c_catalog* catalog, char* error, size_t error_capacity) {
+                                  const tour_c_catalog* catalog,
+                                  char* error,
+                                  size_t error_capacity) {
     ClearError(error, error_capacity);
     if (!runtime || !catalog) {
         SetError("runtime and catalog are required", error, error_capacity);
@@ -88,14 +90,14 @@ int tour_c_runtime_attach_catalog(tour_c_runtime* runtime,
                 SetError("catalog asset has a null path", error, error_capacity);
                 return 0;
             }
-            records.push_back({
-                a.id, a.kind, std::string_view(a.path),
-                std::string_view(a.scene_name ? a.scene_name : "")
-            });
+            records.push_back({a.id,
+                               a.kind,
+                               std::string_view(a.path),
+                               std::string_view(a.scene_name ? a.scene_name : "")});
         }
         std::string diagnostic;
-        if (!runtime->session.AttachCompiledCatalog(records.data(),
-                records.size(), catalog->fingerprint, diagnostic)) {
+        if (!runtime->session.AttachCompiledCatalog(
+                records.data(), records.size(), catalog->fingerprint, diagnostic)) {
             SetError(diagnostic, error, error_capacity);
             return 0;
         }
@@ -108,10 +110,14 @@ int tour_c_runtime_attach_catalog(tour_c_runtime* runtime,
     return 0;
 }
 
-int tour_c_runtime_read_asset(tour_c_runtime* runtime, uint64_t asset_id,
-    tour_c_bytes* out_bytes, char* error, size_t error_capacity) {
+int tour_c_runtime_read_asset(tour_c_runtime* runtime,
+                              uint64_t asset_id,
+                              tour_c_bytes* out_bytes,
+                              char* error,
+                              size_t error_capacity) {
     ClearError(error, error_capacity);
-    if (out_bytes) *out_bytes = {};
+    if (out_bytes)
+        *out_bytes = {};
     if (!runtime || !out_bytes) {
         SetError("runtime and output bytes are required", error, error_capacity);
         return 0;
@@ -143,7 +149,8 @@ int tour_c_runtime_read_asset(tour_c_runtime* runtime, uint64_t asset_id,
 }
 
 void tour_c_bytes_free(tour_c_bytes* bytes) {
-    if (!bytes) return;
+    if (!bytes)
+        return;
     std::free(bytes->data);
     *bytes = {};
 }

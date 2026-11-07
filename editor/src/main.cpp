@@ -4,16 +4,16 @@
 #include "editor_app.h"
 
 #include <Engine/Memory/memory.h>
-#include <Engine/debug_log.h> // SetTraceEnabled (mute engine dashboards)
-#include <Engine/Rendergraph/dlss.h> // DlssSetStartupEnabled (Streamline never loads here)
+#include <Engine/Rendergraph/dlss.h>        // DlssSetStartupEnabled (Streamline never loads here)
 #include <Engine/Utils/shader_hot_reload.h> // the dev watched recompile (TOURMALINE_SHADER_RELOAD)
-#include <Engine/Utils/shader_library.h> // the engine shader mount (before the Live view)
+#include <Engine/Utils/shader_library.h>    // the engine shader mount (before the Live view)
+#include <Engine/debug_log.h>               // SetTraceEnabled (mute engine dashboards)
 
-#include <cstring>
 #include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <cstring>
 #include <filesystem>
+#include <iostream>
 
 #ifdef _WIN32
 // ---------------------------------------------------------------------------
@@ -30,27 +30,27 @@
 // ---------------------------------------------------------------------------
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
 #include <dbghelp.h>
+#include <windows.h>
 
 namespace {
 
 FILE* g_crashLog = nullptr;
 
 void CrashLogOpen() {
-	if (!g_crashLog)
-		g_crashLog = std::fopen("tourmaline_fatal.log", "a");
+    if (!g_crashLog)
+        g_crashLog = std::fopen("tourmaline_fatal.log", "a");
 }
 
 void CrashLogPrintf(const char* fmt, ...) {
-	va_list a1, a2;
-	va_start(a1, fmt);
-	va_copy(a2, a1);
-	std::vfprintf(stderr, fmt, a1);
-	if (g_crashLog)
-		std::vfprintf(g_crashLog, fmt, a2);
-	va_end(a1);
-	va_end(a2);
+    va_list a1, a2;
+    va_start(a1, fmt);
+    va_copy(a2, a1);
+    std::vfprintf(stderr, fmt, a1);
+    if (g_crashLog)
+        std::vfprintf(g_crashLog, fmt, a2);
+    va_end(a1);
+    va_end(a2);
 }
 
 // No C++ objects with destructors here (SEH + unwinding discipline).
@@ -58,166 +58,192 @@ void CrashLogPrintf(const char* fmt, ...) {
 // place, so CaptureStackBackTrace sees the faulting call chain below a
 // few handler frames (skipped).
 void DumpStack() {
-	void* frames[64]{};
-	const WORD n = CaptureStackBackTrace(4, 60, frames, nullptr);
-	SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
-	SymInitialize(GetCurrentProcess(), nullptr, TRUE);
-	CrashLogOpen();
-	CrashLogPrintf("[Crash] native stack (%u frames):\n", (unsigned)n);
-	for (WORD i = 0; i < n; ++i) {
-		DWORD64 off = 0;
-		char symBuf[sizeof(SYMBOL_INFO) + 256]{};
-		SYMBOL_INFO* sym = reinterpret_cast<SYMBOL_INFO*>(symBuf);
-		sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-		sym->MaxNameLen = 255;
-		const char* name = "???";
-		if (SymFromAddr(GetCurrentProcess(), (DWORD64)frames[i], &off, sym) && sym->Name[0])
-			name = sym->Name;
-		DWORD lineOff = 0;
-		IMAGEHLP_LINE64 line{};
-		line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
-		char where[96] = "";
-		if (SymGetLineFromAddr64(GetCurrentProcess(), (DWORD64)frames[i], &lineOff, &line))
-			std::snprintf(where, sizeof(where), " %s(%lu)", line.FileName, (unsigned long)line.LineNumber);
-		HMODULE mod = nullptr;
-		char modName[64] = "?";
-		if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-				(LPCWSTR)frames[i], &mod) && mod) {
-			char buf[64];
-			if (GetModuleFileNameA(mod, buf, sizeof(buf))) {
-				const char* slash = std::strrchr(buf, '\\');
-				std::snprintf(modName, sizeof(modName), "%s", slash ? slash + 1 : buf);
-			}
-		}
-		CrashLogPrintf("[Crash]   #%02u %s!%s+0x%llx%s\n",
-			(unsigned)i, modName, name, (unsigned long long)off, where);
-	}
-	if (g_crashLog) {
-		std::fflush(g_crashLog);
-		std::fclose(g_crashLog);
-		g_crashLog = nullptr;
-	}
-	std::fflush(stderr);
+    void* frames[64]{};
+    const WORD n = CaptureStackBackTrace(4, 60, frames, nullptr);
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+    SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+    CrashLogOpen();
+    CrashLogPrintf("[Crash] native stack (%u frames):\n", (unsigned)n);
+    for (WORD i = 0; i < n; ++i) {
+        DWORD64 off = 0;
+        char symBuf[sizeof(SYMBOL_INFO) + 256]{};
+        SYMBOL_INFO* sym = reinterpret_cast<SYMBOL_INFO*>(symBuf);
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen = 255;
+        const char* name = "???";
+        if (SymFromAddr(GetCurrentProcess(), (DWORD64)frames[i], &off, sym) && sym->Name[0])
+            name = sym->Name;
+        DWORD lineOff = 0;
+        IMAGEHLP_LINE64 line{};
+        line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+        char where[96] = "";
+        if (SymGetLineFromAddr64(GetCurrentProcess(), (DWORD64)frames[i], &lineOff, &line))
+            std::snprintf(
+                where, sizeof(where), " %s(%lu)", line.FileName, (unsigned long)line.LineNumber);
+        HMODULE mod = nullptr;
+        char modName[64] = "?";
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCWSTR)frames[i],
+                               &mod) &&
+            mod) {
+            char buf[64];
+            if (GetModuleFileNameA(mod, buf, sizeof(buf))) {
+                const char* slash = std::strrchr(buf, '\\');
+                std::snprintf(modName, sizeof(modName), "%s", slash ? slash + 1 : buf);
+            }
+        }
+        CrashLogPrintf("[Crash]   #%02u %s!%s+0x%llx%s\n",
+                       (unsigned)i,
+                       modName,
+                       name,
+                       (unsigned long long)off,
+                       where);
+    }
+    if (g_crashLog) {
+        std::fflush(g_crashLog);
+        std::fclose(g_crashLog);
+        g_crashLog = nullptr;
+    }
+    std::fflush(stderr);
 }
 
 LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
-	if (!ep || !ep->ExceptionRecord)
-		return EXCEPTION_CONTINUE_SEARCH;
-	const DWORD code = ep->ExceptionRecord->ExceptionCode;
-	// Only fatal faults (not C++ exceptions 0xE06D7363, not breakpoints
-	// under a debugger, not MSVC asserts' fastfail which never get here).
-	if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_IN_PAGE_ERROR
-		&& code != EXCEPTION_ILLEGAL_INSTRUCTION
-		&& code != EXCEPTION_PRIV_INSTRUCTION
-		&& code != EXCEPTION_STACK_OVERFLOW
-		&& code != 0xC0000409 /* stack buffer overrun / fastfail */
-		&& code != 0x80000004 /* SINGLE_STEP: the Dr0 graph write watchpoint */)
-		return EXCEPTION_CONTINUE_SEARCH;
-	// Hardware watchpoint report (see App::StartGraphWatchdog): Dr0 watches
-	// an 8-byte WRITE on RenderGraph+32 (topoHeap_._Myproxy) during the
-	// editor's first frame - a trap here is the STOMPER ITSELF: dump the
-	// writer's RIP + registers + the written value + the writer's full
-	// stack. Dr6 bit 0 (B0) confirms it is the Dr0 breakpoint.
-	if (code == 0x80000004 && ep->ContextRecord && (ep->ContextRecord->Dr6 & 1)) {
-		const uintptr_t wpAddr = static_cast<uintptr_t>(ep->ContextRecord->Dr0);
-		uint64_t written = 0;
-		__try { written = *reinterpret_cast<uint64_t*>(wpAddr); }
-		__except (EXCEPTION_EXECUTE_HANDLER) {}
-		CrashLogOpen();
-		CrashLogPrintf("[Crash] HW WATCHPOINT: WRITE to graph+32 (Dr0=%p) RIP=%p value=0x%llx\n",
-			(void*)wpAddr, (void*)ep->ContextRecord->Rip,
-			(unsigned long long)written);
-		CrashLogPrintf("[Crash] writer context: rax=%llx rbx=%llx rcx=%llx rdx=%llx rsi=%llx rdi=%llx r8=%llx r9=%llx r10=%llx r11=%llx r12=%llx r13=%llx r14=%llx r15=%llx\n",
-			(unsigned long long)ep->ContextRecord->Rax,
-			(unsigned long long)ep->ContextRecord->Rbx,
-			(unsigned long long)ep->ContextRecord->Rcx,
-			(unsigned long long)ep->ContextRecord->Rdx,
-			(unsigned long long)ep->ContextRecord->Rsi,
-			(unsigned long long)ep->ContextRecord->Rdi,
-			(unsigned long long)ep->ContextRecord->R8,
-			(unsigned long long)ep->ContextRecord->R9,
-			(unsigned long long)ep->ContextRecord->R10,
-			(unsigned long long)ep->ContextRecord->R11,
-			(unsigned long long)ep->ContextRecord->R12,
-			(unsigned long long)ep->ContextRecord->R13,
-			(unsigned long long)ep->ContextRecord->R14,
-			(unsigned long long)ep->ContextRecord->R15);
-		CrashLogPrintf("[Crash] THE STOMPER'S STACK:\n");
-		DumpStack();
-		// Keep the graph head evidence: also dump the first 48 bytes.
-		{
-			uint64_t head[6]{};
-			uintptr_t graphBase = wpAddr - 32;
-			__try {
-				std::memcpy(head, (void*)graphBase, sizeof(head));
-				CrashLogPrintf("[Crash] graph head after write: [%llx %llx %llx %llx %llx %llx]\n",
-					(unsigned long long)head[0], (unsigned long long)head[1],
-					(unsigned long long)head[2], (unsigned long long)head[3],
-					(unsigned long long)head[4], (unsigned long long)head[5]);
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER) {}
-		}
-		if (g_crashLog) {
-			std::fflush(g_crashLog);
-			std::fclose(g_crashLog);
-			g_crashLog = nullptr;
-		}
-		std::fflush(stderr);
-		std::abort();
-	}
-	CrashLogOpen();
-	CrashLogPrintf("[Crash] exception 0x%08lX at %p",
-		(unsigned long)code, ep->ExceptionRecord->ExceptionAddress);
-	if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
-		CrashLogPrintf(" (AV %s at %p)",
-			ep->ExceptionRecord->ExceptionInformation[0] == 8 ? "execute"
-			: ep->ExceptionRecord->ExceptionInformation[0] ? "write" : "read",
-			(void*)ep->ExceptionRecord->ExceptionInformation[1]);
-	CrashLogPrintf("\n");
-	// Null-call forensics: an EXECUTE at 0 (a call through a null/garbage
-	// function pointer) leaves the CALLER's return address at [Rsp] in the
-	// faulting context — CaptureStackBackTrace sees almost nothing there
-	// (the skip eats the shallow frames), so dump the context's raw stack
-	// words with symbols: the first module frame below the fault is the
-	// caller of the null call.
-	if (ep->ContextRecord) {
-		SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
-		SymInitialize(GetCurrentProcess(), nullptr, TRUE);
-		uintptr_t* sp = reinterpret_cast<uintptr_t*>(ep->ContextRecord->Rsp);
-		for (int i = 0; i < 24; ++i) {
-			uintptr_t v = 0;
-			__try { v = sp[i]; }
-			__except (EXCEPTION_EXECUTE_HANDLER) { break; }
-			if (v < 0x10000ull || v > 0x7FFFFFFFFFFFull)
-				continue; // not a code-looking address
-			DWORD64 off = 0;
-			char symBuf[sizeof(SYMBOL_INFO) + 256]{};
-			SYMBOL_INFO* sym = reinterpret_cast<SYMBOL_INFO*>(symBuf);
-			sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-			sym->MaxNameLen = 255;
-			const char* name = "???";
-			if (SymFromAddr(GetCurrentProcess(), (DWORD64)v, &off, sym) && sym->Name[0])
-				name = sym->Name;
-			HMODULE mod = nullptr;
-			char modName[64] = "?";
-			if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-					(LPCWSTR)v, &mod) && mod) {
-				char buf[64];
-				if (GetModuleFileNameA(mod, buf, sizeof(buf))) {
-					const char* slash = std::strrchr(buf, '\\');
-					std::snprintf(modName, sizeof(modName), "%s", slash ? slash + 1 : buf);
-				}
-			}
-			CrashLogPrintf("[Crash]   ctx[rsp+%02d] %p %s!%s+0x%llx\n",
-				i * 8, (void*)v, modName, name, (unsigned long long)off);
-		}
-	}
-	DumpStack();
-	return EXCEPTION_CONTINUE_SEARCH;
+    if (!ep || !ep->ExceptionRecord)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const DWORD code = ep->ExceptionRecord->ExceptionCode;
+    // Only fatal faults (not C++ exceptions 0xE06D7363, not breakpoints
+    // under a debugger, not MSVC asserts' fastfail which never get here).
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_IN_PAGE_ERROR &&
+        code != EXCEPTION_ILLEGAL_INSTRUCTION && code != EXCEPTION_PRIV_INSTRUCTION &&
+        code != EXCEPTION_STACK_OVERFLOW && code != 0xC0000409 /* stack buffer overrun / fastfail */
+        && code != 0x80000004 /* SINGLE_STEP: the Dr0 graph write watchpoint */)
+        return EXCEPTION_CONTINUE_SEARCH;
+    // Hardware watchpoint report (see App::StartGraphWatchdog): Dr0 watches
+    // an 8-byte WRITE on RenderGraph+32 (topoHeap_._Myproxy) during the
+    // editor's first frame - a trap here is the STOMPER ITSELF: dump the
+    // writer's RIP + registers + the written value + the writer's full
+    // stack. Dr6 bit 0 (B0) confirms it is the Dr0 breakpoint.
+    if (code == 0x80000004 && ep->ContextRecord && (ep->ContextRecord->Dr6 & 1)) {
+        const uintptr_t wpAddr = static_cast<uintptr_t>(ep->ContextRecord->Dr0);
+        uint64_t written = 0;
+        __try {
+            written = *reinterpret_cast<uint64_t*>(wpAddr);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+        CrashLogOpen();
+        CrashLogPrintf("[Crash] HW WATCHPOINT: WRITE to graph+32 (Dr0=%p) RIP=%p value=0x%llx\n",
+                       (void*)wpAddr,
+                       (void*)ep->ContextRecord->Rip,
+                       (unsigned long long)written);
+        CrashLogPrintf(
+            "[Crash] writer context: rax=%llx rbx=%llx rcx=%llx rdx=%llx rsi=%llx rdi=%llx r8=%llx "
+            "r9=%llx r10=%llx r11=%llx r12=%llx r13=%llx r14=%llx r15=%llx\n",
+            (unsigned long long)ep->ContextRecord->Rax,
+            (unsigned long long)ep->ContextRecord->Rbx,
+            (unsigned long long)ep->ContextRecord->Rcx,
+            (unsigned long long)ep->ContextRecord->Rdx,
+            (unsigned long long)ep->ContextRecord->Rsi,
+            (unsigned long long)ep->ContextRecord->Rdi,
+            (unsigned long long)ep->ContextRecord->R8,
+            (unsigned long long)ep->ContextRecord->R9,
+            (unsigned long long)ep->ContextRecord->R10,
+            (unsigned long long)ep->ContextRecord->R11,
+            (unsigned long long)ep->ContextRecord->R12,
+            (unsigned long long)ep->ContextRecord->R13,
+            (unsigned long long)ep->ContextRecord->R14,
+            (unsigned long long)ep->ContextRecord->R15);
+        CrashLogPrintf("[Crash] THE STOMPER'S STACK:\n");
+        DumpStack();
+        // Keep the graph head evidence: also dump the first 48 bytes.
+        {
+            uint64_t head[6]{};
+            uintptr_t graphBase = wpAddr - 32;
+            __try {
+                std::memcpy(head, (void*)graphBase, sizeof(head));
+                CrashLogPrintf("[Crash] graph head after write: [%llx %llx %llx %llx %llx %llx]\n",
+                               (unsigned long long)head[0],
+                               (unsigned long long)head[1],
+                               (unsigned long long)head[2],
+                               (unsigned long long)head[3],
+                               (unsigned long long)head[4],
+                               (unsigned long long)head[5]);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+        }
+        if (g_crashLog) {
+            std::fflush(g_crashLog);
+            std::fclose(g_crashLog);
+            g_crashLog = nullptr;
+        }
+        std::fflush(stderr);
+        std::abort();
+    }
+    CrashLogOpen();
+    CrashLogPrintf("[Crash] exception 0x%08lX at %p",
+                   (unsigned long)code,
+                   ep->ExceptionRecord->ExceptionAddress);
+    if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
+        CrashLogPrintf(" (AV %s at %p)",
+                       ep->ExceptionRecord->ExceptionInformation[0] == 8 ? "execute"
+                       : ep->ExceptionRecord->ExceptionInformation[0]    ? "write"
+                                                                         : "read",
+                       (void*)ep->ExceptionRecord->ExceptionInformation[1]);
+    CrashLogPrintf("\n");
+    // Null-call forensics: an EXECUTE at 0 (a call through a null/garbage
+    // function pointer) leaves the CALLER's return address at [Rsp] in the
+    // faulting context — CaptureStackBackTrace sees almost nothing there
+    // (the skip eats the shallow frames), so dump the context's raw stack
+    // words with symbols: the first module frame below the fault is the
+    // caller of the null call.
+    if (ep->ContextRecord) {
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+        SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+        uintptr_t* sp = reinterpret_cast<uintptr_t*>(ep->ContextRecord->Rsp);
+        for (int i = 0; i < 24; ++i) {
+            uintptr_t v = 0;
+            __try {
+                v = sp[i];
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                break;
+            }
+            if (v < 0x10000ull || v > 0x7FFFFFFFFFFFull)
+                continue; // not a code-looking address
+            DWORD64 off = 0;
+            char symBuf[sizeof(SYMBOL_INFO) + 256]{};
+            SYMBOL_INFO* sym = reinterpret_cast<SYMBOL_INFO*>(symBuf);
+            sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+            sym->MaxNameLen = 255;
+            const char* name = "???";
+            if (SymFromAddr(GetCurrentProcess(), (DWORD64)v, &off, sym) && sym->Name[0])
+                name = sym->Name;
+            HMODULE mod = nullptr;
+            char modName[64] = "?";
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (LPCWSTR)v,
+                                   &mod) &&
+                mod) {
+                char buf[64];
+                if (GetModuleFileNameA(mod, buf, sizeof(buf))) {
+                    const char* slash = std::strrchr(buf, '\\');
+                    std::snprintf(modName, sizeof(modName), "%s", slash ? slash + 1 : buf);
+                }
+            }
+            CrashLogPrintf("[Crash]   ctx[rsp+%02d] %p %s!%s+0x%llx\n",
+                           i * 8,
+                           (void*)v,
+                           modName,
+                           name,
+                           (unsigned long long)off);
+        }
+    }
+    DumpStack();
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 void InstallCrashHandler() {
-	AddVectoredExceptionHandler(1, &CrashHandler);
+    AddVectoredExceptionHandler(1, &CrashHandler);
 }
 
 } // namespace
@@ -243,54 +269,54 @@ namespace {
 FILE* g_crashLog = nullptr;
 
 void CrashLogOpen() {
-	if (!g_crashLog)
-		g_crashLog = std::fopen("tourmaline_fatal.log", "a");
+    if (!g_crashLog)
+        g_crashLog = std::fopen("tourmaline_fatal.log", "a");
 }
 
 void CrashLogPrintf(const char* fmt, ...) {
-	va_list a1, a2;
-	va_start(a1, fmt);
-	va_copy(a2, a1);
-	std::vfprintf(stderr, fmt, a1);
-	if (g_crashLog)
-		std::vfprintf(g_crashLog, fmt, a2);
-	va_end(a1);
-	va_end(a2);
+    va_list a1, a2;
+    va_start(a1, fmt);
+    va_copy(a2, a1);
+    std::vfprintf(stderr, fmt, a1);
+    if (g_crashLog)
+        std::vfprintf(g_crashLog, fmt, a2);
+    va_end(a1);
+    va_end(a2);
 }
 
 void DumpStack() {
-	void* frames[64]{};
-	const int n = backtrace(frames, int(std::size(frames)));
-	char** syms = backtrace_symbols(frames, n);
-	CrashLogOpen();
-	CrashLogPrintf("[Crash] native stack (%d frames):\n", n);
-	for (int i = 0; i < n; ++i)
-		CrashLogPrintf("[Crash]   #%02d %s\n", i, syms ? syms[i] : "?");
-	std::free(syms);
-	if (g_crashLog) {
-		std::fflush(g_crashLog);
-		std::fclose(g_crashLog);
-		g_crashLog = nullptr;
-	}
-	std::fflush(stderr);
+    void* frames[64]{};
+    const int n = backtrace(frames, int(std::size(frames)));
+    char** syms = backtrace_symbols(frames, n);
+    CrashLogOpen();
+    CrashLogPrintf("[Crash] native stack (%d frames):\n", n);
+    for (int i = 0; i < n; ++i)
+        CrashLogPrintf("[Crash]   #%02d %s\n", i, syms ? syms[i] : "?");
+    std::free(syms);
+    if (g_crashLog) {
+        std::fflush(g_crashLog);
+        std::fclose(g_crashLog);
+        g_crashLog = nullptr;
+    }
+    std::fflush(stderr);
 }
 
 extern "C" void CrashHandler(int sig) {
-	CrashLogOpen();
-	CrashLogPrintf("[Crash] signal %d (%s)\n", sig, strsignal(sig));
-	DumpStack();
-	// Restore the default disposition and re-raise: WER-equivalent
-	// behavior (core dump / exit status) stays intact.
-	std::signal(sig, SIG_DFL);
-	std::raise(sig);
+    CrashLogOpen();
+    CrashLogPrintf("[Crash] signal %d (%s)\n", sig, strsignal(sig));
+    DumpStack();
+    // Restore the default disposition and re-raise: WER-equivalent
+    // behavior (core dump / exit status) stays intact.
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
 }
 
 void InstallCrashHandler() {
-	std::signal(SIGSEGV, &CrashHandler);
-	std::signal(SIGBUS, &CrashHandler);
-	std::signal(SIGILL, &CrashHandler);
-	std::signal(SIGFPE, &CrashHandler);
-	std::signal(SIGABRT, &CrashHandler);
+    std::signal(SIGSEGV, &CrashHandler);
+    std::signal(SIGBUS, &CrashHandler);
+    std::signal(SIGILL, &CrashHandler);
+    std::signal(SIGFPE, &CrashHandler);
+    std::signal(SIGABRT, &CrashHandler);
 }
 
 } // namespace
@@ -298,205 +324,192 @@ void InstallCrashHandler() {
 
 namespace {
 
-	void PrintUsage(const char* prog) {
-		std::cout << "Usage: " << (prog ? prog : "Editor")
-			<< " --project <dir> [--scene <path.tour|.gltf>] [--out-pak <path.pak>]"
-			" [--strict]\n"
-			<< "  --project is REQUIRED: the editor never picks a project\n"
-			<< "  itself — EditorLauncher.exe owns selection (recents +\n"
-			<< "  New/Browse) and spawns this exe with --project.\n"
-			<< "  --scene opens any SOURCE scene at boot (the same dispatch\n"
-			<< "  as the open dialog: .tour replays the authored scene,\n"
-			<< "  .gltf/.glb runs the import funnel — glTF is import-only\n"
-			<< "  content and the editor is the importer). Cooked paks run\n"
-			<< "  in the App (the editor is the WYSIWYG authoring tool;\n"
-			<< "  pak opens are refused).\n"
-			<< "  --strict: resource-pool exhaustion ABORTS with a fatal\n"
-			<< "  diagnostic instead of degrading silently (dev/diagnosis;\n"
-			<< "  same as TOURMALINE_STRICT=1 — see AGENTS.md).\n";
-	}
+void PrintUsage(const char* prog) {
+    std::cout << "Usage: " << (prog ? prog : "Editor")
+              << " --project <dir> [--scene <path.tour|.gltf>] [--out-pak <path.pak>]"
+                 " [--strict]\n"
+              << "  --project is REQUIRED: the editor never picks a project\n"
+              << "  itself — EditorLauncher.exe owns selection (recents +\n"
+              << "  New/Browse) and spawns this exe with --project.\n"
+              << "  --scene opens any SOURCE scene at boot (the same dispatch\n"
+              << "  as the open dialog: .tour replays the authored scene,\n"
+              << "  .gltf/.glb runs the import funnel — glTF is import-only\n"
+              << "  content and the editor is the importer). Cooked paks run\n"
+              << "  in the App (the editor is the WYSIWYG authoring tool;\n"
+              << "  pak opens are refused).\n"
+              << "  --strict: resource-pool exhaustion ABORTS with a fatal\n"
+              << "  diagnostic instead of degrading silently (dev/diagnosis;\n"
+              << "  same as TOURMALINE_STRICT=1 — see AGENTS.md).\n";
+}
 
 } // namespace
 
-   	int main(int argc, const char* argv[]) {
-	// Reserve linear-allocator virtual address space FIRST (see
-	// Engine/Memory/memory.h) — before any subsystem init.
-	tour::mem::InitMemory();
-	// Mute the periodic engine dashboards ([GfxProbe]/[GfxFilter]
-	// view + dispatch, [exposure] record/download — SMVK_TRACE_LOG):
-	// the editor's terminal is interactive and these every-N-frame
-	// status lines are noise there. The App / bench flows keep them
-	// (they are the only per-run visibility into the live pipeline);
-	// fault/warning lines stay unconditional here too.
-	// TOURMALINE_TRACE=1 keeps them ON in the editor too — the live-view
-	// hunt's window into the exposure/download machinery.
-	if (!([] {
-		const char* e = std::getenv("TOURMALINE_TRACE");
-		return e && std::atoi(e) != 0;
-	}()))
-		smvk::SetTraceEnabled(false);
-	// Disk pipeline cache OFF in the editor (see impl.cpp's
-	// TOURMALINE_PIPELINE_CACHE_DIR contract — "off" = no disk seed or
-	// save; the in-process pipeline-object dedup still runs): compute-pipeline
-	// creation against a driver-seeded cache still crashes the driver on
-	// some configurations (the blob validates — same driver/GPU — but
-	// the driver faults on its own cached data anyway). The shipped App
-	// keeps the cache (startup speed + bench determinism) on the
-	// F:/pipelinecache scratch disk. An explicit user setting wins —
-	// this only defaults when unset, so the cache can be re-enabled
-	// for A/B runs without a rebuild.
-	if (!std::getenv("TOURMALINE_PIPELINE_CACHE_DIR")) {
+int main(int argc, const char* argv[]) {
+    // Reserve linear-allocator virtual address space FIRST (see
+    // Engine/Memory/memory.h) — before any subsystem init.
+    tour::mem::InitMemory();
+    // Mute the periodic engine dashboards ([GfxProbe]/[GfxFilter]
+    // view + dispatch, [exposure] record/download — SMVK_TRACE_LOG):
+    // the editor's terminal is interactive and these every-N-frame
+    // status lines are noise there. The App / bench flows keep them
+    // (they are the only per-run visibility into the live pipeline);
+    // fault/warning lines stay unconditional here too.
+    // TOURMALINE_TRACE=1 keeps them ON in the editor too — the live-view
+    // hunt's window into the exposure/download machinery.
+    if (!([] {
+            const char* e = std::getenv("TOURMALINE_TRACE");
+            return e && std::atoi(e) != 0;
+        }()))
+        smvk::SetTraceEnabled(false);
+    // Disk pipeline cache OFF in the editor (see impl.cpp's
+    // TOURMALINE_PIPELINE_CACHE_DIR contract — "off" = no disk seed or
+    // save; the in-process pipeline-object dedup still runs): compute-pipeline
+    // creation against a driver-seeded cache still crashes the driver on
+    // some configurations (the blob validates — same driver/GPU — but
+    // the driver faults on its own cached data anyway). The shipped App
+    // keeps the cache (startup speed + bench determinism) on the
+    // F:/pipelinecache scratch disk. An explicit user setting wins —
+    // this only defaults when unset, so the cache can be re-enabled
+    // for A/B runs without a rebuild.
+    if (!std::getenv("TOURMALINE_PIPELINE_CACHE_DIR")) {
 #ifdef _WIN32
-		_putenv("TOURMALINE_PIPELINE_CACHE_DIR=off");
+        _putenv("TOURMALINE_PIPELINE_CACHE_DIR=off");
 #else
-		setenv("TOURMALINE_PIPELINE_CACHE_DIR", "off", 0);
+        setenv("TOURMALINE_PIPELINE_CACHE_DIR", "off", 0);
 #endif
-	}
-	// Async compute RE-ENABLED in the editor: the async-split G1/C submits
-	// ride the RenderGraph's OWN split command buffers — G2 records into the
-	// Framebuffer's splitCommandBuffer, which EndAndPresent submits with
-	// the C-done wait — the host's main command buffer is never cut. The
-	// old default-off (the mid-recording G1 submit argument) was a
-	// hosted-era hazard. The churn-death bisect that once pointed here
-	// ("reproduces with async OFF and one queue, vanishes under submission
-	// serialization") was chasing SYMPTOMS of the real root cause, later
-	// pinned by the VK_NV_device_diagnostic_checkpoints fault pinpoint:
-	// the SSR ray counter's missing creation zero-fill (see ssr.h) — the
-	// classify's atomic append started from whatever the allocator recycled
-	// into the fresh 8-byte buffer. SERIALIZE=all "survived" by allocator
-	// perturbation, not causally: serialized submission timings reshuffle
-	// the suballocator's freed-page reuse, so the wild garbage value simply
-	// didn't land in the tested window — the queue/split topology was never
-	// implicated. TOURMALINE_ASYNC_COMPUTE=0 still kills the split for A/B
-	// runs.
-// Crash stack writer (see the comment blocks above): FIRST, before any
-// subsystem init, so any boot-time fault is captured too.
-InstallCrashHandler();
-	const char* scenePath = nullptr;
-	const char* outPak = nullptr;
-	const char* projectDir = nullptr;
-	bool strict = false;
-	for (int i = 1; i < argc; ++i) {
-		const char* a = argv[i];
-		// --scene: the GENERIC source-scene open (any .tour or
-		// .gltf/.glb — OpenAnySceneFile's exact dispatch). The old
-		// glTF-named flag is GONE: glTF is import-only content, the
-		// flag name was a format leak onto a generic surface.
-		if (std::strcmp(a, "--scene") == 0 && i + 1 < argc) {
-			scenePath = argv[++i];
-		}
-		else if (std::strncmp(a, "--scene=", 8) == 0) {
-			scenePath = a + 8;
-		}
-		else if (std::strcmp(a, "--project") == 0 && i + 1 < argc) {
-			projectDir = argv[++i];
-		}
-		else if (std::strncmp(a, "--project=", 10) == 0) {
-			projectDir = a + 10;
-		}
-		else if (std::strcmp(a, "--out-pak") == 0 && i + 1 < argc) {
-			outPak = argv[++i];
-		}
-		else if (std::strncmp(a, "--out-pak=", 10) == 0) {
-			outPak = a + 10;
-		}
-		else if (std::strcmp(a, "--strict") == 0) {
-			// STRICT RESOURCES (see AGENTS.md): resource-pool exhaustion
-			// aborts with a fatal diagnostic instead of degrading
-			// silently. Dev/diagnosis flag — the default stays graceful
-			// so editing sessions survive budget pressure.
-			strict = true;
-		}
-		else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
-			PrintUsage(argv[0]);
-			return EXIT_SUCCESS;
-		}
-		else {
-			std::cerr << "Unknown argument: " << a << "\n";
-			PrintUsage(argv[0]);
-			return EXIT_FAILURE;
-		}
-	}
-	// THE PROJECT ARG IS REQUIRED (the editor/launcher split): the editor
-	// never picks a project itself — the launcher (EditorLauncher.exe)
-	// owns selection (recents + New/Browse) and spawns this exe with
-	// --project. The old in-editor blocking modal is gone with the flow.
-	if (!projectDir) {
-		std::cerr << "Editor: no project (--project <dir> required; the "
-			"EditorLauncher picks one)\n";
-		PrintUsage(argv[0]);
-		return EXIT_FAILURE;
-	}
-	if (strict) {
-		smvk::SetStrictResources(true);
-		std::cerr << "[STRICT] resources: pool exhaustion will abort "
-			"with a diagnostic (see AGENTS.md)\n";
-	}
+    }
+    // Async compute RE-ENABLED in the editor: the async-split G1/C submits
+    // ride the RenderGraph's OWN split command buffers — G2 records into the
+    // Framebuffer's splitCommandBuffer, which EndAndPresent submits with
+    // the C-done wait — the host's main command buffer is never cut. The
+    // old default-off (the mid-recording G1 submit argument) was a
+    // hosted-era hazard. The churn-death bisect that once pointed here
+    // ("reproduces with async OFF and one queue, vanishes under submission
+    // serialization") was chasing SYMPTOMS of the real root cause, later
+    // pinned by the VK_NV_device_diagnostic_checkpoints fault pinpoint:
+    // the SSR ray counter's missing creation zero-fill (see ssr.h) — the
+    // classify's atomic append started from whatever the allocator recycled
+    // into the fresh 8-byte buffer. SERIALIZE=all "survived" by allocator
+    // perturbation, not causally: serialized submission timings reshuffle
+    // the suballocator's freed-page reuse, so the wild garbage value simply
+    // didn't land in the tested window — the queue/split topology was never
+    // implicated. TOURMALINE_ASYNC_COMPUTE=0 still kills the split for A/B
+    // runs.
+    // Crash stack writer (see the comment blocks above): FIRST, before any
+    // subsystem init, so any boot-time fault is captured too.
+    InstallCrashHandler();
+    const char* scenePath = nullptr;
+    const char* outPak = nullptr;
+    const char* projectDir = nullptr;
+    bool strict = false;
+    for (int i = 1; i < argc; ++i) {
+        const char* a = argv[i];
+        // --scene: the GENERIC source-scene open (any .tour or
+        // .gltf/.glb — OpenAnySceneFile's exact dispatch). The old
+        // glTF-named flag is GONE: glTF is import-only content, the
+        // flag name was a format leak onto a generic surface.
+        if (std::strcmp(a, "--scene") == 0 && i + 1 < argc) {
+            scenePath = argv[++i];
+        } else if (std::strncmp(a, "--scene=", 8) == 0) {
+            scenePath = a + 8;
+        } else if (std::strcmp(a, "--project") == 0 && i + 1 < argc) {
+            projectDir = argv[++i];
+        } else if (std::strncmp(a, "--project=", 10) == 0) {
+            projectDir = a + 10;
+        } else if (std::strcmp(a, "--out-pak") == 0 && i + 1 < argc) {
+            outPak = argv[++i];
+        } else if (std::strncmp(a, "--out-pak=", 10) == 0) {
+            outPak = a + 10;
+        } else if (std::strcmp(a, "--strict") == 0) {
+            // STRICT RESOURCES (see AGENTS.md): resource-pool exhaustion
+            // aborts with a fatal diagnostic instead of degrading
+            // silently. Dev/diagnosis flag — the default stays graceful
+            // so editing sessions survive budget pressure.
+            strict = true;
+        } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
+            PrintUsage(argv[0]);
+            return EXIT_SUCCESS;
+        } else {
+            std::cerr << "Unknown argument: " << a << "\n";
+            PrintUsage(argv[0]);
+            return EXIT_FAILURE;
+        }
+    }
+    // THE PROJECT ARG IS REQUIRED (the editor/launcher split): the editor
+    // never picks a project itself — the launcher (EditorLauncher.exe)
+    // owns selection (recents + New/Browse) and spawns this exe with
+    // --project. The old in-editor blocking modal is gone with the flow.
+    if (!projectDir) {
+        std::cerr << "Editor: no project (--project <dir> required; the "
+                     "EditorLauncher picks one)\n";
+        PrintUsage(argv[0]);
+        return EXIT_FAILURE;
+    }
+    if (strict) {
+        smvk::SetStrictResources(true);
+        std::cerr << "[STRICT] resources: pool exhaustion will abort "
+                     "with a diagnostic (see AGENTS.md)\n";
+    }
 
-	// NO NVIDIA Streamline in the editor (DLSS + Reflex/PCL): the editor is
-	// the authoring tool, not a latency-sensitive game — it never loads the
-	// SL interposer, so no SL proxy sits in its Vulkan call chain and no
-	// DLSS/Reflex feature ever initializes. Must run BEFORE app.Run()
-	// (App::Initialize consults the flag before DlssStartup / pointing volk
-	// at the interposer; after that the decision is locked in). Same
-	// contract as the App's --no-dlss. The shipped App keeps its DLSS.
-	smvk::DlssSetStartupEnabled(false);
+    // NO NVIDIA Streamline in the editor (DLSS + Reflex/PCL): the editor is
+    // the authoring tool, not a latency-sensitive game — it never loads the
+    // SL interposer, so no SL proxy sits in its Vulkan call chain and no
+    // DLSS/Reflex feature ever initializes. Must run BEFORE app.Run()
+    // (App::Initialize consults the flag before DlssStartup / pointing volk
+    // at the interposer; after that the decision is locked in). Same
+    // contract as the App's --no-dlss. The shipped App keeps its DLSS.
+    smvk::DlssSetStartupEnabled(false);
 
-	// The engine shader library mounts BEFORE any graphics/editor Live
-	// view initialization: the exe-relative engine-shaders.pak (the
-	// mandatory production source) + the dev content/shaders/
-	// override. Every later shader read (the Live view's full
-	// WorldRenderer included) serves through it.
-	tour::shaders::Init();
-	// TOURMALINE_SHADER_RELOAD=1 (dev): arm the watched recompile
-	// service — engine/shaders/ edits recompile in-process and land
-	// in the dev override tree; the Live view's frame tick consumes
-	// the change log. Never on by default.
-	if (std::getenv("TOURMALINE_SHADER_RELOAD")) {
-		namespace fs = std::filesystem;
-		fs::path srcDir;
-		if (const char* src =
-				std::getenv("TOURMALINE_SHADER_RELOAD_SRC"))
-			srcDir = fs::path(src);
-		else
-			srcDir = (fs::current_path() / ".." / ".." / ".."
-				/ "engine" / "shaders").lexically_normal();
-		const std::string outDir = (fs::current_path() / "content"
-			/ "shaders").lexically_normal().generic_string();
-		std::string rErr;
-		if (!smvk::shader_reload::Start(
-				srcDir.lexically_normal().generic_string(), outDir,
-				rErr))
-			std::cerr << "[shader-reload] not armed: " << rErr
-				<< "\n";
-	}
+    // The engine shader library mounts BEFORE any graphics/editor Live
+    // view initialization: the exe-relative engine-shaders.pak (the
+    // mandatory production source) + the dev content/shaders/
+    // override. Every later shader read (the Live view's full
+    // WorldRenderer included) serves through it.
+    tour::shaders::Init();
+    // TOURMALINE_SHADER_RELOAD=1 (dev): arm the watched recompile
+    // service — engine/shaders/ edits recompile in-process and land
+    // in the dev override tree; the Live view's frame tick consumes
+    // the change log. Never on by default.
+    if (std::getenv("TOURMALINE_SHADER_RELOAD")) {
+        namespace fs = std::filesystem;
+        fs::path srcDir;
+        if (const char* src = std::getenv("TOURMALINE_SHADER_RELOAD_SRC"))
+            srcDir = fs::path(src);
+        else
+            srcDir =
+                (fs::current_path() / ".." / ".." / ".." / "engine" / "shaders").lexically_normal();
+        const std::string outDir =
+            (fs::current_path() / "content" / "shaders").lexically_normal().generic_string();
+        std::string rErr;
+        if (!smvk::shader_reload::Start(srcDir.lexically_normal().generic_string(), outDir, rErr))
+            std::cerr << "[shader-reload] not armed: " << rErr << "\n";
+    }
 
-	editor::EditorApp app;
-	// The REQUIRED project (checked above): the launcher's pick. Opens at
-	// Initialize (replacing the old prefs auto-reopen + the modal).
-	app.SetBootProject(projectDir);
-	if (scenePath) {
-		// Same dispatch as the open dialog (OpenAnySceneFile): .tour
-		// files replay through the tour-open path instead of failing the
-		// glTF import; also gives headless smoke runs the exact dialog
-		// flow (crash repros must not diverge by entry point).
-		if (!app.OpenAnySceneFile(scenePath)) {
-			std::cerr << "Editor: failed to queue scene '" << scenePath << "'\n";
-			return EXIT_FAILURE;
-		}
-	}
-	if (outPak)
-		app.SetOutPak(outPak);
-	try {
-		if (!app.Run())
-			return EXIT_FAILURE;
-	}
-	catch (const std::exception& e) {
-		std::cerr << "\nERROR: " << e.what() << std::endl;
-		std::cerr << "\nPress Enter to exit...";
-		std::cin.get();
-		return EXIT_FAILURE;
-	}
-	tour::mem::ShutdownMemory(); // footprint report (used/committed/reserved)
-	return EXIT_SUCCESS;
+    editor::EditorApp app;
+    // The REQUIRED project (checked above): the launcher's pick. Opens at
+    // Initialize (replacing the old prefs auto-reopen + the modal).
+    app.SetBootProject(projectDir);
+    if (scenePath) {
+        // Same dispatch as the open dialog (OpenAnySceneFile): .tour
+        // files replay through the tour-open path instead of failing the
+        // glTF import; also gives headless smoke runs the exact dialog
+        // flow (crash repros must not diverge by entry point).
+        if (!app.OpenAnySceneFile(scenePath)) {
+            std::cerr << "Editor: failed to queue scene '" << scenePath << "'\n";
+            return EXIT_FAILURE;
+        }
+    }
+    if (outPak)
+        app.SetOutPak(outPak);
+    try {
+        if (!app.Run())
+            return EXIT_FAILURE;
+    } catch (const std::exception& e) {
+        std::cerr << "\nERROR: " << e.what() << std::endl;
+        std::cerr << "\nPress Enter to exit...";
+        std::cin.get();
+        return EXIT_FAILURE;
+    }
+    tour::mem::ShutdownMemory(); // footprint report (used/committed/reserved)
+    return EXIT_SUCCESS;
 }

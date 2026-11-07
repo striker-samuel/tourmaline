@@ -24,125 +24,122 @@
 namespace smvk::project {
 
 enum class PlanAssetKind : uint8_t {
-	// A derived .geometry family. CLUSTER-INTERNAL in the pak: it must
-	// ship in the pak of every scene that references it. A cross-pak
-	// mesh reference is the v1 NON-GOAL — the runtime loads scene/mesh/
-	// material blobs through ONE pak's PakReader; only Texture-kind
-	// blobs are VFS-addressable across mounts (pak.h's interop
-	// contract). The resolver REJECTS any plan that would need one.
-	Geometry,
-	// VFS-addressable cooked content (source images + cooked .ktx2):
-	// shareable across paks — another pak's materials resolve it by
-	// plain VFS path through the mounted pak backends.
-	Texture,
-	// VFS-addressable bake products (GI volume manifests + payloads,
-	// cubemap captures): the same cross-pak contract as Texture.
-	BakeFile,
-	// VFS-addressable SOUND assets (.wav sources): the same cross-pak
-	// contract as Texture — PakAssetKind::Sound blobs served by the
-	// mounted pak backends, referenced by authored audio sources and
-	// resolved by the runtime audio manager through the stable 0x4xxx
-	// content ids.
-	Sound,
-	// PROJECT-AUTHORED SHADER assets (compiled .spv under the
-	// project's content tree): PakAssetKind::Shader blobs served by
-	// the mounted pak backends + the engine shader library, resolved
-	// through the stable 0x5xxx content ids. The ENGINE-NATIVE set
-	// (engine-shaders.pak) is build-owned — recipes never control it.
-	Shader,
-	// GI bake SETS (.givolumemanifest files - a baked lighting set
-	// naming its .givolume payload rows): VFS-addressable content in
-	// the pak (the payload blobs ride the existing gi/ Texture-blob
-	// channel), resolved through the stable 0x6xxx content ids and
-	// loaded/blended at runtime by GiKey (AssetManager::LoadGI /
-	// SetGI / SetGIBlend). The .givolume payloads + .cubemanifest
-	// stay BakeFile plumbing - only the SET manifest is the asset.
-	Gi,
-	// AUTHORED AUDIO GRAPHS (.audiograph files — the audio system's
-	// node-graph + cue asset, docs/audio_graph.md): VFS-addressable
-	// content (PakAssetKind::AudioGraph blobs carrying the authored
-	// text VERBATIM, validated at pack time), resolved through the
-	// stable 0x7xxx content ids. A graph's source nodes reference
-	// .wav Sound assets by VFS path — resolved at instance create
-	// through the same registry.
-	AudioGraph,
-	StateMachine, // immutable generic transition graph
-	NavMesh,      // precomputed CPU navigation triangle mesh
-	SpriteSet,
-	Shape, // authored spline/point-cloud/primitive source
+    // A derived .geometry family. CLUSTER-INTERNAL in the pak: it must
+    // ship in the pak of every scene that references it. A cross-pak
+    // mesh reference is the v1 NON-GOAL — the runtime loads scene/mesh/
+    // material blobs through ONE pak's PakReader; only Texture-kind
+    // blobs are VFS-addressable across mounts (pak.h's interop
+    // contract). The resolver REJECTS any plan that would need one.
+    Geometry,
+    // VFS-addressable cooked content (source images + cooked .ktx2):
+    // shareable across paks — another pak's materials resolve it by
+    // plain VFS path through the mounted pak backends.
+    Texture,
+    // VFS-addressable bake products (GI volume manifests + payloads,
+    // cubemap captures): the same cross-pak contract as Texture.
+    BakeFile,
+    // VFS-addressable SOUND assets (.wav sources): the same cross-pak
+    // contract as Texture — PakAssetKind::Sound blobs served by the
+    // mounted pak backends, referenced by authored audio sources and
+    // resolved by the runtime audio manager through the stable 0x4xxx
+    // content ids.
+    Sound,
+    // PROJECT-AUTHORED SHADER assets (compiled .spv under the
+    // project's content tree): PakAssetKind::Shader blobs served by
+    // the mounted pak backends + the engine shader library, resolved
+    // through the stable 0x5xxx content ids. The ENGINE-NATIVE set
+    // (engine-shaders.pak) is build-owned — recipes never control it.
+    Shader,
+    // GI bake SETS (.givolumemanifest files - a baked lighting set
+    // naming its .givolume payload rows): VFS-addressable content in
+    // the pak (the payload blobs ride the existing gi/ Texture-blob
+    // channel), resolved through the stable 0x6xxx content ids and
+    // loaded/blended at runtime by GiKey (AssetManager::LoadGI /
+    // SetGI / SetGIBlend). The .givolume payloads + .cubemanifest
+    // stay BakeFile plumbing - only the SET manifest is the asset.
+    Gi,
+    // AUTHORED AUDIO GRAPHS (.audiograph files — the audio system's
+    // node-graph + cue asset, docs/audio_graph.md): VFS-addressable
+    // content (PakAssetKind::AudioGraph blobs carrying the authored
+    // text VERBATIM, validated at pack time), resolved through the
+    // stable 0x7xxx content ids. A graph's source nodes reference
+    // .wav Sound assets by VFS path — resolved at instance create
+    // through the same registry.
+    AudioGraph,
+    StateMachine, // immutable generic transition graph
+    NavMesh,      // precomputed CPU navigation triangle mesh
+    SpriteSet,
+    Shape, // authored spline/point-cloud/primitive source
 };
 
 struct PlanAsset {
-	std::string path; // project-relative, forward slashes (the sort key)
-	PlanAssetKind kind = PlanAssetKind::Texture;
+    std::string path; // project-relative, forward slashes (the sort key)
+    PlanAssetKind kind = PlanAssetKind::Texture;
 
-	bool operator==(const PlanAsset& o) const {
-		return path == o.path && kind == o.kind;
-	}
+    bool operator==(const PlanAsset& o) const {
+        return path == o.path && kind == o.kind;
+    }
 };
 
 struct PlanPak {
-	std::string id;
-	std::string output; // the authored output name (the executor places
-	                    // it under the build/publish directory)
-	std::string scene;  // project-relative tour; "" = asset-only pak
-	std::string map;    // world-wide .map content; can coexist with scene
-	bool transitive = false; // the recipe's 'dependencies transitive'
-	std::vector<std::string> depends; // pak ids, authored order (the
-	                                  // plan's order guarantees every
-	                                  // one appears EARLIER in paks)
-	// The RESOLVED bake switches for THIS pak's scene stages: the
-	// recipe-level 'bake gi/cubemaps' defaults, overridden by any
-	// per-pak 'bake' lines. The executor consumes THESE, never the
-	// recipe-level flags (a stress-scene pak beside a baked demo pak).
-	bool bakeGi = false;
-	bool bakeCubemaps = false;
-	// The scene's cooked geometry dependencies in TOUR order — index 0
-	// is the ROOT artifact (the packer's primary VFS input; the same
-	// contract BuildProject's refSource feeds Pak.exe). Empty for
-	// asset-only paks. Repeated references to the same model artifact
-	// appear ONCE (deduped — a flat scene may duplicate a .geometry any
-	// number of times; the geometry itself ships once, cluster-internal
-	// to this pak). Nested .tour references never reach this list: the
-	// resolver REJECTS them (paks cook ONE flat scene).
-	std::vector<std::string> sceneArtifacts;
-	// The pak's OWNED content, sorted by path: the sceneArtifacts (as
-	// Geometry) plus every include-claimed asset. Exactly one pak owns
-	// any given path (the resolver's core invariant).
-	std::vector<PlanAsset> assets;
-	size_t line = 0; // the recipe's [pak] line (diagnostics only)
+    std::string id;
+    std::string output;               // the authored output name (the executor places
+                                      // it under the build/publish directory)
+    std::string scene;                // project-relative tour; "" = asset-only pak
+    std::string map;                  // world-wide .map content; can coexist with scene
+    bool transitive = false;          // the recipe's 'dependencies transitive'
+    std::vector<std::string> depends; // pak ids, authored order (the
+                                      // plan's order guarantees every
+                                      // one appears EARLIER in paks)
+    // The RESOLVED bake switches for THIS pak's scene stages: the
+    // recipe-level 'bake gi/cubemaps' defaults, overridden by any
+    // per-pak 'bake' lines. The executor consumes THESE, never the
+    // recipe-level flags (a stress-scene pak beside a baked demo pak).
+    bool bakeGi = false;
+    bool bakeCubemaps = false;
+    // The scene's cooked geometry dependencies in TOUR order — index 0
+    // is the ROOT artifact (the packer's primary VFS input; the same
+    // contract BuildProject's refSource feeds Pak.exe). Empty for
+    // asset-only paks. Repeated references to the same model artifact
+    // appear ONCE (deduped — a flat scene may duplicate a .geometry any
+    // number of times; the geometry itself ships once, cluster-internal
+    // to this pak). Nested .tour references never reach this list: the
+    // resolver REJECTS them (paks cook ONE flat scene).
+    std::vector<std::string> sceneArtifacts;
+    // The pak's OWNED content, sorted by path: the sceneArtifacts (as
+    // Geometry) plus every include-claimed asset. Exactly one pak owns
+    // any given path (the resolver's core invariant).
+    std::vector<PlanAsset> assets;
+    size_t line = 0; // the recipe's [pak] line (diagnostics only)
 
-	bool operator==(const PlanPak& o) const {
-		return id == o.id && output == o.output && scene == o.scene
-			&& map == o.map
-			&& transitive == o.transitive && depends == o.depends
-			&& bakeGi == o.bakeGi && bakeCubemaps == o.bakeCubemaps
-			&& sceneArtifacts == o.sceneArtifacts && assets == o.assets;
-	}
+    bool operator==(const PlanPak& o) const {
+        return id == o.id && output == o.output && scene == o.scene && map == o.map &&
+               transitive == o.transitive && depends == o.depends && bakeGi == o.bakeGi &&
+               bakeCubemaps == o.bakeCubemaps && sceneArtifacts == o.sceneArtifacts &&
+               assets == o.assets;
+    }
 };
 
 struct BuildPlan {
-	MaterialPackingRule materialPacking;
-	std::string projectName;
-	std::string entryScene; // project-relative .tour
-	std::string entryPak;   // the pak owning the entry scene
-	bool bakeGi = false;
-	bool bakeCubemaps = false;
-	bool bakeSdf = false;
-	// TOPOLOGICAL order: dependencies first, so mounting/packing in
-	// plan order is always correct. Authored order is the deterministic
-	// tiebreak (RES-03: same inputs -> same order, every time).
-	std::vector<PlanPak> paks;
+    MaterialPackingRule materialPacking;
+    std::string projectName;
+    std::string entryScene; // project-relative .tour
+    std::string entryPak;   // the pak owning the entry scene
+    bool bakeGi = false;
+    bool bakeCubemaps = false;
+    bool bakeSdf = false;
+    // TOPOLOGICAL order: dependencies first, so mounting/packing in
+    // plan order is always correct. Authored order is the deterministic
+    // tiebreak (RES-03: same inputs -> same order, every time).
+    std::vector<PlanPak> paks;
 
-	[[nodiscard]] const PlanPak* FindPak(const std::string& id) const;
+    [[nodiscard]] const PlanPak* FindPak(const std::string& id) const;
 
-	bool operator==(const BuildPlan& o) const {
-		return materialPacking == o.materialPacking && projectName == o.projectName
-			&& entryScene == o.entryScene && entryPak == o.entryPak
-			&& bakeGi == o.bakeGi && bakeCubemaps == o.bakeCubemaps
-			&& bakeSdf == o.bakeSdf
-			&& paks == o.paks;
-	}
+    bool operator==(const BuildPlan& o) const {
+        return materialPacking == o.materialPacking && projectName == o.projectName &&
+               entryScene == o.entryScene && entryPak == o.entryPak && bakeGi == o.bakeGi &&
+               bakeCubemaps == o.bakeCubemaps && bakeSdf == o.bakeSdf && paks == o.paks;
+    }
 };
 
 } // namespace smvk::project

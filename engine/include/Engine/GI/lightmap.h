@@ -57,9 +57,11 @@
 // (moved: StaticMeshUpload is ENGINE-OWNED/tour::, Engine/Renderer/
 // mesh.h — the smvk fwd decl became a using-declaration so it cannot
 // collide with mesh.h's compat re-export)
-namespace tour { struct StaticMeshUpload; }
+namespace tour {
+struct StaticMeshUpload;
+}
 namespace smvk {
-	using ::tour::StaticMeshUpload;
+using ::tour::StaticMeshUpload;
 }
 
 namespace tour::gi {
@@ -85,14 +87,14 @@ inline constexpr uint32_t kLightmapBc6hTextureCount = 12;
 // endpoint box (Frostbite lightmap trick — the separator/gutter texels
 // would otherwise cost endpoint precision on the content).
 enum class SgLightmapCompression : uint8_t {
-	Uncompressed = 0,
-	Bc6H = 1,
-	Bc6HOpt = 2,
+    Uncompressed = 0,
+    Bc6H = 1,
+    Bc6HOpt = 2,
 };
 
 // Supported per-chunk lobe counts (BakingLab BakeModes SG5/SG6/SG9/SG12).
 inline bool LightmapLobeCountValid(uint32_t n) {
-	return n == 5 || n == 6 || n == 9 || n == 12;
+    return n == 5 || n == 6 || n == 9 || n == 12;
 }
 
 // Sharpness per lobe count (BakingLab rule, see above).
@@ -107,20 +109,23 @@ glm::vec3 LightmapAxis(uint32_t lobeCount, uint32_t lobe);
 
 // SGIrradianceFitted: Stephen Hill's fitted clamped-cosine approximation
 // for one lobe (BakingLab SG.hlsl, MIT). Returns irradiance (radiance units).
-glm::vec3 SgLightmapIrradianceFitted(const glm::vec3& amp, const glm::vec3& axis,
-	float sharpness, const glm::vec3& n);
+glm::vec3 SgLightmapIrradianceFitted(const glm::vec3& amp,
+                                     const glm::vec3& axis,
+                                     float sharpness,
+                                     const glm::vec3& n);
 
 // Full-chunk evaluation helpers (sum over lobes).
-glm::vec3 SgLightmapDiffuse(const glm::vec3* amps, uint32_t lobeCount,
-	const glm::vec3& n);
+glm::vec3 SgLightmapDiffuse(const glm::vec3* amps, uint32_t lobeCount, const glm::vec3& n);
 // Rough specular: reflection-SG product integral (the SgGiSpecular model) —
 // the GGX reflection kernel approximated by a normalized SG around the
 // reflection vector, each lobe integrating against it analytically.
 // Caller supplies Fresnel once. Replaces the old BakingLab warped-NDF
 // lobe (per-lobe reflect + GGX V1 roots + pow5 Fresnel), which dominated
 // the lit fragment shader.
-glm::vec3 SgLightmapSpecular(const glm::vec3* amps, uint32_t lobeCount,
-	const glm::vec3& r, float roughness);
+glm::vec3 SgLightmapSpecular(const glm::vec3* amps,
+                             uint32_t lobeCount,
+                             const glm::vec3& r,
+                             float roughness);
 
 // ---------------------------------------------------------------------------
 // Fitting (fixed per-count basis, diagonal projection — same production
@@ -128,29 +133,31 @@ glm::vec3 SgLightmapSpecular(const glm::vec3* amps, uint32_t lobeCount,
 // ---------------------------------------------------------------------------
 
 class SgLightmapFitAccumulator {
-public:
-	explicit SgLightmapFitAccumulator(uint32_t lobeCount);
+  public:
+    explicit SgLightmapFitAccumulator(uint32_t lobeCount);
 
-	void AddSample(const glm::vec3& dir, const glm::vec3& radiance, float weight);
-	// Diagonal projection (stable, but double-counts shared lobe energy:
-	// flat/ambient fields overshoot by 1.6-2.4x depending on the count —
-	// measured, see tests/TestLmSelectorDomain).
-	void Solve(glm::vec3* outAmps) const; // outAmps[lobeCount]
-	// Production lightmap solve: projected coordinate descent (NNLS) on
-	// the basis's ANALYTIC Gram matrix, warm-started from the diagonal
-	// projection. Monotone in the least-squares objective with bounded
-	// updates (no unconstrained-solver blow-up class), and exact on
-	// constant fields at every lobe count — the property the per-mesh
-	// lobe-count selection relies on.
-	void SolveGram(glm::vec3* outAmps) const;
+    void AddSample(const glm::vec3& dir, const glm::vec3& radiance, float weight);
+    // Diagonal projection (stable, but double-counts shared lobe energy:
+    // flat/ambient fields overshoot by 1.6-2.4x depending on the count —
+    // measured, see tests/TestLmSelectorDomain).
+    void Solve(glm::vec3* outAmps) const; // outAmps[lobeCount]
+    // Production lightmap solve: projected coordinate descent (NNLS) on
+    // the basis's ANALYTIC Gram matrix, warm-started from the diagonal
+    // projection. Monotone in the least-squares objective with bounded
+    // updates (no unconstrained-solver blow-up class), and exact on
+    // constant fields at every lobe count — the property the per-mesh
+    // lobe-count selection relies on.
+    void SolveGram(glm::vec3* outAmps) const;
 
-	uint32_t lobeCount() const { return lobeCount_; }
+    uint32_t lobeCount() const {
+        return lobeCount_;
+    }
 
-private:
-	uint32_t lobeCount_ = 9;
-	float sharpness_ = 1.0f;
-	glm::vec3 rhs_[kLightmapMaxLobes]{};
-	uint32_t sampleCount_ = 0;
+  private:
+    uint32_t lobeCount_ = 9;
+    float sharpness_ = 1.0f;
+    glm::vec3 rhs_[kLightmapMaxLobes]{};
+    uint32_t sampleCount_ = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -163,66 +170,63 @@ private:
 // mesh's texCoord2, and the lobe count rides the gfx draw ring, so the
 // shader only needs the 9 atlas layers.
 struct SgLightmapChunk {
-	uint32_t lobeCount = 9;   // 5/6/9/12
-	uint32_t baseLayer = 0;   // first of the 9 RGBA16F atlas textures (shared atlas: 0)
-	float rectMin[2] = {};    // atlas texel rect origin (includes margin)
-	float rectMax[2] = {};    // atlas texel rect end
-	uint32_t meshKey = 0;     // owning node id (tool/debug)
+    uint32_t lobeCount = 9; // 5/6/9/12
+    uint32_t baseLayer = 0; // first of the 9 RGBA16F atlas textures (shared atlas: 0)
+    float rectMin[2] = {};  // atlas texel rect origin (includes margin)
+    float rectMax[2] = {};  // atlas texel rect end
+    uint32_t meshKey = 0;   // owning node id (tool/debug)
 };
 
 class SgLightmapAtlas {
-public:
-	uint32_t width = 0;   // texels (shared across the 9 layers)
-	uint32_t height = 0;
-	std::vector<SgLightmapChunk> chunks;
-	// Per-chunk payload: coeffs[(y * width + x)][lobe] in chunk-rect
-	// coords; bake fills covered texels, the dilation fills margins.
-	struct ChunkPayload {
-		uint32_t width = 0, height = 0; // rect size in texels
-		std::vector<glm::vec3> coeffs;  // width*height*lobeCount
-	};
-	std::vector<ChunkPayload> payloads;
+  public:
+    uint32_t width = 0; // texels (shared across the 9 layers)
+    uint32_t height = 0;
+    std::vector<SgLightmapChunk> chunks;
+    // Per-chunk payload: coeffs[(y * width + x)][lobe] in chunk-rect
+    // coords; bake fills covered texels, the dilation fills margins.
+    struct ChunkPayload {
+        uint32_t width = 0, height = 0; // rect size in texels
+        std::vector<glm::vec3> coeffs;  // width*height*lobeCount
+    };
+    std::vector<ChunkPayload> payloads;
 
-	// Bilinear CPU sample inside a chunk rect (mirror of the hardware
-	// filtered texture path; uv in chunk-local [0,1]).
-	bool Sample(uint32_t chunk, const glm::vec2& uv,
-		glm::vec3* outAmps) const;
+    // Bilinear CPU sample inside a chunk rect (mirror of the hardware
+    // filtered texture path; uv in chunk-local [0,1]).
+    bool Sample(uint32_t chunk, const glm::vec2& uv, glm::vec3* outAmps) const;
 
-	// Atlas-space uv for a chart-local uv: rect origin + inner mapping,
-	// normalized over the atlas (what the cook bakes into texCoord2).
-	glm::vec2 AtlasUv(uint32_t chunk, uint32_t margin,
-		const glm::vec2& chartLocalUv) const;
-	// Same mapping in TEXEL space (no normalization): the cook stamps
-	// these while per-LOD appends can still grow the atlas, then divides
-	// every stamped mesh once by the final dimensions (a stamp
-	// normalized mid-cook would be invalidated by later appends).
-	glm::vec2 AtlasTexel(uint32_t chunk, uint32_t margin,
-		const glm::vec2& chartLocalUv) const;
+    // Atlas-space uv for a chart-local uv: rect origin + inner mapping,
+    // normalized over the atlas (what the cook bakes into texCoord2).
+    glm::vec2 AtlasUv(uint32_t chunk, uint32_t margin, const glm::vec2& chartLocalUv) const;
+    // Same mapping in TEXEL space (no normalization): the cook stamps
+    // these while per-LOD appends can still grow the atlas, then divides
+    // every stamped mesh once by the final dimensions (a stamp
+    // normalized mid-cook would be invalidated by later appends).
+    glm::vec2 AtlasTexel(uint32_t chunk, uint32_t margin, const glm::vec2& chartLocalUv) const;
 
-	// 9 RGBA16F layer payloads for GPU upload (uint16 halves, row-major).
-	// Layer t texel (x,y) carries stream halves [t*4, t*4+3] of the
-	// 36-half lobe-major RGB stream (h = lobe*3 + channel); chunks with
-	// fewer lobes fill the prefix subset, the rest stay zero.
-	void PackGpuLayers(std::vector<uint16_t> out[kLightmapLayerCount]) const;
+    // 9 RGBA16F layer payloads for GPU upload (uint16 halves, row-major).
+    // Layer t texel (x,y) carries stream halves [t*4, t*4+3] of the
+    // 36-half lobe-major RGB stream (h = lobe*3 + channel); chunks with
+    // fewer lobes fill the prefix subset, the rest stay zero.
+    void PackGpuLayers(std::vector<uint16_t> out[kLightmapLayerCount]) const;
 
-	size_t GpuBytes() const;
+    size_t GpuBytes() const;
 
-	// ---- BC6H compression (cook time; see SgLightmapCompression) ----
-	// Compresses the payloads into kLightmapBc6hTextureCount one-per-lobe
-	// BC6H images (blocks in bc6hBlocks, lobe-major). optFill switches
-	// the invalid-texel prefill on. Atlas dims must be multiples of 4
-	// (BC6H 4x4 blocks; the packers round the height, the width cap is a
-	// power of two). Uncompressed writers/readers are unaffected until
-	// this runs; WriteFile serializes the blocks (sglm v3) when
-	// compression != Uncompressed.
-	bool CompressToBc6h(bool optFill, std::string& err);
-	SgLightmapCompression compression = SgLightmapCompression::Uncompressed;
-	uint32_t bc6hLobes = 0;          // lobe images stored (<= 12)
-	std::vector<uint8_t> bc6hBlocks; // lobe-major, (w/4)*(h/4)*16 B each
+    // ---- BC6H compression (cook time; see SgLightmapCompression) ----
+    // Compresses the payloads into kLightmapBc6hTextureCount one-per-lobe
+    // BC6H images (blocks in bc6hBlocks, lobe-major). optFill switches
+    // the invalid-texel prefill on. Atlas dims must be multiples of 4
+    // (BC6H 4x4 blocks; the packers round the height, the width cap is a
+    // power of two). Uncompressed writers/readers are unaffected until
+    // this runs; WriteFile serializes the blocks (sglm v3) when
+    // compression != Uncompressed.
+    bool CompressToBc6h(bool optFill, std::string& err);
+    SgLightmapCompression compression = SgLightmapCompression::Uncompressed;
+    uint32_t bc6hLobes = 0;          // lobe images stored (<= 12)
+    std::vector<uint8_t> bc6hBlocks; // lobe-major, (w/4)*(h/4)*16 B each
 
-	bool WriteFile(const std::string& path, std::string& err) const;
-	bool ReadFromMemory(std::span<const uint8_t> bytes, std::string& err);
-	static bool ReadFile(const std::string& path, SgLightmapAtlas& out, std::string& err);
+    bool WriteFile(const std::string& path, std::string& err) const;
+    bool ReadFromMemory(std::span<const uint8_t> bytes, std::string& err);
+    static bool ReadFile(const std::string& path, SgLightmapAtlas& out, std::string& err);
 };
 
 // ---------------------------------------------------------------------------
@@ -230,49 +234,49 @@ public:
 // ---------------------------------------------------------------------------
 
 struct SgLightmapTexel {
-	glm::vec3 position; // world-space surface point
-	glm::vec3 normal;   // world-space shading normal
-	glm::vec2 uv;       // chunk-local lightmap UV in [0,1]
+    glm::vec3 position; // world-space surface point
+    glm::vec3 normal;   // world-space shading normal
+    glm::vec2 uv;       // chunk-local lightmap UV in [0,1]
 };
 
 struct SgLightmapBakeConfig {
-	uint32_t raysPerTexel = 128; // uniform-sphere radiance samples
-	uint32_t maxBounces = 3;
-	uint32_t threadCount = 0;    // 0 = hardware concurrency
-	uint32_t seed = 1;
-	// Per-mesh lobe-count selection (Order:1886-style): each MESH keeps
-	// the smallest candidate count (5/6/9/12, up to the caller's
-	// preferred count) whose fitted diffuse irradiance response degrades
-	// less than lobeRelError (relative RMS) from the PREFERRED-count
-	// reconstruction — both are smooth fits of the same samples, so the
-	// Monte-Carlo noise of the traced ground truth cancels and the number
-	// measures pure representation loss. 15% keeps hard-bounce/contrast
-	// content at 9-12 (sponza: sunlit walls measure 20-35% at 9 lobes,
-	// interiors 8-14%) and lets smooth fields drop to 5-6.
-	bool chooseLobeCount = true;
-	float lobeRelError = 0.15f;   // relative RMS degradation budget
+    uint32_t raysPerTexel = 128; // uniform-sphere radiance samples
+    uint32_t maxBounces = 3;
+    uint32_t threadCount = 0; // 0 = hardware concurrency
+    uint32_t seed = 1;
+    // Per-mesh lobe-count selection (Order:1886-style): each MESH keeps
+    // the smallest candidate count (5/6/9/12, up to the caller's
+    // preferred count) whose fitted diffuse irradiance response degrades
+    // less than lobeRelError (relative RMS) from the PREFERRED-count
+    // reconstruction — both are smooth fits of the same samples, so the
+    // Monte-Carlo noise of the traced ground truth cancels and the number
+    // measures pure representation loss. 15% keeps hard-bounce/contrast
+    // content at 9-12 (sponza: sunlit walls measure 20-35% at 9 lobes,
+    // interiors 8-14%) and lets smooth fields drop to 5-6.
+    bool chooseLobeCount = true;
+    float lobeRelError = 0.15f; // relative RMS degradation budget
 };
 
 struct SgLightmapBakeStats {
-	uint64_t texelsBaked = 0;
-	uint64_t pathsTraced = 0;
-	uint64_t samplesClamped = 0;
-	double seconds = 0.0;
-	// Per-mesh lobe-selection diagnostics (batch path with selection on):
-	// the candidate counts, each one's relative irradiance error against
-	// the traced probes (Monte-Carlo noise dominated — diagnostics only)
-	// and against the preferred-count reconstruction (degradation — the
-	// selection criterion), plus the count the mesh kept. Empty when the
-	// selection did not run.
-	struct LobePick {
-		uint32_t meshKey = 0;
-		uint32_t chosen = 0;
-		uint32_t candCount = 0;
-		uint32_t candCounts[4] = {};
-		double relErr[4] = {}; // vs traced probes (noisy, diagnostics)
-		double degErr[4] = {}; // vs preferred-count fit (the criterion)
-	};
-	std::vector<LobePick> lobePicks;
+    uint64_t texelsBaked = 0;
+    uint64_t pathsTraced = 0;
+    uint64_t samplesClamped = 0;
+    double seconds = 0.0;
+    // Per-mesh lobe-selection diagnostics (batch path with selection on):
+    // the candidate counts, each one's relative irradiance error against
+    // the traced probes (Monte-Carlo noise dominated — diagnostics only)
+    // and against the preferred-count reconstruction (degradation — the
+    // selection criterion), plus the count the mesh kept. Empty when the
+    // selection did not run.
+    struct LobePick {
+        uint32_t meshKey = 0;
+        uint32_t chosen = 0;
+        uint32_t candCount = 0;
+        uint32_t candCounts[4] = {};
+        double relErr[4] = {}; // vs traced probes (noisy, diagnostics)
+        double degErr[4] = {}; // vs preferred-count fit (the criterion)
+    };
+    std::vector<LobePick> lobePicks;
 };
 
 class GiTraceScene;
@@ -282,10 +286,13 @@ using GiBakeProgress = void (*)(const char* line);
 // the normal), fits the chunk's fixed basis with the diagonal projection,
 // 8x-mean firefly clamp (same as the probe bakers). Creates its own
 // thread pool — fine for single-chunk callers/tests.
-bool BakeSgLightmapChunk(const GiTraceScene& scene, uint32_t lobeCount,
-	const std::vector<SgLightmapTexel>& texels, const SgLightmapBakeConfig& config,
-	SgLightmapAtlas::ChunkPayload& out, SgLightmapBakeStats& stats,
-	GiBakeProgress progress = nullptr);
+bool BakeSgLightmapChunk(const GiTraceScene& scene,
+                         uint32_t lobeCount,
+                         const std::vector<SgLightmapTexel>& texels,
+                         const SgLightmapBakeConfig& config,
+                         SgLightmapAtlas::ChunkPayload& out,
+                         SgLightmapBakeStats& stats,
+                         GiBakeProgress progress = nullptr);
 
 // Batch variant: bakes many chunks with ONE shared thread pool (the cook
 // bakes thousands of chart chunks; per-call pool churn would dominate).
@@ -294,15 +301,17 @@ bool BakeSgLightmapChunk(const GiTraceScene& scene, uint32_t lobeCount,
 // for the cook it points into the atlas chunk table). Either absent
 // falls back to the caller's fixed lobe count.
 struct SgLightmapChunkBatch {
-	SgLightmapAtlas::ChunkPayload* payload = nullptr;
-	const std::vector<SgLightmapTexel>* texels = nullptr;
-	uint32_t meshKey = 0;
-	SgLightmapChunk* chunkMeta = nullptr;
+    SgLightmapAtlas::ChunkPayload* payload = nullptr;
+    const std::vector<SgLightmapTexel>* texels = nullptr;
+    uint32_t meshKey = 0;
+    SgLightmapChunk* chunkMeta = nullptr;
 };
-bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
-	std::span<const SgLightmapChunkBatch> batches,
-	const SgLightmapBakeConfig& config, SgLightmapBakeStats& stats,
-	GiBakeProgress progress = nullptr);
+bool BakeSgLightmapChunks(const GiTraceScene& scene,
+                          uint32_t lobeCount,
+                          std::span<const SgLightmapChunkBatch> batches,
+                          const SgLightmapBakeConfig& config,
+                          SgLightmapBakeStats& stats,
+                          GiBakeProgress progress = nullptr);
 
 // Cross-chart seam stitching (run after BakeSgLightmapChunks, before
 // denoise/compress): duplicated vertices at chart seams share the same
@@ -319,7 +328,9 @@ bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 // outBlended receives the boundary-texel count that found foreign
 // neighbors (null ok). Deterministic.
 bool StitchSgLightmapSeams(std::span<const SgLightmapChunkBatch> batches,
-	float blend, uint64_t* outBlended, std::string& err);
+                           float blend,
+                           uint64_t* outBlended,
+                           std::string& err);
 
 // Chart result of the xatlas chart + pack path (GenerateLightmapChartsXatlas)
 // and the Frostbite-style LOD transfer (TransferLightmapCharts). The ATLAS
@@ -339,32 +350,32 @@ bool StitchSgLightmapSeams(std::span<const SgLightmapChunkBatch> batches,
 // shadow smvk::StaticMeshUpload inside this namespace).
 
 struct SgLightmapChartResult {
-	// Per chart: rect size in texels (incl. margins) and the bake points
-	// (world position/normal + chart-rect-local uv per covered texel).
-	struct Chart {
-		uint32_t width = 0;
-		uint32_t height = 0;
-		std::vector<SgLightmapTexel> texels;
-	};
-	std::vector<Chart> charts;
-	// Per ORIGINAL mesh vertex (parallel to upload.vertices): owning
-	// chart index (0xFFFFFFFF = unclaimed/degenerate) and the
-	// chart-local uv in the chart's inner rect, [0,1].
-	// WARNING: this is the FIRST chart to touch the vertex. Where two
-	// charts share a vertex (a seam corner), a per-vertex uv alone
-	// makes the seam triangle interpolate between two unrelated atlas
-	// rects — long streaks across the atlas. Use triChart/cornerChartUv
-	// (the per-triangle view below) when stamping; it gives every
-	// triangle corners inside its OWN chart.
-	std::vector<uint32_t> vertexChart;
-	std::vector<glm::vec2> chartLocalUv;
-	// Per-triangle chart data (the seam-correct view): chart of each
-	// triangle (0xFFFFFFFF = degenerate/uncharted) and per-corner
-	// chart-local uv, triCount*3 in original triangle order. The cook
-	// stamps uv2 per (triangle corner, chart), duplicating seam corners
-	// so no triangle ever spans two atlas rects.
-	std::vector<uint32_t> triChart;
-	std::vector<glm::vec2> cornerChartUv; // triCount * 3, chart-local [0,1]
+    // Per chart: rect size in texels (incl. margins) and the bake points
+    // (world position/normal + chart-rect-local uv per covered texel).
+    struct Chart {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        std::vector<SgLightmapTexel> texels;
+    };
+    std::vector<Chart> charts;
+    // Per ORIGINAL mesh vertex (parallel to upload.vertices): owning
+    // chart index (0xFFFFFFFF = unclaimed/degenerate) and the
+    // chart-local uv in the chart's inner rect, [0,1].
+    // WARNING: this is the FIRST chart to touch the vertex. Where two
+    // charts share a vertex (a seam corner), a per-vertex uv alone
+    // makes the seam triangle interpolate between two unrelated atlas
+    // rects — long streaks across the atlas. Use triChart/cornerChartUv
+    // (the per-triangle view below) when stamping; it gives every
+    // triangle corners inside its OWN chart.
+    std::vector<uint32_t> vertexChart;
+    std::vector<glm::vec2> chartLocalUv;
+    // Per-triangle chart data (the seam-correct view): chart of each
+    // triangle (0xFFFFFFFF = degenerate/uncharted) and per-corner
+    // chart-local uv, triCount*3 in original triangle order. The cook
+    // stamps uv2 per (triangle corner, chart), duplicating seam corners
+    // so no triangle ever spans two atlas rects.
+    std::vector<uint32_t> triChart;
+    std::vector<glm::vec2> cornerChartUv; // triCount * 3, chart-local [0,1]
 };
 
 // ---------------------------------------------------------------------------
@@ -392,55 +403,55 @@ struct SgLightmapChartResult {
 // ---------------------------------------------------------------------------
 
 struct SgLightmapXatlasOptions {
-	// Chart density request, METERS PER TEXEL (world space, after
-	// densityScale): 0.25 = one texel per 25 cm (4 texels/m). Converted
-	// to xatlas's texelsPerUnit internally (floored at 2 texels/m).
-	float metersPerTexel = 0.25f;
-	uint32_t gutterTexels = 1;    // inner margin per chart rect (1..4)
-	// Layout-only pack: run xatlas + footprint-shrink and finalize
-	// rects/cornerChartUv/triChart, but leave Chart.texels empty.
-	// Convergence probes use this (rects alone decide fit); the winning
-	// level is rasterized once via RasterizeLightmapPackTexels before
-	// the expensive GI bake. Default false preserves the old
-	// pack+rasterize behavior.
-	bool deferTexelRaster = false;
+    // Chart density request, METERS PER TEXEL (world space, after
+    // densityScale): 0.25 = one texel per 25 cm (4 texels/m). Converted
+    // to xatlas's texelsPerUnit internally (floored at 2 texels/m).
+    float metersPerTexel = 0.25f;
+    uint32_t gutterTexels = 1; // inner margin per chart rect (1..4)
+    // Layout-only pack: run xatlas + footprint-shrink and finalize
+    // rects/cornerChartUv/triChart, but leave Chart.texels empty.
+    // Convergence probes use this (rects alone decide fit); the winning
+    // level is rasterized once via RasterizeLightmapPackTexels before
+    // the expensive GI bake. Default false preserves the old
+    // pack+rasterize behavior.
+    bool deferTexelRaster = false;
 };
 
 struct SgLightmapXatlasMeshInput {
-	const StaticMeshUpload* upload = nullptr;
-	uint32_t meshKey = 0;      // owning node id (tool/debug, feeds chunk meshKey)
-	float densityScale = 1.0f; // worldScale * curveScale: positions are
-	                           // pre-scaled by this before AddMesh so one
-	                           // texelsPerUnit is world-uniform
+    const StaticMeshUpload* upload = nullptr;
+    uint32_t meshKey = 0;      // owning node id (tool/debug, feeds chunk meshKey)
+    float densityScale = 1.0f; // worldScale * curveScale: positions are
+                               // pre-scaled by this before AddMesh so one
+                               // texelsPerUnit is world-uniform
 };
 
 struct SgLightmapXatlasMeshOutput {
-	bool ok = false;
-	SgLightmapChartResult chart; // charts[j] parallel to rects[j]
-	struct Rect {
-		float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f;
-	};
-	// Packed atlas-texel rects: the chart's UV BBOX + margin (the
-	// unwrapper's own parameterization density, no footprint
-	// compression). Historically these were the rasterized-footprint
-	// bbox + margin — the compression it induced per sparse chart was
-	// the visible texel-density seam; RepackXatlasLevel owns
-	// disjointness now, so the bbox rect is safe. Includes margins.
-	// After RepackXatlasLevel the rects are disjoint (see below).
-	std::vector<Rect> rects;
+    bool ok = false;
+    SgLightmapChartResult chart; // charts[j] parallel to rects[j]
+    struct Rect {
+        float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f;
+    };
+    // Packed atlas-texel rects: the chart's UV BBOX + margin (the
+    // unwrapper's own parameterization density, no footprint
+    // compression). Historically these were the rasterized-footprint
+    // bbox + margin — the compression it induced per sparse chart was
+    // the visible texel-density seam; RepackXatlasLevel owns
+    // disjointness now, so the bbox rect is safe. Includes margins.
+    // After RepackXatlasLevel the rects are disjoint (see below).
+    std::vector<Rect> rects;
 };
 
 struct SgLightmapXatlasLevel {
-	// Parallel to the inputs (ok=false entries hold empty charts).
-	std::vector<SgLightmapXatlasMeshOutput> meshes;
-	uint32_t atlasWidth = 0;  // packed extent (+1 sampling pad, like PackRects)
-	uint32_t atlasHeight = 0;
+    // Parallel to the inputs (ok=false entries hold empty charts).
+    std::vector<SgLightmapXatlasMeshOutput> meshes;
+    uint32_t atlasWidth = 0; // packed extent (+1 sampling pad, like PackRects)
+    uint32_t atlasHeight = 0;
 };
 
-bool GenerateLightmapChartsXatlas(
-	const std::vector<SgLightmapXatlasMeshInput>& meshes,
-	const SgLightmapXatlasOptions& opts, SgLightmapXatlasLevel& out,
-	std::string& err);
+bool GenerateLightmapChartsXatlas(const std::vector<SgLightmapXatlasMeshInput>& meshes,
+                                  const SgLightmapXatlasOptions& opts,
+                                  SgLightmapXatlasLevel& out,
+                                  std::string& err);
 
 // Fills Chart.texels for a layout-only level produced with
 // SgLightmapXatlasOptions::deferTexelRaster. Rasterizes each chart's
@@ -449,9 +460,10 @@ bool GenerateLightmapChartsXatlas(
 // bake consumes the texels. Meshes must be parallel to the inputs that
 // produced the level (same order/count); ok=false entries are skipped.
 // Returns false with err set on input/level mismatch.
-bool RasterizeLightmapPackTexels(
-	const std::vector<SgLightmapXatlasMeshInput>& meshes,
-	SgLightmapXatlasLevel& level, uint32_t gutterTexels, std::string& err);
+bool RasterizeLightmapPackTexels(const std::vector<SgLightmapXatlasMeshInput>& meshes,
+                                 SgLightmapXatlasLevel& level,
+                                 uint32_t gutterTexels,
+                                 std::string& err);
 
 // Pairwise rectangle overlap gates. The GPU packing stage has no
 // ownership check: chunks copy sequentially into the same atlas pixels,
@@ -469,9 +481,8 @@ bool RasterizeLightmapPackTexels(
 // Strict rect intersection (even margin-ring touch) fails; err details
 // the first overlapping pair.
 bool CheckXatlasLevelRectsForOverlap(const SgLightmapXatlasLevel& level,
-	std::string* err = nullptr);
-bool CheckAtlasChunksForOverlap(const SgLightmapAtlas& atlas,
-	std::string* err = nullptr);
+                                     std::string* err = nullptr);
+bool CheckAtlasChunksForOverlap(const SgLightmapAtlas& atlas, std::string* err = nullptr);
 
 // Repack outcome: Ok fits; Infeasible means the job genuinely does
 // not fit (chart wider than the cap, or no placement with the packed
@@ -497,7 +508,9 @@ enum class RepackStatus { Ok, Infeasible, InternalError };
 // final rects). Returns false with err set when a chart is wider than
 // the cap or the packed height exceeds maxHeight.
 RepackStatus RepackXatlasLevel(SgLightmapXatlasLevel& level,
-	uint32_t atlasWidthCap, uint32_t maxHeight, std::string& err);
+                               uint32_t atlasWidthCap,
+                               uint32_t maxHeight,
+                               std::string& err);
 
 // Stacks one xatlas level into a shared atlas at the next free row
 // (2-texel inter-rect gap, same separator as PackRects). Fresh atlases
@@ -509,9 +522,13 @@ RepackStatus RepackXatlasLevel(SgLightmapXatlasLevel& level,
 // Returns false with err set on overflow (caller lowers the density or
 // drops the level).
 bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
-	const SgLightmapXatlasLevel& level, const std::vector<uint32_t>& meshKeys,
-	uint32_t preferredLobes, uint32_t atlasWidthCap, uint32_t maxHeight,
-	std::vector<uint32_t>& outChunkBase, std::string& err);
+                              const SgLightmapXatlasLevel& level,
+                              const std::vector<uint32_t>& meshKeys,
+                              uint32_t preferredLobes,
+                              uint32_t atlasWidthCap,
+                              uint32_t maxHeight,
+                              std::vector<uint32_t>& outChunkBase,
+                              std::string& err);
 
 // Frostbite-style LOD chart sharing: the chart+bake happened ONCE on a
 // REFERENCE parameterization of the surface (LOD1) and every other
@@ -535,20 +552,22 @@ bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
 // triangle parameterizes degenerately) — the smear/black artifact
 // source; everything else is healthy bookkeeping.
 struct SgLightmapTransferStats {
-	uint32_t trisTotal = 0;      // target triangles
-	uint32_t trisUncharted = 0;  // a corner reached no charted reference
-	uint32_t trisSameChart = 0;  // all corners projected into one chart
-	uint32_t trisVote = 0;       // majority/nearest vote + restricted
-	                             // re-projection of off-chart corners
-	uint32_t trisRescued = 0;    // degenerate uv -> re-projected onto
-	                             // the closest reference triangle
-	uint32_t trisDegenerate = 0; // degenerate even after the rescue
+    uint32_t trisTotal = 0;      // target triangles
+    uint32_t trisUncharted = 0;  // a corner reached no charted reference
+    uint32_t trisSameChart = 0;  // all corners projected into one chart
+    uint32_t trisVote = 0;       // majority/nearest vote + restricted
+                                 // re-projection of off-chart corners
+    uint32_t trisRescued = 0;    // degenerate uv -> re-projected onto
+                                 // the closest reference triangle
+    uint32_t trisDegenerate = 0; // degenerate even after the rescue
 };
 
 bool TransferLightmapCharts(const StaticMeshUpload& reference,
-	const SgLightmapChartResult& refCharts,
-	const StaticMeshUpload& target, SgLightmapChartResult& out,
-	std::string& err, SgLightmapTransferStats* stats = nullptr);
+                            const SgLightmapChartResult& refCharts,
+                            const StaticMeshUpload& target,
+                            SgLightmapChartResult& out,
+                            std::string& err,
+                            SgLightmapTransferStats* stats = nullptr);
 
 // Curvature-driven density scale for lightmap charting (cook side):
 // estimates the mesh's SMOOTH bending rate from shared-edge dihedral
@@ -570,50 +589,50 @@ bool TransferLightmapCharts(const StaticMeshUpload& reference,
 // same atlas budget where normals turn fast fixes the banding without
 // raising the total texel count.
 float LightmapCurvatureScale(const StaticMeshUpload& upload,
-	float localTexelsPerUnit, float targetDegreesPerTexel,
-	float maxScale);
+                             float localTexelsPerUnit,
+                             float targetDegreesPerTexel,
+                             float maxScale);
 
 } // namespace tour::gi
-
 
 // COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
 // header's declarations live in tour::gi; the smvk::gi aliases keep the
 // existing call sites compiling through the consumer migration.
 namespace smvk::gi {
-	using ::tour::gi::AppendXatlasLevelToAtlas;
-	using ::tour::gi::BakeSgLightmapChunk;
-	using ::tour::gi::BakeSgLightmapChunks;
-	using ::tour::gi::CheckAtlasChunksForOverlap;
-	using ::tour::gi::CheckXatlasLevelRectsForOverlap;
-	using ::tour::gi::GenerateLightmapChartsXatlas;
-	using ::tour::gi::GiBakeProgress;
-	using ::tour::gi::kLightmapBc6hTextureCount;
-	using ::tour::gi::kLightmapLayerCount;
-	using ::tour::gi::kLightmapMaxLobes;
-	using ::tour::gi::LightmapAxis;
-	using ::tour::gi::LightmapCurvatureScale;
-	using ::tour::gi::LightmapLobeCountValid;
-	using ::tour::gi::LightmapSharpness;
-	using ::tour::gi::RasterizeLightmapPackTexels;
-	using ::tour::gi::RepackXatlasLevel;
-	using ::tour::gi::SgLightmapCompression;
-	using ::tour::gi::RepackStatus;
-	using ::tour::gi::SgLightmapAtlas;
-	using ::tour::gi::SgLightmapBakeConfig;
-	using ::tour::gi::SgLightmapBakeStats;
-	using ::tour::gi::SgLightmapChartResult;
-	using ::tour::gi::SgLightmapChunk;
-	using ::tour::gi::SgLightmapChunkBatch;
-	using ::tour::gi::SgLightmapDiffuse;
-	using ::tour::gi::SgLightmapFitAccumulator;
-	using ::tour::gi::SgLightmapIrradianceFitted;
-	using ::tour::gi::SgLightmapSpecular;
-	using ::tour::gi::SgLightmapTexel;
-	using ::tour::gi::SgLightmapTransferStats;
-	using ::tour::gi::SgLightmapXatlasLevel;
-	using ::tour::gi::SgLightmapXatlasMeshInput;
-	using ::tour::gi::SgLightmapXatlasMeshOutput;
-	using ::tour::gi::SgLightmapXatlasOptions;
-	using ::tour::gi::StitchSgLightmapSeams;
-	using ::tour::gi::TransferLightmapCharts;
-}
+using ::tour::gi::AppendXatlasLevelToAtlas;
+using ::tour::gi::BakeSgLightmapChunk;
+using ::tour::gi::BakeSgLightmapChunks;
+using ::tour::gi::CheckAtlasChunksForOverlap;
+using ::tour::gi::CheckXatlasLevelRectsForOverlap;
+using ::tour::gi::GenerateLightmapChartsXatlas;
+using ::tour::gi::GiBakeProgress;
+using ::tour::gi::kLightmapBc6hTextureCount;
+using ::tour::gi::kLightmapLayerCount;
+using ::tour::gi::kLightmapMaxLobes;
+using ::tour::gi::LightmapAxis;
+using ::tour::gi::LightmapCurvatureScale;
+using ::tour::gi::LightmapLobeCountValid;
+using ::tour::gi::LightmapSharpness;
+using ::tour::gi::RasterizeLightmapPackTexels;
+using ::tour::gi::RepackStatus;
+using ::tour::gi::RepackXatlasLevel;
+using ::tour::gi::SgLightmapAtlas;
+using ::tour::gi::SgLightmapBakeConfig;
+using ::tour::gi::SgLightmapBakeStats;
+using ::tour::gi::SgLightmapChartResult;
+using ::tour::gi::SgLightmapChunk;
+using ::tour::gi::SgLightmapChunkBatch;
+using ::tour::gi::SgLightmapCompression;
+using ::tour::gi::SgLightmapDiffuse;
+using ::tour::gi::SgLightmapFitAccumulator;
+using ::tour::gi::SgLightmapIrradianceFitted;
+using ::tour::gi::SgLightmapSpecular;
+using ::tour::gi::SgLightmapTexel;
+using ::tour::gi::SgLightmapTransferStats;
+using ::tour::gi::SgLightmapXatlasLevel;
+using ::tour::gi::SgLightmapXatlasMeshInput;
+using ::tour::gi::SgLightmapXatlasMeshOutput;
+using ::tour::gi::SgLightmapXatlasOptions;
+using ::tour::gi::StitchSgLightmapSeams;
+using ::tour::gi::TransferLightmapCharts;
+} // namespace smvk::gi

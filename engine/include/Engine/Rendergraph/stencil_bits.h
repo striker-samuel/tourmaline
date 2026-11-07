@@ -56,8 +56,8 @@
 // The HLSL twins of the live layout live in ssr.frag.hlsl — keep them
 // in sync (single byte, cheap to audit).
 
-#include <Engine/smvk.h>
 #include <Engine/Renderer/mesh.h>
+#include <Engine/smvk.h>
 
 #include <cmath>
 #include <cstdint>
@@ -73,8 +73,8 @@ constexpr float kMetalThreshold = 0.50f;
 // threshold below is CENSUS/UI ONLY (mirror-class naming for the
 // material census readout) — the trace itself consumes the continuous
 // value and never thresholds.
-constexpr uint8_t kRoughnessMaxValue = 127u; // bits 0..6
-constexpr uint8_t kMetalBit = 1u << 7;       // bit 7
+constexpr uint8_t kRoughnessMaxValue = 127u;    // bits 0..6
+constexpr uint8_t kMetalBit = 1u << 7;          // bit 7
 constexpr float kCensusMirrorRoughness = 0.15f; // census display: r <= 0.15 -> "SSR"
 
 // Receiver byte for ONE material's values (Main's opaque binds REPLACE
@@ -82,22 +82,20 @@ constexpr float kCensusMirrorRoughness = 0.15f; // census display: r <= 0.15 -> 
 // bits 0..6, metal bit 7. Masked (cutout) materials classify like
 // anyone else: Main's alpha-tested FS discards the holes, which reverts
 // their stencil writes (the old whole-draw zeroing, per-pixel instead).
-inline uint8_t ReceiverRef(const MaterialValues& values)
-{
-	const float roughness = std::min(std::max(values.params.z, 0.0f), 1.0f);
-	uint8_t ref = static_cast<uint8_t>(
-		roughness * static_cast<float>(kRoughnessMaxValue) + 0.5f);
-	if (values.params.y >= kMetalThreshold)
-		ref |= kMetalBit;
-	return ref;
+inline uint8_t ReceiverRef(const MaterialValues& values) {
+    const float roughness = std::min(std::max(values.params.z, 0.0f), 1.0f);
+    uint8_t ref = static_cast<uint8_t>(roughness * static_cast<float>(kRoughnessMaxValue) + 0.5f);
+    if (values.params.y >= kMetalThreshold)
+        ref |= kMetalBit;
+    return ref;
 }
 
 // Decode helpers (mirror the HLSL twins in ssr.frag.hlsl).
-inline float RefRoughness(uint8_t ref)
-{
-	return static_cast<float>(ref & kRoughnessMaxValue)
-		/ static_cast<float>(kRoughnessMaxValue);
+inline float RefRoughness(uint8_t ref) {
+    return static_cast<float>(ref & kRoughnessMaxValue) / static_cast<float>(kRoughnessMaxValue);
 }
-inline bool RefMetal(uint8_t ref) { return (ref & kMetalBit) != 0; }
+inline bool RefMetal(uint8_t ref) {
+    return (ref & kMetalBit) != 0;
+}
 
 } // namespace smvk::stencil

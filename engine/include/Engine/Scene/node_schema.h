@@ -44,15 +44,15 @@
 namespace smvk {
 
 enum class SchemaFieldType : uint32_t {
-	F32 = 1,
-	I32 = 2,
-	U32 = 3,
-	Bool = 4,
-	Vec2 = 5, // two f32
-	Vec3 = 6, // three f32
-	Vec4 = 7, // four f32
-	Str = 8,  // u32 byte length + bytes (cooked inline)
-	Ref = 9,  // u64 stable content id (the typed asset reference)
+    F32 = 1,
+    I32 = 2,
+    U32 = 3,
+    Bool = 4,
+    Vec2 = 5, // two f32
+    Vec3 = 6, // three f32
+    Vec4 = 7, // four f32
+    Str = 8,  // u32 byte length + bytes (cooked inline)
+    Ref = 9,  // u64 stable content id (the typed asset reference)
 };
 
 // One field's cooked shape. `offset` is the field's byte offset in
@@ -60,24 +60,24 @@ enum class SchemaFieldType : uint32_t {
 // layout is fields-in-declaration-order, each aligned to its natural
 // size — str pads to 4, ref aligns 8).
 struct SchemaField {
-	uint32_t id = 0; // the declaration ordinal (stable identity)
-	std::string name;
-	SchemaFieldType type = SchemaFieldType::F32;
-	uint32_t count = 1; // fixed array element count (1 = scalar)
-	std::vector<uint8_t> defaultValue; // cooked-form default
-	// Computed by FinalizeSchema:
-	uint32_t offset = 0; // byte offset in the value block
-	uint32_t stride = 0; // per-element cooked stride
+    uint32_t id = 0; // the declaration ordinal (stable identity)
+    std::string name;
+    SchemaFieldType type = SchemaFieldType::F32;
+    uint32_t count = 1;                // fixed array element count (1 = scalar)
+    std::vector<uint8_t> defaultValue; // cooked-form default
+    // Computed by FinalizeSchema:
+    uint32_t offset = 0; // byte offset in the value block
+    uint32_t stride = 0; // per-element cooked stride
 };
 
 struct NodeSchema {
-	uint32_t id = 0; // the STABLE schema id (project-authored)
-	std::string name; // display name (free to change)
-	std::vector<SchemaField> fields;
-	// Computed by FinalizeSchema:
-	uint32_t valueBytes = 0; // the full cooked value-block size
+    uint32_t id = 0;  // the STABLE schema id (project-authored)
+    std::string name; // display name (free to change)
+    std::vector<SchemaField> fields;
+    // Computed by FinalizeSchema:
+    uint32_t valueBytes = 0; // the full cooked value-block size
 
-	[[nodiscard]] const SchemaField* Field(uint32_t fieldId) const;
+    [[nodiscard]] const SchemaField* Field(uint32_t fieldId) const;
 };
 
 // Computes the cooked layout (offsets/strides/valueBytes) and returns
@@ -94,11 +94,9 @@ uint32_t SchemaTypeStride(SchemaFieldType type);
 // Parses ONE schema definition (the `schema <name> <id>` block; the
 // file may carry several — parse line-wise or split on `schema `).
 // False + err with the offending line number on any malformation.
-bool ParseNodeSchemaText(const std::string& text, NodeSchema& out,
-	std::string& err);
+bool ParseNodeSchemaText(const std::string& text, NodeSchema& out, std::string& err);
 // Parses EVERY `schema` block in a .nodeschema file (order preserved).
-bool ParseNodeSchemaFile(const std::string& text,
-	std::vector<NodeSchema>& out, std::string& err);
+bool ParseNodeSchemaFile(const std::string& text, std::vector<NodeSchema>& out, std::string& err);
 
 // ---- the per-pak registry blob -------------------------------------------
 // One PakAssetKind::Schema blob per pak at the reserved path
@@ -110,10 +108,10 @@ bool ParseNodeSchemaFile(const std::string& text,
 //     per field: u32 id | u32 nameLen | name | u32 type |
 //                u32 count | u32 offset | u32 stride |
 //                u32 defaultLen | default bytes
-std::vector<uint8_t> WriteSchemaRegistryBlob(
-	const std::vector<NodeSchema>& schemas);
+std::vector<uint8_t> WriteSchemaRegistryBlob(const std::vector<NodeSchema>& schemas);
 bool ParseSchemaRegistryBlob(std::span<const uint8_t> blob,
-	std::vector<NodeSchema>& out, std::string& err);
+                             std::vector<NodeSchema>& out,
+                             std::string& err);
 
 inline constexpr const char* kPakSchemaRegistryPath = "#schemas";
 

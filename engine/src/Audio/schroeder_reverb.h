@@ -53,12 +53,12 @@ namespace tour::audio {
 
 // The SchroederReverbNode's configurable shape.
 struct SchroederReverbConfig {
-    ma_uint32 channels = 2;      // 1 = mono (L tunings), 2 = stereo
+    ma_uint32 channels = 2; // 1 = mono (L tunings), 2 = stereo
     ma_uint32 sampleRate = 48000;
-    float rt60 = 1.2f;           // seconds (clamped [0.15, 8])
-    float damping = 0.5f;        // 0..1 comb feedback HF damping
-    float wet = 1.0f;            // 0..1, the MIX mode's dry/wet mix
-    bool wetOnly = false;        // true = the send form (wet-only out)
+    float rt60 = 1.2f;    // seconds (clamped [0.15, 8])
+    float damping = 0.5f; // 0..1 comb feedback HF damping
+    float wet = 1.0f;     // 0..1, the MIX mode's dry/wet mix
+    bool wetOnly = false; // true = the send form (wet-only out)
 };
 
 struct SchroederReverbNode {
@@ -100,7 +100,8 @@ struct SchroederReverbNode {
 // init failure — the caller treats that as the documented graceful
 // degradation (direct audio, reverb disabled).
 bool SchroederReverbInit(ma_node_graph* graph,
-    const SchroederReverbConfig& cfg, SchroederReverbNode* node);
+                         const SchroederReverbConfig& cfg,
+                         SchroederReverbNode* node);
 
 // Tears the node down (detaches + frees the delay lines).
 void SchroederReverbUninit(SchroederReverbNode* node);

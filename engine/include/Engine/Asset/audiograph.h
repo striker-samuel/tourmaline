@@ -100,103 +100,103 @@
 namespace tour::asset {
 
 enum class AudioNodeType : uint32_t {
-	Source = 1,
-	Gain = 2,     // a submix bus (volume); "master output" is a gain node
-	LowPass = 3,  // biquad
-	HighPass = 4, // biquad
-	BandPass = 5, // biquad
-	Notch = 6,    // biquad
-	Peak = 7,     // biquad EQ
-	LowShelf = 8, // biquad EQ
-	HighShelf = 9,// biquad EQ
-	Delay = 10,   // delay + feedback blend (feedback lives INSIDE the node)
-	Reverb = 11,  // the Schroeder reverb (4 damped combs + 2 all-passes,
-	              // per channel, stereo decorrelated; the inline graph
-	              // form mixes dry/wet by -wet, 1 = fully wet)
+    Source = 1,
+    Gain = 2,      // a submix bus (volume); "master output" is a gain node
+    LowPass = 3,   // biquad
+    HighPass = 4,  // biquad
+    BandPass = 5,  // biquad
+    Notch = 6,     // biquad
+    Peak = 7,      // biquad EQ
+    LowShelf = 8,  // biquad EQ
+    HighShelf = 9, // biquad EQ
+    Delay = 10,    // delay + feedback blend (feedback lives INSIDE the node)
+    Reverb = 11,   // the Schroeder reverb (4 damped combs + 2 all-passes,
+                   // per channel, stereo decorrelated; the inline graph
+                   // form mixes dry/wet by -wet, 1 = fully wet)
 };
 
 // The node's authored fields. Which ones a type consumes is documented
 // on the format above; ParseAudioGraphText validates the vocabulary.
 struct AudioGraphNode {
-	std::string name;
-	AudioNodeType type = AudioNodeType::Gain;
-	// Source
-	std::string sound; // the sound asset's VFS path (Sound-kind blob)
-	bool loop = false;
-	// Source level / Gain(submix) volume
-	float gain = 1.0f;
-	// Biquads: lpf/hpf/bpf cutoff; notch/peak/shelf frequency
-	float cutoff = 1000.0f;
-	float frequency = 1000.0f;
-	float q = 1.0f;
-	float gainDb = 0.0f; // peak/shelf
-	uint32_t order = 2;  // lpf/hpf/bpf (1..8)
-	// Delay
-	float delaySeconds = 0.25f;
-	float decay = 0.5f;
-	// Reverb (the Schroeder node's live shape: delay LENGTHS are fixed
-	// at build — only these coefficients automate, smoothed on the
-	// mixer thread)
-	float reverbWet = 1.0f;      // 0..1, the inline dry/wet mix (0 = an
-	                             // EXACT dry bypass)
-	float reverbRt60 = 1.2f;     // seconds, clamped [0.15, 8]
-	float reverbDamping = 0.5f;  // 0..1, comb feedback HF damping
+    std::string name;
+    AudioNodeType type = AudioNodeType::Gain;
+    // Source
+    std::string sound; // the sound asset's VFS path (Sound-kind blob)
+    bool loop = false;
+    // Source level / Gain(submix) volume
+    float gain = 1.0f;
+    // Biquads: lpf/hpf/bpf cutoff; notch/peak/shelf frequency
+    float cutoff = 1000.0f;
+    float frequency = 1000.0f;
+    float q = 1.0f;
+    float gainDb = 0.0f; // peak/shelf
+    uint32_t order = 2;  // lpf/hpf/bpf (1..8)
+    // Delay
+    float delaySeconds = 0.25f;
+    float decay = 0.5f;
+    // Reverb (the Schroeder node's live shape: delay LENGTHS are fixed
+    // at build — only these coefficients automate, smoothed on the
+    // mixer thread)
+    float reverbWet = 1.0f;     // 0..1, the inline dry/wet mix (0 = an
+                                // EXACT dry bypass)
+    float reverbRt60 = 1.2f;    // seconds, clamped [0.15, 8]
+    float reverbDamping = 0.5f; // 0..1, comb feedback HF damping
 };
 
 enum class AudioParamField : uint32_t {
-	Gain = 1,
-	Cutoff = 2,
-	Frequency = 3,
-	Q = 4,
-	GainDb = 5,
-	Decay = 6,
-	// The reverb lane (append-only ABI — never renumber).
-	Wet = 7,
-	Rt60 = 8,
-	Damping = 9,
+    Gain = 1,
+    Cutoff = 2,
+    Frequency = 3,
+    Q = 4,
+    GainDb = 5,
+    Decay = 6,
+    // The reverb lane (append-only ABI — never renumber).
+    Wet = 7,
+    Rt60 = 8,
+    Damping = 9,
 };
 
 // An EXPOSED parameter: the gameplay-facing name bound to one node
 // field. This is the ONLY surface cues automate and gameplay sets —
 // raw node addressing never leaves the asset.
 struct AudioGraphParam {
-	std::string name;
-	std::string node;
-	AudioParamField field = AudioParamField::Gain;
+    std::string name;
+    std::string node;
+    AudioParamField field = AudioParamField::Gain;
 };
 
 struct AudioGraphEdge {
-	std::string from;
-	std::string to; // "output" = the graph exit
+    std::string from;
+    std::string to; // "output" = the graph exit
 };
 
 struct AudioCueKeyframe {
-	double t = 0.0;
-	float value = 0.0f;
-	bool linear = true; // true: linear to the NEXT key; false: step (hold)
+    double t = 0.0;
+    float value = 0.0f;
+    bool linear = true; // true: linear to the NEXT key; false: step (hold)
 };
 
 // Edge-fired source activity (sorted by t at finalize).
 struct AudioCueEvent {
-	enum class Type : uint32_t { StartSource = 1, StopSource = 2 };
-	double t = 0.0;
-	Type type = Type::StartSource;
-	std::string node; // must name a Source node
+    enum class Type : uint32_t { StartSource = 1, StopSource = 2 };
+    double t = 0.0;
+    Type type = Type::StartSource;
+    std::string node; // must name a Source node
 };
 
 // One param's keyframe track inside a cue (keys sorted by t).
 struct AudioCueParamTrack {
-	std::string param; // must name an exposed param
-	std::vector<AudioCueKeyframe> keys;
+    std::string param; // must name an exposed param
+    std::vector<AudioCueKeyframe> keys;
 };
 
 struct AudioCue {
-	std::string name;
-	std::vector<AudioCueEvent> events;
-	std::vector<AudioCueParamTrack> tracks;
-	// Computed at finalize: the timeline end (last event/key time;
-	// automation holds past it — this is bookkeeping for callers).
-	double endT = 0.0;
+    std::string name;
+    std::vector<AudioCueEvent> events;
+    std::vector<AudioCueParamTrack> tracks;
+    // Computed at finalize: the timeline end (last event/key time;
+    // automation holds past it — this is bookkeeping for callers).
+    double endT = 0.0;
 };
 
 // ONE authored audio graph asset. Immutable + shared once parsed; the
@@ -204,10 +204,10 @@ struct AudioCue {
 // value in the animator model — graphs are small, the instance keeps
 // its copy so the caller's storage can be transient).
 struct AudioGraphDoc {
-	std::vector<AudioGraphNode> nodes;
-	std::vector<AudioGraphEdge> edges;
-	std::vector<AudioGraphParam> params;
-	std::vector<AudioCue> cues; // cues[0] is the graph's default cue
+    std::vector<AudioGraphNode> nodes;
+    std::vector<AudioGraphEdge> edges;
+    std::vector<AudioGraphParam> params;
+    std::vector<AudioCue> cues; // cues[0] is the graph's default cue
 };
 
 // Parses the authored text. STRICT: any malformed verb, unknown type,
@@ -215,22 +215,20 @@ struct AudioGraphDoc {
 // empty-cue-set fails with err carrying the LINE NUMBER (the
 // nodeschema discipline — cook-time validation rejects the file before
 // it can pack). `warnings` (optional) carries non-fatal notes.
-bool ParseAudioGraphText(const std::string& text, AudioGraphDoc& out,
-	std::string& err, std::vector<std::string>* warnings = nullptr);
+bool ParseAudioGraphText(const std::string& text,
+                         AudioGraphDoc& out,
+                         std::string& err,
+                         std::vector<std::string>* warnings = nullptr);
 
 // ---- lookups for consumers (the runtime + the catalog emitter) ----
 // Index of the named node / param / cue, or -1 when absent.
-[[nodiscard]] int AudioGraphFindNode(const AudioGraphDoc& doc,
-	const std::string& name);
-[[nodiscard]] int AudioGraphFindParam(const AudioGraphDoc& doc,
-	const std::string& name);
-[[nodiscard]] int AudioGraphFindCue(const AudioGraphDoc& doc,
-	const std::string& name);
+[[nodiscard]] int AudioGraphFindNode(const AudioGraphDoc& doc, const std::string& name);
+[[nodiscard]] int AudioGraphFindParam(const AudioGraphDoc& doc, const std::string& name);
+[[nodiscard]] int AudioGraphFindCue(const AudioGraphDoc& doc, const std::string& name);
 
 // Whether a param field is meaningful for a node type (the -field
 // vocabulary gate used by the parser + the emitter).
-[[nodiscard]] bool AudioGraphNodeFieldValid(AudioNodeType type,
-	AudioParamField field);
+[[nodiscard]] bool AudioGraphNodeFieldValid(AudioNodeType type, AudioParamField field);
 
 // The reserved edge target naming the graph exit (not a node).
 inline constexpr const char* kAudioGraphOutput = "output";

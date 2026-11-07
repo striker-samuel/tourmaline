@@ -22,8 +22,7 @@ struct VertexWindow {
 };
 
 [[nodiscard]] constexpr bool Contains(VertexWindow w, uint32_t vertexId) noexcept {
-    return vertexId >= w.sourceBase
-        && uint64_t(vertexId) - uint64_t(w.sourceBase) < w.vertexCount;
+    return vertexId >= w.sourceBase && uint64_t(vertexId) - uint64_t(w.sourceBase) < w.vertexCount;
 }
 
 // This deliberately uses uint32 wrapping arithmetic, matching the GPU draw
@@ -32,17 +31,16 @@ struct VertexWindow {
 [[nodiscard]] constexpr uint32_t StreamDelta(VertexWindow w) noexcept {
     return w.streamBase - w.sourceBase;
 }
-[[nodiscard]] constexpr uint32_t MapUnchecked(uint32_t vertexId,
-    uint32_t delta) noexcept {
+[[nodiscard]] constexpr uint32_t MapUnchecked(uint32_t vertexId, uint32_t delta) noexcept {
     return vertexId + delta;
 }
 
-[[nodiscard]] constexpr bool TryMap(VertexWindow w, uint32_t vertexId,
-    uint32_t& streamVertex) noexcept {
+[[nodiscard]] constexpr bool TryMap(VertexWindow w,
+                                    uint32_t vertexId,
+                                    uint32_t& streamVertex) noexcept {
     if (!Contains(w, vertexId))
         return false;
-    const uint64_t mapped = uint64_t(w.streamBase)
-        + (uint64_t(vertexId) - w.sourceBase);
+    const uint64_t mapped = uint64_t(w.streamBase) + (uint64_t(vertexId) - w.sourceBase);
     if (mapped > std::numeric_limits<uint32_t>::max())
         return false;
     streamVertex = static_cast<uint32_t>(mapped);
@@ -52,11 +50,13 @@ struct VertexWindow {
 // The checked CPU form can validate upload ranges; the shader fast path
 // uses ByteOffsetUnchecked only after the window has been validated.
 [[nodiscard]] constexpr uint64_t ByteOffsetUnchecked(uint32_t streamVertex,
-    uint32_t strideBytes) noexcept {
+                                                     uint32_t strideBytes) noexcept {
     return uint64_t(streamVertex) * strideBytes;
 }
 [[nodiscard]] constexpr bool TryByteOffset(uint32_t streamVertex,
-    uint32_t strideBytes, uint64_t bufferBytes, uint64_t& offset) noexcept {
+                                           uint32_t strideBytes,
+                                           uint64_t bufferBytes,
+                                           uint64_t& offset) noexcept {
     if (strideBytes == 0)
         return false;
     const uint64_t value = ByteOffsetUnchecked(streamVertex, strideBytes);

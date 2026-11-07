@@ -30,20 +30,22 @@
 
 #include "ProjectRuntime.h"
 
-#include <Engine/Audio/audio.h>
 #include <Engine/Asset/audiograph.h>
+#include <Engine/Audio/audio.h>
 
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
 
-namespace tour { class App; }
+namespace tour {
+class App;
+}
 
 namespace app {
 
 class AudioGraphs {
-public:
+  public:
     AudioGraphs(app::ProjectRuntime& session, tour::App& host);
     ~AudioGraphs(); // defined in the .cpp (Lane is opaque here)
 
@@ -55,15 +57,13 @@ public:
     // AudioInstance + `err` on any failure — a wrong-kind id, an
     // unparsable graph or an unresolvable sound all fail LOUDLY with
     // the named path.
-    [[nodiscard]] tour::audio::AudioInstance create(uint64_t graphId,
-        std::string* err = nullptr);
+    [[nodiscard]] tour::audio::AudioInstance create(uint64_t graphId, std::string* err = nullptr);
 
-private:
+  private:
     // The doc + clip caches + the resolver context (the engine's
     // AudioClipResolver is a plain function pointer + user data).
     struct Lane;
-    static tour::audio::ClipHandle ResolveClip(void* user,
-        const char* soundVfsPath);
+    static tour::audio::ClipHandle ResolveClip(void* user, const char* soundVfsPath);
 
     app::ProjectRuntime& m_session;
     tour::App& m_host;

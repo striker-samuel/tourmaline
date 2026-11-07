@@ -8,8 +8,8 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/RHI/swapchain.h>
 namespace smvk {
-	using ResourceManagerImpl = ResourceManager;
-	using SwapchainImpl = Swapchain;
-	using FrameBufferImpl = Framebuffer;
-	// Pipeline/CommandBuffer are opaque in RenderGraph
-}
+using ResourceManagerImpl = ResourceManager;
+using SwapchainImpl = Swapchain;
+using FrameBufferImpl = Framebuffer;
+// Pipeline/CommandBuffer are opaque in RenderGraph
+} // namespace smvk

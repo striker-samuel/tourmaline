@@ -30,12 +30,12 @@ inline constexpr uint8_t kScopeTest = 1u << 3;
 inline constexpr uint8_t kScopeProfile = 1u << 4;
 
 struct ModalBindingDef {
-	int key = 0;                  // TOUR_KEY_* / input::Key (see input.h)
-	uint8_t mods = 0;             // kModal{Ctrl,Shift,Alt} bits
-	uint8_t scopes = 0;           // kScope* bits
-	void (EditorApp::*run)() = nullptr;
-	const char* label = "";       // action name (legend/help)
-	const char* keycap = "";      // legend key label ("V", "F8", "Shift+F")
+    int key = 0;        // TOUR_KEY_* / input::Key (see input.h)
+    uint8_t mods = 0;   // kModal{Ctrl,Shift,Alt} bits
+    uint8_t scopes = 0; // kScope* bits
+    void (EditorApp::*run)() = nullptr;
+    const char* label = "";  // action name (legend/help)
+    const char* keycap = ""; // legend key label ("V", "F8", "Shift+F")
 };
 
 size_t ModalBindingCount();

@@ -16,9 +16,10 @@ namespace smvk::project::registry {
 // Replaces-or-appends the row for `projectRelativeSource`, stamped with
 // the import's OWN fingerprint (the settings it actually ran under) +
 // the derived counts. True on a successful registry write.
-bool UpdateRow(const Project& project, const ImportResult& result,
-	const std::string& projectRelativeSource,
-	const std::string& originalSource,
-	const std::string& importFingerprint);
+bool UpdateRow(const Project& project,
+               const ImportResult& result,
+               const std::string& projectRelativeSource,
+               const std::string& originalSource,
+               const std::string& importFingerprint);
 
 } // namespace smvk::project::registry

@@ -10,9 +10,12 @@
 // ordinary Lit view. All other modes remain editor-only.
 namespace editor {
 
-template<typename Mode, typename ModeAt>
-constexpr int SelectLivePreviewViewport(int count, int active, ModeAt modeAt,
-    Mode lit, Mode baked) {
+template <typename Mode, typename ModeAt>
+constexpr int SelectLivePreviewViewport(int count,
+                                        int active,
+                                        ModeAt modeAt,
+                                        Mode lit,
+                                        Mode baked) {
     if (count <= 0)
         return -1;
     if (active >= 0 && active < count && modeAt(active) == baked)

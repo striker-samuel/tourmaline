@@ -3,8 +3,8 @@
 
 #include <tourmaline/tooling.h>
 
-#include <project_pipeline/project.h>
 #include <project_pipeline/import_pipeline.h>
+#include <project_pipeline/project.h>
 #include <project_pipeline/project_recipe.h>
 
 #include <cctype>
@@ -18,7 +18,8 @@ namespace {
 namespace fs = std::filesystem;
 
 bool SafeStem(const std::string& stem) {
-    if (stem.empty() || stem.size() > 80) return false;
+    if (stem.empty() || stem.size() > 80)
+        return false;
     for (char c : stem)
         if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
             return false;
@@ -28,9 +29,11 @@ bool SafeStem(const std::string& stem) {
 bool SafeRelativeScene(const std::string& path) {
     const fs::path value(path);
     if (value.empty() || value.is_absolute() || value.has_root_name() ||
-        value.extension() != ".tour") return false;
+        value.extension() != ".tour")
+        return false;
     for (const auto& segment : value) {
-        if (segment == ".." || segment == "." || segment.empty()) return false;
+        if (segment == ".." || segment == "." || segment.empty())
+            return false;
     }
     const std::string normalized = value.generic_string();
     return normalized.rfind("content/scenes/", 0) == 0;
@@ -38,7 +41,8 @@ bool SafeRelativeScene(const std::string& path) {
 
 bool SaveNewFile(const fs::path& path, const std::string& body, std::string& error) {
     std::error_code ec;
-    if (fs::exists(path, ec)) return true; // user-authored file takes precedence
+    if (fs::exists(path, ec))
+        return true; // user-authored file takes precedence
     if (ec) {
         error = "cannot inspect " + path.generic_string() + ": " + ec.message();
         return false;
@@ -72,37 +76,58 @@ std::string Ignore() {
            ".tourmaline/\npaks/\nbuild/\n*.meta\n";
 }
 
-std::string Readme(const std::string& name, const std::string& recipe,
-                   const std::string& entry) {
-    return "# " + name + "\n\n"
+std::string Readme(const std::string& name, const std::string& recipe, const std::string& entry) {
+    return "# " + name +
+           "\n\n"
            "Tourmaline project scaffold. The project.tourproj GUID is its permanent\n"
            "identity; do not regenerate it when moving or renaming this directory.\n\n"
            "The recipe is a *starter* until the entry scene's glTF/geometry reference\n"
            "is authored (a placeholder .tour is NOT fabricated by tourinit).\n\n"
            "Next steps (from the Tourmaline build directory):\n\n"
            "1. Import a model with Project import --project <this-dir> --source <model.glb>.\n"
-           "2. Author or seed " + entry + " using the editor or Project init --from-scene.\n"
-           "3. Project validate --project <this-dir> --recipe " + recipe + "\n"
-           "4. Project build --project <this-dir> --recipe " + recipe + "\n\n"
+           "2. Author or seed " +
+           entry +
+           " using the editor or Project init --from-scene.\n"
+           "3. Project validate --project <this-dir> --recipe " +
+           recipe +
+           "\n"
+           "4. Project build --project <this-dir> --recipe " +
+           recipe +
+           "\n\n"
            "See the repository docs/agent_cli_tools.md manual for inspection,\n"
            "capture and release comparison commands.\n";
 }
 
-std::string Recipe(const std::string& name, const std::string& entry,
-                   const std::string& pak, bool bakeGi, bool bakeCubemaps) {
+std::string Recipe(const std::string& name,
+                   const std::string& entry,
+                   const std::string& pak,
+                   bool bakeGi,
+                   bool bakeCubemaps) {
     return "# Tourmaline project recipe v1. Requires a real imported scene.\n"
-           "recipe 1\nproject \"" + name + "\"\n"
-           "entry " + entry + "\n"
-           "bake gi " + (bakeGi ? "on" : "off") + "\n"
-           "bake cubemaps " + (bakeCubemaps ? "on" : "off") + "\n\n"
-           "[pak world]\noutput " + pak + ".pak\n"
-           "scene " + entry + "\n";
+           "recipe 1\nproject \"" +
+           name +
+           "\"\n"
+           "entry " +
+           entry +
+           "\n"
+           "bake gi " +
+           (bakeGi ? "on" : "off") +
+           "\n"
+           "bake cubemaps " +
+           (bakeCubemaps ? "on" : "off") +
+           "\n\n"
+           "[pak world]\noutput " +
+           pak +
+           ".pak\n"
+           "scene " +
+           entry + "\n";
 }
 
 } // namespace
 
 bool InitializeProject(const ProjectInitOptions& options,
-                       ProjectInitResult& out, std::string& error) {
+                       ProjectInitResult& out,
+                       std::string& error) {
     error.clear();
     ProjectInitResult result;
     if (!SafeStem(options.recipeName) || !SafeStem(options.pakName)) {
@@ -110,8 +135,7 @@ bool InitializeProject(const ProjectInitOptions& options,
         return false;
     }
     const std::string requestedName = options.name;
-    if (requestedName.find_first_of("\r\n\"") != std::string::npos ||
-        requestedName.size() > 128) {
+    if (requestedName.find_first_of("\r\n\"") != std::string::npos || requestedName.size() > 128) {
         error = "project name cannot contain quotes or newlines; maximum 128 bytes";
         return false;
     }
@@ -145,21 +169,19 @@ bool InitializeProject(const ProjectInitOptions& options,
         error = "--from-scene requires --from-gltf so the root reference can be repointed";
         return false;
     }
-    if (!options.fromScene.empty() &&
-        options.entryScene != "content/scenes/main.tour" &&
+    if (!options.fromScene.empty() && options.entryScene != "content/scenes/main.tour" &&
         options.entryScene != "content/scenes/" + options.fromScene.filename().generic_string()) {
         error = "entryScene conflicts with the path created by --from-scene";
         return false;
     }
-    if (!options.fromGltf.empty() && (
-            (options.fromGltf.extension() != ".gltf" && options.fromGltf.extension() != ".glb") ||
-            !fs::is_regular_file(options.fromGltf))) {
+    if (!options.fromGltf.empty() &&
+        ((options.fromGltf.extension() != ".gltf" && options.fromGltf.extension() != ".glb") ||
+         !fs::is_regular_file(options.fromGltf))) {
         error = "--from-gltf must name an existing .gltf or .glb file";
         return false;
     }
-    if (!options.fromScene.empty() && (
-            options.fromScene.extension() != ".tour" ||
-            !fs::is_regular_file(options.fromScene))) {
+    if (!options.fromScene.empty() &&
+        (options.fromScene.extension() != ".tour" || !fs::is_regular_file(options.fromScene))) {
         error = "--from-scene must name an existing .tour file";
         return false;
     }
@@ -193,9 +215,10 @@ bool InitializeProject(const ProjectInitOptions& options,
     }
 
     bool created = false;
-    smvk::project::Project project = smvk::project::Project::Init(
-        result.root, name, created, error);
-    if (!project.Valid()) return false;
+    smvk::project::Project project =
+        smvk::project::Project::Init(result.root, name, created, error);
+    if (!project.Valid())
+        return false;
     result.created = created;
     result.name = project.name;
     result.guid = project.guid;
@@ -211,9 +234,11 @@ bool InitializeProject(const ProjectInitOptions& options,
         }
         result.imported = true;
         if (!options.fromScene.empty()) {
-            const std::string seeded = smvk::project::SeedProjectScene(
-                project, options.fromScene.string(),
-                options.fromGltf.stem().generic_string(), error);
+            const std::string seeded =
+                smvk::project::SeedProjectScene(project,
+                                                options.fromScene.string(),
+                                                options.fromGltf.stem().generic_string(),
+                                                error);
             if (seeded.empty()) {
                 error = "scene seed failed: " + error;
                 return false;
@@ -223,9 +248,8 @@ bool InitializeProject(const ProjectInitOptions& options,
         }
     }
 
-    const std::string text = Recipe(result.name, result.entryScene,
-                                    options.pakName, options.bakeGi,
-                                    options.bakeCubemaps);
+    const std::string text = Recipe(
+        result.name, result.entryScene, options.pakName, options.bakeGi, options.bakeCubemaps);
     smvk::project::ProjectRecipe parsed;
     smvk::project::RecipeDiagnostic diagnostic;
     if (!smvk::project::ParseProjectRecipeText(text, parsed, diagnostic)) {
@@ -234,7 +258,8 @@ bool InitializeProject(const ProjectInitOptions& options,
     }
     const fs::path recipePath(result.recipe);
     if (!fs::exists(recipePath)) {
-        if (!SaveNewFile(recipePath, text, error)) return false;
+        if (!SaveNewFile(recipePath, text, error))
+            return false;
         result.recipeWritten = true;
     }
     if (!SaveNewFile(root / ".tourmaline" / "build-settings.txt", Settings(), error))
@@ -242,8 +267,8 @@ bool InitializeProject(const ProjectInitOptions& options,
     if (options.writeGitignore && !SaveNewFile(root / ".gitignore", Ignore(), error))
         return false;
     if (!SaveNewFile(root / "README.md",
-                     Readme(result.name, options.recipeName + ".tourrecipe",
-                            result.entryScene), error))
+                     Readme(result.name, options.recipeName + ".tourrecipe", result.entryScene),
+                     error))
         return false;
     result.readyToBuild = fs::is_regular_file(root / result.entryScene);
     out = std::move(result);

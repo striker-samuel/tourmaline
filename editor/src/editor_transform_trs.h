@@ -24,8 +24,10 @@ inline bool Finite(const glm::mat4& m) {
     return true;
 }
 
-inline void ReadLocalTRS(const glm::mat4& m, glm::vec3& translation,
-    glm::vec3& rotationDeg, glm::vec3& scale) {
+inline void ReadLocalTRS(const glm::mat4& m,
+                         glm::vec3& translation,
+                         glm::vec3& rotationDeg,
+                         glm::vec3& scale) {
     translation = glm::vec3(0.0f);
     rotationDeg = glm::vec3(0.0f);
     scale = glm::vec3(1.0f);
@@ -38,7 +40,7 @@ inline void ReadLocalTRS(const glm::mat4& m, glm::vec3& translation,
     if (!Finite(m))
         return;
 
-    glm::vec3 axes[3] = { glm::vec3(m[0]), glm::vec3(m[1]), glm::vec3(m[2]) };
+    glm::vec3 axes[3] = {glm::vec3(m[0]), glm::vec3(m[1]), glm::vec3(m[2])};
     bool present[3] = {};
     int count = 0;
     for (int i = 0; i < 3; ++i) {
@@ -74,26 +76,26 @@ inline void ReadLocalTRS(const glm::mat4& m, glm::vec3& translation,
     // When two or three axes are collapsed, rotation is underdetermined:
     // choose a stable perpendicular frame rather than inventing NaNs.
     if (count == 2) {
-        if (!present[0]) axes[0] = glm::cross(axes[1], axes[2]);
-        if (!present[1]) axes[1] = glm::cross(axes[2], axes[0]);
-        if (!present[2]) axes[2] = glm::cross(axes[0], axes[1]);
+        if (!present[0])
+            axes[0] = glm::cross(axes[1], axes[2]);
+        if (!present[1])
+            axes[1] = glm::cross(axes[2], axes[0]);
+        if (!present[2])
+            axes[2] = glm::cross(axes[0], axes[1]);
         for (int i = 0; i < 3; ++i) {
             const float magnitude = glm::length(axes[i]);
             if (!(magnitude > 1e-7f) || !std::isfinite(magnitude))
                 return;
             axes[i] /= magnitude;
         }
-    }
-    else if (count == 1) {
+    } else if (count == 1) {
         const int known = present[0] ? 0 : (present[1] ? 1 : 2);
-        const glm::vec3 ref = std::abs(axes[known].x) < 0.9f
-            ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
+        const glm::vec3 ref =
+            std::abs(axes[known].x) < 0.9f ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
         const glm::vec3 next = glm::normalize(glm::cross(ref, axes[known]));
         axes[(known + 1) % 3] = next;
-        axes[(known + 2) % 3] = glm::cross(
-            axes[known], axes[(known + 1) % 3]);
-    }
-    else if (count == 0) {
+        axes[(known + 2) % 3] = glm::cross(axes[known], axes[(known + 1) % 3]);
+    } else if (count == 0) {
         // No basis directions survive; a zero-scale node can still be
         // selected and given a new scale.
         return;

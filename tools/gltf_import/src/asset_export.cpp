@@ -32,18 +32,20 @@
 
 #include <set>
 
-#include <gltf_import/gltf.h>
+#include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Asset/touranim.h>
-#include <Engine/Asset/meshlet.h>
-#include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Utils/ktx_error_texture.h> // EnsureClusterErrorTexture mint
 #include <Engine/Utils/texture_loader.h>
+#include <gltf_import/gltf.h>
 
 #include "ktx.h"
 
-namespace tinygltf { class Model; }
+namespace tinygltf {
+class Model;
+}
 namespace smvk::assets {
 
 namespace {
@@ -60,117 +62,133 @@ namespace {
 // anywhere, no DB, no .meta, no clock.
 // ---------------------------------------------------------------------------
 inline std::string GuidHexFromBytes(const void* data, size_t size) {
-	const auto* bytes = static_cast<const uint8_t*>(data);
-	uint64_t a = 1469598103934665603ull; // lane A: the classic FNV offset
-	uint64_t b = 1099511628211ull;       // lane B: different seed + multiplier
-	for (size_t i = 0; i < size; ++i) {
-		a ^= bytes[i];
-		a *= 1099511628211ull;
-		b ^= uint64_t(bytes[i]) + uint64_t(i) * 0x9E3779B97F4A7C15ull;
-		b *= 0xC2B2AE3D27D4EB4Full;
-	}
-	const auto finish = [&](uint64_t h) { // the avalanche finish, per lane
-		h ^= uint64_t(size) * 0x9E3779B97F4A7C15ull;
-		h *= 0xFF51AFD7ED558CCDull;
-		h ^= h >> 32;
-		return h;
-	};
-	a = finish(a);
-	b = finish(b);
-	char hex[33] = {};
-	std::snprintf(hex, sizeof(hex), "%016llx%016llx",
-		static_cast<unsigned long long>(a),
-		static_cast<unsigned long long>(b));
-	return std::string(hex, 32);
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    uint64_t a = 1469598103934665603ull; // lane A: the classic FNV offset
+    uint64_t b = 1099511628211ull;       // lane B: different seed + multiplier
+    for (size_t i = 0; i < size; ++i) {
+        a ^= bytes[i];
+        a *= 1099511628211ull;
+        b ^= uint64_t(bytes[i]) + uint64_t(i) * 0x9E3779B97F4A7C15ull;
+        b *= 0xC2B2AE3D27D4EB4Full;
+    }
+    const auto finish = [&](uint64_t h) { // the avalanche finish, per lane
+        h ^= uint64_t(size) * 0x9E3779B97F4A7C15ull;
+        h *= 0xFF51AFD7ED558CCDull;
+        h ^= h >> 32;
+        return h;
+    };
+    a = finish(a);
+    b = finish(b);
+    char hex[33] = {};
+    std::snprintf(hex,
+                  sizeof(hex),
+                  "%016llx%016llx",
+                  static_cast<unsigned long long>(a),
+                  static_cast<unsigned long long>(b));
+    return std::string(hex, 32);
 }
 
 // ---------------------------------------------------------------------------
 // Binary put/get (the .mesh format)
 // ---------------------------------------------------------------------------
 
-void PutU8(std::vector<uint8_t>& b, uint8_t v) { b.push_back(v); }
+void PutU8(std::vector<uint8_t>& b, uint8_t v) {
+    b.push_back(v);
+}
 void PutU32(std::vector<uint8_t>& b, uint32_t v) {
-	const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
-	b.insert(b.end(), p, p + 4);
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
+    b.insert(b.end(), p, p + 4);
 }
 void PutI32(std::vector<uint8_t>& b, int32_t v) {
-	PutU32(b, static_cast<uint32_t>(v));
+    PutU32(b, static_cast<uint32_t>(v));
 }
 void PutF32(std::vector<uint8_t>& b, float v) {
-	uint32_t u;
-	std::memcpy(&u, &v, 4);
-	PutU32(b, u);
+    uint32_t u;
+    std::memcpy(&u, &v, 4);
+    PutU32(b, u);
 }
 void PutVec3(std::vector<uint8_t>& b, const glm::vec3& v) {
-	PutF32(b, v.x);
-	PutF32(b, v.y);
-	PutF32(b, v.z);
+    PutF32(b, v.x);
+    PutF32(b, v.y);
+    PutF32(b, v.z);
 }
 void PutMat4(std::vector<uint8_t>& b, const glm::mat4& m) {
-	for (int i = 0; i < 16; ++i)
-		PutF32(b, glm::value_ptr(m)[i]);
+    for (int i = 0; i < 16; ++i)
+        PutF32(b, glm::value_ptr(m)[i]);
 }
 void PutStr(std::vector<uint8_t>& b, const std::string& s) {
-	PutU32(b, uint32_t(s.size()));
-	b.insert(b.end(), s.begin(), s.end());
+    PutU32(b, uint32_t(s.size()));
+    b.insert(b.end(), s.begin(), s.end());
 }
 void PutBytes(std::vector<uint8_t>& b, const void* p, size_t n) {
-	const uint8_t* q = reinterpret_cast<const uint8_t*>(p);
-	b.insert(b.end(), q, q + n);
+    const uint8_t* q = reinterpret_cast<const uint8_t*>(p);
+    b.insert(b.end(), q, q + n);
 }
 
 struct BlobReader {
-	const uint8_t* p = nullptr;
-	size_t n = 0;
-	size_t off = 0;
-	bool ok = true;
+    const uint8_t* p = nullptr;
+    size_t n = 0;
+    size_t off = 0;
+    bool ok = true;
 
-	uint32_t U32() {
-		if (!ok || off + 4 > n) { ok = false; return 0; }
-		uint32_t v;
-		std::memcpy(&v, p + off, 4);
-		off += 4;
-		return v;
-	}
-	uint8_t U8() {
-		if (!ok || off + 1 > n) { ok = false; return 0; }
-		return p[off++];
-	}
-	float F32() {
-		const uint32_t u = U32();
-		float v;
-		std::memcpy(&v, &u, 4);
-		return v;
-	}
-	glm::vec3 Vec3() {
-		// Sequenced reads: function-argument evaluation order is
-		// unsequenced, and MSVC folds glm::vec3(F32(), F32(), F32())
-		// right-to-left under /O2 (a silent x/z transpose of every
-		// vec3 read — AABBs, meshlet bounds/cones, light colors).
-		const float x = F32();
-		const float y = F32();
-		const float z = F32();
-		return glm::vec3(x, y, z);
-	}
-	glm::mat4 Mat4() {
-		glm::mat4 m;
-		for (int i = 0; i < 16; ++i)
-			glm::value_ptr(m)[i] = F32();
-		return m;
-	}
-	std::string Str() {
-		const uint32_t len = U32();
-		if (!ok || off + len > n) { ok = false; return {}; }
-		std::string s(reinterpret_cast<const char*>(p + off), len);
-		off += len;
-		return s;
-	}
-	const void* Skip(size_t bytes) {
-		if (!ok || off + bytes > n) { ok = false; return nullptr; }
-		const void* r = p + off;
-		off += bytes;
-		return r;
-	}
+    uint32_t U32() {
+        if (!ok || off + 4 > n) {
+            ok = false;
+            return 0;
+        }
+        uint32_t v;
+        std::memcpy(&v, p + off, 4);
+        off += 4;
+        return v;
+    }
+    uint8_t U8() {
+        if (!ok || off + 1 > n) {
+            ok = false;
+            return 0;
+        }
+        return p[off++];
+    }
+    float F32() {
+        const uint32_t u = U32();
+        float v;
+        std::memcpy(&v, &u, 4);
+        return v;
+    }
+    glm::vec3 Vec3() {
+        // Sequenced reads: function-argument evaluation order is
+        // unsequenced, and MSVC folds glm::vec3(F32(), F32(), F32())
+        // right-to-left under /O2 (a silent x/z transpose of every
+        // vec3 read — AABBs, meshlet bounds/cones, light colors).
+        const float x = F32();
+        const float y = F32();
+        const float z = F32();
+        return glm::vec3(x, y, z);
+    }
+    glm::mat4 Mat4() {
+        glm::mat4 m;
+        for (int i = 0; i < 16; ++i)
+            glm::value_ptr(m)[i] = F32();
+        return m;
+    }
+    std::string Str() {
+        const uint32_t len = U32();
+        if (!ok || off + len > n) {
+            ok = false;
+            return {};
+        }
+        std::string s(reinterpret_cast<const char*>(p + off), len);
+        off += len;
+        return s;
+    }
+    const void* Skip(size_t bytes) {
+        if (!ok || off + bytes > n) {
+            ok = false;
+            return nullptr;
+        }
+        const void* r = p + off;
+        off += bytes;
+        return r;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -178,55 +196,49 @@ struct BlobReader {
 // ---------------------------------------------------------------------------
 
 bool WriteFileBytes(const std::filesystem::path& path,
-	const std::vector<uint8_t>& bytes, std::string& err) {
-	std::error_code ec;
-	std::filesystem::create_directories(path.parent_path(), ec);
-	std::ofstream out(path, std::ios::binary | std::ios::trunc);
-	if (!out) {
-		err = "cannot write '" + path.generic_string() + "'";
-		return false;
-	}
-	out.write(reinterpret_cast<const char*>(bytes.data()),
-		std::streamsize(bytes.size()));
-	if (!out.good()) {
-		err = "write failed '" + path.generic_string() + "'";
-		return false;
-	}
-	return true;
+                    const std::vector<uint8_t>& bytes,
+                    std::string& err) {
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        err = "cannot write '" + path.generic_string() + "'";
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+    if (!out.good()) {
+        err = "write failed '" + path.generic_string() + "'";
+        return false;
+    }
+    return true;
 }
 
-bool ReadFileBytes(const std::filesystem::path& path,
-	std::vector<uint8_t>& out, std::string& err) {
-	std::ifstream in(path, std::ios::binary);
-	if (!in) {
-		err = "cannot open '" + path.generic_string() + "'";
-		return false;
-	}
-	out.assign((std::istreambuf_iterator<char>(in)),
-		std::istreambuf_iterator<char>());
-	return true;
+bool ReadFileBytes(const std::filesystem::path& path, std::vector<uint8_t>& out, std::string& err) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        err = "cannot open '" + path.generic_string() + "'";
+        return false;
+    }
+    out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return true;
 }
 
 // File-name-safe asset label (lower/upper/digits/_/-; the rest -> '_').
 std::string SanitizeLabel(std::string s) {
-	for (char& c : s)
-		if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
-			c = '_';
-	return s;
+    for (char& c : s)
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
+            c = '_';
+    return s;
 }
 
-std::string MaterialFileName(const std::string& stem, int index,
-	const std::string& name) {
-	const std::string label =
-		SanitizeLabel(name.empty() ? ("mat" + std::to_string(index)) : name);
-	return stem + ".mat" + std::to_string(index) + "_" + label + ".material";
+std::string MaterialFileName(const std::string& stem, int index, const std::string& name) {
+    const std::string label = SanitizeLabel(name.empty() ? ("mat" + std::to_string(index)) : name);
+    return stem + ".mat" + std::to_string(index) + "_" + label + ".material";
 }
 
-std::string AnimFileName(const std::string& stem, int index,
-	const std::string& name) {
-	const std::string label =
-		SanitizeLabel(name.empty() ? ("anim" + std::to_string(index)) : name);
-	return stem + ".anim" + std::to_string(index) + "_" + label + ".anim";
+std::string AnimFileName(const std::string& stem, int index, const std::string& name) {
+    const std::string label = SanitizeLabel(name.empty() ? ("anim" + std::to_string(index)) : name);
+    return stem + ".anim" + std::to_string(index) + "_" + label + ".anim";
 }
 
 // Raw FLOAT element pointer of an accessor (null on a non-float/short
@@ -240,23 +252,21 @@ std::string AnimFileName(const std::string& stem, int index,
 // AnimReadValue below is the reader that handles both; the raw pointer
 // form stays for DOUBLE accessors only.
 template <typename T>
-const T* AnimAccessorPtr(const tinygltf::Model& m,
-	const tinygltf::Accessor& a, size_t i) {
-	if (a.bufferView < 0 || a.bufferView >= int(m.bufferViews.size()))
-		return nullptr;
-	if (i >= size_t(a.count))
-		return nullptr;
-	const tinygltf::BufferView& bv = m.bufferViews[size_t(a.bufferView)];
-	if (bv.buffer < 0 || bv.buffer >= int(m.buffers.size()))
-		return nullptr;
-	const tinygltf::Buffer& buf = m.buffers[size_t(bv.buffer)];
-	const size_t stride = (a.ByteStride(bv) != 0)
-		? size_t(a.ByteStride(bv)) : sizeof(T) * size_t(a.type);
-	const size_t off = size_t(bv.byteOffset) + size_t(a.byteOffset)
-		+ i * stride;
-	if (off + sizeof(T) > buf.data.size())
-		return nullptr;
-	return reinterpret_cast<const T*>(buf.data.data() + off);
+const T* AnimAccessorPtr(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
+    if (a.bufferView < 0 || a.bufferView >= int(m.bufferViews.size()))
+        return nullptr;
+    if (i >= size_t(a.count))
+        return nullptr;
+    const tinygltf::BufferView& bv = m.bufferViews[size_t(a.bufferView)];
+    if (bv.buffer < 0 || bv.buffer >= int(m.buffers.size()))
+        return nullptr;
+    const tinygltf::Buffer& buf = m.buffers[size_t(bv.buffer)];
+    const size_t stride =
+        (a.ByteStride(bv) != 0) ? size_t(a.ByteStride(bv)) : sizeof(T) * size_t(a.type);
+    const size_t off = size_t(bv.byteOffset) + size_t(a.byteOffset) + i * stride;
+    if (off + sizeof(T) > buf.data.size())
+        return nullptr;
+    return reinterpret_cast<const T*>(buf.data.data() + off);
 }
 
 // Component-type-aware key reader: reads `n` values of accessor element
@@ -264,24 +274,27 @@ const T* AnimAccessorPtr(const tinygltf::Model& m,
 // (5125) reads doubles raw. Returns false on a mismatched component
 // type or an out-of-range read.
 inline bool AnimReadValue(const tinygltf::Model& m,
-	const tinygltf::Accessor& a, size_t i, double* dst, size_t n) {
-	if (a.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) {
-		const double* v = AnimAccessorPtr<double>(m, a, i);
-		if (!v)
-			return false;
-		for (size_t c = 0; c < n; ++c)
-			dst[c] = v[c];
-		return true;
-	}
-	if (a.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
-		const float* v = AnimAccessorPtr<float>(m, a, i);
-		if (!v)
-			return false;
-		for (size_t c = 0; c < n; ++c)
-			dst[c] = double(v[c]);
-		return true;
-	}
-	return false;
+                          const tinygltf::Accessor& a,
+                          size_t i,
+                          double* dst,
+                          size_t n) {
+    if (a.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) {
+        const double* v = AnimAccessorPtr<double>(m, a, i);
+        if (!v)
+            return false;
+        for (size_t c = 0; c < n; ++c)
+            dst[c] = v[c];
+        return true;
+    }
+    if (a.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+        const float* v = AnimAccessorPtr<float>(m, a, i);
+        if (!v)
+            return false;
+        for (size_t c = 0; c < n; ++c)
+            dst[c] = double(v[c]);
+        return true;
+    }
+    return false;
 }
 
 // .anim writer (the .tourAnim ASCII grammar — see touranim.h; the
@@ -289,41 +302,40 @@ inline bool AnimReadValue(const tinygltf::Model& m,
 // emits the documented format directly. Kept minimal: clip/track/key
 // verbs, no comment decoration).
 void WriteTourAnimAsset(const std::filesystem::path& path,
-	const smvk::touranim::AnimDoc& doc, std::string& err) {
-	std::ostringstream o;
-	o << "// .tourAnim " << smvk::touranim::kTourAnimVersion
-		<< " — " << (doc.source.empty() ? "derived" : doc.source) << "\n";
-	o << "source -p \"" << doc.source << "\";\n";
-	for (const smvk::touranim::Clip& clip : doc.clips) {
-		o << "clip -name \"" << clip.name << "\" -duration "
-			<< clip.duration << " -fps " << clip.fps << ";\n";
-		for (const smvk::touranim::Track& t : clip.tracks) {
-			const char* attr = (t.channel
-				== smvk::touranim::Channel::Rotate) ? "rotate"
-				: (t.channel == smvk::touranim::Channel::Scale)
-				? "scale" : "translate";
-			const char* interp = (t.spline
-				== smvk::touranim::Spline::Step) ? "step"
-				: (t.spline == smvk::touranim::Spline::CatmullRom)
-				? "catmullrom" : "linear";
-			o << "track -joint " << t.joint;
-			if (!t.name.empty())
-				o << " -name \"" << t.name << "\"";
-			o << " -attr " << attr << " -interp " << interp << ";\n";
-			for (const smvk::touranim::Key& k : t.keys)
-				o << "  " << k.t << "  " << k.v.x << " " << k.v.y
-					<< " " << k.v.z
-					<< ((t.channel == smvk::touranim::Channel::Rotate)
-						? std::string(" ") + std::to_string(k.v.w)
-						: std::string()) << ";\n";
-		}
-	}
-	std::ofstream out(path, std::ios::binary | std::ios::trunc);
-	if (!out) {
-		err = "cannot write '" + path.generic_string() + "'";
-		return;
-	}
-	out << o.str();
+                        const smvk::touranim::AnimDoc& doc,
+                        std::string& err) {
+    std::ostringstream o;
+    o << "// .tourAnim " << smvk::touranim::kTourAnimVersion << " — "
+      << (doc.source.empty() ? "derived" : doc.source) << "\n";
+    o << "source -p \"" << doc.source << "\";\n";
+    for (const smvk::touranim::Clip& clip : doc.clips) {
+        o << "clip -name \"" << clip.name << "\" -duration " << clip.duration << " -fps "
+          << clip.fps << ";\n";
+        for (const smvk::touranim::Track& t : clip.tracks) {
+            const char* attr = (t.channel == smvk::touranim::Channel::Rotate)  ? "rotate"
+                               : (t.channel == smvk::touranim::Channel::Scale) ? "scale"
+                                                                               : "translate";
+            const char* interp = (t.spline == smvk::touranim::Spline::Step)         ? "step"
+                                 : (t.spline == smvk::touranim::Spline::CatmullRom) ? "catmullrom"
+                                                                                    : "linear";
+            o << "track -joint " << t.joint;
+            if (!t.name.empty())
+                o << " -name \"" << t.name << "\"";
+            o << " -attr " << attr << " -interp " << interp << ";\n";
+            for (const smvk::touranim::Key& k : t.keys)
+                o << "  " << k.t << "  " << k.v.x << " " << k.v.y << " " << k.v.z
+                  << ((t.channel == smvk::touranim::Channel::Rotate)
+                          ? std::string(" ") + std::to_string(k.v.w)
+                          : std::string())
+                  << ";\n";
+        }
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        err = "cannot write '" + path.generic_string() + "'";
+        return;
+    }
+    out << o.str();
 }
 
 // ---------------------------------------------------------------------------
@@ -342,128 +354,140 @@ void WriteTourAnimAsset(const std::filesystem::path& path,
 //                                   pre-10/6 manifests wrote that key)
 //   material.<idx>=<file> <guid> <name>
 //   anim.<idx>=<file> <guid> <name>
-bool ParseManifestLine(const std::string& key, const std::string& val,
-	AssetManifest& m) {
-	if (key == "guid") { m.guid = val; return true; }
-	if (key == "source") { m.source = val; return true; }
-	if (key == "sourcedigest") { m.sourceDigest = val; return true; }
-	if (key == "fingerprint") { m.importFingerprint = val; return true; }
-	if (key == "stem") { m.stem = val; return true; }
-	AssetEntry e{};
-	bool have = false;
-	if (key == "geometry" || key == "mesh") {
-		// ".geometry" is the data blob's name now (the pre-10/6 ".mesh"
-		// derived asset renamed; ".mesh" is the higher placeable asset).
-		// Both keys parse; only "geometry" is written.
-		e.kind = AssetKind::Geometry;
-		have = true;
-	}
-	else if (key.rfind("material.", 0) == 0) {
-		e.kind = AssetKind::Material;
-		e.sourceIndex = std::atoi(key.c_str() + 9);
-		have = true;
-	}
-	else if (key.rfind("anim.", 0) == 0) {
-		e.kind = AssetKind::Anim;
-		e.sourceIndex = std::atoi(key.c_str() + 5);
-		have = true;
-	}
-	if (!have)
-		return false; // unknown key: caller warns
-	std::istringstream is(val);
-	std::string file, guid, name;
-	is >> file >> guid;
-	std::getline(is, name);
-	// trim the name
-	size_t b = name.find_first_not_of(" \t");
-	size_t epos = name.find_last_not_of(" \t\r\n");
-	name = (b == std::string::npos) ? std::string()
-		: name.substr(b, epos - b + 1);
-	e.file = file;
-	e.guid = guid;
-	e.name = name;
-	m.entries.push_back(std::move(e));
-	return true;
+bool ParseManifestLine(const std::string& key, const std::string& val, AssetManifest& m) {
+    if (key == "guid") {
+        m.guid = val;
+        return true;
+    }
+    if (key == "source") {
+        m.source = val;
+        return true;
+    }
+    if (key == "sourcedigest") {
+        m.sourceDigest = val;
+        return true;
+    }
+    if (key == "fingerprint") {
+        m.importFingerprint = val;
+        return true;
+    }
+    if (key == "stem") {
+        m.stem = val;
+        return true;
+    }
+    AssetEntry e{};
+    bool have = false;
+    if (key == "geometry" || key == "mesh") {
+        // ".geometry" is the data blob's name now (the pre-10/6 ".mesh"
+        // derived asset renamed; ".mesh" is the higher placeable asset).
+        // Both keys parse; only "geometry" is written.
+        e.kind = AssetKind::Geometry;
+        have = true;
+    } else if (key.rfind("material.", 0) == 0) {
+        e.kind = AssetKind::Material;
+        e.sourceIndex = std::atoi(key.c_str() + 9);
+        have = true;
+    } else if (key.rfind("anim.", 0) == 0) {
+        e.kind = AssetKind::Anim;
+        e.sourceIndex = std::atoi(key.c_str() + 5);
+        have = true;
+    }
+    if (!have)
+        return false; // unknown key: caller warns
+    std::istringstream is(val);
+    std::string file, guid, name;
+    is >> file >> guid;
+    std::getline(is, name);
+    // trim the name
+    size_t b = name.find_first_not_of(" \t");
+    size_t epos = name.find_last_not_of(" \t\r\n");
+    name = (b == std::string::npos) ? std::string() : name.substr(b, epos - b + 1);
+    e.file = file;
+    e.guid = guid;
+    e.name = name;
+    m.entries.push_back(std::move(e));
+    return true;
 }
 
 } // namespace
 
-bool LoadAssetManifestText(const std::string& text,
-	AssetManifest& out, std::string& err) {
-	out = AssetManifest{};
-	std::istringstream in(text);
-	std::string line;
-	while (std::getline(in, line)) {
-		if (!line.empty() && line.back() == '\r')
-			line.pop_back();
-		if (line.empty() || line[0] == '#')
-			continue;
-		const size_t eq = line.find('=');
-		if (eq == std::string::npos)
-			continue;
-		ParseManifestLine(line.substr(0, eq), line.substr(eq + 1), out);
-	}
-	if (out.guid.empty()) {
-		err = "manifest carries no guid";
-		return false;
-	}
-	return true;
+bool LoadAssetManifestText(const std::string& text, AssetManifest& out, std::string& err) {
+    out = AssetManifest{};
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty() || line[0] == '#')
+            continue;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        ParseManifestLine(line.substr(0, eq), line.substr(eq + 1), out);
+    }
+    if (out.guid.empty()) {
+        err = "manifest carries no guid";
+        return false;
+    }
+    return true;
 }
 
 bool LoadAssetManifest(const std::filesystem::path& gltfPath,
-	AssetManifest& out, std::string& err) {
-	out = AssetManifest{};
-	const std::filesystem::path metaPath =
-		gltfPath.string() + ".meta";
-	std::ifstream in(metaPath);
-	if (!in) {
-		err = "no manifest '" + metaPath.generic_string() + "'";
-		return false;
-	}
-	const std::string text((std::istreambuf_iterator<char>(in)),
-		std::istreambuf_iterator<char>());
-	if (!LoadAssetManifestText(text, out, err))
-		return false;
-	out.stem = std::filesystem::path(gltfPath).stem().string();
-	return true;
+                       AssetManifest& out,
+                       std::string& err) {
+    out = AssetManifest{};
+    const std::filesystem::path metaPath = gltfPath.string() + ".meta";
+    std::ifstream in(metaPath);
+    if (!in) {
+        err = "no manifest '" + metaPath.generic_string() + "'";
+        return false;
+    }
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (!LoadAssetManifestText(text, out, err))
+        return false;
+    out.stem = std::filesystem::path(gltfPath).stem().string();
+    return true;
 }
 
 bool SaveAssetManifest(const std::filesystem::path& gltfPath,
-	const AssetManifest& m, std::string& err) {
-	std::vector<std::string> lines;
-	lines.push_back("# Tourmaline asset manifest (the derived assets of one"
-		" glTF; GUIDs are stable across reimports)");
-	lines.push_back("guid=" + m.guid);
-	lines.push_back("source=" + (m.source.empty()
-		? std::filesystem::path(gltfPath).filename().generic_string()
-		: m.source));
-	if (!m.sourceDigest.empty())
-		lines.push_back("sourcedigest=" + m.sourceDigest);
-	if (!m.importFingerprint.empty())
-		lines.push_back("fingerprint=" + m.importFingerprint);
-	lines.push_back("stem=" + m.stem);
-	for (const AssetEntry& e : m.entries) {
-		std::string key;
-		switch (e.kind) {
-		case AssetKind::Geometry: key = "geometry"; break;
-		case AssetKind::Material:
-			key = "material." + std::to_string(e.sourceIndex);
-			break;
-		case AssetKind::Anim:
-			key = "anim." + std::to_string(e.sourceIndex);
-			break;
-		}
-		lines.push_back(key + "=" + e.file + " " + e.guid + " " + e.name);
-	}
-	const std::filesystem::path metaPath = gltfPath.string() + ".meta";
-	std::ofstream out(metaPath, std::ios::binary | std::ios::trunc);
-	if (!out) {
-		err = "cannot write '" + metaPath.generic_string() + "'";
-		return false;
-	}
-	for (const std::string& l : lines)
-		out << l << "\n";
-	return out.good();
+                       const AssetManifest& m,
+                       std::string& err) {
+    std::vector<std::string> lines;
+    lines.push_back("# Tourmaline asset manifest (the derived assets of one"
+                    " glTF; GUIDs are stable across reimports)");
+    lines.push_back("guid=" + m.guid);
+    lines.push_back("source=" + (m.source.empty()
+                                     ? std::filesystem::path(gltfPath).filename().generic_string()
+                                     : m.source));
+    if (!m.sourceDigest.empty())
+        lines.push_back("sourcedigest=" + m.sourceDigest);
+    if (!m.importFingerprint.empty())
+        lines.push_back("fingerprint=" + m.importFingerprint);
+    lines.push_back("stem=" + m.stem);
+    for (const AssetEntry& e : m.entries) {
+        std::string key;
+        switch (e.kind) {
+        case AssetKind::Geometry:
+            key = "geometry";
+            break;
+        case AssetKind::Material:
+            key = "material." + std::to_string(e.sourceIndex);
+            break;
+        case AssetKind::Anim:
+            key = "anim." + std::to_string(e.sourceIndex);
+            break;
+        }
+        lines.push_back(key + "=" + e.file + " " + e.guid + " " + e.name);
+    }
+    const std::filesystem::path metaPath = gltfPath.string() + ".meta";
+    std::ofstream out(metaPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        err = "cannot write '" + metaPath.generic_string() + "'";
+        return false;
+    }
+    for (const std::string& l : lines)
+        out << l << "\n";
+    return out.good();
 }
 
 // ---------------------------------------------------------------------------
@@ -473,262 +497,256 @@ bool SaveAssetManifest(const std::filesystem::path& gltfPath,
 namespace {
 
 void WriteMaterialAsset(const std::filesystem::path& path,
-	const MaterialAsset& m, std::string& err) {
-	std::ostringstream o;
-	o << "# Tourmaline material asset v1\n";
-	o << "guid=" << m.guid << "\n";
-	o << "name=" << m.name << "\n";
-	const glm::vec4& bc = m.info.baseColorFactor;
-	o << "baseColor=" << bc.x << " " << bc.y << " " << bc.z << " "
-		<< bc.w << "\n";
-	o << "metallic=" << m.info.metallicFactor << "\n";
-	o << "roughness=" << m.info.roughnessFactor << "\n";
-	const glm::vec3& em = m.info.emissiveFactor;
-	o << "emissive=" << em.x << " " << em.y << " " << em.z << "\n";
-	o << "emissiveStrength=" << m.info.emissiveStrength << "\n";
-	const char* alpha = (m.info.alphaMode == smvk::AlphaMode::Mask)
-		? "mask" : (m.info.alphaMode == smvk::AlphaMode::Blend)
-		? "blend" : "opaque";
-	o << "alphaMode=" << alpha << "\n";
-	o << "alphaCutoff=" << m.info.alphaCutoff << "\n";
-	o << "normalScale=" << m.info.normalScale << "\n";
-	o << "occlusionStrength=" << m.info.occlusionStrength << "\n";
-	o << "cavityStrength=" << m.info.cavityStrength << "\n";
-	if (!m.packingSource.empty()) o << "packing.source=" << m.packingSource << "\n";
-	if (!m.packingSignature.empty()) o << "packing.signature=" << m.packingSignature << "\n";
-	if (m.channelSelectors >= 0) o << "packing.channels=" << m.channelSelectors << "\n";
-	o << "doubleSided=" << (m.info.doubleSided ? 1 : 0) << "\n";
-	o << "castsShadows=" << (m.info.castsShadows ? 1 : 0) << "\n";
-	o << "receiveContactShadows=" << (m.info.receiveContactShadows ? 1 : 0) << "\n";
-	const char* shading = (m.info.shadingModel
-		== smvk::ShadingModel::Unlit) ? "unlit"
-		: (m.info.shadingModel == smvk::ShadingModel::Masked) ? "masked"
-		: "lit";
-	o << "shading=" << shading << "\n";
-	auto tex = [&](const char* slot, const MaterialAsset::TexRef& t) {
-		if (!t.path.empty())
-			o << "tex." << slot << "=" << t.path
-				<< (t.srgb ? " srgb" : "") << "\n";
-	};
-	tex("baseColor", m.baseColor);
-	tex("metallicRoughness", m.metallicRoughness);
-	tex("normal", m.normalTex);
-	tex("occlusion", m.occlusion);
-	tex("cavity", m.cavity);
-	tex("emissive", m.emissiveTex);
-	std::ofstream out(path, std::ios::binary | std::ios::trunc);
-	if (!out) {
-		err = "cannot write '" + path.generic_string() + "'";
-		return;
-	}
-	out << o.str();
+                        const MaterialAsset& m,
+                        std::string& err) {
+    std::ostringstream o;
+    o << "# Tourmaline material asset v1\n";
+    o << "guid=" << m.guid << "\n";
+    o << "name=" << m.name << "\n";
+    const glm::vec4& bc = m.info.baseColorFactor;
+    o << "baseColor=" << bc.x << " " << bc.y << " " << bc.z << " " << bc.w << "\n";
+    o << "metallic=" << m.info.metallicFactor << "\n";
+    o << "roughness=" << m.info.roughnessFactor << "\n";
+    const glm::vec3& em = m.info.emissiveFactor;
+    o << "emissive=" << em.x << " " << em.y << " " << em.z << "\n";
+    o << "emissiveStrength=" << m.info.emissiveStrength << "\n";
+    const char* alpha = (m.info.alphaMode == smvk::AlphaMode::Mask)    ? "mask"
+                        : (m.info.alphaMode == smvk::AlphaMode::Blend) ? "blend"
+                                                                       : "opaque";
+    o << "alphaMode=" << alpha << "\n";
+    o << "alphaCutoff=" << m.info.alphaCutoff << "\n";
+    o << "normalScale=" << m.info.normalScale << "\n";
+    o << "occlusionStrength=" << m.info.occlusionStrength << "\n";
+    o << "cavityStrength=" << m.info.cavityStrength << "\n";
+    if (!m.packingSource.empty())
+        o << "packing.source=" << m.packingSource << "\n";
+    if (!m.packingSignature.empty())
+        o << "packing.signature=" << m.packingSignature << "\n";
+    if (m.channelSelectors >= 0)
+        o << "packing.channels=" << m.channelSelectors << "\n";
+    o << "doubleSided=" << (m.info.doubleSided ? 1 : 0) << "\n";
+    o << "castsShadows=" << (m.info.castsShadows ? 1 : 0) << "\n";
+    o << "receiveContactShadows=" << (m.info.receiveContactShadows ? 1 : 0) << "\n";
+    const char* shading = (m.info.shadingModel == smvk::ShadingModel::Unlit)    ? "unlit"
+                          : (m.info.shadingModel == smvk::ShadingModel::Masked) ? "masked"
+                                                                                : "lit";
+    o << "shading=" << shading << "\n";
+    auto tex = [&](const char* slot, const MaterialAsset::TexRef& t) {
+        if (!t.path.empty())
+            o << "tex." << slot << "=" << t.path << (t.srgb ? " srgb" : "") << "\n";
+    };
+    tex("baseColor", m.baseColor);
+    tex("metallicRoughness", m.metallicRoughness);
+    tex("normal", m.normalTex);
+    tex("occlusion", m.occlusion);
+    tex("cavity", m.cavity);
+    tex("emissive", m.emissiveTex);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        err = "cannot write '" + path.generic_string() + "'";
+        return;
+    }
+    out << o.str();
 }
 
 bool SplitPathFlag(const std::string& val, std::string& path, bool& srgb) {
-	const size_t sp = val.rfind(' ');
-	if (sp != std::string::npos && val.compare(sp + 1, 4, "srgb") == 0) {
-		path = val.substr(0, sp);
-		srgb = true;
-		return true;
-	}
-	path = val;
-	srgb = false;
-	return true;
+    const size_t sp = val.rfind(' ');
+    if (sp != std::string::npos && val.compare(sp + 1, 4, "srgb") == 0) {
+        path = val.substr(0, sp);
+        srgb = true;
+        return true;
+    }
+    path = val;
+    srgb = false;
+    return true;
 }
 
 } // namespace
 
 bool SaveMaterialAsset(const std::filesystem::path& path,
-    const MaterialAsset& material, std::string& err) {
+                       const MaterialAsset& material,
+                       std::string& err) {
     err.clear();
     WriteMaterialAsset(path, material, err);
     return err.empty();
 }
 
-bool LoadMaterialAsset(const std::filesystem::path& path,
-	MaterialAsset& out, std::string& err) {
-	out = MaterialAsset{};
-	std::ifstream in(path);
-	if (!in) {
-		err = "cannot open '" + path.generic_string() + "'";
-		return false;
-	}
-	std::string text((std::istreambuf_iterator<char>(in)),
-		std::istreambuf_iterator<char>());
-	return LoadMaterialAssetText(text, out, err);
+bool LoadMaterialAsset(const std::filesystem::path& path, MaterialAsset& out, std::string& err) {
+    out = MaterialAsset{};
+    std::ifstream in(path);
+    if (!in) {
+        err = "cannot open '" + path.generic_string() + "'";
+        return false;
+    }
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return LoadMaterialAssetText(text, out, err);
 }
 
-bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
-	std::string& err) {
-	out = MaterialAsset{};
-	std::istringstream in(text);
-	std::string line;
-	glm::vec4 bc(1.0f);
-	glm::vec3 em(0.0f);
-	while (std::getline(in, line)) {
-		if (!line.empty() && line.back() == '\r')
-			line.pop_back();
-		if (line.empty() || line[0] == '#')
-			continue;
-		const size_t eq = line.find('=');
-		if (eq == std::string::npos)
-			continue;
-		const std::string key = line.substr(0, eq);
-		const std::string val = line.substr(eq + 1);
-		if (key == "guid") out.guid = val;
-		else if (key == "name") out.name = val;
-		else if (key == "baseColor")
-			std::sscanf(val.c_str(), "%f %f %f %f", &bc.x, &bc.y, &bc.z,
-				&bc.w);
-		else if (key == "metallic")
-			out.info.metallicFactor = float(std::atof(val.c_str()));
-		else if (key == "roughness")
-			out.info.roughnessFactor = float(std::atof(val.c_str()));
-		else if (key == "emissive")
-			std::sscanf(val.c_str(), "%f %f %f", &em.x, &em.y, &em.z);
-		else if (key == "emissiveStrength")
-			out.info.emissiveStrength = float(std::atof(val.c_str()));
-		else if (key == "alphaMode") {
-			if (val == "mask") out.info.alphaMode = smvk::AlphaMode::Mask;
-			else if (val == "blend")
-				out.info.alphaMode = smvk::AlphaMode::Blend;
-			else out.info.alphaMode = smvk::AlphaMode::Opaque;
-		}
-		else if (key == "alphaCutoff")
-			out.info.alphaCutoff = float(std::atof(val.c_str()));
-		else if (key == "normalScale")
-			out.info.normalScale = float(std::atof(val.c_str()));
-		else if (key == "occlusionStrength")
-			out.info.occlusionStrength = float(std::atof(val.c_str()));
-		else if (key == "cavityStrength") out.info.cavityStrength = float(std::atof(val.c_str()));
-		else if (key == "packing.source") out.packingSource = val;
-		else if (key == "packing.signature") out.packingSignature = val;
-		else if (key == "packing.channels") out.channelSelectors = std::atoi(val.c_str());
-		else if (key == "doubleSided")
-			out.info.doubleSided = std::atoi(val.c_str()) != 0;
-		else if (key == "castsShadows")
-			out.info.castsShadows = std::atoi(val.c_str()) != 0;
-		else if (key == "receiveContactShadows")
-			out.info.receiveContactShadows = std::atoi(val.c_str()) != 0;
-		else if (key == "shading") {
-			if (val == "unlit")
-				out.info.shadingModel = smvk::ShadingModel::Unlit;
-			else if (val == "masked")
-				out.info.shadingModel = smvk::ShadingModel::Masked;
-			else out.info.shadingModel = smvk::ShadingModel::DefaultLit;
-		}
-		else if (key == "tex.baseColor")
-			SplitPathFlag(val, out.baseColor.path, out.baseColor.srgb);
-		else if (key == "tex.metallicRoughness")
-			SplitPathFlag(val, out.metallicRoughness.path,
-				out.metallicRoughness.srgb);
-		else if (key == "tex.normal")
-			SplitPathFlag(val, out.normalTex.path, out.normalTex.srgb);
-		else if (key == "tex.occlusion")
-			SplitPathFlag(val, out.occlusion.path, out.occlusion.srgb);
-		else if (key == "tex.cavity") SplitPathFlag(val, out.cavity.path, out.cavity.srgb);
-		else if (key == "tex.emissive")
-			SplitPathFlag(val, out.emissiveTex.path, out.emissiveTex.srgb);
-	}
-	out.info.baseColorFactor = bc;
-	out.info.emissiveFactor = em;
-	if (out.guid.empty()) {
-		err = "material asset carries no guid";
-		return false;
-	}
-	return true;
+bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out, std::string& err) {
+    out = MaterialAsset{};
+    std::istringstream in(text);
+    std::string line;
+    glm::vec4 bc(1.0f);
+    glm::vec3 em(0.0f);
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty() || line[0] == '#')
+            continue;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        const std::string key = line.substr(0, eq);
+        const std::string val = line.substr(eq + 1);
+        if (key == "guid")
+            out.guid = val;
+        else if (key == "name")
+            out.name = val;
+        else if (key == "baseColor")
+            std::sscanf(val.c_str(), "%f %f %f %f", &bc.x, &bc.y, &bc.z, &bc.w);
+        else if (key == "metallic")
+            out.info.metallicFactor = float(std::atof(val.c_str()));
+        else if (key == "roughness")
+            out.info.roughnessFactor = float(std::atof(val.c_str()));
+        else if (key == "emissive")
+            std::sscanf(val.c_str(), "%f %f %f", &em.x, &em.y, &em.z);
+        else if (key == "emissiveStrength")
+            out.info.emissiveStrength = float(std::atof(val.c_str()));
+        else if (key == "alphaMode") {
+            if (val == "mask")
+                out.info.alphaMode = smvk::AlphaMode::Mask;
+            else if (val == "blend")
+                out.info.alphaMode = smvk::AlphaMode::Blend;
+            else
+                out.info.alphaMode = smvk::AlphaMode::Opaque;
+        } else if (key == "alphaCutoff")
+            out.info.alphaCutoff = float(std::atof(val.c_str()));
+        else if (key == "normalScale")
+            out.info.normalScale = float(std::atof(val.c_str()));
+        else if (key == "occlusionStrength")
+            out.info.occlusionStrength = float(std::atof(val.c_str()));
+        else if (key == "cavityStrength")
+            out.info.cavityStrength = float(std::atof(val.c_str()));
+        else if (key == "packing.source")
+            out.packingSource = val;
+        else if (key == "packing.signature")
+            out.packingSignature = val;
+        else if (key == "packing.channels")
+            out.channelSelectors = std::atoi(val.c_str());
+        else if (key == "doubleSided")
+            out.info.doubleSided = std::atoi(val.c_str()) != 0;
+        else if (key == "castsShadows")
+            out.info.castsShadows = std::atoi(val.c_str()) != 0;
+        else if (key == "receiveContactShadows")
+            out.info.receiveContactShadows = std::atoi(val.c_str()) != 0;
+        else if (key == "shading") {
+            if (val == "unlit")
+                out.info.shadingModel = smvk::ShadingModel::Unlit;
+            else if (val == "masked")
+                out.info.shadingModel = smvk::ShadingModel::Masked;
+            else
+                out.info.shadingModel = smvk::ShadingModel::DefaultLit;
+        } else if (key == "tex.baseColor")
+            SplitPathFlag(val, out.baseColor.path, out.baseColor.srgb);
+        else if (key == "tex.metallicRoughness")
+            SplitPathFlag(val, out.metallicRoughness.path, out.metallicRoughness.srgb);
+        else if (key == "tex.normal")
+            SplitPathFlag(val, out.normalTex.path, out.normalTex.srgb);
+        else if (key == "tex.occlusion")
+            SplitPathFlag(val, out.occlusion.path, out.occlusion.srgb);
+        else if (key == "tex.cavity")
+            SplitPathFlag(val, out.cavity.path, out.cavity.srgb);
+        else if (key == "tex.emissive")
+            SplitPathFlag(val, out.emissiveTex.path, out.emissiveTex.srgb);
+    }
+    out.info.baseColorFactor = bc;
+    out.info.emissiveFactor = em;
+    if (out.guid.empty()) {
+        err = "material asset carries no guid";
+        return false;
+    }
+    return true;
 }
 
 // ---- .texture (the texture asset: import settings + source ref) ----------
 
-bool LoadTextureAsset(const std::filesystem::path& path,
-	TextureAsset& out, std::string& err) {
-	out = TextureAsset{};
-	std::ifstream in(path);
-	if (!in) {
-		err = "cannot open '" + path.generic_string() + "'";
-		return false;
-	}
-	std::string text((std::istreambuf_iterator<char>(in)),
-		std::istreambuf_iterator<char>());
-	return LoadTextureAssetText(text, out, err);
+bool LoadTextureAsset(const std::filesystem::path& path, TextureAsset& out, std::string& err) {
+    out = TextureAsset{};
+    std::ifstream in(path);
+    if (!in) {
+        err = "cannot open '" + path.generic_string() + "'";
+        return false;
+    }
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return LoadTextureAssetText(text, out, err);
 }
 
-bool LoadTextureAssetText(const std::string& text, TextureAsset& out,
-	std::string& err) {
-	out = TextureAsset{};
-	std::istringstream in(text);
-	std::string line;
-	while (std::getline(in, line)) {
-		if (!line.empty() && line.back() == '\r')
-			line.pop_back();
-		if (line.empty() || line[0] == '#')
-			continue;
-		const size_t eq = line.find('=');
-		if (eq == std::string::npos)
-			continue;
-		const std::string key = line.substr(0, eq);
-		const std::string val = line.substr(eq + 1);
-		if (key == "guid")
-			out.guid = val;
-		else if (key == "name")
-			out.name = val;
-		else if (key == "source")
-			out.source = val;
-		else if (key == "colorspace")
-			out.colorspace = (val == "linear") ? 1 : 0;
-		else if (key == "format") {
-			KtxEncodeFormat f = KtxEncodeFormat::Rgba8;
-			if (!KtxEncodeFormatFromName(val, f)) {
-				err = "unknown format '" + val
-					+ "' (want rgba8|bc1|bc3|bc4|bc5|bc7)";
-				return false;
-			}
-			out.format = int(f);
-		}
-		else if (key == "mipLevels")
-			out.mipLevels = (val == "auto")
-				? 0 : std::max(0, std::atoi(val.c_str()));
-		else if (key == "wrap")
-			out.wrap = (val == "clamp") ? 1 : (val == "mirror") ? 2 : 0;
-		else if (key == "filter")
-			out.filter = (val == "nearest") ? 1 : 0;
-	}
-	if (out.guid.empty()) {
-		err = "texture asset carries no guid";
-		return false;
-	}
-	if (out.source.empty()) {
-		err = "texture asset carries no source";
-		return false;
-	}
-	return true;
+bool LoadTextureAssetText(const std::string& text, TextureAsset& out, std::string& err) {
+    out = TextureAsset{};
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty() || line[0] == '#')
+            continue;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        const std::string key = line.substr(0, eq);
+        const std::string val = line.substr(eq + 1);
+        if (key == "guid")
+            out.guid = val;
+        else if (key == "name")
+            out.name = val;
+        else if (key == "source")
+            out.source = val;
+        else if (key == "colorspace")
+            out.colorspace = (val == "linear") ? 1 : 0;
+        else if (key == "format") {
+            KtxEncodeFormat f = KtxEncodeFormat::Rgba8;
+            if (!KtxEncodeFormatFromName(val, f)) {
+                err = "unknown format '" + val + "' (want rgba8|bc1|bc3|bc4|bc5|bc7)";
+                return false;
+            }
+            out.format = int(f);
+        } else if (key == "mipLevels")
+            out.mipLevels = (val == "auto") ? 0 : std::max(0, std::atoi(val.c_str()));
+        else if (key == "wrap")
+            out.wrap = (val == "clamp") ? 1 : (val == "mirror") ? 2 : 0;
+        else if (key == "filter")
+            out.filter = (val == "nearest") ? 1 : 0;
+    }
+    if (out.guid.empty()) {
+        err = "texture asset carries no guid";
+        return false;
+    }
+    if (out.source.empty()) {
+        err = "texture asset carries no source";
+        return false;
+    }
+    return true;
 }
 
-bool SaveTextureAsset(const std::filesystem::path& path,
-	const TextureAsset& t, std::string& err) {
-	std::ofstream out(path, std::ios::binary | std::ios::trunc);
-	if (!out) {
-		err = "cannot write '" + path.generic_string() + "'";
-		return false;
-	}
-	out << "# Tourmaline texture asset (import settings + source image.\n"
-		"# Identity: the guid + the .meta sidecar beside this file.\n"
-		"# KTX2 sources pre-decide colorspace/format/mipLevels in their\n"
-		"# header - those rows read read-only in the inspector.)\n";
-	out << "guid=" << t.guid << "\n";
-	out << "name=" << t.name << "\n";
-	out << "source=" << t.source << "\n";
-	out << "colorspace=" << (t.colorspace == 1 ? "linear" : "srgb") << "\n";
-	out << "format="
-		<< KtxEncodeFormatName(KtxEncodeFormat(t.format)) << "\n";
-	out << "mipLevels="
-		<< (t.mipLevels > 0 ? std::to_string(t.mipLevels) : "auto") << "\n";
-	out << "wrap="
-		<< (t.wrap == 1 ? "clamp" : t.wrap == 2 ? "mirror" : "repeat")
-		<< "\n";
-	out << "filter=" << (t.filter != 0 ? "nearest" : "linear") << "\n";
-	return !!out;
+bool SaveTextureAsset(const std::filesystem::path& path, const TextureAsset& t, std::string& err) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        err = "cannot write '" + path.generic_string() + "'";
+        return false;
+    }
+    out << "# Tourmaline texture asset (import settings + source image.\n"
+           "# Identity: the guid + the .meta sidecar beside this file.\n"
+           "# KTX2 sources pre-decide colorspace/format/mipLevels in their\n"
+           "# header - those rows read read-only in the inspector.)\n";
+    out << "guid=" << t.guid << "\n";
+    out << "name=" << t.name << "\n";
+    out << "source=" << t.source << "\n";
+    out << "colorspace=" << (t.colorspace == 1 ? "linear" : "srgb") << "\n";
+    out << "format=" << KtxEncodeFormatName(KtxEncodeFormat(t.format)) << "\n";
+    out << "mipLevels=" << (t.mipLevels > 0 ? std::to_string(t.mipLevels) : "auto") << "\n";
+    out << "wrap=" << (t.wrap == 1 ? "clamp" : t.wrap == 2 ? "mirror" : "repeat") << "\n";
+    out << "filter=" << (t.filter != 0 ? "nearest" : "linear") << "\n";
+    return !!out;
 }
 
 // ---------------------------------------------------------------------------
@@ -737,8 +755,7 @@ bool SaveTextureAsset(const std::filesystem::path& path,
 
 namespace {
 
-constexpr uint32_t kMeshMagic =
-	('M' << 24) | ('E' << 16) | ('S' << 8) | 'H';
+constexpr uint32_t kMeshMagic = ('M' << 24) | ('E' << 16) | ('S' << 8) | 'H';
 // v2: the trailing registry carries the per-blob cooked lightmap
 // binding (lmChunk + chart xforms) so the COOK can write cooked
 // artifacts back and pak assembly needs no bake. v1 files still
@@ -752,516 +769,488 @@ constexpr uint32_t kMeshVersion = 3;
 
 } // namespace
 
-void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
-	std::string& err) {
-	std::vector<uint8_t> b;
-	b.reserve(1 << 16);
-	PutU32(b, kMeshMagic);
-	PutU32(b, kMeshVersion);
-	// Hierarchy (raw parents/levels; firstChild/next rebuilt at load).
-	const uint32_t nodeCount = uint32_t(m.nodes.size());
-	PutU32(b, nodeCount);
-	for (const MeshAsset::Node& n : m.nodes) {
-		PutI32(b, n.parent);
-		PutI32(b, n.level);
-	}
-	PutU32(b, nodeCount);
-	for (const std::string& s : m.names)
-		PutStr(b, s);
-	PutU32(b, nodeCount);
-	for (const glm::mat4& t : m.locals)
-		PutMat4(b, t);
-	// Flags (staticRoot / noLightmap), nodeCount bytes each.
-	PutU32(b, nodeCount);
-	PutBytes(b, m.staticRoot.data(), m.staticRoot.size());
-	PutU32(b, nodeCount);
-	PutBytes(b, m.noLightmap.data(), m.noLightmap.size());
-	// Geometry instances (node -> blob + material GUID).
-	PutU32(b, uint32_t(m.instances.size()));
-	for (const MeshAsset::Instance& i : m.instances) {
-		PutU32(b, i.node);
-		PutU32(b, i.geometry);
-		PutStr(b, i.materialGuid);
-	}
-	// Lights + cameras (node-linked defs).
-	PutU32(b, uint32_t(m.lights.size()));
-	for (const MeshAsset::LightDef& l : m.lights) {
-		PutU32(b, l.node);
-		PutU32(b, uint32_t(l.def.type));
-		PutVec3(b, l.def.color);
-		PutF32(b, l.def.intensity);
-		PutF32(b, l.def.range);
-		PutF32(b, l.def.innerConeAngle);
-		PutF32(b, l.def.outerConeAngle);
-		PutU32(b, l.def.flags);
-		PutStr(b, l.def.name);
-	}
-	PutU32(b, uint32_t(m.cameras.size()));
-	for (const MeshAsset::CameraDef& c : m.cameras) {
-		PutU32(b, c.node);
-		PutU32(b, uint32_t(c.def.projection));
-		PutF32(b, c.def.fovYDeg);
-		PutF32(b, c.def.orthoHalfH);
-		PutF32(b, c.def.nearClip);
-		PutF32(b, c.def.farClip);
-		PutStr(b, c.def.name);
-	}
-	// Geometry blobs: packed SoA streams (the GPU heap layout).
-	PutU32(b, uint32_t(m.geometry.size()));
-	for (const MeshAsset::Geometry& g : m.geometry) {
-		PutU32(b, uint32_t(g.positions.size()));
-		PutU32(b, uint32_t(g.indices.size()));
-		PutU32(b, uint32_t(g.surfaces.size()));
-		for (const smvk::Surface& s : g.surfaces) {
-			PutU32(b, s.firstIndex);
-			PutU32(b, s.indexCount);
-			PutI32(b, s.baseVertex);
-		}
-		PutVec3(b, g.aabbMin);
-		PutVec3(b, g.aabbMax);
-		static_assert(sizeof(smvk::PackedVertexPosition) == 12, "layout drift");
-		static_assert(sizeof(smvk::PackedVertexShading) == 16, "layout drift");
-		static_assert(sizeof(smvk::PackedVertexLightmap) == 8, "layout drift");
-		PutBytes(b, g.positions.data(),
-			g.positions.size() * sizeof(smvk::PackedVertexPosition));
-		PutBytes(b, g.shading.data(),
-			g.shading.size() * sizeof(smvk::PackedVertexShading));
-		// v3: OPTIONAL lightmap stream, count-gated (empty = uncharted).
-		PutU32(b, uint32_t(g.lightmap.size()));
-		if (!g.lightmap.empty())
-			PutBytes(b, g.lightmap.data(),
-				g.lightmap.size() * sizeof(smvk::PackedVertexLightmap));
-		PutBytes(b, g.indices.data(),
-			g.indices.size() * sizeof(uint32_t));
-	}
-	// --- Trailing REGISTRY (v1.1; v1.0 files end above and load with
-	// no meshlets/LODs — the reader tolerates the absence) --------------
-	// Per-blob: URI fragment + cooked meshlets + the LOD chain (sibling
-	// blobs, not node-attached).
-	auto putGeometryStreams = [&b](const MeshAsset::Geometry& g) {
-		PutU32(b, uint32_t(g.positions.size()));
-		PutU32(b, uint32_t(g.indices.size()));
-		PutU32(b, uint32_t(g.surfaces.size()));
-		for (const smvk::Surface& s : g.surfaces) {
-			PutU32(b, s.firstIndex);
-			PutU32(b, s.indexCount);
-			PutI32(b, s.baseVertex);
-		}
-		PutVec3(b, g.aabbMin);
-		PutVec3(b, g.aabbMax);
-		PutBytes(b, g.positions.data(),
-			g.positions.size() * sizeof(smvk::PackedVertexPosition));
-		PutBytes(b, g.shading.data(),
-			g.shading.size() * sizeof(smvk::PackedVertexShading));
-		PutU32(b, uint32_t(g.lightmap.size()));
-		if (!g.lightmap.empty())
-			PutBytes(b, g.lightmap.data(),
-				g.lightmap.size() * sizeof(smvk::PackedVertexLightmap));
-		PutBytes(b, g.indices.data(),
-			g.indices.size() * sizeof(uint32_t));
-	};
-	auto putMeshlets = [&b](const smvk::CookedMeshlets& ml) {
-		PutU32(b, uint32_t(ml.meshlets.size()));
-		for (const smvk::Meshlet& m : ml.meshlets) {
-			PutU32(b, m.vertexOffset);
-			PutU32(b, m.vertexCount);
-			PutU32(b, m.triangleOffset);
-			PutU32(b, m.triangleCount);
-			PutVec3(b, m.boundCenter);
-			PutF32(b, m.boundRadius);
-			PutVec3(b, m.coneApex);
-			PutVec3(b, m.coneAxis);
-			PutF32(b, m.coneCutoff);
-		}
-		PutU32(b, uint32_t(ml.vertices.size()));
-		for (uint32_t v : ml.vertices)
-			PutU32(b, v);
-		PutU32(b, uint32_t(ml.triangles.size()));
-		PutBytes(b, ml.triangles.data(), ml.triangles.size());
-	};
-	PutU32(b, uint32_t(m.geometry.size()));
-	for (size_t gi = 0; gi < m.geometry.size(); ++gi) {
-		const MeshAsset::Geometry& g = m.geometry[gi];
-		PutStr(b, g.uriFragment);
-		putMeshlets(g.meshlets);
-		// Cooked lightmap binding (v2): the atlas chunk + the chart
-		// xforms, parallel to the cook's chart indices.
-		PutU32(b, g.lmChunk);
-		PutU32(b, uint32_t(g.lmChartXforms.size()));
-		for (const glm::vec4& x : g.lmChartXforms) {
-			PutF32(b, x.x);
-			PutF32(b, x.y);
-			PutF32(b, x.z);
-			PutF32(b, x.w);
-		}
-		const std::vector<MeshAsset::LodSibling>& chain =
-			(gi < m.lodChains.size()) ? m.lodChains[gi]
-			: std::vector<MeshAsset::LodSibling>();
-		PutU32(b, uint32_t(chain.size()));
-		for (const MeshAsset::LodSibling& s : chain) {
-			putGeometryStreams(s.geo);
-			PutStr(b, s.geo.uriFragment);
-			putMeshlets(s.geo.meshlets);
-			PutU32(b, s.geo.lmChunk);
-			PutU32(b, uint32_t(s.geo.lmChartXforms.size()));
-			for (const glm::vec4& x : s.geo.lmChartXforms) {
-				PutF32(b, x.x);
-				PutF32(b, x.y);
-				PutF32(b, x.z);
-				PutF32(b, x.w);
-			}
-			PutU32(b, s.lodIndex);
-			PutF32(b, s.simplifyError);
-			PutF32(b, s.screenThreshold);
-			PutU32(b, s.triCount);
-			PutF32(b, s.acmr);
-		}
-	}
-	// --- Trailing SKIN section (the Northlight data path; files above
-	// end after the registry and load as static - the reader tolerates
-	// the absence). The cluster skeleton (the joint table in ASSET node
-	// space) + the per-BASE-blob PackedSkinInfluences streams (mesh.h binding 2).
-	// LOD siblings stay static (the runtime skinning slice owns per-LOD
-	// skin propagation).
-	{
-		PutU32(b, m.hasSkeleton ? 1u : 0u);
-		if (m.hasSkeleton) {
-			const smvk::touranim::Skeleton& sk = m.skeleton;
-			PutU32(b, uint32_t(sk.joints.size()));
-			for (uint32_t j : sk.joints)
-				PutU32(b, j);
-			for (const glm::mat4& ibm : sk.inverseBind) {
-				for (int c = 0; c < 4; ++c)
-					for (int r = 0; r < 4; ++r)
-						PutF32(b, ibm[c][r]);
-			}
-			PutU32(b, sk.root);
-		}
-		PutU32(b, uint32_t(m.geometry.size()));
-		for (const MeshAsset::Geometry& g : m.geometry) {
-			PutU32(b, uint32_t(g.skin.size()));
-			if (!g.skin.empty())
-				PutBytes(b, g.skin.data(),
-					g.skin.size() * sizeof(smvk::PackedSkinInfluences));
-		}
-	}
-	if (!WriteFileBytes(path, b, err))
-		return;
+void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m, std::string& err) {
+    std::vector<uint8_t> b;
+    b.reserve(1 << 16);
+    PutU32(b, kMeshMagic);
+    PutU32(b, kMeshVersion);
+    // Hierarchy (raw parents/levels; firstChild/next rebuilt at load).
+    const uint32_t nodeCount = uint32_t(m.nodes.size());
+    PutU32(b, nodeCount);
+    for (const MeshAsset::Node& n : m.nodes) {
+        PutI32(b, n.parent);
+        PutI32(b, n.level);
+    }
+    PutU32(b, nodeCount);
+    for (const std::string& s : m.names)
+        PutStr(b, s);
+    PutU32(b, nodeCount);
+    for (const glm::mat4& t : m.locals)
+        PutMat4(b, t);
+    // Flags (staticRoot / noLightmap), nodeCount bytes each.
+    PutU32(b, nodeCount);
+    PutBytes(b, m.staticRoot.data(), m.staticRoot.size());
+    PutU32(b, nodeCount);
+    PutBytes(b, m.noLightmap.data(), m.noLightmap.size());
+    // Geometry instances (node -> blob + material GUID).
+    PutU32(b, uint32_t(m.instances.size()));
+    for (const MeshAsset::Instance& i : m.instances) {
+        PutU32(b, i.node);
+        PutU32(b, i.geometry);
+        PutStr(b, i.materialGuid);
+    }
+    // Lights + cameras (node-linked defs).
+    PutU32(b, uint32_t(m.lights.size()));
+    for (const MeshAsset::LightDef& l : m.lights) {
+        PutU32(b, l.node);
+        PutU32(b, uint32_t(l.def.type));
+        PutVec3(b, l.def.color);
+        PutF32(b, l.def.intensity);
+        PutF32(b, l.def.range);
+        PutF32(b, l.def.innerConeAngle);
+        PutF32(b, l.def.outerConeAngle);
+        PutU32(b, l.def.flags);
+        PutStr(b, l.def.name);
+    }
+    PutU32(b, uint32_t(m.cameras.size()));
+    for (const MeshAsset::CameraDef& c : m.cameras) {
+        PutU32(b, c.node);
+        PutU32(b, uint32_t(c.def.projection));
+        PutF32(b, c.def.fovYDeg);
+        PutF32(b, c.def.orthoHalfH);
+        PutF32(b, c.def.nearClip);
+        PutF32(b, c.def.farClip);
+        PutStr(b, c.def.name);
+    }
+    // Geometry blobs: packed SoA streams (the GPU heap layout).
+    PutU32(b, uint32_t(m.geometry.size()));
+    for (const MeshAsset::Geometry& g : m.geometry) {
+        PutU32(b, uint32_t(g.positions.size()));
+        PutU32(b, uint32_t(g.indices.size()));
+        PutU32(b, uint32_t(g.surfaces.size()));
+        for (const smvk::Surface& s : g.surfaces) {
+            PutU32(b, s.firstIndex);
+            PutU32(b, s.indexCount);
+            PutI32(b, s.baseVertex);
+        }
+        PutVec3(b, g.aabbMin);
+        PutVec3(b, g.aabbMax);
+        static_assert(sizeof(smvk::PackedVertexPosition) == 12, "layout drift");
+        static_assert(sizeof(smvk::PackedVertexShading) == 16, "layout drift");
+        static_assert(sizeof(smvk::PackedVertexLightmap) == 8, "layout drift");
+        PutBytes(b, g.positions.data(), g.positions.size() * sizeof(smvk::PackedVertexPosition));
+        PutBytes(b, g.shading.data(), g.shading.size() * sizeof(smvk::PackedVertexShading));
+        // v3: OPTIONAL lightmap stream, count-gated (empty = uncharted).
+        PutU32(b, uint32_t(g.lightmap.size()));
+        if (!g.lightmap.empty())
+            PutBytes(b, g.lightmap.data(), g.lightmap.size() * sizeof(smvk::PackedVertexLightmap));
+        PutBytes(b, g.indices.data(), g.indices.size() * sizeof(uint32_t));
+    }
+    // --- Trailing REGISTRY (v1.1; v1.0 files end above and load with
+    // no meshlets/LODs — the reader tolerates the absence) --------------
+    // Per-blob: URI fragment + cooked meshlets + the LOD chain (sibling
+    // blobs, not node-attached).
+    auto putGeometryStreams = [&b](const MeshAsset::Geometry& g) {
+        PutU32(b, uint32_t(g.positions.size()));
+        PutU32(b, uint32_t(g.indices.size()));
+        PutU32(b, uint32_t(g.surfaces.size()));
+        for (const smvk::Surface& s : g.surfaces) {
+            PutU32(b, s.firstIndex);
+            PutU32(b, s.indexCount);
+            PutI32(b, s.baseVertex);
+        }
+        PutVec3(b, g.aabbMin);
+        PutVec3(b, g.aabbMax);
+        PutBytes(b, g.positions.data(), g.positions.size() * sizeof(smvk::PackedVertexPosition));
+        PutBytes(b, g.shading.data(), g.shading.size() * sizeof(smvk::PackedVertexShading));
+        PutU32(b, uint32_t(g.lightmap.size()));
+        if (!g.lightmap.empty())
+            PutBytes(b, g.lightmap.data(), g.lightmap.size() * sizeof(smvk::PackedVertexLightmap));
+        PutBytes(b, g.indices.data(), g.indices.size() * sizeof(uint32_t));
+    };
+    auto putMeshlets = [&b](const smvk::CookedMeshlets& ml) {
+        PutU32(b, uint32_t(ml.meshlets.size()));
+        for (const smvk::Meshlet& m : ml.meshlets) {
+            PutU32(b, m.vertexOffset);
+            PutU32(b, m.vertexCount);
+            PutU32(b, m.triangleOffset);
+            PutU32(b, m.triangleCount);
+            PutVec3(b, m.boundCenter);
+            PutF32(b, m.boundRadius);
+            PutVec3(b, m.coneApex);
+            PutVec3(b, m.coneAxis);
+            PutF32(b, m.coneCutoff);
+        }
+        PutU32(b, uint32_t(ml.vertices.size()));
+        for (uint32_t v : ml.vertices)
+            PutU32(b, v);
+        PutU32(b, uint32_t(ml.triangles.size()));
+        PutBytes(b, ml.triangles.data(), ml.triangles.size());
+    };
+    PutU32(b, uint32_t(m.geometry.size()));
+    for (size_t gi = 0; gi < m.geometry.size(); ++gi) {
+        const MeshAsset::Geometry& g = m.geometry[gi];
+        PutStr(b, g.uriFragment);
+        putMeshlets(g.meshlets);
+        // Cooked lightmap binding (v2): the atlas chunk + the chart
+        // xforms, parallel to the cook's chart indices.
+        PutU32(b, g.lmChunk);
+        PutU32(b, uint32_t(g.lmChartXforms.size()));
+        for (const glm::vec4& x : g.lmChartXforms) {
+            PutF32(b, x.x);
+            PutF32(b, x.y);
+            PutF32(b, x.z);
+            PutF32(b, x.w);
+        }
+        const std::vector<MeshAsset::LodSibling>& chain =
+            (gi < m.lodChains.size()) ? m.lodChains[gi] : std::vector<MeshAsset::LodSibling>();
+        PutU32(b, uint32_t(chain.size()));
+        for (const MeshAsset::LodSibling& s : chain) {
+            putGeometryStreams(s.geo);
+            PutStr(b, s.geo.uriFragment);
+            putMeshlets(s.geo.meshlets);
+            PutU32(b, s.geo.lmChunk);
+            PutU32(b, uint32_t(s.geo.lmChartXforms.size()));
+            for (const glm::vec4& x : s.geo.lmChartXforms) {
+                PutF32(b, x.x);
+                PutF32(b, x.y);
+                PutF32(b, x.z);
+                PutF32(b, x.w);
+            }
+            PutU32(b, s.lodIndex);
+            PutF32(b, s.simplifyError);
+            PutF32(b, s.screenThreshold);
+            PutU32(b, s.triCount);
+            PutF32(b, s.acmr);
+        }
+    }
+    // --- Trailing SKIN section (the Northlight data path; files above
+    // end after the registry and load as static - the reader tolerates
+    // the absence). The cluster skeleton (the joint table in ASSET node
+    // space) + the per-BASE-blob PackedSkinInfluences streams (mesh.h binding 2).
+    // LOD siblings stay static (the runtime skinning slice owns per-LOD
+    // skin propagation).
+    {
+        PutU32(b, m.hasSkeleton ? 1u : 0u);
+        if (m.hasSkeleton) {
+            const smvk::touranim::Skeleton& sk = m.skeleton;
+            PutU32(b, uint32_t(sk.joints.size()));
+            for (uint32_t j : sk.joints)
+                PutU32(b, j);
+            for (const glm::mat4& ibm : sk.inverseBind) {
+                for (int c = 0; c < 4; ++c)
+                    for (int r = 0; r < 4; ++r)
+                        PutF32(b, ibm[c][r]);
+            }
+            PutU32(b, sk.root);
+        }
+        PutU32(b, uint32_t(m.geometry.size()));
+        for (const MeshAsset::Geometry& g : m.geometry) {
+            PutU32(b, uint32_t(g.skin.size()));
+            if (!g.skin.empty())
+                PutBytes(b, g.skin.data(), g.skin.size() * sizeof(smvk::PackedSkinInfluences));
+        }
+    }
+    if (!WriteFileBytes(path, b, err))
+        return;
 }
 
 // Public write-back (the COOK persists cooked artifacts: the worker
 // above already serializes meshlets/LODs/stamped chart UVs; v2 adds
 // the per-blob lightmap binding).
-bool SaveMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
-	std::string& err) {
-	err.clear();
-	WriteMeshAsset(path, m, err);
-	return err.empty();
+bool SaveMeshAsset(const std::filesystem::path& path, const MeshAsset& m, std::string& err) {
+    err.clear();
+    WriteMeshAsset(path, m, err);
+    return err.empty();
 }
 
-bool LoadMeshAsset(const std::filesystem::path& path, MeshAsset& out,
-	std::string& err) {
-	out = MeshAsset{};
-	std::vector<uint8_t> bytes;
-	if (!ReadFileBytes(path, bytes, err))
-		return false;
-	return LoadMeshAssetBytes(bytes.data(), bytes.size(), out, err);
+bool LoadMeshAsset(const std::filesystem::path& path, MeshAsset& out, std::string& err) {
+    out = MeshAsset{};
+    std::vector<uint8_t> bytes;
+    if (!ReadFileBytes(path, bytes, err))
+        return false;
+    return LoadMeshAssetBytes(bytes.data(), bytes.size(), out, err);
 }
 
-bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
-	std::string& err) {
-	out = MeshAsset{};
-	BlobReader r{ data, size, 0, true };
-	const uint32_t magic = r.U32();
-	const uint32_t version = r.U32();
-	if (!r.ok || magic != kMeshMagic) {
-		err = "not a .mesh asset";
-		return false;
-	}
-	// v3 ONLY (the split lightmap stream): older .mesh files fail closed
-	// — reimport from zero per the no-conversion policy.
-	if (version != kMeshVersion) {
-		err = "unsupported .mesh version " + std::to_string(version)
-			+ " (reimport from zero)";
-		return false;
-	}
-	const uint32_t nodeCount = r.U32();
-	out.nodes.resize(nodeCount);
-	for (MeshAsset::Node& n : out.nodes) {
-		n.parent = int32_t(r.U32());
-		n.level = int32_t(r.U32());
-	}
-	out.names.resize(r.U32());
-	for (std::string& s : out.names)
-		s = r.Str();
-	out.locals.resize(r.U32());
-	for (glm::mat4& t : out.locals)
-		t = r.Mat4();
-	const uint32_t srCount = r.U32();
-	out.staticRoot.resize(srCount);
-	for (uint8_t& v : out.staticRoot)
-		v = r.U8();
-	const uint32_t nlmCount = r.U32();
-	out.noLightmap.resize(nlmCount);
-	for (uint8_t& v : out.noLightmap)
-		v = r.U8();
-	out.instances.resize(r.U32());
-	for (MeshAsset::Instance& i : out.instances) {
-		i.node = r.U32();
-		i.geometry = r.U32();
-		i.materialGuid = r.Str();
-	}
-	out.lights.resize(r.U32());
-	for (MeshAsset::LightDef& l : out.lights) {
-		l.node = r.U32();
-		l.def.type = SceneLight::Type(r.U32());
-		l.def.color = r.Vec3();
-		l.def.intensity = r.F32();
-		l.def.range = r.F32();
-		l.def.innerConeAngle = r.F32();
-		l.def.outerConeAngle = r.F32();
-		l.def.flags = r.U32();
-		l.def.name = r.Str();
-	}
-	out.cameras.resize(r.U32());
-	for (MeshAsset::CameraDef& c : out.cameras) {
-		c.node = r.U32();
-		c.def.projection = SceneCamera::Projection(r.U32());
-		c.def.fovYDeg = r.F32();
-		c.def.orthoHalfH = r.F32();
-		c.def.nearClip = r.F32();
-		c.def.farClip = r.F32();
-		c.def.name = r.Str();
-	}
-	const uint32_t blobCount = r.U32();
-	out.geometry.resize(blobCount);
-	for (MeshAsset::Geometry& g : out.geometry) {
-		const uint32_t vcount = r.U32();
-		const uint32_t icount = r.U32();
-		g.surfaces.resize(r.U32());
-		for (smvk::Surface& s : g.surfaces) {
-			s.firstIndex = r.U32();
-			s.indexCount = r.U32();
-			s.baseVertex = int32_t(r.U32());
-		}
-		g.aabbMin = r.Vec3();
-		g.aabbMax = r.Vec3();
-		g.positions.resize(vcount);
-		g.shading.resize(vcount);
-		g.indices.resize(icount);
-		const void* pos = r.Skip(size_t(vcount) * sizeof(smvk::PackedVertexPosition));
-		const void* sha = r.Skip(size_t(vcount) * sizeof(smvk::PackedVertexShading));
-		// v3: OPTIONAL count-gated lightmap stream.
-		const uint32_t lmCount = r.U32();
-		const void* lm = lmCount
-			? r.Skip(size_t(lmCount) * sizeof(smvk::PackedVertexLightmap))
-			: nullptr;
-		const void* idx = r.Skip(size_t(icount) * sizeof(uint32_t));
-		if (!r.ok) {
-			err = "truncated .mesh geometry blob";
-			return false;
-		}
-		std::memcpy(g.positions.data(), pos,
-			size_t(vcount) * sizeof(smvk::PackedVertexPosition));
-		std::memcpy(g.shading.data(), sha,
-			size_t(vcount) * sizeof(smvk::PackedVertexShading));
-		if (lmCount) {
-			if (lmCount != vcount) {
-				err = "lightmap stream vertex mismatch";
-				return false;
-			}
-			g.lightmap.resize(lmCount);
-			std::memcpy(g.lightmap.data(), lm,
-				size_t(lmCount) * sizeof(smvk::PackedVertexLightmap));
-		}
-		std::memcpy(g.indices.data(), idx,
-			size_t(icount) * sizeof(uint32_t));
-	}
-	if (!r.ok) {
-		err = "corrupt .mesh asset";
-		return false;
-	}
-	// --- Trailing REGISTRY (v1.1; v1.0 files end above): per-blob URI
-	// fragment + meshlets + the LOD chain. Absent = zero meshlets, no
-	// LODs (loads fine).
-	if (r.off < r.n && !out.geometry.empty()) {
-		auto getMeshlets = [&r](smvk::CookedMeshlets& ml) {
-			ml.meshlets.resize(r.U32());
-			for (smvk::Meshlet& m : ml.meshlets) {
-				m.vertexOffset = r.U32();
-				m.vertexCount = r.U32();
-				m.triangleOffset = r.U32();
-				m.triangleCount = r.U32();
-				m.boundCenter = r.Vec3();
-				m.boundRadius = r.F32();
-				m.coneApex = r.Vec3();
-				m.coneAxis = r.Vec3();
-				m.coneCutoff = r.F32();
-			}
-			ml.vertices.resize(r.U32());
-			for (uint32_t& v : ml.vertices)
-				v = r.U32();
-			ml.triangles.resize(r.U32());
-			if (const void* p = r.Skip(ml.triangles.size()))
-				std::memcpy(ml.triangles.data(), p,
-					ml.triangles.size());
-		};
-		auto getStreams = [&r](MeshAsset::Geometry& g) {
-			const uint32_t vcount = r.U32();
-			const uint32_t icount = r.U32();
-			g.surfaces.resize(r.U32());
-			for (smvk::Surface& s : g.surfaces) {
-				s.firstIndex = r.U32();
-				s.indexCount = r.U32();
-				s.baseVertex = int32_t(r.U32());
-			}
-			g.aabbMin = r.Vec3();
-			g.aabbMax = r.Vec3();
-			g.positions.resize(vcount);
-			g.shading.resize(vcount);
-			g.indices.resize(icount);
-			const void* pos =
-				r.Skip(size_t(vcount) * sizeof(smvk::PackedVertexPosition));
-			const void* sha = r.Skip(
-				size_t(vcount) * sizeof(smvk::PackedVertexShading));
-			const uint32_t lmCount = r.U32();
-			const void* lm = lmCount
-				? r.Skip(size_t(lmCount) * sizeof(smvk::PackedVertexLightmap))
-				: nullptr;
-			const void* idx =
-				r.Skip(size_t(icount) * sizeof(uint32_t));
-			if (!r.ok)
-				return;
-			std::memcpy(g.positions.data(), pos,
-				size_t(vcount) * sizeof(smvk::PackedVertexPosition));
-			std::memcpy(g.shading.data(), sha,
-				size_t(vcount) * sizeof(smvk::PackedVertexShading));
-			if (lmCount && lmCount == vcount) {
-				g.lightmap.resize(lmCount);
-				std::memcpy(g.lightmap.data(), lm,
-					size_t(lmCount) * sizeof(smvk::PackedVertexLightmap));
-			}
-			std::memcpy(g.indices.data(), idx,
-				size_t(icount) * sizeof(uint32_t));
-		};
-		const uint32_t regCount = r.U32();
-		if (!r.ok || regCount > out.geometry.size()) {
-			err = "corrupt .mesh registry section";
-			return false;
-		}
-		// v2 carries the cooked lightmap binding per blob (base +
-		// siblings); v1 leaves the defaults (uncharted).
-		auto getLmBinding = [&r](MeshAsset::Geometry& g, uint32_t version) {
-			g.lmChunk = 0xFFFFFFFFu;
-			g.lmChartXforms.clear();
-			if (version < 2 || !r.ok)
-				return;
-			g.lmChunk = r.U32();
-			const uint32_t xn = r.U32();
-			if (!r.ok || xn > 1024 * 1024)
-				return;
-			g.lmChartXforms.resize(xn);
-			for (glm::vec4& x : g.lmChartXforms) {
-				x.x = r.F32();
-				x.y = r.F32();
-				x.z = r.F32();
-				x.w = r.F32();
-			}
-		};
-		out.lodChains.resize(out.geometry.size());
-		for (uint32_t gi = 0; gi < regCount; ++gi) {
-			out.geometry[gi].uriFragment = r.Str();
-			getMeshlets(out.geometry[gi].meshlets);
-			getLmBinding(out.geometry[gi], version);
-			std::vector<MeshAsset::LodSibling>& chain =
-				out.lodChains[gi];
-			chain.resize(r.U32());
-			for (MeshAsset::LodSibling& s : chain) {
-				getStreams(s.geo);
-				s.geo.uriFragment = r.Str();
-				getMeshlets(s.geo.meshlets);
-				getLmBinding(s.geo, version);
-				s.lodIndex = r.U32();
-				s.simplifyError = r.F32();
-				s.screenThreshold = r.F32();
-				s.triCount = r.U32();
-				s.acmr = r.F32();
-			}
-		}
-		if (!r.ok) {
-			err = "corrupt .mesh registry section";
-			return false;
-		}
-	}
-	// --- Trailing SKIN section (the Northlight data path; ABSENT = a
-	// pre-skin file, loads as static): the cluster skeleton (the joint
-	// table in ASSET node space) + the per-BASE-blob PackedSkinInfluences streams.
-	// LOD siblings stay static (the runtime skinning slice owns per-LOD
-	// skin propagation).
-	if (r.off < r.n) {
-		const uint32_t has = r.U32();
-		if (!r.ok)
-			return true; // truncated marker: treat as absent
-		if (has != 0u) {
-			out.hasSkeleton = true;
-			smvk::touranim::Skeleton& sk = out.skeleton;
-			const uint32_t jointCount = r.U32();
-			if (!r.ok || jointCount > 4096) {
-				err = "corrupt .mesh skin section (joint count)";
-				return false;
-			}
-			sk.joints.clear();
-			sk.inverseBind.clear();
-			sk.joints.resize(jointCount);
-			sk.inverseBind.resize(jointCount, glm::mat4(1.0f));
-			for (uint32_t i = 0; i < jointCount; ++i) {
-				sk.joints[i] = r.U32();
-				if (!r.ok || sk.joints[i] >= out.nodes.size()) {
-					err = "corrupt .mesh skin section (joint id)";
-					return false;
-				}
-			}
-			for (uint32_t i = 0; i < jointCount; ++i) {
-				glm::mat4 m(1.0f);
-				for (int c = 0; c < 4; ++c)
-					for (int rr = 0; rr < 4; ++rr)
-						m[c][rr] = r.F32();
-				if (!r.ok) {
-					err = "corrupt .mesh skin section (IBM)";
-					return false;
-				}
-				sk.inverseBind[i] = m;
-			}
-			sk.root = r.U32();
-			if (!r.ok || sk.root >= out.nodes.size())
-				sk.root = 0u;
-		}
-		const uint32_t skinBlobCount = r.U32();
-		if (!r.ok)
-			return true; // truncated: treat as absent
-		if (skinBlobCount > out.geometry.size()) {
-			err = "corrupt .mesh skin section (blob count)";
-			return false;
-		}
-		for (uint32_t gi = 0; gi < skinBlobCount; ++gi) {
-			const uint32_t skinCount = r.U32();
-			if (!r.ok || skinCount > 16 * 1024 * 1024) {
-				err = "corrupt .mesh skin section (stream count)";
-				return false;
-			}
-			MeshAsset::Geometry& g = out.geometry[gi];
-			g.skin.resize(skinCount);
-			if (const void* p = r.Skip(size_t(skinCount)
-					* sizeof(smvk::PackedSkinInfluences)))
-				std::memcpy(g.skin.data(), p,
-					size_t(skinCount) * sizeof(smvk::PackedSkinInfluences));
-			else if (skinCount > 0) {
-				err = "corrupt .mesh skin section (stream bytes)";
-				return false;
-			}
-		}
-	}
-	return true;
+bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out, std::string& err) {
+    out = MeshAsset{};
+    BlobReader r{data, size, 0, true};
+    const uint32_t magic = r.U32();
+    const uint32_t version = r.U32();
+    if (!r.ok || magic != kMeshMagic) {
+        err = "not a .mesh asset";
+        return false;
+    }
+    // v3 ONLY (the split lightmap stream): older .mesh files fail closed
+    // — reimport from zero per the no-conversion policy.
+    if (version != kMeshVersion) {
+        err = "unsupported .mesh version " + std::to_string(version) + " (reimport from zero)";
+        return false;
+    }
+    const uint32_t nodeCount = r.U32();
+    out.nodes.resize(nodeCount);
+    for (MeshAsset::Node& n : out.nodes) {
+        n.parent = int32_t(r.U32());
+        n.level = int32_t(r.U32());
+    }
+    out.names.resize(r.U32());
+    for (std::string& s : out.names)
+        s = r.Str();
+    out.locals.resize(r.U32());
+    for (glm::mat4& t : out.locals)
+        t = r.Mat4();
+    const uint32_t srCount = r.U32();
+    out.staticRoot.resize(srCount);
+    for (uint8_t& v : out.staticRoot)
+        v = r.U8();
+    const uint32_t nlmCount = r.U32();
+    out.noLightmap.resize(nlmCount);
+    for (uint8_t& v : out.noLightmap)
+        v = r.U8();
+    out.instances.resize(r.U32());
+    for (MeshAsset::Instance& i : out.instances) {
+        i.node = r.U32();
+        i.geometry = r.U32();
+        i.materialGuid = r.Str();
+    }
+    out.lights.resize(r.U32());
+    for (MeshAsset::LightDef& l : out.lights) {
+        l.node = r.U32();
+        l.def.type = SceneLight::Type(r.U32());
+        l.def.color = r.Vec3();
+        l.def.intensity = r.F32();
+        l.def.range = r.F32();
+        l.def.innerConeAngle = r.F32();
+        l.def.outerConeAngle = r.F32();
+        l.def.flags = r.U32();
+        l.def.name = r.Str();
+    }
+    out.cameras.resize(r.U32());
+    for (MeshAsset::CameraDef& c : out.cameras) {
+        c.node = r.U32();
+        c.def.projection = SceneCamera::Projection(r.U32());
+        c.def.fovYDeg = r.F32();
+        c.def.orthoHalfH = r.F32();
+        c.def.nearClip = r.F32();
+        c.def.farClip = r.F32();
+        c.def.name = r.Str();
+    }
+    const uint32_t blobCount = r.U32();
+    out.geometry.resize(blobCount);
+    for (MeshAsset::Geometry& g : out.geometry) {
+        const uint32_t vcount = r.U32();
+        const uint32_t icount = r.U32();
+        g.surfaces.resize(r.U32());
+        for (smvk::Surface& s : g.surfaces) {
+            s.firstIndex = r.U32();
+            s.indexCount = r.U32();
+            s.baseVertex = int32_t(r.U32());
+        }
+        g.aabbMin = r.Vec3();
+        g.aabbMax = r.Vec3();
+        g.positions.resize(vcount);
+        g.shading.resize(vcount);
+        g.indices.resize(icount);
+        const void* pos = r.Skip(size_t(vcount) * sizeof(smvk::PackedVertexPosition));
+        const void* sha = r.Skip(size_t(vcount) * sizeof(smvk::PackedVertexShading));
+        // v3: OPTIONAL count-gated lightmap stream.
+        const uint32_t lmCount = r.U32();
+        const void* lm =
+            lmCount ? r.Skip(size_t(lmCount) * sizeof(smvk::PackedVertexLightmap)) : nullptr;
+        const void* idx = r.Skip(size_t(icount) * sizeof(uint32_t));
+        if (!r.ok) {
+            err = "truncated .mesh geometry blob";
+            return false;
+        }
+        std::memcpy(g.positions.data(), pos, size_t(vcount) * sizeof(smvk::PackedVertexPosition));
+        std::memcpy(g.shading.data(), sha, size_t(vcount) * sizeof(smvk::PackedVertexShading));
+        if (lmCount) {
+            if (lmCount != vcount) {
+                err = "lightmap stream vertex mismatch";
+                return false;
+            }
+            g.lightmap.resize(lmCount);
+            std::memcpy(
+                g.lightmap.data(), lm, size_t(lmCount) * sizeof(smvk::PackedVertexLightmap));
+        }
+        std::memcpy(g.indices.data(), idx, size_t(icount) * sizeof(uint32_t));
+    }
+    if (!r.ok) {
+        err = "corrupt .mesh asset";
+        return false;
+    }
+    // --- Trailing REGISTRY (v1.1; v1.0 files end above): per-blob URI
+    // fragment + meshlets + the LOD chain. Absent = zero meshlets, no
+    // LODs (loads fine).
+    if (r.off < r.n && !out.geometry.empty()) {
+        auto getMeshlets = [&r](smvk::CookedMeshlets& ml) {
+            ml.meshlets.resize(r.U32());
+            for (smvk::Meshlet& m : ml.meshlets) {
+                m.vertexOffset = r.U32();
+                m.vertexCount = r.U32();
+                m.triangleOffset = r.U32();
+                m.triangleCount = r.U32();
+                m.boundCenter = r.Vec3();
+                m.boundRadius = r.F32();
+                m.coneApex = r.Vec3();
+                m.coneAxis = r.Vec3();
+                m.coneCutoff = r.F32();
+            }
+            ml.vertices.resize(r.U32());
+            for (uint32_t& v : ml.vertices)
+                v = r.U32();
+            ml.triangles.resize(r.U32());
+            if (const void* p = r.Skip(ml.triangles.size()))
+                std::memcpy(ml.triangles.data(), p, ml.triangles.size());
+        };
+        auto getStreams = [&r](MeshAsset::Geometry& g) {
+            const uint32_t vcount = r.U32();
+            const uint32_t icount = r.U32();
+            g.surfaces.resize(r.U32());
+            for (smvk::Surface& s : g.surfaces) {
+                s.firstIndex = r.U32();
+                s.indexCount = r.U32();
+                s.baseVertex = int32_t(r.U32());
+            }
+            g.aabbMin = r.Vec3();
+            g.aabbMax = r.Vec3();
+            g.positions.resize(vcount);
+            g.shading.resize(vcount);
+            g.indices.resize(icount);
+            const void* pos = r.Skip(size_t(vcount) * sizeof(smvk::PackedVertexPosition));
+            const void* sha = r.Skip(size_t(vcount) * sizeof(smvk::PackedVertexShading));
+            const uint32_t lmCount = r.U32();
+            const void* lm =
+                lmCount ? r.Skip(size_t(lmCount) * sizeof(smvk::PackedVertexLightmap)) : nullptr;
+            const void* idx = r.Skip(size_t(icount) * sizeof(uint32_t));
+            if (!r.ok)
+                return;
+            std::memcpy(
+                g.positions.data(), pos, size_t(vcount) * sizeof(smvk::PackedVertexPosition));
+            std::memcpy(g.shading.data(), sha, size_t(vcount) * sizeof(smvk::PackedVertexShading));
+            if (lmCount && lmCount == vcount) {
+                g.lightmap.resize(lmCount);
+                std::memcpy(
+                    g.lightmap.data(), lm, size_t(lmCount) * sizeof(smvk::PackedVertexLightmap));
+            }
+            std::memcpy(g.indices.data(), idx, size_t(icount) * sizeof(uint32_t));
+        };
+        const uint32_t regCount = r.U32();
+        if (!r.ok || regCount > out.geometry.size()) {
+            err = "corrupt .mesh registry section";
+            return false;
+        }
+        // v2 carries the cooked lightmap binding per blob (base +
+        // siblings); v1 leaves the defaults (uncharted).
+        auto getLmBinding = [&r](MeshAsset::Geometry& g, uint32_t version) {
+            g.lmChunk = 0xFFFFFFFFu;
+            g.lmChartXforms.clear();
+            if (version < 2 || !r.ok)
+                return;
+            g.lmChunk = r.U32();
+            const uint32_t xn = r.U32();
+            if (!r.ok || xn > 1024 * 1024)
+                return;
+            g.lmChartXforms.resize(xn);
+            for (glm::vec4& x : g.lmChartXforms) {
+                x.x = r.F32();
+                x.y = r.F32();
+                x.z = r.F32();
+                x.w = r.F32();
+            }
+        };
+        out.lodChains.resize(out.geometry.size());
+        for (uint32_t gi = 0; gi < regCount; ++gi) {
+            out.geometry[gi].uriFragment = r.Str();
+            getMeshlets(out.geometry[gi].meshlets);
+            getLmBinding(out.geometry[gi], version);
+            std::vector<MeshAsset::LodSibling>& chain = out.lodChains[gi];
+            chain.resize(r.U32());
+            for (MeshAsset::LodSibling& s : chain) {
+                getStreams(s.geo);
+                s.geo.uriFragment = r.Str();
+                getMeshlets(s.geo.meshlets);
+                getLmBinding(s.geo, version);
+                s.lodIndex = r.U32();
+                s.simplifyError = r.F32();
+                s.screenThreshold = r.F32();
+                s.triCount = r.U32();
+                s.acmr = r.F32();
+            }
+        }
+        if (!r.ok) {
+            err = "corrupt .mesh registry section";
+            return false;
+        }
+    }
+    // --- Trailing SKIN section (the Northlight data path; ABSENT = a
+    // pre-skin file, loads as static): the cluster skeleton (the joint
+    // table in ASSET node space) + the per-BASE-blob PackedSkinInfluences streams.
+    // LOD siblings stay static (the runtime skinning slice owns per-LOD
+    // skin propagation).
+    if (r.off < r.n) {
+        const uint32_t has = r.U32();
+        if (!r.ok)
+            return true; // truncated marker: treat as absent
+        if (has != 0u) {
+            out.hasSkeleton = true;
+            smvk::touranim::Skeleton& sk = out.skeleton;
+            const uint32_t jointCount = r.U32();
+            if (!r.ok || jointCount > 4096) {
+                err = "corrupt .mesh skin section (joint count)";
+                return false;
+            }
+            sk.joints.clear();
+            sk.inverseBind.clear();
+            sk.joints.resize(jointCount);
+            sk.inverseBind.resize(jointCount, glm::mat4(1.0f));
+            for (uint32_t i = 0; i < jointCount; ++i) {
+                sk.joints[i] = r.U32();
+                if (!r.ok || sk.joints[i] >= out.nodes.size()) {
+                    err = "corrupt .mesh skin section (joint id)";
+                    return false;
+                }
+            }
+            for (uint32_t i = 0; i < jointCount; ++i) {
+                glm::mat4 m(1.0f);
+                for (int c = 0; c < 4; ++c)
+                    for (int rr = 0; rr < 4; ++rr)
+                        m[c][rr] = r.F32();
+                if (!r.ok) {
+                    err = "corrupt .mesh skin section (IBM)";
+                    return false;
+                }
+                sk.inverseBind[i] = m;
+            }
+            sk.root = r.U32();
+            if (!r.ok || sk.root >= out.nodes.size())
+                sk.root = 0u;
+        }
+        const uint32_t skinBlobCount = r.U32();
+        if (!r.ok)
+            return true; // truncated: treat as absent
+        if (skinBlobCount > out.geometry.size()) {
+            err = "corrupt .mesh skin section (blob count)";
+            return false;
+        }
+        for (uint32_t gi = 0; gi < skinBlobCount; ++gi) {
+            const uint32_t skinCount = r.U32();
+            if (!r.ok || skinCount > 16 * 1024 * 1024) {
+                err = "corrupt .mesh skin section (stream count)";
+                return false;
+            }
+            MeshAsset::Geometry& g = out.geometry[gi];
+            g.skin.resize(skinCount);
+            if (const void* p = r.Skip(size_t(skinCount) * sizeof(smvk::PackedSkinInfluences)))
+                std::memcpy(
+                    g.skin.data(), p, size_t(skinCount) * sizeof(smvk::PackedSkinInfluences));
+            else if (skinCount > 0) {
+                err = "corrupt .mesh skin section (stream bytes)";
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,1050 +1258,989 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 // ---------------------------------------------------------------------------
 
 bool DeriveGltfAssets(const tinygltf::Model& model,
-	const std::filesystem::path& gltfPath, const std::string& gltfGuid,
-	const AssetManifest* prevIdentity, const DeriveConfig& config,
-	AssetManifest& outManifest, DeriveStats* outStats, std::string* err,
-	const std::vector<std::string>& extraSourceDeps) {
-	DeriveStats stats{};
-	std::string fail;
-	const std::string stem =
-		std::filesystem::path(gltfPath).stem().string();
-	const std::filesystem::path dir =
-		std::filesystem::path(gltfPath).parent_path();
-	auto giveUp = [&](const std::string& e) {
-		if (err)
-			*err = e;
-		return false;
-	};
+                      const std::filesystem::path& gltfPath,
+                      const std::string& gltfGuid,
+                      const AssetManifest* prevIdentity,
+                      const DeriveConfig& config,
+                      AssetManifest& outManifest,
+                      DeriveStats* outStats,
+                      std::string* err,
+                      const std::vector<std::string>& extraSourceDeps) {
+    DeriveStats stats{};
+    std::string fail;
+    const std::string stem = std::filesystem::path(gltfPath).stem().string();
+    const std::filesystem::path dir = std::filesystem::path(gltfPath).parent_path();
+    auto giveUp = [&](const std::string& e) {
+        if (err)
+            *err = e;
+        return false;
+    };
 
-	// 1) The deterministic cook-mode import (GPU-free like the baker;
-	// node ids identical to the live import — the .tour replay contract).
-	// AUTHORITATIVE PREPROCESSING: the LOD chain + meshlets derive HERE —
-	// the .geometry carries them; cooks consume and never re-decide (the
-	// old cook-time --lods regeneration + geometry write-back is retired).
-	smvk::MeshOptConfig meshOpt{};
-	meshOpt.enabled = config.lods;
-	// The chain settings ride the config (the manifest records their
-	// fingerprint — a ratio change re-derives the artifact).
-	meshOpt.generateLods = config.lods;
-	meshOpt.lodRatios = config.lodRatios;
-	meshOpt.lodTargetError = config.lodTargetError;
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	std::vector<int> gltfNodeMap;
-	{
-		GltfToSceneImporter importer{ *cluster, model, gltfPath };
-		importer.setMeshOptConfig(meshOpt);
-		// Meshlets bake INTO THE .GEOMETRY (the artifact owns the cooked
-		// sets — pak assembly reads them, never re-decides). The old
-		// inverted form (config.meshlets -> setMeshletConfig({}), a
-		// default-DISABLED config) never built a single set: every
-		// .geometry shipped meshlet-less, the runtime GfxRenderer
-		// registered zero clusters and the whole scene fell back to the
-		// direct draw path. request -> the engine canon (64v/64t).
-		if (config.meshlets) {
-			smvk::MeshletConfig mlc{};
-			mlc.enabled = true;
-			importer.setMeshletConfig(mlc);
-		}
-		// Far-shading derivation (default off; see DeriveConfig::shaderLods).
-		importer.setDeriveShaderLods(config.shaderLods);
-		importer.setAutoKtx(true);
-		importer.setModelUriBase(gltfPath.generic_string());
-		// The classic GltfToCluster body (cook mode, no RM): cluster
-		// scene root + the glTF scene roots imported underneath.
-		const int root = addNode(cluster->scene, -1, 0);
-		cluster->scene.localTransform[size_t(root)] = glm::mat4(1.0f);
-		cluster->scene.globalTransform[size_t(root)] = glm::mat4(1.0f);
-		std::vector<int> gltfRoots;
-		if (model.defaultScene >= 0
-			&& model.defaultScene < int(model.scenes.size())) {
-			gltfRoots = model.scenes[size_t(model.defaultScene)].nodes;
-		}
-		else if (!model.scenes.empty()) {
-			gltfRoots = model.scenes.front().nodes;
-		}
-		else {
-			std::vector<bool> referenced(model.nodes.size());
-			for (const auto& n : model.nodes)
-				for (int c : n.children)
-					if (c >= 0 && c < int(model.nodes.size()))
-						referenced[size_t(c)] = true;
-			for (int i = 0; i < int(model.nodes.size()); ++i)
-				if (!referenced[size_t(i)])
-					gltfRoots.push_back(i);
-		}
-	 importer.preloadTextures();
-		for (int gltfNode : gltfRoots)
-			importer.import(gltfNode);
-		// SKIN post pass (the Northlight data path): build the cluster
-		// Skeleton + patch the recorded (mesh, skin) pairs' PackedSkinInfluences
-		// streams (the gltfNodeMap is fully populated now - the same
-		// post-pass contract as GltfToCluster's inline flow).
-		importer.BuildSkinData();
-		RebuildStaticCache(cluster->scene);
-		recalculateGlobalTransforms(cluster->scene);
-		gltfNodeMap = importer.gltfNodeMap();
-	}
+    // 1) The deterministic cook-mode import (GPU-free like the baker;
+    // node ids identical to the live import — the .tour replay contract).
+    // AUTHORITATIVE PREPROCESSING: the LOD chain + meshlets derive HERE —
+    // the .geometry carries them; cooks consume and never re-decide (the
+    // old cook-time --lods regeneration + geometry write-back is retired).
+    smvk::MeshOptConfig meshOpt{};
+    meshOpt.enabled = config.lods;
+    // The chain settings ride the config (the manifest records their
+    // fingerprint — a ratio change re-derives the artifact).
+    meshOpt.generateLods = config.lods;
+    meshOpt.lodRatios = config.lodRatios;
+    meshOpt.lodTargetError = config.lodTargetError;
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    std::vector<int> gltfNodeMap;
+    {
+        GltfToSceneImporter importer{*cluster, model, gltfPath};
+        importer.setMeshOptConfig(meshOpt);
+        // Meshlets bake INTO THE .GEOMETRY (the artifact owns the cooked
+        // sets — pak assembly reads them, never re-decides). The old
+        // inverted form (config.meshlets -> setMeshletConfig({}), a
+        // default-DISABLED config) never built a single set: every
+        // .geometry shipped meshlet-less, the runtime GfxRenderer
+        // registered zero clusters and the whole scene fell back to the
+        // direct draw path. request -> the engine canon (64v/64t).
+        if (config.meshlets) {
+            smvk::MeshletConfig mlc{};
+            mlc.enabled = true;
+            importer.setMeshletConfig(mlc);
+        }
+        // Far-shading derivation (default off; see DeriveConfig::shaderLods).
+        importer.setDeriveShaderLods(config.shaderLods);
+        importer.setAutoKtx(true);
+        importer.setModelUriBase(gltfPath.generic_string());
+        // The classic GltfToCluster body (cook mode, no RM): cluster
+        // scene root + the glTF scene roots imported underneath.
+        const int root = addNode(cluster->scene, -1, 0);
+        cluster->scene.localTransform[size_t(root)] = glm::mat4(1.0f);
+        cluster->scene.globalTransform[size_t(root)] = glm::mat4(1.0f);
+        std::vector<int> gltfRoots;
+        if (model.defaultScene >= 0 && model.defaultScene < int(model.scenes.size())) {
+            gltfRoots = model.scenes[size_t(model.defaultScene)].nodes;
+        } else if (!model.scenes.empty()) {
+            gltfRoots = model.scenes.front().nodes;
+        } else {
+            std::vector<bool> referenced(model.nodes.size());
+            for (const auto& n : model.nodes)
+                for (int c : n.children)
+                    if (c >= 0 && c < int(model.nodes.size()))
+                        referenced[size_t(c)] = true;
+            for (int i = 0; i < int(model.nodes.size()); ++i)
+                if (!referenced[size_t(i)])
+                    gltfRoots.push_back(i);
+        }
+        importer.preloadTextures();
+        for (int gltfNode : gltfRoots)
+            importer.import(gltfNode);
+        // SKIN post pass (the Northlight data path): build the cluster
+        // Skeleton + patch the recorded (mesh, skin) pairs' PackedSkinInfluences
+        // streams (the gltfNodeMap is fully populated now - the same
+        // post-pass contract as GltfToCluster's inline flow).
+        importer.BuildSkinData();
+        RebuildStaticCache(cluster->scene);
+        recalculateGlobalTransforms(cluster->scene);
+        gltfNodeMap = importer.gltfNodeMap();
+    }
 
-	// 2) Manifest identity — THE IDENTITY LEDGER, separate from the
-	// source-byte fingerprints (the identity contract):
-	//   family guid  — the caller's EXPLICIT resolution (the .meta the
-	//                   project pipeline resolved before importing —
-	//                   see ImportProjectAsset) > the previous
-	//                   manifest's guid (identity CARRIES across
-	//                   content edits; the digest below records the
-	//                   change) > the deterministic from-zero mint
-	//                   (SourceAssetGuid — no ledger, no caller).
-	//   sourcedigest — the STALENESS fingerprint (recomputed every
-	//                   derive; never an identity).
-	//   subasset ids — carried from the previous manifest BY NAME (the
-	//                   logical key: the glTF material/animation name),
-	//                   so a DCC re-export that REORDERS the arrays
-	//                   keeps every GUID where cooks, .tours and
-	//                   content ids expect them; unknown names mint
-	//                   deterministically. A name group whose entry
-	//                   COUNT changed against a previous record is
-	//                   AMBIGUOUS — a loud failure, never a silent
-	//                   re-assignment (identity swap).
-	AssetManifest manifest;
-	// The previous manifest (the identity ledger): the caller's
-	// explicit resolution wins (the pipeline resolves the PUBLISHED
-	// .gltf.meta before staging — the stage dir has none); otherwise a
-	// manifest beside the source (the editor / direct-import path) IS
-	// the ledger. A beside-file manifest that exists but does not
-	// parse — or parses to a malformed guid — FAILS: re-deriving over
-	// a corrupt ledger would silently mint a whole new identity set.
-	std::optional<AssetManifest> prevLedger;
-	{
-		if (prevIdentity)
-			prevLedger = *prevIdentity;
-		else {
-			std::error_code metaEc;
-			if (std::filesystem::is_regular_file(
-					std::filesystem::path(gltfPath.string() + ".meta"),
-					metaEc)) {
-				AssetManifest prev;
-				std::string perr;
-				if (!LoadAssetManifest(gltfPath, prev, perr))
-					return giveUp("the manifest beside '"
-						+ gltfPath.generic_string() + "' exists but"
-						+ " does not parse (" + perr + ") — REFUSING"
-						+ " to re-derive over a corrupt identity"
-						+ " ledger. Fix or delete it by hand; identity"
-						+ " repair is explicit, never automatic");
-				if (prev.guid.size() != 32
-						|| prev.guid.find_first_not_of(
-								"0123456789abcdef")
-							!= std::string::npos)
-					return giveUp("the manifest beside '"
-						+ gltfPath.generic_string()
-						+ "' carries a malformed guid row ('"
-						+ prev.guid + "') — REFUSING to re-derive"
-						" over a corrupt identity ledger. Fix or"
-						" delete it by hand; identity repair is"
-						" explicit, never automatic");
-				prevLedger = std::move(prev);
-			}
-		}
-	}
-	const std::string sourceGuid = SourceAssetGuid(gltfPath);
-	manifest.guid = !gltfGuid.empty() ? gltfGuid
-		: (prevLedger && !prevLedger->guid.empty())
-			? prevLedger->guid : sourceGuid;
-	if (prevLedger && !gltfGuid.empty() && !prevLedger->guid.empty()
-			&& gltfGuid != prevLedger->guid)
-		return giveUp("identity conflict: the caller resolved guid "
-			+ gltfGuid + " but the existing manifest for '"
-			+ gltfPath.generic_string() + "' carries "
-			+ prevLedger->guid + " — the EXISTING identity wins or"
-			" the manifest is deleted deliberately; never re-minted"
-			" by accident");
-	manifest.source =
-		std::filesystem::path(gltfPath).filename().generic_string();
-	manifest.sourceDigest =
-		SourceContentDigest(gltfPath, model, extraSourceDeps);
-	manifest.importFingerprint = ImportFingerprintFor(config);
-	manifest.stem = stem;
+    // 2) Manifest identity — THE IDENTITY LEDGER, separate from the
+    // source-byte fingerprints (the identity contract):
+    //   family guid  — the caller's EXPLICIT resolution (the .meta the
+    //                   project pipeline resolved before importing —
+    //                   see ImportProjectAsset) > the previous
+    //                   manifest's guid (identity CARRIES across
+    //                   content edits; the digest below records the
+    //                   change) > the deterministic from-zero mint
+    //                   (SourceAssetGuid — no ledger, no caller).
+    //   sourcedigest — the STALENESS fingerprint (recomputed every
+    //                   derive; never an identity).
+    //   subasset ids — carried from the previous manifest BY NAME (the
+    //                   logical key: the glTF material/animation name),
+    //                   so a DCC re-export that REORDERS the arrays
+    //                   keeps every GUID where cooks, .tours and
+    //                   content ids expect them; unknown names mint
+    //                   deterministically. A name group whose entry
+    //                   COUNT changed against a previous record is
+    //                   AMBIGUOUS — a loud failure, never a silent
+    //                   re-assignment (identity swap).
+    AssetManifest manifest;
+    // The previous manifest (the identity ledger): the caller's
+    // explicit resolution wins (the pipeline resolves the PUBLISHED
+    // .gltf.meta before staging — the stage dir has none); otherwise a
+    // manifest beside the source (the editor / direct-import path) IS
+    // the ledger. A beside-file manifest that exists but does not
+    // parse — or parses to a malformed guid — FAILS: re-deriving over
+    // a corrupt ledger would silently mint a whole new identity set.
+    std::optional<AssetManifest> prevLedger;
+    {
+        if (prevIdentity)
+            prevLedger = *prevIdentity;
+        else {
+            std::error_code metaEc;
+            if (std::filesystem::is_regular_file(std::filesystem::path(gltfPath.string() + ".meta"),
+                                                 metaEc)) {
+                AssetManifest prev;
+                std::string perr;
+                if (!LoadAssetManifest(gltfPath, prev, perr))
+                    return giveUp("the manifest beside '" + gltfPath.generic_string() +
+                                  "' exists but" + " does not parse (" + perr + ") — REFUSING" +
+                                  " to re-derive over a corrupt identity" +
+                                  " ledger. Fix or delete it by hand; identity" +
+                                  " repair is explicit, never automatic");
+                if (prev.guid.size() != 32 ||
+                    prev.guid.find_first_not_of("0123456789abcdef") != std::string::npos)
+                    return giveUp("the manifest beside '" + gltfPath.generic_string() +
+                                  "' carries a malformed guid row ('" + prev.guid +
+                                  "') — REFUSING to re-derive"
+                                  " over a corrupt identity ledger. Fix or"
+                                  " delete it by hand; identity repair is"
+                                  " explicit, never automatic");
+                prevLedger = std::move(prev);
+            }
+        }
+    }
+    const std::string sourceGuid = SourceAssetGuid(gltfPath);
+    manifest.guid = !gltfGuid.empty()                           ? gltfGuid
+                    : (prevLedger && !prevLedger->guid.empty()) ? prevLedger->guid
+                                                                : sourceGuid;
+    if (prevLedger && !gltfGuid.empty() && !prevLedger->guid.empty() &&
+        gltfGuid != prevLedger->guid)
+        return giveUp("identity conflict: the caller resolved guid " + gltfGuid +
+                      " but the existing manifest for '" + gltfPath.generic_string() +
+                      "' carries " + prevLedger->guid +
+                      " — the EXISTING identity wins or"
+                      " the manifest is deleted deliberately; never re-minted"
+                      " by accident");
+    manifest.source = std::filesystem::path(gltfPath).filename().generic_string();
+    manifest.sourceDigest = SourceContentDigest(gltfPath, model, extraSourceDeps);
+    manifest.importFingerprint = ImportFingerprintFor(config);
+    manifest.stem = stem;
 
-	// The name groups (the logical identity keys), pre-scanned so the
-	// ambiguity check runs BEFORE any file is written. Unnamed glTF
-	// assets fall back to index-derived display names ("mat0"/"anim1")
-	// — the best key available; EMPTY previous names (pre-ledger anim
-	// rows) are unkeyable and skip the ledger entirely (fresh mints,
-	// no ambiguity failure against them).
-	const auto materialName = [&](int mi) -> std::string {
-		const tinygltf::Material& gm = model.materials[size_t(mi)];
-		return gm.name.empty()
-			? ("mat" + std::to_string(mi)) : gm.name;
-	};
-	const auto animName = [&](int ai) -> std::string {
-		const tinygltf::Animation& ga = model.animations[size_t(ai)];
-		return ga.name.empty()
-			? ("anim" + std::to_string(ai)) : ga.name;
-	};
-	std::map<std::pair<int, std::string>, int> prevCounts;
-	if (prevLedger)
-		for (const AssetEntry& e : prevLedger->entries)
-			if (!e.name.empty())
-				++prevCounts[{ int(e.kind), e.name }];
-	std::map<std::pair<int, std::string>, int> newCounts;
-	for (int mi = 0; mi < int(model.materials.size()); ++mi)
-		++newCounts[{ int(AssetKind::Material), materialName(mi) }];
-	for (int ai = 0; ai < int(model.animations.size()); ++ai)
-		++newCounts[{ int(AssetKind::Anim), animName(ai) }];
-	++newCounts[{ int(AssetKind::Geometry), stem }];
-	for (const auto& [group, newCount] : newCounts) {
-		const auto pit = prevCounts.find(group);
-		if (pit == prevCounts.end() || pit->second == 0)
-			continue; // no previous record: fresh group, nothing to
-			          // be ambiguous against
-		if (pit->second != newCount)
-			return giveUp("ambiguous subasset remapping: the previous"
-				" manifest has " + std::to_string(pit->second)
-				+ " " + AssetKindName(AssetKind(
-					AssetKind(group.first)))
-				+ "(s) named '" + group.second + "' but the source now"
-				" has " + std::to_string(newCount) + " — which"
-				" previous identity maps where cannot be decided"
-				" safely. Name the assets uniquely (or align the"
-				" counts) and re-import; identity is never silently"
-				" re-assigned");
-	}
+    // The name groups (the logical identity keys), pre-scanned so the
+    // ambiguity check runs BEFORE any file is written. Unnamed glTF
+    // assets fall back to index-derived display names ("mat0"/"anim1")
+    // — the best key available; EMPTY previous names (pre-ledger anim
+    // rows) are unkeyable and skip the ledger entirely (fresh mints,
+    // no ambiguity failure against them).
+    const auto materialName = [&](int mi) -> std::string {
+        const tinygltf::Material& gm = model.materials[size_t(mi)];
+        return gm.name.empty() ? ("mat" + std::to_string(mi)) : gm.name;
+    };
+    const auto animName = [&](int ai) -> std::string {
+        const tinygltf::Animation& ga = model.animations[size_t(ai)];
+        return ga.name.empty() ? ("anim" + std::to_string(ai)) : ga.name;
+    };
+    std::map<std::pair<int, std::string>, int> prevCounts;
+    if (prevLedger)
+        for (const AssetEntry& e : prevLedger->entries)
+            if (!e.name.empty())
+                ++prevCounts[{int(e.kind), e.name}];
+    std::map<std::pair<int, std::string>, int> newCounts;
+    for (int mi = 0; mi < int(model.materials.size()); ++mi)
+        ++newCounts[{int(AssetKind::Material), materialName(mi)}];
+    for (int ai = 0; ai < int(model.animations.size()); ++ai)
+        ++newCounts[{int(AssetKind::Anim), animName(ai)}];
+    ++newCounts[{int(AssetKind::Geometry), stem}];
+    for (const auto& [group, newCount] : newCounts) {
+        const auto pit = prevCounts.find(group);
+        if (pit == prevCounts.end() || pit->second == 0)
+            continue; // no previous record: fresh group, nothing to
+                      // be ambiguous against
+        if (pit->second != newCount)
+            return giveUp("ambiguous subasset remapping: the previous"
+                          " manifest has " +
+                          std::to_string(pit->second) + " " +
+                          AssetKindName(AssetKind(AssetKind(group.first))) + "(s) named '" +
+                          group.second +
+                          "' but the source now"
+                          " has " +
+                          std::to_string(newCount) +
+                          " — which"
+                          " previous identity maps where cannot be decided"
+                          " safely. Name the assets uniquely (or align the"
+                          " counts) and re-import; identity is never silently"
+                          " re-assigned");
+    }
 
-	// The subasset resolver. IDEMPOTENT per (kind, sourceIndex) — the
-	// instance material bindings re-ask for already-resolved assets
-	// (and no longer duplicate manifest rows). The LEDGER side keys on
-	// (kind, name, occurrence): the Nth previous entry of a name group
-	// is the Nth new one (the counts were verified equal above);
-	// unrecorded keys mint deterministically (from-zero reproducible).
-	std::map<std::pair<int, int>, std::string> guidByKindIndex;
-	std::map<std::pair<int, std::string>, int> occurrenceOf;
-	auto guidFor = [&](AssetKind kind, int sourceIndex,
-			const std::string& name) -> std::string {
-		const std::pair<int, int> askKey{ int(kind), sourceIndex };
-		const auto hit = guidByKindIndex.find(askKey);
-		if (hit != guidByKindIndex.end())
-			return hit->second; // already resolved (an instance
-			                    // binding re-asking its material)
-		const int occurrence =
-			occurrenceOf[{ int(kind), name }]++;
-		std::string guid;
-		if (prevLedger && !name.empty()) {
-			int seen = 0;
-			for (const AssetEntry& e : prevLedger->entries) {
-				if (int(e.kind) != int(kind) || e.name != name)
-					continue;
-				if (seen == occurrence) {
-					guid = e.guid; // the carry: identity preserved
-					               // across the content edit
-					++stats.keptGuids;
-					break;
-				}
-				++seen;
-			}
-		}
-		if (guid.empty()) {
-			guid = DerivedEntryGuidForName(manifest.guid, kind, name,
-				occurrence);
-			++stats.newGuids;
-		}
-		guidByKindIndex[askKey] = guid;
-		AssetEntry e{};
-		e.kind = kind;
-		e.sourceIndex = sourceIndex;
-		e.guid = guid;
-		manifest.entries.push_back(e);
-		return guid;
-	};
+    // The subasset resolver. IDEMPOTENT per (kind, sourceIndex) — the
+    // instance material bindings re-ask for already-resolved assets
+    // (and no longer duplicate manifest rows). The LEDGER side keys on
+    // (kind, name, occurrence): the Nth previous entry of a name group
+    // is the Nth new one (the counts were verified equal above);
+    // unrecorded keys mint deterministically (from-zero reproducible).
+    std::map<std::pair<int, int>, std::string> guidByKindIndex;
+    std::map<std::pair<int, std::string>, int> occurrenceOf;
+    auto guidFor = [&](AssetKind kind, int sourceIndex, const std::string& name) -> std::string {
+        const std::pair<int, int> askKey{int(kind), sourceIndex};
+        const auto hit = guidByKindIndex.find(askKey);
+        if (hit != guidByKindIndex.end())
+            return hit->second; // already resolved (an instance
+                                // binding re-asking its material)
+        const int occurrence = occurrenceOf[{int(kind), name}]++;
+        std::string guid;
+        if (prevLedger && !name.empty()) {
+            int seen = 0;
+            for (const AssetEntry& e : prevLedger->entries) {
+                if (int(e.kind) != int(kind) || e.name != name)
+                    continue;
+                if (seen == occurrence) {
+                    guid = e.guid; // the carry: identity preserved
+                                   // across the content edit
+                    ++stats.keptGuids;
+                    break;
+                }
+                ++seen;
+            }
+        }
+        if (guid.empty()) {
+            guid = DerivedEntryGuidForName(manifest.guid, kind, name, occurrence);
+            ++stats.newGuids;
+        }
+        guidByKindIndex[askKey] = guid;
+        AssetEntry e{};
+        e.kind = kind;
+        e.sourceIndex = sourceIndex;
+        e.guid = guid;
+        manifest.entries.push_back(e);
+        return guid;
+    };
 
-	// 3) Material assets (straight from the glTF model: the PBR values
-	// + texture refs (as-authored image URIs; sRGB = baseColor/emissive,
-	// the importer's inferSrgb convention)).
-	for (int mi = 0; mi < int(model.materials.size()); ++mi) {
-		const tinygltf::Material& gm = model.materials[size_t(mi)];
-		MaterialAsset m{};
-		// The NAME resolves the identity (the ledger's logical key) —
-		// computed BEFORE the guid ask, then the guid asks with it.
-		m.name = materialName(mi);
-		m.guid = guidFor(AssetKind::Material, mi, m.name);
-		m.info.baseColorFactor = glm::vec4(
-			float(gm.pbrMetallicRoughness.baseColorFactor[0]),
-			float(gm.pbrMetallicRoughness.baseColorFactor[1]),
-			float(gm.pbrMetallicRoughness.baseColorFactor[2]),
-			float(gm.pbrMetallicRoughness.baseColorFactor[3]));
-		m.info.metallicFactor =
-			float(gm.pbrMetallicRoughness.metallicFactor);
-		m.info.roughnessFactor =
-			float(gm.pbrMetallicRoughness.roughnessFactor);
-		m.info.emissiveFactor = glm::vec3(float(gm.emissiveFactor[0]),
-			float(gm.emissiveFactor[1]), float(gm.emissiveFactor[2]));
-		m.info.alphaMode = (gm.alphaMode == "MASK")
-			? smvk::AlphaMode::Mask : (gm.alphaMode == "BLEND")
-			? smvk::AlphaMode::Blend : smvk::AlphaMode::Opaque;
-		// Derive the shading model like the direct glTF import does: MASK
-		// -> Masked (the lit FS's cutout gates on ShadingModel::Masked; a
-		// lost flag killed the alpha test and masked foliage rendered
-		// fully opaque - the round-trip used to write shading=lit for
-		// alphaMode=mask).
-		m.info.shadingModel = (m.info.alphaMode == smvk::AlphaMode::Mask)
-			? smvk::ShadingModel::Masked
-			: smvk::ShadingModel::DefaultLit;
-		m.info.alphaCutoff = float(gm.alphaCutoff);
-		m.info.doubleSided = gm.doubleSided;
-		auto texRef = [&](int texIndex, bool srgb) {
-			MaterialAsset::TexRef r;
-			r.srgb = srgb;
-			if (texIndex < 0 || texIndex >= int(model.textures.size()))
-				return r;
-			const int img = model.textures[size_t(texIndex)].source;
-			if (img < 0 || img >= int(model.images.size()))
-				return r;
-			r.path = model.images[size_t(img)].uri;
-			return r;
-		};
-		m.baseColor = texRef(
-			gm.pbrMetallicRoughness.baseColorTexture.index, true);
-		m.metallicRoughness = texRef(
-			gm.pbrMetallicRoughness.metallicRoughnessTexture.index, false);
-		m.normalTex = texRef(gm.normalTexture.index, false);
-		m.occlusion = texRef(gm.occlusionTexture.index, false);
-		m.emissiveTex = texRef(gm.emissiveTexture.index, true);
-		// Manifest entry (file + name) + the file write.
-		const std::string file = MaterialFileName(stem, mi, m.name);
-		for (AssetEntry& e : manifest.entries)
-			if (e.kind == AssetKind::Material && e.sourceIndex == mi) {
-				e.file = file;
-				e.name = m.name;
-			}
-		WriteMaterialAsset(dir / file, m, fail);
-		++stats.materials;
-	}
+    // 3) Material assets (straight from the glTF model: the PBR values
+    // + texture refs (as-authored image URIs; sRGB = baseColor/emissive,
+    // the importer's inferSrgb convention)).
+    for (int mi = 0; mi < int(model.materials.size()); ++mi) {
+        const tinygltf::Material& gm = model.materials[size_t(mi)];
+        MaterialAsset m{};
+        // The NAME resolves the identity (the ledger's logical key) —
+        // computed BEFORE the guid ask, then the guid asks with it.
+        m.name = materialName(mi);
+        m.guid = guidFor(AssetKind::Material, mi, m.name);
+        m.info.baseColorFactor = glm::vec4(float(gm.pbrMetallicRoughness.baseColorFactor[0]),
+                                           float(gm.pbrMetallicRoughness.baseColorFactor[1]),
+                                           float(gm.pbrMetallicRoughness.baseColorFactor[2]),
+                                           float(gm.pbrMetallicRoughness.baseColorFactor[3]));
+        m.info.metallicFactor = float(gm.pbrMetallicRoughness.metallicFactor);
+        m.info.roughnessFactor = float(gm.pbrMetallicRoughness.roughnessFactor);
+        m.info.emissiveFactor = glm::vec3(
+            float(gm.emissiveFactor[0]), float(gm.emissiveFactor[1]), float(gm.emissiveFactor[2]));
+        m.info.alphaMode = (gm.alphaMode == "MASK")    ? smvk::AlphaMode::Mask
+                           : (gm.alphaMode == "BLEND") ? smvk::AlphaMode::Blend
+                                                       : smvk::AlphaMode::Opaque;
+        // Derive the shading model like the direct glTF import does: MASK
+        // -> Masked (the lit FS's cutout gates on ShadingModel::Masked; a
+        // lost flag killed the alpha test and masked foliage rendered
+        // fully opaque - the round-trip used to write shading=lit for
+        // alphaMode=mask).
+        m.info.shadingModel = (m.info.alphaMode == smvk::AlphaMode::Mask)
+                                  ? smvk::ShadingModel::Masked
+                                  : smvk::ShadingModel::DefaultLit;
+        m.info.alphaCutoff = float(gm.alphaCutoff);
+        m.info.doubleSided = gm.doubleSided;
+        auto texRef = [&](int texIndex, bool srgb) {
+            MaterialAsset::TexRef r;
+            r.srgb = srgb;
+            if (texIndex < 0 || texIndex >= int(model.textures.size()))
+                return r;
+            const int img = model.textures[size_t(texIndex)].source;
+            if (img < 0 || img >= int(model.images.size()))
+                return r;
+            r.path = model.images[size_t(img)].uri;
+            return r;
+        };
+        m.baseColor = texRef(gm.pbrMetallicRoughness.baseColorTexture.index, true);
+        m.metallicRoughness = texRef(gm.pbrMetallicRoughness.metallicRoughnessTexture.index, false);
+        m.normalTex = texRef(gm.normalTexture.index, false);
+        m.occlusion = texRef(gm.occlusionTexture.index, false);
+        m.emissiveTex = texRef(gm.emissiveTexture.index, true);
+        // Manifest entry (file + name) + the file write.
+        const std::string file = MaterialFileName(stem, mi, m.name);
+        for (AssetEntry& e : manifest.entries)
+            if (e.kind == AssetKind::Material && e.sourceIndex == mi) {
+                e.file = file;
+                e.name = m.name;
+            }
+        WriteMaterialAsset(dir / file, m, fail);
+        ++stats.materials;
+    }
 
-	// 4) The .mesh asset (from the imported cluster): the RAW hierarchy +
-	// the packed SoA geometry blobs + the material GUID bindings (the
-	// cluster material URIs carry "<...>#mat.<gltf index>").
-	MeshAsset mesh;
-	{
-		const Scene& scene = cluster->scene;
-		const size_t nodeCount = scene.hierarchy.size();
-		mesh.nodes.resize(nodeCount);
-		for (size_t i = 0; i < nodeCount; ++i) {
-			mesh.nodes[i].parent = scene.hierarchy[i].parent;
-			mesh.nodes[i].level = scene.hierarchy[i].level;
-		}
-		mesh.names.resize(nodeCount);
-		for (size_t i = 0; i < nodeCount; ++i) {
-			const uint32_t nameIdx = GetNodeNameIndex(scene, NodeId(i));
-			int id = (nameIdx != 0xFFFFFFFFu) ? int(nameIdx) : -1;
-			mesh.names[i] = (id >= 0 && id < int(scene.nodeNames.size()))
-				? scene.nodeNames[size_t(id)] : std::string();
-		}
-		mesh.locals = scene.localTransform;
-		mesh.staticRoot = scene.staticRoot;
-		mesh.noLightmap = scene.noLightmap;
-		// The cluster skeleton (the Northlight data path; the import
-		// post pass built it): the joint ids are CLUSTER scene node ids,
-		// and this node list is a 1:1 copy of that scene - so the ids
-		// ARE the asset node indices. BuildFromMeshAsset remaps them
-		// through its node mapping on restore.
-		mesh.skeleton = cluster->skeleton;
-		mesh.hasSkeleton = cluster->hasSkeleton;
-		// Geometry blobs: unique meshes in first-use order over the
-		// node-sorted instance list (deterministic; the load order
-		// matches the live import's pool order closely enough for the
-		// .tour replay contract: node ids, not pool ids, address nodes).
-		// Deterministic order: the mesh table's rows are unordered, so
-		// the (node, mesh) pair list is sorted by node before use.
-		std::vector<std::pair<uint32_t, uint32_t>> meshPairs;
-		meshPairs.reserve(scene.tables.meshes.size());
-		for (const MeshRow& r : scene.tables.meshes)
-			meshPairs.emplace_back(r.node, r.mesh);
-		std::sort(meshPairs.begin(), meshPairs.end());
-		std::unordered_map<uint32_t, uint32_t> blobOf;
-		for (const auto& [node, poolIdx] : meshPairs) {
-			uint32_t blob = 0;
-			const auto it = blobOf.find(poolIdx);
-			if (it != blobOf.end()) {
-				blob = it->second;
-			}
-			else {
-				blob = uint32_t(mesh.geometry.size());
-				blobOf.emplace(poolIdx, blob);
-				MeshAsset::Geometry g{};
-				const smvk::ClusterStaticMeshHandle h =
-					smvk::ClusterStaticMeshHandle::Mint(poolIdx);
-				// Registry: the derivation's cluster registration (the
-				// URI fragment "<mesh>#mesh.N/prim.M" — rebuilt on the
-				// .mesh path at load so cooks address it identically)
-				// + cooked meshlets + the LOD chain (sibling blobs).
-				const smvk::StringViewT uri =
-					cluster->GetMeshUri(h);
-				const std::string u = uri.Str();
-				const size_t hash = u.rfind('#');
-				g.uriFragment = (hash != std::string::npos)
-					? u.substr(hash + 1) : std::string();
-				if (auto ml = cluster->GetMeshMeshlets(uri))
-					g.meshlets = std::move(*ml);
-					if (const smvk::StaticMeshUpload* up =
-							cluster->GetRetainedUpload(h)) {
-						g.positions.resize(up->vertices.size());
-						g.shading.resize(up->vertices.size());
-						g.lightmap.resize(up->vertices.size());
-						bool charted = false;
-						for (size_t v = 0; v < up->vertices.size(); ++v) {
-							smvk::PackStaticVertex(up->vertices[v],
-								g.positions[v], g.shading[v],
-								g.lightmap[v]);
-							if (up->vertices[v].chartId != 0xFFFFFFFFu)
-								charted = true;
-						}
-						// Uncharted geometry carries NO lightmap stream
-						// (count-gated on disk; the engine blob marks it
-						// lmOff = 0).
-						if (!charted)
-							g.lightmap.clear();
-						g.indices = up->indices;
-						g.surfaces = up->surfaces;
-						g.aabbMin = up->aabbMin;
-						g.aabbMax = up->aabbMax;
-						// The skin stream (the Northlight data path): the
-						// import post pass (BuildSkinData) filled the
-						// retained upload; the .geometry carries it so
-						// cooks/paks/bakes see the same skin.
-						g.skin = up->skin;
-					}
-				// LOD chain: the registered siblings ("<fragment>/lodK")
-				// with their own streams + meshlets + LodInfo.
-				if (auto base = cluster->GetMeshLod(uri)) {
-					std::vector<MeshAsset::LodSibling> chain;
-					const uint32_t siblings = base->candidateCount > 0
-						? base->candidateCount - 1 : 0u;
-					for (uint32_t k = 0; k < siblings; ++k) {
-						const smvk::StringViewT sibUri =
-							smvk::LodSiblingUri(uri, k + 1);
-						auto sibH = cluster->FindMeshByUri(sibUri);
-						if (!sibH)
-							continue;
-						MeshAsset::LodSibling s{};
-						const std::string su = sibUri.Str();
-						const size_t sh = su.rfind('#');
-						s.geo.uriFragment = (sh != std::string::npos)
-							? su.substr(sh + 1) : std::string();
-						if (auto ml = cluster->GetMeshMeshlets(sibUri))
-							s.geo.meshlets = std::move(*ml);
-						if (const smvk::StaticMeshUpload* up =
-								cluster->GetRetainedUpload(*sibH)) {
-							s.geo.positions.resize(up->vertices.size());
-							s.geo.shading.resize(up->vertices.size());
-							s.geo.lightmap.resize(up->vertices.size());
-							bool charted = false;
-							for (size_t v = 0;
-								v < up->vertices.size(); ++v) {
-								smvk::PackStaticVertex(up->vertices[v],
-									s.geo.positions[v],
-									s.geo.shading[v], s.geo.lightmap[v]);
-								if (up->vertices[v].chartId != 0xFFFFFFFFu)
-									charted = true;
-							}
-							// Uncharted siblings carry NO lightmap stream
-							// (count-gated on disk; the engine blob marks
-							// it lmOff = 0).
-							if (!charted)
-								s.geo.lightmap.clear();
-							s.geo.indices = up->indices;
-							s.geo.surfaces = up->surfaces;
-							s.geo.aabbMin = up->aabbMin;
-							s.geo.aabbMax = up->aabbMax;
-						}
-						if (auto li = cluster->GetMeshLod(sibUri)) {
-							s.lodIndex = li->lodIndex;
-							s.simplifyError = li->simplifyError;
-							s.screenThreshold = li->screenThreshold;
-							s.triCount = li->triCount;
-							s.acmr = li->acmr;
-						}
-						chain.push_back(std::move(s));
-					}
-				if (!chain.empty()) {
-					mesh.lodChains.resize(blob + 1);
-					mesh.lodChains[blob] = std::move(chain);
-				}
-				}
-				mesh.geometry.push_back(std::move(g));
-				++stats.geometryBlobs;
-			}
-			MeshAsset::Instance inst{};
-			inst.node = node;
-			inst.geometry = blob;
-			// Material GUID: the cluster material URI fragment
-			// "#mat.<gltf index>" -> the manifest entry.
-			const MaterialRow* mRow = FindMaterial(scene, node);
-			if (mRow) {
-				const smvk::StringViewT uri =
-					cluster->GetMaterialUri(
-						smvk::ClusterMaterialHandle::Mint(mRow->material));
-				const std::string u = uri.Str();
-				const size_t at = u.rfind("#mat.");
-				if (at != std::string::npos) {
-					const int mi = std::atoi(u.c_str() + at + 5);
-					if (mi >= 0 && mi < int(model.materials.size()))
-						inst.materialGuid =
-							guidFor(AssetKind::Material, mi,
-								materialName(mi)); // idempotent:
-								                   // the material's
-								                   // guid resolved
-								                   // in its own
-								                   // loop; the
-								                   // re-ask adds
-								                   // no rows
-				}
-			}
-			mesh.instances.push_back(inst);
-			++stats.instances;
-		}
-		// Lights (the pool defs + node links).
-		for (const LightRow& _row : scene.tables.lights) {
-		const NodeId node = _row.node; const auto& poolIdx = _row.light;
-			if (auto* l = cluster->lights.get(
-					smvk::ClusterLightHandle::Mint(poolIdx))) {
-				MeshAsset::LightDef d{};
-				d.node = node;
-				d.def = *l;
-				mesh.lights.push_back(d);
-				++stats.lights;
-			}
-		}
-	}
-	// The data-blob file: "<stem>.geometry" (the pre-10/6 ".mesh" derived
-	// asset renamed; ".mesh" is the higher placeable asset's name now).
-	const std::string geometryFile = stem + ".geometry";
-	for (AssetEntry& e : manifest.entries)
-		if (e.kind == AssetKind::Geometry) {
-			e.file = geometryFile;
-			e.name = stem;
-		}
-	{
-		AssetEntry e{};
-		e.kind = AssetKind::Geometry;
-		e.sourceIndex = -1;
-		e.guid = guidFor(AssetKind::Geometry, -1, stem);
-		e.file = geometryFile;
-		e.name = stem;
-		for (AssetEntry& x : manifest.entries)
-			if (x.kind == AssetKind::Geometry && &x != &e) {
-				x.file = geometryFile;
-				x.name = stem;
-			}
-	}
-	WriteMeshAsset(dir / geometryFile, mesh, fail);
+    // 4) The .mesh asset (from the imported cluster): the RAW hierarchy +
+    // the packed SoA geometry blobs + the material GUID bindings (the
+    // cluster material URIs carry "<...>#mat.<gltf index>").
+    MeshAsset mesh;
+    {
+        const Scene& scene = cluster->scene;
+        const size_t nodeCount = scene.hierarchy.size();
+        mesh.nodes.resize(nodeCount);
+        for (size_t i = 0; i < nodeCount; ++i) {
+            mesh.nodes[i].parent = scene.hierarchy[i].parent;
+            mesh.nodes[i].level = scene.hierarchy[i].level;
+        }
+        mesh.names.resize(nodeCount);
+        for (size_t i = 0; i < nodeCount; ++i) {
+            const uint32_t nameIdx = GetNodeNameIndex(scene, NodeId(i));
+            int id = (nameIdx != 0xFFFFFFFFu) ? int(nameIdx) : -1;
+            mesh.names[i] = (id >= 0 && id < int(scene.nodeNames.size()))
+                                ? scene.nodeNames[size_t(id)]
+                                : std::string();
+        }
+        mesh.locals = scene.localTransform;
+        mesh.staticRoot = scene.staticRoot;
+        mesh.noLightmap = scene.noLightmap;
+        // The cluster skeleton (the Northlight data path; the import
+        // post pass built it): the joint ids are CLUSTER scene node ids,
+        // and this node list is a 1:1 copy of that scene - so the ids
+        // ARE the asset node indices. BuildFromMeshAsset remaps them
+        // through its node mapping on restore.
+        mesh.skeleton = cluster->skeleton;
+        mesh.hasSkeleton = cluster->hasSkeleton;
+        // Geometry blobs: unique meshes in first-use order over the
+        // node-sorted instance list (deterministic; the load order
+        // matches the live import's pool order closely enough for the
+        // .tour replay contract: node ids, not pool ids, address nodes).
+        // Deterministic order: the mesh table's rows are unordered, so
+        // the (node, mesh) pair list is sorted by node before use.
+        std::vector<std::pair<uint32_t, uint32_t>> meshPairs;
+        meshPairs.reserve(scene.tables.meshes.size());
+        for (const MeshRow& r : scene.tables.meshes)
+            meshPairs.emplace_back(r.node, r.mesh);
+        std::sort(meshPairs.begin(), meshPairs.end());
+        std::unordered_map<uint32_t, uint32_t> blobOf;
+        for (const auto& [node, poolIdx] : meshPairs) {
+            uint32_t blob = 0;
+            const auto it = blobOf.find(poolIdx);
+            if (it != blobOf.end()) {
+                blob = it->second;
+            } else {
+                blob = uint32_t(mesh.geometry.size());
+                blobOf.emplace(poolIdx, blob);
+                MeshAsset::Geometry g{};
+                const smvk::ClusterStaticMeshHandle h =
+                    smvk::ClusterStaticMeshHandle::Mint(poolIdx);
+                // Registry: the derivation's cluster registration (the
+                // URI fragment "<mesh>#mesh.N/prim.M" — rebuilt on the
+                // .mesh path at load so cooks address it identically)
+                // + cooked meshlets + the LOD chain (sibling blobs).
+                const smvk::StringViewT uri = cluster->GetMeshUri(h);
+                const std::string u = uri.Str();
+                const size_t hash = u.rfind('#');
+                g.uriFragment = (hash != std::string::npos) ? u.substr(hash + 1) : std::string();
+                if (auto ml = cluster->GetMeshMeshlets(uri))
+                    g.meshlets = std::move(*ml);
+                if (const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(h)) {
+                    g.positions.resize(up->vertices.size());
+                    g.shading.resize(up->vertices.size());
+                    g.lightmap.resize(up->vertices.size());
+                    bool charted = false;
+                    for (size_t v = 0; v < up->vertices.size(); ++v) {
+                        smvk::PackStaticVertex(
+                            up->vertices[v], g.positions[v], g.shading[v], g.lightmap[v]);
+                        if (up->vertices[v].chartId != 0xFFFFFFFFu)
+                            charted = true;
+                    }
+                    // Uncharted geometry carries NO lightmap stream
+                    // (count-gated on disk; the engine blob marks it
+                    // lmOff = 0).
+                    if (!charted)
+                        g.lightmap.clear();
+                    g.indices = up->indices;
+                    g.surfaces = up->surfaces;
+                    g.aabbMin = up->aabbMin;
+                    g.aabbMax = up->aabbMax;
+                    // The skin stream (the Northlight data path): the
+                    // import post pass (BuildSkinData) filled the
+                    // retained upload; the .geometry carries it so
+                    // cooks/paks/bakes see the same skin.
+                    g.skin = up->skin;
+                }
+                // LOD chain: the registered siblings ("<fragment>/lodK")
+                // with their own streams + meshlets + LodInfo.
+                if (auto base = cluster->GetMeshLod(uri)) {
+                    std::vector<MeshAsset::LodSibling> chain;
+                    const uint32_t siblings =
+                        base->candidateCount > 0 ? base->candidateCount - 1 : 0u;
+                    for (uint32_t k = 0; k < siblings; ++k) {
+                        const smvk::StringViewT sibUri = smvk::LodSiblingUri(uri, k + 1);
+                        auto sibH = cluster->FindMeshByUri(sibUri);
+                        if (!sibH)
+                            continue;
+                        MeshAsset::LodSibling s{};
+                        const std::string su = sibUri.Str();
+                        const size_t sh = su.rfind('#');
+                        s.geo.uriFragment =
+                            (sh != std::string::npos) ? su.substr(sh + 1) : std::string();
+                        if (auto ml = cluster->GetMeshMeshlets(sibUri))
+                            s.geo.meshlets = std::move(*ml);
+                        if (const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(*sibH)) {
+                            s.geo.positions.resize(up->vertices.size());
+                            s.geo.shading.resize(up->vertices.size());
+                            s.geo.lightmap.resize(up->vertices.size());
+                            bool charted = false;
+                            for (size_t v = 0; v < up->vertices.size(); ++v) {
+                                smvk::PackStaticVertex(up->vertices[v],
+                                                       s.geo.positions[v],
+                                                       s.geo.shading[v],
+                                                       s.geo.lightmap[v]);
+                                if (up->vertices[v].chartId != 0xFFFFFFFFu)
+                                    charted = true;
+                            }
+                            // Uncharted siblings carry NO lightmap stream
+                            // (count-gated on disk; the engine blob marks
+                            // it lmOff = 0).
+                            if (!charted)
+                                s.geo.lightmap.clear();
+                            s.geo.indices = up->indices;
+                            s.geo.surfaces = up->surfaces;
+                            s.geo.aabbMin = up->aabbMin;
+                            s.geo.aabbMax = up->aabbMax;
+                        }
+                        if (auto li = cluster->GetMeshLod(sibUri)) {
+                            s.lodIndex = li->lodIndex;
+                            s.simplifyError = li->simplifyError;
+                            s.screenThreshold = li->screenThreshold;
+                            s.triCount = li->triCount;
+                            s.acmr = li->acmr;
+                        }
+                        chain.push_back(std::move(s));
+                    }
+                    if (!chain.empty()) {
+                        mesh.lodChains.resize(blob + 1);
+                        mesh.lodChains[blob] = std::move(chain);
+                    }
+                }
+                mesh.geometry.push_back(std::move(g));
+                ++stats.geometryBlobs;
+            }
+            MeshAsset::Instance inst{};
+            inst.node = node;
+            inst.geometry = blob;
+            // Material GUID: the cluster material URI fragment
+            // "#mat.<gltf index>" -> the manifest entry.
+            const MaterialRow* mRow = FindMaterial(scene, node);
+            if (mRow) {
+                const smvk::StringViewT uri =
+                    cluster->GetMaterialUri(smvk::ClusterMaterialHandle::Mint(mRow->material));
+                const std::string u = uri.Str();
+                const size_t at = u.rfind("#mat.");
+                if (at != std::string::npos) {
+                    const int mi = std::atoi(u.c_str() + at + 5);
+                    if (mi >= 0 && mi < int(model.materials.size()))
+                        inst.materialGuid = guidFor(AssetKind::Material,
+                                                    mi,
+                                                    materialName(mi)); // idempotent:
+                                                                       // the material's
+                                                                       // guid resolved
+                                                                       // in its own
+                                                                       // loop; the
+                                                                       // re-ask adds
+                                                                       // no rows
+                }
+            }
+            mesh.instances.push_back(inst);
+            ++stats.instances;
+        }
+        // Lights (the pool defs + node links).
+        for (const LightRow& _row : scene.tables.lights) {
+            const NodeId node = _row.node;
+            const auto& poolIdx = _row.light;
+            if (auto* l = cluster->lights.get(smvk::ClusterLightHandle::Mint(poolIdx))) {
+                MeshAsset::LightDef d{};
+                d.node = node;
+                d.def = *l;
+                mesh.lights.push_back(d);
+                ++stats.lights;
+            }
+        }
+    }
+    // The data-blob file: "<stem>.geometry" (the pre-10/6 ".mesh" derived
+    // asset renamed; ".mesh" is the higher placeable asset's name now).
+    const std::string geometryFile = stem + ".geometry";
+    for (AssetEntry& e : manifest.entries)
+        if (e.kind == AssetKind::Geometry) {
+            e.file = geometryFile;
+            e.name = stem;
+        }
+    {
+        AssetEntry e{};
+        e.kind = AssetKind::Geometry;
+        e.sourceIndex = -1;
+        e.guid = guidFor(AssetKind::Geometry, -1, stem);
+        e.file = geometryFile;
+        e.name = stem;
+        for (AssetEntry& x : manifest.entries)
+            if (x.kind == AssetKind::Geometry && &x != &e) {
+                x.file = geometryFile;
+                x.name = stem;
+            }
+    }
+    WriteMeshAsset(dir / geometryFile, mesh, fail);
 
-	// 5) Animation assets (the .tourAnim format; tracks retargeted onto
-	// the .geometry's node ids via the import's gltf node map).
-	for (int ai = 0; ai < int(model.animations.size()); ++ai) {
-		const tinygltf::Animation& ga = model.animations[size_t(ai)];
-		smvk::touranim::AnimDoc doc{};
-		doc.source = std::filesystem::path(gltfPath).filename().string();
-		smvk::touranim::Clip clip{};
-		clip.name = ga.name.empty()
-			? ("anim" + std::to_string(ai)) : ga.name;
-		// The anim's identity ask (the manifest row + the ledger
-		// carry): NAME-keyed like materials — a re-import keeps a
-		// NAMED animation's GUID wherever cooks/.tours expect it, and
-		// the row (with the fallback-named display name — never the
-		// EMPTY raw name, which could not key the ledger) lands in
-		// the manifest like materials always did.
-		(void)guidFor(AssetKind::Anim, ai, clip.name);
-		double lastT = 0.0;
-		for (const tinygltf::AnimationChannel& ch : ga.channels) {
-			if (ch.sampler < 0
-				|| ch.sampler >= int(ga.samplers.size()))
-				continue;
-			const int target = ch.target_node;
-			if (target < 0 || target >= int(gltfNodeMap.size()))
-				continue;
-			const int joint = gltfNodeMap[size_t(target)];
-			if (joint < 0)
-				continue;
-			const tinygltf::AnimationSampler& s =
-				ga.samplers[size_t(ch.sampler)];
-			// Output values: a VEC3 (translate/scale) or a quat (rotate).
-			if (s.output < 0 || s.output >= int(model.accessors.size()))
-				continue;
-			const tinygltf::Accessor& out =
-				model.accessors[size_t(s.output)];
-			const tinygltf::Accessor& in =
-				(s.input >= 0 && s.input < int(model.accessors.size()))
-				? model.accessors[size_t(s.input)]
-				: tinygltf::Accessor{};
-			const size_t keys = std::min(size_t(out.count),
-				size_t(in.count));
-			if (keys == 0)
-				continue;
-			smvk::touranim::Track t{};
-			t.joint = uint32_t(joint);
-			t.name = (target >= 0 && target < int(model.nodes.size()))
-				? model.nodes[size_t(target)].name : std::string();
-			t.channel = (ch.target_path == "rotation")
-				? smvk::touranim::Channel::Rotate
-				: (ch.target_path == "scale")
-				? smvk::touranim::Channel::Scale
-				: smvk::touranim::Channel::Translate;
-			// RUNTIME-convention keys: the track REPLACES the node's
-			// whole channel in the RUNTIME's local space, and the
-			// import conjugates each CHAIN TOP node's local by the
-			// coordFix basis (clusterLocal = C * rawLocal; descendants
-			// keep rawLocal verbatim). The raw glTF sampler keys match
-			// only the DESCENDANTS - writing them raw for a top node
-			// SNAPS the whole chain by the basis at the first sample
-			// (the knight: the root's raw -15.3deg yaw key replaced the
-			// C-conjugated +164.7deg bind, and every palette entry
-			// inherited a conjugated -180deg - the deformed body flipped
-			// front-to-back while the draw frame stayed put). Derive the
-			// per-node basis C = clusterLocal * rawLocal^-1 (identity
-			// for descendants, the coordFix basis for tops) and
-			// conjugate the keys through it.
-			glm::mat4 basis(1.0f);
-			glm::vec3 basisScale(1.0f);
-			{
-				const glm::mat4 rawLocal =
-					GetNodeLocalTransform(model.nodes[size_t(target)]);
-				if (joint < int(cluster->scene.localTransform.size())) {
-					basis = cluster->scene.localTransform[size_t(joint)]
-						* glm::inverse(rawLocal);
-					basisScale = glm::vec3(
-						glm::length(glm::vec3(basis[0])),
-						glm::length(glm::vec3(basis[1])),
-						glm::length(glm::vec3(basis[2])));
-					// The conjugation below decomposes C*T*R*S into
-					// T'*R'*S' exactly only while C is a similarity
-					// (uniform scale, no shear). The coordFix bases
-					// (identity / rotY(180) / Y-mirror, no scale) and
-					// uniform preTransforms qualify; anything else warns
-					// (the keys still go out conjugated - better than
-					// the raw snap - but the TRS decomposition is lossy).
-					const float eps = 1e-3f;
-					if (glm::abs(basisScale.x - basisScale.y) > eps
-						|| glm::abs(basisScale.y - basisScale.z) > eps) {
-						std::cerr << "[Anim] node '" << t.name
-							<< "' basis is non-uniform ("
-							<< basisScale.x << "/" << basisScale.y
-							<< "/" << basisScale.z << ") - key"
-							" conjugation is approximate\n";
-					}
-				}
-			}
-			const bool identityBasis =
-				glm::abs(basis[0].x - 1.0f) < 1e-6f
-				&& glm::abs(basis[1].y - 1.0f) < 1e-6f
-				&& glm::abs(basis[2].z - 1.0f) < 1e-6f
-				&& glm::abs(basis[3].x) < 1e-6f
-				&& glm::abs(basis[3].y) < 1e-6f
-				&& glm::abs(basis[3].z) < 1e-6f
-				&& glm::abs(basis[0].y) + glm::abs(basis[0].z)
-					+ glm::abs(basis[1].x) + glm::abs(basis[1].z)
-					+ glm::abs(basis[2].x) + glm::abs(basis[2].y) < 1e-6f;
-			t.spline = (s.interpolation == "STEP")
-				? smvk::touranim::Spline::Step
-				: (s.interpolation == "CUBICSPLINE")
-				? smvk::touranim::Spline::CatmullRom
-				: smvk::touranim::Spline::Linear;
-			for (size_t k = 0; k < keys; ++k) {
-				smvk::touranim::Key key{};
-				// Component-type-aware reads (AnimReadValue): the raw
-				// AnimAccessorPtr<double> reinterpreted FLOAT accessor
-				// data as doubles - the knight's tracks came out as
-				// 2.67e+13 translates and 4e-10 key times.
-				if (!AnimReadValue(model, in, k, &key.t, 1))
-					break;
-				lastT = std::max(lastT, key.t);
-				if (t.channel == smvk::touranim::Channel::Rotate) {
-					double q[4] = {};
-					if (!AnimReadValue(model, out, k, q, 4))
-						break;
-					// glTF stores rotate keys as unit quats (x, y, z,
-					// w) - EXACTLY the .tourAnim contract (touranim.h:
-					// "4 for rotate (UNIT QUATERNION xyzw)"). No glm
-					// quat-ctor-order (w,x,y,z) swizzle here: key.v is a
-					// plain vec4 the runtime reads componentwise as
-					// xyzw (SampleAnimation's quat(v.w, v.x, v.y, v.z)
-					// ctor); the earlier w-first swizzle permuted every
-					// channel of every rotate key into garbage poses.
-					glm::quat rot{float(q[3]), float(q[0]), float(q[1]),
-						float(q[2])};
-					if (!identityBasis) {
-						// The runtime composes the local as T * R * S
-						// and the true animated top local is
-						// C * T * R * S = T' * (C_rot * R) * (|C| * S):
-						// the rotate key is the LEFT-COMPOSED rotation
-						// (q_C * q), NOT the conjugate (C*R*C^-1 - a
-						// yaw under the knight's rotY(180) fix commutes
-						// with it and the conjugate silently kept the
-						// raw key, snapping the root by the full basis).
-						// Strip |C| first so quat_cast sees a rotation.
-						const float meanScale =
-							(basisScale.x + basisScale.y + basisScale.z)
-							/ 3.0f;
-						const glm::mat3 c3 = glm::mat3(basis)
-							/ (std::abs(meanScale) > 1e-9f
-								? meanScale : 1.0f);
-						rot = glm::quat_cast(c3) * rot;
-					}
-					key.v = glm::vec4(rot.x, rot.y, rot.z, rot.w);
-				}
-				else {
-					double v3[3] = {};
-					if (!AnimReadValue(model, out, k, v3, 3))
-						break;
-					glm::vec3 val{float(v3[0]), float(v3[1]),
-						float(v3[2])};
-					if (!identityBasis) {
-						if (t.channel == smvk::touranim::Channel::Translate)
-							// C * T * R * S keeps the translation column
-							// C3*t + C's own translation (the full
-							// affine; coordFix bases carry none).
-							val = glm::vec3(basis * glm::vec4(val, 1.0f));
-						else // Scale: |C| per axis * S.
-							val *= basisScale;
-					}
-					key.v = glm::vec4(val, 1.0f);
-				}
-				t.keys.push_back(key);
-			}
-			if (!t.keys.empty())
-				clip.tracks.push_back(std::move(t));
-		}
-		clip.duration = lastT;
-		doc.clips.push_back(std::move(clip));
-		const std::string file = AnimFileName(stem, ai, ga.name);
-		std::string aerr;
-		WriteTourAnimAsset(dir / file, doc, aerr);
-		for (AssetEntry& e : manifest.entries)
-			if (e.kind == AssetKind::Anim && e.sourceIndex == ai) {
-				e.file = file;
-				e.name = clip.name; // the fallback-named key (never
-				                    // empty — the ledger's name group)
-			}
-		++stats.anims;
-	}
+    // 5) Animation assets (the .tourAnim format; tracks retargeted onto
+    // the .geometry's node ids via the import's gltf node map).
+    for (int ai = 0; ai < int(model.animations.size()); ++ai) {
+        const tinygltf::Animation& ga = model.animations[size_t(ai)];
+        smvk::touranim::AnimDoc doc{};
+        doc.source = std::filesystem::path(gltfPath).filename().string();
+        smvk::touranim::Clip clip{};
+        clip.name = ga.name.empty() ? ("anim" + std::to_string(ai)) : ga.name;
+        // The anim's identity ask (the manifest row + the ledger
+        // carry): NAME-keyed like materials — a re-import keeps a
+        // NAMED animation's GUID wherever cooks/.tours expect it, and
+        // the row (with the fallback-named display name — never the
+        // EMPTY raw name, which could not key the ledger) lands in
+        // the manifest like materials always did.
+        (void)guidFor(AssetKind::Anim, ai, clip.name);
+        double lastT = 0.0;
+        for (const tinygltf::AnimationChannel& ch : ga.channels) {
+            if (ch.sampler < 0 || ch.sampler >= int(ga.samplers.size()))
+                continue;
+            const int target = ch.target_node;
+            if (target < 0 || target >= int(gltfNodeMap.size()))
+                continue;
+            const int joint = gltfNodeMap[size_t(target)];
+            if (joint < 0)
+                continue;
+            const tinygltf::AnimationSampler& s = ga.samplers[size_t(ch.sampler)];
+            // Output values: a VEC3 (translate/scale) or a quat (rotate).
+            if (s.output < 0 || s.output >= int(model.accessors.size()))
+                continue;
+            const tinygltf::Accessor& out = model.accessors[size_t(s.output)];
+            const tinygltf::Accessor& in = (s.input >= 0 && s.input < int(model.accessors.size()))
+                                               ? model.accessors[size_t(s.input)]
+                                               : tinygltf::Accessor{};
+            const size_t keys = std::min(size_t(out.count), size_t(in.count));
+            if (keys == 0)
+                continue;
+            smvk::touranim::Track t{};
+            t.joint = uint32_t(joint);
+            t.name = (target >= 0 && target < int(model.nodes.size()))
+                         ? model.nodes[size_t(target)].name
+                         : std::string();
+            t.channel = (ch.target_path == "rotation") ? smvk::touranim::Channel::Rotate
+                        : (ch.target_path == "scale")  ? smvk::touranim::Channel::Scale
+                                                       : smvk::touranim::Channel::Translate;
+            // RUNTIME-convention keys: the track REPLACES the node's
+            // whole channel in the RUNTIME's local space, and the
+            // import conjugates each CHAIN TOP node's local by the
+            // coordFix basis (clusterLocal = C * rawLocal; descendants
+            // keep rawLocal verbatim). The raw glTF sampler keys match
+            // only the DESCENDANTS - writing them raw for a top node
+            // SNAPS the whole chain by the basis at the first sample
+            // (the knight: the root's raw -15.3deg yaw key replaced the
+            // C-conjugated +164.7deg bind, and every palette entry
+            // inherited a conjugated -180deg - the deformed body flipped
+            // front-to-back while the draw frame stayed put). Derive the
+            // per-node basis C = clusterLocal * rawLocal^-1 (identity
+            // for descendants, the coordFix basis for tops) and
+            // conjugate the keys through it.
+            glm::mat4 basis(1.0f);
+            glm::vec3 basisScale(1.0f);
+            {
+                const glm::mat4 rawLocal = GetNodeLocalTransform(model.nodes[size_t(target)]);
+                if (joint < int(cluster->scene.localTransform.size())) {
+                    basis = cluster->scene.localTransform[size_t(joint)] * glm::inverse(rawLocal);
+                    basisScale = glm::vec3(glm::length(glm::vec3(basis[0])),
+                                           glm::length(glm::vec3(basis[1])),
+                                           glm::length(glm::vec3(basis[2])));
+                    // The conjugation below decomposes C*T*R*S into
+                    // T'*R'*S' exactly only while C is a similarity
+                    // (uniform scale, no shear). The coordFix bases
+                    // (identity / rotY(180) / Y-mirror, no scale) and
+                    // uniform preTransforms qualify; anything else warns
+                    // (the keys still go out conjugated - better than
+                    // the raw snap - but the TRS decomposition is lossy).
+                    const float eps = 1e-3f;
+                    if (glm::abs(basisScale.x - basisScale.y) > eps ||
+                        glm::abs(basisScale.y - basisScale.z) > eps) {
+                        std::cerr << "[Anim] node '" << t.name << "' basis is non-uniform ("
+                                  << basisScale.x << "/" << basisScale.y << "/" << basisScale.z
+                                  << ") - key"
+                                     " conjugation is approximate\n";
+                    }
+                }
+            }
+            const bool identityBasis =
+                glm::abs(basis[0].x - 1.0f) < 1e-6f && glm::abs(basis[1].y - 1.0f) < 1e-6f &&
+                glm::abs(basis[2].z - 1.0f) < 1e-6f && glm::abs(basis[3].x) < 1e-6f &&
+                glm::abs(basis[3].y) < 1e-6f && glm::abs(basis[3].z) < 1e-6f &&
+                glm::abs(basis[0].y) + glm::abs(basis[0].z) + glm::abs(basis[1].x) +
+                        glm::abs(basis[1].z) + glm::abs(basis[2].x) + glm::abs(basis[2].y) <
+                    1e-6f;
+            t.spline = (s.interpolation == "STEP")          ? smvk::touranim::Spline::Step
+                       : (s.interpolation == "CUBICSPLINE") ? smvk::touranim::Spline::CatmullRom
+                                                            : smvk::touranim::Spline::Linear;
+            for (size_t k = 0; k < keys; ++k) {
+                smvk::touranim::Key key{};
+                // Component-type-aware reads (AnimReadValue): the raw
+                // AnimAccessorPtr<double> reinterpreted FLOAT accessor
+                // data as doubles - the knight's tracks came out as
+                // 2.67e+13 translates and 4e-10 key times.
+                if (!AnimReadValue(model, in, k, &key.t, 1))
+                    break;
+                lastT = std::max(lastT, key.t);
+                if (t.channel == smvk::touranim::Channel::Rotate) {
+                    double q[4] = {};
+                    if (!AnimReadValue(model, out, k, q, 4))
+                        break;
+                    // glTF stores rotate keys as unit quats (x, y, z,
+                    // w) - EXACTLY the .tourAnim contract (touranim.h:
+                    // "4 for rotate (UNIT QUATERNION xyzw)"). No glm
+                    // quat-ctor-order (w,x,y,z) swizzle here: key.v is a
+                    // plain vec4 the runtime reads componentwise as
+                    // xyzw (SampleAnimation's quat(v.w, v.x, v.y, v.z)
+                    // ctor); the earlier w-first swizzle permuted every
+                    // channel of every rotate key into garbage poses.
+                    glm::quat rot{float(q[3]), float(q[0]), float(q[1]), float(q[2])};
+                    if (!identityBasis) {
+                        // The runtime composes the local as T * R * S
+                        // and the true animated top local is
+                        // C * T * R * S = T' * (C_rot * R) * (|C| * S):
+                        // the rotate key is the LEFT-COMPOSED rotation
+                        // (q_C * q), NOT the conjugate (C*R*C^-1 - a
+                        // yaw under the knight's rotY(180) fix commutes
+                        // with it and the conjugate silently kept the
+                        // raw key, snapping the root by the full basis).
+                        // Strip |C| first so quat_cast sees a rotation.
+                        const float meanScale = (basisScale.x + basisScale.y + basisScale.z) / 3.0f;
+                        const glm::mat3 c3 =
+                            glm::mat3(basis) / (std::abs(meanScale) > 1e-9f ? meanScale : 1.0f);
+                        rot = glm::quat_cast(c3) * rot;
+                    }
+                    key.v = glm::vec4(rot.x, rot.y, rot.z, rot.w);
+                } else {
+                    double v3[3] = {};
+                    if (!AnimReadValue(model, out, k, v3, 3))
+                        break;
+                    glm::vec3 val{float(v3[0]), float(v3[1]), float(v3[2])};
+                    if (!identityBasis) {
+                        if (t.channel == smvk::touranim::Channel::Translate)
+                            // C * T * R * S keeps the translation column
+                            // C3*t + C's own translation (the full
+                            // affine; coordFix bases carry none).
+                            val = glm::vec3(basis * glm::vec4(val, 1.0f));
+                        else // Scale: |C| per axis * S.
+                            val *= basisScale;
+                    }
+                    key.v = glm::vec4(val, 1.0f);
+                }
+                t.keys.push_back(key);
+            }
+            if (!t.keys.empty())
+                clip.tracks.push_back(std::move(t));
+        }
+        clip.duration = lastT;
+        doc.clips.push_back(std::move(clip));
+        const std::string file = AnimFileName(stem, ai, ga.name);
+        std::string aerr;
+        WriteTourAnimAsset(dir / file, doc, aerr);
+        for (AssetEntry& e : manifest.entries)
+            if (e.kind == AssetKind::Anim && e.sourceIndex == ai) {
+                e.file = file;
+                e.name = clip.name; // the fallback-named key (never
+                                    // empty — the ledger's name group)
+            }
+        ++stats.anims;
+    }
 
-	// 6) The manifest.
-	if (!SaveAssetManifest(gltfPath, manifest, fail))
-		return giveUp("manifest write failed: " + fail);
-	outManifest = std::move(manifest);
-	if (outStats)
-		*outStats = stats;
-	return true;
+    // 6) The manifest.
+    if (!SaveAssetManifest(gltfPath, manifest, fail))
+        return giveUp("manifest write failed: " + fail);
+    outManifest = std::move(manifest);
+    if (outStats)
+        *outStats = stats;
+    return true;
 }
 
-bool ImportMeshSource(
-	const std::filesystem::path& gltfPath, const std::string& gltfGuid,
-	const AssetManifest* prevIdentity, const DeriveConfig& config,
-	AssetManifest& outManifest, DeriveStats* outStats, std::string* err) {
-	auto giveUp = [&](const std::string& e) {
-		if (err)
-			*err = e;
-		return false;
-	};
-	// Host-side parse (mesh sources are import-time SOURCE formats —
-	// never runtime/VFS content; see the header). One loader for every
-	// format: glTF ASCII / GLB binary / the OBJ adapter, with embedded
-	// images extracted to sidecar files and the non-glTF dependencies
-	// (an OBJ's .mtl libraries) reported alongside.
-	tinygltf::Model model;
-	std::vector<std::string> extraDeps;
-	if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(),
-			&extraDeps))
-		return giveUp("source parse failed: "
-			+ gltfPath.generic_string());
-	return DeriveGltfAssets(model, gltfPath, gltfGuid, prevIdentity,
-		config, outManifest, outStats, err, extraDeps);
+bool ImportMeshSource(const std::filesystem::path& gltfPath,
+                      const std::string& gltfGuid,
+                      const AssetManifest* prevIdentity,
+                      const DeriveConfig& config,
+                      AssetManifest& outManifest,
+                      DeriveStats* outStats,
+                      std::string* err) {
+    auto giveUp = [&](const std::string& e) {
+        if (err)
+            *err = e;
+        return false;
+    };
+    // Host-side parse (mesh sources are import-time SOURCE formats —
+    // never runtime/VFS content; see the header). One loader for every
+    // format: glTF ASCII / GLB binary / the OBJ adapter, with embedded
+    // images extracted to sidecar files and the non-glTF dependencies
+    // (an OBJ's .mtl libraries) reported alongside.
+    tinygltf::Model model;
+    std::vector<std::string> extraDeps;
+    if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(), &extraDeps))
+        return giveUp("source parse failed: " + gltfPath.generic_string());
+    return DeriveGltfAssets(
+        model, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps);
 }
 
 std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {
-	// The content identity: hash the SOURCE FILE bytes. Registered in the
-	// .meta (sourcedigest=) AND used as the from-zero asset GUID (see
-	// DeriveGltfAssets). Read errors fall back to the file name — a
-	// deterministic-but-weaker identity beats none (the derivation's own
-	// read of the glTF would fail loudly right after anyway).
-	std::ifstream in(gltfPath, std::ios::binary);
-	if (!in)
-		return GuidHexFromBytes(gltfPath.generic_string().data(),
-			gltfPath.generic_string().size());
-	const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
-		std::istreambuf_iterator<char>());
-	return GuidHexFromBytes(bytes.data(), bytes.size());
+    // The content identity: hash the SOURCE FILE bytes. Registered in the
+    // .meta (sourcedigest=) AND used as the from-zero asset GUID (see
+    // DeriveGltfAssets). Read errors fall back to the file name — a
+    // deterministic-but-weaker identity beats none (the derivation's own
+    // read of the glTF would fail loudly right after anyway).
+    std::ifstream in(gltfPath, std::ios::binary);
+    if (!in)
+        return GuidHexFromBytes(gltfPath.generic_string().data(), gltfPath.generic_string().size());
+    const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                     std::istreambuf_iterator<char>());
+    return GuidHexFromBytes(bytes.data(), bytes.size());
 }
 
 std::string SourceContentDigest(const std::filesystem::path& gltfPath,
-	const tinygltf::Model& model,
-	const std::vector<std::string>& extraSourceDeps) {
-	namespace fs = std::filesystem;
-	// Seed: the source bytes (missing/unreadable = the path string — the
-	// derivation's own read fails loudly right after anyway).
-	std::vector<uint8_t> seed;
-	{
-		std::ifstream in(gltfPath, std::ios::binary);
-		if (in)
-			seed.assign(std::istreambuf_iterator<char>(in),
-				std::istreambuf_iterator<char>());
-	}
-	if (seed.empty()) {
-		const std::string p = gltfPath.generic_string();
-		seed.assign(p.begin(), p.end());
-	}
-	// Dependencies: external buffer + image URIs, SORTED by authored URI
-	// (deterministic regardless of glTF section order; relative stays
-	// relative — machine-independent). data: URIs are embedded (already
-	// in the hashed bytes; those that survived the load extract to
-	// sidecar files and arrive as ordinary URIs). extraSourceDeps are
-	// the non-glTF dependencies the synthetic model cannot express (the
-	// .mtl libraries of an OBJ source) — they ride the same set.
-	std::set<std::string> uris;
-	auto collect = [&](const std::string& uri) {
-		if (uri.empty() || uri.rfind("data:", 0) == 0)
-			return;
-		uris.insert(uri);
-	};
-	for (const auto& b : model.buffers)
-		collect(b.uri);
-	for (const auto& im : model.images)
-		collect(im.uri);
-	for (const std::string& dep : extraSourceDeps)
-		collect(dep);
-	const fs::path dir = gltfPath.parent_path();
-	std::vector<uint8_t> all = seed;
-	for (const std::string& uri : uris) {
-		all.push_back(0);
-		all.insert(all.end(), uri.begin(), uri.end());
-		all.push_back(0);
-		const bool remote = uri.rfind("http://", 0) == 0
-			|| uri.rfind("https://", 0) == 0;
-		bool hashed = false;
-		if (!remote) {
-			const fs::path full = fs::path(uri).is_absolute()
-				? fs::path(uri) : dir / fs::path(uri);
-			std::ifstream in(full, std::ios::binary);
-			if (in) {
-				const std::vector<uint8_t> bytes(
-					(std::istreambuf_iterator<char>(in)),
-					std::istreambuf_iterator<char>());
-				all.insert(all.end(), bytes.begin(), bytes.end());
-				hashed = true;
-			}
-		}
-		if (!hashed) {
-			// Missing/unreadable/remote: the URI is the identity (a
-			// deleted texture re-derives — the digest can never match a
-			// recorded bytes-digest; a remote pin is content-constant).
-			const std::string mark = ":missing:" + uri;
-			all.insert(all.end(), mark.begin(), mark.end());
-		}
-	}
-	return GuidHexFromBytes(all.data(), all.size());
+                                const tinygltf::Model& model,
+                                const std::vector<std::string>& extraSourceDeps) {
+    namespace fs = std::filesystem;
+    // Seed: the source bytes (missing/unreadable = the path string — the
+    // derivation's own read fails loudly right after anyway).
+    std::vector<uint8_t> seed;
+    {
+        std::ifstream in(gltfPath, std::ios::binary);
+        if (in)
+            seed.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    if (seed.empty()) {
+        const std::string p = gltfPath.generic_string();
+        seed.assign(p.begin(), p.end());
+    }
+    // Dependencies: external buffer + image URIs, SORTED by authored URI
+    // (deterministic regardless of glTF section order; relative stays
+    // relative — machine-independent). data: URIs are embedded (already
+    // in the hashed bytes; those that survived the load extract to
+    // sidecar files and arrive as ordinary URIs). extraSourceDeps are
+    // the non-glTF dependencies the synthetic model cannot express (the
+    // .mtl libraries of an OBJ source) — they ride the same set.
+    std::set<std::string> uris;
+    auto collect = [&](const std::string& uri) {
+        if (uri.empty() || uri.rfind("data:", 0) == 0)
+            return;
+        uris.insert(uri);
+    };
+    for (const auto& b : model.buffers)
+        collect(b.uri);
+    for (const auto& im : model.images)
+        collect(im.uri);
+    for (const std::string& dep : extraSourceDeps)
+        collect(dep);
+    const fs::path dir = gltfPath.parent_path();
+    std::vector<uint8_t> all = seed;
+    for (const std::string& uri : uris) {
+        all.push_back(0);
+        all.insert(all.end(), uri.begin(), uri.end());
+        all.push_back(0);
+        const bool remote = uri.rfind("http://", 0) == 0 || uri.rfind("https://", 0) == 0;
+        bool hashed = false;
+        if (!remote) {
+            const fs::path full = fs::path(uri).is_absolute() ? fs::path(uri) : dir / fs::path(uri);
+            std::ifstream in(full, std::ios::binary);
+            if (in) {
+                const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                                 std::istreambuf_iterator<char>());
+                all.insert(all.end(), bytes.begin(), bytes.end());
+                hashed = true;
+            }
+        }
+        if (!hashed) {
+            // Missing/unreadable/remote: the URI is the identity (a
+            // deleted texture re-derives — the digest can never match a
+            // recorded bytes-digest; a remote pin is content-constant).
+            const std::string mark = ":missing:" + uri;
+            all.insert(all.end(), mark.begin(), mark.end());
+        }
+    }
+    return GuidHexFromBytes(all.data(), all.size());
 }
 
 bool ImportTextureSource(const std::filesystem::path& imagePath,
-	bool force, std::string& outTexturePath, std::string* err) {
-	namespace fs = std::filesystem;
-	auto giveUp = [&](const std::string& e) {
-		if (err)
-			*err = e;
-		return false;
-	};
-	std::error_code ec;
-	if (!fs::is_regular_file(imagePath, ec))
-		return giveUp("input not found: " + imagePath.generic_string());
-	// Editor CreateTextureAsset parity (the supported set).
-	std::string ext = imagePath.extension().string();
-	for (char& c : ext)
-		c = char(std::tolower((unsigned char)c));
-	static const char* kSupported[] = { ".png", ".jpg", ".jpeg",
-		".tga", ".bmp", ".ktx2" };
-	bool ok = false;
-	for (const char* k : kSupported)
-		ok = ok || (ext == k);
-	if (!ok)
-		return giveUp("unsupported image '" + ext + "' (want "
-			"png/jpg/jpeg/tga/bmp/ktx2): " + imagePath.generic_string());
-	const std::string stem = imagePath.stem().string();
-	const fs::path texPath = imagePath.parent_path() / (stem + ".texture");
-	outTexturePath = texPath.generic_string();
-	// Settings live in the .texture (delete it to re-create — editor
-	// parity); a source repaint flows through the loose read at cook,
-	// so an existing file is never stale.
-	if (fs::is_regular_file(texPath, ec) && !force)
-		return true;
-	std::ifstream in(imagePath, std::ios::binary);
-	if (!in)
-		return giveUp("cannot read: " + imagePath.generic_string());
-	const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
-		std::istreambuf_iterator<char>());
-	if (bytes.empty())
-		return giveUp("image file is empty: " + imagePath.generic_string());
-	// Editor defaults (sRGB/rgba8/full-chain/repeat/linear — see the
-	// TextureAsset rows); the guid is the CONTENT digest (deterministic;
-	// the editor mints random ones — same format, both valid).
-	TextureAsset t{};
-	t.guid = GuidHexFromBytes(bytes.data(), bytes.size());
-	t.name = stem;
-	t.source = imagePath.filename().generic_string();
-	std::string serr;
-	if (!SaveTextureAsset(texPath, t, serr))
-		return giveUp("cannot write '" + texPath.generic_string()
-			+ "': " + serr);
-	return true;
+                         bool force,
+                         std::string& outTexturePath,
+                         std::string* err) {
+    namespace fs = std::filesystem;
+    auto giveUp = [&](const std::string& e) {
+        if (err)
+            *err = e;
+        return false;
+    };
+    std::error_code ec;
+    if (!fs::is_regular_file(imagePath, ec))
+        return giveUp("input not found: " + imagePath.generic_string());
+    // Editor CreateTextureAsset parity (the supported set).
+    std::string ext = imagePath.extension().string();
+    for (char& c : ext)
+        c = char(std::tolower((unsigned char)c));
+    static const char* kSupported[] = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".ktx2"};
+    bool ok = false;
+    for (const char* k : kSupported)
+        ok = ok || (ext == k);
+    if (!ok)
+        return giveUp("unsupported image '" + ext +
+                      "' (want "
+                      "png/jpg/jpeg/tga/bmp/ktx2): " +
+                      imagePath.generic_string());
+    const std::string stem = imagePath.stem().string();
+    const fs::path texPath = imagePath.parent_path() / (stem + ".texture");
+    outTexturePath = texPath.generic_string();
+    // Settings live in the .texture (delete it to re-create — editor
+    // parity); a source repaint flows through the loose read at cook,
+    // so an existing file is never stale.
+    if (fs::is_regular_file(texPath, ec) && !force)
+        return true;
+    std::ifstream in(imagePath, std::ios::binary);
+    if (!in)
+        return giveUp("cannot read: " + imagePath.generic_string());
+    const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                     std::istreambuf_iterator<char>());
+    if (bytes.empty())
+        return giveUp("image file is empty: " + imagePath.generic_string());
+    // Editor defaults (sRGB/rgba8/full-chain/repeat/linear — see the
+    // TextureAsset rows); the guid is the CONTENT digest (deterministic;
+    // the editor mints random ones — same format, both valid).
+    TextureAsset t{};
+    t.guid = GuidHexFromBytes(bytes.data(), bytes.size());
+    t.name = stem;
+    t.source = imagePath.filename().generic_string();
+    std::string serr;
+    if (!SaveTextureAsset(texPath, t, serr))
+        return giveUp("cannot write '" + texPath.generic_string() + "': " + serr);
+    return true;
 }
 
-std::string DerivedEntryGuid(const std::string& sourceGuid,
-	AssetKind kind, int sourceIndex) {
-	// Seed = the source identity + the entry's (kind, index): a short,
-	// unambiguous seed string (the kind as one char + the index decimal,
-	// separators fixed) hashed with the same two-lane discipline.
-	char seed[80] = {};
-	std::snprintf(seed, sizeof(seed), "%s|%c|%d", sourceGuid.c_str(),
-		char(kind), sourceIndex);
-	return GuidHexFromBytes(seed, std::strlen(seed));
+std::string DerivedEntryGuid(const std::string& sourceGuid, AssetKind kind, int sourceIndex) {
+    // Seed = the source identity + the entry's (kind, index): a short,
+    // unambiguous seed string (the kind as one char + the index decimal,
+    // separators fixed) hashed with the same two-lane discipline.
+    char seed[80] = {};
+    std::snprintf(seed, sizeof(seed), "%s|%c|%d", sourceGuid.c_str(), char(kind), sourceIndex);
+    return GuidHexFromBytes(seed, std::strlen(seed));
 }
 
 std::string DerivedEntryGuidForName(const std::string& sourceGuid,
-	AssetKind kind, const std::string& name, int occurrence) {
-	// Seed = the source identity + the entry's LOGICAL KEY (the kind +
-	// the glTF asset NAME + the same-name occurrence ordinal — the key
-	// the identity ledger carries, NOT the glTF array index): a
-	// from-zero import reproduces the same GUID for the same NAMED
-	// asset regardless of how the DCC ordered the arrays. Unnamed glTF
-	// assets have no logical key to key on (their fallback names embed
-	// the index by necessity) — the ordering independence is a
-	// NAMED-asset property.
-	const std::string seed = sourceGuid + "|" + char(kind) + "|"
-		+ std::to_string(occurrence) + "|" + name;
-	return GuidHexFromBytes(seed.data(), seed.size());
+                                    AssetKind kind,
+                                    const std::string& name,
+                                    int occurrence) {
+    // Seed = the source identity + the entry's LOGICAL KEY (the kind +
+    // the glTF asset NAME + the same-name occurrence ordinal — the key
+    // the identity ledger carries, NOT the glTF array index): a
+    // from-zero import reproduces the same GUID for the same NAMED
+    // asset regardless of how the DCC ordered the arrays. Unnamed glTF
+    // assets have no logical key to key on (their fallback names embed
+    // the index by necessity) — the ordering independence is a
+    // NAMED-asset property.
+    const std::string seed =
+        sourceGuid + "|" + char(kind) + "|" + std::to_string(occurrence) + "|" + name;
+    return GuidHexFromBytes(seed.data(), seed.size());
 }
 
-bool MeshArtifactStale(const std::filesystem::path& gltfPath,
-	const DeriveConfig& config) {
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	const fs::path geometry =
-		fs::path(gltfPath).replace_extension(".geometry");
-	if (!fs::is_regular_file(geometry, ec))
-		return true; // no artifact yet (never imported)
-	if (file_size(geometry, ec) == 0)
-		return true;
-	// Manifest present + parseable (the .material GUID table the build
-	// resolves): a missing/corrupt manifest means a half-written or
-	// hand-mangled derivation — re-derive.
-	AssetManifest m;
-	std::string merr;
-	if (!LoadAssetManifest(gltfPath, m, merr))
-		return true;
-	// CONTENT rule (metas that carry a sourcedigest — every derivation
-	// after the from-zero change): the artifact is current exactly when
-	// the source CONTENT matches the recorded digest. This replaces the
-	// mtime rule for digest-carrying metas: copies that preserve or
-	// reorder mtimes no longer misfire (a same-content copy stays
-	// current, a different-content source with a NEWER artifact still
-	// re-derives — the digest, not the clock, is the identity). The
-	// digest covers the FULL source set (.gltf + .bin + referenced
-	// images — a repainted texture or edited buffer re-derives). When
-	// the source no longer parses, fall back to the single-file digest
-	// (a corrupt source with good artifacts keeps working until the
-	// derivation itself runs and fails loudly).
-	if (!m.sourceDigest.empty()) {
-		// CONTENT half: match -> CONTINUE (the settings half below still
-		// gets its say); mismatch -> stale.
-		tinygltf::Model model;
-		std::vector<std::string> extraDeps;
-		bool contentChanged;
-		if (LoadModelFromSourceFile(model, gltfPath.string().c_str(),
-				&extraDeps))
-			contentChanged = SourceContentDigest(gltfPath, model,
-				extraDeps) != m.sourceDigest;
-		else
-			contentChanged =
-				SourceAssetGuid(gltfPath) != m.sourceDigest;
-		if (contentChanged)
-			return true;
-	}
-	else {
-		// Legacy mtime rule (digest-less metas): the artifact predates the
-		// last source edit. (fs::last_write_time errors read as stale —
-		// the safe side always re-derives.)
-		const auto srcTime = fs::last_write_time(gltfPath, ec);
-		if (ec)
-			return true;
-		const auto artTime = fs::last_write_time(geometry, ec);
-		if (ec || artTime < srcTime)
-			return true;
-	}
-	// SETTINGS/REVISION rule (metas that carry a fingerprint): the source
-	// content matches, but the artifact was derived under DIFFERENT
-	// settings or an older implementation — re-derive (the identity
-	// stays the same: this is freshness, not identity). Fingerprint-less
-	// metas predate the setting-aware gate; the digest rule above
-	// already forces their re-derivation, so no separate fallback.
-	if (!m.importFingerprint.empty()
-			&& m.importFingerprint != ImportFingerprintFor(config))
-		return true;
-	return false;
+bool MeshArtifactStale(const std::filesystem::path& gltfPath, const DeriveConfig& config) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path geometry = fs::path(gltfPath).replace_extension(".geometry");
+    if (!fs::is_regular_file(geometry, ec))
+        return true; // no artifact yet (never imported)
+    if (file_size(geometry, ec) == 0)
+        return true;
+    // Manifest present + parseable (the .material GUID table the build
+    // resolves): a missing/corrupt manifest means a half-written or
+    // hand-mangled derivation — re-derive.
+    AssetManifest m;
+    std::string merr;
+    if (!LoadAssetManifest(gltfPath, m, merr))
+        return true;
+    // CONTENT rule (metas that carry a sourcedigest — every derivation
+    // after the from-zero change): the artifact is current exactly when
+    // the source CONTENT matches the recorded digest. This replaces the
+    // mtime rule for digest-carrying metas: copies that preserve or
+    // reorder mtimes no longer misfire (a same-content copy stays
+    // current, a different-content source with a NEWER artifact still
+    // re-derives — the digest, not the clock, is the identity). The
+    // digest covers the FULL source set (.gltf + .bin + referenced
+    // images — a repainted texture or edited buffer re-derives). When
+    // the source no longer parses, fall back to the single-file digest
+    // (a corrupt source with good artifacts keeps working until the
+    // derivation itself runs and fails loudly).
+    if (!m.sourceDigest.empty()) {
+        // CONTENT half: match -> CONTINUE (the settings half below still
+        // gets its say); mismatch -> stale.
+        tinygltf::Model model;
+        std::vector<std::string> extraDeps;
+        bool contentChanged;
+        if (LoadModelFromSourceFile(model, gltfPath.string().c_str(), &extraDeps))
+            contentChanged = SourceContentDigest(gltfPath, model, extraDeps) != m.sourceDigest;
+        else
+            contentChanged = SourceAssetGuid(gltfPath) != m.sourceDigest;
+        if (contentChanged)
+            return true;
+    } else {
+        // Legacy mtime rule (digest-less metas): the artifact predates the
+        // last source edit. (fs::last_write_time errors read as stale —
+        // the safe side always re-derives.)
+        const auto srcTime = fs::last_write_time(gltfPath, ec);
+        if (ec)
+            return true;
+        const auto artTime = fs::last_write_time(geometry, ec);
+        if (ec || artTime < srcTime)
+            return true;
+    }
+    // SETTINGS/REVISION rule (metas that carry a fingerprint): the source
+    // content matches, but the artifact was derived under DIFFERENT
+    // settings or an older implementation — re-derive (the identity
+    // stays the same: this is freshness, not identity). Fingerprint-less
+    // metas predate the setting-aware gate; the digest rule above
+    // already forces their re-derivation, so no separate fallback.
+    if (!m.importFingerprint.empty() && m.importFingerprint != ImportFingerprintFor(config))
+        return true;
+    return false;
 }
 
 std::string ImportFingerprintFor(const DeriveConfig& config) {
-	// Canonical settings text: every field that changes the DERIVED BYTES.
-	// (Ratios print with %.4g — compact + locale-stable for the fixed set
-	// of values settings realistically carry.)
-	std::ostringstream s;
-	s << "meshlets=" << (config.meshlets ? 1 : 0)
-		<< ";lods=" << (config.lods ? 1 : 0)
-		<< ";shaderLods=" << (config.shaderLods ? 1 : 0)
-		<< ";lodError=" << std::fixed << std::setprecision(4)
-		<< config.lodTargetError
-		<< ";lodRatios=";
-	for (size_t i = 0; i < config.lodRatios.size(); ++i)
-		s << (i ? "," : "") << std::setprecision(4)
-			<< config.lodRatios[i];
-	// Implementation identity: the pipeline revision + the fixed meshlet
-	// canon (an engine canon change re-derives every meshlet set).
-	s << ";rev=" << kImportPipelineRevision
-		<< ";meshletCanon=" << smvk::kMeshletMaxVertices << "v"
-		<< smvk::kMeshletMaxTriangles << "t";
-	const std::string text = s.str();
-	return GuidHexFromBytes(text.data(), text.size());
+    // Canonical settings text: every field that changes the DERIVED BYTES.
+    // (Ratios print with %.4g — compact + locale-stable for the fixed set
+    // of values settings realistically carry.)
+    std::ostringstream s;
+    s << "meshlets=" << (config.meshlets ? 1 : 0) << ";lods=" << (config.lods ? 1 : 0)
+      << ";shaderLods=" << (config.shaderLods ? 1 : 0) << ";lodError=" << std::fixed
+      << std::setprecision(4) << config.lodTargetError << ";lodRatios=";
+    for (size_t i = 0; i < config.lodRatios.size(); ++i)
+        s << (i ? "," : "") << std::setprecision(4) << config.lodRatios[i];
+    // Implementation identity: the pipeline revision + the fixed meshlet
+    // canon (an engine canon change re-derives every meshlet set).
+    s << ";rev=" << kImportPipelineRevision << ";meshletCanon=" << smvk::kMeshletMaxVertices << "v"
+      << smvk::kMeshletMaxTriangles << "t";
+    const std::string text = s.str();
+    return GuidHexFromBytes(text.data(), text.size());
 }
 
-std::vector<std::string> GltfExternalDependencies(
-	const std::filesystem::path& gltfPath) {
-	// Same host-side parse the importer uses (this module is the single
-	// source-aware surface). A source that fails to parse returns the
-	// empty set — the import itself reports the parse failure loudly
-	// right after; the dependency enumeration must never invent files.
-	std::vector<std::string> out;
-	tinygltf::Model model;
-	std::vector<std::string> extraDeps;
-	if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(),
-			&extraDeps))
-		return out;
-	std::set<std::string> uris;
-	auto collect = [&](const std::string& uri) {
-		// Embedded data: URIs ride the source bytes (or extract to
-		// sidecar files at load, arriving here as ordinary URIs);
-		// remote http(s) URIs are not copyable locals.
-		if (uri.empty() || uri.rfind("data:", 0) == 0
-				|| uri.rfind("http://", 0) == 0
-				|| uri.rfind("https://", 0) == 0)
-			return;
-		uris.insert(uri);
-	};
-	for (const auto& b : model.buffers)
-		collect(b.uri);
-	for (const auto& im : model.images)
-		collect(im.uri);
-	// Non-glTF dependencies (an OBJ's .mtl libraries): the same set.
-	for (const std::string& dep : extraDeps)
-		collect(dep);
-	out.assign(uris.begin(), uris.end());
-	return out;
+std::vector<std::string> GltfExternalDependencies(const std::filesystem::path& gltfPath) {
+    // Same host-side parse the importer uses (this module is the single
+    // source-aware surface). A source that fails to parse returns the
+    // empty set — the import itself reports the parse failure loudly
+    // right after; the dependency enumeration must never invent files.
+    std::vector<std::string> out;
+    tinygltf::Model model;
+    std::vector<std::string> extraDeps;
+    if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(), &extraDeps))
+        return out;
+    std::set<std::string> uris;
+    auto collect = [&](const std::string& uri) {
+        // Embedded data: URIs ride the source bytes (or extract to
+        // sidecar files at load, arriving here as ordinary URIs);
+        // remote http(s) URIs are not copyable locals.
+        if (uri.empty() || uri.rfind("data:", 0) == 0 || uri.rfind("http://", 0) == 0 ||
+            uri.rfind("https://", 0) == 0)
+            return;
+        uris.insert(uri);
+    };
+    for (const auto& b : model.buffers)
+        collect(b.uri);
+    for (const auto& im : model.images)
+        collect(im.uri);
+    // Non-glTF dependencies (an OBJ's .mtl libraries): the same set.
+    for (const std::string& dep : extraDeps)
+        collect(dep);
+    out.assign(uris.begin(), uris.end());
+    return out;
 }
 
 // ---- shared material-asset import (editor + cook) ------------------------
@@ -2321,235 +2249,225 @@ std::vector<std::string> GltfExternalDependencies(
 // load with a cook texture-id mint (the glTF importer's cook path). See
 // asset_export.h — the SINGLE import both sides run, so pool indices match
 // across the editor session and the cook replay.
-smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
-	smvk::Cluster& cluster, const std::filesystem::path& assetPath,
-	smvk::ResourceManager* ctx, std::string& err) {
-	err.clear();
-	MaterialAsset m;
-	if (!LoadMaterialAsset(assetPath, m, err))
-		return {};
-	smvk::MaterialCreateInfo info{};
-	info.baseColorFactor = m.info.baseColorFactor;
-	info.emissiveFactor = m.info.emissiveFactor;
-	info.emissiveStrength = m.info.emissiveStrength;
-	info.metallicFactor = m.info.metallicFactor;
-	info.roughnessFactor = m.info.roughnessFactor;
-	info.normalScale = m.info.normalScale;
-	info.occlusionStrength = m.info.occlusionStrength;
-	info.cavityStrength = m.info.cavityStrength;
-	info.channelSelectors = m.channelSelectors;
-	info.shadingModel = m.info.shadingModel;
-	info.alphaMode = m.info.alphaMode;
-	info.alphaCutoff = m.info.alphaCutoff;
-	info.doubleSided = m.info.doubleSided;
-	info.castsShadows = m.info.castsShadows;
-	info.receiveContactShadows = m.info.receiveContactShadows;
-	// Texture refs: image files beside the .material (the URI IS the POSIX
-	// file path). Failures bind the BUILT-IN pink error texture
-	// (editor://error_texture) instead of leaving the slot empty: a
-	// broken texture link reads as an unmistakable pink surface —
-	// reported, never invisible, never fatal.
-	const std::filesystem::path base = assetPath.parent_path();
-	auto loadTex = [&](const MaterialAsset::TexRef& t,
-			smvk::TextureHandle& slot) {
-		auto failPink = [&]() {
-			if (smvk::TextureHandle e =
-					EnsureClusterErrorTexture(cluster, ctx)) {
-				slot = e;
-				std::cerr << "[materialAsset] binding the pink error "
-					"texture (editor://error_texture).\n";
-			}
-		};
-		if (t.path.empty())
-			return;
-		const std::string uri =
-			(base / t.path).generic_string();
-		// TEXTURE-ASSET ref (a .texture file): route through its own
-		// import settings (colorspace/format/mipLevels/filter/wrap — the
-		// asset's colorspace WINS over the TexRef srgb flag; the settings
-		// bake at import). Repeat refs dedupe through the .texture URI.
-		{
-			std::string ext =
-				std::filesystem::path(t.path).extension().string();
-			for (char& c : ext)
-				c = char(std::tolower((unsigned char)c));
-			if (ext == ".texture") {
-				std::string terr;
-				smvk::TextureHandle h = ImportTextureAssetToCluster(
-					cluster, base / t.path, ctx, terr);
-				if (h.empty()) {
-					std::cerr << "[materialAsset] texture asset import "
-						"failed '" << t.path << "': " << terr << "\n";
-					failPink();
-					return;
-				}
-				slot = h;
-				return;
-			}
-		}
-		// Reuse an existing registration (a repeat import, or the texture
-		// arrived via the glTF): the pool entry + source already stand.
-		if (auto hit = cluster.FindTextureByUri(uri)) {
-			slot = *hit;
-			return;
-		}
-		std::ifstream in(uri, std::ios::binary);
-		if (!in) {
-			std::cerr << "[materialAsset] cannot open texture: "
-				<< uri << "\n";
-			failPink();
-			return;
-		}
-		std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
-			std::istreambuf_iterator<char>());
-		if (bytes.empty()) {
-			std::cerr << "[materialAsset] texture file is empty: "
-				<< uri << "\n";
-			failPink();
-			return;
-		}
-		// KTX2 passthrough; other sources transcode (the TexRef srgb flag —
-		// baseColor/emissive are sRGB, data maps linear). HDR needs a float
-		// transcode (unsupported here, same as the editor path).
-		const bool isKtx2 = bytes.size() >= 8
-			&& bytes[0] == 0xAB && bytes[1] == 'K' && bytes[2] == 'T'
-			&& bytes[3] == 'X' && bytes[4] == ' ' && bytes[5] == '2'
-			&& bytes[6] == '0' && bytes[7] == 0xBB;
-		std::vector<uint8_t> payload = bytes;
-		if (!isKtx2) {
-			std::string ext =
-				std::filesystem::path(uri).extension().string();
-			for (char& c : ext)
-				c = char(std::tolower((unsigned char)c));
-			if (ext == ".hdr" || ext == ".exr") {
-				std::cerr << "[materialAsset] HDR source needs a float "
-					"transcode (unsupported): " << uri << "\n";
-				failPink();
-				return;
-			}
-			std::vector<uint8_t> ktx;
-			std::string terr;
-			if (!TranscodeImageToKtx2(bytes.data(), bytes.size(), t.srgb,
-					uri, ktx, terr)) {
-				std::cerr << "[materialAsset] texture transcode failed '"
-					<< uri << "': " << terr << "\n";
-				failPink();
-				return;
-			}
-			payload = std::move(ktx);
-		}
-		smvk::TextureHandle h;
-		if (cluster.IsOfflineMode()) {
-			// Offline: mint the pool id (the glTF importer's offline path); no
-			// GPU exists here — the serializer reads the SOURCE bytes.
-			h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
-		}
-		else {
-			if (!ctx) {
-				std::cerr << "[materialAsset] editor import wants a GPU "
-					"context: " << uri << "\n";
-				failPink();
-				return;
-			}
-			auto holder = smvk::LoadKtxTextureMemory(*ctx,
-				payload.data(), payload.size(), uri);
-			if (!holder.valid()) {
-				std::cerr << "[materialAsset] KTX2 load failed: "
-					<< uri << "\n";
-				failPink();
-				return;
-			}
-			h = holder;
-			cluster.textures.create(std::move(holder));
-		}
-		cluster.RegisterTextureUri(uri, h);
-		// The ORIGINAL source bytes ride the pool entry (cooks re-embed +
-		// re-convert from source, exactly like imported images).
-		cluster.SetTextureSource(uri, std::move(bytes));
-		slot = h;
-	};
-	loadTex(m.baseColor, info.baseColorTexture);
-	loadTex(m.metallicRoughness, info.metallicRoughnessTexture);
-	loadTex(m.normalTex, info.normalTexture);
-	loadTex(m.occlusion, info.occlusionTexture);
-	loadTex(m.cavity, info.cavityTexture);
-	loadTex(m.emissiveTex, info.emissiveTexture);
-	info.diffuse = info.baseColorTexture; // legacy alias
-	const smvk::ClusterMaterialHandle h = cluster.CreateMaterial(info);
-	if (h.empty()) {
-		err = "material creation failed for '"
-			+ assetPath.generic_string() + "'";
-		return {};
-	}
-	cluster.RegisterMaterialUri("asset://" + m.guid, h);
-	return h;
+smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(smvk::Cluster& cluster,
+                                                         const std::filesystem::path& assetPath,
+                                                         smvk::ResourceManager* ctx,
+                                                         std::string& err) {
+    err.clear();
+    MaterialAsset m;
+    if (!LoadMaterialAsset(assetPath, m, err))
+        return {};
+    smvk::MaterialCreateInfo info{};
+    info.baseColorFactor = m.info.baseColorFactor;
+    info.emissiveFactor = m.info.emissiveFactor;
+    info.emissiveStrength = m.info.emissiveStrength;
+    info.metallicFactor = m.info.metallicFactor;
+    info.roughnessFactor = m.info.roughnessFactor;
+    info.normalScale = m.info.normalScale;
+    info.occlusionStrength = m.info.occlusionStrength;
+    info.cavityStrength = m.info.cavityStrength;
+    info.channelSelectors = m.channelSelectors;
+    info.shadingModel = m.info.shadingModel;
+    info.alphaMode = m.info.alphaMode;
+    info.alphaCutoff = m.info.alphaCutoff;
+    info.doubleSided = m.info.doubleSided;
+    info.castsShadows = m.info.castsShadows;
+    info.receiveContactShadows = m.info.receiveContactShadows;
+    // Texture refs: image files beside the .material (the URI IS the POSIX
+    // file path). Failures bind the BUILT-IN pink error texture
+    // (editor://error_texture) instead of leaving the slot empty: a
+    // broken texture link reads as an unmistakable pink surface —
+    // reported, never invisible, never fatal.
+    const std::filesystem::path base = assetPath.parent_path();
+    auto loadTex = [&](const MaterialAsset::TexRef& t, smvk::TextureHandle& slot) {
+        auto failPink = [&]() {
+            if (smvk::TextureHandle e = EnsureClusterErrorTexture(cluster, ctx)) {
+                slot = e;
+                std::cerr << "[materialAsset] binding the pink error "
+                             "texture (editor://error_texture).\n";
+            }
+        };
+        if (t.path.empty())
+            return;
+        const std::string uri = (base / t.path).generic_string();
+        // TEXTURE-ASSET ref (a .texture file): route through its own
+        // import settings (colorspace/format/mipLevels/filter/wrap — the
+        // asset's colorspace WINS over the TexRef srgb flag; the settings
+        // bake at import). Repeat refs dedupe through the .texture URI.
+        {
+            std::string ext = std::filesystem::path(t.path).extension().string();
+            for (char& c : ext)
+                c = char(std::tolower((unsigned char)c));
+            if (ext == ".texture") {
+                std::string terr;
+                smvk::TextureHandle h =
+                    ImportTextureAssetToCluster(cluster, base / t.path, ctx, terr);
+                if (h.empty()) {
+                    std::cerr << "[materialAsset] texture asset import "
+                                 "failed '"
+                              << t.path << "': " << terr << "\n";
+                    failPink();
+                    return;
+                }
+                slot = h;
+                return;
+            }
+        }
+        // Reuse an existing registration (a repeat import, or the texture
+        // arrived via the glTF): the pool entry + source already stand.
+        if (auto hit = cluster.FindTextureByUri(uri)) {
+            slot = *hit;
+            return;
+        }
+        std::ifstream in(uri, std::ios::binary);
+        if (!in) {
+            std::cerr << "[materialAsset] cannot open texture: " << uri << "\n";
+            failPink();
+            return;
+        }
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+        if (bytes.empty()) {
+            std::cerr << "[materialAsset] texture file is empty: " << uri << "\n";
+            failPink();
+            return;
+        }
+        // KTX2 passthrough; other sources transcode (the TexRef srgb flag —
+        // baseColor/emissive are sRGB, data maps linear). HDR needs a float
+        // transcode (unsupported here, same as the editor path).
+        const bool isKtx2 = bytes.size() >= 8 && bytes[0] == 0xAB && bytes[1] == 'K' &&
+                            bytes[2] == 'T' && bytes[3] == 'X' && bytes[4] == ' ' &&
+                            bytes[5] == '2' && bytes[6] == '0' && bytes[7] == 0xBB;
+        std::vector<uint8_t> payload = bytes;
+        if (!isKtx2) {
+            std::string ext = std::filesystem::path(uri).extension().string();
+            for (char& c : ext)
+                c = char(std::tolower((unsigned char)c));
+            if (ext == ".hdr" || ext == ".exr") {
+                std::cerr << "[materialAsset] HDR source needs a float "
+                             "transcode (unsupported): "
+                          << uri << "\n";
+                failPink();
+                return;
+            }
+            std::vector<uint8_t> ktx;
+            std::string terr;
+            if (!TranscodeImageToKtx2(bytes.data(), bytes.size(), t.srgb, uri, ktx, terr)) {
+                std::cerr << "[materialAsset] texture transcode failed '" << uri << "': " << terr
+                          << "\n";
+                failPink();
+                return;
+            }
+            payload = std::move(ktx);
+        }
+        smvk::TextureHandle h;
+        if (cluster.IsOfflineMode()) {
+            // Offline: mint the pool id (the glTF importer's offline path); no
+            // GPU exists here — the serializer reads the SOURCE bytes.
+            h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
+        } else {
+            if (!ctx) {
+                std::cerr << "[materialAsset] editor import wants a GPU "
+                             "context: "
+                          << uri << "\n";
+                failPink();
+                return;
+            }
+            auto holder = smvk::LoadKtxTextureMemory(*ctx, payload.data(), payload.size(), uri);
+            if (!holder.valid()) {
+                std::cerr << "[materialAsset] KTX2 load failed: " << uri << "\n";
+                failPink();
+                return;
+            }
+            h = holder;
+            cluster.textures.create(std::move(holder));
+        }
+        cluster.RegisterTextureUri(uri, h);
+        // The ORIGINAL source bytes ride the pool entry (cooks re-embed +
+        // re-convert from source, exactly like imported images).
+        cluster.SetTextureSource(uri, std::move(bytes));
+        slot = h;
+    };
+    loadTex(m.baseColor, info.baseColorTexture);
+    loadTex(m.metallicRoughness, info.metallicRoughnessTexture);
+    loadTex(m.normalTex, info.normalTexture);
+    loadTex(m.occlusion, info.occlusionTexture);
+    loadTex(m.cavity, info.cavityTexture);
+    loadTex(m.emissiveTex, info.emissiveTexture);
+    info.diffuse = info.baseColorTexture; // legacy alias
+    const smvk::ClusterMaterialHandle h = cluster.CreateMaterial(info);
+    if (h.empty()) {
+        err = "material creation failed for '" + assetPath.generic_string() + "'";
+        return {};
+    }
+    cluster.RegisterMaterialUri("asset://" + m.guid, h);
+    return h;
 }
 
-smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(
-	smvk::Cluster& cluster) {
-	// Reuse an existing pool entry when the URI is already registered (a
-	// cooked-from-tour scene may have minted one).
-	if (auto hit = cluster.FindMaterialByUri("editor://default"))
-		return *hit;
-	smvk::Material def{};
-	def.values.params.y = 0.0f;  // metallic
-	def.values.params.z = 0.9f; // roughness: soft default
-	def.rebuildPipeline();
-	const smvk::ClusterMaterialHandle h =
-		cluster.materials.create(std::move(def));
-	cluster.RegisterMaterialUri("editor://default", h);
-	return h;
+smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(smvk::Cluster& cluster) {
+    // Reuse an existing pool entry when the URI is already registered (a
+    // cooked-from-tour scene may have minted one).
+    if (auto hit = cluster.FindMaterialByUri("editor://default"))
+        return *hit;
+    smvk::Material def{};
+    def.values.params.y = 0.0f; // metallic
+    def.values.params.z = 0.9f; // roughness: soft default
+    def.rebuildPipeline();
+    const smvk::ClusterMaterialHandle h = cluster.materials.create(std::move(def));
+    cluster.RegisterMaterialUri("editor://default", h);
+    return h;
 }
 
-smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster,
-	smvk::ResourceManager* ctx) {
-	// Reuse an existing pool entry when the URI is already registered
-	// (a cooked-from-tour scene may have minted one) — NO pool growth
-	// on repeat asks.
-	if (auto hit = cluster.FindTextureByUri("editor://error_texture"))
-		return *hit;
-	// Mint the pink payload (standalone form: 64x64 sRGB RGBA8, full
-	// chain — small enough to upload once, unmistakable at any LOD).
-	ktxTexture2* pink = smvk::CreatePinkKtx2(64, 64);
-	if (!pink)
-		return {};
-	struct PinkGuard {
-		ktxTexture2* t;
-		~PinkGuard() { if (t) ktxTexture2_Destroy(t); }
-	} guard{ pink };
-	ktx_uint8_t* mem = nullptr;
-	ktx_size_t memLen = 0;
-	if (ktxTexture_WriteToMemory(ktxTexture(pink), &mem, &memLen)
-		!= KTX_SUCCESS || !mem || memLen == 0)
-		return {};
-	std::vector<uint8_t> payload(mem, mem + memLen);
-	// KTX-Software documents free() for this buffer; the prebuilt KTX
-	// DLL is Release-built, so a Debug CRT free would cross heaps (the
-	// tex_transcode precedent: leak in Debug, free in Release).
+smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster, smvk::ResourceManager* ctx) {
+    // Reuse an existing pool entry when the URI is already registered
+    // (a cooked-from-tour scene may have minted one) — NO pool growth
+    // on repeat asks.
+    if (auto hit = cluster.FindTextureByUri("editor://error_texture"))
+        return *hit;
+    // Mint the pink payload (standalone form: 64x64 sRGB RGBA8, full
+    // chain — small enough to upload once, unmistakable at any LOD).
+    ktxTexture2* pink = smvk::CreatePinkKtx2(64, 64);
+    if (!pink)
+        return {};
+    struct PinkGuard {
+        ktxTexture2* t;
+        ~PinkGuard() {
+            if (t)
+                ktxTexture2_Destroy(t);
+        }
+    } guard{pink};
+    ktx_uint8_t* mem = nullptr;
+    ktx_size_t memLen = 0;
+    if (ktxTexture_WriteToMemory(ktxTexture(pink), &mem, &memLen) != KTX_SUCCESS || !mem ||
+        memLen == 0)
+        return {};
+    std::vector<uint8_t> payload(mem, mem + memLen);
+    // KTX-Software documents free() for this buffer; the prebuilt KTX
+    // DLL is Release-built, so a Debug CRT free would cross heaps (the
+    // tex_transcode precedent: leak in Debug, free in Release).
 #ifdef _DEBUG
-	(void)mem;
+    (void)mem;
 #else
-	std::free(mem);
+    std::free(mem);
 #endif
-	smvk::TextureHandle h;
-	if (cluster.IsOfflineMode()) {
-		// Offline: pool id + stash only (the serializer embeds the pink
-		// payload; the runtime streams it like any GPU-ready texture).
-		h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
-	}
-	else {
-		if (!ctx)
-			return {};
-		auto holder = smvk::LoadKtxTextureMemory(*ctx,
-			payload.data(), payload.size(), "editor://error_texture");
-		if (!holder.valid())
-			return {};
-		h = holder;
-		cluster.textures.create(std::move(holder));
-	}
-	cluster.RegisterTextureUri("editor://error_texture", h);
-	cluster.SetTextureSource("editor://error_texture", std::move(payload));
-	return h;
+    smvk::TextureHandle h;
+    if (cluster.IsOfflineMode()) {
+        // Offline: pool id + stash only (the serializer embeds the pink
+        // payload; the runtime streams it like any GPU-ready texture).
+        h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
+    } else {
+        if (!ctx)
+            return {};
+        auto holder = smvk::LoadKtxTextureMemory(
+            *ctx, payload.data(), payload.size(), "editor://error_texture");
+        if (!holder.valid())
+            return {};
+        h = holder;
+        cluster.textures.create(std::move(holder));
+    }
+    cluster.RegisterTextureUri("editor://error_texture", h);
+    cluster.SetTextureSource("editor://error_texture", std::move(payload));
+    return h;
 }
 
 // ---- shared texture-asset import (editor + cook) --------------------------
@@ -2558,136 +2476,135 @@ smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster,
 // format/mipLevels; KTX2 sources pass through verbatim), the sampler rows
 // ride the per-texture sampler registration, and the GPU-READY payload
 // rides the cluster source stash (the cook passthrough-embeds it).
-smvk::TextureHandle ImportTextureAssetToCluster(
-	smvk::Cluster& cluster, const std::filesystem::path& assetPath,
-	smvk::ResourceManager* ctx, std::string& err, bool force,
-	smvk::TextureHandle* replacedHandle) {
-	err.clear();
-	if (replacedHandle)
-		*replacedHandle = {};
-	TextureAsset t;
-	if (!LoadTextureAsset(assetPath, t, err))
-		return {};
-	const std::string uri = assetPath.generic_string();
-	// Repeat import: the pool entry + stash already stand. A settings
-	// change applies at the NEXT import (a fresh session, a cook, or a
-	// delete + re-create — the URI-keyed reuse never re-imports).
-	// The FORCE lane (the watched-project live refresh) is the one
-	// exception: a source edit on disk is exactly what the caller
-	// wants re-read, so the dedupe is bypassed and the standing entry
-	// is REPLACED below (the old handle rides replacedHandle for the
-	// caller's slot rewire; the old pool row dies here, its Holder
-	// releasing through the deferred queue — in-flight frames sampling
-	// the old image finish first).
-	smvk::TextureHandle standing{};
-	if (auto hit = cluster.FindTextureByUri(uri))
-		standing = *hit;
-	if (standing.valid() && !force)
-		return standing;
-	const std::filesystem::path srcPath =
-		assetPath.parent_path() / t.source;
-	std::ifstream in(srcPath, std::ios::binary);
-	if (!in) {
-		err = "cannot open source '" + t.source + "' (beside '"
-			+ assetPath.generic_string() + "')";
-		return {};
-	}
-	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
-		std::istreambuf_iterator<char>());
-	if (bytes.empty()) {
-		err = "source file is empty: " + srcPath.generic_string();
-		return {};
-	}
-	TextureSourceInfo info{};
-	if (!ProbeTextureSource(bytes.data(), bytes.size(), info)) {
-		err = "undecodable source (not PNG/JPG/TGA/BMP/KTX2): "
-			+ srcPath.generic_string();
-		return {};
-	}
-	// KTX2: verbatim (the header pre-decided colorspace/format/mips; the
-	// settings rows read read-only in the inspector). LDR: convert with
-	// the asset's import settings baked in.
-	std::vector<uint8_t> payload = bytes;
-	if (!info.isKtx2) {
-		std::string ext = srcPath.extension().string();
-		for (char& c : ext)
-			c = char(std::tolower((unsigned char)c));
-		if (ext == ".hdr" || ext == ".exr") {
-			err = "HDR source needs a float transcode (unsupported): "
-				+ srcPath.generic_string();
-			return {};
-		}
-		const bool srgb = t.colorspace == 0;
-		std::string terr;
-		if (!TranscodeImageToKtx2(bytes.data(), bytes.size(), srgb, uri,
-				payload, terr, KtxEncodeFormat(t.format),
-				t.mipLevels > 0 ? uint32_t(t.mipLevels) : 0)) {
-			err = "texture conversion failed: " + terr;
-			return {};
-		}
-	}
-	smvk::TextureHandle h;
-	if (cluster.IsOfflineMode()) {
-		// Offline: mint the pool id (the glTF importer's offline path); the
-		// serializer reads the stashed payload below.
-		h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
-	}
-	else {
-		if (!ctx) {
-			err = "editor import wants a GPU context: " + uri;
-			return {};
-		}
-		auto holder = smvk::LoadKtxTextureMemory(*ctx,
-			payload.data(), payload.size(), uri);
-		if (!holder.valid()) {
-			err = "KTX2 load failed: " + uri;
-			return {};
-		}
-		h = holder;
-		cluster.textures.create(std::move(holder));
-	}
-	cluster.RegisterTextureUri(uri, h);
-	// Sampler rows (the FileNode GL-enum vocabulary): filter/wrap intent
-	// persists into the cooked pak's per-texture sampler record.
-	{
-		smvk::TextureSamplerDesc samp;
-		samp.wrapS = samp.wrapT =
-			(t.wrap == 1) ? 33071   // CLAMP_TO_EDGE
-			: (t.wrap == 2) ? 33648 // MIRRORED_REPEAT
-			: 10497;                // REPEAT
-		if (t.filter != 0) {
-			samp.magFilter = 9728; // NEAREST (no mips sampled)
-			samp.minFilter = 9728;
-		}
-		else {
-			samp.magFilter = 9729; // LINEAR
-			samp.minFilter = 9987; // LINEAR_MIPMAP_LINEAR (chain assumed)
-		}
-		cluster.RegisterTextureSampler(uri, samp);
-	}
-	// GPU-READY payload stash: the conversion is baked at import, so the
-	// cook passthrough-embeds these bytes (RGBA8/BCn payloads never need
-	// a cook-time transcode; a Basis-family KTX2 source still rides the
-	// cook's per-semantic transcode + pink-error fallback).
-	cluster.SetTextureSource(uri, std::move(payload));
-	// THE FORCE LANE's replace tail: the fresh entry stands (uri +
-	// sampler + stash upserted onto it above). Destroy the standing
-	// pool row — the scan matches the row holding the OLD RHI handle
-	// (the pool's own handle type is internal; the uri map + material
-	// slots key the RHI handle) — its Holder releases the image through
-	// the deferred queue, and the freed pool slot recycles. The caller
-	// rewires material slots off replacedHandle AFTER this returns (the
-	// frame boundary is single-threaded; nothing renders in between).
-	if (force && standing.valid()) {
-		cluster.textures.forEachHandle([&](auto poolHandle) {
-			auto* row = cluster.textures.get(poolHandle);
-			if (row && smvk::TextureHandle(*row) == standing)
-				cluster.textures.destroy(poolHandle);
-		});
-		if (replacedHandle)
-			*replacedHandle = standing;
-	}
-	return h;
+smvk::TextureHandle ImportTextureAssetToCluster(smvk::Cluster& cluster,
+                                                const std::filesystem::path& assetPath,
+                                                smvk::ResourceManager* ctx,
+                                                std::string& err,
+                                                bool force,
+                                                smvk::TextureHandle* replacedHandle) {
+    err.clear();
+    if (replacedHandle)
+        *replacedHandle = {};
+    TextureAsset t;
+    if (!LoadTextureAsset(assetPath, t, err))
+        return {};
+    const std::string uri = assetPath.generic_string();
+    // Repeat import: the pool entry + stash already stand. A settings
+    // change applies at the NEXT import (a fresh session, a cook, or a
+    // delete + re-create — the URI-keyed reuse never re-imports).
+    // The FORCE lane (the watched-project live refresh) is the one
+    // exception: a source edit on disk is exactly what the caller
+    // wants re-read, so the dedupe is bypassed and the standing entry
+    // is REPLACED below (the old handle rides replacedHandle for the
+    // caller's slot rewire; the old pool row dies here, its Holder
+    // releasing through the deferred queue — in-flight frames sampling
+    // the old image finish first).
+    smvk::TextureHandle standing{};
+    if (auto hit = cluster.FindTextureByUri(uri))
+        standing = *hit;
+    if (standing.valid() && !force)
+        return standing;
+    const std::filesystem::path srcPath = assetPath.parent_path() / t.source;
+    std::ifstream in(srcPath, std::ios::binary);
+    if (!in) {
+        err = "cannot open source '" + t.source + "' (beside '" + assetPath.generic_string() + "')";
+        return {};
+    }
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+    if (bytes.empty()) {
+        err = "source file is empty: " + srcPath.generic_string();
+        return {};
+    }
+    TextureSourceInfo info{};
+    if (!ProbeTextureSource(bytes.data(), bytes.size(), info)) {
+        err = "undecodable source (not PNG/JPG/TGA/BMP/KTX2): " + srcPath.generic_string();
+        return {};
+    }
+    // KTX2: verbatim (the header pre-decided colorspace/format/mips; the
+    // settings rows read read-only in the inspector). LDR: convert with
+    // the asset's import settings baked in.
+    std::vector<uint8_t> payload = bytes;
+    if (!info.isKtx2) {
+        std::string ext = srcPath.extension().string();
+        for (char& c : ext)
+            c = char(std::tolower((unsigned char)c));
+        if (ext == ".hdr" || ext == ".exr") {
+            err = "HDR source needs a float transcode (unsupported): " + srcPath.generic_string();
+            return {};
+        }
+        const bool srgb = t.colorspace == 0;
+        std::string terr;
+        if (!TranscodeImageToKtx2(bytes.data(),
+                                  bytes.size(),
+                                  srgb,
+                                  uri,
+                                  payload,
+                                  terr,
+                                  KtxEncodeFormat(t.format),
+                                  t.mipLevels > 0 ? uint32_t(t.mipLevels) : 0)) {
+            err = "texture conversion failed: " + terr;
+            return {};
+        }
+    }
+    smvk::TextureHandle h;
+    if (cluster.IsOfflineMode()) {
+        // Offline: mint the pool id (the glTF importer's offline path); the
+        // serializer reads the stashed payload below.
+        h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
+    } else {
+        if (!ctx) {
+            err = "editor import wants a GPU context: " + uri;
+            return {};
+        }
+        auto holder = smvk::LoadKtxTextureMemory(*ctx, payload.data(), payload.size(), uri);
+        if (!holder.valid()) {
+            err = "KTX2 load failed: " + uri;
+            return {};
+        }
+        h = holder;
+        cluster.textures.create(std::move(holder));
+    }
+    cluster.RegisterTextureUri(uri, h);
+    // Sampler rows (the FileNode GL-enum vocabulary): filter/wrap intent
+    // persists into the cooked pak's per-texture sampler record.
+    {
+        smvk::TextureSamplerDesc samp;
+        samp.wrapS = samp.wrapT = (t.wrap == 1)   ? 33071  // CLAMP_TO_EDGE
+                                  : (t.wrap == 2) ? 33648  // MIRRORED_REPEAT
+                                                  : 10497; // REPEAT
+        if (t.filter != 0) {
+            samp.magFilter = 9728; // NEAREST (no mips sampled)
+            samp.minFilter = 9728;
+        } else {
+            samp.magFilter = 9729; // LINEAR
+            samp.minFilter = 9987; // LINEAR_MIPMAP_LINEAR (chain assumed)
+        }
+        cluster.RegisterTextureSampler(uri, samp);
+    }
+    // GPU-READY payload stash: the conversion is baked at import, so the
+    // cook passthrough-embeds these bytes (RGBA8/BCn payloads never need
+    // a cook-time transcode; a Basis-family KTX2 source still rides the
+    // cook's per-semantic transcode + pink-error fallback).
+    cluster.SetTextureSource(uri, std::move(payload));
+    // THE FORCE LANE's replace tail: the fresh entry stands (uri +
+    // sampler + stash upserted onto it above). Destroy the standing
+    // pool row — the scan matches the row holding the OLD RHI handle
+    // (the pool's own handle type is internal; the uri map + material
+    // slots key the RHI handle) — its Holder releases the image through
+    // the deferred queue, and the freed pool slot recycles. The caller
+    // rewires material slots off replacedHandle AFTER this returns (the
+    // frame boundary is single-threaded; nothing renders in between).
+    if (force && standing.valid()) {
+        cluster.textures.forEachHandle([&](auto poolHandle) {
+            auto* row = cluster.textures.get(poolHandle);
+            if (row && smvk::TextureHandle(*row) == standing)
+                cluster.textures.destroy(poolHandle);
+        });
+        if (replacedHandle)
+            *replacedHandle = standing;
+    }
+    return h;
 }
 
 } // namespace smvk::assets

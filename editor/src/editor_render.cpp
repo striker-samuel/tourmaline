@@ -31,1153 +31,1210 @@
 
 #include <Engine/Camera/camera.h>
 #include <Engine/Profile/profile.h>
-#include <Engine/Rendergraph/environment.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/RendererLimits.h>
 #include <Engine/Renderer/dxc_integration.h> // TOURMALINE_LIVE_TRIANGLE's inline-HLSL compile
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Rendergraph/environment.h>
 #include <Engine/Utils/bvh.h>
-#include <Engine/core.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
+#include <Engine/core.h>
 
 #include <imgui.h>
 
 namespace editor {
 
-	namespace {
-		// Ring strides mirror the main-pass material/light ABI: the
-		// renderer-owned budgets (shader MaterialsBuffer/LightBuffer
-		// bounds + WorldRenderer's rings derive from the same shared
-		// values — see Engine/Renderer/RendererLimits.h).
-		constexpr uint32_t kMaxMaterials =
-			engine::renderer::limits::MaxMaterials;
-		constexpr uint32_t kMaxLights =
-			engine::renderer::limits::MaxSimultaneousLights;
+namespace {
+// Ring strides mirror the main-pass material/light ABI: the
+// renderer-owned budgets (shader MaterialsBuffer/LightBuffer
+// bounds + WorldRenderer's rings derive from the same shared
+// values — see Engine/Renderer/RendererLimits.h).
+constexpr uint32_t kMaxMaterials = engine::renderer::limits::MaxMaterials;
+constexpr uint32_t kMaxLights = engine::renderer::limits::MaxSimultaneousLights;
 
-		std::vector<char> LoadSpv(const char* path) {
-			return tour::shaders::Read(path);
-		}
-	} // namespace
+std::vector<char> LoadSpv(const char* path) {
+    return tour::shaders::Read(path);
+}
+} // namespace
 
-	bool EditorApp::EnsureShaders() {
-		if (m_litProgram.shaderCount == 2 && m_unlitProgram.shaderCount == 2 &&
-			m_wireProgram.shaderCount == 2 && m_lineProgram.shaderCount == 2)
-			return true;
-		try {
-			if (m_vsModule.empty()) {
-				m_vsModule = m_context->CreateShaderModule(
-					LoadSpv("content/shaders/default.vert.hlsl.spv"), "editorVS");
-				m_lineVsModule = m_context->CreateShaderModule(
-					LoadSpv("content/shaders/debugline.vert.hlsl.spv"), "editorLineVS");
-				m_lineFsModule = m_context->CreateShaderModule(
-					LoadSpv("content/shaders/debugline.frag.hlsl.spv"), "editorLineFS");
-				m_unlitFsModule = m_context->CreateShaderModule(
-					LoadSpv("content/shaders/default_unlit.frag.hlsl.spv"), "editorUnlitFS");
-				m_litFsModule = m_context->CreateShaderModule(
-					LoadSpv("content/shaders/default_lit.frag.hlsl.spv"), "editorLitFS");
-				m_wireFsModule = m_context->CreateShaderModule(
-					LoadSpv("content/shaders/default_wire.frag.hlsl.spv"), "editorWireFS");
-			}
-		}
-		catch (const std::exception& e) {
-			std::cerr << "[Editor] shader load failed: " << e.what() << "\n";
-			return false;
-		}
-		if (m_vsModule.empty() || m_unlitFsModule.empty() || m_litFsModule.empty())
-			return false;
-		const smvk::Shader vs{
-			.module = m_vsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-		m_unlitProgram = { .shaders = { vs,
-			{ .module = m_unlitFsModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment } },
-			.shaderCount = 2 };
-		m_litProgram = { .shaders = { vs,
-			{ .module = m_litFsModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment } },
-			.shaderCount = 2 };
-		m_wireProgram = { .shaders = { vs,
-			{ .module = m_wireFsModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment } },
-			.shaderCount = 2 };
-		const smvk::Shader lineVs{
-			.module = m_lineVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-		m_lineProgram = { .shaders = { lineVs,
-			{ .module = m_lineFsModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment } },
-			.shaderCount = 2 };
-		// Debug-view fragments (same VS as main; failure is non-fatal and the
-		// view falls back to Lit at record time).
-		auto tryDebugView = [&](const char* file, const char* name,
-			smvk::Holder<smvk::ShaderModuleHandle>& mod, smvk::ShaderProgram& prog) {
-			if (prog.shaderCount == 2)
-				return;
-			try {
-				if (mod.empty())
-					mod = m_context->CreateShaderModule(LoadSpv(file), name);
-			}
-			catch (const std::exception& e) {
-				std::cerr << "[Editor] debug shader unavailable (" << file << "): "
-					<< e.what() << "\n";
-				return;
-			}
-			if (mod.empty())
-				return;
-			prog = { .shaders = { vs,
-				{ .module = mod, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment } },
-				.shaderCount = 2 };
-		};
-		tryDebugView("content/shaders/default_uv0_debug.frag.hlsl.spv",
-			"editorUv0FS", m_uv0FsModule, m_uv0Program);
-		tryDebugView("content/shaders/default_uv1_debug.frag.hlsl.spv",
-			"editorUv1FS", m_uv1FsModule, m_uv1Program);
-		tryDebugView("content/shaders/default_vertexcolor_debug.frag.hlsl.spv",
-			"editorVColorFS", m_vcolorFsModule, m_vcolorProgram);
-		tryDebugView("content/shaders/default_baked_debug.frag.hlsl.spv",
-			"editorBakedFS", m_bakedFsModule, m_bakedProgram);
-		// Meshlet debug view (F4): App's meshdebug program (position-only VS +
-		// flat push color). Failure is non-fatal: the view falls back to Lit.
-		if (m_meshDebugProgram.shaderCount != 2) {
-			try {
-				if (m_meshDebugVsModule.empty())
-					m_meshDebugVsModule = m_context->CreateShaderModule(
-						LoadSpv("content/shaders/meshdebug.vert.hlsl.spv"),
-						"editorMeshDebugVS");
-				if (m_meshDebugFsModule.empty())
-					m_meshDebugFsModule = m_context->CreateShaderModule(
-						LoadSpv("content/shaders/meshdebug.frag.hlsl.spv"),
-						"editorMeshDebugFS");
-			}
-			catch (const std::exception& e) {
-				std::cerr << "[Editor] meshdebug shader unavailable: "
-					<< e.what() << "\n";
-			}
-			if (!m_meshDebugVsModule.empty() && !m_meshDebugFsModule.empty())
-				m_meshDebugProgram = { .shaders = {
-					{ .module = m_meshDebugVsModule, .entryPoint = "mainVS",
-						.stage = smvk::ShaderStage::Vertex },
-					{ .module = m_meshDebugFsModule, .entryPoint = "mainPS",
-						.stage = smvk::ShaderStage::Fragment } },
-					.shaderCount = 2 };
-		}
-		// Commented out by user.
-		//// Flat UV views (per-panel type): mesh projected into UV space with
-		//// its texture content. Failure is non-fatal: the panel falls back to
-		//// the 3D UV debug view.
-		//auto tryFlatUv = [&](const char* vsFile, const char* fsFile,
-		//	const char* vsName, const char* fsName,
-		//	smvk::Holder<smvk::ShaderModuleHandle>& vsMod,
-		//	smvk::Holder<smvk::ShaderModuleHandle>& fsMod,
-		//	smvk::ShaderProgram& prog) {
-		//	if (prog.shaderCount == 2)
-		//		return;
-		//	try {
-		//		if (vsMod.empty())
-		//			vsMod = m_context->CreateShaderModule(LoadSpv(vsFile), vsName);
-		//		if (fsMod.empty())
-		//			fsMod = m_context->CreateShaderModule(LoadSpv(fsFile), fsName);
-		//	}
-		//	catch (const std::exception& e) {
-		//		std::cerr << "[Editor] flat-uv shader unavailable (" << vsFile
-		//			<< "): " << e.what() << "\n";
-		//		return;
-		//	}
-		//	if (!vsMod.empty() && !fsMod.empty())
-		//		prog = { .shaders = {
-		//			{ .module = vsMod, .entryPoint = "mainVS",
-		//				.stage = smvk::ShaderStage::Vertex },
-		//			{ .module = fsMod, .entryPoint = "mainPS",
-		//				.stage = smvk::ShaderStage::Fragment } },
-		//			.shaderCount = 2 };
-		//};
-		//tryFlatUv("content/shaders/uvflat0.vert.hlsl.spv",
-		//	"content/shaders/uvflat0.frag.hlsl.spv",
-		//	"editorFlatUv0VS", "editorFlatUv0FS",
-		//	m_flatUv0VsModule, m_flatUv0FsModule, m_flatUv0Program);
-		//tryFlatUv("content/shaders/uvflat1.vert.hlsl.spv",
-		//	"content/shaders/uvflat1.frag.hlsl.spv",
-		//	"editorFlatUv1VS", "editorFlatUv1FS",
-		//	m_flatUv1VsModule, m_flatUv1FsModule, m_flatUv1Program);
-		//// UV-coordinate PNG export: same unwrapped VS, fragment outputs the
-		//// atlas uv itself (uvflat1uv.frag) — no atlas content read.
-		//tryFlatUv("content/shaders/uvflat1.vert.hlsl.spv",
-		//	"content/shaders/uvflat1uv.frag.hlsl.spv",
-		//	"editorFlatUv1VS", "editorFlatUvCoordFS",
-		//	m_flatUv1VsModule, m_flatUvCoordFsModule, m_flatUvCoordProgram);
-		// Samplers: mirror App order (0 = linear clamp, 1 = point). The lit
-		// shader's comparisonSamplerId = 1 addresses the second slot.
-		m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
-			.magFilter = smvk::Filter::Linear, .minFilter = smvk::Filter::Linear,
-			.mipmapMode = smvk::MipmapMode::Linear,
-			.addressU = smvk::AddressMode::ClampToEdge,
-			.addressV = smvk::AddressMode::ClampToEdge,
-			.addressW = smvk::AddressMode::ClampToEdge, .maxAnisotropy = 1.0f });
-		m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
-			.magFilter = smvk::Filter::Nearest, .minFilter = smvk::Filter::Nearest,
-			.mipmapMode = smvk::MipmapMode::Nearest,
-			.addressU = smvk::AddressMode::ClampToEdge,
-			.addressV = smvk::AddressMode::ClampToEdge,
-			.addressW = smvk::AddressMode::ClampToEdge, .maxAnisotropy = 1.0f });
-		// Preview tonemapper (the m_sceneHdr display chain, see the file
-		// header): best-effort - a missing SPV never kills the editor, the
-		// routing in RecordMainPass falls back to the direct LDR write.
-		(void)m_previewTonemap.EnsureShaders(*m_context);
-		return true;
-	}
+bool EditorApp::EnsureShaders() {
+    if (m_litProgram.shaderCount == 2 && m_unlitProgram.shaderCount == 2 &&
+        m_wireProgram.shaderCount == 2 && m_lineProgram.shaderCount == 2)
+        return true;
+    try {
+        if (m_vsModule.empty()) {
+            m_vsModule = m_context->CreateShaderModule(
+                LoadSpv("content/shaders/default.vert.hlsl.spv"), "editorVS");
+            m_lineVsModule = m_context->CreateShaderModule(
+                LoadSpv("content/shaders/debugline.vert.hlsl.spv"), "editorLineVS");
+            m_lineFsModule = m_context->CreateShaderModule(
+                LoadSpv("content/shaders/debugline.frag.hlsl.spv"), "editorLineFS");
+            m_unlitFsModule = m_context->CreateShaderModule(
+                LoadSpv("content/shaders/default_unlit.frag.hlsl.spv"), "editorUnlitFS");
+            m_litFsModule = m_context->CreateShaderModule(
+                LoadSpv("content/shaders/default_lit.frag.hlsl.spv"), "editorLitFS");
+            m_wireFsModule = m_context->CreateShaderModule(
+                LoadSpv("content/shaders/default_wire.frag.hlsl.spv"), "editorWireFS");
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[Editor] shader load failed: " << e.what() << "\n";
+        return false;
+    }
+    if (m_vsModule.empty() || m_unlitFsModule.empty() || m_litFsModule.empty())
+        return false;
+    const smvk::Shader vs{
+        .module = m_vsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+    m_unlitProgram = {.shaders = {vs,
+                                  {.module = m_unlitFsModule,
+                                   .entryPoint = "mainPS",
+                                   .stage = smvk::ShaderStage::Fragment}},
+                      .shaderCount = 2};
+    m_litProgram = {.shaders = {vs,
+                                {.module = m_litFsModule,
+                                 .entryPoint = "mainPS",
+                                 .stage = smvk::ShaderStage::Fragment}},
+                    .shaderCount = 2};
+    m_wireProgram = {.shaders = {vs,
+                                 {.module = m_wireFsModule,
+                                  .entryPoint = "mainPS",
+                                  .stage = smvk::ShaderStage::Fragment}},
+                     .shaderCount = 2};
+    const smvk::Shader lineVs{
+        .module = m_lineVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+    m_lineProgram = {.shaders = {lineVs,
+                                 {.module = m_lineFsModule,
+                                  .entryPoint = "mainPS",
+                                  .stage = smvk::ShaderStage::Fragment}},
+                     .shaderCount = 2};
+    // Debug-view fragments (same VS as main; failure is non-fatal and the
+    // view falls back to Lit at record time).
+    auto tryDebugView = [&](const char* file,
+                            const char* name,
+                            smvk::Holder<smvk::ShaderModuleHandle>& mod,
+                            smvk::ShaderProgram& prog) {
+        if (prog.shaderCount == 2)
+            return;
+        try {
+            if (mod.empty())
+                mod = m_context->CreateShaderModule(LoadSpv(file), name);
+        } catch (const std::exception& e) {
+            std::cerr << "[Editor] debug shader unavailable (" << file << "): " << e.what() << "\n";
+            return;
+        }
+        if (mod.empty())
+            return;
+        prog = {.shaders = {vs,
+                            {.module = mod,
+                             .entryPoint = "mainPS",
+                             .stage = smvk::ShaderStage::Fragment}},
+                .shaderCount = 2};
+    };
+    tryDebugView("content/shaders/default_uv0_debug.frag.hlsl.spv",
+                 "editorUv0FS",
+                 m_uv0FsModule,
+                 m_uv0Program);
+    tryDebugView("content/shaders/default_uv1_debug.frag.hlsl.spv",
+                 "editorUv1FS",
+                 m_uv1FsModule,
+                 m_uv1Program);
+    tryDebugView("content/shaders/default_vertexcolor_debug.frag.hlsl.spv",
+                 "editorVColorFS",
+                 m_vcolorFsModule,
+                 m_vcolorProgram);
+    tryDebugView("content/shaders/default_baked_debug.frag.hlsl.spv",
+                 "editorBakedFS",
+                 m_bakedFsModule,
+                 m_bakedProgram);
+    // Meshlet debug view (F4): App's meshdebug program (position-only VS +
+    // flat push color). Failure is non-fatal: the view falls back to Lit.
+    if (m_meshDebugProgram.shaderCount != 2) {
+        try {
+            if (m_meshDebugVsModule.empty())
+                m_meshDebugVsModule = m_context->CreateShaderModule(
+                    LoadSpv("content/shaders/meshdebug.vert.hlsl.spv"), "editorMeshDebugVS");
+            if (m_meshDebugFsModule.empty())
+                m_meshDebugFsModule = m_context->CreateShaderModule(
+                    LoadSpv("content/shaders/meshdebug.frag.hlsl.spv"), "editorMeshDebugFS");
+        } catch (const std::exception& e) {
+            std::cerr << "[Editor] meshdebug shader unavailable: " << e.what() << "\n";
+        }
+        if (!m_meshDebugVsModule.empty() && !m_meshDebugFsModule.empty())
+            m_meshDebugProgram = {.shaders = {{.module = m_meshDebugVsModule,
+                                               .entryPoint = "mainVS",
+                                               .stage = smvk::ShaderStage::Vertex},
+                                              {.module = m_meshDebugFsModule,
+                                               .entryPoint = "mainPS",
+                                               .stage = smvk::ShaderStage::Fragment}},
+                                  .shaderCount = 2};
+    }
+    // Commented out by user.
+    //// Flat UV views (per-panel type): mesh projected into UV space with
+    //// its texture content. Failure is non-fatal: the panel falls back to
+    //// the 3D UV debug view.
+    // auto tryFlatUv = [&](const char* vsFile, const char* fsFile,
+    //	const char* vsName, const char* fsName,
+    //	smvk::Holder<smvk::ShaderModuleHandle>& vsMod,
+    //	smvk::Holder<smvk::ShaderModuleHandle>& fsMod,
+    //	smvk::ShaderProgram& prog) {
+    //	if (prog.shaderCount == 2)
+    //		return;
+    //	try {
+    //		if (vsMod.empty())
+    //			vsMod = m_context->CreateShaderModule(LoadSpv(vsFile), vsName);
+    //		if (fsMod.empty())
+    //			fsMod = m_context->CreateShaderModule(LoadSpv(fsFile), fsName);
+    //	}
+    //	catch (const std::exception& e) {
+    //		std::cerr << "[Editor] flat-uv shader unavailable (" << vsFile
+    //			<< "): " << e.what() << "\n";
+    //		return;
+    //	}
+    //	if (!vsMod.empty() && !fsMod.empty())
+    //		prog = { .shaders = {
+    //			{ .module = vsMod, .entryPoint = "mainVS",
+    //				.stage = smvk::ShaderStage::Vertex },
+    //			{ .module = fsMod, .entryPoint = "mainPS",
+    //				.stage = smvk::ShaderStage::Fragment } },
+    //			.shaderCount = 2 };
+    // };
+    // tryFlatUv("content/shaders/uvflat0.vert.hlsl.spv",
+    //	"content/shaders/uvflat0.frag.hlsl.spv",
+    //	"editorFlatUv0VS", "editorFlatUv0FS",
+    //	m_flatUv0VsModule, m_flatUv0FsModule, m_flatUv0Program);
+    // tryFlatUv("content/shaders/uvflat1.vert.hlsl.spv",
+    //	"content/shaders/uvflat1.frag.hlsl.spv",
+    //	"editorFlatUv1VS", "editorFlatUv1FS",
+    //	m_flatUv1VsModule, m_flatUv1FsModule, m_flatUv1Program);
+    //// UV-coordinate PNG export: same unwrapped VS, fragment outputs the
+    //// atlas uv itself (uvflat1uv.frag) — no atlas content read.
+    // tryFlatUv("content/shaders/uvflat1.vert.hlsl.spv",
+    //	"content/shaders/uvflat1uv.frag.hlsl.spv",
+    //	"editorFlatUv1VS", "editorFlatUvCoordFS",
+    //	m_flatUv1VsModule, m_flatUvCoordFsModule, m_flatUvCoordProgram);
+    //  Samplers: mirror App order (0 = linear clamp, 1 = point). The lit
+    //  shader's comparisonSamplerId = 1 addresses the second slot.
+    m_context->GetOrCreateSampler(
+        smvk::SamplerCreateInfo{.magFilter = smvk::Filter::Linear,
+                                .minFilter = smvk::Filter::Linear,
+                                .mipmapMode = smvk::MipmapMode::Linear,
+                                .addressU = smvk::AddressMode::ClampToEdge,
+                                .addressV = smvk::AddressMode::ClampToEdge,
+                                .addressW = smvk::AddressMode::ClampToEdge,
+                                .maxAnisotropy = 1.0f});
+    m_context->GetOrCreateSampler(
+        smvk::SamplerCreateInfo{.magFilter = smvk::Filter::Nearest,
+                                .minFilter = smvk::Filter::Nearest,
+                                .mipmapMode = smvk::MipmapMode::Nearest,
+                                .addressU = smvk::AddressMode::ClampToEdge,
+                                .addressV = smvk::AddressMode::ClampToEdge,
+                                .addressW = smvk::AddressMode::ClampToEdge,
+                                .maxAnisotropy = 1.0f});
+    // Preview tonemapper (the m_sceneHdr display chain, see the file
+    // header): best-effort - a missing SPV never kills the editor, the
+    // routing in RecordMainPass falls back to the direct LDR write.
+    (void)m_previewTonemap.EnsureShaders(*m_context);
+    return true;
+}
 
-	bool EditorApp::EnsureBuffers(uint32_t flightCount) {
-		if (m_flightCount == flightCount && !m_frameUniforms.empty())
-			return true;
-		m_flightCount = flightCount;
-		m_frameUniforms = m_context->CreateBuffer(
-			sizeof(engine::FrameUniforms) * flightCount * kMaxViewports,
-			smvk::BufferType_Uniform, "editor frames");
-		m_frameHotBuf = m_context->CreateBuffer(
-			sizeof(engine::FramePSHot) * flightCount * kMaxViewports,
-			smvk::BufferType_Uniform, "editor frame hot");
-		m_insetFrameUniforms = m_context->CreateBuffer(
-			sizeof(engine::FrameUniforms) * flightCount, smvk::BufferType_Uniform,
-			"editor inset frame");
-		m_materialsBuf = m_context->CreateBuffer(
-			sizeof(smvk::MaterialValues) * kMaxMaterials * flightCount,
-			smvk::BufferType_Storage, "editor materials");
-		m_lightsBuf = m_context->CreateBuffer(
-			sizeof(smvk::Light) * kMaxLights * flightCount,
-			smvk::BufferType_Storage, "editor lights");
-		m_cascadeBuf = m_context->CreateBuffer(
-			sizeof(smvk::GpuDirectionalLightDescription) * flightCount,
-			smvk::BufferType_Storage, "editor cascades");
-		return !m_frameUniforms.empty() && !m_frameHotBuf.empty() &&
-			!m_insetFrameUniforms.empty() &&
-			!m_materialsBuf.empty() && !m_lightsBuf.empty() && !m_cascadeBuf.empty();
-	}
+bool EditorApp::EnsureBuffers(uint32_t flightCount) {
+    if (m_flightCount == flightCount && !m_frameUniforms.empty())
+        return true;
+    m_flightCount = flightCount;
+    m_frameUniforms =
+        m_context->CreateBuffer(sizeof(engine::FrameUniforms) * flightCount * kMaxViewports,
+                                smvk::BufferType_Uniform,
+                                "editor frames");
+    m_frameHotBuf =
+        m_context->CreateBuffer(sizeof(engine::FramePSHot) * flightCount * kMaxViewports,
+                                smvk::BufferType_Uniform,
+                                "editor frame hot");
+    m_insetFrameUniforms = m_context->CreateBuffer(sizeof(engine::FrameUniforms) * flightCount,
+                                                   smvk::BufferType_Uniform,
+                                                   "editor inset frame");
+    m_materialsBuf =
+        m_context->CreateBuffer(sizeof(smvk::MaterialValues) * kMaxMaterials * flightCount,
+                                smvk::BufferType_Storage,
+                                "editor materials");
+    m_lightsBuf = m_context->CreateBuffer(
+        sizeof(smvk::Light) * kMaxLights * flightCount, smvk::BufferType_Storage, "editor lights");
+    m_cascadeBuf =
+        m_context->CreateBuffer(sizeof(smvk::GpuDirectionalLightDescription) * flightCount,
+                                smvk::BufferType_Storage,
+                                "editor cascades");
+    return !m_frameUniforms.empty() && !m_frameHotBuf.empty() && !m_insetFrameUniforms.empty() &&
+           !m_materialsBuf.empty() && !m_lightsBuf.empty() && !m_cascadeBuf.empty();
+}
 
-	bool EditorApp::EnsureDepth(smvk::Extent2D extent) {
-		if (m_depth.Valid() && m_depth.extent.width == extent.width &&
-			m_depth.extent.height == extent.height)
-			return true;
-		smvk::DepthDesc desc{};
-		desc.format = m_swapchain->GetDepthFormat();
-		desc.name = "editorDepth";
-		desc.viewName = "editorDepthView";
-		desc.logicalName = "editorDepthLogical";
-		return m_depth.Ensure(*m_context, *m_rendergraph, extent, desc);
-	}
+bool EditorApp::EnsureDepth(smvk::Extent2D extent) {
+    if (m_depth.Valid() && m_depth.extent.width == extent.width &&
+        m_depth.extent.height == extent.height)
+        return true;
+    smvk::DepthDesc desc{};
+    desc.format = m_swapchain->GetDepthFormat();
+    desc.name = "editorDepth";
+    desc.viewName = "editorDepthView";
+    desc.logicalName = "editorDepthLogical";
+    return m_depth.Ensure(*m_context, *m_rendergraph, extent, desc);
+}
 
-	void EditorApp::UpdateFrameData(uint32_t flight) {
-		SetupDefaultCameras();
+void EditorApp::UpdateFrameData(uint32_t flight) {
+    SetupDefaultCameras();
 
-		// One frame slice per (flight, viewport): each viewport renders
-		// with ITS camera (aspect from its rect). The ACTIVE viewport also
-		// drives the light buffer.
-		const uint64_t baseAddr =
-			m_context->GetBufferDeviceAddress(m_frameUniforms);
-		const size_t sliceStride = sizeof(engine::FrameUniforms);
-		for (int vp = 0; vp < ViewportCount(); ++vp) {
-			const ViewportRect& rect = m_viewports[vp].rect;
-			const float aspect = rect.h > 0.0f ? rect.w / rect.h : 1.0f;
-			// Locked look-through wins over the orbit camera; unbound (or
-			// lost-node) viewports keep the existing orbit behavior.
-			glm::mat4 view, proj;
-			glm::vec3 eye;
-			float nearClip, farClip;
-			if (!BoundCameraView(vp, view, proj, eye, nearClip, farClip)) {
-				const EditorCam& cam = m_editorCams[m_viewports[vp].camIdx];
-				view = EditorCamView(cam);
-				proj = EditorCamProj(cam, aspect);
-				eye = EditorCamEye(cam);
-				nearClip = cam.nearClip;
-				farClip = cam.farClip;
-			}
-			const glm::mat4 viewProj = proj * view;
+    // One frame slice per (flight, viewport): each viewport renders
+    // with ITS camera (aspect from its rect). The ACTIVE viewport also
+    // drives the light buffer.
+    const uint64_t baseAddr = m_context->GetBufferDeviceAddress(m_frameUniforms);
+    const size_t sliceStride = sizeof(engine::FrameUniforms);
+    for (int vp = 0; vp < ViewportCount(); ++vp) {
+        const ViewportRect& rect = m_viewports[vp].rect;
+        const float aspect = rect.h > 0.0f ? rect.w / rect.h : 1.0f;
+        // Locked look-through wins over the orbit camera; unbound (or
+        // lost-node) viewports keep the existing orbit behavior.
+        glm::mat4 view, proj;
+        glm::vec3 eye;
+        float nearClip, farClip;
+        if (!BoundCameraView(vp, view, proj, eye, nearClip, farClip)) {
+            const EditorCam& cam = m_editorCams[m_viewports[vp].camIdx];
+            view = EditorCamView(cam);
+            proj = EditorCamProj(cam, aspect);
+            eye = EditorCamEye(cam);
+            nearClip = cam.nearClip;
+            farClip = cam.farClip;
+        }
+        const glm::mat4 viewProj = proj * view;
 
-			engine::FrameUniforms frame{};
-			frame.view = view;
-			frame.proj = proj;
-			frame.viewProj = viewProj;
-			frame.invView = glm::inverse(view);
-			frame.invProj = glm::inverse(proj);
-			frame.invViewProj = glm::inverse(viewProj);
-			frame.prevViewProj = viewProj;
-			frame.cameraPos = eye;
-			frame.time = time_since_start_s;
-			frame.viewportSize = glm::vec2(rect.w, rect.h);
-			frame.invViewportSize = glm::vec2(
-				rect.w > 0.0f ? 1.0f / rect.w : 0.0f,
-				rect.h > 0.0f ? 1.0f / rect.h : 0.0f);
-		frame.nearPlane = nearClip;
-		frame.farPlane = farClip;
-		// The App feeds the SAME number to its frame uniforms and the
-		// tonemap push (see WorldRenderer: data.exposure = FrameExposure()
-		// == tonemapDesc.exposure) - the preview mirrors that with its
-		// standing exposure so the 1/exposure-pre-scaled debug views and
-		// the tonemap layer agree exactly (see PreviewExposure).
-		frame.exposure = PreviewExposure();
-		frame.aoTextureIndex = UINT32_MAX;
-			frame.aoIntensity = 0.0f;
-			frame.evsmMode = 0;
-			frame.decalCount = 0;
-			// NOTE (lightmaps deprecated): FrameUniforms no longer carries the
-			// baked-irradiance atlas slots (see the #if 0 block in
-			// Engine/Renderer/WorldRenderer.h) — the editor's m_lmGpu upload
-			// path is retained, but nothing consumes it per-frame anymore.
-			frame.regEnabled = 0;
-			frame.regCount = 0;
-			frame.dsEnabled = 0;
-			frame.giEnabled = 0;
-			frame.giDebug = 0;
+        engine::FrameUniforms frame{};
+        frame.view = view;
+        frame.proj = proj;
+        frame.viewProj = viewProj;
+        frame.invView = glm::inverse(view);
+        frame.invProj = glm::inverse(proj);
+        frame.invViewProj = glm::inverse(viewProj);
+        frame.prevViewProj = viewProj;
+        frame.cameraPos = eye;
+        frame.time = time_since_start_s;
+        frame.viewportSize = glm::vec2(rect.w, rect.h);
+        frame.invViewportSize =
+            glm::vec2(rect.w > 0.0f ? 1.0f / rect.w : 0.0f, rect.h > 0.0f ? 1.0f / rect.h : 0.0f);
+        frame.nearPlane = nearClip;
+        frame.farPlane = farClip;
+        // The App feeds the SAME number to its frame uniforms and the
+        // tonemap push (see WorldRenderer: data.exposure = FrameExposure()
+        // == tonemapDesc.exposure) - the preview mirrors that with its
+        // standing exposure so the 1/exposure-pre-scaled debug views and
+        // the tonemap layer agree exactly (see PreviewExposure).
+        frame.exposure = PreviewExposure();
+        frame.aoTextureIndex = UINT32_MAX;
+        frame.aoIntensity = 0.0f;
+        frame.evsmMode = 0;
+        frame.decalCount = 0;
+        // NOTE (lightmaps deprecated): FrameUniforms no longer carries the
+        // baked-irradiance atlas slots (see the #if 0 block in
+        // Engine/Renderer/WorldRenderer.h) — the editor's m_lmGpu upload
+        // path is retained, but nothing consumes it per-frame anymore.
+        frame.regEnabled = 0;
+        frame.regCount = 0;
+        frame.dsEnabled = 0;
+        frame.giEnabled = 0;
+        frame.giDebug = 0;
 
-			smvk::EnvironmentSettings env{};
-			ApplyEnvToFrame(frame, env);
-			frame.env = env.ToFrameData();
+        smvk::EnvironmentSettings env{};
+        ApplyEnvToFrame(frame, env);
+        frame.env = env.ToFrameData();
 
-			// FramePSHot hot slab (THE device-death fix): the lit FS reads
-			// FrameUniforms::frameHot UN-GATED at the very top of mainPS
-			// (default_lit_body.hlsli:354 "FramePSHot hot = frame.frameHot
-			// .Get()"), so a zero-init frame made every world-drawing frame
-			// dereference a null BDA — an MMU read at address 0x0 (Aftermath
-			// confirmed) that took the whole device down (surfacing as the
-			// UINT64_MAX timeline abort at the live-view launch). Mirror the
-			// App renderer's UpdateFrameUniforms: upload this view's hot
-			// struct + carry its slab address in the frame uniform BEFORE the
-			// frame upload (the frame carries the BDA). The inset (viewport
-			// strip) copies viewport 0's frame, so it inherits this slab.
-			{
-				engine::FramePSHot hot{};
-				hot.cameraPos = frame.cameraPos;
-				hot.time = frame.time;
-				hot.viewportSize = frame.viewportSize;
-				hot.invViewportSize = frame.invViewportSize;
-				hot.nearPlane = frame.nearPlane;
-				hot.farPlane = frame.farPlane;
-				hot.exposure = frame.exposure;
-				hot.aoTextureIndex = frame.aoTextureIndex;
-				hot.aoIntensity = frame.aoIntensity;
-				hot.evsmMode = frame.evsmMode;
-				hot.dsEnabled = frame.dsEnabled;
-				hot.dsTileCountX = frame.dsTileCountX;
-				hot.fogEndAndFlags_w = frame.env.fogEndAndFlags.w;
-				hot.giIntensity = frame.giIntensity;
-				hot.giDebug = frame.giDebug;
-				hot.giVolumesEnabled = frame.giVolumesEnabled;
-				const size_t hotSlice = (size_t(flight) * kMaxViewports
-					+ size_t(vp)) * sizeof(engine::FramePSHot);
-				m_context->UploadDataToBuffer(m_frameHotBuf, &hot, sizeof(hot),
-					smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-					smvk::AccessFlags::ShaderRead, 0, hotSlice);
-				frame.frameHot =
-					m_context->GetBufferDeviceAddress(m_frameHotBuf) + hotSlice;
-			}
+        // FramePSHot hot slab (THE device-death fix): the lit FS reads
+        // FrameUniforms::frameHot UN-GATED at the very top of mainPS
+        // (default_lit_body.hlsli:354 "FramePSHot hot = frame.frameHot
+        // .Get()"), so a zero-init frame made every world-drawing frame
+        // dereference a null BDA — an MMU read at address 0x0 (Aftermath
+        // confirmed) that took the whole device down (surfacing as the
+        // UINT64_MAX timeline abort at the live-view launch). Mirror the
+        // App renderer's UpdateFrameUniforms: upload this view's hot
+        // struct + carry its slab address in the frame uniform BEFORE the
+        // frame upload (the frame carries the BDA). The inset (viewport
+        // strip) copies viewport 0's frame, so it inherits this slab.
+        {
+            engine::FramePSHot hot{};
+            hot.cameraPos = frame.cameraPos;
+            hot.time = frame.time;
+            hot.viewportSize = frame.viewportSize;
+            hot.invViewportSize = frame.invViewportSize;
+            hot.nearPlane = frame.nearPlane;
+            hot.farPlane = frame.farPlane;
+            hot.exposure = frame.exposure;
+            hot.aoTextureIndex = frame.aoTextureIndex;
+            hot.aoIntensity = frame.aoIntensity;
+            hot.evsmMode = frame.evsmMode;
+            hot.dsEnabled = frame.dsEnabled;
+            hot.dsTileCountX = frame.dsTileCountX;
+            hot.fogEndAndFlags_w = frame.env.fogEndAndFlags.w;
+            hot.giIntensity = frame.giIntensity;
+            hot.giDebug = frame.giDebug;
+            hot.giVolumesEnabled = frame.giVolumesEnabled;
+            const size_t hotSlice =
+                (size_t(flight) * kMaxViewports + size_t(vp)) * sizeof(engine::FramePSHot);
+            m_context->UploadDataToBuffer(m_frameHotBuf,
+                                          &hot,
+                                          sizeof(hot),
+                                          smvk::PipelineStageBit_Vertex |
+                                              smvk::PipelineStageBit_Fragment,
+                                          smvk::AccessFlags::ShaderRead,
+                                          0,
+                                          hotSlice);
+            frame.frameHot = m_context->GetBufferDeviceAddress(m_frameHotBuf) + hotSlice;
+        }
 
-			m_viewports[vp].frame = frame;
-			m_viewports[vp].viewProj = viewProj;
-			// Basis trace (TOURMALINE_BASIS_TRACE=1): one line per viewport
-			// every 60 frames — eye + the screen basis (view-matrix rows:
-			// row 0 = right, row 1 = screen-up) + the rect. Compare against
-			//\ wr\ twin\ gone;\ kept\ for\ the\ editor's\ own
-			// basis disagreement (e.g. a 90-degree roll of boxes/clicks vs
-			// pixels) shows up as different right/up rows for the same eye.
-			if ((m_frameCounter % 60) == 0) {
-				static const bool basisTrace =
-					std::getenv("TOURMALINE_BASIS_TRACE") != nullptr;
-				if (basisTrace) {
-					const glm::vec3 bRight(view[0][0], view[1][0], view[2][0]);
-					const glm::vec3 bUp(view[0][1], view[1][1], view[2][1]);
-					std::fprintf(stderr,
-						"[BASIS] ed vp=%d rect=%.0fx%.0f@%.0f,%.0f "
-						"eye=(%.2f,%.2f,%.2f) "
-						"right=(%.3f,%.3f,%.3f) up=(%.3f,%.3f,%.3f)\n",
-						vp, rect.w, rect.h, rect.x, rect.y,
-						eye.x, eye.y, eye.z,
-						bRight.x, bRight.y, bRight.z,
-						bUp.x, bUp.y, bUp.z);
-				}
-			}
-			m_viewports[vp].frameAddr = baseAddr +
-				(size_t(flight) * kMaxViewports + size_t(vp)) * sliceStride;
-			m_context->UploadDataToBuffer(m_frameUniforms, &frame, sizeof(frame),
-				smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-				smvk::AccessFlags::ShaderRead, 0,
-				(size_t(flight) * kMaxViewports + size_t(vp)) * sliceStride);
-		}
-		// Legacy frame mirrors (gizmo/pick math): the ACTIVE vp.
-		m_lastFrame = m_viewports[m_activeVp].frame;
-		m_lastViewProj = m_viewports[m_activeVp].viewProj;
+        m_viewports[vp].frame = frame;
+        m_viewports[vp].viewProj = viewProj;
+        // Basis trace (TOURMALINE_BASIS_TRACE=1): one line per viewport
+        // every 60 frames — eye + the screen basis (view-matrix rows:
+        // row 0 = right, row 1 = screen-up) + the rect. Compare against
+        //\ wr\ twin\ gone;\ kept\ for\ the\ editor's\ own
+        // basis disagreement (e.g. a 90-degree roll of boxes/clicks vs
+        // pixels) shows up as different right/up rows for the same eye.
+        if ((m_frameCounter % 60) == 0) {
+            static const bool basisTrace = std::getenv("TOURMALINE_BASIS_TRACE") != nullptr;
+            if (basisTrace) {
+                const glm::vec3 bRight(view[0][0], view[1][0], view[2][0]);
+                const glm::vec3 bUp(view[0][1], view[1][1], view[2][1]);
+                std::fprintf(stderr,
+                             "[BASIS] ed vp=%d rect=%.0fx%.0f@%.0f,%.0f "
+                             "eye=(%.2f,%.2f,%.2f) "
+                             "right=(%.3f,%.3f,%.3f) up=(%.3f,%.3f,%.3f)\n",
+                             vp,
+                             rect.w,
+                             rect.h,
+                             rect.x,
+                             rect.y,
+                             eye.x,
+                             eye.y,
+                             eye.z,
+                             bRight.x,
+                             bRight.y,
+                             bRight.z,
+                             bUp.x,
+                             bUp.y,
+                             bUp.z);
+            }
+        }
+        m_viewports[vp].frameAddr =
+            baseAddr + (size_t(flight) * kMaxViewports + size_t(vp)) * sliceStride;
+        m_context->UploadDataToBuffer(m_frameUniforms,
+                                      &frame,
+                                      sizeof(frame),
+                                      smvk::PipelineStageBit_Vertex |
+                                          smvk::PipelineStageBit_Fragment,
+                                      smvk::AccessFlags::ShaderRead,
+                                      0,
+                                      (size_t(flight) * kMaxViewports + size_t(vp)) * sliceStride);
+    }
+    // Legacy frame mirrors (gizmo/pick math): the ACTIVE vp.
+    m_lastFrame = m_viewports[m_activeVp].frame;
+    m_lastViewProj = m_viewports[m_activeVp].viewProj;
 
-	// Sun light (lights[0], same convention as App) from the CURRENT env.
-	// The env block is LUX-NATIVE (see tour::scene::SceneEnv) and the lit view now runs
-	// the App's RAW-LUX HDR display chain (see the file header + m_sceneHdr)
-	// - the lux go in unscaled and the per-viewport tonemap layer brings
-	// them down with the authored operator + exposure, exactly like the App.
-	const EditorEnv& envSet = CurrentEnv();
-	smvk::EnvironmentSettings env{};
-	env.sunAzimuthDeg = envSet.sunAzimuth;
-	env.sunElevationDeg = envSet.sunElevation;
-	const glm::vec3 toSun = env.SunDirectionToSun();
-	smvk::Light lights[kMaxLights]{};
-	{
-		smvk::Light& l = lights[0];
-		l.color = glm::vec4(envSet.sunColor, 1.0f);
-		l.direction[0] = -toSun.x;
-		l.direction[1] = -toSun.y;
-		l.direction[2] = -toSun.z;
-		l.intensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f
-			: envSet.sunIntensity;
-		l.shadow_map_index = -1;
-	}
+    // Sun light (lights[0], same convention as App) from the CURRENT env.
+    // The env block is LUX-NATIVE (see tour::scene::SceneEnv) and the lit view now runs
+    // the App's RAW-LUX HDR display chain (see the file header + m_sceneHdr)
+    // - the lux go in unscaled and the per-viewport tonemap layer brings
+    // them down with the authored operator + exposure, exactly like the App.
+    const EditorEnv& envSet = CurrentEnv();
+    smvk::EnvironmentSettings env{};
+    env.sunAzimuthDeg = envSet.sunAzimuth;
+    env.sunElevationDeg = envSet.sunElevation;
+    const glm::vec3 toSun = env.SunDirectionToSun();
+    smvk::Light lights[kMaxLights]{};
+    {
+        smvk::Light& l = lights[0];
+        l.color = glm::vec4(envSet.sunColor, 1.0f);
+        l.direction[0] = -toSun.x;
+        l.direction[1] = -toSun.y;
+        l.direction[2] = -toSun.z;
+        l.intensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f : envSet.sunIntensity;
+        l.shadow_map_index = -1;
+    }
 
-		// Cascade descriptor: no cascades in the editor's own pass (the
-		// editor passes render shadows per view mode).
-		// Zeroed, uploaded anyway so the shaders never read a null BDA.
-		smvk::GpuDirectionalLightDescription dir{};
-		m_context->UploadDataToBuffer(m_lightsBuf, lights, sizeof(lights),
-			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-			smvk::AccessFlags::ShaderRead, 0, size_t(flight) * sizeof(lights));
+    // Cascade descriptor: no cascades in the editor's own pass (the
+    // editor passes render shadows per view mode).
+    // Zeroed, uploaded anyway so the shaders never read a null BDA.
+    smvk::GpuDirectionalLightDescription dir{};
+    m_context->UploadDataToBuffer(m_lightsBuf,
+                                  lights,
+                                  sizeof(lights),
+                                  smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                                  smvk::AccessFlags::ShaderRead,
+                                  0,
+                                  size_t(flight) * sizeof(lights));
 
-		m_context->UploadDataToBuffer(m_cascadeBuf, &dir, sizeof(dir),
-			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-			smvk::AccessFlags::ShaderRead, 0, size_t(flight) * sizeof(dir));
+    m_context->UploadDataToBuffer(m_cascadeBuf,
+                                  &dir,
+                                  sizeof(dir),
+                                  smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                                  smvk::AccessFlags::ShaderRead,
+                                  0,
+                                  size_t(flight) * sizeof(dir));
 
-		UploadMaterials(flight);
-	}
+    UploadMaterials(flight);
+}
 
-	void EditorApp::ApplyEnvToFrame(engine::FrameUniforms& frame,
-		smvk::EnvironmentSettings& env) const {
-		const EditorEnv& e = CurrentEnv();
-		// RAW lux in (see the file header + m_sceneHdr): the lit view runs
-		// the App's HDR + tonemap display chain, so the env values are the
-		// same numbers the App renders with (sky 600, sun 10000...) and the
-		// per-viewport tonemap layer (authored operator + manual
-		// exposure) brings them to LDR exactly like the App's Tonemap pass.
-		env.skyEnabled = true;
-		env.iblEnabled = true;
-		env.skyZenithColor = e.skyColor;
-		env.skyHorizonColor = e.skyColor;
-		env.skyIntensity = e.skyIntensity;
-		env.groundColor = e.skyColor * 0.5f;
-		env.iblIntensity = e.skyIntensity;
-		env.sunAzimuthDeg = e.sunAzimuth;
-		env.sunElevationDeg = e.sunElevation;
-		env.sunColor = e.sunColor;
-		env.sunIntensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f
-			: e.sunIntensity;
-		env.fogMode = 0; // volumetrics authored, not yet rendered here
-	}
+void EditorApp::ApplyEnvToFrame(engine::FrameUniforms& frame,
+                                smvk::EnvironmentSettings& env) const {
+    const EditorEnv& e = CurrentEnv();
+    // RAW lux in (see the file header + m_sceneHdr): the lit view runs
+    // the App's HDR + tonemap display chain, so the env values are the
+    // same numbers the App renders with (sky 600, sun 10000...) and the
+    // per-viewport tonemap layer (authored operator + manual
+    // exposure) brings them to LDR exactly like the App's Tonemap pass.
+    env.skyEnabled = true;
+    env.iblEnabled = true;
+    env.skyZenithColor = e.skyColor;
+    env.skyHorizonColor = e.skyColor;
+    env.skyIntensity = e.skyIntensity;
+    env.groundColor = e.skyColor * 0.5f;
+    env.iblIntensity = e.skyIntensity;
+    env.sunAzimuthDeg = e.sunAzimuth;
+    env.sunElevationDeg = e.sunElevation;
+    env.sunColor = e.sunColor;
+    env.sunIntensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f : e.sunIntensity;
+    env.fogMode = 0; // volumetrics authored, not yet rendered here
+}
 
-	EditorApp::EditorEnv& EditorApp::CurrentEnv() {
-		// Scene-backed (see tour::scene::SceneEnv): the resolved source that renders —
-		// the scene default, or the selected node block. UI writes land
-		// directly in the scene (no publish step; ResolveSceneEnv refreshes
-		// the rendered copy afterwards).
-		static tour::scene::SceneEnv fallback{};
-		if (!m_world)
-			return fallback;
-		if (m_envCurrent != UINT32_MAX) {
-			auto it = FindEnv(m_world->scene, m_envCurrent);
-			if (it)
-				return it->environment;
-			m_envCurrent = UINT32_MAX;
-		}
-		return m_world->scene.defaultEnvironment;
-	}
+EditorApp::EditorEnv& EditorApp::CurrentEnv() {
+    // Scene-backed (see tour::scene::SceneEnv): the resolved source that renders —
+    // the scene default, or the selected node block. UI writes land
+    // directly in the scene (no publish step; ResolveSceneEnv refreshes
+    // the rendered copy afterwards).
+    static tour::scene::SceneEnv fallback{};
+    if (!m_world)
+        return fallback;
+    if (m_envCurrent != UINT32_MAX) {
+        auto it = FindEnv(m_world->scene, m_envCurrent);
+        if (it)
+            return it->environment;
+        m_envCurrent = UINT32_MAX;
+    }
+    return m_world->scene.defaultEnvironment;
+}
 
-	const EditorApp::EditorEnv& EditorApp::CurrentEnv() const {
-		static const tour::scene::SceneEnv fallback{};
-		if (!m_world)
-			return fallback;
-		if (m_envCurrent != UINT32_MAX) {
-			auto it = FindEnv(m_world->scene, m_envCurrent);
-			if (it)
-				return it->environment;
-		}
-		return m_world->scene.defaultEnvironment;
-	}
+const EditorApp::EditorEnv& EditorApp::CurrentEnv() const {
+    static const tour::scene::SceneEnv fallback{};
+    if (!m_world)
+        return fallback;
+    if (m_envCurrent != UINT32_MAX) {
+        auto it = FindEnv(m_world->scene, m_envCurrent);
+        if (it)
+            return it->environment;
+    }
+    return m_world->scene.defaultEnvironment;
+}
 
-	const SceneRenderSettings& EditorApp::RenderLook() const {
-		// The scene's render look (the split postfx settings — see
-		// SceneRenderSettings): the resolved block when a scene stands,
-		// defaults otherwise (sceneless-safe like CurrentEnv's
-		// fallbacks). No source selection — the look is scene-global.
-		static const SceneRenderSettings fallback{};
-		if (!m_world)
-			return fallback;
-		return m_world->scene.hasRenderSettings
-			? m_world->scene.renderSettings
-			: m_world->scene.defaultRenderSettings;
-	}
+const SceneRenderSettings& EditorApp::RenderLook() const {
+    // The scene's render look (the split postfx settings — see
+    // SceneRenderSettings): the resolved block when a scene stands,
+    // defaults otherwise (sceneless-safe like CurrentEnv's
+    // fallbacks). No source selection — the look is scene-global.
+    static const SceneRenderSettings fallback{};
+    if (!m_world)
+        return fallback;
+    return m_world->scene.hasRenderSettings ? m_world->scene.renderSettings
+                                            : m_world->scene.defaultRenderSettings;
+}
 
-	void EditorApp::UploadMaterials(uint32_t flight) {
-		if (!m_world)
-			return;
-		// Pool index -> bindless slot for the shader's textures[] array
-		// (materials store pool indices; sampling needs descriptor slots).
-		auto remap = [&](int poolIdx) -> int {
-			if (poolIdx < 0)
-				return -1;
-			auto hit = m_bindlessBySlot.find(static_cast<uint32_t>(poolIdx));
-			if (hit == m_bindlessBySlot.end()) {
-				// Crash diagnostic: a map miss uploads the RAW POOL
-				// INDEX as the bindless slot — a bogus descriptor sample on
-				// the first world-drawing frame (the observed device-death).
-				// Log the miss so the offender material/slot is named.
-				std::fprintf(stderr,
-					"[MATSLOT] remap MISS: poolIdx=%d not in m_bindlessBySlot (map=%zu) — raw pool index becomes the bindless slot!\n",
-					poolIdx, m_bindlessBySlot.size());
-				std::fflush(stderr);
-				return poolIdx;
-			}
-			return static_cast<int>(hit->second);
-		};
-		const uint32_t slotCount =
-			std::min<uint32_t>(uint32_t(m_world->materialLocations.size()), kMaxMaterials);
-		std::vector<smvk::MaterialValues> mats(slotCount);
-		for (uint32_t i = 0; i < slotCount; ++i) {
-			if (auto* mat = m_world->GetMaterial(i)) {
-				mats[i] = mat->values;
-				mats[i].textures.x = remap(mat->values.textures.x);
-				mats[i].textures.y = remap(mat->values.textures.y);
-				mats[i].textures.z = remap(mat->values.textures.z);
-				mats[i].textures.w = remap(mat->values.textures.w);
-				mats[i].textures2.x = remap(mat->values.textures2.x);
-			}
-		}
-		if (!mats.empty())
-			m_context->UploadDataToBuffer(m_materialsBuf, mats.data(),
-				sizeof(smvk::MaterialValues) * mats.size(),
-				smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-				smvk::AccessFlags::ShaderRead, 0,
-				size_t(flight) * sizeof(smvk::MaterialValues) * kMaxMaterials);
-	}
+void EditorApp::UploadMaterials(uint32_t flight) {
+    if (!m_world)
+        return;
+    // Pool index -> bindless slot for the shader's textures[] array
+    // (materials store pool indices; sampling needs descriptor slots).
+    auto remap = [&](int poolIdx) -> int {
+        if (poolIdx < 0)
+            return -1;
+        auto hit = m_bindlessBySlot.find(static_cast<uint32_t>(poolIdx));
+        if (hit == m_bindlessBySlot.end()) {
+            // Crash diagnostic: a map miss uploads the RAW POOL
+            // INDEX as the bindless slot — a bogus descriptor sample on
+            // the first world-drawing frame (the observed device-death).
+            // Log the miss so the offender material/slot is named.
+            std::fprintf(stderr,
+                         "[MATSLOT] remap MISS: poolIdx=%d not in m_bindlessBySlot (map=%zu) — raw "
+                         "pool index becomes the bindless slot!\n",
+                         poolIdx,
+                         m_bindlessBySlot.size());
+            std::fflush(stderr);
+            return poolIdx;
+        }
+        return static_cast<int>(hit->second);
+    };
+    const uint32_t slotCount =
+        std::min<uint32_t>(uint32_t(m_world->materialLocations.size()), kMaxMaterials);
+    std::vector<smvk::MaterialValues> mats(slotCount);
+    for (uint32_t i = 0; i < slotCount; ++i) {
+        if (auto* mat = m_world->GetMaterial(i)) {
+            mats[i] = mat->values;
+            mats[i].textures.x = remap(mat->values.textures.x);
+            mats[i].textures.y = remap(mat->values.textures.y);
+            mats[i].textures.z = remap(mat->values.textures.z);
+            mats[i].textures.w = remap(mat->values.textures.w);
+            mats[i].textures2.x = remap(mat->values.textures2.x);
+        }
+    }
+    if (!mats.empty())
+        m_context->UploadDataToBuffer(
+            m_materialsBuf,
+            mats.data(),
+            sizeof(smvk::MaterialValues) * mats.size(),
+            smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+            smvk::AccessFlags::ShaderRead,
+            0,
+            size_t(flight) * sizeof(smvk::MaterialValues) * kMaxMaterials);
+}
 
-	// ---- editor cameras (orbit frame; perspective or orthographic) ---------
-	glm::vec3 EditorCamEye(const EditorCam& c) {
-		return c.target + c.dist * glm::vec3(
-			std::cos(c.pitch) * std::sin(c.yaw),
-			-std::sin(c.pitch),
-			std::cos(c.pitch) * std::cos(c.yaw));
-	}
+// ---- editor cameras (orbit frame; perspective or orthographic) ---------
+glm::vec3 EditorCamEye(const EditorCam& c) {
+    return c.target + c.dist * glm::vec3(std::cos(c.pitch) * std::sin(c.yaw),
+                                         -std::sin(c.pitch),
+                                         std::cos(c.pitch) * std::cos(c.yaw));
+}
 
-	glm::mat4 EditorCamView(const EditorCam& c) {
-		// tour::SafeLookAt: the SHARED degenerate-lookAt resolution (the same one
-		// the camera drive paths use). The old direct lookAt picked
-		// its own near-degenerate basis for the straight-down Top camera,
-		// which rotated the editor's wire boxes 90 degrees against the scene
-		// scene in the top view (the two agreed everywhere else).
-		return tour::SafeLookAt(EditorCamEye(c), c.target);
-	}
+glm::mat4 EditorCamView(const EditorCam& c) {
+    // tour::SafeLookAt: the SHARED degenerate-lookAt resolution (the same one
+    // the camera drive paths use). The old direct lookAt picked
+    // its own near-degenerate basis for the straight-down Top camera,
+    // which rotated the editor's wire boxes 90 degrees against the scene
+    // scene in the top view (the two agreed everywhere else).
+    return tour::SafeLookAt(EditorCamEye(c), c.target);
+}
 
-	glm::mat4 EditorCamProj(const EditorCam& c, float aspect) {
-		glm::mat4 proj(1.0f);
-		if (c.type == EditorCam::Type::Orthographic) {
-			const float h = std::max(c.orthoHalfH, 0.01f);
-			// Swapped near/far args = reversed-Z (near -> 1, far -> 0) for the
-			// GreaterEqual depth pass, matching the perspective path.
-			proj = glm::orthoRH_ZO(-h * aspect, h * aspect, -h, h,
-				c.farClip, c.nearClip);
-		}
-		else {
-			proj = tour::MakeReversedZProjRH(glm::radians(c.fovYDeg), aspect,
-				c.nearClip, c.farClip);
-		}
-		proj[1][1] *= -1.0f; // Vulkan Y-flip
-		return proj;
-	}
+glm::mat4 EditorCamProj(const EditorCam& c, float aspect) {
+    glm::mat4 proj(1.0f);
+    if (c.type == EditorCam::Type::Orthographic) {
+        const float h = std::max(c.orthoHalfH, 0.01f);
+        // Swapped near/far args = reversed-Z (near -> 1, far -> 0) for the
+        // GreaterEqual depth pass, matching the perspective path.
+        proj = glm::orthoRH_ZO(-h * aspect, h * aspect, -h, h, c.farClip, c.nearClip);
+    } else {
+        proj = tour::MakeReversedZProjRH(glm::radians(c.fovYDeg), aspect, c.nearClip, c.farClip);
+    }
+    proj[1][1] *= -1.0f; // Vulkan Y-flip
+    return proj;
+}
 
-	// Locked look-through: viewport follows the bound scene camera node's
-	// global pose + lens (forward = node -Z in world). False when unbound
-	// or the node lost its camera (deleted/detached) — callers fall back
-	// to the orbit camera, and the binding survives so undo restores it.
-	bool EditorApp::BoundCameraPoseFor(int vp, BoundCameraPose& out) const {
-		if (!m_world || vp < 0 || vp >= kMaxViewports)
-			return false;
-		const int bound = m_viewports[vp].boundNode;
-		if (bound < 0 || bound >= int(m_world->scene.hierarchy.size()))
-			return false;
-		const ::SceneCamera* C = FindNodeCamera(uint32_t(bound));
-		const ::SceneLight* L = FindNodeLight(uint32_t(bound));
-		// Spotlights can be previewed through their -Z axis, just like
-		// authored cameras. A point light has no single look direction.
-		if (!C && (!L || L->type != ::SceneLight::Type::Spot))
-			return false;
-		const glm::mat4& G = m_world->scene.globalTransform[uint32_t(bound)];
-		out.eye = glm::vec3(G[3]);
-		out.fwd = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
-		if (!(glm::length(out.fwd) > 1e-6f))
-			return false;
-		out.fwd = glm::normalize(out.fwd);
-		glm::vec3 up = glm::vec3(G * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
-		if (!(glm::length(up) > 1e-6f)
-			|| std::abs(glm::dot(up, out.fwd)) > 0.999f)
-			// Degenerate (or parallel to the view direction): the SHARED
-			// resolution (same convention as every other camera framing —
-			// see tour::ResolveLookAtUp) instead of an ad-hoc +X pick, which
-			// disagreed with the drive paths.
-			up = tour::ResolveLookAtUp(out.eye, out.eye + out.fwd);
-		else
-			up = glm::normalize(up);
-		out.up = up;
-		if (C) {
-			out.nearClip = std::max(C->nearClip, 1e-4f);
-			out.farClip = std::max(C->farClip, out.nearClip * 1.1f + 1e-3f);
-			out.fovYDeg = std::clamp(C->fovYDeg, 1.0f, 179.0f);
-			out.orthoHalfH = (C->projection == ::SceneCamera::Projection::Orthographic)
-				? std::max(C->orthoHalfH, 0.01f) : 0.0f;
-		} else {
-			// The authored cone is a HALF angle; the projection needs
-			// its full vertical aperture.
-			out.nearClip = 0.05f;
-			out.farClip = L->range > out.nearClip
-				? L->range : 1000.0f; // zero range means unbounded
-			out.fovYDeg = glm::degrees(2.0f * std::clamp(
-				L->outerConeAngle, 0.01f, 1.55f));
-			out.orthoHalfH = 0.0f;
-		}
-		return true;
-	}
+// Locked look-through: viewport follows the bound scene camera node's
+// global pose + lens (forward = node -Z in world). False when unbound
+// or the node lost its camera (deleted/detached) — callers fall back
+// to the orbit camera, and the binding survives so undo restores it.
+bool EditorApp::BoundCameraPoseFor(int vp, BoundCameraPose& out) const {
+    if (!m_world || vp < 0 || vp >= kMaxViewports)
+        return false;
+    const int bound = m_viewports[vp].boundNode;
+    if (bound < 0 || bound >= int(m_world->scene.hierarchy.size()))
+        return false;
+    const ::SceneCamera* C = FindNodeCamera(uint32_t(bound));
+    const ::SceneLight* L = FindNodeLight(uint32_t(bound));
+    // Spotlights can be previewed through their -Z axis, just like
+    // authored cameras. A point light has no single look direction.
+    if (!C && (!L || L->type != ::SceneLight::Type::Spot))
+        return false;
+    const glm::mat4& G = m_world->scene.globalTransform[uint32_t(bound)];
+    out.eye = glm::vec3(G[3]);
+    out.fwd = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+    if (!(glm::length(out.fwd) > 1e-6f))
+        return false;
+    out.fwd = glm::normalize(out.fwd);
+    glm::vec3 up = glm::vec3(G * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
+    if (!(glm::length(up) > 1e-6f) || std::abs(glm::dot(up, out.fwd)) > 0.999f)
+        // Degenerate (or parallel to the view direction): the SHARED
+        // resolution (same convention as every other camera framing —
+        // see tour::ResolveLookAtUp) instead of an ad-hoc +X pick, which
+        // disagreed with the drive paths.
+        up = tour::ResolveLookAtUp(out.eye, out.eye + out.fwd);
+    else
+        up = glm::normalize(up);
+    out.up = up;
+    if (C) {
+        out.nearClip = std::max(C->nearClip, 1e-4f);
+        out.farClip = std::max(C->farClip, out.nearClip * 1.1f + 1e-3f);
+        out.fovYDeg = std::clamp(C->fovYDeg, 1.0f, 179.0f);
+        out.orthoHalfH = (C->projection == ::SceneCamera::Projection::Orthographic)
+                             ? std::max(C->orthoHalfH, 0.01f)
+                             : 0.0f;
+    } else {
+        // The authored cone is a HALF angle; the projection needs
+        // its full vertical aperture.
+        out.nearClip = 0.05f;
+        out.farClip = L->range > out.nearClip ? L->range : 1000.0f; // zero range means unbounded
+        out.fovYDeg = glm::degrees(2.0f * std::clamp(L->outerConeAngle, 0.01f, 1.55f));
+        out.orthoHalfH = 0.0f;
+    }
+    return true;
+}
 
-	bool EditorApp::BoundCameraView(int vp, glm::mat4& view, glm::mat4& proj,
-		glm::vec3& eye, float& nearClip, float& farClip) const {
-		BoundCameraPose pose;
-		if (!BoundCameraPoseFor(vp, pose))
-			return false;
-		eye = pose.eye;
-		nearClip = pose.nearClip;
-		farClip = pose.farClip;
-		view = glm::lookAt(eye, eye + pose.fwd, pose.up);
-		const ViewportRect& rect = m_viewports[vp].rect;
-		const float aspect = rect.h > 0.0f ? rect.w / rect.h : 1.0f;
-		glm::mat4 p(1.0f);
-		if (pose.orthoHalfH > 0.0f) {
-			p = glm::orthoRH_ZO(-pose.orthoHalfH * aspect,
-				pose.orthoHalfH * aspect, -pose.orthoHalfH, pose.orthoHalfH,
-				farClip, nearClip);
-		}
-		else {
-			p = tour::MakeReversedZProjRH(glm::radians(pose.fovYDeg), aspect,
-				nearClip, farClip);
-		}
-		p[1][1] *= -1.0f; // Vulkan Y-flip
-		proj = p;
-		return true;
-	}
+bool EditorApp::BoundCameraView(int vp,
+                                glm::mat4& view,
+                                glm::mat4& proj,
+                                glm::vec3& eye,
+                                float& nearClip,
+                                float& farClip) const {
+    BoundCameraPose pose;
+    if (!BoundCameraPoseFor(vp, pose))
+        return false;
+    eye = pose.eye;
+    nearClip = pose.nearClip;
+    farClip = pose.farClip;
+    view = glm::lookAt(eye, eye + pose.fwd, pose.up);
+    const ViewportRect& rect = m_viewports[vp].rect;
+    const float aspect = rect.h > 0.0f ? rect.w / rect.h : 1.0f;
+    glm::mat4 p(1.0f);
+    if (pose.orthoHalfH > 0.0f) {
+        p = glm::orthoRH_ZO(-pose.orthoHalfH * aspect,
+                            pose.orthoHalfH * aspect,
+                            -pose.orthoHalfH,
+                            pose.orthoHalfH,
+                            farClip,
+                            nearClip);
+    } else {
+        p = tour::MakeReversedZProjRH(glm::radians(pose.fovYDeg), aspect, nearClip, farClip);
+    }
+    p[1][1] *= -1.0f; // Vulkan Y-flip
+    proj = p;
+    return true;
+}
 
-	void EditorApp::SetupDefaultCameras() {
-		if (!m_editorCams.empty())
-			return;
-		m_editorCams.resize(4);
-		m_editorCams[0].name = "Perspective";
-		m_editorCams[0].type = EditorCam::Type::Perspective;
-		m_editorCams[0].target = glm::vec3(0.0f, 1.0f, 0.0f);
-		m_editorCams[0].dist = 6.0f;
-		m_editorCams[1].name = "Top";
-		m_editorCams[1].type = EditorCam::Type::Orthographic;
-		m_editorCams[1].target = glm::vec3(0.0f);
-		m_editorCams[1].yaw = 0.0f;
-		m_editorCams[1].pitch = -1.5707963f; // straight down
-		m_editorCams[1].dist = 25.0f;
-		m_editorCams[1].orthoHalfH = 10.0f;
-		m_editorCams[2].name = "Side";
-		m_editorCams[2].type = EditorCam::Type::Orthographic;
-		m_editorCams[2].target = glm::vec3(0.0f);
-		m_editorCams[2].yaw = 1.5707963f; // looking along -X
-		m_editorCams[2].pitch = 0.0f;
-		m_editorCams[2].dist = 25.0f;
-		m_editorCams[2].orthoHalfH = 10.0f;
-		m_editorCams[3].name = "Front";
-		m_editorCams[3].type = EditorCam::Type::Orthographic;
-		m_editorCams[3].target = glm::vec3(0.0f);
-		// yaw 0 = eye at +Z looking along -Z: the engine's -Z-forward
-		// convention seen head-on (Side is the same construction at yaw
-		// pi/2 looking along -X).
-		m_editorCams[3].yaw = 0.0f;
-		m_editorCams[3].pitch = 0.0f;
-		m_editorCams[3].dist = 25.0f;
-		m_editorCams[3].orthoHalfH = 10.0f;
-		// Viewport 0 = perspective; quad adds Top (1) + Side (2) +
-		// Front (3) — the fourth slot was a second Perspective before.
-		for (int i = 0; i < kMaxViewports; ++i)
-			m_viewports[i].camIdx =
-				(i == 1) ? 1 : (i == 2) ? 2 : (i == 3) ? 3 : 0;
-	}
+void EditorApp::SetupDefaultCameras() {
+    if (!m_editorCams.empty())
+        return;
+    m_editorCams.resize(4);
+    m_editorCams[0].name = "Perspective";
+    m_editorCams[0].type = EditorCam::Type::Perspective;
+    m_editorCams[0].target = glm::vec3(0.0f, 1.0f, 0.0f);
+    m_editorCams[0].dist = 6.0f;
+    m_editorCams[1].name = "Top";
+    m_editorCams[1].type = EditorCam::Type::Orthographic;
+    m_editorCams[1].target = glm::vec3(0.0f);
+    m_editorCams[1].yaw = 0.0f;
+    m_editorCams[1].pitch = -1.5707963f; // straight down
+    m_editorCams[1].dist = 25.0f;
+    m_editorCams[1].orthoHalfH = 10.0f;
+    m_editorCams[2].name = "Side";
+    m_editorCams[2].type = EditorCam::Type::Orthographic;
+    m_editorCams[2].target = glm::vec3(0.0f);
+    m_editorCams[2].yaw = 1.5707963f; // looking along -X
+    m_editorCams[2].pitch = 0.0f;
+    m_editorCams[2].dist = 25.0f;
+    m_editorCams[2].orthoHalfH = 10.0f;
+    m_editorCams[3].name = "Front";
+    m_editorCams[3].type = EditorCam::Type::Orthographic;
+    m_editorCams[3].target = glm::vec3(0.0f);
+    // yaw 0 = eye at +Z looking along -Z: the engine's -Z-forward
+    // convention seen head-on (Side is the same construction at yaw
+    // pi/2 looking along -X).
+    m_editorCams[3].yaw = 0.0f;
+    m_editorCams[3].pitch = 0.0f;
+    m_editorCams[3].dist = 25.0f;
+    m_editorCams[3].orthoHalfH = 10.0f;
+    // Viewport 0 = perspective; quad adds Top (1) + Side (2) +
+    // Front (3) — the fourth slot was a second Perspective before.
+    for (int i = 0; i < kMaxViewports; ++i)
+        m_viewports[i].camIdx = (i == 1) ? 1 : (i == 2) ? 2 : (i == 3) ? 3 : 0;
+}
 
-	// One viewport's rect from an UNCLAMPED dock stage area. Extracted
-	// from ComputeViewportRects so the DETACHED live-view capture (the
-	// stage lives in a secondary OS window; the main-fb clamp would
-	// collapse it to 1x1) computes the SAME rect - the drive's extent
-	// and the aspect must not depend on which window hosts the stage.
-	ViewportRect EditorApp::StageViewportRect(
-		const ViewportRect& area, int vp, int layout) {
-		ViewportRect r{};
-		if (layout == 1) {
-			// Quad: 2x2 grid.
-			const float halfW = area.w * 0.5f;
-			const float halfH = area.h * 0.5f;
-			r.x = (vp & 1) ? area.x + halfW : area.x;
-			r.w = halfW;
-			r.y = (vp >= 2) ? area.y + halfH : area.y;
-			r.h = halfH;
-		}
-		else {
-			// Single: THE BIG 4:3 STAGE — the main view is an
-			// aspect-locked panel centered in the central area, not a
-			// stretch-to-fill rect. The letterbox margins around it show
-			// the editor's desk (the frame clear color), the projection
-			// derives from the LOCKED rect (a 4:3 render under any
-			// window aspect — no more reflowing perspective as side
-			// panels resize), and authoring eyeballs a fixed composition
-			// (the 4:3 target's framing stays stable across the layout).
-			// Fit the LARGER dimension, center on both axes.
-			constexpr float kStageAspect = 4.0f / 3.0f;
-			r.x = area.x;
-			r.y = area.y;
-			const float areaAspect = area.w / std::max(area.h, 1.0f);
-			if (areaAspect > kStageAspect) {
-				r.h = area.h;
-				r.w = area.h * kStageAspect;
-			}
-			else {
-				r.w = area.w;
-				r.h = area.w / kStageAspect;
-			}
-			r.x = area.x + (area.w - r.w) * 0.5f;
-			r.y = area.y + (area.h - r.h) * 0.5f;
-		}
-		return r;
-	}
+// One viewport's rect from an UNCLAMPED dock stage area. Extracted
+// from ComputeViewportRects so the DETACHED live-view capture (the
+// stage lives in a secondary OS window; the main-fb clamp would
+// collapse it to 1x1) computes the SAME rect - the drive's extent
+// and the aspect must not depend on which window hosts the stage.
+ViewportRect EditorApp::StageViewportRect(const ViewportRect& area, int vp, int layout) {
+    ViewportRect r{};
+    if (layout == 1) {
+        // Quad: 2x2 grid.
+        const float halfW = area.w * 0.5f;
+        const float halfH = area.h * 0.5f;
+        r.x = (vp & 1) ? area.x + halfW : area.x;
+        r.w = halfW;
+        r.y = (vp >= 2) ? area.y + halfH : area.y;
+        r.h = halfH;
+    } else {
+        // Single: THE BIG 4:3 STAGE — the main view is an
+        // aspect-locked panel centered in the central area, not a
+        // stretch-to-fill rect. The letterbox margins around it show
+        // the editor's desk (the frame clear color), the projection
+        // derives from the LOCKED rect (a 4:3 render under any
+        // window aspect — no more reflowing perspective as side
+        // panels resize), and authoring eyeballs a fixed composition
+        // (the 4:3 target's framing stays stable across the layout).
+        // Fit the LARGER dimension, center on both axes.
+        constexpr float kStageAspect = 4.0f / 3.0f;
+        r.x = area.x;
+        r.y = area.y;
+        const float areaAspect = area.w / std::max(area.h, 1.0f);
+        if (areaAspect > kStageAspect) {
+            r.h = area.h;
+            r.w = area.h * kStageAspect;
+        } else {
+            r.w = area.w;
+            r.h = area.w / kStageAspect;
+        }
+        r.x = area.x + (area.w - r.w) * 0.5f;
+        r.y = area.y + (area.h - r.h) * 0.5f;
+    }
+    return r;
+}
 
-	void EditorApp::ComputeViewportRects(smvk::Extent2D extent) {
-		// The RenderFrame pass graph is recorded BEFORE this frame's ImGui
-		// workspace. Use the previous completed dock window content rect
-		// (one-frame resize latency, no second render pass or realloc).
-		ViewportRect area{ 0.0f, m_menuH, float(extent.width),
-			float(extent.height) - m_menuH };
-		if (m_uiMode) {
-			area = m_dockViewportVisible
-				? m_dockViewportRect
-				: ViewportRect{ 0.0f, m_menuH, float(extent.width),
-					float(extent.height) - m_menuH - kEditorStatusH };
-			// With platform viewports ImGui window coordinates are OS-global,
-			// whereas Vulkan attachment offsets and editor input are local
-			// to the primary SDL window. Convert before clipping/recording.
-			if (m_dockViewportVisible && m_imgui && m_imgui->IsInitialized()) {
-				const ImVec2 origin = ImGui::GetMainViewport()->Pos;
-				area.x -= origin.x;
-				area.y -= origin.y;
-			}
-			// Floating dock windows may extend beyond the main swapchain.
-			// Never wrap a negative position into a uint32 Vulkan offset or
-			// draw outside the attachment when a user drags one offscreen.
-			const float fbW = float(extent.width), fbH = float(extent.height);
-			const float x0 = std::clamp(area.x, 0.0f, fbW);
-			const float y0 = std::clamp(area.y, 0.0f, fbH);
-			const float x1 = std::clamp(area.x + area.w, 0.0f, fbW);
-			const float y1 = std::clamp(area.y + area.h, 0.0f, fbH);
-			area = x1 > x0 + 1.0f && y1 > y0 + 1.0f
-				? ViewportRect{ x0, y0, x1 - x0, y1 - y0 }
-				: ViewportRect{ 0.0f, m_menuH, 1.0f, 1.0f };
-		}
-		// A docked prefab world occupies the right portion of the
-		// CENTRAL editor stage, independently from the Inspector and
-		// asset browser. Keep the scene's native 4:3 aspect and camera
-		// projection inside the remaining left region.
-		if (m_prefabDocked && m_showPrefabWindow && m_prefab.world
-			&& m_vpLayout==0 && area.w>=800.0f)
-			area.w*=0.54f;
-		area.w = std::max(area.w, 1.0f);
-		area.h = std::max(area.h, 1.0f);
+void EditorApp::ComputeViewportRects(smvk::Extent2D extent) {
+    // The RenderFrame pass graph is recorded BEFORE this frame's ImGui
+    // workspace. Use the previous completed dock window content rect
+    // (one-frame resize latency, no second render pass or realloc).
+    ViewportRect area{0.0f, m_menuH, float(extent.width), float(extent.height) - m_menuH};
+    if (m_uiMode) {
+        area = m_dockViewportVisible
+                   ? m_dockViewportRect
+                   : ViewportRect{0.0f,
+                                  m_menuH,
+                                  float(extent.width),
+                                  float(extent.height) - m_menuH - kEditorStatusH};
+        // With platform viewports ImGui window coordinates are OS-global,
+        // whereas Vulkan attachment offsets and editor input are local
+        // to the primary SDL window. Convert before clipping/recording.
+        if (m_dockViewportVisible && m_imgui && m_imgui->IsInitialized()) {
+            const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+            area.x -= origin.x;
+            area.y -= origin.y;
+        }
+        // Floating dock windows may extend beyond the main swapchain.
+        // Never wrap a negative position into a uint32 Vulkan offset or
+        // draw outside the attachment when a user drags one offscreen.
+        const float fbW = float(extent.width), fbH = float(extent.height);
+        const float x0 = std::clamp(area.x, 0.0f, fbW);
+        const float y0 = std::clamp(area.y, 0.0f, fbH);
+        const float x1 = std::clamp(area.x + area.w, 0.0f, fbW);
+        const float y1 = std::clamp(area.y + area.h, 0.0f, fbH);
+        area = x1 > x0 + 1.0f && y1 > y0 + 1.0f ? ViewportRect{x0, y0, x1 - x0, y1 - y0}
+                                                : ViewportRect{0.0f, m_menuH, 1.0f, 1.0f};
+    }
+    // A docked prefab world occupies the right portion of the
+    // CENTRAL editor stage, independently from the Inspector and
+    // asset browser. Keep the scene's native 4:3 aspect and camera
+    // projection inside the remaining left region.
+    if (m_prefabDocked && m_showPrefabWindow && m_prefab.world && m_vpLayout == 0 &&
+        area.w >= 800.0f)
+        area.w *= 0.54f;
+    area.w = std::max(area.w, 1.0f);
+    area.h = std::max(area.h, 1.0f);
 
-		const float mx = float(m_input.getMouseX());
-		const float my = float(m_input.getMouseY());
-		const int count = ViewportCount();
-		// Layout shrank (quad -> single via the View menu; the modal toggle
-		// resets the active index, the menu path does not): a stale active
-		// index pointed at an INVISIBLE viewport — orbit input, the F-key
-		// modes and the World panel's camera section edited a camera no
-		// panel shows (chip/content desync), and m_vp picked its stale
-		// rect. Clamp to the visible range.
-		if (m_activeVp >= count)
-			m_activeVp = 0;
-		for (int i = 0; i < kMaxViewports; ++i)
-			m_viewports[i].hovered = false;
-		for (int i = 0; i < count; ++i) {
-			// The quad split / the aspect-locked 4:3 fit (the shared
-			// authority: StageViewportRect above).
-			ViewportRect r = StageViewportRect(area, i, m_vpLayout);
-			m_viewports[i].rect = r;
-			m_viewports[i].hovered =
-				mx >= r.x && my >= r.y && mx < r.x + r.w && my < r.y + r.h;
-			if (m_viewports[i].hovered)
-				m_activeVp = i;
-		}
-		// Central-rect member (legacy consumers: inset strip, overlay, chrome).
-		m_vp = m_viewports[m_activeVp].rect;
-		// TOURMALINE_LAYOUT_DIAG=1: one-line layout dump (the rework
-		// verification - stage rect/aspect + column heights, once).
-		{
-			static const bool on = [] {
-				const char* e = std::getenv("TOURMALINE_LAYOUT_DIAG");
-				return e && *e && !(*e == '0' && !e[1]);
-			}();
-			if (on) {
-				const ViewportRect& s = m_viewports[0].rect;
-				// The mapping oracles: the ImGui main viewport origin (OS
-				// window position in desktop coords) + its size, so a
-				// desktop screenshot rect can be matched against the
-				// window-local stage rect exactly (TOURMALINE_COMPOSE_DIAG's
-				// "record: WxH at X,Y (window-local)" pairs with this).
-				const ImVec2 vpOrigin = (m_imgui && m_imgui->IsInitialized())
-					? ImGui::GetMainViewport()->Pos : ImVec2(0.0f, 0.0f);
-				const ImVec2 vpSize = (m_imgui && m_imgui->IsInitialized())
-					? ImGui::GetMainViewport()->Size : ImVec2(0.0f, 0.0f);
-				std::fprintf(stderr,
-					"[LAYOUT] dock stage %.0fx%.0f@%.0f,%.0f | vp0 %.0fx%.0f@%.0f,%.0f aspect %.3f | win origin %.0f,%.0f size %.0fx%.0f\n",
-					area.w, area.h, area.x, area.y,
-					s.w, s.h, s.x, s.y, s.w / std::max(s.h, 1.0f),
-					vpOrigin.x, vpOrigin.y, vpSize.x, vpSize.y);
-			}
-		}
-	}
+    const float mx = float(m_input.getMouseX());
+    const float my = float(m_input.getMouseY());
+    const int count = ViewportCount();
+    // Layout shrank (quad -> single via the View menu; the modal toggle
+    // resets the active index, the menu path does not): a stale active
+    // index pointed at an INVISIBLE viewport — orbit input, the F-key
+    // modes and the World panel's camera section edited a camera no
+    // panel shows (chip/content desync), and m_vp picked its stale
+    // rect. Clamp to the visible range.
+    if (m_activeVp >= count)
+        m_activeVp = 0;
+    for (int i = 0; i < kMaxViewports; ++i)
+        m_viewports[i].hovered = false;
+    for (int i = 0; i < count; ++i) {
+        // The quad split / the aspect-locked 4:3 fit (the shared
+        // authority: StageViewportRect above).
+        ViewportRect r = StageViewportRect(area, i, m_vpLayout);
+        m_viewports[i].rect = r;
+        m_viewports[i].hovered = mx >= r.x && my >= r.y && mx < r.x + r.w && my < r.y + r.h;
+        if (m_viewports[i].hovered)
+            m_activeVp = i;
+    }
+    // Central-rect member (legacy consumers: inset strip, overlay, chrome).
+    m_vp = m_viewports[m_activeVp].rect;
+    // TOURMALINE_LAYOUT_DIAG=1: one-line layout dump (the rework
+    // verification - stage rect/aspect + column heights, once).
+    {
+        static const bool on = [] {
+            const char* e = std::getenv("TOURMALINE_LAYOUT_DIAG");
+            return e && *e && !(*e == '0' && !e[1]);
+        }();
+        if (on) {
+            const ViewportRect& s = m_viewports[0].rect;
+            // The mapping oracles: the ImGui main viewport origin (OS
+            // window position in desktop coords) + its size, so a
+            // desktop screenshot rect can be matched against the
+            // window-local stage rect exactly (TOURMALINE_COMPOSE_DIAG's
+            // "record: WxH at X,Y (window-local)" pairs with this).
+            const ImVec2 vpOrigin = (m_imgui && m_imgui->IsInitialized())
+                                        ? ImGui::GetMainViewport()->Pos
+                                        : ImVec2(0.0f, 0.0f);
+            const ImVec2 vpSize = (m_imgui && m_imgui->IsInitialized())
+                                      ? ImGui::GetMainViewport()->Size
+                                      : ImVec2(0.0f, 0.0f);
+            std::fprintf(stderr,
+                         "[LAYOUT] dock stage %.0fx%.0f@%.0f,%.0f | vp0 %.0fx%.0f@%.0f,%.0f aspect "
+                         "%.3f | win origin %.0f,%.0f size %.0fx%.0f\n",
+                         area.w,
+                         area.h,
+                         area.x,
+                         area.y,
+                         s.w,
+                         s.h,
+                         s.x,
+                         s.y,
+                         s.w / std::max(s.h, 1.0f),
+                         vpOrigin.x,
+                         vpOrigin.y,
+                         vpSize.x,
+                         vpSize.y);
+        }
+    }
+}
 
-	bool EditorApp::SecondViewActive() const {
-		if (m_secondView == SecondView::Off)
-			return false;
-		// Fullscreen already shows UVs: no inset needed.
-		if (m_viewports[0].viewMode == ViewMode::Uv0 || m_viewports[0].viewMode == ViewMode::Uv1)
-			return false;
-		return true;
-	}
+bool EditorApp::SecondViewActive() const {
+    if (m_secondView == SecondView::Off)
+        return false;
+    // Fullscreen already shows UVs: no inset needed.
+    if (m_viewports[0].viewMode == ViewMode::Uv0 || m_viewports[0].viewMode == ViewMode::Uv1)
+        return false;
+    return true;
+}
 
-	smvk::Extent2D EditorApp::InsetStrip(const ViewportRect& vp, uint32_t& outX) {
-		uint32_t w = std::min<uint32_t>(400u, uint32_t(vp.w) / 3u);
-		w = std::max(w, 160u);
-		if (w >= uint32_t(vp.w) || vp.h <= 0.0f) {
-			outX = uint32_t(vp.x) + uint32_t(vp.w);
-			return smvk::Extent2D{ 0, 0 };
-		}
-		outX = uint32_t(vp.x + vp.w) - w; // window-absolute strip left edge
-		return smvk::Extent2D{ w, uint32_t(vp.h) };
-	}
+smvk::Extent2D EditorApp::InsetStrip(const ViewportRect& vp, uint32_t& outX) {
+    uint32_t w = std::min<uint32_t>(400u, uint32_t(vp.w) / 3u);
+    w = std::max(w, 160u);
+    if (w >= uint32_t(vp.w) || vp.h <= 0.0f) {
+        outX = uint32_t(vp.x) + uint32_t(vp.w);
+        return smvk::Extent2D{0, 0};
+    }
+    outX = uint32_t(vp.x + vp.w) - w; // window-absolute strip left edge
+    return smvk::Extent2D{w, uint32_t(vp.h)};
+}
 
-	void EditorApp::UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent) {
-		// Same camera as viewport 0, strip aspect: re-project m_lastFrame
-		// (viewport 0's frame) so the inset is undistorted.
-		SetupDefaultCameras();
-		engine::FrameUniforms frame = m_viewports[0].frame;
-		// frame.view already follows the look-through binding (see
-		// UpdateFrameData); only the projection is re-derived for the strip
-		// aspect — from the bound lens when bound, else the orbit camera.
-		const float aspect = stripExtent.height
-			? float(stripExtent.width) / float(stripExtent.height) : 1.0f;
-		glm::mat4 proj = EditorCamProj(m_editorCams[m_viewports[0].camIdx],
-			aspect);
-		glm::mat4 view = frame.view;
-		if (m_viewports[0].boundNode >= 0) {
-			if (const ::SceneCamera* C = FindNodeCamera(
-				uint32_t(m_viewports[0].boundNode))) {
-				glm::mat4 p(1.0f);
-				if (C->projection
-					== ::SceneCamera::Projection::Orthographic) {
-					const float h = std::max(C->orthoHalfH, 0.01f);
-					p = glm::orthoRH_ZO(-h * aspect, h * aspect, -h, h,
-						frame.farPlane, frame.nearPlane);
-				}
-				else {
-					p = tour::MakeReversedZProjRH(glm::radians(
-						std::clamp(C->fovYDeg, 1.0f, 179.0f)), aspect,
-						frame.nearPlane, frame.farPlane);
-				}
-				p[1][1] *= -1.0f;
-				proj = p;
-			}
-			else if (const ::SceneLight* L = FindNodeLight(
-				uint32_t(m_viewports[0].boundNode));
-				L && L->type == ::SceneLight::Type::Spot) {
-				proj = tour::MakeReversedZProjRH(
-					2.0f * std::clamp(L->outerConeAngle, 0.01f, 1.55f),
-					aspect, frame.nearPlane, frame.farPlane);
-				proj[1][1] *= -1.0f;
-			}
-		}
-		const glm::mat4 viewProj = proj * view;
-		frame.view = view;
-		frame.proj = proj;
-		frame.viewProj = viewProj;
-		frame.invView = glm::inverse(view);
-		frame.invProj = glm::inverse(proj);
-		frame.invViewProj = glm::inverse(viewProj);
-		frame.prevViewProj = viewProj;
-		frame.viewportSize = glm::vec2(float(stripExtent.width),
-			float(stripExtent.height));
-		frame.invViewportSize = glm::vec2(
-			stripExtent.width ? 1.0f / float(stripExtent.width) : 0.0f,
-			stripExtent.height ? 1.0f / float(stripExtent.height) : 0.0f);
-		m_context->UploadDataToBuffer(m_insetFrameUniforms, &frame, sizeof(frame),
-			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-			smvk::AccessFlags::ShaderRead, 0, size_t(flight) * sizeof(frame));
-		m_lastInsetFrameAddr =
-			m_context->GetBufferDeviceAddress(m_insetFrameUniforms) +
-			flight * sizeof(engine::FrameUniforms);
-	}
+void EditorApp::UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent) {
+    // Same camera as viewport 0, strip aspect: re-project m_lastFrame
+    // (viewport 0's frame) so the inset is undistorted.
+    SetupDefaultCameras();
+    engine::FrameUniforms frame = m_viewports[0].frame;
+    // frame.view already follows the look-through binding (see
+    // UpdateFrameData); only the projection is re-derived for the strip
+    // aspect — from the bound lens when bound, else the orbit camera.
+    const float aspect =
+        stripExtent.height ? float(stripExtent.width) / float(stripExtent.height) : 1.0f;
+    glm::mat4 proj = EditorCamProj(m_editorCams[m_viewports[0].camIdx], aspect);
+    glm::mat4 view = frame.view;
+    if (m_viewports[0].boundNode >= 0) {
+        if (const ::SceneCamera* C = FindNodeCamera(uint32_t(m_viewports[0].boundNode))) {
+            glm::mat4 p(1.0f);
+            if (C->projection == ::SceneCamera::Projection::Orthographic) {
+                const float h = std::max(C->orthoHalfH, 0.01f);
+                p = glm::orthoRH_ZO(
+                    -h * aspect, h * aspect, -h, h, frame.farPlane, frame.nearPlane);
+            } else {
+                p = tour::MakeReversedZProjRH(glm::radians(std::clamp(C->fovYDeg, 1.0f, 179.0f)),
+                                              aspect,
+                                              frame.nearPlane,
+                                              frame.farPlane);
+            }
+            p[1][1] *= -1.0f;
+            proj = p;
+        } else if (const ::SceneLight* L = FindNodeLight(uint32_t(m_viewports[0].boundNode));
+                   L && L->type == ::SceneLight::Type::Spot) {
+            proj = tour::MakeReversedZProjRH(2.0f * std::clamp(L->outerConeAngle, 0.01f, 1.55f),
+                                             aspect,
+                                             frame.nearPlane,
+                                             frame.farPlane);
+            proj[1][1] *= -1.0f;
+        }
+    }
+    const glm::mat4 viewProj = proj * view;
+    frame.view = view;
+    frame.proj = proj;
+    frame.viewProj = viewProj;
+    frame.invView = glm::inverse(view);
+    frame.invProj = glm::inverse(proj);
+    frame.invViewProj = glm::inverse(viewProj);
+    frame.prevViewProj = viewProj;
+    frame.viewportSize = glm::vec2(float(stripExtent.width), float(stripExtent.height));
+    frame.invViewportSize = glm::vec2(stripExtent.width ? 1.0f / float(stripExtent.width) : 0.0f,
+                                      stripExtent.height ? 1.0f / float(stripExtent.height) : 0.0f);
+    m_context->UploadDataToBuffer(m_insetFrameUniforms,
+                                  &frame,
+                                  sizeof(frame),
+                                  smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                                  smvk::AccessFlags::ShaderRead,
+                                  0,
+                                  size_t(flight) * sizeof(frame));
+    m_lastInsetFrameAddr = m_context->GetBufferDeviceAddress(m_insetFrameUniforms) +
+                           flight * sizeof(engine::FrameUniforms);
+}
 
-	void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
-		const engine::IRenderer::PushConstants& basePc, bool maskedPhase, bool selectedOnly,
-		bool shadowPass, bool bakedOnly, bool chartTail) {
-		(void)basePc;
-		if (!m_world)
-			return;
-		const smvk::IteratorFlags req =
-			smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
-				smvk::IteratorFlagBit_Opaque | smvk::IteratorFlagBit_StaticVertexFmt);
-		m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-			if (item.material == tour::World::kInvalidIndex)
-				return;
-			if (!IsVisibleNode(m_world->scene, int(item.node)))
-				return; // live visibility overrides apply without a Resolve
-			if (selectedOnly && !IsSelected(item.node))
-				return;
-			const bool isMasked = (item.flags & smvk::IteratorFlagBit_Masked) != 0;
-			if (isMasked != maskedPhase)
-				return;
-			if (selectedOnly && item.node != m_selected)
-				return;
-			if (!shadowPass) {
-				const smvk::Material* mat = m_world->GetMaterial(item.material);
-				if (mat && mat->isTransparent())
-					return; // transparent leg draws separately
-			}
-			else {
-				// Shadow pass: opaque casters only (transparent never casts).
-				if ((item.flags & smvk::IteratorFlagBit_CastShadow) == 0)
-					return;
-			}
-			smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
-			if (!mesh)
-				return;
-			// Baked-irradiance view: only baked draws (the direct path has no
-			// per-draw chunk id, so unbaked surfaces would sample a foreign
-			// texel instead of reading black).
-			if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
-				return;
-			const glm::mat4& model = m_world->scene.globalTransform[item.node];
-			engine::IRenderer::PushConstants objPc{};
-			std::memcpy(objPc.model, glm::value_ptr(model), sizeof(objPc.model));
-			objPc.materialId = item.material;
-			cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
-				sizeof(objPc.materialId), &objPc.materialId, smvk::ShaderStage::All);
-			cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
-				sizeof(objPc.model), objPc.model, smvk::ShaderStage::All);
-			// The resolved material userdata (padEnd_[1] — default.vert
-			// forwards it flat at VS location 9 for the lit hooks;
-			// pushed per draw like the main host's direct legs).
-			objPc.padEnd_[1] = m_world->ResolvedItemUserData(item);
-			cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, padEnd_)
-				+ sizeof(objPc.padEnd_[0]), sizeof(objPc.padEnd_[1]),
-				&objPc.padEnd_[1], smvk::ShaderStage::All);
-			if (chartTail) {
-				// Per-mesh chart tail: the direct VS unpacks chart uvs to
-				// atlas space for views that sample lightmaps (F8/Uv1).
-				smvk::gfx::UvFlatVsPushTail tail{};
-				tail.hasXforms = 1;
-				tail.chartOffset = m_world->ChartOffsetFor(item.mesh, 0);
-				tail.lmXforms = EnsureChartXforms();
-				cmd.PushConstants(smvk::gfx::kUvFlatVsPushOffset,
-					sizeof(tail), &tail, smvk::ShaderStage::All);
-			}
-			for (const auto& s : mesh->geometry.surfaces)
-				cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
-		});
-	}
+void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
+                               const engine::IRenderer::PushConstants& basePc,
+                               bool maskedPhase,
+                               bool selectedOnly,
+                               bool shadowPass,
+                               bool bakedOnly,
+                               bool chartTail) {
+    (void)basePc;
+    if (!m_world)
+        return;
+    const smvk::IteratorFlags req =
+        smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                            smvk::IteratorFlagBit_StaticVertexFmt);
+    m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+        if (item.material == tour::World::kInvalidIndex)
+            return;
+        if (!IsVisibleNode(m_world->scene, int(item.node)))
+            return; // live visibility overrides apply without a Resolve
+        if (selectedOnly && !IsSelected(item.node))
+            return;
+        const bool isMasked = (item.flags & smvk::IteratorFlagBit_Masked) != 0;
+        if (isMasked != maskedPhase)
+            return;
+        if (selectedOnly && item.node != m_selected)
+            return;
+        if (!shadowPass) {
+            const smvk::Material* mat = m_world->GetMaterial(item.material);
+            if (mat && mat->isTransparent())
+                return; // transparent leg draws separately
+        } else {
+            // Shadow pass: opaque casters only (transparent never casts).
+            if ((item.flags & smvk::IteratorFlagBit_CastShadow) == 0)
+                return;
+        }
+        smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+        if (!mesh)
+            return;
+        // Baked-irradiance view: only baked draws (the direct path has no
+        // per-draw chunk id, so unbaked surfaces would sample a foreign
+        // texel instead of reading black).
+        if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
+            return;
+        const glm::mat4& model = m_world->scene.globalTransform[item.node];
+        engine::IRenderer::PushConstants objPc{};
+        std::memcpy(objPc.model, glm::value_ptr(model), sizeof(objPc.model));
+        objPc.materialId = item.material;
+        cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
+                          sizeof(objPc.materialId),
+                          &objPc.materialId,
+                          smvk::ShaderStage::All);
+        cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
+                          sizeof(objPc.model),
+                          objPc.model,
+                          smvk::ShaderStage::All);
+        // The resolved material userdata (padEnd_[1] — default.vert
+        // forwards it flat at VS location 9 for the lit hooks;
+        // pushed per draw like the main host's direct legs).
+        objPc.padEnd_[1] = m_world->ResolvedItemUserData(item);
+        cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, padEnd_) +
+                              sizeof(objPc.padEnd_[0]),
+                          sizeof(objPc.padEnd_[1]),
+                          &objPc.padEnd_[1],
+                          smvk::ShaderStage::All);
+        if (chartTail) {
+            // Per-mesh chart tail: the direct VS unpacks chart uvs to
+            // atlas space for views that sample lightmaps (F8/Uv1).
+            smvk::gfx::UvFlatVsPushTail tail{};
+            tail.hasXforms = 1;
+            tail.chartOffset = m_world->ChartOffsetFor(item.mesh, 0);
+            tail.lmXforms = EnsureChartXforms();
+            cmd.PushConstants(
+                smvk::gfx::kUvFlatVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
+        }
+        for (const auto& s : mesh->geometry.surfaces)
+            cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+    });
+}
 
-	bool EditorApp::HasDrawItems() const {
-		return m_world && !m_world->drawItems.empty();
-	}
+bool EditorApp::HasDrawItems() const {
+    return m_world && !m_world->drawItems.empty();
+}
 
-	smvk::ShaderProgram& EditorApp::MainProgram(ViewMode m) {
-		switch (m) {
-		case ViewMode::Unlit:
-			return m_unlitProgram;
-		case ViewMode::Uv0:
-			return m_uv0Program.shaderCount == 2 ? m_uv0Program : m_litProgram;
-		case ViewMode::Uv1:
-			return m_uv1Program.shaderCount == 2 ? m_uv1Program : m_litProgram;
-		case ViewMode::VertexColors:
-			return m_vcolorProgram.shaderCount == 2 ? m_vcolorProgram : m_litProgram;
-		case ViewMode::Baked:
-			return m_bakedProgram.shaderCount == 2 ? m_bakedProgram : m_litProgram;
-		default:
-			return m_litProgram;
-		}
-	}
+smvk::ShaderProgram& EditorApp::MainProgram(ViewMode m) {
+    switch (m) {
+    case ViewMode::Unlit:
+        return m_unlitProgram;
+    case ViewMode::Uv0:
+        return m_uv0Program.shaderCount == 2 ? m_uv0Program : m_litProgram;
+    case ViewMode::Uv1:
+        return m_uv1Program.shaderCount == 2 ? m_uv1Program : m_litProgram;
+    case ViewMode::VertexColors:
+        return m_vcolorProgram.shaderCount == 2 ? m_vcolorProgram : m_litProgram;
+    case ViewMode::Baked:
+        return m_bakedProgram.shaderCount == 2 ? m_bakedProgram : m_litProgram;
+    default:
+        return m_litProgram;
+    }
+}
 
-	smvk::ShaderProgram& EditorApp::FlatUvProgram(ViewMode m) {
-		return (m == ViewMode::FlatUv1) ? m_flatUv1Program : m_flatUv0Program;
-	}
+smvk::ShaderProgram& EditorApp::FlatUvProgram(ViewMode m) {
+    return (m == ViewMode::FlatUv1) ? m_flatUv1Program : m_flatUv0Program;
+}
 
-	smvk::ShaderProgram& EditorApp::FlatUvCoordProgram() {
-		return m_flatUvCoordProgram;
-	}
+smvk::ShaderProgram& EditorApp::FlatUvCoordProgram() {
+    return m_flatUvCoordProgram;
+}
 
-	uint64_t EditorApp::EnsureChartXforms() {
-		if (!m_world || !m_context)
-			return 0;
-		if (m_world->lmChartVersion == m_lmXformsVersion && !m_lmXformsBuf.empty())
-			return m_lmXformsAddr;
-		m_lmXformsVersion = m_world->lmChartVersion;
-		const size_t count = std::max<size_t>(m_world->lmChartTable.size(), 1);
-		const size_t bytes = count * sizeof(glm::vec4);
-		if (m_lmXformsBuf.empty() || m_lmXformsCap < bytes) {
-			m_lmXformsBuf = m_context->CreateBuffer(bytes,
-				smvk::BufferType_Storage, "lm chart xforms");
-			m_lmXformsCap = bytes;
-		}
-		if (m_lmXformsBuf.empty()) {
-			m_lmXformsAddr = 0;
-			return 0;
-		}
-		if (!m_world->lmChartTable.empty()) {
-			m_context->UploadDataToBuffer(m_lmXformsBuf,
-				m_world->lmChartTable.data(), bytes,
-				smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
-				smvk::AccessFlags::ShaderRead);
-		}
-		m_lmXformsAddr = m_context->GetBufferDeviceAddress(m_lmXformsBuf);
-		return m_lmXformsAddr;
-	}
+uint64_t EditorApp::EnsureChartXforms() {
+    if (!m_world || !m_context)
+        return 0;
+    if (m_world->lmChartVersion == m_lmXformsVersion && !m_lmXformsBuf.empty())
+        return m_lmXformsAddr;
+    m_lmXformsVersion = m_world->lmChartVersion;
+    const size_t count = std::max<size_t>(m_world->lmChartTable.size(), 1);
+    const size_t bytes = count * sizeof(glm::vec4);
+    if (m_lmXformsBuf.empty() || m_lmXformsCap < bytes) {
+        m_lmXformsBuf = m_context->CreateBuffer(bytes, smvk::BufferType_Storage, "lm chart xforms");
+        m_lmXformsCap = bytes;
+    }
+    if (m_lmXformsBuf.empty()) {
+        m_lmXformsAddr = 0;
+        return 0;
+    }
+    if (!m_world->lmChartTable.empty()) {
+        m_context->UploadDataToBuffer(m_lmXformsBuf,
+                                      m_world->lmChartTable.data(),
+                                      bytes,
+                                      smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
+                                      smvk::AccessFlags::ShaderRead);
+    }
+    m_lmXformsAddr = m_context->GetBufferDeviceAddress(m_lmXformsBuf);
+    return m_lmXformsAddr;
+}
 
-	void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
-		const engine::IRenderer::PushConstants& pc) {
-		// Flat UV view: the PRIMARY SELECTION's subtree meshes, unwrapped by
-		// the chosen UV channel with the texture content behind them. No
-		// selection = empty panel (classic UV editor: one asset at a time).
-		if (!m_world || m_selected == UINT32_MAX ||
-			m_selected >= m_world->scene.hierarchy.size())
-			return;
-		smvk::ShaderProgram& prog = FlatUvProgram(mode);
-		if (prog.shaderCount != 2)
-			return;
-		// Subtree node set of the primary selection.
-		std::vector<uint32_t> stack{ m_selected };
-		std::unordered_set<uint32_t> subtree;
-		while (!stack.empty()) {
-			const uint32_t n = stack.back();
-			stack.pop_back();
-			if (n >= m_world->scene.hierarchy.size() ||
-				!subtree.insert(n).second)
-				continue;
-			for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
-				c = m_world->scene.hierarchy[c].nextSibling)
-				stack.push_back(uint32_t(c));
-		}
-		const smvk::VertexLayoutId fmt =
-			HasDrawItems() ? smvk::VertexLayoutId::Static
-			: smvk::VertexLayoutId::Empty;
-		if (fmt == smvk::VertexLayoutId::Static)
-			cmd.BindStaticVertexFmt();
-		cmd.BindRenderPipeline(prog, fmt,
-			smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
-				.writeEnable = true, .depthTestEnable = true },
-			smvk::StencilSettings{}, smvk::BlendSettings{},
-			smvk::MSAASettings{},
-			smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
-		cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-		const smvk::IteratorFlags req = smvk::IteratorFlags(
-			smvk::IteratorFlagBit_Renderable |
-			smvk::IteratorFlagBit_StaticVertexFmt);
-		m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-			if (item.material == tour::World::kInvalidIndex)
-				return;
-			if (!subtree.contains(item.node))
-				return;
-			if (!IsVisibleNode(m_world->scene, int(item.node)))
-				return;
-			const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
-			if (!mesh)
-				return;
-			// Lightmap layout: baked meshes only (like the F8 view).
-			if (mode == ViewMode::FlatUv1 && mesh->lmChunk == 0xFFFFFFFFu)
-				return;
-			uint32_t matId = item.material;
-			cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
-				sizeof(matId), &matId, smvk::ShaderStage::All);
-			if (mode == ViewMode::FlatUv1) {
-				// Per-mesh chart tail: the flat VS unpacks chart uvs to
-				// atlas space itself (no draw ring on the direct path).
-				smvk::gfx::UvFlatVsPushTail tail{};
-				tail.hasXforms = 1;
-				tail.chartOffset = m_world->ChartOffsetFor(item.mesh, 0);
-				tail.lmXforms = EnsureChartXforms();
-				cmd.PushConstants(smvk::gfx::kUvFlatVsPushOffset,
-					sizeof(tail), &tail, smvk::ShaderStage::All);
-			}
-			for (const auto& s : mesh->geometry.surfaces)
-				cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
-		});
-	}
+void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd,
+                                ViewMode mode,
+                                const engine::IRenderer::PushConstants& pc) {
+    // Flat UV view: the PRIMARY SELECTION's subtree meshes, unwrapped by
+    // the chosen UV channel with the texture content behind them. No
+    // selection = empty panel (classic UV editor: one asset at a time).
+    if (!m_world || m_selected == UINT32_MAX || m_selected >= m_world->scene.hierarchy.size())
+        return;
+    smvk::ShaderProgram& prog = FlatUvProgram(mode);
+    if (prog.shaderCount != 2)
+        return;
+    // Subtree node set of the primary selection.
+    std::vector<uint32_t> stack{m_selected};
+    std::unordered_set<uint32_t> subtree;
+    while (!stack.empty()) {
+        const uint32_t n = stack.back();
+        stack.pop_back();
+        if (n >= m_world->scene.hierarchy.size() || !subtree.insert(n).second)
+            continue;
+        for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
+             c = m_world->scene.hierarchy[c].nextSibling)
+            stack.push_back(uint32_t(c));
+    }
+    const smvk::VertexLayoutId fmt =
+        HasDrawItems() ? smvk::VertexLayoutId::Static : smvk::VertexLayoutId::Empty;
+    if (fmt == smvk::VertexLayoutId::Static)
+        cmd.BindStaticVertexFmt();
+    cmd.BindRenderPipeline(prog,
+                           fmt,
+                           smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                               .writeEnable = true,
+                                               .depthTestEnable = true},
+                           smvk::StencilSettings{},
+                           smvk::BlendSettings{},
+                           smvk::MSAASettings{},
+                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+    cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+    const smvk::IteratorFlags req = smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
+                                                        smvk::IteratorFlagBit_StaticVertexFmt);
+    m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+        if (item.material == tour::World::kInvalidIndex)
+            return;
+        if (!subtree.contains(item.node))
+            return;
+        if (!IsVisibleNode(m_world->scene, int(item.node)))
+            return;
+        const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+        if (!mesh)
+            return;
+        // Lightmap layout: baked meshes only (like the F8 view).
+        if (mode == ViewMode::FlatUv1 && mesh->lmChunk == 0xFFFFFFFFu)
+            return;
+        uint32_t matId = item.material;
+        cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
+                          sizeof(matId),
+                          &matId,
+                          smvk::ShaderStage::All);
+        if (mode == ViewMode::FlatUv1) {
+            // Per-mesh chart tail: the flat VS unpacks chart uvs to
+            // atlas space itself (no draw ring on the direct path).
+            smvk::gfx::UvFlatVsPushTail tail{};
+            tail.hasXforms = 1;
+            tail.chartOffset = m_world->ChartOffsetFor(item.mesh, 0);
+            tail.lmXforms = EnsureChartXforms();
+            cmd.PushConstants(
+                smvk::gfx::kUvFlatVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
+        }
+        for (const auto& s : mesh->geometry.surfaces)
+            cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+    });
+}
 
-	void EditorApp::BuildFlatUvWires(
-		std::vector<smvk::DebugLineVertex>& outLines, ViewMode mode,
-		uint32_t subtreeRoot, float zoom, glm::vec2 pan) const {
-		// UV wires from the world's RETAINED uploads (the editor keeps no
-		// parsed glTF; the cluster registry resolves node -> CPU geometry).
-		outLines.clear();
-		if (!m_world)
-			return;
-		const bool wholeScene = (subtreeRoot == UINT32_MAX);
-		if (!wholeScene && subtreeRoot >= m_world->scene.hierarchy.size())
-			return;
-		std::unordered_set<uint32_t> subtree;
-		if (!wholeScene) {
-			std::vector<uint32_t> stack{ subtreeRoot };
-			while (!stack.empty()) {
-				const uint32_t n = stack.back();
-				stack.pop_back();
-				if (n >= m_world->scene.hierarchy.size() ||
-					!subtree.insert(n).second)
-					continue;
-				for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
-					c = m_world->scene.hierarchy[c].nextSibling)
-					stack.push_back(uint32_t(c));
-			}
-		}
-		const bool lightmap = (mode == ViewMode::FlatUv1);
-		// Interactive panels keep wires readable; exports wire everything.
-		const size_t wireTriCap = wholeScene ? 400000 : 60000;
-		size_t tris = 0;
-		// Whole-scene export uses identity (pane nav never affects PNGs).
-		const bool applyNav = !wholeScene;
-		for (const MeshRow& row : m_world->scene.tables.meshes) {
-			const uint32_t node = row.node;
-			const uint32_t meshIdx = row.mesh;
-			if (!wholeScene && !subtree.contains(node))
-				continue;
-			const smvk::StaticMeshUpload* up = MeshUploadOf(meshIdx);
-			if (!up || up->vertices.empty() || up->indices.empty())
-				continue; // no exact geometry: no wires
-			const size_t vcount = up->vertices.size();
-			auto uvOf = [&](size_t i, glm::vec2& out) -> bool {
-				if (i >= vcount)
-					return false;
-				out = lightmap ? up->vertices[i].texCoord2
-					: up->vertices[i].texCoord;
-				return true;
-			};
-			const size_t tcount = up->indices.size() / 3;
-			for (size_t t = 0; t < tcount; ++t) {
-				glm::vec2 uv[3];
-				if (!uvOf(up->indices[t * 3 + 0], uv[0])
-					|| !uvOf(up->indices[t * 3 + 1], uv[1])
-					|| !uvOf(up->indices[t * 3 + 2], uv[2]))
-					continue; // corrupt face: skip, keep the rest
-				for (int k = 0; k < 3; ++k) {
-					glm::vec2 na = applyNav ? UvToFlatNdc(uv[k], zoom, pan)
-						: (uv[k] * 2.0f - glm::vec2(1.0f));
-					glm::vec2 nb = applyNav ? UvToFlatNdc(uv[(k + 1) % 3], zoom, pan)
-						: (uv[(k + 1) % 3] * 2.0f - glm::vec2(1.0f));
-					outLines.push_back({ glm::vec3(na.x, na.y, 1.0f) });
-					outLines.push_back({ glm::vec3(nb.x, nb.y, 1.0f) });
-				}
-				if (++tris > wireTriCap)
-					return;
-			}
-		}
-	}
+void EditorApp::BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
+                                 ViewMode mode,
+                                 uint32_t subtreeRoot,
+                                 float zoom,
+                                 glm::vec2 pan) const {
+    // UV wires from the world's RETAINED uploads (the editor keeps no
+    // parsed glTF; the cluster registry resolves node -> CPU geometry).
+    outLines.clear();
+    if (!m_world)
+        return;
+    const bool wholeScene = (subtreeRoot == UINT32_MAX);
+    if (!wholeScene && subtreeRoot >= m_world->scene.hierarchy.size())
+        return;
+    std::unordered_set<uint32_t> subtree;
+    if (!wholeScene) {
+        std::vector<uint32_t> stack{subtreeRoot};
+        while (!stack.empty()) {
+            const uint32_t n = stack.back();
+            stack.pop_back();
+            if (n >= m_world->scene.hierarchy.size() || !subtree.insert(n).second)
+                continue;
+            for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
+                 c = m_world->scene.hierarchy[c].nextSibling)
+                stack.push_back(uint32_t(c));
+        }
+    }
+    const bool lightmap = (mode == ViewMode::FlatUv1);
+    // Interactive panels keep wires readable; exports wire everything.
+    const size_t wireTriCap = wholeScene ? 400000 : 60000;
+    size_t tris = 0;
+    // Whole-scene export uses identity (pane nav never affects PNGs).
+    const bool applyNav = !wholeScene;
+    for (const MeshRow& row : m_world->scene.tables.meshes) {
+        const uint32_t node = row.node;
+        const uint32_t meshIdx = row.mesh;
+        if (!wholeScene && !subtree.contains(node))
+            continue;
+        const smvk::StaticMeshUpload* up = MeshUploadOf(meshIdx);
+        if (!up || up->vertices.empty() || up->indices.empty())
+            continue; // no exact geometry: no wires
+        const size_t vcount = up->vertices.size();
+        auto uvOf = [&](size_t i, glm::vec2& out) -> bool {
+            if (i >= vcount)
+                return false;
+            out = lightmap ? up->vertices[i].texCoord2 : up->vertices[i].texCoord;
+            return true;
+        };
+        const size_t tcount = up->indices.size() / 3;
+        for (size_t t = 0; t < tcount; ++t) {
+            glm::vec2 uv[3];
+            if (!uvOf(up->indices[t * 3 + 0], uv[0]) || !uvOf(up->indices[t * 3 + 1], uv[1]) ||
+                !uvOf(up->indices[t * 3 + 2], uv[2]))
+                continue; // corrupt face: skip, keep the rest
+            for (int k = 0; k < 3; ++k) {
+                glm::vec2 na =
+                    applyNav ? UvToFlatNdc(uv[k], zoom, pan) : (uv[k] * 2.0f - glm::vec2(1.0f));
+                glm::vec2 nb = applyNav ? UvToFlatNdc(uv[(k + 1) % 3], zoom, pan)
+                                        : (uv[(k + 1) % 3] * 2.0f - glm::vec2(1.0f));
+                outLines.push_back({glm::vec3(na.x, na.y, 1.0f)});
+                outLines.push_back({glm::vec3(nb.x, nb.y, 1.0f)});
+            }
+            if (++tris > wireTriCap)
+                return;
+        }
+    }
+}
 
-#if 0 // UV editor window canvas retired (the Live view window replaced
+#if 0  // UV editor window canvas retired (the Live view window replaced
        // it; solid backgrounds everywhere — no transparent chrome fills)
 	void EditorApp::RecordUvWindowPass(smvk::LogicalImageViewHandle swapView,
 		uint32_t flight) {
@@ -1319,76 +1376,93 @@ namespace editor {
 	}
 #endif // UV editor window canvas retired
 
-	smvk::ShaderProgram& EditorApp::InsetProgram() {
-		switch (m_secondView) {
-		case SecondView::Uv0:
-			return m_uv0Program.shaderCount == 2 ? m_uv0Program : m_litProgram;
-		case SecondView::Uv1:
-			return m_uv1Program.shaderCount == 2 ? m_uv1Program : m_litProgram;
-		default:
-			return m_litProgram;
-		}
-	}
+smvk::ShaderProgram& EditorApp::InsetProgram() {
+    switch (m_secondView) {
+    case SecondView::Uv0:
+        return m_uv0Program.shaderCount == 2 ? m_uv0Program : m_litProgram;
+    case SecondView::Uv1:
+        return m_uv1Program.shaderCount == 2 ? m_uv1Program : m_litProgram;
+    default:
+        return m_litProgram;
+    }
+}
 
-	float EditorApp::PreviewExposure() const {
-		// The preview's standing exposure: the authored MANUAL value. The
-		// App seeds its runtime adaptation from the same number
-		// (m_exposureAdapted starts at manual, see ResolveSceneLights)
-		// and meters + adapts from there; the preview has no
-		// histogram pass to meter with, so the manual look is its best
-		// faithful standing approximation (the same "the App renders the
-		// rest" contract as the volumetric settings).
-		return std::max(RenderLook().manualExposure, 1e-6f);
-	}
+float EditorApp::PreviewExposure() const {
+    // The preview's standing exposure: the authored MANUAL value. The
+    // App seeds its runtime adaptation from the same number
+    // (m_exposureAdapted starts at manual, see ResolveSceneLights)
+    // and meters + adapts from there; the preview has no
+    // histogram pass to meter with, so the manual look is its best
+    // faithful standing approximation (the same "the App renders the
+    // rest" contract as the volumetric settings).
+    return std::max(RenderLook().manualExposure, 1e-6f);
+}
 
-	void EditorApp::RecordViewportTonemap(smvk::LogicalImageViewHandle swapView,
-		const ViewportRect& rect, const char* name) {
-		// One tonemap layer per rect (the nvapp element-layer pattern, see
-		// m_sceneHdr): the layer writes the rect of the swap (Load keeps
-		// the chrome + sibling layers outside it) and samples the MATCHING
-		// sub-rect of the shared full-window HDR through the srcUv window -
-		// texel centers, so linear taps never bleed the neighbouring
-		// viewport's content at the rect edges.
-		if (swapView.empty() || !m_previewTonemap.ShadersValid() || !m_sceneHdr.Valid())
-			return;
-		if (rect.w < 1.0f || rect.h < 1.0f)
-			return;
-		const float invW = 1.0f / std::max(float(m_sceneHdr.extent.width), 1.0f);
-		const float invH = 1.0f / std::max(float(m_sceneHdr.extent.height), 1.0f);
-		const float uvMinX = (rect.x + 0.5f) * invW;
-		const float uvMinY = (rect.y + 0.5f) * invH;
-		const float uvMaxX = (rect.x + rect.w - 0.5f) * invW;
-		const float uvMaxY = (rect.y + rect.h - 0.5f) * invH;
-		smvk::TonemapDesc d{};
-		// Authored look: the render settings' operator + the standing
-		// exposure (see PreviewExposure - no bloom layer, the preview
-		// shows the scene).
-		d.exposure = PreviewExposure();
-		d.tonemapMode = RenderLook().tonemapMode;
-		const smvk::LogicalImageViewHandle previewSwapViews[] = { swapView };
-		m_previewTonemap.AddTonemapPass(*m_rendergraph,
-			m_sceneHdr.logicalView,
-			m_sceneHdr.bindlessIndex,
-			{}, UINT32_MAX, 0.0f,   // no bloom layer in the preview
-			m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
-				.magFilter = smvk::Filter::Linear, .minFilter = smvk::Filter::Linear,
-				.mipmapMode = smvk::MipmapMode::Linear,
-				.addressU = smvk::AddressMode::ClampToEdge,
-				.addressV = smvk::AddressMode::ClampToEdge,
-				.addressW = smvk::AddressMode::ClampToEdge,
-				.maxAnisotropy = 1.0f }), // dedupes to slot 0 (EnsureShaders)
-			previewSwapViews,
-			smvk::Extent2D{ uint32_t(rect.w), uint32_t(rect.h) },
-			d, name,
-			{}, UINT32_MAX, 0u, 16.0f,   // no motion-vector debug layer
-			{}, UINT32_MAX, 0.0f,        // no AO layer
-			false,                       // sRGB swapchain: linear store
-			UINT32_MAX, 0.0f,            // no artistic LUT
-			0.0f, 0.0f,                  // no jitter (no temporal AA here)
-			uint32_t(rect.x), uint32_t(rect.y),
-			smvk::AttachmentLoadOp::Load, // keep chrome + sibling layers
-			uvMinX, uvMinY, uvMaxX, uvMaxY);
-	}
+void EditorApp::RecordViewportTonemap(smvk::LogicalImageViewHandle swapView,
+                                      const ViewportRect& rect,
+                                      const char* name) {
+    // One tonemap layer per rect (the nvapp element-layer pattern, see
+    // m_sceneHdr): the layer writes the rect of the swap (Load keeps
+    // the chrome + sibling layers outside it) and samples the MATCHING
+    // sub-rect of the shared full-window HDR through the srcUv window -
+    // texel centers, so linear taps never bleed the neighbouring
+    // viewport's content at the rect edges.
+    if (swapView.empty() || !m_previewTonemap.ShadersValid() || !m_sceneHdr.Valid())
+        return;
+    if (rect.w < 1.0f || rect.h < 1.0f)
+        return;
+    const float invW = 1.0f / std::max(float(m_sceneHdr.extent.width), 1.0f);
+    const float invH = 1.0f / std::max(float(m_sceneHdr.extent.height), 1.0f);
+    const float uvMinX = (rect.x + 0.5f) * invW;
+    const float uvMinY = (rect.y + 0.5f) * invH;
+    const float uvMaxX = (rect.x + rect.w - 0.5f) * invW;
+    const float uvMaxY = (rect.y + rect.h - 0.5f) * invH;
+    smvk::TonemapDesc d{};
+    // Authored look: the render settings' operator + the standing
+    // exposure (see PreviewExposure - no bloom layer, the preview
+    // shows the scene).
+    d.exposure = PreviewExposure();
+    d.tonemapMode = RenderLook().tonemapMode;
+    const smvk::LogicalImageViewHandle previewSwapViews[] = {swapView};
+    m_previewTonemap.AddTonemapPass(
+        *m_rendergraph,
+        m_sceneHdr.logicalView,
+        m_sceneHdr.bindlessIndex,
+        {},
+        UINT32_MAX,
+        0.0f, // no bloom layer in the preview
+        m_context->GetOrCreateSampler(
+            smvk::SamplerCreateInfo{.magFilter = smvk::Filter::Linear,
+                                    .minFilter = smvk::Filter::Linear,
+                                    .mipmapMode = smvk::MipmapMode::Linear,
+                                    .addressU = smvk::AddressMode::ClampToEdge,
+                                    .addressV = smvk::AddressMode::ClampToEdge,
+                                    .addressW = smvk::AddressMode::ClampToEdge,
+                                    .maxAnisotropy = 1.0f}), // dedupes to slot 0 (EnsureShaders)
+        previewSwapViews,
+        smvk::Extent2D{uint32_t(rect.w), uint32_t(rect.h)},
+        d,
+        name,
+        {},
+        UINT32_MAX,
+        0u,
+        16.0f, // no motion-vector debug layer
+        {},
+        UINT32_MAX,
+        0.0f,  // no AO layer
+        false, // sRGB swapchain: linear store
+        UINT32_MAX,
+        0.0f, // no artistic LUT
+        0.0f,
+        0.0f, // no jitter (no temporal AA here)
+        uint32_t(rect.x),
+        uint32_t(rect.y),
+        smvk::AttachmentLoadOp::Load, // keep chrome + sibling layers
+        uvMinX,
+        uvMinY,
+        uvMaxX,
+        uvMaxY);
+}
 
 // The PRE-BAKE probe lattice (LIGHTING 'J' cycle mode 4): the AUTHORED
 // GI volume nodes' would-be grids as instanced 3D spheres (the engine's
@@ -1398,1841 +1472,1845 @@ namespace editor {
 // viewport-independent - each viewport just records the pass again with
 // its own viewProj/eye/rect.
 void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
-	if (m_mode != EditorMode::Lighting || m_giVolumePreviewMode != 4)
-		return;
-	if (!m_world || m_world->scene.tables.giVolumes.empty())
-		return;
-	// Only the HDR path (the direct-write fallback has no tonemap chain
-	// to composite over - same gate as EditorMain's viaHdr).
-	if (!m_previewTonemap.ShadersValid() || !m_sceneHdr.Valid())
-		return;
-	m_giProbeVisual.Ensure(*m_context); // idempotent (geometry + modules)
+    if (m_mode != EditorMode::Lighting || m_giVolumePreviewMode != 4)
+        return;
+    if (!m_world || m_world->scene.tables.giVolumes.empty())
+        return;
+    // Only the HDR path (the direct-write fallback has no tonemap chain
+    // to composite over - same gate as EditorMain's viaHdr).
+    if (!m_previewTonemap.ShadersValid() || !m_sceneHdr.Valid())
+        return;
+    m_giProbeVisual.Ensure(*m_context); // idempotent (geometry + modules)
 
-	smvk::giprobe::GiProbeVolumeRow rows[8];
-	uint32_t rowCount = 0;
-	{
-		std::vector<uint32_t> nodes;
-		nodes.reserve(m_world->scene.tables.giVolumes.size());
-		for (const GiVolumeRow& _row : m_world->scene.tables.giVolumes) {
-			const NodeId node = _row.node;
-			nodes.push_back(node);
-		}
-		std::sort(nodes.begin(), nodes.end());
-		std::vector<smvk::giprobe::GiProbeInstance> lattice;
-		for (size_t ni = 0; ni < nodes.size() && ni < 8; ++ni) {
-			const uint32_t node = nodes[ni];
-			// The editor's own OBB decode (GiVolumeOBB - the gizmo
-			// path's tested transform reading).
-			glm::vec3 center, half;
-			glm::mat3 axes;
-			if (!GiVolumeOBB(node, center, axes, half))
-				continue;
-			const ::SceneGiVolume& cvg = FindGiVolume(m_world->scene, node)->volume;
-			// The SEEDED layout previews exactly what the bake builds.
-			const float spacing = std::max(
-				cvg.optSpacing > 0.0f ? cvg.optSpacing : cvg.spacing,
-				0.01f);
-			const float* phase =
-				cvg.optSpacing > 0.0f ? cvg.optPhase : nullptr;
-			const uint32_t latticeRows =
-				BuildGiProbeLatticeRows(center, axes, half, spacing, lattice,
-					smvk::giprobe::kGiProbeMaxInstances, phase);
-			if (latticeRows == 0)
-				continue;
-			if (m_giProbeDraftBuf[ni].empty()) {
-				m_giProbeDraftBuf[ni] = m_context->CreateBuffer(
-					smvk::giprobe::kGiProbeMaxInstances
-						* sizeof(smvk::giprobe::GiProbeInstance),
-					smvk::BufferType_Storage, "editor gi probe lattice");
-				if (m_giProbeDraftBuf[ni].empty())
-					continue;
-				m_giProbeDraftBda[ni] =
-					m_context->GetBufferDeviceAddress(m_giProbeDraftBuf[ni]);
-			}
-			m_context->UploadDataToBuffer(m_giProbeDraftBuf[ni],
-				lattice.data(), lattice.size() * sizeof(lattice[0]),
-				smvk::PipelineStageBit_Vertex,
-				smvk::AccessFlags::ShaderRead, 0, 0);
-			smvk::giprobe::GiProbeVolumeRow& row = rows[rowCount];
-			row.instances = m_giProbeDraftBuf[ni];
-			row.instancesBda = m_giProbeDraftBda[ni];
-			row.instanceCount = uint32_t(lattice.size());
-			row.volumeIndex = uint32_t(ni); // unused in mode 2
-			++rowCount;
-		}
-	}
-	if (rowCount == 0)
-		return;
-	const ViewportRect& vp = m_viewports[vpIdx].rect;
-	const EditorViewport& evp = m_viewports[vpIdx];
-	// Per-viewport eye (the overlay projection's resolution pattern: the
-	// orbit cam when unbound; the bound-camera case rides the
-	// precomputed viewProj and eye only feeds the distance cull).
-	glm::vec3 eye(0.0f);
-	if (evp.camIdx >= 0 && size_t(evp.camIdx) < m_editorCams.size())
-		eye = EditorCamEye(m_editorCams[size_t(evp.camIdx)]);
-	// Large fixed maxDist: the lattice is an authoring preview - hide
-	// far volumes and the density read breaks mid-inspection.
-	// The marker color's 1/exposure pre-scale (the editor preview's own
-	// exposure chain - PreviewExposure, the same value the tonemap layer
-	// grades this rect with).
-	const float markerGain =
-		1.0f / std::max(PreviewExposure(), 1e-6f);
-	(void)m_giProbeVisual.AppendPass(*m_rendergraph,
-		m_sceneHdr.logicalView,
-		m_depth.logicalView,
-		smvk::Extent2D{ uint32_t(vp.w), uint32_t(vp.h) },
-		evp.viewProj, eye, 500.0f,
-		rows, rowCount,
-		0 /*frame BDA unused in mode 2*/,
-		smvk::giprobe::kGiProbeModeLattice,
-		markerGain,
-		uint32_t(vp.x), uint32_t(vp.y));
+    smvk::giprobe::GiProbeVolumeRow rows[8];
+    uint32_t rowCount = 0;
+    {
+        std::vector<uint32_t> nodes;
+        nodes.reserve(m_world->scene.tables.giVolumes.size());
+        for (const GiVolumeRow& _row : m_world->scene.tables.giVolumes) {
+            const NodeId node = _row.node;
+            nodes.push_back(node);
+        }
+        std::sort(nodes.begin(), nodes.end());
+        std::vector<smvk::giprobe::GiProbeInstance> lattice;
+        for (size_t ni = 0; ni < nodes.size() && ni < 8; ++ni) {
+            const uint32_t node = nodes[ni];
+            // The editor's own OBB decode (GiVolumeOBB - the gizmo
+            // path's tested transform reading).
+            glm::vec3 center, half;
+            glm::mat3 axes;
+            if (!GiVolumeOBB(node, center, axes, half))
+                continue;
+            const ::SceneGiVolume& cvg = FindGiVolume(m_world->scene, node)->volume;
+            // The SEEDED layout previews exactly what the bake builds.
+            const float spacing =
+                std::max(cvg.optSpacing > 0.0f ? cvg.optSpacing : cvg.spacing, 0.01f);
+            const float* phase = cvg.optSpacing > 0.0f ? cvg.optPhase : nullptr;
+            const uint32_t latticeRows = BuildGiProbeLatticeRows(
+                center, axes, half, spacing, lattice, smvk::giprobe::kGiProbeMaxInstances, phase);
+            if (latticeRows == 0)
+                continue;
+            if (m_giProbeDraftBuf[ni].empty()) {
+                m_giProbeDraftBuf[ni] = m_context->CreateBuffer(
+                    smvk::giprobe::kGiProbeMaxInstances * sizeof(smvk::giprobe::GiProbeInstance),
+                    smvk::BufferType_Storage,
+                    "editor gi probe lattice");
+                if (m_giProbeDraftBuf[ni].empty())
+                    continue;
+                m_giProbeDraftBda[ni] = m_context->GetBufferDeviceAddress(m_giProbeDraftBuf[ni]);
+            }
+            m_context->UploadDataToBuffer(m_giProbeDraftBuf[ni],
+                                          lattice.data(),
+                                          lattice.size() * sizeof(lattice[0]),
+                                          smvk::PipelineStageBit_Vertex,
+                                          smvk::AccessFlags::ShaderRead,
+                                          0,
+                                          0);
+            smvk::giprobe::GiProbeVolumeRow& row = rows[rowCount];
+            row.instances = m_giProbeDraftBuf[ni];
+            row.instancesBda = m_giProbeDraftBda[ni];
+            row.instanceCount = uint32_t(lattice.size());
+            row.volumeIndex = uint32_t(ni); // unused in mode 2
+            ++rowCount;
+        }
+    }
+    if (rowCount == 0)
+        return;
+    const ViewportRect& vp = m_viewports[vpIdx].rect;
+    const EditorViewport& evp = m_viewports[vpIdx];
+    // Per-viewport eye (the overlay projection's resolution pattern: the
+    // orbit cam when unbound; the bound-camera case rides the
+    // precomputed viewProj and eye only feeds the distance cull).
+    glm::vec3 eye(0.0f);
+    if (evp.camIdx >= 0 && size_t(evp.camIdx) < m_editorCams.size())
+        eye = EditorCamEye(m_editorCams[size_t(evp.camIdx)]);
+    // Large fixed maxDist: the lattice is an authoring preview - hide
+    // far volumes and the density read breaks mid-inspection.
+    // The marker color's 1/exposure pre-scale (the editor preview's own
+    // exposure chain - PreviewExposure, the same value the tonemap layer
+    // grades this rect with).
+    const float markerGain = 1.0f / std::max(PreviewExposure(), 1e-6f);
+    (void)m_giProbeVisual.AppendPass(*m_rendergraph,
+                                     m_sceneHdr.logicalView,
+                                     m_depth.logicalView,
+                                     smvk::Extent2D{uint32_t(vp.w), uint32_t(vp.h)},
+                                     evp.viewProj,
+                                     eye,
+                                     500.0f,
+                                     rows,
+                                     rowCount,
+                                     0 /*frame BDA unused in mode 2*/,
+                                     smvk::giprobe::kGiProbeModeLattice,
+                                     markerGain,
+                                     uint32_t(vp.x),
+                                     uint32_t(vp.y));
 }
 
-void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
-		uint32_t flight, bool selectedWireOverlay) {
-		if (m_uiMode && !m_dockViewportVisible)
-			return; // no scene pass behind an inactive dock tab
-		const ViewportRect& vp = m_viewports[vpIdx].rect;
-		// View mode is PER VIEWPORT (UV views are panel types too).
-		const ViewMode mode = m_viewports[vpIdx].viewMode;
-		smvk::ShaderProgram& prog = MainProgram(mode);
-		// Meshlet view has its own program + draw path (no material legs).
-		const bool meshletDbg =
-			(mode == ViewMode::Meshlets) && m_meshDebugProgram.shaderCount == 2;
-		if (!meshletDbg && prog.shaderCount != 2)
-			return;
-		// Baked view draws baked meshes only (see DrawWorldNodes).
-		const bool bakedOnly = (mode == ViewMode::Baked);
-		// UV debug views show UNWRAPPED texture space: faces must never be
-		// backface-culled (the UV shell flips winding arbitrarily).
-		const bool uvDbg = (mode == ViewMode::Uv0 || mode == ViewMode::Uv1);
+void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
+                               int vpIdx,
+                               uint32_t flight,
+                               bool selectedWireOverlay) {
+    if (m_uiMode && !m_dockViewportVisible)
+        return; // no scene pass behind an inactive dock tab
+    const ViewportRect& vp = m_viewports[vpIdx].rect;
+    // View mode is PER VIEWPORT (UV views are panel types too).
+    const ViewMode mode = m_viewports[vpIdx].viewMode;
+    smvk::ShaderProgram& prog = MainProgram(mode);
+    // Meshlet view has its own program + draw path (no material legs).
+    const bool meshletDbg = (mode == ViewMode::Meshlets) && m_meshDebugProgram.shaderCount == 2;
+    if (!meshletDbg && prog.shaderCount != 2)
+        return;
+    // Baked view draws baked meshes only (see DrawWorldNodes).
+    const bool bakedOnly = (mode == ViewMode::Baked);
+    // UV debug views show UNWRAPPED texture space: faces must never be
+    // backface-culled (the UV shell flips winding arbitrarily).
+    const bool uvDbg = (mode == ViewMode::Uv0 || mode == ViewMode::Uv1);
 
-		const uint64_t frameAddr = m_viewports[vpIdx].frameAddr;
-		const uint64_t lightsAddr =
-			m_context->GetBufferDeviceAddress(m_lightsBuf) + flight * sizeof(smvk::Light) * kMaxLights;
-		const uint64_t matsAddr =
-			m_context->GetBufferDeviceAddress(m_materialsBuf) +
-			flight * sizeof(smvk::MaterialValues) * kMaxMaterials;
-		const uint64_t cascadeAddr =
-			m_context->GetBufferDeviceAddress(m_cascadeBuf) +
-			flight * sizeof(smvk::GpuDirectionalLightDescription);
+    const uint64_t frameAddr = m_viewports[vpIdx].frameAddr;
+    const uint64_t lightsAddr =
+        m_context->GetBufferDeviceAddress(m_lightsBuf) + flight * sizeof(smvk::Light) * kMaxLights;
+    const uint64_t matsAddr = m_context->GetBufferDeviceAddress(m_materialsBuf) +
+                              flight * sizeof(smvk::MaterialValues) * kMaxMaterials;
+    const uint64_t cascadeAddr = m_context->GetBufferDeviceAddress(m_cascadeBuf) +
+                                 flight * sizeof(smvk::GpuDirectionalLightDescription);
 
-		engine::IRenderer::PushConstants pc{};
-		pc.frameUniforms = frameAddr;
-		pc.lightsBuffer = lightsAddr;
-		pc.materialsBuffer = matsAddr;
-		pc.cascadeBuffer = cascadeAddr;
-		pc.materialId = 0;
-		pc.comparisonSamplerId = 1;
-		pc.numCascades = 0;
-		pc.cascadeIndex = 0;
-		pc.fpLightCount = 0;
-		pc.spotShadowMapIndex = UINT32_MAX;
-		pc.spotShadowCount = 0;
-		pc.spotIndex = UINT32_MAX;
-		pc.pad_pc = 0; // dithered transparency
-		pc.renderViews = 0;
-		pc.mainRenderView = UINT32_MAX;
-		pc.renderViewIndex = UINT32_MAX;
+    engine::IRenderer::PushConstants pc{};
+    pc.frameUniforms = frameAddr;
+    pc.lightsBuffer = lightsAddr;
+    pc.materialsBuffer = matsAddr;
+    pc.cascadeBuffer = cascadeAddr;
+    pc.materialId = 0;
+    pc.comparisonSamplerId = 1;
+    pc.numCascades = 0;
+    pc.cascadeIndex = 0;
+    pc.fpLightCount = 0;
+    pc.spotShadowMapIndex = UINT32_MAX;
+    pc.spotShadowCount = 0;
+    pc.spotIndex = UINT32_MAX;
+    pc.pad_pc = 0; // dithered transparency
+    pc.renderViews = 0;
+    pc.mainRenderView = UINT32_MAX;
+    pc.renderViewIndex = UINT32_MAX;
 
-		// Viewport rect only (the EditorBg pass clears the rest of the
-		// window behind the panels). Color loads the bg clear; depth
-		// clears in the rect (reversed-Z).
-		// Display-chain routing (see m_sceneHdr + the file header): every
-		// MainProgram view except Baked is a tonemap-chain shader (raw-lux
-		// radiance or a 1/frame.exposure pre-scale for the App's
-		// hdr * exposure -> operator chain) - those render into the shared
-		// full-window HDR at the SAME rect (offset/extent/depth unchanged:
-		// the gizmo grid keeps its depth-tested occlusion) and a tonemap
-		// layer resolves the rect to the swap. Baked carries its own
-		// Reinhard + gamma display mapping and stays direct. HDR/tonemapper
-		// unavailable (creation failure) falls back to the direct write
-		// (washed out, but never dead).
-		const bool viaHdr = !bakedOnly
-			&& m_previewTonemap.ShadersValid() && m_sceneHdr.Valid();
-		const smvk::LogicalImageViewHandle colorTarget =
-			viaHdr ? m_sceneHdr.logicalView : swapView;
-		auto& pass = m_rendergraph->AddPass("EditorMain")
-			.SetOffset(uint32_t(vp.x), uint32_t(vp.y))
-			.SetExtent(smvk::Extent2D{ uint32_t(vp.w), uint32_t(vp.h) })
-		.SetColor({ colorTarget },
-			smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store,
-			smvk::ClearColor(0.07f, 0.07f, 0.09f, 1.0f))
-		.SetDepth(m_depth.logicalView,
-			smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
-			smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
-		pass.SetRecordingFunc([this, pc, selectedWireOverlay, bakedOnly, meshletDbg, uvDbg, mode](smvk::CommandBuffer& cmd) {
-			// Meshlet debug leg (F4): flat per-meshlet colors, own program +
-			// expanded index buffer; skips the shaded legs entirely.
-			if (meshletDbg) {
-				DrawMeshletNodes(cmd);
-				// Still show the selection highlight on top.
-				if (selectedWireOverlay && m_selected != UINT32_MAX &&
-					m_wireProgram.shaderCount == 2) {
-					cmd.BindRenderPipeline(m_wireProgram,
-						smvk::VertexLayoutId::Static,
-						smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
-							.writeEnable = false, .depthTestEnable = true },
-						smvk::StencilSettings{}, smvk::BlendSettings{},
-						smvk::MSAASettings{},
-						smvk::RasterSettings{ .polygonMode = smvk::PolygonMode::Line,
-							.cullMode = smvk::CullMode::None });
-					cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-					DrawWorldNodes(cmd, pc, false, true, false);
-					DrawWorldNodes(cmd, pc, true, true, false);
-				}
-				return;
-			}
-			smvk::ShaderProgram& prog = MainProgram(mode);
-			// BindRenderPipeline re-binds the static monoblock internally for
-			// StaticLayout (which does not exist on an empty world), so
-			// empty passes bind Empty (no draws either way).
-			const smvk::VertexLayoutId fmt =
-				HasDrawItems() ? smvk::VertexLayoutId::Static
-				: smvk::VertexLayoutId::Empty;
-			if (fmt == smvk::VertexLayoutId::Static)
-				cmd.BindStaticVertexFmt();
-			const smvk::DepthSettings depth{
-				.depthFunc = smvk::CompareOp::GreaterEqual,
-				.writeEnable = true, .depthTestEnable = true };
-			// Wireframe toggle (Z): the whole scene draws with the flat wire
-			// program in line-polygon mode (falls back to shaded when the
-			// module is missing — a bad cook never blanks the frame).
-			const bool wireAll = m_wireframeAll && m_wireProgram.shaderCount == 2;
-			smvk::ShaderProgram& scene = wireAll ? m_wireProgram : prog;
-			// Opaque leg (opaque + masked; back-cull unless UV/wire view:
-			// the unwrapped UV shells flip winding arbitrarily — culled UVs
-			// look like missing lightmap data).
-			for (int masked = 0; masked <= 1; ++masked) {
-				const bool maskedPhase = (masked == 1);
-				cmd.BindRenderPipeline(scene, fmt,
-					depth, smvk::StencilSettings{}, smvk::BlendSettings{},
-					smvk::MSAASettings{},
-					smvk::RasterSettings{ .polygonMode = wireAll
-						? smvk::PolygonMode::Line : smvk::PolygonMode::Fill,
-						.cullMode = (maskedPhase || uvDbg || wireAll)
-						? smvk::CullMode::None : smvk::CullMode::Back });
-				cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-				DrawWorldNodes(cmd, pc, maskedPhase, false, false, bakedOnly,
-					bakedOnly || mode == ViewMode::Uv1);
-			}
-			// Transparent leg (alpha blend, no depth write).
-			{
-				cmd.BindRenderPipeline(scene, fmt,
-					smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
-						.writeEnable = false, .depthTestEnable = true },
-					smvk::StencilSettings{},
-					smvk::BlendSettings::AlphaBlend(),
-					smvk::MSAASettings{},
-					smvk::RasterSettings{ .polygonMode = wireAll
-						? smvk::PolygonMode::Line : smvk::PolygonMode::Fill,
-						.cullMode = smvk::CullMode::None });
-				engine::IRenderer::PushConstants tpc = pc;
-				tpc.pad_pc = 1; // classic alpha blend
-				cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
-				if (m_world) {
-					const smvk::IteratorFlags req = smvk::IteratorFlags(
-						smvk::IteratorFlagBit_Renderable |
-						smvk::IteratorFlagBit_Transparent |
-						smvk::IteratorFlagBit_StaticVertexFmt);
-					m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-						if (item.material == tour::World::kInvalidIndex)
-							return;
-						if (!IsVisibleNode(m_world->scene, int(item.node)))
-							return;
-						smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
-						if (!mesh)
-							return;
-						if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
-							return;
-						const glm::mat4& model = m_world->scene.globalTransform[item.node];
-						uint32_t matId = item.material;
-						cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
-							sizeof(matId), &matId, smvk::ShaderStage::All);
-						cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
-							sizeof(model), glm::value_ptr(model), smvk::ShaderStage::All);
-						for (const auto& s : mesh->geometry.surfaces)
-							cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
-					});
-				}
-			}
-			// Selection highlight: wireframe overlay over the selected node.
-			if (selectedWireOverlay && m_selected != UINT32_MAX &&
-				m_wireProgram.shaderCount == 2) {
-				cmd.BindRenderPipeline(m_wireProgram,
-					smvk::VertexLayoutId::Static,
-					smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
-						.writeEnable = false, .depthTestEnable = true },
-					smvk::StencilSettings{}, smvk::BlendSettings{},
-					smvk::MSAASettings{},
-					smvk::RasterSettings{ .polygonMode = smvk::PolygonMode::Line,
-						.cullMode = smvk::CullMode::None });
-				cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-				DrawWorldNodes(cmd, pc, false, true, false);
-				DrawWorldNodes(cmd, pc, true, true, false);
-			}
-		});
-		// The authored GI probe lattice is an HDR overlay. It MUST be
-		// recorded before the viewport tonemap, otherwise the spheres
-		// are written after HDR has already been resolved to the swapchain
-		// and "Lattice (pre-bake)" appears to do nothing.
-		if (viaHdr)
-			RecordGiProbeLatticePass(vpIdx);
-		// The matching tonemap layer resolves the scene AND the lattice.
-		// Stable declaration order keeps it below gizmo/ImGui overlays.
-		if (viaHdr)
-			RecordViewportTonemap(swapView, vp, "EditorTonemap");
-	}
+    // Viewport rect only (the EditorBg pass clears the rest of the
+    // window behind the panels). Color loads the bg clear; depth
+    // clears in the rect (reversed-Z).
+    // Display-chain routing (see m_sceneHdr + the file header): every
+    // MainProgram view except Baked is a tonemap-chain shader (raw-lux
+    // radiance or a 1/frame.exposure pre-scale for the App's
+    // hdr * exposure -> operator chain) - those render into the shared
+    // full-window HDR at the SAME rect (offset/extent/depth unchanged:
+    // the gizmo grid keeps its depth-tested occlusion) and a tonemap
+    // layer resolves the rect to the swap. Baked carries its own
+    // Reinhard + gamma display mapping and stays direct. HDR/tonemapper
+    // unavailable (creation failure) falls back to the direct write
+    // (washed out, but never dead).
+    const bool viaHdr = !bakedOnly && m_previewTonemap.ShadersValid() && m_sceneHdr.Valid();
+    const smvk::LogicalImageViewHandle colorTarget = viaHdr ? m_sceneHdr.logicalView : swapView;
+    auto& pass = m_rendergraph->AddPass("EditorMain")
+                     .SetOffset(uint32_t(vp.x), uint32_t(vp.y))
+                     .SetExtent(smvk::Extent2D{uint32_t(vp.w), uint32_t(vp.h)})
+                     .SetColor({colorTarget},
+                               smvk::AttachmentLoadOp::Load,
+                               smvk::AttachmentStoreOp::Store,
+                               smvk::ClearColor(0.07f, 0.07f, 0.09f, 1.0f))
+                     .SetDepth(m_depth.logicalView,
+                               smvk::AttachmentLoadOp::Clear,
+                               smvk::AttachmentStoreOp::Store,
+                               smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
+    pass.SetRecordingFunc([this, pc, selectedWireOverlay, bakedOnly, meshletDbg, uvDbg, mode](
+                              smvk::CommandBuffer& cmd) {
+        // Meshlet debug leg (F4): flat per-meshlet colors, own program +
+        // expanded index buffer; skips the shaded legs entirely.
+        if (meshletDbg) {
+            DrawMeshletNodes(cmd);
+            // Still show the selection highlight on top.
+            if (selectedWireOverlay && m_selected != UINT32_MAX && m_wireProgram.shaderCount == 2) {
+                cmd.BindRenderPipeline(
+                    m_wireProgram,
+                    smvk::VertexLayoutId::Static,
+                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                        .writeEnable = false,
+                                        .depthTestEnable = true},
+                    smvk::StencilSettings{},
+                    smvk::BlendSettings{},
+                    smvk::MSAASettings{},
+                    smvk::RasterSettings{.polygonMode = smvk::PolygonMode::Line,
+                                         .cullMode = smvk::CullMode::None});
+                cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+                DrawWorldNodes(cmd, pc, false, true, false);
+                DrawWorldNodes(cmd, pc, true, true, false);
+            }
+            return;
+        }
+        smvk::ShaderProgram& prog = MainProgram(mode);
+        // BindRenderPipeline re-binds the static monoblock internally for
+        // StaticLayout (which does not exist on an empty world), so
+        // empty passes bind Empty (no draws either way).
+        const smvk::VertexLayoutId fmt =
+            HasDrawItems() ? smvk::VertexLayoutId::Static : smvk::VertexLayoutId::Empty;
+        if (fmt == smvk::VertexLayoutId::Static)
+            cmd.BindStaticVertexFmt();
+        const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                        .writeEnable = true,
+                                        .depthTestEnable = true};
+        // Wireframe toggle (Z): the whole scene draws with the flat wire
+        // program in line-polygon mode (falls back to shaded when the
+        // module is missing — a bad cook never blanks the frame).
+        const bool wireAll = m_wireframeAll && m_wireProgram.shaderCount == 2;
+        smvk::ShaderProgram& scene = wireAll ? m_wireProgram : prog;
+        // Opaque leg (opaque + masked; back-cull unless UV/wire view:
+        // the unwrapped UV shells flip winding arbitrarily — culled UVs
+        // look like missing lightmap data).
+        for (int masked = 0; masked <= 1; ++masked) {
+            const bool maskedPhase = (masked == 1);
+            cmd.BindRenderPipeline(
+                scene,
+                fmt,
+                depth,
+                smvk::StencilSettings{},
+                smvk::BlendSettings{},
+                smvk::MSAASettings{},
+                smvk::RasterSettings{
+                    .polygonMode = wireAll ? smvk::PolygonMode::Line : smvk::PolygonMode::Fill,
+                    .cullMode = (maskedPhase || uvDbg || wireAll) ? smvk::CullMode::None
+                                                                  : smvk::CullMode::Back});
+            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+            DrawWorldNodes(
+                cmd, pc, maskedPhase, false, false, bakedOnly, bakedOnly || mode == ViewMode::Uv1);
+        }
+        // Transparent leg (alpha blend, no depth write).
+        {
+            cmd.BindRenderPipeline(
+                scene,
+                fmt,
+                smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                    .writeEnable = false,
+                                    .depthTestEnable = true},
+                smvk::StencilSettings{},
+                smvk::BlendSettings::AlphaBlend(),
+                smvk::MSAASettings{},
+                smvk::RasterSettings{.polygonMode = wireAll ? smvk::PolygonMode::Line
+                                                            : smvk::PolygonMode::Fill,
+                                     .cullMode = smvk::CullMode::None});
+            engine::IRenderer::PushConstants tpc = pc;
+            tpc.pad_pc = 1; // classic alpha blend
+            cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
+            if (m_world) {
+                const smvk::IteratorFlags req = smvk::IteratorFlags(
+                    smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Transparent |
+                    smvk::IteratorFlagBit_StaticVertexFmt);
+                m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+                    if (item.material == tour::World::kInvalidIndex)
+                        return;
+                    if (!IsVisibleNode(m_world->scene, int(item.node)))
+                        return;
+                    smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+                    if (!mesh)
+                        return;
+                    if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
+                        return;
+                    const glm::mat4& model = m_world->scene.globalTransform[item.node];
+                    uint32_t matId = item.material;
+                    cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
+                                      sizeof(matId),
+                                      &matId,
+                                      smvk::ShaderStage::All);
+                    cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
+                                      sizeof(model),
+                                      glm::value_ptr(model),
+                                      smvk::ShaderStage::All);
+                    for (const auto& s : mesh->geometry.surfaces)
+                        cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+                });
+            }
+        }
+        // Selection highlight: wireframe overlay over the selected node.
+        if (selectedWireOverlay && m_selected != UINT32_MAX && m_wireProgram.shaderCount == 2) {
+            cmd.BindRenderPipeline(m_wireProgram,
+                                   smvk::VertexLayoutId::Static,
+                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                       .writeEnable = false,
+                                                       .depthTestEnable = true},
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings{},
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.polygonMode = smvk::PolygonMode::Line,
+                                                        .cullMode = smvk::CullMode::None});
+            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+            DrawWorldNodes(cmd, pc, false, true, false);
+            DrawWorldNodes(cmd, pc, true, true, false);
+        }
+    });
+    // The authored GI probe lattice is an HDR overlay. It MUST be
+    // recorded before the viewport tonemap, otherwise the spheres
+    // are written after HDR has already been resolved to the swapchain
+    // and "Lattice (pre-bake)" appears to do nothing.
+    if (viaHdr)
+        RecordGiProbeLatticePass(vpIdx);
+    // The matching tonemap layer resolves the scene AND the lattice.
+    // Stable declaration order keeps it below gizmo/ImGui overlays.
+    if (viaHdr)
+        RecordViewportTonemap(swapView, vp, "EditorTonemap");
+}
 
-	void EditorApp::RecordInsetPass(smvk::LogicalImageViewHandle swapView,
-		uint32_t flight) {
-		if (m_uiMode && !m_dockViewportVisible)
-			return;
-		// Second viewport: UV debug side-strip INSIDE viewport 0 (single
-		// layout only; same camera, strip aspect via the inset frame slice).
-		// Color loads (empty areas keep the main view = PiP); depth clears
-		// in the strip because the aspect differs from the main pass.
-		if (!SecondViewActive() || m_vpLayout == 1)
-			return;
-		smvk::ShaderProgram& prog = InsetProgram();
-		if (prog.shaderCount != 2)
-			return;
-		const ViewportRect vp = m_viewports[0].rect;
-		uint32_t stripX = 0;
-		const smvk::Extent2D strip = InsetStrip(vp, stripX);
-		if (strip.width == 0 || strip.height == 0)
-			return;
+void EditorApp::RecordInsetPass(smvk::LogicalImageViewHandle swapView, uint32_t flight) {
+    if (m_uiMode && !m_dockViewportVisible)
+        return;
+    // Second viewport: UV debug side-strip INSIDE viewport 0 (single
+    // layout only; same camera, strip aspect via the inset frame slice).
+    // Color loads (empty areas keep the main view = PiP); depth clears
+    // in the strip because the aspect differs from the main pass.
+    if (!SecondViewActive() || m_vpLayout == 1)
+        return;
+    smvk::ShaderProgram& prog = InsetProgram();
+    if (prog.shaderCount != 2)
+        return;
+    const ViewportRect vp = m_viewports[0].rect;
+    uint32_t stripX = 0;
+    const smvk::Extent2D strip = InsetStrip(vp, stripX);
+    if (strip.width == 0 || strip.height == 0)
+        return;
 
-		const uint64_t lightsAddr =
-			m_context->GetBufferDeviceAddress(m_lightsBuf) + flight * sizeof(smvk::Light) * kMaxLights;
-		const uint64_t matsAddr =
-			m_context->GetBufferDeviceAddress(m_materialsBuf) +
-			flight * sizeof(smvk::MaterialValues) * kMaxMaterials;
-		const uint64_t cascadeAddr =
-			m_context->GetBufferDeviceAddress(m_cascadeBuf) +
-			flight * sizeof(smvk::GpuDirectionalLightDescription);
+    const uint64_t lightsAddr =
+        m_context->GetBufferDeviceAddress(m_lightsBuf) + flight * sizeof(smvk::Light) * kMaxLights;
+    const uint64_t matsAddr = m_context->GetBufferDeviceAddress(m_materialsBuf) +
+                              flight * sizeof(smvk::MaterialValues) * kMaxMaterials;
+    const uint64_t cascadeAddr = m_context->GetBufferDeviceAddress(m_cascadeBuf) +
+                                 flight * sizeof(smvk::GpuDirectionalLightDescription);
 
-		engine::IRenderer::PushConstants pc{};
-		pc.frameUniforms = m_lastInsetFrameAddr;
-		pc.lightsBuffer = lightsAddr;
-		pc.materialsBuffer = matsAddr;
-		pc.cascadeBuffer = cascadeAddr;
-		pc.materialId = 0;
-		pc.comparisonSamplerId = 1;
-		pc.numCascades = 0;
-		pc.cascadeIndex = 0;
-		pc.fpLightCount = 0;
-		pc.spotShadowMapIndex = UINT32_MAX;
-		pc.spotShadowCount = 0;
-		pc.spotIndex = UINT32_MAX;
-		pc.pad_pc = 0;
-		pc.renderViews = 0;
-		pc.mainRenderView = UINT32_MAX;
-		pc.renderViewIndex = UINT32_MAX;
+    engine::IRenderer::PushConstants pc{};
+    pc.frameUniforms = m_lastInsetFrameAddr;
+    pc.lightsBuffer = lightsAddr;
+    pc.materialsBuffer = matsAddr;
+    pc.cascadeBuffer = cascadeAddr;
+    pc.materialId = 0;
+    pc.comparisonSamplerId = 1;
+    pc.numCascades = 0;
+    pc.cascadeIndex = 0;
+    pc.fpLightCount = 0;
+    pc.spotShadowMapIndex = UINT32_MAX;
+    pc.spotShadowCount = 0;
+    pc.spotIndex = UINT32_MAX;
+    pc.pad_pc = 0;
+    pc.renderViews = 0;
+    pc.mainRenderView = UINT32_MAX;
+    pc.renderViewIndex = UINT32_MAX;
 
-		// Display-chain routing (same as RecordMainPass, see m_sceneHdr):
-		// the inset's programs (uv0/uv1/lit) are tonemap-chain shaders, so
-		// the strip renders into the shared HDR at the strip rect and a
-		// tonemap layer resolves it; a missing HDR/tonemapper falls back to
-		// the direct write.
-		const bool viaHdr =
-			m_previewTonemap.ShadersValid() && m_sceneHdr.Valid();
-		const smvk::LogicalImageViewHandle colorTarget =
-			viaHdr ? m_sceneHdr.logicalView : swapView;
-		auto& pass = m_rendergraph->AddPass("EditorInset")
-			.SetOffset(stripX, uint32_t(vp.y))
-			.SetExtent(strip)
-			.SetColor({ colorTarget },
-				smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store,
-				smvk::ClearColor(0, 0, 0, 1))
-			.SetDepth(m_depth.logicalView,
-				smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
-				smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
-		pass.SetRecordingFunc([this, pc](smvk::CommandBuffer& cmd) {
-			smvk::ShaderProgram& prog = InsetProgram();
-			const smvk::VertexLayoutId fmt =
-				HasDrawItems() ? smvk::VertexLayoutId::Static
-				: smvk::VertexLayoutId::Empty;
-			if (fmt == smvk::VertexLayoutId::Static)
-				cmd.BindStaticVertexFmt();
-			const smvk::DepthSettings depth{
-				.depthFunc = smvk::CompareOp::GreaterEqual,
-				.writeEnable = true, .depthTestEnable = true };
-			for (int masked = 0; masked <= 1; ++masked) {
-				const bool maskedPhase = (masked == 1);
-				// UV inset: NO backface cull (the second viewport shows
-				// unwrapped UV shells whose winding flips arbitrarily).
-				cmd.BindRenderPipeline(prog, fmt,
-					depth, smvk::StencilSettings{}, smvk::BlendSettings{},
-					smvk::MSAASettings{},
-					smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
-				cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-				DrawWorldNodes(cmd, pc, maskedPhase, false, false);
-			}
-			{
-				cmd.BindRenderPipeline(prog, fmt,
-					smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
-						.writeEnable = false, .depthTestEnable = true },
-					smvk::StencilSettings{},
-					smvk::BlendSettings::AlphaBlend(),
-					smvk::MSAASettings{}, smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
-				engine::IRenderer::PushConstants tpc = pc;
-				tpc.pad_pc = 1;
-				cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
-				if (m_world) {
-					const smvk::IteratorFlags req = smvk::IteratorFlags(
-						smvk::IteratorFlagBit_Renderable |
-						smvk::IteratorFlagBit_Transparent |
-						smvk::IteratorFlagBit_StaticVertexFmt);
-					m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-						if (item.material == tour::World::kInvalidIndex)
-							return;
-						if (!IsVisibleNode(m_world->scene, int(item.node)))
-							return;
-						smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
-						if (!mesh)
-							return;
-						const glm::mat4& model = m_world->scene.globalTransform[item.node];
-						uint32_t matId = item.material;
-						cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
-							sizeof(matId), &matId, smvk::ShaderStage::All);
-						cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
-							sizeof(model), glm::value_ptr(model), smvk::ShaderStage::All);
-					for (const auto& s : mesh->geometry.surfaces)
-						cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
-					});
-				}
-			}
-		});
-		// The matching tonemap layer for the strip rect (see RecordMainPass).
-		if (viaHdr)
-			RecordViewportTonemap(swapView,
-				ViewportRect{ float(stripX), float(vp.y), float(strip.width),
-					float(strip.height) },
-				"EditorInsetTonemap");
-	}
+    // Display-chain routing (same as RecordMainPass, see m_sceneHdr):
+    // the inset's programs (uv0/uv1/lit) are tonemap-chain shaders, so
+    // the strip renders into the shared HDR at the strip rect and a
+    // tonemap layer resolves it; a missing HDR/tonemapper falls back to
+    // the direct write.
+    const bool viaHdr = m_previewTonemap.ShadersValid() && m_sceneHdr.Valid();
+    const smvk::LogicalImageViewHandle colorTarget = viaHdr ? m_sceneHdr.logicalView : swapView;
+    auto& pass = m_rendergraph->AddPass("EditorInset")
+                     .SetOffset(stripX, uint32_t(vp.y))
+                     .SetExtent(strip)
+                     .SetColor({colorTarget},
+                               smvk::AttachmentLoadOp::Load,
+                               smvk::AttachmentStoreOp::Store,
+                               smvk::ClearColor(0, 0, 0, 1))
+                     .SetDepth(m_depth.logicalView,
+                               smvk::AttachmentLoadOp::Clear,
+                               smvk::AttachmentStoreOp::Store,
+                               smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
+    pass.SetRecordingFunc([this, pc](smvk::CommandBuffer& cmd) {
+        smvk::ShaderProgram& prog = InsetProgram();
+        const smvk::VertexLayoutId fmt =
+            HasDrawItems() ? smvk::VertexLayoutId::Static : smvk::VertexLayoutId::Empty;
+        if (fmt == smvk::VertexLayoutId::Static)
+            cmd.BindStaticVertexFmt();
+        const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                        .writeEnable = true,
+                                        .depthTestEnable = true};
+        for (int masked = 0; masked <= 1; ++masked) {
+            const bool maskedPhase = (masked == 1);
+            // UV inset: NO backface cull (the second viewport shows
+            // unwrapped UV shells whose winding flips arbitrarily).
+            cmd.BindRenderPipeline(prog,
+                                   fmt,
+                                   depth,
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings{},
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+            DrawWorldNodes(cmd, pc, maskedPhase, false, false);
+        }
+        {
+            cmd.BindRenderPipeline(prog,
+                                   fmt,
+                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                       .writeEnable = false,
+                                                       .depthTestEnable = true},
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings::AlphaBlend(),
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+            engine::IRenderer::PushConstants tpc = pc;
+            tpc.pad_pc = 1;
+            cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
+            if (m_world) {
+                const smvk::IteratorFlags req = smvk::IteratorFlags(
+                    smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Transparent |
+                    smvk::IteratorFlagBit_StaticVertexFmt);
+                m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+                    if (item.material == tour::World::kInvalidIndex)
+                        return;
+                    if (!IsVisibleNode(m_world->scene, int(item.node)))
+                        return;
+                    smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+                    if (!mesh)
+                        return;
+                    const glm::mat4& model = m_world->scene.globalTransform[item.node];
+                    uint32_t matId = item.material;
+                    cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
+                                      sizeof(matId),
+                                      &matId,
+                                      smvk::ShaderStage::All);
+                    cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
+                                      sizeof(model),
+                                      glm::value_ptr(model),
+                                      smvk::ShaderStage::All);
+                    for (const auto& s : mesh->geometry.surfaces)
+                        cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+                });
+            }
+        }
+    });
+    // The matching tonemap layer for the strip rect (see RecordMainPass).
+    if (viaHdr)
+        RecordViewportTonemap(
+            swapView,
+            ViewportRect{float(stripX), float(vp.y), float(strip.width), float(strip.height)},
+            "EditorInsetTonemap");
+}
 
-	// ---- meshlet debug view (F4) -------------------------------------------
-	// Expansion of every cooked meshlet into one shared UINT32 index buffer
-	// of monoblock-absolute vertex ids (mesh-local ids + the mesh's
-	// baseVertex, same rebase gfx::RegisterMeshFromCooked performs), with a
-	// per-meshlet draw range so each meshlet gets a flat stable color from
-	// the meshdebug program (App's F3 view, editor port without the GPU
-	// filter). Meshes without cooked meshlets draw their normal surfaces in
-	// a dim fallback color so nothing vanishes.
+// ---- meshlet debug view (F4) -------------------------------------------
+// Expansion of every cooked meshlet into one shared UINT32 index buffer
+// of monoblock-absolute vertex ids (mesh-local ids + the mesh's
+// baseVertex, same rebase gfx::RegisterMeshFromCooked performs), with a
+// per-meshlet draw range so each meshlet gets a flat stable color from
+// the meshdebug program (App's F3 view, editor port without the GPU
+// filter). Meshes without cooked meshlets draw their normal surfaces in
+// a dim fallback color so nothing vanishes.
 
-	namespace {
-		// Editor meshlet palette: 0 = random-but-stable hue per (mesh, meshlet),
-		// 1 = cone-cutoff heat (-1 flat/backfacing-safe -> blue, 1 needle -> red).
-		void MeshletDebugColor(uint32_t mesh, uint32_t meshlet, float coneCutoff,
-			int mode, float out[4]) {
-			if (mode == 1) {
-				const float t = std::clamp((coneCutoff + 1.0f) * 0.5f, 0.0f, 1.0f);
-				// Blue -> cyan -> green -> yellow -> red piecewise ramp.
-				if (t < 0.25f) {
-					const float k = t / 0.25f;
-					out[0] = 0.15f;
-					out[1] = 0.35f * k;
-					out[2] = 0.95f;
-				}
-				else if (t < 0.5f) {
-					const float k = (t - 0.25f) / 0.25f;
-					out[0] = 0.15f;
-					out[1] = 0.35f + 0.6f * k;
-					out[2] = 0.95f - 0.8f * k;
-				}
-				else if (t < 0.75f) {
-					const float k = (t - 0.5f) / 0.25f;
-					out[0] = 0.15f + 0.8f * k;
-					out[1] = 0.95f;
-					out[2] = 0.15f + 0.4f * (1.0f - k) * 0.0f;
-				}
-				else {
-					const float k = (t - 0.75f) / 0.25f;
-					out[0] = 0.95f;
-					out[1] = 0.95f - 0.75f * k;
-					out[2] = 0.15f;
-				}
-			}
-			else {
-				uint32_t h = (mesh * 0x9E3779B1u) ^ (meshlet * 0x85EBCA6Bu);
-				h ^= h >> 13;
-				h *= 0xC2B2AE35u;
-				h ^= h >> 11;
-				const float hue = float(h % 1000u) / 1000.0f;
-				// HSV -> RGB (S 0.62, V 1.0): compact sector interpolation.
-				const float s = 0.62f, v = 1.0f;
-				const int sector = int(hue * 6.0f);
-				const float f = hue * 6.0f - float(sector);
-				const float p = v * (1.0f - s);
-				const float q = v * (1.0f - s * f);
-				const float t = v * (1.0f - s * (1.0f - f));
-				switch (sector % 6) {
-				case 0: out[0] = v; out[1] = t; out[2] = p; break;
-				case 1: out[0] = q; out[1] = v; out[2] = p; break;
-				case 2: out[0] = p; out[1] = v; out[2] = t; break;
-				case 3: out[0] = p; out[1] = q; out[2] = v; break;
-				case 4: out[0] = t; out[1] = p; out[2] = v; break;
-				default: out[0] = v; out[1] = p; out[2] = q; break;
-				}
-			}
-			out[3] = 1.0f;
-		}
-	} // namespace
+namespace {
+// Editor meshlet palette: 0 = random-but-stable hue per (mesh, meshlet),
+// 1 = cone-cutoff heat (-1 flat/backfacing-safe -> blue, 1 needle -> red).
+void MeshletDebugColor(uint32_t mesh, uint32_t meshlet, float coneCutoff, int mode, float out[4]) {
+    if (mode == 1) {
+        const float t = std::clamp((coneCutoff + 1.0f) * 0.5f, 0.0f, 1.0f);
+        // Blue -> cyan -> green -> yellow -> red piecewise ramp.
+        if (t < 0.25f) {
+            const float k = t / 0.25f;
+            out[0] = 0.15f;
+            out[1] = 0.35f * k;
+            out[2] = 0.95f;
+        } else if (t < 0.5f) {
+            const float k = (t - 0.25f) / 0.25f;
+            out[0] = 0.15f;
+            out[1] = 0.35f + 0.6f * k;
+            out[2] = 0.95f - 0.8f * k;
+        } else if (t < 0.75f) {
+            const float k = (t - 0.5f) / 0.25f;
+            out[0] = 0.15f + 0.8f * k;
+            out[1] = 0.95f;
+            out[2] = 0.15f + 0.4f * (1.0f - k) * 0.0f;
+        } else {
+            const float k = (t - 0.75f) / 0.25f;
+            out[0] = 0.95f;
+            out[1] = 0.95f - 0.75f * k;
+            out[2] = 0.15f;
+        }
+    } else {
+        uint32_t h = (mesh * 0x9E3779B1u) ^ (meshlet * 0x85EBCA6Bu);
+        h ^= h >> 13;
+        h *= 0xC2B2AE35u;
+        h ^= h >> 11;
+        const float hue = float(h % 1000u) / 1000.0f;
+        // HSV -> RGB (S 0.62, V 1.0): compact sector interpolation.
+        const float s = 0.62f, v = 1.0f;
+        const int sector = int(hue * 6.0f);
+        const float f = hue * 6.0f - float(sector);
+        const float p = v * (1.0f - s);
+        const float q = v * (1.0f - s * f);
+        const float t = v * (1.0f - s * (1.0f - f));
+        switch (sector % 6) {
+        case 0:
+            out[0] = v;
+            out[1] = t;
+            out[2] = p;
+            break;
+        case 1:
+            out[0] = q;
+            out[1] = v;
+            out[2] = p;
+            break;
+        case 2:
+            out[0] = p;
+            out[1] = v;
+            out[2] = t;
+            break;
+        case 3:
+            out[0] = p;
+            out[1] = q;
+            out[2] = v;
+            break;
+        case 4:
+            out[0] = t;
+            out[1] = p;
+            out[2] = v;
+            break;
+        default:
+            out[0] = v;
+            out[1] = p;
+            out[2] = q;
+            break;
+        }
+    }
+    out[3] = 1.0f;
+}
+} // namespace
 
-	void EditorApp::ResetMeshletDebug() {
-		m_meshletRanges.clear();
-		m_meshletRangesByMesh.clear();
-		m_meshletIndices = {};
-		m_meshletIndexCap = 0;
-		m_meshletDebugBuilt = false;
-		m_meshletDebugHasData = false;
-	}
+void EditorApp::ResetMeshletDebug() {
+    m_meshletRanges.clear();
+    m_meshletRangesByMesh.clear();
+    m_meshletIndices = {};
+    m_meshletIndexCap = 0;
+    m_meshletDebugBuilt = false;
+    m_meshletDebugHasData = false;
+}
 
-	bool EditorApp::EnsureMeshletDebug() {
-		if (!m_world || !m_context)
-			return false;
-		if (m_meshletDebugBuilt)
-			return true;
-		m_meshletDebugBuilt = true;
-		std::vector<uint32_t> indices;
-		uint32_t meshletCount = 0;
-		for (uint32_t mi = 0; mi < uint32_t(m_world->meshLocations.size()); ++mi) {
-			const smvk::StaticMesh* mesh = m_world->GetMesh(mi);
-			if (!mesh || !mesh->meshlets || mesh->meshlets->empty())
-				continue;
-			const smvk::CookedMeshlets& cooked = *mesh->meshlets;
-			const uint32_t baseVertex = mesh->geometry.surfaces.empty()
-				? 0u
-				: uint32_t(std::max<int32_t>(
-					mesh->geometry.surfaces[0].baseVertex, 0));
-			std::vector<uint32_t> meshIndices;
-			std::vector<smvk::MeshletDrawCommand> cmds;
-			smvk::BuildMeshletIndirectCommands(cooked, meshIndices, cmds);
-			for (const auto& c : cmds) {
-				MeshletRange r{};
-				r.firstIndex = uint32_t(indices.size()) + c.firstIndex;
-				r.indexCount = c.indexCount;
-				r.meshlet = c.meshletIndex;
-				r.coneCutoff = c.meshletIndex < cooked.meshlets.size()
-					? cooked.meshlets[c.meshletIndex].coneCutoff : 1.0f;
-				m_meshletRangesByMesh[mi].push_back(
-					uint32_t(m_meshletRanges.size()));
-				m_meshletRanges.push_back(r);
-			}
-			for (uint32_t v : meshIndices)
-				indices.push_back(v + baseVertex);
-			meshletCount += uint32_t(cooked.meshlets.size());
-		}
-		m_meshletDebugHasData = !m_meshletRanges.empty();
-		if (indices.empty())
-			return true; // fallback-only view (no cooked meshlets)
-		const size_t bytes = indices.size() * sizeof(uint32_t);
-		if (m_meshletIndices.empty() || m_meshletIndexCap < uint32_t(indices.size())) {
-			m_meshletIndices = m_context->CreateBuffer(bytes,
-				smvk::BufferType_Index, "editor meshlet dbg indices");
-			m_meshletIndexCap = uint32_t(indices.size());
-		}
-		if (m_meshletIndices.empty()) {
-			m_meshletDebugBuilt = false;
-			return false;
-		}
-		m_context->UploadDataToBuffer(m_meshletIndices, indices.data(), bytes,
-			smvk::PipelineStageBit_Vertex, smvk::AccessFlags::IndexRead);
-		Log("Meshlet debug: " + std::to_string(meshletCount) +
-			" meshlets across " + std::to_string(m_meshletRangesByMesh.size()) +
-			" meshes (" + std::to_string(indices.size() / 3) + " triangles).");
-		return true;
-	}
+bool EditorApp::EnsureMeshletDebug() {
+    if (!m_world || !m_context)
+        return false;
+    if (m_meshletDebugBuilt)
+        return true;
+    m_meshletDebugBuilt = true;
+    std::vector<uint32_t> indices;
+    uint32_t meshletCount = 0;
+    for (uint32_t mi = 0; mi < uint32_t(m_world->meshLocations.size()); ++mi) {
+        const smvk::StaticMesh* mesh = m_world->GetMesh(mi);
+        if (!mesh || !mesh->meshlets || mesh->meshlets->empty())
+            continue;
+        const smvk::CookedMeshlets& cooked = *mesh->meshlets;
+        const uint32_t baseVertex =
+            mesh->geometry.surfaces.empty()
+                ? 0u
+                : uint32_t(std::max<int32_t>(mesh->geometry.surfaces[0].baseVertex, 0));
+        std::vector<uint32_t> meshIndices;
+        std::vector<smvk::MeshletDrawCommand> cmds;
+        smvk::BuildMeshletIndirectCommands(cooked, meshIndices, cmds);
+        for (const auto& c : cmds) {
+            MeshletRange r{};
+            r.firstIndex = uint32_t(indices.size()) + c.firstIndex;
+            r.indexCount = c.indexCount;
+            r.meshlet = c.meshletIndex;
+            r.coneCutoff = c.meshletIndex < cooked.meshlets.size()
+                               ? cooked.meshlets[c.meshletIndex].coneCutoff
+                               : 1.0f;
+            m_meshletRangesByMesh[mi].push_back(uint32_t(m_meshletRanges.size()));
+            m_meshletRanges.push_back(r);
+        }
+        for (uint32_t v : meshIndices)
+            indices.push_back(v + baseVertex);
+        meshletCount += uint32_t(cooked.meshlets.size());
+    }
+    m_meshletDebugHasData = !m_meshletRanges.empty();
+    if (indices.empty())
+        return true; // fallback-only view (no cooked meshlets)
+    const size_t bytes = indices.size() * sizeof(uint32_t);
+    if (m_meshletIndices.empty() || m_meshletIndexCap < uint32_t(indices.size())) {
+        m_meshletIndices =
+            m_context->CreateBuffer(bytes, smvk::BufferType_Index, "editor meshlet dbg indices");
+        m_meshletIndexCap = uint32_t(indices.size());
+    }
+    if (m_meshletIndices.empty()) {
+        m_meshletDebugBuilt = false;
+        return false;
+    }
+    m_context->UploadDataToBuffer(m_meshletIndices,
+                                  indices.data(),
+                                  bytes,
+                                  smvk::PipelineStageBit_Vertex,
+                                  smvk::AccessFlags::IndexRead);
+    Log("Meshlet debug: " + std::to_string(meshletCount) + " meshlets across " +
+        std::to_string(m_meshletRangesByMesh.size()) + " meshes (" +
+        std::to_string(indices.size() / 3) + " triangles).");
+    return true;
+}
 
-	void EditorApp::DrawMeshletNodes(smvk::CommandBuffer& cmd) {
-		if (!m_world || !EnsureMeshletDebug())
-			return;
-		// The meshdebug contract (meshdebug.frag.hlsl): the C++ side
-		// pre-scales the push color by 1/frame exposure so the
-		// tonemapper's hdr * exposure reproduces the authored display
-		// color (App parity - the preview's tonemap layer applies the
-		// same exposure, see PreviewExposure).
-		const float meshletColorPreScale = 1.0f / PreviewExposure();
-		const smvk::VertexLayoutId fmt =
-			HasDrawItems() ? smvk::VertexLayoutId::Static
-			: smvk::VertexLayoutId::Empty;
-		if (fmt == smvk::VertexLayoutId::Static)
-			cmd.BindStaticVertexFmt();
-		cmd.BindRenderPipeline(m_meshDebugProgram, fmt,
-			smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
-				.writeEnable = true, .depthTestEnable = true },
-			smvk::StencilSettings{}, smvk::BlendSettings{},
-			smvk::MSAASettings{},
-			smvk::RasterSettings{ .polygonMode = m_wireframeAll
-				? smvk::PolygonMode::Line : smvk::PolygonMode::Fill,
-				.cullMode = smvk::CullMode::None });
-		engine::MeshDebugPush dp{};
-		std::memcpy(dp.viewProj, glm::value_ptr(m_lastViewProj),
-			sizeof(dp.viewProj));
-		const smvk::IteratorFlags req = smvk::IteratorFlags(
-			smvk::IteratorFlagBit_Renderable |
-			smvk::IteratorFlagBit_Opaque |
-			smvk::IteratorFlagBit_StaticVertexFmt);
-		// Fallback leg (static monoblock indices): meshes without cooked
-		// meshlets draw dim gray — nothing vanishes in the debug view.
-		// (Pre-scaled per the contract above, like the palette leg below.)
-		dp.color[0] = 0.45f * meshletColorPreScale;
-		dp.color[1] = 0.45f * meshletColorPreScale;
-		dp.color[2] = 0.5f * meshletColorPreScale;
-		dp.color[3] = 1.0f;
-		m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-			if (item.material == tour::World::kInvalidIndex)
-				return;
-			if (!IsVisibleNode(m_world->scene, int(item.node)))
-				return;
-			const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
-			if (!mesh || (mesh->meshlets && !mesh->meshlets->empty()))
-				return; // meshlet leg below
-			std::memcpy(dp.model,
-				glm::value_ptr(m_world->scene.globalTransform[item.node]),
-				sizeof(dp.model));
-			cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
-			for (const auto& s : mesh->geometry.surfaces)
-				cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
-		});
-		if (m_meshletRanges.empty())
-			return;
-		// Meshlet leg: switch the index binding to the expanded buffer
-		// (monoblock-absolute ids, vertexOffset 0) and flat-color each range.
-		cmd.BindIndexBuffer(m_meshletIndices);
-		m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-			if (item.material == tour::World::kInvalidIndex)
-				return;
-			if (!IsVisibleNode(m_world->scene, int(item.node)))
-				return;
-			auto bit = m_meshletRangesByMesh.find(item.mesh);
-			if (bit == m_meshletRangesByMesh.end())
-				return;
-			std::memcpy(dp.model,
-				glm::value_ptr(m_world->scene.globalTransform[item.node]),
-				sizeof(dp.model));
-			for (uint32_t ri : bit->second) {
-				const MeshletRange& r = m_meshletRanges[ri];
-				MeshletDebugColor(item.mesh, r.meshlet, r.coneCutoff,
-					m_debugMeshletMode, dp.color);
-				// Contract pre-scale (see DrawMeshletNodes top): rgb only,
-				// the alpha carries no color.
-				dp.color[0] *= meshletColorPreScale;
-				dp.color[1] *= meshletColorPreScale;
-				dp.color[2] *= meshletColorPreScale;
-				cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
-				cmd.DrawIndexed(r.indexCount, 1, r.firstIndex, 0);
-			}
-		});
-	}
+void EditorApp::DrawMeshletNodes(smvk::CommandBuffer& cmd) {
+    if (!m_world || !EnsureMeshletDebug())
+        return;
+    // The meshdebug contract (meshdebug.frag.hlsl): the C++ side
+    // pre-scales the push color by 1/frame exposure so the
+    // tonemapper's hdr * exposure reproduces the authored display
+    // color (App parity - the preview's tonemap layer applies the
+    // same exposure, see PreviewExposure).
+    const float meshletColorPreScale = 1.0f / PreviewExposure();
+    const smvk::VertexLayoutId fmt =
+        HasDrawItems() ? smvk::VertexLayoutId::Static : smvk::VertexLayoutId::Empty;
+    if (fmt == smvk::VertexLayoutId::Static)
+        cmd.BindStaticVertexFmt();
+    cmd.BindRenderPipeline(m_meshDebugProgram,
+                           fmt,
+                           smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                               .writeEnable = true,
+                                               .depthTestEnable = true},
+                           smvk::StencilSettings{},
+                           smvk::BlendSettings{},
+                           smvk::MSAASettings{},
+                           smvk::RasterSettings{.polygonMode = m_wireframeAll
+                                                                   ? smvk::PolygonMode::Line
+                                                                   : smvk::PolygonMode::Fill,
+                                                .cullMode = smvk::CullMode::None});
+    engine::MeshDebugPush dp{};
+    std::memcpy(dp.viewProj, glm::value_ptr(m_lastViewProj), sizeof(dp.viewProj));
+    const smvk::IteratorFlags req =
+        smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                            smvk::IteratorFlagBit_StaticVertexFmt);
+    // Fallback leg (static monoblock indices): meshes without cooked
+    // meshlets draw dim gray — nothing vanishes in the debug view.
+    // (Pre-scaled per the contract above, like the palette leg below.)
+    dp.color[0] = 0.45f * meshletColorPreScale;
+    dp.color[1] = 0.45f * meshletColorPreScale;
+    dp.color[2] = 0.5f * meshletColorPreScale;
+    dp.color[3] = 1.0f;
+    m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+        if (item.material == tour::World::kInvalidIndex)
+            return;
+        if (!IsVisibleNode(m_world->scene, int(item.node)))
+            return;
+        const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+        if (!mesh || (mesh->meshlets && !mesh->meshlets->empty()))
+            return; // meshlet leg below
+        std::memcpy(
+            dp.model, glm::value_ptr(m_world->scene.globalTransform[item.node]), sizeof(dp.model));
+        cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
+        for (const auto& s : mesh->geometry.surfaces)
+            cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+    });
+    if (m_meshletRanges.empty())
+        return;
+    // Meshlet leg: switch the index binding to the expanded buffer
+    // (monoblock-absolute ids, vertexOffset 0) and flat-color each range.
+    cmd.BindIndexBuffer(m_meshletIndices);
+    m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+        if (item.material == tour::World::kInvalidIndex)
+            return;
+        if (!IsVisibleNode(m_world->scene, int(item.node)))
+            return;
+        auto bit = m_meshletRangesByMesh.find(item.mesh);
+        if (bit == m_meshletRangesByMesh.end())
+            return;
+        std::memcpy(
+            dp.model, glm::value_ptr(m_world->scene.globalTransform[item.node]), sizeof(dp.model));
+        for (uint32_t ri : bit->second) {
+            const MeshletRange& r = m_meshletRanges[ri];
+            MeshletDebugColor(item.mesh, r.meshlet, r.coneCutoff, m_debugMeshletMode, dp.color);
+            // Contract pre-scale (see DrawMeshletNodes top): rgb only,
+            // the alpha carries no color.
+            dp.color[0] *= meshletColorPreScale;
+            dp.color[1] *= meshletColorPreScale;
+            dp.color[2] *= meshletColorPreScale;
+            cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
+            cmd.DrawIndexed(r.indexCount, 1, r.firstIndex, 0);
+        }
+    });
+}
 
-	void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
-		// Optick: the editor render frame — the two graph rounds + the
-		// WYSIWYG world renderer between them each get their own scope
-		// (the per-PASS scopes come from RenderGraph::Execute itself;
-		// these cover each round's record + execute as a unit).
-		SMVK_PROFILE_FUNCTION();
-		const auto vkExt = m_swapchain->GetExtent();
-		const smvk::Extent2D extent{ vkExt.width, vkExt.height };
-		if (extent.width == 0 || extent.height == 0)
-			return;
-		if (!EnsureShaders())
-			return;
-		// External swap views persist in the rendergraph (like App/triangle):
-		// register once, not per frame.
-		if (m_swapViews.size() != m_swapchain->GetImageCount()) {
-			m_swapViews.clear();
-			for (uint32_t i = 0; i < m_swapchain->GetImageCount(); ++i)
-				m_swapViews.push_back(m_rendergraph->AddExternalImageView(
-					m_swapchain->GetImageViewHandle(i), m_swapchain->GetSurfaceFormat()));
-		}
-		if (!EnsureBuffers(m_swapchain->framesInFlight()))
-			return;
-		if (!EnsureDepth(extent))
-			return;
-		// Preview HDR (best-effort, see m_sceneHdr): a creation failure
-		// falls back to the direct LDR write (RecordMainPass/RecordInsetPass
-		// gate on m_sceneHdr.Valid()), never a dead editor.
-		(void)m_sceneHdr.Ensure(*m_context, *m_rendergraph, extent,
-			smvk::HdrDesc{
-				.name = "editorPreviewHdr",
-				.viewName = "editorPreviewHdrView",
-				.logicalName = "editorPreviewHdrLogical" });
+void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
+    // Optick: the editor render frame — the two graph rounds + the
+    // WYSIWYG world renderer between them each get their own scope
+    // (the per-PASS scopes come from RenderGraph::Execute itself;
+    // these cover each round's record + execute as a unit).
+    SMVK_PROFILE_FUNCTION();
+    const auto vkExt = m_swapchain->GetExtent();
+    const smvk::Extent2D extent{vkExt.width, vkExt.height};
+    if (extent.width == 0 || extent.height == 0)
+        return;
+    if (!EnsureShaders())
+        return;
+    // External swap views persist in the rendergraph (like App/triangle):
+    // register once, not per frame.
+    if (m_swapViews.size() != m_swapchain->GetImageCount()) {
+        m_swapViews.clear();
+        for (uint32_t i = 0; i < m_swapchain->GetImageCount(); ++i)
+            m_swapViews.push_back(m_rendergraph->AddExternalImageView(
+                m_swapchain->GetImageViewHandle(i), m_swapchain->GetSurfaceFormat()));
+    }
+    if (!EnsureBuffers(m_swapchain->framesInFlight()))
+        return;
+    if (!EnsureDepth(extent))
+        return;
+    // Preview HDR (best-effort, see m_sceneHdr): a creation failure
+    // falls back to the direct LDR write (RecordMainPass/RecordInsetPass
+    // gate on m_sceneHdr.Valid()), never a dead editor.
+    (void)m_sceneHdr.Ensure(*m_context,
+                            *m_rendergraph,
+                            extent,
+                            smvk::HdrDesc{.name = "editorPreviewHdr",
+                                          .viewName = "editorPreviewHdrView",
+                                          .logicalName = "editorPreviewHdrLogical"});
 
-		// Viewport rects (single central or 2x2 quad) between the panels;
-		  // the hovered viewport is ACTIVE (input, gizmo, shadows, framing).
-		ComputeViewportRects(extent);
+    // Viewport rects (single central or 2x2 quad) between the panels;
+    // the hovered viewport is ACTIVE (input, gizmo, shadows, framing).
+    ComputeViewportRects(extent);
 
-		UpdateCamera(delta_time_s);
-		// vi-style modal keys (editor_modal.cpp): the ACTIVE mode's keymap
-		// (LAYOUT/LIGHTING/TEST/PROFILE; 1-4 switch from any mode) interprets
-		// keys, with a global fallback table (mode switches, shading F1-F3,
-		// undo/redo/save, window toggles). Skipped while ImGui wants the
-		// keyboard (typing) or the Q radial popup is open.
-		UpdateModalInput();
+    UpdateCamera(delta_time_s);
+    // vi-style modal keys (editor_modal.cpp): the ACTIVE mode's keymap
+    // (LAYOUT/LIGHTING/TEST/PROFILE; 1-4 switch from any mode) interprets
+    // keys, with a global fallback table (mode switches, shading F1-F3,
+    // undo/redo/save, window toggles). Skipped while ImGui wants the
+    // keyboard (typing) or the Q radial popup is open.
+    UpdateModalInput();
 
-		// Per-flight slot: fb.frameIndex is the fence-gated in-flight index
-		// (AcquireFramebuffer waited its fence before returning it), so the
-		// ring slices sized by framesInFlight() are safe to overwrite.
-		// fb.imageIndex is presentation order (0/2/1/0...) and MUST NOT be
-		// used here: two swapchain images can map to the same
-		// imageIndex % flightCount while the GPU still consumes that slice
-		// (frameHot BDA, uniforms, lights, cascades...). fb.imageIndex only
-		// identifies the swap target: m_swapViews[fb.imageIndex].
-		const uint32_t flight = fb.frameIndex;
-		assert(flight < m_flightCount);
-		UpdateTextureStreaming(extent);
+    // Per-flight slot: fb.frameIndex is the fence-gated in-flight index
+    // (AcquireFramebuffer waited its fence before returning it), so the
+    // ring slices sized by framesInFlight() are safe to overwrite.
+    // fb.imageIndex is presentation order (0/2/1/0...) and MUST NOT be
+    // used here: two swapchain images can map to the same
+    // imageIndex % flightCount while the GPU still consumes that slice
+    // (frameHot BDA, uniforms, lights, cascades...). fb.imageIndex only
+    // identifies the swap target: m_swapViews[fb.imageIndex].
+    const uint32_t flight = fb.frameIndex;
+    assert(flight < m_flightCount);
+    UpdateTextureStreaming(extent);
 
-		// ----------------------------------------------------
-		// Process ALL editor interaction here.
-		// GizmoHandleInput(), selection, painting, etc.
-		// ----------------------------------------------------
+    // ----------------------------------------------------
+    // Process ALL editor interaction here.
+    // GizmoHandleInput(), selection, painting, etc.
+    // ----------------------------------------------------
 
-		// Active-viewport mouse (viewport-local). Alt+LMB is the Maya orbit
-		// gesture; clicks inside the UV inset strip use a different projection.
-		const ViewportRect& vp = m_viewports[m_activeVp].rect;
-		const float lmx = float(m_input.getMouseX()) - vp.x;
-		const float lmy = float(m_input.getMouseY()) - vp.y;
-		const bool inVp = (!m_uiMode || m_dockViewportVisible) &&
-			lmx >= 0.0f && lmy >= 0.0f && lmx < vp.w && lmy < vp.h;
-		const bool altNav = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
-			m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
-		// An earlier viewport drag must not globally bypass ImGui mouse
-		// capture: menus, popups and floating panels can overlap the stage.
-		// Only the currently exposed/hovered viewport may accept scene
-		// interaction when the UI is otherwise capturing the mouse.
-		const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse()
-			&& !(m_uiMode && m_dockViewportHovered && inVp);
-		const bool shiftHeld = m_input.isKeyHeld(TOUR_KEY_LEFT_SHIFT) ||
-			m_input.isKeyHeld(TOUR_KEY_RIGHT_SHIFT);
-		uint32_t insetXAbs = 0;
-		const bool insetActive = SecondViewActive() && m_vpLayout == 0 &&
-			InsetStrip(m_viewports[0].rect, insetXAbs).width != 0;
-		const bool inInset = insetActive && m_activeVp == 0 &&
-			lmx >= float(insetXAbs) - vp.x;
+    // Active-viewport mouse (viewport-local). Alt+LMB is the Maya orbit
+    // gesture; clicks inside the UV inset strip use a different projection.
+    const ViewportRect& vp = m_viewports[m_activeVp].rect;
+    const float lmx = float(m_input.getMouseX()) - vp.x;
+    const float lmy = float(m_input.getMouseY()) - vp.y;
+    const bool inVp = (!m_uiMode || m_dockViewportVisible) && lmx >= 0.0f && lmy >= 0.0f &&
+                      lmx < vp.w && lmy < vp.h;
+    const bool altNav =
+        m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) || m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
+    // An earlier viewport drag must not globally bypass ImGui mouse
+    // capture: menus, popups and floating panels can overlap the stage.
+    // Only the currently exposed/hovered viewport may accept scene
+    // interaction when the UI is otherwise capturing the mouse.
+    const bool uiEats =
+        m_imgui && m_imgui->WantsCaptureMouse() && !(m_uiMode && m_dockViewportHovered && inVp);
+    const bool shiftHeld =
+        m_input.isKeyHeld(TOUR_KEY_LEFT_SHIFT) || m_input.isKeyHeld(TOUR_KEY_RIGHT_SHIFT);
+    uint32_t insetXAbs = 0;
+    const bool insetActive = SecondViewActive() && m_vpLayout == 0 &&
+                             InsetStrip(m_viewports[0].rect, insetXAbs).width != 0;
+    const bool inInset = insetActive && m_activeVp == 0 && lmx >= float(insetXAbs) - vp.x;
 
-		// Viewports keep the mesh/face/vertex click + rubber-band box.
-		// Flat-UV picking lives in the UV editor window (ImGui mouse).
-		// ---- terrain height painting --------------------------------------
-		// Paint mode replaces the LMB press path entirely: no box select, no
-		// gizmo grab, no picking. One stamp per click; drags stamp at
-		// radius-spaced intervals along the surface.
-		const bool surfaceBrush = m_world && m_surfaceBrushEnabled;
-		if (surfaceBrush) {
-			if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-				SurfaceBrushFinish();
-				m_surfaceBrushEnabled = false;
-				m_surfaceDrawing = false;
-			} else {
-				SurfaceBrushInput(m_activeVp, lmx, lmy,
-					m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT),
-					m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT),
-					inVp && !inInset && !altNav && !uiEats);
-			}
-		}
-		const bool scatterPainting = m_world && m_paintScatter &&
-			!altNav && !inInset && inVp && !uiEats;
-		const bool painting = m_world && !surfaceBrush && m_paintTerrain
-			&& !m_paintScatter
-			&& !altNav && !inInset && inVp && !uiEats;
-		// Three independent drags: width on the horizontal construction
-		// plane, depth on the same plane, then height in screen space.
-		// This branch owns LMB while armed (no pick, box select or gizmo).
-		if (surfaceBrush) {
-			// Brush owns LMB while armed; do not pick, box-select, or drag a gizmo.
-		}
-		else if (m_volumeBrushArmed && m_world) {
-			if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-				m_volumeBrushArmed = false;
-				m_volumeBrushDragging = false;
-				m_volumeBrushStage = 0;
-			}
-			else {
-				const bool pressed = m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT);
-				const bool held = m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT);
-				if (!m_volumeBrushDragging && pressed && inVp && !inInset &&
-					!uiEats && !altNav) {
-					m_volumeBrushVp = m_activeVp;
-					m_volumeBrushDragging = true;
-					m_volumeBrushMouseY = lmy;
-					if (m_volumeBrushStage == 0) {
-						glm::vec3 snap;
-						if (SpatialVolumeBrushDepthPoint(m_volumeBrushVp, lmx, lmy, snap)) {
-							m_volumeBrushStart = snap;
-							m_volumeBrushEnd = snap;
-						} else {
-							// Construction-plane fallback is resolved by the ray below.
-							m_volumeBrushStart = glm::vec3(0.0f, ActiveCam().target.y, 0.0f);
-						}
-					}
-				}
-				if (m_volumeBrushDragging) {
-					const EditorViewport& brushVp = m_viewports[m_volumeBrushVp];
-					const ViewportRect& rect = brushVp.rect;
-					const float x = std::clamp(float(m_input.getMouseX()) - rect.x, 0.0f, rect.w);
-					const float y = std::clamp(float(m_input.getMouseY()) - rect.y, 0.0f, rect.h);
-					if (m_volumeBrushStage < 2) {
-						glm::vec3 origin;
-						const smvk::Extent2D brushExt{
-							uint32_t(rect.w), uint32_t(rect.h)};
-						const glm::vec3 ray = MouseRay(x, y, brushExt,
-							brushVp.viewProj, origin);
-						const float planeY = m_volumeBrushStart.y;
-						glm::vec3 hit{};
-						bool valid = false;
-						if (std::fabs(ray.y) > 1e-5f) {
-							const float t = (planeY - origin.y) / ray.y;
-							if (t >= 0.0f) {
-								hit = origin + t * ray;
-								valid = true;
-							}
-						}
-						// Visible surfaces provide depth anchors. Strong
-						// discontinuities pull the cursor toward foreground edges.
-						glm::vec3 depthPoint;
-						const bool depthHit = SpatialVolumeBrushDepthPoint(
-							m_volumeBrushVp, x, y, depthPoint);
-						if (depthHit) {
-							hit = depthPoint;
-							valid = true;
-						}
-						if (valid) {
-							if (m_volumeBrushStage == 0) {
-								// Keep the first click fixed; in the absence of
-								// geometry that first point is on the working plane.
-								if (pressed && !depthHit)
-									m_volumeBrushStart = hit;
-								m_volumeBrushEnd = m_volumeBrushStart;
-								m_volumeBrushEnd.x = hit.x;
-							} else {
-								m_volumeBrushEnd.z = hit.z;
-							}
-						}
-					} else {
-						// Measure projected one-meter vertical displacement. Unlike
-						// a hardcoded pixels/meter factor this adapts to zoom/FOV.
-						const glm::vec3 corner(m_volumeBrushEnd.x,
-							m_volumeBrushStart.y, m_volumeBrushEnd.z);
-						const glm::vec4 p0 = brushVp.viewProj * glm::vec4(corner, 1.0f);
-						const glm::vec4 p1 = brushVp.viewProj * glm::vec4(corner + glm::vec3(0,1,0), 1.0f);
-						if (p0.w > 1e-5f && p1.w > 1e-5f) {
-							const float pixelsPerMeter = (p0.y / p0.w - p1.y / p1.w) * rect.h * 0.5f;
-							if (std::fabs(pixelsPerMeter) > 1e-3f)
-								m_volumeBrushHeight = (y - m_volumeBrushMouseY) / pixelsPerMeter;
-						}
-					}
-					if (!held) {
-						m_volumeBrushDragging = false;
-						if (++m_volumeBrushStage == 3) {
-							FinishSpatialVolumeBrush();
-							m_volumeBrushStage = 0;
-							m_volumeBrushHeight = 0.0f;
-						}
-					}
-				}
-			}
-		}
-		else if (scatterPainting) {
-			if (m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT))
-				m_scatterPaintLast = glm::vec2(-1e9f, -1e9f);
-			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
-				const smvk::Extent2D vpExt{uint32_t(vp.w), uint32_t(vp.h)};
-				glm::vec3 rayOrigin;
-				const glm::vec3 rayDir = MouseRay(lmx, lmy, vpExt,
-					m_viewports[m_activeVp].viewProj, rayOrigin);
-				// PaintScatterAt owns the domain hit and marks the graph dirty.
-				// Don't stamp at every frame when the pointer is stationary.
-				const auto& cr = m_placement.preview.compiled;
-				glm::vec3 hit;
-				bool valid = false;
-				if (cr.domainKind == smvk::placement::DomainKind::Heightfield &&
-					m_placement.preview.terrainField.width > 1) {
-					float t = 0.0f;
-					if (smvk::placement::TerrainRaycast(
-						m_placement.preview.terrainField, rayOrigin, rayDir, 5000.0f, t)) {
-						hit = rayOrigin + rayDir * t;
-						valid = true;
-					}
-				} else if (cr.domainKind == smvk::placement::DomainKind::MeshSurface) {
-					if (auto pick = PickNode(m_activeVp, lmx, lmy, vpExt)) {
-						hit = rayOrigin + rayDir * pick->t;
-						valid = true;
-					}
-				}
-				if (!valid && std::fabs(rayDir.y) > 1e-5f) {
-					const float y = cr.domainKind == smvk::placement::DomainKind::Grid
-						? cr.grid.origin.y : 0.0f;
-					const float t = (y - rayOrigin.y) / rayDir.y;
-					if (t > 0.0f) { hit = rayOrigin + rayDir * t; valid = true; }
-				}
-				if (valid) {
-					const glm::vec2 xz(hit.x, hit.z);
-					const float spacing = std::max(
-						m_scatterBrushRadius * m_scatterBrushSpacing, 0.1f);
-					if (m_scatterPaintLast.x < -1e8f ||
-						glm::length(xz - m_scatterPaintLast) >= spacing) {
-						if (PaintScatterAt(rayOrigin, rayDir))
-							m_scatterPaintLast = xz;
-					}
-				}
-			}
-			else m_scatterPaintLast = glm::vec2(-1e9f, -1e9f);
-		}
-		else if (painting) {
-			// Fresh press always stamps (drag spacing applies within one
-			// stroke only).
-			if (m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT))
-				m_paintLast = glm::vec2(-1e9f, -1e9f);
-			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
-				const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
-				glm::vec3 rayOrigin;
-				const glm::vec3 rayDir = MouseRay(lmx, lmy, vpExt,
-					m_viewports[m_activeVp].viewProj, rayOrigin);
-				const uint32_t group = TerrainGroupOf(m_selected);
-				auto it = m_terrainGroups.find(group);
-				float tHit = 0.0f;
-				if (group != UINT32_MAX && it != m_terrainGroups.end()
-					&& smvk::placement::TerrainRaycast(it->second.data.heights,
-						rayOrigin, rayDir, 5000.0f, tHit)) {
-					const glm::vec3 hit = rayOrigin + rayDir * tHit;
-					const glm::vec2 hitXZ(hit.x, hit.z);
-					const float spacing = std::max(m_paintRadius * m_paintStrokeSpacing, 0.1f);
-					if (m_paintLast.x < -1e8f
-						|| glm::length(hitXZ - m_paintLast) >= spacing) {
-						PaintTerrainAt(rayOrigin, rayDir);
-						m_paintLast = hitXZ;
-					}
-				}
-			}
-			else {
-				m_paintLast = glm::vec2(-1e9f, -1e9f);
-			}
-		}
-		// Rubber-band multiselect: press on empty space (no gizmo grab),
-		// drag past a few pixels -> box; release selects all nodes whose
-		// projected AABB intersects. Shift adds to the current selection.
-		// Box select stays Mesh-mode (face/vertex use click picking).
-		else if (m_world && !m_gizmoDragging && !m_transposeDrag && !altNav &&
-			!inInset && inVp &&
-			m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT) && !uiEats) {
-			if (m_selMode == SelMode::Mesh) {
-				if (!(m_transposeEnabled ? TransposeHandleInput() : GizmoHandleInput())) {
-					m_vpBoxDragging = true;
-					m_vpBoxAdditive = shiftHeld;
-					m_vpBoxVp = m_activeVp;
-					m_vpBoxX0 = m_vpBoxX1 = lmx;
-					m_vpBoxY0 = m_vpBoxY1 = lmy;
-				}
-			}
-			else {
-				// Face/Vertex click-pick (no box, no gizmo grab).
-				const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
-				if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
-					ApplySubSelection(*sub);
-				}
-				else if (!shiftHeld) {
-					ClearSelection();
-				}
-				// Swallow the press so the box path below never starts.
-				m_vpBoxDragging = false;
-			}
-		}
-		if (!m_volumeBrushArmed && !surfaceBrush && m_vpBoxDragging) {
-			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
-				m_vpBoxX1 = std::clamp(float(m_input.getMouseX()) - vp.x,
-					0.0f, vp.w);
-				m_vpBoxY1 = std::clamp(float(m_input.getMouseY()) - vp.y,
-					0.0f, vp.h);
-				// Moved past the dead-zone: it is a box, not a click.
-				if (std::fabs(m_vpBoxX1 - m_vpBoxX0) > 5.0f ||
-					std::fabs(m_vpBoxY1 - m_vpBoxY0) > 5.0f) {
-					// Keep the drag alive; the click-pick path is skipped.
-				}
-			}
-			else {
-				// Release: box (if dragged) or plain click-pick (below).
-				const bool isBox = std::fabs(m_vpBoxX1 - m_vpBoxX0) > 5.0f ||
-					std::fabs(m_vpBoxY1 - m_vpBoxY0) > 5.0f;
-				if (isBox) {
-					FinishBoxSelect();
-				}
-				else if (m_world && m_vpBoxVp == m_activeVp) {
-					const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
-				if (m_selMode == SelMode::Mesh) {
-					// X-ray markers first (lights/GI volume centers/cubemap
-					// pins carry no mesh to raycast — the click twin of
-					// the gizmo diamonds and capture balls); meshes
-					// otherwise.
-					std::optional<PickHit> hit =
-						PickGizmoMarker(m_activeVp, lmx, lmy, vpExt);
-					if (!hit)
-						hit = PickNode(m_activeVp, lmx, lmy, vpExt);
-					if (hit) {
-						if (shiftHeld)
-							AddToSelection(hit->node);
-						else
-							SetSelection(hit->node);
-						m_revealNode = hit->node;
-					}
-					else if (!shiftHeld)
-						ClearSelection();
-				}
-					else {
-						if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
-							ApplySubSelection(*sub);
-						}
-						else if (!shiftHeld)
-							ClearSelection();
-					}
-				}
-				m_vpBoxDragging = false;
-			}
-		}
-		else if (!m_volumeBrushArmed && !surfaceBrush && (m_gizmoDragging || m_transposeDrag || (inVp && !altNav &&
-			m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT) && !uiEats))) {
-			if (m_transposeEnabled) TransposeHandleInput();
-			else GizmoHandleInput();
-		}
+    // Viewports keep the mesh/face/vertex click + rubber-band box.
+    // Flat-UV picking lives in the UV editor window (ImGui mouse).
+    // ---- terrain height painting --------------------------------------
+    // Paint mode replaces the LMB press path entirely: no box select, no
+    // gizmo grab, no picking. One stamp per click; drags stamp at
+    // radius-spaced intervals along the surface.
+    const bool surfaceBrush = m_world && m_surfaceBrushEnabled;
+    if (surfaceBrush) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            SurfaceBrushFinish();
+            m_surfaceBrushEnabled = false;
+            m_surfaceDrawing = false;
+        } else {
+            SurfaceBrushInput(m_activeVp,
+                              lmx,
+                              lmy,
+                              m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT),
+                              m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT),
+                              inVp && !inInset && !altNav && !uiEats);
+        }
+    }
+    const bool scatterPainting =
+        m_world && m_paintScatter && !altNav && !inInset && inVp && !uiEats;
+    const bool painting = m_world && !surfaceBrush && m_paintTerrain && !m_paintScatter &&
+                          !altNav && !inInset && inVp && !uiEats;
+    // Three independent drags: width on the horizontal construction
+    // plane, depth on the same plane, then height in screen space.
+    // This branch owns LMB while armed (no pick, box select or gizmo).
+    if (surfaceBrush) {
+        // Brush owns LMB while armed; do not pick, box-select, or drag a gizmo.
+    } else if (m_volumeBrushArmed && m_world) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            m_volumeBrushArmed = false;
+            m_volumeBrushDragging = false;
+            m_volumeBrushStage = 0;
+        } else {
+            const bool pressed = m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT);
+            const bool held = m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT);
+            if (!m_volumeBrushDragging && pressed && inVp && !inInset && !uiEats && !altNav) {
+                m_volumeBrushVp = m_activeVp;
+                m_volumeBrushDragging = true;
+                m_volumeBrushMouseY = lmy;
+                if (m_volumeBrushStage == 0) {
+                    glm::vec3 snap;
+                    if (SpatialVolumeBrushDepthPoint(m_volumeBrushVp, lmx, lmy, snap)) {
+                        m_volumeBrushStart = snap;
+                        m_volumeBrushEnd = snap;
+                    } else {
+                        // Construction-plane fallback is resolved by the ray below.
+                        m_volumeBrushStart = glm::vec3(0.0f, ActiveCam().target.y, 0.0f);
+                    }
+                }
+            }
+            if (m_volumeBrushDragging) {
+                const EditorViewport& brushVp = m_viewports[m_volumeBrushVp];
+                const ViewportRect& rect = brushVp.rect;
+                const float x = std::clamp(float(m_input.getMouseX()) - rect.x, 0.0f, rect.w);
+                const float y = std::clamp(float(m_input.getMouseY()) - rect.y, 0.0f, rect.h);
+                if (m_volumeBrushStage < 2) {
+                    glm::vec3 origin;
+                    const smvk::Extent2D brushExt{uint32_t(rect.w), uint32_t(rect.h)};
+                    const glm::vec3 ray = MouseRay(x, y, brushExt, brushVp.viewProj, origin);
+                    const float planeY = m_volumeBrushStart.y;
+                    glm::vec3 hit{};
+                    bool valid = false;
+                    if (std::fabs(ray.y) > 1e-5f) {
+                        const float t = (planeY - origin.y) / ray.y;
+                        if (t >= 0.0f) {
+                            hit = origin + t * ray;
+                            valid = true;
+                        }
+                    }
+                    // Visible surfaces provide depth anchors. Strong
+                    // discontinuities pull the cursor toward foreground edges.
+                    glm::vec3 depthPoint;
+                    const bool depthHit =
+                        SpatialVolumeBrushDepthPoint(m_volumeBrushVp, x, y, depthPoint);
+                    if (depthHit) {
+                        hit = depthPoint;
+                        valid = true;
+                    }
+                    if (valid) {
+                        if (m_volumeBrushStage == 0) {
+                            // Keep the first click fixed; in the absence of
+                            // geometry that first point is on the working plane.
+                            if (pressed && !depthHit)
+                                m_volumeBrushStart = hit;
+                            m_volumeBrushEnd = m_volumeBrushStart;
+                            m_volumeBrushEnd.x = hit.x;
+                        } else {
+                            m_volumeBrushEnd.z = hit.z;
+                        }
+                    }
+                } else {
+                    // Measure projected one-meter vertical displacement. Unlike
+                    // a hardcoded pixels/meter factor this adapts to zoom/FOV.
+                    const glm::vec3 corner(
+                        m_volumeBrushEnd.x, m_volumeBrushStart.y, m_volumeBrushEnd.z);
+                    const glm::vec4 p0 = brushVp.viewProj * glm::vec4(corner, 1.0f);
+                    const glm::vec4 p1 =
+                        brushVp.viewProj * glm::vec4(corner + glm::vec3(0, 1, 0), 1.0f);
+                    if (p0.w > 1e-5f && p1.w > 1e-5f) {
+                        const float pixelsPerMeter = (p0.y / p0.w - p1.y / p1.w) * rect.h * 0.5f;
+                        if (std::fabs(pixelsPerMeter) > 1e-3f)
+                            m_volumeBrushHeight = (y - m_volumeBrushMouseY) / pixelsPerMeter;
+                    }
+                }
+                if (!held) {
+                    m_volumeBrushDragging = false;
+                    if (++m_volumeBrushStage == 3) {
+                        FinishSpatialVolumeBrush();
+                        m_volumeBrushStage = 0;
+                        m_volumeBrushHeight = 0.0f;
+                    }
+                }
+            }
+        }
+    } else if (scatterPainting) {
+        if (m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT))
+            m_scatterPaintLast = glm::vec2(-1e9f, -1e9f);
+        if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
+            const smvk::Extent2D vpExt{uint32_t(vp.w), uint32_t(vp.h)};
+            glm::vec3 rayOrigin;
+            const glm::vec3 rayDir =
+                MouseRay(lmx, lmy, vpExt, m_viewports[m_activeVp].viewProj, rayOrigin);
+            // PaintScatterAt owns the domain hit and marks the graph dirty.
+            // Don't stamp at every frame when the pointer is stationary.
+            const auto& cr = m_placement.preview.compiled;
+            glm::vec3 hit;
+            bool valid = false;
+            if (cr.domainKind == smvk::placement::DomainKind::Heightfield &&
+                m_placement.preview.terrainField.width > 1) {
+                float t = 0.0f;
+                if (smvk::placement::TerrainRaycast(
+                        m_placement.preview.terrainField, rayOrigin, rayDir, 5000.0f, t)) {
+                    hit = rayOrigin + rayDir * t;
+                    valid = true;
+                }
+            } else if (cr.domainKind == smvk::placement::DomainKind::MeshSurface) {
+                if (auto pick = PickNode(m_activeVp, lmx, lmy, vpExt)) {
+                    hit = rayOrigin + rayDir * pick->t;
+                    valid = true;
+                }
+            }
+            if (!valid && std::fabs(rayDir.y) > 1e-5f) {
+                const float y =
+                    cr.domainKind == smvk::placement::DomainKind::Grid ? cr.grid.origin.y : 0.0f;
+                const float t = (y - rayOrigin.y) / rayDir.y;
+                if (t > 0.0f) {
+                    hit = rayOrigin + rayDir * t;
+                    valid = true;
+                }
+            }
+            if (valid) {
+                const glm::vec2 xz(hit.x, hit.z);
+                const float spacing = std::max(m_scatterBrushRadius * m_scatterBrushSpacing, 0.1f);
+                if (m_scatterPaintLast.x < -1e8f ||
+                    glm::length(xz - m_scatterPaintLast) >= spacing) {
+                    if (PaintScatterAt(rayOrigin, rayDir))
+                        m_scatterPaintLast = xz;
+                }
+            }
+        } else
+            m_scatterPaintLast = glm::vec2(-1e9f, -1e9f);
+    } else if (painting) {
+        // Fresh press always stamps (drag spacing applies within one
+        // stroke only).
+        if (m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT))
+            m_paintLast = glm::vec2(-1e9f, -1e9f);
+        if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
+            const smvk::Extent2D vpExt{uint32_t(vp.w), uint32_t(vp.h)};
+            glm::vec3 rayOrigin;
+            const glm::vec3 rayDir =
+                MouseRay(lmx, lmy, vpExt, m_viewports[m_activeVp].viewProj, rayOrigin);
+            const uint32_t group = TerrainGroupOf(m_selected);
+            auto it = m_terrainGroups.find(group);
+            float tHit = 0.0f;
+            if (group != UINT32_MAX && it != m_terrainGroups.end() &&
+                smvk::placement::TerrainRaycast(
+                    it->second.data.heights, rayOrigin, rayDir, 5000.0f, tHit)) {
+                const glm::vec3 hit = rayOrigin + rayDir * tHit;
+                const glm::vec2 hitXZ(hit.x, hit.z);
+                const float spacing = std::max(m_paintRadius * m_paintStrokeSpacing, 0.1f);
+                if (m_paintLast.x < -1e8f || glm::length(hitXZ - m_paintLast) >= spacing) {
+                    PaintTerrainAt(rayOrigin, rayDir);
+                    m_paintLast = hitXZ;
+                }
+            }
+        } else {
+            m_paintLast = glm::vec2(-1e9f, -1e9f);
+        }
+    }
+    // Rubber-band multiselect: press on empty space (no gizmo grab),
+    // drag past a few pixels -> box; release selects all nodes whose
+    // projected AABB intersects. Shift adds to the current selection.
+    // Box select stays Mesh-mode (face/vertex use click picking).
+    else if (m_world && !m_gizmoDragging && !m_transposeDrag && !altNav && !inInset && inVp &&
+             m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT) && !uiEats) {
+        if (m_selMode == SelMode::Mesh) {
+            if (!(m_transposeEnabled ? TransposeHandleInput() : GizmoHandleInput())) {
+                m_vpBoxDragging = true;
+                m_vpBoxAdditive = shiftHeld;
+                m_vpBoxVp = m_activeVp;
+                m_vpBoxX0 = m_vpBoxX1 = lmx;
+                m_vpBoxY0 = m_vpBoxY1 = lmy;
+            }
+        } else {
+            // Face/Vertex click-pick (no box, no gizmo grab).
+            const smvk::Extent2D vpExt{uint32_t(vp.w), uint32_t(vp.h)};
+            if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
+                ApplySubSelection(*sub);
+            } else if (!shiftHeld) {
+                ClearSelection();
+            }
+            // Swallow the press so the box path below never starts.
+            m_vpBoxDragging = false;
+        }
+    }
+    if (!m_volumeBrushArmed && !surfaceBrush && m_vpBoxDragging) {
+        if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
+            m_vpBoxX1 = std::clamp(float(m_input.getMouseX()) - vp.x, 0.0f, vp.w);
+            m_vpBoxY1 = std::clamp(float(m_input.getMouseY()) - vp.y, 0.0f, vp.h);
+            // Moved past the dead-zone: it is a box, not a click.
+            if (std::fabs(m_vpBoxX1 - m_vpBoxX0) > 5.0f ||
+                std::fabs(m_vpBoxY1 - m_vpBoxY0) > 5.0f) {
+                // Keep the drag alive; the click-pick path is skipped.
+            }
+        } else {
+            // Release: box (if dragged) or plain click-pick (below).
+            const bool isBox =
+                std::fabs(m_vpBoxX1 - m_vpBoxX0) > 5.0f || std::fabs(m_vpBoxY1 - m_vpBoxY0) > 5.0f;
+            if (isBox) {
+                FinishBoxSelect();
+            } else if (m_world && m_vpBoxVp == m_activeVp) {
+                const smvk::Extent2D vpExt{uint32_t(vp.w), uint32_t(vp.h)};
+                if (m_selMode == SelMode::Mesh) {
+                    // X-ray markers first (lights/GI volume centers/cubemap
+                    // pins carry no mesh to raycast — the click twin of
+                    // the gizmo diamonds and capture balls); meshes
+                    // otherwise.
+                    std::optional<PickHit> hit = PickGizmoMarker(m_activeVp, lmx, lmy, vpExt);
+                    if (!hit)
+                        hit = PickNode(m_activeVp, lmx, lmy, vpExt);
+                    if (hit) {
+                        if (shiftHeld)
+                            AddToSelection(hit->node);
+                        else
+                            SetSelection(hit->node);
+                        m_revealNode = hit->node;
+                    } else if (!shiftHeld)
+                        ClearSelection();
+                } else {
+                    if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
+                        ApplySubSelection(*sub);
+                    } else if (!shiftHeld)
+                        ClearSelection();
+                }
+            }
+            m_vpBoxDragging = false;
+        }
+    } else if (!m_volumeBrushArmed && !surfaceBrush &&
+               (m_gizmoDragging || m_transposeDrag ||
+                (inVp && !altNav && m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT) &&
+                 !uiEats))) {
+        if (m_transposeEnabled)
+            TransposeHandleInput();
+        else
+            GizmoHandleInput();
+    }
 
-		// Any operation above that changes local transforms must also
-		// have propagated scene.globalTransform by this point.
+    // Any operation above that changes local transforms must also
+    // have propagated scene.globalTransform by this point.
 
-		// NOW snapshot camera/render state.
-		UpdateFrameData(flight);
-		// Second-viewport frame slice (strip aspect) for the inset pass.
-		smvk::Extent2D insetStrip{ 0, 0 };
-		if (SecondViewActive() && m_vpLayout == 0) {
-			uint32_t insetX = 0;
-			insetStrip = InsetStrip(m_viewports[0].rect, insetX);
-			if (insetStrip.width != 0)
-				UpdateInsetFrameData(flight, insetStrip);
-		}
+    // NOW snapshot camera/render state.
+    UpdateFrameData(flight);
+    // Second-viewport frame slice (strip aspect) for the inset pass.
+    smvk::Extent2D insetStrip{0, 0};
+    if (SecondViewActive() && m_vpLayout == 0) {
+        uint32_t insetX = 0;
+        insetStrip = InsetStrip(m_viewports[0].rect, insetX);
+        if (insetStrip.width != 0)
+            UpdateInsetFrameData(flight, insetStrip);
+    }
 
-		// In docked UI mode, the legacy (F2+ and fallback) preview must
-		// render to a sampled target rather than behind opaque ImGui dock
-		// windows. Keep the old direct swapchain route in fullscreen mode.
-		const bool hasLegacyViewports =
-			LiveViewViewport() < 0 || ViewportCount() > 1;
-		const bool legacyImageLane = hasLegacyViewports
-			&& m_uiMode && m_dockViewportVisible && !m_dockStageDetached
-			&& EnsureLegacyStageTarget(extent);
-		const smvk::LogicalImageViewHandle sceneColor = legacyImageLane
-			? m_legacyStageLogical : m_swapViews[fb.imageIndex];
+    // In docked UI mode, the legacy (F2+ and fallback) preview must
+    // render to a sampled target rather than behind opaque ImGui dock
+    // windows. Keep the old direct swapchain route in fullscreen mode.
+    const bool hasLegacyViewports = LiveViewViewport() < 0 || ViewportCount() > 1;
+    const bool legacyImageLane = hasLegacyViewports && m_uiMode && m_dockViewportVisible &&
+                                 !m_dockStageDetached && EnsureLegacyStageTarget(extent);
+    const smvk::LogicalImageViewHandle sceneColor =
+        legacyImageLane ? m_legacyStageLogical : m_swapViews[fb.imageIndex];
 
-		// ---- PASSES: background clear + per-viewport scene + overlays ----
-		// The whole window clears FIRST (the dark chrome color shows
-		// through the gaps between the ImGui panels), then each viewport
-		// renders its editor pass, then the gizmo overlay draws on top
-		// — one command buffer, ordered by the graph rounds
-		// (cross-round ordering rides the context-global sync-state
-		// tables: every round's first use of a shared image barriers
-		// against the previous round's writes).
-		m_rendergraph->NewFrame();
-		{
-			// Optick: graph round 1 — the window + HDR backdrop clears.
-			SMVK_PROFILE_RENDER("Editor_Round1Backdrop");
-			// Window chrome backdrop: neutral mid grey (no blue tint — the
-			// old 0.07/0.07/0.09 read blue next to the scene). Shows
-			// through the gaps between panels + viewports.
-			auto& bg = m_rendergraph->AddPass("EditorBg")
-				.SetOffset(0, 0)
-				.SetExtent(extent)
-				.SetColor({ m_swapViews[fb.imageIndex] },
-					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
-					smvk::ClearColor(0.18f, 0.18f, 0.18f, 1.0f))
-				.SetDepth(m_depth.logicalView,
-					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
-					smvk::ClearDepthStencil(0.0f, 0));
-			bg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
-			if (legacyImageLane) {
-				// A complete clear prevents vacated/docked stage rects from
-				// displaying pixels from an earlier layout or scene.
-				m_rendergraph->AddPass("EditorLegacyBg")
-					.SetOffset(0, 0).SetExtent(extent)
-					.SetColor({ m_legacyStageLogical },
-						smvk::AttachmentLoadOp::Clear,
-						smvk::AttachmentStoreOp::Store,
-						smvk::ClearColor(0.18f, 0.18f, 0.18f, 1.0f))
-					.SetRecordingFunc([](smvk::CommandBuffer&) {});
-			}
-		}
-		if (m_sceneHdr.Valid()) {
-			// Preview HDR black clear (full window, see m_sceneHdr): the
-			// sub-rect scene passes LOAD their rects, so UV-shell gaps
-			// (and a shrunken viewport's vacated margin) would otherwise
-			// tonemap STALE rects. Full-extent clear = no sub-rect render
-			// area (the driver slow path the shadow-tile workaround exists
-			// for), and black clears to black through every operator.
-			auto& hdrBg = m_rendergraph->AddPass("EditorHdrBg")
-				.SetOffset(0, 0)
-				.SetExtent(extent)
-				.SetColor({ m_sceneHdr.logicalView },
-					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
-					smvk::ClearColor(0, 0, 0, 1));
-			hdrBg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
-		}
-		m_rendergraph->Execute(fb);
+    // ---- PASSES: background clear + per-viewport scene + overlays ----
+    // The whole window clears FIRST (the dark chrome color shows
+    // through the gaps between the ImGui panels), then each viewport
+    // renders its editor pass, then the gizmo overlay draws on top
+    // — one command buffer, ordered by the graph rounds
+    // (cross-round ordering rides the context-global sync-state
+    // tables: every round's first use of a shared image barriers
+    // against the previous round's writes).
+    m_rendergraph->NewFrame();
+    {
+        // Optick: graph round 1 — the window + HDR backdrop clears.
+        SMVK_PROFILE_RENDER("Editor_Round1Backdrop");
+        // Window chrome backdrop: neutral mid grey (no blue tint — the
+        // old 0.07/0.07/0.09 read blue next to the scene). Shows
+        // through the gaps between panels + viewports.
+        auto& bg = m_rendergraph->AddPass("EditorBg")
+                       .SetOffset(0, 0)
+                       .SetExtent(extent)
+                       .SetColor({m_swapViews[fb.imageIndex]},
+                                 smvk::AttachmentLoadOp::Clear,
+                                 smvk::AttachmentStoreOp::Store,
+                                 smvk::ClearColor(0.18f, 0.18f, 0.18f, 1.0f))
+                       .SetDepth(m_depth.logicalView,
+                                 smvk::AttachmentLoadOp::Clear,
+                                 smvk::AttachmentStoreOp::Store,
+                                 smvk::ClearDepthStencil(0.0f, 0));
+        bg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+        if (legacyImageLane) {
+            // A complete clear prevents vacated/docked stage rects from
+            // displaying pixels from an earlier layout or scene.
+            m_rendergraph->AddPass("EditorLegacyBg")
+                .SetOffset(0, 0)
+                .SetExtent(extent)
+                .SetColor({m_legacyStageLogical},
+                          smvk::AttachmentLoadOp::Clear,
+                          smvk::AttachmentStoreOp::Store,
+                          smvk::ClearColor(0.18f, 0.18f, 0.18f, 1.0f))
+                .SetRecordingFunc([](smvk::CommandBuffer&) {});
+        }
+    }
+    if (m_sceneHdr.Valid()) {
+        // Preview HDR black clear (full window, see m_sceneHdr): the
+        // sub-rect scene passes LOAD their rects, so UV-shell gaps
+        // (and a shrunken viewport's vacated margin) would otherwise
+        // tonemap STALE rects. Full-extent clear = no sub-rect render
+        // area (the driver slow path the shadow-tile workaround exists
+        // for), and black clears to black through every operator.
+        auto& hdrBg = m_rendergraph->AddPass("EditorHdrBg")
+                          .SetOffset(0, 0)
+                          .SetExtent(extent)
+                          .SetColor({m_sceneHdr.logicalView},
+                                    smvk::AttachmentLoadOp::Clear,
+                                    smvk::AttachmentStoreOp::Store,
+                                    smvk::ClearColor(0, 0, 0, 1));
+        hdrBg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+    }
+    m_rendergraph->Execute(fb);
 
-		// ---- WYSIWYG LIVE VIEW (the world layer's record) ---------------
-		// The between-rounds slot — now the LAYER contract's position:
-		// WorldLayer::onRender (the base MainLoop runs the element's
-		// onUpdate — the boundary half — BEFORE the editor's DrawFrame;
-		// this records into the frame at the layer position). The world
-		// render writes ONLY its private inline target + the 1x1 release
-		// scratch (never this swapchain — see the WorldRenderer inline
-		// contract), so its position relative to round 1 is free; it
-		// merely must precede round 2's Execute, whose ImGui pass
-		// samples the target (cross-round ordering rides the
-		// context-global sync-state tables, same as every round).
-		{
-			// Optick: the full WYSIWYG world renderer record (the engine
-			// WorldRenderer's whole update + pass append + Execute).
-			SMVK_PROFILE_RENDER("Editor_Wysiwyg");
-			RenderWysiwygLayer(fb, extent);
-			RenderPrefabLayer(fb, extent);
-		}
+    // ---- WYSIWYG LIVE VIEW (the world layer's record) ---------------
+    // The between-rounds slot — now the LAYER contract's position:
+    // WorldLayer::onRender (the base MainLoop runs the element's
+    // onUpdate — the boundary half — BEFORE the editor's DrawFrame;
+    // this records into the frame at the layer position). The world
+    // render writes ONLY its private inline target + the 1x1 release
+    // scratch (never this swapchain — see the WorldRenderer inline
+    // contract), so its position relative to round 1 is free; it
+    // merely must precede round 2's Execute, whose ImGui pass
+    // samples the target (cross-round ordering rides the
+    // context-global sync-state tables, same as every round).
+    {
+        // Optick: the full WYSIWYG world renderer record (the engine
+        // WorldRenderer's whole update + pass append + Execute).
+        SMVK_PROFILE_RENDER("Editor_Wysiwyg");
+        RenderWysiwygLayer(fb, extent);
+        RenderPrefabLayer(fb, extent);
+    }
 
-		// ---- scene passes (per viewport) + overlay ---------------------
-		// Lit on viewport 0 and F8 baked irradiance use the full renderer.
-		// Only the chosen live viewport skips the legacy editor scene pass;
-		// its inline image is composited after scene recording. All other
-		// viewports retain their editor passes and depth/overlay behavior.
-		m_rendergraph->NewFrame();
-		{
-			// Optick: graph round 2 — the per-viewport scene passes, the
-			// overlays, the one-shot exports and the ImGui UI, through
-			// the round's Execute.
-			SMVK_PROFILE_RENDER("Editor_Round2Scene");
-			const int liveVp = LiveViewViewport();
-			for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
-				if (vpIdx == liveVp)
-					continue; // panel 0's rect shows the live view's composite
-				// RecordMainPass also records its HDR lattice overlay BEFORE
-				// the per-viewport tonemap. Do not append HDR overlays here.
-				RecordMainPass(sceneColor, vpIdx, flight, m_wireOverlay);
-			}
-			// The gizmo + inset ride the ACTIVE viewport — they skip only
-			// while the ACTIVE one IS the live host (panel 0 in Lit): their
-			// depth comes from the scene pass that no longer ran there.
-			if (m_activeVp != liveVp) {
-				RecordInsetPass(sceneColor, flight);
-				RecordGizmoPass(sceneColor);
-			}
-			// One-shot lightmap PNG export: renders the offscreen target this
-			// frame, then reads it back after the submit (button in Bake panel).
-			const bool lmExportThisFrame = m_lmExportQueued && m_hasSglm &&
-				m_lmGpu && m_sglm.width > 0 && m_sglm.height > 0;
-			if (lmExportThisFrame) {
-				EnsureLightmapExportTarget(
-					smvk::Extent2D{ m_sglm.width, m_sglm.height });
-				if (!m_lmExportLogical.empty())
-					RecordLightmapExportPass(flight);
-				else
-					Log("Lightmap export: offscreen target creation failed.");
-				m_lmExportQueued = false;
-			}
-			// One-shot MATERIAL BALL sidecar (the same export pattern): the
-			// queued material's offscreen ball records into this frame's
-			// graph; the post-submit wait + readback + PNG write land the
-			// sidecar next to the source .material asset.
-			const bool matBallThisFrame = m_showMaterialPreview
-				&& m_matBallQueuedMat != UINT32_MAX && EnsureMatBallResources();
-			if (matBallThisFrame) {
-				RecordMatBallPass();
-				smvk::ImageSyncRequest read{};
-				read.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
-				read.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
-				read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
-				m_rendergraph->AddComputePass("MaterialPreviewRelease")
-					.AddImageHint(m_matBallLogical, read)
-					.SetRecordingFunc([](smvk::CommandBuffer&) {});
-			}
+    // ---- scene passes (per viewport) + overlay ---------------------
+    // Lit on viewport 0 and F8 baked irradiance use the full renderer.
+    // Only the chosen live viewport skips the legacy editor scene pass;
+    // its inline image is composited after scene recording. All other
+    // viewports retain their editor passes and depth/overlay behavior.
+    m_rendergraph->NewFrame();
+    {
+        // Optick: graph round 2 — the per-viewport scene passes, the
+        // overlays, the one-shot exports and the ImGui UI, through
+        // the round's Execute.
+        SMVK_PROFILE_RENDER("Editor_Round2Scene");
+        const int liveVp = LiveViewViewport();
+        for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
+            if (vpIdx == liveVp)
+                continue; // panel 0's rect shows the live view's composite
+            // RecordMainPass also records its HDR lattice overlay BEFORE
+            // the per-viewport tonemap. Do not append HDR overlays here.
+            RecordMainPass(sceneColor, vpIdx, flight, m_wireOverlay);
+        }
+        // The gizmo + inset ride the ACTIVE viewport — they skip only
+        // while the ACTIVE one IS the live host (panel 0 in Lit): their
+        // depth comes from the scene pass that no longer ran there.
+        if (m_activeVp != liveVp) {
+            RecordInsetPass(sceneColor, flight);
+            RecordGizmoPass(sceneColor);
+        }
+        // One-shot lightmap PNG export: renders the offscreen target this
+        // frame, then reads it back after the submit (button in Bake panel).
+        const bool lmExportThisFrame =
+            m_lmExportQueued && m_hasSglm && m_lmGpu && m_sglm.width > 0 && m_sglm.height > 0;
+        if (lmExportThisFrame) {
+            EnsureLightmapExportTarget(smvk::Extent2D{m_sglm.width, m_sglm.height});
+            if (!m_lmExportLogical.empty())
+                RecordLightmapExportPass(flight);
+            else
+                Log("Lightmap export: offscreen target creation failed.");
+            m_lmExportQueued = false;
+        }
+        // One-shot MATERIAL BALL sidecar (the same export pattern): the
+        // queued material's offscreen ball records into this frame's
+        // graph; the post-submit wait + readback + PNG write land the
+        // sidecar next to the source .material asset.
+        const bool matBallThisFrame =
+            m_showMaterialPreview && m_matBallQueuedMat != UINT32_MAX && EnsureMatBallResources();
+        if (matBallThisFrame) {
+            RecordMatBallPass();
+            smvk::ImageSyncRequest read{};
+            read.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+            read.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+            read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+            m_rendergraph->AddComputePass("MaterialPreviewRelease")
+                .AddImageHint(m_matBallLogical, read)
+                .SetRecordingFunc([](smvk::CommandBuffer&) {});
+        }
 
-			if (legacyImageLane) {
-				// The UI pass samples this physical image through an ImGui
-				// descriptor. The read hint is the explicit color-write ->
-				// shader-read layout/visibility handoff within this graph.
-				smvk::ImageSyncRequest read{};
-				read.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
-				read.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
-				read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
-				m_rendergraph->AddComputePass("EditorLegacyRelease")
-					.AddImageHint(m_legacyStageLogical, read)
-					.SetRecordingFunc([](smvk::CommandBuffer&) {});
-			}
-			if (m_imgui && m_imgui->IsInitialized()) {
-				// Optick: the ImGui build + record (NewFrame through the
-				// composite + AddPass).
-				SMVK_PROFILE_UI("Editor_UI");
-				m_imgui->NewFrame(extent);
-				DrawUI(extent);
-				// UV editor window canvas retired (see RecordUvWindowPass).
-				//RecordUvWindowPass(m_swapViews[fb.imageIndex], flight);
-				// The docked live viewport now draws the inline target as a
-				// normal ImGui::Image in its own Viewport window, just like
-				// detached platform windows. Do not composite into the main
-				// swapchain here: dock-node/window draw calls can cover a
-				// pre-ImGui composite, leaving a blank gray viewport even
-				// though the renderer produced the scene.
-				m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
-					smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
-				// Prefab's child viewport is an opaque image region. Compose
-				// only that rect after its window background; inspector text
-				// stays outside the image and is never overwritten.
-				RecordPrefabComposePass(m_swapViews[fb.imageIndex]);
-			}
-			// Flush bindless descriptor writes (scene texture views, samplers)
-			// BEFORE Execute records — App does the same (see WorldRenderer).
-			// Without this the textures[] array stays uninitialized and the
-			// viewport samples garbage (gray) no matter the residency or slots.
-			{
-				// Optick: the bindless flush split from the graph Execute it
-				// precedes (resource-binding churn indicator).
-				SMVK_PROFILE_RENDER("Editor_UpdateDescriptors");
-				m_context->UpdateDescriptors();
-			}
-			m_rendergraph->Execute(fb);
-			m_context->ProcessDeferredTasks();
-			if (lmExportThisFrame) {
-				// The export pass ran in this submit: read it back + write PNG.
-				WaitForDeviceIdle();
-				ExportLightmapPng();
-			}
-		} // Editor_Round2Scene
-		++m_frameCounter;
-	}
+        if (legacyImageLane) {
+            // The UI pass samples this physical image through an ImGui
+            // descriptor. The read hint is the explicit color-write ->
+            // shader-read layout/visibility handoff within this graph.
+            smvk::ImageSyncRequest read{};
+            read.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+            read.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+            read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+            m_rendergraph->AddComputePass("EditorLegacyRelease")
+                .AddImageHint(m_legacyStageLogical, read)
+                .SetRecordingFunc([](smvk::CommandBuffer&) {});
+        }
+        if (m_imgui && m_imgui->IsInitialized()) {
+            // Optick: the ImGui build + record (NewFrame through the
+            // composite + AddPass).
+            SMVK_PROFILE_UI("Editor_UI");
+            m_imgui->NewFrame(extent);
+            DrawUI(extent);
+            // UV editor window canvas retired (see RecordUvWindowPass).
+            // RecordUvWindowPass(m_swapViews[fb.imageIndex], flight);
+            // The docked live viewport now draws the inline target as a
+            // normal ImGui::Image in its own Viewport window, just like
+            // detached platform windows. Do not composite into the main
+            // swapchain here: dock-node/window draw calls can cover a
+            // pre-ImGui composite, leaving a blank gray viewport even
+            // though the renderer produced the scene.
+            m_imgui->AddPass(*m_rendergraph,
+                             m_swapViews[fb.imageIndex],
+                             extent,
+                             smvk::AttachmentLoadOp::Load,
+                             smvk::ClearColor(0, 0, 0, 1));
+            // Prefab's child viewport is an opaque image region. Compose
+            // only that rect after its window background; inspector text
+            // stays outside the image and is never overwritten.
+            RecordPrefabComposePass(m_swapViews[fb.imageIndex]);
+        }
+        // Flush bindless descriptor writes (scene texture views, samplers)
+        // BEFORE Execute records — App does the same (see WorldRenderer).
+        // Without this the textures[] array stays uninitialized and the
+        // viewport samples garbage (gray) no matter the residency or slots.
+        {
+            // Optick: the bindless flush split from the graph Execute it
+            // precedes (resource-binding churn indicator).
+            SMVK_PROFILE_RENDER("Editor_UpdateDescriptors");
+            m_context->UpdateDescriptors();
+        }
+        m_rendergraph->Execute(fb);
+        m_context->ProcessDeferredTasks();
+        if (lmExportThisFrame) {
+            // The export pass ran in this submit: read it back + write PNG.
+            WaitForDeviceIdle();
+            ExportLightmapPng();
+        }
+    } // Editor_Round2Scene
+    ++m_frameCounter;
+}
 
-	// ---- WYSIWYG LIVE VIEW (the full-graph renderer; editor_app.h) ----
-	bool EditorApp::EnsureLegacyStageTarget(smvk::Extent2D extent) {
-		if (!m_context || !m_rendergraph || !m_swapchain
-			|| extent.width == 0 || extent.height == 0)
-			return false;
-		const smvk::Format format = m_swapchain->GetSurfaceFormat();
-		if (!m_legacyStageLogical.empty()
-			&& m_legacyStageExtent.width == extent.width
-			&& m_legacyStageExtent.height == extent.height
-			&& m_legacyStageFormat == format)
-			return true;
-		smvk::ImageCreateInfo ci{};
-		ci.extent = { extent.width, extent.height, 1 };
-		ci.format = format;
-		ci.usage = smvk::ImageUsage::ColorAttachment
-			| smvk::ImageUsage::Sampled;
-		ci.mipLevels = 1;
-		ci.arrayLayers = 1;
-		ci.name = "editorLegacyStage";
-		auto image = m_context->CreateImage(ci, nullptr);
-		if (image.empty())
-			return false;
-		const smvk::ImageViewCreateInfo vi{
-			.viewType = smvk::ImageViewType::View2D,
-			.format = format,
-			.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 },
-			.name = "editorLegacyStageView",
-		};
-		auto view = m_context->CreateImageView(image, vi);
-		if (view.empty())
-			return false;
-		const auto logical = m_rendergraph->AddExternalImageView(
-			view, format, "editorLegacyStageLogical");
-		if (logical.empty())
-			return false;
-		// The view changed: the cached ImGui descriptor must not sample
-		// the previous image. Physical images retire through Holder's
-		// deferred destruction path just like the WYSIWYG target.
-		DropLegacyStageTexture();
-		if (!m_legacyStageLogical.empty())
-			m_rendergraph->FreeImageView(m_legacyStageLogical);
-		m_legacyStageLogical = logical;
-		m_legacyStageImage = std::move(image);
-		m_legacyStageView = std::move(view);
-		m_legacyStageExtent = extent;
-		m_legacyStageFormat = format;
-		return true;
-	}
+// ---- WYSIWYG LIVE VIEW (the full-graph renderer; editor_app.h) ----
+bool EditorApp::EnsureLegacyStageTarget(smvk::Extent2D extent) {
+    if (!m_context || !m_rendergraph || !m_swapchain || extent.width == 0 || extent.height == 0)
+        return false;
+    const smvk::Format format = m_swapchain->GetSurfaceFormat();
+    if (!m_legacyStageLogical.empty() && m_legacyStageExtent.width == extent.width &&
+        m_legacyStageExtent.height == extent.height && m_legacyStageFormat == format)
+        return true;
+    smvk::ImageCreateInfo ci{};
+    ci.extent = {extent.width, extent.height, 1};
+    ci.format = format;
+    ci.usage = smvk::ImageUsage::ColorAttachment | smvk::ImageUsage::Sampled;
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.name = "editorLegacyStage";
+    auto image = m_context->CreateImage(ci, nullptr);
+    if (image.empty())
+        return false;
+    const smvk::ImageViewCreateInfo vi{
+        .viewType = smvk::ImageViewType::View2D,
+        .format = format,
+        .subresourceRange = {smvk::ImageAspect::Color, 0, 1, 0, 1},
+        .name = "editorLegacyStageView",
+    };
+    auto view = m_context->CreateImageView(image, vi);
+    if (view.empty())
+        return false;
+    const auto logical =
+        m_rendergraph->AddExternalImageView(view, format, "editorLegacyStageLogical");
+    if (logical.empty())
+        return false;
+    // The view changed: the cached ImGui descriptor must not sample
+    // the previous image. Physical images retire through Holder's
+    // deferred destruction path just like the WYSIWYG target.
+    DropLegacyStageTexture();
+    if (!m_legacyStageLogical.empty())
+        m_rendergraph->FreeImageView(m_legacyStageLogical);
+    m_legacyStageLogical = logical;
+    m_legacyStageImage = std::move(image);
+    m_legacyStageView = std::move(view);
+    m_legacyStageExtent = extent;
+    m_legacyStageFormat = format;
+    return true;
+}
 
-	void EditorApp::LaunchWysiwyg() {
-		if (!m_world)
-			return;
-		StopWysiwyg();
-		// The full pipeline with ONLY the UI pass dropped: the editor
-		// owns the UI (its own overlay + panels) — a second ImGui
-		// context inside the renderer would steal the host's event
-		// hook (the onAttach gate keys on exactly this flag).
-		engine::WorldRendererConfig cfg = engine::WorldRendererConfig::All();
-		cfg.ui = false;
-		m_wysiwyg = tour::mem::MakeProcess<engine::WorldRenderer>(*this);
-		m_wysiwyg->Configure(cfg);
-		// Build the same axis/ring/marker geometry as the legacy editor
-		// path, but draw it in the live renderer's HDR/depth pass. The
-		// editor still owns gizmo picking, dragging and undo.
-		m_wysiwyg->SetDebugDrawSource([this](tour::DebugDrawList& draw) {
-			RecordGizmoPass({}, &draw);
-		});
-		m_wysiwyg->SetDebugDrawEnabled(true);
-		// The BORROWED form of the world contract (see WorldRenderer.h):
-		// the editor KEEPS owning + mutating its world — the renderer
-		// reads the same object, so edits (moves, material swaps, light
-		// changes) show up per frame with no rebinding. The editor's
-		// stop/relaunch owns the lifetime (DriveWysiwygLive's witnesses).
-		m_wysiwyg->SetBorrowedWorld(m_world.get());
-		m_wysiwyg->SetInlineOutput(true);
-		// Editor previews intentionally stay on the PCF shadow path.
-		// EVSM's MSAA depth/moment/blur atlases are not supported in this
-		// inline editor lifecycle; don't let an old session flag revive them.
-		m_renderQuality.evsmEnabled = false;
-		m_wysiwygValid = m_wysiwyg->onAttach();
-		m_wysiwygWorld = m_world.get();
-		m_wysiwygSceneId = SceneIdForHost();
-		if (m_wysiwygValid) {
-			// RENDER QUALITY re-apply: the attach's GI loaders just
-			// flipped the per-source opt-ins (m_regEnabled /
-			// m_giVolumesEnabled) ON for baked content — the SESSION's
-			// renderer options (the Render tab; see m_renderQuality)
-			// win over the on-when-baked defaults, so push them AFTER
-			// the attach (and again per panel edit).
-			m_wysiwyg->PushRenderQuality(m_renderQuality);
-		} else {
-			Log("Live view: renderer attach failed — see the console "
-				"(the window shows a hint).");
-			// Element contract: a failed attach is NOT detached — drop
-			// the instance; the Holders retire their objects deferred.
-			m_wysiwyg.reset();
-		}
-	}
+void EditorApp::LaunchWysiwyg() {
+    if (!m_world)
+        return;
+    StopWysiwyg();
+    // The full pipeline with ONLY the UI pass dropped: the editor
+    // owns the UI (its own overlay + panels) — a second ImGui
+    // context inside the renderer would steal the host's event
+    // hook (the onAttach gate keys on exactly this flag).
+    engine::WorldRendererConfig cfg = engine::WorldRendererConfig::All();
+    cfg.ui = false;
+    m_wysiwyg = tour::mem::MakeProcess<engine::WorldRenderer>(*this);
+    m_wysiwyg->Configure(cfg);
+    // Build the same axis/ring/marker geometry as the legacy editor
+    // path, but draw it in the live renderer's HDR/depth pass. The
+    // editor still owns gizmo picking, dragging and undo.
+    m_wysiwyg->SetDebugDrawSource(
+        [this](tour::DebugDrawList& draw) { RecordGizmoPass({}, &draw); });
+    m_wysiwyg->SetDebugDrawEnabled(true);
+    // The BORROWED form of the world contract (see WorldRenderer.h):
+    // the editor KEEPS owning + mutating its world — the renderer
+    // reads the same object, so edits (moves, material swaps, light
+    // changes) show up per frame with no rebinding. The editor's
+    // stop/relaunch owns the lifetime (DriveWysiwygLive's witnesses).
+    m_wysiwyg->SetBorrowedWorld(m_world.get());
+    m_wysiwyg->SetInlineOutput(true);
+    // Editor previews intentionally stay on the PCF shadow path.
+    // EVSM's MSAA depth/moment/blur atlases are not supported in this
+    // inline editor lifecycle; don't let an old session flag revive them.
+    m_renderQuality.evsmEnabled = false;
+    m_wysiwygValid = m_wysiwyg->onAttach();
+    m_wysiwygWorld = m_world.get();
+    m_wysiwygSceneId = SceneIdForHost();
+    if (m_wysiwygValid) {
+        // RENDER QUALITY re-apply: the attach's GI loaders just
+        // flipped the per-source opt-ins (m_regEnabled /
+        // m_giVolumesEnabled) ON for baked content — the SESSION's
+        // renderer options (the Render tab; see m_renderQuality)
+        // win over the on-when-baked defaults, so push them AFTER
+        // the attach (and again per panel edit).
+        m_wysiwyg->PushRenderQuality(m_renderQuality);
+    } else {
+        Log("Live view: renderer attach failed — see the console "
+            "(the window shows a hint).");
+        // Element contract: a failed attach is NOT detached — drop
+        // the instance; the Holders retire their objects deferred.
+        m_wysiwyg.reset();
+    }
+}
 
-	void EditorApp::StopWysiwyg() {
-		m_wysiwygCanvasSize = ImVec2(0.0f, 0.0f);
-		m_wysiwygLiveRectFresh = false;
-		m_wysiwygLiveRectMin = ImVec2(0.0f, 0.0f);
-		m_wysiwygLiveRectMax = ImVec2(0.0f, 0.0f);
-		// The detached image lane's descriptor references the inline
-		// target's view - it dies with the renderer (see
-		// WysiwygStageTexture).
-		DropWysiwygStageTexture();
-		if (!m_wysiwygComposeLogical.empty()) {
-			m_rendergraph->FreeImageView(m_wysiwygComposeLogical);
-			m_wysiwygComposeLogical = {};
-		}
-		if (m_wysiwyg) {
-			m_wysiwyg->onDetach(); // waits idle, releases while the context lives
-			m_wysiwyg.reset();
-		}
-		m_wysiwygValid = false;
-		m_wysiwygWorld = nullptr;
-		m_wysiwygSceneId.clear();
-	}
+void EditorApp::StopWysiwyg() {
+    m_wysiwygCanvasSize = ImVec2(0.0f, 0.0f);
+    m_wysiwygLiveRectFresh = false;
+    m_wysiwygLiveRectMin = ImVec2(0.0f, 0.0f);
+    m_wysiwygLiveRectMax = ImVec2(0.0f, 0.0f);
+    // The detached image lane's descriptor references the inline
+    // target's view - it dies with the renderer (see
+    // WysiwygStageTexture).
+    DropWysiwygStageTexture();
+    if (!m_wysiwygComposeLogical.empty()) {
+        m_rendergraph->FreeImageView(m_wysiwygComposeLogical);
+        m_wysiwygComposeLogical = {};
+    }
+    if (m_wysiwyg) {
+        m_wysiwyg->onDetach(); // waits idle, releases while the context lives
+        m_wysiwyg.reset();
+    }
+    m_wysiwygValid = false;
+    m_wysiwygWorld = nullptr;
+    m_wysiwygSceneId.clear();
+}
 
-	// ---- The synchronized-tick halves (WorldLayer's phases — see
-	// editor_app.h's WorldLayer). The OLD monolithic DriveWysiwygLive ran
-	// everything MID-FRAME (between the editor's recording rounds, the
-	// frame command buffer open, the flight slot taken) — the frame-blind
-	// placement the gesture-crash hunt pinned. The element contract now
-	// splits it at the pump's boundary:
-	//   UpdateWysiwygBoundary (onUpdate — the base MainLoop runs elements
-	//     BEFORE the host's DrawFrame/acquire): the lazy lifecycle (the
-	//     heavy attach/detach destroys land with the previous frame fully
-	//     presented), Tick + the camera drive, the extent settle (the
-	//     canvas gates + EnsureInlineExtent), and the park decision —
-	//     ALL state work, nothing recording, the acquire not yet taken.
-	//   RenderWysiwygLayer (onRender — the between-rounds position the
-	//     drive always had, but the layer contract's): RenderLayerInto —
-	//     the record only.
-	void EditorApp::UpdateWysiwygBoundary(float dt) {
-		m_wysiwygLayerRenderable = false;
-		// THE WATCHED-PROJECT REFRESH (item 10's editor leg, the
-		// boundary phase — BEFORE the host's acquire): drain settled
-		// source changes + route them through the selective funnels.
-		// Cheap when nothing moved (the watcher's OS queue carries
-		// the load — never a per-frame project scan). Runs even when
-		// the live view is PARKED.
-		ConsumeWatchedProjectChanges();
-		UpdatePrefabBoundary(dt);
-		// Launch housekeeping, lazy per frame: launch while a world + the
-		// LIT MODE (panel 0's) are on; relaunch when the world OBJECT or
-		// the scene stem swaps (open/close/load) or right after a bake
-		// completes (the renderer's GI/cubemap loaders ran at attach —
-		// assets that landed later need a fresh attach to be seen). Lit
-		// is the viewports' DEFAULT mode, so the WYSIWYG render runs out
-		// of the box.
-		//
-		// PARK, NOT STOP (the F1->F2->F1 fix): leaving Lit does NOT tear
-		// the renderer down — the old STOP re-launched on return and the
-		// fresh attach RE-SEEDED the look (the exposure adaptation
-		// restarted from the manual seed) so a round-trip looked
-		// different than the loaded state ("loads with X settings, then
-		// cycles look different"). A parked renderer keeps every piece of
-		// live state — the converged exposure, the temporal history — so
-		// returning to Lit resumes the EXACT look. The stop path stays
-		// for the REAL teardowns: the scene/world swap + the bake
-		// completion relaunch (the witnesses) + CloseScene.
-		const int liveVp = LiveViewViewport();
-		const bool wantLive = liveVp >= 0 && m_world
-			&& (!m_uiMode || m_dockViewportVisible);
-		if (wantLive && (!m_wysiwyg || m_wysiwygWorld != m_world.get()
-				|| m_wysiwygSceneId != SceneIdForHost()))
-			LaunchWysiwyg();
-		if (m_wysiwygGiReloadPending && !m_bakeRunning && m_wysiwyg) {
-			// Bake completion: HOT-SWAP the GI volumes in the RUNNING
-			// renderer (generation N+1 in separate resources, published
-			// by the member swap, the old generation retiring behind
-			// the in-flight frames) - NO WorldRenderer relaunch: the
-			// viewport keeps its camera/quality/state and the last
-			// valid GI renders until the swap lands. The re-read rides
-			// the same bake channel the relaunch used (the world's
-			// VFS sees the fresh manifest + minted artifacts).
-			if (m_wysiwyg->ReloadGiVolumesHotSwap())
-				Log("Bake GI: hot-swapped into the live view (no relaunch)");
-			else
-				Log("Bake GI: hot-swap found no volumes - the live view "
-					"keeps the previous generation");
-		}
-		if (m_wysiwygGiReloadPending && !m_bakeRunning)
-			m_wysiwygGiReloadPending = false;
-		if (!wantLive)
-			return; // PARK: skip the tick/record; keep the renderer + its state
-		if (!m_wysiwyg || !m_wysiwygValid)
-			return;
-		// Camera: THE LIVE VIEW'S viewport's framing — PANEL 0 (the
-		// privileged host: the live view never follows the selection —
-		// the same view the editor preview renders at vp0 (locked
-		// look-through or the orbit camera), fed to the renderer's
-		// positioner. Ortho cameras PARK the layer this frame (glm ortho
-		// carries proj[3][3] = 1; the renderer's lens is perspective-only)
-		// — the window keeps its last content rather than showing a
-		// mis-framed stretch.
-		glm::mat4 view, proj;
-		glm::vec3 eye;
-		float nearClip, farClip;
-		if (!BoundCameraView(liveVp, view, proj, eye, nearClip, farClip)) {
-			const EditorCam& cam =
-				m_editorCams[m_viewports[liveVp].camIdx];
-			view = EditorCamView(cam);
-			proj = EditorCamProj(cam, 1.0f);
-			eye = EditorCamEye(cam);
-		}
-		if (proj[3][3] > 0.5f)
-			return; // ortho: park this frame
-		const glm::vec3 fwd(-view[0][2], -view[1][2], -view[2][2]);
-		const glm::vec3 up(view[0][1], view[1][1], view[2][1]);
-		UpdateParticleSourcePreview();
-		m_wysiwyg->CameraPositioner().lookAt(eye, eye + fwd, up);
-		// The lens: the fov extracted from the SAME projection (exact
-		// for both bound look-through and orbit cameras — proj[1][1] is
-		// cot(fovY/2); no parallel fov bookkeeping to drift).
-		m_wysiwyg->SetSceneFovY(
-			glm::degrees(2.0f * glm::atan(1.0f / proj[1][1])));
-		// F8 must use the engine's actual baked SG-GI sources (regular
-		// grids / convex volumes / cooked lightmaps), not the retired
-		// editor-only lightmap shader, which now unconditionally outputs
-		// black. Isolate baked contributions regardless of the Render
-		// tab's ambient selection; restore session quality on exit.
-		const bool baked = m_viewports[liveVp].viewMode == ViewMode::Baked;
-		m_wysiwyg->SetAmbientMode(baked ? engine::AmbientMode::Baked
-			: static_cast<engine::AmbientMode>(
-				std::clamp(m_renderQuality.giMode, 0, 5)));
-		m_wysiwyg->SetGiDebug(baked ? 1 : 0);
+// ---- The synchronized-tick halves (WorldLayer's phases — see
+// editor_app.h's WorldLayer). The OLD monolithic DriveWysiwygLive ran
+// everything MID-FRAME (between the editor's recording rounds, the
+// frame command buffer open, the flight slot taken) — the frame-blind
+// placement the gesture-crash hunt pinned. The element contract now
+// splits it at the pump's boundary:
+//   UpdateWysiwygBoundary (onUpdate — the base MainLoop runs elements
+//     BEFORE the host's DrawFrame/acquire): the lazy lifecycle (the
+//     heavy attach/detach destroys land with the previous frame fully
+//     presented), Tick + the camera drive, the extent settle (the
+//     canvas gates + EnsureInlineExtent), and the park decision —
+//     ALL state work, nothing recording, the acquire not yet taken.
+//   RenderWysiwygLayer (onRender — the between-rounds position the
+//     drive always had, but the layer contract's): RenderLayerInto —
+//     the record only.
+void EditorApp::UpdateWysiwygBoundary(float dt) {
+    m_wysiwygLayerRenderable = false;
+    // THE WATCHED-PROJECT REFRESH (item 10's editor leg, the
+    // boundary phase — BEFORE the host's acquire): drain settled
+    // source changes + route them through the selective funnels.
+    // Cheap when nothing moved (the watcher's OS queue carries
+    // the load — never a per-frame project scan). Runs even when
+    // the live view is PARKED.
+    ConsumeWatchedProjectChanges();
+    UpdatePrefabBoundary(dt);
+    // Launch housekeeping, lazy per frame: launch while a world + the
+    // LIT MODE (panel 0's) are on; relaunch when the world OBJECT or
+    // the scene stem swaps (open/close/load) or right after a bake
+    // completes (the renderer's GI/cubemap loaders ran at attach —
+    // assets that landed later need a fresh attach to be seen). Lit
+    // is the viewports' DEFAULT mode, so the WYSIWYG render runs out
+    // of the box.
+    //
+    // PARK, NOT STOP (the F1->F2->F1 fix): leaving Lit does NOT tear
+    // the renderer down — the old STOP re-launched on return and the
+    // fresh attach RE-SEEDED the look (the exposure adaptation
+    // restarted from the manual seed) so a round-trip looked
+    // different than the loaded state ("loads with X settings, then
+    // cycles look different"). A parked renderer keeps every piece of
+    // live state — the converged exposure, the temporal history — so
+    // returning to Lit resumes the EXACT look. The stop path stays
+    // for the REAL teardowns: the scene/world swap + the bake
+    // completion relaunch (the witnesses) + CloseScene.
+    const int liveVp = LiveViewViewport();
+    const bool wantLive = liveVp >= 0 && m_world && (!m_uiMode || m_dockViewportVisible);
+    if (wantLive &&
+        (!m_wysiwyg || m_wysiwygWorld != m_world.get() || m_wysiwygSceneId != SceneIdForHost()))
+        LaunchWysiwyg();
+    if (m_wysiwygGiReloadPending && !m_bakeRunning && m_wysiwyg) {
+        // Bake completion: HOT-SWAP the GI volumes in the RUNNING
+        // renderer (generation N+1 in separate resources, published
+        // by the member swap, the old generation retiring behind
+        // the in-flight frames) - NO WorldRenderer relaunch: the
+        // viewport keeps its camera/quality/state and the last
+        // valid GI renders until the swap lands. The re-read rides
+        // the same bake channel the relaunch used (the world's
+        // VFS sees the fresh manifest + minted artifacts).
+        if (m_wysiwyg->ReloadGiVolumesHotSwap())
+            Log("Bake GI: hot-swapped into the live view (no relaunch)");
+        else
+            Log("Bake GI: hot-swap found no volumes - the live view "
+                "keeps the previous generation");
+    }
+    if (m_wysiwygGiReloadPending && !m_bakeRunning)
+        m_wysiwygGiReloadPending = false;
+    if (!wantLive)
+        return; // PARK: skip the tick/record; keep the renderer + its state
+    if (!m_wysiwyg || !m_wysiwygValid)
+        return;
+    // Camera: THE LIVE VIEW'S viewport's framing — PANEL 0 (the
+    // privileged host: the live view never follows the selection —
+    // the same view the editor preview renders at vp0 (locked
+    // look-through or the orbit camera), fed to the renderer's
+    // positioner. Ortho cameras PARK the layer this frame (glm ortho
+    // carries proj[3][3] = 1; the renderer's lens is perspective-only)
+    // — the window keeps its last content rather than showing a
+    // mis-framed stretch.
+    glm::mat4 view, proj;
+    glm::vec3 eye;
+    float nearClip, farClip;
+    if (!BoundCameraView(liveVp, view, proj, eye, nearClip, farClip)) {
+        const EditorCam& cam = m_editorCams[m_viewports[liveVp].camIdx];
+        view = EditorCamView(cam);
+        proj = EditorCamProj(cam, 1.0f);
+        eye = EditorCamEye(cam);
+    }
+    if (proj[3][3] > 0.5f)
+        return; // ortho: park this frame
+    const glm::vec3 fwd(-view[0][2], -view[1][2], -view[2][2]);
+    const glm::vec3 up(view[0][1], view[1][1], view[2][1]);
+    UpdateParticleSourcePreview();
+    m_wysiwyg->CameraPositioner().lookAt(eye, eye + fwd, up);
+    // The lens: the fov extracted from the SAME projection (exact
+    // for both bound look-through and orbit cameras — proj[1][1] is
+    // cot(fovY/2); no parallel fov bookkeeping to drift).
+    m_wysiwyg->SetSceneFovY(glm::degrees(2.0f * glm::atan(1.0f / proj[1][1])));
+    // F8 must use the engine's actual baked SG-GI sources (regular
+    // grids / convex volumes / cooked lightmaps), not the retired
+    // editor-only lightmap shader, which now unconditionally outputs
+    // black. Isolate baked contributions regardless of the Render
+    // tab's ambient selection; restore session quality on exit.
+    const bool baked = m_viewports[liveVp].viewMode == ViewMode::Baked;
+    m_wysiwyg->SetAmbientMode(
+        baked ? engine::AmbientMode::Baked
+              : static_cast<engine::AmbientMode>(std::clamp(m_renderQuality.giMode, 0, 5)));
+    m_wysiwyg->SetGiDebug(baked ? 1 : 0);
 #if defined(DS_DEBUG_VIZ)
-		// The DS visualizers are implemented inside the same lit shader as
-		// the runtime viewer. Drive the borrowed-world renderer directly,
-		// never fake tile counts in the editor's legacy preview path.
-		// A baked-irradiance view takes precedence over diagnostics.
-		m_wysiwyg->SetDsDebugVisualization(
-			baked ? engine::DsDebugViz::Off : m_dsTileVizMode,
-			m_dsTileVizOverlay, m_dsTileVizCountCeil, m_dsTileVizLight);
+    // The DS visualizers are implemented inside the same lit shader as
+    // the runtime viewer. Drive the borrowed-world renderer directly,
+    // never fake tile counts in the editor's legacy preview path.
+    // A baked-irradiance view takes precedence over diagnostics.
+    m_wysiwyg->SetDsDebugVisualization(baked ? engine::DsDebugViz::Off : m_dsTileVizMode,
+                                       m_dsTileVizOverlay,
+                                       m_dsTileVizCountCeil,
+                                       m_dsTileVizLight);
 #endif
-		// Selection bounds now belong to WorldRenderer's own render pass:
-		// the editor-only gizmo pass is skipped for the composited view.
-		m_wysiwyg->SetSelectedNode(m_selected);
-		// Use the renderer's existing depth-tested, cubemap-sampling mirror
-		// spheres instead of foreground vector circles in the Lit viewport.
-		// Keep them editor-only and gated by the probe overlay control.
-		m_wysiwyg->SetCubemapProbePreview(
-			m_mode == EditorMode::Lighting && m_showProbeOverlay);
-		m_wysiwyg->Tick(dt);
-		// The render extent: the Live tab's content rect (captured by
-		// DrawLiveViewTab, one frame of lag) through the protective
-		// gates: a HOLD while a mouse button is down (the dock splitter
-		// + any drag — recreating the inline target at drag cadence
-		// churned the device to VK_ERROR_DEVICE_LOST) and a 16px
-		// deadband (layout rounding, scrollbar flip-flop — a 1px/frame
-		// creep also churned a run). The quad stretches the held
-		// difference; the target snaps once at release. Clamped to the
-		// swap extent (an oversized dock must not oversize the chain)
-		// and floored at 64.
-		float rx = m_wysiwygLiveRectMax.x - m_wysiwygLiveRectMin.x;
-		float ry = m_wysiwygLiveRectMax.y - m_wysiwygLiveRectMin.y;
-		{
-			const bool holding =
-				ImGui::IsMouseDown(ImGuiMouseButton_Left);
-			const float dw = std::abs(rx - m_wysiwygCanvasSize.x);
-			const float dh = std::abs(ry - m_wysiwygCanvasSize.y);
-			if (!holding
-				&& (m_wysiwygCanvasSize.x < 8.0f
-					|| dw > 16.0f || dh > 16.0f))
-				m_wysiwygCanvasSize = ImVec2(rx, ry);
-			// TOURMALINE_LIVE_EXTENT_CHURN=<N> (diag): re-create the
-			// target every N frames by toggling a 48px extent — a
-			// synthetic CONTINUOUS resize through the REAL retire/
-			// recreate path (EnsureInlineTarget + scratch + bindless +
-			// heap slot), deliberately bypassing the hold/deadband
-			// gates. The resize crash reproduces through this probe;
-			// it is the regression test for that fix.
-			static const int churnN = [] {
-				const char* e = std::getenv(
-					"TOURMALINE_LIVE_EXTENT_CHURN");
-				return e ? std::atoi(e) : 0;
-			}();
-			if (churnN > 0) {
-				static uint32_t churnTick = 0;
-				if (++churnTick % uint32_t(churnN) == 0) {
-					static bool churnBig = false;
-					churnBig = !churnBig;
-					rx += (churnBig ? 48.0f : 0.0f);
-					ry += (churnBig ? 48.0f : 0.0f);
-					m_wysiwygCanvasSize = ImVec2(rx, ry);
-				}
-			}
-		}
-		uint32_t cw = std::max(uint32_t(m_wysiwygCanvasSize.x), 64u);
-		uint32_t ch = std::max(uint32_t(m_wysiwygCanvasSize.y), 64u);
-		// The main swapchain is NOT the size authority for a detached
-		// Viewport: its ImGui platform window has an independent framebuffer.
-		// Applying the main swap extent to it produces an undersized target
-		// on a larger/higher-DPI second monitor.
-		if (!m_dockStageDetached) {
-			const smvk::Extent2D swapExt = m_swapchain->GetExtent();
-			if (swapExt.width > 64)
-				cw = std::min(cw, swapExt.width);
-			if (swapExt.height > 64)
-				ch = std::min(ch, swapExt.height);
-		}
-		// The EXTENT-CHANGE DETECTION (feeds the frame-boundary quiesce
-		// — editor_app.cpp's post-present site): any frame that recreates
-		// the inline target (EnsureInlineExtent's extent drift) flags the
-		// boundary wait. The WAIT runs after the present — the frame
-		// fully submitted, nothing recording — so the next chain
-		// re-ensure destroys nothing in flight.
-		const smvk::Extent2D inlineBefore =
-			m_wysiwyg->InlineTargetExtent();
-		if (!m_wysiwyg->EnsureInlineExtent(smvk::Extent2D{ cw, ch })) {
-			// The park oracle (the frozen-stale-image chase): a PERSISTENT
-			// ensure failure parks the world layer silently every frame -
-			// no extent updates, no renders, and (with the image lane) the
-			// panel shows the STALE target stretched at the live stage
-			// rect. Env-gated with the compose diag family.
-			{
-				static const bool on = [] {
-					const char* e =
-						std::getenv("TOURMALINE_COMPOSE_DIAG");
-					return e && *e && !(*e == '0' && !e[1]);
-				}();
-				static uint64_t lastParkPrint = ~0ull;
-				const uint64_t key = m_frameCounter / 120;
-				if (on && key != lastParkPrint) {
-					lastParkPrint = key;
-					std::fprintf(stderr,
-						"[LIVE-PARK] EnsureInlineExtent FAILED (want %ux%u, "
-						"have %ux%u, canvas %.0fx%.0f) - world layer parked\n",
-						cw, ch, inlineBefore.width, inlineBefore.height,
-						m_wysiwygCanvasSize.x, m_wysiwygCanvasSize.y);
-				}
-			}
-			return; // park: the target could not settle this frame
-		}
-		const smvk::Extent2D inlineAfter =
-			m_wysiwyg->InlineTargetExtent();
-		if (inlineAfter.width != inlineBefore.width
-			|| inlineAfter.height != inlineBefore.height) {
-			m_wysiwygBoundaryQuiesce = true;
-			// The recreate oracle (the post-resize parked-target chase):
-			// every inline target recreate prints old -> new extent. If
-			// the subsequent LIVE-DUMP samples show the target at the
-			// CLEAR color (encoded ~118 mean, 0% colored) after one of
-			// these lines, the world's write into the recreated target
-			// is what dies. Env-gated with the compose diag family.
-			{
-				static const bool on = [] {
-					const char* e =
-						std::getenv("TOURMALINE_COMPOSE_DIAG");
-					return e && *e && !(*e == '0' && !e[1]);
-				}();
-				if (on)
-					std::fprintf(stderr,
-						"[LIVE-EXTENT] target recreated %ux%u -> %ux%u "
-						"(canvas %.0fx%.0f)\n",
-						inlineBefore.width, inlineBefore.height,
-						inlineAfter.width, inlineAfter.height,
-						m_wysiwygCanvasSize.x, m_wysiwygCanvasSize.y);
-			}
-		}
-		m_wysiwygLayerRenderable = true;
-	}
+    // Selection bounds now belong to WorldRenderer's own render pass:
+    // the editor-only gizmo pass is skipped for the composited view.
+    m_wysiwyg->SetSelectedNode(m_selected);
+    // Use the renderer's existing depth-tested, cubemap-sampling mirror
+    // spheres instead of foreground vector circles in the Lit viewport.
+    // Keep them editor-only and gated by the probe overlay control.
+    m_wysiwyg->SetCubemapProbePreview(m_mode == EditorMode::Lighting && m_showProbeOverlay);
+    m_wysiwyg->Tick(dt);
+    // The render extent: the Live tab's content rect (captured by
+    // DrawLiveViewTab, one frame of lag) through the protective
+    // gates: a HOLD while a mouse button is down (the dock splitter
+    // + any drag — recreating the inline target at drag cadence
+    // churned the device to VK_ERROR_DEVICE_LOST) and a 16px
+    // deadband (layout rounding, scrollbar flip-flop — a 1px/frame
+    // creep also churned a run). The quad stretches the held
+    // difference; the target snaps once at release. Clamped to the
+    // swap extent (an oversized dock must not oversize the chain)
+    // and floored at 64.
+    float rx = m_wysiwygLiveRectMax.x - m_wysiwygLiveRectMin.x;
+    float ry = m_wysiwygLiveRectMax.y - m_wysiwygLiveRectMin.y;
+    {
+        const bool holding = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        const float dw = std::abs(rx - m_wysiwygCanvasSize.x);
+        const float dh = std::abs(ry - m_wysiwygCanvasSize.y);
+        if (!holding && (m_wysiwygCanvasSize.x < 8.0f || dw > 16.0f || dh > 16.0f))
+            m_wysiwygCanvasSize = ImVec2(rx, ry);
+        // TOURMALINE_LIVE_EXTENT_CHURN=<N> (diag): re-create the
+        // target every N frames by toggling a 48px extent — a
+        // synthetic CONTINUOUS resize through the REAL retire/
+        // recreate path (EnsureInlineTarget + scratch + bindless +
+        // heap slot), deliberately bypassing the hold/deadband
+        // gates. The resize crash reproduces through this probe;
+        // it is the regression test for that fix.
+        static const int churnN = [] {
+            const char* e = std::getenv("TOURMALINE_LIVE_EXTENT_CHURN");
+            return e ? std::atoi(e) : 0;
+        }();
+        if (churnN > 0) {
+            static uint32_t churnTick = 0;
+            if (++churnTick % uint32_t(churnN) == 0) {
+                static bool churnBig = false;
+                churnBig = !churnBig;
+                rx += (churnBig ? 48.0f : 0.0f);
+                ry += (churnBig ? 48.0f : 0.0f);
+                m_wysiwygCanvasSize = ImVec2(rx, ry);
+            }
+        }
+    }
+    uint32_t cw = std::max(uint32_t(m_wysiwygCanvasSize.x), 64u);
+    uint32_t ch = std::max(uint32_t(m_wysiwygCanvasSize.y), 64u);
+    // The main swapchain is NOT the size authority for a detached
+    // Viewport: its ImGui platform window has an independent framebuffer.
+    // Applying the main swap extent to it produces an undersized target
+    // on a larger/higher-DPI second monitor.
+    if (!m_dockStageDetached) {
+        const smvk::Extent2D swapExt = m_swapchain->GetExtent();
+        if (swapExt.width > 64)
+            cw = std::min(cw, swapExt.width);
+        if (swapExt.height > 64)
+            ch = std::min(ch, swapExt.height);
+    }
+    // The EXTENT-CHANGE DETECTION (feeds the frame-boundary quiesce
+    // — editor_app.cpp's post-present site): any frame that recreates
+    // the inline target (EnsureInlineExtent's extent drift) flags the
+    // boundary wait. The WAIT runs after the present — the frame
+    // fully submitted, nothing recording — so the next chain
+    // re-ensure destroys nothing in flight.
+    const smvk::Extent2D inlineBefore = m_wysiwyg->InlineTargetExtent();
+    if (!m_wysiwyg->EnsureInlineExtent(smvk::Extent2D{cw, ch})) {
+        // The park oracle (the frozen-stale-image chase): a PERSISTENT
+        // ensure failure parks the world layer silently every frame -
+        // no extent updates, no renders, and (with the image lane) the
+        // panel shows the STALE target stretched at the live stage
+        // rect. Env-gated with the compose diag family.
+        {
+            static const bool on = [] {
+                const char* e = std::getenv("TOURMALINE_COMPOSE_DIAG");
+                return e && *e && !(*e == '0' && !e[1]);
+            }();
+            static uint64_t lastParkPrint = ~0ull;
+            const uint64_t key = m_frameCounter / 120;
+            if (on && key != lastParkPrint) {
+                lastParkPrint = key;
+                std::fprintf(stderr,
+                             "[LIVE-PARK] EnsureInlineExtent FAILED (want %ux%u, "
+                             "have %ux%u, canvas %.0fx%.0f) - world layer parked\n",
+                             cw,
+                             ch,
+                             inlineBefore.width,
+                             inlineBefore.height,
+                             m_wysiwygCanvasSize.x,
+                             m_wysiwygCanvasSize.y);
+            }
+        }
+        return; // park: the target could not settle this frame
+    }
+    const smvk::Extent2D inlineAfter = m_wysiwyg->InlineTargetExtent();
+    if (inlineAfter.width != inlineBefore.width || inlineAfter.height != inlineBefore.height) {
+        m_wysiwygBoundaryQuiesce = true;
+        // The recreate oracle (the post-resize parked-target chase):
+        // every inline target recreate prints old -> new extent. If
+        // the subsequent LIVE-DUMP samples show the target at the
+        // CLEAR color (encoded ~118 mean, 0% colored) after one of
+        // these lines, the world's write into the recreated target
+        // is what dies. Env-gated with the compose diag family.
+        {
+            static const bool on = [] {
+                const char* e = std::getenv("TOURMALINE_COMPOSE_DIAG");
+                return e && *e && !(*e == '0' && !e[1]);
+            }();
+            if (on)
+                std::fprintf(stderr,
+                             "[LIVE-EXTENT] target recreated %ux%u -> %ux%u "
+                             "(canvas %.0fx%.0f)\n",
+                             inlineBefore.width,
+                             inlineBefore.height,
+                             inlineAfter.width,
+                             inlineAfter.height,
+                             m_wysiwygCanvasSize.x,
+                             m_wysiwygCanvasSize.y);
+        }
+    }
+    m_wysiwygLayerRenderable = true;
+}
 
-	void EditorApp::RenderWysiwygLayer(smvk::Framebuffer& fb,
-		smvk::Extent2D extent) {
-		// TOURMALINE_LIVE_TRIANGLE=1 (the embed bisect — see
-		// editor_app.h): the MINIMAL second graph — the triangle's
-		// trivial pass into a persistent target, Executed + submitted
-		// between the rounds exactly like the world layer. Runs INSTEAD
-		// of the world renderer (same tab-visibility gate below), so
-		// the churn env has nothing to churn — the pure
-		// embed-mechanism test.
-		static const bool triangleEmbed = [] {
-			const char* e = std::getenv("TOURMALINE_LIVE_TRIANGLE");
-			return e && std::atoi(e) != 0;
-		}();
-		if (triangleEmbed) {
-			if (!LiveViewActive())
-				return;
-			if (!m_wysiwygLiveRectFresh)
-				return; // same view-mode gate as the world drive
-			m_wysiwygLiveRectFresh = false;
-			if (!EnsureTriangleEmbed())
-				return;
-			m_triangleGraph->NewFrame();
-			m_triangleGraph->AddPass("TriangleEmbed")
-				.SetOffset(0, 0)
-				.SetExtent(smvk::Extent2D{ 256, 256 })
-				.SetColor({ m_triangleLogical },
-					smvk::AttachmentLoadOp::Clear,
-					smvk::AttachmentStoreOp::Store,
-					smvk::ClearColor(0.03f, 0.03f, 0.05f, 1.0f))
-				.SetRecordingFunc([this](smvk::CommandBuffer& cmd) {
-					cmd.BindRenderPipeline(m_triangleProgram,
-						smvk::VertexLayoutId::Empty,
-						smvk::DepthSettings::Disabled(),
-						smvk::StencilSettings::DefaultDisabled(),
-						smvk::BlendSettings::Opaque(),
-						smvk::MSAASettings::Count1(),
-						smvk::RasterSettings{});
-					cmd.Draw(3, 1, 0, 0);
-				});
-			m_triangleGraph->Execute(fb);
-			return; // the world renderer is BYPASSED in this mode
-		}
-		// The view-visibility gate: DrawLiveViewStage sets the fresh flag
-		// when the stage capture ran (last frame's flag — this sits before
-		// round 2's DrawUI). The view off (View menu) parks the whole
-		// world render — the full-graph cost is only paid while the Live
-		// view is actually showing.
-		if (!m_wysiwygLiveRectFresh)
-			return;
-		m_wysiwygLiveRectFresh = false;
-		// The boundary half's park decision (no world / ortho / the
-		// extent settle failed this frame).
-		if (!m_wysiwyg || !m_wysiwygValid || !m_wysiwygLayerRenderable)
-			return;
-		engine::ElementFrame ef{};
-		ef.fb = &fb;
-		ef.swapExtent = extent;
-		ef.layer = engine::LayerRect::Full();
-		m_wysiwyg->RenderLayerInto(ef);
-		// TOURMALINE_LIVE_DUMP=1 (diag, one-shot at frame>30): sync
-		// readback of the inline target right after the world's Execute —
-		// the "does the world's inline leg produce a real image" oracle.
-		{
-			static const bool liveDump = [] {
-				const char* e = std::getenv("TOURMALINE_LIVE_DUMP");
-				return e && std::atoi(e) != 0;
-			}();
-			// INTERVAL form (the post-resize parked-target chase): the
-			// old one-shot latch could only ever see the FIRST healthy
-			// frame, hiding any later state (the recreated target left
-			// at the clear color after an extent change). Sample every
-			// 120 frames (~2 s) while the env is set - a sync readback,
-			// so only for diagnosis sessions.
-			static uint64_t lastDumpFrame = ~0ull;
-			const uint64_t dumpKey = m_frameCounter / 120;
-			if (liveDump && dumpKey != lastDumpFrame && m_frameCounter > 30
-				&& !m_wysiwyg->InlineTargetImage().empty()) {
-				lastDumpFrame = dumpKey;
-				const smvk::Extent2D le = m_wysiwyg->InlineTargetExtent();
-				std::vector<uint8_t> px(
-					size_t(le.width) * le.height * 4);
-				// The release pass left the target SHADER_READ.
-				if (m_context->DownloadDataFromImage(
-						m_wysiwyg->InlineTargetImage(),
-						smvk::ImageLayout::ShaderReadOnlyOptimal,
-						px.data(), px.size())) {
-					uint64_t sum = 0;
-					uint32_t coloredN = 0, blackN = 0, alphaN = 0;
-					const size_t n = px.size() / 4;
-					for (size_t i = 0; i < n; ++i) {
-						const uint8_t* p = &px[i * 4];
-						const int mx = std::max({ int(p[0]),
-							int(p[1]), int(p[2]) });
-						const int mn = std::min({ int(p[0]),
-							int(p[1]), int(p[2]) });
-						sum += uint64_t(p[0] + p[1] + p[2]) / 3;
-						if (mx < 12)
-							++blackN;
-						if (mx - mn > 40)
-							++coloredN;
-						if (p[3] > 128)
-							++alphaN;
-					}
-					std::fprintf(stderr,
-						"[LIVE-DUMP] %ux%u: meanLuma=%llu "
-						"black=%.1f%% colored=%.1f%% alpha>128=%.1f%%"
-						" | geometry: drawItems=%zu clusters=%zu\n",
-						le.width, le.height,
-						(unsigned long long)(sum / n),
-						100.0 * blackN / double(n),
-						100.0 * coloredN / double(n),
-						100.0 * alphaN / double(n),
-						m_world ? m_world->drawItems.size() : size_t(0),
-						m_world ? m_world->clusters.size() : size_t(0));
-					std::fflush(stderr);
-				}
-				else {
-					std::fprintf(stderr,
-						"[LIVE-DUMP] download FAILED\n");
-				}
-				// THE HDR ORACLE (root cause B discrimination): the
-				// world's scene HDR (RGBA16F, public via
-				// m_viewportResources). If the HDR holds the scene while
-				// the inline target holds only the clear, the tonemap->
-				// inline leg broke on the extent cycle; if the HDR is
-				// ALSO empty, the mesh legs never executed (the CPU-side
-				// filter stats cannot see that).
-				{
-					const auto& hdr =
-						m_wysiwyg->m_viewportResources.hdr;
-					if (hdr.Valid() && hdr.extent.width
-						&& hdr.extent.height) {
-						std::vector<uint8_t> hpx(
-							size_t(hdr.extent.width)
-							* hdr.extent.height * 8);
-						if (m_context->DownloadDataFromImage(
-								hdr.image,
-								smvk::ImageLayout::
-									ShaderReadOnlyOptimal,
-								hpx.data(), hpx.size())) {
-							// IEEE half -> float + stats
-							const auto halfToF32 =
-								[](uint16_t h) -> float {
-								const uint32_t s = (h >> 15) & 1u;
-								const uint32_t e = (h >> 10) & 0x1fu;
-								const uint32_t m = h & 0x3ffu;
-								float v;
-								if (e == 0)
-									v = std::ldexp(float(m), -24);
-								else if (e == 31)
-									v = m ? 0.0f : 1e30f;
-								else
-									v = std::ldexp(
-										float(m | 0x400u), int(e) - 25);
-								return s ? -v : v;
-							};
-							double hsum = 0;
-							uint32_t hBlack = 0, hColored = 0;
-							const size_t hn = hpx.size() / 8;
-							for (size_t i = 0; i < hn; ++i) {
-								const uint16_t* f =
-									reinterpret_cast<const uint16_t*>(
-										&hpx[i * 8]);
-								const float r = halfToF32(f[0]);
-								const float g = halfToF32(f[1]);
-								const float b = halfToF32(f[2]);
-								const float mx = std::max({r, g, b});
-								const float mn = std::min({r, g, b});
-								hsum += double((r + g + b) / 3.0f);
-								if (mx < 0.01f)
-									++hBlack;
-								if (mx - mn > 0.15f)
-									++hColored;
-							}
-							std::fprintf(stderr,
-								"[LIVE-HDR] %ux%u: meanLuma=%.3f "
-								"black=%.1f%% colored=%.1f%%\n",
-								hdr.extent.width, hdr.extent.height,
-								hsum / double(hn),
-								100.0 * hBlack / double(hn),
-								100.0 * hColored / double(hn));
-							std::fflush(stderr);
-						}
-						else
-							std::fprintf(stderr,
-								"[LIVE-HDR] download FAILED\n");
-					}
-				}
-			}
-		}
-	}
+void EditorApp::RenderWysiwygLayer(smvk::Framebuffer& fb, smvk::Extent2D extent) {
+    // TOURMALINE_LIVE_TRIANGLE=1 (the embed bisect — see
+    // editor_app.h): the MINIMAL second graph — the triangle's
+    // trivial pass into a persistent target, Executed + submitted
+    // between the rounds exactly like the world layer. Runs INSTEAD
+    // of the world renderer (same tab-visibility gate below), so
+    // the churn env has nothing to churn — the pure
+    // embed-mechanism test.
+    static const bool triangleEmbed = [] {
+        const char* e = std::getenv("TOURMALINE_LIVE_TRIANGLE");
+        return e && std::atoi(e) != 0;
+    }();
+    if (triangleEmbed) {
+        if (!LiveViewActive())
+            return;
+        if (!m_wysiwygLiveRectFresh)
+            return; // same view-mode gate as the world drive
+        m_wysiwygLiveRectFresh = false;
+        if (!EnsureTriangleEmbed())
+            return;
+        m_triangleGraph->NewFrame();
+        m_triangleGraph->AddPass("TriangleEmbed")
+            .SetOffset(0, 0)
+            .SetExtent(smvk::Extent2D{256, 256})
+            .SetColor({m_triangleLogical},
+                      smvk::AttachmentLoadOp::Clear,
+                      smvk::AttachmentStoreOp::Store,
+                      smvk::ClearColor(0.03f, 0.03f, 0.05f, 1.0f))
+            .SetRecordingFunc([this](smvk::CommandBuffer& cmd) {
+                cmd.BindRenderPipeline(m_triangleProgram,
+                                       smvk::VertexLayoutId::Empty,
+                                       smvk::DepthSettings::Disabled(),
+                                       smvk::StencilSettings::DefaultDisabled(),
+                                       smvk::BlendSettings::Opaque(),
+                                       smvk::MSAASettings::Count1(),
+                                       smvk::RasterSettings{});
+                cmd.Draw(3, 1, 0, 0);
+            });
+        m_triangleGraph->Execute(fb);
+        return; // the world renderer is BYPASSED in this mode
+    }
+    // The view-visibility gate: DrawLiveViewStage sets the fresh flag
+    // when the stage capture ran (last frame's flag — this sits before
+    // round 2's DrawUI). The view off (View menu) parks the whole
+    // world render — the full-graph cost is only paid while the Live
+    // view is actually showing.
+    if (!m_wysiwygLiveRectFresh)
+        return;
+    m_wysiwygLiveRectFresh = false;
+    // The boundary half's park decision (no world / ortho / the
+    // extent settle failed this frame).
+    if (!m_wysiwyg || !m_wysiwygValid || !m_wysiwygLayerRenderable)
+        return;
+    engine::ElementFrame ef{};
+    ef.fb = &fb;
+    ef.swapExtent = extent;
+    ef.layer = engine::LayerRect::Full();
+    m_wysiwyg->RenderLayerInto(ef);
+    // TOURMALINE_LIVE_DUMP=1 (diag, one-shot at frame>30): sync
+    // readback of the inline target right after the world's Execute —
+    // the "does the world's inline leg produce a real image" oracle.
+    {
+        static const bool liveDump = [] {
+            const char* e = std::getenv("TOURMALINE_LIVE_DUMP");
+            return e && std::atoi(e) != 0;
+        }();
+        // INTERVAL form (the post-resize parked-target chase): the
+        // old one-shot latch could only ever see the FIRST healthy
+        // frame, hiding any later state (the recreated target left
+        // at the clear color after an extent change). Sample every
+        // 120 frames (~2 s) while the env is set - a sync readback,
+        // so only for diagnosis sessions.
+        static uint64_t lastDumpFrame = ~0ull;
+        const uint64_t dumpKey = m_frameCounter / 120;
+        if (liveDump && dumpKey != lastDumpFrame && m_frameCounter > 30 &&
+            !m_wysiwyg->InlineTargetImage().empty()) {
+            lastDumpFrame = dumpKey;
+            const smvk::Extent2D le = m_wysiwyg->InlineTargetExtent();
+            std::vector<uint8_t> px(size_t(le.width) * le.height * 4);
+            // The release pass left the target SHADER_READ.
+            if (m_context->DownloadDataFromImage(m_wysiwyg->InlineTargetImage(),
+                                                 smvk::ImageLayout::ShaderReadOnlyOptimal,
+                                                 px.data(),
+                                                 px.size())) {
+                uint64_t sum = 0;
+                uint32_t coloredN = 0, blackN = 0, alphaN = 0;
+                const size_t n = px.size() / 4;
+                for (size_t i = 0; i < n; ++i) {
+                    const uint8_t* p = &px[i * 4];
+                    const int mx = std::max({int(p[0]), int(p[1]), int(p[2])});
+                    const int mn = std::min({int(p[0]), int(p[1]), int(p[2])});
+                    sum += uint64_t(p[0] + p[1] + p[2]) / 3;
+                    if (mx < 12)
+                        ++blackN;
+                    if (mx - mn > 40)
+                        ++coloredN;
+                    if (p[3] > 128)
+                        ++alphaN;
+                }
+                std::fprintf(stderr,
+                             "[LIVE-DUMP] %ux%u: meanLuma=%llu "
+                             "black=%.1f%% colored=%.1f%% alpha>128=%.1f%%"
+                             " | geometry: drawItems=%zu clusters=%zu\n",
+                             le.width,
+                             le.height,
+                             (unsigned long long)(sum / n),
+                             100.0 * blackN / double(n),
+                             100.0 * coloredN / double(n),
+                             100.0 * alphaN / double(n),
+                             m_world ? m_world->drawItems.size() : size_t(0),
+                             m_world ? m_world->clusters.size() : size_t(0));
+                std::fflush(stderr);
+            } else {
+                std::fprintf(stderr, "[LIVE-DUMP] download FAILED\n");
+            }
+            // THE HDR ORACLE (root cause B discrimination): the
+            // world's scene HDR (RGBA16F, public via
+            // m_viewportResources). If the HDR holds the scene while
+            // the inline target holds only the clear, the tonemap->
+            // inline leg broke on the extent cycle; if the HDR is
+            // ALSO empty, the mesh legs never executed (the CPU-side
+            // filter stats cannot see that).
+            {
+                const auto& hdr = m_wysiwyg->m_viewportResources.hdr;
+                if (hdr.Valid() && hdr.extent.width && hdr.extent.height) {
+                    std::vector<uint8_t> hpx(size_t(hdr.extent.width) * hdr.extent.height * 8);
+                    if (m_context->DownloadDataFromImage(hdr.image,
+                                                         smvk::ImageLayout::ShaderReadOnlyOptimal,
+                                                         hpx.data(),
+                                                         hpx.size())) {
+                        // IEEE half -> float + stats
+                        const auto halfToF32 = [](uint16_t h) -> float {
+                            const uint32_t s = (h >> 15) & 1u;
+                            const uint32_t e = (h >> 10) & 0x1fu;
+                            const uint32_t m = h & 0x3ffu;
+                            float v;
+                            if (e == 0)
+                                v = std::ldexp(float(m), -24);
+                            else if (e == 31)
+                                v = m ? 0.0f : 1e30f;
+                            else
+                                v = std::ldexp(float(m | 0x400u), int(e) - 25);
+                            return s ? -v : v;
+                        };
+                        double hsum = 0;
+                        uint32_t hBlack = 0, hColored = 0;
+                        const size_t hn = hpx.size() / 8;
+                        for (size_t i = 0; i < hn; ++i) {
+                            const uint16_t* f = reinterpret_cast<const uint16_t*>(&hpx[i * 8]);
+                            const float r = halfToF32(f[0]);
+                            const float g = halfToF32(f[1]);
+                            const float b = halfToF32(f[2]);
+                            const float mx = std::max({r, g, b});
+                            const float mn = std::min({r, g, b});
+                            hsum += double((r + g + b) / 3.0f);
+                            if (mx < 0.01f)
+                                ++hBlack;
+                            if (mx - mn > 0.15f)
+                                ++hColored;
+                        }
+                        std::fprintf(stderr,
+                                     "[LIVE-HDR] %ux%u: meanLuma=%.3f "
+                                     "black=%.1f%% colored=%.1f%%\n",
+                                     hdr.extent.width,
+                                     hdr.extent.height,
+                                     hsum / double(hn),
+                                     100.0 * hBlack / double(hn),
+                                     100.0 * hColored / double(hn));
+                        std::fflush(stderr);
+                    } else
+                        std::fprintf(stderr, "[LIVE-HDR] download FAILED\n");
+                }
+            }
+        }
+    }
+}
 
-	// ---- The WorldLayer element (the pump contract — see
-	// editor_app.h). Thin forwarding: the editor owns the state; the
-	// element supplies the synchronized tick's phase boundaries.
-	void WorldLayer::onUpdate(float dt) {
-		m_app->ApplyGamePlayRequest();
-		m_app->m_gameSession.Tick(dt);
-		m_app->UpdateWysiwygBoundary(dt);
-	}
+// ---- The WorldLayer element (the pump contract — see
+// editor_app.h). Thin forwarding: the editor owns the state; the
+// element supplies the synchronized tick's phase boundaries.
+void WorldLayer::onUpdate(float dt) {
+    m_app->ApplyGamePlayRequest();
+    m_app->m_gameSession.Tick(dt);
+    m_app->UpdateWysiwygBoundary(dt);
+}
 
-	void WorldLayer::onResize(smvk::Extent2D swapExtent) {
-		// The pump's recreate boundary (the base DrawFrame's rebuild
-		// check calls this BEFORE the acquire): the world's swap-view
-		// invalidation — the inline target's format MIRRORS the swap
-		// surface, so a recreate forces the target's re-create at the
-		// NEXT boundary settle, with nothing in flight now. Also flag
-		// the post-present quiesce: the whole chain re-ensures next
-		// frame (the extent may have changed with the swap).
-		if (!m_app->m_wysiwyg || !m_app->m_wysiwygValid)
-			return;
-		m_app->m_wysiwyg->OnSwapchainRecreated();
-		m_app->m_wysiwygBoundaryQuiesce = true;
-	}
+void WorldLayer::onResize(smvk::Extent2D swapExtent) {
+    // The pump's recreate boundary (the base DrawFrame's rebuild
+    // check calls this BEFORE the acquire): the world's swap-view
+    // invalidation — the inline target's format MIRRORS the swap
+    // surface, so a recreate forces the target's re-create at the
+    // NEXT boundary settle, with nothing in flight now. Also flag
+    // the post-present quiesce: the whole chain re-ensures next
+    // frame (the extent may have changed with the swap).
+    if (!m_app->m_wysiwyg || !m_app->m_wysiwygValid)
+        return;
+    m_app->m_wysiwyg->OnSwapchainRecreated();
+    m_app->m_wysiwygBoundaryQuiesce = true;
+}
 
-	void WorldLayer::onRender(engine::ElementFrame& frame) {
-		if (!frame.fb)
-			return;
-		m_app->RenderWysiwygLayer(*frame.fb, frame.swapExtent);
-	}
+void WorldLayer::onRender(engine::ElementFrame& frame) {
+    if (!frame.fb)
+        return;
+    m_app->RenderWysiwygLayer(*frame.fb, frame.swapExtent);
+}
 
-	// TOURMALINE_LIVE_TRIANGLE's backing (the embed bisect — see
-	// editor_app.h): one persistent 256x256 editor-owned target + a
-	// second RenderGraph + the 01_triangle sample's inline-HLSL program,
-	// all created once. The DriveWysiwygLive triangle branch Executes
-	// this graph between the editor's rounds each frame — a mid-frame
-	// second submit with ZERO claims churn and zero world chain: the
-	// pure "is the embed seam the trigger" test.
-	bool EditorApp::EnsureTriangleEmbed() {
-		if (m_triangleReady)
-			return true;
-		// The graph + target (persistent — never recreated, never claimed
-		// through the target heap).
-		m_triangleGraph = tour::mem::MakeProcess<smvk::RenderGraph>(
-			*m_context);
-		smvk::ImageCreateInfo ci{};
-		ci.extent = { 256, 256, 1 };
-		ci.format = smvk::Format::RGBA8_UNorm;
-		ci.usage = smvk::ImageUsage::ColorAttachment;
-		ci.mipLevels = 1;
-		ci.arrayLayers = 1;
-		ci.name = "triangleEmbed";
-		m_triangleImage = m_context->CreateImage(ci, nullptr);
-		if (m_triangleImage.empty())
-			return false;
-		const smvk::ImageViewCreateInfo vci{
-			.viewType = smvk::ImageViewType::View2D,
-			.format = smvk::Format::RGBA8_UNorm,
-			.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 },
-			.name = "triangleEmbedView",
-		};
-		m_triangleView = m_context->CreateImageView(m_triangleImage, vci);
-		if (m_triangleView.empty())
-			return false;
-		m_triangleLogical = m_triangleGraph->AddExternalImageView(
-			m_triangleView, smvk::Format::RGBA8_UNorm, "triangleLogical");
-		if (m_triangleLogical.empty())
-			return false;
-		// The 01_triangle sample's shaders verbatim (the inline-HLSL
-		// compiler — the same source the sample uses).
-		static constexpr const char* kVert = R"(
+// TOURMALINE_LIVE_TRIANGLE's backing (the embed bisect — see
+// editor_app.h): one persistent 256x256 editor-owned target + a
+// second RenderGraph + the 01_triangle sample's inline-HLSL program,
+// all created once. The DriveWysiwygLive triangle branch Executes
+// this graph between the editor's rounds each frame — a mid-frame
+// second submit with ZERO claims churn and zero world chain: the
+// pure "is the embed seam the trigger" test.
+bool EditorApp::EnsureTriangleEmbed() {
+    if (m_triangleReady)
+        return true;
+    // The graph + target (persistent — never recreated, never claimed
+    // through the target heap).
+    m_triangleGraph = tour::mem::MakeProcess<smvk::RenderGraph>(*m_context);
+    smvk::ImageCreateInfo ci{};
+    ci.extent = {256, 256, 1};
+    ci.format = smvk::Format::RGBA8_UNorm;
+    ci.usage = smvk::ImageUsage::ColorAttachment;
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.name = "triangleEmbed";
+    m_triangleImage = m_context->CreateImage(ci, nullptr);
+    if (m_triangleImage.empty())
+        return false;
+    const smvk::ImageViewCreateInfo vci{
+        .viewType = smvk::ImageViewType::View2D,
+        .format = smvk::Format::RGBA8_UNorm,
+        .subresourceRange = {smvk::ImageAspect::Color, 0, 1, 0, 1},
+        .name = "triangleEmbedView",
+    };
+    m_triangleView = m_context->CreateImageView(m_triangleImage, vci);
+    if (m_triangleView.empty())
+        return false;
+    m_triangleLogical = m_triangleGraph->AddExternalImageView(
+        m_triangleView, smvk::Format::RGBA8_UNorm, "triangleLogical");
+    if (m_triangleLogical.empty())
+        return false;
+    // The 01_triangle sample's shaders verbatim (the inline-HLSL
+    // compiler — the same source the sample uses).
+    static constexpr const char* kVert = R"(
 struct VSOutput { float4 position : SV_Position; float3 color : COLOR0; };
 VSOutput mainVS(uint vertexID : SV_VertexID) {
 	static const float2 positions[3] = { float2(0.0, -0.5), float2(0.5, 0.5), float2(-0.5, 0.5) };
@@ -3245,213 +3323,225 @@ VSOutput mainVS(uint vertexID : SV_VertexID) {
 	return output;
 }
 )";
-		static constexpr const char* kFrag = R"(
+    static constexpr const char* kFrag = R"(
 float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target {
 	return float4(color, 1.0);
 }
 )";
-		try {
-			m_triangleVsModule = m_context->CreateShaderModule(
-				tour::dxc::CompileHLSLToSPIRV(kVert, tour::dxc::DxcShaderStage::Vertex,
-					L"mainVS"),
-				"triangleEmbedVS");
-			m_triangleFsModule = m_context->CreateShaderModule(
-				tour::dxc::CompileHLSLToSPIRV(kFrag, tour::dxc::DxcShaderStage::Fragment,
-					L"mainPS"),
-				"triangleEmbedFS");
-		}
-		catch (const std::exception& e) {
-			std::fprintf(stderr, "[TRIANGLE-EMBED] shader compile: %s\n",
-				e.what());
-			return false;
-		}
-		if (m_triangleVsModule.empty() || m_triangleFsModule.empty())
-			return false;
-		const smvk::Shader vs{ .module = m_triangleVsModule,
-			.entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-		const smvk::Shader fs{ .module = m_triangleFsModule,
-			.entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-		m_triangleProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
-		m_triangleReady = true;
-		return true;
-	}
+    try {
+        m_triangleVsModule = m_context->CreateShaderModule(
+            tour::dxc::CompileHLSLToSPIRV(kVert, tour::dxc::DxcShaderStage::Vertex, L"mainVS"),
+            "triangleEmbedVS");
+        m_triangleFsModule = m_context->CreateShaderModule(
+            tour::dxc::CompileHLSLToSPIRV(kFrag, tour::dxc::DxcShaderStage::Fragment, L"mainPS"),
+            "triangleEmbedFS");
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[TRIANGLE-EMBED] shader compile: %s\n", e.what());
+        return false;
+    }
+    if (m_triangleVsModule.empty() || m_triangleFsModule.empty())
+        return false;
+    const smvk::Shader vs{
+        .module = m_triangleVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
+    const smvk::Shader fs{
+        .module = m_triangleFsModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+    m_triangleProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+    m_triangleReady = true;
+    return true;
+}
 
-	// The Live tab's GPU composite (editor_app.h): the world renderer's
-	// private inline target copied 1:1 into the tab's content rect,
-	// recorded AFTER the ImGui pass so it over-draws the tab body (the
-	// tab content stays empty — no transparent-content-region tricks).
-	// The engine's UiComposite builder: alpha=1 from the tonemap = a
-	// pure copy; SetInputImages declares the sampled read so the
-	// cross-graph barrier rides the context-global sync tables (the
-	// world's inline-release pass left the target in SHADER_READ).
-	void EditorApp::RecordLiveViewComposePass(
-		smvk::LogicalImageViewHandle swapView) {
-		// TOURMALINE_COMPOSE_DIAG=1 (diag): the composite oracle - prints
-		// the destination rect on record AND the exact gate on every
-		// early-out. Answers "the live view renders but nothing shows"
-		// in one stderr line instead of a bisect.
-		static const bool composeDiag = [] {
-			const char* e = std::getenv("TOURMALINE_COMPOSE_DIAG");
-			return e && *e && !(*e == '0' && !e[1]);
-		}();
-		static uint64_t diagLastPrint = ~0ull;
-		const uint64_t diagKey = m_frameCounter / 30; // every ~0.5 s
-		const bool diagNow = composeDiag && diagKey != diagLastPrint;
-		if (diagNow)
-			diagLastPrint = diagKey;
-		if (!m_wysiwyg || !m_wysiwygValid
-			|| m_wysiwyg->InlineTargetView().empty()) {
-			if (diagNow)
-				std::fprintf(stderr,
-					"[LIVE-COMPOSE] skip: no renderer/inline target "
-					"(wysiwyg=%d valid=%d view=%d)\n",
-					m_wysiwyg ? 1 : 0, m_wysiwygValid ? 1 : 0,
-					(m_wysiwyg && !m_wysiwyg->InlineTargetView().empty())
-						? 1 : 0);
-			return;
-		}
-		// DETACHED STAGE: the Viewport window lives in a secondary OS
-		// window with its own (ImGui-backend-owned) swapchain. The
-		// main-swapchain composite can never reach it; the inline target
-		// is drawn as an ImGui image inside the panel instead (see the
-		// Viewport window draw in editor_ui.cpp). Only the drive's
-		// extent capture still runs (DrawLiveViewStage's detached
-		// branch) so the render keeps the stage's size and aspect.
-		if (m_dockStageDetached) {
-			if (diagNow)
-				std::fprintf(stderr,
-					"[LIVE-COMPOSE] skip: dock stage detached (secondary "
-					"OS window presents via the ImGui image lane)\n");
-			return;
-		}
-		// LAYER ORDER, not modal detection: the composite is recorded
-		// BEFORE the ImGui pass (see the call site in DrawFrame), so
-		// every ImGui element - panels, floating windows, dropdowns,
-		// tooltips, real modals - draws ON TOP of the live image. The
-		// old post-ImGui composite needed a popup-name allowlist to
-		// avoid covering dialogs; that list was maintenance debt (a new
-		// dialog was obscured until someone remembered to add its name)
-		// and is gone.
-		// The tab's captured rect, clamped into the framebuffer (the
-		// dock can hang past the window edge while a splitter drags).
-		// ImGui window/client rectangles are in desktop coordinates when
-		// multi-viewports are enabled. The render graph's swapchain offsets
-		// are relative to the primary SDL window, even when that window has
-		// been moved away from desktop (0, 0). Subtract the primary viewport
-		// origin BEFORE clipping or casting offsets to uint32_t.
-		const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
-		const ImVec2 origin = mainViewport->Pos;
-		const ImVec2 fbs = mainViewport->Size;
-		const float x0 = std::clamp(m_wysiwygLiveRectMin.x - origin.x, 0.0f, fbs.x);
-		const float y0 = std::clamp(m_wysiwygLiveRectMin.y - origin.y, 0.0f, fbs.y);
-		const float x1 = std::clamp(m_wysiwygLiveRectMax.x - origin.x, 0.0f, fbs.x);
-		const float y1 = std::clamp(m_wysiwygLiveRectMax.y - origin.y, 0.0f, fbs.y);
-		const float w = x1 - x0, h = y1 - y0;
-		if (w < 8.0f || h < 8.0f) {
-			if (diagNow)
-				std::fprintf(stderr,
-					"[LIVE-COMPOSE] skip: clamped rect too small "
-					"(%.0fx%.0f at %.0f,%.0f; raw min %.0f,%.0f max "
-					"%.0f,%.0f origin %.0f,%.0f fb %.0fx%.0f)\n",
-					w, h, x0, y0,
-					m_wysiwygLiveRectMin.x, m_wysiwygLiveRectMin.y,
-					m_wysiwygLiveRectMax.x, m_wysiwygLiveRectMax.y,
-					origin.x, origin.y, fbs.x, fbs.y);
-			return;
-		}
-		if (!m_wysiwygComposite.Ensure(*m_context))
-			return;
-		// The source: the world's inline target imported into the
-		// EDITOR's graph (re-imported whenever the handle changed — a
-		// target recreate; the old logical frees between rounds, safe
-		// against last round's recorded passes).
-		if (m_wysiwygComposePhysical != m_wysiwyg->InlineTargetView()) {
-			if (!m_wysiwygComposeLogical.empty())
-				m_rendergraph->FreeImageView(m_wysiwygComposeLogical);
-			m_wysiwygComposeLogical = m_rendergraph->AddExternalImageView(
-				m_wysiwyg->InlineTargetView(),
-				m_wysiwyg->InlineTargetFormat(),
-				"wysiwygInlineSource");
-			m_wysiwygComposePhysical = m_wysiwyg->InlineTargetView();
-			if (m_wysiwygComposeLogical.empty())
-				return;
-		}
-		// TOURMALINE_COMPOSE_PINK=1 (diag): draw an UNCONDITIONAL bright
-		// pink clear at the composite's exact rect, INSTEAD of the real
-		// composite - the "does anything this pass claims survive to the
-		// screen" oracle. If the pink shows, the composite's rect,
-		// ordering and surface access are healthy and any dead pixels are
-		// the SOURCE (the inline target's content). If the pink is
-		// covered/vanishes (esp. after a window resize), something AFTER
-		// this pass overwrites the rect - the composite stage itself is
-		// the victim, not the culprit.
-		static const bool pinkDiag = [] {
-			const char* e = std::getenv("TOURMALINE_COMPOSE_PINK");
-			return e && *e && !(*e == '0' && !e[1]);
-		}();
-		if (pinkDiag) {
-			// FULL-SWAP FLOOD: paint the ENTIRE swap attachment pink -
-			// immune to every rect/monitor/DPI mapping question. If ANY
-			// pink appears anywhere on screen, this pass writes; if the
-			// screen shows no pink at all, the pass never lands.
-			const smvk::Extent2D swapExt = m_swapchain->GetExtent();
-			m_rendergraph->AddPass("WysiwygPinkDiag")
-				.SetOffset(0, 0)
-				.SetExtent(swapExt)
-				.SetColor({ swapView }, smvk::AttachmentLoadOp::Clear,
-					smvk::AttachmentStoreOp::Store,
-					smvk::ClearColor(1.0f, 0.0f, 1.0f, 1.0f))
-				.SetRecordingFunc([](smvk::CommandBuffer&) {});
-			if (diagNow)
-				std::fprintf(stderr,
-					"[LIVE-COMPOSE] PINK-FLOOD swap %ux%u (stage was "
-					"%.0fx%.0f at %.0f,%.0f)\n",
-					swapExt.width, swapExt.height, w, h, x0, y0);
-			return;
-		}
-		// decodeOutput follows the ACTUAL surface variant, exactly like
-		// the App's own UiComposite call site (WorldRenderer: swapIsSrgb):
-		// the inline target's bytes are SRGB-ENCODED (the world's tonemap
-		// stores through the surface-format attachment), and the bindless
-		// sample serves them RAW - so on an sRGB swap the shader must
-		// decode before the hardware store encode, or the image is
-		// encoded TWICE and the docked viewport renders as a washed-out
-		// flat gray (the "docked renders gray / floating renders" bug:
-		// the detached lane goes through ImGui's own image path and never
-		// had the problem). The old hard-coded false assumed a hardware
-		// decode on sample that the bindless descriptor never provided.
-		const smvk::Format surface = m_swapchain->GetSurfaceFormat();
-		const bool swapIsSrgb = surface == smvk::Format::BGRA8_SRGB
-			|| surface == smvk::Format::RGBA8_SRGB;
-		if (diagNow) {
-			const smvk::Extent2D te = m_wysiwyg->InlineTargetExtent();
-			std::fprintf(stderr,
-				"[LIVE-COMPOSE] record: %.0fx%.0f at %.0f,%.0f "
-				"(window-local) surface=%d srgb=%d target=%ux%u\n",
-				w, h, x0, y0, int(surface), swapIsSrgb ? 1 : 0,
-				te.width, te.height);
-		}
-		// OPAQUE blend — the alpha-is-DATA lesson: the SMAA T2x chain
-		// packs the VELOCITY MAGNITUDE into the output alpha
-		// (smaa_neighborhood - the resolve's history attenuation; the
-		// swapchain ignores alpha at present, so the App never cared).
-		// A 1:1 host composite must NOT alpha-blend on that channel —
-		// a static camera has velocity ~0, alpha ~0, and an
-		// alpha-blending copy paints NOTHING (the "gray tab" bug:
-		// identical ON/OFF screenshots, the pass traced healthy).
-		// Opaque replaces the dst regardless of the source alpha.
-		const smvk::LogicalImageViewHandle wysiwygSwapViews[] = { swapView };
-		m_wysiwygComposite.AddCompositePass(*m_rendergraph,
-			m_wysiwygComposeLogical,
-			m_wysiwyg->InlineTargetBindlessIndex(),
-			0 /* linear clamp sampler */,
-			wysiwygSwapViews,
-			smvk::Extent2D{ uint32_t(w), uint32_t(h) },
-			swapIsSrgb,
-			"WysiwygCompose",
-			uint32_t(x0), uint32_t(y0),
-			true /* opaqueBlend */);
-	}
+// The Live tab's GPU composite (editor_app.h): the world renderer's
+// private inline target copied 1:1 into the tab's content rect,
+// recorded AFTER the ImGui pass so it over-draws the tab body (the
+// tab content stays empty — no transparent-content-region tricks).
+// The engine's UiComposite builder: alpha=1 from the tonemap = a
+// pure copy; SetInputImages declares the sampled read so the
+// cross-graph barrier rides the context-global sync tables (the
+// world's inline-release pass left the target in SHADER_READ).
+void EditorApp::RecordLiveViewComposePass(smvk::LogicalImageViewHandle swapView) {
+    // TOURMALINE_COMPOSE_DIAG=1 (diag): the composite oracle - prints
+    // the destination rect on record AND the exact gate on every
+    // early-out. Answers "the live view renders but nothing shows"
+    // in one stderr line instead of a bisect.
+    static const bool composeDiag = [] {
+        const char* e = std::getenv("TOURMALINE_COMPOSE_DIAG");
+        return e && *e && !(*e == '0' && !e[1]);
+    }();
+    static uint64_t diagLastPrint = ~0ull;
+    const uint64_t diagKey = m_frameCounter / 30; // every ~0.5 s
+    const bool diagNow = composeDiag && diagKey != diagLastPrint;
+    if (diagNow)
+        diagLastPrint = diagKey;
+    if (!m_wysiwyg || !m_wysiwygValid || m_wysiwyg->InlineTargetView().empty()) {
+        if (diagNow)
+            std::fprintf(stderr,
+                         "[LIVE-COMPOSE] skip: no renderer/inline target "
+                         "(wysiwyg=%d valid=%d view=%d)\n",
+                         m_wysiwyg ? 1 : 0,
+                         m_wysiwygValid ? 1 : 0,
+                         (m_wysiwyg && !m_wysiwyg->InlineTargetView().empty()) ? 1 : 0);
+        return;
+    }
+    // DETACHED STAGE: the Viewport window lives in a secondary OS
+    // window with its own (ImGui-backend-owned) swapchain. The
+    // main-swapchain composite can never reach it; the inline target
+    // is drawn as an ImGui image inside the panel instead (see the
+    // Viewport window draw in editor_ui.cpp). Only the drive's
+    // extent capture still runs (DrawLiveViewStage's detached
+    // branch) so the render keeps the stage's size and aspect.
+    if (m_dockStageDetached) {
+        if (diagNow)
+            std::fprintf(stderr,
+                         "[LIVE-COMPOSE] skip: dock stage detached (secondary "
+                         "OS window presents via the ImGui image lane)\n");
+        return;
+    }
+    // LAYER ORDER, not modal detection: the composite is recorded
+    // BEFORE the ImGui pass (see the call site in DrawFrame), so
+    // every ImGui element - panels, floating windows, dropdowns,
+    // tooltips, real modals - draws ON TOP of the live image. The
+    // old post-ImGui composite needed a popup-name allowlist to
+    // avoid covering dialogs; that list was maintenance debt (a new
+    // dialog was obscured until someone remembered to add its name)
+    // and is gone.
+    // The tab's captured rect, clamped into the framebuffer (the
+    // dock can hang past the window edge while a splitter drags).
+    // ImGui window/client rectangles are in desktop coordinates when
+    // multi-viewports are enabled. The render graph's swapchain offsets
+    // are relative to the primary SDL window, even when that window has
+    // been moved away from desktop (0, 0). Subtract the primary viewport
+    // origin BEFORE clipping or casting offsets to uint32_t.
+    const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+    const ImVec2 origin = mainViewport->Pos;
+    const ImVec2 fbs = mainViewport->Size;
+    const float x0 = std::clamp(m_wysiwygLiveRectMin.x - origin.x, 0.0f, fbs.x);
+    const float y0 = std::clamp(m_wysiwygLiveRectMin.y - origin.y, 0.0f, fbs.y);
+    const float x1 = std::clamp(m_wysiwygLiveRectMax.x - origin.x, 0.0f, fbs.x);
+    const float y1 = std::clamp(m_wysiwygLiveRectMax.y - origin.y, 0.0f, fbs.y);
+    const float w = x1 - x0, h = y1 - y0;
+    if (w < 8.0f || h < 8.0f) {
+        if (diagNow)
+            std::fprintf(stderr,
+                         "[LIVE-COMPOSE] skip: clamped rect too small "
+                         "(%.0fx%.0f at %.0f,%.0f; raw min %.0f,%.0f max "
+                         "%.0f,%.0f origin %.0f,%.0f fb %.0fx%.0f)\n",
+                         w,
+                         h,
+                         x0,
+                         y0,
+                         m_wysiwygLiveRectMin.x,
+                         m_wysiwygLiveRectMin.y,
+                         m_wysiwygLiveRectMax.x,
+                         m_wysiwygLiveRectMax.y,
+                         origin.x,
+                         origin.y,
+                         fbs.x,
+                         fbs.y);
+        return;
+    }
+    if (!m_wysiwygComposite.Ensure(*m_context))
+        return;
+    // The source: the world's inline target imported into the
+    // EDITOR's graph (re-imported whenever the handle changed — a
+    // target recreate; the old logical frees between rounds, safe
+    // against last round's recorded passes).
+    if (m_wysiwygComposePhysical != m_wysiwyg->InlineTargetView()) {
+        if (!m_wysiwygComposeLogical.empty())
+            m_rendergraph->FreeImageView(m_wysiwygComposeLogical);
+        m_wysiwygComposeLogical = m_rendergraph->AddExternalImageView(
+            m_wysiwyg->InlineTargetView(), m_wysiwyg->InlineTargetFormat(), "wysiwygInlineSource");
+        m_wysiwygComposePhysical = m_wysiwyg->InlineTargetView();
+        if (m_wysiwygComposeLogical.empty())
+            return;
+    }
+    // TOURMALINE_COMPOSE_PINK=1 (diag): draw an UNCONDITIONAL bright
+    // pink clear at the composite's exact rect, INSTEAD of the real
+    // composite - the "does anything this pass claims survive to the
+    // screen" oracle. If the pink shows, the composite's rect,
+    // ordering and surface access are healthy and any dead pixels are
+    // the SOURCE (the inline target's content). If the pink is
+    // covered/vanishes (esp. after a window resize), something AFTER
+    // this pass overwrites the rect - the composite stage itself is
+    // the victim, not the culprit.
+    static const bool pinkDiag = [] {
+        const char* e = std::getenv("TOURMALINE_COMPOSE_PINK");
+        return e && *e && !(*e == '0' && !e[1]);
+    }();
+    if (pinkDiag) {
+        // FULL-SWAP FLOOD: paint the ENTIRE swap attachment pink -
+        // immune to every rect/monitor/DPI mapping question. If ANY
+        // pink appears anywhere on screen, this pass writes; if the
+        // screen shows no pink at all, the pass never lands.
+        const smvk::Extent2D swapExt = m_swapchain->GetExtent();
+        m_rendergraph->AddPass("WysiwygPinkDiag")
+            .SetOffset(0, 0)
+            .SetExtent(swapExt)
+            .SetColor({swapView},
+                      smvk::AttachmentLoadOp::Clear,
+                      smvk::AttachmentStoreOp::Store,
+                      smvk::ClearColor(1.0f, 0.0f, 1.0f, 1.0f))
+            .SetRecordingFunc([](smvk::CommandBuffer&) {});
+        if (diagNow)
+            std::fprintf(stderr,
+                         "[LIVE-COMPOSE] PINK-FLOOD swap %ux%u (stage was "
+                         "%.0fx%.0f at %.0f,%.0f)\n",
+                         swapExt.width,
+                         swapExt.height,
+                         w,
+                         h,
+                         x0,
+                         y0);
+        return;
+    }
+    // decodeOutput follows the ACTUAL surface variant, exactly like
+    // the App's own UiComposite call site (WorldRenderer: swapIsSrgb):
+    // the inline target's bytes are SRGB-ENCODED (the world's tonemap
+    // stores through the surface-format attachment), and the bindless
+    // sample serves them RAW - so on an sRGB swap the shader must
+    // decode before the hardware store encode, or the image is
+    // encoded TWICE and the docked viewport renders as a washed-out
+    // flat gray (the "docked renders gray / floating renders" bug:
+    // the detached lane goes through ImGui's own image path and never
+    // had the problem). The old hard-coded false assumed a hardware
+    // decode on sample that the bindless descriptor never provided.
+    const smvk::Format surface = m_swapchain->GetSurfaceFormat();
+    const bool swapIsSrgb =
+        surface == smvk::Format::BGRA8_SRGB || surface == smvk::Format::RGBA8_SRGB;
+    if (diagNow) {
+        const smvk::Extent2D te = m_wysiwyg->InlineTargetExtent();
+        std::fprintf(stderr,
+                     "[LIVE-COMPOSE] record: %.0fx%.0f at %.0f,%.0f "
+                     "(window-local) surface=%d srgb=%d target=%ux%u\n",
+                     w,
+                     h,
+                     x0,
+                     y0,
+                     int(surface),
+                     swapIsSrgb ? 1 : 0,
+                     te.width,
+                     te.height);
+    }
+    // OPAQUE blend — the alpha-is-DATA lesson: the SMAA T2x chain
+    // packs the VELOCITY MAGNITUDE into the output alpha
+    // (smaa_neighborhood - the resolve's history attenuation; the
+    // swapchain ignores alpha at present, so the App never cared).
+    // A 1:1 host composite must NOT alpha-blend on that channel —
+    // a static camera has velocity ~0, alpha ~0, and an
+    // alpha-blending copy paints NOTHING (the "gray tab" bug:
+    // identical ON/OFF screenshots, the pass traced healthy).
+    // Opaque replaces the dst regardless of the source alpha.
+    const smvk::LogicalImageViewHandle wysiwygSwapViews[] = {swapView};
+    m_wysiwygComposite.AddCompositePass(*m_rendergraph,
+                                        m_wysiwygComposeLogical,
+                                        m_wysiwyg->InlineTargetBindlessIndex(),
+                                        0 /* linear clamp sampler */,
+                                        wysiwygSwapViews,
+                                        smvk::Extent2D{uint32_t(w), uint32_t(h)},
+                                        swapIsSrgb,
+                                        "WysiwygCompose",
+                                        uint32_t(x0),
+                                        uint32_t(y0),
+                                        true /* opaqueBlend */);
+}
 
 } // namespace editor
-

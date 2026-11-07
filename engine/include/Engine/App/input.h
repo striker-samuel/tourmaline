@@ -32,32 +32,111 @@ namespace tour::input {
 // [0, KeyCount) still round-trips through the array-backed state.
 enum class Key : uint16_t {
     Unknown = 0,
-    A = 4, B = 5, C = 6, D = 7, E = 8, F = 9, G = 10, H = 11,
-    I = 12, J = 13, K = 14, L = 15, M = 16, N = 17, O = 18, P = 19,
-    Q = 20, R = 21, S = 22, T = 23, U = 24, V = 25, W = 26, X = 27,
-    Y = 28, Z = 29,
-    Num1 = 30, Num2 = 31, Num3 = 32, Num4 = 33, Num5 = 34,
-    Num6 = 35, Num7 = 36, Num8 = 37, Num9 = 38, Num0 = 39,
-    Enter = 40, Escape = 41, Backspace = 42, Tab = 43, Space = 44,
-    Minus = 45, Equal = 46, LeftBracket = 47, RightBracket = 48,
-    Backslash = 49, Semicolon = 51, Apostrophe = 52,
-    GraveAccent = 53, Comma = 54, Period = 55, Slash = 56,
+    A = 4,
+    B = 5,
+    C = 6,
+    D = 7,
+    E = 8,
+    F = 9,
+    G = 10,
+    H = 11,
+    I = 12,
+    J = 13,
+    K = 14,
+    L = 15,
+    M = 16,
+    N = 17,
+    O = 18,
+    P = 19,
+    Q = 20,
+    R = 21,
+    S = 22,
+    T = 23,
+    U = 24,
+    V = 25,
+    W = 26,
+    X = 27,
+    Y = 28,
+    Z = 29,
+    Num1 = 30,
+    Num2 = 31,
+    Num3 = 32,
+    Num4 = 33,
+    Num5 = 34,
+    Num6 = 35,
+    Num7 = 36,
+    Num8 = 37,
+    Num9 = 38,
+    Num0 = 39,
+    Enter = 40,
+    Escape = 41,
+    Backspace = 42,
+    Tab = 43,
+    Space = 44,
+    Minus = 45,
+    Equal = 46,
+    LeftBracket = 47,
+    RightBracket = 48,
+    Backslash = 49,
+    Semicolon = 51,
+    Apostrophe = 52,
+    GraveAccent = 53,
+    Comma = 54,
+    Period = 55,
+    Slash = 56,
     CapsLock = 57,
-    F1 = 58, F2 = 59, F3 = 60, F4 = 61, F5 = 62, F6 = 63,
-    F7 = 64, F8 = 65, F9 = 66, F10 = 67, F11 = 68, F12 = 69,
-    PrintScreen = 70, ScrollLock = 71, Pause = 72, Insert = 73,
-    Home = 74, PageUp = 75, Delete = 76, End = 77,
-    PageDown = 78, Right = 79, Left = 80, Down = 81, Up = 82,
+    F1 = 58,
+    F2 = 59,
+    F3 = 60,
+    F4 = 61,
+    F5 = 62,
+    F6 = 63,
+    F7 = 64,
+    F8 = 65,
+    F9 = 66,
+    F10 = 67,
+    F11 = 68,
+    F12 = 69,
+    PrintScreen = 70,
+    ScrollLock = 71,
+    Pause = 72,
+    Insert = 73,
+    Home = 74,
+    PageUp = 75,
+    Delete = 76,
+    End = 77,
+    PageDown = 78,
+    Right = 79,
+    Left = 80,
+    Down = 81,
+    Up = 82,
     NumLock = 83,
-    KeypadDivide = 84, KeypadMultiply = 85, KeypadSubtract = 86,
-    KeypadAdd = 87, KeypadEnter = 88,
-    Keypad1 = 89, Keypad2 = 90, Keypad3 = 91, Keypad4 = 92,
-    Keypad5 = 93, Keypad6 = 94, Keypad7 = 95, Keypad8 = 96,
-    Keypad9 = 97, Keypad0 = 98, KeypadDecimal = 99,
+    KeypadDivide = 84,
+    KeypadMultiply = 85,
+    KeypadSubtract = 86,
+    KeypadAdd = 87,
+    KeypadEnter = 88,
+    Keypad1 = 89,
+    Keypad2 = 90,
+    Keypad3 = 91,
+    Keypad4 = 92,
+    Keypad5 = 93,
+    Keypad6 = 94,
+    Keypad7 = 95,
+    Keypad8 = 96,
+    Keypad9 = 97,
+    Keypad0 = 98,
+    KeypadDecimal = 99,
     KeypadEqual = 103,
     Menu = 118,
-    LeftControl = 224, LeftShift = 225, LeftAlt = 226, LeftSuper = 227,
-    RightControl = 228, RightShift = 229, RightAlt = 230, RightSuper = 231,
+    LeftControl = 224,
+    LeftShift = 225,
+    LeftAlt = 226,
+    LeftSuper = 227,
+    RightControl = 228,
+    RightShift = 229,
+    RightAlt = 230,
+    RightSuper = 231,
 };
 
 // USB HID scancode space (SDL_SCANCODE_COUNT). Not a key.
@@ -65,26 +144,46 @@ inline constexpr int KeyCount = 512;
 
 // SDL mouse buttons are 1-based (LEFT=1 .. X2=5); slot 0 is unused.
 enum class MouseButton : int {
-    Left = 1, Middle = 3, Right = 2, X1 = 4, X2 = 5,
+    Left = 1,
+    Middle = 3,
+    Right = 2,
+    X1 = 4,
+    X2 = 5,
 };
 inline constexpr int MouseButtonCount = 9;
 
 // Standard console-pad layout. Mirroring SDL's gamepad ordering keeps the
 // adapter a cast (verified by static_assert in input_sdl3.cpp).
 enum class GamepadButton : int {
-    South = 0, East, West, North,
-    Back, Guide, Start, LeftStick, RightStick,
-    LeftShoulder, RightShoulder,
-    DpadUp, DpadDown, DpadLeft, DpadRight,
-    Misc1, RightPaddle1, LeftPaddle1, RightPaddle2, LeftPaddle2,
-    Touchpad, Misc2, Misc3, Misc4, Misc5, Misc6,
+    South = 0,
+    East,
+    West,
+    North,
+    Back,
+    Guide,
+    Start,
+    LeftStick,
+    RightStick,
+    LeftShoulder,
+    RightShoulder,
+    DpadUp,
+    DpadDown,
+    DpadLeft,
+    DpadRight,
+    Misc1,
+    RightPaddle1,
+    LeftPaddle1,
+    RightPaddle2,
+    LeftPaddle2,
+    Touchpad,
+    Misc2,
+    Misc3,
+    Misc4,
+    Misc5,
+    Misc6,
     Count
 };
-enum class GamepadAxis : int {
-    LeftX = 0, LeftY, RightX, RightY,
-    LeftTrigger, RightTrigger,
-    Count
-};
+enum class GamepadAxis : int { LeftX = 0, LeftY, RightX, RightY, LeftTrigger, RightTrigger, Count };
 inline constexpr int GamepadButtonCount = static_cast<int>(GamepadButton::Count);
 inline constexpr int GamepadAxisCount = static_cast<int>(GamepadAxis::Count);
 using GamepadId = uint32_t;
@@ -117,12 +216,25 @@ enum class EventType : uint8_t {
     GamepadButtonDown,
     GamepadButtonUp,
     FileDrop,
-    PenProximityIn, PenProximityOut, PenDown, PenUp, PenMotion,
-    PenAxis, PenButtonDown, PenButtonUp,
+    PenProximityIn,
+    PenProximityOut,
+    PenDown,
+    PenUp,
+    PenMotion,
+    PenAxis,
+    PenButtonDown,
+    PenButtonUp,
 };
 
 enum class PenAxis : uint8_t {
-    Pressure, XTilt, YTilt, Distance, Rotation, Slider, TangentialPressure, Count
+    Pressure,
+    XTilt,
+    YTilt,
+    Distance,
+    Rotation,
+    Slider,
+    TangentialPressure,
+    Count
 };
 using PenId = uint32_t;
 inline constexpr int PenAxisCount = static_cast<int>(PenAxis::Count);
@@ -156,7 +268,6 @@ struct Event {
 } // namespace tour::input
 
 namespace tour::input {
-
 
 // --- Engine key aliases ---
 // Short, engine-owned names for the physical key ids. These are NOT a
@@ -285,19 +396,32 @@ inline constexpr int TOUR_MOUSE_BUTTON_RIGHT = TOUR_MOUSE_BUTTON_2;
 inline constexpr int TOUR_MOUSE_BUTTON_MIDDLE = TOUR_MOUSE_BUTTON_3;
 
 class Input {
-public:
+  public:
     static constexpr int KeyCount = input::KeyCount;
     static constexpr int MouseButtonCount = input::MouseButtonCount;
 
     enum class Action : uint8_t {
-        MoveForward, MoveBack, MoveLeft, MoveRight, MoveUp, MoveDown,
-        Sprint, Crouch, Jump,
-        LookUp, LookDown, LookLeft, LookRight,
-        UiConfirm, UiCancel,
+        MoveForward,
+        MoveBack,
+        MoveLeft,
+        MoveRight,
+        MoveUp,
+        MoveDown,
+        Sprint,
+        Crouch,
+        Jump,
+        LookUp,
+        LookDown,
+        LookLeft,
+        LookRight,
+        UiConfirm,
+        UiCancel,
         Count
     };
 
-    Input() { SetDefaultBindings(); }
+    Input() {
+        SetDefaultBindings();
+    }
 
     void beginFrame() {
         keysPressed.fill(false);
@@ -347,8 +471,7 @@ public:
             onMouseButton(static_cast<int>(e.mouseButton), false, 0);
             return false;
         case input::EventType::MouseMotion:
-            onCursorMove(static_cast<double>(e.x), static_cast<double>(e.y),
-                         e.xrel, e.yrel);
+            onCursorMove(static_cast<double>(e.x), static_cast<double>(e.y), e.xrel, e.yrel);
             return false;
         case input::EventType::MouseWheel:
             onScroll(static_cast<double>(e.x), static_cast<double>(e.y));
@@ -396,8 +519,10 @@ public:
                         e.type == input::EventType::PenButtonUp) &&
                        e.penButton >= 1 && e.penButton <= 8) {
                 const uint8_t mask = static_cast<uint8_t>(1u << (e.penButton - 1));
-                if (e.type == input::EventType::PenButtonDown) pen_.buttons |= mask;
-                else pen_.buttons &= static_cast<uint8_t>(~mask);
+                if (e.type == input::EventType::PenButtonDown)
+                    pen_.buttons |= mask;
+                else
+                    pen_.buttons &= static_cast<uint8_t>(~mask);
             }
             return false;
         }
@@ -478,12 +603,24 @@ public:
     }
 
     // --- Keyboard queries (physical-key ids; TOUR_KEY_* aliases work) ---
-    bool isKeyHeld(int key) const { return validKey(key) && keysDown[key]; }
-    bool isKeyPressed(int key) const { return validKey(key) && keysPressed[key]; }
-    bool isKeyReleased(int key) const { return validKey(key) && keysReleased[key]; }
-    bool isKeyHeld(input::Key key) const { return isKeyHeld(static_cast<int>(key)); }
-    bool isKeyPressed(input::Key key) const { return isKeyPressed(static_cast<int>(key)); }
-    bool isKeyReleased(input::Key key) const { return isKeyReleased(static_cast<int>(key)); }
+    bool isKeyHeld(int key) const {
+        return validKey(key) && keysDown[key];
+    }
+    bool isKeyPressed(int key) const {
+        return validKey(key) && keysPressed[key];
+    }
+    bool isKeyReleased(int key) const {
+        return validKey(key) && keysReleased[key];
+    }
+    bool isKeyHeld(input::Key key) const {
+        return isKeyHeld(static_cast<int>(key));
+    }
+    bool isKeyPressed(input::Key key) const {
+        return isKeyPressed(static_cast<int>(key));
+    }
+    bool isKeyReleased(input::Key key) const {
+        return isKeyReleased(static_cast<int>(key));
+    }
     bool anyKeyPressed() const {
         for (bool b : keysPressed)
             if (b)
@@ -492,26 +629,62 @@ public:
     }
 
     // --- Mouse queries (TOUR_MOUSE_BUTTON_* aliases work) ---
-    bool isMouseButtonHeld(int button) const { return validMouseButton(button) && mouseDown[button]; }
-    bool isMouseButtonPressed(int button) const { return validMouseButton(button) && mousePressed[button]; }
-    bool isMouseButtonReleased(int button) const { return validMouseButton(button) && mouseReleased[button]; }
-    bool isMouseButtonHeld(input::MouseButton button) const { return isMouseButtonHeld(static_cast<int>(button)); }
-    bool isMouseButtonPressed(input::MouseButton button) const { return isMouseButtonPressed(static_cast<int>(button)); }
-    bool isMouseButtonReleased(input::MouseButton button) const { return isMouseButtonReleased(static_cast<int>(button)); }
+    bool isMouseButtonHeld(int button) const {
+        return validMouseButton(button) && mouseDown[button];
+    }
+    bool isMouseButtonPressed(int button) const {
+        return validMouseButton(button) && mousePressed[button];
+    }
+    bool isMouseButtonReleased(int button) const {
+        return validMouseButton(button) && mouseReleased[button];
+    }
+    bool isMouseButtonHeld(input::MouseButton button) const {
+        return isMouseButtonHeld(static_cast<int>(button));
+    }
+    bool isMouseButtonPressed(input::MouseButton button) const {
+        return isMouseButtonPressed(static_cast<int>(button));
+    }
+    bool isMouseButtonReleased(input::MouseButton button) const {
+        return isMouseButtonReleased(static_cast<int>(button));
+    }
 
-    double getMouseX() const { return mouseX; }
-    double getMouseY() const { return mouseY; }
-    double getMouseDeltaX() const { return mouseDeltaX; }
-    double getMouseDeltaY() const { return mouseDeltaY; }
+    double getMouseX() const {
+        return mouseX;
+    }
+    double getMouseY() const {
+        return mouseY;
+    }
+    double getMouseDeltaX() const {
+        return mouseDeltaX;
+    }
+    double getMouseDeltaY() const {
+        return mouseDeltaY;
+    }
     // Relative-mode deltas straight from the platform motion events (FPS look).
-    float getRelativeDeltaX() const { return relMouseDeltaX; }
-    float getRelativeDeltaY() const { return relMouseDeltaY; }
-    double getScrollDeltaX() const { return scrollDeltaX; }
-    double getScrollDeltaY() const { return scrollDeltaY; }
-    int getMods() const { return keyMods; }
-    const std::string& getTextInput() const { return textInput; }
-    bool isQuitRequested() const { return quitRequested; }
-    void clearQuitRequested() { quitRequested = false; }
+    float getRelativeDeltaX() const {
+        return relMouseDeltaX;
+    }
+    float getRelativeDeltaY() const {
+        return relMouseDeltaY;
+    }
+    double getScrollDeltaX() const {
+        return scrollDeltaX;
+    }
+    double getScrollDeltaY() const {
+        return scrollDeltaY;
+    }
+    int getMods() const {
+        return keyMods;
+    }
+    const std::string& getTextInput() const {
+        return textInput;
+    }
+    bool isQuitRequested() const {
+        return quitRequested;
+    }
+    void clearQuitRequested() {
+        quitRequested = false;
+    }
 
     // --- Pen (one active stylus; no synthesized mouse clicks) ---
     struct PenState {
@@ -520,16 +693,28 @@ public:
         float x = 0.0f, y = 0.0f;
         std::array<float, input::PenAxisCount> axes{};
         uint8_t buttons = 0;
-        float pressure() const { return axes[0]; }
-        float tiltX() const { return axes[1]; }
-        float tiltY() const { return axes[2]; }
+        float pressure() const {
+            return axes[0];
+        }
+        float tiltX() const {
+            return axes[1];
+        }
+        float tiltY() const {
+            return axes[2];
+        }
         bool buttonHeld(unsigned index) const {
             return index >= 1 && index <= 8 && (buttons & (1u << (index - 1))) != 0;
         }
     };
-    const PenState& pen() const { return pen_; }
-    bool isPenPressed() const { return penPressed_; }
-    bool isPenReleased() const { return penReleased_; }
+    const PenState& pen() const {
+        return pen_;
+    }
+    bool isPenPressed() const {
+        return penPressed_;
+    }
+    bool isPenReleased() const {
+        return penReleased_;
+    }
 
     // --- Gamepad ---
     struct GamepadState {
@@ -545,8 +730,12 @@ public:
         }
     };
 
-    int gamepadCount() const { return static_cast<int>(gamepads_.size()); }
-    bool hasGamepad() const { return !gamepads_.empty(); }
+    int gamepadCount() const {
+        return static_cast<int>(gamepads_.size());
+    }
+    bool hasGamepad() const {
+        return !gamepads_.empty();
+    }
     const GamepadState* gamepad(int index = 0) const {
         if (index < 0 || index >= static_cast<int>(gamepads_.size()))
             return nullptr;
@@ -565,12 +754,11 @@ public:
         const GamepadState* gp = gamepad(index);
         if (!gp || axis < input::GamepadAxis::LeftX || axis >= input::GamepadAxis::Count)
             return 0.0f;
-        const bool isTrigger = axis == input::GamepadAxis::LeftTrigger ||
-            axis == input::GamepadAxis::RightTrigger;
-        const bool isRight = axis == input::GamepadAxis::RightX ||
-            axis == input::GamepadAxis::RightY;
-        const float dz = isTrigger ? triggerDeadzone_
-            : (isRight ? lookDeadzone_ : stickDeadzone_);
+        const bool isTrigger =
+            axis == input::GamepadAxis::LeftTrigger || axis == input::GamepadAxis::RightTrigger;
+        const bool isRight =
+            axis == input::GamepadAxis::RightX || axis == input::GamepadAxis::RightY;
+        const float dz = isTrigger ? triggerDeadzone_ : (isRight ? lookDeadzone_ : stickDeadzone_);
         float v = gp->axes[static_cast<int>(axis)];
         // Small dead-zone so resting sticks/triggers read exactly 0.
         if (v > -dz && v < dz)
@@ -591,10 +779,8 @@ public:
         const GamepadState* gp = gamepad(index);
         if (!gp)
             return;
-        const input::GamepadAxis ax = left ? input::GamepadAxis::LeftX
-            : input::GamepadAxis::RightX;
-        const input::GamepadAxis ay = left ? input::GamepadAxis::LeftY
-            : input::GamepadAxis::RightY;
+        const input::GamepadAxis ax = left ? input::GamepadAxis::LeftX : input::GamepadAxis::RightX;
+        const input::GamepadAxis ay = left ? input::GamepadAxis::LeftY : input::GamepadAxis::RightY;
         const float dz = left ? stickDeadzone_ : lookDeadzone_;
         const float x = gp->axes[static_cast<int>(ax)];
         const float y = gp->axes[static_cast<int>(ay)];
@@ -608,32 +794,45 @@ public:
     // Trigger 0..1 with deadzone cut + rescale (triggers only).
     float gamepadTrigger(int index, input::GamepadAxis axis) const {
         const GamepadState* gp = gamepad(index);
-        if (!gp || (axis != input::GamepadAxis::LeftTrigger &&
-                    axis != input::GamepadAxis::RightTrigger))
+        if (!gp ||
+            (axis != input::GamepadAxis::LeftTrigger && axis != input::GamepadAxis::RightTrigger))
             return 0.0f;
-        float v = std::fmin(1.0f, std::fmax(0.0f,
-            gp->axes[static_cast<int>(axis)]));
+        float v = std::fmin(1.0f, std::fmax(0.0f, gp->axes[static_cast<int>(axis)]));
         if (v <= triggerDeadzone_)
             return 0.0f;
         return (v - triggerDeadzone_) / (1.0f - triggerDeadzone_);
     }
     // Per-control deadzones (radial for sticks, cut+rescale for triggers).
-    void setDeadzone(float dz) { stickDeadzone_ = lookDeadzone_ = dz; } // legacy: both sticks
-    void setStickDeadzone(float dz) { stickDeadzone_ = dz; }
-    void setLookDeadzone(float dz) { lookDeadzone_ = dz; }
-    void setTriggerDeadzone(float dz) { triggerDeadzone_ = dz; }
-    float stickDeadzone() const { return stickDeadzone_; }
-    float lookDeadzone() const { return lookDeadzone_; }
-    float triggerDeadzone() const { return triggerDeadzone_; }
+    void setDeadzone(float dz) {
+        stickDeadzone_ = lookDeadzone_ = dz;
+    } // legacy: both sticks
+    void setStickDeadzone(float dz) {
+        stickDeadzone_ = dz;
+    }
+    void setLookDeadzone(float dz) {
+        lookDeadzone_ = dz;
+    }
+    void setTriggerDeadzone(float dz) {
+        triggerDeadzone_ = dz;
+    }
+    float stickDeadzone() const {
+        return stickDeadzone_;
+    }
+    float lookDeadzone() const {
+        return lookDeadzone_;
+    }
+    float triggerDeadzone() const {
+        return triggerDeadzone_;
+    }
     bool gamepadButtonHeld(int index, input::GamepadButton b) const {
         const GamepadState* gp = gamepad(index);
-        return gp && b >= input::GamepadButton::South && b < input::GamepadButton::Count
-            && gp->btnDown[static_cast<int>(b)];
+        return gp && b >= input::GamepadButton::South && b < input::GamepadButton::Count &&
+               gp->btnDown[static_cast<int>(b)];
     }
     bool gamepadButtonPressed(int index, input::GamepadButton b) const {
         const GamepadState* gp = gamepad(index);
-        return gp && b >= input::GamepadButton::South && b < input::GamepadButton::Count
-            && gp->btnPressed[static_cast<int>(b)];
+        return gp && b >= input::GamepadButton::South && b < input::GamepadButton::Count &&
+               gp->btnPressed[static_cast<int>(b)];
     }
     // Legacy numeric overloads (SDL_GamepadButton ordering, see above).
     bool gamepadButtonHeld(int index, int b) const {
@@ -645,10 +844,8 @@ public:
 
     // Combined keyboard + left-stick move vector (x = strafe right+, y = forward+).
     void moveVector(float& outX, float& outY) const {
-        outX = (isKeyHeld(input::Key::D) ? 1.0f : 0.0f)
-            - (isKeyHeld(input::Key::A) ? 1.0f : 0.0f);
-        outY = (isKeyHeld(input::Key::W) ? 1.0f : 0.0f)
-            - (isKeyHeld(input::Key::S) ? 1.0f : 0.0f);
+        outX = (isKeyHeld(input::Key::D) ? 1.0f : 0.0f) - (isKeyHeld(input::Key::A) ? 1.0f : 0.0f);
+        outY = (isKeyHeld(input::Key::W) ? 1.0f : 0.0f) - (isKeyHeld(input::Key::S) ? 1.0f : 0.0f);
         if (hasGamepad()) {
             outX += gamepadAxis(0, input::GamepadAxis::LeftX);
             outY -= gamepadAxis(0, input::GamepadAxis::LeftY);
@@ -665,9 +862,15 @@ public:
     }
 
     // --- Actions ---
-    void BindAction(Action a, int scancode) { actionKeys_[static_cast<size_t>(a)].push_back(scancode); }
-    void BindAction(Action a, input::Key key) { BindAction(a, static_cast<int>(key)); }
-    void ClearAction(Action a) { actionKeys_[static_cast<size_t>(a)].clear(); }
+    void BindAction(Action a, int scancode) {
+        actionKeys_[static_cast<size_t>(a)].push_back(scancode);
+    }
+    void BindAction(Action a, input::Key key) {
+        BindAction(a, static_cast<int>(key));
+    }
+    void ClearAction(Action a) {
+        actionKeys_[static_cast<size_t>(a)].clear();
+    }
     bool IsActionHeld(Action a) const {
         for (int k : actionKeys_[static_cast<size_t>(a)])
             if (isKeyHeld(k))
@@ -704,9 +907,13 @@ public:
         BindAction(Action::UiConfirm, input::Key::Enter);
     }
 
-private:
-    static bool validKey(int key) { return key >= 0 && key < KeyCount; }
-    static bool validMouseButton(int b) { return b >= 0 && b < MouseButtonCount; }
+  private:
+    static bool validKey(int key) {
+        return key >= 0 && key < KeyCount;
+    }
+    static bool validMouseButton(int b) {
+        return b >= 0 && b < MouseButtonCount;
+    }
 
     void addGamepad(input::GamepadId id, const std::string& name) {
         for (const auto& g : gamepads_)
@@ -776,24 +983,17 @@ private:
     std::vector<GamepadState> gamepads_;
     float stickDeadzone_ = 0.12f;   // left stick (radial)
     float lookDeadzone_ = 0.20f;    // right stick (radial; drifty pads need it big)
-    float triggerDeadzone_ = 0.05f;  // triggers (0..1 cut + rescale)
+    float triggerDeadzone_ = 0.05f; // triggers (0..1 cut + rescale)
     std::array<std::vector<int>, static_cast<size_t>(Action::Count)> actionKeys_;
 };
 
 } // namespace tour::input
 
-
 // GLOBAL compat aliases (the migration bridge - retire with the call
 // sites; the boundary scanner guards against NEW globals, these are
 // the tracked pre-existing set).
 namespace input = tour::input;
-using tour::input::TOUR_KEY_UNKNOWN;
-using tour::input::TOUR_KEY_SPACE;
-using tour::input::TOUR_KEY_APOSTROPHE;
-using tour::input::TOUR_KEY_COMMA;
-using tour::input::TOUR_KEY_MINUS;
-using tour::input::TOUR_KEY_PERIOD;
-using tour::input::TOUR_KEY_SLASH;
+using tour::input::Input;
 using tour::input::TOUR_KEY_0;
 using tour::input::TOUR_KEY_1;
 using tour::input::TOUR_KEY_2;
@@ -804,58 +1004,27 @@ using tour::input::TOUR_KEY_6;
 using tour::input::TOUR_KEY_7;
 using tour::input::TOUR_KEY_8;
 using tour::input::TOUR_KEY_9;
-using tour::input::TOUR_KEY_SEMICOLON;
-using tour::input::TOUR_KEY_EQUAL;
 using tour::input::TOUR_KEY_A;
+using tour::input::TOUR_KEY_APOSTROPHE;
 using tour::input::TOUR_KEY_B;
-using tour::input::TOUR_KEY_C;
-using tour::input::TOUR_KEY_D;
-using tour::input::TOUR_KEY_E;
-using tour::input::TOUR_KEY_F;
-using tour::input::TOUR_KEY_G;
-using tour::input::TOUR_KEY_H;
-using tour::input::TOUR_KEY_I;
-using tour::input::TOUR_KEY_J;
-using tour::input::TOUR_KEY_K;
-using tour::input::TOUR_KEY_L;
-using tour::input::TOUR_KEY_M;
-using tour::input::TOUR_KEY_N;
-using tour::input::TOUR_KEY_O;
-using tour::input::TOUR_KEY_P;
-using tour::input::TOUR_KEY_Q;
-using tour::input::TOUR_KEY_R;
-using tour::input::TOUR_KEY_S;
-using tour::input::TOUR_KEY_T;
-using tour::input::TOUR_KEY_U;
-using tour::input::TOUR_KEY_V;
-using tour::input::TOUR_KEY_W;
-using tour::input::TOUR_KEY_X;
-using tour::input::TOUR_KEY_Y;
-using tour::input::TOUR_KEY_Z;
-using tour::input::TOUR_KEY_LEFT_BRACKET;
 using tour::input::TOUR_KEY_BACKSLASH;
-using tour::input::TOUR_KEY_RIGHT_BRACKET;
-using tour::input::TOUR_KEY_GRAVE_ACCENT;
-using tour::input::TOUR_KEY_ESCAPE;
-using tour::input::TOUR_KEY_ENTER;
-using tour::input::TOUR_KEY_TAB;
 using tour::input::TOUR_KEY_BACKSPACE;
-using tour::input::TOUR_KEY_INSERT;
-using tour::input::TOUR_KEY_DELETE;
-using tour::input::TOUR_KEY_RIGHT;
-using tour::input::TOUR_KEY_LEFT;
-using tour::input::TOUR_KEY_DOWN;
-using tour::input::TOUR_KEY_UP;
-using tour::input::TOUR_KEY_PAGE_UP;
-using tour::input::TOUR_KEY_PAGE_DOWN;
-using tour::input::TOUR_KEY_HOME;
-using tour::input::TOUR_KEY_END;
+using tour::input::TOUR_KEY_C;
 using tour::input::TOUR_KEY_CAPS_LOCK;
-using tour::input::TOUR_KEY_SCROLL_LOCK;
-using tour::input::TOUR_KEY_NUM_LOCK;
-using tour::input::TOUR_KEY_PRINT_SCREEN;
-using tour::input::TOUR_KEY_PAUSE;
+using tour::input::TOUR_KEY_COMMA;
+using tour::input::TOUR_KEY_D;
+using tour::input::TOUR_KEY_DELETE;
+using tour::input::TOUR_KEY_DOWN;
+using tour::input::TOUR_KEY_E;
+using tour::input::TOUR_KEY_END;
+using tour::input::TOUR_KEY_ENTER;
+using tour::input::TOUR_KEY_EQUAL;
+using tour::input::TOUR_KEY_ESCAPE;
+using tour::input::TOUR_KEY_F;
 using tour::input::TOUR_KEY_F1;
+using tour::input::TOUR_KEY_F10;
+using tour::input::TOUR_KEY_F11;
+using tour::input::TOUR_KEY_F12;
 using tour::input::TOUR_KEY_F2;
 using tour::input::TOUR_KEY_F3;
 using tour::input::TOUR_KEY_F4;
@@ -864,9 +1033,14 @@ using tour::input::TOUR_KEY_F6;
 using tour::input::TOUR_KEY_F7;
 using tour::input::TOUR_KEY_F8;
 using tour::input::TOUR_KEY_F9;
-using tour::input::TOUR_KEY_F10;
-using tour::input::TOUR_KEY_F11;
-using tour::input::TOUR_KEY_F12;
+using tour::input::TOUR_KEY_G;
+using tour::input::TOUR_KEY_GRAVE_ACCENT;
+using tour::input::TOUR_KEY_H;
+using tour::input::TOUR_KEY_HOME;
+using tour::input::TOUR_KEY_I;
+using tour::input::TOUR_KEY_INSERT;
+using tour::input::TOUR_KEY_J;
+using tour::input::TOUR_KEY_K;
 using tour::input::TOUR_KEY_KP_0;
 using tour::input::TOUR_KEY_KP_1;
 using tour::input::TOUR_KEY_KP_2;
@@ -877,23 +1051,56 @@ using tour::input::TOUR_KEY_KP_6;
 using tour::input::TOUR_KEY_KP_7;
 using tour::input::TOUR_KEY_KP_8;
 using tour::input::TOUR_KEY_KP_9;
+using tour::input::TOUR_KEY_KP_ADD;
 using tour::input::TOUR_KEY_KP_DECIMAL;
 using tour::input::TOUR_KEY_KP_DIVIDE;
-using tour::input::TOUR_KEY_KP_MULTIPLY;
-using tour::input::TOUR_KEY_KP_SUBTRACT;
-using tour::input::TOUR_KEY_KP_ADD;
 using tour::input::TOUR_KEY_KP_ENTER;
 using tour::input::TOUR_KEY_KP_EQUAL;
-using tour::input::TOUR_KEY_LEFT_SHIFT;
-using tour::input::TOUR_KEY_LEFT_CONTROL;
-using tour::input::TOUR_KEY_LEFT_ALT;
-using tour::input::TOUR_KEY_LEFT_SUPER;
-using tour::input::TOUR_KEY_RIGHT_SHIFT;
-using tour::input::TOUR_KEY_RIGHT_CONTROL;
-using tour::input::TOUR_KEY_RIGHT_ALT;
-using tour::input::TOUR_KEY_RIGHT_SUPER;
-using tour::input::TOUR_KEY_MENU;
+using tour::input::TOUR_KEY_KP_MULTIPLY;
+using tour::input::TOUR_KEY_KP_SUBTRACT;
+using tour::input::TOUR_KEY_L;
 using tour::input::TOUR_KEY_LAST;
+using tour::input::TOUR_KEY_LEFT;
+using tour::input::TOUR_KEY_LEFT_ALT;
+using tour::input::TOUR_KEY_LEFT_BRACKET;
+using tour::input::TOUR_KEY_LEFT_CONTROL;
+using tour::input::TOUR_KEY_LEFT_SHIFT;
+using tour::input::TOUR_KEY_LEFT_SUPER;
+using tour::input::TOUR_KEY_M;
+using tour::input::TOUR_KEY_MENU;
+using tour::input::TOUR_KEY_MINUS;
+using tour::input::TOUR_KEY_N;
+using tour::input::TOUR_KEY_NUM_LOCK;
+using tour::input::TOUR_KEY_O;
+using tour::input::TOUR_KEY_P;
+using tour::input::TOUR_KEY_PAGE_DOWN;
+using tour::input::TOUR_KEY_PAGE_UP;
+using tour::input::TOUR_KEY_PAUSE;
+using tour::input::TOUR_KEY_PERIOD;
+using tour::input::TOUR_KEY_PRINT_SCREEN;
+using tour::input::TOUR_KEY_Q;
+using tour::input::TOUR_KEY_R;
+using tour::input::TOUR_KEY_RIGHT;
+using tour::input::TOUR_KEY_RIGHT_ALT;
+using tour::input::TOUR_KEY_RIGHT_BRACKET;
+using tour::input::TOUR_KEY_RIGHT_CONTROL;
+using tour::input::TOUR_KEY_RIGHT_SHIFT;
+using tour::input::TOUR_KEY_RIGHT_SUPER;
+using tour::input::TOUR_KEY_S;
+using tour::input::TOUR_KEY_SCROLL_LOCK;
+using tour::input::TOUR_KEY_SEMICOLON;
+using tour::input::TOUR_KEY_SLASH;
+using tour::input::TOUR_KEY_SPACE;
+using tour::input::TOUR_KEY_T;
+using tour::input::TOUR_KEY_TAB;
+using tour::input::TOUR_KEY_U;
+using tour::input::TOUR_KEY_UNKNOWN;
+using tour::input::TOUR_KEY_UP;
+using tour::input::TOUR_KEY_V;
+using tour::input::TOUR_KEY_W;
+using tour::input::TOUR_KEY_X;
+using tour::input::TOUR_KEY_Y;
+using tour::input::TOUR_KEY_Z;
 using tour::input::TOUR_MOUSE_BUTTON_1;
 using tour::input::TOUR_MOUSE_BUTTON_2;
 using tour::input::TOUR_MOUSE_BUTTON_3;
@@ -904,6 +1111,5 @@ using tour::input::TOUR_MOUSE_BUTTON_7;
 using tour::input::TOUR_MOUSE_BUTTON_8;
 using tour::input::TOUR_MOUSE_BUTTON_LAST;
 using tour::input::TOUR_MOUSE_BUTTON_LEFT;
-using tour::input::TOUR_MOUSE_BUTTON_RIGHT;
 using tour::input::TOUR_MOUSE_BUTTON_MIDDLE;
-using tour::input::Input;
+using tour::input::TOUR_MOUSE_BUTTON_RIGHT;

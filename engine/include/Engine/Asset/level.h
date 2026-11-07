@@ -47,30 +47,30 @@ inline constexpr uint32_t kLevelMagic = 0x314C564Cu; // "LVL1" LE
 // One packed sub-blob record (parsed view; offset/size are
 // payload-relative).
 struct LevelSubBlob {
-	PakAssetKind kind = PakAssetKind::Scene;
-	std::string key;   // canonical (vfs-path-shaped) address
-	uint64_t offset = 0;
-	uint64_t size = 0;
+    PakAssetKind kind = PakAssetKind::Scene;
+    std::string key; // canonical (vfs-path-shaped) address
+    uint64_t offset = 0;
+    uint64_t size = 0;
 };
 
 // Parsed level view over borrowed bytes.
 struct LevelBlob {
-	std::string name;       // the level's own ID
-	std::string sceneKey;   // "" = data-only level
-	std::vector<LevelSubBlob> subs;
-	std::span<const uint8_t> payload; // borrowed from the source blob
+    std::string name;     // the level's own ID
+    std::string sceneKey; // "" = data-only level
+    std::vector<LevelSubBlob> subs;
+    std::span<const uint8_t> payload; // borrowed from the source blob
 
-	// First sub-blob by exact key (nullptr = missing).
-	const LevelSubBlob* Find(std::string_view key) const;
-	// Sub-blob bytes by key (empty span = missing/empty).
-	std::span<const uint8_t> Bytes(std::string_view key) const;
+    // First sub-blob by exact key (nullptr = missing).
+    const LevelSubBlob* Find(std::string_view key) const;
+    // Sub-blob bytes by key (empty span = missing/empty).
+    std::span<const uint8_t> Bytes(std::string_view key) const;
 };
 
 // Builder input (one packed payload; bytes copied into the blob).
 struct LevelSubInput {
-	PakAssetKind kind = PakAssetKind::Scene;
-	std::string key;
-	std::span<const uint8_t> bytes;
+    PakAssetKind kind = PakAssetKind::Scene;
+    std::string key;
+    std::span<const uint8_t> bytes;
 };
 
 // Serializes the level blob (header + TOC + concatenated payloads).
@@ -78,8 +78,10 @@ struct LevelSubInput {
 // are allowed on the wire but Find returns the FIRST; builders should
 // keep keys unique. Fails on nothing except allocation; empty bytes are
 // legal (the key still occupies a slot).
-bool BuildLevelBlob(std::string_view name, std::string_view sceneKey,
-	std::span<const LevelSubInput> subs, std::vector<uint8_t>& out);
+bool BuildLevelBlob(std::string_view name,
+                    std::string_view sceneKey,
+                    std::span<const LevelSubInput> subs,
+                    std::vector<uint8_t>& out);
 
 // Parses + validates (magic, truncation, sub-blob bounds). `blob` is
 // borrowed: payload spans point into it. False on any malformation.

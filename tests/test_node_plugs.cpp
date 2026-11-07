@@ -23,41 +23,38 @@ int main() {
     assert(!plugs::Find("no.such.attribute"));
     assert(!plugs::ValidValue("physics.mass", plugs::Value::Bool(true)));
     assert(!plugs::ValidValue("physics.mass", plugs::Value::Number(NAN)));
-    assert(plugs::Write(scene,a,"physics.mass",plugs::Value::Number(17.5)));
+    assert(plugs::Write(scene, a, "physics.mass", plugs::Value::Number(17.5)));
     plugs::Value value;
-    assert(plugs::Read(scene,a,"physics.mass",value));
+    assert(plugs::Read(scene, a, "physics.mass", value));
     assert(value == plugs::Value::Number(17.5));
-    assert(!plugs::Write(scene,b,"physics.mass",plugs::Value::Bool(false)));
-    assert(plugs::Read(scene,b,"physics.mass",value) &&
-        value == plugs::Value::Number(1.0));
-    assert(plugs::Write(scene,b,"trigger.tag",plugs::Value::String("door A")));
-    assert(plugs::Read(scene,b,"trigger.tag",value) &&
-        value == plugs::Value::String("door A"));
-    assert(!plugs::Write(scene,c,"trigger.tag",plugs::Value::String("not attached")));
-    assert(plugs::Write(scene,a,"gi.spacing",plugs::Value::Number(0.75)));
-    assert(plugs::Read(scene,a,"gi.spacing",value) && value.number == 0.75);
-    assert(plugs::Write(scene,a,"node.static",plugs::Value::Bool(true)));
-    assert(plugs::Read(scene,a,"node.static",value) && value.boolean);
-    assert(plugs::Write(scene,a,"node.static",plugs::Value::Bool(false)));
+    assert(!plugs::Write(scene, b, "physics.mass", plugs::Value::Bool(false)));
+    assert(plugs::Read(scene, b, "physics.mass", value) && value == plugs::Value::Number(1.0));
+    assert(plugs::Write(scene, b, "trigger.tag", plugs::Value::String("door A")));
+    assert(plugs::Read(scene, b, "trigger.tag", value) && value == plugs::Value::String("door A"));
+    assert(!plugs::Write(scene, c, "trigger.tag", plugs::Value::String("not attached")));
+    assert(plugs::Write(scene, a, "gi.spacing", plugs::Value::Number(0.75)));
+    assert(plugs::Read(scene, a, "gi.spacing", value) && value.number == 0.75);
+    assert(plugs::Write(scene, a, "node.static", plugs::Value::Bool(true)));
+    assert(plugs::Read(scene, a, "node.static", value) && value.boolean);
+    assert(plugs::Write(scene, a, "node.static", plugs::Value::Bool(false)));
 
     // Per-instance endpoints: one destination source, type safety,
     // downstream dependency propagation, and cycle prevention.
     plugs::Graph graph;
-    assert(graph.Connect({{a,"physics.mass"},{b,"physics.mass"}}));
-    assert(graph.Connect({{b,"physics.mass"},{c,"physics.mass"}}));
-    assert(!graph.Connect({{c,"physics.mass"},{a,"physics.mass"}}));
-    assert(!graph.Connect({{a,"physics.mass"},{b,"physics.sensor"}}));
-    assert(!graph.Connect({{a,"physics.mass"},{a,"physics.mass"}}));
+    assert(graph.Connect({{a, "physics.mass"}, {b, "physics.mass"}}));
+    assert(graph.Connect({{b, "physics.mass"}, {c, "physics.mass"}}));
+    assert(!graph.Connect({{c, "physics.mass"}, {a, "physics.mass"}}));
+    assert(!graph.Connect({{a, "physics.mass"}, {b, "physics.sensor"}}));
+    assert(!graph.Connect({{a, "physics.mass"}, {a, "physics.mass"}}));
     assert(graph.Connections().size() == 2);
     assert(graph.Evaluate(scene));
-    assert(plugs::Read(scene,c,"physics.mass",value) &&
-        value == plugs::Value::Number(17.5));
+    assert(plugs::Read(scene, c, "physics.mass", value) && value == plugs::Value::Number(17.5));
 
     // Reconnect replaces exactly one destination, leaving other links
     // untouched; disconnect only severs that destination plug.
-    assert(graph.Connect({{a,"physics.mass"},{c,"physics.mass"}}));
+    assert(graph.Connect({{a, "physics.mass"}, {c, "physics.mass"}}));
     assert(graph.Connections().size() == 2);
-    graph.Disconnect({c,"physics.mass"});
+    graph.Disconnect({c, "physics.mass"});
     assert(graph.Connections().size() == 1);
     assert(graph.Evaluate(scene));
     return 0;

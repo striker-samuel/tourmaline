@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
-#include <Engine/Scene/scene_memory_bindings.h>
 #include <Engine/Scene/gpu_scene_memory_bindings.h>
+#include <Engine/Scene/scene_memory_bindings.h>
 #include <cassert>
 #include <cstdint>
 
@@ -42,8 +42,8 @@ int main() {
     assert(GetView(scene, Semantic::NodeGeneration).format == ScalarFormat::UInt32);
 
     alignas(16) float external[32]{};
-    ExternalBinding b { Semantic::LocalTransform, external, 2, 2,
-                        sizeof(glm::mat4), alignof(glm::mat4) };
+    ExternalBinding b{
+        Semantic::LocalTransform, external, 2, 2, sizeof(glm::mat4), alignof(glm::mat4)};
     assert(Validate(b));
     b.count = 3;
     assert(!Validate(b));
@@ -74,12 +74,11 @@ int main() {
     alignas(16) glm::mat4 externalLocal[8]{};
     alignas(16) glm::mat4 externalGlobal[8]{};
     alignas(16) Hierarchy externalHierarchy[8]{};
-    ExternalBinding localBind{ Semantic::LocalTransform, externalLocal, 2, 8,
-                               sizeof(glm::mat4), 16 };
-    ExternalBinding globalBind{ Semantic::GlobalTransform, externalGlobal, 2, 8,
-                                sizeof(glm::mat4), 16 };
-    ExternalBinding hierarchyBind{ Semantic::Hierarchy, externalHierarchy, 2, 8,
-                                   sizeof(Hierarchy), 16 };
+    ExternalBinding localBind{Semantic::LocalTransform, externalLocal, 2, 8, sizeof(glm::mat4), 16};
+    ExternalBinding globalBind{
+        Semantic::GlobalTransform, externalGlobal, 2, 8, sizeof(glm::mat4), 16};
+    ExternalBinding hierarchyBind{
+        Semantic::Hierarchy, externalHierarchy, 2, 8, sizeof(Hierarchy), 16};
     assert(BindExternal(bound, localBind));
     assert(BindExternal(bound, globalBind));
     assert(BindExternal(bound, hierarchyBind));
@@ -131,7 +130,7 @@ int main() {
     const auto meshId = gpuDb.meshes.Insert(tour::gpu_scene::Mesh{});
     assert(meshId);
     tour::gpu_scene::Addresses gpuAddresses{};
-    gpuAddresses.meshes = 0x1000u;  // fabricated device address for metadata test
+    gpuAddresses.meshes = 0x1000u; // fabricated device address for metadata test
     const auto gpuViews = GetGpuViews(gpuDb, gpuAddresses, 1);
     assert(gpuViews.size() == 6);
     assert(gpuViews[0].semantic == GpuSemantic::Mesh);

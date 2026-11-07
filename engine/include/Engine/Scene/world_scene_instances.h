@@ -54,16 +54,21 @@ struct WorldSceneInstance {
 };
 
 class WorldSceneInstances {
-public:
+  public:
     // Map identity lives in the single active World, not another World.
     // Refuse to switch while any scene instance from the old Map survives.
     bool SetActiveMap(uint64_t id) {
-        if (!instances_.empty()) return false;
+        if (!instances_.empty())
+            return false;
         activeMap_ = id;
         return true;
     }
-    uint64_t ActiveMap() const { return activeMap_; }
-    size_t Count() const { return instances_.size(); }
+    uint64_t ActiveMap() const {
+        return activeMap_;
+    }
+    size_t Count() const {
+        return instances_.size();
+    }
 
     const WorldSceneInstance* Find(uint64_t id) const {
         const auto it = instances_.find(id);
@@ -73,8 +78,10 @@ public:
     // The caller acquires all assets before this call (AssetResidency's
     // AcquireAll is atomic), and publishes render bindings separately after
     // the root is valid. No scene-level GPU resources are embedded here.
-    uint64_t Instantiate(Scene& target, RegionRegistry& regions,
-                         const Scene& source, uint64_t sceneAssetId,
+    uint64_t Instantiate(Scene& target,
+                         RegionRegistry& regions,
+                         const Scene& source,
+                         uint64_t sceneAssetId,
                          const glm::dmat4& frame,
                          std::vector<asset::AssetLease> assets,
                          std::string& err,
@@ -90,8 +97,8 @@ public:
         }
         for (int c = 0; c < 4; ++c)
             for (int r = 0; r < 4; ++r)
-                if (!std::isfinite(frame[c][r])
-                    || std::abs(frame[c][r]) > double(std::numeric_limits<float>::max())) {
+                if (!std::isfinite(frame[c][r]) ||
+                    std::abs(frame[c][r]) > double(std::numeric_limits<float>::max())) {
                     err = "nonfinite Scene placement";
                     return 0;
                 }
@@ -103,22 +110,19 @@ public:
         const auto& t = source.tables;
         // Non-resource component rows still need their own owner-specific
         // publication. Do not silently discard animation/audio/physics/etc.
-        if (!t.giVolumes.empty() || !t.cubemaps.empty()
-            || !t.exports.empty() || !t.envs.empty()
-            || !t.envVolumes.empty() || !t.audioSources.empty()
-            || !t.audioRooms.empty() || !t.triggerVolumes.empty()
-            || !t.physicsBodies.empty() || !t.schemaAssocs.empty()) {
+        if (!t.giVolumes.empty() || !t.cubemaps.empty() || !t.exports.empty() || !t.envs.empty() ||
+            !t.envVolumes.empty() || !t.audioSources.empty() || !t.audioRooms.empty() ||
+            !t.triggerVolumes.empty() || !t.physicsBodies.empty() || !t.schemaAssocs.empty()) {
             err = "Scene has typed bindings requiring the incremental resource/component publisher";
             return 0;
         }
         // Mesh/material/light/camera/decal rows all have one integer
         // resource index; validate explicitly to avoid an unsafe cast.
-        const auto validRow = [&](uint32_t node, uint32_t sourceIndex,
-                                  const std::vector<uint32_t>* remap) {
-            return remap && node < source.hierarchy.size()
-                && IsLiveSlot(source, node) && sourceIndex < remap->size()
-                && (*remap)[sourceIndex] != UINT32_MAX;
-        };
+        const auto validRow =
+            [&](uint32_t node, uint32_t sourceIndex, const std::vector<uint32_t>* remap) {
+                return remap && node < source.hierarchy.size() && IsLiveSlot(source, node) &&
+                       sourceIndex < remap->size() && (*remap)[sourceIndex] != UINT32_MAX;
+            };
         for (const MeshRow& row : t.meshes)
             if (!bindings || !validRow(row.node, row.mesh, &bindings->mesh)) {
                 err = "Scene mesh resource binding unresolved";
@@ -156,7 +160,8 @@ public:
         std::vector<uint8_t> visit(n, 0);
         size_t live = 0;
         for (uint32_t i = 0; i < n; ++i) {
-            if (!IsLiveSlot(source, i)) continue;
+            if (!IsLiveSlot(source, i))
+                continue;
             ++live;
             if (i >= source.localTransform.size()) {
                 err = "Scene transform missing for a live node";
@@ -165,27 +170,27 @@ public:
             for (int c = 0; c < 4; ++c)
                 for (int r = 0; r < 4; ++r) {
                     const double value = i < source.localTransformDouble.size()
-                        ? source.localTransformDouble[i][c][r]
-                        : double(source.localTransform[i][c][r]);
-                    if (!std::isfinite(source.localTransform[i][c][r])
-                        || !std::isfinite(value)
-                        || std::abs(value) > double(std::numeric_limits<float>::max())) {
+                                             ? source.localTransformDouble[i][c][r]
+                                             : double(source.localTransform[i][c][r]);
+                    if (!std::isfinite(source.localTransform[i][c][r]) || !std::isfinite(value) ||
+                        std::abs(value) > double(std::numeric_limits<float>::max())) {
                         err = "nonfinite or unrepresentable source transform";
                         return 0;
                     }
                 }
         }
         for (uint32_t i = 0; i < n; ++i) {
-            if (!IsLiveSlot(source, i)) continue;
+            if (!IsLiveSlot(source, i))
+                continue;
             std::vector<uint32_t> chain;
             int current = int(i);
             while (current >= 0) {
-                if (size_t(current) >= n
-                    || !IsLiveSlot(source, uint32_t(current))) {
+                if (size_t(current) >= n || !IsLiveSlot(source, uint32_t(current))) {
                     err = "Scene parent points outside live hierarchy";
                     return 0;
                 }
-                if (depth[size_t(current)] >= 0) break;
+                if (depth[size_t(current)] >= 0)
+                    break;
                 if (visit[size_t(current)] == 1) {
                     err = "Scene hierarchy cycle";
                     return 0;
@@ -210,10 +215,9 @@ public:
         const size_t size = target.hierarchy.size();
         const size_t reuse = target.nodeFreeList.size();
         const size_t growth = needed > reuse ? needed - reuse : 0;
-        if (size >= kNodeSlotCountMax - 1
-            || growth > kNodeSlotCountMax - 1 - size
-            || (target.nodeSlotBudget
-                && growth > target.nodeSlotBudget - std::min(size, target.nodeSlotBudget))) {
+        if (size >= kNodeSlotCountMax - 1 || growth > kNodeSlotCountMax - 1 - size ||
+            (target.nodeSlotBudget &&
+             growth > target.nodeSlotBudget - std::min(size, target.nodeSlotBudget))) {
             err = "World instance would exceed scene node budget";
             return 0;
         }
@@ -221,7 +225,8 @@ public:
         std::vector<uint32_t> order;
         order.reserve(live);
         for (uint32_t i = 0; i < n; ++i)
-            if (IsLiveSlot(source, i)) order.push_back(i);
+            if (IsLiveSlot(source, i))
+                order.push_back(i);
         std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
             return depth[a] < depth[b] || (depth[a] == depth[b] && a < b);
         });
@@ -238,8 +243,7 @@ public:
         target.localTransformDouble[size_t(root)] = frame;
         target.localTransformFloatShadow[size_t(root)] = glm::mat4(frame);
         setNodeName(target, root, "SceneInstance");
-        const uint64_t region = regions.Register(
-            target, instance.root, RegionKind::PrefabInstance);
+        const uint64_t region = regions.Register(target, instance.root, RegionKind::PrefabInstance);
         if (!region) {
             deleteSceneNodes(target, {uint32_t(root)});
             err = "failed to register incremental scene root";
@@ -248,19 +252,19 @@ public:
         instance.region = region;
         for (uint32_t src : order) {
             const int sourceParent = source.hierarchy[src].parent;
-            const int parent = sourceParent < 0 ? root :
-                int(NodeHandleSlot(instance.sourceNodes[size_t(sourceParent)]));
+            const int parent =
+                sourceParent < 0 ? root
+                                 : int(NodeHandleSlot(instance.sourceNodes[size_t(sourceParent)]));
             const int dst = addNode(target, parent, depth[src], false);
             instance.sourceNodes[src] = MakeNodeHandle(target, NodeId(dst));
             target.localTransform[size_t(dst)] = source.localTransform[src];
-            target.localTransformDouble[size_t(dst)] =
-                src < source.localTransformDouble.size()
-                ? source.localTransformDouble[src]
-                : glm::dmat4(source.localTransform[src]);
-            target.localTransformFloatShadow[size_t(dst)] =
-                target.localTransform[size_t(dst)];
+            target.localTransformDouble[size_t(dst)] = src < source.localTransformDouble.size()
+                                                           ? source.localTransformDouble[src]
+                                                           : glm::dmat4(source.localTransform[src]);
+            target.localTransformFloatShadow[size_t(dst)] = target.localTransform[size_t(dst)];
             const std::string name = getNodeName(source, int(src));
-            if (!name.empty()) setNodeName(target, dst, name);
+            if (!name.empty())
+                setNodeName(target, dst, name);
             if (src < source.staticRoot.size())
                 target.staticRoot[size_t(dst)] = source.staticRoot[src];
             if (src < source.noLightmap.size())
@@ -272,24 +276,28 @@ public:
             if (src < source.ditherCloseup.size())
                 target.ditherCloseup[size_t(dst)] = source.ditherCloseup[src];
             if (src < source.castsVolumetricShadow.size())
-                target.castsVolumetricShadow[size_t(dst)] =
-                    source.castsVolumetricShadow[src];
+                target.castsVolumetricShadow[size_t(dst)] = source.castsVolumetricShadow[src];
         }
         if (bindings) {
             for (const MeshRow& row : t.meshes)
-                SetMesh(target, NodeHandleSlot(instance.sourceNodes[row.node]),
+                SetMesh(target,
+                        NodeHandleSlot(instance.sourceNodes[row.node]),
                         bindings->mesh[row.mesh]);
             for (const MaterialRow& row : t.materials)
-                SetMaterial(target, NodeHandleSlot(instance.sourceNodes[row.node]),
+                SetMaterial(target,
+                            NodeHandleSlot(instance.sourceNodes[row.node]),
                             bindings->material[row.material]);
             for (const LightRow& row : t.lights)
-                SetLight(target, NodeHandleSlot(instance.sourceNodes[row.node]),
+                SetLight(target,
+                         NodeHandleSlot(instance.sourceNodes[row.node]),
                          bindings->light[row.light]);
             for (const CameraRow& row : t.cameras)
-                SetCamera(target, NodeHandleSlot(instance.sourceNodes[row.node]),
+                SetCamera(target,
+                          NodeHandleSlot(instance.sourceNodes[row.node]),
                           bindings->camera[row.camera]);
             for (const DecalRow& row : t.decals)
-                SetDecal(target, NodeHandleSlot(instance.sourceNodes[row.node]),
+                SetDecal(target,
+                         NodeHandleSlot(instance.sourceNodes[row.node]),
                          bindings->decal[row.decal]);
         }
         // Only the new subtree is marked; no ResolveAndFixup_clusters(),
@@ -305,9 +313,12 @@ public:
 
     bool Retire(Scene& target, RegionRegistry& regions, uint64_t id) {
         auto it = instances_.find(id);
-        if (it == instances_.end()) return false;
-        if (!NodeHandleValid(target, it->second.root)) return false;
-        if (!regions.Unregister(it->second.region)) return false;
+        if (it == instances_.end())
+            return false;
+        if (!NodeHandleValid(target, it->second.root))
+            return false;
+        if (!regions.Unregister(it->second.region))
+            return false;
         // deleteSceneNodes only retires our root and descendants.
         // Surviving instance node slots (and their generations) never move.
         deleteSceneNodes(target, {NodeHandleSlot(it->second.root)});
@@ -315,7 +326,7 @@ public:
         return true;
     }
 
-private:
+  private:
     uint64_t activeMap_ = 0;
     uint64_t nextId_ = 1;
     std::map<uint64_t, WorldSceneInstance> instances_;

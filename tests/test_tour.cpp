@@ -8,9 +8,9 @@
 // Hand-rolled runner (no test framework dependency): each check prints
 // PASS/FAIL, the process exits nonzero on any failure.
 
-#include <cstdio>
-#include <cstdint>
 #include <algorithm>
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -22,8 +22,8 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Scene/scene.h>
 
-#include <gltf_import/gltf.h>
 #include <gltf_import/asset_export.h>
+#include <gltf_import/gltf.h>
 
 #include <ktx.h>
 
@@ -33,749 +33,760 @@ int g_failures = 0;
 int g_checks = 0;
 
 void Check(bool cond, const char* name) {
-	++g_checks;
-	if (cond) {
-		std::cout << "PASS " << name << "\n";
-	}
-	else {
-		++g_failures;
-		std::cout << "FAIL " << name << "\n";
-	}
+    ++g_checks;
+    if (cond) {
+        std::cout << "PASS " << name << "\n";
+    } else {
+        ++g_failures;
+        std::cout << "FAIL " << name << "\n";
+    }
 }
 
 std::string TempTour() {
-	return (std::filesystem::temp_directory_path() / "tourmaline_test.tour").string();
+    return (std::filesystem::temp_directory_path() / "tourmaline_test.tour").string();
 }
 
 void TestRoundTrip() {
-	smvk::tour::Doc doc;
-	doc.source = "content/models/Bistro/bistro.gltf";
-	doc.fingerprint = "abc:123";
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::Rename;
-	c.node = 45;
-	c.text = "Shop \"Wall\"";
-	c.name = "OldName";
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetTranslate;
-	c.node = 7;
-	c.vec = glm::vec3(1.25f, -3.5f, 0.0f);
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetRotate;
-	c.node = 7;
-	c.vec = glm::vec3(0.0f, 90.0f, 0.0f);
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetScale;
-	c.node = 7;
-	c.vec = glm::vec3(1.0f, 2.0f, 1.0f);
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::AssignMaterial;
-	c.node = 9;
-	c.material = 12;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetMatAttr;
-	c.material = 3;
-	c.text = "baseColor";
-	c.vec4 = glm::vec4(1.0f, 0.5f, 0.25f, 1.0f);
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetMatAttr;
-	c.material = 3;
-	c.text = "metallic";
-	c.number = 0.9;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetMatAttr;
-	c.material = 3;
-	c.text = "alphaMode";
-	c.number = 1.0;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetNoLightmap;
-	c.node = 45;
-	c.flag = true;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetVisibility;
-	c.node = 46;
-	c.flag = true;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::Parent;
-	c.node = 45;
-	c.node2 = 12;
-	doc.commands.push_back(c);
-	// Wide Clarisse-style overrides (ordered, later wins, locals win over all).
-	smvk::tour::OverrideRule r{};
-	r.attr = smvk::tour::OverrideAttr::Visibility;
-	r.pattern = "Building_.*";
-	r.flag = true;
-	r.enabled = true;
-	doc.overrides.push_back(r);
-	r = smvk::tour::OverrideRule{};
-	r.attr = smvk::tour::OverrideAttr::NoLightmap;
-	r.pattern = "Tree.*";
-	r.flag = true;
-	r.enabled = false;
-	doc.overrides.push_back(r);
-	// Typed per-plug rules: number, boolean and string survive the
-	// same .tour text format and retain stable, machine-readable keys.
-	r = smvk::tour::OverrideRule{};
-	r.attr = smvk::tour::OverrideAttr::Plug;
-	r.pattern = "Body.*";
-	r.plug = "physics.mass";
-	r.value = tour::scene::plugs::Value::Number(12.5);
-	doc.overrides.push_back(r);
-	r = smvk::tour::OverrideRule{};
-	r.attr = smvk::tour::OverrideAttr::Plug;
-	r.pattern = "Sensor.*";
-	r.plug = "trigger.enabled";
-	r.value = tour::scene::plugs::Value::Bool(false);
-	doc.overrides.push_back(r);
-	r = smvk::tour::OverrideRule{};
-	r.attr = smvk::tour::OverrideAttr::Plug;
-	r.pattern = "Sensor.*";
-	r.plug = "trigger.tag";
-	r.value = tour::scene::plugs::Value::String("Zone A");
-	doc.overrides.push_back(r);
-	doc.connections.push_back({{7,"physics.mass"},{9,"physics.mass"}});
-	// Cook/export knobs ride the scene's exportSettings NODE: a createNode
-	// -at exportSettings line + setExportAttr lines (the singleton is the
-	// first create; attrs address it via kCreateExportRefBase | 0).
-	{
-		smvk::tour::Command ec{};
-		ec.verb = smvk::tour::Verb::CreateNode;
-		ec.nodeType = "exportSettings";
-		ec.node = 0; // parent = cluster root
-		ec.text = "ExportSettings";
-		doc.commands.push_back(ec);
-		auto ea = [&](const char* attr, double num, bool flag,
-			const char* str) {
-			smvk::tour::Command a{};
-			a.verb = smvk::tour::Verb::SetExportAttr;
-			a.node = smvk::tour::kCreateExportRefBase | 0u;
-			a.text = attr;
-			a.number = num;
-			a.flag = flag;
-			a.name = str;
-			doc.commands.push_back(a);
-		};
-		ea("lightmap", 0.0, true, "");
-		ea("lmMetersPerTexel", 0.125, false, "");
-		ea("lmExcludeKw", 0.0, false, "tree,glass");
-		ea("lods", 0.0, true, "");
-		ea("lodRatios", 0.0, false, "0.5,0.25,0.1");
-		ea("lodError", 0.05, false, "");
-		ea("meshlets", 0.0, true, "");
-		ea("meshletMaxVerts", 100.0, false, "");
-		ea("meshletMaxTris", 200.0, false, "");
-		ea("meshletConeWeight", 0.5, false, "");
-	}
-	// The sun/sky ride the ENV BLOCKS (env.default.* editorSet keys —
-	// SceneEnv, lux-native); the exportSettings node carries no sun/sky.
-	doc.editorSettings.emplace_back("env.default.sunAzimuth", "120");
-	doc.editorSettings.emplace_back("env.default.sunElevation", "42");
-	doc.editorSettings.emplace_back("env.default.sunIntensity", "4242");
-	doc.editorSettings.emplace_back("env.default.sunColor", "1 0.5 0.25");
+    smvk::tour::Doc doc;
+    doc.source = "content/models/Bistro/bistro.gltf";
+    doc.fingerprint = "abc:123";
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::Rename;
+    c.node = 45;
+    c.text = "Shop \"Wall\"";
+    c.name = "OldName";
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetTranslate;
+    c.node = 7;
+    c.vec = glm::vec3(1.25f, -3.5f, 0.0f);
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetRotate;
+    c.node = 7;
+    c.vec = glm::vec3(0.0f, 90.0f, 0.0f);
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetScale;
+    c.node = 7;
+    c.vec = glm::vec3(1.0f, 2.0f, 1.0f);
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::AssignMaterial;
+    c.node = 9;
+    c.material = 12;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetMatAttr;
+    c.material = 3;
+    c.text = "baseColor";
+    c.vec4 = glm::vec4(1.0f, 0.5f, 0.25f, 1.0f);
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetMatAttr;
+    c.material = 3;
+    c.text = "metallic";
+    c.number = 0.9;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetMatAttr;
+    c.material = 3;
+    c.text = "alphaMode";
+    c.number = 1.0;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetNoLightmap;
+    c.node = 45;
+    c.flag = true;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetVisibility;
+    c.node = 46;
+    c.flag = true;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::Parent;
+    c.node = 45;
+    c.node2 = 12;
+    doc.commands.push_back(c);
+    // Wide Clarisse-style overrides (ordered, later wins, locals win over all).
+    smvk::tour::OverrideRule r{};
+    r.attr = smvk::tour::OverrideAttr::Visibility;
+    r.pattern = "Building_.*";
+    r.flag = true;
+    r.enabled = true;
+    doc.overrides.push_back(r);
+    r = smvk::tour::OverrideRule{};
+    r.attr = smvk::tour::OverrideAttr::NoLightmap;
+    r.pattern = "Tree.*";
+    r.flag = true;
+    r.enabled = false;
+    doc.overrides.push_back(r);
+    // Typed per-plug rules: number, boolean and string survive the
+    // same .tour text format and retain stable, machine-readable keys.
+    r = smvk::tour::OverrideRule{};
+    r.attr = smvk::tour::OverrideAttr::Plug;
+    r.pattern = "Body.*";
+    r.plug = "physics.mass";
+    r.value = tour::scene::plugs::Value::Number(12.5);
+    doc.overrides.push_back(r);
+    r = smvk::tour::OverrideRule{};
+    r.attr = smvk::tour::OverrideAttr::Plug;
+    r.pattern = "Sensor.*";
+    r.plug = "trigger.enabled";
+    r.value = tour::scene::plugs::Value::Bool(false);
+    doc.overrides.push_back(r);
+    r = smvk::tour::OverrideRule{};
+    r.attr = smvk::tour::OverrideAttr::Plug;
+    r.pattern = "Sensor.*";
+    r.plug = "trigger.tag";
+    r.value = tour::scene::plugs::Value::String("Zone A");
+    doc.overrides.push_back(r);
+    doc.connections.push_back({{7, "physics.mass"}, {9, "physics.mass"}});
+    // Cook/export knobs ride the scene's exportSettings NODE: a createNode
+    // -at exportSettings line + setExportAttr lines (the singleton is the
+    // first create; attrs address it via kCreateExportRefBase | 0).
+    {
+        smvk::tour::Command ec{};
+        ec.verb = smvk::tour::Verb::CreateNode;
+        ec.nodeType = "exportSettings";
+        ec.node = 0; // parent = cluster root
+        ec.text = "ExportSettings";
+        doc.commands.push_back(ec);
+        auto ea = [&](const char* attr, double num, bool flag, const char* str) {
+            smvk::tour::Command a{};
+            a.verb = smvk::tour::Verb::SetExportAttr;
+            a.node = smvk::tour::kCreateExportRefBase | 0u;
+            a.text = attr;
+            a.number = num;
+            a.flag = flag;
+            a.name = str;
+            doc.commands.push_back(a);
+        };
+        ea("lightmap", 0.0, true, "");
+        ea("lmMetersPerTexel", 0.125, false, "");
+        ea("lmExcludeKw", 0.0, false, "tree,glass");
+        ea("lods", 0.0, true, "");
+        ea("lodRatios", 0.0, false, "0.5,0.25,0.1");
+        ea("lodError", 0.05, false, "");
+        ea("meshlets", 0.0, true, "");
+        ea("meshletMaxVerts", 100.0, false, "");
+        ea("meshletMaxTris", 200.0, false, "");
+        ea("meshletConeWeight", 0.5, false, "");
+    }
+    // The sun/sky ride the ENV BLOCKS (env.default.* editorSet keys —
+    // SceneEnv, lux-native); the exportSettings node carries no sun/sky.
+    doc.editorSettings.emplace_back("env.default.sunAzimuth", "120");
+    doc.editorSettings.emplace_back("env.default.sunElevation", "42");
+    doc.editorSettings.emplace_back("env.default.sunIntensity", "4242");
+    doc.editorSettings.emplace_back("env.default.sunColor", "1 0.5 0.25");
 
-	std::string err;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "tour save");
-	if (!err.empty())
-		std::cout << "  save err: " << err << "\n";
+    std::string err;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "tour save");
+    if (!err.empty())
+        std::cout << "  save err: " << err << "\n";
 
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "tour load");
-	Check(back.source == doc.source, "tour source");
-	Check(back.fingerprint == doc.fingerprint, "tour fingerprint");
-	Check(back.commands.size() == doc.commands.size(), "tour command count");
-	// The exportSettings node + its attr lines round-trip, and the ONE
-	// shared mapping (ExportSettingsFromDoc — the same ApplyExportAttr
-	// the replay and Cook.exe run) reads them back exactly.
-	{
-		SceneExportSettings es{};
-		std::string esWarn;
-		Check(smvk::tour::ExportSettingsFromDoc(back, es, &esWarn),
-			"tour exportSettings present");
-		Check(es.lightmap && std::abs(es.lmMetersPerTexel - 0.125f) < 1e-6f,
-			"tour exportSettings bake");
-		Check(es.lmExcludeKw == "tree,glass", "tour exportSettings exclude");
-		Check(es.lods && es.lodRatios == "0.5,0.25,0.1"
-			&& std::abs(es.lodError - 0.05f) < 1e-6f,
-			"tour exportSettings lod detail");
-		Check(es.meshlets && es.meshletMaxVerts == 100
-			&& es.meshletMaxTris == 200
-			&& std::abs(es.meshletConeWeight - 0.5f) < 1e-6f,
-			"tour exportSettings meshlet settings");
-	}
-	// The env-block sun round-trips through the editorSet section (the
-	// opaque key/value pairs the editor + the cooker's env resolution
-	// parse; the cook block itself no longer carries a sun). NOTE: the
-	// last quoted token of a line keeps the statement ';' glued to it
-	// (the tokenizer strips quotes, not the terminator) — every real
-	// consumer is lenient (stof/istringstream), so trim it here only.
-	bool envSunOk = false;
-	{
-		std::string az, el, inten, col;
-		auto trimSemi = [](std::string s) {
-			while (!s.empty() && (s.back() == ';'))
-				s.pop_back();
-			return s;
-		};
-		for (const auto& [k, v] : back.editorSettings) {
-			if (k == "env.default.sunAzimuth") az = trimSemi(v);
-			else if (k == "env.default.sunElevation") el = trimSemi(v);
-			else if (k == "env.default.sunIntensity") inten = trimSemi(v);
-			else if (k == "env.default.sunColor") col = trimSemi(v);
-		}
-		envSunOk = az == "120" && el == "42" && inten == "4242"
-			&& col == "1 0.5 0.25";
-	}
-	Check(envSunOk, "tour env sun block (the sun of record)");
-	if (!back.commands.empty()) {
-		Check(back.commands[0].verb == smvk::tour::Verb::Rename &&
-			back.commands[0].text == "Shop \"Wall\"", "tour rename quoting");
-		Check(back.commands[1].verb == smvk::tour::Verb::SetTranslate &&
-			back.commands[1].vec.x == 1.25f, "tour translate");
-		Check(back.commands[5].verb == smvk::tour::Verb::SetMatAttr &&
-			back.commands[5].vec4.y == 0.5f, "tour baseColor");
-		Check(back.commands[6].number == 0.9, "tour metallic");
-		Check(back.commands[7].number == 1.0, "tour alphaMode mask");
-		Check(back.commands[8].flag == true, "tour noLightmap");
-		Check(back.commands[9].verb == smvk::tour::Verb::SetVisibility &&
-			back.commands[9].flag == true, "tour visibility");
-		Check(back.commands[10].node2 == 12, "tour parent");
-	}
-	Check(back.overrides.size() == 5, "tour override count");
-	if (back.overrides.size() == 5) {
-		Check(back.overrides[0].attr ==
-			smvk::tour::OverrideAttr::Visibility &&
-			back.overrides[0].pattern == "Building_.*" &&
-			back.overrides[0].flag == true &&
-			back.overrides[0].enabled, "tour override visibility");
-		Check(back.overrides[1].attr ==
-			smvk::tour::OverrideAttr::NoLightmap &&
-			!back.overrides[1].enabled, "tour override disabled");
-		Check(smvk::tour::OverridePatternMatches("Building_.*",
-			"Building_A"), "tour override match");
-		Check(!smvk::tour::OverridePatternMatches("Building_.*",
-			"Tree_01"), "tour override non-match");
-		Check(!smvk::tour::OverridePatternMatches("([bad",
-			"anything"), "tour override bad regex");
-		Check(back.overrides[2].attr == smvk::tour::OverrideAttr::Plug &&
-			back.overrides[2].plug == "physics.mass" &&
-			back.overrides[2].value == tour::scene::plugs::Value::Number(12.5),
-			"tour numeric plug override round trip");
-		Check(back.overrides[3].plug == "trigger.enabled" &&
-			back.overrides[3].value == tour::scene::plugs::Value::Bool(false),
-			"tour boolean plug override round trip");
-		Check(back.overrides[4].plug == "trigger.tag" &&
-			back.overrides[4].value == tour::scene::plugs::Value::String("Zone A"),
-			"tour string plug override round trip");
-	}
-	Check(back.connections.size() == 1 &&
-		back.connections[0].source.node == 7 &&
-		back.connections[0].destination.node == 9 &&
-		back.connections[0].source.plug == "physics.mass" &&
-		back.connections[0].destination.plug == "physics.mass",
-		"tour connectAttr round trip");
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "tour load");
+    Check(back.source == doc.source, "tour source");
+    Check(back.fingerprint == doc.fingerprint, "tour fingerprint");
+    Check(back.commands.size() == doc.commands.size(), "tour command count");
+    // The exportSettings node + its attr lines round-trip, and the ONE
+    // shared mapping (ExportSettingsFromDoc — the same ApplyExportAttr
+    // the replay and Cook.exe run) reads them back exactly.
+    {
+        SceneExportSettings es{};
+        std::string esWarn;
+        Check(smvk::tour::ExportSettingsFromDoc(back, es, &esWarn), "tour exportSettings present");
+        Check(es.lightmap && std::abs(es.lmMetersPerTexel - 0.125f) < 1e-6f,
+              "tour exportSettings bake");
+        Check(es.lmExcludeKw == "tree,glass", "tour exportSettings exclude");
+        Check(es.lods && es.lodRatios == "0.5,0.25,0.1" && std::abs(es.lodError - 0.05f) < 1e-6f,
+              "tour exportSettings lod detail");
+        Check(es.meshlets && es.meshletMaxVerts == 100 && es.meshletMaxTris == 200 &&
+                  std::abs(es.meshletConeWeight - 0.5f) < 1e-6f,
+              "tour exportSettings meshlet settings");
+    }
+    // The env-block sun round-trips through the editorSet section (the
+    // opaque key/value pairs the editor + the cooker's env resolution
+    // parse; the cook block itself no longer carries a sun). NOTE: the
+    // last quoted token of a line keeps the statement ';' glued to it
+    // (the tokenizer strips quotes, not the terminator) — every real
+    // consumer is lenient (stof/istringstream), so trim it here only.
+    bool envSunOk = false;
+    {
+        std::string az, el, inten, col;
+        auto trimSemi = [](std::string s) {
+            while (!s.empty() && (s.back() == ';'))
+                s.pop_back();
+            return s;
+        };
+        for (const auto& [k, v] : back.editorSettings) {
+            if (k == "env.default.sunAzimuth")
+                az = trimSemi(v);
+            else if (k == "env.default.sunElevation")
+                el = trimSemi(v);
+            else if (k == "env.default.sunIntensity")
+                inten = trimSemi(v);
+            else if (k == "env.default.sunColor")
+                col = trimSemi(v);
+        }
+        envSunOk = az == "120" && el == "42" && inten == "4242" && col == "1 0.5 0.25";
+    }
+    Check(envSunOk, "tour env sun block (the sun of record)");
+    if (!back.commands.empty()) {
+        Check(back.commands[0].verb == smvk::tour::Verb::Rename &&
+                  back.commands[0].text == "Shop \"Wall\"",
+              "tour rename quoting");
+        Check(back.commands[1].verb == smvk::tour::Verb::SetTranslate &&
+                  back.commands[1].vec.x == 1.25f,
+              "tour translate");
+        Check(back.commands[5].verb == smvk::tour::Verb::SetMatAttr &&
+                  back.commands[5].vec4.y == 0.5f,
+              "tour baseColor");
+        Check(back.commands[6].number == 0.9, "tour metallic");
+        Check(back.commands[7].number == 1.0, "tour alphaMode mask");
+        Check(back.commands[8].flag == true, "tour noLightmap");
+        Check(back.commands[9].verb == smvk::tour::Verb::SetVisibility &&
+                  back.commands[9].flag == true,
+              "tour visibility");
+        Check(back.commands[10].node2 == 12, "tour parent");
+    }
+    Check(back.overrides.size() == 5, "tour override count");
+    if (back.overrides.size() == 5) {
+        Check(back.overrides[0].attr == smvk::tour::OverrideAttr::Visibility &&
+                  back.overrides[0].pattern == "Building_.*" && back.overrides[0].flag == true &&
+                  back.overrides[0].enabled,
+              "tour override visibility");
+        Check(back.overrides[1].attr == smvk::tour::OverrideAttr::NoLightmap &&
+                  !back.overrides[1].enabled,
+              "tour override disabled");
+        Check(smvk::tour::OverridePatternMatches("Building_.*", "Building_A"),
+              "tour override match");
+        Check(!smvk::tour::OverridePatternMatches("Building_.*", "Tree_01"),
+              "tour override non-match");
+        Check(!smvk::tour::OverridePatternMatches("([bad", "anything"), "tour override bad regex");
+        Check(back.overrides[2].attr == smvk::tour::OverrideAttr::Plug &&
+                  back.overrides[2].plug == "physics.mass" &&
+                  back.overrides[2].value == tour::scene::plugs::Value::Number(12.5),
+              "tour numeric plug override round trip");
+        Check(back.overrides[3].plug == "trigger.enabled" &&
+                  back.overrides[3].value == tour::scene::plugs::Value::Bool(false),
+              "tour boolean plug override round trip");
+        Check(back.overrides[4].plug == "trigger.tag" &&
+                  back.overrides[4].value == tour::scene::plugs::Value::String("Zone A"),
+              "tour string plug override round trip");
+    }
+    Check(back.connections.size() == 1 && back.connections[0].source.node == 7 &&
+              back.connections[0].destination.node == 9 &&
+              back.connections[0].source.plug == "physics.mass" &&
+              back.connections[0].destination.plug == "physics.mass",
+          "tour connectAttr round trip");
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 // Maya file-block shape: Name/Last-modified header (old source-asset
 // comments gone), references first, fileInfo constants, tabulated
 // create properties, -type on values — and the whole thing re-parses.
 void TestTourFormat() {
-	smvk::tour::Doc doc;
-	doc.source = "content/models/Bistro/bistro.gltf";
-	smvk::tour::ReferenceCmd r{};
-	r.parent = 0;
-	r.source = "props/chair.gltf";
-	r.name = "chair";
-	doc.references.push_back(r);
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::SetVisibility;
-	c.node = 4;
-	c.flag = true;
-	doc.commands.push_back(c);
-	smvk::tour::Command cl{};
-	cl.verb = smvk::tour::Verb::CreateLight;
-	cl.node = 0;
-	cl.text = "Spot_1";
-	cl.vec = glm::vec3(1, 2, 3);
-	cl.vec4 = glm::vec4(2.0f, 100.0f, 10.0f, 15.0f);
-	cl.number = 30.0;
-	cl.flag = false;
-	cl.node2 = 1;
-	doc.commands.push_back(cl);
-	smvk::tour::Command sa{};
-	sa.verb = smvk::tour::Verb::SetLightAttr;
-	sa.node = smvk::tour::kCreateLightRefBase | 0u;
-	sa.text = "intensity";
-	sa.number = 1500.0;
-	doc.commands.push_back(sa);
-	smvk::tour::Command tr{};
-	tr.verb = smvk::tour::Verb::SetTranslate;
-	tr.node = 7;
-	tr.vec = glm::vec3(1.0f, 2.0f, 3.0f);
-	doc.commands.push_back(tr);
-	std::string err;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "format save");
-	std::ifstream in(TempTour(), std::ios::binary);
-	std::stringstream ss;
-	ss << in.rdbuf();
-	const std::string text = ss.str();
-	in.close();
-	// Header: new lines in, old comment lines out.
-	Check(text.find("//Name: ") != std::string::npos, "format name header");
-	Check(text.find("//Last modified: ") != std::string::npos,
-		"format date header");
-	Check(text.find("// source asset:") == std::string::npos,
-		"format old source comment gone");
-	Check(text.find("cluster-space") == std::string::npos,
-		"format old cluster comment gone");
-	// Block order: references, then fileInfo, then commands.
-	const size_t refPos = text.find("reference -n 0");
-	const size_t fiPos = text.find("fileInfo");
-	const size_t createPos = text.find("createLight");
-	Check(refPos != std::string::npos && fiPos != std::string::npos
-		&& createPos != std::string::npos && refPos < fiPos
-		&& fiPos < createPos, "format block order");
-	Check(text.find("fileInfo -k \"application\"") != std::string::npos,
-		"format fileinfo application");
-	// Tabulated -ref property under its create + -type on values.
-	Check(text.find("\tsetLightAttr -ref 0 -at intensity")
-		!= std::string::npos, "format tabulated ref");
-	Check(text.find("-type \"double3\"") != std::string::npos,
-		"format type double3");
-	Check(text.find("-type \"bool\"") != std::string::npos,
-		"format type bool");
-	// The shaped file re-parses identically.
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
-		"format reload");
-	Check(back.references.size() == 1
-		&& back.references[0].name == "chair", "format ref reload");
-	Check(back.fileInfo.size() >= 3, "format fileinfo reload");
-	Check(back.commands.size() == 4, "format command count");
-	if (back.commands.size() == 4) {
-		Check(back.commands[0].verb == smvk::tour::Verb::SetVisibility
-			&& back.commands[0].flag, "format visibility reload");
-		Check(back.commands[1].verb == smvk::tour::Verb::CreateLight
-			&& back.commands[1].text == "Spot_1",
-			"format create reload");
-		Check(back.commands[2].verb == smvk::tour::Verb::SetLightAttr
-			&& (back.commands[2].node
-				& smvk::tour::kCreateLightRefBase) != 0
-			&& back.commands[2].number == 1500.0,
-			"format tabulated ref reload");
-		Check(back.commands[3].verb == smvk::tour::Verb::SetTranslate,
-			"format translate reload");
-	}
-	// Legacy lines without -type still load.
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "source -p \"x.gltf\";\n";
-		f << "setAttr -n 4 -at translate -t 1 2 3;\n";
-		f << "setVisibility -n 5 -v 1;\n";
-		f << "setLightAttr -ref 0 -at intensity -v 42;\n";
-	}
-	smvk::tour::Doc legacy;
-	Check(smvk::tour::LoadTour(TempTour(), legacy, err, &warns),
-		"format legacy loads");
-	Check(legacy.commands.size() == 3, "format legacy count");
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    smvk::tour::Doc doc;
+    doc.source = "content/models/Bistro/bistro.gltf";
+    smvk::tour::ReferenceCmd r{};
+    r.parent = 0;
+    r.source = "props/chair.gltf";
+    r.name = "chair";
+    doc.references.push_back(r);
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::SetVisibility;
+    c.node = 4;
+    c.flag = true;
+    doc.commands.push_back(c);
+    smvk::tour::Command cl{};
+    cl.verb = smvk::tour::Verb::CreateLight;
+    cl.node = 0;
+    cl.text = "Spot_1";
+    cl.vec = glm::vec3(1, 2, 3);
+    cl.vec4 = glm::vec4(2.0f, 100.0f, 10.0f, 15.0f);
+    cl.number = 30.0;
+    cl.flag = false;
+    cl.node2 = 1;
+    doc.commands.push_back(cl);
+    smvk::tour::Command sa{};
+    sa.verb = smvk::tour::Verb::SetLightAttr;
+    sa.node = smvk::tour::kCreateLightRefBase | 0u;
+    sa.text = "intensity";
+    sa.number = 1500.0;
+    doc.commands.push_back(sa);
+    smvk::tour::Command tr{};
+    tr.verb = smvk::tour::Verb::SetTranslate;
+    tr.node = 7;
+    tr.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+    doc.commands.push_back(tr);
+    std::string err;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "format save");
+    std::ifstream in(TempTour(), std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    const std::string text = ss.str();
+    in.close();
+    // Header: new lines in, old comment lines out.
+    Check(text.find("//Name: ") != std::string::npos, "format name header");
+    Check(text.find("//Last modified: ") != std::string::npos, "format date header");
+    Check(text.find("// source asset:") == std::string::npos, "format old source comment gone");
+    Check(text.find("cluster-space") == std::string::npos, "format old cluster comment gone");
+    // Block order: references, then fileInfo, then commands.
+    const size_t refPos = text.find("reference -n 0");
+    const size_t fiPos = text.find("fileInfo");
+    const size_t createPos = text.find("createLight");
+    Check(refPos != std::string::npos && fiPos != std::string::npos &&
+              createPos != std::string::npos && refPos < fiPos && fiPos < createPos,
+          "format block order");
+    Check(text.find("fileInfo -k \"application\"") != std::string::npos,
+          "format fileinfo application");
+    // Tabulated -ref property under its create + -type on values.
+    Check(text.find("\tsetLightAttr -ref 0 -at intensity") != std::string::npos,
+          "format tabulated ref");
+    Check(text.find("-type \"double3\"") != std::string::npos, "format type double3");
+    Check(text.find("-type \"bool\"") != std::string::npos, "format type bool");
+    // The shaped file re-parses identically.
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "format reload");
+    Check(back.references.size() == 1 && back.references[0].name == "chair", "format ref reload");
+    Check(back.fileInfo.size() >= 3, "format fileinfo reload");
+    Check(back.commands.size() == 4, "format command count");
+    if (back.commands.size() == 4) {
+        Check(back.commands[0].verb == smvk::tour::Verb::SetVisibility && back.commands[0].flag,
+              "format visibility reload");
+        Check(back.commands[1].verb == smvk::tour::Verb::CreateLight &&
+                  back.commands[1].text == "Spot_1",
+              "format create reload");
+        Check(back.commands[2].verb == smvk::tour::Verb::SetLightAttr &&
+                  (back.commands[2].node & smvk::tour::kCreateLightRefBase) != 0 &&
+                  back.commands[2].number == 1500.0,
+              "format tabulated ref reload");
+        Check(back.commands[3].verb == smvk::tour::Verb::SetTranslate, "format translate reload");
+    }
+    // Legacy lines without -type still load.
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "source -p \"x.gltf\";\n";
+        f << "setAttr -n 4 -at translate -t 1 2 3;\n";
+        f << "setVisibility -n 5 -v 1;\n";
+        f << "setLightAttr -ref 0 -at intensity -v 42;\n";
+    }
+    smvk::tour::Doc legacy;
+    Check(smvk::tour::LoadTour(TempTour(), legacy, err, &warns), "format legacy loads");
+    Check(legacy.commands.size() == 3, "format legacy count");
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 void TestUnknownVerbSkipped() {
-	const std::string tp = TempTour();
-	{
-		std::ofstream f(tp, std::ios::binary | std::ios::trunc);
-		f << "// test\nsource -p \"x.gltf\";\n";
-		f << "frobnicate -n 1 -v 2;\n";       // unknown: skip
-		f << "rename -n 2 PlainName;\n";      // unquoted positional + glued ;
-		f << "setNoLightmap -n 3 -v 1;\n";    // known: keep
-		f << "setAttr -n 4 -at glow -t 1 2 3;\n"; // unknown attr: skip
-	}
-	smvk::tour::Doc doc;
-	std::string err;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(tp, doc, err, &warns), "tour tolerant load");
-	Check(doc.commands.size() == 2, "tour skips unknowns");
-	Check(warns.size() == 2, "tour warns twice");
-	Check(doc.commands[0].verb == smvk::tour::Verb::Rename &&
-		doc.commands[0].text == "PlainName", "tour plain rename");
-	std::error_code ec;
-	std::filesystem::remove(tp, ec);
+    const std::string tp = TempTour();
+    {
+        std::ofstream f(tp, std::ios::binary | std::ios::trunc);
+        f << "// test\nsource -p \"x.gltf\";\n";
+        f << "frobnicate -n 1 -v 2;\n";           // unknown: skip
+        f << "rename -n 2 PlainName;\n";          // unquoted positional + glued ;
+        f << "setNoLightmap -n 3 -v 1;\n";        // known: keep
+        f << "setAttr -n 4 -at glow -t 1 2 3;\n"; // unknown attr: skip
+    }
+    smvk::tour::Doc doc;
+    std::string err;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(tp, doc, err, &warns), "tour tolerant load");
+    Check(doc.commands.size() == 2, "tour skips unknowns");
+    Check(warns.size() == 2, "tour warns twice");
+    Check(doc.commands[0].verb == smvk::tour::Verb::Rename && doc.commands[0].text == "PlainName",
+          "tour plain rename");
+    std::error_code ec;
+    std::filesystem::remove(tp, ec);
 }
 
 void TestReparent() {
-	Scene s{};
-	const int root = addNode(s, -1, 0);
-	const int a = addNode(s, root, 1);
-	const int b = addNode(s, root, 1);
-	const int kid = addNode(s, a, 2);
-	smvk::tour::TourReparent(s, uint32_t(kid), uint32_t(b));
-	Check(s.hierarchy[size_t(kid)].parent == b, "reparent link");
-	Check(s.hierarchy[size_t(kid)].level == 2, "reparent level");
-	Check(s.hierarchy[size_t(a)].firstChild == -1, "reparent unlink");
-	// Cycle guard: parenting an ancestor under its descendant is ignored.
-	smvk::tour::TourReparent(s, uint32_t(root), uint32_t(kid));
-	Check(s.hierarchy[size_t(root)].parent == -1, "reparent cycle guard");
-	// Root guard.
-	smvk::tour::TourReparent(s, 0, uint32_t(b));
-	Check(s.hierarchy[0].parent == -1, "reparent root guard");
-	(void)a;
+    Scene s{};
+    const int root = addNode(s, -1, 0);
+    const int a = addNode(s, root, 1);
+    const int b = addNode(s, root, 1);
+    const int kid = addNode(s, a, 2);
+    smvk::tour::TourReparent(s, uint32_t(kid), uint32_t(b));
+    Check(s.hierarchy[size_t(kid)].parent == b, "reparent link");
+    Check(s.hierarchy[size_t(kid)].level == 2, "reparent level");
+    Check(s.hierarchy[size_t(a)].firstChild == -1, "reparent unlink");
+    // Cycle guard: parenting an ancestor under its descendant is ignored.
+    smvk::tour::TourReparent(s, uint32_t(root), uint32_t(kid));
+    Check(s.hierarchy[size_t(root)].parent == -1, "reparent cycle guard");
+    // Root guard.
+    smvk::tour::TourReparent(s, 0, uint32_t(b));
+    Check(s.hierarchy[0].parent == -1, "reparent root guard");
+    (void)a;
 }
 
 void TestReplay() {
-	// GPU-free offline cluster with a hand-built scene (no import needed).
-	// NOTE: heap-allocated — Cluster embeds multi-MB pool arrays and must
-	// never live on the (1MB) thread stack (see PakCooker).
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	const int root = addNode(cluster->scene, -1, 0);
-	const int g0 = addNode(cluster->scene, root, 1);
-	const int g1 = addNode(cluster->scene, root, 1);
-	setNodeName(cluster->scene, g0, "Wall");
-	setNodeName(cluster->scene, g1, "Floor");
-	smvk::MaterialCreateInfo ci{};
-	ci.baseColorFactor = glm::vec4(1.0f);
-	smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
-	smvk::ClusterMaterialHandle m1 = cluster->CreateMaterial(ci);
-	SetMaterial(cluster->scene, uint32_t(g0), m0.index());
-	SetMaterial(cluster->scene, uint32_t(g1), m1.index());
-	RebuildStaticCache(cluster->scene);
+    // GPU-free offline cluster with a hand-built scene (no import needed).
+    // NOTE: heap-allocated — Cluster embeds multi-MB pool arrays and must
+    // never live on the (1MB) thread stack (see PakCooker).
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    const int root = addNode(cluster->scene, -1, 0);
+    const int g0 = addNode(cluster->scene, root, 1);
+    const int g1 = addNode(cluster->scene, root, 1);
+    setNodeName(cluster->scene, g0, "Wall");
+    setNodeName(cluster->scene, g1, "Floor");
+    smvk::MaterialCreateInfo ci{};
+    ci.baseColorFactor = glm::vec4(1.0f);
+    smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
+    smvk::ClusterMaterialHandle m1 = cluster->CreateMaterial(ci);
+    SetMaterial(cluster->scene, uint32_t(g0), m0.index());
+    SetMaterial(cluster->scene, uint32_t(g1), m1.index());
+    RebuildStaticCache(cluster->scene);
 
-	smvk::tour::Doc doc;
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::Rename;
-	c.node = uint32_t(g0);
-	c.text = "Shop_Wall";
-	c.name = "Wall";
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::AssignMaterial;
-	c.node = uint32_t(g0);
-	c.material = m1.index();
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetMatAttr;
-	c.material = m1.index();
-	c.text = "metallic";
-	c.number = 0.75;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetNoLightmap;
-	c.node = uint32_t(g1);
-	c.flag = true;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetTranslate;
-	c.node = uint32_t(g1);
-	c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetVisibility;
-	c.node = uint32_t(g0);
-	c.flag = true;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::Parent;
-	c.node = uint32_t(g0);
-	c.node2 = uint32_t(g1);
-	doc.commands.push_back(c);
-	// Wide overrides: hide everything (g0 has a LOCAL visibility command,
-	// so the rule must skip it; g1 hides via the rule). A second rule
-	// later in the list shows Floor again (later wins).
-	smvk::tour::OverrideRule r{};
-	r.attr = smvk::tour::OverrideAttr::Visibility;
-	r.pattern = ".*";
-	r.flag = true;
-	doc.overrides.push_back(r);
-	r = smvk::tour::OverrideRule{};
-	r.attr = smvk::tour::OverrideAttr::Visibility;
-	r.pattern = "Flo.*";
-	r.flag = false;
-	doc.overrides.push_back(r);
-	r = smvk::tour::OverrideRule{};
-	r.attr = smvk::tour::OverrideAttr::Material;
-	r.pattern = ".*"; // matches both: local wins on g0, rule applies to g1
-	r.material = m0.index();
-	doc.overrides.push_back(r);
+    smvk::tour::Doc doc;
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::Rename;
+    c.node = uint32_t(g0);
+    c.text = "Shop_Wall";
+    c.name = "Wall";
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::AssignMaterial;
+    c.node = uint32_t(g0);
+    c.material = m1.index();
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetMatAttr;
+    c.material = m1.index();
+    c.text = "metallic";
+    c.number = 0.75;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetNoLightmap;
+    c.node = uint32_t(g1);
+    c.flag = true;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetTranslate;
+    c.node = uint32_t(g1);
+    c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetVisibility;
+    c.node = uint32_t(g0);
+    c.flag = true;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::Parent;
+    c.node = uint32_t(g0);
+    c.node2 = uint32_t(g1);
+    doc.commands.push_back(c);
+    // Wide overrides: hide everything (g0 has a LOCAL visibility command,
+    // so the rule must skip it; g1 hides via the rule). A second rule
+    // later in the list shows Floor again (later wins).
+    smvk::tour::OverrideRule r{};
+    r.attr = smvk::tour::OverrideAttr::Visibility;
+    r.pattern = ".*";
+    r.flag = true;
+    doc.overrides.push_back(r);
+    r = smvk::tour::OverrideRule{};
+    r.attr = smvk::tour::OverrideAttr::Visibility;
+    r.pattern = "Flo.*";
+    r.flag = false;
+    doc.overrides.push_back(r);
+    r = smvk::tour::OverrideRule{};
+    r.attr = smvk::tour::OverrideAttr::Material;
+    r.pattern = ".*"; // matches both: local wins on g0, rule applies to g1
+    r.material = m0.index();
+    doc.overrides.push_back(r);
 
-	std::vector<std::string> warns;
-	std::string err;
-	Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-		"tour replay ok");
-	Check(getNodeName(cluster->scene, g0) == "Shop_Wall", "replay rename");
-	Check(FindMaterial(cluster->scene, uint32_t(g0))
-		&& FindMaterial(cluster->scene, uint32_t(g0))->material == m1.index(),
-		"replay assign");
-	const smvk::Material* mat = cluster->materials.get(m1);
-	Check(mat && mat->values.params.y == 0.75f, "replay mattr");
-	Check(cluster->scene.noLightmap.size() == cluster->scene.hierarchy.size() &&
-		cluster->scene.noLightmap[size_t(g1)] == 1, "replay noLM");
-	Check(cluster->scene.localTransform[size_t(g1)][3].x == 1.0f, "replay TRS");
-	Check(cluster->scene.hierarchy[size_t(g0)].parent == g1, "replay parent");
-	// Visibility: local hides g0; the wide ".*" rule skipped it (local
-	// wins) and hit g1 instead; the later "Flo.*" rule re-showed g1.
-	Check(cluster->scene.hidden.size() == cluster->scene.hierarchy.size() &&
-		cluster->scene.hidden[size_t(g0)] == 1, "replay visibility local");
-	Check(cluster->scene.hidden[size_t(g1)] == 0, "replay visibility later-wins");
-	Check(!IsVisibleNode(cluster->scene, g0), "replay hidden effective");
-	// Material override ".*": g0 carries a LOCAL AssignMaterial (m1) — the
-	// wide rule must not clobber it (local wins); g1 has no local, so the
-	// rule assigns m0 there.
-	Check(FindMaterial(cluster->scene, uint32_t(g0))
-		&& FindMaterial(cluster->scene, uint32_t(g0))->material == m1.index(),
-		"replay override local-wins");
-	Check(FindMaterial(cluster->scene, uint32_t(g1))
-		&& FindMaterial(cluster->scene, uint32_t(g1))->material == m0.index(),
-		"replay override applies");
-	Check(smvk::tour::OverrideAttrFromString("visibility", r.attr) &&
-		r.attr == smvk::tour::OverrideAttr::Visibility, "override attr parse");
-	Check(smvk::tour::OverrideAttrFromString("static", r.attr) &&
-		r.attr == smvk::tour::OverrideAttr::Static, "override static attr parse");
-	Check(smvk::tour::OverrideAttrFromString("volumetricShadow", r.attr) &&
-		r.attr == smvk::tour::OverrideAttr::VolumetricShadow,
-		"override volumetric-shadow attr parse");
-	Check(std::string(smvk::tour::OverrideAttrName(smvk::tour::OverrideAttr::Static))
-		== "static", "override static serialization name");
+    std::vector<std::string> warns;
+    std::string err;
+    Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "tour replay ok");
+    Check(getNodeName(cluster->scene, g0) == "Shop_Wall", "replay rename");
+    Check(FindMaterial(cluster->scene, uint32_t(g0)) &&
+              FindMaterial(cluster->scene, uint32_t(g0))->material == m1.index(),
+          "replay assign");
+    const smvk::Material* mat = cluster->materials.get(m1);
+    Check(mat && mat->values.params.y == 0.75f, "replay mattr");
+    Check(cluster->scene.noLightmap.size() == cluster->scene.hierarchy.size() &&
+              cluster->scene.noLightmap[size_t(g1)] == 1,
+          "replay noLM");
+    Check(cluster->scene.localTransform[size_t(g1)][3].x == 1.0f, "replay TRS");
+    Check(cluster->scene.hierarchy[size_t(g0)].parent == g1, "replay parent");
+    // Visibility: local hides g0; the wide ".*" rule skipped it (local
+    // wins) and hit g1 instead; the later "Flo.*" rule re-showed g1.
+    Check(cluster->scene.hidden.size() == cluster->scene.hierarchy.size() &&
+              cluster->scene.hidden[size_t(g0)] == 1,
+          "replay visibility local");
+    Check(cluster->scene.hidden[size_t(g1)] == 0, "replay visibility later-wins");
+    Check(!IsVisibleNode(cluster->scene, g0), "replay hidden effective");
+    // Material override ".*": g0 carries a LOCAL AssignMaterial (m1) — the
+    // wide rule must not clobber it (local wins); g1 has no local, so the
+    // rule assigns m0 there.
+    Check(FindMaterial(cluster->scene, uint32_t(g0)) &&
+              FindMaterial(cluster->scene, uint32_t(g0))->material == m1.index(),
+          "replay override local-wins");
+    Check(FindMaterial(cluster->scene, uint32_t(g1)) &&
+              FindMaterial(cluster->scene, uint32_t(g1))->material == m0.index(),
+          "replay override applies");
+    Check(smvk::tour::OverrideAttrFromString("visibility", r.attr) &&
+              r.attr == smvk::tour::OverrideAttr::Visibility,
+          "override attr parse");
+    Check(smvk::tour::OverrideAttrFromString("static", r.attr) &&
+              r.attr == smvk::tour::OverrideAttr::Static,
+          "override static attr parse");
+    Check(smvk::tour::OverrideAttrFromString("volumetricShadow", r.attr) &&
+              r.attr == smvk::tour::OverrideAttr::VolumetricShadow,
+          "override volumetric-shadow attr parse");
+    Check(std::string(smvk::tour::OverrideAttrName(smvk::tour::OverrideAttr::Static)) == "static",
+          "override static serialization name");
 
-	// Out-of-range ids fail loudly.
-	smvk::tour::Doc bad;
-	smvk::tour::Command bc{};
-	bc.verb = smvk::tour::Verb::Rename;
-	bc.node = 9999;
-	bc.text = "x";
-	bad.commands.push_back(bc);
-	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
-		"replay rejects bad node");
+    // Out-of-range ids fail loudly.
+    smvk::tour::Doc bad;
+    smvk::tour::Command bc{};
+    bc.verb = smvk::tour::Verb::Rename;
+    bc.node = 9999;
+    bc.text = "x";
+    bad.commands.push_back(bc);
+    Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err), "replay rejects bad node");
 }
 
 // Clarisse-style nested scene references: round-trip in the .tour,
 // recursive inlining (wheel -> gear chain) and the cycle guard.
 void TestReferences() {
-	namespace fs = std::filesystem;
-	const fs::path dir = fs::temp_directory_path() / "tourmaline_refs";
-	std::error_code ec;
-	fs::create_directories(dir, ec);
-	// One-triangle glTF (the .geometry artifact build needs real
-	// geometry: a node-only source derives an empty blob).
-	auto writeGltf = [&](const char* file, const char* nodeName) {
-		const fs::path p = dir / file;
-		std::ofstream f(p, std::ios::binary | std::ios::trunc);
-		f << "{\"asset\":{\"version\":\"2.0\"},"
-			"\"scene\":0,"
-			"\"scenes\":[{\"nodes\":[0]}],"
-			"\"nodes\":[{\"name\":\"" << nodeName << "\",\"mesh\":0}],"
-			"\"meshes\":[{\"primitives\":[{\"attributes\":"
-			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
-			"\"accessors\":["
-			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
-			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
-			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
-			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
-			"\"bufferViews\":["
-			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
-			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
-			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
-			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
-			"\"byteLength\":78}]}";
-		return p;
-	};
-	// Artifact world (the 10/6 pivot): glTFs are IMPORT-ONLY; scenes
-	// bind the derived .geometry through their tour's `source -p` line.
-	// Derive beside each source (GPU-free offline-mode import).
-	auto deriveGeometry = [&](const fs::path& gltf, const char* checkName) {
-		smvk::assets::AssetManifest man;
-		std::string ierr;
-		smvk::assets::DeriveConfig cfg{};
-		Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, cfg, man,
-				nullptr, &ierr),
-			checkName);
-		return fs::path(gltf).replace_extension(".geometry");
-	};
-	writeGltf("gear.gltf", "Gear");
-	writeGltf("wheel.gltf", "Wheel");
-	deriveGeometry(dir / "gear.gltf", "ref derive gear artifact");
-	deriveGeometry(dir / "wheel.gltf", "ref derive wheel artifact");
-	// wheel's OWN tour sources its artifact + references gear's TOUR
-	// (`reference` = another .tour SCENE; never a mesh blob) ->
-	// shot(wheel) -> wheel(gear).
-	{
-		std::ofstream f(dir / "wheel.tour", std::ios::binary | std::ios::trunc);
-		f << "source -p \"wheel.geometry\";\n"
-			"reference -n 0 -source \"gear.tour\" -name \"gear\";\n";
-	}
-	{
-		std::ofstream f(dir / "gear.tour", std::ios::binary | std::ios::trunc);
-		f << "source -p \"gear.geometry\";\n";
-	}
-	// Round-trip in the master tour file.
-	smvk::tour::Doc doc;
-	smvk::tour::ReferenceCmd r{};
-	r.parent = 0;
-	r.source = "wheel.tour";
-	r.name = "wheel";
-	r.nameSpace = "vehicle";
-	r.translate = glm::vec3(1.0f, 2.0f, 3.0f);
-	r.hasTranslate = true;
-	r.rotate = glm::vec3(0.0f, 90.0f, 0.0f);
-	r.hasRotate = true;
-	r.scale = glm::vec3(2.0f, 3.0f, 4.0f);
-	r.hasScale = true;
-	doc.references.push_back(r);
-	std::string err;
-	const std::string masterTour = (dir / "master.tour").string();
-	Check(smvk::tour::SaveTour(masterTour, doc, err), "ref save");
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(masterTour, back, err, &warns), "ref load");
-	Check(back.references.size() == 1, "ref count");
-	if (back.references.size() == 1) {
-		Check(back.references[0].source == "wheel.tour" &&
-			!back.references[0].asset &&
-			back.references[0].name == "wheel" &&
-			back.references[0].nameSpace == "vehicle" &&
-			back.references[0].parent == 0 &&
-			back.references[0].hasTranslate &&
-			back.references[0].translate.y == 2.0f &&
-			back.references[0].hasRotate &&
-			back.references[0].rotate.y == 90.0f &&
-			back.references[0].hasScale &&
-			back.references[0].scale.z == 4.0f,
-			"ref fields and prefab TRS roundtrip");
-	}
-	// Apply to a offline cluster: wheel inlined + nested gear (BFS).
-	// NOTE: heap-allocated (Cluster embeds multi-MB pools).
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	addNode(cluster->scene, -1, 0); // cluster root (importer parity)
-	std::vector<int> ph;
-	std::vector<std::string> resolved;
-	const size_t applied = ApplySceneReferences(*cluster, back,
-		dir.generic_string(), nullptr, nullptr, nullptr,
-		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph,
-		nullptr, &resolved);
-	Check(applied == 2, "ref nested applied (wheel + gear)");
-	Check(ph.size() == 1, "ref placeholder list");
-	if (ph.size() == 1 && ph[0] >= 0) {
-		const glm::mat4& placement =
-			cluster->scene.localTransform[size_t(ph[0])];
-		Check(std::abs(placement[3].x - 1.0f) < 1e-4f
-			&& std::abs(placement[3].y - 2.0f) < 1e-4f
-			&& std::abs(placement[0].z + 2.0f) < 1e-4f
-			&& std::abs(placement[1].y - 3.0f) < 1e-4f,
-			"ref prefab placeholder T*R*S");
-	}
-	Check(findNodeByName(cluster->scene, "REF wheel") >= 0, "ref placeholder node");
-	// Reference namespaces (Maya): the subtree takes '<ref>:' — root
-	// namespace is the master tour (its nodes carry no prefix).
-	Check(findNodeByName(cluster->scene, "vehicle:Wheel") >= 0,
-		"ref subtree namespaced");
-	Check(findNodeByName(cluster->scene, "REF gear") >= 0, "ref nested placeholder");
-	Check(findNodeByName(cluster->scene, "vehicle:gear:Gear") >= 0,
-		"ref nested namespaced chain");
-	// Resolved sources: one canonical path per doc reference, in order
-	// (the raw string is what the file says; this is what bound — the
-	// wheel TOUR's resolved model source is its .geometry artifact).
-	Check(resolved.size() == back.references.size(),
-		"ref resolved count matches");
-	if (resolved.size() == back.references.size() && !resolved.empty()) {
-		Check(!resolved[0].empty()
-			&& resolved[0].find("wheel.geometry") != std::string::npos,
-			"ref resolved canonical path");
-	}
-	// Without -namespace, references retain the placeholder-name prefix.
-	back.references[0].nameSpace.clear();
-	auto legacyCluster = std::make_unique<smvk::Cluster>(nullptr);
-	legacyCluster->SetOfflineMode(true);
-	addNode(legacyCluster->scene, -1, 0);
-	Check(ApplySceneReferences(*legacyCluster, back, dir.generic_string(),
-		nullptr, nullptr, nullptr, smvk::MeshOptConfig{},
-		smvk::MeshletConfig{}, 0, nullptr) == 2,
-		"ref default namespace applied");
-	Check(findNodeByName(legacyCluster->scene, "wheel:Wheel") >= 0 &&
-		findNodeByName(legacyCluster->scene, "wheel:gear:Gear") >= 0,
-		"ref default namespace unchanged");
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "tourmaline_refs";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    // One-triangle glTF (the .geometry artifact build needs real
+    // geometry: a node-only source derives an empty blob).
+    auto writeGltf = [&](const char* file, const char* nodeName) {
+        const fs::path p = dir / file;
+        std::ofstream f(p, std::ios::binary | std::ios::trunc);
+        f << "{\"asset\":{\"version\":\"2.0\"},"
+             "\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],"
+             "\"nodes\":[{\"name\":\""
+          << nodeName
+          << "\",\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":"
+             "{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+             "{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+             "{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+             "\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+             "\"bufferViews\":["
+             "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+             "\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+             "base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+             "AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+             "\"byteLength\":78}]}";
+        return p;
+    };
+    // Artifact world (the 10/6 pivot): glTFs are IMPORT-ONLY; scenes
+    // bind the derived .geometry through their tour's `source -p` line.
+    // Derive beside each source (GPU-free offline-mode import).
+    auto deriveGeometry = [&](const fs::path& gltf, const char* checkName) {
+        smvk::assets::AssetManifest man;
+        std::string ierr;
+        smvk::assets::DeriveConfig cfg{};
+        Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, cfg, man, nullptr, &ierr),
+              checkName);
+        return fs::path(gltf).replace_extension(".geometry");
+    };
+    writeGltf("gear.gltf", "Gear");
+    writeGltf("wheel.gltf", "Wheel");
+    deriveGeometry(dir / "gear.gltf", "ref derive gear artifact");
+    deriveGeometry(dir / "wheel.gltf", "ref derive wheel artifact");
+    // wheel's OWN tour sources its artifact + references gear's TOUR
+    // (`reference` = another .tour SCENE; never a mesh blob) ->
+    // shot(wheel) -> wheel(gear).
+    {
+        std::ofstream f(dir / "wheel.tour", std::ios::binary | std::ios::trunc);
+        f << "source -p \"wheel.geometry\";\n"
+             "reference -n 0 -source \"gear.tour\" -name \"gear\";\n";
+    }
+    {
+        std::ofstream f(dir / "gear.tour", std::ios::binary | std::ios::trunc);
+        f << "source -p \"gear.geometry\";\n";
+    }
+    // Round-trip in the master tour file.
+    smvk::tour::Doc doc;
+    smvk::tour::ReferenceCmd r{};
+    r.parent = 0;
+    r.source = "wheel.tour";
+    r.name = "wheel";
+    r.nameSpace = "vehicle";
+    r.translate = glm::vec3(1.0f, 2.0f, 3.0f);
+    r.hasTranslate = true;
+    r.rotate = glm::vec3(0.0f, 90.0f, 0.0f);
+    r.hasRotate = true;
+    r.scale = glm::vec3(2.0f, 3.0f, 4.0f);
+    r.hasScale = true;
+    doc.references.push_back(r);
+    std::string err;
+    const std::string masterTour = (dir / "master.tour").string();
+    Check(smvk::tour::SaveTour(masterTour, doc, err), "ref save");
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(masterTour, back, err, &warns), "ref load");
+    Check(back.references.size() == 1, "ref count");
+    if (back.references.size() == 1) {
+        Check(back.references[0].source == "wheel.tour" && !back.references[0].asset &&
+                  back.references[0].name == "wheel" && back.references[0].nameSpace == "vehicle" &&
+                  back.references[0].parent == 0 && back.references[0].hasTranslate &&
+                  back.references[0].translate.y == 2.0f && back.references[0].hasRotate &&
+                  back.references[0].rotate.y == 90.0f && back.references[0].hasScale &&
+                  back.references[0].scale.z == 4.0f,
+              "ref fields and prefab TRS roundtrip");
+    }
+    // Apply to a offline cluster: wheel inlined + nested gear (BFS).
+    // NOTE: heap-allocated (Cluster embeds multi-MB pools).
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    addNode(cluster->scene, -1, 0); // cluster root (importer parity)
+    std::vector<int> ph;
+    std::vector<std::string> resolved;
+    const size_t applied = ApplySceneReferences(*cluster,
+                                                back,
+                                                dir.generic_string(),
+                                                nullptr,
+                                                nullptr,
+                                                nullptr,
+                                                smvk::MeshOptConfig{},
+                                                smvk::MeshletConfig{},
+                                                0,
+                                                &ph,
+                                                nullptr,
+                                                &resolved);
+    Check(applied == 2, "ref nested applied (wheel + gear)");
+    Check(ph.size() == 1, "ref placeholder list");
+    if (ph.size() == 1 && ph[0] >= 0) {
+        const glm::mat4& placement = cluster->scene.localTransform[size_t(ph[0])];
+        Check(std::abs(placement[3].x - 1.0f) < 1e-4f && std::abs(placement[3].y - 2.0f) < 1e-4f &&
+                  std::abs(placement[0].z + 2.0f) < 1e-4f &&
+                  std::abs(placement[1].y - 3.0f) < 1e-4f,
+              "ref prefab placeholder T*R*S");
+    }
+    Check(findNodeByName(cluster->scene, "REF wheel") >= 0, "ref placeholder node");
+    // Reference namespaces (Maya): the subtree takes '<ref>:' — root
+    // namespace is the master tour (its nodes carry no prefix).
+    Check(findNodeByName(cluster->scene, "vehicle:Wheel") >= 0, "ref subtree namespaced");
+    Check(findNodeByName(cluster->scene, "REF gear") >= 0, "ref nested placeholder");
+    Check(findNodeByName(cluster->scene, "vehicle:gear:Gear") >= 0, "ref nested namespaced chain");
+    // Resolved sources: one canonical path per doc reference, in order
+    // (the raw string is what the file says; this is what bound — the
+    // wheel TOUR's resolved model source is its .geometry artifact).
+    Check(resolved.size() == back.references.size(), "ref resolved count matches");
+    if (resolved.size() == back.references.size() && !resolved.empty()) {
+        Check(!resolved[0].empty() && resolved[0].find("wheel.geometry") != std::string::npos,
+              "ref resolved canonical path");
+    }
+    // Without -namespace, references retain the placeholder-name prefix.
+    back.references[0].nameSpace.clear();
+    auto legacyCluster = std::make_unique<smvk::Cluster>(nullptr);
+    legacyCluster->SetOfflineMode(true);
+    addNode(legacyCluster->scene, -1, 0);
+    Check(ApplySceneReferences(*legacyCluster,
+                               back,
+                               dir.generic_string(),
+                               nullptr,
+                               nullptr,
+                               nullptr,
+                               smvk::MeshOptConfig{},
+                               smvk::MeshletConfig{},
+                               0,
+                               nullptr) == 2,
+          "ref default namespace applied");
+    Check(findNodeByName(legacyCluster->scene, "wheel:Wheel") >= 0 &&
+              findNodeByName(legacyCluster->scene, "wheel:gear:Gear") >= 0,
+          "ref default namespace unchanged");
 
-	// Multiple occurrences of the same .tour remain independently placed
-	// and their nested namespace chains must not alias one another.
-	{
-		smvk::tour::Doc instances;
-		auto occurrence = r;
-		occurrence.name = "wheel_left";
-		occurrence.nameSpace = "left";
-		occurrence.translate = glm::vec3(-4.0f, 0.0f, 0.0f);
-		occurrence.hasRotate = false;
-		occurrence.hasScale = false;
-		instances.references.push_back(occurrence);
-		occurrence.name = "wheel_right";
-		occurrence.nameSpace = "right";
-		occurrence.translate = glm::vec3(6.0f, 0.0f, 0.0f);
-		instances.references.push_back(occurrence);
-		auto world = std::make_unique<smvk::Cluster>(nullptr);
-		world->SetOfflineMode(true);
-		addNode(world->scene, -1, 0);
-		std::vector<int> placeholders;
-		Check(ApplySceneReferences(*world, instances, dir.generic_string(),
-			nullptr, nullptr, nullptr, smvk::MeshOptConfig{},
-			smvk::MeshletConfig{}, 0, &placeholders) == 4,
-			"prefab namespace occurrences resolve both nested subtrees");
-		Check(placeholders.size() == 2 && placeholders[0] >= 0
-			&& placeholders[1] >= 0 && placeholders[0] != placeholders[1],
-			"prefab instances have distinct placeholders");
-		if (placeholders.size() == 2 && placeholders[0] >= 0
-			&& placeholders[1] >= 0)
-			Check(std::abs(world->scene.localTransform[size_t(placeholders[0])][3].x + 4.0f) < 1e-4f
-				&& std::abs(world->scene.localTransform[size_t(placeholders[1])][3].x - 6.0f) < 1e-4f,
-				"prefab instance placements are independent");
-		Check(findNodeByName(world->scene, "left:Wheel") >= 0
-			&& findNodeByName(world->scene, "left:gear:Gear") >= 0
-			&& findNodeByName(world->scene, "right:Wheel") >= 0
-			&& findNodeByName(world->scene, "right:gear:Gear") >= 0,
-			"prefab instances retain separate nested namespaces");
-		Check(findNodeByName(world->scene, "wheel_left:Wheel") < 0
-			&& findNodeByName(world->scene, "wheel_right:Wheel") < 0,
-			"explicit namespace is independent of placeholder name");
-	}
-	// Cycle guard: a scene whose tour references itself inlines once.
-	writeGltf("self.gltf", "Self");
-	deriveGeometry(dir / "self.gltf", "ref derive self artifact");
-	{
-		std::ofstream f(dir / "self.tour", std::ios::binary | std::ios::trunc);
-		f << "source -p \"self.geometry\";\n"
-			"reference -n 0 -source \"self.tour\" -name \"self\";\n";
-	}
-	smvk::tour::Doc selfDoc;
-	smvk::tour::ReferenceCmd sr{};
-	sr.parent = 0;
-	sr.source = "self.tour";
-	sr.name = "self";
-	selfDoc.references.push_back(sr);
-	auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
-	cluster2->SetOfflineMode(true);
-	addNode(cluster2->scene, -1, 0);
-	const size_t selfApplied = ApplySceneReferences(*cluster2, selfDoc,
-		dir.generic_string(), nullptr, nullptr, nullptr,
-		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, nullptr);
-	Check(selfApplied == 1, "ref cycle guard (inlined once)");
-	// Cleanup.
-	fs::remove_all(dir, ec);
+    // Multiple occurrences of the same .tour remain independently placed
+    // and their nested namespace chains must not alias one another.
+    {
+        smvk::tour::Doc instances;
+        auto occurrence = r;
+        occurrence.name = "wheel_left";
+        occurrence.nameSpace = "left";
+        occurrence.translate = glm::vec3(-4.0f, 0.0f, 0.0f);
+        occurrence.hasRotate = false;
+        occurrence.hasScale = false;
+        instances.references.push_back(occurrence);
+        occurrence.name = "wheel_right";
+        occurrence.nameSpace = "right";
+        occurrence.translate = glm::vec3(6.0f, 0.0f, 0.0f);
+        instances.references.push_back(occurrence);
+        auto world = std::make_unique<smvk::Cluster>(nullptr);
+        world->SetOfflineMode(true);
+        addNode(world->scene, -1, 0);
+        std::vector<int> placeholders;
+        Check(ApplySceneReferences(*world,
+                                   instances,
+                                   dir.generic_string(),
+                                   nullptr,
+                                   nullptr,
+                                   nullptr,
+                                   smvk::MeshOptConfig{},
+                                   smvk::MeshletConfig{},
+                                   0,
+                                   &placeholders) == 4,
+              "prefab namespace occurrences resolve both nested subtrees");
+        Check(placeholders.size() == 2 && placeholders[0] >= 0 && placeholders[1] >= 0 &&
+                  placeholders[0] != placeholders[1],
+              "prefab instances have distinct placeholders");
+        if (placeholders.size() == 2 && placeholders[0] >= 0 && placeholders[1] >= 0)
+            Check(std::abs(world->scene.localTransform[size_t(placeholders[0])][3].x + 4.0f) <
+                          1e-4f &&
+                      std::abs(world->scene.localTransform[size_t(placeholders[1])][3].x - 6.0f) <
+                          1e-4f,
+                  "prefab instance placements are independent");
+        Check(findNodeByName(world->scene, "left:Wheel") >= 0 &&
+                  findNodeByName(world->scene, "left:gear:Gear") >= 0 &&
+                  findNodeByName(world->scene, "right:Wheel") >= 0 &&
+                  findNodeByName(world->scene, "right:gear:Gear") >= 0,
+              "prefab instances retain separate nested namespaces");
+        Check(findNodeByName(world->scene, "wheel_left:Wheel") < 0 &&
+                  findNodeByName(world->scene, "wheel_right:Wheel") < 0,
+              "explicit namespace is independent of placeholder name");
+    }
+    // Cycle guard: a scene whose tour references itself inlines once.
+    writeGltf("self.gltf", "Self");
+    deriveGeometry(dir / "self.gltf", "ref derive self artifact");
+    {
+        std::ofstream f(dir / "self.tour", std::ios::binary | std::ios::trunc);
+        f << "source -p \"self.geometry\";\n"
+             "reference -n 0 -source \"self.tour\" -name \"self\";\n";
+    }
+    smvk::tour::Doc selfDoc;
+    smvk::tour::ReferenceCmd sr{};
+    sr.parent = 0;
+    sr.source = "self.tour";
+    sr.name = "self";
+    selfDoc.references.push_back(sr);
+    auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
+    cluster2->SetOfflineMode(true);
+    addNode(cluster2->scene, -1, 0);
+    const size_t selfApplied = ApplySceneReferences(*cluster2,
+                                                    selfDoc,
+                                                    dir.generic_string(),
+                                                    nullptr,
+                                                    nullptr,
+                                                    nullptr,
+                                                    smvk::MeshOptConfig{},
+                                                    smvk::MeshletConfig{},
+                                                    0,
+                                                    nullptr);
+    Check(selfApplied == 1, "ref cycle guard (inlined once)");
+    // Cleanup.
+    fs::remove_all(dir, ec);
 }
 
 // NESTED MODERN TOURS: a referenced scene that records its own source
@@ -785,123 +796,126 @@ void TestReferences() {
 // placeholder and is consumed — never re-inlined as a second, unplaced
 // subtree at the owner's scene root.
 void TestNestedModernTourRoot() {
-	namespace fs = std::filesystem;
-	const fs::path dir = fs::temp_directory_path() / "tourmaline_nested_root";
-	std::error_code ec;
-	fs::create_directories(dir, ec);
-	const fs::path gltf = dir / "modern.gltf";
-	{
-		// One-triangle glTF (the .geometry build needs real geometry).
-		std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
-		f << "{\"asset\":{\"version\":\"2.0\"},"
-			"\"scene\":0,"
-			"\"scenes\":[{\"nodes\":[0]}],"
-			"\"nodes\":[{\"name\":\"Modern\",\"mesh\":0}],"
-			"\"meshes\":[{\"primitives\":[{\"attributes\":"
-			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
-			"\"accessors\":["
-			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
-			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
-			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
-			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
-			"\"bufferViews\":["
-			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
-			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
-			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
-			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
-			"\"byteLength\":78}]}";
-	}
-	smvk::assets::AssetManifest man;
-	std::string ierr;
-	smvk::assets::DeriveConfig dcfg{};
-	Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, dcfg, man,
-			nullptr, &ierr),
-		"nested modern derive artifact");
-	// The CELL scene exactly as the editor writes it today: its own
-	// source rides a `reference -root` line, no `source -p` verb.
-	{
-		std::ofstream f(dir / "cell.tour", std::ios::binary | std::ios::trunc);
-		f << "reference -root -n 0 -source \"modern.geometry\" "
-			"-name \"Modern\";\n";
-	}
-	smvk::tour::Doc doc;
-	smvk::tour::ReferenceCmd r{};
-	r.parent = 0;
-	r.source = "cell.tour";
-	r.name = "cell";
-	r.translate = glm::vec3(5.0f, 0.0f, -2.0f);
-	r.hasTranslate = true;
-	doc.references.push_back(r);
-	// SECOND occurrence of the SAME scene (the documented multi-reference
-	// pattern — crate_a + crate_b): every occurrence re-registers the
-	// SAME mesh URIs, which used to orphan the earlier handles in the
-	// reverse lookup (GetMeshUri -> empty -> the cook's write-back
-	// hard-error, the serializer's duplicated cluster-local fallback).
-	smvk::tour::ReferenceCmd r2{};
-	r2.parent = 0;
-	r2.source = "cell.tour";
-	r2.name = "cell_b";
-	r2.translate = glm::vec3(-5.0f, 0.0f, 2.0f);
-	r2.hasTranslate = true;
-	doc.references.push_back(r2);
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	addNode(cluster->scene, -1, 0); // cluster root (importer parity)
-	std::vector<int> ph;
-	std::vector<std::string> issues;
-	const size_t applied = ApplySceneReferences(*cluster, doc,
-		dir.generic_string(), nullptr, nullptr, nullptr,
-		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph, &issues);
-	Check(applied == 2, "nested modern tour inlined once per occurrence");
-	Check(issues.empty(), "nested modern tour no issues");
-	Check(ph.size() == 2 && ph[0] >= 0 && ph[1] >= 0,
-		"nested modern placeholder nodes");
-	Check(findNodeByName(cluster->scene, "REF cell") >= 0
-		&& findNodeByName(cluster->scene, "REF cell_b") >= 0,
-		"nested modern placeholders named");
-	Check(findNodeByName(cluster->scene, "cell:Modern") >= 0
-		&& findNodeByName(cluster->scene, "cell_b:Modern") >= 0,
-		"nested modern subtrees namespaced under their refs");
-	// The root entry must be CONSUMED as the model source: an
-	// unprefixed 'Modern' twin would mean the geometry imported a
-	// second time, anchored unplaced at the owner's scene root.
-	Check(findNodeByName(cluster->scene, "Modern") < 0,
-		"nested modern root consumed, not re-inlined");
-	if (ph.size() == 2 && ph[0] >= 0 && ph[1] >= 0) {
-		const glm::mat4& a = cluster->scene.localTransform[size_t(ph[0])];
-		const glm::mat4& b = cluster->scene.localTransform[size_t(ph[1])];
-		Check(std::abs(a[3].x - 5.0f) < 1e-4f
-			&& std::abs(a[3].z + 2.0f) < 1e-4f,
-			"nested modern placeholder placement a");
-		Check(std::abs(b[3].x + 5.0f) < 1e-4f
-			&& std::abs(b[3].z - 2.0f) < 1e-4f,
-			"nested modern placeholder placement b");
-	}
-	// THE SHARED-URI CONTRACT (the cook write-back's hard gate): every
-	// cooked mesh reverses to its artifact URI even when a LATER
-	// occurrence re-registered the same URI (latest-wins forward map).
-	{
-		size_t withUri = 0, total = 0;
-		std::unordered_set<uint32_t> seen;
-		for (const MeshRow& row : cluster->scene.tables.meshes) {
-			if (!seen.insert(row.mesh).second)
-				continue;
-			const smvk::ClusterStaticMeshHandle h =
-				cluster->staticMeshes.getHandle(row.mesh);
-			if (!h.valid())
-				continue;
-			++total;
-			if (!cluster->GetMeshUri(h).empty())
-				++withUri;
-		}
-		Check(total > 0 && withUri == total,
-			"shared-asset occurrences all reverse to their mesh uri");
-	}
-	fs::remove_all(dir, ec);
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "tourmaline_nested_root";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path gltf = dir / "modern.gltf";
+    {
+        // One-triangle glTF (the .geometry build needs real geometry).
+        std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
+        f << "{\"asset\":{\"version\":\"2.0\"},"
+             "\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],"
+             "\"nodes\":[{\"name\":\"Modern\",\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":"
+             "{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+             "{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+             "{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+             "\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+             "\"bufferViews\":["
+             "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+             "\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+             "base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+             "AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+             "\"byteLength\":78}]}";
+    }
+    smvk::assets::AssetManifest man;
+    std::string ierr;
+    smvk::assets::DeriveConfig dcfg{};
+    Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, dcfg, man, nullptr, &ierr),
+          "nested modern derive artifact");
+    // The CELL scene exactly as the editor writes it today: its own
+    // source rides a `reference -root` line, no `source -p` verb.
+    {
+        std::ofstream f(dir / "cell.tour", std::ios::binary | std::ios::trunc);
+        f << "reference -root -n 0 -source \"modern.geometry\" "
+             "-name \"Modern\";\n";
+    }
+    smvk::tour::Doc doc;
+    smvk::tour::ReferenceCmd r{};
+    r.parent = 0;
+    r.source = "cell.tour";
+    r.name = "cell";
+    r.translate = glm::vec3(5.0f, 0.0f, -2.0f);
+    r.hasTranslate = true;
+    doc.references.push_back(r);
+    // SECOND occurrence of the SAME scene (the documented multi-reference
+    // pattern — crate_a + crate_b): every occurrence re-registers the
+    // SAME mesh URIs, which used to orphan the earlier handles in the
+    // reverse lookup (GetMeshUri -> empty -> the cook's write-back
+    // hard-error, the serializer's duplicated cluster-local fallback).
+    smvk::tour::ReferenceCmd r2{};
+    r2.parent = 0;
+    r2.source = "cell.tour";
+    r2.name = "cell_b";
+    r2.translate = glm::vec3(-5.0f, 0.0f, 2.0f);
+    r2.hasTranslate = true;
+    doc.references.push_back(r2);
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    addNode(cluster->scene, -1, 0); // cluster root (importer parity)
+    std::vector<int> ph;
+    std::vector<std::string> issues;
+    const size_t applied = ApplySceneReferences(*cluster,
+                                                doc,
+                                                dir.generic_string(),
+                                                nullptr,
+                                                nullptr,
+                                                nullptr,
+                                                smvk::MeshOptConfig{},
+                                                smvk::MeshletConfig{},
+                                                0,
+                                                &ph,
+                                                &issues);
+    Check(applied == 2, "nested modern tour inlined once per occurrence");
+    Check(issues.empty(), "nested modern tour no issues");
+    Check(ph.size() == 2 && ph[0] >= 0 && ph[1] >= 0, "nested modern placeholder nodes");
+    Check(findNodeByName(cluster->scene, "REF cell") >= 0 &&
+              findNodeByName(cluster->scene, "REF cell_b") >= 0,
+          "nested modern placeholders named");
+    Check(findNodeByName(cluster->scene, "cell:Modern") >= 0 &&
+              findNodeByName(cluster->scene, "cell_b:Modern") >= 0,
+          "nested modern subtrees namespaced under their refs");
+    // The root entry must be CONSUMED as the model source: an
+    // unprefixed 'Modern' twin would mean the geometry imported a
+    // second time, anchored unplaced at the owner's scene root.
+    Check(findNodeByName(cluster->scene, "Modern") < 0,
+          "nested modern root consumed, not re-inlined");
+    if (ph.size() == 2 && ph[0] >= 0 && ph[1] >= 0) {
+        const glm::mat4& a = cluster->scene.localTransform[size_t(ph[0])];
+        const glm::mat4& b = cluster->scene.localTransform[size_t(ph[1])];
+        Check(std::abs(a[3].x - 5.0f) < 1e-4f && std::abs(a[3].z + 2.0f) < 1e-4f,
+              "nested modern placeholder placement a");
+        Check(std::abs(b[3].x + 5.0f) < 1e-4f && std::abs(b[3].z - 2.0f) < 1e-4f,
+              "nested modern placeholder placement b");
+    }
+    // THE SHARED-URI CONTRACT (the cook write-back's hard gate): every
+    // cooked mesh reverses to its artifact URI even when a LATER
+    // occurrence re-registered the same URI (latest-wins forward map).
+    {
+        size_t withUri = 0, total = 0;
+        std::unordered_set<uint32_t> seen;
+        for (const MeshRow& row : cluster->scene.tables.meshes) {
+            if (!seen.insert(row.mesh).second)
+                continue;
+            const smvk::ClusterStaticMeshHandle h = cluster->staticMeshes.getHandle(row.mesh);
+            if (!h.valid())
+                continue;
+            ++total;
+            if (!cluster->GetMeshUri(h).empty())
+                ++withUri;
+        }
+        Check(total > 0 && withUri == total,
+              "shared-asset occurrences all reverse to their mesh uri");
+    }
+    fs::remove_all(dir, ec);
 }
 
 // ROOT references: the scene's own glTF rides as reference #0 in the
@@ -910,482 +924,492 @@ void TestNestedModernTourRoot() {
 // (editor + cook build identical worlds). Round-trips as
 // `reference -root -source "..."`.
 void TestRootReference() {
-	namespace fs = std::filesystem;
-	const fs::path dir = fs::temp_directory_path() / "tourmaline_rootref";
-	std::error_code ec;
-	fs::create_directories(dir, ec);
-	const fs::path gltf = dir / "scene.gltf";
-	{
-		// One-triangle glTF (the artifact build needs real geometry);
-		// mesh on Alpha only — Beta still rides as a plain node.
-		std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
-		f << "{\"asset\":{\"version\":\"2.0\"},"
-			"\"scene\":0,"
-			"\"scenes\":[{\"nodes\":[0,1]}],"
-			"\"nodes\":[{\"name\":\"Alpha\",\"mesh\":0},"
-			"{\"name\":\"Beta\"}],"
-			"\"meshes\":[{\"primitives\":[{\"attributes\":"
-			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
-			"\"accessors\":["
-			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
-			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
-			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
-			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
-			"\"bufferViews\":["
-			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
-			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
-			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
-			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
-			"\"byteLength\":78}]}";
-	}
-	// Artifact-reference world: derive the .geometry beside the source;
-	// the ROOT reference binds the artifact (the direct-import parity
-	// below still parses the glTF itself - a plain import, not a ref).
-	smvk::assets::AssetManifest sceneMan;
-	std::string derr;
-	smvk::assets::DeriveConfig dcfg{};
-	Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, dcfg, sceneMan,
-			nullptr, &derr),
-		"rootref derive artifact");
-	std::string err;
-	// Round-trip: writer emits `reference -root`, parser reads it back.
-	smvk::tour::Doc doc;
-	smvk::tour::ReferenceCmd root{};
-	root.root = true;
-	root.source = "scene.geometry";
-	root.name = "scene";
-	doc.references.push_back(root);
-	smvk::tour::ReferenceCmd other{};
-	other.parent = 0;
-	other.source = "extra.geometry";
-	other.name = "extra";
-	// VERB SPLIT: a sourced MESH ASSET (not a .tour scene) — the writer
-	// must serialize it as the per-node `source` verb.
-	other.asset = true;
-	doc.references.push_back(other);
-	const std::string tourPath = (dir / "def.tour").string();
-	Check(smvk::tour::SaveTour(tourPath, doc, err), "rootref save");
-	{
-		std::ifstream f(tourPath, std::ios::binary);
-		std::stringstream ss;
-		ss << f.rdbuf();
-		const std::string text = ss.str();
-		Check(text.find("reference -root -n 0 -source \"scene.geometry\"")
-			!= std::string::npos, "rootref -root line");
-		// The asset entry rides the `source` verb (meshes never ride
-		// `reference`).
-		Check(text.find("source -n 0 -p \"extra.geometry\"")
-			!= std::string::npos, "rootref asset source verb line");
-	}
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(tourPath, back, err, &warns),
-		"rootref load");
-	Check(back.references.size() == 2, "rootref count");
-	if (back.references.size() == 2) {
-		Check(back.references[0].root && back.references[0].source == "scene.geometry",
-			"rootref roundtrip");
-		Check(!back.references[1].root && back.references[1].asset
-			&& back.references[1].source == "extra.geometry",
-			"rootref second stays normal (sourced asset)");
-	}
-	// Bind parity A: definition build (empty root + root reference).
-	auto defCluster = std::make_unique<smvk::Cluster>(nullptr);
-	defCluster->SetOfflineMode(true);
-	addNode(defCluster->scene, -1, 0);
-	std::vector<int> defPh;
-	std::vector<std::string> defResolved;
-	smvk::tour::Doc defDoc; // root ref only (extra.geometry does not exist)
-	defDoc.references.push_back(root);
-	const size_t applied = ApplySceneReferences(*defCluster, defDoc,
-		dir.generic_string(), nullptr, nullptr, nullptr,
-		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &defPh,
-		nullptr, &defResolved);
-	Check(applied == 1, "rootref applied");
-	// No placeholder: the sentinel entry is -1 (root refs anchor at
-	// the scene root).
-	Check(defPh.size() == 1 && defPh[0] == -1, "rootref placeholder sentinel");
-	// Bind parity B: direct import of the same glTF.
-	tinygltf::Model model;
-	Check(LoadModelFromSourceFile(model, gltf.string().c_str()),
-		"rootref parse for direct import");
-	auto dirCluster = std::make_unique<smvk::Cluster>(nullptr);
-	dirCluster->SetOfflineMode(true);
-	addNode(dirCluster->scene, -1, 0);
-	{
-		GltfToSceneImporter importer(*dirCluster, model, gltf);
-		importer.setTextureSource(std::make_shared<HostTextureSource>(dir));
-		// Direct-import roots: default scene's nodes, first-scene
-		// fallback (the same traversal GltfToCluster uses).
-		std::vector<int> gltfRoots;
-		if (model.defaultScene >= 0
-			&& model.defaultScene < (int)model.scenes.size())
-			gltfRoots = model.scenes[size_t(model.defaultScene)].nodes;
-		else if (!model.scenes.empty())
-			gltfRoots = model.scenes.front().nodes;
-		for (int gltfNode : gltfRoots)
-			importer.import(gltfNode);
-	}
-	// IDENTICAL builds: same node count, same names at the same ids
-	// (no placeholder node, no namespace prefix).
-	Check(defCluster->scene.hierarchy.size()
-			== dirCluster->scene.hierarchy.size(),
-		"rootref parity node count");
-	bool namesMatch = true;
-	for (size_t n = 0;
-		n < defCluster->scene.hierarchy.size()
-			&& n < dirCluster->scene.hierarchy.size(); ++n)
-		namesMatch = namesMatch && getNodeName(defCluster->scene, int(n))
-			== getNodeName(dirCluster->scene, int(n));
-	Check(namesMatch, "rootref parity names/ids (no placeholder, no ns)");
-	Check(findNodeByName(defCluster->scene, "Alpha") == 1,
-		"rootref first glTF root at id 1");
-	Check(findNodeByName(defCluster->scene, "REF scene") < 0,
-		"rootref makes no placeholder");
-	// Root + normal reference together: the normal one keeps its
-	// placeholder and namespace; the root one stays bare.
-	{
-		// One-triangle gltf (the sourced-asset build needs geometry).
-		std::ofstream f(dir / "extra.gltf", std::ios::binary | std::ios::trunc);
-		f << "{\"asset\":{\"version\":\"2.0\"},"
-			"\"scene\":0,"
-			"\"scenes\":[{\"nodes\":[0]}],"
-			"\"nodes\":[{\"name\":\"Extra\",\"mesh\":0}],"
-			"\"meshes\":[{\"primitives\":[{\"attributes\":"
-			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
-			"\"accessors\":["
-			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
-			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
-			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
-			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
-			"\"bufferViews\":["
-			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
-			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
-			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
-			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
-			"\"byteLength\":78}]}";
-	}
-	{
-		smvk::assets::AssetManifest extraMan;
-		smvk::assets::DeriveConfig extraCfg{};
-		Check(smvk::assets::ImportMeshSource(dir / "extra.gltf", "",
-				nullptr, extraCfg, extraMan, nullptr, &derr),
-			"rootref derive extra artifact");
-	}
-	{
-		auto both = std::make_unique<smvk::Cluster>(nullptr);
-		both->SetOfflineMode(true);
-		addNode(both->scene, -1, 0);
-		std::vector<int> ph2;
-		const size_t bothApplied = ApplySceneReferences(*both, back,
-			dir.generic_string(), nullptr, nullptr, nullptr,
-			smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph2,
-			nullptr, nullptr);
-		Check(bothApplied == 2, "rootref mixed applied");
-		Check(ph2.size() == 2 && ph2[0] == -1 && ph2[1] >= 0,
-			"rootref mixed placeholders");
-		Check(findNodeByName(both->scene, "extra:Extra") >= 0,
-			"rootref normal ref still namespaced");
-	}
-	fs::remove_all(dir, ec);
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "tourmaline_rootref";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path gltf = dir / "scene.gltf";
+    {
+        // One-triangle glTF (the artifact build needs real geometry);
+        // mesh on Alpha only — Beta still rides as a plain node.
+        std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
+        f << "{\"asset\":{\"version\":\"2.0\"},"
+             "\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0,1]}],"
+             "\"nodes\":[{\"name\":\"Alpha\",\"mesh\":0},"
+             "{\"name\":\"Beta\"}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":"
+             "{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+             "{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+             "{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+             "\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+             "\"bufferViews\":["
+             "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+             "\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+             "base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+             "AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+             "\"byteLength\":78}]}";
+    }
+    // Artifact-reference world: derive the .geometry beside the source;
+    // the ROOT reference binds the artifact (the direct-import parity
+    // below still parses the glTF itself - a plain import, not a ref).
+    smvk::assets::AssetManifest sceneMan;
+    std::string derr;
+    smvk::assets::DeriveConfig dcfg{};
+    Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, dcfg, sceneMan, nullptr, &derr),
+          "rootref derive artifact");
+    std::string err;
+    // Round-trip: writer emits `reference -root`, parser reads it back.
+    smvk::tour::Doc doc;
+    smvk::tour::ReferenceCmd root{};
+    root.root = true;
+    root.source = "scene.geometry";
+    root.name = "scene";
+    doc.references.push_back(root);
+    smvk::tour::ReferenceCmd other{};
+    other.parent = 0;
+    other.source = "extra.geometry";
+    other.name = "extra";
+    // VERB SPLIT: a sourced MESH ASSET (not a .tour scene) — the writer
+    // must serialize it as the per-node `source` verb.
+    other.asset = true;
+    doc.references.push_back(other);
+    const std::string tourPath = (dir / "def.tour").string();
+    Check(smvk::tour::SaveTour(tourPath, doc, err), "rootref save");
+    {
+        std::ifstream f(tourPath, std::ios::binary);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        const std::string text = ss.str();
+        Check(text.find("reference -root -n 0 -source \"scene.geometry\"") != std::string::npos,
+              "rootref -root line");
+        // The asset entry rides the `source` verb (meshes never ride
+        // `reference`).
+        Check(text.find("source -n 0 -p \"extra.geometry\"") != std::string::npos,
+              "rootref asset source verb line");
+    }
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(tourPath, back, err, &warns), "rootref load");
+    Check(back.references.size() == 2, "rootref count");
+    if (back.references.size() == 2) {
+        Check(back.references[0].root && back.references[0].source == "scene.geometry",
+              "rootref roundtrip");
+        Check(!back.references[1].root && back.references[1].asset &&
+                  back.references[1].source == "extra.geometry",
+              "rootref second stays normal (sourced asset)");
+    }
+    // Bind parity A: definition build (empty root + root reference).
+    auto defCluster = std::make_unique<smvk::Cluster>(nullptr);
+    defCluster->SetOfflineMode(true);
+    addNode(defCluster->scene, -1, 0);
+    std::vector<int> defPh;
+    std::vector<std::string> defResolved;
+    smvk::tour::Doc defDoc; // root ref only (extra.geometry does not exist)
+    defDoc.references.push_back(root);
+    const size_t applied = ApplySceneReferences(*defCluster,
+                                                defDoc,
+                                                dir.generic_string(),
+                                                nullptr,
+                                                nullptr,
+                                                nullptr,
+                                                smvk::MeshOptConfig{},
+                                                smvk::MeshletConfig{},
+                                                0,
+                                                &defPh,
+                                                nullptr,
+                                                &defResolved);
+    Check(applied == 1, "rootref applied");
+    // No placeholder: the sentinel entry is -1 (root refs anchor at
+    // the scene root).
+    Check(defPh.size() == 1 && defPh[0] == -1, "rootref placeholder sentinel");
+    // Bind parity B: direct import of the same glTF.
+    tinygltf::Model model;
+    Check(LoadModelFromSourceFile(model, gltf.string().c_str()), "rootref parse for direct import");
+    auto dirCluster = std::make_unique<smvk::Cluster>(nullptr);
+    dirCluster->SetOfflineMode(true);
+    addNode(dirCluster->scene, -1, 0);
+    {
+        GltfToSceneImporter importer(*dirCluster, model, gltf);
+        importer.setTextureSource(std::make_shared<HostTextureSource>(dir));
+        // Direct-import roots: default scene's nodes, first-scene
+        // fallback (the same traversal GltfToCluster uses).
+        std::vector<int> gltfRoots;
+        if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size())
+            gltfRoots = model.scenes[size_t(model.defaultScene)].nodes;
+        else if (!model.scenes.empty())
+            gltfRoots = model.scenes.front().nodes;
+        for (int gltfNode : gltfRoots)
+            importer.import(gltfNode);
+    }
+    // IDENTICAL builds: same node count, same names at the same ids
+    // (no placeholder node, no namespace prefix).
+    Check(defCluster->scene.hierarchy.size() == dirCluster->scene.hierarchy.size(),
+          "rootref parity node count");
+    bool namesMatch = true;
+    for (size_t n = 0;
+         n < defCluster->scene.hierarchy.size() && n < dirCluster->scene.hierarchy.size();
+         ++n)
+        namesMatch = namesMatch && getNodeName(defCluster->scene, int(n)) ==
+                                       getNodeName(dirCluster->scene, int(n));
+    Check(namesMatch, "rootref parity names/ids (no placeholder, no ns)");
+    Check(findNodeByName(defCluster->scene, "Alpha") == 1, "rootref first glTF root at id 1");
+    Check(findNodeByName(defCluster->scene, "REF scene") < 0, "rootref makes no placeholder");
+    // Root + normal reference together: the normal one keeps its
+    // placeholder and namespace; the root one stays bare.
+    {
+        // One-triangle gltf (the sourced-asset build needs geometry).
+        std::ofstream f(dir / "extra.gltf", std::ios::binary | std::ios::trunc);
+        f << "{\"asset\":{\"version\":\"2.0\"},"
+             "\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],"
+             "\"nodes\":[{\"name\":\"Extra\",\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":"
+             "{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+             "{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+             "{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+             "\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+             "\"bufferViews\":["
+             "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+             "\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+             "base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+             "AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+             "\"byteLength\":78}]}";
+    }
+    {
+        smvk::assets::AssetManifest extraMan;
+        smvk::assets::DeriveConfig extraCfg{};
+        Check(smvk::assets::ImportMeshSource(
+                  dir / "extra.gltf", "", nullptr, extraCfg, extraMan, nullptr, &derr),
+              "rootref derive extra artifact");
+    }
+    {
+        auto both = std::make_unique<smvk::Cluster>(nullptr);
+        both->SetOfflineMode(true);
+        addNode(both->scene, -1, 0);
+        std::vector<int> ph2;
+        const size_t bothApplied = ApplySceneReferences(*both,
+                                                        back,
+                                                        dir.generic_string(),
+                                                        nullptr,
+                                                        nullptr,
+                                                        nullptr,
+                                                        smvk::MeshOptConfig{},
+                                                        smvk::MeshletConfig{},
+                                                        0,
+                                                        &ph2,
+                                                        nullptr,
+                                                        nullptr);
+        Check(bothApplied == 2, "rootref mixed applied");
+        Check(ph2.size() == 2 && ph2[0] == -1 && ph2[1] >= 0, "rootref mixed placeholders");
+        Check(findNodeByName(both->scene, "extra:Extra") >= 0,
+              "rootref normal ref still namespaced");
+    }
+    fs::remove_all(dir, ec);
 }
 
 void TestTourReferences() {
-	// .tour as a reference source: the authored scene imports, then its
-	// tour commands replay with id offsets (rename/transform/createLight
-	// + setLightAttr -ref). Disabled references stay unbound.
-	namespace fs = std::filesystem;
-	const fs::path dir = fs::temp_directory_path() / "tourmaline_tourrefs";
-	std::error_code ec;
-	fs::create_directories(dir, ec);
-	auto writeGltf = [&](const char* file, const char* nodeName) {
-		// One-triangle glTF (the artifact build needs real geometry).
-		const fs::path p = dir / file;
-		std::ofstream f(p, std::ios::binary | std::ios::trunc);
-		f << "{\"asset\":{\"version\":\"2.0\"},"
-			"\"scene\":0,"
-			"\"scenes\":[{\"nodes\":[0]}],"
-			"\"nodes\":[{\"name\":\"" << nodeName << "\",\"mesh\":0}],"
-			"\"meshes\":[{\"primitives\":[{\"attributes\":"
-			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
-			"\"accessors\":["
-			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
-			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
-			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
-			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
-			"\"bufferViews\":["
-			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
-			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
-			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
-			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
-			"\"byteLength\":78}]}";
-		return p;
-	};
-	writeGltf("sub.gltf", "Box");
-	writeGltf("gear.gltf", "Gear");
-	// Artifact world: derive both (the referenced tour's source line
-	// binds the derived .geometry; its nested reference binds gear's
-	// TOUR — `reference` = another .tour scene, never a mesh blob).
-	{
-		smvk::assets::AssetManifest man;
-		std::string ierr;
-		smvk::assets::DeriveConfig cfg{};
-		Check(smvk::assets::ImportMeshSource(dir / "sub.gltf", "",
-				nullptr, cfg, man, nullptr, &ierr),
-			"tourref derive sub artifact");
-		Check(smvk::assets::ImportMeshSource(dir / "gear.gltf", "",
-				nullptr, cfg, man, nullptr, &ierr),
-			"tourref derive gear artifact");
-	}
-	{
-		std::ofstream f(dir / "gear.tour", std::ios::binary | std::ios::trunc);
-		f << "source -p \"gear.geometry\";\n";
-	}
-	// The referenced tour: rename + move its node, nest gear's tour,
-	// create a light and tune it via -ref.
-	{
-		std::ofstream f(dir / "sub.tour", std::ios::binary | std::ios::trunc);
-		f << "source -p \"sub.geometry\";\n"
-			"rename -n 0 \"BoxRenamed\";\n"
-			"setAttr -n 0 -at translate -t 5 0 0;\n"
-			"reference -n 0 -source \"gear.tour\" -name \"gear\";\n"
-			"createLight -p 0 -name \"Sub Spot\" -at spot -t 1 2 3 100 10 15 30 0 1;\n"
-			"setLightAttr -ref 0 -at intensity -v 200;\n";
-	}
-	auto freshCluster = []() {
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0); // cluster root (importer parity)
-		return cluster;
-	};
-	// Master references the .tour (enabled by default).
-	smvk::tour::Doc doc;
-	smvk::tour::ReferenceCmd r{};
-	r.parent = 0;
-	r.source = "sub.tour";
-	r.name = "sub";
-	doc.references.push_back(r);
-	std::string err;
-	std::vector<std::string> warns;
-	auto cluster = freshCluster();
-	std::vector<int> ph;
-	const size_t applied = ApplySceneReferences(*cluster, doc,
-		dir.generic_string(), nullptr, nullptr, nullptr,
-		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph);
-	// sub inlined + its tour replayed + nested gear inlined.
-	Check(applied == 2, "tourref applied (sub + nested gear)");
-	Check(ph.size() == 1, "tourref placeholder list");
-	// Id layout (the artifact world): 0 root, 1 "REF sub", 2 BoxRenamed,
-	// 3 Box's primitive-instance node (the import unrolls each gltf
-	// primitive into a child node), 4 the created light (the artifact
-	// build's contract: sub-tour id i lands at ph+1+i).
-	Check(findNodeByName(cluster->scene, "REF sub") == 1,
-		"tourref placeholder");
-	Check(findNodeByName(cluster->scene, "sub:BoxRenamed") == 2,
-		"tourref replayed rename with offset");
-	Check(cluster->scene.hierarchy[size_t(2)].parent == 1,
-		"tourref subtree parent");
-	Check(cluster->scene.localTransform[size_t(2)][3].x == 5.0f,
-		"tourref replayed transform with offset");
-	Check(findNodeByName(cluster->scene, "sub:Sub Spot") == 4,
-		"tourref created light with offset parent");
-	const uint32_t lightNode = 4;
-	const LightRow* lit = FindLight(cluster->scene, lightNode);
-	Check(lit != nullptr, "tourref light link");
-	if (lit != nullptr) {
-		const ::SceneLight* L = cluster->lights.get(
-			cluster->lights.getHandle(lit->light));
-		Check(L && L->type == ::SceneLight::Type::Spot
-			&& L->intensity == 200.0f
-			&& (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0,
-			"tourref -ref attr applied in replay");
-	}
-	Check(findNodeByName(cluster->scene, "REF gear") >= 0,
-		"tourref nested placeholder");
-	Check(findNodeByName(cluster->scene, "sub:gear:Gear") >= 0,
-		"tourref nested namespaced chain");
+    // .tour as a reference source: the authored scene imports, then its
+    // tour commands replay with id offsets (rename/transform/createLight
+    // + setLightAttr -ref). Disabled references stay unbound.
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "tourmaline_tourrefs";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    auto writeGltf = [&](const char* file, const char* nodeName) {
+        // One-triangle glTF (the artifact build needs real geometry).
+        const fs::path p = dir / file;
+        std::ofstream f(p, std::ios::binary | std::ios::trunc);
+        f << "{\"asset\":{\"version\":\"2.0\"},"
+             "\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],"
+             "\"nodes\":[{\"name\":\""
+          << nodeName
+          << "\",\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":"
+             "{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+             "{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+             "{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+             "\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+             "\"bufferViews\":["
+             "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+             "\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+             "base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+             "AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+             "\"byteLength\":78}]}";
+        return p;
+    };
+    writeGltf("sub.gltf", "Box");
+    writeGltf("gear.gltf", "Gear");
+    // Artifact world: derive both (the referenced tour's source line
+    // binds the derived .geometry; its nested reference binds gear's
+    // TOUR — `reference` = another .tour scene, never a mesh blob).
+    {
+        smvk::assets::AssetManifest man;
+        std::string ierr;
+        smvk::assets::DeriveConfig cfg{};
+        Check(
+            smvk::assets::ImportMeshSource(dir / "sub.gltf", "", nullptr, cfg, man, nullptr, &ierr),
+            "tourref derive sub artifact");
+        Check(smvk::assets::ImportMeshSource(
+                  dir / "gear.gltf", "", nullptr, cfg, man, nullptr, &ierr),
+              "tourref derive gear artifact");
+    }
+    {
+        std::ofstream f(dir / "gear.tour", std::ios::binary | std::ios::trunc);
+        f << "source -p \"gear.geometry\";\n";
+    }
+    // The referenced tour: rename + move its node, nest gear's tour,
+    // create a light and tune it via -ref.
+    {
+        std::ofstream f(dir / "sub.tour", std::ios::binary | std::ios::trunc);
+        f << "source -p \"sub.geometry\";\n"
+             "rename -n 0 \"BoxRenamed\";\n"
+             "setAttr -n 0 -at translate -t 5 0 0;\n"
+             "reference -n 0 -source \"gear.tour\" -name \"gear\";\n"
+             "createLight -p 0 -name \"Sub Spot\" -at spot -t 1 2 3 100 10 15 30 0 1;\n"
+             "setLightAttr -ref 0 -at intensity -v 200;\n";
+    }
+    auto freshCluster = []() {
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0); // cluster root (importer parity)
+        return cluster;
+    };
+    // Master references the .tour (enabled by default).
+    smvk::tour::Doc doc;
+    smvk::tour::ReferenceCmd r{};
+    r.parent = 0;
+    r.source = "sub.tour";
+    r.name = "sub";
+    doc.references.push_back(r);
+    std::string err;
+    std::vector<std::string> warns;
+    auto cluster = freshCluster();
+    std::vector<int> ph;
+    const size_t applied = ApplySceneReferences(*cluster,
+                                                doc,
+                                                dir.generic_string(),
+                                                nullptr,
+                                                nullptr,
+                                                nullptr,
+                                                smvk::MeshOptConfig{},
+                                                smvk::MeshletConfig{},
+                                                0,
+                                                &ph);
+    // sub inlined + its tour replayed + nested gear inlined.
+    Check(applied == 2, "tourref applied (sub + nested gear)");
+    Check(ph.size() == 1, "tourref placeholder list");
+    // Id layout (the artifact world): 0 root, 1 "REF sub", 2 BoxRenamed,
+    // 3 Box's primitive-instance node (the import unrolls each gltf
+    // primitive into a child node), 4 the created light (the artifact
+    // build's contract: sub-tour id i lands at ph+1+i).
+    Check(findNodeByName(cluster->scene, "REF sub") == 1, "tourref placeholder");
+    Check(findNodeByName(cluster->scene, "sub:BoxRenamed") == 2,
+          "tourref replayed rename with offset");
+    Check(cluster->scene.hierarchy[size_t(2)].parent == 1, "tourref subtree parent");
+    Check(cluster->scene.localTransform[size_t(2)][3].x == 5.0f,
+          "tourref replayed transform with offset");
+    Check(findNodeByName(cluster->scene, "sub:Sub Spot") == 4,
+          "tourref created light with offset parent");
+    const uint32_t lightNode = 4;
+    const LightRow* lit = FindLight(cluster->scene, lightNode);
+    Check(lit != nullptr, "tourref light link");
+    if (lit != nullptr) {
+        const ::SceneLight* L = cluster->lights.get(cluster->lights.getHandle(lit->light));
+        Check(L && L->type == ::SceneLight::Type::Spot && L->intensity == 200.0f &&
+                  (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0,
+              "tourref -ref attr applied in replay");
+    }
+    Check(findNodeByName(cluster->scene, "REF gear") >= 0, "tourref nested placeholder");
+    Check(findNodeByName(cluster->scene, "sub:gear:Gear") >= 0, "tourref nested namespaced chain");
 
-	// Multiple instances of the SAME .tour source must remain distinct:
-	// each has an independent namespace and a different placement frame.
-	{
-		smvk::tour::Doc multiple;
-		smvk::tour::ReferenceCmd a = r;
-		a.name = "left";
-		a.translate = glm::vec3(11.0f, 0.0f, 0.0f);
-		a.hasTranslate = true;
-		multiple.references.push_back(a);
-		smvk::tour::ReferenceCmd b = a;
-		b.name = "right";
-		b.translate = glm::vec3(-11.0f, 0.0f, 0.0f);
-		multiple.references.push_back(b);
-		auto c = freshCluster();
-		std::vector<int> placeholders;
-		const size_t count = ApplySceneReferences(*c, multiple,
-			dir.generic_string(), nullptr, nullptr, nullptr,
-			smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-			&placeholders);
-		Check(count == 4 && placeholders.size() == 2,
-			"prefab authored two nested instances");
-		Check(findNodeByName(c->scene, "left:BoxRenamed") >= 0
-			&& findNodeByName(c->scene, "right:BoxRenamed") >= 0
-			&& findNodeByName(c->scene, "left:gear:Gear") >= 0
-			&& findNodeByName(c->scene, "right:gear:Gear") >= 0,
-			"prefab authored namespace isolation");
-		if (placeholders.size() == 2
-			&& placeholders[0] >= 0 && placeholders[1] >= 0) {
-			Check(c->scene.localTransform[size_t(placeholders[0])][3].x
-					== 11.0f
-				&& c->scene.localTransform[size_t(placeholders[1])][3].x
-					== -11.0f,
-				"prefab authored placement isolation");
-		}
-	}
+    // Multiple instances of the SAME .tour source must remain distinct:
+    // each has an independent namespace and a different placement frame.
+    {
+        smvk::tour::Doc multiple;
+        smvk::tour::ReferenceCmd a = r;
+        a.name = "left";
+        a.translate = glm::vec3(11.0f, 0.0f, 0.0f);
+        a.hasTranslate = true;
+        multiple.references.push_back(a);
+        smvk::tour::ReferenceCmd b = a;
+        b.name = "right";
+        b.translate = glm::vec3(-11.0f, 0.0f, 0.0f);
+        multiple.references.push_back(b);
+        auto c = freshCluster();
+        std::vector<int> placeholders;
+        const size_t count = ApplySceneReferences(*c,
+                                                  multiple,
+                                                  dir.generic_string(),
+                                                  nullptr,
+                                                  nullptr,
+                                                  nullptr,
+                                                  smvk::MeshOptConfig{},
+                                                  smvk::MeshletConfig{},
+                                                  0,
+                                                  &placeholders);
+        Check(count == 4 && placeholders.size() == 2, "prefab authored two nested instances");
+        Check(findNodeByName(c->scene, "left:BoxRenamed") >= 0 &&
+                  findNodeByName(c->scene, "right:BoxRenamed") >= 0 &&
+                  findNodeByName(c->scene, "left:gear:Gear") >= 0 &&
+                  findNodeByName(c->scene, "right:gear:Gear") >= 0,
+              "prefab authored namespace isolation");
+        if (placeholders.size() == 2 && placeholders[0] >= 0 && placeholders[1] >= 0) {
+            Check(c->scene.localTransform[size_t(placeholders[0])][3].x == 11.0f &&
+                      c->scene.localTransform[size_t(placeholders[1])][3].x == -11.0f,
+                  "prefab authored placement isolation");
+        }
+    }
 
-	// Disabled reference: nothing binds.
-	smvk::tour::Doc offDoc;
-	smvk::tour::ReferenceCmd off{};
-	off.parent = 0;
-	off.source = "sub.tour";
-	off.name = "sub";
-	off.enabled = false;
-	offDoc.references.push_back(off);
-	auto clusterOff = freshCluster();
-	const size_t offApplied = ApplySceneReferences(*clusterOff, offDoc,
-		dir.generic_string(), nullptr, nullptr, nullptr,
-		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, nullptr);
-	// Keep-in-scene contract: disabled references STILL inline (every
-	// cluster id stays stable across enable/disable toggles, so edits
-	// on referenced nodes can never be orphaned). The disabled-HIDE is
-	// EDITOR-side on the resolved world: the runtime draw-list build
-	// excludes hidden nodes at resolve time, so an import-side hide
-	// would permanently drop the reference's meshes.
-	Check(offApplied == 2, "tourref disabled binds (kept in scene)");
-	const int offPh = findNodeByName(clusterOff->scene, "REF sub");
-	Check(offPh >= 0, "tourref disabled keeps placeholder");
-	Check(clusterOff->scene.hidden.size()
-			!= clusterOff->scene.hierarchy.size()
-		|| clusterOff->scene.hidden[size_t(offPh)] == 0,
-		"tourref disabled NOT hidden at import (draw list intact)");
-	Check(findNodeByName(clusterOff->scene, "sub:BoxRenamed") >= 0,
-		"tourref disabled keeps namespaced nodes");
+    // Disabled reference: nothing binds.
+    smvk::tour::Doc offDoc;
+    smvk::tour::ReferenceCmd off{};
+    off.parent = 0;
+    off.source = "sub.tour";
+    off.name = "sub";
+    off.enabled = false;
+    offDoc.references.push_back(off);
+    auto clusterOff = freshCluster();
+    const size_t offApplied = ApplySceneReferences(*clusterOff,
+                                                   offDoc,
+                                                   dir.generic_string(),
+                                                   nullptr,
+                                                   nullptr,
+                                                   nullptr,
+                                                   smvk::MeshOptConfig{},
+                                                   smvk::MeshletConfig{},
+                                                   0,
+                                                   nullptr);
+    // Keep-in-scene contract: disabled references STILL inline (every
+    // cluster id stays stable across enable/disable toggles, so edits
+    // on referenced nodes can never be orphaned). The disabled-HIDE is
+    // EDITOR-side on the resolved world: the runtime draw-list build
+    // excludes hidden nodes at resolve time, so an import-side hide
+    // would permanently drop the reference's meshes.
+    Check(offApplied == 2, "tourref disabled binds (kept in scene)");
+    const int offPh = findNodeByName(clusterOff->scene, "REF sub");
+    Check(offPh >= 0, "tourref disabled keeps placeholder");
+    Check(clusterOff->scene.hidden.size() != clusterOff->scene.hierarchy.size() ||
+              clusterOff->scene.hidden[size_t(offPh)] == 0,
+          "tourref disabled NOT hidden at import (draw list intact)");
+    Check(findNodeByName(clusterOff->scene, "sub:BoxRenamed") >= 0,
+          "tourref disabled keeps namespaced nodes");
 
-	// -enabled round-trips (absent = enabled).
-	smvk::tour::Doc rtDoc;
-	rtDoc.references.push_back(off);
-	std::string rtErr;
-	Check(smvk::tour::SaveTour((dir / "rt.tour").string(), rtDoc, rtErr),
-		"tourref enabled save");
-	smvk::tour::Doc rtBack;
-	Check(smvk::tour::LoadTour((dir / "rt.tour").string(), rtBack, rtErr),
-		"tourref enabled load");
-	Check(rtBack.references.size() == 1 && !rtBack.references[0].enabled,
-		"tourref enabled flag roundtrip");
-	// Cleanup.
-	fs::remove_all(dir, ec);
+    // -enabled round-trips (absent = enabled).
+    smvk::tour::Doc rtDoc;
+    rtDoc.references.push_back(off);
+    std::string rtErr;
+    Check(smvk::tour::SaveTour((dir / "rt.tour").string(), rtDoc, rtErr), "tourref enabled save");
+    smvk::tour::Doc rtBack;
+    Check(smvk::tour::LoadTour((dir / "rt.tour").string(), rtBack, rtErr), "tourref enabled load");
+    Check(rtBack.references.size() == 1 && !rtBack.references[0].enabled,
+          "tourref enabled flag roundtrip");
+    // Cleanup.
+    fs::remove_all(dir, ec);
 }
 
 void TestLightVerbs() {
-	// Editor-authored lights: createLight/setLightAttr round-trip through
-	// Editor-authored lights: createLight/setLightAttr round-trip through
-	// the .tour file, then replay onto a offline cluster (create appends a
-	// node + pool definition; -ref addressing hits creation order).
-	smvk::tour::Doc doc;
-	doc.source = "models/x.gltf";
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::CreateLight;
-	c.node = 0; // parent: cluster root
-	c.text = "Key Spot";
-	c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
-	c.vec4 = glm::vec4(2.0f, 1500.0f, 25.0f, 20.0f); // spot, I, range, inner
-	c.number = 35.0; // outer
-	c.flag = false;  // dynamic
-	c.node2 = 1;     // shadow
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetLightAttr;
-	c.node = smvk::tour::kCreateLightRefBase | 0u;
-	c.text = "intensity";
-	c.number = 2000.0;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetLightAttr;
-	c.node = smvk::tour::kCreateLightRefBase | 0u;
-	c.text = "color";
-	c.vec4 = glm::vec4(1.0f, 0.5f, 0.25f, 1.0f);
-	doc.commands.push_back(c);
+    // Editor-authored lights: createLight/setLightAttr round-trip through
+    // Editor-authored lights: createLight/setLightAttr round-trip through
+    // the .tour file, then replay onto a offline cluster (create appends a
+    // node + pool definition; -ref addressing hits creation order).
+    smvk::tour::Doc doc;
+    doc.source = "models/x.gltf";
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::CreateLight;
+    c.node = 0; // parent: cluster root
+    c.text = "Key Spot";
+    c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+    c.vec4 = glm::vec4(2.0f, 1500.0f, 25.0f, 20.0f); // spot, I, range, inner
+    c.number = 35.0;                                 // outer
+    c.flag = false;                                  // dynamic
+    c.node2 = 1;                                     // shadow
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetLightAttr;
+    c.node = smvk::tour::kCreateLightRefBase | 0u;
+    c.text = "intensity";
+    c.number = 2000.0;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetLightAttr;
+    c.node = smvk::tour::kCreateLightRefBase | 0u;
+    c.text = "color";
+    c.vec4 = glm::vec4(1.0f, 0.5f, 0.25f, 1.0f);
+    doc.commands.push_back(c);
 
-	std::string err;
-	std::vector<std::string> warns;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "light tour save");
-	smvk::tour::Doc back;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "light tour load");
-	Check(back.commands.size() == 3, "light tour command count");
-	const smvk::tour::Command& rc = back.commands[0];
-	Check(rc.verb == smvk::tour::Verb::CreateLight && rc.node == 0
-		&& rc.text == "Key Spot" && rc.vec4.x == 2.0f
-		&& rc.vec4.y == 1500.0f && rc.number == 35.0 && !rc.flag
-		&& rc.node2 == 1, "light create roundtrip");
-	Check(back.commands[1].verb == smvk::tour::Verb::SetLightAttr
-		&& back.commands[1].node == (smvk::tour::kCreateLightRefBase | 0u)
-		&& back.commands[1].text == "intensity"
-		&& back.commands[1].number == 2000.0, "light attr roundtrip");
+    std::string err;
+    std::vector<std::string> warns;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "light tour save");
+    smvk::tour::Doc back;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "light tour load");
+    Check(back.commands.size() == 3, "light tour command count");
+    const smvk::tour::Command& rc = back.commands[0];
+    Check(rc.verb == smvk::tour::Verb::CreateLight && rc.node == 0 && rc.text == "Key Spot" &&
+              rc.vec4.x == 2.0f && rc.vec4.y == 1500.0f && rc.number == 35.0 && !rc.flag &&
+              rc.node2 == 1,
+          "light create roundtrip");
+    Check(back.commands[1].verb == smvk::tour::Verb::SetLightAttr &&
+              back.commands[1].node == (smvk::tour::kCreateLightRefBase | 0u) &&
+              back.commands[1].text == "intensity" && back.commands[1].number == 2000.0,
+          "light attr roundtrip");
 
-	// Replay: root + one imported node; create under root.
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	const int root = addNode(cluster->scene, -1, 0);
-	setNodeName(cluster->scene, root, "Root");
-	const size_t beforeNodes = cluster->scene.hierarchy.size();
-	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
-		"light replay ok");
-	Check(cluster->scene.hierarchy.size() == beforeNodes + 1,
-		"light replay appends node");
-	const uint32_t newNode = uint32_t(beforeNodes);
-	Check(cluster->scene.hierarchy[newNode].parent == root,
-		"light replay parent");
-	Check(getNodeName(cluster->scene, int(newNode)) == "Key Spot",
-		"light replay name");
-	const LightRow* lit = FindLight(cluster->scene, newNode);
-	Check(lit != nullptr, "light replay link");
-	const ::SceneLight* L = cluster->lights.get(
-		cluster->lights.getHandle(lit->light));
-	bool params = L && L->type == ::SceneLight::Type::Spot
-		&& L->intensity == 2000.0f && L->range == 25.0f
-		&& std::abs(L->innerConeAngle - glm::radians(20.0f)) < 1e-4f
-		&& std::abs(L->outerConeAngle - glm::radians(35.0f)) < 1e-4f
-		&& (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0
-		&& (L->flags & ::SceneLight::kSceneLightFlag_Static) == 0
-		&& L->color == glm::vec3(1.0f, 0.5f, 0.25f);
-	Check(params, "light replay params (-ref intensity + color applied)");
-	Check(cluster->scene.localTransform[newNode][3].x == 1.0f,
-		"light replay position");
+    // Replay: root + one imported node; create under root.
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    const int root = addNode(cluster->scene, -1, 0);
+    setNodeName(cluster->scene, root, "Root");
+    const size_t beforeNodes = cluster->scene.hierarchy.size();
+    Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "light replay ok");
+    Check(cluster->scene.hierarchy.size() == beforeNodes + 1, "light replay appends node");
+    const uint32_t newNode = uint32_t(beforeNodes);
+    Check(cluster->scene.hierarchy[newNode].parent == root, "light replay parent");
+    Check(getNodeName(cluster->scene, int(newNode)) == "Key Spot", "light replay name");
+    const LightRow* lit = FindLight(cluster->scene, newNode);
+    Check(lit != nullptr, "light replay link");
+    const ::SceneLight* L = cluster->lights.get(cluster->lights.getHandle(lit->light));
+    bool params = L && L->type == ::SceneLight::Type::Spot && L->intensity == 2000.0f &&
+                  L->range == 25.0f && std::abs(L->innerConeAngle - glm::radians(20.0f)) < 1e-4f &&
+                  std::abs(L->outerConeAngle - glm::radians(35.0f)) < 1e-4f &&
+                  (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0 &&
+                  (L->flags & ::SceneLight::kSceneLightFlag_Static) == 0 &&
+                  L->color == glm::vec3(1.0f, 0.5f, 0.25f);
+    Check(params, "light replay params (-ref intensity + color applied)");
+    Check(cluster->scene.localTransform[newNode][3].x == 1.0f, "light replay position");
 
-	// Out-of-range -ref fails loudly; unknown attr fails at parse.
-	smvk::tour::Doc bad;
-	smvk::tour::Command bc{};
-	bc.verb = smvk::tour::Verb::SetLightAttr;
-	bc.node = smvk::tour::kCreateLightRefBase | 5u;
-	bc.text = "intensity";
-	bc.number = 1.0;
-	bad.commands.push_back(bc);
-	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
-		"light replay rejects bad ref");
-	smvk::tour::Doc parseBad;
-	Check(!smvk::tour::LoadTourFromString(
-		"setLightAttr -n 0 -at frobnicate -v 1;\n", parseBad, err),
-		"light parser rejects bad attr");
+    // Out-of-range -ref fails loudly; unknown attr fails at parse.
+    smvk::tour::Doc bad;
+    smvk::tour::Command bc{};
+    bc.verb = smvk::tour::Verb::SetLightAttr;
+    bc.node = smvk::tour::kCreateLightRefBase | 5u;
+    bc.text = "intensity";
+    bc.number = 1.0;
+    bad.commands.push_back(bc);
+    Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
+          "light replay rejects bad ref");
+    smvk::tour::Doc parseBad;
+    Check(
+        !smvk::tour::LoadTourFromString("setLightAttr -n 0 -at frobnicate -v 1;\n", parseBad, err),
+        "light parser rejects bad attr");
 }
 
 // Unified createNode form: new files write `createNode -at <type>`;
@@ -1394,232 +1418,210 @@ void TestLightVerbs() {
 // at replay; legacy createLight/createTerrain/createTransform lines
 // load unchanged.
 void TestGiVolumeVerbs() {
-	// Authored GI volumes: createGiVolume/setGiVolumeAttr round-trip
-	// through the .tour file, then replay onto a offline cluster (create
-	// appends a node + node-local def; -ref addressing hits creation
-	// order; delete drops the def link).
-	smvk::tour::Doc doc;
-	doc.source = "models/x.gltf";
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::CreateGiVolume;
-	c.node = 0; // parent: cluster root
-	c.text = "GIVolume_1";
-	c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
-	c.svec = glm::vec3(8.0f, 4.0f, 6.0f);
-	c.vec4 = glm::vec4(2.0f, 0.5f, 0.1f, 0.2f); // priority, spacing, in, out
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetGiVolumeAttr;
-	c.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
-	c.text = "spacing";
-	c.number = 0.25;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetGiVolumeAttr;
-	c.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
-	c.text = "size";
-	c.vec4 = glm::vec4(10.0f, 10.0f, 10.0f, 1.0f);
-	doc.commands.push_back(c);
+    // Authored GI volumes: createGiVolume/setGiVolumeAttr round-trip
+    // through the .tour file, then replay onto a offline cluster (create
+    // appends a node + node-local def; -ref addressing hits creation
+    // order; delete drops the def link).
+    smvk::tour::Doc doc;
+    doc.source = "models/x.gltf";
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::CreateGiVolume;
+    c.node = 0; // parent: cluster root
+    c.text = "GIVolume_1";
+    c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+    c.svec = glm::vec3(8.0f, 4.0f, 6.0f);
+    c.vec4 = glm::vec4(2.0f, 0.5f, 0.1f, 0.2f); // priority, spacing, in, out
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetGiVolumeAttr;
+    c.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+    c.text = "spacing";
+    c.number = 0.25;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetGiVolumeAttr;
+    c.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+    c.text = "size";
+    c.vec4 = glm::vec4(10.0f, 10.0f, 10.0f, 1.0f);
+    doc.commands.push_back(c);
 
-	std::string err;
-	std::vector<std::string> warns;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "GI volume tour save");
-	std::ifstream in(TempTour(), std::ios::binary);
-	std::stringstream ss;
-	ss << in.rdbuf();
-	const std::string text = ss.str();
-	in.close();
-	Check(text.find("createGiVolume -p 0 -name \"GIVolume_1\"") != std::string::npos,
-		"gi volume create line");
-	Check(text.find("setGiVolumeAttr -ref 0 -at spacing -v 0.25") != std::string::npos,
-		"gi volume tabulated attr line");
-	smvk::tour::Doc back;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "GI volume tour load");
-	Check(back.commands.size() == 3, "GI volume tour command count");
-	const smvk::tour::Command& rc = back.commands[0];
-	Check(rc.verb == smvk::tour::Verb::CreateGiVolume && rc.node == 0
-		&& rc.text == "GIVolume_1" && rc.vec4.x == 2.0f
-		&& rc.vec4.y == 0.5f && rc.svec.x == 8.0f,
-		"GI volume create roundtrip");
-	Check(back.commands[1].verb == smvk::tour::Verb::SetGiVolumeAttr
-		&& back.commands[1].node == (smvk::tour::kCreateGiVolumeRefBase | 0u)
-		&& back.commands[1].text == "spacing"
-		&& back.commands[1].number == 0.25, "GI volume attr roundtrip");
-	Check(!smvk::tour::Describe(back.commands[0]).empty()
-		&& !smvk::tour::Describe(back.commands[1]).empty(),
-		"GI volume describe");
+    std::string err;
+    std::vector<std::string> warns;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "GI volume tour save");
+    std::ifstream in(TempTour(), std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    const std::string text = ss.str();
+    in.close();
+    Check(text.find("createGiVolume -p 0 -name \"GIVolume_1\"") != std::string::npos,
+          "gi volume create line");
+    Check(text.find("setGiVolumeAttr -ref 0 -at spacing -v 0.25") != std::string::npos,
+          "gi volume tabulated attr line");
+    smvk::tour::Doc back;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "GI volume tour load");
+    Check(back.commands.size() == 3, "GI volume tour command count");
+    const smvk::tour::Command& rc = back.commands[0];
+    Check(rc.verb == smvk::tour::Verb::CreateGiVolume && rc.node == 0 && rc.text == "GIVolume_1" &&
+              rc.vec4.x == 2.0f && rc.vec4.y == 0.5f && rc.svec.x == 8.0f,
+          "GI volume create roundtrip");
+    Check(back.commands[1].verb == smvk::tour::Verb::SetGiVolumeAttr &&
+              back.commands[1].node == (smvk::tour::kCreateGiVolumeRefBase | 0u) &&
+              back.commands[1].text == "spacing" && back.commands[1].number == 0.25,
+          "GI volume attr roundtrip");
+    Check(!smvk::tour::Describe(back.commands[0]).empty() &&
+              !smvk::tour::Describe(back.commands[1]).empty(),
+          "GI volume describe");
 
-	// Replay: root + one imported node; create under root.
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	const int root = addNode(cluster->scene, -1, 0);
-	setNodeName(cluster->scene, root, "Root");
-	const size_t beforeNodes = cluster->scene.hierarchy.size();
-	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
-		"GI volume replay ok");
-	Check(cluster->scene.hierarchy.size() == beforeNodes + 1,
-		"GI volume replay appends node");
-	const uint32_t newNode = uint32_t(beforeNodes);
-	Check(cluster->scene.hierarchy[newNode].parent == root,
-		"GI volume replay parent");
-	Check(getNodeName(cluster->scene, int(newNode)) == "GIVolume_1",
-		"GI volume replay name");
-	const GiVolumeRow* cvit = FindGiVolume(cluster->scene, newNode);
-	Check(cvit != nullptr, "GI volume replay link");
-	Check(cvit != nullptr
-		&& cvit->volume.priority == 2u
-		&& cvit->volume.spacing == 0.25f
-		&& cvit->volume.insideFade == 0.1f
-		&& cvit->volume.outsideFade == 0.2f,
-		"GI volume replay params (-ref spacing applied)");
-	Check(cluster->scene.localTransform[newNode][3].x == 1.0f
-		&& cluster->scene.localTransform[newNode][3].y == 2.0f,
-		"GI volume replay position");
-	// Size attr rebuilt the scale channel (10 m box).
-	glm::vec3 sk, tt, ss3;
-	glm::vec4 pp;
-	glm::quat qq;
-	glm::decompose(cluster->scene.localTransform[newNode], ss3, qq,
-		tt, sk, pp);
-	Check(std::abs(ss3.x - 10.0f) < 1e-4f, "GI volume replay size");
+    // Replay: root + one imported node; create under root.
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    const int root = addNode(cluster->scene, -1, 0);
+    setNodeName(cluster->scene, root, "Root");
+    const size_t beforeNodes = cluster->scene.hierarchy.size();
+    Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "GI volume replay ok");
+    Check(cluster->scene.hierarchy.size() == beforeNodes + 1, "GI volume replay appends node");
+    const uint32_t newNode = uint32_t(beforeNodes);
+    Check(cluster->scene.hierarchy[newNode].parent == root, "GI volume replay parent");
+    Check(getNodeName(cluster->scene, int(newNode)) == "GIVolume_1", "GI volume replay name");
+    const GiVolumeRow* cvit = FindGiVolume(cluster->scene, newNode);
+    Check(cvit != nullptr, "GI volume replay link");
+    Check(cvit != nullptr && cvit->volume.priority == 2u && cvit->volume.spacing == 0.25f &&
+              cvit->volume.insideFade == 0.1f && cvit->volume.outsideFade == 0.2f,
+          "GI volume replay params (-ref spacing applied)");
+    Check(cluster->scene.localTransform[newNode][3].x == 1.0f &&
+              cluster->scene.localTransform[newNode][3].y == 2.0f,
+          "GI volume replay position");
+    // Size attr rebuilt the scale channel (10 m box).
+    glm::vec3 sk, tt, ss3;
+    glm::vec4 pp;
+    glm::quat qq;
+    glm::decompose(cluster->scene.localTransform[newNode], ss3, qq, tt, sk, pp);
+    Check(std::abs(ss3.x - 10.0f) < 1e-4f, "GI volume replay size");
 
-	// Unified form lowers to the legacy verb at parse.
-	smvk::tour::Doc uni;
-	Check(smvk::tour::LoadTourFromString(
-		"createNode -at givolume -p 0 -name \"U\" -t 0 0 0 1 0.5 0.1 0.1 -s 4 4 4;\n",
-		uni, err), "GI volume unified loads");
-	Check(uni.commands.size() == 1
-		&& uni.commands[0].verb == smvk::tour::Verb::CreateGiVolume
-		&& uni.commands[0].text == "U"
-		&& uni.commands[0].vec4.x == 1.0f,
-		"GI volume unified lowers");
-	// Type table knows the DAG kind.
-	size_t tn = 0;
-	const smvk::tour::CreateNodeType* t = smvk::tour::FindCreateNodeType("givolume");
-	Check(t && t->kind == smvk::tour::CreateNodeKind::Dag, "GI volume node type");
-	(void)tn;
+    // Unified form lowers to the legacy verb at parse.
+    smvk::tour::Doc uni;
+    Check(smvk::tour::LoadTourFromString(
+              "createNode -at givolume -p 0 -name \"U\" -t 0 0 0 1 0.5 0.1 0.1 -s 4 4 4;\n",
+              uni,
+              err),
+          "GI volume unified loads");
+    Check(uni.commands.size() == 1 && uni.commands[0].verb == smvk::tour::Verb::CreateGiVolume &&
+              uni.commands[0].text == "U" && uni.commands[0].vec4.x == 1.0f,
+          "GI volume unified lowers");
+    // Type table knows the DAG kind.
+    size_t tn = 0;
+    const smvk::tour::CreateNodeType* t = smvk::tour::FindCreateNodeType("givolume");
+    Check(t && t->kind == smvk::tour::CreateNodeKind::Dag, "GI volume node type");
+    (void)tn;
 
-	// Delete drops the def link (Maya delete: nothing bakes it).
-	smvk::tour::Doc del;
-	smvk::tour::Command dc{};
-	dc.verb = smvk::tour::Verb::Delete;
-	dc.node = newNode;
-	dc.name = "GIVolume_1";
-	del.commands.push_back(dc);
-	Check(smvk::tour::ApplyTourToCluster(*cluster, del, &warns, &err),
-		"GI volume delete replay ok");
-	Check(FindGiVolume(cluster->scene, newNode) == nullptr,
-		"GI volume delete drops def");
+    // Delete drops the def link (Maya delete: nothing bakes it).
+    smvk::tour::Doc del;
+    smvk::tour::Command dc{};
+    dc.verb = smvk::tour::Verb::Delete;
+    dc.node = newNode;
+    dc.name = "GIVolume_1";
+    del.commands.push_back(dc);
+    Check(smvk::tour::ApplyTourToCluster(*cluster, del, &warns, &err),
+          "GI volume delete replay ok");
+    Check(FindGiVolume(cluster->scene, newNode) == nullptr, "GI volume delete drops def");
 
-	// Out-of-range -ref fails loudly; unknown attr fails at parse.
-	smvk::tour::Doc bad;
-	smvk::tour::Command bc{};
-	bc.verb = smvk::tour::Verb::SetGiVolumeAttr;
-	bc.node = smvk::tour::kCreateGiVolumeRefBase | 5u;
-	bc.text = "spacing";
-	bc.number = 1.0;
-	bad.commands.push_back(bc);
-	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
-		"GI volume replay rejects bad ref");
-	smvk::tour::Doc parseBad;
-	Check(!smvk::tour::LoadTourFromString(
-		"setGiVolumeAttr -n 0 -at frobnicate -v 1;\n", parseBad, err),
-		"GI volume parser rejects bad attr");
+    // Out-of-range -ref fails loudly; unknown attr fails at parse.
+    smvk::tour::Doc bad;
+    smvk::tour::Command bc{};
+    bc.verb = smvk::tour::Verb::SetGiVolumeAttr;
+    bc.node = smvk::tour::kCreateGiVolumeRefBase | 5u;
+    bc.text = "spacing";
+    bc.number = 1.0;
+    bad.commands.push_back(bc);
+    Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
+          "GI volume replay rejects bad ref");
+    smvk::tour::Doc parseBad;
+    Check(!smvk::tour::LoadTourFromString(
+              "setGiVolumeAttr -n 0 -at frobnicate -v 1;\n", parseBad, err),
+          "GI volume parser rejects bad attr");
 
-	// The density gates + the optimizer seed parse and round-trip (the
-	// editor writes all three; the parser whitelist used to miss them,
-	// so the editor SAVED TOURS IT COULD NOT RE-OPEN — the 10/30
-	// sponza.tour open failure was exactly this).
-	{
-		smvk::tour::Doc seed;
-		smvk::tour::Command g{};
-		g.verb = smvk::tour::Verb::SetGiVolumeAttr;
-		g.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
-		g.text = "spacinglow";
-		g.number = 0.75;
-		seed.commands.push_back(g);
-		g = smvk::tour::Command{};
-		g.verb = smvk::tour::Verb::SetGiVolumeAttr;
-		g.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
-		g.text = "spacinghigh";
-		g.number = 2.5;
-		seed.commands.push_back(g);
-		g = smvk::tour::Command{};
-		g.verb = smvk::tour::Verb::SetGiVolumeAttr;
-		g.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
-		g.text = "optlayout";
-		g.number = 1.30313;
-		g.vec4 = glm::vec4(0.25f, 0.5f, 0.75f, 0.0f);
-		seed.commands.push_back(g);
-		Check(smvk::tour::SaveTour(TempTour(), seed, err),
-			"GI volume gate/seed save");
-		std::ifstream gin(TempTour(), std::ios::binary);
-		std::stringstream gs;
-		gs << gin.rdbuf();
-		gin.close();
-		const std::string gtext = gs.str();
-		Check(gtext.find("setGiVolumeAttr -ref 0 -at spacinglow -v 0.75")
-				!= std::string::npos
-			&& gtext.find("setGiVolumeAttr -ref 0 -at spacinghigh -v 2.5")
-				!= std::string::npos,
-			"GI volume gate lines");
-		Check(gtext.find(
-				"setGiVolumeAttr -ref 0 -at optlayout -v 1.30313 -t 0.25 0.5 0.75")
-				!= std::string::npos,
-			"GI volume seed line carries the phase");
-		smvk::tour::Doc gback;
-		Check(smvk::tour::LoadTour(TempTour(), gback, err, &warns),
-			"GI volume gate/seed load");
-		Check(gback.commands.size() == 3
-			&& gback.commands[0].text == "spacinglow"
-			&& gback.commands[0].number == 0.75
-			&& gback.commands[1].text == "spacinghigh"
-			&& gback.commands[1].number == 2.5,
-			"GI volume gates roundtrip");
-		Check(gback.commands[2].text == "optlayout"
-			&& gback.commands[2].number == 1.30313
-			&& gback.commands[2].vec4.x == 0.25f
-			&& gback.commands[2].vec4.z == 0.75f,
-			"GI volume seed roundtrip (spacing + phase)");
-		// The OLD scalar-only seed shape (what the writer emitted before
-		// the phase rode -t) still parses — phase defaults to zero.
-		smvk::tour::Doc legacy;
-		Check(smvk::tour::LoadTourFromString(
-			"setGiVolumeAttr -n 0 -at optlayout -v 1.30313;\n", legacy, err),
-			"GI volume legacy scalar seed parses");
-		Check(legacy.commands.size() == 1
-			&& legacy.commands[0].text == "optlayout"
-			&& legacy.commands[0].number == 1.30313
-			&& legacy.commands[0].vec4.x == 0.0f,
-			"GI volume legacy scalar seed values");
-		// Replay applies the seed (optSpacing + optPhase on the def).
-		smvk::tour::Doc rd;
-		smvk::tour::Command rc2{};
-		rc2.verb = smvk::tour::Verb::CreateGiVolume;
-		rc2.node = 0;
-		rc2.text = "GIVolume_seed";
-		rc2.vec4 = glm::vec4(1.0f, 1.0f, 0.1f, 0.1f);
-		rd.commands.push_back(rc2);
-		rc2 = smvk::tour::Command{};
-		rc2.verb = smvk::tour::Verb::SetGiVolumeAttr;
-		rc2.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
-		rc2.text = "optlayout";
-		rc2.number = 1.30313;
-		rc2.vec4 = glm::vec4(0.25f, 0.5f, 0.75f, 0.0f);
-		rd.commands.push_back(rc2);
-		auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
-		cluster2->SetOfflineMode(true);
-		addNode(cluster2->scene, -1, 0);
-		Check(smvk::tour::ApplyTourToCluster(*cluster2, rd, &warns, &err),
-			"GI volume seed replay ok");
-		const GiVolumeRow* seedRow = FindGiVolume(cluster2->scene, 1u);
-		Check(seedRow != nullptr && seedRow->volume.optSpacing == 1.30313f
-			&& seedRow->volume.optPhase[0] == 0.25f
-			&& seedRow->volume.optPhase[2] == 0.75f,
-			"GI volume seed replay params");
-	}
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    // The density gates + the optimizer seed parse and round-trip (the
+    // editor writes all three; the parser whitelist used to miss them,
+    // so the editor SAVED TOURS IT COULD NOT RE-OPEN — the 10/30
+    // sponza.tour open failure was exactly this).
+    {
+        smvk::tour::Doc seed;
+        smvk::tour::Command g{};
+        g.verb = smvk::tour::Verb::SetGiVolumeAttr;
+        g.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+        g.text = "spacinglow";
+        g.number = 0.75;
+        seed.commands.push_back(g);
+        g = smvk::tour::Command{};
+        g.verb = smvk::tour::Verb::SetGiVolumeAttr;
+        g.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+        g.text = "spacinghigh";
+        g.number = 2.5;
+        seed.commands.push_back(g);
+        g = smvk::tour::Command{};
+        g.verb = smvk::tour::Verb::SetGiVolumeAttr;
+        g.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+        g.text = "optlayout";
+        g.number = 1.30313;
+        g.vec4 = glm::vec4(0.25f, 0.5f, 0.75f, 0.0f);
+        seed.commands.push_back(g);
+        Check(smvk::tour::SaveTour(TempTour(), seed, err), "GI volume gate/seed save");
+        std::ifstream gin(TempTour(), std::ios::binary);
+        std::stringstream gs;
+        gs << gin.rdbuf();
+        gin.close();
+        const std::string gtext = gs.str();
+        Check(gtext.find("setGiVolumeAttr -ref 0 -at spacinglow -v 0.75") != std::string::npos &&
+                  gtext.find("setGiVolumeAttr -ref 0 -at spacinghigh -v 2.5") != std::string::npos,
+              "GI volume gate lines");
+        Check(gtext.find("setGiVolumeAttr -ref 0 -at optlayout -v 1.30313 -t 0.25 0.5 0.75") !=
+                  std::string::npos,
+              "GI volume seed line carries the phase");
+        smvk::tour::Doc gback;
+        Check(smvk::tour::LoadTour(TempTour(), gback, err, &warns), "GI volume gate/seed load");
+        Check(gback.commands.size() == 3 && gback.commands[0].text == "spacinglow" &&
+                  gback.commands[0].number == 0.75 && gback.commands[1].text == "spacinghigh" &&
+                  gback.commands[1].number == 2.5,
+              "GI volume gates roundtrip");
+        Check(gback.commands[2].text == "optlayout" && gback.commands[2].number == 1.30313 &&
+                  gback.commands[2].vec4.x == 0.25f && gback.commands[2].vec4.z == 0.75f,
+              "GI volume seed roundtrip (spacing + phase)");
+        // The OLD scalar-only seed shape (what the writer emitted before
+        // the phase rode -t) still parses — phase defaults to zero.
+        smvk::tour::Doc legacy;
+        Check(smvk::tour::LoadTourFromString(
+                  "setGiVolumeAttr -n 0 -at optlayout -v 1.30313;\n", legacy, err),
+              "GI volume legacy scalar seed parses");
+        Check(legacy.commands.size() == 1 && legacy.commands[0].text == "optlayout" &&
+                  legacy.commands[0].number == 1.30313 && legacy.commands[0].vec4.x == 0.0f,
+              "GI volume legacy scalar seed values");
+        // Replay applies the seed (optSpacing + optPhase on the def).
+        smvk::tour::Doc rd;
+        smvk::tour::Command rc2{};
+        rc2.verb = smvk::tour::Verb::CreateGiVolume;
+        rc2.node = 0;
+        rc2.text = "GIVolume_seed";
+        rc2.vec4 = glm::vec4(1.0f, 1.0f, 0.1f, 0.1f);
+        rd.commands.push_back(rc2);
+        rc2 = smvk::tour::Command{};
+        rc2.verb = smvk::tour::Verb::SetGiVolumeAttr;
+        rc2.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+        rc2.text = "optlayout";
+        rc2.number = 1.30313;
+        rc2.vec4 = glm::vec4(0.25f, 0.5f, 0.75f, 0.0f);
+        rd.commands.push_back(rc2);
+        auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
+        cluster2->SetOfflineMode(true);
+        addNode(cluster2->scene, -1, 0);
+        Check(smvk::tour::ApplyTourToCluster(*cluster2, rd, &warns, &err),
+              "GI volume seed replay ok");
+        const GiVolumeRow* seedRow = FindGiVolume(cluster2->scene, 1u);
+        Check(seedRow != nullptr && seedRow->volume.optSpacing == 1.30313f &&
+                  seedRow->volume.optPhase[0] == 0.25f && seedRow->volume.optPhase[2] == 0.75f,
+              "GI volume seed replay params");
+    }
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 // Create-parent sentinel regression (10/6): the editor used to emit
@@ -1634,187 +1636,176 @@ void TestGiVolumeVerbs() {
 // (never the terrain-ref misattribution), and a REAL out-of-range
 // terrain ref still reports the terrain error.
 void TestCreateParentSentinel() {
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	const int root = addNode(cluster->scene, -1, 0);
-	const int g0 = addNode(cluster->scene, root, 1);
-	setNodeName(cluster->scene, g0, "Wall");
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    const int root = addNode(cluster->scene, -1, 0);
+    const int g0 = addNode(cluster->scene, root, 1);
+    setNodeName(cluster->scene, g0, "Wall");
 
-	// 1. Legacy "-p 4294967295": replays, parented at the cluster ROOT.
-	{
-		smvk::tour::Doc doc;
-		smvk::tour::Command c{};
-		c.verb = smvk::tour::Verb::CreateCubemap;
-		c.node = UINT32_MAX; // the leaked uint32_t(-1) parent
-		c.text = "Cube_1";
-		c.vec = glm::vec3(0.0f);
-		c.number = 1.5;
-		doc.commands.push_back(c);
-		std::vector<std::string> warns;
-		std::string err;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"sentinel parent replays (legacy -p 4294967295)");
-		Check(cluster->scene.tables.cubemaps.size() == 1,
-			"sentinel-parent cubemap def created");
-		if (cluster->scene.tables.cubemaps.size() == 1) {
-			const uint32_t created = cluster->scene.tables.cubemaps.begin()->node;
-			Check(cluster->scene.hierarchy[created].parent == root,
-				"sentinel parent lands at the cluster root");
-		}
-	}
+    // 1. Legacy "-p 4294967295": replays, parented at the cluster ROOT.
+    {
+        smvk::tour::Doc doc;
+        smvk::tour::Command c{};
+        c.verb = smvk::tour::Verb::CreateCubemap;
+        c.node = UINT32_MAX; // the leaked uint32_t(-1) parent
+        c.text = "Cube_1";
+        c.vec = glm::vec3(0.0f);
+        c.number = 1.5;
+        doc.commands.push_back(c);
+        std::vector<std::string> warns;
+        std::string err;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+              "sentinel parent replays (legacy -p 4294967295)");
+        Check(cluster->scene.tables.cubemaps.size() == 1, "sentinel-parent cubemap def created");
+        if (cluster->scene.tables.cubemaps.size() == 1) {
+            const uint32_t created = cluster->scene.tables.cubemaps.begin()->node;
+            Check(cluster->scene.hierarchy[created].parent == root,
+                  "sentinel parent lands at the cluster root");
+        }
+    }
 
-	// 2. Garbage node (UINT32_MAX) on a GENERIC verb: fails with an
-	// honest node error — never the terrain-ref misattribution (the
-	// sentinel carries every create-family base bit, so the old
-	// single-bit test read it as a terrain ref). Name key updated for
-	// the Item-6 logical-target layer: a name that RESOLVES is no
-	// longer garbage (the old fixture name "Wall" made this a valid
-	// logical-only rename) — an unresolvable key keeps the intent.
-	{
-		smvk::tour::Doc doc;
-		smvk::tour::Command c{};
-		c.verb = smvk::tour::Verb::Rename;
-		c.node = UINT32_MAX;
-		c.text = "Nope";
-		c.name = "NoSuchNodeAnywhere";
-		doc.commands.push_back(c);
-		std::vector<std::string> warns;
-		std::string err;
-		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"garbage node fails");
-		Check(err.find("terrain ref out of range") == std::string::npos,
-			"garbage node is not misattributed as a terrain ref");
-	}
+    // 2. Garbage node (UINT32_MAX) on a GENERIC verb: fails with an
+    // honest node error — never the terrain-ref misattribution (the
+    // sentinel carries every create-family base bit, so the old
+    // single-bit test read it as a terrain ref). Name key updated for
+    // the Item-6 logical-target layer: a name that RESOLVES is no
+    // longer garbage (the old fixture name "Wall" made this a valid
+    // logical-only rename) — an unresolvable key keeps the intent.
+    {
+        smvk::tour::Doc doc;
+        smvk::tour::Command c{};
+        c.verb = smvk::tour::Verb::Rename;
+        c.node = UINT32_MAX;
+        c.text = "Nope";
+        c.name = "NoSuchNodeAnywhere";
+        doc.commands.push_back(c);
+        std::vector<std::string> warns;
+        std::string err;
+        Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "garbage node fails");
+        Check(err.find("terrain ref out of range") == std::string::npos,
+              "garbage node is not misattributed as a terrain ref");
+    }
 
-	// 3. A REAL out-of-range terrain ref (a paint with no createTerrain
-	// before it) still reports the terrain error — the exclusive-form
-	// check keeps genuine refs working.
-	{
-		smvk::tour::Doc doc;
-		smvk::tour::Command c{};
-		c.verb = smvk::tour::Verb::TerrainPaint;
-		c.node = smvk::tour::kCreateTerrainRefBase | 5u;
-		c.text = "raise";
-		c.vec4 = glm::vec4(0.0f, 0.0f, 4.0f, 0.0f);
-		c.number = 1.0;
-		doc.commands.push_back(c);
-		std::vector<std::string> warns;
-		std::string err;
-		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"real out-of-range terrain ref fails");
-		Check(err.find("terrainPaint ref out of range") != std::string::npos,
-			"real terrain ref reports the terrain error");
-	}
+    // 3. A REAL out-of-range terrain ref (a paint with no createTerrain
+    // before it) still reports the terrain error — the exclusive-form
+    // check keeps genuine refs working.
+    {
+        smvk::tour::Doc doc;
+        smvk::tour::Command c{};
+        c.verb = smvk::tour::Verb::TerrainPaint;
+        c.node = smvk::tour::kCreateTerrainRefBase | 5u;
+        c.text = "raise";
+        c.vec4 = glm::vec4(0.0f, 0.0f, 4.0f, 0.0f);
+        c.number = 1.0;
+        doc.commands.push_back(c);
+        std::vector<std::string> warns;
+        std::string err;
+        Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+              "real out-of-range terrain ref fails");
+        Check(err.find("terrainPaint ref out of range") != std::string::npos,
+              "real terrain ref reports the terrain error");
+    }
 }
 
 // Authored cubemap captures (pinned specular probes): createCubemap/
 // setCubemapAttr round-trip, cook replay (node + node-local def,
 // -ref addressing), delete drops the def, unified form lowers.
 void TestCubemapVerbs() {
-	smvk::tour::Doc doc;
-	doc.source = "models/x.gltf";
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::CreateCubemap;
-	c.node = 0; // parent: cluster root
-	c.text = "Cube_1";
-	c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
-	c.number = 1.5; // influence radius
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetCubemapAttr;
-	c.node = smvk::tour::kCreateCubemapRefBase | 0u;
-	c.text = "radius";
-	c.number = 2.5;
-	doc.commands.push_back(c);
+    smvk::tour::Doc doc;
+    doc.source = "models/x.gltf";
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::CreateCubemap;
+    c.node = 0; // parent: cluster root
+    c.text = "Cube_1";
+    c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+    c.number = 1.5; // influence radius
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetCubemapAttr;
+    c.node = smvk::tour::kCreateCubemapRefBase | 0u;
+    c.text = "radius";
+    c.number = 2.5;
+    doc.commands.push_back(c);
 
-	std::string err;
-	std::vector<std::string> warns;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "cube tour save");
-	std::ifstream in(TempTour(), std::ios::binary);
-	std::stringstream ss;
-	ss << in.rdbuf();
-	const std::string text = ss.str();
-	in.close();
-	Check(text.find("createCubemap -p 0 -name \"Cube_1\"")
-		!= std::string::npos, "cube legacy create line");
-	Check(text.find("setCubemapAttr -ref 0 -at radius -v 2.5")
-		!= std::string::npos, "cube tabulated attr line");
-	smvk::tour::Doc back;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
-		"cube tour load");
-	Check(back.commands.size() == 2, "cube tour command count");
-	Check(back.commands[0].verb == smvk::tour::Verb::CreateCubemap
-		&& back.commands[0].text == "Cube_1"
-		&& back.commands[0].number == 1.5, "cube create roundtrip");
-	Check(back.commands[1].verb == smvk::tour::Verb::SetCubemapAttr
-		&& back.commands[1].node == (smvk::tour::kCreateCubemapRefBase | 0u)
-		&& back.commands[1].number == 2.5, "cube attr roundtrip");
-	Check(!smvk::tour::Describe(back.commands[0]).empty()
-		&& !smvk::tour::Describe(back.commands[1]).empty(),
-		"cube describe");
+    std::string err;
+    std::vector<std::string> warns;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "cube tour save");
+    std::ifstream in(TempTour(), std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    const std::string text = ss.str();
+    in.close();
+    Check(text.find("createCubemap -p 0 -name \"Cube_1\"") != std::string::npos,
+          "cube legacy create line");
+    Check(text.find("setCubemapAttr -ref 0 -at radius -v 2.5") != std::string::npos,
+          "cube tabulated attr line");
+    smvk::tour::Doc back;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "cube tour load");
+    Check(back.commands.size() == 2, "cube tour command count");
+    Check(back.commands[0].verb == smvk::tour::Verb::CreateCubemap &&
+              back.commands[0].text == "Cube_1" && back.commands[0].number == 1.5,
+          "cube create roundtrip");
+    Check(back.commands[1].verb == smvk::tour::Verb::SetCubemapAttr &&
+              back.commands[1].node == (smvk::tour::kCreateCubemapRefBase | 0u) &&
+              back.commands[1].number == 2.5,
+          "cube attr roundtrip");
+    Check(!smvk::tour::Describe(back.commands[0]).empty() &&
+              !smvk::tour::Describe(back.commands[1]).empty(),
+          "cube describe");
 
-	// Replay onto a offline cluster.
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	const int root = addNode(cluster->scene, -1, 0);
-	setNodeName(cluster->scene, root, "Root");
-	const size_t beforeNodes = cluster->scene.hierarchy.size();
-	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
-		"cube replay ok");
-	Check(cluster->scene.hierarchy.size() == beforeNodes + 1,
-		"cube replay appends node");
-	const uint32_t newNode = uint32_t(beforeNodes);
-	Check(getNodeName(cluster->scene, int(newNode)) == "Cube_1",
-		"cube replay name");
-	const CubemapRow* cmit = FindCubemap(cluster->scene, newNode);
-	Check(cmit != nullptr, "cube replay link");
-	Check(cmit != nullptr
-		&& cmit->cubemap.radius == 2.5f,
-		"cube replay params (-ref radius applied)");
-	Check(cluster->scene.localTransform[newNode][3].y == 2.0f,
-		"cube replay position");
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    // Replay onto a offline cluster.
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    const int root = addNode(cluster->scene, -1, 0);
+    setNodeName(cluster->scene, root, "Root");
+    const size_t beforeNodes = cluster->scene.hierarchy.size();
+    Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "cube replay ok");
+    Check(cluster->scene.hierarchy.size() == beforeNodes + 1, "cube replay appends node");
+    const uint32_t newNode = uint32_t(beforeNodes);
+    Check(getNodeName(cluster->scene, int(newNode)) == "Cube_1", "cube replay name");
+    const CubemapRow* cmit = FindCubemap(cluster->scene, newNode);
+    Check(cmit != nullptr, "cube replay link");
+    Check(cmit != nullptr && cmit->cubemap.radius == 2.5f,
+          "cube replay params (-ref radius applied)");
+    Check(cluster->scene.localTransform[newNode][3].y == 2.0f, "cube replay position");
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 
-	// Unified form lowers; type table knows the DAG kind.
-	smvk::tour::Doc uni;
-	Check(smvk::tour::LoadTourFromString(
-		"createNode -at cubemap -p 0 -name \"U\" -t 0 2 0 -v 1.5;\n",
-		uni, err), "cube unified loads");
-	Check(uni.commands.size() == 1
-		&& uni.commands[0].verb == smvk::tour::Verb::CreateCubemap
-		&& uni.commands[0].number == 1.5, "cube unified lowers");
-	const smvk::tour::CreateNodeType* t =
-		smvk::tour::FindCreateNodeType("cubemap");
-	Check(t && t->kind == smvk::tour::CreateNodeKind::Dag,
-		"cube node type");
+    // Unified form lowers; type table knows the DAG kind.
+    smvk::tour::Doc uni;
+    Check(smvk::tour::LoadTourFromString(
+              "createNode -at cubemap -p 0 -name \"U\" -t 0 2 0 -v 1.5;\n", uni, err),
+          "cube unified loads");
+    Check(uni.commands.size() == 1 && uni.commands[0].verb == smvk::tour::Verb::CreateCubemap &&
+              uni.commands[0].number == 1.5,
+          "cube unified lowers");
+    const smvk::tour::CreateNodeType* t = smvk::tour::FindCreateNodeType("cubemap");
+    Check(t && t->kind == smvk::tour::CreateNodeKind::Dag, "cube node type");
 
-	// Delete drops the def (nothing pins it).
-	smvk::tour::Doc del;
-	smvk::tour::Command dc{};
-	dc.verb = smvk::tour::Verb::Delete;
-	dc.node = newNode;
-	dc.name = "Cube_1";
-	del.commands.push_back(dc);
-	Check(smvk::tour::ApplyTourToCluster(*cluster, del, &warns, &err),
-		"cube delete replay ok");
-	Check(FindCubemap(cluster->scene, newNode) == nullptr,
-		"cube delete drops def");
+    // Delete drops the def (nothing pins it).
+    smvk::tour::Doc del;
+    smvk::tour::Command dc{};
+    dc.verb = smvk::tour::Verb::Delete;
+    dc.node = newNode;
+    dc.name = "Cube_1";
+    del.commands.push_back(dc);
+    Check(smvk::tour::ApplyTourToCluster(*cluster, del, &warns, &err), "cube delete replay ok");
+    Check(FindCubemap(cluster->scene, newNode) == nullptr, "cube delete drops def");
 
-	// Out-of-range -ref fails loudly; unknown attr fails at parse.
-	smvk::tour::Doc bad;
-	smvk::tour::Command bc{};
-	bc.verb = smvk::tour::Verb::SetCubemapAttr;
-	bc.node = smvk::tour::kCreateCubemapRefBase | 5u;
-	bc.text = "radius";
-	bc.number = 1.0;
-	bad.commands.push_back(bc);
-	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
-		"cube replay rejects bad ref");
-	smvk::tour::Doc parseBad;
-	Check(!smvk::tour::LoadTourFromString(
-		"setCubemapAttr -n 0 -at frobnicate -v 1;\n", parseBad, err),
-		"cube parser rejects bad attr");
+    // Out-of-range -ref fails loudly; unknown attr fails at parse.
+    smvk::tour::Doc bad;
+    smvk::tour::Command bc{};
+    bc.verb = smvk::tour::Verb::SetCubemapAttr;
+    bc.node = smvk::tour::kCreateCubemapRefBase | 5u;
+    bc.text = "radius";
+    bc.number = 1.0;
+    bad.commands.push_back(bc);
+    Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
+          "cube replay rejects bad ref");
+    smvk::tour::Doc parseBad;
+    Check(!smvk::tour::LoadTourFromString(
+              "setCubemapAttr -n 0 -at frobnicate -v 1;\n", parseBad, err),
+          "cube parser rejects bad attr");
 }
 
 // Unified createNode form: new files write `createNode -at <type>`;
@@ -1823,543 +1814,493 @@ void TestCubemapVerbs() {
 // at replay; legacy createLight/createTerrain/createTransform lines
 // load unchanged.
 void TestCreateNode() {
-	// Type table: DAG vs system knowledge lives on the type. (13 since
-	// the audioRoom type landed — the table grows with node types.)
-	size_t count = 0;
-	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 13,
-		"createnode table size");
-	const smvk::tour::CreateNodeType* t =
-		smvk::tour::FindCreateNodeType("spotLight");
-	Check(t && t->kind == smvk::tour::CreateNodeKind::Dag,
-		"createnode spotLight is dag");
-	Check(smvk::tour::FindCreateNodeType("material")
-		&& smvk::tour::FindCreateNodeType("material")->kind
-			== smvk::tour::CreateNodeKind::System,
-		"createnode material is system");
-	Check(smvk::tour::FindCreateNodeType("point") != nullptr,
-		"createnode legacy alias point");
-	Check(smvk::tour::FindCreateNodeType("nope") == nullptr,
-		"createnode unknown type misses");
-	// Writer emits the unified spelling per DAG type.
-	smvk::tour::Doc doc;
-	doc.source = "models/x.gltf";
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::CreateNode;
-	c.nodeType = "spotLight";
-	c.node = 0;
-	c.text = "Spot_1";
-	c.vec = glm::vec3(1, 2, 3);
-	c.vec4 = glm::vec4(2.0f, 100.0f, 10.0f, 15.0f);
-	c.number = 30.0;
-	doc.commands.push_back(c);
-	smvk::tour::Command tr{};
-	tr.verb = smvk::tour::Verb::CreateNode;
-	tr.nodeType = "transform";
-	tr.node = 0;
-	tr.text = "Grp";
-	tr.vec = glm::vec3(4, 5, 6);
-	tr.vec4 = glm::vec4(0, 0, 0, 0.0f);
-	tr.svec = glm::vec3(1, 2, 3);
-	doc.commands.push_back(tr);
-	smvk::tour::Command img{};
-	img.verb = smvk::tour::Verb::CreateNode;
-	img.nodeType = "image";
-	img.node = 0;
-	img.text = "Ref";
-	doc.commands.push_back(img);
-	std::string err;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "createnode save");
-	std::ifstream in(TempTour(), std::ios::binary);
-	std::stringstream ss;
-	ss << in.rdbuf();
-	const std::string text = ss.str();
-	in.close();
-	Check(text.find("createNode -at spotLight -p 0 -name \"Spot_1\"")
-		!= std::string::npos, "createnode light unified line");
-	Check(text.find("createNode -at transform -p 0 -name \"Grp\"")
-		!= std::string::npos, "createnode transform unified line");
-	Check(text.find("createNode -at image -p 0 -name \"Ref\"")
-		!= std::string::npos, "createnode system unified line");
-	// Re-parse: DAG types lower to legacy verbs; system stays CreateNode.
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
-		"createnode reload");
-	Check(back.commands.size() == 3, "createnode command count");
-	if (back.commands.size() == 3) {
-		Check(back.commands[0].verb == smvk::tour::Verb::CreateLight
-			&& back.commands[0].text == "Spot_1"
-			&& back.commands[0].vec4.y == 100.0f,
-			"createnode light lowers");
-		Check(back.commands[1].verb == smvk::tour::Verb::CreateTransform
-			&& back.commands[1].text == "Grp"
-			&& back.commands[1].svec.y == 2.0f,
-			"createnode transform lowers");
-		Check(back.commands[2].verb == smvk::tour::Verb::CreateNode
-			&& back.commands[2].nodeType == "image",
-			"createnode system stays");
-	}
-	// Cook replay: lowered light creates; system type warns+skips.
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	addNode(cluster->scene, -1, 0);
-	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
-		"createnode replay ok");
-	Check(cluster->scene.tables.lights.size() == 1,
-		"createnode replay creates light");
-	Check(!warns.empty(), "createnode system replay reported");
-	// Unknown -at fails the file loudly.
-	smvk::tour::Doc parseBad;
-	Check(!smvk::tour::LoadTourFromString(
-		"createNode -at frobnicate -p 0 -name \"X\";\n", parseBad, err),
-		"createnode parser rejects bad type");
-	// Legacy spellings still load (backward compat).
-	smvk::tour::Doc legacy;
-	Check(smvk::tour::LoadTourFromString(
-		"createLight -p 0 -name \"L\" -at point -t 0 0 0 10 5 0 0 0 0;\n",
-		legacy, err), "createnode legacy loads");
-	Check(legacy.commands.size() == 1
-		&& legacy.commands[0].verb == smvk::tour::Verb::CreateLight,
-		"createnode legacy verb kept");
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    // Type table: DAG vs system knowledge lives on the type. (13 since
+    // the audioRoom type landed — the table grows with node types.)
+    size_t count = 0;
+    Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 13, "createnode table size");
+    const smvk::tour::CreateNodeType* t = smvk::tour::FindCreateNodeType("spotLight");
+    Check(t && t->kind == smvk::tour::CreateNodeKind::Dag, "createnode spotLight is dag");
+    Check(smvk::tour::FindCreateNodeType("material") &&
+              smvk::tour::FindCreateNodeType("material")->kind ==
+                  smvk::tour::CreateNodeKind::System,
+          "createnode material is system");
+    Check(smvk::tour::FindCreateNodeType("point") != nullptr, "createnode legacy alias point");
+    Check(smvk::tour::FindCreateNodeType("nope") == nullptr, "createnode unknown type misses");
+    // Writer emits the unified spelling per DAG type.
+    smvk::tour::Doc doc;
+    doc.source = "models/x.gltf";
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::CreateNode;
+    c.nodeType = "spotLight";
+    c.node = 0;
+    c.text = "Spot_1";
+    c.vec = glm::vec3(1, 2, 3);
+    c.vec4 = glm::vec4(2.0f, 100.0f, 10.0f, 15.0f);
+    c.number = 30.0;
+    doc.commands.push_back(c);
+    smvk::tour::Command tr{};
+    tr.verb = smvk::tour::Verb::CreateNode;
+    tr.nodeType = "transform";
+    tr.node = 0;
+    tr.text = "Grp";
+    tr.vec = glm::vec3(4, 5, 6);
+    tr.vec4 = glm::vec4(0, 0, 0, 0.0f);
+    tr.svec = glm::vec3(1, 2, 3);
+    doc.commands.push_back(tr);
+    smvk::tour::Command img{};
+    img.verb = smvk::tour::Verb::CreateNode;
+    img.nodeType = "image";
+    img.node = 0;
+    img.text = "Ref";
+    doc.commands.push_back(img);
+    std::string err;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "createnode save");
+    std::ifstream in(TempTour(), std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    const std::string text = ss.str();
+    in.close();
+    Check(text.find("createNode -at spotLight -p 0 -name \"Spot_1\"") != std::string::npos,
+          "createnode light unified line");
+    Check(text.find("createNode -at transform -p 0 -name \"Grp\"") != std::string::npos,
+          "createnode transform unified line");
+    Check(text.find("createNode -at image -p 0 -name \"Ref\"") != std::string::npos,
+          "createnode system unified line");
+    // Re-parse: DAG types lower to legacy verbs; system stays CreateNode.
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "createnode reload");
+    Check(back.commands.size() == 3, "createnode command count");
+    if (back.commands.size() == 3) {
+        Check(back.commands[0].verb == smvk::tour::Verb::CreateLight &&
+                  back.commands[0].text == "Spot_1" && back.commands[0].vec4.y == 100.0f,
+              "createnode light lowers");
+        Check(back.commands[1].verb == smvk::tour::Verb::CreateTransform &&
+                  back.commands[1].text == "Grp" && back.commands[1].svec.y == 2.0f,
+              "createnode transform lowers");
+        Check(back.commands[2].verb == smvk::tour::Verb::CreateNode &&
+                  back.commands[2].nodeType == "image",
+              "createnode system stays");
+    }
+    // Cook replay: lowered light creates; system type warns+skips.
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    addNode(cluster->scene, -1, 0);
+    Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "createnode replay ok");
+    Check(cluster->scene.tables.lights.size() == 1, "createnode replay creates light");
+    Check(!warns.empty(), "createnode system replay reported");
+    // Unknown -at fails the file loudly.
+    smvk::tour::Doc parseBad;
+    Check(!smvk::tour::LoadTourFromString(
+              "createNode -at frobnicate -p 0 -name \"X\";\n", parseBad, err),
+          "createnode parser rejects bad type");
+    // Legacy spellings still load (backward compat).
+    smvk::tour::Doc legacy;
+    Check(smvk::tour::LoadTourFromString(
+              "createLight -p 0 -name \"L\" -at point -t 0 0 0 10 5 0 0 0 0;\n", legacy, err),
+          "createnode legacy loads");
+    Check(legacy.commands.size() == 1 && legacy.commands[0].verb == smvk::tour::Verb::CreateLight,
+          "createnode legacy verb kept");
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 void TestTerrainVerbs() {
-	// createTerrain (group + tiles) + terrainPaint: file round-trip, then
-	// cook replay — heights bake through the stamps into the tile meshes.
-	smvk::tour::Doc doc;
-	doc.source = "models/x.gltf";
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::CreateTerrain;
-	c.node = 0; // parent: cluster root
-	c.text = "Terrain_1";
-	c.vec = glm::vec3(10.0f, 0.0f, 20.0f);
-	c.vec4 = glm::vec4(32.0f, 17.0f, 4.0f, 0.05f); // size, res, height, freq
-	c.number = 7.0;                                // seed
-	c.node2 = 2u | (2u << 16);                     // 2x2 tiles
-	c.material = 0;                                // out-of-range -> default
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::TerrainPaint;
-	c.node = smvk::tour::kCreateTerrainRefBase | 0u;
-	c.text = "raise";
-	c.vec4 = glm::vec4(26.0f, 36.0f, 4.0f, 0.0f); // worldX, worldZ, radius, target
-	c.number = 2.0;                               // strength
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::TerrainPaint;
-	c.node = smvk::tour::kCreateTerrainRefBase | 0u;
-	c.text = "smooth";
-	c.vec4 = glm::vec4(26.0f, 36.0f, 6.0f, 0.0f);
-	c.number = 1.0;
-	doc.commands.push_back(c);
+    // createTerrain (group + tiles) + terrainPaint: file round-trip, then
+    // cook replay — heights bake through the stamps into the tile meshes.
+    smvk::tour::Doc doc;
+    doc.source = "models/x.gltf";
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::CreateTerrain;
+    c.node = 0; // parent: cluster root
+    c.text = "Terrain_1";
+    c.vec = glm::vec3(10.0f, 0.0f, 20.0f);
+    c.vec4 = glm::vec4(32.0f, 17.0f, 4.0f, 0.05f); // size, res, height, freq
+    c.number = 7.0;                                // seed
+    c.node2 = 2u | (2u << 16);                     // 2x2 tiles
+    c.material = 0;                                // out-of-range -> default
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::TerrainPaint;
+    c.node = smvk::tour::kCreateTerrainRefBase | 0u;
+    c.text = "raise";
+    c.vec4 = glm::vec4(26.0f, 36.0f, 4.0f, 0.0f); // worldX, worldZ, radius, target
+    c.number = 2.0;                               // strength
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::TerrainPaint;
+    c.node = smvk::tour::kCreateTerrainRefBase | 0u;
+    c.text = "smooth";
+    c.vec4 = glm::vec4(26.0f, 36.0f, 6.0f, 0.0f);
+    c.number = 1.0;
+    doc.commands.push_back(c);
 
-	std::string err;
-	std::vector<std::string> warns;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "terrain tour save");
-	smvk::tour::Doc back;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
-		"terrain tour load");
-	Check(back.commands.size() == 3, "terrain tour command count");
-	const smvk::tour::Command& rc = back.commands[0];
-	Check(rc.verb == smvk::tour::Verb::CreateTerrain && rc.node == 0
-		&& rc.text == "Terrain_1" && rc.vec4.x == 32.0f
-		&& rc.vec4.y == 17.0f && rc.number == 7.0
-		&& (rc.node2 & 0xFFFFu) == 2u
-		&& ((rc.node2 >> 16) & 0xFFFFu) == 2u, "terrain create roundtrip");
-	const smvk::tour::Command& rp = back.commands[1];
-	Check(rp.verb == smvk::tour::Verb::TerrainPaint
-		&& rp.node == (smvk::tour::kCreateTerrainRefBase | 0u)
-		&& rp.text == "raise" && rp.number == 2.0,
-		"terrain paint roundtrip");
+    std::string err;
+    std::vector<std::string> warns;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "terrain tour save");
+    smvk::tour::Doc back;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "terrain tour load");
+    Check(back.commands.size() == 3, "terrain tour command count");
+    const smvk::tour::Command& rc = back.commands[0];
+    Check(rc.verb == smvk::tour::Verb::CreateTerrain && rc.node == 0 && rc.text == "Terrain_1" &&
+              rc.vec4.x == 32.0f && rc.vec4.y == 17.0f && rc.number == 7.0 &&
+              (rc.node2 & 0xFFFFu) == 2u && ((rc.node2 >> 16) & 0xFFFFu) == 2u,
+          "terrain create roundtrip");
+    const smvk::tour::Command& rp = back.commands[1];
+    Check(rp.verb == smvk::tour::Verb::TerrainPaint &&
+              rp.node == (smvk::tour::kCreateTerrainRefBase | 0u) && rp.text == "raise" &&
+              rp.number == 2.0,
+          "terrain paint roundtrip");
 
-	// Replay onto a offline cluster: group + 4 tile children + meshes from
-	// the POST-PAINT heights. Material 0 is out of range -> the cook
-	// mints the editor default (warned, not failed).
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	const int root = addNode(cluster->scene, -1, 0);
-	setNodeName(cluster->scene, root, "Root");
-	const size_t beforeNodes = cluster->scene.hierarchy.size();
-	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
-		"terrain replay ok");
-	const size_t added = cluster->scene.hierarchy.size() - beforeNodes;
-	Check(added == 1 + 4, "terrain replay group+4 tiles");
-	const uint32_t group = uint32_t(beforeNodes);
-	Check(cluster->scene.hierarchy[group].parent == root,
-		"terrain replay group parent");
-	Check(getNodeName(cluster->scene, int(group)) == "Terrain_1",
-		"terrain replay group name");
-	uint32_t tileMeshes = 0;
-	for (const MeshRow& row : cluster->scene.tables.meshes) {
-		const uint32_t n = row.node;
-		if (n == group)
-			continue; // the group node carries no mesh
-		if (cluster->scene.hierarchy[n].parent == int(group))
-			++tileMeshes;
-	}
-	Check(tileMeshes == 4, "terrain replay 4 tile meshes");
-	// Default material minted: group tiles reference a valid pool id.
-	bool matOk = true;
-	for (const MeshRow& row : cluster->scene.tables.meshes) {
-		const MaterialRow* matRow =
-			FindMaterial(cluster->scene, row.node);
-		if (!matRow
-			|| !cluster->materials.get(
-				cluster->materials.getHandle(matRow->material)))
-			matOk = false;
-	}
-	Check(matOk, "terrain replay default material minted");
-	// Post-loop mesh upload happened (heights baked through 2 stamps).
-	const uint32_t nodes = uint32_t(cluster->scene.hierarchy.size());
-	uint32_t withMesh = 0;
-	for (uint32_t n = 0; n < nodes; ++n)
-		if (FindMesh(cluster->scene, n))
-			++withMesh;
-	Check(withMesh == 4, "terrain replay meshes uploaded post-pass");
+    // Replay onto a offline cluster: group + 4 tile children + meshes from
+    // the POST-PAINT heights. Material 0 is out of range -> the cook
+    // mints the editor default (warned, not failed).
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    const int root = addNode(cluster->scene, -1, 0);
+    setNodeName(cluster->scene, root, "Root");
+    const size_t beforeNodes = cluster->scene.hierarchy.size();
+    Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "terrain replay ok");
+    const size_t added = cluster->scene.hierarchy.size() - beforeNodes;
+    Check(added == 1 + 4, "terrain replay group+4 tiles");
+    const uint32_t group = uint32_t(beforeNodes);
+    Check(cluster->scene.hierarchy[group].parent == root, "terrain replay group parent");
+    Check(getNodeName(cluster->scene, int(group)) == "Terrain_1", "terrain replay group name");
+    uint32_t tileMeshes = 0;
+    for (const MeshRow& row : cluster->scene.tables.meshes) {
+        const uint32_t n = row.node;
+        if (n == group)
+            continue; // the group node carries no mesh
+        if (cluster->scene.hierarchy[n].parent == int(group))
+            ++tileMeshes;
+    }
+    Check(tileMeshes == 4, "terrain replay 4 tile meshes");
+    // Default material minted: group tiles reference a valid pool id.
+    bool matOk = true;
+    for (const MeshRow& row : cluster->scene.tables.meshes) {
+        const MaterialRow* matRow = FindMaterial(cluster->scene, row.node);
+        if (!matRow || !cluster->materials.get(cluster->materials.getHandle(matRow->material)))
+            matOk = false;
+    }
+    Check(matOk, "terrain replay default material minted");
+    // Post-loop mesh upload happened (heights baked through 2 stamps).
+    const uint32_t nodes = uint32_t(cluster->scene.hierarchy.size());
+    uint32_t withMesh = 0;
+    for (uint32_t n = 0; n < nodes; ++n)
+        if (FindMesh(cluster->scene, n))
+            ++withMesh;
+    Check(withMesh == 4, "terrain replay meshes uploaded post-pass");
 
-	// Out-of-range paint ref fails loudly; bad op fails at parse.
-	smvk::tour::Doc bad;
-	smvk::tour::Command bc{};
-	bc.verb = smvk::tour::Verb::TerrainPaint;
-	bc.node = smvk::tour::kCreateTerrainRefBase | 5u;
-	bc.text = "raise";
-	bc.vec4 = glm::vec4(1, 1, 1, 0);
-	bc.number = 1.0;
-	bad.commands.push_back(bc);
-	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
-		"terrain paint rejects bad ref");
-	smvk::tour::Doc parseBad;
-	Check(!smvk::tour::LoadTourFromString(
-		"terrainPaint -ref 0 -at frobnicate -t 1 1 1 0 -v 1;\n",
-		parseBad, err), "terrain paint parser rejects bad op");
+    // Out-of-range paint ref fails loudly; bad op fails at parse.
+    smvk::tour::Doc bad;
+    smvk::tour::Command bc{};
+    bc.verb = smvk::tour::Verb::TerrainPaint;
+    bc.node = smvk::tour::kCreateTerrainRefBase | 5u;
+    bc.text = "raise";
+    bc.vec4 = glm::vec4(1, 1, 1, 0);
+    bc.number = 1.0;
+    bad.commands.push_back(bc);
+    Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
+          "terrain paint rejects bad ref");
+    smvk::tour::Doc parseBad;
+    Check(!smvk::tour::LoadTourFromString(
+              "terrainPaint -ref 0 -at frobnicate -t 1 1 1 0 -v 1;\n", parseBad, err),
+          "terrain paint parser rejects bad op");
 }
 
 // Maya delete: round-trip in the .tour + cook replay drops the node's
 // live links while ids stay addressable by later commands.
 void TestDelete() {
-	smvk::tour::Doc doc;
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::Delete;
-	c.node = 45;
-	c.name = "Shop_Wall";
-	doc.commands.push_back(c);
-	std::string err;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "delete save");
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "delete load");
-	Check(back.commands.size() == 1 &&
-		back.commands[0].verb == smvk::tour::Verb::Delete &&
-		back.commands[0].node == 45, "delete round-trip");
-	Check(smvk::tour::Describe(back.commands[0]).find("delete #45")
-		!= std::string::npos, "delete describe");
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    smvk::tour::Doc doc;
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::Delete;
+    c.node = 45;
+    c.name = "Shop_Wall";
+    doc.commands.push_back(c);
+    std::string err;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "delete save");
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "delete load");
+    Check(back.commands.size() == 1 && back.commands[0].verb == smvk::tour::Verb::Delete &&
+              back.commands[0].node == 45,
+          "delete round-trip");
+    Check(smvk::tour::Describe(back.commands[0]).find("delete #45") != std::string::npos,
+          "delete describe");
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 
-	// Cook replay: mesh/material/light links drop; the node itself (and
-	// every later command addressing it) survives — ids stay stable.
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	const int root = addNode(cluster->scene, -1, 0);
-	const int g0 = addNode(cluster->scene, root, 1);
-	const int g1 = addNode(cluster->scene, root, 1);
-	setNodeName(cluster->scene, g0, "Wall");
-	setNodeName(cluster->scene, g1, "Floor");
-	smvk::MaterialCreateInfo ci{};
-	ci.baseColorFactor = glm::vec4(1.0f);
-	const smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
-	SetMesh(cluster->scene, uint32_t(g0), 0);
-	SetMaterial(cluster->scene, uint32_t(g0), m0.index());
-	SetMaterial(cluster->scene, uint32_t(g1), m0.index());
-	::SceneLight def{};
-	def.type = ::SceneLight::Type::Point;
-	def.name = "L";
-	const uint32_t lIdx =
-		cluster->lights.create(std::move(def)).index();
-	SetLight(cluster->scene, uint32_t(g0), lIdx);
+    // Cook replay: mesh/material/light links drop; the node itself (and
+    // every later command addressing it) survives — ids stay stable.
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    const int root = addNode(cluster->scene, -1, 0);
+    const int g0 = addNode(cluster->scene, root, 1);
+    const int g1 = addNode(cluster->scene, root, 1);
+    setNodeName(cluster->scene, g0, "Wall");
+    setNodeName(cluster->scene, g1, "Floor");
+    smvk::MaterialCreateInfo ci{};
+    ci.baseColorFactor = glm::vec4(1.0f);
+    const smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
+    SetMesh(cluster->scene, uint32_t(g0), 0);
+    SetMaterial(cluster->scene, uint32_t(g0), m0.index());
+    SetMaterial(cluster->scene, uint32_t(g1), m0.index());
+    ::SceneLight def{};
+    def.type = ::SceneLight::Type::Point;
+    def.name = "L";
+    const uint32_t lIdx = cluster->lights.create(std::move(def)).index();
+    SetLight(cluster->scene, uint32_t(g0), lIdx);
 
-	smvk::tour::Doc doc2;
-	smvk::tour::Command d{};
-	d.verb = smvk::tour::Verb::Delete;
-	d.node = uint32_t(g0);
-	d.name = "Wall";
-	doc2.commands.push_back(d);
-	smvk::tour::Command r2{};
-	r2.verb = smvk::tour::Verb::Rename; // ids stay addressable after
-	r2.node = uint32_t(g0);             // the delete (Maya parity)
-	r2.text = "Deleted_Wall";
-	doc2.commands.push_back(r2);
-	Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err),
-		"delete replay ok");
-	Check(FindMesh(cluster->scene, uint32_t(g0)) == nullptr,
-		"delete drops mesh link");
-	Check(FindMaterial(cluster->scene, uint32_t(g0)) == nullptr,
-		"delete drops material link");
-	Check(FindLight(cluster->scene, uint32_t(g0)) == nullptr,
-		"delete drops light link");
-	Check(getNodeName(cluster->scene, g0) == "Deleted_Wall",
-		"delete keeps ids stable");
-	Check(FindMaterial(cluster->scene, uint32_t(g1))
-		&& FindMaterial(cluster->scene, uint32_t(g1))->material
-			== m0.index(),
-		"delete leaves siblings alone");
+    smvk::tour::Doc doc2;
+    smvk::tour::Command d{};
+    d.verb = smvk::tour::Verb::Delete;
+    d.node = uint32_t(g0);
+    d.name = "Wall";
+    doc2.commands.push_back(d);
+    smvk::tour::Command r2{};
+    r2.verb = smvk::tour::Verb::Rename; // ids stay addressable after
+    r2.node = uint32_t(g0);             // the delete (Maya parity)
+    r2.text = "Deleted_Wall";
+    doc2.commands.push_back(r2);
+    Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err), "delete replay ok");
+    Check(FindMesh(cluster->scene, uint32_t(g0)) == nullptr, "delete drops mesh link");
+    Check(FindMaterial(cluster->scene, uint32_t(g0)) == nullptr, "delete drops material link");
+    Check(FindLight(cluster->scene, uint32_t(g0)) == nullptr, "delete drops light link");
+    Check(getNodeName(cluster->scene, g0) == "Deleted_Wall", "delete keeps ids stable");
+    Check(FindMaterial(cluster->scene, uint32_t(g1)) &&
+              FindMaterial(cluster->scene, uint32_t(g1))->material == m0.index(),
+          "delete leaves siblings alone");
 
-	smvk::tour::Doc bad;
-	smvk::tour::Command bd{};
-	bd.verb = smvk::tour::Verb::Delete;
-	bd.node = 9999;
-	bad.commands.push_back(bd);
-	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
-		"delete rejects bad node");
+    smvk::tour::Doc bad;
+    smvk::tour::Command bd{};
+    bd.verb = smvk::tour::Verb::Delete;
+    bd.node = 9999;
+    bad.commands.push_back(bd);
+    Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err), "delete rejects bad node");
 }
 
 // Maya's four identity layers on one scene: MUuid (persistent, unique),
 // MObject (runtime numeric id), MDagPath (full + shortest-unique), and
 // human name+namespace addressing.
 void TestIdentityLayers() {
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	const int root = addNode(cluster->scene, -1, 0); // named root
-	const int grpA = addNode(cluster->scene, root, 1);
-	const int grpB = addNode(cluster->scene, root, 1);
-	const int meshA = addNode(cluster->scene, grpA, 2);
-	const int meshB = addNode(cluster->scene, grpB, 2);
-	const int solo = addNode(cluster->scene, grpB, 2);
-	setNodeName(cluster->scene, grpA, "grpA");
-	setNodeName(cluster->scene, grpB, "grpB");
-	setNodeName(cluster->scene, meshA, "Mesh");
-	setNodeName(cluster->scene, meshB, "Mesh");
-	setNodeName(cluster->scene, solo, "Solo");
-	Scene& scene = cluster->scene;
-	// MDagPath: full path (unnamed root contributes nothing)...
-	Check(smvk::tour::DagFullPath(scene, uint32_t(meshA))
-		== getNodeName(scene, root) + "/grpA/Mesh",
-		"dag full path");
-	Check(smvk::tour::DagFullPath(scene, uint32_t(root))
-		== getNodeName(scene, root), "dag root has a name");
-	// ...and shortest unique path (bare name when it already is unique).
-	Check(smvk::tour::DagShortestUniquePath(scene, uint32_t(meshA))
-		== "grpA/Mesh", "dag shortest duplicated");
-	Check(smvk::tour::DagShortestUniquePath(scene, uint32_t(solo))
-		== "Solo", "dag shortest unique-name");
-	Check(smvk::tour::DagShortestUniquePath(scene, uint32_t(grpA))
-		== "grpA", "dag shortest group");
-	uint32_t hit = UINT32_MAX;
-	Check(smvk::tour::ResolveDagPath(scene, "grpB/Mesh", hit)
-		&& hit == uint32_t(meshB), "dag resolve full");
-	Check(!smvk::tour::ResolveDagPath(scene, "Mesh", hit),
-		"dag resolve bare-name rejected");
-	Check(!smvk::tour::ResolveDagPath(scene, "nope/x", hit),
-		"dag resolve miss");
-	// MUuid: setUuid assigns; re-setting the holder is a no-op true;
-	// handing another live node's uuid to anyone is rejected.
-	const std::string hexA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-	const std::string hexB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-	Check(smvk::tour::SetNodeUuid(scene, uint32_t(meshA), hexA),
-		"uuid first assign");
-	Check(smvk::tour::SetNodeUuid(scene, uint32_t(meshA), hexA),
-		"uuid same-holder idempotent");
-	Check(!smvk::tour::SetNodeUuid(scene, uint32_t(meshB), hexA),
-		"uuid duplicate rejected");
-	Check(GetNodeUuid(scene, uint32_t(meshA)) == hexA,
-		"uuid holder keeps identity");
-	Check(smvk::tour::SetNodeUuid(scene, uint32_t(meshB), hexB),
-		"uuid other node ok");
-	Check(!smvk::tour::SetNodeUuid(scene, 9999, hexA),
-		"uuid out-of-range rejected");
-	Check(!smvk::tour::SetNodeUuid(scene, uint32_t(meshA), ""),
-		"uuid empty rejected");
-	// Cook level: a duplicated uuid line aborts strict replays and is
-	// reported+skipped in non-strict (reference) replays.
-	{
-		smvk::tour::Doc doc;
-		smvk::tour::Command u1{};
-		u1.verb = smvk::tour::Verb::SetUuid;
-		u1.node = uint32_t(solo);
-		u1.uuid = "cccccccccccccccccccccccccccccccc";
-		doc.commands.push_back(u1);
-		smvk::tour::Command u2 = u1;
-		u2.node = uint32_t(grpA); // same hex, other node
-		doc.commands.push_back(u2);
-		std::string err;
-		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, nullptr,
-			&err), "uuid duplicate strict aborts");
-		std::vector<std::string> warns;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns,
-			nullptr, false), "uuid duplicate non-strict survives");
-		Check(!warns.empty(), "uuid duplicate non-strict reported");
-	}
-	// Delete through the layered resolver: uuid hit with a stale id
-	// AND a renamed node (uuids survive renames and hierarchy moves).
-	{
-		setNodeName(scene, meshA, "RenamedMesh");
-		SetMesh(cluster->scene, uint32_t(meshA), 0);
-		smvk::tour::Doc doc;
-		smvk::tour::Command d{};
-		d.verb = smvk::tour::Verb::Delete;
-		d.node = 9999; // stale id AND stale name on purpose
-		d.name = "Mesh";
-		d.uuid = hexA;
-		doc.commands.push_back(d);
-		std::string err;
-		std::vector<std::string> warns;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"uuid delete after rename");
-		Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr,
-			"uuid delete unlinks renamed node");
-	}
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    const int root = addNode(cluster->scene, -1, 0); // named root
+    const int grpA = addNode(cluster->scene, root, 1);
+    const int grpB = addNode(cluster->scene, root, 1);
+    const int meshA = addNode(cluster->scene, grpA, 2);
+    const int meshB = addNode(cluster->scene, grpB, 2);
+    const int solo = addNode(cluster->scene, grpB, 2);
+    setNodeName(cluster->scene, grpA, "grpA");
+    setNodeName(cluster->scene, grpB, "grpB");
+    setNodeName(cluster->scene, meshA, "Mesh");
+    setNodeName(cluster->scene, meshB, "Mesh");
+    setNodeName(cluster->scene, solo, "Solo");
+    Scene& scene = cluster->scene;
+    // MDagPath: full path (unnamed root contributes nothing)...
+    Check(smvk::tour::DagFullPath(scene, uint32_t(meshA)) ==
+              getNodeName(scene, root) + "/grpA/Mesh",
+          "dag full path");
+    Check(smvk::tour::DagFullPath(scene, uint32_t(root)) == getNodeName(scene, root),
+          "dag root has a name");
+    // ...and shortest unique path (bare name when it already is unique).
+    Check(smvk::tour::DagShortestUniquePath(scene, uint32_t(meshA)) == "grpA/Mesh",
+          "dag shortest duplicated");
+    Check(smvk::tour::DagShortestUniquePath(scene, uint32_t(solo)) == "Solo",
+          "dag shortest unique-name");
+    Check(smvk::tour::DagShortestUniquePath(scene, uint32_t(grpA)) == "grpA", "dag shortest group");
+    uint32_t hit = UINT32_MAX;
+    Check(smvk::tour::ResolveDagPath(scene, "grpB/Mesh", hit) && hit == uint32_t(meshB),
+          "dag resolve full");
+    Check(!smvk::tour::ResolveDagPath(scene, "Mesh", hit), "dag resolve bare-name rejected");
+    Check(!smvk::tour::ResolveDagPath(scene, "nope/x", hit), "dag resolve miss");
+    // MUuid: setUuid assigns; re-setting the holder is a no-op true;
+    // handing another live node's uuid to anyone is rejected.
+    const std::string hexA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const std::string hexB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    Check(smvk::tour::SetNodeUuid(scene, uint32_t(meshA), hexA), "uuid first assign");
+    Check(smvk::tour::SetNodeUuid(scene, uint32_t(meshA), hexA), "uuid same-holder idempotent");
+    Check(!smvk::tour::SetNodeUuid(scene, uint32_t(meshB), hexA), "uuid duplicate rejected");
+    Check(GetNodeUuid(scene, uint32_t(meshA)) == hexA, "uuid holder keeps identity");
+    Check(smvk::tour::SetNodeUuid(scene, uint32_t(meshB), hexB), "uuid other node ok");
+    Check(!smvk::tour::SetNodeUuid(scene, 9999, hexA), "uuid out-of-range rejected");
+    Check(!smvk::tour::SetNodeUuid(scene, uint32_t(meshA), ""), "uuid empty rejected");
+    // Cook level: a duplicated uuid line aborts strict replays and is
+    // reported+skipped in non-strict (reference) replays.
+    {
+        smvk::tour::Doc doc;
+        smvk::tour::Command u1{};
+        u1.verb = smvk::tour::Verb::SetUuid;
+        u1.node = uint32_t(solo);
+        u1.uuid = "cccccccccccccccccccccccccccccccc";
+        doc.commands.push_back(u1);
+        smvk::tour::Command u2 = u1;
+        u2.node = uint32_t(grpA); // same hex, other node
+        doc.commands.push_back(u2);
+        std::string err;
+        Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, nullptr, &err),
+              "uuid duplicate strict aborts");
+        std::vector<std::string> warns;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, nullptr, false),
+              "uuid duplicate non-strict survives");
+        Check(!warns.empty(), "uuid duplicate non-strict reported");
+    }
+    // Delete through the layered resolver: uuid hit with a stale id
+    // AND a renamed node (uuids survive renames and hierarchy moves).
+    {
+        setNodeName(scene, meshA, "RenamedMesh");
+        SetMesh(cluster->scene, uint32_t(meshA), 0);
+        smvk::tour::Doc doc;
+        smvk::tour::Command d{};
+        d.verb = smvk::tour::Verb::Delete;
+        d.node = 9999; // stale id AND stale name on purpose
+        d.name = "Mesh";
+        d.uuid = hexA;
+        doc.commands.push_back(d);
+        std::string err;
+        std::vector<std::string> warns;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+              "uuid delete after rename");
+        Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr,
+              "uuid delete unlinks renamed node");
+    }
 }
 
 // Maya delete addressing: uuid primary, name secondary, id fallback.
 void TestDeleteAddressing() {
-	auto freshCluster = []() {
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0); // root (unnamed)
-		return cluster;
-	};
-	auto cluster = freshCluster();
-	// root/grpA + root/grpB, each with a "Mesh" child (duplicated name).
-	const int grpA = addNode(cluster->scene, 0, 1);
-	const int grpB = addNode(cluster->scene, 0, 1);
-	const int meshA = addNode(cluster->scene, grpA, 2);
-	const int meshB = addNode(cluster->scene, grpB, 2);
-	setNodeName(cluster->scene, grpA, "grpA");
-	setNodeName(cluster->scene, grpB, "grpB");
-	setNodeName(cluster->scene, meshA, "Mesh");
-	setNodeName(cluster->scene, meshB, "Mesh");
-	SetMesh(cluster->scene, uint32_t(meshA), 0);
-	SetMesh(cluster->scene, uint32_t(meshB), 0);
-	std::vector<std::string> warns;
-	std::string err;
+    auto freshCluster = []() {
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0); // root (unnamed)
+        return cluster;
+    };
+    auto cluster = freshCluster();
+    // root/grpA + root/grpB, each with a "Mesh" child (duplicated name).
+    const int grpA = addNode(cluster->scene, 0, 1);
+    const int grpB = addNode(cluster->scene, 0, 1);
+    const int meshA = addNode(cluster->scene, grpA, 2);
+    const int meshB = addNode(cluster->scene, grpB, 2);
+    setNodeName(cluster->scene, grpA, "grpA");
+    setNodeName(cluster->scene, grpB, "grpB");
+    setNodeName(cluster->scene, meshA, "Mesh");
+    setNodeName(cluster->scene, meshB, "Mesh");
+    SetMesh(cluster->scene, uint32_t(meshA), 0);
+    SetMesh(cluster->scene, uint32_t(meshB), 0);
+    std::vector<std::string> warns;
+    std::string err;
 
-	// Writer form: delete -uuid <hex> -n <id> -name "<name>".
-	smvk::tour::Doc doc;
-	smvk::tour::Command u{};
-	u.verb = smvk::tour::Verb::SetUuid;
-	u.node = uint32_t(meshA);
-	u.uuid = "0123456789abcdef0123456789abcdef";
-	doc.commands.push_back(u);
-	smvk::tour::Command d{};
-	d.verb = smvk::tour::Verb::Delete;
-	d.node = uint32_t(meshA);
-	d.name = "Mesh";
-	d.uuid = "0123456789abcdef0123456789abcdef";
-	doc.commands.push_back(d);
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "uuid save");
-	smvk::tour::Doc back;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
-		"uuid load");
-	Check(back.commands.size() == 2
-		&& back.commands[0].verb == smvk::tour::Verb::SetUuid
-		&& back.commands[0].uuid == d.uuid
-		&& back.commands[1].verb == smvk::tour::Verb::Delete
-		&& back.commands[1].uuid == d.uuid
-		&& back.commands[1].name == "Mesh", "uuid round-trip");
-	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
-		"uuid replay ok");
-	// meshA unlinked through its uuid (the STALE numeric id 9999 in the
-	// variant below must not matter); meshB untouched.
-	Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr,
-		"uuid delete unlinks");
-	Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
-		"uuid delete spares siblings");
+    // Writer form: delete -uuid <hex> -n <id> -name "<name>".
+    smvk::tour::Doc doc;
+    smvk::tour::Command u{};
+    u.verb = smvk::tour::Verb::SetUuid;
+    u.node = uint32_t(meshA);
+    u.uuid = "0123456789abcdef0123456789abcdef";
+    doc.commands.push_back(u);
+    smvk::tour::Command d{};
+    d.verb = smvk::tour::Verb::Delete;
+    d.node = uint32_t(meshA);
+    d.name = "Mesh";
+    d.uuid = "0123456789abcdef0123456789abcdef";
+    doc.commands.push_back(d);
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "uuid save");
+    smvk::tour::Doc back;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "uuid load");
+    Check(back.commands.size() == 2 && back.commands[0].verb == smvk::tour::Verb::SetUuid &&
+              back.commands[0].uuid == d.uuid &&
+              back.commands[1].verb == smvk::tour::Verb::Delete &&
+              back.commands[1].uuid == d.uuid && back.commands[1].name == "Mesh",
+          "uuid round-trip");
+    Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "uuid replay ok");
+    // meshA unlinked through its uuid (the STALE numeric id 9999 in the
+    // variant below must not matter); meshB untouched.
+    Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr, "uuid delete unlinks");
+    Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr, "uuid delete spares siblings");
 
-	// Stale id + valid uuid: uuid wins even when -n points elsewhere.
-	{
-		smvk::tour::Doc doc2;
-		smvk::tour::Command d2{};
-		d2.verb = smvk::tour::Verb::Delete;
-		d2.node = 9999;
-		d2.uuid = "fedcba9876543210fedcba9876543210";
-		doc2.commands.push_back(d2);
-		SetNodeUuidRaw(cluster->scene, uint32_t(meshB), d2.uuid);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err),
-			"uuid wins over stale id");
-		Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr,
-			"uuid delete hits by uuid");
-	}
-	// DAG path disambiguates duplicated basenames: grpA/Mesh.
-	{
-		SetMesh(cluster->scene, uint32_t(meshA), 0);
-		SetMesh(cluster->scene, uint32_t(meshB), 0);
-		smvk::tour::Doc doc3;
-		smvk::tour::Command d3{};
-		d3.verb = smvk::tour::Verb::Delete;
-		d3.node = 9999; // stale on purpose
-		d3.name = "grpA/Mesh";
-		doc3.commands.push_back(d3);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc3, &warns, &err),
-			"path delete ok");
-		Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr,
-			"path delete hits right leaf");
-		Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
-			"path delete spares other leaf");
-	}
-	// Unique-name delete (no uuid, no useful id): name resolves.
-	// (meshB gets a unique name first; per-node delete never touches
-	// anything but the target's own links.)
-	{
-		setNodeName(cluster->scene, meshB, "Solo");
-		SetMesh(cluster->scene, uint32_t(meshB), 0);
-		smvk::tour::Doc doc4;
-		smvk::tour::Command d4{};
-		d4.verb = smvk::tour::Verb::Delete;
-		d4.node = 9999;
-		d4.name = "Solo";
-		doc4.commands.push_back(d4);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc4, &warns, &err),
-			"name delete ok");
-		Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr,
-			"name delete unlinks");
-	}
-	// A stale UUID with no name must never fall back to a valid numeric
-	// id: after a re-import that slot could belong to another node.
-	{
-		SetMesh(cluster->scene, uint32_t(meshB), 0);
-		smvk::tour::Doc doc6;
-		smvk::tour::Command d6{};
-		d6.verb = smvk::tour::Verb::Delete;
-		d6.node = uint32_t(meshB);
-		d6.uuid = "ffffffffffffffffffffffffffffffff";
-		doc6.commands.push_back(d6);
-		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc6, &warns, &err),
-			"stale uuid-only delete fails strict");
-		Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
-			"stale uuid-only delete preserves numeric target");
-		std::vector<std::string> refWarns;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc6, &refWarns,
-			&err, /*strict=*/false), "stale uuid-only delete skips in reference");
-		Check(!refWarns.empty() && FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
-			"stale uuid-only delete warns and preserves target");
-	}
-	// Legacy nameless delete still resolves by id.
-	{
-		SetMesh(cluster->scene, uint32_t(meshB), 0);
-		smvk::tour::Doc doc5;
-		smvk::tour::Command d5{};
-		d5.verb = smvk::tour::Verb::Delete;
-		d5.node = uint32_t(meshB);
-		doc5.commands.push_back(d5);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc5, &warns, &err),
-			"legacy delete ok");
-		Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr,
-			"legacy delete unlinks");
-	}
-	// GenerateUuid: 32 lowercase hex, unique across calls.
-	{
-		const std::string a = smvk::tour::GenerateUuid();
-		const std::string b = smvk::tour::GenerateUuid();
-		bool hex = a.size() == 32 && b.size() == 32;
-		for (char ch : a + b)
-			hex = hex && ((ch >= '0' && ch <= '9')
-				|| (ch >= 'a' && ch <= 'f'));
-		Check(hex && a != b, "uuid generates unique hex");
-	}
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    // Stale id + valid uuid: uuid wins even when -n points elsewhere.
+    {
+        smvk::tour::Doc doc2;
+        smvk::tour::Command d2{};
+        d2.verb = smvk::tour::Verb::Delete;
+        d2.node = 9999;
+        d2.uuid = "fedcba9876543210fedcba9876543210";
+        doc2.commands.push_back(d2);
+        SetNodeUuidRaw(cluster->scene, uint32_t(meshB), d2.uuid);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err),
+              "uuid wins over stale id");
+        Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr, "uuid delete hits by uuid");
+    }
+    // DAG path disambiguates duplicated basenames: grpA/Mesh.
+    {
+        SetMesh(cluster->scene, uint32_t(meshA), 0);
+        SetMesh(cluster->scene, uint32_t(meshB), 0);
+        smvk::tour::Doc doc3;
+        smvk::tour::Command d3{};
+        d3.verb = smvk::tour::Verb::Delete;
+        d3.node = 9999; // stale on purpose
+        d3.name = "grpA/Mesh";
+        doc3.commands.push_back(d3);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc3, &warns, &err), "path delete ok");
+        Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr, "path delete hits right leaf");
+        Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
+              "path delete spares other leaf");
+    }
+    // Unique-name delete (no uuid, no useful id): name resolves.
+    // (meshB gets a unique name first; per-node delete never touches
+    // anything but the target's own links.)
+    {
+        setNodeName(cluster->scene, meshB, "Solo");
+        SetMesh(cluster->scene, uint32_t(meshB), 0);
+        smvk::tour::Doc doc4;
+        smvk::tour::Command d4{};
+        d4.verb = smvk::tour::Verb::Delete;
+        d4.node = 9999;
+        d4.name = "Solo";
+        doc4.commands.push_back(d4);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc4, &warns, &err), "name delete ok");
+        Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr, "name delete unlinks");
+    }
+    // A stale UUID with no name must never fall back to a valid numeric
+    // id: after a re-import that slot could belong to another node.
+    {
+        SetMesh(cluster->scene, uint32_t(meshB), 0);
+        smvk::tour::Doc doc6;
+        smvk::tour::Command d6{};
+        d6.verb = smvk::tour::Verb::Delete;
+        d6.node = uint32_t(meshB);
+        d6.uuid = "ffffffffffffffffffffffffffffffff";
+        doc6.commands.push_back(d6);
+        Check(!smvk::tour::ApplyTourToCluster(*cluster, doc6, &warns, &err),
+              "stale uuid-only delete fails strict");
+        Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
+              "stale uuid-only delete preserves numeric target");
+        std::vector<std::string> refWarns;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc6, &refWarns, &err, /*strict=*/false),
+              "stale uuid-only delete skips in reference");
+        Check(!refWarns.empty() && FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
+              "stale uuid-only delete warns and preserves target");
+    }
+    // Legacy nameless delete still resolves by id.
+    {
+        SetMesh(cluster->scene, uint32_t(meshB), 0);
+        smvk::tour::Doc doc5;
+        smvk::tour::Command d5{};
+        d5.verb = smvk::tour::Verb::Delete;
+        d5.node = uint32_t(meshB);
+        doc5.commands.push_back(d5);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc5, &warns, &err), "legacy delete ok");
+        Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr, "legacy delete unlinks");
+    }
+    // GenerateUuid: 32 lowercase hex, unique across calls.
+    {
+        const std::string a = smvk::tour::GenerateUuid();
+        const std::string b = smvk::tour::GenerateUuid();
+        bool hex = a.size() == 32 && b.size() == 32;
+        for (char ch : a + b)
+            hex = hex && ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'));
+        Check(hex && a != b, "uuid generates unique hex");
+    }
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 // ---------------------------------------------------------------------------
@@ -2371,768 +2312,713 @@ void TestDeleteAddressing() {
 // ---------------------------------------------------------------------------
 
 void TestLogicalNodeTargets() {
-	auto freshCluster = []() {
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0); // root (unnamed)
-		return cluster;
-	};
-	auto cluster = freshCluster();
-	// root/grpA + root/grpB, each with a "Mesh" child (duplicated name
-	// — the ambiguity that forces uuid/path keys).
-	const int grpA = addNode(cluster->scene, 0, 1);
-	const int grpB = addNode(cluster->scene, 0, 1);
-	const int meshA = addNode(cluster->scene, grpA, 2);
-	const int meshB = addNode(cluster->scene, grpB, 2);
-	setNodeName(cluster->scene, grpA, "grpA");
-	setNodeName(cluster->scene, grpB, "grpB");
-	setNodeName(cluster->scene, meshA, "Mesh");
-	setNodeName(cluster->scene, meshB, "Mesh");
-	SetMesh(cluster->scene, uint32_t(meshA), 0);
-	SetMesh(cluster->scene, uint32_t(meshB), 0);
-	std::vector<std::string> warns;
-	std::string err;
-	const std::string hexA = "0123456789abcdef0123456789abcdef";
+    auto freshCluster = []() {
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0); // root (unnamed)
+        return cluster;
+    };
+    auto cluster = freshCluster();
+    // root/grpA + root/grpB, each with a "Mesh" child (duplicated name
+    // — the ambiguity that forces uuid/path keys).
+    const int grpA = addNode(cluster->scene, 0, 1);
+    const int grpB = addNode(cluster->scene, 0, 1);
+    const int meshA = addNode(cluster->scene, grpA, 2);
+    const int meshB = addNode(cluster->scene, grpB, 2);
+    setNodeName(cluster->scene, grpA, "grpA");
+    setNodeName(cluster->scene, grpB, "grpB");
+    setNodeName(cluster->scene, meshA, "Mesh");
+    setNodeName(cluster->scene, meshB, "Mesh");
+    SetMesh(cluster->scene, uint32_t(meshA), 0);
+    SetMesh(cluster->scene, uint32_t(meshB), 0);
+    std::vector<std::string> warns;
+    std::string err;
+    const std::string hexA = "0123456789abcdef0123456789abcdef";
 
-	// ROUND-TRIP: keys + payload survive save/load verbatim, and the
-	// logical-only form (no -n) round-trips with the no-id sentinel.
-	{
-		smvk::tour::Doc doc;
-		smvk::tour::Command v{};
-		v.verb = smvk::tour::Verb::SetVisibility;
-		v.node = uint32_t(meshA);
-		v.uuid = hexA;
-		v.name = "Mesh";
-		v.flag = true;
-		doc.commands.push_back(v);
-		smvk::tour::Command t{};
-		t.verb = smvk::tour::Verb::SetTranslate;
-		t.node = UINT32_MAX; // logical-only: no numeric target
-		t.uuid = hexA;
-		t.vec = glm::vec3(1.5f, 2.5f, 3.5f);
-		doc.commands.push_back(t);
-		Check(smvk::tour::SaveTour(TempTour(), doc, err),
-			"logical save");
-		smvk::tour::Doc back;
-		Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
-			"logical load");
-		Check(back.commands.size() == 2
-			&& back.commands[0].verb == smvk::tour::Verb::SetVisibility
-			&& back.commands[0].uuid == hexA
-			&& back.commands[0].name == "Mesh"
-			&& back.commands[0].flag
-			&& back.commands[1].verb == smvk::tour::Verb::SetTranslate
-			&& back.commands[1].uuid == hexA
-			&& back.commands[1].node == UINT32_MAX
-			&& back.commands[1].vec == t.vec, "logical round-trip");
-	}
+    // ROUND-TRIP: keys + payload survive save/load verbatim, and the
+    // logical-only form (no -n) round-trips with the no-id sentinel.
+    {
+        smvk::tour::Doc doc;
+        smvk::tour::Command v{};
+        v.verb = smvk::tour::Verb::SetVisibility;
+        v.node = uint32_t(meshA);
+        v.uuid = hexA;
+        v.name = "Mesh";
+        v.flag = true;
+        doc.commands.push_back(v);
+        smvk::tour::Command t{};
+        t.verb = smvk::tour::Verb::SetTranslate;
+        t.node = UINT32_MAX; // logical-only: no numeric target
+        t.uuid = hexA;
+        t.vec = glm::vec3(1.5f, 2.5f, 3.5f);
+        doc.commands.push_back(t);
+        Check(smvk::tour::SaveTour(TempTour(), doc, err), "logical save");
+        smvk::tour::Doc back;
+        Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "logical load");
+        Check(
+            back.commands.size() == 2 && back.commands[0].verb == smvk::tour::Verb::SetVisibility &&
+                back.commands[0].uuid == hexA && back.commands[0].name == "Mesh" &&
+                back.commands[0].flag && back.commands[1].verb == smvk::tour::Verb::SetTranslate &&
+                back.commands[1].uuid == hexA && back.commands[1].node == UINT32_MAX &&
+                back.commands[1].vec == t.vec,
+            "logical round-trip");
+    }
 
-	// UUID KEY + STALE ID: the recorded uuid wins over a -n that no
-	// longer names the node (the id-shift survival — the point).
-	{
-		SetNodeUuidRaw(cluster->scene, uint32_t(meshA), hexA);
-		smvk::tour::Doc doc;
-		smvk::tour::Command v{};
-		v.verb = smvk::tour::Verb::SetVisibility;
-		v.node = 9999; // stale on purpose
-		v.uuid = hexA;
-		v.flag = true;
-		doc.commands.push_back(v);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"logical uuid replay ok");
-		Check(cluster->scene.hidden[size_t(meshA)] != 0
-			&& cluster->scene.hidden[size_t(meshB)] == 0,
-			"logical uuid hits the uuid node only");
-	}
+    // UUID KEY + STALE ID: the recorded uuid wins over a -n that no
+    // longer names the node (the id-shift survival — the point).
+    {
+        SetNodeUuidRaw(cluster->scene, uint32_t(meshA), hexA);
+        smvk::tour::Doc doc;
+        smvk::tour::Command v{};
+        v.verb = smvk::tour::Verb::SetVisibility;
+        v.node = 9999; // stale on purpose
+        v.uuid = hexA;
+        v.flag = true;
+        doc.commands.push_back(v);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+              "logical uuid replay ok");
+        Check(cluster->scene.hidden[size_t(meshA)] != 0 &&
+                  cluster->scene.hidden[size_t(meshB)] == 0,
+              "logical uuid hits the uuid node only");
+    }
 
-	// UUID-ONLY LINE (no -n at all): resolves through the key.
-	{
-		cluster->scene.hidden[size_t(meshA)] = 0;
-		smvk::tour::Doc doc;
-		smvk::tour::Command v{};
-		v.verb = smvk::tour::Verb::SetVisibility;
-		v.node = UINT32_MAX;
-		v.uuid = hexA;
-		v.flag = true;
-		doc.commands.push_back(v);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"logical uuid-only ok");
-		Check(cluster->scene.hidden[size_t(meshA)] != 0,
-			"logical uuid-only hits");
-	}
+    // UUID-ONLY LINE (no -n at all): resolves through the key.
+    {
+        cluster->scene.hidden[size_t(meshA)] = 0;
+        smvk::tour::Doc doc;
+        smvk::tour::Command v{};
+        v.verb = smvk::tour::Verb::SetVisibility;
+        v.node = UINT32_MAX;
+        v.uuid = hexA;
+        v.flag = true;
+        doc.commands.push_back(v);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "logical uuid-only ok");
+        Check(cluster->scene.hidden[size_t(meshA)] != 0, "logical uuid-only hits");
+    }
 
-	// PATH KEY over duplicated basenames: grpA/Mesh picks the right
-	// leaf, the sibling stays untouched.
-	{
-		cluster->scene.hidden[size_t(meshA)] = 0;
-		smvk::tour::Doc doc;
-		smvk::tour::Command v{};
-		v.verb = smvk::tour::Verb::SetTranslate;
-		v.node = 9999; // stale
-		v.name = "grpA/Mesh";
-		v.vec = glm::vec3(7.0f, 0.0f, 0.0f);
-		doc.commands.push_back(v);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"logical path replay ok");
-		Check(cluster->scene.localTransform[size_t(meshA)][3]
-			== glm::vec4(7.0f, 0.0f, 0.0f, 1.0f), "logical path hits");
-		Check(cluster->scene.localTransform[size_t(meshB)][3]
-			== glm::vec4(0.0f, 0.0f, 0.0f, 1.0f),
-			"logical path spares sibling");
-	}
+    // PATH KEY over duplicated basenames: grpA/Mesh picks the right
+    // leaf, the sibling stays untouched.
+    {
+        cluster->scene.hidden[size_t(meshA)] = 0;
+        smvk::tour::Doc doc;
+        smvk::tour::Command v{};
+        v.verb = smvk::tour::Verb::SetTranslate;
+        v.node = 9999; // stale
+        v.name = "grpA/Mesh";
+        v.vec = glm::vec3(7.0f, 0.0f, 0.0f);
+        doc.commands.push_back(v);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+              "logical path replay ok");
+        Check(cluster->scene.localTransform[size_t(meshA)][3] == glm::vec4(7.0f, 0.0f, 0.0f, 1.0f),
+              "logical path hits");
+        Check(cluster->scene.localTransform[size_t(meshB)][3] == glm::vec4(0.0f, 0.0f, 0.0f, 1.0f),
+              "logical path spares sibling");
+    }
 
-	// RENAME's name key is the PRE-rename name (the fresh import's
-	// state): resolve by the original, apply the new.
-	{
-		smvk::tour::Doc doc;
-		smvk::tour::Command r{};
-		r.verb = smvk::tour::Verb::Rename;
-		r.node = 9999;
-		r.name = "grpB/Mesh"; // the ORIGINAL name (path: duplicated base)
-		r.text = "RenamedLeaf";
-		doc.commands.push_back(r);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"logical rename ok");
-		Check(getNodeName(cluster->scene, meshB) == "RenamedLeaf",
-			"logical rename hits");
-		Check(getNodeName(cluster->scene, meshA) == "Mesh",
-			"logical rename spares sibling");
-	}
+    // RENAME's name key is the PRE-rename name (the fresh import's
+    // state): resolve by the original, apply the new.
+    {
+        smvk::tour::Doc doc;
+        smvk::tour::Command r{};
+        r.verb = smvk::tour::Verb::Rename;
+        r.node = 9999;
+        r.name = "grpB/Mesh"; // the ORIGINAL name (path: duplicated base)
+        r.text = "RenamedLeaf";
+        doc.commands.push_back(r);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "logical rename ok");
+        Check(getNodeName(cluster->scene, meshB) == "RenamedLeaf", "logical rename hits");
+        Check(getNodeName(cluster->scene, meshA) == "Mesh", "logical rename spares sibling");
+    }
 
-	// UNIQUE-NAME key (no uuid, stale id).
-	{
-		setNodeName(cluster->scene, grpA, "Solo");
-		smvk::tour::Doc doc;
-		smvk::tour::Command s{};
-		s.verb = smvk::tour::Verb::SetStatic;
-		s.node = 9999;
-		s.name = "Solo";
-		s.flag = true;
-		doc.commands.push_back(s);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"logical unique-name ok");
-		Check(cluster->scene.staticRoot[size_t(grpA)] != 0,
-			"logical unique-name hits");
-	}
+    // UNIQUE-NAME key (no uuid, stale id).
+    {
+        setNodeName(cluster->scene, grpA, "Solo");
+        smvk::tour::Doc doc;
+        smvk::tour::Command s{};
+        s.verb = smvk::tour::Verb::SetStatic;
+        s.node = 9999;
+        s.name = "Solo";
+        s.flag = true;
+        doc.commands.push_back(s);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+              "logical unique-name ok");
+        Check(cluster->scene.staticRoot[size_t(grpA)] != 0, "logical unique-name hits");
+    }
 
-	// UNRESOLVED key: strict replay FAILS loud (never a silent skip).
-	{
-		smvk::tour::Doc doc;
-		smvk::tour::Command v{};
-		v.verb = smvk::tour::Verb::SetVisibility;
-		v.node = UINT32_MAX;
-		v.uuid = "ffffffffffffffffffffffffffffffff"; // nobody holds it
-		v.flag = true;
-		doc.commands.push_back(v);
-		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"logical unresolved fails strict");
-	}
+    // UNRESOLVED key: strict replay FAILS loud (never a silent skip).
+    {
+        smvk::tour::Doc doc;
+        smvk::tour::Command v{};
+        v.verb = smvk::tour::Verb::SetVisibility;
+        v.node = UINT32_MAX;
+        v.uuid = "ffffffffffffffffffffffffffffffff"; // nobody holds it
+        v.flag = true;
+        doc.commands.push_back(v);
+        Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+              "logical unresolved fails strict");
+    }
 
-	// KEYLESS (legacy) lines keep the numeric path: valid id applies,
-	// nothing to verify (no key, no warn).
-	{
-		warns.clear();
-		smvk::tour::Doc doc;
-		smvk::tour::Command v{};
-		v.verb = smvk::tour::Verb::SetVisibility;
-		v.node = uint32_t(meshB);
-		v.flag = true;
-		doc.commands.push_back(v);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"legacy numeric ok");
-		Check(cluster->scene.hidden[size_t(meshB)] != 0,
-			"legacy numeric applies by id");
-	}
+    // KEYLESS (legacy) lines keep the numeric path: valid id applies,
+    // nothing to verify (no key, no warn).
+    {
+        warns.clear();
+        smvk::tour::Doc doc;
+        smvk::tour::Command v{};
+        v.verb = smvk::tour::Verb::SetVisibility;
+        v.node = uint32_t(meshB);
+        v.flag = true;
+        doc.commands.push_back(v);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "legacy numeric ok");
+        Check(cluster->scene.hidden[size_t(meshB)] != 0, "legacy numeric applies by id");
+    }
 
-	// HARD-KEY DISCIPLINE (the Delete contract): a carried key that
-	// does not resolve FAILS the strict replay — a wrong name is an
-	// error, never a silent numeric apply (a recorded identity that
-	// matches nothing means the node is gone; the numeric id under it
-	// may name a DIFFERENT node after a re-import).
-	{
-		smvk::tour::Doc doc;
-		smvk::tour::Command v{};
-		v.verb = smvk::tour::Verb::SetVisibility;
-		v.node = uint32_t(meshB); // valid id, but the key is wrong
-		v.name = "NoSuchNodeKey";
-		v.flag = true;
-		doc.commands.push_back(v);
-		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
-			"logical wrong-key fails strict");
-	}
+    // HARD-KEY DISCIPLINE (the Delete contract): a carried key that
+    // does not resolve FAILS the strict replay — a wrong name is an
+    // error, never a silent numeric apply (a recorded identity that
+    // matches nothing means the node is gone; the numeric id under it
+    // may name a DIFFERENT node after a re-import).
+    {
+        smvk::tour::Doc doc;
+        smvk::tour::Command v{};
+        v.verb = smvk::tour::Verb::SetVisibility;
+        v.node = uint32_t(meshB); // valid id, but the key is wrong
+        v.name = "NoSuchNodeKey";
+        v.flag = true;
+        doc.commands.push_back(v);
+        Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+              "logical wrong-key fails strict");
+    }
 
-	// REFERENCE REPLAY (strict=false): an unresolved key skips with a
-	// warning instead of aborting the rest of the referenced edits.
-	{
-		std::vector<std::string> refWarns;
-		smvk::tour::Doc doc;
-		smvk::tour::Command bad{};
-		bad.verb = smvk::tour::Verb::SetVisibility;
-		bad.node = UINT32_MAX;
-		bad.uuid = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-		bad.flag = true;
-		doc.commands.push_back(bad);
-		smvk::tour::Command good{};
-		good.verb = smvk::tour::Verb::SetStatic;
-		good.node = uint32_t(grpB);
-		good.flag = true;
-		doc.commands.push_back(good);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &refWarns,
-			&err, /*strict=*/false), "logical reference replay ok");
-		Check(cluster->scene.staticRoot[size_t(grpB)] != 0,
-			"logical reference skip spares the rest");
-		Check(std::any_of(refWarns.begin(), refWarns.end(),
-			[](const std::string& w) {
-				return w.find("skipped") != std::string::npos;
-			}), "logical reference warns the skip");
-	}
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    // REFERENCE REPLAY (strict=false): an unresolved key skips with a
+    // warning instead of aborting the rest of the referenced edits.
+    {
+        std::vector<std::string> refWarns;
+        smvk::tour::Doc doc;
+        smvk::tour::Command bad{};
+        bad.verb = smvk::tour::Verb::SetVisibility;
+        bad.node = UINT32_MAX;
+        bad.uuid = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        bad.flag = true;
+        doc.commands.push_back(bad);
+        smvk::tour::Command good{};
+        good.verb = smvk::tour::Verb::SetStatic;
+        good.node = uint32_t(grpB);
+        good.flag = true;
+        doc.commands.push_back(good);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &refWarns, &err, /*strict=*/false),
+              "logical reference replay ok");
+        Check(cluster->scene.staticRoot[size_t(grpB)] != 0,
+              "logical reference skip spares the rest");
+        Check(std::any_of(
+                  refWarns.begin(),
+                  refWarns.end(),
+                  [](const std::string& w) { return w.find("skipped") != std::string::npos; }),
+              "logical reference warns the skip");
+    }
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 void TestFileNodes() {
-	smvk::tour::Doc doc;
-	smvk::tour::FileNode fn;
-	fn.name = "Brick \"Wall\"";
-	fn.path = "textures/brick wall.png";
-	fn.colorspace = 0;
-	fn.wrap = 1;
-	fn.filter = 1;
-	doc.fileNodes.push_back(fn);
-	fn = smvk::tour::FileNode{};
-	fn.name = "rough";
-	fn.path = "F:/content/models/x/r.png";
-	fn.colorspace = 1;
-	fn.wrap = 2;
-	fn.filter = 0;
-	doc.fileNodes.push_back(fn);
-	{
-		// autoKtx off rides the exportSettings node (the singleton).
-		smvk::tour::Command ec{};
-		ec.verb = smvk::tour::Verb::CreateNode;
-		ec.nodeType = "exportSettings";
-		ec.node = 0;
-		ec.text = "ExportSettings";
-		doc.commands.push_back(ec);
-		smvk::tour::Command a{};
-		a.verb = smvk::tour::Verb::SetExportAttr;
-		a.node = smvk::tour::kCreateExportRefBase | 0u;
-		a.text = "autoKtx";
-		a.flag = false;
-		doc.commands.push_back(a);
-	}
-	std::string err;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "filenode save");
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "filenode load");
-	Check(back.fileNodes.size() == 2, "filenode count");
-	if (back.fileNodes.size() == 2) {
-		Check(back.fileNodes[0].name == "Brick \"Wall\""
-			&& back.fileNodes[0].path == "textures/brick wall.png"
-			&& back.fileNodes[0].colorspace == 0
-			&& back.fileNodes[0].wrap == 1
-			&& back.fileNodes[0].filter == 1, "filenode srgb clamp nearest");
-		Check(back.fileNodes[1].name == "rough"
-			&& back.fileNodes[1].path == "F:/content/models/x/r.png"
-			&& back.fileNodes[1].colorspace == 1
-			&& back.fileNodes[1].wrap == 2
-			&& back.fileNodes[1].filter == 0, "filenode linear mirrored linear");
-	}
-	{
-		SceneExportSettings es{};
-		Check(smvk::tour::ExportSettingsFromDoc(back, es, nullptr)
-			&& es.autoKtx == false, "filenode exportSettings autoktx");
-	}
-	// Numeric tolerance + missing-path skip via hand-written lines.
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "fileNode -name \"n\" -path \"p.png\" -colorspace 1 -wrap 0 -filter 0;\n";
-		f << "fileNode -name \"noop\";\n";
-		f.close();
-		smvk::tour::Doc h;
-		std::vector<std::string> w2;
-		Check(smvk::tour::LoadTour(TempTour(), h, err, &w2), "filenode hand load");
-		Check(h.fileNodes.size() == 1 && h.fileNodes[0].colorspace == 1,
-			"filenode numeric + pathless skip");
-	}
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    smvk::tour::Doc doc;
+    smvk::tour::FileNode fn;
+    fn.name = "Brick \"Wall\"";
+    fn.path = "textures/brick wall.png";
+    fn.colorspace = 0;
+    fn.wrap = 1;
+    fn.filter = 1;
+    doc.fileNodes.push_back(fn);
+    fn = smvk::tour::FileNode{};
+    fn.name = "rough";
+    fn.path = "F:/content/models/x/r.png";
+    fn.colorspace = 1;
+    fn.wrap = 2;
+    fn.filter = 0;
+    doc.fileNodes.push_back(fn);
+    {
+        // autoKtx off rides the exportSettings node (the singleton).
+        smvk::tour::Command ec{};
+        ec.verb = smvk::tour::Verb::CreateNode;
+        ec.nodeType = "exportSettings";
+        ec.node = 0;
+        ec.text = "ExportSettings";
+        doc.commands.push_back(ec);
+        smvk::tour::Command a{};
+        a.verb = smvk::tour::Verb::SetExportAttr;
+        a.node = smvk::tour::kCreateExportRefBase | 0u;
+        a.text = "autoKtx";
+        a.flag = false;
+        doc.commands.push_back(a);
+    }
+    std::string err;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "filenode save");
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "filenode load");
+    Check(back.fileNodes.size() == 2, "filenode count");
+    if (back.fileNodes.size() == 2) {
+        Check(back.fileNodes[0].name == "Brick \"Wall\"" &&
+                  back.fileNodes[0].path == "textures/brick wall.png" &&
+                  back.fileNodes[0].colorspace == 0 && back.fileNodes[0].wrap == 1 &&
+                  back.fileNodes[0].filter == 1,
+              "filenode srgb clamp nearest");
+        Check(back.fileNodes[1].name == "rough" &&
+                  back.fileNodes[1].path == "F:/content/models/x/r.png" &&
+                  back.fileNodes[1].colorspace == 1 && back.fileNodes[1].wrap == 2 &&
+                  back.fileNodes[1].filter == 0,
+              "filenode linear mirrored linear");
+    }
+    {
+        SceneExportSettings es{};
+        Check(smvk::tour::ExportSettingsFromDoc(back, es, nullptr) && es.autoKtx == false,
+              "filenode exportSettings autoktx");
+    }
+    // Numeric tolerance + missing-path skip via hand-written lines.
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "fileNode -name \"n\" -path \"p.png\" -colorspace 1 -wrap 0 -filter 0;\n";
+        f << "fileNode -name \"noop\";\n";
+        f.close();
+        smvk::tour::Doc h;
+        std::vector<std::string> w2;
+        Check(smvk::tour::LoadTour(TempTour(), h, err, &w2), "filenode hand load");
+        Check(h.fileNodes.size() == 1 && h.fileNodes[0].colorspace == 1,
+              "filenode numeric + pathless skip");
+    }
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 void TestAudioSource() {
-	// Hand-built doc: create + -ref property attrs + sound-slot
-	// upserts (the authored-emitter surface — payload via tabulated
-	// lines, the exportSettings pattern).
-	smvk::tour::Doc doc;
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::CreateAudioSource;
-	c.node = 0;
-	c.text = "BellTower";
-	c.vec = glm::vec3(0.0f, 20.0f, 0.0f);
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetAudioAttr;
-	c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
-	c.text = "volume";
-	c.number = 0.8;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetAudioAttr;
-	c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
-	c.text = "minDistance";
-	c.number = 2.0;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::AddAudioSound;
-	c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
-	c.text = "Bells";
-	c.name = "content/audio/bells.wav";
-	c.number = 1.0;
-	c.flag = false;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::AddAudioSound;
-	c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
-	c.text = "Wind";
-	c.name = "content/audio/wind.wav";
-	c.number = 0.5;
-	c.flag = true;
-	doc.commands.push_back(c);
-	std::string err;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "audio save");
-	{
-		std::ifstream in(TempTour(), std::ios::binary);
-		std::stringstream ss;
-		ss << in.rdbuf();
-		const std::string text = ss.str();
-		Check(text.find("createAudioSource -p 0 -name \"BellTower\"")
-				!= std::string::npos,
-			"audio create line");
-		Check(text.find("\tsetAudioAttr -ref 0 -at volume")
-				!= std::string::npos,
-			"audio tabulated ref");
-		Check(text.find("addAudioSound -ref 0 -name \"Bells\""
-				" -source \"content/audio/bells.wav\"")
-				!= std::string::npos,
-			"audio sound line");
-	}
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
-		"audio load");
-	Check(back.commands.size() == 5, "audio command count");
-	if (back.commands.size() == 5) {
-		const auto& cc = back.commands[0];
-		Check(cc.verb == smvk::tour::Verb::CreateAudioSource
-			&& cc.text == "BellTower" && cc.vec.y == 20.0f,
-			"audio create payload");
-		Check(back.commands[1].verb == smvk::tour::Verb::SetAudioAttr
-			&& back.commands[1].text == "volume"
-			&& back.commands[1].number == 0.8, "audio volume attr");
-		const auto& snd = back.commands[4];
-		Check(snd.verb == smvk::tour::Verb::AddAudioSound
-			&& snd.text == "Wind" && snd.name == "content/audio/wind.wav"
-			&& snd.number == 0.5 && snd.flag,
-			"audio wind slot");
-	}
-	// Unified spelling lowers identically.
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "createNode -at audioSource -p 0 -name \"U\" -t 0 4 0;\n";
-		f.close();
-		smvk::tour::Doc u;
-		Check(smvk::tour::LoadTour(TempTour(), u, err, nullptr),
-			"audio unified load");
-		Check(u.commands.size() == 1
-			&& u.commands[0].verb == smvk::tour::Verb::CreateAudioSource
-			&& u.commands[0].vec.y == 4.0f, "audio unified lowers");
-	}
-	// Validation rejects garbage: unknown attr, bad flag, negative
-	// volume, removeAudioSound/addAudioSound without -name/-source.
-	{
-		auto reject = [&](const char* text, const char* name) {
-			std::ofstream f(TempTour(), std::ios::binary
-				| std::ios::trunc);
-			f << text;
-			f.close();
-			smvk::tour::Doc b;
-			Check(!smvk::tour::LoadTour(TempTour(), b, err, nullptr),
-				name);
-		};
-		reject("setAudioAttr -n 1 -at tempo -v 2;\n",
-			"audio bad attr rejected");
-		reject("setAudioAttr -n 1 -at spatial -v maybe;\n",
-			"audio bad flag rejected");
-		reject("setAudioAttr -n 1 -at volume -v -1;\n",
-			"audio negative volume rejected");
-		reject("addAudioSound -n 1 -source \"x.wav\";\n",
-			"audio sound without name rejected");
-	}
-	// Replay: node + row link + payload + slots; the remove verb drops
-	// a slot; the upsert replaces by name.
-	{
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0);
-		std::vector<std::string> rw;
-		std::string rerr;
-		// Add a remove + a re-add to the loaded doc before replay.
-		smvk::tour::Command rm{};
-		rm.verb = smvk::tour::Verb::RemoveAudioSound;
-		rm.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
-		rm.text = "Bells";
-		back.commands.push_back(rm);
-		smvk::tour::Command up{};
-		up.verb = smvk::tour::Verb::AddAudioSound;
-		up.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
-		up.text = "Wind";
-		up.name = "content/audio/wind2.wav";
-		up.number = 0.9;
-		up.flag = false;
-		back.commands.push_back(up);
-		Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr),
-			"audio replay ok");
-		Check(cluster->scene.hierarchy.size() == 2, "audio replay node");
-		const AudioSourceRow* it =
-			FindAudioSource(cluster->scene, 1);
-		Check(it != nullptr, "audio replay link");
-		if (it != nullptr) {
-			const SceneAudioSource& def = it->source;
-			Check(def.volume == 0.8f && def.minDistance == 2.0f
-				&& def.spatial && def.maxDistance == 30.0f,
-				"audio replay payload");
-			Check(def.sounds.size() == 1, "audio replay slot count");
-			if (def.sounds.size() == 1) {
-				// "Bells" removed; "Wind" upserted (replaced by name).
-				Check(def.sounds[0].name == "Wind"
-					&& def.sounds[0].assetPath == "content/audio/wind2.wav"
-					&& def.sounds[0].gain == 0.9f
-					&& !def.sounds[0].loop,
-					"audio replay slots");
-			}
-		}
-		// The emitter pose: translate from the create line.
-		const glm::vec3 t(cluster->scene.localTransform[1][3]);
-		Check(std::abs(t.y - 20.0f) < 1e-4f, "audio replay position");
-		// A second replay of the same doc against the same cluster
-		// runs clean too (reference-replay semantics: creates append,
-		// rows upsert — no error path).
-		smvk::tour::Doc second = back;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, second, &rw,
-				&rerr),
-			"audio replay second ok");
-	}
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    // Hand-built doc: create + -ref property attrs + sound-slot
+    // upserts (the authored-emitter surface — payload via tabulated
+    // lines, the exportSettings pattern).
+    smvk::tour::Doc doc;
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::CreateAudioSource;
+    c.node = 0;
+    c.text = "BellTower";
+    c.vec = glm::vec3(0.0f, 20.0f, 0.0f);
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetAudioAttr;
+    c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+    c.text = "volume";
+    c.number = 0.8;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetAudioAttr;
+    c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+    c.text = "minDistance";
+    c.number = 2.0;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::AddAudioSound;
+    c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+    c.text = "Bells";
+    c.name = "content/audio/bells.wav";
+    c.number = 1.0;
+    c.flag = false;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::AddAudioSound;
+    c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+    c.text = "Wind";
+    c.name = "content/audio/wind.wav";
+    c.number = 0.5;
+    c.flag = true;
+    doc.commands.push_back(c);
+    std::string err;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "audio save");
+    {
+        std::ifstream in(TempTour(), std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        const std::string text = ss.str();
+        Check(text.find("createAudioSource -p 0 -name \"BellTower\"") != std::string::npos,
+              "audio create line");
+        Check(text.find("\tsetAudioAttr -ref 0 -at volume") != std::string::npos,
+              "audio tabulated ref");
+        Check(text.find("addAudioSound -ref 0 -name \"Bells\""
+                        " -source \"content/audio/bells.wav\"") != std::string::npos,
+              "audio sound line");
+    }
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "audio load");
+    Check(back.commands.size() == 5, "audio command count");
+    if (back.commands.size() == 5) {
+        const auto& cc = back.commands[0];
+        Check(cc.verb == smvk::tour::Verb::CreateAudioSource && cc.text == "BellTower" &&
+                  cc.vec.y == 20.0f,
+              "audio create payload");
+        Check(back.commands[1].verb == smvk::tour::Verb::SetAudioAttr &&
+                  back.commands[1].text == "volume" && back.commands[1].number == 0.8,
+              "audio volume attr");
+        const auto& snd = back.commands[4];
+        Check(snd.verb == smvk::tour::Verb::AddAudioSound && snd.text == "Wind" &&
+                  snd.name == "content/audio/wind.wav" && snd.number == 0.5 && snd.flag,
+              "audio wind slot");
+    }
+    // Unified spelling lowers identically.
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "createNode -at audioSource -p 0 -name \"U\" -t 0 4 0;\n";
+        f.close();
+        smvk::tour::Doc u;
+        Check(smvk::tour::LoadTour(TempTour(), u, err, nullptr), "audio unified load");
+        Check(u.commands.size() == 1 && u.commands[0].verb == smvk::tour::Verb::CreateAudioSource &&
+                  u.commands[0].vec.y == 4.0f,
+              "audio unified lowers");
+    }
+    // Validation rejects garbage: unknown attr, bad flag, negative
+    // volume, removeAudioSound/addAudioSound without -name/-source.
+    {
+        auto reject = [&](const char* text, const char* name) {
+            std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+            f << text;
+            f.close();
+            smvk::tour::Doc b;
+            Check(!smvk::tour::LoadTour(TempTour(), b, err, nullptr), name);
+        };
+        reject("setAudioAttr -n 1 -at tempo -v 2;\n", "audio bad attr rejected");
+        reject("setAudioAttr -n 1 -at spatial -v maybe;\n", "audio bad flag rejected");
+        reject("setAudioAttr -n 1 -at volume -v -1;\n", "audio negative volume rejected");
+        reject("addAudioSound -n 1 -source \"x.wav\";\n", "audio sound without name rejected");
+    }
+    // Replay: node + row link + payload + slots; the remove verb drops
+    // a slot; the upsert replaces by name.
+    {
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0);
+        std::vector<std::string> rw;
+        std::string rerr;
+        // Add a remove + a re-add to the loaded doc before replay.
+        smvk::tour::Command rm{};
+        rm.verb = smvk::tour::Verb::RemoveAudioSound;
+        rm.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+        rm.text = "Bells";
+        back.commands.push_back(rm);
+        smvk::tour::Command up{};
+        up.verb = smvk::tour::Verb::AddAudioSound;
+        up.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+        up.text = "Wind";
+        up.name = "content/audio/wind2.wav";
+        up.number = 0.9;
+        up.flag = false;
+        back.commands.push_back(up);
+        Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr), "audio replay ok");
+        Check(cluster->scene.hierarchy.size() == 2, "audio replay node");
+        const AudioSourceRow* it = FindAudioSource(cluster->scene, 1);
+        Check(it != nullptr, "audio replay link");
+        if (it != nullptr) {
+            const SceneAudioSource& def = it->source;
+            Check(def.volume == 0.8f && def.minDistance == 2.0f && def.spatial &&
+                      def.maxDistance == 30.0f,
+                  "audio replay payload");
+            Check(def.sounds.size() == 1, "audio replay slot count");
+            if (def.sounds.size() == 1) {
+                // "Bells" removed; "Wind" upserted (replaced by name).
+                Check(def.sounds[0].name == "Wind" &&
+                          def.sounds[0].assetPath == "content/audio/wind2.wav" &&
+                          def.sounds[0].gain == 0.9f && !def.sounds[0].loop,
+                      "audio replay slots");
+            }
+        }
+        // The emitter pose: translate from the create line.
+        const glm::vec3 t(cluster->scene.localTransform[1][3]);
+        Check(std::abs(t.y - 20.0f) < 1e-4f, "audio replay position");
+        // A second replay of the same doc against the same cluster
+        // runs clean too (reference-replay semantics: creates append,
+        // rows upsert — no error path).
+        smvk::tour::Doc second = back;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, second, &rw, &rerr),
+              "audio replay second ok");
+    }
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 void TestAudioRoom() {
-	// Hand-built doc: room-only create + -ref property attrs (the
-	// authored-room surface — payload via tabulated lines, the
-	// exportSettings pattern), plus the attach/remove association
-	// verbs on a created GIVOLUME (one placement, two associations).
-	smvk::tour::Doc doc;
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::CreateAudioRoom;
-	c.node = 0;
-	c.text = "Hall";
-	c.vec = glm::vec3(0.0f, 2.0f, 0.0f);
-	c.svec = glm::vec3(14.0f, 4.0f, 12.0f);
-	doc.commands.push_back(c);
-	const auto attr = [&](const char* name, double v) {
-		smvk::tour::Command a{};
-		a.verb = smvk::tour::Verb::SetAudioRoomAttr;
-		a.node = smvk::tour::kCreateAudioRoomRefBase | 0u;
-		a.text = name;
-		a.number = v;
-		doc.commands.push_back(a);
-	};
-	attr("rt60", 1.9);
-	attr("wet", 0.32);
-	attr("damping", 0.65);
-	attr("priority", 5);
-	std::string err;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "room save");
-	{
-		std::ifstream in(TempTour(), std::ios::binary);
-		std::stringstream ss;
-		ss << in.rdbuf();
-		const std::string text = ss.str();
-		Check(text.find("createNode -at audioRoom -p 0"
-				" -name \"Hall\" -t 0 2 0 -s 14 4 12")
-				!= std::string::npos,
-			"room create line");
-		Check(text.find("\tsetAudioRoomAttr -ref 0 -at rt60 -v 1.9")
-				!= std::string::npos,
-			"room tabulated ref");
-	}
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
-		"room load");
-	Check(back.commands.size() == 5, "room command count");
-	if (back.commands.size() == 5) {
-		const auto& cc = back.commands[0];
-		Check(cc.verb == smvk::tour::Verb::CreateAudioRoom
-			&& cc.text == "Hall" && cc.vec.y == 2.0f
-			&& cc.svec.x == 14.0f && cc.svec.z == 12.0f,
-			"room create payload");
-		Check(back.commands[1].verb == smvk::tour::Verb::SetAudioRoomAttr
-			&& back.commands[1].text == "rt60"
-			&& back.commands[1].number == 1.9, "room rt60 attr");
-	}
-	// The unified spelling lowers identically (both -t and -s).
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "createNode -at audioRoom -p 0 -name \"U\" -t 0 4 0"
-			" -s 8 4 8;\n";
-		f.close();
-		smvk::tour::Doc u;
-		Check(smvk::tour::LoadTour(TempTour(), u, err, nullptr),
-			"room unified load");
-		Check(u.commands.size() == 1
-			&& u.commands[0].verb == smvk::tour::Verb::CreateAudioRoom
-			&& u.commands[0].vec.y == 4.0f
-			&& u.commands[0].svec.x == 8.0f, "room unified lowers");
-	}
-	// Validation rejects garbage: unknown attr, out-of-range rt60/wet,
-	// attachAudioRoom -ref without -owner, an unknown owner family.
-	{
-		auto reject = [&](const char* text, const char* name) {
-			std::ofstream f(TempTour(), std::ios::binary
-				| std::ios::trunc);
-			f << text;
-			f.close();
-			smvk::tour::Doc b;
-			Check(!smvk::tour::LoadTour(TempTour(), b, err, nullptr),
-				name);
-		};
-		reject("setAudioRoomAttr -n 1 -at tempo -v 2;\n",
-			"room bad attr rejected");
-		reject("setAudioRoomAttr -n 1 -at rt60 -v 12;\n",
-			"room rt60 out of range rejected");
-		reject("setAudioRoomAttr -n 1 -at wet -v 1.5;\n",
-			"room wet out of range rejected");
-		reject("attachAudioRoom -ref 0;\n",
-			"room attach without owner rejected");
-		reject("attachAudioRoom -ref 0 -owner camera;\n",
-			"room unknown owner family rejected");
-	}
-	// Replay: the created node + the payload row; the pose = translate
-	// + FULL-extent scale; a second replay runs clean.
-	{
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0);
-		std::vector<std::string> rw;
-		std::string rerr;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr),
-			"room replay ok");
-		Check(cluster->scene.hierarchy.size() == 2, "room replay node");
-		const tour::scene::AudioRoomRow* it =
-			tour::scene::FindAudioRoom(cluster->scene, 1);
-		Check(it != nullptr, "room replay link");
-		if (it != nullptr) {
-			const tour::scene::SceneAudioRoom& def = it->room;
-			Check(def.rt60 == 1.9f && def.wet == 0.32f
-				&& def.damping == 0.65f && def.priority == 5
-				&& def.enabled && def.insideFade == 0.30f,
-				"room replay payload");
-		}
-		// The room shape: translate(0,2,0) + scale(14,4,12) — the FULL
-		// extents ride the scale columns (half = 7,2,6 through
-		// spatial_volume.h).
-		const glm::vec3 t(cluster->scene.localTransform[1][3]);
-		const float sx = glm::length(glm::vec3(
-			cluster->scene.localTransform[1][0]));
-		Check(std::abs(t.y - 2.0f) < 1e-4f && std::abs(sx - 14.0f) < 1e-3f,
-			"room replay shape");
-		smvk::tour::Doc second = back;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, second, &rw,
-				&rerr),
-			"room replay second ok");
-	}
-	// The association verbs on a CREATED GIVOLUME: attach drops the
-	// row on the GI node (both associations coexist), remove drops the
-	// room and leaves the GI row intact.
-	{
-		smvk::tour::Doc gd;
-		smvk::tour::Command g{};
-		g.verb = smvk::tour::Verb::CreateGiVolume;
-		g.node = 0;
-		g.text = "GreatHall";
-		g.vec = glm::vec3(0.0f, 2.0f, 0.0f);
-		g.svec = glm::vec3(14.0f, 4.0f, 12.0f);
-		g.vec4 = glm::vec4(0.0f, 0.5f, 0.1f, 0.1f);
-		gd.commands.push_back(g);
-		smvk::tour::Command at{};
-		at.verb = smvk::tour::Verb::AttachAudioRoom;
-		at.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
-		at.text = "givolume";
-		gd.commands.push_back(at);
-		smvk::tour::Command st{};
-		st.verb = smvk::tour::Verb::SetAudioRoomAttr;
-		st.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
-		st.text = "rt60";
-		st.number = 2.4;
-		gd.commands.push_back(st);
-		{
-			auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-			cluster->SetOfflineMode(true);
-			addNode(cluster->scene, -1, 0);
-			std::vector<std::string> rw;
-			std::string rerr;
-			Check(smvk::tour::ApplyTourToCluster(*cluster, gd, &rw,
-					&rerr),
-				"room attach replay ok");
-			Check(FindGiVolume(cluster->scene, 1) != nullptr
-				&& tour::scene::FindAudioRoom(cluster->scene, 1)
-					!= nullptr,
-				"room attach coexists with givolume");
-			const tour::scene::AudioRoomRow* row =
-				tour::scene::FindAudioRoom(cluster->scene, 1);
-			Check(row && row->room.rt60 == 2.4f,
-				"room attach attr applies");
-		}
-		// Save + reload round-trips the -owner addressing.
-		Check(smvk::tour::SaveTour(TempTour(), gd, err), "room gi save");
-		{
-			std::ifstream in(TempTour(), std::ios::binary);
-			std::stringstream ss;
-			ss << in.rdbuf();
-			const std::string text = ss.str();
-			Check(text.find("attachAudioRoom -ref 0 -owner givolume")
-				!= std::string::npos, "room gi attach line");
-		}
-		// Remove: the room row drops, the GI row stays.
-		smvk::tour::Command rm{};
-		rm.verb = smvk::tour::Verb::RemoveAudioRoom;
-		rm.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
-		rm.text = "givolume";
-		gd.commands.push_back(rm);
-		{
-			auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-			cluster->SetOfflineMode(true);
-			addNode(cluster->scene, -1, 0);
-			std::vector<std::string> rw;
-			std::string rerr;
-			Check(smvk::tour::ApplyTourToCluster(*cluster, gd, &rw,
-					&rerr),
-				"room remove replay ok");
-			Check(FindGiVolume(cluster->scene, 1) != nullptr
-				&& tour::scene::FindAudioRoom(cluster->scene, 1)
-					== nullptr,
-				"room remove leaves the givolume");
-		}
-	}
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    // Hand-built doc: room-only create + -ref property attrs (the
+    // authored-room surface — payload via tabulated lines, the
+    // exportSettings pattern), plus the attach/remove association
+    // verbs on a created GIVOLUME (one placement, two associations).
+    smvk::tour::Doc doc;
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::CreateAudioRoom;
+    c.node = 0;
+    c.text = "Hall";
+    c.vec = glm::vec3(0.0f, 2.0f, 0.0f);
+    c.svec = glm::vec3(14.0f, 4.0f, 12.0f);
+    doc.commands.push_back(c);
+    const auto attr = [&](const char* name, double v) {
+        smvk::tour::Command a{};
+        a.verb = smvk::tour::Verb::SetAudioRoomAttr;
+        a.node = smvk::tour::kCreateAudioRoomRefBase | 0u;
+        a.text = name;
+        a.number = v;
+        doc.commands.push_back(a);
+    };
+    attr("rt60", 1.9);
+    attr("wet", 0.32);
+    attr("damping", 0.65);
+    attr("priority", 5);
+    std::string err;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "room save");
+    {
+        std::ifstream in(TempTour(), std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        const std::string text = ss.str();
+        Check(text.find("createNode -at audioRoom -p 0"
+                        " -name \"Hall\" -t 0 2 0 -s 14 4 12") != std::string::npos,
+              "room create line");
+        Check(text.find("\tsetAudioRoomAttr -ref 0 -at rt60 -v 1.9") != std::string::npos,
+              "room tabulated ref");
+    }
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "room load");
+    Check(back.commands.size() == 5, "room command count");
+    if (back.commands.size() == 5) {
+        const auto& cc = back.commands[0];
+        Check(cc.verb == smvk::tour::Verb::CreateAudioRoom && cc.text == "Hall" &&
+                  cc.vec.y == 2.0f && cc.svec.x == 14.0f && cc.svec.z == 12.0f,
+              "room create payload");
+        Check(back.commands[1].verb == smvk::tour::Verb::SetAudioRoomAttr &&
+                  back.commands[1].text == "rt60" && back.commands[1].number == 1.9,
+              "room rt60 attr");
+    }
+    // The unified spelling lowers identically (both -t and -s).
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "createNode -at audioRoom -p 0 -name \"U\" -t 0 4 0"
+             " -s 8 4 8;\n";
+        f.close();
+        smvk::tour::Doc u;
+        Check(smvk::tour::LoadTour(TempTour(), u, err, nullptr), "room unified load");
+        Check(u.commands.size() == 1 && u.commands[0].verb == smvk::tour::Verb::CreateAudioRoom &&
+                  u.commands[0].vec.y == 4.0f && u.commands[0].svec.x == 8.0f,
+              "room unified lowers");
+    }
+    // Validation rejects garbage: unknown attr, out-of-range rt60/wet,
+    // attachAudioRoom -ref without -owner, an unknown owner family.
+    {
+        auto reject = [&](const char* text, const char* name) {
+            std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+            f << text;
+            f.close();
+            smvk::tour::Doc b;
+            Check(!smvk::tour::LoadTour(TempTour(), b, err, nullptr), name);
+        };
+        reject("setAudioRoomAttr -n 1 -at tempo -v 2;\n", "room bad attr rejected");
+        reject("setAudioRoomAttr -n 1 -at rt60 -v 12;\n", "room rt60 out of range rejected");
+        reject("setAudioRoomAttr -n 1 -at wet -v 1.5;\n", "room wet out of range rejected");
+        reject("attachAudioRoom -ref 0;\n", "room attach without owner rejected");
+        reject("attachAudioRoom -ref 0 -owner camera;\n", "room unknown owner family rejected");
+    }
+    // Replay: the created node + the payload row; the pose = translate
+    // + FULL-extent scale; a second replay runs clean.
+    {
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0);
+        std::vector<std::string> rw;
+        std::string rerr;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr), "room replay ok");
+        Check(cluster->scene.hierarchy.size() == 2, "room replay node");
+        const tour::scene::AudioRoomRow* it = tour::scene::FindAudioRoom(cluster->scene, 1);
+        Check(it != nullptr, "room replay link");
+        if (it != nullptr) {
+            const tour::scene::SceneAudioRoom& def = it->room;
+            Check(def.rt60 == 1.9f && def.wet == 0.32f && def.damping == 0.65f &&
+                      def.priority == 5 && def.enabled && def.insideFade == 0.30f,
+                  "room replay payload");
+        }
+        // The room shape: translate(0,2,0) + scale(14,4,12) — the FULL
+        // extents ride the scale columns (half = 7,2,6 through
+        // spatial_volume.h).
+        const glm::vec3 t(cluster->scene.localTransform[1][3]);
+        const float sx = glm::length(glm::vec3(cluster->scene.localTransform[1][0]));
+        Check(std::abs(t.y - 2.0f) < 1e-4f && std::abs(sx - 14.0f) < 1e-3f, "room replay shape");
+        smvk::tour::Doc second = back;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, second, &rw, &rerr),
+              "room replay second ok");
+    }
+    // The association verbs on a CREATED GIVOLUME: attach drops the
+    // row on the GI node (both associations coexist), remove drops the
+    // room and leaves the GI row intact.
+    {
+        smvk::tour::Doc gd;
+        smvk::tour::Command g{};
+        g.verb = smvk::tour::Verb::CreateGiVolume;
+        g.node = 0;
+        g.text = "GreatHall";
+        g.vec = glm::vec3(0.0f, 2.0f, 0.0f);
+        g.svec = glm::vec3(14.0f, 4.0f, 12.0f);
+        g.vec4 = glm::vec4(0.0f, 0.5f, 0.1f, 0.1f);
+        gd.commands.push_back(g);
+        smvk::tour::Command at{};
+        at.verb = smvk::tour::Verb::AttachAudioRoom;
+        at.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+        at.text = "givolume";
+        gd.commands.push_back(at);
+        smvk::tour::Command st{};
+        st.verb = smvk::tour::Verb::SetAudioRoomAttr;
+        st.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+        st.text = "rt60";
+        st.number = 2.4;
+        gd.commands.push_back(st);
+        {
+            auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+            cluster->SetOfflineMode(true);
+            addNode(cluster->scene, -1, 0);
+            std::vector<std::string> rw;
+            std::string rerr;
+            Check(smvk::tour::ApplyTourToCluster(*cluster, gd, &rw, &rerr),
+                  "room attach replay ok");
+            Check(FindGiVolume(cluster->scene, 1) != nullptr &&
+                      tour::scene::FindAudioRoom(cluster->scene, 1) != nullptr,
+                  "room attach coexists with givolume");
+            const tour::scene::AudioRoomRow* row = tour::scene::FindAudioRoom(cluster->scene, 1);
+            Check(row && row->room.rt60 == 2.4f, "room attach attr applies");
+        }
+        // Save + reload round-trips the -owner addressing.
+        Check(smvk::tour::SaveTour(TempTour(), gd, err), "room gi save");
+        {
+            std::ifstream in(TempTour(), std::ios::binary);
+            std::stringstream ss;
+            ss << in.rdbuf();
+            const std::string text = ss.str();
+            Check(text.find("attachAudioRoom -ref 0 -owner givolume") != std::string::npos,
+                  "room gi attach line");
+        }
+        // Remove: the room row drops, the GI row stays.
+        smvk::tour::Command rm{};
+        rm.verb = smvk::tour::Verb::RemoveAudioRoom;
+        rm.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+        rm.text = "givolume";
+        gd.commands.push_back(rm);
+        {
+            auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+            cluster->SetOfflineMode(true);
+            addNode(cluster->scene, -1, 0);
+            std::vector<std::string> rw;
+            std::string rerr;
+            Check(smvk::tour::ApplyTourToCluster(*cluster, gd, &rw, &rerr),
+                  "room remove replay ok");
+            Check(FindGiVolume(cluster->scene, 1) != nullptr &&
+                      tour::scene::FindAudioRoom(cluster->scene, 1) == nullptr,
+                  "room remove leaves the givolume");
+        }
+    }
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
-void TestCamera() {	// Hand-built doc: full-lens create + -ref attrs (fov + position).
-	smvk::tour::Doc doc;
-	smvk::tour::Command c{};
-	c.verb = smvk::tour::Verb::CreateCamera;
-	c.node = 0;
-	c.text = "Shot_1";
-	c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
-	c.svec = glm::vec3(10.0f, 20.0f, 30.0f);
-	c.vec4 = glm::vec4(0.0f, 35.0f, 0.5f, 500.0f);
-	c.number = 10.0;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetCamAttr;
-	c.node = smvk::tour::kCreateCameraRefBase | 0u;
-	c.text = "fovY";
-	c.number = 40.0;
-	doc.commands.push_back(c);
-	c = smvk::tour::Command{};
-	c.verb = smvk::tour::Verb::SetCamAttr;
-	c.node = smvk::tour::kCreateCameraRefBase | 0u;
-	c.text = "position";
-	c.vec4 = glm::vec4(4.0f, 5.0f, 6.0f, 1.0f);
-	doc.commands.push_back(c);
-	std::string err;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "camera save");
-	{
-		std::ifstream in(TempTour(), std::ios::binary);
-		std::stringstream ss;
-		ss << in.rdbuf();
-		const std::string text = ss.str();
-		Check(text.find("createCamera -p 0 -name \"Shot_1\"") != std::string::npos,
-			"camera create line");
-		Check(text.find("\tsetCamAttr -ref 0 -at fovY") != std::string::npos,
-			"camera tabulated ref");
-	}
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "camera load");
-	Check(back.commands.size() == 3, "camera command count");
-	if (back.commands.size() == 3) {
-		const auto& cc = back.commands[0];
-		Check(cc.verb == smvk::tour::Verb::CreateCamera
-			&& cc.text == "Shot_1" && cc.vec.x == 1.0f
-			&& cc.svec.y == 20.0f && cc.vec4.y == 35.0f,
-			"camera create payload");
-		Check(back.commands[1].verb == smvk::tour::Verb::SetCamAttr
-			&& back.commands[1].text == "fovY"
-			&& back.commands[1].number == 40.0, "camera fov attr");
-		Check(back.commands[2].text == "position"
-			&& back.commands[2].vec4.x == 4.0f, "camera position attr");
-	}
-	// Unified spelling lowers identically.
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "createNode -at camera -p 0 -name \"U\" -t 0 1 2 0 0 0 1 35 0.5 500 8;\n";
-		f.close();
-		smvk::tour::Doc u;
-		Check(smvk::tour::LoadTour(TempTour(), u, err, nullptr), "camera unified load");
-		Check(u.commands.size() == 1
-			&& u.commands[0].verb == smvk::tour::Verb::CreateCamera
-			&& u.commands[0].vec4.x == 1.0f
-			&& u.commands[0].number == 8.0, "camera unified lowers");
-	}
-	// Lens validation rejects garbage.
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "createCamera -p 0 -name \"B\" -t 0 0 0 0 0 0 0 0 0.5 500 8;\n";
-		f.close();
-		smvk::tour::Doc b;
-		Check(!smvk::tour::LoadTour(TempTour(), b, err, nullptr), "camera bad lens rejected");
-		std::ofstream f2(TempTour(), std::ios::binary | std::ios::trunc);
-		f2 << "setCamAttr -n 1 -at zoom -v 2;\n";
-		f2.close();
-		smvk::tour::Doc b2;
-		Check(!smvk::tour::LoadTour(TempTour(), b2, err, nullptr), "camera bad attr rejected");
-	}
-	// Replay: node + pool def + link + -ref attr + position.
-	{
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0);
-		std::vector<std::string> rw;
-		std::string rerr;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr),
-			"camera replay ok");
-		Check(cluster->scene.hierarchy.size() == 2, "camera replay node");
-		const CameraRow* it = FindCamera(cluster->scene, 1);
-		Check(it != nullptr, "camera replay link");
-		if (it != nullptr) {
-			const smvk::ClusterCameraHandle h =
-				cluster->cameras.getHandle(it->camera);
-			const SceneCamera* def = cluster->cameras.get(h);
-			Check(def && def->fovYDeg == 40.0f
-				&& def->projection == SceneCamera::Projection::Perspective
-				&& def->name == "Shot_1", "camera replay lens+name");
-		}
-		// Position channel rebuilt the translate (rotation stayed 10/20/30).
-		const glm::vec3 t(cluster->scene.localTransform[1][3]);
-		Check(std::abs(t.x - 4.0f) < 1e-4f && std::abs(t.y - 5.0f) < 1e-4f
-			&& std::abs(t.z - 6.0f) < 1e-4f, "camera replay position");
-	}
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+void TestCamera() { // Hand-built doc: full-lens create + -ref attrs (fov + position).
+    smvk::tour::Doc doc;
+    smvk::tour::Command c{};
+    c.verb = smvk::tour::Verb::CreateCamera;
+    c.node = 0;
+    c.text = "Shot_1";
+    c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+    c.svec = glm::vec3(10.0f, 20.0f, 30.0f);
+    c.vec4 = glm::vec4(0.0f, 35.0f, 0.5f, 500.0f);
+    c.number = 10.0;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetCamAttr;
+    c.node = smvk::tour::kCreateCameraRefBase | 0u;
+    c.text = "fovY";
+    c.number = 40.0;
+    doc.commands.push_back(c);
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetCamAttr;
+    c.node = smvk::tour::kCreateCameraRefBase | 0u;
+    c.text = "position";
+    c.vec4 = glm::vec4(4.0f, 5.0f, 6.0f, 1.0f);
+    doc.commands.push_back(c);
+    std::string err;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "camera save");
+    {
+        std::ifstream in(TempTour(), std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        const std::string text = ss.str();
+        Check(text.find("createCamera -p 0 -name \"Shot_1\"") != std::string::npos,
+              "camera create line");
+        Check(text.find("\tsetCamAttr -ref 0 -at fovY") != std::string::npos,
+              "camera tabulated ref");
+    }
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "camera load");
+    Check(back.commands.size() == 3, "camera command count");
+    if (back.commands.size() == 3) {
+        const auto& cc = back.commands[0];
+        Check(cc.verb == smvk::tour::Verb::CreateCamera && cc.text == "Shot_1" &&
+                  cc.vec.x == 1.0f && cc.svec.y == 20.0f && cc.vec4.y == 35.0f,
+              "camera create payload");
+        Check(back.commands[1].verb == smvk::tour::Verb::SetCamAttr &&
+                  back.commands[1].text == "fovY" && back.commands[1].number == 40.0,
+              "camera fov attr");
+        Check(back.commands[2].text == "position" && back.commands[2].vec4.x == 4.0f,
+              "camera position attr");
+    }
+    // Unified spelling lowers identically.
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "createNode -at camera -p 0 -name \"U\" -t 0 1 2 0 0 0 1 35 0.5 500 8;\n";
+        f.close();
+        smvk::tour::Doc u;
+        Check(smvk::tour::LoadTour(TempTour(), u, err, nullptr), "camera unified load");
+        Check(u.commands.size() == 1 && u.commands[0].verb == smvk::tour::Verb::CreateCamera &&
+                  u.commands[0].vec4.x == 1.0f && u.commands[0].number == 8.0,
+              "camera unified lowers");
+    }
+    // Lens validation rejects garbage.
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "createCamera -p 0 -name \"B\" -t 0 0 0 0 0 0 0 0 0.5 500 8;\n";
+        f.close();
+        smvk::tour::Doc b;
+        Check(!smvk::tour::LoadTour(TempTour(), b, err, nullptr), "camera bad lens rejected");
+        std::ofstream f2(TempTour(), std::ios::binary | std::ios::trunc);
+        f2 << "setCamAttr -n 1 -at zoom -v 2;\n";
+        f2.close();
+        smvk::tour::Doc b2;
+        Check(!smvk::tour::LoadTour(TempTour(), b2, err, nullptr), "camera bad attr rejected");
+    }
+    // Replay: node + pool def + link + -ref attr + position.
+    {
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0);
+        std::vector<std::string> rw;
+        std::string rerr;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr), "camera replay ok");
+        Check(cluster->scene.hierarchy.size() == 2, "camera replay node");
+        const CameraRow* it = FindCamera(cluster->scene, 1);
+        Check(it != nullptr, "camera replay link");
+        if (it != nullptr) {
+            const smvk::ClusterCameraHandle h = cluster->cameras.getHandle(it->camera);
+            const SceneCamera* def = cluster->cameras.get(h);
+            Check(def && def->fovYDeg == 40.0f &&
+                      def->projection == SceneCamera::Projection::Perspective &&
+                      def->name == "Shot_1",
+                  "camera replay lens+name");
+        }
+        // Position channel rebuilt the translate (rotation stayed 10/20/30).
+        const glm::vec3 t(cluster->scene.localTransform[1][3]);
+        Check(std::abs(t.x - 4.0f) < 1e-4f && std::abs(t.y - 5.0f) < 1e-4f &&
+                  std::abs(t.z - 6.0f) < 1e-4f,
+              "camera replay position");
+    }
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 // Artifact-cache consultation through the importer's texture path: a
@@ -3140,123 +3026,119 @@ void TestCamera() {	// Hand-built doc: full-lens create + -ref attrs (fov + posi
 // on miss, serves it byte-identically on the next import (no second
 // Put), and a corrupt cached payload reprocesses (never trusted).
 void TestTextureCacheConsult() {
-	namespace fs = std::filesystem;
-	const auto dir = fs::temp_directory_path() / "tourmaline_texcachetest";
-	std::error_code ec;
-	fs::remove_all(dir, ec);
-	fs::create_directories(dir, ec);
-	// Hand-written minimal 1x1 32-bit uncompressed TGA (stb-readable).
-	{
-		const unsigned char tga[22] = {
-			0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			1, 0, 1, 0, 32, 0, // 1x1, 32bpp, bottom-up
-			0x00, 0x00, 0xFF, 0xFF // BGRA: opaque blue
-		};
-		std::ofstream f(dir / "tex.tga", std::ios::binary);
-		f.write(reinterpret_cast<const char*>(tga), sizeof(tga));
-	}
-	// glTF: 1 triangle (36 zero bytes via data-URI buffer), material 0
-	// with a baseColorTexture -> texture 0 -> image tex.tga.
-	// 36 zero bytes -> 48 base64 chars (12 groups of "AAAA"); built
-	// programmatically so the count cannot drift.
-	std::string b64;
-	for (int i = 0; i < 12; ++i)
-		b64 += "AAAA";
-	const std::string gltfText =
-		"{\"asset\":{\"version\":\"2.0\"},"
-		"\"scenes\":[{\"nodes\":[0]}],"
-		"\"nodes\":[{\"mesh\":0}],"
-		"\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
-		"\"material\":0}]}],"
-		"\"materials\":[{\"pbrMetallicRoughness\":"
-		"{\"baseColorTexture\":{\"index\":0}}}],"
-		"\"textures\":[{\"source\":0}],"
-		"\"images\":[{\"uri\":\"tex.tga\"}],"
-		"\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
-		"\"count\":3,\"type\":\"VEC3\",\"max\":[0,0,0],\"min\":[0,0,0]}],"
-		"\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
-		"\"buffers\":[{\"byteLength\":36,"
-		"\"uri\":\"data:application/octet-stream;base64,"
-		+ b64 + "\"}]}";
-	const auto gltfPath = dir / "tex.gltf";
-	{
-		std::ofstream f(gltfPath, std::ios::binary | std::ios::trunc);
-		f << gltfText;
-	}
-	// Fake cache: records every call; Get's payload is injectable.
-	struct FakeCache final : GltfArtifactCache {
-		int getCalls = 0;
-		int putCalls = 0;
-		std::string lastHash;
-		std::string lastMeta;
-		std::vector<uint8_t> served; // empty = miss
-		bool Get(const std::string&, const std::string& uri,
-			std::vector<uint8_t>& out) override {
-			(void)uri;
-			++getCalls;
-			if (served.empty())
-				return false;
-			out = served;
-			return true;
-		}
-		bool Put(const std::string&, const std::string&,
-			const void* payload, size_t payloadSize,
-			const std::string& sourceHash,
-			const std::string& meta) override {
-			++putCalls;
-			lastHash = sourceHash;
-			lastMeta = meta;
-			const auto* p = static_cast<const uint8_t*>(payload);
-			served.assign(p, p + payloadSize);
-			return true;
-		}
-	};
-	auto importWith = [&](FakeCache& cache) -> bool {
-		tinygltf::Model model;
-		if (!LoadModelFromSourceFile(model, gltfPath.string().c_str()))
-			return false;
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0);
-		GltfToSceneImporter importer(*cluster, model, gltfPath);
-		importer.setTextureSource(
-			std::make_shared<HostTextureSource>(dir));
-		importer.setArtifactCache(&cache);
-		importer.import(0);
-		return cluster->scene.tables.meshes.size() == 1
-			&& cluster->textures.numObjects() >= 0;
-	};
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / "tourmaline_texcachetest";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    // Hand-written minimal 1x1 32-bit uncompressed TGA (stb-readable).
+    {
+        const unsigned char tga[22] = {
+            0,    0,    2,    0,   0, 0, 0, 0,  0,
+            0,    0,    0,    1,   0, 1, 0, 32, 0, // 1x1, 32bpp, bottom-up
+            0x00, 0x00, 0xFF, 0xFF                 // BGRA: opaque blue
+        };
+        std::ofstream f(dir / "tex.tga", std::ios::binary);
+        f.write(reinterpret_cast<const char*>(tga), sizeof(tga));
+    }
+    // glTF: 1 triangle (36 zero bytes via data-URI buffer), material 0
+    // with a baseColorTexture -> texture 0 -> image tex.tga.
+    // 36 zero bytes -> 48 base64 chars (12 groups of "AAAA"); built
+    // programmatically so the count cannot drift.
+    std::string b64;
+    for (int i = 0; i < 12; ++i)
+        b64 += "AAAA";
+    const std::string gltfText =
+        "{\"asset\":{\"version\":\"2.0\"},"
+        "\"scenes\":[{\"nodes\":[0]}],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+        "\"material\":0}]}],"
+        "\"materials\":[{\"pbrMetallicRoughness\":"
+        "{\"baseColorTexture\":{\"index\":0}}}],"
+        "\"textures\":[{\"source\":0}],"
+        "\"images\":[{\"uri\":\"tex.tga\"}],"
+        "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
+        "\"count\":3,\"type\":\"VEC3\",\"max\":[0,0,0],\"min\":[0,0,0]}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
+        "\"buffers\":[{\"byteLength\":36,"
+        "\"uri\":\"data:application/octet-stream;base64," +
+        b64 + "\"}]}";
+    const auto gltfPath = dir / "tex.gltf";
+    {
+        std::ofstream f(gltfPath, std::ios::binary | std::ios::trunc);
+        f << gltfText;
+    }
+    // Fake cache: records every call; Get's payload is injectable.
+    struct FakeCache final : GltfArtifactCache {
+        int getCalls = 0;
+        int putCalls = 0;
+        std::string lastHash;
+        std::string lastMeta;
+        std::vector<uint8_t> served; // empty = miss
+        bool Get(const std::string&, const std::string& uri, std::vector<uint8_t>& out) override {
+            (void)uri;
+            ++getCalls;
+            if (served.empty())
+                return false;
+            out = served;
+            return true;
+        }
+        bool Put(const std::string&,
+                 const std::string&,
+                 const void* payload,
+                 size_t payloadSize,
+                 const std::string& sourceHash,
+                 const std::string& meta) override {
+            ++putCalls;
+            lastHash = sourceHash;
+            lastMeta = meta;
+            const auto* p = static_cast<const uint8_t*>(payload);
+            served.assign(p, p + payloadSize);
+            return true;
+        }
+    };
+    auto importWith = [&](FakeCache& cache) -> bool {
+        tinygltf::Model model;
+        if (!LoadModelFromSourceFile(model, gltfPath.string().c_str()))
+            return false;
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0);
+        GltfToSceneImporter importer(*cluster, model, gltfPath);
+        importer.setTextureSource(std::make_shared<HostTextureSource>(dir));
+        importer.setArtifactCache(&cache);
+        importer.import(0);
+        return cluster->scene.tables.meshes.size() == 1 && cluster->textures.numObjects() >= 0;
+    };
 
-	FakeCache cache;
-	Check(importWith(cache), "texcache import ok");
-	Check(cache.getCalls == 1, "texcache consulted once");
-	Check(cache.putCalls == 1, "texcache staged once on miss");
-	Check(!cache.lastHash.empty() && cache.lastHash.size() == 16,
-		"texcache hash key");
-	// The staged payload is a real KTX2 (the transcode output).
-	Check(cache.served.size() >= 12 && cache.served[0] == 0xAB
-		&& cache.served[4] == ' ' && cache.served[5] == '2',
-		"texcache payload is ktx2");
+    FakeCache cache;
+    Check(importWith(cache), "texcache import ok");
+    Check(cache.getCalls == 1, "texcache consulted once");
+    Check(cache.putCalls == 1, "texcache staged once on miss");
+    Check(!cache.lastHash.empty() && cache.lastHash.size() == 16, "texcache hash key");
+    // The staged payload is a real KTX2 (the transcode output).
+    Check(cache.served.size() >= 12 && cache.served[0] == 0xAB && cache.served[4] == ' ' &&
+              cache.served[5] == '2',
+          "texcache payload is ktx2");
 
-	// Second import with the served payload: HIT — no transcode, no
-	// Put. (The first import wrote a .ktx2 sidecar next to the source;
-	// remove it so the store consult is actually reached.)
-	fs::remove(dir / "tex.ktx2", ec);
-	FakeCache hit;
-	hit.served = cache.served;
-	Check(importWith(hit), "texcache hit import ok");
-	Check(hit.getCalls == 1 && hit.putCalls == 0,
-		"texcache hit serves without re-staging");
+    // Second import with the served payload: HIT — no transcode, no
+    // Put. (The first import wrote a .ktx2 sidecar next to the source;
+    // remove it so the store consult is actually reached.)
+    fs::remove(dir / "tex.ktx2", ec);
+    FakeCache hit;
+    hit.served = cache.served;
+    Check(importWith(hit), "texcache hit import ok");
+    Check(hit.getCalls == 1 && hit.putCalls == 0, "texcache hit serves without re-staging");
 
-	// Corrupt cached payload: never trusted — reprocess + re-stage.
-	fs::remove(dir / "tex.ktx2", ec);
-	FakeCache corrupt;
-	corrupt.served = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
-	Check(importWith(corrupt), "texcache corrupt import ok");
-	Check(corrupt.putCalls == 1,
-		"texcache corrupt reprocesses + restages");
+    // Corrupt cached payload: never trusted — reprocess + re-stage.
+    fs::remove(dir / "tex.ktx2", ec);
+    FakeCache corrupt;
+    corrupt.served = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+    Check(importWith(corrupt), "texcache corrupt import ok");
+    Check(corrupt.putCalls == 1, "texcache corrupt reprocesses + restages");
 
-	fs::remove_all(dir, ec);
+    fs::remove_all(dir, ec);
 }
 
 } // namespace
@@ -3266,117 +3148,134 @@ void TestTextureCacheConsult() {
 // keeps binding through its GUID even when the recorded -source path is
 // stale; a miss falls back to the recorded path exactly as before).
 void TestReferenceGuid() {
-	namespace fs = std::filesystem;
-	const fs::path dir = fs::temp_directory_path() / "tourmaline_refguid";
-	std::error_code ec;
-	fs::create_directories(dir, ec);
-	// The referenced asset lives at a NEW path; the tour still records
-	// the OLD one (a rename that happened outside the editor). A mesh
-	// blob (the sourced-asset semantic: `source -n ... -p ...`).
-	const fs::path gltf = dir / "moved.gltf";
-	{
-		std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
-		f << "{\"asset\":{\"version\":\"2.0\"},"
-			"\"scene\":0,"
-			"\"scenes\":[{\"nodes\":[0]}],"
-			"\"nodes\":[{\"name\":\"Solo\",\"mesh\":0}],"
-			"\"meshes\":[{\"primitives\":[{\"attributes\":"
-			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
-			"\"accessors\":["
-			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
-			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
-			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
-			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
-			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
-			"\"bufferViews\":["
-			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
-			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
-			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
-			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
-			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
-			"\"byteLength\":78}]}";
-	}
-	{
-		smvk::assets::AssetManifest man;
-		std::string derr;
-		smvk::assets::DeriveConfig cfg{};
-		Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, cfg, man,
-				nullptr, &derr),
-			"refguid derive artifact");
-	}
-	const std::string kGuid = "0123456789abcdef0123456789abcdef";
-	// Round-trip: emit + parse keep the guid beside the source.
-	smvk::tour::Doc doc;
-	smvk::tour::ReferenceCmd r{};
-	r.parent = 0;
-	r.asset = true; // a sourced mesh blob (the `source` verb)
-	r.source = "old_name.geometry"; // stale (the file was renamed)
-	r.guid = kGuid;
-	r.name = "solo";
-	doc.references.push_back(r);
-	const std::string tourPath = (dir / "def.tour").string();
-	std::string err;
-	Check(smvk::tour::SaveTour(tourPath, doc, err), "refguid save");
-	{
-		std::ifstream f(tourPath, std::ios::binary);
-		std::stringstream ss;
-		ss << f.rdbuf();
-		const std::string text = ss.str();
-		Check(text.find("-guid " + kGuid) != std::string::npos,
-			"refguid emitted");
-	}
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(tourPath, back, err, &warns),
-		"refguid load");
-	Check(back.references.size() == 1
-		&& back.references[0].guid == kGuid
-		&& back.references[0].asset
-		&& back.references[0].source == "old_name.geometry",
-		"refguid roundtrip");
-	// Resolver: GUID -> the moved file's path.
-	struct FakeResolver final : public GltfGuidResolver {
-		std::string movedTo;
-		std::string PathForGuid(const std::string& guid) override {
-			if (guid == "0123456789abcdef0123456789abcdef")
-				return movedTo;
-			return {}; // unknown: caller falls back to -source
-		}
-	};
-	FakeResolver resolver;
-	resolver.movedTo = fs::path(gltf).replace_extension(".geometry")
-		.generic_string();
-	// Identity-first: stale -source + GUID resolves to the moved file.
-	{
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0);
-		std::vector<int> ph;
-		std::vector<std::string> issues;
-		const size_t applied = ApplySceneReferences(*cluster, back,
-			dir.generic_string(), nullptr, nullptr, nullptr,
-			smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph,
-			&issues, nullptr, true, nullptr, nullptr, &resolver);
-		Check(applied == 1, "refguid identity-first bind");
-	}
-	// Resolver miss ("" = unknown GUID): falls back to the recorded
-	// path — which is stale here, so the reference skips with an issue
-	// (never a crash, never wrong geometry).
-	{
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0);
-		std::vector<int> ph;
-		std::vector<std::string> issues;
-		const size_t applied = ApplySceneReferences(*cluster, back,
-			dir.generic_string(), nullptr, nullptr, nullptr,
-			smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph,
-			&issues, nullptr, true, nullptr, nullptr, nullptr);
-		Check(applied == 0 && !issues.empty(),
-			"refguid miss falls back + skips cleanly");
-	}
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "tourmaline_refguid";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    // The referenced asset lives at a NEW path; the tour still records
+    // the OLD one (a rename that happened outside the editor). A mesh
+    // blob (the sourced-asset semantic: `source -n ... -p ...`).
+    const fs::path gltf = dir / "moved.gltf";
+    {
+        std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
+        f << "{\"asset\":{\"version\":\"2.0\"},"
+             "\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],"
+             "\"nodes\":[{\"name\":\"Solo\",\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":"
+             "{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+             "{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+             "\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+             "{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+             "\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+             "\"bufferViews\":["
+             "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+             "\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+             "base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+             "AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+             "\"byteLength\":78}]}";
+    }
+    {
+        smvk::assets::AssetManifest man;
+        std::string derr;
+        smvk::assets::DeriveConfig cfg{};
+        Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, cfg, man, nullptr, &derr),
+              "refguid derive artifact");
+    }
+    const std::string kGuid = "0123456789abcdef0123456789abcdef";
+    // Round-trip: emit + parse keep the guid beside the source.
+    smvk::tour::Doc doc;
+    smvk::tour::ReferenceCmd r{};
+    r.parent = 0;
+    r.asset = true;                 // a sourced mesh blob (the `source` verb)
+    r.source = "old_name.geometry"; // stale (the file was renamed)
+    r.guid = kGuid;
+    r.name = "solo";
+    doc.references.push_back(r);
+    const std::string tourPath = (dir / "def.tour").string();
+    std::string err;
+    Check(smvk::tour::SaveTour(tourPath, doc, err), "refguid save");
+    {
+        std::ifstream f(tourPath, std::ios::binary);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        const std::string text = ss.str();
+        Check(text.find("-guid " + kGuid) != std::string::npos, "refguid emitted");
+    }
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(tourPath, back, err, &warns), "refguid load");
+    Check(back.references.size() == 1 && back.references[0].guid == kGuid &&
+              back.references[0].asset && back.references[0].source == "old_name.geometry",
+          "refguid roundtrip");
+    // Resolver: GUID -> the moved file's path.
+    struct FakeResolver final : public GltfGuidResolver {
+        std::string movedTo;
+        std::string PathForGuid(const std::string& guid) override {
+            if (guid == "0123456789abcdef0123456789abcdef")
+                return movedTo;
+            return {}; // unknown: caller falls back to -source
+        }
+    };
+    FakeResolver resolver;
+    resolver.movedTo = fs::path(gltf).replace_extension(".geometry").generic_string();
+    // Identity-first: stale -source + GUID resolves to the moved file.
+    {
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0);
+        std::vector<int> ph;
+        std::vector<std::string> issues;
+        const size_t applied = ApplySceneReferences(*cluster,
+                                                    back,
+                                                    dir.generic_string(),
+                                                    nullptr,
+                                                    nullptr,
+                                                    nullptr,
+                                                    smvk::MeshOptConfig{},
+                                                    smvk::MeshletConfig{},
+                                                    0,
+                                                    &ph,
+                                                    &issues,
+                                                    nullptr,
+                                                    true,
+                                                    nullptr,
+                                                    nullptr,
+                                                    &resolver);
+        Check(applied == 1, "refguid identity-first bind");
+    }
+    // Resolver miss ("" = unknown GUID): falls back to the recorded
+    // path — which is stale here, so the reference skips with an issue
+    // (never a crash, never wrong geometry).
+    {
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0);
+        std::vector<int> ph;
+        std::vector<std::string> issues;
+        const size_t applied = ApplySceneReferences(*cluster,
+                                                    back,
+                                                    dir.generic_string(),
+                                                    nullptr,
+                                                    nullptr,
+                                                    nullptr,
+                                                    smvk::MeshOptConfig{},
+                                                    smvk::MeshletConfig{},
+                                                    0,
+                                                    &ph,
+                                                    &issues,
+                                                    nullptr,
+                                                    true,
+                                                    nullptr,
+                                                    nullptr,
+                                                    nullptr);
+        Check(applied == 0 && !issues.empty(), "refguid miss falls back + skips cleanly");
+    }
 }
 
 // Material-asset pool imports: round-trip as ordered materialAsset lines
@@ -3387,60 +3286,55 @@ void TestReferenceGuid() {
 // 26-entry pool, and SerializeCluster failed with "scene references
 // unknown material pool index 26").
 void TestMaterialAssets() {
-	smvk::tour::Doc doc;
-	smvk::tour::MaterialAssetCmd def{};
-	def.editorDefault = true;
-	def.name = "default";
-	doc.materialAssets.push_back(def);
-	smvk::tour::MaterialAssetCmd asset{};
-	asset.path = "content/models/Sponza/mat0_brick.material";
-	asset.name = "Brick \"Rough\"";
-	doc.materialAssets.push_back(asset);
-	asset = smvk::tour::MaterialAssetCmd{};
-	asset.path = "F:/projects/game/content/models/Sponza/mat1_leaf.material";
-	asset.name = "leaf";
-	doc.materialAssets.push_back(asset);
-	std::string err;
-	Check(smvk::tour::SaveTour(TempTour(), doc, err), "materialasset save");
-	smvk::tour::Doc back;
-	std::vector<std::string> warns;
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
-		"materialasset load");
-	Check(back.materialAssets.size() == 3, "materialasset count + order");
-	if (back.materialAssets.size() == 3) {
-		Check(back.materialAssets[0].editorDefault
-			&& back.materialAssets[0].path.empty()
-			&& back.materialAssets[0].name == "default",
-			"materialasset default seed");
-		Check(!back.materialAssets[1].editorDefault
-			&& back.materialAssets[1].path
-				== "content/models/Sponza/mat0_brick.material"
-			&& back.materialAssets[1].name == "Brick \"Rough\"",
-			"materialasset project-relative record");
-		Check(!back.materialAssets[2].editorDefault
-			&& back.materialAssets[2].path
-				== "F:/projects/game/content/models/Sponza/mat1_leaf.material",
-			"materialasset absolute record");
-	}
-	// Hand-written forms: bare -default; (no space), missing -path/-default
-	// warns + skips, a lone -path record parses (name optional).
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "materialAsset -default;\n"
-			"materialAsset -name \"no path\";\n"
-			"materialAsset -path \"content/x.material\";\n";
-	}
-	back = smvk::tour::Doc{};
-	warns.clear();
-	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
-		"materialasset hand-written load");
-	Check(back.materialAssets.size() == 2
-		&& back.materialAssets[0].editorDefault
-		&& !back.materialAssets[1].editorDefault
-		&& back.materialAssets[1].path == "content/x.material"
-		&& back.materialAssets[1].name.empty(),
-		"materialasset bare -default + path-only record");
-	Check(!warns.empty(), "materialasset missing path warns");
+    smvk::tour::Doc doc;
+    smvk::tour::MaterialAssetCmd def{};
+    def.editorDefault = true;
+    def.name = "default";
+    doc.materialAssets.push_back(def);
+    smvk::tour::MaterialAssetCmd asset{};
+    asset.path = "content/models/Sponza/mat0_brick.material";
+    asset.name = "Brick \"Rough\"";
+    doc.materialAssets.push_back(asset);
+    asset = smvk::tour::MaterialAssetCmd{};
+    asset.path = "F:/projects/game/content/models/Sponza/mat1_leaf.material";
+    asset.name = "leaf";
+    doc.materialAssets.push_back(asset);
+    std::string err;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "materialasset save");
+    smvk::tour::Doc back;
+    std::vector<std::string> warns;
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "materialasset load");
+    Check(back.materialAssets.size() == 3, "materialasset count + order");
+    if (back.materialAssets.size() == 3) {
+        Check(back.materialAssets[0].editorDefault && back.materialAssets[0].path.empty() &&
+                  back.materialAssets[0].name == "default",
+              "materialasset default seed");
+        Check(!back.materialAssets[1].editorDefault &&
+                  back.materialAssets[1].path == "content/models/Sponza/mat0_brick.material" &&
+                  back.materialAssets[1].name == "Brick \"Rough\"",
+              "materialasset project-relative record");
+        Check(!back.materialAssets[2].editorDefault &&
+                  back.materialAssets[2].path ==
+                      "F:/projects/game/content/models/Sponza/mat1_leaf.material",
+              "materialasset absolute record");
+    }
+    // Hand-written forms: bare -default; (no space), missing -path/-default
+    // warns + skips, a lone -path record parses (name optional).
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "materialAsset -default;\n"
+             "materialAsset -name \"no path\";\n"
+             "materialAsset -path \"content/x.material\";\n";
+    }
+    back = smvk::tour::Doc{};
+    warns.clear();
+    Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "materialasset hand-written load");
+    Check(back.materialAssets.size() == 2 && back.materialAssets[0].editorDefault &&
+              !back.materialAssets[1].editorDefault &&
+              back.materialAssets[1].path == "content/x.material" &&
+              back.materialAssets[1].name.empty(),
+          "materialasset bare -default + path-only record");
+    Check(!warns.empty(), "materialasset missing path warns");
 }
 
 // ---- .texture assets (import settings + source ref) -----------------------
@@ -3448,130 +3342,124 @@ void TestMaterialAssets() {
 // (BCn payload, clamped chain) + the source probes (read-only inspector
 // facts). The LDR source is a hand-rolled 16x16 TGA (no fixture files).
 void TestTextureAssets() {
-	smvk::assets::TextureAsset t{};
-	t.guid = "3f3458f33359f0a4822a6ad788d7c3a0";
-	t.name = "brick";
-	t.source = "brick.png";
-	t.colorspace = 1; // linear (data map)
-	t.format = int(KtxEncodeFormat::Bc5);
-	t.mipLevels = 3;
-	t.wrap = 1;      // clamp
-	t.filter = 1;    // nearest
-	std::string err;
-	const std::string text =
-		"# test\n"
-		"guid=3f3458f33359f0a4822a6ad788d7c3a0\n"
-		"name=brick\n"
-		"source=brick.png\n"
-		"colorspace=linear\n"
-		"format=bc5\n"
-		"mipLevels=3\n"
-		"wrap=clamp\n"
-		"filter=nearest\n";
-	smvk::assets::TextureAsset back{};
-	Check(smvk::assets::LoadTextureAssetText(text, back, err),
-		"textureasset parse");
-	Check(back.guid == t.guid && back.source == t.source
-		&& back.colorspace == t.colorspace && back.format == t.format
-		&& back.mipLevels == t.mipLevels && back.wrap == t.wrap
-		&& back.filter == t.filter,
-		"textureasset fields round-trip");
-	Check(!smvk::assets::LoadTextureAssetText(
-			"guid=x\nsource=a.png\nformat=bc2\n", back, err),
-		"textureasset unknown format fails");
-	Check(!smvk::assets::LoadTextureAssetText(
-			"guid=x\n", back, err),
-		"textureasset missing source fails");
-	{
-		const std::filesystem::path p =
-			std::filesystem::temp_directory_path()
-			/ "tourmaline_test.texture";
-		Check(smvk::assets::SaveTextureAsset(p, t, err),
-			"textureasset save");
-		smvk::assets::TextureAsset f{};
-		Check(smvk::assets::LoadTextureAsset(p, f, err)
-			&& f.format == int(KtxEncodeFormat::Bc5) && f.mipLevels == 3
-			&& f.wrap == 1 && f.filter == 1 && f.colorspace == 1,
-			"textureasset file round-trip");
-	}
-	{
-		KtxEncodeFormat f = KtxEncodeFormat::Rgba8;
-		Check(KtxEncodeFormatFromName("bc7", f)
-			&& f == KtxEncodeFormat::Bc7 && KtxEncodeFormatIsBcn(f)
-			&& !KtxEncodeFormatIsBcn(KtxEncodeFormat::Rgba8),
-			"ktxencodeformat name round-trip");
-		Check(KtxEncodeFormatVkFormat(KtxEncodeFormat::Bc7, true) == 146
-			&& KtxEncodeFormatVkFormat(KtxEncodeFormat::Bc7, false) == 145
-			&& KtxEncodeFormatVkFormat(KtxEncodeFormat::Bc3, true) == 138
-			&& KtxEncodeFormatVkFormat(KtxEncodeFormat::Rgba8, false) == 37
-			&& KtxEncodeFormatVkFormat(KtxEncodeFormat::Rgba8, true) == 43,
-			"ktxencodeformat vkformats");
-	}
-	// LDR -> KTX2 with the settings baked: BC7 sRGB, chain clamped to 3
-	// (a 16x16 full chain is 5 levels). The hand-rolled TGA is an
-	// uncompressed 32-bit top-left raster (no CRC/container to fake).
-	{
-		std::vector<uint8_t> tga;
-		const uint16_t w = 16, h = 16;
-		auto put8 = [&](uint8_t v) { tga.push_back(v); };
-		auto put16 = [&](uint16_t v) {
-			put8(uint8_t(v & 0xFF));
-			put8(uint8_t(v >> 8));
-		};
-		put8(0); put8(0); put8(2); // id, no colormap, uncompressed truecolor
-		put16(0); put16(0); put8(0);
-		put16(0); put16(0); // origin
-		put16(w); put16(h);
-		put8(32);          // 32 bpp (BGRA)
-		put8(0x28);         // 8 alpha bits + top-left origin
-		for (uint32_t i = 0; i < uint32_t(w) * h; ++i) {
-			put8(uint8_t((i * 7) & 0xFF));
-			put8(uint8_t((i * 13) & 0xFF));
-			put8(uint8_t((i * 29) & 0xFF));
-			put8(255);
-		}
-		TextureSourceInfo info{};
-		Check(ProbeTextureSource(tga.data(), tga.size(), info)
-			&& !info.isKtx2 && info.width == 16 && info.height == 16,
-			"textureasset probe ldr tga");
-		std::vector<uint8_t> ktx;
-		std::string terr;
-		Check(TranscodeImageToKtx2(tga.data(), tga.size(), true, "test",
-				ktx, terr, KtxEncodeFormat::Bc7, 3),
-			"textureasset transcode bc7");
-		ktxTexture2* tex = nullptr;
-		const bool parsed = ktxTexture2_CreateFromMemory(
-			ktx.data(), ktx_size_t(ktx.size()),
-			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &tex) == KTX_SUCCESS;
-		Check(parsed && tex, "textureasset transcode output parses");
-		if (parsed && tex) {
-			Check(tex->vkFormat == 146, "textureasset bc7 srgb vkformat");
-			Check(tex->numLevels == 3, "textureasset chain clamped to 3");
-			Check(ktxTexture2_NeedsTranscoding(tex) == KTX_FALSE,
-				"textureasset payload gpu-ready (no transcode)");
-			ktxTexture2_Destroy(tex);
-		}
-		else if (tex)
-			ktxTexture2_Destroy(tex);
-		TextureSourceInfo kInfo{};
-		Check(ProbeTextureSource(ktx.data(), ktx.size(), kInfo)
-			&& kInfo.isKtx2 && kInfo.width == 16 && kInfo.height == 16
-			&& kInfo.mipLevels == 3 && kInfo.vkFormat == 146
-			&& kInfo.srgb && kInfo.bcn && !kInfo.basis,
-			"textureasset probe ktx2 header facts");
-		// Uncompressed default (no clamp): full chain, RGBA8 sRGB.
-		{
-			std::vector<uint8_t> rgba;
-			Check(TranscodeImageToKtx2(tga.data(), tga.size(), true,
-					"test", rgba, terr),
-				"textureasset transcode rgba8");
-			TextureSourceInfo rInfo{};
-			Check(ProbeTextureSource(rgba.data(), rgba.size(), rInfo)
-				&& rInfo.isKtx2 && rInfo.vkFormat == 43
-				&& rInfo.mipLevels == 5 && !rInfo.bcn && !rInfo.basis,
-				"textureasset rgba8 full chain");
-		}
-	}
+    smvk::assets::TextureAsset t{};
+    t.guid = "3f3458f33359f0a4822a6ad788d7c3a0";
+    t.name = "brick";
+    t.source = "brick.png";
+    t.colorspace = 1; // linear (data map)
+    t.format = int(KtxEncodeFormat::Bc5);
+    t.mipLevels = 3;
+    t.wrap = 1;   // clamp
+    t.filter = 1; // nearest
+    std::string err;
+    const std::string text = "# test\n"
+                             "guid=3f3458f33359f0a4822a6ad788d7c3a0\n"
+                             "name=brick\n"
+                             "source=brick.png\n"
+                             "colorspace=linear\n"
+                             "format=bc5\n"
+                             "mipLevels=3\n"
+                             "wrap=clamp\n"
+                             "filter=nearest\n";
+    smvk::assets::TextureAsset back{};
+    Check(smvk::assets::LoadTextureAssetText(text, back, err), "textureasset parse");
+    Check(back.guid == t.guid && back.source == t.source && back.colorspace == t.colorspace &&
+              back.format == t.format && back.mipLevels == t.mipLevels && back.wrap == t.wrap &&
+              back.filter == t.filter,
+          "textureasset fields round-trip");
+    Check(!smvk::assets::LoadTextureAssetText("guid=x\nsource=a.png\nformat=bc2\n", back, err),
+          "textureasset unknown format fails");
+    Check(!smvk::assets::LoadTextureAssetText("guid=x\n", back, err),
+          "textureasset missing source fails");
+    {
+        const std::filesystem::path p =
+            std::filesystem::temp_directory_path() / "tourmaline_test.texture";
+        Check(smvk::assets::SaveTextureAsset(p, t, err), "textureasset save");
+        smvk::assets::TextureAsset f{};
+        Check(smvk::assets::LoadTextureAsset(p, f, err) && f.format == int(KtxEncodeFormat::Bc5) &&
+                  f.mipLevels == 3 && f.wrap == 1 && f.filter == 1 && f.colorspace == 1,
+              "textureasset file round-trip");
+    }
+    {
+        KtxEncodeFormat f = KtxEncodeFormat::Rgba8;
+        Check(KtxEncodeFormatFromName("bc7", f) && f == KtxEncodeFormat::Bc7 &&
+                  KtxEncodeFormatIsBcn(f) && !KtxEncodeFormatIsBcn(KtxEncodeFormat::Rgba8),
+              "ktxencodeformat name round-trip");
+        Check(KtxEncodeFormatVkFormat(KtxEncodeFormat::Bc7, true) == 146 &&
+                  KtxEncodeFormatVkFormat(KtxEncodeFormat::Bc7, false) == 145 &&
+                  KtxEncodeFormatVkFormat(KtxEncodeFormat::Bc3, true) == 138 &&
+                  KtxEncodeFormatVkFormat(KtxEncodeFormat::Rgba8, false) == 37 &&
+                  KtxEncodeFormatVkFormat(KtxEncodeFormat::Rgba8, true) == 43,
+              "ktxencodeformat vkformats");
+    }
+    // LDR -> KTX2 with the settings baked: BC7 sRGB, chain clamped to 3
+    // (a 16x16 full chain is 5 levels). The hand-rolled TGA is an
+    // uncompressed 32-bit top-left raster (no CRC/container to fake).
+    {
+        std::vector<uint8_t> tga;
+        const uint16_t w = 16, h = 16;
+        auto put8 = [&](uint8_t v) { tga.push_back(v); };
+        auto put16 = [&](uint16_t v) {
+            put8(uint8_t(v & 0xFF));
+            put8(uint8_t(v >> 8));
+        };
+        put8(0);
+        put8(0);
+        put8(2); // id, no colormap, uncompressed truecolor
+        put16(0);
+        put16(0);
+        put8(0);
+        put16(0);
+        put16(0); // origin
+        put16(w);
+        put16(h);
+        put8(32);   // 32 bpp (BGRA)
+        put8(0x28); // 8 alpha bits + top-left origin
+        for (uint32_t i = 0; i < uint32_t(w) * h; ++i) {
+            put8(uint8_t((i * 7) & 0xFF));
+            put8(uint8_t((i * 13) & 0xFF));
+            put8(uint8_t((i * 29) & 0xFF));
+            put8(255);
+        }
+        TextureSourceInfo info{};
+        Check(ProbeTextureSource(tga.data(), tga.size(), info) && !info.isKtx2 &&
+                  info.width == 16 && info.height == 16,
+              "textureasset probe ldr tga");
+        std::vector<uint8_t> ktx;
+        std::string terr;
+        Check(TranscodeImageToKtx2(
+                  tga.data(), tga.size(), true, "test", ktx, terr, KtxEncodeFormat::Bc7, 3),
+              "textureasset transcode bc7");
+        ktxTexture2* tex = nullptr;
+        const bool parsed = ktxTexture2_CreateFromMemory(ktx.data(),
+                                                         ktx_size_t(ktx.size()),
+                                                         KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+                                                         &tex) == KTX_SUCCESS;
+        Check(parsed && tex, "textureasset transcode output parses");
+        if (parsed && tex) {
+            Check(tex->vkFormat == 146, "textureasset bc7 srgb vkformat");
+            Check(tex->numLevels == 3, "textureasset chain clamped to 3");
+            Check(ktxTexture2_NeedsTranscoding(tex) == KTX_FALSE,
+                  "textureasset payload gpu-ready (no transcode)");
+            ktxTexture2_Destroy(tex);
+        } else if (tex)
+            ktxTexture2_Destroy(tex);
+        TextureSourceInfo kInfo{};
+        Check(ProbeTextureSource(ktx.data(), ktx.size(), kInfo) && kInfo.isKtx2 &&
+                  kInfo.width == 16 && kInfo.height == 16 && kInfo.mipLevels == 3 &&
+                  kInfo.vkFormat == 146 && kInfo.srgb && kInfo.bcn && !kInfo.basis,
+              "textureasset probe ktx2 header facts");
+        // Uncompressed default (no clamp): full chain, RGBA8 sRGB.
+        {
+            std::vector<uint8_t> rgba;
+            Check(TranscodeImageToKtx2(tga.data(), tga.size(), true, "test", rgba, terr),
+                  "textureasset transcode rgba8");
+            TextureSourceInfo rInfo{};
+            Check(ProbeTextureSource(rgba.data(), rgba.size(), rInfo) && rInfo.isKtx2 &&
+                      rInfo.vkFormat == 43 && rInfo.mipLevels == 5 && !rInfo.bcn && !rInfo.basis,
+                  "textureasset rgba8 full chain");
+        }
+    }
 }
 
 namespace {
@@ -3579,63 +3467,67 @@ namespace {
 // Deterministic xorshift64 (fixed seed: the fuzz corpus is reproducible,
 // no time-seeded flakes in ctest).
 struct FuzzRng {
-	uint64_t s = 0x9E3779B97F4A7C15ull;
-	uint64_t next() {
-		s ^= s << 13;
-		s ^= s >> 7;
-		s ^= s << 17;
-		return s;
-	}
-	size_t below(size_t n) { return size_t(next() % uint64_t(n)); }
+    uint64_t s = 0x9E3779B97F4A7C15ull;
+    uint64_t next() {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        return s;
+    }
+    size_t below(size_t n) {
+        return size_t(next() % uint64_t(n));
+    }
 };
 
 // Fresh GPU-free offline cluster: root + Wall + Floor + one material (same
 // shape as TestReplay; heap-allocated — Cluster is multi-MB).
 std::unique_ptr<smvk::Cluster> FreshFuzzCluster() {
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	const int root = addNode(cluster->scene, -1, 0);
-	const int g0 = addNode(cluster->scene, root, 1);
-	const int g1 = addNode(cluster->scene, root, 1);
-	setNodeName(cluster->scene, g0, "Wall");
-	setNodeName(cluster->scene, g1, "Floor");
-	smvk::MaterialCreateInfo ci{};
-	ci.baseColorFactor = glm::vec4(1.0f);
-	smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
-	SetMaterial(cluster->scene, uint32_t(g0), m0.index());
-	RebuildStaticCache(cluster->scene);
-	return cluster;
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    const int root = addNode(cluster->scene, -1, 0);
+    const int g0 = addNode(cluster->scene, root, 1);
+    const int g1 = addNode(cluster->scene, root, 1);
+    setNodeName(cluster->scene, g0, "Wall");
+    setNodeName(cluster->scene, g1, "Floor");
+    smvk::MaterialCreateInfo ci{};
+    ci.baseColorFactor = glm::vec4(1.0f);
+    smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
+    SetMaterial(cluster->scene, uint32_t(g0), m0.index());
+    RebuildStaticCache(cluster->scene);
+    return cluster;
 }
 
 size_t FuzzClusterNodeCount(smvk::Cluster& c) {
-	return c.scene.hierarchy.size();
+    return c.scene.hierarchy.size();
 }
 
 // One-triangle glTF (the .geometry artifact build needs real geometry;
 // same shape as the reference tests' writers). The nesting fuzz derives
 // its artifact zoo from these.
 std::string TriangleGltfJson(const char* nodeName) {
-	return std::string("{\"asset\":{\"version\":\"2.0\"},"
-		"\"scene\":0,"
-		"\"scenes\":[{\"nodes\":[0]}],"
-		"\"nodes\":[{\"name\":\"") + nodeName + "\",\"mesh\":0}],"
-		"\"meshes\":[{\"primitives\":[{\"attributes\":"
-		"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
-		"\"accessors\":["
-		"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
-		"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
-		"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
-		"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
-		"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
-		"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
-		"\"bufferViews\":["
-		"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
-		"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
-		"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
-		"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
-		"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
-		"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
-		"\"byteLength\":78}]}";
+    return std::string("{\"asset\":{\"version\":\"2.0\"},"
+                       "\"scene\":0,"
+                       "\"scenes\":[{\"nodes\":[0]}],"
+                       "\"nodes\":[{\"name\":\"") +
+           nodeName +
+           "\",\"mesh\":0}],"
+           "\"meshes\":[{\"primitives\":[{\"attributes\":"
+           "{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+           "\"accessors\":["
+           "{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+           "\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+           "{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+           "\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+           "{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+           "\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+           "\"bufferViews\":["
+           "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+           "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+           "{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+           "\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+           "base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+           "AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+           "\"byteLength\":78}]}";
 }
 
 } // namespace
@@ -3648,408 +3540,515 @@ std::string TriangleGltfJson(const char* nodeName) {
 // (numeric ids, UINT32_MAX sentinel, -ref family bases, symbolic -p,
 // bad regex, dup uuid) that hand-written tests only sample.
 void TestTourFuzz() {
-	static const char* kSeeds[] = {
-		"rename -n 1 Wall;",
-		"setTranslate -n 1 -v 1 2 3;",
-		"setRotate -n 1 -v 0 90 0;",
-		"setScale -n 2 -v 1 2 1;",
-		"assignMaterial -n 1 -m 0;",
-		"setMatAttr -m 0 -at baseColor -v 1 0.5 0.25 1;",
-		"setNoLightmap -n 1 -v 1;",
-		"setVisibility -n 2 -v 0;",
-		"parent -n 2 -p 1;",
-		"createLight -n 0 -at point -v 1 2 3;",
-		"setLightAttr -n 4 -at intensity -v 5;",
-		"delete -n 2;",
-		"setUuid -n 1 -uuid 0123456789abcdef0123456789abcdef;",
-		"createNode -at group Group_1;",
-		"createGiVolume -n 0 -at box -v 1 1 1;",
-		"setGiVolumeAttr -n 4 -at density -v 0.5;",
-		"createCubemap -n 0 -at probe -v 0 1 0;",
-		"createCamera -n 0 -at persp;",
-		"setCamAttr -n 4 -at fov -v 60;",
-		"terrainPaint -n 1 -at raise -v 0 0 4 0 -t 1;",
-		// Nesting verbs (parse coverage through the same mutations;
-		// ApplyTourToCluster ignores references, so the bounds stay).
-		"reference -n 1 -source \"a.tour\" -name \"a\";",
-		"reference -root -n 0 -source \"a.geometry\";",
-		"source -n 1 -p \"b.geometry\" -name \"b\";",
-		"reference -n 2 -source \"b.tour\" -name \"other\" -guid 0123456789abcdef0123456789abcdef;",
-		"source -n 1 -p \"c.geometry\" -name \"otherMesh\" -t 1 2 3;",
-	};
-	static const char* kMutIds[] = {
-		"0", "1", "2", "3", "999999", "4294967295", "-1", "2147483647",
-		"2147483648", "0x80000000", "0x40000003", "0x20000000",
-	};
-	static const char* kMutTails[] = {
-		"", ";", ";;", "-v 0;", "-v 1e38 1e38 1e38;", "-v nan nan nan;",
-		"-v inf -inf 0;", "-p 4294967295;", "-p \"Wall\";",
-		"-p \"No/Such/Path\";", "-ref 999;", "-ref 0;",
-		"-uuid 0123456789abcdef0123456789abcdef;",
-		"-uuid not-a-uuid;", "-uuid 0123456789abcdef0123456789abcde;",
-		"-pattern \"[\";", "-pattern \"(unclosed\";", "-pattern \"*\";",
-		"-pattern \".*\";", "-at bogusAttr;", "-t 1 2;",
-		"\"unterminated;", "\xFF\xFE-binary;",
-	};
-	FuzzRng rng;
-	const int kIters = 240;
-	int parsed = 0, rejected = 0, replayed = 0, skipped = 0;
-	for (int i = 0; i < kIters; ++i) {
-		std::string text = "source -p \"x.gltf\";\n";
-		const int lines = 1 + int(rng.below(3));
-		for (int l = 0; l < lines; ++l) {
-			std::string seed = kSeeds[rng.below(sizeof(kSeeds) / sizeof(kSeeds[0]))];
-			// 50%: rewrite the first -n id with an edge id.
-			if (rng.below(2) == 0) {
-				const size_t at = seed.find("-n ");
-				if (at != std::string::npos) {
-					const size_t end = seed.find_first_of(" ;", at + 3);
-					seed.replace(at + 3, end - (at + 3),
-						kMutIds[rng.below(sizeof(kMutIds) / sizeof(kMutIds[0]))]);
-				}
-			}
-			seed += kMutTails[rng.below(sizeof(kMutTails) / sizeof(kMutTails[0]))];
-			text += seed + "\n";
-		}
-		smvk::tour::Doc doc;
-		std::string err;
-		std::vector<std::string> warns;
-		const bool ok = smvk::tour::LoadTourFromString(text, doc, err, &warns);
-		if (!ok) {
-			++rejected;
-			continue; // honest reject: err set, no partial crash
-		}
-		++parsed;
-		// Describe must never throw, even on garbage commands.
-		for (const auto& c : doc.commands)
-			(void)smvk::tour::Describe(c);
-		// Non-strict replay on a fresh cluster: returns bool, bounded
-		// warnings, node count sane. Run twice for determinism.
-		auto c1 = FreshFuzzCluster();
-		auto c2 = FreshFuzzCluster();
-		const size_t before = FuzzClusterNodeCount(*c1);
-		std::vector<std::string> w1, w2;
-		std::string e1, e2;
-		const bool r1 = smvk::tour::ApplyTourToCluster(*c1, doc, &w1, &e1, false);
-		const bool r2 = smvk::tour::ApplyTourToCluster(*c2, doc, &w2, &e2, false);
-		if (r1)
-			++replayed;
-		else
-			++skipped;
-		if (r1 != r2 || w1.size() != w2.size()
-			|| FuzzClusterNodeCount(*c1) != FuzzClusterNodeCount(*c2)) {
-			Check(false, "tour fuzz deterministic replay");
-			return;
-		}
-		if (w1.size() > doc.commands.size() + doc.overrides.size() + 8) {
-			Check(false, "tour fuzz warnings bounded");
-			return;
-		}
-		if (FuzzClusterNodeCount(*c1) > before + doc.commands.size() + 4) {
-			Check(false, "tour fuzz node growth bounded");
-			return;
-		}
-		// Strict replay must also just return (never abort).
-		auto c3 = FreshFuzzCluster();
-		std::vector<std::string> w3;
-		std::string e3;
-		(void)smvk::tour::ApplyTourToCluster(*c3, doc, &w3, &e3, true);
-	}
-	Check(parsed > 0 && rejected > 0, "tour fuzz parsed-and-rejected");
-	Check(replayed + skipped == parsed, "tour fuzz replay accounting");
-	// Orphan contract: unresolvable node with strict=false warns and
-	// skips (verbatim re-emit upstream) — never drops silently, never
-	// takes the cluster down.
-	{
-		auto cluster = FreshFuzzCluster();
-		const size_t before = FuzzClusterNodeCount(*cluster);
-		smvk::tour::Doc doc;
-		smvk::tour::Command c{};
-		c.verb = smvk::tour::Verb::Rename;
-		c.node = 9999;
-		c.text = "Ghost";
-		// (Name updated for the Item-6 logical-target layer: the old
-		// fixture name "Wall" RESOLVED, turning the orphan into a
-		// valid logical rename. An absent name keeps this a true
-		// orphan — the check's intent.)
-		c.name = "NoSuchGhost";
-		doc.commands.push_back(c);
-		std::vector<std::string> warns;
-		std::string err;
-		const bool ok = smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err, false);
-		Check(!warns.empty(), "tour fuzz orphan warns (never silent)");
-		Check(FuzzClusterNodeCount(*cluster) == before, "tour fuzz orphan no-mutate");
-		(void)ok;
-	}
-	// ------------------------------------------------------------------
-	// NESTING fuzz: the reference/source verbs + ApplySceneReferences
-	// over generated nested tour graphs. Setup: three derived triangle
-	// artifacts + a tour-file zoo covering every nesting shape — chain
-	// (nest_a->nest_b->nest_c), self-cycle, a 10-deep chain past the
-	// depth cap (kMaxRefDepth=8), the per-node `source` asset verb, the
-	// legacy mesh-through-reference line, a source-less tour and a
-	// missing source. Properties: parse or honest reject; apply returns
-	// (the chain guard + depth cap terminate the BFS — never hangs);
-	// deterministic across two fresh clusters; node growth bounded per
-	// bind; issues bounded (no runaway queue).
-	// ------------------------------------------------------------------
-	int nestParsed = 0, nestRejected = 0, nestBinds = 0;
-	{
-		namespace fs = std::filesystem;
-		const fs::path dir = fs::temp_directory_path() / "tourmaline_fuzznest";
-		std::error_code ec;
-		fs::create_directories(dir, ec);
-		auto writeGltf = [&](const char* file, const char* nodeName) {
-			const fs::path p = dir / file;
-			std::ofstream f(p, std::ios::binary | std::ios::trunc);
-			f << TriangleGltfJson(nodeName);
-			return p;
-		};
-		auto derive = [&](const char* stem) {
-			smvk::assets::AssetManifest man;
-			std::string derr;
-			smvk::assets::DeriveConfig cfg{};
-			(void)smvk::assets::ImportMeshSource(
-				dir / (std::string(stem) + ".gltf"), "", nullptr, cfg,
-				man, nullptr, &derr);
-		};
-		writeGltf("a.gltf", "A");
-		writeGltf("b.gltf", "B");
-		writeGltf("c.gltf", "C");
-		derive("a");
-		derive("b");
-		derive("c");
-		auto writeTour = [&](const char* file, const std::string& body) {
-			std::ofstream f(dir / file, std::ios::binary | std::ios::trunc);
-			f << body;
-		};
-		writeTour("nest_a.tour", "source -p \"a.geometry\";\n"
-			"reference -n 0 -source \"nest_b.tour\" -name \"b\";\n");
-		writeTour("nest_b.tour", "source -p \"b.geometry\";\n"
-			"reference -n 0 -source \"nest_c.tour\" -name \"c\";\n");
-		writeTour("nest_c.tour", "source -p \"c.geometry\";\n");
-		writeTour("cycle.tour", "source -p \"a.geometry\";\n"
-			"reference -n 0 -source \"cycle.tour\" -name \"self\";\n");
-		for (int k = 0; k < 10; ++k) {
-			// Each level sources a DISTINCT artifact: the cycle guard
-			// keys on the resolved model source, so a shared source
-			// would collapse the chain after the first bind and the
-			// depth cap would never be exercised.
-			writeGltf(("d" + std::to_string(k) + ".gltf").c_str(),
-				("D" + std::to_string(k)).c_str());
-			derive(("d" + std::to_string(k)).c_str());
-			std::string body = "source -p \"d" + std::to_string(k)
-				+ ".geometry\";\n";
-			if (k < 9)
-				body += "reference -n 0 -source \"deep"
-					+ std::to_string(k + 1) + ".tour\" -name \"d"
-					+ std::to_string(k + 1) + "\";\n";
-			writeTour(("deep" + std::to_string(k) + ".tour").c_str(), body);
-		}
-		writeTour("mixed.tour", "source -p \"a.geometry\";\n"
-			"source -n 0 -p \"b.geometry\" -name \"bb\";\n"
-			"reference -n 0 -source \"cycle.tour\" -name \"cy\";\n");
-		writeTour("nosrc.tour", "reference -n 0 -source \"nest_c.tour\" -name \"nest\";\n");
-		writeTour("missing.tour", "source -p \"nope.geometry\";\n");
+    static const char* kSeeds[] = {
+        "rename -n 1 Wall;",
+        "setTranslate -n 1 -v 1 2 3;",
+        "setRotate -n 1 -v 0 90 0;",
+        "setScale -n 2 -v 1 2 1;",
+        "assignMaterial -n 1 -m 0;",
+        "setMatAttr -m 0 -at baseColor -v 1 0.5 0.25 1;",
+        "setNoLightmap -n 1 -v 1;",
+        "setVisibility -n 2 -v 0;",
+        "parent -n 2 -p 1;",
+        "createLight -n 0 -at point -v 1 2 3;",
+        "setLightAttr -n 4 -at intensity -v 5;",
+        "delete -n 2;",
+        "setUuid -n 1 -uuid 0123456789abcdef0123456789abcdef;",
+        "createNode -at group Group_1;",
+        "createGiVolume -n 0 -at box -v 1 1 1;",
+        "setGiVolumeAttr -n 4 -at density -v 0.5;",
+        "createCubemap -n 0 -at probe -v 0 1 0;",
+        "createCamera -n 0 -at persp;",
+        "setCamAttr -n 4 -at fov -v 60;",
+        "terrainPaint -n 1 -at raise -v 0 0 4 0 -t 1;",
+        // Nesting verbs (parse coverage through the same mutations;
+        // ApplyTourToCluster ignores references, so the bounds stay).
+        "reference -n 1 -source \"a.tour\" -name \"a\";",
+        "reference -root -n 0 -source \"a.geometry\";",
+        "source -n 1 -p \"b.geometry\" -name \"b\";",
+        "reference -n 2 -source \"b.tour\" -name \"other\" -guid 0123456789abcdef0123456789abcdef;",
+        "source -n 1 -p \"c.geometry\" -name \"otherMesh\" -t 1 2 3;",
+    };
+    static const char* kMutIds[] = {
+        "0",
+        "1",
+        "2",
+        "3",
+        "999999",
+        "4294967295",
+        "-1",
+        "2147483647",
+        "2147483648",
+        "0x80000000",
+        "0x40000003",
+        "0x20000000",
+    };
+    static const char* kMutTails[] = {
+        "",
+        ";",
+        ";;",
+        "-v 0;",
+        "-v 1e38 1e38 1e38;",
+        "-v nan nan nan;",
+        "-v inf -inf 0;",
+        "-p 4294967295;",
+        "-p \"Wall\";",
+        "-p \"No/Such/Path\";",
+        "-ref 999;",
+        "-ref 0;",
+        "-uuid 0123456789abcdef0123456789abcdef;",
+        "-uuid not-a-uuid;",
+        "-uuid 0123456789abcdef0123456789abcde;",
+        "-pattern \"[\";",
+        "-pattern \"(unclosed\";",
+        "-pattern \"*\";",
+        "-pattern \".*\";",
+        "-at bogusAttr;",
+        "-t 1 2;",
+        "\"unterminated;",
+        "\xFF\xFE-binary;",
+    };
+    FuzzRng rng;
+    const int kIters = 240;
+    int parsed = 0, rejected = 0, replayed = 0, skipped = 0;
+    for (int i = 0; i < kIters; ++i) {
+        std::string text = "source -p \"x.gltf\";\n";
+        const int lines = 1 + int(rng.below(3));
+        for (int l = 0; l < lines; ++l) {
+            std::string seed = kSeeds[rng.below(sizeof(kSeeds) / sizeof(kSeeds[0]))];
+            // 50%: rewrite the first -n id with an edge id.
+            if (rng.below(2) == 0) {
+                const size_t at = seed.find("-n ");
+                if (at != std::string::npos) {
+                    const size_t end = seed.find_first_of(" ;", at + 3);
+                    seed.replace(at + 3,
+                                 end - (at + 3),
+                                 kMutIds[rng.below(sizeof(kMutIds) / sizeof(kMutIds[0]))]);
+                }
+            }
+            seed += kMutTails[rng.below(sizeof(kMutTails) / sizeof(kMutTails[0]))];
+            text += seed + "\n";
+        }
+        smvk::tour::Doc doc;
+        std::string err;
+        std::vector<std::string> warns;
+        const bool ok = smvk::tour::LoadTourFromString(text, doc, err, &warns);
+        if (!ok) {
+            ++rejected;
+            continue; // honest reject: err set, no partial crash
+        }
+        ++parsed;
+        // Describe must never throw, even on garbage commands.
+        for (const auto& c : doc.commands)
+            (void)smvk::tour::Describe(c);
+        // Non-strict replay on a fresh cluster: returns bool, bounded
+        // warnings, node count sane. Run twice for determinism.
+        auto c1 = FreshFuzzCluster();
+        auto c2 = FreshFuzzCluster();
+        const size_t before = FuzzClusterNodeCount(*c1);
+        std::vector<std::string> w1, w2;
+        std::string e1, e2;
+        const bool r1 = smvk::tour::ApplyTourToCluster(*c1, doc, &w1, &e1, false);
+        const bool r2 = smvk::tour::ApplyTourToCluster(*c2, doc, &w2, &e2, false);
+        if (r1)
+            ++replayed;
+        else
+            ++skipped;
+        if (r1 != r2 || w1.size() != w2.size() ||
+            FuzzClusterNodeCount(*c1) != FuzzClusterNodeCount(*c2)) {
+            Check(false, "tour fuzz deterministic replay");
+            return;
+        }
+        if (w1.size() > doc.commands.size() + doc.overrides.size() + 8) {
+            Check(false, "tour fuzz warnings bounded");
+            return;
+        }
+        if (FuzzClusterNodeCount(*c1) > before + doc.commands.size() + 4) {
+            Check(false, "tour fuzz node growth bounded");
+            return;
+        }
+        // Strict replay must also just return (never abort).
+        auto c3 = FreshFuzzCluster();
+        std::vector<std::string> w3;
+        std::string e3;
+        (void)smvk::tour::ApplyTourToCluster(*c3, doc, &w3, &e3, true);
+    }
+    Check(parsed > 0 && rejected > 0, "tour fuzz parsed-and-rejected");
+    Check(replayed + skipped == parsed, "tour fuzz replay accounting");
+    // Orphan contract: unresolvable node with strict=false warns and
+    // skips (verbatim re-emit upstream) — never drops silently, never
+    // takes the cluster down.
+    {
+        auto cluster = FreshFuzzCluster();
+        const size_t before = FuzzClusterNodeCount(*cluster);
+        smvk::tour::Doc doc;
+        smvk::tour::Command c{};
+        c.verb = smvk::tour::Verb::Rename;
+        c.node = 9999;
+        c.text = "Ghost";
+        // (Name updated for the Item-6 logical-target layer: the old
+        // fixture name "Wall" RESOLVED, turning the orphan into a
+        // valid logical rename. An absent name keeps this a true
+        // orphan — the check's intent.)
+        c.name = "NoSuchGhost";
+        doc.commands.push_back(c);
+        std::vector<std::string> warns;
+        std::string err;
+        const bool ok = smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err, false);
+        Check(!warns.empty(), "tour fuzz orphan warns (never silent)");
+        Check(FuzzClusterNodeCount(*cluster) == before, "tour fuzz orphan no-mutate");
+        (void)ok;
+    }
+    // ------------------------------------------------------------------
+    // NESTING fuzz: the reference/source verbs + ApplySceneReferences
+    // over generated nested tour graphs. Setup: three derived triangle
+    // artifacts + a tour-file zoo covering every nesting shape — chain
+    // (nest_a->nest_b->nest_c), self-cycle, a 10-deep chain past the
+    // depth cap (kMaxRefDepth=8), the per-node `source` asset verb, the
+    // legacy mesh-through-reference line, a source-less tour and a
+    // missing source. Properties: parse or honest reject; apply returns
+    // (the chain guard + depth cap terminate the BFS — never hangs);
+    // deterministic across two fresh clusters; node growth bounded per
+    // bind; issues bounded (no runaway queue).
+    // ------------------------------------------------------------------
+    int nestParsed = 0, nestRejected = 0, nestBinds = 0;
+    {
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() / "tourmaline_fuzznest";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        auto writeGltf = [&](const char* file, const char* nodeName) {
+            const fs::path p = dir / file;
+            std::ofstream f(p, std::ios::binary | std::ios::trunc);
+            f << TriangleGltfJson(nodeName);
+            return p;
+        };
+        auto derive = [&](const char* stem) {
+            smvk::assets::AssetManifest man;
+            std::string derr;
+            smvk::assets::DeriveConfig cfg{};
+            (void)smvk::assets::ImportMeshSource(
+                dir / (std::string(stem) + ".gltf"), "", nullptr, cfg, man, nullptr, &derr);
+        };
+        writeGltf("a.gltf", "A");
+        writeGltf("b.gltf", "B");
+        writeGltf("c.gltf", "C");
+        derive("a");
+        derive("b");
+        derive("c");
+        auto writeTour = [&](const char* file, const std::string& body) {
+            std::ofstream f(dir / file, std::ios::binary | std::ios::trunc);
+            f << body;
+        };
+        writeTour("nest_a.tour",
+                  "source -p \"a.geometry\";\n"
+                  "reference -n 0 -source \"nest_b.tour\" -name \"b\";\n");
+        writeTour("nest_b.tour",
+                  "source -p \"b.geometry\";\n"
+                  "reference -n 0 -source \"nest_c.tour\" -name \"c\";\n");
+        writeTour("nest_c.tour", "source -p \"c.geometry\";\n");
+        writeTour("cycle.tour",
+                  "source -p \"a.geometry\";\n"
+                  "reference -n 0 -source \"cycle.tour\" -name \"self\";\n");
+        for (int k = 0; k < 10; ++k) {
+            // Each level sources a DISTINCT artifact: the cycle guard
+            // keys on the resolved model source, so a shared source
+            // would collapse the chain after the first bind and the
+            // depth cap would never be exercised.
+            writeGltf(("d" + std::to_string(k) + ".gltf").c_str(),
+                      ("D" + std::to_string(k)).c_str());
+            derive(("d" + std::to_string(k)).c_str());
+            std::string body = "source -p \"d" + std::to_string(k) + ".geometry\";\n";
+            if (k < 9)
+                body += "reference -n 0 -source \"deep" + std::to_string(k + 1) +
+                        ".tour\" -name \"d" + std::to_string(k + 1) + "\";\n";
+            writeTour(("deep" + std::to_string(k) + ".tour").c_str(), body);
+        }
+        writeTour("mixed.tour",
+                  "source -p \"a.geometry\";\n"
+                  "source -n 0 -p \"b.geometry\" -name \"bb\";\n"
+                  "reference -n 0 -source \"cycle.tour\" -name \"cy\";\n");
+        writeTour("nosrc.tour", "reference -n 0 -source \"nest_c.tour\" -name \"nest\";\n");
+        writeTour("missing.tour", "source -p \"nope.geometry\";\n");
 
-		static const char* kNestSources[] = {
-			"nest_a.tour", "nest_b.tour", "nest_c.tour",
-			"cycle.tour", "deep0.tour", "deep5.tour", "mixed.tour",
-			"nosrc.tour", "missing.tour",
-			"a.geometry", "b.geometry", "c.geometry",
-			"nothere.tour", "nothere.geometry",
-			"", ".", "x/y.tour", "a.gltf",
-		};
-		static const char* kNestIds[] = {
-			"0", "1", "2", "7", "999999", "4294967295",
-		};
-		static const char* kNestGuids[] = {
-			"0123456789abcdef0123456789abcdef",
-			"ffffffffffffffffffffffffffffffff",
-			"bad-guid",
-			"0123456789abcdef0123456789abcde",
-		};
-		static const char* kNestTails[] = {
-			"", ";;", "\"unterminated;", "-pattern \"[\"", "-t 1 2",
-			"-guid", ";; ;",
-		};
-		auto makeNestLine = [&]() -> std::string {
-			const bool assetVerb = rng.below(2) == 0;
-			const char* src =
-				kNestSources[rng.below(sizeof(kNestSources) / sizeof(kNestSources[0]))];
-			const char* id =
-				kNestIds[rng.below(sizeof(kNestIds) / sizeof(kNestIds[0]))];
-			std::string line = assetVerb
-				? std::string("source -n ") + id + " -p \"" + src + "\""
-				: std::string("reference -n ") + id + " -source \"" + src + "\"";
-			if (!assetVerb && rng.below(10) == 0)
-				line += " -root";
-			if (rng.below(5) == 0)
-				line += std::string(" -guid ")
-					+ kNestGuids[rng.below(sizeof(kNestGuids) / sizeof(kNestGuids[0]))];
-			if (rng.below(2) == 0)
-				line += " -name \"n" + std::to_string(rng.below(8)) + "\"";
-			if (rng.below(3) == 0)
-				line += " -t 1 2 3";
-			if (rng.below(5) == 0)
-				line += " -enabled off";
-			if (rng.below(10) == 0)
-				line += kNestTails[rng.below(sizeof(kNestTails) / sizeof(kNestTails[0]))];
-			return line + ";\n";
-		};
+        static const char* kNestSources[] = {
+            "nest_a.tour",
+            "nest_b.tour",
+            "nest_c.tour",
+            "cycle.tour",
+            "deep0.tour",
+            "deep5.tour",
+            "mixed.tour",
+            "nosrc.tour",
+            "missing.tour",
+            "a.geometry",
+            "b.geometry",
+            "c.geometry",
+            "nothere.tour",
+            "nothere.geometry",
+            "",
+            ".",
+            "x/y.tour",
+            "a.gltf",
+        };
+        static const char* kNestIds[] = {
+            "0",
+            "1",
+            "2",
+            "7",
+            "999999",
+            "4294967295",
+        };
+        static const char* kNestGuids[] = {
+            "0123456789abcdef0123456789abcdef",
+            "ffffffffffffffffffffffffffffffff",
+            "bad-guid",
+            "0123456789abcdef0123456789abcde",
+        };
+        static const char* kNestTails[] = {
+            "",
+            ";;",
+            "\"unterminated;",
+            "-pattern \"[\"",
+            "-t 1 2",
+            "-guid",
+            ";; ;",
+        };
+        auto makeNestLine = [&]() -> std::string {
+            const bool assetVerb = rng.below(2) == 0;
+            const char* src =
+                kNestSources[rng.below(sizeof(kNestSources) / sizeof(kNestSources[0]))];
+            const char* id = kNestIds[rng.below(sizeof(kNestIds) / sizeof(kNestIds[0]))];
+            std::string line = assetVerb
+                                   ? std::string("source -n ") + id + " -p \"" + src + "\""
+                                   : std::string("reference -n ") + id + " -source \"" + src + "\"";
+            if (!assetVerb && rng.below(10) == 0)
+                line += " -root";
+            if (rng.below(5) == 0)
+                line += std::string(" -guid ") +
+                        kNestGuids[rng.below(sizeof(kNestGuids) / sizeof(kNestGuids[0]))];
+            if (rng.below(2) == 0)
+                line += " -name \"n" + std::to_string(rng.below(8)) + "\"";
+            if (rng.below(3) == 0)
+                line += " -t 1 2 3";
+            if (rng.below(5) == 0)
+                line += " -enabled off";
+            if (rng.below(10) == 0)
+                line += kNestTails[rng.below(sizeof(kNestTails) / sizeof(kNestTails[0]))];
+            return line + ";\n";
+        };
 
-		const int kNestIters = 96;
-		bool nestFailed = false;
-		for (int i = 0; i < kNestIters && !nestFailed; ++i) {
-			std::string text;
-			const int lines = 1 + int(rng.below(3));
-			for (int l = 0; l < lines; ++l)
-				text += makeNestLine();
-			// 10%: a deliberately-broken reference (no -source) — the
-			// parser must reject honestly, never crash.
-			if (rng.below(10) == 0)
-				text += "reference -n 1;\n";
-			smvk::tour::Doc doc;
-			std::string err;
-			std::vector<std::string> warns;
-			if (!smvk::tour::LoadTourFromString(text, doc, err, &warns)) {
-				++nestRejected;
-				continue;
-			}
-			++nestParsed;
-			if (doc.references.empty())
-				continue;
-			auto c1 = FreshFuzzCluster();
-			auto c2 = FreshFuzzCluster();
-			const size_t before = FuzzClusterNodeCount(*c1);
-			std::vector<int> ph1, ph2;
-			std::vector<std::string> is1, is2;
-			const size_t a1 = ApplySceneReferences(*c1, doc,
-				dir.generic_string(), nullptr, nullptr, nullptr,
-				smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-				&ph1, &is1, nullptr, true, nullptr, nullptr, nullptr);
-			const size_t a2 = ApplySceneReferences(*c2, doc,
-				dir.generic_string(), nullptr, nullptr, nullptr,
-				smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-				&ph2, &is2, nullptr, true, nullptr, nullptr, nullptr);
-			nestBinds += int(a1);
-			if (a1 != a2 || is1.size() != is2.size()
-				|| FuzzClusterNodeCount(*c1) != FuzzClusterNodeCount(*c2)) {
-				Check(false, "tour fuzz nesting deterministic apply");
-				nestFailed = true;
-				break;
-			}
-			// Each bound reference adds at most a placeholder + the
-			// triangle artifact's 2 content nodes (see BuildFromMeshAsset:
-			// asset node 0 maps to the placeholder; nodes 1.. land at
-			// ph+i). Strict > would signal duplicated/dangling builds.
-			if (FuzzClusterNodeCount(*c1) > before + a1 * 3 + 4) {
-				Check(false, "tour fuzz nesting node growth bounded");
-				nestFailed = true;
-				break;
-			}
-			// Issues stay bounded: the depth cap (8) + per-file ref counts
-			// bound the BFS visits; anything past double digits is a
-			// runaway queue.
-			if (is1.size() > 64) {
-				Check(false, "tour fuzz nesting issues bounded");
-				nestFailed = true;
-				break;
-			}
-		}
-		Check(nestParsed > 0 && nestRejected > 0,
-			"tour fuzz nesting parsed-and-rejected");
-		if (!nestFailed) {
-			// Pinned nesting contracts (deterministic, not random):
-			auto applyDoc = [&](const char* refSource) {
-				smvk::tour::Doc doc;
-				smvk::tour::ReferenceCmd r{};
-				r.parent = 0;
-				r.source = refSource;
-				r.name = "x";
-				doc.references.push_back(r);
-				auto cluster = FreshFuzzCluster();
-				return ApplySceneReferences(*cluster, doc,
-					dir.generic_string(), nullptr, nullptr, nullptr,
-					smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-					nullptr, nullptr, nullptr, true, nullptr, nullptr,
-					nullptr);
-			};
-			// Self-cycle: binds exactly once (the chain guard terminates).
-			Check(applyDoc("cycle.tour") == 1,
-				"tour fuzz nesting cycle terminates once");
-			// 10-deep chain: the depth cap (kMaxRefDepth=8) binds levels
-			// 0..7 and skips level 8+ (8 binds).
-			Check(applyDoc("deep0.tour") == 8,
-				"tour fuzz nesting depth cap binds 8");
-			// Tour-LEVEL source (no -n) stays doc.source (the verb
-			// split's disambiguation) and a references-empty doc applies
-			// nothing.
-			{
-				smvk::tour::Doc doc;
-				std::string err;
-				Check(smvk::tour::LoadTourFromString(
-						"source -p \"b.geometry\";\n", doc, err),
-					"tour fuzz nesting tour-level source parses");
-				Check(doc.source == "b.geometry" && doc.references.empty(),
-					"tour fuzz nesting tour-level source stays doc.source");
-				auto cluster = FreshFuzzCluster();
-				Check(ApplySceneReferences(*cluster, doc,
-						dir.generic_string(), nullptr, nullptr, nullptr,
-						smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-						nullptr, nullptr, nullptr, true, nullptr, nullptr,
-						nullptr) == 0,
-					"tour fuzz nesting no-refs applies nothing");
-			}
-			// Legacy mesh-through-reference line: parses back as a
-			// sourced ASSET (extension-derived) and still binds.
-			{
-				smvk::tour::Doc doc;
-				std::string err;
-				Check(smvk::tour::LoadTourFromString(
-						"reference -n 0 -source \"b.geometry\" -name \"b\";\n",
-						doc, err),
-					"tour fuzz nesting legacy line parses");
-				Check(doc.references.size() == 1
-						&& doc.references[0].asset,
-					"tour fuzz nesting legacy blob parses as asset");
-				auto cluster = FreshFuzzCluster();
-				Check(ApplySceneReferences(*cluster, doc,
-						dir.generic_string(), nullptr, nullptr, nullptr,
-						smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-						nullptr, nullptr, nullptr, true, nullptr, nullptr,
-						nullptr) == 1,
-					"tour fuzz nesting legacy blob binds");
-			}
-			// The per-node `source` verb (mesh assets never ride
-			// `reference`): parses as a sourced asset and binds.
-			{
-				smvk::tour::Doc doc;
-				std::string err;
-				Check(smvk::tour::LoadTourFromString(
-						"source -n 1 -p \"c.geometry\" -name \"cee\";\n",
-						doc, err),
-					"tour fuzz nesting source verb parses");
-				Check(doc.references.size() == 1
-						&& doc.references[0].asset
-						&& doc.references[0].parent == 1
-						&& doc.references[0].name == "cee",
-					"tour fuzz nesting source verb carries node+name");
-				auto cluster = FreshFuzzCluster();
-				Check(ApplySceneReferences(*cluster, doc,
-						dir.generic_string(), nullptr, nullptr, nullptr,
-						smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-						nullptr, nullptr, nullptr, true, nullptr, nullptr,
-						nullptr) == 1,
-					"tour fuzz nesting source verb binds");
-			}
-		}
-		fs::remove_all(dir, ec);
-	}
-	std::cout << "tour fuzz: parsed=" << parsed << " rejected=" << rejected
-		<< " replayed=" << replayed << " skipped=" << skipped
-		<< " | nesting: parsed=" << nestParsed << " rejected=" << nestRejected
-		<< " binds=" << nestBinds << "\n";
+        const int kNestIters = 96;
+        bool nestFailed = false;
+        for (int i = 0; i < kNestIters && !nestFailed; ++i) {
+            std::string text;
+            const int lines = 1 + int(rng.below(3));
+            for (int l = 0; l < lines; ++l)
+                text += makeNestLine();
+            // 10%: a deliberately-broken reference (no -source) — the
+            // parser must reject honestly, never crash.
+            if (rng.below(10) == 0)
+                text += "reference -n 1;\n";
+            smvk::tour::Doc doc;
+            std::string err;
+            std::vector<std::string> warns;
+            if (!smvk::tour::LoadTourFromString(text, doc, err, &warns)) {
+                ++nestRejected;
+                continue;
+            }
+            ++nestParsed;
+            if (doc.references.empty())
+                continue;
+            auto c1 = FreshFuzzCluster();
+            auto c2 = FreshFuzzCluster();
+            const size_t before = FuzzClusterNodeCount(*c1);
+            std::vector<int> ph1, ph2;
+            std::vector<std::string> is1, is2;
+            const size_t a1 = ApplySceneReferences(*c1,
+                                                   doc,
+                                                   dir.generic_string(),
+                                                   nullptr,
+                                                   nullptr,
+                                                   nullptr,
+                                                   smvk::MeshOptConfig{},
+                                                   smvk::MeshletConfig{},
+                                                   0,
+                                                   &ph1,
+                                                   &is1,
+                                                   nullptr,
+                                                   true,
+                                                   nullptr,
+                                                   nullptr,
+                                                   nullptr);
+            const size_t a2 = ApplySceneReferences(*c2,
+                                                   doc,
+                                                   dir.generic_string(),
+                                                   nullptr,
+                                                   nullptr,
+                                                   nullptr,
+                                                   smvk::MeshOptConfig{},
+                                                   smvk::MeshletConfig{},
+                                                   0,
+                                                   &ph2,
+                                                   &is2,
+                                                   nullptr,
+                                                   true,
+                                                   nullptr,
+                                                   nullptr,
+                                                   nullptr);
+            nestBinds += int(a1);
+            if (a1 != a2 || is1.size() != is2.size() ||
+                FuzzClusterNodeCount(*c1) != FuzzClusterNodeCount(*c2)) {
+                Check(false, "tour fuzz nesting deterministic apply");
+                nestFailed = true;
+                break;
+            }
+            // Each bound reference adds at most a placeholder + the
+            // triangle artifact's 2 content nodes (see BuildFromMeshAsset:
+            // asset node 0 maps to the placeholder; nodes 1.. land at
+            // ph+i). Strict > would signal duplicated/dangling builds.
+            if (FuzzClusterNodeCount(*c1) > before + a1 * 3 + 4) {
+                Check(false, "tour fuzz nesting node growth bounded");
+                nestFailed = true;
+                break;
+            }
+            // Issues stay bounded: the depth cap (8) + per-file ref counts
+            // bound the BFS visits; anything past double digits is a
+            // runaway queue.
+            if (is1.size() > 64) {
+                Check(false, "tour fuzz nesting issues bounded");
+                nestFailed = true;
+                break;
+            }
+        }
+        Check(nestParsed > 0 && nestRejected > 0, "tour fuzz nesting parsed-and-rejected");
+        if (!nestFailed) {
+            // Pinned nesting contracts (deterministic, not random):
+            auto applyDoc = [&](const char* refSource) {
+                smvk::tour::Doc doc;
+                smvk::tour::ReferenceCmd r{};
+                r.parent = 0;
+                r.source = refSource;
+                r.name = "x";
+                doc.references.push_back(r);
+                auto cluster = FreshFuzzCluster();
+                return ApplySceneReferences(*cluster,
+                                            doc,
+                                            dir.generic_string(),
+                                            nullptr,
+                                            nullptr,
+                                            nullptr,
+                                            smvk::MeshOptConfig{},
+                                            smvk::MeshletConfig{},
+                                            0,
+                                            nullptr,
+                                            nullptr,
+                                            nullptr,
+                                            true,
+                                            nullptr,
+                                            nullptr,
+                                            nullptr);
+            };
+            // Self-cycle: binds exactly once (the chain guard terminates).
+            Check(applyDoc("cycle.tour") == 1, "tour fuzz nesting cycle terminates once");
+            // 10-deep chain: the depth cap (kMaxRefDepth=8) binds levels
+            // 0..7 and skips level 8+ (8 binds).
+            Check(applyDoc("deep0.tour") == 8, "tour fuzz nesting depth cap binds 8");
+            // Tour-LEVEL source (no -n) stays doc.source (the verb
+            // split's disambiguation) and a references-empty doc applies
+            // nothing.
+            {
+                smvk::tour::Doc doc;
+                std::string err;
+                Check(smvk::tour::LoadTourFromString("source -p \"b.geometry\";\n", doc, err),
+                      "tour fuzz nesting tour-level source parses");
+                Check(doc.source == "b.geometry" && doc.references.empty(),
+                      "tour fuzz nesting tour-level source stays doc.source");
+                auto cluster = FreshFuzzCluster();
+                Check(ApplySceneReferences(*cluster,
+                                           doc,
+                                           dir.generic_string(),
+                                           nullptr,
+                                           nullptr,
+                                           nullptr,
+                                           smvk::MeshOptConfig{},
+                                           smvk::MeshletConfig{},
+                                           0,
+                                           nullptr,
+                                           nullptr,
+                                           nullptr,
+                                           true,
+                                           nullptr,
+                                           nullptr,
+                                           nullptr) == 0,
+                      "tour fuzz nesting no-refs applies nothing");
+            }
+            // Legacy mesh-through-reference line: parses back as a
+            // sourced ASSET (extension-derived) and still binds.
+            {
+                smvk::tour::Doc doc;
+                std::string err;
+                Check(smvk::tour::LoadTourFromString(
+                          "reference -n 0 -source \"b.geometry\" -name \"b\";\n", doc, err),
+                      "tour fuzz nesting legacy line parses");
+                Check(doc.references.size() == 1 && doc.references[0].asset,
+                      "tour fuzz nesting legacy blob parses as asset");
+                auto cluster = FreshFuzzCluster();
+                Check(ApplySceneReferences(*cluster,
+                                           doc,
+                                           dir.generic_string(),
+                                           nullptr,
+                                           nullptr,
+                                           nullptr,
+                                           smvk::MeshOptConfig{},
+                                           smvk::MeshletConfig{},
+                                           0,
+                                           nullptr,
+                                           nullptr,
+                                           nullptr,
+                                           true,
+                                           nullptr,
+                                           nullptr,
+                                           nullptr) == 1,
+                      "tour fuzz nesting legacy blob binds");
+            }
+            // The per-node `source` verb (mesh assets never ride
+            // `reference`): parses as a sourced asset and binds.
+            {
+                smvk::tour::Doc doc;
+                std::string err;
+                Check(smvk::tour::LoadTourFromString(
+                          "source -n 1 -p \"c.geometry\" -name \"cee\";\n", doc, err),
+                      "tour fuzz nesting source verb parses");
+                Check(doc.references.size() == 1 && doc.references[0].asset &&
+                          doc.references[0].parent == 1 && doc.references[0].name == "cee",
+                      "tour fuzz nesting source verb carries node+name");
+                auto cluster = FreshFuzzCluster();
+                Check(ApplySceneReferences(*cluster,
+                                           doc,
+                                           dir.generic_string(),
+                                           nullptr,
+                                           nullptr,
+                                           nullptr,
+                                           smvk::MeshOptConfig{},
+                                           smvk::MeshletConfig{},
+                                           0,
+                                           nullptr,
+                                           nullptr,
+                                           nullptr,
+                                           true,
+                                           nullptr,
+                                           nullptr,
+                                           nullptr) == 1,
+                      "tour fuzz nesting source verb binds");
+            }
+        }
+        fs::remove_all(dir, ec);
+    }
+    std::cout << "tour fuzz: parsed=" << parsed << " rejected=" << rejected
+              << " replayed=" << replayed << " skipped=" << skipped
+              << " | nesting: parsed=" << nestParsed << " rejected=" << nestRejected
+              << " binds=" << nestBinds << "\n";
 }
 
 // Dither-on-closeup (Scene::ditherCloseup): the per-frame per-draw state
@@ -4058,69 +4057,73 @@ void TestTourFuzz() {
 // nearest-flagged-ancestor rule, the empty-table fast path, and the
 // setDitherCloseup tour verb round-trip that authors the flag.
 void TestDitherCloseup() {
-	Scene scene;
-	const int root = addNode(scene, -1, 0);
-	const int grp = addNode(scene, root, 1);
-	const int mesh = addNode(scene, grp, 2);
-	const int far = addNode(scene, root, 2);
-	scene.globalTransform.resize(scene.hierarchy.size());
-	scene.globalTransform[grp][3] = glm::vec4(10.0f, 0.0f, 0.0f, 1.0f);
-	scene.globalTransform[far][3] = glm::vec4(100.0f, 0.0f, 0.0f, 1.0f);
-	const glm::vec3 atGrp(10.0f, 0.0f, 0.0f);
-	// Empty flag table: everything Off (the one-branch fast path).
-	Check(DitherCloseupStateFor(scene, mesh, atGrp)
-		== DitherCloseupState::Off, "dither empty table off");
-	// Author the flag on the GROUP (subtree inheritance below it).
-	MarkDitherCloseup(scene, grp);
-	Check(IsDitherCloseupNode(scene, mesh), "dither subtree inherited");
-	Check(!IsDitherCloseupNode(scene, far), "dither sibling unaffected");
-	Check(!IsDitherCloseupNode(scene, root), "dither root unaffected");
-	// Band edges against the flagged ancestor's translate (grp @ 10,0,0).
-	Check(DitherCloseupStateFor(scene, mesh, glm::vec3(10.0f + kDitherCloseupHideM, 0, 0))
-		== DitherCloseupState::Hidden, "dither hide edge");
-	Check(DitherCloseupStateFor(scene, mesh, glm::vec3(10.0f + kDitherCloseupSolidM, 0, 0))
-		== DitherCloseupState::Off, "dither solid edge");
-	Check(DitherCloseupStateFor(scene, mesh,
-			glm::vec3(10.0f + 0.5f * (kDitherCloseupHideM + kDitherCloseupSolidM), 0, 0))
-		== DitherCloseupState::Fade, "dither mid band fade");
-	Check(DitherCloseupStateFor(scene, mesh, atGrp)
-		== DitherCloseupState::Hidden, "dither camera at anchor hidden");
-	// Unflagged node: Off everywhere.
-	Check(DitherCloseupStateFor(scene, far, atGrp)
-		== DitherCloseupState::Off, "dither unflagged node off");
-	// Flag the ROOT too: the mesh's NEAREST flagged ancestor (grp) wins
-	// (the tighter authoring intent owns the fade band).
-	MarkDitherCloseup(scene, root);
-	Check(DitherCloseupStateFor(scene, mesh, glm::vec3(10.0f + kDitherCloseupHideM, 0, 0))
-		== DitherCloseupState::Hidden, "dither nearest ancestor wins");
-	// Clearing the group flag falls back to the root anchor (0,0,0).
-	ClearDitherCloseup(scene, grp);
-	Check(DitherCloseupStateFor(scene, mesh, glm::vec3(kDitherCloseupHideM, 0, 0))
-		== DitherCloseupState::Hidden, "dither root anchor fallback");
-	// Tour verb round-trip: setDitherCloseup replays onto the scene.
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "setDitherCloseup -n " << grp << " -type \"bool\" -v 1;\n";
-		f.close();
-		smvk::tour::Doc doc;
-		std::string err;
-		std::vector<std::string> warns;
-		Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns),
-			"dither verb parse");
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0);
-		const int cGrp = addNode(cluster->scene, 0, 1);
-		const int cMesh = addNode(cluster->scene, cGrp, 2);
-		std::vector<std::string> rw;
-		std::string rerr;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr),
-			"dither verb replay ok");
-		Check(IsDitherCloseupNode(cluster->scene, cMesh),
-			"dither verb replay flag");
-		std::error_code ec;
-		std::filesystem::remove(TempTour(), ec);
-	}
+    Scene scene;
+    const int root = addNode(scene, -1, 0);
+    const int grp = addNode(scene, root, 1);
+    const int mesh = addNode(scene, grp, 2);
+    const int far = addNode(scene, root, 2);
+    scene.globalTransform.resize(scene.hierarchy.size());
+    scene.globalTransform[grp][3] = glm::vec4(10.0f, 0.0f, 0.0f, 1.0f);
+    scene.globalTransform[far][3] = glm::vec4(100.0f, 0.0f, 0.0f, 1.0f);
+    const glm::vec3 atGrp(10.0f, 0.0f, 0.0f);
+    // Empty flag table: everything Off (the one-branch fast path).
+    Check(DitherCloseupStateFor(scene, mesh, atGrp) == DitherCloseupState::Off,
+          "dither empty table off");
+    // Author the flag on the GROUP (subtree inheritance below it).
+    MarkDitherCloseup(scene, grp);
+    Check(IsDitherCloseupNode(scene, mesh), "dither subtree inherited");
+    Check(!IsDitherCloseupNode(scene, far), "dither sibling unaffected");
+    Check(!IsDitherCloseupNode(scene, root), "dither root unaffected");
+    // Band edges against the flagged ancestor's translate (grp @ 10,0,0).
+    Check(DitherCloseupStateFor(scene, mesh, glm::vec3(10.0f + kDitherCloseupHideM, 0, 0)) ==
+              DitherCloseupState::Hidden,
+          "dither hide edge");
+    Check(DitherCloseupStateFor(scene, mesh, glm::vec3(10.0f + kDitherCloseupSolidM, 0, 0)) ==
+              DitherCloseupState::Off,
+          "dither solid edge");
+    Check(DitherCloseupStateFor(
+              scene,
+              mesh,
+              glm::vec3(10.0f + 0.5f * (kDitherCloseupHideM + kDitherCloseupSolidM), 0, 0)) ==
+              DitherCloseupState::Fade,
+          "dither mid band fade");
+    Check(DitherCloseupStateFor(scene, mesh, atGrp) == DitherCloseupState::Hidden,
+          "dither camera at anchor hidden");
+    // Unflagged node: Off everywhere.
+    Check(DitherCloseupStateFor(scene, far, atGrp) == DitherCloseupState::Off,
+          "dither unflagged node off");
+    // Flag the ROOT too: the mesh's NEAREST flagged ancestor (grp) wins
+    // (the tighter authoring intent owns the fade band).
+    MarkDitherCloseup(scene, root);
+    Check(DitherCloseupStateFor(scene, mesh, glm::vec3(10.0f + kDitherCloseupHideM, 0, 0)) ==
+              DitherCloseupState::Hidden,
+          "dither nearest ancestor wins");
+    // Clearing the group flag falls back to the root anchor (0,0,0).
+    ClearDitherCloseup(scene, grp);
+    Check(DitherCloseupStateFor(scene, mesh, glm::vec3(kDitherCloseupHideM, 0, 0)) ==
+              DitherCloseupState::Hidden,
+          "dither root anchor fallback");
+    // Tour verb round-trip: setDitherCloseup replays onto the scene.
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "setDitherCloseup -n " << grp << " -type \"bool\" -v 1;\n";
+        f.close();
+        smvk::tour::Doc doc;
+        std::string err;
+        std::vector<std::string> warns;
+        Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns), "dither verb parse");
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0);
+        const int cGrp = addNode(cluster->scene, 0, 1);
+        const int cMesh = addNode(cluster->scene, cGrp, 2);
+        std::vector<std::string> rw;
+        std::string rerr;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr), "dither verb replay ok");
+        Check(IsDitherCloseupNode(cluster->scene, cMesh), "dither verb replay flag");
+        std::error_code ec;
+        std::filesystem::remove(TempTour(), ec);
+    }
 }
 
 // Per-node flag-table bookkeeping regression (the 811b461f review
@@ -4135,128 +4138,116 @@ void TestDitherCloseup() {
 // and the legacy .scene save/load round-trip (dense compaction) - any
 // future per-node flag must keep ALL of these sites additive.
 void TestSceneFlagTables() {
-	// --- create: addNode grows BOTH tables with the hierarchy ---
-	Scene scene;
-	const int root = addNode(scene, -1, 0);
-	const int a = addNode(scene, root, 1);
-	const int b = addNode(scene, root, 1);
-	Check(scene.hierarchy.size() == 3, "flagtables create hierarchy");
-	Check(scene.ditherCloseup.size() == 3
-		&& scene.castsVolumetricShadow.size() == 3,
-		"flagtables create both tables grow");
-	MarkDitherCloseup(scene, a);
-	MarkCastsVolumetricShadow(scene, b);
-	Check(IsDitherCloseupNode(scene, a) && !IsDitherCloseupNode(scene, b),
-		"flagtables create dither authored");
-	Check(IsCastsVolumetricShadowNode(scene, b)
-		&& !IsCastsVolumetricShadowNode(scene, a),
-		"flagtables create volumetric authored");
+    // --- create: addNode grows BOTH tables with the hierarchy ---
+    Scene scene;
+    const int root = addNode(scene, -1, 0);
+    const int a = addNode(scene, root, 1);
+    const int b = addNode(scene, root, 1);
+    Check(scene.hierarchy.size() == 3, "flagtables create hierarchy");
+    Check(scene.ditherCloseup.size() == 3 && scene.castsVolumetricShadow.size() == 3,
+          "flagtables create both tables grow");
+    MarkDitherCloseup(scene, a);
+    MarkCastsVolumetricShadow(scene, b);
+    Check(IsDitherCloseupNode(scene, a) && !IsDitherCloseupNode(scene, b),
+          "flagtables create dither authored");
+    Check(IsCastsVolumetricShadowNode(scene, b) && !IsCastsVolumetricShadowNode(scene, a),
+          "flagtables create volumetric authored");
 
-	// --- delete (Epoch 6b): deleteSceneNodes RETIRES the slot — the
-	// arrays keep their length, every survivor's id stays put, the
-	// retired slot's flags clear, and the freed slot re-enters
-	// circulation through addNode (generation bumped). ---
-	deleteSceneNodes(scene, { (uint32_t)a });
-	Check(scene.hierarchy.size() == 3, "flagtables delete hierarchy unchanged");
-	Check(scene.ditherCloseup.size() == 3
-		&& scene.castsVolumetricShadow.size() == 3,
-		"flagtables delete both tables unchanged");
-	Check(LiveNodeCount(scene) == 2, "flagtables delete live count");
-	// b KEPT id 2: the volumetric flag is exactly where it was authored
-	// (no slide onto another node — the pre-6b compaction moved b to 1).
-	Check(scene.castsVolumetricShadow[2] != 0
-		&& scene.castsVolumetricShadow[0] == 0
-		&& scene.castsVolumetricShadow[1] == 0,
-		"flagtables delete volumetric kept id");
-	// The retired slot's dither flag cleared with the node.
-	Check(scene.ditherCloseup[1] == 0,
-		"flagtables delete dither flag gone with node");
-	Check(!IsNodeAlive(scene, (uint32_t)a) && IsNodeAlive(scene, (uint32_t)b),
-		"flagtables delete liveness");
-	// Reuse: addNode pops the freed slot (LIFO free list) with CLEAN
-	// per-node state — the old life's flags/links must not leak.
-	const int c = addNode(scene, root, 1);
-	Check(c == a, "flagtables delete slot reused");
-	Check(scene.ditherCloseup[size_t(c)] == 0
-		&& scene.castsVolumetricShadow[size_t(c)] == 0,
-		"flagtables reuse clean flags");
-	Check(scene.hierarchy[size_t(c)].parent == root
-		&& scene.hierarchy[size_t(c)].firstChild == -1,
-		"flagtables reuse relinked under root");
+    // --- delete (Epoch 6b): deleteSceneNodes RETIRES the slot — the
+    // arrays keep their length, every survivor's id stays put, the
+    // retired slot's flags clear, and the freed slot re-enters
+    // circulation through addNode (generation bumped). ---
+    deleteSceneNodes(scene, {(uint32_t)a});
+    Check(scene.hierarchy.size() == 3, "flagtables delete hierarchy unchanged");
+    Check(scene.ditherCloseup.size() == 3 && scene.castsVolumetricShadow.size() == 3,
+          "flagtables delete both tables unchanged");
+    Check(LiveNodeCount(scene) == 2, "flagtables delete live count");
+    // b KEPT id 2: the volumetric flag is exactly where it was authored
+    // (no slide onto another node — the pre-6b compaction moved b to 1).
+    Check(scene.castsVolumetricShadow[2] != 0 && scene.castsVolumetricShadow[0] == 0 &&
+              scene.castsVolumetricShadow[1] == 0,
+          "flagtables delete volumetric kept id");
+    // The retired slot's dither flag cleared with the node.
+    Check(scene.ditherCloseup[1] == 0, "flagtables delete dither flag gone with node");
+    Check(!IsNodeAlive(scene, (uint32_t)a) && IsNodeAlive(scene, (uint32_t)b),
+          "flagtables delete liveness");
+    // Reuse: addNode pops the freed slot (LIFO free list) with CLEAN
+    // per-node state — the old life's flags/links must not leak.
+    const int c = addNode(scene, root, 1);
+    Check(c == a, "flagtables delete slot reused");
+    Check(scene.ditherCloseup[size_t(c)] == 0 && scene.castsVolumetricShadow[size_t(c)] == 0,
+          "flagtables reuse clean flags");
+    Check(scene.hierarchy[size_t(c)].parent == root && scene.hierarchy[size_t(c)].firstChild == -1,
+          "flagtables reuse relinked under root");
 
-	// --- merge: mergeScenes carries BOTH tables across sources ---
-	Scene s0;
-	{
-		const int r = addNode(s0, -1, 0);
-		const int n = addNode(s0, r, 1);
-		MarkDitherCloseup(s0, n);
-		MarkCastsVolumetricShadow(s0, r);
-	}
-	Scene s1;
-	{
-		const int r = addNode(s1, -1, 0);
-		MarkCastsVolumetricShadow(s1, r);
-	}
-	Scene merged;
-	mergeScenes(merged, { &s0, &s1 },
-		{ glm::mat4(1.0f), glm::mat4(1.0f) }, { 0u, 0u }, false, false, false);
-	// Layout: 0 = the merged root, 1..2 = s0 (shifted +1), 3 = s1 (one
-	// node) - four total, every source node keeping its own flags.
-	Check(merged.hierarchy.size() == 4, "flagtables merge hierarchy");
-	Check(merged.ditherCloseup.size() == 4
-		&& merged.castsVolumetricShadow.size() == 4,
-		"flagtables merge both tables carried");
-	if (merged.ditherCloseup.size() == 4)
-		Check(merged.ditherCloseup[2] != 0 && merged.ditherCloseup[1] == 0
-			&& merged.ditherCloseup[3] == 0,
-			"flagtables merge dither position");
-	if (merged.castsVolumetricShadow.size() == 4)
-		Check(merged.castsVolumetricShadow[1] != 0
-			&& merged.castsVolumetricShadow[3] != 0
-			&& merged.castsVolumetricShadow[0] == 0
-			&& merged.castsVolumetricShadow[2] == 0,
-			"flagtables merge volumetric position");
+    // --- merge: mergeScenes carries BOTH tables across sources ---
+    Scene s0;
+    {
+        const int r = addNode(s0, -1, 0);
+        const int n = addNode(s0, r, 1);
+        MarkDitherCloseup(s0, n);
+        MarkCastsVolumetricShadow(s0, r);
+    }
+    Scene s1;
+    {
+        const int r = addNode(s1, -1, 0);
+        MarkCastsVolumetricShadow(s1, r);
+    }
+    Scene merged;
+    mergeScenes(
+        merged, {&s0, &s1}, {glm::mat4(1.0f), glm::mat4(1.0f)}, {0u, 0u}, false, false, false);
+    // Layout: 0 = the merged root, 1..2 = s0 (shifted +1), 3 = s1 (one
+    // node) - four total, every source node keeping its own flags.
+    Check(merged.hierarchy.size() == 4, "flagtables merge hierarchy");
+    Check(merged.ditherCloseup.size() == 4 && merged.castsVolumetricShadow.size() == 4,
+          "flagtables merge both tables carried");
+    if (merged.ditherCloseup.size() == 4)
+        Check(merged.ditherCloseup[2] != 0 && merged.ditherCloseup[1] == 0 &&
+                  merged.ditherCloseup[3] == 0,
+              "flagtables merge dither position");
+    if (merged.castsVolumetricShadow.size() == 4)
+        Check(merged.castsVolumetricShadow[1] != 0 && merged.castsVolumetricShadow[3] != 0 &&
+                  merged.castsVolumetricShadow[0] == 0 && merged.castsVolumetricShadow[2] == 0,
+              "flagtables merge volumetric position");
 
-	// --- save/load: the legacy .scene blob round-trips BOTH sections ---
-	// (Epoch 6b: the FILE stays dense — a holed scene compacts on write,
-	// so the round trip renumbers ids; the flag bytes ride the
-	// compaction map and land on the same NODES.) Retire the reused
-	// slot first so the round trip actually crosses a hole.
-	deleteSceneNodes(scene, { (uint32_t)c });
-	MarkDitherCloseup(scene, b); // both kinds live on the 3-slot/2-live scene
-	// The names section rides between the mesh maps and the flag
-	// sections: saveScene writes it ONLY when non-empty while loadScene
-	// always consumes it when not at EOF, so a NAMELESS scene misaligns
-	// every later section (a latent legacy-format asymmetry - production
-	// scenes always carry names; this test populates them like real
-	// content so it exercises the flag sections' own bytes).
-	// The pool may already carry names from the earlier fixture, so
-	// address "root" by its PUSHED index - a hardcoded 0 pointed at
-	// the first pre-existing name and the compaction faithfully
-	// roundtripped THAT instead.
-	scene.nodeNames.push_back("root");
-	const uint32_t rootName = uint32_t(scene.nodeNames.size() - 1);
-	SetNodeNameIndex(scene, 0, rootName);
-	SetNodeNameIndex(scene, 2, rootName);
-	{
-		saveScene(TempTour().c_str(), scene);
-		Scene loaded;
-		loadScene(TempTour().c_str(), loaded);
-		Check(loaded.hierarchy.size() == 2 && LiveNodeCount(loaded) == 2,
-			"flagtables roundtrip compacts to dense");
-		// b (scene slot 2) loads as dense node 1 with BOTH its flags.
-		Check(loaded.ditherCloseup.size() == 2
-			&& loaded.ditherCloseup[0] == 0 && loaded.ditherCloseup[1] != 0,
-			"flagtables roundtrip dither table");
-		Check(loaded.castsVolumetricShadow.size() == 2
-			&& loaded.castsVolumetricShadow[0] == 0
-			&& loaded.castsVolumetricShadow[1] != 0,
-			"flagtables roundtrip volumetric table");
-		Check(getNodeName(loaded, 1) == "root",
-			"flagtables roundtrip name rides compaction");
-		std::error_code ec;
-		std::filesystem::remove(TempTour(), ec);
-	}
+    // --- save/load: the legacy .scene blob round-trips BOTH sections ---
+    // (Epoch 6b: the FILE stays dense — a holed scene compacts on write,
+    // so the round trip renumbers ids; the flag bytes ride the
+    // compaction map and land on the same NODES.) Retire the reused
+    // slot first so the round trip actually crosses a hole.
+    deleteSceneNodes(scene, {(uint32_t)c});
+    MarkDitherCloseup(scene, b); // both kinds live on the 3-slot/2-live scene
+    // The names section rides between the mesh maps and the flag
+    // sections: saveScene writes it ONLY when non-empty while loadScene
+    // always consumes it when not at EOF, so a NAMELESS scene misaligns
+    // every later section (a latent legacy-format asymmetry - production
+    // scenes always carry names; this test populates them like real
+    // content so it exercises the flag sections' own bytes).
+    // The pool may already carry names from the earlier fixture, so
+    // address "root" by its PUSHED index - a hardcoded 0 pointed at
+    // the first pre-existing name and the compaction faithfully
+    // roundtripped THAT instead.
+    scene.nodeNames.push_back("root");
+    const uint32_t rootName = uint32_t(scene.nodeNames.size() - 1);
+    SetNodeNameIndex(scene, 0, rootName);
+    SetNodeNameIndex(scene, 2, rootName);
+    {
+        saveScene(TempTour().c_str(), scene);
+        Scene loaded;
+        loadScene(TempTour().c_str(), loaded);
+        Check(loaded.hierarchy.size() == 2 && LiveNodeCount(loaded) == 2,
+              "flagtables roundtrip compacts to dense");
+        // b (scene slot 2) loads as dense node 1 with BOTH its flags.
+        Check(loaded.ditherCloseup.size() == 2 && loaded.ditherCloseup[0] == 0 &&
+                  loaded.ditherCloseup[1] != 0,
+              "flagtables roundtrip dither table");
+        Check(loaded.castsVolumetricShadow.size() == 2 && loaded.castsVolumetricShadow[0] == 0 &&
+                  loaded.castsVolumetricShadow[1] != 0,
+              "flagtables roundtrip volumetric table");
+        Check(getNodeName(loaded, 1) == "root", "flagtables roundtrip name rides compaction");
+        std::error_code ec;
+        std::filesystem::remove(TempTour(), ec);
+    }
 }
 
 // Per-material flag bits (MaterialValues::emissiveFactor.w - mesh.h):
@@ -4265,416 +4256,388 @@ void TestSceneFlagTables() {
 // "emissive" attr's flag PRESERVATION (it used to hard-write w=0 and
 // would silently clear the flags on every emissive edit).
 void TestMaterialContactFlag() {
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	// Import chain: the create-info bit lands in the flags word.
-	smvk::MaterialCreateInfo ciOn{};
-	ciOn.receiveContactShadows = true;
-	const auto mOn = cluster->CreateMaterial(ciOn);
-	smvk::MaterialCreateInfo ciOff{};
-	ciOff.receiveContactShadows = false;
-	const auto mOff = cluster->CreateMaterial(ciOff);
-	const smvk::Material* matOn = cluster->materials.get(mOn);
-	const smvk::Material* matOff = cluster->materials.get(mOff);
-	Check(matOn && matOff, "contactflag materials created");
-	if (matOn && matOff) {
-		Check(smvk::MaterialFlagsFromWord(matOn->values.emissiveFactor.w)
-			== smvk::kMaterialFlagReceiveContactShadows,
-			"contactflag import bit on");
-		Check(smvk::MaterialFlagsFromWord(
-			matOff->values.emissiveFactor.w) == 0u,
-			"contactflag import bit off");
-	}
-	// Tour attr: setMatAttr contactShadows 0 opts out; the emissive
-	// write in the SAME tour must not resurrect or clear anything.
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "setMatAttr -m " << mOn.index()
-			<< " -at contactShadows -v 0;\n"
-			"setMatAttr -m " << mOn.index()
-			<< " -at emissive -type \"float4\" -t 1 0.5 0.25 4;\n";
-		f.close();
-		smvk::tour::Doc doc;
-		std::string err;
-		std::vector<std::string> warns;
-		Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns),
-			"contactflag tour parse");
-		std::vector<std::string> rw;
-		std::string rerr;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr),
-			"contactflag tour replay ok");
-		const smvk::Material* mat = cluster->materials.get(
-			cluster->materials.getHandle(mOn.index()));
-		Check(mat && smvk::MaterialFlagsFromWord(
-			mat->values.emissiveFactor.w) == 0u,
-			"contactflag tour opt-out");
-		Check(mat && mat->values.emissiveFactor.x == 1.0f
-			&& mat->values.emissiveFactor.y == 0.5f
-			&& mat->values.params2.z == 4.0f,
-			"contactflag emissive applied");
-	}
-	// And back on, with another emissive edit in the same tour: the
-	// emissive write must PRESERVE the live flag word (the regression
-	// this test pins - the old w=0 write cleared it).
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "setMatAttr -m " << mOn.index()
-			<< " -at contactShadows -v 1;\n"
-			"setMatAttr -m " << mOn.index()
-			<< " -at emissive -type \"float4\" -t 0 1 0 2;\n";
-		f.close();
-		smvk::tour::Doc doc;
-		std::string err;
-		std::vector<std::string> warns;
-		Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns),
-			"contactflag tour parse 2");
-		std::vector<std::string> rw;
-		std::string rerr;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr),
-			"contactflag tour replay 2");
-		const smvk::Material* mat = cluster->materials.get(
-			cluster->materials.getHandle(mOn.index()));
-		Check(mat && smvk::MaterialFlagsFromWord(
-			mat->values.emissiveFactor.w)
-			== smvk::kMaterialFlagReceiveContactShadows,
-			"contactflag emissive preserves flags");
-	}
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    // Import chain: the create-info bit lands in the flags word.
+    smvk::MaterialCreateInfo ciOn{};
+    ciOn.receiveContactShadows = true;
+    const auto mOn = cluster->CreateMaterial(ciOn);
+    smvk::MaterialCreateInfo ciOff{};
+    ciOff.receiveContactShadows = false;
+    const auto mOff = cluster->CreateMaterial(ciOff);
+    const smvk::Material* matOn = cluster->materials.get(mOn);
+    const smvk::Material* matOff = cluster->materials.get(mOff);
+    Check(matOn && matOff, "contactflag materials created");
+    if (matOn && matOff) {
+        Check(smvk::MaterialFlagsFromWord(matOn->values.emissiveFactor.w) ==
+                  smvk::kMaterialFlagReceiveContactShadows,
+              "contactflag import bit on");
+        Check(smvk::MaterialFlagsFromWord(matOff->values.emissiveFactor.w) == 0u,
+              "contactflag import bit off");
+    }
+    // Tour attr: setMatAttr contactShadows 0 opts out; the emissive
+    // write in the SAME tour must not resurrect or clear anything.
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "setMatAttr -m " << mOn.index()
+          << " -at contactShadows -v 0;\n"
+             "setMatAttr -m "
+          << mOn.index() << " -at emissive -type \"float4\" -t 1 0.5 0.25 4;\n";
+        f.close();
+        smvk::tour::Doc doc;
+        std::string err;
+        std::vector<std::string> warns;
+        Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns), "contactflag tour parse");
+        std::vector<std::string> rw;
+        std::string rerr;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr),
+              "contactflag tour replay ok");
+        const smvk::Material* mat =
+            cluster->materials.get(cluster->materials.getHandle(mOn.index()));
+        Check(mat && smvk::MaterialFlagsFromWord(mat->values.emissiveFactor.w) == 0u,
+              "contactflag tour opt-out");
+        Check(mat && mat->values.emissiveFactor.x == 1.0f && mat->values.emissiveFactor.y == 0.5f &&
+                  mat->values.params2.z == 4.0f,
+              "contactflag emissive applied");
+    }
+    // And back on, with another emissive edit in the same tour: the
+    // emissive write must PRESERVE the live flag word (the regression
+    // this test pins - the old w=0 write cleared it).
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "setMatAttr -m " << mOn.index()
+          << " -at contactShadows -v 1;\n"
+             "setMatAttr -m "
+          << mOn.index() << " -at emissive -type \"float4\" -t 0 1 0 2;\n";
+        f.close();
+        smvk::tour::Doc doc;
+        std::string err;
+        std::vector<std::string> warns;
+        Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns), "contactflag tour parse 2");
+        std::vector<std::string> rw;
+        std::string rerr;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr),
+              "contactflag tour replay 2");
+        const smvk::Material* mat =
+            cluster->materials.get(cluster->materials.getHandle(mOn.index()));
+        Check(mat && smvk::MaterialFlagsFromWord(mat->values.emissiveFactor.w) ==
+                         smvk::kMaterialFlagReceiveContactShadows,
+              "contactflag emissive preserves flags");
+    }
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 void TestLightmapOptIn() {
-	Scene scene;
-	const int root = addNode(scene, -1, 0);
-	const int grp = addNode(scene, root, 1);
-	const int mesh = addNode(scene, grp, 2);
-	const int far = addNode(scene, root, 2);
-	// Empty flag table: everything skipped (default off).
-	Check(!IsLightmapNode(scene, mesh), "lm empty table skips");
-	Check(!IsLightmapNode(scene, root), "lm root skipped");
-	// Author the flag on the GROUP (subtree inheritance below it).
-	MarkLightmap(scene, grp);
-	Check(IsLightmapNode(scene, mesh), "lm subtree inherited");
-	Check(!IsLightmapNode(scene, far), "lm sibling unaffected");
-	Check(!IsLightmapNode(scene, root), "lm root unaffected");
-	ClearLightmap(scene, grp);
-	Check(!IsLightmapNode(scene, mesh), "lm clear skips");
-	// Legacy opt-out still force-skips (both flags honored).
-	MarkLightmap(scene, grp);
-	MarkNoLightmap(scene, grp);
-	Check(IsLightmapNode(scene, mesh), "lm opt-in reads");
-	Check(IsNoLightmapNode(scene, mesh), "lm opt-out reads");
-	ClearNoLightmap(scene, grp);
-	ClearLightmap(scene, grp);
-	// Tour verb round-trip: setLightmap replays onto the scene.
-	{
-		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
-		f << "setLightmap -n " << grp << " -type \"bool\" -v 1;\n";
-		f.close();
-		smvk::tour::Doc doc;
-		std::string err;
-		std::vector<std::string> warns;
-		Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns),
-			"lm verb parse");
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		addNode(cluster->scene, -1, 0);
-		const int cGrp = addNode(cluster->scene, 0, 1);
-		const int cMesh = addNode(cluster->scene, cGrp, 2);
-		(void)cGrp;
-		std::vector<std::string> rw;
-		std::string rerr;
-		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr),
-			"lm verb replay ok");
-		Check(IsLightmapNode(cluster->scene, cMesh),
-			"lm verb replay flag");
-		std::error_code ec;
-		std::filesystem::remove(TempTour(), ec);
-	}
-	// Override attr name round-trips.
-	Check(std::string(smvk::tour::OverrideAttrName(
-		smvk::tour::OverrideAttr::Lightmap)) == "lightmap",
-		"lm override attr name");
+    Scene scene;
+    const int root = addNode(scene, -1, 0);
+    const int grp = addNode(scene, root, 1);
+    const int mesh = addNode(scene, grp, 2);
+    const int far = addNode(scene, root, 2);
+    // Empty flag table: everything skipped (default off).
+    Check(!IsLightmapNode(scene, mesh), "lm empty table skips");
+    Check(!IsLightmapNode(scene, root), "lm root skipped");
+    // Author the flag on the GROUP (subtree inheritance below it).
+    MarkLightmap(scene, grp);
+    Check(IsLightmapNode(scene, mesh), "lm subtree inherited");
+    Check(!IsLightmapNode(scene, far), "lm sibling unaffected");
+    Check(!IsLightmapNode(scene, root), "lm root unaffected");
+    ClearLightmap(scene, grp);
+    Check(!IsLightmapNode(scene, mesh), "lm clear skips");
+    // Legacy opt-out still force-skips (both flags honored).
+    MarkLightmap(scene, grp);
+    MarkNoLightmap(scene, grp);
+    Check(IsLightmapNode(scene, mesh), "lm opt-in reads");
+    Check(IsNoLightmapNode(scene, mesh), "lm opt-out reads");
+    ClearNoLightmap(scene, grp);
+    ClearLightmap(scene, grp);
+    // Tour verb round-trip: setLightmap replays onto the scene.
+    {
+        std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+        f << "setLightmap -n " << grp << " -type \"bool\" -v 1;\n";
+        f.close();
+        smvk::tour::Doc doc;
+        std::string err;
+        std::vector<std::string> warns;
+        Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns), "lm verb parse");
+        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        addNode(cluster->scene, -1, 0);
+        const int cGrp = addNode(cluster->scene, 0, 1);
+        const int cMesh = addNode(cluster->scene, cGrp, 2);
+        (void)cGrp;
+        std::vector<std::string> rw;
+        std::string rerr;
+        Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr), "lm verb replay ok");
+        Check(IsLightmapNode(cluster->scene, cMesh), "lm verb replay flag");
+        std::error_code ec;
+        std::filesystem::remove(TempTour(), ec);
+    }
+    // Override attr name round-trips.
+    Check(std::string(smvk::tour::OverrideAttrName(smvk::tour::OverrideAttr::Lightmap)) ==
+              "lightmap",
+          "lm override attr name");
 }
 
 void TestTextureAssetForceImport() {
-	// The importer's FORCE lane (the watched-project live refresh,
-	// item 16): a re-import over a STANDING uri re-reads the edited
-	// source, lands a fresh handle under the SAME uri, reports the
-	// replaced handle for the caller's material-slot rewire, and the
-	// dedupe contract holds on BOTH sides of the swap. CPU-only: an
-	// OFFLINE cluster (the Mint path) + a hand-written TGA (stb
-	// decodes uncompressed true-color with no encoder dependency).
-	//
-	// The scratch tree sits at a RELATIVE path under the CWD — asset
-	// URIs are VFS-relative by contract (NormalizeAssetUri REJECTS
-	// drive-letter/absolute/.. paths), so an absolute temp dir would
-	// never register and every uri-keyed row would miss.
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	const fs::path dir = "tourmaline_texforce";
-	fs::remove_all(dir, ec);
-	fs::create_directories(dir, ec);
+    // The importer's FORCE lane (the watched-project live refresh,
+    // item 16): a re-import over a STANDING uri re-reads the edited
+    // source, lands a fresh handle under the SAME uri, reports the
+    // replaced handle for the caller's material-slot rewire, and the
+    // dedupe contract holds on BOTH sides of the swap. CPU-only: an
+    // OFFLINE cluster (the Mint path) + a hand-written TGA (stb
+    // decodes uncompressed true-color with no encoder dependency).
+    //
+    // The scratch tree sits at a RELATIVE path under the CWD — asset
+    // URIs are VFS-relative by contract (NormalizeAssetUri REJECTS
+    // drive-letter/absolute/.. paths), so an absolute temp dir would
+    // never register and every uri-keyed row would miss.
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = "tourmaline_texforce";
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
 
-	// A 2x2 uncompressed 32-bit top-down TGA; `fill` picks the pixel
-	// pattern so the two generations differ byte-wise.
-	const auto writeTga = [&dir](uint8_t fill) {
-		std::vector<uint8_t> tga(18 + 2 * 2 * 4, 0);
-		tga[2] = 2;    // uncompressed true-color
-		tga[12] = 2;   // width (LE)
-		tga[14] = 2;   // height (LE)
-		tga[16] = 32;  // bits per pixel
-		tga[17] = 0x28; // top-down origin + 8 attribute bits
-		for (size_t i = 18; i < tga.size(); ++i)
-			tga[i] = uint8_t(fill + (i - 18));
-		std::ofstream out(dir / "brick.tga",
-			std::ios::binary | std::ios::trunc);
-		out.write(reinterpret_cast<const char*>(tga.data()),
-			std::streamsize(tga.size()));
-	};
-	writeTga(10);
-	{
-		std::ofstream out(dir / "brick.texture",
-			std::ios::binary | std::ios::trunc);
-		out << "guid=3f3458f33359f0a4822a6ad788d7c3a0\n"
-			"name=brick\nsource=brick.tga\ncolorspace=srgb\n"
-			"format=rgba8\n";
-	}
+    // A 2x2 uncompressed 32-bit top-down TGA; `fill` picks the pixel
+    // pattern so the two generations differ byte-wise.
+    const auto writeTga = [&dir](uint8_t fill) {
+        std::vector<uint8_t> tga(18 + 2 * 2 * 4, 0);
+        tga[2] = 2;     // uncompressed true-color
+        tga[12] = 2;    // width (LE)
+        tga[14] = 2;    // height (LE)
+        tga[16] = 32;   // bits per pixel
+        tga[17] = 0x28; // top-down origin + 8 attribute bits
+        for (size_t i = 18; i < tga.size(); ++i)
+            tga[i] = uint8_t(fill + (i - 18));
+        std::ofstream out(dir / "brick.tga", std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(tga.data()), std::streamsize(tga.size()));
+    };
+    writeTga(10);
+    {
+        std::ofstream out(dir / "brick.texture", std::ios::binary | std::ios::trunc);
+        out << "guid=3f3458f33359f0a4822a6ad788d7c3a0\n"
+               "name=brick\nsource=brick.tga\ncolorspace=srgb\n"
+               "format=rgba8\n";
+    }
 
-	// NOTE: the cluster is HEAP-allocated like every other test — a
-	// Cluster carries INLINE 8192-entry pools (Pool::objects_[kMaxSize]),
-	// so a stack instance is megabytes and overflows the 1 MB stack at
-	// the function probe (the stack-overflow exit this test first
-	// shipped with, misread as an earlier test's crash through the
-	// buffered-stdout ordering).
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	const fs::path assetPath = dir / "brick.texture";
-	std::string err;
-	// First import: mints the offline handle + the uri/stash rows.
-	const smvk::TextureHandle h1 =
-		smvk::assets::ImportTextureAssetToCluster(
-			*cluster, assetPath, nullptr, err);
-	Check(h1.valid(), "texforce.first-import");
-	// The dedupe: a repeat import (no force) returns the SAME handle.
-	Check(smvk::assets::ImportTextureAssetToCluster(
-			*cluster, assetPath, nullptr, err) == h1,
-		"texforce.dedupe-keeps-standing");
-	// The source EDIT on disk + the FORCE re-import: a FRESH handle
-	// under the SAME uri, the OLD handle reported for the rewire.
-	writeTga(200); // the edited generation
-	smvk::TextureHandle replaced{};
-	const smvk::TextureHandle h2 =
-		smvk::assets::ImportTextureAssetToCluster(
-			*cluster, assetPath, nullptr, err, /*force=*/true,
-			&replaced);
-	Check(h2.valid() && h2 != h1, "texforce.force-fresh-handle");
-	Check(replaced == h1, "texforce.force-reports-replaced");
-	const std::string uri = assetPath.generic_string();
-	Check(cluster->FindTextureByUri(uri).value_or(smvk::TextureHandle{})
-			== h2, "texforce.uri-upserted");
-	{
-		// The stash rides the NEW payload (the cook embeds the fresh
-		// pixels, not the stale generation).
-		const std::vector<uint8_t>* stash = cluster->GetTextureSource(uri);
-		Check(stash != nullptr && !stash->empty(),
-			"texforce.stash-refreshed");
-	}
-	// The dedupe holds on the NEW entry too.
-	Check(smvk::assets::ImportTextureAssetToCluster(
-			*cluster, assetPath, nullptr, err) == h2,
-		"texforce.dedupe-against-new");
-	// A FAILED force (the source deleted) keeps the standing entry +
-	// reports nothing replaced — the consumer-side last-known-good.
-	fs::remove(dir / "brick.tga", ec);
-	smvk::TextureHandle replacedFail{};
-	const smvk::TextureHandle hFail =
-		smvk::assets::ImportTextureAssetToCluster(
-			*cluster, assetPath, nullptr, err, /*force=*/true,
-			&replacedFail);
-	Check(hFail.empty() && replacedFail.empty(),
-		"texforce.failed-force-keeps-standing");
-	Check(cluster->FindTextureByUri(uri).value_or(smvk::TextureHandle{})
-			== h2, "texforce.standing-survives-failure");
-	fs::remove_all(dir, ec);
+    // NOTE: the cluster is HEAP-allocated like every other test — a
+    // Cluster carries INLINE 8192-entry pools (Pool::objects_[kMaxSize]),
+    // so a stack instance is megabytes and overflows the 1 MB stack at
+    // the function probe (the stack-overflow exit this test first
+    // shipped with, misread as an earlier test's crash through the
+    // buffered-stdout ordering).
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    const fs::path assetPath = dir / "brick.texture";
+    std::string err;
+    // First import: mints the offline handle + the uri/stash rows.
+    const smvk::TextureHandle h1 =
+        smvk::assets::ImportTextureAssetToCluster(*cluster, assetPath, nullptr, err);
+    Check(h1.valid(), "texforce.first-import");
+    // The dedupe: a repeat import (no force) returns the SAME handle.
+    Check(smvk::assets::ImportTextureAssetToCluster(*cluster, assetPath, nullptr, err) == h1,
+          "texforce.dedupe-keeps-standing");
+    // The source EDIT on disk + the FORCE re-import: a FRESH handle
+    // under the SAME uri, the OLD handle reported for the rewire.
+    writeTga(200); // the edited generation
+    smvk::TextureHandle replaced{};
+    const smvk::TextureHandle h2 = smvk::assets::ImportTextureAssetToCluster(
+        *cluster, assetPath, nullptr, err, /*force=*/true, &replaced);
+    Check(h2.valid() && h2 != h1, "texforce.force-fresh-handle");
+    Check(replaced == h1, "texforce.force-reports-replaced");
+    const std::string uri = assetPath.generic_string();
+    Check(cluster->FindTextureByUri(uri).value_or(smvk::TextureHandle{}) == h2,
+          "texforce.uri-upserted");
+    {
+        // The stash rides the NEW payload (the cook embeds the fresh
+        // pixels, not the stale generation).
+        const std::vector<uint8_t>* stash = cluster->GetTextureSource(uri);
+        Check(stash != nullptr && !stash->empty(), "texforce.stash-refreshed");
+    }
+    // The dedupe holds on the NEW entry too.
+    Check(smvk::assets::ImportTextureAssetToCluster(*cluster, assetPath, nullptr, err) == h2,
+          "texforce.dedupe-against-new");
+    // A FAILED force (the source deleted) keeps the standing entry +
+    // reports nothing replaced — the consumer-side last-known-good.
+    fs::remove(dir / "brick.tga", ec);
+    smvk::TextureHandle replacedFail{};
+    const smvk::TextureHandle hFail = smvk::assets::ImportTextureAssetToCluster(
+        *cluster, assetPath, nullptr, err, /*force=*/true, &replacedFail);
+    Check(hFail.empty() && replacedFail.empty(), "texforce.failed-force-keeps-standing");
+    Check(cluster->FindTextureByUri(uri).value_or(smvk::TextureHandle{}) == h2,
+          "texforce.standing-survives-failure");
+    fs::remove_all(dir, ec);
 }
 
 void TestPhysicsAuthoring() {
-	using namespace smvk::tour;
-	Doc doc{};
-	std::string err;
-	Check(LoadTourFromString(
-		"attachPhysicsBody -n 0;\n"
-		"setPhysicsBodyAttr -n 0 -at motion -v 1;\n"
-		"setPhysicsBodyAttr -n 0 -at shape -v 2;\n"
-		"setPhysicsBodyAttr -n 0 -at radius -v 0.75;\n"
-		"setPhysicsBodyAttr -n 0 -at mass -v 12.5;\n"
-		"setPhysicsBodyAttr -n 0 -at sensor -type \"bool\" -v on;\n",
-		doc, err), "physics: parse authored commands");
-	Check(doc.commands.size() == 6, "physics: parsed command count");
-	Check(SaveTour(TempTour(), doc, err), "physics: tour save");
-	Doc loaded{};
-	Check(LoadTour(TempTour(), loaded, err), "physics: tour reload");
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	addNode(cluster->scene, -1, 0);
-	Check(ApplyTourToCluster(*cluster, loaded, nullptr, &err),
-		"physics: cook replay");
-	const auto* row = tour::scene::FindPhysicsBody(cluster->scene, 0);
-	Check(row && row->body.motion == 1 && row->body.shape == 2
-		&& row->body.sensor && row->body.mass == 12.5f
-		&& row->body.radius == 0.75f,
-		"physics: replay body properties");
-	Doc bad{};
-	Check(!LoadTourFromString(
-		"setPhysicsBodyAttr -n 0 -at mass -v -3;\n", bad, err),
-		"physics: negative mass rejected");
-	Check(!LoadTourFromString(
-		"setPhysicsBodyAttr -n 0 -at shape -v 3;\n", bad, err),
-		"physics: invalid collider rejected");
-	std::error_code ec;
-	std::filesystem::remove(TempTour(), ec);
+    using namespace smvk::tour;
+    Doc doc{};
+    std::string err;
+    Check(LoadTourFromString("attachPhysicsBody -n 0;\n"
+                             "setPhysicsBodyAttr -n 0 -at motion -v 1;\n"
+                             "setPhysicsBodyAttr -n 0 -at shape -v 2;\n"
+                             "setPhysicsBodyAttr -n 0 -at radius -v 0.75;\n"
+                             "setPhysicsBodyAttr -n 0 -at mass -v 12.5;\n"
+                             "setPhysicsBodyAttr -n 0 -at sensor -type \"bool\" -v on;\n",
+                             doc,
+                             err),
+          "physics: parse authored commands");
+    Check(doc.commands.size() == 6, "physics: parsed command count");
+    Check(SaveTour(TempTour(), doc, err), "physics: tour save");
+    Doc loaded{};
+    Check(LoadTour(TempTour(), loaded, err), "physics: tour reload");
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    addNode(cluster->scene, -1, 0);
+    Check(ApplyTourToCluster(*cluster, loaded, nullptr, &err), "physics: cook replay");
+    const auto* row = tour::scene::FindPhysicsBody(cluster->scene, 0);
+    Check(row && row->body.motion == 1 && row->body.shape == 2 && row->body.sensor &&
+              row->body.mass == 12.5f && row->body.radius == 0.75f,
+          "physics: replay body properties");
+    Doc bad{};
+    Check(!LoadTourFromString("setPhysicsBodyAttr -n 0 -at mass -v -3;\n", bad, err),
+          "physics: negative mass rejected");
+    Check(!LoadTourFromString("setPhysicsBodyAttr -n 0 -at shape -v 3;\n", bad, err),
+          "physics: invalid collider rejected");
+    std::error_code ec;
+    std::filesystem::remove(TempTour(), ec);
 }
 
 void TestRequiredNodeNames() {
-	using namespace smvk::tour;
-	std::string err;
-	Doc parsed;
-	for (const char* kind : { "transform", "pointLight", "spotLight",
-			"terrain", "givolume", "cubemap", "camera",
-			"audioSource", "audioRoom", "exportSettings",
-			"material", "file", "image" }) {
-		Check(!LoadTourFromString(std::string("createNode -at ")
-				+ kind + " -p 0;\n", parsed, err),
-			"all createNode kinds require -name");
-		Check(!LoadTourFromString(std::string("createNode -at ")
-				+ kind + " -p 0 -name \"\";\n", parsed, err),
-			"all createNode kinds reject empty names");
-	}
-	Check(!LoadTourFromString(
-			"createLight -p 0 -at point -t 0 0 0 10 5 0 0 0 0;\n",
-			parsed, err), "legacy create also requires name");
-	Check(!LoadTourFromString(
-			"rename -n 0 \"\";\n", parsed, err),
-			"rename cannot erase node name");
-	Check(!LoadTourFromString(
-			"reference -n 0 -source \"child.tour\";\n",
-			parsed, err), "scene reference requires name");
-	Check(!LoadTourFromString(
-			"source -n 0 -p \"mesh.geometry\";\n",
-			parsed, err), "sourced node requires name");
-	Check(!LoadTourFromString(
-			"fileNode -path \"tex.png\";\n",
-			parsed, err), "fileNode requires name");
-	Check(LoadTourFromString(
-			"reference -root -n 0 -source \"root.geometry\";\n",
-			parsed, err), "root reference has no placeholder node");
-	Doc invalid;
-	Command unnamed{};
-	unnamed.verb = Verb::CreateNode;
-	unnamed.nodeType = "image";
-	invalid.commands.push_back(unnamed);
-	Check(!SaveTour(TempTour(), invalid, err),
-		"writer refuses unnamed nodes before writing");
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	addNode(cluster->scene, -1, 0);
-	Check(!ApplyTourToCluster(*cluster, invalid, nullptr, &err),
-		"replay refuses programmatic unnamed nodes");
+    using namespace smvk::tour;
+    std::string err;
+    Doc parsed;
+    for (const char* kind : {"transform",
+                             "pointLight",
+                             "spotLight",
+                             "terrain",
+                             "givolume",
+                             "cubemap",
+                             "camera",
+                             "audioSource",
+                             "audioRoom",
+                             "exportSettings",
+                             "material",
+                             "file",
+                             "image"}) {
+        Check(!LoadTourFromString(std::string("createNode -at ") + kind + " -p 0;\n", parsed, err),
+              "all createNode kinds require -name");
+        Check(!LoadTourFromString(
+                  std::string("createNode -at ") + kind + " -p 0 -name \"\";\n", parsed, err),
+              "all createNode kinds reject empty names");
+    }
+    Check(!LoadTourFromString("createLight -p 0 -at point -t 0 0 0 10 5 0 0 0 0;\n", parsed, err),
+          "legacy create also requires name");
+    Check(!LoadTourFromString("rename -n 0 \"\";\n", parsed, err), "rename cannot erase node name");
+    Check(!LoadTourFromString("reference -n 0 -source \"child.tour\";\n", parsed, err),
+          "scene reference requires name");
+    Check(!LoadTourFromString("source -n 0 -p \"mesh.geometry\";\n", parsed, err),
+          "sourced node requires name");
+    Check(!LoadTourFromString("fileNode -path \"tex.png\";\n", parsed, err),
+          "fileNode requires name");
+    Check(LoadTourFromString("reference -root -n 0 -source \"root.geometry\";\n", parsed, err),
+          "root reference has no placeholder node");
+    Doc invalid;
+    Command unnamed{};
+    unnamed.verb = Verb::CreateNode;
+    unnamed.nodeType = "image";
+    invalid.commands.push_back(unnamed);
+    Check(!SaveTour(TempTour(), invalid, err), "writer refuses unnamed nodes before writing");
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    addNode(cluster->scene, -1, 0);
+    Check(!ApplyTourToCluster(*cluster, invalid, nullptr, &err),
+          "replay refuses programmatic unnamed nodes");
 }
 
-
 void TestReferenceNamespaceFuzz() {
-	using namespace smvk::tour;
-	std::string err;
-	Doc doc;
-	const auto makeLine = [](const std::string& ns) {
-		return std::string("reference -n 0 -source \"part.tour\" -name \"instance\" -namespace \"")
-			+ ns + "\";\n";
-	};
-	for (const std::string& ns : { "", ":", "a:b", "a/b",
-		"../escape", "branch:leaf", "/absolute" })
-		Check(!LoadTourFromString(makeLine(ns), doc, err),
-			"namespace negative corpus rejects invalid values");
-	for (const char* line : {
-		"reference -n 0 -source \"part.tour\" -name \"part\" -namespace;\n",
-		"reference -n 0 -source \"part.tour\" -name \"part\" -namespace -t 1 2 3;\n",
-		"reference -root -n 0 -source \"root.geometry\" -namespace \"root\";\n",
-		"reference -n 0 -source \"mesh.geometry\" -name \"part\" -namespace \"mesh\";\n" })
-		Check(!LoadTourFromString(line, doc, err),
-			"namespace forbidden for root and mesh references");
+    using namespace smvk::tour;
+    std::string err;
+    Doc doc;
+    const auto makeLine = [](const std::string& ns) {
+        return std::string(
+                   "reference -n 0 -source \"part.tour\" -name \"instance\" -namespace \"") +
+               ns + "\";\n";
+    };
+    for (const std::string& ns : {"", ":", "a:b", "a/b", "../escape", "branch:leaf", "/absolute"})
+        Check(!LoadTourFromString(makeLine(ns), doc, err),
+              "namespace negative corpus rejects invalid values");
+    for (const char* line :
+         {"reference -n 0 -source \"part.tour\" -name \"part\" -namespace;\n",
+          "reference -n 0 -source \"part.tour\" -name \"part\" -namespace -t 1 2 3;\n",
+          "reference -root -n 0 -source \"root.geometry\" -namespace \"root\";\n",
+          "reference -n 0 -source \"mesh.geometry\" -name \"part\" -namespace \"mesh\";\n"})
+        Check(!LoadTourFromString(line, doc, err),
+              "namespace forbidden for root and mesh references");
 
-	// Fixed-seed grammar mutation: stable and reproducible in CI.
-	uint32_t seed = 0x6e735f31u;
-	const auto rnd = [&]() {
-		seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-		return seed;
-	};
-	const std::string alphabet =
-		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/.";
-	for (int k = 0; k < 256; ++k) {
-		std::string ns;
-		const size_t len = 1 + rnd() % 28;
-		for (size_t i = 0; i < len; ++i)
-			ns += alphabet[rnd() % alphabet.size()];
-		const bool valid = ns.find_first_of(":/") == std::string::npos;
-		const bool parsed = LoadTourFromString(makeLine(ns), doc, err);
-		Check(parsed == valid, "namespace fuzz grammar accepted/rejected");
-		if (!parsed) continue;
-		Check(doc.references.size() == 1
-			&& doc.references[0].nameSpace == ns,
-			"namespace fuzz parsed value is exact");
-		const std::string path = TempTour();
-		Check(SaveTour(path, doc, err), "namespace fuzz save");
-		Doc loaded;
-		Check(LoadTour(path, loaded, err)
-			&& loaded.references.size() == 1
-			&& loaded.references[0].nameSpace == ns,
-			"namespace fuzz stable file roundtrip");
-	}
-	Check(LoadTourFromString(
-		"reference -n 0 -source \"part.tour\" -name \"part\";\n", doc, err)
-		&& doc.references.size() == 1 && doc.references[0].nameSpace.empty(),
-		"namespace missing flag uses old fallback");
+    // Fixed-seed grammar mutation: stable and reproducible in CI.
+    uint32_t seed = 0x6e735f31u;
+    const auto rnd = [&]() {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        return seed;
+    };
+    const std::string alphabet =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/.";
+    for (int k = 0; k < 256; ++k) {
+        std::string ns;
+        const size_t len = 1 + rnd() % 28;
+        for (size_t i = 0; i < len; ++i)
+            ns += alphabet[rnd() % alphabet.size()];
+        const bool valid = ns.find_first_of(":/") == std::string::npos;
+        const bool parsed = LoadTourFromString(makeLine(ns), doc, err);
+        Check(parsed == valid, "namespace fuzz grammar accepted/rejected");
+        if (!parsed)
+            continue;
+        Check(doc.references.size() == 1 && doc.references[0].nameSpace == ns,
+              "namespace fuzz parsed value is exact");
+        const std::string path = TempTour();
+        Check(SaveTour(path, doc, err), "namespace fuzz save");
+        Doc loaded;
+        Check(LoadTour(path, loaded, err) && loaded.references.size() == 1 &&
+                  loaded.references[0].nameSpace == ns,
+              "namespace fuzz stable file roundtrip");
+    }
+    Check(LoadTourFromString("reference -n 0 -source \"part.tour\" -name \"part\";\n", doc, err) &&
+              doc.references.size() == 1 && doc.references[0].nameSpace.empty(),
+          "namespace missing flag uses old fallback");
 }
 
 void TestMayaNodeNamePropagation() {
-	using namespace smvk::tour;
-	Scene scene;
-	const int root = addNode(scene, -1, 0);
-	const int a = addNode(scene, root, 1);
-	const int b = addNode(scene, root, 1);
-	const int leaf = addNode(scene, a, 2);
-	Check(!getNodeName(scene, root).empty()
-		&& !getNodeName(scene, a).empty()
-		&& !getNodeName(scene, leaf).empty(),
-		"every allocated node has a nonempty name");
-	setNodeName(scene, a, "Group");
-	setNodeName(scene, b, "Group");
-	Check(getNodeName(scene, b) == "Group1",
-		"sibling collision receives Maya-style suffix");
-	setNodeName(scene, leaf, "Mesh");
-	const std::string rootPath = getNodeName(scene, root);
-	Check(DagFullPath(scene, uint32_t(leaf))
-		== rootPath + "/Group/Mesh", "child full DAG path");
-	setNodeName(scene, a, "Renamed");
-	Check(DagFullPath(scene, uint32_t(leaf))
-		== rootPath + "/Renamed/Mesh", "ancestor rename propagates path");
-	TourReparent(scene, uint32_t(leaf), uint32_t(b));
-	Check(DagFullPath(scene, uint32_t(leaf))
-		== rootPath + "/Group1/Mesh", "reparent propagates path");
-	const int other = addNode(scene, a, 2);
-	setNodeName(scene, other, "Mesh");
-	TourReparent(scene, uint32_t(leaf), uint32_t(a));
-	Check(getNodeName(scene, leaf) == "Mesh1",
-		"reparent collision gives child unique sibling name");
-	Check(DagFullPath(scene, uint32_t(leaf))
-		== rootPath + "/Renamed/Mesh1", "reparent collision propagates path");
-	uint32_t resolved = UINT32_MAX;
-	Check(ResolveParentTarget(scene, "Renamed/Mesh1", resolved)
-		&& resolved == uint32_t(leaf), "path lookup uses moved name");
-	Check(!ResolveParentTarget(scene, "Renamed/Mesh", resolved)
-		|| resolved == uint32_t(other), "paths never target stale leaf");
+    using namespace smvk::tour;
+    Scene scene;
+    const int root = addNode(scene, -1, 0);
+    const int a = addNode(scene, root, 1);
+    const int b = addNode(scene, root, 1);
+    const int leaf = addNode(scene, a, 2);
+    Check(!getNodeName(scene, root).empty() && !getNodeName(scene, a).empty() &&
+              !getNodeName(scene, leaf).empty(),
+          "every allocated node has a nonempty name");
+    setNodeName(scene, a, "Group");
+    setNodeName(scene, b, "Group");
+    Check(getNodeName(scene, b) == "Group1", "sibling collision receives Maya-style suffix");
+    setNodeName(scene, leaf, "Mesh");
+    const std::string rootPath = getNodeName(scene, root);
+    Check(DagFullPath(scene, uint32_t(leaf)) == rootPath + "/Group/Mesh", "child full DAG path");
+    setNodeName(scene, a, "Renamed");
+    Check(DagFullPath(scene, uint32_t(leaf)) == rootPath + "/Renamed/Mesh",
+          "ancestor rename propagates path");
+    TourReparent(scene, uint32_t(leaf), uint32_t(b));
+    Check(DagFullPath(scene, uint32_t(leaf)) == rootPath + "/Group1/Mesh",
+          "reparent propagates path");
+    const int other = addNode(scene, a, 2);
+    setNodeName(scene, other, "Mesh");
+    TourReparent(scene, uint32_t(leaf), uint32_t(a));
+    Check(getNodeName(scene, leaf) == "Mesh1",
+          "reparent collision gives child unique sibling name");
+    Check(DagFullPath(scene, uint32_t(leaf)) == rootPath + "/Renamed/Mesh1",
+          "reparent collision propagates path");
+    uint32_t resolved = UINT32_MAX;
+    Check(ResolveParentTarget(scene, "Renamed/Mesh1", resolved) && resolved == uint32_t(leaf),
+          "path lookup uses moved name");
+    Check(!ResolveParentTarget(scene, "Renamed/Mesh", resolved) || resolved == uint32_t(other),
+          "paths never target stale leaf");
 }
 
 void TestShapePlacements() {
@@ -4689,75 +4652,74 @@ void TestShapePlacements() {
     Check(LoadTourFromString(source, doc, err), "shape placements parse");
     Check(doc.shapePlacements.size() == 2, "both shape placements retained");
     if (doc.shapePlacements.size() == 2) {
-        Check(doc.shapePlacements[0].name == "Trail"
-            && doc.shapePlacements[0].position == glm::vec3(1,2,3),
-            "shape placement transform parsed");
-        Check(!doc.shapePlacements[1].enabled,
-            "shape placement enabled flag parsed");
+        Check(doc.shapePlacements[0].name == "Trail" &&
+                  doc.shapePlacements[0].position == glm::vec3(1, 2, 3),
+              "shape placement transform parsed");
+        Check(!doc.shapePlacements[1].enabled, "shape placement enabled flag parsed");
     }
     Doc packed;
     Check(LoadTourFromString(SerializeShapePlacements(doc), packed, err),
-        "cooked shape sidecar parses");
-    Check(packed.shapePlacements.size() == 2,
-        "cooked shape sidecar carries both instances");
+          "cooked shape sidecar parses");
+    Check(packed.shapePlacements.size() == 2, "cooked shape sidecar carries both instances");
     const std::string path = TempTour();
     Check(SaveTour(path, doc, err), "save shape placements to tour");
     Doc loaded;
     Check(LoadTour(path, loaded, err), "load saved shape placements");
-    Check(loaded.shapePlacements.size() == 2,
-        "shape placements survive .tour roundtrip");
+    Check(loaded.shapePlacements.size() == 2, "shape placements survive .tour roundtrip");
     Check(!LoadTourFromString(
-        "shapeInstance -name \"Bad\" -source \"../escape.shape\";\n",
-        loaded, err), "shape placement rejects traversal");
-    Check(!LoadTourFromString(
-        "shapeInstance -name \"Same\" -source \"a.shape\";\n"
-        "shapeInstance -name \"Same\" -source \"b.shape\";\n",
-        loaded, err), "shape placement rejects duplicate names");
-    Check(!LoadTourFromString(
-        "shapeInstance -name \"Bad\" -source \"a.shape\" "
-        "-t 1 NaN 2;\n", loaded, err),
-        "shape placement rejects nonfinite coordinates");
+              "shapeInstance -name \"Bad\" -source \"../escape.shape\";\n", loaded, err),
+          "shape placement rejects traversal");
+    Check(!LoadTourFromString("shapeInstance -name \"Same\" -source \"a.shape\";\n"
+                              "shapeInstance -name \"Same\" -source \"b.shape\";\n",
+                              loaded,
+                              err),
+          "shape placement rejects duplicate names");
+    Check(!LoadTourFromString("shapeInstance -name \"Bad\" -source \"a.shape\" "
+                              "-t 1 NaN 2;\n",
+                              loaded,
+                              err),
+          "shape placement rejects nonfinite coordinates");
 }
 
 int main() {
-	TestShapePlacements();
-	TestPhysicsAuthoring();
-	TestRequiredNodeNames();
-	TestMayaNodeNamePropagation();
-	TestRoundTrip();
-	TestFileNodes();
-	TestCamera();
-	TestAudioSource();
-	TestAudioRoom();
-	TestTextureCacheConsult();
-	TestTourFormat();
-	TestUnknownVerbSkipped();
-	TestReparent();
-	TestDelete();
-	TestDeleteAddressing();
-	TestLogicalNodeTargets();
-	TestIdentityLayers();
-	TestReplay();
-	TestReferences();
-	TestReferenceNamespaceFuzz();
-	TestNestedModernTourRoot();
-	TestTourReferences();
-	TestLightVerbs();
-	TestTerrainVerbs();
-	TestGiVolumeVerbs();
-	TestCubemapVerbs();
-	TestCreateParentSentinel();
-	TestRootReference();
-	TestReferenceGuid();
-	TestCreateNode();
-	TestMaterialAssets();
-	TestTextureAssets();
-	TestTextureAssetForceImport();
-	TestTourFuzz();
-	TestDitherCloseup();
-	TestSceneFlagTables();
-	TestMaterialContactFlag();
-	TestLightmapOptIn();
-	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
-	return g_failures == 0 ? 0 : 1;
+    TestShapePlacements();
+    TestPhysicsAuthoring();
+    TestRequiredNodeNames();
+    TestMayaNodeNamePropagation();
+    TestRoundTrip();
+    TestFileNodes();
+    TestCamera();
+    TestAudioSource();
+    TestAudioRoom();
+    TestTextureCacheConsult();
+    TestTourFormat();
+    TestUnknownVerbSkipped();
+    TestReparent();
+    TestDelete();
+    TestDeleteAddressing();
+    TestLogicalNodeTargets();
+    TestIdentityLayers();
+    TestReplay();
+    TestReferences();
+    TestReferenceNamespaceFuzz();
+    TestNestedModernTourRoot();
+    TestTourReferences();
+    TestLightVerbs();
+    TestTerrainVerbs();
+    TestGiVolumeVerbs();
+    TestCubemapVerbs();
+    TestCreateParentSentinel();
+    TestRootReference();
+    TestReferenceGuid();
+    TestCreateNode();
+    TestMaterialAssets();
+    TestTextureAssets();
+    TestTextureAssetForceImport();
+    TestTourFuzz();
+    TestDitherCloseup();
+    TestSceneFlagTables();
+    TestMaterialContactFlag();
+    TestLightmapOptIn();
+    std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
+    return g_failures == 0 ? 0 : 1;
 }

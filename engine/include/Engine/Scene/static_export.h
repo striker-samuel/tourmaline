@@ -21,12 +21,10 @@ struct StaticExportHierarchy {
 inline StaticExportHierarchy BuildStaticExportHierarchy(const Scene& scene) {
     const size_t count = scene.hierarchy.size();
     StaticExportHierarchy out{
-        scene.hierarchy, scene.localTransform, std::vector<uint8_t>(count, 0)
-    };
+        scene.hierarchy, scene.localTransform, std::vector<uint8_t>(count, 0)};
     std::vector<uint8_t> flattened(count, 0);
     const auto live = [&](int n) {
-        return n >= 0 && size_t(n) < count
-            && IsLiveSlot(scene, uint32_t(n));
+        return n >= 0 && size_t(n) < count && IsLiveSlot(scene, uint32_t(n));
     };
 
     // Recompute from local transforms instead of trusting globalTransform:
@@ -39,8 +37,7 @@ inline StaticExportHierarchy BuildStaticExportHierarchy(const Scene& scene) {
         int n = int(s);
         size_t depth = 0;
         while (live(n) && depth++ < count) {
-            if (size_t(n) < scene.staticRoot.size()
-                && scene.staticRoot[size_t(n)] != 0)
+            if (size_t(n) < scene.staticRoot.size() && scene.staticRoot[size_t(n)] != 0)
                 isStatic = true;
             world = scene.localTransform[size_t(n)] * world;
             n = scene.hierarchy[size_t(n)].parent;
@@ -51,9 +48,7 @@ inline StaticExportHierarchy BuildStaticExportHierarchy(const Scene& scene) {
         out.staticRoots[s] = 1;
         out.transforms[s] = world;
         out.hierarchy[s] = Hierarchy{
-            .parent = -1, .firstChild = -1, .nextSibling = -1,
-            .lastSibling = -1, .level = 0
-        };
+            .parent = -1, .firstChild = -1, .nextSibling = -1, .lastSibling = -1, .level = 0};
     }
 
     // A dynamic parent must no longer point into a detached static tree.

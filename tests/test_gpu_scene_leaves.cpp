@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 // Headless GPUIR leaf membership, coarse bounds and dirty-range contracts.
-#include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/gpu_scene_leaf.h>
+#include <Engine/Renderer/gpu_scene_world.h>
 
 #include <array>
 #include <cstdio>
@@ -14,10 +14,18 @@
 // whose NDEBUG no-op makes Release runs vacuous - and any side effect
 // inside an assert (see test_gpu_scene_candidates.cpp:
 // assert(leaves.Flush(db))) was silently skipped, crashing the run.
-#define CHECK(cond) do { ++g_checks; if (!(cond)) { ++g_failures; \
-    std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } \
-    while (0)
-namespace { int g_checks = 0; int g_failures = 0; }
+#define CHECK(cond)                                                                                \
+    do {                                                                                           \
+        ++g_checks;                                                                                \
+        if (!(cond)) {                                                                             \
+            ++g_failures;                                                                          \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                   \
+        }                                                                                          \
+    } while (0)
+namespace {
+int g_checks = 0;
+int g_failures = 0;
+} // namespace
 
 using namespace tour::gpu_scene;
 
@@ -25,8 +33,10 @@ namespace {
 using Id = Handle<Instance>;
 void Apply(SceneRegistry& source, LeafRegistry& leaves, RenderDatabase& db) {
     auto deltas = source.TakeDeltas();
-    for (Id id : deltas.retired) leaves.Remove(id);
-    for (Id id : deltas.changed) leaves.Upsert(id, db);
+    for (Id id : deltas.retired)
+        leaves.Remove(id);
+    for (Id id : deltas.changed)
+        leaves.Upsert(id, db);
     CHECK(leaves.Flush(db));
 }
 
@@ -115,11 +125,13 @@ void CheckMembership() {
     CHECK(source.PublishMesh(a.mesh, levels, false, db));
     leaves.RefreshSafety();
     CHECK(leaves.Flush(db));
-    for (const auto& t : leaves.Tickets(db)) CHECK(!t.boundsComplete);
+    for (const auto& t : leaves.Tickets(db))
+        CHECK(!t.boundsComplete);
     CHECK(source.PublishMesh(a.mesh, levels, true, db));
     leaves.RefreshSafety();
     CHECK(leaves.Flush(db));
-    for (const auto& t : leaves.Tickets(db)) CHECK(t.boundsComplete);
+    for (const auto& t : leaves.Tickets(db))
+        CHECK(t.boundsComplete);
 
     // Destroyed source is removed and cannot alias a reused instance slot.
     auto state = source.Reconcile(std::span<const SourceRecord>(&b, 1), db);
@@ -153,8 +165,8 @@ void CheckLargeWorldAndShear() {
     const auto mesh = db.meshes.Insert(Mesh{0, 0, 0, MeshFlagCompleteBounds});
     CHECK(mesh);
     Instance instance{};
-    instance.worldPosition = tour::math::SplitDoubleFloat(
-        glm::dvec3(-1e12 + 0.125, 12.0, 1e12 + 0.5));
+    instance.worldPosition =
+        tour::math::SplitDoubleFloat(glm::dvec3(-1e12 + 0.125, 12.0, 1e12 + 0.5));
     instance.localSphere = glm::vec4(0, 0, 0, 4);
     instance.refs = glm::uvec4(mesh.slot, mesh.generation, 0, 0);
     // Sheared basis: Frobenius norm must include off-axis terms.

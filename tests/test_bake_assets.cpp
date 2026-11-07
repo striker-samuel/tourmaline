@@ -35,239 +35,219 @@ int g_failures = 0;
 int g_checks = 0;
 
 void Check(bool cond, const char* name) {
-	++g_checks;
-	if (cond) {
-		std::cout << "PASS " << name << "\n";
-	}
-	else {
-		++g_failures;
-		std::cout << "FAIL " << name << "\n";
-	}
+    ++g_checks;
+    if (cond) {
+        std::cout << "PASS " << name << "\n";
+    } else {
+        ++g_failures;
+        std::cout << "FAIL " << name << "\n";
+    }
 }
 
 std::string TempDir() {
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	fs::path dir = fs::temp_directory_path(ec)
-		/ "tourmaline_bakeassets";
-	fs::create_directories(dir, ec);
-	return dir.generic_string();
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path dir = fs::temp_directory_path(ec) / "tourmaline_bakeassets";
+    fs::create_directories(dir, ec);
+    return dir.generic_string();
 }
 
 void TestSplitManifestRow() {
-	using smvk::bake::SplitManifestRow;
-	Check(SplitManifestRow("gi/abc.sgrv")
-			== "gi/abc.sgrv", "bake.row.legacy");
-	Check(SplitManifestRow(
-			"0123456789abcdef0123456789abcdef gi/abc.sgrv  # bar")
-			== "gi/abc.sgrv", "bake.row.guid-note");
-	Check(SplitManifestRow("0123456789abcdef0123456789abcdef gi/abc.sgrv")
-			== "gi/abc.sgrv", "bake.row.guid-bare");
-	Check(SplitManifestRow("  gi/abc.sgrv  ") == "gi/abc.sgrv",
-		"bake.row.trim");
-	Check(SplitManifestRow("") == "", "bake.row.blank");
-	Check(SplitManifestRow("# convex GI volumes") == "",
-		"bake.row.comment");
-	Check(SplitManifestRow("not-a-guid-hex gi/abc.sgrv")
-			== "not-a-guid-hex gi/abc.sgrv", "bake.row.nonhex-kept");
+    using smvk::bake::SplitManifestRow;
+    Check(SplitManifestRow("gi/abc.sgrv") == "gi/abc.sgrv", "bake.row.legacy");
+    Check(SplitManifestRow("0123456789abcdef0123456789abcdef gi/abc.sgrv  # bar") == "gi/abc.sgrv",
+          "bake.row.guid-note");
+    Check(SplitManifestRow("0123456789abcdef0123456789abcdef gi/abc.sgrv") == "gi/abc.sgrv",
+          "bake.row.guid-bare");
+    Check(SplitManifestRow("  gi/abc.sgrv  ") == "gi/abc.sgrv", "bake.row.trim");
+    Check(SplitManifestRow("") == "", "bake.row.blank");
+    Check(SplitManifestRow("# convex GI volumes") == "", "bake.row.comment");
+    Check(SplitManifestRow("not-a-guid-hex gi/abc.sgrv") == "not-a-guid-hex gi/abc.sgrv",
+          "bake.row.nonhex-kept");
 }
 
 void TestCubemanifestGuid() {
-	using smvk::CubemapManifestEntry;
-	const std::string g1 = "0123456789abcdef0123456789abcdef";
-	const std::string g2 = "fedcba9876543210fedcba9876543210";
-	std::vector<CubemapManifestEntry> rows;
-	{
-		CubemapManifestEntry e{};
-		e.vfsPath = "textures/cubemaps/" + g1 + ".ktx2";
-		e.position = glm::vec3(1.0f, 2.0f, 3.0f);
-		e.influenceRadius = 10.0f;
-		e.fadeRadius = 5.0f;
-		e.pinned = true;
-		e.guid = g1;
-		rows.push_back(e);
-	}
-	{
-		CubemapManifestEntry e{};
-		e.vfsPath = "textures/cubemaps/" + g2 + ".ktx2";
-		e.position = glm::vec3(4.0f, 5.0f, 6.0f);
-		e.influenceRadius = 8.0f;
-		e.fadeRadius = 4.0f;
-		e.guid = g2;
-		rows.push_back(e);
-	}
-	const std::string text = smvk::CubemapManifestSerialize(rows);
-	std::vector<CubemapManifestEntry> back;
-	std::string err;
-	Check(smvk::CubemapManifestParse(text, back, err)
-		&& back.size() == 2, "bake.cubemanifest.guid-roundtrip");
-	if (back.size() == 2) {
-		Check(back[0].guid == g1 && back[0].pinned
-			&& back[0].vfsPath == rows[0].vfsPath
-			&& std::abs(back[0].position.x - 1.0f) < 1e-4f,
-			"bake.cubemanifest.guid-row");
-		Check(back[1].guid == g2 && !back[1].pinned,
-			"bake.cubemanifest.guid-row-unpinned");
-	}
-	// Legacy rows (no guid) parse exactly as before.
-	{
-		std::vector<CubemapManifestEntry> legacy;
-		Check(smvk::CubemapManifestParse(
-				"textures/cubemaps/sponza_3.ktx2 1 2 3 10 5\n"
-				"textures/cubemaps/sponza_4.ktx2 4 5 6 10 5 pin\n",
-				legacy, err)
-			&& legacy.size() == 2, "bake.cubemanifest.legacy-roundtrip");
-		if (legacy.size() == 2)
-			Check(legacy[0].guid.empty() && !legacy[0].pinned
-				&& legacy[1].guid.empty() && legacy[1].pinned
-				&& legacy[1].vfsPath
-					== "textures/cubemaps/sponza_4.ktx2",
-				"bake.cubemanifest.legacy-fields");
-	}
-	// Unknown trailing tokens still fail (forward strictness).
-	{
-		std::vector<CubemapManifestEntry> bad;
-		Check(!smvk::CubemapManifestParse(
-				"textures/cubemaps/a.ktx2 1 2 3 10 5 frobnicate\n",
-				bad, err), "bake.cubemanifest.unknown-token-fails");
-	}
-	{
-		std::vector<CubemapManifestEntry> bad;
-		Check(!smvk::CubemapManifestParse(
-				"textures/cubemaps/a.ktx2 1 2 3 10 5 guid nothex\n",
-				bad, err), "bake.cubemanifest.bad-guid-fails");
-	}
-	std::error_code ec;
-	std::filesystem::remove_all(TempDir(), ec);
+    using smvk::CubemapManifestEntry;
+    const std::string g1 = "0123456789abcdef0123456789abcdef";
+    const std::string g2 = "fedcba9876543210fedcba9876543210";
+    std::vector<CubemapManifestEntry> rows;
+    {
+        CubemapManifestEntry e{};
+        e.vfsPath = "textures/cubemaps/" + g1 + ".ktx2";
+        e.position = glm::vec3(1.0f, 2.0f, 3.0f);
+        e.influenceRadius = 10.0f;
+        e.fadeRadius = 5.0f;
+        e.pinned = true;
+        e.guid = g1;
+        rows.push_back(e);
+    }
+    {
+        CubemapManifestEntry e{};
+        e.vfsPath = "textures/cubemaps/" + g2 + ".ktx2";
+        e.position = glm::vec3(4.0f, 5.0f, 6.0f);
+        e.influenceRadius = 8.0f;
+        e.fadeRadius = 4.0f;
+        e.guid = g2;
+        rows.push_back(e);
+    }
+    const std::string text = smvk::CubemapManifestSerialize(rows);
+    std::vector<CubemapManifestEntry> back;
+    std::string err;
+    Check(smvk::CubemapManifestParse(text, back, err) && back.size() == 2,
+          "bake.cubemanifest.guid-roundtrip");
+    if (back.size() == 2) {
+        Check(back[0].guid == g1 && back[0].pinned && back[0].vfsPath == rows[0].vfsPath &&
+                  std::abs(back[0].position.x - 1.0f) < 1e-4f,
+              "bake.cubemanifest.guid-row");
+        Check(back[1].guid == g2 && !back[1].pinned, "bake.cubemanifest.guid-row-unpinned");
+    }
+    // Legacy rows (no guid) parse exactly as before.
+    {
+        std::vector<CubemapManifestEntry> legacy;
+        Check(smvk::CubemapManifestParse("textures/cubemaps/sponza_3.ktx2 1 2 3 10 5\n"
+                                         "textures/cubemaps/sponza_4.ktx2 4 5 6 10 5 pin\n",
+                                         legacy,
+                                         err) &&
+                  legacy.size() == 2,
+              "bake.cubemanifest.legacy-roundtrip");
+        if (legacy.size() == 2)
+            Check(legacy[0].guid.empty() && !legacy[0].pinned && legacy[1].guid.empty() &&
+                      legacy[1].pinned && legacy[1].vfsPath == "textures/cubemaps/sponza_4.ktx2",
+                  "bake.cubemanifest.legacy-fields");
+    }
+    // Unknown trailing tokens still fail (forward strictness).
+    {
+        std::vector<CubemapManifestEntry> bad;
+        Check(!smvk::CubemapManifestParse(
+                  "textures/cubemaps/a.ktx2 1 2 3 10 5 frobnicate\n", bad, err),
+              "bake.cubemanifest.unknown-token-fails");
+    }
+    {
+        std::vector<CubemapManifestEntry> bad;
+        Check(!smvk::CubemapManifestParse(
+                  "textures/cubemaps/a.ktx2 1 2 3 10 5 guid nothex\n", bad, err),
+              "bake.cubemanifest.bad-guid-fails");
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(TempDir(), ec);
 }
 
 } // namespace
 
 void TestGiCookRoundTrip() {
-	using smvk::cook::GiCookAsset;
-	const std::string guid = "0123456789abcdef0123456789abcdef";
-	const std::string blob = "fedcba9876543210fedcba9876543210";
-	GiCookAsset a = smvk::cook::DefaultGiCookAsset("MyGI", "sponza");
-	a.guid = guid;
-	a.giVolumes = false;
-	a.blobGuid = blob;
-	a.blobPath = "gi/" + blob + ".sggi";
-	a.bakedHash = smvk::cook::GiCookSettingsHash(a);
-	std::string text;
-	Check(smvk::cook::SaveGiCookAssetText(text, a),
-		"cook.gi.save");
-	GiCookAsset back;
-	std::string err;
-	Check(smvk::cook::LoadGiCookAssetText(text, back, err)
-		&& back.guid == guid && back.name == "MyGI"
-		&& back.scene == "sponza" && !back.giVolumes
-		&& back.blobGuid == blob
-		&& back.blobPath == "gi/" + blob + ".sggi"
-		&& back.bakedHash == a.bakedHash, "cook.gi.roundtrip");
-	// Fresh bake reads fresh; a settings change reads stale; the blob
-	// fields themselves never affect the hash.
-	Check(!smvk::cook::GiCookBlobStale(back), "cook.gi.fresh");
-	GiCookAsset changed = back;
-	changed.giVolumes = !changed.giVolumes;
-	Check(smvk::cook::GiCookBlobStale(changed), "cook.gi.stale");
-	GiCookAsset moved = back;
-	moved.blobPath = "gi/renamed.sggi";
-	Check(!smvk::cook::GiCookBlobStale(moved), "cook.gi.blob-untracked");
-	// Creation shape: unbaked by default, never stale.
-	GiCookAsset fresh = smvk::cook::DefaultGiCookAsset("New", "");
-	fresh.guid = guid;
-	Check(fresh.blobGuid.empty() && fresh.bakedHash.empty()
-		&& !smvk::cook::GiCookBlobStale(fresh), "cook.gi.unbaked");
-	// (The world= flag is retired with the octree bake — an old
-	// sidecar's world= line loads through the unknown-key tolerance.)
-	{
-		GiCookAsset legacy;
-		std::string lerr;
-		Check(smvk::cook::LoadGiCookAssetText(
-				"guid=" + guid + "\nname=L\nscene=s\n"
-				+ "giVolumes=1\nworld=1\n"
-				+ "blobGuid=" + blob + "\n"
-				+ "blobPath=gi/x.sggi\nbakedHash=ab\n",
-				legacy, lerr)
-			&& legacy.giVolumes && legacy.blobGuid == blob,
-			"cook.gi.legacy-world-ignored");
-	}
+    using smvk::cook::GiCookAsset;
+    const std::string guid = "0123456789abcdef0123456789abcdef";
+    const std::string blob = "fedcba9876543210fedcba9876543210";
+    GiCookAsset a = smvk::cook::DefaultGiCookAsset("MyGI", "sponza");
+    a.guid = guid;
+    a.giVolumes = false;
+    a.blobGuid = blob;
+    a.blobPath = "gi/" + blob + ".sggi";
+    a.bakedHash = smvk::cook::GiCookSettingsHash(a);
+    std::string text;
+    Check(smvk::cook::SaveGiCookAssetText(text, a), "cook.gi.save");
+    GiCookAsset back;
+    std::string err;
+    Check(smvk::cook::LoadGiCookAssetText(text, back, err) && back.guid == guid &&
+              back.name == "MyGI" && back.scene == "sponza" && !back.giVolumes &&
+              back.blobGuid == blob && back.blobPath == "gi/" + blob + ".sggi" &&
+              back.bakedHash == a.bakedHash,
+          "cook.gi.roundtrip");
+    // Fresh bake reads fresh; a settings change reads stale; the blob
+    // fields themselves never affect the hash.
+    Check(!smvk::cook::GiCookBlobStale(back), "cook.gi.fresh");
+    GiCookAsset changed = back;
+    changed.giVolumes = !changed.giVolumes;
+    Check(smvk::cook::GiCookBlobStale(changed), "cook.gi.stale");
+    GiCookAsset moved = back;
+    moved.blobPath = "gi/renamed.sggi";
+    Check(!smvk::cook::GiCookBlobStale(moved), "cook.gi.blob-untracked");
+    // Creation shape: unbaked by default, never stale.
+    GiCookAsset fresh = smvk::cook::DefaultGiCookAsset("New", "");
+    fresh.guid = guid;
+    Check(fresh.blobGuid.empty() && fresh.bakedHash.empty() && !smvk::cook::GiCookBlobStale(fresh),
+          "cook.gi.unbaked");
+    // (The world= flag is retired with the octree bake — an old
+    // sidecar's world= line loads through the unknown-key tolerance.)
+    {
+        GiCookAsset legacy;
+        std::string lerr;
+        Check(smvk::cook::LoadGiCookAssetText("guid=" + guid + "\nname=L\nscene=s\n" +
+                                                  "giVolumes=1\nworld=1\n" + "blobGuid=" + blob +
+                                                  "\n" + "blobPath=gi/x.sggi\nbakedHash=ab\n",
+                                              legacy,
+                                              lerr) &&
+                  legacy.giVolumes && legacy.blobGuid == blob,
+              "cook.gi.legacy-world-ignored");
+    }
 }
 
 void TestLightmapCookRoundTrip() {
-	using smvk::cook::LightmapCookAsset;
-	const std::string guid = "0123456789abcdef0123456789abcdef";
-	const std::string blob = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-	// Defaults mirror TourCook (a fresh asset bakes what the dialog
-	// would bake).
-	LightmapCookAsset d = smvk::cook::DefaultLightmapCookAsset("x", "");
-	Check(d.lmMetersPerTexel == 0.25f && d.lmLobes == 12
-		&& d.lmAtlasWidth == 1024 && d.lmRays == 256
-		&& d.lmProxyRes == 256 && d.sunAzimuth == 30.0f
-		&& d.sunElevation == 55.0f && d.sunIntensity == 10000.0f
-		&& d.skyIntensity == 600.0f, "cook.lm.defaults");
-	LightmapCookAsset a =
-		smvk::cook::DefaultLightmapCookAsset("MyLM", "bistro");
-	a.guid = guid;
-	a.lmMetersPerTexel = 0.125f;
-	a.lmExcludeKw = "foliage,glass";
-	a.sunColor = glm::vec3(1.0f, 0.5f, 0.25f);
-	a.blobGuid = blob;
-	a.blobPath = "gi/" + blob + ".sglm";
-	a.bakedHash = smvk::cook::LightmapCookSettingsHash(a);
-	std::string text;
-	Check(smvk::cook::SaveLightmapCookAssetText(text, a),
-		"cook.lm.save");
-	LightmapCookAsset back;
-	std::string err;
-	Check(smvk::cook::LoadLightmapCookAssetText(text, back, err)
-		&& back.guid == guid && back.name == "MyLM"
-		&& back.scene == "bistro"
-		&& back.lmMetersPerTexel == 0.125f
-		&& back.lmExcludeKw == "foliage,glass"
-		&& back.sunColor.x == 1.0f && back.sunColor.z == 0.25f
-		&& back.blobGuid == blob
-		&& back.bakedHash == a.bakedHash, "cook.lm.roundtrip");
-	Check(!smvk::cook::LightmapCookBlobStale(back), "cook.lm.fresh");
-	LightmapCookAsset changed = back;
-	changed.lmRays = 512;
-	Check(smvk::cook::LightmapCookBlobStale(changed), "cook.lm.stale");
+    using smvk::cook::LightmapCookAsset;
+    const std::string guid = "0123456789abcdef0123456789abcdef";
+    const std::string blob = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    // Defaults mirror TourCook (a fresh asset bakes what the dialog
+    // would bake).
+    LightmapCookAsset d = smvk::cook::DefaultLightmapCookAsset("x", "");
+    Check(d.lmMetersPerTexel == 0.25f && d.lmLobes == 12 && d.lmAtlasWidth == 1024 &&
+              d.lmRays == 256 && d.lmProxyRes == 256 && d.sunAzimuth == 30.0f &&
+              d.sunElevation == 55.0f && d.sunIntensity == 10000.0f && d.skyIntensity == 600.0f,
+          "cook.lm.defaults");
+    LightmapCookAsset a = smvk::cook::DefaultLightmapCookAsset("MyLM", "bistro");
+    a.guid = guid;
+    a.lmMetersPerTexel = 0.125f;
+    a.lmExcludeKw = "foliage,glass";
+    a.sunColor = glm::vec3(1.0f, 0.5f, 0.25f);
+    a.blobGuid = blob;
+    a.blobPath = "gi/" + blob + ".sglm";
+    a.bakedHash = smvk::cook::LightmapCookSettingsHash(a);
+    std::string text;
+    Check(smvk::cook::SaveLightmapCookAssetText(text, a), "cook.lm.save");
+    LightmapCookAsset back;
+    std::string err;
+    Check(smvk::cook::LoadLightmapCookAssetText(text, back, err) && back.guid == guid &&
+              back.name == "MyLM" && back.scene == "bistro" && back.lmMetersPerTexel == 0.125f &&
+              back.lmExcludeKw == "foliage,glass" && back.sunColor.x == 1.0f &&
+              back.sunColor.z == 0.25f && back.blobGuid == blob && back.bakedHash == a.bakedHash,
+          "cook.lm.roundtrip");
+    Check(!smvk::cook::LightmapCookBlobStale(back), "cook.lm.fresh");
+    LightmapCookAsset changed = back;
+    changed.lmRays = 512;
+    Check(smvk::cook::LightmapCookBlobStale(changed), "cook.lm.stale");
 }
 
 void TestCookAssetRejects() {
-	std::string err;
-	smvk::cook::GiCookAsset g;
-	Check(!smvk::cook::LoadGiCookAssetText("name=NoGuid\n", g, err),
-		"cook.gi.no-guid-fails");
-	Check(!smvk::cook::LoadGiCookAssetText("guid=not-a-guid\n", g,
-			err), "cook.gi.bad-guid-fails");
-	Check(!smvk::cook::LoadGiCookAssetText(
-			"guid=0123456789abcdef0123456789abcdef\n"
-			"blobGuid=typo\n", g, err), "cook.gi.bad-blob-fails");
-	smvk::cook::LightmapCookAsset l;
-	Check(!smvk::cook::LoadLightmapCookAssetText("name=NoGuid\n", l,
-			err), "cook.lm.no-guid-fails");
-	// Unknown keys skip (forward tolerance); whitespace trims.
-	Check(smvk::cook::LoadLightmapCookAssetText(
-			"guid=0123456789abcdef0123456789abcdef\n"
-			"futureFlag=42\n"
-			" scene = bistro \n", l, err)
-		&& l.scene == "bistro", "cook.lm.tolerant");
-	Check(!smvk::cook::IsCookAssetGuid("XYZ")
-		&& smvk::cook::IsCookAssetGuid(
-			"0123456789abcdef0123456789abcdef")
-		&& !smvk::cook::IsCookAssetGuid(
-			"0123456789ABCDEF0123456789ABCDEF"),
-		"cook.guid.valid");
+    std::string err;
+    smvk::cook::GiCookAsset g;
+    Check(!smvk::cook::LoadGiCookAssetText("name=NoGuid\n", g, err), "cook.gi.no-guid-fails");
+    Check(!smvk::cook::LoadGiCookAssetText("guid=not-a-guid\n", g, err), "cook.gi.bad-guid-fails");
+    Check(!smvk::cook::LoadGiCookAssetText("guid=0123456789abcdef0123456789abcdef\n"
+                                           "blobGuid=typo\n",
+                                           g,
+                                           err),
+          "cook.gi.bad-blob-fails");
+    smvk::cook::LightmapCookAsset l;
+    Check(!smvk::cook::LoadLightmapCookAssetText("name=NoGuid\n", l, err), "cook.lm.no-guid-fails");
+    // Unknown keys skip (forward tolerance); whitespace trims.
+    Check(smvk::cook::LoadLightmapCookAssetText("guid=0123456789abcdef0123456789abcdef\n"
+                                                "futureFlag=42\n"
+                                                " scene = bistro \n",
+                                                l,
+                                                err) &&
+              l.scene == "bistro",
+          "cook.lm.tolerant");
+    Check(!smvk::cook::IsCookAssetGuid("XYZ") &&
+              smvk::cook::IsCookAssetGuid("0123456789abcdef0123456789abcdef") &&
+              !smvk::cook::IsCookAssetGuid("0123456789ABCDEF0123456789ABCDEF"),
+          "cook.guid.valid");
 }
 
 int main() {
-	TestSplitManifestRow();
-	TestCubemanifestGuid();
-	TestGiCookRoundTrip();
-	TestLightmapCookRoundTrip();
-	TestCookAssetRejects();
-	std::cout << "checks=" << g_checks
-		<< " failures=" << g_failures << "\n";
-	return g_failures == 0 ? 0 : 1;
+    TestSplitManifestRow();
+    TestCubemanifestGuid();
+    TestGiCookRoundTrip();
+    TestLightmapCookRoundTrip();
+    TestCookAssetRejects();
+    std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
+    return g_failures == 0 ? 0 : 1;
 }

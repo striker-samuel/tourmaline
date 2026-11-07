@@ -46,63 +46,62 @@ namespace smvk::project {
 using GeometryImportSettings = smvk::assets::DeriveConfig;
 
 struct ImportRequest {
-	Project project;
-	std::filesystem::path source;      // the external glTF/GLB
-	GeometryImportSettings settings;
-	MaterialPackingRule materialPacking;
+    Project project;
+    std::filesystem::path source; // the external glTF/GLB
+    GeometryImportSettings settings;
+    MaterialPackingRule materialPacking;
     // Builds pass an explicit resolved policy (even when the rule is
     // empty). Standalone imports otherwise discover one root .tourrecipe.
     bool materialPackingExplicit = false;
-	bool force = false;                // re-derive even when current
+    bool force = false; // re-derive even when current
 };
 
 struct ImportResult {
-	// The project-owned source copy (absolute, inside ImportsDir()).
-	std::filesystem::path projectSource;
-	// The project-owned .geometry (the runtime/renderer-ready artifact).
-	std::filesystem::path geometry;
-	std::string guid;                  // the manifest's source GUID
-	uint32_t geometryBlobs = 0;
-	uint32_t lodLevels = 0;            // total sibling levels across blobs
-	uint32_t meshletSets = 0;          // blobs carrying a cooked set
-	bool derived = false;             // false = current, nothing written
+    // The project-owned source copy (absolute, inside ImportsDir()).
+    std::filesystem::path projectSource;
+    // The project-owned .geometry (the runtime/renderer-ready artifact).
+    std::filesystem::path geometry;
+    std::string guid; // the manifest's source GUID
+    uint32_t geometryBlobs = 0;
+    uint32_t lodLevels = 0;   // total sibling levels across blobs
+    uint32_t meshletSets = 0; // blobs carrying a cooked set
+    bool derived = false;     // false = current, nothing written
 };
 
 // Compose project-wide material channel recipes into imported PNGs.
 // Outputs are canonical by material property, and source paths resolve
 // relative to the glTF's imported family directory.
 bool ComposeMaterialFromRecipe(const MaterialPackingRule& rule,
-    smvk::assets::MaterialAsset& material,
-    const std::filesystem::path& directory, std::string& err);
+                               smvk::assets::MaterialAsset& material,
+                               const std::filesystem::path& directory,
+                               std::string& err);
 
 // Pure, testable material-policy transform. Importer applies it before
 // publication; cooker reads the resulting .material metadata.
 bool ApplyMaterialPackingRule(const MaterialPackingRule& rule,
-    smvk::assets::MaterialAsset& material);
+                              smvk::assets::MaterialAsset& material);
 bool MaterialPackingRuleMatches(const MaterialPackingRule& rule,
-    const smvk::assets::MaterialAsset& material);
+                                const smvk::assets::MaterialAsset& material);
 
 // The canonical import. True on success (fresh derivation OR current
 // skip); false + err on failure (the previous generation stays live).
-bool ImportProjectAsset(const ImportRequest& request,
-	ImportResult& out, std::string& err);
+bool ImportProjectAsset(const ImportRequest& request, ImportResult& out, std::string& err);
 
 // ---- staleness report (the build --explain surface) ----------------------
 
 struct ImportStatus {
-	std::string source;      // project-relative glTF path
-	std::string guid;
-	std::string original;    // the original external path (metadata only)
-	bool known = false;      // a registry row exists
-	bool current = true;     // family + fingerprint agree
-	std::string why;         // the decision explanation
-	std::string fingerprint;
+    std::string source; // project-relative glTF path
+    std::string guid;
+    std::string original; // the original external path (metadata only)
+    bool known = false;   // a registry row exists
+    bool current = true;  // family + fingerprint agree
+    std::string why;      // the decision explanation
+    std::string fingerprint;
 };
 
 // One row per registry record, in file order. err set when the registry
 // is unreadable (still returns what parsed).
-std::vector<ImportStatus> ProjectImportStatuses(const Project& project,
-	std::string* err = nullptr);
+std::vector<ImportStatus> ProjectImportStatuses(const Project& project, std::string* err = nullptr);
 
 // ---- scene seeding (the authored .tour into the project) ------------------
 
@@ -115,7 +114,8 @@ std::vector<ImportStatus> ProjectImportStatuses(const Project& project,
 // `importedStem` is the imported source stem (the family directory name).
 // Returns the project-relative scene path (or err).
 std::string SeedProjectScene(const Project& project,
-	const std::string& externalTour, const std::string& importedStem,
-	std::string& err);
+                             const std::string& externalTour,
+                             const std::string& importedStem,
+                             std::string& err);
 
 } // namespace smvk::project

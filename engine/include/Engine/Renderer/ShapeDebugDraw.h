@@ -18,8 +18,7 @@ inline bool AppendShapeDebug(const asset::ShapeAsset& shape,
                              const glm::vec3& color,
                              tour::DebugDrawList& draw,
                              std::string& error,
-                             tour::DebugDepthMode depth =
-                                 tour::DebugDepthMode::Tested) {
+                             tour::DebugDepthMode depth = tour::DebugDepthMode::Tested) {
     asset::ShapeGeometry geometry;
     if (!asset::TessellateShape(shape, geometry, error))
         return false;
@@ -30,10 +29,11 @@ inline bool AppendShapeDebug(const asset::ShapeAsset& shape,
     // Do not partially append huge datasets when the debug stream budget
     // cannot accommodate them.
     const size_t count = geometry.topology == asset::ShapeGeometry::Topology::Points
-        ? geometry.vertices.size() : geometry.indices.size() / 2;
+                             ? geometry.vertices.size()
+                             : geometry.indices.size() / 2;
     const size_t available = geometry.topology == asset::ShapeGeometry::Topology::Points
-        ? tour::DebugDrawList::MaxPoints - draw.PointCount()
-        : tour::DebugDrawList::MaxLines - draw.Size();
+                                 ? tour::DebugDrawList::MaxPoints - draw.PointCount()
+                                 : tour::DebugDrawList::MaxLines - draw.Size();
     if (count > available) {
         error = "shape exceeds available debug drawing capacity";
         return false;
@@ -48,7 +48,8 @@ inline bool AppendShapeDebug(const asset::ShapeAsset& shape,
         for (size_t i = 0; i + 1 < geometry.indices.size(); i += 2)
             draw.Line(transform(geometry.vertices[geometry.indices[i]]),
                       transform(geometry.vertices[geometry.indices[i + 1]]),
-                      color, depth);
+                      color,
+                      depth);
     }
     error.clear();
     return true;

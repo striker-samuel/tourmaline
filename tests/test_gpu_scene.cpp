@@ -17,18 +17,25 @@
 // whose NDEBUG no-op makes Release runs vacuous - and any side effect
 // inside an assert (see test_gpu_scene_candidates.cpp:
 // assert(leaves.Flush(db))) was silently skipped, crashing the run.
-#define CHECK(cond) do { ++g_checks; if (!(cond)) { ++g_failures; \
-    std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } \
-    while (0)
-namespace { int g_checks = 0; int g_failures = 0; }
+#define CHECK(cond)                                                                                \
+    do {                                                                                           \
+        ++g_checks;                                                                                \
+        if (!(cond)) {                                                                             \
+            ++g_failures;                                                                          \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                   \
+        }                                                                                          \
+    } while (0)
+namespace {
+int g_checks = 0;
+int g_failures = 0;
+} // namespace
 
 namespace {
 using namespace tour::gpu_scene;
 constexpr uint32_t Flights = smvk::limits::MaxFramesInFlight;
 static_assert(Flights >= 2);
 
-template <typename RowType>
-struct FakeGpu {
+template <typename RowType> struct FakeGpu {
     using Entry = Row<RowType>;
     std::array<std::vector<Entry>, Flights> mirror{};
     std::array<std::vector<std::pair<size_t, size_t>>, Flights> copies{};
@@ -39,16 +46,13 @@ struct FakeGpu {
         const size_t need = (offset + bytes) / sizeof(Entry);
         if (data.size() < need)
             data.resize(need);
-        std::memcpy(reinterpret_cast<unsigned char*>(data.data()) + offset,
-                    src, bytes);
+        std::memcpy(reinterpret_cast<unsigned char*>(data.data()) + offset, src, bytes);
         copies[f].emplace_back(offset, bytes);
         return true;
     }
 
-    template <uint32_t N>
-    bool Publish(Table<RowType, N>& table, uint32_t f, bool full = false) {
-        return table.Publish(f, full, [&](size_t offset, const void* src,
-                                          size_t bytes) {
+    template <uint32_t N> bool Publish(Table<RowType, N>& table, uint32_t f, bool full = false) {
+        return table.Publish(f, full, [&](size_t offset, const void* src, size_t bytes) {
             return Upload(f, offset, src, bytes);
         });
     }
@@ -58,8 +62,7 @@ void CheckDatabase() {
     Database<Flights> db;
     FakeGpu<Instance> gpu;
     Instance a{};
-    a.worldPosition = tour::math::SplitDoubleFloat(
-        glm::dvec3(1.0e12 + 0.125, -1.0e12, 2.0));
+    a.worldPosition = tour::math::SplitDoubleFloat(glm::dvec3(1.0e12 + 0.125, -1.0e12, 2.0));
     a.refs.x = 3;
 
     const auto one = db.instances.Insert(a);
@@ -127,8 +130,8 @@ void CheckDatabase() {
     // A failed writer cannot acknowledge dirty state; retry succeeds.
     a.refs.x = 99;
     CHECK(db.instances.Update(two, a));
-    const bool failed = db.instances.Publish(0, false,
-        [](size_t, const void*, size_t) { return false; });
+    const bool failed =
+        db.instances.Publish(0, false, [](size_t, const void*, size_t) { return false; });
     CHECK(!failed && db.instances.PendingRows(0) == 1);
     CHECK(gpu.Publish(db.instances, 0));
     CHECK(gpu.mirror[0][0].value.refs.x == 99);

@@ -7,12 +7,12 @@
 // with the running App session.
 
 #include "RuntimeProcedurals.h"
-#include <Engine/Renderer/mesh.h>
 #include <Engine/App/cluster.h>
+#include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 
-#include <imgui.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include <imgui.h>
 
 #include <algorithm>
 #include <array>
@@ -29,15 +29,14 @@ constexpr float kPi = 3.14159265358979323846f;
 struct MeshRecipe {
     smvk::StaticMeshUpload upload{};
 
-    uint32_t Vertex(const glm::vec3& p, const glm::vec3& n,
-        const glm::vec2& uv) {
+    uint32_t Vertex(const glm::vec3& p, const glm::vec3& n, const glm::vec2& uv) {
         smvk::ImportStaticVertex v{};
         v.pos = p;
         v.normal = glm::normalize(n);
-        v.tangent = glm::vec4(
-            glm::abs(v.normal.y) < 0.98f
-                ? glm::normalize(glm::cross(glm::vec3(0, 1, 0), v.normal))
-                : glm::vec3(1, 0, 0), 1.0f);
+        v.tangent = glm::vec4(glm::abs(v.normal.y) < 0.98f
+                                  ? glm::normalize(glm::cross(glm::vec3(0, 1, 0), v.normal))
+                                  : glm::vec3(1, 0, 0),
+                              1.0f);
         v.texCoord = uv;
         v.color = glm::vec4(1.0f);
         v.chartId = UINT32_MAX; // never baked into a lightmap
@@ -66,15 +65,18 @@ struct MeshRecipe {
                 upload.aabbMin = glm::min(upload.aabbMin, v.pos);
                 upload.aabbMax = glm::max(upload.aabbMax, v.pos);
             }
-            upload.surfaces.push_back(
-                smvk::Surface{0u, uint32_t(upload.indices.size()), 0});
+            upload.surfaces.push_back(smvk::Surface{0u, uint32_t(upload.indices.size()), 0});
         }
         return std::move(upload);
     }
 };
 
-void Sphere(MeshRecipe& mesh, const glm::vec3& origin,
-    float radius, int slices, int stacks, bool inside = false) {
+void Sphere(MeshRecipe& mesh,
+            const glm::vec3& origin,
+            float radius,
+            int slices,
+            int stacks,
+            bool inside = false) {
     const uint32_t first = uint32_t(mesh.upload.vertices.size());
     const uint32_t stride = uint32_t(slices + 1);
     for (int y = 0; y <= stacks; ++y) {
@@ -83,10 +85,9 @@ void Sphere(MeshRecipe& mesh, const glm::vec3& origin,
         for (int x = 0; x <= slices; ++x) {
             const float u = float(x) / slices;
             const float azimuth = 2.0f * kPi * u;
-            const glm::vec3 n(
-                std::sin(elevation) * std::cos(azimuth),
-                std::cos(elevation),
-                std::sin(elevation) * std::sin(azimuth));
+            const glm::vec3 n(std::sin(elevation) * std::cos(azimuth),
+                              std::cos(elevation),
+                              std::sin(elevation) * std::sin(azimuth));
             mesh.Vertex(origin + n * radius, inside ? -n : n, {u, v});
         }
     }
@@ -101,23 +102,25 @@ void Sphere(MeshRecipe& mesh, const glm::vec3& origin,
         }
 }
 
-void Face(MeshRecipe& mesh, const glm::vec3& center,
-    const glm::vec3& tangent, const glm::vec3& bitangent,
-    const glm::vec3& normal) {
-    const uint32_t a = mesh.Vertex(center-tangent-bitangent, normal, {0, 0});
-    const uint32_t b = mesh.Vertex(center+tangent-bitangent, normal, {1, 0});
-    const uint32_t c = mesh.Vertex(center+tangent+bitangent, normal, {1, 1});
-    const uint32_t d = mesh.Vertex(center-tangent+bitangent, normal, {0, 1});
+void Face(MeshRecipe& mesh,
+          const glm::vec3& center,
+          const glm::vec3& tangent,
+          const glm::vec3& bitangent,
+          const glm::vec3& normal) {
+    const uint32_t a = mesh.Vertex(center - tangent - bitangent, normal, {0, 0});
+    const uint32_t b = mesh.Vertex(center + tangent - bitangent, normal, {1, 0});
+    const uint32_t c = mesh.Vertex(center + tangent + bitangent, normal, {1, 1});
+    const uint32_t d = mesh.Vertex(center - tangent + bitangent, normal, {0, 1});
     mesh.Quad(a, b, c, d);
 }
 
 void Box(MeshRecipe& mesh, float hx, float hy, float hz) {
-    Face(mesh, {hx,0,0}, {0,hy,0}, {0,0,hz}, {1,0,0});
-    Face(mesh, {-hx,0,0}, {0,hy,0}, {0,0,hz}, {-1,0,0});
-    Face(mesh, {0,hy,0}, {hx,0,0}, {0,0,hz}, {0,1,0});
-    Face(mesh, {0,-hy,0}, {hx,0,0}, {0,0,hz}, {0,-1,0});
-    Face(mesh, {0,0,hz}, {hx,0,0}, {0,hy,0}, {0,0,1});
-    Face(mesh, {0,0,-hz}, {hx,0,0}, {0,hy,0}, {0,0,-1});
+    Face(mesh, {hx, 0, 0}, {0, hy, 0}, {0, 0, hz}, {1, 0, 0});
+    Face(mesh, {-hx, 0, 0}, {0, hy, 0}, {0, 0, hz}, {-1, 0, 0});
+    Face(mesh, {0, hy, 0}, {hx, 0, 0}, {0, 0, hz}, {0, 1, 0});
+    Face(mesh, {0, -hy, 0}, {hx, 0, 0}, {0, 0, hz}, {0, -1, 0});
+    Face(mesh, {0, 0, hz}, {hx, 0, 0}, {0, hy, 0}, {0, 0, 1});
+    Face(mesh, {0, 0, -hz}, {hx, 0, 0}, {0, hy, 0}, {0, 0, -1});
 }
 
 void Torus(MeshRecipe& mesh, float size, int segments) {
@@ -129,11 +132,11 @@ void Torus(MeshRecipe& mesh, float size, int segments) {
         const glm::vec3 radial(std::cos(u), 0, std::sin(u));
         for (int j = 0; j <= ring; ++j) {
             const float v = 2.0f * kPi * float(j) / ring;
-            const glm::vec3 n =
-                radial * std::cos(v) + glm::vec3(0, std::sin(v), 0);
-            mesh.Vertex(radial * (size * 0.35f + size * 0.15f * std::cos(v))
-                + glm::vec3(0, size * 0.15f * std::sin(v), 0),
-                n, {float(i) / (segments * 2), float(j) / ring});
+            const glm::vec3 n = radial * std::cos(v) + glm::vec3(0, std::sin(v), 0);
+            mesh.Vertex(radial * (size * 0.35f + size * 0.15f * std::cos(v)) +
+                            glm::vec3(0, size * 0.15f * std::sin(v), 0),
+                        n,
+                        {float(i) / (segments * 2), float(j) / ring});
         }
     }
     for (int i = 0; i < segments * 2; ++i)
@@ -143,8 +146,7 @@ void Torus(MeshRecipe& mesh, float size, int segments) {
         }
 }
 
-void WavePlane(MeshRecipe& mesh, float size, int resolution,
-    float amplitude, float cycles) {
+void WavePlane(MeshRecipe& mesh, float size, int resolution, float amplitude, float cycles) {
     const uint32_t stride = uint32_t(resolution + 1);
     const float omega = 2.0f * kPi * cycles / size;
     for (int z = 0; z <= resolution; ++z)
@@ -153,13 +155,10 @@ void WavePlane(MeshRecipe& mesh, float size, int resolution,
             const float v = float(z) / resolution;
             const float px = (u - 0.5f) * size;
             const float pz = (v - 0.5f) * size;
-            const float y = amplitude * 0.5f *
-                (std::sin(omega * px) + std::cos(omega * pz * 0.8f));
+            const float y = amplitude * 0.5f * (std::sin(omega * px) + std::cos(omega * pz * 0.8f));
             const float dx = amplitude * 0.5f * omega * std::cos(omega * px);
-            const float dz = -amplitude * 0.4f * omega
-                * std::sin(omega * pz * 0.8f);
-            mesh.Vertex({px,y,pz},
-                glm::normalize(glm::vec3(-dx,1.0f,-dz)), {u,v});
+            const float dz = -amplitude * 0.4f * omega * std::sin(omega * pz * 0.8f);
+            mesh.Vertex({px, y, pz}, glm::normalize(glm::vec3(-dx, 1.0f, -dz)), {u, v});
         }
     for (int z = 0; z < resolution; ++z)
         for (int x = 0; x < resolution; ++x) {
@@ -174,50 +173,68 @@ void HairBundle(MeshRecipe& mesh, float size, int resolution) {
     constexpr int rows = 12;
     for (int strand = 0; strand < strands; ++strand) {
         const float a = 2.0f * kPi * float(strand) / strands;
-        const glm::vec3 radial(std::cos(a),0,std::sin(a));
-        const glm::vec3 binormal(-radial.z,0,radial.x);
+        const glm::vec3 radial(std::cos(a), 0, std::sin(a));
+        const glm::vec3 binormal(-radial.z, 0, radial.x);
         const uint32_t first = uint32_t(mesh.upload.vertices.size());
         const uint32_t stride = sides + 1;
         for (int y = 0; y <= rows; ++y) {
             const float t = float(y) / rows;
-            const glm::vec3 center = radial * size * (0.2f + 0.38f*t*t)
-                + binormal * size * (0.08f * std::sin(kPi*t))
-                + glm::vec3(0, size*(t-0.5f), 0);
-            const float r = size * (0.032f * (1.0f-t) + 0.002f);
+            const glm::vec3 center = radial * size * (0.2f + 0.38f * t * t) +
+                                     binormal * size * (0.08f * std::sin(kPi * t)) +
+                                     glm::vec3(0, size * (t - 0.5f), 0);
+            const float r = size * (0.032f * (1.0f - t) + 0.002f);
             for (int j = 0; j <= sides; ++j) {
                 const float v = 2.0f * kPi * float(j) / sides;
-                const glm::vec3 n =
-                    radial*std::cos(v) + binormal*std::sin(v);
-                mesh.Vertex(center + r*n, n, {float(j)/sides, t});
+                const glm::vec3 n = radial * std::cos(v) + binormal * std::sin(v);
+                mesh.Vertex(center + r * n, n, {float(j) / sides, t});
             }
         }
         for (int y = 0; y < rows; ++y)
             for (int j = 0; j < sides; ++j) {
-                const uint32_t v = first + uint32_t(y)*stride + uint32_t(j);
-                mesh.Quad(v,v+1,v+stride+1,v+stride);
+                const uint32_t v = first + uint32_t(y) * stride + uint32_t(j);
+                mesh.Quad(v, v + 1, v + stride + 1, v + stride);
             }
     }
 }
 
-smvk::StaticMeshUpload MakeFixture(int shape, float size, int resolution,
-    float thickness, float amplitude, float frequency) {
+smvk::StaticMeshUpload MakeFixture(int shape,
+                                   float size,
+                                   int resolution,
+                                   float thickness,
+                                   float amplitude,
+                                   float frequency) {
     MeshRecipe mesh;
     switch (shape) {
-    case 0: Sphere(mesh, {}, size*0.5f, resolution*2, resolution); break;
-    case 1: Box(mesh, size*0.5f, size*0.5f, size*0.5f); break;
-    case 2: Torus(mesh, size, resolution); break;
-    case 3: WavePlane(mesh, size, resolution, amplitude, frequency); break;
-    case 4: Box(mesh, size*0.5f, thickness*0.5f, size*0.5f); break;
-    case 5: HairBundle(mesh, size, resolution); break;
+    case 0:
+        Sphere(mesh, {}, size * 0.5f, resolution * 2, resolution);
+        break;
+    case 1:
+        Box(mesh, size * 0.5f, size * 0.5f, size * 0.5f);
+        break;
+    case 2:
+        Torus(mesh, size, resolution);
+        break;
+    case 3:
+        WavePlane(mesh, size, resolution, amplitude, frequency);
+        break;
+    case 4:
+        Box(mesh, size * 0.5f, thickness * 0.5f, size * 0.5f);
+        break;
+    case 5:
+        HairBundle(mesh, size, resolution);
+        break;
     case 6:
         for (int z = -1; z <= 1; ++z)
             for (int x = -1; x <= 1; ++x)
-                Sphere(mesh, {x*size*0.85f,0,z*size*0.85f},
-                    size*0.3f, resolution, std::max(8,resolution/2));
+                Sphere(mesh,
+                       {x * size * 0.85f, 0, z * size * 0.85f},
+                       size * 0.3f,
+                       resolution,
+                       std::max(8, resolution / 2));
         break;
     case 7: // thickness test: front and inward-facing back shell
-        Sphere(mesh, {}, size*0.5f, resolution*2, resolution);
-        Sphere(mesh, {}, size*0.42f, resolution*2, resolution, true);
+        Sphere(mesh, {}, size * 0.5f, resolution * 2, resolution);
+        Sphere(mesh, {}, size * 0.42f, resolution * 2, resolution, true);
         break;
     }
     return mesh.Finish();
@@ -228,16 +245,24 @@ smvk::MaterialCreateInfo FixtureMaterial(int shape) {
     info.metallicFactor = (shape == 2) ? 0.85f : 0.0f;
     info.roughnessFactor = (shape == 3 || shape == 7) ? 0.08f : 0.36f;
     switch (shape) {
-    case 3: info.baseColorFactor = {0.12f,0.46f,0.72f,1}; break;
-    case 4: info.baseColorFactor = {0.88f,0.44f,0.34f,1}; break;
-    case 5: info.baseColorFactor = {0.38f,0.22f,0.12f,1}; break;
+    case 3:
+        info.baseColorFactor = {0.12f, 0.46f, 0.72f, 1};
+        break;
+    case 4:
+        info.baseColorFactor = {0.88f, 0.44f, 0.34f, 1};
+        break;
+    case 5:
+        info.baseColorFactor = {0.38f, 0.22f, 0.12f, 1};
+        break;
     case 7:
-        info.baseColorFactor = {0.52f,0.79f,0.95f,0.25f};
+        info.baseColorFactor = {0.52f, 0.79f, 0.95f, 0.25f};
         info.alphaMode = smvk::AlphaMode::Blend;
         info.doubleSided = true;
         info.castsShadows = false;
         break;
-    default: info.baseColorFactor = {0.75f,0.75f,0.77f,1}; break;
+    default:
+        info.baseColorFactor = {0.75f, 0.75f, 0.77f, 1};
+        break;
     }
     return info;
 }
@@ -255,25 +280,24 @@ void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
     smvk::Cluster& dyn = World()->EnsureDynamicCluster(m_host.GetResourceManager());
 
     if (request == 1) {
-        const smvk::StaticMeshUpload upload = MakeFixture(
-            std::clamp(m_runtimeProcShape,0,7),
-            std::clamp(m_runtimeProcSize,0.2f,20.0f),
-            std::clamp(m_runtimeProcResolution,8,64),
-            std::clamp(m_runtimeProcThickness,0.02f,5.0f),
-            std::clamp(m_runtimeProcWaveHeight,0.0f,3.0f),
-            std::clamp(m_runtimeProcWaveFreq,0.25f,10.0f));
+        const smvk::StaticMeshUpload upload =
+            MakeFixture(std::clamp(m_runtimeProcShape, 0, 7),
+                        std::clamp(m_runtimeProcSize, 0.2f, 20.0f),
+                        std::clamp(m_runtimeProcResolution, 8, 64),
+                        std::clamp(m_runtimeProcThickness, 0.02f, 5.0f),
+                        std::clamp(m_runtimeProcWaveHeight, 0.0f, 3.0f),
+                        std::clamp(m_runtimeProcWaveFreq, 0.25f, 10.0f));
         if (upload.vertices.empty() || upload.indices.empty())
             return;
         const auto newMesh = dyn.UploadStaticMesh(upload);
         if (!newMesh.valid()) {
-            std::fprintf(stderr,"[Procedurals] mesh upload failed\n");
+            std::fprintf(stderr, "[Procedurals] mesh upload failed\n");
             return;
         }
-        const auto newMaterial =
-            dyn.CreateMaterial(FixtureMaterial(m_runtimeProcShape));
+        const auto newMaterial = dyn.CreateMaterial(FixtureMaterial(m_runtimeProcShape));
         if (!newMaterial.valid()) {
             dyn.DestroyMesh(newMesh);
-            std::fprintf(stderr,"[Procedurals] material creation failed\n");
+            std::fprintf(stderr, "[Procedurals] material creation failed\n");
             return;
         }
         // Preserve the old fixture until replacement allocation succeeds.
@@ -290,12 +314,10 @@ void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
             m_retired.push_back({m_runtimeProcMesh, m_runtimeProcMaterial});
         }
         m_runtimeProcNode = uint32_t(node);
-        const glm::vec3 center = m_renderer.CameraPositioner().cameraPosition_
-            + m_renderer.CameraPositioner().getForward() * m_runtimeProcDistance;
-        dyn.scene.localTransform[size_t(node)] =
-            glm::translate(glm::mat4(1.0f), center);
-        dyn.scene.globalTransform[size_t(node)] =
-            dyn.scene.localTransform[size_t(node)];
+        const glm::vec3 center = m_renderer.CameraPositioner().cameraPosition_ +
+                                 m_renderer.CameraPositioner().getForward() * m_runtimeProcDistance;
+        dyn.scene.localTransform[size_t(node)] = glm::translate(glm::mat4(1.0f), center);
+        dyn.scene.globalTransform[size_t(node)] = dyn.scene.localTransform[size_t(node)];
         SetMesh(dyn.scene, uint32_t(node), newMesh.index());
         SetMaterial(dyn.scene, uint32_t(node), newMaterial.index());
         m_runtimeProcMesh = newMesh;
@@ -318,24 +340,20 @@ void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
 
 void RuntimeProcedurals::DrawRuntimeProceduralsTab() {
     ImGui::TextWrapped("Runtime-only rendering fixtures. No .tour, "
-        "project assets or editor entities are created.");
+                       "project assets or editor entities are created.");
     ImGui::SeparatorText("Geometry");
-    static constexpr const char* names =
-        "Sphere (PBR)\0Cube (hard edges)\0Torus (specular)\0"
-        "Wave surface (water)\0Thin slab (SSS)\0"
-        "Strand bundle (hair)\0Nine-sphere grid\0Glass shell\0";
+    static constexpr const char* names = "Sphere (PBR)\0Cube (hard edges)\0Torus (specular)\0"
+                                         "Wave surface (water)\0Thin slab (SSS)\0"
+                                         "Strand bundle (hair)\0Nine-sphere grid\0Glass shell\0";
     ImGui::Combo("Fixture", &m_runtimeProcShape, names);
     ImGui::SliderFloat("Size", &m_runtimeProcSize, 0.2f, 20.0f, "%.2f m");
     ImGui::SliderInt("Resolution", &m_runtimeProcResolution, 8, 64);
     ImGui::SliderFloat("Spawn distance", &m_runtimeProcDistance, 2.0f, 30.0f, "%.1f m");
     if (m_runtimeProcShape == 4)
-        ImGui::SliderFloat("Slab thickness", &m_runtimeProcThickness,
-            0.02f, 5.0f, "%.2f m");
+        ImGui::SliderFloat("Slab thickness", &m_runtimeProcThickness, 0.02f, 5.0f, "%.2f m");
     if (m_runtimeProcShape == 3) {
-        ImGui::SliderFloat("Wave height", &m_runtimeProcWaveHeight,
-            0.0f, 3.0f, "%.2f m");
-        ImGui::SliderFloat("Wave cycles", &m_runtimeProcWaveFreq,
-            0.25f, 10.0f);
+        ImGui::SliderFloat("Wave height", &m_runtimeProcWaveHeight, 0.0f, 3.0f, "%.2f m");
+        ImGui::SliderFloat("Wave cycles", &m_runtimeProcWaveFreq, 0.25f, 10.0f);
         ImGui::TextDisabled("Static geometry (no wave simulation).");
     }
     if (m_runtimeProcShape == 5)
@@ -380,7 +398,8 @@ void RuntimeProcedurals::DrawRuntimeProceduralsTab() {
         m_renderer.SetDebugView(engine::ViewMode::HairPreview);
     if (ImGui::Button("Water debug"))
         m_renderer.SetDebugView(engine::ViewMode::WaterPreview);
-    ImGui::TextDisabled("SSS/hair/water modes are existing renderer diagnostics, not physical shaders.");
+    ImGui::TextDisabled(
+        "SSS/hair/water modes are existing renderer diagnostics, not physical shaders.");
 
     ImGui::SeparatorText("Light Crowd");
     auto& light = m_renderer.LightCrowdSettings();
@@ -401,25 +420,30 @@ void RuntimeProcedurals::DrawRuntimeProceduralsTab() {
     ImGui::SliderFloat("Hue spread", &light.hueSpread, 0.0f, 1.0f);
     ImGui::Checkbox("Cast shadows (crowd)", &light.castShadows);
     if (light.castShadows) {
-        const int cap = std::min(int(smvk::kMaxPointShadowLights),
-            std::max(light.count, 1));
+        const int cap = std::min(int(smvk::kMaxPointShadowLights), std::max(light.count, 1));
         int shadows = std::min(light.shadowCount, cap);
         if (ImGui::SliderInt("Shadow casters", &shadows, 0, cap))
             light.shadowCount = shadows;
     }
 }
 
-
 void RuntimeProcedurals::RetireResources() {
-    if (m_retired.empty()) return;
+    if (m_retired.empty())
+        return;
     auto* world = World();
-    if (!world) { m_retired.clear(); return; }
+    if (!world) {
+        m_retired.clear();
+        return;
+    }
     auto* ctx = m_host.GetResourceManager();
-    if (!ctx) return;
+    if (!ctx)
+        return;
     auto& dyn = world->EnsureDynamicCluster(ctx);
     for (const auto& item : m_retired) {
-        if (item.mesh.valid()) dyn.DestroyMesh(item.mesh);
-        if (item.material.valid()) dyn.DestroyMaterial(item.material);
+        if (item.mesh.valid())
+            dyn.DestroyMesh(item.mesh);
+        if (item.material.valid())
+            dyn.DestroyMaterial(item.material);
     }
     m_retired.clear();
 }

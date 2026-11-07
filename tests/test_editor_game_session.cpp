@@ -6,12 +6,13 @@
 #include <memory>
 
 // CHECK must evaluate its operand in optimized builds (unlike assert).
-#define CHECK(expr) do { \
-    if (!(expr)) { \
-        std::fprintf(stderr, "CHECK failed: %s at line %d\n", #expr, __LINE__); \
-        std::abort(); \
-    } \
-} while (false)
+#define CHECK(expr)                                                                                \
+    do {                                                                                           \
+        if (!(expr)) {                                                                             \
+            std::fprintf(stderr, "CHECK failed: %s at line %d\n", #expr, __LINE__);                \
+            std::abort();                                                                          \
+        }                                                                                          \
+    } while (false)
 
 int main() {
     editor::GameSessionRunner runner;
@@ -21,14 +22,17 @@ int main() {
     runner.Tick(1.0f);
     CHECK(!runner.Active());
     auto state = std::make_shared<int>(42);
-    CHECK(runner.Start({
-        .onUpdate = [&, state](float dt) {
-            ++updates;
-            total += dt;
-            CHECK(*state == 42);
-        },
-        .onStop = [&, state] { ++stops; CHECK(*state == 42); }
-    }));
+    CHECK(runner.Start({.onUpdate =
+                            [&, state](float dt) {
+                                ++updates;
+                                total += dt;
+                                CHECK(*state == 42);
+                            },
+                        .onStop =
+                            [&, state] {
+                                ++stops;
+                                CHECK(*state == 42);
+                            }}));
     CHECK(!runner.Start({})); // cannot replace a running game
     runner.Tick(0.25f);
     runner.Tick(0.75f);

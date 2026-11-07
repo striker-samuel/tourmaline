@@ -40,7 +40,6 @@
 
 namespace tour::mem::config {
 
-
 inline constexpr size_t kKiB = size_t(1) << 10;
 inline constexpr size_t kMiB = size_t(1) << 20;
 inline constexpr size_t kGiB = size_t(1) << 30;
@@ -156,35 +155,35 @@ inline constexpr size_t kDefaultAlign = 16;
 //   TOURMALINE_MEM_STATIC_LIGHTMAP_MB   staticLightmapHeap (GPU, optional)
 //   TOURMALINE_MEM_TARGET_BLOCK_MB      targetHeapBlock (GPU graph targets)
 struct RuntimeConfig {
-	size_t appArenaBlock = kAppArenaBlock;
-	size_t frameArenaBlock = kFrameArenaBlock;
+    size_t appArenaBlock = kAppArenaBlock;
+    size_t frameArenaBlock = kFrameArenaBlock;
 
-	size_t processReserve = kProcessReserve;
-	size_t frameReserve = kFrameReserve;
-	size_t flightReserve = kFlightReserve;
-	size_t transientReserve = kTransientReserve;
+    size_t processReserve = kProcessReserve;
+    size_t frameReserve = kFrameReserve;
+    size_t flightReserve = kFlightReserve;
+    size_t transientReserve = kTransientReserve;
 
-	size_t streamerTotalBudget = kStreamerTotalBudget;
-	size_t stagingRingPerThread = kStagingRingPerThread;
-	size_t bulkRingCapacity = kBulkRingCapacity;
-	size_t uploadFlushThreshold = kUploadFlushThreshold;
-	size_t readbackStagingMin = kReadbackStagingMin;
-	size_t readbackStagingMax = kReadbackStagingMax;
+    size_t streamerTotalBudget = kStreamerTotalBudget;
+    size_t stagingRingPerThread = kStagingRingPerThread;
+    size_t bulkRingCapacity = kBulkRingCapacity;
+    size_t uploadFlushThreshold = kUploadFlushThreshold;
+    size_t readbackStagingMin = kReadbackStagingMin;
+    size_t readbackStagingMax = kReadbackStagingMax;
 
-	size_t threadPoolQueueSlots = kThreadPoolQueueSlots;
+    size_t threadPoolQueueSlots = kThreadPoolQueueSlots;
 
-	size_t commitQuantum = kCommitQuantum;
+    size_t commitQuantum = kCommitQuantum;
 
-	size_t staticVertexHeap = kStaticVertexHeap;
-	size_t staticIndexHeap = kStaticIndexHeap;
-	// OPTIONAL lightmap vertex stream (8 B/vertex, carved only for
-	// meshes with chart data — lightmaps deprecated, usually empty).
-	// 64 MiB = 8M lightmapped vertices; the worst case (every vertex of
-	// a maxed pos/shading heap lightmapped) would be kStaticVertexHeap/2
-	// at the 16-byte shading stride — raise via the env override when a
-	// real lightmap reactivation needs it.
-	size_t staticLightmapHeap = kStaticLightmapHeap;
-	size_t targetHeapBlock = kTargetHeapBlock;
+    size_t staticVertexHeap = kStaticVertexHeap;
+    size_t staticIndexHeap = kStaticIndexHeap;
+    // OPTIONAL lightmap vertex stream (8 B/vertex, carved only for
+    // meshes with chart data — lightmaps deprecated, usually empty).
+    // 64 MiB = 8M lightmapped vertices; the worst case (every vertex of
+    // a maxed pos/shading heap lightmapped) would be kStaticVertexHeap/2
+    // at the 16-byte shading stride — raise via the env override when a
+    // real lightmap reactivation needs it.
+    size_t staticLightmapHeap = kStaticLightmapHeap;
+    size_t targetHeapBlock = kTargetHeapBlock;
 };
 
 // The process-wide runtime sizes, parsed from TOURMALINE_MEM_* on first use
@@ -205,9 +204,9 @@ const RuntimeConfig& Runtime();
 // launch flag beats the ambient environment). Single-threaded by
 // contract: written once on the main thread before any allocator exists.
 struct MemCliOverrides {
-	size_t processReserveMb = 0;
-	size_t frameReserveMb = 0;
-	size_t transientReserveMb = 0;
+    size_t processReserveMb = 0;
+    size_t frameReserveMb = 0;
+    size_t transientReserveMb = 0;
 };
 void ApplyMemCliOverrides(const MemCliOverrides& o);
 
@@ -217,33 +216,33 @@ void ApplyMemCliOverrides(const MemCliOverrides& o);
 // owned and lives in tour::mem::config; the smvk aliases keep the
 // existing call sites compiling through the migration.
 namespace smvk::mem::config {
-	using ::tour::mem::config::kKiB;
-	using ::tour::mem::config::kMiB;
-	using ::tour::mem::config::kGiB;
-	using ::tour::mem::config::kAppArenaBlock;
-	using ::tour::mem::config::kFrameArenaBlock;
-	using ::tour::mem::config::kProcessReserve;
-	using ::tour::mem::config::kFrameReserve;
-	using ::tour::mem::config::kTransientReserve;
-	using ::tour::mem::config::kStaticVertexHeap;
-	using ::tour::mem::config::kStaticIndexHeap;
-	using ::tour::mem::config::kStaticLightmapHeap;
-	using ::tour::mem::config::kTargetHeapBlock;
-	using ::tour::mem::config::kReadbackStagingMin;
-	using ::tour::mem::config::kReadbackStagingMax;
-	using ::tour::mem::config::kStreamerTotalBudget;
-	using ::tour::mem::config::kUploadFlushThreshold;
-	using ::tour::mem::config::kStagingRingPerThread;
-	using ::tour::mem::config::kBulkRingCapacity;
-	using ::tour::mem::config::kNumPoolShards;
-	using ::tour::mem::config::kShardCapacity;
-	using ::tour::mem::config::kShardedMaxSize;
-	using ::tour::mem::config::kThreadPoolQueueSlots;
-	using ::tour::mem::config::kMaxThreadPoolQueueSlots;
-	using ::tour::mem::config::kCommitQuantum;
-	using ::tour::mem::config::kDefaultAlign;
-	using ::tour::mem::config::RuntimeConfig;
-	using ::tour::mem::config::Runtime;
-	using ::tour::mem::config::MemCliOverrides;
-	using ::tour::mem::config::ApplyMemCliOverrides;
-}
+using ::tour::mem::config::ApplyMemCliOverrides;
+using ::tour::mem::config::kAppArenaBlock;
+using ::tour::mem::config::kBulkRingCapacity;
+using ::tour::mem::config::kCommitQuantum;
+using ::tour::mem::config::kDefaultAlign;
+using ::tour::mem::config::kFrameArenaBlock;
+using ::tour::mem::config::kFrameReserve;
+using ::tour::mem::config::kGiB;
+using ::tour::mem::config::kKiB;
+using ::tour::mem::config::kMaxThreadPoolQueueSlots;
+using ::tour::mem::config::kMiB;
+using ::tour::mem::config::kNumPoolShards;
+using ::tour::mem::config::kProcessReserve;
+using ::tour::mem::config::kReadbackStagingMax;
+using ::tour::mem::config::kReadbackStagingMin;
+using ::tour::mem::config::kShardCapacity;
+using ::tour::mem::config::kShardedMaxSize;
+using ::tour::mem::config::kStagingRingPerThread;
+using ::tour::mem::config::kStaticIndexHeap;
+using ::tour::mem::config::kStaticLightmapHeap;
+using ::tour::mem::config::kStaticVertexHeap;
+using ::tour::mem::config::kStreamerTotalBudget;
+using ::tour::mem::config::kTargetHeapBlock;
+using ::tour::mem::config::kThreadPoolQueueSlots;
+using ::tour::mem::config::kTransientReserve;
+using ::tour::mem::config::kUploadFlushThreshold;
+using ::tour::mem::config::MemCliOverrides;
+using ::tour::mem::config::Runtime;
+using ::tour::mem::config::RuntimeConfig;
+} // namespace smvk::mem::config

@@ -11,9 +11,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <utility>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace tour::renderer {
@@ -36,12 +36,14 @@ struct ShapeInstance {
 // Scene-side authoring representation, consumed by WorldRenderer without
 // needing an immediate-mode debug producer or enabled debug toggles.
 class ShapeScene {
-public:
+  public:
     static constexpr size_t MaxInstances = 4096;
 
     [[nodiscard]] ShapeInstanceHandle Add(const asset::ShapeAsset& asset,
-        const glm::mat4& transform, const glm::vec3& color,
-        std::string& error, DebugDepthMode depth = DebugDepthMode::Tested) {
+                                          const glm::mat4& transform,
+                                          const glm::vec3& color,
+                                          std::string& error,
+                                          DebugDepthMode depth = DebugDepthMode::Tested) {
         asset::ShapeGeometry geometry;
         if (!asset::TessellateShape(asset, geometry, error))
             return {};
@@ -51,12 +53,16 @@ public:
         }
         size_t index = slots_.size();
         for (size_t i = 0; i < slots_.size(); ++i)
-            if (!slots_[i].active) { index = i; break; }
+            if (!slots_[i].active) {
+                index = i;
+                break;
+            }
         if (index == slots_.size() && index >= MaxInstances) {
             error = "shape scene instance limit exceeded";
             return {};
         }
-        if (index == slots_.size()) slots_.emplace_back();
+        if (index == slots_.size())
+            slots_.emplace_back();
         Slot& slot = slots_[index];
         slot.instance = {std::move(geometry), transform, color, depth};
         slot.active = true;
@@ -68,10 +74,11 @@ public:
 
     // In-memory source lane for content-registry / pak consumers. The host
     // owns resolution and supplies the decoded .shape bytes as UTF-8 text.
-    [[nodiscard]] ShapeInstanceHandle LoadText(
-        const std::string& text, const glm::mat4& transform,
-        const glm::vec3& color, std::string& error,
-        DebugDepthMode depth = DebugDepthMode::Tested) {
+    [[nodiscard]] ShapeInstanceHandle LoadText(const std::string& text,
+                                               const glm::mat4& transform,
+                                               const glm::vec3& color,
+                                               std::string& error,
+                                               DebugDepthMode depth = DebugDepthMode::Tested) {
         asset::ShapeAsset shape;
         if (!asset::ParseShapeAsset(text, shape, error))
             return {};
@@ -81,10 +88,11 @@ public:
     // Authoring/dev path: read a .shape document and instantiate it once.
     // Production packages should provide decoded text through the content
     // registry instead of relying on absolute host filesystem paths.
-    [[nodiscard]] ShapeInstanceHandle LoadFile(
-        const std::filesystem::path& path, const glm::mat4& transform,
-        const glm::vec3& color, std::string& error,
-        DebugDepthMode depth = DebugDepthMode::Tested) {
+    [[nodiscard]] ShapeInstanceHandle LoadFile(const std::filesystem::path& path,
+                                               const glm::mat4& transform,
+                                               const glm::vec3& color,
+                                               std::string& error,
+                                               DebugDepthMode depth = DebugDepthMode::Tested) {
         std::ifstream file(path, std::ios::binary);
         if (!file) {
             error = "unable to open shape source: " + path.generic_string();
@@ -109,7 +117,8 @@ public:
     }
 
     [[nodiscard]] const ShapeInstance* Get(ShapeInstanceHandle handle) const {
-        if (handle.index >= slots_.size()) return nullptr;
+        if (handle.index >= slots_.size())
+            return nullptr;
         const Slot& slot = slots_[handle.index];
         if (!slot.active || slot.generation != handle.generation)
             return nullptr;
@@ -117,43 +126,54 @@ public:
     }
 
     bool Remove(ShapeInstanceHandle handle) {
-        if (!Get(handle)) return false;
+        if (!Get(handle))
+            return false;
         Slot& slot = slots_[handle.index];
         slot.active = false;
         slot.instance = {};
         ++slot.generation;
-        if (!slot.generation) ++slot.generation;
+        if (!slot.generation)
+            ++slot.generation;
         --count_;
         ++revision_;
         return true;
     }
 
     bool SetTransform(ShapeInstanceHandle handle, const glm::mat4& transform) {
-        if (!Get(handle)) return false;
+        if (!Get(handle))
+            return false;
         slots_[handle.index].instance.worldFromLocal = transform;
         ++revision_;
         return true;
     }
 
     bool SetColor(ShapeInstanceHandle handle, const glm::vec3& color) {
-        if (!Get(handle)) return false;
+        if (!Get(handle))
+            return false;
         slots_[handle.index].instance.color = color;
         ++revision_;
         return true;
     }
 
-    [[nodiscard]] size_t Size() const { return count_; }
-    [[nodiscard]] uint64_t Revision() const { return revision_; }
+    [[nodiscard]] size_t Size() const {
+        return count_;
+    }
+    [[nodiscard]] uint64_t Revision() const {
+        return revision_;
+    }
 
     void Clear() {
         for (Slot& slot : slots_) {
-            if (!slot.active) continue;
+            if (!slot.active)
+                continue;
             slot.active = false;
             slot.instance = {};
             ++slot.generation;
-            if (!slot.generation) ++slot.generation;
+            if (!slot.generation)
+                ++slot.generation;
         }
-        if (count_ != 0) ++revision_;
+        if (count_ != 0)
+            ++revision_;
         count_ = 0;
     }
 
@@ -164,18 +184,18 @@ public:
     size_t AppendDraws(DebugDrawList& draw) const {
         size_t submitted = 0;
         for (const Slot& slot : slots_) {
-            if (!slot.active) continue;
+            if (!slot.active)
+                continue;
             const ShapeInstance& instance = slot.instance;
             const auto& mesh = instance.geometry;
             const bool points = mesh.topology == asset::ShapeGeometry::Topology::Points;
-            const size_t required = points ? mesh.vertices.size() : mesh.indices.size()/2;
-            const size_t remaining = points
-                ? DebugDrawList::MaxPoints - draw.PointCount()
-                : DebugDrawList::MaxLines - draw.Size();
-            if (required > remaining) continue;
+            const size_t required = points ? mesh.vertices.size() : mesh.indices.size() / 2;
+            const size_t remaining = points ? DebugDrawList::MaxPoints - draw.PointCount()
+                                            : DebugDrawList::MaxLines - draw.Size();
+            if (required > remaining)
+                continue;
             auto transform = [&](const asset::ShapePoint& p) {
-                return glm::vec3(instance.worldFromLocal *
-                    glm::vec4(p.x, p.y, p.z, 1.0f));
+                return glm::vec3(instance.worldFromLocal * glm::vec4(p.x, p.y, p.z, 1.0f));
             };
             if (points) {
                 for (const auto& p : mesh.vertices)
@@ -183,15 +203,16 @@ public:
             } else {
                 for (size_t i = 0; i + 1 < mesh.indices.size(); i += 2)
                     draw.Line(transform(mesh.vertices[mesh.indices[i]]),
-                              transform(mesh.vertices[mesh.indices[i+1]]),
-                              instance.color, instance.depth);
+                              transform(mesh.vertices[mesh.indices[i + 1]]),
+                              instance.color,
+                              instance.depth);
             }
             ++submitted;
         }
         return submitted;
     }
 
-private:
+  private:
     struct Slot {
         ShapeInstance instance;
         uint32_t generation = 1;

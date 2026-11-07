@@ -2,20 +2,21 @@
 // SPDX-License-Identifier: MIT
 #include <Engine/App/input_tape.h>
 
-#include <cstdlib>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <limits>
 #include <string>
 #include <vector>
 
-#define CHECK(expression) do { \
-    if (!(expression)) { \
-        std::cerr << "CHECK failed: " << #expression << " at line " << __LINE__ << "\n"; \
-        std::abort(); \
-    } \
-} while (false)
+#define CHECK(expression)                                                                          \
+    do {                                                                                           \
+        if (!(expression)) {                                                                       \
+            std::cerr << "CHECK failed: " << #expression << " at line " << __LINE__ << "\n";       \
+            std::abort();                                                                          \
+        }                                                                                          \
+    } while (false)
 
 using namespace tour;
 using namespace tour::input;
@@ -34,20 +35,23 @@ int main() {
     CHECK(original.BeginFrame(0, error));
     CHECK(original.SetDeltaTime(16'666'667, error));
     CHECK(original.Record(KeyEvent(EventType::KeyDown, Key::W), error));
-    CHECK(original.Record(KeyEvent(EventType::KeyDown, Key::LeftShift,
-                                    ModifierShift), error));
+    CHECK(original.Record(KeyEvent(EventType::KeyDown, Key::LeftShift, ModifierShift), error));
     Event motion;
     motion.type = EventType::MouseMotion;
-    motion.x = 320.5f; motion.y = 120.0f;
-    motion.xrel = -2.25f; motion.yrel = 4.5f;
+    motion.x = 320.5f;
+    motion.y = 120.0f;
+    motion.xrel = -2.25f;
+    motion.yrel = 4.5f;
     CHECK(original.Record(motion, error));
     Event gamepad;
-    gamepad.type = EventType::GamepadAdded; gamepad.gamepadId = 73;
+    gamepad.type = EventType::GamepadAdded;
+    gamepad.gamepadId = 73;
     gamepad.text = "Test pad";
     CHECK(original.Record(gamepad, error));
     gamepad.type = EventType::GamepadAxisMotion;
     gamepad.gamepadAxis = GamepadAxis::LeftX;
-    gamepad.axis = -0.765625f; gamepad.text.clear();
+    gamepad.axis = -0.765625f;
+    gamepad.text.clear();
     CHECK(original.Record(gamepad, error));
     CHECK(original.BeginFrame(1, error));
     CHECK(original.SetDeltaTime(16'666'667, error));
@@ -55,10 +59,13 @@ int main() {
     repeat.repeat = true;
     CHECK(original.Record(repeat, error));
     Event text;
-    text.type = EventType::TextInput; text.text = "hello";
+    text.type = EventType::TextInput;
+    text.text = "hello";
     CHECK(original.Record(text, error));
     Event wheel;
-    wheel.type = EventType::MouseWheel; wheel.x = 0.0f; wheel.y = -2.0f;
+    wheel.type = EventType::MouseWheel;
+    wheel.x = 0.0f;
+    wheel.y = -2.0f;
     CHECK(original.Record(wheel, error));
     CHECK(original.BeginFrame(2, error));
     CHECK(original.SetDeltaTime(20'000'000, error));
@@ -82,8 +89,10 @@ int main() {
     for (size_t tick = 0; tick < original.Frames().size(); ++tick) {
         a.beginFrame();
         b.beginFrame();
-        for (const auto& e : original.Frame(tick)->events) a.onEvent(e);
-        for (const auto& e : restored.Frame(tick)->events) b.onEvent(e);
+        for (const auto& e : original.Frame(tick)->events)
+            a.onEvent(e);
+        for (const auto& e : restored.Frame(tick)->events)
+            b.onEvent(e);
         CHECK(a.isKeyHeld(Key::W) == b.isKeyHeld(Key::W));
         CHECK(a.isKeyPressed(Key::W) == b.isKeyPressed(Key::W));
         CHECK(a.isKeyReleased(Key::W) == b.isKeyReleased(Key::W));
@@ -98,8 +107,8 @@ int main() {
     CHECK(!a.isKeyHeld(Key::W));
     CHECK(a.isKeyReleased(Key::W));
 
-    const auto destination = std::filesystem::temp_directory_path() /
-        "tourmaline_input_tape_test.bin";
+    const auto destination =
+        std::filesystem::temp_directory_path() / "tourmaline_input_tape_test.bin";
     std::error_code ec;
     std::filesystem::remove(destination, ec);
     CHECK(original.Save(destination.string(), error));

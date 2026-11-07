@@ -13,7 +13,7 @@ namespace editor::ui {
 // platform backend creates, focuses, renders and destroys the SDL OS
 // window during RenderPlatformWindows().
 inline void PrepareSystemModal(const ImVec2& size = ImVec2(0, 0),
-    ImGuiCond sizeCondition = ImGuiCond_Appearing) {
+                               ImGuiCond sizeCondition = ImGuiCond_Appearing) {
     if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         ImGuiWindowClass modalClass{};
         modalClass.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge;
@@ -22,8 +22,7 @@ inline void PrepareSystemModal(const ImVec2& size = ImVec2(0, 0),
         ImGui::SetNextWindowClass(&modalClass);
     }
     const ImGuiViewport* main = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(main->GetCenter(), ImGuiCond_Appearing,
-        ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(main->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (size.x > 0 && size.y > 0)
         ImGui::SetNextWindowSize(size, sizeCondition);
 }
@@ -35,12 +34,11 @@ inline void PrepareSystemModal(const ImVec2& size = ImVec2(0, 0),
 // must treat the platform close button like their Cancel/Close action.
 inline bool SystemModalCloseRequested() {
     const ImGuiViewport* viewport = ImGui::GetWindowViewport();
-    return viewport && viewport != ImGui::GetMainViewport() &&
-        viewport->PlatformRequestClose;
+    return viewport && viewport != ImGui::GetMainViewport() && viewport->PlatformRequestClose;
 }
 
 inline constexpr ImGuiWindowFlags kSystemModalFlags =
-    ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
-    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings;
+    ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
+    ImGuiWindowFlags_NoSavedSettings;
 
 } // namespace editor::ui

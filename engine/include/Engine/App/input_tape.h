@@ -28,15 +28,19 @@ struct RecordedInputFrame {
 };
 
 class InputTape {
-public:
+  public:
     static constexpr uint32_t Version = 1;
     static constexpr uint32_t MaxFrames = 1'000'000;
     static constexpr uint32_t MaxEventsPerFrame = 4096;
     static constexpr uint32_t MaxTextBytes = 4096;
     static constexpr size_t MaxFileBytes = 128u * 1024u * 1024u;
 
-    [[nodiscard]] const std::vector<RecordedInputFrame>& Frames() const { return frames_; }
-    void Clear() { frames_.clear(); }
+    [[nodiscard]] const std::vector<RecordedInputFrame>& Frames() const {
+        return frames_;
+    }
+    void Clear() {
+        frames_.clear();
+    }
 
     static bool IsRecordable(EventType type) {
         // Quit, window-close and file-drop remain live OS operations. In
@@ -91,8 +95,7 @@ public:
         for (size_t i = 0; i < frames_.size(); ++i) {
             const auto& frame = frames_[i];
             if (frame.tick != i || frame.deltaTimeNs == 0 ||
-                frame.deltaTimeNs > 10'000'000'000ull ||
-                frame.events.size() > MaxEventsPerFrame) {
+                frame.deltaTimeNs > 10'000'000'000ull || frame.events.size() > MaxEventsPerFrame) {
                 error = "input tape: invalid frame";
                 return false;
             }
@@ -140,8 +143,8 @@ public:
         }
         Reader reader{input, 8};
         uint32_t version = 0, count = 0;
-        if (!reader.U32(version) || version != Version || !reader.U32(count) ||
-            count == 0 || count > MaxFrames) {
+        if (!reader.U32(version) || version != Version || !reader.U32(count) || count == 0 ||
+            count > MaxFrames) {
             error = "input tape: unsupported version or frame count";
             return false;
         }
@@ -150,9 +153,8 @@ public:
         for (uint32_t i = 0; i < count; ++i) {
             RecordedInputFrame frame;
             uint32_t events = 0;
-            if (!reader.U64(frame.tick) || frame.tick != i ||
-                !reader.U64(frame.deltaTimeNs) || frame.deltaTimeNs == 0 ||
-                frame.deltaTimeNs > 10'000'000'000ull ||
+            if (!reader.U64(frame.tick) || frame.tick != i || !reader.U64(frame.deltaTimeNs) ||
+                frame.deltaTimeNs == 0 || frame.deltaTimeNs > 10'000'000'000ull ||
                 !reader.U32(events) || events > MaxEventsPerFrame) {
                 error = "input tape: invalid/truncated frame";
                 return false;
@@ -163,12 +165,10 @@ public:
                 uint8_t type = 0, repeated = 0;
                 uint32_t key = 0, mouse = 0, button = 0, axis = 0, mods = 0, length = 0;
                 if (!reader.U8(type) || !reader.U32(key) || !reader.U32(mouse) ||
-                    !reader.U32(button) || !reader.U32(axis) ||
-                    !reader.U32(e.gamepadId) || !reader.U32(mods) ||
-                    !reader.Float(e.axis) || !reader.Float(e.x) ||
-                    !reader.Float(e.y) || !reader.Float(e.xrel) ||
-                    !reader.Float(e.yrel) || !reader.U8(repeated) ||
-                    !reader.U32(length) || length > MaxTextBytes ||
+                    !reader.U32(button) || !reader.U32(axis) || !reader.U32(e.gamepadId) ||
+                    !reader.U32(mods) || !reader.Float(e.axis) || !reader.Float(e.x) ||
+                    !reader.Float(e.y) || !reader.Float(e.xrel) || !reader.Float(e.yrel) ||
+                    !reader.U8(repeated) || !reader.U32(length) || length > MaxTextBytes ||
                     length > input.size() - reader.offset || repeated > 1u ||
                     key >= static_cast<uint32_t>(KeyCount) || mods > UINT16_MAX) {
                     error = "input tape: invalid/truncated event";
@@ -261,24 +261,27 @@ public:
         return Decode(bytes, error);
     }
 
-private:
+  private:
     struct Reader {
         std::span<const uint8_t> data;
         size_t offset = 0;
         bool U8(uint8_t& out) {
-            if (offset >= data.size()) return false;
+            if (offset >= data.size())
+                return false;
             out = data[offset++];
             return true;
         }
         bool U32(uint32_t& out) {
-            if (data.size() - offset < 4) return false;
+            if (data.size() - offset < 4)
+                return false;
             out = 0;
             for (unsigned i = 0; i < 4; ++i)
                 out |= uint32_t(data[offset++]) << (i * 8);
             return true;
         }
         bool U64(uint64_t& out) {
-            if (data.size() - offset < 8) return false;
+            if (data.size() - offset < 8)
+                return false;
             out = 0;
             for (unsigned i = 0; i < 8; ++i)
                 out |= uint64_t(data[offset++]) << (i * 8);
@@ -286,7 +289,8 @@ private:
         }
         bool Float(float& out) {
             uint32_t bits = 0;
-            if (!U32(bits)) return false;
+            if (!U32(bits))
+                return false;
             std::memcpy(&out, &bits, sizeof(out));
             return true;
         }
@@ -312,13 +316,11 @@ private:
             static_cast<int>(e.gamepadButton) < 0 ||
             static_cast<int>(e.gamepadButton) >= GamepadButtonCount ||
             static_cast<int>(e.gamepadAxis) < 0 ||
-            static_cast<int>(e.gamepadAxis) >= GamepadAxisCount ||
-            e.text.size() > MaxTextBytes || !std::isfinite(e.axis) ||
-            !std::isfinite(e.x) || !std::isfinite(e.y) ||
+            static_cast<int>(e.gamepadAxis) >= GamepadAxisCount || e.text.size() > MaxTextBytes ||
+            !std::isfinite(e.axis) || !std::isfinite(e.x) || !std::isfinite(e.y) ||
             !std::isfinite(e.xrel) || !std::isfinite(e.yrel))
             return false;
-        if ((e.type == EventType::KeyDown || e.type == EventType::KeyUp) &&
-            e.key == Key::Unknown)
+        if ((e.type == EventType::KeyDown || e.type == EventType::KeyUp) && e.key == Key::Unknown)
             return false;
         return true;
     }

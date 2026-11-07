@@ -9,25 +9,27 @@
 
 namespace editor {
 
-[[nodiscard]] inline bool IsPublishedMeshBound(
-	const std::string& publishedSource, const std::string& boundPath) {
-	namespace fs = std::filesystem;
-	if (publishedSource.empty() || boundPath.empty())
-		return false;
-	std::error_code ec;
-	auto source = fs::absolute(fs::path(publishedSource), ec);
-	if (ec) return false;
-	auto bound = fs::absolute(fs::path(boundPath), ec);
-	if (ec) return false;
-	source = source.lexically_normal();
-	bound = bound.lexically_normal();
-	if (source == bound)
-		return true;
-	source.replace_extension(".geometry");
-	if (source == bound)
-		return true;
-	source.replace_extension(".mesh");
-	return source == bound;
+[[nodiscard]] inline bool IsPublishedMeshBound(const std::string& publishedSource,
+                                               const std::string& boundPath) {
+    namespace fs = std::filesystem;
+    if (publishedSource.empty() || boundPath.empty())
+        return false;
+    std::error_code ec;
+    auto source = fs::absolute(fs::path(publishedSource), ec);
+    if (ec)
+        return false;
+    auto bound = fs::absolute(fs::path(boundPath), ec);
+    if (ec)
+        return false;
+    source = source.lexically_normal();
+    bound = bound.lexically_normal();
+    if (source == bound)
+        return true;
+    source.replace_extension(".geometry");
+    if (source == bound)
+        return true;
+    source.replace_extension(".mesh");
+    return source == bound;
 }
 
 } // namespace editor

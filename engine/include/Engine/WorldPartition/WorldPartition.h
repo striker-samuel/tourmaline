@@ -60,9 +60,9 @@
 #include <cstdint>
 #include <vector>
 
-#include <glm/glm.hpp>
 #include <Engine/Core/Limits.h>
 #include <Engine/WorldPartition/WorldTilePath.h>
+#include <glm/glm.hpp>
 
 namespace engine::worldpartition {
 
@@ -70,7 +70,7 @@ namespace engine::worldpartition {
 // Cell constants (1 world unit = 1 metre).
 // ---------------------------------------------------------------------------
 inline constexpr double kRootCellSize = engine::limits::WorldRootCellSizeMeters; // XZ
-inline constexpr double kSubcellSize = engine::limits::WorldSubcellSizeMeters; // XZ
+inline constexpr double kSubcellSize = engine::limits::WorldSubcellSizeMeters;   // XZ
 
 // ---------------------------------------------------------------------------
 // World cell keys — 2D (XZ) for terrain and ordinary scene content.
@@ -80,69 +80,71 @@ inline constexpr double kSubcellSize = engine::limits::WorldSubcellSizeMeters; /
 // a nonzero ID. World instance generations are separate runtime identities.
 using WorldId = uint64_t;
 
-struct WorldCellKey
-{
-	int64_t x = 0;
-	int64_t z = 0;
+struct WorldCellKey {
+    int64_t x = 0;
+    int64_t z = 0;
 
-	bool operator==(const WorldCellKey& o) const { return x == o.x && z == o.z; }
-	bool operator!=(const WorldCellKey& o) const { return !(*this == o); }
+    bool operator==(const WorldCellKey& o) const {
+        return x == o.x && z == o.z;
+    }
+    bool operator!=(const WorldCellKey& o) const {
+        return !(*this == o);
+    }
 };
 
-struct WorldCellKeyHash
-{
-	size_t operator()(const WorldCellKey& k) const noexcept
-	{
-		const uint64_t h = 1469598103934665603ull
-			^ (static_cast<uint64_t>(static_cast<int64_t>(k.x)) * 1099511628211ull)
-			^ (static_cast<uint64_t>(static_cast<int64_t>(k.z)) * 1099511628211ull >> 3);
-		return static_cast<size_t>(h);
-	}
+struct WorldCellKeyHash {
+    size_t operator()(const WorldCellKey& k) const noexcept {
+        const uint64_t h =
+            1469598103934665603ull ^
+            (static_cast<uint64_t>(static_cast<int64_t>(k.x)) * 1099511628211ull) ^
+            (static_cast<uint64_t>(static_cast<int64_t>(k.z)) * 1099511628211ull >> 3);
+        return static_cast<size_t>(h);
+    }
 };
 
 // Floor discipline (NEVER truncation): -1 m is cell -1; exactly -256 m
 // is cell -1; -256.001 is cell -2. Same rule as the WorldFields brick
 // addressing — the two schemes must agree at their shared boundaries.
-inline WorldCellKey GetWorldCell(glm::dvec3 pos, double cellSize = kRootCellSize)
-{
-	return WorldCellKey{
-		int64_t(std::floor(pos.x / cellSize)),
-		int64_t(std::floor(pos.z / cellSize)),
-	};
+inline WorldCellKey GetWorldCell(glm::dvec3 pos, double cellSize = kRootCellSize) {
+    return WorldCellKey{
+        int64_t(std::floor(pos.x / cellSize)),
+        int64_t(std::floor(pos.z / cellSize)),
+    };
 }
 
 // World-space bounds of a cell ([min, min+size) on XZ; unbounded Y).
-inline void WorldCellBounds(const WorldCellKey& key, double cellSize,
-	glm::dvec3& outMin, glm::dvec3& outMax)
-{
-	outMin = glm::dvec3(double(key.x) * cellSize, 0.0, double(key.z) * cellSize);
-	outMax = outMin + glm::dvec3(cellSize, 0.0, cellSize);
+inline void WorldCellBounds(const WorldCellKey& key,
+                            double cellSize,
+                            glm::dvec3& outMin,
+                            glm::dvec3& outMax) {
+    outMin = glm::dvec3(double(key.x) * cellSize, 0.0, double(key.z) * cellSize);
+    outMax = outMin + glm::dvec3(cellSize, 0.0, cellSize);
 }
 
 // Subcell (64 m) key — terrain patch granularity. Distinct type so a
 // cell and a subcell can never be silently mixed.
-struct WorldSubcellKey
-{
-	int64_t x = 0;
-	int64_t z = 0;
-	bool operator==(const WorldSubcellKey& o) const { return x == o.x && z == o.z; }
+struct WorldSubcellKey {
+    int64_t x = 0;
+    int64_t z = 0;
+    bool operator==(const WorldSubcellKey& o) const {
+        return x == o.x && z == o.z;
+    }
 };
 
-inline WorldSubcellKey GetWorldSubcell(glm::dvec3 pos, double subcellSize = kSubcellSize)
-{
-	return WorldSubcellKey{
-		int64_t(std::floor(pos.x / subcellSize)),
-		int64_t(std::floor(pos.z / subcellSize)),
-	};
+inline WorldSubcellKey GetWorldSubcell(glm::dvec3 pos, double subcellSize = kSubcellSize) {
+    return WorldSubcellKey{
+        int64_t(std::floor(pos.x / subcellSize)),
+        int64_t(std::floor(pos.z / subcellSize)),
+    };
 }
 
 inline WorldCellKey SubcellToCell(const WorldSubcellKey& s,
-	double cellSize = kRootCellSize, double subcellSize = kSubcellSize)
-{
-	return WorldCellKey{
-		int64_t(std::floor((double(s.x) * subcellSize) / cellSize)),
-		int64_t(std::floor((double(s.z) * subcellSize) / cellSize)),
-	};
+                                  double cellSize = kRootCellSize,
+                                  double subcellSize = kSubcellSize) {
+    return WorldCellKey{
+        int64_t(std::floor((double(s.x) * subcellSize) / cellSize)),
+        int64_t(std::floor((double(s.z) * subcellSize) / cellSize)),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -151,31 +153,28 @@ inline WorldCellKey SubcellToCell(const WorldSubcellKey& s,
 // one root cell per horizontal axis. 1 m/voxel fog -> 4 (a subcell per
 // brick); 4 m/voxel wind -> 1 (a root cell per brick).
 // ---------------------------------------------------------------------------
-inline constexpr uint32_t BricksPerRootCell(double baseVoxelSizeMeters)
-{
-	const double brickFootprint = 64.0 * baseVoxelSizeMeters;
-	return uint32_t(kRootCellSize / brickFootprint);
+inline constexpr uint32_t BricksPerRootCell(double baseVoxelSizeMeters) {
+    const double brickFootprint = 64.0 * baseVoxelSizeMeters;
+    return uint32_t(kRootCellSize / brickFootprint);
 }
 
 // ---------------------------------------------------------------------------
 // Streaming model (the scheduler seam — v1 carries the flow; the dedupe/
 // priority/dependency engine lands with the terrain client).
 // ---------------------------------------------------------------------------
-enum class StreamLayer : uint8_t
-{
-	Terrain = 0,
-	Scene = 1,
-	Geometry = 2,
-	WorldField = 3,
-	Collision = 4,
-	Navigation = 5,
-	Placement = 6,
+enum class StreamLayer : uint8_t {
+    Terrain = 0,
+    Scene = 1,
+    Geometry = 2,
+    WorldField = 3,
+    Collision = 4,
+    Navigation = 5,
+    Placement = 6,
 };
 inline constexpr uint32_t kStreamLayerCount = 7;
 
-inline constexpr uint32_t StreamLayerBit(StreamLayer l)
-{
-	return uint32_t(1) << uint32_t(l);
+inline constexpr uint32_t StreamLayerBit(StreamLayer l) {
+    return uint32_t(1) << uint32_t(l);
 }
 
 // The lifecycle a streamed resource moves through. "Requested -> IO/
@@ -184,12 +183,11 @@ inline constexpr uint32_t StreamLayerBit(StreamLayer l)
 // (collision, navigation) activate from CpuReady; GPU resources need
 // upload completion, barriers and valid descriptor/page-table
 // publication (the WorldFields publication contract is one instance).
-enum class DesiredResidency : uint8_t
-{
-	Metadata = 0, // manifest/index bytes only
-	CpuReady = 1, // decoded on the CPU, not yet uploaded
-	GpuReady = 2, // uploaded + published, not yet activated
-	Active = 3, // visible/simulatable
+enum class DesiredResidency : uint8_t {
+    Metadata = 0, // manifest/index bytes only
+    CpuReady = 1, // decoded on the CPU, not yet uploaded
+    GpuReady = 2, // uploaded + published, not yet activated
+    Active = 3,   // visible/simulatable
 };
 
 // A streaming tile is identified by its world AND its spatial address.
@@ -205,10 +203,10 @@ struct WorldTileKey {
 struct WorldTileKeyLess {
     bool operator()(const WorldTileKey& a, const WorldTileKey& b) const {
         return a.world < b.world ||
-            (a.world == b.world &&
+               (a.world == b.world &&
                 (a.cell.x < b.cell.x ||
-                    (a.cell.x == b.cell.x && (a.cell.z < b.cell.z ||
-                    (a.cell.z == b.cell.z && a.path.bits < b.path.bits)))));
+                 (a.cell.x == b.cell.x &&
+                  (a.cell.z < b.cell.z || (a.cell.z == b.cell.z && a.path.bits < b.path.bits)))));
     }
 };
 
@@ -217,29 +215,27 @@ struct WorldTileKeyLess {
 // set into their own desired resources (a field provider centers its
 // clipmaps on the primary interest and leads by velocity; a future
 // terrain provider requests the covering height pages).
-struct StreamingInterest
-{
-	WorldId world = 0; // 0: legacy unscoped providers
-	glm::dvec3 position{ 0.0 };
-	glm::dvec3 velocity{ 0.0 }; // m/s — lookahead direction (the prefetch
-	// rule: d_prefetch >= v_max * t_worstReady + d_safety)
-	double radiusMeters = 256.0;
-	float priority = 1.0f; // higher wins (providers weight per layer)
-	uint32_t layerMask = 0xFFFFFFFFu; // StreamLayerBit(...) set
-	DesiredResidency desired = DesiredResidency::GpuReady;
+struct StreamingInterest {
+    WorldId world = 0; // 0: legacy unscoped providers
+    glm::dvec3 position{0.0};
+    glm::dvec3 velocity{0.0}; // m/s — lookahead direction (the prefetch
+    // rule: d_prefetch >= v_max * t_worstReady + d_safety)
+    double radiusMeters = 256.0;
+    float priority = 1.0f;            // higher wins (providers weight per layer)
+    uint32_t layerMask = 0xFFFFFFFFu; // StreamLayerBit(...) set
+    DesiredResidency desired = DesiredResidency::GpuReady;
 };
 
 // A generic (layer, cell, priority, desired) request — what a provider
 // asked the scheduler for. Providers may carry richer private payloads;
 // this is the shared currency the dedupe/priority engine will resolve.
-struct StreamRequest
-{
-	WorldId world = 0; // shared scheduler must key (world, layer, cell)
-	StreamLayer layer = StreamLayer::WorldField;
-	WorldCellKey cell{};
-	DesiredResidency desired = DesiredResidency::GpuReady;
-	float priority = 1.0f;
-	uint64_t frameRequested = 0;
+struct StreamRequest {
+    WorldId world = 0; // shared scheduler must key (world, layer, cell)
+    StreamLayer layer = StreamLayer::WorldField;
+    WorldCellKey cell{};
+    DesiredResidency desired = DesiredResidency::GpuReady;
+    float priority = 1.0f;
+    uint64_t frameRequested = 0;
 };
 
 // Request sink handed to GatherRequests. The partition owns the backing
@@ -254,43 +250,46 @@ struct StreamRequest
 inline constexpr size_t kStreamRequestInitialCapacity = 256;
 inline constexpr size_t kStreamRequestHardCap = size_t(1) << 16;
 
-class StreamRequestSink
-{
-public:
-	StreamRequestSink(std::vector<StreamRequest>& storage, size_t hardCap)
-		: storage_(&storage), hardCap_(hardCap)
-	{
-	}
-	void Push(const StreamRequest& r)
-	{
-		// Grow the owner's buffer when full (the partition's gather
-		// scratch; requestBuffer_ keeps the capacity for later frames).
-		if (count_ == storage_->size() && count_ < hardCap_) {
-			const size_t grow = std::min(hardCap_,
-				std::max<size_t>(storage_->size() * 2,
-					kStreamRequestInitialCapacity));
-			storage_->resize(grow);
-		}
-		if (count_ < storage_->size()) {
-			(*storage_)[count_++] = r;
-		} else {
-			assert(count_ < hardCap_
-				&& "StreamRequestSink hard-cap overflow (provider bug)");
-			++dropped_;
-		}
-	}
-	const StreamRequest* Requests() const { return storage_->data(); }
-	size_t Count() const { return count_; }
-	// Requests dropped past the hard cap this gather (0 in any healthy
-	// frame; a nonzero value is a provider over-producing).
-	size_t Dropped() const { return dropped_; }
-	void Clear() { count_ = 0; dropped_ = 0; }
+class StreamRequestSink {
+  public:
+    StreamRequestSink(std::vector<StreamRequest>& storage, size_t hardCap)
+        : storage_(&storage), hardCap_(hardCap) {}
+    void Push(const StreamRequest& r) {
+        // Grow the owner's buffer when full (the partition's gather
+        // scratch; requestBuffer_ keeps the capacity for later frames).
+        if (count_ == storage_->size() && count_ < hardCap_) {
+            const size_t grow = std::min(
+                hardCap_, std::max<size_t>(storage_->size() * 2, kStreamRequestInitialCapacity));
+            storage_->resize(grow);
+        }
+        if (count_ < storage_->size()) {
+            (*storage_)[count_++] = r;
+        } else {
+            assert(count_ < hardCap_ && "StreamRequestSink hard-cap overflow (provider bug)");
+            ++dropped_;
+        }
+    }
+    const StreamRequest* Requests() const {
+        return storage_->data();
+    }
+    size_t Count() const {
+        return count_;
+    }
+    // Requests dropped past the hard cap this gather (0 in any healthy
+    // frame; a nonzero value is a provider over-producing).
+    size_t Dropped() const {
+        return dropped_;
+    }
+    void Clear() {
+        count_ = 0;
+        dropped_ = 0;
+    }
 
-private:
-	std::vector<StreamRequest>* storage_ = nullptr; // owner's gather scratch
-	size_t hardCap_ = 0;
-	size_t count_ = 0;
-	size_t dropped_ = 0;
+  private:
+    std::vector<StreamRequest>* storage_ = nullptr; // owner's gather scratch
+    size_t hardCap_ = 0;
+    size_t count_ = 0;
+    size_t dropped_ = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -305,25 +304,28 @@ private:
 // mutation happen ONLY in these callbacks (resources finishing after
 // this frame's publication point defer to the next frame).
 // ---------------------------------------------------------------------------
-class IWorldStreamProvider
-{
-public:
-	virtual ~IWorldStreamProvider() = default;
-	virtual const char* ProviderName() const = 0;
-	// The resolved interest set (deduped by the partition; highest
-	// priority first). Providers snapshot what they need.
-	virtual void OnStreamingInterests(const StreamingInterest* interests,
-		size_t count) = 0;
-	// Optional (v1: the partition records requests for diagnostics; the
-	// dedupe/priority engine grows here). Return the request count pushed.
-	virtual size_t GatherRequests(StreamRequestSink* sink,
-		uint64_t frameIndex) { (void)sink; (void)frameIndex; return 0; }
-	// Commit this frame: publish completed resources (uploads + page
-	// tables + activation deltas), inside the frame's budget.
-	virtual void CommitFrame(uint64_t frameIndex) = 0;
-	// Retire resources no longer required, respecting in-flight GPU
-	// references (the deferred-retirement discipline).
-	virtual void RetireFrame(uint64_t frameIndex) { (void)frameIndex; }
+class IWorldStreamProvider {
+  public:
+    virtual ~IWorldStreamProvider() = default;
+    virtual const char* ProviderName() const = 0;
+    // The resolved interest set (deduped by the partition; highest
+    // priority first). Providers snapshot what they need.
+    virtual void OnStreamingInterests(const StreamingInterest* interests, size_t count) = 0;
+    // Optional (v1: the partition records requests for diagnostics; the
+    // dedupe/priority engine grows here). Return the request count pushed.
+    virtual size_t GatherRequests(StreamRequestSink* sink, uint64_t frameIndex) {
+        (void)sink;
+        (void)frameIndex;
+        return 0;
+    }
+    // Commit this frame: publish completed resources (uploads + page
+    // tables + activation deltas), inside the frame's budget.
+    virtual void CommitFrame(uint64_t frameIndex) = 0;
+    // Retire resources no longer required, respecting in-flight GPU
+    // references (the deferred-retirement discipline).
+    virtual void RetireFrame(uint64_t frameIndex) {
+        (void)frameIndex;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -339,52 +341,63 @@ public:
 //   6) retire, respecting in-flight GPU references (RetireFrame)
 // Run BEFORE constructing frame render data.
 // ---------------------------------------------------------------------------
-class WorldPartition
-{
-public:
-	WorldPartition() = default;
-	~WorldPartition() = default;
-	WorldPartition(const WorldPartition&) = delete;
-	WorldPartition& operator=(const WorldPartition&) = delete;
+class WorldPartition {
+  public:
+    WorldPartition() = default;
+    ~WorldPartition() = default;
+    WorldPartition(const WorldPartition&) = delete;
+    WorldPartition& operator=(const WorldPartition&) = delete;
 
-	void AddProvider(IWorldStreamProvider* provider);
-	// Providers are borrowed from the renderer. Release registrations before
-	// a renderer detaches so a later onAttach cannot register duplicates.
-	void ClearProviders() {
-		providers_.clear();
-		interests_.clear();
-		requestCount_ = 0;
-		requestDrops_ = 0;
-	}
-	size_t ProviderCount() const { return providers_.size(); }
+    void AddProvider(IWorldStreamProvider* provider);
+    // Providers are borrowed from the renderer. Release registrations before
+    // a renderer detaches so a later onAttach cannot register duplicates.
+    void ClearProviders() {
+        providers_.clear();
+        interests_.clear();
+        requestCount_ = 0;
+        requestDrops_ = 0;
+    }
+    size_t ProviderCount() const {
+        return providers_.size();
+    }
 
-	// The frame's interest set (copied; render thread, before
-	// UpdateFrame). Higher-priority-first sort is applied once here.
-	void SetInterests(const StreamingInterest* interests, size_t count);
+    // The frame's interest set (copied; render thread, before
+    // UpdateFrame). Higher-priority-first sort is applied once here.
+    void SetInterests(const StreamingInterest* interests, size_t count);
 
-	// The frame sequence (see the class comment). frameIndex is the
-	// monotonic frame counter providers key their clocks on.
-	void UpdateFrame(uint64_t frameIndex);
+    // The frame sequence (see the class comment). frameIndex is the
+    // monotonic frame counter providers key their clocks on.
+    void UpdateFrame(uint64_t frameIndex);
 
-	// ---- inspection (pointer + count) ----
-	const StreamingInterest* Interests() const { return interests_.data(); }
-	size_t InterestCount() const { return interests_.size(); }
-	const StreamRequest* Requests() const { return requestBuffer_.data(); }
-	size_t RequestCount() const { return requestCount_; }
-	// Diagnostics: requests dropped past the sink's hard cap in the last
-	// UpdateFrame (0 in any healthy frame; nonzero = a provider bug).
-	size_t DroppedRequestCount() const { return requestDrops_; }
-	// Diagnostics: the distinct active root cells across all interests'
-	// radii (the editor's residency-map backing data grows from here).
-	size_t ActiveCellCount() const;
+    // ---- inspection (pointer + count) ----
+    const StreamingInterest* Interests() const {
+        return interests_.data();
+    }
+    size_t InterestCount() const {
+        return interests_.size();
+    }
+    const StreamRequest* Requests() const {
+        return requestBuffer_.data();
+    }
+    size_t RequestCount() const {
+        return requestCount_;
+    }
+    // Diagnostics: requests dropped past the sink's hard cap in the last
+    // UpdateFrame (0 in any healthy frame; nonzero = a provider bug).
+    size_t DroppedRequestCount() const {
+        return requestDrops_;
+    }
+    // Diagnostics: the distinct active root cells across all interests'
+    // radii (the editor's residency-map backing data grows from here).
+    size_t ActiveCellCount() const;
 
-private:
-	std::vector<IWorldStreamProvider*> providers_; // not owned
-	std::vector<StreamingInterest> interests_; // sorted priority-first
-	std::vector<StreamRequest> requestBuffer_; // gather scratch (grows)
-	size_t requestCount_ = 0;
-	size_t requestDrops_ = 0;
-	StreamRequestSink MakeSink();
+  private:
+    std::vector<IWorldStreamProvider*> providers_; // not owned
+    std::vector<StreamingInterest> interests_;     // sorted priority-first
+    std::vector<StreamRequest> requestBuffer_;     // gather scratch (grows)
+    size_t requestCount_ = 0;
+    size_t requestDrops_ = 0;
+    StreamRequestSink MakeSink();
 };
 
 } // namespace engine::worldpartition

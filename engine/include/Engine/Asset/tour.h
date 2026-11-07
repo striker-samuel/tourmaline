@@ -79,8 +79,12 @@
 #include <Engine/Scene/node_plugs.h>
 #include <Engine/Scene/scene.h> // SceneExportSettings (the export-settings node payload)
 
-namespace tour { struct Cluster; }
-namespace smvk { using ::tour::Cluster; } // namespace smvk
+namespace tour {
+struct Cluster;
+}
+namespace smvk {
+using ::tour::Cluster;
+} // namespace smvk
 
 // (namespace/RHI boundary audit) the old GLOBAL `struct Scene;` fwd is
 // GONE: it declared a ::Scene distinct from tour::scene::Scene and
@@ -105,11 +109,11 @@ inline constexpr int kTourVersion = 1;
 // stem; unmatched images fall back to usage inference (baseColor /
 // emissive = sRGB, everything else linear).
 struct FileNode {
-	std::string name; // display name (defaults to the path stem)
-	std::string path; // source image (host path or VFS-relative)
-	int colorspace = 0; // 0 = sRGB (color/emissive), 1 = linear (data)
-	int wrap = 0;       // 0 = repeat, 1 = clamp-edge, 2 = mirrored-repeat
-	int filter = 0;     // 0 = linear, 1 = nearest
+    std::string name;   // display name (defaults to the path stem)
+    std::string path;   // source image (host path or VFS-relative)
+    int colorspace = 0; // 0 = sRGB (color/emissive), 1 = linear (data)
+    int wrap = 0;       // 0 = repeat, 1 = clamp-edge, 2 = mirrored-repeat
+    int filter = 0;     // 0 = linear, 1 = nearest
 };
 
 // Material-asset import (ordered editor-side POOL imports, replayed
@@ -120,11 +124,11 @@ struct FileNode {
 // material seed. The record order IS the pool order — nothing else
 // appends to the pool after the reference bind.
 struct MaterialAssetCmd {
-	bool editorDefault = false; // the deterministic "editor://default" seed
-	                             // material (no source file)
-	std::string path;  // .material source (project-relative or absolute,
-	                   // POSIX separators — the reference-source convention)
-	std::string name; // display name
+    bool editorDefault = false; // the deterministic "editor://default" seed
+                                // material (no source file)
+    std::string path;           // .material source (project-relative or absolute,
+                                // POSIX separators — the reference-source convention)
+    std::string name;           // display name
 };
 
 // Texture-asset import (ordered editor-side POOL imports, replayed
@@ -136,9 +140,9 @@ struct MaterialAssetCmd {
 // its pool entry). Textures the glTF itself imports need no record
 // (reference-bound, like every other cluster content).
 struct TextureAssetCmd {
-	std::string path;  // .texture source (project-relative or absolute,
-	                   // POSIX separators — the reference-source convention)
-	std::string name; // display name
+    std::string path; // .texture source (project-relative or absolute,
+                      // POSIX separators — the reference-source convention)
+    std::string name; // display name
 };
 
 // GI-asset binding (the scene's HARD identification of its baked GI
@@ -159,232 +163,232 @@ struct TextureAssetCmd {
 // (the stamp's supersede list retires it BY RECORD), and the pak's
 // name never enters the bake identity at all.
 struct GiAssetCmd {
-	enum class Kind : uint8_t { World, GiVolume, Captures };
-	Kind kind = Kind::World;
-	uint32_t ref = 0;    // GI-volume family ref (Kind::GiVolume only): raw
-	                     // kCreateGiVolumeRefBase|k form as authored
-	std::string source;  // VFS path, POSIX separators ("gi/<uuid>.sggi")
-	std::string guid;    // artifact .meta GUID ("" = path-only bind)
-	// The bake-input hash AT BAKE TIME (see Engine/GI/bake_inputs.h —
-	// the invalidation model). The PAK GATE recomputes the current unit
-	// hash and refuses the artifact on a mismatch or an empty hash here
-	// (an unverifiable bake is a stale bake — old lighting must never
-	// ride into a pak silently). The bake owners stamp it; the capture
-	// set's per-ROW hashes live in the manifest rows themselves (this is
-	// the set-level fold — the gate's fast path).
-	std::string bakedHash;
+    enum class Kind : uint8_t { World, GiVolume, Captures };
+    Kind kind = Kind::World;
+    uint32_t ref = 0;   // GI-volume family ref (Kind::GiVolume only): raw
+                        // kCreateGiVolumeRefBase|k form as authored
+    std::string source; // VFS path, POSIX separators ("gi/<uuid>.sggi")
+    std::string guid;   // artifact .meta GUID ("" = path-only bind)
+    // The bake-input hash AT BAKE TIME (see Engine/GI/bake_inputs.h —
+    // the invalidation model). The PAK GATE recomputes the current unit
+    // hash and refuses the artifact on a mismatch or an empty hash here
+    // (an unverifiable bake is a stale bake — old lighting must never
+    // ride into a pak silently). The bake owners stamp it; the capture
+    // set's per-ROW hashes live in the manifest rows themselves (this is
+    // the set-level fold — the gate's fast path).
+    std::string bakedHash;
 };
 
 enum class Verb : uint8_t {
-	Rename,
-	SetTranslate,
-	SetRotate, // degrees XYZ, same convention as the editor inspector
-	SetScale,
-	AssignMaterial, // material = cluster material POOL index
-	SetMatAttr,     // text = attr name; vec/vec4/number by attr
-	SetNoLightmap,  // flag
-	SetLightmap,    // flag (bake opt-in; default off, see Scene::lightmap)
-	SetDitherCloseup, // flag (subtree dither on camera closeup)
-	SetVisibility,  // flag: hidden self state (hierarchical, see Scene::hidden)
-	SetCastsVolumetricShadow, // flag: the coarse fog-tile caster mark
-	                          // (self flag, see Scene::castsVolumetricShadow)
-	SetStatic,      // flag: static-subtree ROOT mark (Scene::staticRoot —
-	                // frozen transforms after the initial build, mega-mesh
-	                // collapse eligibility; see Scene/static_merge.h)
-	Parent,         // node2 = new parent (cluster node id)
-	CreateLight,    // node = PARENT cluster id; text = light name;
-	                // vec = local position; vec4 = (typeFloat [1=point,
-	                // 2=spot], intensity [cd], range [m, 0=inf],
-	                // innerConeDeg); number = outerConeDeg; flag =
-	                // static bake-only; node2 = shadow request (0/1)
-	SetLightAttr,   // node = target cluster id, or a created-light ref
-	                // (kCreateLightRefBase | k — see below); text = attr
-	                // ("color","intensity","range","inner","outer",
-	                // "static","shadow","name"); vec4 = color value;
-	                // number = scalar (cone angles in DEGREES); flag =
-	                // flag value; name = new name (attr "name" only)
-	CreateTerrain,  // node = PARENT cluster id; text = terrain name;
-	                // vec = local position (group origin corner); vec4 =
-	                // (size[m], res[samples/side], height[m], freq[1/m]);
-	                // number = noise seed; material = cluster material pool
-	                // index; node2 = tilesX | (tilesZ << 16) (tile split)
-	TerrainPaint,   // node = kCreateTerrainRefBase | k (k-th createTerrain);
-	                // text = op ("raise","lower","flatten","smooth"); vec4 =
-	                // (worldX, worldZ, radius, flattenTarget); number =
-	                // strength (m for raise/lower, 0..1 blend otherwise)
- 	Delete,         // Maya delete: file-stable node identity —
- 	                // uuid PRIMARY (see SetUuid), name secondary,
- 	                // numeric id as legacy fallback/disambiguator:
- 	                //   delete -uuid <hex> -n <id> -name "<name>"
- 	                // (-uuid and/or -name may be absent in hand-written
- 	                // or legacy lines). Resolution: exact uuid match
- 	                // wins; else a unique full-name match; else a
- 	                // '/'-separated ancestor path suffix ("grp/mesh",
- 	                // matched from any depth); else the recorded id
- 	                // when it still names the same node (disambiguator
- 	                // for duplicated names) or for nameless legacy
- 	                // deletes. Ids are never renumbered; pool resources
- 	                // are never reclaimed — only the LINKS drop.
- 	SetUuid,        // node = cluster node id; uuid = 32-hex file-stable
- 	                // identity recorded on it (Scene::uuidForNode). The
- 	                // editor assigns these for every node a Delete line
- 	                // addresses and emits them BEFORE the delete lines;
- 	                // replay/cook record them back onto the nodes.
- 	CreateTransform, // node = PARENT cluster id; text = node name;
- 	                // vec4 = (tx,ty,tz...) — see below. A plain transform
- 	                // node (Maya group locator): no mesh, no light, no
- 	                // pool entry. The editor uses these as reference-
- 	                // displacement placeholders (see below); anything may
- 	                // parent under them like any transform.
- 	                // -t packs local TRS: x y z rx ry rz sx sy sz
- 	                // (9 values, rotation in DEGREES, editor convention).
- 	                // (Legacy verb — new files write the unified
- 	                // createNode form below.)
-   	CreateNode,     // THE node verb (Maya createNode): -at names the
-   	                // node TYPE, the rest is per-type payload:
-   	                //   DAG types (hierarchy nodes — transform +
-   	                //   parentable): transform, pointLight, spotLight,
-    	                //   terrain, givolume, cubemap, camera,
-   	                //   exportSettings (the WorldSettings-style export
-   	                //   config singleton; payload via setExportAttr,
-   	                //   NOT on the create line). Replayed by
-   	                //   cook + editor with full create semantics (-ref
-   	                //   bookkeeping included).
-   	                //   System types (no DAG presence — editor-managed
-   	                //   data): material, file, image. Parsed +
-   	                //   validated, skipped at replay with a log.
-    	                // New files write ONLY this form; the legacy
-    	                // createLight/createTerrain/createTransform
-    	                // verbs still parse (backward compat).
- 	CreateGiVolume,  // node = PARENT cluster id; text = volume name;
-	                // vec = local position (box center); svec = local
-	                // size (full extents, m); vec4 = (priority,
-	                // spacing[m], insideFade[m], outsideFade[m]).
-	                // An authored convex GI volume (gi_baker box spec
-	                // shape): axis-aligned, rotation ignored.
- 	AttachTriggerVolume, // attach a spatial trigger row to an existing node
-  RemoveTriggerVolume, // detach trigger without deleting node
-  SetTriggerVolumeAttr, // enabled, once or tag
-  AttachPhysicsBody, // add body + collider properties to a node
-  RemovePhysicsBody, // detach without deleting the node
-  SetPhysicsBodyAttr, // motion/shape/mass/material/geometry/sensor
-  AttachGiVolume,  // add a default GI component to an existing node
-  RemoveGiVolume,  // remove only GI on a node
-  SetGiVolumeAttr,    // node = target cluster id, or a created-volume ref
-	                // (kCreateGiVolumeRefBase | k — see below); text = attr
-	                // ("priority","spacing","inside","outside",
-	                // "position","rotation","size","name"); number =
-	                // scalar value; vec4 = triple value (position/
-	                // rotation-deg/size); name = new name (attr "name").
-  	CreateCubemap,  // node = PARENT cluster id; text = capture name;
-  	               // vec = local position (pinned probe); number =
-  	               // influence radius (m). An authored cubemap capture:
-  	               // the cook's --cubemap stage bakes it as a 'pin' row
-  	               // (wins weight ties at load).
-  	SetCubemapAttr, // node = target cluster id, or a created-capture ref
-  	               // (kCreateCubemapRefBase | k — see below); text = attr
-  	               // ("position","radius","name"); number = scalar
-  	               // (radius); vec4 = triple (position); name = new name
-  	               // (attr "name").
-  	SetExportAttr,  // node = target cluster id, or the created
-  	               // exportSettings node ref (kCreateExportRefBase | k);
-  	               // text = attr — a SceneExportSettings field name
-  	               // ("meshopt","lods","lodRatios","lodError",
-  	               // "lightmap","lmMetersPerTexel","lmLobes",
-  	               // "lmAtlasWidth","lmRays","lmProxyRes",
-  	               // "lmExcludeSmall","lmExcludeKw","cubemap",
-  	               // "cubemapSize","cubemapRays","cubemapOctree",
-  	               // "cubemapOctreeMax","cubemapOctreeMin",
-  	               // "cubemapOctreeDepth","cubemapExtraRadius",
-  	               // "meshlets","meshletMaxVerts","meshletMaxTris",
-  	               // "meshletConeWeight","giVolumes","giWorld","autoKtx",
-  	               // "ignoreVfs"); number = scalar value; flag = bool
-  	               // value (-type bool); name = string value (-type
-  	               // string). The scene's WorldSettings-style export
-  	               // config node (the cook block REPLACEMENT — see
-  	               // SceneExportSettings).
-  	CreateCamera, // node = PARENT cluster id; text = camera name;
-  	              // vec = local position; svec = local rotation in
-  	              // DEGREES (editor TRS convention); vec4 =
-  	              // (projFloat [0 = perspective, 1 = orthographic],
-  	              // fovYDeg, nearClip, farClip); number = orthoHalfH
-  	              // (m, ortho only). An authored camera node: the lens
-  	              // lives in the cluster cameras pool, the pose rides
-  	              // the node transform (forward = node -Z in world).
-  	SetCamAttr,   // node = target cluster id, or a created-camera ref
-  	              // (kCreateCameraRefBase | k — see below); text = attr
-  	              // ("projection","fovY","orthoHalfH","near","far",
-  	              // "name","position","rotation"); number = scalar
-  	              // value (projection: 0/1); name = new name (attr
-  	              // "name" only); vec4 = triple (position/
-  	              // rotation-deg). Post-creation TRS edits on created
-  	              // cameras lower to position/rotation (their cluster
-  	              // ids don't exist until replay).
-  CreateAudioSource, // node = PARENT cluster id; text = source name;
-                  // vec = local position. An authored audio-source
-                  // node (the emitter association): a plain transform
-                  // + the DEFAULT SceneAudioSource payload - the
-                  // properties + sound slots ride setAudioAttr /
-                  // addAudioSound lines tabulated under the create
-                  // (the exportSettings pattern; nothing audio lives
-                  // on the create line). The emitter POSE resolves
-                  // from the node's global transform at use.
-  SetAudioAttr,  // node = target cluster id, or a created-source ref
-                  // (kCreateAudioSourceRefBase | k - see below); text
-                  // = attr ("volume","spatial","playOnLoad",
-                  // "minDistance","maxDistance","name","position");
-                  // number = scalar; flag = bool (spatial/playOnLoad);
-                  // name = new name (attr "name" only - the NODE's
-                  // name; the payload has none); vec4 = triple
-                  // (position).
-  AddAudioSound, // node = target cluster id or a created-source ref;
-                  // text = the sound SLOT name ("Bells" - the stable
-                  // slot identifier: reordering the collection never
-                  // breaks it); name = the ASSET PATH (authoring-time
-                  // reference, "content/audio/bells.wav"); number =
-                  // slot gain (default 1); flag = slot loop default.
-                  // Upsert by slot name (a re-add replaces).
-  RemoveAudioSound, // node = target cluster id or a created-source
-                  // ref; text = the slot name to remove.
-  CreateAudioRoom, // node = PARENT cluster id; text = room name; vec =
-                  // local position; svec = FULL box extents (the
-                  // givolume placement convention). An authored
-                  // audio-room node (the environmental-reverb
-                  // association, docs/audio_graph.md): a plain
-                  // transform + the DEFAULT SceneAudioRoom payload -
-                  // the properties ride setAudioRoomAttr lines
-                  // tabulated under the create. The room SHAPE is the
-                  // node's transform (spatial_volume.h decodes it at
-                  // the listener); a node may ALSO carry a GiVolumeRow
-                  // (one placement, two associations).
-  AttachAudioRoom, // Attaches an AudioRoomRow to an EXISTING node (the
-                  // GI-inspector "Enable" path): node = the target
-                  // (cluster id, or a created-family ref), text = the
-                  // family the ref indexes ("givolume" / "audioRoom").
-                  // The DEFAULT payload attaches - setAudioRoomAttr
-                  // lines carry the properties. Idempotent by node (a
-                  // re-attach replaces the row).
-  RemoveAudioRoom, // Drops the AudioRoomRow from the target node (the
-                  // "Disable" path - the NODE + any GiVolumeRow stay).
-  SetAudioRoomAttr, // node = target cluster id, or a created-room ref
-                  // (kCreateAudioRoomRefBase | k); text = attr
-                  // ("enabled","priority","insideFade","outsideFade",
-                  // "wet","rt60","damping","transitionSeconds","name",
-                  // "position","rotation","size"); number = scalar;
-                  // flag = bool (enabled); name = new name (attr
-                  // "name" only); vec4 = triple (position / rotation
-                  // degrees / size = FULL extents). Post-creation TRS
-                  // edits on created rooms lower to position/rotation/
-                  // size (the givolume lane).
- };
+    Rename,
+    SetTranslate,
+    SetRotate, // degrees XYZ, same convention as the editor inspector
+    SetScale,
+    AssignMaterial,           // material = cluster material POOL index
+    SetMatAttr,               // text = attr name; vec/vec4/number by attr
+    SetNoLightmap,            // flag
+    SetLightmap,              // flag (bake opt-in; default off, see Scene::lightmap)
+    SetDitherCloseup,         // flag (subtree dither on camera closeup)
+    SetVisibility,            // flag: hidden self state (hierarchical, see Scene::hidden)
+    SetCastsVolumetricShadow, // flag: the coarse fog-tile caster mark
+                              // (self flag, see Scene::castsVolumetricShadow)
+    SetStatic,                // flag: static-subtree ROOT mark (Scene::staticRoot —
+                              // frozen transforms after the initial build, mega-mesh
+                              // collapse eligibility; see Scene/static_merge.h)
+    Parent,                   // node2 = new parent (cluster node id)
+    CreateLight,              // node = PARENT cluster id; text = light name;
+                              // vec = local position; vec4 = (typeFloat [1=point,
+                              // 2=spot], intensity [cd], range [m, 0=inf],
+                              // innerConeDeg); number = outerConeDeg; flag =
+                              // static bake-only; node2 = shadow request (0/1)
+    SetLightAttr,             // node = target cluster id, or a created-light ref
+                              // (kCreateLightRefBase | k — see below); text = attr
+                              // ("color","intensity","range","inner","outer",
+                              // "static","shadow","name"); vec4 = color value;
+                              // number = scalar (cone angles in DEGREES); flag =
+                              // flag value; name = new name (attr "name" only)
+    CreateTerrain,            // node = PARENT cluster id; text = terrain name;
+                              // vec = local position (group origin corner); vec4 =
+                              // (size[m], res[samples/side], height[m], freq[1/m]);
+                              // number = noise seed; material = cluster material pool
+                              // index; node2 = tilesX | (tilesZ << 16) (tile split)
+    TerrainPaint,             // node = kCreateTerrainRefBase | k (k-th createTerrain);
+                              // text = op ("raise","lower","flatten","smooth"); vec4 =
+                              // (worldX, worldZ, radius, flattenTarget); number =
+                              // strength (m for raise/lower, 0..1 blend otherwise)
+    Delete,                   // Maya delete: file-stable node identity —
+                              // uuid PRIMARY (see SetUuid), name secondary,
+                              // numeric id as legacy fallback/disambiguator:
+                              //   delete -uuid <hex> -n <id> -name "<name>"
+                              // (-uuid and/or -name may be absent in hand-written
+                              // or legacy lines). Resolution: exact uuid match
+                              // wins; else a unique full-name match; else a
+                              // '/'-separated ancestor path suffix ("grp/mesh",
+                              // matched from any depth); else the recorded id
+                              // when it still names the same node (disambiguator
+                              // for duplicated names) or for nameless legacy
+                              // deletes. Ids are never renumbered; pool resources
+                              // are never reclaimed — only the LINKS drop.
+    SetUuid,                  // node = cluster node id; uuid = 32-hex file-stable
+                              // identity recorded on it (Scene::uuidForNode). The
+                              // editor assigns these for every node a Delete line
+                              // addresses and emits them BEFORE the delete lines;
+                              // replay/cook record them back onto the nodes.
+    CreateTransform,          // node = PARENT cluster id; text = node name;
+                              // vec4 = (tx,ty,tz...) — see below. A plain transform
+                              // node (Maya group locator): no mesh, no light, no
+                              // pool entry. The editor uses these as reference-
+                              // displacement placeholders (see below); anything may
+                              // parent under them like any transform.
+                              // -t packs local TRS: x y z rx ry rz sx sy sz
+                              // (9 values, rotation in DEGREES, editor convention).
+                              // (Legacy verb — new files write the unified
+                              // createNode form below.)
+    CreateNode,               // THE node verb (Maya createNode): -at names the
+                              // node TYPE, the rest is per-type payload:
+                              //   DAG types (hierarchy nodes — transform +
+                              //   parentable): transform, pointLight, spotLight,
+                              //   terrain, givolume, cubemap, camera,
+                              //   exportSettings (the WorldSettings-style export
+                              //   config singleton; payload via setExportAttr,
+                              //   NOT on the create line). Replayed by
+                              //   cook + editor with full create semantics (-ref
+                              //   bookkeeping included).
+                              //   System types (no DAG presence — editor-managed
+                              //   data): material, file, image. Parsed +
+                              //   validated, skipped at replay with a log.
+                              // New files write ONLY this form; the legacy
+                              // createLight/createTerrain/createTransform
+                              // verbs still parse (backward compat).
+    CreateGiVolume,           // node = PARENT cluster id; text = volume name;
+                              // vec = local position (box center); svec = local
+                              // size (full extents, m); vec4 = (priority,
+                              // spacing[m], insideFade[m], outsideFade[m]).
+                              // An authored convex GI volume (gi_baker box spec
+                              // shape): axis-aligned, rotation ignored.
+    AttachTriggerVolume,      // attach a spatial trigger row to an existing node
+    RemoveTriggerVolume,      // detach trigger without deleting node
+    SetTriggerVolumeAttr,     // enabled, once or tag
+    AttachPhysicsBody,        // add body + collider properties to a node
+    RemovePhysicsBody,        // detach without deleting the node
+    SetPhysicsBodyAttr,       // motion/shape/mass/material/geometry/sensor
+    AttachGiVolume,           // add a default GI component to an existing node
+    RemoveGiVolume,           // remove only GI on a node
+    SetGiVolumeAttr,          // node = target cluster id, or a created-volume ref
+                              // (kCreateGiVolumeRefBase | k — see below); text = attr
+                              // ("priority","spacing","inside","outside",
+                              // "position","rotation","size","name"); number =
+                              // scalar value; vec4 = triple value (position/
+                              // rotation-deg/size); name = new name (attr "name").
+    CreateCubemap,            // node = PARENT cluster id; text = capture name;
+                              // vec = local position (pinned probe); number =
+                              // influence radius (m). An authored cubemap capture:
+                              // the cook's --cubemap stage bakes it as a 'pin' row
+                              // (wins weight ties at load).
+    SetCubemapAttr,           // node = target cluster id, or a created-capture ref
+                              // (kCreateCubemapRefBase | k — see below); text = attr
+                              // ("position","radius","name"); number = scalar
+                              // (radius); vec4 = triple (position); name = new name
+                              // (attr "name").
+    SetExportAttr,            // node = target cluster id, or the created
+                              // exportSettings node ref (kCreateExportRefBase | k);
+                              // text = attr — a SceneExportSettings field name
+                              // ("meshopt","lods","lodRatios","lodError",
+                              // "lightmap","lmMetersPerTexel","lmLobes",
+                              // "lmAtlasWidth","lmRays","lmProxyRes",
+                              // "lmExcludeSmall","lmExcludeKw","cubemap",
+                              // "cubemapSize","cubemapRays","cubemapOctree",
+                              // "cubemapOctreeMax","cubemapOctreeMin",
+                              // "cubemapOctreeDepth","cubemapExtraRadius",
+                              // "meshlets","meshletMaxVerts","meshletMaxTris",
+                              // "meshletConeWeight","giVolumes","giWorld","autoKtx",
+                              // "ignoreVfs"); number = scalar value; flag = bool
+                              // value (-type bool); name = string value (-type
+                              // string). The scene's WorldSettings-style export
+                              // config node (the cook block REPLACEMENT — see
+                              // SceneExportSettings).
+    CreateCamera,             // node = PARENT cluster id; text = camera name;
+                              // vec = local position; svec = local rotation in
+                              // DEGREES (editor TRS convention); vec4 =
+                              // (projFloat [0 = perspective, 1 = orthographic],
+                              // fovYDeg, nearClip, farClip); number = orthoHalfH
+                              // (m, ortho only). An authored camera node: the lens
+                              // lives in the cluster cameras pool, the pose rides
+                              // the node transform (forward = node -Z in world).
+    SetCamAttr,               // node = target cluster id, or a created-camera ref
+                              // (kCreateCameraRefBase | k — see below); text = attr
+                              // ("projection","fovY","orthoHalfH","near","far",
+                              // "name","position","rotation"); number = scalar
+                              // value (projection: 0/1); name = new name (attr
+                              // "name" only); vec4 = triple (position/
+                              // rotation-deg). Post-creation TRS edits on created
+                              // cameras lower to position/rotation (their cluster
+                              // ids don't exist until replay).
+    CreateAudioSource,        // node = PARENT cluster id; text = source name;
+                              // vec = local position. An authored audio-source
+                              // node (the emitter association): a plain transform
+                              // + the DEFAULT SceneAudioSource payload - the
+                              // properties + sound slots ride setAudioAttr /
+                              // addAudioSound lines tabulated under the create
+                              // (the exportSettings pattern; nothing audio lives
+                              // on the create line). The emitter POSE resolves
+                              // from the node's global transform at use.
+    SetAudioAttr,             // node = target cluster id, or a created-source ref
+                              // (kCreateAudioSourceRefBase | k - see below); text
+                              // = attr ("volume","spatial","playOnLoad",
+                              // "minDistance","maxDistance","name","position");
+                              // number = scalar; flag = bool (spatial/playOnLoad);
+                              // name = new name (attr "name" only - the NODE's
+                              // name; the payload has none); vec4 = triple
+                              // (position).
+    AddAudioSound,            // node = target cluster id or a created-source ref;
+                              // text = the sound SLOT name ("Bells" - the stable
+                              // slot identifier: reordering the collection never
+                              // breaks it); name = the ASSET PATH (authoring-time
+                              // reference, "content/audio/bells.wav"); number =
+                              // slot gain (default 1); flag = slot loop default.
+                              // Upsert by slot name (a re-add replaces).
+    RemoveAudioSound,         // node = target cluster id or a created-source
+                              // ref; text = the slot name to remove.
+    CreateAudioRoom,          // node = PARENT cluster id; text = room name; vec =
+                              // local position; svec = FULL box extents (the
+                              // givolume placement convention). An authored
+                              // audio-room node (the environmental-reverb
+                              // association, docs/audio_graph.md): a plain
+                              // transform + the DEFAULT SceneAudioRoom payload -
+                              // the properties ride setAudioRoomAttr lines
+                              // tabulated under the create. The room SHAPE is the
+                              // node's transform (spatial_volume.h decodes it at
+                              // the listener); a node may ALSO carry a GiVolumeRow
+                              // (one placement, two associations).
+    AttachAudioRoom,          // Attaches an AudioRoomRow to an EXISTING node (the
+                              // GI-inspector "Enable" path): node = the target
+                              // (cluster id, or a created-family ref), text = the
+                              // family the ref indexes ("givolume" / "audioRoom").
+                              // The DEFAULT payload attaches - setAudioRoomAttr
+                              // lines carry the properties. Idempotent by node (a
+                              // re-attach replaces the row).
+    RemoveAudioRoom,          // Drops the AudioRoomRow from the target node (the
+                              // "Disable" path - the NODE + any GiVolumeRow stay).
+    SetAudioRoomAttr,         // node = target cluster id, or a created-room ref
+                              // (kCreateAudioRoomRefBase | k); text = attr
+                              // ("enabled","priority","insideFade","outsideFade",
+                              // "wet","rt60","damping","transitionSeconds","name",
+                              // "position","rotation","size"); number = scalar;
+                              // flag = bool (enabled); name = new name (attr
+                              // "name" only); vec4 = triple (position / rotation
+                              // degrees / size = FULL extents). Post-creation TRS
+                              // edits on created rooms lower to position/rotation/
+                              // size (the givolume lane).
+};
 
 // Node-type table for createNode -at (Maya node types): whether the
 // type takes DAG presence (hierarchy node: transform + parentable) or
 // is a system type (editor-managed data, no scene node).
 enum class CreateNodeKind : uint8_t { Dag, System };
 struct CreateNodeType {
-	const char* name;      // -at value ("transform", "pointLight", ...)
-	CreateNodeKind kind;
+    const char* name; // -at value ("transform", "pointLight", ...)
+    CreateNodeKind kind;
 };
 // The known types, in file order (index-stable for tooling).
 const CreateNodeType* CreateNodeTypes(size_t& countOut);
@@ -397,24 +401,24 @@ const CreateNodeType* FindCreateNodeType(const std::string& at);
 // cook/replay time; per-node local commands win over matching wide
 // rules (more specific wins), later rules win over earlier ones.
 enum class OverrideAttr : uint8_t {
-	Visibility,   // flag = hidden (1 hides the subtree root)
-	Material,     // material = cluster material pool index
-	NoLightmap,   // flag
-	Lightmap,     // flag (bake opt-in)
-	DitherCloseup, // flag
-	Static,       // subtree frozen-transform root
-	VolumetricShadow, // coarse fog shadow caster
-	Plug, // path + typed value from the shared scene plug registry
+    Visibility,       // flag = hidden (1 hides the subtree root)
+    Material,         // material = cluster material pool index
+    NoLightmap,       // flag
+    Lightmap,         // flag (bake opt-in)
+    DitherCloseup,    // flag
+    Static,           // subtree frozen-transform root
+    VolumetricShadow, // coarse fog shadow caster
+    Plug,             // path + typed value from the shared scene plug registry
 };
 
 struct OverrideRule {
-	OverrideAttr attr = OverrideAttr::Visibility;
-	std::string pattern; // ECMAScript regex over node names
-	bool flag = false;   // Visibility/NoLightmap/Lightmap/Dither value
-	uint32_t material = 0; // Material: cluster material pool index
-	std::string plug; // Plug: stable node/component property path
-	tour::scene::plugs::Value value; // Plug: bool/number/string
-	bool enabled = true;
+    OverrideAttr attr = OverrideAttr::Visibility;
+    std::string pattern;             // ECMAScript regex over node names
+    bool flag = false;               // Visibility/NoLightmap/Lightmap/Dither value
+    uint32_t material = 0;           // Material: cluster material pool index
+    std::string plug;                // Plug: stable node/component property path
+    tour::scene::plugs::Value value; // Plug: bool/number/string
+    bool enabled = true;
 };
 
 // Clarisse-style SCENE REFERENCE: a placeholder node in the OWNING scene
@@ -426,94 +430,94 @@ struct OverrideRule {
 // nodes once inlined), so a wheel override in the shot never touches the
 // wheel asset.
 struct ReferenceCmd {
-	uint32_t parent = 0;      // placeholder's parent (cluster node id)
-	std::string source;       // referenced scene: .gltf (raw geometry) or
-	                          // .tour (the authored scene — its source gltf
-	                          // is imported, then its tour commands replay
-	                          // with id offsets; see ApplySceneReferences)
-	std::string guid;         // source file's asset GUID (.meta sidecar):
-	                          // stable across moves/renames, resolved first;
-	                          // `source` stays as the legacy fallback
-	std::string name;         // placeholder node name ("REF <name>")
-	std::string nameSpace;    // optional Maya-style namespace override (-namespace);
-	                          // empty = use name (legacy behavior)
-	glm::vec3 translate{ 0.0f }; // optional placement offset
-	bool hasTranslate = false;
-	// Authored .tour scene occurrences can be fully placed without
-	// flattening the referenced scene. Rotation is XYZ Euler degrees,
-	// composed as T * Rx * Ry * Rz * S at the placeholder group.
-	glm::vec3 rotate{ 0.0f };
-	glm::vec3 scale{ 1.0f };
-	bool hasRotate = false;
-	bool hasScale = false;
-	bool enabled = true;      // false = unloaded (kept in the list, not
-	                          // bound; Maya-style load/unload)
-	// ROOT reference: the scene's OWN source glTF, kept in the document
-	// as reference #0 (the definition is self-contained — no separate
-	// `source` line). Inlined directly under the scene root with NO
-	// placeholder and NO namespace (Maya: the master file's own
-	// contents carry no prefix), so cluster ids match a direct source
-	// import exactly. Editor and cook build identical worlds from the
-	// identical doc. Never disabled/removed/replaced.
-	bool root = false;
-	// SOURCED MESH ASSET (the asset-bind semantic): true = the entry
-	// places a derived .geometry/.mesh data blob's content under
-	// `parent` — serialized as the per-node `source` verb (`source -n
-	// <p> -p "<blob>"`). Meshes NEVER ride the `reference` verb: that
-	// verb is for referencing another .tour SCENE. Legacy tours naming
-	// a blob in `reference -source` parse back with this set (the kind
-	// is extension-derived), so old files keep binding; a re-save
-	// migrates them to the `source` verb. ROOT entries ignore it (the
-	// scene's own source stays `reference -root` whatever it points
-	// at — every existing model tour records it that way).
-	bool asset = false;
+    uint32_t parent = 0;       // placeholder's parent (cluster node id)
+    std::string source;        // referenced scene: .gltf (raw geometry) or
+                               // .tour (the authored scene — its source gltf
+                               // is imported, then its tour commands replay
+                               // with id offsets; see ApplySceneReferences)
+    std::string guid;          // source file's asset GUID (.meta sidecar):
+                               // stable across moves/renames, resolved first;
+                               // `source` stays as the legacy fallback
+    std::string name;          // placeholder node name ("REF <name>")
+    std::string nameSpace;     // optional Maya-style namespace override (-namespace);
+                               // empty = use name (legacy behavior)
+    glm::vec3 translate{0.0f}; // optional placement offset
+    bool hasTranslate = false;
+    // Authored .tour scene occurrences can be fully placed without
+    // flattening the referenced scene. Rotation is XYZ Euler degrees,
+    // composed as T * Rx * Ry * Rz * S at the placeholder group.
+    glm::vec3 rotate{0.0f};
+    glm::vec3 scale{1.0f};
+    bool hasRotate = false;
+    bool hasScale = false;
+    bool enabled = true; // false = unloaded (kept in the list, not
+                         // bound; Maya-style load/unload)
+    // ROOT reference: the scene's OWN source glTF, kept in the document
+    // as reference #0 (the definition is self-contained — no separate
+    // `source` line). Inlined directly under the scene root with NO
+    // placeholder and NO namespace (Maya: the master file's own
+    // contents carry no prefix), so cluster ids match a direct source
+    // import exactly. Editor and cook build identical worlds from the
+    // identical doc. Never disabled/removed/replaced.
+    bool root = false;
+    // SOURCED MESH ASSET (the asset-bind semantic): true = the entry
+    // places a derived .geometry/.mesh data blob's content under
+    // `parent` — serialized as the per-node `source` verb (`source -n
+    // <p> -p "<blob>"`). Meshes NEVER ride the `reference` verb: that
+    // verb is for referencing another .tour SCENE. Legacy tours naming
+    // a blob in `reference -source` parse back with this set (the kind
+    // is extension-derived), so old files keep binding; a re-save
+    // migrates them to the `source` verb. ROOT entries ignore it (the
+    // scene's own source stays `reference -root` whatever it points
+    // at — every existing model tour records it that way).
+    bool asset = false;
 };
 
 struct Command {
-	Verb verb = Verb::Rename;
-	uint32_t node = 0;     // cluster node id (node verbs)
-	uint32_t node2 = 0;    // Parent: new parent cluster node id;
-	                       // CreateLight: shadow request (0/1)
-	std::string parentRef; // -p as QUOTED name/path/uuid (symbolic parent
-	                       // form): for Parent/CreateLight/CreateTerrain/
-	                       // CreateTransform, the parent by human or uuid
-	                       // identity instead of a bare numeric id. Empty
-	                       // = numeric node2 form (legacy).
-	uint32_t material = 0; // AssignMaterial / SetMatAttr: cluster pool index
-	std::string text;      // Rename: new name; SetMatAttr/SetLightAttr:
-	                       // attr name; CreateLight: light name
-	glm::vec3 vec{ 0.0f }; // translate / rotate-deg / scale /
-	                       // CreateLight local position
-	glm::vec3 svec{ 1.0f, 1.0f, 1.0f }; // createTransform local scale;
-	                       // CreateGiVolume local size (full extents, m)
-	glm::vec4 vec4{ 1.0f }; // mat vec attr value (baseColor/emissive);
-	                        // CreateLight: (typeFloat, intensity, range,
-	                        // innerConeDeg); SetLightAttr "color": rgb
-	double number = 0.0;   // mat scalar attr value; CreateLight:
-	                       // outerConeDeg; SetLightAttr scalar value
-	bool flag = false;     // SetNoLightmap / SetLightmap /
-	                       // SetDitherCloseup value;
-	                       // CreateLight: static bake-only;
-	                       // SetLightAttr static/shadow value
-	std::string name;      // recorded node name: a LOGICAL TARGET KEY
-	                       // on the generic node verbs (uuid/name/id
-	                       // resolution, see the header); the attr
-	                       // verbs' PAYLOAD instead (SetLightAttr
-	                       // "name"/"cookie": the NEW name; Add/
-	                       // RemoveAudioSound: the slot id); Delete:
-	                       // secondary addressing key; SetUuid + the
-	                       // creates: recorded name (trailing comment)
-	std::string uuid;      // the LOGICAL TARGET KEY (the strongest: a
-	                       // 32-hex file-stable identity) on the
-	                       // logical-target verbs; SetUuid: the
-	                       // identity being ASSIGNED (payload — its
-	                       // target stays numeric); Delete: its PRIMARY
-	                       // addressing key
- 	std::string nodeType;  // createNode -at type ("transform",
-  	                       // "pointLight", "spotLight", "terrain",
-  	                       // "givolume", "cubemap", "camera",
-  	                       // "exportSettings", "material", "file",
-  	                       // "image")
+    Verb verb = Verb::Rename;
+    uint32_t node = 0;                // cluster node id (node verbs)
+    uint32_t node2 = 0;               // Parent: new parent cluster node id;
+                                      // CreateLight: shadow request (0/1)
+    std::string parentRef;            // -p as QUOTED name/path/uuid (symbolic parent
+                                      // form): for Parent/CreateLight/CreateTerrain/
+                                      // CreateTransform, the parent by human or uuid
+                                      // identity instead of a bare numeric id. Empty
+                                      // = numeric node2 form (legacy).
+    uint32_t material = 0;            // AssignMaterial / SetMatAttr: cluster pool index
+    std::string text;                 // Rename: new name; SetMatAttr/SetLightAttr:
+                                      // attr name; CreateLight: light name
+    glm::vec3 vec{0.0f};              // translate / rotate-deg / scale /
+                                      // CreateLight local position
+    glm::vec3 svec{1.0f, 1.0f, 1.0f}; // createTransform local scale;
+                                      // CreateGiVolume local size (full extents, m)
+    glm::vec4 vec4{1.0f};             // mat vec attr value (baseColor/emissive);
+                                      // CreateLight: (typeFloat, intensity, range,
+                                      // innerConeDeg); SetLightAttr "color": rgb
+    double number = 0.0;              // mat scalar attr value; CreateLight:
+                                      // outerConeDeg; SetLightAttr scalar value
+    bool flag = false;                // SetNoLightmap / SetLightmap /
+                                      // SetDitherCloseup value;
+                                      // CreateLight: static bake-only;
+                                      // SetLightAttr static/shadow value
+    std::string name;                 // recorded node name: a LOGICAL TARGET KEY
+                                      // on the generic node verbs (uuid/name/id
+                                      // resolution, see the header); the attr
+                                      // verbs' PAYLOAD instead (SetLightAttr
+                                      // "name"/"cookie": the NEW name; Add/
+                                      // RemoveAudioSound: the slot id); Delete:
+                                      // secondary addressing key; SetUuid + the
+                                      // creates: recorded name (trailing comment)
+    std::string uuid;                 // the LOGICAL TARGET KEY (the strongest: a
+                                      // 32-hex file-stable identity) on the
+                                      // logical-target verbs; SetUuid: the
+                                      // identity being ASSIGNED (payload — its
+                                      // target stays numeric); Delete: its PRIMARY
+                                      // addressing key
+    std::string nodeType;             // createNode -at type ("transform",
+                                      // "pointLight", "spotLight", "terrain",
+                                      // "givolume", "cubemap", "camera",
+                                      // "exportSettings", "material", "file",
+                                      // "image")
 };
 
 // SetLightAttr addressing for lights created by an earlier CreateLight
@@ -579,10 +583,9 @@ inline constexpr uint32_t kCreateTransformRefBase = 0x00800000u;
 // UINT32_MAX masquerade as a terrain ref and misreported the replay
 // as "terrain ref out of range" instead of the honest node error).
 inline constexpr uint32_t kCreateRefFamilyMask =
-	kCreateLightRefBase | kCreateTerrainRefBase | kCreateGiVolumeRefBase
-	| kCreateCubemapRefBase | kCreateCameraRefBase
-	| kCreateExportRefBase | kCreateAudioSourceRefBase
-	| kCreateAudioRoomRefBase | kCreateTransformRefBase;
+    kCreateLightRefBase | kCreateTerrainRefBase | kCreateGiVolumeRefBase | kCreateCubemapRefBase |
+    kCreateCameraRefBase | kCreateExportRefBase | kCreateAudioSourceRefBase |
+    kCreateAudioRoomRefBase | kCreateTransformRefBase;
 
 // Scene-owned procedural shape placement. Lives in the .tour source and
 // the cooked scene's shape-placement sidecar, rather than in the geometry
@@ -598,68 +601,69 @@ struct ShapePlacement {
 };
 
 struct Doc {
-	int version = kTourVersion;
-	std::string source;      // source glTF path (DEPRECATED: geometry may
-	                         // come entirely from references — may be
-	                         // empty; the loader builds an empty world
-	                         // then binds references + replays commands)
-	std::string fingerprint; // size+mtime of source at save (warn on mismatch)
-	std::vector<Command> commands;
-	std::vector<ShapePlacement> shapePlacements; // scene-owned spline/point placements
-	std::vector<OverrideRule> overrides; // wide regex rules (ordered, later wins)
-	std::vector<tour::scene::plugs::Connection> connections; // typed DAG plug links (source -> destination)
-	// Scene references (ordered; the OWNING scene's level-1 list —
-	// deeper nesting comes from each referenced source's own tour).
-	// Written FIRST in the file (Maya file-block order).
-	std::vector<ReferenceCmd> references;
-	// File nodes (ordered Maya file/image declarations, editor-authored):
-	// cooked records — the cooker consumes them for KTX conversion
-	// (unlike editorSettings, which never cook).
-	std::vector<FileNode> fileNodes;
-	// Material-asset imports (ordered; see MaterialAssetCmd): replayed by
-	// the editor AND the cook BEFORE the command list, so pool indices
-	// recorded by assignMaterial/-m lines match the authoring session.
-	std::vector<MaterialAssetCmd> materialAssets;
-	// Texture-asset imports (ordered; see TextureAssetCmd): replayed by
-	// the editor AND the cook BEFORE the material-asset records, so a
-	// material (or a light cookie) referencing a .texture finds its pool
-	// entry exactly like the authoring session.
-	std::vector<TextureAssetCmd> textureAssets;
-	// GI-asset bindings (ordered; see GiAssetCmd): the scene's baked-GI
-	// identification — the world field + one record per authored convex
-	// volume. Resolved onto the replayed scene by ApplyTourToCluster
-	// (Scene::giWorld* + SceneGiVolume::bake*), read by the pak cooker / the
-	// editor loaders. The bake owner upserts these after every bake.
-	std::vector<GiAssetCmd> giAssets;
-	// fileInfo constants (Maya fileInfo block): fixed format metadata
-	// (application/product/version), then anything carried. Written
-	// right after the references.
-	std::vector<std::pair<std::string, std::string>> fileInfo;
-	// Editor-only settings (editorSet lines): viewport/env authoring state
-	// the EDITOR persists for itself. NEVER applied by ApplyTourToCluster
-	// — the cook silently ignores this whole section (editor IBL and
-	// friends must not leak into paks). The ONLY exception: the env
-	// blocks (env.default.* / env.n.* / env.current — resolved into the
-	// cluster scene by ApplyTourToCluster) and the TYPED scene-object
-	// reference fields below — both are world settings the runtime App
-	// consumes through the cooked pak, not editor view state.
-	//
-	// TYPED SCENE-OBJECT REFERENCE FIELD (the reusable pattern): the key
-	// names the object family, the value is a replay-stable address in
-	// the family's own addressing grammar. camera.default is the first
-	// field: "ref <k>" (the k-th CreateCamera in the doc — the same
-	// family ref space setCamAttr -ref uses) or "node <clusterId>" (a
-	// cluster-backed camera, e.g. an imported glTF camera). Resolved at
-	// cook (ApplyTourToCluster -> Scene::defaultCameraNode, validated
-	// against the replayed scene, dangling refs warn + drop like env
-	// blocks) and at editor replay (the live world node id). Future
-	// typed fields (light.default, ...) reuse this grammar.
-	std::vector<std::pair<std::string, std::string>> editorSettings;
-	// NOTE: no cook block anymore — the export settings are a SCENE NODE
-	// (createNode -at exportSettings + setExportAttr, payload in
-	// Scene::exportForNode); see SceneExportSettings. The old `cook`
-	// verb + TourCook struct are gone (old files: the verb warns + skips;
-	// settings default until re-authored on the node).
+    int version = kTourVersion;
+    std::string source;      // source glTF path (DEPRECATED: geometry may
+                             // come entirely from references — may be
+                             // empty; the loader builds an empty world
+                             // then binds references + replays commands)
+    std::string fingerprint; // size+mtime of source at save (warn on mismatch)
+    std::vector<Command> commands;
+    std::vector<ShapePlacement> shapePlacements; // scene-owned spline/point placements
+    std::vector<OverrideRule> overrides;         // wide regex rules (ordered, later wins)
+    std::vector<tour::scene::plugs::Connection>
+        connections; // typed DAG plug links (source -> destination)
+    // Scene references (ordered; the OWNING scene's level-1 list —
+    // deeper nesting comes from each referenced source's own tour).
+    // Written FIRST in the file (Maya file-block order).
+    std::vector<ReferenceCmd> references;
+    // File nodes (ordered Maya file/image declarations, editor-authored):
+    // cooked records — the cooker consumes them for KTX conversion
+    // (unlike editorSettings, which never cook).
+    std::vector<FileNode> fileNodes;
+    // Material-asset imports (ordered; see MaterialAssetCmd): replayed by
+    // the editor AND the cook BEFORE the command list, so pool indices
+    // recorded by assignMaterial/-m lines match the authoring session.
+    std::vector<MaterialAssetCmd> materialAssets;
+    // Texture-asset imports (ordered; see TextureAssetCmd): replayed by
+    // the editor AND the cook BEFORE the material-asset records, so a
+    // material (or a light cookie) referencing a .texture finds its pool
+    // entry exactly like the authoring session.
+    std::vector<TextureAssetCmd> textureAssets;
+    // GI-asset bindings (ordered; see GiAssetCmd): the scene's baked-GI
+    // identification — the world field + one record per authored convex
+    // volume. Resolved onto the replayed scene by ApplyTourToCluster
+    // (Scene::giWorld* + SceneGiVolume::bake*), read by the pak cooker / the
+    // editor loaders. The bake owner upserts these after every bake.
+    std::vector<GiAssetCmd> giAssets;
+    // fileInfo constants (Maya fileInfo block): fixed format metadata
+    // (application/product/version), then anything carried. Written
+    // right after the references.
+    std::vector<std::pair<std::string, std::string>> fileInfo;
+    // Editor-only settings (editorSet lines): viewport/env authoring state
+    // the EDITOR persists for itself. NEVER applied by ApplyTourToCluster
+    // — the cook silently ignores this whole section (editor IBL and
+    // friends must not leak into paks). The ONLY exception: the env
+    // blocks (env.default.* / env.n.* / env.current — resolved into the
+    // cluster scene by ApplyTourToCluster) and the TYPED scene-object
+    // reference fields below — both are world settings the runtime App
+    // consumes through the cooked pak, not editor view state.
+    //
+    // TYPED SCENE-OBJECT REFERENCE FIELD (the reusable pattern): the key
+    // names the object family, the value is a replay-stable address in
+    // the family's own addressing grammar. camera.default is the first
+    // field: "ref <k>" (the k-th CreateCamera in the doc — the same
+    // family ref space setCamAttr -ref uses) or "node <clusterId>" (a
+    // cluster-backed camera, e.g. an imported glTF camera). Resolved at
+    // cook (ApplyTourToCluster -> Scene::defaultCameraNode, validated
+    // against the replayed scene, dangling refs warn + drop like env
+    // blocks) and at editor replay (the live world node id). Future
+    // typed fields (light.default, ...) reuse this grammar.
+    std::vector<std::pair<std::string, std::string>> editorSettings;
+    // NOTE: no cook block anymore — the export settings are a SCENE NODE
+    // (createNode -at exportSettings + setExportAttr, payload in
+    // Scene::exportForNode); see SceneExportSettings. The old `cook`
+    // verb + TourCook struct are gone (old files: the verb warns + skips;
+    // settings default until re-authored on the node).
 };
 
 // Best-effort source fingerprint ("<size>:<mtime>" hex); empty when the
@@ -667,16 +671,20 @@ struct Doc {
 std::string Fingerprint(const std::string& path);
 
 bool SaveTour(const std::string& path, const Doc& doc, std::string& err);
-bool LoadTour(const std::string& path, Doc& doc, std::string& err,
-	std::vector<std::string>* warnings = nullptr);
+bool LoadTour(const std::string& path,
+              Doc& doc,
+              std::string& err,
+              std::vector<std::string>* warnings = nullptr);
 // Parse from an in-memory text (the file loader reads then calls this;
 // also lets VFS-based consumers cook referenced-scene tours).
 // Emits only the shapeInstance commands, for the scene's cooked placement
 // sidecar. Reuses the same strict parser as .tour source authoring.
 std::string SerializeShapePlacements(const Doc& doc);
 
-bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
-	std::vector<std::string>* warnings = nullptr);
+bool LoadTourFromString(const std::string& text,
+                        Doc& doc,
+                        std::string& err,
+                        std::vector<std::string>* warnings = nullptr);
 
 // Replay node/material commands onto a freshly imported cook Cluster
 // (cluster-space ids apply directly). Runs BEFORE meshopt/LOD/bake so pool
@@ -690,11 +698,13 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 // index the giAsset/GI-volume family refs address). The bake owners (GiBaker,
 // Cook.exe's in-process GI-volume bake) need it to stamp the doc's giAsset
 // records back after a bake (StampGiAssets).
-bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
-	std::vector<std::string>* warnings = nullptr, std::string* err = nullptr,
-	bool strict = true,
-	std::vector<uint32_t>* createdGiVolumesOut = nullptr,
-	std::vector<uint32_t>* createdTransformsOut = nullptr);
+bool ApplyTourToCluster(Cluster& cluster,
+                        const Doc& doc,
+                        std::vector<std::string>* warnings = nullptr,
+                        std::string* err = nullptr,
+                        bool strict = true,
+                        std::vector<uint32_t>* createdGiVolumesOut = nullptr,
+                        std::vector<uint32_t>* createdTransformsOut = nullptr);
 
 // The bake owner's STAMP: mirror a replayed scene's GI bindings onto the
 // doc's giAsset records. The SCENE is the authority — the bake updates
@@ -711,11 +721,12 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 // the only way an old artifact lingers is nobody deleting it, and the
 // record set-difference is the exact list). Returns false only on a
 // structural error (err out).
-bool StampGiAssets(Doc& doc, const Scene& scene,
-	const std::vector<uint32_t>& createdGiVolumes,
-	std::string* err = nullptr,
-	std::vector<std::string>* superseded = nullptr,
-	const std::vector<uint32_t>* createdTransforms = nullptr);
+bool StampGiAssets(Doc& doc,
+                   const Scene& scene,
+                   const std::vector<uint32_t>& createdGiVolumes,
+                   std::string* err = nullptr,
+                   std::vector<std::string>* superseded = nullptr,
+                   const std::vector<uint32_t>* createdTransforms = nullptr);
 
 // Structural reparent on any Scene (shared by the editor live path and the
 // cook replay path). Index-preserving: no nodes are added/removed, only
@@ -737,8 +748,7 @@ std::string GenerateUuid();
 // Symbolic parent resolution (the -p quoted form): a uuid hex, a node
 // name, or a '/'-separated ancestor path — resolved against the CURRENT
 // scene, so parents survive numeric id shifts. False = nothing matched.
-bool ResolveParentTarget(const Scene& scene, const std::string& ref,
-	uint32_t& out);
+bool ResolveParentTarget(const Scene& scene, const std::string& ref, uint32_t& out);
 
 // Maya's identity layers, mapped onto this codebase (setUuid parity):
 //
@@ -765,8 +775,7 @@ std::string DagFullPath(const Scene& scene, uint32_t node);
 std::string DagShortestUniquePath(const Scene& scene, uint32_t node);
 // Resolve a full path, a '/'-separated suffix from any depth, or a
 // bare name (unique match only).
-bool ResolveDagPath(const Scene& scene, const std::string& path,
-	uint32_t& out);
+bool ResolveDagPath(const Scene& scene, const std::string& path, uint32_t& out);
 
 // Delete addressing shared by the cook replay and the editor live
 // replay: uuid exact match wins; else a unique full-name match; else a
@@ -775,15 +784,17 @@ bool ResolveDagPath(const Scene& scene, const std::string& path,
 // the scene, and (for named deletes) names the same node — the
 // disambiguator for duplicated names and the legacy path for nameless
 // deletes. False = nothing resolved (warn-and-skip).
-bool ResolveDeleteTarget(const Scene& scene, const std::string& uuid,
-	const std::string& name, uint32_t idFallback, uint32_t& out);
+bool ResolveDeleteTarget(const Scene& scene,
+                         const std::string& uuid,
+                         const std::string& name,
+                         uint32_t idFallback,
+                         uint32_t& out);
 
 // Override helpers: attr name mapping + ECMAScript regex match over node
 // names (false on empty/bad patterns, never throws).
 bool OverrideAttrFromString(const std::string& s, OverrideAttr& out);
 const char* OverrideAttrName(OverrideAttr a);
-bool OverridePatternMatches(const std::string& pattern,
-	const std::string& nodeName);
+bool OverridePatternMatches(const std::string& pattern, const std::string& nodeName);
 
 // Apply one SetExportAttr command onto a SceneExportSettings payload
 // (field-name keyed; value rides flag/name/number per the attr's type).
@@ -791,8 +802,7 @@ bool OverridePatternMatches(const std::string& pattern,
 // path, and the doc walk below (the same lines, so the results agree
 // by construction). Unknown attrs warn-and-skip through warnOut (never
 // fatal); returns false only then.
-bool ApplyExportAttr(SceneExportSettings& es, const Command& c,
-	std::string* warnOut = nullptr);
+bool ApplyExportAttr(SceneExportSettings& es, const Command& c, std::string* warnOut = nullptr);
 
 // Reads the scene's export settings straight off a Doc's command list:
 // the FIRST createNode -at exportSettings (the singleton rule) + its
@@ -803,8 +813,9 @@ bool ApplyExportAttr(SceneExportSettings& es, const Command& c,
 // agree by construction. Returns true when the doc carries a node;
 // false when not (out stays untouched). warnOut collects non-fatal
 // notes (duplicates, unknown attrs, -n forms left to the replay).
-bool ExportSettingsFromDoc(const Doc& doc, SceneExportSettings& out,
-	std::string* warnOut = nullptr);
+bool ExportSettingsFromDoc(const Doc& doc,
+                           SceneExportSettings& out,
+                           std::string* warnOut = nullptr);
 
 } // namespace tour::asset
 
@@ -815,5 +826,5 @@ bool ExportSettingsFromDoc(const Doc& doc, SceneExportSettings& out,
 // sites move. THE NAME COLLISION DISSOLVES: unqualified tour:: inside
 // namespace smvk no longer finds a sibling tour namespace here.
 namespace smvk {
-	namespace tour = ::tour::asset;
+namespace tour = ::tour::asset;
 }

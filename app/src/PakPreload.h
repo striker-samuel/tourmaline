@@ -21,11 +21,11 @@ namespace app {
 // consumes it on the render thread once the context exists. `backend` is
 // null on any failure (error filled).
 struct PakPreload {
-	std::string scenePak; // display name (also the VFS mount name)
-	std::string openPath; // resolved host path (empty = not found)
-	std::shared_ptr<const std::vector<uint8_t>> image;
-	std::shared_ptr<smvk::PakBackend> backend;
-	std::string error;
+    std::string scenePak; // display name (also the VFS mount name)
+    std::string openPath; // resolved host path (empty = not found)
+    std::shared_ptr<const std::vector<uint8_t>> image;
+    std::shared_ptr<smvk::PakBackend> backend;
+    std::string error;
 };
 
 // --pak accepts host paths AND vfs-style paths ("/content/..."): try as-is,

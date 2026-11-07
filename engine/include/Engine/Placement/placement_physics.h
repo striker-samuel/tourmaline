@@ -35,62 +35,66 @@ using EntityId = uint64_t;
 inline constexpr EntityId kInvalidEntity = 0;
 
 struct PlacementHit {
-	StableID id;
-	uint32_t prototypeId = 0;
-	glm::vec3 position{ 0.0f };
-	float distance = 0.0f; // ray t, or center distance for AABB queries
+    StableID id;
+    uint32_t prototypeId = 0;
+    glm::vec3 position{0.0f};
+    float distance = 0.0f; // ray t, or center distance for AABB queries
 };
 
 // Flat query source: caller gathers resident instances (+ids) from
 // PlacementSystem tiles. Decoupled so physics never touches tile state.
 struct PlacementQuerySource {
-	const std::vector<RenderInstance>* instances = nullptr;
-	const std::vector<StableID>* ids = nullptr; // parallel, may be null
-	const PrototypeTable* prototypes = nullptr; // for collisionRadius, may be null
-	float defaultRadius = 0.5f;
+    const std::vector<RenderInstance>* instances = nullptr;
+    const std::vector<StableID>* ids = nullptr; // parallel, may be null
+    const PrototypeTable* prototypes = nullptr; // for collisionRadius, may be null
+    float defaultRadius = 0.5f;
 };
 
 // Nearest sphere hit along ray (instance = sphere at position with
 // radius collisionRadius*maxScale). Returns nullopt on miss.
 std::optional<PlacementHit> RaycastPlacements(const PlacementQuerySource& src,
-	const glm::vec3& origin, const glm::vec3& dir, float maxDist);
+                                              const glm::vec3& origin,
+                                              const glm::vec3& dir,
+                                              float maxDist);
 
 // All instances whose sphere intersects the AABB.
 std::vector<PlacementHit> QueryPlacementsAABB(const PlacementQuerySource& src,
-	const glm::vec3& boxMin, const glm::vec3& boxMax);
+                                              const glm::vec3& boxMin,
+                                              const glm::vec3& boxMax);
 
 // Promotion registry: StableID <-> EntityId with suppression set.
 // The renderer skips suppressed StableIDs; the spawner creates bodies.
 class PromotionRegistry {
-public:
-	// Returns existing entity when already promoted (idempotent).
-	EntityId promote(const StableID& id, EntityId fresh);
-	// Releases back to procedural. Returns false when unknown.
-	bool demote(const StableID& id);
-	bool demoteByEntity(EntityId e);
-	bool isSuppressed(const StableID& id) const;
-	std::optional<EntityId> entityFor(const StableID& id) const;
-	size_t promotedCount() const { return idToEntity_.size(); }
-	void clear();
+  public:
+    // Returns existing entity when already promoted (idempotent).
+    EntityId promote(const StableID& id, EntityId fresh);
+    // Releases back to procedural. Returns false when unknown.
+    bool demote(const StableID& id);
+    bool demoteByEntity(EntityId e);
+    bool isSuppressed(const StableID& id) const;
+    std::optional<EntityId> entityFor(const StableID& id) const;
+    size_t promotedCount() const {
+        return idToEntity_.size();
+    }
+    void clear();
 
-private:
-	std::unordered_map<StableID, EntityId, StableIDHash> idToEntity_;
-	std::unordered_map<EntityId, StableID> entityToId_;
+  private:
+    std::unordered_map<StableID, EntityId, StableIDHash> idToEntity_;
+    std::unordered_map<EntityId, StableID> entityToId_;
 };
 
 } // namespace tour::placement
-
 
 // COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
 // placement header's declarations live in tour::placement; the smvk::
 // placement aliases keep the existing call sites compiling through the
 // consumer migration.
 namespace smvk::placement {
-	using ::tour::placement::EntityId;
-	using ::tour::placement::kInvalidEntity;
-	using ::tour::placement::PlacementHit;
-	using ::tour::placement::PlacementQuerySource;
-	using ::tour::placement::PromotionRegistry;
-	using ::tour::placement::QueryPlacementsAABB;
-	using ::tour::placement::RaycastPlacements;
-}
+using ::tour::placement::EntityId;
+using ::tour::placement::kInvalidEntity;
+using ::tour::placement::PlacementHit;
+using ::tour::placement::PlacementQuerySource;
+using ::tour::placement::PromotionRegistry;
+using ::tour::placement::QueryPlacementsAABB;
+using ::tour::placement::RaycastPlacements;
+} // namespace smvk::placement

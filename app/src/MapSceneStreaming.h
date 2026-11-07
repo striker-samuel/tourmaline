@@ -9,11 +9,11 @@
 #include "ProjectScenes.h"
 
 #include <Engine/App/world.h>
-#include <Engine/WorldPartition/map_tile_pak.h>
 #include <Engine/WorldPartition/SceneTileProvider.h>
+#include <Engine/WorldPartition/map_tile_pak.h>
 
-#include <glm/glm.hpp>
 #include <cmath>
+#include <glm/glm.hpp>
 #include <map>
 #include <string>
 #include <vector>
@@ -21,39 +21,43 @@
 namespace app {
 
 class MapSceneStreaming {
-public:
-    MapSceneStreaming(ProjectScenes& scenes, tour::World& world,
+  public:
+    MapSceneStreaming(ProjectScenes& scenes,
+                      tour::World& world,
                       smvk::ResourceManager* context,
                       tour::TextureStreamer* streamer)
         : scenes_(scenes), world_(world), context_(context), streamer_(streamer) {
-        provider_.SetCallbacks(
-            [this](const engine::worldpartition::SceneTileDescriptor& desc,
-                   engine::worldpartition::DesiredResidency, uint64_t ticket) {
-                Load(desc, ticket);
-            },
-            [this](const engine::worldpartition::SceneTileDescriptor& desc) {
-                return Retire(desc.tile);
-            });
+        provider_.SetCallbacks([this](const engine::worldpartition::SceneTileDescriptor& desc,
+                                      engine::worldpartition::DesiredResidency,
+                                      uint64_t ticket) { Load(desc, ticket); },
+                               [this](const engine::worldpartition::SceneTileDescriptor& desc) {
+                                   return Retire(desc.tile);
+                               });
     }
 
     // Borrowed provider: host calls WorldPartition::AddProvider(&Provider())
     // and must ClearProviders before destruction. All methods run on the
     // render/update thread; no background Scene mutation is permitted.
-    engine::worldpartition::SceneTileProvider& Provider() { return provider_; }
+    engine::worldpartition::SceneTileProvider& Provider() {
+        return provider_;
+    }
     engine::worldpartition::WorldId ActiveMap() const {
         return provider_.ActiveWorld();
     }
-    const std::string& LastError() const { return error_; }
+    const std::string& LastError() const {
+        return error_;
+    }
 
     // Bind a different Map only after deactivating the previous one.
     // The pak reader must outlive this streaming service.
-    bool BindMap(const smvk::PakReader& reader,
-                 engine::worldpartition::WorldId worldId) {
+    bool BindMap(const smvk::PakReader& reader, engine::worldpartition::WorldId worldId) {
         error_.clear();
-        if (!worldId) { error_ = "Map identity must be nonzero"; return false; }
-        if (provider_.ActiveWorld() || provider_.ResidentCount()
-            || provider_.PendingCount() || !active_.empty()
-            || !persistent_.empty()) {
+        if (!worldId) {
+            error_ = "Map identity must be nonzero";
+            return false;
+        }
+        if (provider_.ActiveWorld() || provider_.ResidentCount() || provider_.PendingCount() ||
+            !active_.empty() || !persistent_.empty()) {
             error_ = "retire the active Map before binding a replacement";
             return false;
         }
@@ -68,7 +72,8 @@ public:
             return false;
         }
         std::vector<SceneHandle> created;
-        if (!InstantiateRecords(global, created)) return false;
+        if (!InstantiateRecords(global, created))
+            return false;
         if (!provider_.SetManifest(worldId, std::move(descriptors))) {
             error_ = "failed to install MapTile manifest";
             Rollback(created);
@@ -87,8 +92,8 @@ public:
         provider_.OnStreamingInterests(nullptr, 0);
         provider_.RetireFrame(0);
         if (!active_.empty()) {
-            error_ = "Map retirement left active scene instances: " +
-                std::to_string(active_.size());
+            error_ =
+                "Map retirement left active scene instances: " + std::to_string(active_.size());
             return false;
         }
         while (!persistent_.empty()) {
@@ -107,9 +112,8 @@ public:
         return true;
     }
 
-private:
-    void Load(const engine::worldpartition::SceneTileDescriptor& descriptor,
-              uint64_t ticket) {
+  private:
+    void Load(const engine::worldpartition::SceneTileDescriptor& descriptor, uint64_t ticket) {
         if (!reader_) {
             error_ = "MapTile reader not bound";
             provider_.ResetPending(descriptor.tile, ticket);
@@ -153,8 +157,7 @@ private:
             for (int c = 0; c < 4; ++c)
                 for (int r = 0; r < 4; ++r) {
                     const double value = record.worldTransform[c][r];
-                    if (!std::isfinite(value)
-                        || std::abs(value) > double(3.402823466e38f))
+                    if (!std::isfinite(value) || std::abs(value) > double(3.402823466e38f))
                         valid = false;
                     frame[c][r] = static_cast<float>(value);
                 }
@@ -167,8 +170,8 @@ private:
             const SceneHandle instance = scenes_.InstantiatePrefab(
                 world_, context_, streamer_, record.sceneAssetId, frame, err);
             if (!instance) {
-                error_ = "failed to instantiate Scene " +
-                    std::to_string(record.sceneAssetId) + ": " + err;
+                error_ = "failed to instantiate Scene " + std::to_string(record.sceneAssetId) +
+                         ": " + err;
                 Rollback(created);
                 return false;
             }
@@ -179,7 +182,8 @@ private:
 
     bool Retire(engine::worldpartition::WorldTileKey tile) {
         const auto it = active_.find(tile);
-        if (it == active_.end()) return true;
+        if (it == active_.end())
+            return true;
         while (!it->second.empty()) {
             std::string err;
             if (!scenes_.RemoveScene(it->second.back(), world_, err)) {
@@ -200,7 +204,8 @@ private:
     engine::worldpartition::SceneTileProvider provider_;
     std::map<engine::worldpartition::WorldTileKey,
              std::vector<SceneHandle>,
-             engine::worldpartition::WorldTileKeyLess> active_;
+             engine::worldpartition::WorldTileKeyLess>
+        active_;
     std::vector<SceneHandle> persistent_;
     std::string error_;
 };

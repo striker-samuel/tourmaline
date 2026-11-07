@@ -57,13 +57,11 @@ inline void PutBe32(std::vector<uint8_t>& out, uint32_t value) {
 }
 
 inline bool EmbedPngMetadata(const std::filesystem::path& path,
-                             std::string_view payload, std::string& error) {
-    static constexpr std::array<uint8_t, 8> signature{
-        137, 80, 78, 71, 13, 10, 26, 10
-    };
+                             std::string_view payload,
+                             std::string& error) {
+    static constexpr std::array<uint8_t, 8> signature{137, 80, 78, 71, 13, 10, 26, 10};
     static constexpr std::array<uint8_t, 12> iend{
-        0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xAE, 0x42, 0x60, 0x82
-    };
+        0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xAE, 0x42, 0x60, 0x82};
     if (payload.size() > 64u * 1024u * 1024u - 6u) {
         error = "snapshot payload exceeds 64 MiB";
         return false;
@@ -95,8 +93,7 @@ inline bool EmbedPngMetadata(const std::filesystem::path& path,
     PutBe32(chunk, static_cast<uint32_t>(payload.size() + 6u));
     chunk.insert(chunk.end(), {'t', 's', 'N', 'p', 'T', 'S', 'N', 'P', '1', 0});
     chunk.insert(chunk.end(), payload.begin(), payload.end());
-    const uint32_t crc = PngCrc(std::span<const uint8_t>(
-        chunk.data() + 4, chunk.size() - 4));
+    const uint32_t crc = PngCrc(std::span<const uint8_t>(chunk.data() + 4, chunk.size() - 4));
     PutBe32(chunk, crc);
     bytes.insert(insertAt, chunk.begin(), chunk.end());
     const std::filesystem::path staging = path.string() + ".meta.tmp";
@@ -141,21 +138,23 @@ inline bool EmbedPngMetadata(const std::filesystem::path& path,
 // SAME simulation tick as the renderer submits the image and only calls
 // Complete after that image's GPU readback has finished.
 class SequenceWriter {
-public:
+  public:
     static constexpr uint32_t Version = 1;
-    bool Configure(std::filesystem::path directory, uint32_t keyInterval,
-                   uint64_t firstTick, uint32_t count, std::string id,
+    bool Configure(std::filesystem::path directory,
+                   uint32_t keyInterval,
+                   uint64_t firstTick,
+                   uint32_t count,
+                   std::string id,
                    std::string& error) {
-        if (directory.empty() || !keyInterval || !count || count > 1'000'000 ||
-            id.empty() || !std::filesystem::is_directory(directory)) {
+        if (directory.empty() || !keyInterval || !count || count > 1'000'000 || id.empty() ||
+            !std::filesystem::is_directory(directory)) {
             error = "invalid sequence directory/interval/count/id";
             return false;
         }
         // Avoid silently mixing previous captures with a new sequence.
         for (const auto& entry : std::filesystem::directory_iterator(directory)) {
             if (entry.path().filename().string().starts_with("Frame_") &&
-                (entry.path().extension() == ".png" ||
-                 entry.path().extension() == ".rgba" ||
+                (entry.path().extension() == ".png" || entry.path().extension() == ".rgba" ||
                  entry.path().extension() == ".json")) {
                 error = "sequence output contains existing Frame_*.png";
                 return false;
@@ -169,20 +168,30 @@ public:
         return true;
     }
 
-    [[nodiscard]] bool Enabled() const { return count_ != 0; }
-    [[nodiscard]] bool WantsTick(uint64_t tick) const {
-        return Enabled() && tick >= firstTick_ &&
-            tick - firstTick_ < count_;
+    [[nodiscard]] bool Enabled() const {
+        return count_ != 0;
     }
-    [[nodiscard]] uint32_t Written() const { return written_; }
-    [[nodiscard]] uint32_t Count() const { return count_; }
-    [[nodiscard]] const std::filesystem::path& Directory() const { return directory_; }
+    [[nodiscard]] bool WantsTick(uint64_t tick) const {
+        return Enabled() && tick >= firstTick_ && tick - firstTick_ < count_;
+    }
+    [[nodiscard]] uint32_t Written() const {
+        return written_;
+    }
+    [[nodiscard]] uint32_t Count() const {
+        return count_;
+    }
+    [[nodiscard]] const std::filesystem::path& Directory() const {
+        return directory_;
+    }
 
-    bool Stage(uint64_t tick, uint64_t dtNs, const Json& state,
-               Json events, Json provenance, std::string& error) {
-        if (!WantsTick(tick) || pending_ || tick != firstTick_ + written_ ||
-            !dtNs || dtNs > 10'000'000'000ull ||
-            !events.is_array() || events.size() > 4096 ||
+    bool Stage(uint64_t tick,
+               uint64_t dtNs,
+               const Json& state,
+               Json events,
+               Json provenance,
+               std::string& error) {
+        if (!WantsTick(tick) || pending_ || tick != firstTick_ + written_ || !dtNs ||
+            dtNs > 10'000'000'000ull || !events.is_array() || events.size() > 4096 ||
             !state.is_object()) {
             error = "invalid or non-contiguous snapshot frame";
             return false;
@@ -198,8 +207,7 @@ public:
             {"kind", key ? "key" : "delta"},
             {"previous_payload_fnv64", written_ == 0 ? Json(nullptr) : Json(previousPayloadHash_)},
             {"state_fnv64", Fnv64(state.dump())},
-            {"events", std::move(events)}
-        };
+            {"events", std::move(events)}};
         if (key) {
             pendingRecord_["state"] = state;
             pendingRecord_["provenance"] = std::move(provenance);
@@ -212,8 +220,7 @@ public:
         return true;
     }
 
-    bool Complete(std::string_view pngPath, std::span<const uint8_t> rgba,
-                  std::string& error) {
+    bool Complete(std::string_view pngPath, std::span<const uint8_t> rgba, std::string& error) {
         if (!pending_) {
             error = "sequence readback has no matching state";
             return false;
@@ -224,8 +231,7 @@ public:
             error = "snapshot metadata too large";
             return false;
         }
-        if (!EmbedPngMetadata(std::filesystem::path(std::string(pngPath)),
-                              serialized, error))
+        if (!EmbedPngMetadata(std::filesystem::path(std::string(pngPath)), serialized, error))
             return false;
         std::string payload = "TSNP1";
         payload.push_back('\0');
@@ -281,8 +287,7 @@ public:
         }
         {
             std::ofstream meta(jsonTmp, std::ios::binary | std::ios::trunc);
-            if (!meta.write(serialized.data(),
-                            static_cast<std::streamsize>(serialized.size()))) {
+            if (!meta.write(serialized.data(), static_cast<std::streamsize>(serialized.size()))) {
                 error = "cannot write raw snapshot sidecar";
                 cleanup();
                 return false;
@@ -312,8 +317,7 @@ public:
 
     [[nodiscard]] std::filesystem::path FramePath(std::string_view extension) const {
         std::ostringstream name;
-        name << "Frame_" << std::setw(4) << std::setfill('0')
-             << (written_ + 1) << extension;
+        name << "Frame_" << std::setw(4) << std::setfill('0') << (written_ + 1) << extension;
         return directory_ / name.str();
     }
 
@@ -321,7 +325,7 @@ public:
         return FramePath(".png");
     }
 
-private:
+  private:
     std::filesystem::path directory_;
     uint32_t interval_ = 0;
     uint64_t firstTick_ = 0;

@@ -35,30 +35,29 @@ namespace {
 namespace fs = std::filesystem;
 
 std::string LowerExt(const std::string& path) {
-	std::string ext = fs::path(path).extension().generic_string();
-	for (char& c : ext)
-		c = char(std::tolower(static_cast<unsigned char>(c)));
-	return ext;
+    std::string ext = fs::path(path).extension().generic_string();
+    for (char& c : ext)
+        c = char(std::tolower(static_cast<unsigned char>(c)));
+    return ext;
 }
 
 std::vector<std::string> SplitSegments(const std::string& p) {
-	std::vector<std::string> segs;
-	size_t start = 0;
-	while (start < p.size()) {
-		const size_t end = p.find('/', start);
-		if (end == std::string::npos) {
-			segs.push_back(p.substr(start));
-			break;
-		}
-		segs.push_back(p.substr(start, end - start));
-		start = end + 1;
-	}
-	return segs;
+    std::vector<std::string> segs;
+    size_t start = 0;
+    while (start < p.size()) {
+        const size_t end = p.find('/', start);
+        if (end == std::string::npos) {
+            segs.push_back(p.substr(start));
+            break;
+        }
+        segs.push_back(p.substr(start, end - start));
+        start = end + 1;
+    }
+    return segs;
 }
 
 bool HasWildcard(const std::string& s) {
-	return s.find('*') != std::string::npos
-		|| s.find('?') != std::string::npos;
+    return s.find('*') != std::string::npos || s.find('?') != std::string::npos;
 }
 
 // Which plan kind a matched file is. Family/support files (the .gltf/
@@ -66,82 +65,79 @@ bool HasWildcard(const std::string& s) {
 // discover them through the artifact families + the VFS; claiming them
 // would double-ship content the packer already resolves.
 PlanAssetKind ClassifyAsset(const std::string& path, bool& known) {
-	known = true;
-	const std::string ext = LowerExt(path);
-	if (ext == ".geometry")
-		return PlanAssetKind::Geometry;
-	if (ext == ".png" || ext == ".jpg" || ext == ".jpeg"
-			|| ext == ".tga" || ext == ".bmp" || ext == ".ktx2")
-		return PlanAssetKind::Texture;
-	if (ext == ".wav")
-		return PlanAssetKind::Sound;
-	// PROJECT-AUTHORED compiled shaders (the .spv the project OWNS —
-	// its own content tree, never the engine's build-owneds; the
-	// engine-shaders.pak carries those).
-	if (ext == ".spv")
-		return PlanAssetKind::Shader;
-	// GI bake SETS: the .givolumemanifest is the GAME-LOADABLE asset
-	// (a baked lighting set naming its .givolume payload rows — a
-	// 0x6xxx GiKey, AssetManager::LoadGI). The .givolume payloads +
-	// .cubemanifest stay BakeFile plumbing (family/support content
-	// the packer embeds on the gi/ VFS channel).
-	if (ext == ".givolumemanifest")
-		return PlanAssetKind::Gi;
-	if (ext == ".givolume" || ext == ".cubemanifest")
-		return PlanAssetKind::BakeFile;
-	// AUTHORED AUDIO GRAPHS (the .audiograph text asset — a 0x7xxx
-	// AudioGraphKey; the strict parser validates it at pack time).
-	if (ext == ".audiograph")
-		return PlanAssetKind::AudioGraph;
-	if (ext == ".statemachine")
-		return PlanAssetKind::StateMachine;
-	if (ext == ".navmesh")
-		return PlanAssetKind::NavMesh;
-	if (ext == ".spriteset")
-		return PlanAssetKind::SpriteSet;
-	if (ext == ".shape")
-		return PlanAssetKind::Shape;
-	known = false;
-	return PlanAssetKind::Texture;
+    known = true;
+    const std::string ext = LowerExt(path);
+    if (ext == ".geometry")
+        return PlanAssetKind::Geometry;
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".bmp" ||
+        ext == ".ktx2")
+        return PlanAssetKind::Texture;
+    if (ext == ".wav")
+        return PlanAssetKind::Sound;
+    // PROJECT-AUTHORED compiled shaders (the .spv the project OWNS —
+    // its own content tree, never the engine's build-owneds; the
+    // engine-shaders.pak carries those).
+    if (ext == ".spv")
+        return PlanAssetKind::Shader;
+    // GI bake SETS: the .givolumemanifest is the GAME-LOADABLE asset
+    // (a baked lighting set naming its .givolume payload rows — a
+    // 0x6xxx GiKey, AssetManager::LoadGI). The .givolume payloads +
+    // .cubemanifest stay BakeFile plumbing (family/support content
+    // the packer embeds on the gi/ VFS channel).
+    if (ext == ".givolumemanifest")
+        return PlanAssetKind::Gi;
+    if (ext == ".givolume" || ext == ".cubemanifest")
+        return PlanAssetKind::BakeFile;
+    // AUTHORED AUDIO GRAPHS (the .audiograph text asset — a 0x7xxx
+    // AudioGraphKey; the strict parser validates it at pack time).
+    if (ext == ".audiograph")
+        return PlanAssetKind::AudioGraph;
+    if (ext == ".statemachine")
+        return PlanAssetKind::StateMachine;
+    if (ext == ".navmesh")
+        return PlanAssetKind::NavMesh;
+    if (ext == ".spriteset")
+        return PlanAssetKind::SpriteSet;
+    if (ext == ".shape")
+        return PlanAssetKind::Shape;
+    known = false;
+    return PlanAssetKind::Texture;
 }
 
 // Expands ONE include pattern against the project tree into `hits`
 // (project-relative, forward slashes; the caller's set keeps them
 // sorted + unique). Returns false only on a filesystem walk error.
-bool ExpandPattern(const fs::path& root, const std::string& pattern,
-	std::set<std::string>& hits) {
-	const std::vector<std::string> segs = SplitSegments(pattern);
-	// The deepest wildcard-free prefix anchors the walk (an unanchored
-	// '**' walks the whole project — correct, just slower).
-	size_t staticCount = 0;
-	while (staticCount < segs.size() && !HasWildcard(segs[staticCount]))
-		++staticCount;
-	fs::path base = root;
-	for (size_t i = 0; i < staticCount; ++i)
-		base /= segs[i];
-	std::error_code ec;
-	if (staticCount == segs.size()) {
-		// A fully-static pattern: the exact file, claimed verbatim.
-		if (fs::is_regular_file(base, ec))
-			hits.insert(pattern);
-		return true;
-	}
-	if (!fs::is_directory(base, ec))
-		return true; // no matches; the caller's empty-match check fires
-	fs::recursive_directory_iterator it(base, ec);
-	const fs::recursive_directory_iterator end;
-	while (!ec && it != end) {
-		const fs::directory_entry entry = *it;
-		if (entry.is_regular_file(ec)) {
-			const std::string rel =
-				fs::relative(entry.path(), root, ec).generic_string();
-			if (!ec && !rel.empty()
-					&& RecipeGlobMatch(pattern, rel))
-				hits.insert(rel);
-		}
-		it.increment(ec);
-	}
-	return true;
+bool ExpandPattern(const fs::path& root, const std::string& pattern, std::set<std::string>& hits) {
+    const std::vector<std::string> segs = SplitSegments(pattern);
+    // The deepest wildcard-free prefix anchors the walk (an unanchored
+    // '**' walks the whole project — correct, just slower).
+    size_t staticCount = 0;
+    while (staticCount < segs.size() && !HasWildcard(segs[staticCount]))
+        ++staticCount;
+    fs::path base = root;
+    for (size_t i = 0; i < staticCount; ++i)
+        base /= segs[i];
+    std::error_code ec;
+    if (staticCount == segs.size()) {
+        // A fully-static pattern: the exact file, claimed verbatim.
+        if (fs::is_regular_file(base, ec))
+            hits.insert(pattern);
+        return true;
+    }
+    if (!fs::is_directory(base, ec))
+        return true; // no matches; the caller's empty-match check fires
+    fs::recursive_directory_iterator it(base, ec);
+    const fs::recursive_directory_iterator end;
+    while (!ec && it != end) {
+        const fs::directory_entry entry = *it;
+        if (entry.is_regular_file(ec)) {
+            const std::string rel = fs::relative(entry.path(), root, ec).generic_string();
+            if (!ec && !rel.empty() && RecipeGlobMatch(pattern, rel))
+                hits.insert(rel);
+        }
+        it.increment(ec);
+    }
+    return true;
 }
 
 // Loads + validates one scene tour (BuildProject's contract): the tour
@@ -153,357 +149,351 @@ bool ExpandPattern(const fs::path& root, const std::string& pattern,
 // prefab-authoring pattern), but the pak lane refuses them loudly —
 // silently flattening a scene graph the author never sees flattened is
 // exactly how a 1,024-reference stress scene sneaks into a pak.
-bool CollectSceneArtifacts(const Project& project, const std::string& scene,
-	std::vector<std::string>& artifacts, std::string& err) {
-	std::error_code ec;
-	const fs::path tourAbs = fs::path(project.root) / fs::path(scene);
-	if (!fs::is_regular_file(tourAbs, ec)) {
-		err = "scene tour not found: " + scene;
-		return false;
-	}
-	smvk::tour::Doc doc;
-	std::string loadErr;
-	if (!smvk::tour::LoadTour(tourAbs.generic_string(), doc, loadErr)) {
-		err = "tour load failed (" + scene + "): " + loadErr;
-		return false;
-	}
-	if (doc.references.empty()) {
-		err = "the scene tour has no root reference (nothing to build): "
-			+ scene;
-		return false;
-	}
-	// Root reference (#0): the artifact the packer takes as its primary
-	// VFS input. PROJECT-RELATIVE only (an absolute reference breaks
-	// mesh-URI registration — the same rejection BuildProject applies).
-	const std::string& rootRef = doc.references[0].source;
-	if (fs::path(rootRef).is_absolute()) {
-		err = "the tour's root reference must be project-relative: '"
-			+ rootRef + "' (" + scene + ")";
-		return false;
-	}
-	if (LowerExt(rootRef) == ".tour") {
-		err = "the tour's ROOT reference is another scene: '" + rootRef
-			+ "' (" + scene + ") — paks cook ONE flat scene; make the"
-				" root a model artifact (.geometry) instead";
-		return false;
-	}
-	if (!fs::is_regular_file(fs::path(project.root) / fs::path(rootRef),
-			ec)) {
-		err = "the tour's referenced artifact is missing: '" + rootRef
-			+ "' (" + scene + ")";
-		return false;
-	}
-	artifacts.push_back(rootRef);
-	for (size_t i = 1; i < doc.references.size(); ++i) {
-		const smvk::tour::ReferenceCmd& ref = doc.references[i];
-		if (!ref.enabled || ref.source.empty())
-			continue; // an unloaded placeholder carries no dependency
-		if (fs::path(ref.source).is_absolute()) {
-			err = "the tour's reference must be project-relative: '"
-				+ ref.source + "' (" + scene + ")";
-			return false;
-		}
-		const std::string ext = LowerExt(ref.source);
-		if (ext == ".tour") {
-			// Nested scene: REJECTED (the pak-lane policy above).
-			err = "nested scene reference '" + ref.source + "' (" + scene
-				+ "): paks do not support scene-to-scene references —"
-					" reference the model artifact (.geometry) directly";
-			return false;
-		}
-		else if (ext == ".geometry"
-				|| smvk::assets::IsMeshSourceExtension(ext)) {
-			if (!fs::is_regular_file(
-					fs::path(project.root) / fs::path(ref.source), ec)) {
-				err = "the tour's referenced artifact is missing: '"
-					+ ref.source + "' (" + scene + ")";
-				return false;
-			}
-			artifacts.push_back(ref.source);
-		}
-		else {
-			err = "unsupported reference '" + ref.source + "' (" + scene
-				+ "): references are .geometry/"
-					"model-source artifacts (scenes are flat)";
-			return false;
-		}
-	}
-	return true;
+bool CollectSceneArtifacts(const Project& project,
+                           const std::string& scene,
+                           std::vector<std::string>& artifacts,
+                           std::string& err) {
+    std::error_code ec;
+    const fs::path tourAbs = fs::path(project.root) / fs::path(scene);
+    if (!fs::is_regular_file(tourAbs, ec)) {
+        err = "scene tour not found: " + scene;
+        return false;
+    }
+    smvk::tour::Doc doc;
+    std::string loadErr;
+    if (!smvk::tour::LoadTour(tourAbs.generic_string(), doc, loadErr)) {
+        err = "tour load failed (" + scene + "): " + loadErr;
+        return false;
+    }
+    if (doc.references.empty()) {
+        err = "the scene tour has no root reference (nothing to build): " + scene;
+        return false;
+    }
+    // Root reference (#0): the artifact the packer takes as its primary
+    // VFS input. PROJECT-RELATIVE only (an absolute reference breaks
+    // mesh-URI registration — the same rejection BuildProject applies).
+    const std::string& rootRef = doc.references[0].source;
+    if (fs::path(rootRef).is_absolute()) {
+        err =
+            "the tour's root reference must be project-relative: '" + rootRef + "' (" + scene + ")";
+        return false;
+    }
+    if (LowerExt(rootRef) == ".tour") {
+        err = "the tour's ROOT reference is another scene: '" + rootRef + "' (" + scene +
+              ") — paks cook ONE flat scene; make the"
+              " root a model artifact (.geometry) instead";
+        return false;
+    }
+    if (!fs::is_regular_file(fs::path(project.root) / fs::path(rootRef), ec)) {
+        err = "the tour's referenced artifact is missing: '" + rootRef + "' (" + scene + ")";
+        return false;
+    }
+    artifacts.push_back(rootRef);
+    for (size_t i = 1; i < doc.references.size(); ++i) {
+        const smvk::tour::ReferenceCmd& ref = doc.references[i];
+        if (!ref.enabled || ref.source.empty())
+            continue; // an unloaded placeholder carries no dependency
+        if (fs::path(ref.source).is_absolute()) {
+            err = "the tour's reference must be project-relative: '" + ref.source + "' (" + scene +
+                  ")";
+            return false;
+        }
+        const std::string ext = LowerExt(ref.source);
+        if (ext == ".tour") {
+            // Nested scene: REJECTED (the pak-lane policy above).
+            err = "nested scene reference '" + ref.source + "' (" + scene +
+                  "): paks do not support scene-to-scene references —"
+                  " reference the model artifact (.geometry) directly";
+            return false;
+        } else if (ext == ".geometry" || smvk::assets::IsMeshSourceExtension(ext)) {
+            if (!fs::is_regular_file(fs::path(project.root) / fs::path(ref.source), ec)) {
+                err = "the tour's referenced artifact is missing: '" + ref.source + "' (" + scene +
+                      ")";
+                return false;
+            }
+            artifacts.push_back(ref.source);
+        } else {
+            err = "unsupported reference '" + ref.source + "' (" + scene +
+                  "): references are .geometry/"
+                  "model-source artifacts (scenes are flat)";
+            return false;
+        }
+    }
+    return true;
 }
 
 // Transitive depends test (the parser already rejected cycles, so the
 // walk terminates). Feeds the scene-geometry ownership rule below: a
 // scene pak may cook over a model family OWNED by a pak it depends on.
 bool PakDependsOn(const std::vector<RecipePak>& paks,
-	const std::string& pakId, const std::string& ownerId) {
-	std::set<std::string> visited;
-	std::vector<std::string> stack{ pakId };
-	while (!stack.empty()) {
-		const std::string cur = stack.back();
-		stack.pop_back();
-		if (!visited.insert(cur).second)
-			continue;
-		for (const RecipePak& p : paks) {
-			if (p.id != cur)
-				continue;
-			for (const std::string& dep : p.depends) {
-				if (dep == ownerId)
-					return true;
-				stack.push_back(dep);
-			}
-		}
-	}
-	return false;
+                  const std::string& pakId,
+                  const std::string& ownerId) {
+    std::set<std::string> visited;
+    std::vector<std::string> stack{pakId};
+    while (!stack.empty()) {
+        const std::string cur = stack.back();
+        stack.pop_back();
+        if (!visited.insert(cur).second)
+            continue;
+        for (const RecipePak& p : paks) {
+            if (p.id != cur)
+                continue;
+            for (const std::string& dep : p.depends) {
+                if (dep == ownerId)
+                    return true;
+                stack.push_back(dep);
+            }
+        }
+    }
+    return false;
 }
 
 } // namespace
 
-bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
-	BuildPlan& out, std::string& err) {
-	err.clear();
-	out = BuildPlan{};
-	if (!project.Valid()) {
-		err = "invalid project (open/init first)";
-		return false;
-	}
-	if (recipe.version != kRecipeGrammarVersion || recipe.paks.empty()
-			|| recipe.entry.empty()) {
-		err = "the recipe is not parsed/validated (ParseProjectRecipe"
-			" first)";
-		return false;
-	}
-	out.projectName = recipe.projectName;
-	out.materialPacking = recipe.materialPacking;
-	out.bakeGi = recipe.bakeGi;
-	out.bakeCubemaps = recipe.bakeCubemaps;
-	out.bakeSdf = recipe.bakeSdf;
+bool ResolveRecipe(const Project& project,
+                   const ProjectRecipe& recipe,
+                   BuildPlan& out,
+                   std::string& err) {
+    err.clear();
+    out = BuildPlan{};
+    if (!project.Valid()) {
+        err = "invalid project (open/init first)";
+        return false;
+    }
+    if (recipe.version != kRecipeGrammarVersion || recipe.paks.empty() || recipe.entry.empty()) {
+        err = "the recipe is not parsed/validated (ParseProjectRecipe"
+              " first)";
+        return false;
+    }
+    out.projectName = recipe.projectName;
+    out.materialPacking = recipe.materialPacking;
+    out.bakeGi = recipe.bakeGi;
+    out.bakeCubemaps = recipe.bakeCubemaps;
+    out.bakeSdf = recipe.bakeSdf;
 
-	// ---- 1) the entry scene is owned by exactly one pak --------------
-	// (the parser already verified ownership exists; a hand-built
-	// recipe gets the same check here — and two paks claiming the same
-	// scene is always wrong: a scene ships once)
-	const RecipePak* entryPak = nullptr;
-	for (const RecipePak& pak : recipe.paks) {
-		if (pak.scene.empty() || pak.scene != recipe.entry)
-			continue;
-		if (entryPak) {
-			err = "the entry scene is claimed by both [pak "
-				+ entryPak->id + "] and [pak " + pak.id + "]";
-			return false;
-		}
-		entryPak = &pak;
-	}
-	if (!entryPak) {
-		err = "the entry scene '" + recipe.entry
-			+ "' is not owned by any [pak] 'scene' directive";
-		return false;
-	}
-	out.entryScene = recipe.entry;
-	out.entryPak = entryPak->id;
+    // ---- 1) the entry scene is owned by exactly one pak --------------
+    // (the parser already verified ownership exists; a hand-built
+    // recipe gets the same check here — and two paks claiming the same
+    // scene is always wrong: a scene ships once)
+    const RecipePak* entryPak = nullptr;
+    for (const RecipePak& pak : recipe.paks) {
+        if (pak.scene.empty() || pak.scene != recipe.entry)
+            continue;
+        if (entryPak) {
+            err = "the entry scene is claimed by both [pak " + entryPak->id + "] and [pak " +
+                  pak.id + "]";
+            return false;
+        }
+        entryPak = &pak;
+    }
+    if (!entryPak) {
+        err = "the entry scene '" + recipe.entry + "' is not owned by any [pak] 'scene' directive";
+        return false;
+    }
+    out.entryScene = recipe.entry;
+    out.entryPak = entryPak->id;
 
-	// Ownership table: path -> owner pak (+ how it was claimed, for the
-	// conflict diagnostics). One entry per path, ever.
-	struct Owned {
-		std::string pak;
-		PlanAssetKind kind;
-		bool fromScene; // claimed as a scene's geometry vs an include
-	};
-	std::map<std::string, Owned> owned;
+    // Ownership table: path -> owner pak (+ how it was claimed, for the
+    // conflict diagnostics). One entry per path, ever.
+    struct Owned {
+        std::string pak;
+        PlanAssetKind kind;
+        bool fromScene; // claimed as a scene's geometry vs an include
+    };
+    std::map<std::string, Owned> owned;
 
-	// ---- 2) scene paks: validate + force-own their geometry ----------
-	// Authored order. A scene's artifacts BELONG to its pak — a second
-	// scene pak or an include claiming them is the v1 boundary hit:
-	// meshes/materials are cluster-internal and cannot cross paks.
-	std::map<std::string, std::vector<std::string>> pakArtifacts;
-	for (const RecipePak& pak : recipe.paks) {
-		if (pak.scene.empty())
-			continue;
-		std::vector<std::string> artifacts;
-		if (!CollectSceneArtifacts(project, pak.scene, artifacts, err))
-			return false;
-		// order-preserving dedupe (a flat scene may reference the same
-		// model artifact many times — 1,024 Sponza duplicates own ONE
-		// geometry)
-		{
-			std::set<std::string> seen;
-			std::vector<std::string> unique;
-			for (const std::string& a : artifacts)
-				if (seen.insert(a).second)
-					unique.push_back(a);
-			artifacts.swap(unique);
-		}
-		for (const std::string& a : artifacts) {
-			auto it = owned.find(a);
-			if (it != owned.end()) {
-				// SANCTIONED SHARE: a scene pak that DEPENDS on the
-				// owning pak cooks over the shared model family. The
-				// dependent scene's cluster still embeds the meshes
-				// CLUSTER-INTERNALLY (the serializer inlines the scene's
-				// whole reference walk into ITS pak — bytes duplicate per
-				// pak by design), while the OWNED table keeps exactly one
-				// owner: the dependency, which the plan's topological
-				// order mounts first, so its records serve the shared
-				// paths. This is how a deployment ships several FLAT
-				// scenes over one geometry family (the sponza_10 demo
-				// set: the atrium scene + the grid stress scenes, all
-				// referencing the one Sponza.geometry).
-				if (PakDependsOn(recipe.paks, pak.id, it->second.pak))
-					continue; // keep as a cook input, do not re-claim
-				err = "[pak " + pak.id + "] references '" + a
-					+ "' already owned by [pak " + it->second.pak + "] —"
-						" meshes/materials are cluster-internal and"
-						" cannot be shared across paks (v1): give one"
-						" pak the scene, the other a 'depends' edge"
-						" (a scene pak that depends on the owner may"
-						" cook over the shared family)";
-				return false;
-			}
-			owned[a] = { pak.id, PlanAssetKind::Geometry, true };
-		}
-		pakArtifacts[pak.id] = std::move(artifacts);
-	}
+    // ---- 2) scene paks: validate + force-own their geometry ----------
+    // Authored order. A scene's artifacts BELONG to its pak — a second
+    // scene pak or an include claiming them is the v1 boundary hit:
+    // meshes/materials are cluster-internal and cannot cross paks.
+    std::map<std::string, std::vector<std::string>> pakArtifacts;
+    for (const RecipePak& pak : recipe.paks) {
+        if (pak.scene.empty())
+            continue;
+        std::vector<std::string> artifacts;
+        if (!CollectSceneArtifacts(project, pak.scene, artifacts, err))
+            return false;
+        // order-preserving dedupe (a flat scene may reference the same
+        // model artifact many times — 1,024 Sponza duplicates own ONE
+        // geometry)
+        {
+            std::set<std::string> seen;
+            std::vector<std::string> unique;
+            for (const std::string& a : artifacts)
+                if (seen.insert(a).second)
+                    unique.push_back(a);
+            artifacts.swap(unique);
+        }
+        for (const std::string& a : artifacts) {
+            auto it = owned.find(a);
+            if (it != owned.end()) {
+                // SANCTIONED SHARE: a scene pak that DEPENDS on the
+                // owning pak cooks over the shared model family. The
+                // dependent scene's cluster still embeds the meshes
+                // CLUSTER-INTERNALLY (the serializer inlines the scene's
+                // whole reference walk into ITS pak — bytes duplicate per
+                // pak by design), while the OWNED table keeps exactly one
+                // owner: the dependency, which the plan's topological
+                // order mounts first, so its records serve the shared
+                // paths. This is how a deployment ships several FLAT
+                // scenes over one geometry family (the sponza_10 demo
+                // set: the atrium scene + the grid stress scenes, all
+                // referencing the one Sponza.geometry).
+                if (PakDependsOn(recipe.paks, pak.id, it->second.pak))
+                    continue; // keep as a cook input, do not re-claim
+                err = "[pak " + pak.id + "] references '" + a + "' already owned by [pak " +
+                      it->second.pak +
+                      "] —"
+                      " meshes/materials are cluster-internal and"
+                      " cannot be shared across paks (v1): give one"
+                      " pak the scene, the other a 'depends' edge"
+                      " (a scene pak that depends on the owner may"
+                      " cook over the shared family)";
+                return false;
+            }
+            owned[a] = {pak.id, PlanAssetKind::Geometry, true};
+        }
+        pakArtifacts[pak.id] = std::move(artifacts);
+    }
 
-	// ---- 3) includes: expand + claim (authored order) -----------------
-	for (const RecipePak& pak : recipe.paks) {
-		std::set<std::string> hits;
-		for (const std::string& pattern : pak.includes) {
-			std::set<std::string> one;
-			if (!ExpandPattern(fs::path(project.root), pattern, one)) {
-				err = "[pak " + pak.id + "] include walk failed: '"
-					+ pattern + "'";
-				return false;
-			}
-			if (one.empty()) {
-				// An include is a CLAIM — a glob matching nothing is a
-				// broken claim (typo'd directory), not an empty pak.
-				err = "[pak " + pak.id + "] include '" + pattern
-					+ "' matched no files";
-				return false;
-			}
-			hits.insert(one.begin(), one.end());
-		}
-		size_t assetsClaimed = 0;
-		for (const std::string& rel : hits) {
-			bool known = false;
-			const PlanAssetKind kind = ClassifyAsset(rel, known);
-			if (!known)
-				continue; // family/support file — the stages' discovery
-			if (kind == PlanAssetKind::Geometry) {
-				// Meshes are CLUSTER-INTERNAL: geometry enters a pak
-				// only through its scene's reference walk (the packer's
-				// tour mode inlines the whole walk into one cluster).
-				// An include glob matching our OWN scene's artifact is a
-				// redundant claim (fine); anything else — another pak's
-				// scene artifact or an unreferenced .geometry — is not
-				// packable content in v1.
-				auto own = owned.find(rel);
-				if (own != owned.end() && own->second.pak == pak.id)
-					continue;
-				err = "[pak " + pak.id + "] include claims the geometry '"
-					+ rel + "' — meshes are cluster-internal and only"
-						" enter a pak through its scene's references"
-						" (v1): drop the claim, or give this pak the"
-						" scene that uses it";
-				return false;
-			}
-			auto it = owned.find(rel);
-			if (it != owned.end()) {
-				if (it->second.pak == pak.id)
-					continue; // already ours (our own scene's artifact
-					          // matched by our own glob)
-				err = "[pak " + pak.id + "] include claims '" + rel
-					+ "' already owned by [pak " + it->second.pak + "]"
-					+ (it->second.fromScene
-						? " (a scene's geometry is cluster-internal —"
-							" it cannot move into an include pak)"
-						: "")
-					+ " — every cooked artifact has exactly one owner";
-				return false;
-			}
-			owned[rel] = { pak.id, kind, false };
-			++assetsClaimed;
-		}
-		if (pak.scene.empty() && pak.map.empty() && assetsClaimed == 0) {
-			err = "[pak " + pak.id + "] owns no content: its includes"
-				" matched no asset files";
-			return false;
-		}
-	}
+    // ---- 3) includes: expand + claim (authored order) -----------------
+    for (const RecipePak& pak : recipe.paks) {
+        std::set<std::string> hits;
+        for (const std::string& pattern : pak.includes) {
+            std::set<std::string> one;
+            if (!ExpandPattern(fs::path(project.root), pattern, one)) {
+                err = "[pak " + pak.id + "] include walk failed: '" + pattern + "'";
+                return false;
+            }
+            if (one.empty()) {
+                // An include is a CLAIM — a glob matching nothing is a
+                // broken claim (typo'd directory), not an empty pak.
+                err = "[pak " + pak.id + "] include '" + pattern + "' matched no files";
+                return false;
+            }
+            hits.insert(one.begin(), one.end());
+        }
+        size_t assetsClaimed = 0;
+        for (const std::string& rel : hits) {
+            bool known = false;
+            const PlanAssetKind kind = ClassifyAsset(rel, known);
+            if (!known)
+                continue; // family/support file — the stages' discovery
+            if (kind == PlanAssetKind::Geometry) {
+                // Meshes are CLUSTER-INTERNAL: geometry enters a pak
+                // only through its scene's reference walk (the packer's
+                // tour mode inlines the whole walk into one cluster).
+                // An include glob matching our OWN scene's artifact is a
+                // redundant claim (fine); anything else — another pak's
+                // scene artifact or an unreferenced .geometry — is not
+                // packable content in v1.
+                auto own = owned.find(rel);
+                if (own != owned.end() && own->second.pak == pak.id)
+                    continue;
+                err = "[pak " + pak.id + "] include claims the geometry '" + rel +
+                      "' — meshes are cluster-internal and only"
+                      " enter a pak through its scene's references"
+                      " (v1): drop the claim, or give this pak the"
+                      " scene that uses it";
+                return false;
+            }
+            auto it = owned.find(rel);
+            if (it != owned.end()) {
+                if (it->second.pak == pak.id)
+                    continue; // already ours (our own scene's artifact
+                              // matched by our own glob)
+                err = "[pak " + pak.id + "] include claims '" + rel + "' already owned by [pak " +
+                      it->second.pak + "]" +
+                      (it->second.fromScene ? " (a scene's geometry is cluster-internal —"
+                                              " it cannot move into an include pak)"
+                                            : "") +
+                      " — every cooked artifact has exactly one owner";
+                return false;
+            }
+            owned[rel] = {pak.id, kind, false};
+            ++assetsClaimed;
+        }
+        if (pak.scene.empty() && pak.map.empty() && assetsClaimed == 0) {
+            err = "[pak " + pak.id +
+                  "] owns no content: its includes"
+                  " matched no asset files";
+            return false;
+        }
+    }
 
-	// ---- 4) topological sort (dependencies first, authored tiebreak) --
-	// The parser rejected unknown targets + cycles; re-verify so a
-	// hand-built recipe can't smuggle either past the plan.
-	std::map<std::string, size_t> idIndex;
-	for (size_t i = 0; i < recipe.paks.size(); ++i) {
-		const std::string id = recipe.paks[i].id;
-		if (!idIndex.emplace(id, i).second) {
-			err = "duplicate pak id '" + id + "'";
-			return false;
-		}
-	}
-	for (const RecipePak& pak : recipe.paks)
-		for (const std::string& dep : pak.depends)
-			if (idIndex.find(dep) == idIndex.end()) {
-				err = "[pak " + pak.id + "] depends on unknown pak '"
-					+ dep + "'";
-				return false;
-			}
-	std::vector<size_t> order;
-	{
-		std::vector<int> placed(recipe.paks.size(), 0);
-		while (order.size() < recipe.paks.size()) {
-			// The authored-earliest unplaced pak whose dependencies are
-			// all placed — deterministic, and dependencies always land
-			// before their dependents.
-			bool progressed = false;
-			for (size_t i = 0; i < recipe.paks.size(); ++i) {
-				if (placed[i])
-					continue;
-				bool ready = true;
-				for (const std::string& dep : recipe.paks[i].depends)
-					if (!placed[idIndex.at(dep)]) {
-						ready = false;
-						break;
-					}
-				if (ready) {
-					placed[i] = 1;
-					order.push_back(i);
-					progressed = true;
-					break; // restart the scan: authored order first
-				}
-			}
-			if (!progressed) {
-				err = "dependency cycle among [pak] sections";
-				return false;
-			}
-		}
-	}
+    // ---- 4) topological sort (dependencies first, authored tiebreak) --
+    // The parser rejected unknown targets + cycles; re-verify so a
+    // hand-built recipe can't smuggle either past the plan.
+    std::map<std::string, size_t> idIndex;
+    for (size_t i = 0; i < recipe.paks.size(); ++i) {
+        const std::string id = recipe.paks[i].id;
+        if (!idIndex.emplace(id, i).second) {
+            err = "duplicate pak id '" + id + "'";
+            return false;
+        }
+    }
+    for (const RecipePak& pak : recipe.paks)
+        for (const std::string& dep : pak.depends)
+            if (idIndex.find(dep) == idIndex.end()) {
+                err = "[pak " + pak.id + "] depends on unknown pak '" + dep + "'";
+                return false;
+            }
+    std::vector<size_t> order;
+    {
+        std::vector<int> placed(recipe.paks.size(), 0);
+        while (order.size() < recipe.paks.size()) {
+            // The authored-earliest unplaced pak whose dependencies are
+            // all placed — deterministic, and dependencies always land
+            // before their dependents.
+            bool progressed = false;
+            for (size_t i = 0; i < recipe.paks.size(); ++i) {
+                if (placed[i])
+                    continue;
+                bool ready = true;
+                for (const std::string& dep : recipe.paks[i].depends)
+                    if (!placed[idIndex.at(dep)]) {
+                        ready = false;
+                        break;
+                    }
+                if (ready) {
+                    placed[i] = 1;
+                    order.push_back(i);
+                    progressed = true;
+                    break; // restart the scan: authored order first
+                }
+            }
+            if (!progressed) {
+                err = "dependency cycle among [pak] sections";
+                return false;
+            }
+        }
+    }
 
-	// ---- 5) assemble the plan ------------------------------------------
-	for (size_t idx : order) {
-		const RecipePak& rp = recipe.paks[idx];
-		PlanPak pp;
-		pp.id = rp.id;
-		pp.output = rp.output;
-		pp.scene = rp.scene;
-		pp.map = rp.map;
-		pp.transitive = rp.dependenciesTransitive;
-		pp.depends = rp.depends;
-		// Resolve the bake switches: the recipe-level defaults, then
-		// any per-pak overrides (a stress-scene pak beside a baked demo
-		// pak turns ITS bakes off).
-		pp.bakeGi = rp.bakeGi.value_or(recipe.bakeGi);
-		pp.bakeCubemaps = rp.bakeCubemaps.value_or(recipe.bakeCubemaps);
-		pp.line = rp.line;
-		if (!pp.scene.empty())
-			pp.sceneArtifacts = pakArtifacts.at(pp.id);
-		// `owned` iterates in path order — assets come out sorted.
-		for (const auto& [path, own] : owned)
-			if (own.pak == pp.id)
-				pp.assets.push_back(PlanAsset{ path, own.kind });
-		out.paks.push_back(std::move(pp));
-	}
-	return true;
+    // ---- 5) assemble the plan ------------------------------------------
+    for (size_t idx : order) {
+        const RecipePak& rp = recipe.paks[idx];
+        PlanPak pp;
+        pp.id = rp.id;
+        pp.output = rp.output;
+        pp.scene = rp.scene;
+        pp.map = rp.map;
+        pp.transitive = rp.dependenciesTransitive;
+        pp.depends = rp.depends;
+        // Resolve the bake switches: the recipe-level defaults, then
+        // any per-pak overrides (a stress-scene pak beside a baked demo
+        // pak turns ITS bakes off).
+        pp.bakeGi = rp.bakeGi.value_or(recipe.bakeGi);
+        pp.bakeCubemaps = rp.bakeCubemaps.value_or(recipe.bakeCubemaps);
+        pp.line = rp.line;
+        if (!pp.scene.empty())
+            pp.sceneArtifacts = pakArtifacts.at(pp.id);
+        // `owned` iterates in path order — assets come out sorted.
+        for (const auto& [path, own] : owned)
+            if (own.pak == pp.id)
+                pp.assets.push_back(PlanAsset{path, own.kind});
+        out.paks.push_back(std::move(pp));
+    }
+    return true;
 }
 
 } // namespace smvk::project

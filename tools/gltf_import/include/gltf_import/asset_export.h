@@ -46,8 +46,8 @@
 // the session records the .geometry. The asset browser shows the glTF
 // as a FOLDER of the derived assets.
 
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -55,12 +55,14 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/cluster.h>
-#include <Engine/Renderer/mesh.h>
-#include <Engine/Scene/scene.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/touranim.h>
+#include <Engine/Renderer/mesh.h>
+#include <Engine/Scene/scene.h>
 
-namespace tinygltf { class Model; }
+namespace tinygltf {
+class Model;
+}
 
 namespace smvk {
 class ResourceManager; // GPU-load context (ImportMaterialAssetToCluster)
@@ -71,47 +73,50 @@ namespace smvk::assets {
 enum class AssetKind : uint8_t { Geometry = 0, Material = 1, Anim = 2 };
 
 inline const char* AssetKindName(AssetKind k) {
-	switch (k) {
-	case AssetKind::Geometry: return "geometry";
-	case AssetKind::Material: return "material";
-	case AssetKind::Anim: return "anim";
-	}
-	return "?";
+    switch (k) {
+    case AssetKind::Geometry:
+        return "geometry";
+    case AssetKind::Material:
+        return "material";
+    case AssetKind::Anim:
+        return "anim";
+    }
+    return "?";
 }
 
 // One manifest entry (a derived asset of the glTF).
 struct AssetEntry {
-	AssetKind kind = AssetKind::Geometry;
-	std::string file;       // file NAME next to the glTF (no dirs)
-	std::string guid;       // 32-hex asset GUID (stable across reimports)
-	std::string name;       // the LOGICAL identity key (the material/
-	                        // anim display name — never empty; unnamed
-	                        // glTF assets carry index-derived fallbacks)
-	int sourceIndex = -1;   // glTF material/animation index (row key +
-	                        // the unnamed-asset fallback; NOT the
-	                        // identity — the name is)
+    AssetKind kind = AssetKind::Geometry;
+    std::string file;     // file NAME next to the glTF (no dirs)
+    std::string guid;     // 32-hex asset GUID (stable across reimports)
+    std::string name;     // the LOGICAL identity key (the material/
+                          // anim display name — never empty; unnamed
+                          // glTF assets carry index-derived fallbacks)
+    int sourceIndex = -1; // glTF material/animation index (row key +
+                          // the unnamed-asset fallback; NOT the
+                          // identity — the name is)
 };
 
 // The glTF's manifest (the <stem>.gltf.meta).
 struct AssetManifest {
-	std::string guid;       // the glTF asset's GUID (the .meta identity)
-	std::string source;     // the glTF file NAME (display + reimport)
-	// The ORIGINAL SOURCE FILE's content identity (32-hex, derived from the
-	// glTF bytes — see SourceAssetGuid). Registered in the .meta so the
-	// artifact family always knows the exact source content it came from:
-	// a from-zero re-import reproduces it anywhere, and staleness/matching
-	// can key on CONTENT (the mtime rule alone misfires on copies that
-	// preserve or reorders mtimes). Empty on legacy metas (pre-digest).
-	std::string sourceDigest;
-	// The IMPORT FINGERPRINT (32-hex — ImportFingerprintFor): the settings
-	// + implementation revisions the artifacts were derived under. The
-	// CONTENT digest above answers "did the source change"; this answers
-	// "would we derive the same artifact" (a LOD-ratio change or a
-	// processor revision bump re-derives even with byte-identical
-	// sources). Empty on legacy metas (pre-fingerprint).
-	std::string importFingerprint;
-	std::string stem;       // the asset file stem ("<stem>.geometry" etc.)
-	std::vector<AssetEntry> entries;
+    std::string guid;   // the glTF asset's GUID (the .meta identity)
+    std::string source; // the glTF file NAME (display + reimport)
+    // The ORIGINAL SOURCE FILE's content identity (32-hex, derived from the
+    // glTF bytes — see SourceAssetGuid). Registered in the .meta so the
+    // artifact family always knows the exact source content it came from:
+    // a from-zero re-import reproduces it anywhere, and staleness/matching
+    // can key on CONTENT (the mtime rule alone misfires on copies that
+    // preserve or reorders mtimes). Empty on legacy metas (pre-digest).
+    std::string sourceDigest;
+    // The IMPORT FINGERPRINT (32-hex — ImportFingerprintFor): the settings
+    // + implementation revisions the artifacts were derived under. The
+    // CONTENT digest above answers "did the source change"; this answers
+    // "would we derive the same artifact" (a LOD-ratio change or a
+    // processor revision bump re-derives even with byte-identical
+    // sources). Empty on legacy metas (pre-fingerprint).
+    std::string importFingerprint;
+    std::string stem; // the asset file stem ("<stem>.geometry" etc.)
+    std::vector<AssetEntry> entries;
 };
 
 // ---- .material (the material asset) --------------------------------------
@@ -120,22 +125,23 @@ struct AssetManifest {
 // glTF texture slot convention: baseColor/emissive are sRGB, the rest
 // linear). Empty path = unbound slot.
 struct MaterialAsset {
-	std::string guid;
-	std::string name;
-	smvk::MaterialCreateInfo info{};
-	struct TexRef {
-		std::string path;
-		bool srgb = false;
-	};
-	TexRef baseColor;
-	TexRef metallicRoughness;
-	TexRef normalTex;
-	TexRef occlusion;
-	TexRef cavity;
-	std::string packingSource;
-	std::string packingSignature; // exact normalized .tourrecipe rule // recipe rule origin, empty for native glTF
-	int channelSelectors = -1; // material output channel metadata
-	TexRef emissiveTex;
+    std::string guid;
+    std::string name;
+    smvk::MaterialCreateInfo info{};
+    struct TexRef {
+        std::string path;
+        bool srgb = false;
+    };
+    TexRef baseColor;
+    TexRef metallicRoughness;
+    TexRef normalTex;
+    TexRef occlusion;
+    TexRef cavity;
+    std::string packingSource;
+    std::string packingSignature; // exact normalized .tourrecipe rule // recipe rule origin, empty
+                                  // for native glTF
+    int channelSelectors = -1;    // material output channel metadata
+    TexRef emissiveTex;
 };
 
 // Deterministic image-channel composer shared by project import and cook.
@@ -144,12 +150,12 @@ struct MaterialAsset {
 // Output is a linear or sRGB PNG as chosen by the material texture slot.
 struct PackedImageChannel {
     std::filesystem::path path;
-    int component = 0;       // 0=R, 1=G, 2=B, 3=A
-    uint8_t constant = 255;  // used when path is empty
+    int component = 0;      // 0=R, 1=G, 2=B, 3=A
+    uint8_t constant = 255; // used when path is empty
 };
 bool ComposeMaterialImage(const std::filesystem::path& output,
-    const std::array<PackedImageChannel, 4>& channels,
-    std::string& err);
+                          const std::array<PackedImageChannel, 4>& channels,
+                          std::string& err);
 
 // ---- .texture (the texture asset) -----------------------------------------
 // A user-authored TEXTURE ASSET: an import-settings record + a source
@@ -167,26 +173,23 @@ bool ComposeMaterialImage(const std::filesystem::path& output,
 // tex refs may point at a .texture file: the import routes through its
 // settings (its colorspace wins over the ref's srgb flag).
 struct TextureAsset {
-	std::string guid;
-	std::string name;
-	std::string source;     // image file beside the .texture (png/jpg/
-	                        // jpeg/tga/bmp/ktx2; POSIX-relative path)
-	int colorspace = 0;     // 0 = sRGB (color), 1 = linear (data): the
-	                        // FileNode convention; KTX2 sources: read-only
-	int format = 0;         // KtxEncodeFormat value (0 = rgba8); KTX2
-	                        // sources: read-only (the file's payload)
-	int mipLevels = 0;      // 0 = auto (the full chain), N = clamp to N;
-	                        // KTX2 sources: read-only (the file's chain)
-	int wrap = 0;           // 0 = repeat, 1 = clamp-edge, 2 = mirrored
-	                        // repeat (S+T; the FileNode convention)
-	int filter = 0;         // 0 = linear, 1 = nearest (mag+min)
+    std::string guid;
+    std::string name;
+    std::string source; // image file beside the .texture (png/jpg/
+                        // jpeg/tga/bmp/ktx2; POSIX-relative path)
+    int colorspace = 0; // 0 = sRGB (color), 1 = linear (data): the
+                        // FileNode convention; KTX2 sources: read-only
+    int format = 0;     // KtxEncodeFormat value (0 = rgba8); KTX2
+                        // sources: read-only (the file's payload)
+    int mipLevels = 0;  // 0 = auto (the full chain), N = clamp to N;
+                        // KTX2 sources: read-only (the file's chain)
+    int wrap = 0;       // 0 = repeat, 1 = clamp-edge, 2 = mirrored
+                        // repeat (S+T; the FileNode convention)
+    int filter = 0;     // 0 = linear, 1 = nearest (mag+min)
 };
-bool LoadTextureAsset(const std::filesystem::path& path,
-	TextureAsset& out, std::string& err);
-bool LoadTextureAssetText(const std::string& text, TextureAsset& out,
-	std::string& err);
-bool SaveTextureAsset(const std::filesystem::path& path,
-	const TextureAsset& t, std::string& err);
+bool LoadTextureAsset(const std::filesystem::path& path, TextureAsset& out, std::string& err);
+bool LoadTextureAssetText(const std::string& text, TextureAsset& out, std::string& err);
+bool SaveTextureAsset(const std::filesystem::path& path, const TextureAsset& t, std::string& err);
 
 // ---- .mesh (the scene-graph + geometry asset) ----------------------------
 // Everything the world build needs: the hierarchy (RAW locals as the glTF
@@ -196,88 +199,88 @@ bool SaveTextureAsset(const std::filesystem::path& path,
 // bindings: geometry instances (each with its MATERIAL ASSET GUID) +
 // light/camera definitions.
 struct MeshAsset {
-	struct Node {
-		int32_t parent = -1;
-		int32_t level = 0;
-	};
-	std::vector<Node> nodes;
-	std::vector<std::string> names;        // per node ("" = unnamed)
-	std::vector<glm::mat4> locals;         // raw TRS as authored
-	std::vector<uint8_t> staticRoot;       // per node (0/1)
-	std::vector<uint8_t> noLightmap;       // per node (0/1)
-	struct Instance {
-		uint32_t node = 0;
-		uint32_t geometry = 0;
-		std::string materialGuid;          // "" = unbound
-	};
-	std::vector<Instance> instances;
-	struct LightDef {
-		uint32_t node = 0;
-		SceneLight def{};
-	};
-	std::vector<LightDef> lights;
-	struct CameraDef {
-		uint32_t node = 0;
-		SceneCamera def{};
-	};
-	std::vector<CameraDef> cameras;
-	struct Geometry {
-		std::vector<smvk::PackedVertexPosition> positions;
-		std::vector<smvk::PackedVertexShading> shading;
-		// OPTIONAL lightmap stream parallel to positions/shading — the
-		// split-packed SoA (the engine blob's marker 2): chartUv/chartId
-		// words for every vertex; empty when the geometry is uncharted
-		// (lightmaps deprecated — usually empty).
-		std::vector<smvk::PackedVertexLightmap> lightmap;
-		std::vector<uint32_t> indices;
-		std::vector<smvk::Surface> surfaces;
-		glm::vec3 aabbMin{ 0.0f };
-		glm::vec3 aabbMax{ 0.0f };
-		// Registry (the derivation's cluster registration): the mesh's
-		// URI FRAGMENT ("mesh.N/prim.M") — the loader registers
-		// "<mesh-path>#<fragment>" so cooks address it deterministically.
-		std::string uriFragment;
-		// Cooked meshlets (the derivation's meshlet pass; F3 + cooked
-		// parity). Empty when none.
-		smvk::CookedMeshlets meshlets;
-		// Cooked lightmap binding (the COOK's lightmap bake writes these
-		// back; import.exe leaves them empty). lmChunk = the atlas chunk
-		// index (0xFFFFFFFF = uncharted); lmChartXforms parallels the
-		// cook's chart indices (one float4 per chart: xy = scale,
-		// zw = offset). The cluster restore stamps them onto the
-		// StaticMesh so pak assembly needs no bake.
-		uint32_t lmChunk = 0xFFFFFFFFu;
-		std::vector<glm::vec4> lmChartXforms;
-		// glTF skin stream (the Northlight data path), parallel to
-		// positions/shading: the packed PackedSkinInfluences per vertex (mesh.h
-		// binding 2). The BASE blobs carry it (the import post pass
-		// filled the retained upload); LOD siblings stay static for now
-		// (the runtime skinning slice owns per-LOD skin propagation).
-		// Empty = a static mesh.
-		std::vector<smvk::PackedSkinInfluences> skin;
-	};
-	std::vector<Geometry> geometry;
-	// The cluster's skeletal skin (the FIRST glTF skin won; the import
-	// post pass filled it). The joint table is in the ASSET node space
-	// (the node list below is a 1:1 copy of the import cluster's scene,
-	// so the joint ids ARE asset node indices); BuildFromMeshAsset
-	// remaps them through its node mapping on restore. hasSkeleton
-	// false = no skinned blobs.
-	smvk::touranim::Skeleton skeleton;
-	bool hasSkeleton = false;
-	// LOD chains, PARALLEL to geometry (per base blob): the derived
-	// sibling blobs ("<fragment>/lodK"). Loaded as cluster meshes (not
-	// node-attached) + RegisterMeshLod entries — F5 + distance LODs
-	// survive the preprocessed path.
-	struct LodSibling {
-		Geometry geo{};         // the sibling blob (own uri fragment)
-		uint32_t lodIndex = 1; // 1-based (0 = the base)
-		float simplifyError = 0.0f;
-		float screenThreshold = -1.0f;
-		uint32_t triCount = 0;
-		float acmr = 0.0f;
-	};
-	std::vector<std::vector<LodSibling>> lodChains;
+    struct Node {
+        int32_t parent = -1;
+        int32_t level = 0;
+    };
+    std::vector<Node> nodes;
+    std::vector<std::string> names;  // per node ("" = unnamed)
+    std::vector<glm::mat4> locals;   // raw TRS as authored
+    std::vector<uint8_t> staticRoot; // per node (0/1)
+    std::vector<uint8_t> noLightmap; // per node (0/1)
+    struct Instance {
+        uint32_t node = 0;
+        uint32_t geometry = 0;
+        std::string materialGuid; // "" = unbound
+    };
+    std::vector<Instance> instances;
+    struct LightDef {
+        uint32_t node = 0;
+        SceneLight def{};
+    };
+    std::vector<LightDef> lights;
+    struct CameraDef {
+        uint32_t node = 0;
+        SceneCamera def{};
+    };
+    std::vector<CameraDef> cameras;
+    struct Geometry {
+        std::vector<smvk::PackedVertexPosition> positions;
+        std::vector<smvk::PackedVertexShading> shading;
+        // OPTIONAL lightmap stream parallel to positions/shading — the
+        // split-packed SoA (the engine blob's marker 2): chartUv/chartId
+        // words for every vertex; empty when the geometry is uncharted
+        // (lightmaps deprecated — usually empty).
+        std::vector<smvk::PackedVertexLightmap> lightmap;
+        std::vector<uint32_t> indices;
+        std::vector<smvk::Surface> surfaces;
+        glm::vec3 aabbMin{0.0f};
+        glm::vec3 aabbMax{0.0f};
+        // Registry (the derivation's cluster registration): the mesh's
+        // URI FRAGMENT ("mesh.N/prim.M") — the loader registers
+        // "<mesh-path>#<fragment>" so cooks address it deterministically.
+        std::string uriFragment;
+        // Cooked meshlets (the derivation's meshlet pass; F3 + cooked
+        // parity). Empty when none.
+        smvk::CookedMeshlets meshlets;
+        // Cooked lightmap binding (the COOK's lightmap bake writes these
+        // back; import.exe leaves them empty). lmChunk = the atlas chunk
+        // index (0xFFFFFFFF = uncharted); lmChartXforms parallels the
+        // cook's chart indices (one float4 per chart: xy = scale,
+        // zw = offset). The cluster restore stamps them onto the
+        // StaticMesh so pak assembly needs no bake.
+        uint32_t lmChunk = 0xFFFFFFFFu;
+        std::vector<glm::vec4> lmChartXforms;
+        // glTF skin stream (the Northlight data path), parallel to
+        // positions/shading: the packed PackedSkinInfluences per vertex (mesh.h
+        // binding 2). The BASE blobs carry it (the import post pass
+        // filled the retained upload); LOD siblings stay static for now
+        // (the runtime skinning slice owns per-LOD skin propagation).
+        // Empty = a static mesh.
+        std::vector<smvk::PackedSkinInfluences> skin;
+    };
+    std::vector<Geometry> geometry;
+    // The cluster's skeletal skin (the FIRST glTF skin won; the import
+    // post pass filled it). The joint table is in the ASSET node space
+    // (the node list below is a 1:1 copy of the import cluster's scene,
+    // so the joint ids ARE asset node indices); BuildFromMeshAsset
+    // remaps them through its node mapping on restore. hasSkeleton
+    // false = no skinned blobs.
+    smvk::touranim::Skeleton skeleton;
+    bool hasSkeleton = false;
+    // LOD chains, PARALLEL to geometry (per base blob): the derived
+    // sibling blobs ("<fragment>/lodK"). Loaded as cluster meshes (not
+    // node-attached) + RegisterMeshLod entries — F5 + distance LODs
+    // survive the preprocessed path.
+    struct LodSibling {
+        Geometry geo{};        // the sibling blob (own uri fragment)
+        uint32_t lodIndex = 1; // 1-based (0 = the base)
+        float simplifyError = 0.0f;
+        float screenThreshold = -1.0f;
+        uint32_t triCount = 0;
+        float acmr = 0.0f;
+    };
+    std::vector<std::vector<LodSibling>> lodChains;
 };
 
 // Derivation CONFIG (mirrors the editor import gates; defaults = the
@@ -296,32 +299,32 @@ struct MeshAsset {
 // DeriveGltfAssets; changing them changes the fingerprint and re-derives
 // the artifact.
 struct DeriveConfig {
-	bool meshlets = true;   // TOURMALINE_EDITOR_MESHLETS parity
-	bool lods = true;       // TOURMALINE_EDITOR_LODS parity
-	bool shaderLods = false; // TOURMALINE_EDITOR_SHADERLODS parity (opt-in)
-	// The LOD chain settings (MeshOptConfig::lodRatios/lodTargetError —
-	// the cook's historical --lod-ratios/--lod-error defaults; now owned
-	// by the import). Coarsest-last ratios vs LOD0; the error is the
-	// relative meshopt_simplify budget (fraction of extents).
-	std::vector<float> lodRatios{ 0.75f, 0.5f, 0.3f, 0.15f };
-	float lodTargetError = 0.01f;
+    bool meshlets = true;    // TOURMALINE_EDITOR_MESHLETS parity
+    bool lods = true;        // TOURMALINE_EDITOR_LODS parity
+    bool shaderLods = false; // TOURMALINE_EDITOR_SHADERLODS parity (opt-in)
+    // The LOD chain settings (MeshOptConfig::lodRatios/lodTargetError —
+    // the cook's historical --lod-ratios/--lod-error defaults; now owned
+    // by the import). Coarsest-last ratios vs LOD0; the error is the
+    // relative meshopt_simplify budget (fraction of extents).
+    std::vector<float> lodRatios{0.75f, 0.5f, 0.3f, 0.15f};
+    float lodTargetError = 0.01f;
 };
 
 struct DeriveStats {
-	uint32_t materials = 0;
-	uint32_t anims = 0;
-	uint32_t geometryBlobs = 0;
-	uint32_t instances = 0;
-	uint32_t lights = 0;
-	uint32_t cameras = 0;
-	// The ledger counters: keptGuids = identities CARRIED from the
-	// previous manifest (by name); newGuids = fresh deterministic
-	// mints (unknown names / from-zero imports); dropped = previous
-	// entries whose names vanished from the source (retired, not
-	// re-assigned).
-	uint32_t keptGuids = 0;
-	uint32_t newGuids = 0;
-	uint32_t dropped = 0;
+    uint32_t materials = 0;
+    uint32_t anims = 0;
+    uint32_t geometryBlobs = 0;
+    uint32_t instances = 0;
+    uint32_t lights = 0;
+    uint32_t cameras = 0;
+    // The ledger counters: keptGuids = identities CARRIED from the
+    // previous manifest (by name); newGuids = fresh deterministic
+    // mints (unknown names / from-zero imports); dropped = previous
+    // entries whose names vanished from the source (retired, not
+    // re-assigned).
+    uint32_t keptGuids = 0;
+    uint32_t newGuids = 0;
+    uint32_t dropped = 0;
 };
 
 // Runs the (deterministic, GPU-free offline-mode) import of the glTF + writes
@@ -340,20 +343,19 @@ struct DeriveStats {
 // Returns false + err on a failed import, an identity failure or a failed
 // write (a partial derivation leaves older files — the next successful
 // derive overwrites them).
-bool DeriveGltfAssets(
-	const tinygltf::Model& model,
-	const std::filesystem::path& gltfPath,
-	const std::string& gltfGuid,
-	const AssetManifest* prevIdentity,
-	const DeriveConfig& config,
-	AssetManifest& outManifest,
-	DeriveStats* outStats = nullptr,
-	std::string* err = nullptr,
-	// Non-glTF source dependencies the synthetic model cannot express
-	// (today: the .mtl files an OBJ source consumed — LoadModelFrom-
-	// SourceFile's extraDeps). Folded into the recorded sourceDigest so
-	// an .mtl edit re-derives exactly like a texture edit does.
-	const std::vector<std::string>& extraSourceDeps = {});
+bool DeriveGltfAssets(const tinygltf::Model& model,
+                      const std::filesystem::path& gltfPath,
+                      const std::string& gltfGuid,
+                      const AssetManifest* prevIdentity,
+                      const DeriveConfig& config,
+                      AssetManifest& outManifest,
+                      DeriveStats* outStats = nullptr,
+                      std::string* err = nullptr,
+                      // Non-glTF source dependencies the synthetic model cannot express
+                      // (today: the .mtl files an OBJ source consumed — LoadModelFrom-
+                      // SourceFile's extraDeps). Folded into the recorded sourceDigest so
+                      // an .mtl edit re-derives exactly like a texture edit does.
+                      const std::vector<std::string>& extraSourceDeps = {});
 
 // THE MESH IMPORTER entry: parse + derive in one call. The parse is
 // host-side (mesh source formats — .gltf/.glb through tinygltf, .obj
@@ -369,14 +371,13 @@ bool DeriveGltfAssets(
 // source, and outManifest carries the table. The natural driver is
 // MeshArtifactStale below (derive only when the artifacts are missing
 // or the source changed).
-bool ImportMeshSource(
-	const std::filesystem::path& gltfPath,
-	const std::string& gltfGuid,
-	const AssetManifest* prevIdentity,
-	const DeriveConfig& config,
-	AssetManifest& outManifest,
-	DeriveStats* outStats = nullptr,
-	std::string* err = nullptr);
+bool ImportMeshSource(const std::filesystem::path& gltfPath,
+                      const std::string& gltfGuid,
+                      const AssetManifest* prevIdentity,
+                      const DeriveConfig& config,
+                      AssetManifest& outManifest,
+                      DeriveStats* outStats = nullptr,
+                      std::string* err = nullptr);
 
 // ---- from-zero identity (register the original source, same uuid anywhere) --
 // SourceAssetGuid: the glTF asset GUID derived DETERMINISTICALLY from the
@@ -391,8 +392,7 @@ bool ImportMeshSource(
 // identity is the ledger's (see DeriveGltfAssets), staleness is
 // SourceContentDigest below (the full source set), so a texture/.bin edit
 // re-derives without re-GUIDing the family.
-[[nodiscard]] std::string SourceAssetGuid(
-	const std::filesystem::path& gltfPath);
+[[nodiscard]] std::string SourceAssetGuid(const std::filesystem::path& gltfPath);
 // SourceContentDigest: the STALENESS identity — the same two-lane hash
 // over the source bytes PLUS every external source it pulls in (the
 // .bin buffers + referenced images + extraSourceDeps, sorted by
@@ -408,10 +408,9 @@ bool ImportMeshSource(
 // extracted sidecars are untouched digests to its own bytes + the
 // extracted payloads (deterministic; a hand-edit of an extracted
 // sidecar flips it and the re-import regenerates it from the source).
-[[nodiscard]] std::string SourceContentDigest(
-	const std::filesystem::path& gltfPath,
-	const tinygltf::Model& model,
-	const std::vector<std::string>& extraSourceDeps = {});
+[[nodiscard]] std::string SourceContentDigest(const std::filesystem::path& gltfPath,
+                                              const tinygltf::Model& model,
+                                              const std::vector<std::string>& extraSourceDeps = {});
 // Single-image import (import.exe + loose-image drops): writes
 // <stem>.texture beside the source (editor CreateTextureAsset parity:
 // sRGB/rgba8/full-chain/repeat/linear defaults; the guid is the source
@@ -419,21 +418,25 @@ bool ImportMeshSource(
 // (import settings live there — delete it to re-create); force=true
 // recreates (settings reset). Returns false + err on IO failure.
 bool ImportTextureSource(const std::filesystem::path& imagePath,
-	bool force, std::string& outTexturePath, std::string* err = nullptr);
+                         bool force,
+                         std::string& outTexturePath,
+                         std::string* err = nullptr);
 // DerivedEntryGuid: the deterministic GUID of one derived entry keyed on
 // (source guid, kind, source INDEX) — the legacy derivation shape (the
 // pre-ledger manifests carry these; the two-lane hash over the seed).
-[[nodiscard]] std::string DerivedEntryGuid(
-	const std::string& sourceGuid, AssetKind kind, int sourceIndex);
+[[nodiscard]] std::string DerivedEntryGuid(const std::string& sourceGuid,
+                                           AssetKind kind,
+                                           int sourceIndex);
 // DerivedEntryGuidForName: the deterministic GUID of one derived entry
 // keyed on the entry's LOGICAL KEY (source guid, kind, NAME, same-name
 // occurrence ordinal) — the from-zero mint the ledger-aware derivation
 // uses. A from-zero import reproduces the same GUID for the same NAMED
 // asset regardless of how the DCC ordered the glTF arrays (unnamed assets
 // have index-derived fallback names — no logical key exists to key on).
-[[nodiscard]] std::string DerivedEntryGuidForName(
-	const std::string& sourceGuid, AssetKind kind,
-	const std::string& name, int occurrence);
+[[nodiscard]] std::string DerivedEntryGuidForName(const std::string& sourceGuid,
+                                                  AssetKind kind,
+                                                  const std::string& name,
+                                                  int occurrence);
 
 // The re-import gate: TRUE when the derived .geometry beside `gltfPath`
 // is missing/empty, the manifest is missing/unparseable, the SOURCE SET
@@ -445,7 +448,7 @@ bool ImportTextureSource(const std::filesystem::path& imagePath,
 // the .geometry directly without re-deriving. Digest-less (legacy)
 // metas fall back to the mtime rule.
 bool MeshArtifactStale(const std::filesystem::path& gltfPath,
-	const DeriveConfig& config = DeriveConfig{});
+                       const DeriveConfig& config = DeriveConfig{});
 
 // The import pipeline revision: bump when the DERIVATION's observable
 // behavior changes (what a re-import would produce differently —
@@ -473,39 +476,32 @@ inline constexpr uint32_t kImportPipelineRevision = 1;
 // enumeration parses through the same LoadModelFromSourceFile path
 // the importer uses.
 [[nodiscard]] std::vector<std::string> GltfExternalDependencies(
-	const std::filesystem::path& gltfPath);
+    const std::filesystem::path& gltfPath);
 
 // Readers (round-trip; the world build + the read-only inspector use them).
-bool LoadMeshAsset(
-	const std::filesystem::path& path, MeshAsset& out, std::string& err);
-bool LoadMaterialAsset(
-	const std::filesystem::path& path, MaterialAsset& out, std::string& err);
+bool LoadMeshAsset(const std::filesystem::path& path, MeshAsset& out, std::string& err);
+bool LoadMaterialAsset(const std::filesystem::path& path, MaterialAsset& out, std::string& err);
 // Byte/text forms (VFS reads cook through the overlay; the host forms
 // wrap these).
-bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
-	std::string& err);
-bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
-	std::string& err);
+bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out, std::string& err);
+bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out, std::string& err);
 bool SaveMaterialAsset(const std::filesystem::path& path,
-	const MaterialAsset& material, std::string& err);
+                       const MaterialAsset& material,
+                       std::string& err);
 // Writer (round-trip; the COOK writes cooked artifacts back: stamped
 // chart UVs ride the shading blobs verbatim, meshlets/LODs persist,
 // and the v2 trailing registry carries the per-blob lightmap binding).
 // Returns false with err set on IO failure.
-bool SaveMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
-	std::string& err);
+bool SaveMeshAsset(const std::filesystem::path& path, const MeshAsset& m, std::string& err);
 // Reads <gltfPath>.meta (the manifest of an already-imported glTF).
-bool LoadAssetManifest(
-	const std::filesystem::path& gltfPath, AssetManifest& out,
-	std::string& err);
+bool LoadAssetManifest(const std::filesystem::path& gltfPath, AssetManifest& out, std::string& err);
 // Text form (VFS reads cook through the overlay; the host form wraps
 // this). Tolerant: unknown keys skip, a missing guid fails.
-bool LoadAssetManifestText(const std::string& text, AssetManifest& out,
-	std::string& err);
+bool LoadAssetManifestText(const std::string& text, AssetManifest& out, std::string& err);
 // Writes the manifest (DeriveGltfAssets' tail; exposed for tests).
-bool SaveAssetManifest(
-	const std::filesystem::path& gltfPath, const AssetManifest& manifest,
-	std::string& err);
+bool SaveAssetManifest(const std::filesystem::path& gltfPath,
+                       const AssetManifest& manifest,
+                       std::string& err);
 
 // ---- shared material-asset import (editor + cook) -------------------------
 // The SINGLE import path for asset-browser materials (a .material + its
@@ -521,9 +517,10 @@ bool SaveAssetManifest(
 // afterwards — editor-side state). ctx == nullptr (cook): pool + URI +
 // source registration only; no GPU work.
 // Returns the cluster material handle (empty + err on failure).
-smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
-	smvk::Cluster& cluster, const std::filesystem::path& assetPath,
-	smvk::ResourceManager* ctx, std::string& err);
+smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(smvk::Cluster& cluster,
+                                                         const std::filesystem::path& assetPath,
+                                                         smvk::ResourceManager* ctx,
+                                                         std::string& err);
 // The editor's deterministic default-material seed ("editor://default"):
 // reuses the registered handle when one exists, else creates it (metallic
 // 0, roughness 0.9). The editor wraps this with its world materialLocations
@@ -537,8 +534,7 @@ smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(smvk::Cluster& cluster)
 // reads as an unmistakable pink surface — reported, never invisible and
 // never fatal. Cook mode mints the pool id + stash only (the cook
 // embeds the pink payload; the runtime streams it like any texture).
-smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster,
-	smvk::ResourceManager* ctx);
+smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster, smvk::ResourceManager* ctx);
 
 // ---- shared texture-asset import (editor + cook) --------------------------
 // The SINGLE import path for .texture assets (a .texture + its source image
@@ -569,9 +565,11 @@ smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster,
 // pool indices — the caller owns the cross-cluster rewrite + its
 // pool->bindless map rebuild). Default false keeps the dedupe
 // contract everywhere else.
-smvk::TextureHandle ImportTextureAssetToCluster(
-	smvk::Cluster& cluster, const std::filesystem::path& assetPath,
-	smvk::ResourceManager* ctx, std::string& err, bool force = false,
-	smvk::TextureHandle* replacedHandle = nullptr);
+smvk::TextureHandle ImportTextureAssetToCluster(smvk::Cluster& cluster,
+                                                const std::filesystem::path& assetPath,
+                                                smvk::ResourceManager* ctx,
+                                                std::string& err,
+                                                bool force = false,
+                                                smvk::TextureHandle* replacedHandle = nullptr);
 
 } // namespace smvk::assets

@@ -36,23 +36,22 @@ namespace smvk {
 // kept). `retired` collects the released old handles — the caller owns
 // the retirement pass.
 [[nodiscard]] inline bool SwapShaderModule(ResourceManager& ctx,
-	const char* path, const char* debugName,
-	Holder<ShaderModuleHandle>& member,
-	std::vector<ShaderModuleHandle>& retired)
-{
-	Holder<ShaderModuleHandle> fresh;
-	try {
-		fresh = ctx.CreateShaderModule(shaders::Read(path), debugName);
-	}
-	catch (...) {
-		return false; // last-known-good: the standing module stays
-	}
-	if (fresh.empty())
-		return false;
-	if (!member.empty())
-		retired.push_back(member.release());
-	member = std::move(fresh);
-	return true;
+                                           const char* path,
+                                           const char* debugName,
+                                           Holder<ShaderModuleHandle>& member,
+                                           std::vector<ShaderModuleHandle>& retired) {
+    Holder<ShaderModuleHandle> fresh;
+    try {
+        fresh = ctx.CreateShaderModule(shaders::Read(path), debugName);
+    } catch (...) {
+        return false; // last-known-good: the standing module stays
+    }
+    if (fresh.empty())
+        return false;
+    if (!member.empty())
+        retired.push_back(member.release());
+    member = std::move(fresh);
+    return true;
 }
 
 } // namespace smvk

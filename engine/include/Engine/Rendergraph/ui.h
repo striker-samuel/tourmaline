@@ -24,113 +24,120 @@
 //                                linearSampler, swapViews, swapExtent,
 //                                swapIsSrgb);
 
-#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
 #include <cassert>
 #include <cstdint>
-#include <string>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace smvk {
 
 struct UiDesc {
-	Format format = Format::BGRA8_UNorm; // UNORM sibling of the swapchain surface format
-	const char* name = "ui";
-	const char* viewName = "uiView";
-	const char* logicalName = "uiLogical";
+    Format format = Format::BGRA8_UNorm; // UNORM sibling of the swapchain surface format
+    const char* name = "ui";
+    const char* viewName = "uiView";
+    const char* logicalName = "uiLogical";
 };
 
 struct UiTarget {
-	Holder<ImageHandle> image;
-	Holder<ImageViewHandle> view;
-	Holder<BindlessImageHandle> bindless;
-	uint32_t bindlessIndex = UINT32_MAX;
-	LogicalImageViewHandle logicalView;
-	Extent2D extent{ 0, 0 };
-	Format format = Format::BGRA8_UNorm;
+    Holder<ImageHandle> image;
+    Holder<ImageViewHandle> view;
+    Holder<BindlessImageHandle> bindless;
+    uint32_t bindlessIndex = UINT32_MAX;
+    LogicalImageViewHandle logicalView;
+    Extent2D extent{0, 0};
+    Format format = Format::BGRA8_UNorm;
 
-	[[nodiscard]] bool Valid() const { return !image.empty(); }
+    [[nodiscard]] bool Valid() const {
+        return !image.empty();
+    }
 
-	bool Create(ResourceManager& ctx, RenderGraph& rg, Extent2D targetExtent, const UiDesc& d = {}) {
-		if (targetExtent.width == 0 || targetExtent.height == 0)
-			return false;
-		Destroy(rg);
+    bool Create(ResourceManager& ctx,
+                RenderGraph& rg,
+                Extent2D targetExtent,
+                const UiDesc& d = {}) {
+        if (targetExtent.width == 0 || targetExtent.height == 0)
+            return false;
+        Destroy(rg);
 
-		ImageCreateInfo ci{};
-		ci.extent = { targetExtent.width, targetExtent.height, 1 };
-		ci.format = d.format;
-		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
-		ci.mipLevels = 1;
-		ci.arrayLayers = 1;
-		ci.name = d.name;
+        ImageCreateInfo ci{};
+        ci.extent = {targetExtent.width, targetExtent.height, 1};
+        ci.format = d.format;
+        ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+        ci.mipLevels = 1;
+        ci.arrayLayers = 1;
+        ci.name = d.name;
 
-		Holder<ImageHandle> newImage = ctx.CreateImage(ci, nullptr);
-		if (newImage.empty())
-			return false;
+        Holder<ImageHandle> newImage = ctx.CreateImage(ci, nullptr);
+        if (newImage.empty())
+            return false;
 
-		ImageViewCreateInfo vci{};
-		vci.viewType = ImageViewType::View2D;
-		vci.format = Format::Undefined; // inherit
-		vci.subresourceRange = { ImageAspect::Color, 0, 1, 0, 1 };
-		vci.name = d.viewName;
+        ImageViewCreateInfo vci{};
+        vci.viewType = ImageViewType::View2D;
+        vci.format = Format::Undefined; // inherit
+        vci.subresourceRange = {ImageAspect::Color, 0, 1, 0, 1};
+        vci.name = d.viewName;
 
-		Holder<ImageViewHandle> newView = ctx.CreateImageView(newImage, vci);
-		if (newView.empty())
-			return false;
+        Holder<ImageViewHandle> newView = ctx.CreateImageView(newImage, vci);
+        if (newView.empty())
+            return false;
 
-		Holder<BindlessImageHandle> newBindless =
-			ctx.CreateBindlessImage(newView, ImageLayout::ShaderReadOnlyOptimal);
-		if (newBindless.empty())
-			return false;
-		const uint32_t newBindlessIndex = ctx.GetBindlessIndex(newBindless);
+        Holder<BindlessImageHandle> newBindless =
+            ctx.CreateBindlessImage(newView, ImageLayout::ShaderReadOnlyOptimal);
+        if (newBindless.empty())
+            return false;
+        const uint32_t newBindlessIndex = ctx.GetBindlessIndex(newBindless);
 
-		LogicalImageViewHandle newLogical =
-			rg.AddExternalImageView(newView, d.format, d.logicalName);
-		if (newLogical.empty())
-			return false;
+        LogicalImageViewHandle newLogical =
+            rg.AddExternalImageView(newView, d.format, d.logicalName);
+        if (newLogical.empty())
+            return false;
 
-		image = std::move(newImage);
-		view = std::move(newView);
-		bindless = std::move(newBindless);
-		bindlessIndex = newBindlessIndex;
-		logicalView = newLogical;
-		extent = targetExtent;
-		format = d.format;
-		ctx.GetOrCreateSampler(SamplerCreateInfo{});
-		return true;
-	}
+        image = std::move(newImage);
+        view = std::move(newView);
+        bindless = std::move(newBindless);
+        bindlessIndex = newBindlessIndex;
+        logicalView = newLogical;
+        extent = targetExtent;
+        format = d.format;
+        ctx.GetOrCreateSampler(SamplerCreateInfo{});
+        return true;
+    }
 
-	void Destroy(RenderGraph& rg) {
-		if (!logicalView.empty())
-			rg.FreeImageView(logicalView);
-		logicalView = {};
-		bindlessIndex = UINT32_MAX;
-		bindless = {};
-		view = {};
-		image = {};
-		extent = { 0, 0 };
-	}
+    void Destroy(RenderGraph& rg) {
+        if (!logicalView.empty())
+            rg.FreeImageView(logicalView);
+        logicalView = {};
+        bindlessIndex = UINT32_MAX;
+        bindless = {};
+        view = {};
+        image = {};
+        extent = {0, 0};
+    }
 
-	// Recreate only when extent / format drift (ui scale changes, resize).
-	bool Ensure(ResourceManager& ctx, RenderGraph& rg, Extent2D targetExtent, const UiDesc& d = {}) {
-		if (Valid() &&
-			extent.width == targetExtent.width && extent.height == targetExtent.height &&
-			format == d.format) {
-			return true;
-		}
-		return Create(ctx, rg, targetExtent, d);
-	}
+    // Recreate only when extent / format drift (ui scale changes, resize).
+    bool Ensure(ResourceManager& ctx,
+                RenderGraph& rg,
+                Extent2D targetExtent,
+                const UiDesc& d = {}) {
+        if (Valid() && extent.width == targetExtent.width && extent.height == targetExtent.height &&
+            format == d.format) {
+            return true;
+        }
+        return Create(ctx, rg, targetExtent, d);
+    }
 };
 
 // Must match ui_composite.frag.hlsl UiCompositePush (16 bytes).
 struct UiCompositePush {
-	uint32_t uiTextureIndex = UINT32_MAX;
-	uint32_t samplerIndex = 0;
-	uint32_t decodeOutput = 0; // 1 = decode to linear for the sRGB swapchain store
-	uint32_t pad1 = 0;
+    uint32_t uiTextureIndex = UINT32_MAX;
+    uint32_t samplerIndex = 0;
+    uint32_t decodeOutput = 0; // 1 = decode to linear for the sRGB swapchain store
+    uint32_t pad1 = 0;
 };
 static_assert(sizeof(UiCompositePush) == 16);
 
@@ -139,128 +146,125 @@ inline constexpr const char* kUiCompositeVsPath = "content/shaders/tonemap.vert.
 inline constexpr const char* kUiCompositePsPath = "content/shaders/ui_composite.frag.hlsl.spv";
 
 struct UiComposite {
-	Holder<ShaderModuleHandle> vsModule;
-	Holder<ShaderModuleHandle> fragModule;
-	ShaderProgram program{};
+    Holder<ShaderModuleHandle> vsModule;
+    Holder<ShaderModuleHandle> fragModule;
+    ShaderProgram program{};
 
-	[[nodiscard]] bool ShadersValid() const {
-		return program.shaderCount != 0 && !vsModule.empty() && !fragModule.empty();
-	}
+    [[nodiscard]] bool ShadersValid() const {
+        return program.shaderCount != 0 && !vsModule.empty() && !fragModule.empty();
+    }
 
-	bool EnsureShaders(ResourceManager& ctx,
-		const char* vsPath = kUiCompositeVsPath,
-		const char* psPath = kUiCompositePsPath) {
-		if (ShadersValid())
-			return true;
-		try {
-			const std::string vs = vsPath ? vsPath : kUiCompositeVsPath;
-			const std::string ps = psPath ? psPath : kUiCompositePsPath;
-			if (vsModule.empty())
-				vsModule = ctx.CreateShaderModule(readFile(vs), "uiCompositeVert");
-			if (fragModule.empty())
-				fragModule = ctx.CreateShaderModule(readFile(ps), "uiCompositeFrag");
-		} catch (...) {
-			return false;
-		}
-		if (vsModule.empty() || fragModule.empty())
-			return false;
-		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
-		Shader ps{ .module = fragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
-		program = { .shaders = { vs, ps }, .shaderCount = 2 };
-		return true;
-	}
+    bool EnsureShaders(ResourceManager& ctx,
+                       const char* vsPath = kUiCompositeVsPath,
+                       const char* psPath = kUiCompositePsPath) {
+        if (ShadersValid())
+            return true;
+        try {
+            const std::string vs = vsPath ? vsPath : kUiCompositeVsPath;
+            const std::string ps = psPath ? psPath : kUiCompositePsPath;
+            if (vsModule.empty())
+                vsModule = ctx.CreateShaderModule(readFile(vs), "uiCompositeVert");
+            if (fragModule.empty())
+                fragModule = ctx.CreateShaderModule(readFile(ps), "uiCompositeFrag");
+        } catch (...) {
+            return false;
+        }
+        if (vsModule.empty() || fragModule.empty())
+            return false;
+        Shader vs{.module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex};
+        Shader ps{.module = fragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment};
+        program = {.shaders = {vs, ps}, .shaderCount = 2};
+        return true;
+    }
 
-	void DestroyShaders() {
-		program = ShaderProgram();
-		vsModule = {};
-		fragModule = {};
-	}
+    void DestroyShaders() {
+        program = ShaderProgram();
+        vsModule = {};
+        fragModule = {};
+    }
 
-	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
-	// module swap (a failed read keeps the standing module), zero the
-	// program, re-Ensure. Returns true when anything moved; the released
-	// old handles ride `retired` for the caller's retirement pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-		std::vector<ShaderModuleHandle>& retired) {
-		bool any = false;
-		any |= SwapShaderModule(ctx, kUiCompositeVsPath,
-			"uiCompositeVert", vsModule, retired);
-		any |= SwapShaderModule(ctx, kUiCompositePsPath,
-			"uiCompositeFrag", fragModule, retired);
-		if (!any)
-			return false;
-		program = ShaderProgram();
-		EnsureShaders(ctx);
-		return true;
-	}
+    // HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+    // module swap (a failed read keeps the standing module), zero the
+    // program, re-Ensure. Returns true when anything moved; the released
+    // old handles ride `retired` for the caller's retirement pass.
+    [[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+                                     std::vector<ShaderModuleHandle>& retired) {
+        bool any = false;
+        any |= SwapShaderModule(ctx, kUiCompositeVsPath, "uiCompositeVert", vsModule, retired);
+        any |= SwapShaderModule(ctx, kUiCompositePsPath, "uiCompositeFrag", fragModule, retired);
+        if (!any)
+            return false;
+        program = ShaderProgram();
+        EnsureShaders(ctx);
+        return true;
+    }
 
-	bool Ensure(ResourceManager& ctx,
-		const char* vsPath = kUiCompositeVsPath,
-		const char* psPath = kUiCompositePsPath) {
-		return EnsureShaders(ctx, vsPath, psPath);
-	}
+    bool Ensure(ResourceManager& ctx,
+                const char* vsPath = kUiCompositeVsPath,
+                const char* psPath = kUiCompositePsPath) {
+        return EnsureShaders(ctx, vsPath, psPath);
+    }
 
-	// Emits the UI target -> swapchain alpha-blend pass. Loads the
-	// tonemapped scene (written by the previous swap write) and composites
-	// the UI on top. decodeOutput: set when the swapchain surface format is
-	// an _SRGB variant - the shader decodes the sampled (encoded) UI bytes
-	// to linear so the hardware store encode restores them; with a
-	// non-sRGB surface they pass through raw. Captures only copyable
-	// handles/indices.
-	// Layer sub-rect (see Tonemapper::AddTonemapPass): offsetX/Y confine
-	// the composite to the element's rect. Load is unconditional here so
-	// sub-rect layers always preserve siblings.
-	// opaqueBlend: replace the dst instead of alpha-blending (a 1:1 copy
-	// that ignores the SOURCE alpha). For sources whose alpha channel is
-	// DATA, not opacity - the SMAA T2x chain packs the velocity magnitude
-	// into alpha (smaa_neighborhood - the resolve's history attenuation;
-	// the swapchain ignores it at present, but an embedded host's
-	// composite MUST NOT alpha-blend on it).
-	RenderPass& AddCompositePass(RenderGraph& rg,
-		LogicalImageViewHandle uiView,
-		uint32_t uiBindlessIndex,
-		uint32_t linearSamplerIndex,
-		std::span<const LogicalImageViewHandle> swapViews,
-		Extent2D swapExtent,
-		bool decodeOutput = false,
-		const char* name = nullptr,
-		uint32_t offsetX = 0,
-		uint32_t offsetY = 0,
-		bool opaqueBlend = false) const {
-		assert(ShadersValid());
-		assert(!uiView.empty());
-		assert(!swapViews.empty());
+    // Emits the UI target -> swapchain alpha-blend pass. Loads the
+    // tonemapped scene (written by the previous swap write) and composites
+    // the UI on top. decodeOutput: set when the swapchain surface format is
+    // an _SRGB variant - the shader decodes the sampled (encoded) UI bytes
+    // to linear so the hardware store encode restores them; with a
+    // non-sRGB surface they pass through raw. Captures only copyable
+    // handles/indices.
+    // Layer sub-rect (see Tonemapper::AddTonemapPass): offsetX/Y confine
+    // the composite to the element's rect. Load is unconditional here so
+    // sub-rect layers always preserve siblings.
+    // opaqueBlend: replace the dst instead of alpha-blending (a 1:1 copy
+    // that ignores the SOURCE alpha). For sources whose alpha channel is
+    // DATA, not opacity - the SMAA T2x chain packs the velocity magnitude
+    // into alpha (smaa_neighborhood - the resolve's history attenuation;
+    // the swapchain ignores it at present, but an embedded host's
+    // composite MUST NOT alpha-blend on it).
+    RenderPass& AddCompositePass(RenderGraph& rg,
+                                 LogicalImageViewHandle uiView,
+                                 uint32_t uiBindlessIndex,
+                                 uint32_t linearSamplerIndex,
+                                 std::span<const LogicalImageViewHandle> swapViews,
+                                 Extent2D swapExtent,
+                                 bool decodeOutput = false,
+                                 const char* name = nullptr,
+                                 uint32_t offsetX = 0,
+                                 uint32_t offsetY = 0,
+                                 bool opaqueBlend = false) const {
+        assert(ShadersValid());
+        assert(!uiView.empty());
+        assert(!swapViews.empty());
 
-		UiCompositePush push{};
-		push.uiTextureIndex = uiBindlessIndex;
-		push.samplerIndex = linearSamplerIndex;
-		push.decodeOutput = decodeOutput ? 1u : 0u;
+        UiCompositePush push{};
+        push.uiTextureIndex = uiBindlessIndex;
+        push.samplerIndex = linearSamplerIndex;
+        push.decodeOutput = decodeOutput ? 1u : 0u;
 
-		RenderPass& pass = rg.AddPass(name ? name : "UiComposite");
-		pass.SetOffset(offsetX, offsetY)
-			.SetExtent(swapExtent)
-			.SetInputImages({ uiView })
-			.SetColor(swapViews,
-				AttachmentLoadOp::Load,
-				AttachmentStoreOp::Store,
-				ClearColor(0, 0, 0, 1));
-		ShaderProgram progCopy = program; // ShaderProgram is copyable (handles only)
-		pass.SetRecordingFunc([progCopy, push, opaqueBlend](CommandBuffer& cmd) mutable {
-			cmd.BindRenderPipeline(
-				progCopy,
-				VertexLayoutId::Empty,
-				DepthSettings::Disabled(),
-				StencilSettings::DefaultDisabled(),
-				opaqueBlend
-					? BlendSettings::Opaque() // 1:1 copy: src replaces dst
-					: BlendSettings::AlphaBlend(), // src.rgb*src.a + dst.rgb*(1-src.a)
-				MSAASettings::Count1(),
-				RasterSettings{ .cullMode = CullMode::None });
-			cmd.PushConstants(0, sizeof(UiCompositePush), &push, ShaderStage::All);
-			cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-		});
-		return pass;
-	}
+        RenderPass& pass = rg.AddPass(name ? name : "UiComposite");
+        pass.SetOffset(offsetX, offsetY)
+            .SetExtent(swapExtent)
+            .SetInputImages({uiView})
+            .SetColor(swapViews,
+                      AttachmentLoadOp::Load,
+                      AttachmentStoreOp::Store,
+                      ClearColor(0, 0, 0, 1));
+        ShaderProgram progCopy = program; // ShaderProgram is copyable (handles only)
+        pass.SetRecordingFunc([progCopy, push, opaqueBlend](CommandBuffer& cmd) mutable {
+            cmd.BindRenderPipeline(
+                progCopy,
+                VertexLayoutId::Empty,
+                DepthSettings::Disabled(),
+                StencilSettings::DefaultDisabled(),
+                opaqueBlend ? BlendSettings::Opaque()      // 1:1 copy: src replaces dst
+                            : BlendSettings::AlphaBlend(), // src.rgb*src.a + dst.rgb*(1-src.a)
+                MSAASettings::Count1(),
+                RasterSettings{.cullMode = CullMode::None});
+            cmd.PushConstants(0, sizeof(UiCompositePush), &push, ShaderStage::All);
+            cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+        });
+        return pass;
+    }
 };
 
 } // namespace smvk

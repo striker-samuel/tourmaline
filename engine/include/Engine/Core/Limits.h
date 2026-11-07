@@ -43,8 +43,7 @@ inline constexpr uint32_t MaxWorldEnvTilesPerAxis =
 inline constexpr uint32_t MaxWorldTileSubdivisionLevels = 31;
 
 static_assert(WorldRootCellSizeMeters / WorldSubcellSizeMeters == 4.0);
-static_assert(double(MaxWorldEnvTilesPerAxis) * WorldSubcellSizeMeters
-    == MaxWorldWidthMeters);
+static_assert(double(MaxWorldEnvTilesPerAxis) * WorldSubcellSizeMeters == MaxWorldWidthMeters);
 static_assert(1u + 2u * MaxWorldTileSubdivisionLevels <= 64u);
 
 } // namespace engine::limits

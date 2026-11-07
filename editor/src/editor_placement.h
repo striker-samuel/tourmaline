@@ -52,63 +52,72 @@ namespace editor::placement {
 // EditorApp integration TUs.
 namespace detail {
 inline std::string FStr(float v) {
-	char buf[32];
-	std::snprintf(buf, sizeof(buf), "%.6g", (double)v);
-	return buf;
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", (double)v);
+    return buf;
 }
 inline float StrF(const std::string& s, float fb) {
-	try { return s.empty() ? fb : std::stof(s); }
-	catch (...) { return fb; }
+    try {
+        return s.empty() ? fb : std::stof(s);
+    } catch (...) {
+        return fb;
+    }
 }
 inline int StrI(const std::string& s, int fb) {
-	try { return s.empty() ? fb : std::stoi(s); }
-	catch (...) { return fb; }
+    try {
+        return s.empty() ? fb : std::stoi(s);
+    } catch (...) {
+        return fb;
+    }
 }
 inline uint64_t StrU64(const std::string& s, uint64_t fb) {
-	try { return s.empty() ? fb : std::stoull(s); }
-	catch (...) { return fb; }
+    try {
+        return s.empty() ? fb : std::stoull(s);
+    } catch (...) {
+        return fb;
+    }
 }
 } // namespace detail
 
 // ---- node kinds (stable ids: serialized) ------------------------------
 enum class NodeKind : int {
-	Grid = 0,       // domain: jittered lattice. f: ox,oy,oz,ex,ez,cx,cz
-	Mesh = 1,       // domain: scene mesh surface. i: worldNodeId
-	Density = 2,    // const field. f: value
-	Noise = 3,      // value-noise field (world XZ). f: freq,ox,oz
-	Slope = 4,      // slope mask (surface normal). f: flatDeg,steepDeg
-	Altitude = 5,   // altitude band (world Y). f: lo0,lo1,hi0,hi1
-	Add = 6,        // a+b
-	Mul = 7,        // a*b
-	Min = 8,        // min(a,b)
-	Max = 9,        // max(a,b)
-	Clamp = 10,     // clamp01(x)
-	Remap = 11,     // remap x [in0,in1]->[out0,out1]. f: 4
-	Smoothstep = 12,// smoothstep(e0,e1,x). f: e0,e1
-	Power = 13,     // pow(x,exp). f: exp
-	Invert = 14,    // 1-x
-	Accept = 15,    // stochastic accept. in density, out density (scaled).
-	                // Layer prefers Accept input (scale applies); a bare
-	                // field auto-wraps at scale 1.
-	Prototypes = 16,// prototype table. f: slopeRock,threshold,w0,r0,... s: uri0,...
-	Transform = 17, // scale range. f: minS,maxS
-	Spacing = 18,   // min-distance. f: minSpacing (0 = off)
-	Layer = 19,     // output sink. in domain,density,protos,xform,spacing.
-	                // f: candidates. s: seedU64.
-	Terrain = 20,   // domain: heightfield. f: ox,oz,size,res,height,freq
-	                // (analytic fallback when unbound). i[0] = seed32,
-	                // i[1] = bound terrain GROUP world node (-1 = analytic:
-	                // when bound, the LIVE painted heights drive previews)
-	                // (appended after Layer: kind ints are serialized)
-	EcotopeMask = 21, // field: painted ecotope weight at world XZ (the
-	                // paint layer channel). f: channel (0 = the first).
-	                // Reads the layer's EcotopeMaskData — a maskless layer
-	                // REFUSES GPU evaluation (never a silent zero density).
-	                // (appended: kind ints are serialized)
-	PointCloud = 22, // domain: the Surface Brush's parented point samples
-	                // i[0] = source stroke index (-1 means all painted strokes)
-	                // append-only ID: never renumber serialized node kinds
-	Count = 23,
+    Grid = 0,         // domain: jittered lattice. f: ox,oy,oz,ex,ez,cx,cz
+    Mesh = 1,         // domain: scene mesh surface. i: worldNodeId
+    Density = 2,      // const field. f: value
+    Noise = 3,        // value-noise field (world XZ). f: freq,ox,oz
+    Slope = 4,        // slope mask (surface normal). f: flatDeg,steepDeg
+    Altitude = 5,     // altitude band (world Y). f: lo0,lo1,hi0,hi1
+    Add = 6,          // a+b
+    Mul = 7,          // a*b
+    Min = 8,          // min(a,b)
+    Max = 9,          // max(a,b)
+    Clamp = 10,       // clamp01(x)
+    Remap = 11,       // remap x [in0,in1]->[out0,out1]. f: 4
+    Smoothstep = 12,  // smoothstep(e0,e1,x). f: e0,e1
+    Power = 13,       // pow(x,exp). f: exp
+    Invert = 14,      // 1-x
+    Accept = 15,      // stochastic accept. in density, out density (scaled).
+                      // Layer prefers Accept input (scale applies); a bare
+                      // field auto-wraps at scale 1.
+    Prototypes = 16,  // prototype table. f: slopeRock,threshold,w0,r0,... s: uri0,...
+    Transform = 17,   // scale range. f: minS,maxS
+    Spacing = 18,     // min-distance. f: minSpacing (0 = off)
+    Layer = 19,       // output sink. in domain,density,protos,xform,spacing.
+                      // f: candidates. s: seedU64.
+    Terrain = 20,     // domain: heightfield. f: ox,oz,size,res,height,freq
+                      // (analytic fallback when unbound). i[0] = seed32,
+                      // i[1] = bound terrain GROUP world node (-1 = analytic:
+                      // when bound, the LIVE painted heights drive previews)
+                      // (appended after Layer: kind ints are serialized)
+    EcotopeMask = 21, // field: painted ecotope weight at world XZ (the
+                      // paint layer channel). f: channel (0 = the first).
+                      // Reads the layer's EcotopeMaskData — a maskless layer
+                      // REFUSES GPU evaluation (never a silent zero density).
+                      // (appended: kind ints are serialized)
+    PointCloud = 22,  // domain: the Surface Brush's parented point samples
+                      // i[0] = source stroke index (-1 means all painted strokes)
+                      // append-only ID: never renumber serialized node kinds
+    Count = 23,
 };
 
 const char* NodeKindName(NodeKind k);
@@ -121,45 +130,50 @@ uint32_t NodeKindCapabilities(NodeKind k);
 // ---- pins --------------------------------------------------------------
 enum class PinType { Domain, Field, Protos, Xform, Spacing };
 const char* PinTypeName(PinType t);
-struct PinDef { const char* name; PinType type; };
+struct PinDef {
+    const char* name;
+    PinType type;
+};
 std::vector<PinDef> NodeInputs(NodeKind k);
 std::vector<PinDef> NodeOutputs(NodeKind k);
 
 // ---- document -----------------------------------------------------------
 struct PNode {
-	uint32_t id = 0;
-	NodeKind kind = NodeKind::Density;
-	float pos[2] = { 0, 0 }; // canvas position
-	std::vector<float> f;    // params (kind-specific layout, see above)
-	std::vector<int> i;      // int params (Mesh node id)
-	std::vector<std::string> s; // string params (uris, seed)
+    uint32_t id = 0;
+    NodeKind kind = NodeKind::Density;
+    float pos[2] = {0, 0};      // canvas position
+    std::vector<float> f;       // params (kind-specific layout, see above)
+    std::vector<int> i;         // int params (Mesh node id)
+    std::vector<std::string> s; // string params (uris, seed)
 };
 struct PLink {
-	uint32_t id = 0;
-	uint32_t from = 0;       // node id
-	std::string fromPin;     // pin name ("out" for single-output nodes)
-	uint32_t to = 0;
-	std::string toPin;       // input pin name
+    uint32_t id = 0;
+    uint32_t from = 0;   // node id
+    std::string fromPin; // pin name ("out" for single-output nodes)
+    uint32_t to = 0;
+    std::string toPin; // input pin name
 };
 
 struct GraphDoc {
-	std::string name = "Scatter";
-	std::map<uint32_t, PNode> nodes; // ordered: deterministic files
-	std::map<uint32_t, PLink> links;
-	uint32_t nextId = 1;
+    std::string name = "Scatter";
+    std::map<uint32_t, PNode> nodes; // ordered: deterministic files
+    std::map<uint32_t, PLink> links;
+    uint32_t nextId = 1;
 
-	PNode* find(uint32_t id);
-	const PNode* find(uint32_t id) const;
-	// Single link feeding (node,toPin), or null.
-	const PLink* inputLink(uint32_t node, const std::string& pin) const;
-	// Fresh id (reuses freed ids).
-	uint32_t allocId();
-	// Structural edits (no undo here: EditorDoc wraps them).
-	uint32_t addNode(NodeKind kind, float x, float y);
-	bool removeNode(uint32_t id); // also drops attached links
-	uint32_t addLink(uint32_t from, const std::string& fromPin,
-		uint32_t to, const std::string& toPin); // 0 = rejected (type clash)
-	bool removeLink(uint32_t id);
+    PNode* find(uint32_t id);
+    const PNode* find(uint32_t id) const;
+    // Single link feeding (node,toPin), or null.
+    const PLink* inputLink(uint32_t node, const std::string& pin) const;
+    // Fresh id (reuses freed ids).
+    uint32_t allocId();
+    // Structural edits (no undo here: EditorDoc wraps them).
+    uint32_t addNode(NodeKind kind, float x, float y);
+    bool removeNode(uint32_t id); // also drops attached links
+    uint32_t addLink(uint32_t from,
+                     const std::string& fromPin,
+                     uint32_t to,
+                     const std::string& toPin); // 0 = rejected (type clash)
+    bool removeLink(uint32_t id);
 };
 
 // ---- Maya-style DG wiring (editor_dg.h) --------------------------------
@@ -195,89 +209,89 @@ bool ParseGraph(const std::string& text, GraphDoc& out);
 // shared by preview, viewport mesh and cooker — they agree by
 // construction). See Engine/Placement/placement_terrain.h.
 struct CompileResult {
-	bool ok = false;
-	std::string error;   // first error (UI shows it)
-	std::string warning; // non-fatal (defaults applied, preview caps)
-	smvk::placement::PlacementProgram program;
-	std::vector<int> instrToNode; // program.instrs[i] came from editor node id
-	smvk::placement::TileGenConfig config;
-	smvk::placement::PrototypeTable prototypes;
-	smvk::placement::GridDomain grid; // valid when domainKind == Grid
-	uint32_t meshNode = UINT32_MAX;   // valid when domainKind == MeshSurface
-	smvk::placement::TerrainParams terrain; // valid when Heightfield
-	int pointStroke = -1; // PointCloud: -1 = all painted strokes
-	uint32_t terrainBind = UINT32_MAX; // Heightfield: LIVE terrain group
-	                                   // world node (painted heights)
-	smvk::placement::DomainKind domainKind = smvk::placement::DomainKind::Grid;
-	uint64_t seed = 0;
-	bool gpuOk = true;      // MVP: always true; framework for BAKE_ONLY
-	std::string gpuBlocker; // node label that blocks GPU runtime (future)
+    bool ok = false;
+    std::string error;   // first error (UI shows it)
+    std::string warning; // non-fatal (defaults applied, preview caps)
+    smvk::placement::PlacementProgram program;
+    std::vector<int> instrToNode; // program.instrs[i] came from editor node id
+    smvk::placement::TileGenConfig config;
+    smvk::placement::PrototypeTable prototypes;
+    smvk::placement::GridDomain grid;       // valid when domainKind == Grid
+    uint32_t meshNode = UINT32_MAX;         // valid when domainKind == MeshSurface
+    smvk::placement::TerrainParams terrain; // valid when Heightfield
+    int pointStroke = -1;                   // PointCloud: -1 = all painted strokes
+    uint32_t terrainBind = UINT32_MAX;      // Heightfield: LIVE terrain group
+                                            // world node (painted heights)
+    smvk::placement::DomainKind domainKind = smvk::placement::DomainKind::Grid;
+    uint64_t seed = 0;
+    bool gpuOk = true;      // MVP: always true; framework for BAKE_ONLY
+    std::string gpuBlocker; // node label that blocks GPU runtime (future)
 };
 CompileResult CompileGraph(const GraphDoc& doc, uint64_t graphId);
 
 // ---- live preview (rebuilt on dirty) --------------------------------------
 struct PreviewPoint {
-	glm::vec3 p{ 0.0f };
-	uint32_t proto = 0;
-	uint32_t candidate = 0; // candidateIndex (recomputes the StableID)
-	smvk::placement::StableID id;
+    glm::vec3 p{0.0f};
+    uint32_t proto = 0;
+    uint32_t candidate = 0; // candidateIndex (recomputes the StableID)
+    smvk::placement::StableID id;
 };
 // Sparse, deterministic world-space brush stamps for per-graph scatter masks.
 struct PaintStamp {
-	float x = 0.0f, z = 0.0f;
-	float radius = 8.0f, opacity = 0.5f;
-	bool erase = false;
+    float x = 0.0f, z = 0.0f;
+    float radius = 8.0f, opacity = 0.5f;
+    bool erase = false;
 };
 struct PreviewCache {
-	bool dirty = true;
-	bool ok = false;
-	std::string error;
-	std::string stats;
-	CompileResult compiled;
-	smvk::placement::PlacementSystem system;
-	uint64_t layerKey = 0;
-	smvk::placement::GridDomain grid;   // bound domain (for trace re-eval)
-	smvk::placement::PlacementMeshData mesh;
-	smvk::placement::PlacementPointCloudData pointCloud; // resolved world points
-	smvk::placement::HeightfieldData terrainField; // generated analytic terrain
-	smvk::placement::EcotopeMaskData paintMask; // persistent while preview layer is registered
-	smvk::placement::HeightfieldDomain terrainDom; // points at terrainField
-	smvk::placement::DomainKind domainKind = smvk::placement::DomainKind::Grid;
-	std::vector<PreviewPoint> accepted; // sorted (system order)
-	std::vector<PreviewPoint> rejected; // capped sample
-	uint32_t candidateTotal = 0;
-	uint32_t meshTris = 0; // mesh domain extraction info
-	double genMs = 0.0;
-	int picked = -1; // index into accepted (-1 = none)
+    bool dirty = true;
+    bool ok = false;
+    std::string error;
+    std::string stats;
+    CompileResult compiled;
+    smvk::placement::PlacementSystem system;
+    uint64_t layerKey = 0;
+    smvk::placement::GridDomain grid; // bound domain (for trace re-eval)
+    smvk::placement::PlacementMeshData mesh;
+    smvk::placement::PlacementPointCloudData pointCloud; // resolved world points
+    smvk::placement::HeightfieldData terrainField;       // generated analytic terrain
+    smvk::placement::EcotopeMaskData paintMask;    // persistent while preview layer is registered
+    smvk::placement::HeightfieldDomain terrainDom; // points at terrainField
+    smvk::placement::DomainKind domainKind = smvk::placement::DomainKind::Grid;
+    std::vector<PreviewPoint> accepted; // sorted (system order)
+    std::vector<PreviewPoint> rejected; // capped sample
+    uint32_t candidateTotal = 0;
+    uint32_t meshTris = 0; // mesh domain extraction info
+    double genMs = 0.0;
+    int picked = -1; // index into accepted (-1 = none)
 };
 
 // ---- editor session state --------------------------------------------------
 struct EditorDoc {
-	std::map<uint64_t, GraphDoc> graphs; // ordered: deterministic files
-	std::map<uint64_t, std::vector<PaintStamp>> paintStamps; // per-graph authored density
+    std::map<uint64_t, GraphDoc> graphs;                     // ordered: deterministic files
+    std::map<uint64_t, std::vector<PaintStamp>> paintStamps; // per-graph authored density
 
-	uint64_t active = 0;
-	uint64_t nextGraph = 1;
-	bool showGraph = false;
-	bool showOverlay = true;
-	bool showRejected = true;
-	uint32_t previewCap = 4096; // candidate cap for UI responsiveness
-	// canvas interaction (per active graph; reset on switch)
-	int selected = -1;       // selected node id (-1 = none)
-	int selectedLink = -1;   // selected link id
-	int linkFrom = -1;       // link-drag source node (or -1)
-	std::string linkFromPin; // link-drag source pin
-	float pan[2] = { 0, 0 };
-	// undo: full-doc snapshots (cap 50)
-	std::vector<std::string> undoStack;
-	int undoPos = -1;
-	void pushUndo();
-	bool undo();
-	bool redo();
-	GraphDoc* current();
-	const GraphDoc* current() const;
-	uint64_t addGraph(const std::string& name);
-	PreviewCache preview;
+    uint64_t active = 0;
+    uint64_t nextGraph = 1;
+    bool showGraph = false;
+    bool showOverlay = true;
+    bool showRejected = true;
+    uint32_t previewCap = 4096; // candidate cap for UI responsiveness
+    // canvas interaction (per active graph; reset on switch)
+    int selected = -1;       // selected node id (-1 = none)
+    int selectedLink = -1;   // selected link id
+    int linkFrom = -1;       // link-drag source node (or -1)
+    std::string linkFromPin; // link-drag source pin
+    float pan[2] = {0, 0};
+    // undo: full-doc snapshots (cap 50)
+    std::vector<std::string> undoStack;
+    int undoPos = -1;
+    void pushUndo();
+    bool undo();
+    bool redo();
+    GraphDoc* current();
+    const GraphDoc* current() const;
+    uint64_t addGraph(const std::string& name);
+    PreviewCache preview;
 };
 
 } // namespace editor::placement

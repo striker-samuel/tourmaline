@@ -40,17 +40,19 @@ inline RayTracingDebugSummary SummarizeRayTracingCandidates(
     std::map<std::array<uint32_t, 8>, uint32_t> keys;
     for (size_t i = 0; i < input.size(); ++i) {
         const auto& inst = input[i];
-        if (inst.baseVertex < 0 || inst.vertexCount < 3 ||
-            inst.indexCount < 3 || inst.indexCount % 3 != 0) {
+        if (inst.baseVertex < 0 || inst.vertexCount < 3 || inst.indexCount < 3 ||
+            inst.indexCount % 3 != 0) {
             ++out.rejected;
             continue;
         }
-        const std::array<uint32_t, 8> key{
-            inst.firstIndex, inst.indexCount,
-            uint32_t(inst.baseVertex), inst.vertexCount,
-            inst.opacityMode, inst.opacityTextureIndex,
-            std::bit_cast<uint32_t>(inst.opacityFactor),
-            std::bit_cast<uint32_t>(inst.opacityCutoff)};
+        const std::array<uint32_t, 8> key{inst.firstIndex,
+                                          inst.indexCount,
+                                          uint32_t(inst.baseVertex),
+                                          inst.vertexCount,
+                                          inst.opacityMode,
+                                          inst.opacityTextureIndex,
+                                          std::bit_cast<uint32_t>(inst.opacityFactor),
+                                          std::bit_cast<uint32_t>(inst.opacityCutoff)};
         const uint32_t proposed = uint32_t(out.blases.size());
         const auto [it, inserted] = keys.emplace(key, proposed);
         const uint32_t triangles = inst.indexCount / 3;

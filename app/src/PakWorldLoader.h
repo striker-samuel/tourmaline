@@ -17,13 +17,16 @@
 #include <string>
 #include <vector>
 
-namespace tour { struct World; class TextureStreamer; }
+namespace tour {
+struct World;
+class TextureStreamer;
+} // namespace tour
 namespace smvk {
-	class OverlayVfs;
-	class ResourceManager;
-	using ::tour::TextureStreamer; // (moved: engine-owned streamer, tour::)
-	using ::tour::World;
-}
+class OverlayVfs;
+class ResourceManager;
+using ::tour::TextureStreamer; // (moved: engine-owned streamer, tour::)
+using ::tour::World;
+} // namespace smvk
 
 namespace app {
 
@@ -39,14 +42,13 @@ class ProjectRuntime; // the content session (ProjectRuntime.h)
 // uses — the overlay keeps its protocol role (the engine hands the
 // world-source callback a vfs; hosts mount their paks into it),
 // the CONTENT reads ride the session.
-tour::mem::LinearPtr<tour::World> LoadPakWorld(
-	PakPreload pre,
-	int sceneIndex,
-	smvk::ResourceManager& ctx,
-	smvk::OverlayVfs& contentVfs,
-	tour::TextureStreamer* sceneStreamer,
-	app::ProjectRuntime& session,
-	size_t nodeBudget);
+tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
+                                               int sceneIndex,
+                                               smvk::ResourceManager& ctx,
+                                               smvk::OverlayVfs& contentVfs,
+                                               tour::TextureStreamer* sceneStreamer,
+                                               app::ProjectRuntime& session,
+                                               size_t nodeBudget);
 
 // The --project + multi-pak launch (the session flows): EVERY listed
 // pak preloaded + mounted (manifest order) BEFORE the cluster load —
@@ -59,15 +61,14 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(
 // unrelated fallback scene). `preloads` is manifest order;
 // `entryPakIndex` indexes into it; `session` is the launch's content
 // session (REQUIRED — every content read on this path rides it).
-tour::mem::LinearPtr<tour::World> LoadProjectWorld(
-	std::vector<PakPreload> preloads,
-	size_t entryPakIndex,
-	const std::string& entrySceneName,
-	smvk::ResourceManager& ctx,
-	smvk::OverlayVfs& contentVfs,
-	tour::TextureStreamer* sceneStreamer,
-	app::ProjectRuntime* session,
-	size_t nodeBudget);
+tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> preloads,
+                                                   size_t entryPakIndex,
+                                                   const std::string& entrySceneName,
+                                                   smvk::ResourceManager& ctx,
+                                                   smvk::OverlayVfs& contentVfs,
+                                                   tour::TextureStreamer* sceneStreamer,
+                                                   app::ProjectRuntime* session,
+                                                   size_t nodeBudget);
 
 // STATIC-FLAG APPLICATION (the loader's decision seam — public for
 // PakHostTests, which drives it on hand-built value worlds). Cooked
@@ -87,7 +88,6 @@ void ApplyCookedStaticFlags(tour::World& world, const std::string& pakName);
 // any runtime path). Public so additive scene loads run the SAME tail
 // as the entry load. `pakStem` is the anim fallback's stem (the loading
 // pak's).
-void PostLoadTail(tour::World& world, const std::string& pakStem,
-	app::ProjectRuntime& session);
+void PostLoadTail(tour::World& world, const std::string& pakStem, app::ProjectRuntime& session);
 
 } // namespace app

@@ -47,30 +47,33 @@
 namespace smvk {
 
 struct CubemapOctreeOptions {
-	float maxCellSize = 8.0f;   // open cells larger than this subdivide (coverage)
-	float minCellSize = 2.0f;   // never subdivide at/below this (detail floor)
-	uint32_t maxDepth = 4;      // root = depth 0 (safety cap)
-	float embedDist = 0.3f;     // placement occupancy test (axial rays, meters)
-	uint32_t maxProbes = 32;    // hard cap: the runtime tile/global scan budget
+    float maxCellSize = 8.0f; // open cells larger than this subdivide (coverage)
+    float minCellSize = 2.0f; // never subdivide at/below this (detail floor)
+    uint32_t maxDepth = 4;    // root = depth 0 (safety cap)
+    float embedDist = 0.3f;   // placement occupancy test (axial rays, meters)
+    uint32_t maxProbes = 32;  // hard cap: the runtime tile/global scan budget
 };
 
 struct CubemapPlacedProbe {
-	glm::vec3 position{ 0.0f };
-	float influenceRadius = 10.0f;
-	float fadeRadius = 5.0f;
-	uint32_t depth = 0;         // emitting cell depth (0 = coarsest)
+    glm::vec3 position{0.0f};
+    float influenceRadius = 10.0f;
+    float fadeRadius = 5.0f;
+    uint32_t depth = 0; // emitting cell depth (0 = coarsest)
 };
 
 // Occlusion predicate: true when the ray hits anything within maxDist.
 using CubemapOcclusionRay =
-	std::function<bool(const glm::vec3& origin, const glm::vec3& dir, float maxDist)>;
+    std::function<bool(const glm::vec3& origin, const glm::vec3& dir, float maxDist)>;
 
 // Grows the octree over [bmin, bmax] and emits placed probes (breadth
 // first, budget-capped). Returns the emitted count; log receives a short
 // human-readable summary (depth histogram + drops). Degenerate bounds
 // emit a single centered fallback probe.
-size_t BuildOctreeProbePositions(const glm::vec3& bmin, const glm::vec3& bmax,
-	const CubemapOctreeOptions& opts, const CubemapOcclusionRay& occluded,
-	std::vector<CubemapPlacedProbe>& out, std::string& log);
+size_t BuildOctreeProbePositions(const glm::vec3& bmin,
+                                 const glm::vec3& bmax,
+                                 const CubemapOctreeOptions& opts,
+                                 const CubemapOcclusionRay& occluded,
+                                 std::vector<CubemapPlacedProbe>& out,
+                                 std::string& log);
 
 } // namespace smvk

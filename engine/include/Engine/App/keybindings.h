@@ -21,7 +21,7 @@ namespace engine {
 namespace keybind {
 
 // ---- Mode / UI ----
-constexpr int UI_TOGGLE = TOUR_KEY_I;       // FPS <-> UI panel mode
+constexpr int UI_TOGGLE = TOUR_KEY_I; // FPS <-> UI panel mode
 // The debug PANEL (the right-hand "Tourmaline - Debug" sidebar): TAB pops
 // it in/out (the window's close X flips the same flag). The panel starts
 // HIDDEN — hosts render a clean scene by default; the stats HUD below is
@@ -37,12 +37,12 @@ constexpr int VRAM_VIEWER_TOGGLE = TOUR_KEY_M;
 
 // ---- Feature toggles ----
 constexpr int MOTION_BLUR_TOGGLE = TOUR_KEY_M;
-constexpr int AO_CYCLE = TOUR_KEY_O;        // None -> Ssao -> Sao
+constexpr int AO_CYCLE = TOUR_KEY_O; // None -> Ssao -> Sao
 constexpr int BLOOM_TOGGLE = TOUR_KEY_B;
 constexpr int AUTO_EXPOSURE_TOGGLE = TOUR_KEY_X;
 constexpr int MOTION_DEBUG_TOGGLE = TOUR_KEY_V;
 constexpr int LOD_TOGGLE = TOUR_KEY_L;
-constexpr int PARTICLES_TOGGLE = TOUR_KEY_F;// GPU particle system on/off
+constexpr int PARTICLES_TOGGLE = TOUR_KEY_F; // GPU particle system on/off
 constexpr int DEFERRED_SHADOWS_TOGGLE = TOUR_KEY_H;
 // G was free (the old filtered-view A/B toggle died with the legacy
 // direct-draws off path); it is now the camera reset (CAMERA_RESET above).
@@ -62,13 +62,13 @@ constexpr int TERRAIN_TOGGLE = TOUR_KEY_T;
 constexpr int CULLING_FREEZE_TOGGLE = TOUR_KEY_F;
 
 // ---- Ambient / GI ----
-constexpr int AMBIENT_CYCLE = TOUR_KEY_N;   // All -> Lightmaps -> Probes -> SkyIbl -> Off
-constexpr int GI_DEBUG_CYCLE = TOUR_KEY_R;  // baked-GI debug views (alias GI_DEBUG_CYCLE_ALT)
+constexpr int AMBIENT_CYCLE = TOUR_KEY_N;  // All -> Lightmaps -> Probes -> SkyIbl -> Off
+constexpr int GI_DEBUG_CYCLE = TOUR_KEY_R; // baked-GI debug views (alias GI_DEBUG_CYCLE_ALT)
 constexpr int GI_DEBUG_CYCLE_ALT = TOUR_KEY_F8;
 
 // ---- Actions (fire once, not toggles) ----
-constexpr int DECAL_SPLAT = TOUR_KEY_J;     // blood splat at the crosshair
-constexpr int CAPTURE = TOUR_KEY_F7;        // LUT export + screenshot
+constexpr int DECAL_SPLAT = TOUR_KEY_J; // blood splat at the crosshair
+constexpr int CAPTURE = TOUR_KEY_F7;    // LUT export + screenshot
 
 // ---- Tool windows (pop up on demand, outside the debug panel) ----
 constexpr int TEXTURE_VIEWER_TOGGLE = TOUR_KEY_GRAVE_ACCENT; // ` texture inspector window
@@ -76,7 +76,7 @@ constexpr int TEXTURE_VIEWER_TOGGLE = TOUR_KEY_GRAVE_ACCENT; // ` texture inspec
 constexpr int WORLD_MAP_TOGGLE = TOUR_KEY_C;
 
 // ---- AA bank ----
-constexpr int AA_CYCLE = TOUR_KEY_Z;        // Off -> MSAA 2x -> SMAA 1x -> SMAA T2x
+constexpr int AA_CYCLE = TOUR_KEY_Z; // Off -> MSAA 2x -> SMAA 1x -> SMAA T2x
 constexpr int AA_OFF = TOUR_KEY_1;
 constexpr int AA_MSAA2X = TOUR_KEY_2;
 constexpr int AA_SMAA1X = TOUR_KEY_3;
@@ -97,8 +97,9 @@ constexpr int DEBUG_VIEW_CUBEMAP = TOUR_KEY_F10; // reused from the lightmap-UV 
 constexpr int DEBUG_VIEW_POM = TOUR_KEY_F11;
 
 // ---- Diagnostics ----
-constexpr int FRAME_HISTOGRAM_TOGGLE = TOUR_KEY_F12; // live frame-time strip (keep; do not add more F12 uses)
-constexpr int DS_VIZ_CYCLE = TOUR_KEY_Y;             // deferred-shadow visualizers (DS_DEBUG_VIZ builds)
+constexpr int FRAME_HISTOGRAM_TOGGLE =
+    TOUR_KEY_F12;                        // live frame-time strip (keep; do not add more F12 uses)
+constexpr int DS_VIZ_CYCLE = TOUR_KEY_Y; // deferred-shadow visualizers (DS_DEBUG_VIZ builds)
 // Text-only stats HUD (top-left overlay): Ctrl held + T pressed. T alone
 // does nothing (no bare binding); Ctrl alone stays camera-descend (the
 // WASDQE/Space/Shift/Ctrl movement reservation is untouched — only the
@@ -113,7 +114,7 @@ constexpr int HUD_TOGGLE = TOUR_KEY_T;
 constexpr int GI_DEBUG_MODE_COUNT = 5;
 
 inline void CycleGiDebug(int& mode) {
-	mode = (mode + 1) % GI_DEBUG_MODE_COUNT;
+    mode = (mode + 1) % GI_DEBUG_MODE_COUNT;
 }
 
 } // namespace keybind

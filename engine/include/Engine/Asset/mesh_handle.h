@@ -14,11 +14,11 @@
 namespace app {
 
 struct MeshHandle {
-	std::uint64_t value = 0;
-	constexpr bool operator==(const MeshHandle&) const = default;
-	[[nodiscard]] constexpr explicit operator bool() const {
-		return value != 0;
-	}
+    std::uint64_t value = 0;
+    constexpr bool operator==(const MeshHandle&) const = default;
+    [[nodiscard]] constexpr explicit operator bool() const {
+        return value != 0;
+    }
 };
 
 } // namespace app

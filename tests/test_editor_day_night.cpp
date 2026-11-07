@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
-// Standalone smoke test: c++ -std=c++17 tests/test_editor_day_night.cpp -o /tmp/tour_sun_test && /tmp/tour_sun_test
+// Standalone smoke test: c++ -std=c++17 tests/test_editor_day_night.cpp -o /tmp/tour_sun_test &&
+// /tmp/tour_sun_test
 #include "../editor/src/editor_day_night.h"
 // NDEBUG-stripped asserts would leave this Release test vacuous - the
 // whole body is assert-based (the #74 lesson: assert RESULTS is fine,

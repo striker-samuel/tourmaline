@@ -32,84 +32,94 @@
 #include <Engine/App/input.h>
 #include <Engine/App/keybindings.h>
 #include <Engine/Camera/camera.h>
-#include <Engine/Renderer/WorldRenderer.h>
 #include <Engine/ImGui/imgui_overlay.h>
+#include <Engine/Renderer/WorldRenderer.h>
 
 #include <glm/glm.hpp>
 
 namespace engine {
 
 class WorldRendererElement : public IAppElement {
-public:
-	explicit WorldRendererElement(smvk::App& host);
-	const char* ElementName() const override { return m_renderer.RendererName(); }
+  public:
+    explicit WorldRendererElement(smvk::App& host);
+    const char* ElementName() const override {
+        return m_renderer.RendererName();
+    }
 
-	// IAppElement lifecycle: the renderer pair + the control pass.
-	bool onAttach() override;
-	void onDetach() override;
-	void onResize(smvk::Extent2D swapExtent) override;
-	void onUpdate(float dt) override;
-	void onRender(ElementFrame& frame) override;
+    // IAppElement lifecycle: the renderer pair + the control pass.
+    bool onAttach() override;
+    void onDetach() override;
+    void onResize(smvk::Extent2D swapExtent) override;
+    void onUpdate(float dt) override;
+    void onRender(ElementFrame& frame) override;
 
-	// The wrapped renderer: hosts drive its public API directly (SetSceneId,
-	// SetWorldSource, Configure, GetTextureStreamer, SetDlssMode, exposure
-	// pins, ...). Control surface stays HERE (SetDisableControl /
-	// SetBenchMoveSpeed below).
-	WorldRenderer& Renderer() { return m_renderer; }
+    // The wrapped renderer: hosts drive its public API directly (SetSceneId,
+    // SetWorldSource, Configure, GetTextureStreamer, SetDlssMode, exposure
+    // pins, ...). Control surface stays HERE (SetDisableControl /
+    // SetBenchMoveSpeed below).
+    WorldRenderer& Renderer() {
+        return m_renderer;
+    }
 
-	// ---- Control surface (moved from WorldRenderer) ------------------
-	// Bench freeze (--disable_control): skip every camera-control update
-	// (keyboard/gamepad/mouselook) so the camera stays at the scene's
-	// configured pose for the whole run and A/B comparisons are
-	// deterministic. The I-key UI mode and the feature shortcuts
-	// (L/G/H/...) keep working.
-	void SetDisableControl(bool v) { m_disableControl = v; }
-	// Bench flight (--bench_move <m/s>): integrate the camera straight
-	// along the spawn forward vector at a constant velocity past warmup
-	// (stationary through warmup so every run starts at the same pose).
-	// Deterministic — no input ramp/damping — and drives LOD promotion
-	// + texture streaming churn through the measured frames. 0 = off.
-	void SetBenchMoveSpeed(float v) { m_benchMoveSpeed = v; }
-	// Bench turn (--bench_turn <deg/s>): constant-rate YAW around the
-	// world up vector through the measured frames (0 = off; negative
-	// turns left). Stacks with --bench_move — the flight path curves
-	// through the scene, sweeping the view frustum (and with it the
-	// shadow-caster candidate churn) far harder than straight-line
-	// motion. Same warmup-stationary + deterministic contract as the
-	// move rate.
-	void SetBenchTurnRate(float v) { m_benchTurnRate = v; }
-	// FPS <-> UI mode (the I key / gamepad Start): relative-mouse capture
-	// for FPS, free cursor for ImGui (the old WorldRenderer::SetUIMode).
-	void SetUIMode(bool ui);
+    // ---- Control surface (moved from WorldRenderer) ------------------
+    // Bench freeze (--disable_control): skip every camera-control update
+    // (keyboard/gamepad/mouselook) so the camera stays at the scene's
+    // configured pose for the whole run and A/B comparisons are
+    // deterministic. The I-key UI mode and the feature shortcuts
+    // (L/G/H/...) keep working.
+    void SetDisableControl(bool v) {
+        m_disableControl = v;
+    }
+    // Bench flight (--bench_move <m/s>): integrate the camera straight
+    // along the spawn forward vector at a constant velocity past warmup
+    // (stationary through warmup so every run starts at the same pose).
+    // Deterministic — no input ramp/damping — and drives LOD promotion
+    // + texture streaming churn through the measured frames. 0 = off.
+    void SetBenchMoveSpeed(float v) {
+        m_benchMoveSpeed = v;
+    }
+    // Bench turn (--bench_turn <deg/s>): constant-rate YAW around the
+    // world up vector through the measured frames (0 = off; negative
+    // turns left). Stacks with --bench_move — the flight path curves
+    // through the scene, sweeping the view frustum (and with it the
+    // shadow-caster candidate churn) far harder than straight-line
+    // motion. Same warmup-stationary + deterministic contract as the
+    // move rate.
+    void SetBenchTurnRate(float v) {
+        m_benchTurnRate = v;
+    }
+    // FPS <-> UI mode (the I key / gamepad Start): relative-mouse capture
+    // for FPS, free cursor for ImGui (the old WorldRenderer::SetUIMode).
+    void SetUIMode(bool ui);
 
-private:
-	// Per-frame control pass (the old WorldRenderer::Update): shortcuts,
-	// headless decal autosplat, camera drive, bench flight.
-	void Update(float dt);
-	// Global feature shortcuts (the old WorldRenderer::HandleShortcuts
-	// verbatim — see keybindings.h; WASDQE/Space/Shift/Ctrl are reserved
-	// for the camera and never used here).
-	void HandleShortcuts();
-	// FPS camera drive (the old WorldRenderer::UpdateCamera verbatim:
-	// keys/gamepad into the positioner, relative deltas into the virtual
-	// cursor, mouselook).
-	void UpdateCamera(float dt);
+  private:
+    // Per-frame control pass (the old WorldRenderer::Update): shortcuts,
+    // headless decal autosplat, camera drive, bench flight.
+    void Update(float dt);
+    // Global feature shortcuts (the old WorldRenderer::HandleShortcuts
+    // verbatim — see keybindings.h; WASDQE/Space/Shift/Ctrl are reserved
+    // for the camera and never used here).
+    void HandleShortcuts();
+    // FPS camera drive (the old WorldRenderer::UpdateCamera verbatim:
+    // keys/gamepad into the positioner, relative deltas into the virtual
+    // cursor, mouselook).
+    void UpdateCamera(float dt);
 
-	smvk::App& m_host;
-	Input& m_input;
-	WorldRenderer m_renderer;
-	// Lifetime owner of the optional ImGui context.
-	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
-	// Control state (moved from the renderer):
-	bool m_uiMode = false;
-	bool m_disableControl = false;
-	float m_benchMoveSpeed = 0.0f;
-	float m_benchTurnRate = 0.0f; // deg/s yaw (world up), bench window only
-	// Virtual cursor for FPS mouselook: SDL relative mode warps the real
-	// cursor, so absolute positions are garbage while captured. The look
-	// deltas (xrel/yrel, valid in BOTH relative and normal mode) fold
-	// into this unbounded NDC-space position that feeds the positioner.
-	glm::vec2 m_virtualMouse{ 0.0f };
+    smvk::App& m_host;
+    Input& m_input;
+    WorldRenderer m_renderer;
+    // Lifetime owner of the optional ImGui context.
+    smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
+    // Control state (moved from the renderer):
+    bool m_uiMode = false;
+    bool m_disableControl = false;
+    float m_benchMoveSpeed = 0.0f;
+    float m_benchTurnRate = 0.0f; // deg/s yaw (world up), bench window only
+    // Virtual cursor for FPS mouselook: SDL relative mode warps the real
+    // cursor, so absolute positions are garbage while captured. The look
+    // deltas (xrel/yrel, valid in BOTH relative and normal mode) fold
+    // into this unbounded NDC-space position that feeds the positioner.
+    glm::vec2 m_virtualMouse{0.0f};
 };
 
 } // namespace engine

@@ -12,16 +12,16 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <Windows.h>
 #include <Unknwn.h>
+#include <Windows.h>
 #endif
 #include <dxc/dxcapi.h>
 
-#include <string_view>
-#include <vector>
-#include <stdexcept>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
+#include <string_view>
+#include <vector>
 
 #include <Engine/Renderer/dxc_integration.h>
 
@@ -30,40 +30,36 @@
 // legacy spellings resolving.)
 namespace tour::dxc {
 
-static const wchar_t* GetShaderProfile(DxcShaderStage stage)
-{
-    switch (stage)
-    {
-    case DxcShaderStage::Vertex:   return L"vs_6_6";
-    case DxcShaderStage::Fragment: return L"ps_6_6";
-    case DxcShaderStage::Compute:  return L"cs_6_6";
-    case DxcShaderStage::Task:     return L"as_6_7";
-    case DxcShaderStage::Mesh:     return L"ms_6_7";
+static const wchar_t* GetShaderProfile(DxcShaderStage stage) {
+    switch (stage) {
+    case DxcShaderStage::Vertex:
+        return L"vs_6_6";
+    case DxcShaderStage::Fragment:
+        return L"ps_6_6";
+    case DxcShaderStage::Compute:
+        return L"cs_6_6";
+    case DxcShaderStage::Task:
+        return L"as_6_7";
+    case DxcShaderStage::Mesh:
+        return L"ms_6_7";
     }
 
     return nullptr;
 }
 
-std::vector<char> CompileHLSLToSPIRV(
-    std::string_view source,
-    DxcShaderStage stage,
-    const wchar_t* entryPoint
-)
-{
+std::vector<char> CompileHLSLToSPIRV(std::string_view source,
+                                     DxcShaderStage stage,
+                                     const wchar_t* entryPoint) {
     // The legacy self-contained form: no include dir, no defines.
-    return CompileHLSLToSPIRV(source, stage, entryPoint,
-        std::wstring(), {}, nullptr);
+    return CompileHLSLToSPIRV(source, stage, entryPoint, std::wstring(), {}, nullptr);
 }
 
-std::vector<char> CompileHLSLToSPIRV(
-    std::string_view source,
-    DxcShaderStage stage,
-    const wchar_t* entryPoint,
-    const std::wstring& includeDir,
-    const std::vector<std::wstring>& defines,
-    std::string* outDiagnostics
-)
-{
+std::vector<char> CompileHLSLToSPIRV(std::string_view source,
+                                     DxcShaderStage stage,
+                                     const wchar_t* entryPoint,
+                                     const std::wstring& includeDir,
+                                     const std::vector<std::wstring>& defines,
+                                     std::string* outDiagnostics) {
     IDxcUtils* utils = nullptr;
     IDxcCompiler3* compiler = nullptr;
     IDxcResult* result = nullptr;
@@ -82,22 +78,15 @@ std::vector<char> CompileHLSLToSPIRV(
             *outDiagnostics = diag;
         // The diagnostics ride the throw too — the reload service
         // surfaces them either way.
-        throw std::runtime_error(diag.empty() ? what
-            : std::string(what) + ": " + diag);
+        throw std::runtime_error(diag.empty() ? what : std::string(what) + ": " + diag);
     };
 
-    HRESULT hr = DxcCreateInstance(
-        CLSID_DxcUtils,
-        IID_PPV_ARGS(&utils)
-    );
+    HRESULT hr = DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&utils));
 
     if (FAILED(hr))
         giveUp("Failed to create IDxcUtils", {});
 
-    hr = DxcCreateInstance(
-        CLSID_DxcCompiler,
-        IID_PPV_ARGS(&compiler)
-    );
+    hr = DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler));
 
     if (FAILED(hr))
         giveUp("Failed to create IDxcCompiler3", {});
@@ -150,13 +139,11 @@ std::vector<char> CompileHLSLToSPIRV(
     arguments.push_back(L"-Qstrip_debug");
 #endif
 
-    hr = compiler->Compile(
-        &sourceBuffer,
-        arguments.data(),
-        static_cast<uint32_t>(arguments.size()),
-        includes,
-        IID_PPV_ARGS(&result)
-    );
+    hr = compiler->Compile(&sourceBuffer,
+                           arguments.data(),
+                           static_cast<uint32_t>(arguments.size()),
+                           includes,
+                           IID_PPV_ARGS(&result));
 
     if (FAILED(hr))
         giveUp("DXC Compile() call failed", {});
@@ -164,11 +151,7 @@ std::vector<char> CompileHLSLToSPIRV(
     // Compiler warnings/errors
     IDxcBlobUtf8* errors = nullptr;
 
-    result->GetOutput(
-        DXC_OUT_ERRORS,
-        IID_PPV_ARGS(&errors),
-        nullptr
-    );
+    result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr);
 
     std::string errorText;
     if (errors && errors->GetStringLength() > 0) {
@@ -188,11 +171,7 @@ std::vector<char> CompileHLSLToSPIRV(
     // Retrieve compiled SPIR-V
     IDxcBlob* object = nullptr;
 
-    hr = result->GetOutput(
-        DXC_OUT_OBJECT,
-        IID_PPV_ARGS(&object),
-        nullptr
-    );
+    hr = result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&object), nullptr);
 
     if (FAILED(hr) || !object) {
         if (errors)
@@ -200,13 +179,9 @@ std::vector<char> CompileHLSLToSPIRV(
         giveUp("Failed to retrieve SPIR-V", errorText);
     }
 
-    const char* begin =
-        static_cast<const char*>(object->GetBufferPointer());
+    const char* begin = static_cast<const char*>(object->GetBufferPointer());
 
-    std::vector<char> spirv(
-        begin,
-        begin + object->GetBufferSize()
-    );
+    std::vector<char> spirv(begin, begin + object->GetBufferSize());
 
     object->Release();
 

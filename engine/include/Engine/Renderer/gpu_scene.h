@@ -30,8 +30,7 @@ inline constexpr uint32_t InvalidIndex = UINT32_MAX;
 
 // Every table has persistent SLOT indices. Generation + live status travel
 // with each GPU row so future consumers can reject stale references.
-template <typename Payload>
-struct alignas(16) Row {
+template <typename Payload> struct alignas(16) Row {
     Payload value{};
     glm::uvec4 identity{0u}; // x = generation, y = alive (0/1), z/w reserved
 };
@@ -69,7 +68,7 @@ struct alignas(16) Instance {
     glm::vec4 basisX{1.0f, 0.0f, 0.0f, 0.0f};
     glm::vec4 basisY{0.0f, 1.0f, 0.0f, 0.0f};
     glm::vec4 basisZ{0.0f, 0.0f, 1.0f, 0.0f};
-    glm::vec4 localSphere{0.0f}; // xyz mesh-local center, w radius
+    glm::vec4 localSphere{0.0f};   // xyz mesh-local center, w radius
     glm::uvec4 refs{InvalidIndex}; // mesh slot, mesh generation, World material, flags
 };
 
@@ -86,7 +85,7 @@ struct alignas(16) LeafMember {
 struct alignas(16) Leaf {
     tour::math::DoubleFloat3 worldCenter{};
     glm::vec4 halfExtents{0.0f}; // xyz conservative; w reserved
-    glm::uvec4 range{0u}; // x first member, y member count, z/w reserved
+    glm::uvec4 range{0u};        // x first member, y member count, z/w reserved
     // Membership list / spatial traversal is a later PR. A leaf range is
     // not valid for GPU traversal until a separate list has been published.
 };
@@ -104,8 +103,7 @@ static_assert(offsetof(Row<Instance>, identity) == 112);
 static_assert(std::is_trivially_copyable_v<Row<Instance>>);
 static_assert(std::is_standard_layout_v<Row<Instance>>);
 
-template <typename Payload>
-struct Handle {
+template <typename Payload> struct Handle {
     uint32_t slot = InvalidIndex;
     uint32_t generation = 0;
     [[nodiscard]] explicit operator bool() const noexcept {
@@ -117,15 +115,14 @@ struct Handle {
 // FrameCount is the number of independently synchronized GPU copies.
 // Each changed slot is queued at most once PER flight, even if edited many
 // times before that flight is reused. This avoids an O(scene-size) scan.
-template <typename Payload, uint32_t FrameCount>
-class Table {
+template <typename Payload, uint32_t FrameCount> class Table {
     static_assert(FrameCount > 0 && FrameCount <= 32);
     static_assert(std::is_standard_layout_v<Payload>);
     static_assert(std::is_trivially_copyable_v<Payload>);
     static_assert(alignof(Payload) == 16);
     static_assert(sizeof(Payload) % 16 == 0);
 
-public:
+  public:
     using Value = Payload;
     using Entry = Row<Payload>;
     using Id = Handle<Payload>;
@@ -133,8 +130,12 @@ public:
     [[nodiscard]] uint32_t Size() const noexcept {
         return static_cast<uint32_t>(rows_.size()); // includes tombstones
     }
-    [[nodiscard]] uint32_t LiveCount() const noexcept { return liveCount_; }
-    [[nodiscard]] const std::vector<Entry>& Rows() const noexcept { return rows_; }
+    [[nodiscard]] uint32_t LiveCount() const noexcept {
+        return liveCount_;
+    }
+    [[nodiscard]] const std::vector<Entry>& Rows() const noexcept {
+        return rows_;
+    }
 
     [[nodiscard]] Id Insert(const Payload& value) {
         uint32_t slot;
@@ -162,8 +163,7 @@ public:
     // The normal generational Insert() cannot guarantee adjacency when
     // free slots are recycled. Allocate a contiguous group instead.
     // This runs at mesh registration/chain reshaping, NOT per frame.
-    [[nodiscard]] std::vector<Id> InsertContiguous(
-        std::span<const Payload> payloads) {
+    [[nodiscard]] std::vector<Id> InsertContiguous(std::span<const Payload> payloads) {
         std::vector<Id> ids;
         if (payloads.empty() || payloads.size() > InvalidIndex)
             return ids;
@@ -181,9 +181,10 @@ public:
         }
         if (first != InvalidIndex) {
             const uint64_t end = uint64_t(first) + count;
-            free_.erase(std::remove_if(free_.begin(), free_.end(),
-                [&](uint32_t slot) { return slot >= first && slot < end; }),
-                free_.end());
+            free_.erase(std::remove_if(free_.begin(),
+                                       free_.end(),
+                                       [&](uint32_t slot) { return slot >= first && slot < end; }),
+                        free_.end());
         } else {
             if (payloads.size() > size_t(InvalidIndex) - rows_.size())
                 return ids;
@@ -208,9 +209,8 @@ public:
     }
 
     [[nodiscard]] bool Contains(Id id) const noexcept {
-        return id && id.slot < rows_.size()
-            && rows_[id.slot].identity.x == id.generation
-            && rows_[id.slot].identity.y == 1;
+        return id && id.slot < rows_.size() && rows_[id.slot].identity.x == id.generation &&
+               rows_[id.slot].identity.y == 1;
     }
 
     [[nodiscard]] const Payload* Get(Id id) const noexcept {
@@ -229,7 +229,7 @@ public:
         if (!Contains(id))
             return false;
         Entry& row = rows_[id.slot];
-        row.value = {};              // tombstone must be GPU-visible
+        row.value = {}; // tombstone must be GPU-visible
         row.identity.y = 0;
         --liveCount_;
         // Avoid ABA on uint32 generation wrap; permanently retire the slot
@@ -253,16 +253,14 @@ public:
             return false;
         auto& indices = pending_[flight];
         if (forceFull) {
-            if (!rows_.empty() &&
-                !write(0, rows_.data(), rows_.size() * sizeof(Entry)))
+            if (!rows_.empty() && !write(0, rows_.data(), rows_.size() * sizeof(Entry)))
                 return false;
         } else if (!indices.empty()) {
             std::sort(indices.begin(), indices.end());
             size_t first = indices[0];
             size_t end = first + 1;
             const auto flush = [&](size_t lo, size_t hi) {
-                return write(lo * sizeof(Entry), rows_.data() + lo,
-                             (hi - lo) * sizeof(Entry));
+                return write(lo * sizeof(Entry), rows_.data() + lo, (hi - lo) * sizeof(Entry));
             };
             for (size_t k = 1; k < indices.size(); ++k) {
                 if (indices[k] == end) {
@@ -287,7 +285,7 @@ public:
         return flight < FrameCount ? pending_[flight].size() : 0;
     }
 
-private:
+  private:
     void Touch(uint32_t slot) {
         for (uint32_t f = 0; f < FrameCount; ++f) {
             const uint32_t bit = uint32_t(1) << f;
@@ -308,8 +306,7 @@ private:
 // Stable indices belong to the table, not to the material-sorted CPU
 // draw list or a merged scene node. No World association in this first
 // PR: registration of authored/runtime instances happens separately.
-template <uint32_t FrameCount>
-struct Database {
+template <uint32_t FrameCount> struct Database {
     Table<Mesh, FrameCount> meshes;
     Table<Lod, FrameCount> lods;
     Table<Submesh, FrameCount> submeshes;

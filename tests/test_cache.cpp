@@ -32,140 +32,134 @@ int g_failures = 0;
 int g_checks = 0;
 
 void Check(bool cond, const char* name) {
-	++g_checks;
-	if (cond) {
-		std::cout << "PASS " << name << "\n";
-	}
-	else {
-		++g_failures;
-		std::cout << "FAIL " << name << "\n";
-	}
+    ++g_checks;
+    if (cond) {
+        std::cout << "PASS " << name << "\n";
+    } else {
+        ++g_failures;
+        std::cout << "FAIL " << name << "\n";
+    }
 }
 
 std::string TempDir() {
-	const auto dir = std::filesystem::temp_directory_path() /
-		"tourmaline_cache_test";
-	std::error_code ec;
-	std::filesystem::remove_all(dir, ec);
-	std::filesystem::create_directories(dir, ec);
-	return dir.generic_string();
+    const auto dir = std::filesystem::temp_directory_path() / "tourmaline_cache_test";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    return dir.generic_string();
 }
 
 } // namespace
 
 void TestRegistryRootAndRegistry() {
-	using namespace smvk::cache;
+    using namespace smvk::cache;
 
-	// ---- registry root ----------------------------------------------------
-	{
-		const std::string root = EnsureRegistryRoot(
-			TempDir() + "/registry");
-		Check(!root.empty(), "ensure root");
-		Check(std::filesystem::is_directory(root + "/pak"),
-			"ensure pak subdir");
-		Check(EnsureRegistryRoot("").empty(), "empty root rejected");
+    // ---- registry root ----------------------------------------------------
+    {
+        const std::string root = EnsureRegistryRoot(TempDir() + "/registry");
+        Check(!root.empty(), "ensure root");
+        Check(std::filesystem::is_directory(root + "/pak"), "ensure pak subdir");
+        Check(EnsureRegistryRoot("").empty(), "empty root rejected");
 #ifdef _WIN32
-		// Invisible registry: the root carries the hidden attribute.
-		const DWORD attrs = GetFileAttributesA(root.c_str());
-		Check(attrs != INVALID_FILE_ATTRIBUTES
-			&& (attrs & FILE_ATTRIBUTE_HIDDEN) != 0,
-			"root hidden attribute");
+        // Invisible registry: the root carries the hidden attribute.
+        const DWORD attrs = GetFileAttributesA(root.c_str());
+        Check(attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_HIDDEN) != 0,
+              "root hidden attribute");
 #endif
-	}
+    }
 
-	// ---- hash ------------------------------------------------------------
-	{
-		const char a[] = "hello";
-		const std::string h1 = HashBytes(a, 5);
-		const std::string h2 = HashBytes(a, 5);
-		const std::string h3 = HashBytes("hellp", 5);
-		const std::string h4 = HashBytes("hello", 6);
-		Check(h1 == h2 && h1.size() == 16, "hash deterministic + hex16");
-		Check(h1 != h3, "hash differs on content");
-		Check(h1 != h4, "hash differs on length");
-	}
+    // ---- hash ------------------------------------------------------------
+    {
+        const char a[] = "hello";
+        const std::string h1 = HashBytes(a, 5);
+        const std::string h2 = HashBytes(a, 5);
+        const std::string h3 = HashBytes("hellp", 5);
+        const std::string h4 = HashBytes("hello", 6);
+        Check(h1 == h2 && h1.size() == 16, "hash deterministic + hex16");
+        Check(h1 != h3, "hash differs on content");
+        Check(h1 != h4, "hash differs on length");
+    }
 
-	// ---- registry ---------------------------------------------------------
-	const std::string dir = TempDir();
-	const std::string dbPath = dir + "/cache.db";
-	std::string err;
-	{
-		CacheDb db;
-		// Error paths before open.
-		ArtifactRecord dummy;
-		Check(!db.Put(dummy, err), "put before open fails");
-		Check(!db.IsOpen(), "closed before open");
-		Check(db.Open(dbPath, err), "open + schema init");
-		Check(db.IsOpen(), "open state");
-		Check(db.Count(err) == 0, "count empty");
+    // ---- registry ---------------------------------------------------------
+    const std::string dir = TempDir();
+    const std::string dbPath = dir + "/cache.db";
+    std::string err;
+    {
+        CacheDb db;
+        // Error paths before open.
+        ArtifactRecord dummy;
+        Check(!db.Put(dummy, err), "put before open fails");
+        Check(!db.IsOpen(), "closed before open");
+        Check(db.Open(dbPath, err), "open + schema init");
+        Check(db.IsOpen(), "open state");
+        Check(db.Count(err) == 0, "count empty");
 
-		ArtifactRecord rec;
-		rec.hash = HashBytes("texdata", 7);
-		rec.klass = "texture";
-		rec.uri = "models/x/tex.png";
-		rec.pak = "artifacts/textures.pak";
-		rec.offset = 128;
-		rec.size = 4096;
-		rec.meta = "{\"format\":\"ktx2\"}";
-		Check(db.Put(rec, err), "put #1");
-		Check(db.Count(err) == 1, "count one");
+        ArtifactRecord rec;
+        rec.hash = HashBytes("texdata", 7);
+        rec.klass = "texture";
+        rec.uri = "models/x/tex.png";
+        rec.pak = "artifacts/textures.pak";
+        rec.offset = 128;
+        rec.size = 4096;
+        rec.meta = "{\"format\":\"ktx2\"}";
+        Check(db.Put(rec, err), "put #1");
+        Check(db.Count(err) == 1, "count one");
 
-		ArtifactRecord got;
-		Check(db.Get("texture", "models/x/tex.png", got, err), "get hit");
-		Check(got.hash == rec.hash && got.pak == rec.pak
-			&& got.offset == 128 && got.size == 4096
-			&& got.meta == rec.meta && got.created > 0,
-			"get round-trip");
-		Check(!db.Get("mesh", "models/x/tex.png", got, err), "get class miss");
-		Check(!db.Get("texture", "nope", got, err), "get uri miss");
+        ArtifactRecord got;
+        Check(db.Get("texture", "models/x/tex.png", got, err), "get hit");
+        Check(got.hash == rec.hash && got.pak == rec.pak && got.offset == 128 && got.size == 4096 &&
+                  got.meta == rec.meta && got.created > 0,
+              "get round-trip");
+        Check(!db.Get("mesh", "models/x/tex.png", got, err), "get class miss");
+        Check(!db.Get("texture", "nope", got, err), "get uri miss");
 
-		ArtifactRecord byHash;
-		Check(db.GetByHash(rec.hash, byHash, err), "by-hash hit");
-		Check(byHash.uri == rec.uri, "by-hash round-trip");
-		Check(!db.GetByHash("0000000000000000", byHash, err), "by-hash miss");
+        ArtifactRecord byHash;
+        Check(db.GetByHash(rec.hash, byHash, err), "by-hash hit");
+        Check(byHash.uri == rec.uri, "by-hash round-trip");
+        Check(!db.GetByHash("0000000000000000", byHash, err), "by-hash miss");
 
-		// Upsert: re-register the same (klass, uri) with new payload.
-		ArtifactRecord rec2 = rec;
-		rec2.offset = 8192;
-		rec2.size = 8;
-		Check(db.Put(rec2, err), "put upsert");
-		Check(db.Count(err) == 1, "upsert keeps one row");
-		Check(db.Get("texture", "models/x/tex.png", got, err)
-			&& got.offset == 8192, "upsert latest wins");
+        // Upsert: re-register the same (klass, uri) with new payload.
+        ArtifactRecord rec2 = rec;
+        rec2.offset = 8192;
+        rec2.size = 8;
+        Check(db.Put(rec2, err), "put upsert");
+        Check(db.Count(err) == 1, "upsert keeps one row");
+        Check(db.Get("texture", "models/x/tex.png", got, err) && got.offset == 8192,
+              "upsert latest wins");
 
-		// Second class + listing + remove.
-		ArtifactRecord mesh;
-		mesh.hash = "abcdef0123456789";
-		mesh.klass = "mesh";
-		mesh.uri = "models/x/m#mesh.0";
-		mesh.pak = "artifacts/meshes.pak";
-		mesh.size = 99;
-		Check(db.Put(mesh, err), "put mesh");
-		const auto all = db.All(err);
-		Check(all.size() == 2, "all lists both");
-		Check(db.Remove("mesh", "models/x/m#mesh.0", err), "remove");
-		Check(db.Count(err) == 1, "count after remove");
+        // Second class + listing + remove.
+        ArtifactRecord mesh;
+        mesh.hash = "abcdef0123456789";
+        mesh.klass = "mesh";
+        mesh.uri = "models/x/m#mesh.0";
+        mesh.pak = "artifacts/meshes.pak";
+        mesh.size = 99;
+        Check(db.Put(mesh, err), "put mesh");
+        const auto all = db.All(err);
+        Check(all.size() == 2, "all lists both");
+        Check(db.Remove("mesh", "models/x/m#mesh.0", err), "remove");
+        Check(db.Count(err) == 1, "count after remove");
 
-		// Corrupt-record guards: empty fields reject.
-		ArtifactRecord bad;
-		bad.klass = "texture";
-		Check(!db.Put(bad, err), "record needs uri+hash");
-	}
+        // Corrupt-record guards: empty fields reject.
+        ArtifactRecord bad;
+        bad.klass = "texture";
+        Check(!db.Put(bad, err), "record needs uri+hash");
+    }
 
-	// Reopen: schema is idempotent and rows persist.
-	{
-		CacheDb db;
-		Check(db.Open(dbPath, err), "reopen");
-		Check(db.Count(err) == 1, "rows persist across open");
-		ArtifactRecord got;
-		Check(db.Get("texture", "models/x/tex.png", got, err)
-			&& got.offset == 8192, "persisted upsert value");
-	}
-	// WAL sidecars exist next to the db while at least one connection
-	// is open; after Close they may remain — harmless either way.
+    // Reopen: schema is idempotent and rows persist.
+    {
+        CacheDb db;
+        Check(db.Open(dbPath, err), "reopen");
+        Check(db.Count(err) == 1, "rows persist across open");
+        ArtifactRecord got;
+        Check(db.Get("texture", "models/x/tex.png", got, err) && got.offset == 8192,
+              "persisted upsert value");
+    }
+    // WAL sidecars exist next to the db while at least one connection
+    // is open; after Close they may remain — harmless either way.
 
-	std::error_code ec;
-	std::filesystem::remove_all(dir, ec);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 
 void TestStore();
@@ -174,84 +168,79 @@ void TestStore();
 // validation) + identity registration (the funnel: manifest UUIDs in
 // the db, payloads in the hidden per-class paks).
 void TestKindsAndIdentity() {
-	using namespace smvk::cache;
-	Check(IsValidArtifactKind("texture")
-		&& IsValidArtifactKind("mesh")
-		&& IsValidArtifactKind("material")
-		&& IsValidArtifactKind("animation")
-		&& IsValidArtifactKind("light")
-		&& IsValidArtifactKind("camera")
-		&& IsValidArtifactKind("scene")
-		&& IsValidArtifactKind("gi"), "kinds.frozen8");
-	Check(!IsValidArtifactKind("") && !IsValidArtifactKind("bogus")
-		&& !IsValidArtifactKind("Texture")
-		&& !IsValidArtifactKind("textures/"), "kinds.reject");
-	Check(ArtifactPakFileName("texture") == "pak/texture.pak"
-		&& ArtifactPakFileName("gi") == "pak/gi.pak",
-		"kinds.pakfile");
-	smvk::PakAssetKind k{};
-	Check(ArtifactKindToPakKind("gi", k)
-		&& k == smvk::PakAssetKind::Texture, "kinds.gi.serves");
-	Check(!ArtifactKindToPakKind("bogus", k), "kinds.map.reject");
+    using namespace smvk::cache;
+    Check(IsValidArtifactKind("texture") && IsValidArtifactKind("mesh") &&
+              IsValidArtifactKind("material") && IsValidArtifactKind("animation") &&
+              IsValidArtifactKind("light") && IsValidArtifactKind("camera") &&
+              IsValidArtifactKind("scene") && IsValidArtifactKind("gi"),
+          "kinds.frozen8");
+    Check(!IsValidArtifactKind("") && !IsValidArtifactKind("bogus") &&
+              !IsValidArtifactKind("Texture") && !IsValidArtifactKind("textures/"),
+          "kinds.reject");
+    Check(ArtifactPakFileName("texture") == "pak/texture.pak" &&
+              ArtifactPakFileName("gi") == "pak/gi.pak",
+          "kinds.pakfile");
+    smvk::PakAssetKind k{};
+    Check(ArtifactKindToPakKind("gi", k) && k == smvk::PakAssetKind::Texture, "kinds.gi.serves");
+    Check(!ArtifactKindToPakKind("bogus", k), "kinds.map.reject");
 
-	const std::string dir = TempDir() + "/identity";
-	const std::string dbPath = dir + "/cache.db";
-	std::string err;
-	CacheDb db;
-	Check(db.Open(dbPath, err), "identity.open");
-	// Validation: unknown kinds fail closed at every write gate.
-	ArtifactRecord bad;
-	bad.hash = HashBytes("x", 1);
-	bad.klass = "bogus";
-	bad.uri = "models/x/a";
-	Check(!db.Put(bad, err), "identity.put.reject-kind");
-	Check(!db.Register("bogus", "guid", "uri", "hash", "", err),
-		"identity.register.reject-kind");
-	Check(!db.Register("mesh", "", "uri", "hash", "", err),
-		"identity.register.needs-uuid");
-	// Identity row (no payload): derivation lives loose, addressed
-	// through the db. FindByUuid reads it; Get reports no-payload
-	// instead of serving garbage.
-	const std::string uuid = "0123456789abcdef0123456789abcdef";
-	Check(db.Register("mesh", uuid, "content/models/x/m.geometry",
-		"deadbeefdeadbeef", "{\"src\":\"x\"}", err), "identity.register");
-	ArtifactRecord found;
-	Check(db.FindByUuid("mesh", uuid, found, err)
-		&& found.uri == "content/models/x/m.geometry"
-		&& found.hash == "deadbeefdeadbeef"
-		&& found.pak.empty() && found.size == 0,
-		"identity.find");
-	Check(!db.FindByUuid("mesh", "nope", found, err),
-		"identity.find.miss");
-	Check(!db.FindByUuid("texture", uuid, found, err),
-		"identity.find.class-miss");
-	// A payload Flush after a Register keeps the uuid (the upsert
-	// never clobbers identity with an empty stamp).
-	ArtifactStore store(dir, db);
-	const std::vector<uint8_t> payload = { 9, 9, 9 };
-	Check(store.Put("mesh", "content/models/x/m.geometry", payload,
-		"deadbeefdeadbeef", "{}", err), "identity.stage");
-	Check(store.Flush(err), "identity.flush");
-	// The payload write keeps the registered identity (upsert never
-	// clobbers uuid with an empty stamp) and records the canonical
-	// pak/ path. (Stored size is the padded TOC size, not the raw
-	// payload length — assert presence + path + identity, not bytes.
-	// File names are singular-by-construction: pak/<klass>.pak.)
-	Check(db.FindByUuid("mesh", uuid, found, err)
-		&& found.size > 0 && found.pak == "pak/mesh.pak"
-		&& found.uuid == uuid, "identity.survives.flush");
-	std::vector<uint8_t> got;
-	Check(store.Get("mesh", "content/models/x/m.geometry", got, err)
-		&& got == payload, "identity.payload.served");
-	// Identity-only row (registered, never staged): Get fails with a
-	// no-payload diagnostic instead of a missing-pak error.
-	Check(db.Register("material", uuid, "content/models/x.m.material",
-		"feedfacefeedface", "", err), "identity.register.material");
-	Check(!store.Get("material", "content/models/x.m.material", got,
-		err) && !err.empty(), "identity.get.no-payload");
+    const std::string dir = TempDir() + "/identity";
+    const std::string dbPath = dir + "/cache.db";
+    std::string err;
+    CacheDb db;
+    Check(db.Open(dbPath, err), "identity.open");
+    // Validation: unknown kinds fail closed at every write gate.
+    ArtifactRecord bad;
+    bad.hash = HashBytes("x", 1);
+    bad.klass = "bogus";
+    bad.uri = "models/x/a";
+    Check(!db.Put(bad, err), "identity.put.reject-kind");
+    Check(!db.Register("bogus", "guid", "uri", "hash", "", err), "identity.register.reject-kind");
+    Check(!db.Register("mesh", "", "uri", "hash", "", err), "identity.register.needs-uuid");
+    // Identity row (no payload): derivation lives loose, addressed
+    // through the db. FindByUuid reads it; Get reports no-payload
+    // instead of serving garbage.
+    const std::string uuid = "0123456789abcdef0123456789abcdef";
+    Check(db.Register("mesh",
+                      uuid,
+                      "content/models/x/m.geometry",
+                      "deadbeefdeadbeef",
+                      "{\"src\":\"x\"}",
+                      err),
+          "identity.register");
+    ArtifactRecord found;
+    Check(db.FindByUuid("mesh", uuid, found, err) && found.uri == "content/models/x/m.geometry" &&
+              found.hash == "deadbeefdeadbeef" && found.pak.empty() && found.size == 0,
+          "identity.find");
+    Check(!db.FindByUuid("mesh", "nope", found, err), "identity.find.miss");
+    Check(!db.FindByUuid("texture", uuid, found, err), "identity.find.class-miss");
+    // A payload Flush after a Register keeps the uuid (the upsert
+    // never clobbers identity with an empty stamp).
+    ArtifactStore store(dir, db);
+    const std::vector<uint8_t> payload = {9, 9, 9};
+    Check(store.Put("mesh", "content/models/x/m.geometry", payload, "deadbeefdeadbeef", "{}", err),
+          "identity.stage");
+    Check(store.Flush(err), "identity.flush");
+    // The payload write keeps the registered identity (upsert never
+    // clobbers uuid with an empty stamp) and records the canonical
+    // pak/ path. (Stored size is the padded TOC size, not the raw
+    // payload length — assert presence + path + identity, not bytes.
+    // File names are singular-by-construction: pak/<klass>.pak.)
+    Check(db.FindByUuid("mesh", uuid, found, err) && found.size > 0 &&
+              found.pak == "pak/mesh.pak" && found.uuid == uuid,
+          "identity.survives.flush");
+    std::vector<uint8_t> got;
+    Check(store.Get("mesh", "content/models/x/m.geometry", got, err) && got == payload,
+          "identity.payload.served");
+    // Identity-only row (registered, never staged): Get fails with a
+    // no-payload diagnostic instead of a missing-pak error.
+    Check(db.Register("material", uuid, "content/models/x.m.material", "feedfacefeedface", "", err),
+          "identity.register.material");
+    Check(!store.Get("material", "content/models/x.m.material", got, err) && !err.empty(),
+          "identity.get.no-payload");
 
-	std::error_code ec;
-	std::filesystem::remove_all(dir, ec);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 
 // StoreArtifactCacheAdapter: gltf_import's GltfArtifactCache over the
@@ -259,51 +248,45 @@ void TestKindsAndIdentity() {
 // round-trip IS the acceleration contract (keyed by the importer's
 // TextureConversionHash).
 void TestStoreAdapter() {
-	using namespace smvk::cache;
-	const std::string dir = TempDir() + "/adapter";
-	const std::string root = EnsureRegistryRoot(dir + "/registry");
-	if (root.empty()) {
-		std::cout << "FAIL adapter root\n";
-		return;
-	}
-	CacheDb db;
-	std::string err;
-	if (!db.Open((std::filesystem::path(root) / "cache.db").string(),
-			err)) {
-		std::cout << "FAIL adapter db open: " << err << "\n";
-		return;
-	}
-	ArtifactStore store(root, db);
-	StoreArtifactCacheAdapter adapter(store);
+    using namespace smvk::cache;
+    const std::string dir = TempDir() + "/adapter";
+    const std::string root = EnsureRegistryRoot(dir + "/registry");
+    if (root.empty()) {
+        std::cout << "FAIL adapter root\n";
+        return;
+    }
+    CacheDb db;
+    std::string err;
+    if (!db.Open((std::filesystem::path(root) / "cache.db").string(), err)) {
+        std::cout << "FAIL adapter db open: " << err << "\n";
+        return;
+    }
+    ArtifactStore store(root, db);
+    StoreArtifactCacheAdapter adapter(store);
 
-	const std::string src = "png-bytes";
-	const std::string key = TextureConversionHash(src.data(), src.size(),
-		true);
-	std::vector<uint8_t> payload = { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
-		0x30, 0xBB, 1, 2, 3 };
-	Check(adapter.Put("texture", "models/x/tex.png", payload.data(),
-			payload.size(), key, "{\"srgb\":1}"),
-		"adapter.put.stages");
-	Check(store.StagedCount() == 1, "adapter.stage.count");
-	Check(store.Flush(err), "adapter.flush");
-	std::vector<uint8_t> got;
-	Check(adapter.Get("texture", "models/x/tex.png", got)
-		&& got == payload, "adapter.get.roundtrip");
-	Check(!adapter.Get("texture", "models/nope.png", got),
-		"adapter.get.miss");
-	// The key mixes the transfer: a colorspace change can never serve
-	// the stale transfer (the VTXfer-sidecar rule, store-flavored).
-	const std::string key2 = TextureConversionHash(src.data(), src.size(),
-		true);
-	const std::string keyLinear = TextureConversionHash(src.data(),
-		src.size(), false);
-	Check(key == key2 && key != keyLinear, "adapter.hash.transfer.mix");
-	ArtifactRecord rec;
-	Check(db.Get("texture", "models/x/tex.png", rec, err)
-		&& rec.hash == key, "adapter.registry.key");
+    const std::string src = "png-bytes";
+    const std::string key = TextureConversionHash(src.data(), src.size(), true);
+    std::vector<uint8_t> payload = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 1, 2, 3};
+    Check(adapter.Put(
+              "texture", "models/x/tex.png", payload.data(), payload.size(), key, "{\"srgb\":1}"),
+          "adapter.put.stages");
+    Check(store.StagedCount() == 1, "adapter.stage.count");
+    Check(store.Flush(err), "adapter.flush");
+    std::vector<uint8_t> got;
+    Check(adapter.Get("texture", "models/x/tex.png", got) && got == payload,
+          "adapter.get.roundtrip");
+    Check(!adapter.Get("texture", "models/nope.png", got), "adapter.get.miss");
+    // The key mixes the transfer: a colorspace change can never serve
+    // the stale transfer (the VTXfer-sidecar rule, store-flavored).
+    const std::string key2 = TextureConversionHash(src.data(), src.size(), true);
+    const std::string keyLinear = TextureConversionHash(src.data(), src.size(), false);
+    Check(key == key2 && key != keyLinear, "adapter.hash.transfer.mix");
+    ArtifactRecord rec;
+    Check(db.Get("texture", "models/x/tex.png", rec, err) && rec.hash == key,
+          "adapter.registry.key");
 
-	std::error_code ec;
-	std::filesystem::remove_all(dir, ec);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 
 // AssetDatabase (Unity SourceAssetDB analog): .meta sidecars + the
@@ -311,105 +294,92 @@ void TestStoreAdapter() {
 // scoped store keys (identically-named textures across models stop
 // colliding).
 void TestAssetDatabase() {
-	using namespace smvk::cache;
-	namespace fs = std::filesystem;
-	const std::string dir = TempDir() + "/assetdb";
-	const std::string proj = dir + "/proj";
-	const std::string registry = dir + "/registry";
-	std::error_code ec;
-	fs::create_directories(proj + "/content/models", ec);
-	fs::create_directories(registry, ec);
-	const fs::path asset = fs::path(proj)
-		/ "content/models/hero.gltf";
-	{
-		std::ofstream f(asset, std::ios::binary | std::ios::trunc);
-		f << "{\"asset\":{\"version\":\"2.0\"}}";
-	}
-	const std::string guid = "aaaabbbbccccdddd0000111122223333";
-	std::string err;
-	// Meta sidecar round-trip.
-	Check(WriteAssetMeta(asset.generic_string(), guid, "model", err),
-		"assetdb.meta.write");
-	std::string gotGuid;
-	Check(ReadAssetMeta(asset.generic_string(), gotGuid, err)
-		&& gotGuid == guid, "assetdb.meta.read");
-	Check(ReadAssetMeta("no/such/file.gltf", gotGuid, err) == false
-		&& err == "no .meta", "assetdb.meta.miss");
-	Check(!IsValidAssetGuid("XYZ") && IsValidAssetGuid(guid),
-		"assetdb.guid.valid");
-	// Directory: adopt + lookups both ways.
-	AssetDatabase adb;
-	Check(adb.Open(registry, proj, err), "assetdb.open");
-	Check(adb.AdoptFile(asset.generic_string(), guid, "model", err),
-		"assetdb.adopt");
-	Check(adb.GuidForPath(asset.generic_string(), gotGuid)
-		&& gotGuid == guid, "assetdb.guid.for.path");
-	std::string gotPath;
-	Check(adb.PathForGuid(guid, gotPath)
-		&& fs::path(gotPath) == fs::path(asset.generic_string()),
-		"assetdb.path.for.guid");
-	// Move + rename (Explorer-side): stale path misses, rescan
-	// re-points the row, PathForGuid heals.
-	const fs::path moved = fs::path(proj)
-		/ "content/models/villain.gltf";
-	fs::rename(asset, moved, ec);
-	fs::rename(fs::path(asset.generic_string() + ".meta"),
-		fs::path(moved.generic_string() + ".meta"), ec);
-	Check(!adb.PathForGuid(guid, gotPath), "assetdb.stale.path.miss");
-	RescanStats stats;
-	Check(adb.RescanProject(stats, err) && stats.moved == 1,
-		"assetdb.rescan.moved");
-	Check(adb.PathForGuid(guid, gotPath)
-		&& fs::path(gotPath) == fs::path(moved.generic_string()),
-		"assetdb.rescan.healed");
-	// GUID-scoped store keys: same-named textures under different
-	// models keep separate rows (Has gates on the hash).
-	{
-		CacheDb db;
-		Check(db.Open((fs::path(registry) / "cache.db").string(), err),
-			"assetdb.store.open");
-		ArtifactStore store(registry, db);
-		StoreArtifactCacheAdapter adapter(store);
-		const std::string srcA = "AAAA";
-		const std::string srcB = "BBBB";
-		const std::string hashA = TextureConversionHash(
-			srcA.data(), srcA.size(), true);
-		const std::string hashB = TextureConversionHash(
-			srcB.data(), srcB.size(), true);
-		std::vector<uint8_t> out;
-		// Unscoped (legacy): the shared uri thrashes (latest wins).
-		adapter.SetKeyScope("");
-		Check(adapter.Put("texture", "t/diffuse.png", srcA.data(),
-			srcA.size(), hashA, ""), "assetdb.put.a.legacy");
-		Check(adapter.Has("texture", "t/diffuse.png", hashB) == false,
-			"assetdb.has.gates.hash");
-		// Scoped: two models, same texture uri, distinct payloads.
-		adapter.SetKeyScope(guid);
-		Check(adapter.Put("texture", "t/diffuse.png", srcA.data(),
-			srcA.size(), hashA, ""), "assetdb.put.a.scoped");
-		adapter.SetKeyScope("ffff0000ffff0000ffff0000ffff0000");
-		Check(adapter.Put("texture", "t/diffuse.png", srcB.data(),
-			srcB.size(), hashB, ""), "assetdb.put.b.scoped");
-		adapter.SetKeyScope(guid);
-		Check(adapter.Has("texture", "t/diffuse.png", hashA)
-			&& adapter.Get("texture", "t/diffuse.png", out)
-			&& out.size() == 4, "assetdb.get.a.scoped");
-		adapter.SetKeyScope("ffff0000ffff0000ffff0000ffff0000");
-		Check(adapter.Get("texture", "t/diffuse.png", out)
-			&& out.size() == 4, "assetdb.get.b.scoped");
-		// Both rows live side by side (no latest-wins overwrite).
-		// (Flush commits the staged puts to the registry + class pak.)
-		Check(store.Flush(err), "assetdb.store.flush");
-		std::string qerr;
-		ArtifactRecord recA, recB;
-		Check(db.Get("texture", guid + "/t/diffuse.png", recA, qerr)
-			&& recA.hash == hashA, "assetdb.registry.a");
-		Check(db.Get("texture",
-			"ffff0000ffff0000ffff0000ffff0000/t/diffuse.png",
-			recB, qerr) && recB.hash == hashB,
-			"assetdb.registry.b");
-	}
-	fs::remove_all(dir, ec);
+    using namespace smvk::cache;
+    namespace fs = std::filesystem;
+    const std::string dir = TempDir() + "/assetdb";
+    const std::string proj = dir + "/proj";
+    const std::string registry = dir + "/registry";
+    std::error_code ec;
+    fs::create_directories(proj + "/content/models", ec);
+    fs::create_directories(registry, ec);
+    const fs::path asset = fs::path(proj) / "content/models/hero.gltf";
+    {
+        std::ofstream f(asset, std::ios::binary | std::ios::trunc);
+        f << "{\"asset\":{\"version\":\"2.0\"}}";
+    }
+    const std::string guid = "aaaabbbbccccdddd0000111122223333";
+    std::string err;
+    // Meta sidecar round-trip.
+    Check(WriteAssetMeta(asset.generic_string(), guid, "model", err), "assetdb.meta.write");
+    std::string gotGuid;
+    Check(ReadAssetMeta(asset.generic_string(), gotGuid, err) && gotGuid == guid,
+          "assetdb.meta.read");
+    Check(ReadAssetMeta("no/such/file.gltf", gotGuid, err) == false && err == "no .meta",
+          "assetdb.meta.miss");
+    Check(!IsValidAssetGuid("XYZ") && IsValidAssetGuid(guid), "assetdb.guid.valid");
+    // Directory: adopt + lookups both ways.
+    AssetDatabase adb;
+    Check(adb.Open(registry, proj, err), "assetdb.open");
+    Check(adb.AdoptFile(asset.generic_string(), guid, "model", err), "assetdb.adopt");
+    Check(adb.GuidForPath(asset.generic_string(), gotGuid) && gotGuid == guid,
+          "assetdb.guid.for.path");
+    std::string gotPath;
+    Check(adb.PathForGuid(guid, gotPath) && fs::path(gotPath) == fs::path(asset.generic_string()),
+          "assetdb.path.for.guid");
+    // Move + rename (Explorer-side): stale path misses, rescan
+    // re-points the row, PathForGuid heals.
+    const fs::path moved = fs::path(proj) / "content/models/villain.gltf";
+    fs::rename(asset, moved, ec);
+    fs::rename(
+        fs::path(asset.generic_string() + ".meta"), fs::path(moved.generic_string() + ".meta"), ec);
+    Check(!adb.PathForGuid(guid, gotPath), "assetdb.stale.path.miss");
+    RescanStats stats;
+    Check(adb.RescanProject(stats, err) && stats.moved == 1, "assetdb.rescan.moved");
+    Check(adb.PathForGuid(guid, gotPath) && fs::path(gotPath) == fs::path(moved.generic_string()),
+          "assetdb.rescan.healed");
+    // GUID-scoped store keys: same-named textures under different
+    // models keep separate rows (Has gates on the hash).
+    {
+        CacheDb db;
+        Check(db.Open((fs::path(registry) / "cache.db").string(), err), "assetdb.store.open");
+        ArtifactStore store(registry, db);
+        StoreArtifactCacheAdapter adapter(store);
+        const std::string srcA = "AAAA";
+        const std::string srcB = "BBBB";
+        const std::string hashA = TextureConversionHash(srcA.data(), srcA.size(), true);
+        const std::string hashB = TextureConversionHash(srcB.data(), srcB.size(), true);
+        std::vector<uint8_t> out;
+        // Unscoped (legacy): the shared uri thrashes (latest wins).
+        adapter.SetKeyScope("");
+        Check(adapter.Put("texture", "t/diffuse.png", srcA.data(), srcA.size(), hashA, ""),
+              "assetdb.put.a.legacy");
+        Check(adapter.Has("texture", "t/diffuse.png", hashB) == false, "assetdb.has.gates.hash");
+        // Scoped: two models, same texture uri, distinct payloads.
+        adapter.SetKeyScope(guid);
+        Check(adapter.Put("texture", "t/diffuse.png", srcA.data(), srcA.size(), hashA, ""),
+              "assetdb.put.a.scoped");
+        adapter.SetKeyScope("ffff0000ffff0000ffff0000ffff0000");
+        Check(adapter.Put("texture", "t/diffuse.png", srcB.data(), srcB.size(), hashB, ""),
+              "assetdb.put.b.scoped");
+        adapter.SetKeyScope(guid);
+        Check(adapter.Has("texture", "t/diffuse.png", hashA) &&
+                  adapter.Get("texture", "t/diffuse.png", out) && out.size() == 4,
+              "assetdb.get.a.scoped");
+        adapter.SetKeyScope("ffff0000ffff0000ffff0000ffff0000");
+        Check(adapter.Get("texture", "t/diffuse.png", out) && out.size() == 4,
+              "assetdb.get.b.scoped");
+        // Both rows live side by side (no latest-wins overwrite).
+        // (Flush commits the staged puts to the registry + class pak.)
+        Check(store.Flush(err), "assetdb.store.flush");
+        std::string qerr;
+        ArtifactRecord recA, recB;
+        Check(db.Get("texture", guid + "/t/diffuse.png", recA, qerr) && recA.hash == hashA,
+              "assetdb.registry.a");
+        Check(db.Get("texture", "ffff0000ffff0000ffff0000ffff0000/t/diffuse.png", recB, qerr) &&
+                  recB.hash == hashB,
+              "assetdb.registry.b");
+    }
+    fs::remove_all(dir, ec);
 }
 
 // Bake-asset adoption: GI/cubemap outputs carry .meta sidecars (see
@@ -418,238 +388,216 @@ void TestAssetDatabase() {
 // lifted for sidecar-carrying files). Files WITHOUT sidecars (debug
 // PNGs) stay out.
 void TestBakeAssetDatabase() {
-	using namespace smvk::cache;
-	namespace fs = std::filesystem;
-	const std::string dir = TempDir() + "/bakeassets";
-	const std::string proj = dir + "/proj";
-	const std::string registry = dir + "/registry";
-	std::error_code ec;
-	fs::create_directories(proj + "/content/gi", ec);
-	fs::create_directories(proj + "/content/textures/cubemaps", ec);
-	fs::create_directories(registry, ec);
-	const std::string sglmGuid = "0123456789abcdef0123456789abcdef";
-	const std::string ktxGuid = "fedcba9876543210fedcba9876543210";
-	const std::string sglm = proj + "/content/gi/" + sglmGuid + ".sglm";
-	{
-		std::ofstream f(sglm, std::ios::binary | std::ios::trunc);
-		f << "sglm-payload";
-		std::ofstream m(sglm + ".meta", std::ios::binary | std::ios::trunc);
-		m << "guid=" << sglmGuid << "\nkind=gi\nlogical=lightmap:test\n";
-	}
-	const std::string ktx = proj + "/content/textures/cubemaps/" + ktxGuid
-		+ ".ktx2";
-	{
-		std::ofstream f(ktx, std::ios::binary | std::ios::trunc);
-		f << "ktx-payload";
-		std::ofstream m(ktx + ".meta", std::ios::binary | std::ios::trunc);
-		m << "guid=" << ktxGuid << "\nkind=cubemap\n";
-	}
-	// Debug output without a sidecar: never adopted.
-	{
-		std::ofstream f(proj + "/content/gi/test_atlas.png",
-			std::ios::binary | std::ios::trunc);
-		f << "png";
-	}
-	AssetDatabase adb;
-	std::string err;
-	Check(adb.Open(registry, proj, err), "bakeassets.open");
-	RescanStats stats;
-	Check(adb.RescanProject(stats, err) && stats.adopted == 2,
-		"bakeassets.rescan.adopted");
-	std::string gotPath;
-	Check(adb.PathForGuid(sglmGuid, gotPath)
-		&& fs::path(gotPath) == fs::path(sglm), "bakeassets.gi.resolve");
-	Check(adb.PathForGuid(ktxGuid, gotPath)
-		&& fs::path(gotPath) == fs::path(ktx), "bakeassets.cubemap.resolve");
-	// Kinds land on the rows (the browser collections filter on them).
-	std::vector<AssetRecord> rows;
-	Check(adb.All(rows, err) && rows.size() == 2, "bakeassets.all.count");
-	if (rows.size() == 2) {
-		bool gi = false, cube = false;
-		for (const auto& r : rows) {
-			if (r.guid == sglmGuid)
-				gi = (r.kind == "gi");
-			if (r.guid == ktxGuid)
-				cube = (r.kind == "cubemap");
-		}
-		Check(gi && cube, "bakeassets.all.kinds");
-	}
-	// Move heals through the sidecar (the GUID travels with the file).
-	const std::string moved = proj + "/content/gi/moved.sglm";
-	fs::rename(sglm, moved, ec);
-	fs::rename(sglm + ".meta", moved + ".meta", ec);
-	Check(adb.RescanProject(stats, err) && stats.moved == 1,
-		"bakeassets.rescan.moved");
-	Check(adb.PathForGuid(sglmGuid, gotPath)
-		&& fs::path(gotPath) == fs::path(moved), "bakeassets.moved.healed");
-	fs::remove_all(dir, ec);
+    using namespace smvk::cache;
+    namespace fs = std::filesystem;
+    const std::string dir = TempDir() + "/bakeassets";
+    const std::string proj = dir + "/proj";
+    const std::string registry = dir + "/registry";
+    std::error_code ec;
+    fs::create_directories(proj + "/content/gi", ec);
+    fs::create_directories(proj + "/content/textures/cubemaps", ec);
+    fs::create_directories(registry, ec);
+    const std::string sglmGuid = "0123456789abcdef0123456789abcdef";
+    const std::string ktxGuid = "fedcba9876543210fedcba9876543210";
+    const std::string sglm = proj + "/content/gi/" + sglmGuid + ".sglm";
+    {
+        std::ofstream f(sglm, std::ios::binary | std::ios::trunc);
+        f << "sglm-payload";
+        std::ofstream m(sglm + ".meta", std::ios::binary | std::ios::trunc);
+        m << "guid=" << sglmGuid << "\nkind=gi\nlogical=lightmap:test\n";
+    }
+    const std::string ktx = proj + "/content/textures/cubemaps/" + ktxGuid + ".ktx2";
+    {
+        std::ofstream f(ktx, std::ios::binary | std::ios::trunc);
+        f << "ktx-payload";
+        std::ofstream m(ktx + ".meta", std::ios::binary | std::ios::trunc);
+        m << "guid=" << ktxGuid << "\nkind=cubemap\n";
+    }
+    // Debug output without a sidecar: never adopted.
+    {
+        std::ofstream f(proj + "/content/gi/test_atlas.png", std::ios::binary | std::ios::trunc);
+        f << "png";
+    }
+    AssetDatabase adb;
+    std::string err;
+    Check(adb.Open(registry, proj, err), "bakeassets.open");
+    RescanStats stats;
+    Check(adb.RescanProject(stats, err) && stats.adopted == 2, "bakeassets.rescan.adopted");
+    std::string gotPath;
+    Check(adb.PathForGuid(sglmGuid, gotPath) && fs::path(gotPath) == fs::path(sglm),
+          "bakeassets.gi.resolve");
+    Check(adb.PathForGuid(ktxGuid, gotPath) && fs::path(gotPath) == fs::path(ktx),
+          "bakeassets.cubemap.resolve");
+    // Kinds land on the rows (the browser collections filter on them).
+    std::vector<AssetRecord> rows;
+    Check(adb.All(rows, err) && rows.size() == 2, "bakeassets.all.count");
+    if (rows.size() == 2) {
+        bool gi = false, cube = false;
+        for (const auto& r : rows) {
+            if (r.guid == sglmGuid)
+                gi = (r.kind == "gi");
+            if (r.guid == ktxGuid)
+                cube = (r.kind == "cubemap");
+        }
+        Check(gi && cube, "bakeassets.all.kinds");
+    }
+    // Move heals through the sidecar (the GUID travels with the file).
+    const std::string moved = proj + "/content/gi/moved.sglm";
+    fs::rename(sglm, moved, ec);
+    fs::rename(sglm + ".meta", moved + ".meta", ec);
+    Check(adb.RescanProject(stats, err) && stats.moved == 1, "bakeassets.rescan.moved");
+    Check(adb.PathForGuid(sglmGuid, gotPath) && fs::path(gotPath) == fs::path(moved),
+          "bakeassets.moved.healed");
+    fs::remove_all(dir, ec);
 }
 
 int main() {
-	TestRegistryRootAndRegistry();
-	TestKindsAndIdentity();
-	TestStore();
-	TestStoreAdapter();
-	TestAssetDatabase();
-	TestBakeAssetDatabase();
-	std::cout << g_checks - g_failures << "/" << g_checks
-		<< " passed\n";
-	return g_failures == 0 ? 0 : 1;
+    TestRegistryRootAndRegistry();
+    TestKindsAndIdentity();
+    TestStore();
+    TestStoreAdapter();
+    TestAssetDatabase();
+    TestBakeAssetDatabase();
+    std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
+    return g_failures == 0 ? 0 : 1;
 }
 
 void TestStore() {
-	using namespace smvk::cache;
-	const std::string dir = TempDir() + "/store";
-	const std::string root = EnsureRegistryRoot(dir + "/registry");
-	if (root.empty()) {
-		std::cout << "FAIL store root\n";
-		return;
-	}
-	CacheDb db;
-	std::string err;
-	if (!db.Open((std::filesystem::path(root) / "cache.db").string(),
-			err)) {
-		std::cout << "FAIL store db open: " << err << "\n";
-		return;
-	}
-	ArtifactStore store(root, db);
+    using namespace smvk::cache;
+    const std::string dir = TempDir() + "/store";
+    const std::string root = EnsureRegistryRoot(dir + "/registry");
+    if (root.empty()) {
+        std::cout << "FAIL store root\n";
+        return;
+    }
+    CacheDb db;
+    std::string err;
+    if (!db.Open((std::filesystem::path(root) / "cache.db").string(), err)) {
+        std::cout << "FAIL store db open: " << err << "\n";
+        return;
+    }
+    ArtifactStore store(root, db);
 
-	// Stage + read-before-flush (write-behind coherence). Texture-class
-	// payloads ride the real cooked-texture envelope (BuildTexturePayload:
-	// uri + sampler + ktx bytes) — exactly what the final paks embed, and
-	// what PakBackend::TryRead parses on the VFS path below.
-	const std::vector<uint8_t> ktx = { 1, 2, 3, 4, 5 };
-	const std::vector<uint8_t> png = ktx;
-	const auto envelope = smvk::BuildTexturePayload(
-		"models/x/tex.png", 1, 1, 1, 1,
-		std::span<const uint8_t>(ktx));
-	const std::string srcHash = HashBytes(png.data(), png.size());
-	Check(store.Put("texture", "models/x/tex.png", envelope, srcHash,
-			"{\"fmt\":\"ktx2\"}", err), "store.stage");
-	Check(store.StagedCount() == 1, "store.staged.count");
-	{
-		std::vector<uint8_t> got;
-		Check(store.Get("texture", "models/x/tex.png", got, err)
-			&& got == envelope, "store.staged.get");
-	}
-	Check(store.Has("texture", "models/x/tex.png", srcHash),
-		"store.has.staged");
-	Check(!store.Has("texture", "models/x/tex.png",
-		HashBytes("other", 5)), "store.has.hash.miss");
+    // Stage + read-before-flush (write-behind coherence). Texture-class
+    // payloads ride the real cooked-texture envelope (BuildTexturePayload:
+    // uri + sampler + ktx bytes) — exactly what the final paks embed, and
+    // what PakBackend::TryRead parses on the VFS path below.
+    const std::vector<uint8_t> ktx = {1, 2, 3, 4, 5};
+    const std::vector<uint8_t> png = ktx;
+    const auto envelope =
+        smvk::BuildTexturePayload("models/x/tex.png", 1, 1, 1, 1, std::span<const uint8_t>(ktx));
+    const std::string srcHash = HashBytes(png.data(), png.size());
+    Check(store.Put("texture", "models/x/tex.png", envelope, srcHash, "{\"fmt\":\"ktx2\"}", err),
+          "store.stage");
+    Check(store.StagedCount() == 1, "store.staged.count");
+    {
+        std::vector<uint8_t> got;
+        Check(store.Get("texture", "models/x/tex.png", got, err) && got == envelope,
+              "store.staged.get");
+    }
+    Check(store.Has("texture", "models/x/tex.png", srcHash), "store.has.staged");
+    Check(!store.Has("texture", "models/x/tex.png", HashBytes("other", 5)), "store.has.hash.miss");
 
-	// Flush: pak grows + registry commits; reads switch to disk.
-	Check(store.Flush(err), "store.flush");
-	Check(store.StagedCount() == 0, "store.flush.empties");
-	{
-		std::vector<uint8_t> got;
-		Check(store.Get("texture", "models/x/tex.png", got, err)
-			&& got == envelope, "store.disk.get");
-		Check(!store.Get("texture", "nope", got, err),
-			"store.get.miss");
-	}
+    // Flush: pak grows + registry commits; reads switch to disk.
+    Check(store.Flush(err), "store.flush");
+    Check(store.StagedCount() == 0, "store.flush.empties");
+    {
+        std::vector<uint8_t> got;
+        Check(store.Get("texture", "models/x/tex.png", got, err) && got == envelope,
+              "store.disk.get");
+        Check(!store.Get("texture", "nope", got, err), "store.get.miss");
+    }
 
-	// The grown pak is a VALID pak: PakReader opens it (CRC included),
-	// PakBackend serves the entry by URI through a VFS overlay.
-	{
-		std::vector<uint8_t> img;
-		Check(store.ReadPakImage("texture", img, err),
-			"store.read.pak.image");
-		auto image = std::make_shared<const std::vector<uint8_t>>(
-			std::move(img));
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(*image), err);
-		Check(r.has_value(), "store.pak.reader.open");
-		if (r) {
-			const auto* e = r->Find(smvk::PakAssetKind::Texture,
-				"models/x/tex.png");
-			Check(e != nullptr && e->size == envelope.size(),
-				"store.pak.find");
-			// Registry addressing == TOC addressing (the store's
-			// direct-read contract).
-			ArtifactRecord rec;
-			Check(db.Get("texture", "models/x/tex.png", rec, err)
-				&& rec.offset == e->offset && rec.size == e->size,
-				"store.registry.addressing.matches.toc");
-		}
-		smvk::OverlayVfs vfs;
-		std::string berr;
-		auto backend = smvk::PakBackend::Open(image, "registry", berr);
-		Check(backend != nullptr, "store.backend.open");
-		if (backend) {
-			vfs.Mount(backend, 50, "registry");
-			auto served = vfs.TryRead("models/x/tex.png");
-			// PakBackend serves the TEXTURE PAYLOAD'S ktx bytes (the
-			// cooked-artifact contract, exactly like a final pak).
-			Check(served && served->size() == ktx.size()
-				&& std::equal(ktx.begin(), ktx.end(), served->begin()),
-				"store.vfs.serves");
-			Check(!vfs.TryRead("models/nope.png").has_value(),
-				"store.vfs.miss");
-		}
-	}
+    // The grown pak is a VALID pak: PakReader opens it (CRC included),
+    // PakBackend serves the entry by URI through a VFS overlay.
+    {
+        std::vector<uint8_t> img;
+        Check(store.ReadPakImage("texture", img, err), "store.read.pak.image");
+        auto image = std::make_shared<const std::vector<uint8_t>>(std::move(img));
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(*image), err);
+        Check(r.has_value(), "store.pak.reader.open");
+        if (r) {
+            const auto* e = r->Find(smvk::PakAssetKind::Texture, "models/x/tex.png");
+            Check(e != nullptr && e->size == envelope.size(), "store.pak.find");
+            // Registry addressing == TOC addressing (the store's
+            // direct-read contract).
+            ArtifactRecord rec;
+            Check(db.Get("texture", "models/x/tex.png", rec, err) && rec.offset == e->offset &&
+                      rec.size == e->size,
+                  "store.registry.addressing.matches.toc");
+        }
+        smvk::OverlayVfs vfs;
+        std::string berr;
+        auto backend = smvk::PakBackend::Open(image, "registry", berr);
+        Check(backend != nullptr, "store.backend.open");
+        if (backend) {
+            vfs.Mount(backend, 50, "registry");
+            auto served = vfs.TryRead("models/x/tex.png");
+            // PakBackend serves the TEXTURE PAYLOAD'S ktx bytes (the
+            // cooked-artifact contract, exactly like a final pak).
+            Check(served && served->size() == ktx.size() &&
+                      std::equal(ktx.begin(), ktx.end(), served->begin()),
+                  "store.vfs.serves");
+            Check(!vfs.TryRead("models/nope.png").has_value(), "store.vfs.miss");
+        }
+    }
 
-	// Batch flush across classes + a second flush on the same pak
-	// (append-grow: the pak keeps opening valid).
-	{
-		const std::vector<uint8_t> m1 = { 6, 6, 6 };
-		const std::vector<uint8_t> t2(77, 0x77);
-		Check(store.Put("mesh", "models/x/m#mesh.0", m1,
-			HashBytes("meshsrc", 8), "{}", err), "store.stage.mesh");
-		Check(store.Put("texture", "models/x/tex2.png", t2,
-			HashBytes("png2", 4), "{}", err), "store.stage.tex2");
-		Check(store.Flush(err), "store.flush.two.classes");
-		std::vector<uint8_t> gotM, gotT;
-		Check(store.Get("mesh", "models/x/m#mesh.0", gotM, err)
-			&& gotM == m1, "store.mesh.get");
-		Check(store.Get("texture", "models/x/tex2.png", gotT, err)
-			&& gotT.size() == 77, "store.tex2.get");
-		// Old entry still reads after the second growth.
-		Check(store.Get("texture", "models/x/tex.png", gotT, err)
-			&& gotT == envelope, "store.old.entry.survives.growth");
-	}
+    // Batch flush across classes + a second flush on the same pak
+    // (append-grow: the pak keeps opening valid).
+    {
+        const std::vector<uint8_t> m1 = {6, 6, 6};
+        const std::vector<uint8_t> t2(77, 0x77);
+        Check(store.Put("mesh", "models/x/m#mesh.0", m1, HashBytes("meshsrc", 8), "{}", err),
+              "store.stage.mesh");
+        Check(store.Put("texture", "models/x/tex2.png", t2, HashBytes("png2", 4), "{}", err),
+              "store.stage.tex2");
+        Check(store.Flush(err), "store.flush.two.classes");
+        std::vector<uint8_t> gotM, gotT;
+        Check(store.Get("mesh", "models/x/m#mesh.0", gotM, err) && gotM == m1, "store.mesh.get");
+        Check(store.Get("texture", "models/x/tex2.png", gotT, err) && gotT.size() == 77,
+              "store.tex2.get");
+        // Old entry still reads after the second growth.
+        Check(store.Get("texture", "models/x/tex.png", gotT, err) && gotT == envelope,
+              "store.old.entry.survives.growth");
+    }
 
-	// Upsert through the store: latest payload wins, old bytes become
-	// dead space (registry row + TOC entry both replaced).
-	{
-		const std::vector<uint8_t> v2 = { 9, 9, 9, 9 };
-		Check(store.Put("texture", "models/x/tex.png", v2,
-			HashBytes("texv2", 5), "{}", err), "store.stage.upsert");
-		Check(store.Flush(err), "store.flush.upsert");
-		std::vector<uint8_t> got;
-		Check(store.Get("texture", "models/x/tex.png", got, err)
-			&& got == v2, "store.upsert.latest.wins");
-		std::string err2;
-		Check(!store.Has("texture", "models/x/tex.png", srcHash),
-			"store.upsert.has.old.hash.miss");
-	}
+    // Upsert through the store: latest payload wins, old bytes become
+    // dead space (registry row + TOC entry both replaced).
+    {
+        const std::vector<uint8_t> v2 = {9, 9, 9, 9};
+        Check(store.Put("texture", "models/x/tex.png", v2, HashBytes("texv2", 5), "{}", err),
+              "store.stage.upsert");
+        Check(store.Flush(err), "store.flush.upsert");
+        std::vector<uint8_t> got;
+        Check(store.Get("texture", "models/x/tex.png", got, err) && got == v2,
+              "store.upsert.latest.wins");
+        std::string err2;
+        Check(!store.Has("texture", "models/x/tex.png", srcHash), "store.upsert.has.old.hash.miss");
+    }
 
-	// Persistence: a fresh store over the same root reads everything.
-	{
-		ArtifactStore store2(root, db);
-		std::vector<uint8_t> got;
-		Check(store2.Get("texture", "models/x/tex.png", got, err)
-			&& got.size() == 4, "store.persisted.get");
-		Check(store2.Get("mesh", "models/x/m#mesh.0", got, err)
-			&& got.size() == 3, "store.persisted.mesh");
-	}
+    // Persistence: a fresh store over the same root reads everything.
+    {
+        ArtifactStore store2(root, db);
+        std::vector<uint8_t> got;
+        Check(store2.Get("texture", "models/x/tex.png", got, err) && got.size() == 4,
+              "store.persisted.get");
+        Check(store2.Get("mesh", "models/x/m#mesh.0", got, err) && got.size() == 3,
+              "store.persisted.mesh");
+    }
 
-	// Remove + ResetClass (corruption repair path).
-	{
-		Check(store.Remove("mesh", "models/x/m#mesh.0", err),
-			"store.remove");
-		std::vector<uint8_t> got;
-		Check(!store.Get("mesh", "models/x/m#mesh.0", got, err),
-			"store.removed.gone");
-		Check(store.ResetClass("texture", err), "store.reset.class");
-		Check(!store.Get("texture", "models/x/tex.png", got, err),
-			"store.reset.cleared");
-		Check(!std::filesystem::exists(
-				std::filesystem::path(root) / "artifacts"
-				/ "texture.pak"), "store.reset.pak.gone");
-		std::string cerr;
-		Check(db.Count(cerr) == 0, "store.reset.registry.empty");
-	}
+    // Remove + ResetClass (corruption repair path).
+    {
+        Check(store.Remove("mesh", "models/x/m#mesh.0", err), "store.remove");
+        std::vector<uint8_t> got;
+        Check(!store.Get("mesh", "models/x/m#mesh.0", got, err), "store.removed.gone");
+        Check(store.ResetClass("texture", err), "store.reset.class");
+        Check(!store.Get("texture", "models/x/tex.png", got, err), "store.reset.cleared");
+        Check(!std::filesystem::exists(std::filesystem::path(root) / "artifacts" / "texture.pak"),
+              "store.reset.pak.gone");
+        std::string cerr;
+        Check(db.Count(cerr) == 0, "store.reset.registry.empty");
+    }
 
-	std::error_code ec;
-	std::filesystem::remove_all(dir, ec);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }

@@ -30,57 +30,50 @@
 
 namespace tour::mem {
 
-template<typename T>
-struct LinearAllocatorSTL {
-	using value_type = T;
-	using propagate_on_container_move_assignment = std::true_type;
-	using is_always_equal = std::false_type;
+template <typename T> struct LinearAllocatorSTL {
+    using value_type = T;
+    using propagate_on_container_move_assignment = std::true_type;
+    using is_always_equal = std::false_type;
 
-	LinearAllocator* allocator = nullptr;
+    LinearAllocator* allocator = nullptr;
 
-	LinearAllocatorSTL() noexcept = default;
-	explicit LinearAllocatorSTL(LinearAllocator* a) noexcept : allocator(a) {}
-	template<typename U>
-	LinearAllocatorSTL(const LinearAllocatorSTL<U>& o) noexcept : allocator(o.allocator) {}
+    LinearAllocatorSTL() noexcept = default;
+    explicit LinearAllocatorSTL(LinearAllocator* a) noexcept : allocator(a) {}
+    template <typename U>
+    LinearAllocatorSTL(const LinearAllocatorSTL<U>& o) noexcept : allocator(o.allocator) {}
 
-	[[nodiscard]] T* allocate(size_t n) {
-		// Crash early with the allocator's own diagnostic when stateless.
-		if (!allocator)
-			ReportOomAndCrash("LinearAllocatorSTL(null)", n * sizeof(T), 0, 0);
-		return static_cast<T*>(allocator->Allocate(n * sizeof(T), alignof(T)));
-	}
-	void deallocate(T*, size_t) noexcept {
-		// No-op: reclaimed by LinearAllocator::Reset / process teardown.
-	}
+    [[nodiscard]] T* allocate(size_t n) {
+        // Crash early with the allocator's own diagnostic when stateless.
+        if (!allocator)
+            ReportOomAndCrash("LinearAllocatorSTL(null)", n * sizeof(T), 0, 0);
+        return static_cast<T*>(allocator->Allocate(n * sizeof(T), alignof(T)));
+    }
+    void deallocate(T*, size_t) noexcept {
+        // No-op: reclaimed by LinearAllocator::Reset / process teardown.
+    }
 
-	template<typename U>
-	bool operator==(const LinearAllocatorSTL<U>& o) const noexcept {
-		return allocator == o.allocator;
-	}
-	template<typename U>
-	bool operator!=(const LinearAllocatorSTL<U>& o) const noexcept {
-		return allocator != o.allocator;
-	}
+    template <typename U> bool operator==(const LinearAllocatorSTL<U>& o) const noexcept {
+        return allocator == o.allocator;
+    }
+    template <typename U> bool operator!=(const LinearAllocatorSTL<U>& o) const noexcept {
+        return allocator != o.allocator;
+    }
 };
 
-template<typename T>
-using ProcessVector = std::vector<T, LinearAllocatorSTL<T>>;
-template<typename T>
-using FrameVector = std::vector<T, LinearAllocatorSTL<T>>;
-template<typename T>
-using TransientVector = std::vector<T, LinearAllocatorSTL<T>>;
+template <typename T> using ProcessVector = std::vector<T, LinearAllocatorSTL<T>>;
+template <typename T> using FrameVector = std::vector<T, LinearAllocatorSTL<T>>;
+template <typename T> using TransientVector = std::vector<T, LinearAllocatorSTL<T>>;
 // Monotonic in-flight storage over the transient allocator (never reset
 // while live; reclaimed per-element). Identical layout to TransientVector.
-template<typename T>
-using UploadInFlightVector = std::vector<T, LinearAllocatorSTL<T>>;
+template <typename T> using UploadInFlightVector = std::vector<T, LinearAllocatorSTL<T>>;
 
 } // namespace tour::mem
 // COMPAT (the boundary audit): LinearAllocatorSTL + the arena vectors
 // live in tour::mem; the smvk aliases keep call sites compiling.
 namespace smvk::mem {
-	using ::tour::mem::LinearAllocatorSTL;
-	using ::tour::mem::ProcessVector;
-	using ::tour::mem::FrameVector;
-	using ::tour::mem::TransientVector;
-	using ::tour::mem::UploadInFlightVector;
-}
+using ::tour::mem::FrameVector;
+using ::tour::mem::LinearAllocatorSTL;
+using ::tour::mem::ProcessVector;
+using ::tour::mem::TransientVector;
+using ::tour::mem::UploadInFlightVector;
+} // namespace smvk::mem

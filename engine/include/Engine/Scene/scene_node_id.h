@@ -56,18 +56,14 @@ inline constexpr uint32_t kNodeSlotCountMax = 1u << kNodeSlotBits;
 using NodeHandle = uint32_t;
 inline constexpr NodeHandle kNodeInvalidHandle = 0xFFFFFFFFu;
 
-inline constexpr uint32_t NodeHandleSlot(NodeHandle h)
-{
-	return h & kNodeSlotMask;
+inline constexpr uint32_t NodeHandleSlot(NodeHandle h) {
+    return h & kNodeSlotMask;
 }
-inline constexpr uint32_t NodeHandleGen(NodeHandle h)
-{
-	return (h >> kNodeSlotBits) & kNodeGenMask;
+inline constexpr uint32_t NodeHandleGen(NodeHandle h) {
+    return (h >> kNodeSlotBits) & kNodeGenMask;
 }
-inline constexpr NodeHandle PackNodeHandle(uint32_t slot, uint32_t gen)
-{
-	return (NodeHandle((gen & kNodeGenMask) << kNodeSlotBits))
-		| NodeHandle(slot & kNodeSlotMask);
+inline constexpr NodeHandle PackNodeHandle(uint32_t slot, uint32_t gen) {
+    return (NodeHandle((gen & kNodeGenMask) << kNodeSlotBits)) | NodeHandle(slot & kNodeSlotMask);
 }
 
 } // namespace tour::scene
@@ -77,12 +73,12 @@ inline constexpr NodeHandle PackNodeHandle(uint32_t slot, uint32_t gen)
 // declarations, these are the tracked pre-existing set) ----
 using NodeId = tour::scene::NodeId;
 using NodeHandle = tour::scene::NodeHandle;
-using tour::scene::kNodeSlotBits;
-using tour::scene::kNodeSlotMask;
 using tour::scene::kNodeGenBits;
 using tour::scene::kNodeGenMask;
-using tour::scene::kNodeSlotCountMax;
 using tour::scene::kNodeInvalidHandle;
-using tour::scene::NodeHandleSlot;
+using tour::scene::kNodeSlotBits;
+using tour::scene::kNodeSlotCountMax;
+using tour::scene::kNodeSlotMask;
 using tour::scene::NodeHandleGen;
+using tour::scene::NodeHandleSlot;
 using tour::scene::PackNodeHandle;

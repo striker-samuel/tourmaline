@@ -37,19 +37,23 @@ namespace smvk::dlss_vk {
 // owns it BY VALUE and keeps it alive across slDLSSEvaluate (the tag
 // points into the struct).
 struct TaggedResource {
-	sl::Resource resource;
-	sl::ResourceTag tag;
-	sl::Extent extent;
+    sl::Resource resource;
+    sl::ResourceTag tag;
+    sl::Extent extent;
 
-	// `layout` must be the image layout at the time SL consumes the
-	// resource (the rendergraph barriers images to exactly these
-	// layouts via the pass image hints before recording): depth
-	// DEPTH_STENCIL_READ_ONLY_OPTIMAL, inputs SHADER_READ_ONLY_OPTIMAL,
-	// the storage output GENERAL.
-	TaggedResource(Extent2D extent2d, Format format, ImageUsage usage,
-		VkImageLayout layout, sl::BufferType type,
-		sl::ResourceLifecycle lifecycle,
-		VkImage vkImage, VkImageView vkView);
+    // `layout` must be the image layout at the time SL consumes the
+    // resource (the rendergraph barriers images to exactly these
+    // layouts via the pass image hints before recording): depth
+    // DEPTH_STENCIL_READ_ONLY_OPTIMAL, inputs SHADER_READ_ONLY_OPTIMAL,
+    // the storage output GENERAL.
+    TaggedResource(Extent2D extent2d,
+                   Format format,
+                   ImageUsage usage,
+                   VkImageLayout layout,
+                   sl::BufferType type,
+                   sl::ResourceLifecycle lifecycle,
+                   VkImage vkImage,
+                   VkImageView vkView);
 };
 
 } // namespace smvk::dlss_vk

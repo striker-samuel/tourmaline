@@ -44,13 +44,14 @@
 
 namespace smvk::project {
 
-bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
-	BuildPlan& out, std::string& err);
+bool ResolveRecipe(const Project& project,
+                   const ProjectRecipe& recipe,
+                   BuildPlan& out,
+                   std::string& err);
 
 // Recipe include-glob matching: '**' matches any number of path
 // segments (including zero), '*'/'?' stay within one segment. Both
 // sides are project-relative, forward-slashed. Exported for tests.
-[[nodiscard]] bool RecipeGlobMatch(const std::string& pattern,
-	const std::string& path);
+[[nodiscard]] bool RecipeGlobMatch(const std::string& pattern, const std::string& path);
 
 } // namespace smvk::project

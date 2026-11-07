@@ -26,12 +26,12 @@ namespace tour::placement {
 // using-directive (R6-gated).
 
 struct TerrainParams {
-	glm::vec2 origin{ 0.0f, 0.0f }; // world XZ of texel (0,0)
-	float size = 64.0f;             // square extent in meters
-	uint32_t res = 64;              // samples per side (clamped 2..512)
-	float height = 8.0f;            // max hill height in meters
-	float freq = 0.02f;             // noise frequency (1/m)
-	uint64_t seed = 1;              // noise seed
+    glm::vec2 origin{0.0f, 0.0f}; // world XZ of texel (0,0)
+    float size = 64.0f;           // square extent in meters
+    uint32_t res = 64;            // samples per side (clamped 2..512)
+    float height = 8.0f;          // max hill height in meters
+    float freq = 0.02f;           // noise frequency (1/m)
+    uint64_t seed = 1;            // noise seed
 };
 
 // Builds the heightfield described by params. Deterministic: same params
@@ -59,16 +59,21 @@ bool BuildTerrainUpload(const TerrainParams& params, StaticMeshUpload& out);
 inline constexpr uint32_t kTerrainMaxTiles = 16; // per axis
 
 struct TerrainGroupData {
-	TerrainParams params;      // res/size describe the GLOBAL grid
-	uint32_t tilesX = 1;
-	uint32_t tilesZ = 1;
-	HeightfieldData heights;    // global grid (res x res), world-relative
+    TerrainParams params; // res/size describe the GLOBAL grid
+    uint32_t tilesX = 1;
+    uint32_t tilesZ = 1;
+    HeightfieldData heights; // global grid (res x res), world-relative
 };
 
 // Resolves the inclusive sample range of tile (tx,tz) in the global grid:
 // [x0..x1] x [z0..z1] with shared edge samples between neighbours.
-void TerrainTileRange(const TerrainGroupData& g, uint32_t tx, uint32_t tz,
-	uint32_t& x0, uint32_t& x1, uint32_t& z0, uint32_t& z1);
+void TerrainTileRange(const TerrainGroupData& g,
+                      uint32_t tx,
+                      uint32_t tz,
+                      uint32_t& x0,
+                      uint32_t& x1,
+                      uint32_t& z0,
+                      uint32_t& z1);
 
 // The tile's group-local XZ position: its ACTUAL first sample,
 // (x0 * spacing, z0 * spacing). The tile node transform MUST be
@@ -90,47 +95,77 @@ glm::vec2 TerrainTileOrigin(const TerrainGroupData& g, uint32_t tx, uint32_t tz)
 // a one-sample tile would divide by w-1 == 0 for its UVs). UVs are
 // per-tile [0,1] (tile-local planar, standard for per-tile
 // material/layer assignment).
-bool BuildTerrainTileUpload(const TerrainGroupData& g, uint32_t tx, uint32_t tz,
-	StaticMeshUpload& out);
+bool BuildTerrainTileUpload(const TerrainGroupData& g,
+                            uint32_t tx,
+                            uint32_t tz,
+                            StaticMeshUpload& out);
 
 // ---- Height painting (deterministic, no RNG) -----------------------------
 enum class TerrainBrushOp : uint8_t {
-	Raise = 0,
-	Lower = 1,
-	Flatten = 2, // pull towards `target` height
-	Smooth = 3,  // 3x3 box blur
+    Raise = 0,
+    Lower = 1,
+    Flatten = 2, // pull towards `target` height
+    Smooth = 3,  // 3x3 box blur
 };
 
 // Applies one brush stamp at WORLD XZ to the global grid. Falloff is a
 // smoothstep from the stamp center; strength is the per-stamp amount in
 // meters (Raise/Lower) or the blend factor 0..1 (Flatten/Smooth).
-void TerrainBrushStamp(TerrainGroupData& g, TerrainBrushOp op,
-	float wx, float wz, float radius, float strength, float target);
+void TerrainBrushStamp(TerrainGroupData& g,
+                       TerrainBrushOp op,
+                       float wx,
+                       float wz,
+                       float radius,
+                       float strength,
+                       float target);
 
 // Inclusive sample-box of a stamp (for before-patch capture): clamped to
 // the grid, rounded outward so undo restores every touched sample.
-void TerrainBrushBox(const TerrainGroupData& g, float wx, float wz,
-	float radius, uint32_t& x0, uint32_t& x1, uint32_t& z0, uint32_t& z1);
+void TerrainBrushBox(const TerrainGroupData& g,
+                     float wx,
+                     float wz,
+                     float radius,
+                     uint32_t& x0,
+                     uint32_t& x1,
+                     uint32_t& z0,
+                     uint32_t& z1);
 
 // Which tiles a stamp's box touches (may be empty on a miss). Tiles are
 // packed tx | (tz << 16), ascending, deterministic.
-void TerrainBrushTouchedTiles(uint32_t x0, uint32_t x1, uint32_t z0,
-	uint32_t z1, uint32_t res, uint32_t tilesX, uint32_t tilesZ,
-	std::vector<uint32_t>& outTiles);
+void TerrainBrushTouchedTiles(uint32_t x0,
+                              uint32_t x1,
+                              uint32_t z0,
+                              uint32_t z1,
+                              uint32_t res,
+                              uint32_t tilesX,
+                              uint32_t tilesZ,
+                              std::vector<uint32_t>& outTiles);
 
 // Raycast against the heightfield ( marched fixed steps + bisection
 // refine). o + t*d = hit point; returns false on no hit within maxDist.
 bool TerrainRaycast(const HeightfieldData& hf,
-	const glm::vec3& o, const glm::vec3& d, float maxDist, float& t);
+                    const glm::vec3& o,
+                    const glm::vec3& d,
+                    float maxDist,
+                    float& t);
 
 // Undo helper: copy a sample box out / write one back (row-major, x-major
 // within rows: (z - z0) * boxW + (x - x0)).
 void TerrainCopyBox(const TerrainGroupData& g,
-	uint32_t x0, uint32_t x1, uint32_t z0, uint32_t z1,
-	std::vector<float>& outBox, uint32_t& boxW, uint32_t& boxH);
+                    uint32_t x0,
+                    uint32_t x1,
+                    uint32_t z0,
+                    uint32_t z1,
+                    std::vector<float>& outBox,
+                    uint32_t& boxW,
+                    uint32_t& boxH);
 void TerrainWriteBox(TerrainGroupData& g,
-	uint32_t x0, uint32_t x1, uint32_t z0, uint32_t z1,
-	const std::vector<float>& box, uint32_t boxW);
+                     uint32_t x0,
+                     uint32_t x1,
+                     uint32_t z0,
+                     uint32_t z1,
+                     const std::vector<float>& box,
+                     uint32_t boxW);
 
 // ---------------------------------------------------------------------------
 // WORLD-TILE BRIDGE (the ecotope + terrain "ride" — the PR05 foundation).
@@ -164,18 +199,21 @@ void TerrainWriteBox(TerrainGroupData& g,
 // tilesPerAxis x tilesPerAxis grid of tileRes x tileRes RGBA8 tiles
 // (production: 16x16 x 256 — the world's harvested `masks`).
 struct WorldMaskGrid {
-	const std::vector<std::vector<uint8_t>>* tiles = nullptr; // [tz*nS+tx]
-	uint32_t tilesPerAxis = 0;
-	uint32_t tileRes = 0;
-	[[nodiscard]] bool Valid() const {
-		if (!tiles || tilesPerAxis == 0 || tileRes == 0) return false;
-		const size_t count = size_t(tilesPerAxis) * size_t(tilesPerAxis);
-		const size_t bytes = size_t(tileRes) * size_t(tileRes) * 4;
-		if (tiles->size() < count) return false;
-		for (size_t i = 0; i < count; ++i)
-			if ((*tiles)[i].size() != bytes) return false;
-		return true;
-	}
+    const std::vector<std::vector<uint8_t>>* tiles = nullptr; // [tz*nS+tx]
+    uint32_t tilesPerAxis = 0;
+    uint32_t tileRes = 0;
+    [[nodiscard]] bool Valid() const {
+        if (!tiles || tilesPerAxis == 0 || tileRes == 0)
+            return false;
+        const size_t count = size_t(tilesPerAxis) * size_t(tilesPerAxis);
+        const size_t bytes = size_t(tileRes) * size_t(tileRes) * 4;
+        if (tiles->size() < count)
+            return false;
+        for (size_t i = 0; i < count; ++i)
+            if ((*tiles)[i].size() != bytes)
+                return false;
+        return true;
+    }
 };
 
 // The cross-boundary halo (meters) every world tile's harvest AND
@@ -183,15 +221,15 @@ struct WorldMaskGrid {
 // across borders, the central-difference normals read ±1 heightfield
 // texel. Pass the SAME value to PlacementSystem::InvalidateRegion.
 inline float WorldTileHaloMeters(float minSpacing, float heightTexel) {
-	return std::max(minSpacing > 0.0f ? minSpacing : 0.0f, 2.0f * heightTexel);
+    return std::max(minSpacing > 0.0f ? minSpacing : 0.0f, 2.0f * heightTexel);
 }
 
 // The per-tile harvested world data (the residency entry owns it; the
 // layer binding REPOINTS at it per tile — heights + domain + eco).
 struct WorldTileData {
-	HeightfieldData heights;   // the tile window (+ halo), meters
-	HeightfieldDomain domain; // extent = the HALF-OPEN tile rect
-	EcotopeMaskData eco;      // the tile's paint window (+ the same halo)
+    HeightfieldData heights;  // the tile window (+ halo), meters
+    HeightfieldDomain domain; // extent = the HALF-OPEN tile rect
+    EcotopeMaskData eco;      // the tile's paint window (+ the same halo)
 };
 
 // Builds one world placement tile's data: the heightfield window
@@ -201,52 +239,58 @@ struct WorldTileData {
 // candidate-ownership rule. Returns false when the tile lies outside
 // the world or the sources are invalid.
 bool BuildWorldTileDomain(const smvk::terrain::TerrainHField& field,
-	const WorldMaskGrid& masks, float tileSize,
-	int32_t tileX, int32_t tileZ, float haloMeters,
-	WorldTileData& out);
+                          const WorldMaskGrid& masks,
+                          float tileSize,
+                          int32_t tileX,
+                          int32_t tileZ,
+                          float haloMeters,
+                          WorldTileData& out);
 
 // Harvests the [rectMin, rectMax) world-XZ window (+ halo texels) of the
 // tiled heights into a placement HeightfieldData (meters). Returns false
 // on an invalid field/rect.
 bool HarvestWorldHeightfield(const smvk::terrain::TerrainHField& field,
-	const glm::vec2& rectMin, const glm::vec2& rectMax, uint32_t halo,
-	HeightfieldData& out);
+                             const glm::vec2& rectMin,
+                             const glm::vec2& rectMax,
+                             uint32_t halo,
+                             HeightfieldData& out);
 
 // Harvests the same window (optional halo — needed for bilinear
-// continuity at placement tile boundaries) of the S-tile paint channels into a placement EcotopeMaskData (4 channels,
-// 0..255 -> 0..1). Returns false on an invalid grid/rect.
+// continuity at placement tile boundaries) of the S-tile paint channels into a placement
+// EcotopeMaskData (4 channels, 0..255 -> 0..1). Returns false on an invalid grid/rect.
 bool HarvestWorldEcotope(const smvk::terrain::TerrainMeta& meta,
-	const WorldMaskGrid& masks,
-	const glm::vec2& rectMin, const glm::vec2& rectMax,
-	EcotopeMaskData& out, uint32_t halo = 0);
+                         const WorldMaskGrid& masks,
+                         const glm::vec2& rectMin,
+                         const glm::vec2& rectMax,
+                         EcotopeMaskData& out,
+                         uint32_t halo = 0);
 
 } // namespace tour::placement
-
 
 // COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
 // placement header's declarations live in tour::placement; the smvk::
 // placement aliases keep the existing call sites compiling through the
 // consumer migration.
 namespace smvk::placement {
-	using ::tour::placement::BuildTerrainHeights;
-	using ::tour::placement::BuildTerrainTileUpload;
-	using ::tour::placement::BuildTerrainUpload;
-	using ::tour::placement::BuildWorldTileDomain;
-	using ::tour::placement::HarvestWorldEcotope;
-	using ::tour::placement::HarvestWorldHeightfield;
-	using ::tour::placement::kTerrainMaxTiles;
-	using ::tour::placement::TerrainBrushBox;
-	using ::tour::placement::TerrainBrushOp;
-	using ::tour::placement::TerrainBrushStamp;
-	using ::tour::placement::TerrainBrushTouchedTiles;
-	using ::tour::placement::TerrainCopyBox;
-	using ::tour::placement::TerrainGroupData;
-	using ::tour::placement::TerrainParams;
-	using ::tour::placement::TerrainRaycast;
-	using ::tour::placement::TerrainTileOrigin;
-	using ::tour::placement::TerrainTileRange;
-	using ::tour::placement::TerrainWriteBox;
-	using ::tour::placement::WorldMaskGrid;
-	using ::tour::placement::WorldTileData;
-	using ::tour::placement::WorldTileHaloMeters;
-}
+using ::tour::placement::BuildTerrainHeights;
+using ::tour::placement::BuildTerrainTileUpload;
+using ::tour::placement::BuildTerrainUpload;
+using ::tour::placement::BuildWorldTileDomain;
+using ::tour::placement::HarvestWorldEcotope;
+using ::tour::placement::HarvestWorldHeightfield;
+using ::tour::placement::kTerrainMaxTiles;
+using ::tour::placement::TerrainBrushBox;
+using ::tour::placement::TerrainBrushOp;
+using ::tour::placement::TerrainBrushStamp;
+using ::tour::placement::TerrainBrushTouchedTiles;
+using ::tour::placement::TerrainCopyBox;
+using ::tour::placement::TerrainGroupData;
+using ::tour::placement::TerrainParams;
+using ::tour::placement::TerrainRaycast;
+using ::tour::placement::TerrainTileOrigin;
+using ::tour::placement::TerrainTileRange;
+using ::tour::placement::TerrainWriteBox;
+using ::tour::placement::WorldMaskGrid;
+using ::tour::placement::WorldTileData;
+using ::tour::placement::WorldTileHaloMeters;
+} // namespace smvk::placement

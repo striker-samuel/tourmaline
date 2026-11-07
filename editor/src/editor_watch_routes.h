@@ -38,43 +38,41 @@
 namespace editor {
 
 enum class WatchRoute {
-	Removed,
-	MetaSidecar,
-	GltfSource,
-	TourDoc,
-	TextureSource,
-	Other,
+    Removed,
+    MetaSidecar,
+    GltfSource,
+    TourDoc,
+    TextureSource,
+    Other,
 };
 
-[[nodiscard]] inline WatchRoute ClassifyWatchedChange(
-	const std::filesystem::path& path)
-{
-	// Extension, lowercased (the old funnel compared case-sensitively;
-	// a DCC saving "X.PNG" deserves the same refresh).
-	std::string ext = path.extension().generic_string();
-	for (char& c : ext)
-		if (c >= 'A' && c <= 'Z')
-			c = char(c - 'A' + 'a');
-	if (ext == ".meta")
-		return WatchRoute::MetaSidecar;
-	if (smvk::assets::IsMeshSourceExtension(ext))
-		return WatchRoute::GltfSource;
-	if (ext == ".tour" || ext == ".tourrecipe")
-		return WatchRoute::TourDoc;
-	if (ext == ".png" || ext == ".jpg" || ext == ".jpeg"
-			|| ext == ".tga" || ext == ".bmp" || ext == ".ktx2") {
-		// An image is a TEXTURE SOURCE only when its .texture asset
-		// sits beside it (the asset convention); a bare image (a
-		// glTF-imported source image, a reference, concept art) keeps
-		// the generic log — its refresh rides the glTF artifact's
-		// content digest, never a pool swap.
-		std::error_code ec;
-		std::filesystem::path asset = path;
-		asset.replace_extension(".texture");
-		if (std::filesystem::exists(asset, ec))
-			return WatchRoute::TextureSource;
-	}
-	return WatchRoute::Other;
+[[nodiscard]] inline WatchRoute ClassifyWatchedChange(const std::filesystem::path& path) {
+    // Extension, lowercased (the old funnel compared case-sensitively;
+    // a DCC saving "X.PNG" deserves the same refresh).
+    std::string ext = path.extension().generic_string();
+    for (char& c : ext)
+        if (c >= 'A' && c <= 'Z')
+            c = char(c - 'A' + 'a');
+    if (ext == ".meta")
+        return WatchRoute::MetaSidecar;
+    if (smvk::assets::IsMeshSourceExtension(ext))
+        return WatchRoute::GltfSource;
+    if (ext == ".tour" || ext == ".tourrecipe")
+        return WatchRoute::TourDoc;
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".bmp" ||
+        ext == ".ktx2") {
+        // An image is a TEXTURE SOURCE only when its .texture asset
+        // sits beside it (the asset convention); a bare image (a
+        // glTF-imported source image, a reference, concept art) keeps
+        // the generic log — its refresh rides the glTF artifact's
+        // content digest, never a pool swap.
+        std::error_code ec;
+        std::filesystem::path asset = path;
+        asset.replace_extension(".texture");
+        if (std::filesystem::exists(asset, ec))
+            return WatchRoute::TextureSource;
+    }
+    return WatchRoute::Other;
 }
 
 } // namespace editor

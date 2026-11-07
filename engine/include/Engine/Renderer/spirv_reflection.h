@@ -36,30 +36,28 @@ namespace smvk {
 // ---------------------------------------------------------------------------
 // Reflected specialization constant (one OpSpecId).
 // ---------------------------------------------------------------------------
-struct SpirvSpecConstant
-{
-	enum class Type : uint8_t
-	{
-		Bool,
-		Int,
-		UInt,
-		Float,
-		Double,
-		Int64,
-		UInt64,
-		Unknown,
-	};
+struct SpirvSpecConstant {
+    enum class Type : uint8_t {
+        Bool,
+        Int,
+        UInt,
+        Float,
+        Double,
+        Int64,
+        UInt64,
+        Unknown,
+    };
 
-	uint32_t specId = 0;
-	Type type = Type::Unknown;
-	// Size of one scalar default value in bytes (4 or 8).
-	uint32_t sizeBytes = 0;
-	bool hasDefault = false;
-	// Raw little-endian default payload (sizeBytes long when hasDefault).
-	std::vector<uint8_t> defaultValue;
-	std::string name;
+    uint32_t specId = 0;
+    Type type = Type::Unknown;
+    // Size of one scalar default value in bytes (4 or 8).
+    uint32_t sizeBytes = 0;
+    bool hasDefault = false;
+    // Raw little-endian default payload (sizeBytes long when hasDefault).
+    std::vector<uint8_t> defaultValue;
+    std::string name;
 
-	bool operator==(const SpirvSpecConstant&) const = default;
+    bool operator==(const SpirvSpecConstant&) const = default;
 };
 
 // ---------------------------------------------------------------------------
@@ -67,41 +65,39 @@ struct SpirvSpecConstant
 // attribute locations the module actually consumes — DXC dead-code-strips
 // unused inputs, so declared == consumed).
 // ---------------------------------------------------------------------------
-struct SpirvStageInput
-{
-	uint32_t location = 0;
-	// The input's scalar component count (1 for scalars, N for
-	// vectors). The pipeline builder pairs the location against the
-	// bound attribute's FORMAT and flags an input that consumes MORE
-	// components than the format provides (the fetch would read
-	// undefined data — the old reflection carried only the location,
-	// so this mismatch passed silently).
-	uint32_t componentCount = 0;
-	std::string name;
+struct SpirvStageInput {
+    uint32_t location = 0;
+    // The input's scalar component count (1 for scalars, N for
+    // vectors). The pipeline builder pairs the location against the
+    // bound attribute's FORMAT and flags an input that consumes MORE
+    // components than the format provides (the fetch would read
+    // undefined data — the old reflection carried only the location,
+    // so this mismatch passed silently).
+    uint32_t componentCount = 0;
+    std::string name;
 
-	bool operator==(const SpirvStageInput&) const = default;
+    bool operator==(const SpirvStageInput&) const = default;
 };
 
 // ---------------------------------------------------------------------------
 // Full per-module reflection result.
 // ---------------------------------------------------------------------------
-struct SpirvReflection
-{
-	bool valid = false;
-	std::string error;
-	// One entry per push-constant block, with owning stage flags.
-	// Offset/size are in bytes (lowest member offset .. block end).
-	std::vector<PushConstantRange> pushConstants;
-	std::vector<SpirvSpecConstant> specConstants;
-	std::vector<std::string> entryPoints;
-	// Non-builtin stage inputs (built-ins like gl_VertexIndex excluded;
-	// meaningful for the VERTEX stage — the attribute locations the
-	// module consumes; the pipeline builder filters the vertex format's
-	// attribute list to these so no pipeline binds unconsumed
-	// attributes, validation-clean).
-	std::vector<SpirvStageInput> stageInputs;
+struct SpirvReflection {
+    bool valid = false;
+    std::string error;
+    // One entry per push-constant block, with owning stage flags.
+    // Offset/size are in bytes (lowest member offset .. block end).
+    std::vector<PushConstantRange> pushConstants;
+    std::vector<SpirvSpecConstant> specConstants;
+    std::vector<std::string> entryPoints;
+    // Non-builtin stage inputs (built-ins like gl_VertexIndex excluded;
+    // meaningful for the VERTEX stage — the attribute locations the
+    // module consumes; the pipeline builder filters the vertex format's
+    // attribute list to these so no pipeline binds unconsumed
+    // attributes, validation-clean).
+    std::vector<SpirvStageInput> stageInputs;
 
-	bool operator==(const SpirvReflection&) const = default;
+    bool operator==(const SpirvReflection&) const = default;
 };
 
 // Reflect a single SPIR-V module. Words must start with the SPIR-V magic
@@ -116,7 +112,7 @@ SpirvReflection ReflectSpirvBytes(std::span<const uint8_t> bytes);
 // minimal set of non-overlapping ranges with unioned stage flags, suitable
 // for VkPushConstantRange-style layouts. Ranges are sorted by offset.
 std::vector<PushConstantRange> MergePushConstantRanges(
-	const std::vector<std::vector<PushConstantRange>>& perModule);
+    const std::vector<std::vector<PushConstantRange>>& perModule);
 
 // Validate that every reflected range lies within [0, maxSize), is a
 // multiple of 4 (VUID-vkCmdPushConstants-offset-01795), and that total
@@ -168,12 +164,12 @@ ShaderStage ExpandPushStagesForLayout(ShaderStage requested,
 // translation (12,13,14), leaving every translated object with a
 // translation-free prevWorld (garbage motion vectors). CPU-only.
 inline void PackPushFloat3x4(const float* srcColMajor16, float* dst12) {
-	assert(srcColMajor16 && dst12);
-	for (int c = 0; c < 4; ++c) {
-		dst12[3 * c + 0] = srcColMajor16[4 * c + 0];
-		dst12[3 * c + 1] = srcColMajor16[4 * c + 1];
-		dst12[3 * c + 2] = srcColMajor16[4 * c + 2];
-	}
+    assert(srcColMajor16 && dst12);
+    for (int c = 0; c < 4; ++c) {
+        dst12[3 * c + 0] = srcColMajor16[4 * c + 0];
+        dst12[3 * c + 1] = srcColMajor16[4 * c + 1];
+        dst12[3 * c + 2] = srcColMajor16[4 * c + 2];
+    }
 }
 
 } // namespace smvk

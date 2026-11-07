@@ -39,18 +39,19 @@ std::string FindOwningMeshSource(const std::string& derivedAssetPath);
 
 // What a confirmed delete will remove (all absolute generic paths).
 struct AssetDeletePlan {
-	std::string target;              // the selected path itself
-	bool isDir = false;              // target is a directory
-	size_t entryCount = 0;           // dir: recursive entries; file: 1
-	std::vector<std::string> also;   // sidecar + derived files (files only)
-	std::vector<std::string> notes;  // prompt lines ("+ 3 derived ...")
+    std::string target;             // the selected path itself
+    bool isDir = false;             // target is a directory
+    size_t entryCount = 0;          // dir: recursive entries; file: 1
+    std::vector<std::string> also;  // sidecar + derived files (files only)
+    std::vector<std::string> notes; // prompt lines ("+ 3 derived ...")
 };
 
 // Computes the plan (false + err when refused: outside the project,
 // protected path, derived asset, missing file — never throws).
 bool PlanAssetDelete(const std::string& absPath,
-	const std::string& projectRoot, AssetDeletePlan& out,
-	std::string& err);
+                     const std::string& projectRoot,
+                     AssetDeletePlan& out,
+                     std::string& err);
 // Removes every planned path (target + also). Best-effort order, first
 // error wins in err (never throws).
 bool ExecuteAssetDelete(const AssetDeletePlan& plan, std::string& err);
@@ -60,7 +61,9 @@ bool ExecuteAssetDelete(const AssetDeletePlan& plan, std::string& err);
 // asset database can recover the GUID on rescan. Manifest-derived files are
 // not independently renameable.
 bool RenameBrowserAsset(const std::string& absPath,
-    const std::string& projectRoot, const std::string& newName,
-    std::string& newPath, std::string& err);
+                        const std::string& projectRoot,
+                        const std::string& newName,
+                        std::string& newPath,
+                        std::string& err);
 
 } // namespace editor

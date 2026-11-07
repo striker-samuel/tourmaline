@@ -57,10 +57,10 @@
 //   // phases 2-4: AddPhase2/3/4Pass + recording funcs (bind, push, dispatch)
 //   // lighting pass: AddMainReadHints + FrameUniforms ds* fields.
 
-#include <Engine/Rendergraph/rendergraph.h>
-#include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/Rendergraph/forwardplus.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
 #include <glm/glm.hpp>
@@ -82,20 +82,20 @@ namespace smvk {
 // Constants (must match engine/shaders/deferredshadow_types.hlsli)
 // ---------------------------------------------------------------------------
 
-static constexpr uint32_t kDsShadowTilePx = 8;     // Shadow Tile = 8x8 px
-static constexpr uint32_t kDsTileGroupTiles = 8;   // TileGroup = 8x8 tiles
+static constexpr uint32_t kDsShadowTilePx = 8;   // Shadow Tile = 8x8 px
+static constexpr uint32_t kDsTileGroupTiles = 8; // TileGroup = 8x8 tiles
 // The three FORMAT constants below are aliases of the forwardplus.h
 // single source (kFp*): the zBin + tile-mask layout is shared phase-1
 // infrastructure — the DEFAULT forward+ tile cull consumes the same
 // artifacts this pipeline does, so the two consumers can never disagree
 // on bin counts, group-word counts, or the group pixel pitch.
-static constexpr uint32_t kDsTileGroupPx = kFpTileGroupPx;       // 8 * 8
+static constexpr uint32_t kDsTileGroupPx = kFpTileGroupPx; // 8 * 8
 static constexpr uint32_t kDsZBinCount = kFpZBinCount;
 static constexpr uint32_t kDsMaxLightGroups = kFpMaxLightGroups; // MAX_FP_LIGHTS / 32
-static constexpr uint32_t kDsMaxTileGroups = 4096; // 64x64px groups (4K)
-static constexpr uint32_t kDsMaxTiles = 131072;    // 8px tiles (4K)
-static constexpr uint32_t kDsMaxListUInts = 4u << 20;  // 16 MB
-static constexpr uint32_t kDsMaxVisSlots = 256u << 10; // 64B each, 16 MB
+static constexpr uint32_t kDsMaxTileGroups = 4096;               // 64x64px groups (4K)
+static constexpr uint32_t kDsMaxTiles = 131072;                  // 8px tiles (4K)
+static constexpr uint32_t kDsMaxListUInts = 4u << 20;            // 16 MB
+static constexpr uint32_t kDsMaxVisSlots = 256u << 10;           // 64B each, 16 MB
 static constexpr uint32_t kDsMaxLightsPerTile = 96;
 static constexpr uint32_t kDsSlotAllLit = 0x3FFFFFu;
 static constexpr float kDsInfiniteRange = 1e6f;
@@ -106,17 +106,15 @@ static constexpr float kDsInfiniteRange = 1e6f;
 static constexpr size_t kDsZBinBytes = sizeof(uint32_t) * 4 * kDsZBinCount;
 static constexpr size_t kDsTileMaskBytes =
     sizeof(uint32_t) * (1 + kDsMaxLightGroups) * kDsMaxTileGroups;
-static constexpr size_t kDsTileStateBytes = sizeof(uint32_t) * 4 * kDsMaxTiles;static constexpr size_t kDsLightListBytes = sizeof(uint32_t) * kDsMaxListUInts;
+static constexpr size_t kDsTileStateBytes = sizeof(uint32_t) * 4 * kDsMaxTiles;
+static constexpr size_t kDsLightListBytes = sizeof(uint32_t) * kDsMaxListUInts;
 static constexpr size_t kDsVisibilityBytes = uint64_t(kDsMaxVisSlots) * 64;
 // Counters + the phase 3/4 classification histogram (see DsCounters).
 static constexpr uint32_t kDsCounterCount = 10;
 
-inline constexpr const char* kDsPhase2CsPath =
-    "content/shaders/deferredshadow_phase2.cs.hlsl.spv";
-inline constexpr const char* kDsPhase3CsPath =
-    "content/shaders/deferredshadow_phase3.cs.hlsl.spv";
-inline constexpr const char* kDsPhase4CsPath =
-    "content/shaders/deferredshadow_phase4.cs.hlsl.spv";
+inline constexpr const char* kDsPhase2CsPath = "content/shaders/deferredshadow_phase2.cs.hlsl.spv";
+inline constexpr const char* kDsPhase3CsPath = "content/shaders/deferredshadow_phase3.cs.hlsl.spv";
+inline constexpr const char* kDsPhase4CsPath = "content/shaders/deferredshadow_phase4.cs.hlsl.spv";
 inline constexpr const char* kDsPhase2VizCsPath =
     "content/shaders/deferredshadow_phase2.cs.hlsl.viz.spv";
 inline constexpr const char* kDsPhase3VizCsPath =
@@ -125,9 +123,9 @@ inline constexpr const char* kDsPhase3VizCsPath =
 // Must match DsPhasePush in engine/shaders/deferredshadow.hlsli (120 B).
 struct alignas(8) DsPhasePush {
     uint64_t frameUniforms = 0;
-    uint64_t lights = 0;      // sorted light buffer (phase 1)
+    uint64_t lights = 0; // sorted light buffer (phase 1)
     uint64_t zbins = 0;
-    uint64_t tileMasks = 0;   // CPU phase-1 masks (phase 2 input)
+    uint64_t tileMasks = 0;      // CPU phase-1 masks (phase 2 input)
     uint64_t tileGroupMasks = 0; // GPU masks (phase 2 out, 3 in)
     uint64_t tileState = 0;
     uint64_t lightList = 0;
@@ -143,7 +141,7 @@ struct alignas(8) DsPhasePush {
     uint32_t groupCountY = 0;
     uint32_t depthTextureIndex = UINT32_MAX;
     float spotShadowNear = 0.5f; // SPOT_SHADOW_NEAR (PCSS eye-depth inversion)
-    float pcssLightSize = 0.35f;  // world-space emitting-sphere diameter (PCSS)
+    float pcssLightSize = 0.35f; // world-space emitting-sphere diameter (PCSS)
 };
 static_assert(sizeof(DsPhasePush) == 120);
 
@@ -155,21 +153,19 @@ static_assert(sizeof(DsPhasePush) == 120);
 // near-sentinel so the monotonic max-bin walk skips them.
 // ---------------------------------------------------------------------------
 
-inline float DsNearSortKey(const ForwardPlusLight& L, const glm::mat4& view)
-{
+inline float DsNearSortKey(const ForwardPlusLight& L, const glm::mat4& view) {
     const float range = (L.range <= 0.0f) ? kDsInfiniteRange : L.range;
-    const glm::vec3 cView = view * glm::vec4(
-        glm::vec3(L.position[0], L.position[1], L.position[2]), 1.0f);
+    const glm::vec3 cView =
+        view * glm::vec4(glm::vec3(L.position[0], L.position[1], L.position[2]), 1.0f);
     const float z = -cView.z; // forward distance (view looks down -z)
     if (z + range <= 0.0f)
         return std::numeric_limits<float>::max(); // fully behind camera
     return std::max(z - range, 0.0f);
 }
 
-template<typename LightAllocator>
+template <typename LightAllocator>
 inline void DsSortLightsByNearDistance(std::vector<ForwardPlusLight, LightAllocator>& lights,
-    const glm::mat4& view)
-{
+                                       const glm::mat4& view) {
     const uint32_t n = (uint32_t)lights.size();
     if (n < 2)
         return;
@@ -182,7 +178,7 @@ inline void DsSortLightsByNearDistance(std::vector<ForwardPlusLight, LightAlloca
     static thread_local std::vector<std::pair<float, uint32_t>> keys;
     keys.resize(n);
     for (uint32_t i = 0; i < n; ++i)
-        keys[i] = { DsNearSortKey(lights[i], view), i };
+        keys[i] = {DsNearSortKey(lights[i], view), i};
     std::sort(keys.begin(), keys.end());
     static thread_local std::vector<ForwardPlusLight> sorted;
     sorted.assign(lights.begin(), lights.end());
@@ -206,9 +202,10 @@ inline void DsSortLightsByNearDistance(std::vector<ForwardPlusLight, LightAlloca
 
 template <typename OutputArray, typename LightAllocator>
 inline void DsBuildZBins(const std::vector<ForwardPlusLight, LightAllocator>& sortedLights,
-    const glm::mat4& view, float nearPlane, float farPlane,
-    OutputArray& outBins)
-{
+                         const glm::mat4& view,
+                         float nearPlane,
+                         float farPlane,
+                         OutputArray& outBins) {
     outBins.assign(4 * kDsZBinCount, 0);
     const uint32_t n = (uint32_t)sortedLights.size();
     // thread_local scratch: this runs every frame on the render thread;
@@ -224,8 +221,8 @@ inline void DsBuildZBins(const std::vector<ForwardPlusLight, LightAllocator>& so
     for (uint32_t i = 0; i < n; ++i) {
         const ForwardPlusLight& L = sortedLights[i];
         const float range = (L.range <= 0.0f) ? kDsInfiniteRange : L.range;
-        const glm::vec3 cView = view * glm::vec4(
-            glm::vec3(L.position[0], L.position[1], L.position[2]), 1.0f);
+        const glm::vec3 cView =
+            view * glm::vec4(glm::vec3(L.position[0], L.position[1], L.position[2]), 1.0f);
         const float z = -cView.z;
         if (z + range <= 0.0f)
             continue; // dead: keep (kDsZBinCount, 0) sentinels
@@ -241,7 +238,7 @@ inline void DsBuildZBins(const std::vector<ForwardPlusLight, LightAllocator>& so
     // branchy iterations at 1024 lights.
     static thread_local std::vector<uint32_t> minIdx;
     minIdx.assign(kDsZBinCount, n); // sentinel = n (empty)
-    uint32_t hi = 0; // bins [0..hi) already carry their min index
+    uint32_t hi = 0;                // bins [0..hi) already carry their min index
     for (uint32_t i = 0; i < n; ++i) {
         if (nearBin[i] == kDsZBinCount)
             continue; // dead light
@@ -291,11 +288,13 @@ inline void DsBuildZBins(const std::vector<ForwardPlusLight, LightAllocator>& so
 
 template <typename OutputArray, typename LightAllocator>
 inline void DsBuildTileMasks(const std::vector<ForwardPlusLight, LightAllocator>& lights,
-    const glm::mat4& view, const glm::mat4& proj,
-    uint32_t vpWidth, uint32_t vpHeight,
-    OutputArray& outMasks,
-    uint32_t& outGroupCountX, uint32_t& outGroupCountY)
-{
+                             const glm::mat4& view,
+                             const glm::mat4& proj,
+                             uint32_t vpWidth,
+                             uint32_t vpHeight,
+                             OutputArray& outMasks,
+                             uint32_t& outGroupCountX,
+                             uint32_t& outGroupCountY) {
     outGroupCountX = (vpWidth + kDsTileGroupPx - 1) / kDsTileGroupPx;
     outGroupCountY = (vpHeight + kDsTileGroupPx - 1) / kDsTileGroupPx;
     outMasks.assign(size_t(outGroupCountX) * outGroupCountY * (1 + kDsMaxLightGroups), 0);
@@ -310,8 +309,7 @@ inline void DsBuildTileMasks(const std::vector<ForwardPlusLight, LightAllocator>
     const float wF = std::max(float(vpWidth), 1.0f);
     const float hF = std::max(float(vpHeight), 1.0f);
 
-    const uint32_t n = std::min<uint32_t>(
-        (uint32_t)lights.size(), kDsMaxLightGroups * 32u);
+    const uint32_t n = std::min<uint32_t>((uint32_t)lights.size(), kDsMaxLightGroups * 32u);
     // Group origin planes are light-independent (same cross() order as
     // forwardplus.cs.hlsl — verified there by hand): precompute 4 inward
     // planes per group. They depend ONLY on (proj, extent), so they are
@@ -372,7 +370,8 @@ inline void DsBuildTileMasks(const std::vector<ForwardPlusLight, LightAllocator>
         for (int sz = -1; sz <= 1; sz += 2) {
             for (int sy = -1; sy <= 1; sy += 2) {
                 for (int sx = -1; sx <= 1; sx += 2) {
-                    const glm::vec3 corner = cView + range * glm::vec3(float(sx), float(sy), float(sz));
+                    const glm::vec3 corner =
+                        cView + range * glm::vec3(float(sx), float(sy), float(sz));
                     const glm::vec4 clip = proj * glm::vec4(corner, 1.0f);
                     if (clip.w <= 1e-6f) {
                         crossesNear = true;
@@ -384,9 +383,11 @@ inline void DsBuildTileMasks(const std::vector<ForwardPlusLight, LightAllocator>
                     ndcMinY = std::min(ndcMinY, ndc.y);
                     ndcMaxY = std::max(ndcMaxY, ndc.y);
                 }
-                if (crossesNear) break;
+                if (crossesNear)
+                    break;
             }
-            if (crossesNear) break;
+            if (crossesNear)
+                break;
         }
 
         uint32_t gx0 = 0, gy0 = 0, gx1 = outGroupCountX - 1, gy1 = outGroupCountY - 1;
@@ -408,8 +409,7 @@ inline void DsBuildTileMasks(const std::vector<ForwardPlusLight, LightAllocator>
         const uint32_t lightBit = 1u << (i % 32u);
         for (uint32_t gy = gy0; gy <= gy1; ++gy) {
             for (uint32_t gx = gx0; gx <= gx1; ++gx) {
-                const glm::vec3* planes =
-                    &groupPlanes[(size_t(gy) * outGroupCountX + gx) * 4];
+                const glm::vec3* planes = &groupPlanes[(size_t(gy) * outGroupCountX + gx) * 4];
                 bool outside = false;
                 for (int p = 0; p < 4; ++p) {
                     if (dot(planes[p], cView) < -range) {
@@ -455,7 +455,7 @@ struct DeferredShadows {
     Holder<ShaderModuleHandle> phaseVizModules[2]{};
     ShaderProgram phaseVizPrograms[2]{};
 
-    Extent2D extent{ 0, 0 };
+    Extent2D extent{0, 0};
     uint32_t tileCountX = 0;
     uint32_t tileCountY = 0;
     uint32_t groupCountX = 0;
@@ -465,9 +465,8 @@ struct DeferredShadows {
         if (tileCountX == 0 || tileCountY == 0)
             return false;
         for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
-            if (zBins[f].empty() || tileMasks[f].empty() ||
-                tileGroupMasks[f].empty() || tileState[f].empty() ||
-                lightList[f].empty() || visibility[f].empty() ||
+            if (zBins[f].empty() || tileMasks[f].empty() || tileGroupMasks[f].empty() ||
+                tileState[f].empty() || lightList[f].empty() || visibility[f].empty() ||
                 counters[f].empty())
                 return false;
         }
@@ -498,22 +497,19 @@ struct DeferredShadows {
         if (ShadersValid())
             return true;
         static constexpr const char* kPaths[3] = {
-            kDsPhase2CsPath, kDsPhase3CsPath, kDsPhase4CsPath
-        };
+            kDsPhase2CsPath, kDsPhase3CsPath, kDsPhase4CsPath};
         try {
             for (uint32_t p = 0; p < 3; ++p) {
                 if (phaseModules[p].empty())
-                    phaseModules[p] = ctx.CreateShaderModule(
-                        readFile(kPaths[p]), "deferredShadowCS");
+                    phaseModules[p] =
+                        ctx.CreateShaderModule(readFile(kPaths[p]), "deferredShadowCS");
             }
 #if defined(DS_DEBUG_VIZ)
-            static constexpr const char* kVizPaths[2] = {
-                kDsPhase2VizCsPath, kDsPhase3VizCsPath
-            };
+            static constexpr const char* kVizPaths[2] = {kDsPhase2VizCsPath, kDsPhase3VizCsPath};
             for (uint32_t p = 0; p < 2; ++p) {
                 if (phaseVizModules[p].empty())
-                    phaseVizModules[p] = ctx.CreateShaderModule(
-                        readFile(kVizPaths[p]), "deferredShadowVizCS");
+                    phaseVizModules[p] =
+                        ctx.CreateShaderModule(readFile(kVizPaths[p]), "deferredShadowVizCS");
             }
 #endif
         } catch (...) {
@@ -523,20 +519,17 @@ struct DeferredShadows {
             if (phaseModules[p].empty())
                 return false;
             Shader cs{
-                .module = phaseModules[p],
-                .entryPoint = "mainCS",
-                .stage = ShaderStage::Compute };
-            phasePrograms[p] = { .shaders = { cs }, .shaderCount = 1 };
+                .module = phaseModules[p], .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+            phasePrograms[p] = {.shaders = {cs}, .shaderCount = 1};
         }
 #if defined(DS_DEBUG_VIZ)
         for (uint32_t p = 0; p < 2; ++p) {
             if (phaseVizModules[p].empty())
                 return false;
-            Shader cs{
-                .module = phaseVizModules[p],
-                .entryPoint = "mainCS",
-                .stage = ShaderStage::Compute };
-            phaseVizPrograms[p] = { .shaders = { cs }, .shaderCount = 1 };
+            Shader cs{.module = phaseVizModules[p],
+                      .entryPoint = "mainCS",
+                      .stage = ShaderStage::Compute};
+            phaseVizPrograms[p] = {.shaders = {cs}, .shaderCount = 1};
         }
 #endif
         return true;
@@ -559,21 +552,17 @@ struct DeferredShadows {
     // released old handles ride `retired` for the caller's retirement
     // pass (RenderGraph::RetireShaderModule + the deferred queue).
     [[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-        std::vector<ShaderModuleHandle>& retired) {
+                                     std::vector<ShaderModuleHandle>& retired) {
         static constexpr const char* kPaths[3] = {
-            kDsPhase2CsPath, kDsPhase3CsPath, kDsPhase4CsPath
-        };
+            kDsPhase2CsPath, kDsPhase3CsPath, kDsPhase4CsPath};
         bool any = false;
         for (uint32_t p = 0; p < 3; ++p)
-            any |= SwapShaderModule(ctx, kPaths[p], "deferredShadowCS",
-                phaseModules[p], retired);
+            any |= SwapShaderModule(ctx, kPaths[p], "deferredShadowCS", phaseModules[p], retired);
 #if defined(DS_DEBUG_VIZ)
-        static constexpr const char* kVizPaths[2] = {
-            kDsPhase2VizCsPath, kDsPhase3VizCsPath
-        };
+        static constexpr const char* kVizPaths[2] = {kDsPhase2VizCsPath, kDsPhase3VizCsPath};
         for (uint32_t p = 0; p < 2; ++p)
-            any |= SwapShaderModule(ctx, kVizPaths[p], "deferredShadowVizCS",
-                phaseVizModules[p], retired);
+            any |= SwapShaderModule(
+                ctx, kVizPaths[p], "deferredShadowVizCS", phaseVizModules[p], retired);
 #endif
         if (!any)
             return false;
@@ -599,33 +588,37 @@ struct DeferredShadows {
         if (tcx * tcy > kDsMaxTiles || gcx * gcy > kDsMaxTileGroups)
             return false;
 
-        struct BufSpec { size_t size; const char* name; };
+        struct BufSpec {
+            size_t size;
+            const char* name;
+        };
         const BufSpec specs[7] = {
-            { kDsZBinBytes, "ds zbins" },
-            { kDsTileMaskBytes, "ds tileMasks" },
-            { kDsTileMaskBytes, "ds tileGroupMasks" },
-            { kDsTileStateBytes, "ds tileState" },
-            { kDsLightListBytes, "ds lightList" },
-            { kDsVisibilityBytes, "ds visibility" },
-            { kDsCounterCount * sizeof(uint32_t), "ds counters" },
+            {kDsZBinBytes, "ds zbins"},
+            {kDsTileMaskBytes, "ds tileMasks"},
+            {kDsTileMaskBytes, "ds tileGroupMasks"},
+            {kDsTileStateBytes, "ds tileState"},
+            {kDsLightListBytes, "ds lightList"},
+            {kDsVisibilityBytes, "ds visibility"},
+            {kDsCounterCount * sizeof(uint32_t), "ds counters"},
         };
         Holder<BufferHandle>* buffers[7] = {
-            zBins, tileMasks, tileGroupMasks, tileState, lightList, visibility, counters
-        };
-        LogicalBufferHandle* logicals[7] = {
-            zBinsLogical, tileMasksLogical, tileGroupMasksLogical,
-            tileStateLogical, lightListLogical, visibilityLogical, countersLogical
-        };
+            zBins, tileMasks, tileGroupMasks, tileState, lightList, visibility, counters};
+        LogicalBufferHandle* logicals[7] = {zBinsLogical,
+                                            tileMasksLogical,
+                                            tileGroupMasksLogical,
+                                            tileStateLogical,
+                                            lightListLogical,
+                                            visibilityLogical,
+                                            countersLogical};
         for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
             for (uint32_t b = 0; b < 7; ++b) {
-                Holder<BufferHandle> buf = ctx.CreateBuffer(
-                    specs[b].size, BufferType_Storage, specs[b].name);
+                Holder<BufferHandle> buf =
+                    ctx.CreateBuffer(specs[b].size, BufferType_Storage, specs[b].name);
                 if (buf.empty()) {
                     Destroy(rg);
                     return false;
                 }
-                LogicalBufferHandle logical =
-                    rg.AddExternalBuffer(buf, specs[b].name);
+                LogicalBufferHandle logical = rg.AddExternalBuffer(buf, specs[b].name);
                 if (logical.empty()) {
                     Destroy(rg);
                     return false;
@@ -655,13 +648,15 @@ struct DeferredShadows {
     }
 
     void Destroy(RenderGraph& rg) {
-        LogicalBufferHandle* logicals[7] = {
-            zBinsLogical, tileMasksLogical, tileGroupMasksLogical,
-            tileStateLogical, lightListLogical, visibilityLogical, countersLogical
-        };
+        LogicalBufferHandle* logicals[7] = {zBinsLogical,
+                                            tileMasksLogical,
+                                            tileGroupMasksLogical,
+                                            tileStateLogical,
+                                            lightListLogical,
+                                            visibilityLogical,
+                                            countersLogical};
         Holder<BufferHandle>* buffers[7] = {
-            zBins, tileMasks, tileGroupMasks, tileState, lightList, visibility, counters
-        };
+            zBins, tileMasks, tileGroupMasks, tileState, lightList, visibility, counters};
         for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
             for (uint32_t b = 0; b < 7; ++b) {
                 if (!logicals[b][f].empty())
@@ -670,15 +665,14 @@ struct DeferredShadows {
                 buffers[b][f] = {};
             }
         }
-        extent = { 0, 0 };
+        extent = {0, 0};
         tileCountX = tileCountY = groupCountX = groupCountY = 0;
     }
 
     // Buffers are fixed-size: Ensure only refreshes dispatch dims.
     bool Ensure(ResourceManager& ctx, RenderGraph& rg, Extent2D swapExtent) {
-        const bool shapeOk = Valid() &&
-            extent.width == swapExtent.width &&
-            extent.height == swapExtent.height;
+        const bool shapeOk =
+            Valid() && extent.width == swapExtent.width && extent.height == swapExtent.height;
         if (shapeOk)
             return EnsureShaders(ctx);
         return Create(ctx, rg, swapExtent);
@@ -765,8 +759,10 @@ struct DeferredShadows {
     // Phase 2: reads depth + lights + zbins + CPU masks; writes group
     // masks, tile state, counters. Dispatch (groupCountX, groupCountY, 1).
     RenderPass& AddPhase2Pass(RenderGraph& rg,
-        LogicalImageViewHandle depthLogical, LogicalBufferHandle lightsLogical,
-        uint32_t f, const char* name = "DsFindLightsApprox") const {
+                              LogicalImageViewHandle depthLogical,
+                              LogicalBufferHandle lightsLogical,
+                              uint32_t f,
+                              const char* name = "DsFindLightsApprox") const {
         assert(Valid());
         RenderPass& pass = rg.AddComputePass(name);
         AddDepthReadHint(pass, depthLogical);
@@ -782,8 +778,10 @@ struct DeferredShadows {
     // Phase 3: reads depth + lights + group masks; writes tile state +
     // light list. Dispatch (tileCountX, tileCountY, 1).
     RenderPass& AddPhase3Pass(RenderGraph& rg,
-        LogicalImageViewHandle depthLogical, LogicalBufferHandle lightsLogical,
-        uint32_t f, const char* name = "DsFindLightsAccurate") const {
+                              LogicalImageViewHandle depthLogical,
+                              LogicalBufferHandle lightsLogical,
+                              uint32_t f,
+                              const char* name = "DsFindLightsAccurate") const {
         assert(Valid());
         RenderPass& pass = rg.AddComputePass(name);
         AddDepthReadHint(pass, depthLogical);
@@ -799,10 +797,12 @@ struct DeferredShadows {
     // atlas is SAMPLED in compute (bindless, depth read-only layout).
     // Dispatch (tileCountX, tileCountY, 1).
     RenderPass& AddPhase4Pass(RenderGraph& rg,
-        LogicalImageViewHandle depthLogical, LogicalBufferHandle lightsLogical,
-        LogicalBufferHandle spotShadowBufferLogical,
-        LogicalImageViewHandle spotAtlasLogical,
-        uint32_t f, const char* name = "DsGenerateShadows") const {
+                              LogicalImageViewHandle depthLogical,
+                              LogicalBufferHandle lightsLogical,
+                              LogicalBufferHandle spotShadowBufferLogical,
+                              LogicalImageViewHandle spotAtlasLogical,
+                              uint32_t f,
+                              const char* name = "DsGenerateShadows") const {
         assert(Valid());
         RenderPass& pass = rg.AddComputePass(name);
         AddDepthReadHint(pass, depthLogical);
@@ -825,8 +825,9 @@ struct DeferredShadows {
     // Read-side hints for the lighting pass (final list + visibility +
     // tile state, fragment stage).
     static void AddMainReadHints(RenderPass& mainPass,
-        LogicalBufferHandle tileState, LogicalBufferHandle lightList,
-        LogicalBufferHandle visibility) {
+                                 LogicalBufferHandle tileState,
+                                 LogicalBufferHandle lightList,
+                                 LogicalBufferHandle visibility) {
         BufferSyncRequest read{};
         read.barrierMasks.accessMask = AccessFlags::ShaderRead;
         read.barrierMasks.stageMask = PipelineStageBit_Fragment;

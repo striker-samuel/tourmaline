@@ -224,8 +224,8 @@ struct AudioEngine::CreatePayload {
 struct AudioEngine::Core {
     ma_engine engine{};
     bool engineInit = false;
-    std::deque<ClipData> clips;         // stable element addresses
-    std::vector<Voice> voices;          // legacy fire-and-forget lane
+    std::deque<ClipData> clips; // stable element addresses
+    std::vector<Voice> voices;  // legacy fire-and-forget lane
     // Instance states by slot index (null/absent when never built or
     // torn down; validated by generation at every use).
     std::vector<GraphInstanceState*> instances;
@@ -259,15 +259,12 @@ struct AudioEngine::Core {
     // functions below for the pure-math halves).
     void UninitInstance(GraphInstanceState* st);
     GraphInstanceState* BuildInstance(AudioEngine::CreatePayload* payload);
-    void ApplyInstanceParam(GraphInstanceState& st, uint32_t paramOrdinal,
-        float value);
+    void ApplyInstanceParam(GraphInstanceState& st, uint32_t paramOrdinal, float value);
     void AdvanceInstance(GraphInstanceState& st, double dt);
     void ApplyInstancePlay(GraphInstanceState& st, uint32_t cueOrdinal);
-    void ApplyInstanceCrossFade(GraphInstanceState& st,
-        uint32_t cueOrdinal, float fadeSeconds);
+    void ApplyInstanceCrossFade(GraphInstanceState& st, uint32_t cueOrdinal, float fadeSeconds);
     static void ApplyInstanceStop(GraphInstanceState& st);
-    void ApplyInstanceSetParam(GraphInstanceState& st,
-        uint32_t paramOrdinal, float value);
+    void ApplyInstanceSetParam(GraphInstanceState& st, uint32_t paramOrdinal, float value);
 
     // Tears one legacy voice down (the sound detaches from the graph,
     // the per-voice cursor clears). Mixer thread, chunk boundary.
@@ -296,10 +293,8 @@ bool AudioEngine::Core::BuildWorldBus() {
     // The wet gain: defaults to an endpoint attach (exactly what the
     // wet path wants); its volume is the SEND gain.
     {
-        ma_sound_group_config cfg =
-            ma_sound_group_config_init_2(&engine);
-        if (ma_sound_group_init_ex(&engine, &cfg, &wetGain)
-            != MA_SUCCESS)
+        ma_sound_group_config cfg = ma_sound_group_config_init_2(&engine);
+        if (ma_sound_group_init_ex(&engine, &cfg, &wetGain) != MA_SUCCESS)
             return false;
         wetGainInit = true;
         ma_sound_group_set_volume(&wetGain, 0.0f);
@@ -309,44 +304,37 @@ bool AudioEngine::Core::BuildWorldBus() {
         SchroederReverbConfig cfg;
         cfg.channels = channels;
         cfg.sampleRate = rate;
-        cfg.rt60 = 0.35f;   // the outdoor baseline until a room wins
+        cfg.rt60 = 0.35f; // the outdoor baseline until a room wins
         cfg.damping = 0.5f;
         cfg.wet = 1.0f;
         cfg.wetOnly = true; // the SEND form: dry rides the splitter
         if (!SchroederReverbInit(graph, cfg, &worldReverb))
             return false;
         worldReverbInit = true;
-        ma_node_attach_output_bus(&worldReverb.base, 0,
-            (ma_node*)&wetGain, 0);
+        ma_node_attach_output_bus(&worldReverb.base, 0, (ma_node*)&wetGain, 0);
     }
     // The dry/wet splitter.
     {
-        ma_splitter_node_config cfg =
-            ma_splitter_node_config_init(channels);
+        ma_splitter_node_config cfg = ma_splitter_node_config_init(channels);
         cfg.outputBusCount = 2;
-        if (ma_splitter_node_init(graph, &cfg, nullptr, &worldSplit)
-            != MA_SUCCESS)
+        if (ma_splitter_node_init(graph, &cfg, nullptr, &worldSplit) != MA_SUCCESS)
             return false;
         worldSplitInit = true;
         // Bus 0: the untouched dry path. Bus 1: the wet send.
-        if (ma_node_attach_output_bus(&worldSplit.base, 0, endpoint, 0)
-            != MA_SUCCESS)
+        if (ma_node_attach_output_bus(&worldSplit.base, 0, endpoint, 0) != MA_SUCCESS)
             return false;
-        if (ma_node_attach_output_bus(&worldSplit.base, 1,
-            &worldReverb.base, 0) != MA_SUCCESS)
+        if (ma_node_attach_output_bus(&worldSplit.base, 1, &worldReverb.base, 0) != MA_SUCCESS)
             return false;
     }
     // The shared group every world-SFX voice attaches into.
     {
-        ma_sound_group_config cfg =
-            ma_sound_group_config_init_2(&engine);
+        ma_sound_group_config cfg = ma_sound_group_config_init_2(&engine);
         cfg.flags |= MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
-        if (ma_sound_group_init_ex(&engine, &cfg, &worldSfxGroup)
-            != MA_SUCCESS)
+        if (ma_sound_group_init_ex(&engine, &cfg, &worldSfxGroup) != MA_SUCCESS)
             return false;
         worldSfxGroupInit = true;
-        if (ma_node_attach_output_bus((ma_node*)&worldSfxGroup, 0,
-            &worldSplit.base, 0) != MA_SUCCESS)
+        if (ma_node_attach_output_bus((ma_node*)&worldSfxGroup, 0, &worldSplit.base, 0) !=
+            MA_SUCCESS)
             return false;
     }
     worldBusBuilt = true;
@@ -381,15 +369,13 @@ void AudioEngine::Core::TeardownWorldBus() {
     worldBusBuilt = false;
 }
 
-void AudioEngine::Core::ApplyEnvironment(float wet, float rt60,
-    float damping) {
+void AudioEngine::Core::ApplyEnvironment(float wet, float rt60, float damping) {
     if (!worldBusBuilt)
         return;
     // The send gain rides the wet group (256-frame smoothed by the
     // engine node); the coefficients smooth inside the reverb's
     // processing callback (~30 ms) — both on the mixer thread.
-    ma_sound_group_set_volume(&wetGain,
-        std::clamp(wet, 0.0f, 1.0f));
+    ma_sound_group_set_volume(&wetGain, std::clamp(wet, 0.0f, 1.0f));
     SchroederReverbSetRt60(&worldReverb, rt60);
     SchroederReverbSetDamping(&worldReverb, damping);
 }
@@ -518,8 +504,7 @@ void AudioEngine::Core::UninitInstance(GraphInstanceState* st) {
 // on a structural failure (all failure modes that matter were
 // validated by the parser + the caller-thread clip resolution; ma
 // init failures are the remaining, unlikely ones).
-GraphInstanceState* AudioEngine::Core::BuildInstance(
-    AudioEngine::CreatePayload* payload) {
+GraphInstanceState* AudioEngine::Core::BuildInstance(AudioEngine::CreatePayload* payload) {
     const asset::AudioGraphDoc& doc = *payload->doc;
     const ma_uint32 channels = ma_engine_get_channels(&engine);
     const ma_uint32 rate = ma_engine_get_sample_rate(&engine);
@@ -532,8 +517,7 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
     st->nodes.resize(doc.nodes.size());
     st->sourceOrdinalOfNode.assign(doc.nodes.size(), -1);
     st->nodeOfParam.assign(doc.params.size(), -1);
-    st->trackOfParam.assign(doc.cues.size(),
-        std::vector<int>(doc.params.size(), -1));
+    st->trackOfParam.assign(doc.cues.size(), std::vector<int>(doc.params.size(), -1));
 
     // The instance bus: the SINGLE exit — authored edges into
     // "output" attach here, the bus attaches to the endpoint. Its
@@ -541,8 +525,7 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
     {
         ma_sound_group_config cfg = ma_sound_group_config_init_2(&engine);
         cfg.pInitialAttachment = ma_engine_get_endpoint(&engine);
-        if (ma_sound_group_init_ex(&engine, &cfg, &st->bus)
-            != MA_SUCCESS) {
+        if (ma_sound_group_init_ex(&engine, &cfg, &st->bus) != MA_SUCCESS) {
             std::cerr << "[Audio] instance create: bus init failed\n";
             return nullptr;
         }
@@ -564,13 +547,10 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
         case asset::AudioNodeType::Gain: {
             // Authored gain nodes are submix buses, created detached
             // (NO_DEFAULT_ATTACHMENT) and wired like any other node.
-            ma_sound_group_config cfg =
-                ma_sound_group_config_init_2(&engine);
+            ma_sound_group_config cfg = ma_sound_group_config_init_2(&engine);
             cfg.flags |= MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
-            if (ma_sound_group_init_ex(&engine, &cfg, &n.group)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: gain node '"
-                    << a.name << "' init failed\n";
+            if (ma_sound_group_init_ex(&engine, &cfg, &n.group) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: gain node '" << a.name << "' init failed\n";
                 return nullptr;
             }
             ma_sound_group_set_volume(&n.group, a.gain);
@@ -578,100 +558,80 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
             break;
         }
         case asset::AudioNodeType::LowPass: {
-            ma_lpf_node_config cfg = ma_lpf_node_config_init(channels,
-                rate, a.cutoff, a.order);
-            if (ma_lpf_node_init(graph, &cfg, nullptr, &n.lpf)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: lpf node '"
-                    << a.name << "' init failed\n";
+            ma_lpf_node_config cfg = ma_lpf_node_config_init(channels, rate, a.cutoff, a.order);
+            if (ma_lpf_node_init(graph, &cfg, nullptr, &n.lpf) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: lpf node '" << a.name << "' init failed\n";
                 return nullptr;
             }
             n.built = true;
             break;
         }
         case asset::AudioNodeType::HighPass: {
-            ma_hpf_node_config cfg = ma_hpf_node_config_init(channels,
-                rate, a.cutoff, a.order);
-            if (ma_hpf_node_init(graph, &cfg, nullptr, &n.hpf)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: hpf node '"
-                    << a.name << "' init failed\n";
+            ma_hpf_node_config cfg = ma_hpf_node_config_init(channels, rate, a.cutoff, a.order);
+            if (ma_hpf_node_init(graph, &cfg, nullptr, &n.hpf) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: hpf node '" << a.name << "' init failed\n";
                 return nullptr;
             }
             n.built = true;
             break;
         }
         case asset::AudioNodeType::BandPass: {
-            ma_bpf_node_config cfg = ma_bpf_node_config_init(channels,
-                rate, a.cutoff, a.order);
-            if (ma_bpf_node_init(graph, &cfg, nullptr, &n.bpf)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: bpf node '"
-                    << a.name << "' init failed\n";
+            ma_bpf_node_config cfg = ma_bpf_node_config_init(channels, rate, a.cutoff, a.order);
+            if (ma_bpf_node_init(graph, &cfg, nullptr, &n.bpf) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: bpf node '" << a.name << "' init failed\n";
                 return nullptr;
             }
             n.built = true;
             break;
         }
         case asset::AudioNodeType::Notch: {
-            ma_notch_node_config cfg = ma_notch_node_config_init(channels,
-                rate, a.q, a.frequency);
-            if (ma_notch_node_init(graph, &cfg, nullptr, &n.notch)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: notch node '"
-                    << a.name << "' init failed\n";
+            ma_notch_node_config cfg = ma_notch_node_config_init(channels, rate, a.q, a.frequency);
+            if (ma_notch_node_init(graph, &cfg, nullptr, &n.notch) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: notch node '" << a.name << "' init failed\n";
                 return nullptr;
             }
             n.built = true;
             break;
         }
         case asset::AudioNodeType::Peak: {
-            ma_peak_node_config cfg = ma_peak_node_config_init(channels,
-                rate, a.gainDb, a.q, a.frequency);
-            if (ma_peak_node_init(graph, &cfg, nullptr, &n.peak)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: peak node '"
-                    << a.name << "' init failed\n";
+            ma_peak_node_config cfg =
+                ma_peak_node_config_init(channels, rate, a.gainDb, a.q, a.frequency);
+            if (ma_peak_node_init(graph, &cfg, nullptr, &n.peak) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: peak node '" << a.name << "' init failed\n";
                 return nullptr;
             }
             n.built = true;
             break;
         }
         case asset::AudioNodeType::LowShelf: {
-            ma_loshelf_node_config cfg = ma_loshelf_node_config_init(
-                channels, rate, a.gainDb, a.q, a.frequency);
-            if (ma_loshelf_node_init(graph, &cfg, nullptr, &n.loshelf)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: loshelf node '"
-                    << a.name << "' init failed\n";
+            ma_loshelf_node_config cfg =
+                ma_loshelf_node_config_init(channels, rate, a.gainDb, a.q, a.frequency);
+            if (ma_loshelf_node_init(graph, &cfg, nullptr, &n.loshelf) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: loshelf node '" << a.name
+                          << "' init failed\n";
                 return nullptr;
             }
             n.built = true;
             break;
         }
         case asset::AudioNodeType::HighShelf: {
-            ma_hishelf_node_config cfg = ma_hishelf_node_config_init(
-                channels, rate, a.gainDb, a.q, a.frequency);
-            if (ma_hishelf_node_init(graph, &cfg, nullptr, &n.hishelf)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: hishelf node '"
-                    << a.name << "' init failed\n";
+            ma_hishelf_node_config cfg =
+                ma_hishelf_node_config_init(channels, rate, a.gainDb, a.q, a.frequency);
+            if (ma_hishelf_node_init(graph, &cfg, nullptr, &n.hishelf) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: hishelf node '" << a.name
+                          << "' init failed\n";
                 return nullptr;
             }
             n.built = true;
             break;
         }
         case asset::AudioNodeType::Delay: {
-            ma_uint32 frames = static_cast<ma_uint32>(
-                a.delaySeconds * static_cast<float>(rate));
+            ma_uint32 frames = static_cast<ma_uint32>(a.delaySeconds * static_cast<float>(rate));
             if (frames < 1)
                 frames = 1;
-            ma_delay_node_config cfg = ma_delay_node_config_init(channels,
-                rate, frames, a.decay);
-            if (ma_delay_node_init(graph, &cfg, nullptr, &n.delay)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: delay node '"
-                    << a.name << "' init failed\n";
+            ma_delay_node_config cfg = ma_delay_node_config_init(channels, rate, frames, a.decay);
+            if (ma_delay_node_init(graph, &cfg, nullptr, &n.delay) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: delay node '" << a.name << "' init failed\n";
                 return nullptr;
             }
             n.built = true;
@@ -689,8 +649,8 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
             cfg.wet = a.reverbWet;
             cfg.wetOnly = false;
             if (!SchroederReverbInit(graph, cfg, &n.reverb)) {
-                std::cerr << "[Audio] instance create: reverb node '"
-                    << a.name << "' init failed\n";
+                std::cerr << "[Audio] instance create: reverb node '" << a.name
+                          << "' init failed\n";
                 return nullptr;
             }
             n.built = true;
@@ -712,10 +672,8 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
     std::vector<std::vector<ma_node*>> targets(doc.nodes.size());
     for (const asset::AudioGraphEdge& e : doc.edges) {
         const int from = asset::AudioGraphFindNode(doc, e.from);
-        const int to = e.to == asset::kAudioGraphOutput
-            ? -1 : asset::AudioGraphFindNode(doc, e.to);
-        ma_node* dst = (to < 0) ? (ma_node*)&st->bus
-            : NodeOf(st->nodes[to]);
+        const int to = e.to == asset::kAudioGraphOutput ? -1 : asset::AudioGraphFindNode(doc, e.to);
+        ma_node* dst = (to < 0) ? (ma_node*)&st->bus : NodeOf(st->nodes[to]);
         targets[from].push_back(dst);
     }
     for (size_t i = 0; i < doc.nodes.size(); ++i) {
@@ -728,21 +686,18 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
         if (targets[i].size() == 1) {
             ma_node_attach_output_bus(self, 0, targets[i][0], 0);
         } else {
-            ma_splitter_node_config cfg =
-                ma_splitter_node_config_init(channels);
-            cfg.outputBusCount =
-                static_cast<ma_uint32>(targets[i].size());
-            if (ma_splitter_node_init(graph, &cfg, nullptr, &n.split)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: splitter for '"
-                    << doc.nodes[i].name << "' init failed\n";
+            ma_splitter_node_config cfg = ma_splitter_node_config_init(channels);
+            cfg.outputBusCount = static_cast<ma_uint32>(targets[i].size());
+            if (ma_splitter_node_init(graph, &cfg, nullptr, &n.split) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: splitter for '" << doc.nodes[i].name
+                          << "' init failed\n";
                 return nullptr;
             }
             n.hasSplit = true;
             ma_node_attach_output_bus(self, 0, &n.split.base, 0);
             for (size_t k = 0; k < targets[i].size(); ++k)
-                ma_node_attach_output_bus(&n.split.base,
-                    static_cast<ma_uint32>(k), targets[i][k], 0);
+                ma_node_attach_output_bus(
+                    &n.split.base, static_cast<ma_uint32>(k), targets[i][k], 0);
         }
     }
 
@@ -755,16 +710,14 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
     for (size_t ci = 0; ci < doc.cues.size(); ++ci) {
         const asset::AudioCue& cue = doc.cues[ci];
         for (size_t ti = 0; ti < cue.tracks.size(); ++ti) {
-            const int pi = asset::AudioGraphFindParam(doc,
-                cue.tracks[ti].param);
+            const int pi = asset::AudioGraphFindParam(doc, cue.tracks[ti].param);
             if (pi >= 0)
                 st->trackOfParam[ci][pi] = static_cast<int>(ti);
         }
     }
     // The param -> node join.
     for (size_t pi = 0; pi < doc.params.size(); ++pi)
-        st->nodeOfParam[pi] = asset::AudioGraphFindNode(doc,
-            doc.params[pi].node);
+        st->nodeOfParam[pi] = asset::AudioGraphFindNode(doc, doc.params[pi].node);
 
     for (int s = 0; s < sourceCount; ++s) {
         const int nodeOrdinal = st->nodeOfSource[s];
@@ -772,8 +725,8 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
         const ClipHandle clip = payload->clips[nodeOrdinal];
         if (!clip.valid()) {
             std::cerr << "[Audio] instance create: source '" << a.name
-                << "' has no resolved clip (the create was validated "
-                "caller-side — a pak or clip went away?)\n";
+                      << "' has no resolved clip (the create was validated "
+                         "caller-side — a pak or clip went away?)\n";
             return nullptr;
         }
         const std::vector<ma_node*>& dsts = targets[nodeOrdinal];
@@ -791,46 +744,40 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
             // in its OWN ref).
             {
                 const ClipData& cd = clips[clip.index];
-                const ma_uint64 frames = channels > 0
-                    ? cd.samples.size()
-                        / static_cast<ma_uint64>(channels)
-                    : 0;
-                if (frames == 0
-                    || ma_audio_buffer_ref_init(ma_format_f32,
-                        channels, cd.samples.data(), frames,
-                        &v.dataSource) != MA_SUCCESS) {
+                const ma_uint64 frames =
+                    channels > 0 ? cd.samples.size() / static_cast<ma_uint64>(channels) : 0;
+                if (frames == 0 ||
+                    ma_audio_buffer_ref_init(
+                        ma_format_f32, channels, cd.samples.data(), frames, &v.dataSource) !=
+                        MA_SUCCESS) {
                     std::cerr << "[Audio] instance create: voice"
-                        " cursor for '" << a.name << "' failed\n";
+                                 " cursor for '"
+                              << a.name << "' failed\n";
                     return nullptr;
                 }
                 v.dataSourceInit = true;
             }
             ma_sound_config cfg = ma_sound_config_init_2(&engine);
             cfg.pDataSource = (ma_data_source*)&v.dataSource;
-            cfg.flags = MA_SOUND_FLAG_NO_SPATIALIZATION
-                | MA_SOUND_FLAG_NO_PITCH;
+            cfg.flags = MA_SOUND_FLAG_NO_SPATIALIZATION | MA_SOUND_FLAG_NO_PITCH;
             if (dsts.size() == 1) {
                 cfg.pInitialAttachment = dsts[0];
             } else {
                 // Fan-out: the sound feeds a splitter, the splitter's
                 // outputs feed the destinations.
                 cfg.flags |= MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
-                ma_splitter_node_config sc =
-                    ma_splitter_node_config_init(channels);
-                sc.outputBusCount =
-                    static_cast<ma_uint32>(dsts.size());
-                if (ma_splitter_node_init(graph, &sc, nullptr, &v.split)
-                    != MA_SUCCESS) {
+                ma_splitter_node_config sc = ma_splitter_node_config_init(channels);
+                sc.outputBusCount = static_cast<ma_uint32>(dsts.size());
+                if (ma_splitter_node_init(graph, &sc, nullptr, &v.split) != MA_SUCCESS) {
                     std::cerr << "[Audio] instance create: voice "
-                        "splitter for '" << a.name << "' init failed\n";
+                                 "splitter for '"
+                              << a.name << "' init failed\n";
                     return nullptr;
                 }
                 v.hasSplit = true;
             }
-            if (ma_sound_init_ex(&engine, &cfg, &v.sound)
-                != MA_SUCCESS) {
-                std::cerr << "[Audio] instance create: voice for '"
-                    << a.name << "' init failed\n";
+            if (ma_sound_init_ex(&engine, &cfg, &v.sound) != MA_SUCCESS) {
+                std::cerr << "[Audio] instance create: voice for '" << a.name << "' init failed\n";
                 return nullptr;
             }
             v.built = true;
@@ -838,8 +785,7 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
             ma_sound_set_volume(&v.sound, 0.0f); // silent until started
             if (v.hasSplit) {
                 for (size_t k = 0; k < dsts.size(); ++k)
-                    ma_node_attach_output_bus(&v.split.base,
-                        static_cast<ma_uint32>(k), dsts[k], 0);
+                    ma_node_attach_output_bus(&v.split.base, static_cast<ma_uint32>(k), dsts[k], 0);
             }
         }
     }
@@ -855,16 +801,30 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
         if (ni >= 0) {
             const asset::AudioGraphNode& a = doc.nodes[ni];
             switch (doc.params[pi].field) {
-            case asset::AudioParamField::Gain: value = a.gain; break;
-            case asset::AudioParamField::Cutoff: value = a.cutoff; break;
+            case asset::AudioParamField::Gain:
+                value = a.gain;
+                break;
+            case asset::AudioParamField::Cutoff:
+                value = a.cutoff;
+                break;
             case asset::AudioParamField::Frequency:
                 value = a.frequency;
                 break;
-            case asset::AudioParamField::Q: value = a.q; break;
-            case asset::AudioParamField::GainDb: value = a.gainDb; break;
-            case asset::AudioParamField::Decay: value = a.decay; break;
-            case asset::AudioParamField::Wet: value = a.reverbWet; break;
-            case asset::AudioParamField::Rt60: value = a.reverbRt60; break;
+            case asset::AudioParamField::Q:
+                value = a.q;
+                break;
+            case asset::AudioParamField::GainDb:
+                value = a.gainDb;
+                break;
+            case asset::AudioParamField::Decay:
+                value = a.decay;
+                break;
+            case asset::AudioParamField::Wet:
+                value = a.reverbWet;
+                break;
+            case asset::AudioParamField::Rt60:
+                value = a.reverbRt60;
+                break;
             case asset::AudioParamField::Damping:
                 value = a.reverbDamping;
                 break;
@@ -886,7 +846,8 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
 // can click slightly; a smoothed param node is the documented
 // follow-up).
 void AudioEngine::Core::ApplyInstanceParam(GraphInstanceState& st,
-    uint32_t paramOrdinal, float value) {
+                                           uint32_t paramOrdinal,
+                                           float value) {
     const asset::AudioGraphDoc& doc = *st.doc;
     const asset::AudioGraphParam& p = doc.params[paramOrdinal];
     const int ni = st.nodeOfParam[paramOrdinal];
@@ -913,72 +874,68 @@ void AudioEngine::Core::ApplyInstanceParam(GraphInstanceState& st,
     case asset::AudioParamField::Cutoff:
         n.cutoff = value;
         if (n.type == asset::AudioNodeType::LowPass) {
-            ma_lpf_config cfg = ma_lpf_config_init(ma_format_f32,
-                channels, rate, value, n.order);
+            ma_lpf_config cfg = ma_lpf_config_init(ma_format_f32, channels, rate, value, n.order);
             ma_lpf_node_reinit(&cfg, &n.lpf);
         } else if (n.type == asset::AudioNodeType::HighPass) {
-            ma_hpf_config cfg = ma_hpf_config_init(ma_format_f32,
-                channels, rate, value, n.order);
+            ma_hpf_config cfg = ma_hpf_config_init(ma_format_f32, channels, rate, value, n.order);
             ma_hpf_node_reinit(&cfg, &n.hpf);
         } else if (n.type == asset::AudioNodeType::BandPass) {
-            ma_bpf_config cfg = ma_bpf_config_init(ma_format_f32,
-                channels, rate, value, n.order);
+            ma_bpf_config cfg = ma_bpf_config_init(ma_format_f32, channels, rate, value, n.order);
             ma_bpf_node_reinit(&cfg, &n.bpf);
         }
         break;
     case asset::AudioParamField::Frequency:
         n.frequency = value;
         if (n.type == asset::AudioNodeType::Notch) {
-            ma_notch_config cfg = ma_notch2_config_init(ma_format_f32,
-                channels, rate, n.q, value);
+            ma_notch_config cfg = ma_notch2_config_init(ma_format_f32, channels, rate, n.q, value);
             ma_notch_node_reinit(&cfg, &n.notch);
         } else if (n.type == asset::AudioNodeType::Peak) {
-            ma_peak_config cfg = ma_peak2_config_init(ma_format_f32,
-                channels, rate, n.gainDb, n.q, value);
+            ma_peak_config cfg =
+                ma_peak2_config_init(ma_format_f32, channels, rate, n.gainDb, n.q, value);
             ma_peak_node_reinit(&cfg, &n.peak);
         } else if (n.type == asset::AudioNodeType::LowShelf) {
-            ma_loshelf_config cfg = ma_loshelf2_config_init(ma_format_f32,
-                channels, rate, n.gainDb, n.q, value);
+            ma_loshelf_config cfg =
+                ma_loshelf2_config_init(ma_format_f32, channels, rate, n.gainDb, n.q, value);
             ma_loshelf_node_reinit(&cfg, &n.loshelf);
         } else if (n.type == asset::AudioNodeType::HighShelf) {
-            ma_hishelf_config cfg = ma_hishelf2_config_init(ma_format_f32,
-                channels, rate, n.gainDb, n.q, value);
+            ma_hishelf_config cfg =
+                ma_hishelf2_config_init(ma_format_f32, channels, rate, n.gainDb, n.q, value);
             ma_hishelf_node_reinit(&cfg, &n.hishelf);
         }
         break;
     case asset::AudioParamField::Q:
         n.q = value;
         if (n.type == asset::AudioNodeType::Notch) {
-            ma_notch_config cfg = ma_notch2_config_init(ma_format_f32,
-                channels, rate, value, n.frequency);
+            ma_notch_config cfg =
+                ma_notch2_config_init(ma_format_f32, channels, rate, value, n.frequency);
             ma_notch_node_reinit(&cfg, &n.notch);
         } else if (n.type == asset::AudioNodeType::Peak) {
-            ma_peak_config cfg = ma_peak2_config_init(ma_format_f32,
-                channels, rate, n.gainDb, value, n.frequency);
+            ma_peak_config cfg =
+                ma_peak2_config_init(ma_format_f32, channels, rate, n.gainDb, value, n.frequency);
             ma_peak_node_reinit(&cfg, &n.peak);
         } else if (n.type == asset::AudioNodeType::LowShelf) {
-            ma_loshelf_config cfg = ma_loshelf2_config_init(ma_format_f32,
-                channels, rate, n.gainDb, value, n.frequency);
+            ma_loshelf_config cfg = ma_loshelf2_config_init(
+                ma_format_f32, channels, rate, n.gainDb, value, n.frequency);
             ma_loshelf_node_reinit(&cfg, &n.loshelf);
         } else if (n.type == asset::AudioNodeType::HighShelf) {
-            ma_hishelf_config cfg = ma_hishelf2_config_init(ma_format_f32,
-                channels, rate, n.gainDb, value, n.frequency);
+            ma_hishelf_config cfg = ma_hishelf2_config_init(
+                ma_format_f32, channels, rate, n.gainDb, value, n.frequency);
             ma_hishelf_node_reinit(&cfg, &n.hishelf);
         }
         break;
     case asset::AudioParamField::GainDb:
         n.gainDb = value;
         if (n.type == asset::AudioNodeType::Peak) {
-            ma_peak_config cfg = ma_peak2_config_init(ma_format_f32,
-                channels, rate, value, n.q, n.frequency);
+            ma_peak_config cfg =
+                ma_peak2_config_init(ma_format_f32, channels, rate, value, n.q, n.frequency);
             ma_peak_node_reinit(&cfg, &n.peak);
         } else if (n.type == asset::AudioNodeType::LowShelf) {
-            ma_loshelf_config cfg = ma_loshelf2_config_init(ma_format_f32,
-                channels, rate, value, n.q, n.frequency);
+            ma_loshelf_config cfg =
+                ma_loshelf2_config_init(ma_format_f32, channels, rate, value, n.q, n.frequency);
             ma_loshelf_node_reinit(&cfg, &n.loshelf);
         } else if (n.type == asset::AudioNodeType::HighShelf) {
-            ma_hishelf_config cfg = ma_hishelf2_config_init(ma_format_f32,
-                channels, rate, value, n.q, n.frequency);
+            ma_hishelf_config cfg =
+                ma_hishelf2_config_init(ma_format_f32, channels, rate, value, n.q, n.frequency);
             ma_hishelf_node_reinit(&cfg, &n.hishelf);
         }
         break;
@@ -1008,7 +965,9 @@ void AudioEngine::Core::ApplyInstanceParam(GraphInstanceState& st,
 // (cues sustain indefinitely — a forever-hold would starve gameplay
 // set; the last automated value simply stays applied).
 static bool TrackOpinion(const std::vector<asset::AudioCueKeyframe>& keys,
-    double t, float baseline, float& out) {
+                         double t,
+                         float baseline,
+                         float& out) {
     if (keys.empty())
         return false;
     if (t > keys.back().t)
@@ -1034,9 +993,7 @@ static bool TrackOpinion(const std::vector<asset::AudioCueKeyframe>& keys,
                 return true;
             }
             const double f = (t - keys[k].t) / span;
-            out = keys[k].value
-                + static_cast<float>(f)
-                    * (keys[k + 1].value - keys[k].value);
+            out = keys[k].value + static_cast<float>(f) * (keys[k + 1].value - keys[k].value);
             return true;
         }
     }
@@ -1074,20 +1031,20 @@ static float LayerWeightOf(const GraphInstanceState& st, int cueOrdinal) {
 
 // Advances ONE cue layer: fires the source events whose time the
 // cursor crosses (edge-triggered through eventIdx) and returns.
-static void AdvanceLayer(GraphInstanceState& st, int cueOrdinal,
-    double& cursor, size_t& eventIdx, double dt) {
+static void AdvanceLayer(GraphInstanceState& st,
+                         int cueOrdinal,
+                         double& cursor,
+                         size_t& eventIdx,
+                         double dt) {
     if (cueOrdinal < 0)
         return;
     const asset::AudioCue& cue = st.doc->cues[cueOrdinal];
     const double newT = cursor + dt;
     const size_t cueCount = st.doc->cues.size();
-    while (eventIdx < cue.events.size()
-        && cue.events[eventIdx].t <= newT) {
+    while (eventIdx < cue.events.size() && cue.events[eventIdx].t <= newT) {
         const asset::AudioCueEvent& ev = cue.events[eventIdx];
-        const int nodeOrdinal = asset::AudioGraphFindNode(*st.doc,
-            ev.node);
-        const int s = nodeOrdinal >= 0
-            ? st.sourceOrdinalOfNode[nodeOrdinal] : -1;
+        const int nodeOrdinal = asset::AudioGraphFindNode(*st.doc, ev.node);
+        const int s = nodeOrdinal >= 0 ? st.sourceOrdinalOfNode[nodeOrdinal] : -1;
         if (s >= 0) {
             InstanceVoice& v = st.voices[s * cueCount + cueOrdinal];
             if (v.built) {
@@ -1111,8 +1068,7 @@ static void AdvanceLayer(GraphInstanceState& st, int cueOrdinal,
 // The per-boundary instance tick: advance both layers, evaluate +
 // apply automation, refresh the voice volumes (authored gain x layer
 // weight), complete fades. Mixer thread; dt = the chunk duration.
-void AudioEngine::Core::AdvanceInstance(GraphInstanceState& st,
-    double dt) {
+void AudioEngine::Core::AdvanceInstance(GraphInstanceState& st, double dt) {
     if (!st.built || !st.playing)
         return;
     AdvanceLayer(st, st.currentCue, st.curCursor, st.curEventIdx, dt);
@@ -1127,25 +1083,23 @@ void AudioEngine::Core::AdvanceInstance(GraphInstanceState& st,
     // past that the param releases to manual control.
     const size_t paramCount = st.doc->params.size();
     for (size_t pi = 0; pi < paramCount; ++pi) {
-        const asset::AudioCue* curCue = st.currentCue >= 0
-            ? &st.doc->cues[st.currentCue] : nullptr;
-        const asset::AudioCue* fadeCue = st.fading && st.fadeCue >= 0
-            ? &st.doc->cues[st.fadeCue] : nullptr;
+        const asset::AudioCue* curCue = st.currentCue >= 0 ? &st.doc->cues[st.currentCue] : nullptr;
+        const asset::AudioCue* fadeCue =
+            st.fading && st.fadeCue >= 0 ? &st.doc->cues[st.fadeCue] : nullptr;
         const int tiCur = curCue ? st.trackOfParam[st.currentCue][pi] : -1;
         const int tiFade = fadeCue ? st.trackOfParam[st.fadeCue][pi] : -1;
         float vCur = 0.0f, vFade = 0.0f;
-        const bool hasCur = tiCur >= 0
-            && TrackOpinion(curCue->tracks[tiCur].keys, st.curCursor,
-                st.curBaseline[pi], vCur);
-        const bool hasFade = tiFade >= 0
-            && TrackOpinion(fadeCue->tracks[tiFade].keys, st.fadeCursor,
-                st.fadeBaseline[pi], vFade);
+        const bool hasCur =
+            tiCur >= 0 &&
+            TrackOpinion(curCue->tracks[tiCur].keys, st.curCursor, st.curBaseline[pi], vCur);
+        const bool hasFade =
+            tiFade >= 0 &&
+            TrackOpinion(fadeCue->tracks[tiFade].keys, st.fadeCursor, st.fadeBaseline[pi], vFade);
         if (!hasCur && !hasFade)
             continue; // no active opinion — the store holds
         float value;
         if (hasCur && hasFade) {
-            const float w = std::clamp(
-                st.fadeT / st.fadeDuration, 0.0f, 1.0f);
+            const float w = std::clamp(st.fadeT / st.fadeDuration, 0.0f, 1.0f);
             value = vCur + (vFade - vCur) * w;
         } else if (hasCur) {
             value = vCur;
@@ -1155,8 +1109,7 @@ void AudioEngine::Core::AdvanceInstance(GraphInstanceState& st,
         if (value != st.lastApplied[pi]) {
             st.paramStore[pi] = value;
             st.lastApplied[pi] = value;
-            ApplyInstanceParam(st, static_cast<uint32_t>(pi),
-                value);
+            ApplyInstanceParam(st, static_cast<uint32_t>(pi), value);
         }
     }
 
@@ -1174,8 +1127,7 @@ void AudioEngine::Core::AdvanceInstance(GraphInstanceState& st,
             v.lastVolume = -1.0f;
             continue;
         }
-        const float target = v.authoredGain
-            * LayerWeightOf(st, v.cueOrdinal);
+        const float target = v.authoredGain * LayerWeightOf(st, v.cueOrdinal);
         if (target != v.lastVolume) {
             ma_sound_set_volume(&v.sound, target);
             v.lastVolume = target;
@@ -1197,8 +1149,7 @@ void AudioEngine::Core::AdvanceInstance(GraphInstanceState& st,
 
 // ---- instance control ops (drain-time, mixer thread) ----------------------
 
-void AudioEngine::Core::ApplyInstancePlay(GraphInstanceState& st,
-    uint32_t cueOrdinal) {
+void AudioEngine::Core::ApplyInstancePlay(GraphInstanceState& st, uint32_t cueOrdinal) {
     if (!st.built || cueOrdinal >= st.doc->cues.size())
         return;
     // Snap semantics: any running fade completes instantly (the old
@@ -1224,7 +1175,8 @@ void AudioEngine::Core::ApplyInstancePlay(GraphInstanceState& st,
 }
 
 void AudioEngine::Core::ApplyInstanceCrossFade(GraphInstanceState& st,
-    uint32_t cueOrdinal, float fadeSeconds) {
+                                               uint32_t cueOrdinal,
+                                               float fadeSeconds) {
     if (!st.built || cueOrdinal >= st.doc->cues.size())
         return;
     if (fadeSeconds <= 0.0f || st.currentCue < 0 || !st.playing) {
@@ -1261,7 +1213,8 @@ void AudioEngine::Core::ApplyInstanceStop(GraphInstanceState& st) {
 }
 
 void AudioEngine::Core::ApplyInstanceSetParam(GraphInstanceState& st,
-    uint32_t paramOrdinal, float value) {
+                                              uint32_t paramOrdinal,
+                                              float value) {
     if (!st.built || paramOrdinal >= st.doc->params.size())
         return;
     st.paramStore[paramOrdinal] = value;
@@ -1305,8 +1258,7 @@ bool AudioEngine::Init(const Config& cfg) {
 
     if (!SDL_WasInit(SDL_INIT_AUDIO)) {
         if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-            lastError_ = std::string("SDL audio init failed: ")
-                + SDL_GetError();
+            lastError_ = std::string("SDL audio init failed: ") + SDL_GetError();
             return false;
         }
     }
@@ -1325,8 +1277,7 @@ bool AudioEngine::Init(const Config& cfg) {
     ma_engine_config maCfg = ma_engine_config_init();
     maCfg.channels = static_cast<ma_uint32>(config_.channels);
     maCfg.sampleRate = static_cast<ma_uint32>(config_.sampleRate);
-    maCfg.periodSizeInFrames =
-        static_cast<ma_uint32>(config_.framesPerChunk);
+    maCfg.periodSizeInFrames = static_cast<ma_uint32>(config_.framesPerChunk);
     maCfg.noDevice = MA_TRUE;
     maCfg.listenerCount = 1;
     // Volume smoothing for every sound/group (the per-boundary
@@ -1347,7 +1298,7 @@ bool AudioEngine::Init(const Config& cfg) {
     // Play(WorldSfx) degrades to a direct endpoint attach.
     if (!core_->BuildWorldBus())
         std::cerr << "[Audio] environmental bus init failed -"
-            " world-SFX voices fall back to direct (no reverb)\n";
+                     " world-SFX voices fall back to direct (no reverb)\n";
 
     if (config_.deviceless) {
         initialized_ = true;
@@ -1393,7 +1344,7 @@ void AudioEngine::Shutdown() {
         // above; the reverb's delay lines free here).
         core_->TeardownWorldBus();
         core_->clips.clear(); // the decoded bytes (voice cursors gone)
-        delete core_; // uninits the engine last (Core dtor)
+        delete core_;         // uninits the engine last (Core dtor)
         core_ = nullptr;
     }
     if (deviceStream_)
@@ -1417,7 +1368,8 @@ bool AudioEngine::OpenDeviceStream() {
     spec.format = SDL_AUDIO_F32;
     spec.channels = config_.channels;
     spec.freq = config_.sampleRate;
-    deviceStream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+    deviceStream_ =
+        SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
     if (!deviceStream_) {
         lastError_ = std::string("SDL_OpenAudioDeviceStream failed: ") + SDL_GetError();
         return false;
@@ -1557,7 +1509,7 @@ ClipHandle AudioEngine::StoreClip(std::vector<float>&& samples) {
     cd.alive = true;
     clipAlive_[idx] = 1;
     SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
-    return ClipHandle{ idx };
+    return ClipHandle{idx};
 }
 
 void AudioEngine::UnloadClip(ClipHandle clip) {
@@ -1583,8 +1535,7 @@ bool AudioEngine::ClipValid(ClipHandle clip) const {
     if (!clip.valid() || !mutex_)
         return false;
     SDL_LockMutex(static_cast<SDL_Mutex*>(mutex_));
-    const bool ok = clip.index < clipAlive_.size()
-        && clipAlive_[clip.index] != 0;
+    const bool ok = clip.index < clipAlive_.size() && clipAlive_[clip.index] != 0;
     SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
     return ok;
 }
@@ -1597,8 +1548,11 @@ void AudioEngine::PushCommand(Command&& c) {
     SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
 }
 
-VoiceHandle AudioEngine::Play(ClipHandle clip, float volume, bool loop,
-    float pitch, AudioRoute route) {
+VoiceHandle AudioEngine::Play(ClipHandle clip,
+                              float volume,
+                              bool loop,
+                              float pitch,
+                              AudioRoute route) {
     if (!clip.valid() || !mutex_)
         return {};
     Command c{};
@@ -1612,7 +1566,7 @@ VoiceHandle AudioEngine::Play(ClipHandle clip, float volume, bool loop,
     if (nextVoiceId_ == 0)
         nextVoiceId_ = 1;
     PushCommand(std::move(c));
-    return VoiceHandle{ c.voiceId };
+    return VoiceHandle{c.voiceId};
 }
 
 void AudioEngine::Stop(VoiceHandle voice) {
@@ -1650,8 +1604,7 @@ void AudioEngine::SetVoicePan(VoiceHandle voice, float pan) {
     PushCommand(std::move(c));
 }
 
-void AudioEngine::SetVoiceSpatial(VoiceHandle voice, float volume,
-    float pan) {
+void AudioEngine::SetVoiceSpatial(VoiceHandle voice, float volume, float pan) {
     if (!voice.valid())
         return;
     Command c{};
@@ -1662,8 +1615,7 @@ void AudioEngine::SetVoiceSpatial(VoiceHandle voice, float volume,
     PushCommand(std::move(c));
 }
 
-void AudioEngine::ConstantPowerPan(float pan, float& left,
-    float& right) {
+void AudioEngine::ConstantPowerPan(float pan, float& left, float& right) {
     // Equal-loudness (constant power) pan: theta sweeps the quadrant
     // 0..pi/2 as pan goes -1..+1; cos/sin keep the summed power at 1
     // (linear pan's -6dB center dip audibly attenuates moving sounds).
@@ -1677,8 +1629,8 @@ bool AudioEngine::IsVoicePlaying(VoiceHandle voice) const {
     if (!voice.valid() || !mutex_)
         return false;
     SDL_LockMutex(static_cast<SDL_Mutex*>(mutex_));
-    const bool playing = std::find(liveVoiceIds_.begin(),
-        liveVoiceIds_.end(), voice.id) != liveVoiceIds_.end();
+    const bool playing =
+        std::find(liveVoiceIds_.begin(), liveVoiceIds_.end(), voice.id) != liveVoiceIds_.end();
     SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
     return playing;
 }
@@ -1728,9 +1680,10 @@ bool AudioEngine::ValidateInstance(smvk::AudioInstanceHandle handle) const {
     return s.alive && s.generation == handle.Generation();
 }
 
-smvk::AudioInstanceHandle AudioEngine::CreateInstance(
-    const asset::AudioGraphDoc& doc, AudioClipResolver resolver,
-    void* resolverUser, std::string* err) {
+smvk::AudioInstanceHandle AudioEngine::CreateInstance(const asset::AudioGraphDoc& doc,
+                                                      AudioClipResolver resolver,
+                                                      void* resolverUser,
+                                                      std::string* err) {
     const auto fail = [&](const std::string& m) {
         if (err)
             *err = m;
@@ -1740,7 +1693,7 @@ smvk::AudioInstanceHandle AudioEngine::CreateInstance(
         return fail("audio engine not initialized");
     if (doc.nodes.empty() || doc.cues.empty())
         return fail("the graph doc is empty (it must have passed "
-            "ParseAudioGraphText)");
+                    "ParseAudioGraphText)");
 
     // Resolve every source's clip HERE — the caller thread. Pak reads
     // + WAV decode never touch the mixer thread; a failed resolution
@@ -1751,18 +1704,16 @@ smvk::AudioInstanceHandle AudioEngine::CreateInstance(
             continue;
         if (!resolver)
             return fail("no clip resolver supplied");
-        const ClipHandle h = resolver(resolverUser,
-            doc.nodes[i].sound.c_str());
+        const ClipHandle h = resolver(resolverUser, doc.nodes[i].sound.c_str());
         bool ok = h.valid();
         if (ok) {
             SDL_LockMutex(static_cast<SDL_Mutex*>(mutex_));
-            ok = h.index < core_->clips.size()
-                && core_->clips[h.index].alive;
+            ok = h.index < core_->clips.size() && core_->clips[h.index].alive;
             SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
         }
         if (!ok)
-            return fail("sound '" + doc.nodes[i].sound + "' (node '"
-                + doc.nodes[i].name + "') failed to resolve");
+            return fail("sound '" + doc.nodes[i].sound + "' (node '" + doc.nodes[i].name +
+                        "') failed to resolve");
         clips[i] = h;
     }
 
@@ -1821,8 +1772,7 @@ bool AudioEngine::PumpOffline(float* out, int frames) {
         return false;
     DrainCommands();
     if (!paused_) {
-        const double dt = static_cast<double>(frames)
-            / static_cast<double>(config_.sampleRate);
+        const double dt = static_cast<double>(frames) / static_cast<double>(config_.sampleRate);
         for (GraphInstanceState* st : core_->instances)
             if (st)
                 core_->AdvanceInstance(*st, dt);
@@ -1843,8 +1793,7 @@ bool AudioEngine::PumpOffline(float* out, int frames) {
         instancePlaying_.assign(core_->instances.size(), 0);
         for (size_t i = 0; i < core_->instances.size(); ++i)
             if (core_->instances[i])
-                instancePlaying_[i] =
-                    core_->instances[i]->playing ? 1 : 0;
+                instancePlaying_[i] = core_->instances[i]->playing ? 1 : 0;
         SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
     }
     MixChunk(out, frames);
@@ -1864,8 +1813,7 @@ void AudioEngine::DrainCommands() {
     for (const auto& c : cmds) {
         switch (c.type) {
         case Command::Type::Play: {
-            if (c.clipIndex >= core_->clips.size()
-                || !core_->clips[c.clipIndex].alive)
+            if (c.clipIndex >= core_->clips.size() || !core_->clips[c.clipIndex].alive)
                 break; // the clip died between Play and the drain
             Voice* slot = nullptr;
             for (auto& v : core_->voices) {
@@ -1874,9 +1822,7 @@ void AudioEngine::DrainCommands() {
                     break;
                 }
             }
-            if (!slot
-                && static_cast<int>(core_->voices.size())
-                    < config_.maxVoices) {
+            if (!slot && static_cast<int>(core_->voices.size()) < config_.maxVoices) {
                 core_->voices.emplace_back();
                 slot = &core_->voices.back();
             }
@@ -1888,37 +1834,35 @@ void AudioEngine::DrainCommands() {
             // last voice may have exhausted).
             {
                 const ClipData& cd = core_->clips[c.clipIndex];
-                const ma_uint64 frames = config_.channels > 0
-                    ? cd.samples.size()
-                        / static_cast<ma_uint64>(config_.channels)
-                    : 0;
+                const ma_uint64 frames =
+                    config_.channels > 0
+                        ? cd.samples.size() / static_cast<ma_uint64>(config_.channels)
+                        : 0;
                 if (frames == 0) {
                     std::cerr << "[Audio] voice over an empty clip"
-                        " (dropped)\n";
+                                 " (dropped)\n";
                     break;
                 }
                 if (ma_audio_buffer_ref_init(ma_format_f32,
-                        static_cast<ma_uint32>(config_.channels),
-                        cd.samples.data(), frames, &slot->dataSource)
-                    != MA_SUCCESS) {
+                                             static_cast<ma_uint32>(config_.channels),
+                                             cd.samples.data(),
+                                             frames,
+                                             &slot->dataSource) != MA_SUCCESS) {
                     std::cerr << "[Audio] voice cursor init failed"
-                        " (dropped)\n";
+                                 " (dropped)\n";
                     break;
                 }
                 slot->dataSourceInit = true;
             }
-            ma_sound_config cfg =
-                ma_sound_config_init_2(&core_->engine);
+            ma_sound_config cfg = ma_sound_config_init_2(&core_->engine);
             cfg.pDataSource = (ma_data_source*)&slot->dataSource;
             cfg.flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
             // The ROUTE: the shared environmental bus (spatial scene
             // voices) or the endpoint (everything else; a failed bus
             // build degrades WorldSfx to the direct attach).
             if (c.route == 1u && core_->worldBusBuilt)
-                cfg.pInitialAttachment =
-                    (ma_node*)&core_->worldSfxGroup;
-            if (ma_sound_init_ex(&core_->engine, &cfg, &slot->sound)
-                != MA_SUCCESS) {
+                cfg.pInitialAttachment = (ma_node*)&core_->worldSfxGroup;
+            if (ma_sound_init_ex(&core_->engine, &cfg, &slot->sound) != MA_SUCCESS) {
                 std::cerr << "[Audio] voice init failed (dropped)\n";
                 core_->UninitVoice(*slot);
                 break;
@@ -1926,8 +1870,7 @@ void AudioEngine::DrainCommands() {
             ma_sound_set_volume(&slot->sound, c.volume);
             ma_sound_set_pan(&slot->sound, c.pan);
             ma_sound_set_pitch(&slot->sound, c.pitch);
-            ma_sound_set_looping(&slot->sound,
-                c.loop ? MA_TRUE : MA_FALSE);
+            ma_sound_set_looping(&slot->sound, c.loop ? MA_TRUE : MA_FALSE);
             ma_sound_start(&slot->sound);
             slot->inUse = true;
             slot->id = c.voiceId;
@@ -2020,8 +1963,7 @@ void AudioEngine::DrainCommands() {
             if (c.slot >= core_->instances.size())
                 core_->instances.resize(c.slot + 1, nullptr);
             GraphInstanceState* existing = core_->instances[c.slot];
-            if (existing
-                && existing->generation == c.generation) {
+            if (existing && existing->generation == c.generation) {
                 // A same-generation rebuild (should not happen —
                 // destroys bump the generation); drop the old state.
                 core_->UninitInstance(existing);
@@ -2029,8 +1971,8 @@ void AudioEngine::DrainCommands() {
             }
             GraphInstanceState* st = core_->BuildInstance(payload.get());
             if (!st) {
-                std::cerr << "[Audio] instance create failed (slot "
-                    << c.slot << ") — the slot stays empty\n";
+                std::cerr << "[Audio] instance create failed (slot " << c.slot
+                          << ") — the slot stays empty\n";
                 break;
             }
             core_->instances[c.slot] = st;
@@ -2061,8 +2003,7 @@ void AudioEngine::DrainCommands() {
                 core_->ApplyInstancePlay(*st, c.ordinal);
                 break;
             case Command::Type::InstanceCrossFade:
-                core_->ApplyInstanceCrossFade(*st, c.ordinal,
-                    c.fadeSeconds);
+                core_->ApplyInstanceCrossFade(*st, c.ordinal, c.fadeSeconds);
                 break;
             case Command::Type::InstanceStop:
                 core_->ApplyInstanceStop(*st);
@@ -2103,8 +2044,7 @@ void AudioEngine::MixChunk(float* out, int frames) {
     // buffers).
     ma_uint64 read = 0;
     SDL_LockMutex(static_cast<SDL_Mutex*>(mutex_));
-    ma_engine_read_pcm_frames(&core_->engine, out,
-        static_cast<ma_uint64>(frames), &read);
+    ma_engine_read_pcm_frames(&core_->engine, out, static_cast<ma_uint64>(frames), &read);
     SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
     if (read < static_cast<ma_uint64>(frames))
         std::fill(out + read * ch, out + n, 0.0f);
@@ -2148,8 +2088,7 @@ void AudioEngine::MixerLoop() {
             instancePlaying_.assign(core_->instances.size(), 0);
             for (size_t i = 0; i < core_->instances.size(); ++i)
                 if (core_->instances[i])
-                    instancePlaying_[i] =
-                        core_->instances[i]->playing ? 1 : 0;
+                    instancePlaying_[i] = core_->instances[i]->playing ? 1 : 0;
             SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
         }
         MixChunk(mix.data(), frames);
@@ -2158,8 +2097,8 @@ void AudioEngine::MixerLoop() {
             // SDL_GetAudioStreamQueued returns bytes.
             const int bytesPerMs = (config_.sampleRate * ch * 4) / 1000;
             if (queued < bytesPerMs * targetQueuedMs) {
-                SDL_PutAudioStreamData(stream, mix.data(),
-                    static_cast<int>(mix.size() * sizeof(float)));
+                SDL_PutAudioStreamData(
+                    stream, mix.data(), static_cast<int>(mix.size() * sizeof(float)));
             } else {
                 SDL_Delay(2);
             }
@@ -2191,10 +2130,8 @@ void AudioInstance::play() {
 void AudioInstance::playCue(uint32_t cueOrdinal) {
     if (!m_engine || !m_engine->ValidateInstance(m_handle))
         return;
-    if (m_engine->instanceSlots_[m_handle.Index()].doc
-        && cueOrdinal
-            >= m_engine->instanceSlots_[m_handle.Index()]
-                .doc->cues.size())
+    if (m_engine->instanceSlots_[m_handle.Index()].doc &&
+        cueOrdinal >= m_engine->instanceSlots_[m_handle.Index()].doc->cues.size())
         return;
     AudioEngine::Command c{};
     c.type = AudioEngine::Command::Type::InstancePlay;
@@ -2296,8 +2233,8 @@ bool AudioInstance::playing() const {
         return false;
     SDL_LockMutex(static_cast<SDL_Mutex*>(m_engine->mutex_));
     const uint32_t idx = m_handle.Index();
-    const bool playing = idx < m_engine->instancePlaying_.size()
-        && m_engine->instancePlaying_[idx] != 0;
+    const bool playing =
+        idx < m_engine->instancePlaying_.size() && m_engine->instancePlaying_[idx] != 0;
     SDL_UnlockMutex(static_cast<SDL_Mutex*>(m_engine->mutex_));
     return playing;
 }

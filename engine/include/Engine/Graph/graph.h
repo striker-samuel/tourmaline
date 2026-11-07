@@ -20,12 +20,12 @@ namespace tour::graph {
 enum class PortDirection : uint8_t { Input, Output };
 struct Port {
     std::string name;
-    std::string type;     // domain-defined semantic type, e.g. "field"
+    std::string type; // domain-defined semantic type, e.g. "field"
     PortDirection direction = PortDirection::Input;
     bool multiple = false; // only meaningful on input ports
 };
 struct Node {
-    uint32_t id = 0; // stable within authored document; zero invalid
+    uint32_t id = 0;  // stable within authored document; zero invalid
     std::string type; // domain-defined node schema name
     std::vector<Port> ports;
 };
@@ -39,11 +39,14 @@ struct Document {
     std::map<uint32_t, Link> links;
 
     [[nodiscard]] const Port* FindPort(uint32_t id,
-        std::string_view name, PortDirection direction) const {
+                                       std::string_view name,
+                                       PortDirection direction) const {
         auto n = nodes.find(id);
-        if (n == nodes.end()) return nullptr;
+        if (n == nodes.end())
+            return nullptr;
         for (const Port& p : n->second.ports)
-            if (p.name == name && p.direction == direction) return &p;
+            if (p.name == name && p.direction == direction)
+                return &p;
         return nullptr;
     }
 };
@@ -60,8 +63,7 @@ struct ValidationResult {
 // Structural consistency is domain-independent. Reject malformed ids,
 // unknown ports, channel/type mismatches, multiple wires into a single
 // input and cycles (unless explicitly allowed by the consumer).
-inline ValidationResult Validate(const Document& doc,
-    ValidationPolicy policy = {}) {
+inline ValidationResult Validate(const Document& doc, ValidationPolicy policy = {}) {
     ValidationResult result;
     std::map<uint32_t, uint32_t> indegrees;
     std::map<uint32_t, std::vector<uint32_t>> outgoing;
@@ -72,8 +74,7 @@ inline ValidationResult Validate(const Document& doc,
         }
         std::set<std::pair<PortDirection, std::string>> names;
         for (const Port& p : node.ports)
-            if (p.name.empty() || p.type.empty()
-                || !names.emplace(p.direction, p.name).second) {
+            if (p.name.empty() || p.type.empty() || !names.emplace(p.direction, p.name).second) {
                 result.error = "duplicate or empty graph port";
                 return result;
             }
@@ -81,21 +82,18 @@ inline ValidationResult Validate(const Document& doc,
     }
     std::set<std::pair<uint32_t, std::string>> occupiedInputs;
     for (const auto& [id, link] : doc.links) {
-        if (!id || id != link.id || !link.from || !link.to
-            || (!policy.allowSelfLinks && link.from == link.to)) {
+        if (!id || id != link.id || !link.from || !link.to ||
+            (!policy.allowSelfLinks && link.from == link.to)) {
             result.error = "invalid graph link identity or self-link";
             return result;
         }
-        const Port* src = doc.FindPort(link.from, link.output,
-            PortDirection::Output);
-        const Port* dst = doc.FindPort(link.to, link.input,
-            PortDirection::Input);
+        const Port* src = doc.FindPort(link.from, link.output, PortDirection::Output);
+        const Port* dst = doc.FindPort(link.to, link.input, PortDirection::Input);
         if (!src || !dst || src->type != dst->type) {
             result.error = "dangling or incompatible graph ports";
             return result;
         }
-        if (!dst->multiple
-            && !occupiedInputs.emplace(link.to, link.input).second) {
+        if (!dst->multiple && !occupiedInputs.emplace(link.to, link.input).second) {
             result.error = "input port has more than one link";
             return result;
         }
@@ -106,7 +104,8 @@ inline ValidationResult Validate(const Document& doc,
     // cooked traversal independent of insertion/undo history.
     std::set<uint32_t> ready;
     for (const auto& [id, count] : indegrees)
-        if (!count) ready.insert(id);
+        if (!count)
+            ready.insert(id);
     while (!ready.empty()) {
         const uint32_t id = *ready.begin();
         ready.erase(ready.begin());

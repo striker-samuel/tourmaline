@@ -30,7 +30,10 @@ inline bool ParseMap(std::string_view input, Map& output, std::string& error) {
     std::istringstream lines{std::string(input)};
     std::string line;
     Map candidate{};
-    struct Pending { uint64_t parentId = 0; MapNode node; };
+    struct Pending {
+        uint64_t parentId = 0;
+        MapNode node;
+    };
     std::vector<Pending> pending;
     size_t lineNumber = 0;
     bool sawHeader = false;
@@ -41,14 +44,15 @@ inline bool ParseMap(std::string_view input, Map& output, std::string& error) {
     while (std::getline(lines, line)) {
         ++lineNumber;
         const auto start = line.find_first_not_of(" \t\r");
-        if (start == std::string::npos || line[start] == '#') continue;
+        if (start == std::string::npos || line[start] == '#')
+            continue;
         std::istringstream in(line.substr(start));
         std::string command, trailing;
         in >> command;
         if (!sawHeader) {
             uint32_t version = 0;
-            if (command != "map" || !(in >> version >> candidate.id)
-                || version != 1 || candidate.id == 0 || (in >> trailing))
+            if (command != "map" || !(in >> version >> candidate.id) || version != 1 ||
+                candidate.id == 0 || (in >> trailing))
                 return fail("expected 'map 1 WORLD_ID'");
             sawHeader = true;
             continue;
@@ -59,8 +63,8 @@ inline bool ParseMap(std::string_view input, Map& output, std::string& error) {
             return fail("map node count exceeds limit");
         Pending rec{};
         unsigned persistent = 0;
-        if (!(in >> rec.node.id >> rec.parentId >> rec.node.sceneAssetId >> persistent)
-            || persistent > 1 || !rec.node.id)
+        if (!(in >> rec.node.id >> rec.parentId >> rec.node.sceneAssetId >> persistent) ||
+            persistent > 1 || !rec.node.id)
             return fail("invalid node identifiers/flags");
         rec.node.persistent = persistent != 0;
         if (command == "node") {
@@ -69,18 +73,22 @@ inline bool ParseMap(std::string_view input, Map& output, std::string& error) {
                 return fail("node requires local translation XYZ");
             if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
                 return fail("nonfinite translation");
-            rec.node.localTransform = glm::translate(glm::dmat4(1), glm::dvec3(x,y,z));
+            rec.node.localTransform = glm::translate(glm::dmat4(1), glm::dvec3(x, y, z));
         } else {
             for (int c = 0; c < 4; ++c)
                 for (int r = 0; r < 4; ++r)
-                    if (!(in >> rec.node.localTransform[c][r])
-                        || !std::isfinite(rec.node.localTransform[c][r]))
+                    if (!(in >> rec.node.localTransform[c][r]) ||
+                        !std::isfinite(rec.node.localTransform[c][r]))
                         return fail("matrix requires 16 finite column-major doubles");
         }
-        if (in >> trailing) return fail("unexpected trailing tokens");
+        if (in >> trailing)
+            return fail("unexpected trailing tokens");
         pending.push_back(std::move(rec));
     }
-    if (!sawHeader) { error = "missing map header"; return false; }
+    if (!sawHeader) {
+        error = "missing map header";
+        return false;
+    }
     std::unordered_map<uint64_t, uint32_t> slots;
     for (uint32_t i = 0; i < pending.size(); ++i)
         if (!slots.emplace(pending[i].node.id, i).second) {

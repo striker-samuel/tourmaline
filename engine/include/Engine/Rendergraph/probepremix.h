@@ -44,9 +44,9 @@
 // design and A/B-able via the pin).
 
 #include <Engine/Memory/pool.h>
-#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Rendergraph/forwardplus.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
 #include <glm/glm.hpp>
@@ -65,21 +65,21 @@ inline constexpr uint32_t kDefaultBlendSize = 128;
 // probepremix_weights/mix.cs.hlsl + environment.hlsli). All GPU-owned:
 // the CPU never reads it back (no classification, no readback stall).
 struct alignas(16) BlendSelectionGpu {
-	uint32_t count = 0;                                     // 0
-	uint32_t indices[kMaxBlendProbes] = {};                 // 4  cubemap bindless
-	float weights[kMaxBlendProbes] = {};                    // 20 normalized
-	// The parallax box: WEIGHT-LERPED across the selected set (lerping
-	// the capture positions + the plane distances by the mix weights is
-	// exactly lerping the AABB corners - one smooth box that tracks the
-	// blend, no popping when the dominant slot swaps while moving). The
-	// same packing the lit walk reads off the light tail
-	// (MakeProbeLightEntry); pos = the lerped capture position,
-	// boxMinus/boxPlus = the lerped plane distances.
-	float pos[3] = {};                                       // 36
-	float boxMinus[3] = {};                                 // 48
-	float boxPlus[3] = {};                                  // 60
-	uint32_t pad0 = 0;                                      // 72
-	uint32_t pad1 = 0;                                      // 76
+    uint32_t count = 0;                     // 0
+    uint32_t indices[kMaxBlendProbes] = {}; // 4  cubemap bindless
+    float weights[kMaxBlendProbes] = {};    // 20 normalized
+    // The parallax box: WEIGHT-LERPED across the selected set (lerping
+    // the capture positions + the plane distances by the mix weights is
+    // exactly lerping the AABB corners - one smooth box that tracks the
+    // blend, no popping when the dominant slot swaps while moving). The
+    // same packing the lit walk reads off the light tail
+    // (MakeProbeLightEntry); pos = the lerped capture position,
+    // boxMinus/boxPlus = the lerped plane distances.
+    float pos[3] = {};      // 36
+    float boxMinus[3] = {}; // 48
+    float boxPlus[3] = {};  // 60
+    uint32_t pad0 = 0;      // 72
+    uint32_t pad1 = 0;      // 76
 };
 static_assert(sizeof(BlendSelectionGpu) == 80);
 
@@ -105,176 +105,179 @@ static_assert(sizeof(BlendSelectionGpu) == 80);
 // its inner region outweighs the outer one - the original's point.
 // ---------------------------------------------------------------------------
 struct NdfCandidate {
-	uint32_t cubemap = UINT32_MAX; // the candidate's cubemap bindless index
-	float ndf = 1.0f;               // clamped: 0 = inner, [0,1), 1 = out
-	float influence = 0.0f;         // tie-break (wide wins)
+    uint32_t cubemap = UINT32_MAX; // the candidate's cubemap bindless index
+    float ndf = 1.0f;              // clamped: 0 = inner, [0,1), 1 = out
+    float influence = 0.0f;        // tie-break (wide wins)
 };
 
-inline void ComputeNdfWeights(const NdfCandidate* candidates, uint32_t n,
-	float* outWeights, uint32_t maxOut = kMaxBlendProbes) {
-	for (uint32_t i = 0; i < maxOut; ++i)
-		outWeights[i] = 0.0f;
-	if (n == 0 || n > maxOut)
-		return;
-	// The designated dominant inner hit (if any): widest influence wins,
-	// then the lowest cubemap index.
-	int32_t dominant = -1;
-	for (uint32_t i = 0; i < n; ++i) {
-		if (candidates[i].cubemap == UINT32_MAX || candidates[i].ndf >= 1.0f)
-			continue; // out of influence entirely
-		if (candidates[i].ndf <= 0.0f) {
-			if (dominant < 0
-				|| candidates[i].influence > candidates[dominant].influence
-				|| (candidates[i].influence == candidates[dominant].influence
-					&& candidates[i].cubemap < candidates[dominant].cubemap))
-				dominant = int32_t(i);
-		}
-	}
-	if (dominant >= 0) {
-		// Inner-region hit: the designated dominant probe EXCLUSIVE
-		// (everyone else 0 - including other inner hits).
-		for (uint32_t i = 0; i < n; ++i)
-			outWeights[i] = 0.0f;
-		outWeights[dominant] = 1.0f;
-		return;
-	}
-	// Transition region only. One candidate: the a-term degenerates
-	// (N-1 = 0) - the exclusive weight 1.
-	uint32_t count = 0;
-	for (uint32_t i = 0; i < n; ++i)
-		if (candidates[i].cubemap != UINT32_MAX && candidates[i].ndf < 1.0f)
-			++count;
-	if (count == 0)
-		return;
-	if (count == 1) {
-		for (uint32_t i = 0; i < n; ++i)
-			outWeights[i] =
-				(candidates[i].cubemap != UINT32_MAX && candidates[i].ndf < 1.0f)
-				? 1.0f : 0.0f;
-		return;
-	}
-	// The published a*b weighting over the in-influence candidates.
-	float sumD = 0.0f, sumR = 0.0f;
-	for (uint32_t i = 0; i < n; ++i) {
-		if (candidates[i].cubemap == UINT32_MAX || candidates[i].ndf >= 1.0f)
-			continue;
-		sumD += candidates[i].ndf;
-		sumR += (1.0f - candidates[i].ndf);
-	}
-	sumD = std::max(sumD, 1e-6f);
-	sumR = std::max(sumR, 1e-6f);
-	float sumW = 0.0f;
-	for (uint32_t i = 0; i < n; ++i) {
-		if (candidates[i].cubemap == UINT32_MAX || candidates[i].ndf >= 1.0f) {
-			outWeights[i] = 0.0f;
-			continue;
-		}
-		const float d = candidates[i].ndf;
-		const float a = (1.0f - d / sumD) / float(count - 1);
-		const float b = (1.0f - d) / sumR;
-		outWeights[i] = std::max(a, 0.0f) * std::max(b, 0.0f);
-		sumW += outWeights[i];
-	}
-	if (sumW <= 1e-6f)
-		return;
-	for (uint32_t i = 0; i < n; ++i)
-		outWeights[i] /= sumW;
+inline void ComputeNdfWeights(const NdfCandidate* candidates,
+                              uint32_t n,
+                              float* outWeights,
+                              uint32_t maxOut = kMaxBlendProbes) {
+    for (uint32_t i = 0; i < maxOut; ++i)
+        outWeights[i] = 0.0f;
+    if (n == 0 || n > maxOut)
+        return;
+    // The designated dominant inner hit (if any): widest influence wins,
+    // then the lowest cubemap index.
+    int32_t dominant = -1;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (candidates[i].cubemap == UINT32_MAX || candidates[i].ndf >= 1.0f)
+            continue; // out of influence entirely
+        if (candidates[i].ndf <= 0.0f) {
+            if (dominant < 0 || candidates[i].influence > candidates[dominant].influence ||
+                (candidates[i].influence == candidates[dominant].influence &&
+                 candidates[i].cubemap < candidates[dominant].cubemap))
+                dominant = int32_t(i);
+        }
+    }
+    if (dominant >= 0) {
+        // Inner-region hit: the designated dominant probe EXCLUSIVE
+        // (everyone else 0 - including other inner hits).
+        for (uint32_t i = 0; i < n; ++i)
+            outWeights[i] = 0.0f;
+        outWeights[dominant] = 1.0f;
+        return;
+    }
+    // Transition region only. One candidate: the a-term degenerates
+    // (N-1 = 0) - the exclusive weight 1.
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < n; ++i)
+        if (candidates[i].cubemap != UINT32_MAX && candidates[i].ndf < 1.0f)
+            ++count;
+    if (count == 0)
+        return;
+    if (count == 1) {
+        for (uint32_t i = 0; i < n; ++i)
+            outWeights[i] =
+                (candidates[i].cubemap != UINT32_MAX && candidates[i].ndf < 1.0f) ? 1.0f : 0.0f;
+        return;
+    }
+    // The published a*b weighting over the in-influence candidates.
+    float sumD = 0.0f, sumR = 0.0f;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (candidates[i].cubemap == UINT32_MAX || candidates[i].ndf >= 1.0f)
+            continue;
+        sumD += candidates[i].ndf;
+        sumR += (1.0f - candidates[i].ndf);
+    }
+    sumD = std::max(sumD, 1e-6f);
+    sumR = std::max(sumR, 1e-6f);
+    float sumW = 0.0f;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (candidates[i].cubemap == UINT32_MAX || candidates[i].ndf >= 1.0f) {
+            outWeights[i] = 0.0f;
+            continue;
+        }
+        const float d = candidates[i].ndf;
+        const float a = (1.0f - d / sumD) / float(count - 1);
+        const float b = (1.0f - d) / sumR;
+        outWeights[i] = std::max(a, 0.0f) * std::max(b, 0.0f);
+        sumW += outWeights[i];
+    }
+    if (sumW <= 1e-6f)
+        return;
+    for (uint32_t i = 0; i < n; ++i)
+        outWeights[i] /= sumW;
 }
 
 // Weights-pass push (must mirror probepremix_weights.cs.hlsl).
 struct alignas(16) WeightsPush {
-	uint64_t lights = 0;          // 0  fpLights buffer device address
-	uint64_t selection = 0;       // 8  BlendSelectionGpu output BDA
-	float poiX = 0.0f;            // 16 point of interest (camera position)
-	float poiY = 0.0f;            // 20
-	float poiZ = 0.0f;            // 24
-	uint32_t lightCount = 0;     // 28 lights [0, lightCount) in the buffer
-	uint32_t probeCount = 0;     // 32 probes [lightCount, +probeCount)
-	uint32_t pad0 = 0;            // 36 (16-align tail)
-	uint32_t pad1 = 0;            // 40
+    uint64_t lights = 0;     // 0  fpLights buffer device address
+    uint64_t selection = 0;  // 8  BlendSelectionGpu output BDA
+    float poiX = 0.0f;       // 16 point of interest (camera position)
+    float poiY = 0.0f;       // 20
+    float poiZ = 0.0f;       // 24
+    uint32_t lightCount = 0; // 28 lights [0, lightCount) in the buffer
+    uint32_t probeCount = 0; // 32 probes [lightCount, +probeCount)
+    uint32_t pad0 = 0;       // 36 (16-align tail)
+    uint32_t pad1 = 0;       // 40
 };
 static_assert(sizeof(WeightsPush) == 48);
 
 // Mix-pass push (must mirror probepremix_mix.cs.hlsl).
 struct alignas(16) MixPush {
-	uint64_t selection = 0;      // 0  BlendSelectionGpu input BDA
-	uint32_t dstIndex = 0;       // 8  bindless storage index of THIS mip's
-	                             //    2D-array view (6 face layers)
-	uint32_t mip = 0;             // 12 mip being written (mix mip-to-mip)
-	uint32_t faceSize = 0;       // 16 face extent at this mip
-	uint32_t samplerIndex = 0;   // 20 bindless sampler (clamp, linear mips)
-	uint32_t mipCount = 0;       // 24 (diagnostics only)
-	uint32_t pad0 = 0;           // 28
+    uint64_t selection = 0;    // 0  BlendSelectionGpu input BDA
+    uint32_t dstIndex = 0;     // 8  bindless storage index of THIS mip's
+                               //    2D-array view (6 face layers)
+    uint32_t mip = 0;          // 12 mip being written (mix mip-to-mip)
+    uint32_t faceSize = 0;     // 16 face extent at this mip
+    uint32_t samplerIndex = 0; // 20 bindless sampler (clamp, linear mips)
+    uint32_t mipCount = 0;     // 24 (diagnostics only)
+    uint32_t pad0 = 0;         // 28
 };
 static_assert(sizeof(MixPush) == 32);
 
 struct ProbePremix {
-	// The blended cubemap: 128^2 x 6 faces, mipCount mips, RGBA16F,
-	// cube-compatible. Storage-written by the mix pass (one 2D-array
-	// view per mip for the bindless storage array) and SAMPLED by the
-	// material through one cube view (full chain).
-	Holder<ImageHandle> blendedImage;
-	Holder<ImageViewHandle> cubeView;         // sampled (all faces/mips)
-	Holder<BindlessImageHandle> cubeBindless; // sample bindless (cubemaps[] space)
-	// Per-mip storage views (binding-2 slot space) + their logical views.
-	std::vector<Holder<ImageViewHandle>> mipStorageViews;
-	std::vector<Holder<BindlessImageHandle>> mipStorageBindless;
-	std::vector<LogicalImageViewHandle> mipLogical; // graph barrier handles
-	std::vector<uint32_t> mipStorageIndex;         // push dstIndex values
-	// Graph barrier handle for the SAMPLED cube view (the material's
-	// single fetch through frame.probePremixIndex): the Main pass hints
-	// a fragment ShaderRead on it, which pairs with the per-mip storage
-	// writes below (CollectPassUsages keys sync on the resolved
-	// PHYSICAL image - both view families alias blendedImage) to build
-	// the mix-write -> Main-read edge + the General ->
-	// ShaderReadOnlyOptimal transition the bindless fetch alone never
-	// produces.
-	LogicalImageViewHandle cubeLogical;
-	uint32_t cubeBindlessIndex = UINT32_MAX;       // FrameUniforms field
-	uint32_t size = 0;
-	uint32_t mipCount = 0;
+    // The blended cubemap: 128^2 x 6 faces, mipCount mips, RGBA16F,
+    // cube-compatible. Storage-written by the mix pass (one 2D-array
+    // view per mip for the bindless storage array) and SAMPLED by the
+    // material through one cube view (full chain).
+    Holder<ImageHandle> blendedImage;
+    Holder<ImageViewHandle> cubeView;         // sampled (all faces/mips)
+    Holder<BindlessImageHandle> cubeBindless; // sample bindless (cubemaps[] space)
+    // Per-mip storage views (binding-2 slot space) + their logical views.
+    std::vector<Holder<ImageViewHandle>> mipStorageViews;
+    std::vector<Holder<BindlessImageHandle>> mipStorageBindless;
+    std::vector<LogicalImageViewHandle> mipLogical; // graph barrier handles
+    std::vector<uint32_t> mipStorageIndex;          // push dstIndex values
+    // Graph barrier handle for the SAMPLED cube view (the material's
+    // single fetch through frame.probePremixIndex): the Main pass hints
+    // a fragment ShaderRead on it, which pairs with the per-mip storage
+    // writes below (CollectPassUsages keys sync on the resolved
+    // PHYSICAL image - both view families alias blendedImage) to build
+    // the mix-write -> Main-read edge + the General ->
+    // ShaderReadOnlyOptimal transition the bindless fetch alone never
+    // produces.
+    LogicalImageViewHandle cubeLogical;
+    uint32_t cubeBindlessIndex = UINT32_MAX; // FrameUniforms field
+    uint32_t size = 0;
+    uint32_t mipCount = 0;
 
-	// Selection buffer (GPU-owned, rewritten by the weights pass each frame).
-	Holder<BufferHandle> selectionBuffer;
-	uint64_t selectionBda = 0;
-	// Graph barrier handle for the selection buffer. Minted ONCE in
-	// Ensure and reused by BOTH AppendPasses hints - re-minting per
-	// call allocated a fresh logical buffer per pass per frame
-	// (NewFrame clears passes_ only, never the logical pools: two live
-	// entries per frame until the 8192-entry pool cap, then
-	// AddExternalBuffer hands back empty handles).
-	LogicalBufferHandle selectionLogical;
+    // Selection buffer (GPU-owned, rewritten by the weights pass each frame).
+    Holder<BufferHandle> selectionBuffer;
+    uint64_t selectionBda = 0;
+    // Graph barrier handle for the selection buffer. Minted ONCE in
+    // Ensure and reused by BOTH AppendPasses hints - re-minting per
+    // call allocated a fresh logical buffer per pass per frame
+    // (NewFrame clears passes_ only, never the logical pools: two live
+    // entries per frame until the 8192-entry pool cap, then
+    // AddExternalBuffer hands back empty handles).
+    LogicalBufferHandle selectionLogical;
 
-	Holder<ShaderModuleHandle> weightsModule;
-	Holder<ShaderModuleHandle> mixModule;
-	ShaderProgram weightsProgram{};
-	ShaderProgram mixProgram{};
+    Holder<ShaderModuleHandle> weightsModule;
+    Holder<ShaderModuleHandle> mixModule;
+    ShaderProgram weightsProgram{};
+    ShaderProgram mixProgram{};
 
-	bool valid = false;
+    bool valid = false;
 
-	// Idempotent resource + program creation. faceSizeIn default 128
-	// (matches the bake's --cubemap-size; the mix mip chains align when
-	// the sources share the chain depth - deeper source chains clamp).
-	bool Ensure(ResourceManager& ctx, RenderGraph& rg, uint32_t faceSizeIn,
-		uint32_t mipCountIn);
-	void Destroy(RenderGraph& rg);
+    // Idempotent resource + program creation. faceSizeIn default 128
+    // (matches the bake's --cubemap-size; the mix mip chains align when
+    // the sources share the chain depth - deeper source chains clamp).
+    bool Ensure(ResourceManager& ctx, RenderGraph& rg, uint32_t faceSizeIn, uint32_t mipCountIn);
+    void Destroy(RenderGraph& rg);
 
-	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
-	// module swap (a failed read keeps the standing module), zero the
-	// programs, re-Ensure with the LAST face/mip config (the buffers
-	// survive). Returns true when anything moved; the released old
-	// handles ride `retired` for the caller's retirement pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx, RenderGraph& rg,
-		std::vector<ShaderModuleHandle>& retired);
+    // HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+    // module swap (a failed read keeps the standing module), zero the
+    // programs, re-Ensure with the LAST face/mip config (the buffers
+    // survive). Returns true when anything moved; the released old
+    // handles ride `retired` for the caller's retirement pass.
+    [[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+                                     RenderGraph& rg,
+                                     std::vector<ShaderModuleHandle>& retired);
 
-	// Appends the two compute passes (weights then mix). lightsBda =
-	// the fpLights buffer address (the same buffer the lit walk reads);
-	// lightCount/probeCount = the tail window; poi = the camera position;
-	// samplerIndex = the bindless cubemap sampler (clamp, linear mips -
-	// the same one the lit walk uses).
-	bool AppendPasses(RenderGraph& rg, uint64_t lightsBda,
-		uint32_t lightCount, uint32_t probeCount, const glm::vec3& poi,
-		uint32_t samplerIndex);
+    // Appends the two compute passes (weights then mix). lightsBda =
+    // the fpLights buffer address (the same buffer the lit walk reads);
+    // lightCount/probeCount = the tail window; poi = the camera position;
+    // samplerIndex = the bindless cubemap sampler (clamp, linear mips -
+    // the same one the lit walk uses).
+    bool AppendPasses(RenderGraph& rg,
+                      uint64_t lightsBda,
+                      uint32_t lightCount,
+                      uint32_t probeCount,
+                      const glm::vec3& poi,
+                      uint32_t samplerIndex);
 };
 
 } // namespace smvk::probepremix

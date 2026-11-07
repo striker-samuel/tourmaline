@@ -74,16 +74,16 @@ namespace shader_reload {
 
 // One recompile outcome (the ConsumeChanges log).
 enum class Status : uint8_t {
-	Recompiled, // new validated bytes landed (or were already current)
-	Failed,     // the compile/validation failed; LAST-KNOWN-GOOD kept
+    Recompiled, // new validated bytes landed (or were already current)
+    Failed,     // the compile/validation failed; LAST-KNOWN-GOOD kept
 };
 
 struct Change {
-	std::string spvPath;  // the VFS path ("content/shaders/x.spv")
-	std::string source;   // the .hlsl that drove the recompile
-	Status status = Status::Recompiled;
-	std::string diagnostic; // the compiler error text (Failed)
-	uint64_t bytes = 0;     // the landed .spv size (Recompiled)
+    std::string spvPath; // the VFS path ("content/shaders/x.spv")
+    std::string source;  // the .hlsl that drove the recompile
+    Status status = Status::Recompiled;
+    std::string diagnostic; // the compiler error text (Failed)
+    uint64_t bytes = 0;     // the landed .spv size (Recompiled)
 };
 
 // ---- lifecycle -----------------------------------------------------------
@@ -91,8 +91,7 @@ struct Change {
 // under `outDir` (the build's content/shaders — the shader library's
 // dev override). Idempotent; the watcher thread + the OS events ride
 // Engine/Utils/file_watcher.h. False + err when the dir is missing.
-[[nodiscard]] bool Start(const std::string& sourceDir,
-	const std::string& outDir, std::string& err);
+[[nodiscard]] bool Start(const std::string& sourceDir, const std::string& outDir, std::string& err);
 void Stop();
 [[nodiscard]] bool Running();
 [[nodiscard]] const std::string& SourceDir();
@@ -110,17 +109,17 @@ void Stop();
 // (usually "<source stem>.spv"). False + out.diagnostic on failure —
 // the existing .spv is never touched.
 [[nodiscard]] bool Recompile(const std::string& hlslAbsPath,
-	const std::string& spvRelName, Change& out);
+                             const std::string& spvRelName,
+                             Change& out);
 
 // The variant twins of one source file (empty when none) — the
 // baked-define permutations, the mirror of engine/CMakeLists.txt's
 // VARIANTS entries for that file: (spv name suffix, define list).
 struct Variant {
-	std::string suffix;            // ".sg5" -> "<stem>.sg5.spv"
-	std::vector<std::string> defines;
+    std::string suffix; // ".sg5" -> "<stem>.sg5.spv"
+    std::vector<std::string> defines;
 };
-[[nodiscard]] const std::vector<Variant>& VariantsOf(
-	const std::string& fileName);
+[[nodiscard]] const std::vector<Variant>& VariantsOf(const std::string& fileName);
 
 } // namespace shader_reload
 

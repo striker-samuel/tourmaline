@@ -35,10 +35,10 @@
 //    (no Y-flip on the light perspective – same convention as cascades).
 //  - tile descriptors reuse GpuCascadeDescription (splitEnd stores range).
 
-#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/light.h>
 #include <Engine/Rendergraph/forwardplus.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -70,360 +70,354 @@ static constexpr uint32_t kPointShadowFaceCount = 6;
 // SpotShadowBuffer array bound and the C++ ring-buffer stride both key
 // off it - editing either without the other mis-frames every shadow).
 static constexpr uint32_t kMaxLocalShadowTiles =
-	kMaxSpotShadows + kMaxPointShadowLights * kPointShadowFaceCount;
+    kMaxSpotShadows + kMaxPointShadowLights * kPointShadowFaceCount;
 
 struct SpotShadowMapDesc {
-	uint32_t slotCount = 4;                 // active tiles this frame (<= cap)
-	uint32_t resolution = 1024;             // per-tile res, square
-	Format format = Format::D32_Float;      // depth-only atlas
-	float nearPlane = 0.5f;                 // perspective near for all spots
-	float bias = 0.0f;                      // receiver-depth bias (perspective) – 0: oriented depth bias in shader
-	const char* name = "spotShadowAtlas";
+    uint32_t slotCount = 4;            // active tiles this frame (<= cap)
+    uint32_t resolution = 1024;        // per-tile res, square
+    Format format = Format::D32_Float; // depth-only atlas
+    float nearPlane = 0.5f;            // perspective near for all spots
+    float bias = 0.0f; // receiver-depth bias (perspective) – 0: oriented depth bias in shader
+    const char* name = "spotShadowAtlas";
 };
 
 inline constexpr const char* kSpotShadowVsPath = "content/shaders/shadow.vert.hlsl.spv";
 
 struct SpotShadowAtlas {
-	Holder<ImageHandle> image;
-	Holder<ImageViewHandle> attachmentView; // depth attachment (depth aspect)
-	Holder<ImageViewHandle> sampledView;    // sampled depth view
-	Holder<BindlessImageHandle> bindless;
-	LogicalImageViewHandle logicalView; // rendergraph alias of sampledView
+    Holder<ImageHandle> image;
+    Holder<ImageViewHandle> attachmentView; // depth attachment (depth aspect)
+    Holder<ImageViewHandle> sampledView;    // sampled depth view
+    Holder<BindlessImageHandle> bindless;
+    LogicalImageViewHandle logicalView; // rendergraph alias of sampledView
 
-	// Depth program (shadow.vert, mainVS). The app's masked program handles
-	// cutout casters; this one handles solid casters.
-	Holder<ShaderModuleHandle> vsModule;
-	ShaderProgram program{};
+    // Depth program (shadow.vert, mainVS). The app's masked program handles
+    // cutout casters; this one handles solid casters.
+    Holder<ShaderModuleHandle> vsModule;
+    ShaderProgram program{};
 
-	Extent2D atlasExtent{ 0, 0 };
-	Extent2D tileExtent{ 0, 0 };
-	Format format = Format::D32_Float;
-	uint32_t slotCount = 0;
+    Extent2D atlasExtent{0, 0};
+    Extent2D tileExtent{0, 0};
+    Format format = Format::D32_Float;
+    uint32_t slotCount = 0;
 
-	[[nodiscard]] bool Valid() const {
-		return !image.empty() && slotCount != 0;
-	}
+    [[nodiscard]] bool Valid() const {
+        return !image.empty() && slotCount != 0;
+    }
 
-	[[nodiscard]] bool ShadersValid() const {
-		return program.shaderCount != 0 && !vsModule.empty();
-	}
+    [[nodiscard]] bool ShadersValid() const {
+        return program.shaderCount != 0 && !vsModule.empty();
+    }
 
-	[[nodiscard]] uint32_t Columns() const {
-		assert(slotCount != 0);
-		return static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<float>(slotCount))));
-	}
+    [[nodiscard]] uint32_t Columns() const {
+        assert(slotCount != 0);
+        return static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<float>(slotCount))));
+    }
 
-	void TileOrigin(uint32_t index, int32_t& outX, int32_t& outY) const {
-		assert(index < slotCount);
-		const uint32_t cols = Columns();
-		outX = static_cast<int32_t>((index % cols) * tileExtent.width);
-		outY = static_cast<int32_t>((index / cols) * tileExtent.height);
-	}
+    void TileOrigin(uint32_t index, int32_t& outX, int32_t& outY) const {
+        assert(index < slotCount);
+        const uint32_t cols = Columns();
+        outX = static_cast<int32_t>((index % cols) * tileExtent.width);
+        outY = static_cast<int32_t>((index / cols) * tileExtent.height);
+    }
 
-	int32_t BindlessIndex(ResourceManager& ctx) const {
-		return bindless.empty() ? -1 : static_cast<int32_t>(ctx.GetBindlessIndex(bindless));
-	}
+    int32_t BindlessIndex(ResourceManager& ctx) const {
+        return bindless.empty() ? -1 : static_cast<int32_t>(ctx.GetBindlessIndex(bindless));
+    }
 
-	bool EnsureShaders(ResourceManager& ctx, const char* vsPath = kSpotShadowVsPath) {
-		if (ShadersValid())
-			return true;
-		try {
-			const std::string path = vsPath ? vsPath : kSpotShadowVsPath;
-			vsModule = ctx.CreateShaderModule(readFile(path), "spotShadowVert");
-		} catch (...) {
-			return false;
-		}
-		if (vsModule.empty())
-			return false;
-		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
-		program = { .shaders = { vs }, .shaderCount = 1 };
-		return true;
-	}
+    bool EnsureShaders(ResourceManager& ctx, const char* vsPath = kSpotShadowVsPath) {
+        if (ShadersValid())
+            return true;
+        try {
+            const std::string path = vsPath ? vsPath : kSpotShadowVsPath;
+            vsModule = ctx.CreateShaderModule(readFile(path), "spotShadowVert");
+        } catch (...) {
+            return false;
+        }
+        if (vsModule.empty())
+            return false;
+        Shader vs{.module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex};
+        program = {.shaders = {vs}, .shaderCount = 1};
+        return true;
+    }
 
-	void DestroyShaders() {
-		program = ShaderProgram();
-		vsModule = {};
-	}
+    void DestroyShaders() {
+        program = ShaderProgram();
+        vsModule = {};
+    }
 
-	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
-	// module swap (a failed read keeps the standing module), zero the
-	// program, re-Ensure. Returns true when anything moved; the released
-	// old handle rides `retired` for the caller's retirement pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-		std::vector<ShaderModuleHandle>& retired) {
-		if (!SwapShaderModule(ctx, kSpotShadowVsPath,
-				"spotShadowVert", vsModule, retired))
-			return false;
-		program = ShaderProgram();
-		EnsureShaders(ctx);
-		return true;
-	}
+    // HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+    // module swap (a failed read keeps the standing module), zero the
+    // program, re-Ensure. Returns true when anything moved; the released
+    // old handle rides `retired` for the caller's retirement pass.
+    [[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+                                     std::vector<ShaderModuleHandle>& retired) {
+        if (!SwapShaderModule(ctx, kSpotShadowVsPath, "spotShadowVert", vsModule, retired))
+            return false;
+        program = ShaderProgram();
+        EnsureShaders(ctx);
+        return true;
+    }
 
-	void Destroy(RenderGraph& rg) {
-		if (!logicalView.empty())
-			rg.FreeImageView(logicalView);
-		logicalView = {};
-		bindless = {};
-		sampledView = {};
-		attachmentView = {};
-		image = {};
-		atlasExtent = { 0, 0 };
-		tileExtent = { 0, 0 };
-		slotCount = 0;
-	}
+    void Destroy(RenderGraph& rg) {
+        if (!logicalView.empty())
+            rg.FreeImageView(logicalView);
+        logicalView = {};
+        bindless = {};
+        sampledView = {};
+        attachmentView = {};
+        image = {};
+        atlasExtent = {0, 0};
+        tileExtent = {0, 0};
+        slotCount = 0;
+    }
 
-	bool Create(ResourceManager& ctx, RenderGraph& rg, const SpotShadowMapDesc& desc,
-		const char* vsPath = kSpotShadowVsPath,
-		uint32_t slotCap = kMaxLocalShadowTiles) {
-		if (desc.slotCount == 0 || desc.slotCount > slotCap)
-			return false;
-		if (desc.resolution == 0)
-			return false;
+    bool Create(ResourceManager& ctx,
+                RenderGraph& rg,
+                const SpotShadowMapDesc& desc,
+                const char* vsPath = kSpotShadowVsPath,
+                uint32_t slotCap = kMaxLocalShadowTiles) {
+        if (desc.slotCount == 0 || desc.slotCount > slotCap)
+            return false;
+        if (desc.resolution == 0)
+            return false;
 
-		const uint32_t cols = static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<float>(desc.slotCount))));
-		const uint32_t rows = (desc.slotCount + cols - 1) / cols;
-		const Extent2D atlas{ desc.resolution * cols, desc.resolution * rows };
+        const uint32_t cols =
+            static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<float>(desc.slotCount))));
+        const uint32_t rows = (desc.slotCount + cols - 1) / cols;
+        const Extent2D atlas{desc.resolution * cols, desc.resolution * rows};
 
-		ImageCreateInfo imageCI{};
-		imageCI.format = desc.format;
-		imageCI.extent = { atlas.width, atlas.height, 1u };
-		imageCI.mipLevels = 1u;
-		imageCI.arrayLayers = 1u;
-		imageCI.usage = ImageUsage::DepthStencilAttachment | ImageUsage::Sampled;
-		imageCI.name = desc.name;
+        ImageCreateInfo imageCI{};
+        imageCI.format = desc.format;
+        imageCI.extent = {atlas.width, atlas.height, 1u};
+        imageCI.mipLevels = 1u;
+        imageCI.arrayLayers = 1u;
+        imageCI.usage = ImageUsage::DepthStencilAttachment | ImageUsage::Sampled;
+        imageCI.name = desc.name;
 
-		Holder<ImageHandle> newImage = ctx.CreateImage(imageCI, nullptr);
-		if (newImage.empty())
-			return false;
+        Holder<ImageHandle> newImage = ctx.CreateImage(imageCI, nullptr);
+        if (newImage.empty())
+            return false;
 
-		ImageViewCreateInfo attachmentCI{};
-		attachmentCI.viewType = ImageViewType::View2D;
-		attachmentCI.format = Format::Undefined; // inherit
-		attachmentCI.subresourceRange = {
-			.aspect = ImageAspect::Depth,
-			.baseMipLevel = 0,
-			.mipLevelCount = 1,
-			.baseArrayLayer = 0,
-			.arrayLayerCount = 1,
-		};
-		attachmentCI.name = "spot shadow attachment (depth only)";
+        ImageViewCreateInfo attachmentCI{};
+        attachmentCI.viewType = ImageViewType::View2D;
+        attachmentCI.format = Format::Undefined; // inherit
+        attachmentCI.subresourceRange = {
+            .aspect = ImageAspect::Depth,
+            .baseMipLevel = 0,
+            .mipLevelCount = 1,
+            .baseArrayLayer = 0,
+            .arrayLayerCount = 1,
+        };
+        attachmentCI.name = "spot shadow attachment (depth only)";
 
-		Holder<ImageViewHandle> newAttachment = ctx.CreateImageView(newImage, attachmentCI);
-		if (newAttachment.empty())
-			return false;
+        Holder<ImageViewHandle> newAttachment = ctx.CreateImageView(newImage, attachmentCI);
+        if (newAttachment.empty())
+            return false;
 
-		ImageViewCreateInfo sampledCI{};
-		sampledCI.viewType = ImageViewType::View2D;
-		sampledCI.format = Format::Undefined; // inherit
-		sampledCI.subresourceRange = {
-			.aspect = ImageAspect::Depth,
-			.baseMipLevel = 0,
-			.mipLevelCount = 1,
-			.baseArrayLayer = 0,
-			.arrayLayerCount = 1,
-		};
-		sampledCI.name = "spot shadow sampled";
+        ImageViewCreateInfo sampledCI{};
+        sampledCI.viewType = ImageViewType::View2D;
+        sampledCI.format = Format::Undefined; // inherit
+        sampledCI.subresourceRange = {
+            .aspect = ImageAspect::Depth,
+            .baseMipLevel = 0,
+            .mipLevelCount = 1,
+            .baseArrayLayer = 0,
+            .arrayLayerCount = 1,
+        };
+        sampledCI.name = "spot shadow sampled";
 
-		Holder<ImageViewHandle> newSampled = ctx.CreateImageView(newImage, sampledCI);
-		if (newSampled.empty())
-			return false;
+        Holder<ImageViewHandle> newSampled = ctx.CreateImageView(newImage, sampledCI);
+        if (newSampled.empty())
+            return false;
 
-		Holder<BindlessImageHandle> newBindless =
-			ctx.CreateBindlessImage(newSampled, ImageLayout::DepthReadOnlyOptimal);
-		if (newBindless.empty())
-			return false;
+        Holder<BindlessImageHandle> newBindless =
+            ctx.CreateBindlessImage(newSampled, ImageLayout::DepthReadOnlyOptimal);
+        if (newBindless.empty())
+            return false;
 
-		LogicalImageViewHandle newLogical =
-			rg.AddExternalImageView(newSampled, desc.format, "spotShadowMapView");
-		if (newLogical.empty())
-			return false;
+        LogicalImageViewHandle newLogical =
+            rg.AddExternalImageView(newSampled, desc.format, "spotShadowMapView");
+        if (newLogical.empty())
+            return false;
 
-		image = std::move(newImage);
-		attachmentView = std::move(newAttachment);
-		sampledView = std::move(newSampled);
-		bindless = std::move(newBindless);
-		logicalView = newLogical;
-		atlasExtent = atlas;
-		tileExtent = { desc.resolution, desc.resolution };
-		format = desc.format;
-		slotCount = desc.slotCount;
-		return EnsureShaders(ctx, vsPath);
-	}
+        image = std::move(newImage);
+        attachmentView = std::move(newAttachment);
+        sampledView = std::move(newSampled);
+        bindless = std::move(newBindless);
+        logicalView = newLogical;
+        atlasExtent = atlas;
+        tileExtent = {desc.resolution, desc.resolution};
+        format = desc.format;
+        slotCount = desc.slotCount;
+        return EnsureShaders(ctx, vsPath);
+    }
 
-	// Recreate only when slotCount / resolution / format drift.
-	bool Ensure(ResourceManager& ctx, RenderGraph& rg, const SpotShadowMapDesc& desc,
-		const char* vsPath = kSpotShadowVsPath,
-		uint32_t slotCap = kMaxLocalShadowTiles) {
-		if (Valid() &&
-			slotCount == desc.slotCount &&
-			tileExtent.width == desc.resolution &&
-			tileExtent.height == desc.resolution &&
-			format == desc.format) {
-			return EnsureShaders(ctx, vsPath);
-		}
-		Destroy(rg);
-		return Create(ctx, rg, desc, vsPath);
-	}
+    // Recreate only when slotCount / resolution / format drift.
+    bool Ensure(ResourceManager& ctx,
+                RenderGraph& rg,
+                const SpotShadowMapDesc& desc,
+                const char* vsPath = kSpotShadowVsPath,
+                uint32_t slotCap = kMaxLocalShadowTiles) {
+        if (Valid() && slotCount == desc.slotCount && tileExtent.width == desc.resolution &&
+            tileExtent.height == desc.resolution && format == desc.format) {
+            return EnsureShaders(ctx, vsPath);
+        }
+        Destroy(rg);
+        return Create(ctx, rg, desc, vsPath);
+    }
 
-	// Builds one tile descriptor for a spot light. shadowMapIndex is the
-	// bindless index of this atlas (stored by the caller into the light).
-	// lightSize/softness drive the EVSM soft-shadow penumbra (packed into
-	// the tile pads, see SampleEvsmSpotTileSoft): lightSize = world-space
-	// emitting-sphere diameter, softness = artistic scalar (0 = hard).
-	// nearPlane rides pad_ so the shader can invert the RH_ZO perspective.
-	GpuCascadeDescription BuildSpotTile(
-		const glm::vec3& position,
-		const glm::vec3& direction,
-		float outerAngle,
-		float range,
-		int32_t shadowMapIndex,
-		uint32_t tileIndex,
-		float nearPlane = 0.5f,
-		float bias = 0.0f,
-		float lightSize = 0.35f,
-		float softness = 1.0f) const {
-		assert(Valid());
-		assert(tileIndex < slotCount);
+    // Builds one tile descriptor for a spot light. shadowMapIndex is the
+    // bindless index of this atlas (stored by the caller into the light).
+    // lightSize/softness drive the EVSM soft-shadow penumbra (packed into
+    // the tile pads, see SampleEvsmSpotTileSoft): lightSize = world-space
+    // emitting-sphere diameter, softness = artistic scalar (0 = hard).
+    // nearPlane rides pad_ so the shader can invert the RH_ZO perspective.
+    GpuCascadeDescription BuildSpotTile(const glm::vec3& position,
+                                        const glm::vec3& direction,
+                                        float outerAngle,
+                                        float range,
+                                        int32_t shadowMapIndex,
+                                        uint32_t tileIndex,
+                                        float nearPlane = 0.5f,
+                                        float bias = 0.0f,
+                                        float lightSize = 0.35f,
+                                        float softness = 1.0f) const {
+        assert(Valid());
+        assert(tileIndex < slotCount);
 
-		GpuCascadeDescription tile{};
-		const glm::mat4 vp = GetSpotLightVP(position, direction, outerAngle, range, nearPlane, 1.0f);
-		std::memcpy(tile.lightVP, glm::value_ptr(vp), sizeof(tile.lightVP));
-		tile.splitEnd = range;
-		tile.bias = bias;
-		tile.normalBias = 0.02f;
-		tile.pad_ = 0.0f;
-		tile.invShadowSize = glm::vec2(
-			1.0f / static_cast<float>(tileExtent.width),
-			1.0f / static_cast<float>(tileExtent.height));
+        GpuCascadeDescription tile{};
+        const glm::mat4 vp =
+            GetSpotLightVP(position, direction, outerAngle, range, nearPlane, 1.0f);
+        std::memcpy(tile.lightVP, glm::value_ptr(vp), sizeof(tile.lightVP));
+        tile.splitEnd = range;
+        tile.bias = bias;
+        tile.normalBias = 0.02f;
+        tile.pad_ = 0.0f;
+        tile.invShadowSize = glm::vec2(1.0f / static_cast<float>(tileExtent.width),
+                                       1.0f / static_cast<float>(tileExtent.height));
 
-		const float invAtlasW = 1.0f / static_cast<float>(atlasExtent.width);
-		const float invAtlasH = 1.0f / static_cast<float>(atlasExtent.height);
-		const uint32_t cols = Columns();
-		const float offX = static_cast<float>((tileIndex % cols) * tileExtent.width);
-		const float offY = static_cast<float>((tileIndex / cols) * tileExtent.height);
-		tile.uvScale = glm::vec2(
-			static_cast<float>(tileExtent.width) * invAtlasW,
-			static_cast<float>(tileExtent.height) * invAtlasH);
-		tile.uvBias = glm::vec2(offX * invAtlasW, offY * invAtlasH);
-		const float texelU = 0.5f * invAtlasW;
-		const float texelV = 0.5f * invAtlasH;
-		tile.uvClampMin = tile.uvBias + glm::vec2(texelU, texelV);
-		tile.uvClampMax = tile.uvBias + tile.uvScale - glm::vec2(texelU, texelV);
-		// Soft shadows (SampleEvsmSpotTileSoft): near plane for the
-		// eye-depth inversion, emitting-sphere diameter + artistic scalar
-		// for the PCSS-style penumbra.
-		tile.pad_ = nearPlane;
-		tile.pad2_[0] = std::max(lightSize, 0.0f);
-		tile.pad2_[1] = std::max(softness, 0.0f);
-		(void)shadowMapIndex; // atlas index lives in the light / push constants
-		return tile;
-	}
+        const float invAtlasW = 1.0f / static_cast<float>(atlasExtent.width);
+        const float invAtlasH = 1.0f / static_cast<float>(atlasExtent.height);
+        const uint32_t cols = Columns();
+        const float offX = static_cast<float>((tileIndex % cols) * tileExtent.width);
+        const float offY = static_cast<float>((tileIndex / cols) * tileExtent.height);
+        tile.uvScale = glm::vec2(static_cast<float>(tileExtent.width) * invAtlasW,
+                                 static_cast<float>(tileExtent.height) * invAtlasH);
+        tile.uvBias = glm::vec2(offX * invAtlasW, offY * invAtlasH);
+        const float texelU = 0.5f * invAtlasW;
+        const float texelV = 0.5f * invAtlasH;
+        tile.uvClampMin = tile.uvBias + glm::vec2(texelU, texelV);
+        tile.uvClampMax = tile.uvBias + tile.uvScale - glm::vec2(texelU, texelV);
+        // Soft shadows (SampleEvsmSpotTileSoft): near plane for the
+        // eye-depth inversion, emitting-sphere diameter + artistic scalar
+        // for the PCSS-style penumbra.
+        tile.pad_ = nearPlane;
+        tile.pad2_[0] = std::max(lightSize, 0.0f);
+        tile.pad2_[1] = std::max(softness, 0.0f);
+        (void)shadowMapIndex; // atlas index lives in the light / push constants
+        return tile;
+    }
 
-	// One cube-face tile of a shadowed POINT light (see the file header).
-	// tileIndex is the face's slot in the combined frame numbering (spots
-	// first, then point faces); the light's ForwardPlusLight.shadowTile
-	// stores the FIRST face's index and the sampler adds the face number
-	// (dominant-axis selection, shadows.hlsli GetPointShadowFactorTile).
-	// Face order is CubemapFace (+X, -X, +Y, -Y, +Z, -Z) - the same table
-	// the sampling side's selection mirrors.
-	// The pads carry the same receiver-side knobs the SPOT tiles pack
-	// (they used to stay zeroed for the PCF-only point path): pad_ = the
-	// perspective near plane the EVSM sampling needs to invert RH_ZO eye
-	// depth, pad2 = the emitting-sphere diameter + artistic softness the
-	// PCSS-style penumbra projects through the cube face's 90-degree half
-	// angle (see SampleEvsmSpotTileSoft reused by GetPointShadowFactorEvsm:
-	// the face IS a cone, half angle 45). The PCF path ignores the pads.
-	GpuCascadeDescription BuildPointFaceTile(
-		const glm::vec3& position,
-		uint32_t face,
-		float range,
-		uint32_t tileIndex,
-		float nearPlane = 0.5f,
-		float bias = 0.0f,
-		float lightSize = 0.35f,
-		float softness = 1.0f) const {
-		assert(Valid());
-		assert(tileIndex < slotCount);
-		assert(face < kPointShadowFaceCount);
+    // One cube-face tile of a shadowed POINT light (see the file header).
+    // tileIndex is the face's slot in the combined frame numbering (spots
+    // first, then point faces); the light's ForwardPlusLight.shadowTile
+    // stores the FIRST face's index and the sampler adds the face number
+    // (dominant-axis selection, shadows.hlsli GetPointShadowFactorTile).
+    // Face order is CubemapFace (+X, -X, +Y, -Y, +Z, -Z) - the same table
+    // the sampling side's selection mirrors.
+    // The pads carry the same receiver-side knobs the SPOT tiles pack
+    // (they used to stay zeroed for the PCF-only point path): pad_ = the
+    // perspective near plane the EVSM sampling needs to invert RH_ZO eye
+    // depth, pad2 = the emitting-sphere diameter + artistic softness the
+    // PCSS-style penumbra projects through the cube face's 90-degree half
+    // angle (see SampleEvsmSpotTileSoft reused by GetPointShadowFactorEvsm:
+    // the face IS a cone, half angle 45). The PCF path ignores the pads.
+    GpuCascadeDescription BuildPointFaceTile(const glm::vec3& position,
+                                             uint32_t face,
+                                             float range,
+                                             uint32_t tileIndex,
+                                             float nearPlane = 0.5f,
+                                             float bias = 0.0f,
+                                             float lightSize = 0.35f,
+                                             float softness = 1.0f) const {
+        assert(Valid());
+        assert(tileIndex < slotCount);
+        assert(face < kPointShadowFaceCount);
 
-		GpuCascadeDescription tile{};
-		const glm::mat4 vp = GetPointShadowFaceVP(position, face, range, nearPlane);
-		std::memcpy(tile.lightVP, glm::value_ptr(vp), sizeof(tile.lightVP));
-		tile.splitEnd = range;
-		tile.bias = bias;
-		tile.normalBias = 0.02f; // same receiver-side world bias as spot tiles
-		tile.pad_ = nearPlane;
-		tile.pad2_[0] = std::max(lightSize, 0.0f);
-		tile.pad2_[1] = std::max(softness, 0.0f);
-		tile.invShadowSize = glm::vec2(
-			1.0f / static_cast<float>(tileExtent.width),
-			1.0f / static_cast<float>(tileExtent.height));
+        GpuCascadeDescription tile{};
+        const glm::mat4 vp = GetPointShadowFaceVP(position, face, range, nearPlane);
+        std::memcpy(tile.lightVP, glm::value_ptr(vp), sizeof(tile.lightVP));
+        tile.splitEnd = range;
+        tile.bias = bias;
+        tile.normalBias = 0.02f; // same receiver-side world bias as spot tiles
+        tile.pad_ = nearPlane;
+        tile.pad2_[0] = std::max(lightSize, 0.0f);
+        tile.pad2_[1] = std::max(softness, 0.0f);
+        tile.invShadowSize = glm::vec2(1.0f / static_cast<float>(tileExtent.width),
+                                       1.0f / static_cast<float>(tileExtent.height));
 
-		const float invAtlasW = 1.0f / static_cast<float>(atlasExtent.width);
-		const float invAtlasH = 1.0f / static_cast<float>(atlasExtent.height);
-		const uint32_t cols = Columns();
-		const float offX = static_cast<float>((tileIndex % cols) * tileExtent.width);
-		const float offY = static_cast<float>((tileIndex / cols) * tileExtent.height);
-		tile.uvScale = glm::vec2(
-			static_cast<float>(tileExtent.width) * invAtlasW,
-			static_cast<float>(tileExtent.height) * invAtlasH);
-		tile.uvBias = glm::vec2(offX * invAtlasW, offY * invAtlasH);
-		const float texelU = 0.5f * invAtlasW;
-		const float texelV = 0.5f * invAtlasH;
-		tile.uvClampMin = tile.uvBias + glm::vec2(texelU, texelV);
-		tile.uvClampMax = tile.uvBias + tile.uvScale - glm::vec2(texelU, texelV);
-		return tile;
-	}
+        const float invAtlasW = 1.0f / static_cast<float>(atlasExtent.width);
+        const float invAtlasH = 1.0f / static_cast<float>(atlasExtent.height);
+        const uint32_t cols = Columns();
+        const float offX = static_cast<float>((tileIndex % cols) * tileExtent.width);
+        const float offY = static_cast<float>((tileIndex / cols) * tileExtent.height);
+        tile.uvScale = glm::vec2(static_cast<float>(tileExtent.width) * invAtlasW,
+                                 static_cast<float>(tileExtent.height) * invAtlasH);
+        tile.uvBias = glm::vec2(offX * invAtlasW, offY * invAtlasH);
+        const float texelU = 0.5f * invAtlasW;
+        const float texelV = 0.5f * invAtlasH;
+        tile.uvClampMin = tile.uvBias + glm::vec2(texelU, texelV);
+        tile.uvClampMax = tile.uvBias + tile.uvScale - glm::vec2(texelU, texelV);
+        return tile;
+    }
 
-	// LiSPSM (Light Space Perspective Shadow Maps) variant for spotlights.
-	// Warps the spot projection to match the camera's perspective frustum,
-	// providing better texel density in camera/view space.
-	GpuCascadeDescription BuildSpotTileLiSPSM(
-		const glm::vec3& position,
-		const glm::vec3& direction,
-		float outerAngle,
-		float range,
-		int32_t shadowMapIndex,
-		uint32_t tileIndex,
-		const glm::mat4& cameraView,
-		const glm::mat4& cameraProj,
-		float cameraNear,
-		float cameraFar,
-		float nearPlane = 0.5f,
-		float bias = 0.0f,
-		float lightSize = 0.35f,
-		float softness = 1.0f) const;
+    // LiSPSM (Light Space Perspective Shadow Maps) variant for spotlights.
+    // Warps the spot projection to match the camera's perspective frustum,
+    // providing better texel density in camera/view space.
+    GpuCascadeDescription BuildSpotTileLiSPSM(const glm::vec3& position,
+                                              const glm::vec3& direction,
+                                              float outerAngle,
+                                              float range,
+                                              int32_t shadowMapIndex,
+                                              uint32_t tileIndex,
+                                              const glm::mat4& cameraView,
+                                              const glm::mat4& cameraProj,
+                                              float cameraNear,
+                                              float cameraFar,
+                                              float nearPlane = 0.5f,
+                                              float bias = 0.0f,
+                                              float lightSize = 0.35f,
+                                              float softness = 1.0f) const;
 
-	// Adds one depth pass rendering slotIndex into its atlas tile. Every
-	// spot tile is cleared: each pass owns a disjoint pass area (offset +
-	// tileExtent) and Execute() clears exactly that tile (full-area render
-	// pass + explicit scissor-clipped vkCmdClearAttachments), so per-tile
-	// Clear both initializes the tile and preserves the others.
-	RenderPass& AddSpotPass(RenderGraph& rg, uint32_t slotIndex, const char* name = nullptr) const {
-		assert(Valid());
-		assert(slotIndex < slotCount);
-		int32_t offX = 0, offY = 0;
-		TileOrigin(slotIndex, offX, offY);
-		RenderPass& pass = rg.AddPass(name);
-		pass.SetOffset(offX, offY)
-			.SetExtent(tileExtent)
-			.SetDepth(
-				logicalView,
-				AttachmentLoadOp::Clear,
-				AttachmentStoreOp::Store,
-				ClearDepthStencil(1.0f, 0));
-		return pass;
-	}
+    // Adds one depth pass rendering slotIndex into its atlas tile. Every
+    // spot tile is cleared: each pass owns a disjoint pass area (offset +
+    // tileExtent) and Execute() clears exactly that tile (full-area render
+    // pass + explicit scissor-clipped vkCmdClearAttachments), so per-tile
+    // Clear both initializes the tile and preserves the others.
+    RenderPass& AddSpotPass(RenderGraph& rg, uint32_t slotIndex, const char* name = nullptr) const {
+        assert(Valid());
+        assert(slotIndex < slotCount);
+        int32_t offX = 0, offY = 0;
+        TileOrigin(slotIndex, offX, offY);
+        RenderPass& pass = rg.AddPass(name);
+        pass.SetOffset(offX, offY)
+            .SetExtent(tileExtent)
+            .SetDepth(logicalView,
+                      AttachmentLoadOp::Clear,
+                      AttachmentStoreOp::Store,
+                      ClearDepthStencil(1.0f, 0));
+        return pass;
+    }
 };
 
 // ---------------------------------------------------------------------------
 // Caster selection: which requesting spots get one of `maxCount` tiles.
 // ---------------------------------------------------------------------------
 struct SpotShadowCandidate {
-	uint32_t lightIndex = 0; // index into the ForwardPlusLight array
-	float score = 0.0f;      // higher = more important (see heuristic)
-	float dist = 0.0f;       // camera-to-light distance (m)
-	float screenRadius = 0.0f; // approx. light-sphere radius in NDC height
+    uint32_t lightIndex = 0;   // index into the ForwardPlusLight array
+    float score = 0.0f;        // higher = more important (see heuristic)
+    float dist = 0.0f;         // camera-to-light distance (m)
+    float screenRadius = 0.0f; // approx. light-sphere radius in NDC height
 };
 
 // Heuristic (cheap, frame-coherent enough for v1):
@@ -438,76 +432,77 @@ struct SpotShadowCandidate {
 //     Brighter, wider, closer, on-screen lights win. Ties break by light
 //     index so the selection is deterministic frame to frame.
 // Callers assign tiles 0..selected-1 in the returned order.
-template<typename LightAllocator, typename CandidateAllocator = std::allocator<SpotShadowCandidate>>
+template <typename LightAllocator,
+          typename CandidateAllocator = std::allocator<SpotShadowCandidate>>
 inline std::vector<SpotShadowCandidate, CandidateAllocator> SelectSpotShadowCasters(
-	const std::vector<ForwardPlusLight, LightAllocator>& lights,
-	const glm::mat4& viewProj,
-	const glm::vec3& cameraPos,
-	float maxDistance,
-	uint32_t maxCount,
-	float proj11Abs,
-	CandidateAllocator allocator = {})
-{
-	std::vector<SpotShadowCandidate, CandidateAllocator> out{allocator};
-	if (maxCount == 0 || maxDistance <= 0.0f)
-		return out;
-	maxCount = std::min(maxCount, kMaxSpotShadows);
+    const std::vector<ForwardPlusLight, LightAllocator>& lights,
+    const glm::mat4& viewProj,
+    const glm::vec3& cameraPos,
+    float maxDistance,
+    uint32_t maxCount,
+    float proj11Abs,
+    CandidateAllocator allocator = {}) {
+    std::vector<SpotShadowCandidate, CandidateAllocator> out{allocator};
+    if (maxCount == 0 || maxDistance <= 0.0f)
+        return out;
+    maxCount = std::min(maxCount, kMaxSpotShadows);
 
-	const float projFactor = std::max(proj11Abs, 1e-4f);
-	for (uint32_t i = 0; i < lights.size(); ++i) {
-		const ForwardPlusLight& l = lights[i];
-		if (l.type != static_cast<int32_t>(kForwardPlusSpot))
-			continue;
-		if ((l.flags & kForwardPlusFlag_CastShadow) == 0)
-			continue;
-		if (l.intensity <= 0.0f || l.range <= 0.0f)
-			continue;
+    const float projFactor = std::max(proj11Abs, 1e-4f);
+    for (uint32_t i = 0; i < lights.size(); ++i) {
+        const ForwardPlusLight& l = lights[i];
+        if (l.type != static_cast<int32_t>(kForwardPlusSpot))
+            continue;
+        if ((l.flags & kForwardPlusFlag_CastShadow) == 0)
+            continue;
+        if (l.intensity <= 0.0f || l.range <= 0.0f)
+            continue;
 
-		const glm::vec3 lightPosition(l.position[0], l.position[1], l.position[2]);
-		const glm::vec3 toLight = lightPosition - cameraPos;
-		const float dist = glm::length(toLight);
-		if (dist > maxDistance)
-			continue;
+        const glm::vec3 lightPosition(l.position[0], l.position[1], l.position[2]);
+        const glm::vec3 toLight = lightPosition - cameraPos;
+        const float dist = glm::length(toLight);
+        if (dist > maxDistance)
+            continue;
 
-		// NDC-box test of the bounding sphere (conservative margin).
-		const glm::vec4 clip = viewProj * glm::vec4(lightPosition, 1.0f);
-		if (clip.w <= 1e-4f) {
-			// Behind (or on) the camera plane: keep only lights whose range
-			// reaches the camera – they can still light visible pixels.
-			if (dist > l.range)
-				continue;
-		} else {
-			const float radiusNdc = (l.range * projFactor) / clip.w;
-			const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-			const float m = radiusNdc;
-			if (ndc.x < -1.0f - m || ndc.x > 1.0f + m ||
-				ndc.y < -1.0f - m || ndc.y > 1.0f + m ||
-				ndc.z < -m || ndc.z > 1.0f + m)
-				continue;
-		}
+        // NDC-box test of the bounding sphere (conservative margin).
+        const glm::vec4 clip = viewProj * glm::vec4(lightPosition, 1.0f);
+        if (clip.w <= 1e-4f) {
+            // Behind (or on) the camera plane: keep only lights whose range
+            // reaches the camera – they can still light visible pixels.
+            if (dist > l.range)
+                continue;
+        } else {
+            const float radiusNdc = (l.range * projFactor) / clip.w;
+            const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+            const float m = radiusNdc;
+            if (ndc.x < -1.0f - m || ndc.x > 1.0f + m || ndc.y < -1.0f - m || ndc.y > 1.0f + m ||
+                ndc.z < -m || ndc.z > 1.0f + m)
+                continue;
+        }
 
-		const float radiusNdc = (l.range * projFactor) / std::max(clip.w <= 1e-4f ? dist : clip.w, 1e-4f);
-		const float coverage = glm::clamp(radiusNdc, 0.0f, 2.0f);
-		const float cosOuter = std::cos(glm::clamp(l.outerAngle, 0.0f, glm::radians(89.0f)));
-		const float cone = (1.0f - cosOuter) + 0.05f;
-		const float score = l.intensity * cone * (0.25f + coverage) / std::max(dist * dist, 1.0f);
+        const float radiusNdc =
+            (l.range * projFactor) / std::max(clip.w <= 1e-4f ? dist : clip.w, 1e-4f);
+        const float coverage = glm::clamp(radiusNdc, 0.0f, 2.0f);
+        const float cosOuter = std::cos(glm::clamp(l.outerAngle, 0.0f, glm::radians(89.0f)));
+        const float cone = (1.0f - cosOuter) + 0.05f;
+        const float score = l.intensity * cone * (0.25f + coverage) / std::max(dist * dist, 1.0f);
 
-		SpotShadowCandidate c{};
-		c.lightIndex = i;
-		c.score = score;
-		c.dist = dist;
-		c.screenRadius = coverage;
-		out.push_back(c);
-	}
+        SpotShadowCandidate c{};
+        c.lightIndex = i;
+        c.score = score;
+        c.dist = dist;
+        c.screenRadius = coverage;
+        out.push_back(c);
+    }
 
-	std::sort(out.begin(), out.end(), [](const SpotShadowCandidate& a, const SpotShadowCandidate& b) {
-		if (a.score != b.score)
-			return a.score > b.score;
-		return a.lightIndex < b.lightIndex;
-	});
-	if (out.size() > maxCount)
-		out.resize(maxCount);
-	return out;
+    std::sort(
+        out.begin(), out.end(), [](const SpotShadowCandidate& a, const SpotShadowCandidate& b) {
+            if (a.score != b.score)
+                return a.score > b.score;
+            return a.lightIndex < b.lightIndex;
+        });
+    if (out.size() > maxCount)
+        out.resize(maxCount);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -519,73 +514,74 @@ inline std::vector<SpotShadowCandidate, CandidateAllocator> SelectSpotShadowCast
 // selected light costs SIX atlas tiles + six depth passes, which is why
 // kMaxPointShadowLights stays small.
 // ---------------------------------------------------------------------------
-template<typename LightAllocator, typename CandidateAllocator = std::allocator<SpotShadowCandidate>>
+template <typename LightAllocator,
+          typename CandidateAllocator = std::allocator<SpotShadowCandidate>>
 inline std::vector<SpotShadowCandidate, CandidateAllocator> SelectPointShadowCasters(
-	const std::vector<ForwardPlusLight, LightAllocator>& lights,
-	const glm::mat4& viewProj,
-	const glm::vec3& cameraPos,
-	float maxDistance,
-	uint32_t maxCount,
-	float proj11Abs,
-	CandidateAllocator allocator = {})
-{
-	std::vector<SpotShadowCandidate, CandidateAllocator> out{allocator};
-	if (maxCount == 0 || maxDistance <= 0.0f)
-		return out;
-	maxCount = std::min(maxCount, kMaxPointShadowLights);
+    const std::vector<ForwardPlusLight, LightAllocator>& lights,
+    const glm::mat4& viewProj,
+    const glm::vec3& cameraPos,
+    float maxDistance,
+    uint32_t maxCount,
+    float proj11Abs,
+    CandidateAllocator allocator = {}) {
+    std::vector<SpotShadowCandidate, CandidateAllocator> out{allocator};
+    if (maxCount == 0 || maxDistance <= 0.0f)
+        return out;
+    maxCount = std::min(maxCount, kMaxPointShadowLights);
 
-	const float projFactor = std::max(proj11Abs, 1e-4f);
-	for (uint32_t i = 0; i < lights.size(); ++i) {
-		const ForwardPlusLight& l = lights[i];
-		if (l.type != static_cast<int32_t>(kForwardPlusPoint))
-			continue;
-		if ((l.flags & kForwardPlusFlag_CastShadow) == 0)
-			continue;
-		if (l.intensity <= 0.0f || l.range <= 0.0f)
-			continue;
+    const float projFactor = std::max(proj11Abs, 1e-4f);
+    for (uint32_t i = 0; i < lights.size(); ++i) {
+        const ForwardPlusLight& l = lights[i];
+        if (l.type != static_cast<int32_t>(kForwardPlusPoint))
+            continue;
+        if ((l.flags & kForwardPlusFlag_CastShadow) == 0)
+            continue;
+        if (l.intensity <= 0.0f || l.range <= 0.0f)
+            continue;
 
-		const glm::vec3 lightPosition(l.position[0], l.position[1], l.position[2]);
-		const glm::vec3 toLight = lightPosition - cameraPos;
-		const float dist = glm::length(toLight);
-		if (dist > maxDistance)
-			continue;
+        const glm::vec3 lightPosition(l.position[0], l.position[1], l.position[2]);
+        const glm::vec3 toLight = lightPosition - cameraPos;
+        const float dist = glm::length(toLight);
+        if (dist > maxDistance)
+            continue;
 
-		// NDC-box test of the bounding sphere (conservative margin) - the
-		// sphere is the whole influence ball for a point (no cone to test).
-		const glm::vec4 clip = viewProj * glm::vec4(lightPosition, 1.0f);
-		if (clip.w <= 1e-4f) {
-			if (dist > l.range)
-				continue;
-		} else {
-			const float radiusNdc = (l.range * projFactor) / clip.w;
-			const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-			const float m = radiusNdc;
-			if (ndc.x < -1.0f - m || ndc.x > 1.0f + m ||
-				ndc.y < -1.0f - m || ndc.y > 1.0f + m ||
-				ndc.z < -m || ndc.z > 1.0f + m)
-				continue;
-		}
+        // NDC-box test of the bounding sphere (conservative margin) - the
+        // sphere is the whole influence ball for a point (no cone to test).
+        const glm::vec4 clip = viewProj * glm::vec4(lightPosition, 1.0f);
+        if (clip.w <= 1e-4f) {
+            if (dist > l.range)
+                continue;
+        } else {
+            const float radiusNdc = (l.range * projFactor) / clip.w;
+            const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+            const float m = radiusNdc;
+            if (ndc.x < -1.0f - m || ndc.x > 1.0f + m || ndc.y < -1.0f - m || ndc.y > 1.0f + m ||
+                ndc.z < -m || ndc.z > 1.0f + m)
+                continue;
+        }
 
-		const float radiusNdc = (l.range * projFactor) / std::max(clip.w <= 1e-4f ? dist : clip.w, 1e-4f);
-		const float coverage = glm::clamp(radiusNdc, 0.0f, 2.0f);
-		const float score = l.intensity * (0.25f + coverage) / std::max(dist * dist, 1.0f);
+        const float radiusNdc =
+            (l.range * projFactor) / std::max(clip.w <= 1e-4f ? dist : clip.w, 1e-4f);
+        const float coverage = glm::clamp(radiusNdc, 0.0f, 2.0f);
+        const float score = l.intensity * (0.25f + coverage) / std::max(dist * dist, 1.0f);
 
-		SpotShadowCandidate c{};
-		c.lightIndex = i;
-		c.score = score;
-		c.dist = dist;
-		c.screenRadius = coverage;
-		out.push_back(c);
-	}
+        SpotShadowCandidate c{};
+        c.lightIndex = i;
+        c.score = score;
+        c.dist = dist;
+        c.screenRadius = coverage;
+        out.push_back(c);
+    }
 
-	std::sort(out.begin(), out.end(), [](const SpotShadowCandidate& a, const SpotShadowCandidate& b) {
-		if (a.score != b.score)
-			return a.score > b.score;
-		return a.lightIndex < b.lightIndex;
-	});
-	if (out.size() > maxCount)
-		out.resize(maxCount);
-	return out;
+    std::sort(
+        out.begin(), out.end(), [](const SpotShadowCandidate& a, const SpotShadowCandidate& b) {
+            if (a.score != b.score)
+                return a.score > b.score;
+            return a.lightIndex < b.lightIndex;
+        });
+    if (out.size() > maxCount)
+        out.resize(maxCount);
+    return out;
 }
 
 } // namespace smvk

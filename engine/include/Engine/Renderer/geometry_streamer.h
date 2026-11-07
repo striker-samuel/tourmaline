@@ -154,23 +154,22 @@ namespace tour {
 // result = fall back to the pinned-image lane (clusters loaded the
 // classic way still promote exactly as before).
 struct LodPagePin {
-	const uint8_t* data = nullptr; // the ENTRY payload (contiguous)
-	size_t size = 0;
-	std::function<void()> release; // unpin (after the synchronous upload)
+    const uint8_t* data = nullptr; // the ENTRY payload (contiguous)
+    size_t size = 0;
+    std::function<void()> release; // unpin (after the synchronous upload)
 };
-using LodPageSource = std::function<std::optional<LodPagePin>(
-	const char* uri)>;
+using LodPageSource = std::function<std::optional<LodPagePin>(const char* uri)>;
 void SetLodPageSource(LodPageSource source);
 [[nodiscard]] LodPageSource& LodPageSourceRef();
 
 inline LodPageSource& LodPageSourceRef() {
-	// Process-wide, installed once at host startup (main thread; the
-	// promote tick is the frame boundary — same-thread discipline).
-	static LodPageSource source;
-	return source;
+    // Process-wide, installed once at host startup (main thread; the
+    // promote tick is the frame boundary — same-thread discipline).
+    static LodPageSource source;
+    return source;
 }
 inline void SetLodPageSource(LodPageSource source) {
-	LodPageSourceRef() = std::move(source);
+    LodPageSourceRef() = std::move(source);
 }
 
 // The env gate (the DebugImageDumpArmed pattern: static-cached, read
@@ -179,12 +178,12 @@ inline void SetLodPageSource(LodPageSource source) {
 // directly because cluster load happens before any renderer state
 // exists (the gate must decide at parse time what gets uploaded).
 inline bool GeometryStreamingEnabled() {
-	static const bool enabled = [] {
-		const char* e = std::getenv("TOURMALINE_GEOMETRY_STREAMING");
-		return e && (std::strcmp(e, "1") == 0 || std::strcmp(e, "on") == 0
-			|| std::strcmp(e, "true") == 0);
-	}();
-	return enabled;
+    static const bool enabled = [] {
+        const char* e = std::getenv("TOURMALINE_GEOMETRY_STREAMING");
+        return e && (std::strcmp(e, "1") == 0 || std::strcmp(e, "on") == 0 ||
+                     std::strcmp(e, "true") == 0);
+    }();
+    return enabled;
 }
 
 // ---- config ---------------------------------------------------------------
@@ -195,65 +194,65 @@ inline bool GeometryStreamingEnabled() {
 // later stages consume - present, documented, and inert until then.
 
 struct GeometryStreamingConfig {
-	// Working-set ceiling for DEMAND-LOADED siblings (the pinned LOD0
-	// bases + coarsest fallbacks ride OUTSIDE this - they are load-time
-	// residents like today). v1: accounting only (promotes stop when the
-	// promoted bytes exceed the budget); no eviction exists to enforce
-	// it downward.
-	uint64_t gpuBudgetBytes = 512ull << 20;
-	// Promote throttle: sum of promoted payload bytes per frame (the
-	// texture streamer's maxUpgradesPerFrame discipline, in bytes -
-	// mesh payloads are far chunkier than mip tails).
-	uint64_t uploadBytesPerFrame = 16ull << 20;
-	// Promote throttle: max sibling promotes per frame (bounds the
-	// per-promote registration work + the gfx table rebuild cadence).
-	uint32_t maxPromotesPerFrame = 4;
+    // Working-set ceiling for DEMAND-LOADED siblings (the pinned LOD0
+    // bases + coarsest fallbacks ride OUTSIDE this - they are load-time
+    // residents like today). v1: accounting only (promotes stop when the
+    // promoted bytes exceed the budget); no eviction exists to enforce
+    // it downward.
+    uint64_t gpuBudgetBytes = 512ull << 20;
+    // Promote throttle: sum of promoted payload bytes per frame (the
+    // texture streamer's maxUpgradesPerFrame discipline, in bytes -
+    // mesh payloads are far chunkier than mip tails).
+    uint64_t uploadBytesPerFrame = 16ull << 20;
+    // Promote throttle: max sibling promotes per frame (bounds the
+    // per-promote registration work + the gfx table rebuild cadence).
+    uint32_t maxPromotesPerFrame = 4;
 
-	// Idle frames before a demand-loaded sibling is EVICTION-ELIGIBLE
-	// (nothing drawn or demanded it within the window). 0 = evictable
-	// the frame after its last touch. Pins: TOURMALINE_GEOMETRY_EVICT_IDLE.
-	uint32_t idleFramesBeforeEvict = 60;
-	// Levels finer than the desired one to prefetch (hides the promote
-	// latency when the camera approaches). 0 = demand only. v1-live:
-	// the demand window includes desired - prefetchLevels FINER
-	// neighbors of the drawn level.
-	uint32_t prefetchLevels = 1;
+    // Idle frames before a demand-loaded sibling is EVICTION-ELIGIBLE
+    // (nothing drawn or demanded it within the window). 0 = evictable
+    // the frame after its last touch. Pins: TOURMALINE_GEOMETRY_EVICT_IDLE.
+    uint32_t idleFramesBeforeEvict = 60;
+    // Levels finer than the desired one to prefetch (hides the promote
+    // latency when the camera approaches). 0 = demand only. v1-live:
+    // the demand window includes desired - prefetchLevels FINER
+    // neighbors of the drawn level.
+    uint32_t prefetchLevels = 1;
 
-	// The coarsest sibling per cooked group stays resident from load
-	// (the plan's pinned fallback: whatever happens, a drawable level
-	// beyond LOD0 exists).
-	bool pinCoarsestLod = true;
+    // The coarsest sibling per cooked group stays resident from load
+    // (the plan's pinned fallback: whatever happens, a drawable level
+    // beyond LOD0 exists).
+    bool pinCoarsestLod = true;
 
-	// Eviction ON: the promoted working set is bounded by gpuBudgetBytes
-	// (the idlest siblings past idleFramesBeforeEvict return to
-	// deferred). The gfx-table rebuild (ResetStaticRegistrations + the
-	// re-register walk skips destroyed pool entries) is the per-mesh
-	// removal mechanism.
-	bool enableEviction = true;
-	// Stage-4's physical half - INERT in v1 (see the file header).
-	bool enableSparseBacking = false;
+    // Eviction ON: the promoted working set is bounded by gpuBudgetBytes
+    // (the idlest siblings past idleFramesBeforeEvict return to
+    // deferred). The gfx-table rebuild (ResetStaticRegistrations + the
+    // re-register walk skips destroyed pool entries) is the per-mesh
+    // removal mechanism.
+    bool enableEviction = true;
+    // Stage-4's physical half - INERT in v1 (see the file header).
+    bool enableSparseBacking = false;
 };
 
 // ---- per-frame streaming state -------------------------------------------
 
 struct GeometryStreamingStats {
-	uint64_t promotedCount = 0;      // siblings promoted since load
-	uint64_t promotedBytes = 0;      // their payload bytes (vert+index)
-	uint64_t evictedCount = 0;       // siblings evicted back to deferred
-	uint64_t evictedBytes = 0;       // their freed payload bytes
-	uint64_t deferredAtLoad = 0;     // the load-time census
-	uint64_t deferredBytesAtLoad = 0; // payload bytes NOT uploaded at load
-	uint64_t promotesLastUpdate = 0; // this tick's promotes
-	uint64_t evictionsLastUpdate = 0; // this tick's evictions
-	uint64_t demandMisses = 0;       // cumulative (mesh, level) demands
-	                                 // that were not resident
+    uint64_t promotedCount = 0;       // siblings promoted since load
+    uint64_t promotedBytes = 0;       // their payload bytes (vert+index)
+    uint64_t evictedCount = 0;        // siblings evicted back to deferred
+    uint64_t evictedBytes = 0;        // their freed payload bytes
+    uint64_t deferredAtLoad = 0;      // the load-time census
+    uint64_t deferredBytesAtLoad = 0; // payload bytes NOT uploaded at load
+    uint64_t promotesLastUpdate = 0;  // this tick's promotes
+    uint64_t evictionsLastUpdate = 0; // this tick's evictions
+    uint64_t demandMisses = 0;        // cumulative (mesh, level) demands
+                                      // that were not resident
 };
 
 // One entry per PROMOTED sibling (the eviction candidates): the payload
 // accounting + the idle clock. Key = worldMesh<<32 | lodIndex.
 struct PromotedLodEntry {
-	uint64_t payloadBytes = 0;
-	uint64_t lastTouchFrame = 0;   // last drawn OR demanded frame
+    uint64_t payloadBytes = 0;
+    uint64_t lastTouchFrame = 0; // last drawn OR demanded frame
 };
 
 // The streamer state the WorldRenderer ticks (the promote/evict
@@ -261,82 +260,81 @@ struct PromotedLodEntry {
 // World::Promote/EvictLodLevel - the asset owns its payload; this
 // struct owns POLICY).
 struct GeometryStreamer {
-	GeometryStreamingConfig config{};
-	GeometryStreamingStats stats{};
-	std::unordered_map<uint64_t, PromotedLodEntry> promoted;
+    GeometryStreamingConfig config{};
+    GeometryStreamingStats stats{};
+    std::unordered_map<uint64_t, PromotedLodEntry> promoted;
 
-	// Budget/throttle decisions for one promote candidate.
-	[[nodiscard]] bool CanPromoteThisFrame(uint64_t bytesThisFrame,
-		uint32_t promotesThisFrame) const {
-		if (promotesThisFrame >= config.maxPromotesPerFrame)
-			return false;
-		if (bytesThisFrame >= config.uploadBytesPerFrame)
-			return false;
-		if (stats.promotedBytes >= config.gpuBudgetBytes)
-			return false;
-		return true;
-	}
+    // Budget/throttle decisions for one promote candidate.
+    [[nodiscard]] bool CanPromoteThisFrame(uint64_t bytesThisFrame,
+                                           uint32_t promotesThisFrame) const {
+        if (promotesThisFrame >= config.maxPromotesPerFrame)
+            return false;
+        if (bytesThisFrame >= config.uploadBytesPerFrame)
+            return false;
+        if (stats.promotedBytes >= config.gpuBudgetBytes)
+            return false;
+        return true;
+    }
 
-	void NotePromote(uint32_t mesh, uint32_t lod, uint64_t payloadBytes,
-		uint64_t frame) {
-		++stats.promotedCount;
-		stats.promotedBytes += payloadBytes;
-		++stats.promotesLastUpdate;
-		promoted[(uint64_t(mesh) << 32) | lod] =
-			PromotedLodEntry{ payloadBytes, frame };
-	}
+    void NotePromote(uint32_t mesh, uint32_t lod, uint64_t payloadBytes, uint64_t frame) {
+        ++stats.promotedCount;
+        stats.promotedBytes += payloadBytes;
+        ++stats.promotesLastUpdate;
+        promoted[(uint64_t(mesh) << 32) | lod] = PromotedLodEntry{payloadBytes, frame};
+    }
 
-	void NoteTouch(uint32_t mesh, uint32_t lod, uint64_t frame) {
-		auto it = promoted.find((uint64_t(mesh) << 32) | lod);
-		if (it != promoted.end())
-			it->second.lastTouchFrame = frame;
-	}
+    void NoteTouch(uint32_t mesh, uint32_t lod, uint64_t frame) {
+        auto it = promoted.find((uint64_t(mesh) << 32) | lod);
+        if (it != promoted.end())
+            it->second.lastTouchFrame = frame;
+    }
 
-	void NoteEvict(uint32_t mesh, uint32_t lod, uint64_t payloadBytes) {
-		++stats.evictedCount;
-		stats.evictedBytes += payloadBytes;
-		++stats.evictionsLastUpdate;
-		stats.promotedBytes -= (stats.promotedBytes >= payloadBytes)
-			? payloadBytes : stats.promotedBytes;
-		promoted.erase((uint64_t(mesh) << 32) | lod);
-	}
+    void NoteEvict(uint32_t mesh, uint32_t lod, uint64_t payloadBytes) {
+        ++stats.evictedCount;
+        stats.evictedBytes += payloadBytes;
+        ++stats.evictionsLastUpdate;
+        stats.promotedBytes -=
+            (stats.promotedBytes >= payloadBytes) ? payloadBytes : stats.promotedBytes;
+        promoted.erase((uint64_t(mesh) << 32) | lod);
+    }
 
-	void BeginUpdate() {
-		stats.promotesLastUpdate = 0;
-		stats.evictionsLastUpdate = 0;
-	}
+    void BeginUpdate() {
+        stats.promotesLastUpdate = 0;
+        stats.evictionsLastUpdate = 0;
+    }
 
-	// The eviction candidate search: over budget, the IDLEST promoted
-	// sibling (oldest touch) past the idle window. keyOut/bytesOut
-	// filled on hit. A sibling touched THIS frame is never evictable
-	// (it is currently drawn or demanded - the invariant that a level
-	// in use stays resident).
-	[[nodiscard]] bool FindEvictCandidate(uint64_t frame,
-		uint64_t& keyOut, uint64_t& bytesOut) const {
-		if (!config.enableEviction)
-			return false;
-		if (stats.promotedBytes <= config.gpuBudgetBytes)
-			return false;
-		uint64_t bestKey = 0;
-		uint64_t bestBytes = 0;
-		uint64_t bestTouch = ~uint64_t(0);
-		for (const auto& [key, e] : promoted) {
-			if (frame <= e.lastTouchFrame)
-				continue; // touched this very frame
-			if (frame - e.lastTouchFrame < config.idleFramesBeforeEvict)
-				continue; // inside the idle window
-			if (e.lastTouchFrame < bestTouch) {
-				bestTouch = e.lastTouchFrame;
-				bestKey = key;
-				bestBytes = e.payloadBytes;
-			}
-		}
-		if (bestTouch == ~uint64_t(0))
-			return false;
-		keyOut = bestKey;
-		bytesOut = bestBytes;
-		return true;
-	}
+    // The eviction candidate search: over budget, the IDLEST promoted
+    // sibling (oldest touch) past the idle window. keyOut/bytesOut
+    // filled on hit. A sibling touched THIS frame is never evictable
+    // (it is currently drawn or demanded - the invariant that a level
+    // in use stays resident).
+    [[nodiscard]] bool FindEvictCandidate(uint64_t frame,
+                                          uint64_t& keyOut,
+                                          uint64_t& bytesOut) const {
+        if (!config.enableEviction)
+            return false;
+        if (stats.promotedBytes <= config.gpuBudgetBytes)
+            return false;
+        uint64_t bestKey = 0;
+        uint64_t bestBytes = 0;
+        uint64_t bestTouch = ~uint64_t(0);
+        for (const auto& [key, e] : promoted) {
+            if (frame <= e.lastTouchFrame)
+                continue; // touched this very frame
+            if (frame - e.lastTouchFrame < config.idleFramesBeforeEvict)
+                continue; // inside the idle window
+            if (e.lastTouchFrame < bestTouch) {
+                bestTouch = e.lastTouchFrame;
+                bestKey = key;
+                bestBytes = e.payloadBytes;
+            }
+        }
+        if (bestTouch == ~uint64_t(0))
+            return false;
+        keyOut = bestKey;
+        bytesOut = bestBytes;
+        return true;
+    }
 };
 
 // The config with the env overrides (the DebugImageDumpArmed pattern:
@@ -345,23 +343,22 @@ struct GeometryStreamer {
 // (small values force eviction churn for testing);
 // TOURMALINE_GEOMETRY_EVICT_IDLE pins the idle window in frames (0 =
 // evictable the frame after its last touch).
-[[nodiscard]] inline const GeometryStreamingConfig&
-GeometryStreamingRuntimeConfig() {
-	static const GeometryStreamingConfig cfg = [] {
-		GeometryStreamingConfig c{};
-		if (const char* e = std::getenv("TOURMALINE_GEOMETRY_BUDGET_MB")) {
-			const long mb = std::atol(e);
-			if (mb > 0)
-				c.gpuBudgetBytes = uint64_t(mb) << 20;
-		}
-		if (const char* e = std::getenv("TOURMALINE_GEOMETRY_EVICT_IDLE")) {
-			const long f = std::atol(e);
-			if (f >= 0)
-				c.idleFramesBeforeEvict = uint32_t(f);
-		}
-		return c;
-	}();
-	return cfg;
+[[nodiscard]] inline const GeometryStreamingConfig& GeometryStreamingRuntimeConfig() {
+    static const GeometryStreamingConfig cfg = [] {
+        GeometryStreamingConfig c{};
+        if (const char* e = std::getenv("TOURMALINE_GEOMETRY_BUDGET_MB")) {
+            const long mb = std::atol(e);
+            if (mb > 0)
+                c.gpuBudgetBytes = uint64_t(mb) << 20;
+        }
+        if (const char* e = std::getenv("TOURMALINE_GEOMETRY_EVICT_IDLE")) {
+            const long f = std::atol(e);
+            if (f >= 0)
+                c.idleFramesBeforeEvict = uint32_t(f);
+        }
+        return c;
+    }();
+    return cfg;
 }
 
 } // namespace tour
@@ -372,14 +369,14 @@ GeometryStreamingRuntimeConfig() {
 // machinery, PakApp's SetLodPageSource install) compiling through the
 // consumer migration. Retire as call sites move.
 namespace smvk {
-	using ::tour::LodPagePin;
-	using ::tour::LodPageSource;
-	using ::tour::SetLodPageSource;
-	using ::tour::LodPageSourceRef;
-	using ::tour::GeometryStreamingEnabled;
-	using ::tour::GeometryStreamingConfig;
-	using ::tour::GeometryStreamingStats;
-	using ::tour::PromotedLodEntry;
-	using ::tour::GeometryStreamer;
-	using ::tour::GeometryStreamingRuntimeConfig;
-}
+using ::tour::GeometryStreamer;
+using ::tour::GeometryStreamingConfig;
+using ::tour::GeometryStreamingEnabled;
+using ::tour::GeometryStreamingRuntimeConfig;
+using ::tour::GeometryStreamingStats;
+using ::tour::LodPagePin;
+using ::tour::LodPageSource;
+using ::tour::LodPageSourceRef;
+using ::tour::PromotedLodEntry;
+using ::tour::SetLodPageSource;
+} // namespace smvk

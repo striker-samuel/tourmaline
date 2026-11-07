@@ -27,7 +27,8 @@ namespace pakcook {
 // skipped, not fatal — the dump stays useful on half-broken atlases)
 // and writes it as a PNG. Returns false + err on IO failure.
 bool WriteLightmapAtlasPng(const smvk::gi::SgLightmapAtlas& atlas,
-	const std::string& path, std::string& err);
+                           const std::string& path,
+                           std::string& err);
 
 // Chart-id map (<scene>_charts.png): every chunk rect filled with a
 // stable color keyed by the ATLAS CHUNK INDEX — the same chart id the
@@ -40,7 +41,9 @@ bool WriteLightmapAtlasPng(const smvk::gi::SgLightmapAtlas& atlas,
 // Same skip-not-fatal policy as the atlas dump. Returns false + err on
 // IO failure.
 bool WriteLightmapChartsPng(const smvk::gi::SgLightmapAtlas& atlas,
-	uint32_t margin, const std::string& path, std::string& err);
+                            uint32_t margin,
+                            const std::string& path,
+                            std::string& err);
 
 // Bright-pink fault map (<scene>_pink.png, --lm-debug-pink on): the
 // TRUE lightmap the runtime loads — lobe-0 amplitude decoded exactly
@@ -66,7 +69,8 @@ bool WriteLightmapChartsPng(const smvk::gi::SgLightmapAtlas& atlas,
 // skip-not-fatal policy as the other dumps. Returns false + err on IO
 // failure.
 bool WriteLightmapPinkPng(const smvk::gi::SgLightmapAtlas& atlas,
-	const std::vector<char>& hasBakePoints, const std::string& path,
-	std::string& err);
+                          const std::vector<char>& hasBakePoints,
+                          const std::string& path,
+                          std::string& err);
 
 } // namespace pakcook

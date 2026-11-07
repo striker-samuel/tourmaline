@@ -18,90 +18,90 @@
 namespace paktool {
 
 struct PakArgs {
-	std::string contentDir = "content";
-	std::vector<std::string> inVfsList; // processed .geometry artifacts
-	std::string inVfs; // primary identity (first artifact / tour ref)
-	std::string tour; // definition tour (editor scene overlay)
-	std::string mapFile; // optional world-wide .map placement document
-	std::string registryDir; // explicit programmatic registry root
-	                         // (editor store); bare CLI packs derive it
-	                         // from the content root
-	std::string outPak;
-	// Read-only inspection (--dump-pak): print the pak manifest, no
-	// cooking, no writes. dumpNodes pins the scene node print.
-	std::string dumpPak;
-	std::vector<uint32_t> dumpNodes;
-	bool dumpManifest = false;
-	// Re-open the written pak with PakReader after writing (default on).
-	bool verify = true;
-	// Per-blob LZ4 compression (default on: only stores when it shrinks).
-	bool compress = true;
-	int lz4Accel = 1;
-	bool meshopt = true;
-	float overdraw = 1.05f;
-	bool autoKtx = true;
-	// SKIP the loose VFS bake-file discovery at assembly (-1 = the tour's
-	// exportSettings node decides — the SceneExportSettings::ignoreVfs
-	// default; 0/1 = CLI-pinned, e.g. the editor passes the node's value
-	// through here). On = the pak embeds ONLY the scene's own content
-	// (meshes/materials/textures, blobs by path): no gi/ cubemap
-	// manifests + KTX rows, no .sggi, no .givolumemanifest + .givolume rows, no
-	// bindings for them (see SceneExportSettings::ignoreVfs).
-	int ignoreVfs = -1;
-	// Level blob (see Engine/Asset/level.h): pack the scene + the baked
-	// data into ONE levels/<name>.level blob. Empty = no level blob.
-	// (No cubemap knobs here: PAK never bakes captures — cook.exe does;
-	// pak embeds the loose bake files it discovers at the canonical
-	// gi/cubemaps/ paths.)
-	std::string levelName;
-	// Tiled terrain source dir (host path; see Rendergraph/terrain_meta.h).
-	std::string terrainDir;
-	// SHADER PACK mode (the engine-owned engine-shaders.pak): a host
-	// directory whose recursive *.spv files embed VERBATIM as
-	// Shader-kind blobs keyed "content/shaders/<relative>". Set alone
-	// (no artifacts/tour/content-set/terrain) = a standalone shader
-	// package; set beside scene inputs = the shaders ride the same
-	// pak. Every blob's SPIR-V magic is validated — a corrupt blob
-	// fails the pack, never ships.
-	std::string shaderDir;
-	// The DECLARED-LIST form: one HOST path per line (the build's
-	// authoritative compiled-output list); packs EXACTLY these files
-	// (stale .spv from retired variants never ship).
-	std::string shaderList;
-	// Sun/sky bake env (the CLI sun defaults; the tour env block wins
-	// when the definition carries one — see EnvForBake).
-	float sunAzimuth = 30.0f;
-	float sunElevation = 55.0f;
-	float sunIntensity = 10000.0f;
-	float skyIntensity = 600.0f;
-	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
-	// Probe-volume bake files this pak's scenes sample (repeatable).
-	std::vector<std::string> giProbes;
-	// ---- the multi-pak content-set surface (the recipe build) --------
-	// VFS paths to embed directly as Texture-kind blobs (an ASSET-ONLY
-	// pak: no scene, no clusters — e.g. shared textures another pak's
-	// materials resolve cross-pak through the mounted backends).
-	// Source images (.png/.jpg/...) transcode to KTX2 sRGB (authored
-	// color content); .ktx2 + text manifests embed verbatim. Empty =
-	// the normal tour/artifact path.
-	std::vector<std::string> contentSet;
-	// VFS texture paths this pak must NOT embed (owned by a DEPENDENCY
-	// pak — the resolved plan's ownership table): the serializer skips
-	// them, the materials keep their refs, the runtime resolves
-	// cross-pak through the mounted backends. Empty = embed everything
-	// (the single-pak default, byte-identical).
-	std::vector<std::string> excludeVfsPaths;
-	// The SOUND-ID map (the recipe build's [ids] table slice):
-	// authored sound assetPath -> stable 0x4xxx content id, stamped
-	// into the cooked scene's audio section. EMPTY = a bare,
-	// non-project cook (referenced sounds serialize 0 = unresolved);
-	// NON-EMPTY with an unresolved referenced path FAILS the cook.
-	std::vector<std::pair<std::string, uint64_t>> soundIds;
-	// The project's NODE SCHEMAS (--schema <file>, repeatable): cooked
-	// into the pak's "#schemas" registry blob (the schema LAYOUTS the
-	// scene's v19 schema-association rows decode against —
-	// Engine/Scene/node_schema.h).
-	std::vector<std::string> schemaFiles;
+    std::string contentDir = "content";
+    std::vector<std::string> inVfsList; // processed .geometry artifacts
+    std::string inVfs;                  // primary identity (first artifact / tour ref)
+    std::string tour;                   // definition tour (editor scene overlay)
+    std::string mapFile;                // optional world-wide .map placement document
+    std::string registryDir;            // explicit programmatic registry root
+                                        // (editor store); bare CLI packs derive it
+                                        // from the content root
+    std::string outPak;
+    // Read-only inspection (--dump-pak): print the pak manifest, no
+    // cooking, no writes. dumpNodes pins the scene node print.
+    std::string dumpPak;
+    std::vector<uint32_t> dumpNodes;
+    bool dumpManifest = false;
+    // Re-open the written pak with PakReader after writing (default on).
+    bool verify = true;
+    // Per-blob LZ4 compression (default on: only stores when it shrinks).
+    bool compress = true;
+    int lz4Accel = 1;
+    bool meshopt = true;
+    float overdraw = 1.05f;
+    bool autoKtx = true;
+    // SKIP the loose VFS bake-file discovery at assembly (-1 = the tour's
+    // exportSettings node decides — the SceneExportSettings::ignoreVfs
+    // default; 0/1 = CLI-pinned, e.g. the editor passes the node's value
+    // through here). On = the pak embeds ONLY the scene's own content
+    // (meshes/materials/textures, blobs by path): no gi/ cubemap
+    // manifests + KTX rows, no .sggi, no .givolumemanifest + .givolume rows, no
+    // bindings for them (see SceneExportSettings::ignoreVfs).
+    int ignoreVfs = -1;
+    // Level blob (see Engine/Asset/level.h): pack the scene + the baked
+    // data into ONE levels/<name>.level blob. Empty = no level blob.
+    // (No cubemap knobs here: PAK never bakes captures — cook.exe does;
+    // pak embeds the loose bake files it discovers at the canonical
+    // gi/cubemaps/ paths.)
+    std::string levelName;
+    // Tiled terrain source dir (host path; see Rendergraph/terrain_meta.h).
+    std::string terrainDir;
+    // SHADER PACK mode (the engine-owned engine-shaders.pak): a host
+    // directory whose recursive *.spv files embed VERBATIM as
+    // Shader-kind blobs keyed "content/shaders/<relative>". Set alone
+    // (no artifacts/tour/content-set/terrain) = a standalone shader
+    // package; set beside scene inputs = the shaders ride the same
+    // pak. Every blob's SPIR-V magic is validated — a corrupt blob
+    // fails the pack, never ships.
+    std::string shaderDir;
+    // The DECLARED-LIST form: one HOST path per line (the build's
+    // authoritative compiled-output list); packs EXACTLY these files
+    // (stale .spv from retired variants never ship).
+    std::string shaderList;
+    // Sun/sky bake env (the CLI sun defaults; the tour env block wins
+    // when the definition carries one — see EnvForBake).
+    float sunAzimuth = 30.0f;
+    float sunElevation = 55.0f;
+    float sunIntensity = 10000.0f;
+    float skyIntensity = 600.0f;
+    glm::vec3 sunColor{1.0f, 0.95f, 0.90f};
+    // Probe-volume bake files this pak's scenes sample (repeatable).
+    std::vector<std::string> giProbes;
+    // ---- the multi-pak content-set surface (the recipe build) --------
+    // VFS paths to embed directly as Texture-kind blobs (an ASSET-ONLY
+    // pak: no scene, no clusters — e.g. shared textures another pak's
+    // materials resolve cross-pak through the mounted backends).
+    // Source images (.png/.jpg/...) transcode to KTX2 sRGB (authored
+    // color content); .ktx2 + text manifests embed verbatim. Empty =
+    // the normal tour/artifact path.
+    std::vector<std::string> contentSet;
+    // VFS texture paths this pak must NOT embed (owned by a DEPENDENCY
+    // pak — the resolved plan's ownership table): the serializer skips
+    // them, the materials keep their refs, the runtime resolves
+    // cross-pak through the mounted backends. Empty = embed everything
+    // (the single-pak default, byte-identical).
+    std::vector<std::string> excludeVfsPaths;
+    // The SOUND-ID map (the recipe build's [ids] table slice):
+    // authored sound assetPath -> stable 0x4xxx content id, stamped
+    // into the cooked scene's audio section. EMPTY = a bare,
+    // non-project cook (referenced sounds serialize 0 = unresolved);
+    // NON-EMPTY with an unresolved referenced path FAILS the cook.
+    std::vector<std::pair<std::string, uint64_t>> soundIds;
+    // The project's NODE SCHEMAS (--schema <file>, repeatable): cooked
+    // into the pak's "#schemas" registry blob (the schema LAYOUTS the
+    // scene's v19 schema-association rows decode against —
+    // Engine/Scene/node_schema.h).
+    std::vector<std::string> schemaFiles;
 };
 
 // Byte-identical to the CLI run (same return codes). Prints go through

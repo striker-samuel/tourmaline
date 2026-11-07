@@ -25,7 +25,7 @@ struct SharedAssetRecord {
 using AssetLease = std::shared_ptr<const SharedAssetRecord>;
 
 class AssetResidency {
-public:
+  public:
     using Loader = std::function<std::shared_ptr<void>(uint64_t)>;
 
     explicit AssetResidency(Loader loader) : loader_(std::move(loader)) {}
@@ -33,15 +33,18 @@ public:
     // Fails closed (nullptr) if missing ID, loader, or backing. Existing
     // leases always refer to the SAME asset record for the same content ID.
     AssetLease Acquire(uint64_t id) {
-        if (!id || !loader_) return {};
+        if (!id || !loader_)
+            return {};
         auto it = entries_.find(id);
         if (it != entries_.end()) {
-            if (auto existing = it->second.lock()) return existing;
+            if (auto existing = it->second.lock())
+                return existing;
         }
         std::shared_ptr<void> backing = loader_(id);
-        if (!backing) return {};
-        auto record = std::make_shared<SharedAssetRecord>(
-            SharedAssetRecord{id, std::move(backing)});
+        if (!backing)
+            return {};
+        auto record =
+            std::make_shared<SharedAssetRecord>(SharedAssetRecord{id, std::move(backing)});
         entries_[id] = record;
         return record;
     }
@@ -49,13 +52,13 @@ public:
     // All-or-nothing ownership: if one dependency fails, acquired leases
     // are discarded, including those created in this call. No partial
     // instance may publish with only some of its material/mesh assets.
-    bool AcquireAll(std::span<const uint64_t> ids,
-                    std::vector<AssetLease>& out) {
+    bool AcquireAll(std::span<const uint64_t> ids, std::vector<AssetLease>& out) {
         std::vector<AssetLease> next;
         next.reserve(ids.size());
         for (const uint64_t id : ids) {
             auto lease = Acquire(id);
-            if (!lease) return false;
+            if (!lease)
+                return false;
             next.push_back(std::move(lease));
         }
         out = std::move(next);
@@ -73,7 +76,7 @@ public:
             it = it->second.expired() ? entries_.erase(it) : ++it;
     }
 
-private:
+  private:
     Loader loader_;
     std::map<uint64_t, std::weak_ptr<const SharedAssetRecord>> entries_;
 };

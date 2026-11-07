@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace engine {
@@ -11,8 +11,11 @@ namespace engine {
 // PNG decode/encode wrappers for the artistic LUT workflow (stb-based).
 // RGBA8, tightly packed, row-major top-down.
 // Decode catalog-provided PNG bytes, without filesystem reads.
-bool LutLoadPngMemory(const uint8_t* bytes, size_t count,
-	std::vector<uint8_t>& rgba, int& w, int& h);
+bool LutLoadPngMemory(const uint8_t* bytes,
+                      size_t count,
+                      std::vector<uint8_t>& rgba,
+                      int& w,
+                      int& h);
 bool LutWritePng(const char* path, int w, int h, const uint8_t* rgba);
 
 } // namespace engine

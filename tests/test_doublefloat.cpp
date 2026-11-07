@@ -13,10 +13,18 @@
 // whose NDEBUG no-op makes Release runs vacuous - and any side effect
 // inside an assert (see test_gpu_scene_candidates.cpp:
 // assert(leaves.Flush(db))) was silently skipped, crashing the run.
-#define CHECK(cond) do { ++g_checks; if (!(cond)) { ++g_failures; \
-    std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } \
-    while (0)
-namespace { int g_checks = 0; int g_failures = 0; }
+#define CHECK(cond)                                                                                \
+    do {                                                                                           \
+        ++g_checks;                                                                                \
+        if (!(cond)) {                                                                             \
+            ++g_failures;                                                                          \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                   \
+        }                                                                                          \
+    } while (0)
+namespace {
+int g_checks = 0;
+int g_failures = 0;
+} // namespace
 
 namespace {
 using tour::math::DoubleFloat3;
@@ -29,14 +37,16 @@ using tour::math::SplitDoubleFloat;
 
 void CheckNear(float actual, double expected, double tolerance) {
     if (std::abs(double(actual) - expected) > tolerance) {
-        std::fprintf(stderr, "DoubleFloat: expected %.12g, got %.12g (tol %.4g)\n",
-                     expected, double(actual), tolerance);
+        std::fprintf(stderr,
+                     "DoubleFloat: expected %.12g, got %.12g (tol %.4g)\n",
+                     expected,
+                     double(actual),
+                     tolerance);
         std::abort();
     }
 }
 
-void CheckRelative(const glm::dvec3& world, const glm::dvec3& eye,
-                   double tolerance) {
+void CheckRelative(const glm::dvec3& world, const glm::dvec3& eye, double tolerance) {
     const DoubleFloat3 gpuWorld = SplitDoubleFloat(world);
     const DoubleFloat3 gpuEye = SplitDoubleFloat(eye);
     CHECK(gpuWorld.high.w == 0.0f && gpuWorld.low.w == 0.0f);
@@ -77,8 +87,7 @@ int main() {
         const glm::dvec3 camera(base + 17.0, base - 13.0, base + 5.0);
         for (int i = 0; i < 128; ++i) {
             const double t = double(i) * 0.137;
-            const glm::dvec3 point(base + t, base - 0.5 * t,
-                                   base + 0.25 * t);
+            const glm::dvec3 point(base + t, base - 0.5 * t, base + 0.25 * t);
             CheckRelative(point, camera, 0.02);
         }
     }
@@ -92,11 +101,9 @@ int main() {
     CHECK(relativeModel[3].w == 1.0f);
 
     // Snapping must be stable around positive and negative grid edges.
-    const glm::dvec3 snapped = SnapRenderOrigin(
-        glm::dvec3(-0.5, 4096.0, -4096.125));
+    const glm::dvec3 snapped = SnapRenderOrigin(glm::dvec3(-0.5, 4096.0, -4096.125));
     CHECK(snapped == glm::dvec3(-4096.0, 4096.0, -8192.0));
-    CHECK(SnapRenderOrigin(glm::dvec3(4095.99, 0.0, 8191.0))
-           == glm::dvec3(0.0, 0.0, 4096.0));
+    CHECK(SnapRenderOrigin(glm::dvec3(4095.99, 0.0, 8191.0)) == glm::dvec3(0.0, 0.0, 4096.0));
 
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

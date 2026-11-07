@@ -38,88 +38,87 @@ int g_failures = 0;
 int g_checks = 0;
 
 void Check(bool cond, const char* name) {
-	++g_checks;
-	if (cond) {
-		std::cout << "PASS " << name << "\n";
-	}
-	else {
-		++g_failures;
-		std::cout << "FAIL " << name << "\n";
-	}
+    ++g_checks;
+    if (cond) {
+        std::cout << "PASS " << name << "\n";
+    } else {
+        ++g_failures;
+        std::cout << "FAIL " << name << "\n";
+    }
 }
 
 void TestSsrTaaToggle() {
-	using namespace smvk;
+    using namespace smvk;
 
-	// Consecutive temporal records alternate slots; only the first is a
-	// warmup (mirrors smaaglobal.fifo-N-consecutive-alternates-and-warms-up).
-	{
-		SsrTaaState st;
-		bool ok = true;
-		const int n = 6;
-		for (int i = 0; i < n; ++i) {
-			const SsrTaaFrameParams p = SsrTaaBeginFrame(st, true);
-			if (p.parity != (uint32_t)(i % 2))
-				ok = false;
-			if (p.historyValid != (i != 0))
-				ok = false;
-			SsrTaaEndFrame(st, true);
-		}
-		Check(ok, "ssrtaa.consecutive-alternates-and-warms-up");
-	}
+    // Consecutive temporal records alternate slots; only the first is a
+    // warmup (mirrors smaaglobal.fifo-N-consecutive-alternates-and-warms-up).
+    {
+        SsrTaaState st;
+        bool ok = true;
+        const int n = 6;
+        for (int i = 0; i < n; ++i) {
+            const SsrTaaFrameParams p = SsrTaaBeginFrame(st, true);
+            if (p.parity != (uint32_t)(i % 2))
+                ok = false;
+            if (p.historyValid != (i != 0))
+                ok = false;
+            SsrTaaEndFrame(st, true);
+        }
+        Check(ok, "ssrtaa.consecutive-alternates-and-warms-up");
+    }
 
-	// A spatial-only record freezes the phase and invalidates (never
-	// blend stale); re-entry warms up on the frozen phase, then
-	// alternation resumes.
-	{
-		SsrTaaState st;
-		SsrTaaEndFrame(st, true);  // record 0 ran temporal: parity 0->1, valid
-		SsrTaaEndFrame(st, false); // spatial-only record: freeze + invalidate
-		const SsrTaaFrameParams p = SsrTaaBeginFrame(st, true);
-		Check(!p.historyValid, "ssrtaa.spatial-record-invalidates");
-		Check(p.parity == 1, "ssrtaa.spatial-record-freezes-phase");
-		SsrTaaEndFrame(st, true); // re-entry warms up: valid, parity 1->0
-		const SsrTaaFrameParams q = SsrTaaBeginFrame(st, true);
-		Check(q.historyValid && q.parity == 0, "ssrtaa.reentry-resumes-alternation");
-	}
+    // A spatial-only record freezes the phase and invalidates (never
+    // blend stale); re-entry warms up on the frozen phase, then
+    // alternation resumes.
+    {
+        SsrTaaState st;
+        SsrTaaEndFrame(st, true);  // record 0 ran temporal: parity 0->1, valid
+        SsrTaaEndFrame(st, false); // spatial-only record: freeze + invalidate
+        const SsrTaaFrameParams p = SsrTaaBeginFrame(st, true);
+        Check(!p.historyValid, "ssrtaa.spatial-record-invalidates");
+        Check(p.parity == 1, "ssrtaa.spatial-record-freezes-phase");
+        SsrTaaEndFrame(st, true); // re-entry warms up: valid, parity 1->0
+        const SsrTaaFrameParams q = SsrTaaBeginFrame(st, true);
+        Check(q.historyValid && q.parity == 0, "ssrtaa.reentry-resumes-alternation");
+    }
 
-	// Two spatial records in a row stay invalidated on the frozen phase.
-	{
-		SsrTaaState st;
-		SsrTaaEndFrame(st, true);
-		SsrTaaEndFrame(st, false);
-		SsrTaaEndFrame(st, false);
-		const SsrTaaFrameParams p = SsrTaaBeginFrame(st, true);
-		Check(!p.historyValid && p.parity == 1, "ssrtaa.double-spatial-stays-frozen");
-	}
+    // Two spatial records in a row stay invalidated on the frozen phase.
+    {
+        SsrTaaState st;
+        SsrTaaEndFrame(st, true);
+        SsrTaaEndFrame(st, false);
+        SsrTaaEndFrame(st, false);
+        const SsrTaaFrameParams p = SsrTaaBeginFrame(st, true);
+        Check(!p.historyValid && p.parity == 1, "ssrtaa.double-spatial-stays-frozen");
+    }
 
-	// Inactive snapshot is zeros (no temporal pass emitted).
-	{
-		SsrTaaState st;
-		SsrTaaEndFrame(st, true);
-		const SsrTaaFrameParams p = SsrTaaBeginFrame(st, false);
-		Check(p.parity == 0 && !p.historyValid, "ssrtaa.inactive-snapshot-is-zero");
-	}
+    // Inactive snapshot is zeros (no temporal pass emitted).
+    {
+        SsrTaaState st;
+        SsrTaaEndFrame(st, true);
+        const SsrTaaFrameParams p = SsrTaaBeginFrame(st, false);
+        Check(p.parity == 0 && !p.historyValid, "ssrtaa.inactive-snapshot-is-zero");
+    }
 
-	// Explicit invalidation (rebuild / extent drift / AA-mode change)
-	// resets to phase 0.
-	{
-		SsrTaaState st;
-		SsrTaaEndFrame(st, true);
-		SsrTaaEndFrame(st, true);
-		SsrTaaInvalidateHistory(st);
-		const SsrTaaFrameParams p = SsrTaaBeginFrame(st, true);
-		Check(!p.historyValid && p.parity == 0, "ssrtaa.invalidate-resets");
-	}
+    // Explicit invalidation (rebuild / extent drift / AA-mode change)
+    // resets to phase 0.
+    {
+        SsrTaaState st;
+        SsrTaaEndFrame(st, true);
+        SsrTaaEndFrame(st, true);
+        SsrTaaInvalidateHistory(st);
+        const SsrTaaFrameParams p = SsrTaaBeginFrame(st, true);
+        Check(!p.historyValid && p.parity == 0, "ssrtaa.invalidate-resets");
+    }
 
-	// Parity is a slot index: out-of-range state still snapshots masked.
-	{
-		SsrTaaState st;
-		st.parity = 7;
-		st.historyValid = true;
-		const SsrTaaFrameParams p = SsrTaaBeginFrame(st, true);
-		Check(p.parity == 1, "ssrtaa.parity-masked-to-slot");
-	}
+    // Parity is a slot index: out-of-range state still snapshots masked.
+    {
+        SsrTaaState st;
+        st.parity = 7;
+        st.historyValid = true;
+        const SsrTaaFrameParams p = SsrTaaBeginFrame(st, true);
+        Check(p.parity == 1, "ssrtaa.parity-masked-to-slot");
+    }
 }
 
 } // namespace
@@ -139,82 +138,86 @@ namespace {
 
 // Pre-change formula (static IGN, no epoch).
 float SsrIgnLegacy(float px, float py) {
-	const float d = px * 0.06711056f + py * 0.00583715f;
-	const float f1 = d - std::floor(d);
-	const float f2 = 52.9829189f * f1;
-	return f2 - std::floor(f2);
+    const float d = px * 0.06711056f + py * 0.00583715f;
+    const float f1 = d - std::floor(d);
+    const float f2 = 52.9829189f * f1;
+    return f2 - std::floor(f2);
 }
 
 // Current shader formula with the dither epoch.
 float SsrIgnForTest(float px, float py, uint32_t frameIndex) {
-	const uint32_t f = frameIndex & 255u;
-	const float qx = px + float(f) * 17.23f;
-	const float qy = py + float(f) * 9.71f;
-	const float d = qx * 0.06711056f + qy * 0.00583715f;
-	const float f1 = d - std::floor(d);
-	const float f2 = 52.9829189f * f1;
-	return f2 - std::floor(f2);
+    const uint32_t f = frameIndex & 255u;
+    const float qx = px + float(f) * 17.23f;
+    const float qy = py + float(f) * 9.71f;
+    const float d = qx * 0.06711056f + qy * 0.00583715f;
+    const float f1 = d - std::floor(d);
+    const float f2 = 52.9829189f * f1;
+    return f2 - std::floor(f2);
 }
 
 void TestSsrDitherEpoch() {
-	// Epoch 0 is bit-exact with the legacy static pattern (spatial-path
-	// back-compat) across a sweep of pixels.
-	{
-		bool ok = true;
-		for (int y = 0; y < 16 && ok; ++y)
-			for (int x = 0; x < 16 && ok; ++x) {
-				const float px = float(x * 131 + 7), py = float(y * 197 + 13);
-				if (SsrIgnForTest(px, py, 0u) != SsrIgnLegacy(px, py))
-					ok = false;
-			}
-		Check(ok, "ssrdither.epoch-0-matches-legacy");
-	}
+    // Epoch 0 is bit-exact with the legacy static pattern (spatial-path
+    // back-compat) across a sweep of pixels.
+    {
+        bool ok = true;
+        for (int y = 0; y < 16 && ok; ++y)
+            for (int x = 0; x < 16 && ok; ++x) {
+                const float px = float(x * 131 + 7), py = float(y * 197 + 13);
+                if (SsrIgnForTest(px, py, 0u) != SsrIgnLegacy(px, py))
+                    ok = false;
+            }
+        Check(ok, "ssrdither.epoch-0-matches-legacy");
+    }
 
-	// Every epoch value stays in [0,1) (frac contract).
-	{
-		bool ok = true;
-		for (uint32_t f = 0; f < 300 && ok; ++f) {
-			const float v = SsrIgnForTest(123.0f, 456.0f, f);
-			if (!(v >= 0.0f && v < 1.0f))
-				ok = false;
-		}
-		Check(ok, "ssrdither.values-in-unit-range");
-	}
+    // Every epoch value stays in [0,1) (frac contract).
+    {
+        bool ok = true;
+        for (uint32_t f = 0; f < 300 && ok; ++f) {
+            const float v = SsrIgnForTest(123.0f, 456.0f, f);
+            if (!(v >= 0.0f && v < 1.0f))
+                ok = false;
+        }
+        Check(ok, "ssrdither.values-in-unit-range");
+    }
 
-	// Consecutive epochs decorrelate: a fixed pixel takes many distinct
-	// values over 32 records (TAA has something to converge).
-	{
-		float vals[32];
-		for (uint32_t f = 0; f < 32; ++f)
-			vals[f] = SsrIgnForTest(123.0f, 456.0f, f);
-		int distinct = 1;
-		for (int i = 1; i < 32; ++i) {
-			bool seen = false;
-			for (int j = 0; j < i; ++j)
-				if (std::fabs(vals[i] - vals[j]) < 1e-3f) { seen = true; break; }
-			if (!seen)
-				++distinct;
-		}
-		char name[64];
-		std::snprintf(name, sizeof(name), "ssrdither.decorrelates-32-frames (distinct=%d)", distinct);
-		Check(distinct >= 16, name);
-	}
+    // Consecutive epochs decorrelate: a fixed pixel takes many distinct
+    // values over 32 records (TAA has something to converge).
+    {
+        float vals[32];
+        for (uint32_t f = 0; f < 32; ++f)
+            vals[f] = SsrIgnForTest(123.0f, 456.0f, f);
+        int distinct = 1;
+        for (int i = 1; i < 32; ++i) {
+            bool seen = false;
+            for (int j = 0; j < i; ++j)
+                if (std::fabs(vals[i] - vals[j]) < 1e-3f) {
+                    seen = true;
+                    break;
+                }
+            if (!seen)
+                ++distinct;
+        }
+        char name[64];
+        std::snprintf(
+            name, sizeof(name), "ssrdither.decorrelates-32-frames (distinct=%d)", distinct);
+        Check(distinct >= 16, name);
+    }
 
-	// The epoch wraps every 256 records (bounded float precision).
-	{
-		const float a = SsrIgnForTest(123.0f, 456.0f, 0u);
-		const float b = SsrIgnForTest(123.0f, 456.0f, 256u);
-		const float c = SsrIgnForTest(123.0f, 456.0f, 1u);
-		const float d = SsrIgnForTest(123.0f, 456.0f, 257u);
-		Check(a == b && c == d, "ssrdither.epoch-wraps-at-256");
-	}
+    // The epoch wraps every 256 records (bounded float precision).
+    {
+        const float a = SsrIgnForTest(123.0f, 456.0f, 0u);
+        const float b = SsrIgnForTest(123.0f, 456.0f, 256u);
+        const float c = SsrIgnForTest(123.0f, 456.0f, 1u);
+        const float d = SsrIgnForTest(123.0f, 456.0f, 257u);
+        Check(a == b && c == d, "ssrdither.epoch-wraps-at-256");
+    }
 }
 
 } // namespace
 
 int main() {
-	TestSsrTaaToggle();
-	TestSsrDitherEpoch();
-	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
-	return g_failures == 0 ? 0 : 1;
+    TestSsrTaaToggle();
+    TestSsrDitherEpoch();
+    std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
+    return g_failures == 0 ? 0 : 1;
 }

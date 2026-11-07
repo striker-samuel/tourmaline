@@ -27,224 +27,231 @@
 namespace tour::placement {
 
 enum class TileState : uint8_t {
-	Unloaded = 0,
-	Generating,
-	Resident,
-	Dirty,
-	Evicting,
+    Unloaded = 0,
+    Generating,
+    Resident,
+    Dirty,
+    Evicting,
 };
 
 struct TileKey {
-	TileID tile;
-	uint64_t programId = 0;
-	bool operator==(const TileKey& o) const { return tile == o.tile && programId == o.programId; }
+    TileID tile;
+    uint64_t programId = 0;
+    bool operator==(const TileKey& o) const {
+        return tile == o.tile && programId == o.programId;
+    }
 };
 struct TileKeyHash {
-	size_t operator()(const TileKey& k) const {
-		uint32_t h = SplitMix32((uint32_t)k.tile.x + 0x9e3779b9u);
-		h = HashMix32(h, (uint32_t)k.tile.y);
-		h = HashMix32(h, (uint32_t)k.tile.z);
-		h = HashMix32(h, (uint32_t)(k.programId & 0xFFFFFFFFull));
-		h = HashMix32(h, (uint32_t)(k.programId >> 32));
-		return (size_t)h;
-	}
+    size_t operator()(const TileKey& k) const {
+        uint32_t h = SplitMix32((uint32_t)k.tile.x + 0x9e3779b9u);
+        h = HashMix32(h, (uint32_t)k.tile.y);
+        h = HashMix32(h, (uint32_t)k.tile.z);
+        h = HashMix32(h, (uint32_t)(k.programId & 0xFFFFFFFFull));
+        h = HashMix32(h, (uint32_t)(k.programId >> 32));
+        return (size_t)h;
+    }
 };
 
 // What changed underneath a tile (roads, biomes, prototype sets...).
 // Bump a version to dirty dependent tiles; tiles whose key doesn't
 // include the resource keep serving.
 struct DependencyVersions {
-	uint64_t terrain = 0;
-	uint64_t biome = 0;
-	uint64_t prototypes = 0;
-	uint64_t gameplay = 0;
-	bool operator==(const DependencyVersions& o) const {
-		return terrain == o.terrain && biome == o.biome
-			&& prototypes == o.prototypes && gameplay == o.gameplay;
-	}
+    uint64_t terrain = 0;
+    uint64_t biome = 0;
+    uint64_t prototypes = 0;
+    uint64_t gameplay = 0;
+    bool operator==(const DependencyVersions& o) const {
+        return terrain == o.terrain && biome == o.biome && prototypes == o.prototypes &&
+               gameplay == o.gameplay;
+    }
 };
 
 struct PlacementTile {
-	TileKey key;
-	TileState state = TileState::Unloaded;
-	std::vector<RenderInstance> instances; // resident output, SORTED by (prototypeId, StableID)
-	DependencyVersions deps;               // versions at generation time
-	uint64_t generation = 0;               // PR05: the activation token (bumped per
-	                                       // (re)activation; a delayed publish with a
-	                                       // stale token is refused)
-	uint64_t lastAccess = 0;               // LRU stamp (PlacementSystem::tick_)
-	glm::vec3 boundsMin{ 0.0f };           // cached instance bounds (coarse cull)
-	glm::vec3 boundsMax{ 0.0f };
-	uint64_t aliveBDA = 0; // GPU flag2 buffer for constraint-filtered tiles (0 = all alive)
+    TileKey key;
+    TileState state = TileState::Unloaded;
+    std::vector<RenderInstance> instances; // resident output, SORTED by (prototypeId, StableID)
+    DependencyVersions deps;               // versions at generation time
+    uint64_t generation = 0;               // PR05: the activation token (bumped per
+                                           // (re)activation; a delayed publish with a
+                                           // stale token is refused)
+    uint64_t lastAccess = 0;               // LRU stamp (PlacementSystem::tick_)
+    glm::vec3 boundsMin{0.0f};             // cached instance bounds (coarse cull)
+    glm::vec3 boundsMax{0.0f};
+    uint64_t aliveBDA = 0; // GPU flag2 buffer for constraint-filtered tiles (0 = all alive)
 };
 
 // How to feed candidates into a tile (MVP: fixed-count stratified/grid).
 struct TileGenConfig {
-	uint32_t candidatesPerTile = 4096;
-	float minSpacing = 0.0f;     // 0 = no min-distance pass
-	float minScale = 0.8f;
-	float maxScale = 1.2f;
-	float densityScale = 1.0f;
-	bool slopeToRock = false;    // slope rule demo: proto 1 when steep
-	float slopeThresholdDeg = 35.0f;
+    uint32_t candidatesPerTile = 4096;
+    float minSpacing = 0.0f; // 0 = no min-distance pass
+    float minScale = 0.8f;
+    float maxScale = 1.2f;
+    float densityScale = 1.0f;
+    bool slopeToRock = false; // slope rule demo: proto 1 when steep
+    float slopeThresholdDeg = 35.0f;
 };
 
 // Renderer-agnostic transient draw (no RHI/gfx dependency here).
 // The app layer maps these to gfx::PushDraw or direct draws per frame.
 struct TransientDraw {
-	glm::vec3 position{ 0.0f };
-	float yaw = 0.0f;
-	glm::vec3 scale{ 1.0f };
-	uint32_t prototypeId = 0;
-	uint32_t stableLow = 0;
+    glm::vec3 position{0.0f};
+    float yaw = 0.0f;
+    glm::vec3 scale{1.0f};
+    uint32_t prototypeId = 0;
+    uint32_t stableLow = 0;
 };
 
 class PlacementSystem {
-public:
-	// Registered evaluators (one layer = one program + domain binding).
-	struct LayerBinding {
-		uint64_t programId = 0;
-		PlacementProgram program;
-		DomainKind domainKind = DomainKind::Grid;
-		const GridDomain* grid = nullptr;             // not owned (caller keeps alive)
-		const PlacementMeshData* mesh = nullptr;      // not owned
-		const PlacementPointCloudData* pointCloud = nullptr; // not owned; one sample / candidate
-		const HeightfieldDomain* heightfield = nullptr; // not owned
-		const EcotopeMaskData* ecotope = nullptr;    // not owned (PR04: the
-		                                              // painted layer the
-		                                              // EcotopeMask op reads)
-		PrototypeTable prototypes;
-		TileGenConfig config;
-	};
-	void registerLayer(LayerBinding layer);
-	bool hasLayer(uint64_t programId) const;
+  public:
+    // Registered evaluators (one layer = one program + domain binding).
+    struct LayerBinding {
+        uint64_t programId = 0;
+        PlacementProgram program;
+        DomainKind domainKind = DomainKind::Grid;
+        const GridDomain* grid = nullptr;                    // not owned (caller keeps alive)
+        const PlacementMeshData* mesh = nullptr;             // not owned
+        const PlacementPointCloudData* pointCloud = nullptr; // not owned; one sample / candidate
+        const HeightfieldDomain* heightfield = nullptr;      // not owned
+        const EcotopeMaskData* ecotope = nullptr;            // not owned (PR04: the
+                                                             // painted layer the
+                                                             // EcotopeMask op reads)
+        PrototypeTable prototypes;
+        TileGenConfig config;
+    };
+    void registerLayer(LayerBinding layer);
+    bool hasLayer(uint64_t programId) const;
 
-	// Generate (or refresh) one tile synchronously on CPU — the legacy
-	// oracle form: generate + publish in one call (the token contract
-	// does not apply: the result is complete when this returns).
-	// Returns resident instance count.
-	size_t generateTile(uint64_t programId, TileID tile, const DependencyVersions& deps);
+    // Generate (or refresh) one tile synchronously on CPU — the legacy
+    // oracle form: generate + publish in one call (the token contract
+    // does not apply: the result is complete when this returns).
+    // Returns resident instance count.
+    size_t generateTile(uint64_t programId, TileID tile, const DependencyVersions& deps);
 
-	// The token-governed form (PR05): generate WITHOUT publishing (the
-	// tile enters Generating with a fresh activation token). The caller
-	// publishes via PublishActivation(key, generation) when the result is
-	// complete — a stale token (the tile was re-activated, invalidated
-	// or dropped meanwhile) refuses and the caller discards its result.
-	// The CPU oracle path and the GPU scatter path share this flow.
-	bool GenerateTilePending(uint64_t programId, TileID tile,
-		const DependencyVersions& deps, uint64_t& generationOut);
+    // The token-governed form (PR05): generate WITHOUT publishing (the
+    // tile enters Generating with a fresh activation token). The caller
+    // publishes via PublishActivation(key, generation) when the result is
+    // complete — a stale token (the tile was re-activated, invalidated
+    // or dropped meanwhile) refuses and the caller discards its result.
+    // The CPU oracle path and the GPU scatter path share this flow.
+    bool GenerateTilePending(uint64_t programId,
+                             TileID tile,
+                             const DependencyVersions& deps,
+                             uint64_t& generationOut);
 
-	// Mark tiles whose key matches programId dirty (layer edit / dep bump).
-	void invalidateLayer(uint64_t programId);
-	void invalidateAll();
+    // Mark tiles whose key matches programId dirty (layer edit / dep bump).
+    void invalidateLayer(uint64_t programId);
+    void invalidateAll();
 
-	// LRU: drop Resident tiles (except those in keep[]) beyond budget.
-	void evictBeyond(size_t maxResident, const std::vector<TileKey>& keep = {});
+    // LRU: drop Resident tiles (except those in keep[]) beyond budget.
+    void evictBeyond(size_t maxResident, const std::vector<TileKey>& keep = {});
 
-	// ---- World-tile residency (PR05 — the plan's tile integration) ----
-	// The CPU residency tick over WORLD tiles (the PlacementRef::tileSize
-	// grid; the tile's world rect is HALF-OPEN
-	// [tile*tileSize, (tile+1)*tileSize) — the canonical world-space
-	// candidate ownership rule: neighbors never duplicate shared
-	// borders, and the grid domain's jitter keeps every candidate inside
-	// its own tile).
-	//
-	//   * ACTIVATE the tiles intersecting the interest rects (world XZ,
-	//     half-open). Fresh tiles enter Generating; their Activation
-	//     carries a GENERATION TOKEN bumped on every (re)assignment, so
-	//     a delayed job can never publish stale contents after a rapid
-	//     edit cycle (publish with a stale token is refused).
-	//   * REGENERATE Resident tiles whose DependencyVersions went stale
-	//     (an edit class bumped underneath them).
-	//   * EVICT beyond budget, LRU (never the tiles activating this
-	//     tick). Camera movement only changes the interest set — a
-	//     resident tile that stays intersecting is NOT touched.
-	//
-	// The caller dispatches the returned activations (CPU oracle or the
-	// GPU scatter path), then publishes with
-	// PublishActivation(key, generation) — a stale generation is refused
-	// and the tile stays dirty for the next tick.
-	struct ActivationRequest {
-		TileKey key;
-		uint64_t generation = 0;
-		DependencyVersions deps;      // the versions to record
-		bool regenerate = false;      // true = was resident but stale
-	};
-	// rects: rectCount glm::vec4 world-XZ rects (minX, minZ, maxX, maxZ),
-	// half-open. Every tile intersecting any rect activates; resident
-	// tiles outside the interest set are NOT touched (camera movement
-	// never regenerates — only the interest set changes).
-	void UpdateResidency(uint64_t programId, float tileSize,
-		const glm::vec4* rects, size_t rectCount,
-		const DependencyVersions& deps, size_t maxResidentTiles,
-		std::vector<ActivationRequest>& out);
+    // ---- World-tile residency (PR05 — the plan's tile integration) ----
+    // The CPU residency tick over WORLD tiles (the PlacementRef::tileSize
+    // grid; the tile's world rect is HALF-OPEN
+    // [tile*tileSize, (tile+1)*tileSize) — the canonical world-space
+    // candidate ownership rule: neighbors never duplicate shared
+    // borders, and the grid domain's jitter keeps every candidate inside
+    // its own tile).
+    //
+    //   * ACTIVATE the tiles intersecting the interest rects (world XZ,
+    //     half-open). Fresh tiles enter Generating; their Activation
+    //     carries a GENERATION TOKEN bumped on every (re)assignment, so
+    //     a delayed job can never publish stale contents after a rapid
+    //     edit cycle (publish with a stale token is refused).
+    //   * REGENERATE Resident tiles whose DependencyVersions went stale
+    //     (an edit class bumped underneath them).
+    //   * EVICT beyond budget, LRU (never the tiles activating this
+    //     tick). Camera movement only changes the interest set — a
+    //     resident tile that stays intersecting is NOT touched.
+    //
+    // The caller dispatches the returned activations (CPU oracle or the
+    // GPU scatter path), then publishes with
+    // PublishActivation(key, generation) — a stale generation is refused
+    // and the tile stays dirty for the next tick.
+    struct ActivationRequest {
+        TileKey key;
+        uint64_t generation = 0;
+        DependencyVersions deps; // the versions to record
+        bool regenerate = false; // true = was resident but stale
+    };
+    // rects: rectCount glm::vec4 world-XZ rects (minX, minZ, maxX, maxZ),
+    // half-open. Every tile intersecting any rect activates; resident
+    // tiles outside the interest set are NOT touched (camera movement
+    // never regenerates — only the interest set changes).
+    void UpdateResidency(uint64_t programId,
+                         float tileSize,
+                         const glm::vec4* rects,
+                         size_t rectCount,
+                         const DependencyVersions& deps,
+                         size_t maxResidentTiles,
+                         std::vector<ActivationRequest>& out);
 
-	// Region invalidation (the editor paint path): mark every tile
-	// intersecting [rectMin, rectMax] expanded by haloMeters Dirty. The
-	// halo carries the cross-boundary influence — a min-spacing winner
-	// or a central-difference normal sample reading a neighbouring
-	// tile's edge data. Bounded by the layer's world placement.
-	// GENERATING tiles under the region are invalidated TOO: their
-	// in-flight token is retired (the delayed publish refuses; the next
-	// residency tick regenerates against the edited terrain) — a paint
-	// under an in-flight tile must never publish the stale result.
-	void InvalidateRegion(uint64_t programId, float tileSize,
-		const glm::vec2& rectMin, const glm::vec2& rectMax,
-		float haloMeters);
+    // Region invalidation (the editor paint path): mark every tile
+    // intersecting [rectMin, rectMax] expanded by haloMeters Dirty. The
+    // halo carries the cross-boundary influence — a min-spacing winner
+    // or a central-difference normal sample reading a neighbouring
+    // tile's edge data. Bounded by the layer's world placement.
+    // GENERATING tiles under the region are invalidated TOO: their
+    // in-flight token is retired (the delayed publish refuses; the next
+    // residency tick regenerates against the edited terrain) — a paint
+    // under an in-flight tile must never publish the stale result.
+    void InvalidateRegion(uint64_t programId,
+                          float tileSize,
+                          const glm::vec2& rectMin,
+                          const glm::vec2& rectMax,
+                          float haloMeters);
 
-	// Publishes a completed activation. Refuses (returns false) when the
-	// generation token went stale — the tile was re-activated or
-	// invalidated while the job ran; the caller drops its result and the
-	// next residency tick regenerates.
-	bool PublishActivation(const TileKey& key, uint64_t generation);
+    // Publishes a completed activation. Refuses (returns false) when the
+    // generation token went stale — the tile was re-activated or
+    // invalidated while the job ran; the caller drops its result and the
+    // next residency tick regenerates.
+    bool PublishActivation(const TileKey& key, uint64_t generation);
 
-	// Cancels a pending activation the host REFUSED to process this frame
-	// (the GPU runtime's constraint pacing — at most one constraint trio
-	// per frame, the shared scratch's serialization). A FRESH activation
-	// (no prior content) erases clean — the next UpdateResidency
-	// re-requests it. A REGENERATION reverts to Dirty: the tile keeps
-	// serving its current (stale) content until the deferred trio runs,
-	// and the next tick re-emits the activation (a Generating tile with
-	// matching deps would otherwise never re-emit — the deferral would
-	// leak with nobody left to publish it). Refuses a stale generation
-	// (the tile re-activated under a newer token meanwhile — stands).
-	bool CancelActivation(const TileKey& key, uint64_t generation,
-		bool revertToDirty);
+    // Cancels a pending activation the host REFUSED to process this frame
+    // (the GPU runtime's constraint pacing — at most one constraint trio
+    // per frame, the shared scratch's serialization). A FRESH activation
+    // (no prior content) erases clean — the next UpdateResidency
+    // re-requests it. A REGENERATION reverts to Dirty: the tile keeps
+    // serving its current (stale) content until the deferred trio runs,
+    // and the next tick re-emits the activation (a Generating tile with
+    // matching deps would otherwise never re-emit — the deferral would
+    // leak with nobody left to publish it). Refuses a stale generation
+    // (the tile re-activated under a newer token meanwhile — stands).
+    bool CancelActivation(const TileKey& key, uint64_t generation, bool revertToDirty);
 
-	// GPU slot eviction: forget the CPU residency mirror for the old
-	// tenant. Any delayed publish for that key must then fail closed.
-	void ForgetTile(const TileKey& key);
+    // GPU slot eviction: forget the CPU residency mirror for the old
+    // tenant. Any delayed publish for that key must then fail closed.
+    void ForgetTile(const TileKey& key);
 
-	// Transient per-frame feed: visible resident tiles → draws.
-	// frustumTest(center, radius) returns true when kept; LOD pick via callback.
-	// Scene is NEVER touched — output is a scratch vector the caller maps
-	// to gfx::PushDraw / direct draws and discards.
-	void pushVisibleDraws(uint64_t programId,
-		const std::function<bool(const glm::vec3&, float)>& frustumTest,
-		std::vector<TransientDraw>& out) const;
-	size_t residentTileCount() const;
-	size_t residentInstanceCount(uint64_t programId) const;
+    // Transient per-frame feed: visible resident tiles → draws.
+    // frustumTest(center, radius) returns true when kept; LOD pick via callback.
+    // Scene is NEVER touched — output is a scratch vector the caller maps
+    // to gfx::PushDraw / direct draws and discards.
+    void pushVisibleDraws(uint64_t programId,
+                          const std::function<bool(const glm::vec3&, float)>& frustumTest,
+                          std::vector<TransientDraw>& out) const;
+    size_t residentTileCount() const;
+    size_t residentInstanceCount(uint64_t programId) const;
 
-	// Test/debug access.
-	const PlacementTile* findTile(uint64_t programId, TileID tile) const;
+    // Test/debug access.
+    const PlacementTile* findTile(uint64_t programId, TileID tile) const;
 
-	// Iteration over resident tiles of one layer (draw feed, streaming).
-	template<typename Func>
-	void forEachResidentTile(uint64_t programId, Func&& func) const {
-		for (const auto& [key, tile] : tiles_)
-			if (key.programId == programId && tile.state == TileState::Resident)
-				func(key, tile);
-	}
+    // Iteration over resident tiles of one layer (draw feed, streaming).
+    template <typename Func> void forEachResidentTile(uint64_t programId, Func&& func) const {
+        for (const auto& [key, tile] : tiles_)
+            if (key.programId == programId && tile.state == TileState::Resident)
+                func(key, tile);
+    }
 
-private:
-	// Shared invalidation step (invalidateLayer/invalidateAll/
-	// InvalidateRegion): Resident -> Dirty; Generating -> token retired
-	// + Dirty (see the .cpp contract block).
-	void InvalidateTileInFlight(PlacementTile& tile);
+  private:
+    // Shared invalidation step (invalidateLayer/invalidateAll/
+    // InvalidateRegion): Resident -> Dirty; Generating -> token retired
+    // + Dirty (see the .cpp contract block).
+    void InvalidateTileInFlight(PlacementTile& tile);
 
-	std::unordered_map<uint64_t, LayerBinding> layers_;
-	std::unordered_map<TileKey, PlacementTile, TileKeyHash> tiles_;
-	uint64_t tick_ = 0;
+    std::unordered_map<uint64_t, LayerBinding> layers_;
+    std::unordered_map<TileKey, PlacementTile, TileKeyHash> tiles_;
+    uint64_t tick_ = 0;
 };
 
 // Standalone (testable) tile evaluation used by generateTile and — via
@@ -253,7 +260,8 @@ private:
 // non-null, receives the StableIDs parallel to the returned instances
 // (post-constraint, same order).
 std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& layer,
-	TileID tile, std::vector<StableID>* idsOut = nullptr);
+                                         TileID tile,
+                                         std::vector<StableID>* idsOut = nullptr);
 
 // Draw-path order: sorts instances (+ids) by (prototypeId, StableID) so
 // each prototype forms one contiguous run. Fully deterministic.
@@ -287,12 +295,14 @@ void ComputeTileBounds(PlacementTile& tile);
 // (float floor). Measure-zero input, visual determinism still holds,
 // strong determinism holds everywhere else.
 struct ConstraintVolume {
-	glm::vec3 origin{ 0.0f };
-	uint32_t dimX = 0, dimY = 0, dimZ = 0; // cells per axis; 0 = unbounded
-	float spacing = 1.0f;
+    glm::vec3 origin{0.0f};
+    uint32_t dimX = 0, dimY = 0, dimZ = 0; // cells per axis; 0 = unbounded
+    float spacing = 1.0f;
 };
 void ApplyMinDistance(std::vector<RenderInstance>& instances,
-	std::vector<StableID>& ids, float spacing, const ConstraintVolume& volume);
+                      std::vector<StableID>& ids,
+                      float spacing,
+                      const ConstraintVolume& volume);
 
 // Constraint volume for a layer's tile evaluation. Grid layers get a
 // bounded volume covering the tile (+2 stagnant cells, 128m height band);
@@ -302,24 +312,23 @@ ConstraintVolume ConstraintVolumeForLayer(const PlacementSystem::LayerBinding& l
 
 } // namespace tour::placement
 
-
 // COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
 // placement header's declarations live in tour::placement; the smvk::
 // placement aliases keep the existing call sites compiling through the
 // consumer migration.
 namespace smvk::placement {
-	using ::tour::placement::ApplyMinDistance;
-	using ::tour::placement::ComputeTileBounds;
-	using ::tour::placement::ConstraintVolume;
-	using ::tour::placement::ConstraintVolumeForLayer;
-	using ::tour::placement::DependencyVersions;
-	using ::tour::placement::EvaluateTile;
-	using ::tour::placement::PlacementSystem;
-	using ::tour::placement::PlacementTile;
-	using ::tour::placement::SortInstancesForDraw;
-	using ::tour::placement::TileGenConfig;
-	using ::tour::placement::TileKey;
-	using ::tour::placement::TileKeyHash;
-	using ::tour::placement::TileState;
-	using ::tour::placement::TransientDraw;
-}
+using ::tour::placement::ApplyMinDistance;
+using ::tour::placement::ComputeTileBounds;
+using ::tour::placement::ConstraintVolume;
+using ::tour::placement::ConstraintVolumeForLayer;
+using ::tour::placement::DependencyVersions;
+using ::tour::placement::EvaluateTile;
+using ::tour::placement::PlacementSystem;
+using ::tour::placement::PlacementTile;
+using ::tour::placement::SortInstancesForDraw;
+using ::tour::placement::TileGenConfig;
+using ::tour::placement::TileKey;
+using ::tour::placement::TileKeyHash;
+using ::tour::placement::TileState;
+using ::tour::placement::TransientDraw;
+} // namespace smvk::placement

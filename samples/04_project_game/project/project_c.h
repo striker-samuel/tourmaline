@@ -30,13 +30,11 @@ static const tour_c_asset_desc tour_project_assets[] = {
     {UINT64_C(0x7000), TOUR_C_KIND_AUDIOGRAPH, "content/audio/forest.audiograph", ""},
 };
 
-static const tour_c_catalog tour_project_catalog = {
-    TOUR_C_CATALOG_ABI_VERSION,
-    tour_project_assets,
-    5u,
-    TOUR_PROJECT_CATALOG_FINGERPRINT,
-    TOUR_PROJECT_ENTRY_SCENE
-};
+static const tour_c_catalog tour_project_catalog = {TOUR_C_CATALOG_ABI_VERSION,
+                                                    tour_project_assets,
+                                                    5u,
+                                                    TOUR_PROJECT_CATALOG_FINGERPRINT,
+                                                    TOUR_PROJECT_ENTRY_SCENE};
 
 // Pak names/files are deployment selection, not identity.
 static const tour_c_package tour_project_paks[] = {

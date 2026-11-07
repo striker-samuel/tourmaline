@@ -58,172 +58,159 @@
 namespace {
 
 bool ParseOnOff(const std::string& v) {
-	return v == "on" || v == "1" || v == "true";
+    return v == "on" || v == "1" || v == "true";
 }
 
-	void Usage() {
-		std::cout
-			<< "import.exe <input> [--meshlets on|off] [--lods on|off]\n"
-			<< "    [--shader-lods on|off] [--force]\n"
-			<< "  (the raw-source -> engine-format converter:\n"
-			<< "   .glb/.gltf/.obj derives the .geometry + .material/.anim\n"
-			<< "   + .meta artifact family next to the source - the SAME\n"
-			<< "   import the editor's open/drop runs; deterministic GUIDs,\n"
-			<< "   byte-identical from-zero re-imports.\n"
-			<< "   .png/.jpg/.jpeg/.tga/.bmp/.ktx2 writes <stem>.texture\n"
-			<< "   beside the source (editor parity; never overwrites -\n"
-			<< "   --force recreates and resets its settings).\n"
-		<< "   Default derive-if-stale; --force always re-derives. Bake\n"
-		<< "   the artifacts with cook.exe, assemble with pak.exe.)\n";
-	}
+void Usage() {
+    std::cout << "import.exe <input> [--meshlets on|off] [--lods on|off]\n"
+              << "    [--shader-lods on|off] [--force]\n"
+              << "  (the raw-source -> engine-format converter:\n"
+              << "   .glb/.gltf/.obj derives the .geometry + .material/.anim\n"
+              << "   + .meta artifact family next to the source - the SAME\n"
+              << "   import the editor's open/drop runs; deterministic GUIDs,\n"
+              << "   byte-identical from-zero re-imports.\n"
+              << "   .png/.jpg/.jpeg/.tga/.bmp/.ktx2 writes <stem>.texture\n"
+              << "   beside the source (editor parity; never overwrites -\n"
+              << "   --force recreates and resets its settings).\n"
+              << "   Default derive-if-stale; --force always re-derives. Bake\n"
+              << "   the artifacts with cook.exe, assemble with pak.exe.)\n";
+}
 
 } // namespace
 
 int main(int argc, char** argv) {
-	std::string input;
-	bool force = false;
-	smvk::assets::DeriveConfig config{};
-	bool seenFlag = false;
-	for (int i = 1; i < argc; ++i) {
-		const std::string a = argv[i];
-		auto need = [&](std::string& dst) {
-			if (i + 1 >= argc) {
-				std::cerr << "Missing value for " << a << std::endl;
-				return false;
-			}
-			dst = argv[++i];
-			return true;
-		};
-		const bool isFlag = a.size() >= 2 && a[0] == '-' && a[1] == '-';
-		if (!isFlag) {
-			if (seenFlag || !input.empty()) {
-				std::cerr << "Multiple inputs / artifact after flags: '"
-					<< a << "' (import.exe takes ONE input - the settings"
-					" are flags)" << std::endl;
-				return 1;
-			}
-			input = a;
-			continue;
-		}
-		seenFlag = true;
-		if (a == "--meshlets") {
-			std::string v;
-			if (!need(v)) return 1;
-			config.meshlets = ParseOnOff(v);
-		}
-		else if (a == "--lods") {
-			std::string v;
-			if (!need(v)) return 1;
-			config.lods = ParseOnOff(v);
-		}
-		else if (a == "--shader-lods") {
-			std::string v;
-			if (!need(v)) return 1;
-			config.shaderLods = ParseOnOff(v);
-		}
-		else if (a == "--force") {
-			force = true;
-		}
-		else if (a == "--help" || a == "-h") {
-			Usage();
-			return 0;
-		}
-		else {
-			std::cerr << "Unknown arg: " << a << std::endl;
-			Usage();
-			return 1;
-		}
-	}
-	if (input.empty()) {
-		std::cerr << "Required: import.exe <input> (.glb/.gltf/.obj or"
-			" .png/.jpg/.jpeg/.tga/.bmp/.ktx2)" << std::endl;
-		Usage();
-		return 1;
-	}
+    std::string input;
+    bool force = false;
+    smvk::assets::DeriveConfig config{};
+    bool seenFlag = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        auto need = [&](std::string& dst) {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for " << a << std::endl;
+                return false;
+            }
+            dst = argv[++i];
+            return true;
+        };
+        const bool isFlag = a.size() >= 2 && a[0] == '-' && a[1] == '-';
+        if (!isFlag) {
+            if (seenFlag || !input.empty()) {
+                std::cerr << "Multiple inputs / artifact after flags: '" << a
+                          << "' (import.exe takes ONE input - the settings"
+                             " are flags)"
+                          << std::endl;
+                return 1;
+            }
+            input = a;
+            continue;
+        }
+        seenFlag = true;
+        if (a == "--meshlets") {
+            std::string v;
+            if (!need(v))
+                return 1;
+            config.meshlets = ParseOnOff(v);
+        } else if (a == "--lods") {
+            std::string v;
+            if (!need(v))
+                return 1;
+            config.lods = ParseOnOff(v);
+        } else if (a == "--shader-lods") {
+            std::string v;
+            if (!need(v))
+                return 1;
+            config.shaderLods = ParseOnOff(v);
+        } else if (a == "--force") {
+            force = true;
+        } else if (a == "--help" || a == "-h") {
+            Usage();
+            return 0;
+        } else {
+            std::cerr << "Unknown arg: " << a << std::endl;
+            Usage();
+            return 1;
+        }
+    }
+    if (input.empty()) {
+        std::cerr << "Required: import.exe <input> (.glb/.gltf/.obj or"
+                     " .png/.jpg/.jpeg/.tga/.bmp/.ktx2)"
+                  << std::endl;
+        Usage();
+        return 1;
+    }
 
-	const std::filesystem::path inPath(input);
-	if (!std::filesystem::exists(inPath)) {
-		std::cerr << "Input not found: " << input << std::endl;
-		return 1;
-	}
-	std::string ext = inPath.extension().string();
-	for (char& c : ext)
-		c = char(std::tolower((unsigned char)c));
-	const bool isModel = smvk::assets::IsMeshSourceExtension(ext);
-	const bool isImage = (ext == ".png" || ext == ".jpg"
-		|| ext == ".jpeg" || ext == ".tga" || ext == ".bmp"
-		|| ext == ".ktx2");
-	if (!isModel && !isImage) {
-		std::cerr << "Unsupported input '" << ext << "' (want"
-			" .glb/.gltf/.obj or .png/.jpg/.jpeg/.tga/.bmp/.ktx2): "
-			<< input << std::endl;
-		return 1;
-	}
+    const std::filesystem::path inPath(input);
+    if (!std::filesystem::exists(inPath)) {
+        std::cerr << "Input not found: " << input << std::endl;
+        return 1;
+    }
+    std::string ext = inPath.extension().string();
+    for (char& c : ext)
+        c = char(std::tolower((unsigned char)c));
+    const bool isModel = smvk::assets::IsMeshSourceExtension(ext);
+    const bool isImage = (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" ||
+                          ext == ".bmp" || ext == ".ktx2");
+    if (!isModel && !isImage) {
+        std::cerr << "Unsupported input '" << ext
+                  << "' (want"
+                     " .glb/.gltf/.obj or .png/.jpg/.jpeg/.tga/.bmp/.ktx2): "
+                  << input << std::endl;
+        return 1;
+    }
 
-	// Single-image import (editor CreateTextureAsset parity): an
-	// existing .texture is never stale (settings live there; source
-	// repaints flow through the loose read at cook) — --force recreates.
-	if (isImage) {
-		const std::filesystem::path texGuess =
-			inPath.parent_path()
-			/ (inPath.stem().string() + ".texture");
-		std::error_code tec;
-		if (!force && std::filesystem::is_regular_file(texGuess, tec)) {
-			std::cout << "Texture asset current: '"
-				<< texGuess.generic_string()
-				<< "' exists (settings live there - delete it to"
-				" re-create, or --force to reset them)\n";
-			return 0;
-		}
-		std::string texPath;
-		std::string terr;
-		if (!smvk::assets::ImportTextureSource(inPath, force, texPath,
-				&terr)) {
-			std::cerr << "Import failed: " << (terr.empty()
-				? "unknown" : terr) << std::endl;
-			return 1;
-		}
-		std::cout << "Imported texture: " << input << "\n"
-			<< "  asset=" << texPath << "\n"
-			<< (force
-				? "  (--force: settings reset to the defaults)\n"
-				: "")
-			<< "  reference it from materials as a .texture source\n";
-		return 0;
-	}
+    // Single-image import (editor CreateTextureAsset parity): an
+    // existing .texture is never stale (settings live there; source
+    // repaints flow through the loose read at cook) — --force recreates.
+    if (isImage) {
+        const std::filesystem::path texGuess =
+            inPath.parent_path() / (inPath.stem().string() + ".texture");
+        std::error_code tec;
+        if (!force && std::filesystem::is_regular_file(texGuess, tec)) {
+            std::cout << "Texture asset current: '" << texGuess.generic_string()
+                      << "' exists (settings live there - delete it to"
+                         " re-create, or --force to reset them)\n";
+            return 0;
+        }
+        std::string texPath;
+        std::string terr;
+        if (!smvk::assets::ImportTextureSource(inPath, force, texPath, &terr)) {
+            std::cerr << "Import failed: " << (terr.empty() ? "unknown" : terr) << std::endl;
+            return 1;
+        }
+        std::cout << "Imported texture: " << input << "\n"
+                  << "  asset=" << texPath << "\n"
+                  << (force ? "  (--force: settings reset to the defaults)\n" : "")
+                  << "  reference it from materials as a .texture source\n";
+        return 0;
+    }
 
-	// A DELIBERATE import always re-derives (the tool call IS the
-	// intent — the derive-if-stale no-op made "fresh import" test runs
-	// silently skip and left stale chain-carrying artifacts in place,
-	// which every later cook then idempotence-skipped). The staleness
-	// gate lives with the EDITOR's open/drop flow (MeshArtifactStale
-	// via ImportMeshSource); the CLI overwrites, period. --force stays
-	// accepted as a no-op (scripts keep working).
-	(void)force;
-	smvk::assets::AssetManifest manifest;
-	smvk::assets::DeriveStats stats;
-	std::string err;
-	// gltfGuid "" + ledger nullptr = the from-zero/ledger flow: the
-	// derivation consumes a .gltf.meta beside the source when one
-	// exists (identity carries across re-imports) and otherwise mints
-	// the deterministic from-zero identity (SourceAssetGuid).
-	if (!smvk::assets::ImportMeshSource(inPath, "", nullptr, config,
-			manifest, &stats, &err)) {
-		std::cerr << "Import failed: " << (err.empty()
-			? "unknown" : err) << std::endl;
-		return 1;
-	}
-	std::cout << "Imported: " << input << "\n"
-		<< "  materials=" << stats.materials
-		<< " anims=" << stats.anims
-		<< " geometryBlobs=" << stats.geometryBlobs
-		<< " instances=" << stats.instances
-		<< " lights=" << stats.lights
-		<< " cameras=" << stats.cameras
-		<< " nodes=" << (stats.instances + stats.lights + stats.cameras)
-		<< "\n"
-		<< "  (deterministic GUIDs: " << stats.newGuids
-		<< " new; a from-zero re-import is byte-identical)\n"
-		<< "  cook with: pak.exe <vfs_path> <stem>.geometry [--options]\n";
-	return 0;
+    // A DELIBERATE import always re-derives (the tool call IS the
+    // intent — the derive-if-stale no-op made "fresh import" test runs
+    // silently skip and left stale chain-carrying artifacts in place,
+    // which every later cook then idempotence-skipped). The staleness
+    // gate lives with the EDITOR's open/drop flow (MeshArtifactStale
+    // via ImportMeshSource); the CLI overwrites, period. --force stays
+    // accepted as a no-op (scripts keep working).
+    (void)force;
+    smvk::assets::AssetManifest manifest;
+    smvk::assets::DeriveStats stats;
+    std::string err;
+    // gltfGuid "" + ledger nullptr = the from-zero/ledger flow: the
+    // derivation consumes a .gltf.meta beside the source when one
+    // exists (identity carries across re-imports) and otherwise mints
+    // the deterministic from-zero identity (SourceAssetGuid).
+    if (!smvk::assets::ImportMeshSource(inPath, "", nullptr, config, manifest, &stats, &err)) {
+        std::cerr << "Import failed: " << (err.empty() ? "unknown" : err) << std::endl;
+        return 1;
+    }
+    std::cout << "Imported: " << input << "\n"
+              << "  materials=" << stats.materials << " anims=" << stats.anims
+              << " geometryBlobs=" << stats.geometryBlobs << " instances=" << stats.instances
+              << " lights=" << stats.lights << " cameras=" << stats.cameras
+              << " nodes=" << (stats.instances + stats.lights + stats.cameras) << "\n"
+              << "  (deterministic GUIDs: " << stats.newGuids
+              << " new; a from-zero re-import is byte-identical)\n"
+              << "  cook with: pak.exe <vfs_path> <stem>.geometry [--options]\n";
+    return 0;
 }

@@ -28,8 +28,8 @@ struct ChartStream {
 };
 
 [[nodiscard]] constexpr bool HasLightmap(const ChartStream& s) noexcept {
-    return s.resident && s.vertices.vertexCount != 0
-        && s.chartTransformCount != 0 && s.lobeCount != kNoLobes;
+    return s.resident && s.vertices.vertexCount != 0 && s.chartTransformCount != 0 &&
+           s.lobeCount != kNoLobes;
 }
 
 [[nodiscard]] constexpr bool ValidLobeCount(uint32_t lobes) noexcept {
@@ -37,9 +37,10 @@ struct ChartStream {
 }
 
 [[nodiscard]] constexpr bool TryChartTransformIndex(const ChartStream& stream,
-    uint32_t chartId, uint32_t tableSize, uint32_t& transformIndex) noexcept {
-    if (!HasLightmap(stream) || chartId == kNoChart
-        || chartId >= stream.chartTransformCount)
+                                                    uint32_t chartId,
+                                                    uint32_t tableSize,
+                                                    uint32_t& transformIndex) noexcept {
+    if (!HasLightmap(stream) || chartId == kNoChart || chartId >= stream.chartTransformCount)
         return false;
     const uint64_t index = uint64_t(stream.chartTransformOffset) + chartId;
     if (index >= tableSize || index > UINT32_MAX)
@@ -49,14 +50,15 @@ struct ChartStream {
 }
 
 [[nodiscard]] constexpr bool TryVertexByteOffset(const ChartStream& stream,
-    uint32_t globalVertexId, uint64_t lightmapHeapBytes,
-    uint64_t& offset) noexcept {
+                                                 uint32_t globalVertexId,
+                                                 uint64_t lightmapHeapBytes,
+                                                 uint64_t& offset) noexcept {
     if (!HasLightmap(stream))
         return false;
     uint32_t streamVertex = 0;
-    return vertexpull::TryMap(stream.vertices, globalVertexId, streamVertex)
-        && vertexpull::TryByteOffset(streamVertex,
-            vertexpull::kLightmapStrideBytes, lightmapHeapBytes, offset);
+    return vertexpull::TryMap(stream.vertices, globalVertexId, streamVertex) &&
+           vertexpull::TryByteOffset(
+               streamVertex, vertexpull::kLightmapStrideBytes, lightmapHeapBytes, offset);
 }
 
 [[nodiscard]] constexpr uint16_t UnpackU16(uint32_t packed, uint32_t component) noexcept {

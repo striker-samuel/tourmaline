@@ -18,7 +18,7 @@
 namespace tour {
 
 class RandomStream {
-public:
+  public:
     struct State {
         uint64_t state = 0;
         uint64_t increment = 1;
@@ -62,7 +62,9 @@ public:
         return static_cast<float>(NextU32() >> 8u) * (1.0f / 16777216.0f);
     }
 
-    [[nodiscard]] State Save() const noexcept { return {state_, increment_}; }
+    [[nodiscard]] State Save() const noexcept {
+        return {state_, increment_};
+    }
 
     void Restore(State value) {
         if ((value.increment & 1u) == 0)
@@ -71,7 +73,7 @@ public:
         increment_ = value.increment;
     }
 
-private:
+  private:
     uint64_t state_ = 0;
     uint64_t increment_ = 1;
 };
@@ -82,10 +84,12 @@ private:
 // Stream() and Reseed() must be called on the owning thread. Worker jobs can
 // take independent *values* from MakeStream() and mutate those privately.
 class RandomService {
-public:
+  public:
     explicit RandomService(uint64_t seed = 0) noexcept : seed_(seed) {}
 
-    [[nodiscard]] uint64_t Seed() const noexcept { return seed_; }
+    [[nodiscard]] uint64_t Seed() const noexcept {
+        return seed_;
+    }
 
     // Clears all named streams. References returned by Stream() are invalid
     // after this call; reseed at launch or a known simulation reset point.
@@ -97,7 +101,7 @@ public:
     [[nodiscard]] RandomStream MakeStream(std::string_view name) const noexcept {
         const uint64_t nameHash = HashName(name);
         return RandomStream(Mix64(seed_ ^ nameHash),
-            Mix64(seed_ ^ nameHash ^ 0x9e3779b97f4a7c15ULL));
+                            Mix64(seed_ ^ nameHash ^ 0x9e3779b97f4a7c15ULL));
     }
 
     RandomStream& Stream(std::string_view name) {
@@ -106,7 +110,9 @@ public:
         return it->second;
     }
 
-    RandomStream& Gameplay() { return Stream("gameplay"); }
+    RandomStream& Gameplay() {
+        return Stream("gameplay");
+    }
 
     // Deterministic checkpoint over all persistent named streams. Sorted by
     // name so that serialized state is independent of unordered_map order.
@@ -140,11 +146,10 @@ public:
     // The resulting numeric seed must be logged/stored for later replay.
     [[nodiscard]] static uint64_t GenerateSeed() {
         std::random_device device;
-        return (static_cast<uint64_t>(device()) << 32u) |
-            static_cast<uint64_t>(device());
+        return (static_cast<uint64_t>(device()) << 32u) | static_cast<uint64_t>(device());
     }
 
-private:
+  private:
     [[nodiscard]] static uint64_t HashName(std::string_view name) noexcept {
         uint64_t hash = 14695981039346656037ULL; // FNV-1a 64-bit
         for (char ch : name) {

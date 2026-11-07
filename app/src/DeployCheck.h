@@ -27,8 +27,7 @@ namespace app {
 // the actual bytes. A PLAIN (non-addressed) name passes on existence
 // + a valid image (the legacy single-pak layout). False + err with
 // the actionable reason.
-[[nodiscard]] bool ValidatePakFile(const std::string& pakPath,
-	std::string& err);
+[[nodiscard]] bool ValidatePakFile(const std::string& pakPath, std::string& err);
 
 // The engine shader source proof: the shader library initializes
 // (exe-relative discovery — the engine-shaders.pak package and/or the

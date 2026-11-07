@@ -60,8 +60,8 @@
 
 #include "ProjectRuntime.h"
 
-#include <Engine/Renderer/ShapeScene.h>
 #include <Engine/Asset/cluster_serializer.h> // ExternalTextureResolver
+#include <Engine/Renderer/ShapeScene.h>
 
 #include <cstdint>
 #include <functional>
@@ -72,12 +72,18 @@
 #include <string>
 #include <vector>
 
-namespace tour { struct World; struct Cluster; class TextureStreamer; }
-namespace tour::asset { class PakReader; }
-namespace smvk {
-	class OverlayVfs;
-	class ResourceManager;
+namespace tour {
+struct World;
+struct Cluster;
+class TextureStreamer;
+} // namespace tour
+namespace tour::asset {
+class PakReader;
 }
+namespace smvk {
+class OverlayVfs;
+class ResourceManager;
+} // namespace smvk
 
 namespace app {
 
@@ -85,209 +91,223 @@ namespace app {
 // "no scene" — gameplay structs compose these exactly like
 // MeshEntityHandle/AnimatorHandle.
 struct SceneHandle {
-	uint64_t value = 0;
+    uint64_t value = 0;
 
-	[[nodiscard]] constexpr uint32_t Index() const {
-		return static_cast<uint32_t>(value);
-	}
-	[[nodiscard]] constexpr uint32_t Generation() const {
-		return static_cast<uint32_t>(value >> 32);
-	}
-	[[nodiscard]] constexpr explicit operator bool() const {
-		return value != 0;
-	}
-	friend bool operator==(SceneHandle, SceneHandle) = default;
+    [[nodiscard]] constexpr uint32_t Index() const {
+        return static_cast<uint32_t>(value);
+    }
+    [[nodiscard]] constexpr uint32_t Generation() const {
+        return static_cast<uint32_t>(value >> 32);
+    }
+    [[nodiscard]] constexpr explicit operator bool() const {
+        return value != 0;
+    }
+    friend bool operator==(SceneHandle, SceneHandle) = default;
 };
 
 class ProjectScenes {
-public:
-	// Where a scene id resolves to (the id->scene join's product).
-	struct SceneTarget {
-		std::string pak;        // manifest pak FILE (also the VFS mount name)
-		std::string sceneName;  // the cooked scene's name (may be empty on old paks)
-		uint32_t sceneIndex = 0; // the pak's scene index (what the load consumes)
-	};
+  public:
+    // Where a scene id resolves to (the id->scene join's product).
+    struct SceneTarget {
+        std::string pak;         // manifest pak FILE (also the VFS mount name)
+        std::string sceneName;   // the cooked scene's name (may be empty on old paks)
+        uint32_t sceneIndex = 0; // the pak's scene index (what the load consumes)
+    };
 
-	// The pak -> cluster step. The default mirrors World::
-	// LoadClusterFromPak (DeserializeCluster + RegisterCluster) and
-	// needs a live ResourceManager (a null ctx is the GPU-less test
-	// seam and refuses); the GPU-less tests replace it with a
-	// hand-built offline cluster. Returns the registered cluster
-	// (the WORLD owns it) or null + err.
-	using ClusterLoader = std::function<tour::Cluster*(
-		tour::World& world, smvk::ResourceManager* ctx,
-		const tour::asset::PakReader& reader, uint32_t sceneIndex,
-		tour::TextureStreamer* streamer,
-		std::shared_ptr<const std::vector<uint8_t>> imagePin,
-		const smvk::ExternalTextureResolver* externalTexture,
-		std::string& err)>;
+    // The pak -> cluster step. The default mirrors World::
+    // LoadClusterFromPak (DeserializeCluster + RegisterCluster) and
+    // needs a live ResourceManager (a null ctx is the GPU-less test
+    // seam and refuses); the GPU-less tests replace it with a
+    // hand-built offline cluster. Returns the registered cluster
+    // (the WORLD owns it) or null + err.
+    using ClusterLoader =
+        std::function<tour::Cluster*(tour::World& world,
+                                     smvk::ResourceManager* ctx,
+                                     const tour::asset::PakReader& reader,
+                                     uint32_t sceneIndex,
+                                     tour::TextureStreamer* streamer,
+                                     std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                                     const smvk::ExternalTextureResolver* externalTexture,
+                                     std::string& err)>;
 
-	explicit ProjectScenes(ProjectRuntime& runtime,
-		smvk::OverlayVfs& contentVfs);
+    explicit ProjectScenes(ProjectRuntime& runtime, smvk::OverlayVfs& contentVfs);
 
-	// The constructor's adopt-or-open pass: every manifest pak adopted
-	// from the host's mounts or preloaded + opened in parallel, then
-	// registered with the session's registry (the shared-image lane)
-	// and mounted (priority 10, manifest order) into `contentVfs` if
-	// not already mounted — the overlay is the LOOSE/LEGACY surface
-	// (the anim-clip fallback lane in PostLoadTail); the CANONICAL
-	// content resolution (cross-pak textures, byte reads) goes through
-	// the session's registry, never the overlay.
-	// One pak failing leaves the layer unusable (the same every-pak-
-	// must-open contract LoadProjectWorld applies) — check Valid().
-	// Optional retained shape scene owned by the WorldRenderer. A scene
-	// load acquires authored shape instances; unload releases those handles.
-	// Attach before LoadScene/LoadSceneAdditive; the registry must outlive
-	// this ProjectScenes service.
-	void SetShapeScene(tour::renderer::ShapeScene* shapes) {
-		m_shapes = shapes;
-	}
-	[[nodiscard]] bool Valid() const { return m_openError.empty(); }
-	[[nodiscard]] const std::string& OpenError() const {
-		return m_openError;
-	}
+    // The constructor's adopt-or-open pass: every manifest pak adopted
+    // from the host's mounts or preloaded + opened in parallel, then
+    // registered with the session's registry (the shared-image lane)
+    // and mounted (priority 10, manifest order) into `contentVfs` if
+    // not already mounted — the overlay is the LOOSE/LEGACY surface
+    // (the anim-clip fallback lane in PostLoadTail); the CANONICAL
+    // content resolution (cross-pak textures, byte reads) goes through
+    // the session's registry, never the overlay.
+    // One pak failing leaves the layer unusable (the same every-pak-
+    // must-open contract LoadProjectWorld applies) — check Valid().
+    // Optional retained shape scene owned by the WorldRenderer. A scene
+    // load acquires authored shape instances; unload releases those handles.
+    // Attach before LoadScene/LoadSceneAdditive; the registry must outlive
+    // this ProjectScenes service.
+    void SetShapeScene(tour::renderer::ShapeScene* shapes) {
+        m_shapes = shapes;
+    }
+    [[nodiscard]] bool Valid() const {
+        return m_openError.empty();
+    }
+    [[nodiscard]] const std::string& OpenError() const {
+        return m_openError;
+    }
 
-	// The runtime façade this layer resolves ids through (the
-	// ProjectScenes ctor argument).
-	[[nodiscard]] ProjectRuntime& Runtime() const { return m_runtime; }
+    // The runtime façade this layer resolves ids through (the
+    // ProjectScenes ctor argument).
+    [[nodiscard]] ProjectRuntime& Runtime() const {
+        return m_runtime;
+    }
 
-	// ---- the id->scene join ----
-	// Resolves (and caches) a scene id to its load target. Unknown ids,
-	// non-scene kinds, missing/corrupt paks, and multi-scene paks
-	// without a recorded name all refuse loudly (err filled, nullopt).
-	[[nodiscard]] std::optional<SceneTarget> ResolveSceneTarget(
-		uint64_t sceneId, std::string& err);
+    // ---- the id->scene join ----
+    // Resolves (and caches) a scene id to its load target. Unknown ids,
+    // non-scene kinds, missing/corrupt paks, and multi-scene paks
+    // without a recorded name all refuse loudly (err filled, nullopt).
+    [[nodiscard]] std::optional<SceneTarget> ResolveSceneTarget(uint64_t sceneId, std::string& err);
 
-	// ---- scene instances ----
-	// REPLACE semantics: unloads every currently loaded project scene,
-	// then loads sceneId into `world`. Empty handle + err on failure
-	// (the world is untouched when the replace's own load fails — the
-	// previously loaded scenes are already gone by then; a failed
-	// LoadScene is a loud dead end, never a silent fallback scene).
-	// ctx is the host's upload context — REQUIRED for the default
-	// cluster loader (null = the GPU-less test seam, which must pair
-	// with a replaced clusterLoader).
-	SceneHandle LoadScene(tour::World& world, smvk::ResourceManager* ctx,
-		tour::TextureStreamer* streamer, uint64_t sceneId,
-		std::string& err);
-	// ADDITIVE: stacks sceneId on top of whatever the world already
-	// carries (the entry scene the apphost loaded, other additive
-	// scenes, editor content).
-	SceneHandle LoadSceneAdditive(tour::World& world,
-		smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
-		uint64_t sceneId, std::string& err);
-	// A prefab is an ordinary cooked .tour SCENE, not a new asset kind.
-	// Each call creates a DISTINCT cluster/SceneHandle; the authored
-	// transforms and resource references are kept, and the frame is
-	// applied outside the source root transform. Remove with RemoveScene().
-	// No extra ECS/prefab registry; instance edits never touch the source.
-	SceneHandle InstantiatePrefab(tour::World& world,
-		smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
-		uint64_t sceneId, const glm::mat4& frame, std::string& err);
-	// Absolute placement: always uses the ORIGINAL authored root frame,
-	// not the previous pose (avoids cumulative transformation drift).
-	// Rebuilds the world fold, main/update thread only.
-	bool SetPrefabTransform(SceneHandle prefab, tour::World& world,
-		const glm::mat4& frame, std::string& err);
-	[[nodiscard]] std::optional<glm::mat4> PrefabTransform(
-		SceneHandle prefab) const;
+    // ---- scene instances ----
+    // REPLACE semantics: unloads every currently loaded project scene,
+    // then loads sceneId into `world`. Empty handle + err on failure
+    // (the world is untouched when the replace's own load fails — the
+    // previously loaded scenes are already gone by then; a failed
+    // LoadScene is a loud dead end, never a silent fallback scene).
+    // ctx is the host's upload context — REQUIRED for the default
+    // cluster loader (null = the GPU-less test seam, which must pair
+    // with a replaced clusterLoader).
+    SceneHandle LoadScene(tour::World& world,
+                          smvk::ResourceManager* ctx,
+                          tour::TextureStreamer* streamer,
+                          uint64_t sceneId,
+                          std::string& err);
+    // ADDITIVE: stacks sceneId on top of whatever the world already
+    // carries (the entry scene the apphost loaded, other additive
+    // scenes, editor content).
+    SceneHandle LoadSceneAdditive(tour::World& world,
+                                  smvk::ResourceManager* ctx,
+                                  tour::TextureStreamer* streamer,
+                                  uint64_t sceneId,
+                                  std::string& err);
+    // A prefab is an ordinary cooked .tour SCENE, not a new asset kind.
+    // Each call creates a DISTINCT cluster/SceneHandle; the authored
+    // transforms and resource references are kept, and the frame is
+    // applied outside the source root transform. Remove with RemoveScene().
+    // No extra ECS/prefab registry; instance edits never touch the source.
+    SceneHandle InstantiatePrefab(tour::World& world,
+                                  smvk::ResourceManager* ctx,
+                                  tour::TextureStreamer* streamer,
+                                  uint64_t sceneId,
+                                  const glm::mat4& frame,
+                                  std::string& err);
+    // Absolute placement: always uses the ORIGINAL authored root frame,
+    // not the previous pose (avoids cumulative transformation drift).
+    // Rebuilds the world fold, main/update thread only.
+    bool SetPrefabTransform(SceneHandle prefab,
+                            tour::World& world,
+                            const glm::mat4& frame,
+                            std::string& err);
+    [[nodiscard]] std::optional<glm::mat4> PrefabTransform(SceneHandle prefab) const;
 
-	// Unloads the scene's cluster from `world` and releases its owned
-	// assets. releasedAssets (optional out) receives the asset ids
-	// whose last owner went away and that carry no explicit prefetch
-	// pin — the decoded-form caches (audio) evict exactly those.
-	// False + err on a stale/unknown handle (generation mismatch =
-	// the scene was already removed).
-	bool RemoveScene(SceneHandle scene, tour::World& world,
-		std::string& err,
-		std::vector<uint64_t>* releasedAssets = nullptr);
+    // Unloads the scene's cluster from `world` and releases its owned
+    // assets. releasedAssets (optional out) receives the asset ids
+    // whose last owner went away and that carry no explicit prefetch
+    // pin — the decoded-form caches (audio) evict exactly those.
+    // False + err on a stale/unknown handle (generation mismatch =
+    // the scene was already removed).
+    bool RemoveScene(SceneHandle scene,
+                     tour::World& world,
+                     std::string& err,
+                     std::vector<uint64_t>* releasedAssets = nullptr);
 
-	[[nodiscard]] bool IsLoaded(SceneHandle scene) const;
-	[[nodiscard]] uint32_t LoadedSceneCount() const;
-	// The first loaded instance of a content id (empty handle = none).
-	[[nodiscard]] SceneHandle FindScene(uint64_t sceneId) const;
-	// The content id a loaded instance carries (0 on a bad handle).
-	[[nodiscard]] uint64_t SceneContentId(SceneHandle scene) const;
-	// The cluster a loaded instance created (nullptr on a bad handle;
-	// DEAD after RemoveScene — the world owned it, the unload erased
-	// it). Lets scene-aware layers (audio) reach the owning cluster.
-	[[nodiscard]] tour::Cluster* SceneCluster(SceneHandle scene) const;
+    [[nodiscard]] bool IsLoaded(SceneHandle scene) const;
+    [[nodiscard]] uint32_t LoadedSceneCount() const;
+    // The first loaded instance of a content id (empty handle = none).
+    [[nodiscard]] SceneHandle FindScene(uint64_t sceneId) const;
+    // The content id a loaded instance carries (0 on a bad handle).
+    [[nodiscard]] uint64_t SceneContentId(SceneHandle scene) const;
+    // The cluster a loaded instance created (nullptr on a bad handle;
+    // DEAD after RemoveScene — the world owned it, the unload erased
+    // it). Lets scene-aware layers (audio) reach the owning cluster.
+    [[nodiscard]] tour::Cluster* SceneCluster(SceneHandle scene) const;
 
-	// ---- ownership-aware prefetch ----
-	// Warms the asset's pak (the background preload + open — the
-	// expensive half of a first read) and PINS the id. Works for every
-	// kind: scenes additionally resolve + cache their SceneTarget.
-	// Pair every Prefetch with a Release; pins survive scene removal.
-	bool Prefetch(uint64_t assetId, std::string& err);
-	// Drops one explicit pin. False (no-op) when the id carries none.
-	bool Release(uint64_t assetId);
-	[[nodiscard]] bool IsPinned(uint64_t assetId) const;
-	// True while the id is held by ANY owner: an explicit pin or any
-	// loaded scene's ownership registry (what decoded-form caches gate
-	// eviction on).
-	[[nodiscard]] bool IsHeld(uint64_t assetId) const;
+    // ---- ownership-aware prefetch ----
+    // Warms the asset's pak (the background preload + open — the
+    // expensive half of a first read) and PINS the id. Works for every
+    // kind: scenes additionally resolve + cache their SceneTarget.
+    // Pair every Prefetch with a Release; pins survive scene removal.
+    bool Prefetch(uint64_t assetId, std::string& err);
+    // Drops one explicit pin. False (no-op) when the id carries none.
+    bool Release(uint64_t assetId);
+    [[nodiscard]] bool IsPinned(uint64_t assetId) const;
+    // True while the id is held by ANY owner: an explicit pin or any
+    // loaded scene's ownership registry (what decoded-form caches gate
+    // eviction on).
+    [[nodiscard]] bool IsHeld(uint64_t assetId) const;
 
-	// ---- the ownership registry ----
-	// Registers that `scene` owns assetId (the scene-aware layers call
-	// this at their own load/discover points — e.g. audio registering
-	// each scene's sound ids). Duplicate acquires per scene are
-	// idempotent. No-op on a stale handle.
-	void SceneAcquireAsset(SceneHandle scene, uint64_t assetId);
-	// Releases the scene's whole registry (RemoveScene calls this
-	// internally; returns the dropped ids — see RemoveScene). Public
-	// so a layer that tears its own state down first can drive the
-	// same bookkeeping.
-	[[nodiscard]] std::vector<uint64_t> SceneReleaseAssets(
-		SceneHandle scene);
+    // ---- the ownership registry ----
+    // Registers that `scene` owns assetId (the scene-aware layers call
+    // this at their own load/discover points — e.g. audio registering
+    // each scene's sound ids). Duplicate acquires per scene are
+    // idempotent. No-op on a stale handle.
+    void SceneAcquireAsset(SceneHandle scene, uint64_t assetId);
+    // Releases the scene's whole registry (RemoveScene calls this
+    // internally; returns the dropped ids — see RemoveScene). Public
+    // so a layer that tears its own state down first can drive the
+    // same bookkeeping.
+    [[nodiscard]] std::vector<uint64_t> SceneReleaseAssets(SceneHandle scene);
 
-	// The replaceable pak->cluster seam (see ClusterLoader). Public by
-	// design: the GPU-less tests substitute a hand-built cluster.
-	ClusterLoader clusterLoader;
+    // The replaceable pak->cluster seam (see ClusterLoader). Public by
+    // design: the GPU-less tests substitute a hand-built cluster.
+    ClusterLoader clusterLoader;
 
-private:
-	struct SceneInstance {
-		uint32_t generation = 1;
-		bool loaded = false;
-		uint64_t contentId = 0;
-		std::string pak;
-		std::string sceneName;
-		uint32_t sceneIndex = 0;
-		tour::Cluster* cluster = nullptr; // dead after RemoveScene
-		std::vector<uint64_t> ownedAssets;
-		struct ShapeAttachment {
-			tour::renderer::ShapeInstanceHandle handle;
-			glm::mat4 localTransform{1.0f};
-		};
-		std::vector<ShapeAttachment> shapes;
-		tour::World* owner = nullptr;
-		bool prefab = false;
-		uint32_t prefabRoot = UINT32_MAX;
-		glm::mat4 prefabSourceRoot{1.0f};
-		glm::mat4 prefabFrame{1.0f};
-	};
+  private:
+    struct SceneInstance {
+        uint32_t generation = 1;
+        bool loaded = false;
+        uint64_t contentId = 0;
+        std::string pak;
+        std::string sceneName;
+        uint32_t sceneIndex = 0;
+        tour::Cluster* cluster = nullptr; // dead after RemoveScene
+        std::vector<uint64_t> ownedAssets;
+        struct ShapeAttachment {
+            tour::renderer::ShapeInstanceHandle handle;
+            glm::mat4 localTransform{1.0f};
+        };
+        std::vector<ShapeAttachment> shapes;
+        tour::World* owner = nullptr;
+        bool prefab = false;
+        uint32_t prefabRoot = UINT32_MAX;
+        glm::mat4 prefabSourceRoot{1.0f};
+        glm::mat4 prefabFrame{1.0f};
+    };
 
-	[[nodiscard]] SceneInstance* Instance(SceneHandle scene);
-	[[nodiscard]] const SceneInstance* Instance(SceneHandle scene) const;
-	[[nodiscard]] SceneHandle AllocHandle();
-	void FreeHandle(SceneHandle scene);
+    [[nodiscard]] SceneInstance* Instance(SceneHandle scene);
+    [[nodiscard]] const SceneInstance* Instance(SceneHandle scene) const;
+    [[nodiscard]] SceneHandle AllocHandle();
+    void FreeHandle(SceneHandle scene);
 
-	SceneHandle LoadInternal(tour::World& world,
-		smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
-		uint64_t sceneId, std::string& err,
-		const glm::mat4* prefabFrame = nullptr);
+    SceneHandle LoadInternal(tour::World& world,
+                             smvk::ResourceManager* ctx,
+                             tour::TextureStreamer* streamer,
+                             uint64_t sceneId,
+                             std::string& err,
+                             const glm::mat4* prefabFrame = nullptr);
 
-	tour::renderer::ShapeScene* m_shapes = nullptr;
-	ProjectRuntime& m_runtime;
-	smvk::OverlayVfs& m_vfs;
-	std::string m_openError; // non-empty = the ctor's pak pass failed
-	std::vector<SceneInstance> m_slots;
-	std::vector<uint32_t> m_free;
-	// Explicit prefetch pins (id -> count).
-	std::map<uint64_t, uint32_t> m_pins;
-	// Resolved scene targets (id -> join product), warmed by Prefetch.
-	std::map<uint64_t, SceneTarget> m_targets;
-	// The asset ownership registry (id -> live owning scene count).
-	std::map<uint64_t, uint32_t> m_assetRefs;
+    tour::renderer::ShapeScene* m_shapes = nullptr;
+    ProjectRuntime& m_runtime;
+    smvk::OverlayVfs& m_vfs;
+    std::string m_openError; // non-empty = the ctor's pak pass failed
+    std::vector<SceneInstance> m_slots;
+    std::vector<uint32_t> m_free;
+    // Explicit prefetch pins (id -> count).
+    std::map<uint64_t, uint32_t> m_pins;
+    // Resolved scene targets (id -> join product), warmed by Prefetch.
+    std::map<uint64_t, SceneTarget> m_targets;
+    // The asset ownership registry (id -> live owning scene count).
+    std::map<uint64_t, uint32_t> m_assetRefs;
 };
 
 } // namespace app

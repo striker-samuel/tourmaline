@@ -17,7 +17,7 @@
 namespace smvk {
 
 class SdlInputBackend {
-public:
+  public:
     SdlInputBackend() = default;
     ~SdlInputBackend();
 
@@ -30,7 +30,7 @@ public:
     // (with the device name) so Input can track the device.
     bool Translate(const SDL_Event& src, input::Event& out);
 
-private:
+  private:
     struct OpenGamepad {
         input::GamepadId id = 0;
         SDL_Gamepad* handle = nullptr;

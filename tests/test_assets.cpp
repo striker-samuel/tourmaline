@@ -25,25 +25,25 @@
 #endif
 
 #include <Engine/App/cluster.h>
-#include <Engine/App/world.h>
 #include <Engine/App/static_merge.h>
+#include <Engine/App/world.h>
+#include <Engine/Asset/asset_plan.h>
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/compression.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Asset/pak_pager.h>
 #include <Engine/Asset/shape_asset.h>
 #include <Engine/Asset/tour.h>
-#include <Engine/Asset/pak_pager.h>
-#include <Engine/Asset/asset_plan.h>
-#include <Engine/Scene/node_schema.h>
-#include <Engine/platform.h> // readFile (exe-relative shader loads)
 #include <Engine/Renderer/spirv_reflection.h>
 #include <Engine/Renderer/vertex_pack.h>
+#include <Engine/Scene/node_schema.h>
 #include <Engine/Scene/scene.h>
-#include <Engine/Vfs/vfs.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
+#include <Engine/Vfs/vfs.h>
+#include <Engine/platform.h> // readFile (exe-relative shader loads)
 
 namespace {
 
@@ -51,525 +51,501 @@ int g_failures = 0;
 int g_checks = 0;
 
 void Check(bool cond, const char* name) {
-	++g_checks;
-	if (cond) {
-		std::cout << "PASS " << name << "\n";
-	}
-	else {
-		++g_failures;
-		std::cout << "FAIL " << name << "\n";
-	}
+    ++g_checks;
+    if (cond) {
+        std::cout << "PASS " << name << "\n";
+    } else {
+        ++g_failures;
+        std::cout << "FAIL " << name << "\n";
+    }
 }
 
 void TestVfsNormalize() {
-	using smvk::vfs::Normalize;
-	Check(Normalize("models/Sponza/sponza.gltf") == "models/Sponza/sponza.gltf", "vfs.norm.plain");
-	Check(Normalize("models\\Sponza\\sponza.gltf") == "models/Sponza/sponza.gltf", "vfs.norm.backslash");
-	Check(Normalize("./models//Sponza/./sponza.gltf") == "models/Sponza/sponza.gltf", "vfs.norm.dots");
-	Check(Normalize("models/Sponza/../Sponza/sponza.gltf") == "models/Sponza/sponza.gltf", "vfs.norm.dotdot");
-	Check(Normalize("") == "", "vfs.norm.empty");
-	Check(Normalize("/absolute/path") == "", "vfs.norm.absolute");
-	Check(Normalize("C:/win/path") == "", "vfs.norm.drive");
-	Check(Normalize("../escape") == "", "vfs.norm.escape");
-	Check(Normalize("a/../../escape") == "", "vfs.norm.escape2");
-	Check(smvk::vfs::Join("models/Sponza", "sponza.gltf") == "models/Sponza/sponza.gltf", "vfs.join");
-	Check(smvk::vfs::BaseDir("models/Sponza/sponza.gltf") == "models/Sponza", "vfs.basedir");
-	Check(smvk::vfs::FileName("models/Sponza/sponza.gltf") == "sponza.gltf", "vfs.filename");
+    using smvk::vfs::Normalize;
+    Check(Normalize("models/Sponza/sponza.gltf") == "models/Sponza/sponza.gltf", "vfs.norm.plain");
+    Check(Normalize("models\\Sponza\\sponza.gltf") == "models/Sponza/sponza.gltf",
+          "vfs.norm.backslash");
+    Check(Normalize("./models//Sponza/./sponza.gltf") == "models/Sponza/sponza.gltf",
+          "vfs.norm.dots");
+    Check(Normalize("models/Sponza/../Sponza/sponza.gltf") == "models/Sponza/sponza.gltf",
+          "vfs.norm.dotdot");
+    Check(Normalize("") == "", "vfs.norm.empty");
+    Check(Normalize("/absolute/path") == "", "vfs.norm.absolute");
+    Check(Normalize("C:/win/path") == "", "vfs.norm.drive");
+    Check(Normalize("../escape") == "", "vfs.norm.escape");
+    Check(Normalize("a/../../escape") == "", "vfs.norm.escape2");
+    Check(smvk::vfs::Join("models/Sponza", "sponza.gltf") == "models/Sponza/sponza.gltf",
+          "vfs.join");
+    Check(smvk::vfs::BaseDir("models/Sponza/sponza.gltf") == "models/Sponza", "vfs.basedir");
+    Check(smvk::vfs::FileName("models/Sponza/sponza.gltf") == "sponza.gltf", "vfs.filename");
 }
 
 void TestOverlayMem() {
-	smvk::OverlayVfs vfs;
-	auto base = std::make_shared<smvk::MemBackend>("base");
-	auto over = std::make_shared<smvk::MemBackend>("over");
-	base->Write("textures/a.ktx2", { 1, 2, 3 });
-	base->Write("textures/b.ktx2", { 4, 5 });
-	over->Write("textures/a.ktx2", { 9, 9, 9, 9 });
-	vfs.Mount(base, 10, "base");
-	vfs.Mount(over, 0, "over"); // higher precedence
+    smvk::OverlayVfs vfs;
+    auto base = std::make_shared<smvk::MemBackend>("base");
+    auto over = std::make_shared<smvk::MemBackend>("over");
+    base->Write("textures/a.ktx2", {1, 2, 3});
+    base->Write("textures/b.ktx2", {4, 5});
+    over->Write("textures/a.ktx2", {9, 9, 9, 9});
+    vfs.Mount(base, 10, "base");
+    vfs.Mount(over, 0, "over"); // higher precedence
 
-	auto a = vfs.TryRead("textures/a.ktx2");
-	Check(a && a->size() == 4 && (*a)[0] == 9, "vfs.overlay.precedence");
-	auto b = vfs.TryRead("textures/b.ktx2");
-	Check(b && b->size() == 2, "vfs.overlay.fallthrough");
-	Check(!vfs.Exists("textures/missing.ktx2"), "vfs.overlay.miss");
-	auto providers = vfs.FindProviders("textures/a.ktx2");
-	Check(providers.size() == 2, "vfs.overlay.providers");
-	auto dir = vfs.ListDir("textures");
-	Check(dir.size() == 2, "vfs.overlay.listdir");
-	bool threw = false;
-	try {
-		vfs.ReadBinary("nope.bin");
-	}
-	catch (const std::runtime_error&) {
-		threw = true;
-	}
-	Check(threw, "vfs.overlay.throw");
-	Check(vfs.Unmount("over"), "vfs.unmount");
-	auto a2 = vfs.TryRead("textures/a.ktx2");
-	Check(a2 && a2->size() == 3, "vfs.unmount.fallback");
+    auto a = vfs.TryRead("textures/a.ktx2");
+    Check(a && a->size() == 4 && (*a)[0] == 9, "vfs.overlay.precedence");
+    auto b = vfs.TryRead("textures/b.ktx2");
+    Check(b && b->size() == 2, "vfs.overlay.fallthrough");
+    Check(!vfs.Exists("textures/missing.ktx2"), "vfs.overlay.miss");
+    auto providers = vfs.FindProviders("textures/a.ktx2");
+    Check(providers.size() == 2, "vfs.overlay.providers");
+    auto dir = vfs.ListDir("textures");
+    Check(dir.size() == 2, "vfs.overlay.listdir");
+    bool threw = false;
+    try {
+        vfs.ReadBinary("nope.bin");
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    Check(threw, "vfs.overlay.throw");
+    Check(vfs.Unmount("over"), "vfs.unmount");
+    auto a2 = vfs.TryRead("textures/a.ktx2");
+    Check(a2 && a2->size() == 3, "vfs.unmount.fallback");
 }
 
 void TestAssetUris() {
-	auto [f, frag] = smvk::SplitAssetUri("models/s.gltf#mesh.1/prim.0");
-	Check(f == "models/s.gltf" && frag == "mesh.1/prim.0", "uri.split");
-	Check(smvk::NormalizeAssetUri("models\\s.gltf#mesh.1") == "models/s.gltf#mesh.1", "uri.normalize");
-	Check(smvk::NormalizeAssetUri("../evil#x") == "", "uri.escape");
-	Check(smvk::MakeSubUri("models/s.gltf", "mat.3") == "models/s.gltf#mat.3", "uri.mksub");
-	Check(smvk::AssetFilePart("models/s.gltf#mat.3") == "models/s.gltf", "uri.filepart");
+    auto [f, frag] = smvk::SplitAssetUri("models/s.gltf#mesh.1/prim.0");
+    Check(f == "models/s.gltf" && frag == "mesh.1/prim.0", "uri.split");
+    Check(smvk::NormalizeAssetUri("models\\s.gltf#mesh.1") == "models/s.gltf#mesh.1",
+          "uri.normalize");
+    Check(smvk::NormalizeAssetUri("../evil#x") == "", "uri.escape");
+    Check(smvk::MakeSubUri("models/s.gltf", "mat.3") == "models/s.gltf#mat.3", "uri.mksub");
+    Check(smvk::AssetFilePart("models/s.gltf#mat.3") == "models/s.gltf", "uri.filepart");
 }
 
 void TestStringViewArena() {
-	using namespace smvk;
-	// StringViewT basics: slicing, search, compare, char* interop.
-	StringViewT v = "models/b.gltf#mesh.3";
-	Check(v.size() == 19 && !v.empty(), "sv.size");
-	Check(v.substr(0, 10) == "models/b.g", "sv.substr");
-	Check(v.find('#') == 12, "sv.find");
-	Check(v.find("mesh") == 13, "sv.findstr");
-	Check(v.starts_with("models") && v.ends_with(".3"), "sv.prefix");
-	Check(v.contains('#') && !v.contains('?'), "sv.contains");
-	Check(StringViewT("a/b").rfind('/') == 1, "sv.rfind");
-	Check(StringViewT("  hi  ").trim() == "hi", "sv.trim");
-	Check(StringViewT() == "" && StringViewT("").valid(), "sv.emptyview");
-	Check(StringViewT("abc").Str() == std::string("abc"), "sv.str");
-	Check(StringViewT("b") > StringViewT("a") && StringViewT("a") < StringViewT("ab"), "sv.order");
+    using namespace smvk;
+    // StringViewT basics: slicing, search, compare, char* interop.
+    StringViewT v = "models/b.gltf#mesh.3";
+    Check(v.size() == 19 && !v.empty(), "sv.size");
+    Check(v.substr(0, 10) == "models/b.g", "sv.substr");
+    Check(v.find('#') == 12, "sv.find");
+    Check(v.find("mesh") == 13, "sv.findstr");
+    Check(v.starts_with("models") && v.ends_with(".3"), "sv.prefix");
+    Check(v.contains('#') && !v.contains('?'), "sv.contains");
+    Check(StringViewT("a/b").rfind('/') == 1, "sv.rfind");
+    Check(StringViewT("  hi  ").trim() == "hi", "sv.trim");
+    Check(StringViewT() == "" && StringViewT("").valid(), "sv.emptyview");
+    Check(StringViewT("abc").Str() == std::string("abc"), "sv.str");
+    Check(StringViewT("b") > StringViewT("a") && StringViewT("a") < StringViewT("ab"), "sv.order");
 
-	// Arena: bump allocation, string copies, format, reset.
-	Arena a(256);
-	StringViewT s = a.AllocateString("hello world");
-	Check(s == "hello world", "arena.string");
-	const uint64_t* big = a.Create<uint64_t>(0xDEADBEEFCAFEull);
-	Check(*big == 0xDEADBEEFCAFEull, "arena.create");
-	StringViewT f = a.FormatString("%s/%u", "mesh", 7u);
-	Check(f == "mesh/7", "arena.format");
-	const size_t used = a.UsedBytes();
-	Check(used > 0, "arena.used");
-	Check(a.BlockCount() >= 1, "arena.blocks");
-	// Oversized request gets a dedicated block.
-	void* huge = a.Allocate(a.BlockCount() * 1024 * 1024 + 4096);
-	Check(huge != nullptr, "arena.huge");
-	a.Reset();
-	Check(a.UsedBytes() == 0 && a.BlockCount() == 0, "arena.reset");
+    // Arena: bump allocation, string copies, format, reset.
+    Arena a(256);
+    StringViewT s = a.AllocateString("hello world");
+    Check(s == "hello world", "arena.string");
+    const uint64_t* big = a.Create<uint64_t>(0xDEADBEEFCAFEull);
+    Check(*big == 0xDEADBEEFCAFEull, "arena.create");
+    StringViewT f = a.FormatString("%s/%u", "mesh", 7u);
+    Check(f == "mesh/7", "arena.format");
+    const size_t used = a.UsedBytes();
+    Check(used > 0, "arena.used");
+    Check(a.BlockCount() >= 1, "arena.blocks");
+    // Oversized request gets a dedicated block.
+    void* huge = a.Allocate(a.BlockCount() * 1024 * 1024 + 4096);
+    Check(huge != nullptr, "arena.huge");
+    a.Reset();
+    Check(a.UsedBytes() == 0 && a.BlockCount() == 0, "arena.reset");
 
-	// ConcatInto composes without std::string.
-	Arena b(256);
-	Check(ConcatInto(b, "models", "/q.gltf") == "models/q.gltf", "arena.concat");
-	Check(ConcatInto(b, "", "x") == "x" && ConcatInto(b, "x", "") == "x", "arena.concat.empty");
+    // ConcatInto composes without std::string.
+    Arena b(256);
+    Check(ConcatInto(b, "models", "/q.gltf") == "models/q.gltf", "arena.concat");
+    Check(ConcatInto(b, "", "x") == "x" && ConcatInto(b, "x", "") == "x", "arena.concat.empty");
 
-	// UriMap: insert/find/erase/tombstones/growth over string keys.
-	UriMap<uint32_t> m;
-	Check(m.Find("missing") == nullptr, "umap.find.miss");
-	m.Insert("models/a.gltf#mesh.0", 0);
-	m.Insert("models/a.gltf#mesh.1", 1);
-	m.Insert("models/b.gltf#mesh.0", 2);
-	Check(m.Size() == 3, "umap.size");
-	Check(m.Find("models/a.gltf#mesh.0") && *m.Find("models/a.gltf#mesh.0") == 0, "umap.find");
-	Check(*m.Find("models/b.gltf#mesh.0") == 2, "umap.find2");
-	m.Insert("models/a.gltf#mesh.1", 11); // replace keeps one entry
-	Check(m.Size() == 3 && *m.Find("models/a.gltf#mesh.1") == 11, "umap.replace");
-	Check(m.Erase("models/a.gltf#mesh.0"), "umap.erase");
-	Check(!m.Find("models/a.gltf#mesh.0"), "umap.erase.gone");
-	// Stress growth + tombstone probing.
-	UriMap<int> big2;
-	std::vector<StringViewT> keys;
-	keys.reserve(500);
-	for (int i = 0; i < 500; ++i) {
-		keys.push_back(AppArena().FormatString("stress/key.%d", i));
-		big2.Insert(keys.back(), i);
-		if (i % 3 == 0)
-			big2.Erase(keys.back());
-	}
-	int found = 0, missing = 0;
-	for (int i = 0; i < 500; ++i) {
-		if (i % 3 == 0) {
-			if (!big2.Find(keys[i]))
-				++missing;
-		}
-		else if (big2.Find(keys[i]) && *big2.Find(keys[i]) == i)
-			++found;
-	}
-	Check(found == 334 && missing == 167, "umap.stress");
+    // UriMap: insert/find/erase/tombstones/growth over string keys.
+    UriMap<uint32_t> m;
+    Check(m.Find("missing") == nullptr, "umap.find.miss");
+    m.Insert("models/a.gltf#mesh.0", 0);
+    m.Insert("models/a.gltf#mesh.1", 1);
+    m.Insert("models/b.gltf#mesh.0", 2);
+    Check(m.Size() == 3, "umap.size");
+    Check(m.Find("models/a.gltf#mesh.0") && *m.Find("models/a.gltf#mesh.0") == 0, "umap.find");
+    Check(*m.Find("models/b.gltf#mesh.0") == 2, "umap.find2");
+    m.Insert("models/a.gltf#mesh.1", 11); // replace keeps one entry
+    Check(m.Size() == 3 && *m.Find("models/a.gltf#mesh.1") == 11, "umap.replace");
+    Check(m.Erase("models/a.gltf#mesh.0"), "umap.erase");
+    Check(!m.Find("models/a.gltf#mesh.0"), "umap.erase.gone");
+    // Stress growth + tombstone probing.
+    UriMap<int> big2;
+    std::vector<StringViewT> keys;
+    keys.reserve(500);
+    for (int i = 0; i < 500; ++i) {
+        keys.push_back(AppArena().FormatString("stress/key.%d", i));
+        big2.Insert(keys.back(), i);
+        if (i % 3 == 0)
+            big2.Erase(keys.back());
+    }
+    int found = 0, missing = 0;
+    for (int i = 0; i < 500; ++i) {
+        if (i % 3 == 0) {
+            if (!big2.Find(keys[i]))
+                ++missing;
+        } else if (big2.Find(keys[i]) && *big2.Find(keys[i]) == i)
+            ++found;
+    }
+    Check(found == 334 && missing == 167, "umap.stress");
 }
 
 void TestTextureSourceLifetime() {
-	// TextureStreamer retains a borrowed pointer into Cluster's source
-	// bytes. Both the initial stash and UriMap growth must preserve it.
-	// HEAP-ALLOCATE the Cluster: sizeof(Cluster) is ~6.5 MB (the embedded
-	// Scene tables), and a stack instance overflows the default 1 MB
-	// Windows thread stack (0xC00000FD) before the first check runs.
-	// Linux's larger default stack masked this in the PR's CI lane.
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	std::vector<uint8_t> bytes(4096, 0xAB);
-	const uint8_t* original = bytes.data();
-	cluster->SetTextureSource("textures/pinned.ktx2", std::move(bytes));
-	const auto* stored = cluster->GetTextureSource("textures/pinned.ktx2");
-	Check(stored && stored->data() == original,
-		"texture.source.stash-moves-backing");
+    // TextureStreamer retains a borrowed pointer into Cluster's source
+    // bytes. Both the initial stash and UriMap growth must preserve it.
+    // HEAP-ALLOCATE the Cluster: sizeof(Cluster) is ~6.5 MB (the embedded
+    // Scene tables), and a stack instance overflows the default 1 MB
+    // Windows thread stack (0xC00000FD) before the first check runs.
+    // Linux's larger default stack masked this in the PR's CI lane.
+    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    std::vector<uint8_t> bytes(4096, 0xAB);
+    const uint8_t* original = bytes.data();
+    cluster->SetTextureSource("textures/pinned.ktx2", std::move(bytes));
+    const auto* stored = cluster->GetTextureSource("textures/pinned.ktx2");
+    Check(stored && stored->data() == original, "texture.source.stash-moves-backing");
 
-	const uint8_t* pinned = stored ? stored->data() : nullptr;
-	for (int i = 0; i < 64; ++i) {
-		cluster->SetTextureSource(
-			smvk::AppArena().FormatString("textures/other_%d.ktx2", i),
-			std::vector<uint8_t>(4096, static_cast<uint8_t>(i)));
-	}
-	stored = cluster->GetTextureSource("textures/pinned.ktx2");
-	Check(stored && stored->data() == pinned &&
-		stored->size() == 4096 && (*stored)[0] == 0xAB,
-		"texture.source.rehash-preserves-streaming-pointer");
+    const uint8_t* pinned = stored ? stored->data() : nullptr;
+    for (int i = 0; i < 64; ++i) {
+        cluster->SetTextureSource(smvk::AppArena().FormatString("textures/other_%d.ktx2", i),
+                                  std::vector<uint8_t>(4096, static_cast<uint8_t>(i)));
+    }
+    stored = cluster->GetTextureSource("textures/pinned.ktx2");
+    Check(stored && stored->data() == pinned && stored->size() == 4096 && (*stored)[0] == 0xAB,
+          "texture.source.rehash-preserves-streaming-pointer");
 }
 
 void TestShapePakBlobs() {
     using namespace smvk;
-    const auto cloud = ::tour::asset::DefaultShapeAsset(
-        ::tour::asset::ShapeKind::PointCloud);
+    const auto cloud = ::tour::asset::DefaultShapeAsset(::tour::asset::ShapeKind::PointCloud);
     const std::string source = ::tour::asset::SerializeShapeAsset(cloud);
     const std::string placements =
         "shapeInstance -name \"Cloud\" -source \"content/shapes/cloud.shape\" "
         "-t 0 1 0 -color 1 0.5 0.2 -enabled on;\n";
     PakWriter writer;
     Check(writer.AddBlob(PakAssetKind::Shape,
-        "content/shapes/cloud.shape", std::vector<uint8_t>(
-            source.begin(), source.end())), "shape.pak.write-source");
+                         "content/shapes/cloud.shape",
+                         std::vector<uint8_t>(source.begin(), source.end())),
+          "shape.pak.write-source");
     Check(writer.AddBlob(PakAssetKind::ShapePlacements,
-        ::tour::asset::kShapePlacementsPakPath,
-        std::vector<uint8_t>(placements.begin(), placements.end())),
-        "shape.pak.write-placement-sidecar");
+                         ::tour::asset::kShapePlacementsPakPath,
+                         std::vector<uint8_t>(placements.begin(), placements.end())),
+          "shape.pak.write-placement-sidecar");
     const auto image = writer.Finalize();
     std::string error;
     auto reader = PakReader::Open(std::span<const uint8_t>(image), error);
     Check(reader.has_value(), "shape.pak.open");
-    if (!reader) return;
-    const auto* shapeRow = reader->Find(
-        PakAssetKind::Shape, "content/shapes/cloud.shape");
+    if (!reader)
+        return;
+    const auto* shapeRow = reader->Find(PakAssetKind::Shape, "content/shapes/cloud.shape");
     Check(shapeRow != nullptr, "shape.pak.source-blob-kind");
     if (shapeRow) {
         const auto bytes = reader->Payload(*shapeRow);
         ::tour::asset::ShapeAsset parsed;
         Check(::tour::asset::ParseShapeAsset(
-            std::string(reinterpret_cast<const char*>(bytes.data()),
-                bytes.size()), parsed, error)
-                && parsed.kind == ::tour::asset::ShapeKind::PointCloud,
-            "shape.pak.source-valid");
+                  std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
+                  parsed,
+                  error) &&
+                  parsed.kind == ::tour::asset::ShapeKind::PointCloud,
+              "shape.pak.source-valid");
     }
-    const auto* placementRow = reader->Find(
-        PakAssetKind::ShapePlacements,
-        ::tour::asset::kShapePlacementsPakPath);
+    const auto* placementRow =
+        reader->Find(PakAssetKind::ShapePlacements, ::tour::asset::kShapePlacementsPakPath);
     Check(placementRow != nullptr, "shape.pak.internal-placement-kind");
     if (placementRow) {
         const auto bytes = reader->Payload(*placementRow);
         ::tour::asset::Doc doc;
         Check(::tour::asset::LoadTourFromString(
-            std::string(reinterpret_cast<const char*>(bytes.data()),
-                bytes.size()), doc, error) && doc.shapePlacements.size() == 1,
-            "shape.pak.placement-parse");
+                  std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
+                  doc,
+                  error) &&
+                  doc.shapePlacements.size() == 1,
+              "shape.pak.placement-parse");
     }
 }
 
 void TestPakRoundTrip() {
-	smvk::PakWriter w;
-	Check(!w.AddBlob(smvk::PakAssetKind::Texture, "../evil", { 1 }), "pak.reject.escape");
-	Check(w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2", { 1, 2, 3, 4 }), "pak.add.tex");
-	std::vector<uint8_t> scene = { 9, 9, 9 };
-	Check(w.AddBlob(smvk::PakAssetKind::Scene, "<cluster-local>#scene", scene), "pak.add.scene");
-	std::vector<uint8_t> img = w.Finalize();
-	Check(img.size() > 64, "pak.finalize.size");
+    smvk::PakWriter w;
+    Check(!w.AddBlob(smvk::PakAssetKind::Texture, "../evil", {1}), "pak.reject.escape");
+    Check(w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2", {1, 2, 3, 4}), "pak.add.tex");
+    std::vector<uint8_t> scene = {9, 9, 9};
+    Check(w.AddBlob(smvk::PakAssetKind::Scene, "<cluster-local>#scene", scene), "pak.add.scene");
+    std::vector<uint8_t> img = w.Finalize();
+    Check(img.size() > 64, "pak.finalize.size");
 
-	std::string err;
-	auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), err);
-	Check(r.has_value(), "pak.open.ok");
-	if (!r) {
-		std::cout << "  pak error: " << err << "\n";
-		return;
-	}
-	Check(r->EntryCount() == 2, "pak.entry.count");
-	const auto* tex = r->Find(smvk::PakAssetKind::Texture, "textures/a.ktx2");
-	Check(tex != nullptr, "pak.find.tex");
-	if (tex) {
-		auto payload = r->Payload(*tex);
-		Check(payload.size() == 4 && payload[0] == 1, "pak.payload");
-	}
-	Check(r->Find(smvk::PakAssetKind::Mesh, "textures/a.ktx2") == nullptr, "pak.find.kindmiss");
+    std::string err;
+    auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), err);
+    Check(r.has_value(), "pak.open.ok");
+    if (!r) {
+        std::cout << "  pak error: " << err << "\n";
+        return;
+    }
+    Check(r->EntryCount() == 2, "pak.entry.count");
+    const auto* tex = r->Find(smvk::PakAssetKind::Texture, "textures/a.ktx2");
+    Check(tex != nullptr, "pak.find.tex");
+    if (tex) {
+        auto payload = r->Payload(*tex);
+        Check(payload.size() == 4 && payload[0] == 1, "pak.payload");
+    }
+    Check(r->Find(smvk::PakAssetKind::Mesh, "textures/a.ktx2") == nullptr, "pak.find.kindmiss");
 
-	// SMP8 PAGE VERIFICATION: a corrupt PAGE byte passes the small
-	// mount (the footer CRC covers the TOC metadata only) and fails
-	// AT THE PAGE — Payload() throws + VerifyAll() reports it (the
-	// lazy per-page contract; the deployment gate calls VerifyAll).
-	{
-		std::vector<uint8_t> bad = img;
-		bad[32] ^= 0xFF; // the tex blob's first payload byte
-		std::string err2;
-		auto rBad = smvk::PakReader::Open(
-			std::span<const uint8_t>(bad), err2);
-		Check(rBad.has_value(), "pak.corrupt.mount-tolerates-page");
-		bool threw = false;
-		if (rBad) {
-			const auto* tex2 = rBad->Find(
-				smvk::PakAssetKind::Texture, "textures/a.ktx2");
-			if (tex2) {
-				try {
-					(void)rBad->Payload(*tex2);
-				}
-				catch (const std::runtime_error&) {
-					threw = true;
-				}
-			}
-			std::string verr;
-			Check(!rBad->VerifyAll(verr) && !verr.empty(),
-				"pak.corrupt.verifyall-reports");
-		}
-		Check(threw, "pak.corrupt.page-throws");
-		// The untouched scene page still serves (selective integrity:
-		// a corrupt page never poisons its neighbors).
-		if (rBad) {
-			const auto* sc = rBad->Find(smvk::PakAssetKind::Scene,
-				"<cluster-local>#scene");
-			Check(sc != nullptr && rBad->Payload(*sc).size() == 3,
-				"pak.corrupt.sibling-page-clean");
-		}
-	}
+    // SMP8 PAGE VERIFICATION: a corrupt PAGE byte passes the small
+    // mount (the footer CRC covers the TOC metadata only) and fails
+    // AT THE PAGE — Payload() throws + VerifyAll() reports it (the
+    // lazy per-page contract; the deployment gate calls VerifyAll).
+    {
+        std::vector<uint8_t> bad = img;
+        bad[32] ^= 0xFF; // the tex blob's first payload byte
+        std::string err2;
+        auto rBad = smvk::PakReader::Open(std::span<const uint8_t>(bad), err2);
+        Check(rBad.has_value(), "pak.corrupt.mount-tolerates-page");
+        bool threw = false;
+        if (rBad) {
+            const auto* tex2 = rBad->Find(smvk::PakAssetKind::Texture, "textures/a.ktx2");
+            if (tex2) {
+                try {
+                    (void)rBad->Payload(*tex2);
+                } catch (const std::runtime_error&) {
+                    threw = true;
+                }
+            }
+            std::string verr;
+            Check(!rBad->VerifyAll(verr) && !verr.empty(), "pak.corrupt.verifyall-reports");
+        }
+        Check(threw, "pak.corrupt.page-throws");
+        // The untouched scene page still serves (selective integrity:
+        // a corrupt page never poisons its neighbors).
+        if (rBad) {
+            const auto* sc = rBad->Find(smvk::PakAssetKind::Scene, "<cluster-local>#scene");
+            Check(sc != nullptr && rBad->Payload(*sc).size() == 3,
+                  "pak.corrupt.sibling-page-clean");
+        }
+    }
 
-	// Texture payload helpers.
-	auto tp = smvk::BuildTexturePayload("textures/a.ktx2", 1, 2, 3, 4,
-		std::span<const uint8_t>(std::vector<uint8_t>{ 7, 8 }));
-	smvk::PakTexturePayload parsed;
-	Check(smvk::ParseTexturePayload(tp, parsed), "pak.texpayload.parse");
-	Check(parsed.uri == "textures/a.ktx2" && parsed.magFilter == 1 &&
-		parsed.minFilter == 2 && parsed.wrapS == 3 && parsed.wrapT == 4 &&
-		parsed.ktxBytes.size() == 2 && parsed.ktxBytes[0] == 7, "pak.texpayload.fields");
+    // Texture payload helpers.
+    auto tp = smvk::BuildTexturePayload(
+        "textures/a.ktx2", 1, 2, 3, 4, std::span<const uint8_t>(std::vector<uint8_t>{7, 8}));
+    smvk::PakTexturePayload parsed;
+    Check(smvk::ParseTexturePayload(tp, parsed), "pak.texpayload.parse");
+    Check(parsed.uri == "textures/a.ktx2" && parsed.magFilter == 1 && parsed.minFilter == 2 &&
+              parsed.wrapS == 3 && parsed.wrapT == 4 && parsed.ktxBytes.size() == 2 &&
+              parsed.ktxBytes[0] == 7,
+          "pak.texpayload.fields");
 }
 
 // CRC-32 combine (the primitive behind the parallel whole-image verify
 // in PakReader::Open): linear over GF(2), so the CRC of a concatenation
 // rebuilds from part CRCs. Deterministic LCG buffers, no <random> dep.
 void TestPakCrcCombine() {
-	auto fill = [](std::vector<uint8_t>& v, uint32_t seed) {
-		uint32_t s = seed;
-		for (auto& b : v) {
-			s = s * 1664525u + 1013904223u;
-			b = static_cast<uint8_t>(s >> 24);
-		}
-	};
-	std::vector<uint8_t> a(4096), b(2048), c(513);
-	fill(a, 1);
-	fill(b, 2);
-	fill(c, 3);
-	const uint32_t crcA = smvk::PakCrc32(a.data(), a.size());
-	const uint32_t crcB = smvk::PakCrc32(b.data(), b.size());
-	const uint32_t crcC = smvk::PakCrc32(c.data(), c.size());
-	std::vector<uint8_t> ab(a);
-	ab.insert(ab.end(), b.begin(), b.end());
-	std::vector<uint8_t> abc(ab);
-	abc.insert(abc.end(), c.begin(), c.end());
-	const uint32_t whole = smvk::PakCrc32(abc.data(), abc.size());
-	// Two-way combine matches the CRC of the concatenation.
-	Check(smvk::PakCrc32Combine(crcA, crcB, b.size())
-		== smvk::PakCrc32(ab.data(), ab.size()), "pak.crc.combine.two");
-	// Right-to-left fold (exactly what PakCrc32Parallel does).
-	const uint32_t bc = smvk::PakCrc32Combine(crcB, crcC, c.size());
-	Check(smvk::PakCrc32Combine(crcA, bc, b.size() + c.size()) == whole,
-		"pak.crc.combine.three");
-	// Empty tail keeps crc1.
-	Check(smvk::PakCrc32Combine(0xDEADBEEFu, 0x12345678u, 0) == 0xDEADBEEFu,
-		"pak.crc.combine.empty");
+    auto fill = [](std::vector<uint8_t>& v, uint32_t seed) {
+        uint32_t s = seed;
+        for (auto& b : v) {
+            s = s * 1664525u + 1013904223u;
+            b = static_cast<uint8_t>(s >> 24);
+        }
+    };
+    std::vector<uint8_t> a(4096), b(2048), c(513);
+    fill(a, 1);
+    fill(b, 2);
+    fill(c, 3);
+    const uint32_t crcA = smvk::PakCrc32(a.data(), a.size());
+    const uint32_t crcB = smvk::PakCrc32(b.data(), b.size());
+    const uint32_t crcC = smvk::PakCrc32(c.data(), c.size());
+    std::vector<uint8_t> ab(a);
+    ab.insert(ab.end(), b.begin(), b.end());
+    std::vector<uint8_t> abc(ab);
+    abc.insert(abc.end(), c.begin(), c.end());
+    const uint32_t whole = smvk::PakCrc32(abc.data(), abc.size());
+    // Two-way combine matches the CRC of the concatenation.
+    Check(smvk::PakCrc32Combine(crcA, crcB, b.size()) == smvk::PakCrc32(ab.data(), ab.size()),
+          "pak.crc.combine.two");
+    // Right-to-left fold (exactly what PakCrc32Parallel does).
+    const uint32_t bc = smvk::PakCrc32Combine(crcB, crcC, c.size());
+    Check(smvk::PakCrc32Combine(crcA, bc, b.size() + c.size()) == whole, "pak.crc.combine.three");
+    // Empty tail keeps crc1.
+    Check(smvk::PakCrc32Combine(0xDEADBEEFu, 0x12345678u, 0) == 0xDEADBEEFu,
+          "pak.crc.combine.empty");
 }
 
 // Chunk-parallel CRC: pool-folded chunks must equal the serial walk.
 // Small chunk sizes keep the test light while covering the multi-chunk
 // fold path (the 8 MB default only kicks in for real multi-GB paks).
 void TestPakCrcParallel() {
-	std::vector<uint8_t> data(256 * 1024);
-	uint32_t s = 7;
-	for (auto& b : data) {
-		s = s * 1664525u + 1013904223u;
-		b = static_cast<uint8_t>(s >> 24);
-	}
-	const uint32_t serial = smvk::PakCrc32(data.data(), data.size());
-	Check(smvk::PakCrc32Parallel(std::span<const uint8_t>(data),
-			100 * 1024) == serial, "pak.crc.parallel.fold");
-	// Chunk >= size stays serial inside.
-	Check(smvk::PakCrc32Parallel(std::span<const uint8_t>(data),
-			data.size() + 1) == serial, "pak.crc.parallel.singlechunk");
-	// Degenerate empty input.
-	Check(smvk::PakCrc32Parallel({}) == 0u, "pak.crc.parallel.empty");
+    std::vector<uint8_t> data(256 * 1024);
+    uint32_t s = 7;
+    for (auto& b : data) {
+        s = s * 1664525u + 1013904223u;
+        b = static_cast<uint8_t>(s >> 24);
+    }
+    const uint32_t serial = smvk::PakCrc32(data.data(), data.size());
+    Check(smvk::PakCrc32Parallel(std::span<const uint8_t>(data), 100 * 1024) == serial,
+          "pak.crc.parallel.fold");
+    // Chunk >= size stays serial inside.
+    Check(smvk::PakCrc32Parallel(std::span<const uint8_t>(data), data.size() + 1) == serial,
+          "pak.crc.parallel.singlechunk");
+    // Degenerate empty input.
+    Check(smvk::PakCrc32Parallel({}) == 0u, "pak.crc.parallel.empty");
 }
 
 // Tail-upload digest: kind + tailFirstMip round-trip, embedded in a v4
 // payload and read back through both payload parsers (V4 finds the
 // digest; the legacy parser tolerates the digest-less shape only).
 void TestPakTextureDigest() {
-	smvk::TextureStreamMeta meta{};
-	meta.tailFirstMip = 2;
-	std::vector<uint8_t> digestBytes;
-	Check(smvk::BuildTextureDigest(meta, digestBytes), "pak.digest.build.ok");
-	Check(digestBytes.size() == 8, "pak.digest.build.bytes");
-	smvk::TextureStreamMeta back{};
-	Check(smvk::ParseTextureDigest(std::span<const uint8_t>(digestBytes), back),
-		"pak.digest.parse.ok");
-	Check(back.tailFirstMip == 2, "pak.digest.fields");
-	// Garbage is rejected (wrong kind, short/long buffer).
-	std::vector<uint8_t> bad = digestBytes;
-	bad[0] ^= 0xFF;
-	smvk::TextureStreamMeta junk{};
-	Check(!smvk::ParseTextureDigest(std::span<const uint8_t>(bad), junk),
-		"pak.digest.reject.kind");
-	Check(!smvk::ParseTextureDigest(
-			std::span<const uint8_t>(digestBytes.data(), 7), junk),
-		"pak.digest.reject.short");
-	Check(!smvk::ParseTextureDigest(
-			std::span<const uint8_t>(digestBytes.data(), 9), junk),
-		"pak.digest.reject.long");
-	// Payload embedding: V4 parser finds the digest, legacy parser
-	// rejects the digested shape but accepts the digest-less shape.
-	const std::vector<uint8_t> ktx = { 9, 8, 7, 6 };
-	auto blob = smvk::BuildTexturePayloadV4("textures/d.ktx2", 1, 2, 3, 4,
-		std::span<const uint8_t>(ktx),
-		std::span<const uint8_t>(digestBytes));
-	smvk::PakTexturePayload p4;
-	Check(smvk::ParseTexturePayloadV4(std::span<const uint8_t>(blob), p4),
-		"pak.digest.payload.v4.parse");
-	smvk::TextureStreamMeta m4{};
-	Check(smvk::ParseTextureDigest(p4.digest, m4) && m4.tailFirstMip == 2,
-		"pak.digest.payload.v4.fields");
-	Check(p4.ktxBytes.size() == 4
-		&& p4.ktxBytes[0] == 9 && p4.uri == "textures/d.ktx2",
-		"pak.digest.payload.v4.bytes");
-	smvk::PakTexturePayload legacy;
-	Check(!smvk::ParseTexturePayload(std::span<const uint8_t>(blob), legacy),
-		"pak.digest.payload.legacy.rejects.digest");
-	auto blobLegacy = smvk::BuildTexturePayload("textures/e.ktx2", 1, 2, 3, 4,
-		std::span<const uint8_t>(ktx));
-	smvk::PakTexturePayload p3;
-	Check(smvk::ParseTexturePayload(std::span<const uint8_t>(blobLegacy), p3),
-		"pak.digest.payload.legacy.parse");
-	Check(p3.digest.empty() && p3.ktxBytes.size() == 4,
-		"pak.digest.payload.legacy.fields");
+    smvk::TextureStreamMeta meta{};
+    meta.tailFirstMip = 2;
+    std::vector<uint8_t> digestBytes;
+    Check(smvk::BuildTextureDigest(meta, digestBytes), "pak.digest.build.ok");
+    Check(digestBytes.size() == 8, "pak.digest.build.bytes");
+    smvk::TextureStreamMeta back{};
+    Check(smvk::ParseTextureDigest(std::span<const uint8_t>(digestBytes), back),
+          "pak.digest.parse.ok");
+    Check(back.tailFirstMip == 2, "pak.digest.fields");
+    // Garbage is rejected (wrong kind, short/long buffer).
+    std::vector<uint8_t> bad = digestBytes;
+    bad[0] ^= 0xFF;
+    smvk::TextureStreamMeta junk{};
+    Check(!smvk::ParseTextureDigest(std::span<const uint8_t>(bad), junk), "pak.digest.reject.kind");
+    Check(!smvk::ParseTextureDigest(std::span<const uint8_t>(digestBytes.data(), 7), junk),
+          "pak.digest.reject.short");
+    Check(!smvk::ParseTextureDigest(std::span<const uint8_t>(digestBytes.data(), 9), junk),
+          "pak.digest.reject.long");
+    // Payload embedding: V4 parser finds the digest, legacy parser
+    // rejects the digested shape but accepts the digest-less shape.
+    const std::vector<uint8_t> ktx = {9, 8, 7, 6};
+    auto blob = smvk::BuildTexturePayloadV4("textures/d.ktx2",
+                                            1,
+                                            2,
+                                            3,
+                                            4,
+                                            std::span<const uint8_t>(ktx),
+                                            std::span<const uint8_t>(digestBytes));
+    smvk::PakTexturePayload p4;
+    Check(smvk::ParseTexturePayloadV4(std::span<const uint8_t>(blob), p4),
+          "pak.digest.payload.v4.parse");
+    smvk::TextureStreamMeta m4{};
+    Check(smvk::ParseTextureDigest(p4.digest, m4) && m4.tailFirstMip == 2,
+          "pak.digest.payload.v4.fields");
+    Check(p4.ktxBytes.size() == 4 && p4.ktxBytes[0] == 9 && p4.uri == "textures/d.ktx2",
+          "pak.digest.payload.v4.bytes");
+    smvk::PakTexturePayload legacy;
+    Check(!smvk::ParseTexturePayload(std::span<const uint8_t>(blob), legacy),
+          "pak.digest.payload.legacy.rejects.digest");
+    auto blobLegacy =
+        smvk::BuildTexturePayload("textures/e.ktx2", 1, 2, 3, 4, std::span<const uint8_t>(ktx));
+    smvk::PakTexturePayload p3;
+    Check(smvk::ParseTexturePayload(std::span<const uint8_t>(blobLegacy), p3),
+          "pak.digest.payload.legacy.parse");
+    Check(p3.digest.empty() && p3.ktxBytes.size() == 4, "pak.digest.payload.legacy.fields");
 }
 
 void TestPakAppend() {
-	namespace fs = std::filesystem;
-	const auto dir = fs::temp_directory_path() / "tourmaline_pak_append";
-	std::error_code ec;
-	fs::remove_all(dir, ec);
-	fs::create_directories(dir, ec);
-	const std::string pakPath = (dir / "grown.pak").string();
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / "tourmaline_pak_append";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    const std::string pakPath = (dir / "grown.pak").string();
 
-	std::string err;
-	std::vector<smvk::PakAppendInfo> infos;
-	// Fresh file: batch of two, then read back through PakReader.
-	{
-		const std::vector<uint8_t> a = { 1, 2, 3, 4, 5 };
-		const std::vector<uint8_t> b(200, 0x5A);
-		std::vector<std::pair<std::string, std::span<const uint8_t>>>
-			blobs = { { "textures/a.bin", a }, { "textures/b.bin", b } };
-		Check(smvk::AppendPakBlobs(pakPath,
-				smvk::PakAssetKind::Texture, blobs, infos, err),
-			"pak.append.fresh");
-		Check(infos.size() == 2
-			&& infos[1].offset > infos[0].offset, "pak.append.info");
-	}
-	{
-		std::vector<uint8_t> img;
-		std::ifstream f(pakPath, std::ios::binary);
-		f.seekg(0, std::ios::end);
-		img.resize(size_t(f.tellg()));
-		f.seekg(0);
-		f.read(reinterpret_cast<char*>(img.data()),
-			std::streamsize(img.size()));
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(img), err);
-		Check(r.has_value(), "pak.append.reader.open");
-		if (r) {
-			Check(r->EntryCount() == 2, "pak.append.entries");
-			const auto* eA = r->Find(smvk::PakAssetKind::Texture,
-				"textures/a.bin");
-			Check(eA != nullptr, "pak.append.find.a");
-			if (eA) {
-				auto p = r->Payload(*eA);
-				Check(p.size() == 5 && p[0] == 1, "pak.append.payload.a");
-				// Direct (offset, size) read matches Find (the
-				// registry-read contract: uncompressed entries).
-				Check(eA->offset == infos[0].offset
-					&& eA->size == infos[0].size,
-					"pak.append.direct.addressing");
-			}
-			const auto* eB = r->Find(smvk::PakAssetKind::Texture,
-				"textures/b.bin");
-			Check(eB != nullptr && r->Payload(*eB).size() == 200,
-				"pak.append.payload.b");
-		}
-	}
-	// Grow the same file with a third blob + a superseding update: the
-	// TOC must stay unique-by-path and Find returns the LATEST payload.
-	{
-		const std::vector<uint8_t> c = { 9, 9 };
-		const std::vector<uint8_t> a2 = { 6, 7, 8 };
-		std::vector<std::pair<std::string, std::span<const uint8_t>>>
-			blobs = { { "textures/c.bin", c },
-				{ "textures/a.bin", a2 } };
-		Check(smvk::AppendPakBlobs(pakPath,
-				smvk::PakAssetKind::Texture, blobs, infos, err),
-			"pak.append.grow");
-	}
-	{
-		std::vector<uint8_t> img;
-		std::ifstream f(pakPath, std::ios::binary);
-		f.seekg(0, std::ios::end);
-		img.resize(size_t(f.tellg()));
-		f.seekg(0);
-		f.read(reinterpret_cast<char*>(img.data()),
-			std::streamsize(img.size()));
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(img), err);
-		Check(r.has_value(), "pak.append.grow.reader.open");
-		if (r) {
-			Check(r->EntryCount() == 3, "pak.append.grow.unique.toc");
-			const auto* eA = r->Find(smvk::PakAssetKind::Texture,
-				"textures/a.bin");
-			Check(eA != nullptr && eA->size == 3
-				&& r->Payload(*eA)[0] == 6,
-				"pak.append.grow.latest.wins");
-			Check(r->Find(smvk::PakAssetKind::Texture, "textures/c.bin")
-				!= nullptr, "pak.append.grow.find.c");
-		}
-	}
-	// Interop: a PakWriter-produced (LZ4) pak still grows + reads.
-	{
-		smvk::PakWriter w;
-		w.SetCompression(smvk::PakCompression::Lz4, 1);
-		Check(w.AddBlob(smvk::PakAssetKind::Texture,
-				"textures/w.ktx2",
-				std::vector<uint8_t>(4096, 0x33)), "pak.append.w.add");
-		const auto img = w.Finalize();
-		const std::string lzPath = (dir / "writer.pak").string();
-		{
-			std::ofstream f(lzPath, std::ios::binary);
-			f.write(reinterpret_cast<const char*>(img.data()),
-				std::streamsize(img.size()));
-		}
-		const std::vector<uint8_t> n = { 4, 4, 4 };
-		std::vector<std::pair<std::string, std::span<const uint8_t>>>
-			blobs = { { "textures/append.ktx2", n } };
-		Check(smvk::AppendPakBlobs(lzPath,
-				smvk::PakAssetKind::Texture, blobs, infos, err),
-			"pak.append.into.writer.pak");
-		std::vector<uint8_t> img2;
-		std::ifstream f(lzPath, std::ios::binary);
-		f.seekg(0, std::ios::end);
-		img2.resize(size_t(f.tellg()));
-		f.seekg(0);
-		f.read(reinterpret_cast<char*>(img2.data()),
-			std::streamsize(img2.size()));
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(img2), err);
-		Check(r.has_value(), "pak.append.writer.reader.open");
-		if (r) {
-			Check(r->Find(smvk::PakAssetKind::Texture, "textures/w.ktx2")
-				&& r->Find(smvk::PakAssetKind::Texture,
-					"textures/append.ktx2") != nullptr,
-				"pak.append.writer.both.served");
-		}
-	}
-	fs::remove_all(dir, ec);
+    std::string err;
+    std::vector<smvk::PakAppendInfo> infos;
+    // Fresh file: batch of two, then read back through PakReader.
+    {
+        const std::vector<uint8_t> a = {1, 2, 3, 4, 5};
+        const std::vector<uint8_t> b(200, 0x5A);
+        std::vector<std::pair<std::string, std::span<const uint8_t>>> blobs = {
+            {"textures/a.bin", a}, {"textures/b.bin", b}};
+        Check(smvk::AppendPakBlobs(pakPath, smvk::PakAssetKind::Texture, blobs, infos, err),
+              "pak.append.fresh");
+        Check(infos.size() == 2 && infos[1].offset > infos[0].offset, "pak.append.info");
+    }
+    {
+        std::vector<uint8_t> img;
+        std::ifstream f(pakPath, std::ios::binary);
+        f.seekg(0, std::ios::end);
+        img.resize(size_t(f.tellg()));
+        f.seekg(0);
+        f.read(reinterpret_cast<char*>(img.data()), std::streamsize(img.size()));
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), err);
+        Check(r.has_value(), "pak.append.reader.open");
+        if (r) {
+            Check(r->EntryCount() == 2, "pak.append.entries");
+            const auto* eA = r->Find(smvk::PakAssetKind::Texture, "textures/a.bin");
+            Check(eA != nullptr, "pak.append.find.a");
+            if (eA) {
+                auto p = r->Payload(*eA);
+                Check(p.size() == 5 && p[0] == 1, "pak.append.payload.a");
+                // Direct (offset, size) read matches Find (the
+                // registry-read contract: uncompressed entries).
+                Check(eA->offset == infos[0].offset && eA->size == infos[0].size,
+                      "pak.append.direct.addressing");
+            }
+            const auto* eB = r->Find(smvk::PakAssetKind::Texture, "textures/b.bin");
+            Check(eB != nullptr && r->Payload(*eB).size() == 200, "pak.append.payload.b");
+        }
+    }
+    // Grow the same file with a third blob + a superseding update: the
+    // TOC must stay unique-by-path and Find returns the LATEST payload.
+    {
+        const std::vector<uint8_t> c = {9, 9};
+        const std::vector<uint8_t> a2 = {6, 7, 8};
+        std::vector<std::pair<std::string, std::span<const uint8_t>>> blobs = {
+            {"textures/c.bin", c}, {"textures/a.bin", a2}};
+        Check(smvk::AppendPakBlobs(pakPath, smvk::PakAssetKind::Texture, blobs, infos, err),
+              "pak.append.grow");
+    }
+    {
+        std::vector<uint8_t> img;
+        std::ifstream f(pakPath, std::ios::binary);
+        f.seekg(0, std::ios::end);
+        img.resize(size_t(f.tellg()));
+        f.seekg(0);
+        f.read(reinterpret_cast<char*>(img.data()), std::streamsize(img.size()));
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), err);
+        Check(r.has_value(), "pak.append.grow.reader.open");
+        if (r) {
+            Check(r->EntryCount() == 3, "pak.append.grow.unique.toc");
+            const auto* eA = r->Find(smvk::PakAssetKind::Texture, "textures/a.bin");
+            Check(eA != nullptr && eA->size == 3 && r->Payload(*eA)[0] == 6,
+                  "pak.append.grow.latest.wins");
+            Check(r->Find(smvk::PakAssetKind::Texture, "textures/c.bin") != nullptr,
+                  "pak.append.grow.find.c");
+        }
+    }
+    // Interop: a PakWriter-produced (LZ4) pak still grows + reads.
+    {
+        smvk::PakWriter w;
+        w.SetCompression(smvk::PakCompression::Lz4, 1);
+        Check(w.AddBlob(
+                  smvk::PakAssetKind::Texture, "textures/w.ktx2", std::vector<uint8_t>(4096, 0x33)),
+              "pak.append.w.add");
+        const auto img = w.Finalize();
+        const std::string lzPath = (dir / "writer.pak").string();
+        {
+            std::ofstream f(lzPath, std::ios::binary);
+            f.write(reinterpret_cast<const char*>(img.data()), std::streamsize(img.size()));
+        }
+        const std::vector<uint8_t> n = {4, 4, 4};
+        std::vector<std::pair<std::string, std::span<const uint8_t>>> blobs = {
+            {"textures/append.ktx2", n}};
+        Check(smvk::AppendPakBlobs(lzPath, smvk::PakAssetKind::Texture, blobs, infos, err),
+              "pak.append.into.writer.pak");
+        std::vector<uint8_t> img2;
+        std::ifstream f(lzPath, std::ios::binary);
+        f.seekg(0, std::ios::end);
+        img2.resize(size_t(f.tellg()));
+        f.seekg(0);
+        f.read(reinterpret_cast<char*>(img2.data()), std::streamsize(img2.size()));
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(img2), err);
+        Check(r.has_value(), "pak.append.writer.reader.open");
+        if (r) {
+            Check(r->Find(smvk::PakAssetKind::Texture, "textures/w.ktx2") &&
+                      r->Find(smvk::PakAssetKind::Texture, "textures/append.ktx2") != nullptr,
+                  "pak.append.writer.both.served");
+        }
+    }
+    fs::remove_all(dir, ec);
 }
 
 // ---------------------------------------------------------------------------
@@ -590,180 +566,177 @@ void TestPakAppend() {
 // fields and recompute the TOC CRC so the reader's CRC gate always
 // passes.
 struct RawPak {
-	std::vector<uint8_t> bytes;
-	size_t tocOffset = 0;
-	size_t entryOff = 0;
-	size_t footerOff = 0;
+    std::vector<uint8_t> bytes;
+    size_t tocOffset = 0;
+    size_t entryOff = 0;
+    size_t footerOff = 0;
 
-	void Put32(size_t at, uint32_t v) { memcpy(&bytes[at], &v, 4); }
-	void Put64(size_t at, uint64_t v) { memcpy(&bytes[at], &v, 8); }
+    void Put32(size_t at, uint32_t v) {
+        memcpy(&bytes[at], &v, 4);
+    }
+    void Put64(size_t at, uint64_t v) {
+        memcpy(&bytes[at], &v, 8);
+    }
 
-	// SMP8 reseat: the footer CRC covers ONLY the TOC bytes
-	// [tocOffset, footerOff) (the small mount metadata).
-	void Reseat() {
-		const uint32_t crc = smvk::PakCrc32(
-			bytes.data() + tocOffset, footerOff - tocOffset);
-		Put32(footerOff + 16, crc);
-	}
+    // SMP8 reseat: the footer CRC covers ONLY the TOC bytes
+    // [tocOffset, footerOff) (the small mount metadata).
+    void Reseat() {
+        const uint32_t crc = smvk::PakCrc32(bytes.data() + tocOffset, footerOff - tocOffset);
+        Put32(footerOff + 16, crc);
+    }
 };
 
-RawPak BuildRawPak(uint64_t entryOffset, uint64_t entrySize,
-	const std::string& path = "a") {
-	RawPak p;
-	const size_t payloadOff = 32, payloadLen = 16;
-	p.tocOffset = payloadOff + payloadLen; // 48
-	p.entryOff = p.tocOffset;
-	// SMP8 fixed entry: 44 bytes (hash, kind, flags, offset, size,
-	// slot, contentCrc, pathLen) + the path.
-	p.footerOff = p.tocOffset + 44 + path.size();
-	p.bytes.assign(p.footerOff + 24, 0);
-	p.Put32(0, smvk::kPakMagic);
-	p.Put64(12, p.tocOffset);
-	p.Put64(20, 1); // tocCount
-	for (size_t i = 0; i < payloadLen; ++i)
-		p.bytes[payloadOff + i] = static_cast<uint8_t>(i);
-	p.Put64(p.entryOff + 0, smvk::PakHashPath(path));
-	p.Put32(p.entryOff + 8, static_cast<uint32_t>(smvk::PakAssetKind::Texture));
-	p.Put32(p.entryOff + 12, 0); // flags
-	p.Put64(p.entryOff + 16, entryOffset);
-	p.Put64(p.entryOff + 24, entrySize);
-	p.Put32(p.entryOff + 32, 0); // slot
-	// The page's contentCrc over the payload bytes (the baseline case
-	// serves the page; the tampered-offset cases reject at the range
-	// checks before any fetch).
-	p.Put32(p.entryOff + 36,
-		smvk::PakCrc32(p.bytes.data() + payloadOff, payloadLen));
-	p.Put32(p.entryOff + 40, static_cast<uint32_t>(path.size()));
-	if (!path.empty())
-		memcpy(&p.bytes[p.entryOff + 44], path.data(), path.size());
-	p.Put64(p.footerOff + 0, p.tocOffset);
-	p.Put64(p.footerOff + 8, 1);
-	p.Put32(p.footerOff + 20, smvk::kPakFooterMagic);
-	p.Reseat();
-	return p;
+RawPak BuildRawPak(uint64_t entryOffset, uint64_t entrySize, const std::string& path = "a") {
+    RawPak p;
+    const size_t payloadOff = 32, payloadLen = 16;
+    p.tocOffset = payloadOff + payloadLen; // 48
+    p.entryOff = p.tocOffset;
+    // SMP8 fixed entry: 44 bytes (hash, kind, flags, offset, size,
+    // slot, contentCrc, pathLen) + the path.
+    p.footerOff = p.tocOffset + 44 + path.size();
+    p.bytes.assign(p.footerOff + 24, 0);
+    p.Put32(0, smvk::kPakMagic);
+    p.Put64(12, p.tocOffset);
+    p.Put64(20, 1); // tocCount
+    for (size_t i = 0; i < payloadLen; ++i)
+        p.bytes[payloadOff + i] = static_cast<uint8_t>(i);
+    p.Put64(p.entryOff + 0, smvk::PakHashPath(path));
+    p.Put32(p.entryOff + 8, static_cast<uint32_t>(smvk::PakAssetKind::Texture));
+    p.Put32(p.entryOff + 12, 0); // flags
+    p.Put64(p.entryOff + 16, entryOffset);
+    p.Put64(p.entryOff + 24, entrySize);
+    p.Put32(p.entryOff + 32, 0); // slot
+    // The page's contentCrc over the payload bytes (the baseline case
+    // serves the page; the tampered-offset cases reject at the range
+    // checks before any fetch).
+    p.Put32(p.entryOff + 36, smvk::PakCrc32(p.bytes.data() + payloadOff, payloadLen));
+    p.Put32(p.entryOff + 40, static_cast<uint32_t>(path.size()));
+    if (!path.empty())
+        memcpy(&p.bytes[p.entryOff + 44], path.data(), path.size());
+    p.Put64(p.footerOff + 0, p.tocOffset);
+    p.Put64(p.footerOff + 8, 1);
+    p.Put32(p.footerOff + 20, smvk::kPakFooterMagic);
+    p.Reseat();
+    return p;
 }
 
 // Patch tocOffset in header + footer together (the reader requires
 // them to agree), then reseat the CRC.
 void SetTocOffset(RawPak& p, uint64_t v) {
-	p.Put64(12, v);
-	p.Put64(p.footerOff + 0, v);
-	p.Reseat();
+    p.Put64(12, v);
+    p.Put64(p.footerOff + 0, v);
+    p.Reseat();
 }
 
 bool OpenRaw(const RawPak& p) {
-	std::string err;
-	return smvk::PakReader::Open(
-		std::span<const uint8_t>(p.bytes), err).has_value();
+    std::string err;
+    return smvk::PakReader::Open(std::span<const uint8_t>(p.bytes), err).has_value();
 }
 
 void TestPakMalformedBounds() {
-	// Baseline: the well-formed shape opens (the rejects below are
-	// the SAME image with one field bent).
-	{
-		RawPak p = BuildRawPak(32, 16);
-		Check(OpenRaw(p), "pak.bounds.baseline.opens");
-		std::string err;
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(p.bytes), err);
-		if (r) {
-			const auto* e = r->Find(smvk::PakAssetKind::Texture, "a");
-			Check(e != nullptr && r->Payload(*e).size() == 16,
-				"pak.bounds.baseline.payload");
-		}
-	}
-	// offset = UINT64_MAX, size = 1: the classic wrap - the old
-	// additive `offset + size > tocOffset` saw 0 and PASSED, then
-	// Payload() subspan(SIZE_MAX, 1) read wild memory.
-	{
-		RawPak p = BuildRawPak(UINT64_MAX, 1);
-		Check(!OpenRaw(p), "pak.bounds.offset.wrap.rejected");
-	}
-	// offset near the wrap point, size completing it:
-	// (UINT64_MAX - 47) + 48 == 0 <= tocOffset under the old check.
-	{
-		RawPak p = BuildRawPak(UINT64_MAX - 47, 48);
-		Check(!OpenRaw(p), "pak.bounds.offset.wrap2.rejected");
-	}
-	// size = UINT64_MAX from a valid offset: 40 + UINT64_MAX wraps to
-	// 39 <= 48 under the old additive check.
-	{
-		RawPak p = BuildRawPak(40, UINT64_MAX);
-		Check(!OpenRaw(p), "pak.bounds.size.wrap.rejected");
-	}
-	// Blob pointing INSIDE the header (offset 0, 8 bytes): in-bounds
-	// for the image but outside the payload region - rejected.
-	{
-		RawPak p = BuildRawPak(0, 8);
-		Check(!OpenRaw(p), "pak.bounds.offset.below.header.rejected");
-	}
-	// Blob range ending past the TOC start (unwrapped, plain overrun).
-	{
-		RawPak p = BuildRawPak(44, 8); // 44 + 8 = 52 > 48
-		Check(!OpenRaw(p), "pak.bounds.overrun.rejected");
-	}
-	// Blob AT the TOC start with nonzero size.
-	{
-		RawPak p = BuildRawPak(48, 8); // == tocOffset
-		Check(!OpenRaw(p), "pak.bounds.at.toc.rejected");
-	}
-	// tocOffset = UINT64_MAX (header/footer agree, CRC valid): the TOC
-	// region gate rejects before any parsing.
-	{
-		RawPak p = BuildRawPak(32, 16);
-		SetTocOffset(p, UINT64_MAX);
-		Check(!OpenRaw(p), "pak.bounds.toc.offset.wrap.rejected");
-	}
-	// tocOffset inside the header (payloads always follow the 32-byte
-	// header).
-	{
-		RawPak p = BuildRawPak(32, 16);
-		SetTocOffset(p, 8);
-		Check(!OpenRaw(p), "pak.bounds.toc.offset.below.header.rejected");
-	}
-	// tocOffset so the 36-byte fixed entry cannot fit before the
-	// footer (an 8-byte gap): the entry-level subtraction check
-	// rejects (the old `off + kTocEntryFixed > image.size()` accepted
-	// - the region between fOff and image.size() was parseable).
-	{
-		RawPak p = BuildRawPak(32, 16);
-		SetTocOffset(p, p.footerOff - 8);
-		Check(!OpenRaw(p), "pak.bounds.toc.entry.overruns.footer.rejected");
-	}
-	// tocCount far past what the TOC region can hold (2^40): the
-	// parse's first out-of-region entry rejects (bounded work - the
-	// loop dies on the first overrun, never on tocCount iterations).
-	{
-		RawPak p = BuildRawPak(32, 16);
-		p.Put64(20, 1ull << 40);
-		p.Put64(p.footerOff + 8, 1ull << 40);
-		p.Reseat();
-		Check(!OpenRaw(p), "pak.bounds.toc.count.oversized.rejected");
-	}
-	// Zero-length path with its matching hash + an EXACT TOC: accepted
-	// (a harmless row - Find() only ever queries normalized non-empty
-	// paths). The SMP8 parser TIGHTENED the shape: the TOC must end
-	// EXACTLY, so the slack byte the SMP7-era pin tolerated is now a
-	// deliberate rejection (pinned right below).
-	{
-		RawPak p = BuildRawPak(32, 16, "");
-		std::string err;
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(p.bytes), err);
-		Check(r.has_value(), "pak.bounds.zero.pathlen.accepted");
-		if (r)
-			Check(r->EntryCount() == 1, "pak.bounds.zero.pathlen.entry");
-	}
-	// The SMP8 tightening itself: a zero-length path with a leftover
-	// slack byte after the entry (the old pin's shape) is rejected -
-	// the TOC may not carry unaccounted bytes.
-	{
-		RawPak p = BuildRawPak(32, 16, "a");
-		p.Put32(p.entryOff + 40, 0); // pathLen 0, the "a" byte stays
-		p.Put64(p.entryOff + 0, smvk::PakHashPath(""));
-		p.Reseat();
-		Check(!OpenRaw(p), "pak.bounds.toc.slack.rejected");
-	}
+    // Baseline: the well-formed shape opens (the rejects below are
+    // the SAME image with one field bent).
+    {
+        RawPak p = BuildRawPak(32, 16);
+        Check(OpenRaw(p), "pak.bounds.baseline.opens");
+        std::string err;
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(p.bytes), err);
+        if (r) {
+            const auto* e = r->Find(smvk::PakAssetKind::Texture, "a");
+            Check(e != nullptr && r->Payload(*e).size() == 16, "pak.bounds.baseline.payload");
+        }
+    }
+    // offset = UINT64_MAX, size = 1: the classic wrap - the old
+    // additive `offset + size > tocOffset` saw 0 and PASSED, then
+    // Payload() subspan(SIZE_MAX, 1) read wild memory.
+    {
+        RawPak p = BuildRawPak(UINT64_MAX, 1);
+        Check(!OpenRaw(p), "pak.bounds.offset.wrap.rejected");
+    }
+    // offset near the wrap point, size completing it:
+    // (UINT64_MAX - 47) + 48 == 0 <= tocOffset under the old check.
+    {
+        RawPak p = BuildRawPak(UINT64_MAX - 47, 48);
+        Check(!OpenRaw(p), "pak.bounds.offset.wrap2.rejected");
+    }
+    // size = UINT64_MAX from a valid offset: 40 + UINT64_MAX wraps to
+    // 39 <= 48 under the old additive check.
+    {
+        RawPak p = BuildRawPak(40, UINT64_MAX);
+        Check(!OpenRaw(p), "pak.bounds.size.wrap.rejected");
+    }
+    // Blob pointing INSIDE the header (offset 0, 8 bytes): in-bounds
+    // for the image but outside the payload region - rejected.
+    {
+        RawPak p = BuildRawPak(0, 8);
+        Check(!OpenRaw(p), "pak.bounds.offset.below.header.rejected");
+    }
+    // Blob range ending past the TOC start (unwrapped, plain overrun).
+    {
+        RawPak p = BuildRawPak(44, 8); // 44 + 8 = 52 > 48
+        Check(!OpenRaw(p), "pak.bounds.overrun.rejected");
+    }
+    // Blob AT the TOC start with nonzero size.
+    {
+        RawPak p = BuildRawPak(48, 8); // == tocOffset
+        Check(!OpenRaw(p), "pak.bounds.at.toc.rejected");
+    }
+    // tocOffset = UINT64_MAX (header/footer agree, CRC valid): the TOC
+    // region gate rejects before any parsing.
+    {
+        RawPak p = BuildRawPak(32, 16);
+        SetTocOffset(p, UINT64_MAX);
+        Check(!OpenRaw(p), "pak.bounds.toc.offset.wrap.rejected");
+    }
+    // tocOffset inside the header (payloads always follow the 32-byte
+    // header).
+    {
+        RawPak p = BuildRawPak(32, 16);
+        SetTocOffset(p, 8);
+        Check(!OpenRaw(p), "pak.bounds.toc.offset.below.header.rejected");
+    }
+    // tocOffset so the 36-byte fixed entry cannot fit before the
+    // footer (an 8-byte gap): the entry-level subtraction check
+    // rejects (the old `off + kTocEntryFixed > image.size()` accepted
+    // - the region between fOff and image.size() was parseable).
+    {
+        RawPak p = BuildRawPak(32, 16);
+        SetTocOffset(p, p.footerOff - 8);
+        Check(!OpenRaw(p), "pak.bounds.toc.entry.overruns.footer.rejected");
+    }
+    // tocCount far past what the TOC region can hold (2^40): the
+    // parse's first out-of-region entry rejects (bounded work - the
+    // loop dies on the first overrun, never on tocCount iterations).
+    {
+        RawPak p = BuildRawPak(32, 16);
+        p.Put64(20, 1ull << 40);
+        p.Put64(p.footerOff + 8, 1ull << 40);
+        p.Reseat();
+        Check(!OpenRaw(p), "pak.bounds.toc.count.oversized.rejected");
+    }
+    // Zero-length path with its matching hash + an EXACT TOC: accepted
+    // (a harmless row - Find() only ever queries normalized non-empty
+    // paths). The SMP8 parser TIGHTENED the shape: the TOC must end
+    // EXACTLY, so the slack byte the SMP7-era pin tolerated is now a
+    // deliberate rejection (pinned right below).
+    {
+        RawPak p = BuildRawPak(32, 16, "");
+        std::string err;
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(p.bytes), err);
+        Check(r.has_value(), "pak.bounds.zero.pathlen.accepted");
+        if (r)
+            Check(r->EntryCount() == 1, "pak.bounds.zero.pathlen.entry");
+    }
+    // The SMP8 tightening itself: a zero-length path with a leftover
+    // slack byte after the entry (the old pin's shape) is rejected -
+    // the TOC may not carry unaccounted bytes.
+    {
+        RawPak p = BuildRawPak(32, 16, "a");
+        p.Put32(p.entryOff + 40, 0); // pathLen 0, the "a" byte stays
+        p.Put64(p.entryOff + 0, smvk::PakHashPath(""));
+        p.Reseat();
+        Check(!OpenRaw(p), "pak.bounds.toc.slack.rejected");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -778,191 +751,183 @@ void TestPakMalformedBounds() {
 // test; run a TSan build of this binary to make the race loud.
 // ---------------------------------------------------------------------------
 void TestPakAppendConcurrentFirstUse() {
-	namespace fs = std::filesystem;
-	constexpr int kThreads = 8;
-	constexpr int kAppendsPerThread = 4;
-	const auto dir = fs::temp_directory_path() / "tourmaline_pak_concurrent";
-	std::error_code ec;
-	fs::remove_all(dir, ec);
-	fs::create_directories(dir, ec);
+    namespace fs = std::filesystem;
+    constexpr int kThreads = 8;
+    constexpr int kAppendsPerThread = 4;
+    const auto dir = fs::temp_directory_path() / "tourmaline_pak_concurrent";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
 
-	std::atomic<int> failures = 0;
-	std::atomic<bool> go = false;
-	std::vector<std::thread> threads;
-	threads.reserve(kThreads);
-	for (int t = 0; t < kThreads; ++t) {
-		threads.emplace_back([&, t] {
-			// Spin until every thread is parked at the start line so
-			// the first appends overlap maximally.
-			while (!go.load(std::memory_order_acquire))
-				std::this_thread::yield();
-			const std::string pakPath =
-				(dir / ("thr" + std::to_string(t) + ".pak")).string();
-			for (int a = 0; a < kAppendsPerThread; ++a) {
-				const std::vector<uint8_t> payload(64,
-					static_cast<uint8_t>(t * 16 + a));
-				std::vector<std::pair<std::string,
-					std::span<const uint8_t>>> blobs = {
-					{ "textures/t" + std::to_string(t)
-						+ "_" + std::to_string(a) + ".bin", payload } };
-				std::vector<smvk::PakAppendInfo> infos;
-				std::string err;
-				if (!smvk::AppendPakBlobs(pakPath,
-						smvk::PakAssetKind::Texture, blobs, infos, err))
-					++failures;
-			}
-		});
-	}
-	go.store(true, std::memory_order_release);
-	for (auto& th : threads)
-		th.join();
-	Check(failures.load() == 0, "pak.append.concurrent.success");
+    std::atomic<int> failures = 0;
+    std::atomic<bool> go = false;
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] {
+            // Spin until every thread is parked at the start line so
+            // the first appends overlap maximally.
+            while (!go.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            const std::string pakPath = (dir / ("thr" + std::to_string(t) + ".pak")).string();
+            for (int a = 0; a < kAppendsPerThread; ++a) {
+                const std::vector<uint8_t> payload(64, static_cast<uint8_t>(t * 16 + a));
+                std::vector<std::pair<std::string, std::span<const uint8_t>>> blobs = {
+                    {"textures/t" + std::to_string(t) + "_" + std::to_string(a) + ".bin", payload}};
+                std::vector<smvk::PakAppendInfo> infos;
+                std::string err;
+                if (!smvk::AppendPakBlobs(pakPath, smvk::PakAssetKind::Texture, blobs, infos, err))
+                    ++failures;
+            }
+        });
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& th : threads)
+        th.join();
+    Check(failures.load() == 0, "pak.append.concurrent.success");
 
-	// Every thread's pak must be openable with the exact appended
-	// entries intact (the CRC the concurrent appends computed must be
-	// the true image CRC - a raced table fill would have written a
-	// wrong footer CRC).
-	int opened = 0, entries = 0;
-	for (int t = 0; t < kThreads; ++t) {
-		const std::string pakPath =
-			(dir / ("thr" + std::to_string(t) + ".pak")).string();
-		std::ifstream f(pakPath, std::ios::binary);
-		if (!f)
-			continue;
-		std::vector<uint8_t> img;
-		f.seekg(0, std::ios::end);
-		img.resize(size_t(f.tellg()));
-		f.seekg(0);
-		f.read(reinterpret_cast<char*>(img.data()),
-			std::streamsize(img.size()));
-		std::string err;
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(img), err);
-		if (r) {
-			++opened;
-			entries += int(r->EntryCount());
-		}
-	}
-	Check(opened == kThreads, "pak.append.concurrent.all.open");
-	Check(entries == kThreads * kAppendsPerThread,
-		"pak.append.concurrent.entry.count");
-	fs::remove_all(dir, ec);
+    // Every thread's pak must be openable with the exact appended
+    // entries intact (the CRC the concurrent appends computed must be
+    // the true image CRC - a raced table fill would have written a
+    // wrong footer CRC).
+    int opened = 0, entries = 0;
+    for (int t = 0; t < kThreads; ++t) {
+        const std::string pakPath = (dir / ("thr" + std::to_string(t) + ".pak")).string();
+        std::ifstream f(pakPath, std::ios::binary);
+        if (!f)
+            continue;
+        std::vector<uint8_t> img;
+        f.seekg(0, std::ios::end);
+        img.resize(size_t(f.tellg()));
+        f.seekg(0);
+        f.read(reinterpret_cast<char*>(img.data()), std::streamsize(img.size()));
+        std::string err;
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), err);
+        if (r) {
+            ++opened;
+            entries += int(r->EntryCount());
+        }
+    }
+    Check(opened == kThreads, "pak.append.concurrent.all.open");
+    Check(entries == kThreads * kAppendsPerThread, "pak.append.concurrent.entry.count");
+    fs::remove_all(dir, ec);
 }
 
 void TestLz4Codec() {
-	// Highly compressible data round-trips.
-	std::vector<uint8_t> raw(64 * 1024, 0xAB);
-	for (size_t i = 0; i < raw.size(); i += 64)
-		raw[i] = static_cast<uint8_t>(i >> 6);
-	std::vector<uint8_t> comp;
-	Check(smvk::Lz4Compress(std::span<const uint8_t>(raw), comp), "lz4.compress.ok");
-	Check(!comp.empty() && comp.size() < raw.size(), "lz4.compress.shrinks");
-	std::vector<uint8_t> back;
-	Check(smvk::Lz4Decompress(std::span<const uint8_t>(comp), raw.size(), back), "lz4.decompress.ok");
-	Check(back == raw, "lz4.roundtrip.bytes");
-	// Wrong output size fails instead of overrunning.
-	std::vector<uint8_t> wrong;
-	Check(!smvk::Lz4Decompress(std::span<const uint8_t>(comp), raw.size() + 1, wrong), "lz4.decompress.sizemiss");
-	// Truncated block fails.
-	std::vector<uint8_t> trunc(comp.begin(), comp.end() - 1);
-	std::vector<uint8_t> truncOut;
-	Check(!smvk::Lz4Decompress(std::span<const uint8_t>(trunc), raw.size(), truncOut), "lz4.decompress.trunc");
-	// Empty input rejected.
-	std::vector<uint8_t> emptyOut;
-	Check(!smvk::Lz4Compress(std::span<const uint8_t>{}, emptyOut), "lz4.compress.empty");
-	// Blob helpers: tiny payloads stay stored verbatim.
-	std::vector<uint8_t> tiny = { 1, 2, 3, 4 };
-	auto [tinyStored, tinyFlag] = smvk::CompressPakBlob(
-		std::span<const uint8_t>(tiny), smvk::PakCompression::Lz4);
-	Check(!tinyFlag && tinyStored == tiny, "lz4.blob.tiny.raw");
-	// None mode never compresses.
-	auto [rawStored, rawFlag] = smvk::CompressPakBlob(
-		std::span<const uint8_t>(raw), smvk::PakCompression::None);
-	Check(!rawFlag && rawStored == raw, "lz4.blob.none.raw");
-	// LZ4 mode compresses the big blob with the 8-byte size prefix.
-	auto [lz4Stored, lz4Flag] = smvk::CompressPakBlob(
-		std::span<const uint8_t>(raw), smvk::PakCompression::Lz4);
-	Check(lz4Flag && lz4Stored.size() < raw.size(), "lz4.blob.shrinks");
-	std::vector<uint8_t> blobBack;
-	Check(smvk::DecompressPakBlob(std::span<const uint8_t>(lz4Stored), true, blobBack), "lz4.blob.parse");
-	Check(blobBack == raw, "lz4.blob.roundtrip");
+    // Highly compressible data round-trips.
+    std::vector<uint8_t> raw(64 * 1024, 0xAB);
+    for (size_t i = 0; i < raw.size(); i += 64)
+        raw[i] = static_cast<uint8_t>(i >> 6);
+    std::vector<uint8_t> comp;
+    Check(smvk::Lz4Compress(std::span<const uint8_t>(raw), comp), "lz4.compress.ok");
+    Check(!comp.empty() && comp.size() < raw.size(), "lz4.compress.shrinks");
+    std::vector<uint8_t> back;
+    Check(smvk::Lz4Decompress(std::span<const uint8_t>(comp), raw.size(), back),
+          "lz4.decompress.ok");
+    Check(back == raw, "lz4.roundtrip.bytes");
+    // Wrong output size fails instead of overrunning.
+    std::vector<uint8_t> wrong;
+    Check(!smvk::Lz4Decompress(std::span<const uint8_t>(comp), raw.size() + 1, wrong),
+          "lz4.decompress.sizemiss");
+    // Truncated block fails.
+    std::vector<uint8_t> trunc(comp.begin(), comp.end() - 1);
+    std::vector<uint8_t> truncOut;
+    Check(!smvk::Lz4Decompress(std::span<const uint8_t>(trunc), raw.size(), truncOut),
+          "lz4.decompress.trunc");
+    // Empty input rejected.
+    std::vector<uint8_t> emptyOut;
+    Check(!smvk::Lz4Compress(std::span<const uint8_t>{}, emptyOut), "lz4.compress.empty");
+    // Blob helpers: tiny payloads stay stored verbatim.
+    std::vector<uint8_t> tiny = {1, 2, 3, 4};
+    auto [tinyStored, tinyFlag] =
+        smvk::CompressPakBlob(std::span<const uint8_t>(tiny), smvk::PakCompression::Lz4);
+    Check(!tinyFlag && tinyStored == tiny, "lz4.blob.tiny.raw");
+    // None mode never compresses.
+    auto [rawStored, rawFlag] =
+        smvk::CompressPakBlob(std::span<const uint8_t>(raw), smvk::PakCompression::None);
+    Check(!rawFlag && rawStored == raw, "lz4.blob.none.raw");
+    // LZ4 mode compresses the big blob with the 8-byte size prefix.
+    auto [lz4Stored, lz4Flag] =
+        smvk::CompressPakBlob(std::span<const uint8_t>(raw), smvk::PakCompression::Lz4);
+    Check(lz4Flag && lz4Stored.size() < raw.size(), "lz4.blob.shrinks");
+    std::vector<uint8_t> blobBack;
+    Check(smvk::DecompressPakBlob(std::span<const uint8_t>(lz4Stored), true, blobBack),
+          "lz4.blob.parse");
+    Check(blobBack == raw, "lz4.blob.roundtrip");
 }
 
 void TestPakCompressedRoundTrip() {
-	smvk::PakWriter w;
-	w.SetCompression(smvk::PakCompression::Lz4);
-	// Compressible mesh-like payload (repeated vertex-ish pattern).
-	std::vector<uint8_t> big(32 * 1024, 0);
-	for (size_t i = 0; i < big.size(); ++i)
-		big[i] = static_cast<uint8_t>((i * 7) & 0xFF);
-	Check(w.AddBlob(smvk::PakAssetKind::Mesh, "models/big#mesh.0", big), "paklz4.add.big");
-	std::vector<uint8_t> scene = { 9, 9, 9 };
-	Check(w.AddBlob(smvk::PakAssetKind::Scene, "<cluster-local>#scene", scene), "paklz4.add.scene");
-	Check(w.CompressedEntryCount() == 1, "paklz4.compressed.count");
-	std::vector<uint8_t> img = w.Finalize();
-	Check(img.size() > 64, "paklz4.finalize.size");
+    smvk::PakWriter w;
+    w.SetCompression(smvk::PakCompression::Lz4);
+    // Compressible mesh-like payload (repeated vertex-ish pattern).
+    std::vector<uint8_t> big(32 * 1024, 0);
+    for (size_t i = 0; i < big.size(); ++i)
+        big[i] = static_cast<uint8_t>((i * 7) & 0xFF);
+    Check(w.AddBlob(smvk::PakAssetKind::Mesh, "models/big#mesh.0", big), "paklz4.add.big");
+    std::vector<uint8_t> scene = {9, 9, 9};
+    Check(w.AddBlob(smvk::PakAssetKind::Scene, "<cluster-local>#scene", scene), "paklz4.add.scene");
+    Check(w.CompressedEntryCount() == 1, "paklz4.compressed.count");
+    std::vector<uint8_t> img = w.Finalize();
+    Check(img.size() > 64, "paklz4.finalize.size");
 
-	std::string err;
-	auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), err);
-	Check(r.has_value(), "paklz4.open.ok");
-	if (!r) {
-		std::cout << "  paklz4 error: " << err << "\n";
-		return;
-	}
-	Check(r->CompressedEntryCount() == 1, "paklz4.reader.count");
-	const auto* mesh = r->Find(smvk::PakAssetKind::Mesh, "models/big#mesh.0");
-	Check(mesh != nullptr, "paklz4.find.mesh");
-	if (mesh) {
-		auto payload = r->Payload(*mesh);
-		Check(payload.size() == big.size() &&
-			memcmp(payload.data(), big.data(), big.size()) == 0, "paklz4.payload.bytes");
-	}
-	// SMP8 PAGE VERIFICATION: a corrupt byte inside the STORED LZ4
-	// block passes the small mount (TOC-only CRC) and fails AT THE
-	// PAGE — Payload() throws + VerifyAll() reports.
-	{
-		std::vector<uint8_t> bad = img;
-		if (bad.size() > 80)
-			bad[60] ^= 0xFF; // inside the stored (compressed) blob
-		std::string err2;
-		auto rBad = smvk::PakReader::Open(
-			std::span<const uint8_t>(bad), err2);
-		Check(rBad.has_value(), "paklz4.corrupt.mount-tolerates-page");
-		bool threw = false;
-		if (rBad) {
-			const auto* m2 = rBad->Find(smvk::PakAssetKind::Mesh,
-				"models/big#mesh.0");
-			if (m2) {
-				try {
-					(void)rBad->Payload(*m2);
-				}
-				catch (const std::runtime_error&) {
-					threw = true;
-				}
-			}
-			std::string verr;
-			Check(!rBad->VerifyAll(verr), "paklz4.corrupt.verifyall");
-		}
-		Check(threw, "paklz4.corrupt.page-throws");
-	}
+    std::string err;
+    auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), err);
+    Check(r.has_value(), "paklz4.open.ok");
+    if (!r) {
+        std::cout << "  paklz4 error: " << err << "\n";
+        return;
+    }
+    Check(r->CompressedEntryCount() == 1, "paklz4.reader.count");
+    const auto* mesh = r->Find(smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+    Check(mesh != nullptr, "paklz4.find.mesh");
+    if (mesh) {
+        auto payload = r->Payload(*mesh);
+        Check(payload.size() == big.size() && memcmp(payload.data(), big.data(), big.size()) == 0,
+              "paklz4.payload.bytes");
+    }
+    // SMP8 PAGE VERIFICATION: a corrupt byte inside the STORED LZ4
+    // block passes the small mount (TOC-only CRC) and fails AT THE
+    // PAGE — Payload() throws + VerifyAll() reports.
+    {
+        std::vector<uint8_t> bad = img;
+        if (bad.size() > 80)
+            bad[60] ^= 0xFF; // inside the stored (compressed) blob
+        std::string err2;
+        auto rBad = smvk::PakReader::Open(std::span<const uint8_t>(bad), err2);
+        Check(rBad.has_value(), "paklz4.corrupt.mount-tolerates-page");
+        bool threw = false;
+        if (rBad) {
+            const auto* m2 = rBad->Find(smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+            if (m2) {
+                try {
+                    (void)rBad->Payload(*m2);
+                } catch (const std::runtime_error&) {
+                    threw = true;
+                }
+            }
+            std::string verr;
+            Check(!rBad->VerifyAll(verr), "paklz4.corrupt.verifyall");
+        }
+        Check(threw, "paklz4.corrupt.page-throws");
+    }
 
-	// Compressed textures stay servable through the VFS backend.
-	smvk::PakWriter w2;
-	w2.SetCompression(smvk::PakCompression::Lz4);
-	std::vector<uint8_t> ktx(4096, 0x5A);
-	auto tp = smvk::BuildTexturePayload("textures/big.ktx2", 1, 2, 3, 4,
-		std::span<const uint8_t>(ktx));
-	w2.AddBlob(smvk::PakAssetKind::Texture, "textures/big.ktx2", std::move(tp));
-	w2.AddBlob(smvk::PakAssetKind::Scene, "<cluster-local>#scene", { 1 });
-	auto img2 = std::make_shared<const std::vector<uint8_t>>(w2.Finalize());
-	auto backend = smvk::PakBackend::Open(img2, "lz4.pak", err);
-	Check(backend != nullptr, "paklz4.backend.open");
-	if (backend) {
-		smvk::OverlayVfs vfs;
-		vfs.Mount(backend, 0, "lz4.pak");
-		auto bytes = vfs.TryRead("textures/big.ktx2");
-		Check(bytes && bytes->size() == ktx.size() && (*bytes)[0] == 0x5A, "paklz4.backend.serve");
-	}
+    // Compressed textures stay servable through the VFS backend.
+    smvk::PakWriter w2;
+    w2.SetCompression(smvk::PakCompression::Lz4);
+    std::vector<uint8_t> ktx(4096, 0x5A);
+    auto tp =
+        smvk::BuildTexturePayload("textures/big.ktx2", 1, 2, 3, 4, std::span<const uint8_t>(ktx));
+    w2.AddBlob(smvk::PakAssetKind::Texture, "textures/big.ktx2", std::move(tp));
+    w2.AddBlob(smvk::PakAssetKind::Scene, "<cluster-local>#scene", {1});
+    auto img2 = std::make_shared<const std::vector<uint8_t>>(w2.Finalize());
+    auto backend = smvk::PakBackend::Open(img2, "lz4.pak", err);
+    Check(backend != nullptr, "paklz4.backend.open");
+    if (backend) {
+        smvk::OverlayVfs vfs;
+        vfs.Mount(backend, 0, "lz4.pak");
+        auto bytes = vfs.TryRead("textures/big.ktx2");
+        Check(bytes && bytes->size() == ktx.size() && (*bytes)[0] == 0x5A, "paklz4.backend.serve");
+    }
 }
 
 // SMP8 (the paged break): the format's new surface pinned directly —
@@ -971,212 +936,184 @@ void TestPakCompressedRoundTrip() {
 // per-page verification contract (mount = small TOC metadata; the
 // page CRC checks at fetch / VerifyAll - never at boot).
 void TestPakSmp8() {
-	namespace fs = std::filesystem;
-	const fs::path tmp = fs::temp_directory_path() / "tourmaline_smp8";
-	std::error_code ec;
-	fs::remove_all(tmp, ec);
-	fs::create_directories(tmp, ec);
+    namespace fs = std::filesystem;
+    const fs::path tmp = fs::temp_directory_path() / "tourmaline_smp8";
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp, ec);
 
-	// The plan codec: write/parse round trip + malformed refusals.
-	{
-		std::vector<smvk::PakMeshPlanFamily> fams = {
-			{ "content/models/tree.geometry",
-				{ { "content/models/tree.geometry#mesh.0/prim.0", 0 },
-				  { "content/models/tree.geometry#mesh.0/prim.0/lod1", 1 },
-				  { "content/models/tree.geometry#mesh.0/prim.0/lod2", 2 } } },
-			{ "content/models/rock.geometry",
-				{ { "content/models/rock.geometry#mesh.0/prim.0", 0 } } },
-		};
-		const std::vector<uint8_t> blob = smvk::WriteMeshPlanBlob(fams);
-		std::vector<smvk::PakMeshPlanFamily> back;
-		std::string perr;
-		Check(smvk::ParseMeshPlanBlob(
-				std::span<const uint8_t>(blob), back, perr)
-			&& back.size() == 2
-			&& back[0].familyPath == fams[0].familyPath
-			&& back[0].members.size() == 3
-			&& back[0].members[0].tocPath
-				== fams[0].members[0].tocPath
-			&& back[0].members[0].lodIndex == 0
-			&& back[0].members[1].tocPath
-				== fams[0].members[1].tocPath
-			&& back[0].members[1].lodIndex == 1
-			&& back[0].members[2].lodIndex == 2
-			&& back[1].familyPath == fams[1].familyPath
-			&& back[1].members.size() == 1,
-			"smp8.plan.roundtrip");
-		// Truncated + trailing junk refuse.
-		std::vector<smvk::PakMeshPlanFamily> junk;
-		Check(!smvk::ParseMeshPlanBlob(
-				std::span<const uint8_t>(blob.data(), blob.size() - 3),
-				junk, perr), "smp8.plan.truncated-refused");
-		std::vector<uint8_t> trailing = blob;
-		trailing.push_back(0);
-		Check(!smvk::ParseMeshPlanBlob(
-				std::span<const uint8_t>(trailing), junk, perr),
-			"smp8.plan.trailing-refused");
-	}
+    // The plan codec: write/parse round trip + malformed refusals.
+    {
+        std::vector<smvk::PakMeshPlanFamily> fams = {
+            {"content/models/tree.geometry",
+             {{"content/models/tree.geometry#mesh.0/prim.0", 0},
+              {"content/models/tree.geometry#mesh.0/prim.0/lod1", 1},
+              {"content/models/tree.geometry#mesh.0/prim.0/lod2", 2}}},
+            {"content/models/rock.geometry", {{"content/models/rock.geometry#mesh.0/prim.0", 0}}},
+        };
+        const std::vector<uint8_t> blob = smvk::WriteMeshPlanBlob(fams);
+        std::vector<smvk::PakMeshPlanFamily> back;
+        std::string perr;
+        Check(smvk::ParseMeshPlanBlob(std::span<const uint8_t>(blob), back, perr) &&
+                  back.size() == 2 && back[0].familyPath == fams[0].familyPath &&
+                  back[0].members.size() == 3 &&
+                  back[0].members[0].tocPath == fams[0].members[0].tocPath &&
+                  back[0].members[0].lodIndex == 0 &&
+                  back[0].members[1].tocPath == fams[0].members[1].tocPath &&
+                  back[0].members[1].lodIndex == 1 && back[0].members[2].lodIndex == 2 &&
+                  back[1].familyPath == fams[1].familyPath && back[1].members.size() == 1,
+              "smp8.plan.roundtrip");
+        // Truncated + trailing junk refuse.
+        std::vector<smvk::PakMeshPlanFamily> junk;
+        Check(!smvk::ParseMeshPlanBlob(
+                  std::span<const uint8_t>(blob.data(), blob.size() - 3), junk, perr),
+              "smp8.plan.truncated-refused");
+        std::vector<uint8_t> trailing = blob;
+        trailing.push_back(0);
+        Check(!smvk::ParseMeshPlanBlob(std::span<const uint8_t>(trailing), junk, perr),
+              "smp8.plan.trailing-refused");
+    }
 
-	// A pak carrying a plan + slots; the join serves through
-	// MeshPlanFamily.
-	smvk::PakWriter w;
-	const std::string treeFamily = "content/models/tree.geometry";
-	Check(w.AddBlob(smvk::PakAssetKind::Mesh,
-			treeFamily + "#mesh.0/prim.0", { 1, 2, 3, 4 }), "smp8.add.base");
-	Check(w.AddBlob(smvk::PakAssetKind::Mesh,
-			treeFamily + "#mesh.0/prim.0/lod1", { 5, 6, 7, 8 }),
-		"smp8.add.lod");
-	Check(w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
-			{ 9, 9, 9 }), "smp8.add.tex");
-	{
-		std::vector<smvk::PakMeshPlanFamily> fams = {
-			{ treeFamily,
-				{ { treeFamily + "#mesh.0/prim.0", 0 },
-				  { treeFamily + "#mesh.0/prim.0/lod1", 1 } } },
-		};
-		Check(w.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
-				smvk::WriteMeshPlanBlob(fams)), "smp8.add.plan");
-	}
-	const std::vector<uint8_t> img = w.Finalize();
-	const fs::path pakPath = tmp / "smp8.pak";
-	{
-		std::ofstream f(pakPath, std::ios::binary | std::ios::trunc);
-		f.write(reinterpret_cast<const char*>(img.data()),
-			std::streamsize(img.size()));
-	}
+    // A pak carrying a plan + slots; the join serves through
+    // MeshPlanFamily.
+    smvk::PakWriter w;
+    const std::string treeFamily = "content/models/tree.geometry";
+    Check(w.AddBlob(smvk::PakAssetKind::Mesh, treeFamily + "#mesh.0/prim.0", {1, 2, 3, 4}),
+          "smp8.add.base");
+    Check(w.AddBlob(smvk::PakAssetKind::Mesh, treeFamily + "#mesh.0/prim.0/lod1", {5, 6, 7, 8}),
+          "smp8.add.lod");
+    Check(w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2", {9, 9, 9}), "smp8.add.tex");
+    {
+        std::vector<smvk::PakMeshPlanFamily> fams = {
+            {treeFamily,
+             {{treeFamily + "#mesh.0/prim.0", 0}, {treeFamily + "#mesh.0/prim.0/lod1", 1}}},
+        };
+        Check(w.AddBlob(
+                  smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath, smvk::WriteMeshPlanBlob(fams)),
+              "smp8.add.plan");
+    }
+    const std::vector<uint8_t> img = w.Finalize();
+    const fs::path pakPath = tmp / "smp8.pak";
+    {
+        std::ofstream f(pakPath, std::ios::binary | std::ios::trunc);
+        f.write(reinterpret_cast<const char*>(img.data()), std::streamsize(img.size()));
+    }
 
-	// Image-backed: slots + the join.
-	{
-		std::string err;
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(img), err);
-		Check(r.has_value(), "smp8.open.ok");
-		if (r) {
-			// Slots: sequential writer ordinals, FindBySlot resolves.
-			Check(r->FindBySlot(0) != nullptr
-				&& r->FindBySlot(0)->path
-					== treeFamily + "#mesh.0/prim.0"
-				&& r->FindBySlot(1)->path
-					== treeFamily + "#mesh.0/prim.0/lod1"
-				&& r->FindBySlot(2)->path == "textures/a.ktx2"
-				&& r->FindBySlot(3)->path == smvk::kPakMeshPlanPath
-				&& r->FindBySlot(999) == nullptr,
-				"smp8.slots");
-			// The join: base + lod sibling with LOD indices.
-			std::vector<smvk::PakMeshPlanMember> members;
-			std::string jerr;
-			Check(r->MeshPlanFamily(treeFamily, members, jerr)
-				&& members.size() == 2
-				&& members[0].lodIndex == 0
-				&& members[1].lodIndex == 1,
-				"smp8.join-family");
-			// VerifyAll on a pristine image passes.
-			std::string verr;
-			Check(r->VerifyAll(verr) && verr.empty(), "smp8.verifyall.ok");
-		}
-	}
+    // Image-backed: slots + the join.
+    {
+        std::string err;
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), err);
+        Check(r.has_value(), "smp8.open.ok");
+        if (r) {
+            // Slots: sequential writer ordinals, FindBySlot resolves.
+            Check(r->FindBySlot(0) != nullptr &&
+                      r->FindBySlot(0)->path == treeFamily + "#mesh.0/prim.0" &&
+                      r->FindBySlot(1)->path == treeFamily + "#mesh.0/prim.0/lod1" &&
+                      r->FindBySlot(2)->path == "textures/a.ktx2" &&
+                      r->FindBySlot(3)->path == smvk::kPakMeshPlanPath &&
+                      r->FindBySlot(999) == nullptr,
+                  "smp8.slots");
+            // The join: base + lod sibling with LOD indices.
+            std::vector<smvk::PakMeshPlanMember> members;
+            std::string jerr;
+            Check(r->MeshPlanFamily(treeFamily, members, jerr) && members.size() == 2 &&
+                      members[0].lodIndex == 0 && members[1].lodIndex == 1,
+                  "smp8.join-family");
+            // VerifyAll on a pristine image passes.
+            std::string verr;
+            Check(r->VerifyAll(verr) && verr.empty(), "smp8.verifyall.ok");
+        }
+    }
 
-	// FILE-BACKED: the header/footer/TOC-only mount + positional page
-	// reads; payload parity with the image-backed form + HasImage
-	// false + ImageData null.
-	{
-		std::string err;
-		auto r = smvk::PakReader::OpenFile(pakPath.generic_string(), err);
-		Check(r.has_value(), "smp8.file.open");
-		if (r) {
-			Check(!r->HasImage() && r->ImageData() == nullptr,
-				"smp8.file.no-image");
-			Check(r->EntryCount() == 4, "smp8.file.entries");
-			const auto* base = r->Find(smvk::PakAssetKind::Mesh,
-				treeFamily + "#mesh.0/prim.0");
-			Check(base != nullptr, "smp8.file.find");
-			if (base) {
-				const auto payload = r->Payload(*base);
-				Check(payload.size() == 4 && payload[0] == 1,
-					"smp8.file.page-parity");
-			}
-			// The join serves identically from the file-backed reader.
-			std::vector<smvk::PakMeshPlanMember> members;
-			std::string jerr;
-			Check(r->MeshPlanFamily(treeFamily, members, jerr)
-				&& members.size() == 2, "smp8.file.join");
-			// VerifyAll over the file passes.
-			std::string verr;
-			Check(r->VerifyAll(verr) && verr.empty(), "smp8.file.verifyall");
-		}
-		// A MISSING file refuses loudly.
-		std::string merr;
-		Check(!smvk::PakReader::OpenFile(
-				(tmp / "missing.pak").generic_string(), merr)
-			&& !merr.empty(), "smp8.file.missing-refused");
-	}
+    // FILE-BACKED: the header/footer/TOC-only mount + positional page
+    // reads; payload parity with the image-backed form + HasImage
+    // false + ImageData null.
+    {
+        std::string err;
+        auto r = smvk::PakReader::OpenFile(pakPath.generic_string(), err);
+        Check(r.has_value(), "smp8.file.open");
+        if (r) {
+            Check(!r->HasImage() && r->ImageData() == nullptr, "smp8.file.no-image");
+            Check(r->EntryCount() == 4, "smp8.file.entries");
+            const auto* base = r->Find(smvk::PakAssetKind::Mesh, treeFamily + "#mesh.0/prim.0");
+            Check(base != nullptr, "smp8.file.find");
+            if (base) {
+                const auto payload = r->Payload(*base);
+                Check(payload.size() == 4 && payload[0] == 1, "smp8.file.page-parity");
+            }
+            // The join serves identically from the file-backed reader.
+            std::vector<smvk::PakMeshPlanMember> members;
+            std::string jerr;
+            Check(r->MeshPlanFamily(treeFamily, members, jerr) && members.size() == 2,
+                  "smp8.file.join");
+            // VerifyAll over the file passes.
+            std::string verr;
+            Check(r->VerifyAll(verr) && verr.empty(), "smp8.file.verifyall");
+        }
+        // A MISSING file refuses loudly.
+        std::string merr;
+        Check(!smvk::PakReader::OpenFile((tmp / "missing.pak").generic_string(), merr) &&
+                  !merr.empty(),
+              "smp8.file.missing-refused");
+    }
 
-	// FILE-BACKED page corruption: the mount opens (the TOC is fine),
-	// the corrupt page's fetch throws, VerifyAll names it, the clean
-	// sibling page still serves.
-	{
-		std::vector<uint8_t> bad = img;
-		bad[32] ^= 0xFF; // the base mesh blob's first byte
-		const fs::path badPath = tmp / "smp8bad.pak";
-		{
-			std::ofstream f(badPath, std::ios::binary | std::ios::trunc);
-			f.write(reinterpret_cast<const char*>(bad.data()),
-				std::streamsize(bad.size()));
-		}
-		std::string err;
-		auto r = smvk::PakReader::OpenFile(badPath.generic_string(), err);
-		Check(r.has_value(), "smp8.file.corrupt.mount-tolerant");
-		if (r) {
-			const auto* base = r->Find(smvk::PakAssetKind::Mesh,
-				treeFamily + "#mesh.0/prim.0");
-			bool threw = false;
-			if (base) {
-				try {
-					(void)r->Payload(*base);
-				}
-				catch (const std::runtime_error&) {
-					threw = true;
-				}
-			}
-			Check(threw, "smp8.file.corrupt.page-throws");
-			const auto* lod = r->Find(smvk::PakAssetKind::Mesh,
-				treeFamily + "#mesh.0/prim.0/lod1");
-			Check(lod != nullptr && r->Payload(*lod).size() == 4,
-				"smp8.file.corrupt.sibling-clean");
-			std::string verr;
-			Check(!r->VerifyAll(verr) && !verr.empty(),
-				"smp8.file.corrupt.verifyall");
-		}
-	}
+    // FILE-BACKED page corruption: the mount opens (the TOC is fine),
+    // the corrupt page's fetch throws, VerifyAll names it, the clean
+    // sibling page still serves.
+    {
+        std::vector<uint8_t> bad = img;
+        bad[32] ^= 0xFF; // the base mesh blob's first byte
+        const fs::path badPath = tmp / "smp8bad.pak";
+        {
+            std::ofstream f(badPath, std::ios::binary | std::ios::trunc);
+            f.write(reinterpret_cast<const char*>(bad.data()), std::streamsize(bad.size()));
+        }
+        std::string err;
+        auto r = smvk::PakReader::OpenFile(badPath.generic_string(), err);
+        Check(r.has_value(), "smp8.file.corrupt.mount-tolerant");
+        if (r) {
+            const auto* base = r->Find(smvk::PakAssetKind::Mesh, treeFamily + "#mesh.0/prim.0");
+            bool threw = false;
+            if (base) {
+                try {
+                    (void)r->Payload(*base);
+                } catch (const std::runtime_error&) {
+                    threw = true;
+                }
+            }
+            Check(threw, "smp8.file.corrupt.page-throws");
+            const auto* lod = r->Find(smvk::PakAssetKind::Mesh, treeFamily + "#mesh.0/prim.0/lod1");
+            Check(lod != nullptr && r->Payload(*lod).size() == 4,
+                  "smp8.file.corrupt.sibling-clean");
+            std::string verr;
+            Check(!r->VerifyAll(verr) && !verr.empty(), "smp8.file.corrupt.verifyall");
+        }
+    }
 
-	// Dead epochs fail closed: an SMP7 image (forged with a valid
-	// shape) is refused at the magic - the format has NO compat
-	// reader, content recooks from zero.
-	{
-		std::vector<uint8_t> smp7 = img;
-		const uint32_t oldMagic = 0x37504D53u; // "SMP7"
-		const uint32_t oldFooter = 0x374D504Bu; // "KPM7"
-		memcpy(smp7.data(), &oldMagic, 4);
-		memcpy(smp7.data() + smp7.size() - 4, &oldFooter, 4);
-		std::string err;
-		Check(!smvk::PakReader::Open(
-				std::span<const uint8_t>(smp7), err)
-			&& err.find("recook") != std::string::npos,
-			"smp8.smp7-rejected");
-		{
-			std::ofstream f(tmp / "smp7.pak",
-				std::ios::binary | std::ios::trunc);
-			f.write(reinterpret_cast<const char*>(smp7.data()),
-				std::streamsize(smp7.size()));
-		}
-		std::string ferr2;
-		Check(!smvk::PakReader::OpenFile(
-				(tmp / "smp7.pak").generic_string(), ferr2)
-			&& ferr2.find("recook") != std::string::npos,
-			"smp8.smp7-file-rejected");
-	}
+    // Dead epochs fail closed: an SMP7 image (forged with a valid
+    // shape) is refused at the magic - the format has NO compat
+    // reader, content recooks from zero.
+    {
+        std::vector<uint8_t> smp7 = img;
+        const uint32_t oldMagic = 0x37504D53u;  // "SMP7"
+        const uint32_t oldFooter = 0x374D504Bu; // "KPM7"
+        memcpy(smp7.data(), &oldMagic, 4);
+        memcpy(smp7.data() + smp7.size() - 4, &oldFooter, 4);
+        std::string err;
+        Check(!smvk::PakReader::Open(std::span<const uint8_t>(smp7), err) &&
+                  err.find("recook") != std::string::npos,
+              "smp8.smp7-rejected");
+        {
+            std::ofstream f(tmp / "smp7.pak", std::ios::binary | std::ios::trunc);
+            f.write(reinterpret_cast<const char*>(smp7.data()), std::streamsize(smp7.size()));
+        }
+        std::string ferr2;
+        Check(!smvk::PakReader::OpenFile((tmp / "smp7.pak").generic_string(), ferr2) &&
+                  ferr2.find("recook") != std::string::npos,
+              "smp8.smp7-file-rejected");
+    }
 
-	fs::remove_all(tmp, ec);
+    fs::remove_all(tmp, ec);
 }
 
 // THE ASYNC PAK PAGER (docs/pak_vnext.md): page-granular reads over a
@@ -1184,214 +1121,187 @@ void TestPakSmp8() {
 // bounded pool, cancellation, the per-page failure surfacing, and the
 // parity with the image-backed reader.
 void TestPakPager() {
-	namespace fs = std::filesystem;
-	const fs::path tmp = fs::temp_directory_path() / "tourmaline_pager";
-	std::error_code ec;
-	fs::remove_all(tmp, ec);
-	fs::create_directories(tmp, ec);
+    namespace fs = std::filesystem;
+    const fs::path tmp = fs::temp_directory_path() / "tourmaline_pager";
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp, ec);
 
-	// A pak: a compressible mesh payload (LZ4), a plain scene blob, a
-	// texture envelope.
-	smvk::PakWriter w;
-	w.SetCompression(smvk::PakCompression::Lz4);
-	std::vector<uint8_t> big(64 * 1024);
-	for (size_t i = 0; i < big.size(); ++i)
-		big[i] = static_cast<uint8_t>((i * 7) & 0xFF);
-	Check(w.AddBlob(smvk::PakAssetKind::Mesh, "models/big#mesh.0", big),
-		"pager.add.mesh");
-	Check(w.AddBlob(smvk::PakAssetKind::Scene, "scene/only", { 1, 2, 3, 4 }),
-		"pager.add.scene");
-	const std::vector<uint8_t> ktx = { 7, 8, 9, 10 };
-	w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
-		smvk::BuildTexturePayload("textures/a.ktx2", -1, -1, -1, -1,
-			std::span<const uint8_t>(ktx)));
-	const std::vector<uint8_t> img = w.Finalize();
-	const fs::path pakPath = tmp / "pager.pak";
-	{
-		std::ofstream f(pakPath, std::ios::binary | std::ios::trunc);
-		f.write(reinterpret_cast<const char*>(img.data()),
-			std::streamsize(img.size()));
-	}
-	const std::string pak = pakPath.generic_string();
+    // A pak: a compressible mesh payload (LZ4), a plain scene blob, a
+    // texture envelope.
+    smvk::PakWriter w;
+    w.SetCompression(smvk::PakCompression::Lz4);
+    std::vector<uint8_t> big(64 * 1024);
+    for (size_t i = 0; i < big.size(); ++i)
+        big[i] = static_cast<uint8_t>((i * 7) & 0xFF);
+    Check(w.AddBlob(smvk::PakAssetKind::Mesh, "models/big#mesh.0", big), "pager.add.mesh");
+    Check(w.AddBlob(smvk::PakAssetKind::Scene, "scene/only", {1, 2, 3, 4}), "pager.add.scene");
+    const std::vector<uint8_t> ktx = {7, 8, 9, 10};
+    w.AddBlob(smvk::PakAssetKind::Texture,
+              "textures/a.ktx2",
+              smvk::BuildTexturePayload(
+                  "textures/a.ktx2", -1, -1, -1, -1, std::span<const uint8_t>(ktx)));
+    const std::vector<uint8_t> img = w.Finalize();
+    const fs::path pakPath = tmp / "pager.pak";
+    {
+        std::ofstream f(pakPath, std::ios::binary | std::ios::trunc);
+        f.write(reinterpret_cast<const char*>(img.data()), std::streamsize(img.size()));
+    }
+    const std::string pak = pakPath.generic_string();
 
-	// Open + payload parity with the image-backed reader (LZ4 + plain
-	// pages both decode identically) + the single disk read.
-	{
-		smvk::PakPager pager(pak);
-		Check(pager.Valid(), "pager.open");
-		const auto* mesh = pager.Reader().Find(
-			smvk::PakAssetKind::Mesh, "models/big#mesh.0");
-		Check(mesh != nullptr, "pager.find.mesh");
-		std::string err;
-		auto page = pager.Read(*mesh, err);
-		Check(bool(page) && err.empty() && page.size() == big.size()
-			&& memcmp(page.data(), big.data(), big.size()) == 0,
-			"pager.page-parity-lz4");
-		const auto stats = pager.PageStats();
-		Check(stats.diskReads == 1 && stats.residentPages == 1,
-			"pager.one-disk-read");
-		// DEDUP: concurrent requests for the same page ATTACH — one
-		// disk read total, every Acquire succeeds.
-		std::vector<smvk::PakPager::Request> reqs;
-		for (int i = 0; i < 8; ++i)
-			reqs.push_back(pager.ReadAsync(*mesh));
-		bool allServed = true;
-		for (const auto& r : reqs) {
-			std::string aerr;
-			auto p = pager.Acquire(r, aerr);
-			allServed = allServed && bool(p)
-				&& p.size() == big.size();
-		}
-		Check(allServed && pager.PageStats().diskReads == 1,
-			"pager.dedup-attaches");
-		// Prefetch satisfies a later demand read (attach to the
-		// queued/in-flight/resident page - still one read).
-		const auto* scene = pager.Reader().Find(
-			smvk::PakAssetKind::Scene, "scene/only");
-		pager.Prefetch(*scene);
-		std::string serr;
-		auto spage = pager.Read(*scene, serr);
-		Check(spage && spage.size() == 4
-			&& pager.PageStats().diskReads == 2,
-			"pager.prefetch-satisfies-demand");
-		// Cancellation of a RESIDENT page refuses (deterministic side
-		// of the cancel contract); unknown requests refuse.
-		smvk::PakPager::Request bogus;
-		Check(!pager.Cancel(bogus), "pager.cancel-unknown-refused");
-		smvk::PakPager::Request live = pager.ReadAsync(*scene);
-		Check(!pager.Cancel(live), "pager.cancel-resident-refused");
-	}
+    // Open + payload parity with the image-backed reader (LZ4 + plain
+    // pages both decode identically) + the single disk read.
+    {
+        smvk::PakPager pager(pak);
+        Check(pager.Valid(), "pager.open");
+        const auto* mesh = pager.Reader().Find(smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+        Check(mesh != nullptr, "pager.find.mesh");
+        std::string err;
+        auto page = pager.Read(*mesh, err);
+        Check(bool(page) && err.empty() && page.size() == big.size() &&
+                  memcmp(page.data(), big.data(), big.size()) == 0,
+              "pager.page-parity-lz4");
+        const auto stats = pager.PageStats();
+        Check(stats.diskReads == 1 && stats.residentPages == 1, "pager.one-disk-read");
+        // DEDUP: concurrent requests for the same page ATTACH — one
+        // disk read total, every Acquire succeeds.
+        std::vector<smvk::PakPager::Request> reqs;
+        for (int i = 0; i < 8; ++i)
+            reqs.push_back(pager.ReadAsync(*mesh));
+        bool allServed = true;
+        for (const auto& r : reqs) {
+            std::string aerr;
+            auto p = pager.Acquire(r, aerr);
+            allServed = allServed && bool(p) && p.size() == big.size();
+        }
+        Check(allServed && pager.PageStats().diskReads == 1, "pager.dedup-attaches");
+        // Prefetch satisfies a later demand read (attach to the
+        // queued/in-flight/resident page - still one read).
+        const auto* scene = pager.Reader().Find(smvk::PakAssetKind::Scene, "scene/only");
+        pager.Prefetch(*scene);
+        std::string serr;
+        auto spage = pager.Read(*scene, serr);
+        Check(spage && spage.size() == 4 && pager.PageStats().diskReads == 2,
+              "pager.prefetch-satisfies-demand");
+        // Cancellation of a RESIDENT page refuses (deterministic side
+        // of the cancel contract); unknown requests refuse.
+        smvk::PakPager::Request bogus;
+        Check(!pager.Cancel(bogus), "pager.cancel-unknown-refused");
+        smvk::PakPager::Request live = pager.ReadAsync(*scene);
+        Check(!pager.Cancel(live), "pager.cancel-resident-refused");
+    }
 
-	// The pinned bounded pool: pins + demand WAITERS survive the
-	// budget; unpinned LRU pages evict on trim; a pinned page's bytes
-	// stay valid across evictions. (A budget below ONE page is the
-	// adversarial case: the install -> pin window must never evict
-	// the page out from under its waiter - the livelock the waiters
-	// counter exists to break.)
-	{
-		smvk::PakPager pager(pak);
-		pager.SetBudget(1024); // far below any page
-		const auto* mesh = pager.Reader().Find(
-			smvk::PakAssetKind::Mesh, "models/big#mesh.0");
-		const auto* scene = pager.Reader().Find(
-			smvk::PakAssetKind::Scene, "scene/only");
-		std::string err;
-		auto pinned = pager.Read(*mesh, err);
-		Check(bool(pinned), "pager.pin-read");
-		Check(pager.PageStats().residentPages == 1,
-			"pager.pin-survives-budget");
-		{
-			std::string serr;
-			auto temp = pager.Read(*scene, serr);
-			Check(bool(temp), "pager.pin-second-page");
-			// Both pages stay: the pinned one + the one being waited
-			// on (over budget is the holders' doing, not the pool's).
-			Check(pager.PageStats().residentPages == 2,
-				"pager.pin-over-budget-both-resident");
-		}
-		// temp died: an explicit trim evicts the UNPINNED page; the
-		// PINNED one stays + its bytes are untouched.
-		pager.SetBudget(1024);
-		const auto stats = pager.PageStats();
-		Check(stats.evictions == 1 && stats.residentPages == 1,
-			"pager.evict-unpinned-lru");
-		Check(pinned.size() == big.size()
-			&& memcmp(pinned.data(), big.data(), big.size()) == 0,
-			"pager.pinned-bytes-valid");
-		// Releasing the pin lets a later trim drop it.
-		pinned = {};
-		pager.SetBudget(1024);
-		Check(pager.PageStats().residentPages == 0,
-			"pager.trim-after-unpin");
-	}
+    // The pinned bounded pool: pins + demand WAITERS survive the
+    // budget; unpinned LRU pages evict on trim; a pinned page's bytes
+    // stay valid across evictions. (A budget below ONE page is the
+    // adversarial case: the install -> pin window must never evict
+    // the page out from under its waiter - the livelock the waiters
+    // counter exists to break.)
+    {
+        smvk::PakPager pager(pak);
+        pager.SetBudget(1024); // far below any page
+        const auto* mesh = pager.Reader().Find(smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+        const auto* scene = pager.Reader().Find(smvk::PakAssetKind::Scene, "scene/only");
+        std::string err;
+        auto pinned = pager.Read(*mesh, err);
+        Check(bool(pinned), "pager.pin-read");
+        Check(pager.PageStats().residentPages == 1, "pager.pin-survives-budget");
+        {
+            std::string serr;
+            auto temp = pager.Read(*scene, serr);
+            Check(bool(temp), "pager.pin-second-page");
+            // Both pages stay: the pinned one + the one being waited
+            // on (over budget is the holders' doing, not the pool's).
+            Check(pager.PageStats().residentPages == 2, "pager.pin-over-budget-both-resident");
+        }
+        // temp died: an explicit trim evicts the UNPINNED page; the
+        // PINNED one stays + its bytes are untouched.
+        pager.SetBudget(1024);
+        const auto stats = pager.PageStats();
+        Check(stats.evictions == 1 && stats.residentPages == 1, "pager.evict-unpinned-lru");
+        Check(pinned.size() == big.size() && memcmp(pinned.data(), big.data(), big.size()) == 0,
+              "pager.pinned-bytes-valid");
+        // Releasing the pin lets a later trim drop it.
+        pinned = {};
+        pager.SetBudget(1024);
+        Check(pager.PageStats().residentPages == 0, "pager.trim-after-unpin");
+    }
 
-	// A CORRUPT PAGE fails AT the page (the SMP8 lazy verification
-	// surfaced by the pager) — its neighbors stay servable.
-	{
-		std::string serr;
-		auto imgReader = smvk::PakReader::Open(
-			std::span<const uint8_t>(img), serr);
-		Check(imgReader.has_value(), "pager.corrupt.source-open");
-		if (imgReader) {
-			const auto* scene = imgReader->Find(
-				smvk::PakAssetKind::Scene, "scene/only");
-			Check(scene != nullptr, "pager.corrupt.find-scene");
-			if (scene) {
-				std::vector<uint8_t> bad = img;
-				bad[size_t(scene->offset)] ^= 0xFF;
-				const fs::path badPath = tmp / "pagerbad.pak";
-				{
-					std::ofstream f(badPath,
-						std::ios::binary | std::ios::trunc);
-					f.write(reinterpret_cast<const char*>(bad.data()),
-						std::streamsize(bad.size()));
-				}
-				smvk::PakPager pager(badPath.generic_string());
-				Check(pager.Valid(), "pager.corrupt.open");
-				const auto* scene2 = pager.Reader().Find(
-					smvk::PakAssetKind::Scene, "scene/only");
-				const auto* mesh2 = pager.Reader().Find(
-					smvk::PakAssetKind::Mesh, "models/big#mesh.0");
-				std::string perr;
-				auto page = pager.Read(*scene2, perr);
-				Check(!page && perr.find("corrupt page")
-					!= std::string::npos,
-					"pager.corrupt-page-fails-loud");
-				std::string merr;
-				auto mesh = pager.Read(*mesh2, merr);
-				Check(mesh && mesh.size() == big.size(),
-					"pager.corrupt-sibling-serves");
-			}
-		}
-	}
+    // A CORRUPT PAGE fails AT the page (the SMP8 lazy verification
+    // surfaced by the pager) — its neighbors stay servable.
+    {
+        std::string serr;
+        auto imgReader = smvk::PakReader::Open(std::span<const uint8_t>(img), serr);
+        Check(imgReader.has_value(), "pager.corrupt.source-open");
+        if (imgReader) {
+            const auto* scene = imgReader->Find(smvk::PakAssetKind::Scene, "scene/only");
+            Check(scene != nullptr, "pager.corrupt.find-scene");
+            if (scene) {
+                std::vector<uint8_t> bad = img;
+                bad[size_t(scene->offset)] ^= 0xFF;
+                const fs::path badPath = tmp / "pagerbad.pak";
+                {
+                    std::ofstream f(badPath, std::ios::binary | std::ios::trunc);
+                    f.write(reinterpret_cast<const char*>(bad.data()), std::streamsize(bad.size()));
+                }
+                smvk::PakPager pager(badPath.generic_string());
+                Check(pager.Valid(), "pager.corrupt.open");
+                const auto* scene2 = pager.Reader().Find(smvk::PakAssetKind::Scene, "scene/only");
+                const auto* mesh2 =
+                    pager.Reader().Find(smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+                std::string perr;
+                auto page = pager.Read(*scene2, perr);
+                Check(!page && perr.find("corrupt page") != std::string::npos,
+                      "pager.corrupt-page-fails-loud");
+                std::string merr;
+                auto mesh = pager.Read(*mesh2, merr);
+                Check(mesh && mesh.size() == big.size(), "pager.corrupt-sibling-serves");
+            }
+        }
+    }
 
-	// Bad inputs: a missing file + a garbage file refuse loudly; reads
-	// on an invalid pager never touch anything.
-	{
-		smvk::PakPager missing((tmp / "missing.pak").generic_string());
-		Check(!missing.Valid() && !missing.OpenError().empty(),
-			"pager.missing-refused");
-		const fs::path garbagePath = tmp / "garbage.pak";
-		{
-			std::ofstream f(garbagePath, std::ios::binary | std::ios::trunc);
-			const char bytes[64] = {};
-			f.write(bytes, sizeof(bytes));
-		}
-		smvk::PakPager garbage(garbagePath.generic_string());
-		Check(!garbage.Valid() && garbage.OpenError().find("magic")
-			!= std::string::npos, "pager.garbage-refused");
-	}
-	// Concurrency: threads demanding the same + different pages; every
-	// Acquire served, per-page dedup holds (each DISTINCT page read
-	// exactly once).
-	{
-		smvk::PakPager pager(pak);
-		const auto* mesh = pager.Reader().Find(
-			smvk::PakAssetKind::Mesh, "models/big#mesh.0");
-		const auto* scene = pager.Reader().Find(
-			smvk::PakAssetKind::Scene, "scene/only");
-		std::atomic<int> failures{ 0 };
-		std::vector<std::thread> threads;
-		for (int t = 0; t < 8; ++t) {
-			threads.emplace_back([&, t] {
-				const smvk::PakTocEntry& e =
-					(t % 2) ? *mesh : *scene;
-				for (int i = 0; i < 16; ++i) {
-					std::string err;
-					auto page = pager.Read(e, err);
-					if (!page || !err.empty())
-						++failures;
-				}
-			});
-		}
-		for (auto& th : threads)
-			th.join();
-		Check(failures.load() == 0, "pager.concurrent-all-served");
-		Check(pager.PageStats().diskReads == 2,
-			"pager.concurrent-dedup");
-	}
+    // Bad inputs: a missing file + a garbage file refuse loudly; reads
+    // on an invalid pager never touch anything.
+    {
+        smvk::PakPager missing((tmp / "missing.pak").generic_string());
+        Check(!missing.Valid() && !missing.OpenError().empty(), "pager.missing-refused");
+        const fs::path garbagePath = tmp / "garbage.pak";
+        {
+            std::ofstream f(garbagePath, std::ios::binary | std::ios::trunc);
+            const char bytes[64] = {};
+            f.write(bytes, sizeof(bytes));
+        }
+        smvk::PakPager garbage(garbagePath.generic_string());
+        Check(!garbage.Valid() && garbage.OpenError().find("magic") != std::string::npos,
+              "pager.garbage-refused");
+    }
+    // Concurrency: threads demanding the same + different pages; every
+    // Acquire served, per-page dedup holds (each DISTINCT page read
+    // exactly once).
+    {
+        smvk::PakPager pager(pak);
+        const auto* mesh = pager.Reader().Find(smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+        const auto* scene = pager.Reader().Find(smvk::PakAssetKind::Scene, "scene/only");
+        std::atomic<int> failures{0};
+        std::vector<std::thread> threads;
+        for (int t = 0; t < 8; ++t) {
+            threads.emplace_back([&, t] {
+                const smvk::PakTocEntry& e = (t % 2) ? *mesh : *scene;
+                for (int i = 0; i < 16; ++i) {
+                    std::string err;
+                    auto page = pager.Read(e, err);
+                    if (!page || !err.empty())
+                        ++failures;
+                }
+            });
+        }
+        for (auto& th : threads)
+            th.join();
+        Check(failures.load() == 0, "pager.concurrent-all-served");
+        Check(pager.PageStats().diskReads == 2, "pager.concurrent-dedup");
+    }
 
-	fs::remove_all(tmp, ec);
+    fs::remove_all(tmp, ec);
 }
 
 // PROJECT-DEFINED NODE SCHEMAS (Engine/Scene/node_schema.h — the
@@ -1400,219 +1310,190 @@ void TestPakPager() {
 // schema-association round trip (through ParseSceneBlob, the
 // GPU-less reader).
 void TestNodeSchemas() {
-	// The authored text form: fields, defaults (scalars, vec3, ref,
-	// str, fixed arrays), stable ids.
-	smvk::NodeSchema schema;
-	{
-		const std::string text =
-			"# the stable id never changes; the name may\n"
-			"schema ZombieSpawner 3001\n"
-			"  attr respawnTime f32 = 12.0\n"
-			"  attr maxAlive u32 = 8\n"
-			"  attr spawnOffset vec3 = 1 2 3\n"
-			"  attr guardMesh ref = 0x3000\n"
-			"  attr patrolPoints vec3 2 = 0 0 0  10 0 0\n"
-			"  attr enabled bool = 1\n"
-			"  attr label str = \"spawner\"\n";
-		std::string perr;
-		Check(smvk::ParseNodeSchemaText(text, schema, perr),
-			"schema.parse");
-		Check(schema.id == 3001 && schema.name == "ZombieSpawner"
-			&& schema.fields.size() == 7, "schema.parse.fields");
-		// Defaults decode: f32 at its offset, vec3 components, the
-		// ref content id (u64 LE), the str (len + bytes).
-		const smvk::SchemaField* respawn = schema.Field(0);
-		Check(respawn && respawn->offset == 0
-			&& respawn->defaultValue.size() == 4, "schema.layout.first");
-		float f = 0;
-		if (respawn)
-			std::memcpy(&f, respawn->defaultValue.data(), 4);
-		Check(f == 12.0f, "schema.default.f32");
-		const smvk::SchemaField* offset3 = schema.Field(2);
-		Check(offset3 && offset3->stride == 12
-			&& offset3->defaultValue.size() == 12,
-			"schema.layout.vec3");
-		const smvk::SchemaField* ref = schema.Field(3);
-		Check(ref && ref->offset == 24 && ref->stride == 8,
-			"schema.layout.ref-align8");
-		uint64_t refId = 0;
-		if (ref)
-			std::memcpy(&refId, ref->defaultValue.data(),
-				std::min<size_t>(8, ref->defaultValue.size()));
-		Check(refId == 0x3000, "schema.default.ref");
-		const smvk::SchemaField* arr = schema.Field(4);
-		Check(arr && arr->count == 2 && arr->stride == 12
-			&& arr->defaultValue.size() == 24,
-			"schema.layout.array");
-		const smvk::SchemaField* str = schema.Field(6);
-		Check(str && str->count == 1
-			&& str->defaultValue.size() >= 4 + 7,
-			"schema.layout.str");
-		uint32_t strLen = 0;
-		if (str && str->defaultValue.size() >= 4) {
-			std::memcpy(&strLen, str->defaultValue.data(), 4);
-			Check(strLen == 7
-				&& std::memcmp(str->defaultValue.data() + 4, "spawner",
-					7) == 0,
-				"schema.default.str");
-		}
-		else {
-			Check(false, "schema.default.str");
-		}
-		// The full cooked block size: fields in order, NATURALLY
-		// aligned (f32@0, u32@4, vec3@8..20, ref@24..32 (align 8),
-		// vec3[2]@32..56, bool@56..60, str tail@60: 4+7 padded ->
-		// 72).
-		Check(schema.valueBytes == 72, "schema.layout.value-bytes");
-	}
-	// Malformed: unknown type, bad count, wrong literal count, dup
-	// names, missing header, str-not-last.
-	{
-		const char* bads[] = {
-			"schema X 1\n attr a quat = 1",
-			"schema X 1\n attr a f32 0 = 1",
-			"schema X 1\n attr a vec3 = 1 2",
-			"schema X 1\n attr a f32 = 1\n attr a f32 = 2",
-			"attr a f32 = 1",
-			"schema X 0\n attr a f32 = 1",
-			// str must be layout-terminal (the variable tail).
-			"schema X 1\n attr a str = \"x\"\n attr b f32 = 1",
-		};
-		for (const char* text : bads) {
-			smvk::NodeSchema junk;
-			std::string perr;
-			Check(!smvk::ParseNodeSchemaText(text, junk, perr),
-				"schema.parse-malformed");
-		}
-	}
-	// The multi-schema file form.
-	{
-		const std::string file =
-			"schema A 3001\n attr x f32 = 1\n"
-			"schema B 3002\n attr y u32 = 2\n attr z ref = 0x2000\n";
-		std::vector<smvk::NodeSchema> parsed;
-		std::string perr;
-		Check(smvk::ParseNodeSchemaFile(file, parsed, perr)
-			&& parsed.size() == 2 && parsed[0].id == 3001
-			&& parsed[1].id == 3002 && parsed[1].fields.size() == 2,
-			"schema.file-multi");
-	}
-	// The registry blob codec + the in-pak round trip.
-	{
-		const std::vector<uint8_t> blob =
-			smvk::WriteSchemaRegistryBlob({ schema });
-		std::vector<smvk::NodeSchema> back;
-		std::string rerr;
-		Check(smvk::ParseSchemaRegistryBlob(
-				std::span<const uint8_t>(blob), back, rerr)
-			&& back.size() == 1 && back[0].id == 3001
-			&& back[0].valueBytes == schema.valueBytes
-			&& back[0].fields.size() == schema.fields.size()
-			&& back[0].Field(3)->offset == schema.Field(3)->offset,
-			"schema.registry-roundtrip");
-		std::vector<smvk::NodeSchema> junk;
-		Check(!smvk::ParseSchemaRegistryBlob(
-				std::span<const uint8_t>(blob.data(), blob.size() - 4),
-				junk, rerr), "schema.registry-truncated-refused");
+    // The authored text form: fields, defaults (scalars, vec3, ref,
+    // str, fixed arrays), stable ids.
+    smvk::NodeSchema schema;
+    {
+        const std::string text = "# the stable id never changes; the name may\n"
+                                 "schema ZombieSpawner 3001\n"
+                                 "  attr respawnTime f32 = 12.0\n"
+                                 "  attr maxAlive u32 = 8\n"
+                                 "  attr spawnOffset vec3 = 1 2 3\n"
+                                 "  attr guardMesh ref = 0x3000\n"
+                                 "  attr patrolPoints vec3 2 = 0 0 0  10 0 0\n"
+                                 "  attr enabled bool = 1\n"
+                                 "  attr label str = \"spawner\"\n";
+        std::string perr;
+        Check(smvk::ParseNodeSchemaText(text, schema, perr), "schema.parse");
+        Check(schema.id == 3001 && schema.name == "ZombieSpawner" && schema.fields.size() == 7,
+              "schema.parse.fields");
+        // Defaults decode: f32 at its offset, vec3 components, the
+        // ref content id (u64 LE), the str (len + bytes).
+        const smvk::SchemaField* respawn = schema.Field(0);
+        Check(respawn && respawn->offset == 0 && respawn->defaultValue.size() == 4,
+              "schema.layout.first");
+        float f = 0;
+        if (respawn)
+            std::memcpy(&f, respawn->defaultValue.data(), 4);
+        Check(f == 12.0f, "schema.default.f32");
+        const smvk::SchemaField* offset3 = schema.Field(2);
+        Check(offset3 && offset3->stride == 12 && offset3->defaultValue.size() == 12,
+              "schema.layout.vec3");
+        const smvk::SchemaField* ref = schema.Field(3);
+        Check(ref && ref->offset == 24 && ref->stride == 8, "schema.layout.ref-align8");
+        uint64_t refId = 0;
+        if (ref)
+            std::memcpy(
+                &refId, ref->defaultValue.data(), std::min<size_t>(8, ref->defaultValue.size()));
+        Check(refId == 0x3000, "schema.default.ref");
+        const smvk::SchemaField* arr = schema.Field(4);
+        Check(arr && arr->count == 2 && arr->stride == 12 && arr->defaultValue.size() == 24,
+              "schema.layout.array");
+        const smvk::SchemaField* str = schema.Field(6);
+        Check(str && str->count == 1 && str->defaultValue.size() >= 4 + 7, "schema.layout.str");
+        uint32_t strLen = 0;
+        if (str && str->defaultValue.size() >= 4) {
+            std::memcpy(&strLen, str->defaultValue.data(), 4);
+            Check(strLen == 7 && std::memcmp(str->defaultValue.data() + 4, "spawner", 7) == 0,
+                  "schema.default.str");
+        } else {
+            Check(false, "schema.default.str");
+        }
+        // The full cooked block size: fields in order, NATURALLY
+        // aligned (f32@0, u32@4, vec3@8..20, ref@24..32 (align 8),
+        // vec3[2]@32..56, bool@56..60, str tail@60: 4+7 padded ->
+        // 72).
+        Check(schema.valueBytes == 72, "schema.layout.value-bytes");
+    }
+    // Malformed: unknown type, bad count, wrong literal count, dup
+    // names, missing header, str-not-last.
+    {
+        const char* bads[] = {
+            "schema X 1\n attr a quat = 1",
+            "schema X 1\n attr a f32 0 = 1",
+            "schema X 1\n attr a vec3 = 1 2",
+            "schema X 1\n attr a f32 = 1\n attr a f32 = 2",
+            "attr a f32 = 1",
+            "schema X 0\n attr a f32 = 1",
+            // str must be layout-terminal (the variable tail).
+            "schema X 1\n attr a str = \"x\"\n attr b f32 = 1",
+        };
+        for (const char* text : bads) {
+            smvk::NodeSchema junk;
+            std::string perr;
+            Check(!smvk::ParseNodeSchemaText(text, junk, perr), "schema.parse-malformed");
+        }
+    }
+    // The multi-schema file form.
+    {
+        const std::string file = "schema A 3001\n attr x f32 = 1\n"
+                                 "schema B 3002\n attr y u32 = 2\n attr z ref = 0x2000\n";
+        std::vector<smvk::NodeSchema> parsed;
+        std::string perr;
+        Check(smvk::ParseNodeSchemaFile(file, parsed, perr) && parsed.size() == 2 &&
+                  parsed[0].id == 3001 && parsed[1].id == 3002 && parsed[1].fields.size() == 2,
+              "schema.file-multi");
+    }
+    // The registry blob codec + the in-pak round trip.
+    {
+        const std::vector<uint8_t> blob = smvk::WriteSchemaRegistryBlob({schema});
+        std::vector<smvk::NodeSchema> back;
+        std::string rerr;
+        Check(smvk::ParseSchemaRegistryBlob(std::span<const uint8_t>(blob), back, rerr) &&
+                  back.size() == 1 && back[0].id == 3001 &&
+                  back[0].valueBytes == schema.valueBytes &&
+                  back[0].fields.size() == schema.fields.size() &&
+                  back[0].Field(3)->offset == schema.Field(3)->offset,
+              "schema.registry-roundtrip");
+        std::vector<smvk::NodeSchema> junk;
+        Check(!smvk::ParseSchemaRegistryBlob(
+                  std::span<const uint8_t>(blob.data(), blob.size() - 4), junk, rerr),
+              "schema.registry-truncated-refused");
 
-		// Through a pak: the Schema-kind blob at the reserved path.
-		smvk::PakWriter w;
-		Check(w.AddBlob(smvk::PakAssetKind::Schema,
-				smvk::kPakSchemaRegistryPath, blob), "schema.pak-add");
-		const std::vector<uint8_t> img = w.Finalize();
-		std::string oerr;
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(img), oerr);
-		Check(r.has_value(), "schema.pak-open");
-		if (r) {
-			const auto* e = r->Find(smvk::PakAssetKind::Schema,
-				smvk::kPakSchemaRegistryPath);
-			Check(e != nullptr, "schema.pak-find");
-			std::vector<smvk::NodeSchema> loaded;
-			std::string lerr;
-			Check(e && smvk::ParseSchemaRegistryBlob(r->Payload(*e),
-					loaded, lerr)
-				&& loaded.size() == 1 && loaded[0].id == 3001,
-				"schema.pak-registry-serves");
-		}
-	}
-	// The scene blob's v19 round trip: an offline cluster carrying a
-	// schema association cooks + reads back byte-exact (through
-	// ParseSceneBlob, the GPU-less reader).
-	{
-		auto c = std::make_unique<smvk::Cluster>(nullptr);
-		c->SetOfflineMode(true);
-		const int root = addNode(c->scene, -1, 0);
-		const int child = addNode(c->scene, root, 1);
-		// The cooked value block: the schema's defaults.
-		std::vector<uint8_t> values(schema.valueBytes, 0);
-		for (const smvk::SchemaField& f : schema.fields)
-			std::memcpy(values.data() + f.offset, f.defaultValue.data(),
-				std::min(f.defaultValue.size(),
-					values.size() - f.offset));
-		Check(SetSchemaAssoc(c->scene, NodeId(child), 3001,
-				values), "schema.set-assoc");
-		smvk::PakWriter w;
-		std::string serr;
-		smvk::ClusterSerializeStats stats;
-		Check(smvk::SerializeCluster(*c, w, &stats, &serr, &schema, 1),
-			"schema.serialize");
-		const std::vector<uint8_t> img = w.Finalize();
-		std::string oerr;
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(img), oerr);
-		Check(r.has_value(), "schema.scene-pak-open");
-		if (r) {
-			const auto* e = r->Find(smvk::PakAssetKind::Scene,
-				"<cluster-local>#scene");
-			Check(e != nullptr, "schema.scene-find");
-			Scene scene;
-			std::string name;
-			std::string perr;
-			Check(e && smvk::ParseSceneBlob(r->Payload(*e), scene,
-					name, nullptr, perr),
-				"schema.scene-parse");
-			Check(scene.tables.schemaAssocs.size() == 1
-				&& scene.tables.schemaAssocs[0].schemaId == 3001
-				&& scene.tables.schemaAssocs[0].values == values
-				&& FindSchemaAssoc(scene,
-					scene.tables.schemaAssocs[0].node) != nullptr,
-				"schema.scene-row-roundtrip");
-			// The registry blob rides the same pak.
-			const auto* reg = r->Find(smvk::PakAssetKind::Schema,
-				smvk::kPakSchemaRegistryPath);
-			std::vector<smvk::NodeSchema> loaded;
-			std::string lerr;
-			Check(reg && smvk::ParseSchemaRegistryBlob(r->Payload(*reg),
-					loaded, lerr) && loaded.size() == 1,
-				"schema.scene-registry-rides");
-		}
-		// A schema-less cluster: the v19 section is UNIFORM (zero
-		// rows) — old-shape blobs still parse.
-		{
-			auto bare = std::make_unique<smvk::Cluster>(nullptr);
-			bare->SetOfflineMode(true);
-			addNode(bare->scene, -1, 0);
-			smvk::PakWriter w2;
-			Check(smvk::SerializeCluster(*bare, w2, nullptr, &serr),
-				"schema.serialize-bare");
-			auto img2 = w2.Finalize();
-			auto r2 = smvk::PakReader::Open(
-				std::span<const uint8_t>(img2), oerr);
-			Check(r2.has_value(), "schema.bare-pak-open");
-			if (r2) {
-				const auto* e = r2->Find(smvk::PakAssetKind::Scene,
-					"<cluster-local>#scene");
-				Scene scene;
-				std::string name;
-				std::string perr;
-				Check(e && smvk::ParseSceneBlob(r2->Payload(*e), scene,
-						name, nullptr, perr)
-					&& scene.tables.schemaAssocs.empty(),
-					"schema.bare-zero-rows");
-			}
-		}
-	}
+        // Through a pak: the Schema-kind blob at the reserved path.
+        smvk::PakWriter w;
+        Check(w.AddBlob(smvk::PakAssetKind::Schema, smvk::kPakSchemaRegistryPath, blob),
+              "schema.pak-add");
+        const std::vector<uint8_t> img = w.Finalize();
+        std::string oerr;
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), oerr);
+        Check(r.has_value(), "schema.pak-open");
+        if (r) {
+            const auto* e = r->Find(smvk::PakAssetKind::Schema, smvk::kPakSchemaRegistryPath);
+            Check(e != nullptr, "schema.pak-find");
+            std::vector<smvk::NodeSchema> loaded;
+            std::string lerr;
+            Check(e && smvk::ParseSchemaRegistryBlob(r->Payload(*e), loaded, lerr) &&
+                      loaded.size() == 1 && loaded[0].id == 3001,
+                  "schema.pak-registry-serves");
+        }
+    }
+    // The scene blob's v19 round trip: an offline cluster carrying a
+    // schema association cooks + reads back byte-exact (through
+    // ParseSceneBlob, the GPU-less reader).
+    {
+        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        c->SetOfflineMode(true);
+        const int root = addNode(c->scene, -1, 0);
+        const int child = addNode(c->scene, root, 1);
+        // The cooked value block: the schema's defaults.
+        std::vector<uint8_t> values(schema.valueBytes, 0);
+        for (const smvk::SchemaField& f : schema.fields)
+            std::memcpy(values.data() + f.offset,
+                        f.defaultValue.data(),
+                        std::min(f.defaultValue.size(), values.size() - f.offset));
+        Check(SetSchemaAssoc(c->scene, NodeId(child), 3001, values), "schema.set-assoc");
+        smvk::PakWriter w;
+        std::string serr;
+        smvk::ClusterSerializeStats stats;
+        Check(smvk::SerializeCluster(*c, w, &stats, &serr, &schema, 1), "schema.serialize");
+        const std::vector<uint8_t> img = w.Finalize();
+        std::string oerr;
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), oerr);
+        Check(r.has_value(), "schema.scene-pak-open");
+        if (r) {
+            const auto* e = r->Find(smvk::PakAssetKind::Scene, "<cluster-local>#scene");
+            Check(e != nullptr, "schema.scene-find");
+            Scene scene;
+            std::string name;
+            std::string perr;
+            Check(e && smvk::ParseSceneBlob(r->Payload(*e), scene, name, nullptr, perr),
+                  "schema.scene-parse");
+            Check(scene.tables.schemaAssocs.size() == 1 &&
+                      scene.tables.schemaAssocs[0].schemaId == 3001 &&
+                      scene.tables.schemaAssocs[0].values == values &&
+                      FindSchemaAssoc(scene, scene.tables.schemaAssocs[0].node) != nullptr,
+                  "schema.scene-row-roundtrip");
+            // The registry blob rides the same pak.
+            const auto* reg = r->Find(smvk::PakAssetKind::Schema, smvk::kPakSchemaRegistryPath);
+            std::vector<smvk::NodeSchema> loaded;
+            std::string lerr;
+            Check(reg && smvk::ParseSchemaRegistryBlob(r->Payload(*reg), loaded, lerr) &&
+                      loaded.size() == 1,
+                  "schema.scene-registry-rides");
+        }
+        // A schema-less cluster: the v19 section is UNIFORM (zero
+        // rows) — old-shape blobs still parse.
+        {
+            auto bare = std::make_unique<smvk::Cluster>(nullptr);
+            bare->SetOfflineMode(true);
+            addNode(bare->scene, -1, 0);
+            smvk::PakWriter w2;
+            Check(smvk::SerializeCluster(*bare, w2, nullptr, &serr), "schema.serialize-bare");
+            auto img2 = w2.Finalize();
+            auto r2 = smvk::PakReader::Open(std::span<const uint8_t>(img2), oerr);
+            Check(r2.has_value(), "schema.bare-pak-open");
+            if (r2) {
+                const auto* e = r2->Find(smvk::PakAssetKind::Scene, "<cluster-local>#scene");
+                Scene scene;
+                std::string name;
+                std::string perr;
+                Check(e && smvk::ParseSceneBlob(r2->Payload(*e), scene, name, nullptr, perr) &&
+                          scene.tables.schemaAssocs.empty(),
+                      "schema.bare-zero-rows");
+            }
+        }
+    }
 }
 
 // THE LAYOUT FINGERPRINTS (Engine/Asset/asset_plan.h — the compiled
@@ -1621,168 +1502,169 @@ void TestNodeSchemas() {
 // no recompile), and the layout sensitivity (slots, lengths, kinds,
 // the mesh-plan join all move it).
 void TestPakLayoutFingerprint() {
-	namespace fs = std::filesystem;
-	const fs::path tmp = fs::temp_directory_path()
-		/ "tourmaline_planfp";
-	std::error_code ec;
-	fs::remove_all(tmp, ec);
-	fs::create_directories(tmp, ec);
+    namespace fs = std::filesystem;
+    const fs::path tmp = fs::temp_directory_path() / "tourmaline_planfp";
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp, ec);
 
-	const auto writePak = [&](const char* name,
-			const std::vector<uint8_t>& img) {
-		std::ofstream f(tmp / name, std::ios::binary | std::ios::trunc);
-		f.write(reinterpret_cast<const char*>(img.data()),
-			std::streamsize(img.size()));
-	};
-	smvk::PakWriter w;
-	w.AddBlob(smvk::PakAssetKind::Mesh,
-		"content/models/tree.geometry#mesh.0/prim.0", { 1, 2, 3, 4 });
-	w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
-		smvk::BuildTexturePayload("textures/a.ktx2", -1, -1, -1, -1,
-			std::span<const uint8_t>(
-				std::vector<uint8_t>{ 9, 9, 9 })));
-	{
-		std::vector<smvk::PakMeshPlanFamily> plan = {
-			{ "content/models/tree.geometry",
-				{ { "content/models/tree.geometry#mesh.0/prim.0", 0 } } },
-		};
-		w.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
-			smvk::WriteMeshPlanBlob(plan));
-	}
-	const std::vector<uint8_t> img = w.Finalize();
-	writePak("a.pak", img);
-	// A CONTENT-ONLY variant: the same layout, one payload byte
-	// different (the texture's ktx tail).
-	std::vector<uint8_t> repixel = img;
-	{
-		std::string oerr;
-		auto r = smvk::PakReader::Open(
-			std::span<const uint8_t>(repixel), oerr);
-		if (r) {
-			if (const auto* e = r->Find(smvk::PakAssetKind::Texture,
-					"textures/a.ktx2"))
-				repixel[size_t(e->offset + e->size - 1)] ^= 0xFF;
-		}
-	}
-	writePak("repixel.pak", repixel);
-	// A LAYOUT variant: one entry's LENGTH changes (a re-cooked
-	// payload of a different size).
-	{
-		smvk::PakWriter w2;
-		w2.AddBlob(smvk::PakAssetKind::Mesh,
-			"content/models/tree.geometry#mesh.0/prim.0", { 1, 2, 3 });
-		w2.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
-			smvk::BuildTexturePayload("textures/a.ktx2", -1, -1, -1,
-				-1, std::span<const uint8_t>(
-					std::vector<uint8_t>{ 9, 9, 9 })));
-		std::vector<smvk::PakMeshPlanFamily> plan = {
-			{ "content/models/tree.geometry",
-				{ { "content/models/tree.geometry#mesh.0/prim.0",
-					0 } } },
-		};
-		w2.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
-			smvk::WriteMeshPlanBlob(plan));
-		writePak("relayout.pak", w2.Finalize());
-	}
-	// A MESH-PLAN variant: the same entries, the JOIN changes (a new
-	// LOD member reference).
-	{
-		smvk::PakWriter w3;
-		w3.AddBlob(smvk::PakAssetKind::Mesh,
-			"content/models/tree.geometry#mesh.0/prim.0", { 1, 2, 3, 4 });
-		w3.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
-			smvk::BuildTexturePayload("textures/a.ktx2", -1, -1, -1,
-				-1, std::span<const uint8_t>(
-					std::vector<uint8_t>{ 9, 9, 9 })));
-		std::vector<smvk::PakMeshPlanFamily> plan = {
-			{ "content/models/tree.geometry",
-				{ { "content/models/tree.geometry#mesh.0/prim.0", 0 },
-				  { "content/models/tree.geometry"
-					"#mesh.0/prim.0/lod1", 1 } } },
-		};
-		w3.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
-			smvk::WriteMeshPlanBlob(plan));
-		writePak("replan.pak", w3.Finalize());
-	}
+    const auto writePak = [&](const char* name, const std::vector<uint8_t>& img) {
+        std::ofstream f(tmp / name, std::ios::binary | std::ios::trunc);
+        f.write(reinterpret_cast<const char*>(img.data()), std::streamsize(img.size()));
+    };
+    smvk::PakWriter w;
+    w.AddBlob(smvk::PakAssetKind::Mesh, "content/models/tree.geometry#mesh.0/prim.0", {1, 2, 3, 4});
+    w.AddBlob(smvk::PakAssetKind::Texture,
+              "textures/a.ktx2",
+              smvk::BuildTexturePayload("textures/a.ktx2",
+                                        -1,
+                                        -1,
+                                        -1,
+                                        -1,
+                                        std::span<const uint8_t>(std::vector<uint8_t>{9, 9, 9})));
+    {
+        std::vector<smvk::PakMeshPlanFamily> plan = {
+            {"content/models/tree.geometry", {{"content/models/tree.geometry#mesh.0/prim.0", 0}}},
+        };
+        w.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath, smvk::WriteMeshPlanBlob(plan));
+    }
+    const std::vector<uint8_t> img = w.Finalize();
+    writePak("a.pak", img);
+    // A CONTENT-ONLY variant: the same layout, one payload byte
+    // different (the texture's ktx tail).
+    std::vector<uint8_t> repixel = img;
+    {
+        std::string oerr;
+        auto r = smvk::PakReader::Open(std::span<const uint8_t>(repixel), oerr);
+        if (r) {
+            if (const auto* e = r->Find(smvk::PakAssetKind::Texture, "textures/a.ktx2"))
+                repixel[size_t(e->offset + e->size - 1)] ^= 0xFF;
+        }
+    }
+    writePak("repixel.pak", repixel);
+    // A LAYOUT variant: one entry's LENGTH changes (a re-cooked
+    // payload of a different size).
+    {
+        smvk::PakWriter w2;
+        w2.AddBlob(
+            smvk::PakAssetKind::Mesh, "content/models/tree.geometry#mesh.0/prim.0", {1, 2, 3});
+        w2.AddBlob(
+            smvk::PakAssetKind::Texture,
+            "textures/a.ktx2",
+            smvk::BuildTexturePayload("textures/a.ktx2",
+                                      -1,
+                                      -1,
+                                      -1,
+                                      -1,
+                                      std::span<const uint8_t>(std::vector<uint8_t>{9, 9, 9})));
+        std::vector<smvk::PakMeshPlanFamily> plan = {
+            {"content/models/tree.geometry", {{"content/models/tree.geometry#mesh.0/prim.0", 0}}},
+        };
+        w2.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath, smvk::WriteMeshPlanBlob(plan));
+        writePak("relayout.pak", w2.Finalize());
+    }
+    // A MESH-PLAN variant: the same entries, the JOIN changes (a new
+    // LOD member reference).
+    {
+        smvk::PakWriter w3;
+        w3.AddBlob(
+            smvk::PakAssetKind::Mesh, "content/models/tree.geometry#mesh.0/prim.0", {1, 2, 3, 4});
+        w3.AddBlob(
+            smvk::PakAssetKind::Texture,
+            "textures/a.ktx2",
+            smvk::BuildTexturePayload("textures/a.ktx2",
+                                      -1,
+                                      -1,
+                                      -1,
+                                      -1,
+                                      std::span<const uint8_t>(std::vector<uint8_t>{9, 9, 9})));
+        std::vector<smvk::PakMeshPlanFamily> plan = {
+            {"content/models/tree.geometry",
+             {{"content/models/tree.geometry#mesh.0/prim.0", 0},
+              {"content/models/tree.geometry"
+               "#mesh.0/prim.0/lod1",
+               1}}},
+        };
+        w3.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath, smvk::WriteMeshPlanBlob(plan));
+        writePak("replan.pak", w3.Finalize());
+    }
 
-	const auto fpOf = [&](const char* name) -> std::string {
-		std::string oerr;
-		auto r = smvk::PakReader::OpenFile(
-			(tmp / name).generic_string(), oerr);
-		Check(r.has_value(), (std::string("planfp.open.")
-			+ name).c_str());
-		return r ? smvk::PakLayoutFingerprint(*r) : std::string();
-	};
-	const std::string fpA = fpOf("a.pak");
-	// Determinism: the same file folds the same.
-	Check(fpOf("a.pak") == fpA, "planfp.deterministic");
-	// CONTENT-ONLY change: the SAME fingerprint (the payload-only
-	// redeploy needs NO recompile — the acceptance contract; the
-	// per-page contentCrc owns runtime integrity, not the layout).
-	Check(fpOf("repixel.pak") == fpA, "planfp.content-excluded");
-	// LENGTH change: a DIFFERENT fingerprint (lengths are covered).
-	Check(fpOf("relayout.pak") != fpA, "planfp.length-covered");
-	// The mesh-plan join is covered.
-	Check(fpOf("replan.pak") != fpA, "planfp.meshplan-covered");
-	// The LIST fold: the pak names + per-pak fingerprints.
-	{
-		const std::string names[2] = { "one.pak", "two.pak" };
-		const std::string fps[2] = { fpA, fpA };
-		const std::string listA =
-			smvk::FoldPakLayouts(names, fps, 2);
-		Check(smvk::FoldPakLayouts(names, fps, 2) == listA,
-			"planfp.list-deterministic");
-		// The order matters (mount order is an assumption).
-		const std::string swapped[2] = { "two.pak", "one.pak" };
-		Check(smvk::FoldPakLayouts(swapped, fps, 2) != listA,
-			"planfp.list-order-covered");
-		// A pak's layout change moves the list.
-		const std::string fps2[2] = { fpOf("relayout.pak"), fpA };
-		Check(smvk::FoldPakLayouts(names, fps2, 2) != listA,
-			"planfp.list-pak-covered");
-	}
-	fs::remove_all(tmp, ec);
+    const auto fpOf = [&](const char* name) -> std::string {
+        std::string oerr;
+        auto r = smvk::PakReader::OpenFile((tmp / name).generic_string(), oerr);
+        Check(r.has_value(), (std::string("planfp.open.") + name).c_str());
+        return r ? smvk::PakLayoutFingerprint(*r) : std::string();
+    };
+    const std::string fpA = fpOf("a.pak");
+    // Determinism: the same file folds the same.
+    Check(fpOf("a.pak") == fpA, "planfp.deterministic");
+    // CONTENT-ONLY change: the SAME fingerprint (the payload-only
+    // redeploy needs NO recompile — the acceptance contract; the
+    // per-page contentCrc owns runtime integrity, not the layout).
+    Check(fpOf("repixel.pak") == fpA, "planfp.content-excluded");
+    // LENGTH change: a DIFFERENT fingerprint (lengths are covered).
+    Check(fpOf("relayout.pak") != fpA, "planfp.length-covered");
+    // The mesh-plan join is covered.
+    Check(fpOf("replan.pak") != fpA, "planfp.meshplan-covered");
+    // The LIST fold: the pak names + per-pak fingerprints.
+    {
+        const std::string names[2] = {"one.pak", "two.pak"};
+        const std::string fps[2] = {fpA, fpA};
+        const std::string listA = smvk::FoldPakLayouts(names, fps, 2);
+        Check(smvk::FoldPakLayouts(names, fps, 2) == listA, "planfp.list-deterministic");
+        // The order matters (mount order is an assumption).
+        const std::string swapped[2] = {"two.pak", "one.pak"};
+        Check(smvk::FoldPakLayouts(swapped, fps, 2) != listA, "planfp.list-order-covered");
+        // A pak's layout change moves the list.
+        const std::string fps2[2] = {fpOf("relayout.pak"), fpA};
+        Check(smvk::FoldPakLayouts(names, fps2, 2) != listA, "planfp.list-pak-covered");
+    }
+    fs::remove_all(tmp, ec);
 }
 
 void TestPakBackendServesTextures() {
-	smvk::PakWriter w;
-	auto tp = smvk::BuildTexturePayload("textures/brick.ktx2", -1, -1, -1, -1,
-		std::span<const uint8_t>(std::vector<uint8_t>{ 10, 20, 30 }));
-	w.AddBlob(smvk::PakAssetKind::Texture, "textures/brick.ktx2", std::move(tp));
-	std::vector<uint8_t> scene = { 1 };
-	w.AddBlob(smvk::PakAssetKind::Scene, "<cluster-local>#scene", scene);
-	auto img = std::make_shared<const std::vector<uint8_t>>(w.Finalize());
-	std::string err;
-	auto backend = smvk::PakBackend::Open(img, "test.pak", err);
-	Check(backend != nullptr, "pakbackend.open");
-	if (!backend) {
-		std::cout << "  backend error: " << err << "\n";
-		return;
-	}
-	smvk::OverlayVfs vfs;
-	vfs.Mount(backend, 0, "test.pak");
-	auto bytes = vfs.TryRead("textures/brick.ktx2");
-	Check(bytes && bytes->size() == 3 && (*bytes)[0] == 10, "pakbackend.serve.ktx");
-	Check(!vfs.Exists("models/s.gltf"), "pakbackend.nontex.invisible");
-	auto dir = vfs.ListDir("textures");
-	Check(dir.size() == 1 && dir[0] == "textures/brick.ktx2", "pakbackend.listdir");
+    smvk::PakWriter w;
+    auto tp = smvk::BuildTexturePayload("textures/brick.ktx2",
+                                        -1,
+                                        -1,
+                                        -1,
+                                        -1,
+                                        std::span<const uint8_t>(std::vector<uint8_t>{10, 20, 30}));
+    w.AddBlob(smvk::PakAssetKind::Texture, "textures/brick.ktx2", std::move(tp));
+    std::vector<uint8_t> scene = {1};
+    w.AddBlob(smvk::PakAssetKind::Scene, "<cluster-local>#scene", scene);
+    auto img = std::make_shared<const std::vector<uint8_t>>(w.Finalize());
+    std::string err;
+    auto backend = smvk::PakBackend::Open(img, "test.pak", err);
+    Check(backend != nullptr, "pakbackend.open");
+    if (!backend) {
+        std::cout << "  backend error: " << err << "\n";
+        return;
+    }
+    smvk::OverlayVfs vfs;
+    vfs.Mount(backend, 0, "test.pak");
+    auto bytes = vfs.TryRead("textures/brick.ktx2");
+    Check(bytes && bytes->size() == 3 && (*bytes)[0] == 10, "pakbackend.serve.ktx");
+    Check(!vfs.Exists("models/s.gltf"), "pakbackend.nontex.invisible");
+    auto dir = vfs.ListDir("textures");
+    Check(dir.size() == 1 && dir[0] == "textures/brick.ktx2", "pakbackend.listdir");
 }
 
 smvk::StaticMeshUpload MakeQuad() {
-	smvk::StaticMeshUpload u;
-	for (int i = 0; i < 4; ++i) {
-		smvk::ImportStaticVertex v{};
-		v.pos = { (i & 1) ? 1.0f : 0.0f, (i & 2) ? 1.0f : 0.0f, 0.0f };
-		v.color = { 1, 1, 1, 1 };
-		v.texCoord = { v.pos.x, v.pos.y };
-		v.normal = { 0, 0, 1 };
-		v.tangent = { 1, 0, 0, 1 };
-		u.vertices.push_back(v);
-	}
-	u.indices = { 0, 1, 2, 0, 2, 3 };
-	u.aabbMin = { 0, 0, 0 };
-	u.aabbMax = { 1, 1, 0 };
-	return u;
+    smvk::StaticMeshUpload u;
+    for (int i = 0; i < 4; ++i) {
+        smvk::ImportStaticVertex v{};
+        v.pos = {(i & 1) ? 1.0f : 0.0f, (i & 2) ? 1.0f : 0.0f, 0.0f};
+        v.color = {1, 1, 1, 1};
+        v.texCoord = {v.pos.x, v.pos.y};
+        v.normal = {0, 0, 1};
+        v.tangent = {1, 0, 0, 1};
+        u.vertices.push_back(v);
+    }
+    u.indices = {0, 1, 2, 0, 2, 3};
+    u.aabbMin = {0, 0, 0};
+    u.aabbMax = {1, 1, 0};
+    return u;
 }
 
 // 3x3 vertex grid on z=0 (4 quads, 8 triangles): left quads chart 0,
@@ -1794,1586 +1676,1603 @@ smvk::StaticMeshUpload MakeQuad() {
 // vertex (parallel to the vertices); each vertex also carries its id
 // in chartId, like a stamped cook upload.
 smvk::StaticMeshUpload MakeTwoChartGrid(std::vector<uint32_t>& chartOf) {
-	chartOf.clear();
-	smvk::StaticMeshUpload u;
-	auto vert = [&](float x, float y, uint32_t chart, float cu, float cv) {
-		smvk::ImportStaticVertex v{};
-		v.pos = { x, y, 0.0f };
-		v.color = { 1, 1, 1, 1 };
-		v.texCoord = { x * 0.5f, y * 0.5f };
-		v.texCoord2 = { cu, cv };
-		v.normal = { 0, 0, 1 };
-		v.tangent = { 1, 0, 0, 1 };
-		v.chartId = chart;
-		chartOf.push_back(chart);
-		u.vertices.push_back(v);
-	};
-	// Chart uv extents stay well under kLodCrossChartUvSpan (0.45):
-	// within-chart triangles span at most |du|+|dv| = 0.075+0.30 = 0.375,
-	// while any cross-chart corner pair spans >= 0.625.
-	for (int y = 0; y <= 2; ++y)
-		vert(0.0f, float(y), 0, 0.10f, 0.10f + 0.15f * float(y));
-	for (int y = 0; y <= 2; ++y)
-		vert(1.0f, float(y), 0, 0.175f, 0.10f + 0.15f * float(y));
-	for (int y = 0; y <= 2; ++y)
-		vert(1.0f, float(y), 1, 0.80f, 0.10f + 0.15f * float(y));
-	for (int y = 0; y <= 2; ++y)
-		vert(2.0f, float(y), 1, 0.875f, 0.10f + 0.15f * float(y));
-	// chart 0: verts 0..5 (x=0: 0,1,2 | x=1: 3,4,5)
-	// chart 1: verts 6..11 (x=1: 6,7,8 | x=2: 9,10,11)
-	auto id = [](int x, int y, int chart) -> uint32_t {
-		return chart == 0
-			? (x == 0 ? uint32_t(y) : 3u + uint32_t(y))
-			: (x == 1 ? 6u + uint32_t(y) : 9u + uint32_t(y));
-	};
-	for (int y = 0; y < 2; ++y) {
-		// Left quad (chart 0).
-		const uint32_t a = id(0, y, 0), b = id(1, y, 0),
-			c = id(0, y + 1, 0), d = id(1, y + 1, 0);
-		u.indices.insert(u.indices.end(), { a, b, c, b, d, c });
-		// Right quad (chart 1).
-		const uint32_t a2 = id(1, y, 1), b2 = id(2, y, 1),
-			c2 = id(1, y + 1, 1), d2 = id(2, y + 1, 1);
-		u.indices.insert(u.indices.end(), { a2, b2, c2, b2, d2, c2 });
-	}
-	u.aabbMin = { 0.0f, 0.0f, 0.0f };
-	u.aabbMax = { 2.0f, 2.0f, 0.0f };
-	u.surfaces.push_back({ 0, uint32_t(u.indices.size()), 0 });
-	return u;
+    chartOf.clear();
+    smvk::StaticMeshUpload u;
+    auto vert = [&](float x, float y, uint32_t chart, float cu, float cv) {
+        smvk::ImportStaticVertex v{};
+        v.pos = {x, y, 0.0f};
+        v.color = {1, 1, 1, 1};
+        v.texCoord = {x * 0.5f, y * 0.5f};
+        v.texCoord2 = {cu, cv};
+        v.normal = {0, 0, 1};
+        v.tangent = {1, 0, 0, 1};
+        v.chartId = chart;
+        chartOf.push_back(chart);
+        u.vertices.push_back(v);
+    };
+    // Chart uv extents stay well under kLodCrossChartUvSpan (0.45):
+    // within-chart triangles span at most |du|+|dv| = 0.075+0.30 = 0.375,
+    // while any cross-chart corner pair spans >= 0.625.
+    for (int y = 0; y <= 2; ++y)
+        vert(0.0f, float(y), 0, 0.10f, 0.10f + 0.15f * float(y));
+    for (int y = 0; y <= 2; ++y)
+        vert(1.0f, float(y), 0, 0.175f, 0.10f + 0.15f * float(y));
+    for (int y = 0; y <= 2; ++y)
+        vert(1.0f, float(y), 1, 0.80f, 0.10f + 0.15f * float(y));
+    for (int y = 0; y <= 2; ++y)
+        vert(2.0f, float(y), 1, 0.875f, 0.10f + 0.15f * float(y));
+    // chart 0: verts 0..5 (x=0: 0,1,2 | x=1: 3,4,5)
+    // chart 1: verts 6..11 (x=1: 6,7,8 | x=2: 9,10,11)
+    auto id = [](int x, int y, int chart) -> uint32_t {
+        return chart == 0 ? (x == 0 ? uint32_t(y) : 3u + uint32_t(y))
+                          : (x == 1 ? 6u + uint32_t(y) : 9u + uint32_t(y));
+    };
+    for (int y = 0; y < 2; ++y) {
+        // Left quad (chart 0).
+        const uint32_t a = id(0, y, 0), b = id(1, y, 0), c = id(0, y + 1, 0), d = id(1, y + 1, 0);
+        u.indices.insert(u.indices.end(), {a, b, c, b, d, c});
+        // Right quad (chart 1).
+        const uint32_t a2 = id(1, y, 1), b2 = id(2, y, 1), c2 = id(1, y + 1, 1),
+                       d2 = id(2, y + 1, 1);
+        u.indices.insert(u.indices.end(), {a2, b2, c2, b2, d2, c2});
+    }
+    u.aabbMin = {0.0f, 0.0f, 0.0f};
+    u.aabbMax = {2.0f, 2.0f, 0.0f};
+    u.surfaces.push_back({0, uint32_t(u.indices.size()), 0});
+    return u;
 }
 
 void TestMeshOpt() {
-	smvk::MeshOptConfig cfg; // all passes on
-	auto quad = MakeQuad();
-	smvk::MeshOptStats stats;
-	smvk::LodInfo lod;
-	Check(smvk::OptimizeStaticMeshUpload(quad, cfg, 7, &stats, &lod), "meshopt.quad.ok");
-	Check(quad.vertices.size() == 4 && quad.indices.size() == 6, "meshopt.quad.topology");
-	Check(stats.triangles == 2 && stats.lodGroupId == 7, "meshopt.quad.stats");
-	Check(stats.acmrAfter > 0.0f && stats.acmrAfter <= stats.acmrBefore + 1e-5f, "meshopt.quad.acmr");
-	Check(lod.lodIndex == 0 && lod.screenThreshold < 0.0f, "meshopt.lod.unplugged");
-	Check(lod.triCount == 2, "meshopt.lod.tris");
+    smvk::MeshOptConfig cfg; // all passes on
+    auto quad = MakeQuad();
+    smvk::MeshOptStats stats;
+    smvk::LodInfo lod;
+    Check(smvk::OptimizeStaticMeshUpload(quad, cfg, 7, &stats, &lod), "meshopt.quad.ok");
+    Check(quad.vertices.size() == 4 && quad.indices.size() == 6, "meshopt.quad.topology");
+    Check(stats.triangles == 2 && stats.lodGroupId == 7, "meshopt.quad.stats");
+    Check(stats.acmrAfter > 0.0f && stats.acmrAfter <= stats.acmrBefore + 1e-5f,
+          "meshopt.quad.acmr");
+    Check(lod.lodIndex == 0 && lod.screenThreshold < 0.0f, "meshopt.lod.unplugged");
+    Check(lod.triCount == 2, "meshopt.lod.tris");
 
-	// Weld merges duplicated vertices.
-	auto dup = MakeQuad();
-	dup.vertices.push_back(dup.vertices[0]);
-	dup.vertices.push_back(dup.vertices[1]);
-	dup.vertices.push_back(dup.vertices[2]);
-	dup.indices = { 4, 5, 6, 0, 2, 3 };
-	smvk::MeshOptStats ws;
-	Check(smvk::OptimizeStaticMeshUpload(dup, cfg, 0, &ws, nullptr), "meshopt.weld.ok");
-	Check(ws.outVertices == 4, "meshopt.weld.merged");
+    // Weld merges duplicated vertices.
+    auto dup = MakeQuad();
+    dup.vertices.push_back(dup.vertices[0]);
+    dup.vertices.push_back(dup.vertices[1]);
+    dup.vertices.push_back(dup.vertices[2]);
+    dup.indices = {4, 5, 6, 0, 2, 3};
+    smvk::MeshOptStats ws;
+    Check(smvk::OptimizeStaticMeshUpload(dup, cfg, 0, &ws, nullptr), "meshopt.weld.ok");
+    Check(ws.outVertices == 4, "meshopt.weld.merged");
 
-	// Degenerate input fails softly.
-	smvk::StaticMeshUpload empty;
-	smvk::LodInfo elod;
-	Check(!smvk::OptimizeStaticMeshUpload(empty, cfg, 0, nullptr, &elod), "meshopt.empty.false");
-	Check(elod.lodIndex == 0, "meshopt.empty.lodmarker");
+    // Degenerate input fails softly.
+    smvk::StaticMeshUpload empty;
+    smvk::LodInfo elod;
+    Check(!smvk::OptimizeStaticMeshUpload(empty, cfg, 0, nullptr, &elod), "meshopt.empty.false");
+    Check(elod.lodIndex == 0, "meshopt.empty.lodmarker");
 
-	// Disabled config leaves data untouched.
-	auto q2 = MakeQuad();
-	smvk::MeshOptConfig off;
-	off.enabled = false;
-	Check(!smvk::OptimizeStaticMeshUpload(q2, off, 0), "meshopt.disabled.false");
-	Check(q2.vertices.size() == 4, "meshopt.disabled.untouched");
+    // Disabled config leaves data untouched.
+    auto q2 = MakeQuad();
+    smvk::MeshOptConfig off;
+    off.enabled = false;
+    Check(!smvk::OptimizeStaticMeshUpload(q2, off, 0), "meshopt.disabled.false");
+    Check(q2.vertices.size() == 4, "meshopt.disabled.untouched");
 }
 
 void TestSmoothNormalRepair() {
-	// Thin double-sided card modeled as one triangle wound both ways
-	// (shared vertices, opposing faces — the decimated-foliage case that
-	// produced the distant-sibling black band): the area-weighted
-	// accumulation cancels to exactly zero. Pre-repair this left the
-	// (0,1,0) fallback, which disagrees with both faces (dot == 0) and
-	// shades black where it interpolates backwards (NdotL <= 0 kills
-	// the sun, the GI SH samples the dark lobe).
-	smvk::StaticMeshUpload u;
-	auto vert = [&](float x, float y, float z) {
-		smvk::ImportStaticVertex v{};
-		v.pos = { x, y, z };
-		v.color = { 1, 1, 1, 1 };
-		v.texCoord = { x, y };
-		v.normal = { 0, 0, 1 };
-		v.tangent = { 1, 0, 0, 1 };
-		u.vertices.push_back(v);
-	};
-	vert(0.0f, 0.0f, 0.0f); // 0
-	vert(1.0f, 0.0f, 0.0f); // 1
-	vert(0.0f, 1.0f, 0.0f); // 2
-	vert(5.0f, 5.0f, 5.0f); // 3: unreferenced (keeps the +Y fallback)
-	u.indices = { 0, 1, 2, 0, 2, 1 }; // +Z then -Z, same verts
-	u.aabbMin = { 0, 0, 0 };
-	u.aabbMax = { 1, 1, 0 };
-	smvk::ComputeSmoothNormals(u);
-	// Every referenced vertex must end unit-length and agreeing with its
-	// dominant face (dot > 0). The dominant face is T0 (+Z: first max on
-	// the area tie), so the repaired normals must point +Z here.
-	for (int i = 0; i < 3; ++i) {
-		const glm::vec3& n = u.vertices[i].normal;
-		Check(std::isfinite(n.x + n.y + n.z)
-			&& fabsf(glm::length(n) - 1.0f) < 1e-5f, "smoothnorm.repair.unit");
-		Check(glm::dot(n, glm::vec3(0.0f, 0.0f, 1.0f)) > 0.0f,
-			"smoothnorm.repair.agrees");
-	}
-	// Unreferenced vertices keep the legacy +Y fallback (no face to
-	// agree with, so the repair correctly skips them).
-	{
-		const glm::vec3& n = u.vertices[3].normal;
-		Check(fabsf(n.x) < 1e-6f && fabsf(n.y - 1.0f) < 1e-6f
-			&& fabsf(n.z) < 1e-6f, "smoothnorm.repair.unreferenced");
-	}
-	// Clean single-sided quad (consistent CCW winding — note MakeQuad
-	// itself mixes windings, so this control builds its own): pure
-	// accumulation, repair must not fire (exact +Z preserved).
-	smvk::StaticMeshUpload q;
-	for (int i = 0; i < 4; ++i) {
-		smvk::ImportStaticVertex v{};
-		v.pos = { (i & 1) ? 1.0f : 0.0f, (i & 2) ? 1.0f : 0.0f, 0.0f };
-		v.color = { 1, 1, 1, 1 };
-		v.texCoord = { v.pos.x, v.pos.y };
-		v.normal = { 0, 0, 1 };
-		v.tangent = { 1, 0, 0, 1 };
-		q.vertices.push_back(v);
-	}
-	q.indices = { 0, 1, 2, 1, 3, 2 }; // both CCW (+Z)
-	q.aabbMin = { 0, 0, 0 };
-	q.aabbMax = { 1, 1, 0 };
-	smvk::ComputeSmoothNormals(q);
-	for (const auto& v : q.vertices)
-		Check(fabsf(v.normal.x) < 1e-6f && fabsf(v.normal.y) < 1e-6f
-			&& fabsf(v.normal.z - 1.0f) < 1e-6f, "smoothnorm.repair.clean");
+    // Thin double-sided card modeled as one triangle wound both ways
+    // (shared vertices, opposing faces — the decimated-foliage case that
+    // produced the distant-sibling black band): the area-weighted
+    // accumulation cancels to exactly zero. Pre-repair this left the
+    // (0,1,0) fallback, which disagrees with both faces (dot == 0) and
+    // shades black where it interpolates backwards (NdotL <= 0 kills
+    // the sun, the GI SH samples the dark lobe).
+    smvk::StaticMeshUpload u;
+    auto vert = [&](float x, float y, float z) {
+        smvk::ImportStaticVertex v{};
+        v.pos = {x, y, z};
+        v.color = {1, 1, 1, 1};
+        v.texCoord = {x, y};
+        v.normal = {0, 0, 1};
+        v.tangent = {1, 0, 0, 1};
+        u.vertices.push_back(v);
+    };
+    vert(0.0f, 0.0f, 0.0f);         // 0
+    vert(1.0f, 0.0f, 0.0f);         // 1
+    vert(0.0f, 1.0f, 0.0f);         // 2
+    vert(5.0f, 5.0f, 5.0f);         // 3: unreferenced (keeps the +Y fallback)
+    u.indices = {0, 1, 2, 0, 2, 1}; // +Z then -Z, same verts
+    u.aabbMin = {0, 0, 0};
+    u.aabbMax = {1, 1, 0};
+    smvk::ComputeSmoothNormals(u);
+    // Every referenced vertex must end unit-length and agreeing with its
+    // dominant face (dot > 0). The dominant face is T0 (+Z: first max on
+    // the area tie), so the repaired normals must point +Z here.
+    for (int i = 0; i < 3; ++i) {
+        const glm::vec3& n = u.vertices[i].normal;
+        Check(std::isfinite(n.x + n.y + n.z) && fabsf(glm::length(n) - 1.0f) < 1e-5f,
+              "smoothnorm.repair.unit");
+        Check(glm::dot(n, glm::vec3(0.0f, 0.0f, 1.0f)) > 0.0f, "smoothnorm.repair.agrees");
+    }
+    // Unreferenced vertices keep the legacy +Y fallback (no face to
+    // agree with, so the repair correctly skips them).
+    {
+        const glm::vec3& n = u.vertices[3].normal;
+        Check(fabsf(n.x) < 1e-6f && fabsf(n.y - 1.0f) < 1e-6f && fabsf(n.z) < 1e-6f,
+              "smoothnorm.repair.unreferenced");
+    }
+    // Clean single-sided quad (consistent CCW winding — note MakeQuad
+    // itself mixes windings, so this control builds its own): pure
+    // accumulation, repair must not fire (exact +Z preserved).
+    smvk::StaticMeshUpload q;
+    for (int i = 0; i < 4; ++i) {
+        smvk::ImportStaticVertex v{};
+        v.pos = {(i & 1) ? 1.0f : 0.0f, (i & 2) ? 1.0f : 0.0f, 0.0f};
+        v.color = {1, 1, 1, 1};
+        v.texCoord = {v.pos.x, v.pos.y};
+        v.normal = {0, 0, 1};
+        v.tangent = {1, 0, 0, 1};
+        q.vertices.push_back(v);
+    }
+    q.indices = {0, 1, 2, 1, 3, 2}; // both CCW (+Z)
+    q.aabbMin = {0, 0, 0};
+    q.aabbMax = {1, 1, 0};
+    smvk::ComputeSmoothNormals(q);
+    for (const auto& v : q.vertices)
+        Check(fabsf(v.normal.x) < 1e-6f && fabsf(v.normal.y) < 1e-6f &&
+                  fabsf(v.normal.z - 1.0f) < 1e-6f,
+              "smoothnorm.repair.clean");
 }
 
 smvk::StaticMeshUpload MakeGrid(int n) {
-	smvk::StaticMeshUpload u;
-	for (int iy = 0; iy <= n; ++iy)
-		for (int ix = 0; ix <= n; ++ix) {
-			smvk::ImportStaticVertex v{};
-			v.pos = { (float)ix, (float)iy, 0.1f * sinf((float)ix * 0.7f) * cosf((float)iy * 0.7f) };
-			v.color = { 1, 1, 1, 1 };
-			v.texCoord = { (float)ix / n, (float)iy / n };
-			v.normal = { 0, 0, 1 };
-			v.tangent = { 1, 0, 0, 1 };
-			u.vertices.push_back(v);
-		}
-	auto at = [n](int ix, int iy) { return (uint32_t)(iy * (n + 1) + ix); };
-	for (int iy = 0; iy < n; ++iy)
-		for (int ix = 0; ix < n; ++ix) {
-			u.indices.insert(u.indices.end(), { at(ix, iy), at(ix + 1, iy), at(ix, iy + 1) });
-			u.indices.insert(u.indices.end(), { at(ix + 1, iy), at(ix + 1, iy + 1), at(ix, iy + 1) });
-		}
-	u.aabbMin = { 0, 0, -1 };
-	u.aabbMax = { (float)n, (float)n, 1 };
-	return u;
+    smvk::StaticMeshUpload u;
+    for (int iy = 0; iy <= n; ++iy)
+        for (int ix = 0; ix <= n; ++ix) {
+            smvk::ImportStaticVertex v{};
+            v.pos = {(float)ix, (float)iy, 0.1f * sinf((float)ix * 0.7f) * cosf((float)iy * 0.7f)};
+            v.color = {1, 1, 1, 1};
+            v.texCoord = {(float)ix / n, (float)iy / n};
+            v.normal = {0, 0, 1};
+            v.tangent = {1, 0, 0, 1};
+            u.vertices.push_back(v);
+        }
+    auto at = [n](int ix, int iy) { return (uint32_t)(iy * (n + 1) + ix); };
+    for (int iy = 0; iy < n; ++iy)
+        for (int ix = 0; ix < n; ++ix) {
+            u.indices.insert(u.indices.end(), {at(ix, iy), at(ix + 1, iy), at(ix, iy + 1)});
+            u.indices.insert(u.indices.end(), {at(ix + 1, iy), at(ix + 1, iy + 1), at(ix, iy + 1)});
+        }
+    u.aabbMin = {0, 0, -1};
+    u.aabbMax = {(float)n, (float)n, 1};
+    return u;
 }
 
 // Flat grid with adversarial checker UVs: geometrically a perfect plane
 // (positions-only simplify would nuke it for ~zero error) but every edge
 // spans the full texture, so any collapse destroys the parameterization.
 smvk::StaticMeshUpload MakeCheckerGrid(int n) {
-	smvk::StaticMeshUpload u;
-	for (int iy = 0; iy <= n; ++iy)
-		for (int ix = 0; ix <= n; ++ix) {
-			smvk::ImportStaticVertex v{};
-			v.pos = { (float)ix, (float)iy, 0.0f };
-			v.color = { 1, 1, 1, 1 };
-			const float c = ((ix + iy) & 1) ? 1.0f : 0.0f;
-			v.texCoord = { c, c };
-			v.normal = { 0, 0, 1 };
-			v.tangent = { 1, 0, 0, 1 };
-			u.vertices.push_back(v);
-		}
-	auto at = [n](int ix, int iy) { return (uint32_t)(iy * (n + 1) + ix); };
-	for (int iy = 0; iy < n; ++iy)
-		for (int ix = 0; ix < n; ++ix) {
-			u.indices.insert(u.indices.end(), { at(ix, iy), at(ix + 1, iy), at(ix, iy + 1) });
-			u.indices.insert(u.indices.end(), { at(ix + 1, iy), at(ix + 1, iy + 1), at(ix, iy + 1) });
-		}
-	u.aabbMin = { 0, 0, 0 };
-	u.aabbMax = { (float)n, (float)n, 0 };
-	return u;
+    smvk::StaticMeshUpload u;
+    for (int iy = 0; iy <= n; ++iy)
+        for (int ix = 0; ix <= n; ++ix) {
+            smvk::ImportStaticVertex v{};
+            v.pos = {(float)ix, (float)iy, 0.0f};
+            v.color = {1, 1, 1, 1};
+            const float c = ((ix + iy) & 1) ? 1.0f : 0.0f;
+            v.texCoord = {c, c};
+            v.normal = {0, 0, 1};
+            v.tangent = {1, 0, 0, 1};
+            u.vertices.push_back(v);
+        }
+    auto at = [n](int ix, int iy) { return (uint32_t)(iy * (n + 1) + ix); };
+    for (int iy = 0; iy < n; ++iy)
+        for (int ix = 0; ix < n; ++ix) {
+            u.indices.insert(u.indices.end(), {at(ix, iy), at(ix + 1, iy), at(ix, iy + 1)});
+            u.indices.insert(u.indices.end(), {at(ix + 1, iy), at(ix + 1, iy + 1), at(ix, iy + 1)});
+        }
+    u.aabbMin = {0, 0, 0};
+    u.aabbMax = {(float)n, (float)n, 0};
+    return u;
 }
 
 void TestLodChain() {
-	// LOD chain on a tessellated grid: ratios must yield a strictly
-	// coarser chain with finite, non-negative local errors.
-	smvk::MeshOptConfig cfg;
-	cfg.generateLods = true;
-	cfg.lodRatios = { 0.6f, 0.3f, 0.12f };
-	cfg.lodTargetError = 0.05f;
-	auto grid = MakeGrid(16);
-	const size_t baseTris = grid.indices.size() / 3;
-	std::vector<smvk::CookedLod> chain;
-	Check(smvk::BuildLodChainForUpload(grid, cfg, chain), "lod.grid.valid");
-	Check(!chain.empty(), "lod.grid.nonempty");
-	bool strictlyCoarser = true;
-	size_t prev = baseTris;
-	for (const auto& l : chain) {
-		if (l.triCount >= prev)
-			strictlyCoarser = false;
-		prev = l.triCount;
-		if (!std::isfinite(l.relativeError) || !std::isfinite(l.localError) ||
-			l.relativeError < 0.0f || l.localError < 0.0f)
-			strictlyCoarser = false;
-		if (l.upload.vertices.empty() || l.upload.indices.empty())
-			strictlyCoarser = false;
-	}
-	Check(strictlyCoarser, "lod.grid.coarser");
-	Check(chain.size() <= cfg.lodRatios.size(), "lod.grid.bounded");
+    // LOD chain on a tessellated grid: ratios must yield a strictly
+    // coarser chain with finite, non-negative local errors.
+    smvk::MeshOptConfig cfg;
+    cfg.generateLods = true;
+    cfg.lodRatios = {0.6f, 0.3f, 0.12f};
+    cfg.lodTargetError = 0.05f;
+    auto grid = MakeGrid(16);
+    const size_t baseTris = grid.indices.size() / 3;
+    std::vector<smvk::CookedLod> chain;
+    Check(smvk::BuildLodChainForUpload(grid, cfg, chain), "lod.grid.valid");
+    Check(!chain.empty(), "lod.grid.nonempty");
+    bool strictlyCoarser = true;
+    size_t prev = baseTris;
+    for (const auto& l : chain) {
+        if (l.triCount >= prev)
+            strictlyCoarser = false;
+        prev = l.triCount;
+        if (!std::isfinite(l.relativeError) || !std::isfinite(l.localError) ||
+            l.relativeError < 0.0f || l.localError < 0.0f)
+            strictlyCoarser = false;
+        if (l.upload.vertices.empty() || l.upload.indices.empty())
+            strictlyCoarser = false;
+    }
+    Check(strictlyCoarser, "lod.grid.coarser");
+    Check(chain.size() <= cfg.lodRatios.size(), "lod.grid.bounded");
 
-	// Sibling normals/tangents must be re-derived from the decimated
-	// topology: LOD0's baked frame (here flat (0,0,1) for a bumpy grid)
-	// interpolates wrongly over the new triangles and shades black.
-	// Independently re-accumulate area-weighted normals per sibling and
-	// compare against what was cooked.
-	bool framesRecooked = true;
-	for (const auto& l : chain) {
-		const auto& up = l.upload;
-		std::vector<glm::vec3> acc(up.vertices.size(), glm::vec3(0.0f));
-		for (size_t t = 0; t + 2 < up.indices.size() + 1; t += 3) {
-			const uint32_t i0 = up.indices[t], i1 = up.indices[t + 1], i2 = up.indices[t + 2];
-			const glm::vec3 fn = glm::cross(
-				up.vertices[i1].pos - up.vertices[i0].pos,
-				up.vertices[i2].pos - up.vertices[i0].pos);
-			acc[i0] += fn; acc[i1] += fn; acc[i2] += fn;
-		}
-		for (size_t i = 0; i < up.vertices.size(); ++i) {
-			const glm::vec3 n = up.vertices[i].normal;
-			if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z) ||
-				fabsf(glm::length(n) - 1.0f) > 1e-4f) {
-				framesRecooked = false; break;
-			}
-			const glm::vec3 expect = (glm::dot(acc[i], acc[i]) > 1e-24f)
-				? glm::normalize(acc[i]) : glm::vec3(0.0f, 1.0f, 0.0f);
-			if (glm::dot(n, expect) < 0.999f) { // stale LOD0 (0,0,1) fails here
-				framesRecooked = false; break;
-			}
-			const glm::vec4 tan = up.vertices[i].tangent;
-			if (!std::isfinite(tan.x) || !std::isfinite(tan.y) || !std::isfinite(tan.z) ||
-				fabsf(glm::length(glm::vec3(tan)) - 1.0f) > 1e-4f ||
-				fabsf(fabsf(tan.w) - 1.0f) > 1e-4f ||
-				fabsf(glm::dot(glm::vec3(tan), n)) > 1e-3f) {
-				framesRecooked = false; break;
-			}
-		}
-		if (!framesRecooked) break;
-	}
-	Check(framesRecooked, "lod.grid.frames.recooked");
+    // Sibling normals/tangents must be re-derived from the decimated
+    // topology: LOD0's baked frame (here flat (0,0,1) for a bumpy grid)
+    // interpolates wrongly over the new triangles and shades black.
+    // Independently re-accumulate area-weighted normals per sibling and
+    // compare against what was cooked.
+    bool framesRecooked = true;
+    for (const auto& l : chain) {
+        const auto& up = l.upload;
+        std::vector<glm::vec3> acc(up.vertices.size(), glm::vec3(0.0f));
+        for (size_t t = 0; t + 2 < up.indices.size() + 1; t += 3) {
+            const uint32_t i0 = up.indices[t], i1 = up.indices[t + 1], i2 = up.indices[t + 2];
+            const glm::vec3 fn = glm::cross(up.vertices[i1].pos - up.vertices[i0].pos,
+                                            up.vertices[i2].pos - up.vertices[i0].pos);
+            acc[i0] += fn;
+            acc[i1] += fn;
+            acc[i2] += fn;
+        }
+        for (size_t i = 0; i < up.vertices.size(); ++i) {
+            const glm::vec3 n = up.vertices[i].normal;
+            if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z) ||
+                fabsf(glm::length(n) - 1.0f) > 1e-4f) {
+                framesRecooked = false;
+                break;
+            }
+            const glm::vec3 expect = (glm::dot(acc[i], acc[i]) > 1e-24f)
+                                         ? glm::normalize(acc[i])
+                                         : glm::vec3(0.0f, 1.0f, 0.0f);
+            if (glm::dot(n, expect) < 0.999f) { // stale LOD0 (0,0,1) fails here
+                framesRecooked = false;
+                break;
+            }
+            const glm::vec4 tan = up.vertices[i].tangent;
+            if (!std::isfinite(tan.x) || !std::isfinite(tan.y) || !std::isfinite(tan.z) ||
+                fabsf(glm::length(glm::vec3(tan)) - 1.0f) > 1e-4f ||
+                fabsf(fabsf(tan.w) - 1.0f) > 1e-4f || fabsf(glm::dot(glm::vec3(tan), n)) > 1e-3f) {
+                framesRecooked = false;
+                break;
+            }
+        }
+        if (!framesRecooked)
+            break;
+    }
+    Check(framesRecooked, "lod.grid.frames.recooked");
 
-	// Tiny mesh: 2-tri quad must be fully filtered (min triangles = 8).
-	auto quad = MakeQuad();
-	std::vector<smvk::CookedLod> tiny;
-	Check(smvk::BuildLodChainForUpload(quad, cfg, tiny), "lod.tiny.valid");
-	Check(tiny.empty(), "lod.tiny.filtered");
+    // Tiny mesh: 2-tri quad must be fully filtered (min triangles = 8).
+    auto quad = MakeQuad();
+    std::vector<smvk::CookedLod> tiny;
+    Check(smvk::BuildLodChainForUpload(quad, cfg, tiny), "lod.tiny.valid");
+    Check(tiny.empty(), "lod.tiny.filtered");
 
-	// Cutout path (preserveCoverage): UV-aware simplify + locked borders.
-	// Foliage quads sample coverage from the alpha texture via UVs, so a
-	// positions-only decimation that collapses borders / stretches UVs
-	// flashes background through the leaves on every LOD switch.
-	{
-		auto cut = MakeGrid(16);
-		std::vector<smvk::CookedLod> cchain;
-		Check(smvk::BuildLodChainForUpload(cut, cfg, cchain, true), "lod.cutout.valid");
-		Check(!cchain.empty(), "lod.cutout.nonempty");
-		// Locked borders: every LOD0 edge vertex must survive bit-exact in
-		// each kept sibling (border verts are never moved or removed).
-		const int n = 16;
-		bool bordersKept = true;
-		for (const auto& l : cchain) {
-			for (const auto& v : cut.vertices) {
-				const bool edge = v.pos.x == 0.0f || v.pos.x == (float)n ||
-					v.pos.y == 0.0f || v.pos.y == (float)n;
-				if (!edge)
-					continue;
-				bool found = false;
-				for (const auto& kv : l.upload.vertices) {
-					if (kv.pos == v.pos) { found = true; break; }
-				}
-				if (!found) { bordersKept = false; break; }
-			}
-			if (!bordersKept)
-				break;
-			if (!std::isfinite(l.relativeError) || !std::isfinite(l.localError) ||
-				l.relativeError < 0.0f || l.localError < 0.0f) {
-				bordersKept = false;
-				break;
-			}
-		}
-		Check(bordersKept, "lod.cutout.borders");
-	}
+    // Cutout path (preserveCoverage): UV-aware simplify + locked borders.
+    // Foliage quads sample coverage from the alpha texture via UVs, so a
+    // positions-only decimation that collapses borders / stretches UVs
+    // flashes background through the leaves on every LOD switch.
+    {
+        auto cut = MakeGrid(16);
+        std::vector<smvk::CookedLod> cchain;
+        Check(smvk::BuildLodChainForUpload(cut, cfg, cchain, true), "lod.cutout.valid");
+        Check(!cchain.empty(), "lod.cutout.nonempty");
+        // Locked borders: every LOD0 edge vertex must survive bit-exact in
+        // each kept sibling (border verts are never moved or removed).
+        const int n = 16;
+        bool bordersKept = true;
+        for (const auto& l : cchain) {
+            for (const auto& v : cut.vertices) {
+                const bool edge = v.pos.x == 0.0f || v.pos.x == (float)n || v.pos.y == 0.0f ||
+                                  v.pos.y == (float)n;
+                if (!edge)
+                    continue;
+                bool found = false;
+                for (const auto& kv : l.upload.vertices) {
+                    if (kv.pos == v.pos) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    bordersKept = false;
+                    break;
+                }
+            }
+            if (!bordersKept)
+                break;
+            if (!std::isfinite(l.relativeError) || !std::isfinite(l.localError) ||
+                l.relativeError < 0.0f || l.localError < 0.0f) {
+                bordersKept = false;
+                break;
+            }
+        }
+        Check(bordersKept, "lod.cutout.borders");
+    }
 
-	// Degenerate input fails softly.
-	smvk::StaticMeshUpload empty;
-	std::vector<smvk::CookedLod> deg;
-	Check(!smvk::BuildLodChainForUpload(empty, cfg, deg), "lod.empty.false");
+    // Degenerate input fails softly.
+    smvk::StaticMeshUpload empty;
+    std::vector<smvk::CookedLod> deg;
+    Check(!smvk::BuildLodChainForUpload(empty, cfg, deg), "lod.empty.false");
 
-	// Albedo-UV awareness: the default sibling path carries texCoord in
-	// the error metric (MeshOptConfig::lodUvAware, on by default). On a
-	// flat checker-UV sheet the position error is ~zero either way, but
-	// the UV term must inflate the reported error vs positions-only; the
-	// flag-off path must reproduce the positions-only result.
-	{
-		smvk::MeshOptConfig uvCfg;
-		uvCfg.generateLods = true;
-		uvCfg.lodRatios = { 0.6f };
-		uvCfg.lodTargetError = 0.05f;
-		auto checker = MakeCheckerGrid(8);
-		std::vector<smvk::CookedLod> uvChain;
-		Check(smvk::BuildLodChainForUpload(checker, uvCfg, uvChain),
-			"lod.uv.valid");
-		smvk::MeshOptConfig posCfg = uvCfg;
-		posCfg.lodUvAware = false;
-		std::vector<smvk::CookedLod> posChain;
-		Check(smvk::BuildLodChainForUpload(checker, posCfg, posChain),
-			"lod.uv.posonly.valid");
-		Check(!uvChain.empty() && !posChain.empty(), "lod.uv.nonempty");
-		if (!uvChain.empty() && !posChain.empty()) {
-			Check(uvChain[0].localError > posChain[0].localError * 1.1f,
-				"lod.uv.inflates");
-			Check(posChain[0].localError < 1e-3f, "lod.uv.posonly.zeroerr");
-		}
-	}
+    // Albedo-UV awareness: the default sibling path carries texCoord in
+    // the error metric (MeshOptConfig::lodUvAware, on by default). On a
+    // flat checker-UV sheet the position error is ~zero either way, but
+    // the UV term must inflate the reported error vs positions-only; the
+    // flag-off path must reproduce the positions-only result.
+    {
+        smvk::MeshOptConfig uvCfg;
+        uvCfg.generateLods = true;
+        uvCfg.lodRatios = {0.6f};
+        uvCfg.lodTargetError = 0.05f;
+        auto checker = MakeCheckerGrid(8);
+        std::vector<smvk::CookedLod> uvChain;
+        Check(smvk::BuildLodChainForUpload(checker, uvCfg, uvChain), "lod.uv.valid");
+        smvk::MeshOptConfig posCfg = uvCfg;
+        posCfg.lodUvAware = false;
+        std::vector<smvk::CookedLod> posChain;
+        Check(smvk::BuildLodChainForUpload(checker, posCfg, posChain), "lod.uv.posonly.valid");
+        Check(!uvChain.empty() && !posChain.empty(), "lod.uv.nonempty");
+        if (!uvChain.empty() && !posChain.empty()) {
+            Check(uvChain[0].localError > posChain[0].localError * 1.1f, "lod.uv.inflates");
+            Check(posChain[0].localError < 1e-3f, "lod.uv.posonly.zeroerr");
+        }
+    }
 
-	// URI helpers round-trip (views + arenas, no std::string round-trip).
-	const std::string base = "models/q.gltf#mesh.0/prim.0";
-	const smvk::StringViewT sib = smvk::LodSiblingUri(base, 2);
-	Check(sib == base + "/lod2", "lod.uri.sibling");
-	Check(smvk::BaseMeshUriForLod(sib) == base, "lod.uri.base");
-	Check(smvk::BaseMeshUriForLod(base) == base, "lod.uri.base.passthrough");
+    // URI helpers round-trip (views + arenas, no std::string round-trip).
+    const std::string base = "models/q.gltf#mesh.0/prim.0";
+    const smvk::StringViewT sib = smvk::LodSiblingUri(base, 2);
+    Check(sib == base + "/lod2", "lod.uri.sibling");
+    Check(smvk::BaseMeshUriForLod(sib) == base, "lod.uri.base");
+    Check(smvk::BaseMeshUriForLod(base) == base, "lod.uri.base.passthrough");
 
-	// Node scale: identity 1, max axis wins, translation ignored.
-	Check(smvk::MaxScaleOfMatrix(glm::mat4(1.0f)) == 1.0f, "lod.scale.identity");
-	{
-		glm::mat4 m(1.0f);
-		m[0] = glm::vec4(2.0f, 0, 0, 0);
-		m[1] = glm::vec4(0, 3.0f, 0, 0);
-		m[2] = glm::vec4(0, 0, 4.0f, 0);
-		m[3] = glm::vec4(100.0f, 0, 0, 1);
-		Check(smvk::MaxScaleOfMatrix(m) == 4.0f, "lod.scale.maxaxis");
-	}
+    // Node scale: identity 1, max axis wins, translation ignored.
+    Check(smvk::MaxScaleOfMatrix(glm::mat4(1.0f)) == 1.0f, "lod.scale.identity");
+    {
+        glm::mat4 m(1.0f);
+        m[0] = glm::vec4(2.0f, 0, 0, 0);
+        m[1] = glm::vec4(0, 3.0f, 0, 0);
+        m[2] = glm::vec4(0, 0, 4.0f, 0);
+        m[3] = glm::vec4(100.0f, 0, 0, 1);
+        Check(smvk::MaxScaleOfMatrix(m) == 4.0f, "lod.scale.maxaxis");
+    }
 
-	// LOD error storage contract (the FinalizeLodWorldErrors removal):
-	// the serialized simplifyError is MESH-LOCAL (scale-free); the pick
-	// composes the instance scale at runtime - local error * the
-	// instance's MaxScaleOfMatrix * the projection. Baking a scene
-	// transform into the artifact compounded per re-cook (CookLodSiblings
-	// skips meshes that already carry siblings, so a cook-time scaling
-	// pass re-applied the node scale to already-scaled errors every run:
-	// Sponza's 0.008 root shrank them 125x per re-cook and the picker
-	// served the coarsest LOD centimeters from the camera).
-	{
-		using namespace smvk;
-		glm::mat4 root(1.0f);
-		root = glm::scale(root, glm::vec3(0.008f));
-		const float localErr = 30.0f; // local units (relErr * extent ~3000)
-		const float worldErr = localErr * MaxScaleOfMatrix(root);
-		Check(fabsf(worldErr - 0.24f) < 1e-4f, "lod.error.instance-scale");
-		// Sponza close-up sanity: 0.24m world error at 2 m, 1080p/45deg
-		// projects ~112 px - far over any sane budget, so LOD0 stays
-		// near the camera (the compounded 0.008^2 error projected ~1 px
-		// and picked the coarsest sibling there).
-		const float px = LodProjectedPixelError(worldErr, 2.0f, 1080.0f,
-			0.7853982f);
-		Check(px > 100.0f, "lod.error.closeup-lod0");
-		// The compounded error (local * 0.008 * 0.008 - one extra
-		// finalize against a loaded world-scaled error) fits the budget
-		// at the same distance: the regression this contract forbids.
-		const float compounded = localErr * 0.008f * 0.008f;
-		const float pxBad = LodProjectedPixelError(compounded, 2.0f,
-			1080.0f, 0.7853982f);
-		Check(pxBad < 1.5f, "lod.error.compounded-fits");
-	}
+    // LOD error storage contract (the FinalizeLodWorldErrors removal):
+    // the serialized simplifyError is MESH-LOCAL (scale-free); the pick
+    // composes the instance scale at runtime - local error * the
+    // instance's MaxScaleOfMatrix * the projection. Baking a scene
+    // transform into the artifact compounded per re-cook (CookLodSiblings
+    // skips meshes that already carry siblings, so a cook-time scaling
+    // pass re-applied the node scale to already-scaled errors every run:
+    // Sponza's 0.008 root shrank them 125x per re-cook and the picker
+    // served the coarsest LOD centimeters from the camera).
+    {
+        using namespace smvk;
+        glm::mat4 root(1.0f);
+        root = glm::scale(root, glm::vec3(0.008f));
+        const float localErr = 30.0f; // local units (relErr * extent ~3000)
+        const float worldErr = localErr * MaxScaleOfMatrix(root);
+        Check(fabsf(worldErr - 0.24f) < 1e-4f, "lod.error.instance-scale");
+        // Sponza close-up sanity: 0.24m world error at 2 m, 1080p/45deg
+        // projects ~112 px - far over any sane budget, so LOD0 stays
+        // near the camera (the compounded 0.008^2 error projected ~1 px
+        // and picked the coarsest sibling there).
+        const float px = LodProjectedPixelError(worldErr, 2.0f, 1080.0f, 0.7853982f);
+        Check(px > 100.0f, "lod.error.closeup-lod0");
+        // The compounded error (local * 0.008 * 0.008 - one extra
+        // finalize against a loaded world-scaled error) fits the budget
+        // at the same distance: the regression this contract forbids.
+        const float compounded = localErr * 0.008f * 0.008f;
+        const float pxBad = LodProjectedPixelError(compounded, 2.0f, 1080.0f, 0.7853982f);
+        Check(pxBad < 1.5f, "lod.error.compounded-fits");
+    }
 }
 
 void TestLodSelection() {
-	// Error-driven transitions share one formula (cook, tests, renderer).
-	using namespace smvk;
-	const float fov = 0.7853982f; // 45 deg
-	const float h = 1080.0f;
-	// LOD0 / degenerate inputs never project.
-	Check(LodProjectedPixelError(0.0f, 10.0f, h, fov) == 0.0f, "lod.px.zero");
-	Check(LodProjectedPixelError(0.02f, 0.0f, h, fov) == 0.0f, "lod.px.nodist");
-	// Known value: 0.02m at 1m, 1080p/45deg ~= 26.07px.
-	{
-		const float px = LodProjectedPixelError(0.02f, 1.0f, h, fov);
-		Check(fabsf(px - 26.07f) < 0.05f, "lod.px.value");
-	}
-	// Switch distance is the inverse: error projects to exactly the budget.
-	{
-		const float d = LodSwitchDistance(0.02f, h, fov, 1.0f);
-		Check(fabsf(d - 26.07f) < 0.05f, "lod.switch.value");
-		Check(fabsf(LodProjectedPixelError(0.02f, d, h, fov) - 1.0f) < 1e-3f,
-			"lod.switch.roundtrip");
-	}
-	// Coarsest-in-budget wins; errors grow coarser so the first miss stops.
-	{
-		const float errors[] = { 0.0f, 0.01f, 0.05f };
-		// d=5: LOD1 projects ~2.6px > 1px budget -> LOD0.
-		Check(SelectLodIndexForDistance(errors, 3, 5.0f, h, fov, 1.0f) == 0,
-			"lod.sel.near");
-		// d=50: LOD1 ~0.26px in budget, LOD2 ~1.3px out -> LOD1.
-		Check(SelectLodIndexForDistance(errors, 3, 50.0f, h, fov, 1.0f) == 1,
-			"lod.sel.mid");
-		// d=500: everything in budget -> coarsest (LOD2).
-		Check(SelectLodIndexForDistance(errors, 3, 500.0f, h, fov, 1.0f) == 2,
-			"lod.sel.far");
-		// Empty chain -> LOD0.
-		Check(SelectLodIndexForDistance(nullptr, 0, 500.0f, h, fov, 1.0f) == 0,
-			"lod.sel.empty");
-	}
-	// Hysteresis band (currentLod + hysteresis): coarsen needs the tight
-	// budget*(1-h), refine needs the loose budget*(1+h); inside the band
-	// the current level is sticky.
-	{
-		const float errors[] = { 0.0f, 0.01f, 0.05f };
-		constexpr float hys = 0.2f;
-		// Distances where LOD1 projects exactly 0.9 / 1.1 / 1.3 px
-		// (LOD2 stays far out of budget at all of them).
-		const float d09 = LodSwitchDistance(0.01f, h, fov, 0.9f);
-		const float d11 = LodSwitchDistance(0.01f, h, fov, 1.1f);
-		const float d13 = LodSwitchDistance(0.01f, h, fov, 1.3f);
-		// Stateless walk picks LOD1 wherever it is in budget (0.9px);
-		// the banded walk needs the 0.8px tight bar to coarsen off LOD0.
-		Check(SelectLodIndexForDistance(errors, 3, d09, h, fov, 1.0f) == 1,
-			"lod.hyst.stateless.09");
-		Check(SelectLodIndexForDistance(errors, 3, d09, h, fov, 1.0f, 0, hys) == 0,
-			"lod.hyst.fresh.tightbar");
-		Check(SelectLodIndexForDistance(errors, 3, d11, h, fov, 1.0f) == 0,
-			"lod.hyst.stateless.11");
-		// Already at LOD1: sticky inside the band (0.8 < px <= 1.2), refine
-		// only past the loose bar.
-		Check(SelectLodIndexForDistance(errors, 3, d09, h, fov, 1.0f, 1, hys) == 1,
-			"lod.hyst.sticky");
-		Check(SelectLodIndexForDistance(errors, 3, d11, h, fov, 1.0f, 1, hys) == 1,
-			"lod.hyst.sticky.loose");
-		Check(SelectLodIndexForDistance(errors, 3, d13, h, fov, 1.0f, 1, hys) == 0,
-			"lod.hyst.refine");
-		// h = 0 is the stateless result for any current level.
-		for (uint32_t cur = 0; cur < 3; ++cur) {
-			Check(SelectLodIndexForDistance(errors, 3, 50.0f, h, fov, 1.0f, cur, 0.0f) == 1,
-				"lod.hyst.zero.mid");
-			Check(SelectLodIndexForDistance(errors, 3, 5.0f, h, fov, 1.0f, cur, 0.0f) == 0,
-				"lod.hyst.zero.near");
-			Check(SelectLodIndexForDistance(errors, 3, 500.0f, h, fov, 1.0f, cur, 0.0f) == 2,
-				"lod.hyst.zero.far");
-		}
-		// Zero-error siblings pass both bars (always safe); a stale level
-		// beyond a broken chain refines back to the last good LOD.
-		{
-			const float ez[] = { 0.0f, 0.0f, 0.05f };
-			Check(SelectLodIndexForDistance(ez, 3, 5.0f, h, fov, 1.0f, 0, hys) == 1,
-				"lod.hyst.zeroerr");
-			const float eb[] = { 0.0f, 0.01f, -1.0f };
-			Check(SelectLodIndexForDistance(eb, 3, 5000.0f, h, fov, 1.0f, 2, hys) == 1,
-				"lod.hyst.broken.refine");
-		}
-	}
-	// World chain resolution over cooked "/lodN" siblings (headless: cook
-	// cluster registered with a World, no GPU involved).
-	{
-		auto cluster = std::make_unique<Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		auto q = MakeQuad();
-		const auto mh = cluster->UploadStaticMesh(q);
-		const std::string uri = "models/q.gltf#mesh.4/prim.0";
-		cluster->RegisterMeshUri(uri, mh);
-		LodInfo lod0;
-		lod0.groupId = 4;
-		lod0.lodIndex = 0;
-		lod0.candidateCount = 2;
-		lod0.triCount = 2;
-		cluster->RegisterMeshLod(uri, lod0);
-		const auto h1 = cluster->UploadStaticMesh(q);
-		const smvk::StringViewT uri1 = LodSiblingUri(uri, 1);
-		cluster->RegisterMeshUri(uri1, h1);
-		LodInfo lod1;
-		lod1.groupId = 4;
-		lod1.lodIndex = 1;
-		lod1.candidateCount = 2;
-		lod1.simplifyError = 0.5f; // MESH-LOCAL (scale-free by contract)
-		lod1.triCount = 1;
-		cluster->RegisterMeshLod(uri1, lod1);
-		const int root = addNode(cluster->scene, -1, 0);
-		const int n1 = addNode(cluster->scene, root, 1);
-		SetMesh(cluster->scene, uint32_t(n1), mh.index());
-		// Explicit opt-in: the ShaderLodPolicy default is vertex-lit OFF
-		// (the derivation only stamps it when DeriveConfig::shaderLods
-		// is set), so this test material programs it on by hand.
-		MaterialCreateInfo shaderLodCi{};
-		shaderLodCi.allowFarVertexLit = true;
-		const auto shaderLodMatH = cluster->CreateMaterial(shaderLodCi);
-		SetMaterial(cluster->scene, uint32_t(n1), shaderLodMatH.index());
-		cluster->scene.localTransform[n1] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));
-		markAsChanged(cluster->scene, root);
-		recalculateGlobalTransforms(cluster->scene);
-		// (No finalize: the sibling error stays MESH-LOCAL. The node's
-		// world scale (3x) turns it into the 1.5 world error AT THE PICK -
-		// SelectLodIndex's instanceWorldScale, exactly like
-		// World::LodIndexForNode composes MaxScaleOfMatrix(globalTransform)
-		// per node.)
+    // Error-driven transitions share one formula (cook, tests, renderer).
+    using namespace smvk;
+    const float fov = 0.7853982f; // 45 deg
+    const float h = 1080.0f;
+    // LOD0 / degenerate inputs never project.
+    Check(LodProjectedPixelError(0.0f, 10.0f, h, fov) == 0.0f, "lod.px.zero");
+    Check(LodProjectedPixelError(0.02f, 0.0f, h, fov) == 0.0f, "lod.px.nodist");
+    // Known value: 0.02m at 1m, 1080p/45deg ~= 26.07px.
+    {
+        const float px = LodProjectedPixelError(0.02f, 1.0f, h, fov);
+        Check(fabsf(px - 26.07f) < 0.05f, "lod.px.value");
+    }
+    // Switch distance is the inverse: error projects to exactly the budget.
+    {
+        const float d = LodSwitchDistance(0.02f, h, fov, 1.0f);
+        Check(fabsf(d - 26.07f) < 0.05f, "lod.switch.value");
+        Check(fabsf(LodProjectedPixelError(0.02f, d, h, fov) - 1.0f) < 1e-3f,
+              "lod.switch.roundtrip");
+    }
+    // Coarsest-in-budget wins; errors grow coarser so the first miss stops.
+    {
+        const float errors[] = {0.0f, 0.01f, 0.05f};
+        // d=5: LOD1 projects ~2.6px > 1px budget -> LOD0.
+        Check(SelectLodIndexForDistance(errors, 3, 5.0f, h, fov, 1.0f) == 0, "lod.sel.near");
+        // d=50: LOD1 ~0.26px in budget, LOD2 ~1.3px out -> LOD1.
+        Check(SelectLodIndexForDistance(errors, 3, 50.0f, h, fov, 1.0f) == 1, "lod.sel.mid");
+        // d=500: everything in budget -> coarsest (LOD2).
+        Check(SelectLodIndexForDistance(errors, 3, 500.0f, h, fov, 1.0f) == 2, "lod.sel.far");
+        // Empty chain -> LOD0.
+        Check(SelectLodIndexForDistance(nullptr, 0, 500.0f, h, fov, 1.0f) == 0, "lod.sel.empty");
+    }
+    // Hysteresis band (currentLod + hysteresis): coarsen needs the tight
+    // budget*(1-h), refine needs the loose budget*(1+h); inside the band
+    // the current level is sticky.
+    {
+        const float errors[] = {0.0f, 0.01f, 0.05f};
+        constexpr float hys = 0.2f;
+        // Distances where LOD1 projects exactly 0.9 / 1.1 / 1.3 px
+        // (LOD2 stays far out of budget at all of them).
+        const float d09 = LodSwitchDistance(0.01f, h, fov, 0.9f);
+        const float d11 = LodSwitchDistance(0.01f, h, fov, 1.1f);
+        const float d13 = LodSwitchDistance(0.01f, h, fov, 1.3f);
+        // Stateless walk picks LOD1 wherever it is in budget (0.9px);
+        // the banded walk needs the 0.8px tight bar to coarsen off LOD0.
+        Check(SelectLodIndexForDistance(errors, 3, d09, h, fov, 1.0f) == 1,
+              "lod.hyst.stateless.09");
+        Check(SelectLodIndexForDistance(errors, 3, d09, h, fov, 1.0f, 0, hys) == 0,
+              "lod.hyst.fresh.tightbar");
+        Check(SelectLodIndexForDistance(errors, 3, d11, h, fov, 1.0f) == 0,
+              "lod.hyst.stateless.11");
+        // Already at LOD1: sticky inside the band (0.8 < px <= 1.2), refine
+        // only past the loose bar.
+        Check(SelectLodIndexForDistance(errors, 3, d09, h, fov, 1.0f, 1, hys) == 1,
+              "lod.hyst.sticky");
+        Check(SelectLodIndexForDistance(errors, 3, d11, h, fov, 1.0f, 1, hys) == 1,
+              "lod.hyst.sticky.loose");
+        Check(SelectLodIndexForDistance(errors, 3, d13, h, fov, 1.0f, 1, hys) == 0,
+              "lod.hyst.refine");
+        // h = 0 is the stateless result for any current level.
+        for (uint32_t cur = 0; cur < 3; ++cur) {
+            Check(SelectLodIndexForDistance(errors, 3, 50.0f, h, fov, 1.0f, cur, 0.0f) == 1,
+                  "lod.hyst.zero.mid");
+            Check(SelectLodIndexForDistance(errors, 3, 5.0f, h, fov, 1.0f, cur, 0.0f) == 0,
+                  "lod.hyst.zero.near");
+            Check(SelectLodIndexForDistance(errors, 3, 500.0f, h, fov, 1.0f, cur, 0.0f) == 2,
+                  "lod.hyst.zero.far");
+        }
+        // Zero-error siblings pass both bars (always safe); a stale level
+        // beyond a broken chain refines back to the last good LOD.
+        {
+            const float ez[] = {0.0f, 0.0f, 0.05f};
+            Check(SelectLodIndexForDistance(ez, 3, 5.0f, h, fov, 1.0f, 0, hys) == 1,
+                  "lod.hyst.zeroerr");
+            const float eb[] = {0.0f, 0.01f, -1.0f};
+            Check(SelectLodIndexForDistance(eb, 3, 5000.0f, h, fov, 1.0f, 2, hys) == 1,
+                  "lod.hyst.broken.refine");
+        }
+    }
+    // World chain resolution over cooked "/lodN" siblings (headless: cook
+    // cluster registered with a World, no GPU involved).
+    {
+        auto cluster = std::make_unique<Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        auto q = MakeQuad();
+        const auto mh = cluster->UploadStaticMesh(q);
+        const std::string uri = "models/q.gltf#mesh.4/prim.0";
+        cluster->RegisterMeshUri(uri, mh);
+        LodInfo lod0;
+        lod0.groupId = 4;
+        lod0.lodIndex = 0;
+        lod0.candidateCount = 2;
+        lod0.triCount = 2;
+        cluster->RegisterMeshLod(uri, lod0);
+        const auto h1 = cluster->UploadStaticMesh(q);
+        const smvk::StringViewT uri1 = LodSiblingUri(uri, 1);
+        cluster->RegisterMeshUri(uri1, h1);
+        LodInfo lod1;
+        lod1.groupId = 4;
+        lod1.lodIndex = 1;
+        lod1.candidateCount = 2;
+        lod1.simplifyError = 0.5f; // MESH-LOCAL (scale-free by contract)
+        lod1.triCount = 1;
+        cluster->RegisterMeshLod(uri1, lod1);
+        const int root = addNode(cluster->scene, -1, 0);
+        const int n1 = addNode(cluster->scene, root, 1);
+        SetMesh(cluster->scene, uint32_t(n1), mh.index());
+        // Explicit opt-in: the ShaderLodPolicy default is vertex-lit OFF
+        // (the derivation only stamps it when DeriveConfig::shaderLods
+        // is set), so this test material programs it on by hand.
+        MaterialCreateInfo shaderLodCi{};
+        shaderLodCi.allowFarVertexLit = true;
+        const auto shaderLodMatH = cluster->CreateMaterial(shaderLodCi);
+        SetMaterial(cluster->scene, uint32_t(n1), shaderLodMatH.index());
+        cluster->scene.localTransform[n1] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));
+        markAsChanged(cluster->scene, root);
+        recalculateGlobalTransforms(cluster->scene);
+        // (No finalize: the sibling error stays MESH-LOCAL. The node's
+        // world scale (3x) turns it into the 1.5 world error AT THE PICK -
+        // SelectLodIndex's instanceWorldScale, exactly like
+        // World::LodIndexForNode composes MaxScaleOfMatrix(globalTransform)
+        // per node.)
 
-		World world;
-		world.RegisterCluster(std::move(cluster));
-		world.ResolveAndFixup_clusters();
-		Check(world.meshLocations.size() == 1, "lod.world.meshes");
-		Check(world.LodChainLength(0) == 2, "lod.world.chainlen");
-		Check(world.ResolveLodMesh(0, 0).has_value(), "lod.world.lod0");
-		Check(world.ResolveLodMesh(0, 1).has_value(), "lod.world.lod1");
-		Check(!world.ResolveLodMesh(0, 2).has_value(), "lod.world.lod2.miss");
-		// The serialized error is MESH-LOCAL (the instance scale applies
-		// at the pick, below).
-		Check(fabsf(world.LodErrorAt(0, 1) - 0.5f) < 1e-4f, "lod.world.error");
-		// Instance scale 3x -> world error 1.5: err 1.5 projects ~19.5px
-		// at 100m (over budget -> LOD0), ~0.39px at 5000m (in budget ->
-		// LOD1).
-		const float sc = 3.0f;
-		Check(world.SelectLodIndex(0, 100.0f, h, fov, 1.0f, 0, sc) == 0, "lod.world.near");
-		Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f, 0, sc) == 1, "lod.world.far");
-		// The unscaled pick treats 0.5 as world meters: LOD1 fits at
-		// ~5000m/3 - the per-instance scale is what makes near views stay
-		// on LOD0 for a 3x-scaled instance.
-		Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f) == 1, "lod.world.far.unscaled");
-		Check(world.GetLodMesh(0, 1) != nullptr, "lod.world.mesh");
-		// Hysteresis through the World (sibling world error 1.5): 1.1 px is
-		// inside the loose side of the band but over the plain bar — the
-		// stateless pick is LOD0, the band keeps LOD1; 1.3 px refines.
-		{
-			const float dW11 = LodSwitchDistance(1.5f, h, fov, 1.1f);
-			const float dW13 = LodSwitchDistance(1.5f, h, fov, 1.3f);
-			Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 0, sc) == 0,
-				"lod.world.hyst.stateless");
-			Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 1, sc) == 1,
-				"lod.world.hyst.sticky");
-			Check(world.SelectLodIndex(0, dW13, h, fov, 1.0f, 1, sc) == 0,
-				"lod.world.hyst.refine");
-		}
+        World world;
+        world.RegisterCluster(std::move(cluster));
+        world.ResolveAndFixup_clusters();
+        Check(world.meshLocations.size() == 1, "lod.world.meshes");
+        Check(world.LodChainLength(0) == 2, "lod.world.chainlen");
+        Check(world.ResolveLodMesh(0, 0).has_value(), "lod.world.lod0");
+        Check(world.ResolveLodMesh(0, 1).has_value(), "lod.world.lod1");
+        Check(!world.ResolveLodMesh(0, 2).has_value(), "lod.world.lod2.miss");
+        // The serialized error is MESH-LOCAL (the instance scale applies
+        // at the pick, below).
+        Check(fabsf(world.LodErrorAt(0, 1) - 0.5f) < 1e-4f, "lod.world.error");
+        // Instance scale 3x -> world error 1.5: err 1.5 projects ~19.5px
+        // at 100m (over budget -> LOD0), ~0.39px at 5000m (in budget ->
+        // LOD1).
+        const float sc = 3.0f;
+        Check(world.SelectLodIndex(0, 100.0f, h, fov, 1.0f, 0, sc) == 0, "lod.world.near");
+        Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f, 0, sc) == 1, "lod.world.far");
+        // The unscaled pick treats 0.5 as world meters: LOD1 fits at
+        // ~5000m/3 - the per-instance scale is what makes near views stay
+        // on LOD0 for a 3x-scaled instance.
+        Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f) == 1, "lod.world.far.unscaled");
+        Check(world.GetLodMesh(0, 1) != nullptr, "lod.world.mesh");
+        // Hysteresis through the World (sibling world error 1.5): 1.1 px is
+        // inside the loose side of the band but over the plain bar — the
+        // stateless pick is LOD0, the band keeps LOD1; 1.3 px refines.
+        {
+            const float dW11 = LodSwitchDistance(1.5f, h, fov, 1.1f);
+            const float dW13 = LodSwitchDistance(1.5f, h, fov, 1.3f);
+            Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 0, sc) == 0,
+                  "lod.world.hyst.stateless");
+            Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 1, sc) == 1, "lod.world.hyst.sticky");
+            Check(world.SelectLodIndex(0, dW13, h, fov, 1.0f, 1, sc) == 0, "lod.world.hyst.refine");
+        }
 
-		// ---- Shader LODs (per-material far-level shading) -----------
-		// The farthest level of a cooked chain substitutes vertex-lit
-		// when the material programs it (see ShaderLodPolicy), or stays
-		// on lit with the material's quality specialization; every other
-		// level, out-of-range probes and invalid materials resolve
-		// default (full-lit, no spec). World node ids are re-based on
-		// merge (the world reserves its own root), so the material is
-		// located by (cluster, handle) in materialLocations, not by the
-		// cluster-scene node id.
-		uint32_t shaderLodMat = UINT32_MAX;
-		for (uint32_t i = 0; i < (uint32_t)world.materialLocations.size(); ++i) {
-			const auto& loc = world.materialLocations[i];
-			if (loc.cluster == world.clusters.front().get()
-				&& loc.handle == shaderLodMatH)
-				shaderLodMat = i;
-		}
-		Check(shaderLodMat != UINT32_MAX, "lod.shader.matwired");
-		{
-			const auto fs0 = world.FarShadingAt(0, 0, shaderLodMat);
-			Check(fs0.isDefault() && !fs0.vertexLit, "lod.shader.l0");
-			const auto fs1 = world.FarShadingAt(0, 1, shaderLodMat);
-			Check(!fs1.isDefault() && fs1.vertexLit, "lod.shader.farthest");
-			const auto fs2 = world.FarShadingAt(0, 2, shaderLodMat);
-			Check(fs2.isDefault(), "lod.shader.oob");
-			const auto fsBad = world.FarShadingAt(0, 1, UINT32_MAX);
-			Check(fsBad.isDefault(), "lod.shader.badmat");
-		}
-		Check(world.LodChainLength(0) == 2, "lod.shader.chainlen");
-		// Opt-out: a material that disallows the cheap program stays on
-		// lit at the farthest level (default quality = default shading),
-		// and a non-default quality resolves specialized (and back).
-		if (smvk::Material* m = world.GetMaterial(shaderLodMat)) {
-			m->shaderLod.allowFarVertexLit = false;
-			const auto fsOpt = world.FarShadingAt(0, 1, shaderLodMat);
-			Check(fsOpt.isDefault() && !fsOpt.vertexLit, "lod.shader.optout");
-			m->shaderLod.farQuality.specular = false;
-			const auto fsSpec = world.FarShadingAt(0, 1, shaderLodMat);
-			Check(!fsSpec.isDefault() && !fsSpec.vertexLit
-				&& !fsSpec.quality.specular && fsSpec.quality.normalMap,
-				"lod.shader.specquality");
-			m->shaderLod.farQuality.specular = true;
-			m->shaderLod.allowFarVertexLit = true;
-			const auto fsBack = world.FarShadingAt(0, 1, shaderLodMat);
-			Check(!fsBack.isDefault() && fsBack.vertexLit, "lod.shader.optin");
-		}
-		else {
-			Check(false, "lod.shader.matfetch");
-		}
+        // ---- Shader LODs (per-material far-level shading) -----------
+        // The farthest level of a cooked chain substitutes vertex-lit
+        // when the material programs it (see ShaderLodPolicy), or stays
+        // on lit with the material's quality specialization; every other
+        // level, out-of-range probes and invalid materials resolve
+        // default (full-lit, no spec). World node ids are re-based on
+        // merge (the world reserves its own root), so the material is
+        // located by (cluster, handle) in materialLocations, not by the
+        // cluster-scene node id.
+        uint32_t shaderLodMat = UINT32_MAX;
+        for (uint32_t i = 0; i < (uint32_t)world.materialLocations.size(); ++i) {
+            const auto& loc = world.materialLocations[i];
+            if (loc.cluster == world.clusters.front().get() && loc.handle == shaderLodMatH)
+                shaderLodMat = i;
+        }
+        Check(shaderLodMat != UINT32_MAX, "lod.shader.matwired");
+        {
+            const auto fs0 = world.FarShadingAt(0, 0, shaderLodMat);
+            Check(fs0.isDefault() && !fs0.vertexLit, "lod.shader.l0");
+            const auto fs1 = world.FarShadingAt(0, 1, shaderLodMat);
+            Check(!fs1.isDefault() && fs1.vertexLit, "lod.shader.farthest");
+            const auto fs2 = world.FarShadingAt(0, 2, shaderLodMat);
+            Check(fs2.isDefault(), "lod.shader.oob");
+            const auto fsBad = world.FarShadingAt(0, 1, UINT32_MAX);
+            Check(fsBad.isDefault(), "lod.shader.badmat");
+        }
+        Check(world.LodChainLength(0) == 2, "lod.shader.chainlen");
+        // Opt-out: a material that disallows the cheap program stays on
+        // lit at the farthest level (default quality = default shading),
+        // and a non-default quality resolves specialized (and back).
+        if (smvk::Material* m = world.GetMaterial(shaderLodMat)) {
+            m->shaderLod.allowFarVertexLit = false;
+            const auto fsOpt = world.FarShadingAt(0, 1, shaderLodMat);
+            Check(fsOpt.isDefault() && !fsOpt.vertexLit, "lod.shader.optout");
+            m->shaderLod.farQuality.specular = false;
+            const auto fsSpec = world.FarShadingAt(0, 1, shaderLodMat);
+            Check(!fsSpec.isDefault() && !fsSpec.vertexLit && !fsSpec.quality.specular &&
+                      fsSpec.quality.normalMap,
+                  "lod.shader.specquality");
+            m->shaderLod.farQuality.specular = true;
+            m->shaderLod.allowFarVertexLit = true;
+            const auto fsBack = world.FarShadingAt(0, 1, shaderLodMat);
+            Check(!fsBack.isDefault() && fsBack.vertexLit, "lod.shader.optin");
+        } else {
+            Check(false, "lod.shader.matfetch");
+        }
 
-		// ---- Decision cache cadence ------------------------------------
-		// Node n1 sits at the origin scaled 3x; drive the eye instead of
-		// the node: far eye (5000m) -> LOD1 in budget, near eye (100m)
-		// -> LOD0 (err 1.5 projects ~19.5px).
-		NodeId rn = 0;
-		for (const MeshRow& row : world.scene.tables.meshes)
-			rn = row.node; // the single renderable node
-		LodFrameInputs in{};
-		in.viewportHeight = h;
-		in.fovY = fov;
-		in.pixelBudget = 1.0f;
-		// Full rate (DEFAULT): every node recomputes every frame.
-		in.frameId = 1;
-		in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.fullrate.bootstrap");
-		in.frameId = 2;
-		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.fullrate.refresh");
-		// Frame 3 recomputes too (the halfrate mode below serves the
-		// stale LOD0 here): the far eye wins immediately.
-		in.frameId = 3;
-		in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.fullrate.everyframe");
-		// Same frame, different eye: the stamped decision is served to
-		// every consumer (filter/prepass/main consistency within a frame).
-		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.fullrate.sameframe");
-		// Invalidate forces a recompute on the very next call.
-		world.InvalidateLodCache();
-		in.frameId = 4;
-		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.fullrate.invalidate");
-		// Halfrate opt-out (SetLodFullRate(false), the pre-fullrate
-		// behavior): parity split serves 1-frame-stale decisions on
-		// off-parity frames. Same eye swings as above — far/near errors
-		// (0.39px / 19.5px) sit far outside the hysteresis band, so the
-		// band never changes these outcomes.
-		world.SetLodFullRate(false);
-		world.InvalidateLodCache();
-		// The halfrate parity split is PER-NODE: node n recomputes on
-		// ticks where (tick & 1) == (n & 1). The merged id's PARITY
-		// depends on the world layout (the single-cluster identity copy
-		// keeps source ids, the legacy multi-cluster shift moves them
-		// +1), so the cadence checks drive rn's OWN parity instead of
-		// assuming an even merged id.
-		const bool rnOdd = (rn & 1u) != 0u;
-		// Frame 1 (tick 1): rn not due yet on its off-parity tick, but
-		// the empty-cache bootstrap computes anyway - far inputs select
-		// LOD1. (On rn's own parity tick the recompute is immediate -
-		// same outcome.)
-		in.frameId = 1;
-		in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.bootstrap");
-		// Frame 2 (tick 2): rn due only when even - near inputs
-		// recompute to LOD0 then; odd rn serves the stale LOD1 (this is
-		// the halfrate serving 1-frame-stale decisions).
-		in.frameId = 2;
-		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == (rnOdd ? 1 : 0),
-			"lod.halfrate.refresh");
-		// Frame 3 (tick 3): the mirrored tick - even rn serves its
-		// cached LOD0 (the staleness pin), odd rn recomputes on its due
-		// tick with the far inputs and lands on LOD1.
-		in.frameId = 3;
-		in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == (rnOdd ? 1 : 0),
-			"lod.halfrate.stale");
-		// Frame 4 (tick 4): far inputs win for both parities - even rn
-		// recomputes (due) to LOD1, odd rn serves its tick-3 LOD1.
-		in.frameId = 4;
-		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.nextrefresh");
-		// Same frame, different eye: the stamped decision is served to
-		// every consumer (filter/prepass/main consistency within a frame).
-		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.sameframe");
-		// Invalidate forces a recompute on the very next call (the
-		// cleared stamps bootstrap regardless of parity).
-		world.InvalidateLodCache();
-		in.frameId = 5;
-		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
-		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.halfrate.invalidate");
-		world.SetLodFullRate(true);
+        // ---- Decision cache cadence ------------------------------------
+        // Node n1 sits at the origin scaled 3x; drive the eye instead of
+        // the node: far eye (5000m) -> LOD1 in budget, near eye (100m)
+        // -> LOD0 (err 1.5 projects ~19.5px).
+        NodeId rn = 0;
+        for (const MeshRow& row : world.scene.tables.meshes)
+            rn = row.node; // the single renderable node
+        LodFrameInputs in{};
+        in.viewportHeight = h;
+        in.fovY = fov;
+        in.pixelBudget = 1.0f;
+        // Full rate (DEFAULT): every node recomputes every frame.
+        in.frameId = 1;
+        in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
+        Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.fullrate.bootstrap");
+        in.frameId = 2;
+        in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+        Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.fullrate.refresh");
+        // Frame 3 recomputes too (the halfrate mode below serves the
+        // stale LOD0 here): the far eye wins immediately.
+        in.frameId = 3;
+        in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
+        Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.fullrate.everyframe");
+        // Same frame, different eye: the stamped decision is served to
+        // every consumer (filter/prepass/main consistency within a frame).
+        in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+        Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.fullrate.sameframe");
+        // Invalidate forces a recompute on the very next call.
+        world.InvalidateLodCache();
+        in.frameId = 4;
+        in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+        Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.fullrate.invalidate");
+        // Halfrate opt-out (SetLodFullRate(false), the pre-fullrate
+        // behavior): parity split serves 1-frame-stale decisions on
+        // off-parity frames. Same eye swings as above — far/near errors
+        // (0.39px / 19.5px) sit far outside the hysteresis band, so the
+        // band never changes these outcomes.
+        world.SetLodFullRate(false);
+        world.InvalidateLodCache();
+        // The halfrate parity split is PER-NODE: node n recomputes on
+        // ticks where (tick & 1) == (n & 1). The merged id's PARITY
+        // depends on the world layout (the single-cluster identity copy
+        // keeps source ids, the legacy multi-cluster shift moves them
+        // +1), so the cadence checks drive rn's OWN parity instead of
+        // assuming an even merged id.
+        const bool rnOdd = (rn & 1u) != 0u;
+        // Frame 1 (tick 1): rn not due yet on its off-parity tick, but
+        // the empty-cache bootstrap computes anyway - far inputs select
+        // LOD1. (On rn's own parity tick the recompute is immediate -
+        // same outcome.)
+        in.frameId = 1;
+        in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
+        Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.bootstrap");
+        // Frame 2 (tick 2): rn due only when even - near inputs
+        // recompute to LOD0 then; odd rn serves the stale LOD1 (this is
+        // the halfrate serving 1-frame-stale decisions).
+        in.frameId = 2;
+        in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+        Check(world.LodIndexForNode(rn, 0, in) == (rnOdd ? 1 : 0), "lod.halfrate.refresh");
+        // Frame 3 (tick 3): the mirrored tick - even rn serves its
+        // cached LOD0 (the staleness pin), odd rn recomputes on its due
+        // tick with the far inputs and lands on LOD1.
+        in.frameId = 3;
+        in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
+        Check(world.LodIndexForNode(rn, 0, in) == (rnOdd ? 1 : 0), "lod.halfrate.stale");
+        // Frame 4 (tick 4): far inputs win for both parities - even rn
+        // recomputes (due) to LOD1, odd rn serves its tick-3 LOD1.
+        in.frameId = 4;
+        Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.nextrefresh");
+        // Same frame, different eye: the stamped decision is served to
+        // every consumer (filter/prepass/main consistency within a frame).
+        in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+        Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.sameframe");
+        // Invalidate forces a recompute on the very next call (the
+        // cleared stamps bootstrap regardless of parity).
+        world.InvalidateLodCache();
+        in.frameId = 5;
+        in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+        Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.halfrate.invalidate");
+        world.SetLodFullRate(true);
 
-		// Closest-approach distance (Sponza regression): node n1 sits at
-		// the origin scaled 3x over a 2x2 quad, so the LOD0 world sphere
-		// is center (3,3,0) radius ~4.24 — not the node origin.
-		{
-			const float d = world.LodDistanceForNode(rn, 0,
-				glm::vec3(0.0f, 100.0f, 0.0f));
-			Check(d > 90.0f && d < 100.0f, "lod.dist.sphere");
-			Check(world.LodDistanceForNode(rn, 0, glm::vec3(3.0f, 3.0f, 0.0f))
-				== 0.0f, "lod.dist.inside");
-			// Unknown mesh falls back to the origin distance (100m).
-			Check(world.LodDistanceForNode(rn, 999,
-				glm::vec3(0.0f, 100.0f, 0.0f)) == 100.0f, "lod.dist.fallback");
-		}
+        // Closest-approach distance (Sponza regression): node n1 sits at
+        // the origin scaled 3x over a 2x2 quad, so the LOD0 world sphere
+        // is center (3,3,0) radius ~4.24 — not the node origin.
+        {
+            const float d = world.LodDistanceForNode(rn, 0, glm::vec3(0.0f, 100.0f, 0.0f));
+            Check(d > 90.0f && d < 100.0f, "lod.dist.sphere");
+            Check(world.LodDistanceForNode(rn, 0, glm::vec3(3.0f, 3.0f, 0.0f)) == 0.0f,
+                  "lod.dist.inside");
+            // Unknown mesh falls back to the origin distance (100m).
+            Check(world.LodDistanceForNode(rn, 999, glm::vec3(0.0f, 100.0f, 0.0f)) == 100.0f,
+                  "lod.dist.fallback");
+        }
 
-		// Uncooked chains (LOD0 alone, no "/lodN" siblings) never downgrade
-		// shading: level 0 is the only level and stays full-lit. A fresh
-		// resolve must also re-stamp the cooked chain's farthest level.
-		// (World mesh indices follow unordered_map iteration order after
-		// the re-resolve, so look the two meshes up by URI.)
-		{
-			Cluster& c = *world.clusters.front();
-			const auto h2 = c.UploadStaticMesh(q);
-			const std::string uri2 = "models/q.gltf#mesh.5/prim.0";
-			c.RegisterMeshUri(uri2, h2);
-			const int n2 = addNode(c.scene, 0, 2);
-			SetMesh(c.scene, uint32_t(n2), h2.index());
-			markAsChanged(c.scene, 0);
-			recalculateGlobalTransforms(c.scene);
-			world.ResolveAndFixup_clusters();
-			Check(world.meshLocations.size() == 2, "lod.shader.meshes2");
-			uint32_t cookedMesh = UINT32_MAX, uncookedMesh = UINT32_MAX;
-			for (uint32_t i = 0; i < (uint32_t)world.meshLocations.size(); ++i) {
-				const auto& loc = world.meshLocations[i];
-				const std::string u(loc.cluster->GetMeshUri(loc.handle).Str());
-				if (u == uri2)
-					uncookedMesh = i;
-				else if (u == uri)
-					cookedMesh = i;
-			}
-			Check(uncookedMesh != UINT32_MAX && cookedMesh != UINT32_MAX,
-				"lod.shader.uris");
-			uint32_t shaderLodMat2 = UINT32_MAX;
-			for (uint32_t i = 0; i < (uint32_t)world.materialLocations.size(); ++i) {
-				const auto& loc = world.materialLocations[i];
-				if (loc.cluster == world.clusters.front().get()
-					&& loc.handle == shaderLodMatH)
-					shaderLodMat2 = i;
-			}
-			Check(shaderLodMat2 != UINT32_MAX, "lod.shader.matwired2");
-			Check(world.LodChainLength(uncookedMesh) == 1, "lod.shader.uncooked.len");
-			Check(world.FarShadingAt(uncookedMesh, 0, shaderLodMat2).isDefault(),
-				"lod.shader.uncooked.lit");
-			Check(world.FarShadingAt(uncookedMesh, 3, shaderLodMat2).isDefault(),
-				"lod.shader.uncooked.oob");
-			{
-				const auto fsRe = world.FarShadingAt(cookedMesh, 1, shaderLodMat2);
-				Check(!fsRe.isDefault() && fsRe.vertexLit, "lod.shader.restamp");
-			}
-		}
-	}
+        // Uncooked chains (LOD0 alone, no "/lodN" siblings) never downgrade
+        // shading: level 0 is the only level and stays full-lit. A fresh
+        // resolve must also re-stamp the cooked chain's farthest level.
+        // (World mesh indices follow unordered_map iteration order after
+        // the re-resolve, so look the two meshes up by URI.)
+        {
+            Cluster& c = *world.clusters.front();
+            const auto h2 = c.UploadStaticMesh(q);
+            const std::string uri2 = "models/q.gltf#mesh.5/prim.0";
+            c.RegisterMeshUri(uri2, h2);
+            const int n2 = addNode(c.scene, 0, 2);
+            SetMesh(c.scene, uint32_t(n2), h2.index());
+            markAsChanged(c.scene, 0);
+            recalculateGlobalTransforms(c.scene);
+            world.ResolveAndFixup_clusters();
+            Check(world.meshLocations.size() == 2, "lod.shader.meshes2");
+            uint32_t cookedMesh = UINT32_MAX, uncookedMesh = UINT32_MAX;
+            for (uint32_t i = 0; i < (uint32_t)world.meshLocations.size(); ++i) {
+                const auto& loc = world.meshLocations[i];
+                const std::string u(loc.cluster->GetMeshUri(loc.handle).Str());
+                if (u == uri2)
+                    uncookedMesh = i;
+                else if (u == uri)
+                    cookedMesh = i;
+            }
+            Check(uncookedMesh != UINT32_MAX && cookedMesh != UINT32_MAX, "lod.shader.uris");
+            uint32_t shaderLodMat2 = UINT32_MAX;
+            for (uint32_t i = 0; i < (uint32_t)world.materialLocations.size(); ++i) {
+                const auto& loc = world.materialLocations[i];
+                if (loc.cluster == world.clusters.front().get() && loc.handle == shaderLodMatH)
+                    shaderLodMat2 = i;
+            }
+            Check(shaderLodMat2 != UINT32_MAX, "lod.shader.matwired2");
+            Check(world.LodChainLength(uncookedMesh) == 1, "lod.shader.uncooked.len");
+            Check(world.FarShadingAt(uncookedMesh, 0, shaderLodMat2).isDefault(),
+                  "lod.shader.uncooked.lit");
+            Check(world.FarShadingAt(uncookedMesh, 3, shaderLodMat2).isDefault(),
+                  "lod.shader.uncooked.oob");
+            {
+                const auto fsRe = world.FarShadingAt(cookedMesh, 1, shaderLodMat2);
+                Check(!fsRe.isDefault() && fsRe.vertexLit, "lod.shader.restamp");
+            }
+        }
+    }
 }
 
 void TestLodLightmapAudit() {
-	using namespace smvk;
-	std::vector<uint32_t> chartOf;
-	auto grid = MakeTwoChartGrid(chartOf);
+    using namespace smvk;
+    std::vector<uint32_t> chartOf;
+    auto grid = MakeTwoChartGrid(chartOf);
 
-	// Chart-aware chain: one level from the two-chart grid.
-	MeshOptConfig cfg;
-	cfg.generateLods = true;
-	cfg.lodRatios = { 0.5f };
-	cfg.lodTargetError = 0.1f;
-	cfg.lodMinTriangles = 2;
-	cfg.lodMinReduction = 0.1f;
-	std::vector<CookedLod> chain;
-	Check(BuildLodChainForUpload(grid, cfg, chain, false, chartOf.data()),
-		"lmlod.chain.ok");
-	Check(chain.size() == 1, "lmlod.chain.kept");
-	// Identity chart transforms (chart-local == atlas) for the audit:
-	// one entry per chart of the grid.
-	const std::vector<glm::vec4> gridXforms = {
-		{ 1.0f, 1.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 0.0f, 0.0f } };
-	if (!chain.empty()) {
-		// Affine-in-position chart uvs within one chart: the simplified
-		// triangles reuse LOD0's parameterization exactly, so the
-		// projection audit reports ~0 texel drift and no cross-chart
-		// triangle can exist (chart attributes blocked the seam twins).
-		Check(chain[0].triCount < 8, "lmlod.chain.reduced");
-		LodLightmapAuditReport rep;
-		Check(AuditLodLightmap(grid, chain[0].upload, glm::mat4(1.0f),
-			gridXforms, 512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.ran");
-		Check(rep.samples > 0, "lmlod.audit.samples");
-		Check(rep.unresolved == 0, "lmlod.audit.resolved");
-		Check(rep.crossChartTris == 0, "lmlod.audit.nocross");
-		Check(rep.maxTexels < 1.0f, "lmlod.audit.affine");
-	}
+    // Chart-aware chain: one level from the two-chart grid.
+    MeshOptConfig cfg;
+    cfg.generateLods = true;
+    cfg.lodRatios = {0.5f};
+    cfg.lodTargetError = 0.1f;
+    cfg.lodMinTriangles = 2;
+    cfg.lodMinReduction = 0.1f;
+    std::vector<CookedLod> chain;
+    Check(BuildLodChainForUpload(grid, cfg, chain, false, chartOf.data()), "lmlod.chain.ok");
+    Check(chain.size() == 1, "lmlod.chain.kept");
+    // Identity chart transforms (chart-local == atlas) for the audit:
+    // one entry per chart of the grid.
+    const std::vector<glm::vec4> gridXforms = {{1.0f, 1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f, 0.0f}};
+    if (!chain.empty()) {
+        // Affine-in-position chart uvs within one chart: the simplified
+        // triangles reuse LOD0's parameterization exactly, so the
+        // projection audit reports ~0 texel drift and no cross-chart
+        // triangle can exist (chart attributes blocked the seam twins).
+        Check(chain[0].triCount < 8, "lmlod.chain.reduced");
+        LodLightmapAuditReport rep;
+        Check(AuditLodLightmap(grid,
+                               chain[0].upload,
+                               glm::mat4(1.0f),
+                               gridXforms,
+                               512,
+                               512,
+                               8.0f,
+                               0.5f,
+                               1024,
+                               rep),
+              "lmlod.audit.ran");
+        Check(rep.samples > 0, "lmlod.audit.samples");
+        Check(rep.unresolved == 0, "lmlod.audit.resolved");
+        Check(rep.crossChartTris == 0, "lmlod.audit.nocross");
+        Check(rep.maxTexels < 1.0f, "lmlod.audit.affine");
+    }
 
-	// Wrong parameterization: same geometry, v-flipped chart uvs — the
-	// audit must see large texel drift (this is the regression detector
-	// for "siblings with garbage chart uvs").
-	{
-		auto bad = grid;
-		for (auto& v : bad.vertices)
-			v.texCoord2.y = 0.95f - v.texCoord2.y;
-		LodLightmapAuditReport rep;
-		Check(AuditLodLightmap(grid, bad, glm::mat4(1.0f),
-			gridXforms, 512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.bad.ran");
-		Check(rep.samples > 0 && rep.maxTexels > 100.0f,
-			"lmlod.audit.detects.drift");
-	}
+    // Wrong parameterization: same geometry, v-flipped chart uvs — the
+    // audit must see large texel drift (this is the regression detector
+    // for "siblings with garbage chart uvs").
+    {
+        auto bad = grid;
+        for (auto& v : bad.vertices)
+            v.texCoord2.y = 0.95f - v.texCoord2.y;
+        LodLightmapAuditReport rep;
+        Check(AuditLodLightmap(
+                  grid, bad, glm::mat4(1.0f), gridXforms, 512, 512, 8.0f, 0.5f, 1024, rep),
+              "lmlod.audit.bad.ran");
+        Check(rep.samples > 0 && rep.maxTexels > 100.0f, "lmlod.audit.detects.drift");
+    }
 
-	// Cross-chart triangle: one quad mixing both charts (the
-	// catastrophic atlas-smear shape) — counted on every triangle, no
-	// projection needed (chart-id mismatch flags it).
-	{
-		smvk::StaticMeshUpload mix;
-		mix.vertices = { grid.vertices[0], grid.vertices[9],
-			grid.vertices[11], grid.vertices[2] }; // c0,c1,c1,c0 corners
-		mix.indices = { 0, 1, 2, 0, 2, 3 };
-		mix.aabbMin = { 0.0f, 0.0f, 0.0f };
-		mix.aabbMax = { 2.0f, 2.0f, 0.0f };
-		mix.surfaces.push_back({ 0, 6, 0 });
-		LodLightmapAuditReport rep;
-		Check(AuditLodLightmap(grid, mix, glm::mat4(1.0f),
-			gridXforms, 512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.mix.ran");
-		Check(rep.crossChartTris == 2, "lmlod.audit.crosschart");
-	}
+    // Cross-chart triangle: one quad mixing both charts (the
+    // catastrophic atlas-smear shape) — counted on every triangle, no
+    // projection needed (chart-id mismatch flags it).
+    {
+        smvk::StaticMeshUpload mix;
+        mix.vertices = {grid.vertices[0],
+                        grid.vertices[9],
+                        grid.vertices[11],
+                        grid.vertices[2]}; // c0,c1,c1,c0 corners
+        mix.indices = {0, 1, 2, 0, 2, 3};
+        mix.aabbMin = {0.0f, 0.0f, 0.0f};
+        mix.aabbMax = {2.0f, 2.0f, 0.0f};
+        mix.surfaces.push_back({0, 6, 0});
+        LodLightmapAuditReport rep;
+        Check(AuditLodLightmap(
+                  grid, mix, glm::mat4(1.0f), gridXforms, 512, 512, 8.0f, 0.5f, 1024, rep),
+              "lmlod.audit.mix.ran");
+        Check(rep.crossChartTris == 2, "lmlod.audit.crosschart");
+    }
 }
 
 void TestCookLodSiblingsLightmap() {
-	using namespace smvk;
-	auto cluster = std::make_unique<Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	std::vector<uint32_t> chartOf;
-	auto grid = MakeTwoChartGrid(chartOf);
-	const auto mh = cluster->UploadStaticMesh(grid);
-	const std::string uri = "models/lm.gltf#mesh.0/prim.0";
-	cluster->RegisterMeshUri(uri, mh);
-	{
-		LodInfo lod0;
-		lod0.groupId = 5;
-		lod0.triCount = 8;
-		cluster->RegisterMeshLod(uri, lod0);
-	}
-	// Fake a stamped bake: lobe count + chart transforms on the mesh.
-	cluster->staticMeshes.get(mh)->lmChunk = 9;
-	cluster->staticMeshes.get(mh)->lmChartXforms = {
-		{ 1.0f, 1.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 0.0f, 0.0f } };
-	// Node + opaque material (Blend/MASK would divert to the coverage
-	// path, which is never lightmapped).
-	MaterialCreateInfo ci{};
-	const auto matH = cluster->CreateMaterial(ci);
-	const int root = addNode(cluster->scene, -1, 0);
-	const int n1 = addNode(cluster->scene, root, 1);
-	SetMesh(cluster->scene, uint32_t(n1), mh.index());
-	SetMaterial(cluster->scene, uint32_t(n1), matH.index());
-	markAsChanged(cluster->scene, root);
-	recalculateGlobalTransforms(cluster->scene);
+    using namespace smvk;
+    auto cluster = std::make_unique<Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    std::vector<uint32_t> chartOf;
+    auto grid = MakeTwoChartGrid(chartOf);
+    const auto mh = cluster->UploadStaticMesh(grid);
+    const std::string uri = "models/lm.gltf#mesh.0/prim.0";
+    cluster->RegisterMeshUri(uri, mh);
+    {
+        LodInfo lod0;
+        lod0.groupId = 5;
+        lod0.triCount = 8;
+        cluster->RegisterMeshLod(uri, lod0);
+    }
+    // Fake a stamped bake: lobe count + chart transforms on the mesh.
+    cluster->staticMeshes.get(mh)->lmChunk = 9;
+    cluster->staticMeshes.get(mh)->lmChartXforms = {{1.0f, 1.0f, 0.0f, 0.0f},
+                                                    {1.0f, 1.0f, 0.0f, 0.0f}};
+    // Node + opaque material (Blend/MASK would divert to the coverage
+    // path, which is never lightmapped).
+    MaterialCreateInfo ci{};
+    const auto matH = cluster->CreateMaterial(ci);
+    const int root = addNode(cluster->scene, -1, 0);
+    const int n1 = addNode(cluster->scene, root, 1);
+    SetMesh(cluster->scene, uint32_t(n1), mh.index());
+    SetMaterial(cluster->scene, uint32_t(n1), matH.index());
+    markAsChanged(cluster->scene, root);
+    recalculateGlobalTransforms(cluster->scene);
 
-	std::unordered_map<uint32_t, std::vector<uint32_t>> charts;
-	charts.emplace(mh.index(), chartOf);
-	MeshOptConfig cfg;
-	cfg.generateLods = true;
-	cfg.lodRatios = { 0.5f };
-	cfg.lodTargetError = 0.1f;
-	cfg.lodMinTriangles = 2;
-	cfg.lodMinReduction = 0.1f;
-	MeshletConfig mcfg; // off
-	CookLodSiblingsOptions so;
-	so.vertexCharts = &charts;
-	so.audit = true;
-	so.atlasWidth = 512;
-	so.atlasHeight = 512;
-	so.auditThresholdTexels = 8.0f;
-	Check(CookLodSiblings(*cluster, cfg, mcfg, so), "lmlod.cook.ok");
+    std::unordered_map<uint32_t, std::vector<uint32_t>> charts;
+    charts.emplace(mh.index(), chartOf);
+    MeshOptConfig cfg;
+    cfg.generateLods = true;
+    cfg.lodRatios = {0.5f};
+    cfg.lodTargetError = 0.1f;
+    cfg.lodMinTriangles = 2;
+    cfg.lodMinReduction = 0.1f;
+    MeshletConfig mcfg; // off
+    CookLodSiblingsOptions so;
+    so.vertexCharts = &charts;
+    so.audit = true;
+    so.atlasWidth = 512;
+    so.atlasHeight = 512;
+    so.auditThresholdTexels = 8.0f;
+    Check(CookLodSiblings(*cluster, cfg, mcfg, so), "lmlod.cook.ok");
 
-	const std::string uri1 = uri + "/lod1";
-	auto sibInfo = cluster->GetMeshLod(uri1);
-	Check(sibInfo && sibInfo->lodIndex == 1, "lmlod.sib.lodinfo");
-	Check(sibInfo && sibInfo->candidateCount == 2, "lmlod.sib.candidates");
-	auto sibH = cluster->FindMeshByUri(uri1);
-	Check(sibH && sibH->valid(), "lmlod.sib.handle");
-	if (sibH) {
-		const StaticMesh* sib = cluster->staticMeshes.get(*sibH);
-		Check(sib && sib->lmChunk == 9, "lmlod.sib.lmchunk");
-		Check(sib && sib->lmChartXforms.size() == 2, "lmlod.sib.xforms");
-		const StaticMeshUpload* up = cluster->GetRetainedUpload(*sibH);
-		Check(up && !up->indices.empty(), "lmlod.sib.retained");
-		bool spansOk = true;
-		bool chartsOk = true;
-		bool anyUv = false;
-		if (up) {
-			for (size_t t = 0; t + 2 < up->indices.size() / 3; ++t) {
-				const ImportStaticVertex& va = up->vertices[up->indices[t * 3 + 0]];
-				const ImportStaticVertex& vb = up->vertices[up->indices[t * 3 + 1]];
-				const ImportStaticVertex& vc = up->vertices[up->indices[t * 3 + 2]];
-				// Core invariant: no sibling triangle mixes charts.
-				if (va.chartId != vb.chartId || va.chartId != vc.chartId) {
-					chartsOk = false;
-					break;
-				}
-				const glm::vec2& a = va.texCoord2;
-				const glm::vec2& b = vb.texCoord2;
-				const glm::vec2& c = vc.texCoord2;
-				const float span = std::max({
-					std::abs(a.x - b.x) + std::abs(a.y - b.y),
-					std::abs(a.x - c.x) + std::abs(a.y - c.y),
-					std::abs(b.x - c.x) + std::abs(b.y - c.y) });
-				if (span > kLodCrossChartUvSpan) {
-					spansOk = false;
-					break;
-				}
-			}
-			for (const auto& v : up->vertices) {
-				if (v.texCoord2.x != 0.0f || v.texCoord2.y != 0.0f) {
-					anyUv = true;
-					break;
-				}
-			}
-		}
-		Check(chartsOk, "lmlod.sib.nochartmix");
-		Check(spansOk, "lmlod.sib.nocrosschart");
-		Check(anyUv, "lmlod.sib.uv2carried");
-	}
-	auto baseInfo = cluster->GetMeshLod(uri);
-	Check(baseInfo && baseInfo->candidateCount == 2, "lmlod.base.candidates");
-	Check(baseInfo && baseInfo->simplifyError == 0.0f, "lmlod.base.zeroerr");
-	Check(sibInfo && sibInfo->simplifyError > 0.0f, "lmlod.sib.error");
+    const std::string uri1 = uri + "/lod1";
+    auto sibInfo = cluster->GetMeshLod(uri1);
+    Check(sibInfo && sibInfo->lodIndex == 1, "lmlod.sib.lodinfo");
+    Check(sibInfo && sibInfo->candidateCount == 2, "lmlod.sib.candidates");
+    auto sibH = cluster->FindMeshByUri(uri1);
+    Check(sibH && sibH->valid(), "lmlod.sib.handle");
+    if (sibH) {
+        const StaticMesh* sib = cluster->staticMeshes.get(*sibH);
+        Check(sib && sib->lmChunk == 9, "lmlod.sib.lmchunk");
+        Check(sib && sib->lmChartXforms.size() == 2, "lmlod.sib.xforms");
+        const StaticMeshUpload* up = cluster->GetRetainedUpload(*sibH);
+        Check(up && !up->indices.empty(), "lmlod.sib.retained");
+        bool spansOk = true;
+        bool chartsOk = true;
+        bool anyUv = false;
+        if (up) {
+            for (size_t t = 0; t + 2 < up->indices.size() / 3; ++t) {
+                const ImportStaticVertex& va = up->vertices[up->indices[t * 3 + 0]];
+                const ImportStaticVertex& vb = up->vertices[up->indices[t * 3 + 1]];
+                const ImportStaticVertex& vc = up->vertices[up->indices[t * 3 + 2]];
+                // Core invariant: no sibling triangle mixes charts.
+                if (va.chartId != vb.chartId || va.chartId != vc.chartId) {
+                    chartsOk = false;
+                    break;
+                }
+                const glm::vec2& a = va.texCoord2;
+                const glm::vec2& b = vb.texCoord2;
+                const glm::vec2& c = vc.texCoord2;
+                const float span = std::max({std::abs(a.x - b.x) + std::abs(a.y - b.y),
+                                             std::abs(a.x - c.x) + std::abs(a.y - c.y),
+                                             std::abs(b.x - c.x) + std::abs(b.y - c.y)});
+                if (span > kLodCrossChartUvSpan) {
+                    spansOk = false;
+                    break;
+                }
+            }
+            for (const auto& v : up->vertices) {
+                if (v.texCoord2.x != 0.0f || v.texCoord2.y != 0.0f) {
+                    anyUv = true;
+                    break;
+                }
+            }
+        }
+        Check(chartsOk, "lmlod.sib.nochartmix");
+        Check(spansOk, "lmlod.sib.nocrosschart");
+        Check(anyUv, "lmlod.sib.uv2carried");
+    }
+    auto baseInfo = cluster->GetMeshLod(uri);
+    Check(baseInfo && baseInfo->candidateCount == 2, "lmlod.base.candidates");
+    Check(baseInfo && baseInfo->simplifyError == 0.0f, "lmlod.base.zeroerr");
+    Check(sibInfo && sibInfo->simplifyError > 0.0f, "lmlod.sib.error");
 
-	// Unlightmapped mesh (no charts entry, no lmChunk): siblings still
-	// cook (positions-only path) and carry no lightmap chunk.
-	std::vector<uint32_t> chartOf2;
-	auto grid2 = MakeTwoChartGrid(chartOf2);
-	const auto mh2 = cluster->UploadStaticMesh(grid2);
-	const std::string uri2 = "models/lm.gltf#mesh.1/prim.0";
-	cluster->RegisterMeshUri(uri2, mh2);
-	const int n2 = addNode(cluster->scene, root, 1);
-	SetMesh(cluster->scene, uint32_t(n2), mh2.index());
-	SetMaterial(cluster->scene, uint32_t(n2), matH.index());
-	markAsChanged(cluster->scene, root);
-	recalculateGlobalTransforms(cluster->scene);
-	Check(CookLodSiblings(*cluster, cfg, mcfg, so), "lmlod.cook2.ok");
-	auto sib2H = cluster->FindMeshByUri(uri2 + "/lod1");
-	Check(sib2H && sib2H->valid(), "lmlod.unlit.sib");
-	if (sib2H) {
-		const StaticMesh* sib2 = cluster->staticMeshes.get(*sib2H);
-		Check(sib2 && sib2->lmChunk == 0xFFFFFFFFu, "lmlod.unlit.nolmchunk");
-	}
+    // Unlightmapped mesh (no charts entry, no lmChunk): siblings still
+    // cook (positions-only path) and carry no lightmap chunk.
+    std::vector<uint32_t> chartOf2;
+    auto grid2 = MakeTwoChartGrid(chartOf2);
+    const auto mh2 = cluster->UploadStaticMesh(grid2);
+    const std::string uri2 = "models/lm.gltf#mesh.1/prim.0";
+    cluster->RegisterMeshUri(uri2, mh2);
+    const int n2 = addNode(cluster->scene, root, 1);
+    SetMesh(cluster->scene, uint32_t(n2), mh2.index());
+    SetMaterial(cluster->scene, uint32_t(n2), matH.index());
+    markAsChanged(cluster->scene, root);
+    recalculateGlobalTransforms(cluster->scene);
+    Check(CookLodSiblings(*cluster, cfg, mcfg, so), "lmlod.cook2.ok");
+    auto sib2H = cluster->FindMeshByUri(uri2 + "/lod1");
+    Check(sib2H && sib2H->valid(), "lmlod.unlit.sib");
+    if (sib2H) {
+        const StaticMesh* sib2 = cluster->staticMeshes.get(*sib2H);
+        Check(sib2 && sib2->lmChunk == 0xFFFFFFFFu, "lmlod.unlit.nolmchunk");
+    }
 }
 
 void TestLightmapChartTable() {
-	using namespace smvk;
-	// Scene-wide chart transform table (headless: offline cluster
-	// registered with a World, no GPU involved). Mesh A carries 2
-	// charts, mesh B 1 chart, mesh C is unbaked (contributes nothing).
-	auto cluster = std::make_unique<Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-	std::vector<uint32_t> chartOf;
-	auto gridA = MakeTwoChartGrid(chartOf);
-	const auto mhA = cluster->UploadStaticMesh(gridA);
-	cluster->RegisterMeshUri("models/lm.gltf#mesh.0/prim.0", mhA);
-	cluster->staticMeshes.get(mhA)->lmChunk = 9;
-	const std::vector<glm::vec4> xformsA = {
-		{ 0.5f, 0.5f, 0.0f, 0.0f }, { 0.5f, 0.5f, 0.5f, 0.0f } };
-	cluster->staticMeshes.get(mhA)->lmChartXforms = xformsA;
-	auto gridB = MakeQuad();
-	const auto mhB = cluster->UploadStaticMesh(gridB);
-	cluster->RegisterMeshUri("models/lm.gltf#mesh.1/prim.0", mhB);
-	cluster->staticMeshes.get(mhB)->lmChunk = 5;
-	const std::vector<glm::vec4> xformsB = {
-		{ 0.25f, 0.25f, 0.25f, 0.5f } };
-	cluster->staticMeshes.get(mhB)->lmChartXforms = xformsB;
-	auto gridC = MakeQuad();
-	const auto mhC = cluster->UploadStaticMesh(gridC);
-	cluster->RegisterMeshUri("models/lm.gltf#mesh.2/prim.0", mhC);
-	MaterialCreateInfo ci{};
-	const auto matH = cluster->CreateMaterial(ci);
-	const int root = addNode(cluster->scene, -1, 0);
-	const int nA = addNode(cluster->scene, root, 1);
-	const int nB = addNode(cluster->scene, root, 1);
-	const int nC = addNode(cluster->scene, root, 1);
-	SetMesh(cluster->scene, uint32_t(nA), mhA.index());
-	SetMesh(cluster->scene, uint32_t(nB), mhB.index());
-	SetMesh(cluster->scene, uint32_t(nC), mhC.index());
-	SetMaterial(cluster->scene, uint32_t(nA), matH.index());
-	SetMaterial(cluster->scene, uint32_t(nB), matH.index());
-	SetMaterial(cluster->scene, uint32_t(nC), matH.index());
-	markAsChanged(cluster->scene, root);
-	recalculateGlobalTransforms(cluster->scene);
+    using namespace smvk;
+    // Scene-wide chart transform table (headless: offline cluster
+    // registered with a World, no GPU involved). Mesh A carries 2
+    // charts, mesh B 1 chart, mesh C is unbaked (contributes nothing).
+    auto cluster = std::make_unique<Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    std::vector<uint32_t> chartOf;
+    auto gridA = MakeTwoChartGrid(chartOf);
+    const auto mhA = cluster->UploadStaticMesh(gridA);
+    cluster->RegisterMeshUri("models/lm.gltf#mesh.0/prim.0", mhA);
+    cluster->staticMeshes.get(mhA)->lmChunk = 9;
+    const std::vector<glm::vec4> xformsA = {{0.5f, 0.5f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f, 0.0f}};
+    cluster->staticMeshes.get(mhA)->lmChartXforms = xformsA;
+    auto gridB = MakeQuad();
+    const auto mhB = cluster->UploadStaticMesh(gridB);
+    cluster->RegisterMeshUri("models/lm.gltf#mesh.1/prim.0", mhB);
+    cluster->staticMeshes.get(mhB)->lmChunk = 5;
+    const std::vector<glm::vec4> xformsB = {{0.25f, 0.25f, 0.25f, 0.5f}};
+    cluster->staticMeshes.get(mhB)->lmChartXforms = xformsB;
+    auto gridC = MakeQuad();
+    const auto mhC = cluster->UploadStaticMesh(gridC);
+    cluster->RegisterMeshUri("models/lm.gltf#mesh.2/prim.0", mhC);
+    MaterialCreateInfo ci{};
+    const auto matH = cluster->CreateMaterial(ci);
+    const int root = addNode(cluster->scene, -1, 0);
+    const int nA = addNode(cluster->scene, root, 1);
+    const int nB = addNode(cluster->scene, root, 1);
+    const int nC = addNode(cluster->scene, root, 1);
+    SetMesh(cluster->scene, uint32_t(nA), mhA.index());
+    SetMesh(cluster->scene, uint32_t(nB), mhB.index());
+    SetMesh(cluster->scene, uint32_t(nC), mhC.index());
+    SetMaterial(cluster->scene, uint32_t(nA), matH.index());
+    SetMaterial(cluster->scene, uint32_t(nB), matH.index());
+    SetMaterial(cluster->scene, uint32_t(nC), matH.index());
+    markAsChanged(cluster->scene, root);
+    recalculateGlobalTransforms(cluster->scene);
 
-	World world;
-	world.RegisterCluster(std::move(cluster));
-	world.ResolveAndFixup_clusters();
-	Check(world.meshLocations.size() == 3, "lmchart.meshes");
-	// World mesh indices follow table row order — look them up by pool
-	// handle.
-	auto worldIndexOf = [&](uint32_t poolIdx) -> uint32_t {
-		for (uint32_t i = 0; i < (uint32_t)world.meshLocations.size(); ++i)
-			if (world.meshLocations[i].handle.index() == poolIdx)
-				return i;
-		return 0xFFFFFFFFu;
-	};
-	const uint32_t wiA = worldIndexOf(mhA.index());
-	const uint32_t wiB = worldIndexOf(mhB.index());
-	const uint32_t wiC = worldIndexOf(mhC.index());
-	Check(wiA != 0xFFFFFFFFu && wiB != 0xFFFFFFFFu
-		&& wiC != 0xFFFFFFFFu, "lmchart.lookup");
-	if (wiA == 0xFFFFFFFFu || wiB == 0xFFFFFFFFu || wiC == 0xFFFFFFFFu)
-		return;
-	// Table holds exactly the baked charts (2 + 1), each mesh's entries
-	// in chart order at its own base.
-	Check(world.lmChartTable.size() == 3, "lmchart.count");
-	const uint32_t baseA = world.ChartOffsetFor(wiA, 0);
-	const uint32_t baseB = world.ChartOffsetFor(wiB, 0);
-	const uint32_t baseC = world.ChartOffsetFor(wiC, 0);
-	Check(baseC == 0, "lmchart.unlit.zero");
-	Check(baseA + 2 <= 3 && baseB + 1 <= 3, "lmchart.bounds");
-	Check(baseA != baseB, "lmchart.distinct");
-	bool tableOk = world.lmChartTable.size() == 3;
-	for (size_t i = 0; tableOk && i < xformsA.size(); ++i)
-		tableOk = tableOk && world.lmChartTable[baseA + i] == xformsA[i];
-	for (size_t i = 0; tableOk && i < xformsB.size(); ++i)
-		tableOk = tableOk && world.lmChartTable[baseB + i] == xformsB[i];
-	Check(tableOk, "lmchart.layout");
-	// CPU mirror of the VS unpack (atlasUv = chartUv * xy + zw) lands
-	// inside the owning chart's rect for a stamped vertex.
-	{
-		const ImportStaticVertex& v = gridA.vertices[6]; // chart 1 corner
-		const glm::vec4& xf = world.lmChartTable[baseA + v.chartId];
-		const glm::vec2 atlas = v.texCoord2 * glm::vec2(xf.x, xf.y)
-			+ glm::vec2(xf.z, xf.w);
-		Check(v.chartId == 1, "lmchart.vert.chart");
-		Check(atlas.x >= 0.5f && atlas.x <= 1.0f
-			&& atlas.y >= 0.0f && atlas.y <= 0.5f, "lmchart.vert.rect");
-	}
-	// Out-of-range probes resolve 0; a re-resolve bumps the version.
-	Check(world.ChartOffsetFor(wiA, 7) == baseA, "lmchart.lod.oob");
-	Check(world.ChartOffsetFor(9999, 0) == 0, "lmchart.mesh.oob");
-	const uint64_t v0 = world.lmChartVersion;
-	world.ResolveAndFixup_clusters();
-	Check(world.lmChartVersion != v0, "lmchart.version");
-	Check(world.ChartOffsetFor(wiA, 0) == baseA, "lmchart.stable");
+    World world;
+    world.RegisterCluster(std::move(cluster));
+    world.ResolveAndFixup_clusters();
+    Check(world.meshLocations.size() == 3, "lmchart.meshes");
+    // World mesh indices follow table row order — look them up by pool
+    // handle.
+    auto worldIndexOf = [&](uint32_t poolIdx) -> uint32_t {
+        for (uint32_t i = 0; i < (uint32_t)world.meshLocations.size(); ++i)
+            if (world.meshLocations[i].handle.index() == poolIdx)
+                return i;
+        return 0xFFFFFFFFu;
+    };
+    const uint32_t wiA = worldIndexOf(mhA.index());
+    const uint32_t wiB = worldIndexOf(mhB.index());
+    const uint32_t wiC = worldIndexOf(mhC.index());
+    Check(wiA != 0xFFFFFFFFu && wiB != 0xFFFFFFFFu && wiC != 0xFFFFFFFFu, "lmchart.lookup");
+    if (wiA == 0xFFFFFFFFu || wiB == 0xFFFFFFFFu || wiC == 0xFFFFFFFFu)
+        return;
+    // Table holds exactly the baked charts (2 + 1), each mesh's entries
+    // in chart order at its own base.
+    Check(world.lmChartTable.size() == 3, "lmchart.count");
+    const uint32_t baseA = world.ChartOffsetFor(wiA, 0);
+    const uint32_t baseB = world.ChartOffsetFor(wiB, 0);
+    const uint32_t baseC = world.ChartOffsetFor(wiC, 0);
+    Check(baseC == 0, "lmchart.unlit.zero");
+    Check(baseA + 2 <= 3 && baseB + 1 <= 3, "lmchart.bounds");
+    Check(baseA != baseB, "lmchart.distinct");
+    bool tableOk = world.lmChartTable.size() == 3;
+    for (size_t i = 0; tableOk && i < xformsA.size(); ++i)
+        tableOk = tableOk && world.lmChartTable[baseA + i] == xformsA[i];
+    for (size_t i = 0; tableOk && i < xformsB.size(); ++i)
+        tableOk = tableOk && world.lmChartTable[baseB + i] == xformsB[i];
+    Check(tableOk, "lmchart.layout");
+    // CPU mirror of the VS unpack (atlasUv = chartUv * xy + zw) lands
+    // inside the owning chart's rect for a stamped vertex.
+    {
+        const ImportStaticVertex& v = gridA.vertices[6]; // chart 1 corner
+        const glm::vec4& xf = world.lmChartTable[baseA + v.chartId];
+        const glm::vec2 atlas = v.texCoord2 * glm::vec2(xf.x, xf.y) + glm::vec2(xf.z, xf.w);
+        Check(v.chartId == 1, "lmchart.vert.chart");
+        Check(atlas.x >= 0.5f && atlas.x <= 1.0f && atlas.y >= 0.0f && atlas.y <= 0.5f,
+              "lmchart.vert.rect");
+    }
+    // Out-of-range probes resolve 0; a re-resolve bumps the version.
+    Check(world.ChartOffsetFor(wiA, 7) == baseA, "lmchart.lod.oob");
+    Check(world.ChartOffsetFor(9999, 0) == 0, "lmchart.mesh.oob");
+    const uint64_t v0 = world.lmChartVersion;
+    world.ResolveAndFixup_clusters();
+    Check(world.lmChartVersion != v0, "lmchart.version");
+    Check(world.ChartOffsetFor(wiA, 0) == baseA, "lmchart.stable");
 }
 
 void TestClusterSerializeCook() {
-	using namespace smvk;
-	// GPU-free offline cluster: CPU geometry + minted texture ids only.
-	auto cluster = std::make_unique<Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
-		Check(cluster->IsOfflineMode(), "offline.mode.on");
+    using namespace smvk;
+    // GPU-free offline cluster: CPU geometry + minted texture ids only.
+    auto cluster = std::make_unique<Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
+    Check(cluster->IsOfflineMode(), "offline.mode.on");
 
-	// Mesh (cook path retains uploads for serialization).
-	auto quad = MakeQuad();
-	const ClusterStaticMeshHandle mh = cluster->UploadStaticMesh(quad);
-	Check(mh.valid(), "cook.mesh.handle");
-	Check(cluster->GetRetainedUpload(mh) != nullptr, "cook.mesh.retained");
-	Check(cluster->GetRetainedUpload(mh)->vertices.size() == 4, "cook.mesh.retained.verts");
-	const std::string meshUri = "models/q.gltf#mesh.0/prim.0";
-	Check(cluster->RegisterMeshUri(meshUri, mh), "cook.mesh.uri");
-	{
-		LodInfo lod;
-		lod.triCount = 2;
-		cluster->RegisterMeshLod(meshUri, lod);
-	}
+    // Mesh (cook path retains uploads for serialization).
+    auto quad = MakeQuad();
+    const ClusterStaticMeshHandle mh = cluster->UploadStaticMesh(quad);
+    Check(mh.valid(), "cook.mesh.handle");
+    Check(cluster->GetRetainedUpload(mh) != nullptr, "cook.mesh.retained");
+    Check(cluster->GetRetainedUpload(mh)->vertices.size() == 4, "cook.mesh.retained.verts");
+    const std::string meshUri = "models/q.gltf#mesh.0/prim.0";
+    Check(cluster->RegisterMeshUri(meshUri, mh), "cook.mesh.uri");
+    {
+        LodInfo lod;
+        lod.triCount = 2;
+        cluster->RegisterMeshLod(meshUri, lod);
+    }
 
-	// Texture: minted handle (no RHI pool), validated payload stashed.
-	const TextureHandle th = TextureHandle::Mint(cluster->AllocOfflineTextureId());
-	const std::string texUri = "textures/fake.ktx2";
-	Check(th.valid() && th.index() == 0, "cook.tex.mint");
-	Check(cluster->RegisterTextureUri(texUri, th), "cook.tex.uri");
-	cluster->RegisterTextureSampler(texUri, TextureSamplerDesc{ 9729, 9987, 10497, 10497 });
-	// Minimal fake KTX2 payload (magic + pad) — serializer embeds verbatim.
-	std::vector<uint8_t> fakeKtx = { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB,
-		0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4 };
-	cluster->SetTextureSource(texUri, fakeKtx);
-	Check(cluster->GetTextureSource(texUri) != nullptr, "cook.tex.src");
+    // Texture: minted handle (no RHI pool), validated payload stashed.
+    const TextureHandle th = TextureHandle::Mint(cluster->AllocOfflineTextureId());
+    const std::string texUri = "textures/fake.ktx2";
+    Check(th.valid() && th.index() == 0, "cook.tex.mint");
+    Check(cluster->RegisterTextureUri(texUri, th), "cook.tex.uri");
+    cluster->RegisterTextureSampler(texUri, TextureSamplerDesc{9729, 9987, 10497, 10497});
+    // Minimal fake KTX2 payload (magic + pad) — serializer embeds verbatim.
+    std::vector<uint8_t> fakeKtx = {
+        0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4};
+    cluster->SetTextureSource(texUri, fakeKtx);
+    Check(cluster->GetTextureSource(texUri) != nullptr, "cook.tex.src");
 
-	// Material referencing the minted texture slot.
-	MaterialCreateInfo ci{};
-	ci.baseColorTexture = th;
-	ci.metallicFactor = 0.25f;
-	ci.roughnessFactor = 0.75f;
-	ci.shadingModel = ShadingModel::Masked;
-	ci.alphaMode = AlphaMode::Mask;
-	ci.alphaCutoff = 0.33f;
-	ci.doubleSided = true;
-	const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
-	Check(math.valid(), "cook.mat.handle");
-	Check(cluster->RegisterMaterialUri("models/q.gltf#mat.0", math), "cook.mat.uri");
-	Check(cluster->FindMaterialByUri("models/q.gltf#mat.0") == math, "cook.mat.find");
-	{
-		const Material* m = cluster->materials.get(math);
-		Check(m && m->values.textures[0] == 0 && m->doubleSided &&
-			m->alphaMode == AlphaMode::Mask, "cook.mat.values");
-	}
+    // Material referencing the minted texture slot.
+    MaterialCreateInfo ci{};
+    ci.baseColorTexture = th;
+    ci.metallicFactor = 0.25f;
+    ci.roughnessFactor = 0.75f;
+    ci.shadingModel = ShadingModel::Masked;
+    ci.alphaMode = AlphaMode::Mask;
+    ci.alphaCutoff = 0.33f;
+    ci.doubleSided = true;
+    const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
+    Check(math.valid(), "cook.mat.handle");
+    Check(cluster->RegisterMaterialUri("models/q.gltf#mat.0", math), "cook.mat.uri");
+    Check(cluster->FindMaterialByUri("models/q.gltf#mat.0") == math, "cook.mat.find");
+    {
+        const Material* m = cluster->materials.get(math);
+        Check(m && m->values.textures[0] == 0 && m->doubleSided && m->alphaMode == AlphaMode::Mask,
+              "cook.mat.values");
+    }
 
-	// Scene: root + one renderable node.
-	const int root = addNode(cluster->scene, -1, 0);
-	const int child = addNode(cluster->scene, root, 1);
-	SetMesh(cluster->scene, uint32_t(child), mh.index());
-	SetMaterial(cluster->scene, uint32_t(child), math.index());
-	setNodeName(cluster->scene, child, "QuadNode");
-	// Explicit animation references (the scene blob's trailing v16
-	// section — the self-contained anim pipeline): the cooked asset
-	// records its .tourAnim clip paths; the tail-layout assertions below
-	// pin the wire format (the section is the LAST thing in the blob).
-	cluster->scene.animClipRefs = {
-		"demo/knight.anim0_rig.anim",
-		"demo/knight.anim1_walk.anim",
-	};
-	// A cooked static mark alongside (the trailing v2 section): authored
-	// marks serialize verbatim for the runtime to honor.
-	MarkSubtreeStatic(cluster->scene, root);
+    // Scene: root + one renderable node.
+    const int root = addNode(cluster->scene, -1, 0);
+    const int child = addNode(cluster->scene, root, 1);
+    SetMesh(cluster->scene, uint32_t(child), mh.index());
+    SetMaterial(cluster->scene, uint32_t(child), math.index());
+    setNodeName(cluster->scene, child, "QuadNode");
+    // Explicit animation references (the scene blob's trailing v16
+    // section — the self-contained anim pipeline): the cooked asset
+    // records its .tourAnim clip paths; the tail-layout assertions below
+    // pin the wire format (the section is the LAST thing in the blob).
+    cluster->scene.animClipRefs = {
+        "demo/knight.anim0_rig.anim",
+        "demo/knight.anim1_walk.anim",
+    };
+    // A cooked static mark alongside (the trailing v2 section): authored
+    // marks serialize verbatim for the runtime to honor.
+    MarkSubtreeStatic(cluster->scene, root);
 
-	// Cooked punctual light carrying the static flag (bake source —
-	// lightmap/probe harvest + runtime forward+ exclusion; see
-	// SceneLight::kSceneLightFlag_Static). Links from its own node like
-	// the glTF importer's group nodes.
-	SceneLight lightDef;
-	lightDef.type = SceneLight::Type::Spot;
-	lightDef.color = glm::vec3(1.0f, 0.5f, 0.25f);
-	lightDef.intensity = 64.0f;
-	lightDef.range = 12.0f;
-	lightDef.innerConeAngle = glm::radians(15.0f);
-	lightDef.outerConeAngle = glm::radians(30.0f);
-	lightDef.flags = SceneLight::kSceneLightFlag_Static;
-	lightDef.name = "STATIC_LampA";
-	const ClusterLightHandle lh = cluster->CreateLight(lightDef);
-	Check(lh.valid(), "cook.light.handle");
-	Check(cluster->RegisterLightUri("models/q.gltf#light.0", lh), "cook.light.uri");
-	const int lightNode = addNode(cluster->scene, root, 1);
-	SetLight(cluster->scene, NodeId(lightNode), lh.index());
-	setNodeName(cluster->scene, lightNode, "LampNode");
+    // Cooked punctual light carrying the static flag (bake source —
+    // lightmap/probe harvest + runtime forward+ exclusion; see
+    // SceneLight::kSceneLightFlag_Static). Links from its own node like
+    // the glTF importer's group nodes.
+    SceneLight lightDef;
+    lightDef.type = SceneLight::Type::Spot;
+    lightDef.color = glm::vec3(1.0f, 0.5f, 0.25f);
+    lightDef.intensity = 64.0f;
+    lightDef.range = 12.0f;
+    lightDef.innerConeAngle = glm::radians(15.0f);
+    lightDef.outerConeAngle = glm::radians(30.0f);
+    lightDef.flags = SceneLight::kSceneLightFlag_Static;
+    lightDef.name = "STATIC_LampA";
+    const ClusterLightHandle lh = cluster->CreateLight(lightDef);
+    Check(lh.valid(), "cook.light.handle");
+    Check(cluster->RegisterLightUri("models/q.gltf#light.0", lh), "cook.light.uri");
+    const int lightNode = addNode(cluster->scene, root, 1);
+    SetLight(cluster->scene, NodeId(lightNode), lh.index());
+    setNodeName(cluster->scene, lightNode, "LampNode");
 
-	PakWriter writer;
-	ClusterSerializeStats stats;
-	std::string err;
-	Check(SerializeCluster(*cluster, writer, &stats, &err), "cook.serialize.ok");
-	if (!err.empty())
-		std::cout << "  serialize err: " << err << "\n";
-	Check(stats.meshes == 1 && stats.materials == 1 && stats.textures == 1 &&
-		stats.nodes == 3, "cook.serialize.stats");
-	Check(stats.lights == 1, "cook.serialize.stats.lights");
+    PakWriter writer;
+    ClusterSerializeStats stats;
+    std::string err;
+    Check(SerializeCluster(*cluster, writer, &stats, &err), "cook.serialize.ok");
+    if (!err.empty())
+        std::cout << "  serialize err: " << err << "\n";
+    Check(stats.meshes == 1 && stats.materials == 1 && stats.textures == 1 && stats.nodes == 3,
+          "cook.serialize.stats");
+    Check(stats.lights == 1, "cook.serialize.stats.lights");
 
-	std::vector<uint8_t> img = writer.Finalize();
-	std::string openErr;
-	auto reader = PakReader::Open(std::span<const uint8_t>(img), openErr);
-	Check(reader.has_value(), "cook.pak.open");
-	if (!reader)
-		return;
-	Check(reader->BlobsOfKind(PakAssetKind::Mesh).size() == 1, "cook.pak.mesh1");
-	Check(reader->BlobsOfKind(PakAssetKind::Material).size() == 1, "cook.pak.mat1");
-	Check(reader->BlobsOfKind(PakAssetKind::Texture).size() == 1, "cook.pak.tex1");
-	Check(reader->BlobsOfKind(PakAssetKind::Scene).size() == 1, "cook.pak.scene1");
-	// SMP8: the cook emits the MESH PLAN (the family -> member join)
-	// alongside the mesh blobs — the runtime join reads it, never a
-	// TOC string scan.
-	Check(reader->BlobsOfKind(PakAssetKind::Plan).size() == 1,
-		"cook.pak.plan1");
-	{
-		std::vector<PakMeshPlanMember> planMembers;
-		std::string planErr;
-		Check(reader->MeshPlanFamily("models/q.gltf", planMembers,
-				planErr)
-			&& planMembers.size() == 1
-			&& planMembers[0].tocPath == "models/q.gltf#mesh.0/prim.0"
-			&& planMembers[0].lodIndex == 0,
-			"cook.pak.plan-family");
-		// A family the plan does not carry refuses loudly (a version
-		// skew - recook, never a silent empty join).
-		std::vector<PakMeshPlanMember> none;
-		std::string noneErr;
-		Check(!reader->MeshPlanFamily("models/ghost.geometry", none,
-				noneErr)
-			&& noneErr.find("recook") != std::string::npos,
-			"cook.pak.plan-unknown-refused");
-	}
+    std::vector<uint8_t> img = writer.Finalize();
+    std::string openErr;
+    auto reader = PakReader::Open(std::span<const uint8_t>(img), openErr);
+    Check(reader.has_value(), "cook.pak.open");
+    if (!reader)
+        return;
+    Check(reader->BlobsOfKind(PakAssetKind::Mesh).size() == 1, "cook.pak.mesh1");
+    Check(reader->BlobsOfKind(PakAssetKind::Material).size() == 1, "cook.pak.mat1");
+    Check(reader->BlobsOfKind(PakAssetKind::Texture).size() == 1, "cook.pak.tex1");
+    Check(reader->BlobsOfKind(PakAssetKind::Scene).size() == 1, "cook.pak.scene1");
+    // SMP8: the cook emits the MESH PLAN (the family -> member join)
+    // alongside the mesh blobs — the runtime join reads it, never a
+    // TOC string scan.
+    Check(reader->BlobsOfKind(PakAssetKind::Plan).size() == 1, "cook.pak.plan1");
+    {
+        std::vector<PakMeshPlanMember> planMembers;
+        std::string planErr;
+        Check(reader->MeshPlanFamily("models/q.gltf", planMembers, planErr) &&
+                  planMembers.size() == 1 &&
+                  planMembers[0].tocPath == "models/q.gltf#mesh.0/prim.0" &&
+                  planMembers[0].lodIndex == 0,
+              "cook.pak.plan-family");
+        // A family the plan does not carry refuses loudly (a version
+        // skew - recook, never a silent empty join).
+        std::vector<PakMeshPlanMember> none;
+        std::string noneErr;
+        Check(!reader->MeshPlanFamily("models/ghost.geometry", none, noneErr) &&
+                  noneErr.find("recook") != std::string::npos,
+              "cook.pak.plan-unknown-refused");
+    }
 
-	// Scene blob's trailing v16 ANIMATION-REFS section (the last thing
-	// the writer emits): u32 count + PutStr per ref. The blob tail must
-	// be exactly those bytes — the reader (ParseSceneBlob's mirror parse)
-	// consumes them and the trailing-bytes check demands an exact end.
-	{
-		const auto sceneBlobs = reader->BlobsOfKind(PakAssetKind::Scene);
-		if (sceneBlobs.size() == 1) {
-			const std::span<const uint8_t> p = reader->Payload(*sceneBlobs[0]);
-			// Expected tail: u32(2) + u32(len)+"a" + u32(len)+"b".
-			std::vector<uint8_t> expect;
-			auto putU32 = [&](uint32_t v) {
-				for (int i = 0; i < 4; ++i)
-					expect.push_back(uint8_t((v >> (8 * i)) & 0xFF));
-			};
-			putU32(2);
-			putU32(uint32_t(cluster->scene.animClipRefs[0].size()));
-			expect.insert(expect.end(),
-				cluster->scene.animClipRefs[0].begin(),
-				cluster->scene.animClipRefs[0].end());
-			putU32(uint32_t(cluster->scene.animClipRefs[1].size()));
-			expect.insert(expect.end(),
-				cluster->scene.animClipRefs[1].begin(),
-				cluster->scene.animClipRefs[1].end());
-			// The v17 per-node volumetric-shadow caster section trails
-			// the anim refs (u32 nodeCount + nodeCount flag bytes; this
-			// scene never marks a caster, so the writer emits the
-			// all-zero fallback). The tail pin USED to end at the anim
-			// refs - v16's "last section" contract - and has failed
-			// every FRESH build since v17 appended the caster bytes
-			// (811b461f): unnoticed locally because the stale
-			// AssetTests.exe kept passing (the targeted App-only
-			// rebuilds never relinked it), loud in CI where every build
-			// is fresh.
-			putU32(uint32_t(cluster->scene.hierarchy.size()));
-			expect.insert(expect.end(),
-				cluster->scene.hierarchy.size(), uint8_t(0));
-			// The v18 audio-source section trails the caster bytes
-			// (u32 rowCount — this scene carries no audio sources, so
-			// the writer emits the zero-row form; see the dedicated
-			// TestAudioSceneSection for the populated encoding).
-			putU32(0);
-			// The v19 schema-association section trails the audio
-			// sources (u32 rowCount — this scene carries no schema
-			// associations, so the writer emits the uniform zero-row
-			// form).
-			putU32(0);
-			// The v20 audio-room section trails the schema
-			// associations (u32 rowCount — this scene carries no audio
-			// rooms, so the writer emits the uniform zero-row form;
-			// see TestAudioRoomSection for the populated encoding).
-			putU32(0);
-			// The v21 trigger section trails the audio rooms (u32
-			// rowCount — no triggers in this scene, uniform zero-row
-			// form; see TestTriggerVolume in test_trigger_volume.cpp
-			// for the populated encoding).
-			putU32(0);
-			// The v22 physics-body section trails the triggers (u32
-			// rowCount — no authored bodies in this scene, uniform
-			// zero-row form).
-			putU32(0);
-			const size_t at = p.size() - expect.size();
-			bool tailOk = p.size() >= expect.size();
-			for (size_t i = 0; tailOk && i < expect.size(); ++i)
-				tailOk = p[at + i] == expect[i];
-			Check(tailOk, "cook.pak.scene.animrefs-tail");
-			// (The authored static mark's serialization is covered by the
-			// real-pak stamptest flow — the pak cooker stamps + the App
-			// honors the marks; the manual light-blob parse above pins
-			// the section pattern style.)
-		}
-	}
+    // Scene blob's trailing v16 ANIMATION-REFS section (the last thing
+    // the writer emits): u32 count + PutStr per ref. The blob tail must
+    // be exactly those bytes — the reader (ParseSceneBlob's mirror parse)
+    // consumes them and the trailing-bytes check demands an exact end.
+    {
+        const auto sceneBlobs = reader->BlobsOfKind(PakAssetKind::Scene);
+        if (sceneBlobs.size() == 1) {
+            const std::span<const uint8_t> p = reader->Payload(*sceneBlobs[0]);
+            // Expected tail: u32(2) + u32(len)+"a" + u32(len)+"b".
+            std::vector<uint8_t> expect;
+            auto putU32 = [&](uint32_t v) {
+                for (int i = 0; i < 4; ++i)
+                    expect.push_back(uint8_t((v >> (8 * i)) & 0xFF));
+            };
+            putU32(2);
+            putU32(uint32_t(cluster->scene.animClipRefs[0].size()));
+            expect.insert(expect.end(),
+                          cluster->scene.animClipRefs[0].begin(),
+                          cluster->scene.animClipRefs[0].end());
+            putU32(uint32_t(cluster->scene.animClipRefs[1].size()));
+            expect.insert(expect.end(),
+                          cluster->scene.animClipRefs[1].begin(),
+                          cluster->scene.animClipRefs[1].end());
+            // The v17 per-node volumetric-shadow caster section trails
+            // the anim refs (u32 nodeCount + nodeCount flag bytes; this
+            // scene never marks a caster, so the writer emits the
+            // all-zero fallback). The tail pin USED to end at the anim
+            // refs - v16's "last section" contract - and has failed
+            // every FRESH build since v17 appended the caster bytes
+            // (811b461f): unnoticed locally because the stale
+            // AssetTests.exe kept passing (the targeted App-only
+            // rebuilds never relinked it), loud in CI where every build
+            // is fresh.
+            putU32(uint32_t(cluster->scene.hierarchy.size()));
+            expect.insert(expect.end(), cluster->scene.hierarchy.size(), uint8_t(0));
+            // The v18 audio-source section trails the caster bytes
+            // (u32 rowCount — this scene carries no audio sources, so
+            // the writer emits the zero-row form; see the dedicated
+            // TestAudioSceneSection for the populated encoding).
+            putU32(0);
+            // The v19 schema-association section trails the audio
+            // sources (u32 rowCount — this scene carries no schema
+            // associations, so the writer emits the uniform zero-row
+            // form).
+            putU32(0);
+            // The v20 audio-room section trails the schema
+            // associations (u32 rowCount — this scene carries no audio
+            // rooms, so the writer emits the uniform zero-row form;
+            // see TestAudioRoomSection for the populated encoding).
+            putU32(0);
+            // The v21 trigger section trails the audio rooms (u32
+            // rowCount — no triggers in this scene, uniform zero-row
+            // form; see TestTriggerVolume in test_trigger_volume.cpp
+            // for the populated encoding).
+            putU32(0);
+            // The v22 physics-body section trails the triggers (u32
+            // rowCount — no authored bodies in this scene, uniform
+            // zero-row form).
+            putU32(0);
+            const size_t at = p.size() - expect.size();
+            bool tailOk = p.size() >= expect.size();
+            for (size_t i = 0; tailOk && i < expect.size(); ++i)
+                tailOk = p[at + i] == expect[i];
+            Check(tailOk, "cook.pak.scene.animrefs-tail");
+            // (The authored static mark's serialization is covered by the
+            // real-pak stamptest flow — the pak cooker stamps + the App
+            // honors the marks; the manual light-blob parse above pins
+            // the section pattern style.)
+        }
+    }
 
-	// Light blob round-trip: definition fields + the trailing flags
-	// section (kSceneLightFlag_Static) the bake harvest reads back.
-	{
-		const auto lightBlobs = reader->BlobsOfKind(PakAssetKind::Light);
-		Check(lightBlobs.size() == 1, "cook.pak.light1");
-		if (lightBlobs.size() == 1) {
-			const std::span<const uint8_t> p = reader->Payload(*lightBlobs[0]);
-			size_t off = 0;
-			bool ok = p.size() >= 4;
-			auto u32 = [&]() {
-				uint32_t v = 0;
-				if (off + 4 <= p.size())
-					memcpy(&v, p.data() + off, 4);
-				else
-					ok = false;
-				off += 4;
-				return v;
-			};
-			auto f32 = [&]() {
-				float v = 0.0f;
-				if (off + 4 <= p.size())
-					memcpy(&v, p.data() + off, 4);
-				else
-					ok = false;
-				off += 4;
-				return v;
-			};
-			auto str = [&]() {
-				const uint32_t n = u32();
-				std::string s;
-				if (ok && off + n <= p.size()) {
-					s.assign(reinterpret_cast<const char*>(p.data() + off), n);
-					off += n;
-				} else {
-					ok = false;
-				}
-				return s;
-			};
-			const std::string uri = str();
-			const uint32_t type = u32();
-			const float cr = f32(), cg = f32(), cb = f32();
-			const float intensity = f32();
-			const float range = f32();
-			const float inner = f32();
-			const float outer = f32();
-			const std::string name = str();
-			const uint32_t flags = u32();
-			Check(ok, "cook.pak.light.parse");
-			Check(uri == "models/q.gltf#light.0", "cook.pak.light.uri");
-			Check(type == 2 /* Spot */, "cook.pak.light.type");
-			Check(std::abs(cr - 1.0f) < 1e-6f && std::abs(cg - 0.5f) < 1e-6f &&
-				std::abs(cb - 0.25f) < 1e-6f, "cook.pak.light.color");
-			Check(std::abs(intensity - 64.0f) < 1e-6f &&
-				std::abs(range - 12.0f) < 1e-6f, "cook.pak.light.ir");
-			Check(std::abs(inner - glm::radians(15.0f)) < 1e-6f &&
-				std::abs(outer - glm::radians(30.0f)) < 1e-6f,
-				"cook.pak.light.cones");
-		Check(name == "STATIC_LampA", "cook.pak.light.name");
-		Check(flags == SceneLight::kSceneLightFlag_Static,
-			"cook.pak.light.flags.static");
-		// v6 gobo/function section (the test light carries no cookie:
-		// empty URI + the function defaults).
-		const std::string cookie = str();
-		const uint32_t fn = u32();
-		const float fnSpeed = f32();
-		const float fnScale = f32();
-		Check(ok, "cook.pak.light.gobo.parse");
-		Check(cookie.empty() && fn == 0
-			&& std::abs(fnSpeed - 1.0f) < 1e-6f
-			&& std::abs(fnScale - 0.5f) < 1e-6f,
-			"cook.pak.light.gobo.defaults");
-		Check(off == p.size(), "cook.pak.light.exactend");
-		}
-	}
+    // Light blob round-trip: definition fields + the trailing flags
+    // section (kSceneLightFlag_Static) the bake harvest reads back.
+    {
+        const auto lightBlobs = reader->BlobsOfKind(PakAssetKind::Light);
+        Check(lightBlobs.size() == 1, "cook.pak.light1");
+        if (lightBlobs.size() == 1) {
+            const std::span<const uint8_t> p = reader->Payload(*lightBlobs[0]);
+            size_t off = 0;
+            bool ok = p.size() >= 4;
+            auto u32 = [&]() {
+                uint32_t v = 0;
+                if (off + 4 <= p.size())
+                    memcpy(&v, p.data() + off, 4);
+                else
+                    ok = false;
+                off += 4;
+                return v;
+            };
+            auto f32 = [&]() {
+                float v = 0.0f;
+                if (off + 4 <= p.size())
+                    memcpy(&v, p.data() + off, 4);
+                else
+                    ok = false;
+                off += 4;
+                return v;
+            };
+            auto str = [&]() {
+                const uint32_t n = u32();
+                std::string s;
+                if (ok && off + n <= p.size()) {
+                    s.assign(reinterpret_cast<const char*>(p.data() + off), n);
+                    off += n;
+                } else {
+                    ok = false;
+                }
+                return s;
+            };
+            const std::string uri = str();
+            const uint32_t type = u32();
+            const float cr = f32(), cg = f32(), cb = f32();
+            const float intensity = f32();
+            const float range = f32();
+            const float inner = f32();
+            const float outer = f32();
+            const std::string name = str();
+            const uint32_t flags = u32();
+            Check(ok, "cook.pak.light.parse");
+            Check(uri == "models/q.gltf#light.0", "cook.pak.light.uri");
+            Check(type == 2 /* Spot */, "cook.pak.light.type");
+            Check(std::abs(cr - 1.0f) < 1e-6f && std::abs(cg - 0.5f) < 1e-6f &&
+                      std::abs(cb - 0.25f) < 1e-6f,
+                  "cook.pak.light.color");
+            Check(std::abs(intensity - 64.0f) < 1e-6f && std::abs(range - 12.0f) < 1e-6f,
+                  "cook.pak.light.ir");
+            Check(std::abs(inner - glm::radians(15.0f)) < 1e-6f &&
+                      std::abs(outer - glm::radians(30.0f)) < 1e-6f,
+                  "cook.pak.light.cones");
+            Check(name == "STATIC_LampA", "cook.pak.light.name");
+            Check(flags == SceneLight::kSceneLightFlag_Static, "cook.pak.light.flags.static");
+            // v6 gobo/function section (the test light carries no cookie:
+            // empty URI + the function defaults).
+            const std::string cookie = str();
+            const uint32_t fn = u32();
+            const float fnSpeed = f32();
+            const float fnScale = f32();
+            Check(ok, "cook.pak.light.gobo.parse");
+            Check(cookie.empty() && fn == 0 && std::abs(fnSpeed - 1.0f) < 1e-6f &&
+                      std::abs(fnScale - 0.5f) < 1e-6f,
+                  "cook.pak.light.gobo.defaults");
+            Check(off == p.size(), "cook.pak.light.exactend");
+        }
+    }
 
-	// Texture payload round-trip (bytes + sampler).
-	const PakTocEntry* tex = reader->Find(PakAssetKind::Texture, texUri);
-	Check(tex != nullptr, "cook.pak.tex.find");
-	if (tex) {
-		PakTexturePayload p;
-		Check(ParseTexturePayload(reader->Payload(*tex), p), "cook.pak.tex.parse");
-		Check(p.uri == texUri && p.magFilter == 9729 && p.minFilter == 9987 &&
-			p.wrapS == 10497 && p.wrapT == 10497, "cook.pak.tex.sampler");
-		Check(p.ktxBytes.size() == fakeKtx.size() &&
-			memcmp(p.ktxBytes.data(), fakeKtx.data(), fakeKtx.size()) == 0,
-			"cook.pak.tex.bytes");
-	}
+    // Texture payload round-trip (bytes + sampler).
+    const PakTocEntry* tex = reader->Find(PakAssetKind::Texture, texUri);
+    Check(tex != nullptr, "cook.pak.tex.find");
+    if (tex) {
+        PakTexturePayload p;
+        Check(ParseTexturePayload(reader->Payload(*tex), p), "cook.pak.tex.parse");
+        Check(p.uri == texUri && p.magFilter == 9729 && p.minFilter == 9987 && p.wrapS == 10497 &&
+                  p.wrapT == 10497,
+              "cook.pak.tex.sampler");
+        Check(p.ktxBytes.size() == fakeKtx.size() &&
+                  memcmp(p.ktxBytes.data(), fakeKtx.data(), fakeKtx.size()) == 0,
+              "cook.pak.tex.bytes");
+    }
 
-	// Mesh blob carries the v5 fast-load payload: packed-SoA streams (the
-	// exact GPU heap layout) addressed by recorded blob-relative offsets.
-	// Chart data rides the SEPARATE lightmap stream (the uncharted quad is
-	// lmOff = 0 here).
-	const auto meshes = reader->BlobsOfKind(PakAssetKind::Mesh);
-	Check(!meshes.empty(), "cook.pak.mesh.find");
-	if (!meshes.empty()) {
-		const std::span<const uint8_t> pay = reader->Payload(*meshes[0]);
-		// Header: uri len+bytes, counts(3), surfaces(0 entries), aabb(24),
-		// sphere, topology, lod(7 fields), lmChunk, lmXformCount(0 here).
-		const size_t header = 4 + meshUri.size() + 12 + 24 + 4 + 4 + 28 + 8;
-		Check(pay.size() > header + 36, "cook.pak.mesh.v4.section");
-		uint32_t marker = 0;
-		memcpy(&marker, pay.data() + header, 4);
-		Check(marker == 2u, "cook.pak.mesh.v4.marker");
-		uint64_t posOff = 0, shadeOff = 0, lmOff = 0, idxOff = 0;
-		memcpy(&posOff, pay.data() + header + 4, 8);
-		memcpy(&shadeOff, pay.data() + header + 12, 8);
-		memcpy(&lmOff, pay.data() + header + 20, 8);
-		memcpy(&idxOff, pay.data() + header + 28, 8);
-		const size_t posBytes = 4 * sizeof(PackedVertexPosition);
-		const size_t shadeBytes = 4 * sizeof(PackedVertexShading);
-		const size_t idxBytes = 6 * sizeof(uint32_t);
-		// Stream starts: marker section end aligned up to 16, then the
-		// streams back-to-back (the uncharted quad skips the lightmap
-		// stream entirely), then the meshlet trailer (count 0).
-		Check(posOff == ((header + 36 + 15) & ~size_t(15)), "cook.pak.mesh.v4.posoff");
-		Check(lmOff == 0 && shadeOff == posOff + posBytes
-			&& idxOff == shadeOff + shadeBytes,
-			"cook.pak.mesh.v4.streamoffs");
-		Check(posOff + posBytes + shadeBytes + idxBytes + 12 + 4 == pay.size(),
-			"cook.pak.mesh.v4.exactend");
-		// The trailing skin-stream section (the Northlight data path):
-		// the meshlet trailer (12 bytes, count 0) + the skin count (4
-		// bytes, count 0 here - the quad is static). A present skin
-		// section must end the blob exactly (see the loader).
-		// Stream content: the shared pack helper's output for the quad's
-		// vertices + the raw index buffer.
-		bool streamsOk = true;
-		for (uint32_t v = 0; v < 4; ++v) {
-			PackedVertexPosition pos{};
-			PackedVertexShading shade{};
-			PackedVertexLightmap lm{};
-			PackStaticVertex(quad.vertices[v], pos, shade, lm);
-			streamsOk = streamsOk
-				&& memcmp(pay.data() + posOff + v * sizeof(PackedVertexPosition),
-					&pos, sizeof(PackedVertexPosition)) == 0
-				&& memcmp(pay.data() + shadeOff + v * sizeof(PackedVertexShading),
-					&shade, sizeof(PackedVertexShading)) == 0;
-		}
-		for (uint32_t i = 0; i < 6; ++i) {
-			uint32_t idx = 0;
-			memcpy(&idx, pay.data() + idxOff + i * 4, 4);
-			streamsOk = streamsOk && idx == quad.indices[i];
-		}
-		Check(streamsOk, "cook.pak.mesh.v4.streams");
-	}
+    // Mesh blob carries the v5 fast-load payload: packed-SoA streams (the
+    // exact GPU heap layout) addressed by recorded blob-relative offsets.
+    // Chart data rides the SEPARATE lightmap stream (the uncharted quad is
+    // lmOff = 0 here).
+    const auto meshes = reader->BlobsOfKind(PakAssetKind::Mesh);
+    Check(!meshes.empty(), "cook.pak.mesh.find");
+    if (!meshes.empty()) {
+        const std::span<const uint8_t> pay = reader->Payload(*meshes[0]);
+        // Header: uri len+bytes, counts(3), surfaces(0 entries), aabb(24),
+        // sphere, topology, lod(7 fields), lmChunk, lmXformCount(0 here).
+        const size_t header = 4 + meshUri.size() + 12 + 24 + 4 + 4 + 28 + 8;
+        Check(pay.size() > header + 36, "cook.pak.mesh.v4.section");
+        uint32_t marker = 0;
+        memcpy(&marker, pay.data() + header, 4);
+        Check(marker == 2u, "cook.pak.mesh.v4.marker");
+        uint64_t posOff = 0, shadeOff = 0, lmOff = 0, idxOff = 0;
+        memcpy(&posOff, pay.data() + header + 4, 8);
+        memcpy(&shadeOff, pay.data() + header + 12, 8);
+        memcpy(&lmOff, pay.data() + header + 20, 8);
+        memcpy(&idxOff, pay.data() + header + 28, 8);
+        const size_t posBytes = 4 * sizeof(PackedVertexPosition);
+        const size_t shadeBytes = 4 * sizeof(PackedVertexShading);
+        const size_t idxBytes = 6 * sizeof(uint32_t);
+        // Stream starts: marker section end aligned up to 16, then the
+        // streams back-to-back (the uncharted quad skips the lightmap
+        // stream entirely), then the meshlet trailer (count 0).
+        Check(posOff == ((header + 36 + 15) & ~size_t(15)), "cook.pak.mesh.v4.posoff");
+        Check(lmOff == 0 && shadeOff == posOff + posBytes && idxOff == shadeOff + shadeBytes,
+              "cook.pak.mesh.v4.streamoffs");
+        Check(posOff + posBytes + shadeBytes + idxBytes + 12 + 4 == pay.size(),
+              "cook.pak.mesh.v4.exactend");
+        // The trailing skin-stream section (the Northlight data path):
+        // the meshlet trailer (12 bytes, count 0) + the skin count (4
+        // bytes, count 0 here - the quad is static). A present skin
+        // section must end the blob exactly (see the loader).
+        // Stream content: the shared pack helper's output for the quad's
+        // vertices + the raw index buffer.
+        bool streamsOk = true;
+        for (uint32_t v = 0; v < 4; ++v) {
+            PackedVertexPosition pos{};
+            PackedVertexShading shade{};
+            PackedVertexLightmap lm{};
+            PackStaticVertex(quad.vertices[v], pos, shade, lm);
+            streamsOk = streamsOk &&
+                        memcmp(pay.data() + posOff + v * sizeof(PackedVertexPosition),
+                               &pos,
+                               sizeof(PackedVertexPosition)) == 0 &&
+                        memcmp(pay.data() + shadeOff + v * sizeof(PackedVertexShading),
+                               &shade,
+                               sizeof(PackedVertexShading)) == 0;
+        }
+        for (uint32_t i = 0; i < 6; ++i) {
+            uint32_t idx = 0;
+            memcpy(&idx, pay.data() + idxOff + i * 4, 4);
+            streamsOk = streamsOk && idx == quad.indices[i];
+        }
+        Check(streamsOk, "cook.pak.mesh.v4.streams");
+    }
 }
 
 void TestStaticSubtrees() {
-	Scene scene;
-	const int root = addNode(scene, -1, 0);
-	const int a = addNode(scene, root, 1);
-	const int b = addNode(scene, a, 2);
-	const int c = addNode(scene, root, 1);
-	Check(!IsStaticNode(scene, a), "static.init.dynamic");
-	MarkSubtreeStatic(scene, a);
-	Check(IsStaticSubtreeRoot(scene, a), "static.root");
-	Check(IsStaticNode(scene, a) && IsStaticNode(scene, b), "static.cache.desc");
-	Check(!IsStaticNode(scene, root) && !IsStaticNode(scene, c), "static.cache.sibling");
-	// Dynamic dirty path skips frozen nodes.
-	markAsChangedDynamic(scene, root);
-	bool sawStatic = false;
-	for (int l = 0; l < MAX_NODE_LEVEL; ++l)
-		for (int n : scene.changedAtThisFrame[l])
-			if (n == a || n == b)
-				sawStatic = true;
-	Check(!sawStatic, "static.dirty.skip");
-	for (int l = 0; l < MAX_NODE_LEVEL; ++l)
-		scene.changedAtThisFrame[l].clear();
-	// Dynamic recalc leaves baked globals alone.
-	scene.globalTransform[b] = glm::mat4(2.0f);
-	markAsChanged(scene, root);
-	Check(recalculateGlobalTransformsDynamic(scene), "static.recalc.dynamic");
-	Check(scene.globalTransform[b] == glm::mat4(2.0f), "static.recalc.baked");
-	ClearSubtreeStatic(scene, a);
-	Check(!IsStaticNode(scene, a) && !IsStaticNode(scene, b), "static.clear");
+    Scene scene;
+    const int root = addNode(scene, -1, 0);
+    const int a = addNode(scene, root, 1);
+    const int b = addNode(scene, a, 2);
+    const int c = addNode(scene, root, 1);
+    Check(!IsStaticNode(scene, a), "static.init.dynamic");
+    MarkSubtreeStatic(scene, a);
+    Check(IsStaticSubtreeRoot(scene, a), "static.root");
+    Check(IsStaticNode(scene, a) && IsStaticNode(scene, b), "static.cache.desc");
+    Check(!IsStaticNode(scene, root) && !IsStaticNode(scene, c), "static.cache.sibling");
+    // Dynamic dirty path skips frozen nodes.
+    markAsChangedDynamic(scene, root);
+    bool sawStatic = false;
+    for (int l = 0; l < MAX_NODE_LEVEL; ++l)
+        for (int n : scene.changedAtThisFrame[l])
+            if (n == a || n == b)
+                sawStatic = true;
+    Check(!sawStatic, "static.dirty.skip");
+    for (int l = 0; l < MAX_NODE_LEVEL; ++l)
+        scene.changedAtThisFrame[l].clear();
+    // Dynamic recalc leaves baked globals alone.
+    scene.globalTransform[b] = glm::mat4(2.0f);
+    markAsChanged(scene, root);
+    Check(recalculateGlobalTransformsDynamic(scene), "static.recalc.dynamic");
+    Check(scene.globalTransform[b] == glm::mat4(2.0f), "static.recalc.baked");
+    ClearSubtreeStatic(scene, a);
+    Check(!IsStaticNode(scene, a) && !IsStaticNode(scene, b), "static.clear");
 }
 
 void TestMeshlets() {
-	smvk::MeshletConfig cfg;
-	cfg.enabled = true;
-	cfg.maxVertices = 64;
-	cfg.maxTriangles = 124;
-	auto quad = MakeQuad();
-	smvk::CookedMeshlets cooked;
-	smvk::MeshletStats st;
-	Check(smvk::BuildMeshletsForUpload(quad, cfg, &cooked, &st, nullptr), "meshlet.quad.ok");
-	Check(!cooked.empty() && st.meshletCount >= 1, "meshlet.quad.count");
-	Check(st.totalTriangles == 2, "meshlet.quad.tris");
-	bool windowsOk = true;
-	for (const auto& m : cooked.meshlets) {
-		if (m.vertexCount == 0 || m.vertexCount > 64 || m.triangleCount == 0 ||
-			m.triangleCount > 124 || m.boundRadius <= 0.0f)
-			windowsOk = false;
-		if ((size_t)m.vertexOffset + m.vertexCount > cooked.vertices.size() ||
-			(size_t)m.triangleOffset + (size_t)m.triangleCount * 3 > cooked.triangles.size())
-			windowsOk = false;
-	}
-	Check(windowsOk, "meshlet.quad.windows");
-	// Indirect staging expands to the same triangle soup.
-	std::vector<uint32_t> idx;
-	std::vector<smvk::MeshletDrawCommand> cmds;
-	smvk::BuildMeshletIndirectCommands(cooked, idx, cmds);
-	Check(cmds.size() == cooked.meshlets.size() && idx.size() == 6, "meshlet.indirect.count");
-	// Disabled config fails softly with empty output.
-	smvk::MeshletConfig off;
-	smvk::CookedMeshlets empty;
-	Check(!smvk::BuildMeshletsForUpload(quad, off, &empty, nullptr, nullptr), "meshlet.disabled.false");
-	Check(empty.empty(), "meshlet.disabled.empty");
-	// Degenerate input fails softly.
-	smvk::StaticMeshUpload deg;
-	Check(!smvk::BuildMeshletsForUpload(deg, cfg, &empty, nullptr, nullptr), "meshlet.empty.false");
+    smvk::MeshletConfig cfg;
+    cfg.enabled = true;
+    cfg.maxVertices = 64;
+    cfg.maxTriangles = 124;
+    auto quad = MakeQuad();
+    smvk::CookedMeshlets cooked;
+    smvk::MeshletStats st;
+    Check(smvk::BuildMeshletsForUpload(quad, cfg, &cooked, &st, nullptr), "meshlet.quad.ok");
+    Check(!cooked.empty() && st.meshletCount >= 1, "meshlet.quad.count");
+    Check(st.totalTriangles == 2, "meshlet.quad.tris");
+    bool windowsOk = true;
+    for (const auto& m : cooked.meshlets) {
+        if (m.vertexCount == 0 || m.vertexCount > 64 || m.triangleCount == 0 ||
+            m.triangleCount > 124 || m.boundRadius <= 0.0f)
+            windowsOk = false;
+        if ((size_t)m.vertexOffset + m.vertexCount > cooked.vertices.size() ||
+            (size_t)m.triangleOffset + (size_t)m.triangleCount * 3 > cooked.triangles.size())
+            windowsOk = false;
+    }
+    Check(windowsOk, "meshlet.quad.windows");
+    // Indirect staging expands to the same triangle soup.
+    std::vector<uint32_t> idx;
+    std::vector<smvk::MeshletDrawCommand> cmds;
+    smvk::BuildMeshletIndirectCommands(cooked, idx, cmds);
+    Check(cmds.size() == cooked.meshlets.size() && idx.size() == 6, "meshlet.indirect.count");
+    // Disabled config fails softly with empty output.
+    smvk::MeshletConfig off;
+    smvk::CookedMeshlets empty;
+    Check(!smvk::BuildMeshletsForUpload(quad, off, &empty, nullptr, nullptr),
+          "meshlet.disabled.false");
+    Check(empty.empty(), "meshlet.disabled.empty");
+    // Degenerate input fails softly.
+    smvk::StaticMeshUpload deg;
+    Check(!smvk::BuildMeshletsForUpload(deg, cfg, &empty, nullptr, nullptr), "meshlet.empty.false");
 
-	// Containment invariant: every cooked bound sphere must contain its
-	// meshlet's triangles (the HZB occlusion + cone tests rely on it; a
-	// violation false-culls visible meshlets). Grid + one long sliver
-	// forces disparate verts into shared meshlets (cf. sponza prim.49).
-	{
-		smvk::StaticMeshUpload u;
-		const int N = 8;
-		for (int iy = 0; iy <= N; ++iy)
-			for (int ix = 0; ix <= N; ++ix) {
-				smvk::ImportStaticVertex v{};
-				v.pos = { (float)ix, (float)iy, 0.0f };
-				u.vertices.push_back(v);
-			}
-		auto at = [N](int ix, int iy) { return (uint32_t)(iy * (N + 1) + ix); };
-		for (int iy = 0; iy < N; ++iy)
-			for (int ix = 0; ix < N; ++ix) {
-				u.indices.insert(u.indices.end(), { at(ix, iy), at(ix + 1, iy), at(ix, iy + 1) });
-				u.indices.insert(u.indices.end(), { at(ix + 1, iy), at(ix + 1, iy + 1), at(ix, iy + 1) });
-			}
-		// Long sliver: two verts in the grid, one 60 units away.
-		uint32_t s0 = (uint32_t)u.vertices.size();
-		smvk::ImportStaticVertex a{}; a.pos = { 0.0f, 0.0f, 0.0f };
-		smvk::ImportStaticVertex b{}; b.pos = { 0.5f, 0.0f, 0.0f };
-		smvk::ImportStaticVertex c{}; c.pos = { 60.0f, 0.5f, 0.0f };
-		u.vertices.push_back(a); u.vertices.push_back(b); u.vertices.push_back(c);
-		u.indices.insert(u.indices.end(), { s0, s0 + 1, s0 + 2 });
-		smvk::MeshletConfig sc = cfg;
-		sc.maxVertices = 64;
-		sc.maxTriangles = 32;
-		smvk::CookedMeshlets sliv;
-		Check(smvk::BuildMeshletsForUpload(u, sc, &sliv, nullptr, nullptr), "meshlet.sliver.ok");
-		bool contained = !sliv.empty();
-		for (const auto& m : sliv.meshlets) {
-			for (uint32_t t = 0; t < m.triangleCount && contained; ++t) {
-				for (uint32_t k = 0; k < 3 && contained; ++k) {
-					uint32_t local = sliv.triangles[m.triangleOffset + t * 3 + k];
-					if (local >= m.vertexCount) { contained = false; break; }
-					uint32_t vid = sliv.vertices[m.vertexOffset + local];
-					if (vid >= u.vertices.size()) { contained = false; break; }
-					const auto& p = u.vertices[vid].pos;
-					float dx = p.x - m.boundCenter.x;
-					float dy = p.y - m.boundCenter.y;
-					float dz = p.z - m.boundCenter.z;
-					float d = std::sqrt(dx * dx + dy * dy + dz * dz);
-					if (d > m.boundRadius + 1e-3f * std::max(1.0f, m.boundRadius))
-						contained = false;
-				}
-			}
-		}
-		Check(contained, "meshlet.sliver.contained");
-	}
+    // Containment invariant: every cooked bound sphere must contain its
+    // meshlet's triangles (the HZB occlusion + cone tests rely on it; a
+    // violation false-culls visible meshlets). Grid + one long sliver
+    // forces disparate verts into shared meshlets (cf. sponza prim.49).
+    {
+        smvk::StaticMeshUpload u;
+        const int N = 8;
+        for (int iy = 0; iy <= N; ++iy)
+            for (int ix = 0; ix <= N; ++ix) {
+                smvk::ImportStaticVertex v{};
+                v.pos = {(float)ix, (float)iy, 0.0f};
+                u.vertices.push_back(v);
+            }
+        auto at = [N](int ix, int iy) { return (uint32_t)(iy * (N + 1) + ix); };
+        for (int iy = 0; iy < N; ++iy)
+            for (int ix = 0; ix < N; ++ix) {
+                u.indices.insert(u.indices.end(), {at(ix, iy), at(ix + 1, iy), at(ix, iy + 1)});
+                u.indices.insert(u.indices.end(),
+                                 {at(ix + 1, iy), at(ix + 1, iy + 1), at(ix, iy + 1)});
+            }
+        // Long sliver: two verts in the grid, one 60 units away.
+        uint32_t s0 = (uint32_t)u.vertices.size();
+        smvk::ImportStaticVertex a{};
+        a.pos = {0.0f, 0.0f, 0.0f};
+        smvk::ImportStaticVertex b{};
+        b.pos = {0.5f, 0.0f, 0.0f};
+        smvk::ImportStaticVertex c{};
+        c.pos = {60.0f, 0.5f, 0.0f};
+        u.vertices.push_back(a);
+        u.vertices.push_back(b);
+        u.vertices.push_back(c);
+        u.indices.insert(u.indices.end(), {s0, s0 + 1, s0 + 2});
+        smvk::MeshletConfig sc = cfg;
+        sc.maxVertices = 64;
+        sc.maxTriangles = 32;
+        smvk::CookedMeshlets sliv;
+        Check(smvk::BuildMeshletsForUpload(u, sc, &sliv, nullptr, nullptr), "meshlet.sliver.ok");
+        bool contained = !sliv.empty();
+        for (const auto& m : sliv.meshlets) {
+            for (uint32_t t = 0; t < m.triangleCount && contained; ++t) {
+                for (uint32_t k = 0; k < 3 && contained; ++k) {
+                    uint32_t local = sliv.triangles[m.triangleOffset + t * 3 + k];
+                    if (local >= m.vertexCount) {
+                        contained = false;
+                        break;
+                    }
+                    uint32_t vid = sliv.vertices[m.vertexOffset + local];
+                    if (vid >= u.vertices.size()) {
+                        contained = false;
+                        break;
+                    }
+                    const auto& p = u.vertices[vid].pos;
+                    float dx = p.x - m.boundCenter.x;
+                    float dy = p.y - m.boundCenter.y;
+                    float dz = p.z - m.boundCenter.z;
+                    float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+                    if (d > m.boundRadius + 1e-3f * std::max(1.0f, m.boundRadius))
+                        contained = false;
+                }
+            }
+        }
+        Check(contained, "meshlet.sliver.contained");
+    }
 }
 
 void TestVertexPack() {
-	using namespace smvk;
-	using namespace smvk::vertexpack;
+    using namespace smvk;
+    using namespace smvk::vertexpack;
 
-	// Packed shading stream: 16 bytes + the separate OPTIONAL lightmap
-	// stream (8 bytes, chart data only), fixed member offsets (the Vulkan
-	// attribute tables in mesh.h mirror these: StaticLayout/SkinnedLayout
-	// bind color at 0/uv at 4/normal at 8/tangent at 12; the lightmapped
-	// layout's binding 2 fetches chartUv as RG16_UNorm and chart as
-	// R32_UInt from its own stream).
-	Check(sizeof(PackedVertexShading) == 16, "vpack.sizeof");
-	Check(offsetof(PackedVertexShading, color) == 0 &&
-		offsetof(PackedVertexShading, uv) == 4 &&
-		offsetof(PackedVertexShading, normal) == 8 &&
-		offsetof(PackedVertexShading, tangent) == 12, "vpack.offsets");
-	Check(sizeof(PackedVertexLightmap) == 8, "vpack.lm.sizeof");
-	Check(offsetof(PackedVertexLightmap, chartUv) == 0 &&
-		offsetof(PackedVertexLightmap, chartId) == 4, "vpack.lm.offsets");
-	// Default record = the uncharted sentinel (never carves a stream).
-	Check(PackedVertexLightmap{}.chartId == 0xFFFFFFFFu, "vpack.lm.uncharted");
+    // Packed shading stream: 16 bytes + the separate OPTIONAL lightmap
+    // stream (8 bytes, chart data only), fixed member offsets (the Vulkan
+    // attribute tables in mesh.h mirror these: StaticLayout/SkinnedLayout
+    // bind color at 0/uv at 4/normal at 8/tangent at 12; the lightmapped
+    // layout's binding 2 fetches chartUv as RG16_UNorm and chart as
+    // R32_UInt from its own stream).
+    Check(sizeof(PackedVertexShading) == 16, "vpack.sizeof");
+    Check(offsetof(PackedVertexShading, color) == 0 && offsetof(PackedVertexShading, uv) == 4 &&
+              offsetof(PackedVertexShading, normal) == 8 &&
+              offsetof(PackedVertexShading, tangent) == 12,
+          "vpack.offsets");
+    Check(sizeof(PackedVertexLightmap) == 8, "vpack.lm.sizeof");
+    Check(offsetof(PackedVertexLightmap, chartUv) == 0 &&
+              offsetof(PackedVertexLightmap, chartId) == 4,
+          "vpack.lm.offsets");
+    // Default record = the uncharted sentinel (never carves a stream).
+    Check(PackedVertexLightmap{}.chartId == 0xFFFFFFFFu, "vpack.lm.uncharted");
 
-	// Normal oct round-trip: axes, diagonals, skewed, degenerate zero.
-	const glm::vec3 normalCases[] = {
-		{ 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f },
-		{ 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f },
-		{ 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -1.0f },
-		{ 1.0f, 1.0f, 1.0f }, { -1.0f, 1.0f, -1.0f },
-		{ 0.3f, -0.7f, 0.648f },
-		{ 0.0f, 0.0f, 0.0f }, // degenerate -> +Z fallback
-	};
-	bool normalsOk = true;
-	for (const auto& n : normalCases) {
-		const glm::vec3 out = UnpackNormalOct(PackNormalOct(n));
-		const glm::vec3 ref =
-			(glm::dot(n, n) > 1e-24f) ? glm::normalize(n) : glm::vec3(0.0f, 0.0f, 1.0f);
-		if (glm::dot(out, ref) < 0.9999f)
-			normalsOk = false;
-	}
-	Check(normalsOk, "vpack.normal.roundtrip");
+    // Normal oct round-trip: axes, diagonals, skewed, degenerate zero.
+    const glm::vec3 normalCases[] = {
+        {1.0f, 0.0f, 0.0f},
+        {-1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {0.0f, -1.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f},
+        {0.0f, 0.0f, -1.0f},
+        {1.0f, 1.0f, 1.0f},
+        {-1.0f, 1.0f, -1.0f},
+        {0.3f, -0.7f, 0.648f},
+        {0.0f, 0.0f, 0.0f}, // degenerate -> +Z fallback
+    };
+    bool normalsOk = true;
+    for (const auto& n : normalCases) {
+        const glm::vec3 out = UnpackNormalOct(PackNormalOct(n));
+        const glm::vec3 ref =
+            (glm::dot(n, n) > 1e-24f) ? glm::normalize(n) : glm::vec3(0.0f, 0.0f, 1.0f);
+        if (glm::dot(out, ref) < 0.9999f)
+            normalsOk = false;
+    }
+    Check(normalsOk, "vpack.normal.roundtrip");
 
-	// Tangent oct round-trip incl. handedness bit; w==0 packs as +1
-	// (matches the fragment-shader placeholder fallback).
-	bool tangentsOk = true;
-	const glm::vec4 tangentCases[] = {
-		{ 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, -1.0f },
-		{ 0.0f, 0.0f, 1.0f, 0.0f }, { 0.577f, 0.577f, 0.577f, -1.0f },
-		{ 0.0f, 0.0f, 0.0f, 1.0f }, // degenerate -> +X fallback
-	};
-	for (const auto& t : tangentCases) {
-		const glm::vec4 out = UnpackTangentOct(PackTangentOct(glm::vec3(t), t.w));
-		// The degenerate input's expectation is the DOCUMENTED +X
-		// fallback (vertex_pack.h / vertex_pack.hlsli), never
-		// glm::normalize of the zero vector — normalize(0) is NaN, and
-		// NaN < threshold is false, so the old form passed the
-		// degenerate case vacuously without ever checking the
-		// fallback (the normal loop above already had the right shape).
-		const glm::vec3 ref = (glm::dot(glm::vec3(t), glm::vec3(t)) > 1e-24f)
-			? glm::normalize(glm::vec3(t))
-			: glm::vec3(1.0f, 0.0f, 0.0f);
-		const float refW = (t.w < 0.0f) ? -1.0f : 1.0f;
-		if (glm::dot(glm::vec3(out), ref) < 0.999f)
-			tangentsOk = false;
-		if (out.w != refW)
-			tangentsOk = false;
-	}
-	Check(tangentsOk, "vpack.tangent.roundtrip");
+    // Tangent oct round-trip incl. handedness bit; w==0 packs as +1
+    // (matches the fragment-shader placeholder fallback).
+    bool tangentsOk = true;
+    const glm::vec4 tangentCases[] = {
+        {1.0f, 0.0f, 0.0f, 1.0f},
+        {1.0f, 0.0f, 0.0f, -1.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+        {0.577f, 0.577f, 0.577f, -1.0f},
+        {0.0f, 0.0f, 0.0f, 1.0f}, // degenerate -> +X fallback
+    };
+    for (const auto& t : tangentCases) {
+        const glm::vec4 out = UnpackTangentOct(PackTangentOct(glm::vec3(t), t.w));
+        // The degenerate input's expectation is the DOCUMENTED +X
+        // fallback (vertex_pack.h / vertex_pack.hlsli), never
+        // glm::normalize of the zero vector — normalize(0) is NaN, and
+        // NaN < threshold is false, so the old form passed the
+        // degenerate case vacuously without ever checking the
+        // fallback (the normal loop above already had the right shape).
+        const glm::vec3 ref = (glm::dot(glm::vec3(t), glm::vec3(t)) > 1e-24f)
+                                  ? glm::normalize(glm::vec3(t))
+                                  : glm::vec3(1.0f, 0.0f, 0.0f);
+        const float refW = (t.w < 0.0f) ? -1.0f : 1.0f;
+        if (glm::dot(glm::vec3(out), ref) < 0.999f)
+            tangentsOk = false;
+        if (out.w != refW)
+            tangentsOk = false;
+    }
+    Check(tangentsOk, "vpack.tangent.roundtrip");
 
-	// uv half round-trip over typical glTF ranges.
-	bool uvOk = true;
-	const glm::vec2 uvCases[] = {
-		{ 0.0f, 0.0f }, { 0.25f, 0.75f }, { 3.5f, -1.25f }, { 17.0f, 0.5f },
-	};
-	for (const auto& uv : uvCases) {
-		const uint32_t packed = PackUvHalf(uv);
-		glm::vec2 unpacked = glm::unpackHalf2x16(packed);
-		const glm::vec2 err = glm::abs(unpacked - uv);
-		if (!(err.x < 0.01f && err.y < 0.01f))
-			uvOk = false;
-	}
-	Check(uvOk, "vpack.uv.roundtrip");
+    // uv half round-trip over typical glTF ranges.
+    bool uvOk = true;
+    const glm::vec2 uvCases[] = {
+        {0.0f, 0.0f},
+        {0.25f, 0.75f},
+        {3.5f, -1.25f},
+        {17.0f, 0.5f},
+    };
+    for (const auto& uv : uvCases) {
+        const uint32_t packed = PackUvHalf(uv);
+        glm::vec2 unpacked = glm::unpackHalf2x16(packed);
+        const glm::vec2 err = glm::abs(unpacked - uv);
+        if (!(err.x < 0.01f && err.y < 0.01f))
+            uvOk = false;
+    }
+    Check(uvOk, "vpack.uv.roundtrip");
 }
 
 // ---------------------------------------------------------------------------
@@ -3387,297 +3286,280 @@ void TestVertexPack() {
 // reorder of either side fails HERE first.
 // ---------------------------------------------------------------------------
 void TestVertexLayoutShaderAbi() {
-	using namespace smvk;
+    using namespace smvk;
 
-	// ---- 1) every registered layout passes the structural validator.
-	{
-		const std::pair<const VertexLayoutDesc*, const char*> layouts[] = {
-			{ &StaticLayout, "Static" },
-			{ &StaticLightmappedLayout, "StaticLightmapped" },
-			{ &SkinnedLayout, "Skinned" },
-			{ &DebugLineLayout, "DebugLine" },
-			{ &TerrainFullLayout, "TerrainFull" },
-			{ &TerrainReducedLayout, "TerrainLow" },
-			{ &TerrainFarLayout, "TerrainFar" },
-		};
-		bool allValid = true;
-		for (const auto& [desc, name] : layouts) {
-			std::string err;
-			if (!ValidateVertexLayout(*desc, &err)) {
-				allValid = false;
-				std::cout << "  layout '" << name << "': " << err << "\n";
-			}
-		}
-		Check(allValid, "vabi.layouts.structural");
-	}
+    // ---- 1) every registered layout passes the structural validator.
+    {
+        const std::pair<const VertexLayoutDesc*, const char*> layouts[] = {
+            {&StaticLayout, "Static"},
+            {&StaticLightmappedLayout, "StaticLightmapped"},
+            {&SkinnedLayout, "Skinned"},
+            {&DebugLineLayout, "DebugLine"},
+            {&TerrainFullLayout, "TerrainFull"},
+            {&TerrainReducedLayout, "TerrainLow"},
+            {&TerrainFarLayout, "TerrainFar"},
+        };
+        bool allValid = true;
+        for (const auto& [desc, name] : layouts) {
+            std::string err;
+            if (!ValidateVertexLayout(*desc, &err)) {
+                allValid = false;
+                std::cout << "  layout '" << name << "': " << err << "\n";
+            }
+        }
+        Check(allValid, "vabi.layouts.structural");
+    }
 
-	// ---- 2) the validator REJECTS the bad shapes (not vacuously
-	// passing): duplicate locations, attribute overruns, unaligned
-	// offsets, unusable formats.
-	{
-		VertexLayoutDesc d{};
-		d.bindings.push_back({ .binding = 0, .stride = 12,
-			.attributes = {
-				{ .semantic = VertexSemantic::Position, .location = 0,
-					.format = Format::RGB32_Float, .offset = 0 },
-				{ .semantic = VertexSemantic::Normal, .location = 0,
-					.format = Format::R32_UInt, .offset = 12 } } });
-		std::string err;
-		Check(!ValidateVertexLayout(d, &err)
-			&& err.find("duplicate") != std::string::npos,
-			"vabi.reject.duplicate-location");
-		d.bindings[0].attributes[1].location = 1;
-		err.clear();
-		Check(!ValidateVertexLayout(d, &err)
-			&& err.find("stride") != std::string::npos,
-			"vabi.reject.stride-overrun");
-		d.bindings[0].attributes[1].offset = 9; // unaligned to R32
-		d.bindings[0].stride = 24;
-		err.clear();
-		Check(!ValidateVertexLayout(d, &err)
-			&& err.find("align") != std::string::npos,
-			"vabi.reject.offset-align");
-	}
+    // ---- 2) the validator REJECTS the bad shapes (not vacuously
+    // passing): duplicate locations, attribute overruns, unaligned
+    // offsets, unusable formats.
+    {
+        VertexLayoutDesc d{};
+        d.bindings.push_back({.binding = 0,
+                              .stride = 12,
+                              .attributes = {{.semantic = VertexSemantic::Position,
+                                              .location = 0,
+                                              .format = Format::RGB32_Float,
+                                              .offset = 0},
+                                             {.semantic = VertexSemantic::Normal,
+                                              .location = 0,
+                                              .format = Format::R32_UInt,
+                                              .offset = 12}}});
+        std::string err;
+        Check(!ValidateVertexLayout(d, &err) && err.find("duplicate") != std::string::npos,
+              "vabi.reject.duplicate-location");
+        d.bindings[0].attributes[1].location = 1;
+        err.clear();
+        Check(!ValidateVertexLayout(d, &err) && err.find("stride") != std::string::npos,
+              "vabi.reject.stride-overrun");
+        d.bindings[0].attributes[1].offset = 9; // unaligned to R32
+        d.bindings[0].stride = 24;
+        err.clear();
+        Check(!ValidateVertexLayout(d, &err) && err.find("align") != std::string::npos,
+              "vabi.reject.offset-align");
+    }
 
-	// ---- 3) the compiled-SPIR-V pairing: every consumed VS input has
-	// a same-location attribute with enough components.
-	{
-		const std::pair<const char*, const VertexLayoutDesc*> pairs[] = {
-			{ "content/shaders/default.vert.hlsl.spv", &StaticLayout },
-			{ "content/shaders/gfxfiltered.vert.hlsl.spv", &StaticLayout },
-			{ "content/shaders/shadow.vert.hlsl.spv", &StaticLayout },
-			{ "content/shaders/motionvector.vert.hlsl.spv", &StaticLayout },
-			{ "content/shaders/meshdebug.vert.hlsl.spv", &StaticLayout },
-			{ "content/shaders/meshparticles_draw.vert.hlsl.spv",
-				&StaticLayout },
-			{ "content/shaders/placement_instanced.vert.hlsl.spv",
-				&StaticLayout },
-			// The direct VS also carries the SKIN tail (locations 5/6):
-			// the skinned layout must cover it.
-			{ "content/shaders/default.vert.hlsl.spv", &SkinnedLayout },
-			{ "content/shaders/gfxfiltered.vert.hlsl.spv", &SkinnedLayout },
-			{ "content/shaders/terrain.vert.hlsl.spv", &TerrainFullLayout },
-			{ "content/shaders/terrainfar.vert.hlsl.spv", &TerrainFarLayout },
-			{ "content/shaders/debugline.vert.hlsl.spv", &DebugLineLayout },
-		};
-		bool abiOk = true;
-		int reflected = 0;
-		for (const auto& [spvPath, layout] : pairs) {
-			const std::vector<char> code = smvk::shaders::Read(spvPath);
-			if (code.empty()) {
-				std::cout << "  missing shader: " << spvPath << "\n";
-				abiOk = false;
-				continue;
-			}
-			const SpirvReflection refl = ReflectSpirvBytes(
-				std::span<const char>(code));
-			if (!refl.valid) {
-				std::cout << "  reflection failed: " << spvPath << "\n";
-				abiOk = false;
-				continue;
-			}
-			for (const SpirvStageInput& in : refl.stageInputs) {
-				++reflected;
-				const VertexAttribute* match = nullptr;
-				for (const VertexBinding& b : layout->bindings)
-					for (const VertexAttribute& a : b.attributes)
-						if (a.location == in.location) {
-							match = &a;
-							break;
-						}
-				if (!match) {
-					std::cout << "  " << spvPath << ": input location "
-						<< in.location << " ('" << in.name
-						<< "') has no attribute in the layout\n";
-					abiOk = false;
-					continue;
-				}
-				if (in.componentCount
-					> GetFormatComponentCount(match->format)) {
-					std::cout << "  " << spvPath << ": input location "
-						<< in.location << " ('" << in.name << "') wants "
-						<< in.componentCount << " components, the format"
-						<< " provides "
-						<< GetFormatComponentCount(match->format) << "\n";
-					abiOk = false;
-				}
-			}
-		}
-		Check(abiOk, "vabi.spirv.pairing");
-		// The pairs actually exercised the ABI (the reflection saw
-		// real inputs — guards against a silently-empty spv glob).
-		Check(reflected > 20, "vabi.spirv.inputs-seen");
-	}
+    // ---- 3) the compiled-SPIR-V pairing: every consumed VS input has
+    // a same-location attribute with enough components.
+    {
+        const std::pair<const char*, const VertexLayoutDesc*> pairs[] = {
+            {"content/shaders/default.vert.hlsl.spv", &StaticLayout},
+            {"content/shaders/gfxfiltered.vert.hlsl.spv", &StaticLayout},
+            {"content/shaders/shadow.vert.hlsl.spv", &StaticLayout},
+            {"content/shaders/motionvector.vert.hlsl.spv", &StaticLayout},
+            {"content/shaders/meshdebug.vert.hlsl.spv", &StaticLayout},
+            {"content/shaders/meshparticles_draw.vert.hlsl.spv", &StaticLayout},
+            {"content/shaders/placement_instanced.vert.hlsl.spv", &StaticLayout},
+            // The direct VS also carries the SKIN tail (locations 5/6):
+            // the skinned layout must cover it.
+            {"content/shaders/default.vert.hlsl.spv", &SkinnedLayout},
+            {"content/shaders/gfxfiltered.vert.hlsl.spv", &SkinnedLayout},
+            {"content/shaders/terrain.vert.hlsl.spv", &TerrainFullLayout},
+            {"content/shaders/terrainfar.vert.hlsl.spv", &TerrainFarLayout},
+            {"content/shaders/debugline.vert.hlsl.spv", &DebugLineLayout},
+        };
+        bool abiOk = true;
+        int reflected = 0;
+        for (const auto& [spvPath, layout] : pairs) {
+            const std::vector<char> code = smvk::shaders::Read(spvPath);
+            if (code.empty()) {
+                std::cout << "  missing shader: " << spvPath << "\n";
+                abiOk = false;
+                continue;
+            }
+            const SpirvReflection refl = ReflectSpirvBytes(std::span<const char>(code));
+            if (!refl.valid) {
+                std::cout << "  reflection failed: " << spvPath << "\n";
+                abiOk = false;
+                continue;
+            }
+            for (const SpirvStageInput& in : refl.stageInputs) {
+                ++reflected;
+                const VertexAttribute* match = nullptr;
+                for (const VertexBinding& b : layout->bindings)
+                    for (const VertexAttribute& a : b.attributes)
+                        if (a.location == in.location) {
+                            match = &a;
+                            break;
+                        }
+                if (!match) {
+                    std::cout << "  " << spvPath << ": input location " << in.location << " ('"
+                              << in.name << "') has no attribute in the layout\n";
+                    abiOk = false;
+                    continue;
+                }
+                if (in.componentCount > GetFormatComponentCount(match->format)) {
+                    std::cout << "  " << spvPath << ": input location " << in.location << " ('"
+                              << in.name << "') wants " << in.componentCount
+                              << " components, the format"
+                              << " provides " << GetFormatComponentCount(match->format) << "\n";
+                    abiOk = false;
+                }
+            }
+        }
+        Check(abiOk, "vabi.spirv.pairing");
+        // The pairs actually exercised the ABI (the reflection saw
+        // real inputs — guards against a silently-empty spv glob).
+        Check(reflected > 20, "vabi.spirv.inputs-seen");
+    }
 }
 
 void TestStaticCollapse() {
-	using namespace smvk;
-	auto cluster = std::make_unique<Cluster>(nullptr);
-	cluster->SetOfflineMode(true);
+    using namespace smvk;
+    auto cluster = std::make_unique<Cluster>(nullptr);
+    cluster->SetOfflineMode(true);
 
-	// Two quads sharing one material; second translated +1 on X.
-	auto q1 = MakeQuad();
-	auto q2 = MakeQuad();
-	MaterialCreateInfo ci{};
-	const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
-	const uint32_t matIdx = math.index();
+    // Two quads sharing one material; second translated +1 on X.
+    auto q1 = MakeQuad();
+    auto q2 = MakeQuad();
+    MaterialCreateInfo ci{};
+    const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
+    const uint32_t matIdx = math.index();
 
-	const int root = addNode(cluster->scene, -1, 0);
-	const int n1 = addNode(cluster->scene, root, 1);
-	const int n2 = addNode(cluster->scene, root, 1);
-	const ClusterStaticMeshHandle h1 = cluster->UploadStaticMesh(q1);
-	const ClusterStaticMeshHandle h2 = cluster->UploadStaticMesh(q2);
-	SetMesh(cluster->scene, uint32_t(n1), h1.index());
-	SetMesh(cluster->scene, uint32_t(n2), h2.index());
-	SetMaterial(cluster->scene, uint32_t(n1), matIdx);
-	SetMaterial(cluster->scene, uint32_t(n2), matIdx);
-	cluster->scene.localTransform[n2] = glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-	MarkSubtreeStatic(cluster->scene, n1);
-	MarkSubtreeStatic(cluster->scene, n2);
-	markAsChanged(cluster->scene, root);
-	recalculateGlobalTransforms(cluster->scene);
+    const int root = addNode(cluster->scene, -1, 0);
+    const int n1 = addNode(cluster->scene, root, 1);
+    const int n2 = addNode(cluster->scene, root, 1);
+    const ClusterStaticMeshHandle h1 = cluster->UploadStaticMesh(q1);
+    const ClusterStaticMeshHandle h2 = cluster->UploadStaticMesh(q2);
+    SetMesh(cluster->scene, uint32_t(n1), h1.index());
+    SetMesh(cluster->scene, uint32_t(n2), h2.index());
+    SetMaterial(cluster->scene, uint32_t(n1), matIdx);
+    SetMaterial(cluster->scene, uint32_t(n2), matIdx);
+    cluster->scene.localTransform[n2] =
+        glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    MarkSubtreeStatic(cluster->scene, n1);
+    MarkSubtreeStatic(cluster->scene, n2);
+    markAsChanged(cluster->scene, root);
+    recalculateGlobalTransforms(cluster->scene);
 
-	StaticMergeOptions opts;
-	opts.deleteSources = true;
-	StaticMergeResult mr = CollapseStaticSubtrees(*cluster, opts);
-	Check(mr.ok, "collapse.ok");
-	Check(mr.srcNodesConsumed == 2, "collapse.consumed");
-	Check(mr.blocks.size() == 1, "collapse.singleblock");
-	if (!mr.blocks.empty()) {
-		const auto h = cluster->staticMeshes.getHandle(mr.blocks[0].meshPoolIndex);
-		const StaticMeshUpload* up = cluster->GetRetainedUpload(h);
-		Check(up && up->vertices.size() == 8 && up->indices.size() == 12, "collapse.baked.size");
-		if (up && up->vertices.size() == 8) {
-			// Second quad baked at +1 X: its min.x must be 1, first quad 0.
-			float minAll = up->vertices[0].pos.x;
-			float maxAll = up->vertices[0].pos.x;
-			for (const auto& v : up->vertices) {
-				minAll = std::min(minAll, v.pos.x);
-				maxAll = std::max(maxAll, v.pos.x);
-			}
-			Check(minAll == 0.0f && maxAll == 2.0f, "collapse.baked.transform");
-		}
-		Check(IsStaticNode(cluster->scene, mr.blocks[0].node), "collapse.block.static");
-	}
+    StaticMergeOptions opts;
+    opts.deleteSources = true;
+    StaticMergeResult mr = CollapseStaticSubtrees(*cluster, opts);
+    Check(mr.ok, "collapse.ok");
+    Check(mr.srcNodesConsumed == 2, "collapse.consumed");
+    Check(mr.blocks.size() == 1, "collapse.singleblock");
+    if (!mr.blocks.empty()) {
+        const auto h = cluster->staticMeshes.getHandle(mr.blocks[0].meshPoolIndex);
+        const StaticMeshUpload* up = cluster->GetRetainedUpload(h);
+        Check(up && up->vertices.size() == 8 && up->indices.size() == 12, "collapse.baked.size");
+        if (up && up->vertices.size() == 8) {
+            // Second quad baked at +1 X: its min.x must be 1, first quad 0.
+            float minAll = up->vertices[0].pos.x;
+            float maxAll = up->vertices[0].pos.x;
+            for (const auto& v : up->vertices) {
+                minAll = std::min(minAll, v.pos.x);
+                maxAll = std::max(maxAll, v.pos.x);
+            }
+            Check(minAll == 0.0f && maxAll == 2.0f, "collapse.baked.transform");
+        }
+        Check(IsStaticNode(cluster->scene, mr.blocks[0].node), "collapse.block.static");
+    }
 }
 
 void TestMultiSceneSerialize() {
-	using namespace smvk;
-	// Two offline clusters sharing one mesh URI: the shared blob must land
-	// once, both scenes reference it, discovery lists both in order.
-	auto makeScene = [](const char* meshUri, const char* matUri,
-			const char* nodeName) {
-		auto cluster = std::make_unique<Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		auto quad = MakeQuad();
-		const ClusterStaticMeshHandle mh = cluster->UploadStaticMesh(quad);
-		cluster->RegisterMeshUri(meshUri, mh);
-		MaterialCreateInfo ci{};
-		const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
-		cluster->RegisterMaterialUri(matUri, math);
-		const int root = addNode(cluster->scene, -1, 0);
-		const int n = addNode(cluster->scene, root, 1);
-		SetMesh(cluster->scene, uint32_t(n), mh.index());
-		SetMaterial(cluster->scene, uint32_t(n), math.index());
-		setNodeName(cluster->scene, n, nodeName);
-		return cluster;
-	};
-	auto a = makeScene("m#shared", "m#matA", "NodeA");
-	auto b = makeScene("m#shared", "m#matB", "NodeB");
-	PakWriter writer;
-	ClusterSerializeStats stats;
-	std::string err;
-	const std::vector<const Cluster*> clusters{ a.get(), b.get() };
-	Check(SerializeClusters(clusters, { "Alpha", "Beta" },
-		writer, &stats, &err), "multiscene.serialize.ok");
-	Check(stats.meshes == 1 && stats.materials == 2,
-		"multiscene.stats.shared");
-	Check(stats.nodes == 4, "multiscene.stats.nodes");
-	std::vector<uint8_t> img = writer.Finalize();
-	std::string openErr;
-	auto reader = PakReader::Open(std::span<const uint8_t>(img), openErr);
-	Check(reader.has_value(), "multiscene.pak.open");
-	if (!reader)
-		return;
-	Check(reader->BlobsOfKind(PakAssetKind::Mesh).size() == 1,
-		"multiscene.mesh.dedup");
-	Check(reader->BlobsOfKind(PakAssetKind::Scene).size() == 2,
-		"multiscene.scene2");
-	std::string lerr;
-	auto scenes = ListPakScenes(*reader, &lerr);
-	Check(scenes.size() == 2, "multiscene.list.count");
-	if (scenes.size() == 2) {
-		Check(scenes[0].name == "Alpha" && scenes[1].name == "Beta",
-			"multiscene.list.names");
-		Check(scenes[0].nodes == 2 && scenes[1].nodes == 2,
-			"multiscene.list.nodes");
-		Check(scenes[0].tocPath == "<cluster-local>#scene",
-			"multiscene.list.toc0");
-		Check(scenes[1].tocPath == "<cluster-local>#scene.1",
-			"multiscene.list.toc1");
-	}
-	// Named GI bake files round-trip through one Gi blob (union across
-	// scenes; parse needs no cluster). The dither flag rides along so
-	// the v6 section walk is covered by the listing below.
-	a->RegisterGiBinding(GiBinding::Kind::Lightmap, "town");
-	b->RegisterGiBinding(GiBinding::Kind::Probe, "town_probe");
-	// Bake-asset GUID names ride the same blob (see
-	// Engine/Asset/bake_asset.h): the manifest kinds resolve the guided
-	// runtime manifests, the payload names stay opaque strings here.
-	a->RegisterGiBinding(GiBinding::Kind::RegManifest,
-		"0123456789abcdef0123456789abcdef");
-	b->RegisterGiBinding(GiBinding::Kind::GiVolumeManifest,
-		"fedcba9876543210fedcba9876543210");
-	a->RegisterGiBinding(GiBinding::Kind::Cubemap,
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-	MarkDitherCloseup(a->scene, 1);
-	PakWriter writerGi;
-	Check(SerializeClusters(clusters, { "Alpha", "Beta" }, writerGi,
-		nullptr, &err), "multiscene.gi.serialize.ok");
-	std::vector<uint8_t> imgGi = writerGi.Finalize();
-	auto readerGi = PakReader::Open(std::span<const uint8_t>(imgGi), openErr);
-	Check(readerGi.has_value(), "multiscene.gi.open");
-	if (readerGi) {
-		const auto giBlobs = readerGi->BlobsOfKind(PakAssetKind::Gi);
-		Check(giBlobs.size() == 1, "multiscene.gi.oneblob");
-		if (!giBlobs.empty()) {
-			std::vector<GiBinding> bindings;
-			std::string gerr;
-			Check(ParseGiRegistryBlob(readerGi->Payload(*giBlobs[0]),
-				bindings, gerr), "multiscene.gi.parse");
-			Check(bindings.size() == 5, "multiscene.gi.count");
-			if (bindings.size() == 5) {
-				// Union order: cluster a's bindings (registration order)
-				// first, then cluster b's.
-				Check(bindings[0].kind == GiBinding::Kind::Lightmap &&
-					bindings[0].name == "town", "multiscene.gi.lm");
-				Check(bindings[1].kind == GiBinding::Kind::RegManifest &&
-					bindings[1].name
-						== "0123456789abcdef0123456789abcdef",
-					"multiscene.gi.regmanifest");
-				Check(bindings[2].kind == GiBinding::Kind::Cubemap &&
-					bindings[2].name
-						== "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-					"multiscene.gi.cubemap");
-				Check(bindings[3].kind == GiBinding::Kind::Probe &&
-					bindings[3].name == "town_probe", "multiscene.gi.probe");
-				Check(bindings[4].kind == GiBinding::Kind::GiVolumeManifest &&
-					bindings[4].name
-						== "fedcba9876543210fedcba9876543210",
-					"multiscene.gi.givolumemanifest");
-			}
-		}
-	}
-	// Legacy single-scene layout still lists exactly one scene.
-	PakWriter w2;
-	Check(SerializeCluster(*a, w2, nullptr, &err), "multiscene.legacy.ok");
-	std::vector<uint8_t> img2 = w2.Finalize();
-	auto r2 = PakReader::Open(std::span<const uint8_t>(img2), openErr);
-	Check(r2.has_value(), "multiscene.legacy.open");
-	if (r2) {
-		auto s2 = ListPakScenes(*r2, &lerr);
-		Check(s2.size() == 1 && s2[0].nodes == 2, "multiscene.legacy.list");
-	}
+    using namespace smvk;
+    // Two offline clusters sharing one mesh URI: the shared blob must land
+    // once, both scenes reference it, discovery lists both in order.
+    auto makeScene = [](const char* meshUri, const char* matUri, const char* nodeName) {
+        auto cluster = std::make_unique<Cluster>(nullptr);
+        cluster->SetOfflineMode(true);
+        auto quad = MakeQuad();
+        const ClusterStaticMeshHandle mh = cluster->UploadStaticMesh(quad);
+        cluster->RegisterMeshUri(meshUri, mh);
+        MaterialCreateInfo ci{};
+        const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
+        cluster->RegisterMaterialUri(matUri, math);
+        const int root = addNode(cluster->scene, -1, 0);
+        const int n = addNode(cluster->scene, root, 1);
+        SetMesh(cluster->scene, uint32_t(n), mh.index());
+        SetMaterial(cluster->scene, uint32_t(n), math.index());
+        setNodeName(cluster->scene, n, nodeName);
+        return cluster;
+    };
+    auto a = makeScene("m#shared", "m#matA", "NodeA");
+    auto b = makeScene("m#shared", "m#matB", "NodeB");
+    PakWriter writer;
+    ClusterSerializeStats stats;
+    std::string err;
+    const std::vector<const Cluster*> clusters{a.get(), b.get()};
+    Check(SerializeClusters(clusters, {"Alpha", "Beta"}, writer, &stats, &err),
+          "multiscene.serialize.ok");
+    Check(stats.meshes == 1 && stats.materials == 2, "multiscene.stats.shared");
+    Check(stats.nodes == 4, "multiscene.stats.nodes");
+    std::vector<uint8_t> img = writer.Finalize();
+    std::string openErr;
+    auto reader = PakReader::Open(std::span<const uint8_t>(img), openErr);
+    Check(reader.has_value(), "multiscene.pak.open");
+    if (!reader)
+        return;
+    Check(reader->BlobsOfKind(PakAssetKind::Mesh).size() == 1, "multiscene.mesh.dedup");
+    Check(reader->BlobsOfKind(PakAssetKind::Scene).size() == 2, "multiscene.scene2");
+    std::string lerr;
+    auto scenes = ListPakScenes(*reader, &lerr);
+    Check(scenes.size() == 2, "multiscene.list.count");
+    if (scenes.size() == 2) {
+        Check(scenes[0].name == "Alpha" && scenes[1].name == "Beta", "multiscene.list.names");
+        Check(scenes[0].nodes == 2 && scenes[1].nodes == 2, "multiscene.list.nodes");
+        Check(scenes[0].tocPath == "<cluster-local>#scene", "multiscene.list.toc0");
+        Check(scenes[1].tocPath == "<cluster-local>#scene.1", "multiscene.list.toc1");
+    }
+    // Named GI bake files round-trip through one Gi blob (union across
+    // scenes; parse needs no cluster). The dither flag rides along so
+    // the v6 section walk is covered by the listing below.
+    a->RegisterGiBinding(GiBinding::Kind::Lightmap, "town");
+    b->RegisterGiBinding(GiBinding::Kind::Probe, "town_probe");
+    // Bake-asset GUID names ride the same blob (see
+    // Engine/Asset/bake_asset.h): the manifest kinds resolve the guided
+    // runtime manifests, the payload names stay opaque strings here.
+    a->RegisterGiBinding(GiBinding::Kind::RegManifest, "0123456789abcdef0123456789abcdef");
+    b->RegisterGiBinding(GiBinding::Kind::GiVolumeManifest, "fedcba9876543210fedcba9876543210");
+    a->RegisterGiBinding(GiBinding::Kind::Cubemap, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    MarkDitherCloseup(a->scene, 1);
+    PakWriter writerGi;
+    Check(SerializeClusters(clusters, {"Alpha", "Beta"}, writerGi, nullptr, &err),
+          "multiscene.gi.serialize.ok");
+    std::vector<uint8_t> imgGi = writerGi.Finalize();
+    auto readerGi = PakReader::Open(std::span<const uint8_t>(imgGi), openErr);
+    Check(readerGi.has_value(), "multiscene.gi.open");
+    if (readerGi) {
+        const auto giBlobs = readerGi->BlobsOfKind(PakAssetKind::Gi);
+        Check(giBlobs.size() == 1, "multiscene.gi.oneblob");
+        if (!giBlobs.empty()) {
+            std::vector<GiBinding> bindings;
+            std::string gerr;
+            Check(ParseGiRegistryBlob(readerGi->Payload(*giBlobs[0]), bindings, gerr),
+                  "multiscene.gi.parse");
+            Check(bindings.size() == 5, "multiscene.gi.count");
+            if (bindings.size() == 5) {
+                // Union order: cluster a's bindings (registration order)
+                // first, then cluster b's.
+                Check(bindings[0].kind == GiBinding::Kind::Lightmap && bindings[0].name == "town",
+                      "multiscene.gi.lm");
+                Check(bindings[1].kind == GiBinding::Kind::RegManifest &&
+                          bindings[1].name == "0123456789abcdef0123456789abcdef",
+                      "multiscene.gi.regmanifest");
+                Check(bindings[2].kind == GiBinding::Kind::Cubemap &&
+                          bindings[2].name == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "multiscene.gi.cubemap");
+                Check(bindings[3].kind == GiBinding::Kind::Probe &&
+                          bindings[3].name == "town_probe",
+                      "multiscene.gi.probe");
+                Check(bindings[4].kind == GiBinding::Kind::GiVolumeManifest &&
+                          bindings[4].name == "fedcba9876543210fedcba9876543210",
+                      "multiscene.gi.givolumemanifest");
+            }
+        }
+    }
+    // Legacy single-scene layout still lists exactly one scene.
+    PakWriter w2;
+    Check(SerializeCluster(*a, w2, nullptr, &err), "multiscene.legacy.ok");
+    std::vector<uint8_t> img2 = w2.Finalize();
+    auto r2 = PakReader::Open(std::span<const uint8_t>(img2), openErr);
+    Check(r2.has_value(), "multiscene.legacy.open");
+    if (r2) {
+        auto s2 = ListPakScenes(*r2, &lerr);
+        Check(s2.size() == 1 && s2[0].nodes == 2, "multiscene.legacy.list");
+    }
 }
 
 // The scene blob's trailing v18 AUDIO-SOURCE section (the cooked
@@ -3688,141 +3570,133 @@ void TestMultiSceneSerialize() {
 // FAILURE (the project contract: never silently omit a referenced
 // sound), and the bare-cook semantic (an EMPTY map stamps 0).
 void TestAudioSceneSection() {
-	using namespace smvk;
-	auto mkCluster = []() {
-		auto c = std::make_unique<smvk::Cluster>(nullptr);
-		c->SetOfflineMode(true);
-		addNode(c->scene, -1, 0); // root (slot 0)
-		const int emitter = addNode(c->scene, 0, 1); // slot 1
-		SceneAudioSource src;
-		src.volume = 0.8f;
-		src.spatial = true;
-		src.playOnLoad = true;
-		src.minDistance = 2.0f;
-		src.maxDistance = 30.0f;
-		AudioSoundRef bells;
-		bells.name = "Bells";
-		bells.assetPath = "content/audio/bells.wav";
-		bells.gain = 1.5f;
-		bells.loop = true;
-		src.sounds.push_back(bells);
-		SetAudioSource(c->scene, NodeId(emitter), src);
-		return c;
-	};
-	const std::string paths[1] = { "content/audio/bells.wav" };
-	const uint64_t ids[1] = { 0x4000 };
-	// (a) The resolved map: exact byte tail (v18 is the LAST section —
-	// u32 rowCount + per-row fields + per-sound (u64 id, f32 gain,
-	// u32 loop)).
-	{
-		auto c = mkCluster();
-		PakWriter w;
-		std::string err;
-		ClusterSerializeStats stats;
-		Check(SerializeClusters({ c.get() }, { "Audio" }, w, &stats,
-				&err, nullptr, 0, paths, ids, 1),
-			"audio.serialize.resolved-ok");
-		Check(stats.audioSources == 1, "audio.serialize.stats");
-		std::vector<uint8_t> img = w.Finalize();
-		std::string openErr;
-		auto reader = PakReader::Open(
-			std::span<const uint8_t>(img), openErr);
-		Check(reader.has_value(), "audio.pak.open");
-		if (reader) {
-			const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
-			Check(scenes.size() == 1, "audio.pak.scene1");
-			if (scenes.size() == 1) {
-				const std::span<const uint8_t> p =
-					reader->Payload(*scenes[0]);
-				std::vector<uint8_t> expect;
-				auto putU32 = [&](uint32_t v) {
-					for (int i = 0; i < 4; ++i)
-						expect.push_back(
-							uint8_t((v >> (8 * i)) & 0xFF));
-				};
-				auto putU64 = [&](uint64_t v) {
-					for (int i = 0; i < 8; ++i)
-						expect.push_back(
-							uint8_t((v >> (8 * i)) & 0xFF));
-				};
-				auto putF32 = [&](float f) {
-					uint32_t v = 0;
-					memcpy(&v, &f, 4);
-					putU32(v);
-				};
-				putU32(1);          // rowCount
-				putU32(1);          // denseNode (slot 1 -> dense 1)
-				putF32(0.8f);       // volume
-				putU32(3u);         // flags: spatial | playOnLoad
-				putF32(2.0f);       // minDistance
-				putF32(30.0f);      // maxDistance
-				putU32(1);          // soundCount
-				putU64(0x4000);     // the STABLE content id
-				putF32(1.5f);       // gain
-				putU32(1);          // loop
-				// The v19 schema-association section trails the audio
-				// sources (the uniform zero-row form — this scene
-				// carries no schema associations).
-				putU32(0);
-				// The v20 audio-room section trails the schema
-				// associations (the uniform zero-row form — this scene
-				// carries no audio rooms).
-				putU32(0);
-				// The v21 trigger section trails the audio rooms (the
-				// uniform zero-row form — no triggers in this scene).
-				putU32(0);
-				// The v22 physics-body section trails the triggers
-				// (the uniform zero-row form — no authored bodies).
-				putU32(0);
-				const size_t at = p.size() - expect.size();
-				bool tailOk = p.size() >= expect.size();
-				for (size_t i = 0; tailOk && i < expect.size(); ++i)
-					tailOk = p[at + i] == expect[i];
-				Check(tailOk, "audio.pak.scene.section-tail");
-				// The structure parse (ListPakScenes shares
-				// ParseSceneBlob) consumes the populated section.
-				std::string lerr;
-				auto listed = ListPakScenes(*reader, &lerr);
-				Check(listed.size() == 1 && lerr.empty()
-					&& listed[0].nodes == 2,
-					"audio.pak.scene.list-parses");
-			}
-		}
-	}
-	// (b) A NON-empty map that does not cover the referenced path
-	// FAILS (the project contract — the error names the sound).
-	{
-		auto c = mkCluster();
-		PakWriter w;
-		std::string err;
-		const std::string otherPaths[1] = { "content/audio/other.wav" };
-		const uint64_t otherIds[1] = { 0x4001 };
-		Check(!SerializeClusters({ c.get() }, { "Audio" }, w, nullptr,
-				&err, nullptr, 0, otherPaths, otherIds, 1)
-			&& err.find("no content id") != std::string::npos
-			&& err.find("content/audio/bells.wav")
-				!= std::string::npos,
-			"audio.serialize.unresolved-fails");
-	}
-	// (c) The EMPTY map (a bare, non-project cook): succeeds, the ids
-	// stamp 0 (= unresolved — the emitter exists, plays nothing).
-	{
-		auto c = mkCluster();
-		PakWriter w;
-		std::string err;
-		Check(SerializeClusters({ c.get() }, { "Audio" }, w, nullptr,
-				&err, nullptr, 0, nullptr, nullptr, 0),
-			"audio.serialize.bare-cook-ok");
-		std::vector<uint8_t> img = w.Finalize();
-		std::string openErr;
-		auto reader = PakReader::Open(
-			std::span<const uint8_t>(img), openErr);
-		if (reader) {
-			std::string lerr;
-			auto listed = ListPakScenes(*reader, &lerr);
-			Check(listed.size() == 1, "audio.bare.list-parses");
-		}
-	}
+    using namespace smvk;
+    auto mkCluster = []() {
+        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        c->SetOfflineMode(true);
+        addNode(c->scene, -1, 0);                    // root (slot 0)
+        const int emitter = addNode(c->scene, 0, 1); // slot 1
+        SceneAudioSource src;
+        src.volume = 0.8f;
+        src.spatial = true;
+        src.playOnLoad = true;
+        src.minDistance = 2.0f;
+        src.maxDistance = 30.0f;
+        AudioSoundRef bells;
+        bells.name = "Bells";
+        bells.assetPath = "content/audio/bells.wav";
+        bells.gain = 1.5f;
+        bells.loop = true;
+        src.sounds.push_back(bells);
+        SetAudioSource(c->scene, NodeId(emitter), src);
+        return c;
+    };
+    const std::string paths[1] = {"content/audio/bells.wav"};
+    const uint64_t ids[1] = {0x4000};
+    // (a) The resolved map: exact byte tail (v18 is the LAST section —
+    // u32 rowCount + per-row fields + per-sound (u64 id, f32 gain,
+    // u32 loop)).
+    {
+        auto c = mkCluster();
+        PakWriter w;
+        std::string err;
+        ClusterSerializeStats stats;
+        Check(SerializeClusters({c.get()}, {"Audio"}, w, &stats, &err, nullptr, 0, paths, ids, 1),
+              "audio.serialize.resolved-ok");
+        Check(stats.audioSources == 1, "audio.serialize.stats");
+        std::vector<uint8_t> img = w.Finalize();
+        std::string openErr;
+        auto reader = PakReader::Open(std::span<const uint8_t>(img), openErr);
+        Check(reader.has_value(), "audio.pak.open");
+        if (reader) {
+            const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
+            Check(scenes.size() == 1, "audio.pak.scene1");
+            if (scenes.size() == 1) {
+                const std::span<const uint8_t> p = reader->Payload(*scenes[0]);
+                std::vector<uint8_t> expect;
+                auto putU32 = [&](uint32_t v) {
+                    for (int i = 0; i < 4; ++i)
+                        expect.push_back(uint8_t((v >> (8 * i)) & 0xFF));
+                };
+                auto putU64 = [&](uint64_t v) {
+                    for (int i = 0; i < 8; ++i)
+                        expect.push_back(uint8_t((v >> (8 * i)) & 0xFF));
+                };
+                auto putF32 = [&](float f) {
+                    uint32_t v = 0;
+                    memcpy(&v, &f, 4);
+                    putU32(v);
+                };
+                putU32(1);      // rowCount
+                putU32(1);      // denseNode (slot 1 -> dense 1)
+                putF32(0.8f);   // volume
+                putU32(3u);     // flags: spatial | playOnLoad
+                putF32(2.0f);   // minDistance
+                putF32(30.0f);  // maxDistance
+                putU32(1);      // soundCount
+                putU64(0x4000); // the STABLE content id
+                putF32(1.5f);   // gain
+                putU32(1);      // loop
+                // The v19 schema-association section trails the audio
+                // sources (the uniform zero-row form — this scene
+                // carries no schema associations).
+                putU32(0);
+                // The v20 audio-room section trails the schema
+                // associations (the uniform zero-row form — this scene
+                // carries no audio rooms).
+                putU32(0);
+                // The v21 trigger section trails the audio rooms (the
+                // uniform zero-row form — no triggers in this scene).
+                putU32(0);
+                // The v22 physics-body section trails the triggers
+                // (the uniform zero-row form — no authored bodies).
+                putU32(0);
+                const size_t at = p.size() - expect.size();
+                bool tailOk = p.size() >= expect.size();
+                for (size_t i = 0; tailOk && i < expect.size(); ++i)
+                    tailOk = p[at + i] == expect[i];
+                Check(tailOk, "audio.pak.scene.section-tail");
+                // The structure parse (ListPakScenes shares
+                // ParseSceneBlob) consumes the populated section.
+                std::string lerr;
+                auto listed = ListPakScenes(*reader, &lerr);
+                Check(listed.size() == 1 && lerr.empty() && listed[0].nodes == 2,
+                      "audio.pak.scene.list-parses");
+            }
+        }
+    }
+    // (b) A NON-empty map that does not cover the referenced path
+    // FAILS (the project contract — the error names the sound).
+    {
+        auto c = mkCluster();
+        PakWriter w;
+        std::string err;
+        const std::string otherPaths[1] = {"content/audio/other.wav"};
+        const uint64_t otherIds[1] = {0x4001};
+        Check(!SerializeClusters(
+                  {c.get()}, {"Audio"}, w, nullptr, &err, nullptr, 0, otherPaths, otherIds, 1) &&
+                  err.find("no content id") != std::string::npos &&
+                  err.find("content/audio/bells.wav") != std::string::npos,
+              "audio.serialize.unresolved-fails");
+    }
+    // (c) The EMPTY map (a bare, non-project cook): succeeds, the ids
+    // stamp 0 (= unresolved — the emitter exists, plays nothing).
+    {
+        auto c = mkCluster();
+        PakWriter w;
+        std::string err;
+        Check(SerializeClusters(
+                  {c.get()}, {"Audio"}, w, nullptr, &err, nullptr, 0, nullptr, nullptr, 0),
+              "audio.serialize.bare-cook-ok");
+        std::vector<uint8_t> img = w.Finalize();
+        std::string openErr;
+        auto reader = PakReader::Open(std::span<const uint8_t>(img), openErr);
+        if (reader) {
+            std::string lerr;
+            auto listed = ListPakScenes(*reader, &lerr);
+            Check(listed.size() == 1, "audio.bare.list-parses");
+        }
+    }
 }
 
 // The scene blob's v20 AUDIO-ROOM section: the exact populated byte
@@ -3830,140 +3704,133 @@ void TestAudioSceneSection() {
 // full ParseSceneBlob payload round-trip (the reader's sanitize gates
 // included) and the structure-only ListPakScenes lane.
 void TestAudioRoomSection() {
-	using namespace smvk;
-	auto mkCluster = []() {
-		auto c = std::make_unique<smvk::Cluster>(nullptr);
-		c->SetOfflineMode(true);
-		addNode(c->scene, -1, 0); // root (slot 0)
-		const int roomNode = addNode(c->scene, 0, 1); // slot 1
-		::tour::scene::SceneAudioRoom room;
-		room.enabled = true;
-		room.priority = 3;
-		room.insideFade = 0.5f;
-		room.outsideFade = 1.0f;
-		room.wet = 0.4f;
-		room.rt60 = 2.5f;
-		room.damping = 0.7f;
-		room.transitionSeconds = 0.5f;
-		::tour::scene::SetAudioRoom(c->scene, NodeId(roomNode), room);
-		// A second DISABLED room on the root exercises the flags bit.
-		::tour::scene::SceneAudioRoom off;
-		off.enabled = false;
-		off.priority = 9;
-		::tour::scene::SetAudioRoom(c->scene, NodeId(0), off);
-		return c;
-	};
-	{
-		auto c = mkCluster();
-		PakWriter w;
-		std::string err;
-		ClusterSerializeStats stats;
-		Check(SerializeClusters({ c.get() }, { "Room" }, w, &stats,
-				&err, nullptr, 0, nullptr, nullptr, 0),
-			"room.serialize.ok");
-		Check(stats.audioRooms == 2, "room.serialize.stats");
-		std::vector<uint8_t> img = w.Finalize();
-		std::string openErr;
-		auto reader = PakReader::Open(
-			std::span<const uint8_t>(img), openErr);
-		Check(reader.has_value(), "room.pak.open");
-		if (reader) {
-			const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
-			Check(scenes.size() == 1, "room.pak.scene1");
-			if (scenes.size() == 1) {
-				const std::span<const uint8_t> p =
-					reader->Payload(*scenes[0]);
-				std::vector<uint8_t> expect;
-				auto putU32 = [&](uint32_t v) {
-					for (int i = 0; i < 4; ++i)
-						expect.push_back(
-							uint8_t((v >> (8 * i)) & 0xFF));
-				};
-				auto putF32 = [&](float f) {
-					uint32_t v = 0;
-					memcpy(&v, &f, 4);
-					putU32(v);
-				};
-				// Node-sorted: denseNode 0 (the root room) first, then
-				// denseNode 1. v20 ends here; the v21 trigger section
-				// (uniform zero-row form — no triggers in this scene)
-				// is the tail's actual end.
-				putU32(2);      // rowCount
-				putU32(0);      // denseNode 0
-				putU32(0);      // flags: disabled
-				putU32(9);      // priority
-				putF32(0.30f);  // insideFade
-				putF32(0.70f);  // outsideFade
-				putF32(0.25f);  // wet
-				putF32(1.20f);  // rt60
-				putF32(0.50f);  // damping
-				putF32(0.25f);  // transitionSeconds
-				putU32(1);      // denseNode 1
-				putU32(1);      // flags: enabled
-				putU32(3);      // priority
-				putF32(0.5f);   // insideFade
-				putF32(1.0f);   // outsideFade
-				putF32(0.4f);   // wet
-				putF32(2.5f);   // rt60
-				putF32(0.7f);   // damping
-				putF32(0.5f);   // transitionSeconds
-				// The v21 trigger section (u32 rowCount — zero-row
-				// form: this scene carries no trigger components).
-				putU32(0);
-				// The v22 physics-body section (u32 rowCount — zero-row
-				// form: this scene carries no authored bodies).
-				putU32(0);
-				const size_t at = p.size() - expect.size();
-				bool tailOk = p.size() >= expect.size();
-				for (size_t i = 0; tailOk && i < expect.size(); ++i)
-					tailOk = p[at + i] == expect[i];
-				Check(tailOk, "room.pak.scene.section-tail");
-				// The structure parse (ListPakScenes shares
-				// ParseSceneBlob) consumes the populated section.
-				std::string lerr;
-				auto listed = ListPakScenes(*reader, &lerr);
-				Check(listed.size() == 1 && lerr.empty()
-					&& listed[0].nodes == 2,
-					"room.pak.scene.list-parses");
-				// The FULL payload round-trip: every authored field
-				// survives the cook + the reader's sanitize gates.
-				Scene scene;
-				std::string nameOut, perr;
-				Check(ParseSceneBlob(p, scene, nameOut, nullptr, perr)
-					&& perr.empty(), "room.parse.round-trips");
-				const ::tour::scene::AudioRoomRow* r1 =
-					::tour::scene::FindAudioRoom(scene, NodeId(1));
-				const ::tour::scene::AudioRoomRow* r0 = ::tour::scene::FindAudioRoom(scene, NodeId(0));
-				Check(r1 && r1->room.enabled
-					&& r1->room.priority == 3
-					&& r1->room.insideFade == 0.5f
-					&& r1->room.outsideFade == 1.0f
-					&& r1->room.wet == 0.4f
-					&& r1->room.rt60 == 2.5f
-					&& r1->room.damping == 0.7f
-					&& r1->room.transitionSeconds == 0.5f,
-					"room.parse.payload");
-				Check(r0 && !r0->room.enabled && r0->room.priority == 9,
-					"room.parse.disabled-flags");
-			}
-		}
-	}
-	// A row on a RETIRED slot fails the serialize loudly (the same
-	// contract as every association table). The row is pushed DIRECTLY
-	// — the Set mutator would reject it first (that is its own gate);
-	// this pins the serializer's independent backstop.
-	{
-		auto c = mkCluster();
-		::tour::scene::AudioRoomRow orphan;
-		orphan.node = 99; // no such slot in the 2-node cluster
-		c->scene.tables.audioRooms.push_back(orphan);
-		PakWriter w;
-		std::string err;
-		Check(!SerializeClusters({ c.get() }, { "Room" }, w, nullptr,
-				&err, nullptr, 0, nullptr, nullptr, 0)
-			&& err.find("retired node slot") != std::string::npos,
-			"room.serialize.retired-fails");
-	}
+    using namespace smvk;
+    auto mkCluster = []() {
+        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        c->SetOfflineMode(true);
+        addNode(c->scene, -1, 0);                     // root (slot 0)
+        const int roomNode = addNode(c->scene, 0, 1); // slot 1
+        ::tour::scene::SceneAudioRoom room;
+        room.enabled = true;
+        room.priority = 3;
+        room.insideFade = 0.5f;
+        room.outsideFade = 1.0f;
+        room.wet = 0.4f;
+        room.rt60 = 2.5f;
+        room.damping = 0.7f;
+        room.transitionSeconds = 0.5f;
+        ::tour::scene::SetAudioRoom(c->scene, NodeId(roomNode), room);
+        // A second DISABLED room on the root exercises the flags bit.
+        ::tour::scene::SceneAudioRoom off;
+        off.enabled = false;
+        off.priority = 9;
+        ::tour::scene::SetAudioRoom(c->scene, NodeId(0), off);
+        return c;
+    };
+    {
+        auto c = mkCluster();
+        PakWriter w;
+        std::string err;
+        ClusterSerializeStats stats;
+        Check(SerializeClusters(
+                  {c.get()}, {"Room"}, w, &stats, &err, nullptr, 0, nullptr, nullptr, 0),
+              "room.serialize.ok");
+        Check(stats.audioRooms == 2, "room.serialize.stats");
+        std::vector<uint8_t> img = w.Finalize();
+        std::string openErr;
+        auto reader = PakReader::Open(std::span<const uint8_t>(img), openErr);
+        Check(reader.has_value(), "room.pak.open");
+        if (reader) {
+            const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
+            Check(scenes.size() == 1, "room.pak.scene1");
+            if (scenes.size() == 1) {
+                const std::span<const uint8_t> p = reader->Payload(*scenes[0]);
+                std::vector<uint8_t> expect;
+                auto putU32 = [&](uint32_t v) {
+                    for (int i = 0; i < 4; ++i)
+                        expect.push_back(uint8_t((v >> (8 * i)) & 0xFF));
+                };
+                auto putF32 = [&](float f) {
+                    uint32_t v = 0;
+                    memcpy(&v, &f, 4);
+                    putU32(v);
+                };
+                // Node-sorted: denseNode 0 (the root room) first, then
+                // denseNode 1. v20 ends here; the v21 trigger section
+                // (uniform zero-row form — no triggers in this scene)
+                // is the tail's actual end.
+                putU32(2);     // rowCount
+                putU32(0);     // denseNode 0
+                putU32(0);     // flags: disabled
+                putU32(9);     // priority
+                putF32(0.30f); // insideFade
+                putF32(0.70f); // outsideFade
+                putF32(0.25f); // wet
+                putF32(1.20f); // rt60
+                putF32(0.50f); // damping
+                putF32(0.25f); // transitionSeconds
+                putU32(1);     // denseNode 1
+                putU32(1);     // flags: enabled
+                putU32(3);     // priority
+                putF32(0.5f);  // insideFade
+                putF32(1.0f);  // outsideFade
+                putF32(0.4f);  // wet
+                putF32(2.5f);  // rt60
+                putF32(0.7f);  // damping
+                putF32(0.5f);  // transitionSeconds
+                // The v21 trigger section (u32 rowCount — zero-row
+                // form: this scene carries no trigger components).
+                putU32(0);
+                // The v22 physics-body section (u32 rowCount — zero-row
+                // form: this scene carries no authored bodies).
+                putU32(0);
+                const size_t at = p.size() - expect.size();
+                bool tailOk = p.size() >= expect.size();
+                for (size_t i = 0; tailOk && i < expect.size(); ++i)
+                    tailOk = p[at + i] == expect[i];
+                Check(tailOk, "room.pak.scene.section-tail");
+                // The structure parse (ListPakScenes shares
+                // ParseSceneBlob) consumes the populated section.
+                std::string lerr;
+                auto listed = ListPakScenes(*reader, &lerr);
+                Check(listed.size() == 1 && lerr.empty() && listed[0].nodes == 2,
+                      "room.pak.scene.list-parses");
+                // The FULL payload round-trip: every authored field
+                // survives the cook + the reader's sanitize gates.
+                Scene scene;
+                std::string nameOut, perr;
+                Check(ParseSceneBlob(p, scene, nameOut, nullptr, perr) && perr.empty(),
+                      "room.parse.round-trips");
+                const ::tour::scene::AudioRoomRow* r1 =
+                    ::tour::scene::FindAudioRoom(scene, NodeId(1));
+                const ::tour::scene::AudioRoomRow* r0 =
+                    ::tour::scene::FindAudioRoom(scene, NodeId(0));
+                Check(r1 && r1->room.enabled && r1->room.priority == 3 &&
+                          r1->room.insideFade == 0.5f && r1->room.outsideFade == 1.0f &&
+                          r1->room.wet == 0.4f && r1->room.rt60 == 2.5f &&
+                          r1->room.damping == 0.7f && r1->room.transitionSeconds == 0.5f,
+                      "room.parse.payload");
+                Check(r0 && !r0->room.enabled && r0->room.priority == 9,
+                      "room.parse.disabled-flags");
+            }
+        }
+    }
+    // A row on a RETIRED slot fails the serialize loudly (the same
+    // contract as every association table). The row is pushed DIRECTLY
+    // — the Set mutator would reject it first (that is its own gate);
+    // this pins the serializer's independent backstop.
+    {
+        auto c = mkCluster();
+        ::tour::scene::AudioRoomRow orphan;
+        orphan.node = 99; // no such slot in the 2-node cluster
+        c->scene.tables.audioRooms.push_back(orphan);
+        PakWriter w;
+        std::string err;
+        Check(!SerializeClusters(
+                  {c.get()}, {"Room"}, w, nullptr, &err, nullptr, 0, nullptr, nullptr, 0) &&
+                  err.find("retired node slot") != std::string::npos,
+              "room.serialize.retired-fails");
+    }
 }
 
 // Node names are AUTHORING-ONLY (cluster_serializer.h's contract): the
@@ -3972,154 +3839,160 @@ void TestAudioRoomSection() {
 // load SKIPS them on OLD paks that still carry them (cursor-advance,
 // zero allocations). This pins both halves.
 void TestNodeNameStripping() {
-	using namespace smvk;
-	{
-		// (a) The WRITER strip: a named cluster cooks to zero-count name
-		// sections; the structure round-trips unchanged.
-		auto c = std::make_unique<smvk::Cluster>(nullptr);
-		c->SetOfflineMode(true);
-		addNode(c->scene, -1, 0);
-		const int child = addNode(c->scene, 0, 1);
-		setNodeName(c->scene, child, "QuadNode");
-		PakWriter w;
-		std::string err;
-		Check(SerializeClusters({ c.get() }, { "Names" }, w, nullptr,
-				&err, nullptr, 0, nullptr, nullptr, 0) && err.empty(),
-			"names.serialize.ok");
-		const std::vector<uint8_t> img = w.Finalize();
-		auto reader = PakReader::Open(std::span<const uint8_t>(img), err);
-		Check(reader.has_value(), "names.pak.open");
-		if (reader) {
-			const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
-			Check(scenes.size() == 1, "names.pak.scene1");
-			if (scenes.size() == 1) {
-				Scene scene;
-				std::string nameOut, perr;
-				Check(ParseSceneBlob(reader->Payload(*scenes[0]), scene,
-						nameOut, nullptr, perr) && perr.empty(),
-					"names.parse.ok");
-				Check(scene.nodeNames.empty()
-					&& scene.hierarchy.size() == 2,
-					"names.stripped-from-cooked-blob");
-			}
-		}
-	}
-	{
-		// (b) The LOAD skip on an OLD-STYLE blob (names present, the
-		// pre-strip writer's shape): wantNodeNames=false cursor-skips
-		// the pair + string tables with zero allocations and identical
-		// structure; the default (true) still materializes them.
-		std::vector<uint8_t> p;
-		auto putU32 = [&p](uint32_t v) {
-			for (int i = 0; i < 4; ++i)
-				p.push_back(uint8_t((v >> (8 * i)) & 0xFF));
-		};
-		auto putF32 = [&p, &putU32](float f) {
-			uint32_t v = 0;
-			std::memcpy(&v, &f, 4);
-			putU32(v);
-		};
-		const uint32_t kNone = 0xFFFFFFFFu;
-		putU32(2); // nodeCount
-		// hierarchy: 2 x (parent, firstChild, nextSibling, lastSibling,
-		// level) - root then its child.
-		putU32(kNone); putU32(1); putU32(kNone); putU32(1); putU32(0);
-		putU32(0); putU32(kNone); putU32(kNone); putU32(kNone); putU32(1);
-		// transforms: 2 x 16 f32 (identity).
-		for (int n = 0; n < 2 * 16; ++n)
-			putF32((n % 5 == 0) ? 1.0f : 0.0f);
-		putU32(0); // meshPairCount
-		putU32(0); // matPairCount
-		putU32(1); // namePairCount: node 1 -> nameIdx 0
-		putU32(1);
-		putU32(0);
-		putU32(1); // nodeNameCount: "QuadNode"
-		putU32(8);
-		p.insert(p.end(), { 'Q','u','a','d','N','o','d','e' });
-		putU32(0); // matNameCount
-		{
-			Scene on, off;
-			std::string nameOn, nameOff, errOn, errOff;
-			Check(ParseSceneBlob(p, on, nameOn, nullptr, errOn,
-					nullptr, nullptr, /*wantNodeNames=*/true)
-				&& errOn.empty() && on.nodeNames.size() == 1
-				&& on.nodeNames[0] == "QuadNode"
-				&& getNodeName(on, 1) == "QuadNode",
-				"names.default-still-loads");
-			Check(ParseSceneBlob(p, off, nameOff, nullptr, errOff,
-					nullptr, nullptr, /*wantNodeNames=*/false)
-				&& errOff.empty() && off.nodeNames.empty()
-				&& off.hierarchy.size() == on.hierarchy.size()
-				&& nameOff == nameOn,
-				"names.skip-no-alloc-identical-structure");
-		}
-	}
+    using namespace smvk;
+    {
+        // (a) The WRITER strip: a named cluster cooks to zero-count name
+        // sections; the structure round-trips unchanged.
+        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        c->SetOfflineMode(true);
+        addNode(c->scene, -1, 0);
+        const int child = addNode(c->scene, 0, 1);
+        setNodeName(c->scene, child, "QuadNode");
+        PakWriter w;
+        std::string err;
+        Check(SerializeClusters(
+                  {c.get()}, {"Names"}, w, nullptr, &err, nullptr, 0, nullptr, nullptr, 0) &&
+                  err.empty(),
+              "names.serialize.ok");
+        const std::vector<uint8_t> img = w.Finalize();
+        auto reader = PakReader::Open(std::span<const uint8_t>(img), err);
+        Check(reader.has_value(), "names.pak.open");
+        if (reader) {
+            const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
+            Check(scenes.size() == 1, "names.pak.scene1");
+            if (scenes.size() == 1) {
+                Scene scene;
+                std::string nameOut, perr;
+                Check(ParseSceneBlob(reader->Payload(*scenes[0]), scene, nameOut, nullptr, perr) &&
+                          perr.empty(),
+                      "names.parse.ok");
+                Check(scene.nodeNames.empty() && scene.hierarchy.size() == 2,
+                      "names.stripped-from-cooked-blob");
+            }
+        }
+    }
+    {
+        // (b) The LOAD skip on an OLD-STYLE blob (names present, the
+        // pre-strip writer's shape): wantNodeNames=false cursor-skips
+        // the pair + string tables with zero allocations and identical
+        // structure; the default (true) still materializes them.
+        std::vector<uint8_t> p;
+        auto putU32 = [&p](uint32_t v) {
+            for (int i = 0; i < 4; ++i)
+                p.push_back(uint8_t((v >> (8 * i)) & 0xFF));
+        };
+        auto putF32 = [&p, &putU32](float f) {
+            uint32_t v = 0;
+            std::memcpy(&v, &f, 4);
+            putU32(v);
+        };
+        const uint32_t kNone = 0xFFFFFFFFu;
+        putU32(2); // nodeCount
+        // hierarchy: 2 x (parent, firstChild, nextSibling, lastSibling,
+        // level) - root then its child.
+        putU32(kNone);
+        putU32(1);
+        putU32(kNone);
+        putU32(1);
+        putU32(0);
+        putU32(0);
+        putU32(kNone);
+        putU32(kNone);
+        putU32(kNone);
+        putU32(1);
+        // transforms: 2 x 16 f32 (identity).
+        for (int n = 0; n < 2 * 16; ++n)
+            putF32((n % 5 == 0) ? 1.0f : 0.0f);
+        putU32(0); // meshPairCount
+        putU32(0); // matPairCount
+        putU32(1); // namePairCount: node 1 -> nameIdx 0
+        putU32(1);
+        putU32(0);
+        putU32(1); // nodeNameCount: "QuadNode"
+        putU32(8);
+        p.insert(p.end(), {'Q', 'u', 'a', 'd', 'N', 'o', 'd', 'e'});
+        putU32(0); // matNameCount
+        {
+            Scene on, off;
+            std::string nameOn, nameOff, errOn, errOff;
+            Check(ParseSceneBlob(
+                      p, on, nameOn, nullptr, errOn, nullptr, nullptr, /*wantNodeNames=*/true) &&
+                      errOn.empty() && on.nodeNames.size() == 1 && on.nodeNames[0] == "QuadNode" &&
+                      getNodeName(on, 1) == "QuadNode",
+                  "names.default-still-loads");
+            Check(
+                ParseSceneBlob(
+                    p, off, nameOff, nullptr, errOff, nullptr, nullptr, /*wantNodeNames=*/false) &&
+                    errOff.empty() && off.nodeNames.empty() &&
+                    off.hierarchy.size() == on.hierarchy.size() && nameOff == nameOn,
+                "names.skip-no-alloc-identical-structure");
+        }
+    }
 }
 
 } // namespace
 
 int main() {
-	// Unbuffered stdout: a crash mid-run must not lose the tail (PASS lines
-	// name the last completed check; stderr markers below name the test).
-	setvbuf(stdout, nullptr, _IONBF, 0);
-	// Asserts go to stderr, not a modal dialog: a failing assert must kill
-	// the run immediately in CI/redirected runs instead of hanging on a
-	// window nobody can see (the CRT default pops Retry/Abort/Ignore).
+    // Unbuffered stdout: a crash mid-run must not lose the tail (PASS lines
+    // name the last completed check; stderr markers below name the test).
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    // Asserts go to stderr, not a modal dialog: a failing assert must kill
+    // the run immediately in CI/redirected runs instead of hanging on a
+    // window nobody can see (the CRT default pops Retry/Abort/Ignore).
 #ifdef _MSC_VER
-	{
-		_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-		_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-		_CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-		_CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-	}
+    {
+        _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+        _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    }
 #endif
-	// Per-test stderr markers: stdout is block-buffered when redirected, so
-	// a crash mid-run loses the tail — stderr is unbuffered and names the
-	// crashing test immediately.
-	auto run = [](const char* name, void (*fn)()) {
-		std::cerr << "[test] " << name << std::endl;
-		fn();
-	};
-	// FIRST, before any pak CRC: the concurrent append test needs the
-	// CRC table's process-wide first-use window intact (every later
-	// test would initialize it single-threaded and spend the window).
-	run("TestPakAppendConcurrentFirstUse", TestPakAppendConcurrentFirstUse);
-	run("TestVfsNormalize", TestVfsNormalize);
-	run("TestOverlayMem", TestOverlayMem);
-	run("TestAssetUris", TestAssetUris);
-	run("TestTextureSourceLifetime", TestTextureSourceLifetime);
-	run("TestPakRoundTrip", TestPakRoundTrip);
-	run("TestShapePakBlobs", TestShapePakBlobs);
-	run("TestPakCrcCombine", TestPakCrcCombine);
-	run("TestPakCrcParallel", TestPakCrcParallel);
-	run("TestPakTextureDigest", TestPakTextureDigest);
-	run("TestPakAppend", TestPakAppend);
-	run("TestPakMalformedBounds", TestPakMalformedBounds);
-	run("TestLz4Codec", TestLz4Codec);
-	run("TestPakCompressedRoundTrip", TestPakCompressedRoundTrip);
-	run("TestPakSmp8", TestPakSmp8);
-	run("TestPakPager", TestPakPager);
-	run("TestNodeSchemas", TestNodeSchemas);
-	run("TestPakLayoutFingerprint", TestPakLayoutFingerprint);
-	run("TestPakBackendServesTextures", TestPakBackendServesTextures);
-	run("TestMeshOpt", TestMeshOpt);
-	run("TestSmoothNormalRepair", TestSmoothNormalRepair);
-	run("TestLodChain", TestLodChain);
-	run("TestLodSelection", TestLodSelection);
-	run("TestLodLightmapAudit", TestLodLightmapAudit);
-	run("TestCookLodSiblingsLightmap", TestCookLodSiblingsLightmap);
-	run("TestLightmapChartTable", TestLightmapChartTable);
-	run("TestVertexPack", TestVertexPack);
-	run("TestVertexLayoutShaderAbi", TestVertexLayoutShaderAbi);
-	run("TestClusterSerializeCook", TestClusterSerializeCook);
-	run("TestMultiSceneSerialize", TestMultiSceneSerialize);
-	run("TestAudioSceneSection", TestAudioSceneSection);
-	run("TestAudioRoomSection", TestAudioRoomSection);
-run("TestNodeNameStripping", TestNodeNameStripping);
-	run("TestStaticSubtrees", TestStaticSubtrees);
-	run("TestMeshlets", TestMeshlets);
-	run("TestStaticCollapse", TestStaticCollapse);
-	std::cout << g_checks - g_failures << "/" << g_checks << " checks passed\n";
-	return g_failures == 0 ? 0 : 1;
+    // Per-test stderr markers: stdout is block-buffered when redirected, so
+    // a crash mid-run loses the tail — stderr is unbuffered and names the
+    // crashing test immediately.
+    auto run = [](const char* name, void (*fn)()) {
+        std::cerr << "[test] " << name << std::endl;
+        fn();
+    };
+    // FIRST, before any pak CRC: the concurrent append test needs the
+    // CRC table's process-wide first-use window intact (every later
+    // test would initialize it single-threaded and spend the window).
+    run("TestPakAppendConcurrentFirstUse", TestPakAppendConcurrentFirstUse);
+    run("TestVfsNormalize", TestVfsNormalize);
+    run("TestOverlayMem", TestOverlayMem);
+    run("TestAssetUris", TestAssetUris);
+    run("TestTextureSourceLifetime", TestTextureSourceLifetime);
+    run("TestPakRoundTrip", TestPakRoundTrip);
+    run("TestShapePakBlobs", TestShapePakBlobs);
+    run("TestPakCrcCombine", TestPakCrcCombine);
+    run("TestPakCrcParallel", TestPakCrcParallel);
+    run("TestPakTextureDigest", TestPakTextureDigest);
+    run("TestPakAppend", TestPakAppend);
+    run("TestPakMalformedBounds", TestPakMalformedBounds);
+    run("TestLz4Codec", TestLz4Codec);
+    run("TestPakCompressedRoundTrip", TestPakCompressedRoundTrip);
+    run("TestPakSmp8", TestPakSmp8);
+    run("TestPakPager", TestPakPager);
+    run("TestNodeSchemas", TestNodeSchemas);
+    run("TestPakLayoutFingerprint", TestPakLayoutFingerprint);
+    run("TestPakBackendServesTextures", TestPakBackendServesTextures);
+    run("TestMeshOpt", TestMeshOpt);
+    run("TestSmoothNormalRepair", TestSmoothNormalRepair);
+    run("TestLodChain", TestLodChain);
+    run("TestLodSelection", TestLodSelection);
+    run("TestLodLightmapAudit", TestLodLightmapAudit);
+    run("TestCookLodSiblingsLightmap", TestCookLodSiblingsLightmap);
+    run("TestLightmapChartTable", TestLightmapChartTable);
+    run("TestVertexPack", TestVertexPack);
+    run("TestVertexLayoutShaderAbi", TestVertexLayoutShaderAbi);
+    run("TestClusterSerializeCook", TestClusterSerializeCook);
+    run("TestMultiSceneSerialize", TestMultiSceneSerialize);
+    run("TestAudioSceneSection", TestAudioSceneSection);
+    run("TestAudioRoomSection", TestAudioRoomSection);
+    run("TestNodeNameStripping", TestNodeNameStripping);
+    run("TestStaticSubtrees", TestStaticSubtrees);
+    run("TestMeshlets", TestMeshlets);
+    run("TestStaticCollapse", TestStaticCollapse);
+    std::cout << g_checks - g_failures << "/" << g_checks << " checks passed\n";
+    return g_failures == 0 ? 0 : 1;
 }
-

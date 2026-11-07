@@ -19,11 +19,11 @@ namespace {
 int g_checks = 0;
 int g_failures = 0;
 void Check(bool cond, const char* name) {
-	++g_checks;
-	if (!cond) {
-		++g_failures;
-		std::printf("FAIL %s\n", name);
-	}
+    ++g_checks;
+    if (!cond) {
+        ++g_failures;
+        std::printf("FAIL %s\n", name);
+    }
 }
 
 RelativeFrustum Cube(glm::dvec3 origin, double radius = 10.0) {
@@ -31,17 +31,19 @@ RelativeFrustum Cube(glm::dvec3 origin, double radius = 10.0) {
     view.originWorld = origin;
     // Six inward, normalized planes in view-origin-relative coordinates.
     view.planes = {{
-        { 1,  0,  0, radius},
-        {-1,  0,  0, radius},
-        { 0,  1,  0, radius},
-        { 0, -1,  0, radius},
-        { 0,  0,  1, radius},
-        { 0,  0, -1, radius},
+        {1, 0, 0, radius},
+        {-1, 0, 0, radius},
+        {0, 1, 0, radius},
+        {0, -1, 0, radius},
+        {0, 0, 1, radius},
+        {0, 0, -1, radius},
     }};
     return view;
 }
-Handle<Instance> Add(RenderDatabase& db, LeafRegistry& leaves,
-                     Handle<Mesh> mesh, glm::dvec3 where,
+Handle<Instance> Add(RenderDatabase& db,
+                     LeafRegistry& leaves,
+                     Handle<Mesh> mesh,
+                     glm::dvec3 where,
                      float localRadius = 0.5f) {
     Instance value{};
     value.worldPosition = tour::math::SplitDoubleFloat(where);
@@ -52,8 +54,7 @@ Handle<Instance> Add(RenderDatabase& db, LeafRegistry& leaves,
     leaves.Upsert(id, db);
     return id;
 }
-bool VerifyRanges(const CandidateSelection& result,
-                  const RenderDatabase& db) {
+bool VerifyRanges(const CandidateSelection& result, const RenderDatabase& db) {
     if (!result.Valid()) {
         Check(false, "cand.verify-valid");
         return false;
@@ -67,15 +68,13 @@ bool VerifyRanges(const CandidateSelection& result,
         count += range.members.y;
         const Handle<Leaf> leaf{range.leaf.x, range.leaf.y};
         const Leaf* row = db.leaves.Get(leaf);
-        if (!row || row->range.x != range.members.x
-                || row->range.y != range.members.y) {
+        if (!row || row->range.x != range.members.x || row->range.y != range.members.y) {
             Check(false, "cand.verify-range-matches-leaf");
             return false;
         }
         for (uint32_t i = 0; i < range.members.y; ++i) {
             const auto& m = db.leafMembers.Rows()[range.members.x + i];
-            if (m.identity.y != 1
-                    || !db.instances.Contains({m.value.ref.x, m.value.ref.y})) {
+            if (m.identity.y != 1 || !db.instances.Contains({m.value.ref.x, m.value.ref.y})) {
                 Check(false, "cand.verify-member-live");
                 return false;
             }
@@ -87,8 +86,7 @@ bool VerifyRanges(const CandidateSelection& result,
 void CheckCoarse() {
     RenderDatabase db{};
     LeafRegistry leaves{};
-    const auto complete = db.meshes.Insert(
-        Mesh{0, 1, 1, MeshFlagCompleteBounds});
+    const auto complete = db.meshes.Insert(Mesh{0, 1, 1, MeshFlagCompleteBounds});
     const auto unknown = db.meshes.Insert(Mesh{0, 1, 1, 0});
     Check(bool(complete) && bool(unknown), "cand.mesh-inserts");
 
@@ -112,43 +110,38 @@ void CheckCoarse() {
     Check(!ReferenceInstanceVisible(db, far, view), "cand.far-rejected");
     Check(ReferenceInstanceVisible(db, failOpen, view), "cand.unknown-fails-open");
 
-    const auto passAll = SelectPassedInstanceRanges(
-        db, tickets, view, CandidateMode::PassAll);
+    const auto passAll = SelectPassedInstanceRanges(db, tickets, view, CandidateMode::PassAll);
     Check(VerifyRanges(passAll, db), "cand.passall-verifies");
     Check(passAll.ranges.size() == 4, "cand.passall-four-ranges");
     Check(passAll.candidateCount == 4, "cand.passall-four-candidates");
 
     // Overflow invalidates the complete selection, no partial output.
-    auto overflow = SelectPassedInstanceRanges(
-        db, tickets, view, CandidateMode::PassAll, 8, 3);
-    Check(overflow.status == CandidateStatus::CapacityExceeded,
-        "cand.overflow-ranges");
+    auto overflow = SelectPassedInstanceRanges(db, tickets, view, CandidateMode::PassAll, 8, 3);
+    Check(overflow.status == CandidateStatus::CapacityExceeded, "cand.overflow-ranges");
+    Check(overflow.ranges.empty() && overflow.candidateCount == 0, "cand.overflow-no-partial");
+    overflow = SelectPassedInstanceRanges(db, tickets, view, CandidateMode::PassAll, 2, 8);
+    Check(overflow.status == CandidateStatus::CapacityExceeded, "cand.overflow-members");
     Check(overflow.ranges.empty() && overflow.candidateCount == 0,
-        "cand.overflow-no-partial");
-    overflow = SelectPassedInstanceRanges(
-        db, tickets, view, CandidateMode::PassAll, 2, 8);
-    Check(overflow.status == CandidateStatus::CapacityExceeded,
-        "cand.overflow-members");
-    Check(overflow.ranges.empty() && overflow.candidateCount == 0,
-        "cand.overflow-members-no-partial");
+          "cand.overflow-members-no-partial");
 
     auto badTickets = tickets;
     badTickets[0].memberCount += 1;
     const auto invalid = SelectPassedInstanceRanges(db, badTickets, view);
-    Check(invalid.status == CandidateStatus::InvalidSnapshot,
-        "cand.bad-ticket-count");
+    Check(invalid.status == CandidateStatus::InvalidSnapshot, "cand.bad-ticket-count");
     Check(invalid.ranges.empty(), "cand.bad-ticket-no-ranges");
     badTickets = tickets;
     badTickets.push_back(tickets.front());
     Check(SelectPassedInstanceRanges(db, badTickets, view).status ==
-          CandidateStatus::InvalidSnapshot, "cand.duplicate-ticket");
+              CandidateStatus::InvalidSnapshot,
+          "cand.duplicate-ticket");
 
     auto invalidView = view;
     invalidView.planes[0] = glm::dvec4(0);
     Check(SelectPassedInstanceRanges(db, tickets, invalidView).status ==
-          CandidateStatus::InvalidView, "cand.degenerate-view");
-    Check(SelectPassedInstanceRanges(db, tickets, invalidView,
-            CandidateMode::PassAll).Valid(), "cand.passall-ignores-view");
+              CandidateStatus::InvalidView,
+          "cand.degenerate-view");
+    Check(SelectPassedInstanceRanges(db, tickets, invalidView, CandidateMode::PassAll).Valid(),
+          "cand.passall-ignores-view");
 
     // Within-cell motion retains leaf identities; camera motion cannot
     // dirty the persistent scene registry.
@@ -173,18 +166,17 @@ void CheckCoarse() {
     Check(reincarnated.generation != far.generation, "cand.generation-bumped");
     Check(leaves.Flush(db), "cand.reflush-reincarnated");
     const auto newTickets = leaves.Tickets(db);
-    Check(VerifyRanges(SelectPassedInstanceRanges(db, newTickets, view,
-        CandidateMode::PassAll), db), "cand.reincarnated-verifies");
+    Check(
+        VerifyRanges(SelectPassedInstanceRanges(db, newTickets, view, CandidateMode::PassAll), db),
+        "cand.reincarnated-verifies");
     Check(!db.instances.Contains(far), "cand.old-handle-dead");
 }
 void CheckLargeWorld() {
     RenderDatabase db{};
     LeafRegistry leaves{};
-    const auto complete = db.meshes.Insert(
-        Mesh{0, 1, 1, MeshFlagCompleteBounds});
+    const auto complete = db.meshes.Insert(Mesh{0, 1, 1, MeshFlagCompleteBounds});
     const glm::dvec3 eye(1.0e12, 0, -1.0e12);
-    const auto visible = Add(db, leaves, complete,
-                             eye + glm::dvec3(0.25, 0, -2.0));
+    const auto visible = Add(db, leaves, complete, eye + glm::dvec3(0.25, 0, -2.0));
     (void)Add(db, leaves, complete, eye + glm::dvec3(256, 0, 0));
     Check(leaves.Flush(db), "cand.large-flush");
     const auto view = Cube(eye);
@@ -192,8 +184,8 @@ void CheckLargeWorld() {
     Check(out.Valid() && out.candidateCount == 1, "cand.large-one-candidate");
     Check(out.rejectedLeaves == 1, "cand.large-one-rejected");
     Check(ReferenceInstanceVisible(db, visible, view), "cand.large-visible");
-    Check(tour::math::JoinDoubleFloat(db.instances.Get(visible)->worldPosition).x >
-          9.0e11, "cand.large-precision-kept");
+    Check(tour::math::JoinDoubleFloat(db.instances.Get(visible)->worldPosition).x > 9.0e11,
+          "cand.large-precision-kept");
 }
 } // namespace
 

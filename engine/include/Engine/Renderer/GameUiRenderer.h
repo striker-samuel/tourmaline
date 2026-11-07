@@ -4,10 +4,10 @@
 #pragma once
 // Separate from WorldRenderer and World2DRenderer: pixel-space game HUD/UI
 // rendering, a single bindless instanced draw, nested CPU-only layout.
-#include <Engine/Renderer/Renderer.h>
-#include <Engine/Renderer/GameUiLayout.h>
 #include <Engine/Asset/spriteset.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/GameUiLayout.h>
+#include <Engine/Renderer/Renderer.h>
 #include <Engine/Rendergraph/rendergraph.h>
 
 #include <array>
@@ -16,138 +16,158 @@
 #include <cstdio>
 #include <optional>
 #include <span>
-#include <string_view>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace tour {
 
 struct UiDrawRect2D {
-	UiRect2D bounds{};
-	glm::vec4 tint{1.0f}; // straight alpha; solid fill when texture is empty
-	smvk::TextureHandle texture{}; // host-owned sampled 2D texture
-	glm::vec2 uvMin{0.0f};
-	glm::vec2 uvMax{1.0f};
-	std::optional<UiRect2D> clip{}; // null: viewport; e.g. layoutItem.clip
-	uint32_t effect = 0; // project custom fragment shader payload, stock ignores
+    UiRect2D bounds{};
+    glm::vec4 tint{1.0f};          // straight alpha; solid fill when texture is empty
+    smvk::TextureHandle texture{}; // host-owned sampled 2D texture
+    glm::vec2 uvMin{0.0f};
+    glm::vec2 uvMax{1.0f};
+    std::optional<UiRect2D> clip{}; // null: viewport; e.g. layoutItem.clip
+    uint32_t effect = 0;            // project custom fragment shader payload, stock ignores
 };
 
 // GPU layout must mirror engine/shaders/gameui.hlsli GameUiRectInstance.
 // Packed to 72 bytes, one texture index PER instance -> one draw for
 // mixed textured/solid rectangles without changing atlas descriptors.
 struct GameUiRectInstance {
-	float origin[2]{};
-	float size[2]{};
-	float uvMin[2]{};
-	float uvMax[2]{};
-	float tint[4]{};
-	float clipMin[2]{};
-	float clipMax[2]{};
-	uint32_t textureIndex = UINT32_MAX; // no texture => solid fill
-	uint32_t pad = 0;
+    float origin[2]{};
+    float size[2]{};
+    float uvMin[2]{};
+    float uvMax[2]{};
+    float tint[4]{};
+    float clipMin[2]{};
+    float clipMax[2]{};
+    uint32_t textureIndex = UINT32_MAX; // no texture => solid fill
+    uint32_t pad = 0;
 };
 static_assert(sizeof(GameUiRectInstance) == 72);
 
 struct GameUiPreparedRect {
-	GameUiRectInstance instance{};
-	smvk::TextureHandle texture{};
+    GameUiRectInstance instance{};
+    smvk::TextureHandle texture{};
 };
 
 // Testable without a GPU: filters invalid/invisible rectangles, retains
 // submission order, leaves texture-index resolution for AppendPass.
 [[nodiscard]] std::vector<GameUiPreparedRect> PrepareGameUiRects(
-	std::span<const UiDrawRect2D> rects, smvk::Extent2D viewport);
+    std::span<const UiDrawRect2D> rects,
+    smvk::Extent2D viewport);
 
 class GameUiRenderer final : public engine::IRenderer {
-public:
-	const char* RendererName() const override { return "GameUI"; }
+  public:
+    const char* RendererName() const override {
+        return "GameUI";
+    }
 
-	// Instance capacity: mirrors the HLSL GAME_UI_MAX_RECTS array bound in
-	// gameui.hlsli (DXC requires an explicit struct-member dimension; the
-	// draw itself is bounded by the recorded instanceCount). DrawRect fails
-	// loudly past this — a game UI never legitimately exceeds 64k rects.
-	static constexpr size_t kMaxRects = 65536;
+    // Instance capacity: mirrors the HLSL GAME_UI_MAX_RECTS array bound in
+    // gameui.hlsli (DXC requires an explicit struct-member dimension; the
+    // draw itself is bounded by the recorded instanceCount). DrawRect fails
+    // loudly past this — a game UI never legitimately exceeds 64k rects.
+    static constexpr size_t kMaxRects = 65536;
 
-	// Draws are appended in painter's order (last is on top). Caller
-	// rebuilds every frame, or may reuse its own retained widget tree.
-	void BeginFrame() { m_rects.clear(); }
-	void Reserve(size_t count) { m_rects.reserve(count); }
-	// Read-only pending submissions for CPU diagnostics and geometry tests.
-	[[nodiscard]] std::span<const UiDrawRect2D> PendingRects() const { return m_rects; }
-	void DrawRect(const UiDrawRect2D& rect) {
-		if (m_rects.size() >= kMaxRects) {
-			if (!m_overflowLogged) {
-				m_overflowLogged = true;
-				std::fprintf(stderr, "[GameUi] rect overflow: >%zu rects "
-					"(the shader table capacity); excess dropped\n", kMaxRects);
-			}
-			return;
-		}
-		m_rects.push_back(rect);
-	}
+    // Draws are appended in painter's order (last is on top). Caller
+    // rebuilds every frame, or may reuse its own retained widget tree.
+    void BeginFrame() {
+        m_rects.clear();
+    }
+    void Reserve(size_t count) {
+        m_rects.reserve(count);
+    }
+    // Read-only pending submissions for CPU diagnostics and geometry tests.
+    [[nodiscard]] std::span<const UiDrawRect2D> PendingRects() const {
+        return m_rects;
+    }
+    void DrawRect(const UiDrawRect2D& rect) {
+        if (m_rects.size() >= kMaxRects) {
+            if (!m_overflowLogged) {
+                m_overflowLogged = true;
+                std::fprintf(stderr,
+                             "[GameUi] rect overflow: >%zu rects "
+                             "(the shader table capacity); excess dropped\n",
+                             kMaxRects);
+            }
+            return;
+        }
+        m_rects.push_back(rect);
+    }
 
-	// Draw an authored sprite region from an already loaded host-owned atlas.
-	// Returns false for an unknown sprite, invalid geometry, or insufficient
-	// rectangle capacity. Trimmed regions draw their visible crop into bounds.
-	[[nodiscard]] bool DrawSprite(const asset::SpriteSet& set,
-		std::string_view name, UiRect2D bounds, smvk::TextureHandle texture,
-		glm::vec4 tint = glm::vec4(1.0f),
-		std::optional<UiRect2D> clip = std::nullopt);
+    // Draw an authored sprite region from an already loaded host-owned atlas.
+    // Returns false for an unknown sprite, invalid geometry, or insufficient
+    // rectangle capacity. Trimmed regions draw their visible crop into bounds.
+    [[nodiscard]] bool DrawSprite(const asset::SpriteSet& set,
+                                  std::string_view name,
+                                  UiRect2D bounds,
+                                  smvk::TextureHandle texture,
+                                  glm::vec4 tint = glm::vec4(1.0f),
+                                  std::optional<UiRect2D> clip = std::nullopt);
 
-	// Split a SpriteSet region into up to nine rectangles with fixed-size
-	// corners and stretched edges/center. Tiny targets proportionally shrink
-	// the destination borders; the source UV borders remain unchanged.
-	// With zero borders this is equivalent to DrawSprite.
-	[[nodiscard]] bool DrawNineSlice(const asset::SpriteSet& set,
-		std::string_view name, UiRect2D bounds, smvk::TextureHandle texture,
-		glm::vec4 tint = glm::vec4(1.0f),
-		std::optional<UiRect2D> clip = std::nullopt);
+    // Split a SpriteSet region into up to nine rectangles with fixed-size
+    // corners and stretched edges/center. Tiny targets proportionally shrink
+    // the destination borders; the source UV borders remain unchanged.
+    // With zero borders this is equivalent to DrawSprite.
+    [[nodiscard]] bool DrawNineSlice(const asset::SpriteSet& set,
+                                     std::string_view name,
+                                     UiRect2D bounds,
+                                     smvk::TextureHandle texture,
+                                     glm::vec4 tint = glm::vec4(1.0f),
+                                     std::optional<UiRect2D> clip = std::nullopt);
 
-	// Called on the render thread. Shaders are packed automatically by
-	// the existing engine shaders build. Textures are owned by the host.
-	// Optional project PS, same GameUI VS/PS linkage as the engine's default.
-	// Configure before the first frame's EnsureShaders.
-	void SetFragmentShaderPath(std::string path) { m_fragmentShaderPath = std::move(path); }
-	// Keep text/pixel sprites sharp; other hosts retain linear sampling.
-	void SetPixelArtSampling(bool nearest) { m_pixelArtSampling = nearest; }
-	[[nodiscard]] bool EnsureShaders(smvk::ResourceManager& ctx);
+    // Called on the render thread. Shaders are packed automatically by
+    // the existing engine shaders build. Textures are owned by the host.
+    // Optional project PS, same GameUI VS/PS linkage as the engine's default.
+    // Configure before the first frame's EnsureShaders.
+    void SetFragmentShaderPath(std::string path) {
+        m_fragmentShaderPath = std::move(path);
+    }
+    // Keep text/pixel sprites sharp; other hosts retain linear sampling.
+    void SetPixelArtSampling(bool nearest) {
+        m_pixelArtSampling = nearest;
+    }
+    [[nodiscard]] bool EnsureShaders(smvk::ResourceManager& ctx);
 
-	// Appends AFTER the scene/world pass to render on top. The host owns
-	// rendergraph execution and texture upload/synchronization. The
-	// frameSlot must be acquired/fenced; only one append per slot/frame.
-	[[nodiscard]] bool AppendPass(
-		smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
-		smvk::LogicalImageViewHandle colorTarget,
-		smvk::Extent2D viewport, uint32_t frameSlot,
-		bool clear = false);
+    // Appends AFTER the scene/world pass to render on top. The host owns
+    // rendergraph execution and texture upload/synchronization. The
+    // frameSlot must be acquired/fenced; only one append per slot/frame.
+    [[nodiscard]] bool AppendPass(smvk::ResourceManager& ctx,
+                                  smvk::RenderGraph& rg,
+                                  smvk::LogicalImageViewHandle colorTarget,
+                                  smvk::Extent2D viewport,
+                                  uint32_t frameSlot,
+                                  bool clear = false);
 
-	// Call before destroying the rendergraph and ResourceManager.
-	void Destroy(smvk::RenderGraph& rg);
+    // Call before destroying the rendergraph and ResourceManager.
+    void Destroy(smvk::RenderGraph& rg);
 
-private:
-	struct Flight {
-		smvk::Holder<smvk::BufferHandle> instances;
-		smvk::LogicalBufferHandle logical{};
-		size_t capacity = 0;
-	};
-	struct Push {
-		uint64_t instances = 0;
-		float viewport[2]{};
-		uint32_t samplerIndex = UINT32_MAX;
-		uint32_t pad = 0;
-	};
-	static_assert(sizeof(Push) == 24);
+  private:
+    struct Flight {
+        smvk::Holder<smvk::BufferHandle> instances;
+        smvk::LogicalBufferHandle logical{};
+        size_t capacity = 0;
+    };
+    struct Push {
+        uint64_t instances = 0;
+        float viewport[2]{};
+        uint32_t samplerIndex = UINT32_MAX;
+        uint32_t pad = 0;
+    };
+    static_assert(sizeof(Push) == 24);
 
-	std::vector<UiDrawRect2D> m_rects;
-	bool m_overflowLogged = false;
-	std::array<Flight, smvk::limits::MaxFramesInFlight> m_flights{};
-	smvk::Holder<smvk::ShaderModuleHandle> m_vs;
-	smvk::Holder<smvk::ShaderModuleHandle> m_fs;
-	smvk::ShaderProgram m_program{};
-	std::string m_fragmentShaderPath = "content/shaders/gameui.frag.hlsl.spv";
-	bool m_pixelArtSampling = false;
-	uint32_t m_sampler = UINT32_MAX;
+    std::vector<UiDrawRect2D> m_rects;
+    bool m_overflowLogged = false;
+    std::array<Flight, smvk::limits::MaxFramesInFlight> m_flights{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_vs;
+    smvk::Holder<smvk::ShaderModuleHandle> m_fs;
+    smvk::ShaderProgram m_program{};
+    std::string m_fragmentShaderPath = "content/shaders/gameui.frag.hlsl.spv";
+    bool m_pixelArtSampling = false;
+    uint32_t m_sampler = UINT32_MAX;
 };
 
 } // namespace tour

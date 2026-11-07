@@ -37,61 +37,54 @@ inline constexpr uint32_t kMaxPageTableEntriesPerLevel = 2048;
 // The GPU decodes AFTER interpolation. Keep in sync with WORLD_FIELD_ENC_*
 // in world_field.hlsli (the numeric values ride the GPU table's meta.y).
 // ---------------------------------------------------------------------------
-enum class WorldFieldEncoding : uint32_t
-{
-	Linear = 0,
-	SqrtUNorm = 1,
-	SignedNormalized = 2,
+enum class WorldFieldEncoding : uint32_t {
+    Linear = 0,
+    SqrtUNorm = 1,
+    SignedNormalized = 2,
 };
 
-enum class WorldFieldUpdateMode : uint32_t
-{
-	StaticStreamed = 0, // cooked/procedural, paged in and never rewritten
-	CpuUpdated = 1, // CPU rewrites bricks over time (reserved, v1 treats as static)
-	GpuGenerated = 2, // compute writes atlas slots directly (reserved)
+enum class WorldFieldUpdateMode : uint32_t {
+    StaticStreamed = 0, // cooked/procedural, paged in and never rewritten
+    CpuUpdated = 1,     // CPU rewrites bricks over time (reserved, v1 treats as static)
+    GpuGenerated = 2,   // compute writes atlas slots directly (reserved)
 };
 
 // ---------------------------------------------------------------------------
 // Brick identity: field id (registration order — the GPU fields[] index)
 // + LOD + SIGNED brick coords on the field's world lattice.
 // ---------------------------------------------------------------------------
-struct WorldBrickKey
-{
-	uint32_t fieldId = 0;
-	uint32_t lod = 0;
-	int32_t x = 0;
-	int32_t y = 0;
-	int32_t z = 0;
+struct WorldBrickKey {
+    uint32_t fieldId = 0;
+    uint32_t lod = 0;
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t z = 0;
 
-	bool operator==(const WorldBrickKey& o) const
-	{
-		return fieldId == o.fieldId && lod == o.lod
-			&& x == o.x && y == o.y && z == o.z;
-	}
+    bool operator==(const WorldBrickKey& o) const {
+        return fieldId == o.fieldId && lod == o.lod && x == o.x && y == o.y && z == o.z;
+    }
 };
 
-struct WorldBrickKeyHash
-{
-	size_t operator()(const WorldBrickKey& k) const noexcept
-	{
-		// FNV-1a over the 20 bytes — cheap, order-independent enough for a
-		// few-thousand-entry residency map.
-		uint32_t h = 2166136261u;
-		const auto mix = [&h](uint32_t v) {
-			h ^= v;
-			h *= 16777619u;
-		};
-		mix(k.fieldId);
-		mix(k.lod);
-		mix(static_cast<uint32_t>(k.x));
-		mix(static_cast<uint32_t>(k.y));
-		mix(static_cast<uint32_t>(k.z));
-		return static_cast<size_t>(h);
-	}
+struct WorldBrickKeyHash {
+    size_t operator()(const WorldBrickKey& k) const noexcept {
+        // FNV-1a over the 20 bytes — cheap, order-independent enough for a
+        // few-thousand-entry residency map.
+        uint32_t h = 2166136261u;
+        const auto mix = [&h](uint32_t v) {
+            h ^= v;
+            h *= 16777619u;
+        };
+        mix(k.fieldId);
+        mix(k.lod);
+        mix(static_cast<uint32_t>(k.x));
+        mix(static_cast<uint32_t>(k.y));
+        mix(static_cast<uint32_t>(k.z));
+        return static_cast<size_t>(h);
+    }
 };
 
 // Sentinel marking a free pool slot (SlotOwner() when unbound).
 inline constexpr uint32_t kFreeSlotFieldId = 0xFFFFFFFFu;
-inline const WorldBrickKey kFreeSlotKey{ kFreeSlotFieldId, 0, 0, 0, 0 };
+inline const WorldBrickKey kFreeSlotKey{kFreeSlotFieldId, 0, 0, 0, 0};
 
 } // namespace engine::worldfields

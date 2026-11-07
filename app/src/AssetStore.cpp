@@ -22,281 +22,261 @@
 namespace app {
 
 AssetStore::AssetStore(ProjectRuntime& runtime, smvk::ResourceManager* ctx)
-	: m_runtime(runtime), m_ctx(ctx)
-{
-	// The DEFAULT cluster source: the engine's real deserialize (the
-	// production lane — pinned by every cooked project launch). Null
-	// ctx refuses loudly; the GPU-less tests override the seam.
-	clusterSource =
-		[this](tour::World& world, const smvk::PakReader& reader,
-			uint32_t sceneIndex, std::string& err) -> tour::Cluster* {
-		if (!m_ctx) {
-			err = "LoadMesh needs a GPU context (the mesh's owning"
-				" scene cluster deserializes + uploads)";
-			return nullptr;
-		}
-		try {
-			return &world.LoadClusterFromPak(*m_ctx, reader, sceneIndex);
-		}
-		catch (const std::exception& e) {
-			err = std::string("the owning cluster failed to load: ")
-				+ e.what();
-			return nullptr;
-		}
-	};
+    : m_runtime(runtime), m_ctx(ctx) {
+    // The DEFAULT cluster source: the engine's real deserialize (the
+    // production lane — pinned by every cooked project launch). Null
+    // ctx refuses loudly; the GPU-less tests override the seam.
+    clusterSource = [this](tour::World& world,
+                           const smvk::PakReader& reader,
+                           uint32_t sceneIndex,
+                           std::string& err) -> tour::Cluster* {
+        if (!m_ctx) {
+            err = "LoadMesh needs a GPU context (the mesh's owning"
+                  " scene cluster deserializes + uploads)";
+            return nullptr;
+        }
+        try {
+            return &world.LoadClusterFromPak(*m_ctx, reader, sceneIndex);
+        } catch (const std::exception& e) {
+            err = std::string("the owning cluster failed to load: ") + e.what();
+            return nullptr;
+        }
+    };
 }
 
-AssetStore::~AssetStore()
-{
-	// Defensive teardown: an owner that skipped ReleaseAll still
-	// must not leak references (the park bridge would keep every
-	// held cluster alive past its world). Order contract: the store
-	// dies BEFORE the world (see the header).
-	ReleaseAll();
+AssetStore::~AssetStore() {
+    // Defensive teardown: an owner that skipped ReleaseAll still
+    // must not leak references (the park bridge would keep every
+    // held cluster alive past its world). Order contract: the store
+    // dies BEFORE the world (see the header).
+    ReleaseAll();
 }
 
 // ---- the found-or-loaded acquire ------------------------------------------
 
 tour::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
-	const std::string& pakName, const std::string& familyPath,
-	const std::vector<smvk::PakMeshPlanMember>& members, bool resident,
-	std::string& err)
-{
-	err.clear();
-	if (members.empty()) {
-		err = "the mesh family '" + familyPath + "' has no cooked"
-			" members (the pak's mesh plan is a version skew -"
-			" recook)";
-		return nullptr;
-	}
-	// (a) A cluster this store already holds (registered OR parked)
-	// against THIS world: the shared-acquire dedup — repeated keys
-	// never re-load, never re-carve GPU ranges.
-	if (tour::Cluster* held = FindHeldWithFamily(world, members)) {
-		TakeRef(world, held, resident);
-		return held;
-	}
-	// (b) ANY world-registered cluster (the apphost may have loaded
-	// the owning scene through ProjectScenes): adopt it — the asset
-	// rides the scene's own cluster, no duplicate carrier.
-	for (const auto& c : world.clusters)
-		if (c && clusterHasFamily(*c, members)) {
-			TakeRef(world, c.get(), resident);
-			return c.get();
-		}
-	// (c) Load through the seam: mesh rows carry no cooked-scene
-	// token, so a deserialize is the only proof a scene carries the
-	// family — walk the pak's scenes in order; on a miss, unload and
-	// try the next (the v1 join boundary: a multi-scene pak whose
-	// scenes SPLIT one .geometry family refuses loudly; the
-	// subset-load follow-up addresses it).
-	std::string perr;
-	std::shared_ptr<smvk::PakBackend> backend =
-		m_runtime.OpenPak(pakName, perr);
-	if (!backend) {
-		err = perr;
-		return nullptr;
-	}
-	std::string lerr;
-	const std::vector<smvk::PakSceneInfo> scenes =
-		smvk::ListPakScenes(backend->Reader(), &lerr);
-	if (scenes.empty()) {
-		err = "the pak '" + pakName + "' carries no scenes: " + lerr;
-		return nullptr;
-	}
-	for (uint32_t si = 0; si < uint32_t(scenes.size()); ++si) {
-		if (!clusterSource) {
-			err = "the AssetStore has no cluster source installed";
-			return nullptr;
-		}
-		tour::Cluster* loaded = clusterSource(world,
-			backend->Reader(), si, err);
-		if (!loaded) {
-			if (err.empty())
-				err = "the cluster source failed (scene "
-					+ std::to_string(si) + ")";
-			return nullptr;
-		}
-		if (clusterHasFamily(*loaded, members)) {
-			// The fresh carrier folds into the world exactly like the
-			// old EnsureFamilyCluster did (World::LoadClusterFromPak's
-			// own resolve parity — a source that registers a cluster
-			// must see it resolved).
-			world.ResolveAndFixup_clusters();
-			TakeRef(world, loaded, resident);
-			return loaded;
-		}
-		// Not this scene's family: drop the cluster again (a
-		// load-time miss — UnloadCluster's own resolve folds nothing
-		// user-visible back in).
-		world.UnloadCluster(*loaded);
-	}
-	err = "no scene in pak '" + pakName + "' carries the mesh family '"
-		+ familyPath + "' (a multi-scene split family - the v1 join"
-		" boundary, see docs/content_as_code.md)";
-	return nullptr;
+                                                const std::string& pakName,
+                                                const std::string& familyPath,
+                                                const std::vector<smvk::PakMeshPlanMember>& members,
+                                                bool resident,
+                                                std::string& err) {
+    err.clear();
+    if (members.empty()) {
+        err = "the mesh family '" + familyPath +
+              "' has no cooked"
+              " members (the pak's mesh plan is a version skew -"
+              " recook)";
+        return nullptr;
+    }
+    // (a) A cluster this store already holds (registered OR parked)
+    // against THIS world: the shared-acquire dedup — repeated keys
+    // never re-load, never re-carve GPU ranges.
+    if (tour::Cluster* held = FindHeldWithFamily(world, members)) {
+        TakeRef(world, held, resident);
+        return held;
+    }
+    // (b) ANY world-registered cluster (the apphost may have loaded
+    // the owning scene through ProjectScenes): adopt it — the asset
+    // rides the scene's own cluster, no duplicate carrier.
+    for (const auto& c : world.clusters)
+        if (c && clusterHasFamily(*c, members)) {
+            TakeRef(world, c.get(), resident);
+            return c.get();
+        }
+    // (c) Load through the seam: mesh rows carry no cooked-scene
+    // token, so a deserialize is the only proof a scene carries the
+    // family — walk the pak's scenes in order; on a miss, unload and
+    // try the next (the v1 join boundary: a multi-scene pak whose
+    // scenes SPLIT one .geometry family refuses loudly; the
+    // subset-load follow-up addresses it).
+    std::string perr;
+    std::shared_ptr<smvk::PakBackend> backend = m_runtime.OpenPak(pakName, perr);
+    if (!backend) {
+        err = perr;
+        return nullptr;
+    }
+    std::string lerr;
+    const std::vector<smvk::PakSceneInfo> scenes = smvk::ListPakScenes(backend->Reader(), &lerr);
+    if (scenes.empty()) {
+        err = "the pak '" + pakName + "' carries no scenes: " + lerr;
+        return nullptr;
+    }
+    for (uint32_t si = 0; si < uint32_t(scenes.size()); ++si) {
+        if (!clusterSource) {
+            err = "the AssetStore has no cluster source installed";
+            return nullptr;
+        }
+        tour::Cluster* loaded = clusterSource(world, backend->Reader(), si, err);
+        if (!loaded) {
+            if (err.empty())
+                err = "the cluster source failed (scene " + std::to_string(si) + ")";
+            return nullptr;
+        }
+        if (clusterHasFamily(*loaded, members)) {
+            // The fresh carrier folds into the world exactly like the
+            // old EnsureFamilyCluster did (World::LoadClusterFromPak's
+            // own resolve parity — a source that registers a cluster
+            // must see it resolved).
+            world.ResolveAndFixup_clusters();
+            TakeRef(world, loaded, resident);
+            return loaded;
+        }
+        // Not this scene's family: drop the cluster again (a
+        // load-time miss — UnloadCluster's own resolve folds nothing
+        // user-visible back in).
+        world.UnloadCluster(*loaded);
+    }
+    err = "no scene in pak '" + pakName + "' carries the mesh family '" + familyPath +
+          "' (a multi-scene split family - the v1 join"
+          " boundary, see docs/content_as_code.md)";
+    return nullptr;
 }
 
 tour::Cluster* AssetStore::AcquireFamilyClusterByPlan(tour::World& world,
-	const smvk::MeshPlanRef& plan, bool resident, std::string& err)
-{
-	err.clear();
-	// The pak by MOUNT INDEX — never a name search.
-	const std::string pakName =
-		m_runtime.ManifestPakName(plan.pakIndex);
-	if (pakName.empty()) {
-		err = "the compiled plan names pak index "
-			+ std::to_string(plan.pakIndex)
-			+ " but the manifest carries fewer paks — a version skew"
-			" (redeploy or rebuild; never a dynamic fallback)";
-		return nullptr;
-	}
-	// The compiled slot validated against the DEPLOYED TOC through
-	// the O(1) slot index: kind + the family-path key. A mismatch is
-	// the per-asset fail-closed contract.
-	std::string perr;
-	std::shared_ptr<smvk::PakPager> pager =
-		m_runtime.OpenPakPager(pakName, perr);
-	if (!pager) {
-		err = perr;
-		return nullptr;
-	}
-	const smvk::PakTocEntry* base =
-		pager->Reader().FindBySlot(plan.baseSlot);
-	if (!base || base->kind != smvk::PakAssetKind::Mesh) {
-		err = "the compiled plan's slot "
-			+ std::to_string(plan.baseSlot) + " in pak '" + pakName
-			+ "' is not a mesh entry — the deployed content's layout"
-			" does not match the compiled plans (redeploy or"
-			" rebuild; never a dynamic fallback)";
-		return nullptr;
-	}
-	const std::string expectedPrefix =
-		std::string(plan.familyPath) + "#";
-	if (base->path.rfind(expectedPrefix, 0) != 0) {
-		err = "the compiled plan's slot "
-			+ std::to_string(plan.baseSlot) + " in pak '" + pakName
-			+ "' carries '" + base->path + "' but the plan keys"
-			" family '" + std::string(plan.familyPath)
-			+ "' — the deployed content's layout does not match the"
-			" compiled plans (redeploy or rebuild; never a dynamic"
-			" fallback)";
-		return nullptr;
-	}
-	// The acquire through the SAME core as the catalog lane (the
-	// held/world searches + the cluster-source walk) — the plan names
-	// the ADDRESS; the ownership machinery is shared, never
-	// duplicated.
-	std::vector<smvk::PakMeshPlanMember> members;
-	members.push_back(smvk::PakMeshPlanMember{ base->path, 0 });
-	return AcquireFamilyCluster(world, pakName, plan.familyPath,
-		members, resident, err);
+                                                      const smvk::MeshPlanRef& plan,
+                                                      bool resident,
+                                                      std::string& err) {
+    err.clear();
+    // The pak by MOUNT INDEX — never a name search.
+    const std::string pakName = m_runtime.ManifestPakName(plan.pakIndex);
+    if (pakName.empty()) {
+        err = "the compiled plan names pak index " + std::to_string(plan.pakIndex) +
+              " but the manifest carries fewer paks — a version skew"
+              " (redeploy or rebuild; never a dynamic fallback)";
+        return nullptr;
+    }
+    // The compiled slot validated against the DEPLOYED TOC through
+    // the O(1) slot index: kind + the family-path key. A mismatch is
+    // the per-asset fail-closed contract.
+    std::string perr;
+    std::shared_ptr<smvk::PakPager> pager = m_runtime.OpenPakPager(pakName, perr);
+    if (!pager) {
+        err = perr;
+        return nullptr;
+    }
+    const smvk::PakTocEntry* base = pager->Reader().FindBySlot(plan.baseSlot);
+    if (!base || base->kind != smvk::PakAssetKind::Mesh) {
+        err = "the compiled plan's slot " + std::to_string(plan.baseSlot) + " in pak '" + pakName +
+              "' is not a mesh entry — the deployed content's layout"
+              " does not match the compiled plans (redeploy or"
+              " rebuild; never a dynamic fallback)";
+        return nullptr;
+    }
+    const std::string expectedPrefix = std::string(plan.familyPath) + "#";
+    if (base->path.rfind(expectedPrefix, 0) != 0) {
+        err = "the compiled plan's slot " + std::to_string(plan.baseSlot) + " in pak '" + pakName +
+              "' carries '" + base->path +
+              "' but the plan keys"
+              " family '" +
+              std::string(plan.familyPath) +
+              "' — the deployed content's layout does not match the"
+              " compiled plans (redeploy or rebuild; never a dynamic"
+              " fallback)";
+        return nullptr;
+    }
+    // The acquire through the SAME core as the catalog lane (the
+    // held/world searches + the cluster-source walk) — the plan names
+    // the ADDRESS; the ownership machinery is shared, never
+    // duplicated.
+    std::vector<smvk::PakMeshPlanMember> members;
+    members.push_back(smvk::PakMeshPlanMember{base->path, 0});
+    return AcquireFamilyCluster(world, pakName, plan.familyPath, members, resident, err);
 }
 
-void AssetStore::ReleaseFamilyCluster(tour::Cluster* cluster)
-{
-	// Pointer IDENTITY only until the ref is confirmed — a cluster
-	// this store does not hold is a no-op, never a dereference.
-	const auto it = m_held.find(cluster);
-	if (it == m_held.end())
-		return;
-	Held& h = it->second;
-	if (h.refs == 0)
-		return; // only the session ref remains (ReleaseAll owns it)
-	if (h.world)
-		h.world->ReleaseCluster(*cluster);
-	if (--h.refs == 0 && !h.resident)
-		m_held.erase(it); // nothing left holding it: the record goes
+void AssetStore::ReleaseFamilyCluster(tour::Cluster* cluster) {
+    // Pointer IDENTITY only until the ref is confirmed — a cluster
+    // this store does not hold is a no-op, never a dereference.
+    const auto it = m_held.find(cluster);
+    if (it == m_held.end())
+        return;
+    Held& h = it->second;
+    if (h.refs == 0)
+        return; // only the session ref remains (ReleaseAll owns it)
+    if (h.world)
+        h.world->ReleaseCluster(*cluster);
+    if (--h.refs == 0 && !h.resident)
+        m_held.erase(it); // nothing left holding it: the record goes
 }
 
-void AssetStore::MakeResident(tour::Cluster* cluster)
-{
-	const auto it = m_held.find(cluster);
-	if (it == m_held.end())
-		return;
-	Held& h = it->second;
-	if (h.resident || !h.world)
-		return;
-	h.resident = true;
-	h.world->RetainCluster(*cluster);
+void AssetStore::MakeResident(tour::Cluster* cluster) {
+    const auto it = m_held.find(cluster);
+    if (it == m_held.end())
+        return;
+    Held& h = it->second;
+    if (h.resident || !h.world)
+        return;
+    h.resident = true;
+    h.world->RetainCluster(*cluster);
 }
 
-void AssetStore::ReleaseAll()
-{
-	for (auto& [cluster, h] : m_held) {
-		if (!h.world)
-			continue;
-		// Every ref the store took: the acquire refs + the session
-		// ref. The LAST one may destroy a parked cluster (the world
-		// does it) — the ledger below is map storage, not cluster
-		// state, so the loop is safe past that point.
-		const uint32_t total = h.refs + (h.resident ? 1 : 0);
-		for (uint32_t i = 0; i < total; ++i)
-			h.world->ReleaseCluster(*cluster);
-	}
-	m_held.clear();
+void AssetStore::ReleaseAll() {
+    for (auto& [cluster, h] : m_held) {
+        if (!h.world)
+            continue;
+        // Every ref the store took: the acquire refs + the session
+        // ref. The LAST one may destroy a parked cluster (the world
+        // does it) — the ledger below is map storage, not cluster
+        // state, so the loop is safe past that point.
+        const uint32_t total = h.refs + (h.resident ? 1 : 0);
+        for (uint32_t i = 0; i < total; ++i)
+            h.world->ReleaseCluster(*cluster);
+    }
+    m_held.clear();
 }
 
 // ---- the join + the searches -----------------------------------------------
 
 bool AssetStore::FamilyMembers(const smvk::PakBackend& backend,
-	const std::string& familyPath,
-	std::vector<smvk::PakMeshPlanMember>& out, std::string& err)
-{
-	// The COOKED MESH PLAN (SMP8): the cook resolved the family ->
-	// member join; the runtime never string-scans the TOC. A missing
-	// plan/family is a version skew - recook, never a silent empty.
-	return backend.Reader().MeshPlanFamily(familyPath, out, err);
+                               const std::string& familyPath,
+                               std::vector<smvk::PakMeshPlanMember>& out,
+                               std::string& err) {
+    // The COOKED MESH PLAN (SMP8): the cook resolved the family ->
+    // member join; the runtime never string-scans the TOC. A missing
+    // plan/family is a version skew - recook, never a silent empty.
+    return backend.Reader().MeshPlanFamily(familyPath, out, err);
 }
 
-std::size_t AssetStore::HeldClusterCount() const
-{
-	return m_held.size();
+std::size_t AssetStore::HeldClusterCount() const {
+    return m_held.size();
 }
 
-bool AssetStore::HoldsCluster(tour::Cluster* cluster) const
-{
-	return m_held.find(cluster) != m_held.end();
+bool AssetStore::HoldsCluster(tour::Cluster* cluster) const {
+    return m_held.find(cluster) != m_held.end();
 }
 
-tour::Cluster* AssetStore::FindHeldWithFamily(tour::World& world,
-	const std::vector<smvk::PakMeshPlanMember>& members) const
-{
-	// A held cluster is refcounted alive (every record implies >= 1
-	// world assetRef) — the dereference is safe by construction. A
-	// record against ANOTHER world is skipped: a cluster lives in one
-	// world at a time (the v1 bridge; the permanent store lifts this).
-	for (const auto& [cluster, h] : m_held)
-		if (h.world == &world && cluster
-			&& clusterHasFamily(*cluster, members))
-			return cluster;
-	return nullptr;
+tour::Cluster* AssetStore::FindHeldWithFamily(
+    tour::World& world,
+    const std::vector<smvk::PakMeshPlanMember>& members) const {
+    // A held cluster is refcounted alive (every record implies >= 1
+    // world assetRef) — the dereference is safe by construction. A
+    // record against ANOTHER world is skipped: a cluster lives in one
+    // world at a time (the v1 bridge; the permanent store lifts this).
+    for (const auto& [cluster, h] : m_held)
+        if (h.world == &world && cluster && clusterHasFamily(*cluster, members))
+            return cluster;
+    return nullptr;
 }
 
 bool AssetStore::clusterHasFamily(tour::Cluster& cluster,
-	const std::vector<smvk::PakMeshPlanMember>& members)
-{
-	for (const smvk::PakMeshPlanMember& m : members)
-		if (cluster.FindMeshByUri(m.tocPath))
-			return true;
-	return false;
+                                  const std::vector<smvk::PakMeshPlanMember>& members) {
+    for (const smvk::PakMeshPlanMember& m : members)
+        if (cluster.FindMeshByUri(m.tocPath))
+            return true;
+    return false;
 }
 
-void AssetStore::TakeRef(tour::World& world, tour::Cluster* cluster,
-	bool resident)
-{
-	const auto [it, inserted] = m_held.try_emplace(cluster,
-		Held{ &world, 0, false });
-	Held& h = it->second;
-	h.world = &world; // a re-acquire against a new world re-homes the record
-	++h.refs;
-	world.RetainCluster(*cluster);
-	// keepResident upgrades only (never downgrades a shared carrier's
-	// residency — the LoadMesh rule): the sticky session ref.
-	if (resident && !h.resident) {
-		h.resident = true;
-		world.RetainCluster(*cluster);
-	}
+void AssetStore::TakeRef(tour::World& world, tour::Cluster* cluster, bool resident) {
+    const auto [it, inserted] = m_held.try_emplace(cluster, Held{&world, 0, false});
+    Held& h = it->second;
+    h.world = &world; // a re-acquire against a new world re-homes the record
+    ++h.refs;
+    world.RetainCluster(*cluster);
+    // keepResident upgrades only (never downgrades a shared carrier's
+    // residency — the LoadMesh rule): the sticky session ref.
+    if (resident && !h.resident) {
+        h.resident = true;
+        world.RetainCluster(*cluster);
+    }
 }
 
 } // namespace app
