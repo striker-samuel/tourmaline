@@ -676,6 +676,53 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
     };
     std::vector<LocalMaps> locals(clusters.size());
 
+    // COOKED STATIC-CULL BVH pre-pass (Cluster::cookedStaticBvh): every
+    // mesh's LOCAL-space AABB by URI (from the retained uploads the blob
+    // writes — the runtime StaticMesh.geometry aabb is a bit-exact copy,
+    // which the adoption-guard hash depends on), the LOD-family map
+    // (uri before '#', the mesh plan's family split) so the tree bakes
+    // FAMILY-UNION bounds like the runtime rebuild, and per-cluster
+    // pool-index -> URI lookup for the scene mesh rows.
+    struct BvhMeshAabb {
+        glm::vec3 mn{0.0f}, mx{0.0f};
+    };
+    std::unordered_map<std::string, BvhMeshAabb> bvhAabbByUri;
+    std::unordered_map<std::string, std::vector<std::string>> bvhFamilyMembers;
+    std::vector<std::unordered_map<uint32_t, std::string>> bvhUriByPoolIndex(clusters.size());
+    {
+        const auto familyOf = [](const std::string& uri) {
+            const size_t hash = uri.find('#');
+            return hash == std::string::npos ? uri : uri.substr(0, hash);
+        };
+        for (size_t bci = 0; bci < clusters.size(); ++bci) {
+            const Cluster& bcluster = *clusters[bci];
+            std::vector<ClusterStaticMeshHandle> bhandles;
+            // constcast: Pool::forEachHandle is non-const (historic).
+            const_cast<Cluster&>(bcluster).staticMeshes.forEachHandle(
+                [&](ClusterStaticMeshHandle h) { bhandles.push_back(h); });
+            for (const auto h : bhandles) {
+                std::string uri = bcluster.GetMeshUri(h).Str();
+                if (uri.empty())
+                    uri = "<cluster-local>#mesh." + std::to_string(h.index());
+                bvhUriByPoolIndex[bci].emplace(h.index(), uri);
+                const StaticMeshUpload* upload = bcluster.GetRetainedUpload(h);
+                const StaticMesh* mesh = const_cast<Cluster&>(bcluster).staticMeshes.get(h);
+                if (!upload && !mesh)
+                    continue; // stale pool entry: the mesh pass below fails loudly
+                BvhMeshAabb a;
+                if (upload) {
+                    a.mn = upload->aabbMin;
+                    a.mx = upload->aabbMax;
+                } else {
+                    a.mn = mesh->geometry.aabbMin;
+                    a.mx = mesh->geometry.aabbMax;
+                }
+                bvhAabbByUri.emplace(uri, a); // first wins: shared URIs are one asset
+                bvhFamilyMembers[familyOf(uri)].push_back(uri);
+            }
+        }
+    }
+
     for (size_t ci = 0; ci < clusters.size(); ++ci) {
         const Cluster& cluster = *clusters[ci];
         LocalMaps& local = locals[ci];
@@ -1710,6 +1757,115 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
                     PutU32(blob, b.sensor ? 1u : 0u);
                 }
             }
+            // STATIC-CULL BVH section (Cluster::cookedStaticBvh): the
+            // frustum-cull tree over this scene's STATIC mesh rows, baked
+            // over LOD-family-union world AABBs. The World ADOPTS it at
+            // resolve time instead of rebuilding when the adoption-guard
+            // hash matches (World::AdoptCookedStaticBvh): the hash folds
+            // the dense parents + local-transform bytes this writer just
+            // emitted plus the static rows' (dense node, base-mesh local
+            // AABB) bytes — exactly what the loaded scene recovers
+            // bit-exactly. ALWAYS written (a zero-prim tree for scenes
+            // without static meshes) so the layout is uniform; pre-section
+            // paks parse through the ordinary rebuild (absent-tolerant
+            // like the v20+ siblings). Framing: u32 payloadLen + payload
+            // (the bvh.h wire format) + u64 stateHash.
+            {
+                std::vector<::tour::Partition> bvhPrims;
+                std::vector<::tour::StaticCullRow> bvhHashRows;
+                std::vector<int32_t> denseParents;
+                std::vector<glm::mat4> denseLocals;
+                denseParents.reserve(nodeCount);
+                denseLocals.reserve(nodeCount);
+                for (uint32_t s = 0; s < scene.hierarchy.size(); ++s) {
+                    if (slotToDense[s] == UINT32_MAX)
+                        continue;
+                    denseParents.push_back(denseLink(exportView.hierarchy[s].parent));
+                    denseLocals.push_back(exportView.transforms[s]);
+                }
+                const auto familyOf = [](const std::string& uri) {
+                    const size_t hash = uri.find('#');
+                    return hash == std::string::npos ? uri : uri.substr(0, hash);
+                };
+                for (const MeshRow& row : scene.tables.meshes) {
+                    if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
+                        continue; // the pair table above already failed loudly on these
+                    if (!tour::scene::IsStaticNode(scene, int(row.node)))
+                        continue;
+                    if (row.node >= scene.globalTransform.size())
+                        return fail("scene mesh row node has no global transform (static bvh)");
+                    const auto uriIt = bvhUriByPoolIndex[ci].find(row.mesh);
+                    if (uriIt == bvhUriByPoolIndex[ci].end())
+                        return fail("scene mesh row references unknown pool mesh (static bvh)");
+                    const std::string& uri = uriIt->second;
+                    // BASE mesh local AABB — the hash's row input (the
+                    // runtime folds the same row's StaticMesh.geometry).
+                    const auto baseIt = bvhAabbByUri.find(uri);
+                    if (baseIt == bvhAabbByUri.end())
+                        return fail("static bvh aabb missing for " + uri);
+                    bvhHashRows.push_back(::tour::StaticCullRow{
+                        slotToDense[row.node], baseIt->second.mn, baseIt->second.mx});
+                    // FAMILY-UNION local bounds (the runtime rebuild's
+                    // lod-chain union; simplified siblings stay inside the
+                    // base hull, the union is belt-and-braces parity).
+                    glm::vec3 lmn(std::numeric_limits<float>::max());
+                    glm::vec3 lmx(-std::numeric_limits<float>::max());
+                    const auto famIt = bvhFamilyMembers.find(familyOf(uri));
+                    if (famIt != bvhFamilyMembers.end()) {
+                        for (const std::string& member : famIt->second) {
+                            const auto aIt = bvhAabbByUri.find(member);
+                            if (aIt == bvhAabbByUri.end())
+                                continue;
+                            lmn = glm::min(lmn, aIt->second.mn);
+                            lmx = glm::max(lmx, aIt->second.mx);
+                        }
+                    }
+                    // World AABB: 8 corners under the node's global
+                    // transform (conservative under rotation/scale).
+                    const glm::mat4& model = scene.globalTransform[row.node];
+                    ::tour::Aabb world = ::tour::Aabb::empty();
+                    const glm::vec3 corners[8] = {
+                        {lmn.x, lmn.y, lmn.z},
+                        {lmn.x, lmn.y, lmx.z},
+                        {lmn.x, lmx.y, lmn.z},
+                        {lmn.x, lmx.y, lmx.z},
+                        {lmx.x, lmn.y, lmn.z},
+                        {lmx.x, lmn.y, lmx.z},
+                        {lmx.x, lmx.y, lmn.z},
+                        {lmx.x, lmx.y, lmx.z},
+                    };
+                    for (const auto& corner : corners)
+                        world.expand(glm::vec3(model * glm::vec4(corner, 1.0f)));
+                    bvhPrims.push_back(
+                        ::tour::Partition{world, world.centroid(), slotToDense[row.node]});
+                }
+                ::tour::BvhTree bvh;
+                const uint32_t bvhN = static_cast<uint32_t>(bvhPrims.size());
+                bvh.primIndices.resize(bvhN);
+                for (uint32_t i = 0; i < bvhN; ++i)
+                    bvh.primIndices[i] = i;
+                bvh.nodes.reserve(size_t(bvhN) * 2);
+                if (bvhN > 0)
+                    ::tour::buildRecursive(bvh, bvhPrims, 0, bvhN, /*maxLeafSize=*/4);
+                bvh.primToNode.resize(bvhN);
+                for (uint32_t slot = 0; slot < bvhN; ++slot)
+                    bvh.primToNode[slot] = bvhPrims[bvh.primIndices[slot]].node;
+                std::vector<uint8_t> bvhBytes;
+                if (!::tour::SerializeBvh(bvh, bvhBytes))
+                    return fail("static bvh serialize failed");
+                const uint64_t stateHash =
+                    ::tour::StaticCullStateHash(denseParents.data(),
+                                                denseLocals.data(),
+                                                nodeCount,
+                                                bvhHashRows.data(),
+                                                static_cast<uint32_t>(bvhHashRows.size()));
+                PutU32(blob, static_cast<uint32_t>(bvhBytes.size()));
+                blob.insert(blob.end(), bvhBytes.begin(), bvhBytes.end());
+                PutU32(blob, nodeCount); // bakedNodeCount (the fold's prefix bound)
+                PutU64(blob, stateHash);
+                if (stats)
+                    stats->staticBvhPrims += bvhN;
+            }
             if (!writer.AddBlob(PakAssetKind::Scene, SceneTocPath(ci, multi), std::move(blob)))
                 return fail("scene blob rejected");
             if (stats)
@@ -1810,7 +1966,8 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
                     std::string& err,
                     smvk::touranim::Skeleton* skeletonOut,
                     bool* hasSkeletonOut,
-                    bool wantNodeNames) {
+                    bool wantNodeNames,
+                    CookedStaticBvhOut* cookedStaticBvhOut) {
     auto fail = [&](const std::string& msg) {
         err = msg;
         return false;
@@ -2450,6 +2607,42 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
                     return fail("bad scene physics body record");
                 b.sensor = sensor != 0;
                 scene.tables.physicsBodies.push_back({node, b});
+            }
+        }
+        // STATIC-CULL BVH section (Cluster::cookedStaticBvh; the writer's
+        // mirror — see the serialize side for the framing): u32 payloadLen
+        // + payload (the Engine/Utils/bvh.h wire format, prim node ids =
+        // THIS scene's dense slots) + u32 bakedNodeCount + u64 stateHash
+        // (the adoption guard). Missing == pre-section pak (the World
+        // rebuilds; absent-tolerant like the v20+ siblings); present must
+        // end the blob exactly. cookedStaticBvhOut == null validates and
+        // skips (listers/tools).
+        if (c.off < c.img.size()) {
+            const uint32_t payloadLen = c.u32();
+            if (!c.ok || payloadLen > c.img.size() - c.off ||
+                c.img.size() - c.off - payloadLen != 12)
+                return fail("bad scene static-bvh section framing");
+            const uint8_t* bvhPayload = c.img.data() + c.off;
+            c.off += payloadLen;
+            const uint32_t bakedNodeCount = c.u32();
+            const uint32_t hashLo = c.u32();
+            const uint32_t hashHi = c.u32();
+            if (!c.ok)
+                return fail("truncated scene static-bvh section");
+            const uint64_t stateHash =
+                (static_cast<uint64_t>(hashHi) << 32) | static_cast<uint64_t>(hashLo);
+            if (cookedStaticBvhOut) {
+                std::string bvhErr;
+                if (!tour::DeserializeBvh(std::span<const uint8_t>(bvhPayload, payloadLen),
+                                          nodeCount,
+                                          cookedStaticBvhOut->tree,
+                                          bvhErr))
+                    return fail("bad scene static-bvh: " + bvhErr);
+                if (bakedNodeCount != nodeCount)
+                    return fail("bad scene static-bvh: baked node count mismatch");
+                cookedStaticBvhOut->stateHash = stateHash;
+                cookedStaticBvhOut->bakedNodeCount = bakedNodeCount;
+                cookedStaticBvhOut->present = true;
             }
         }
         if (c.off != c.img.size())
@@ -3342,6 +3535,7 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
         // The process default (RunPakApp flips it OFF: the runtime render
         // lanes consume zero node names; editors/tools keep it ON).
         const bool wantNodeNames = tour::asset::SceneNodeNamesWanted();
+        CookedStaticBvhOut cookedBvh;
         if (!ParseSceneBlob(reader.Payload(*sceneEntries[sceneIndex]),
                             cluster->scene,
                             sceneName,
@@ -3349,7 +3543,8 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
                             perr,
                             &cluster->skeleton,
                             &cluster->hasSkeleton,
-                            wantNodeNames)) {
+                            wantNodeNames,
+                            &cookedBvh)) {
             // SELF-HEAL (geometry streaming only): ParseSceneBlob hard-
             // fails on an invalid mesh pak id - with streaming on, a
             // DEFERRED sibling sits invalid in meshByPakId. Cooked scenes
@@ -3379,6 +3574,7 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
                 cluster->hasSkeleton = false;
                 sceneName.clear();
                 perr.clear();
+                cookedBvh = CookedStaticBvhOut{}; // the failed parse wrote nothing; be explicit
                 healed = ParseSceneBlob(reader.Payload(*sceneEntries[sceneIndex]),
                                         cluster->scene,
                                         sceneName,
@@ -3386,11 +3582,18 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
                                         perr,
                                         &cluster->skeleton,
                                         &cluster->hasSkeleton,
-                                        wantNodeNames);
+                                        wantNodeNames,
+                                        &cookedBvh);
             }
             if (!healed)
                 return fail(perr);
         }
+        // The cooked static-cull tree (present on new paks; empty +
+        // hash 0 on pre-section paks — the World rebuild stays the
+        // fallback). Consumed by World::AdoptCookedStaticBvh.
+        cluster->cookedStaticBvh = std::move(cookedBvh.tree);
+        cluster->cookedStaticBvhStateHash = cookedBvh.stateHash;
+        cluster->cookedStaticBvhNodeCount = cookedBvh.bakedNodeCount;
         if (!sceneName.empty())
             std::cerr << "DeserializeCluster: scene[" << sceneIndex << "] '" << sceneName << "'\n";
         // The skeleton (the knight's joint table + inverse binds) landed

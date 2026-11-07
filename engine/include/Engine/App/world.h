@@ -1078,6 +1078,16 @@ struct World {
     // there are no static mesh nodes (leaves the tree empty).
     void RebuildStaticBvh();
     void InvalidateStaticBvh();
+    // The resolve-time entry (ResolveAndFixup_clusters calls this in
+    // place of RebuildStaticBvh): tries the COOKED tree first — a pak
+    // whose scene blob carried the static-cull section (Cluster::
+    // cookedStaticBvh) installs it instead of rebuilding, guarded by the
+    // adoption hash (tour::StaticCullStateHash over the loaded scene —
+    // any post-load edit mismatches and rebuilds). Single-contributing-
+    // cluster worlds only; the seed is CONSUMED on any attempt so later
+    // resolves always take the ordinary rebuild.
+    void RefreshStaticBvh();
+    [[nodiscard]] bool AdoptCookedStaticBvh();
     // Lazily rebuilds when invalid; returns the cached static tree.
     const ::tour::BvhTree& EnsureStaticBvh() const;
     // World-space AABB over every mesh instance (union of the

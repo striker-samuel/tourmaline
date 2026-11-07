@@ -62,6 +62,10 @@ struct ClusterSerializeStats {
     // shape riding the node transform itself; no .givolume, no bake
     // artifact).
     uint32_t audioRooms = 0;
+    // Static-cull BVH prims baked into the Scene blob's static-cull
+    // section (one per static mesh row; the World's adoption source —
+    // see Cluster::cookedStaticBvh).
+    uint32_t staticBvhPrims = 0;
 };
 
 // One scene entry of a pak (TOC order = scene index; index 0 is the
@@ -70,6 +74,25 @@ struct PakSceneInfo {
     std::string name;    // glTF scene name (may be empty)
     std::string tocPath; // "<cluster-local>#scene" or "#scene.<index>"
     uint32_t nodes = 0;
+};
+
+// Cooked static-cull BVH out of ParseSceneBlob: the tree (over the scene's
+// static mesh rows, prim ids = scene SLOT ids) + the adoption-guard hash
+// (tour::StaticCullStateHash — the fold the World recomputes over its own
+// scene and compares before adopting; see Engine/Utils/bvh.h). `present`
+// distinguishes "old blob, no section" (adopt nothing) from a zero-prim
+// section (a scene with no static meshes — adopt the empty tree, i.e. no
+// static cull candidates).
+struct CookedStaticBvhOut {
+    tour::BvhTree tree;
+    uint64_t stateHash = 0;
+    // The dense node count the cook's fold covered (the blob's node
+    // count). The runtime folds the SAME PREFIX of its own arrays: the
+    // world may APPEND runtime-owned nodes after the parse (the default
+    // camera, gameplay spawns) which carry no mesh rows and must not
+    // break the match; any change INSIDE the prefix still flips it.
+    uint32_t bakedNodeCount = 0;
+    bool present = false;
 };
 
 // Serializes clusters (scene + meshes + materials + embedded textures)
@@ -205,7 +228,11 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
                     std::string& err,
                     smvk::touranim::Skeleton* skeletonOut = nullptr,
                     bool* hasSkeletonOut = nullptr,
-                    bool wantNodeNames = true);
+                    bool wantNodeNames = true,
+                    // Static-cull BVH section out (optional, the skeleton
+                    // pattern): null = validate-and-skip (listers, tools);
+                    // non-null consumes the section when present.
+                    CookedStaticBvhOut* cookedStaticBvhOut = nullptr);
 
 } // namespace smvk
 

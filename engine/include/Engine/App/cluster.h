@@ -21,6 +21,7 @@
 #include <Engine/Renderer/geometry_upload.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
+#include <Engine/Utils/bvh.h>
 #include <Engine/smvk.h>
 
 namespace tour {
@@ -84,6 +85,22 @@ struct Cluster {
     World* world = nullptr;
     Cluster* sibling = nullptr;
     // linked list for import chain if multiple clusters belong to one input file.
+
+    // COOKED STATIC-CULL BVH (the scene blob's static-cull section,
+    // Engine/Utils/bvh.h): the frustum-cull tree over the scene's static
+    // mesh rows, baked at cook time over LOD-family-union world AABBs.
+    // The World ADOPTS it at resolve time instead of rebuilding
+    // (World::AdoptCookedStaticBvh) when the adoption-guard hash still
+    // matches — the tree is then CONSUMED (moved out), so any later edit
+    // resolves through the ordinary rebuild. Empty on runtime-built
+    // clusters, editor clusters and pre-section paks (the rebuild path
+    // stays the one and only fallback).
+    tour::BvhTree cookedStaticBvh;
+    // The cook-side StaticCullStateHash fold the adoption compares against,
+    // + the dense node count that fold covered (the runtime folds the SAME
+    // PREFIX — the world may append runtime-owned nodes post-parse).
+    uint64_t cookedStaticBvhStateHash = 0;
+    uint32_t cookedStaticBvhNodeCount = 0;
 
     smvk::Pool<StaticMesh, StaticMesh> staticMeshes;
     // smvk::Pool<SkinnedMesh, SkinnedMesh> skinnedMesh;

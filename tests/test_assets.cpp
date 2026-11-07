@@ -50,7 +50,7 @@ namespace {
 int g_failures = 0;
 int g_checks = 0;
 
-void Check(bool cond, const char* name) {
+void Check(bool cond, const std::string& name) {
     ++g_checks;
     if (cond) {
         std::cout << "PASS " << name << "\n";
@@ -2702,6 +2702,54 @@ void TestLightmapChartTable() {
     Check(world.ChartOffsetFor(wiA, 0) == baseA, "lmchart.stable");
 }
 
+// The scene blob's tail pin, post the static-cull BVH section: the
+// section (u32 payloadLen + payload + u64 stateHash - ALWAYS written)
+// trails the physics rows, and its size is framing-derived (a populated
+// tree for scenes with static mesh rows), so the byte pin ends BEFORE it
+// while the section itself is validated exactly: the parsed tree must
+// re-serialize byte-identical inside the framing. Returns false with
+// diag filled on any mismatch.
+bool SceneTailMatchesWithBvhSection(std::span<const uint8_t> p,
+                                    const std::vector<uint8_t>& expect,
+                                    std::string& diag) {
+    Scene probe;
+    std::string nameOut, perr;
+    smvk::CookedStaticBvhOut cooked;
+    if (!smvk::ParseSceneBlob(p, probe, nameOut, nullptr, perr, nullptr, nullptr, true, &cooked) ||
+        !perr.empty() || !cooked.present) {
+        diag = "bvh section missing or unparsable: " + perr;
+        return false;
+    }
+    std::vector<uint8_t> bvhBytes;
+    if (!::tour::SerializeBvh(cooked.tree, bvhBytes)) {
+        diag = "bvh re-serialize failed";
+        return false;
+    }
+    const size_t bvhTotal = 4 + bvhBytes.size() + 12; // len + payload + bakedNodeCount + hash
+    if (p.size() < bvhTotal + expect.size()) {
+        diag = "payload shorter than the pinned tail + bvh section";
+        return false;
+    }
+    const size_t at = p.size() - expect.size() - bvhTotal;
+    for (size_t i = 0; i < expect.size(); ++i)
+        if (p[at + i] != expect[i]) {
+            diag = "pinned section bytes differ at " + std::to_string(i);
+            return false;
+        }
+    const size_t sec = p.size() - bvhTotal;
+    for (size_t i = 0; i < 4; ++i)
+        if (p[sec + i] != uint8_t((bvhBytes.size() >> (8 * i)) & 0xFF)) {
+            diag = "bvh framing length mismatch";
+            return false;
+        }
+    for (size_t i = 0; i < bvhBytes.size(); ++i)
+        if (p[sec + 4 + i] != bvhBytes[i]) {
+            diag = "bvh payload differs from the re-serialized tree";
+            return false;
+        }
+    return true;
+}
+
 void TestClusterSerializeCook() {
     using namespace smvk;
     // GPU-free offline cluster: CPU geometry + minted texture ids only.
@@ -2892,11 +2940,15 @@ void TestClusterSerializeCook() {
             // rowCount — no authored bodies in this scene, uniform
             // zero-row form).
             putU32(0);
-            const size_t at = p.size() - expect.size();
-            bool tailOk = p.size() >= expect.size();
-            for (size_t i = 0; tailOk && i < expect.size(); ++i)
-                tailOk = p[at + i] == expect[i];
-            Check(tailOk, "cook.pak.scene.animrefs-tail");
+            // The static-cull BVH section trails the physics rows (always
+            // written; validated through SceneTailMatchesWithBvhSection —
+            // this scene has one static mesh row, so the section carries a
+            // populated tree).
+            std::string tailDiag;
+            Check(SceneTailMatchesWithBvhSection(p, expect, tailDiag),
+                  "cook.pak.scene.animrefs-tail");
+            if (!tailDiag.empty())
+                std::cout << "  DIAG: " << tailDiag << "\n";
             // (The authored static mark's serialization is covered by the
             // real-pak stamptest flow — the pak cooker stamps + the App
             // honors the marks; the manual light-blob parse above pins
@@ -3651,11 +3703,15 @@ void TestAudioSceneSection() {
                 // The v22 physics-body section trails the triggers
                 // (the uniform zero-row form — no authored bodies).
                 putU32(0);
-                const size_t at = p.size() - expect.size();
-                bool tailOk = p.size() >= expect.size();
-                for (size_t i = 0; tailOk && i < expect.size(); ++i)
-                    tailOk = p[at + i] == expect[i];
-                Check(tailOk, "audio.pak.scene.section-tail");
+                // The static-cull BVH section trails the physics rows
+                // (always written; validated through
+                // SceneTailMatchesWithBvhSection — this scene carries no
+                // static mesh rows, so the section is the empty tree).
+                std::string tailDiag;
+                Check(SceneTailMatchesWithBvhSection(p, expect, tailDiag),
+                      "audio.pak.scene.section-tail");
+                if (!tailDiag.empty())
+                    std::cout << "  DIAG: " << tailDiag << "\n";
                 // The structure parse (ListPakScenes shares
                 // ParseSceneBlob) consumes the populated section.
                 std::string lerr;
@@ -3784,11 +3840,15 @@ void TestAudioRoomSection() {
                 // The v22 physics-body section (u32 rowCount — zero-row
                 // form: this scene carries no authored bodies).
                 putU32(0);
-                const size_t at = p.size() - expect.size();
-                bool tailOk = p.size() >= expect.size();
-                for (size_t i = 0; tailOk && i < expect.size(); ++i)
-                    tailOk = p[at + i] == expect[i];
-                Check(tailOk, "room.pak.scene.section-tail");
+                // The static-cull BVH section trails the physics rows
+                // (always written; validated through
+                // SceneTailMatchesWithBvhSection — no static mesh rows
+                // here, so the section is the empty tree).
+                std::string tailDiag;
+                Check(SceneTailMatchesWithBvhSection(p, expect, tailDiag),
+                      "room.pak.scene.section-tail");
+                if (!tailDiag.empty())
+                    std::cout << "  DIAG: " << tailDiag << "\n";
                 // The structure parse (ListPakScenes shares
                 // ParseSceneBlob) consumes the populated section.
                 std::string lerr;
@@ -3830,6 +3890,152 @@ void TestAudioRoomSection() {
                   {c.get()}, {"Room"}, w, nullptr, &err, nullptr, 0, nullptr, nullptr, 0) &&
                   err.find("retired node slot") != std::string::npos,
               "room.serialize.retired-fails");
+    }
+}
+
+// The static-cull BVH section (Cluster::cookedStaticBvh): the cook bakes
+// the frustum-cull tree over the scene's STATIC mesh rows (LOD-family
+// union bounds under the node's global transform); the reader recovers
+// the tree + the adoption-guard hash. Pins the populated form, the
+// prim/node bookkeeping, the baked bounds, hash sensitivity (an edited
+// local transform flips the fold — the World adoption's whole contract),
+// and the absent-section fallback on the pre-section grammar.
+void TestStaticBvhSection() {
+    using namespace smvk;
+    auto mkCluster = [] {
+        auto c = std::make_unique<Cluster>(nullptr);
+        c->SetOfflineMode(true);
+        const ClusterStaticMeshHandle mh = c->UploadStaticMesh(MakeQuad());
+        c->RegisterMeshUri("models/bvh.gltf#mesh.0", mh);
+        const int root = addNode(c->scene, -1, 0);
+        const int child = addNode(c->scene, root, 1);
+        SetMesh(c->scene, uint32_t(child), mh.index());
+        MarkSubtreeStatic(c->scene, root);
+        recalculateGlobalTransforms(c->scene);
+        return c;
+    };
+    auto cook = [](Cluster& c, std::vector<uint8_t>& img, ClusterSerializeStats& stats) {
+        PakWriter w;
+        std::string err;
+        const bool ok =
+            SerializeClusters({&c}, {"Bvh"}, w, &stats, &err, nullptr, 0, nullptr, nullptr, 0);
+        Check(ok && err.empty(), "bvh.serialize.ok");
+        img = w.Finalize();
+    };
+    auto parse = [](const std::vector<uint8_t>& img,
+                    Scene& scene,
+                    CookedStaticBvhOut& out,
+                    const char* tag) {
+        std::string err;
+        auto reader = PakReader::Open(std::span<const uint8_t>(img), err);
+        Check(reader.has_value(), std::string(tag) + ".open");
+        if (!reader)
+            return false;
+        const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
+        Check(scenes.size() == 1, std::string(tag) + ".scene1");
+        if (scenes.size() != 1)
+            return false;
+        std::string nameOut, perr;
+        const bool ok = ParseSceneBlob(reader->Payload(*scenes[0]),
+                                       scene,
+                                       nameOut,
+                                       nullptr,
+                                       perr,
+                                       nullptr,
+                                       nullptr,
+                                       true,
+                                       &out);
+        Check(ok && perr.empty(), std::string(tag) + ".parse");
+        return ok && perr.empty();
+    };
+    {
+        // (a) The populated form: one static mesh row -> one prim, leaf
+        // root, the quad's world AABB under the identity transform.
+        auto c = mkCluster();
+        std::vector<uint8_t> img;
+        ClusterSerializeStats stats;
+        cook(*c, img, stats);
+        Check(stats.staticBvhPrims == 1, "bvh.serialize.stats-prim");
+        Scene scene;
+        CookedStaticBvhOut cooked;
+        if (parse(img, scene, cooked, "bvh.pak")) {
+            Check(cooked.present, "bvh.parse.present");
+            Check(cooked.tree.primIndices.size() == 1 && cooked.tree.primToNode.size() == 1,
+                  "bvh.parse.prim-count");
+            Check(cooked.tree.primToNode[0] == 1, "bvh.parse.prim-node"); // the row's dense node
+            Check(cooked.tree.nodes.size() == 1 && cooked.tree.nodes[0].isLeaf() &&
+                      cooked.tree.nodes[0].count == 1,
+                  "bvh.parse.root-leaf");
+            const ::tour::Aabb& b = cooked.tree.nodes[0].bounds;
+            Check(b.mn.x == 0.0f && b.mn.y == 0.0f && b.mn.z == 0.0f && b.mx.x == 1.0f &&
+                      b.mx.y == 1.0f && b.mx.z == 0.0f,
+                  "bvh.parse.bounds");
+            Check(cooked.stateHash != 0, "bvh.parse.hash-nonzero");
+            // (c) The pre-section grammar: strip the section's framing
+            // bytes -> the parser treats the payload as an old pak (no
+            // BVH, clean parse) — the World's rebuild fallback.
+            std::vector<uint8_t> treeBytes;
+            Check(::tour::SerializeBvh(cooked.tree, treeBytes), "bvh.reserialize");
+            const size_t sectionTotal = 4 + treeBytes.size() + 12; // len + payload + baked + hash
+            Check(img.size() > sectionTotal, "bvh.strip.size");
+            // The section lives inside the SCENE blob, not the pak image:
+            // re-open, take the scene payload, strip, reparse.
+            std::string err;
+            auto reader = PakReader::Open(std::span<const uint8_t>(img), err);
+            Check(reader.has_value(), "bvh.strip.open");
+            if (reader) {
+                const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
+                Check(scenes.size() == 1, "bvh.strip.scene1");
+                if (scenes.size() == 1) {
+                    const std::span<const uint8_t> p = reader->Payload(*scenes[0]);
+                    Check(p.size() > sectionTotal, "bvh.strip.payload-size");
+                    if (p.size() > sectionTotal) {
+                        std::vector<uint8_t> oldGrammar(p.begin(), p.end() - sectionTotal);
+                        Scene scene2;
+                        CookedStaticBvhOut none;
+                        std::string nameOut, perr;
+                        Check(ParseSceneBlob(std::span<const uint8_t>(oldGrammar),
+                                             scene2,
+                                             nameOut,
+                                             nullptr,
+                                             perr,
+                                             nullptr,
+                                             nullptr,
+                                             true,
+                                             &none) &&
+                                  perr.empty() && !none.present && none.tree.nodes.empty(),
+                              "bvh.absent-tolerated");
+                    }
+                }
+            }
+        }
+    }
+    {
+        // (b) Hash sensitivity: the same scene with ONE edited local
+        // transform folds differently (the adoption guard rejects
+        // post-load edits).
+        auto c = mkCluster();
+        glm::mat4 moved(1.0f);
+        moved[3] = glm::vec4(2.0f, 0.0f, 0.0f, 1.0f); // translate x+2 (column-major)
+        c->scene.localTransform[1] = moved;
+        recalculateGlobalTransforms(c->scene);
+        std::vector<uint8_t> img;
+        ClusterSerializeStats stats;
+        cook(*c, img, stats);
+        Scene scene;
+        CookedStaticBvhOut cooked;
+        if (parse(img, scene, cooked, "bvh.edit.pak")) {
+            Check(cooked.present && cooked.stateHash != 0, "bvh.edit.present");
+            // Recomputed against the ORIGINAL fold: differs.
+            auto c0 = mkCluster();
+            std::vector<uint8_t> img0;
+            ClusterSerializeStats stats0;
+            cook(*c0, img0, stats0);
+            Scene scene0;
+            CookedStaticBvhOut cooked0;
+            if (parse(img0, scene0, cooked0, "bvh.orig.pak"))
+                Check(cooked.stateHash != cooked0.stateHash, "bvh.hash-edit-flips");
+        }
     }
 }
 
@@ -3989,6 +4195,7 @@ int main() {
     run("TestMultiSceneSerialize", TestMultiSceneSerialize);
     run("TestAudioSceneSection", TestAudioSceneSection);
     run("TestAudioRoomSection", TestAudioRoomSection);
+    run("TestStaticBvhSection", TestStaticBvhSection);
     run("TestNodeNameStripping", TestNodeNameStripping);
     run("TestStaticSubtrees", TestStaticSubtrees);
     run("TestMeshlets", TestMeshlets);

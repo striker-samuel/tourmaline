@@ -2011,7 +2011,10 @@ void World::RefreshRuntimeSceneCaches() {
 
     RebuildLodChains();
     RebuildLightmapChartTable();
-    RebuildStaticBvh();
+    // The cooked-tree adoption lane: adopt when a fresh pak cluster
+    // carries the static-cull section and nothing diverged since the
+    // cook, else the ordinary rebuild (see RefreshStaticBvh).
+    RefreshStaticBvh();
     ++gpuSceneTopologyRevision; // authored/runtime topology or binding remap
     dirtyCull = true;
 }
@@ -2720,6 +2723,112 @@ void World::RebuildStaticBvh() {
         staticBvh_.primToNode[slot] = prims[primId].node;
     }
     staticBvhValid_ = true;
+}
+
+void World::RefreshStaticBvh() {
+    if (AdoptCookedStaticBvh())
+        return;
+    RebuildStaticBvh();
+}
+
+bool World::AdoptCookedStaticBvh() {
+    // Failure reporting (one stderr line, failure only): adoption misses
+    // are never silent - the fallback rebuild is correct but the operator
+    // should know the cooked tree went unused.
+    auto whyNot = [&](const char* reason) {
+        std::fprintf(stderr, "[World] cooked static-cull BVH not adopted: %s\n", reason);
+        return false;
+    };
+    if (staticBvhValid_)
+        return false; // already cached this resolve cycle
+    // Single contributing cluster with an UNCONSUMED cooked tree (the
+    // section rides the pak's scene blob; multi-cluster/additive worlds
+    // rebuild - the per-cluster trees do not merge).
+    Cluster* seed = nullptr;
+    for (const MeshLocation& loc : meshLocations) {
+        if (!loc.cluster || !loc.handle.valid())
+            continue;
+        if (seed && loc.cluster != seed)
+            return whyNot("multiple contributing clusters");
+        seed = loc.cluster;
+    }
+    if (!seed)
+        return false;
+    if (seed->cookedStaticBvh.nodes.empty())
+        return whyNot("cluster carries no cooked tree (pre-section pak or consumed)");
+    if (seed->cookedStaticBvhStateHash == 0)
+        return whyNot("cooked tree without a state hash");
+    // The adoption-guard hash (tour::StaticCullStateHash - the SAME fold
+    // the cook baked): dense parents + local-transform bytes + the static
+    // mesh rows' (node, base-mesh AABB) bytes. Everything the baked tree
+    // covers; any post-load edit (transform, reparent, row add/remove,
+    // mesh swap) mismatches. The parents/locals roundtrip through the
+    // blob bit-exactly, so an untouched world matches by construction.
+    // The seed is CONSUMED either way - a mismatched tree can never
+    // become valid again, and a consumed seed keeps later resolves on
+    // the ordinary rebuild path.
+    const uint32_t baked = seed->cookedStaticBvhNodeCount;
+    std::vector<int32_t> parents;
+    parents.reserve(scene.hierarchy.size());
+    for (const Hierarchy& h : scene.hierarchy)
+        parents.push_back(h.parent);
+    // Parent NORMALIZATION: a parent at or beyond the baked prefix is an
+    // APPENDED runtime ancestor (the default-camera spawn wraps the scene
+    // root under itself, identity-transformed - globals unchanged). Fold
+    // those as -1 so the benign wrap matches the cook's root view. A
+    // reparent INSIDE the baked set still flips the fold. (A host that
+    // wraps the scene under a TRANSFORMED appended node shifts globals
+    // without flipping the fold - a documented v1 residual: adoption
+    // would cull against stale bounds. Never silent corruption of the
+    // tree itself; the conservative failure is over-inclusion.)
+    for (int32_t& p : parents)
+        if (p >= int32_t(baked))
+            p = -1;
+    std::vector<::tour::StaticCullRow> rows;
+    rows.reserve(scene.tables.meshes.size());
+    for (const MeshRow& row : scene.tables.meshes) {
+        if (!IsStaticNode(scene, int(row.node)))
+            continue;
+        const StaticMesh* mesh = GetMesh(row.mesh);
+        if (!mesh)
+            continue; // RebuildStaticBvh skips these rows too
+        rows.push_back(
+            ::tour::StaticCullRow{row.node, mesh->geometry.aabbMin, mesh->geometry.aabbMax});
+    }
+    // Fold the COOKED PREFIX only: the world may APPEND runtime-owned
+    // nodes after the parse (the default camera, gameplay spawns) which
+    // carry no mesh rows — they must not break the match. Any change
+    // INSIDE the prefix (transform, reparent, row edit) still flips it.
+    // A world SMALLER than the bake is a structural mismatch: rebuild.
+    if (baked == 0 || scene.hierarchy.size() < baked) {
+        seed->cookedStaticBvh = ::tour::BvhTree{}; // consumed: never valid
+        seed->cookedStaticBvhStateHash = 0;
+        seed->cookedStaticBvhNodeCount = 0;
+        return whyNot("scene shrank below the baked node prefix");
+    }
+    const uint64_t hash = ::tour::StaticCullStateHash(parents.data(),
+                                                      scene.localTransform.data(),
+                                                      baked,
+                                                      rows.data(),
+                                                      static_cast<uint32_t>(rows.size()));
+    if (hash != seed->cookedStaticBvhStateHash) {
+        seed->cookedStaticBvh = ::tour::BvhTree{}; // consumed: never valid again
+        seed->cookedStaticBvhStateHash = 0;
+        seed->cookedStaticBvhNodeCount = 0;
+        return whyNot("state hash mismatch (post-load edit or fold drift)");
+    }
+    if (seed->cookedStaticBvh.primIndices.size() != rows.size())
+        return whyNot("prim count differs from the current static rows");
+    staticBvh_ = std::move(seed->cookedStaticBvh);
+    staticBvhValid_ = true;
+    std::fprintf(stderr,
+                 "[World] adopted the cooked static-cull BVH (%u prims, %zu nodes)\n",
+                 static_cast<uint32_t>(staticBvh_.primIndices.size()),
+                 staticBvh_.nodes.size());
+    seed->cookedStaticBvh = ::tour::BvhTree{}; // consumed either way
+    seed->cookedStaticBvhStateHash = 0;
+    seed->cookedStaticBvhNodeCount = 0;
+    return true;
 }
 
 ::tour::Aabb World::ComputeSceneBounds() const {

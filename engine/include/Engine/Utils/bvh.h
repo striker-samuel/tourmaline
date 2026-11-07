@@ -401,4 +401,197 @@ inline void frustumCullBVH(const BvhTree& tree,
     frustumCullBVH(tree, rootIndex, planes, planeCount, outVisiblePrims);
 }
 
+// ---------------------------------------------------------------------------
+// COOKED-TREE WIRE FORMAT (the scene blob's static-cull section; see
+// cluster_serializer.cpp). Little-endian, byte-identical roundtrip:
+//   u32 primCount, u32 nodeCount,
+//   u32 primIndices[primCount],
+//   u32 primToNode[primCount]        (SCENE SLOT ids, dense == loaded slots),
+//   per node: 6 x f32 (aabb mn/mx), u32 leftFirst, u32 count, u32 right.
+// The reader fails closed on any out-of-range index or non-finite bound.
+// ---------------------------------------------------------------------------
+inline void BvhPut32(std::vector<uint8_t>& out, uint32_t v) {
+    for (unsigned i = 0; i < 4; ++i)
+        out.push_back(static_cast<uint8_t>(v >> (i * 8)));
+}
+inline void BvhPutF(std::vector<uint8_t>& out, float v) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &v, sizeof(bits));
+    BvhPut32(out, bits);
+}
+inline bool SerializeBvh(const BvhTree& tree, std::vector<uint8_t>& out) {
+    if (tree.nodes.size() > UINT32_MAX || tree.primIndices.size() > UINT32_MAX)
+        return false;
+    const uint32_t primCount = static_cast<uint32_t>(tree.primIndices.size());
+    const uint32_t nodeCount = static_cast<uint32_t>(tree.nodes.size());
+    if (tree.primToNode.size() != tree.primIndices.size())
+        return false;
+    BvhPut32(out, primCount);
+    BvhPut32(out, nodeCount);
+    for (uint32_t p : tree.primIndices)
+        BvhPut32(out, p);
+    for (uint32_t n : tree.primToNode)
+        BvhPut32(out, n);
+    for (const BvhNode& n : tree.nodes) {
+        BvhPutF(out, n.bounds.mn.x);
+        BvhPutF(out, n.bounds.mn.y);
+        BvhPutF(out, n.bounds.mn.z);
+        BvhPutF(out, n.bounds.mx.x);
+        BvhPutF(out, n.bounds.mx.y);
+        BvhPutF(out, n.bounds.mx.z);
+        BvhPut32(out, n.leftFirst);
+        BvhPut32(out, n.count);
+        BvhPut32(out, n.right);
+    }
+    return true;
+}
+inline bool DeserializeBvh(std::span<const uint8_t> payload,
+                           uint32_t primToNodeBound,
+                           BvhTree& out,
+                           std::string& err) {
+    out = BvhTree{};
+    if (payload.size() < 8) {
+        err = "bvh section truncated";
+        return false;
+    }
+    size_t off = 0;
+    auto u32 = [&]() -> uint32_t {
+        uint32_t v = 0;
+        for (unsigned i = 0; i < 4; ++i)
+            v |= uint32_t(payload[off + i]) << (i * 8);
+        off += 4;
+        return v;
+    };
+    auto f32 = [&]() -> float {
+        const uint32_t bits = u32();
+        float v = 0.0f;
+        std::memcpy(&v, &bits, sizeof(v));
+        return v;
+    };
+    const uint32_t primCount = u32();
+    const uint32_t nodeCount = u32();
+    // Per node: 6 x f32 (24) + u32 leftFirst + u32 count + u32 right (12)
+    // = 36 bytes.
+    const size_t fixed = 8ull + size_t(primCount) * 8ull + size_t(nodeCount) * 36ull;
+    // Zero-prim zero-node is the LEGITIMATE empty tree (the writer always
+    // emits the section; scenes without static meshes carry {0,0}). Any
+    // other zero/nonzero mix, oversize or byte-count mismatch is corrupt.
+    if (primCount > 64u * 1024u * 1024u || nodeCount > 2u * primCount + 1u ||
+        (nodeCount == 0) != (primCount == 0) || fixed != payload.size()) {
+        err = "bvh section shape invalid (prims=" + std::to_string(primCount) +
+              " nodes=" + std::to_string(nodeCount) + " fixed=" + std::to_string(fixed) +
+              " size=" + std::to_string(payload.size()) + ")";
+        return false;
+    }
+    if (primCount == 0) {
+        if (off != payload.size()) {
+            err = "bvh section trailing bytes";
+            return false;
+        }
+        return true; // the empty tree
+    }
+    out.primIndices.resize(primCount);
+    for (uint32_t i = 0; i < primCount; ++i) {
+        out.primIndices[i] = u32();
+        if (out.primIndices[i] >= primCount) {
+            err = "bvh prim index out of range";
+            return false;
+        }
+    }
+    out.primToNode.resize(primCount);
+    for (uint32_t i = 0; i < primCount; ++i) {
+        out.primToNode[i] = u32();
+        if (out.primToNode[i] >= primToNodeBound) {
+            err = "bvh prim node id out of range";
+            return false;
+        }
+    }
+    out.nodes.resize(nodeCount);
+    for (uint32_t i = 0; i < nodeCount; ++i) {
+        BvhNode& n = out.nodes[i];
+        n.bounds.mn = {f32(), f32(), f32()};
+        n.bounds.mx = {f32(), f32(), f32()};
+        n.leftFirst = u32();
+        n.count = u32();
+        n.right = u32();
+        const bool finiteBounds = std::isfinite(n.bounds.mn.x) && std::isfinite(n.bounds.mn.y) &&
+                                  std::isfinite(n.bounds.mn.z) && std::isfinite(n.bounds.mx.x) &&
+                                  std::isfinite(n.bounds.mx.y) && std::isfinite(n.bounds.mx.z);
+        const bool refsOk = n.isLeaf() ? (uint64_t(n.leftFirst) + n.count <= primCount)
+                                       : (n.leftFirst < nodeCount && n.right < nodeCount);
+        if (!finiteBounds || !refsOk) {
+            err = "bvh node invalid";
+            return false;
+        }
+    }
+    if (off != payload.size()) {
+        err = "bvh section trailing bytes";
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// The ADOPTION GUARD hash: one fold, used IDENTICALLY by the cook (over the
+// dense-remapped source scene) and by the World at resolve time (over the
+// loaded scene) — the bit-exactness contract that makes adopting a cooked
+// tree safe. Covers everything the baked tree depends on:
+//   - node count + every node's parent + LOCAL transform bytes (any
+//     reparent/move/structure edit flips it; locals roundtrip through the
+//     blob bit-exactly, globals do not need to),
+//   - the static mesh-row SET: per row (node id + the mesh's geometry AABB
+//     bytes — the exact bounds the tree bakes).
+// Row combining is order-independent (per-row fnv1a64 added mod 2^64), so
+// the cook's row order need not match the loaded scene's.
+// ---------------------------------------------------------------------------
+struct StaticCullRow {
+    uint32_t node = 0;
+    glm::vec3 aabbMin{0.0f};
+    glm::vec3 aabbMax{0.0f};
+};
+inline uint64_t StaticCullRowFnv(const StaticCullRow& r) {
+    uint64_t h = 14695981039346656037ull;
+    auto fold = [&](const void* p, size_t n) {
+        const uint8_t* b = static_cast<const uint8_t*>(p);
+        for (size_t i = 0; i < n; ++i) {
+            h ^= b[i];
+            h *= 1099511628211ull;
+        }
+    };
+    fold(&r.node, sizeof(r.node));
+    fold(glm::value_ptr(r.aabbMin), sizeof(glm::vec3));
+    fold(glm::value_ptr(r.aabbMax), sizeof(glm::vec3));
+    return h;
+}
+// parents/locals are DENSE-ORDERED (the blob's node order == the loaded
+// scene's slots): the cook folds the same bytes it writes (denseLink'd
+// parents + export-view locals), the World folds its own loaded arrays —
+// identical by construction. Row combining is order-independent (per-row
+// fnv1a64 summed mod 2^64).
+inline uint64_t StaticCullStateHash(const int32_t* parents,
+                                    const glm::mat4* locals,
+                                    uint32_t nodeCount,
+                                    const StaticCullRow* rows,
+                                    uint32_t rowCount) {
+    uint64_t h = 14695981039346656037ull;
+    auto fold = [&](const void* p, size_t n) {
+        const uint8_t* b = static_cast<const uint8_t*>(p);
+        for (size_t i = 0; i < n; ++i) {
+            h ^= b[i];
+            h *= 1099511628211ull;
+        }
+    };
+    fold(&nodeCount, sizeof(nodeCount));
+    for (uint32_t i = 0; i < nodeCount; ++i) {
+        fold(&parents[i], sizeof(int32_t));
+        fold(glm::value_ptr(locals[i]), sizeof(glm::mat4));
+    }
+    fold(&rowCount, sizeof(rowCount));
+    uint64_t rowAcc = 0; // order-independent: sum of per-row hashes
+    for (uint32_t i = 0; i < rowCount; ++i)
+        rowAcc += StaticCullRowFnv(rows[i]);
+    fold(&rowAcc, sizeof(rowAcc));
+    return h;
+}
+
 } // namespace tour
