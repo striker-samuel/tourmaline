@@ -332,7 +332,7 @@ class WorldSynchronizer {
             world_ = &world;
         }
         SyncStats stats{};
-        if (revision_ != world.gpuSceneTopologyRevision || geometryRevision_ != geometryRevision) {
+        if (revision_ != world.gpuSceneTopologyRevision) {
             nodeKeys_.assign(world.scene.hierarchy.size(), {});
             for (size_t i = 0; i < world.clusters.size() && i < world.clusterMergedNodes.size();
                  ++i) {
@@ -405,31 +405,10 @@ class WorldSynchronizer {
                 records.push_back(record);
             }
             stats = registry_.Reconcile(records, db);
-            // Metadata is per shared mesh, not per instance. On streaming
-            // revisions, re-scan unique chains but dirty only changed rows.
-            for (const auto& [source, worldIndex] : meshWorldIndices) {
-                if (worldIndex >= world.lodChains.size())
-                    continue;
-                const auto& chain = world.lodChains[worldIndex].levels;
-                if (chain.empty() || chain.size() > 16)
-                    continue;
-                std::vector<LevelSource> levels;
-                levels.reserve(chain.size());
-                bool complete = true;
-                // Animated vertex positions can leave the static cooked
-                // mesh bounds: until skinning publishes dynamic bounds,
-                // never reject the whole leaf using the bind-pose sphere.
-                if (const StaticMesh* base = world.GetMesh(worldIndex))
-                    complete = !base->skinned;
-                for (uint32_t i = 0; i < chain.size(); ++i) {
-                    const auto& l = chain[i];
-                    complete &= l.boundsKnown;
-                    const uint32_t gfxId =
-                        geometryLookup ? geometryLookup(worldIndex, i) : InvalidIndex;
-                    levels.push_back(LevelSource{l.error, gfxId, l.resident, l.boundsKnown});
-                }
-                (void)registry_.PublishMesh(source, levels, complete, db);
-            }
+            // Retain source-to-world mesh bindings for geometry-only revisions.
+            // They are rebuilt only when topology changes, not for every LOD promotion.
+            meshWorldIndices_ = std::move(meshWorldIndices);
+            PublishGeometry(world, db, geometryLookup);
             const bool meshPublicationChanged = geometryRevision_ != geometryRevision;
             revision_ = world.gpuSceneTopologyRevision;
             geometryRevision_ = geometryRevision;
@@ -439,6 +418,13 @@ class WorldSynchronizer {
                       world.scene.gpuSceneGlobalQueued.end(),
                       uint8_t(0));
             return stats;
+        }
+        // A geometry-only revision updates shared mesh/LOD/submesh rows without
+        // scanning drawItems, rebuilding nodeKeys, or reconciling instances.
+        const bool meshPublicationChanged = geometryRevision_ != geometryRevision;
+        if (meshPublicationChanged) {
+            PublishGeometry(world, db, geometryLookup);
+            geometryRevision_ = geometryRevision;
         }
         // Recalc can append the same node multiple times before a frame.
         auto& dirty = world.scene.gpuSceneGlobalChanges;
@@ -454,7 +440,7 @@ class WorldSynchronizer {
             if (node < world.scene.gpuSceneGlobalQueued.size())
                 world.scene.gpuSceneGlobalQueued[node] = 0;
         dirty.clear();
-        stats.leafPublicationOk = SyncLeaves(db, false);
+        stats.leafPublicationOk = SyncLeaves(db, meshPublicationChanged);
         return stats;
     }
     void Reset(RenderDatabase& db) {
@@ -462,6 +448,7 @@ class WorldSynchronizer {
         registry_.Clear(db);
         (void)registry_.TakeDeltas();
         nodeKeys_.clear();
+        meshWorldIndices_.clear();
         revision_ = ~uint64_t(0);
         geometryRevision_ = ~uint64_t(0);
         world_ = nullptr;
@@ -477,6 +464,34 @@ class WorldSynchronizer {
     }
 
   private:
+    void PublishGeometry(World& world, RenderDatabase& db, const GeometryLookup& geometryLookup) {
+        // The source-to-mesh mapping is refreshed by topology reconciliation.
+        // Geometry revisions must not force another O(instances) scan.
+        for (const auto& [source, worldIndex] : meshWorldIndices_) {
+            if (worldIndex >= world.lodChains.size())
+                continue;
+            const auto& chain = world.lodChains[worldIndex].levels;
+            if (chain.empty() || chain.size() > 16)
+                continue;
+            std::vector<LevelSource> levels;
+            levels.reserve(chain.size());
+            bool complete = true;
+            // Animated vertex positions can leave the static cooked
+            // mesh bounds: until skinning publishes dynamic bounds,
+            // never reject the whole leaf using the bind-pose sphere.
+            if (const StaticMesh* base = world.GetMesh(worldIndex))
+                complete = !base->skinned;
+            for (uint32_t i = 0; i < chain.size(); ++i) {
+                const auto& l = chain[i];
+                complete &= l.boundsKnown;
+                const uint32_t gfxId =
+                    geometryLookup ? geometryLookup(worldIndex, i) : InvalidIndex;
+                levels.push_back(LevelSource{l.error, gfxId, l.resident, l.boundsKnown});
+            }
+            (void)registry_.PublishMesh(source, levels, complete, db);
+        }
+
+    }
     [[nodiscard]] bool SyncLeaves(RenderDatabase& db, bool meshChanged) {
         SceneRegistry::Deltas changes = registry_.TakeDeltas();
         for (auto id : changes.retired)
@@ -493,6 +508,7 @@ class WorldSynchronizer {
     uint64_t revision_ = ~uint64_t(0);
     uint64_t geometryRevision_ = ~uint64_t(0);
     std::vector<SourceKey> nodeKeys_;
+    std::unordered_map<SourceKey, uint32_t, SourceKeyHash> meshWorldIndices_;
     SceneRegistry registry_;
 };
 
