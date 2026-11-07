@@ -125,9 +125,10 @@ class WorldEnvTiles {
         if (count > kEnvTileMaxRecords - 1 || (count && !ids))
             return false;
         for (uint32_t i = 0; i < count; ++i)
-            if (ids[i] == 0 || ids[i] >= recordCount_)
+            if (ids[i] >= recordCount_)
                 return false;
-        farCandidates_.assign(ids, ids + count);
+        if (count) farCandidates_.assign(ids, ids + count);
+        else farCandidates_.clear();
         return true;
     }
     const EnvTileCell* Cells() const {
