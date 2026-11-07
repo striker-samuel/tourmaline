@@ -5299,6 +5299,7 @@ smvk::GpuDirectionalLightDescription WorldRenderer::UpdateLights(
     light.direction[1] = lightDir.y;
     light.direction[2] = lightDir.z;
     light.intensity = env.sunIntensity;
+    light.flags = static_cast<int32_t>(m_sceneLights.directionalMask);
     // EVSM: the index addresses the blurred moments (sampled with a
     // 1-frame lag); FrameUniforms.evsmMode tells shaders which
     // representation the index refers to. Otherwise the depth atlas.
@@ -6905,6 +6906,7 @@ void WorldRenderer::RefreshSceneLights(bool log, bool seedEnvSun) {
             electedSunDir = -emis;
             electedSunColor = L.color;
             electedSunIntensity = L.intensity;
+            m_sceneLights.directionalMask = L.layerMask;
             sunTaken = true;
         } else if (L.type == ::SceneLight::Type::Point) {
             smvk::ForwardPlusLight pl{};
@@ -13654,8 +13656,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 ? 1u
                                 : 0u;
             pc.padEnd_[1] = userData;
+            pc.padEnd_[2] = node < m_world->scene.metadata.size()
+                                ? m_world->scene.metadata[node].lightLayerMask : 0xffffffffu;
             cmd.PushConstants(offsetof(IRenderer::PushConstants, padEnd_),
-                              sizeof(pc.padEnd_[0]) * 2,
+                              sizeof(pc.padEnd_[0]) * 3,
                               &pc.padEnd_[0],
                               smvk::ShaderStage::All);
             const float* modelData = glm::value_ptr(model);
