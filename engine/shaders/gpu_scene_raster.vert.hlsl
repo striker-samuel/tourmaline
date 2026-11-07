@@ -7,6 +7,7 @@
 //
 // Static opaque geometry only: skinning, authored lightmap streams,
 // material instance userdata and motion are still fallback-only.
+#define GFXFILTERED_PASS
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
 #include "gpu_scene.hlsli"
