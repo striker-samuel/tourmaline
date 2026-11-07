@@ -659,9 +659,18 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
         float2(frame.envTileMinX, frame.envTileMinZ)) / 64.0));
     if (all(cellI >= int2(0,0)) &&
         all(cellI < int2(frame.envTileDimX, frame.envTileDimZ))) {
+        const uint2 tile = uint2(cellI);
+        const uint rootWidth = (frame.envTileDimX + 3u) / 4u;
+        const uint rootIndex = (tile.y / 4u) * rootWidth + (tile.x / 4u);
+        const uint page = GPU_PTR(uint)(
+            frame.envTilePageTable + uint64_t(rootIndex) * 4u).Get();
+        // Unresident root pages contain no cell payload and resolve the
+        // base look. An active page holds 16 x 32B EnvTileCells.
+        if (page != 0xffffffffu) {
+        const uint localCell = (tile.y & 3u) * 4u + (tile.x & 3u);
         const EnvTileCell c = GPU_PTR(EnvTileCell)(
             frame.envTileCells +
-            uint64_t(uint(cellI.y) * frame.envTileDimX + uint(cellI.x)) * 32u).Get();
+            (uint64_t(page) * 16u + uint64_t(localCell)) * 32u).Get();
         [loop]
         for (uint i = 0; i < c.candidateCount; ++i) {
             const uint id = GPU_PTR(uint)(
@@ -674,6 +683,7 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
             rec = id;
             w = influence;
             break;
+        }
         }
     }
     const EnvTileRecord r = GPU_PTR(EnvTileRecord)(
