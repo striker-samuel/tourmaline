@@ -756,6 +756,8 @@ int RunPakApp(PakAppConfig cfg) {
                     if (!rendererRaw->InstallCookedEnvironment(
                             envWorld, cooked.gridMin, cooked.dimX, cooked.dimZ,
                             cooked.records.data(), cooked.shapes.data(), count,
+                            cooked.farCandidates.data(),
+                            uint32_t(cooked.farCandidates.size()),
                             std::move(pageReader))) {
                         std::cerr << "[EnvTiles] cooked environment rejected for '"
                                   << envSceneName << "'\n";
