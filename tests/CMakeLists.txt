@@ -810,6 +810,15 @@ set_target_properties(RhiUploadBarrierGpuTests PROPERTIES
 
 add_test(NAME rhi_upload_barriers_gpu_tests COMMAND RhiUploadBarrierGpuTests)
 
+# CPU-only VMA budget-pressure/spill warning state-machine regression.
+add_executable(GpuMemorySpillTests test_gpu_memory_spill.cpp)
+target_include_directories(GpuMemorySpillTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(GpuMemorySpillTests PROPERTIES
+    CXX_STANDARD 20
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_memory_spill_tests COMMAND GpuMemorySpillTests)
+
 add_executable(MemoryTests test_memory.cpp)
 
 target_link_libraries(MemoryTests
