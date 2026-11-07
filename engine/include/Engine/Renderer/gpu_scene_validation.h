@@ -195,6 +195,25 @@ static_assert(sizeof(WorkPrefixPush) == 24);
 static_assert(sizeof(WorkScatterPush) == 48);
 static_assert(offsetof(WorkScatterPush, limits) == 32);
 
+// Three-stage production work scan: 256 candidates per workgroup; group
+// offsets are a much smaller bounded scan, never per-instance serial work.
+struct ParallelWorkBlockPush {
+    uint64_t counts = 0, offsets = 0, sums = 0;
+    uint32_t candidateCount = 0, groupCount = 0;
+};
+struct ParallelWorkGroupPush {
+    uint64_t sums = 0, bases = 0;
+    uint32_t groupCount = 0, reserved = 0;
+};
+struct ParallelWorkAddPush {
+    uint64_t offsets = 0, sums = 0, bases = 0;
+    uint32_t candidateCount = 0, groupCount = 0;
+};
+static_assert(sizeof(ParallelWorkBlockPush) == 32);
+static_assert(sizeof(ParallelWorkGroupPush) == 24);
+static_assert(sizeof(ParallelWorkAddPush) == 32);
+
+
 // CPU oracle: exactly mirrors the GPU's current finest-registered-resident
 // LOD policy and preserves visible-instance/LOD-submesh order. This is not
 // screen-space error LOD selection yet.
@@ -680,6 +699,36 @@ class CandidateValidator {
         return true;
     }
 
+    [[nodiscard]] bool PrepareParallelWorkPrefix(
+        smvk::ResourceManager& ctx,
+        uint32_t flight,
+        ParallelWorkBlockPush& block,
+        ParallelWorkGroupPush& groups,
+        ParallelWorkAddPush& add) {
+        if (flight >= Flights)
+            return false;
+        auto& f = flight_[flight];
+        if (!f.workPrepared || f.workCandidates == 0 || f.workCandidates > 524288u)
+            return false;
+        const uint32_t blockCount = (f.workCandidates + 255u) / 256u;
+        if (blockCount == 0 || blockCount > 4096u ||
+            !Ensure(ctx, f.workBlockSums, f.workBlockSumsSize,
+                    size_t(blockCount) * sizeof(uint32_t), "scene work block sums") ||
+            !Ensure(ctx, f.workBlockBases, f.workBlockBasesSize,
+                    size_t(blockCount) * sizeof(uint32_t), "scene work block bases"))
+            return false;
+        const uint64_t counts = ctx.GetBufferDeviceAddress(f.workCounts);
+        const uint64_t offsets = ctx.GetBufferDeviceAddress(f.workOffsets);
+        const uint64_t sums = ctx.GetBufferDeviceAddress(f.workBlockSums);
+        const uint64_t bases = ctx.GetBufferDeviceAddress(f.workBlockBases);
+        if (!counts || !offsets || !sums || !bases)
+            return false;
+        block = {counts, offsets, sums, f.workCandidates, blockCount};
+        groups = {sums, bases, blockCount, 0};
+        add = {offsets, sums, bases, f.workCandidates, blockCount};
+        return true;
+    }
+
     // Prepare two fully GPU-driven passes: arg generation (one thread)
     // and an indirect compute consumer of the expanded work records.
     // The ResourceManager creates Storage buffers with INDIRECT usage too
@@ -805,6 +854,8 @@ class CandidateValidator {
         std::vector<InstanceCullVerdict> expectedCompact{};
         bool compactPrepared = false;
         smvk::Holder<smvk::BufferHandle> workChoices{}, workCounts{}, workOffsets{}, workOutput{};
+        smvk::Holder<smvk::BufferHandle> workBlockSums{}, workBlockBases{};
+        size_t workBlockSumsSize = 0, workBlockBasesSize = 0;
         size_t workChoicesSize = 0, workCountsSize = 0, workOffsetsSize = 0, workOutputSize = 0;
         std::vector<SceneSubmeshWork> expectedWork{};
         uint32_t workCandidates = 0;
