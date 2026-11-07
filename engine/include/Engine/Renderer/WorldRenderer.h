@@ -95,6 +95,7 @@
 #include <Engine/WorldFields/WorldFieldCodec.h>
 #include <Engine/WorldFields/WorldFieldProvider.h>
 #include <Engine/WorldPartition/WorldEnvTiles.h>
+#include <Engine/WorldPartition/WorldEnvTileProvider.h>
 #include <Engine/WorldPartition/WorldPartition.h>
 
 #include <Engine/App/Element.h>
@@ -4134,6 +4135,8 @@ class WorldRenderer : public IRenderer {
     engine::worldfields::WorldFieldSystem m_worldFields;
     engine::worldfields::WorldFieldProvider m_worldFieldProvider{m_worldFields};
     engine::worldpartition::WorldPartition m_worldPartition;
+    engine::worldpartition::WorldEnvTileProvider m_envTileProvider;
+    uint64_t m_envTileResidentRevision = 0;
     engine::worldpartition::WorldId m_activeMapId = 0;
     double m_mapStreamingRadius = 512.0;
     std::unique_ptr<smvk::ThreadPool> m_worldFieldWorkPool;

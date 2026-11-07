@@ -2254,6 +2254,7 @@ bool WorldRenderer::onAttach() {
     }
     m_worldFieldProvider.SetContext(m_context);
     m_worldPartition.AddProvider(&m_worldFieldProvider);
+    m_worldPartition.AddProvider(&m_envTileProvider);
     // Placement receives the SAME prioritized interest stream and commits
     // its generation passes at the partition publication point. The
     // renderer still owns Vulkan resources and records view-specific
@@ -2847,6 +2848,8 @@ void WorldRenderer::onDetach() {
     m_worldPartition.ClearProviders();
     m_placementStreamProvider.SetCommitCallback({});
     m_worldFieldProvider.SetContext(nullptr);
+    m_envTileProvider.SetSource(nullptr, 0);
+    m_envTileResidentRevision = 0;
     // Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
     m_host.WaitForDeviceIdle();
     if (m_gpuPlacementRuntime && m_gpuPlacementRuntime->Valid())
@@ -9852,6 +9855,7 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
                         smvk::AccessFlags::ShaderRead);
             }
             m_envTilesPublished = true;
+            m_envTileProvider.SetSource(&m_envTiles, m_envTilesDirtyHash);
             // One-time diagnostic (the bake replaced the per-frame pack).
             if (m_envTileZoneCount == UINT32_MAX) {
                 m_envTileZoneCount = m_envTiles.RecordCount();
@@ -10403,7 +10407,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 
         // Placement's optional interest is a separate layer, but shares
         // the partition's priority ordering and commit sequence.
-        engine::worldpartition::StreamingInterest interests[3]{interest, interest, interest};
+        engine::worldpartition::StreamingInterest interests[4]{interest, interest, interest, interest};
         size_t interestCount = 1;
         if (m_activeMapId) {
             interests[interestCount].world = m_activeMapId;
@@ -10434,10 +10438,60 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         } else {
             m_placementStreamProvider.SetFrameSource(false, glm::vec4(0.0f));
         }
+        // Environment volumes share the 64m subcell address space but
+        // are resident only around the requested streaming interests.
+        // The provider commits this frame before FrameUniforms publishes
+        // GPU addresses. Its dense cell-header grid is just an address
+        // table; only resident cells have packed candidate references.
+        if (m_world && m_envTiles.Valid()) {
+            engine::worldpartition::StreamingInterest envInterest = interest;
+            envInterest.world = m_activeMapId;
+            envInterest.radiusMeters = std::max(512.0, m_mapStreamingRadius);
+            envInterest.layerMask =
+                engine::worldpartition::StreamLayerBit(
+                    engine::worldpartition::StreamLayer::Environment);
+            interests[interestCount++] = envInterest;
+        }
         m_worldPartition.SetInterests(interests, interestCount);
         // Residency/LRU clocks require a monotonic simulation frame, not the
         // swapchain's cycling frames-in-flight slot (fb.frameIndex).
         m_worldPartition.UpdateFrame(m_frameCounter);
+        // Publish the provider's resident candidate stream only on a
+        // membership/bake change, not per frame. Cells without residency
+        // intentionally resolve the base environment.
+        if (m_envTilesPublished &&
+            m_envTileProvider.Revision() != m_envTileResidentRevision) {
+            const size_t bytes = m_envTileProvider.CellCount() *
+                sizeof(engine::worldpartition::EnvTileCell);
+            const size_t indexBytes = m_envTileProvider.IndexCount() * sizeof(uint32_t);
+            if (m_envTileCellBytes != bytes ||
+                m_resources.envTileCellsBuffer.empty()) {
+                m_resources.envTileCellsBuffer = m_context->CreateBuffer(
+                    std::max(bytes, size_t(32)), smvk::BufferType_Storage,
+                    "env tile resident cell headers");
+                m_envTileCellBytes = m_resources.envTileCellsBuffer.empty() ? 0 : bytes;
+            }
+            if (m_envTileIndexBytes != indexBytes ||
+                m_resources.envTileIndicesBuffer.empty()) {
+                m_resources.envTileIndicesBuffer = m_context->CreateBuffer(
+                    std::max(indexBytes, size_t(4)), smvk::BufferType_Storage,
+                    "env tile resident candidates");
+                m_envTileIndexBytes = m_resources.envTileIndicesBuffer.empty() ? 0 : indexBytes;
+            }
+            if (!m_resources.envTileCellsBuffer.empty() &&
+                !m_resources.envTileIndicesBuffer.empty()) {
+                m_context->UploadDataToBuffer(m_resources.envTileCellsBuffer,
+                    m_envTileProvider.Cells(), bytes,
+                    smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                    smvk::AccessFlags::ShaderRead);
+                if (indexBytes)
+                    m_context->UploadDataToBuffer(m_resources.envTileIndicesBuffer,
+                        m_envTileProvider.Indices(), indexBytes,
+                        smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                        smvk::AccessFlags::ShaderRead);
+                m_envTileResidentRevision = m_envTileProvider.Revision();
+            }
+        }
     }
     // The renderer owns no environment: the frame's look is built
     // from the WORLD's scene env here, once per frame (the main

@@ -170,8 +170,9 @@ enum class StreamLayer : uint8_t {
     Collision = 4,
     Navigation = 5,
     Placement = 6,
+    Environment = 7,
 };
-inline constexpr uint32_t kStreamLayerCount = 7;
+inline constexpr uint32_t kStreamLayerCount = 8;
 
 inline constexpr uint32_t StreamLayerBit(StreamLayer l) {
     return uint32_t(1) << uint32_t(l);
@@ -233,6 +234,7 @@ struct StreamRequest {
     WorldId world = 0; // shared scheduler must key (world, layer, cell)
     StreamLayer layer = StreamLayer::WorldField;
     WorldCellKey cell{};
+    WorldSubcellKey subcell{}; // optional 64m address for environment requests
     DesiredResidency desired = DesiredResidency::GpuReady;
     float priority = 1.0f;
     uint64_t frameRequested = 0;
