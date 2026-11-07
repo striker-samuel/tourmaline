@@ -2372,6 +2372,9 @@ class WorldRenderer : public IRenderer {
     // stable per-submesh expansion. Still validation-only.
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneWorkModules{};
     std::array<smvk::ShaderProgram, 3> m_gpuSceneWorkPrograms{};
+    // Hierarchical production work prefix (block counts, block bases, add).
+    std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneWorkScanModules{};
+    std::array<smvk::ShaderProgram, 3> m_gpuSceneWorkScanPrograms{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterBuildModule{};
     smvk::ShaderProgram m_gpuSceneRasterBuildProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterVsModule{};
