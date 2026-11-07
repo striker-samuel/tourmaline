@@ -533,6 +533,25 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                     }
                 }
 
+                // SDR display preview, applied downstream of tonemapping and LUT.
+                ImGui::SeparatorText("SDR Display Calibration");
+                ImGui::TextDisabled("sRGB / Rec.709 output; D65 is the neutral reference.");
+                ImGui::TextWrapped("Visual adjustment only: use a colorimeter and an OS "
+                                   "display profile for accurate monitor calibration.");
+                ImGui::Checkbox("Show calibration bars", &m_displayTestPattern);
+                ImGui::SliderFloat("Display brightness trim",
+                                   &m_displayBrightness, 0.5f, 1.5f, "%.2f");
+                ImGui::SliderFloat("White balance red", &m_displayRedGain, 0.5f, 1.5f, "%.3f");
+                ImGui::SliderFloat("White balance green", &m_displayGreenGain, 0.5f, 1.5f, "%.3f");
+                ImGui::SliderFloat("White balance blue", &m_displayBlueGain, 0.5f, 1.5f, "%.3f");
+                if (ImGui::Button("Reset display calibration")) {
+                    m_displayBrightness = 1.0f;
+                    m_displayRedGain = 1.0f;
+                    m_displayGreenGain = 1.0f;
+                    m_displayBlueGain = 1.0f;
+                    m_displayTestPattern = false;
+                }
+
                 // ---- Atmosphere: sky, sun, zones, fog.
                 ImGui::SeparatorText("Atmosphere");
                 {
