@@ -1222,9 +1222,13 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                             for (const auto& row : rows)
                                 if (row.valid)
                                     totalMs += std::max(0.0, row.ms);
-                            // Fixed-height rows; the stacked column uses duration height,
-                            // independent of label positions.
-                            constexpr float rowHeight = 24.0f;
+                            // Reserve two font-scaled text lines per pass so the duration
+                            // never overlaps the next pass label at larger UI font sizes.
+                            // The stacked column still uses duration height independently.
+                            const float lineHeight = ImGui::GetTextLineHeight();
+                            constexpr float lineSpacing = 3.0f;
+                            constexpr float rowPadding = 4.0f;
+                            const float rowHeight = 2.0f * lineHeight + lineSpacing + rowPadding;
                             const float plotHeight = rowHeight * static_cast<float>(rows.size());
                             const float labelWidth = 230.0f;
                             const float plotWidth = 75.0f;
@@ -1276,7 +1280,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                                 else
                                     snprintf(value, sizeof(value), "off");
                                 draw->AddText(ImVec2(labelTop.x + 12.0f,
-                                                     labelTop.y + ImGui::GetTextLineHeight()),
+                                                     labelTop.y + lineHeight + lineSpacing),
                                               ImGui::GetColorU32(ImGuiCol_TextDisabled),
                                               value);
                                 if (rows[i].valid && totalMs > 0.0) {
