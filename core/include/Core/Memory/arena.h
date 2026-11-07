@@ -119,17 +119,4 @@ private:
 	}
 };
 
-// Process-lifetime arena (app boot..shutdown; grows monotonically).
-[[nodiscard]] Arena& AppArena();
-// Per-frame scratch; ResetFrameArena() at frame start.
-[[nodiscard]] Arena& FrameArena();
-void ResetFrameArena();
-
-// GPU-flight-lifetime CPU storage. One independent backing reservation per
-// swapchain flight slot. Reuse only after the corresponding slot fence
-// retires; views must not survive that slot's next successful acquire.
-// Not for independently retired transfers or persistent resources.
-[[nodiscard]] Arena& FlightArena(uint32_t flightIndex);
-void ResetFlightArena(uint32_t flightIndex);
-
 } // namespace smvk

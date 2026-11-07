@@ -40,6 +40,7 @@
 
 namespace tour::mem::config {
 
+
 inline constexpr size_t kKiB = size_t(1) << 10;
 inline constexpr size_t kMiB = size_t(1) << 20;
 inline constexpr size_t kGiB = size_t(1) << 30;

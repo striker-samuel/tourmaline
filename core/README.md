@@ -4,8 +4,8 @@
 location for allocation policy, linear allocators, arenas, arena-backed flat
 arrays, linear vectors and byte-oriented string views.
 
-The CMake `tourmaline_core` interface target exposes these headers to
-`engine` and to engine consumers (including the RHI/smvk code).
+The CMake `tourmaline_core` static library owns the memory implementations
+and exposes the public headers to `engine` and other consumers.
 
 ## Compatibility
 
@@ -28,14 +28,16 @@ to avoid silently breaking consumer ABI.
 - `ArenaFlatArray<T>`: trivially-copyable records only, not a replacement
   for nontrivial resource owners, futures or dynamic strings.
 
-## Remaining implementation split
+## Implementation ownership
 
-The allocator implementations are still compiled from
-`engine/src/Memory/*.cpp`. In particular `arena.cpp` depends on
-`smvk::limits::MaxFramesInFlight`; moving these translation units to a
-standalone static Core library requires extracting the flight-slot policy
-first. The interface target is therefore an **API boundary**, not yet an
-independently linked memory library.
+`tourmaline_core` compiles only reusable `Arena` and `LinearAllocator`
+implementations. Engine owns `AppArena`, `FrameArena`, `FlightArena`,
+`ResetFrameArena`, `ResetFlightArena`, and the application-defined global
+allocator lifecycle/configuration implementation (`memory.cpp`). GPU flight
+slot counts follow the RHI's `MaxFramesInFlight` setting, outside Core.
+This is a first boundary correction; the existing Core `alloc_config.h`
+still contains Tourmaline runtime/renderer sizing constants and needs a
+separate follow-up migration to become a minimal generic configuration.
 
 Hot-path migration must be incremental: replace scratch allocations,
 then profile, compile and test frame reset / async / GPU fence behavior
