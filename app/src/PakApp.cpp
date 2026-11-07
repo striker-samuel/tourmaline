@@ -18,6 +18,7 @@
 #include "RuntimeProcedurals.h"
 #include "ShapeSceneLoader.h"
 #include <imgui.h>
+#include <SDL3/SDL_video.h> // SDL_SetWindowTitle (matching the grass demo)
 
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/cluster_serializer.h> // ListPakScenes (the discovery lane's entry pick)
@@ -30,6 +31,7 @@
 #include <Engine/Renderer/geometry_streamer.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -43,6 +45,44 @@
 
 namespace app {
 namespace {
+
+// App-only window title stats, like the grass demo. Use wall-clock frame
+// deltas (not benchmark/replay simulation deltas) and refresh periodically
+// rather than doing an OS title update on every frame.
+class PakViewerApp final : public tour::App {
+  public:
+    void SetTitleScene(std::string scene) { m_titleScene = std::move(scene); }
+
+  protected:
+    void LateUpdate() override {
+        // Benchmark sessions should not include SDL title updates in timings.
+        if (GetFrameBudget() > 0 || !GetWindow())
+            return;
+        if (!std::isfinite(real_delta_time_s) || real_delta_time_s <= 0.0)
+            return;
+        m_titleAccumSeconds += real_delta_time_s;
+        if (++m_titleFrames < 120)
+            return;
+        const double avgMs = 1000.0 * m_titleAccumSeconds / double(m_titleFrames);
+        const double fps = double(m_titleFrames) / m_titleAccumSeconds;
+        char title[256] = {};
+        std::snprintf(title,
+                      sizeof(title),
+                      "Tourmaline App | %.80s | %.1f FPS | %.2f ms/frame | %s",
+                      m_titleScene.c_str(),
+                      fps,
+                      avgMs,
+                      smvk::ToString(GetPresentMode()));
+        SDL_SetWindowTitle(GetWindow(), title);
+        m_titleFrames = 0;
+        m_titleAccumSeconds = 0.0;
+    }
+
+  private:
+    std::string m_titleScene = "Scene";
+    uint32_t m_titleFrames = 0;
+    double m_titleAccumSeconds = 0.0;
+};
 
 // Pak stem -> scene id (GI bake stem + check-scene gating). The
 // loader has its own copy for the anim fallback; the renderer's id
@@ -450,7 +490,8 @@ int RunPakApp(PakAppConfig cfg) {
     // window/context/swapchain + the frame sync — the default DrawFrame
     // pump drives the element between its acquire and present; the
     // renderer never acquires/presents on its own).
-    tour::App app;
+    PakViewerApp app;
+    app.SetTitleScene(sceneId);
     try {
         // Seed BEFORE service/game elements attach, and record the effective
         // seed even on unpinned launches so it can be replayed later.
