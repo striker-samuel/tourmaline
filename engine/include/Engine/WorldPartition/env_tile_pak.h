@@ -28,8 +28,8 @@ using smvk::envzones::EnvZoneGpu;
 
 inline constexpr uint32_t kManifestMagic = 0x314D5645u; // EVM1
 inline constexpr uint32_t kPageMagic = 0x31505645u; // EVP1
-inline constexpr uint32_t kFormat = 1u;
-inline constexpr size_t kManifestHeaderBytes = 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4;
+inline constexpr uint32_t kFormat = 2u; // far-zone shortlist appended to metadata
+inline constexpr size_t kManifestHeaderBytes = 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 4;
 inline constexpr size_t kRecordBytes = 48 + 144;
 inline constexpr size_t kPageHeaderBytes = 4 + 4 + 8 + 8 + 8 + 4;
 
@@ -101,6 +101,7 @@ struct Manifest {
     uint32_t dimX = 0, dimZ = 0;
     std::vector<EnvTileRecord> records;
     std::vector<EnvZoneGpu> shapes;
+    std::vector<uint32_t> farCandidates; // priority-ordered, includes base sentinel
     std::vector<uint8_t> pagePresent; // one byte per grid cell, 0 or 1
 };
 
@@ -111,11 +112,13 @@ inline bool EncodeManifest(const Manifest& m, std::vector<uint8_t>& out) {
         m.dimZ > engine::worldpartition::kEnvTileMaxDim ||
         !n || n > engine::worldpartition::kEnvTileMaxRecords ||
         m.shapes.size() != n ||
+        m.farCandidates.size() > n ||
         m.pagePresent.size() != size_t(m.dimX) * m.dimZ ||
         !std::isfinite(m.gridMin.x) ||
         !std::isfinite(m.gridMin.y)) return false;
     std::vector<uint8_t> bytes;
-    bytes.reserve(kManifestHeaderBytes + n*kRecordBytes + m.pagePresent.size());
+    bytes.reserve(kManifestHeaderBytes + n*kRecordBytes +
+                  m.farCandidates.size()*4 + m.pagePresent.size());
     Write32(bytes, kManifestMagic);
     Write32(bytes, kFormat);
     Write64(bytes, m.world);
@@ -124,6 +127,7 @@ inline bool EncodeManifest(const Manifest& m, std::vector<uint8_t>& out) {
     Write32(bytes, m.dimX);
     Write32(bytes, m.dimZ);
     Write32(bytes, uint32_t(n));
+    Write32(bytes, uint32_t(m.farCandidates.size()));
     for (size_t i = 0; i < n; ++i) {
         WriteVec(bytes, m.records[i].sky);
         WriteVec(bytes, m.records[i].fog);
@@ -136,6 +140,10 @@ inline bool EncodeManifest(const Manifest& m, std::vector<uint8_t>& out) {
         WriteVec(bytes, s.fog);
         WriteVec(bytes, s.vol);
     }
+    for (uint32_t id : m.farCandidates) {
+        if (id >= n) return false;
+        Write32(bytes, id);
+    }
     for (uint8_t present : m.pagePresent) {
         if (present > 1) return false;
         bytes.push_back(present);
@@ -146,7 +154,7 @@ inline bool EncodeManifest(const Manifest& m, std::vector<uint8_t>& out) {
 
 inline bool DecodeManifest(std::span<const uint8_t> b, WorldId expected, Manifest& out) {
     size_t p = 0;
-    uint32_t magic = 0, version = 0, n = 0, dx = 0, dz = 0;
+    uint32_t magic = 0, version = 0, n = 0, dx = 0, dz = 0, farCount = 0;
     uint64_t world = 0;
     glm::vec2 origin{};
     if (b.size() < kManifestHeaderBytes ||
@@ -156,11 +164,12 @@ inline bool DecodeManifest(std::span<const uint8_t> b, WorldId expected, Manifes
         !ReadFloat(b,p,origin.x) || !ReadFloat(b,p,origin.y) ||
         !Read32(b,p,dx) || !Read32(b,p,dz) ||
         !Read32(b,p,n) || !n || n > engine::worldpartition::kEnvTileMaxRecords ||
+        !Read32(b,p,farCount) || farCount > n ||
         !dx || !dz || dx > engine::worldpartition::kEnvTileMaxDim ||
         dz > engine::worldpartition::kEnvTileMaxDim ||
         !std::isfinite(origin.x) || !std::isfinite(origin.y) ||
         b.size() != kManifestHeaderBytes + size_t(n)*kRecordBytes +
-                    size_t(dx)*dz) return false;
+                    size_t(farCount)*4 + size_t(dx)*dz) return false;
     Manifest next{};
     next.world = world;
     next.gridMin = origin;
@@ -179,6 +188,9 @@ inline bool DecodeManifest(std::span<const uint8_t> b, WorldId expected, Manifes
             !ReadVec(b,p,shape.shape) || !ReadVec(b,p,shape.sky) ||
             !ReadVec(b,p,shape.fog) || !ReadVec(b,p,shape.vol)) return false;
     }
+    next.farCandidates.resize(farCount);
+    for (uint32_t& id : next.farCandidates)
+        if (!Read32(b,p,id) || id >= n) return false;
     next.pagePresent.resize(size_t(dx)*dz);
     for (uint8_t& present : next.pagePresent) {
         present = b[p++];
@@ -238,6 +250,8 @@ inline bool AddEnvTiles(smvk::PakWriter& writer, WorldId world, const WorldEnvTi
     manifest.dimZ = tiles.DimZ();
     manifest.records.assign(tiles.Records(), tiles.Records() + tiles.RecordCount());
     manifest.shapes.assign(tiles.Shapes(), tiles.Shapes() + tiles.RecordCount());
+    manifest.farCandidates.assign(tiles.FarCandidates(),
+                                  tiles.FarCandidates() + tiles.FarCandidateCount());
     manifest.pagePresent.assign(size_t(tiles.DimX())*tiles.DimZ(), uint8_t(0));
     for (size_t i = 0; i < manifest.pagePresent.size(); ++i) {
         const auto& c = tiles.Cells()[i];
