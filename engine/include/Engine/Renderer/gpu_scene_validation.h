@@ -603,9 +603,12 @@ class CandidateValidator {
                                             WorkSelectPush& select,
                                             WorkPrefixPush& prefix,
                                             WorkScatterPush& scatter) {
-        // This pipeline is validation-only and must not silently allocate
-        // hundreds of megabytes at the production million-candidate cap.
-        if (flight >= Flights || candidateCount == 0u || candidateCount > 32768u ||
+        // Validation reserves 16 submesh work records per candidate for
+        // arbitrary reference fixtures. Production supports the current
+        // one-submesh-per-LOD database and reserves one work per candidate.
+        // Admission checks must reject multi-submesh production scenes.
+        if (flight >= Flights || candidateCount == 0u ||
+            candidateCount > (flight_[flight].validate ? 32768u : 524288u) ||
             db.instances.Size() > MaxShaderRowSlots || db.meshes.Size() > MaxShaderRowSlots ||
             db.lods.Size() > MaxShaderRowSlots || db.submeshes.Size() > MaxShaderRowSlots ||
             !addresses.instances || !addresses.meshes || !addresses.lods || !addresses.submeshes)
@@ -613,8 +616,7 @@ class CandidateValidator {
         auto& f = flight_[flight];
         if (!f.compactPrepared || f.candidateCount != candidateCount)
             return false;
-        constexpr uint32_t MaxSubmeshesPerLod = 16u;
-        const size_t maxWork = size_t(candidateCount) * MaxSubmeshesPerLod;
+        const size_t maxWork = size_t(candidateCount) * (f.validate ? 16u : 1u);
         if (!Ensure(ctx,
                     f.workChoices,
                     f.workChoicesSize,
@@ -735,9 +737,10 @@ class CandidateValidator {
             geometryCount > kMaxRasterDrawGroups)
             return false;
         auto& f = flight_[flight];
-        if (!f.workPrepared || f.workCandidates == 0 || f.workCandidates > 32768)
+        if (!f.workPrepared || f.workCandidates == 0 ||
+            f.workCandidates > (f.validate ? 32768u : 524288u))
             return false;
-        const uint64_t maxCommands = uint64_t(f.workCandidates) * 16u;
+        const uint64_t maxCommands = uint64_t(f.workCandidates) * (f.validate ? 16u : 1u);
         if (maxCommands > 524288u || maxCommands > UINT32_MAX)
             return false;
         if (!Ensure(ctx, f.rasterCommands, f.rasterSize,
