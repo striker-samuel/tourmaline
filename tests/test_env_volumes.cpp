@@ -652,6 +652,49 @@ int main() {
               "envtile.async-revision-invalidates-residency");
     }
 
+    // Far tier is a shortlist of exact large/unbounded OBBs, not
+    // far-distance tile rasterization. Tiny interiors are never added.
+    {
+        ::Scene scene;
+        const uint32_t large = MakeZone(scene, glm::vec3(400, 20, 400));
+        const uint32_t small = MakeZone(scene, glm::vec3(4, 4, 4));
+        (void)large; (void)small;
+        engine::worldpartition::WorldEnvTiles baked;
+        Check(baked.Build(scene, glm::vec2(-512), 16, 16, -50, 50),
+              "envtile.far-build");
+        Check(baked.FarCandidateCount()==2,
+              "envtile.far-large-plus-base-only");
+        Check(baked.FarCandidateCount()>=2 &&
+              baked.FarCandidates()[0]!=0 &&
+              baked.FarCandidates()[1]==0,
+              "envtile.far-preserves-priority-order");
+        tour::envcook::Manifest manifest{};
+        manifest.world = 55;
+        manifest.gridMin = baked.GridMin();
+        manifest.dimX = baked.DimX();
+        manifest.dimZ = baked.DimZ();
+        manifest.records.assign(baked.Records(), baked.Records()+baked.RecordCount());
+        manifest.shapes.assign(baked.Shapes(), baked.Shapes()+baked.RecordCount());
+        manifest.farCandidates.assign(baked.FarCandidates(),
+                                      baked.FarCandidates()+baked.FarCandidateCount());
+        manifest.pagePresent.assign(size_t(manifest.dimX)*manifest.dimZ,0);
+        std::vector<uint8_t> bytes;
+        Check(tour::envcook::EncodeManifest(manifest,bytes),
+              "envtile.far-manifest-encode");
+        tour::envcook::Manifest decoded{};
+        Check(tour::envcook::DecodeManifest(bytes,55,decoded) &&
+              decoded.farCandidates==manifest.farCandidates,
+              "envtile.far-manifest-roundtrip");
+        engine::worldpartition::WorldEnvTiles loaded;
+        Check(loaded.LoadCooked(decoded.gridMin,decoded.dimX,decoded.dimZ,
+                               decoded.records.data(),decoded.shapes.data(),
+                               uint32_t(decoded.records.size())) &&
+              loaded.SetCookedFarCandidates(decoded.farCandidates.data(),
+                                            uint32_t(decoded.farCandidates.size())) &&
+              loaded.FarCandidateCount()==2,
+              "envtile.far-cooked-restored");
+    }
+
     // Persistent baked pages: stable little-endian manifest and
     // independently decodable world-scoped 64m pages.
     {
