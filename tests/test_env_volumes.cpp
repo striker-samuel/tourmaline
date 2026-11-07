@@ -365,35 +365,45 @@ int main() {
             Check(t.At(glm::vec3(32, 30, 32)).record == b, "envtile.stack-inside-B");
         }
 
-        // THE REJECT: four records in one column (base 10 m, A/B 4 m
-        // each, C 22 m) — not representable; the bake keeps the LARGEST
-        // vertical mass (C) everywhere in the column, loudly.
+        // Four vertical intervals remain distinguishable: there is no
+        // three-slot approximation or largest-mass collapse.
         {
             ::Scene s;
-            (void)makeTileZone(
-                s, glm::vec3(32, 2, 32), glm::vec3(32, 12, 32), glm::vec3(1, 0, 0), 5.0f);
-            (void)makeTileZone(
-                s, glm::vec3(32, 2, 32), glm::vec3(32, 16, 32), glm::vec3(0, 1, 0), 6.0f);
-            (void)makeTileZone(
-                s, glm::vec3(32, 11, 32), glm::vec3(32, 29, 32), glm::vec3(0, 0, 1), 7.0f);
-            WorldEnvTiles t;
-            Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f), "envtile.reject-build");
-            const uint32_t c = recOf(t, glm::vec3(0, 0, 1));
-            Check(c != 0xFFFFFFFFu, "envtile.reject-record-C");
-            // Every probe returns a VALID record with weight > 0 — the
-            // reject is honest (the dominant look), never garbage.
-            const uint32_t count = t.RecordCount();
-            const float probes[5] = {2.0f, 12.0f, 16.0f, 29.0f, 38.0f};
-            bool allValid = true, allDominant = true;
-            for (float y : probes) {
-                const WorldEnvTiles::Lookup l = t.At(glm::vec3(32, y, 32));
-                if (!l.valid || l.record >= count || !(l.weight > 0.0f))
-                    allValid = false;
-                if (l.record != c)
-                    allDominant = false;
-            }
-            Check(allValid, "envtile.reject-probes-valid (no garbage)");
-            Check(allDominant, "envtile.reject-largest-mass-kept (the explicit reject)");
+            (void)makeTileZone(s, glm::vec3(32,2,32), glm::vec3(32,12,32),
+                glm::vec3(1,0,0), 5.0f);
+            (void)makeTileZone(s, glm::vec3(32,2,32), glm::vec3(32,16,32),
+                glm::vec3(0,1,0), 6.0f);
+            (void)makeTileZone(s, glm::vec3(32,11,32), glm::vec3(32,29,32),
+                glm::vec3(0,0,1), 7.0f);
+            WorldEnvTiles tiles;
+            Check(tiles.Build(s, glm::vec2(0), 1, 1, 0, 40), "envtile.stack4-build");
+            Check(tiles.At(glm::vec3(32,2,32)).record == 0, "envtile.stack4-base");
+            Check(tiles.At(glm::vec3(32,12,32)).record ==
+                recOf(tiles,glm::vec3(1,0,0)), "envtile.stack4-first");
+            Check(tiles.At(glm::vec3(32,16,32)).record ==
+                recOf(tiles,glm::vec3(0,1,0)), "envtile.stack4-second");
+            Check(tiles.At(glm::vec3(32,29,32)).record ==
+                recOf(tiles,glm::vec3(0,0,1)), "envtile.stack4-third");
+        }
+        // A 6m interior within a 64m cell must not be lost by a missed
+        // center sample, nor smeared across the tile footprint.
+        {
+            ::Scene s;
+            const uint32_t node = makeTileZone(s, glm::vec3(3,3,3),
+                glm::vec3(8,10,8), glm::vec3(1,0,0), 5.0f);
+            MutateEnvVolume(s,node,[](EnvVolume& v) {
+                v.blendRadius = 4.0f;
+                v.blendWeight = 0.8f;
+            });
+            WorldEnvTiles tiles;
+            Check(tiles.Build(s,glm::vec2(0),1,1,0,30),"envtile.subtile-build");
+            const uint32_t room = recOf(tiles,glm::vec3(1,0,0));
+            Check(tiles.At(glm::vec3(8,10,8)).record == room,
+                "envtile.subtile-interior");
+            Check(tiles.At(glm::vec3(56,10,56)).record == 0,
+                "envtile.subtile-no-bleed");
+            Check(std::abs(tiles.At(glm::vec3(8,15,8)).weight - 0.4f)<1e-5f,
+                "envtile.subtile-continuous-falloff");
         }
 
         // Preserved shapes: no-split outside every zone + the underwater
