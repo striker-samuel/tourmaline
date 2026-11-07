@@ -176,22 +176,17 @@ class SceneTileProvider final : public IWorldStreamProvider {
                 continue;
             candidates.push_back({key, policy.first, policy.second});
         }
-        std::stable_sort(
-            candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
-                if (a.priority != b.priority)
-                    return a.priority > b.priority;
+        SelectStreamRequests(candidates, maxNewRequestsPerFrame_,
+            [](const Candidate& a, const Candidate& b) {
+                if (a.priority != b.priority) return a.priority > b.priority;
                 return SceneTileKeyLess{}(a.tile, b.tile);
             });
-        size_t issued = 0;
         for (const auto& candidate : candidates) {
-            if (issued >= maxNewRequestsPerFrame_)
-                break;
             const auto it = manifest_.find(candidate.tile);
             if (it == manifest_.end())
                 continue;
             const auto ticket = tickets_.Issue(candidate.tile);
             if (!ticket) break; // exhausted ticket IDs, fail closed
-            ++issued;
             request_(it->second, candidate.desired, *ticket);
         }
     }
