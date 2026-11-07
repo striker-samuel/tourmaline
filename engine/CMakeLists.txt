@@ -35,6 +35,9 @@ file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
 
 add_library(engine STATIC ${ENGINE_SRC})
 
+# Engine and RHI consume the same Core/Memory API.
+target_link_libraries(engine PUBLIC tourmaline_core)
+
 target_include_directories(engine
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
