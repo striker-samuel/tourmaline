@@ -158,15 +158,14 @@ public:
         for (size_t i = 0; i < desired_.size(); ++i)
             if (desired_[i] && !resident_.count(i) && tickets_.CanIssue(i, frame))
                 missing.push_back(i);
-        std::stable_sort(missing.begin(), missing.end(), [&](size_t a, size_t b) {
-            if (priority_[a] != priority_[b]) return priority_[a] > priority_[b];
-            return a < b;
-        });
         const size_t remaining = resident_.size() + tickets_.PendingCount() >= maxResidentCells_
             ? 0 : maxResidentCells_ - resident_.size() - tickets_.PendingCount();
-        const size_t toIssue = std::min({maxNewRequestsPerFrame_, remaining, missing.size()});
-        for (size_t k = 0; k < toIssue; ++k) {
-            const size_t i = missing[k];
+        SelectStreamRequests(missing, std::min(maxNewRequestsPerFrame_, remaining),
+            [&](size_t a, size_t b) {
+                if (priority_[a] != priority_[b]) return priority_[a] > priority_[b];
+                return a < b;
+            });
+        for (size_t i : missing) {
             const uint32_t ix = uint32_t(i % source_->DimX());
             const uint32_t iz = uint32_t(i / source_->DimX());
             const WorldSubcellKey subcell = Key(ix, iz);
