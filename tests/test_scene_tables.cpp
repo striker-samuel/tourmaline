@@ -61,6 +61,14 @@ Scene MakeScene(uint32_t count) {
 
 int main() {
     {
+        const SceneRenderSettings defaults{};
+        Check(!defaults.autoExposure, "render-settings.auto-exposure-default-off");
+        Scene s;
+        Check(!s.renderSettings.autoExposure, "scene.auto-exposure-default-off");
+        Check(!s.defaultRenderSettings.autoExposure,
+              "scene.default-render-settings.auto-exposure-default-off");
+    }
+    {
         Scene s;
         const int root = addNode(s, -1, 0);
         const int child = addNode(s, root, 1);
