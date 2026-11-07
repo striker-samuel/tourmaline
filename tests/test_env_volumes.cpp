@@ -693,6 +693,78 @@ int main() {
               "envtile.pak-page-invalid-record-fail-atomic");
     }
 
+    // Sparse GPU page representation: only a resident 4x4 root page
+    // allocates physical 32B cell headers; root-page misses are base.
+    {
+        using namespace engine::worldpartition;
+        ::Scene scene;
+        WorldEnvTiles baked;
+        Check(baked.Build(scene, glm::vec2(0), 8, 1, 0, 40),
+              "envtile.sparse-source-build");
+        WorldEnvTileProvider provider;
+        provider.SetSource(&baked, 7);
+        WorldPartition partition;
+        partition.AddProvider(&provider);
+        StreamingInterest interest{};
+        interest.position=glm::dvec3(32,0,32);
+        interest.radiusMeters=0;
+        interest.layerMask=StreamLayerBit(StreamLayer::Environment);
+        partition.SetInterests(&interest,1);
+        partition.UpdateFrame(1);
+        Check(provider.PageTableCount()==2 &&
+              provider.PageTable()[0]==0 &&
+              provider.PageTable()[1]==UINT32_MAX &&
+              provider.PackedCellCount()==16,
+              "envtile.sparse-one-root-page");
+        interest.position.x=480;
+        partition.SetInterests(&interest,1);
+        partition.UpdateFrame(2);
+        Check(provider.PageTable()[0]==UINT32_MAX &&
+              provider.PageTable()[1]==0 &&
+              provider.PackedCellCount()==16,
+              "envtile.sparse-root-page-relocation");
+        partition.SetInterests(nullptr,0);
+        partition.UpdateFrame(3);
+        Check(provider.PackedCellCount()==0 &&
+              provider.PageTable()[0]==UINT32_MAX &&
+              provider.PageTable()[1]==UINT32_MAX,
+              "envtile.sparse-no-resident-all-base");
+    }
+
+    // Full SMP8 cook/read path (the cooker uses the same helper):
+    // immutable OBB manifest + independently seekable candidate page.
+    {
+        ::Scene scene;
+        const uint32_t node = MakeZone(scene, glm::vec3(3,3,3));
+        scene.globalTransform[node] = glm::translate(glm::mat4(1),
+            glm::vec3(8,10,8))*glm::scale(glm::mat4(1),glm::vec3(3,3,3));
+        engine::worldpartition::WorldEnvTiles baked;
+        Check(baked.Build(scene,glm::vec2(0),1,1,0,40),
+              "envtile.smp8-source");
+        smvk::PakWriter writer;
+        constexpr auto world=uint64_t(123);
+        Check(tour::envcook::AddEnvTiles(writer,world,baked),
+              "envtile.smp8-cook-pages");
+        const std::vector<uint8_t> image=writer.Finalize();
+        std::string error;
+        auto reader=smvk::PakReader::Open(image,error);
+        Check(reader.has_value(),"envtile.smp8-reader-open");
+        if (reader) {
+            tour::envcook::Manifest manifest;
+            Check(tour::envcook::ReadEnvManifest(*reader,world,manifest) &&
+                  manifest.records.size()==2 && manifest.pagePresent.size()==1 &&
+                  manifest.pagePresent[0]==1,
+                  "envtile.smp8-cooked-manifest");
+            std::vector<uint32_t> ids;
+            Check(tour::envcook::ReadEnvPage(*reader,world,{0,0},
+                  uint32_t(manifest.records.size()),true,ids) &&
+                  ids.size()==2,"envtile.smp8-page-roundtrip");
+            Check(!tour::envcook::ReadEnvPage(*reader,world,{1,0},
+                  uint32_t(manifest.records.size()),true,ids),
+                  "envtile.smp8-missing-required-page-fails");
+        }
+    }
+
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }
