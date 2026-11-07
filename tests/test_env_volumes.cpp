@@ -666,12 +666,14 @@ int main() {
         manifest.dimZ = baked.DimZ();
         manifest.records.assign(baked.Records(),baked.Records()+baked.RecordCount());
         manifest.shapes.assign(baked.Shapes(),baked.Shapes()+baked.RecordCount());
+        manifest.pagePresent.assign(size_t(manifest.dimX)*manifest.dimZ, uint8_t(0));
         std::vector<uint8_t> bytes;
         Check(EncodeManifest(manifest,bytes),"envtile.pak-manifest-encode");
         Manifest decoded{};
         Check(DecodeManifest(bytes,12,decoded) && decoded.world==12 &&
               decoded.records.size()==baked.RecordCount() &&
               decoded.shapes.size()==baked.RecordCount() &&
+              decoded.pagePresent.size()==4 &&
               decoded.dimX==2 && decoded.dimZ==2,"envtile.pak-manifest-roundtrip");
         Check(!DecodeManifest(bytes,13,decoded),"envtile.pak-manifest-wrong-world");
         bytes.pop_back();
