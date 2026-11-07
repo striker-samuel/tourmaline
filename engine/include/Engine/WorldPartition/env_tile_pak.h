@@ -100,6 +100,7 @@ struct Manifest {
     uint32_t dimX = 0, dimZ = 0;
     std::vector<EnvTileRecord> records;
     std::vector<EnvZoneGpu> shapes;
+    std::vector<uint8_t> pagePresent; // one byte per grid cell, 0 or 1
 };
 
 inline bool EncodeManifest(const Manifest& m, std::vector<uint8_t>& out) {
@@ -108,10 +109,12 @@ inline bool EncodeManifest(const Manifest& m, std::vector<uint8_t>& out) {
         m.dimX > engine::worldpartition::kEnvTileMaxDim ||
         m.dimZ > engine::worldpartition::kEnvTileMaxDim ||
         !n || n > engine::worldpartition::kEnvTileMaxRecords ||
-        m.shapes.size() != n || !std::isfinite(m.gridMin.x) ||
+        m.shapes.size() != n ||
+        m.pagePresent.size() != size_t(m.dimX) * m.dimZ ||
+        !std::isfinite(m.gridMin.x) ||
         !std::isfinite(m.gridMin.y)) return false;
     std::vector<uint8_t> bytes;
-    bytes.reserve(kManifestHeaderBytes + n*kRecordBytes);
+    bytes.reserve(kManifestHeaderBytes + n*kRecordBytes + m.pagePresent.size());
     Write32(bytes, kManifestMagic);
     Write32(bytes, kFormat);
     Write64(bytes, m.world);
@@ -132,6 +135,10 @@ inline bool EncodeManifest(const Manifest& m, std::vector<uint8_t>& out) {
         WriteVec(bytes, s.fog);
         WriteVec(bytes, s.vol);
     }
+    for (uint8_t present : m.pagePresent) {
+        if (present > 1) return false;
+        bytes.push_back(present);
+    }
     out = std::move(bytes);
     return true;
 }
@@ -151,7 +158,8 @@ inline bool DecodeManifest(std::span<const uint8_t> b, WorldId expected, Manifes
         !dx || !dz || dx > engine::worldpartition::kEnvTileMaxDim ||
         dz > engine::worldpartition::kEnvTileMaxDim ||
         !std::isfinite(origin.x) || !std::isfinite(origin.y) ||
-        b.size() != kManifestHeaderBytes + size_t(n)*kRecordBytes) return false;
+        b.size() != kManifestHeaderBytes + size_t(n)*kRecordBytes +
+                    size_t(dx)*dz) return false;
     Manifest next{};
     next.world = world;
     next.gridMin = origin;
@@ -169,6 +177,11 @@ inline bool DecodeManifest(std::span<const uint8_t> b, WorldId expected, Manifes
         if (!ReadUVec(b,p,shape.halfAndMask) ||
             !ReadVec(b,p,shape.shape) || !ReadVec(b,p,shape.sky) ||
             !ReadVec(b,p,shape.fog) || !ReadVec(b,p,shape.vol)) return false;
+    }
+    next.pagePresent.resize(size_t(dx)*dz);
+    for (uint8_t& present : next.pagePresent) {
+        present = b[p++];
+        if (present > 1) return false;
     }
     out = std::move(next);
     return true;
@@ -224,6 +237,12 @@ inline bool AddEnvTiles(smvk::PakWriter& writer, WorldId world, const WorldEnvTi
     manifest.dimZ = tiles.DimZ();
     manifest.records.assign(tiles.Records(), tiles.Records() + tiles.RecordCount());
     manifest.shapes.assign(tiles.Shapes(), tiles.Shapes() + tiles.RecordCount());
+    manifest.pagePresent.assign(size_t(tiles.DimX())*tiles.DimZ(), uint8_t(0));
+    for (size_t i = 0; i < manifest.pagePresent.size(); ++i) {
+        const auto& c = tiles.Cells()[i];
+        manifest.pagePresent[i] = uint8_t(c.candidateCount &&
+            !(c.candidateCount == 1 && tiles.CandidateIndices()[c.firstCandidate] == 0));
+    }
     std::vector<uint8_t> blob;
     if (!EncodeManifest(manifest, blob) ||
         !writer.AddBlob(smvk::PakAssetKind::EnvTile, ManifestPath(world), std::move(blob)))
@@ -257,9 +276,14 @@ inline bool ReadEnvManifest(const smvk::PakReader& reader, WorldId world, Manife
 // pages still fail explicitly (never silently turn into base).
 inline bool ReadEnvPage(const smvk::PakReader& reader, WorldId world,
                         WorldSubcellKey tile, uint32_t recordCount,
-                        std::vector<uint32_t>& out) {
+                        bool expectedPage, std::vector<uint32_t>& out) {
     const auto* entry = reader.Find(smvk::PakAssetKind::EnvTile, PagePath(world,tile));
-    if (!entry) { out = {0}; return true; }
+    if (!entry) {
+        if (expectedPage) return false; // missing authored data is corruption
+        out = {0};
+        return true;
+    }
+    if (!expectedPage) return false; // unexpected page: manifest mismatch
     try { return DecodePage(reader.Payload(*entry),world,tile,recordCount,out); }
     catch (...) { return false; }
 }
