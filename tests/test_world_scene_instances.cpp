@@ -6,6 +6,7 @@
 #include <Engine/Asset/asset_residency.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>
+#include <Engine/WorldPartition/DirectMapSceneStreaming.h>
 
 #include <cmath>
 #include <cstdio>
@@ -158,6 +159,125 @@ int main() {
     CHECK(c != 0);
     CHECK(!NodeHandleValid(world.scene, firstChild));
     CHECK(world.RetireSceneHierarchy(c));
+
+    // Cooked Map pages can now drive the direct World-owned instance path
+    // without allocating a Cluster or rebuilding all merged Scene nodes.
+    {
+        namespace wp = engine::worldpartition;
+        tour::World mapWorld;
+        auto directSource = std::make_shared<Scene>();
+        addNode(*directSource, -1, 0);
+        int resolveCalls = 0;
+        wp::DirectMapSceneStreaming stream(
+            mapWorld,
+            [&](uint64_t sceneId, wp::DirectScenePayload& payload, std::string& err) {
+                ++resolveCalls;
+                if (sceneId != 9001) { err = "unknown Scene ID"; return false; }
+                payload.scene = directSource;
+                return true;
+            });
+        tour::CompiledMapTiles compiled{};
+        compiled.world = 300;
+        tour::CookedMapPlacement tiled{};
+        tiled.mapNodeId = 1;
+        tiled.sceneAssetId = 9001;
+        tiled.worldTransform = glm::dmat4(1.0);
+        compiled.tiles[{0, 0}] = {tiled};
+        tour::CookedMapPlacement persistent = tiled;
+        persistent.mapNodeId = 2;
+        compiled.persistent = {persistent};
+        smvk::PakWriter writer;
+        CHECK(tour::mapcook::AddMapTiles(writer, compiled));
+        auto bytes = writer.Finalize();
+        std::string mapError;
+        auto reader = smvk::PakReader::Open(bytes, mapError);
+        CHECK(reader.has_value());
+        if (reader) {
+            CHECK(stream.BindMap(*reader, 300));
+            CHECK(stream.ActiveMap() == 300 &&
+                  stream.PersistentInstanceCount() == 1 &&
+                  mapWorld.worldSceneInstances.Count() == 1);
+            wp::WorldPartition partition;
+            partition.AddProvider(&stream.Provider());
+            wp::StreamingInterest interest{};
+            interest.world = 300;
+            interest.position = glm::dvec3(128, 0, 128);
+            interest.radiusMeters = 0;
+            interest.layerMask = wp::StreamLayerBit(wp::StreamLayer::Scene);
+            partition.SetInterests(&interest, 1);
+            partition.UpdateFrame(1);
+            CHECK(stream.ActiveTileCount() == 1 &&
+                  mapWorld.worldSceneInstances.Count() == 2 &&
+                  resolveCalls == 2 && mapWorld.clusters.empty());
+            // Dropping interest removes only the tiled instance. Persistent
+            // placement must survive until the explicit Map unbind.
+            partition.SetInterests(nullptr, 0);
+            partition.UpdateFrame(2);
+            CHECK(stream.ActiveTileCount() == 0 &&
+                  mapWorld.worldSceneInstances.Count() == 1);
+            partition.ClearProviders();
+            CHECK(stream.UnbindMap() &&
+                  stream.PersistentInstanceCount() == 0 &&
+                  mapWorld.worldSceneInstances.Count() == 0 &&
+                  mapWorld.ActiveMapIdentity() == 0 &&
+                  mapWorld.clusters.empty());
+            CHECK(stream.BindMap(*reader, 300));
+            partition.AddProvider(&stream.Provider());
+            partition.SetInterests(&interest, 1);
+            partition.UpdateFrame(3);
+            CHECK(stream.ActiveTileCount() == 1);
+            partition.SetInterests(nullptr, 0);
+            partition.UpdateFrame(4);
+            partition.ClearProviders();
+            CHECK(stream.UnbindMap());
+        }
+    }
+    {
+        // Source with an unresolved typed GPU resource is never quietly
+        // reduced to a hierarchy-only scene.
+        namespace wp = engine::worldpartition;
+        tour::World mapWorld;
+        auto unsupported = std::make_shared<Scene>();
+        const int node = addNode(*unsupported, -1, 0);
+        CHECK(SetMesh(*unsupported, NodeId(node), 0));
+        wp::DirectMapSceneStreaming stream(
+            mapWorld,
+            [&](uint64_t, wp::DirectScenePayload& payload, std::string&) {
+                payload.scene = unsupported;
+                return true;
+            });
+        tour::CompiledMapTiles compiled{};
+        compiled.world = 400;
+        tour::CookedMapPlacement tile{};
+        tile.mapNodeId = 10; tile.sceneAssetId = 9002;
+        tile.worldTransform = glm::dmat4(1.0);
+        compiled.tiles[{0, 0}] = {tile};
+        smvk::PakWriter writer;
+        CHECK(tour::mapcook::AddMapTiles(writer, compiled));
+        auto bytes = writer.Finalize();
+        std::string err;
+        auto reader = smvk::PakReader::Open(bytes, err);
+        CHECK(reader && stream.BindMap(*reader, 400));
+        if (reader) {
+            wp::WorldPartition partition;
+            partition.AddProvider(&stream.Provider());
+            wp::StreamingInterest interest{};
+            interest.world = 400;
+            interest.position = glm::dvec3(128, 0, 128);
+            interest.radiusMeters = 0;
+            interest.layerMask = wp::StreamLayerBit(wp::StreamLayer::Scene);
+            partition.SetInterests(&interest, 1);
+            partition.UpdateFrame(1);
+            CHECK(stream.ActiveTileCount() == 0 &&
+                  mapWorld.worldSceneInstances.Count() == 0 &&
+                  stream.LastError().find("binding") != std::string::npos &&
+                  mapWorld.clusters.empty());
+            partition.SetInterests(nullptr, 0);
+            partition.UpdateFrame(2);
+            partition.ClearProviders();
+            CHECK(stream.UnbindMap());
+        }
+    }
 
     std::printf("world_scene_instance_tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
