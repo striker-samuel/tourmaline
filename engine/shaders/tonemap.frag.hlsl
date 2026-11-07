@@ -204,7 +204,15 @@ float3 Tonemap(float3 c, uint mode)
 {
     if (mode == 0) return Reinhard(c);
     if (mode == 2) return Uncharted2(c);
-    if (mode == 3) return GT7Tonemap(c);
+    if (mode == 3)
+    {
+        // GT7's SDR reference uses a 2.5 framebuffer-unit peak before its
+        // 1/2.5 output correction. Compensate the shared exposure on input
+        // so switching from ACES does not dramatically darken midtones;
+        // keep the reference curve and SDR output normalization unchanged.
+        const float gt7ExposureCompensation = 2.5f;
+        return GT7Tonemap(c * gt7ExposureCompensation);
+    }
     return ACESFilm(c); // default 1 = ACES
 }
 
