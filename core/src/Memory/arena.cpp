@@ -1,10 +1,9 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-#include <Engine/Memory/arena.h>
+#include <Core/Memory/arena.h>
 
-#include <Engine/Memory/memory.h>
-#include <Engine/smvk.h>
+#include <Core/Memory/memory.h>
 
 #include <algorithm>
 #include <array>
@@ -153,10 +152,10 @@ struct FlightArenaStorage {
 };
 
 FlightArenaStorage& FlightStorage(uint32_t flightIndex) {
-	assert(flightIndex < smvk::limits::MaxFramesInFlight);
+	assert(flightIndex < tour::mem::config::kFlightArenaSlots);
 	// Flight arenas are accessed on the render/acquire thread only.
 	static std::array<std::unique_ptr<FlightArenaStorage>,
-		smvk::limits::MaxFramesInFlight> slots;
+		tour::mem::config::kFlightArenaSlots> slots;
 	if (!slots[flightIndex])
 		slots[flightIndex] = std::make_unique<FlightArenaStorage>();
 	return *slots[flightIndex];

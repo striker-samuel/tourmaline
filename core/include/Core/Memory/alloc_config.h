@@ -40,6 +40,11 @@
 
 namespace tour::mem::config {
 
+// Number of independently retired GPU flight arenas. Kept in Core so
+// the allocator implementation does not depend on the Vulkan/RHI API.
+inline constexpr uint32_t kFlightArenaSlots = 2;
+
+
 inline constexpr size_t kKiB = size_t(1) << 10;
 inline constexpr size_t kMiB = size_t(1) << 20;
 inline constexpr size_t kGiB = size_t(1) << 30;

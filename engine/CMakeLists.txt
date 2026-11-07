@@ -33,6 +33,8 @@ file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
     ${TOURMALINE_SOURCE_DIR}/core/include/Core/*.h
 )
 
+list(FILTER ENGINE_SRC EXCLUDE REGEX "/src/Memory/(arena|linear_allocator|memory)\\.cpp$")
+
 add_library(engine STATIC ${ENGINE_SRC})
 
 # Engine and RHI consume the same Core/Memory API.

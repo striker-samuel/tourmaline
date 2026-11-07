@@ -11,7 +11,7 @@
 // OOM: every exhaustion path funnels into ReportOomAndCrash — stderr
 // diagnostic + abort. No fallback, no compaction, by design.
 
-#include <Engine/Memory/linear_allocator.h>
+#include <Core/Memory/linear_allocator.h>
 
 #include <cstdio>
 #include <cstdlib>
