@@ -11135,7 +11135,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     frustum,
                     tour::gpu_scene::CandidateMode::Frustum,
                     65536,
-                    32768);
+                    gpuSceneRasterMode ? 524288u : 32768u);
             tour::gpu_scene::InstanceCullGpuPush gpuPush{};
             if (selected.Valid() && selected.candidateCount > 0 &&
                 m_gpuSceneValidator.Prepare(
