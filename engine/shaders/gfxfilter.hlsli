@@ -165,9 +165,9 @@ struct GfxDraw
     // docs/shader_library_design.md Phase A): the material instance
     // override or the base material default, forwarded flat (VS location
     // 9) to the lit FS family's TM_ModifySurface / TM_ModifyLitColor
-    // hooks. Bit layout is gameplay-owned. y/z/w reserved (stride pad
-    // to the 16-byte multiple — 112 bytes total, the C++ static_assert's
-    // mirror).
+    // hooks. Bit layout is gameplay-owned. y is the per-instance direct
+    // light receiving mask (32 channels), z/w remain stride padding.
+    // Total 112 bytes, pinned by the C++ static_assert.
     uint4 misc3;
 };
 struct GfxDraws { GfxDraw draws[GFX_MAX_DRAWS]; };
