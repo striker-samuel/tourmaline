@@ -745,7 +745,9 @@ struct ResolvedSceneLights {
     // there is no authored-vs-default sun state to retain. The election
     // lives in RefreshSceneLights locals and dies on return.
     std::vector<smvk::ForwardPlusLight> forwardPlusLights;
+    uint32_t directionalMask = 0xffffffffu;
     void clear() {
+        directionalMask = 0xffffffffu;
         forwardPlusLights.clear();
     }
     bool hasLights() const {
