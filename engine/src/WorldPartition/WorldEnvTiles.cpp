@@ -159,6 +159,8 @@ bool WorldEnvTiles::Build(const Scene& scene,
         base.boundedVolume = std::numeric_limits<double>::infinity();
         base.nodeId = UINT32_MAX;
         base.priority = scene.environment.zonePriority;
+        base.xzMin = glm::vec2(-std::numeric_limits<float>::infinity());
+        base.xzMax = glm::vec2( std::numeric_limits<float>::infinity());
         candidates_.push_back(base);
 
         struct NodeZone {
@@ -216,6 +218,27 @@ bool WorldEnvTiles::Build(const Scene& scene,
                 volume *= double(len) * 2.0;
             }
             NodeZone nz{};
+            // Conservative XZ projection, enlarged by fade radius.
+            // Infinite faces are over-included, never silently missed.
+            bool infinite = infMask != 0u;
+            for (int a = 0; a < 3; ++a)
+                infinite |= !std::isfinite(glm::length(glm::vec3(g[a])));
+            if (infinite) {
+                cand.xzMin = glm::vec2(-std::numeric_limits<float>::infinity());
+                cand.xzMax = glm::vec2( std::numeric_limits<float>::infinity());
+            } else {
+                glm::vec2 lo(std::numeric_limits<float>::infinity());
+                glm::vec2 hi(-std::numeric_limits<float>::infinity());
+                for (int sx : {-1, 1})
+                    for (int sy : {-1, 1})
+                        for (int sz : {-1, 1}) {
+                            const glm::vec3 p = glm::vec3(g * glm::vec4(float(sx), float(sy), float(sz), 1.0f));
+                            lo = glm::min(lo, glm::vec2(p.x, p.z));
+                            hi = glm::max(hi, glm::vec2(p.x, p.z));
+                        }
+                cand.xzMin = lo - glm::vec2(blendRadius);
+                cand.xzMax = hi + glm::vec2(blendRadius);
+            }
             nz.cand = cand;
             nz.cand.record = 0; // assigned after the sort
             nz.cand.boundedVolume = unbounded ? std::numeric_limits<double>::infinity() : volume;
@@ -275,132 +298,29 @@ bool WorldEnvTiles::Build(const Scene& scene,
             return a.nodeId < b.nodeId;
         });
 
-    // ---- Raster: every tile column walks a ~1 m vertical slice ladder,
-    // bisects each flip edge, and packs the merged interval list. (The
-    // retired lo/mid/hi triple + a single lo/hi bisection could only ever
-    // find ONE flip: an enclosed room — base below, the interior inside,
-    // base above — bisected between the SAME base winners at both ends
-    // and the interior record VANISHED from the bake entirely; the
-    // review's finding. The ladder sees every band at its resolution and
-    // the cell now carries three records.)
-    struct ColumnInterval {
-        uint32_t record = 0;
-        float lo = 0.0f, hi = 0.0f; // flip edges (refined)
-    };
-    const float yLo = yMin + 0.01f;
-    const float yHi = yMax - 0.01f;
-    const float height = yHi - yLo;
-    // ~1 m slices on a 64 m scene; clamped 17..129 (taller scenes trade
-    // vertical resolution, same class as the retired 6-step bisection).
-    const int sliceCount = int(std::clamp(std::ceil(height) + 1.0f, 17.0f, 129.0f));
-    // (resize, not the vexing parse: vector<T> v(count) declares a
-    // function when count is wrapped in a cast's parens.)
-    std::vector<Lookup> slices;
-    slices.resize(size_t(sliceCount));
-    std::vector<ColumnInterval> intervals;
-    uint32_t rejectedColumns = 0;
+    // Spatial bake: keep every potentially influencing OBB, sorted by
+    // priority, bounded volume, then node ID. Includes the base.
+    shapes_.assign(kEnvTileMaxRecords, smvk::envzones::EnvZoneGpu{});
+    for (const Candidate& candidate : candidates_)
+        shapes_[candidate.record] = candidate.zone;
     cells_.assign(size_t(dimX_) * dimZ_, EnvTileCell{});
+    candidateIndices_.clear();
     for (uint32_t iz = 0; iz < dimZ_; ++iz)
         for (uint32_t ix = 0; ix < dimX_; ++ix) {
-            const float wx = gridMin_.x + (float(ix) + 0.5f) * kEnvTileSize;
-            const float wz = gridMin_.y + (float(iz) + 0.5f) * kEnvTileSize;
             EnvTileCell& cell = cells_[size_t(iz) * dimX_ + ix];
-
-            // 1) The ladder: the winner at each slice height.
-            for (int i = 0; i < sliceCount; ++i)
-                slices[size_t(i)] =
-                    Evaluate(glm::vec3(wx, yLo + height * (float(i) / float(sliceCount - 1)), wz));
-
-            // 2) The intervals: runs of equal winners, each flip edge
-            // refined by a 6-step bisection INSIDE its ladder gap (a
-            // sub-gap band reads as the gap's far record — 1 m accuracy,
-            // the retired bake's own class).
-            intervals.clear();
-            uint32_t cur = slices[0].record;
-            float runLo = yLo;
-            for (int i = 0; i + 1 < sliceCount; ++i) {
-                if (slices[size_t(i + 1)].record == cur)
+            cell.firstCandidate = uint32_t(candidateIndices_.size());
+            const glm::vec2 lo = gridMin_ + glm::vec2(float(ix), float(iz)) * kEnvTileSize;
+            const glm::vec2 hi = lo + glm::vec2(kEnvTileSize);
+            for (const Candidate& candidate : candidates_) {
+                if (candidate.xzMax.x < lo.x || candidate.xzMin.x > hi.x ||
+                    candidate.xzMax.y < lo.y || candidate.xzMin.y > hi.y)
                     continue;
-                float a = yLo + height * (float(i) / float(sliceCount - 1));
-                float b = yLo + height * (float(i + 1) / float(sliceCount - 1));
-                for (int it = 0; it < 6; ++it) {
-                    const float m = 0.5f * (a + b);
-                    if (Evaluate(glm::vec3(wx, m, wz)).record == cur)
-                        a = m;
-                    else
-                        b = m;
-                }
-                const float edge = 0.5f * (a + b);
-                intervals.push_back(ColumnInterval{cur, runLo, edge});
-                cur = slices[size_t(i + 1)].record;
-                runLo = edge;
+                candidateIndices_.push_back(candidate.record);
+                ++cell.candidateCount;
             }
-            intervals.push_back(ColumnInterval{cur, runLo, yHi});
-            // Sanitize the list: drop degenerate zero-width runs (two
-            // bisection edges landing equal — belt and braces), then fuse
-            // same-record neighbors the drop can leave behind. Adjacent
-            // intervals SHARE an edge by construction (one run's hi is
-            // the next run's lo) — that is NOT a merge condition.
-            for (size_t k = 0; k < intervals.size();)
-                if (intervals[k].hi <= intervals[k].lo)
-                    intervals.erase(intervals.begin() + ptrdiff_t(k));
-                else
-                    ++k;
-            for (size_t k = 0; intervals.size() > 1 && k < intervals.size() - 1;)
-                if (intervals[k].record == intervals[k + 1].record) {
-                    intervals[k].hi = intervals[k + 1].hi;
-                    intervals.erase(intervals.begin() + ptrdiff_t(k) + 1);
-                } else {
-                    ++k;
-                }
-
-            // 3) Pack: 1 = no split, 2 = the splitY plane, 3 = the mid
-            // band, >3 = the explicit reject (the largest vertical mass —
-            // a 4+ stack of env zones in one 64 m column is not
-            // representable; keep the dominant look, log once per bake).
-            const auto midSample = [&](const ColumnInterval& in) {
-                const Lookup l = Evaluate(glm::vec3(wx, 0.5f * (in.lo + in.hi), wz));
-                return l.record == in.record ? l.weight : 1.0f;
-            };
-            if (intervals.size() > 3) {
-                size_t best = 0;
-                for (size_t k = 1; k < intervals.size(); ++k)
-                    if (intervals[k].hi - intervals[k].lo > intervals[best].hi - intervals[best].lo)
-                        best = k;
-                cell.lowerRecord = intervals[best].record;
-                cell.upperRecord = intervals[best].record;
-                cell.splitY = -std::numeric_limits<float>::max();
-                cell.lowerWeight = midSample(intervals[best]);
-                cell.upperWeight = cell.lowerWeight;
-                cell.midRecord = 0xFFFFFFFFu;
-                ++rejectedColumns;
-                continue;
-            }
-            cell.lowerRecord = intervals.front().record;
-            cell.upperRecord = intervals.back().record;
-            cell.lowerWeight = midSample(intervals.front());
-            cell.upperWeight = midSample(intervals.back());
-            if (intervals.size() == 1) {
-                cell.splitY = -std::numeric_limits<float>::max();
-                cell.midRecord = 0xFFFFFFFFu;
-                continue;
-            }
-            cell.splitY = intervals[0].hi;
-            if (intervals.size() == 2) {
-                cell.midRecord = 0xFFFFFFFFu;
-                continue;
-            }
-            // Three: the mid band bounded by [splitY, midHiY].
-            cell.midRecord = intervals[1].record;
-            cell.midHiY = intervals[1].hi;
-            cell.midWeight = midSample(intervals[1]);
         }
-    if (rejectedColumns > 0)
-        std::fprintf(stderr,
-                     "[EnvTiles] %u column(s) carry 4+ vertical "
-                     "records — not representable (64 m tile, 3 slots); kept the "
-                     "largest vertical mass per column\n",
-                     rejectedColumns);
+    (void)yMin;
+    (void)yMax;
     built_ = true;
     return true;
 }
@@ -429,34 +349,27 @@ WorldEnvTiles::Lookup WorldEnvTiles::Evaluate(const glm::vec3& p) const {
 
 WorldEnvTiles::Lookup WorldEnvTiles::At(glm::vec3 pos) const {
     Lookup out{};
-    out.valid = false;
-    if (!built_)
-        return out;
-    // Out of grid: the base record at weight 1 (the zone-zero semantic —
-    // the tile grid is the scene bounds + margin, beyond it the default
-    // environment applies, matching infinite zones' outside behavior).
+    if (!built_) return out;
+    out.valid = true;
+    out.record = 0;
+    out.weight = 1.0f;
     const float fx = std::floor((pos.x - gridMin_.x) / kEnvTileSize);
     const float fz = std::floor((pos.z - gridMin_.y) / kEnvTileSize);
-    if (!(fx >= 0.0f) || !(fz >= 0.0f) || fx >= float(dimX_) || fz >= float(dimZ_)) {
-        out.record = 0;
-        out.weight = 1.0f;
-        out.valid = true;
+    if (!(fx >= 0.0f) || !(fz >= 0.0f) ||
+        fx >= float(dimX_) || fz >= float(dimZ_))
         return out;
-    }
     const EnvTileCell& cell = cells_[size_t(fz) * dimX_ + size_t(fx)];
-    // The vertical profile: the optional mid band first (the enclosed
-    // room), else the splitY half-spaces.
-    if (cell.midRecord != 0xFFFFFFFFu && pos.y >= cell.splitY && pos.y <= cell.midHiY) {
-        out.record = cell.midRecord;
-        out.weight = cell.midWeight;
-    } else if (pos.y > cell.splitY) {
-        out.record = cell.upperRecord;
-        out.weight = cell.upperWeight;
-    } else {
-        out.record = cell.lowerRecord;
-        out.weight = cell.lowerWeight;
+    for (uint32_t i = 0; i < cell.candidateCount; ++i) {
+        const uint32_t id = candidateIndices_[cell.firstCandidate + i];
+        const auto& shape = shapes_[id];
+        const float w = std::clamp(shape.shape.y, 0.0f, 1.0f) *
+                        smvk::envzones::EnvZoneFalloff(shape, pos);
+        if (w > 0.0f) {
+            out.record = id;
+            out.weight = w;
+            return out;
+        }
     }
-    out.valid = true;
     return out;
 }
 
