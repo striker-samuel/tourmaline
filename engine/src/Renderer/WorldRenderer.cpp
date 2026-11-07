@@ -10759,6 +10759,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         if (gpuSceneSync.leafPublicationOk)
             m_gpuSceneDatabaseReady =
                 m_gpuSceneUploader.Publish(*m_context, m_gpuSceneDatabase, fb.frameIndex);
+        // Resolve real indexed geometry ranges alongside the GPU-scene tables.
+        // geometryId in Submesh is only a revision-local Gfx mesh registration,
+        // so never substitute it for indexCount/firstIndex/vertexOffset.
+        if (m_gpuSceneDatabaseReady && m_gfxFilterAvailable)
+            m_gpuSceneDatabaseReady = m_gpuSceneIndexedGeometry.Publish(
+                *m_context, m_gfxRenderer.State(),
+                m_gpuSceneGeometryRevision, fb.frameIndex);
         if (!m_gpuSceneDatabaseReady)
             std::fprintf(stderr,
                          "[GpuScene] database publication failed; no GPU reader this frame\n");
