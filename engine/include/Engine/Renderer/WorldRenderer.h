@@ -2316,8 +2316,6 @@ protected:
 	// Transient gfx registration indices are reassigned on each rebuild.
 	// Republish all mesh links when the source registration changes.
 	uint64_t m_gpuSceneGeometryRevision = 0;
-	// The control element owns the overlay; this pointer is borrowed.
-	UiTextureService m_uiTextureService{};
 	smvk::mem::LinearPtr<smvk::World> m_worldOwned; // the source-moved form
 	smvk::World* m_borrowedWorld = nullptr;        // the embedded-host form
 
@@ -2354,6 +2352,8 @@ protected:
 	// WorldRendererElement — pure control state. The panel footer + gamepad
 	// widgets below read the hint/input back-pointers the element pushes.)
 	// The element's UI-mode hint (FPS vs UI): panel footer text only.
+	// The control element owns the overlay; this pointer is borrowed.
+	UiTextureService m_uiTextureService{};
 	bool m_uiModeHint = false;
 	// Input back-pointer for the panel's gamepad CONFIG widgets (axis
 	// readouts + deadzone sliders) — the renderer never polls input for
