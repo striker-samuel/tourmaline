@@ -10741,6 +10741,40 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_VALIDATE");
         return e && std::strcmp(e, "1") == 0;
     }();
+    // Deliberately opt-in until all production pass/material variants match.
+    // Validation remains separate; do not mix CPU readback with GPU raster.
+    static const bool s_gpuSceneRaster = [] {
+        const char* e = std::getenv("TOURMALINE_GPU_SCENE_RASTER");
+        return e && std::strcmp(e, "1") == 0;
+    }();
+    if (s_gpuSceneRaster && m_gpuSceneRasterProgram.shaderCount != 2) {
+        try {
+            if (m_gpuSceneRasterVsModule.empty())
+                m_gpuSceneRasterVsModule = m_context->CreateShaderModule(
+                    smvk::shaders::Read("content/shaders/gpu_scene_raster.vert.hlsl.spv"),
+                    "gpuSceneRasterVS");
+            if (m_gpuSceneRasterFsModule.empty())
+                m_gpuSceneRasterFsModule = m_context->CreateShaderModule(
+                    smvk::shaders::Read("content/shaders/gfxmesh_lit.frag.hlsl.spv"),
+                    "gpuSceneRasterLitFS");
+            if (!m_gpuSceneRasterVsModule.empty() && !m_gpuSceneRasterFsModule.empty()) {
+                smvk::Shader vs{.module = m_gpuSceneRasterVsModule,
+                                .entryPoint = "mainVS",
+                                .stage = smvk::ShaderStage::Vertex};
+                smvk::Shader fs{.module = m_gpuSceneRasterFsModule,
+                                .entryPoint = "mainPS",
+                                .stage = smvk::ShaderStage::Fragment};
+                m_gpuSceneRasterProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+            }
+        } catch (...) {
+            static bool logged = false;
+            if (!logged) {
+                std::fprintf(stderr,
+                             "[GpuSceneRaster] raster shaders unavailable; legacy path retained\\n");
+                logged = true;
+            }
+        }
+    }
     if (s_gpuSceneValidate)
         m_gpuSceneValidator.BeginFlight(*m_context, fb.frameIndex);
     m_gpuSceneDatabaseReady = false;
