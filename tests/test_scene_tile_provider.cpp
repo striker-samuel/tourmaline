@@ -126,6 +126,19 @@ int main() {
         check(loadOrder.size() == 2, "per-frame request budget enforced");
     }
     {
+        struct Request { int id; float priority; };
+        std::vector<Request> work{{1, 1.0f}, {2, 3.0f}, {3, 3.0f}, {4, -1.0f}};
+        wp::SelectStreamRequests(work, 2, [](const Request& a, const Request& b) {
+            return a.priority > b.priority;
+        });
+        check(work.size() == 2 && work[0].id == 2 && work[1].id == 3,
+              "shared request selector respects budget and stable ties");
+        wp::SelectStreamRequests(work, 0, [](const Request& a, const Request& b) {
+            return a.priority > b.priority;
+        });
+        check(work.empty(), "shared request selector honors zero budget");
+    }
+    {
         // Both scene and environment providers use these shared ticket rules.
         wp::StreamTicketLedger<int> ledger;
         const auto first = ledger.Issue(7, 1);
