@@ -7,6 +7,10 @@
 // resolve the actual index/vertex ranges before a raster work item can use it.
 // ABI mirrors engine/shaders/gpu_scene_raster_drawbuild.cs.hlsl.
 
+#include <Engine/Core/double_float.h>
+
+#include <glm/glm.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -62,6 +66,27 @@ struct RasterWorkDrawBuildPush {
     uint32_t commandCapacity = 0;
     uint32_t reserved = 0;
 };
+
+// Static-opaque raster VS input: world position is rebased against this
+// double-float origin before the relative VP is evaluated. The lit fragment
+// still uses float world positions like the legacy raster shaders.
+struct alignas(16) RasterViewData {
+    glm::mat4 relativeViewProjection{1.0f};
+    tour::math::DoubleFloat3 origin{};
+};
+
+// HLSL RasterVsPush begins at byte offset 192 of the shared 256B
+// scene push. Shader locations 0..10 match gfxmesh_lit.frag.hlsl.
+inline constexpr uint32_t kRasterVsPushOffset = 192;
+struct RasterVsPush {
+    uint64_t work = 0;
+    uint64_t instances = 0;
+    uint64_t view = 0;
+    uint32_t instanceSlots = 0;
+    uint32_t workSlots = 0;
+};
+static_assert(sizeof(RasterViewData) == 96);
+static_assert(sizeof(RasterVsPush) == 32);
 
 // Push constants for the independent indirect raster command build kernel.
 struct RasterDrawBuildPush {
