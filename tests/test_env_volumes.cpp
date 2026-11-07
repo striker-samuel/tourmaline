@@ -21,6 +21,7 @@
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/WorldPartition/WorldEnvTiles.h>
+#include <Engine/WorldPartition/WorldEnvTileProvider.h>
 
 namespace {
 
@@ -549,6 +550,47 @@ int main() {
                       "envtile.extent-underwater-vertical-range-kept");
             }
         }
+    }
+
+    // WorldPartition environment residency: subcell selection is
+    // interest-driven; distant authored cells must not remain resident.
+    {
+        ::Scene scene;
+        engine::worldpartition::WorldEnvTiles baked;
+        Check(baked.Build(scene, glm::vec2(0), 4, 1, 0, 40),
+              "envtile.stream-source-build");
+        engine::worldpartition::WorldEnvTileProvider provider;
+        provider.SetSource(&baked, 1);
+        engine::worldpartition::WorldPartition partition;
+        partition.AddProvider(&provider);
+        engine::worldpartition::StreamingInterest interest{};
+        interest.position = glm::dvec3(32, 0, 32);
+        interest.radiusMeters = 0;
+        interest.layerMask = engine::worldpartition::StreamLayerBit(
+            engine::worldpartition::StreamLayer::Environment);
+        partition.SetInterests(&interest, 1);
+        partition.UpdateFrame(1);
+        const auto first = provider.Revision();
+        Check(first != 0 && provider.CellCount() == 4 &&
+              provider.Cells()[0].candidateCount > 0 &&
+              provider.Cells()[3].candidateCount == 0,
+              "envtile.stream-near-cell-resident");
+        partition.UpdateFrame(2);
+        Check(provider.Revision() == first,
+              "envtile.stream-steady-no-republish");
+        interest.position.x = 224.0;
+        partition.SetInterests(&interest, 1);
+        partition.UpdateFrame(3);
+        Check(provider.Revision() > first &&
+              provider.Cells()[0].candidateCount == 0 &&
+              provider.Cells()[3].candidateCount > 0,
+              "envtile.stream-movement-retire-and-activate");
+        Check(partition.RequestCount() > 0,
+              "envtile.stream-requested-through-partition");
+        partition.SetInterests(nullptr, 0);
+        partition.UpdateFrame(4);
+        Check(provider.ResidentCount() == 0 && provider.IndexCount() == 0,
+              "envtile.stream-no-interests-retired");
     }
 
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
