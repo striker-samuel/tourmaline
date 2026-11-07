@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <memory>
 #include <optional>
 #include <span>
@@ -2281,6 +2282,19 @@ class WorldRenderer : public IRenderer {
     engine::worldpartition::WorldPartition& StreamingPartition() {
         return m_worldPartition;
     }
+    // The application host (never the renderer) owns pak discovery and
+    // supplies immutable cooked metadata plus a thread-safe page reader.
+    // Request callback runs off the render thread; completions are adopted
+    // at the next WorldPartition frame publication point.
+    using EnvPageReader = std::function<bool(
+        engine::worldpartition::WorldSubcellKey, std::vector<uint32_t>&)>;
+    bool InstallCookedEnvironment(
+        engine::worldpartition::WorldId world, glm::vec2 gridMin,
+        uint32_t dimX, uint32_t dimZ,
+        const engine::worldpartition::EnvTileRecord* records,
+        const smvk::envzones::EnvZoneGpu* shapes, uint32_t recordCount,
+        EnvPageReader reader);
+
     void SetMapStreamingRadius(double metres) {
         if (std::isfinite(metres) && metres >= 0.0)
             m_mapStreamingRadius = metres;
@@ -4554,6 +4568,19 @@ class WorldRenderer : public IRenderer {
     uint32_t m_envTileZoneCount = UINT32_MAX; // overflow log dedupe
     size_t m_envTileIndexBytes = 0;
     size_t m_envTileCellBytes = 0;            // the cells buffer size (recreate key)
+    bool m_envCooked = false;
+    bool m_envCookedHashInitialized = false;
+    uint64_t m_envCookedHash = 0;
+    engine::worldpartition::WorldId m_envCookedWorld = 0;
+    EnvPageReader m_envPageReader;
+    struct EnvPageJob {
+        engine::worldpartition::WorldSubcellKey key{};
+        uint64_t ticket = 0;
+        std::future<std::pair<bool, std::vector<uint32_t>>> future;
+    };
+    std::vector<EnvPageJob> m_envPageJobs;
+    void DrainEnvPageJobs();
+
     // Hashes the zone tables + transforms (the bake inputs) and rebuilds +
     // re-uploads the tiles on change (see UpdateEnvTiles — called before
     // UpdateFrameUniforms).
