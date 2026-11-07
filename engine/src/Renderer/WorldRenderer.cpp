@@ -14097,10 +14097,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                               sizeof(sceneRasterVsPush),
                               &sceneRasterVsPush,
                               smvk::ShaderStage::All);
-            cmd.DrawIndexedIndirect(sceneRasterCommands,
-                                    0,
-                                    sceneRasterCommandCount,
-                                    sizeof(tour::gpu_scene::RasterIndirectCommand));
+            // Bound CPU draw submissions by a small number of indirect
+            // chunks, not by instance count. Reuse the engine's 65,535
+            // command-per-call partition convention.
+            constexpr uint32_t kChunk = smvk::gfx::kMaxDraws;
+            for (uint32_t first = 0; first < sceneRasterCommandCount; first += kChunk) {
+                const uint32_t count = std::min(kChunk, sceneRasterCommandCount - first);
+                cmd.DrawIndexedIndirect(
+                    sceneRasterCommands,
+                    uint64_t(first) * sizeof(tour::gpu_scene::RasterIndirectCommand),
+                    count,
+                    sizeof(tour::gpu_scene::RasterIndirectCommand));
+            }
         }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----
         // Filtered path: one multi-draw per material over the compacted
