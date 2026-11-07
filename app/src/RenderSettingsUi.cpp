@@ -1222,15 +1222,14 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                             for (const auto& row : rows)
                                 if (row.valid)
                                     totalMs += std::max(0.0, row.ms);
-                            // Reserve two font-scaled text lines per pass so the duration
-                            // never overlaps the next pass label at larger UI font sizes.
-                            // The stacked column still uses duration height independently.
+                            // Compact one-line rows: name on the left, timing right-aligned.
+                            // Keep both columns independent of the duration stack.
                             const float lineHeight = ImGui::GetTextLineHeight();
-                            constexpr float lineSpacing = 3.0f;
-                            constexpr float rowPadding = 4.0f;
-                            const float rowHeight = 2.0f * lineHeight + lineSpacing + rowPadding;
+                            const float rowHeight = lineHeight + 4.0f;
                             const float plotHeight = rowHeight * static_cast<float>(rows.size());
                             const float labelWidth = 230.0f;
+                            const float valueWidth = ImGui::CalcTextSize("8888.88 ms").x + 6.0f;
+                            const float nameWidth = labelWidth - valueWidth - 4.0f;
                             const float plotWidth = 75.0f;
                             static constexpr ImU32 colors[] = {IM_COL32(105, 140, 190, 230),
                                                                IM_COL32(74, 157, 148, 230),
@@ -1264,13 +1263,13 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                                                       origin.y + rowHeight * static_cast<float>(i));
                                 draw->AddCircleFilled(
                                     ImVec2(labelTop.x + 4.0f, labelTop.y + 8.0f), 3.0f, color);
-                                // Clip long pass names so they cannot paint
-                                // over the independent timeline column.
+                                // Clip pass names at the value column, while keeping
+                                // full names available on hover in the future.
                                 draw->PushClipRect(
-                                    labelTop,
-                                    ImVec2(labelTop.x + labelWidth - 4.0f, labelTop.y + rowHeight),
+                                    ImVec2(labelTop.x + 12.0f, labelTop.y),
+                                    ImVec2(labelTop.x + nameWidth, labelTop.y + rowHeight),
                                     true);
-                                draw->AddText(ImVec2(labelTop.x + 12.0f, labelTop.y),
+                                draw->AddText(ImVec2(labelTop.x + 12.0f, labelTop.y + 2.0f),
                                               ImGui::GetColorU32(ImGuiCol_Text),
                                               knownPassNames[i].c_str());
                                 draw->PopClipRect();
@@ -1279,8 +1278,9 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                                     snprintf(value, sizeof(value), "%.2f ms", rows[i].ms);
                                 else
                                     snprintf(value, sizeof(value), "off");
-                                draw->AddText(ImVec2(labelTop.x + 12.0f,
-                                                     labelTop.y + lineHeight + lineSpacing),
+                                const float valueX = labelTop.x + labelWidth - 4.0f -
+                                                     ImGui::CalcTextSize(value).x;
+                                draw->AddText(ImVec2(valueX, labelTop.y + 2.0f),
                                               ImGui::GetColorU32(ImGuiCol_TextDisabled),
                                               value);
                                 if (rows[i].valid && totalMs > 0.0) {
