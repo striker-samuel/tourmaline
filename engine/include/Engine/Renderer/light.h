@@ -81,7 +81,8 @@ struct DirectionalLight {
 struct alignas(16) Light {
     glm::vec4 color = glm::vec4(1.0f);
     float position[3] = {0.0f, 0.0f, 0.0f};
-    int32_t flags = 0;
+    // Direct-light channel mask. Explicitly all channels for unauthored suns.
+    int32_t flags = -1;
     float direction[3] = {0.0f, 0.0f, 0.0f};
     // Unified field – units depend on Light.type / shader path:
     //  Directional → lux, Point/Spot → candela; see top-of-file doc.
