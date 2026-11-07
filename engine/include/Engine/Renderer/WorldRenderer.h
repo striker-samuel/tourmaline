@@ -1528,6 +1528,34 @@ public:
     void DrawAppSettingsUi(const DebugUiFrame& frame);
     void DrawAppDebugUi(const DebugUiFrame& frame);
 
+    // Host UI, debug drawing and game HUD integration.
+	void SetUiModeHint(bool ui) { m_uiModeHint = ui; }
+	void SetInputForUi(Input* in) { m_inputUi = in; }
+	// Host-installed extra UI hook (app-owned overlays): drawn inside
+	// the frame's ImGui build, after the debug panel + floating tools,
+	// right before the UI pass records. Lets app hosts draw through the
+	// renderer's ImGui pass (the sponza invaders HUD) without a
+	// renderer subclass. No-op unless installed; runs only when the UI
+	// pass runs (m_passes.ui + a live overlay).
+	void SetExtraUi(std::function<void()> fn) { m_extraUi = std::move(fn); }
+	// Caller is responsible for the producer lifetime. No physics or scene
+	// dependency; the list is discarded/rebuilt while drawing is enabled.
+	void SetDebugDrawSource(std::function<void(tour::DebugDrawList&)> fn) {
+		m_debugDrawSource = std::move(fn);
+	}
+	// Retained world-space spline and point-cloud instances. Updates retain
+	// their handles until explicitly removed or the renderer is destroyed.
+	// Kept independent of SetDebugDrawEnabled().
+	[[nodiscard]] tour::renderer::ShapeScene& Shapes() { return m_shapeScene; }
+	[[nodiscard]] const tour::renderer::ShapeScene& Shapes() const { return m_shapeScene; }
+	void SetDebugDrawEnabled(bool enabled) { m_debugDrawEnabled = enabled; }
+	[[nodiscard]] bool DebugDrawEnabled() const { return m_debugDrawEnabled; }
+	// Host-owned game UI callback. Draws through the native render graph,
+	// after ImGui and before the scene's UI composite (no SDL renderer).
+	void SetExtraGameUi(std::function<void(tour::GameUiRenderer&,
+		smvk::Extent2D)> fn) { m_extraGameUi = std::move(fn); }
+
+
 
 	// ------------------------------------------------------------------
 	// HOST: the App owns the window/context/swapchain (the frame-sync
@@ -1538,11 +1566,6 @@ public:
 	// Detach (host shutdown, reverse stack order) releases everything
 	// while the context is alive.
 	// ------------------------------------------------------------------
-	// A loaded catalog LUT, supplied as decoded RGBA8 bytes by the
-	// runtime asset service. No filesystem scanning or filename lookup.
-	bool SetColorLutRgba(const uint8_t* rgba, size_t bytes,
-		std::string_view assetName);
-	void ClearColorLut();
 
 	explicit WorldRenderer(smvk::App& host);
 	~WorldRenderer();
@@ -1700,6 +1723,26 @@ public:
 	smvk::TextureStreamer* GetTextureStreamer() const {
 		return m_textureStreamer.get();
 	}
+
+    // Host-supplied GPU placement and terrain invalidation.
+	// Optional GPU-placed vegetation draw feed. Host owns the runtime,
+	// its LayerBinding and WorldMaskGrid for the full attachment lifetime.
+	// The renderer creates/destroys only its GPU resources, records
+	// BeginFrame -> cull/compaction/indirect, and consumes the commands
+	// in Main. The source meshes MUST already live in the static vertex
+	// heap; seeds are their absolute indexed-draw ranges. Off by default.
+	void SetGpuPlacementRuntime(tour::placement::PlacementWorldRuntime* runtime,
+		const tour::placement::PlacementIndirectCmd* seeds,
+		uint32_t seedCount, float interestRadius = 64.0f) {
+		m_gpuPlacementRuntime = runtime;
+		m_gpuPlacementSeedCount = seedCount > 8 ? 8 : seedCount;
+		for (uint32_t i = 0; i < m_gpuPlacementSeedCount; ++i)
+			m_gpuPlacementSeeds[i] = seeds[i];
+		m_gpuPlacementRadius = interestRadius > 0.0f ? interestRadius : 64.0f;
+	}
+	// The host calls this after changing the world's height/mask data;
+	// every interested placement tile will then regenerate.
+	void InvalidateGpuPlacementTerrain() { ++m_gpuPlacementTerrainRevision; }
 	// Active GI permutation variant based on loaded GI assets
 	[[nodiscard]] GIVariant GetActiveGIVariant() const {
 		// Priority: Volumes > Regular > None. The convex GI volumes
@@ -2074,6 +2117,14 @@ public:
 	// The App drives these through its debug panel. The m_passes
 	// SHAPE stays untouched (Configure owns the pipeline shape) — these
 	// are the runtime toggles every pass gates on.
+
+    // Host-decoded color grading LUT (no renderer-side asset lookup).
+	// A loaded catalog LUT, supplied as decoded RGBA8 bytes by the
+	// runtime asset service. No filesystem scanning or filename lookup.
+	bool SetColorLutRgba(const uint8_t* rgba, size_t bytes,
+		std::string_view assetName);
+	void ClearColorLut();
+
 	void SetBloomEnabled(bool v) { m_bloomEnabled = v; }
 	bool BloomEnabled() const { return m_bloomEnabled; }
 	void SetMotionBlurEnabled(bool v) { m_motionBlurEnabled = v; }
@@ -2142,6 +2193,93 @@ protected:
 	// SOURCE contract): owned = the moved-in source result (below),
 	// borrowed = the host's live pointer (kept alive by the host).
 	smvk::World* m_world = nullptr;
+	// ---- World voxel fields (Engine/WorldFields — the atlas-backed
+	// virtual world volume system). World-space (NOT viewport-scoped):
+	// follows the frame's camera (PrepareFrame's interest point),
+	// publishes its field/page-table BDA into FrameUniforms::worldFields,
+	// and any pass samples it through the shared world_field.hlsli. One
+	// infrastructure, independent fields (fog density, wind, ...): the
+	// field set registers ONCE in onAttach (InitWorldFields — ids are
+	// registration order, fog first per WORLD_FIELD_ID_*). v1 is gated
+	// by TOURMALINE_WORLD_FIELDS=1 (the checkerboard shakedown field +
+	// budgeted pools; fog/wind register with their consumers).
+	// ---- The WorldPartition (Engine/WorldPartition) drives it: the
+	// frame builds a StreamingInterest from the camera (position +
+	// velocity), the partition runs the provider sequence, and the
+	// WorldFieldProvider maps CommitFrame onto the fields' publication.
+	// Brick generation runs on a small DEDICATED work pool (async — the
+	// pool's ring is ours alone per the enqueue/backpressure contract). ----
+	engine::worldfields::WorldFieldSystem m_worldFields;
+	engine::worldfields::WorldFieldProvider m_worldFieldProvider{ m_worldFields };
+	engine::worldpartition::WorldPartition m_worldPartition;
+	engine::worldpartition::WorldId m_activeMapId = 0;
+	double m_mapStreamingRadius = 512.0;
+	std::unique_ptr<smvk::ThreadPool> m_worldFieldWorkPool;
+	glm::vec3 m_worldFieldPrevEye{ 0.0f };
+	bool m_worldFieldPrevEyeValid = false;
+	// Skydome visibility (K): a debug visibility toggle like wireframe /
+	// hide-transparent — NOT environment state (the renderer owns no
+	// environment; it renders the world's scene env). The pass-set flag
+	// m_passes.skydome stays the pipeline-shape switch.
+	bool m_skyEnabled = true;
+	smvk::Skydome m_skydome{};
+	// Tiled terrain heightfield (baked G-blocks from the world's TerrainSource;
+	// see Rendergraph/terrain.h): 256 m blocks x 4 LODs rendered in the
+	// Main pass right after the sky. m_passes.terrain is the pipeline
+	// shape switch; m_terrainEnabled is the debug visibility toggle (like
+	// the skydome's K). OFF by default (m_passes.terrain=false).
+	bool m_terrainEnabled = true;
+	smvk::terrain::TerrainField m_terrain{};
+	// Heightfield shadow mode/steps for the terrain frag tail (RunConfig
+	// snapshot at Configure: TOURMALINE_TERRAIN_HFSHADOW[_STEPS]).
+	int m_terrainHfShadow = 1;
+	int m_terrainHfSteps = 16;
+	// World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the runtime
+	// rework of the old OBB-volume zone system): the zone tables BAKE onto
+	// the 64 m tile grid whenever they change (a cheap per-frame HASH, not
+	// a per-frame pack) and the terrain/volumetric shaders resolve a zone
+	// by TILE ADDRESS. ALWAYS ON: the base record ([0], the scene's DEFAULT
+	// environment, the old zone-zero) is the weight-1 fallback everywhere
+	// (out-of-grid included). The old runtime toggle (m_envZonesEnabled)
+	// and the authored Scene::envZonesEnabled master switch are retired —
+	// the field stays on the tour/pak wire (forced true at every read) for
+	// format compatibility.
+	engine::worldpartition::WorldEnvTiles m_envTiles;
+	uint64_t m_envTilesDirtyHash = 0; // the zone-table fingerprint
+	bool m_envTilesPublished = false; // buffers exist + built
+	uint32_t m_envTileZoneCount = UINT32_MAX; // overflow log dedupe
+	size_t m_envTileCellBytes = 0; // the cells buffer size (recreate key)
+	// Hashes the zone tables + transforms (the bake inputs) and rebuilds +
+	// re-uploads the tiles on change (see UpdateEnvTiles — called before
+	// UpdateFrameUniforms).
+	void UpdateEnvTiles(uint32_t currentFrame);
+	tour::CameraPositioner_FirstPerson m_cameraPositioner = tour::CameraPositioner_FirstPerson(
+		glm::vec3(0.0f, 1.0f, 0.0f), //pos
+		glm::vec3(0.0f, 1.0f, 1.0f), //target
+		glm::vec3(0.0f, 1.0f, 0.0f) //up
+	);
+	tour::Camera m_camera = tour::Camera(m_cameraPositioner);
+	// (The virtual cursor for FPS mouselook moved to WorldRendererElement
+	// with the camera drive.)
+	// ---- Texture streaming (mip-tail residency, see
+	// Engine/Renderer/texture_streamer.h). Owns residency for glTF-loaded
+	// textures and for pak v4 digest textures (objects + tail registered
+	// by the host's world source; digest-less pak blobs stay
+	// full-resident, the pre-v4 behavior).
+	bool m_textureStreamingEnabled = true;
+	// Mip bias for the streamer's demand (RunConfig::texstreamMipBias via
+	// ApplyRunConfig): the resolution-scaling study pins asset quality to
+	// the 1080p reference with log2(render_scale) here, so the studied
+	// resolutions differ ONLY in pixels, never in demanded asset quality.
+	float m_texstreamMipBias = 0.0f;
+	// Geometry LOD streaming (Renderer/geometry_streamer.h): the env
+	// gate arms it at cluster load (what defers); this active flag is
+	// the per-frame tick gate - set at scene registration when the
+	// world still holds deferred siblings, cleared when the last one
+	// promotes.
+	bool m_geometryStreamingActive = false;
+	smvk::GeometryStreamer m_geometryStreamer{};
+	smvk::mem::LinearPtr<smvk::TextureStreamer> m_textureStreamer;
 	// Persistent, per-flight scene database — no render consumer yet.
 	// Separate opt-in vegetation path: never overrides the GPU-scene
 	// validation culler or the renderer's normal scene draw list.
@@ -2214,6 +2352,8 @@ protected:
 	// WorldRendererElement — pure control state. The panel footer + gamepad
 	// widgets below read the hint/input back-pointers the element pushes.)
 	// The element's UI-mode hint (FPS vs UI): panel footer text only.
+	// The control element owns the overlay; this pointer is borrowed.
+	UiTextureService m_uiTextureService{};
 	bool m_uiModeHint = false;
 	// Input back-pointer for the panel's gamepad CONFIG widgets (axis
 	// readouts + deadzone sliders) — the renderer never polls input for
@@ -2236,52 +2376,6 @@ protected:
 	// Same-frame game HUD, composited before UiComposite; no backend API in games.
 	std::function<void(tour::GameUiRenderer&, smvk::Extent2D)> m_extraGameUi;
 	tour::GameUiRenderer m_gameUi;
-public:
-	void SetUiModeHint(bool ui) { m_uiModeHint = ui; }
-	void SetInputForUi(Input* in) { m_inputUi = in; }
-	// Host-installed extra UI hook (app-owned overlays): drawn inside
-	// the frame's ImGui build, after the debug panel + floating tools,
-	// right before the UI pass records. Lets app hosts draw through the
-	// renderer's ImGui pass (the sponza invaders HUD) without a
-	// renderer subclass. No-op unless installed; runs only when the UI
-	// pass runs (m_passes.ui + a live overlay).
-	void SetExtraUi(std::function<void()> fn) { m_extraUi = std::move(fn); }
-	// Caller is responsible for the producer lifetime. No physics or scene
-	// dependency; the list is discarded/rebuilt while drawing is enabled.
-	void SetDebugDrawSource(std::function<void(tour::DebugDrawList&)> fn) {
-		m_debugDrawSource = std::move(fn);
-	}
-	// Retained world-space spline and point-cloud instances. Updates retain
-	// their handles until explicitly removed or the renderer is destroyed.
-	// Kept independent of SetDebugDrawEnabled().
-	[[nodiscard]] tour::renderer::ShapeScene& Shapes() { return m_shapeScene; }
-	[[nodiscard]] const tour::renderer::ShapeScene& Shapes() const { return m_shapeScene; }
-	void SetDebugDrawEnabled(bool enabled) { m_debugDrawEnabled = enabled; }
-	[[nodiscard]] bool DebugDrawEnabled() const { return m_debugDrawEnabled; }
-	// Host-owned game UI callback. Draws through the native render graph,
-	// after ImGui and before the scene's UI composite (no SDL renderer).
-	void SetExtraGameUi(std::function<void(tour::GameUiRenderer&,
-		smvk::Extent2D)> fn) { m_extraGameUi = std::move(fn); }
-
-	// Optional GPU-placed vegetation draw feed. Host owns the runtime,
-	// its LayerBinding and WorldMaskGrid for the full attachment lifetime.
-	// The renderer creates/destroys only its GPU resources, records
-	// BeginFrame -> cull/compaction/indirect, and consumes the commands
-	// in Main. The source meshes MUST already live in the static vertex
-	// heap; seeds are their absolute indexed-draw ranges. Off by default.
-	void SetGpuPlacementRuntime(tour::placement::PlacementWorldRuntime* runtime,
-		const tour::placement::PlacementIndirectCmd* seeds,
-		uint32_t seedCount, float interestRadius = 64.0f) {
-		m_gpuPlacementRuntime = runtime;
-		m_gpuPlacementSeedCount = seedCount > 8 ? 8 : seedCount;
-		for (uint32_t i = 0; i < m_gpuPlacementSeedCount; ++i)
-			m_gpuPlacementSeeds[i] = seeds[i];
-		m_gpuPlacementRadius = interestRadius > 0.0f ? interestRadius : 64.0f;
-	}
-	// The host calls this after changing the world's height/mask data;
-	// every interested placement tile will then regenerate.
-	void InvalidateGpuPlacementTerrain() { ++m_gpuPlacementTerrainRevision; }
-protected:
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
 	float m_uiScale = 1.0f;
@@ -2414,16 +2508,6 @@ public:
 	// once (one-time glTF re-import hitch, noted on console); true when
 	// the BVH is ready for raycasts.
 	bool EnsurePickScene();
-	// Headless J (TOURMALINE_DECAL_AUTOSPLAT=<frame>): auto-runs the
-	// crosshair spawn at the given frame so capture/A-B runs verify the
-	// pick path without window focus. -1 = off.
-	int m_decalAutoSplatAtFrame = -1;
-	// Decal visibility (UI checkbox + TOURMALINE_DECALS env): a render
-	// toggle over whatever entities the world carries, never content.
-	bool m_decalsEnabled = true;
-	// Unresolved decal texture URIs already warned about (warn-once-until-
-	// resolved, so a dangling ref doesn't spam per frame).
-	std::unordered_set<std::string> m_decalTexWarnedUris;
 
 	// ---- Deferred shadows (Square-Enix-style tiled/zBin pipeline, see
 	// smvk::DeferredShadows) ----
@@ -2600,8 +2684,6 @@ public:
 	// Host demo-content opt-in (see SetDemoContentEnabled). Default OFF.
 	bool m_demoContent = false;
 
-	// The control element owns the overlay; this pointer is borrowed.
-	UiTextureService m_uiTextureService{};
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	// Resolved KHR_lights_punctual set for the loaded scene (snapshotted
@@ -2641,6 +2723,16 @@ public:
 	float m_lightPointSize = 6.0f; // ImGui circle radius (px)
 	int m_maxLightLabels = 256;    // cap text draws (points are all drawn)
 
+	// Headless J (TOURMALINE_DECAL_AUTOSPLAT=<frame>): auto-runs the
+	// crosshair spawn at the given frame so capture/A-B runs verify the
+	// pick path without window focus. -1 = off.
+	int m_decalAutoSplatAtFrame = -1;
+	// Decal visibility (UI checkbox + TOURMALINE_DECALS env): a render
+	// toggle over whatever entities the world carries, never content.
+	bool m_decalsEnabled = true;
+	// Unresolved decal texture URIs already warned about (warn-once-until-
+	// resolved, so a dangling ref doesn't spam per frame).
+	std::unordered_set<std::string> m_decalTexWarnedUris;
 	// ---- Forward+ decals (world entities; see the decl block above) ----
 	uint32_t m_decalFrameCount = 0; // live decal count (set by UpdateDecals,
 	                                // read by UpdateFrameUniforms)
@@ -3900,38 +3992,6 @@ private:
     smvk::RayTracingDebugSummary m_rayTracingDebugSummary;
     const smvk::World* m_rayTracingCachedWorld = nullptr;
     bool m_rayTracingCacheValid = false;
-	// ---- World voxel fields (Engine/WorldFields — the atlas-backed
-	// virtual world volume system). World-space (NOT viewport-scoped):
-	// follows the frame's camera (PrepareFrame's interest point),
-	// publishes its field/page-table BDA into FrameUniforms::worldFields,
-	// and any pass samples it through the shared world_field.hlsli. One
-	// infrastructure, independent fields (fog density, wind, ...): the
-	// field set registers ONCE in onAttach (InitWorldFields — ids are
-	// registration order, fog first per WORLD_FIELD_ID_*). v1 is gated
-	// by TOURMALINE_WORLD_FIELDS=1 (the checkerboard shakedown field +
-	// budgeted pools; fog/wind register with their consumers).
-	// ---- The WorldPartition (Engine/WorldPartition) drives it: the
-	// frame builds a StreamingInterest from the camera (position +
-	// velocity), the partition runs the provider sequence, and the
-	// WorldFieldProvider maps CommitFrame onto the fields' publication.
-	// Brick generation runs on a small DEDICATED work pool (async — the
-	// pool's ring is ours alone per the enqueue/backpressure contract). ----
-	engine::worldfields::WorldFieldSystem m_worldFields;
-	engine::worldfields::WorldFieldProvider m_worldFieldProvider{ m_worldFields };
-	engine::worldpartition::WorldPartition m_worldPartition;
-	engine::worldpartition::WorldId m_activeMapId = 0;
-	double m_mapStreamingRadius = 512.0;
-	std::unique_ptr<smvk::ThreadPool> m_worldFieldWorkPool;
-	glm::vec3 m_worldFieldPrevEye{ 0.0f };
-	bool m_worldFieldPrevEyeValid = false;
-	// ---- Artistic LUT grading (TPP-style 32^3 strip, see tonemap.h) ----
-	// content/luts/*.png: 1024x32 sRGB-encoded strips. F7 exports the
-	// neutral strip + a screenshot reference into exports/ for Photoshop.
-	smvk::Holder<smvk::TextureHandle> m_lutTexture;
-	uint32_t m_lutBindless = UINT32_MAX;
-	std::string m_lutFile; // "" = off
-	float m_lutIntensity = 1.0f;
-
 	// Screenshot capture: the tonemap pass writes one extra RGBA8_SRGB
 	// target on the capture frame; the bytes read back to PNG after Execute.
 	smvk::Holder<smvk::ImageHandle> m_captureImage;
@@ -4224,6 +4284,14 @@ private:
 	bool m_bloomEnabled = true; // runs before Tonemap; gated with m_passes.bloom (B)
 	float m_bloomIntensity = 0.6f; // tonemap bloom-add scale (== BLOOM_INTENSITY)
 	float m_bloomThreshold = 800.0f; // pre-exposure HDR at the manual-exposure reference (== BLOOM_THRESHOLD; knee tracks at 0.25x; exposure-aware scaling inverts to 1/exposure)
+	// ---- Artistic LUT grading (TPP-style 32^3 strip, see tonemap.h) ----
+	// content/luts/*.png: 1024x32 sRGB-encoded strips. F7 exports the
+	// neutral strip + a screenshot reference into exports/ for Photoshop.
+	smvk::Holder<smvk::TextureHandle> m_lutTexture;
+	uint32_t m_lutBindless = UINT32_MAX;
+	std::string m_lutFile; // "" = off
+	float m_lutIntensity = 1.0f;
+
 	// ---- Tonemap operator (see Engine/Rendergraph/tonemap.h + tonemap.frag.hlsl) ----
 	// 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
 	// Exposure section; applied per-frame onto the tonemapDesc push.
@@ -4291,42 +4359,6 @@ private:
 		int type = 0;      // 0=point, 1=spot (kForwardPlusPoint/Spot)
 	};
 	std::vector<DebugLight> m_debugLights;
-	// Skydome visibility (K): a debug visibility toggle like wireframe /
-	// hide-transparent — NOT environment state (the renderer owns no
-	// environment; it renders the world's scene env). The pass-set flag
-	// m_passes.skydome stays the pipeline-shape switch.
-	bool m_skyEnabled = true;
-	smvk::Skydome m_skydome{};
-	// Tiled terrain heightfield (baked G-blocks from the world's TerrainSource;
-	// see Rendergraph/terrain.h): 256 m blocks x 4 LODs rendered in the
-	// Main pass right after the sky. m_passes.terrain is the pipeline
-	// shape switch; m_terrainEnabled is the debug visibility toggle (like
-	// the skydome's K). OFF by default (m_passes.terrain=false).
-	bool m_terrainEnabled = true;
-	smvk::terrain::TerrainField m_terrain{};
-	// Heightfield shadow mode/steps for the terrain frag tail (RunConfig
-	// snapshot at Configure: TOURMALINE_TERRAIN_HFSHADOW[_STEPS]).
-	int m_terrainHfShadow = 1;
-	int m_terrainHfSteps = 16;
-	// World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the runtime
-	// rework of the old OBB-volume zone system): the zone tables BAKE onto
-	// the 64 m tile grid whenever they change (a cheap per-frame HASH, not
-	// a per-frame pack) and the terrain/volumetric shaders resolve a zone
-	// by TILE ADDRESS. ALWAYS ON: the base record ([0], the scene's DEFAULT
-	// environment, the old zone-zero) is the weight-1 fallback everywhere
-	// (out-of-grid included). The old runtime toggle (m_envZonesEnabled)
-	// and the authored Scene::envZonesEnabled master switch are retired —
-	// the field stays on the tour/pak wire (forced true at every read) for
-	// format compatibility.
-	engine::worldpartition::WorldEnvTiles m_envTiles;
-	uint64_t m_envTilesDirtyHash = 0; // the zone-table fingerprint
-	bool m_envTilesPublished = false; // buffers exist + built
-	uint32_t m_envTileZoneCount = UINT32_MAX; // overflow log dedupe
-	size_t m_envTileCellBytes = 0; // the cells buffer size (recreate key)
-	// Hashes the zone tables + transforms (the bake inputs) and rebuilds +
-	// re-uploads the tiles on change (see UpdateEnvTiles — called before
-	// UpdateFrameUniforms).
-	void UpdateEnvTiles(uint32_t currentFrame);
 	// ---- Texture inspector (aux-texture debug view) ----
 	// A SEPARATE floating ImGui window (not part of the debug panel — it
 	// only opens on the keybind::TEXTURE_VIEWER_TOGGLE shortcut, backtick),
@@ -4422,33 +4454,6 @@ private:
 	// the shared body of both paths; see the viewer draw site). 2D gets
 	// one binding; cubemaps get the six per-face views + bindings.
 	void SelectTexDebugTexture(const smvk::TextureInfo& t);
-	tour::CameraPositioner_FirstPerson m_cameraPositioner = tour::CameraPositioner_FirstPerson(
-		glm::vec3(0.0f, 1.0f, 0.0f), //pos
-		glm::vec3(0.0f, 1.0f, 1.0f), //target
-		glm::vec3(0.0f, 1.0f, 0.0f) //up
-	);
-	tour::Camera m_camera = tour::Camera(m_cameraPositioner);
-	// (The virtual cursor for FPS mouselook moved to WorldRendererElement
-	// with the camera drive.)
-	// ---- Texture streaming (mip-tail residency, see
-	// Engine/Renderer/texture_streamer.h). Owns residency for glTF-loaded
-	// textures and for pak v4 digest textures (objects + tail registered
-	// by the host's world source; digest-less pak blobs stay
-	// full-resident, the pre-v4 behavior).
-	bool m_textureStreamingEnabled = true;
-	// Mip bias for the streamer's demand (RunConfig::texstreamMipBias via
-	// ApplyRunConfig): the resolution-scaling study pins asset quality to
-	// the 1080p reference with log2(render_scale) here, so the studied
-	// resolutions differ ONLY in pixels, never in demanded asset quality.
-	float m_texstreamMipBias = 0.0f;
-	// Geometry LOD streaming (Renderer/geometry_streamer.h): the env
-	// gate arms it at cluster load (what defers); this active flag is
-	// the per-frame tick gate - set at scene registration when the
-	// world still holds deferred siblings, cleared when the last one
-	// promotes.
-	bool m_geometryStreamingActive = false;
-	smvk::GeometryStreamer m_geometryStreamer{};
-	smvk::mem::LinearPtr<smvk::TextureStreamer> m_textureStreamer;
 	// ---- Async readback ticket (exposure histogram + deferred-shadow
 	// counters) ----
 	// Submit + non-blocking poll each tick: the render thread NEVER waits

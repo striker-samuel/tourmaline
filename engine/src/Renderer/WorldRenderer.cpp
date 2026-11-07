@@ -7905,6 +7905,94 @@ namespace engine {
 		return m_decalFrameCount;
 	}
 
+	// Decal picking and crosshair spawning (kept adjacent to its related renderer stage).
+	bool WorldRenderer::EnsurePickScene() {
+		// Pick acceleration needs CPU-side triangle soup. Cooked worlds
+		// carry none (pak clusters upload straight to the GPU; the glTF
+		// re-import source went away with the scene registry), so the
+		// BVH stays off and every consumer fails OPEN: the crosshair
+		// splat logs + no-ops. (The octree probe-culling consumer died
+		// with the .sggi loader.)
+		if (m_decalPickState == 0) {
+			std::cerr << "[Pick] no CPU pick source (cooked worlds upload "
+				"straight to the GPU) - pick BVH off\n";
+			m_decalPickState = -1;
+		}
+		return m_decalPickState > 0 && m_decalPickScene
+			&& !m_decalPickScene->Bvh().Empty();
+	}
+
+	void WorldRenderer::SpawnDecalAtCrosshair() {
+		if (!DecalsActive()) {
+			std::cerr << "[Decals] disabled (UI checkbox or TOURMALINE_DECALS=1)\n";
+			return;
+		}
+
+		// Camera ray: crosshair = view center; the view matrix maps world
+		// -> view (looking down -z), so the world-space forward is the
+		// negated third column of the inverse view.
+		const glm::mat4 invView = glm::inverse(m_camera.getViewMatrix());
+		const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
+		const glm::vec3 fwd = -glm::normalize(glm::vec3(invView[2]));
+
+		// Lazy pick BVH (first J): shared builder below (one-time glTF
+		// re-import hitch, noted on console).
+		if (!EnsurePickScene()) {
+			std::cerr << "[Decals] no pick geometry - crosshair spawn off\n";
+			return;
+		}
+
+		smvk::gi::TriangleBvh::Hit hit;
+		constexpr float kDecalPickRange = 500.0f;
+		if (!m_decalPickScene->Bvh().Raycast(eye, fwd, kDecalPickRange, hit)) {
+			std::cerr << "[Decals] crosshair miss (aim at a surface)\n";
+			return;
+		}
+		glm::vec3 n = m_decalPickScene->Bvh().TriangleNormal(hit.tri);
+		if (glm::length(n) < 1e-5f) {
+			std::cerr << "[Decals] degenerate hit triangle\n";
+			return;
+		}
+		n = glm::normalize(n);
+		if (glm::dot(n, fwd) > 0.0f)
+			n = -n; // two-sided BVH: face the incoming ray
+		const glm::vec3 hitPos = eye + fwd * hit.t;
+
+		// Texture V hint: camera up projected into the surface plane (so
+		// wall smears read upright); camera right as the near-floor
+		// fallback (world up degenerates against a floor's normal).
+		glm::vec3 camUp = glm::normalize(glm::vec3(invView[1]));
+		glm::vec3 camRight = glm::normalize(glm::vec3(invView[0]));
+		glm::vec3 up = camUp - n * glm::dot(camUp, n);
+		if (glm::length(up) < 0.1f)
+			up = camRight - n * glm::dot(camRight, n);
+
+		smvk::gi::Pcg32 rng(++m_decalSpawnSeed * 0x9E3779B97F4A7C15ull);
+		const float t = rng.Float();
+		// Splat size range for spawned decals (half extents, meters).
+		constexpr float kSpawnSizeMin = 0.28f;
+		constexpr float kSpawnSizeMax = 0.55f;
+		const float half = kSpawnSizeMin
+			+ (kSpawnSizeMax - kSpawnSizeMin) * t;
+
+		// Entity frame (see SceneDecal + DecalNodeFrame): local -Z is
+		// the projection axis INTO the surface, +Y the texture V hint,
+		// scale the half extents; the box hovers 0.3 m off the wall so
+		// the depth reach straddles it.
+		const glm::vec3 center = hitPos + n * 0.30f;
+		const glm::mat4 frame = ::DecalNodeFrame(center, -n, up,
+			glm::vec3(half, half, 0.85f));
+
+		::SceneDecal def{};
+		def.albedoUri = std::string(::kDecalBloodAlbedoUri);
+		def.normalUri = std::string(::kDecalBloodNormalUri);
+		def.opacity = 0.75f + 0.25f * rng.Float();
+		def.seed = m_decalSpawnSeed++;
+		def.name = "blood_splat_" + std::to_string(def.seed);
+		if (m_world->CreateDecalAt(frame, std::move(def)) == UINT32_MAX)
+			std::cerr << "[Decals] crosshair spawn failed (world refused)\n";
+	}
+
 	void WorldRenderer::SeedParticleEmitters() {
 		if (!m_particleDemo.emitters.empty())
 			return;
@@ -8094,93 +8182,6 @@ namespace engine {
 		return ps.UpdateEmitters(*m_context, currentFrame,
 			rows.data(),
 			(uint32_t)rows.size());
-	}
-
-	bool WorldRenderer::EnsurePickScene() {
-		// Pick acceleration needs CPU-side triangle soup. Cooked worlds
-		// carry none (pak clusters upload straight to the GPU; the glTF
-		// re-import source went away with the scene registry), so the
-		// BVH stays off and every consumer fails OPEN: the crosshair
-		// splat logs + no-ops. (The octree probe-culling consumer died
-		// with the .sggi loader.)
-		if (m_decalPickState == 0) {
-			std::cerr << "[Pick] no CPU pick source (cooked worlds upload "
-				"straight to the GPU) - pick BVH off\n";
-			m_decalPickState = -1;
-		}
-		return m_decalPickState > 0 && m_decalPickScene
-			&& !m_decalPickScene->Bvh().Empty();
-	}
-
-	void WorldRenderer::SpawnDecalAtCrosshair() {
-		if (!DecalsActive()) {
-			std::cerr << "[Decals] disabled (UI checkbox or TOURMALINE_DECALS=1)\n";
-			return;
-		}
-
-		// Camera ray: crosshair = view center; the view matrix maps world
-		// -> view (looking down -z), so the world-space forward is the
-		// negated third column of the inverse view.
-		const glm::mat4 invView = glm::inverse(m_camera.getViewMatrix());
-		const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
-		const glm::vec3 fwd = -glm::normalize(glm::vec3(invView[2]));
-
-		// Lazy pick BVH (first J): shared builder below (one-time glTF
-		// re-import hitch, noted on console).
-		if (!EnsurePickScene()) {
-			std::cerr << "[Decals] no pick geometry - crosshair spawn off\n";
-			return;
-		}
-
-		smvk::gi::TriangleBvh::Hit hit;
-		constexpr float kDecalPickRange = 500.0f;
-		if (!m_decalPickScene->Bvh().Raycast(eye, fwd, kDecalPickRange, hit)) {
-			std::cerr << "[Decals] crosshair miss (aim at a surface)\n";
-			return;
-		}
-		glm::vec3 n = m_decalPickScene->Bvh().TriangleNormal(hit.tri);
-		if (glm::length(n) < 1e-5f) {
-			std::cerr << "[Decals] degenerate hit triangle\n";
-			return;
-		}
-		n = glm::normalize(n);
-		if (glm::dot(n, fwd) > 0.0f)
-			n = -n; // two-sided BVH: face the incoming ray
-		const glm::vec3 hitPos = eye + fwd * hit.t;
-
-		// Texture V hint: camera up projected into the surface plane (so
-		// wall smears read upright); camera right as the near-floor
-		// fallback (world up degenerates against a floor's normal).
-		glm::vec3 camUp = glm::normalize(glm::vec3(invView[1]));
-		glm::vec3 camRight = glm::normalize(glm::vec3(invView[0]));
-		glm::vec3 up = camUp - n * glm::dot(camUp, n);
-		if (glm::length(up) < 0.1f)
-			up = camRight - n * glm::dot(camRight, n);
-
-		smvk::gi::Pcg32 rng(++m_decalSpawnSeed * 0x9E3779B97F4A7C15ull);
-		const float t = rng.Float();
-		// Splat size range for spawned decals (half extents, meters).
-		constexpr float kSpawnSizeMin = 0.28f;
-		constexpr float kSpawnSizeMax = 0.55f;
-		const float half = kSpawnSizeMin
-			+ (kSpawnSizeMax - kSpawnSizeMin) * t;
-
-		// Entity frame (see SceneDecal + DecalNodeFrame): local -Z is
-		// the projection axis INTO the surface, +Y the texture V hint,
-		// scale the half extents; the box hovers 0.3 m off the wall so
-		// the depth reach straddles it.
-		const glm::vec3 center = hitPos + n * 0.30f;
-		const glm::mat4 frame = ::DecalNodeFrame(center, -n, up,
-			glm::vec3(half, half, 0.85f));
-
-		::SceneDecal def{};
-		def.albedoUri = std::string(::kDecalBloodAlbedoUri);
-		def.normalUri = std::string(::kDecalBloodNormalUri);
-		def.opacity = 0.75f + 0.25f * rng.Float();
-		def.seed = m_decalSpawnSeed++;
-		def.name = "blood_splat_" + std::to_string(def.seed);
-		if (m_world->CreateDecalAt(frame, std::move(def)) == UINT32_MAX)
-			std::cerr << "[Decals] crosshair spawn failed (world refused)\n";
 	}
 
 	// ---------------------------------------------------------------------
@@ -8555,6 +8556,22 @@ namespace engine {
 		}
 	}
 
+	// LOD statistics (kept adjacent to its related renderer stage).
+	void WorldRenderer::ResetLodStats() {
+		m_lodShaderDraws = 0;
+		m_lodChainMeshes = 0;
+		m_lodChainLods = 0;
+		if (m_world) {
+			for (uint32_t i = 0; i < (uint32_t)m_world->meshLocations.size(); ++i) {
+				const uint32_t n = m_world->LodChainLength(i);
+				if (n > 1) {
+					++m_lodChainMeshes;
+					m_lodChainLods += n - 1;
+				}
+			}
+		}
+	}
+
 	// Error-driven LOD pick for one instance. Distance comes from the node's
 	// world translation to the render camera; the world-space simplifier
 	// error of each cooked sibling projects to pixels via
@@ -8924,21 +8941,6 @@ namespace engine {
 		});
 	}
 
-	void WorldRenderer::ResetLodStats() {
-		m_lodShaderDraws = 0;
-		m_lodChainMeshes = 0;
-		m_lodChainLods = 0;
-		if (m_world) {
-			for (uint32_t i = 0; i < (uint32_t)m_world->meshLocations.size(); ++i) {
-				const uint32_t n = m_world->LodChainLength(i);
-				if (n > 1) {
-					++m_lodChainMeshes;
-					m_lodChainLods += n - 1;
-				}
-			}
-		}
-	}
-
 	void WorldRenderer::RefreshGpuMemoryStats(bool force) {
 		if (!m_context)
 			return;
@@ -9102,6 +9104,44 @@ namespace engine {
 		// never shared with SSR's; the mirrors ride the same recreate).
 		smvk::SsgiDiffuseTaaInvalidateHistory(m_ssgiDiffuseTaa);
 		UpdateCameraAspect(renderExtent);
+	}
+
+	// Texture filtering (kept adjacent to its related renderer stage).
+	void WorldRenderer::SetTextureFiltering(TextureFiltering mode)
+	{
+		if (m_textureFiltering == mode)
+			return;
+		m_textureFiltering = mode;
+		ApplyTextureFiltering();
+	}
+
+	void WorldRenderer::ApplyTextureFiltering()
+	{
+		if (!m_context)
+			return;
+		// Trilinear baseline (linear within + linear between mips); aniso Nx
+		// adds maxAnisotropy N (CreateSampler clamps to the device limit, and
+		// enables VK anisotropy only when > 1).
+		const float maxAniso = TextureFilteringAnisotropy(m_textureFiltering);
+		// Slot 0: default Repeat sampler (material albedo/normal/metalness/...,
+		// shaders hardcode samplers[0]). Slot 2: clamp sampler (lightmap
+		// atlases, 3D probe volumes via samplers[2], cubemaps via dedup).
+		// Both are recreated in place so the bindless indices stay stable.
+		if (m_context->GetSamplerCount() > 0) {
+			smvk::SamplerCreateInfo repeatCi{};
+			repeatCi.mipmapMode = smvk::MipmapMode::Linear;
+			repeatCi.maxAnisotropy = maxAniso;
+			m_context->RecreateSampler(0, repeatCi);
+		}
+		if (m_context->GetSamplerCount() > 2) {
+			smvk::SamplerCreateInfo clampCi{};
+			clampCi.addressU = smvk::AddressMode::ClampToEdge;
+			clampCi.addressV = smvk::AddressMode::ClampToEdge;
+			clampCi.addressW = smvk::AddressMode::ClampToEdge;
+			clampCi.mipmapMode = smvk::MipmapMode::Linear;
+			clampCi.maxAnisotropy = maxAniso;
+			m_context->RecreateSampler(2, clampCi);
+		}
 	}
 
 	// ---------------------------------------------------------------------
@@ -17797,43 +17837,6 @@ namespace engine {
 	// (UpdateCamera + SetUIMode moved to WorldRendererElement with the
 	// input polling and the virtual cursor — see its UpdateCamera/
 	// SetUIMode. The frame build reads the driven camera off Camera().)
-
-	void WorldRenderer::SetTextureFiltering(TextureFiltering mode)
-	{
-		if (m_textureFiltering == mode)
-			return;
-		m_textureFiltering = mode;
-		ApplyTextureFiltering();
-	}
-
-	void WorldRenderer::ApplyTextureFiltering()
-	{
-		if (!m_context)
-			return;
-		// Trilinear baseline (linear within + linear between mips); aniso Nx
-		// adds maxAnisotropy N (CreateSampler clamps to the device limit, and
-		// enables VK anisotropy only when > 1).
-		const float maxAniso = TextureFilteringAnisotropy(m_textureFiltering);
-		// Slot 0: default Repeat sampler (material albedo/normal/metalness/...,
-		// shaders hardcode samplers[0]). Slot 2: clamp sampler (lightmap
-		// atlases, 3D probe volumes via samplers[2], cubemaps via dedup).
-		// Both are recreated in place so the bindless indices stay stable.
-		if (m_context->GetSamplerCount() > 0) {
-			smvk::SamplerCreateInfo repeatCi{};
-			repeatCi.mipmapMode = smvk::MipmapMode::Linear;
-			repeatCi.maxAnisotropy = maxAniso;
-			m_context->RecreateSampler(0, repeatCi);
-		}
-		if (m_context->GetSamplerCount() > 2) {
-			smvk::SamplerCreateInfo clampCi{};
-			clampCi.addressU = smvk::AddressMode::ClampToEdge;
-			clampCi.addressV = smvk::AddressMode::ClampToEdge;
-			clampCi.addressW = smvk::AddressMode::ClampToEdge;
-			clampCi.mipmapMode = smvk::MipmapMode::Linear;
-			clampCi.maxAnisotropy = maxAniso;
-			m_context->RecreateSampler(2, clampCi);
-		}
-	}
 
 	// ---------------------------------------------------------------------
 } // namespace engine
