@@ -4998,7 +4998,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     if (m_envTilesPublished && !m_resources.envTileRecordsBuffer.empty() &&
         !m_resources.envTileCellsBuffer.empty() &&
         !m_resources.envTileShapesBuffer.empty() &&
-        !m_resources.envTileIndicesBuffer.empty()) {
+        !m_resources.envTileIndicesBuffer.empty() &&
+        !m_resources.envTilePageTableBuffer.empty()) {
         data.envZones = m_context->GetBufferDeviceAddress(m_resources.envTileRecordsBuffer);
         data.envZoneCount = m_envTiles.RecordCount();
         // bit0 = tiles live; bit1 = any record authors volumetric
@@ -5013,6 +5014,7 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         data.envTileCells = m_context->GetBufferDeviceAddress(m_resources.envTileCellsBuffer);
         data.envTileShapes = m_context->GetBufferDeviceAddress(m_resources.envTileShapesBuffer);
         data.envTileIndices = m_context->GetBufferDeviceAddress(m_resources.envTileIndicesBuffer);
+        data.envTilePageTable = m_context->GetBufferDeviceAddress(m_resources.envTilePageTableBuffer);
     } else {
         data.envZones = 0;
         data.envZoneCount = 0;
@@ -5024,6 +5026,7 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         data.envTileCells = 0;
         data.envTileShapes = 0;
         data.envTileIndices = 0;
+        data.envTilePageTable = 0;
     }
 
     // ---- Forward+ decals (tiled projected splats) ----
@@ -9894,37 +9897,14 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
                     sizeof(worldpartition::EnvTileRecord) * m_envTiles.RecordCount(),
                     smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
                     smvk::AccessFlags::ShaderRead);
-                // Cells: recreate when the grid extent changed (the BDA
-                // re-reads fresh each frame; the old holder retires through
-                // the deferred queue while in-flight frames still read it).
-                const size_t cellBytes =
-                    sizeof(worldpartition::EnvTileCell) * m_envTiles.CellCount();
-                if (m_resources.envTileCellsBuffer.empty() || m_envTileCellBytes != cellBytes) {
-                    m_resources.envTileCellsBuffer = m_context->CreateBuffer(
-                        cellBytes, smvk::BufferType_Storage, "env tile cells");
-                    m_envTileCellBytes = m_resources.envTileCellsBuffer.empty() ? 0 : cellBytes;
-                    if (m_resources.envTileCellsBuffer.empty()) {
-                        smvk::OnResourceExhaustion("env tile cells");
-                        return; // count 0 -> the plain env path, retried next frame
-                    }
-                }
-                // The WorldPartition provider publishes resident cell
-                // headers after CommitFrame; do not upload all world cells
-                // here, even transiently on a scene edit.
+                // Cell headers are allocated ONLY for resident 4x4 root
+                // pages after the WorldPartition provider commits.
                 if (m_resources.envTileShapesBuffer.empty())
                     m_resources.envTileShapesBuffer = m_context->CreateBuffer(
                         sizeof(smvk::envzones::EnvZoneGpu) * worldpartition::kEnvTileMaxRecords,
                         smvk::BufferType_Storage, "env tile exact shapes");
-                const size_t indexBytes = sizeof(uint32_t) * m_envTiles.CandidateIndexCount();
-                if (m_resources.envTileIndicesBuffer.empty() || m_envTileIndexBytes != indexBytes) {
-                    m_resources.envTileIndicesBuffer = m_context->CreateBuffer(
-                        std::max(indexBytes, size_t(4)), smvk::BufferType_Storage,
-                        "env tile candidate indices");
-                    m_envTileIndexBytes = m_resources.envTileIndicesBuffer.empty() ? 0 : indexBytes;
-                }
-                if (m_resources.envTileShapesBuffer.empty() ||
-                    m_resources.envTileIndicesBuffer.empty()) {
-                    smvk::OnResourceExhaustion("env tile spatial index buffers");
+                if (m_resources.envTileShapesBuffer.empty()) {
+                    smvk::OnResourceExhaustion("env tile shape buffer");
                     return;
                 }
                 m_context->UploadDataToBuffer(m_resources.envTileShapesBuffer,
@@ -10544,15 +10524,23 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // intentionally resolve the base environment.
         if (m_envTilesPublished &&
             m_envTileProvider.Revision() != m_envTileResidentRevision) {
-            const size_t bytes = m_envTileProvider.CellCount() *
+            const size_t bytes = m_envTileProvider.PackedCellCount() *
                 sizeof(engine::worldpartition::EnvTileCell);
+            const size_t tableBytes = m_envTileProvider.PageTableCount() * sizeof(uint32_t);
             const size_t indexBytes = m_envTileProvider.IndexCount() * sizeof(uint32_t);
             if (m_envTileCellBytes != bytes ||
                 m_resources.envTileCellsBuffer.empty()) {
                 m_resources.envTileCellsBuffer = m_context->CreateBuffer(
                     std::max(bytes, size_t(32)), smvk::BufferType_Storage,
-                    "env tile resident cell headers");
+                    "env tile resident 4x4 cell pages");
                 m_envTileCellBytes = m_resources.envTileCellsBuffer.empty() ? 0 : bytes;
+            }
+            if (m_envTileTableBytes != tableBytes ||
+                m_resources.envTilePageTableBuffer.empty()) {
+                m_resources.envTilePageTableBuffer = m_context->CreateBuffer(
+                    std::max(tableBytes, size_t(4)), smvk::BufferType_Storage,
+                    "env tile root page table");
+                m_envTileTableBytes = m_resources.envTilePageTableBuffer.empty() ? 0 : tableBytes;
             }
             if (m_envTileIndexBytes != indexBytes ||
                 m_resources.envTileIndicesBuffer.empty()) {
@@ -10562,9 +10550,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_envTileIndexBytes = m_resources.envTileIndicesBuffer.empty() ? 0 : indexBytes;
             }
             if (!m_resources.envTileCellsBuffer.empty() &&
+                !m_resources.envTilePageTableBuffer.empty() &&
                 !m_resources.envTileIndicesBuffer.empty()) {
-                m_context->UploadDataToBuffer(m_resources.envTileCellsBuffer,
-                    m_envTileProvider.Cells(), bytes,
+                if (bytes)
+                    m_context->UploadDataToBuffer(m_resources.envTileCellsBuffer,
+                        m_envTileProvider.PackedCells(), bytes,
+                        smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                        smvk::AccessFlags::ShaderRead);
+                m_context->UploadDataToBuffer(m_resources.envTilePageTableBuffer,
+                    m_envTileProvider.PageTable(), tableBytes,
                     smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
                     smvk::AccessFlags::ShaderRead);
                 if (indexBytes)
