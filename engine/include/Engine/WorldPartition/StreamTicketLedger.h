@@ -6,15 +6,26 @@
 // Providers retain ownership of demand selection, content, and GPU retirement.
 // Ticket numbers are deliberately NOT reset by Clear(): a late completion
 // must never match a new request after a world or source revision swap.
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <map>
 #include <optional>
+#include <vector>
 #include <utility>
 
 namespace engine::worldpartition {
+
+// Shared deterministic priority selection. The budget is provider-local;
+// WorldPartition currently records requests but does not own cross-layer IO.
+template<class Candidate, class PriorityLess>
+void SelectStreamRequests(std::vector<Candidate>& candidates, size_t maxRequests,
+                          PriorityLess higherPriorityFirst) {
+    std::stable_sort(candidates.begin(), candidates.end(), higherPriorityFirst);
+    if (candidates.size() > maxRequests) candidates.resize(maxRequests);
+}
 
 template<class Key, class Less = std::less<Key>>
 class StreamTicketLedger {
