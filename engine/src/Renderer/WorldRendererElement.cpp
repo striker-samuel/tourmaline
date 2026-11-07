@@ -73,6 +73,7 @@ bool WorldRendererElement::onAttach() {
     // I key / gamepad Start toggles to UI (NORMAL). The old renderer
     // onAttach did this right after its ImGui init.
     SetUIMode(false);
+    m_lastGpuMemoryPoll = std::chrono::steady_clock::now();
     return true;
 }
 
@@ -104,6 +105,43 @@ void WorldRendererElement::onUpdate(float dt) {
     // Renderer clock latch (shader time + camera integration), then
     // the control pass (the old App::MainLoop Update slot).
     m_renderer.Tick(dt);
+    // Poll VMA-budget warnings at ~1 Hz using wall time, not simulation dt.
+    // This is advisory telemetry only: no eviction or quality changes.
+    if (m_renderer.m_context) {
+        const auto now = std::chrono::steady_clock::now();
+        const double seconds =
+            std::chrono::duration<double>(now - m_lastGpuMemoryPoll).count();
+        if (seconds >= 1.0) {
+            m_lastGpuMemoryPoll = now;
+            const auto warning = m_renderer.m_context->PollGpuMemoryWarning(seconds);
+            if (warning.changed) {
+                const char* state = "unavailable";
+                switch (warning.state) {
+                case smvk::GpuMemoryWarning::Healthy: state = "healthy"; break;
+                case smvk::GpuMemoryWarning::Pressure: state = "pressure"; break;
+                case smvk::GpuMemoryWarning::Critical: state = "critical"; break;
+                case smvk::GpuMemoryWarning::SpillSuspected: state = "spill-suspected"; break;
+                case smvk::GpuMemoryWarning::Unavailable: break;
+                }
+                // Re-query on state transitions only; quiet frames do not
+                // generate logs or extra memory diagnostics.
+                uint64_t localUsage = 0, localBudget = 0;
+                for (const auto& heap : m_renderer.m_context->GetGpuMemoryInfo()) {
+                    if (heap.deviceLocal) {
+                        localUsage += heap.usageBytes;
+                        localBudget += heap.budgetBytes;
+                    }
+                }
+                constexpr double MiB = 1024.0 * 1024.0;
+                std::fprintf(stderr,
+                             "[GpuMemory] %s local=%.1f/%.1f MiB (%.1f%%)"
+                             " nonlocal-growth=%.1f MiB (suspected spill is not confirmed eviction)\\n",
+                             state, double(localUsage) / MiB, double(localBudget) / MiB,
+                             warning.localRatio * 100.0,
+                             double(warning.nonlocalGrowthBytes) / MiB);
+            }
+        }
+    }
     Update(dt);
     // Status push for the renderer's panel footer (display only).
     m_renderer.SetUiModeHint(m_uiMode);
