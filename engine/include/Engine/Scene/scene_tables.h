@@ -249,6 +249,8 @@ struct NodeRows {
 struct NodeMetadata {
     uint32_t name = 0xFFFFFFFFu;
     std::string uuid;
+    // Per-instance direct-light receiving channels (not a mesh/material property).
+    uint32_t lightLayerMask = 0xffffffffu;
 };
 
 // ---- handwritten maintenance (no FindRow<T> — one explicit set per
