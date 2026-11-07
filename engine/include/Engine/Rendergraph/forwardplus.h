@@ -82,7 +82,7 @@ struct alignas(16) ForwardPlusLight {
     int32_t shadowTile = -1;           // 64 tile in spot atlas, -1 = none
     int32_t shadowMapIndex = -1;       // 68 bindless atlas index, -1 = none
     float shadowBias = 0.0f;           // 72 receiver-depth bias
-    float pad2_ = 0.0f;                // 76
+    uint32_t layerMask = 0xffffffffu;  // 76 direct-light channels
     int32_t cookieIndex = -1;          // 80 bindless gobo texture, -1 = none
     int32_t functionType = 0;          // 84 kForwardPlusFunction_*
     float functionSpeed = 1.0f;        // 88 animation speed multiplier
