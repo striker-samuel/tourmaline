@@ -461,11 +461,12 @@ class CandidateValidator {
         f.expected.clear();
     }
 
+    template <typename Selection>
     [[nodiscard]] bool Prepare(smvk::ResourceManager& ctx,
                                uint32_t flight,
                                const RenderDatabase& db,
                                const Addresses& addresses,
-                               const CandidateSelection& selected,
+                               const Selection& selected,
                                const RelativeFrustum& view,
                                InstanceCullGpuPush& push,
                                bool validate = true) {
