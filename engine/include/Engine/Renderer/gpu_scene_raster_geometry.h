@@ -143,4 +143,48 @@ class IndexedGeometryPublisher {
     }();
 };
 
+// Per-view rebase data used by the GPU-scene VS. The renderer's existing
+// absolute VP is translated into the same camera-relative space used by
+// DoubleFloatRelative. Rendering far beyond float camera authority still
+// requires a genuine double-precision camera construction.
+class RasterViewPublisher {
+  public:
+    static constexpr uint32_t Flights = smvk::limits::MaxFramesInFlight;
+
+    [[nodiscard]] bool Publish(smvk::ResourceManager& ctx,
+                               uint32_t flight,
+                               const glm::mat4& worldViewProjection,
+                               const glm::dvec3& cameraWorld) {
+        if (flight >= Flights)
+            return false;
+        if (buffers_[flight].empty()) {
+            buffers_[flight] = ctx.CreateBuffer(
+                sizeof(RasterViewData), smvk::BufferType_Storage,
+                "GPU scene camera-relative raster view");
+            if (buffers_[flight].empty())
+                return false;
+        }
+        glm::dmat4 translated(1.0);
+        translated[3] = glm::dvec4(cameraWorld, 1.0);
+        RasterViewData view{};
+        view.relativeViewProjection =
+            glm::mat4(glm::dmat4(worldViewProjection) * translated);
+        view.origin = tour::math::SplitDoubleFloat(cameraWorld);
+        ctx.UploadDataToBuffer(buffers_[flight], &view, sizeof(view),
+                               smvk::PipelineStage(smvk::PipelineStageBit_VertexShader),
+                               smvk::AccessFlags::ShaderRead);
+        return true;
+    }
+
+    [[nodiscard]] uint64_t DeviceAddress(const smvk::ResourceManager& ctx,
+                                         uint32_t flight) const {
+        if (flight >= Flights || buffers_[flight].empty())
+            return 0;
+        return ctx.GetBufferDeviceAddress(buffers_[flight]);
+    }
+
+  private:
+    std::array<smvk::Holder<smvk::BufferHandle>, Flights> buffers_{};
+};
+
 } // namespace tour::gpu_scene
