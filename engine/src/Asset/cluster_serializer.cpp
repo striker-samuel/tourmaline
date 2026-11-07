@@ -1864,6 +1864,12 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
                 blob.insert(blob.end(), bvhBytes.begin(), bvhBytes.end());
                 PutU32(blob, nodeCount); // bakedNodeCount (the fold's prefix bound)
                 PutU64(blob, stateHash);
+                // Per-instance direct-light receiver masks: dense node order.
+                PutU32(blob, nodeCount);
+                for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
+                    if (slotToDense[s] != UINT32_MAX)
+                        PutU32(blob, s < scene.metadata.size()
+                                         ? scene.metadata[s].lightLayerMask : 0xffffffffu);
                 if (stats)
                     stats->staticBvhPrims += bvhN;
             }
@@ -2621,7 +2627,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
         if (c.off < c.img.size()) {
             const uint32_t payloadLen = c.u32();
             if (!c.ok || payloadLen > c.img.size() - c.off ||
-                c.img.size() - c.off - payloadLen != 12)
+                c.img.size() - c.off - payloadLen != 12 + 4 + size_t(nodeCount) * 4)
                 return fail("bad scene static-bvh section framing");
             const uint8_t* bvhPayload = c.img.data() + c.off;
             c.off += payloadLen;
@@ -2645,6 +2651,14 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
                 cookedStaticBvhOut->bakedNodeCount = bakedNodeCount;
                 cookedStaticBvhOut->present = true;
             }
+            const uint32_t maskCount = c.u32();
+            if (!c.ok || maskCount != nodeCount)
+                return fail("bad scene receiver-mask count");
+            EnsureNodeMetadata(scene);
+            for (uint32_t n = 0; n < nodeCount; ++n)
+                scene.metadata[n].lightLayerMask = c.u32();
+            if (!c.ok)
+                return fail("truncated scene receiver masks");
         }
         if (c.off != c.img.size())
             return fail("scene blob trailing bytes mismatch");
