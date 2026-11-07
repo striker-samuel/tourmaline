@@ -1753,7 +1753,8 @@ static void EmitBucketMajor(State& s,
             if (slot >= kMaxBatches) {
                 std::fprintf(stderr,
                              "[GfxFilter] FATAL: seed emitter exceeded authored batch budget "
-                             "(%u commands).\n", kMaxBatches);
+                             "(%u commands).\n",
+                             kMaxBatches);
                 std::fflush(stderr);
                 std::abort();
             }
@@ -2066,7 +2067,8 @@ void PushDraw(State& s,
         std::fprintf(stderr,
                      "[GfxFilter] FATAL: view %u exceeded the authored draw budget "
                      "(%u draws). No geometry is dropped or alternate path used.\n",
-                     view, kMaxDraws);
+                     view,
+                     kMaxDraws);
         std::fflush(stderr);
         std::abort();
     }
@@ -2294,7 +2296,8 @@ void PushShadowDraw(State& s,
         std::fprintf(stderr,
                      "[GfxFilter] FATAL: shadow view %u exceeded the authored draw budget "
                      "(%u draws). No geometry is dropped or alternate path used.\n",
-                     sview, kMaxDraws);
+                     sview,
+                     kMaxDraws);
         std::fflush(stderr);
         std::abort();
     }
@@ -2362,13 +2365,6 @@ void BuildShadowList(State& s, uint32_t sview) {
         for (uint32_t ci = 0; ci < mesh.clusterCount; ++ci) {
             const Cluster& c = s.clusters[mesh.clusterStart + ci];
             ++sv.stats.clustersProcessed;
-            if (sv.emitScratch.size() >= kMaxBatches) {
-                std::fprintf(stderr,
-                             "[GfxFilter] FATAL: shadow view %u exceeded authored batch budget "
-                             "(%u clusters).\n", sview, kMaxBatches);
-                std::fflush(stderr);
-                std::abort();
-            }
             // Sphere-only cull: the normal-cone stage needs a valid eye
             // position, which directional cascade views do not have —
             // the rasterizer's backface cull covers facings instead.
@@ -2377,6 +2373,21 @@ void BuildShadowList(State& s, uint32_t sview) {
             if (!RenderViewIntersectsSphere(*sv.renderView, worldCenter, worldRadius)) {
                 ++sv.stats.clustersCulled;
                 continue;
+            }
+            // Capacity check AFTER the frustum rejection (the #263 review
+            // catch): a full list must still walk — and harmlessly reject —
+            // the rest of the mesh's clusters; only a SURVIVOR that cannot
+            // fit is over budget. Rejected clusters past a full list are
+            // free, so the abort names real emitted workload, not
+            // traversal tail.
+            if (sv.emitScratch.size() >= kMaxBatches) {
+                std::fprintf(stderr,
+                             "[GfxFilter] FATAL: shadow view %u exceeded authored batch budget "
+                             "(%u clusters).\n",
+                             sview,
+                             kMaxBatches);
+                std::fflush(stderr);
+                std::abort();
             }
             detail::EmitEntry e{};
             e.cluster = mesh.clusterStart + ci;
@@ -2712,7 +2723,10 @@ void BuildBatches(State& s, uint32_t view) {
             std::fprintf(stderr,
                          "[GfxFilter] FATAL: view %u exceeded authored candidate budget "
                          "(%u slots; current=%u, requested=%u).\n",
-                         view, cap, batchSlot, mesh.clusterCount);
+                         view,
+                         cap,
+                         batchSlot,
+                         mesh.clusterCount);
             std::fflush(stderr);
             std::abort();
         }
