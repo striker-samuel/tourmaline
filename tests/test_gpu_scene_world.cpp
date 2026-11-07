@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Headless contracts for the GPUIR World -> GPU scene bridge.
 #include <Engine/Renderer/gpu_scene_instancing.h>
+#include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Scene/scene.h>
 #include <cstdio>
@@ -28,6 +29,17 @@ int g_failures = 0;
 using namespace tour::gpu_scene;
 
 int main() {
+    // GPU-generated indexed draw commands must exactly match Vulkan's ABI.
+    {
+        const IndexedGeometry geo{231, 400, -12, 0};
+        const RasterGroup group{4, 12345, 17, 0};
+        const auto cmd = MakeRasterCommand(geo, group);
+        CHECK(cmd.indexCount == 231 && cmd.firstIndex == 400 &&
+              cmd.vertexOffset == -12 && cmd.instanceCount == 17 &&
+              cmd.firstInstance == 12345);
+        const RasterGroup empty{4, 0, 0, 0};
+        CHECK(MakeRasterCommand(geo, empty).instanceCount == 0);
+    }
     // Geometry-only revisions must not revisit CPU drawItems or reconcile
     // the complete instance registry. The empty World tests the control
     // path without requiring Vulkan or a cooked cluster.
