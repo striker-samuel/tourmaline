@@ -7790,7 +7790,7 @@ namespace engine {
 		// no STL nodes, buckets or string copies. At most two lookups per
 		// row; a 4x-sized table keeps probing short.
 		struct TextureCacheEntry {
-			const std::string* uri = nullptr;
+			smvk::StringViewT uri{};
 			int32_t bindless = -1;
 		};
 		size_t cacheCapacity = 8;
@@ -7805,10 +7805,12 @@ namespace engine {
 		auto resolveTex = [&](const std::string& uri) -> int32_t {
 			if (uri.empty())
 				return -1;
+			// Keys borrow stable scene URI storage for this call only.
+			const smvk::StringViewT uriView(uri);
 			size_t slot = static_cast<size_t>(
-				smvk::StringViewHash::Of(uri.data(), uri.size())) & cacheMask;
-			while (texCache[slot].uri) {
-				if (*texCache[slot].uri == uri)
+				smvk::StringViewHash{}(uriView)) & cacheMask;
+			while (texCache[slot].uri.valid()) {
+				if (texCache[slot].uri == uriView)
 					return texCache[slot].bindless;
 				slot = (slot + 1) & cacheMask;
 			}
@@ -7824,7 +7826,7 @@ namespace engine {
 			if (bindless < 0 && m_decalTexWarnedUris.insert(uri).second)
 				std::cerr << "[Decals] texture '" << uri
 					<< "' unresolved (no cluster texture) - decal skipped\n";
-			texCache[slot] = { &uri, bindless };
+			texCache[slot] = { uriView, bindless };
 			return bindless;
 		};
 
@@ -13046,23 +13048,37 @@ namespace engine {
 			const float det = glm::determinant(selectedFrame);
 			if (std::isfinite(det) && std::abs(det) > 1e-9f) {
 				const glm::mat4 invFrame = glm::inverse(selectedFrame);
-				std::unordered_set<uint32_t> subtree;
-				std::vector<uint32_t> pending{ m_selectedNode };
-				while (!pending.empty()) {
-					const uint32_t node = pending.back();
-					pending.pop_back();
-					if (node >= m_world->scene.hierarchy.size()
-						|| !subtree.insert(node).second)
-						continue;
+				// Frame-local node membership and DFS stack: no hash buckets or
+				// heap growth while drawing the editor selection outline.
+				const size_t nodeCount = m_world->scene.hierarchy.size();
+				auto& scratch = smvk::FrameArena();
+				auto* subtree = static_cast<uint8_t*>(
+					scratch.Allocate(nodeCount, alignof(uint8_t)));
+				std::memset(subtree, 0, nodeCount);
+				auto* pending = static_cast<uint32_t*>(
+					scratch.Allocate(nodeCount * sizeof(uint32_t), alignof(uint32_t)));
+				size_t pendingCount = 0;
+				pending[pendingCount++] = m_selectedNode;
+				subtree[m_selectedNode] = 1;
+				while (pendingCount) {
+					const uint32_t node = pending[--pendingCount];
 					for (int child = m_world->scene.hierarchy[node].firstChild;
-						child != -1;
-						child = m_world->scene.hierarchy[child].nextSibling)
-						pending.push_back(static_cast<uint32_t>(child));
+						child != -1;) {
+						const auto index = static_cast<size_t>(child);
+						if (index >= nodeCount)
+							break;
+						const int next = m_world->scene.hierarchy[index].nextSibling;
+						if (!subtree[index]) {
+							subtree[index] = 1;
+							pending[pendingCount++] = static_cast<uint32_t>(index);
+						}
+						child = next;
+					}
 				}
 				glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
 				bool hasMesh = false;
 				for (const auto& item : m_world->drawItems) {
-					if (!subtree.contains(item.node)
+					if (item.node >= nodeCount || !subtree[item.node]
 						|| item.node >= m_world->scene.globalTransform.size())
 						continue;
 					const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
