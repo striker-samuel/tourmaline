@@ -52,6 +52,7 @@
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/ray_tracing_debug.h>
@@ -2356,6 +2357,7 @@ class WorldRenderer : public IRenderer {
     tour::gpu_scene::RenderDatabase m_gpuSceneDatabase;
     tour::gpu_scene::WorldSynchronizer m_gpuSceneSync;
     tour::gpu_scene::Uploader m_gpuSceneUploader;
+    tour::gpu_scene::IndexedGeometryPublisher m_gpuSceneIndexedGeometry;
     // Feature-gated CPU/GPU instance visibility parity only. Separate
     // per-flight buffers, never used to create production draw commands.
     tour::gpu_scene::CandidateValidator m_gpuSceneValidator;
