@@ -81,6 +81,7 @@ struct SceneLight {
     float innerConeAngle = 0.0f; // radians, spot only
     float outerConeAngle = 0.0f; // radians, spot only
     uint32_t flags = 0;          // kSceneLightFlag_*
+    uint32_t layerMask = 0xffffffffu; // direct-light linking channels
     // Spot COOKIE (gobo; see the spot shading path): a texture asset ref
     // (a .texture file path or a plain image URI — the cluster pool
     // texture it names is projected through the cone; the light build
