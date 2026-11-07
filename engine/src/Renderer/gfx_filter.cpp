@@ -1751,14 +1751,11 @@ static void EmitBucketMajor(State& s,
             cmd.firstInstance = e.draw;
             const uint32_t slot = (uint32_t)outCmds.size();
             if (slot >= kMaxBatches) {
-                static bool warnedSeedCap = false;
-                if (!warnedSeedCap) {
-                    warnedSeedCap = true;
-                    SMVK_DEBUG_LOG("[GfxFilter] seed emitter: batch cap %u hit, dropping "
-                                   "commands (increase kMaxBatches).\n",
-                                   kMaxBatches);
-                }
-                break;
+                std::fprintf(stderr,
+                             "[GfxFilter] FATAL: seed emitter exceeded authored batch budget "
+                             "(%u commands).\n", kMaxBatches);
+                std::fflush(stderr);
+                std::abort();
             }
             outCmds.push_back(cmd);
             if (!outRanges.empty()) {
@@ -2334,7 +2331,6 @@ void BuildShadowList(State& s, uint32_t sview) {
     sv.drawConstants.clear();
     sv.drawConstants.reserve(sv.draws.size());
     sv.emitScratch.clear();
-    bool batchCapped = false;
     for (uint32_t sorted = 0; sorted < (uint32_t)order.size(); ++sorted) {
         const DrawRequest& d = sv.draws[order[sorted]];
         Draw dc{};
@@ -2367,15 +2363,11 @@ void BuildShadowList(State& s, uint32_t sview) {
             const Cluster& c = s.clusters[mesh.clusterStart + ci];
             ++sv.stats.clustersProcessed;
             if (sv.emitScratch.size() >= kMaxBatches) {
-                static bool warnedShadowBatchCap = false;
-                if (!warnedShadowBatchCap) {
-                    warnedShadowBatchCap = true;
-                    SMVK_DEBUG_LOG("[GfxFilter] BuildShadowList: batch cap %u hit, dropping "
-                                   "clusters (increase kMaxBatches).\n",
-                                   kMaxBatches);
-                }
-                batchCapped = true;
-                break;
+                std::fprintf(stderr,
+                             "[GfxFilter] FATAL: shadow view %u exceeded authored batch budget "
+                             "(%u clusters).\n", sview, kMaxBatches);
+                std::fflush(stderr);
+                std::abort();
             }
             // Sphere-only cull: the normal-cone stage needs a valid eye
             // position, which directional cascade views do not have —
@@ -2394,8 +2386,6 @@ void BuildShadowList(State& s, uint32_t sview) {
             sv.emitScratch.push_back(e);
             sv.stats.trianglesProcessed += c.triCount;
         }
-        if (batchCapped)
-            break;
     }
     // Bucket-major emit: opaque commands first (one VS-only multi-draw),
     // then masked per-material ranges (alpha-test FS push per range).
@@ -2672,8 +2662,7 @@ void BuildBatches(State& s, uint32_t view) {
         // the lit hooks). Does NOT affect the material sort above:
         // same-material draws stay batched whatever their values.
         dc.userData = d.userData;
-        // Filled below with the draw's candidate-slot base
-        // (0xFFFFFFFF = the cap dropped the draw).
+        // Filled below with the draw's candidate-slot base.
         dc.candidateBase = 0;
         v.drawConstants.push_back(dc);
     }
@@ -2717,32 +2706,26 @@ void BuildBatches(State& s, uint32_t view) {
             rangeStart = batchSlot;
         }
         // Candidate-slot base + (bucket, material) range walk.
-        if (batchSlot >= cap) {
-            v.drawConstants[sorted].candidateBase = 0xFFFFFFFFu;
-        } else {
-            v.drawConstants[sorted].candidateBase = batchSlot;
-            if (d.drawSet != cullRangeSet || d.material != cullRangeMaterial) {
-                pushCullRange(batchSlot);
-                cullRangeSet = d.drawSet;
-                cullRangeMaterial = d.material;
-                cullRangeStart = batchSlot;
-            }
-            if (cullRangeSet == DrawSetBit_Masked && cullOpaque == 0)
-                cullOpaque = batchSlot; // first masked slot (opaque span end)
+        // Validate the entire draw BEFORE assigning a candidate base:
+        // no partial mesh may enter the authored GPU workload.
+        if (mesh.clusterCount > cap - batchSlot) {
+            std::fprintf(stderr,
+                         "[GfxFilter] FATAL: view %u exceeded authored candidate budget "
+                         "(%u slots; current=%u, requested=%u).\n",
+                         view, cap, batchSlot, mesh.clusterCount);
+            std::fflush(stderr);
+            std::abort();
         }
-        if (batchSlot >= cap) {
-            static bool warnedBatchCap = false;
-            if (!warnedBatchCap) {
-                warnedBatchCap = true;
-                SMVK_DEBUG_LOG("[GfxFilter] BuildBatches: candidate slot cap %u hit, dropping "
-                               "clusters (increase kMaxBatchSlots).\n",
-                               cap);
-            }
-            continue; // mark the remaining draws' bases sentinel below
+        v.drawConstants[sorted].candidateBase = batchSlot;
+        if (d.drawSet != cullRangeSet || d.material != cullRangeMaterial) {
+            pushCullRange(batchSlot);
+            cullRangeSet = d.drawSet;
+            cullRangeMaterial = d.material;
+            cullRangeStart = batchSlot;
         }
+        if (cullRangeSet == DrawSetBit_Masked && cullOpaque == 0)
+            cullOpaque = batchSlot; // first masked slot (opaque span end)
         for (uint32_t ci = 0; ci < mesh.clusterCount; ++ci) {
-            if (batchSlot >= cap)
-                break; // partial draw (shader guards slot >= cap)
             const Cluster& c = s.clusters[mesh.clusterStart + ci];
             ++v.stats.clustersProcessed;
             Batch b{};
