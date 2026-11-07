@@ -6912,6 +6912,7 @@ void WorldRenderer::RefreshSceneLights(bool log, bool seedEnvSun) {
             pl.position = glm::vec3(G[3]);
             pl.range = L.range; // 0 = infinite (shaders handle <= 0)
             pl.intensity = L.intensity;
+            pl.layerMask = L.layerMask;
             pl.type = (int32_t)smvk::kForwardPlusPoint;
             // Authored cast-shadow request (the same flag spots use; the
             // frame's point selection honors it - six cube-face tiles).
@@ -6937,6 +6938,7 @@ void WorldRenderer::RefreshSceneLights(bool log, bool seedEnvSun) {
             sl.direction = emis;
             sl.range = L.range;
             sl.intensity = L.intensity;
+            sl.layerMask = L.layerMask;
             sl.innerAngle = L.innerConeAngle;
             sl.outerAngle = L.outerConeAngle;
             sl.type = (int32_t)smvk::kForwardPlusSpot;
