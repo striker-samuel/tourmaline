@@ -7034,12 +7034,22 @@ namespace engine {
 		}
 		// Deterministic node order (pak order is already sorted, but the
 		// world table's row order is not - sort the node ids).
-		std::vector<uint32_t> nodes;
-		nodes.reserve(scene.tables.lights.size());
-		for (const LightRow& row : scene.tables.lights)
-			nodes.push_back(row.node);
+		const size_t lightCount = scene.tables.lights.size();
+		auto& scratch = smvk::FrameArena();
+		std::span<uint32_t> nodes(static_cast<uint32_t*>(
+			scratch.Allocate(lightCount * sizeof(uint32_t), alignof(uint32_t))),
+			lightCount);
+		for (size_t i = 0; i < lightCount; ++i)
+			nodes[i] = scene.tables.lights[i].node;
 		std::sort(nodes.begin(), nodes.end());
-		std::vector<smvk::ForwardPlusLight> spots, points;
+		// At most one entry per authored light can enter either array.
+		std::span<smvk::ForwardPlusLight> spots(static_cast<smvk::ForwardPlusLight*>(
+			scratch.Allocate(lightCount * sizeof(smvk::ForwardPlusLight),
+				alignof(smvk::ForwardPlusLight))), lightCount);
+		std::span<smvk::ForwardPlusLight> points(static_cast<smvk::ForwardPlusLight*>(
+			scratch.Allocate(lightCount * sizeof(smvk::ForwardPlusLight),
+				alignof(smvk::ForwardPlusLight))), lightCount);
+		size_t spotCount = 0, pointCount = 0;
 		// Elected-sun locals: seed a sceneless env below (bind time) and
 		// die on return - the env is the single source of sun values.
 		glm::vec3 electedSunDir{ 0.0f, 1.0f, 0.0f };
@@ -7108,7 +7118,7 @@ namespace engine {
 				pl.functionType = int32_t(L.functionType);
 				pl.functionSpeed = L.functionSpeed;
 				pl.functionScale = L.functionScale;
-				points.push_back(pl);
+				points[pointCount++] = pl;
 			}
 			else if (L.type == ::SceneLight::Type::Spot) {
 				glm::vec3 emis = glm::vec3(G * glm::vec4(aimAxis, 0.0f));
@@ -7163,31 +7173,31 @@ namespace engine {
 				sl.functionType = int32_t(L.functionType);
 				sl.functionSpeed = L.functionSpeed;
 				sl.functionScale = L.functionScale;
-				spots.push_back(sl);
+				spots[spotCount++] = sl;
 			}
 		}
 		// Spots first (per-tile slot priority): the tile lists keep only the
 		// first FP_MAX_PER_TILE passing lights, so cone lights must not
 		// compete with the point crowd for those slots.
-		m_sceneLights.forwardPlusLights.reserve(spots.size() + points.size());
+		m_sceneLights.forwardPlusLights.reserve(spotCount + pointCount);
 		m_sceneLights.forwardPlusLights.insert(
-			m_sceneLights.forwardPlusLights.end(), spots.begin(), spots.end());
+			m_sceneLights.forwardPlusLights.end(), spots.begin(), spots.begin() + spotCount);
 		m_sceneLights.forwardPlusLights.insert(
-			m_sceneLights.forwardPlusLights.end(), points.begin(), points.end());
+			m_sceneLights.forwardPlusLights.end(), points.begin(), points.begin() + pointCount);
 		if (m_sceneLights.forwardPlusLights.size() > FP_MAX_LIGHTS) {
 			if (log)
 				std::cerr << "[Scene] resolved lights clamped: "
 				<< m_sceneLights.forwardPlusLights.size() << " -> " << FP_MAX_LIGHTS << "\n";
 			m_sceneLights.forwardPlusLights.resize(FP_MAX_LIGHTS);
 		}
-		if (log)
-			std::cerr << "[Scene] resolved lights: spots=" << spots.size()
-			<< " points=" << points.size()
-			<< (sunTaken ? " + sun" : " (env-default sun)")
-			<< (staticBakeOnly > 0
-				? " | static(bake-only)=" + std::to_string(staticBakeOnly)
-				: "")
-			<< "\n";
+		if (log) {
+			std::cerr << "[Scene] resolved lights: spots=" << spotCount
+				<< " points=" << pointCount
+				<< (sunTaken ? " + sun" : " (env-default sun)");
+			if (staticBakeOnly > 0)
+				std::cerr << " | static(bake-only)=" << staticBakeOnly;
+			std::cerr << "\n";
+		}
 		// Overwrite a sceneless env's default sun values with the election
 		// (sky disc, IBL tint and shadow-casting light stay in sync; sun
 		// fields only - the env block is lux-native, so the light's lux
