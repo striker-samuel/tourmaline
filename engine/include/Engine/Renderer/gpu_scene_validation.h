@@ -627,7 +627,7 @@ class CandidateValidator {
         // one-submesh-per-LOD database and reserves one work per candidate.
         // Admission checks must reject multi-submesh production scenes.
         if (flight >= Flights || candidateCount == 0u ||
-            candidateCount > (flight_[flight].validate ? 32768u : 524288u) ||
+            candidateCount > (flight_[flight].validate ? 32768u : 1048576u) ||
             db.instances.Size() > MaxShaderRowSlots || db.meshes.Size() > MaxShaderRowSlots ||
             db.lods.Size() > MaxShaderRowSlots || db.submeshes.Size() > MaxShaderRowSlots ||
             !addresses.instances || !addresses.meshes || !addresses.lods || !addresses.submeshes)
@@ -708,7 +708,7 @@ class CandidateValidator {
         if (flight >= Flights)
             return false;
         auto& f = flight_[flight];
-        if (!f.workPrepared || f.workCandidates == 0 || f.workCandidates > 524288u)
+        if (!f.workPrepared || f.workCandidates == 0 || f.workCandidates > 1048576u)
             return false;
         const uint32_t blockCount = (f.workCandidates + 255u) / 256u;
         if (blockCount == 0 || blockCount > 4096u ||
@@ -787,10 +787,10 @@ class CandidateValidator {
             return false;
         auto& f = flight_[flight];
         if (!f.workPrepared || f.workCandidates == 0 ||
-            f.workCandidates > (f.validate ? 32768u : 524288u))
+            f.workCandidates > (f.validate ? 32768u : 1048576u))
             return false;
         const uint64_t maxCommands = uint64_t(f.workCandidates) * (f.validate ? 16u : 1u);
-        if (maxCommands > 524288u || maxCommands > UINT32_MAX)
+        if (maxCommands > 1048576u || maxCommands > UINT32_MAX)
             return false;
         if (!Ensure(ctx, f.rasterCommands, f.rasterSize,
                     size_t(maxCommands) * sizeof(RasterIndirectCommand),
