@@ -1,84 +1,85 @@
-# Light layers / light linking: design and rollout
+# Light linking channels
 
-## Goal
+Tourmaline supports **32 independent direct-light channels** for each light
+and each renderable node. A light contributes to a receiver only when:
 
-Allow a light to affect only selected renderable receivers without
-duplicating geometry or requiring separate view layers. The user-facing
-model is a 32-bit **light channel mask** on each light and each renderable.
-A direct-light contribution is evaluated iff
-`(light.layers & receiver.layers) != 0`.
+```cpp
+(light.layerMask & node.lightLayerMask) != 0
+```
 
-This document and `Engine/Renderer/light_layers.h` define the CPU contract
-only. **This PR does not yet enable light linking in rendered frames.**
-GPU integration, scene persistence, and editor controls are follow-ups.
+The defaults are `0xffffffff` (all channels), and `0` intentionally
+receives/emits no linked direct light. Channels may be combined by ORing bits;
+there is no hierarchy or implicit exclusive ownership.
 
-## Compatibility and semantics
+## Editor
 
-- Defaults: **all 32 bits enabled** for both lights and receivers, so
-  unauthored assets render as before. The CPU helper exports
-  `kAllLayers`, `kNoLayers`, `kDefaultLayer`, `Layer(bit)` and
-  `Affects(light, receiver)`.
-- Zero explicitly receives no linked direct light; it is not a wildcard.
-  Multiple channels are ORed and overlap is sufficient (not equality).
-- Layers affect **direct** point, spot, and directional illumination.
-  They do **not** implicitly modify shadow caster visibility, baked GI,
-  sky IBL, lightmaps, reflection probes, decals, or volumetric fog.
-  Those paths need separate semantics before adding filtering.
-- The mask is independent of shadow request flags, culling tile masks,
-  the editor's visibility/isolation flags, and physical material layers.
-- 32 channels, zero-based index 0..31. Bit 31 must work as unsigned.
+Select any node and edit **Receive light channels** (8-digit hexadecimal).
+Select a light and edit **Emit light channels**. Both controls are undoable
+through the existing `SetLightAttr` edit command and persist through
+`.tour` saves. Different nodes referencing the same mesh can use different
+receive masks. Example: emit `00000002`, receive `00000002` to link only
+channel 1 (zero-based); receive `00000001` to exclude that light.
 
-## Proposed implementation sequence
+## .tour authoring
 
-1. **Scene and authoring:** Add `uint32_t layers = 0xffffffffu` to
-   `SceneLight` and an explicit renderable-node receiving mask (not a
-   shared mesh/material property, because two instances may receive
-   different lights). Expose per-object and per-light 32-checkbox or
-   compact hexadecimal mask controls. Add `.tour` verbs and replay
-   validation, then round-trip source -> cooker -> cooked schema ->
-   runtime. Missing fields in old content default to all bits.
-2. **CPU gather and GPU layout:** Forward+ lights currently use a
-   tightly matched **96-byte** `ForwardPlusLight` struct in
-   `engine/include/Engine/Rendergraph/forwardplus.h` and
-   `engine/shaders/common.hlsli`. Do not repurpose the shadow
-   `flags` bit or the float padding. Introduce an explicit uint mask
-   field in a coordinated CPU/HLSL layout revision with offset and
-   sizeof assertions, and update upload strides and any consumers of
-   the raw record. The directional-light path needs the same contract.
-3. **Receiver to shader:** Deliver a per-instance receiving mask through
-   the correct static, GPU-driven, skinned, and transparent draw paths.
-   Do not assign the mask on a mesh asset or material (instances can
-   differ). Propagate it to the fragment shader without interpolation.
-4. **Shading:** Check mask overlap before point/spot light evaluation
-   and before directional light contribution in the direct-light path.
-   Never remove lights from the global Forward+ tiled lists based on a
-   particular receiver: a tile can contain receivers on different
-   channels. Keep reflection-probe entries exempt.
-5. **Test and performance:** Verify default-scene pixel parity;
-   overlapping and disjoint masks on two instances of one mesh;
-   shadowed and unshadowed point/spot cases; directional-only case;
-   transparent and skinned geometry; GPU-driven vs direct draws; bit 31;
-   zero and all mask; imported and cooked `.tour` round trips.
-   Confirm no per-pixel mask-specific tile rebuilds, and benchmark
-   masked vs all-layers scenes.
+Receiver masks use the existing generic target addressing (including
+`-uuid` for stable node targeting). Masks are **unsigned 32-bit decimal**
+integers on the wire; the editor presents them in hex.
 
-## Risk register
+```text
+setLightAttr -n 12 -at layerMask -v 2;
+setLightAttr -n 27 -at receiverMask -v 2;
+setLightAttr -n 28 -at receiverMask -v 1;
+```
 
-**Layout and shader mismatch:** The HLSL Forward+ record is hardcoded
-to 96 bytes. Any new member must land with corresponding CPU offset,
-HLSL offset, upload bounds, and assertions in one implementation change.
+`layerMask` requires a light; `receiverMask` works on any node.
+The writer prints an exact decimal integer, not a float in reduced precision,
+so bit 31 round-trips intact. The scene cooker stores receiver masks on
+**dense node slots** and stores light masks in the cooked light definitions.
+This updates the cooked blob layout: recook content built before this change.
 
-**Shadow semantics:** A light being unlinked from a receiver must not
-accidentally disable another light's shadows. Receiver-specific shadow
-filtering is out of scope until the same semantic model exists for
-casters and receivers.
+## Game API
 
-**Backward compatibility:** Never reinterpret existing flags as layers.
-Missing serialized fields mean all channels, not zero.
+For game-created node handles:
 
-## CPU regression test
+```cpp
+const auto instance = world.AddNode();
+world[instance].SetLightLayerMask(1u << 3);
+```
 
-`c++ -std=c++20 -Iengine/include tests/test_light_layers.cpp -o /tmp/test_light_layers && /tmp/test_light_layers`
+For authored world nodes, access `scene.metadata[node].lightLayerMask`
+after resolving the node ID (or issue a `.tour` attribute override).
 
-The CPU-only test guards default parity, multi-bit overlap, empty masks,
-and bit 31. GPU tests will be required in the implementation PR.
+## Renderer
+
+- Point and spot lights publish `SceneLight::layerMask` as
+  `ForwardPlusLight::layerMask` at **byte 76**. This reuses the existing
+  4-byte padding field, retaining the 96-byte CPU/HLSL ABI and tile-culling
+  resource strides.
+- The single directional sun uses the existing 32-bit `Light::flags`
+  field as a direct-light mask; the default is all bits set.
+- Receivers are per-**node instance**, not per mesh or per material.
+  Direct indexed draws push the mask at **push-constant byte 248**;
+  filtered/GPU-driven draws publish it at **GfxDraw.misc3.y**. Vertex and
+  mesh shaders forward it `nointerpolation` to fragment location **10**.
+- The lit fragment shader rejects disjoint point/spot lights before BRDF
+  evaluation. Directional direct radiance is zeroed when the mask is disjoint.
+  Existing Forward+ tiled light lists are global per tile and are **not**
+  culled by a particular receiver; different receivers can share a tile.
+
+## Intentional boundaries
+
+Light linking affects **direct** diffuse/specular illumination only.
+Sky/ambient, baked GI, reflection probes, local and directional shadow
+**caster** visibility, fog, decals, and emissive are not linked channels.
+A light excluded from a receiver contributes no direct term on that receiver,
+regardless of its computed shadow visibility. Shadow casters still populate
+the shared shadow atlases, so receivers of other lights are unaffected.
+
+## Validation
+
+`LightLayersTests` (CPU masks, including zero/all/high-bit) is registered
+with CTest; `TourTests` covers .tour round-trips and replay of both light
+and non-light receiver masks. The repository's standard CMake/CTest build and
+shader compilation are the integration gates. A rendered GPU comparison of
+independently masked instances is still recommended before merging.
