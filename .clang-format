@@ -1,0 +1,27 @@
+BasedOnStyle: LLVM
+
+# Indentation
+IndentWidth: 4
+ContinuationIndentWidth: 4
+UseTab: Never
+
+# Line length
+ColumnLimit: 100
+PenaltyReturnTypeOnItsOwnLine: 1000
+
+# Function parameters and arguments
+AlignAfterOpenBracket: Align
+BinPackParameters: false
+BinPackArguments: false
+AllowAllParametersOfDeclarationOnNextLine: false
+
+# Braces
+BreakBeforeBraces: Attach
+
+# Operators and spacing
+BreakBeforeBinaryOperators: None
+SpaceBeforeParens: ControlStatements
+PointerAlignment: Left
+
+# Short functions
+AllowShortFunctionsOnASingleLine: Empty
