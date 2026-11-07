@@ -715,11 +715,22 @@ int RunPakApp(PakAppConfig cfg) {
                         return nullptr;
                     }
                     const uint32_t count = uint32_t(cooked.records.size());
-                    auto pageReader = [backend=envPageBackend, envWorld, count](
+                    const int64_t originX = int64_t(std::floor(
+                        double(cooked.gridMin.x) / engine::worldpartition::kEnvTileSize));
+                    const int64_t originZ = int64_t(std::floor(
+                        double(cooked.gridMin.y) / engine::worldpartition::kEnvTileSize));
+                    const uint32_t dimX = cooked.dimX, dimZ = cooked.dimZ;
+                    auto pageReader = [backend=envPageBackend, envWorld, count,
+                                       originX, originZ, dimX, dimZ,
+                                       present = std::move(cooked.pagePresent)](
                         engine::worldpartition::WorldSubcellKey key,
                         std::vector<uint32_t>& ids) {
+                        const int64_t x = key.x - originX, z = key.z - originZ;
+                        if (x < 0 || z < 0 || x >= dimX || z >= dimZ)
+                            return false;
+                        const bool required = present[size_t(z)*dimX + size_t(x)] != 0;
                         return tour::envcook::ReadEnvPage(
-                            backend->Reader(), envWorld, key, count, ids);
+                            backend->Reader(), envWorld, key, count, required, ids);
                     };
                     if (!rendererRaw->InstallCookedEnvironment(
                             envWorld, cooked.gridMin, cooked.dimX, cooked.dimZ,
