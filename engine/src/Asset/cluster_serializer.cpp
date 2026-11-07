@@ -1107,6 +1107,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             PutU32(blob, l->functionType);
             PutF32(blob, l->functionSpeed);
             PutF32(blob, l->functionScale);
+            PutU32(blob, l->layerMask);
 
             if (!writer.AddBlob(PakAssetKind::Light, uri, std::move(blob)))
                 return fail("invalid light uri: " + uri);
@@ -3425,6 +3426,10 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
         l.functionType = lightFn;
         l.functionSpeed = lightFnSpeed;
         l.functionScale = lightFnScale;
+        // New cooked light payload: light linking mask after light function.
+        l.layerMask = (c.off + 4 <= c.img.size()) ? c.u32() : 0xffffffffu;
+        if (!c.ok)
+            return fail("truncated light layer mask: " + e->path);
         const ClusterLightHandle h = cluster->CreateLight(std::move(l));
         if (!h.valid())
             return fail("CreateLight failed for: " + uri);
