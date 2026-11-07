@@ -33,6 +33,14 @@ template <typename T> void Ack(Table<T, smvk::limits::MaxFramesInFlight>& table,
 }
 void CheckContiguousAllocations() {
     Table<Lod, smvk::limits::MaxFramesInFlight> table;
+    // New production API uses caller-owned stack storage, never a result vector.
+    const std::array<Lod, 2> initial{{Lod{}, Lod{}}};
+    std::array<Handle<Lod>, 2> initialIds{};
+    CHECK(table.InsertContiguous(std::span<const Lod>(initial),
+                                 std::span<Handle<Lod>>(initialIds)));
+    CHECK(initialIds[0] && initialIds[1].slot == initialIds[0].slot + 1);
+    CHECK(table.Erase(initialIds[0]));
+    CHECK(table.Erase(initialIds[1]));
     const std::array<Lod, 4> four{{Lod{}, Lod{}, Lod{}, Lod{}}};
     auto a = table.InsertContiguous(four);
     CHECK(a.size() == 4);
