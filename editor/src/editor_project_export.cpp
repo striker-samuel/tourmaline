@@ -166,6 +166,21 @@ std::string WithRecipeDirective(const std::string& source,
            source.substr(insertAt);
 }
 
+// Append repeated directives rather than replacing the first owned item.
+std::string WithRecipeListItem(const std::string& source,
+                               const std::string& pakId,
+                               const std::string& key,
+                               const std::string& value) {
+    const size_t start = source.find("[pak " + pakId + "]");
+    if (start == std::string::npos)
+        return source;
+    const size_t next = source.find("[pak ", start + 1);
+    const size_t insertAt = next == std::string::npos ? source.size() : next;
+    const std::string prefix = insertAt > 0 && source[insertAt - 1] != '\n' ? "\n" : "";
+    return source.substr(0, insertAt) + prefix + key + " " + value + "\n" +
+           source.substr(insertAt);
+}
+
 // Remove one repeated include/depends directive, without touching siblings.
 std::string WithoutRecipeListItem(const std::string& source,
                                   const std::string& pakId,
@@ -405,8 +420,7 @@ void EditorApp::DrawProjectExportWindow() {
         m_projectExportRecipeText.data(), preview, previewError);
 
     if (ImGui::BeginTabBar("##recipeViews")) {
-        if (ImGui::BeginTabItem("Configure", nullptr,
-                               m_projectExportVisualMode ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (ImGui::BeginTabItem("Configure")) {
             m_projectExportVisualMode = true;
             if (!parsed) {
                 ImGui::TextWrapped("The recipe has a syntax error: %s",
@@ -468,7 +482,7 @@ void EditorApp::DrawProjectExportWindow() {
                                              sizeof(m_projectExportNewIncludeBuf));
                     ImGui::SameLine();
                     if (ImGui::Button("Add include") && m_projectExportNewIncludeBuf[0]) {
-                        apply(WithRecipeDirective(
+                        apply(WithRecipeListItem(
                             m_projectExportRecipeText.data(), pak.id, "include",
                             RecipeValue(m_projectExportNewIncludeBuf)));
                         m_projectExportNewIncludeBuf[0] = '\0';
@@ -488,7 +502,7 @@ void EditorApp::DrawProjectExportWindow() {
                                              sizeof(m_projectExportNewDependsBuf));
                     ImGui::SameLine();
                     if (ImGui::Button("Add dependency") && m_projectExportNewDependsBuf[0]) {
-                        apply(WithRecipeDirective(
+                        apply(WithRecipeListItem(
                             m_projectExportRecipeText.data(), pak.id, "depends",
                             RecipeValue(m_projectExportNewDependsBuf)));
                         m_projectExportNewDependsBuf[0] = '\0';
@@ -524,8 +538,7 @@ void EditorApp::DrawProjectExportWindow() {
             }
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Text", nullptr,
-                               !m_projectExportVisualMode ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (ImGui::BeginTabItem("Text")) {
             m_projectExportVisualMode = false;
             ImGui::TextDisabled("Full .tourrecipe source. Comments and advanced directives are preserved.");
             if (ImGui::InputTextMultiline("##tourrecipe",
