@@ -1466,37 +1466,30 @@ void mergeScenes(Scene& scene,
                  bool mergeMeshes,
                  bool mergeMaterials,
                  bool mergeLights) {
-    // Create new root node (slot 0 of the reset destination).
-    scene.hierarchy.assign(1,
-                           Hierarchy{
-                               .parent = -1,
-                               .firstChild = -1,
-                               .nextSibling = -1,
-                               .lastSibling = -1,
-                               .level = 0,
-                           });
-    // The fresh-root reset also resets the slot machinery (Epoch 6b): a
-    // stale free list would hand addNode recycled slots whose parallel-
-    // array entries belong to the pre-reset graph.
-    scene.nodeGeneration.assign(1, kNodeSlotAliveBit);
+    // FLAT MERGE: the destination resets to EMPTY — no synthetic "World"
+    // root node. Top level after the merge = every source's live ROOTS,
+    // parent relationships preserved verbatim (roots stay parent == -1);
+    // rootTransforms pre-multiply onto each source root's LOCAL directly
+    // (identical globals to the old under-an-identity-parent form). The
+    // reset also resets the slot machinery (Epoch 6b): a stale free list
+    // would hand addNode recycled slots whose parallel-array entries
+    // belong to the pre-reset graph.
+    scene.hierarchy.clear();
+    scene.nodeGeneration.clear();
     scene.nodeFreeList.clear();
 
-    // I dont care about names for now at least.
-    // scene.metadata[0].name = 0;
-    // scene.nodeNames      = { "NewRoot" };
-
-    scene.localTransform.assign(1, glm::mat4(1.f));
-    scene.globalTransform.assign(1, glm::mat4(1.f));
-    scene.localTransformDouble.assign(1, glm::dmat4(1.0));
-    scene.globalTransformDouble.assign(1, glm::dmat4(1.0));
-    scene.localTransformFloatShadow.assign(1, glm::mat4(1.0f));
-    scene.staticRoot.assign(1, 0);
-    scene.staticNode.assign(1, 0);
-    scene.noLightmap.assign(1, 0);
-    scene.lightmap.assign(1, 0);
-    scene.castsVolumetricShadow.assign(1, 0);
-    scene.ditherCloseup.assign(1, 0);
-    scene.hidden.assign(1, 0);
+    scene.localTransform.clear();
+    scene.globalTransform.clear();
+    scene.localTransformDouble.clear();
+    scene.globalTransformDouble.clear();
+    scene.localTransformFloatShadow.clear();
+    scene.staticRoot.clear();
+    scene.staticNode.clear();
+    scene.noLightmap.clear();
+    scene.lightmap.clear();
+    scene.castsVolumetricShadow.clear();
+    scene.ditherCloseup.clear();
+    scene.hidden.clear();
     // The hierarchy reset above makes EVERY prior association row dead
     // (node ids no longer resolve) — clear all tables with it. Lights
     // especially: cooked punctual lights are Cluster pool assets (pool
@@ -1505,7 +1498,6 @@ void mergeScenes(Scene& scene,
     scene.tables = {};
     scene.rowsForNode.clear();
     scene.metadata.clear();
-    setNodeName(scene, 0, "World");
 
     if (scenes.empty())
         return;
@@ -1525,21 +1517,23 @@ void mergeScenes(Scene& scene,
     // became an explicit map — correct for holed sources, numerically
     // identical for dense ones). srcSlot -> dst NodeId, UINT32_MAX = hole.
     std::vector<NodeId> nodeMap;
-    // Each source's root in the DESTINATION (its first live slot — slot 0
-    // for a dense source, matching the old offs arithmetic exactly).
-    std::vector<NodeId> srcRoots;
+    // Each source's live ROOTS in the DESTINATION (parent == -1 in the
+    // source; a multi-root source contributes every root — the flat
+    // merge keeps them independent).
+    std::vector<std::vector<NodeId>> srcRoots;
     srcRoots.reserve(scenes.size());
     for (const Scene* s : scenes) {
         const uint32_t srcSlotCount = (uint32_t)s->hierarchy.size();
         nodeMap.assign(srcSlotCount, UINT32_MAX);
 
         // Pass 1: allocate a destination slot per LIVE source node (level
-        // +1: everything sits one rung lower under the merged root) and
-        // copy its payload. Links stay default; pass 2 maps them.
+        // VERBATIM — no merged root to sit under, roots stay at their
+        // authored depth) and copy its payload. Links stay default; pass
+        // 2 maps them.
         for (uint32_t src = 0; src < srcSlotCount; ++src) {
             if (!IsLiveSlot(*s, src))
                 continue;
-            const int dst = addNode(scene, -1, s->hierarchy[src].level + 1);
+            const int dst = addNode(scene, -1, s->hierarchy[src].level);
             assert(dst >= 0);
             nodeMap[src] = (NodeId)dst;
             scene.localTransform[size_t(dst)] = s->localTransform[src];
@@ -1594,15 +1588,14 @@ void mergeScenes(Scene& scene,
         if (mergeMaterials)
             mergeVectors(scene.materialNames, s->materialNames);
 
-        // The source's root for the relink pass: first live slot (slot 0 of
-        // a dense source — the old code's `offs` node).
-        NodeId srcRoot = UINT32_MAX;
+        // The source's ROOTS for the flat merge (every live root, not
+        // just the first live slot — a multi-root source keeps every
+        // root independent).
+        std::vector<NodeId> srcRootsThis;
         for (uint32_t src = 0; src < srcSlotCount; ++src)
-            if (nodeMap[src] != UINT32_MAX) {
-                srcRoot = nodeMap[src];
-                break;
-            }
-        srcRoots.push_back(srcRoot);
+            if (nodeMap[src] != UINT32_MAX && s->hierarchy[src].parent < 0)
+                srcRootsThis.push_back(nodeMap[src]);
+        srcRoots.push_back(std::move(srcRootsThis));
 
         // Typed tables: append the source rows through the map with the
         // resource offsets (one row at a time — SetMesh/SetMaterial keep
@@ -1659,35 +1652,22 @@ void mergeScenes(Scene& scene,
         }
     }
 
-    // Attach each source's root under the merged root (the old
-    // 'fixing nextSibling of the old roots' pass, map-based): a chain in
-    // source order, rootTransforms pre-multiplied onto the roots.
-    {
-        NodeId prevRoot = UINT32_MAX;
-        for (size_t idx = 0; idx < scenes.size(); ++idx) {
-            const NodeId root = srcRoots[idx];
-            if (root == UINT32_MAX)
-                continue; // empty source: contributes no hierarchy
-            scene.hierarchy[root].parent = 0;
-            if (!rootTransforms.empty()) {
-                // Preserve the precise source translation when applying the
-                // legacy float root offset; update the float shadow as well so
-                // recalculation cannot silently re-import a rounded matrix.
-                scene.localTransformDouble[root] =
-                    glm::dmat4(rootTransforms[idx]) * scene.localTransformDouble[root];
-                scene.localTransform[root] = glm::mat4(scene.localTransformDouble[root]);
-                scene.localTransformFloatShadow[root] = scene.localTransform[root];
-            }
-            if (prevRoot == UINT32_MAX)
-                scene.hierarchy[0].firstChild = int(root);
-            else
-                scene.hierarchy[prevRoot].nextSibling = int(root);
-            prevRoot = root;
+    // FLAT MERGE TAIL: nothing attaches anywhere — every source root
+    // stays parent == -1. rootTransforms pre-multiply onto EACH of the
+    // source's roots' LOCAL transforms directly (identical globals to
+    // the old under-an-identity-parent form: global = rootXform * local).
+    for (size_t idx = 0; idx < scenes.size(); ++idx) {
+        if (rootTransforms.empty())
+            break;
+        for (NodeId root : srcRoots[idx]) {
+            // Preserve the precise source translation when applying the
+            // legacy float root offset; update the float shadow as well so
+            // recalculation cannot silently re-import a rounded matrix.
+            scene.localTransformDouble[root] =
+                glm::dmat4(rootTransforms[idx]) * scene.localTransformDouble[root];
+            scene.localTransform[root] = glm::mat4(scene.localTransformDouble[root]);
+            scene.localTransformFloatShadow[root] = scene.localTransform[root];
         }
-        if (prevRoot != UINT32_MAX)
-            scene.hierarchy[prevRoot].nextSibling = -1;
-        else
-            scene.hierarchy[0].firstChild = -1; // no live nodes at all
     }
 
     scene.staticNode.assign(scene.hierarchy.size(), 0);

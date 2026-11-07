@@ -4196,18 +4196,21 @@ void TestSceneFlagTables() {
     Scene merged;
     mergeScenes(
         merged, {&s0, &s1}, {glm::mat4(1.0f), glm::mat4(1.0f)}, {0u, 0u}, false, false, false);
-    // Layout: 0 = the merged root, 1..2 = s0 (shifted +1), 3 = s1 (one
-    // node) - four total, every source node keeping its own flags.
-    Check(merged.hierarchy.size() == 4, "flagtables merge hierarchy");
-    Check(merged.ditherCloseup.size() == 4 && merged.castsVolumetricShadow.size() == 4,
+    // FLAT MERGE (no synthetic "World" root): 0..1 = s0 (ids NOT
+    // shifted), 2 = s1 — three total, every source node keeping its own
+    // flags, roots staying parent == -1.
+    Check(merged.hierarchy.size() == 3, "flagtables merge hierarchy");
+    Check(merged.ditherCloseup.size() == 3 && merged.castsVolumetricShadow.size() == 3,
           "flagtables merge both tables carried");
-    if (merged.ditherCloseup.size() == 4)
-        Check(merged.ditherCloseup[2] != 0 && merged.ditherCloseup[1] == 0 &&
-                  merged.ditherCloseup[3] == 0,
+    Check(merged.hierarchy[0].parent == -1 && merged.hierarchy[2].parent == -1,
+          "flagtables merge roots stay flat");
+    if (merged.ditherCloseup.size() == 3)
+        Check(merged.ditherCloseup[1] != 0 && merged.ditherCloseup[0] == 0 &&
+                  merged.ditherCloseup[2] == 0,
               "flagtables merge dither position");
-    if (merged.castsVolumetricShadow.size() == 4)
-        Check(merged.castsVolumetricShadow[1] != 0 && merged.castsVolumetricShadow[3] != 0 &&
-                  merged.castsVolumetricShadow[0] == 0 && merged.castsVolumetricShadow[2] == 0,
+    if (merged.castsVolumetricShadow.size() == 3)
+        Check(merged.castsVolumetricShadow[0] != 0 && merged.castsVolumetricShadow[2] != 0 &&
+                  merged.castsVolumetricShadow[1] == 0,
               "flagtables merge volumetric position");
 
     // --- save/load: the legacy .scene blob round-trips BOTH sections ---

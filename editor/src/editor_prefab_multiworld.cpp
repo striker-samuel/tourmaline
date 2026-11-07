@@ -969,14 +969,19 @@ void EditorApp::DrawPrefabWindow() {
                     ImGui::PopID();
                 }
             } else {
-                for (int child = source.hierarchy[0].firstChild; child >= 0;
-                     child = source.hierarchy[child].nextSibling)
-                    drawNode(drawNode, uint32_t(child));
+                // FLAT SCENE: top level = every live ROOT (parent == -1),
+                // not the children of node 0 (the synthetic world root is
+                // gone; node 0 is regular content and renders itself).
+                for (uint32_t n = 0; n < uint32_t(source.hierarchy.size()); ++n) {
+                    if (source.hierarchy[n].parent != -1 || !IsLiveSlot(source, n))
+                        continue;
+                    drawNode(drawNode, n);
+                }
             }
         }
         ImGui::EndChild();
         const uint32_t node = m_prefab.selected;
-        if (node > 0 && node < source.localTransform.size() && IsLiveSlot(source, node)) {
+        if (node < source.localTransform.size() && IsLiveSlot(source, node)) {
             glm::vec3 t, r, sc;
             if (ReadTrs(source.localTransform[node], t, r, sc)) {
                 ImGui::Text("Node %u", node);

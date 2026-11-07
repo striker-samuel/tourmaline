@@ -1220,9 +1220,11 @@ void World::ResolveAndFixup_clusters() {
     // single-cluster bulk copy too - it swaps the Scene instance).
     regions = RegionRegistry{};
     // Fail BEFORE rebuilding if aggregate live nodes exceed the user
-    // budget. The synthetic world root consumes one slot too.
+    // budget. No synthetic world root: the World is a CONTAINER, not a
+    // node — every slot belongs to merged content (the old root consumed
+    // one slot of every scene's budget).
     if (scene.nodeSlotBudget) {
-        size_t needed = 1;
+        size_t needed = 0;
         for (const auto& c : clusters) {
             needed += tour::scene::LiveNodeCount(c->scene);
             if (needed > scene.nodeSlotBudget)
@@ -1298,27 +1300,15 @@ void World::ResolveAndFixup_clusters() {
     // an unauthored cluster never shadows an authored one).
     bool renderTaken = false;
 
-    // Append the synthetic root to the copied single-cluster scene.
-    // Do not recycle a retired source slot (node ids must stay 1:1).
-    std::vector<uint32_t> savedFreeList;
-    if (singleCluster) {
-        savedFreeList = std::move(scene.nodeFreeList);
-        scene.nodeFreeList.clear();
-    }
-    const int root = addNode(scene, -1, 0);
-    if (singleCluster)
-        scene.nodeFreeList = std::move(savedFreeList);
-    scene.localTransform[root] = glm::mat4(1.0f);
-    scene.globalTransform[root] = glm::mat4(1.0f);
-    if (!singleCluster) {
-        scene.staticRoot.assign(scene.hierarchy.size(), 0);
-        scene.staticNode.assign(scene.hierarchy.size(), 0);
-        scene.noLightmap.assign(scene.hierarchy.size(), 0);
-        scene.lightmap.assign(scene.hierarchy.size(), 0);
-        scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
-        scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
-        scene.hidden.assign(scene.hierarchy.size(), 0);
-    }
+    // FLAT WORLD: no synthetic root node. The World is a container that
+    // owns the merged Scene; top level = every live root (parent == -1)
+    // of every merged cluster scene, preserved VERBATIM — the
+    // single-cluster fast path keeps the copied scene exactly as cooked
+    // (node ids 1:1, parents untouched), and the legacy merge appends
+    // each cluster's nodes with their original parent relationships
+    // remapped. addNode in pass 1 below maintains all per-slot parallel
+    // arrays (the flag tables grow with zeros), so no pre-sizing is
+    // needed on the reset path either.
 
     for (auto& clusterPtr : clusters) {
         Cluster& cluster = *clusterPtr.get();
@@ -1411,33 +1401,24 @@ void World::ResolveAndFixup_clusters() {
                 h.lastSibling = mapLink(sh.lastSibling);
             }
 
-        // Reparent the cluster root under the world root. The root
-        // is the cluster's FIRST LIVE slot (slot 0 of a dense scene
-        // — the old nodeOffset node). EMPTY cluster scenes (a
-        // payload-only dynamic cluster, a cook cluster with assets
-        // but no nodes) contribute no hierarchy: every map entry is
-        // UINT32_MAX — skip (nothing to reparent or dirty below).
-        NodeId clusterRootNode = UINT32_MAX;
-        for (uint32_t s = 0; s < clusterSlotCount; ++s)
-            if (nodeMap[s] != UINT32_MAX) {
-                clusterRootNode = nodeMap[s];
-                break;
-            }
-        if (clusterRootNode != UINT32_MAX) {
-            scene.hierarchy[clusterRootNode].parent = root;
-            if (scene.hierarchy[root].firstChild == -1) {
-                scene.hierarchy[root].firstChild = clusterRootNode;
-            } else {
-                const uint32_t prevFirst = scene.hierarchy[root].firstChild;
-                scene.hierarchy[clusterRootNode].nextSibling = prevFirst;
-                scene.hierarchy[root].firstChild = clusterRootNode;
-            }
-            scene.hierarchy[clusterRootNode].level += 1;
-            // Expose each imported subtree as a registered ownership
-            // boundary. This compatibility path still holds resources in
-            // Cluster pools until the asset-owner migration is complete.
+        // Ownership boundaries, NOT hierarchy: EVERY live ROOT of the
+        // cluster registers as a region (a scene may carry several roots
+        // — a multi-root cook, the deliberate WorldSun). Nothing is
+        // reparented and no level is shifted: source parent
+        // relationships are preserved verbatim, roots stay parent == -1,
+        // and the World is a container, not a transform node. RegionOf's
+        // nearest-registered-ancestor walk resolves every node under its
+        // owning root whatever its depth. This compatibility path still
+        // holds resources in Cluster pools until the asset-owner
+        // migration is complete. EMPTY cluster scenes (a payload-only
+        // dynamic cluster, a cook cluster with assets but no nodes)
+        // contribute no hierarchy: every map entry is UINT32_MAX — no
+        // regions either.
+        for (uint32_t s = 0; s < clusterSlotCount; ++s) {
+            if (nodeMap[s] == UINT32_MAX || cs.hierarchy[s].parent >= 0)
+                continue;
             regions.Register(scene,
-                             MakeNodeHandle(scene, clusterRootNode),
+                             MakeNodeHandle(scene, nodeMap[s]),
                              cluster.isDynamic ? RegionKind::Runtime : RegionKind::Scene);
         }
 
@@ -1666,8 +1647,9 @@ void World::ResolveAndFixup_clusters() {
             activeEnvTaken = true;
         }
 
-        if (clusterRootNode != UINT32_MAX)
-            markAsChanged(scene, int(clusterRootNode));
+        // (Per-cluster merge-dirty marking is gone with the synthetic
+        // root: the resolve tail's MarkAllRootsChanged marks EVERY merged
+        // root, which is exactly the merge boundary now.)
         ++clusterOrdinal;
     }
 
@@ -1814,10 +1796,10 @@ void World::ResolveAndFixup_clusters() {
     // the pose onto the rebuilt cluster scene.)
 
     RebuildStaticCache(scene);
-    // Full-recalc marking at the merge boundary: root-level nodes
-    // (the cooker's WorldSun is addNode(scene,-1,1)) fall outside
-    // node 0's subtree - without this their world globals keep the
-    // identity default and the sun decodes horizontal (az=0/el=0).
+    // Full-recalc marking at the merge boundary: EVERY root participates
+    // (a flat world carries one root per merged cluster-scene root —
+    // multi-root cooks, the deliberate WorldSun) so all merged globals
+    // recompose from their authored locals.
     MarkAllRootsChanged(scene);
     recalculateGlobalTransforms(scene);
 
@@ -1831,8 +1813,20 @@ void World::ResolveAndFixup_clusters() {
     // re-flushes the pose onto the rebuilt cluster scene.)
 }
 
-NodeHandle World::AddNode(const glm::mat4& localFrame) {
-    const int node = addNode(scene, -1, 0);
+NodeHandle World::AddNode(const glm::mat4& localFrame, NodeHandle parent) {
+    // Explicit parenting ONLY (the flat-world contract): an omitted or
+    // invalid-by-value parent spawns ROOT-LEVEL; a live parent links the
+    // child under it (addNode maintains the child/sibling chains) with
+    // the caller's frame PARENT-RELATIVE. A dead/stale parent HANDLE is
+    // a generation-checked refusal, never a silent root spawn.
+    int parentSlot = -1;
+    if (parent != kNodeInvalidHandle) {
+        if (!NodeHandleValid(scene, parent))
+            return kNodeInvalidHandle;
+        parentSlot = int(NodeHandleSlot(parent));
+    }
+    const int level = parentSlot >= 0 ? scene.hierarchy[size_t(parentSlot)].level + 1 : 0;
+    const int node = addNode(scene, parentSlot, level);
     if (node < 0)
         return kNodeInvalidHandle;
     // Preserve the ABA guarantee even across the legacy full-scene
@@ -1849,8 +1843,14 @@ NodeHandle World::AddNode(const glm::mat4& localFrame) {
     const NodeHandle handle = MakeNodeHandle(scene, NodeId(node));
     gameNodes_.insert(handle);
     (void)tour::scene::SetLocalTransform(scene, handle, localFrame);
-    scene.globalTransform[size_t(node)] = localFrame;
-    markAsChanged(scene, node);
+    // Root-level nodes carry the frame as their global directly; a
+    // parented node recomposes through the ordinary recalc below.
+    if (parentSlot < 0) {
+        scene.globalTransform[size_t(node)] = localFrame;
+        markAsChanged(scene, node);
+    } else {
+        markAsChanged(scene, node); // recompose under the parent chain
+    }
     RefreshRuntimeSceneCaches();
     return handle;
 }
@@ -2772,18 +2772,6 @@ bool World::AdoptCookedStaticBvh() {
     parents.reserve(scene.hierarchy.size());
     for (const Hierarchy& h : scene.hierarchy)
         parents.push_back(h.parent);
-    // Parent NORMALIZATION: a parent at or beyond the baked prefix is an
-    // APPENDED runtime ancestor (the default-camera spawn wraps the scene
-    // root under itself, identity-transformed - globals unchanged). Fold
-    // those as -1 so the benign wrap matches the cook's root view. A
-    // reparent INSIDE the baked set still flips the fold. (A host that
-    // wraps the scene under a TRANSFORMED appended node shifts globals
-    // without flipping the fold - a documented v1 residual: adoption
-    // would cull against stale bounds. Never silent corruption of the
-    // tree itself; the conservative failure is over-inclusion.)
-    for (int32_t& p : parents)
-        if (p >= int32_t(baked))
-            p = -1;
     std::vector<::tour::StaticCullRow> rows;
     rows.reserve(scene.tables.meshes.size());
     for (const MeshRow& row : scene.tables.meshes) {
@@ -2796,10 +2784,14 @@ bool World::AdoptCookedStaticBvh() {
             ::tour::StaticCullRow{row.node, mesh->geometry.aabbMin, mesh->geometry.aabbMax});
     }
     // Fold the COOKED PREFIX only: the world may APPEND runtime-owned
-    // nodes after the parse (the default camera, gameplay spawns) which
-    // carry no mesh rows — they must not break the match. Any change
-    // INSIDE the prefix (transform, reparent, row edit) still flips it.
-    // A world SMALLER than the bake is a structural mismatch: rebuild.
+    // nodes after the cooked content (the dynamic spawn cluster's merge)
+    // which carry no baked-cull state — they must not break the match.
+    // Any change INSIDE the prefix (transform, reparent, row edit) still
+    // flips it. A world SMALLER than the bake is a structural mismatch:
+    // rebuild. (The baked asset FINGERPRINT stored in the pak stays
+    // stable across all of this; this fold is the RUNTIME validation of
+    // the current static-cull state — a stable fingerprint alone cannot
+    // prove an edited scene is safe to cull with the baked tree.)
     if (baked == 0 || scene.hierarchy.size() < baked) {
         seed->cookedStaticBvh = ::tour::BvhTree{}; // consumed: never valid
         seed->cookedStaticBvhStateHash = 0;

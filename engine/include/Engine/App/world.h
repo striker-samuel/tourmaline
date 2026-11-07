@@ -110,10 +110,27 @@ typedef uint32_t IteratorFlags;
 // It owns (has-a) the merged Scene hierarchy, owns the Clusters that hold
 // the actual mesh/material/texture resources, and resolves per-node mesh/
 // material indices stored in the Scene to the owning Cluster + handle.
+//
+// FLAT WORLD CONTRACT:
+// - The World is a CONTAINER, not a transform node. There is no synthetic
+//   world-root node: top level of the merged hierarchy is every live root
+//   (parent == -1) of every merged cluster scene, preserved verbatim.
+// - parent == -1 IS the root-node contract; a scene may carry any number
+//   of roots, and node 0 is regular content (never "the world").
+// - Relationships only change through explicit parenting operations; the
+//   resolve never reparents merged content and never shifts levels.
+// - Runtime spawns (camera pass-through pose, decals, audio sources,
+//   mesh entities) are root-level by default.
+// - OWNERSHIP is independent of hierarchy: cluster-owned resources ride
+//   the Cluster pools + the per-cluster location tables; the Region
+//   registry exposes every merged ROOT as an ownership boundary. Removing
+//   a parent never deletes cluster-owned nodes; unloading a cluster
+//   removes exactly its nodes and resources through the resolve.
 struct World {
     explicit World() {};
     // Must be set before loading/registering clusters or first resolve.
-    // Budget includes the synthetic world root and any runtime nodes.
+    // Budget covers the merged CONTENT nodes (no synthetic root; runtime
+    // spawn nodes count against it as they merge).
     // 0 = UNBUDGETED (the default host shape): node storage rides the
     // PROCESS linear allocator, the byte budget (--mem-process-mb /
     // TOURMALINE_MEM_PROCESS_MB) owns capacity and its [OOM] fail-fast
@@ -157,7 +174,15 @@ struct World {
     [[nodiscard]] const std::string& LastAssetError() const {
         return lastGameAssetError_;
     }
-    [[nodiscard]] NodeHandle AddNode(const glm::mat4& localFrame = glm::mat4(1.0f));
+    // Gameplay node entry. Root-level by default (the flat-world
+    // contract: relationships only form through EXPLICIT parenting).
+    // A live `parent` handle links the child under it — `localFrame` is
+    // then PARENT-RELATIVE. A stale/dead parent handle is a
+    // generation-checked REFUSAL (returns the invalid handle), never a
+    // silent root spawn. Game nodes + their links live until the next
+    // full legacy resolve (the documented game-node lifetime).
+    [[nodiscard]] NodeHandle AddNode(const glm::mat4& localFrame = glm::mat4(1.0f),
+                                     NodeHandle parent = kNodeInvalidHandle);
     bool RemoveNode(NodeHandle node);
     [[nodiscard]] bool IsGameNode(NodeHandle node) const {
         return gameNodes_.contains(node) && NodeHandleValid(scene, node);

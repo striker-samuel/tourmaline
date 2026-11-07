@@ -330,9 +330,18 @@ void EditorApp::DrawSceneOutliner() {
                 n = uint32_t(p);
             }
         }
-        for (int c = m_world->scene.hierarchy[0].firstChild; c != -1;
-             c = m_world->scene.hierarchy[c].nextSibling)
-            DrawOutlinerNode(uint32_t(c), expand.empty() ? nullptr : &expand);
+        // FLAT WORLD: top level = every live ROOT (parent == -1), not
+        // the children of a synthetic node 0 (removed with the synthetic
+        // world root). Slot order keeps the tree stable across resolves.
+        for (uint32_t n = 0; n < uint32_t(m_world->scene.hierarchy.size()); ++n) {
+            if (m_world->scene.hierarchy[n].parent != -1)
+                continue;
+            if (m_deletedNodes.contains(n))
+                continue; // deleted (Maya delete): out of the live scene
+            if (InDisabledRefSubtree(n))
+                continue; // disabled reference tree: not shown, not read
+            DrawOutlinerNode(n, expand.empty() ? nullptr : &expand);
+        }
     }
     ImGui::EndChild();
     m_revealNode = UINT32_MAX;

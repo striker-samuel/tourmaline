@@ -414,15 +414,17 @@ void TestSingleClusterBulkResolve() {
     Cluster* ptr = c.get();
     w.RegisterCluster(std::move(c));
     w.ResolveAndFixup_clusters();
-    Check(w.scene.hierarchy.size() == sourceSlots + 1, "single.bulk.slot-count");
+    // FLAT WORLD: no synthetic root — the merged scene is the source
+    // scene verbatim (same slot count, parents untouched).
+    Check(w.scene.hierarchy.size() == sourceSlots, "single.bulk.slot-count");
     Check(w.clusterMergedNodes.size() == 1 && w.clusterMergedNodes[0].size() == sourceSlots &&
               w.clusterMergedNodes[0][NodeId(root)] == NodeId(root) &&
               w.clusterMergedNodes[0][NodeId(child)] == NodeId(child) &&
               w.clusterMergedNodes[0][NodeId(retired)] == UINT32_MAX,
           "single.bulk.identity-and-holes");
-    Check(w.scene.hierarchy[NodeId(root)].parent == int(sourceSlots) &&
+    Check(w.scene.hierarchy[NodeId(root)].parent == -1 &&
               w.scene.hierarchy[NodeId(child)].parent == root,
-          "single.bulk.reparent");
+          "single.bulk.parents-preserved");
     Check(w.lightLocations.size() == 1 && w.lightLocations[0].cluster == ptr &&
               FindLight(w.scene, NodeId(child)) != nullptr,
           "single.bulk.light-remap");
@@ -430,7 +432,7 @@ void TestSingleClusterBulkResolve() {
               ptr->scene.hierarchy[NodeId(root)].parent == -1,
           "single.bulk.source-intact");
     w.ResolveAndFixup_clusters();
-    Check(w.scene.hierarchy.size() == sourceSlots + 1 && w.lightLocations.size() == 1,
+    Check(w.scene.hierarchy.size() == sourceSlots && w.lightLocations.size() == 1,
           "single.bulk.repeat-resolve");
 }
 
@@ -449,16 +451,16 @@ void TestSceneNodeBudget() {
           "budget.exact-capacity-no-realloc");
 
     World w;
-    w.ConfigureSceneNodeBudget(4); // 3 cluster nodes + synthetic root
+    w.ConfigureSceneNodeBudget(3); // 3 cluster nodes, no synthetic root slot
     auto c = std::make_unique<Cluster>(nullptr);
     for (int i = 0; i < 3; ++i)
         addNode(c->scene, -1, 0, false);
     w.RegisterCluster(std::move(c));
     w.ResolveAndFixup_clusters();
-    Check(w.scene.hierarchy.size() == 4, "budget.world-exact-capacity");
+    Check(w.scene.hierarchy.size() == 3, "budget.world-exact-capacity");
     const auto* mergedStorage = w.scene.hierarchy.data();
     w.ResolveAndFixup_clusters();
-    Check(w.scene.hierarchy.size() == 4 && w.scene.hierarchy.data() == mergedStorage,
+    Check(w.scene.hierarchy.size() == 3 && w.scene.hierarchy.data() == mergedStorage,
           "budget.resolve-reuses-node-storage");
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -1148,14 +1150,14 @@ void TestResolveHoledCluster() {
     const ::Scene& s = w.scene;
     // The single-content-cluster identity copy (#228): source slots stay
     // 1:1 - the world scene carries the cluster's slots INCLUDING the
-    // retired hole (kept retired, never recycled) plus the appended
-    // synthetic root. Slot map: 0 = cluster root, 1 = the hole, 2 = b,
-    // 3 = world root.
-    Check(s.hierarchy.size() == 4 && LiveNodeCount(s) == 3, "holedresolve.world-dense");
-    // The cluster root keeps its source id (0) and reparents under the
-    // appended world root (3).
-    Check(s.hierarchy[3].firstChild == 0 && s.hierarchy[0].parent == 3,
-          "holedresolve.cluster-root-reparented");
+    // retired hole (kept retired, never recycled). FLAT WORLD: no
+    // synthetic root, so the scene IS the cluster's slot layout.
+    // Slot map: 0 = cluster root, 1 = the hole, 2 = b.
+    Check(s.hierarchy.size() == 3 && LiveNodeCount(s) == 2, "holedresolve.world-dense");
+    // The cluster root keeps its source id (0) and STAYS a root (no
+    // synthetic reparenting).
+    Check(s.hierarchy[0].parent == -1 && s.hierarchy[0].firstChild == 2,
+          "holedresolve.cluster-root-stays-root");
     // b (source slot 2) links under the cluster root with no sibling
     // ghosts - the retirement already unlinked the hole; the identity
     // copy preserves that linkage verbatim.
@@ -1204,6 +1206,31 @@ void TestGameOwnedNodes() {
     const NodeHandle afterResolve = w.AddNode();
     Check(w.IsGameNode(afterResolve) && !w.IsGameNode(replacement),
           "game-node: no handle ABA across full scene resolve");
+
+    // EXPLICIT PARENTING (the flat-world contract): a live parent links
+    // the child under it with a parent-RELATIVE frame; a stale parent
+    // handle is a refusal; the default stays root-level.
+    const NodeHandle parentNode = w.AddNode(glm::translate(glm::mat4(1.0f), glm::vec3(1, 0, 0)));
+    Check(w.IsGameNode(parentNode) && w.scene.hierarchy[NodeHandleSlot(parentNode)].parent == -1,
+          "game-node: default spawn stays root-level");
+    const glm::mat4 rel = glm::translate(glm::mat4(1.0f), glm::vec3(0, 2, 0));
+    const NodeHandle childNode = w.AddNode(rel, parentNode);
+    Check(w.IsGameNode(childNode) && w.scene.hierarchy[NodeHandleSlot(childNode)].parent ==
+                                         int(NodeHandleSlot(parentNode)),
+          "game-node: explicit parent links");
+    recalculateGlobalTransforms(w.scene);
+    const glm::vec3 childPos = glm::vec3(w.scene.globalTransform[NodeHandleSlot(childNode)][3]);
+    Check(childPos.x == 1.0f && childPos.y == 2.0f && childPos.z == 0.0f,
+          "game-node: parent-relative frame composes");
+    Check(w.scene.hierarchy[NodeHandleSlot(parentNode)].firstChild ==
+              int(NodeHandleSlot(childNode)),
+          "game-node: parent child-chain maintained");
+    // Stale parent: remove it, then attempt a parented spawn through the
+    // dead handle — refused, nothing spawned.
+    const NodeHandle stale = parentNode;
+    Check(w.RemoveNode(parentNode), "game-node: parent removed");
+    const NodeHandle orphan = w.AddNode(rel, stale);
+    Check(orphan == kNodeInvalidHandle && !w.IsGameNode(orphan), "game-node: stale parent refused");
 }
 
 // Renderer instances can survive a scene switch. Two newly constructed
@@ -1225,6 +1252,277 @@ void TestLightmapChartRevisionAcrossWorlds() {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// FLAT WORLD (no synthetic root): the World is a container, not a node.
+// Top level = every live root of every merged cluster scene, parent
+// relationships preserved verbatim, ownership = the REGION set.
+// ---------------------------------------------------------------------------
+void TestFlatWorldResolve() {
+    using namespace smvk;
+
+    // (1) ONE scene: ids, parents, levels preserved verbatim; no extra
+    // node; the root registers as the ownership region.
+    {
+        World w;
+        auto c = std::make_unique<Cluster>(nullptr);
+        c->SetOfflineMode(true);
+        const int r = addNode(c->scene, -1, 0);
+        const int m1 = addNode(c->scene, r, 1);
+        const int m2 = addNode(c->scene, r, 1);
+        MarkSubtreeStatic(c->scene, r);
+        w.RegisterCluster(std::move(c));
+        w.ResolveAndFixup_clusters();
+        Check(w.scene.hierarchy.size() == 3, "flatworld.single.no-synthetic-root");
+        Check(w.scene.hierarchy[size_t(r)].parent == -1, "flatworld.single.root-parent-kept");
+        Check(w.scene.hierarchy[size_t(m1)].parent == r &&
+                  w.scene.hierarchy[size_t(m2)].parent == r,
+              "flatworld.single.children-kept");
+        Check(w.scene.hierarchy[size_t(r)].level == 0 && w.scene.hierarchy[size_t(m1)].level == 1,
+              "flatworld.single.levels-verbatim");
+        Check(w.RegionForNode(NodeId(r)) != nullptr && w.RegionForNode(NodeId(m1)) != nullptr &&
+                  NodeHandleSlot(w.RegionForNode(NodeId(m1))->root) == uint32_t(r),
+              "flatworld.single.region-owned");
+    }
+
+    // (2) TWO scenes (the legacy merge): both preserved, roots
+    // independent, each root its own region.
+    {
+        World w;
+        auto a = std::make_unique<Cluster>(nullptr);
+        a->SetOfflineMode(true);
+        const int ar = addNode(a->scene, -1, 0);
+        const int ac = addNode(a->scene, ar, 1);
+        auto b = std::make_unique<Cluster>(nullptr);
+        b->SetOfflineMode(true);
+        const int br = addNode(b->scene, -1, 0);
+        const int bc = addNode(b->scene, br, 1);
+        Cluster* bp = b.get();
+        w.RegisterCluster(std::move(a));
+        w.RegisterCluster(std::move(b));
+        w.ResolveAndFixup_clusters();
+        Check(w.scene.hierarchy.size() == 4, "flatworld.two.node-count");
+        Check(w.scene.hierarchy[0].parent == -1 && w.scene.hierarchy[2].parent == -1,
+              "flatworld.two.roots-independent");
+        Check(w.scene.hierarchy[1].parent == 0 && w.scene.hierarchy[3].parent == 2,
+              "flatworld.two.children-kept");
+        Check(w.RegionForNode(NodeId(0)) != nullptr && w.RegionForNode(NodeId(2)) != nullptr &&
+                  w.RegionForNode(NodeId(0))->id != w.RegionForNode(NodeId(2))->id,
+              "flatworld.two.regions-distinct");
+        // Unload B: only B's nodes leave; A keeps its ids (the identity
+        // fast path re-engages with ONE content cluster).
+        w.UnloadCluster(*bp);
+        w.ResolveAndFixup_clusters();
+        Check(w.scene.hierarchy.size() == 2 && w.scene.hierarchy[0].parent == -1 &&
+                  w.scene.hierarchy[1].parent == 0,
+              "flatworld.two.unload-only-owned");
+    }
+
+    // (3) MULTI-ROOT cluster scene: EVERY root stays independent and
+    // registers its own region (not just the first live slot).
+    {
+        World w;
+        auto c = std::make_unique<Cluster>(nullptr);
+        c->SetOfflineMode(true);
+        const int r1 = addNode(c->scene, -1, 0);
+        const int r1c = addNode(c->scene, r1, 1);
+        const int r2 = addNode(c->scene, -1, 0); // second authored root
+        const int r2c = addNode(c->scene, r2, 1);
+        w.RegisterCluster(std::move(c));
+        w.ResolveAndFixup_clusters();
+        Check(w.scene.hierarchy.size() == 4, "flatworld.multiroot.node-count");
+        Check(w.scene.hierarchy[size_t(r1)].parent == -1 &&
+                  w.scene.hierarchy[size_t(r2)].parent == -1,
+              "flatworld.multiroot.roots-independent");
+        Check(w.scene.hierarchy[size_t(r2c)].parent == r2,
+              "flatworld.multiroot.second-subtree-kept");
+        Check(w.RegionForNode(NodeId(r2)) != nullptr &&
+                  NodeHandleSlot(w.RegionForNode(NodeId(r2c))->root) == uint32_t(r2),
+              "flatworld.multiroot.every-root-registers");
+        // Full traversal reaches every live node from the roots.
+        size_t reached = 0;
+        for (size_t n = 0; n < w.scene.hierarchy.size(); ++n)
+            if (w.scene.hierarchy[n].parent == -1)
+                ++reached;
+        Check(reached == 2, "flatworld.multiroot.traverse-all-roots");
+    }
+
+    // (4) Runtime spawn: root-level by default, and NO existing node's
+    // parent changes (no synthetic reparenting at resolve).
+    {
+        World w;
+        auto c = std::make_unique<Cluster>(nullptr);
+        c->SetOfflineMode(true);
+        const int r = addNode(c->scene, -1, 0);
+        const int m = addNode(c->scene, r, 1);
+        w.RegisterCluster(std::move(c));
+        w.ResolveAndFixup_clusters();
+        std::vector<int> parentsBefore(w.scene.hierarchy.size());
+        for (size_t n = 0; n < w.scene.hierarchy.size(); ++n)
+            parentsBefore[n] = w.scene.hierarchy[n].parent;
+        const glm::mat4 frame = glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 2.0f, 3.0f));
+        const NodeId decalNode = w.CreateDecalAt(frame, SceneDecal{});
+        Check(decalNode != UINT32_MAX && w.scene.hierarchy[size_t(decalNode)].parent == -1,
+              "flatworld.spawn-root-level");
+        for (size_t n = 0; n < parentsBefore.size(); ++n)
+            if (int(n) != int(decalNode))
+                Check(w.scene.hierarchy[n].parent == parentsBefore[n],
+                      "flatworld.spawn-no-reparent");
+        // The durable-side resolve keeps the spawn root-level too.
+        w.ResolveAndFixup_clusters();
+        Check(w.scene.hierarchy[size_t(decalNode)].parent == -1,
+              "flatworld.spawn-resolve-stays-root");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// STATIC-CULL ADOPTION GUARD: the baked tree installs only while the
+// world's static geometry/transform/hierarchy state matches the cook's
+// fold. The baked tree is forged with maxLeafSize=1 (a distinguishable
+// node count vs the rebuild's 4) so adoption vs rebuild is observable
+// through the public tree.
+// ---------------------------------------------------------------------------
+void TestStaticBvhAdoptionGuard() {
+    using namespace smvk;
+    // 6 static mesh rows under one root (7 nodes): enough prims that
+    // leafSize 1 (~11 nodes) and the rebuild's leafSize 4 (~3 nodes)
+    // are unambiguous.
+    auto mkBaked = [](Cluster*& out) {
+        auto c = std::make_unique<Cluster>(nullptr);
+        c->SetOfflineMode(true);
+        const int r = addNode(c->scene, -1, 0);
+        std::vector<uint32_t> meshNodes;
+        for (int i = 0; i < 6; ++i) {
+            const int n = addNode(c->scene, r, 1);
+            const auto mh = c->staticMeshes.create(StaticMesh{});
+            SetMesh(c->scene, NodeId(n), mh.index());
+            meshNodes.push_back(uint32_t(n));
+        }
+        MarkSubtreeStatic(c->scene, r);
+        recalculateGlobalTransforms(c->scene);
+        // Forge the cooked section by hand (the serializer lane has its
+        // own round-trip tests; this pins the WORLD-side guard).
+        std::vector<::tour::Partition> prims;
+        std::vector<::tour::StaticCullRow> rows;
+        for (uint32_t n : meshNodes) {
+            const MeshRow* row = FindMesh(c->scene, NodeId(n));
+            const StaticMesh* mesh =
+                row ? c->staticMeshes.get(c->staticMeshes.getHandle(row->mesh)) : nullptr;
+            if (!row || !mesh)
+                continue;
+            rows.push_back(
+                ::tour::StaticCullRow{n, mesh->geometry.aabbMin, mesh->geometry.aabbMax});
+            const ::tour::Aabb local{mesh->geometry.aabbMin, mesh->geometry.aabbMax};
+            ::tour::Aabb world = ::tour::Aabb::empty();
+            const glm::mat4& model = c->scene.globalTransform[n];
+            const glm::vec3 corners[8] = {
+                {local.mn.x, local.mn.y, local.mn.z},
+                {local.mn.x, local.mn.y, local.mx.z},
+                {local.mn.x, local.mx.y, local.mn.z},
+                {local.mn.x, local.mx.y, local.mx.z},
+                {local.mx.x, local.mn.y, local.mn.z},
+                {local.mx.x, local.mn.y, local.mx.z},
+                {local.mx.x, local.mx.y, local.mn.z},
+                {local.mx.x, local.mx.y, local.mx.z},
+            };
+            for (const auto& corner : corners)
+                world.expand(glm::vec3(model * glm::vec4(corner, 1.0f)));
+            prims.push_back(::tour::Partition{world, world.centroid(), n});
+        }
+        ::tour::BvhTree tree;
+        const uint32_t N = uint32_t(prims.size());
+        tree.primIndices.resize(N);
+        for (uint32_t i = 0; i < N; ++i)
+            tree.primIndices[i] = i;
+        if (N > 0)
+            ::tour::buildRecursive(tree, prims, 0, N, /*maxLeafSize=*/1);
+        tree.primToNode.resize(N);
+        for (uint32_t slot = 0; slot < N; ++slot)
+            tree.primToNode[slot] = prims[tree.primIndices[slot]].node;
+        std::vector<int32_t> parents;
+        for (const Hierarchy& h : c->scene.hierarchy)
+            parents.push_back(h.parent);
+        c->cookedStaticBvh = tree;
+        c->cookedStaticBvhStateHash =
+            ::tour::StaticCullStateHash(parents.data(),
+                                        c->scene.localTransform.data(),
+                                        uint32_t(c->scene.hierarchy.size()),
+                                        rows.data(),
+                                        uint32_t(rows.size()));
+        c->cookedStaticBvhNodeCount = uint32_t(c->scene.hierarchy.size());
+        out = c.get();
+        return c;
+    };
+
+    // (a) Unchanged world: the baked tree is ADOPTED (the leafSize-1
+    // shape lands; the seed is consumed).
+    {
+        World w;
+        Cluster* cp = nullptr;
+        auto c = mkBaked(cp);
+        w.RegisterCluster(std::move(c));
+        w.ResolveAndFixup_clusters();
+        Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() > 8,
+              "bvhguard.unchanged-adopted");
+        Check(cp->cookedStaticBvh.nodes.empty() && cp->cookedStaticBvhStateHash == 0,
+              "bvhguard.unchanged-seed-consumed");
+        // A runtime append (the dynamic spawn cluster) resolves through
+        // the rebuild — culling stays CORRECT (the flat-world prefix
+        // contract: appended nodes never invalidate the baked asset).
+        const glm::mat4 frame = glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 0.0f, 0.0f));
+        (void)w.CreateDecalAt(frame, SceneDecal{});
+        w.ResolveAndFixup_clusters();
+        Check(w.HasStaticBvh(), "bvhguard.append-still-culls");
+    }
+
+    // (b) Edited local transform BEFORE the first resolve: stale tree
+    // rejected (the rebuild shape lands, the seed consumed).
+    {
+        World w;
+        Cluster* cp = nullptr;
+        auto c = mkBaked(cp);
+        glm::mat4 moved(1.0f);
+        moved[3] = glm::vec4(2.0f, 0.0f, 0.0f, 1.0f);
+        cp->scene.localTransform[2] = moved; // a static mesh node's local
+        w.RegisterCluster(std::move(c));
+        w.ResolveAndFixup_clusters();
+        Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() <= 8,
+              "bvhguard.transform-edit-rejected");
+        Check(cp->cookedStaticBvh.nodes.empty(), "bvhguard.transform-edit-consumed");
+    }
+
+    // (c) Reparented static mesh BEFORE the first resolve: rejected.
+    {
+        World w;
+        Cluster* cp = nullptr;
+        auto c = mkBaked(cp);
+        // The structural edit the fold must catch (no public scene
+        // reparent mutator — the editor owns that lane; the field write
+        // is the minimal honest probe of the hierarchy fold).
+        cp->scene.hierarchy[3].parent = 1;
+        w.RegisterCluster(std::move(c));
+        w.ResolveAndFixup_clusters();
+        Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() <= 8,
+              "bvhguard.reparent-rejected");
+    }
+
+    // (d) Changed static mesh binding BEFORE the first resolve: the row
+    // bytes differ (a different AABB) — rejected.
+    {
+        World w;
+        Cluster* cp = nullptr;
+        auto c = mkBaked(cp);
+        StaticMesh other{};
+        other.geometry.aabbMin = {-4.0f, -4.0f, -4.0f};
+        other.geometry.aabbMax = {4.0f, 4.0f, 4.0f};
+        const auto mh = cp->staticMeshes.create(std::move(other));
+        SetMesh(cp->scene, NodeId(2), mh.index());
+        w.RegisterCluster(std::move(c));
+        w.ResolveAndFixup_clusters();
+        Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() <= 8,
+              "bvhguard.geometry-change-rejected");
+    }
+}
+
 int main() {
     TestSingleClusterBulkResolve();
     TestSceneNodeBudget();
@@ -1242,6 +1540,8 @@ int main() {
     TestSchemaAssocFold();
     TestLightmapChartRevisionAcrossWorlds();
     TestGameOwnedNodes();
+    TestFlatWorldResolve();
+    TestStaticBvhAdoptionGuard();
     std::cout << (g_failures == 0 ? "ALL PASS" : "FAILURES") << " (" << g_checks << " checks)\n";
     return g_failures == 0 ? 0 : 1;
 }
