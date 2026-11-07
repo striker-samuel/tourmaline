@@ -467,7 +467,8 @@ class CandidateValidator {
                                const Addresses& addresses,
                                const CandidateSelection& selected,
                                const RelativeFrustum& view,
-                               InstanceCullGpuPush& push) {
+                               InstanceCullGpuPush& push,
+                               bool validate = true) {
         if (flight >= Flights || !selected.Valid() || selected.candidateCount == 0 ||
             selected.candidateCount > MaxPassedInstanceCandidates ||
             selected.ranges.size() > MaxPassedLeafRanges || db.leaves.Size() > MaxShaderRowSlots ||
@@ -479,6 +480,8 @@ class CandidateValidator {
         if (f.pending)
             return false;
         f.prepared = false;
+        f.validate = validate;
+        f.candidateCount = selected.candidateCount;
         InstanceCullGpuView viewData{};
         if (!PackInstanceCullView(view, viewData))
             return false;
@@ -509,17 +512,22 @@ class CandidateValidator {
                                  db.instances.Size());
         push.counts2 = glm::uvec4(db.leaves.Size(), db.meshes.Size(), 1, 0);
 
+        // Production GPU raster must never build a CPU per-candidate oracle.
+        // The opt-in validation path retains reference comparison/readback.
         std::vector<InstanceCullVerdict> expected;
-        expected.reserve(selected.candidateCount);
-        for (const auto& range : selected.ranges) {
-            const Leaf* leaf = db.leaves.Get({range.leaf.x, range.leaf.y});
-            if (!leaf || leaf->range.x != range.members.x || leaf->range.y != range.members.y)
+        if (validate) {
+            expected.reserve(selected.candidateCount);
+            for (const auto& range : selected.ranges) {
+                const Leaf* leaf = db.leaves.Get({range.leaf.x, range.leaf.y});
+                if (!leaf || leaf->range.x != range.members.x ||
+                    leaf->range.y != range.members.y)
+                    return false;
+                for (uint32_t i = 0; i < range.members.y; ++i)
+                    expected.push_back(ReferenceCandidate(db, range.members.x + i, view));
+            }
+            if (expected.size() != selected.candidateCount)
                 return false;
-            for (uint32_t i = 0; i < range.members.y; ++i)
-                expected.push_back(ReferenceCandidate(db, range.members.x + i, view));
         }
-        if (expected.size() != selected.candidateCount)
-            return false;
         ctx.UploadDataToBuffer(f.ranges,
                                selected.ranges.data(),
                                bytes,
@@ -547,7 +555,7 @@ class CandidateValidator {
             candidateCount > MaxPassedInstanceCandidates)
             return false;
         auto& f = flight_[flight];
-        if (!f.prepared || f.expected.size() != candidateCount)
+        if (!f.prepared || f.candidateCount != candidateCount)
             return false;
         const uint32_t groups = (candidateCount + 63u) / 64u;
         if (!Ensure(ctx,
@@ -576,7 +584,10 @@ class CandidateValidator {
         prefix = {counts, offsets, groups, 0u};
         scatter = {verdicts, offsets, output, candidateCount, groups};
         f.groupCount = groups;
-        f.expectedCompact = CompactVisibleVerdicts(f.expected);
+        if (f.validate)
+            f.expectedCompact = CompactVisibleVerdicts(f.expected);
+        else
+            f.expectedCompact.clear();
         f.compactPrepared = true;
         return true;
     }
@@ -599,7 +610,7 @@ class CandidateValidator {
             !addresses.instances || !addresses.meshes || !addresses.lods || !addresses.submeshes)
             return false;
         auto& f = flight_[flight];
-        if (!f.compactPrepared || f.expected.size() != candidateCount)
+        if (!f.compactPrepared || f.candidateCount != candidateCount)
             return false;
         constexpr uint32_t MaxSubmeshesPerLod = 16u;
         const size_t maxWork = size_t(candidateCount) * MaxSubmeshesPerLod;
@@ -633,10 +644,14 @@ class CandidateValidator {
         if (!compact || !compactOffsets || !choices || !counts || !offsets || !output)
             return false;
 
-        f.expectedWork = ReferenceExpandWork(db, f.expectedCompact);
-        if (f.expectedWork.size() > maxWork) {
+        if (f.validate) {
+            f.expectedWork = ReferenceExpandWork(db, f.expectedCompact);
+            if (f.expectedWork.size() > maxWork) {
+                f.expectedWork.clear();
+                return false;
+            }
+        } else {
             f.expectedWork.clear();
-            return false;
         }
         select = {};
         select.compact = compact;
@@ -744,7 +759,7 @@ class CandidateValidator {
             return;
         auto& f = flight_[flight];
         if (f.prepared) {
-            f.pending = true;
+            f.pending = f.validate;
             f.prepared = false;
         }
     }
@@ -786,6 +801,8 @@ class CandidateValidator {
         bool indirectPrepared = false;
         size_t rangesSize = 0, verdictSize = 0;
         std::vector<InstanceCullVerdict> expected{};
+        uint32_t candidateCount = 0;
+        bool validate = true;
         bool pending = false, prepared = false;
     };
     static bool Ensure(smvk::ResourceManager& ctx,
