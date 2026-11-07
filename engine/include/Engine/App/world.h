@@ -230,6 +230,15 @@ struct World {
         // node: replacement is atomic on invalid/unmapped handles.
         bool SetMesh(app::MeshHandle mesh) const;
         bool RemoveMesh() const;
+        // Per-instance direct-light linking (32 user-defined channels).
+        // This is node-local, not shared by mesh instances.
+        bool SetLightLayerMask(uint32_t mask) const {
+            if (!owner_.IsGameNode(handle_))
+                return false;
+            tour::scene::EnsureNodeMetadata(owner_.scene);
+            owner_.scene.metadata[NodeHandleSlot(handle_)].lightLayerMask = mask;
+            return true;
+        }
         bool SetLocalTransform(const glm::mat4& frame) const {
             return owner_.IsGameNode(handle_) &&
                    tour::scene::SetLocalTransform(owner_.scene, handle_, frame);
