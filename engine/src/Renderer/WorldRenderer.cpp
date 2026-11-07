@@ -11072,6 +11072,32 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
         }
+        static constexpr const char* scanPaths[3] = {
+            "content/shaders/gpu_scene_work_prefix_block.cs.hlsl.spv",
+            "content/shaders/gpu_scene_work_prefix_groups.cs.hlsl.spv",
+            "content/shaders/gpu_scene_work_prefix_add.cs.hlsl.spv"};
+        for (uint32_t i = 0; i < 3u; ++i) {
+            if (m_gpuSceneWorkScanPrograms[i].shaderCount != 0)
+                continue;
+            try {
+                auto bytes = smvk::shaders::Read(scanPaths[i]);
+                m_gpuSceneWorkScanModules[i] =
+                    m_context->CreateShaderModule(std::move(bytes), "gpuSceneWorkScanCS");
+                if (!m_gpuSceneWorkScanModules[i].empty()) {
+                    smvk::Shader cs{.module = m_gpuSceneWorkScanModules[i],
+                                    .entryPoint = "mainCS",
+                                    .stage = smvk::ShaderStage::Compute};
+                    m_gpuSceneWorkScanPrograms[i] = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                static bool logged = false;
+                if (!logged) {
+                    std::fprintf(stderr,
+                                 "[GpuSceneRaster] parallel work scan unavailable; fallback\\n");
+                    logged = true;
+                }
+            }
+        }
         static constexpr const char* indirectPaths[2] = {
             "content/shaders/gpu_scene_indirect_args.cs.hlsl.spv",
             "content/shaders/gpu_scene_indirect_verify.cs.hlsl.spv"};
@@ -11166,7 +11192,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 const bool workProgramsAvailable = m_gpuSceneWorkPrograms[0].shaderCount == 1 &&
                                                    m_gpuSceneWorkPrograms[1].shaderCount == 1 &&
                                                    m_gpuSceneWorkPrograms[2].shaderCount == 1;
-                const bool workReady =
+                const bool workPrepared =
                     compactReady && workProgramsAvailable &&
                     m_gpuSceneValidator.PrepareWorkExpansion(
                         *m_context,
@@ -11177,6 +11203,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         workSelect,
                         workPrefix,
                         workScatter);
+                tour::gpu_scene::ParallelWorkBlockPush workBlock{};
+                tour::gpu_scene::ParallelWorkGroupPush workGroups{};
+                tour::gpu_scene::ParallelWorkAddPush workAdd{};
+                const bool parallelScanReady =
+                    gpuSceneRasterMode && workPrepared &&
+                    m_gpuSceneWorkScanPrograms[0].shaderCount == 1 &&
+                    m_gpuSceneWorkScanPrograms[1].shaderCount == 1 &&
+                    m_gpuSceneWorkScanPrograms[2].shaderCount == 1 &&
+                    m_gpuSceneValidator.PrepareParallelWorkPrefix(
+                        *m_context, fb.frameIndex, workBlock, workGroups, workAdd);
+                const bool workReady =
+                    workPrepared && (!gpuSceneRasterMode || parallelScanReady);
                 tour::gpu_scene::RasterWorkDrawBuildPush rasterPush{};
                 smvk::BufferHandle rasterCommands{};
                 const bool rasterReady =
@@ -11247,12 +11285,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 auto program = m_gpuSceneCullProgram;
                 auto compactPrograms = m_gpuSceneCompactPrograms;
                 auto workPrograms = m_gpuSceneWorkPrograms;
+                auto workScanPrograms = m_gpuSceneWorkScanPrograms;
                 auto rasterProgram = m_gpuSceneRasterBuildProgram;
                 auto indirectPrograms = m_gpuSceneIndirectPrograms;
                 const uint32_t groups = (selected.candidateCount + 63u) / 64u;
                 pass.SetRecordingFunc([program,
                                        compactPrograms,
                                        workPrograms,
+                                       workScanPrograms,
                                        rasterProgram,
                                        indirectPrograms,
                                        gpuPush,
@@ -11262,6 +11302,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        workSelect,
                                        workPrefix,
                                        workScatter,
+                                       workBlock,
+                                       workGroups,
+                                       workAdd,
                                        rasterPush,
                                        rasterCommands,
                                        indirectArgs,
@@ -11270,6 +11313,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        groups,
                                        compactReady,
                                        workReady,
+                                       parallelScanReady,
                                        rasterReady,
                                        indirectReady](smvk::CommandBuffer& cmd) mutable {
                     cmd.BindComputePipeline(program);
@@ -11301,10 +11345,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         0, sizeof(workSelect), &workSelect, smvk::ShaderStage::Compute);
                     cmd.Dispatch(groups, 1, 1);
                     cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workPrograms[1]);
-                    cmd.PushConstants(
-                        0, sizeof(workPrefix), &workPrefix, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(1, 1, 1);
+                    if (parallelScanReady) {
+                        // 1) Parallel intra-block scan. 2) bounded scan of
+                        // block totals. 3) parallel global base addition.
+                        // No single-thread walk across instance candidates.
+                        cmd.BindComputePipeline(workScanPrograms[0]);
+                        cmd.PushConstants(0, sizeof(workBlock), &workBlock,
+                                          smvk::ShaderStage::Compute);
+                        cmd.Dispatch((workBlock.candidateCount + 255u) / 256u, 1, 1);
+                        cmd.EmitGlobalMemoryBarrier();
+                        cmd.BindComputePipeline(workScanPrograms[1]);
+                        cmd.PushConstants(0, sizeof(workGroups), &workGroups,
+                                          smvk::ShaderStage::Compute);
+                        cmd.Dispatch(1, 1, 1);
+                        cmd.EmitGlobalMemoryBarrier();
+                        cmd.BindComputePipeline(workScanPrograms[2]);
+                        cmd.PushConstants(0, sizeof(workAdd), &workAdd,
+                                          smvk::ShaderStage::Compute);
+                        cmd.Dispatch((workAdd.candidateCount + 255u) / 256u, 1, 1);
+                    } else {
+                        cmd.BindComputePipeline(workPrograms[1]);
+                        cmd.PushConstants(
+                            0, sizeof(workPrefix), &workPrefix, smvk::ShaderStage::Compute);
+                        cmd.Dispatch(1, 1, 1);
+                    }
                     cmd.EmitGlobalMemoryBarrier();
                     cmd.BindComputePipeline(workPrograms[2]);
                     cmd.PushConstants(
