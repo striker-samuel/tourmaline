@@ -13636,10 +13636,37 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         mainPass.AddBufferHint(m_gpuPlacementViewLogical, vertexRead);
         mainPass.AddBufferHint(meshPs.indirectLogical, indirectRead);
     }
+    // The GPU-generated raster command buffer is written by compute and
+    // consumed by DrawIndexedIndirect; the work rows are vertex BDA input.
+    // These are distinct pipeline stages and need explicit graph edges.
+    if (m_gpuSceneRasterDrawActive) {
+        smvk::BufferSyncRequest indirectRead{};
+        indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
+        indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
+        mainPass.AddBufferHint(m_gpuSceneRasterIndirectLogical[fb.frameIndex], indirectRead);
+        smvk::BufferSyncRequest vertexRead{};
+        vertexRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+        vertexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+        mainPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], vertexRead);
+    }
+    const bool sceneRasterActive = m_gpuSceneRasterDrawActive;
+    const smvk::BufferHandle sceneRasterCommands = m_gpuSceneRasterIndirect;
+    const uint32_t sceneRasterCommandCount = m_gpuSceneRasterDrawCapacity;
+    const tour::gpu_scene::RasterVsPush sceneRasterVsPush{
+        m_gpuSceneRasterWorkBda,
+        m_gpuSceneUploader.DeviceAddresses(*m_context, fb.frameIndex).instances,
+        m_gpuSceneRasterView.DeviceAddress(*m_context, fb.frameIndex),
+        m_gpuSceneDatabase.instances.Size(),
+        m_gpuSceneRasterDrawCapacity};
+
     mainPass.SetRecordingFunc([this,
                                pc,
                                useMsaa,
                                gfxSlot,
+                               sceneRasterActive,
+                               sceneRasterCommands,
+                               sceneRasterCommandCount,
+                               sceneRasterVsPush,
                                renderViewsAddress,
                                mainRenderView,
                                coneLineVerts,
@@ -14046,6 +14073,31 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             wireframeRaster(smvk::RasterSettings{}));
         cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
 
+        // GPU-scene indexed raster (static opaque subset). The vertex
+        // shader fetches work[SV_InstanceID] and the generation-checked
+        // persistent instance; zero-count commands do not rasterize.
+        // This path replaces the GfxFilter Main leg only when the
+        // eligibility gate proved every World draw belongs to it.
+        if (sceneRasterActive) {
+            cmd.BindStaticVertexFmt();
+            cmd.BindRenderPipeline(
+                m_gpuSceneRasterProgram,
+                smvk::VertexLayoutId::Static,
+                opaqueDepth,
+                noStencil,
+                smvk::BlendSettings::Opaque(),
+                msaaSettings,
+                smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+            cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
+                              sizeof(sceneRasterVsPush),
+                              &sceneRasterVsPush,
+                              smvk::ShaderStage::All);
+            cmd.DrawIndexedIndirect(sceneRasterCommands,
+                                    0,
+                                    sceneRasterCommandCount,
+                                    sizeof(tour::gpu_scene::RasterIndirectCommand));
+        }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----
         // Filtered path: one multi-draw per material over the compacted
         // index list (model matrices come from the draws buffer via
@@ -14054,7 +14106,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // gfxSlot validity IS the filter gate (invalid = the pass config
         // killed it, setup latched it off, or the frame's filter failed -
         // the runtime A/B toggle is gone).
-        const bool gfxActive = gfxSlot != UINT32_MAX;
+        const bool gfxActive = gfxSlot != UINT32_MAX && !sceneRasterActive;
         // Debug views replace the shaded opaque leg:
         //   - The FLAT views (Meshlets F3 / LODs F5) intentionally bypass
         //     the GPU chain and draw EVERY instance direct — HZB-culled
@@ -14423,7 +14475,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
             }
         }
-        if (!bypassFilter) {
+        if (!bypassFilter && !sceneRasterActive) {
             // UINT32_MAX forces a bind check on the first node; an
             // identical state is deduped by the CommandBuffer's
             // current-pipeline check, so this costs nothing.
