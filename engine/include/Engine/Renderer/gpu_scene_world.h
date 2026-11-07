@@ -12,6 +12,7 @@
 #include <Engine/Renderer/gpu_scene_upload.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <functional>
