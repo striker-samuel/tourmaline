@@ -353,6 +353,7 @@ class WorldSynchronizer {
             if (nodeCount > nodeKeyCapacity_) {
                 nodeKeys_ = static_cast<SourceKey*>(
                     smvk::AppArena().Allocate(nodeCount * sizeof(SourceKey), alignof(SourceKey)));
+                std::uninitialized_value_construct_n(nodeKeys_, nodeCount);
                 nodeKeyCapacity_ = nodeCount;
             }
             nodeKeyCount_ = nodeCount;
@@ -407,7 +408,7 @@ class WorldSynchronizer {
                 SourceRecord record{};
                 record.instance = key;
                 record.mesh = {owner->second, loc.handle.index(), loc.handle.gen()};
-                scratchMeshes[meshCount++] = MeshSourceEntry{record.mesh, item.mesh};
+                std::construct_at(scratchMeshes + meshCount++, MeshSourceEntry{record.mesh, item.mesh});
                 record.globalModel = tour::scene::GlobalTransformDouble(world.scene, item.node);
                 record.material = item.material; // interim World index
                 record.flags = static_cast<uint32_t>(item.flags);
@@ -457,11 +458,13 @@ class WorldSynchronizer {
                 meshSources_ = static_cast<MeshSourceEntry*>(
                     smvk::AppArena().Allocate(uniqueCount * sizeof(MeshSourceEntry),
                                               alignof(MeshSourceEntry)));
+                std::uninitialized_value_construct_n(meshSources_, uniqueCount);
                 meshSourceCapacity_ = uniqueCount;
             }
             meshSourceCount_ = uniqueCount;
             if (uniqueCount)
                 std::copy_n(scratchMeshes, uniqueCount, meshSources_);
+            std::destroy_n(scratchMeshes, meshCount);
             stats.geometryMeshesVisited = PublishGeometry(world, db, geometryLookup);
             stats.geometryRefreshed = true;
             const bool meshPublicationChanged = geometryRevision_ != geometryRevision;
