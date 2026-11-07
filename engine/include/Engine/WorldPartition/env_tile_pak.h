@@ -284,7 +284,10 @@ inline bool ReadEnvPage(const smvk::PakReader& reader, WorldId world,
         return true;
     }
     if (!expectedPage) return false; // unexpected page: manifest mismatch
-    try { return DecodePage(reader.Payload(*entry),world,tile,recordCount,out); }
+    try {
+        const std::vector<uint8_t> bytes = reader.PayloadCopyUncached(*entry);
+        return DecodePage(bytes, world, tile, recordCount, out);
+    }
     catch (...) { return false; }
 }
 } // namespace tour::envcook
