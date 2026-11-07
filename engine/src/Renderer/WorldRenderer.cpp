@@ -4988,7 +4988,9 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     // grid BDA. A failed buffer = count 0 -> the consumers take the
     // plain resolved env path.
     if (m_envTilesPublished && !m_resources.envTileRecordsBuffer.empty() &&
-        !m_resources.envTileCellsBuffer.empty()) {
+        !m_resources.envTileCellsBuffer.empty() &&
+        !m_resources.envTileShapesBuffer.empty() &&
+        !m_resources.envTileIndicesBuffer.empty()) {
         data.envZones = m_context->GetBufferDeviceAddress(m_resources.envTileRecordsBuffer);
         data.envZoneCount = m_envTiles.RecordCount();
         // bit0 = tiles live; bit1 = any record authors volumetric
@@ -5001,6 +5003,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         data.envTileDimX = m_envTiles.DimX();
         data.envTileDimZ = m_envTiles.DimZ();
         data.envTileCells = m_context->GetBufferDeviceAddress(m_resources.envTileCellsBuffer);
+        data.envTileShapes = m_context->GetBufferDeviceAddress(m_resources.envTileShapesBuffer);
+        data.envTileIndices = m_context->GetBufferDeviceAddress(m_resources.envTileIndicesBuffer);
     } else {
         data.envZones = 0;
         data.envZoneCount = 0;
@@ -5010,6 +5014,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         data.envTileDimX = 0;
         data.envTileDimZ = 0;
         data.envTileCells = 0;
+        data.envTileShapes = 0;
+        data.envTileIndices = 0;
     }
 
     // ---- Forward+ decals (tiled projected splats) ----
@@ -9818,6 +9824,32 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
                                               smvk::PipelineStageBit_Vertex |
                                                   smvk::PipelineStageBit_Fragment,
                                               smvk::AccessFlags::ShaderRead);
+                if (m_resources.envTileShapesBuffer.empty())
+                    m_resources.envTileShapesBuffer = m_context->CreateBuffer(
+                        sizeof(smvk::envzones::EnvZoneGpu) * worldpartition::kEnvTileMaxRecords,
+                        smvk::BufferType_Storage, "env tile exact shapes");
+                const size_t indexBytes = sizeof(uint32_t) * m_envTiles.CandidateIndexCount();
+                if (m_resources.envTileIndicesBuffer.empty() || m_envTileIndexBytes != indexBytes) {
+                    m_resources.envTileIndicesBuffer = m_context->CreateBuffer(
+                        std::max(indexBytes, size_t(4)), smvk::BufferType_Storage,
+                        "env tile candidate indices");
+                    m_envTileIndexBytes = m_resources.envTileIndicesBuffer.empty() ? 0 : indexBytes;
+                }
+                if (m_resources.envTileShapesBuffer.empty() ||
+                    m_resources.envTileIndicesBuffer.empty()) {
+                    smvk::OnResourceExhaustion("env tile spatial index buffers");
+                    return;
+                }
+                m_context->UploadDataToBuffer(m_resources.envTileShapesBuffer,
+                    m_envTiles.Shapes(),
+                    sizeof(smvk::envzones::EnvZoneGpu) * m_envTiles.RecordCount(),
+                    smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                    smvk::AccessFlags::ShaderRead);
+                if (indexBytes)
+                    m_context->UploadDataToBuffer(m_resources.envTileIndicesBuffer,
+                        m_envTiles.CandidateIndices(), indexBytes,
+                        smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                        smvk::AccessFlags::ShaderRead);
             }
             m_envTilesPublished = true;
             // One-time diagnostic (the bake replaced the per-frame pack).

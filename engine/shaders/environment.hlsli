@@ -604,59 +604,78 @@ void EnvTileUnpack(EnvTileRecord r, out EnvZoneLook z)
     z.volumetricDensity = r.vol.y;
 }
 
-// Resolves the zone at p by TILE ADDRESS (the retired per-pixel OBB walk's
-// replacement). weight = the baked blendWeight*falloff; the look is the
-// tile's record. Returns false when no tiles are live (the caller keeps
-// the plain look).
+// Exact authored OBB falloff: mirror of smvk::envzones::EnvZoneFalloff.
+// Tile membership is only a conservative broadphase, never the winner.
+float EnvShapeFalloff(EnvZoneShape s, float3 p)
+{
+    const float4 p4 = float4(p, 1.0);
+    const float3 local = float3(dot(s.worldToLocal[0], p4),
+                                dot(s.worldToLocal[1], p4),
+                                dot(s.worldToLocal[2], p4));
+    const float3 half = asfloat(s.halfAndMask.xyz);
+    float dist2 = 0.0;
+    [unroll] for (uint a = 0; a < 3; ++a) {
+        const float h = half[a];
+        const uint mask = s.halfAndMask.w;
+        const bool negFace = (mask & (1u << (2u * a))) != 0u;
+        const bool posFace = (mask & (2u << (2u * a))) != 0u;
+        const bool flat = isfinite(h) && !(h > 0.0);
+        if (flat && !negFace && !posFace) return 0.0;
+        const bool negInf = !isfinite(h) || negFace || (flat && (negFace || posFace));
+        const bool posInf = !isfinite(h) || posFace || (flat && (negFace || posFace));
+        const float scale = (isfinite(h) && h > 0.0) ? h : 1.0;
+        if (!negInf && local[a] < -1.0) {
+            const float d = (-1.0 - local[a]) * scale;
+            dist2 += d*d;
+        }
+        if (!posInf && local[a] > 1.0) {
+            const float d = (local[a] - 1.0) * scale;
+            dist2 += d*d;
+        }
+    }
+    if (!(dist2 > 0.0)) return 1.0;
+    const float radius = max(s.shape.z, 0.0);
+    if (!(radius > 0.0)) return 0.0;
+    const float t = saturate(sqrt(dist2) / radius);
+    return 1.0 - t*t*(3.0 - 2.0*t);
+}
+
 bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
     out EnvZoneLook z)
 {
     weight = 0.0;
-    z.skyTint = float3(1.0, 1.0, 1.0);
-    z.ambientI = 0.0;
-    z.fogColor = float3(0.0, 0.0, 0.0);
-    z.fogDensity = 0.0;
-    z.volumetrics = 1.0;
-    z.volumetricDensity = 0.0;
+    z.skyTint = float3(1,1,1);
+    z.ambientI = 0;
+    z.fogColor = float3(0,0,0);
+    z.fogDensity = 0;
+    z.volumetrics = 1;
+    z.volumetricDensity = 0;
     const uint n = frame.envZoneCount;
     if (n == 0u || (frame.envZoneFlags & 1u) == 0u)
         return false;
-
-    // Out of grid (or a degenerate grid): the BASE record at weight 1 —
-    // the zone-zero semantic; the grid spans the scene bounds + margin,
-    // beyond it the default environment applies.
-    const float2 rel = (p.xz - float2(frame.envTileMinX, frame.envTileMinZ))
-        / 64.0;
-    const int2 cellI = int2(floor(rel));
-    if (any(cellI < int2(0, 0)) || any(cellI >= int2(frame.envTileDimX, frame.envTileDimZ)))
-    {
-        const EnvTileRecord base =
-            GPU_PTR(EnvTileRecord)(frame.envZones).Get();
-        EnvTileUnpack(base, z);
-        weight = 1.0;
-        return true;
+    uint rec = 0u;
+    float w = 1.0;
+    const int2 cellI = int2(floor((p.xz -
+        float2(frame.envTileMinX, frame.envTileMinZ)) / 64.0));
+    if (all(cellI >= int2(0,0)) &&
+        all(cellI < int2(frame.envTileDimX, frame.envTileDimZ))) {
+        const EnvTileCell c = GPU_PTR(EnvTileCell)(
+            frame.envTileCells +
+            uint64_t(uint(cellI.y) * frame.envTileDimX + uint(cellI.x)) * 32u).Get();
+        [loop]
+        for (uint i = 0; i < c.candidateCount; ++i) {
+            const uint id = GPU_PTR(uint)(
+                frame.envTileIndices + uint64_t(c.firstCandidate + i) * 4u).Get();
+            if (id >= n) continue;
+            const EnvZoneShape s = GPU_PTR(EnvZoneShape)(
+                frame.envTileShapes + uint64_t(id) * 144u).Get();
+            const float influence = saturate(s.shape.y) * EnvShapeFalloff(s, p);
+            if (!(influence > 0.0)) continue;
+            rec = id;
+            w = influence;
+            break;
+        }
     }
-
-    // The cell: up to three records — the mid band (the enclosed room)
-    // first, else the splitY half-spaces.
-    const EnvTileCell c = GPU_PTR(EnvTileCell)(
-        frame.envTileCells
-        + uint64_t(uint(cellI.y) * frame.envTileDimX + uint(cellI.x)) * 32u
-    ).Get();
-    uint rec; float w;
-    if (c.midRecord != 0xFFFFFFFFu
-        && p.y >= c.splitY && p.y <= c.midHiY) {
-        rec = c.midRecord;
-        w = c.midWeight;
-    } else if (p.y > c.splitY) {
-        rec = c.upperRecord;
-        w = c.upperWeight;
-    } else {
-        rec = c.lowerRecord;
-        w = c.lowerWeight;
-    }
-    if (rec >= n)
-        return false; // stale/corrupt index: the plain path, never garbage
     const EnvTileRecord r = GPU_PTR(EnvTileRecord)(
         frame.envZones + uint64_t(rec) * 48u).Get();
     EnvTileUnpack(r, z);
@@ -664,143 +683,13 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
     return w > 0.0;
 }
 
-// ---------------------------------------------------------------------------
-// The per-segment zone resolver (the volumetric march's TILE CACHE).
-// EnvZoneAt's full walk — cell fetch, vertical band pick, record fetch,
-// unpack — memoized on the (XZ cell, record) pair: the CELL re-reads only
-// when the march crosses a 64 m tile boundary, the RECORD only when the
-// vertical band changes (y crossing splitY / midHiY) or the pick moves to
-// a different record. A 64-step march through one room costs ONE cell
-// fetch + ONE record fetch; the segments between reuse the resolve — the
-// buffers are NOT re-walked at every step. (rec, weight) are paired per
-// band per cell (the weight rides the same cell+band slot as the record),
-// so one comparison gates both refetches.
-//
-// WHY PER SEGMENT (the review's finding): the old march resolved the zone
-// ONCE at the camera ray's midpoint and used that single density for the
-// whole sightline. A ray through two zones took the middle zone's
-// density for the full length; a NEAR WALL changed the midpoint — a
-// scene-depth-dependent zone pick that changed with the view without
-// the camera moving. Per-segment resolution makes each segment's
-// extinction its own zone's.
-// ---------------------------------------------------------------------------
-static const int2 kEnvZoneCellOutOfGrid = int2(0x7fffffff, 0x7fffffff);
-
-struct EnvZoneMarchCache
-{
-    int2 cell;          // the cached XZ tile key (kEnvZoneCellOutOfGrid = out of grid)
-    EnvTileCell c;      // the cell content (the vertical pick source)
-    uint rec;           // the cached record pick (0xFFFFFFFF = none yet)
-    float weight;       // the cached blend weight (paired with the pick)
-    EnvZoneLook look;   // the cached unpacked record
-    bool usable;        // the cached serve is valid (w > 0, rec < count)
-    bool live;          // at least one resolve happened
-};
-
-// Resolves the zone at p through the cache; same semantics as EnvZoneAt
-// (false = the plain path, weight 0 — the caller keeps the pass base).
+// Exact smooth falloff is position-dependent inside the same tile.
+// Do not memoize a sampled record or weight for an entire march cell.
+struct EnvZoneMarchCache { uint unused; };
 bool EnvZoneSegment(float3 p, FrameUniforms frame,
     inout EnvZoneMarchCache cache, out float weight, out EnvZoneLook z)
 {
-    weight = 0.0;
-    z.skyTint = float3(1.0, 1.0, 1.0);
-    z.ambientI = 0.0;
-    z.fogColor = float3(0.0, 0.0, 0.0);
-    z.fogDensity = 0.0;
-    z.volumetrics = 1.0;
-    z.volumetricDensity = 0.0;
-    const uint n = frame.envZoneCount;
-    if (n == 0u || (frame.envZoneFlags & 1u) == 0u)
-        return false; // the caller hoists this; the belt+braces re-check
-
-    // The XZ tile key. Out of grid canonicalizes to ONE sentinel cell so
-    // the base-record-at-weight-1 state (EnvZoneAt's zone-zero semantic)
-    // caches like any other — the synthesized cell is a no-split
-    // lower=upper=record-0 column and the pick below flows through the
-    // common path with no special cases.
-    const float2 rel = (p.xz - float2(frame.envTileMinX, frame.envTileMinZ))
-        / 64.0;
-    const int2 cellI = int2(floor(rel));
-    int2 cellKey = cellI;
-    if (any(cellI < int2(0, 0))
-        || any(cellI >= int2(frame.envTileDimX, frame.envTileDimZ)))
-        cellKey = kEnvZoneCellOutOfGrid;
-
-    // CELL level: re-read the cell only at a tile-key change — ANY
-    // component change (any(), NOT all(): all() only fired when BOTH
-    // X and Z differed, so an X-only or Z-only tile crossing kept the
-    // previous tile's cell + record — the wrong zone's fog density
-    // across tile borders, the exact per-tile inconsistency the
-    // per-segment rework exists to remove; the diagonal crossing was
-    // the only one that ever invalidated. Regression cases mirrored
-    // in test_world_partition.cpp's env-zone tile-cache block.)
-    if (!cache.live || any(cache.cell != cellKey))
-    {
-        if (all(cellKey == kEnvZoneCellOutOfGrid))
-        {
-            // Out of grid: the BASE record at weight 1 (the zone-zero
-            // semantic — same as EnvZoneAt).
-            cache.c.lowerRecord = 0u;
-            cache.c.upperRecord = 0u;
-            cache.c.splitY = -3.402823466e+38f;
-            cache.c.lowerWeight = 1.0;
-            cache.c.upperWeight = 1.0;
-            cache.c.midRecord = 0xFFFFFFFFu;
-            cache.c.midHiY = -3.402823466e+38f;
-            cache.c.midWeight = 0.0;
-        }
-        else
-        {
-            cache.c = GPU_PTR(EnvTileCell)(
-                frame.envTileCells
-                + uint64_t(uint(cellI.y) * frame.envTileDimX
-                    + uint(cellI.x)) * 32u
-            ).Get();
-        }
-        cache.cell = cellKey;
-        cache.live = true;
-    }
-
-    // The vertical band pick (cheap branches off the CACHED cell — y
-    // crossing splitY/midHiY inside one tile changes the record; the
-    // same pick order as EnvZoneAt: mid band first, then the half
-    // spaces).
-    uint rec; float w;
-    if (cache.c.midRecord != 0xFFFFFFFFu
-        && p.y >= cache.c.splitY && p.y <= cache.c.midHiY) {
-        rec = cache.c.midRecord;
-        w = cache.c.midWeight;
-    } else if (p.y > cache.c.splitY) {
-        rec = cache.c.upperRecord;
-        w = cache.c.upperWeight;
-    } else {
-        rec = cache.c.lowerRecord;
-        w = cache.c.lowerWeight;
-    }
-
-    // RECORD level: re-read only when the pick (or its paired weight —
-    // an adjacent tile of the same zone at a different falloff sample)
-    // changes. A stale/corrupt index (rec >= n) caches as unusable for
-    // the cell — never garbage, never a re-fetch storm.
-    if (rec != cache.rec || w != cache.weight)
-    {
-        cache.rec = rec;
-        cache.weight = w;
-        if (rec < n)
-        {
-            const EnvTileRecord r = GPU_PTR(EnvTileRecord)(
-                frame.envZones + uint64_t(rec) * 48u).Get();
-            EnvTileUnpack(r, cache.look);
-            cache.usable = w > 0.0;
-        }
-        else
-        {
-            cache.usable = false;
-        }
-    }
-    weight = cache.weight;
-    z = cache.look;
-    return cache.usable;
+    return EnvZoneAt(p, frame, weight, z);
 }
 
 // Zone-tinted + zone-intensity ambient irradiance for N (the

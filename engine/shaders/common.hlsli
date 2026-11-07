@@ -580,21 +580,19 @@ struct EnvTileRecordsBuffer
 {
     EnvTileRecord records[ENV_TILE_MAX];
 };
-// One 64 m world tile (a subcell column): up to THREE records — the
-// dominant record BELOW and ABOVE splitY (the vertical split carries
-// underwater/interior half-spaces) plus an optional mid BAND bounded by
-// [splitY, midHiY] (the enclosed room: base -> interior -> base).
-// lower==upper + splitY=-FLT_MAX + midRecord=0xFFFFFFFF = no split.
-struct EnvTileCell
-{
-    uint lowerRecord;       // 0
-    uint upperRecord;       // 4
-    float splitY;           // 8
-    float lowerWeight;      // 12
-    float upperWeight;      // 16
-    uint midRecord;         // 20 (0xFFFFFFFF = no mid band)
-    float midHiY;           // 24 (the band's high edge)
-    float midWeight;        // 28 (32 B total)
+// The original exact OBB packer ABI (144 B), indexed by zone record.
+struct EnvZoneShape {
+    float4 worldToLocal[4];
+    uint4 halfAndMask;
+    float4 shape;
+    float4 sky;
+    float4 fog;
+    float4 vol;
+};
+struct EnvTileCell {
+    uint firstCandidate;
+    uint candidateCount;
+    uint reserved[6];
 };
 
 // Offsets mirror the C++ FrameUniforms in App/world_renderer.h (asserted
@@ -810,7 +808,9 @@ uint decalCount;                                         // 776 0 = decals off
     uint envTileDimX;                                             // 1696 tiles per axis (64 m each)
     uint envTileDimZ;                                             // 1700
     uint64_t envTileCells;                                        // 1704 the EnvTileCell grid BDA (raw)
-    uint envTileReserved[42];                                     // 1712 (keeps lmLayers@1888 pinned)
+    uint64_t envTileShapes;                                     // 1712 OBB shapes BDA
+    uint64_t envTileIndices;                                    // 1720 candidate ids BDA
+    uint envTileReserved[38];                                     // 1712 (keeps lmLayers@1888 pinned)
     // ---- SG 2D lightmaps (STATIC geometry): atlas layers ride the
     // bindless texture slots (mirror of the C++ APPEND-ONLY tail — every
     // pinned offset above stays put). lmLayerKind: 0 = 9 RGBA16F stream
