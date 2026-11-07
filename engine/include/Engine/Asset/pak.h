@@ -523,6 +523,11 @@ class PakReader {
     // Null when no entry carries the slot.
     const PakTocEntry* FindBySlot(uint32_t slot) const;
     std::span<const uint8_t> Payload(const PakTocEntry& entry) const;
+    // Independent verified page read without persistent materialization.
+    // Returns owned bytes; safe for evictable streamed subcell content.
+    // Serializes positional file access with normal Payload(), validates
+    // content CRC and decodes LZ4, but NEVER fills the lazy page cache.
+    std::vector<uint8_t> PayloadCopyUncached(const PakTocEntry& entry) const;
     // The explicit full-verification policy: hashes every entry's
     // stored bytes against its contentCrc (image-backed: in-memory;
     // file-backed: positional reads). False + the first failing path
