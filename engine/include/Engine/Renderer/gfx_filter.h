@@ -163,8 +163,8 @@ static constexpr uint32_t kMaxBatchSlots = 262144;
 // fly-through, more from overhead vantages) silently dropped whole
 // instances past 4k. Sized to kMaxBatches: the filtered-index survivor
 // ring stays the REAL per-view geometry budget (see kMaxBatches + the
-// monoblock note above) — a draw count beyond 65536 wants that lane
-// resized, not this one. Memory cost: one Draw ring slice per (view,
+// monoblock note above). Content must stay within every independent
+// draw/candidate/survivor budget; exceeding a budget is not a fallback. Memory cost: one Draw ring slice per (view,
 // flight) at kMaxDraws * sizeof(Draw) ~= 7 MB, the cullState verdict
 // words (kMaxDraws + 5 uints ~= 256 KB) and the skin-bounds drawBound
 // tail (kMaxDraws * 16 B = 1 MB). HLSL mirror: gfxfilter.hlsli
