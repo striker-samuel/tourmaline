@@ -9,6 +9,7 @@
 
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/gpu_scene_candidates.h>
+#include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/renderview.h>
 
 #include <algorithm>
@@ -704,6 +705,40 @@ class CandidateValidator {
         return true;
     }
 
+    // Flight-safe raster indirect command output. Unlike the diagnostic
+    // VkDispatchIndirectCommand, these are actual 20-byte Vulkan indexed
+    // draw records derived entirely from GPU work + indexed geometry.
+    // The caller still owns the shader dispatch and the compute->draw barrier.
+    [[nodiscard]] bool PrepareRasterCommands(smvk::ResourceManager& ctx,
+                                             uint32_t flight,
+                                             uint64_t geometryAddress,
+                                             uint32_t geometryCount,
+                                             RasterWorkDrawBuildPush& push,
+                                             smvk::BufferHandle& commands) {
+        if (flight >= Flights || !geometryAddress || geometryCount == 0 ||
+            geometryCount > kMaxRasterDrawGroups)
+            return false;
+        auto& f = flight_[flight];
+        if (!f.workPrepared || f.workCandidates == 0 || f.workCandidates > 32768)
+            return false;
+        const uint64_t maxCommands = uint64_t(f.workCandidates) * 16u;
+        if (maxCommands > 524288u || maxCommands > UINT32_MAX)
+            return false;
+        if (!Ensure(ctx, f.rasterCommands, f.rasterSize,
+                    size_t(maxCommands) * sizeof(RasterIndirectCommand),
+                    "GPU scene raster indirect commands"))
+            return false;
+        const uint64_t work = ctx.GetBufferDeviceAddress(f.workOutput);
+        const uint64_t offsets = ctx.GetBufferDeviceAddress(f.workOffsets);
+        const uint64_t output = ctx.GetBufferDeviceAddress(f.rasterCommands);
+        if (!work || !offsets || !output)
+            return false;
+        push = {work, offsets, geometryAddress, output, f.workCandidates,
+                geometryCount, uint32_t(maxCommands), 0};
+        commands = f.rasterCommands;
+        return true;
+    }
+
     void MarkDispatched(uint32_t flight) {
         if (flight >= Flights)
             return;
@@ -744,6 +779,8 @@ class CandidateValidator {
         uint32_t workCandidates = 0;
         bool workPrepared = false;
         smvk::Holder<smvk::BufferHandle> indirectArgs{}, indirectVerified{};
+        smvk::Holder<smvk::BufferHandle> rasterCommands{};
+        size_t rasterSize = 0;
         size_t indirectVerifiedSize = 0;
         uint32_t indirectCapacity = 0;
         bool indirectPrepared = false;
