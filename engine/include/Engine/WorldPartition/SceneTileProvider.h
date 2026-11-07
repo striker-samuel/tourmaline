@@ -9,6 +9,7 @@
 
 #include <Engine/WorldPartition/WorldPartition.h>
 #include <Engine/WorldPartition/StreamTicketLedger.h>
+#include <Engine/WorldPartition/StreamBudgetPool.h>
 
 #include <algorithm>
 #include <cmath>
@@ -38,6 +39,17 @@ class SceneTileProvider final : public IWorldStreamProvider {
 
     const char* ProviderName() const override {
         return "SceneTiles";
+    }
+
+    // Byte estimates must be conservative upper bounds. A finite byte cap
+    // rejects requests when the host has not supplied an estimate.
+    using CostEstimator = std::function<std::pair<uint64_t,uint64_t>(const SceneTileDescriptor&)>;
+    void SetCostEstimator(CostEstimator estimator) { costEstimator_ = std::move(estimator); }
+    void SetBudgetPool(StreamBudgetPool* pool) override {
+        if (pool == budgets_) return;
+        if (budgets_) for (const auto& tile : reservations_) budgets_->Release(BudgetKey(tile));
+        reservations_.clear();
+        budgets_ = pool;
     }
 
     void SetMaxNewRequestsPerFrame(size_t limit) {
@@ -87,11 +99,14 @@ class SceneTileProvider final : public IWorldStreamProvider {
         if (!desired_.count(cell) || !tickets_.Accept(cell, ticket))
             return false;
         resident_.insert(cell);
+        if (budgets_) budgets_->CompleteIo(BudgetKey(cell));
         return true;
     }
 
     bool ResetPending(WorldTileKey cell, uint64_t ticket) {
-        return tickets_.Fail(cell, ticket);
+        if (!tickets_.Fail(cell, ticket)) return false;
+        ReleaseBudget(cell);
+        return true;
     }
 
     bool IsResident(WorldTileKey cell) const {
@@ -187,6 +202,15 @@ class SceneTileProvider final : public IWorldStreamProvider {
                 continue;
             const auto ticket = tickets_.Issue(candidate.tile);
             if (!ticket) break; // exhausted ticket IDs, fail closed
+            if (budgets_) {
+                const auto cost = costEstimator_ ? costEstimator_(it->second)
+                                                  : std::pair<uint64_t,uint64_t>{0,0};
+                if (!budgets_->Reserve(BudgetKey(candidate.tile), cost.first, cost.second)) {
+                    tickets_.Fail(candidate.tile, *ticket);
+                    continue; // another provider may be using the shared budget
+                }
+                reservations_.insert(candidate.tile);
+            }
             request_(it->second, candidate.desired, *ticket);
         }
     }
@@ -204,6 +228,7 @@ class SceneTileProvider final : public IWorldStreamProvider {
                 ++it; // failed retirement must remain resident for retry
                 continue;
             }
+            ReleaseBudget(*it);
             it = resident_.erase(it);
         }
         // A canceled IO request must not be treated as a newly resident tile.
@@ -212,9 +237,29 @@ class SceneTileProvider final : public IWorldStreamProvider {
         tickets_.CancelUndesired([&](const WorldTileKey& key) {
             return desired_.count(key) != 0;
         });
+        for (auto it = reservations_.begin(); it != reservations_.end();) {
+            if (desired_.count(*it) || resident_.count(*it)) { ++it; continue; }
+            if (budgets_) budgets_->Release(BudgetKey(*it));
+            it = reservations_.erase(it);
+        }
     }
 
   private:
+    static StreamBudgetKey BudgetKey(const WorldTileKey& tile) {
+        StreamBudgetKey key{};
+        key.world = tile.world;
+        key.layer = StreamLayer::Scene;
+        key.cell = tile.cell;
+        key.pathBits = tile.path.bits;
+        return key;
+    }
+    void ReleaseBudget(const WorldTileKey& tile) {
+        if (!reservations_.erase(tile)) return;
+        if (budgets_) budgets_->Release(BudgetKey(tile));
+    }
+    StreamBudgetPool* budgets_ = nullptr;
+    CostEstimator costEstimator_;
+    std::set<WorldTileKey, SceneTileKeyLess> reservations_;
     WorldId activeWorld_ = 0;
     std::map<WorldTileKey, SceneTileDescriptor, SceneTileKeyLess> manifest_;
     std::map<WorldTileKey, std::pair<float, DesiredResidency>, SceneTileKeyLess> desired_;
