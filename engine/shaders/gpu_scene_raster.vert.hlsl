@@ -12,7 +12,7 @@
 #include "gpu_scene.hlsli"
 #include "gpu_platform.hlsli"
 
-#define GPU_SCENE_RASTER_MAX_WORK 524288u
+#define GPU_SCENE_RASTER_MAX_WORK 1048576u
 #define GPU_SCENE_RASTER_MAX_INSTANCES 4194304u
 
 struct RasterWorkRow { uint4 identity; uint4 detail; };
