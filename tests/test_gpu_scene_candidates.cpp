@@ -111,7 +111,8 @@ void CheckCoarse() {
         for (size_t i = 0; i < selection.ranges.size(); ++i) {
             const auto& a = frameSelection.ranges[i];
             const auto& b = selection.ranges[i];
-            Check(a.members == b.members && a.leaf == b.leaf,
+            Check(glm::all(glm::equal(a.members, b.members)) &&
+                      glm::all(glm::equal(a.leaf, b.leaf)),
                   "cand.frame-arena-range-matches");
         }
     }
