@@ -129,6 +129,7 @@ bool WorldEnvTiles::LoadCooked(glm::vec2 min, uint32_t dx, uint32_t dz,
     dimZ_ = dz;
     candidates_.clear();
     candidateIndices_.clear();
+    farCandidates_.clear();
     cells_.assign(size_t(dx) * dz, EnvTileCell{});
     built_ = true;
     return true;
@@ -325,8 +326,19 @@ bool WorldEnvTiles::Build(const Scene& scene,
     // Spatial bake: keep every potentially influencing OBB, sorted by
     // priority, bounded volume, then node ID. Includes the base.
     shapes_.assign(kEnvTileMaxRecords, smvk::envzones::EnvZoneGpu{});
-    for (const Candidate& candidate : candidates_)
+    farCandidates_.clear();
+    // Always-resident global shortlist: avoid loading the entire far
+    // tile grid. Include the base IN SORT ORDER so base priority still
+    // beats any lower-priority far look (first influencing candidate).
+    // 512m projected footprint or any infinite face is far-relevant.
+    for (const Candidate& candidate : candidates_) {
         shapes_[candidate.record] = candidate.zone;
+        const glm::vec2 span = candidate.xzMax - candidate.xzMin;
+        const bool unbounded = !std::isfinite(span.x) || !std::isfinite(span.y);
+        if (candidate.record == 0 || unbounded ||
+            span.x >= 512.0f || span.y >= 512.0f)
+            farCandidates_.push_back(candidate.record);
+    }
     cells_.assign(size_t(dimX_) * dimZ_, EnvTileCell{});
     candidateIndices_.clear();
     for (uint32_t iz = 0; iz < dimZ_; ++iz)
