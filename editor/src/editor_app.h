@@ -3351,11 +3351,12 @@ class EditorApp : public tour::App {
     // all of them: a blocking modal popup (viewport mouse is eaten by
     // the modal itself, keyboard shortcuts by the TaskWindowBlocking
     // gate in UpdateModalInput) with the live stage, a progress bar and
-    // a scrolling detail log. "Run in background" drops the popup while
-    // the worker continues; the top-bar button reopens it on demand.
+    // a scrolling detail log. Background-capable tasks can hide the popup
+    // while their worker continues; project export must remain modal.
     struct ModalTaskWindow {
         bool wantOpen = false;     // a task owns the popup (armed/running/done)
         bool inBackground = false; // user sent it behind; worker continues
+        bool allowBackground = true; // false for non-cancellable project builds
         bool opened = false;       // OpenPopup consumed (re-armed on reopen)
         std::string popupId = "TaskProgress";
         std::string title;              // header, e.g. "Bake GI"
@@ -3374,7 +3375,8 @@ class EditorApp : public tour::App {
     bool TaskWindowBlocking() const {
         return m_taskWindow.wantOpen && !m_taskWindow.inBackground;
     }
-    void TaskWindowBegin(const std::string& title, const std::string& stage);
+    void TaskWindowBegin(const std::string& title, const std::string& stage,
+                         bool allowBackground = true);
     void TaskWindowPush(const std::string& line); // detail log (capped)
     void TaskWindowStage(const std::string& stage, float progress = -1.0f);
     void TaskWindowFinish(bool ok, const std::string& result);
