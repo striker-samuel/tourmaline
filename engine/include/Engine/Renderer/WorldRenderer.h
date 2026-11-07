@@ -2371,6 +2371,8 @@ class WorldRenderer : public IRenderer {
     // stable per-submesh expansion. Still validation-only.
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneWorkModules{};
     std::array<smvk::ShaderProgram, 3> m_gpuSceneWorkPrograms{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterBuildModule{};
+    smvk::ShaderProgram m_gpuSceneRasterBuildProgram{};
     // GPU-produced compute dispatch arguments plus an indirect work consumer.
     // No indexed graphics draws are changed by this validation-only chain.
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 2> m_gpuSceneIndirectModules{};
