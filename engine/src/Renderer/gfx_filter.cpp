@@ -2416,6 +2416,94 @@ void UploadShadowList(State& s, ResourceManager& ctx, uint32_t frameIndex, uint3
     assert(frameIndex < smvk::limits::MaxFramesInFlight);
     ShadowView& sv = s.shadowViews[sview];
     sv.frameIndex = frameIndex;
+    // TMP-DIAG (grid32 shadow DEVICE_LOST hunt, remove later): validate every
+    // built command/range against the ring bounds BEFORE the upload, and
+    // trace list churn (the fault is camera-motion dependent — a static
+    // camera produces identical lists every frame and never crashes).
+    {
+        static uint64_t s_diagFrames = 0;
+        static std::vector<std::pair<uint32_t, uint32_t>> s_lastSizes;
+        const uint64_t diagFrame = s_diagFrames++;
+        const uint32_t indexLo = s.clusterIndexBase;
+        const uint32_t indexHi = s.clusterIndexBase + (uint32_t)s.filterIndices.size();
+        if (sv.drawConstants.size() != sv.draws.size() || sv.draws.size() > kMaxDraws ||
+            sv.commands.size() > kMaxBatches) {
+            std::fprintf(stderr,
+                         "[TMP-DIAG] shadow ring BAD frame=%llu sview=%u draws=%zu/%zu "
+                         "constants=%zu cmds=%zu (caps %u/%u)\n",
+                         (unsigned long long)diagFrame,
+                         sview,
+                         sv.draws.size(),
+                         sv.drawConstants.size(),
+                         sv.drawConstants.size(),
+                         sv.commands.size(),
+                         kMaxDraws,
+                         kMaxBatches);
+        }
+        for (uint32_t k = 0; k < (uint32_t)sv.commands.size(); ++k) {
+            const SeedCommand& c = sv.commands[k];
+            const bool idxOk = c.indexCount != 0 && (c.indexCount % 3) == 0 &&
+                               c.firstIndex >= indexLo && c.firstIndex <= indexHi &&
+                               c.indexCount <= indexHi - c.firstIndex;
+            const bool instOk = c.firstInstance < sv.drawConstants.size();
+            if (!idxOk || !instOk || c.vertexOffset != 0) {
+                std::fprintf(stderr,
+                             "[TMP-DIAG] shadow cmd BAD frame=%llu sview=%u k=%u/%zu idx=%u "
+                             "first=%u (region %u..%u) inst=%u/%zu draws=%zu\n",
+                             (unsigned long long)diagFrame,
+                             sview,
+                             k,
+                             sv.commands.size(),
+                             c.indexCount,
+                             c.firstIndex,
+                             indexLo,
+                             indexHi,
+                             c.firstInstance,
+                             sv.drawConstants.size(),
+                             sv.draws.size());
+                break;
+            }
+        }
+        for (uint32_t r = 0; r < (uint32_t)sv.ranges.size(); ++r) {
+            const SeedRange& sr = sv.ranges[r];
+            if (sr.firstCommand + sr.commandCount > (uint32_t)sv.commands.size()) {
+                std::fprintf(stderr,
+                             "[TMP-DIAG] shadow range BAD frame=%llu sview=%u r=%u first=%u "
+                             "count=%u cmds=%zu\n",
+                             (unsigned long long)diagFrame,
+                             sview,
+                             r,
+                             sr.firstCommand,
+                             sr.commandCount,
+                             sv.commands.size());
+                break;
+            }
+        }
+        if (sv.opaqueCommands > (uint32_t)sv.commands.size()) {
+            std::fprintf(stderr,
+                         "[TMP-DIAG] shadow opaque BAD frame=%llu sview=%u opaque=%u cmds=%zu\n",
+                         (unsigned long long)diagFrame,
+                         sview,
+                         sv.opaqueCommands,
+                         sv.commands.size());
+        }
+        if (sview >= s_lastSizes.size())
+            s_lastSizes.resize(sview + 1, {UINT32_MAX, UINT32_MAX});
+        const auto sizes =
+            std::make_pair((uint32_t)sv.drawConstants.size(), (uint32_t)sv.commands.size());
+        if (s_lastSizes[sview] != sizes) {
+            s_lastSizes[sview] = sizes;
+            std::fprintf(stderr,
+                         "[TMP-DIAG] shadow list frame=%llu sview=%u draws=%zu cmds=%zu "
+                         "ranges=%zu opaque=%u\n",
+                         (unsigned long long)diagFrame,
+                         sview,
+                         sv.drawConstants.size(),
+                         sv.commands.size(),
+                         sv.ranges.size(),
+                         sv.opaqueCommands);
+        }
+    }
     // GPU mirrors (main thread; the EndAndPresent flush orders the copies
     // ahead of every consumer pass — same mechanism as the seed/remainder
     // uploads).

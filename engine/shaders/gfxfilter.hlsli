@@ -32,7 +32,11 @@
 #include "gpu_platform.hlsli"
 
 #define GFX_THREADS_PER_CLUSTER 128
-#define GFX_MAX_DRAWS 4096
+// Mirror of C++ kMaxDraws (gfx_filter.h) — keep in lockstep. 64k: the
+// 4k budget silently dropped whole instances on grid32-scale instanced
+// scenes; the survivor ring (GFX_MAX_BATCHES) stays the real per-view
+// geometry ceiling.
+#define GFX_MAX_DRAWS 65536
 #define GFX_MAX_BATCHES 65536
 // GPU-cull candidate capacity: per (draw x cluster) slot pushed by the
 // CPU candidate build (batches + indirect + seed/remainder command arrays

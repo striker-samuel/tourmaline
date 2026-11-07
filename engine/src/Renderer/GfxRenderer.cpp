@@ -1105,6 +1105,13 @@ void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd,
                                    uint64_t renderViewsAddr,
                                    uint32_t renderViewIndex,
                                    const IRenderer::PushConstants& shadowPC) {
+    // TMP-DIAG (grid32 shadow DEVICE_LOST hunt, remove later): phase bisection
+    // knobs. TOURMALINE_SD_SKIP=opq skips the opaque indirect seed draw,
+    // =mask skips the masked cutout ranges, comma-combinable. Whichever
+    // removal stops the crash names the faulting phase.
+    static const char* skipEnv = std::getenv("TOURMALINE_SD_SKIP");
+    const bool skipOpaque = skipEnv && std::strstr(skipEnv, "opq") != nullptr;
+    const bool skipMasked = skipEnv && std::strstr(skipEnv, "mask") != nullptr;
     const std::vector<smvk::gfx::SeedRange>& ranges = smvk::gfx::ShadowRanges(gfx, sview);
     const uint32_t opaqueCount = smvk::gfx::ShadowOpaqueCommands(gfx, sview);
     const smvk::BufferHandle indirectBuf = smvk::gfx::ShadowIndirectBuffer(gfx, sview);
@@ -1144,7 +1151,7 @@ void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd,
     // BindStaticVertexFmt is correct for every draw below).
     // Phase 1: opaque casters (VS-only, FRONT-culled like the direct path —
     // back faces only, the shadow anti-acne classic).
-    if (opaqueCount > 0) {
+    if (opaqueCount > 0 && !skipOpaque) { // TMP-DIAG: TOURMALINE_SD_SKIP=opq
         cmd.BindRenderPipeline(shadowSeedOpaqueProgram,
                                smvk::VertexLayoutId::Static,
                                smvk::DepthSettings{.depthFunc = smvk::CompareOp::LessEqual,
@@ -1166,6 +1173,8 @@ void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd,
     // leaf-shaped shadows). Cull follows the material raster, matching
     // the main view (cutout has no backface depth anywhere).
     for (const smvk::gfx::SeedRange& r : ranges) {
+        if (skipMasked) // TMP-DIAG: TOURMALINE_SD_SKIP=mask
+            break;
         if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
             continue;
         if (r.material == UINT32_MAX)
