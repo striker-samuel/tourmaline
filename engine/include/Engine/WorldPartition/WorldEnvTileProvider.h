@@ -15,6 +15,7 @@
 // Stale completions after eviction, teleport, or scene revision are rejected.
 #include <Engine/WorldPartition/WorldEnvTiles.h>
 #include <Engine/WorldPartition/WorldPartition.h>
+#include <Engine/WorldPartition/StreamTicketLedger.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -122,11 +123,10 @@ public:
                   std::vector<uint32_t> candidates) {
         const size_t i = Index(subcell);
         if (i >= desired_.size() || !desired_[i]) return false;
-        const auto it = pending_.find(i);
-        if (it == pending_.end() || it->second != ticket) return false;
+        if (!tickets_.Matches(i, ticket)) return false;
         for (uint32_t candidate : candidates)
             if (candidate >= source_->RecordCount()) return false;
-        pending_.erase(it);
+        tickets_.Accept(i, ticket);
         resident_[i] = std::move(candidates);
         PublishSnapshot();
         return true;
@@ -134,11 +134,7 @@ public:
 
     bool Fail(WorldSubcellKey subcell, uint64_t ticket) {
         const size_t i = Index(subcell);
-        const auto it = pending_.find(i);
-        if (it == pending_.end() || it->second != ticket) return false;
-        pending_.erase(it);
-        retryAfter_[i] = lastFrame_ + 120; // avoid hot-looping corrupt pages
-        return true;
+        return tickets_.Fail(i, ticket, lastFrame_, 120); // corrupt page backoff
     }
 
     void CommitFrame(uint64_t frame) override {
@@ -154,22 +150,20 @@ public:
                 changed = true;
             }
         }
-        for (auto it = pending_.begin(); it != pending_.end();) {
-            if (it->first < desired_.size() && desired_[it->first]) ++it;
-            else it = pending_.erase(it);
-        }
+        tickets_.CancelUndesired([&](size_t i) {
+            return i < desired_.size() && desired_[i];
+        });
 
         std::vector<size_t> missing;
         for (size_t i = 0; i < desired_.size(); ++i)
-            if (desired_[i] && !resident_.count(i) && !pending_.count(i) &&
-                (!retryAfter_.count(i) || frame >= retryAfter_[i]))
+            if (desired_[i] && !resident_.count(i) && tickets_.CanIssue(i, frame))
                 missing.push_back(i);
         std::stable_sort(missing.begin(), missing.end(), [&](size_t a, size_t b) {
             if (priority_[a] != priority_[b]) return priority_[a] > priority_[b];
             return a < b;
         });
-        const size_t remaining = resident_.size() + pending_.size() >= maxResidentCells_
-            ? 0 : maxResidentCells_ - resident_.size() - pending_.size();
+        const size_t remaining = resident_.size() + tickets_.PendingCount() >= maxResidentCells_
+            ? 0 : maxResidentCells_ - resident_.size() - tickets_.PendingCount();
         const size_t toIssue = std::min({maxNewRequestsPerFrame_, remaining, missing.size()});
         for (size_t k = 0; k < toIssue; ++k) {
             const size_t i = missing[k];
@@ -177,10 +171,9 @@ public:
             const uint32_t iz = uint32_t(i / source_->DimX());
             const WorldSubcellKey subcell = Key(ix, iz);
             if (request_) {
-                if (!nextTicket_) break; // no ticket wraparound
-                const uint64_t ticket = nextTicket_++;
-                pending_.emplace(i, ticket);
-                request_(subcell, ticket);
+                const auto ticket = tickets_.Issue(i, frame);
+                if (!ticket) break; // no ticket wraparound
+                request_(subcell, *ticket);
             } else {
                 // Scene-backed synchronous fallback. This never touches pak
                 // IO and costs only a copy of the already-baked indices.
@@ -215,7 +208,7 @@ public:
     size_t IndexCount() const { return indices_.size(); }
     uint64_t Revision() const { return revision_; }
     size_t ResidentCount() const { return resident_.size(); }
-    size_t PendingCount() const { return pending_.size(); }
+    size_t PendingCount() const { return tickets_.PendingCount(); }
 
 private:
     WorldSubcellKey Key(uint32_t ix, uint32_t iz) const {
@@ -276,8 +269,7 @@ private:
     }
     void Invalidate() {
         resident_.clear();
-        pending_.clear();
-        retryAfter_.clear();
+        tickets_.Clear();
         desired_.clear();
         priority_.clear();
         cells_.clear();
@@ -290,7 +282,7 @@ private:
     WorldId world_ = 0;
     const WorldEnvTiles* source_ = nullptr;
     uint64_t sourceRevision_ = 0;
-    uint64_t revision_ = 0, nextTicket_ = 1, lastFrame_ = 0;
+    uint64_t revision_ = 0, lastFrame_ = 0;
     size_t maxNewRequestsPerFrame_ = 64;
     size_t maxResidentCells_ = 4096;
     bool unpublished_ = true;
@@ -298,8 +290,7 @@ private:
     std::vector<uint8_t> desired_;
     std::vector<float> priority_;
     std::map<size_t, std::vector<uint32_t>> resident_;
-    std::map<size_t, uint64_t> pending_;
-    std::map<size_t, uint64_t> retryAfter_;
+    StreamTicketLedger<size_t> tickets_;
     std::vector<EnvTileCell> cells_; // logical grid, CPU only
     std::vector<EnvTileCell> packedCells_; // physical resident 4x4 root pages
     std::vector<uint32_t> pageTable_; // root coords to physical slot
