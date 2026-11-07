@@ -685,7 +685,7 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
 
 // Exact smooth falloff is position-dependent inside the same tile.
 // Do not memoize a sampled record or weight for an entire march cell.
-struct EnvZoneMarchCache { uint unused; };
+struct EnvZoneMarchCache { uint rec; };
 bool EnvZoneSegment(float3 p, FrameUniforms frame,
     inout EnvZoneMarchCache cache, out float weight, out EnvZoneLook z)
 {
