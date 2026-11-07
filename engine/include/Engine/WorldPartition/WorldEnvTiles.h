@@ -117,6 +117,19 @@ class WorldEnvTiles {
     const smvk::envzones::EnvZoneGpu* Shapes() const { return shapes_.data(); }
     const uint32_t* CandidateIndices() const { return candidateIndices_.data(); }
     uint32_t CandidateIndexCount() const { return uint32_t(candidateIndices_.size()); }
+    // Static far field: important large/unbounded volumes in exact winner
+    // order, evaluated only when a detailed page is not resident.
+    const uint32_t* FarCandidates() const { return farCandidates_.data(); }
+    uint32_t FarCandidateCount() const { return uint32_t(farCandidates_.size()); }
+    bool SetCookedFarCandidates(const uint32_t* ids, uint32_t count) {
+        if (count > kEnvTileMaxRecords - 1 || (count && !ids))
+            return false;
+        for (uint32_t i = 0; i < count; ++i)
+            if (ids[i] == 0 || ids[i] >= recordCount_)
+                return false;
+        farCandidates_.assign(ids, ids + count);
+        return true;
+    }
     const EnvTileCell* Cells() const {
         return cells_.data();
     }
@@ -152,6 +165,7 @@ class WorldEnvTiles {
 
     std::vector<smvk::envzones::EnvZoneGpu> shapes_; // record-indexed OBBs
     std::vector<uint32_t> candidateIndices_; // ordered per-cell references
+    std::vector<uint32_t> farCandidates_; // sorted far-tier candidate IDs
     std::vector<EnvTileRecord> records_; // [0] = the base
     uint32_t recordCount_ = 0;
     std::vector<EnvTileCell> cells_;    // dimX * dimZ
