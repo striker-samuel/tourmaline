@@ -9821,12 +9821,9 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
                         return; // count 0 -> the plain env path, retried next frame
                     }
                 }
-                m_context->UploadDataToBuffer(m_resources.envTileCellsBuffer,
-                                              m_envTiles.Cells(),
-                                              cellBytes,
-                                              smvk::PipelineStageBit_Vertex |
-                                                  smvk::PipelineStageBit_Fragment,
-                                              smvk::AccessFlags::ShaderRead);
+                // The WorldPartition provider publishes resident cell
+                // headers after CommitFrame; do not upload all world cells
+                // here, even transiently on a scene edit.
                 if (m_resources.envTileShapesBuffer.empty())
                     m_resources.envTileShapesBuffer = m_context->CreateBuffer(
                         sizeof(smvk::envzones::EnvZoneGpu) * worldpartition::kEnvTileMaxRecords,
@@ -9848,11 +9845,8 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
                     sizeof(smvk::envzones::EnvZoneGpu) * m_envTiles.RecordCount(),
                     smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
                     smvk::AccessFlags::ShaderRead);
-                if (indexBytes)
-                    m_context->UploadDataToBuffer(m_resources.envTileIndicesBuffer,
-                        m_envTiles.CandidateIndices(), indexBytes,
-                        smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-                        smvk::AccessFlags::ShaderRead);
+                // Candidate IDs are published from the provider's compact
+                // resident index stream after WorldPartition::UpdateFrame.
             }
             m_envTilesPublished = true;
             m_envTileProvider.SetSource(&m_envTiles, m_envTilesDirtyHash);
