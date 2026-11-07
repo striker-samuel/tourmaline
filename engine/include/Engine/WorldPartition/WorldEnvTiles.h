@@ -2,56 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// WorldEnvTiles — environment zones as WORLD TILES (the runtime rework of
-// the old OBB-volume zone system).
-//
-// The AUTHORING surface is unchanged (env entities as scene nodes whose
-// transforms define OBBs + EnvVolume inf faces — the editor's volume
-// panel, the tour/pak keys). The RUNTIME is replaced: instead of packing
-// up to 64 GPU zone records every frame and resolving the covering zone
-// by PER-PIXEL OBB intersection, the zones are BAKED onto the partition's
-// 64 m subcell grid (one world tile per cell) whenever the zone tables
-// change (load / edit — a cheap hash, not every frame), and the shaders
-// resolve a zone by TILE ADDRESS:
-//
-//   worldPos -> floor((pos.xz - gridMin) / 64) -> cell ->
-//     (dominant record below/above splitY, weights) -> records[rec]
-//
-// A cell carries up to THREE records: a lower/upper pair split at a Y
-// plane (the vertical half-space zones — underwater y<=0, an interior
-// floor), plus an optional mid BAND bounded by [splitY, midHiY] — the
-// enclosed-room shape (base below the floor, the room inside, base above
-// the ceiling) needs all three. lower==upper + splitY = -FLT_MAX +
-// midRecord = 0xFFFFFFFF is the no-split common case. Columns whose
-// profile needs FOUR+ records (multiple stacked env zones in one 64 m
-// column) are not representable: the bake keeps the largest vertical
-// mass and logs a diagnostic (the explicit reject — never a silently
-// wrong shape). Each record index is into the records array
-// where [0] is ALWAYS the base (the ACTIVE resolved scene environment,
-// represented by an all-infinite +/- XYZ zone: outside every bounded
-// zone the base look applies at weight 1, including out-of-grid points).
-//
-// FIDELITY CONTRACT vs the retired per-pixel walk: the winner selection
-// is the SAME resolution (priority desc -> innermost bounded volume ->
-// node id; the first influencing zone wins) and the weight is the same
-// blendWeight * blendRadius falloff — evaluated at the tile's SAMPLE
-// positions instead of continuously. The trade (accepted, documented):
-// a tile is 64 m, so fade bands quantize to tile granularity (a 256 m
-// blend radius still fades across 4 cells; a 10 m radius becomes one
-// tile's step). Zones coarser than a tile — the design target — are
-// faithful; sub-tile detail is not representable by design.
-//
-// Layout: the records (48 B each, EnvTileRecord) + the cells (32 B each,
-// EnvTileCell) ride a plain storage buffer each; the shader reads by
-// BDA + offset (the probePremixSel raw-BDA pattern). HLSL mirrors in
-// common.hlsli; the FrameUniforms env block carries the BDAs + the grid
-// header (see the pinned envZone* fields).
-
+// WorldEnvTiles: exact static OBB geometry accelerated by a 64m spatial
+// index. A tile contains references to all overlapping candidates, not a
+// sampled winner. The shading position determines coverage and falloff.
 #include <cstdint>
 #include <vector>
-
 #include <glm/glm.hpp>
-
 #include <Engine/Core/Limits.h>
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Scene/scene.h>
@@ -68,29 +24,13 @@ struct EnvTileRecord {
 };
 static_assert(sizeof(EnvTileRecord) == 48, "EnvTileRecord: HLSL mirror");
 
-// One 64 m world tile (a subcell column). HLSL mirror: EnvTileCell,
-// 32 B. The column's vertical profile is up to THREE records: lower /
-// mid / upper, where mid is a BAND bounded by [splitY, midHiY] —
-// lower==upper + splitY = -FLT_MAX + midRecord = 0xFFFFFFFF is the
-// no-split common case; a two-record profile sets splitY and leaves
-// midRecord dead; a three-record profile (an enclosed interior: base ->
-// room -> base, or a stacked pair) fills the band fields. lower/mid/
-// upperWeight = the zone's blendWeight*falloff sampled at each slot's
-// interval mid; the base (record 0) tiles carry weight 1.
+// The 32-byte tile retains the existing raw BDA addressing stride.
 struct EnvTileCell {
-    uint32_t lowerRecord = 0;
-    uint32_t upperRecord = 0;
-    float splitY = -3.402823466e+38f; // -FLT_MAX: no vertical split
-    float lowerWeight = 0.0f;
-    float upperWeight = 0.0f;
-    // The mid BAND (three-record columns): midRecord = 0xFFFFFFFF means
-    // no band (the two-record/no-split shapes above); otherwise the band
-    // covers splitY <= y <= midHiY.
-    uint32_t midRecord = 0xFFFFFFFFu;
-    float midHiY = -3.402823466e+38f;
-    float midWeight = 0.0f;
+    uint32_t firstCandidate = 0;
+    uint32_t candidateCount = 0;
+    uint32_t reserved[6] = {};
 };
-static_assert(sizeof(EnvTileCell) == 32, "EnvTileCell: HLSL mirror");
+static_assert(sizeof(EnvTileCell) == 32, "EnvTileCell HLSL ABI");
 
 inline constexpr uint32_t kEnvTileMaxRecords = 64; // [0]=base + 63 zones
 inline constexpr uint32_t kEnvTileMaxDim = engine::limits::MaxWorldEnvTilesPerAxis;
@@ -166,6 +106,9 @@ class WorldEnvTiles {
     // scan — by design: the scene env (the base block) IS a zone
     // author, and the env table owns the look.
     bool AnyVolumetricFog() const;
+    const smvk::envzones::EnvZoneGpu* Shapes() const { return shapes_.data(); }
+    const uint32_t* CandidateIndices() const { return candidateIndices_.data(); }
+    uint32_t CandidateIndexCount() const { return uint32_t(candidateIndices_.size()); }
     const EnvTileCell* Cells() const {
         return cells_.data();
     }
@@ -189,6 +132,7 @@ class WorldEnvTiles {
     struct Candidate {
         smvk::envzones::EnvZoneGpu zone{}; // the sanitized OBB + look
         uint32_t record = 0;               // the assigned record index
+        glm::vec2 xzMin{0.0f}, xzMax{0.0f}; // conservative falloff AABB
         double boundedVolume = 0.0;        // finite product; +inf for any unbounded face
         uint32_t nodeId = 0;
         float priority = 0.0f;
@@ -198,6 +142,8 @@ class WorldEnvTiles {
     // 1 when nothing covers.
     Lookup Evaluate(const glm::vec3& p) const;
 
+    std::vector<smvk::envzones::EnvZoneGpu> shapes_; // record-indexed OBBs
+    std::vector<uint32_t> candidateIndices_; // ordered per-cell references
     std::vector<EnvTileRecord> records_; // [0] = the base
     uint32_t recordCount_ = 0;
     std::vector<EnvTileCell> cells_;    // dimX * dimZ
