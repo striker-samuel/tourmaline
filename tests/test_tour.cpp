@@ -1356,13 +1356,27 @@ void TestLightVerbs() {
     c.text = "color";
     c.vec4 = glm::vec4(1.0f, 0.5f, 0.25f, 1.0f);
     doc.commands.push_back(c);
+    // High-bit and bit-0 mask must round-trip without double text truncation.
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetLightAttr;
+    c.node = smvk::tour::kCreateLightRefBase | 0u;
+    c.text = "layerMask";
+    c.number = 2147483649.0;
+    doc.commands.push_back(c);
+    // A receiver need not itself be a light.
+    c = smvk::tour::Command{};
+    c.verb = smvk::tour::Verb::SetLightAttr;
+    c.node = 0;
+    c.text = "receiverMask";
+    c.number = 2147483648.0;
+    doc.commands.push_back(c);
 
     std::string err;
     std::vector<std::string> warns;
     Check(smvk::tour::SaveTour(TempTour(), doc, err), "light tour save");
     smvk::tour::Doc back;
     Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "light tour load");
-    Check(back.commands.size() == 3, "light tour command count");
+    Check(back.commands.size() == 5, "light tour command count");
     const smvk::tour::Command& rc = back.commands[0];
     Check(rc.verb == smvk::tour::Verb::CreateLight && rc.node == 0 && rc.text == "Key Spot" &&
               rc.vec4.x == 2.0f && rc.vec4.y == 1500.0f && rc.number == 35.0 && !rc.flag &&
@@ -1392,8 +1406,12 @@ void TestLightVerbs() {
                   std::abs(L->outerConeAngle - glm::radians(35.0f)) < 1e-4f &&
                   (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0 &&
                   (L->flags & ::SceneLight::kSceneLightFlag_Static) == 0 &&
-                  L->color == glm::vec3(1.0f, 0.5f, 0.25f);
-    Check(params, "light replay params (-ref intensity + color applied)");
+                  L->color == glm::vec3(1.0f, 0.5f, 0.25f) &&
+                  L->layerMask == 2147483649u;
+    Check(params, "light replay params (-ref intensity + color + layer mask)");
+    Check(cluster->scene.metadata.size() > 0 &&
+              cluster->scene.metadata[0].lightLayerMask == 2147483648u,
+          "non-light receiver mask tour roundtrip");
     Check(cluster->scene.localTransform[newNode][3].x == 1.0f, "light replay position");
 
     // Out-of-range -ref fails loudly; unknown attr fails at parse.

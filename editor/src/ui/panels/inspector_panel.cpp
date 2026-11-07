@@ -282,6 +282,32 @@ void EditorApp::DrawInspector() {
         }
     }
 
+    // Every scene node can receive only chosen direct-light channels. The
+    // mask belongs to the NODE, so separate instances of one mesh can link
+    // to different lights. Hexadecimal input exposes all 32 bits directly.
+    {
+        uint32_t receiveMask = node < scene.metadata.size()
+                                   ? scene.metadata[node].lightLayerMask : 0xffffffffu;
+        if (ImGui::InputScalar("Receive light channels",
+                               ImGuiDataType_U32,
+                               &receiveMask,
+                               nullptr,
+                               nullptr,
+                               "%08X",
+                               ImGuiInputTextFlags_CharsHexadecimal)) {
+            EditCmd c{};
+            c.verb = EditVerb::SetLightAttr;
+            c.node = node;
+            c.lightAttr = "receiverMask";
+            c.number = double(receiveMask);
+            ReadNodeLightAttr(node, "receiverMask", c.beforeVec4, c.beforeNum,
+                              c.beforeFlag, c.beforeText);
+            Do(c);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Direct lighting channels received by this node (32-bit hex mask)");
+    }
+
     // Cooked light on this node (KHR punctual, import or pak).
     if (glm::vec3 aimWs(0.0f); const ::SceneLight* li = FindNodeLight(node, &aimWs)) {
         const attr::ScopedID lightId("light");
@@ -290,6 +316,27 @@ void EditorApp::DrawInspector() {
                             : li->type == ::SceneLight::Type::Spot      ? "Spot"
                                                                         : "Point";
         ImGui::Text("Light: %s '%s'", tname, li->name.c_str());
+        {
+            uint32_t emitMask = li->layerMask;
+            if (ImGui::InputScalar("Emit light channels",
+                                   ImGuiDataType_U32,
+                                   &emitMask,
+                                   nullptr,
+                                   nullptr,
+                                   "%08X",
+                                   ImGuiInputTextFlags_CharsHexadecimal)) {
+                EditCmd edit{};
+                edit.verb = EditVerb::SetLightAttr;
+                edit.node = node;
+                edit.lightAttr = "layerMask";
+                edit.number = double(emitMask);
+                ReadNodeLightAttr(node, "layerMask", edit.beforeVec4,
+                                  edit.beforeNum, edit.beforeFlag, edit.beforeText);
+                Do(edit);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Affects receivers sharing any enabled light channel");
+        }
         // (The readouts — the live color/intensity, the aim axis, the
         // world position, the cone angles — ride the ATTRIBUTE rows'
         // hover hints now; the info text rows below the attrs are the

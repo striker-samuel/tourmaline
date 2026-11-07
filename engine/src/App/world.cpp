@@ -1438,6 +1438,7 @@ void World::ResolveAndFixup_clusters() {
                 if (cs.metadata[s].name != 0xFFFFFFFFu)
                     SetNodeNameIndex(scene, nodeMap[s], cs.metadata[s].name + clusterNameOffset);
                 SetNodeUuidRaw(scene, nodeMap[s], cs.metadata[s].uuid);
+                scene.metadata[nodeMap[s]].lightLayerMask = cs.metadata[s].lightLayerMask;
             }
         }
 

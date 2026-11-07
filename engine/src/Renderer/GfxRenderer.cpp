@@ -2075,7 +2075,10 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx,
                                     lmDelta,
                                     // The resolved material userdata (the instance override
                                     // or the base default — the lit hooks' runtime input).
-                                    world.ResolvedItemUserData(item));
+                                    world.ResolvedItemUserData(item),
+                                    item.node < world.scene.metadata.size()
+                                        ? world.scene.metadata[item.node].lightLayerMask
+                                        : 0xffffffffu);
             } // PushDraw stage (includes userdata resolution)
             if (dumpGates)
                 ++s_gates.pushed;

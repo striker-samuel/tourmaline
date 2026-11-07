@@ -646,6 +646,8 @@ static void WriteCommandLine(std::ostream& f, const Command& c, const char* inde
             f << " -type \"string\" -v " << Quote(c.name);
         else if (c.text == "static" || c.text == "shadow")
             f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
+        else if (c.text == "layerMask" || c.text == "receiverMask")
+            f << " -v " << uint32_t(c.number); // exact 32-bit mask (no float precision loss)
         else
             f << " -v " << c.number;
         break;
@@ -2667,7 +2669,9 @@ bool LoadTourFromString(const std::string& text,
                                            "cookie",
                                            "function",
                                            "functionSpeed",
-                                           "functionScale"};
+                                           "functionScale",
+                                           "layerMask",
+                                           "receiverMask"};
             bool known = false;
             for (const char* a : kAttrs)
                 if (fl.at == a) {
@@ -5024,6 +5028,11 @@ bool ApplyTourToCluster(Cluster& cluster,
                     return false;
                 break;
             }
+            if (c.text == "receiverMask") {
+                EnsureNodeMetadata(scene);
+                scene.metadata[target].lightLayerMask = uint32_t(c.number);
+                break;
+            }
             const LightRow* lit = FindLight(scene, target);
             if (!lit) {
                 if (err)
@@ -5075,6 +5084,8 @@ bool ApplyTourToCluster(Cluster& cluster,
                 def->functionSpeed = std::max(float(c.number), 0.01f);
             } else if (c.text == "functionScale") {
                 def->functionScale = std::clamp(float(c.number), 0.0f, 1.0f);
+            } else if (c.text == "layerMask") {
+                def->layerMask = uint32_t(c.number);
             } else if (c.text == "position" || c.text == "rotation") {
                 // Rebuild the node's local TRS with one channel replaced
                 // (editor TRS convention: Rz*Ry*Rx, degrees).

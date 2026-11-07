@@ -48,6 +48,7 @@ struct PSIn
     // it exactly like ditherCloseup (direct pc byte 244 / Draw ring
     // misc3.x), pinned at EXPLICIT location 9 for the same reason.
     [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
+    [[vk::location(10)]] nointerpolation uint lightLayerMask : TEXCOORD9;
     bool isFrontFace : SV_IsFrontFace;
 };
 #endif
@@ -1142,7 +1143,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float NdotH = max(dot(N, H), 0.0f);
     float HdotV = max(dot(H, V), 0.0f);
 
+    // Keep indirect illumination independent of the direct-light linking mask.
     float3 lightColor = light.color.rgb * light.intensity;
+    if ((asuint(light.flags) & IN.lightLayerMask) == 0u)
+        lightColor = float3(0.0f, 0.0f, 0.0f);
 
     // Raster plane, not smooth vertex normals: the slope bias must
     // describe the depth actually written by the shadow caster. Keep this
@@ -1290,6 +1294,8 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 if (slotInfo != DS_SLOT_ALL_LIT)
                     vis = DsLoadVisibility(frame.dsVisibility, slotInfo, localIdx);
                 if (li >= nlights)
+                    continue;
+                if ((fpLightsBuf.Get().lights[li].layerMask & IN.lightLayerMask) == 0u)
                     continue;
                 EvaluateForwardPlusLight(fpLightsBuf.Get().lights[li],
                     IN.worldPos, geomN, N, V, F0, shadingRoughness,

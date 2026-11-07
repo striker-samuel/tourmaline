@@ -108,6 +108,7 @@ struct VSOut
     // exactly like location 8 above (every producer of the lit FS
     // interface must agree).
     [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
+    [[vk::location(10)]] nointerpolation uint lightLayerMask : TEXCOORD9;
 };
 
 VSOut mainVS(VSIn IN)
@@ -184,6 +185,7 @@ VSOut mainVS(VSIn IN)
     // draw producer resolved the material instance override / base
     // default at frame build — flat per draw, never a per-vertex value.
     OUT.userData = draw.misc3.x;
+    OUT.lightLayerMask = draw.misc3.y;
 
     // Packed shading stream: normal/tangent ride as R32_UInt oct words
     // (the skinned swap above replaces the packed words with the deformed

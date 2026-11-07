@@ -96,6 +96,7 @@ struct DefaultVsPush
     // value here (the padEnd_.x anti-leak contract, scoped to the
     // readers that exist).
     uint userData;     // 244
+    uint lightLayerMask; // 248: per-instance direct-light receiving channels
 };
 
 GPU_PUSH(DefaultVsPush, pcDB);
@@ -147,6 +148,7 @@ struct VSOut
     // ring's misc3.x at the same location). FSs that do not declare it
     // simply do not fetch it.
     [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
+    [[vk::location(10)]] nointerpolation uint lightLayerMask : TEXCOORD9;
 };
 
 VSOut mainVS(VSIn IN)
@@ -217,6 +219,7 @@ VSOut mainVS(VSIn IN)
     // The resolved material userdata (byte 244 — the direct legs push it
     // per lit draw; the resolve is the World's material runtime state).
     OUT.userData = pcDB.userData;
+    OUT.lightLayerMask = pcDB.lightLayerMask;
 
     // Properly transform normal/tangent to world space.
     // - Normal uses inverse-transpose of upper 3x3 to survive non-uniform scale.

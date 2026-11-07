@@ -144,6 +144,10 @@ VSOut mainVS(VSIn IN)
     float3 L = normalize(-light.direction);
     float NdotL = saturate(dot(N, L));
     float3 sunE = light.color.rgb * light.intensity;
+    // Shader-LOD fallback must honor the same per-instance direct-light mask
+    // as the full PBR fragment path (direct draw pc tail byte 248).
+    if ((asuint(light.flags) & pc.padEnd.z) == 0u)
+        sunE = float3(0.0f, 0.0f, 0.0f);
     float3 direct = albedo / PI * NdotL * sunE;
     float3 ambient = albedo * mat.ambient.rgb;
 

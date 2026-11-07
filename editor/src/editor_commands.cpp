@@ -2919,6 +2919,14 @@ bool EditorApp::ReadNodeLightAttr(uint32_t node,
     num = 0.0;
     flag = false;
     text.clear();
+    if (attr == "receiverMask") {
+        if (!m_world || node >= m_world->scene.hierarchy.size())
+            return false;
+        num = node < m_world->scene.metadata.size()
+                  ? double(m_world->scene.metadata[node].lightLayerMask)
+                  : 4294967295.0;
+        return true;
+    }
     const ::SceneLight* L = FindNodeLight(node, nullptr);
     if (!L)
         return false;
@@ -2947,6 +2955,8 @@ bool EditorApp::ReadNodeLightAttr(uint32_t node,
         num = double(L->functionSpeed);
     } else if (attr == "functionScale") {
         num = double(L->functionScale);
+    } else if (attr == "layerMask") {
+        num = double(L->layerMask);
     } else if (attr == "position" || attr == "rotation") {
         if (!m_world || node >= m_world->scene.hierarchy.size())
             return false;
@@ -2968,6 +2978,14 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node,
     if (!m_world)
         return false;
     Scene& scene = m_world->scene;
+    if (attr == "receiverMask") {
+        if (node >= scene.hierarchy.size())
+            return false;
+        EnsureNodeMetadata(scene);
+        scene.metadata[node].lightLayerMask =
+            uint32_t(std::clamp(num, 0.0, 4294967295.0));
+        return true;
+    }
     auto lit = FindLight(scene, node);
     if (!lit || lit->light >= m_world->lightLocations.size())
         return false;
@@ -3013,6 +3031,8 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node,
         L->functionSpeed = std::max(float(num), 0.01f);
     } else if (attr == "functionScale") {
         L->functionScale = std::clamp(float(num), 0.0f, 1.0f);
+    } else if (attr == "layerMask") {
+        L->layerMask = uint32_t(std::clamp(num, 0.0, 4294967295.0));
     } else if (attr == "position" || attr == "rotation") {
         if (node >= scene.hierarchy.size())
             return false;

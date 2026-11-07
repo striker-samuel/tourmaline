@@ -346,7 +346,7 @@ struct ForwardPlusLight
     int shadowTile;     // 64 spot: tile index; point: FIRST of 6 face tiles; -1 = unshadowed
     int shadowMapIndex; // 68 bindless atlas index, -1 = unshadowed
     float shadowBias;   // 72 receiver-depth bias (perspective)
-    float pad2_;        // 76
+    uint layerMask;     // 76 light-linking channels (uint32 bitset)
     int cookieIndex;    // 80 bindless gobo texture, -1 = none
     int functionType;   // 84 0=none, 1=flicker, 2=pulse, 3=bands
     float functionSpeed; // 88 animation speed multiplier

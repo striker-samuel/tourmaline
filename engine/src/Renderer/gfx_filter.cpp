@@ -2059,7 +2059,8 @@ void PushDraw(State& s,
               uint32_t lmChunk,
               uint32_t lmChartOffset,
               uint32_t lmDelta,
-              uint32_t userData) {
+              uint32_t userData,
+              uint32_t lightLayerMask) {
     assert(view < s.viewCount);
     assert(mesh < s.meshes.size());
     View& v = s.views[view];
@@ -2083,6 +2084,7 @@ void PushDraw(State& s,
     d.lmChartOffset = lmChartOffset;
     d.lmDelta = lmDelta;
     d.userData = userData;
+    d.lightLayerMask = lightLayerMask;
     v.draws.push_back(d);
 }
 
@@ -2675,6 +2677,7 @@ void BuildBatches(State& s, uint32_t view) {
         // the lit hooks). Does NOT affect the material sort above:
         // same-material draws stay batched whatever their values.
         dc.userData = d.userData;
+        dc.lightLayerMask = d.lightLayerMask;
         // Filled below with the draw's candidate-slot base.
         dc.candidateBase = 0;
         v.drawConstants.push_back(dc);
