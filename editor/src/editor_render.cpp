@@ -1019,9 +1019,12 @@ void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
         // forwards it flat at VS location 9 for the lit hooks;
         // pushed per draw like the main host's direct legs).
         objPc.padEnd_[1] = m_world->ResolvedItemUserData(item);
+        objPc.padEnd_[2] = item.node < m_world->scene.metadata.size()
+                               ? m_world->scene.metadata[item.node].lightLayerMask
+                               : 0xffffffffu;
         cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, padEnd_) +
                               sizeof(objPc.padEnd_[0]),
-                          sizeof(objPc.padEnd_[1]),
+                          sizeof(objPc.padEnd_[1]) * 2,
                           &objPc.padEnd_[1],
                           smvk::ShaderStage::All);
         if (chartTail) {
