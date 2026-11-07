@@ -3532,28 +3532,30 @@ namespace engine {
 		SMVK_PROFILE_STREAM("CubemapStreaming_Update");
 		SMVK_PROFILE_TAG("rows", m_cubemapRows.size());
 		SMVK_PROFILE_TAG("priming", priming ? 1u : 0u);
-		// Rank non-pinned, non-failed rows by camera distance.
-		// (Rank + the vectors live at function scope: the loads and
-		// evict loops below consume them after the rank scope closes.)
+		// Frame-local rank tables survive both load and eviction passes.
 		struct Rank { size_t row; float dist; };
-		std::vector<Rank> ranks;
-		std::vector<size_t> rankOf;
+		const size_t rowCount = m_cubemapRows.size();
+		auto& rankArena = smvk::FrameArena();
+		auto* rankData = static_cast<Rank*>(
+			rankArena.Allocate(rowCount * sizeof(Rank), alignof(Rank)));
+		auto* rankOf = static_cast<size_t*>(
+			rankArena.Allocate(rowCount * sizeof(size_t), alignof(size_t)));
+		size_t rankCount = 0;
 		{
 			SMVK_PROFILE_STREAM("CubemapStreaming_Rank");
-			ranks.reserve(m_cubemapRows.size());
-			rankOf.assign(m_cubemapRows.size(), SIZE_MAX);
+			std::fill_n(rankOf, rowCount, SIZE_MAX);
 			for (size_t i = 0; i < m_cubemapRows.size(); ++i) {
 				const CubemapRow& row = m_cubemapRows[i];
 				if (row.pinned || row.failed)
 					continue;
-				rankOf[i] = ranks.size();
-				ranks.push_back(Rank{ i, glm::distance(eye, row.position) });
+				rankOf[i] = rankCount;
+				rankData[rankCount++] = Rank{ i, glm::distance(eye, row.position) };
 			}
-			std::sort(ranks.begin(), ranks.end(),
+			std::sort(rankData, rankData + rankCount,
 				[](const Rank& a, const Rank& b) { return a.dist < b.dist; });
-			for (size_t r = 0; r < ranks.size(); ++r)
-				rankOf[ranks[r].row] = r;
-			SMVK_PROFILE_TAG("ranked", ranks.size());
+			for (size_t r = 0; r < rankCount; ++r)
+				rankOf[rankData[r].row] = r;
+			SMVK_PROFILE_TAG("ranked", rankCount);
 		}
 		auto isResident = [&](const CubemapRow& row) {
 			const auto* entry = m_cubemaps.Find(row.entryName);
@@ -3565,7 +3567,7 @@ namespace engine {
 		{
 			SMVK_PROFILE_STREAM("CubemapStreaming_Load");
 			uint32_t loadsLeft = priming ? UINT32_MAX : m_cubemapStreamLoadsPerUpdate;
-			for (const Rank& r : ranks) {
+			for (const Rank& r : std::span<const Rank>(rankData, rankCount)) {
 				CubemapRow& row = m_cubemapRows[r.row];
 				if (isResident(row))
 					continue;
@@ -3614,7 +3616,7 @@ namespace engine {
 		// Evictions (hysteresis: rank slack + range margin past fade).
 		if (!priming) {
 			SMVK_PROFILE_STREAM("CubemapStreaming_Evict");
-			for (const Rank& r : ranks) {
+			for (const Rank& r : std::span<const Rank>(rankData, rankCount)) {
 				CubemapRow& row = m_cubemapRows[r.row];
 				if (!isResident(row))
 					continue;
@@ -8512,7 +8514,7 @@ namespace engine {
 #endif
 
 			// Sample final entries around screen center.
-			std::vector<uint32_t> list;
+			uint32_t list[8] = {};
 			const uint32_t samples[3][2] = {
 				{ ds.tileCountX / 2, ds.tileCountY / 2 },
 				{ ds.tileCountX / 4, ds.tileCountY / 4 },
@@ -8534,9 +8536,8 @@ namespace engine {
 					continue;
 				}
 				const uint32_t n = std::min<uint32_t>(count, 8);
-				list.resize(n);
 				if (!m_context->DownloadDataFromBuffer(ds.LightListBuffer(frameIndex),
-					list.data(), size_t(n) * sizeof(uint32_t),
+					list, size_t(n) * sizeof(uint32_t),
 					size_t(slot) * sizeof(uint32_t))) {
 					std::fprintf(stderr, "[ds-dump] tile(%u,%u): list download FAILED\n",
 						tx, ty);
