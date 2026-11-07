@@ -58,6 +58,9 @@ struct SyncStats {
     uint32_t created = 0, updated = 0, retired = 0;
     uint32_t meshesCreated = 0, meshesRetired = 0;
     bool leafPublicationOk = true;
+    bool topologyReconciled = false;
+    bool geometryRefreshed = false;
+    uint32_t geometryMeshesVisited = 0;
 };
 
 // Conservative readiness gate for *future* draw consumers. An alive
@@ -405,10 +408,12 @@ class WorldSynchronizer {
                 records.push_back(record);
             }
             stats = registry_.Reconcile(records, db);
+            stats.topologyReconciled = true;
             // Retain source-to-world mesh bindings for geometry-only revisions.
             // They are rebuilt only when topology changes, not for every LOD promotion.
             meshWorldIndices_ = std::move(meshWorldIndices);
-            PublishGeometry(world, db, geometryLookup);
+            stats.geometryMeshesVisited = PublishGeometry(world, db, geometryLookup);
+            stats.geometryRefreshed = true;
             const bool meshPublicationChanged = geometryRevision_ != geometryRevision;
             revision_ = world.gpuSceneTopologyRevision;
             geometryRevision_ = geometryRevision;
@@ -423,7 +428,8 @@ class WorldSynchronizer {
         // scanning drawItems, rebuilding nodeKeys, or reconciling instances.
         const bool meshPublicationChanged = geometryRevision_ != geometryRevision;
         if (meshPublicationChanged) {
-            PublishGeometry(world, db, geometryLookup);
+            stats.geometryMeshesVisited = PublishGeometry(world, db, geometryLookup);
+            stats.geometryRefreshed = true;
             geometryRevision_ = geometryRevision;
         }
         // Recalc can append the same node multiple times before a frame.
@@ -464,7 +470,8 @@ class WorldSynchronizer {
     }
 
   private:
-    void PublishGeometry(World& world, RenderDatabase& db, const GeometryLookup& geometryLookup) {
+    uint32_t PublishGeometry(World& world, RenderDatabase& db, const GeometryLookup& geometryLookup) {
+        uint32_t visited = 0;
         // The source-to-mesh mapping is refreshed by topology reconciliation.
         // Geometry revisions must not force another O(instances) scan.
         for (const auto& [source, worldIndex] : meshWorldIndices_) {
@@ -489,8 +496,9 @@ class WorldSynchronizer {
                 levels.push_back(LevelSource{l.error, gfxId, l.resident, l.boundsKnown});
             }
             (void)registry_.PublishMesh(source, levels, complete, db);
+            ++visited;
         }
-
+        return visited;
     }
     [[nodiscard]] bool SyncLeaves(RenderDatabase& db, bool meshChanged) {
         SceneRegistry::Deltas changes = registry_.TakeDeltas();
