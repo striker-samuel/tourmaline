@@ -295,6 +295,12 @@ set_target_properties(LightTests PROPERTIES
 
 add_test(NAME light_tests COMMAND LightTests)
 
+# CPU-only light-linking channel overlap contract (no Vulkan context).
+add_executable(LightLayersTests test_light_layers.cpp)
+target_include_directories(LightLayersTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(LightLayersTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME light_layers_tests COMMAND LightLayersTests)
+
 add_executable(CameraTests test_camera.cpp)
 
 target_link_libraries(CameraTests
