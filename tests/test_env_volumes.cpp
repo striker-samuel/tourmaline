@@ -22,6 +22,7 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/WorldPartition/WorldEnvTiles.h>
 #include <Engine/WorldPartition/WorldEnvTileProvider.h>
+#include <Engine/WorldPartition/env_tile_pak.h>
 
 namespace {
 
@@ -649,6 +650,45 @@ int main() {
         provider.SetSource(&baked, 21);
         Check(provider.ResidentCount() == 0 && provider.PendingCount() == 0,
               "envtile.async-revision-invalidates-residency");
+    }
+
+    // Persistent baked pages: stable little-endian manifest and
+    // independently decodable world-scoped 64m pages.
+    {
+        using namespace tour::envcook;
+        ::Scene scene;
+        engine::worldpartition::WorldEnvTiles baked;
+        Check(baked.Build(scene,glm::vec2(0),2,2,0,40),"envtile.pak-source");
+        Manifest manifest{};
+        manifest.world = 12;
+        manifest.gridMin = baked.GridMin();
+        manifest.dimX = baked.DimX();
+        manifest.dimZ = baked.DimZ();
+        manifest.records.assign(baked.Records(),baked.Records()+baked.RecordCount());
+        manifest.shapes.assign(baked.Shapes(),baked.Shapes()+baked.RecordCount());
+        std::vector<uint8_t> bytes;
+        Check(EncodeManifest(manifest,bytes),"envtile.pak-manifest-encode");
+        Manifest decoded{};
+        Check(DecodeManifest(bytes,12,decoded) && decoded.world==12 &&
+              decoded.records.size()==baked.RecordCount() &&
+              decoded.shapes.size()==baked.RecordCount() &&
+              decoded.dimX==2 && decoded.dimZ==2,"envtile.pak-manifest-roundtrip");
+        Check(!DecodeManifest(bytes,13,decoded),"envtile.pak-manifest-wrong-world");
+        bytes.pop_back();
+        Check(!DecodeManifest(bytes,12,decoded),"envtile.pak-manifest-truncated");
+        const engine::worldpartition::WorldSubcellKey key{-1,7};
+        const std::vector<uint32_t> ids{0};
+        bytes.clear();
+        Check(EncodePage(12,key,ids,bytes),"envtile.pak-page-encode");
+        std::vector<uint32_t> read;
+        Check(DecodePage(bytes,12,key,1,read) && read==ids,
+              "envtile.pak-page-roundtrip-negative-key");
+        Check(!DecodePage(bytes,12,{0,7},1,read),
+              "envtile.pak-page-mismatched-coordinates");
+        const auto corrupt = bytes.size()-1;
+        bytes[corrupt] = 0xff;
+        Check(!DecodePage(bytes,12,key,1,read) && read==ids,
+              "envtile.pak-page-invalid-record-fail-atomic");
     }
 
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
