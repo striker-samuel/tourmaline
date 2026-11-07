@@ -2919,6 +2919,14 @@ bool EditorApp::ReadNodeLightAttr(uint32_t node,
     num = 0.0;
     flag = false;
     text.clear();
+    if (attr == "receiverMask") {
+        if (!m_world || node >= m_world->scene.hierarchy.size())
+            return false;
+        num = node < m_world->scene.metadata.size()
+                  ? double(m_world->scene.metadata[node].lightLayerMask)
+                  : 4294967295.0;
+        return true;
+    }
     const ::SceneLight* L = FindNodeLight(node, nullptr);
     if (!L)
         return false;
@@ -2970,6 +2978,14 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node,
     if (!m_world)
         return false;
     Scene& scene = m_world->scene;
+    if (attr == "receiverMask") {
+        if (node >= scene.hierarchy.size())
+            return false;
+        EnsureNodeMetadata(scene);
+        scene.metadata[node].lightLayerMask =
+            uint32_t(std::clamp(num, 0.0, 4294967295.0));
+        return true;
+    }
     auto lit = FindLight(scene, node);
     if (!lit || lit->light >= m_world->lightLocations.size())
         return false;
