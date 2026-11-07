@@ -9728,6 +9728,9 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
             }
             mixF(e.skyIntensity);
             mixF(e.fogDensity);
+            // A fog-tier switch must invalidate the baked environment
+            // fingerprint even when its numeric fog values are unchanged.
+            mixU32(static_cast<uint32_t>(e.fogQuality));
             mixF(e.volumetrics);
             mixF(e.volumetricDensity);
             mixF(e.zonePriority);

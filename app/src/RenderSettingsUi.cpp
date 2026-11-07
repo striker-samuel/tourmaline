@@ -564,8 +564,12 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                             authored();
                             if (se.fogQuality == 2 && se.volumetrics <= 0.0f)
                                 se.volumetrics = std::max(m_volumetricIntensity, 1.0f);
-                            if (se.fogQuality == 2)
+                            if (se.fogQuality == 2) {
+                                // The base env tile owns these authored values. Restore
+                                // both on an off/on round-trip, not just scattering.
                                 m_volumetricIntensity = se.volumetrics;
+                                m_volumetricDensity = se.volumetricDensity;
+                            }
                             // A validated headless pin still takes precedence over
                             // the authored tier. Invalid spellings do not pin it.
                             if (!m_headlessPins.volumetric.has_value())

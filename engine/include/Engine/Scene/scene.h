@@ -197,7 +197,7 @@ struct SceneRenderSettings {
     uint32_t tonemapMode = 3;
     // Exposure (histogram meter + eye adaptation): auto flag, manual
     // exposure when auto is off, EV trim, adapt rates, absolute clamps.
-    bool autoExposure = true;
+    bool autoExposure = false;
     float manualExposure = 0.001f;
     float exposureEvBias = 0.0f; // -4..+4
     float exposureSpeedToDark = 1.0f;
