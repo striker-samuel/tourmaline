@@ -56,7 +56,7 @@ public:
             return false;
         }
         if (ActiveMap() || provider_.ResidentCount() || provider_.PendingCount() ||
-            !active_.empty() || !persistent_.empty()) {
+            !active_.empty() || !persistent_.empty() || !orphaned_.empty()) {
             error_ = "retire the prior Map before binding a replacement";
             return false;
         }
@@ -73,14 +73,14 @@ public:
         }
         std::vector<uint64_t> created;
         if (!InstantiateRecords(persistent, created)) {
-            Rollback(created);
-            if (created.empty()) world_.SetActiveMapIdentity(0);
+            if (!Rollback(created)) orphaned_ = std::move(created);
+            if (orphaned_.empty()) world_.SetActiveMapIdentity(0);
             return false;
         }
         if (!provider_.SetManifest(mapId, std::move(descriptors))) {
             error_ = "Scene tile manifest installation failed";
-            Rollback(created);
-            if (created.empty()) world_.SetActiveMapIdentity(0);
+            if (!Rollback(created)) orphaned_ = std::move(created);
+            if (orphaned_.empty()) world_.SetActiveMapIdentity(0);
             return false;
         }
         persistent_ = std::move(created);
@@ -98,7 +98,7 @@ public:
             error_ = "streamed tiles could not all be retired";
             return false;
         }
-        if (!Rollback(persistent_)) return false;
+        if (!Rollback(persistent_) || !Rollback(orphaned_)) return false;
         if (!provider_.SetManifest(WorldId(0), {})) {
             error_ = "provider still has live tile requests";
             return false;
@@ -148,6 +148,11 @@ private:
     }
 
     void Load(const SceneTileDescriptor& descriptor, uint64_t ticket) {
+        if (!orphaned_.empty()) {
+            error_ = "unretired direct instances require cleanup before further loading";
+            provider_.ResetPending(descriptor.tile, ticket);
+            return;
+        }
         if (!reader_) {
             error_ = "Map tile reader is unbound";
             provider_.ResetPending(descriptor.tile, ticket);
@@ -161,12 +166,12 @@ private:
         }
         std::vector<uint64_t> created;
         if (!InstantiateRecords(records, created)) {
-            if (!Rollback(created)) return; // retain error + fail closed
+            if (!Rollback(created)) orphaned_.insert(orphaned_.end(), created.begin(), created.end());
             provider_.ResetPending(descriptor.tile, ticket);
             return;
         }
         if (!provider_.Activate(descriptor.tile, ticket)) {
-            Rollback(created);
+            if (!Rollback(created)) orphaned_.insert(orphaned_.end(), created.begin(), created.end());
             return;
         }
         active_.emplace(descriptor.tile, std::move(created));
@@ -186,6 +191,7 @@ private:
     SceneTileProvider provider_;
     std::map<WorldTileKey, std::vector<uint64_t>, WorldTileKeyLess> active_;
     std::vector<uint64_t> persistent_;
+    std::vector<uint64_t> orphaned_; // failed rollback remains reachable for retry
     std::string error_;
 };
 
