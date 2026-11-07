@@ -593,6 +593,64 @@ int main() {
               "envtile.stream-no-interests-retired");
     }
 
+    // Async path: a completion is published only with its current ticket;
+    // moving the interest must discard stale in-flight page payloads.
+    {
+        ::Scene scene;
+        engine::worldpartition::WorldEnvTiles baked;
+        Check(baked.Build(scene, glm::vec2(0), 4, 1, 0, 40),
+              "envtile.async-source-build");
+        using namespace engine::worldpartition;
+        WorldEnvTileProvider provider;
+        provider.SetSource(&baked, 20);
+        provider.SetMaxNewRequestsPerFrame(1);
+        WorldSubcellKey requested{};
+        uint64_t ticket = 0;
+        size_t requestCount = 0;
+        provider.SetRequestCallback([&](WorldSubcellKey key, uint64_t t) {
+            requested = key;
+            ticket = t;
+            ++requestCount;
+        });
+        WorldPartition partition;
+        partition.AddProvider(&provider);
+        StreamingInterest interest{};
+        interest.position = glm::dvec3(32, 0, 32);
+        interest.radiusMeters = 0;
+        interest.layerMask = StreamLayerBit(StreamLayer::Environment);
+        partition.SetInterests(&interest, 1);
+        partition.UpdateFrame(1);
+        const WorldSubcellKey oldKey = requested;
+        const uint64_t oldTicket = ticket;
+        Check(requestCount == 1 && provider.PendingCount() == 1 &&
+              provider.ResidentCount() == 0,
+              "envtile.async-one-request-in-flight");
+        // A stale page should never enter a new camera window.
+        interest.position.x = 224;
+        partition.SetInterests(&interest, 1);
+        partition.UpdateFrame(2);
+        Check(!provider.Activate(oldKey, oldTicket, {0}) &&
+              provider.ResidentCount() == 0,
+              "envtile.async-stale-ticket-rejected");
+        Check(ticket != oldTicket && provider.PendingCount() == 1,
+              "envtile.async-new-request-after-teleport");
+        const uint64_t activeTicket = ticket;
+        Check(!provider.Activate(requested, activeTicket, {999}),
+              "envtile.async-corrupt-record-id-rejected");
+        Check(provider.Activate(requested, activeTicket, {0}),
+              "envtile.async-valid-ticket-accepted");
+        Check(provider.ResidentCount() == 1 && provider.IndexCount() == 1,
+              "envtile.async-publication-only-after-activation");
+        const auto revision = provider.Revision();
+        partition.UpdateFrame(3);
+        Check(provider.Revision() == revision,
+              "envtile.async-steady-state-does-not-publish");
+        // A new bake supersedes an old page, even if the tile key matches.
+        provider.SetSource(&baked, 21);
+        Check(provider.ResidentCount() == 0 && provider.PendingCount() == 0,
+              "envtile.async-revision-invalidates-residency");
+    }
+
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }
