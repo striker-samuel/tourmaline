@@ -691,7 +691,10 @@ void EditorApp::StartProjectRecipeBuild(const std::string& recipePath,
     m_cookRunning = true;
     m_cookJustFinished = false;
     m_cookLastOk = false;
-    TaskWindowBegin("Export Project", "Resolving .tourrecipe and preparing project paks...");
+    // Publishing the project is not cancellable or undoable; keep the
+    // task modal in front until the worker completes and result is acknowledged.
+    TaskWindowBegin("Export Project", "Resolving .tourrecipe and preparing project paks...",
+                    false);
     m_taskWindow.logPath = buildLog->Path();
     m_projectExportStatus = "Building " + recipePath;
     Log("Export Project started: " + recipePath);

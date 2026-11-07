@@ -25,9 +25,11 @@ inline constexpr size_t kTaskLogCap = 500;
 
 } // namespace
 
-void EditorApp::TaskWindowBegin(const std::string& title, const std::string& stage) {
+void EditorApp::TaskWindowBegin(const std::string& title, const std::string& stage,
+                                bool allowBackground) {
     m_taskWindow.wantOpen = true;
     m_taskWindow.inBackground = false;
+    m_taskWindow.allowBackground = allowBackground;
     m_taskWindow.opened = false; // re-arm OpenPopup below
     m_taskWindow.title = title;
     m_taskWindow.stage = stage;
@@ -83,14 +85,17 @@ void EditorApp::DrawTaskWindow() {
     }
     if (ui::SystemModalCloseRequested()) {
         // Closing the native window never cancels an in-process worker.
-        if (!m_taskWindow.done)
-            m_taskWindow.inBackground = true;
-        else
-            m_taskWindow.wantOpen = false;
-        m_taskWindow.opened = false;
-        ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-        return;
+        if (m_taskWindow.done || m_taskWindow.allowBackground) {
+            if (!m_taskWindow.done)
+                m_taskWindow.inBackground = true;
+            else
+                m_taskWindow.wantOpen = false;
+            m_taskWindow.opened = false;
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+            return;
+        }
+        // Non-cancellable builds must stay modal until completion.
     }
     ImGui::Text("%s", m_taskWindow.title.c_str());
     ImGui::Separator();
@@ -117,15 +122,18 @@ void EditorApp::DrawTaskWindow() {
         ImGui::EndChild();
     }
     if (!m_taskWindow.done) {
-        // Running: the background hatch hides the modal without
-        // stopping the in-process baker (no safe cancellation API yet).
-        if (ImGui::Button("Run in background")) {
-            m_taskWindow.inBackground = true;
-            ImGui::CloseCurrentPopup();
+        if (m_taskWindow.allowBackground) {
+            // Background-capable workers continue after hiding the modal.
+            if (ImGui::Button("Run in background")) {
+                m_taskWindow.inBackground = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("the worker continues; the top-bar button "
+                                "reopens this window.");
+        } else {
+            ImGui::TextDisabled("Build in progress; cannot cancel, undo, or run in background.");
         }
-        ImGui::SameLine();
-        ImGui::TextDisabled("the worker continues; the top-bar button "
-                            "reopens this window.");
     } else {
         // Finished: result + acknowledge. The Console carries the same
         // lines for the record.
