@@ -110,6 +110,30 @@ EnvGridExtent ComputeEnvGridExtent(const Scene& scene, const EnvGridBounds& scen
     return out;
 }
 
+bool WorldEnvTiles::LoadCooked(glm::vec2 min, uint32_t dx, uint32_t dz,
+                               const EnvTileRecord* looks,
+                               const smvk::envzones::EnvZoneGpu* shapes,
+                               uint32_t count) {
+    built_ = false;
+    if (!looks || !shapes || !count || count > kEnvTileMaxRecords ||
+        !dx || !dz || dx > kEnvTileMaxDim || dz > kEnvTileMaxDim ||
+        !std::isfinite(min.x) || !std::isfinite(min.y))
+        return false;
+    records_.assign(kEnvTileMaxRecords, EnvTileRecord{});
+    shapes_.assign(kEnvTileMaxRecords, smvk::envzones::EnvZoneGpu{});
+    std::copy(looks, looks + count, records_.begin());
+    std::copy(shapes, shapes + count, shapes_.begin());
+    recordCount_ = count;
+    gridMin_ = min;
+    dimX_ = dx;
+    dimZ_ = dz;
+    candidates_.clear();
+    candidateIndices_.clear();
+    cells_.assign(size_t(dx) * dz, EnvTileCell{});
+    built_ = true;
+    return true;
+}
+
 bool WorldEnvTiles::Build(const Scene& scene,
                           glm::vec2 gridMin,
                           uint32_t dimX,
