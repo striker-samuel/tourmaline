@@ -84,6 +84,7 @@ struct MeshVert
     // at the same location), consumed by the lit FS twin's
     // TM_ModifySurface / TM_ModifyLitColor hooks.
     [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
+    [[vk::location(10)]] nointerpolation uint lightLayerMask : TEXCOORD9;
 };
 
 // Per-triangle cull: verbatim port of CullTriangle (gfxfilter.cs.hlsl),
@@ -373,6 +374,7 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
             v.meshMaterial = draw.misc2.y;
             v.ditherCloseup = (draw.misc.y & GFX_DRAW_DITHER_CLOSEUP) ? 1u : 0u;
             v.userData = draw.misc3.x;
+            v.lightLayerMask = draw.misc3.y;
 
             float3 normal = OctDecodeNormal(nW);
             float4 tangent = OctDecodeTangent(tW);
