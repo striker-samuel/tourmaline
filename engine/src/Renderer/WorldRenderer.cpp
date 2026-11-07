@@ -2848,7 +2848,12 @@ void WorldRenderer::onDetach() {
     m_worldPartition.ClearProviders();
     m_placementStreamProvider.SetCommitCallback({});
     m_worldFieldProvider.SetContext(nullptr);
+    m_envTileProvider.SetRequestCallback({});
     m_envTileProvider.SetSource(nullptr, 0);
+    m_envPageJobs.clear(); // futures join before dropping reader captures
+    m_envPageReader = {};
+    m_envCooked = false;
+    m_envCookedHashInitialized = false;
     m_envTileResidentRevision = 0;
     // Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
     m_host.WaitForDeviceIdle();
@@ -9697,6 +9702,71 @@ static smvk::EnvironmentSettings MapSceneEnv(const tour::scene::SceneEnv& w, boo
 // zonePriority - 0 by default - sits under the node priorities).
 // Failure/overflow is non-fatal (count 0 = the plain resolved env
 // path, the default look still renders through it).
+bool WorldRenderer::InstallCookedEnvironment(
+    engine::worldpartition::WorldId world, glm::vec2 gridMin,
+    uint32_t dimX, uint32_t dimZ,
+    const engine::worldpartition::EnvTileRecord* records,
+    const smvk::envzones::EnvZoneGpu* shapes, uint32_t recordCount,
+    EnvPageReader reader) {
+    if (!reader || !m_envTiles.LoadCooked(gridMin, dimX, dimZ,
+                                          records, shapes, recordCount))
+        return false;
+    m_envCooked = true;
+    m_envCookedWorld = world;
+    m_envCookedHashInitialized = false;
+    m_envTilesPublished = false;
+    m_envTileProvider.SetWorld(world);
+    m_envPageReader = std::move(reader);
+    // Bounded async pak page IO. Never call the page reader in the
+    // render frame; the Future is polled without blocking next frame.
+    m_envTileProvider.SetMaxNewRequestsPerFrame(8);
+    m_envTileProvider.SetRequestCallback([this](worldpartition::WorldSubcellKey key,
+                                                 uint64_t ticket) {
+        if (m_envPageJobs.size() >= 16) {
+            m_envTileProvider.Fail(key, ticket);
+            return;
+        }
+        try {
+            EnvPageReader readerCopy = m_envPageReader;
+            EnvPageJob job{};
+            job.key = key;
+            job.ticket = ticket;
+            job.future = std::async(std::launch::async,
+                [readerCopy = std::move(readerCopy), key]() mutable {
+                    std::vector<uint32_t> ids;
+                    try {
+                        const bool ok = readerCopy(key, ids);
+                        return std::make_pair(ok, std::move(ids));
+                    } catch (...) {
+                        return std::make_pair(false, std::vector<uint32_t>{});
+                    }
+                });
+            m_envPageJobs.push_back(std::move(job));
+        } catch (...) {
+            m_envTileProvider.Fail(key, ticket);
+        }
+    });
+    return true;
+}
+
+void WorldRenderer::DrainEnvPageJobs() {
+    for (size_t i = 0; i < m_envPageJobs.size();) {
+        auto& job = m_envPageJobs[i];
+        if (job.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            ++i;
+            continue;
+        }
+        const auto [ok, candidates] = job.future.get();
+        if (ok) {
+            if (!m_envTileProvider.Activate(job.key, job.ticket, candidates))
+                m_envTileProvider.Fail(job.key, job.ticket);
+        } else {
+            m_envTileProvider.Fail(job.key, job.ticket);
+        }
+        m_envPageJobs.erase(m_envPageJobs.begin() + ptrdiff_t(i));
+    }
+}
+
 void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
     // The env-tile bake (the world-tile rework of the zone system):
     // hash the bake inputs (zone tables + their transforms + the base
@@ -9776,6 +9846,19 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
         mixF(bounds.mx.z);
     }
 
+    if (m_envCooked) {
+        if (!m_envCookedHashInitialized) {
+            m_envCookedHash = hash;
+            m_envCookedHashInitialized = true;
+        } else if (hash != m_envCookedHash) {
+            // A live editor edit invalidates the immutable pak bake.
+            // Return to the scene-backed exact source immediately.
+            m_envCooked = false;
+            m_envPageReader = {};
+            m_envTileProvider.SetRequestCallback({});
+            m_envTileProvider.SetMaxNewRequestsPerFrame(64);
+        }
+    }
     if (hash != m_envTilesDirtyHash || !m_envTilesPublished) {
         // Optick: the change-triggered bake (grid extent + the tile
         // Build + record/cell uploads) — the edit-hitch investigation
@@ -9791,10 +9874,14 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
         // base record; infinite faces extend their world axes to the
         // 16 km design edge). The math + its contract live in
         // WorldPartition (ComputeEnvGridExtent) next to the bake.
-        const worldpartition::EnvGridExtent ext = worldpartition::ComputeEnvGridExtent(
-            scene, worldpartition::EnvGridBounds{bounds.mn, bounds.mx});
+        const worldpartition::EnvGridExtent ext = m_envCooked
+            ? worldpartition::EnvGridExtent{m_envTiles.GridMin(),
+                m_envTiles.DimX(), m_envTiles.DimZ(), 0.0f, 0.0f}
+            : worldpartition::ComputeEnvGridExtent(
+                scene, worldpartition::EnvGridBounds{bounds.mn, bounds.mx});
 
-        if (m_envTiles.Build(scene, ext.gridMin, ext.dimX, ext.dimZ, ext.yMin, ext.yMax) &&
+        if ((m_envCooked ||
+             m_envTiles.Build(scene, ext.gridMin, ext.dimX, ext.dimZ, ext.yMin, ext.yMax)) &&
             !m_resources.envTileRecordsBuffer.empty()) {
             SMVK_PROFILE_TAG("tiles", ext.dimX * ext.dimZ);
             SMVK_PROFILE_TAG("records", m_envTiles.RecordCount());
@@ -10432,7 +10519,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         } else {
             m_placementStreamProvider.SetFrameSource(false, glm::vec4(0.0f));
         }
-        m_envTileProvider.SetWorld(m_activeMapId);
+        DrainEnvPageJobs();
+        m_envTileProvider.SetWorld(m_envCooked ? m_envCookedWorld : m_activeMapId);
         // Environment volumes share the 64m subcell address space but
         // are resident only around the requested streaming interests.
         // The provider commits this frame before FrameUniforms publishes
@@ -10440,7 +10528,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // table; only resident cells have packed candidate references.
         if (m_world && m_envTiles.Valid()) {
             engine::worldpartition::StreamingInterest envInterest = interest;
-            envInterest.world = m_activeMapId;
+            envInterest.world = m_envCooked ? m_envCookedWorld : m_activeMapId;
             envInterest.radiusMeters = std::max(512.0, m_mapStreamingRadius);
             envInterest.layerMask =
                 engine::worldpartition::StreamLayerBit(
