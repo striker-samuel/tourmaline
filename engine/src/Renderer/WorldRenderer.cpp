@@ -10766,6 +10766,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_gpuSceneDatabaseReady = m_gpuSceneIndexedGeometry.Publish(
                 *m_context, m_gfxRenderer.State(),
                 m_gpuSceneGeometryRevision, fb.frameIndex);
+        if (m_gpuSceneDatabaseReady)
+            m_gpuSceneDatabaseReady = m_gpuSceneRasterView.Publish(
+                *m_context, fb.frameIndex, frameData.viewProj,
+                glm::dvec3(m_cameraPositioner.cameraPosition_));
         if (!m_gpuSceneDatabaseReady)
             std::fprintf(stderr,
                          "[GpuScene] database publication failed; no GPU reader this frame\n");
