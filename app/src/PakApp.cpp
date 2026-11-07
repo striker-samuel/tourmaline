@@ -602,6 +602,7 @@ int RunPakApp(PakAppConfig cfg) {
             tour::mem::LinearPtr<tour::World> world;
             std::string packedShapePlacements;
             std::shared_ptr<smvk::PakBackend> envPageBackend;
+            std::string envPakPath;
             std::string envSceneName;
             auto captureShapePlacements = [&](const PakPreload& preload) {
                 if (!preload.backend)
@@ -672,6 +673,7 @@ int RunPakApp(PakAppConfig cfg) {
                 // Retain the selected pak pager independently of the
                 // preload vector, for asynchronous env subcell reads.
                 envPageBackend = preloads[entryIdx].backend;
+                envPakPath = preloads[entryIdx].openPath;
                 envSceneName = entryName;
                 world = LoadProjectWorld(std::move(preloads),
                                          entryIdx,
@@ -686,6 +688,7 @@ int RunPakApp(PakAppConfig cfg) {
                 if (!captureShapePlacements(entryPreload))
                     return nullptr;
                 envPageBackend = entryPreload.backend;
+                envPakPath = entryPreload.openPath;
                 if (envPageBackend) {
                     const auto scenes = smvk::ListPakScenes(envPageBackend->Reader());
                     if (sceneIndex >= 0 && size_t(sceneIndex) < scenes.size())
@@ -705,9 +708,25 @@ int RunPakApp(PakAppConfig cfg) {
             // first independently seekable fetch.
             if (world && envPageBackend && !envSceneName.empty()) {
                 const auto envWorld = tour::envcook::SceneWorldId(envSceneName);
-                const smvk::PakReader& reader = envPageBackend->Reader();
-                if (reader.Find(smvk::PakAssetKind::EnvTile,
-                                tour::envcook::ManifestPath(envWorld))) {
+                const smvk::PakReader& metadataReader = envPageBackend->Reader();
+                if (metadataReader.Find(smvk::PakAssetKind::EnvTile,
+                                        tour::envcook::ManifestPath(envWorld))) {
+                    // Use a separate FILE-BACKED pak reader for streaming
+                    // (SMP8 positional reads + CRC); unlike the preload
+                    // backend, it does not retain the entire pak image.
+                    std::shared_ptr<smvk::PakReader> pagePak;
+                    if (!envPakPath.empty()) {
+                        std::string openError;
+                        auto filePak = smvk::PakReader::OpenFile(envPakPath, openError);
+                        if (!filePak) {
+                            std::cerr << "[EnvTiles] page reader failed: "
+                                      << openError << "\n";
+                            return nullptr;
+                        }
+                        pagePak = std::make_shared<smvk::PakReader>(std::move(*filePak));
+                    }
+                    const smvk::PakReader& reader =
+                        pagePak ? *pagePak : metadataReader;
                     tour::envcook::Manifest cooked{};
                     if (!tour::envcook::ReadEnvManifest(reader, envWorld, cooked)) {
                         std::cerr << "[EnvTiles] invalid cooked manifest for '"
@@ -720,7 +739,7 @@ int RunPakApp(PakAppConfig cfg) {
                     const int64_t originZ = int64_t(std::floor(
                         double(cooked.gridMin.y) / engine::worldpartition::kEnvTileSize));
                     const uint32_t dimX = cooked.dimX, dimZ = cooked.dimZ;
-                    auto pageReader = [backend=envPageBackend, envWorld, count,
+                    auto pageReader = [backend=envPageBackend, pagePak, envWorld, count,
                                        originX, originZ, dimX, dimZ,
                                        present = std::move(cooked.pagePresent)](
                         engine::worldpartition::WorldSubcellKey key,
@@ -729,8 +748,10 @@ int RunPakApp(PakAppConfig cfg) {
                         if (x < 0 || z < 0 || x >= dimX || z >= dimZ)
                             return false;
                         const bool required = present[size_t(z)*dimX + size_t(x)] != 0;
+                        const smvk::PakReader& pak =
+                            pagePak ? *pagePak : backend->Reader();
                         return tour::envcook::ReadEnvPage(
-                            backend->Reader(), envWorld, key, count, required, ids);
+                            pak, envWorld, key, count, required, ids);
                     };
                     if (!rendererRaw->InstallCookedEnvironment(
                             envWorld, cooked.gridMin, cooked.dimX, cooked.dimZ,
