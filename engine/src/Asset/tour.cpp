@@ -2667,7 +2667,8 @@ bool LoadTourFromString(const std::string& text,
                                            "cookie",
                                            "function",
                                            "functionSpeed",
-                                           "functionScale"};
+                                           "functionScale",
+                                           "layerMask"};
             bool known = false;
             for (const char* a : kAttrs)
                 if (fl.at == a) {
@@ -5075,6 +5076,8 @@ bool ApplyTourToCluster(Cluster& cluster,
                 def->functionSpeed = std::max(float(c.number), 0.01f);
             } else if (c.text == "functionScale") {
                 def->functionScale = std::clamp(float(c.number), 0.0f, 1.0f);
+            } else if (c.text == "layerMask") {
+                def->layerMask = uint32_t(c.number);
             } else if (c.text == "position" || c.text == "rotation") {
                 // Rebuild the node's local TRS with one channel replaced
                 // (editor TRS convention: Rz*Ry*Rx, degrees).
