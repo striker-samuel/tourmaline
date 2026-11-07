@@ -134,6 +134,23 @@ the work pool; the frame builds the camera interest (position +
 measured velocity) and calls `UpdateFrame` before `UpdateFrameUniforms`
 (the field table BDA rides `FrameUniforms::worldFields`).
 
+## Shared request ticket lifecycle (post-#266 cleanup)
+
+`StreamTicketLedger<Key>` now owns provider-independent pending generations,
+stale-completion checks, failure cooldowns, and cancellation. Scene and
+environment providers use the same primitive; ticket sequence numbers
+survive source/world invalidation, so a late completion cannot match a
+new request for the same cell. `SelectStreamRequests` implements stable
+priority order and provider-local per-frame request caps. Providers still
+own demand interpretation, resource payloads, and fence-safe retirement.
+
+**Boundary:** This change removes duplicate request control logic; it is
+not a global asynchronous IO scheduler. WorldPartition still gathers
+requests for diagnostics, while providers dispatch within their own
+limits. Global per-layer byte/IO/upload budgets and dependencies require
+a separate scheduler contract. The Cluster-backed Map bridge is still a
+transitional compatibility path, not something this cleanup removes.
+
 ## Milestones
 
 1. **[DONE]** Partition core — cells, interests, providers, sequence,
