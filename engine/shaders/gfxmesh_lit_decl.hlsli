@@ -47,6 +47,7 @@ struct PSIn
     // lit_hooks_api.hlsli). EXPLICIT location 9, pinned exactly like
     // ditherCloseup above.
     [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
+    [[vk::location(10)]] nointerpolation uint lightLayerMask : TEXCOORD9;
     bool isFrontFace : SV_IsFrontFace;
 };
 #define GFX_MATERIAL_ID (IN.meshMaterial)
