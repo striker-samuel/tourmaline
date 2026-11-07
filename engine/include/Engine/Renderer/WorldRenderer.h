@@ -358,7 +358,7 @@ struct RenderQualityConfig {
     smvk::EvsmPipelineMode evsmPipeline = smvk::EvsmPipelineMode::SameFrame;
     float evsmSpotLightSize = 0.35f;
     // Sun contact shadows (contact_shadow.h).
-    bool contactShadowsEnabled = true;
+    bool contactShadowsEnabled = false;
     float contactShadowMaxDistance = 0.35f;
     float contactShadowThickness = 0.03f;
     float contactShadowStartBias = 0.01f;
@@ -4091,7 +4091,7 @@ class WorldRenderer : public IRenderer {
     // steps / 0.03 m thickness / 0.01 m bias / HALF resolution - every
     // knob is live (the panel sliders + the TOURMALINE_CONTACT_SHADOWS*
     // env pins), these are starting points, not authority. ----
-    bool m_contactShadowsEnabled = true;
+    bool m_contactShadowsEnabled = false;
     float m_contactShadowMaxDistance = 0.35f; // march length (m)
     float m_contactShadowThickness = 0.03f;   // thin-occluder acceptance band (m)
     float m_contactShadowStartBias = 0.01f;   // ray start + self-hit floor (m)
@@ -4343,7 +4343,7 @@ class WorldRenderer : public IRenderer {
     // Bloom/Tonemap; the smoothed exposure feeds the tonemap push next
     // frame (1-frame lag) and scales the bloom threshold/knee so bloom
     // strength stays constant as exposure shifts.
-    bool m_autoExposureEnabled = true;
+    bool m_autoExposureEnabled = false;
     // Bench determinism pin (survives the scene seed — applied in
     // ResolveSceneLights): --bench pins fixed manual exposure,
     // but the per-scene PushPostfxEnv seed re-seeds m_autoExposureEnabled
