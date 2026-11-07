@@ -11124,14 +11124,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             const glm::dvec3 origin(m_cameraPositioner.cameraPosition_);
             const auto frustum =
                 tour::gpu_scene::LegacyRelativeFrustum(m_renderViews.Get(mainRenderView), origin);
-            const auto tickets = m_gpuSceneSync.LeafTickets(m_gpuSceneDatabase);
+            // Coarse CPU selection touches spatial leaves, not individual
+            // drawItems. Tickets, duplicate-check scratch and ranges all
+            // come from FrameArena and are consumed before frame reset.
+            const auto tickets = m_gpuSceneSync.LeafTicketsFrame(m_gpuSceneDatabase);
             const auto selected =
-                tour::gpu_scene::SelectPassedInstanceRanges(m_gpuSceneDatabase,
-                                                            tickets,
-                                                            frustum,
-                                                            tour::gpu_scene::CandidateMode::Frustum,
-                                                            65536,
-                                                            32768);
+                tour::gpu_scene::SelectPassedInstanceRangesFrame(
+                    m_gpuSceneDatabase,
+                    tickets,
+                    frustum,
+                    tour::gpu_scene::CandidateMode::Frustum,
+                    65536,
+                    32768);
             tour::gpu_scene::InstanceCullGpuPush gpuPush{};
             if (selected.Valid() && selected.candidateCount > 0 &&
                 m_gpuSceneValidator.Prepare(
