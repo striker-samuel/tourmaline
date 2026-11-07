@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <numeric>
@@ -2065,15 +2066,12 @@ void PushDraw(State& s,
     assert(mesh < s.meshes.size());
     View& v = s.views[view];
     if (v.draws.size() >= kMaxDraws) {
-        static bool warnedDrawCap = false;
-        if (!warnedDrawCap) {
-            warnedDrawCap = true;
-            std::fprintf(stderr,
-                         "[GfxFilter] PushDraw: draw cap %u hit, dropping draws "
-                         "(increase kMaxDraws).\n",
-                         kMaxDraws);
-        }
-        return;
+        std::fprintf(stderr,
+                     "[GfxFilter] FATAL: view %u exceeded the authored draw budget "
+                     "(%u draws). No geometry is dropped or alternate path used.\n",
+                     view, kMaxDraws);
+        std::fflush(stderr);
+        std::abort();
     }
     DrawRequest d{};
     d.mesh = mesh;
@@ -2296,15 +2294,12 @@ void PushShadowDraw(State& s,
     assert(mesh < s.meshes.size());
     ShadowView& sv = s.shadowViews[sview];
     if (sv.draws.size() >= kMaxDraws) {
-        static bool warnedShadowDrawCap = false;
-        if (!warnedShadowDrawCap) {
-            warnedShadowDrawCap = true;
-            std::fprintf(stderr,
-                         "[GfxFilter] PushShadowDraw: draw cap %u hit, dropping draws "
-                         "(increase kMaxDraws).\n",
-                         kMaxDraws);
-        }
-        return;
+        std::fprintf(stderr,
+                     "[GfxFilter] FATAL: shadow view %u exceeded the authored draw budget "
+                     "(%u draws). No geometry is dropped or alternate path used.\n",
+                     sview, kMaxDraws);
+        std::fflush(stderr);
+        std::abort();
     }
     DrawRequest d{};
     d.mesh = mesh;
