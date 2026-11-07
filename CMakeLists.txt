@@ -558,6 +558,7 @@ set(USE_TZCNT OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/JoltPhysics/Build)
 
 add_subdirectory(external/imgui)
+add_subdirectory(core)
 add_subdirectory(engine)
 # Embree backend wiring (see the options block above): the engine links
 # the static lib (the traversal path is unconditional in the source —
