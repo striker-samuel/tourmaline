@@ -35,6 +35,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -89,6 +90,7 @@ struct alignas(16) ForwardPlusLight {
     float functionScale = 1.0f;        // 92 modulation depth / pattern scale
 };
 static_assert(sizeof(ForwardPlusLight) == 96);
+static_assert(offsetof(ForwardPlusLight, layerMask) == 76);
 static_assert(sizeof(ForwardPlusLight) % 16 == 0);
 
 static constexpr uint32_t kForwardPlusPoint = 0;
