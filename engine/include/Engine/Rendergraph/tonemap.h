@@ -37,7 +37,7 @@
 
 namespace smvk {
 
-// Must match tonemap.frag.hlsl TonemapPush (64 bytes).
+// Must match tonemap.frag.hlsl TonemapPush (108 bytes).
 struct TonemapPush {
     uint32_t hdrTextureIndex = UINT32_MAX;
     uint32_t samplerIndex = 0;
@@ -80,8 +80,14 @@ struct TonemapPush {
     // layout-identical to the HLSL mirror (the appended tail).
     float shadowClipThreshold = 0.01f;
     float highlightClipThreshold = 0.99f;
+    // Optional SDR display trims (linear output, before sRGB encoding).
+    float displayRedGain = 1.0f;
+    float displayGreenGain = 1.0f;
+    float displayBlueGain = 1.0f;
+    float displayBrightness = 1.0f;
+    uint32_t displayTestPattern = 0; // 0=scene, 1=calibration bars
 };
-static_assert(sizeof(TonemapPush) == 88);
+static_assert(sizeof(TonemapPush) == 108);
 
 inline constexpr uint32_t kTonemapReinhard = 0;
 inline constexpr uint32_t kTonemapACES = 1;
@@ -95,6 +101,11 @@ struct TonemapDesc {
     // thresholds, carried into the push by AddTonemapPass.
     float shadowClipThreshold = 0.01f;
     float highlightClipThreshold = 0.99f;
+    float displayRedGain = 1.0f;
+    float displayGreenGain = 1.0f;
+    float displayBlueGain = 1.0f;
+    float displayBrightness = 1.0f;
+    bool displayTestPattern = false;
     const char* name = "Tonemap";
 };
 
@@ -270,6 +281,11 @@ struct Tonemapper {
         push.srcUvMaxY = srcUvMaxY;
         push.shadowClipThreshold = overrideDesc.shadowClipThreshold;
         push.highlightClipThreshold = overrideDesc.highlightClipThreshold;
+        push.displayRedGain = overrideDesc.displayRedGain;
+        push.displayGreenGain = overrideDesc.displayGreenGain;
+        push.displayBlueGain = overrideDesc.displayBlueGain;
+        push.displayBrightness = overrideDesc.displayBrightness;
+        push.displayTestPattern = overrideDesc.displayTestPattern ? 1u : 0u;
 
         std::vector<LogicalImageViewHandle> inputs;
         inputs.reserve((bloomOn ? 1 : 0) + (motionDebugOn ? 1 : 0) + (aoOn ? 1 : 0) + 1);
