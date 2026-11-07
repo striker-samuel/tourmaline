@@ -10856,6 +10856,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     } else {
         m_gpuSceneRasterEligible = false;
+        // A transient publish failure must not cache an "eligible" scene:
+        // next frame must recheck geometry and current source identities.
+        m_gpuSceneRasterEligibilityWorld = nullptr;
     }
     m_gpuSceneRasterDrawActive = false;
     // Probe residency for this frame's eye (throttled inside; the
