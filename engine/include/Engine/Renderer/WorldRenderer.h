@@ -2377,6 +2377,24 @@ class WorldRenderer : public IRenderer {
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterVsModule{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterProgram{};
+    // Prototype production cutover: only all-supported static/opaque scenes
+    // may substitute their Main draws. Unsupported content uses GfxFilter.
+    const smvk::World* m_gpuSceneRasterEligibilityWorld = nullptr;
+    uint64_t m_gpuSceneRasterEligibilityTopologyRevision = ~uint64_t(0);
+    uint64_t m_gpuSceneRasterEligibilityGeometryRevision = ~uint64_t(0);
+    bool m_gpuSceneRasterEligible = false;
+    bool m_gpuSceneRasterDrawActive = false;
+    smvk::BufferHandle m_gpuSceneRasterIndirect{};
+    uint64_t m_gpuSceneRasterWorkBda = 0;
+    uint32_t m_gpuSceneRasterDrawCapacity = 0;
+    std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterLogicalBacking{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterIndirectLogical{};
+    std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterWorkLogicalBacking{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterWorkLogical{};
     // GPU-produced compute dispatch arguments plus an indirect work consumer.
     // No indexed graphics draws are changed by this validation-only chain.
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 2> m_gpuSceneIndirectModules{};
