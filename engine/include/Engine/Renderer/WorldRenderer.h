@@ -2261,6 +2261,25 @@ protected:
 	tour::Camera m_camera = tour::Camera(m_cameraPositioner);
 	// (The virtual cursor for FPS mouselook moved to WorldRendererElement
 	// with the camera drive.)
+	// ---- Texture streaming (mip-tail residency, see
+	// Engine/Renderer/texture_streamer.h). Owns residency for glTF-loaded
+	// textures and for pak v4 digest textures (objects + tail registered
+	// by the host's world source; digest-less pak blobs stay
+	// full-resident, the pre-v4 behavior).
+	bool m_textureStreamingEnabled = true;
+	// Mip bias for the streamer's demand (RunConfig::texstreamMipBias via
+	// ApplyRunConfig): the resolution-scaling study pins asset quality to
+	// the 1080p reference with log2(render_scale) here, so the studied
+	// resolutions differ ONLY in pixels, never in demanded asset quality.
+	float m_texstreamMipBias = 0.0f;
+	// Geometry LOD streaming (Renderer/geometry_streamer.h): the env
+	// gate arms it at cluster load (what defers); this active flag is
+	// the per-frame tick gate - set at scene registration when the
+	// world still holds deferred siblings, cleared when the last one
+	// promotes.
+	bool m_geometryStreamingActive = false;
+	smvk::GeometryStreamer m_geometryStreamer{};
+	smvk::mem::LinearPtr<smvk::TextureStreamer> m_textureStreamer;
 	// Persistent, per-flight scene database — no render consumer yet.
 	// Separate opt-in vegetation path: never overrides the GPU-scene
 	// validation culler or the renderer's normal scene draw list.
@@ -2297,6 +2316,8 @@ protected:
 	// Transient gfx registration indices are reassigned on each rebuild.
 	// Republish all mesh links when the source registration changes.
 	uint64_t m_gpuSceneGeometryRevision = 0;
+	// The control element owns the overlay; this pointer is borrowed.
+	UiTextureService m_uiTextureService{};
 	smvk::mem::LinearPtr<smvk::World> m_worldOwned; // the source-moved form
 	smvk::World* m_borrowedWorld = nullptr;        // the embedded-host form
 
@@ -2663,8 +2684,6 @@ public:
 	// Host demo-content opt-in (see SetDemoContentEnabled). Default OFF.
 	bool m_demoContent = false;
 
-	// The control element owns the overlay; this pointer is borrowed.
-	UiTextureService m_uiTextureService{};
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	// Resolved KHR_lights_punctual set for the loaded scene (snapshotted
@@ -4435,25 +4454,6 @@ private:
 	// the shared body of both paths; see the viewer draw site). 2D gets
 	// one binding; cubemaps get the six per-face views + bindings.
 	void SelectTexDebugTexture(const smvk::TextureInfo& t);
-	// ---- Texture streaming (mip-tail residency, see
-	// Engine/Renderer/texture_streamer.h). Owns residency for glTF-loaded
-	// textures and for pak v4 digest textures (objects + tail registered
-	// by the host's world source; digest-less pak blobs stay
-	// full-resident, the pre-v4 behavior).
-	bool m_textureStreamingEnabled = true;
-	// Mip bias for the streamer's demand (RunConfig::texstreamMipBias via
-	// ApplyRunConfig): the resolution-scaling study pins asset quality to
-	// the 1080p reference with log2(render_scale) here, so the studied
-	// resolutions differ ONLY in pixels, never in demanded asset quality.
-	float m_texstreamMipBias = 0.0f;
-	// Geometry LOD streaming (Renderer/geometry_streamer.h): the env
-	// gate arms it at cluster load (what defers); this active flag is
-	// the per-frame tick gate - set at scene registration when the
-	// world still holds deferred siblings, cleared when the last one
-	// promotes.
-	bool m_geometryStreamingActive = false;
-	smvk::GeometryStreamer m_geometryStreamer{};
-	smvk::mem::LinearPtr<smvk::TextureStreamer> m_textureStreamer;
 	// ---- Async readback ticket (exposure histogram + deferred-shadow
 	// counters) ----
 	// Submit + non-blocking poll each tick: the render thread NEVER waits
