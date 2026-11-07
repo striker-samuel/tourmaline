@@ -3,6 +3,18 @@
 
 #pragma once
 
+// volk's contract: the loader's global prototypes must be ABSENT so
+// volk's function-pointer table is the one definition in the process.
+// This must happen BEFORE any include below - vk_mem_alloc.h and
+// ktxvulkan.h both pull in vulkan.h on their own, so the include ORDER
+// is not a sufficient guard (the alphabetical "vk_mem_alloc.h" before
+// "volk.h" ordering makes volk.h see an already-included VULKAN_H_ and
+// #error out). Defining it here also covers every TU that includes
+// this header without its own guard (swapchain.cpp, dlss.cpp).
+#ifndef VK_NO_PROTOTYPES
+#define VK_NO_PROTOTYPES
+#endif
+
 #include <Engine/Memory/arena.h>
 #include <Engine/Memory/linear_vector.h>
 #include <Engine/Memory/memory.h>

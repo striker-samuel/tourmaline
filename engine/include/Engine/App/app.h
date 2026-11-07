@@ -31,7 +31,7 @@
 struct SDL_Window;
 
 namespace tour {
-class World;
+struct World;
 }
 
 namespace smvk {

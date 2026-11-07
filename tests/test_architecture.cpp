@@ -772,9 +772,9 @@ int main() {
             {"Placement/placement_tile.h", 14, 0},
             {"Profile/profile.h", 15, 0},
             {"Rendergraph/placement_pass.h",
-             19,
-             0}, // +1 (#126): the
-                 // PointCloud placement-source plumbing — review at gate.
+             17,
+             0}, // -2 (the #251-era core
+                 // memory extraction retired two; see the R7 shrink rule)
             {"Utils/shader_library.h", 0, 1}, // namespace shaders = ::tour::shaders
             {"Renderer/geometry_streamer.h", 10, 0},
             {"Renderer/texture_streamer.h", 4, 0},

@@ -55,7 +55,7 @@ namespace engine {
 class WorldRenderer; // the renderer facade (the GI publish seam)
 }
 namespace tour {
-class World;           // the engine-owned world (smvk::World is an alias)
+struct World;          // the engine-owned world (smvk::World is an alias)
 class TextureStreamer; // (moved: engine-owned streamer, tour::)
 } // namespace tour
 namespace smvk {
