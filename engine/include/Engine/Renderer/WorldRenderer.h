@@ -1528,6 +1528,34 @@ public:
     void DrawAppSettingsUi(const DebugUiFrame& frame);
     void DrawAppDebugUi(const DebugUiFrame& frame);
 
+    // Host UI, debug drawing and game HUD integration.
+	void SetUiModeHint(bool ui) { m_uiModeHint = ui; }
+	void SetInputForUi(Input* in) { m_inputUi = in; }
+	// Host-installed extra UI hook (app-owned overlays): drawn inside
+	// the frame's ImGui build, after the debug panel + floating tools,
+	// right before the UI pass records. Lets app hosts draw through the
+	// renderer's ImGui pass (the sponza invaders HUD) without a
+	// renderer subclass. No-op unless installed; runs only when the UI
+	// pass runs (m_passes.ui + a live overlay).
+	void SetExtraUi(std::function<void()> fn) { m_extraUi = std::move(fn); }
+	// Caller is responsible for the producer lifetime. No physics or scene
+	// dependency; the list is discarded/rebuilt while drawing is enabled.
+	void SetDebugDrawSource(std::function<void(tour::DebugDrawList&)> fn) {
+		m_debugDrawSource = std::move(fn);
+	}
+	// Retained world-space spline and point-cloud instances. Updates retain
+	// their handles until explicitly removed or the renderer is destroyed.
+	// Kept independent of SetDebugDrawEnabled().
+	[[nodiscard]] tour::renderer::ShapeScene& Shapes() { return m_shapeScene; }
+	[[nodiscard]] const tour::renderer::ShapeScene& Shapes() const { return m_shapeScene; }
+	void SetDebugDrawEnabled(bool enabled) { m_debugDrawEnabled = enabled; }
+	[[nodiscard]] bool DebugDrawEnabled() const { return m_debugDrawEnabled; }
+	// Host-owned game UI callback. Draws through the native render graph,
+	// after ImGui and before the scene's UI composite (no SDL renderer).
+	void SetExtraGameUi(std::function<void(tour::GameUiRenderer&,
+		smvk::Extent2D)> fn) { m_extraGameUi = std::move(fn); }
+
+
 
 	// ------------------------------------------------------------------
 	// HOST: the App owns the window/context/swapchain (the frame-sync
@@ -1538,11 +1566,6 @@ public:
 	// Detach (host shutdown, reverse stack order) releases everything
 	// while the context is alive.
 	// ------------------------------------------------------------------
-	// A loaded catalog LUT, supplied as decoded RGBA8 bytes by the
-	// runtime asset service. No filesystem scanning or filename lookup.
-	bool SetColorLutRgba(const uint8_t* rgba, size_t bytes,
-		std::string_view assetName);
-	void ClearColorLut();
 
 	explicit WorldRenderer(smvk::App& host);
 	~WorldRenderer();
@@ -1700,6 +1723,26 @@ public:
 	smvk::TextureStreamer* GetTextureStreamer() const {
 		return m_textureStreamer.get();
 	}
+
+    // Host-supplied GPU placement and terrain invalidation.
+	// Optional GPU-placed vegetation draw feed. Host owns the runtime,
+	// its LayerBinding and WorldMaskGrid for the full attachment lifetime.
+	// The renderer creates/destroys only its GPU resources, records
+	// BeginFrame -> cull/compaction/indirect, and consumes the commands
+	// in Main. The source meshes MUST already live in the static vertex
+	// heap; seeds are their absolute indexed-draw ranges. Off by default.
+	void SetGpuPlacementRuntime(tour::placement::PlacementWorldRuntime* runtime,
+		const tour::placement::PlacementIndirectCmd* seeds,
+		uint32_t seedCount, float interestRadius = 64.0f) {
+		m_gpuPlacementRuntime = runtime;
+		m_gpuPlacementSeedCount = seedCount > 8 ? 8 : seedCount;
+		for (uint32_t i = 0; i < m_gpuPlacementSeedCount; ++i)
+			m_gpuPlacementSeeds[i] = seeds[i];
+		m_gpuPlacementRadius = interestRadius > 0.0f ? interestRadius : 64.0f;
+	}
+	// The host calls this after changing the world's height/mask data;
+	// every interested placement tile will then regenerate.
+	void InvalidateGpuPlacementTerrain() { ++m_gpuPlacementTerrainRevision; }
 	// Active GI permutation variant based on loaded GI assets
 	[[nodiscard]] GIVariant GetActiveGIVariant() const {
 		// Priority: Volumes > Regular > None. The convex GI volumes
@@ -2074,6 +2117,14 @@ public:
 	// The App drives these through its debug panel. The m_passes
 	// SHAPE stays untouched (Configure owns the pipeline shape) — these
 	// are the runtime toggles every pass gates on.
+
+    // Host-decoded color grading LUT (no renderer-side asset lookup).
+	// A loaded catalog LUT, supplied as decoded RGBA8 bytes by the
+	// runtime asset service. No filesystem scanning or filename lookup.
+	bool SetColorLutRgba(const uint8_t* rgba, size_t bytes,
+		std::string_view assetName);
+	void ClearColorLut();
+
 	void SetBloomEnabled(bool v) { m_bloomEnabled = v; }
 	bool BloomEnabled() const { return m_bloomEnabled; }
 	void SetMotionBlurEnabled(bool v) { m_motionBlurEnabled = v; }
@@ -2236,52 +2287,6 @@ protected:
 	// Same-frame game HUD, composited before UiComposite; no backend API in games.
 	std::function<void(tour::GameUiRenderer&, smvk::Extent2D)> m_extraGameUi;
 	tour::GameUiRenderer m_gameUi;
-public:
-	void SetUiModeHint(bool ui) { m_uiModeHint = ui; }
-	void SetInputForUi(Input* in) { m_inputUi = in; }
-	// Host-installed extra UI hook (app-owned overlays): drawn inside
-	// the frame's ImGui build, after the debug panel + floating tools,
-	// right before the UI pass records. Lets app hosts draw through the
-	// renderer's ImGui pass (the sponza invaders HUD) without a
-	// renderer subclass. No-op unless installed; runs only when the UI
-	// pass runs (m_passes.ui + a live overlay).
-	void SetExtraUi(std::function<void()> fn) { m_extraUi = std::move(fn); }
-	// Caller is responsible for the producer lifetime. No physics or scene
-	// dependency; the list is discarded/rebuilt while drawing is enabled.
-	void SetDebugDrawSource(std::function<void(tour::DebugDrawList&)> fn) {
-		m_debugDrawSource = std::move(fn);
-	}
-	// Retained world-space spline and point-cloud instances. Updates retain
-	// their handles until explicitly removed or the renderer is destroyed.
-	// Kept independent of SetDebugDrawEnabled().
-	[[nodiscard]] tour::renderer::ShapeScene& Shapes() { return m_shapeScene; }
-	[[nodiscard]] const tour::renderer::ShapeScene& Shapes() const { return m_shapeScene; }
-	void SetDebugDrawEnabled(bool enabled) { m_debugDrawEnabled = enabled; }
-	[[nodiscard]] bool DebugDrawEnabled() const { return m_debugDrawEnabled; }
-	// Host-owned game UI callback. Draws through the native render graph,
-	// after ImGui and before the scene's UI composite (no SDL renderer).
-	void SetExtraGameUi(std::function<void(tour::GameUiRenderer&,
-		smvk::Extent2D)> fn) { m_extraGameUi = std::move(fn); }
-
-	// Optional GPU-placed vegetation draw feed. Host owns the runtime,
-	// its LayerBinding and WorldMaskGrid for the full attachment lifetime.
-	// The renderer creates/destroys only its GPU resources, records
-	// BeginFrame -> cull/compaction/indirect, and consumes the commands
-	// in Main. The source meshes MUST already live in the static vertex
-	// heap; seeds are their absolute indexed-draw ranges. Off by default.
-	void SetGpuPlacementRuntime(tour::placement::PlacementWorldRuntime* runtime,
-		const tour::placement::PlacementIndirectCmd* seeds,
-		uint32_t seedCount, float interestRadius = 64.0f) {
-		m_gpuPlacementRuntime = runtime;
-		m_gpuPlacementSeedCount = seedCount > 8 ? 8 : seedCount;
-		for (uint32_t i = 0; i < m_gpuPlacementSeedCount; ++i)
-			m_gpuPlacementSeeds[i] = seeds[i];
-		m_gpuPlacementRadius = interestRadius > 0.0f ? interestRadius : 64.0f;
-	}
-	// The host calls this after changing the world's height/mask data;
-	// every interested placement tile will then regenerate.
-	void InvalidateGpuPlacementTerrain() { ++m_gpuPlacementTerrainRevision; }
-protected:
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
 	float m_uiScale = 1.0f;
