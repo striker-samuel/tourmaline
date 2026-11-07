@@ -10432,6 +10432,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         } else {
             m_placementStreamProvider.SetFrameSource(false, glm::vec4(0.0f));
         }
+        m_envTileProvider.SetWorld(m_activeMapId);
         // Environment volumes share the 64m subcell address space but
         // are resident only around the requested streaming interests.
         // The provider commits this frame before FrameUniforms publishes
