@@ -1043,7 +1043,9 @@ struct FrameUniforms {
     uint64_t envTileShapes = 0;        // 1712 exact OBBs BDA
     uint64_t envTileIndices = 0;       // 1720 candidate ids BDA
     uint64_t envTilePageTable = 0;    // 1728 root-page -> physical slot BDA
-    uint32_t envTileReserved[36] = {}; // 1736 pinned lmLayers tail // 1712 (keeps lmLayers@1888 pinned)
+    uint64_t envTileFarIndices = 0;  // 1736 far candidate shortlist
+    uint32_t envTileFarCount = 0;     // 1744
+    uint32_t envTileReserved[33] = {}; // 1736 pinned lmLayers tail // 1712 (keeps lmLayers@1888 pinned)
     // ---- SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h):
     // atlas layers ride the bindless texture slots. lmLayerKind selects
     // the layout: 0 = the classic 9 RGBA16F stream layers, 1 = BC6H
@@ -1223,7 +1225,9 @@ static_assert(offsetof(FrameUniforms, envTileCells) == 1704, "envTileCells offse
 static_assert(offsetof(FrameUniforms, envTileShapes) == 1712, "envTileShapes HLSL mirror");
 static_assert(offsetof(FrameUniforms, envTileIndices) == 1720, "envTileIndices HLSL mirror");
 static_assert(offsetof(FrameUniforms, envTilePageTable) == 1728, "envTilePageTable HLSL mirror");
-static_assert(offsetof(FrameUniforms, envTileReserved) == 1736,
+static_assert(offsetof(FrameUniforms, envTileFarIndices) == 1736, "far BDA HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileFarCount) == 1744, "far count HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileReserved) == 1748,
               "envTileReserved offset: HLSL mirror");
 // SG 2D lightmap tail (append-only; see the block above envZoneReserved).
 static_assert(offsetof(FrameUniforms, lmLayers) == 1888, "lmLayers offset: HLSL mirror");
@@ -1332,6 +1336,7 @@ struct AppResources {
     smvk::Holder<smvk::BufferHandle> envTileShapesBuffer;
     smvk::Holder<smvk::BufferHandle> envTileIndicesBuffer;
     smvk::Holder<smvk::BufferHandle> envTilePageTableBuffer;
+    smvk::Holder<smvk::BufferHandle> envTileFarIndicesBuffer;
     smvk::Holder<smvk::BufferHandle>
         spotShadowBuffer; // GpuCascadeDescription * kMaxLocalShadowTiles per frame (spot tiles +
                           // point faces)
@@ -2296,6 +2301,7 @@ class WorldRenderer : public IRenderer {
         uint32_t dimX, uint32_t dimZ,
         const engine::worldpartition::EnvTileRecord* records,
         const smvk::envzones::EnvZoneGpu* shapes, uint32_t recordCount,
+        const uint32_t* farCandidates, uint32_t farCount,
         EnvPageReader reader);
 
     void SetMapStreamingRadius(double metres) {
