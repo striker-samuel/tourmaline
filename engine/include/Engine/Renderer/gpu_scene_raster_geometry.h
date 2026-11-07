@@ -171,7 +171,7 @@ class RasterViewPublisher {
             glm::mat4(glm::dmat4(worldViewProjection) * translated);
         view.origin = tour::math::SplitDoubleFloat(cameraWorld);
         ctx.UploadDataToBuffer(buffers_[flight], &view, sizeof(view),
-                               smvk::PipelineStage(smvk::PipelineStageBit_VertexShader),
+                               smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
                                smvk::AccessFlags::ShaderRead);
         return true;
     }
