@@ -177,7 +177,7 @@ template <typename Payload, uint32_t FrameCount> class Table {
         if (free_.size() >= count) {
             // Scratch belongs to FrameArena; no malloc-backed temporary sort.
             auto* ordered = static_cast<uint32_t*>(
-                smvk::FrameArena().Allocate(free_.size() * sizeof(uint32_t), alignof(uint32_t)));
+                smvk::FrameArena().Allocate(free_.size() * sizeof(uint32_t), 16));
             std::copy(free_.begin(), free_.end(), ordered);
             std::sort(ordered, ordered + free_.size());
             for (size_t i = 0; i + count <= free_.size(); ++i) {
