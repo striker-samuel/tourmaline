@@ -9711,8 +9711,12 @@ bool WorldRenderer::InstallCookedEnvironment(
     const engine::worldpartition::EnvTileRecord* records,
     const smvk::envzones::EnvZoneGpu* shapes, uint32_t recordCount,
     EnvPageReader reader) {
-    if (!reader || !m_envTiles.LoadCooked(gridMin, dimX, dimZ,
-                                          records, shapes, recordCount))
+    if (!reader) return false;
+    // Invalidate all pending page tickets BEFORE installing a new
+    // manifest, even if the scene hash/world identity happens to match.
+    m_envTileProvider.SetSource(nullptr, 0);
+    if (!m_envTiles.LoadCooked(gridMin, dimX, dimZ,
+                              records, shapes, recordCount))
         return false;
     m_envCooked = true;
     m_envCookedWorld = world;
@@ -9764,7 +9768,10 @@ void WorldRenderer::DrainEnvPageJobs() {
             if (!m_envTileProvider.Activate(job.key, job.ticket, candidates))
                 m_envTileProvider.Fail(job.key, job.ticket);
         } else {
-            m_envTileProvider.Fail(job.key, job.ticket);
+            if (m_envTileProvider.Fail(job.key, job.ticket))
+                std::cerr << "[EnvTiles] cooked page read failed ("
+                          << job.key.x << ", " << job.key.z
+                          << "), retry deferred\n";
         }
         m_envPageJobs.erase(m_envPageJobs.begin() + ptrdiff_t(i));
     }
