@@ -10808,6 +10808,56 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             std::fprintf(stderr,
                          "[GpuScene] database publication failed; no GPU reader this frame\n");
     }
+    // The first production raster cutover is deliberately whole-world
+    // and conservative: if any draw needs a legacy feature, retain the
+    // entire legacy Main path (no accidental duplicate or missing draw).
+    // Cache the costly eligibility scan by topology+geometry revisions.
+    if (s_gpuSceneRaster && m_world && m_gpuSceneDatabaseReady) {
+        if (m_gpuSceneRasterEligibilityWorld != m_world ||
+            m_gpuSceneRasterEligibilityTopologyRevision !=
+                m_world->gpuSceneTopologyRevision ||
+            m_gpuSceneRasterEligibilityGeometryRevision != m_gpuSceneGeometryRevision) {
+            m_gpuSceneRasterEligibilityWorld = m_world;
+            m_gpuSceneRasterEligibilityTopologyRevision = m_world->gpuSceneTopologyRevision;
+            m_gpuSceneRasterEligibilityGeometryRevision = m_gpuSceneGeometryRevision;
+            m_gpuSceneRasterEligible =
+                !m_world->drawItems.empty() &&
+                m_gpuSceneDatabase.instances.LiveCount() == m_world->drawItems.size();
+            const auto& gfxState = m_gfxRenderer.State();
+            constexpr uint32_t requiredFlags =
+                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
+            constexpr uint32_t forbiddenFlags =
+                smvk::IteratorFlagBit_Masked | smvk::IteratorFlagBit_Transparent;
+            if (m_gpuSceneRasterEligible) {
+                for (const auto& item : m_world->drawItems) {
+                    const auto* mesh = m_world->GetMesh(item.mesh);
+                    const uint32_t gfxId = m_gfxRenderer.GfxMeshForLod(item.mesh, 0);
+                    tour::gpu_scene::IndexedGeometry geometry{};
+                    if ((item.flags & requiredFlags) != requiredFlags ||
+                        (item.flags & forbiddenFlags) != 0 ||
+                        item.material == smvk::World::kInvalidIndex ||
+                        item.materialInstance != 0 ||
+                        m_world->MaterialUserData(item.material) != 0 ||
+                        m_gfxRenderer.MaterialProjectFamily(item.material) ||
+                        item.node >= m_world->scene.globalTransform.size() ||
+                        (item.node < m_world->scene.ditherCloseup.size() &&
+                         m_world->scene.ditherCloseup[item.node] != 0) ||
+                        !mesh || mesh->skinned || mesh->geometry.surfaces.size() != 1 ||
+                        (item.mesh < m_world->lodChains.size() &&
+                         m_world->lodChains[item.mesh].levels.size() != 1) ||
+                        gfxId == UINT32_MAX ||
+                        !tour::gpu_scene::ResolveIndexedGeometry(gfxState, gfxId, geometry)) {
+                        m_gpuSceneRasterEligible = false;
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        m_gpuSceneRasterEligible = false;
+    }
+    m_gpuSceneRasterDrawActive = false;
     // Probe residency for this frame's eye (throttled inside; the
     // FP upload below reads the rebuilt rows - see m_cubemapRows).
     UpdateCubemapStreaming(m_cameraPositioner.cameraPosition_);
