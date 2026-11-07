@@ -7,6 +7,7 @@
 // This is a cook/reader seam, not a dependency on renderer Vulkan state.
 #include <Engine/Asset/pak.h>
 #include <Engine/WorldPartition/WorldEnvTiles.h>
+#include <Engine/WorldPartition/WorldPartition.h>
 #include <bit>
 #include <cmath>
 #include <utility>
