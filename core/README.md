@@ -30,11 +30,14 @@ to avoid silently breaking consumer ABI.
 
 ## Implementation ownership
 
-`core/src/Memory/*.cpp` implements arenas, linear allocators and global
-allocator lifetime. GPU flight arena storage uses Core's
-`tour::mem::config::kFlightArenaSlots` rather than depending on the RHI API;
-keep it aligned with the backend's `MaxFramesInFlight` setting.
-The Core static library can be linked independently of Engine.
+`tourmaline_core` compiles only reusable `Arena` and `LinearAllocator`
+implementations. Engine owns `AppArena`, `FrameArena`, `FlightArena`,
+`ResetFrameArena`, `ResetFlightArena`, and the application-defined global
+allocator lifecycle/configuration implementation (`memory.cpp`). GPU flight
+slot counts follow the RHI's `MaxFramesInFlight` setting, outside Core.
+This is a first boundary correction; the existing Core `alloc_config.h`
+still contains Tourmaline runtime/renderer sizing constants and needs a
+separate follow-up migration to become a minimal generic configuration.
 
 Hot-path migration must be incremental: replace scratch allocations,
 then profile, compile and test frame reset / async / GPU fence behavior

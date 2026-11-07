@@ -5,7 +5,6 @@
 add_library(tourmaline_core STATIC
     src/Memory/arena.cpp
     src/Memory/linear_allocator.cpp
-    src/Memory/memory.cpp
 )
 target_compile_features(tourmaline_core PUBLIC cxx_std_20)
 target_include_directories(tourmaline_core PUBLIC

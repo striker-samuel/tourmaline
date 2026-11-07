@@ -3,10 +3,10 @@
 
 // Global linear allocator instances (see memory.h).
 
-#include <Core/Memory/memory.h>
+#include <Engine/Memory/memory.h>
 
-#include <Core/Memory/alloc_config.h>
-#include <Core/Memory/arena.h>
+#include <Engine/Memory/alloc_config.h>
+#include <Engine/Memory/arena.h>
 
 #include <cerrno>
 #include <cstdio>
