@@ -101,6 +101,30 @@ void CheckCoarse() {
 
     const auto selection = SelectPassedInstanceRanges(db, tickets, view);
     Check(VerifyRanges(selection, db), "cand.selection-verifies");
+    const auto frameTickets = leaves.TicketsFrame(db);
+    const auto frameSelection = SelectPassedInstanceRangesFrame(db, frameTickets, view);
+    Check(frameSelection.Valid(), "cand.frame-arena-selection-valid");
+    Check(frameSelection.candidateCount == selection.candidateCount &&
+              frameSelection.ranges.size() == selection.ranges.size(),
+          "cand.frame-arena-counts-match");
+    if (frameSelection.ranges.size() == selection.ranges.size()) {
+        for (size_t i = 0; i < selection.ranges.size(); ++i) {
+            const auto& a = frameSelection.ranges[i];
+            const auto& b = selection.ranges[i];
+            Check(a.members == b.members && a.leaf == b.leaf,
+                  "cand.frame-arena-range-matches");
+        }
+    }
+    const auto frameOverflow = SelectPassedInstanceRangesFrame(
+        db, frameTickets, view, CandidateMode::PassAll, 2, 8);
+    Check(frameOverflow.status == CandidateStatus::CapacityExceeded &&
+              frameOverflow.ranges.empty(), "cand.frame-arena-overflow-fails");
+    if (!frameTickets.empty()) {
+        const LeafTicket duplicates[2] = {frameTickets.front(), frameTickets.front()};
+        Check(SelectPassedInstanceRangesFrame(db, duplicates, view).status ==
+                  CandidateStatus::InvalidSnapshot,
+              "cand.frame-arena-duplicate-fails");
+    }
     Check(selection.ranges.size() == 3, "cand.three-ranges");
     Check(selection.rejectedLeaves == 1, "cand.one-rejected-leaf");
     Check(selection.unculledLeaves == 1, "cand.one-unculled-leaf");
