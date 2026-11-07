@@ -22,6 +22,7 @@
 
 #include <Engine/Placement/placement_stream_provider.h>
 #include <Engine/WorldPartition/WorldPartition.h>
+#include <Engine/WorldPartition/StreamBudgetPool.h>
 
 namespace wp = engine::worldpartition;
 
@@ -347,6 +348,47 @@ int main() {
         p.SetInterests(&fields, 1);
         p.UpdateFrame(13);
         Check(!placement.CommittedThisFrame() && commits == 1, "placement.partition-layer-mask");
+    }
+
+    // ---- shared IO + prospective GPU admission ----
+    {
+        wp::WorldPartition partition;
+        auto& budgets = partition.Budgets();
+        budgets.SetLimits({128, 1024, 2});
+        const wp::StreamBudgetKey scene{41, wp::StreamLayer::Scene, {0, 0}};
+        const wp::StreamBudgetKey env{41, wp::StreamLayer::Environment, {0, 0}, {0, 0}};
+        const wp::StreamBudgetKey other{41, wp::StreamLayer::Environment, {1, 0}, {4, 0}};
+        Check(!budgets.Reserve(scene, 0, 256),
+              "budget.reject-unknown-io-with-finite-cap");
+        Check(!budgets.Reserve(scene, 64, 0),
+              "budget.reject-unknown-vram-with-finite-cap");
+        Check(budgets.Reserve(scene, 64, 512),
+              "budget.scene-reservation");
+        Check(!budgets.Reserve(scene, 64, 512),
+              "budget.no-duplicate-reservation");
+        Check(budgets.Reserve(env, 64, 512),
+              "budget.environment-shares-pool");
+        Check(!budgets.Reserve(other, 1, 1),
+              "budget.blocks-over-capacity");
+        Check(budgets.InFlightIoBytes() == 128 &&
+              budgets.ReservedGpuBytes() == 1024 &&
+              budgets.InFlightRequests() == 2,
+              "budget.tracks-global-totals");
+        Check(budgets.CompleteIo(scene) && budgets.InFlightIoBytes() == 64 &&
+              budgets.InFlightRequests() == 1,
+              "budget.io-completion-frees-bandwidth");
+        Check(!budgets.Reserve(other, 1, 1),
+              "budget.gpu-cap-survives-io-completion");
+        Check(budgets.Release(scene) && budgets.ReservedGpuBytes() == 512,
+              "budget.retirement-frees-gpu-reservation");
+        Check(budgets.Reserve(other, 1, 1) &&
+              budgets.ReservationCount() == 2,
+              "budget.retired-capacity-can-be-reused");
+        Check(budgets.Release(env) && budgets.Release(other) &&
+              budgets.InFlightIoBytes() == 0 &&
+              budgets.ReservedGpuBytes() == 0 &&
+              budgets.InFlightRequests() == 0,
+              "budget.cancel-and-retire-release-all");
     }
 
     // ---- active-cell coverage ----
