@@ -3532,28 +3532,30 @@ namespace engine {
 		SMVK_PROFILE_STREAM("CubemapStreaming_Update");
 		SMVK_PROFILE_TAG("rows", m_cubemapRows.size());
 		SMVK_PROFILE_TAG("priming", priming ? 1u : 0u);
-		// Rank non-pinned, non-failed rows by camera distance.
-		// (Rank + the vectors live at function scope: the loads and
-		// evict loops below consume them after the rank scope closes.)
+		// Frame-local rank tables survive both load and eviction passes.
 		struct Rank { size_t row; float dist; };
-		std::vector<Rank> ranks;
-		std::vector<size_t> rankOf;
+		const size_t rowCount = m_cubemapRows.size();
+		auto& rankArena = smvk::FrameArena();
+		auto* rankData = static_cast<Rank*>(
+			rankArena.Allocate(rowCount * sizeof(Rank), alignof(Rank)));
+		auto* rankOf = static_cast<size_t*>(
+			rankArena.Allocate(rowCount * sizeof(size_t), alignof(size_t)));
+		size_t rankCount = 0;
 		{
 			SMVK_PROFILE_STREAM("CubemapStreaming_Rank");
-			ranks.reserve(m_cubemapRows.size());
-			rankOf.assign(m_cubemapRows.size(), SIZE_MAX);
+			std::fill_n(rankOf, rowCount, SIZE_MAX);
 			for (size_t i = 0; i < m_cubemapRows.size(); ++i) {
 				const CubemapRow& row = m_cubemapRows[i];
 				if (row.pinned || row.failed)
 					continue;
-				rankOf[i] = ranks.size();
-				ranks.push_back(Rank{ i, glm::distance(eye, row.position) });
+				rankOf[i] = rankCount;
+				rankData[rankCount++] = Rank{ i, glm::distance(eye, row.position) };
 			}
-			std::sort(ranks.begin(), ranks.end(),
+			std::sort(rankData, rankData + rankCount,
 				[](const Rank& a, const Rank& b) { return a.dist < b.dist; });
-			for (size_t r = 0; r < ranks.size(); ++r)
-				rankOf[ranks[r].row] = r;
-			SMVK_PROFILE_TAG("ranked", ranks.size());
+			for (size_t r = 0; r < rankCount; ++r)
+				rankOf[rankData[r].row] = r;
+			SMVK_PROFILE_TAG("ranked", rankCount);
 		}
 		auto isResident = [&](const CubemapRow& row) {
 			const auto* entry = m_cubemaps.Find(row.entryName);
@@ -3565,7 +3567,7 @@ namespace engine {
 		{
 			SMVK_PROFILE_STREAM("CubemapStreaming_Load");
 			uint32_t loadsLeft = priming ? UINT32_MAX : m_cubemapStreamLoadsPerUpdate;
-			for (const Rank& r : ranks) {
+			for (const Rank& r : std::span<const Rank>(rankData, rankCount)) {
 				CubemapRow& row = m_cubemapRows[r.row];
 				if (isResident(row))
 					continue;
@@ -3614,7 +3616,7 @@ namespace engine {
 		// Evictions (hysteresis: rank slack + range margin past fade).
 		if (!priming) {
 			SMVK_PROFILE_STREAM("CubemapStreaming_Evict");
-			for (const Rank& r : ranks) {
+			for (const Rank& r : std::span<const Rank>(rankData, rankCount)) {
 				CubemapRow& row = m_cubemapRows[r.row];
 				if (!isResident(row))
 					continue;
@@ -7032,12 +7034,22 @@ namespace engine {
 		}
 		// Deterministic node order (pak order is already sorted, but the
 		// world table's row order is not - sort the node ids).
-		std::vector<uint32_t> nodes;
-		nodes.reserve(scene.tables.lights.size());
-		for (const LightRow& row : scene.tables.lights)
-			nodes.push_back(row.node);
+		const size_t lightCount = scene.tables.lights.size();
+		auto& scratch = smvk::FrameArena();
+		std::span<uint32_t> nodes(static_cast<uint32_t*>(
+			scratch.Allocate(lightCount * sizeof(uint32_t), alignof(uint32_t))),
+			lightCount);
+		for (size_t i = 0; i < lightCount; ++i)
+			nodes[i] = scene.tables.lights[i].node;
 		std::sort(nodes.begin(), nodes.end());
-		std::vector<smvk::ForwardPlusLight> spots, points;
+		// At most one entry per authored light can enter either array.
+		std::span<smvk::ForwardPlusLight> spots(static_cast<smvk::ForwardPlusLight*>(
+			scratch.Allocate(lightCount * sizeof(smvk::ForwardPlusLight),
+				alignof(smvk::ForwardPlusLight))), lightCount);
+		std::span<smvk::ForwardPlusLight> points(static_cast<smvk::ForwardPlusLight*>(
+			scratch.Allocate(lightCount * sizeof(smvk::ForwardPlusLight),
+				alignof(smvk::ForwardPlusLight))), lightCount);
+		size_t spotCount = 0, pointCount = 0;
 		// Elected-sun locals: seed a sceneless env below (bind time) and
 		// die on return - the env is the single source of sun values.
 		glm::vec3 electedSunDir{ 0.0f, 1.0f, 0.0f };
@@ -7106,7 +7118,7 @@ namespace engine {
 				pl.functionType = int32_t(L.functionType);
 				pl.functionSpeed = L.functionSpeed;
 				pl.functionScale = L.functionScale;
-				points.push_back(pl);
+				points[pointCount++] = pl;
 			}
 			else if (L.type == ::SceneLight::Type::Spot) {
 				glm::vec3 emis = glm::vec3(G * glm::vec4(aimAxis, 0.0f));
@@ -7161,31 +7173,31 @@ namespace engine {
 				sl.functionType = int32_t(L.functionType);
 				sl.functionSpeed = L.functionSpeed;
 				sl.functionScale = L.functionScale;
-				spots.push_back(sl);
+				spots[spotCount++] = sl;
 			}
 		}
 		// Spots first (per-tile slot priority): the tile lists keep only the
 		// first FP_MAX_PER_TILE passing lights, so cone lights must not
 		// compete with the point crowd for those slots.
-		m_sceneLights.forwardPlusLights.reserve(spots.size() + points.size());
+		m_sceneLights.forwardPlusLights.reserve(spotCount + pointCount);
 		m_sceneLights.forwardPlusLights.insert(
-			m_sceneLights.forwardPlusLights.end(), spots.begin(), spots.end());
+			m_sceneLights.forwardPlusLights.end(), spots.begin(), spots.begin() + spotCount);
 		m_sceneLights.forwardPlusLights.insert(
-			m_sceneLights.forwardPlusLights.end(), points.begin(), points.end());
+			m_sceneLights.forwardPlusLights.end(), points.begin(), points.begin() + pointCount);
 		if (m_sceneLights.forwardPlusLights.size() > FP_MAX_LIGHTS) {
 			if (log)
 				std::cerr << "[Scene] resolved lights clamped: "
 				<< m_sceneLights.forwardPlusLights.size() << " -> " << FP_MAX_LIGHTS << "\n";
 			m_sceneLights.forwardPlusLights.resize(FP_MAX_LIGHTS);
 		}
-		if (log)
-			std::cerr << "[Scene] resolved lights: spots=" << spots.size()
-			<< " points=" << points.size()
-			<< (sunTaken ? " + sun" : " (env-default sun)")
-			<< (staticBakeOnly > 0
-				? " | static(bake-only)=" + std::to_string(staticBakeOnly)
-				: "")
-			<< "\n";
+		if (log) {
+			std::cerr << "[Scene] resolved lights: spots=" << spotCount
+				<< " points=" << pointCount
+				<< (sunTaken ? " + sun" : " (env-default sun)");
+			if (staticBakeOnly > 0)
+				std::cerr << " | static(bake-only)=" << staticBakeOnly;
+			std::cerr << "\n";
+		}
 		// Overwrite a sceneless env's default sun values with the election
 		// (sky disc, IBL tint and shadow-casting light stay in sync; sun
 		// fields only - the env block is lux-native, so the light's lux
@@ -7790,7 +7802,7 @@ namespace engine {
 		// no STL nodes, buckets or string copies. At most two lookups per
 		// row; a 4x-sized table keeps probing short.
 		struct TextureCacheEntry {
-			const std::string* uri = nullptr;
+			smvk::StringViewT uri{};
 			int32_t bindless = -1;
 		};
 		size_t cacheCapacity = 8;
@@ -7805,10 +7817,12 @@ namespace engine {
 		auto resolveTex = [&](const std::string& uri) -> int32_t {
 			if (uri.empty())
 				return -1;
+			// Keys borrow stable scene URI storage for this call only.
+			const smvk::StringViewT uriView(uri);
 			size_t slot = static_cast<size_t>(
-				smvk::StringViewHash::Of(uri.data(), uri.size())) & cacheMask;
-			while (texCache[slot].uri) {
-				if (*texCache[slot].uri == uri)
+				smvk::StringViewHash{}(uriView)) & cacheMask;
+			while (texCache[slot].uri.valid()) {
+				if (texCache[slot].uri == uriView)
 					return texCache[slot].bindless;
 				slot = (slot + 1) & cacheMask;
 			}
@@ -7824,7 +7838,7 @@ namespace engine {
 			if (bindless < 0 && m_decalTexWarnedUris.insert(uri).second)
 				std::cerr << "[Decals] texture '" << uri
 					<< "' unresolved (no cluster texture) - decal skipped\n";
-			texCache[slot] = { &uri, bindless };
+			texCache[slot] = { uriView, bindless };
 			return bindless;
 		};
 
@@ -8510,7 +8524,7 @@ namespace engine {
 #endif
 
 			// Sample final entries around screen center.
-			std::vector<uint32_t> list;
+			uint32_t list[8] = {};
 			const uint32_t samples[3][2] = {
 				{ ds.tileCountX / 2, ds.tileCountY / 2 },
 				{ ds.tileCountX / 4, ds.tileCountY / 4 },
@@ -8532,9 +8546,8 @@ namespace engine {
 					continue;
 				}
 				const uint32_t n = std::min<uint32_t>(count, 8);
-				list.resize(n);
 				if (!m_context->DownloadDataFromBuffer(ds.LightListBuffer(frameIndex),
-					list.data(), size_t(n) * sizeof(uint32_t),
+					list, size_t(n) * sizeof(uint32_t),
 					size_t(slot) * sizeof(uint32_t))) {
 					std::fprintf(stderr, "[ds-dump] tile(%u,%u): list download FAILED\n",
 						tx, ty);
@@ -13046,23 +13059,37 @@ namespace engine {
 			const float det = glm::determinant(selectedFrame);
 			if (std::isfinite(det) && std::abs(det) > 1e-9f) {
 				const glm::mat4 invFrame = glm::inverse(selectedFrame);
-				std::unordered_set<uint32_t> subtree;
-				std::vector<uint32_t> pending{ m_selectedNode };
-				while (!pending.empty()) {
-					const uint32_t node = pending.back();
-					pending.pop_back();
-					if (node >= m_world->scene.hierarchy.size()
-						|| !subtree.insert(node).second)
-						continue;
+				// Frame-local node membership and DFS stack: no hash buckets or
+				// heap growth while drawing the editor selection outline.
+				const size_t nodeCount = m_world->scene.hierarchy.size();
+				auto& scratch = smvk::FrameArena();
+				auto* subtree = static_cast<uint8_t*>(
+					scratch.Allocate(nodeCount, alignof(uint8_t)));
+				std::memset(subtree, 0, nodeCount);
+				auto* pending = static_cast<uint32_t*>(
+					scratch.Allocate(nodeCount * sizeof(uint32_t), alignof(uint32_t)));
+				size_t pendingCount = 0;
+				pending[pendingCount++] = m_selectedNode;
+				subtree[m_selectedNode] = 1;
+				while (pendingCount) {
+					const uint32_t node = pending[--pendingCount];
 					for (int child = m_world->scene.hierarchy[node].firstChild;
-						child != -1;
-						child = m_world->scene.hierarchy[child].nextSibling)
-						pending.push_back(static_cast<uint32_t>(child));
+						child != -1;) {
+						const auto index = static_cast<size_t>(child);
+						if (index >= nodeCount)
+							break;
+						const int next = m_world->scene.hierarchy[index].nextSibling;
+						if (!subtree[index]) {
+							subtree[index] = 1;
+							pending[pendingCount++] = static_cast<uint32_t>(index);
+						}
+						child = next;
+					}
 				}
 				glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
 				bool hasMesh = false;
 				for (const auto& item : m_world->drawItems) {
-					if (!subtree.contains(item.node)
+					if (item.node >= nodeCount || !subtree[item.node]
 						|| item.node >= m_world->scene.globalTransform.size())
 						continue;
 					const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
@@ -16802,7 +16829,7 @@ namespace engine {
 						fw, fh, mn, mx, sum / (double)px.size(),
 						drawn, 100.0 * (double)drawn / (double)px.size());
 					for (uint32_t ry = 0; ry < 16; ++ry) {
-						std::string row;
+						char row[33] = {};
 						for (uint32_t rx = 0; rx < 32; ++rx) {
 							double cell = 0;
 							size_t n = 0;
@@ -16812,10 +16839,10 @@ namespace engine {
 									++n;
 								}
 							const float c = n ? float(cell / (double)n) : 1.0f;
-							row += (c >= 0.999f) ? '.'
+							row[rx] = (c >= 0.999f) ? '.'
 								: (c > 0.75f ? '-' : (c > 0.5f ? '+' : 'X'));
 						}
-						std::fprintf(stderr, "[FogTileDump] %s\n", row.c_str());
+						std::fprintf(stderr, "[FogTileDump] %s\n", row);
 					}
 				}
 				else {
@@ -16870,7 +16897,7 @@ namespace engine {
 						occluded, 100.0 * (double)occluded / (double)total,
 						partial);
 					for (uint32_t ry = 0; ry < 16; ++ry) {
-						std::string row;
+						char row[33] = {};
 						for (uint32_t rx = 0; rx < 32; ++rx) {
 							size_t hits = 0, n = 0;
 							for (uint32_t y = ry * vh / 16; y < (ry + 1) * vh / 16; ++y)
@@ -16879,10 +16906,10 @@ namespace engine {
 									++n;
 								}
 							const float c = n ? float(hits) / float(n) : 0.0f;
-							row += (c < 0.02f) ? '.'
+							row[rx] = (c < 0.02f) ? '.'
 								: (c < 0.25f ? '-' : (c < 0.5f ? '+' : 'X'));
 						}
-						std::fprintf(stderr, "[ContactShadowDump] %s\n", row.c_str());
+						std::fprintf(stderr, "[ContactShadowDump] %s\n", row);
 					}
 				}
 				else {
