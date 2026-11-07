@@ -14,7 +14,7 @@
 // then validate the persistent Instance row's slot AND generation.
 #include "gpu_platform.hlsli"
 
-#define GS_RASTER_MAX_WORK     524288u
+#define GS_RASTER_MAX_WORK     1048576u
 #define GS_RASTER_MAX_GEO      65535u
 #define GS_RASTER_MAX_CANDIDATES 1048576u
 #define GS_INVALID            0xffffffffu
