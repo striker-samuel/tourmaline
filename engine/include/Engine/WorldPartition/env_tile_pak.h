@@ -15,6 +15,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace tour::envcook {
@@ -75,6 +76,16 @@ inline bool ReadUVec(std::span<const uint8_t> b, size_t& p, glm::uvec4& v) {
     return true;
 }
 
+// Reserved scene-scoped ID for the baked env content in a scene pak.
+// Scene name is the same identity used by SerializeClusters/ListPakScenes.
+inline WorldId SceneWorldId(std::string_view sceneName) {
+    uint64_t hash = 14695981039346656037ull;
+    for (unsigned char c : sceneName) {
+        hash ^= uint64_t(c);
+        hash *= 1099511628211ull;
+    }
+    return hash | (uint64_t(1) << 63);
+}
 inline std::string ManifestPath(WorldId world) {
     return "worlds/" + std::to_string(world) + "/env/manifest.evm";
 }
