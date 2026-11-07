@@ -48,6 +48,21 @@ struct InstanceReference {
     uint32_t generation = 0;
 };
 
+// The direct GPU-scene work-to-raster path: each GPU-produced submesh work
+// record maps to one indirect command and one SV_InstanceID work slot.
+// Work rows already carry the persistent instance (slot,generation) pair.
+// This intermediate form does not require CPU per-instance grouping.
+struct RasterWorkDrawBuildPush {
+    uint64_t work = 0;          // SceneSubmeshWork[] generated on GPU
+    uint64_t workOffsets = 0;   // workOffsets[candidateCount] = GPU work count
+    uint64_t indexedGeometry = 0;
+    uint64_t indirect = 0;
+    uint32_t candidateCount = 0;
+    uint32_t geometryCount = 0;
+    uint32_t commandCapacity = 0;
+    uint32_t reserved = 0;
+};
+
 // Push constants for the independent indirect raster command build kernel.
 struct RasterDrawBuildPush {
     uint64_t indexedGeometry = 0;
@@ -62,6 +77,7 @@ static_assert(sizeof(RasterGroup) == 16 && alignof(RasterGroup) == 16);
 static_assert(sizeof(RasterIndirectCommand) == 20);
 static_assert(sizeof(InstanceReference) == 8);
 static_assert(sizeof(RasterDrawBuildPush) == 32);
+static_assert(sizeof(RasterWorkDrawBuildPush) == 48);
 static_assert(offsetof(RasterIndirectCommand, firstInstance) == 16);
 static_assert(std::is_trivially_copyable_v<RasterIndirectCommand>);
 
