@@ -158,7 +158,7 @@ static constexpr uint32_t kMaxBatches = 65536; // surviving (draw x cluster) per
 // pushed meshes' full cluster lists at Bistro scale (~100k) with 2.5x
 // headroom. Cheap buffers only — the filtered ring stays kMaxBatches.
 static constexpr uint32_t kMaxBatchSlots = 262144;
-// Draws pushed per view. 64k (16x the old 4k Bistro budget): grid32-scale
+// Draws pushed per view. 65535 (near 64k, vs the old 4k Bistro budget): grid32-scale
 // instanced scenes (1024 Sponzas = 105k meshes, ~10-30k visible draws in a
 // fly-through, more from overhead vantages) silently dropped whole
 // instances past 4k. Sized to kMaxBatches: the filtered-index survivor
@@ -170,10 +170,10 @@ static constexpr uint32_t kMaxBatchSlots = 262144;
 // tail (kMaxDraws * 16 B = 1 MB). HLSL mirror: gfxfilter.hlsli
 // GFX_MAX_DRAWS (GfxDraws, GfxCullState, drawBound tail) — keep both in
 // lockstep. Note: the per-draw cull dispatches run one workgroup per draw
-// (Dispatch(drawCount,1,1)), which passes 65535 on drivers with only the
-// spec-minimum workgroup count — the batch dispatches already exceed it
-// on the same hardware (NVIDIA allows 2^31-1).
-static constexpr uint32_t kMaxDraws = 65536;
+// (Dispatch(drawCount,1,1)). 65535 is the Vulkan 1.3 minimum guaranteed
+// maxComputeWorkGroupCount[0]. Larger workloads are unsupported by the
+// fixed authored-content contract; never silently drop draws.
+static constexpr uint32_t kMaxDraws = 65535; // authored per-view limit; Vulkan 1.3 minimum dispatch X
 // Sized for LOD chains: every cooked sibling registers its own gfx mesh
 // (~3x the LOD0-only count), so headroom over the pre-LOD 4k budget.
 static constexpr uint32_t kMaxMeshes = 8192;
