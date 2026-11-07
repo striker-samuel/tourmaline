@@ -11,7 +11,7 @@ int failures = 0;
 
 void Expect(bool ok, const char* test) {
     if (!ok) {
-        std::fprintf(stderr, "FAIL gpu-memory.%s\\n", test);
+        std::fprintf(stderr, "FAIL gpu-memory.%s\n", test);
         ++failures;
     }
 }
