@@ -117,8 +117,7 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
   are all valid implementations of identical logical tile IDs.
 - [x] Hook a synchronous runtime bridge to paged MapTile read + real
   ProjectScenes prefab activation, rollback, retirement and active Map switching.
-- [ ] Replace that bridge's synchronous loading with async IO/decode,
-  budgeted publication and GPU-fence-aware retirement; add telemetry.
+- [ ] Replace synchronous tile reads with async IO/decode, budgeted publication and GPU-fence-aware retirement; add telemetry. A separate Cluster-free direct World adapter is now available as the preferred host interface.
 - [ ] Verify multi-tile shared asset IDs and cross-pak dependency resolution.
 
 ### Epoch 4 — asset ownership independence
@@ -134,9 +133,8 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
 
 ### Epoch 5 — incremental authoritative World
 - [x] Add a direct `World::scene` hierarchy-instantiation API with generational node handles, active Map identity, explicit instance ownership and selective retirement (#232). The production Map tile bridge still uses the legacy ProjectScenes/Cluster loader.
-- [ ] Switch production tile activation to that direct-instance API after cooked-scene/resource-provider integration; preserve world-qualified ownership across Map changes.
-- [ ] Implement transactional `ActivateTile` and `DeactivateTile`:
-  check budgets and dependencies before publishing; rollback on failure.
+- [ ] Wire production cooked-scene resource resolution and GPU publication into the new direct Map adapter; world-qualified tile activation itself now uses direct instance IDs when a valid resolver is supplied.
+- [ ] Finish transactional GPU-aware `ActivateTile` and `DeactivateTile`: the direct Map adapter now rolls back hierarchy instances on error, but async dependencies and GPU budget/fence publication still need implementation.
 - [x] Preserve unrelated World node slots and generation validity during direct hierarchy-instance retirement; cover subtree removal with headless tests (#232).
 - [ ] Verify these guarantees in production tile unload/reload (currently using the legacy bridge).
 - [ ] Remove `clusterMergedNodes`, source scene mirrors and
@@ -203,9 +201,12 @@ The original epoch checkboxes predate the merged direct-instance PR #232.
 Its **standalone direct World hierarchy API**, independent asset lease ledger,
 explicit resource remapping and incremental render-item publication are
 implemented and have *registered headless tests*. These are not proof of
-production Map-tile cutover: `MapSceneStreaming` still calls legacy
-`ProjectScenes`, World resource location tables still refer to Cluster-owned
-pools, and no author-run native/CTest/GPU validation was reported. The
+production Map-tile cutover: `MapSceneStreaming` now aliases a direct
+World-instance adapter and the former ProjectScenes-backed bridge is named
+`LegacyMapSceneStreaming`. A full cooked-Scene and GPU resource resolver
+has **not** been integrated, World resource location tables may still
+refer to Cluster-owned pools, and no author-run native/CTest/GPU validation
+was reported. The
 checkboxes above distinguish these landed primitives from the remaining
 production integration and hardware acceptance gates.
 
@@ -215,8 +216,9 @@ Epoch 1 includes a world-aware scene residency provider, priority/request
 budget and renderer-facing active Map interest. Epochs 2 and 3 now include
 authoring Map parsing, tile placement encoding, real SMP8 page packaging,
 TOC discovery, persistent placements, recipe-driven Project Build and
-a runtime ProjectScenes bridge. **This is still a legacy-cluster bridge, not
-the requested full cutover.** Cook-time static BVHs, independent asset
-ownership, incremental World mutation, async IO, visibility-driven GPU scene
-and full perf acceptance remain unimplemented. Tests are prescribed but
+a compatibility ProjectScenes bridge plus a new direct World hierarchy
+Map adapter. **The direct streaming seam exists, but the production
+resource/asset pipeline cutover is still incomplete.** Cook-time static
+BVHs, full independent GPU asset ownership, async IO, visibility-driven
+GPU scene and performance acceptance remain unimplemented. Tests are prescribed but
 not run in this environment. Keep this PR draft.

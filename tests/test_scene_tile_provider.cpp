@@ -3,6 +3,7 @@
 // Headless scene tile residency tests; integrator runs these via CTest.
 
 #include <Engine/WorldPartition/SceneTileProvider.h>
+#include <Engine/WorldPartition/StreamTicketLedger.h>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
@@ -123,6 +124,95 @@ int main() {
               "highest-priority tile requested first");
         p.UpdateFrame(21);
         check(loadOrder.size() == 2, "per-frame request budget enforced");
+    }
+    {
+        // Real SceneTileProvider participates in the partition-owned budget.
+        wp::WorldPartition p;
+        p.Budgets().SetLimits({80, 200, 1});
+        wp::SceneTileProvider budgeted;
+        check(budgeted.SetManifest({{{88, {0, 0}}, 1}, {{88, {1, 0}}, 2}}),
+              "budgeted scene fixture accepted");
+        budgeted.SetCostEstimator([](const wp::SceneTileDescriptor&) {
+            return std::pair<uint64_t,uint64_t>{80, 200};
+        });
+        std::vector<uint64_t> loaded;
+        std::vector<uint64_t> tickets;
+        budgeted.SetCallbacks(
+            [&](const wp::SceneTileDescriptor& d, wp::DesiredResidency, uint64_t ticket) {
+                loaded.push_back(d.contentId);
+                tickets.push_back(ticket);
+            },
+            [](const wp::SceneTileDescriptor&) { return true; });
+        p.AddProvider(&budgeted);
+        wp::StreamingInterest interest{};
+        interest.world = 88;
+        interest.position = glm::dvec3(128, 0, 128);
+        interest.radiusMeters = 512;
+        interest.layerMask = wp::StreamLayerBit(wp::StreamLayer::Scene);
+        p.SetInterests(&interest, 1);
+        p.UpdateFrame(1);
+        check(loaded.size() == 1 && p.Budgets().InFlightRequests() == 1,
+              "global budget admits one scene IO request");
+        check(budgeted.Activate({88, {0, 0}}, tickets[0]),
+              "scene first request activated");
+        p.UpdateFrame(2);
+        check(loaded.size() == 1 && p.Budgets().InFlightRequests() == 0 &&
+              p.Budgets().ReservedGpuBytes() == 200,
+              "resident scene GPU budget blocks second tile");
+        interest.position = glm::dvec3(384, 0, 128);
+        interest.radiusMeters = 0;
+        p.SetInterests(&interest, 1);
+        p.UpdateFrame(3); // old tile retires after CommitFrame
+        p.UpdateFrame(4);
+        check(loaded.size() == 2 && loaded.back() == 2,
+              "second tile admitted after old reservation retires");
+        check(budgeted.ResetPending({88, {1, 0}}, tickets.back()) &&
+              p.Budgets().ReservationCount() == 0,
+              "failed tile IO releases shared reservation");
+        p.ClearProviders();
+    }
+    {
+        struct Request { int id; float priority; };
+        std::vector<Request> work{{1, 1.0f}, {2, 3.0f}, {3, 3.0f}, {4, -1.0f}};
+        wp::SelectStreamRequests(work, 2, [](const Request& a, const Request& b) {
+            return a.priority > b.priority;
+        });
+        check(work.size() == 2 && work[0].id == 2 && work[1].id == 3,
+              "shared request selector respects budget and stable ties");
+        wp::SelectStreamRequests(work, 0, [](const Request& a, const Request& b) {
+            return a.priority > b.priority;
+        });
+        check(work.empty(), "shared request selector honors zero budget");
+    }
+    {
+        // Both scene and environment providers use these shared ticket rules.
+        wp::StreamTicketLedger<int> ledger;
+        const auto first = ledger.Issue(7, 1);
+        check(first.has_value() && ledger.PendingCount() == 1,
+              "ticket issue creates one pending request");
+        check(!ledger.Issue(7, 1).has_value(), "duplicate issue rejected");
+        check(first.has_value() && !ledger.Accept(7, *first + 1),
+              "wrong ticket cannot activate");
+        ledger.CancelUndesired([](int) { return false; });
+        check(first.has_value() && !ledger.Accept(7, *first),
+              "cancelled ticket cannot activate");
+        const auto second = ledger.Issue(7, 2);
+        check(second.has_value() && first.has_value() && *second != *first,
+              "reissue after cancellation has new generation");
+        check(second.has_value() && ledger.Fail(7, *second, 2, 120),
+              "failure records retry cooldown");
+        check(!ledger.CanIssue(7, 121) && ledger.CanIssue(7, 122),
+              "retry waits through complete cooldown");
+        const auto third = ledger.Issue(7, 122);
+        check(third.has_value(), "request resumes after cooldown");
+        ledger.Clear();
+        check(ledger.PendingCount() == 0 && third.has_value() &&
+              !ledger.Accept(7, *third), "source change rejects stale completion");
+        const auto fourth = ledger.Issue(7, 123);
+        check(fourth.has_value() && third.has_value() && *fourth > *third,
+              "clear never resets ticket generations");
+        check(fourth.has_value() && ledger.Accept(7, *fourth) &&
+              ledger.PendingCount() == 0, "valid completion clears pending");
     }
     std::cout << "scene_tile_provider failures=" << failures << "\n";
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;

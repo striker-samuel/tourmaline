@@ -134,6 +134,56 @@ the work pool; the frame builds the camera interest (position +
 measured velocity) and calls `UpdateFrame` before `UpdateFrameUniforms`
 (the field table BDA rides `FrameUniforms::worldFields`).
 
+## Shared resource admission and budget reservations
+
+`WorldPartition::Budgets()` is a shared `StreamBudgetPool` that places
+hard admission limits on **estimated** in-flight IO bytes, in-flight request
+count, and prospectively resident GPU bytes. Both `SceneTileProvider` and
+`WorldEnvTileProvider` participate: a new page reserves before dispatch;
+IO completion returns the IO credit; failure, cancellation, teleport,
+source invalidation, and retirement return the GPU credit. The reservation
+key includes world, layer, root cell, environment subcell and scene tile
+path, so unrelated resources cannot collide.
+
+`SetLimits({maxInFlightIoBytes, maxResidentGpuBytes, maxInFlightRequests})`
+configures the aggregate pool. Infinite limits are the compatibility
+default. Finite byte limits **reject unknown zero-byte costs** rather than
+allow unaccounted allocations. The Scene provider requires the host to
+supply conservative byte estimates through `SetCostEstimator`; without
+them, a finite byte budget refuses new Scene loads. The environment
+provider uses an upper bound of candidate indices plus one resident root
+page per requested cell, which callers may override when they know
+cooked-page byte sizes.
+
+**Important limitations:** this is admission reservation accounting,
+not measured Vulkan allocation enforcement. The Scene/Map legacy Cluster
+loader has not been migrated to authoritative GPU resource size reporting.
+Environment global shape/look GPU buffers, other provider caches, staging
+transients, and deferred GPU retirement are also not yet charged to this
+pool. The current scheduler's provider iteration still decides which
+provider reaches the budget first; global cross-provider priority dispatch
+and hardware-validated memory ceilings remain follow-up integration work.
+Do not claim that setting a finite `maxResidentGpuBytes` caps total device
+VRAM until every physical allocator registers and releases allocations
+after the GPU retirement fences.
+
+## Shared request ticket lifecycle (post-#266 cleanup)
+
+`StreamTicketLedger<Key>` now owns provider-independent pending generations,
+stale-completion checks, failure cooldowns, and cancellation. Scene and
+environment providers use the same primitive; ticket sequence numbers
+survive source/world invalidation, so a late completion cannot match a
+new request for the same cell. `SelectStreamRequests` implements stable
+priority order and provider-local per-frame request caps. Providers still
+own demand interpretation, resource payloads, and fence-safe retirement.
+
+**Boundary:** This change removes duplicate request control logic; it is
+not a global asynchronous IO scheduler. WorldPartition still gathers
+requests for diagnostics, while providers dispatch within their own
+limits. Global per-layer byte/IO/upload budgets and dependencies require
+a separate scheduler contract. The Cluster-backed Map bridge is still a
+transitional compatibility path, not something this cleanup removes.
+
 ## Milestones
 
 1. **[DONE]** Partition core — cells, interests, providers, sequence,

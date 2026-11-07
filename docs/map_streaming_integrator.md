@@ -56,27 +56,51 @@ The resolver passes the Map to the shared Project Build Pak stage, which
 publishes it through the existing staging and manifest pipeline. The local
 Scene assets named by numeric ID must still be cataloged in project content.
 
-## Host runtime bridge
+## Host runtime: direct World-scene streaming
 
-`app/src/MapSceneStreaming.h` exposes a MapSceneStreaming owner. The host
-constructs it with ProjectScenes, its current `tour::World`, GPU upload
-context, and texture streamer. With a live `PakReader`, it calls
-`BindMap(reader, worldId)`, then registers
-`&bridge.Provider()` with `WorldRenderer::StreamingPartition()`, and
-sets `WorldRenderer::SetActiveMapId(worldId)`.
+`app/src/MapSceneStreaming.h` now exposes the **Cluster-free** adapter
+`app::MapSceneStreaming` (an alias of
+`engine::worldpartition::DirectMapSceneStreaming`). Its constructor takes
+a `tour::World&` and a `ResolveScene` callback, NOT `ProjectScenes`.
+The callback resolves a scene content ID into
+`DirectScenePayload{scene, assets, resources}`: a retained immutable
+`Scene`, independent `AssetLease` objects and explicit World resource
+index remappings. The source must be fully validated and GPU-ready where
+needed before the callback returns. No fallback to Cluster loading occurs.
 
-The renderer injects a Scene-layer interest alongside WorldFields/Placement
-every frame, with a configurable map streaming radius. The bridge uses
-SMP8 tile-page reads and `InstantiatePrefab`/`RemoveScene`. To switch Maps:
-stop producing demand, `UnbindMap()` and confirm success, reset the active
-renderer Map ID, then bind/register the new Map. Keep the reader, ProjectScenes
-and provider owner alive until WorldPartition detaches/clears borrowed
-providers. The bridge is synchronous and not suitable for low-latency
-streaming of many heavy scenes yet.
+The host binds a Map from an SMP8 `PakReader` with `BindMap(reader, mapId)`,
+registers `&stream.Provider()` with
+`WorldRenderer::StreamingPartition()`, and sets the renderer's active
+Map interest to `mapId`. The streaming adapter sets the **World's**
+active Map identity itself; do not overwrite it independently.
+`UnbindMap()` retires tile and persistent direct instance IDs and clears
+World Map identity. Unregister the borrowed provider and wait for GPU
+retirement before destroying the streaming adapter or releasing its assets.
 
-**Important:** the apphost has not been changed to automatically discover
-which authored Map is active; selection and bridge lifetime still belong to
-the host. An empty Map remains a valid active identity.
+This direct path calls `World::InstantiateSceneHierarchy` and
+`World::RetireSceneHierarchy`, never `ProjectScenes::InstantiatePrefab`,
+`World::LoadClusterFromPak`, or `ResolveAndFixup_clusters`. It rejects
+missing bindings and scene components for which the incremental publisher
+is not implemented; it does not silently discard them. Failed rollback
+handles remain tracked for explicit cleanup, not silently orphaned.
+
+### Migration / compatibility
+
+The old adapter is now named `app::LegacyMapSceneStreaming` in
+`app/src/LegacyMapSceneStreaming.h`. It must be included explicitly;
+`MapSceneStreaming.h` no longer selects it. Existing hosts using the
+old `ProjectScenes, World, ResourceManager, TextureStreamer`
+constructor must supply the new resolver or explicitly opt into the
+compatibility adapter.
+
+**Not a complete production asset-pipeline cutover yet:** the repository
+still needs a concrete cooked-Scene decoder and stable GPU resource
+publisher implementing `ResolveScene` for all shipped component kinds,
+as well as asynchronous reads, dependencies, fence-safe asset release,
+and production performance validation. The new adapter is functional
+for source Scenes/resources that satisfy its contract and refuses those
+that do not. Do not delete the legacy implementation until full
+content coverage is demonstrated.
 
 ## Integrator gates
 
@@ -93,7 +117,7 @@ the host. An empty Map remains a valid active identity.
    missing/corrupt page, negative coordinates, and stale async ticket.
 5. Run Project Build with a map-only pak and verify the published pak's
    MapManifest/MapTile pages through the content-addressed release.
-6. With the runtime bridge, load adjacent cells, rotate quickly, unload,
+6. With the direct World adapter, load adjacent cells, rotate quickly, unload,
    change active Map, and verify no scene handle accidentally survives or
    causes resurrection. Watch for synchronous hitches.
 7. Do NOT treat passing this subset as completing Epochs 4–7. The final
