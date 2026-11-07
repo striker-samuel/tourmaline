@@ -136,11 +136,13 @@ public:
         const size_t i = Index(subcell);
         const auto it = pending_.find(i);
         if (it == pending_.end() || it->second != ticket) return false;
-        pending_.erase(it); // retry on a later CommitFrame
+        pending_.erase(it);
+        retryAfter_[i] = lastFrame_ + 120; // avoid hot-looping corrupt pages
         return true;
     }
 
-    void CommitFrame(uint64_t) override {
+    void CommitFrame(uint64_t frame) override {
+        lastFrame_ = frame;
         if (!source_ || !source_->Valid()) return;
         bool changed = false;
         // Retire first, including canceled loads, before dispatching more.
@@ -159,7 +161,8 @@ public:
 
         std::vector<size_t> missing;
         for (size_t i = 0; i < desired_.size(); ++i)
-            if (desired_[i] && !resident_.count(i) && !pending_.count(i))
+            if (desired_[i] && !resident_.count(i) && !pending_.count(i) &&
+                (!retryAfter_.count(i) || frame >= retryAfter_[i]))
                 missing.push_back(i);
         std::stable_sort(missing.begin(), missing.end(), [&](size_t a, size_t b) {
             if (priority_[a] != priority_[b]) return priority_[a] > priority_[b];
@@ -274,6 +277,7 @@ private:
     void Invalidate() {
         resident_.clear();
         pending_.clear();
+        retryAfter_.clear();
         desired_.clear();
         priority_.clear();
         cells_.clear();
@@ -286,7 +290,7 @@ private:
     WorldId world_ = 0;
     const WorldEnvTiles* source_ = nullptr;
     uint64_t sourceRevision_ = 0;
-    uint64_t revision_ = 0, nextTicket_ = 1;
+    uint64_t revision_ = 0, nextTicket_ = 1, lastFrame_ = 0;
     size_t maxNewRequestsPerFrame_ = 64;
     size_t maxResidentCells_ = 4096;
     bool unpublished_ = true;
@@ -295,6 +299,7 @@ private:
     std::vector<float> priority_;
     std::map<size_t, std::vector<uint32_t>> resident_;
     std::map<size_t, uint64_t> pending_;
+    std::map<size_t, uint64_t> retryAfter_;
     std::vector<EnvTileCell> cells_; // logical grid, CPU only
     std::vector<EnvTileCell> packedCells_; // physical resident 4x4 root pages
     std::vector<uint32_t> pageTable_; // root coords to physical slot
