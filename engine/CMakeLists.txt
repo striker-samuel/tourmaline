@@ -30,6 +30,7 @@ endif()
 file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
     src/*.cpp
     include/Engine/*.h
+    ${TOURMALINE_SOURCE_DIR}/core/include/Core/*.h
 )
 
 add_library(engine STATIC ${ENGINE_SRC})
@@ -37,6 +38,7 @@ add_library(engine STATIC ${ENGINE_SRC})
 target_include_directories(engine
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${TOURMALINE_SOURCE_DIR}/core/include
         ${TOURMALINE_SOURCE_DIR}/external/tinygltf
         ${nlohmann_json_SOURCE_DIR}/single_include
         ${nlohmann_json_SOURCE_DIR}/single_include/nlohmann
