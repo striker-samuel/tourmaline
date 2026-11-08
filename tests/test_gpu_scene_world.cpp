@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Headless contracts for the GPUIR World -> GPU scene bridge.
 #include <Engine/Renderer/gpu_scene_instancing.h>
+#include <Engine/Renderer/gpu_scene_pages.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
@@ -31,6 +32,29 @@ int g_failures = 0;
 using namespace tour::gpu_scene;
 
 int main() {
+    // Page sizing is a pure CPU contract: no Vulkan device required.
+    // BDA rows remain physically contiguous across page boundaries.
+    {
+        static_assert(TablePageLayout<Mesh>::RowsPerPage == 2048);
+        static_assert(TablePageLayout<Lod>::RowsPerPage == 2048);
+        static_assert(TablePageLayout<Submesh>::RowsPerPage == 2048);
+        static_assert(TablePageLayout<Instance>::RowsPerPage == 512);
+        static_assert(TablePageLayout<Leaf>::RowsPerPage == 819);
+        static_assert(TablePageLayout<LeafMember>::RowsPerPage == 2048);
+        size_t cap = 123, bytes = 123;
+        CHECK(TablePageLayout<Instance>::Capacity(0, cap) && cap == 0);
+        CHECK(TablePageLayout<Instance>::Bytes(0, bytes) && bytes == 0);
+        CHECK(TablePageLayout<Instance>::Capacity(1, cap) && cap == 512);
+        CHECK(TablePageLayout<Instance>::Bytes(1, bytes) && bytes == 65536);
+        CHECK(TablePageLayout<Instance>::Capacity(512, cap) && cap == 512);
+        CHECK(TablePageLayout<Instance>::Capacity(513, cap) && cap == 1024);
+        CHECK(TablePageLayout<Leaf>::Capacity(819, cap) && cap == 819);
+        CHECK(TablePageLayout<Leaf>::Bytes(819, bytes) && bytes == 65520);
+        CHECK(TablePageLayout<Leaf>::Capacity(820, cap) && cap == 1638);
+        CHECK(TablePageLayout<LeafMember>::Capacity(2049, cap) && cap == 4096);
+        CHECK(!TablePageLayout<Instance>::Capacity(SIZE_MAX, cap));
+        CHECK(!TablePageLayout<Leaf>::Bytes(SIZE_MAX, bytes));
+    }
     // Every compute invocation writes a verdict header, even when it
     // rejects an invalid leaf/member. Zero-filled readback is not a valid
     // visibility verdict; the slot is either unwritten or misaddressed.
