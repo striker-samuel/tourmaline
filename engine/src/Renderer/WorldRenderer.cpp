@@ -10896,6 +10896,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // occupied prefix is a published snapshot. Do not clear or
             // destroy it while a current-frame submission can query it.
             uint32_t compatibleCount = 0;
+            uint32_t doubleSidedCount = 0;
             const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
             constexpr uint32_t requiredFlags =
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
@@ -10914,16 +10915,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     (item.flags & forbiddenFlags) == 0 &&
                     item.material != smvk::World::kInvalidIndex && item.materialInstance == 0 &&
                     m_world->MaterialUserData(item.material) == 0 &&
-                    // Double-sided materials stay LEGACY-owned: the
-                    // GPU-scene raster leg is one Cull-Back pipeline over
-                    // the whole command list (no per-material raster
-                    // split yet); the legacy filtered/direct legs carry
-                    // the material's Cull None + the filter's backface
-                    // sparing (DrawFlagBit_DoubleSided).
-                    ![&]() {
-                        const smvk::Material* m = m_world->GetMaterial(item.material);
-                        return m && m->doubleSided;
-                    }() &&
                     !m_gfxRenderer.MaterialProjectFamily(item.material) &&
                     !m_gfxRenderer.MaterialLayered(item.material) &&
                     item.node < m_world->scene.globalTransform.size() &&
@@ -10980,12 +10971,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     }();
                 m_gpuSceneRasterEntries[i] = {key, compatible};
                 compatibleCount += compatible ? 1u : 0u;
+                // GPU work carries this per-instance flag, and the
+                // indirect builder emits the work in exactly one fixed PSO
+                // class. Count only admitted sources, never legacy ones.
+                if (compatible) {
+                    const smvk::Material* m = m_world->GetMaterial(item.material);
+                    doubleSidedCount += m && m->doubleSided ? 1u : 0u;
+                }
             }
             // Publish sorts and rejects duplicate source keys: two draw
             // records for one source must not silently share ownership.
             const bool snapshotValid = m_gpuSceneRasterOwnership.Publish(
                 std::span<tour::gpu_scene::RasterOwnershipEntry>(m_gpuSceneRasterEntries, total));
             m_gpuSceneRasterCompatibleCount = snapshotValid ? compatibleCount : 0u;
+            m_gpuSceneRasterDoubleSidedCount = snapshotValid ? doubleSidedCount : 0u;
             m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount;
             m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
             // Mixed ownership is recorded, but *not* submitted until GPU
@@ -10996,6 +10995,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     } else {
         m_gpuSceneRasterEligible = false;
         m_gpuSceneRasterCompatibleCount = 0;
+        m_gpuSceneRasterDoubleSidedCount = 0;
         m_gpuSceneRasterLegacyCount = m_world ? uint32_t(m_world->drawItems.size()) : 0u;
         m_gpuSceneRasterOwnership.Reset();
         // Transient publication failures must not keep stale eligibility.
