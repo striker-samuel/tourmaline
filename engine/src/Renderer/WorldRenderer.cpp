@@ -9992,6 +9992,21 @@ void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
     std::cerr << "[VFS] loose mounts: content/ (0)"
               << (m_projectRoot.empty() ? "" : " + project root (-10)") << "\n";
 }
+// Narrow GfxFilter's static geometry state into the pointer+count view the
+// GPU-scene indexed-geometry publisher consumes. The narrowing lives HERE, in
+// engine implementation code, so the public header carries no RHI/gfx::State
+// exposure (the R8 boundary guard in tests/test_architecture.cpp).
+static tour::gpu_scene::IndexedGeometryTables
+GpuSceneIndexedTables(const tour::gfx::State& gfx) {
+    tour::gpu_scene::IndexedGeometryTables tables;
+    tables.meshes = gfx.meshes.data();
+    tables.meshCount = uint32_t(gfx.meshes.size());
+    tables.clusters = gfx.clusters.data();
+    tables.clusterCount = uint32_t(gfx.clusters.size());
+    tables.indexBase = gfx.clusterIndexBase;
+    return tables;
+}
+
 void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     SMVK_PROFILE_FUNCTION();
     SMVK_PROFILE_TAG("frameIndex", fb.frameIndex);
@@ -10741,7 +10756,54 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_VALIDATE");
         return e && std::strcmp(e, "1") == 0;
     }();
-    if (s_gpuSceneValidate)
+    // Deliberately opt-in until all production pass/material variants match.
+    // Validation remains separate; do not mix CPU readback with GPU raster.
+    static const bool s_gpuSceneRaster = [] {
+        const char* e = std::getenv("TOURMALINE_GPU_SCENE_RASTER");
+        return e && std::strcmp(e, "1") == 0;
+    }();
+    if (s_gpuSceneRaster && m_gpuSceneRasterProgram.shaderCount != 2) {
+        try {
+            if (m_gpuSceneRasterVsModule.empty())
+                m_gpuSceneRasterVsModule = m_context->CreateShaderModule(
+                    smvk::shaders::Read("content/shaders/gpu_scene_raster.vert.hlsl.spv"),
+                    "gpuSceneRasterVS");
+            if (m_gpuSceneRasterFsModule.empty())
+                m_gpuSceneRasterFsModule = m_context->CreateShaderModule(
+                    smvk::shaders::Read("content/shaders/gfxmesh_lit.frag.hlsl.spv"),
+                    "gpuSceneRasterLitFS");
+            if (!m_gpuSceneRasterVsModule.empty() && !m_gpuSceneRasterFsModule.empty()) {
+                smvk::Shader vs{.module = m_gpuSceneRasterVsModule,
+                                .entryPoint = "mainVS",
+                                .stage = smvk::ShaderStage::Vertex};
+                smvk::Shader fs{.module = m_gpuSceneRasterFsModule,
+                                .entryPoint = "mainPS",
+                                .stage = smvk::ShaderStage::Fragment};
+                m_gpuSceneRasterProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+                m_gpuSceneRasterDepthProgram = {.shaders = {vs}, .shaderCount = 1};
+                if (m_gpuSceneRasterGbufferFsModule.empty())
+                    m_gpuSceneRasterGbufferFsModule = m_context->CreateShaderModule(
+                        smvk::shaders::Read(
+                            "content/shaders/gpu_scene_gbuffer.frag.hlsl.spv"),
+                        "gpuSceneRasterGbufferFS");
+                if (!m_gpuSceneRasterGbufferFsModule.empty()) {
+                    smvk::Shader gbFs{.module = m_gpuSceneRasterGbufferFsModule,
+                                      .entryPoint = "mainPS",
+                                      .stage = smvk::ShaderStage::Fragment};
+                    m_gpuSceneRasterGbufferProgram =
+                        {.shaders = {vs, gbFs}, .shaderCount = 2};
+                }
+            }
+        } catch (...) {
+            static bool logged = false;
+            if (!logged) {
+                std::fprintf(stderr,
+                             "[GpuSceneRaster] raster shaders unavailable; legacy path retained\n");
+                logged = true;
+            }
+        }
+    }
+    if (s_gpuSceneValidate || s_gpuSceneRaster)
         m_gpuSceneValidator.BeginFlight(*m_context, fb.frameIndex);
     m_gpuSceneDatabaseReady = false;
     // GPUIR scene mirror: topology reconciliation or dirty transforms,
@@ -10759,10 +10821,74 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         if (gpuSceneSync.leafPublicationOk)
             m_gpuSceneDatabaseReady =
                 m_gpuSceneUploader.Publish(*m_context, m_gpuSceneDatabase, fb.frameIndex);
+        // Resolve real indexed geometry ranges alongside the GPU-scene tables.
+        // geometryId in Submesh is only a revision-local Gfx mesh registration,
+        // so never substitute it for indexCount/firstIndex/vertexOffset.
+        if (m_gpuSceneDatabaseReady && m_gfxFilterAvailable)
+            m_gpuSceneDatabaseReady = m_gpuSceneIndexedGeometry.Publish(
+                *m_context, GpuSceneIndexedTables(m_gfxRenderer.State()),
+                m_gpuSceneGeometryRevision, fb.frameIndex);
+        if (m_gpuSceneDatabaseReady)
+            m_gpuSceneDatabaseReady = m_gpuSceneRasterView.Publish(
+                *m_context, fb.frameIndex, frameData.viewProj,
+                glm::dvec3(m_cameraPositioner.cameraPosition_));
         if (!m_gpuSceneDatabaseReady)
             std::fprintf(stderr,
                          "[GpuScene] database publication failed; no GPU reader this frame\n");
     }
+    // The first production raster cutover is deliberately whole-world
+    // and conservative: if any draw needs a legacy feature, retain the
+    // entire legacy Main path (no accidental duplicate or missing draw).
+    // Cache the costly eligibility scan by topology+geometry revisions.
+    if (s_gpuSceneRaster && m_world && m_gpuSceneDatabaseReady) {
+        if (m_gpuSceneRasterEligibilityWorld != m_world ||
+            m_gpuSceneRasterEligibilityTopologyRevision !=
+                m_world->gpuSceneTopologyRevision ||
+            m_gpuSceneRasterEligibilityGeometryRevision != m_gpuSceneGeometryRevision) {
+            m_gpuSceneRasterEligibilityWorld = m_world;
+            m_gpuSceneRasterEligibilityTopologyRevision = m_world->gpuSceneTopologyRevision;
+            m_gpuSceneRasterEligibilityGeometryRevision = m_gpuSceneGeometryRevision;
+            m_gpuSceneRasterEligible =
+                !m_world->drawItems.empty() &&
+                m_gpuSceneDatabase.instances.LiveCount() == m_world->drawItems.size();
+            const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
+            constexpr uint32_t requiredFlags =
+                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
+            constexpr uint32_t forbiddenFlags =
+                smvk::IteratorFlagBit_Masked | smvk::IteratorFlagBit_Transparent;
+            if (m_gpuSceneRasterEligible) {
+                for (const auto& item : m_world->drawItems) {
+                    const auto* mesh = m_world->GetMesh(item.mesh);
+                    const uint32_t gfxId = m_gfxRenderer.GfxMeshForLod(item.mesh, 0);
+                    tour::gpu_scene::IndexedGeometry geometry{};
+                    if ((item.flags & requiredFlags) != requiredFlags ||
+                        (item.flags & forbiddenFlags) != 0 ||
+                        item.material == smvk::World::kInvalidIndex ||
+                        item.materialInstance != 0 ||
+                        m_world->MaterialUserData(item.material) != 0 ||
+                        m_gfxRenderer.MaterialProjectFamily(item.material) ||
+                        item.node >= m_world->scene.globalTransform.size() ||
+                        (item.node < m_world->scene.ditherCloseup.size() &&
+                         m_world->scene.ditherCloseup[item.node] != 0) ||
+                        !mesh || mesh->skinned || mesh->geometry.surfaces.size() != 1 ||
+                        (item.mesh < m_world->lodChains.size() &&
+                         m_world->lodChains[item.mesh].levels.size() != 1) ||
+                        gfxId == UINT32_MAX ||
+                        !tour::gpu_scene::ResolveIndexedGeometry(gfxTables, gfxId, geometry)) {
+                        m_gpuSceneRasterEligible = false;
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        m_gpuSceneRasterEligible = false;
+        // A transient publish failure must not cache an "eligible" scene:
+        // next frame must recheck geometry and current source identities.
+        m_gpuSceneRasterEligibilityWorld = nullptr;
+    }
+    m_gpuSceneRasterDrawActive = false;
     // Probe residency for this frame's eye (throttled inside; the
     // FP upload below reads the rebuilt rows - see m_cubemapRows).
     UpdateCubemapStreaming(m_cameraPositioner.cameraPosition_);
@@ -10895,8 +11021,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // built from the existing absolute-world frustum. The production
     // RenderView, GfxDraw/HZB and indirect chain are NEVER modified.
     // Sampling once per 120 frames bounds the debug CPU oracle/readback.
-    if (s_gpuSceneValidate && m_world && m_gpuSceneDatabaseReady &&
-        mainRenderView != smvk::RenderViewSet::kInvalidIndex && (m_frameCounter % 120u) == 0u) {
+    const bool gpuSceneRasterMode =
+        s_gpuSceneRaster && !s_gpuSceneValidate && m_gpuSceneRasterEligible &&
+        m_gpuSceneRasterProgram.shaderCount == 2 && !ShaderLodActive() &&
+        !m_wireframe && m_debugView == ViewMode::Lit &&
+        GetActiveGIVariant() == engine::GIVariant::None;
+    if ((s_gpuSceneValidate || gpuSceneRasterMode) && m_world && m_gpuSceneDatabaseReady &&
+        mainRenderView != smvk::RenderViewSet::kInvalidIndex &&
+        (gpuSceneRasterMode || (m_frameCounter % 120u) == 0u)) {
         if (m_gpuSceneCullProgram.shaderCount == 0) {
             try {
                 auto bytes =
@@ -10971,6 +11103,32 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
         }
+        static constexpr const char* scanPaths[3] = {
+            "content/shaders/gpu_scene_work_prefix_block.cs.hlsl.spv",
+            "content/shaders/gpu_scene_work_prefix_groups.cs.hlsl.spv",
+            "content/shaders/gpu_scene_work_prefix_add.cs.hlsl.spv"};
+        for (uint32_t i = 0; i < 3u; ++i) {
+            if (m_gpuSceneWorkScanPrograms[i].shaderCount != 0)
+                continue;
+            try {
+                auto bytes = smvk::shaders::Read(scanPaths[i]);
+                m_gpuSceneWorkScanModules[i] =
+                    m_context->CreateShaderModule(std::move(bytes), "gpuSceneWorkScanCS");
+                if (!m_gpuSceneWorkScanModules[i].empty()) {
+                    smvk::Shader cs{.module = m_gpuSceneWorkScanModules[i],
+                                    .entryPoint = "mainCS",
+                                    .stage = smvk::ShaderStage::Compute};
+                    m_gpuSceneWorkScanPrograms[i] = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                static bool logged = false;
+                if (!logged) {
+                    std::fprintf(stderr,
+                                 "[GpuSceneRaster] parallel work scan unavailable; fallback\n");
+                    logged = true;
+                }
+            }
+        }
         static constexpr const char* indirectPaths[2] = {
             "content/shaders/gpu_scene_indirect_args.cs.hlsl.spv",
             "content/shaders/gpu_scene_indirect_verify.cs.hlsl.spv"};
@@ -10995,6 +11153,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
         }
+        if (m_gpuSceneRasterBuildProgram.shaderCount == 0) {
+            try {
+                auto bytes = smvk::shaders::Read(
+                    "content/shaders/gpu_scene_raster_work_drawbuild.cs.hlsl.spv");
+                m_gpuSceneRasterBuildModule =
+                    m_context->CreateShaderModule(std::move(bytes), "gpuSceneRasterBuildCS");
+                if (!m_gpuSceneRasterBuildModule.empty()) {
+                    smvk::Shader cs{.module = m_gpuSceneRasterBuildModule,
+                                    .entryPoint = "mainCS",
+                                    .stage = smvk::ShaderStage::Compute};
+                    m_gpuSceneRasterBuildProgram = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                static bool logged = false;
+                if (!logged) {
+                    std::fprintf(stderr,
+                                 "[GpuSceneRaster] indexed drawbuilder unavailable; skipped\n");
+                    logged = true;
+                }
+            }
+        }
         if (m_gpuSceneCullProgram.shaderCount == 1) {
             // This is a validation bridge, NOT true large-world camera
             // authority. The source VP remains float32; we only change
@@ -11002,14 +11181,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             const glm::dvec3 origin(m_cameraPositioner.cameraPosition_);
             const auto frustum =
                 tour::gpu_scene::LegacyRelativeFrustum(m_renderViews.Get(mainRenderView), origin);
-            const auto tickets = m_gpuSceneSync.LeafTickets(m_gpuSceneDatabase);
+            // Coarse CPU selection touches spatial leaves, not individual
+            // drawItems. Tickets, duplicate-check scratch and ranges all
+            // come from FrameArena and are consumed before frame reset.
+            const auto tickets = m_gpuSceneSync.LeafTicketsFrame(m_gpuSceneDatabase);
             const auto selected =
-                tour::gpu_scene::SelectPassedInstanceRanges(m_gpuSceneDatabase,
-                                                            tickets,
-                                                            frustum,
-                                                            tour::gpu_scene::CandidateMode::Frustum,
-                                                            65536,
-                                                            32768);
+                tour::gpu_scene::SelectPassedInstanceRangesFrame(
+                    m_gpuSceneDatabase,
+                    tickets,
+                    frustum,
+                    tour::gpu_scene::CandidateMode::Frustum,
+                    65536,
+                    gpuSceneRasterMode ? 1048576u : 32768u);
+            // No passed spatial candidates means no GPU raster commands.
+            // This is an owned empty Main pass, not a failed admission:
+            // avoid rebuilding all CPU GfxFilter draws for an empty view.
+            if (gpuSceneRasterMode && selected.Valid() && selected.candidateCount == 0) {
+                m_gpuSceneRasterDrawActive = true;
+                m_gpuSceneRasterDrawCapacity = 0;
+                m_gpuSceneRasterWorkBda = 0;
+                m_gpuSceneRasterIndirect = {};
+            }
             tour::gpu_scene::InstanceCullGpuPush gpuPush{};
             if (selected.Valid() && selected.candidateCount > 0 &&
                 m_gpuSceneValidator.Prepare(
@@ -11019,7 +11211,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneUploader.DeviceAddresses(*m_context, fb.frameIndex),
                     selected,
                     frustum,
-                    gpuPush)) {
+                    gpuPush,
+                    !gpuSceneRasterMode)) {
                 tour::gpu_scene::CompactCountPush countPush{};
                 tour::gpu_scene::CompactPrefixPush prefixPush{};
                 tour::gpu_scene::CompactScatterPush scatterPush{};
@@ -11039,7 +11232,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 const bool workProgramsAvailable = m_gpuSceneWorkPrograms[0].shaderCount == 1 &&
                                                    m_gpuSceneWorkPrograms[1].shaderCount == 1 &&
                                                    m_gpuSceneWorkPrograms[2].shaderCount == 1;
-                const bool workReady =
+                const bool workPrepared =
                     compactReady && workProgramsAvailable &&
                     m_gpuSceneValidator.PrepareWorkExpansion(
                         *m_context,
@@ -11050,6 +11243,29 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         workSelect,
                         workPrefix,
                         workScatter);
+                tour::gpu_scene::ParallelWorkBlockPush workBlock{};
+                tour::gpu_scene::ParallelWorkGroupPush workGroups{};
+                tour::gpu_scene::ParallelWorkAddPush workAdd{};
+                const bool parallelScanReady =
+                    gpuSceneRasterMode && workPrepared &&
+                    m_gpuSceneWorkScanPrograms[0].shaderCount == 1 &&
+                    m_gpuSceneWorkScanPrograms[1].shaderCount == 1 &&
+                    m_gpuSceneWorkScanPrograms[2].shaderCount == 1 &&
+                    m_gpuSceneValidator.PrepareParallelWorkPrefix(
+                        *m_context, fb.frameIndex, workBlock, workGroups, workAdd);
+                const bool workReady =
+                    workPrepared && (!gpuSceneRasterMode || parallelScanReady);
+                tour::gpu_scene::RasterWorkDrawBuildPush rasterPush{};
+                smvk::BufferHandle rasterCommands{};
+                const bool rasterReady =
+                    workReady && m_gpuSceneRasterBuildProgram.shaderCount == 1 &&
+                    m_gpuSceneValidator.PrepareRasterCommands(
+                        *m_context,
+                        fb.frameIndex,
+                        m_gpuSceneIndexedGeometry.DeviceAddress(*m_context, fb.frameIndex),
+                        m_gpuSceneIndexedGeometry.Count(fb.frameIndex),
+                        rasterPush,
+                        rasterCommands);
                 tour::gpu_scene::SceneIndirectArgsPush indirectArgs{};
                 tour::gpu_scene::SceneIndirectVerifyPush indirectVerify{};
                 smvk::BufferHandle indirectBuffer{};
@@ -11062,16 +11278,62 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                         indirectArgs,
                                                         indirectVerify,
                                                         indirectBuffer);
-                auto& pass = m_rendergraph->AddComputePass("GpuSceneValidate");
+                if (gpuSceneRasterMode && rasterReady) {
+                    // Per-flight buffer ownership is in CandidateValidator;
+                    // only the rendergraph logical references live here.
+                    const uint32_t flight = fb.frameIndex;
+                    const auto workHandle = m_gpuSceneValidator.RasterWorkBuffer(flight);
+                    const uint64_t workBda =
+                        m_gpuSceneValidator.RasterWorkAddress(*m_context, flight);
+                    if (workBda != 0 && !workHandle.empty()) {
+                        if (m_gpuSceneRasterLogicalBacking[flight] != rasterCommands) {
+                            if (!m_gpuSceneRasterIndirectLogical[flight].empty())
+                                m_rendergraph->FreeBuffer(m_gpuSceneRasterIndirectLogical[flight]);
+                            m_gpuSceneRasterIndirectLogical[flight] =
+                                m_rendergraph->AddExternalBuffer(rasterCommands,
+                                                                  "GpuSceneRasterIndirect");
+                            m_gpuSceneRasterLogicalBacking[flight] = rasterCommands;
+                        }
+                        if (m_gpuSceneRasterWorkLogicalBacking[flight] != workHandle) {
+                            if (!m_gpuSceneRasterWorkLogical[flight].empty())
+                                m_rendergraph->FreeBuffer(m_gpuSceneRasterWorkLogical[flight]);
+                            m_gpuSceneRasterWorkLogical[flight] =
+                                m_rendergraph->AddExternalBuffer(workHandle,
+                                                                  "GpuSceneRasterWork");
+                            m_gpuSceneRasterWorkLogicalBacking[flight] = workHandle;
+                        }
+                        m_gpuSceneRasterDrawActive =
+                            !m_gpuSceneRasterIndirectLogical[flight].empty() &&
+                            !m_gpuSceneRasterWorkLogical[flight].empty();
+                        if (m_gpuSceneRasterDrawActive) {
+                            m_gpuSceneRasterIndirect = rasterCommands;
+                            m_gpuSceneRasterWorkBda = workBda;
+                            m_gpuSceneRasterDrawCapacity = rasterPush.commandCapacity;
+                        }
+                    }
+                }
+                auto& pass = m_rendergraph->AddComputePass(
+                    gpuSceneRasterMode ? "GpuSceneRasterBuild" : "GpuSceneValidate");
+                if (m_gpuSceneRasterDrawActive) {
+                    smvk::BufferSyncRequest write{};
+                    write.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                    write.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+                    pass.AddBufferHint(m_gpuSceneRasterIndirectLogical[fb.frameIndex], write);
+                    pass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], write);
+                }
                 // ShaderProgram copies must be mutable for BindComputePipeline.
                 auto program = m_gpuSceneCullProgram;
                 auto compactPrograms = m_gpuSceneCompactPrograms;
                 auto workPrograms = m_gpuSceneWorkPrograms;
+                auto workScanPrograms = m_gpuSceneWorkScanPrograms;
+                auto rasterProgram = m_gpuSceneRasterBuildProgram;
                 auto indirectPrograms = m_gpuSceneIndirectPrograms;
                 const uint32_t groups = (selected.candidateCount + 63u) / 64u;
                 pass.SetRecordingFunc([program,
                                        compactPrograms,
                                        workPrograms,
+                                       workScanPrograms,
+                                       rasterProgram,
                                        indirectPrograms,
                                        gpuPush,
                                        countPush,
@@ -11080,12 +11342,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        workSelect,
                                        workPrefix,
                                        workScatter,
+                                       workBlock,
+                                       workGroups,
+                                       workAdd,
+                                       rasterPush,
+                                       rasterCommands,
                                        indirectArgs,
                                        indirectVerify,
                                        indirectBuffer,
                                        groups,
                                        compactReady,
                                        workReady,
+                                       parallelScanReady,
+                                       rasterReady,
                                        indirectReady](smvk::CommandBuffer& cmd) mutable {
                     cmd.BindComputePipeline(program);
                     cmd.PushConstants(0, sizeof(gpuPush), &gpuPush, smvk::ShaderStage::Compute);
@@ -11116,15 +11385,44 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         0, sizeof(workSelect), &workSelect, smvk::ShaderStage::Compute);
                     cmd.Dispatch(groups, 1, 1);
                     cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workPrograms[1]);
-                    cmd.PushConstants(
-                        0, sizeof(workPrefix), &workPrefix, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(1, 1, 1);
+                    if (parallelScanReady) {
+                        // 1) Parallel intra-block scan. 2) bounded scan of
+                        // block totals. 3) parallel global base addition.
+                        // No single-thread walk across instance candidates.
+                        cmd.BindComputePipeline(workScanPrograms[0]);
+                        cmd.PushConstants(0, sizeof(workBlock), &workBlock,
+                                          smvk::ShaderStage::Compute);
+                        cmd.Dispatch((workBlock.candidateCount + 255u) / 256u, 1, 1);
+                        cmd.EmitGlobalMemoryBarrier();
+                        cmd.BindComputePipeline(workScanPrograms[1]);
+                        cmd.PushConstants(0, sizeof(workGroups), &workGroups,
+                                          smvk::ShaderStage::Compute);
+                        cmd.Dispatch(1, 1, 1);
+                        cmd.EmitGlobalMemoryBarrier();
+                        cmd.BindComputePipeline(workScanPrograms[2]);
+                        cmd.PushConstants(0, sizeof(workAdd), &workAdd,
+                                          smvk::ShaderStage::Compute);
+                        cmd.Dispatch((workAdd.candidateCount + 255u) / 256u, 1, 1);
+                    } else {
+                        cmd.BindComputePipeline(workPrograms[1]);
+                        cmd.PushConstants(
+                            0, sizeof(workPrefix), &workPrefix, smvk::ShaderStage::Compute);
+                        cmd.Dispatch(1, 1, 1);
+                    }
                     cmd.EmitGlobalMemoryBarrier();
                     cmd.BindComputePipeline(workPrograms[2]);
                     cmd.PushConstants(
                         0, sizeof(workScatter), &workScatter, smvk::ShaderStage::Compute);
                     cmd.Dispatch(groups, 1, 1);
+                    if (rasterReady) {
+                        // GPU work -> indexed draw argument visibility; no
+                        // CPU readback, and all 20 command bytes are GPU-written.
+                        cmd.EmitGlobalMemoryBarrier();
+                        cmd.BindComputePipeline(rasterProgram);
+                        cmd.PushConstants(
+                            0, sizeof(rasterPush), &rasterPush, smvk::ShaderStage::Compute);
+                        cmd.Dispatch((rasterPush.commandCapacity + 63u) / 64u, 1, 1);
+                    }
                     if (!indirectReady)
                         return;
                     cmd.EmitGlobalMemoryBarrier();
@@ -11147,6 +11445,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                              uint32_t(selected.status));
             }
         }
+    }
+    if (s_gpuSceneRaster &&
+        m_gpuSceneRasterDrawActive != m_gpuSceneRasterPreviouslyActive) {
+        std::fprintf(stderr,
+                     "[GpuSceneRaster] %s candidates/maxCommands=%u"
+                     " (Main indexed GPU work; legacy fallback on ineligible frames)\n",
+                     m_gpuSceneRasterDrawActive ? "active" : "fallback",
+                     m_gpuSceneRasterDrawActive ? m_gpuSceneRasterDrawCapacity : 0u);
+        m_gpuSceneRasterPreviouslyActive = m_gpuSceneRasterDrawActive;
     }
     const uint64_t renderViewsAddress = m_renderViews.DeviceAddress(*m_context, fb.frameIndex);
 
@@ -12244,7 +12551,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // (seed + HZB + dispatch + remainder). The filtered main view has no
     // runtime off switch anymore. When off, gfxSlot stays invalid and
     // every consumer falls back to direct draws.
-    const bool gfxFilterOn = m_passes.gfxFilter && m_gfxFilterAvailable;
+    // GPU-scene raster owns eligible opaque draws; do not also build the
+    // O(drawItems) GfxFilter batches, temporal seeds, or filter compute chain.
+    // If GPU-scene admission failed, retain the original GfxFilter path.
+    const bool gfxFilterOn = m_passes.gfxFilter && m_gfxFilterAvailable &&
+                             !m_gpuSceneRasterDrawActive;
     if (gfxFilterOn) {
         if (m_freezeCullingView && !m_frozenViewValid) {
             m_frozenViewProj = frameData.viewProj;
@@ -12415,7 +12726,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // TOURMALINE_HIZ=0 / the UI checkbox) - never the fill. Skipped
     // only while the culling view is frozen (the held pyramid must
     // not be rebuilt).
-    if (!cullingFrozen)
+    if (!cullingFrozen && !m_gpuSceneRasterDrawActive)
         m_fpRenderer.AppendOccluderPrepass(fc);
 
     // Northlight depth split (filter on + seed primed depth): the HZB
@@ -12506,8 +12817,34 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     } else {
         // Full prepass before the HZB (Clear when not seeded).
-        if (m_passes.forwardPlusPrepass)
-            m_fpRenderer.AppendPrepass(fc);
+        if (m_passes.forwardPlusPrepass) {
+            // GPU scene owns the full static-opaque scene when admitted.
+            // The thin SSR/SSGI G-buffer still requires its full material
+            // writer; until the GPU material-ID variant is wired, use the
+            // legacy prepass for those frames instead of stale G-buffer data.
+            if (m_gpuSceneRasterDrawActive &&
+                (fc.ssrGbufferWanted
+                     ? m_gpuSceneRasterGbufferProgram.shaderCount == 2
+                     : m_gpuSceneRasterDepthProgram.shaderCount == 1)) {
+                const uint32_t flight = fb.frameIndex;
+                const tour::gpu_scene::RasterVsPush tail{
+                    m_gpuSceneRasterWorkBda,
+                    m_gpuSceneUploader.DeviceAddresses(*m_context, flight).instances,
+                    m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
+                    m_gpuSceneDatabase.instances.Size(),
+                    m_gpuSceneRasterDrawCapacity};
+                m_fpRenderer.AppendGpuScenePrepass(
+                    fc, fc.ssrGbufferWanted
+                            ? m_gpuSceneRasterGbufferProgram
+                            : m_gpuSceneRasterDepthProgram,
+                    m_gpuSceneRasterIndirect,
+                    m_gpuSceneRasterIndirectLogical[flight],
+                    m_gpuSceneRasterWorkLogical[flight],
+                    m_gpuSceneRasterDrawCapacity, tail);
+            } else {
+                m_fpRenderer.AppendPrepass(fc);
+            }
+        }
         if (gfxFilterOn) {
             if (!cullingFrozen)
                 appendHizPasses();
@@ -13446,10 +13783,37 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         mainPass.AddBufferHint(m_gpuPlacementViewLogical, vertexRead);
         mainPass.AddBufferHint(meshPs.indirectLogical, indirectRead);
     }
+    // The GPU-generated raster command buffer is written by compute and
+    // consumed by DrawIndexedIndirect; the work rows are vertex BDA input.
+    // These are distinct pipeline stages and need explicit graph edges.
+    if (m_gpuSceneRasterDrawActive && m_gpuSceneRasterDrawCapacity > 0) {
+        smvk::BufferSyncRequest indirectRead{};
+        indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
+        indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
+        mainPass.AddBufferHint(m_gpuSceneRasterIndirectLogical[fb.frameIndex], indirectRead);
+        smvk::BufferSyncRequest vertexRead{};
+        vertexRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+        vertexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+        mainPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], vertexRead);
+    }
+    const bool sceneRasterActive = m_gpuSceneRasterDrawActive;
+    const smvk::BufferHandle sceneRasterCommands = m_gpuSceneRasterIndirect;
+    const uint32_t sceneRasterCommandCount = m_gpuSceneRasterDrawCapacity;
+    const tour::gpu_scene::RasterVsPush sceneRasterVsPush{
+        m_gpuSceneRasterWorkBda,
+        m_gpuSceneUploader.DeviceAddresses(*m_context, fb.frameIndex).instances,
+        m_gpuSceneRasterView.DeviceAddress(*m_context, fb.frameIndex),
+        m_gpuSceneDatabase.instances.Size(),
+        m_gpuSceneRasterDrawCapacity};
+
     mainPass.SetRecordingFunc([this,
                                pc,
                                useMsaa,
                                gfxSlot,
+                               sceneRasterActive,
+                               sceneRasterCommands,
+                               sceneRasterCommandCount,
+                               sceneRasterVsPush,
                                renderViewsAddress,
                                mainRenderView,
                                coneLineVerts,
@@ -13856,6 +14220,39 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             wireframeRaster(smvk::RasterSettings{}));
         cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
 
+        // GPU-scene indexed raster (static opaque subset). The vertex
+        // shader fetches work[SV_InstanceID] and the generation-checked
+        // persistent instance; zero-count commands do not rasterize.
+        // This path replaces the GfxFilter Main leg only when the
+        // eligibility gate proved every World draw belongs to it.
+        if (sceneRasterActive && sceneRasterCommandCount > 0) {
+            cmd.BindStaticVertexFmt();
+            cmd.BindRenderPipeline(
+                m_gpuSceneRasterProgram,
+                smvk::VertexLayoutId::Static,
+                opaqueDepth,
+                noStencil,
+                smvk::BlendSettings::Opaque(),
+                msaaSettings,
+                smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+            cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
+                              sizeof(sceneRasterVsPush),
+                              &sceneRasterVsPush,
+                              smvk::ShaderStage::All);
+            // Bound CPU draw submissions by a small number of indirect
+            // chunks, not by instance count. Reuse the engine's 65,535
+            // command-per-call partition convention.
+            constexpr uint32_t kChunk = smvk::gfx::kMaxDraws;
+            for (uint32_t first = 0; first < sceneRasterCommandCount; first += kChunk) {
+                const uint32_t count = std::min(kChunk, sceneRasterCommandCount - first);
+                cmd.DrawIndexedIndirect(
+                    sceneRasterCommands,
+                    uint64_t(first) * sizeof(tour::gpu_scene::RasterIndirectCommand),
+                    count,
+                    sizeof(tour::gpu_scene::RasterIndirectCommand));
+            }
+        }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----
         // Filtered path: one multi-draw per material over the compacted
         // index list (model matrices come from the draws buffer via
@@ -13864,7 +14261,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // gfxSlot validity IS the filter gate (invalid = the pass config
         // killed it, setup latched it off, or the frame's filter failed -
         // the runtime A/B toggle is gone).
-        const bool gfxActive = gfxSlot != UINT32_MAX;
+        const bool gfxActive = gfxSlot != UINT32_MAX && !sceneRasterActive;
         // Debug views replace the shaded opaque leg:
         //   - The FLAT views (Meshlets F3 / LODs F5) intentionally bypass
         //     the GPU chain and draw EVERY instance direct — HZB-culled
@@ -14233,7 +14630,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
             }
         }
-        if (!bypassFilter) {
+        if (!bypassFilter && !sceneRasterActive) {
             // UINT32_MAX forces a bind check on the first node; an
             // identical state is deduped by the CommandBuffer's
             // current-pipeline check, so this costs nothing.

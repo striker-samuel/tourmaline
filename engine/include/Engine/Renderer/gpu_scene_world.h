@@ -7,13 +7,18 @@
 // the unstable merged World NodeId or material-sorted drawItems index.
 
 #include <Engine/App/world.h>
+#include <Engine/Memory/arena.h>
 #include <Engine/Renderer/gpu_scene_leaf.h>
 #include <Engine/Renderer/gpu_scene_upload.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
+#include <new>
+#include <tuple>
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
@@ -58,6 +63,9 @@ struct SyncStats {
     uint32_t created = 0, updated = 0, retired = 0;
     uint32_t meshesCreated = 0, meshesRetired = 0;
     bool leafPublicationOk = true;
+    bool topologyReconciled = false;
+    bool geometryRefreshed = false;
+    uint32_t geometryMeshesVisited = 0;
 };
 
 // Conservative readiness gate for *future* draw consumers. An alive
@@ -152,26 +160,31 @@ class SceneRegistry {
             return false;
         MeshState& state = it->second;
         const size_t count = levels.size();
-        if (state.lods.size() != count) {
-            // Do not retire old rows before successfully allocating a new
-            // replacement; on failure the existing mesh record is intact.
-            std::vector<Submesh> subValues(count);
-            auto subs = db.submeshes.InsertContiguous(subValues);
-            if (subs.size() != count)
+        if (state.count != count) {
+            // Max LOD chain is 16, so both payloads and handles fit in a
+            // fixed stack array. No heap vector or per-update allocation.
+            std::array<Submesh, 16> subValues{};
+            std::array<Lod, 16> lodValues{};
+            std::array<Handle<Submesh>, 16> subs{};
+            std::array<Handle<Lod>, 16> lods{};
+            const auto subsIn = std::span<const Submesh>(subValues.data(), count);
+            const auto subsOut = std::span<Handle<Submesh>>(subs.data(), count);
+            if (!db.submeshes.InsertContiguous(subsIn, subsOut))
                 return false;
-            std::vector<Lod> lodValues(count);
-            auto lods = db.lods.InsertContiguous(lodValues);
-            if (lods.size() != count) {
-                for (auto id : subs)
-                    (void)db.submeshes.Erase(id);
+            const auto lodsIn = std::span<const Lod>(lodValues.data(), count);
+            const auto lodsOut = std::span<Handle<Lod>>(lods.data(), count);
+            if (!db.lods.InsertContiguous(lodsIn, lodsOut)) {
+                for (size_t i = 0; i < count; ++i)
+                    (void)db.submeshes.Erase(subs[i]);
                 return false;
             }
-            for (auto id : state.lods)
-                (void)db.lods.Erase(id);
-            for (auto id : state.submeshes)
-                (void)db.submeshes.Erase(id);
-            state.lods = std::move(lods);
-            state.submeshes = std::move(subs);
+            for (size_t i = 0; i < state.count; ++i) {
+                (void)db.lods.Erase(state.lods[i]);
+                (void)db.submeshes.Erase(state.submeshes[i]);
+            }
+            state.lods = lods;
+            state.submeshes = subs;
+            state.count = static_cast<uint32_t>(count);
         }
         uint32_t residentMask = 0;
         for (uint32_t level = 0; level < count; ++level) {
@@ -253,7 +266,7 @@ class SceneRegistry {
                 auto handle = db.meshes.Insert(Mesh{});
                 if (!handle)
                     continue;
-                mesh = meshes_.emplace(r.mesh, MeshState{handle, {}, {}}).first;
+                mesh = meshes_.emplace(r.mesh, MeshState{handle, {}, {}, 0}).first;
                 ++stats.meshesCreated;
             }
             Instance data{};
@@ -301,15 +314,17 @@ class SceneRegistry {
   private:
     struct MeshState {
         Handle<Mesh> id{};
-        std::vector<Handle<Lod>> lods;
-        std::vector<Handle<Submesh>> submeshes;
+        std::array<Handle<Lod>, 16> lods{};
+        std::array<Handle<Submesh>, 16> submeshes{};
+        uint32_t count = 0;
     };
     static void EraseMesh(MeshState& state, RenderDatabase& db) {
-        for (auto id : state.lods)
-            (void)db.lods.Erase(id);
-        for (auto id : state.submeshes)
-            (void)db.submeshes.Erase(id);
+        for (uint32_t i = 0; i < state.count; ++i) {
+            (void)db.lods.Erase(state.lods[i]);
+            (void)db.submeshes.Erase(state.submeshes[i]);
+        }
         (void)db.meshes.Erase(state.id);
+        state.count = 0;
     }
     std::vector<InstanceId> changed_;
     std::vector<InstanceId> retired_;
@@ -332,8 +347,18 @@ class WorldSynchronizer {
             world_ = &world;
         }
         SyncStats stats{};
-        if (revision_ != world.gpuSceneTopologyRevision || geometryRevision_ != geometryRevision) {
-            nodeKeys_.assign(world.scene.hierarchy.size(), {});
+        if (revision_ != world.gpuSceneTopologyRevision) {
+            // Persistent source identity mapping: AppArena, not a heap vector.
+            const size_t nodeCount = world.scene.hierarchy.size();
+            if (nodeCount > nodeKeyCapacity_) {
+                nodeKeys_ = static_cast<SourceKey*>(
+                    smvk::AppArena().Allocate(nodeCount * sizeof(SourceKey), alignof(SourceKey)));
+                std::uninitialized_value_construct_n(nodeKeys_, nodeCount);
+                nodeKeyCapacity_ = nodeCount;
+            }
+            nodeKeyCount_ = nodeCount;
+            if (nodeKeyCount_)
+                std::fill_n(nodeKeys_, nodeKeyCount_, SourceKey{});
             for (size_t i = 0; i < world.clusters.size() && i < world.clusterMergedNodes.size();
                  ++i) {
                 const Cluster* c = world.clusters[i].get();
@@ -345,7 +370,7 @@ class WorldSynchronizer {
                 const auto& nodes = world.clusterMergedNodes[i];
                 for (uint32_t local = 0; local < nodes.size(); ++local) {
                     const uint32_t merged = nodes[local];
-                    if (merged == InvalidIndex || merged >= nodeKeys_.size())
+                    if (merged == InvalidIndex || merged >= nodeKeyCount_)
                         continue;
                     const uint32_t gen = local < c->scene.nodeGeneration.size()
                                              ? (c->scene.nodeGeneration[local] & kNodeGenMask)
@@ -353,12 +378,21 @@ class WorldSynchronizer {
                     nodeKeys_[merged] = {owner->second, local, gen};
                 }
             }
-            std::vector<SourceRecord> records;
-            records.reserve(world.drawItems.size());
-            std::unordered_map<SourceKey, uint32_t, SourceKeyHash> meshWorldIndices;
-            meshWorldIndices.reserve(world.meshLocations.size());
+            // The source-record list is only consumed by Reconcile below.
+            // Allocate it from the current FrameArena; no persistent heap vector.
+            const size_t maxRecords = world.drawItems.size();
+            auto* records = maxRecords
+                ? static_cast<SourceRecord*>(smvk::FrameArena().Allocate(
+                      maxRecords * sizeof(SourceRecord), alignof(SourceRecord)))
+                : nullptr;
+            auto* scratchMeshes = maxRecords
+                ? static_cast<MeshSourceEntry*>(smvk::FrameArena().Allocate(
+                      maxRecords * sizeof(MeshSourceEntry), alignof(MeshSourceEntry)))
+                : nullptr;
+            size_t recordCount = 0;
+            size_t meshCount = 0;
             for (const World::RenderItem& item : world.drawItems) {
-                if (item.node >= nodeKeys_.size() ||
+                if (item.node >= nodeKeyCount_ ||
                     item.node >= world.scene.globalTransform.size() ||
                     item.mesh >= world.meshLocations.size())
                     continue;
@@ -374,7 +408,7 @@ class WorldSynchronizer {
                 SourceRecord record{};
                 record.instance = key;
                 record.mesh = {owner->second, loc.handle.index(), loc.handle.gen()};
-                meshWorldIndices.try_emplace(record.mesh, item.mesh);
+                std::construct_at(scratchMeshes + meshCount++, MeshSourceEntry{record.mesh, item.mesh});
                 record.globalModel = tour::scene::GlobalTransformDouble(world.scene, item.node);
                 record.material = item.material; // interim World index
                 record.flags = static_cast<uint32_t>(item.flags);
@@ -402,34 +436,37 @@ class WorldSynchronizer {
                         record.localSphere = glm::vec4(center, glm::length(bmax - center));
                     }
                 }
-                records.push_back(record);
+                new (records + recordCount++) SourceRecord(record);
             }
-            stats = registry_.Reconcile(records, db);
-            // Metadata is per shared mesh, not per instance. On streaming
-            // revisions, re-scan unique chains but dirty only changed rows.
-            for (const auto& [source, worldIndex] : meshWorldIndices) {
-                if (worldIndex >= world.lodChains.size())
-                    continue;
-                const auto& chain = world.lodChains[worldIndex].levels;
-                if (chain.empty() || chain.size() > 16)
-                    continue;
-                std::vector<LevelSource> levels;
-                levels.reserve(chain.size());
-                bool complete = true;
-                // Animated vertex positions can leave the static cooked
-                // mesh bounds: until skinning publishes dynamic bounds,
-                // never reject the whole leaf using the bind-pose sphere.
-                if (const StaticMesh* base = world.GetMesh(worldIndex))
-                    complete = !base->skinned;
-                for (uint32_t i = 0; i < chain.size(); ++i) {
-                    const auto& l = chain[i];
-                    complete &= l.boundsKnown;
-                    const uint32_t gfxId =
-                        geometryLookup ? geometryLookup(worldIndex, i) : InvalidIndex;
-                    levels.push_back(LevelSource{l.error, gfxId, l.resident, l.boundsKnown});
-                }
-                (void)registry_.PublishMesh(source, levels, complete, db);
+            stats = registry_.Reconcile(std::span<const SourceRecord>(records, recordCount), db);
+            std::destroy_n(records, recordCount);
+            stats.topologyReconciled = true;
+            // Retain a sorted, de-duplicated mesh source map in AppArena.
+            // Geometry-only revisions must never rebuild it from drawItems.
+            auto meshLess = [](const MeshSourceEntry& a, const MeshSourceEntry& b) {
+                return std::tie(a.source.registration, a.source.slot, a.source.generation) <
+                       std::tie(b.source.registration, b.source.slot, b.source.generation);
+            };
+            if (meshCount > 1)
+                std::sort(scratchMeshes, scratchMeshes + meshCount, meshLess);
+            size_t uniqueCount = 0;
+            for (size_t i = 0; i < meshCount; ++i) {
+                if (uniqueCount == 0 || !(scratchMeshes[i].source == scratchMeshes[uniqueCount - 1].source))
+                    scratchMeshes[uniqueCount++] = scratchMeshes[i];
             }
+            if (uniqueCount > meshSourceCapacity_) {
+                meshSources_ = static_cast<MeshSourceEntry*>(
+                    smvk::AppArena().Allocate(uniqueCount * sizeof(MeshSourceEntry),
+                                              alignof(MeshSourceEntry)));
+                std::uninitialized_value_construct_n(meshSources_, uniqueCount);
+                meshSourceCapacity_ = uniqueCount;
+            }
+            meshSourceCount_ = uniqueCount;
+            if (uniqueCount)
+                std::copy_n(scratchMeshes, uniqueCount, meshSources_);
+            std::destroy_n(scratchMeshes, meshCount);
+            stats.geometryMeshesVisited = PublishGeometry(world, db, geometryLookup);
+            stats.geometryRefreshed = true;
             const bool meshPublicationChanged = geometryRevision_ != geometryRevision;
             revision_ = world.gpuSceneTopologyRevision;
             geometryRevision_ = geometryRevision;
@@ -440,12 +477,20 @@ class WorldSynchronizer {
                       uint8_t(0));
             return stats;
         }
+        // A geometry-only revision updates shared mesh/LOD/submesh rows without
+        // scanning drawItems, rebuilding nodeKeys, or reconciling instances.
+        const bool meshPublicationChanged = geometryRevision_ != geometryRevision;
+        if (meshPublicationChanged) {
+            stats.geometryMeshesVisited = PublishGeometry(world, db, geometryLookup);
+            stats.geometryRefreshed = true;
+            geometryRevision_ = geometryRevision;
+        }
         // Recalc can append the same node multiple times before a frame.
         auto& dirty = world.scene.gpuSceneGlobalChanges;
         std::sort(dirty.begin(), dirty.end());
         dirty.erase(std::unique(dirty.begin(), dirty.end()), dirty.end());
         for (NodeId node : dirty) {
-            if (node < nodeKeys_.size() && node < world.scene.globalTransform.size() &&
+            if (node < nodeKeyCount_ && node < world.scene.globalTransform.size() &&
                 registry_.UpdateGlobal(
                     nodeKeys_[node], tour::scene::GlobalTransformDouble(world.scene, node), db))
                 ++stats.updated;
@@ -454,20 +499,25 @@ class WorldSynchronizer {
             if (node < world.scene.gpuSceneGlobalQueued.size())
                 world.scene.gpuSceneGlobalQueued[node] = 0;
         dirty.clear();
-        stats.leafPublicationOk = SyncLeaves(db, false);
+        stats.leafPublicationOk = SyncLeaves(db, meshPublicationChanged);
         return stats;
     }
     void Reset(RenderDatabase& db) {
         leafRegistry_.Clear(db);
         registry_.Clear(db);
         (void)registry_.TakeDeltas();
-        nodeKeys_.clear();
+        nodeKeyCount_ = 0;
+        meshSourceCount_ = 0; // Retain AppArena capacity for subsequent Worlds.
         revision_ = ~uint64_t(0);
         geometryRevision_ = ~uint64_t(0);
         world_ = nullptr;
     }
     [[nodiscard]] std::vector<LeafTicket> LeafTickets(const RenderDatabase& db) const {
         return leafRegistry_.Tickets(db);
+    }
+    [[nodiscard]] std::span<const LeafTicket> LeafTicketsFrame(
+        const RenderDatabase& db) const {
+        return leafRegistry_.TicketsFrame(db);
     }
     [[nodiscard]] size_t LeafCount() const {
         return leafRegistry_.LeafCount();
@@ -477,6 +527,39 @@ class WorldSynchronizer {
     }
 
   private:
+    uint32_t PublishGeometry(World& world, RenderDatabase& db, const GeometryLookup& geometryLookup) {
+        uint32_t visited = 0;
+        // The source-to-mesh mapping is refreshed by topology reconciliation.
+        // Geometry revisions must not force another O(instances) scan.
+        for (size_t meshIdx = 0; meshIdx < meshSourceCount_; ++meshIdx) {
+            const auto& [source, worldIndex] = meshSources_[meshIdx];
+            if (worldIndex >= world.lodChains.size())
+                continue;
+            const auto& chain = world.lodChains[worldIndex].levels;
+            if (chain.empty() || chain.size() > 16)
+                continue;
+            // LOD chains are capped at 16; keep this scratch on the stack.
+            std::array<LevelSource, 16> levels{};
+            bool complete = true;
+            // Animated vertex positions can leave the static cooked
+            // mesh bounds: until skinning publishes dynamic bounds,
+            // never reject the whole leaf using the bind-pose sphere.
+            if (const StaticMesh* base = world.GetMesh(worldIndex))
+                complete = !base->skinned;
+            for (uint32_t i = 0; i < chain.size(); ++i) {
+                const auto& l = chain[i];
+                complete &= l.boundsKnown;
+                const uint32_t gfxId =
+                    geometryLookup ? geometryLookup(worldIndex, i) : InvalidIndex;
+                levels[i] = LevelSource{l.error, gfxId, l.resident, l.boundsKnown};
+            }
+            (void)registry_.PublishMesh(source,
+                                        std::span<const LevelSource>(levels.data(), chain.size()),
+                                        complete, db);
+            ++visited;
+        }
+        return visited;
+    }
     [[nodiscard]] bool SyncLeaves(RenderDatabase& db, bool meshChanged) {
         SceneRegistry::Deltas changes = registry_.TakeDeltas();
         for (auto id : changes.retired)
@@ -492,7 +575,14 @@ class WorldSynchronizer {
     const World* world_ = nullptr;
     uint64_t revision_ = ~uint64_t(0);
     uint64_t geometryRevision_ = ~uint64_t(0);
-    std::vector<SourceKey> nodeKeys_;
+    struct MeshSourceEntry {
+        SourceKey source{};
+        uint32_t worldIndex = InvalidIndex;
+    };
+    SourceKey* nodeKeys_ = nullptr; // AppArena-owned, retained across topology refreshes
+    size_t nodeKeyCount_ = 0, nodeKeyCapacity_ = 0;
+    MeshSourceEntry* meshSources_ = nullptr; // AppArena-owned, persistent
+    size_t meshSourceCount_ = 0, meshSourceCapacity_ = 0;
     SceneRegistry registry_;
 };
 

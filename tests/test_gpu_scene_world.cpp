@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // Headless contracts for the GPUIR World -> GPU scene bridge.
 #include <Engine/Renderer/gpu_scene_instancing.h>
+#include <Engine/Renderer/gpu_scene_raster.h>
+#include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Scene/scene.h>
 #include <cstdio>
@@ -28,6 +30,67 @@ int g_failures = 0;
 using namespace tour::gpu_scene;
 
 int main() {
+    // GPU-generated indexed draw commands must exactly match Vulkan's ABI.
+    {
+        const IndexedGeometry geo{231, 400, -12, 0};
+        const RasterGroup group{4, 12345, 17, 0};
+        const auto cmd = MakeRasterCommand(geo, group);
+        CHECK(cmd.indexCount == 231 && cmd.firstIndex == 400 &&
+              cmd.vertexOffset == -12 && cmd.instanceCount == 17 &&
+              cmd.firstInstance == 12345);
+        const RasterGroup empty{4, 0, 0, 0};
+        CHECK(MakeRasterCommand(geo, empty).instanceCount == 0);
+    }
+    // A Gfx mesh registration is only legal for one indexed command when
+    // its cooked cluster index intervals are contiguous and in order.
+    {
+        std::vector<tour::gfx::Mesh> meshes;
+        std::vector<tour::gfx::Cluster> clusters;
+        meshes.emplace_back(tour::gfx::Mesh{0, 2});
+        tour::gfx::Cluster first{};
+        first.mesh = 0;
+        first.indexOffset = 0;
+        first.triCount = 2;
+        tour::gfx::Cluster second{};
+        second.mesh = 0;
+        second.indexOffset = 6;
+        second.triCount = 3;
+        clusters.push_back(first);
+        clusters.push_back(second);
+        IndexedGeometryTables tables{};
+        tables.meshes = meshes.data();
+        tables.meshCount = uint32_t(meshes.size());
+        tables.clusters = clusters.data();
+        tables.clusterCount = uint32_t(clusters.size());
+        tables.indexBase = 16; // absolute firstIndex = base + cluster offset
+        IndexedGeometry indexed{};
+        CHECK(ResolveIndexedGeometry(tables, 0, indexed));
+        CHECK(indexed.indexCount == 15 && indexed.firstIndex == 16 &&
+              indexed.vertexOffset == 0);
+        CHECK(!ResolveIndexedGeometry(tables, 1, indexed));
+        clusters[1].indexOffset = 7; // not a contiguous index interval
+        CHECK(!ResolveIndexedGeometry(tables, 0, indexed));
+        CHECK(indexed.indexCount == 0);
+    }
+    // Geometry-only revisions must not revisit CPU drawItems or reconcile
+    // the complete instance registry. The empty World tests the control
+    // path without requiring Vulkan or a cooked cluster.
+    {
+        smvk::World world{};
+        RenderDatabase snapshot{};
+        WorldSynchronizer sync{};
+        const auto first = sync.Synchronize(world, snapshot, 1);
+        CHECK(first.topologyReconciled && first.geometryRefreshed);
+        const auto unchanged = sync.Synchronize(world, snapshot, 1);
+        CHECK(!unchanged.topologyReconciled && !unchanged.geometryRefreshed);
+        const auto geometryOnly = sync.Synchronize(world, snapshot, 2);
+        CHECK(!geometryOnly.topologyReconciled && geometryOnly.geometryRefreshed);
+        CHECK(geometryOnly.created == 0 && geometryOnly.updated == 0 &&
+              geometryOnly.retired == 0 && geometryOnly.geometryMeshesVisited == 0);
+        ++world.gpuSceneTopologyRevision;
+        const auto topology = sync.Synchronize(world, snapshot, 2);
+        CHECK(topology.topologyReconciled);
+    }
     RenderDatabase db{};
     SceneRegistry bridge{};
     SourceRecord a{};

@@ -31,6 +31,24 @@ template <typename T> void Ack(Table<T, smvk::limits::MaxFramesInFlight>& table,
     CHECK(table.Publish(flight, true, [](size_t, const void*, size_t) { return true; }));
     CHECK(table.PendingRows(flight) == 0);
 }
+// The production caller-span form never allocates a result vector: the caller
+// owns the output storage (a fixed std::array here). An undersized output span
+// is refused WITHOUT touching the table, so a failed call cannot half-insert.
+void CheckCallerSpanAllocations() {
+    Table<Lod, smvk::limits::MaxFramesInFlight> table;
+    const std::array<Lod, 2> initial{{Lod{}, Lod{}}};
+    std::array<Handle<Lod>, 2> ids{};
+    CHECK(table.InsertContiguous(initial, ids));
+    CHECK(ids[0] && ids[1].slot == ids[0].slot + 1);
+    CHECK(ids[0].generation == 1 && ids[1].generation == 1);
+    CHECK(table.LiveCount() == 2);
+    std::array<Handle<Lod>, 1> tooSmall{};
+    CHECK(!table.InsertContiguous(initial, tooSmall));
+    CHECK(table.LiveCount() == 2);
+    CHECK(!tooSmall[0]);
+    CHECK(table.Erase(ids[0]) && table.Erase(ids[1]));
+    CHECK(table.LiveCount() == 0);
+}
 void CheckContiguousAllocations() {
     Table<Lod, smvk::limits::MaxFramesInFlight> table;
     const std::array<Lod, 4> four{{Lod{}, Lod{}, Lod{}, Lod{}}};
@@ -158,6 +176,7 @@ void CheckMeshResidency() {
 }
 } // namespace
 int main() {
+    CheckCallerSpanAllocations();
     CheckContiguousAllocations();
     CheckMeshResidency();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);

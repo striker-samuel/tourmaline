@@ -10,6 +10,7 @@
 // whose previous GPU work has retired; frame slots keep independent dirty logs.
 
 #include <Engine/Core/double_float.h>
+#include <Engine/Memory/arena.h>
 
 #include <glm/glm.hpp>
 
@@ -163,16 +164,23 @@ template <typename Payload, uint32_t FrameCount> class Table {
     // The normal generational Insert() cannot guarantee adjacency when
     // free slots are recycled. Allocate a contiguous group instead.
     // This runs at mesh registration/chain reshaping, NOT per frame.
-    [[nodiscard]] std::vector<Id> InsertContiguous(std::span<const Payload> payloads) {
-        std::vector<Id> ids;
-        if (payloads.empty() || payloads.size() > InvalidIndex)
-            return ids;
+    // Allocation-free caller-facing contiguous insertion. The output span is
+    // supplied by the caller (stack for <=16 mesh LODs; FrameArena for leaves).
+    // The compatibility vector overload below is retained for older callers.
+    [[nodiscard]] bool InsertContiguous(std::span<const Payload> payloads,
+                                        std::span<Id> ids) {
+        if (payloads.empty() || payloads.size() > InvalidIndex ||
+            ids.size() < payloads.size())
+            return false;
         const uint32_t count = static_cast<uint32_t>(payloads.size());
         uint32_t first = InvalidIndex;
         if (free_.size() >= count) {
-            std::vector<uint32_t> ordered = free_;
-            std::sort(ordered.begin(), ordered.end());
-            for (size_t i = 0; i + count <= ordered.size(); ++i) {
+            // Scratch belongs to FrameArena; no malloc-backed temporary sort.
+            auto* ordered = static_cast<uint32_t*>(
+                smvk::FrameArena().Allocate(free_.size() * sizeof(uint32_t), 16));
+            std::copy(free_.begin(), free_.end(), ordered);
+            std::sort(ordered, ordered + free_.size());
+            for (size_t i = 0; i + count <= free_.size(); ++i) {
                 if (ordered[i + count - 1] - ordered[i] == count - 1) {
                     first = ordered[i];
                     break;
@@ -181,20 +189,18 @@ template <typename Payload, uint32_t FrameCount> class Table {
         }
         if (first != InvalidIndex) {
             const uint64_t end = uint64_t(first) + count;
-            free_.erase(std::remove_if(free_.begin(),
-                                       free_.end(),
+            free_.erase(std::remove_if(free_.begin(), free_.end(),
                                        [&](uint32_t slot) { return slot >= first && slot < end; }),
                         free_.end());
         } else {
             if (payloads.size() > size_t(InvalidIndex) - rows_.size())
-                return ids;
+                return false;
             first = static_cast<uint32_t>(rows_.size());
             rows_.resize(rows_.size() + count);
             pendingMasks_.resize(rows_.size(), 0);
             for (uint32_t i = 0; i < count; ++i)
                 rows_[first + i].identity.x = 1;
         }
-        ids.reserve(count);
         for (uint32_t i = 0; i < count; ++i) {
             const uint32_t slot = first + i;
             Entry& row = rows_[slot];
@@ -203,8 +209,19 @@ template <typename Payload, uint32_t FrameCount> class Table {
             row.identity.y = 1;
             ++liveCount_;
             Touch(slot);
-            ids.push_back(Id{slot, row.identity.x});
+            ids[i] = Id{slot, row.identity.x};
         }
+        return true;
+    }
+
+    // Backward compatibility for CPU-only tooling/tests; production scene
+    // publication uses the caller-buffer overload above.
+    [[nodiscard]] std::vector<Id> InsertContiguous(std::span<const Payload> payloads) {
+        if (payloads.empty() || payloads.size() > InvalidIndex)
+            return {};
+        std::vector<Id> ids(payloads.size());
+        if (!InsertContiguous(payloads, std::span<Id>(ids)))
+            return {};
         return ids;
     }
 

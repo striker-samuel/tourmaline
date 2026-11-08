@@ -8,6 +8,7 @@
 // tests. Neither stage replaces GfxDraw/seed/HZB yet.
 
 #include <Engine/Renderer/gpu_scene_leaf.h>
+#include <Engine/Memory/arena.h>
 
 #include <glm/glm.hpp>
 
@@ -17,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <set>
 #include <span>
 #include <utility>
@@ -176,6 +178,88 @@ struct CandidateSelection {
         out.ranges.push_back(range);
         out.candidateCount += ticket.memberCount;
     }
+    return out;
+}
+
+// No-heap production candidate selector. All scratch and output ranges
+// belong to FrameArena; the caller must consume them before frame reset.
+// Duplicate leaf identities and all snapshot errors fail closed at the
+// selection level, enabling the renderer's complete legacy fallback.
+struct FrameCandidateSelection {
+    CandidateStatus status = CandidateStatus::Ok;
+    std::span<const PassedInstanceRange> ranges{};
+    uint32_t candidateCount = 0;
+    uint32_t rejectedLeaves = 0;
+    uint32_t unculledLeaves = 0;
+    [[nodiscard]] bool Valid() const { return status == CandidateStatus::Ok; }
+};
+
+[[nodiscard]] inline FrameCandidateSelection SelectPassedInstanceRangesFrame(
+    const RenderDatabase& db,
+    std::span<const LeafTicket> tickets,
+    const RelativeFrustum& view,
+    CandidateMode mode = CandidateMode::Frustum,
+    uint32_t maxRanges = MaxPassedLeafRanges,
+    uint32_t maxCandidates = MaxPassedInstanceCandidates) {
+    FrameCandidateSelection out{};
+    const auto fail = [&](CandidateStatus error) {
+        FrameCandidateSelection failed{};
+        failed.status = error;
+        return failed;
+    };
+    if (mode == CandidateMode::Frustum && !view.Valid())
+        return fail(CandidateStatus::InvalidView);
+    maxRanges = std::min(maxRanges, MaxPassedLeafRanges);
+    maxCandidates = std::min(maxCandidates, MaxPassedInstanceCandidates);
+
+    // Validate unique leaf identities using FrameArena sorting instead of
+    // std::set nodes. The output retains original spatial ticket ordering.
+    if (!tickets.empty()) {
+        auto* keys = static_cast<uint64_t*>(
+            smvk::FrameArena().Allocate(tickets.size() * sizeof(uint64_t), 16));
+        for (size_t i = 0; i < tickets.size(); ++i) {
+            const auto id = tickets[i].leaf;
+            if (!id)
+                return fail(CandidateStatus::InvalidSnapshot);
+            keys[i] = (uint64_t(id.slot) << 32) | id.generation;
+        }
+        if (tickets.size() > 1)
+            std::sort(keys, keys + tickets.size());
+        for (size_t i = 1; i < tickets.size(); ++i)
+            if (keys[i] == keys[i - 1])
+                return fail(CandidateStatus::InvalidSnapshot);
+    }
+
+    const size_t capacity = std::min<size_t>(tickets.size(), maxRanges);
+    auto* ranges = capacity
+        ? static_cast<PassedInstanceRange*>(smvk::FrameArena().Allocate(
+              capacity * sizeof(PassedInstanceRange), alignof(PassedInstanceRange)))
+        : nullptr;
+    size_t used = 0;
+    for (const LeafTicket& ticket : tickets) {
+        const Leaf* leaf = db.leaves.Get(ticket.leaf);
+        if (!leaf || leaf->range.x != ticket.firstMember ||
+            leaf->range.y != ticket.memberCount || ticket.memberCount == 0 ||
+            uint64_t(ticket.firstMember) + ticket.memberCount > db.leafMembers.Size())
+            return fail(CandidateStatus::InvalidSnapshot);
+        const bool safe = (leaf->range.z & LeafFlagBoundsComplete) != 0;
+        if (!safe)
+            ++out.unculledLeaves;
+        if (mode == CandidateMode::Frustum && safe && !PossibleLeafInFrustum(*leaf, view)) {
+            ++out.rejectedLeaves;
+            continue;
+        }
+        if (used >= capacity ||
+            uint64_t(out.candidateCount) + ticket.memberCount > maxCandidates)
+            return fail(CandidateStatus::CapacityExceeded);
+        PassedInstanceRange range{};
+        range.members = glm::uvec4(ticket.firstMember, ticket.memberCount,
+                                    out.candidateCount, 0u);
+        range.leaf = glm::uvec4(ticket.leaf.slot, ticket.leaf.generation, 0u, 0u);
+        std::construct_at(ranges + used++, range);
+        out.candidateCount += ticket.memberCount;
+    }
+    out.ranges = std::span<const PassedInstanceRange>(ranges, used);
     return out;
 }
 

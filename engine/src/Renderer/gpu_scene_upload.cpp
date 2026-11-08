@@ -57,7 +57,7 @@ bool PublishTable(smvk::ResourceManager& ctx,
             ctx.UploadDataToBuffer(mirror.buffers[flight],
                                    bytes,
                                    count,
-                                   smvk::PipelineStage(smvk::PipelineStageBit_Compute),
+                                   smvk::PipelineStage(smvk::PipelineStageBit_Compute | smvk::PipelineStageBit_Vertex),
                                    smvk::AccessFlags::ShaderRead,
                                    0,
                                    destination);

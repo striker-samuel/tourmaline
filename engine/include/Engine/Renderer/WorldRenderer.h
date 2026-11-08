@@ -52,6 +52,7 @@
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/ray_tracing_debug.h>
@@ -2356,6 +2357,8 @@ class WorldRenderer : public IRenderer {
     tour::gpu_scene::RenderDatabase m_gpuSceneDatabase;
     tour::gpu_scene::WorldSynchronizer m_gpuSceneSync;
     tour::gpu_scene::Uploader m_gpuSceneUploader;
+    tour::gpu_scene::IndexedGeometryPublisher m_gpuSceneIndexedGeometry;
+    tour::gpu_scene::RasterViewPublisher m_gpuSceneRasterView;
     // Feature-gated CPU/GPU instance visibility parity only. Separate
     // per-flight buffers, never used to create production draw commands.
     tour::gpu_scene::CandidateValidator m_gpuSceneValidator;
@@ -2369,6 +2372,36 @@ class WorldRenderer : public IRenderer {
     // stable per-submesh expansion. Still validation-only.
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneWorkModules{};
     std::array<smvk::ShaderProgram, 3> m_gpuSceneWorkPrograms{};
+    // Hierarchical production work prefix (block counts, block bases, add).
+    std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneWorkScanModules{};
+    std::array<smvk::ShaderProgram, 3> m_gpuSceneWorkScanPrograms{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterBuildModule{};
+    smvk::ShaderProgram m_gpuSceneRasterBuildProgram{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterVsModule{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterFsModule{};
+    smvk::ShaderProgram m_gpuSceneRasterProgram{};
+    smvk::ShaderProgram m_gpuSceneRasterDepthProgram{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterGbufferFsModule{};
+    smvk::ShaderProgram m_gpuSceneRasterGbufferProgram{};
+    // Prototype production cutover: only all-supported static/opaque scenes
+    // may substitute their Main draws. Unsupported content uses GfxFilter.
+    const smvk::World* m_gpuSceneRasterEligibilityWorld = nullptr;
+    uint64_t m_gpuSceneRasterEligibilityTopologyRevision = ~uint64_t(0);
+    uint64_t m_gpuSceneRasterEligibilityGeometryRevision = ~uint64_t(0);
+    bool m_gpuSceneRasterEligible = false;
+    bool m_gpuSceneRasterDrawActive = false;
+    bool m_gpuSceneRasterPreviouslyActive = false;
+    smvk::BufferHandle m_gpuSceneRasterIndirect{};
+    uint64_t m_gpuSceneRasterWorkBda = 0;
+    uint32_t m_gpuSceneRasterDrawCapacity = 0;
+    std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterLogicalBacking{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterIndirectLogical{};
+    std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterWorkLogicalBacking{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterWorkLogical{};
     // GPU-produced compute dispatch arguments plus an indirect work consumer.
     // No indexed graphics draws are changed by this validation-only chain.
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 2> m_gpuSceneIndirectModules{};
