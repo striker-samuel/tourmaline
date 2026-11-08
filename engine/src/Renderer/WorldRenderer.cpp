@@ -12867,7 +12867,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             gpuHistoryValid = previousHistorySlots >= temporalSlots &&
                 !m_gpuSceneRasterHistoryBuffers[previousFlight].empty();
             if (gpuHistoryValid)
-                gpuHistoryPrevious = m_gpuSceneRasterHistoryBuffers[previousFlight];
+                gpuHistoryPrevious = smvk::BufferHandle(m_gpuSceneRasterHistoryBuffers[previousFlight]);
         }
         bool resourcesReady = true;
         if (m_gpuSceneRasterTemporalCommandCapacity[temporalFlight] < temporalCommands ||
@@ -12928,9 +12928,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             !m_gpuSceneRasterRemainderLogicals[temporalFlight].empty() &&
             !m_gpuSceneRasterHistoryLogicals[temporalFlight].empty();
         if (resourcesReady) {
-            gpuSeedCommands = m_gpuSceneRasterSeedBuffers[temporalFlight];
-            gpuRemainderCommands = m_gpuSceneRasterRemainderBuffers[temporalFlight];
-            gpuHistoryCurrent = m_gpuSceneRasterHistoryBuffers[temporalFlight];
+            gpuSeedCommands = smvk::BufferHandle(m_gpuSceneRasterSeedBuffers[temporalFlight]);
+            gpuRemainderCommands = smvk::BufferHandle(m_gpuSceneRasterRemainderBuffers[temporalFlight]);
+            gpuHistoryCurrent = smvk::BufferHandle(m_gpuSceneRasterHistoryBuffers[temporalFlight]);
             gpuTemporalReady = true;
         }
     }
@@ -13004,8 +13004,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const uint64_t remainderBda = m_context->GetBufferDeviceAddress(gpuRemainderCommands);
         const uint64_t historyBda = gpuHistoryValid
             ? m_context->GetBufferDeviceAddress(gpuHistoryPrevious) : 0u;
+        const uint64_t currentHistoryBda =
+            m_context->GetBufferDeviceAddress(gpuHistoryCurrent);
         gpuTemporalReady = rawBda != 0 && seedBda != 0 &&
-                           remainderBda != 0 && (!gpuHistoryValid || historyBda != 0);
+                           remainderBda != 0 && currentHistoryBda != 0 &&
+                           (!gpuHistoryValid || historyBda != 0);
         if (gpuTemporalReady) {
             const tour::gpu_scene::RasterSeedPush seedPush{
                 rawBda, m_gpuSceneRasterWorkBda, historyBda,
