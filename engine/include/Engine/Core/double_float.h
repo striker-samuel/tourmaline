@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include <Engine/Renderer/gpu_struct_name.h>
 // High/low float32 world-position transport for future persistent GPU scenes.
 //
 // This is NOT a replacement for CPU double-precision scene transforms.
@@ -22,6 +23,7 @@
 
 namespace tour::math {
 
+GPU_STRUCT_NAME(DoubleFloat3)
 struct alignas(16) DoubleFloat3 {
     glm::vec4 high{0.0f};
     glm::vec4 low{0.0f};
