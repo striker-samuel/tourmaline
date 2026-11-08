@@ -12983,8 +12983,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             *m_context, *m_rendergraph, m_renderViews.Get(mainRenderView),
             m_cameraPositioner.cameraPosition_, renderExtent.width, renderExtent.height);
     }
-    if (gpuTemporalReady && m_gfxRenderer.LastSlot() == UINT32_MAX)
+    if (gpuTemporalReady &&
+        (m_gfxRenderer.LastSlot() == UINT32_MAX || cullingFrozen))
         gpuTemporalReady = false;
+    // The source pyramid must exist before the seed draws and Hi-Z
+    // compute passes can be scheduled. An allocation/shader failure is
+    // fail-open: keep the original GPU-scene indirect commands.
+    if (gpuTemporalReady) {
+        const uint32_t hizSlot = m_gfxRenderer.LastSlot();
+        const auto& h = smvk::gfx::Temporal(m_gfxRenderer.gfx, hizSlot)
+                            .hiz[temporalFlight];
+        gpuTemporalReady = h.mipCount != 0 &&
+            !h.logical.empty() &&
+            smvk::gfx::HizAddress(m_gfxRenderer.gfx, *m_context, hizSlot) != 0;
+    }
     if (gpuTemporalReady) {
         const uint64_t rawBda = m_context->GetBufferDeviceAddress(m_gpuSceneRasterIndirect);
         const uint64_t seedBda = m_context->GetBufferDeviceAddress(gpuSeedCommands);
