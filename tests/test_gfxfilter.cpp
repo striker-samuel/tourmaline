@@ -2737,6 +2737,22 @@ void TestDynamicCapacityPlanning() {
               plan.survivors == 65536, "gfx.dynamic.exceeds-old-limits");
     Check(!PlanDynamicCapacity(SIZE_MAX, 1, 128, 16, plan),
           "gfx.dynamic.overflow-plan");
+    DispatchGrid grid{};
+    Check(PlanDispatchGrid(0, grid) && grid.x == 0 && grid.y == 0,
+          "gfx.dynamic.dispatch-zero");
+    Check(PlanDispatchGrid(65535, grid) && grid.x == 65535 && grid.y == 1,
+          "gfx.dynamic.dispatch-edge");
+    Check(PlanDispatchGrid(65536, grid) && grid.x == 65535 && grid.y == 2,
+          "gfx.dynamic.dispatch-cross-axis");
+    Check(PlanDispatchGrid(70000, grid) && grid.x == 65535 && grid.y == 2,
+          "gfx.dynamic.dispatch-oversized");
+    Check(PlanDispatchGrid(size_t(65535) * 65535, grid) &&
+              grid.x == 65535 && grid.y == 65535,
+          "gfx.dynamic.dispatch-maximum");
+    Check(!PlanDispatchGrid(size_t(65535) * 65535 + 1, grid) &&
+              grid.x == 0 && grid.y == 0,
+          "gfx.dynamic.dispatch-overflow");
+
 }
 
 int main() {
