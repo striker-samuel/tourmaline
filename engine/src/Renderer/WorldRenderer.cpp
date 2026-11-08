@@ -13170,7 +13170,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // TOURMALINE_HIZ=0 / the UI checkbox) - never the fill. Skipped
     // only while the culling view is frozen (the held pyramid must
     // not be rebuilt).
-    if (!cullingFrozen &&
+    if (!cullingFrozen && !gpuTemporalReady &&
         (!m_gpuSceneRasterDrawActive || m_gpuSceneRasterLegacyCount != 0))
         m_fpRenderer.AppendOccluderPrepass(fc);
 
