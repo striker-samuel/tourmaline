@@ -2409,6 +2409,16 @@ class WorldRenderer : public IRenderer {
         m_gpuSceneRasterOwnerMaskLogicalBacking{};
     std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
         m_gpuSceneRasterOwnerMaskLogical{};
+    // Reuse unchanged flight snapshots: transform dirties update instance
+    // rows, not source-to-raster ownership. Only topology/geometry changes
+    // rebuild the generation array, so steady-state mask uploads are O(0).
+    std::array<const smvk::World*, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskWorld{};
+    std::array<uint64_t, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskTopologyRev{};
+    std::array<uint64_t, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskGeometryRev{};
+
     uint32_t m_gpuSceneRasterCompatibleCount = 0;
     uint32_t m_gpuSceneRasterLegacyCount = 0;
     // Prototype production cutover: only all-supported static/opaque scenes
