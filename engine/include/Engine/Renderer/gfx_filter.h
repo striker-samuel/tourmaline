@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include <Engine/Renderer/gfx_dynamic_capacity.h>
 // GeometryFX-style per-view triangle filter (Vulkan port), procedural API.
 //
 // Produces, per view, a compacted index list + VkDrawIndexedIndirectCommand
@@ -323,7 +324,7 @@ struct FilterPush {
     uint64_t skinBounds = 0;
     glm::mat4 viewProj{};
     glm::vec3 eye{0.0f};
-    float pad1 = 0.0f;
+    uint32_t drawCapacity = 0; // verdict prefix / atomic counter offset
     uint32_t cullFlags = 0;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -342,7 +343,7 @@ struct FilterPush {
     // firstIndex = indexBase + outputOffset so draws address the monoblock
     // absolutely and the index binding never switches buffers.
     uint32_t indexBase = 0;
-    uint32_t pad3 = 0;
+    uint32_t candidateCapacity = 0; // skin tail offset / parity bound
     // Draw-level texture-demand inputs (PushAndDispatch zero-gates
     // textureMetaCount when ANY of these BDAs is null — a null BDA
     // dereference is an MMU fault and takes the whole device down; same
@@ -408,7 +409,7 @@ struct BatchCullPush {
     // measured but SHIPPED DISABLED, their HZB covered the win; this engine's
     // HZB covers the static geometry the same way).
     uint32_t skinConeEnabled = 0;
-    uint32_t pad3[2] = {};
+    uint32_t capacities[2] = {}; // x candidate parity stride; y draw verdict stride
 };
 static_assert(sizeof(BatchCullPush) == 208);
 
@@ -432,7 +433,7 @@ struct SkinBoundsPush {
     // isolates the cone rebuild from the sphere rebuild in one headless
     // run) — the pre-rebuild behavior.
     uint32_t coneEnabled = 1;
-    uint32_t pad1 = 0;
+    uint32_t candidateCapacity = 0;
 };
 static_assert(sizeof(SkinBoundsPush) == 64);
 
@@ -454,7 +455,8 @@ struct ConeDebugPush {
     uint64_t lines = 0;           // out (2 packed verts per candidate slot)
     uint32_t skinBoundsValid = 0; // 0: every draw reads the static table
     uint32_t drawCount = 0;
-    uint32_t pad2[2] = {};
+    uint32_t candidateCapacity = 0;
+    uint32_t pad2 = 0;
 };
 static_assert(sizeof(ConeDebugPush) == 56);
 
@@ -476,7 +478,7 @@ struct DrawCullPush {
     uint64_t skinBounds = 0; // deformed unions (skinned draws; the table tail)
     glm::mat4 viewProj{};    // FROZEN view
     glm::vec3 eye{0.0f};
-    float pad1 = 0.0f;
+    uint32_t candidateCapacity = 0;
     uint32_t cullFlags = 0; // GFX_CULL_OCCLUSION / GFX_CULL_HZBSKIPMASKED
     uint32_t drawCount = 0;
     uint32_t width = 0; // guard-band extent (== HZB target)
@@ -787,6 +789,7 @@ struct View {
     smvk::Holder<smvk::BufferHandle> cullStateBuffers[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle keptLogicals[smvk::limits::MaxFramesInFlight]{};
     smvk::LogicalBufferHandle cullStateLogicals[smvk::limits::MaxFramesInFlight]{};
+    GrowableCapacity flightCapacity[smvk::limits::MaxFramesInFlight]{};
     // Filtered-index scratch lives in the static index monoblock (one index
     // VkBuffer for mesh + cluster-ordered + filtered regions; firstIndex is
     // absolute, so the index binding never switches). Per (view, flight)
@@ -1079,6 +1082,7 @@ struct TemporalView {
     uint32_t remainderOpaqueCommands = 0;
     smvk::Holder<smvk::BufferHandle> remainderIndirectBuffers[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle remainderIndirectLogicals[smvk::limits::MaxFramesInFlight]{};
+    GrowableCapacity flightCapacity[smvk::limits::MaxFramesInFlight]{};
 };
 
 // ---------------------------------------------------------------------------
@@ -1124,6 +1128,7 @@ struct ShadowView {
     smvk::Holder<smvk::BufferHandle> indirectBuffers[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle drawLogicals[smvk::limits::MaxFramesInFlight]{};
     smvk::LogicalBufferHandle indirectLogicals[smvk::limits::MaxFramesInFlight]{};
+    uint32_t drawCapacity[smvk::limits::MaxFramesInFlight]{};
     bool buffersReady = false;
 };
 
@@ -1212,6 +1217,7 @@ struct State {
     smvk::ShaderProgram skinBoundsProgram{};
     smvk::Holder<smvk::BufferHandle> skinBoundsBuffers[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle skinBoundsLogicals[smvk::limits::MaxFramesInFlight]{};
+    GrowableCapacity skinBoundsCapacity[smvk::limits::MaxFramesInFlight]{};
     bool skinBoundsReady = false;
     // GfxConeDebug (the cone-axis overlay's GPU leg): writes two packed
     // DebugLineVertex float3s per candidate slot — the ACTUAL cull cones
@@ -1225,6 +1231,7 @@ struct State {
     smvk::ShaderProgram coneDebugProgram{};
     smvk::Holder<smvk::BufferHandle> coneDebugLines;
     smvk::LogicalBufferHandle coneDebugLinesLogical{};
+    uint32_t coneDebugCandidateCapacity = 0;
     bool coneDebug = false; // the UI toggle's armed state
     // The STATIC heap BDAs for the VS legs' skinned fetch (the same heaps
     // every draw path reads - the RHI globals from vulkan_impl.h, stashed
@@ -1268,6 +1275,7 @@ struct State {
     // it via the listBDA base). kMaxBatches uints per flight.
     smvk::Holder<smvk::BufferHandle> meshBatchLists[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle meshBatchListLogicals[smvk::limits::MaxFramesInFlight]{};
+    uint32_t meshBatchListCapacity[smvk::limits::MaxFramesInFlight]{};
     std::vector<View> views;
     std::vector<TemporalView> temporals; // parallel to views (same slot)
     uint32_t viewCount = 0;
