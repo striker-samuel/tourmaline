@@ -292,6 +292,14 @@ static_assert(sizeof(SceneIndirectVerifyPush) == 32);
     return {(workCount + 63u) / 64u, 1u, 1u};
 }
 
+// A shader invocation always writes a verdict header, including rejected
+// candidates (slot=InvalidIndex). An all-zero tuple therefore indicates an
+// unwritten/incorrectly addressed output, not an ordinary invisible object.
+[[nodiscard]] inline bool IsUnwrittenCullVerdict(const InstanceCullVerdict& value) noexcept {
+    return value.value.x == 0u && value.value.y == 0u &&
+           value.value.z == 0u && value.value.w == 0u;
+}
+
 class CandidateValidator {
   public:
     static constexpr uint32_t Flights = smvk::limits::MaxFramesInFlight;
@@ -325,8 +333,7 @@ class CandidateValidator {
         // output from an ordinary visibility mismatch.
         const size_t zeroVerdicts = std::count_if(
             readback.begin(), readback.end(), [](const InstanceCullVerdict& v) {
-                return v.value.x == 0u && v.value.y == 0u &&
-                       v.value.z == 0u && v.value.w == 0u;
+                return IsUnwrittenCullVerdict(v);
             });
         if (zeroVerdicts != 0)
             std::fprintf(stderr,
