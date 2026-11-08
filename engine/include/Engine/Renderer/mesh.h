@@ -257,16 +257,20 @@ struct MaterialCreateInfo {
 
 MaterialPipelineState MakePipelineStateForMaterial(
     AlphaMode alphaMode,
-    ShadingModel shadingModel = ShadingModel::DefaultLit);
+    ShadingModel shadingModel = ShadingModel::DefaultLit,
+    bool doubleSided = false);
 
 struct Material {
     MaterialValues values{};
     ShadingModel shadingModel = ShadingModel::DefaultLit;
     AlphaMode alphaMode = AlphaMode::Opaque;
     float alphaCutoff = 0.5f;
-    // Legacy: two-sided rendering is no longer supported (the pipeline
-    // is always back-face culled). The cooked flag is still parsed so
-    // existing paks load, but it has no effect (see MakePipelineStateForMaterial).
+    // Two-sided rendering (the TODO's "un-ignore" landed): the flag drives
+    // CullMode::None in MakePipelineStateForMaterial, and the lit FS family
+    // flips the shading normal on !SV_IsFrontFace so backfaces light
+    // correctly. The GPU filter's per-triangle backface test spares these
+    // draws too (DrawFlagBit_DoubleSided on the draw ring), else the
+    // filtered list would drop the faces the rasterizer now draws.
     bool doubleSided = false;
     bool castsShadows = true;
     ShaderLodPolicy shaderLod{};
@@ -284,7 +288,7 @@ struct Material {
     }
 
     void rebuildPipeline() {
-        pipeline = MakePipelineStateForMaterial(alphaMode, shadingModel);
+        pipeline = MakePipelineStateForMaterial(alphaMode, shadingModel, doubleSided);
     }
 };
 

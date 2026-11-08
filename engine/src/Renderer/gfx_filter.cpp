@@ -3873,7 +3873,8 @@ void RecordMeshVariant(State& s,
                        uint32_t renderViewIndex,
                        uint64_t lmXformsAddr,
                        const DepthSettings& depth,
-                       const MSAASettings& msaa) {
+                       const MSAASettings& msaa,
+                       const RasterSettings& raster) {
     assert(view < s.views.size());
     View& v = s.views[view];
     if (listCount == 0 || meshProg.shaderCount != 2 || paramsBDA == 0)
@@ -3881,8 +3882,9 @@ void RecordMeshVariant(State& s,
     const uint32_t f = v.frameIndex;
     uint64_t drawsBDA = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
 
-    // Opaque state (mirrors bindForMaterial for standard
-    // opaque materials: Cull Back + Opaque blend; masked draws
+    // Opaque state (mirrors bindForMaterial for standard opaque
+    // materials; the caller resolves the span material's raster —
+    // double-sided materials dispatch CullMode::None; masked draws
     // never reach this dispatch — see MeshDrawEligible).
     cmd.BindRenderPipeline(meshProg,
                            VertexLayoutId::Empty, // no VS stage: vertex input ignored, keep empty
@@ -3890,7 +3892,7 @@ void RecordMeshVariant(State& s,
                            StencilSettings::DefaultDisabled(),
                            BlendSettings::Opaque(),
                            msaa,
-                           RasterSettings{.cullMode = CullMode::Back});
+                           raster);
     FilteredVsPush tail{};
     tail.draws = drawsBDA;
     tail.renderViews = renderViewsAddr;

@@ -20,17 +20,24 @@
 namespace tour {
 using namespace ::smvk;
 
-MaterialPipelineState MakePipelineStateForMaterial(AlphaMode alphaMode, ShadingModel shadingModel) {
+MaterialPipelineState MakePipelineStateForMaterial(AlphaMode alphaMode,
+                                                    ShadingModel shadingModel,
+                                                    bool doubleSided) {
     MaterialPipelineState out{};
 
-    // Raster: always back-face cull (two-sided geometry is no longer
-    // supported — the cooked Material::doubleSided flag is ignored).
+    // Raster: back-face cull by default; DOUBLE-SIDED materials rasterize
+    // both faces (CullMode::None) — the cooked Material::doubleSided flag
+    // drives it, and the lit FS family flips the shading normal on
+    // !SV_IsFrontFace so backfaces light correctly (thin shells: the
+    // knight's cloth/shield, transmissive glass panes). The depth legs
+    // that follow the material raster stay consistent automatically
+    // (MaterialDepth / bindForMaterial read pipeline.raster).
     // NOTE: main view uses reversed infinite-Z with Y-flipped proj (proj[1][1] *= -1).
     // Position conversion (-x,-z) preserves winding (+1), Y-flip inverts it (-1).
     // Net winding inversion would suggest Clockwise, but glTF import + Vulkan viewport
     // handling keeps NDC winding as CounterClockwise for front faces in this engine
     // (verified: Clockwise caused global N inversion). Keep CounterClockwise per user report.
-    out.raster.cullMode = CullMode::Back;
+    out.raster.cullMode = doubleSided ? CullMode::None : CullMode::Back;
     out.raster.polygonMode = PolygonMode::Fill;
     out.raster.frontFace = FrontFace::CounterClockwise;
 

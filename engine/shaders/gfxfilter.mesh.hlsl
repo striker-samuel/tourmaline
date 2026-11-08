@@ -279,8 +279,14 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
                         asfloat(P.positions.Get().words[wbase + 2]));
                 clip[r][k] = mul(P.viewProj, mul(draw.model, float4(p, 1.0f)));
             }
+            // Double-sided draws (GFX_DRAW_DOUBLESIDED): drop the
+            // backface test — the rasterizer draws both faces, so the
+            // mesh list must keep them (same rule as the indexed filter).
+            uint meshCullFlags = P.cullFlags;
+            if ((draw.misc.y & GFX_DRAW_DOUBLESIDED) != 0)
+                meshCullFlags &= ~(uint) GFX_CULL_BACKFACE;
             survive[r] = !MeshCullTriangle(tri[r], clip[r][0], clip[r][1], clip[r][2],
-                P.cullFlags, P.width, P.height);
+                meshCullFlags, P.width, P.height);
         }
     }
 

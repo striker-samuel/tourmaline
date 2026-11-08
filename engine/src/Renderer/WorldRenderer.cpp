@@ -10905,6 +10905,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     item.material != smvk::World::kInvalidIndex &&
                     item.materialInstance == 0 &&
                     m_world->MaterialUserData(item.material) == 0 &&
+                    // Double-sided materials stay LEGACY-owned: the
+                    // GPU-scene raster leg is one Cull-Back pipeline over
+                    // the whole command list (no per-material raster
+                    // split yet); the legacy filtered/direct legs carry
+                    // the material's Cull None + the filter's backface
+                    // sparing (DrawFlagBit_DoubleSided).
+                    ![&]() {
+                        const smvk::Material* m = m_world->GetMaterial(item.material);
+                        return m && m->doubleSided;
+                    }() &&
                     !m_gfxRenderer.MaterialProjectFamily(item.material) &&
                     !m_gfxRenderer.MaterialLayered(item.material) &&
                     item.node < m_world->scene.globalTransform.size() &&
@@ -13351,8 +13361,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 .depthTestEnable = true,
             };
             // Phase 2 masked pipeline: cull follows the material raster so
-            // motion coverage matches Main (always back-face cull now —
-            // cutout culls back). Rebinds only on cull
+            // motion coverage matches Main (double-sided materials carry
+            // Cull None — the material pipeline's; cutout backface cull
+            // stays). Rebinds only on cull
             // changes (the CommandBuffer dedupes identical states).
             smvk::CullMode boundMotionMaskedCull = smvk::CullMode::FrontAndBack;
             auto ensureMotionMaskedPipeline = [&](smvk::CullMode cull) {
@@ -13368,6 +13379,25 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 cmd.PushConstants(
                     0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
                 boundMotionMaskedCull = cull;
+            };
+            // Phase 1 solid pipeline: the SAME per-material cull rule (the
+            // phase-1 bind at the walk below is only the first bind —
+            // double-sided solids rebind to the material's Cull None so
+            // motion coverage matches Main exactly on both faces).
+            smvk::CullMode boundMotionSolidCull = smvk::CullMode::FrontAndBack;
+            auto ensureMotionSolidPipeline = [&](smvk::CullMode cull) {
+                if (cull == boundMotionSolidCull)
+                    return;
+                cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
+                                       smvk::VertexLayoutId::Static,
+                                       motionDepth,
+                                       smvk::StencilSettings{},
+                                       smvk::BlendSettings::Opaque(),
+                                       smvk::MSAASettings::Count1(),
+                                       smvk::RasterSettings{.cullMode = cull});
+                cmd.PushConstants(
+                    0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
+                boundMotionSolidCull = cull;
             };
             auto drawMotionNode = [&](const smvk::World::RenderItem& item,
                                       bool maskedPhase,
@@ -13405,6 +13435,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     if (const smvk::Material* mat = m_world->GetMaterial(item.material))
                         cull = mat->pipeline.raster.cullMode;
                     ensureMotionMaskedPipeline(cull);
+                } else {
+                    // Solid phase: follow the material raster too
+                    // (double-sided solids need Cull None here, or their
+                    // backfaces would carry zero motion and ghost under
+                    // the T2x resolve).
+                    smvk::CullMode cull = smvk::CullMode::Back;
+                    if (const smvk::Material* mat = m_world->GetMaterial(item.material))
+                        cull = mat->pipeline.raster.cullMode;
+                    ensureMotionSolidPipeline(cull);
                 }
                 auto& model = m_world->scene.globalTransform[item.node];
                 smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
@@ -13493,7 +13532,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
                 }
             }
-            // Phase 1: solid geometry, back-culled like the prepass.
+            // Phase 1: solid geometry, back-culled like the prepass (the
+            // per-item solid ensure inside drawMotionNode switches to the
+            // material's raster — Cull None for double-sided — so motion
+            // coverage matches Main exactly; this bind is just the
+            // pre-walk state, the first item rebinds through the tracker).
             cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
                                    smvk::VertexLayoutId::Static,
                                    motionDepth,

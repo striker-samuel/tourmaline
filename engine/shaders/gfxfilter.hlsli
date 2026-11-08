@@ -169,6 +169,12 @@ struct GfxBatches { uint4 batch[GFX_MAX_BATCH_SLOTS]; };
 // (params.deformed, indexed vi - params.deformedBase) instead of the
 // bind-pose heaps. The flag is only set when params.deformed != 0.
 #define GFX_DRAW_SKINNED 0x4
+// misc.y bit 3 (C++ mirror DrawFlagBit_DoubleSided): the draw's material
+// is DOUBLE-SIDED — the rasterizer draws both faces (CullMode::None via
+// the material pipeline) and the per-triangle backface cull stages spare
+// these draws (the faces the rasterizer now draws must survive the
+// filtered/mesh lists).
+#define GFX_DRAW_DOUBLESIDED 0x8
 
 // Draw-set buckets (T1; mirrors C++ DrawSetBit_*). The seed depth pass
 // issues one PSO per bucket; views mask which buckets they accept.

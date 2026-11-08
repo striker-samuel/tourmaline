@@ -181,8 +181,9 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
             {
                 // GPU context + pass scope come from RenderGraph::Execute.
                 // Phase 2 masked pipeline: cull follows the material raster
-                // (always back-face cull now — cutout must not write
-                // backface depth the shaded pass never draws).
+                // so the depth contains exactly the faces the shaded pass
+                // draws (double-sided masked materials carry Cull None
+                // with it).
                 // boundMaskedCull starts at a never-bound sentinel; rebinds
                 // only on cull changes and the CommandBuffer dedupes identical
                 // pipeline states, so an all-masked scene pays one bind.
@@ -207,6 +208,32 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                     cmd.PushConstants(
                         0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
                     boundMaskedCull = cull;
+                };
+                // Solid-phase twin (the SAME per-material cull rule): the
+                // depth/G-buffer must cover the faces Main draws — a
+                // double-sided material's Cull None raster means the solid
+                // phase writes depth for both faces, else the F+ tile cull
+                // and SSSR's thin G-buffer miss the backface pixels Main
+                // shades. boundSolidCull's sentinel forces the first item
+                // through the ensure; identical states dedupe free.
+                smvk::CullMode boundSolidCull = smvk::CullMode::FrontAndBack;
+                auto ensureSolidPipeline = [&](smvk::CullMode cull) {
+                    if (cull == boundSolidCull)
+                        return;
+                    cmd.BindRenderPipeline(gbufferOn ? gbufferProgram : fp->depthProgram,
+                                           smvk::VertexLayoutId::Static,
+                                           smvk::DepthSettings{
+                                               .depthFunc = smvk::CompareOp::GreaterEqual,
+                                               .writeEnable = true,
+                                               .depthTestEnable = true,
+                                           },
+                                           smvk::StencilSettings{},
+                                           smvk::BlendSettings{},
+                                           smvk::MSAASettings{},
+                                           smvk::RasterSettings{.cullMode = cull});
+                    cmd.PushConstants(
+                        0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
+                    boundSolidCull = cull;
                 };
                 auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
                     if (gpuRasterOwnsNode && gpuRasterOwnsNode(item.node))
@@ -336,6 +363,13 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                         if (const smvk::Material* mat = world->GetMaterial(item.material))
                             cull = mat->pipeline.raster.cullMode;
                         ensureMaskedPipeline(cull);
+                    } else {
+                        // Solid phase: the material raster (Cull None for
+                        // double-sided — see ensureSolidPipeline's comment).
+                        smvk::CullMode cull = smvk::CullMode::Back;
+                        if (const smvk::Material* mat = world->GetMaterial(item.material))
+                            cull = mat->pipeline.raster.cullMode;
+                        ensureSolidPipeline(cull);
                     }
                     // Per-draw dither-on-closeup flag (padEnd_[0] — the partial
                     // push range persists across draws, so EVERY draw pushes its
@@ -368,19 +402,11 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                 // G-buffer FS pair (SSSR: the trivial gbuffer.frag reads the
                 // interpolated world normal + material factors and writes the
                 // RGBA8 thin G-buffer — no textures, no lighting).
-                cmd.BindRenderPipeline(gbufferOn ? gbufferProgram : fp->depthProgram,
-                                       smvk::VertexLayoutId::Static,
-                                       smvk::DepthSettings{
-                                           .depthFunc = smvk::CompareOp::GreaterEqual,
-                                           .writeEnable = true,
-                                           .depthTestEnable = true,
-                                       },
-                                       smvk::StencilSettings{},
-                                       smvk::BlendSettings{},
-                                       smvk::MSAASettings{},
-                                       smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-                cmd.PushConstants(
-                    0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
+                // Initial bind BEFORE the walks (PushConstants asserts on a
+                // bound pipeline layout — the per-draw skin-tail push lands
+                // before the phase ensures); the per-item ensures rebind
+                // from here, identical states dedupe free.
+                ensureSolidPipeline(smvk::CullMode::Back);
                 // Phase order: MOST EXPENSIVE FIRST. Phase 1 = MASK cutout
                 // (alpha-tested FS: baseColor fetch + discard — the expensive
                 // per-fragment work): it runs against empty depth, but masked

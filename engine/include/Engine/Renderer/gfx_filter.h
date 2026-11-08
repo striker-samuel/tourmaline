@@ -131,6 +131,14 @@ inline constexpr uint32_t DrawFlagBit_DitherCloseup = 0x2;
 // data keeps the static bind-pose fetches). HLSL mirror:
 // GFX_DRAW_SKINNED (gfxfilter.hlsli misc.y bit 2).
 inline constexpr uint32_t DrawFlagBit_Skinned = 0x4;
+// The draw's material is DOUBLE-SIDED (Material::doubleSided): the
+// rasterizer draws both faces (CullMode::None via
+// MakePipelineStateForMaterial) and the GPU filter's per-triangle
+// backface test spares these draws — else the filtered/mesh lists
+// would drop exactly the faces the rasterizer now draws (thin shells
+// see-through at open edges). HLSL mirror: GFX_DRAW_DOUBLESIDED
+// (gfxfilter.hlsli misc.y bit 3).
+inline constexpr uint32_t DrawFlagBit_DoubleSided = 0x8;
 
 typedef uint32_t DrawFlags;
 // Draw-set buckets: geometry grouped by properties that affect
@@ -1452,7 +1460,9 @@ uint64_t UploadMeshParams(State& s,
                           const glm::mat4& liveViewProj);
 // One variant dispatch: bind mesh pipeline, push tails, DrawMeshTasks.
 // Params must already be uploaded (UploadMeshParams); listBase/listCount
-// slice this dispatch out of the shared compacted list.
+// slice this dispatch out of the shared compacted list. The raster comes
+// from the span's material pipeline (double-sided materials dispatch
+// CullMode::None — mirrors bindForMaterial for the indexed leg).
 void RecordMeshVariant(State& s,
                        smvk::CommandBuffer& cmd,
                        smvk::ResourceManager& ctx,
@@ -1465,7 +1475,8 @@ void RecordMeshVariant(State& s,
                        uint32_t renderViewIndex,
                        uint64_t lmXformsAddr,
                        const smvk::DepthSettings& depth,
-                       const smvk::MSAASettings& msaa);
+                       const smvk::MSAASettings& msaa,
+                       const smvk::RasterSettings& raster);
 // Creates shader only; per-(view, frame) buffers are allocated on demand
 // by BeginView (pool) so unused views cost nothing.
 bool Ensure(State& s,

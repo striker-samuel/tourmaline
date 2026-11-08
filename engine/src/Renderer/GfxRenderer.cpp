@@ -784,6 +784,9 @@ void GfxRenderer::RecordMeshMain(smvk::CommandBuffer& cmd,
         smvk::ShaderProgram* prog;
         uint32_t base;
         uint32_t count;
+        // The span material's raster (double-sided materials dispatch
+        // CullMode::None — mirrors bindForMaterial for the indexed leg).
+        smvk::RasterSettings raster;
     };
     // Recording-only scratch; destroyed before the next frame allocator reset.
     tour::mem::FrameVector<Span> spans{
@@ -801,7 +804,9 @@ void GfxRenderer::RecordMeshMain(smvk::CommandBuffer& cmd,
                                                    MaterialProjectFamily(ranges[ri].material));
         if (prog == nullptr || ranges[ri].commandCount == 0)
             continue; // belt (eligibility already resolved the program)
-        Span sp{prog, (uint32_t)list.size(), ranges[ri].commandCount};
+        smvk::RasterSettings spanRaster{};
+        spanRaster.cullMode = MaterialDepth(ranges[ri].material).cullMode;
+        Span sp{prog, (uint32_t)list.size(), ranges[ri].commandCount, spanRaster};
         for (uint32_t i = 0; i < ranges[ri].commandCount; ++i)
             list.push_back(ranges[ri].firstCommand + i);
         spans.push_back(sp);
@@ -837,7 +842,8 @@ void GfxRenderer::RecordMeshMain(smvk::CommandBuffer& cmd,
                                      renderViewIndex,
                                      ChartXformsAddress(),
                                      depth,
-                                     msaa);
+                                     msaa,
+                                     sp.raster);
     }
 }
 
@@ -862,7 +868,12 @@ void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd,
     // index regions share the static index monoblock with absolute
     // firstIndex, so the offset-0 binding from BindStaticVertexFmt (run by
     // every BindRenderPipeline) is correct for every draw below.
-    // Phase 1: opaque (VS-only, back-culled like the prepass).
+    // Phase 1: opaque (VS-only). Deliberately STAYS Cull Back for all
+    // opaque seed commands (one pipeline over the positional span):
+    // the seed is temporal-reuse depth — a missing backface depth only
+    // means less HZB occlusion (the conservative direction), and Main's
+    // GreaterEqual test passes backfaces wherever nothing was written.
+    // Double-sided MAIN coverage comes from the legs that shade.
     if (opaqueCount > 0) {
         cmd.BindRenderPipeline(seedOpaqueProgram,
                                smvk::VertexLayoutId::Static,
@@ -1982,6 +1993,14 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx,
             if (const smvk::Material* mat = world.GetMaterial(item.material)) {
                 if (mat->shadingModel == smvk::ShadingModel::Masked)
                     drawSet = smvk::gfx::DrawSetBit_Masked;
+                // DOUBLE-SIDED materials: the ring flag tells the GPU
+                // filter's per-triangle backface stage to spare this draw
+                // (the rasterizer draws both faces — CullMode::None via
+                // MakePipelineStateForMaterial; the FS flips the shading
+                // normal on backfaces). Without it the filtered/mesh lists
+                // would drop exactly the faces the rasterizer now draws.
+                if (mat->doubleSided)
+                    drawFlags |= smvk::gfx::DrawFlagBit_DoubleSided;
             }
             // Dither-on-closeup Fade band (see the state check above): the
             // ring flag forwards flat (VS location 8) into the lit FS

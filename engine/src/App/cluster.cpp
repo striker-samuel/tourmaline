@@ -1157,7 +1157,7 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(const Materi
     material.castsShadows = castsShadows;
     material.shaderLod.allowFarVertexLit = allowFarVertexLit;
     material.shaderLod.farQuality = farQuality;
-    material.pipeline = MakePipelineStateForMaterial(alphaMode, shadingModel);
+    material.pipeline = MakePipelineStateForMaterial(alphaMode, shadingModel, doubleSided);
     return materials.create(std::move(material));
 }
 

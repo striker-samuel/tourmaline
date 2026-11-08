@@ -455,22 +455,25 @@ TODO
    `AddImage` per frame without free.
 
 
-(Engine, future) Two-sided materials (CullMode::None): the importer asserts
-on doubleSided under --strict while the runtime IGNORES the cooked flag
-(mesh.h: "two-sided rendering is no longer supported (the pipeline is
-always back-face culled)" — MakePipelineStateForMaterial pins Cull Back).
-Content wants it: glass panes already stamp doubleSided=true (gltf.cpp's
-stale "pipeline cull None via doubleSided" comment), and thin double-skin
-shells (the knight's cloth/shield) suffer under Cull Back (see-through at
-open edges/folds/grazing angles) + under the Cull Front shadow depth (the
-thin-shell self-shadow acne — see the standing verdict below). Support
-shape: un-ignore Material::doubleSided -> MakePipelineStateForMaterial
-gains a CullMode::None raster variant for those materials across every
-pipeline family (lit/depth/prepass/motion/seed + the direct and indirect
-legs), plus a shadow-depth policy for two-sided casters (Cull None + the
-existing receiver-side bias, or keep Cull Front and accept the acne), and
-the importer's --strict assert drops once the flag is real. The meshlet
-cones stay safe either way (facing-mixed -> degenerate -> keep); the
+(Engine, landed 2026-11) Two-sided materials (CullMode::None): the
+runtime honors the cooked Material::doubleSided flag —
+MakePipelineStateForMaterial gains the flag (Cull None raster), the
+lit FS family already flips the shading normal on !SV_IsFrontFace,
+the GPU filter's per-triangle backface stage spares flagged draws
+(DrawFlagBit_DoubleSided on the draw ring, both the indexed and mesh
+legs), the F+ prepass/motion solid phases follow the material raster
+per item (ensureSolidPipeline twins), the mesh-shader spans dispatch
+the span material's raster, and the GPU-scene admission gate keeps
+double-sided materials LEGACY-owned (its single Cull-Back command
+list has no per-material split yet). The seed/remainder opaque depth
+stays Cull Back by design (temporal-reuse depth: missing backface
+depth only relaxes HZB occlusion — the conservative direction). Still
+open from the original entry: the shadow-depth policy for two-sided
+casters (opaque shadow legs stay Cull Front — thin-shell self-shadow
+acne accepted; the masked shadow phase already follows the material
+raster), and the importer's --strict doubleSided assert (if any
+remains) should drop now that the flag is real. The meshlet cones
+stay safe either way (facing-mixed -> degenerate -> keep); the
 per-triangle homogeneous backface filter flag needs no change.
 
 (Engine, standing decision) Skinned-mesh culling runs CONSERVATIVE by

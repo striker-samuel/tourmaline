@@ -66,8 +66,10 @@ struct GfxConfig {
 // resolver reads the live World): masked depth phases must rasterize
 // exactly the faces the shaded pass draws (alpha test + material cull),
 // else depth contains fragments Main never draws (over-occlusion behind
-// cutout cards). Two-sided support is gone: the pipeline is always
-// back-face culled, so the default/fallback is Cull Back.
+// cutout cards). The material pipeline carries the cull (Cull Back by
+// default, Cull None for double-sided materials — see
+// MakePipelineStateForMaterial); the unset-resolver fallback stays Cull
+// Back.
 struct MaterialDepthState {
     smvk::CullMode cullMode = smvk::CullMode::Back;
     bool alphaTested = false;

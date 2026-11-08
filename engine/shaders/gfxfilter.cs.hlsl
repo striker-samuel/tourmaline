@@ -250,9 +250,8 @@ void PublishDrawDemand(uint drawIdx)
     }
 }
 
-bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2)
+bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, uint flags)
 {
-    uint flags = pcF.cullFlags;
     bool cull = false;
 
     if ((flags & GFX_CULL_DEGENERATE) != 0)
@@ -428,6 +427,14 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
             pcF.indices.Get().idx[baseIndex + 1],
             pcF.indices.Get().idx[baseIndex + 2]);
         float4x4 model = pcF.draws.Get().draws[header.y].model;
+        // Per-triangle cull flags: the view's flags, minus the backface
+        // test for DOUBLE-SIDED draws (GFX_DRAW_DOUBLESIDED — the
+        // rasterizer draws both faces, so the filtered list must keep
+        // them; the faces the rasterizer now draws would otherwise be
+        // dropped here exactly once each).
+        uint triCullFlags = pcF.cullFlags;
+        if ((pcF.draws.Get().draws[header.y].misc.y & GFX_DRAW_DOUBLESIDED) != 0)
+            triCullFlags &= ~(uint) GFX_CULL_BACKFACE;
         float4 clip[3];
         [unroll]
         for (int k = 0; k < 3; ++k)
@@ -440,7 +447,7 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
                 asfloat(pcF.positions.Get().words[wbase + 2]));
             clip[k] = mul(pcF.viewProj, mul(model, float4(p, 1.0f)));
         }
-        cull = CullTriangle(tri, clip[0], clip[1], clip[2])
+        cull = CullTriangle(tri, clip[0], clip[1], clip[2], triCullFlags)
             || (gClusterCull != 0);
         if (!cull)
             InterlockedAdd(gLocalCount, 3, slot);
