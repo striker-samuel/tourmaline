@@ -13395,7 +13395,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 (fc.ssrGbufferWanted
                      ? m_gpuSceneRasterGbufferProgram.shaderCount == 2
                      : m_gpuSceneRasterDepthProgram.shaderCount == 1);
-            bool gpuDepthPrimed = false;
+            bool gpuDepthPrimed = fc.gpuSceneDepthPrimed;
             if (gpuPrepassAvailable) {
                 const uint32_t flight = fb.frameIndex;
                 const tour::gpu_scene::RasterVsPush tail{
@@ -13404,14 +13404,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
                     m_gpuSceneDatabase.instances.Size(),
                     m_gpuSceneRasterDrawCapacity};
-                gpuDepthPrimed = m_fpRenderer.AppendGpuScenePrepass(
+                // GPU T5 remainder has already been classified by the
+                // current work builder and culled against the SEED-only
+                // Hi-Z pyramid. Seed depth is in the target; LOAD it,
+                // rasterize only the remainder, and preserve seed G-buffer
+                // pixels. The non-temporal path draws the whole list once.
+                const auto commands = gpuTemporalReady
+                    ? gpuRemainderCommands : m_gpuSceneRasterIndirect;
+                const auto logical = gpuTemporalReady
+                    ? m_gpuSceneRasterRemainderLogicals[flight]
+                    : m_gpuSceneRasterIndirectLogical[flight];
+                const bool remainderPrimed = m_fpRenderer.AppendGpuScenePrepass(
                     fc, fc.ssrGbufferWanted
                             ? m_gpuSceneRasterGbufferProgram
                             : m_gpuSceneRasterDepthProgram,
-                    m_gpuSceneRasterIndirect,
-                    m_gpuSceneRasterIndirectLogical[flight],
+                    commands, logical,
                     m_gpuSceneRasterWorkLogical[flight],
                     m_gpuSceneRasterDrawCapacity, tail);
+                gpuDepthPrimed = remainderPrimed;
                 fc.gpuSceneDepthPrimed = gpuDepthPrimed;
             }
             if (!gpuDepthPrimed || m_gpuSceneRasterLegacyCount != 0) {
