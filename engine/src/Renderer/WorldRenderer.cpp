@@ -12975,6 +12975,53 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gfxRenderer.AppendPasses(fc);
         gfxSlot = m_gfxRenderer.LastSlot();
     }
+    // For all-GPU scenes, create only the Hi-Z view/pyramid. Mixed scenes
+    // already initialized this view through the legacy fallback renderer.
+    // Do not build a second, conflicting pyramid for the same eye.
+    if (gpuTemporalReady && !gfxFilterOn) {
+        gpuTemporalReady = m_gfxRenderer.PrepareGpuSceneHiz(
+            *m_context, *m_rendergraph, m_renderViews.Get(mainRenderView),
+            m_cameraPositioner.cameraPosition_, renderExtent.width, renderExtent.height);
+    }
+    if (gpuTemporalReady && m_gfxRenderer.LastSlot() == UINT32_MAX)
+        gpuTemporalReady = false;
+    if (gpuTemporalReady) {
+        const uint64_t rawBda = m_context->GetBufferDeviceAddress(m_gpuSceneRasterIndirect);
+        const uint64_t seedBda = m_context->GetBufferDeviceAddress(gpuSeedCommands);
+        const uint64_t remainderBda = m_context->GetBufferDeviceAddress(gpuRemainderCommands);
+        const uint64_t historyBda = gpuHistoryValid
+            ? m_context->GetBufferDeviceAddress(gpuHistoryPrevious) : 0u;
+        gpuTemporalReady = rawBda != 0 && seedBda != 0 &&
+                           remainderBda != 0 && (!gpuHistoryValid || historyBda != 0);
+        if (gpuTemporalReady) {
+            const tour::gpu_scene::RasterSeedPush seedPush{
+                rawBda, m_gpuSceneRasterWorkBda, historyBda,
+                seedBda, remainderBda, temporalCommands,
+                temporalSlots, previousHistorySlots, gpuHistoryValid ? 1u : 0u};
+            auto& pass = m_rendergraph->AddComputePass("GpuSceneTemporalSeedBuild");
+            smvk::BufferSyncRequest read{};
+            read.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+            read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+            pass.AddBufferHint(m_gpuSceneRasterIndirectLogical[temporalFlight], read);
+            pass.AddBufferHint(m_gpuSceneRasterWorkLogical[temporalFlight], read);
+            if (gpuHistoryValid)
+                pass.AddBufferHint(m_gpuSceneRasterHistoryLogicals[
+                    m_gpuSceneRasterLastHistoryFlight], read);
+            smvk::BufferSyncRequest write{};
+            write.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+            write.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+            pass.AddBufferHint(m_gpuSceneRasterSeedLogicals[temporalFlight], write);
+            pass.AddBufferHint(m_gpuSceneRasterRemainderLogicals[temporalFlight], write);
+            const auto program = m_gpuSceneRasterSeedProgram;
+            pass.SetRecordingFunc([program, seedPush](smvk::CommandBuffer& cmd) mutable {
+                cmd.BindComputePipeline(program);
+                cmd.PushConstants(0, sizeof(seedPush), &seedPush, smvk::ShaderStage::Compute);
+                cmd.Dispatch((seedPush.commandCapacity + 63u) / 64u, 1, 1);
+            });
+        }
+    }
+    if (!gpuTemporalReady)
+        m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
     fc.seedDepthPrimed = gfxFilterOn && m_gfxRenderer.SeededThisFrame();
     // 2x MSAA mode (hoisted: the fc fill below + Main + the pane layer
     // all key on it - Main writes the TRANSIENT MSAA depth whose
