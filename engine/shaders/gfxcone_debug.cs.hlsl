@@ -68,7 +68,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     for (uint ci = gtid.x; ci < me.clusterCount; ci += 128u)
     {
         const uint slot = base + ci;
-        if (base == 0xFFFFFFFFu || slot >= pcG.candidateCapacity)
+        if (base == 0xFFFFFFFFu || slot >= pcG.candidateListCapacity)
             continue; // dropped draw / candidate cap: no slot to write
 
         // The cone: struct ternaries are not HLSL — spelled out. The
