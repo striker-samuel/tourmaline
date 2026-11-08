@@ -86,9 +86,11 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
     // instances) keep their depth coverage, preserving the 1x Main
     // read-only contract.
     void AppendPrepass(smvk::FrameContext& fc, bool fallbackOnly = false);
-    // Opt-in fully static-opaque depth: GPU-generated indexed commands
-    // replace the CPU drawItems prepass. Not valid with the thin G-buffer;
-    // callers must retain AppendPrepass when fc.ssrGbufferWanted.
+    // Opt-in fully static-opaque depth/G-buffer: GPU-generated indexed
+    // commands replace the CPU drawItems prepass. Pass a VS-only depth
+    // program when !fc.ssrGbufferWanted, or the material-aware GPU-scene
+    // VS+G-buffer FS program when the thin receiver attachments are used.
+    // Missing shader variants must fall back to AppendPrepass.
     void AppendGpuScenePrepass(smvk::FrameContext& fc,
                                smvk::ShaderProgram rasterDepth,
                                smvk::BufferHandle indirect,
