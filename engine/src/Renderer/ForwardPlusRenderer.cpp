@@ -454,14 +454,21 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
     smvk::LogicalBufferHandle indirectLogical,
     smvk::LogicalBufferHandle workLogical,
     uint32_t commandCount,
-    const tour::gpu_scene::RasterVsPush& vertexPush) {
+    const tour::gpu_scene::RasterVsPush& vertexPush,
+    bool hizOccluder) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || (rasterDepth.shaderCount != 1 && rasterDepth.shaderCount != 2))
         return false;
-    const bool gbufferOn = fc.ssrGbufferWanted && rasterDepth.shaderCount == 2 &&
+    // A temporal seed must be VS-only and must NEVER write the Main
+    // depth/G-buffer attachments: its pyramid represents the proven
+    // previous-visible subset, not the complete set of current draws.
+    if (hizOccluder && (rasterDepth.shaderCount != 1 || fc.hizDepthView.empty()))
+        return false;
+    const bool gbufferOn = !hizOccluder && fc.ssrGbufferWanted &&
+                           rasterDepth.shaderCount == 2 &&
                            !fc.gbufferView.empty() && !fc.gbuffer2View.empty();
     // A requested G-buffer must not silently render depth alone.
-    if (fc.ssrGbufferWanted && !gbufferOn)
+    if (!hizOccluder && fc.ssrGbufferWanted && !gbufferOn)
         return false;
     smvk::ResourceManager& ctx = *fc.ctx;
     smvk::RenderGraph& rg = *fc.rg;
@@ -469,10 +476,12 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
     if (!fp->Valid())
         return false;
     auto& pass = fp->AddDepthPrepass(
-        rg, fc.depthView, {fc.extent.width, fc.extent.height},
-        "GpuSceneDepth",
-        fc.seedDepthPrimed ? smvk::AttachmentLoadOp::Load
-                           : smvk::AttachmentLoadOp::Clear,
+        rg, hizOccluder ? fc.hizDepthView : fc.depthView,
+        {fc.extent.width, fc.extent.height},
+        hizOccluder ? "GpuSceneHizSeed" : "GpuSceneDepth",
+        hizOccluder ? smvk::AttachmentLoadOp::Clear
+                    : (fc.seedDepthPrimed ? smvk::AttachmentLoadOp::Load
+                                          : smvk::AttachmentLoadOp::Clear),
         gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
         smvk::AttachmentLoadOp::Clear,
         gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
