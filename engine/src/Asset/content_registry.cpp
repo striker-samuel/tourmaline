@@ -454,7 +454,8 @@ std::optional<std::vector<uint8_t>> ContentRegistry::ReadPath(const std::string&
                                                   smvk::PakAssetKind::AudioGraph,
                                                   smvk::PakAssetKind::StateMachine,
                                                   smvk::PakAssetKind::NavMesh,
-                                                  smvk::PakAssetKind::Shape}) {
+                                                  smvk::PakAssetKind::Shape,
+                                                  smvk::PakAssetKind::Anim}) {
                 if (!ProviderServes(p, norm, kind))
                     continue;
                 return ReadThrough(p, norm, &kind, err);
@@ -597,7 +598,8 @@ std::vector<std::string> ContentRegistry::ListPathsUnder(const std::string& pref
                                         PakAssetKind::AudioGraph,
                                         PakAssetKind::StateMachine,
                                         PakAssetKind::NavMesh,
-                                        PakAssetKind::Shape}) {
+                                        PakAssetKind::Shape,
+                                        PakAssetKind::Anim}) {
             for (const PakTocEntry* e : reader.BlobsOfKind(kind)) {
                 const std::string& p = e->path;
                 if (p.size() <= prefixSlash.size() ||
@@ -740,7 +742,8 @@ std::optional<std::vector<uint8_t>> ContentRegistry::ReadThrough(ContentProvider
                                                smvk::PakAssetKind::AudioGraph,
                                                smvk::PakAssetKind::StateMachine,
                                                smvk::PakAssetKind::NavMesh,
-                                               smvk::PakAssetKind::Shape}) {
+                                               smvk::PakAssetKind::Shape,
+                                               smvk::PakAssetKind::Anim}) {
             entry = pager->Reader().Find(probe, norm);
             if (entry) {
                 found = probe;

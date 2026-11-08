@@ -223,6 +223,7 @@ enum class PakAssetKind : uint32_t {
     MapTile = 23,         // cooked Map tile placement pages (logical world-cell content, not VFS)
     MapManifest = 24,     // cooked world-wide Map ID, tile count and persistent placement index
     EnvTile = 25,         // cooked immutable 64m environment-volume candidate page (not VFS)
+    Anim = 26,            // VFS-addressable authored .anim clip (raw tourAnim text)
 };
 
 enum PakEntryFlags : uint32_t {

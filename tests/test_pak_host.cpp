@@ -322,6 +322,36 @@ void TestPakPathResolution() {
     fs::remove_all(tmp, ec);
 }
 
+// Anim clips are raw VFS assets, not Texture-kind KTX payloads.
+void TestAnimPakKind() {
+    const std::string path = "content/models/knight/walk.anim";
+    const std::string text = "tourAnim test clip bytes";
+    smvk::PakWriter writer;
+    Check(writer.AddBlob(smvk::PakAssetKind::Anim, path,
+                         std::vector<uint8_t>(text.begin(), text.end())),
+          "anim.writer-adds-dedicated-kind");
+    const auto image = writer.Finalize();
+    std::string err;
+    auto backend = smvk::PakBackend::Open(std::make_shared<std::vector<uint8_t>>(image),
+                                          "anim-test", err);
+    Check(backend != nullptr, "anim.pak-opens");
+    if (!backend)
+        return;
+    const auto& reader = backend->Reader();
+    Check(reader.Find(smvk::PakAssetKind::Anim, path) != nullptr &&
+              reader.BlobsOfKind(smvk::PakAssetKind::Texture).empty(),
+          "anim.not-classified-as-texture");
+    Check(backend->Exists(path), "anim.vfs-exists");
+    auto bytes = backend->TryRead(path);
+    Check(bytes && std::string(bytes->begin(), bytes->end()) == text,
+          "anim.vfs-returns-raw-clip");
+    const auto stat = backend->Stat(path);
+    Check(stat && stat->size == text.size(), "anim.vfs-stat-raw-size");
+    const auto listing = backend->ListDir("content/models/knight");
+    Check(std::find(listing.begin(), listing.end(), path) != listing.end(),
+          "anim.vfs-listed");
+}
+
 // ---- Corruption handling (smvk::PakBackend::Open fail-closed) ----
 
 void TestPakCorruption() {
@@ -1859,6 +1889,7 @@ int main() {
     TestRuntime();
     TestPakPathResolution();
     TestPakCorruption();
+    TestAnimPakKind();
     TestDeployCheck();
     TestStaticFlagApplication();
     TestProjectRuntime();

@@ -2278,7 +2278,7 @@ int Run(const PakArgs& c) {
     // manifest lists them as anim.<idx> rows beside the .geometry. The
     // pak RECORDS the clip VFS paths on every cluster whose meshes come
     // from that artifact (scene.animClipRefs — the scene blob's trailing
-    // ref section) and EMBEDS the clip files as Texture-kind blobs at the
+    // ref section) and EMBEDS the clip files as Anim-kind blobs at the
     // same paths (the .cubemanifest text-in-a-Texture-payload pattern:
     // PakBackend serves by path, so the runtime's mounted pak resolves
     // the refs with no loose files). The old runtime discovery enumerated
@@ -2328,7 +2328,7 @@ int Run(const PakArgs& c) {
                         refs.push_back(animVfs);
                 }
                 // Embed ONCE (dedup across artifacts/scenes): the clip
-                // file rides as a Texture-kind blob (text payload).
+                // file rides as an Anim-kind blob (raw text).
                 bool seen = false;
                 for (const auto& [p, b] : animBlobs)
                     if (p == animVfs) {
@@ -2988,19 +2988,15 @@ int Run(const PakArgs& c) {
         }
         tool::out() << "Embedded GI " << vfsPath << " (" << bytes.size() << " B)\n";
     }
-    // Anim clips (the self-contained anim pipeline — see the stamp block
-    // above): Texture-kind blobs at the recorded ref paths, the same
-    // path-embed pattern as the manifests. PakBackend serves them by path;
-    // the runtime's content VFS resolves the scene's animClipRefs
-    // straight out of this pak.
+    // Anim clips are their own VFS-addressable kind. Store the authored
+    // tourAnim text directly; no texture envelope or KTX interpretation.
     for (auto& [vfsPath, bytes] : animBlobs) {
-        std::vector<uint8_t> payload =
-            smvk::BuildTexturePayload(vfsPath, -1, -1, -1, -1, std::span<const uint8_t>(bytes));
-        if (!writer.AddBlob(smvk::PakAssetKind::Texture, vfsPath, std::move(payload))) {
+        const size_t size = bytes.size();
+        if (!writer.AddBlob(smvk::PakAssetKind::Anim, vfsPath, std::move(bytes))) {
             tool::err() << "Anim AddBlob failed: " << vfsPath << std::endl;
             return 1;
         }
-        tool::out() << "Embedded anim clip " << vfsPath << " (" << bytes.size() << " B text)\n";
+        tool::out() << "Embedded anim clip " << vfsPath << " (" << size << " B text)\n";
     }
     // ---- SHADER blobs (the engine-shaders.pak mode) ---------------------
     // (See PackShaderTree/PackShaderList — the shared validated embeds,
