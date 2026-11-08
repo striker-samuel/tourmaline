@@ -125,13 +125,17 @@ struct RasterHizCullPush {
     uint64_t instances = 0;
     uint64_t view = 0;
     uint64_t hiz = 0;
+    uint64_t previous = 0;
     uint32_t commandCapacity = 0;
     uint32_t instanceSlots = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t mips = 0;
+    uint32_t historySlots = 0;
+    uint32_t historyValid = 0;
+    uint32_t reserved = 0;
 };
-static_assert(sizeof(RasterHizCullPush) == 64);
+static_assert(sizeof(RasterHizCullPush) == 80);
 
 // Push constants for the independent indirect raster command build kernel.
 struct RasterDrawBuildPush {
