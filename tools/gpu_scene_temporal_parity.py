@@ -57,6 +57,7 @@ import pixel_compare
 # The one-shot line WorldRenderer prints when the temporal chain actually
 # dispatches seed + Hi-Z gate + history in a frame.
 WITNESS = "[GpuSceneTemporal] engaged:"
+UNKNOWN_RUNCONFIG_PIN = "[RunConfig] unknown TOURMALINE_* var (typo?):"
 # smvk::gfx::CullFlagBit_HzbOcclusion (gfx_filter.h) - gates the gpu-scene
 # instance Hi-Z test AND GfxFilter's cluster-level HZB test.
 HZB_OCCLUSION_BIT = 0x40
@@ -239,6 +240,14 @@ def main(argv=None):
             return 3
         report = json.loads(manifest.read_text(encoding="utf-8"))
         app_log = (leg_dir / "app.log").read_text(encoding="utf-8", errors="replace")
+        # The parity gate must never certify an OFF leg whose switch
+        # RunConfig silently ignored. Treat *any* unknown TOURMALINE knob
+        # as an invalid capture rather than merely accepting equal pixels.
+        if UNKNOWN_RUNCONFIG_PIN in app_log:
+            print(f"gpu_scene_temporal_parity: leg {leg} used an unknown "
+                  f"TOURMALINE_* environment variable; see {leg_dir / 'app.log'}",
+                  file=sys.stderr)
+            return 3
         records[leg] = {
             "pixels": str(leg_dir / "capture.png"),
             "witness": witness_count(app_log),
