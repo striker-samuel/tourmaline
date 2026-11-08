@@ -126,6 +126,29 @@ class EvaluateTests(unittest.TestCase):
         self.assertTrue(verdict["temporal-parity"]["pass"])
         self.assertIn("floor 8", verdict["temporal-parity"]["detail"])
 
+    def test_strict_bit_exact_on_on_rejects_noise_even_below_default_cap(self):
+        self.diff_counts = [8, 0]
+        verdict, ok = mod.evaluate(self.legs(), require_bit_exact=True)
+        self.assertFalse(ok)
+        self.assertFalse(verdict["determinism"]["pass"])
+        self.assertTrue(verdict["temporal-parity"]["pass"])
+
+    def test_strict_bit_exact_temporal_and_hiz_reject_single_pixel(self):
+        self.diff_counts = [0, 1, 1]
+        legs = self.legs(**{"hiz-off": self.leg(witness=1)})
+        verdict, ok = mod.evaluate(legs, require_bit_exact=True)
+        self.assertFalse(ok)
+        self.assertTrue(verdict["determinism"]["pass"])
+        self.assertFalse(verdict["temporal-parity"]["pass"])
+        self.assertFalse(verdict["hiz-parity"]["pass"])
+
+    def test_strict_bit_exact_accepts_all_zero_diffs_and_engaged_hiz(self):
+        self.diff_counts = [0, 0, 0]
+        legs = self.legs(**{"hiz-off": self.leg(witness=1)})
+        verdict, ok = mod.evaluate(legs, require_bit_exact=True)
+        self.assertTrue(ok)
+        self.assertTrue(verdict["hiz-parity"]["pass"])
+
     def test_parity_beyond_floor_plus_margin_fails(self):
         self.diff_counts = [8, 40]
         verdict, ok = mod.evaluate(self.legs())
