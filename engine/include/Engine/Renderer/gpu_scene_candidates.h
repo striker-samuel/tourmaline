@@ -68,12 +68,16 @@ struct InstanceCullGpuPush {
     uint64_t verdicts = 0;
     glm::uvec4 counts{0u};
     glm::uvec4 counts2{0u};
+    // Zero for validation/pass-all; nonzero BDA of per-instance slot ->
+    // admitted generation. Only exact generation matches may rasterize.
+    uint64_t ownerGenerations = 0;
 };
 static_assert(sizeof(InstanceCullGpuView) == 128);
 static_assert(offsetof(InstanceCullGpuView, inwardPlanes) == 32);
-static_assert(sizeof(InstanceCullGpuPush) == 88);
+static_assert(sizeof(InstanceCullGpuPush) == 96);
 static_assert(offsetof(InstanceCullGpuPush, counts) == 56);
 static_assert(offsetof(InstanceCullGpuPush, counts2) == 72);
+static_assert(offsetof(InstanceCullGpuPush, ownerGenerations) == 88);
 
 struct RelativeFrustum {
     // The origin and six inward half-spaces must be in the SAME frame as
