@@ -19,6 +19,11 @@
 namespace tour::gpu_scene {
 
 inline constexpr uint32_t kMaxRasterDrawGroups = 65535;
+// Fixed PSO bins keep one indirect submission per class, independent of
+// material or draw count. Bin zero backface-culls; bin one renders both sides.
+inline constexpr uint32_t kRasterPipelineClassCount = 2;
+inline constexpr uint32_t kRasterPipelineDoubleSided = 1;
+
 
 // Immutable, GPU-addressable indexed-geometry descriptor. One per compatible
 // raster geometry registration; managed separately from per-frame visibility.
@@ -65,7 +70,7 @@ struct RasterWorkDrawBuildPush {
     uint32_t candidateCount = 0;
     uint32_t geometryCount = 0;
     uint32_t commandCapacity = 0;
-    uint32_t reserved = 0;
+    uint32_t reserved = 0; // per-class command stride (work capacity)
 };
 
 // Static-opaque raster VS input: world position is rebased against this
