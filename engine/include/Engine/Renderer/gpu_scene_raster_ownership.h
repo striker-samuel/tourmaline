@@ -87,6 +87,27 @@ class CanonicalRasterOwnership {
     [[nodiscard]] bool OwnsLegacy(SourceKey source) const noexcept {
         return Owner(source) == RasterOwner::Legacy;
     }
+    // Build a per-flight GPU admission mask indexed by persistent instance
+    // slots. A value is the CURRENT generation, or zero for legacy-owned
+    // slots. Upload the whole mask before dispatch; the shader must compare
+    // both slot and generation before emitting a visible verdict.
+    // Compatibility is frozen at snapshot publication, while the caller
+    // decides whether this frame actually commits GPU ownership.
+    template <typename Finder>
+    [[nodiscard]] bool BuildGenerationMask(std::span<uint32_t> mask, Finder&& find) const {
+        std::fill(mask.begin(), mask.end(), 0u);
+        if (!valid_)
+            return false;
+        for (const auto& entry : entries_) {
+            if (!entry.staticOpaqueCompatible)
+                continue;
+            const Handle<Instance> id = find(entry.source);
+            if (!id || id.slot >= mask.size() || mask[id.slot] != 0)
+                return false;
+            mask[id.slot] = id.generation;
+        }
+        return true;
+    }
 
   private:
     std::span<const RasterOwnershipEntry> entries_{};
