@@ -153,6 +153,26 @@ int main() {
         CHECK(owners.OwnsGpu({11, 2, 1}));
         CHECK(owners.OwnsGpu({11, 8, 1}));
         CHECK(owners.OwnsLegacy({22, 5, 1}));
+        // The GPU mask is indexed by *persistent instance slot*, not
+        // draw-order. Only compatible rows carry their exact generation.
+        std::array<uint32_t, 9> mask{};
+        const auto find = [](SourceKey key) -> Handle<Instance> {
+            if (key == SourceKey{11, 2, 1}) return {7, 19};
+            if (key == SourceKey{11, 8, 1}) return {2, 31};
+            if (key == SourceKey{22, 5, 1}) return {4, 9};
+            return {};
+        };
+        CHECK(owners.BuildGenerationMask(mask, find));
+        CHECK(mask[7] == 19 && mask[2] == 31);
+        CHECK(mask[4] == 0 && mask[0] == 0);
+        mask[7] = 100;
+        CHECK(owners.BuildGenerationMask(mask, find) && mask[7] == 19);
+        CHECK(!owners.BuildGenerationMask(
+            std::span<uint32_t>(mask.data(), 3), find));
+        CHECK(std::all_of(mask.begin(), mask.begin() + 3,
+                          [](uint32_t generation) { return generation == 0; }) ||
+              mask[2] == 31); // failed mask must never be published
+
         CHECK(owners.OwnsLegacy({11, 2, 2})); // generation changed
         CHECK(owners.OwnsLegacy({99, 2, 1})); // unknown registration
         owners.BeginFrame(); // publication / pipeline failed on next flight
@@ -176,6 +196,9 @@ int main() {
         CHECK(!owners.Publish(duplicates));
         owners.CommitGpuPrepared();
         CHECK(!owners.GpuActive() && owners.OwnsLegacy({33, 1, 1}));
+        CHECK(!owners.BuildGenerationMask(mask, find));
+        CHECK(std::all_of(mask.begin(), mask.end(),
+                          [](uint32_t generation) { return generation == 0; }));
         RasterOwnershipEntry invalid[] = {{{0, 1, 1}, true}};
         CHECK(!owners.Publish(invalid));
         CHECK(owners.OwnsLegacy({0, 1, 1}));
