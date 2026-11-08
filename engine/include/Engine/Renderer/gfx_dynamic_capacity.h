@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <limits>
 
-namespace smvk::gfx {
+namespace tour::gfx {
 
 inline constexpr uint32_t kGfxCapacityPageBytes = 64u * 1024u;
 
@@ -60,4 +60,4 @@ struct GrowableCapacity {
     return true;
 }
 
-} // namespace smvk::gfx
+} // namespace tour::gfx
