@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 
 namespace tour::gfx {
 
@@ -28,7 +29,9 @@ inline constexpr size_t kDynamicPageBytes = 64u * 1024u;
         return true;
     if (bytesPerEntry == 0 || bytesPerEntry > kDynamicPageBytes)
         return false;
-    const size_t pageRows = kDynamicPageBytes / bytesPerEntry;
+    // LCM(pageBytes, stride) / stride: the byte size really is page-aligned
+    // even for strides such as 24 that do not divide 64 KiB.
+    const size_t pageRows = kDynamicPageBytes / std::gcd(kDynamicPageBytes, bytesPerEntry);
     const size_t pages = 1 + (entries - 1) / pageRows;
     if (pages > std::numeric_limits<uint32_t>::max() / pageRows)
         return false;
