@@ -30,6 +30,16 @@ struct HizResources {
     smvk::LogicalBufferHandle logical{};
 };
 
+// Owns every in-flight pyramid slice and SPD verification/counter resource
+// for one visibility view. Renderer-specific history and draw lists belong
+// in the consumer's sidecar, not alongside this resource registry.
+struct HizViewResources {
+    HizResources hiz[smvk::limits::MaxFramesInFlight];
+    smvk::Holder<smvk::BufferHandle> hizSpdCounter;
+    smvk::LogicalBufferHandle hizSpdCounterLogical{};
+    HizResources hizVerify[smvk::limits::MaxFramesInFlight];
+};
+
 [[nodiscard]] inline uint32_t HzbMipCount(uint32_t w, uint32_t h) noexcept {
     if (w == 0 || h == 0) return 0u;
     uint32_t count = 1u;
