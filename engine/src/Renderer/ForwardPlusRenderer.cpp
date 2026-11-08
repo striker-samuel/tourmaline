@@ -409,7 +409,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
     }
 }
 
-void ForwardPlusRenderer::AppendGpuScenePrepass(
+bool ForwardPlusRenderer::AppendGpuScenePrepass(
     smvk::FrameContext& base,
     smvk::ShaderProgram rasterDepth,
     smvk::BufferHandle indirect,
@@ -419,17 +419,17 @@ void ForwardPlusRenderer::AppendGpuScenePrepass(
     const tour::gpu_scene::RasterVsPush& vertexPush) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || (rasterDepth.shaderCount != 1 && rasterDepth.shaderCount != 2))
-        return;
+        return false;
     const bool gbufferOn = fc.ssrGbufferWanted && rasterDepth.shaderCount == 2 &&
                            !fc.gbufferView.empty() && !fc.gbuffer2View.empty();
     // A requested G-buffer must not silently render depth alone.
     if (fc.ssrGbufferWanted && !gbufferOn)
-        return;
+        return false;
     smvk::ResourceManager& ctx = *fc.ctx;
     smvk::RenderGraph& rg = *fc.rg;
     fp->Ensure(ctx, rg, {fc.extent.width, fc.extent.height}, desc, fc.depthViewHandle);
     if (!fp->Valid())
-        return;
+        return false;
     auto& pass = fp->AddDepthPrepass(
         rg, fc.depthView, {fc.extent.width, fc.extent.height},
         "GpuSceneDepth",
@@ -454,7 +454,7 @@ void ForwardPlusRenderer::AppendGpuScenePrepass(
         [rasterDepth, scenePush, indirect, commandCount, vertexPush](
             smvk::CommandBuffer& cmd) mutable {
             if (!commandCount)
-                return; // the pass still clears depth for empty views
+                return false; // the pass still clears depth for empty views
             cmd.BindStaticVertexFmt();
             cmd.BindRenderPipeline(
                 rasterDepth, smvk::VertexLayoutId::Static,
@@ -478,6 +478,7 @@ void ForwardPlusRenderer::AppendGpuScenePrepass(
                     n, sizeof(tour::gpu_scene::RasterIndirectCommand));
             }
         });
+    return true;
 }
 
 void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
