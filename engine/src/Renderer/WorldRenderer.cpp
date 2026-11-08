@@ -11421,7 +11421,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // Without a logical graph reference this compute pass has no
                 // declared write on its validation-only path. Keep the logical
                 // tied to the flight's actual physical buffer after realloc.
-                bool verdictGraphReady = true;
+                // A failed mixed owner mask or raster preparation must
+                // not dispatch the unrestricted GPU culler: it would
+                // generate commands for legacy-owned sources. Legacy
+                // submission reclaims the entire scene instead.
+                bool verdictGraphReady = !gpuSceneRasterMode || ownerMaskReady;
                 if (s_gpuSceneValidate) {
                     const uint32_t flight = fb.frameIndex;
                     const auto verdictHandle = m_gpuSceneValidator.VerdictBuffer(flight);
