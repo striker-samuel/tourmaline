@@ -59,7 +59,7 @@ struct GpuSceneInstanceCullPush {
     GPU_PTR_READ(GpuSceneCullView) view;
     GPU_PTR_WRITE(GpuSceneCullVerdicts) verdicts;
     uint4 counts; // x rangeCount, y candidateCount, z memberSlots, w instanceSlots
-    uint4 counts2; // x leafSlots, y meshSlots, z viewValid (0=passthrough), w spare
+    uint4 counts2; // x leafSlots, y meshSlots, z viewValid (0=passthrough), w owner-mask enabled
     GPU_PTR_READ(GpuSceneOwnerGenerations) ownerGenerations; // null in CPU oracle mode
 };
 GPU_PUSH(GpuSceneInstanceCullPush, pcS);
@@ -158,7 +158,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // flight's mask records its exact generation. A retired/recycled slot
     // or a legacy-owned (including skinned) source emits no GPU work.
     // Validation mode has a null owner pointer and retains its full oracle.
-    if (pcS.ownerGenerations != 0 &&
+    if (pcS.counts2.w != 0u &&
         pcS.ownerGenerations.Get().generations[instanceId] != instanceGen)
         return;
 
