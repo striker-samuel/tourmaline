@@ -15016,7 +15016,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // legs run — the debug views used to show the bind pose, hiding
         // exactly the deformation the debugging needs to see).
         // TOURMALINE_KD_NOSKIN=1 pins the bind pose for A/B.
-        auto pushMeshDebugSkinTail = [&](uint32_t meshId) {
+        auto pushMeshDebugSkinTail = [&](uint32_t meshId, NodeId node) {
             MeshDebugSkinTail tail{};
             static const bool noskin = [] {
                 const char* e = std::getenv("TOURMALINE_KD_NOSKIN");
@@ -15024,7 +15024,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }();
             const smvk::gfx::State& st = m_gfxRenderer.State();
             if (!noskin && st.skinDeformedBda != 0 && st.skinDeformedBase != UINT32_MAX) {
-                if (const smvk::StaticMesh* m = m_world->GetMesh(meshId); m && m->skinned) {
+                // SELECTED-LOD admission (the same contract as the gfx draw
+                // push's DrawFlagBit_Skinned gate): the debug draws' vertex
+                // ids index the SELECTED sibling's heap range, so only the
+                // selected StaticMesh's skinned flag proves deformed-span
+                // coverage. The old base-mesh key enabled the swap for
+                // LOD-selected draws whose vertices sit OUTSIDE the span -
+                // (vertexID - deformedBase)*5 then read words past the
+                // heap: the broken, half-exploded poses the Meshlets/Lods
+                // views showed on LOD-switched skinned meshes.
+                if (const smvk::StaticMesh* sel = LodMeshForNode(node, meshId);
+                    sel && sel->skinned) {
                     tail.deformed = st.skinDeformedBda;
                     tail.deformedBase = st.skinDeformedBase;
                     tail.skinned = 1;
@@ -15070,7 +15080,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     std::copy_n(glm::value_ptr(model), 16, dp.model);
                     // Per-item skin tail: the animated pose for SKINNED items
                     // (covers the filterable + white-fallback branches below).
-                    pushMeshDebugSkinTail(worldMesh);
+                    pushMeshDebugSkinTail(worldMesh, item.node);
                     // Heat-mode cone source: SKINNED items have no CPU-visible
                     // deformed cutoffs (the skinBounds table is GPU-resident —
                     // the axis overlay reads it GPU-side via GfxConeDebug, but
@@ -15157,7 +15167,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     std::copy_n(glm::value_ptr(model), 16, lp2.model);
                     // Per-item skin tail (the LODs view shares the meshdebug
                     // VS: skinned items pose to the deformed heap too).
-                    pushMeshDebugSkinTail(item.mesh);
+                    pushMeshDebugSkinTail(item.mesh, item.node);
                     uint32_t lod = 0;
                     smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh, &lod);
                     if (!meshDesc)
@@ -15545,7 +15555,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     cmd.PushConstants(0, sizeof(transLp), &transLp, smvk::ShaderStage::All);
                     // Per-draw skin tail (the meshdebug VS shared with the
                     // opaque LODs view: skinned transparents pose too).
-                    pushMeshDebugSkinTail(d.meshId);
+                    pushMeshDebugSkinTail(d.meshId, d.node);
                     for (auto& draw_set : meshDesc->geometry.surfaces) {
                         cmd.DrawIndexed(
                             draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
