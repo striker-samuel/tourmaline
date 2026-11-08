@@ -842,46 +842,6 @@ void Destroy(State& s, RenderGraph& rg) {
 // Hierarchical-Z (T2)
 // ---------------------------------------------------------------------------
 
-uint32_t HzbMipCount(uint32_t w, uint32_t h) {
-    if (w == 0 || h == 0)
-        return 0;
-    uint32_t count = 1;
-    while ((w > 1 || h > 1) && count < kHizMaxMips) {
-        w = std::max(1u, (w + 1u) >> 1);
-        h = std::max(1u, (h + 1u) >> 1);
-        ++count;
-    }
-    return count;
-}
-
-void HzbMipDims(uint32_t w, uint32_t h, uint32_t mip, uint32_t& outW, uint32_t& outH) {
-    for (uint32_t k = 0; k < mip; ++k) {
-        w = std::max(1u, (w + 1u) >> 1);
-        h = std::max(1u, (h + 1u) >> 1);
-    }
-    outW = w;
-    outH = h;
-}
-
-uint32_t HzbMipOffsetFloats(uint32_t w, uint32_t h, uint32_t mip) {
-    uint32_t off = 0;
-    for (uint32_t k = 0; k < mip; ++k) {
-        uint32_t kw = w, kh = h;
-        HzbMipDims(w, h, k, kw, kh);
-        off += kw * kh;
-    }
-    return off;
-}
-
-uint32_t HzbTotalFloats(uint32_t w, uint32_t h) {
-    const uint32_t count = HzbMipCount(w, h);
-    if (count == 0)
-        return 0;
-    uint32_t lw = 0, lh = 0;
-    HzbMipDims(w, h, count - 1, lw, lh);
-    return HzbMipOffsetFloats(w, h, count - 1) + lw * lh;
-}
-
 ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
                                          float worldRadius,
                                          const glm::vec3& eye,
@@ -1014,71 +974,6 @@ bool HzbOccluded(const float* hzb,
     return occluded;
 }
 
-// (Re)builds ONE HizResources slice for w/h: frees the old logical,
-// zero-fills the fresh buffer (0 = far under reversed-Z: keep-safe, no
-// garbage MIN-reducing into a 1-frame over-cull pop), registers it.
-// Shared by the live pyramid and the SPD verify shadow. Returns false on
-// allocation failure (the slice is left with mips=0 — callers gate on it).
-static bool RebuildHizSlice(ResourceManager& ctx,
-                            RenderGraph& rg,
-                            HizResources& hz,
-                            uint32_t w,
-                            uint32_t h,
-                            const char* name) {
-    const uint32_t wantMips = HzbMipCount(w, h);
-    if (!hz.logical.empty())
-        rg.FreeBuffer(hz.logical);
-    hz.logical = {};
-    hz.buffer = {};
-    hz.width = w;
-    hz.height = h;
-    hz.mipCount = wantMips;
-    for (uint32_t m = 0; m < wantMips; ++m)
-        hz.mipOffsets[m] = HzbMipOffsetFloats(w, h, m);
-    for (uint32_t m = wantMips; m < kHizMaxMips; ++m)
-        hz.mipOffsets[m] = 0;
-    // Diagnose-only: shader-side array cap (hzb.hlsli HZB_MAX_FLOATS).
-    // Exceeding it reads/writes out of bounds -> undefined HZB -> over-cull.
-    static constexpr uint32_t kHzbShaderMaxFloats = 12582912;
-    if ((uint64_t)HzbTotalFloats(w, h) > kHzbShaderMaxFloats) {
-        SMVK_DEBUG_LOG("[GfxHiz] target %ux%u needs %u floats, exceeds shader cap %u: "
-                       "expect pyramid corruption.\n",
-                       w,
-                       h,
-                       HzbTotalFloats(w, h),
-                       kHzbShaderMaxFloats);
-    }
-    hz.buffer =
-        ctx.CreateBuffer((size_t)HzbTotalFloats(w, h) * sizeof(float), BufferType_Storage, name);
-    if (hz.buffer.empty()) {
-        // Leave no half-built pyramid behind: the shader gates on mips.
-        hz.width = hz.height = hz.mipCount = 0;
-        return false;
-    }
-    // Fresh pyramid starts as far (0 under reversed-Z = keep-safe). Without
-    // this, a rebuild leaves garbage that MIN-reduces upward into a 1-frame
-    // over-cull pop on fast yaw / fly-through (Release exposes it; Debug
-    // validation + timing usually masks it). Resizes are rare, so a full
-    // zero-fill is affordable.
-    {
-        std::vector<uint8_t> zeros((size_t)HzbTotalFloats(w, h) * sizeof(float), 0);
-        if (!zeros.empty()) {
-            ctx.UploadDataToBuffer(hz.buffer,
-                                   zeros.data(),
-                                   zeros.size(),
-                                   PipelineStage(PipelineStageBit_Compute),
-                                   AccessFlags::ShaderRead | AccessFlags::ShaderWrite);
-        }
-    }
-    hz.logical = rg.AddExternalBuffer(hz.buffer, name);
-    if (hz.logical.empty()) {
-        hz.buffer = {};
-        hz.width = hz.height = hz.mipCount = 0;
-        return false;
-    }
-    return true;
-}
-
 // SPD counter slice stride (mirrors Ssgi::Hzb::kHzbCounterSliceBytes —
 // one 16-byte word set per frame in flight).
 static constexpr uint32_t kHizSpdCounterSliceBytes = 16;
@@ -1135,13 +1030,13 @@ bool EnsureHiz(State& s,
     if (!hzOk) {
         // Size drift: rebuild + disarm (stale seed extent).
         t.historyValid = false;
-        if (!RebuildHizSlice(ctx, rg, hz, w, h, "gfx hiz"))
+        if (!tour::visibility::RebuildHizSlice(ctx, rg, hz, w, h, "gfx hiz"))
             return false;
     }
     if (verifyOn && !hzVOk) {
         // Shadow failure is non-fatal (verify just stays unarmed — the
         // record-time gate checks the slice); the live pyramid stands.
-        (void)RebuildHizSlice(ctx, rg, hzV, w, h, "gfx hizVerify");
+        (void)tour::visibility::RebuildHizSlice(ctx, rg, hzV, w, h, "gfx hizVerify");
     }
     return true;
 }
@@ -1168,21 +1063,7 @@ RenderPass& AddHizPass(State& s,
     SMVK_PROFILE_TAG("mipCount", hz.mipCount);
 
     RenderPass& pass = rg.AddComputePass(passName ? passName : "GfxHiz");
-    BufferSyncRequest hizRW{};
-    hizRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-    hizRW.barrierMasks.stageMask = PipelineStageBit_Compute;
-    pass.AddBufferHint(hz.logical, hizRW);
-    if (dstMip == 0 && !depthLogical.empty()) {
-        ImageSyncRequest depthReq{};
-        depthReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
-        depthReq.barrierMasks.stageMask = PipelineStageBit_Compute;
-        // Use DepthStencilReadOnlyOptimal to match the bindless descriptor layout
-        // (created with DepthStencilReadOnlyOptimal in DepthTarget::Create and
-        // ForwardPlus::Ensure). The render graph's depth fixup would promote ShaderReadOnlyOptimal,
-        // but being explicit avoids any layout mismatch between descriptor and actual image layout.
-        depthReq.layout = ImageLayout::DepthStencilReadOnlyOptimal;
-        pass.AddImageHint(depthLogical, depthReq);
-    }
+    tour::visibility::AddHizBuildHints(pass, hz.logical, depthLogical, dstMip == 0u);
 
     // DEBUG: Log HZB pass creation
     static uint64_t s_hizPassCount = 0;
@@ -1328,14 +1209,7 @@ RenderPass& AddHizSpdPass(State& s,
     SMVK_PROFILE_TAG("shadow", shadow ? 1 : 0);
 
     RenderPass& pass = rg.AddComputePass(passName ? passName : "GfxHizSpd");
-    {
-        // The pyramid: read (footprints) + write (every level) within the
-        // same dispatch — the same RW hint the per-mip passes carry.
-        BufferSyncRequest hizRW{};
-        hizRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-        hizRW.barrierMasks.stageMask = PipelineStageBit_Compute;
-        pass.AddBufferHint(hz.logical, hizRW);
-    }
+    tour::visibility::AddHizBuildHints(pass, hz.logical, depthLogical, true);
     {
         // The completion counter: InterlockedAdd/Exchange from every
         // group (read-modify-write — atomics need the RW hint).
@@ -1344,17 +1218,7 @@ RenderPass& AddHizSpdPass(State& s,
         counterRW.barrierMasks.stageMask = PipelineStageBit_Compute;
         pass.AddBufferHint(t.hizSpdCounterLogical, counterRW);
     }
-    {
-        // The single dispatch ALWAYS reads the depth for its mip-0 copy
-        // (DepthStencilReadOnlyOptimal matches the bindless descriptor
-        // layout — the same note as AddHizPass).
-        ImageSyncRequest depthReq{};
-        depthReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
-        depthReq.barrierMasks.stageMask = PipelineStageBit_Compute;
-        depthReq.layout = ImageLayout::DepthStencilReadOnlyOptimal;
-        if (!depthLogical.empty())
-            pass.AddImageHint(depthLogical, depthReq);
-    }
+
     return pass;
 }
 
