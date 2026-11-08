@@ -10756,11 +10756,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_VALIDATE");
         return e && std::strcmp(e, "1") == 0;
     }();
-    // Deliberately opt-in until all production pass/material variants match.
-    // Validation remains separate; do not mix CPU readback with GPU raster.
+    // GPU-scene Main/depth is the default for admitted static opaque
+    // sources. Unsupported objects (including GPU-skinned, layered and
+    // masked) retain the proven legacy raster path through canonical
+    // source ownership. Explicit =0 disables the GPU cutover for A/B
+    // diagnosis. Validation remains separate from production raster.
     static const bool s_gpuSceneRaster = [] {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_RASTER");
-        return e && std::strcmp(e, "1") == 0;
+        return !e || std::strcmp(e, "0") != 0;
     }();
     if (s_gpuSceneRaster && m_gpuSceneRasterProgram.shaderCount != 2) {
         try {
