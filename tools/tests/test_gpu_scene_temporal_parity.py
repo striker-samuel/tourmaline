@@ -51,6 +51,13 @@ class LegPinTests(unittest.TestCase):
         self.assertEqual(int(pins[mod.CULL_FLAGS_NAME], 0) & mod.HZB_OCCLUSION_BIT, 0)
         self.assertNotIn("TOURMALINE_GPU_SCENE_TEMPORAL", pins)
 
+    def test_hiz_pin_matches_engine_runconfig_name(self):
+        # RunConfig reads CULLFLAGS, not CULL_FLAGS. A wrong pin makes
+        # the Hi-Z OFF leg vacuous while the image comparison still passes.
+        self.assertEqual(mod.CULL_FLAGS_NAME, "TOURMALINE_CULLFLAGS")
+        self.assertEqual(mod.leg_pins("hiz-off", {}, "0x20b"),
+                         {"TOURMALINE_CULLFLAGS": "0x20b"})
+
     def test_default_hiz_off_flags_clear_the_bit(self):
         self.assertEqual(int(f"{mod.DEFAULT_HIZ_OFF_FLAGS:#x}", 0) & mod.HZB_OCCLUSION_BIT, 0)
 
