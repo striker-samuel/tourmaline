@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include <Engine/Renderer/gpu_struct_name.h>
 // GPUIR-inspired GPU-scene database: persistent rows and dirty-row publication.
 // This is CPU-owned storage; an RHI adapter publishes the byte-identical rows.
 // No camera-dependent positions, render passes, or draw candidates live here.
@@ -36,6 +37,7 @@ template <typename Payload> struct alignas(16) Row {
     glm::uvec4 identity{0u}; // x = generation, y = alive (0/1), z/w reserved
 };
 
+GPU_STRUCT_NAME(GpuSceneMesh)
 struct alignas(16) Mesh {
     uint32_t firstLod = 0;
     uint32_t lodCount = 0;
@@ -50,6 +52,7 @@ inline constexpr uint32_t LodFlagFilterable = 1u << 2;
 // GPU instance culling must require this flag on the referenced mesh.
 inline constexpr uint32_t MeshFlagCompleteBounds = 1u << 0;
 
+GPU_STRUCT_NAME(GpuSceneLod)
 struct alignas(16) Lod {
     uint32_t firstSubmesh = 0;
     uint32_t submeshCount = 0;
@@ -57,6 +60,7 @@ struct alignas(16) Lod {
     uint32_t flags = 0;
 };
 
+GPU_STRUCT_NAME(GpuSceneSubmesh)
 struct alignas(16) Submesh {
     uint32_t geometryId = InvalidIndex;
     uint32_t materialId = InvalidIndex;
@@ -64,6 +68,7 @@ struct alignas(16) Submesh {
     uint32_t passMask = 0;
 };
 
+GPU_STRUCT_NAME(GpuSceneInstance)
 struct alignas(16) Instance {
     tour::math::DoubleFloat3 worldPosition{};
     glm::vec4 basisX{1.0f, 0.0f, 0.0f, 0.0f};
@@ -79,10 +84,12 @@ inline constexpr uint32_t LeafFlagBoundsComplete = 1u << 0;
 
 // A leaf contains a contiguous span of LeafMember rows; each member
 // points at an Instance slot+generation rather than a frame-local draw.
+GPU_STRUCT_NAME(GpuSceneLeafMember)
 struct alignas(16) LeafMember {
     glm::uvec4 ref{InvalidIndex, 0u, 0u, 0u};
 };
 
+GPU_STRUCT_NAME(GpuSceneLeaf)
 struct alignas(16) Leaf {
     tour::math::DoubleFloat3 worldCenter{};
     glm::vec4 halfExtents{0.0f}; // xyz conservative; w reserved

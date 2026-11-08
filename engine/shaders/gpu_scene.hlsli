@@ -7,6 +7,7 @@
 // generation validation and persistent -> transient expansion.
 #include "double_float.hlsli"
 
+// GPU_STRUCT_NAME(GpuSceneMesh)
 struct GpuSceneMesh {
     uint firstLod;
     uint lodCount;
@@ -17,6 +18,7 @@ struct GpuSceneMesh {
 // Lod flags: 1 = resident payload, 2 = bound metadata known,
 // 4 = registered in the transient meshlet geometry table.
 // Mesh flags: 1 = conservative bounds known for ALL LODs.
+// GPU_STRUCT_NAME(GpuSceneLod)
 struct GpuSceneLod {
     uint firstSubmesh;
     uint submeshCount;
@@ -24,6 +26,7 @@ struct GpuSceneLod {
     uint flags;
 };
 
+// GPU_STRUCT_NAME(GpuSceneSubmesh)
 struct GpuSceneSubmesh {
     uint geometryId;
     uint materialId;
@@ -31,6 +34,7 @@ struct GpuSceneSubmesh {
     uint passMask;
 };
 
+// GPU_STRUCT_NAME(GpuSceneInstance)
 struct GpuSceneInstance {
     DoubleFloat3 worldPosition;
     float4 basisX;
@@ -42,9 +46,11 @@ struct GpuSceneInstance {
 
 // Instance references are never draw IDs: generation must match the
 // GpuSceneInstanceRow identity before GPU culling/draw expansion.
+// GPU_STRUCT_NAME(GpuSceneLeafMember)
 struct GpuSceneLeafMember { uint4 ref; };
 // GpuSceneLeaf.range: x = first LeafMember row, y = member count,
 // z bit 0 = all member bounds complete, w reserved.
+// GPU_STRUCT_NAME(GpuSceneLeaf)
 struct GpuSceneLeaf {
     DoubleFloat3 worldCenter;
     float4 halfExtents;
