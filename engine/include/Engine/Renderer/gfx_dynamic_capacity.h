@@ -58,4 +58,25 @@ inline constexpr size_t kDynamicPageBytes = 64u * 1024u;
     return true;
 }
 
+// Vulkan 1.3 guarantees at least 65535 workgroups in both X and Y.
+// Flatten as gid.y * 65535 + gid.x in the matching compute shader.
+struct DispatchGrid {
+    uint32_t x = 0;
+    uint32_t y = 0;
+};
+inline constexpr uint32_t kDispatchAxisGroups = 65535u;
+
+[[nodiscard]] inline constexpr bool PlanDispatchGrid(size_t groups,
+                                                      DispatchGrid& result) noexcept {
+    result = {};
+    if (groups == 0)
+        return true;
+    const size_t y = 1 + (groups - 1) / kDispatchAxisGroups;
+    if (y > kDispatchAxisGroups)
+        return false;
+    result.x = uint32_t(groups < kDispatchAxisGroups ? groups : kDispatchAxisGroups);
+    result.y = uint32_t(y);
+    return true;
+}
+
 } // namespace tour::gfx
