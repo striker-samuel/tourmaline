@@ -102,8 +102,12 @@ class CanonicalRasterOwnership {
             if (!entry.staticOpaqueCompatible)
                 continue;
             const Handle<Instance> id = find(entry.source);
-            if (!id || id.slot >= mask.size() || mask[id.slot] != 0)
+            if (!id || id.slot >= mask.size() || mask[id.slot] != 0) {
+                // A failed build must not leak a partly admitted mask
+                // even if a future caller mistakenly uploads its storage.
+                std::fill(mask.begin(), mask.end(), 0u);
                 return false;
+            }
             mask[id.slot] = id.generation;
         }
         return true;
