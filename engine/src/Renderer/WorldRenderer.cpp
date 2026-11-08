@@ -10765,6 +10765,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 .entryPoint = "mainPS",
                                 .stage = smvk::ShaderStage::Fragment};
                 m_gpuSceneRasterProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+                m_gpuSceneRasterDepthProgram = {.shaders = {vs}, .shaderCount = 1};
             }
         } catch (...) {
             static bool logged = false;
@@ -12698,7 +12699,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // TOURMALINE_HIZ=0 / the UI checkbox) - never the fill. Skipped
     // only while the culling view is frozen (the held pyramid must
     // not be rebuilt).
-    if (!cullingFrozen)
+    if (!cullingFrozen && !m_gpuSceneRasterDrawActive)
         m_fpRenderer.AppendOccluderPrepass(fc);
 
     // Northlight depth split (filter on + seed primed depth): the HZB
@@ -12789,8 +12790,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     } else {
         // Full prepass before the HZB (Clear when not seeded).
-        if (m_passes.forwardPlusPrepass)
-            m_fpRenderer.AppendPrepass(fc);
+        if (m_passes.forwardPlusPrepass) {
+            // GPU scene owns the full static-opaque scene when admitted.
+            // The thin SSR/SSGI G-buffer still requires its full material
+            // writer; until the GPU material-ID variant is wired, use the
+            // legacy prepass for those frames instead of stale G-buffer data.
+            if (m_gpuSceneRasterDrawActive &&
+                m_gpuSceneRasterDepthProgram.shaderCount == 1 &&
+                !fc.ssrGbufferWanted) {
+                const uint32_t flight = fb.frameIndex;
+                const tour::gpu_scene::RasterVsPush tail{
+                    m_gpuSceneRasterWorkBda,
+                    m_gpuSceneUploader.DeviceAddresses(*m_context, flight).instances,
+                    m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
+                    m_gpuSceneDatabase.instances.Size(),
+                    m_gpuSceneRasterDrawCapacity};
+                m_fpRenderer.AppendGpuScenePrepass(
+                    fc, m_gpuSceneRasterDepthProgram, m_gpuSceneRasterIndirect,
+                    m_gpuSceneRasterIndirectLogical[flight],
+                    m_gpuSceneRasterWorkLogical[flight],
+                    m_gpuSceneRasterDrawCapacity, tail);
+            } else {
+                m_fpRenderer.AppendPrepass(fc);
+            }
+        }
         if (gfxFilterOn) {
             if (!cullingFrozen)
                 appendHizPasses();
