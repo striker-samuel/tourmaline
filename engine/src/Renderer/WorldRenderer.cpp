@@ -13174,6 +13174,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // TOURMALINE_HIZ=0 / the UI checkbox) - never the fill. Skipped
     // only while the culling view is frozen (the held pyramid must
     // not be rebuilt).
+    // Check both depth variants BEFORE suppressing the legacy occluder
+    // pass. A missing seed/SSR program must not leave mixed GfxFilter
+    // culling reading an uninitialized dedicated Hi-Z depth target.
+    if (gpuTemporalReady &&
+        (m_gpuSceneRasterDepthProgram.shaderCount != 1 ||
+         fc.hizDepthView.empty() ||
+         (fc.ssrGbufferWanted && m_gpuSceneRasterGbufferProgram.shaderCount != 2))) {
+        gpuTemporalReady = false;
+        m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
+    }
     if (!cullingFrozen && !gpuTemporalReady &&
         (!m_gpuSceneRasterDrawActive || m_gpuSceneRasterLegacyCount != 0))
         m_fpRenderer.AppendOccluderPrepass(fc);
