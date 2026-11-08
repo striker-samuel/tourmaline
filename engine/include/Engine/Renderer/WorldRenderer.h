@@ -2381,6 +2381,8 @@ class WorldRenderer : public IRenderer {
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterProgram{};
     smvk::ShaderProgram m_gpuSceneRasterDepthProgram{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterGbufferFsModule{};
+    smvk::ShaderProgram m_gpuSceneRasterGbufferProgram{};
     // Prototype production cutover: only all-supported static/opaque scenes
     // may substitute their Main draws. Unsupported content uses GfxFilter.
     const smvk::World* m_gpuSceneRasterEligibilityWorld = nullptr;
