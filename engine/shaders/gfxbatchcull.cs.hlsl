@@ -52,7 +52,8 @@ groupshared uint gsFirstKept; // min kept cluster index (0xFFFFFFFF = none)
 [numthreads(128, 1, 1)]
 void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
 {
-    const uint drawIdx = gid.x;
+    // Flatten the 2D Vulkan-minimum 65535x65535 group grid.
+    const uint drawIdx = gid.y * 65535u + gid.x;
     const bool drawValid = drawIdx < pcB.drawCount && drawIdx < GFX_MAX_DRAWS;
     GfxDraw d;
     d.model = float4x4(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
