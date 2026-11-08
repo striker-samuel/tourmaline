@@ -1063,8 +1063,8 @@ RenderPass& AddHizPass(State& s,
     SMVK_PROFILE_TAG("mip", dstMip);
     SMVK_PROFILE_TAG("mipCount", hz.mipCount);
 
-    RenderPass& pass = rg.AddComputePass(passName ? passName : "GfxHiz");
-    tour::visibility::AddHizBuildHints(pass, hz.logical, depthLogical, dstMip == 0u);
+    RenderPass& pass = tour::visibility::AddHizMipPass(
+        rg, hz, dstMip, depthLogical, passName ? passName : "GfxHiz");
 
     // DEBUG: Log HZB pass creation
     static uint64_t s_hizPassCount = 0;
@@ -1193,16 +1193,9 @@ RenderPass& AddHizSpdPass(State& s,
     SMVK_PROFILE_TAG("mipCount", hz.mipCount);
     SMVK_PROFILE_TAG("shadow", shadow ? 1 : 0);
 
-    RenderPass& pass = rg.AddComputePass(passName ? passName : "GfxHizSpd");
-    tour::visibility::AddHizBuildHints(pass, hz.logical, depthLogical, true);
-    {
-        // The completion counter: InterlockedAdd/Exchange from every
-        // group (read-modify-write — atomics need the RW hint).
-        BufferSyncRequest counterRW{};
-        counterRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-        counterRW.barrierMasks.stageMask = PipelineStageBit_Compute;
-        pass.AddBufferHint(t.hizSpdCounterLogical, counterRW);
-    }
+    RenderPass& pass = tour::visibility::AddHizSpdPass(
+        rg, hz, t.hizSpdCounterLogical, depthLogical,
+        passName ? passName : "GfxHizSpd");
 
     return pass;
 }
