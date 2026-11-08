@@ -1014,30 +1014,14 @@ struct EmitEntry {
 // static_asserted), so history lives in this sidecar, parallel to views.
 // prev* is last frame's surviving set (seed source for T3); curr* is this
 // frame's (rotated into prev* by SnapshotVisible, called per frame in T5).
-struct TemporalView {
+struct TemporalView : tour::visibility::HizViewResources {
     bool historyValid = false;        // false until one full visibility frame lands
     float minimumContribution = 0.0f; // px-area threshold, T4 (0 = disabled)
     uint32_t drawSetMask = DrawSetMask_All;
     uint32_t width = 0, height = 0; // extent the history was built for
-    // HZB pyramid, ringed per frame in flight (same rule as View buffers
-    // and the vis/seed/remainder mirrors: frames overlap, uploads flush
-    // immediately, and a single shared pyramid would be clobbered by the
-    // next frame while the current one still reads it).
-    HizResources hiz[smvk::limits::MaxFramesInFlight];
-    // SPD completion-counter ring (hzb_spd .min): ONE buffer per view,
-    // 16-byte slices per frame in flight (the ssgi HzB counter's rule —
-    // builds that could overlap in flight never share a word). Extent-
-    // independent, created lazily by EnsureHiz while SPD or its verify
-    // is on; creation-zero-filled (the GPU-counter convention) and reset
-    // by the shader's last group after the tail.
-    smvk::Holder<smvk::BufferHandle> hizSpdCounter;
-    smvk::LogicalBufferHandle hizSpdCounterLogical{};
-    // SPD verify shadow (TOURMALINE_HIZ_SPD_VERIFY): the SPD twin of
-    // hiz[f], per flight, built from the same seed depth while the
-    // per-mip path feeds the cull chain; VerifyHizSpd compares the two
-    // post-Execute. Debug scaffolding — only maintained while the verify
-    // switch is on.
-    HizResources hizVerify[smvk::limits::MaxFramesInFlight];
+    // The per-flight live pyramid, SPD counter and verify shadow are
+    // inherited from visibility::HizViewResources. Only the GfxFilter
+    // visibility history and draw lists stay in this renderer sidecar.
     // CPU snapshot (headless-testable; GPU mirror below is uploaded by
     // UploadVisible into the frameIndex ring slice).
     std::vector<Batch> prevBatches;        // surviving (cluster, draw) pairs
