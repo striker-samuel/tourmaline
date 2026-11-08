@@ -2398,6 +2398,19 @@ class WorldRenderer : public IRenderer {
     tour::gpu_scene::CanonicalRasterOwnership m_gpuSceneRasterOwnership;
     tour::gpu_scene::RasterOwnershipEntry* m_gpuSceneRasterEntries = nullptr;
     size_t m_gpuSceneRasterEntryCapacity = 0;
+    // One immutable generation mask per acquired flight. A zero entry is
+    // legacy-owned; other entries are admitted instance generations. Its
+    // BDA is an extra compute input, never a second draw source.
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskBuffers{};
+    std::array<size_t, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskCapacity{};
+    std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskLogicalBacking{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskLogical{};
+    uint32_t m_gpuSceneRasterCompatibleCount = 0;
+    uint32_t m_gpuSceneRasterLegacyCount = 0;
     // Prototype production cutover: only all-supported static/opaque scenes
     // may substitute their Main draws. Unsupported content uses GfxFilter.
     const smvk::World* m_gpuSceneRasterEligibilityWorld = nullptr;
