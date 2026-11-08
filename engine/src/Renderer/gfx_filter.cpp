@@ -4,6 +4,7 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gfx_dynamic_capacity.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <Engine/debug_log.h>
@@ -29,6 +30,17 @@ namespace tour::gfx {
 // using-namespace-gfx consumer — the ambiguity that made the header
 // fully qualified instead.
 using namespace ::smvk;
+
+// 2D dispatch flattened in the corresponding HLSL entrypoints.
+static void DispatchDrawGroups(CommandBuffer& cmd, uint32_t groups) {
+    DispatchGrid grid{};
+    if (!PlanDispatchGrid(groups, grid)) {
+        std::fprintf(stderr, "[GfxFilter] FATAL: dispatch requires too many workgroups (%u)\n", groups);
+        std::abort();
+    }
+    if (grid.x != 0)
+        cmd.Dispatch(grid.x, grid.y, 1);
+}
 
 // TMP-PROBE: list-mechanism breakdown for the traversal investigation.
 // Accumulates per-scope ms, prints averages every 240 BeginViews.
@@ -3077,7 +3089,7 @@ void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ct
     }
     cmd.BindComputePipeline(s.skinBoundsProgram);
     cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
-    cmd.Dispatch(drawCount, 1, 1);
+    DispatchDrawGroups(cmd, drawCount);
 }
 
 // ---------------------------------------------------------------------------
@@ -3184,7 +3196,7 @@ void PushAndDispatchConeDebug(State& s, CommandBuffer& cmd, ResourceManager& ctx
     cmd.BindComputePipeline(s.coneDebugProgram);
     cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
     // One 128-thread workgroup per draw (the GfxBatchCull dispatch shape).
-    cmd.Dispatch(drawCount, 1, 1);
+    DispatchDrawGroups(cmd, drawCount);
 }
 
 RenderPass& AddBatchCullPass(State& s, RenderGraph& rg, uint32_t view) {
@@ -3311,7 +3323,7 @@ void PushAndDispatchBatchCull(State& s, CommandBuffer& cmd, ResourceManager& ctx
     cmd.BindComputePipeline(s.batchCullProgram);
     cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
     // One 128-thread workgroup per material-sorted draw.
-    cmd.Dispatch(drawCount, 1, 1);
+    DispatchDrawGroups(cmd, drawCount);
 }
 
 RenderPass& AddDrawCullPass(State& s, RenderGraph& rg, uint32_t view) {
@@ -3399,7 +3411,7 @@ void PushAndDispatchDrawCull(State& s, CommandBuffer& cmd, ResourceManager& ctx,
     }
     cmd.BindComputePipeline(s.drawCullProgram);
     cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
-    cmd.Dispatch((drawCount + 63u) / 64u, 1, 1);
+    DispatchDrawGroups(cmd, (uint32_t)((uint64_t(drawCount) + 63u) / 64u));
 }
 
 const std::vector<SeedRange>& CullRanges(const State& s, uint32_t view) {
