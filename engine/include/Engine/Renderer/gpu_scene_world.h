@@ -414,6 +414,12 @@ class WorldSynchronizer {
                 record.globalModel = tour::scene::GlobalTransformDouble(world.scene, item.node);
                 record.material = item.material; // interim World index
                 record.flags = static_cast<uint32_t>(item.flags);
+                // Per-instance pipeline classification, independent of
+                // mesh sharing. Keep legacy admission until both raster
+                // and depth PSO bins are wired end-to-end.
+                if (const auto* material = world.GetMaterial(item.material);
+                    material && material->doubleSided)
+                    record.flags |= InstanceFlagDoubleSided;
                 // Union the bounds of EVERY cooked LOD, including payloads
                 // that are currently deferred. Bounds must not shrink on
                 // eviction or the GPU would cull geometry after promotion.
