@@ -52,6 +52,11 @@ are converted together.
 - The pure capacity planner now aligns allocated **bytes** to 64 KiB,
   including non-divisor element strides (e.g. 24 bytes), rather than
   merely rounding by floor(64 KiB / stride).
+- A separate checked byte-budget planner now describes draw, candidate,
+  indirect, temporal, kept-parity, cull-state, skin-bounds, debug-line
+  and mesh-batch-list allocation sizes and fails without publishing a
+  partial plan if any size overflows. The survivor index ring remains
+  independently capped and is not automatically grown.
 - These are preparatory changes. The engine still uses fixed GPU buffer
   sizes, fixed HLSL array bounds, and old draw/candidate fatal checks.
   Do not mistake oversized dispatch tests for oversized scene coverage.
