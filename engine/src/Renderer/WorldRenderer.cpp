@@ -10903,6 +10903,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
             constexpr uint32_t forbiddenFlags =
                 smvk::IteratorFlagBit_Masked | smvk::IteratorFlagBit_Transparent;
+            // KD tally (parallel to the chain below, never replacing it):
+            // count the FIRST rejecting gate group per item - 1 sync,
+            // 2 db-ready, 3 flags, 4 material, 5 node/mesh, 6 lod/geometry,
+            // 0 compatible. Evaluation order mirrors the chain so the
+            // histogram names the same short-circuit point.
+            static const bool s_kdElig = std::getenv("TOURMALINE_KD") != nullptr;
+            uint32_t kdTally[7] = {};
+            uint32_t kdSub[4] = {}; // 0 flagsReq 1 flagsForb 2 surfaces 3 lightmap
+            static const bool s_kdSub = s_kdElig;
             for (size_t i = 0; i < total; ++i) {
                 const auto& item = m_world->drawItems[i];
                 const auto key = m_gpuSceneSync.SourceForNode(item.node);
@@ -10926,7 +10935,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // Packed vertex lightmaps use a different shader path;
                     // leave those objects with the legacy filtered/direct
                     // raster until the GPU-scene lit variant is implemented.
-                    mesh->lmChunk == UINT32_MAX && mesh->lightmapBase == UINT32_MAX &&
+                    // lmChunk alone is COOK-INPUT FLAGGING: meshes carry the
+                    // chunk/lobe flag even when no lightmap was ever baked
+                    // (every local scene cooks flagged, none baked) - the
+                    // real signal is the packed chart stream, the same
+                    // data-gate directLmEligible and the chart-table
+                    // rebuild use. Flagged-but-unbaked meshes shade through
+                    // the ordinary path and stay GPU-scene eligible.
+                    (mesh->lmChartXforms.empty() ||
+                     (mesh->lmChunk == UINT32_MAX && mesh->lightmapBase == UINT32_MAX)) &&
                     // The GPU work selector resolves the finest resident
                     // registered LOD. RasterIndexedInstanceReady requires
                     // complete union bounds for multi-LOD chains; retain
@@ -10978,6 +10995,47 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     const smvk::Material* m = m_world->GetMaterial(item.material);
                     doubleSidedCount += m && m->doubleSided ? 1u : 0u;
                 }
+                // KD tally: the mirror tracks the NEW chain (double-sided
+                // is admitted + binned above, no longer a group-4 reject).
+                // Sub-tallies refine the big groups: flagsReq/flagsForb
+                // (3a/3b), surfaces (5b), lightmap (5c) - the rest of
+                // node/mesh is 5a.
+                if (s_kdElig) {
+                    const bool a = key.registration != 0 && bool(instance);
+                    const bool b = a && tour::gpu_scene::RasterIndexedInstanceReady(
+                                            m_gpuSceneDatabase, instance);
+                    const bool flagsOk = (item.flags & requiredFlags) == requiredFlags &&
+                                         (item.flags & forbiddenFlags) == 0;
+                    const bool c = b && flagsOk;
+                    const bool d = c && item.material != smvk::World::kInvalidIndex &&
+                                   item.materialInstance == 0 &&
+                                   m_world->MaterialUserData(item.material) == 0 &&
+                                   !m_gfxRenderer.MaterialProjectFamily(item.material) &&
+                                   !m_gfxRenderer.MaterialLayered(item.material);
+                    const bool e5a = d && item.node < m_world->scene.globalTransform.size() &&
+                                     !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh &&
+                                     !mesh->skinned;
+                    const bool e =
+                        e5a && mesh->geometry.surfaces.size() == 1 &&
+                        (mesh->lmChartXforms.empty() ||
+                         (mesh->lmChunk == UINT32_MAX && mesh->lightmapBase == UINT32_MAX));
+                    ++kdTally[compatible ? 0
+                              : a        ? (b ? (c ? (d ? (e ? 6u : 5u) : 4u) : 3u) : 2u)
+                                         : 1u];
+                    if (s_kdSub) {
+                        if (b && !flagsOk) {
+                            if ((item.flags & requiredFlags) != requiredFlags)
+                                ++kdSub[0]; // 3a missing required bit
+                            else
+                                ++kdSub[1]; // 3b forbidden bit present
+                        } else if (e5a && !e) {
+                            if (mesh->geometry.surfaces.size() != 1)
+                                ++kdSub[2]; // 5b multi-surface mesh
+                            else
+                                ++kdSub[3]; // 5c lightmapped mesh
+                        }
+                    }
+                }
             }
             // Publish sorts and rejects duplicate source keys: two draw
             // records for one source must not silently share ownership.
@@ -10987,6 +11045,23 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_gpuSceneRasterDoubleSidedCount = snapshotValid ? doubleSidedCount : 0u;
             m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount;
             m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
+            if (s_kdElig)
+                std::fprintf(stderr,
+                             "[KD] eligibility: total=%zu compatible=%u | first-reject "
+                             "sync=%u db=%u flags=%u material=%u nodeMesh=%u lodGeometry=%u "
+                             "| flagsReq=%u flagsForb=%u surfaces=%u lightmap=%u\n",
+                             total,
+                             compatibleCount,
+                             kdTally[1],
+                             kdTally[2],
+                             kdTally[3],
+                             kdTally[4],
+                             kdTally[5],
+                             kdTally[6],
+                             kdSub[0],
+                             kdSub[1],
+                             kdSub[2],
+                             kdSub[3]);
             // Mixed ownership is recorded, but *not* submitted until GPU
             // candidate work and every legacy Main/depth path share the
             // same per-flight mask. In particular, GPU-skinned objects may
@@ -11138,6 +11213,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         s_gpuSceneRaster && !s_gpuSceneValidate && m_gpuSceneRasterEligible &&
         m_gpuSceneRasterProgram.shaderCount == 2 && !ShaderLodActive() && !m_wireframe &&
         m_debugView == ViewMode::Lit && GetActiveGIVariant() == engine::GIVariant::None;
+    // KD diagnostic: the full raster-mode breakdown (the temporal gate
+    // downstream only names its own conditions - this names every reason
+    // the cutover can sit out, whole-world eligibility and the GI-variant
+    // refusal included).
+    if (std::getenv("TOURMALINE_KD")) {
+        static uint32_t s_kdRasterMode = 0;
+        if (s_kdRasterMode++ < 6)
+            std::fprintf(stderr,
+                         "[KD] raster mode: env=%d validate=%d eligible=%d(%u/%u) "
+                         "program=%d shaderLod=%d wire=%d view=%d gi=%d\n",
+                         s_gpuSceneRaster ? 1 : 0,
+                         s_gpuSceneValidate ? 1 : 0,
+                         m_gpuSceneRasterEligible ? 1 : 0,
+                         m_gpuSceneRasterCompatibleCount,
+                         m_gpuSceneRasterCompatibleCount + m_gpuSceneRasterLegacyCount,
+                         m_gpuSceneRasterProgram.shaderCount,
+                         ShaderLodActive() ? 1 : 0,
+                         m_wireframe ? 1 : 0,
+                         int(m_debugView),
+                         int(GetActiveGIVariant()));
+    }
     if ((s_gpuSceneValidate || gpuSceneRasterMode) && m_world && m_gpuSceneDatabaseReady &&
         mainRenderView != smvk::RenderViewSet::kInvalidIndex &&
         (gpuSceneRasterMode || (m_frameCounter % 120u) == 0u)) {
@@ -11401,10 +11497,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // here rather than last frame's cached view.
                     workSelect.lodEyeBudget =
                         glm::vec4(m_cameraPositioner.cameraPosition_, m_lodPixelBudget);
-                    workSelect.lodProjection =
-                        glm::vec4(float(renderExtent.height),
-                                  glm::radians(kCameraFovYDegrees),
-                                  m_lodEnabled ? 1.0f : 0.0f, 0.0f);
+                    workSelect.lodProjection = glm::vec4(float(renderExtent.height),
+                                                         glm::radians(kCameraFovYDegrees),
+                                                         m_lodEnabled ? 1.0f : 0.0f,
+                                                         0.0f);
                 }
                 tour::gpu_scene::ParallelWorkBlockPush workBlock{};
                 tour::gpu_scene::ParallelWorkGroupPush workGroups{};
@@ -12873,6 +12969,23 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_TEMPORAL");
         return !e || std::strcmp(e, "0") != 0;
     }();
+    // KD diagnostic: name the FIRST failing gate condition (a silent
+    // no-op chain is indistinguishable from a correct one at the pixel
+    // level - the parity gate's engagement witness depends on knowing
+    // why the chain sat out).
+    if (std::getenv("TOURMALINE_KD")) {
+        static uint32_t s_kdTemporal = 0;
+        if (s_kdTemporal++ < 6)
+            std::fprintf(stderr,
+                         "[KD] temporal gate: temporal=%d rasterActive=%d programs=%d "
+                         "gfxFilter=%d commands=%u slots=%u\n",
+                         s_gpuSceneTemporal ? 1 : 0,
+                         m_gpuSceneRasterDrawActive ? 1 : 0,
+                         temporalProgramsReady ? 1 : 0,
+                         m_gfxFilterAvailable ? 1 : 0,
+                         temporalCommands,
+                         temporalSlots);
+    }
     if (s_gpuSceneTemporal && m_gpuSceneRasterDrawActive && temporalProgramsReady &&
         m_gfxFilterAvailable && temporalCommands != 0 && temporalSlots != 0 &&
         temporalCommands <= 2u * 1048576u && temporalSlots <= 4194304u) {
@@ -13353,6 +13466,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         if (gpuTemporalReady) {
             const uint32_t hizSlot = m_gfxRenderer.LastSlot();
             const auto& hz = smvk::gfx::Temporal(m_gfxRenderer.gfx, hizSlot).hiz[temporalFlight];
+            // One-shot ENGAGEMENT WITNESS for the capture-based parity
+            // gate (tools/gpu_scene_temporal_parity.py): the temporal
+            // A/B contract is PIXEL IDENTITY between the chain on and
+            // TOURMALINE_GPU_SCENE_TEMPORAL=0 - but identical pixels
+            // alone cannot distinguish "correct" from "silently
+            // absent". This line (grep'd from the app log) proves the
+            // ON side actually dispatched seed + Hi-Z gate + history
+            // this frame; the gate also asserts its ABSENCE in the OFF
+            // run's log.
+            static uint32_t s_temporalEngagedLog = 0;
+            if (s_temporalEngagedLog++ < 3)
+                std::fprintf(stderr,
+                             "[GpuSceneTemporal] engaged: commands=%u slots=%u history=%u "
+                             "hiz=%ux%u mips=%u\n",
+                             temporalCommands,
+                             temporalSlots,
+                             gpuHistoryValid ? 1u : 0u,
+                             hz.width,
+                             hz.height,
+                             hz.mipCount);
             // AddHizPasses declares depth/compute read-write dependencies.
             appendHizPasses();
             const uint64_t prevBda =
@@ -14950,12 +15083,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 const uint32_t base = bin * binStride;
                 for (uint32_t first = 0; first < binStride; first += kChunk) {
                     const uint32_t count = std::min(kChunk, binStride - first);
-                    cmd.DrawIndexedIndirect(
-                        sceneRasterCommands,
-                        uint64_t(base + first) *
-                            sizeof(tour::gpu_scene::RasterIndirectCommand),
-                        count,
-                        sizeof(tour::gpu_scene::RasterIndirectCommand));
+                    cmd.DrawIndexedIndirect(sceneRasterCommands,
+                                            uint64_t(base + first) *
+                                                sizeof(tour::gpu_scene::RasterIndirectCommand),
+                                            count,
+                                            sizeof(tour::gpu_scene::RasterIndirectCommand));
                 }
             };
             drawBin(0u);
