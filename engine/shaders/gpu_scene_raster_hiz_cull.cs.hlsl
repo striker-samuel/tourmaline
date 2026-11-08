@@ -30,6 +30,7 @@ struct RasterViewData {
 };
 struct RasterHizPush {
     GPU_PTR(RasterCommands) commands;
+    GPU_PTR(RasterCommands) remainder;
     GPU_PTR_READ(RasterWork) work;
     GPU_PTR_READ(RasterInstances) instances;
     GPU_PTR_READ(RasterViewData) view;
@@ -101,5 +102,10 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (p.testable && p.onTarget && BoundHzbOccluded(p, ctx)) {
         cmd.instanceCount = 0u;
         pcH.commands.Get().rows[i] = cmd;
+        // The final depth remainder must match Main's visibility
+        // decision. Seed commands were omitted from this buffer already.
+        RasterIndirectCommand rem = pcH.remainder.Get().rows[i];
+        rem.instanceCount = 0u;
+        pcH.remainder.Get().rows[i] = rem;
     }
 }
