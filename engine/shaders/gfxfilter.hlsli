@@ -75,11 +75,40 @@ struct GfxClusters  { GfxClusterData cluster[GFX_MAX_CLUSTERS]; };
 // gfxdrawcull / gfxfilter's ClusterOccluded + PublishDrawDemand) index the
 // region they need. Generous declared capacity (the BDA-pointer pattern —
 // loads stay in bounds of the real buffer sized by the C++ kSkinBoundsBytes).
-struct GfxSkinBoundsTable
+// The first candidateCapacity*4 uint4s hold clusters (4 vectors
+// per GfxClusterData). The following drawCapacity uint4s hold draw union
+// bounds. This dynamic layout preserves the single BDA used by every
+// GPU skinning / batch-cull / demand / cone consumer.
+struct GfxSkinBoundsTable { uint4 words[]; };
+GfxClusterData LoadSkinCluster(GPU_PTR_READ(GfxSkinBoundsTable) table, uint slot)
 {
-    GfxClusterData cluster[GFX_MAX_BATCH_SLOTS];
-    float4 drawBound[GFX_MAX_DRAWS];
-};
+    const uint base = slot * 4u;
+    GfxClusterData outData;
+    outData.a = table.Get().words[base];
+    outData.b = asfloat(table.Get().words[base + 1u]);
+    outData.c = asfloat(table.Get().words[base + 2u]);
+    outData.d = asfloat(table.Get().words[base + 3u]);
+    return outData;
+}
+void StoreSkinCluster(GPU_PTR_WRITE(GfxSkinBoundsTable) table,
+                      uint slot, GfxClusterData data)
+{
+    const uint base = slot * 4u;
+    table.Get().words[base] = data.a;
+    table.Get().words[base + 1u] = asuint(data.b);
+    table.Get().words[base + 2u] = asuint(data.c);
+    table.Get().words[base + 3u] = asuint(data.d);
+}
+float4 LoadSkinDrawBound(GPU_PTR_READ(GfxSkinBoundsTable) table,
+                         uint candidateCapacity, uint draw)
+{
+    return asfloat(table.Get().words[candidateCapacity * 4u + draw]);
+}
+void StoreSkinDrawBound(GPU_PTR_WRITE(GfxSkinBoundsTable) table,
+                        uint candidateCapacity, uint draw, float4 value)
+{
+    table.Get().words[candidateCapacity * 4u + draw] = asuint(value);
+}
 // Cone-axis debug line output (gfxcone_debug.cs.hlsl): packed
 // DebugLineVertex float3s (3 uint words per vertex, the GfxPositions
 // packed-stride pattern — a float3 member array cannot express the 12B
@@ -89,7 +118,7 @@ struct GfxSkinBoundsTable
 // no compaction, no ordinals. Lazily created when the overlay's UI toggle
 // arms it (SetConeDebug); degenerate cones (the keep-cone) write
 // zero-length lines (degenerate primitives — discarded).
-struct GfxConeDebugLines { uint word[GFX_MAX_BATCH_SLOTS * 6]; };
+struct GfxConeDebugLines { uint word[]; };
 // DEFORMED vertex heap (the Northlight compute-skinning output; the
 // skinning pass - gfxskinning.cs.hlsl - wrote it this frame): 5 words per
 // vertex [pos3 asuint, packed normal, packed tangent]. Skinned draws
@@ -113,7 +142,7 @@ struct GfxSkinDeformedHeap { uint word[64 * 1024 * 1024]; };
 // surviving cluster; see PublishDrawDemand for the containment argument
 // (draw sphere contains every cluster sphere -> a designated group that
 // skips publishing implies no sibling group survives either).
-struct GfxBatches { uint4 batch[GFX_MAX_BATCH_SLOTS]; };
+struct GfxBatches { uint4 batch[]; };
 #define GFX_BATCH_DEMAND 0x1 // batch.w bit 0
 
 // misc.y bit 1: Scene::ditherCloseup fade band this frame (C++ mirror
@@ -170,7 +199,7 @@ struct GfxDraw
     // Total 112 bytes, pinned by the C++ static_assert.
     uint4 misc3;
 };
-struct GfxDraws { GfxDraw draws[GFX_MAX_DRAWS]; };
+struct GfxDraws { GfxDraw draws[]; };
 
 // Scene-wide lightmap chart atlas transforms (one float4 per mesh chart:
 // xy = scale, zw = offset; atlasUv = chartUv * xy + zw). Concatenated
@@ -201,7 +230,7 @@ struct GfxIndirectCmd
     int vertexOffset;
     uint firstInstance;
 };
-struct GfxIndirect { GfxIndirectCmd cmds[GFX_MAX_BATCH_SLOTS]; };
+struct GfxIndirect { GfxIndirectCmd cmds[]; };
 
 // ---------------------------------------------------------------------------
 // GPU cull chain (Northlight-style; mirrors C++ gfx_filter.h). CPU seeds
@@ -226,7 +255,7 @@ struct GfxSeedCmd
     int vertexOffset;
     uint firstInstance;
 };
-struct GfxSeedCmds { GfxSeedCmd cmd[GFX_MAX_BATCH_SLOTS]; };
+struct GfxSeedCmds { GfxSeedCmd cmd[]; };
 
 // Kept-bit ring: TWO parity regions in one buffer per flight. The frame
 // whose parity is P writes region P (every candidate slot gets a
@@ -247,7 +276,7 @@ struct GfxSeedCmds { GfxSeedCmd cmd[GFX_MAX_BATCH_SLOTS]; };
 // and a stale-dropped slot misses the seed and the remainder pass draws
 // it the same frame (no holes). This is the standard GPU-driven temporal
 // reuse trade (slot-stable instance reuse), the price of zero readbacks.
-struct GfxKeptBits { uint kept[GFX_MAX_BATCH_SLOTS * 2]; };
+struct GfxKeptBits { uint kept[]; };
 
 // Draw verdicts (gfxdrawcull: mesh-bound frustum + HZB occlusion, the
 // frozen cull view) + the filter's atomic filtered-offset counter, packed
@@ -261,7 +290,7 @@ struct GfxKeptBits { uint kept[GFX_MAX_BATCH_SLOTS * 2]; };
 #define GFX_DIAG_ALLOCATED   (GFX_MAX_DRAWS + 3)
 #define GFX_DIAG_GATED       (GFX_MAX_DRAWS + 4)
 #define GFX_CULL_STATE_WORDS (GFX_MAX_DRAWS + 5)
-struct GfxCullState { uint v[GFX_CULL_STATE_WORDS]; };
+struct GfxCullState { uint v[]; };
 
 // Static per-mesh cluster range (mirror of C++ gfx::Mesh /
 // ClusterConstants' layout counterpart). Load-time upload.
@@ -675,7 +704,7 @@ struct GfxFilterPush
     GPU_PTR_READ(GfxSkinBoundsTable) skinBounds;
     float4x4 viewProj;
     float3 eye;
-    float pad1;
+    uint drawCapacity;
     uint cullFlags;
     uint width;
     uint height;
@@ -695,7 +724,7 @@ struct GfxFilterPush
     // written as indexBase + outputOffset (absolute), so draws address the
     // monoblock directly and the index binding never switches buffers.
     uint indexBase;
-    uint pad3;
+    uint candidateCapacity;
     // Draw-level texture-demand inputs (0/empty disables the publisher in
     // the shader; PushAndDispatch zero-gates the whole set on any null
     // BDA — same belt-and-braces rule as the HZB inputs above).
@@ -743,7 +772,7 @@ struct GfxBatchCullPush
     GPU_PTR_WRITE(GfxCullState) cullState; // out: offset-counter zero (group 0)
     float4x4 viewProj;   // LIVE view (seed/remainder semantics)
     float3 eye;
-    float pad1;
+    uint dispatchUnused;
     uint drawCount;
     uint drawSetMask;    // TemporalView::drawSetMask (seed/remainder bucket gate)
     uint clusterIndexBase; // absolute firstIndex base for seed/remainder commands
@@ -765,7 +794,7 @@ struct GfxBatchCullPush
     // — default 0: skinned clusters cull conservative, sphere+frustum only;
     // Remedy's own shipped call, their HZB covered the cones' win).
     uint skinConeEnabled;
-    uint2 pad3;
+    uint2 capacities; // x candidate slots per parity, y draw verdict offset
 };
 //static_assert(sizeof(GfxBatchCullPush) == 208);
 
@@ -790,7 +819,7 @@ struct GfxSkinBoundsPush
     uint deformedBase;  // 0xFFFFFFFF = none
     uint drawCount;
     uint coneEnabled;   // 0 = degenerate cones (TOURMALINE_SKIN_CONE=0 A/B)
-    uint pad1;
+    uint candidateCapacity;
 };
 
 // GfxConeDebug (the cone-axis overlay's GPU leg): one 128-thread workgroup
@@ -813,7 +842,8 @@ struct GfxConeDebugPush
     GPU_PTR_WRITE(GfxConeDebugLines) lines; // out (2 verts per slot)
     uint skinBoundsValid; // 0: every draw reads the static table
     uint drawCount;
-    uint2 pad;
+    uint candidateCapacity;
+    uint pad;
 };
 //static_assert(sizeof(GfxConeDebugPush) == 56);
 
@@ -839,7 +869,7 @@ struct GfxDrawCullPush
     GPU_PTR_READ(GfxSkinBoundsTable) skinBounds; // deformed unions (skinned draws)
     float4x4 viewProj;  // FROZEN view (the gfx view record matrix)
     float3 eye;
-    float pad1;
+    uint candidateCapacity;
     uint cullFlags;    // GFX_CULL_OCCLUSION | GFX_CULL_HZBSKIPMASKED consumers
     uint drawCount;
     uint width;         // guard-band extent (== HZB target)
