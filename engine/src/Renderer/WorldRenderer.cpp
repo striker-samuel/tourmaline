@@ -10878,7 +10878,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 tour::gpu_scene::IndexedGeometry geometry{};
                 const bool compatible =
                     key.registration != 0 && bool(instance) &&
-                    tour::gpu_scene::InstanceDrawReady(m_gpuSceneDatabase, instance) &&
+                    tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase, instance) &&
                     (item.flags & requiredFlags) == requiredFlags &&
                     (item.flags & forbiddenFlags) == 0 &&
                     item.material != smvk::World::kInvalidIndex &&
