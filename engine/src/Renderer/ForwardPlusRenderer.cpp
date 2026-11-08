@@ -455,7 +455,8 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
     smvk::LogicalBufferHandle workLogical,
     uint32_t commandCount,
     const tour::gpu_scene::RasterVsPush& vertexPush,
-    bool hizOccluder) {
+    bool hizOccluder,
+    bool hasDoubleSided) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || (rasterDepth.shaderCount != 1 && rasterDepth.shaderCount != 2))
         return false;
@@ -501,7 +502,7 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
     }
     const IRenderer::PushConstants scenePush = fc.pc;
     pass.SetRecordingFunc(
-        [rasterDepth, scenePush, indirect, commandCount, vertexPush](
+        [rasterDepth, scenePush, indirect, commandCount, vertexPush, hasDoubleSided](
             smvk::CommandBuffer& cmd) mutable {
             if (!commandCount)
                 return; // the pass still clears depth for empty views
@@ -519,13 +520,34 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
                 0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
             cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
                               sizeof(vertexPush), &vertexPush, smvk::ShaderStage::All);
+            // GPU work-to-command build splits commands into fixed class
+            // ranges. One back-cull PSO and, only when needed, one CullNone
+            // PSO handle all draws in this prepass/seed.
             constexpr uint32_t kChunk = 65535u;
-            for (uint32_t first = 0; first < commandCount; first += kChunk) {
-                const uint32_t n = std::min(kChunk, commandCount - first);
-                cmd.DrawIndexedIndirect(
-                    indirect,
-                    uint64_t(first) * sizeof(tour::gpu_scene::RasterIndirectCommand),
-                    n, sizeof(tour::gpu_scene::RasterIndirectCommand));
+            const uint32_t stride = commandCount / 2u;
+            const auto drawBin = [&](uint32_t bin) {
+                const uint32_t base = bin * stride;
+                for (uint32_t first = 0; first < stride; first += kChunk) {
+                    const uint32_t n = std::min(kChunk, stride - first);
+                    cmd.DrawIndexedIndirect(
+                        indirect,
+                        uint64_t(base + first) *
+                            sizeof(tour::gpu_scene::RasterIndirectCommand),
+                        n, sizeof(tour::gpu_scene::RasterIndirectCommand));
+                }
+            };
+            drawBin(0u);
+            if (hasDoubleSided) {
+                cmd.BindRenderPipeline(
+                    rasterDepth, smvk::VertexLayoutId::Static,
+                    smvk::DepthSettings{
+                        .depthFunc = smvk::CompareOp::GreaterEqual,
+                        .writeEnable = true,
+                        .depthTestEnable = true},
+                    smvk::StencilSettings{}, smvk::BlendSettings{},
+                    smvk::MSAASettings{},
+                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                drawBin(1u);
             }
         });
     return true;
