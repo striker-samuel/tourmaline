@@ -231,6 +231,16 @@ struct GfxRenderer : public smvk::IFrameRenderer {
                          smvk::LogicalImageViewHandle depthLogical,
                          uint32_t depthBindlessIndex,
                          const char* passName = "GfxHiz");
+    // GPU-scene-only frames still need a flight-safe HZB slot, without
+    // spending CPU time expanding any GfxFilter draws or seed lists.
+    // Called only when the regular GfxFilter AppendPasses was skipped.
+    [[nodiscard]] bool PrepareGpuSceneHiz(smvk::ResourceManager& ctx,
+                                          smvk::RenderGraph& rg,
+                                          const smvk::RenderView& view,
+                                          const glm::vec3& eye,
+                                          uint32_t flight,
+                                          uint32_t width,
+                                          uint32_t height);
     // SPD-vs-per-mip culling HZB verification (TOURMALINE_HIZ_SPD_VERIFY):
     // AppendHizPasses arms this when the frame recorded BOTH the per-mip
     // live pyramid and the SPD shadow; the host consumes it post-Execute

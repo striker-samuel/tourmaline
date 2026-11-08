@@ -97,8 +97,8 @@
 #include <Engine/WorldFields/WorldField.h>
 #include <Engine/WorldFields/WorldFieldCodec.h>
 #include <Engine/WorldFields/WorldFieldProvider.h>
-#include <Engine/WorldPartition/WorldEnvTiles.h>
 #include <Engine/WorldPartition/WorldEnvTileProvider.h>
+#include <Engine/WorldPartition/WorldEnvTiles.h>
 #include <Engine/WorldPartition/WorldPartition.h>
 
 #include <Engine/App/Element.h>
@@ -1036,20 +1036,21 @@ struct FrameUniforms {
     // (lmLayers@1888, probe@1952, worldFields@1976).
     // APPEND-ONLY tail (after giVolumeMeanLayers): every pinned offset
     // above stays put when this grows. ----
-    uint64_t envZones = 0;             // 1672 EnvTileRecord array BDA (raw)
-    uint32_t envZoneCount = 0;         // 1680 live records (incl. base)
-    uint32_t envZoneFlags = 0;         // 1684 bit0 = tiles live, bit1 = zone fog authored
-    float envTileMinX = 0.0f;          // 1688 tile-grid min corner X (m)
-    float envTileMinZ = 0.0f;          // 1692 min corner Z
-    uint32_t envTileDimX = 0;          // 1696 tiles per axis (64 m each)
-    uint32_t envTileDimZ = 0;          // 1700
-    uint64_t envTileCells = 0;         // 1704 the EnvTileCell grid BDA (raw)
-    uint64_t envTileShapes = 0;        // 1712 exact OBBs BDA
-    uint64_t envTileIndices = 0;       // 1720 candidate ids BDA
-    uint64_t envTilePageTable = 0;    // 1728 root-page -> physical slot BDA
-    uint64_t envTileFarIndices = 0;  // 1736 far candidate shortlist
-    uint32_t envTileFarCount = 0;     // 1744
-    uint32_t envTileReserved[33] = {}; // 1736 pinned lmLayers tail // 1712 (keeps lmLayers@1888 pinned)
+    uint64_t envZones = 0;          // 1672 EnvTileRecord array BDA (raw)
+    uint32_t envZoneCount = 0;      // 1680 live records (incl. base)
+    uint32_t envZoneFlags = 0;      // 1684 bit0 = tiles live, bit1 = zone fog authored
+    float envTileMinX = 0.0f;       // 1688 tile-grid min corner X (m)
+    float envTileMinZ = 0.0f;       // 1692 min corner Z
+    uint32_t envTileDimX = 0;       // 1696 tiles per axis (64 m each)
+    uint32_t envTileDimZ = 0;       // 1700
+    uint64_t envTileCells = 0;      // 1704 the EnvTileCell grid BDA (raw)
+    uint64_t envTileShapes = 0;     // 1712 exact OBBs BDA
+    uint64_t envTileIndices = 0;    // 1720 candidate ids BDA
+    uint64_t envTilePageTable = 0;  // 1728 root-page -> physical slot BDA
+    uint64_t envTileFarIndices = 0; // 1736 far candidate shortlist
+    uint32_t envTileFarCount = 0;   // 1744
+    uint32_t envTileReserved[33] =
+        {}; // 1736 pinned lmLayers tail // 1712 (keeps lmLayers@1888 pinned)
     // ---- SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h):
     // atlas layers ride the bindless texture slots. lmLayerKind selects
     // the layout: 0 = the classic 9 RGBA16F stream layers, 1 = BC6H
@@ -2298,15 +2299,18 @@ class WorldRenderer : public IRenderer {
     // supplies immutable cooked metadata plus a thread-safe page reader.
     // Request callback runs off the render thread; completions are adopted
     // at the next WorldPartition frame publication point.
-    using EnvPageReader = std::function<bool(
-        engine::worldpartition::WorldSubcellKey, std::vector<uint32_t>&)>;
-    bool InstallCookedEnvironment(
-        engine::worldpartition::WorldId world, glm::vec2 gridMin,
-        uint32_t dimX, uint32_t dimZ,
-        const engine::worldpartition::EnvTileRecord* records,
-        const smvk::envzones::EnvZoneGpu* shapes, uint32_t recordCount,
-        const uint32_t* farCandidates, uint32_t farCount,
-        EnvPageReader reader);
+    using EnvPageReader =
+        std::function<bool(engine::worldpartition::WorldSubcellKey, std::vector<uint32_t>&)>;
+    bool InstallCookedEnvironment(engine::worldpartition::WorldId world,
+                                  glm::vec2 gridMin,
+                                  uint32_t dimX,
+                                  uint32_t dimZ,
+                                  const engine::worldpartition::EnvTileRecord* records,
+                                  const smvk::envzones::EnvZoneGpu* shapes,
+                                  uint32_t recordCount,
+                                  const uint32_t* farCandidates,
+                                  uint32_t farCount,
+                                  EnvPageReader reader);
 
     void SetMapStreamingRadius(double metres) {
         if (std::isfinite(metres) && metres >= 0.0)
@@ -2403,8 +2407,7 @@ class WorldRenderer : public IRenderer {
     // BDA is an extra compute input, never a second draw source.
     std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
         m_gpuSceneRasterOwnerMaskBuffers{};
-    std::array<size_t, smvk::limits::MaxFramesInFlight>
-        m_gpuSceneRasterOwnerMaskCapacity{};
+    std::array<size_t, smvk::limits::MaxFramesInFlight> m_gpuSceneRasterOwnerMaskCapacity{};
     std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
         m_gpuSceneRasterOwnerMaskLogicalBacking{};
     std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
@@ -2414,10 +2417,8 @@ class WorldRenderer : public IRenderer {
     // rebuild the generation array, so steady-state mask uploads are O(0).
     std::array<const smvk::World*, smvk::limits::MaxFramesInFlight>
         m_gpuSceneRasterOwnerMaskWorld{};
-    std::array<uint64_t, smvk::limits::MaxFramesInFlight>
-        m_gpuSceneRasterOwnerMaskTopologyRev{};
-    std::array<uint64_t, smvk::limits::MaxFramesInFlight>
-        m_gpuSceneRasterOwnerMaskGeometryRev{};
+    std::array<uint64_t, smvk::limits::MaxFramesInFlight> m_gpuSceneRasterOwnerMaskTopologyRev{};
+    std::array<uint64_t, smvk::limits::MaxFramesInFlight> m_gpuSceneRasterOwnerMaskGeometryRev{};
 
     uint32_t m_gpuSceneRasterCompatibleCount = 0;
     uint32_t m_gpuSceneRasterLegacyCount = 0;
@@ -2440,6 +2441,39 @@ class WorldRenderer : public IRenderer {
         m_gpuSceneRasterWorkLogicalBacking{};
     std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
         m_gpuSceneRasterWorkLogical{};
+    // GPU-scene temporal visibility, separate from GfxFilter's CPU seed.
+    // Per-flight command rings contain CURRENT work, partitioned by the
+    // LAST flight's persistent instance (slot,generation) visibility map.
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterSeedModule{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterHizCullModule{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterHistoryModule{};
+    smvk::ShaderProgram m_gpuSceneRasterSeedProgram{};
+    smvk::ShaderProgram m_gpuSceneRasterHizCullProgram{};
+    // ONE program for both history legs (clear + commit): the shader's
+    // mainCS switches on the push `mode` word, so a single pipeline is
+    // bound twice per frame with different push constants.
+    smvk::ShaderProgram m_gpuSceneRasterHistoryProgram{};
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterSeedBuffers{};
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterRemainderBuffers{};
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterHistoryBuffers{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterSeedLogicals{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterRemainderLogicals{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterHistoryLogicals{};
+    std::array<uint32_t, smvk::limits::MaxFramesInFlight> m_gpuSceneRasterTemporalCommandCapacity{};
+    std::array<uint32_t, smvk::limits::MaxFramesInFlight> m_gpuSceneRasterTemporalHistoryCapacity{};
+    uint32_t m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
+    const smvk::World* m_gpuSceneRasterHistoryWorld = nullptr;
+    uint64_t m_gpuSceneRasterHistoryTopologyRevision = ~uint64_t(0);
+    uint64_t m_gpuSceneRasterHistoryGeometryRevision = ~uint64_t(0);
+    uint32_t m_gpuSceneRasterHistoryWidth = 0;
+    uint32_t m_gpuSceneRasterHistoryHeight = 0;
+
     // GPU-produced compute dispatch arguments plus an indirect work consumer.
     // No indexed graphics draws are changed by this validation-only chain.
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 2> m_gpuSceneIndirectModules{};
@@ -4650,7 +4684,7 @@ class WorldRenderer : public IRenderer {
     uint32_t m_envTileZoneCount = UINT32_MAX; // overflow log dedupe
     size_t m_envTileIndexBytes = 0;
     size_t m_envTileTableBytes = 0;
-    size_t m_envTileCellBytes = 0;            // the cells buffer size (recreate key)
+    size_t m_envTileCellBytes = 0; // the cells buffer size (recreate key)
     bool m_envCooked = false;
     bool m_envCookedHashInitialized = false;
     uint64_t m_envCookedHash = 0;

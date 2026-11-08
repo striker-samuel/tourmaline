@@ -4996,10 +4996,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     // grid BDA. A failed buffer = count 0 -> the consumers take the
     // plain resolved env path.
     if (m_envTilesPublished && !m_resources.envTileRecordsBuffer.empty() &&
-        !m_resources.envTileCellsBuffer.empty() &&
-        !m_resources.envTileShapesBuffer.empty() &&
-        !m_resources.envTileIndicesBuffer.empty() &&
-        !m_resources.envTilePageTableBuffer.empty() &&
+        !m_resources.envTileCellsBuffer.empty() && !m_resources.envTileShapesBuffer.empty() &&
+        !m_resources.envTileIndicesBuffer.empty() && !m_resources.envTilePageTableBuffer.empty() &&
         !m_resources.envTileFarIndicesBuffer.empty()) {
         data.envZones = m_context->GetBufferDeviceAddress(m_resources.envTileRecordsBuffer);
         data.envZoneCount = m_envTiles.RecordCount();
@@ -5015,8 +5013,10 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         data.envTileCells = m_context->GetBufferDeviceAddress(m_resources.envTileCellsBuffer);
         data.envTileShapes = m_context->GetBufferDeviceAddress(m_resources.envTileShapesBuffer);
         data.envTileIndices = m_context->GetBufferDeviceAddress(m_resources.envTileIndicesBuffer);
-        data.envTilePageTable = m_context->GetBufferDeviceAddress(m_resources.envTilePageTableBuffer);
-        data.envTileFarIndices = m_context->GetBufferDeviceAddress(m_resources.envTileFarIndicesBuffer);
+        data.envTilePageTable =
+            m_context->GetBufferDeviceAddress(m_resources.envTilePageTableBuffer);
+        data.envTileFarIndices =
+            m_context->GetBufferDeviceAddress(m_resources.envTileFarIndicesBuffer);
         data.envTileFarCount = m_envTiles.FarCandidateCount();
     } else {
         data.envZones = 0;
@@ -6347,8 +6347,7 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
         // suffix moves with a capacity grow between submit and poll.
         m_pendingReadbackHasGfxKept = gfxKeptActive;
         if (m_pendingReadbackHasGfxKept && !gfx.views.empty())
-            m_pendingGfxKeptWord =
-                smvk::gfx::CullStateCounterWord(gfx, 0, m_pendingReadbackSlot);
+            m_pendingGfxKeptWord = smvk::gfx::CullStateCounterWord(gfx, 0, m_pendingReadbackSlot);
         // DS counters (40 B) ride the same batch (no extra submit): the
         // slice's zero-fill was only STAGED in UpdateForwardPlusLights
         // (ring flush happens at EndAndPresent), so the transfer-queue
@@ -6621,7 +6620,8 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
                     smvk::gfx::CullStateCounterWord(gfx, 0, m_filterAuditSlot);
                 m_filterAuditKeptStride =
                     v0.candidateCapacity[m_filterAuditSlot] * sizeof(uint32_t);
-                m_filterAuditVerdicts.assign(smvk::gfx::CullStateWords(gfx, 0, m_filterAuditSlot), 0u);
+                m_filterAuditVerdicts.assign(smvk::gfx::CullStateWords(gfx, 0, m_filterAuditSlot),
+                                             0u);
                 for (uint32_t reg = 0; reg < 2; ++reg)
                     m_filterAuditKept[reg].assign(v0.batchCount, 0u);
                 m_filterAuditIndirect.assign(size_t(v0.batchCount) * 5, 0u);
@@ -9742,19 +9742,22 @@ static smvk::EnvironmentSettings MapSceneEnv(const tour::scene::SceneEnv& w, boo
 // zonePriority - 0 by default - sits under the node priorities).
 // Failure/overflow is non-fatal (count 0 = the plain resolved env
 // path, the default look still renders through it).
-bool WorldRenderer::InstallCookedEnvironment(
-    engine::worldpartition::WorldId world, glm::vec2 gridMin,
-    uint32_t dimX, uint32_t dimZ,
-    const engine::worldpartition::EnvTileRecord* records,
-    const smvk::envzones::EnvZoneGpu* shapes, uint32_t recordCount,
-    const uint32_t* farCandidates, uint32_t farCount,
-    EnvPageReader reader) {
-    if (!reader) return false;
+bool WorldRenderer::InstallCookedEnvironment(engine::worldpartition::WorldId world,
+                                             glm::vec2 gridMin,
+                                             uint32_t dimX,
+                                             uint32_t dimZ,
+                                             const engine::worldpartition::EnvTileRecord* records,
+                                             const smvk::envzones::EnvZoneGpu* shapes,
+                                             uint32_t recordCount,
+                                             const uint32_t* farCandidates,
+                                             uint32_t farCount,
+                                             EnvPageReader reader) {
+    if (!reader)
+        return false;
     // Invalidate all pending page tickets BEFORE installing a new
     // manifest, even if the scene hash/world identity happens to match.
     m_envTileProvider.SetSource(nullptr, 0);
-    if (!m_envTiles.LoadCooked(gridMin, dimX, dimZ,
-                              records, shapes, recordCount) ||
+    if (!m_envTiles.LoadCooked(gridMin, dimX, dimZ, records, shapes, recordCount) ||
         !m_envTiles.SetCookedFarCandidates(farCandidates, farCount))
         return false;
     m_envCooked = true;
@@ -9767,7 +9770,7 @@ bool WorldRenderer::InstallCookedEnvironment(
     // render frame; the Future is polled without blocking next frame.
     m_envTileProvider.SetMaxNewRequestsPerFrame(8);
     m_envTileProvider.SetRequestCallback([this](worldpartition::WorldSubcellKey key,
-                                                 uint64_t ticket) {
+                                                uint64_t ticket) {
         if (m_envPageJobs.size() >= 16) {
             m_envTileProvider.Fail(key, ticket);
             return;
@@ -9777,8 +9780,8 @@ bool WorldRenderer::InstallCookedEnvironment(
             EnvPageJob job{};
             job.key = key;
             job.ticket = ticket;
-            job.future = std::async(std::launch::async,
-                [readerCopy = std::move(readerCopy), key]() mutable {
+            job.future =
+                std::async(std::launch::async, [readerCopy = std::move(readerCopy), key]() mutable {
                     std::vector<uint32_t> ids;
                     try {
                         const bool ok = readerCopy(key, ids);
@@ -9808,9 +9811,8 @@ void WorldRenderer::DrainEnvPageJobs() {
                 m_envTileProvider.Fail(job.key, job.ticket);
         } else {
             if (m_envTileProvider.Fail(job.key, job.ticket))
-                std::cerr << "[EnvTiles] cooked page read failed ("
-                          << job.key.x << ", " << job.key.z
-                          << "), retry deferred\n";
+                std::cerr << "[EnvTiles] cooked page read failed (" << job.key.x << ", "
+                          << job.key.z << "), retry deferred\n";
         }
         m_envPageJobs.erase(m_envPageJobs.begin() + ptrdiff_t(i));
     }
@@ -9923,11 +9925,14 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
         // base record; infinite faces extend their world axes to the
         // 16 km design edge). The math + its contract live in
         // WorldPartition (ComputeEnvGridExtent) next to the bake.
-        const worldpartition::EnvGridExtent ext = m_envCooked
-            ? worldpartition::EnvGridExtent{m_envTiles.GridMin(),
-                m_envTiles.DimX(), m_envTiles.DimZ(), 0.0f, 0.0f}
-            : worldpartition::ComputeEnvGridExtent(
-                scene, worldpartition::EnvGridBounds{bounds.mn, bounds.mx});
+        const worldpartition::EnvGridExtent ext =
+            m_envCooked ? worldpartition::EnvGridExtent{m_envTiles.GridMin(),
+                                                        m_envTiles.DimX(),
+                                                        m_envTiles.DimZ(),
+                                                        0.0f,
+                                                        0.0f}
+                        : worldpartition::ComputeEnvGridExtent(
+                              scene, worldpartition::EnvGridBounds{bounds.mn, bounds.mx});
 
         if ((m_envCooked ||
              m_envTiles.Build(scene, ext.gridMin, ext.dimX, ext.dimZ, ext.yMin, ext.yMax)) &&
@@ -9948,12 +9953,14 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
                 if (m_resources.envTileShapesBuffer.empty())
                     m_resources.envTileShapesBuffer = m_context->CreateBuffer(
                         sizeof(smvk::envzones::EnvZoneGpu) * worldpartition::kEnvTileMaxRecords,
-                        smvk::BufferType_Storage, "env tile exact shapes");
+                        smvk::BufferType_Storage,
+                        "env tile exact shapes");
                 if (m_resources.envTileShapesBuffer.empty()) {
                     smvk::OnResourceExhaustion("env tile shape buffer");
                     return;
                 }
-                m_context->UploadDataToBuffer(m_resources.envTileShapesBuffer,
+                m_context->UploadDataToBuffer(
+                    m_resources.envTileShapesBuffer,
                     m_envTiles.Shapes(),
                     sizeof(smvk::envzones::EnvZoneGpu) * m_envTiles.RecordCount(),
                     smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
@@ -9961,17 +9968,19 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
                 if (m_resources.envTileFarIndicesBuffer.empty())
                     m_resources.envTileFarIndicesBuffer = m_context->CreateBuffer(
                         sizeof(uint32_t) * worldpartition::kEnvTileMaxRecords,
-                        smvk::BufferType_Storage, "env far shortlisted candidates");
+                        smvk::BufferType_Storage,
+                        "env far shortlisted candidates");
                 if (m_resources.envTileFarIndicesBuffer.empty()) {
                     smvk::OnResourceExhaustion("env far candidates");
                     return;
                 }
                 if (m_envTiles.FarCandidateCount())
                     m_context->UploadDataToBuffer(m_resources.envTileFarIndicesBuffer,
-                        m_envTiles.FarCandidates(),
-                        sizeof(uint32_t) * m_envTiles.FarCandidateCount(),
-                        smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-                        smvk::AccessFlags::ShaderRead);
+                                                  m_envTiles.FarCandidates(),
+                                                  sizeof(uint32_t) * m_envTiles.FarCandidateCount(),
+                                                  smvk::PipelineStageBit_Vertex |
+                                                      smvk::PipelineStageBit_Fragment,
+                                                  smvk::AccessFlags::ShaderRead);
                 // Candidate IDs are published from the provider's compact
                 // resident index stream after WorldPartition::UpdateFrame.
             }
@@ -10014,8 +10023,7 @@ void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
 // GPU-scene indexed-geometry publisher consumes. The narrowing lives HERE, in
 // engine implementation code, so the public header carries no RHI/gfx::State
 // exposure (the R8 boundary guard in tests/test_architecture.cpp).
-static tour::gpu_scene::IndexedGeometryTables
-GpuSceneIndexedTables(const tour::gfx::State& gfx) {
+static tour::gpu_scene::IndexedGeometryTables GpuSceneIndexedTables(const tour::gfx::State& gfx) {
     tour::gpu_scene::IndexedGeometryTables tables;
     tables.meshes = gfx.meshes.data();
     tables.meshCount = uint32_t(gfx.meshes.size());
@@ -10543,7 +10551,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 
         // Placement's optional interest is a separate layer, but shares
         // the partition's priority ordering and commit sequence.
-        engine::worldpartition::StreamingInterest interests[4]{interest, interest, interest, interest};
+        engine::worldpartition::StreamingInterest interests[4]{
+            interest, interest, interest, interest};
         size_t interestCount = 1;
         if (m_activeMapId) {
             interests[interestCount].world = m_activeMapId;
@@ -10585,9 +10594,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             engine::worldpartition::StreamingInterest envInterest = interest;
             envInterest.world = m_envCooked ? m_envCookedWorld : m_activeMapId;
             envInterest.radiusMeters = std::max(512.0, m_mapStreamingRadius);
-            envInterest.layerMask =
-                engine::worldpartition::StreamLayerBit(
-                    engine::worldpartition::StreamLayer::Environment);
+            envInterest.layerMask = engine::worldpartition::StreamLayerBit(
+                engine::worldpartition::StreamLayer::Environment);
             interests[interestCount++] = envInterest;
         }
         m_worldPartition.SetInterests(interests, interestCount);
@@ -10597,31 +10605,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // Publish the provider's resident candidate stream only on a
         // membership/bake change, not per frame. Cells without residency
         // intentionally resolve the base environment.
-        if (m_envTilesPublished &&
-            m_envTileProvider.Revision() != m_envTileResidentRevision) {
-            const size_t bytes = m_envTileProvider.PackedCellCount() *
-                sizeof(engine::worldpartition::EnvTileCell);
+        if (m_envTilesPublished && m_envTileProvider.Revision() != m_envTileResidentRevision) {
+            const size_t bytes =
+                m_envTileProvider.PackedCellCount() * sizeof(engine::worldpartition::EnvTileCell);
             const size_t tableBytes = m_envTileProvider.PageTableCount() * sizeof(uint32_t);
             const size_t indexBytes = m_envTileProvider.IndexCount() * sizeof(uint32_t);
-            if (m_envTileCellBytes != bytes ||
-                m_resources.envTileCellsBuffer.empty()) {
-                m_resources.envTileCellsBuffer = m_context->CreateBuffer(
-                    std::max(bytes, size_t(32)), smvk::BufferType_Storage,
-                    "env tile resident 4x4 cell pages");
+            if (m_envTileCellBytes != bytes || m_resources.envTileCellsBuffer.empty()) {
+                m_resources.envTileCellsBuffer =
+                    m_context->CreateBuffer(std::max(bytes, size_t(32)),
+                                            smvk::BufferType_Storage,
+                                            "env tile resident 4x4 cell pages");
                 m_envTileCellBytes = m_resources.envTileCellsBuffer.empty() ? 0 : bytes;
             }
-            if (m_envTileTableBytes != tableBytes ||
-                m_resources.envTilePageTableBuffer.empty()) {
-                m_resources.envTilePageTableBuffer = m_context->CreateBuffer(
-                    std::max(tableBytes, size_t(4)), smvk::BufferType_Storage,
-                    "env tile root page table");
+            if (m_envTileTableBytes != tableBytes || m_resources.envTilePageTableBuffer.empty()) {
+                m_resources.envTilePageTableBuffer =
+                    m_context->CreateBuffer(std::max(tableBytes, size_t(4)),
+                                            smvk::BufferType_Storage,
+                                            "env tile root page table");
                 m_envTileTableBytes = m_resources.envTilePageTableBuffer.empty() ? 0 : tableBytes;
             }
-            if (m_envTileIndexBytes != indexBytes ||
-                m_resources.envTileIndicesBuffer.empty()) {
-                m_resources.envTileIndicesBuffer = m_context->CreateBuffer(
-                    std::max(indexBytes, size_t(4)), smvk::BufferType_Storage,
-                    "env tile resident candidates");
+            if (m_envTileIndexBytes != indexBytes || m_resources.envTileIndicesBuffer.empty()) {
+                m_resources.envTileIndicesBuffer =
+                    m_context->CreateBuffer(std::max(indexBytes, size_t(4)),
+                                            smvk::BufferType_Storage,
+                                            "env tile resident candidates");
                 m_envTileIndexBytes = m_resources.envTileIndicesBuffer.empty() ? 0 : indexBytes;
             }
             if (!m_resources.envTileCellsBuffer.empty() &&
@@ -10629,18 +10636,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 !m_resources.envTileIndicesBuffer.empty()) {
                 if (bytes)
                     m_context->UploadDataToBuffer(m_resources.envTileCellsBuffer,
-                        m_envTileProvider.PackedCells(), bytes,
-                        smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-                        smvk::AccessFlags::ShaderRead);
+                                                  m_envTileProvider.PackedCells(),
+                                                  bytes,
+                                                  smvk::PipelineStageBit_Vertex |
+                                                      smvk::PipelineStageBit_Fragment,
+                                                  smvk::AccessFlags::ShaderRead);
                 m_context->UploadDataToBuffer(m_resources.envTilePageTableBuffer,
-                    m_envTileProvider.PageTable(), tableBytes,
-                    smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-                    smvk::AccessFlags::ShaderRead);
+                                              m_envTileProvider.PageTable(),
+                                              tableBytes,
+                                              smvk::PipelineStageBit_Vertex |
+                                                  smvk::PipelineStageBit_Fragment,
+                                              smvk::AccessFlags::ShaderRead);
                 if (indexBytes)
                     m_context->UploadDataToBuffer(m_resources.envTileIndicesBuffer,
-                        m_envTileProvider.Indices(), indexBytes,
-                        smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-                        smvk::AccessFlags::ShaderRead);
+                                                  m_envTileProvider.Indices(),
+                                                  indexBytes,
+                                                  smvk::PipelineStageBit_Vertex |
+                                                      smvk::PipelineStageBit_Fragment,
+                                                  smvk::AccessFlags::ShaderRead);
                 m_envTileResidentRevision = m_envTileProvider.Revision();
             }
         }
@@ -10804,15 +10817,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gpuSceneRasterDepthProgram = {.shaders = {vs}, .shaderCount = 1};
                 if (m_gpuSceneRasterGbufferFsModule.empty())
                     m_gpuSceneRasterGbufferFsModule = m_context->CreateShaderModule(
-                        smvk::shaders::Read(
-                            "content/shaders/gpu_scene_gbuffer.frag.hlsl.spv"),
+                        smvk::shaders::Read("content/shaders/gpu_scene_gbuffer.frag.hlsl.spv"),
                         "gpuSceneRasterGbufferFS");
                 if (!m_gpuSceneRasterGbufferFsModule.empty()) {
                     smvk::Shader gbFs{.module = m_gpuSceneRasterGbufferFsModule,
                                       .entryPoint = "mainPS",
                                       .stage = smvk::ShaderStage::Fragment};
-                    m_gpuSceneRasterGbufferProgram =
-                        {.shaders = {vs, gbFs}, .shaderCount = 2};
+                    m_gpuSceneRasterGbufferProgram = {.shaders = {vs, gbFs}, .shaderCount = 2};
                 }
             }
         } catch (...) {
@@ -10846,13 +10857,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // geometryId in Submesh is only a revision-local Gfx mesh registration,
         // so never substitute it for indexCount/firstIndex/vertexOffset.
         if (m_gpuSceneDatabaseReady && m_gfxFilterAvailable)
-            m_gpuSceneDatabaseReady = m_gpuSceneIndexedGeometry.Publish(
-                *m_context, GpuSceneIndexedTables(m_gfxRenderer.State()),
-                m_gpuSceneGeometryRevision, fb.frameIndex);
+            m_gpuSceneDatabaseReady =
+                m_gpuSceneIndexedGeometry.Publish(*m_context,
+                                                  GpuSceneIndexedTables(m_gfxRenderer.State()),
+                                                  m_gpuSceneGeometryRevision,
+                                                  fb.frameIndex);
         if (m_gpuSceneDatabaseReady)
-            m_gpuSceneDatabaseReady = m_gpuSceneRasterView.Publish(
-                *m_context, fb.frameIndex, frameData.viewProj,
-                glm::dvec3(m_cameraPositioner.cameraPosition_));
+            m_gpuSceneDatabaseReady =
+                m_gpuSceneRasterView.Publish(*m_context,
+                                             fb.frameIndex,
+                                             frameData.viewProj,
+                                             glm::dvec3(m_cameraPositioner.cameraPosition_));
         if (!m_gpuSceneDatabaseReady)
             std::fprintf(stderr,
                          "[GpuScene] database publication failed; no GPU reader this frame\n");
@@ -10864,19 +10879,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     m_gpuSceneRasterOwnership.BeginFrame();
     if (s_gpuSceneRaster && m_world && m_gpuSceneDatabaseReady) {
         if (m_gpuSceneRasterEligibilityWorld != m_world ||
-            m_gpuSceneRasterEligibilityTopologyRevision !=
-                m_world->gpuSceneTopologyRevision ||
+            m_gpuSceneRasterEligibilityTopologyRevision != m_world->gpuSceneTopologyRevision ||
             m_gpuSceneRasterEligibilityGeometryRevision != m_gpuSceneGeometryRevision) {
             m_gpuSceneRasterEligibilityWorld = m_world;
             m_gpuSceneRasterEligibilityTopologyRevision = m_world->gpuSceneTopologyRevision;
             m_gpuSceneRasterEligibilityGeometryRevision = m_gpuSceneGeometryRevision;
             const size_t total = m_world->drawItems.size();
             if (total > m_gpuSceneRasterEntryCapacity) {
-                m_gpuSceneRasterEntries =
-                    static_cast<tour::gpu_scene::RasterOwnershipEntry*>(
-                        smvk::AppArena().Allocate(
-                            total * sizeof(tour::gpu_scene::RasterOwnershipEntry),
-                            alignof(tour::gpu_scene::RasterOwnershipEntry)));
+                m_gpuSceneRasterEntries = static_cast<tour::gpu_scene::RasterOwnershipEntry*>(
+                    smvk::AppArena().Allocate(total * sizeof(tour::gpu_scene::RasterOwnershipEntry),
+                                              alignof(tour::gpu_scene::RasterOwnershipEntry)));
                 std::uninitialized_value_construct_n(m_gpuSceneRasterEntries, total);
                 m_gpuSceneRasterEntryCapacity = total;
             }
@@ -10900,8 +10912,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase, instance) &&
                     (item.flags & requiredFlags) == requiredFlags &&
                     (item.flags & forbiddenFlags) == 0 &&
-                    item.material != smvk::World::kInvalidIndex &&
-                    item.materialInstance == 0 &&
+                    item.material != smvk::World::kInvalidIndex && item.materialInstance == 0 &&
                     m_world->MaterialUserData(item.material) == 0 &&
                     // Double-sided materials stay LEGACY-owned: the
                     // GPU-scene raster leg is one Cull-Back pipeline over
@@ -10919,13 +10930,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // Closeup dither is inherited from ancestors and
                     // changes with camera distance; never GPU-own it
                     // without the matching masked/depth shader variants.
-                    !IsDitherCloseupNode(m_world->scene, int(item.node)) &&
-                    mesh && !mesh->skinned && mesh->geometry.surfaces.size() == 1 &&
+                    !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh &&
+                    !mesh->skinned && mesh->geometry.surfaces.size() == 1 &&
                     // Packed vertex lightmaps use a different shader path;
                     // leave those objects with the legacy filtered/direct
                     // raster until the GPU-scene lit variant is implemented.
-                    mesh->lmChunk == UINT32_MAX &&
-                    mesh->lightmapBase == UINT32_MAX &&
+                    mesh->lmChunk == UINT32_MAX && mesh->lightmapBase == UINT32_MAX &&
                     // The GPU work selector resolves the finest resident
                     // registered LOD. RasterIndexedInstanceReady requires
                     // complete union bounds for multi-LOD chains; retain
@@ -10937,8 +10947,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         const auto* inst = m_gpuSceneDatabase.instances.Get(instance);
                         if (!inst)
                             return false;
-                        const auto* selectedMesh = m_gpuSceneDatabase.meshes.Get(
-                            {inst->refs.x, inst->refs.y});
+                        const auto* selectedMesh =
+                            m_gpuSceneDatabase.meshes.Get({inst->refs.x, inst->refs.y});
                         if (!selectedMesh)
                             return false;
                         if (selectedMesh->lodCount > 1) {
@@ -10957,10 +10967,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         for (uint32_t level = 0; level < selectedMesh->lodCount; ++level) {
                             if (!(selectedMesh->residentMask & (1u << level)))
                                 continue;
-                            const auto& lod = m_gpuSceneDatabase.lods.Rows()[
-                                selectedMesh->firstLod + level];
-                            const auto& sub = m_gpuSceneDatabase.submeshes.Rows()[
-                                lod.value.firstSubmesh];
+                            const auto& lod =
+                                m_gpuSceneDatabase.lods.Rows()[selectedMesh->firstLod + level];
+                            const auto& sub =
+                                m_gpuSceneDatabase.submeshes.Rows()[lod.value.firstSubmesh];
                             tour::gpu_scene::IndexedGeometry geometry{};
                             if (!tour::gpu_scene::ResolveIndexedGeometry(
                                     gfxTables, sub.value.geometryId, geometry))
@@ -10974,11 +10984,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // Publish sorts and rejects duplicate source keys: two draw
             // records for one source must not silently share ownership.
             const bool snapshotValid = m_gpuSceneRasterOwnership.Publish(
-                std::span<tour::gpu_scene::RasterOwnershipEntry>(
-                    m_gpuSceneRasterEntries, total));
+                std::span<tour::gpu_scene::RasterOwnershipEntry>(m_gpuSceneRasterEntries, total));
             m_gpuSceneRasterCompatibleCount = snapshotValid ? compatibleCount : 0u;
-            m_gpuSceneRasterLegacyCount =
-                uint32_t(total) - m_gpuSceneRasterCompatibleCount;
+            m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount;
             m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
             // Mixed ownership is recorded, but *not* submitted until GPU
             // candidate work and every legacy Main/depth path share the
@@ -10988,8 +10996,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     } else {
         m_gpuSceneRasterEligible = false;
         m_gpuSceneRasterCompatibleCount = 0;
-        m_gpuSceneRasterLegacyCount = m_world
-            ? uint32_t(m_world->drawItems.size()) : 0u;
+        m_gpuSceneRasterLegacyCount = m_world ? uint32_t(m_world->drawItems.size()) : 0u;
         m_gpuSceneRasterOwnership.Reset();
         // Transient publication failures must not keep stale eligibility.
         m_gpuSceneRasterEligibilityWorld = nullptr;
@@ -11129,9 +11136,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // Sampling once per 120 frames bounds the debug CPU oracle/readback.
     const bool gpuSceneRasterMode =
         s_gpuSceneRaster && !s_gpuSceneValidate && m_gpuSceneRasterEligible &&
-        m_gpuSceneRasterProgram.shaderCount == 2 && !ShaderLodActive() &&
-        !m_wireframe && m_debugView == ViewMode::Lit &&
-        GetActiveGIVariant() == engine::GIVariant::None;
+        m_gpuSceneRasterProgram.shaderCount == 2 && !ShaderLodActive() && !m_wireframe &&
+        m_debugView == ViewMode::Lit && GetActiveGIVariant() == engine::GIVariant::None;
     if ((s_gpuSceneValidate || gpuSceneRasterMode) && m_world && m_gpuSceneDatabaseReady &&
         mainRenderView != smvk::RenderViewSet::kInvalidIndex &&
         (gpuSceneRasterMode || (m_frameCounter % 120u) == 0u)) {
@@ -11280,6 +11286,43 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
         }
+        // GPU-scene temporal seed and Hi-Z: optional until their complete
+        // compute + rendergraph chain is ready. Missing modules fail open
+        // to the existing unculled GPU-scene depth/Main path.
+        const auto loadRasterTemporal = [this](smvk::Holder<smvk::ShaderModuleHandle>& module,
+                                               smvk::ShaderProgram& program,
+                                               const char* path,
+                                               const char* entry) {
+            if (program.shaderCount == 1)
+                return;
+            try {
+                if (module.empty())
+                    module = m_context->CreateShaderModule(smvk::shaders::Read(path),
+                                                           "gpuSceneRasterTemporalCS");
+                if (!module.empty()) {
+                    smvk::Shader cs{
+                        .module = module, .entryPoint = entry, .stage = smvk::ShaderStage::Compute};
+                    program = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                // The Hi-Z path is optional; never take ownership from
+                // the normal raster draw chain when a shader is missing.
+            }
+        };
+        loadRasterTemporal(m_gpuSceneRasterSeedModule,
+                           m_gpuSceneRasterSeedProgram,
+                           "content/shaders/gpu_scene_raster_seed.cs.hlsl.spv",
+                           "mainCS");
+        loadRasterTemporal(m_gpuSceneRasterHizCullModule,
+                           m_gpuSceneRasterHizCullProgram,
+                           "content/shaders/gpu_scene_raster_hiz_cull.cs.hlsl.spv",
+                           "mainCS");
+        // The history clear + commit legs share one module/entry point;
+        // the push `mode` word selects the leg per dispatch.
+        loadRasterTemporal(m_gpuSceneRasterHistoryModule,
+                           m_gpuSceneRasterHistoryProgram,
+                           "content/shaders/gpu_scene_raster_history.cs.hlsl.spv",
+                           "mainCS");
         if (m_gpuSceneCullProgram.shaderCount == 1) {
             // This is a validation bridge, NOT true large-world camera
             // authority. The source VP remains float32; we only change
@@ -11291,14 +11334,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // drawItems. Tickets, duplicate-check scratch and ranges all
             // come from FrameArena and are consumed before frame reset.
             const auto tickets = m_gpuSceneSync.LeafTicketsFrame(m_gpuSceneDatabase);
-            const auto selected =
-                tour::gpu_scene::SelectPassedInstanceRangesFrame(
-                    m_gpuSceneDatabase,
-                    tickets,
-                    frustum,
-                    tour::gpu_scene::CandidateMode::Frustum,
-                    65536,
-                    gpuSceneRasterMode ? 1048576u : 32768u);
+            const auto selected = tour::gpu_scene::SelectPassedInstanceRangesFrame(
+                m_gpuSceneDatabase,
+                tickets,
+                frustum,
+                tour::gpu_scene::CandidateMode::Frustum,
+                65536,
+                gpuSceneRasterMode ? 1048576u : 32768u);
             // No passed spatial candidates means no GPU raster commands.
             // This is an owned empty Main pass, not a failed admission:
             // avoid rebuilding all CPU GfxFilter draws for an empty view.
@@ -11360,8 +11402,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneWorkScanPrograms[2].shaderCount == 1 &&
                     m_gpuSceneValidator.PrepareParallelWorkPrefix(
                         *m_context, fb.frameIndex, workBlock, workGroups, workAdd);
-                const bool workReady =
-                    workPrepared && (!gpuSceneRasterMode || parallelScanReady);
+                const bool workReady = workPrepared && (!gpuSceneRasterMode || parallelScanReady);
                 tour::gpu_scene::RasterWorkDrawBuildPush rasterPush{};
                 smvk::BufferHandle rasterCommands{};
                 const bool rasterReady =
@@ -11406,15 +11447,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     uint32_t* generations = nullptr;
                     ownerMaskReady = slots != 0;
                     if (changed && ownerMaskReady) {
-                        generations = static_cast<uint32_t*>(
-                            smvk::FrameArena().Allocate(
-                                slots * sizeof(uint32_t), alignof(uint32_t)));
-                        ownerMaskReady = generations &&
-                            m_gpuSceneRasterOwnership.BuildGenerationMask(
-                                std::span<uint32_t>(generations, slots),
-                                [this](tour::gpu_scene::SourceKey key) {
-                                    return m_gpuSceneSync.Find(key);
-                                });
+                        generations = static_cast<uint32_t*>(smvk::FrameArena().Allocate(
+                            slots * sizeof(uint32_t), alignof(uint32_t)));
+                        ownerMaskReady =
+                            generations && m_gpuSceneRasterOwnership.BuildGenerationMask(
+                                               std::span<uint32_t>(generations, slots),
+                                               [this](tour::gpu_scene::SourceKey key) {
+                                                   return m_gpuSceneSync.Find(key);
+                                               });
                         if (ownerMaskReady &&
                             (m_gpuSceneRasterOwnerMaskBuffers[flight].empty() ||
                              m_gpuSceneRasterOwnerMaskCapacity[flight] < requiredCapacity)) {
@@ -11432,30 +11472,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     if (ownerMaskReady) {
                         const auto maskHandle =
                             smvk::BufferHandle(m_gpuSceneRasterOwnerMaskBuffers[flight]);
-                        const uint64_t maskBda =
-                            m_context->GetBufferDeviceAddress(maskHandle);
+                        const uint64_t maskBda = m_context->GetBufferDeviceAddress(maskHandle);
                         ownerMaskReady = maskBda != 0 && !maskHandle.empty();
                         if (ownerMaskReady &&
                             (m_gpuSceneRasterOwnerMaskLogicalBacking[flight] != maskHandle ||
                              m_gpuSceneRasterOwnerMaskLogical[flight].empty())) {
                             if (!m_gpuSceneRasterOwnerMaskLogical[flight].empty())
-                                m_rendergraph->FreeBuffer(
-                                    m_gpuSceneRasterOwnerMaskLogical[flight]);
+                                m_rendergraph->FreeBuffer(m_gpuSceneRasterOwnerMaskLogical[flight]);
                             m_gpuSceneRasterOwnerMaskLogical[flight] =
-                                m_rendergraph->AddExternalBuffer(
-                                    maskHandle, "GpuSceneOwnerGenerations");
+                                m_rendergraph->AddExternalBuffer(maskHandle,
+                                                                 "GpuSceneOwnerGenerations");
                             m_gpuSceneRasterOwnerMaskLogicalBacking[flight] = maskHandle;
                         }
-                        ownerMaskReady = ownerMaskReady &&
-                            !m_gpuSceneRasterOwnerMaskLogical[flight].empty();
+                        ownerMaskReady =
+                            ownerMaskReady && !m_gpuSceneRasterOwnerMaskLogical[flight].empty();
                         if (ownerMaskReady) {
                             if (changed) {
-                                m_context->UploadDataToBuffer(
-                                    maskHandle,
-                                    generations,
-                                    slots * sizeof(uint32_t),
-                                    smvk::PipelineStageBit_Compute,
-                                    smvk::AccessFlags::ShaderRead);
+                                m_context->UploadDataToBuffer(maskHandle,
+                                                              generations,
+                                                              slots * sizeof(uint32_t),
+                                                              smvk::PipelineStageBit_Compute,
+                                                              smvk::AccessFlags::ShaderRead);
                                 m_gpuSceneRasterOwnerMaskWorld[flight] = m_world;
                                 m_gpuSceneRasterOwnerMaskTopologyRev[flight] =
                                     m_world->gpuSceneTopologyRevision;
@@ -11480,15 +11517,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 m_rendergraph->FreeBuffer(m_gpuSceneRasterIndirectLogical[flight]);
                             m_gpuSceneRasterIndirectLogical[flight] =
                                 m_rendergraph->AddExternalBuffer(rasterCommands,
-                                                                  "GpuSceneRasterIndirect");
+                                                                 "GpuSceneRasterIndirect");
                             m_gpuSceneRasterLogicalBacking[flight] = rasterCommands;
                         }
                         if (m_gpuSceneRasterWorkLogicalBacking[flight] != workHandle) {
                             if (!m_gpuSceneRasterWorkLogical[flight].empty())
                                 m_rendergraph->FreeBuffer(m_gpuSceneRasterWorkLogical[flight]);
                             m_gpuSceneRasterWorkLogical[flight] =
-                                m_rendergraph->AddExternalBuffer(workHandle,
-                                                                  "GpuSceneRasterWork");
+                                m_rendergraph->AddExternalBuffer(workHandle, "GpuSceneRasterWork");
                             m_gpuSceneRasterWorkLogicalBacking[flight] = workHandle;
                         }
                         m_gpuSceneRasterDrawActive =
@@ -11524,156 +11560,156 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         if (!m_gpuSceneVerdictLogical[flight].empty())
                             m_rendergraph->FreeBuffer(m_gpuSceneVerdictLogical[flight]);
                         m_gpuSceneVerdictLogical[flight] =
-                            m_rendergraph->AddExternalBuffer(verdictHandle,
-                                                              "GpuSceneCullVerdicts");
+                            m_rendergraph->AddExternalBuffer(verdictHandle, "GpuSceneCullVerdicts");
                         m_gpuSceneVerdictLogicalBacking[flight] = verdictHandle;
                     }
-                    verdictGraphReady = verdictGraphReady &&
-                                        !m_gpuSceneVerdictLogical[flight].empty();
+                    verdictGraphReady =
+                        verdictGraphReady && !m_gpuSceneVerdictLogical[flight].empty();
                     if (!verdictGraphReady)
                         std::fprintf(stderr,
                                      "[GpuSceneValidate] verdict graph registration failed; "
                                      "validation dispatch suppressed\n");
                 }
                 if (verdictGraphReady) {
-                auto& pass = m_rendergraph->AddComputePass(
-                    gpuSceneRasterMode ? "GpuSceneRasterBuild" : "GpuSceneValidate");
-                if (s_gpuSceneValidate) {
-                    smvk::BufferSyncRequest verdictWrite{};
-                    verdictWrite.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
-                    verdictWrite.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
-                    pass.AddBufferHint(m_gpuSceneVerdictLogical[fb.frameIndex], verdictWrite);
-                }
-                if (m_gpuSceneRasterDrawActive) {
-                    smvk::BufferSyncRequest write{};
-                    write.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
-                    write.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
-                    pass.AddBufferHint(m_gpuSceneRasterIndirectLogical[fb.frameIndex], write);
-                    pass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], write);
-                    smvk::BufferSyncRequest ownerRead{};
-                    ownerRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
-                    ownerRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
-                    pass.AddBufferHint(
-                        m_gpuSceneRasterOwnerMaskLogical[fb.frameIndex], ownerRead);
-                }
-                // ShaderProgram copies must be mutable for BindComputePipeline.
-                auto program = m_gpuSceneCullProgram;
-                auto compactPrograms = m_gpuSceneCompactPrograms;
-                auto workPrograms = m_gpuSceneWorkPrograms;
-                auto workScanPrograms = m_gpuSceneWorkScanPrograms;
-                auto rasterProgram = m_gpuSceneRasterBuildProgram;
-                auto indirectPrograms = m_gpuSceneIndirectPrograms;
-                const uint32_t groups = (selected.candidateCount + 63u) / 64u;
-                pass.SetRecordingFunc([program,
-                                       compactPrograms,
-                                       workPrograms,
-                                       workScanPrograms,
-                                       rasterProgram,
-                                       indirectPrograms,
-                                       gpuPush,
-                                       countPush,
-                                       prefixPush,
-                                       scatterPush,
-                                       workSelect,
-                                       workPrefix,
-                                       workScatter,
-                                       workBlock,
-                                       workGroups,
-                                       workAdd,
-                                       rasterPush,
-                                       rasterCommands,
-                                       indirectArgs,
-                                       indirectVerify,
-                                       indirectBuffer,
-                                       groups,
-                                       compactReady,
-                                       workReady,
-                                       parallelScanReady,
-                                       rasterReady,
-                                       indirectReady](smvk::CommandBuffer& cmd) mutable {
-                    cmd.BindComputePipeline(program);
-                    cmd.PushConstants(0, sizeof(gpuPush), &gpuPush, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    if (!compactReady)
-                        return;
-                    // All inputs are BDA-only. Explicit shader-write/read
-                    // barriers are required between dependent dispatches.
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(compactPrograms[0]);
-                    cmd.PushConstants(0, sizeof(countPush), &countPush, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(compactPrograms[1]);
-                    cmd.PushConstants(
-                        0, sizeof(prefixPush), &prefixPush, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(1, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(compactPrograms[2]);
-                    cmd.PushConstants(
-                        0, sizeof(scatterPush), &scatterPush, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    if (!workReady)
-                        return;
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workPrograms[0]);
-                    cmd.PushConstants(
-                        0, sizeof(workSelect), &workSelect, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    if (parallelScanReady) {
-                        // 1) Parallel intra-block scan. 2) bounded scan of
-                        // block totals. 3) parallel global base addition.
-                        // No single-thread walk across instance candidates.
-                        cmd.BindComputePipeline(workScanPrograms[0]);
-                        cmd.PushConstants(0, sizeof(workBlock), &workBlock,
-                                          smvk::ShaderStage::Compute);
-                        cmd.Dispatch((workBlock.candidateCount + 255u) / 256u, 1, 1);
+                    auto& pass = m_rendergraph->AddComputePass(
+                        gpuSceneRasterMode ? "GpuSceneRasterBuild" : "GpuSceneValidate");
+                    if (s_gpuSceneValidate) {
+                        smvk::BufferSyncRequest verdictWrite{};
+                        verdictWrite.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                        verdictWrite.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+                        pass.AddBufferHint(m_gpuSceneVerdictLogical[fb.frameIndex], verdictWrite);
+                    }
+                    if (m_gpuSceneRasterDrawActive) {
+                        smvk::BufferSyncRequest write{};
+                        write.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                        write.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+                        pass.AddBufferHint(m_gpuSceneRasterIndirectLogical[fb.frameIndex], write);
+                        pass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], write);
+                        smvk::BufferSyncRequest ownerRead{};
+                        ownerRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                        ownerRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+                        pass.AddBufferHint(m_gpuSceneRasterOwnerMaskLogical[fb.frameIndex],
+                                           ownerRead);
+                    }
+                    // ShaderProgram copies must be mutable for BindComputePipeline.
+                    auto program = m_gpuSceneCullProgram;
+                    auto compactPrograms = m_gpuSceneCompactPrograms;
+                    auto workPrograms = m_gpuSceneWorkPrograms;
+                    auto workScanPrograms = m_gpuSceneWorkScanPrograms;
+                    auto rasterProgram = m_gpuSceneRasterBuildProgram;
+                    auto indirectPrograms = m_gpuSceneIndirectPrograms;
+                    const uint32_t groups = (selected.candidateCount + 63u) / 64u;
+                    pass.SetRecordingFunc([program,
+                                           compactPrograms,
+                                           workPrograms,
+                                           workScanPrograms,
+                                           rasterProgram,
+                                           indirectPrograms,
+                                           gpuPush,
+                                           countPush,
+                                           prefixPush,
+                                           scatterPush,
+                                           workSelect,
+                                           workPrefix,
+                                           workScatter,
+                                           workBlock,
+                                           workGroups,
+                                           workAdd,
+                                           rasterPush,
+                                           rasterCommands,
+                                           indirectArgs,
+                                           indirectVerify,
+                                           indirectBuffer,
+                                           groups,
+                                           compactReady,
+                                           workReady,
+                                           parallelScanReady,
+                                           rasterReady,
+                                           indirectReady](smvk::CommandBuffer& cmd) mutable {
+                        cmd.BindComputePipeline(program);
+                        cmd.PushConstants(0, sizeof(gpuPush), &gpuPush, smvk::ShaderStage::Compute);
+                        cmd.Dispatch(groups, 1, 1);
+                        if (!compactReady)
+                            return;
+                        // All inputs are BDA-only. Explicit shader-write/read
+                        // barriers are required between dependent dispatches.
                         cmd.EmitGlobalMemoryBarrier();
-                        cmd.BindComputePipeline(workScanPrograms[1]);
-                        cmd.PushConstants(0, sizeof(workGroups), &workGroups,
-                                          smvk::ShaderStage::Compute);
+                        cmd.BindComputePipeline(compactPrograms[0]);
+                        cmd.PushConstants(
+                            0, sizeof(countPush), &countPush, smvk::ShaderStage::Compute);
+                        cmd.Dispatch(groups, 1, 1);
+                        cmd.EmitGlobalMemoryBarrier();
+                        cmd.BindComputePipeline(compactPrograms[1]);
+                        cmd.PushConstants(
+                            0, sizeof(prefixPush), &prefixPush, smvk::ShaderStage::Compute);
                         cmd.Dispatch(1, 1, 1);
                         cmd.EmitGlobalMemoryBarrier();
-                        cmd.BindComputePipeline(workScanPrograms[2]);
-                        cmd.PushConstants(0, sizeof(workAdd), &workAdd,
-                                          smvk::ShaderStage::Compute);
-                        cmd.Dispatch((workAdd.candidateCount + 255u) / 256u, 1, 1);
-                    } else {
-                        cmd.BindComputePipeline(workPrograms[1]);
+                        cmd.BindComputePipeline(compactPrograms[2]);
                         cmd.PushConstants(
-                            0, sizeof(workPrefix), &workPrefix, smvk::ShaderStage::Compute);
-                        cmd.Dispatch(1, 1, 1);
-                    }
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workPrograms[2]);
-                    cmd.PushConstants(
-                        0, sizeof(workScatter), &workScatter, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    if (rasterReady) {
-                        // GPU work -> indexed draw argument visibility; no
-                        // CPU readback, and all 20 command bytes are GPU-written.
+                            0, sizeof(scatterPush), &scatterPush, smvk::ShaderStage::Compute);
+                        cmd.Dispatch(groups, 1, 1);
+                        if (!workReady)
+                            return;
                         cmd.EmitGlobalMemoryBarrier();
-                        cmd.BindComputePipeline(rasterProgram);
+                        cmd.BindComputePipeline(workPrograms[0]);
                         cmd.PushConstants(
-                            0, sizeof(rasterPush), &rasterPush, smvk::ShaderStage::Compute);
-                        cmd.Dispatch((rasterPush.commandCapacity + 63u) / 64u, 1, 1);
-                    }
-                    if (!indirectReady)
-                        return;
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(indirectPrograms[0]);
-                    cmd.PushConstants(
-                        0, sizeof(indirectArgs), &indirectArgs, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(1, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(indirectPrograms[1]);
-                    cmd.PushConstants(
-                        0, sizeof(indirectVerify), &indirectVerify, smvk::ShaderStage::Compute);
-                    // A GPU-computed command launches exactly the work-record
-                    // consumers needed: no CPU count/readback on the hot path.
-                    cmd.DispatchIndirect(indirectBuffer, 0);
-                });
-                m_gpuSceneValidator.MarkDispatched(fb.frameIndex);
+                            0, sizeof(workSelect), &workSelect, smvk::ShaderStage::Compute);
+                        cmd.Dispatch(groups, 1, 1);
+                        cmd.EmitGlobalMemoryBarrier();
+                        if (parallelScanReady) {
+                            // 1) Parallel intra-block scan. 2) bounded scan of
+                            // block totals. 3) parallel global base addition.
+                            // No single-thread walk across instance candidates.
+                            cmd.BindComputePipeline(workScanPrograms[0]);
+                            cmd.PushConstants(
+                                0, sizeof(workBlock), &workBlock, smvk::ShaderStage::Compute);
+                            cmd.Dispatch((workBlock.candidateCount + 255u) / 256u, 1, 1);
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(workScanPrograms[1]);
+                            cmd.PushConstants(
+                                0, sizeof(workGroups), &workGroups, smvk::ShaderStage::Compute);
+                            cmd.Dispatch(1, 1, 1);
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(workScanPrograms[2]);
+                            cmd.PushConstants(
+                                0, sizeof(workAdd), &workAdd, smvk::ShaderStage::Compute);
+                            cmd.Dispatch((workAdd.candidateCount + 255u) / 256u, 1, 1);
+                        } else {
+                            cmd.BindComputePipeline(workPrograms[1]);
+                            cmd.PushConstants(
+                                0, sizeof(workPrefix), &workPrefix, smvk::ShaderStage::Compute);
+                            cmd.Dispatch(1, 1, 1);
+                        }
+                        cmd.EmitGlobalMemoryBarrier();
+                        cmd.BindComputePipeline(workPrograms[2]);
+                        cmd.PushConstants(
+                            0, sizeof(workScatter), &workScatter, smvk::ShaderStage::Compute);
+                        cmd.Dispatch(groups, 1, 1);
+                        if (rasterReady) {
+                            // GPU work -> indexed draw argument visibility; no
+                            // CPU readback, and all 20 command bytes are GPU-written.
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(rasterProgram);
+                            cmd.PushConstants(
+                                0, sizeof(rasterPush), &rasterPush, smvk::ShaderStage::Compute);
+                            cmd.Dispatch((rasterPush.commandCapacity + 63u) / 64u, 1, 1);
+                        }
+                        if (!indirectReady)
+                            return;
+                        cmd.EmitGlobalMemoryBarrier();
+                        cmd.BindComputePipeline(indirectPrograms[0]);
+                        cmd.PushConstants(
+                            0, sizeof(indirectArgs), &indirectArgs, smvk::ShaderStage::Compute);
+                        cmd.Dispatch(1, 1, 1);
+                        cmd.EmitGlobalMemoryBarrier();
+                        cmd.BindComputePipeline(indirectPrograms[1]);
+                        cmd.PushConstants(
+                            0, sizeof(indirectVerify), &indirectVerify, smvk::ShaderStage::Compute);
+                        // A GPU-computed command launches exactly the work-record
+                        // consumers needed: no CPU count/readback on the hot path.
+                        cmd.DispatchIndirect(indirectBuffer, 0);
+                    });
+                    m_gpuSceneValidator.MarkDispatched(fb.frameIndex);
                 }
             } else if (selected.status != tour::gpu_scene::CandidateStatus::Ok) {
                 std::fprintf(stderr,
@@ -11682,13 +11718,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
     }
-    if (s_gpuSceneRaster &&
-        m_gpuSceneRasterDrawActive != m_gpuSceneRasterPreviouslyActive) {
+    if (s_gpuSceneRaster && m_gpuSceneRasterDrawActive != m_gpuSceneRasterPreviouslyActive) {
         std::fprintf(stderr,
                      "[GpuSceneRaster] %s admittedStatic=%u legacySources=%u"
                      " candidates/maxCommands=%u (opt-in indexed Main)\n",
-                     !m_gpuSceneRasterDrawActive ? "fallback"
-                     : m_gpuSceneRasterLegacyCount ? "mixed" : "active",
+                     !m_gpuSceneRasterDrawActive   ? "fallback"
+                     : m_gpuSceneRasterLegacyCount ? "mixed"
+                                                   : "active",
                      m_gpuSceneRasterDrawActive ? m_gpuSceneRasterCompatibleCount : 0u,
                      m_gpuSceneRasterDrawActive ? m_gpuSceneRasterLegacyCount : 0u,
                      m_gpuSceneRasterDrawActive ? m_gpuSceneRasterDrawCapacity : 0u);
@@ -11809,8 +11845,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // snapshot, so Main/depth/filtered paths are exact complements.
     if (m_gpuSceneRasterDrawActive) {
         fc.gpuRasterOwnsNode = [this](NodeId node) {
-            return m_gpuSceneRasterOwnership.OwnsGpu(
-                m_gpuSceneSync.SourceForNode(node));
+            return m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(node));
         };
     }
     fc.views = &m_renderViews;
@@ -12802,8 +12837,116 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // GPU-scene raster owns eligible opaque draws; do not also build the
     // O(drawItems) GfxFilter batches, temporal seeds, or filter compute chain.
     // If GPU-scene admission failed, retain the original GfxFilter path.
+    // GPU-only temporal work is allocated per acquired flight. The HISTORY
+    // input is a previous completed submission, never the CPU's draw order.
+    // Unavailable resources leave the normal GPU raster commands intact.
+    const uint32_t temporalFlight = fb.frameIndex;
+    const uint32_t temporalSlots = uint32_t(m_gpuSceneDatabase.instances.Size());
+    const uint32_t temporalCommands = m_gpuSceneRasterDrawCapacity;
+    smvk::BufferHandle gpuSeedCommands{};
+    smvk::BufferHandle gpuRemainderCommands{};
+    smvk::BufferHandle gpuHistoryCurrent{};
+    smvk::BufferHandle gpuHistoryPrevious{};
+    uint32_t previousHistorySlots = 0;
+    bool gpuHistoryValid = false;
+    bool gpuTemporalReady = false;
+    const bool temporalProgramsReady = m_gpuSceneRasterSeedProgram.shaderCount == 1 &&
+                                       m_gpuSceneRasterHizCullProgram.shaderCount == 1 &&
+                                       m_gpuSceneRasterHistoryProgram.shaderCount == 1;
+    // Debug A/B: isolate temporal seed/Hi-Z without disabling GPU-scene
+    // indexed geometry, ownership or work generation.
+    static const bool s_gpuSceneTemporal = [] {
+        const char* e = std::getenv("TOURMALINE_GPU_SCENE_TEMPORAL");
+        return !e || std::strcmp(e, "0") != 0;
+    }();
+    if (s_gpuSceneTemporal && m_gpuSceneRasterDrawActive && temporalProgramsReady &&
+        m_gfxFilterAvailable && temporalCommands != 0 && temporalSlots != 0 &&
+        temporalCommands <= 1048576u && temporalSlots <= 4194304u) {
+        const uint32_t previousFlight = m_gpuSceneRasterLastHistoryFlight;
+        gpuHistoryValid =
+            previousFlight < smvk::limits::MaxFramesInFlight &&
+            m_gpuSceneRasterHistoryWorld == m_world &&
+            m_gpuSceneRasterHistoryTopologyRevision == m_world->gpuSceneTopologyRevision &&
+            m_gpuSceneRasterHistoryGeometryRevision == m_gpuSceneGeometryRevision &&
+            m_gpuSceneRasterHistoryWidth == renderExtent.width &&
+            m_gpuSceneRasterHistoryHeight == renderExtent.height;
+        if (gpuHistoryValid) {
+            previousHistorySlots = m_gpuSceneRasterTemporalHistoryCapacity[previousFlight];
+            gpuHistoryValid = previousHistorySlots >= temporalSlots &&
+                              !m_gpuSceneRasterHistoryBuffers[previousFlight].empty();
+            if (gpuHistoryValid)
+                gpuHistoryPrevious =
+                    smvk::BufferHandle(m_gpuSceneRasterHistoryBuffers[previousFlight]);
+        }
+        bool resourcesReady = true;
+        if (m_gpuSceneRasterTemporalCommandCapacity[temporalFlight] < temporalCommands ||
+            m_gpuSceneRasterSeedBuffers[temporalFlight].empty() ||
+            m_gpuSceneRasterRemainderBuffers[temporalFlight].empty()) {
+            const size_t bytes =
+                size_t(temporalCommands) * sizeof(tour::gpu_scene::RasterIndirectCommand);
+            auto seed =
+                m_context->CreateBuffer(bytes, smvk::BufferType_Storage, "GpuSceneTemporalSeed");
+            auto remainder = m_context->CreateBuffer(
+                bytes, smvk::BufferType_Storage, "GpuSceneTemporalRemainder");
+            resourcesReady = !seed.empty() && !remainder.empty();
+            if (resourcesReady) {
+                if (!m_gpuSceneRasterSeedLogicals[temporalFlight].empty())
+                    m_rendergraph->FreeBuffer(m_gpuSceneRasterSeedLogicals[temporalFlight]);
+                if (!m_gpuSceneRasterRemainderLogicals[temporalFlight].empty())
+                    m_rendergraph->FreeBuffer(m_gpuSceneRasterRemainderLogicals[temporalFlight]);
+                m_gpuSceneRasterSeedBuffers[temporalFlight] = std::move(seed);
+                m_gpuSceneRasterRemainderBuffers[temporalFlight] = std::move(remainder);
+                m_gpuSceneRasterSeedLogicals[temporalFlight] = m_rendergraph->AddExternalBuffer(
+                    m_gpuSceneRasterSeedBuffers[temporalFlight], "GpuSceneTemporalSeed");
+                m_gpuSceneRasterRemainderLogicals[temporalFlight] =
+                    m_rendergraph->AddExternalBuffer(
+                        m_gpuSceneRasterRemainderBuffers[temporalFlight],
+                        "GpuSceneTemporalRemainder");
+                resourcesReady = !m_gpuSceneRasterSeedLogicals[temporalFlight].empty() &&
+                                 !m_gpuSceneRasterRemainderLogicals[temporalFlight].empty();
+                if (resourcesReady)
+                    m_gpuSceneRasterTemporalCommandCapacity[temporalFlight] = temporalCommands;
+            }
+        }
+        if (resourcesReady &&
+            (m_gpuSceneRasterTemporalHistoryCapacity[temporalFlight] < temporalSlots ||
+             m_gpuSceneRasterHistoryBuffers[temporalFlight].empty())) {
+            // A resize of the previous snapshot invalidates its contents,
+            // including the single-flight case.
+            if (m_gpuSceneRasterLastHistoryFlight == temporalFlight)
+                gpuHistoryValid = false;
+            auto history = m_context->CreateBuffer(size_t(temporalSlots) * sizeof(uint32_t),
+                                                   smvk::BufferType_Storage,
+                                                   "GpuSceneTemporalHistory");
+            resourcesReady = !history.empty();
+            if (resourcesReady) {
+                if (!m_gpuSceneRasterHistoryLogicals[temporalFlight].empty())
+                    m_rendergraph->FreeBuffer(m_gpuSceneRasterHistoryLogicals[temporalFlight]);
+                m_gpuSceneRasterHistoryBuffers[temporalFlight] = std::move(history);
+                m_gpuSceneRasterHistoryLogicals[temporalFlight] = m_rendergraph->AddExternalBuffer(
+                    m_gpuSceneRasterHistoryBuffers[temporalFlight], "GpuSceneTemporalHistory");
+                resourcesReady = !m_gpuSceneRasterHistoryLogicals[temporalFlight].empty();
+                if (resourcesReady)
+                    m_gpuSceneRasterTemporalHistoryCapacity[temporalFlight] = temporalSlots;
+            }
+        }
+        resourcesReady = resourcesReady && !m_gpuSceneRasterSeedLogicals[temporalFlight].empty() &&
+                         !m_gpuSceneRasterRemainderLogicals[temporalFlight].empty() &&
+                         !m_gpuSceneRasterHistoryLogicals[temporalFlight].empty();
+        if (resourcesReady) {
+            gpuSeedCommands = smvk::BufferHandle(m_gpuSceneRasterSeedBuffers[temporalFlight]);
+            gpuRemainderCommands =
+                smvk::BufferHandle(m_gpuSceneRasterRemainderBuffers[temporalFlight]);
+            gpuHistoryCurrent = smvk::BufferHandle(m_gpuSceneRasterHistoryBuffers[temporalFlight]);
+            gpuTemporalReady = true;
+        }
+    }
+    // Raster without a complete temporal chain remains correct and unculled.
+    if (!gpuTemporalReady)
+        m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
+
     const bool gfxFilterOn = m_passes.gfxFilter && m_gfxFilterAvailable &&
-        (!m_gpuSceneRasterDrawActive || m_gpuSceneRasterLegacyCount != 0);
+                             (!m_gpuSceneRasterDrawActive || m_gpuSceneRasterLegacyCount != 0);
     m_gfxRenderer.SetGpuRasterOwnership(fc.gpuRasterOwnsNode);
     if (gfxFilterOn) {
         if (m_freezeCullingView && !m_frozenViewValid) {
@@ -12839,6 +12982,75 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gfxRenderer.AppendPasses(fc);
         gfxSlot = m_gfxRenderer.LastSlot();
     }
+    // For all-GPU scenes, create only the Hi-Z view/pyramid. Mixed scenes
+    // already initialized this view through the legacy fallback renderer.
+    // Do not build a second, conflicting pyramid for the same eye.
+    if (gpuTemporalReady && !gfxFilterOn) {
+        gpuTemporalReady = m_gfxRenderer.PrepareGpuSceneHiz(*m_context,
+                                                            *m_rendergraph,
+                                                            m_renderViews.Get(mainRenderView),
+                                                            m_cameraPositioner.cameraPosition_,
+                                                            temporalFlight,
+                                                            renderExtent.width,
+                                                            renderExtent.height);
+    }
+    if (gpuTemporalReady && (m_gfxRenderer.LastSlot() == UINT32_MAX || cullingFrozen))
+        gpuTemporalReady = false;
+    // The source pyramid must exist before the seed draws and Hi-Z
+    // compute passes can be scheduled. An allocation/shader failure is
+    // fail-open: keep the original GPU-scene indirect commands.
+    if (gpuTemporalReady) {
+        const uint32_t hizSlot = m_gfxRenderer.LastSlot();
+        const auto& h = smvk::gfx::Temporal(m_gfxRenderer.gfx, hizSlot).hiz[temporalFlight];
+        gpuTemporalReady = h.mipCount != 0 && !h.logical.empty() &&
+                           smvk::gfx::HizAddress(m_gfxRenderer.gfx, *m_context, hizSlot) != 0;
+    }
+    if (gpuTemporalReady) {
+        const uint64_t rawBda = m_context->GetBufferDeviceAddress(m_gpuSceneRasterIndirect);
+        const uint64_t seedBda = m_context->GetBufferDeviceAddress(gpuSeedCommands);
+        const uint64_t remainderBda = m_context->GetBufferDeviceAddress(gpuRemainderCommands);
+        const uint64_t historyBda =
+            gpuHistoryValid ? m_context->GetBufferDeviceAddress(gpuHistoryPrevious) : 0u;
+        const uint64_t currentHistoryBda = m_context->GetBufferDeviceAddress(gpuHistoryCurrent);
+        gpuTemporalReady = rawBda != 0 && seedBda != 0 && remainderBda != 0 &&
+                           currentHistoryBda != 0 && (!gpuHistoryValid || historyBda != 0);
+        if (gpuTemporalReady) {
+            const tour::gpu_scene::RasterSeedPush seedPush{rawBda,
+                                                           m_gpuSceneRasterWorkBda,
+                                                           historyBda,
+                                                           seedBda,
+                                                           remainderBda,
+                                                           temporalCommands,
+                                                           temporalSlots,
+                                                           previousHistorySlots,
+                                                           gpuHistoryValid ? 1u : 0u};
+            auto& pass = m_rendergraph->AddComputePass("GpuSceneTemporalSeedBuild");
+            smvk::BufferSyncRequest read{};
+            read.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+            read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+            pass.AddBufferHint(m_gpuSceneRasterIndirectLogical[temporalFlight], read);
+            pass.AddBufferHint(m_gpuSceneRasterWorkLogical[temporalFlight], read);
+            if (gpuHistoryValid)
+                pass.AddBufferHint(
+                    m_gpuSceneRasterHistoryLogicals[m_gpuSceneRasterLastHistoryFlight], read);
+            smvk::BufferSyncRequest write{};
+            write.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+            write.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+            pass.AddBufferHint(m_gpuSceneRasterSeedLogicals[temporalFlight], write);
+            pass.AddBufferHint(m_gpuSceneRasterRemainderLogicals[temporalFlight], write);
+            // Non-const copy: BindComputePipeline takes a non-const ref and
+            // a `const auto` capture stays const inside the closure even
+            // with `mutable`.
+            auto program = m_gpuSceneRasterSeedProgram;
+            pass.SetRecordingFunc([program, seedPush](smvk::CommandBuffer& cmd) mutable {
+                cmd.BindComputePipeline(program);
+                cmd.PushConstants(0, sizeof(seedPush), &seedPush, smvk::ShaderStage::Compute);
+                cmd.Dispatch((seedPush.commandCapacity + 63u) / 64u, 1, 1);
+            });
+        }
+    }
+    if (!gpuTemporalReady)
+        m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
     fc.seedDepthPrimed = gfxFilterOn && m_gfxRenderer.SeededThisFrame();
     // 2x MSAA mode (hoisted: the fc fill below + Main + the pane layer
     // all key on it - Main writes the TRANSIENT MSAA depth whose
@@ -12975,7 +13187,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // TOURMALINE_HIZ=0 / the UI checkbox) - never the fill. Skipped
     // only while the culling view is frozen (the held pyramid must
     // not be rebuilt).
-    if (!cullingFrozen &&
+    // Check both depth variants BEFORE suppressing the legacy occluder
+    // pass. A missing seed/SSR program must not leave mixed GfxFilter
+    // culling reading an uninitialized dedicated Hi-Z depth target.
+    if (gpuTemporalReady &&
+        (m_gpuSceneRasterDepthProgram.shaderCount != 1 || fc.hizDepthView.empty() ||
+         (fc.ssrGbufferWanted && m_gpuSceneRasterGbufferProgram.shaderCount != 2))) {
+        gpuTemporalReady = false;
+        m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
+    }
+    if (!cullingFrozen && !gpuTemporalReady &&
         (!m_gpuSceneRasterDrawActive || m_gpuSceneRasterLegacyCount != 0))
         m_fpRenderer.AppendOccluderPrepass(fc);
 
@@ -13026,9 +13247,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // seed-writes-the-G-buffer variant (a normal-outputting seed VS +
     // the trivial FS pair on the indirect draws) is the follow-up
     // that re-enables the slim split with SSR on.
-    const bool depthSplit =
-        gfxFilterOn && !m_gpuSceneRasterDrawActive &&
-        fc.seedDepthPrimed && !m_splitDisabled && !fc.ssrGbufferWanted;
+    const bool depthSplit = gfxFilterOn && !m_gpuSceneRasterDrawActive && fc.seedDepthPrimed &&
+                            !m_splitDisabled && !fc.ssrGbufferWanted;
     fc.gfxLodFilterable =
         depthSplit
             ? std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)>(
@@ -13067,7 +13287,146 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_gfxRenderer.AppendRemainderPass(fc);
         }
     } else {
-        // Full prepass before the HZB (Clear when not seeded).
+        // GPU-scene's Northlight equivalent: current-frustum commands
+        // are split using LAST frame's (slot,generation) visibility. The
+        // seed alone rasterizes into hizDepth, the MIN HZB is built from
+        // exactly that subset, then current non-seed commands are tested.
+        // Complete Main depth is drawn only AFTER that verdict. A full
+        // prepass before Hi-Z would self-occlude the query and turn the
+        // occlusion test into a structural no-op.
+        if (gpuTemporalReady) {
+            const tour::gpu_scene::RasterVsPush seedVsPush{
+                m_gpuSceneRasterWorkBda,
+                m_gpuSceneUploader.DeviceAddresses(*m_context, temporalFlight).instances,
+                m_gpuSceneRasterView.DeviceAddress(*m_context, temporalFlight),
+                temporalSlots,
+                temporalCommands};
+            const bool seedRecorded =
+                m_fpRenderer.AppendGpuScenePrepass(fc,
+                                                   m_gpuSceneRasterDepthProgram,
+                                                   gpuSeedCommands,
+                                                   m_gpuSceneRasterSeedLogicals[temporalFlight],
+                                                   m_gpuSceneRasterWorkLogical[temporalFlight],
+                                                   temporalCommands,
+                                                   seedVsPush,
+                                                   /*hizOccluder=*/true);
+            if (!seedRecorded)
+                gpuTemporalReady = false;
+            // Prime MAIN depth/G-buffer with the same prev-visible seed.
+            // The subsequent Hi-Z depth is a separate target. After the
+            // occlusion test, only the current-minus-seed remainder will
+            // append to MAIN depth (Load), matching GfxFilter T3/T5.
+            if (gpuTemporalReady && m_passes.forwardPlusPrepass) {
+                auto depthProgram = fc.ssrGbufferWanted ? m_gpuSceneRasterGbufferProgram
+                                                        : m_gpuSceneRasterDepthProgram;
+                const bool primed =
+                    m_fpRenderer.AppendGpuScenePrepass(fc,
+                                                       depthProgram,
+                                                       gpuSeedCommands,
+                                                       m_gpuSceneRasterSeedLogicals[temporalFlight],
+                                                       m_gpuSceneRasterWorkLogical[temporalFlight],
+                                                       temporalCommands,
+                                                       seedVsPush);
+                if (!primed)
+                    gpuTemporalReady = false;
+                else
+                    fc.gpuSceneDepthPrimed = true;
+            }
+        }
+        if (gpuTemporalReady) {
+            const uint32_t hizSlot = m_gfxRenderer.LastSlot();
+            const auto& hz = smvk::gfx::Temporal(m_gfxRenderer.gfx, hizSlot).hiz[temporalFlight];
+            // AddHizPasses declares depth/compute read-write dependencies.
+            appendHizPasses();
+            const uint64_t prevBda =
+                gpuHistoryValid ? m_context->GetBufferDeviceAddress(gpuHistoryPrevious) : 0u;
+            const tour::gpu_scene::RasterHizCullPush hizPush{
+                m_context->GetBufferDeviceAddress(m_gpuSceneRasterIndirect),
+                m_context->GetBufferDeviceAddress(gpuRemainderCommands),
+                m_gpuSceneRasterWorkBda,
+                m_gpuSceneUploader.DeviceAddresses(*m_context, temporalFlight).instances,
+                m_gpuSceneUploader.DeviceAddresses(*m_context, temporalFlight).meshes,
+                m_gpuSceneRasterView.DeviceAddress(*m_context, temporalFlight),
+                smvk::gfx::HizAddress(m_gfxRenderer.gfx, *m_context, hizSlot),
+                prevBda,
+                temporalCommands,
+                temporalSlots,
+                uint32_t(m_gpuSceneDatabase.meshes.Size()),
+                hz.width,
+                hz.height,
+                hz.mipCount,
+                previousHistorySlots,
+                gpuHistoryValid ? 1u : 0u,
+                (uint32_t(m_gfxRenderer.config.cullFlags) &
+                 uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion)) != 0u
+                    ? 1u
+                    : 0u};
+            auto& gate = m_rendergraph->AddComputePass("GpuSceneHizCull");
+            smvk::BufferSyncRequest indirectRW{};
+            indirectRW.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+            indirectRW.barrierMasks.accessMask =
+                smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+            gate.AddBufferHint(m_gpuSceneRasterIndirectLogical[temporalFlight], indirectRW);
+            gate.AddBufferHint(m_gpuSceneRasterRemainderLogicals[temporalFlight], indirectRW);
+            smvk::BufferSyncRequest hizRead{};
+            hizRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+            hizRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+            gate.AddBufferHint(hz.logical, hizRead);
+            gate.AddBufferHint(m_gpuSceneRasterWorkLogical[temporalFlight], hizRead);
+            if (gpuHistoryValid)
+                gate.AddBufferHint(
+                    m_gpuSceneRasterHistoryLogicals[m_gpuSceneRasterLastHistoryFlight], hizRead);
+            auto hizProgram = m_gpuSceneRasterHizCullProgram;
+            gate.SetRecordingFunc([hizProgram, hizPush](smvk::CommandBuffer& cmd) mutable {
+                cmd.BindComputePipeline(hizProgram);
+                cmd.PushConstants(0, sizeof(hizPush), &hizPush, smvk::ShaderStage::Compute);
+                cmd.Dispatch((hizPush.commandCapacity + 63u) / 64u, 1, 1);
+            });
+            // Publish only actually surviving GPU work, never stale work
+            // slots or CPU draw IDs. A strict shader barrier separates
+            // clearing from atomic per-instance generation publication.
+            const tour::gpu_scene::RasterHistoryPush historyPush{
+                hizPush.commands,
+                hizPush.work,
+                m_context->GetBufferDeviceAddress(gpuHistoryCurrent),
+                temporalCommands,
+                temporalSlots,
+                m_gpuSceneRasterTemporalHistoryCapacity[temporalFlight],
+                0u};
+            auto& history = m_rendergraph->AddComputePass("GpuSceneVisibleHistory");
+            history.AddBufferHint(m_gpuSceneRasterIndirectLogical[temporalFlight], hizRead);
+            history.AddBufferHint(m_gpuSceneRasterWorkLogical[temporalFlight], hizRead);
+            smvk::BufferSyncRequest historyRW{};
+            historyRW.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+            historyRW.barrierMasks.accessMask =
+                smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+            history.AddBufferHint(m_gpuSceneRasterHistoryLogicals[temporalFlight], historyRW);
+            auto historyProgram = m_gpuSceneRasterHistoryProgram;
+            history.SetRecordingFunc([historyProgram,
+                                      historyPush](smvk::CommandBuffer& cmd) mutable {
+                // Same pipeline, two legs: clear (mode 0) zeroes the
+                // flight's snapshot, the barrier orders it before the
+                // atomic commit writes (mode 1).
+                tour::gpu_scene::RasterHistoryPush clearPush = historyPush;
+                clearPush.mode = 0u;
+                cmd.BindComputePipeline(historyProgram);
+                cmd.PushConstants(0, sizeof(clearPush), &clearPush, smvk::ShaderStage::Compute);
+                cmd.Dispatch((historyPush.historySlots + 63u) / 64u, 1, 1);
+                cmd.EmitGlobalMemoryBarrier();
+                tour::gpu_scene::RasterHistoryPush commitPush = historyPush;
+                commitPush.mode = 1u;
+                cmd.PushConstants(0, sizeof(commitPush), &commitPush, smvk::ShaderStage::Compute);
+                cmd.Dispatch((historyPush.commandCapacity + 63u) / 64u, 1, 1);
+            });
+            m_gpuSceneRasterLastHistoryFlight = temporalFlight;
+            m_gpuSceneRasterHistoryWorld = m_world;
+            m_gpuSceneRasterHistoryTopologyRevision = m_world->gpuSceneTopologyRevision;
+            m_gpuSceneRasterHistoryGeometryRevision = m_gpuSceneGeometryRevision;
+            m_gpuSceneRasterHistoryWidth = renderExtent.width;
+            m_gpuSceneRasterHistoryHeight = renderExtent.height;
+        }
+        // The complete (GPU + legacy) depth is assembled AFTER the
+        // seed-only occlusion verdict, with no chance of self-culling.
         if (m_passes.forwardPlusPrepass) {
             // GPU indexed depth/G-buffer clears and writes FIRST. The
             // remaining legacy objects (including GPU-skinned geometry)
@@ -13079,10 +13438,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // legacy prepass for those frames instead of stale G-buffer data.
             const bool gpuPrepassAvailable =
                 m_gpuSceneRasterDrawActive &&
-                (fc.ssrGbufferWanted
-                     ? m_gpuSceneRasterGbufferProgram.shaderCount == 2
-                     : m_gpuSceneRasterDepthProgram.shaderCount == 1);
-            bool gpuDepthPrimed = false;
+                (fc.ssrGbufferWanted ? m_gpuSceneRasterGbufferProgram.shaderCount == 2
+                                     : m_gpuSceneRasterDepthProgram.shaderCount == 1);
+            bool gpuDepthPrimed = fc.gpuSceneDepthPrimed;
             if (gpuPrepassAvailable) {
                 const uint32_t flight = fb.frameIndex;
                 const tour::gpu_scene::RasterVsPush tail{
@@ -13091,14 +13449,25 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
                     m_gpuSceneDatabase.instances.Size(),
                     m_gpuSceneRasterDrawCapacity};
-                gpuDepthPrimed = m_fpRenderer.AppendGpuScenePrepass(
-                    fc, fc.ssrGbufferWanted
-                            ? m_gpuSceneRasterGbufferProgram
-                            : m_gpuSceneRasterDepthProgram,
-                    m_gpuSceneRasterIndirect,
-                    m_gpuSceneRasterIndirectLogical[flight],
+                // GPU T5 remainder has already been classified by the
+                // current work builder and culled against the SEED-only
+                // Hi-Z pyramid. Seed depth is in the target; LOAD it,
+                // rasterize only the remainder, and preserve seed G-buffer
+                // pixels. The non-temporal path draws the whole list once.
+                const auto commands =
+                    gpuTemporalReady ? gpuRemainderCommands : m_gpuSceneRasterIndirect;
+                const auto logical = gpuTemporalReady ? m_gpuSceneRasterRemainderLogicals[flight]
+                                                      : m_gpuSceneRasterIndirectLogical[flight];
+                const bool remainderPrimed = m_fpRenderer.AppendGpuScenePrepass(
+                    fc,
+                    fc.ssrGbufferWanted ? m_gpuSceneRasterGbufferProgram
+                                        : m_gpuSceneRasterDepthProgram,
+                    commands,
+                    logical,
                     m_gpuSceneRasterWorkLogical[flight],
-                    m_gpuSceneRasterDrawCapacity, tail);
+                    m_gpuSceneRasterDrawCapacity,
+                    tail);
+                gpuDepthPrimed = remainderPrimed;
                 fc.gpuSceneDepthPrimed = gpuDepthPrimed;
             }
             if (!gpuDepthPrimed || m_gpuSceneRasterLegacyCount != 0) {
@@ -13113,7 +13482,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
         if (gfxFilterOn) {
-            if (!cullingFrozen)
+            // When GPU-scene seeded the pyramid above, legacy draw/cluster
+            // culling consumes the SAME depth rather than rebuilding it
+            // over the completed current frame. Standalone GfxFilter
+            // retains its existing full-prepass path.
+            if (!cullingFrozen && !gpuTemporalReady)
                 appendHizPasses();
             m_gfxRenderer.AppendFilterDispatch(fc);
             if (m_gfxRenderer.RemainderPending()) {
@@ -13327,8 +13700,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 continue; // corrupt slot layout: the pass skips it too
             candidateTotal += count;
         }
-        coneLineVerts = (uint32_t)std::min<uint64_t>(candidateTotal * 2,
-                                                     (uint64_t)slotCap * 2);
+        coneLineVerts = (uint32_t)std::min<uint64_t>(candidateTotal * 2, (uint64_t)slotCap * 2);
     }
 
     // ---------------------------------------------------------------------
@@ -14325,7 +14697,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 : 0u;
             pc.padEnd_[1] = userData;
             pc.padEnd_[2] = node < m_world->scene.metadata.size()
-                                ? m_world->scene.metadata[node].lightLayerMask : 0xffffffffu;
+                                ? m_world->scene.metadata[node].lightLayerMask
+                                : 0xffffffffu;
             cmd.PushConstants(offsetof(IRenderer::PushConstants, padEnd_),
                               sizeof(pc.padEnd_[0]) * 3,
                               &pc.padEnd_[0],
@@ -14531,14 +14904,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // eligibility gate proved every World draw belongs to it.
         if (sceneRasterActive && sceneRasterCommandCount > 0) {
             cmd.BindStaticVertexFmt();
-            cmd.BindRenderPipeline(
-                m_gpuSceneRasterProgram,
-                smvk::VertexLayoutId::Static,
-                opaqueDepth,
-                noStencil,
-                smvk::BlendSettings::Opaque(),
-                msaaSettings,
-                smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+            cmd.BindRenderPipeline(m_gpuSceneRasterProgram,
+                                   smvk::VertexLayoutId::Static,
+                                   opaqueDepth,
+                                   noStencil,
+                                   smvk::BlendSettings::Opaque(),
+                                   msaaSettings,
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
             cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
             cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
                               sizeof(sceneRasterVsPush),
@@ -14552,11 +14924,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             constexpr uint32_t kChunk = 65535;
             for (uint32_t first = 0; first < sceneRasterCommandCount; first += kChunk) {
                 const uint32_t count = std::min(kChunk, sceneRasterCommandCount - first);
-                cmd.DrawIndexedIndirect(
-                    sceneRasterCommands,
-                    uint64_t(first) * sizeof(tour::gpu_scene::RasterIndirectCommand),
-                    count,
-                    sizeof(tour::gpu_scene::RasterIndirectCommand));
+                cmd.DrawIndexedIndirect(sceneRasterCommands,
+                                        uint64_t(first) *
+                                            sizeof(tour::gpu_scene::RasterIndirectCommand),
+                                        count,
+                                        sizeof(tour::gpu_scene::RasterIndirectCommand));
             }
         }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----
@@ -14689,8 +15061,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     smvk::IteratorFlagBit_StaticVertexFmt,
                 [&](const smvk::World::RenderItem& item) {
                     if (sceneRasterActive &&
-                        m_gpuSceneRasterOwnership.OwnsGpu(
-                            m_gpuSceneSync.SourceForNode(item.node)))
+                        m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
                         return; // GPU indexed Main owns this exact source
                     if (item.material == smvk::World::kInvalidIndex)
                         return;
@@ -14940,8 +15311,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
             }
         }
-        if (!bypassFilter &&
-            (!sceneRasterActive || m_gpuSceneRasterLegacyCount != 0)) {
+        if (!bypassFilter && (!sceneRasterActive || m_gpuSceneRasterLegacyCount != 0)) {
             // UINT32_MAX forces a bind check on the first node; an
             // identical state is deduped by the CommandBuffer's
             // current-pipeline check, so this costs nothing.
@@ -18046,13 +18416,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // with the fixed table).
                 const uint32_t tailCap = st.skinBoundsDrawCap[fb.frameIndex];
                 std::vector<glm::vec4> tail(tailCap);
-                if (m_context->DownloadDataFromBuffer(st.skinBoundsBuffers[fb.frameIndex],
-                                                      tail.data(),
-                                                      tail.size() * sizeof(glm::vec4),
-                                                      (size_t)st.skinBoundsCandidateCap[fb.frameIndex] *
-                                                          sizeof(smvk::gfx::ClusterConstants))) {
-                    for (uint32_t di = 0; di < v.drawConstants.size() && di < tail.size();
-                         ++di) {
+                if (m_context->DownloadDataFromBuffer(
+                        st.skinBoundsBuffers[fb.frameIndex],
+                        tail.data(),
+                        tail.size() * sizeof(glm::vec4),
+                        (size_t)st.skinBoundsCandidateCap[fb.frameIndex] *
+                            sizeof(smvk::gfx::ClusterConstants))) {
+                    for (uint32_t di = 0; di < v.drawConstants.size() && di < tail.size(); ++di) {
                         const smvk::gfx::Draw& d = v.drawConstants[di];
                         if ((d.flags & smvk::gfx::DrawFlagBit_Skinned) == 0)
                             continue;
