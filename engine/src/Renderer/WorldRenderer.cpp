@@ -12869,19 +12869,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             if (gpuHistoryValid)
                 gpuHistoryPrevious = m_gpuSceneRasterHistoryBuffers[previousFlight];
         }
-        auto prepare = [this](
-            smvk::Holder<smvk::BufferHandle>& storage,
-            smvk::LogicalBufferHandle& logical,
-            uint32_t count, size_t stride, const char* label) {
-            if (storage.empty()) {
-                storage = m_context->CreateBuffer(size_t(count) * stride,
-                                                   smvk::BufferType_Storage, label);
-                if (storage.empty())
-                    return false;
-                logical = m_rendergraph->AddExternalBuffer(storage, label);
-            }
-            return !logical.empty();
-        };
         bool resourcesReady = true;
         if (m_gpuSceneRasterTemporalCommandCapacity[temporalFlight] < temporalCommands ||
             m_gpuSceneRasterSeedBuffers[temporalFlight].empty() ||
