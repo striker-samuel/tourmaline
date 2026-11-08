@@ -20,6 +20,31 @@
 
 namespace tour::gpu_scene {
 
+// Indexed Main requires a registered, resident LOD0 with one filterable
+// submesh. It does NOT require complete culling bounds: the existing
+// instance/leaf culler deliberately fails OPEN on unknown bounds, and the
+// #275 whole-static opt-in supported that conservative behavior.
+[[nodiscard]] inline bool RasterIndexedInstanceReady(
+    const RenderDatabase& db, Handle<Instance> id) noexcept {
+    const Instance* instance = db.instances.Get(id);
+    if (!instance)
+        return false;
+    const Mesh* mesh = db.meshes.Get({instance->refs.x, instance->refs.y});
+    if (!mesh || mesh->lodCount != 1 || (mesh->residentMask & 1u) == 0 ||
+        mesh->firstLod >= db.lods.Size())
+        return false;
+    const auto& lod = db.lods.Rows()[mesh->firstLod];
+    if (lod.identity.y != 1 ||
+        (lod.value.flags & (LodFlagResident | LodFlagFilterable)) !=
+            (LodFlagResident | LodFlagFilterable) ||
+        lod.value.submeshCount != 1 ||
+        lod.value.firstSubmesh >= db.submeshes.Size())
+        return false;
+    const auto& submesh = db.submeshes.Rows()[lod.value.firstSubmesh];
+    return submesh.identity.y == 1 &&
+           submesh.value.geometryId != InvalidIndex;
+}
+
 enum class RasterOwner : uint8_t { Legacy, Gpu };
 
 struct RasterOwnershipEntry {
