@@ -11702,6 +11702,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     fc.ctx = m_context;
     fc.rg = m_rendergraph.get();
     fc.world = m_world;
+    // The rendergraph records this frame before the next scene sync. The
+    // CPU predicate and GPU mask originate in the SAME canonical source
+    // snapshot, so Main/depth/filtered paths are exact complements.
+    if (m_gpuSceneRasterDrawActive) {
+        fc.gpuRasterOwnsNode = [this](NodeId node) {
+            return m_gpuSceneRasterOwnership.OwnsGpu(
+                m_gpuSceneSync.SourceForNode(node));
+        };
+    }
     fc.views = &m_renderViews;
     fc.frameIndex = fb.frameIndex;
     fc.mainViewIndex = mainRenderView;
@@ -12692,7 +12701,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // O(drawItems) GfxFilter batches, temporal seeds, or filter compute chain.
     // If GPU-scene admission failed, retain the original GfxFilter path.
     const bool gfxFilterOn = m_passes.gfxFilter && m_gfxFilterAvailable &&
-                             !m_gpuSceneRasterDrawActive;
+        (!m_gpuSceneRasterDrawActive || m_gpuSceneRasterLegacyCount != 0);
+    m_gfxRenderer.SetGpuRasterOwnership(fc.gpuRasterOwnsNode);
     if (gfxFilterOn) {
         if (m_freezeCullingView && !m_frozenViewValid) {
             m_frozenViewProj = frameData.viewProj;
@@ -12863,7 +12873,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // TOURMALINE_HIZ=0 / the UI checkbox) - never the fill. Skipped
     // only while the culling view is frozen (the held pyramid must
     // not be rebuilt).
-    if (!cullingFrozen && !m_gpuSceneRasterDrawActive)
+    if (!cullingFrozen &&
+        (!m_gpuSceneRasterDrawActive || m_gpuSceneRasterLegacyCount != 0))
         m_fpRenderer.AppendOccluderPrepass(fc);
 
     // Northlight depth split (filter on + seed primed depth): the HZB
@@ -12914,7 +12925,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // the trivial FS pair on the indirect draws) is the follow-up
     // that re-enables the slim split with SSR on.
     const bool depthSplit =
-        gfxFilterOn && fc.seedDepthPrimed && !m_splitDisabled && !fc.ssrGbufferWanted;
+        gfxFilterOn && !m_gpuSceneRasterDrawActive &&
+        fc.seedDepthPrimed && !m_splitDisabled && !fc.ssrGbufferWanted;
     fc.gfxLodFilterable =
         depthSplit
             ? std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)>(
@@ -14398,7 +14410,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // gfxSlot validity IS the filter gate (invalid = the pass config
         // killed it, setup latched it off, or the frame's filter failed -
         // the runtime A/B toggle is gone).
-        const bool gfxActive = gfxSlot != UINT32_MAX && !sceneRasterActive;
+        const bool gfxActive = gfxSlot != UINT32_MAX;
         // Debug views replace the shaded opaque leg:
         //   - The FLAT views (Meshlets F3 / LODs F5) intentionally bypass
         //     the GPU chain and draw EVERY instance direct — HZB-culled
@@ -14519,6 +14531,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                     smvk::IteratorFlagBit_StaticVertexFmt,
                 [&](const smvk::World::RenderItem& item) {
+                    if (sceneRasterActive &&
+                        m_gpuSceneRasterOwnership.OwnsGpu(
+                            m_gpuSceneSync.SourceForNode(item.node)))
+                        return; // GPU indexed Main owns this exact source
                     if (item.material == smvk::World::kInvalidIndex)
                         return;
                     const uint32_t worldMesh = item.mesh;
@@ -14767,7 +14783,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
             }
         }
-        if (!bypassFilter && !sceneRasterActive) {
+        if (!bypassFilter &&
+            (!sceneRasterActive || m_gpuSceneRasterLegacyCount != 0)) {
             // UINT32_MAX forces a bind check on the first node; an
             // identical state is deduped by the CommandBuffer's
             // current-pipeline check, so this costs nothing.
