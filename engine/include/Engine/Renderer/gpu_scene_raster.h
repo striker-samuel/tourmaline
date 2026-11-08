@@ -121,6 +121,7 @@ static_assert(sizeof(RasterHistoryPush) == 40);
 // The view BDA is the same camera-relative RasterViewData as the raster VS.
 struct RasterHizCullPush {
     uint64_t commands = 0;
+    uint64_t remainder = 0;
     uint64_t work = 0;
     uint64_t instances = 0;
     uint64_t view = 0;
@@ -135,7 +136,7 @@ struct RasterHizCullPush {
     uint32_t historyValid = 0;
     uint32_t reserved = 0;
 };
-static_assert(sizeof(RasterHizCullPush) == 80);
+static_assert(sizeof(RasterHizCullPush) == 88);
 
 // Push constants for the independent indirect raster command build kernel.
 struct RasterDrawBuildPush {
