@@ -180,6 +180,8 @@ struct WorkSelectPush {
     uint64_t choices = 0, counts = 0;
     alignas(16) glm::uvec4 limits{0u};
     glm::uvec4 limits2{0u};
+    glm::vec4 lodEyeBudget{0.0f};
+    glm::vec4 lodProjection{0.0f};
 };
 struct WorkPrefixPush {
     uint64_t counts = 0, offsets = 0;
@@ -189,8 +191,9 @@ struct WorkScatterPush {
     uint64_t choices = 0, offsets = 0, submeshes = 0, output = 0;
     alignas(16) glm::uvec4 limits{0u};
 };
-static_assert(sizeof(WorkSelectPush) == 96);
+static_assert(sizeof(WorkSelectPush) == 128);
 static_assert(offsetof(WorkSelectPush, limits) == 64);
+static_assert(offsetof(WorkSelectPush, lodEyeBudget) == 96);
 static_assert(sizeof(WorkPrefixPush) == 24);
 static_assert(sizeof(WorkScatterPush) == 48);
 static_assert(offsetof(WorkScatterPush, limits) == 32);
@@ -214,12 +217,44 @@ static_assert(sizeof(ParallelWorkGroupPush) == 24);
 static_assert(sizeof(ParallelWorkAddPush) == 32);
 
 
-// CPU oracle: exactly mirrors the GPU's current finest-registered-resident
-// LOD policy and preserves visible-instance/LOD-submesh order. This is not
-// screen-space error LOD selection yet.
+// GPU work expansion reference with optional projected-error selection.
+// The default disabled policy retains the legacy finest-resident tests.
+struct GpuLodView {
+    glm::vec3 eye{0.0f};
+    float pixelBudget = 1.0f;
+    float viewportHeight = 1080.0f;
+    float fovY = 0.7853982f;
+    bool enabled = false;
+};
+
+[[nodiscard]] inline float GpuLodPixelScale(const Instance& instance,
+                                            const GpuLodView& view) noexcept {
+    const glm::vec3 bx(instance.basisX), by(instance.basisY), bz(instance.basisZ);
+    const float scale = std::max(glm::length(bx),
+                                 std::max(glm::length(by), glm::length(bz)));
+    const glm::vec3 center =
+        glm::vec3(instance.worldPosition.high) - view.eye +
+        glm::vec3(instance.worldPosition.low) +
+        bx * instance.localSphere.x + by * instance.localSphere.y +
+        bz * instance.localSphere.z;
+    const float radius = instance.localSphere.w *
+                         std::sqrt(std::max(glm::dot(bx, bx) +
+                                                glm::dot(by, by) + glm::dot(bz, bz), 0.0f));
+    const float distance = std::max(glm::length(center) - radius, 0.0f);
+    if (!view.enabled || !(view.pixelBudget >= 0.0f) ||
+        !std::isfinite(view.pixelBudget) || !(view.viewportHeight > 0.0f) ||
+        !(view.fovY > 0.0f && view.fovY < 3.14159f) ||
+        !(distance > 0.0f) || !std::isfinite(distance) ||
+        !(scale > 0.0f) || !std::isfinite(scale))
+        return -1.0f;
+    return scale * view.viewportHeight /
+           (2.0f * std::tan(view.fovY * 0.5f) * distance);
+}
+
 [[nodiscard]] inline std::vector<SceneSubmeshWork> ReferenceExpandWork(
     const RenderDatabase& db,
-    std::span<const InstanceCullVerdict> compacted) {
+    std::span<const InstanceCullVerdict> compacted,
+    const GpuLodView& view = {}) {
     std::vector<SceneSubmeshWork> result;
     for (const auto& verdict : compacted) {
         if (verdict.value.x == InvalidIndex || verdict.value.y == 0u || verdict.value.z == 0u)
@@ -232,6 +267,9 @@ static_assert(sizeof(ParallelWorkAddPush) == 32);
             mesh->firstLod >= db.lods.Size() || mesh->lodCount > db.lods.Size() - mesh->firstLod)
             continue;
 
+        const float pixelScale = GpuLodPixelScale(*inst, view);
+        bool found = false;
+        std::vector<SceneSubmeshWork> selected;
         for (uint32_t level = 0; level < mesh->lodCount; ++level) {
             if ((mesh->residentMask & (1u << level)) == 0u)
                 continue;
@@ -245,7 +283,7 @@ static_assert(sizeof(ParallelWorkAddPush) == 32);
                 lod.submeshCount > db.submeshes.Size() - lod.firstSubmesh)
                 continue;
 
-            std::vector<SceneSubmeshWork> selected;
+            std::vector<SceneSubmeshWork> candidate;
             for (uint32_t sub = 0; sub < lod.submeshCount; ++sub) {
                 const uint32_t slot = lod.firstSubmesh + sub;
                 const auto& subRow = db.submeshes.Rows()[slot];
@@ -258,13 +296,18 @@ static_assert(sizeof(ParallelWorkAddPush) == 32);
                                            subRow.value.materialId);
                 work.detail =
                     glm::uvec4(level, slot, subRow.value.pipelineGroup, subRow.value.passMask);
-                selected.push_back(work);
+                candidate.push_back(work);
             }
-            if (!selected.empty()) {
-                result.insert(result.end(), selected.begin(), selected.end());
-                break;
-            }
+            if (candidate.empty())
+                continue;
+            if (found && (pixelScale < 0.0f || !std::isfinite(pixelScale) ||
+                !std::isfinite(lod.simplifyError) || lod.simplifyError < 0.0f ||
+                lod.simplifyError * pixelScale > view.pixelBudget))
+                continue;
+            selected = std::move(candidate);
+            found = true;
         }
+        result.insert(result.end(), selected.begin(), selected.end());
     }
     return result;
 }

@@ -11392,6 +11392,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         workSelect,
                         workPrefix,
                         workScatter);
+                // GPU-scene and World LODs consume the same per-frame pixel
+                // budget, projection and camera; only the hysteresis cache
+                // remains CPU-owned until persistent GPU LOD history lands.
+                if (workPrepared) {
+                    // m_lodFrameInputs is initialized later when AppFrameContext
+                    // is assembled. Use this frame's authoritative values
+                    // here rather than last frame's cached view.
+                    workSelect.lodEyeBudget =
+                        glm::vec4(m_cameraPositioner.cameraPosition_, m_lodPixelBudget);
+                    workSelect.lodProjection =
+                        glm::vec4(float(renderExtent.height),
+                                  glm::radians(kCameraFovYDegrees),
+                                  m_lodEnabled ? 1.0f : 0.0f, 0.0f);
+                }
                 tour::gpu_scene::ParallelWorkBlockPush workBlock{};
                 tour::gpu_scene::ParallelWorkGroupPush workGroups{};
                 tour::gpu_scene::ParallelWorkAddPush workAdd{};

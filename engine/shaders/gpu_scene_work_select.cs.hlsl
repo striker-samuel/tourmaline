@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
-// GPU Scene: select the finest registered/resident LOD for each compacted
+// GPU Scene: select the coarsest in-budget registered/resident LOD for each
 // visible instance and count its valid submeshes. No draw side effects.
 #include "gpu_platform.hlsli"
 #include "gpu_scene.hlsli"
@@ -34,6 +34,8 @@ struct Push {
     GPU_PTR_WRITE(Counts) counts;
     uint4 limits; // candidates, groups, instance slots, mesh slots
     uint4 limits2; // lod slots, submesh slots, reserved, reserved
+    float4 lodEyeBudget; // absolute float camera xyz, pixel budget w
+    float4 lodProjection; // viewport height, vertical FOV radians, enabled, reserved
 };
 GPU_PUSH(Push, pcW);
 
@@ -65,9 +67,35 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (mesh.value.firstLod >= lodSlots ||
         mesh.value.lodCount > lodSlots - mesh.value.firstLod) return;
 
-    // LOD0 is finest. Until the shared screen-error selector is moved
-    // into this stage, use the first fully registered resident LOD;
-    // never guess a deferred LOD's geometry.
+    // Match the World's sphere-surface distance and per-instance max axis
+    // scale (mesh simplification errors are authored in local units).
+    // Near/inside bounds, invalid view data, or disabled LOD use the finest
+    // available LOD. This first GPU selection has no previous-LOD hysteresis.
+    const float3 bx = inst.value.basisX.xyz;
+    const float3 by = inst.value.basisY.xyz;
+    const float3 bz = inst.value.basisZ.xyz;
+    const float scale = max(length(bx), max(length(by), length(bz)));
+    const float3 center =
+        (inst.value.worldPosition.high.xyz - pcW.lodEyeBudget.xyz) +
+        inst.value.worldPosition.low.xyz +
+        bx * inst.value.localSphere.x + by * inst.value.localSphere.y +
+        bz * inst.value.localSphere.z;
+    const float radius = inst.value.localSphere.w *
+                         sqrt(max(dot(bx,bx) + dot(by,by) + dot(bz,bz), 0.0f));
+    const float distance = max(length(center) - radius, 0.0f);
+    const bool useError = pcW.lodProjection.z != 0.0f &&
+        pcW.lodEyeBudget.w >= 0.0f && isfinite(pcW.lodEyeBudget.w) &&
+        pcW.lodProjection.x > 0.0f &&
+        pcW.lodProjection.y > 0.0f && pcW.lodProjection.y < 3.14159f &&
+        distance > 0.0f && isfinite(distance) &&
+        scale > 0.0f && isfinite(scale);
+    const float pixelsPerWorldUnit = useError ?
+        pcW.lodProjection.x / (2.0f * tan(pcW.lodProjection.y * 0.5f) * distance) : 0.0f;
+    WorkChoice selected = choice;
+    uint selectedWork = 0u;
+    bool found = false;
+    // LOD0 is finest. Scan all valid resident levels; choose the coarsest
+    // within the pixel budget, while retaining the finest valid fallback.
     for (uint lodIndex = 0u; lodIndex < mesh.value.lodCount; ++lodIndex) {
         if ((mesh.value.residentMask & (1u << lodIndex)) == 0u) continue;
         const GpuSceneLodRow lod =
@@ -86,11 +114,18 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                 ++workCount;
         }
         if (workCount == 0u) continue;
-        choice.identity = uint4(verdict.x, verdict.y, lodIndex,
-                                 lod.value.firstSubmesh);
-        choice.range = uint4(lod.value.submeshCount, workCount, 0u, 0u);
-        pcW.choices.Get().rows[i] = choice;
-        pcW.counts.Get().values[i] = workCount;
-        return;
+        if (found && (!useError || !isfinite(pixelsPerWorldUnit) ||
+            !isfinite(lod.value.simplifyError) || lod.value.simplifyError < 0.0f ||
+            lod.value.simplifyError * scale * pixelsPerWorldUnit > pcW.lodEyeBudget.w))
+            continue;
+        selected.identity = uint4(verdict.x, verdict.y, lodIndex,
+                                  lod.value.firstSubmesh);
+        selected.range = uint4(lod.value.submeshCount, workCount, 0u, 0u);
+        selectedWork = workCount;
+        found = true;
+    }
+    if (found) {
+        pcW.choices.Get().rows[i] = selected;
+        pcW.counts.Get().values[i] = selectedWork;
     }
 }

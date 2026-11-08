@@ -180,7 +180,8 @@ void CheckStableCompaction() {
 
 void CheckSubmeshWorkExpansion() {
     CHECK(sizeof(SceneSubmeshWork) == 32);
-    CHECK(sizeof(WorkSelectPush) == 96);
+    CHECK(sizeof(WorkSelectPush) == 128);
+    CHECK(offsetof(WorkSelectPush, lodEyeBudget) == 96);
     CHECK(sizeof(WorkPrefixPush) == 24);
     CHECK(sizeof(WorkScatterPush) == 48);
 
@@ -240,6 +241,62 @@ void CheckSubmeshWorkExpansion() {
     CHECK(ReferenceExpandWork(db, visible).empty());
 }
 
+void CheckProjectedErrorWorkSelection() {
+    RenderDatabase db{};
+    const std::array<Submesh, 3> subs{{Submesh{10u, 0u, 0u, 0u},
+                                        Submesh{11u, 0u, 0u, 0u},
+                                        Submesh{12u, 0u, 0u, 0u}}};
+    const auto subIds = db.submeshes.InsertContiguous(subs);
+    CHECK(subIds.size() == 3);
+    const std::array<Lod, 3> lods{{
+        Lod{subIds[0].slot, 1u, 0.0f, LodFlagResident | LodFlagFilterable},
+        Lod{subIds[1].slot, 1u, 1.0f, LodFlagResident | LodFlagFilterable},
+        Lod{subIds[2].slot, 1u, 10.0f, LodFlagResident | LodFlagFilterable}}};
+    const auto lodIds = db.lods.InsertContiguous(lods);
+    CHECK(lodIds.size() == 3);
+    auto mesh = db.meshes.Insert(Mesh{lodIds[0].slot, 3u, 7u, MeshFlagCompleteBounds});
+    Instance instance{};
+    instance.worldPosition = tour::math::SplitDoubleFloat(glm::dvec3(0, 0, 100));
+    instance.localSphere = glm::vec4(0, 0, 0, 1);
+    instance.refs = glm::uvec4(mesh.slot, mesh.generation, 0u, 0u);
+    auto id = db.instances.Insert(instance);
+    InstanceCullVerdict verdict{};
+    verdict.value = glm::uvec4(id.slot, id.generation, 1u, 0u);
+    std::array<InstanceCullVerdict, 1> visible{verdict};
+    GpuLodView view{};
+    view.enabled = true;
+    view.fovY = 1.57079632679f;
+    view.viewportHeight = 1000.0f;
+    view.pixelBudget = 1.0f;
+    auto work = ReferenceExpandWork(db, visible, view);
+    CHECK(work.size() == 1 && work[0].detail.x == 0u);
+    view.pixelBudget = 10.0f;
+    work = ReferenceExpandWork(db, visible, view);
+    CHECK(work.size() == 1 && work[0].detail.x == 1u);
+    view.pixelBudget = 100.0f;
+    work = ReferenceExpandWork(db, visible, view);
+    CHECK(work.size() == 1 && work[0].detail.x == 2u);
+    // Sparse residency: an absent middle level must not be drawn.
+    CHECK(db.meshes.Update(mesh, Mesh{lodIds[0].slot, 3u, 5u, MeshFlagCompleteBounds}));
+    view.pixelBudget = 10.0f;
+    work = ReferenceExpandWork(db, visible, view);
+    CHECK(work.size() == 1 && work[0].detail.x == 0u);
+    view.pixelBudget = 100.0f;
+    work = ReferenceExpandWork(db, visible, view);
+    CHECK(work.size() == 1 && work[0].detail.x == 2u);
+    // Per-instance scale moves the same asset's projected error threshold.
+    instance.basisX.x = 2.0f;
+    instance.basisY.y = 2.0f;
+    instance.basisZ.z = 2.0f;
+    CHECK(db.instances.Update(id, instance));
+    view.pixelBudget = 10.0f;
+    CHECK(ReferenceExpandWork(db, visible, view)[0].detail.x == 0u);
+    // Disabling geometry LOD always returns the finest valid level.
+    view.enabled = false;
+    view.pixelBudget = 1000.0f;
+    CHECK(ReferenceExpandWork(db, visible, view)[0].detail.x == 0u);
+}
+
 void CheckLegacyRebasing() {
     smvk::RenderView view{};
     // Absolute plane: world x <= 103, but origin is world x=100.
@@ -289,6 +346,7 @@ int main() {
     CheckStableCompaction();
     CheckIndirectAndAuthoritativeView();
     CheckSubmeshWorkExpansion();
+    CheckProjectedErrorWorkSelection();
     CheckLegacyRebasing();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
