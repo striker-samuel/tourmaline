@@ -480,8 +480,9 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
         {fc.extent.width, fc.extent.height},
         hizOccluder ? "GpuSceneHizSeed" : "GpuSceneDepth",
         hizOccluder ? smvk::AttachmentLoadOp::Clear
-                    : (fc.seedDepthPrimed ? smvk::AttachmentLoadOp::Load
-                                          : smvk::AttachmentLoadOp::Clear),
+                    : ((fc.seedDepthPrimed || fc.gpuSceneDepthPrimed)
+                           ? smvk::AttachmentLoadOp::Load
+                           : smvk::AttachmentLoadOp::Clear),
         gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
         fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
                                : smvk::AttachmentLoadOp::Clear,
