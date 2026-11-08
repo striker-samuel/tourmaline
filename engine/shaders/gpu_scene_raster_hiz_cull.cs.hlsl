@@ -23,6 +23,7 @@ struct RasterCommands { RasterIndirectCommand rows[GS_RASTER_MAX_WORK]; };
 struct RasterWorkRow { uint4 identity; uint4 detail; };
 struct RasterWork { RasterWorkRow rows[GS_RASTER_MAX_WORK]; };
 struct RasterInstances { GpuSceneInstanceRow rows[GS_RASTER_MAX_INSTANCES]; };
+struct RasterMeshes { GpuSceneMeshRow rows[GS_RASTER_MAX_INSTANCES]; };
 struct RasterHistory { uint generations[GS_RASTER_MAX_INSTANCES]; };
 struct RasterViewData {
     float4x4 relativeViewProjection;
@@ -33,11 +34,13 @@ struct RasterHizPush {
     GPU_PTR(RasterCommands) remainder;
     GPU_PTR_READ(RasterWork) work;
     GPU_PTR_READ(RasterInstances) instances;
+    GPU_PTR_READ(RasterMeshes) meshes;
     GPU_PTR_READ(RasterViewData) view;
     GPU_PTR_READ(HzbBuffer) hiz;
     GPU_PTR_READ(RasterHistory) previous;
     uint commandCapacity;
     uint instanceSlots;
+    uint meshSlots;
     uint width;
     uint height;
     uint mips;
@@ -73,6 +76,16 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         pcH.previous.Get().generations[work.identity.x] == work.identity.y)
         return;
     const GpuSceneInstance inst = row.value;
+    // A single-LOD mesh can be raster-admitted without proven bounds
+    // (the existing frustum culler fails open). NEVER treat its default
+    // localSphere as an occlusion bound. Validate the mesh generation,
+    // plus the all-LOD conservative bounds flag before testing.
+    if (inst.refs.x >= min(pcH.meshSlots, GS_RASTER_MAX_INSTANCES))
+        return;
+    const GpuSceneMeshRow mesh = pcH.meshes.Get().rows[inst.refs.x];
+    if (mesh.identity.y != 1u || mesh.identity.x != inst.refs.y ||
+        (mesh.value.flags & 1u) == 0u)
+        return;
 
     // Both the GPU-scene view and the model are CAMERA-RELATIVE. The
     // double-float subtraction must precede all float projection math.
