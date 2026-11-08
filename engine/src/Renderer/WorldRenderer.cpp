@@ -13294,6 +13294,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 ? m_context->GetBufferDeviceAddress(gpuHistoryPrevious) : 0u;
             const tour::gpu_scene::RasterHizCullPush hizPush{
                 m_context->GetBufferDeviceAddress(m_gpuSceneRasterIndirect),
+                m_context->GetBufferDeviceAddress(gpuRemainderCommands),
                 m_gpuSceneRasterWorkBda,
                 m_gpuSceneUploader.DeviceAddresses(*m_context, temporalFlight).instances,
                 m_gpuSceneRasterView.DeviceAddress(*m_context, temporalFlight),
@@ -13308,6 +13309,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             indirectRW.barrierMasks.accessMask =
                 smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
             gate.AddBufferHint(m_gpuSceneRasterIndirectLogical[temporalFlight], indirectRW);
+            gate.AddBufferHint(m_gpuSceneRasterRemainderLogicals[temporalFlight], indirectRW);
             smvk::BufferSyncRequest hizRead{};
             hizRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
             hizRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
