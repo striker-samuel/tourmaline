@@ -12967,14 +12967,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     } else {
         // Full prepass before the HZB (Clear when not seeded).
         if (m_passes.forwardPlusPrepass) {
-            // GPU scene owns the full static-opaque scene when admitted.
+            // GPU indexed depth/G-buffer clears and writes FIRST. The
+            // remaining legacy objects (including GPU-skinned geometry)
+            // then Load both targets and draw the exact complement.
+            // Missing GPU depth variants fall back to the complete CPU
+            // prepass, without removing any GPU-owned objects from it.
             // The thin SSR/SSGI G-buffer still requires its full material
             // writer; until the GPU material-ID variant is wired, use the
             // legacy prepass for those frames instead of stale G-buffer data.
-            if (m_gpuSceneRasterDrawActive &&
+            const bool gpuPrepassAvailable =
+                m_gpuSceneRasterDrawActive &&
                 (fc.ssrGbufferWanted
                      ? m_gpuSceneRasterGbufferProgram.shaderCount == 2
-                     : m_gpuSceneRasterDepthProgram.shaderCount == 1)) {
+                     : m_gpuSceneRasterDepthProgram.shaderCount == 1);
+            bool gpuDepthPrimed = false;
+            if (gpuPrepassAvailable) {
                 const uint32_t flight = fb.frameIndex;
                 const tour::gpu_scene::RasterVsPush tail{
                     m_gpuSceneRasterWorkBda,
@@ -12982,7 +12989,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
                     m_gpuSceneDatabase.instances.Size(),
                     m_gpuSceneRasterDrawCapacity};
-                m_fpRenderer.AppendGpuScenePrepass(
+                gpuDepthPrimed = m_fpRenderer.AppendGpuScenePrepass(
                     fc, fc.ssrGbufferWanted
                             ? m_gpuSceneRasterGbufferProgram
                             : m_gpuSceneRasterDepthProgram,
@@ -12990,8 +12997,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneRasterIndirectLogical[flight],
                     m_gpuSceneRasterWorkLogical[flight],
                     m_gpuSceneRasterDrawCapacity, tail);
-            } else {
+                fc.gpuSceneDepthPrimed = gpuDepthPrimed;
+            }
+            if (!gpuDepthPrimed || m_gpuSceneRasterLegacyCount != 0) {
+                // If the GPU prepass failed to attach, legacy depth must
+                // cover the whole world even though GPU Main still owns
+                // its static subset. Restore the predicate afterwards.
+                const auto ownsGpu = fc.gpuRasterOwnsNode;
+                if (!gpuDepthPrimed)
+                    fc.gpuRasterOwnsNode = {};
                 m_fpRenderer.AppendPrepass(fc);
+                fc.gpuRasterOwnsNode = ownsGpu;
             }
         }
         if (gfxFilterOn) {
