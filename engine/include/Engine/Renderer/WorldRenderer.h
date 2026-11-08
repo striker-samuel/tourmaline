@@ -2387,6 +2387,7 @@ class WorldRenderer : public IRenderer {
     uint64_t m_gpuSceneRasterEligibilityGeometryRevision = ~uint64_t(0);
     bool m_gpuSceneRasterEligible = false;
     bool m_gpuSceneRasterDrawActive = false;
+    bool m_gpuSceneRasterPreviouslyActive = false;
     smvk::BufferHandle m_gpuSceneRasterIndirect{};
     uint64_t m_gpuSceneRasterWorkBda = 0;
     uint32_t m_gpuSceneRasterDrawCapacity = 0;
