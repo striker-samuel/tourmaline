@@ -61,6 +61,56 @@ inline constexpr size_t kDynamicPageBytes = 64u * 1024u;
     return true;
 }
 
+// Checked byte budget for the coupled per-view/per-flight allocations.
+// Strides are arguments so this stays independent of RHI and GPU headers.
+struct DynamicBytes {
+    size_t draws = 0;
+    size_t batches = 0;
+    size_t indirect = 0;
+    size_t temporalCommands = 0; // each of seed and remainder
+    size_t kept = 0;             // two candidate parity regions
+    size_t cullState = 0;        // draw verdicts + five counters
+    size_t skinBounds = 0;       // candidate clusters + draw union tail
+    size_t coneDebug = 0;        // two packed float3 lines per candidate
+    size_t meshBatchList = 0;
+};
+
+[[nodiscard]] inline constexpr bool CheckedBytes(size_t count,
+                                                 size_t stride,
+                                                 size_t& bytes) noexcept {
+    bytes = 0;
+    if (stride && count > std::numeric_limits<size_t>::max() / stride)
+        return false;
+    bytes = count * stride;
+    return true;
+}
+
+[[nodiscard]] inline constexpr bool PlanDynamicBytes(const DynamicCapacity& cap,
+                                                     size_t drawStride,
+                                                     size_t batchStride,
+                                                     size_t indirectStride,
+                                                     size_t temporalStride,
+                                                     size_t clusterStride,
+                                                     DynamicBytes& out) noexcept {
+    DynamicBytes plan{};
+    size_t tail = 0;
+    if (!CheckedBytes(cap.draws, drawStride, plan.draws) ||
+        !CheckedBytes(cap.candidates, batchStride, plan.batches) ||
+        !CheckedBytes(cap.candidates, indirectStride, plan.indirect) ||
+        !CheckedBytes(cap.candidates, temporalStride, plan.temporalCommands) ||
+        !CheckedBytes(cap.candidates, 2u * sizeof(uint32_t), plan.kept) ||
+        !CheckedBytes(size_t(cap.draws) + 5u, sizeof(uint32_t), plan.cullState) ||
+        !CheckedBytes(cap.candidates, clusterStride, plan.skinBounds) ||
+        !CheckedBytes(cap.draws, 4u * sizeof(uint32_t), tail) ||
+        tail > std::numeric_limits<size_t>::max() - plan.skinBounds ||
+        !CheckedBytes(cap.candidates, 6u * sizeof(uint32_t), plan.coneDebug) ||
+        !CheckedBytes(cap.candidates, sizeof(uint32_t), plan.meshBatchList))
+        return false;
+    plan.skinBounds += tail;
+    out = plan; // no partial plan on failure
+    return true;
+}
+
 // Vulkan 1.3 guarantees at least 65535 workgroups in both X and Y.
 // Flatten as gid.y * 65535 + gid.x in the matching compute shader.
 struct DispatchGrid {
