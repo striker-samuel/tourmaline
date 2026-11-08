@@ -100,6 +100,9 @@ int main() {
         WorldSynchronizer sync{};
         const auto first = sync.Synchronize(world, snapshot, 1);
         CHECK(first.topologyReconciled && first.geometryRefreshed);
+        CHECK(!sync.SourceForNode(0).registration); // unknown merged node fails closed
+        CHECK(sync.SourceForNode(UINT32_MAX).slot == InvalidIndex);
+
         const auto unchanged = sync.Synchronize(world, snapshot, 1);
         CHECK(!unchanged.topologyReconciled && !unchanged.geometryRefreshed);
         const auto geometryOnly = sync.Synchronize(world, snapshot, 2);
