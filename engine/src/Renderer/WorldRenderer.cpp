@@ -11280,6 +11280,38 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
         }
+        // GPU-scene temporal seed and Hi-Z: optional until their complete
+        // compute + rendergraph chain is ready. Missing modules fail open
+        // to the existing unculled GPU-scene depth/Main path.
+        const auto loadRasterTemporal = [this](
+            smvk::Holder<smvk::ShaderModuleHandle>& module,
+            smvk::ShaderProgram& program,
+            const char* path, const char* entry) {
+            if (program.shaderCount == 1)
+                return;
+            try {
+                if (module.empty())
+                    module = m_context->CreateShaderModule(
+                        smvk::shaders::Read(path), "gpuSceneRasterTemporalCS");
+                if (!module.empty()) {
+                    smvk::Shader cs{.module = module,
+                                    .entryPoint = entry,
+                                    .stage = smvk::ShaderStage::Compute};
+                    program = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                // The Hi-Z path is optional; never take ownership from
+                // the normal raster draw chain when a shader is missing.
+            }
+        };
+        loadRasterTemporal(m_gpuSceneRasterSeedModule, m_gpuSceneRasterSeedProgram,
+            "content/shaders/gpu_scene_raster_seed.cs.hlsl.spv", "mainCS");
+        loadRasterTemporal(m_gpuSceneRasterHizCullModule, m_gpuSceneRasterHizCullProgram,
+            "content/shaders/gpu_scene_raster_hiz_cull.cs.hlsl.spv", "mainCS");
+        loadRasterTemporal(m_gpuSceneRasterHistoryModule, m_gpuSceneRasterHistoryClearProgram,
+            "content/shaders/gpu_scene_raster_history.cs.hlsl.spv", "mainClear");
+        loadRasterTemporal(m_gpuSceneRasterHistoryModule, m_gpuSceneRasterHistoryCommitProgram,
+            "content/shaders/gpu_scene_raster_history.cs.hlsl.spv", "mainCommit");
         if (m_gpuSceneCullProgram.shaderCount == 1) {
             // This is a validation bridge, NOT true large-world camera
             // authority. The source VP remains float32; we only change
