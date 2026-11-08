@@ -10836,10 +10836,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             std::fprintf(stderr,
                          "[GpuScene] database publication failed; no GPU reader this frame\n");
     }
-    // The first production raster cutover is deliberately whole-world
-    // and conservative: if any draw needs a legacy feature, retain the
-    // entire legacy Main path (no accidental duplicate or missing draw).
-    // Cache the costly eligibility scan by topology+geometry revisions.
+    // Canonical static opaque admission. One source key per authored local
+    // node, NEVER a merged node id or material-sorted drawItems index.
+    // GPU skinning already runs in the legacy renderer: those draw items
+    // remain legacy-owned until GPU-scene raster consumes deformed geometry.
+    m_gpuSceneRasterOwnership.BeginFrame();
     if (s_gpuSceneRaster && m_world && m_gpuSceneDatabaseReady) {
         if (m_gpuSceneRasterEligibilityWorld != m_world ||
             m_gpuSceneRasterEligibilityTopologyRevision !=
@@ -10848,44 +10849,62 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_gpuSceneRasterEligibilityWorld = m_world;
             m_gpuSceneRasterEligibilityTopologyRevision = m_world->gpuSceneTopologyRevision;
             m_gpuSceneRasterEligibilityGeometryRevision = m_gpuSceneGeometryRevision;
-            m_gpuSceneRasterEligible =
-                !m_world->drawItems.empty() &&
-                m_gpuSceneDatabase.instances.LiveCount() == m_world->drawItems.size();
+            const size_t total = m_world->drawItems.size();
+            if (total > m_gpuSceneRasterEntryCapacity) {
+                m_gpuSceneRasterEntries =
+                    static_cast<tour::gpu_scene::RasterOwnershipEntry*>(
+                        smvk::AppArena().Allocate(
+                            total * sizeof(tour::gpu_scene::RasterOwnershipEntry),
+                            alignof(tour::gpu_scene::RasterOwnershipEntry)));
+                std::uninitialized_value_construct_n(m_gpuSceneRasterEntries, total);
+                m_gpuSceneRasterEntryCapacity = total;
+            }
+            bool allCompatible = total != 0 &&
+                m_gpuSceneDatabase.instances.LiveCount() == total;
             const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
             constexpr uint32_t requiredFlags =
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                 smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
             constexpr uint32_t forbiddenFlags =
                 smvk::IteratorFlagBit_Masked | smvk::IteratorFlagBit_Transparent;
-            if (m_gpuSceneRasterEligible) {
-                for (const auto& item : m_world->drawItems) {
-                    const auto* mesh = m_world->GetMesh(item.mesh);
-                    const uint32_t gfxId = m_gfxRenderer.GfxMeshForLod(item.mesh, 0);
-                    tour::gpu_scene::IndexedGeometry geometry{};
-                    if ((item.flags & requiredFlags) != requiredFlags ||
-                        (item.flags & forbiddenFlags) != 0 ||
-                        item.material == smvk::World::kInvalidIndex ||
-                        item.materialInstance != 0 ||
-                        m_world->MaterialUserData(item.material) != 0 ||
-                        m_gfxRenderer.MaterialProjectFamily(item.material) ||
-                        item.node >= m_world->scene.globalTransform.size() ||
-                        (item.node < m_world->scene.ditherCloseup.size() &&
-                         m_world->scene.ditherCloseup[item.node] != 0) ||
-                        !mesh || mesh->skinned || mesh->geometry.surfaces.size() != 1 ||
-                        (item.mesh < m_world->lodChains.size() &&
-                         m_world->lodChains[item.mesh].levels.size() != 1) ||
-                        gfxId == UINT32_MAX ||
-                        !tour::gpu_scene::ResolveIndexedGeometry(gfxTables, gfxId, geometry)) {
-                        m_gpuSceneRasterEligible = false;
-                        break;
-                    }
-                }
+            for (size_t i = 0; i < total; ++i) {
+                const auto& item = m_world->drawItems[i];
+                const auto key = m_gpuSceneSync.SourceForNode(item.node);
+                const auto instance = m_gpuSceneSync.Find(key);
+                const auto* mesh = m_world->GetMesh(item.mesh);
+                const uint32_t gfxId = m_gfxRenderer.GfxMeshForLod(item.mesh, 0);
+                tour::gpu_scene::IndexedGeometry geometry{};
+                const bool compatible =
+                    key.registration != 0 && bool(instance) &&
+                    tour::gpu_scene::InstanceDrawReady(m_gpuSceneDatabase, instance) &&
+                    (item.flags & requiredFlags) == requiredFlags &&
+                    (item.flags & forbiddenFlags) == 0 &&
+                    item.material != smvk::World::kInvalidIndex &&
+                    item.materialInstance == 0 &&
+                    m_world->MaterialUserData(item.material) == 0 &&
+                    !m_gfxRenderer.MaterialProjectFamily(item.material) &&
+                    item.node < m_world->scene.globalTransform.size() &&
+                    (item.node >= m_world->scene.ditherCloseup.size() ||
+                     m_world->scene.ditherCloseup[item.node] == 0) &&
+                    mesh && !mesh->skinned && mesh->geometry.surfaces.size() == 1 &&
+                    (item.mesh >= m_world->lodChains.size() ||
+                     m_world->lodChains[item.mesh].levels.size() == 1) &&
+                    gfxId != UINT32_MAX &&
+                    tour::gpu_scene::ResolveIndexedGeometry(gfxTables, gfxId, geometry);
+                m_gpuSceneRasterEntries[i] = {key, compatible};
+                allCompatible &= compatible;
             }
+            // Publish sorts and rejects duplicate source keys: two draw
+            // records for one source must not silently share ownership.
+            const bool snapshotValid = m_gpuSceneRasterOwnership.Publish(
+                std::span<tour::gpu_scene::RasterOwnershipEntry>(
+                    m_gpuSceneRasterEntries, total));
+            m_gpuSceneRasterEligible = allCompatible && snapshotValid;
         }
     } else {
         m_gpuSceneRasterEligible = false;
-        // A transient publish failure must not cache an "eligible" scene:
-        // next frame must recheck geometry and current source identities.
+        m_gpuSceneRasterOwnership.Reset();
+        // Transient publication failures must not keep stale eligibility.
         m_gpuSceneRasterEligibilityWorld = nullptr;
     }
     m_gpuSceneRasterDrawActive = false;
@@ -11306,6 +11325,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             !m_gpuSceneRasterIndirectLogical[flight].empty() &&
                             !m_gpuSceneRasterWorkLogical[flight].empty();
                         if (m_gpuSceneRasterDrawActive) {
+                            // Commit only after every GPU work and logical
+                            // submission buffer is ready for this flight.
+                            // In the current whole-world mode every source
+                            // must be compatible; mixed mode is still gated.
+                            m_gpuSceneRasterOwnership.CommitGpuPrepared();
                             m_gpuSceneRasterIndirect = rasterCommands;
                             m_gpuSceneRasterWorkBda = workBda;
                             m_gpuSceneRasterDrawCapacity = rasterPush.commandCapacity;
