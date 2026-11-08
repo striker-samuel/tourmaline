@@ -13262,7 +13262,104 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_gfxRenderer.AppendRemainderPass(fc);
         }
     } else {
-        // Full prepass before the HZB (Clear when not seeded).
+        // GPU-scene's Northlight equivalent: current-frustum commands
+        // are split using LAST frame's (slot,generation) visibility. The
+        // seed alone rasterizes into hizDepth, the MIN HZB is built from
+        // exactly that subset, then current non-seed commands are tested.
+        // Complete Main depth is drawn only AFTER that verdict. A full
+        // prepass before Hi-Z would self-occlude the query and turn the
+        // occlusion test into a structural no-op.
+        if (gpuTemporalReady) {
+            const tour::gpu_scene::RasterVsPush seedVsPush{
+                m_gpuSceneRasterWorkBda,
+                m_gpuSceneUploader.DeviceAddresses(*m_context, temporalFlight).instances,
+                m_gpuSceneRasterView.DeviceAddress(*m_context, temporalFlight),
+                temporalSlots, temporalCommands};
+            const bool seedRecorded = m_fpRenderer.AppendGpuScenePrepass(
+                fc, m_gpuSceneRasterDepthProgram, gpuSeedCommands,
+                m_gpuSceneRasterSeedLogicals[temporalFlight],
+                m_gpuSceneRasterWorkLogical[temporalFlight],
+                temporalCommands, seedVsPush, /*hizOccluder=*/true);
+            if (!seedRecorded)
+                gpuTemporalReady = false;
+        }
+        if (gpuTemporalReady) {
+            const uint32_t hizSlot = m_gfxRenderer.LastSlot();
+            const auto& hz = smvk::gfx::Temporal(m_gfxRenderer.gfx, hizSlot)
+                                 .hiz[temporalFlight];
+            // AddHizPasses declares depth/compute read-write dependencies.
+            appendHizPasses();
+            const uint64_t prevBda = gpuHistoryValid
+                ? m_context->GetBufferDeviceAddress(gpuHistoryPrevious) : 0u;
+            const tour::gpu_scene::RasterHizCullPush hizPush{
+                m_context->GetBufferDeviceAddress(m_gpuSceneRasterIndirect),
+                m_gpuSceneRasterWorkBda,
+                m_gpuSceneUploader.DeviceAddresses(*m_context, temporalFlight).instances,
+                m_gpuSceneRasterView.DeviceAddress(*m_context, temporalFlight),
+                smvk::gfx::HizAddress(m_gfxRenderer.gfx, *m_context, hizSlot),
+                prevBda,
+                temporalCommands, temporalSlots, hz.width, hz.height,
+                hz.mipCount, previousHistorySlots,
+                gpuHistoryValid ? 1u : 0u, 0u};
+            auto& gate = m_rendergraph->AddComputePass("GpuSceneHizCull");
+            smvk::BufferSyncRequest indirectRW{};
+            indirectRW.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+            indirectRW.barrierMasks.accessMask =
+                smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+            gate.AddBufferHint(m_gpuSceneRasterIndirectLogical[temporalFlight], indirectRW);
+            smvk::BufferSyncRequest hizRead{};
+            hizRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+            hizRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+            gate.AddBufferHint(hz.logical, hizRead);
+            gate.AddBufferHint(m_gpuSceneRasterWorkLogical[temporalFlight], hizRead);
+            if (gpuHistoryValid)
+                gate.AddBufferHint(m_gpuSceneRasterHistoryLogicals[
+                    m_gpuSceneRasterLastHistoryFlight], hizRead);
+            auto hizProgram = m_gpuSceneRasterHizCullProgram;
+            gate.SetRecordingFunc([hizProgram, hizPush](smvk::CommandBuffer& cmd) mutable {
+                cmd.BindComputePipeline(hizProgram);
+                cmd.PushConstants(0, sizeof(hizPush), &hizPush, smvk::ShaderStage::Compute);
+                cmd.Dispatch((hizPush.commandCapacity + 63u) / 64u, 1, 1);
+            });
+            // Publish only actually surviving GPU work, never stale work
+            // slots or CPU draw IDs. A strict shader barrier separates
+            // clearing from atomic per-instance generation publication.
+            const tour::gpu_scene::RasterHistoryPush historyPush{
+                hizPush.commands, hizPush.work,
+                m_context->GetBufferDeviceAddress(gpuHistoryCurrent),
+                temporalCommands, temporalSlots,
+                m_gpuSceneRasterTemporalHistoryCapacity[temporalFlight], 0u};
+            auto& history = m_rendergraph->AddComputePass("GpuSceneVisibleHistory");
+            history.AddBufferHint(m_gpuSceneRasterIndirectLogical[temporalFlight], hizRead);
+            history.AddBufferHint(m_gpuSceneRasterWorkLogical[temporalFlight], hizRead);
+            smvk::BufferSyncRequest historyRW{};
+            historyRW.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+            historyRW.barrierMasks.accessMask =
+                smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+            history.AddBufferHint(m_gpuSceneRasterHistoryLogicals[temporalFlight], historyRW);
+            auto clearProgram = m_gpuSceneRasterHistoryClearProgram;
+            auto commitProgram = m_gpuSceneRasterHistoryCommitProgram;
+            history.SetRecordingFunc(
+                [clearProgram, commitProgram, historyPush](smvk::CommandBuffer& cmd) mutable {
+                    cmd.BindComputePipeline(clearProgram);
+                    cmd.PushConstants(0, sizeof(historyPush), &historyPush,
+                                      smvk::ShaderStage::Compute);
+                    cmd.Dispatch((historyPush.historySlots + 63u) / 64u, 1, 1);
+                    cmd.EmitGlobalMemoryBarrier();
+                    cmd.BindComputePipeline(commitProgram);
+                    cmd.PushConstants(0, sizeof(historyPush), &historyPush,
+                                      smvk::ShaderStage::Compute);
+                    cmd.Dispatch((historyPush.commandCapacity + 63u) / 64u, 1, 1);
+                });
+            m_gpuSceneRasterLastHistoryFlight = temporalFlight;
+            m_gpuSceneRasterHistoryWorld = m_world;
+            m_gpuSceneRasterHistoryTopologyRevision = m_world->gpuSceneTopologyRevision;
+            m_gpuSceneRasterHistoryGeometryRevision = m_gpuSceneGeometryRevision;
+            m_gpuSceneRasterHistoryWidth = renderExtent.width;
+            m_gpuSceneRasterHistoryHeight = renderExtent.height;
+        }
+        // The complete (GPU + legacy) depth is assembled AFTER the
+        // seed-only occlusion verdict, with no chance of self-culling.
         if (m_passes.forwardPlusPrepass) {
             // GPU indexed depth/G-buffer clears and writes FIRST. The
             // remaining legacy objects (including GPU-skinned geometry)
@@ -13308,7 +13405,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
         if (gfxFilterOn) {
-            if (!cullingFrozen)
+            // When GPU-scene seeded the pyramid above, legacy draw/cluster
+            // culling consumes the SAME depth rather than rebuilding it
+            // over the completed current frame. Standalone GfxFilter
+            // retains its existing full-prepass path.
+            if (!cullingFrozen && !gpuTemporalReady)
                 appendHizPasses();
             m_gfxRenderer.AppendFilterDispatch(fc);
             if (m_gfxRenderer.RemainderPending()) {
