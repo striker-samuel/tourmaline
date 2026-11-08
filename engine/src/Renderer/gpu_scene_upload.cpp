@@ -3,6 +3,7 @@
 
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/gpu_scene_upload.h>
+#include <Engine/Renderer/gpu_scene_pages.h>
 
 #include <algorithm>
 #include <array>
@@ -30,26 +31,23 @@ bool PublishTable(smvk::ResourceManager& ctx,
     if (table.Size() == 0)
         return true; // empty table has a null GPU address
 
+    // Grow by complete, row-aligned 64 KiB logical pages. Every table
+    // remains ONE contiguous BDA allocation; the GPU does not need a page
+    // table or an additional pointer chase. VMA manages the physical bins.
+    size_t requiredRows = 0;
+    size_t requiredBytes = 0;
+    using Pages = TablePageLayout<Payload>;
+    if (!Pages::Capacity(table.Size(), requiredRows) ||
+        !Pages::Bytes(table.Size(), requiredBytes))
+        return false;
     bool fullCopy = false;
     if (mirror.capacityRows[flight] < table.Size() || mirror.buffers[flight].empty()) {
-        size_t cap = std::max<size_t>(16, mirror.capacityRows[flight]);
-        while (cap < table.Size()) {
-            if (cap > std::numeric_limits<size_t>::max() / 2)
-                return false;
-            cap *= 2;
-        }
-        if (cap >
-            std::numeric_limits<size_t>::max() / sizeof(typename Table<Payload, Flights>::Entry))
-            return false;
-
-        auto next = ctx.CreateBuffer(
-            cap * sizeof(typename Table<Payload, Flights>::Entry), smvk::BufferType_Storage, name);
+        auto next = ctx.CreateGpuSceneBuffer(requiredBytes, name);
         if (next.empty())
             return false;
-        // Holder replacement goes through ResourceManager's deferred
-        // destruction, protecting older in-flight references.
+        // Holder replacement is deferred until old GPU flights retire.
         mirror.buffers[flight] = std::move(next);
-        mirror.capacityRows[flight] = cap;
+        mirror.capacityRows[flight] = requiredRows;
         fullCopy = true;
     }
     return table.Publish(
