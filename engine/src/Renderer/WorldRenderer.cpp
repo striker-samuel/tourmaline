@@ -13283,6 +13283,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 temporalCommands, seedVsPush, /*hizOccluder=*/true);
             if (!seedRecorded)
                 gpuTemporalReady = false;
+            // Prime MAIN depth/G-buffer with the same prev-visible seed.
+            // The subsequent Hi-Z depth is a separate target. After the
+            // occlusion test, only the current-minus-seed remainder will
+            // append to MAIN depth (Load), matching GfxFilter T3/T5.
+            if (gpuTemporalReady && m_passes.forwardPlusPrepass) {
+                auto depthProgram = fc.ssrGbufferWanted
+                    ? m_gpuSceneRasterGbufferProgram
+                    : m_gpuSceneRasterDepthProgram;
+                const bool primed = m_fpRenderer.AppendGpuScenePrepass(
+                    fc, depthProgram, gpuSeedCommands,
+                    m_gpuSceneRasterSeedLogicals[temporalFlight],
+                    m_gpuSceneRasterWorkLogical[temporalFlight],
+                    temporalCommands, seedVsPush);
+                if (!primed)
+                    gpuTemporalReady = false;
+                else
+                    fc.gpuSceneDepthPrimed = true;
+            }
         }
         if (gpuTemporalReady) {
             const uint32_t hizSlot = m_gfxRenderer.LastSlot();
