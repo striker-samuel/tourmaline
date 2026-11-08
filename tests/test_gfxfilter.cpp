@@ -2729,6 +2729,9 @@ void TestDynamicCapacityPlanning() {
     Check(RoundCapacity(1, 128, c) && c == 512, "gfx.dynamic.first-page");
     Check(RoundCapacity(512, 128, c) && c == 512, "gfx.dynamic.page-end");
     Check(RoundCapacity(513, 128, c) && c == 1024, "gfx.dynamic.page-grow");
+    Check(RoundCapacity(1, 24, c) && c == 8192 &&
+              (c * 24) % kDynamicPageBytes == 0,
+          "gfx.dynamic.non-divisor-stride-page-alignment");
     Check(!RoundCapacity(1, 0, c), "gfx.dynamic.zero-stride-rejected");
     Check(!RoundCapacity(SIZE_MAX, 128, c), "gfx.dynamic.overflow-rejected");
     DynamicCapacity plan{};
