@@ -2855,6 +2855,11 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
     digestLoads.reserve(texEntries.size());
     legacyLoads.reserve(texEntries.size());
     for (const PakTocEntry* e : texEntries) {
+        // Compatibility with paks cooked before Anim had its own TOC kind:
+        // those clips were encoded as Texture envelopes for VFS access.
+        // New paks store raw clips under PakAssetKind::Anim instead.
+        if (e->path.size() >= 5 && e->path.compare(e->path.size() - 5, 5, ".anim") == 0)
+            continue;
         if (isBakePath(e->path))
             continue; // bake payload, harvested above
         PakTexturePayload p;
