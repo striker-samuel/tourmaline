@@ -4,6 +4,7 @@
 #include <Engine/Renderer/gpu_scene_instancing.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
+#include <Engine/Renderer/gpu_scene_raster_ownership.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Scene/scene.h>
 #include <cstdio>
@@ -90,6 +91,51 @@ int main() {
         ++world.gpuSceneTopologyRevision;
         const auto topology = sync.Synchronize(world, snapshot, 2);
         CHECK(topology.topologyReconciled);
+    }
+    // Canonical static-source ownership, independent of drawItems sort order.
+    // Admission never commits ownership until the GPU work is prepared.
+    {
+        RasterOwnershipEntry entries[] = {
+            {{22, 5, 1}, false},
+            {{11, 2, 1}, true},
+            {{11, 8, 1}, true},
+        };
+        CanonicalRasterOwnership owners;
+        CHECK(owners.Publish(entries));
+        CHECK(owners.Valid() && owners.Size() == 3);
+        CHECK(owners.OwnsLegacy({11, 2, 1}));
+        owners.CommitGpuPrepared();
+        CHECK(owners.OwnsGpu({11, 2, 1}));
+        CHECK(owners.OwnsGpu({11, 8, 1}));
+        CHECK(owners.OwnsLegacy({22, 5, 1}));
+        CHECK(owners.OwnsLegacy({11, 2, 2})); // generation changed
+        CHECK(owners.OwnsLegacy({99, 2, 1})); // unknown registration
+        owners.BeginFrame(); // publication / pipeline failed on next flight
+        CHECK(!owners.GpuActive() && owners.OwnsLegacy({11, 2, 1}));
+        owners.CommitGpuPrepared();
+        CHECK(owners.OwnsGpu({11, 2, 1}));
+        // A dirty topology publication takes ownership back immediately.
+        RasterOwnershipEntry next[] = {
+            {{11, 2, 2}, true},
+            {{22, 5, 1}, false},
+        };
+        CHECK(owners.Publish(next));
+        CHECK(owners.OwnsLegacy({11, 2, 2})); // until next GPU commit
+        owners.CommitGpuPrepared();
+        CHECK(owners.OwnsGpu({11, 2, 2}));
+        CHECK(owners.OwnsLegacy({11, 2, 1}));
+        CHECK(owners.OwnsLegacy({22, 5, 1}));
+        RasterOwnershipEntry duplicates[] = {
+            {{33, 1, 1}, true}, {{33, 1, 1}, false},
+        };
+        CHECK(!owners.Publish(duplicates));
+        owners.CommitGpuPrepared();
+        CHECK(!owners.GpuActive() && owners.OwnsLegacy({33, 1, 1}));
+        RasterOwnershipEntry invalid[] = {{{0, 1, 1}, true}};
+        CHECK(!owners.Publish(invalid));
+        CHECK(owners.OwnsLegacy({0, 1, 1}));
+        owners.Reset();
+        CHECK(!owners.Valid() && owners.Size() == 0);
     }
     RenderDatabase db{};
     SceneRegistry bridge{};
