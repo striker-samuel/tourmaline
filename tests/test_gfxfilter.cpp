@@ -2740,6 +2740,25 @@ void TestDynamicCapacityPlanning() {
               plan.survivors == 65536, "gfx.dynamic.exceeds-old-limits");
     Check(!PlanDynamicCapacity(SIZE_MAX, 1, 128, 16, plan),
           "gfx.dynamic.overflow-plan");
+    DynamicBytes bytes{};
+    Check(PlanDynamicBytes(plan, sizeof(Draw), sizeof(Batch), 20u, 20u,
+                           sizeof(ClusterConstants), bytes) &&
+              bytes.draws == size_t(plan.draws) * sizeof(Draw) &&
+              bytes.batches == size_t(plan.candidates) * sizeof(Batch) &&
+              bytes.indirect == size_t(plan.candidates) * 20u &&
+              bytes.temporalCommands == bytes.indirect &&
+              bytes.kept == size_t(plan.candidates) * 2u * sizeof(uint32_t) &&
+              bytes.cullState == (size_t(plan.draws) + 5u) * sizeof(uint32_t) &&
+              bytes.skinBounds == size_t(plan.candidates) * sizeof(ClusterConstants) +
+                                      size_t(plan.draws) * sizeof(glm::vec4) &&
+              bytes.coneDebug == size_t(plan.candidates) * 24u &&
+              bytes.meshBatchList == size_t(plan.candidates) * sizeof(uint32_t),
+          "gfx.dynamic.coupled-byte-budgets");
+    const DynamicBytes unchanged = bytes;
+    Check(!PlanDynamicBytes(plan, SIZE_MAX, sizeof(Batch), 20u, 20u,
+                            sizeof(ClusterConstants), bytes) &&
+              bytes.draws == unchanged.draws,
+          "gfx.dynamic.byte-overflow-atomic");
     DispatchGrid grid{};
     Check(PlanDispatchGrid(0, grid) && grid.x == 0 && grid.y == 0,
           "gfx.dynamic.dispatch-zero");
