@@ -9,12 +9,16 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <algorithm>
+#include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <vector>
 
 namespace tour::visibility {
 inline constexpr uint32_t kHizMaxMips = 16u;
 inline constexpr uint32_t kHizSrcDepth = 0xffffffffu;
+inline constexpr uint32_t kHizSpdCounterSliceBytes = 16u;
+inline constexpr uint32_t kHizShaderMaxFloats = 12582912u;
 
 // Same GPU-addressable format used by hzb.hlsli / hzb_spd.cs.hlsl.
 struct HizResources {
@@ -164,6 +168,14 @@ static_assert(sizeof(HzbSpdPush) == 104);
         hz.mipOffsets[m] = HzbMipOffsetFloats(w, h, m);
     for (uint32_t m = hz.mipCount; m < kHizMaxMips; ++m)
         hz.mipOffsets[m] = 0u;
+    // Preserve the old builder's Release-visible diagnosis for layouts
+    // exceeding hzb.hlsli's declared float-array ceiling. The allocation
+    // policy remains unchanged in this refactor.
+    if (uint64_t(HzbTotalFloats(w, h)) > kHizShaderMaxFloats) {
+        std::fprintf(stderr,
+                     "[VisibilityHiz] %ux%u pyramid exceeds shader float cap %u\\n",
+                     w, h, kHizShaderMaxFloats);
+    }
     const size_t bytes = size_t(HzbTotalFloats(w, h)) * sizeof(float);
     if (!bytes) {
         hz.width = hz.height = hz.mipCount = 0;
