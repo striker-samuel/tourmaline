@@ -295,7 +295,9 @@ struct GpuLodView {
                                            subRow.value.geometryId,
                                            subRow.value.materialId);
                 work.detail =
-                    glm::uvec4(level, slot, subRow.value.pipelineGroup, subRow.value.passMask);
+                    glm::uvec4(level, slot,
+                               (inst->refs.w & InstanceFlagDoubleSided) != 0u ? 1u : 0u,
+                               subRow.value.passMask);
                 candidate.push_back(work);
             }
             if (candidate.empty())
