@@ -6,8 +6,16 @@
 // The occluder depth uses the unfiltered frustum-visible commands; the
 // final commands can only lose instances, never gain invalid references.
 // Unknown, invalid or untestable bounds always KEEP the command.
-#include "gpu_scene.hlsli"
+// The pass macro + common.hlsli include follow the sibling gfxfilter.hlsli
+// consumers (gfxbatchcull/gfxdrawcull/gfxcone_debug): gfxfilter.hlsli's
+// GfxFilterPush references MaterialsBuffer, which only common.hlsli
+// declares, and the macro keeps common.hlsli from declaring the scene-wide
+// `pc` push block alongside this kernel's own RasterHizPush.
+#define GPU_SCENE_RASTER_HIZCULL_PASS
+#include "common.hlsli"
 #include "gfxfilter.hlsli"
+#include "gpu_platform.hlsli"
+#include "gpu_scene.hlsli"
 
 #define GS_RASTER_MAX_WORK 1048576u
 #define GS_RASTER_MAX_INSTANCES 4194304u

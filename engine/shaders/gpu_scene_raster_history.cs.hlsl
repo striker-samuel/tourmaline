@@ -1,7 +1,11 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 // Per-flight visibility snapshot; GPU-writes generations of surviving work.
-// Distinct Clear/Commit dispatches with an explicit shader-memory barrier.
+// Distinct Clear/Commit DISPATCHES with an explicit shader-memory barrier
+// between them. The repo's DXC rule compiles every .cs.hlsl with the single
+// `mainCS` entry point (DXC emits exactly one OpEntryPoint per invocation),
+// so the two legs share that entry point and switch on the push `mode`
+// word; the host binds the SAME pipeline twice with different pushes.
 #include "gpu_platform.hlsli"
 #define GS_MAX_WORK 1048576u
 #define GS_MAX_INSTANCES 4194304u
@@ -17,16 +21,16 @@ struct Push {
     uint commandCapacity;
     uint instanceSlots;
     uint historySlots;
-    uint reserved;
+    uint mode; // 0 = clear this flight's snapshot, 1 = commit survivors
 };
 GPU_PUSH(Push, pc);
 [numthreads(64, 1, 1)]
-void mainClear(uint3 tid : SV_DispatchThreadID) {
-    if (tid.x < pc.historySlots && tid.x < GS_MAX_INSTANCES)
-        pc.history.Get().generations[tid.x] = 0u;
-}
-[numthreads(64, 1, 1)]
-void mainCommit(uint3 tid : SV_DispatchThreadID) {
+void mainCS(uint3 tid : SV_DispatchThreadID) {
+    if (pc.mode == 0u) {
+        if (tid.x < pc.historySlots && tid.x < GS_MAX_INSTANCES)
+            pc.history.Get().generations[tid.x] = 0u;
+        return;
+    }
     const uint i = tid.x;
     if (i >= pc.commandCapacity || i >= GS_MAX_WORK) return;
     const RasterIndirectCmd cmd = pc.commands.Get().rows[i];

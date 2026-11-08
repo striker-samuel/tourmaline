@@ -26,7 +26,7 @@ struct alignas(16) IndexedGeometry {
     uint32_t indexCount = 0;
     uint32_t firstIndex = 0;
     int32_t vertexOffset = 0;
-    uint32_t flags = 0;  // reserved; not a residency/generation proof
+    uint32_t flags = 0; // reserved; not a residency/generation proof
 };
 
 // One group of compacted visible references, after GPU selection/grouping.
@@ -58,8 +58,8 @@ struct InstanceReference {
 // Work rows already carry the persistent instance (slot,generation) pair.
 // This intermediate form does not require CPU per-instance grouping.
 struct RasterWorkDrawBuildPush {
-    uint64_t work = 0;          // SceneSubmeshWork[] generated on GPU
-    uint64_t workOffsets = 0;   // workOffsets[candidateCount] = GPU work count
+    uint64_t work = 0;        // SceneSubmeshWork[] generated on GPU
+    uint64_t workOffsets = 0; // workOffsets[candidateCount] = GPU work count
     uint64_t indexedGeometry = 0;
     uint64_t indirect = 0;
     uint32_t candidateCount = 0;
@@ -92,12 +92,10 @@ static_assert(sizeof(RasterVsPush) == 32);
 // CPU reference for the GPU seed shader. A work-slot index is NOT a
 // visibility identity; only the persistent instance (slot,generation)
 // from the current work row may match the previous survivor snapshot.
-[[nodiscard]] inline bool RasterTemporalSeedMember(
-    std::span<const uint32_t> previousGenerations,
-    InstanceReference instance) noexcept {
-    return instance.generation != 0u &&
-        instance.slot < previousGenerations.size() &&
-        previousGenerations[instance.slot] == instance.generation;
+[[nodiscard]] inline bool RasterTemporalSeedMember(std::span<const uint32_t> previousGenerations,
+                                                   InstanceReference instance) noexcept {
+    return instance.generation != 0u && instance.slot < previousGenerations.size() &&
+           previousGenerations[instance.slot] == instance.generation;
 }
 
 // GPU-created temporal commands preserve ALL per-work-slot identities.
@@ -123,7 +121,10 @@ struct RasterHistoryPush {
     uint32_t commandCapacity = 0;
     uint32_t instanceSlots = 0;
     uint32_t historySlots = 0;
-    uint32_t reserved = 0;
+    // 0 = clear this flight's snapshot, 1 = commit survivors. The two legs
+    // share ONE mainCS entry point (the DXC single-entry-point rule) and
+    // the host binds the same pipeline twice with different pushes.
+    uint32_t mode = 0;
 };
 static_assert(sizeof(RasterHistoryPush) == 40);
 
@@ -170,11 +171,12 @@ static_assert(sizeof(RasterWorkDrawBuildPush) == 48);
 static_assert(offsetof(RasterIndirectCommand, firstInstance) == 16);
 static_assert(std::is_trivially_copyable_v<RasterIndirectCommand>);
 
-[[nodiscard]] inline RasterIndirectCommand MakeRasterCommand(
-    const IndexedGeometry& geometry, const RasterGroup& group) noexcept {
-    return RasterIndirectCommand{
-        geometry.indexCount, group.instanceCount, geometry.firstIndex,
-        geometry.vertexOffset, group.firstInstance
-    };
+[[nodiscard]] inline RasterIndirectCommand MakeRasterCommand(const IndexedGeometry& geometry,
+                                                             const RasterGroup& group) noexcept {
+    return RasterIndirectCommand{geometry.indexCount,
+                                 group.instanceCount,
+                                 geometry.firstIndex,
+                                 geometry.vertexOffset,
+                                 group.firstInstance};
 }
 } // namespace tour::gpu_scene
