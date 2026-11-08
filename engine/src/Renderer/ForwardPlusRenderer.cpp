@@ -404,6 +404,68 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
     }
 }
 
+void ForwardPlusRenderer::AppendGpuScenePrepass(
+    smvk::FrameContext& base,
+    smvk::ShaderProgram rasterDepth,
+    smvk::BufferHandle indirect,
+    smvk::LogicalBufferHandle indirectLogical,
+    smvk::LogicalBufferHandle workLogical,
+    uint32_t commandCount,
+    const tour::gpu_scene::RasterVsPush& vertexPush) {
+    AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+    if (!fp || rasterDepth.shaderCount != 1 || fc.ssrGbufferWanted)
+        return;
+    smvk::ResourceManager& ctx = *fc.ctx;
+    smvk::RenderGraph& rg = *fc.rg;
+    fp->Ensure(ctx, rg, {fc.extent.width, fc.extent.height}, desc, fc.depthViewHandle);
+    if (!fp->Valid())
+        return;
+    auto& pass = fp->AddDepthPrepass(
+        rg, fc.depthView, {fc.extent.width, fc.extent.height},
+        "GpuSceneDepth",
+        fc.seedDepthPrimed ? smvk::AttachmentLoadOp::Load
+                           : smvk::AttachmentLoadOp::Clear);
+    if (commandCount > 0) {
+        smvk::BufferSyncRequest indirectRead{};
+        indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
+        indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
+        pass.AddBufferHint(indirectLogical, indirectRead);
+        smvk::BufferSyncRequest workRead{};
+        workRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+        workRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+        pass.AddBufferHint(workLogical, workRead);
+    }
+    const IRenderer::PushConstants scenePush = fc.pc;
+    pass.SetRecordingFunc(
+        [rasterDepth, scenePush, indirect, commandCount, vertexPush](
+            smvk::CommandBuffer& cmd) mutable {
+            if (!commandCount)
+                return; // the pass still clears depth for empty views
+            cmd.BindStaticVertexFmt();
+            cmd.BindRenderPipeline(
+                rasterDepth, smvk::VertexLayoutId::Static,
+                smvk::DepthSettings{
+                    .depthFunc = smvk::CompareOp::GreaterEqual,
+                    .writeEnable = true,
+                    .depthTestEnable = true},
+                smvk::StencilSettings{}, smvk::BlendSettings{},
+                smvk::MSAASettings{},
+                smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+            cmd.PushConstants(
+                0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
+            cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
+                              sizeof(vertexPush), &vertexPush, smvk::ShaderStage::All);
+            constexpr uint32_t kChunk = smvk::gfx::kMaxDraws;
+            for (uint32_t first = 0; first < commandCount; first += kChunk) {
+                const uint32_t n = std::min(kChunk, commandCount - first);
+                cmd.DrawIndexedIndirect(
+                    indirect,
+                    uint64_t(first) * sizeof(tour::gpu_scene::RasterIndirectCommand),
+                    n, sizeof(tour::gpu_scene::RasterIndirectCommand));
+            }
+        });
+}
+
 void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp)
