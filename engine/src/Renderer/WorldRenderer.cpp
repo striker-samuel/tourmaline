@@ -13318,11 +13318,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_context->GetBufferDeviceAddress(gpuRemainderCommands),
                 m_gpuSceneRasterWorkBda,
                 m_gpuSceneUploader.DeviceAddresses(*m_context, temporalFlight).instances,
+                m_gpuSceneUploader.DeviceAddresses(*m_context, temporalFlight).meshes,
                 m_gpuSceneRasterView.DeviceAddress(*m_context, temporalFlight),
                 smvk::gfx::HizAddress(m_gfxRenderer.gfx, *m_context, hizSlot),
                 prevBda,
-                temporalCommands, temporalSlots, hz.width, hz.height,
-                hz.mipCount, previousHistorySlots,
+                temporalCommands, temporalSlots,
+                uint32_t(m_gpuSceneDatabase.meshes.Size()),
+                hz.width, hz.height, hz.mipCount, previousHistorySlots,
                 gpuHistoryValid ? 1u : 0u, 0u};
             auto& gate = m_rendergraph->AddComputePass("GpuSceneHizCull");
             smvk::BufferSyncRequest indirectRW{};
