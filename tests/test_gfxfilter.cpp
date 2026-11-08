@@ -1181,6 +1181,19 @@ void TestTemporalSnapshot() {
 
 void TestHizLayout() {
     using namespace smvk::gfx;
+    // Neutral visibility is the source of truth; the former gfx API remains
+    // byte/layout-compatible for existing callers during migration.
+    static_assert(std::is_same_v<HizResources, tour::visibility::HizResources>);
+    static_assert(std::is_same_v<HzbPush, tour::visibility::HzbPush>);
+    static_assert(sizeof(tour::visibility::HzbPush) == 48);
+    Check(tour::visibility::HzbMipCount(1920, 1080) == 12,
+          "visibility.hiz.hd-levels");
+    Check(tour::visibility::HzbMipOffsetFloats(5, 3, 2) == 21,
+          "visibility.hiz.odd-mip-offset");
+    Check(tour::visibility::HzbTotalFloats(64, 64) == 5461,
+          "visibility.hiz.total-pow2");
+    Check(tour::visibility::HzbReduce2x2(0.0f, 0.9f, 0.8f, 0.7f) == 0.0f,
+          "visibility.hiz.reversed-z-sky-keeps");
     Check(HzbMipCount(0, 0) == 0, "gfx.hiz.zero-extent");
     Check(HzbMipCount(1, 1) == 1, "gfx.hiz.single-texel");
     Check(HzbMipCount(64, 64) == 7, "gfx.hiz.pow2-levels");
