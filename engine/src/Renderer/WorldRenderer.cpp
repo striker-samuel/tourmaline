@@ -10887,8 +10887,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     !m_gfxRenderer.MaterialProjectFamily(item.material) &&
                     !m_gfxRenderer.MaterialLayered(item.material) &&
                     item.node < m_world->scene.globalTransform.size() &&
-                    (item.node >= m_world->scene.ditherCloseup.size() ||
-                     m_world->scene.ditherCloseup[item.node] == 0) &&
+                    // Closeup dither is inherited from ancestors and
+                    // changes with camera distance; never GPU-own it
+                    // without the matching masked/depth shader variants.
+                    !IsDitherCloseupNode(m_world->scene, int(item.node)) &&
                     mesh && !mesh->skinned && mesh->geometry.surfaces.size() == 1 &&
                     // Packed vertex lightmaps use a different shader path;
                     // leave those objects with the legacy filtered/direct
