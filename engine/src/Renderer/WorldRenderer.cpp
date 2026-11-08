@@ -13028,7 +13028,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             write.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
             pass.AddBufferHint(m_gpuSceneRasterSeedLogicals[temporalFlight], write);
             pass.AddBufferHint(m_gpuSceneRasterRemainderLogicals[temporalFlight], write);
-            const auto program = m_gpuSceneRasterSeedProgram;
+            auto program = m_gpuSceneRasterSeedProgram;
             pass.SetRecordingFunc([program, seedPush](smvk::CommandBuffer& cmd) mutable {
                 cmd.BindComputePipeline(program);
                 cmd.PushConstants(0, sizeof(seedPush), &seedPush, smvk::ShaderStage::Compute);
