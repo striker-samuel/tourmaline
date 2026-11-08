@@ -57,6 +57,22 @@ int main() {
         CHECK(!TablePageLayout<Instance>::Capacity(SIZE_MAX, cap));
         CHECK(!TablePageLayout<Leaf>::Bytes(SIZE_MAX, bytes));
     }
+    // Streamed-LOD admission must fail closed when a geometry-only
+    // metadata update expands an AABB beyond the cached instance sphere.
+    {
+        const glm::vec4 sphere(0.0f, 0.0f, 0.0f, 2.0f);
+        CHECK(RasterSphereContainsLodBounds(
+            sphere, glm::vec3(-1.0f), glm::vec3(1.0f)));
+        CHECK(!RasterSphereContainsLodBounds(
+            sphere, glm::vec3(-2.0f), glm::vec3(2.0f)));
+        CHECK(!RasterSphereContainsLodBounds(
+            sphere, glm::vec3(2.0f), glm::vec3(3.0f)));
+        CHECK(!RasterSphereContainsLodBounds(
+            sphere, glm::vec3(1.0f), glm::vec3(-1.0f)));
+        CHECK(!RasterSphereContainsLodBounds(
+            glm::vec4(0.0f, 0.0f, 0.0f, -1.0f),
+            glm::vec3(-1.0f), glm::vec3(1.0f)));
+    }
     // Every compute invocation writes a verdict header, even when it
     // rejects an invalid leaf/member. Zero-filled readback is not a valid
     // visibility verdict; the slot is either unwritten or misaddressed.
