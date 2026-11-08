@@ -483,9 +483,11 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
                     : (fc.seedDepthPrimed ? smvk::AttachmentLoadOp::Load
                                           : smvk::AttachmentLoadOp::Clear),
         gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
-        smvk::AttachmentLoadOp::Clear,
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
+                               : smvk::AttachmentLoadOp::Clear,
         gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
-        smvk::AttachmentLoadOp::Clear);
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
+                               : smvk::AttachmentLoadOp::Clear);
     if (commandCount > 0) {
         smvk::BufferSyncRequest indirectRead{};
         indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
