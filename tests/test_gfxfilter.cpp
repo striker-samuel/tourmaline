@@ -2754,6 +2754,9 @@ void TestDynamicCapacityPlanning() {
               bytes.coneDebug == size_t(plan.candidates) * 24u &&
               bytes.meshBatchList == size_t(plan.candidates) * sizeof(uint32_t),
           "gfx.dynamic.coupled-byte-budgets");
+    Check(!PlanDynamicBytes(plan, 0, sizeof(Batch), 20u, 20u,
+                            sizeof(ClusterConstants), bytes),
+          "gfx.dynamic.zero-draw-stride-rejected");
     const DynamicBytes unchanged = bytes;
     Check(!PlanDynamicBytes(plan, SIZE_MAX, sizeof(Batch), 20u, 20u,
                             sizeof(ClusterConstants), bytes) &&
