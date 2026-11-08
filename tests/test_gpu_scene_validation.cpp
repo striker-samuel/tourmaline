@@ -180,7 +180,8 @@ void CheckStableCompaction() {
 
 void CheckSubmeshWorkExpansion() {
     CHECK(sizeof(SceneSubmeshWork) == 32);
-    CHECK(sizeof(WorkSelectPush) == 96);
+    CHECK(sizeof(WorkSelectPush) == 128);
+    CHECK(offsetof(WorkSelectPush, lodEyeBudget) == 96);
     CHECK(sizeof(WorkPrefixPush) == 24);
     CHECK(sizeof(WorkScatterPush) == 48);
 
