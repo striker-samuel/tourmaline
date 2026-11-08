@@ -99,11 +99,12 @@ def evaluate(legs, noise_margin=8, noise_cap=64, require_bit_exact=False):
     floor in captures. Its verdict and work scatter kernels currently use
     ordered prefix scans (not atomic output allocation), so depth-equal
     draw order is a hypothesis, not a confirmed cause.
-    By default, Parity is therefore judged RELATIVE to the lane's own noise floor:
+    By default parity is judged relative to the lane's own noise floor:
     the determinism leg (on-a vs on-b) measures it, and the temporal /
     Hi-Z legs must stay within floor + noise_margin. A floor above
     noise_cap fails outright - that is a determinism regression, not
-    noise.
+    noise. The opt-in require_bit_exact mode disallows every difference,
+    independent of noise_cap and noise_margin.
     """
     def pixels(name):
         return legs[name]["pixels"]
