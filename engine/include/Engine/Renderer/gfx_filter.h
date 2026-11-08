@@ -912,17 +912,7 @@ static_assert(sizeof(HzbPush) == 48);
 // identical output is the A/B + verify contract).
 // counter = THIS frame-in-flight's slice of the counter ring (the
 // caller resolves BDA + 16 * frameIndex at call time).
-struct HzbSpdPush {
-    uint64_t hzb = 0;
-    uint64_t counter = 0;
-    uint32_t width = 0; // mip 0 extent
-    uint32_t height = 0;
-    uint32_t mipCount = 0; // 1..kHizMaxMips
-    uint32_t depthTextureIndex = UINT32_MAX;
-    uint32_t mipOffsets[kHizMaxMips] = {}; // float offsets per level
-    uint32_t groupCount = 0;               // dispatch gx*gy (last-group test)
-    uint32_t pad = 0;
-};
+using HzbSpdPush = tour::visibility::HzbSpdPush;
 static_assert(sizeof(HzbSpdPush) == 104);
 
 // (cluster, model) identity reduced to one u64 sort key: 32-bit bitwise
