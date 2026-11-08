@@ -974,9 +974,9 @@ bool HzbOccluded(const float* hzb,
     return occluded;
 }
 
-// SPD counter slice stride (mirrors Ssgi::Hzb::kHzbCounterSliceBytes —
-// one 16-byte word set per frame in flight).
-static constexpr uint32_t kHizSpdCounterSliceBytes = 16;
+// SPD completion-ring layout is shared with all visibility builders.
+static constexpr uint32_t kHizSpdCounterSliceBytes =
+    tour::visibility::kHizSpdCounterSliceBytes;
 
 bool EnsureHiz(State& s,
                ResourceManager& ctx,
@@ -1044,7 +1044,8 @@ bool EnsureHiz(State& s,
 uint64_t HizAddress(State& s, ResourceManager& ctx, uint32_t view) {
     if (view >= s.temporals.size() || view >= s.views.size())
         return 0;
-    return ctx.GetBufferDeviceAddress(s.temporals[view].hiz[s.views[view].frameIndex].buffer);
+    return tour::visibility::HizAddress(
+        s.temporals[view].hiz[s.views[view].frameIndex], ctx);
 }
 
 RenderPass& AddHizPass(State& s,
