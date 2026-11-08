@@ -20,6 +20,7 @@
 #include <map>
 #include <numeric>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -1181,6 +1182,57 @@ void TestTemporalSnapshot() {
 
 void TestHizLayout() {
     using namespace smvk::gfx;
+    // Neutral visibility is the source of truth; the former gfx API remains
+    // byte/layout-compatible for existing callers during migration.
+    static_assert(std::is_same_v<HizResources, tour::visibility::HizResources>);
+    static_assert(std::is_base_of_v<tour::visibility::HizViewResources, TemporalView>);
+    static_assert(sizeof(tour::visibility::HizViewResources{}.hiz) /
+                      sizeof(HizResources) == smvk::limits::MaxFramesInFlight);
+    static_assert(std::is_same_v<HzbPush, tour::visibility::HzbPush>);
+    static_assert(sizeof(tour::visibility::HzbPush) == 48);
+    Check(tour::visibility::HzbMipCount(1920, 1080) == 12,
+          "visibility.hiz.hd-levels");
+    Check(tour::visibility::HzbMipOffsetFloats(5, 3, 2) == 21,
+          "visibility.hiz.odd-mip-offset");
+    Check(tour::visibility::HzbTotalFloats(64, 64) == 5461,
+          "visibility.hiz.total-pow2");
+    Check(tour::visibility::HzbReduce2x2(0.0f, 0.9f, 0.8f, 0.7f) == 0.0f,
+          "visibility.hiz.reversed-z-sky-keeps");
+    static_assert(std::is_same_v<HzbSpdPush, tour::visibility::HzbSpdPush>);
+    static_assert(sizeof(HzbSpdPush) == 104);
+    // Both dispatch backends must agree on offsets, dimensions and ABI,
+    // including odd extents and the mip-zero depth source sentinel.
+    tour::visibility::HizResources neutral{};
+    neutral.width = 5u;
+    neutral.height = 3u;
+    neutral.mipCount = tour::visibility::HzbMipCount(5u, 3u);
+    for (uint32_t mip = 0; mip < neutral.mipCount; ++mip)
+        neutral.mipOffsets[mip] = tour::visibility::HzbMipOffsetFloats(5u, 3u, mip);
+    tour::visibility::HzbPush mipPush{};
+    Check(!tour::visibility::MakeHizMipPush(neutral, 0u, 0u, 7u, mipPush),
+          "visibility.hiz.reject-zero-bda");
+    Check(!tour::visibility::MakeHizMipPush(neutral, 1u, neutral.mipCount, 7u, mipPush),
+          "visibility.hiz.reject-bad-mip");
+    Check(tour::visibility::MakeHizMipPush(neutral, 123u, 0u, 7u, mipPush),
+          "visibility.hiz.mip0-push");
+    Check(mipPush.srcMip == kHizSrcDepth && mipPush.dstWidth == 5u &&
+          mipPush.dstHeight == 3u && mipPush.depthTextureIndex == 7u,
+          "visibility.hiz.mip0-layout");
+    Check(tour::visibility::MakeHizMipPush(neutral, 123u, 2u, 7u, mipPush),
+          "visibility.hiz.odd-mip-push");
+    Check(mipPush.srcWidth == 3u && mipPush.srcHeight == 2u &&
+          mipPush.dstWidth == 2u && mipPush.dstHeight == 1u &&
+          mipPush.srcOffset == 15u && mipPush.dstOffset == 21u,
+          "visibility.hiz.odd-mip-layout");
+    tour::visibility::HzbSpdPush spdPush{};
+    Check(!tour::visibility::MakeHizSpdPush(neutral, 1u, 0u, 7u, spdPush),
+          "visibility.hiz.spd-reject-zero-counter");
+    Check(tour::visibility::MakeHizSpdPush(neutral, 123u, 456u, 7u, spdPush),
+          "visibility.hiz.spd-push");
+    Check(spdPush.mipOffsets[2] == mipPush.dstOffset &&
+          spdPush.groupCount == 1u && spdPush.mipCount == neutral.mipCount,
+          "visibility.hiz.spd-matches-per-mip");
+
     Check(HzbMipCount(0, 0) == 0, "gfx.hiz.zero-extent");
     Check(HzbMipCount(1, 1) == 1, "gfx.hiz.single-texel");
     Check(HzbMipCount(64, 64) == 7, "gfx.hiz.pow2-levels");

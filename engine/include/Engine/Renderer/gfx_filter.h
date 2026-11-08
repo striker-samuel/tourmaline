@@ -50,6 +50,7 @@
 #include <Engine/Memory/pool.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/renderview.h>
+#include <Engine/Renderer/visibility_hiz.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
@@ -851,26 +852,15 @@ static_assert(sizeof(VisibleCluster) == 8);
 // layout (BDA style, no storage images / samplers needed). Mip 0 mirrors
 // the depth texture 1:1; mip k dims are max(1, ceil(dim / 2^k)) - i.e.
 // repeated dst = max((src + 1u) >> 1, 1u), clamped 2x2 covers odd edges.
-static constexpr uint32_t kHizMaxMips = 16;
-struct HizResources {
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t mipCount = 0;
-    uint32_t mipOffsets[kHizMaxMips] = {}; // float offsets into buffer
-    smvk::Holder<smvk::BufferHandle> buffer;
-    smvk::LogicalBufferHandle logical{};
-};
-// Pure-CPU HZB layout (headless-testable). Mip dims clamp at 1x1; count
-// stops when both dims are 1 (capped at kHizMaxMips).
-uint32_t HzbMipCount(uint32_t w, uint32_t h);
-void HzbMipDims(uint32_t w, uint32_t h, uint32_t mip, uint32_t& outW, uint32_t& outH);
-uint32_t HzbMipOffsetFloats(uint32_t w, uint32_t h, uint32_t mip);
-uint32_t HzbTotalFloats(uint32_t w, uint32_t h);
-// Conservative 2x2 reduction for reversed-Z (MIN: one sky pixel poisons
-// the texel to 0 -> keep; see hzb.hlsli derivation).
-inline float HzbReduce2x2(float a, float b, float c, float d) {
-    return std::min(std::min(a, b), std::min(c, d));
-}
+// Backwards-compatible names: the storage and mip layout are now owned
+// by the renderer-neutral visibility subsystem, not by gfx::State.
+inline constexpr uint32_t kHizMaxMips = tour::visibility::kHizMaxMips;
+using HizResources = tour::visibility::HizResources;
+using tour::visibility::HzbMipCount;
+using tour::visibility::HzbMipDims;
+using tour::visibility::HzbMipOffsetFloats;
+using tour::visibility::HzbTotalFloats;
+using tour::visibility::HzbReduce2x2;
 
 // Per-cluster screen-space footprint (T4). Pure-CPU mirror of the filter
 // CS math (same formulas, same conservatism); the shader duplicates them
@@ -910,20 +900,8 @@ bool HzbOccluded(const float* hzb,
 
 // Compute push. Must match HLSL HzbPush in hzb.hlsli (48 bytes).
 // srcMip = kHizSrcDepth copies mip 0 from the depth texture instead.
-static constexpr uint32_t kHizSrcDepth = 0xFFFFFFFFu;
-struct HzbPush {
-    uint64_t hzb = 0;
-    uint32_t srcMip = kHizSrcDepth;
-    uint32_t dstMip = 0;
-    uint32_t srcWidth = 0;
-    uint32_t srcHeight = 0;
-    uint32_t dstWidth = 0;
-    uint32_t dstHeight = 0;
-    uint32_t srcOffset = 0; // floats (ignored for depth source)
-    uint32_t dstOffset = 0; // floats
-    uint32_t depthTextureIndex = UINT32_MAX;
-    uint32_t pad = 0;
-};
+inline constexpr uint32_t kHizSrcDepth = tour::visibility::kHizSrcDepth;
+using HzbPush = tour::visibility::HzbPush;
 static_assert(sizeof(HzbPush) == 48);
 
 // Single-dispatch SPD HZB build (hzb_spd.cs.hlsl): one 256-lane
@@ -934,17 +912,7 @@ static_assert(sizeof(HzbPush) == 48);
 // identical output is the A/B + verify contract).
 // counter = THIS frame-in-flight's slice of the counter ring (the
 // caller resolves BDA + 16 * frameIndex at call time).
-struct HzbSpdPush {
-    uint64_t hzb = 0;
-    uint64_t counter = 0;
-    uint32_t width = 0; // mip 0 extent
-    uint32_t height = 0;
-    uint32_t mipCount = 0; // 1..kHizMaxMips
-    uint32_t depthTextureIndex = UINT32_MAX;
-    uint32_t mipOffsets[kHizMaxMips] = {}; // float offsets per level
-    uint32_t groupCount = 0;               // dispatch gx*gy (last-group test)
-    uint32_t pad = 0;
-};
+using HzbSpdPush = tour::visibility::HzbSpdPush;
 static_assert(sizeof(HzbSpdPush) == 104);
 
 // (cluster, model) identity reduced to one u64 sort key: 32-bit bitwise
@@ -1046,30 +1014,14 @@ struct EmitEntry {
 // static_asserted), so history lives in this sidecar, parallel to views.
 // prev* is last frame's surviving set (seed source for T3); curr* is this
 // frame's (rotated into prev* by SnapshotVisible, called per frame in T5).
-struct TemporalView {
+struct TemporalView : tour::visibility::HizViewResources {
     bool historyValid = false;        // false until one full visibility frame lands
     float minimumContribution = 0.0f; // px-area threshold, T4 (0 = disabled)
     uint32_t drawSetMask = DrawSetMask_All;
     uint32_t width = 0, height = 0; // extent the history was built for
-    // HZB pyramid, ringed per frame in flight (same rule as View buffers
-    // and the vis/seed/remainder mirrors: frames overlap, uploads flush
-    // immediately, and a single shared pyramid would be clobbered by the
-    // next frame while the current one still reads it).
-    HizResources hiz[smvk::limits::MaxFramesInFlight];
-    // SPD completion-counter ring (hzb_spd .min): ONE buffer per view,
-    // 16-byte slices per frame in flight (the ssgi HzB counter's rule —
-    // builds that could overlap in flight never share a word). Extent-
-    // independent, created lazily by EnsureHiz while SPD or its verify
-    // is on; creation-zero-filled (the GPU-counter convention) and reset
-    // by the shader's last group after the tail.
-    smvk::Holder<smvk::BufferHandle> hizSpdCounter;
-    smvk::LogicalBufferHandle hizSpdCounterLogical{};
-    // SPD verify shadow (TOURMALINE_HIZ_SPD_VERIFY): the SPD twin of
-    // hiz[f], per flight, built from the same seed depth while the
-    // per-mip path feeds the cull chain; VerifyHizSpd compares the two
-    // post-Execute. Debug scaffolding — only maintained while the verify
-    // switch is on.
-    HizResources hizVerify[smvk::limits::MaxFramesInFlight];
+    // The per-flight live pyramid, SPD counter and verify shadow are
+    // inherited from visibility::HizViewResources. Only the GfxFilter
+    // visibility history and draw lists stay in this renderer sidecar.
     // CPU snapshot (headless-testable; GPU mirror below is uploaded by
     // UploadVisible into the frameIndex ring slice).
     std::vector<Batch> prevBatches;        // surviving (cluster, draw) pairs
