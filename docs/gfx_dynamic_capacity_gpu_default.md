@@ -42,6 +42,22 @@ are converted together.
 6. Exercise old-limit exceedance, allocation failures and Vulkan
    validation. No silent drop or partial draw admitted.
 
+## Incremental implementation on PR #280
+
+- The draw-oriented GfxBatchCull, GfxSkinBounds, GfxConeDebug and
+  GfxDrawCull dispatches now use a Vulkan-1.3-minimum-safe two-dimensional
+  workgroup grid (65,535 groups per X row). The matching shaders flatten
+  the Y coordinate into their draw index. Headless planner tests cover
+  65,535/65,536 groups, 70,000 groups, maximum and overflow.
+- The pure capacity planner now aligns allocated **bytes** to 64 KiB,
+  including non-divisor element strides (e.g. 24 bytes), rather than
+  merely rounding by floor(64 KiB / stride).
+- These are preparatory changes. The engine still uses fixed GPU buffer
+  sizes, fixed HLSL array bounds, and old draw/candidate fatal checks.
+  Do not mistake oversized dispatch tests for oversized scene coverage.
+- Full GPU-scene A/B screenshots and Vulkan validation require hardware.
+  Headless CI cannot certify visual parity.
+
 ## Later renderer work
 
 These are independent of dynamic GfxFilter capacity and must be
