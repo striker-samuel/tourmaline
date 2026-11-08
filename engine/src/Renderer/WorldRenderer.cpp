@@ -12834,6 +12834,123 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // GPU-scene raster owns eligible opaque draws; do not also build the
     // O(drawItems) GfxFilter batches, temporal seeds, or filter compute chain.
     // If GPU-scene admission failed, retain the original GfxFilter path.
+    // GPU-only temporal work is allocated per acquired flight. The HISTORY
+    // input is a previous completed submission, never the CPU's draw order.
+    // Unavailable resources leave the normal GPU raster commands intact.
+    const uint32_t temporalFlight = fb.frameIndex;
+    const uint32_t temporalSlots = uint32_t(m_gpuSceneDatabase.instances.Size());
+    const uint32_t temporalCommands = m_gpuSceneRasterDrawCapacity;
+    smvk::BufferHandle gpuSeedCommands{};
+    smvk::BufferHandle gpuRemainderCommands{};
+    smvk::BufferHandle gpuHistoryCurrent{};
+    smvk::BufferHandle gpuHistoryPrevious{};
+    uint32_t previousHistorySlots = 0;
+    bool gpuHistoryValid = false;
+    bool gpuTemporalReady = false;
+    const bool temporalProgramsReady =
+        m_gpuSceneRasterSeedProgram.shaderCount == 1 &&
+        m_gpuSceneRasterHizCullProgram.shaderCount == 1 &&
+        m_gpuSceneRasterHistoryClearProgram.shaderCount == 1 &&
+        m_gpuSceneRasterHistoryCommitProgram.shaderCount == 1;
+    if (m_gpuSceneRasterDrawActive && temporalProgramsReady &&
+        m_gfxFilterAvailable && temporalCommands != 0 && temporalSlots != 0 &&
+        temporalCommands <= 1048576u && temporalSlots <= 4194304u) {
+        const uint32_t previousFlight = m_gpuSceneRasterLastHistoryFlight;
+        gpuHistoryValid = previousFlight < smvk::limits::MaxFramesInFlight &&
+            m_gpuSceneRasterHistoryWorld == m_world &&
+            m_gpuSceneRasterHistoryTopologyRevision == m_world->gpuSceneTopologyRevision &&
+            m_gpuSceneRasterHistoryGeometryRevision == m_gpuSceneGeometryRevision &&
+            m_gpuSceneRasterHistoryWidth == renderExtent.width &&
+            m_gpuSceneRasterHistoryHeight == renderExtent.height;
+        if (gpuHistoryValid) {
+            previousHistorySlots = m_gpuSceneRasterTemporalHistoryCapacity[previousFlight];
+            gpuHistoryValid = previousHistorySlots >= temporalSlots &&
+                !m_gpuSceneRasterHistoryBuffers[previousFlight].empty();
+            if (gpuHistoryValid)
+                gpuHistoryPrevious = m_gpuSceneRasterHistoryBuffers[previousFlight];
+        }
+        auto prepare = [this](
+            smvk::Holder<smvk::BufferHandle>& storage,
+            smvk::LogicalBufferHandle& logical,
+            uint32_t count, size_t stride, const char* label) {
+            if (storage.empty()) {
+                storage = m_context->CreateBuffer(size_t(count) * stride,
+                                                   smvk::BufferType_Storage, label);
+                if (storage.empty())
+                    return false;
+                logical = m_rendergraph->AddExternalBuffer(storage, label);
+            }
+            return !logical.empty();
+        };
+        bool resourcesReady = true;
+        if (m_gpuSceneRasterTemporalCommandCapacity[temporalFlight] < temporalCommands ||
+            m_gpuSceneRasterSeedBuffers[temporalFlight].empty() ||
+            m_gpuSceneRasterRemainderBuffers[temporalFlight].empty()) {
+            const size_t bytes =
+                size_t(temporalCommands) * sizeof(tour::gpu_scene::RasterIndirectCommand);
+            auto seed = m_context->CreateBuffer(bytes, smvk::BufferType_Storage,
+                                                 "GpuSceneTemporalSeed");
+            auto remainder = m_context->CreateBuffer(bytes, smvk::BufferType_Storage,
+                                                      "GpuSceneTemporalRemainder");
+            resourcesReady = !seed.empty() && !remainder.empty();
+            if (resourcesReady) {
+                if (!m_gpuSceneRasterSeedLogicals[temporalFlight].empty())
+                    m_rendergraph->FreeBuffer(m_gpuSceneRasterSeedLogicals[temporalFlight]);
+                if (!m_gpuSceneRasterRemainderLogicals[temporalFlight].empty())
+                    m_rendergraph->FreeBuffer(m_gpuSceneRasterRemainderLogicals[temporalFlight]);
+                m_gpuSceneRasterSeedBuffers[temporalFlight] = std::move(seed);
+                m_gpuSceneRasterRemainderBuffers[temporalFlight] = std::move(remainder);
+                m_gpuSceneRasterSeedLogicals[temporalFlight] = m_rendergraph->AddExternalBuffer(
+                    m_gpuSceneRasterSeedBuffers[temporalFlight], "GpuSceneTemporalSeed");
+                m_gpuSceneRasterRemainderLogicals[temporalFlight] =
+                    m_rendergraph->AddExternalBuffer(
+                        m_gpuSceneRasterRemainderBuffers[temporalFlight],
+                        "GpuSceneTemporalRemainder");
+                resourcesReady = !m_gpuSceneRasterSeedLogicals[temporalFlight].empty() &&
+                                 !m_gpuSceneRasterRemainderLogicals[temporalFlight].empty();
+                if (resourcesReady)
+                    m_gpuSceneRasterTemporalCommandCapacity[temporalFlight] = temporalCommands;
+            }
+        }
+        if (resourcesReady &&
+            (m_gpuSceneRasterTemporalHistoryCapacity[temporalFlight] < temporalSlots ||
+             m_gpuSceneRasterHistoryBuffers[temporalFlight].empty())) {
+            // A resize of the previous snapshot invalidates its contents,
+            // including the single-flight case.
+            if (m_gpuSceneRasterLastHistoryFlight == temporalFlight)
+                gpuHistoryValid = false;
+            auto history = m_context->CreateBuffer(
+                size_t(temporalSlots) * sizeof(uint32_t), smvk::BufferType_Storage,
+                "GpuSceneTemporalHistory");
+            resourcesReady = !history.empty();
+            if (resourcesReady) {
+                if (!m_gpuSceneRasterHistoryLogicals[temporalFlight].empty())
+                    m_rendergraph->FreeBuffer(m_gpuSceneRasterHistoryLogicals[temporalFlight]);
+                m_gpuSceneRasterHistoryBuffers[temporalFlight] = std::move(history);
+                m_gpuSceneRasterHistoryLogicals[temporalFlight] =
+                    m_rendergraph->AddExternalBuffer(
+                        m_gpuSceneRasterHistoryBuffers[temporalFlight],
+                        "GpuSceneTemporalHistory");
+                resourcesReady = !m_gpuSceneRasterHistoryLogicals[temporalFlight].empty();
+                if (resourcesReady)
+                    m_gpuSceneRasterTemporalHistoryCapacity[temporalFlight] = temporalSlots;
+            }
+        }
+        resourcesReady = resourcesReady &&
+            !m_gpuSceneRasterSeedLogicals[temporalFlight].empty() &&
+            !m_gpuSceneRasterRemainderLogicals[temporalFlight].empty() &&
+            !m_gpuSceneRasterHistoryLogicals[temporalFlight].empty();
+        if (resourcesReady) {
+            gpuSeedCommands = m_gpuSceneRasterSeedBuffers[temporalFlight];
+            gpuRemainderCommands = m_gpuSceneRasterRemainderBuffers[temporalFlight];
+            gpuHistoryCurrent = m_gpuSceneRasterHistoryBuffers[temporalFlight];
+            gpuTemporalReady = true;
+        }
+    }
+    // Raster without a complete temporal chain remains correct and unculled.
+    if (!gpuTemporalReady)
+        m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
+
     const bool gfxFilterOn = m_passes.gfxFilter && m_gfxFilterAvailable &&
         (!m_gpuSceneRasterDrawActive || m_gpuSceneRasterLegacyCount != 0);
     m_gfxRenderer.SetGpuRasterOwnership(fc.gpuRasterOwnsNode);
