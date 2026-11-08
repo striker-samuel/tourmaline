@@ -11396,12 +11396,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // budget, projection and camera; only the hysteresis cache
                 // remains CPU-owned until persistent GPU LOD history lands.
                 if (workPrepared) {
-                    workSelect.lodEyeBudget = glm::vec4(m_lodFrameInputs.eye,
-                                                       m_lodFrameInputs.pixelBudget);
-                    workSelect.lodProjection = glm::vec4(m_lodFrameInputs.viewportHeight,
-                                                         m_lodFrameInputs.fovY,
-                                                         m_lodEnabled ? 1.0f : 0.0f,
-                                                         0.0f);
+                    // m_lodFrameInputs is initialized later when AppFrameContext
+                    // is assembled. Use this frame's authoritative values
+                    // here rather than last frame's cached view.
+                    workSelect.lodEyeBudget =
+                        glm::vec4(m_cameraPositioner.cameraPosition_, m_lodPixelBudget);
+                    workSelect.lodProjection =
+                        glm::vec4(float(renderExtent.height),
+                                  glm::radians(kCameraFovYDegrees),
+                                  m_lodEnabled ? 1.0f : 0.0f, 0.0f);
                 }
                 tour::gpu_scene::ParallelWorkBlockPush workBlock{};
                 tour::gpu_scene::ParallelWorkGroupPush workGroups{};
