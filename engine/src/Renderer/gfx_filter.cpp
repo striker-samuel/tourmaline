@@ -467,13 +467,16 @@ static void RollbackTemporalBuffers(RenderGraph& rg, TemporalView& t, uint32_t d
 
 static bool CreateTemporalBuffers(ResourceManager& ctx, RenderGraph& rg, TemporalView& t) {
     for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
-        t.visClusterBuffers[f] =
-            ctx.CreateBuffer(kVisClusterBytes, BufferType_Storage, "gfx visibleClusters");
+        // Rows share one per-flight candidate capacity across the
+        // visible-cluster mirror and both temporal indirect streams.
+        // One initial logical page is sufficient for empty views.
         uint32_t dc = 0, cc = 0;
         if (!GrowCapacity(1, 0, sizeof(Draw), dc) ||
-            !GrowCapacity(1, 0, sizeof(SeedCommand), cc))
+            !GrowCapacity(1, 0, sizeof(VisibleCluster), cc))
             return false;
         t.flightCapacity[f] = {dc, cc};
+        t.visClusterBuffers[f] = ctx.CreateGpuSceneBuffer(
+            size_t(cc) * sizeof(VisibleCluster), "gfx visibleClusters");
         t.visDrawBuffers[f] =
             ctx.CreateGpuSceneBuffer(size_t(dc) * sizeof(Draw), "gfx visibleDraws");
         // Storage, NOT Indirect (same queue-sharing argument as the filter
