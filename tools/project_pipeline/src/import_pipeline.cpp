@@ -428,7 +428,12 @@ bool ImportProjectAsset(const ImportRequest& request, ImportResult& out, std::st
     for (const auto& g : asset.geometry) {
         if (!g.meshlets.empty())
             ++blobsWithMeshlets;
-        if (g.indices.size() / 3 > 100)
+        // SKINNED blobs are deliberately single-level (the simplifier
+        // cannot carry the per-vertex skin stream - see the importer's
+        // LOD gate): they never count as chainable here, or the
+        // "requested but derived nothing" rule below would fire on a
+        // fully-skinned family that correctly skipped its siblings.
+        if (g.indices.size() / 3 > 100 && g.skin.empty())
             ++chainableBlobs;
     }
     for (const auto& chain : asset.lodChains)

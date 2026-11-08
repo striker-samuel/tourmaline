@@ -2143,8 +2143,18 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
     // LOD0 into sibling uploads. Local errors are recorded here; world
     // scaling by node scale happens in FinalizeLodWorldErrors once globals
     // are final (shared meshes use the max instanced scale).
+    // SKINNED meshes keep a SINGLE-LEVEL chain: meshopt simplification
+    // cannot carry the per-vertex skin stream (the packed influences
+    // parallel the UNSIMPLIFIED vertex order - a sibling's remapped
+    // vertices have no stream), so the runtime's strict admission
+    // (EnsureSkinnedGpuData + the draw-side selected-LOD gate) honestly
+    // drops every stream-less sibling to bind pose - an animated mesh
+    // silently freezing at LOD-switch distance. Skipping the siblings
+    // here keeps every draw on the streamed base mesh, which is also
+    // the GPU-driven raster eligibility shape (single-level chains).
     std::vector<smvk::CookedLod> lodChain;
-    if (meshOptConfig.generateLods && !data.vertices.empty() && !data.indices.empty()) {
+    if (meshOptConfig.generateLods && data.skin.empty() && !data.vertices.empty() &&
+        !data.indices.empty()) {
         // Alpha cutout (MASK) and blended foliage sample coverage from the
         // base-color alpha via the UVs: positions-only simplify collapses
         // quad borders and stretches UVs, flashing background through the
