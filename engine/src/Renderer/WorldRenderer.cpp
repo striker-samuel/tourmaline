@@ -11165,6 +11165,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     tour::gpu_scene::CandidateMode::Frustum,
                     65536,
                     gpuSceneRasterMode ? 1048576u : 32768u);
+            // No passed spatial candidates means no GPU raster commands.
+            // This is an owned empty Main pass, not a failed admission:
+            // avoid rebuilding all CPU GfxFilter draws for an empty view.
+            if (gpuSceneRasterMode && selected.Valid() && selected.candidateCount == 0) {
+                m_gpuSceneRasterDrawActive = true;
+                m_gpuSceneRasterDrawCapacity = 0;
+                m_gpuSceneRasterWorkBda = 0;
+                m_gpuSceneRasterIndirect = {};
+            }
             tour::gpu_scene::InstanceCullGpuPush gpuPush{};
             if (selected.Valid() && selected.candidateCount > 0 &&
                 m_gpuSceneValidator.Prepare(
@@ -13723,7 +13732,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // The GPU-generated raster command buffer is written by compute and
     // consumed by DrawIndexedIndirect; the work rows are vertex BDA input.
     // These are distinct pipeline stages and need explicit graph edges.
-    if (m_gpuSceneRasterDrawActive) {
+    if (m_gpuSceneRasterDrawActive && m_gpuSceneRasterDrawCapacity > 0) {
         smvk::BufferSyncRequest indirectRead{};
         indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
         indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
@@ -14162,7 +14171,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // persistent instance; zero-count commands do not rasterize.
         // This path replaces the GfxFilter Main leg only when the
         // eligibility gate proved every World draw belongs to it.
-        if (sceneRasterActive) {
+        if (sceneRasterActive && sceneRasterCommandCount > 0) {
             cmd.BindStaticVertexFmt();
             cmd.BindRenderPipeline(
                 m_gpuSceneRasterProgram,
