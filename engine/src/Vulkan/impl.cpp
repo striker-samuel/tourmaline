@@ -8455,7 +8455,17 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
     // arena-owned name (buffers now name-track like images - see
     // GetMemoryAllocInfos).
     VmaAllocationInfo ledgerInfo{};
-    VK_CHECK(vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vkBuffer, &desc.vma_alloc, &ledgerInfo));
+    VkResult allocationResult =
+        vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vkBuffer, &desc.vma_alloc, &ledgerInfo);
+    if (allocationResult != VK_SUCCESS && aci.pool != VK_NULL_HANDLE) {
+        // A pool may be unable to grow its fixed-size block on a memory-
+        // constrained device. Do not make GPU scene allocation LESS robust
+        // than the ordinary RHI path: retry through VMA's default allocator.
+        aci.pool = VK_NULL_HANDLE;
+        allocationResult =
+            vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vkBuffer, &desc.vma_alloc, &ledgerInfo);
+    }
+    VK_CHECK(allocationResult);
     desc.allocBytes = ledgerInfo.size;
     desc.type = bufferType;
     desc.name = CopyResourceName(debugName);
