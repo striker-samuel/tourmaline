@@ -13,9 +13,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <new>
 #include <tuple>
@@ -433,7 +435,19 @@ class WorldSynchronizer {
                     }
                     if (anyBounds) {
                         const glm::vec3 center = bmin + (bmax - bmin) * 0.5f;
-                        record.localSphere = glm::vec4(center, glm::length(bmax - center));
+                        // Conservative across float32 rounding: the sphere
+                        // must contain every AABB corner, including after
+                        // the center was rounded to float32. Round the
+                        // resulting radius up rather than letting streamed
+                        // LOD admission spuriously fail by one ULP.
+                        const glm::dvec3 c(center);
+                        const glm::dvec3 lo(bmin), hi(bmax);
+                        const glm::dvec3 reach =
+                            glm::max(glm::abs(lo - c), glm::abs(hi - c));
+                        const float radius = std::nextafter(
+                            static_cast<float>(glm::length(reach)),
+                            std::numeric_limits<float>::infinity());
+                        record.localSphere = glm::vec4(center, radius);
                     }
                 }
                 new (records + recordCount++) SourceRecord(record);
