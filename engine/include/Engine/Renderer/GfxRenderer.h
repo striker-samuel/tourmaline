@@ -925,9 +925,13 @@ struct GfxRenderer : public smvk::IFrameRenderer {
         smvk::gfx::BuildShadowList(gfx, sview);
     }
     // Main thread, after joining the build futures: upload the frame ring
-    // slice (draws as VS reads, commands as draw-indirect reads).
-    void UploadShadowList(smvk::ResourceManager& ctx, uint32_t frameIndex, uint32_t sview) {
-        smvk::gfx::UploadShadowList(gfx, ctx, frameIndex, sview);
+    // slice (draws as VS reads, commands as draw-indirect reads). The
+    // rendergraph feeds the dynamic-capacity grow-rebind of the draw ring.
+    void UploadShadowList(smvk::ResourceManager& ctx,
+                          smvk::RenderGraph& rg,
+                          uint32_t frameIndex,
+                          uint32_t sview) {
+        smvk::gfx::UploadShadowList(gfx, ctx, rg, frameIndex, sview);
     }
     // Consume side: opaque multi-draw + per-material masked ranges over
     // the view's CPU-built command list. Shadow-atlas depth is normal-Z

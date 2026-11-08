@@ -4811,10 +4811,15 @@ class WorldRenderer : public IRenderer {
     // cannot see the GPU-mode cull (clustersCulled only counts the CPU-mode
     // path), so the filter's atomic filtered-offset counter word (zeroed by
     // the batch-cull dispatch, accumulated per KEPT entry - word
-    // kCullStateCounterWord in the cullState slice) rides the same ticket:
+    // CullStateCounterWord of the cullState slice, RUNTIME since the
+    // dynamic-capacity cutover) rides the same ticket:
     // 4 bytes, ~a few frames stale (retired-slice cadence), landed into
     // m_gfxKeptBatches for the HUD/panel culled computation.
+    // m_pendingGfxKeptWord: the counter word offset CAPTURED AT SUBMIT —
+    // the same span shape must accompany submit and poll, and a mid-flight
+    // capacity grow moves the suffix.
     uint32_t m_pendingGfxKept = 0;
+    uint32_t m_pendingGfxKeptWord = 0;
     uint32_t m_gfxKeptBatches = 0;
     bool m_gfxKeptValid = false;
     // TMP-DIAG (TOURMALINE_FILTERAUDIT=<frame>): one-shot async readback of
@@ -4830,7 +4835,14 @@ class WorldRenderer : public IRenderer {
     uint32_t m_filterAuditSlot = 0;
     uint32_t m_filterAuditBatchCount = 0;
     uint32_t m_filterAuditDrawCount = 0;
-    tour::mem::ArenaFlatArray<uint32_t> m_filterAuditVerdicts; // kCullStateWords
+    // Submit-time cull-state word layout (RUNTIME since the dynamic-
+    // capacity cutover — a mid-flight grow moves the suffix, and the same
+    // span shape must accompany the submit and its poll): the counter
+    // word index and the kept parity-region byte stride of the audited
+    // flight slice.
+    uint32_t m_filterAuditCounterWord = 0;
+    uint32_t m_filterAuditKeptStride = 0;
+    tour::mem::ArenaFlatArray<uint32_t> m_filterAuditVerdicts; // cullState words (runtime-sized)
     tour::mem::ArenaFlatArray<uint32_t> m_filterAuditKept[2];  // per parity region, live slots
     tour::mem::ArenaFlatArray<uint32_t> m_filterAuditIndirect; // 5 words per slot
     tour::mem::ArenaFlatArray<uint32_t> m_filterAuditBatches;  // 4 words per slot

@@ -32,18 +32,20 @@
 #include "gpu_platform.hlsli"
 
 #define GFX_THREADS_PER_CLUSTER 128
-// Mirror of C++ kMaxDraws (gfx_filter.h) — keep in lockstep. 64k: the
-// 4k budget silently dropped whole instances on grid32-scale instanced
-// scenes; the survivor ring (GFX_MAX_BATCHES) stays the real per-view
-// geometry ceiling.
-#define GFX_MAX_DRAWS 65535
+// DECLARED-capacity bounds (the BDA-pointer generous-declared pattern —
+// vk::BufferPointer needs complete fixed-size types, so the arrays below
+// are declared at these sizes and the RUNTIME buffer, sized by the C++
+// planner, may be anything up to them). They are ALSO the fail-closed CPU
+// ceilings (C++ mirrors tour::gfx::kDeclaredMaxDraws /
+// kDeclaredMaxCandidates, gfx_dynamic_capacity.h — keep all three in
+// lockstep): the runtime capacity NEVER exceeds them (a scene needing
+// more is a loud fatal), so dynamic indexing always stays inside the
+// declared arrays. Successors of the retired fixed caps (65535 draws /
+// 262144 candidate slots) — 16x headroom each. The survivor ring
+// (GFX_MAX_BATCHES) stays separately budgeted.
+#define GFX_MAX_DRAWS 1048576
 #define GFX_MAX_BATCHES 65536
-// GPU-cull candidate capacity: per (draw x cluster) slot pushed by the
-// CPU candidate build (batches + indirect + seed/remainder command arrays
-// are all pre-sized by this). Survivors stay bounded by GFX_MAX_BATCHES —
-// the filter's atomic filtered-offset allocation clamps at the ring
-// capacity (the GPU twin of the old CPU kMaxBatches cap + warning).
-#define GFX_MAX_BATCH_SLOTS 262144
+#define GFX_MAX_BATCH_SLOTS 4194304
 // Explicit bounds (this DXC rejects unsized struct members; mirrors the
 // C++ capacities in Engine/Renderer/gfx_filter.h).
 #define GFX_MAX_VERTICES 44739242   // 512MB pos heap / 12B (see mesh.cpp)
@@ -73,13 +75,52 @@ struct GfxClusters  { GfxClusterData cluster[GFX_MAX_CLUSTERS]; };
 // index each frame the pass runs — dropped/capped draws get a keep-sphere
 // radius 1e30). One buffer, one pointer: the consumers (gfxbatchcull /
 // gfxdrawcull / gfxfilter's ClusterOccluded + PublishDrawDemand) index the
-// region they need. Generous declared capacity (the BDA-pointer pattern —
-// loads stay in bounds of the real buffer sized by the C++ kSkinBoundsBytes).
+// region they need.
+//
+// THE DYNAMIC-CAPACITY LAYOUT RULE (the fixed layout made the tail's
+// declared offset coincide with the allocated one; the dynamic table must
+// NOT address past the real buffer): the table is ONE FLAT GfxClusterData
+// array — cluster slots [0, candidateCapacity), then the drawBound tail at
+// float4 index candidateCapacity * 4 + drawIdx (four 16B float4s per 64B
+// entry). NEVER a second declared member (a trailing drawBound[] array
+// would sit at the DECLARED bound's offset — megabytes past the runtime
+// buffer — the device-lost class the knight run caught). Access the tail
+// ONLY through the helpers below; cluster[slot] reads stay direct.
 struct GfxSkinBoundsTable
 {
-    GfxClusterData cluster[GFX_MAX_BATCH_SLOTS];
-    float4 drawBound[GFX_MAX_DRAWS];
+    GfxClusterData cluster[GFX_MAX_BATCH_SLOTS + (GFX_MAX_DRAWS + 3) / 4];
 };
+
+// drawBound[drawIdx] as a float4 view into the flat table: the tail rides
+// at the RUNTIME candidate capacity (the pushes carry the table's own
+// allocation, never a derived or declared value).
+float4 GfxSkinDrawBound(GPU_PTR_READ(GfxSkinBoundsTable) t,
+                        uint candidateCapacity,
+                        uint drawIdx)
+{
+    const uint f4 = candidateCapacity * 4u + drawIdx;
+    const GfxClusterData e = t.Get().cluster[f4 >> 2u];
+    const uint q = f4 & 3u;
+    return q == 0u ? e.a : (q == 1u ? e.b : (q == 2u ? e.c : e.d));
+}
+
+// The writer's twin (gfxskinbounds.cs.hlsl thread 0's definitive store).
+void GfxSkinSetDrawBound(GPU_PTR_WRITE(GfxSkinBoundsTable) t,
+                         uint candidateCapacity,
+                         uint drawIdx,
+                         float4 v)
+{
+    const uint f4 = candidateCapacity * 4u + drawIdx;
+    const uint q = f4 & 3u;
+    if (q == 0u)
+        t.Get().cluster[f4 >> 2u].a = v;
+    else if (q == 1u)
+        t.Get().cluster[f4 >> 2u].b = v;
+    else if (q == 2u)
+        t.Get().cluster[f4 >> 2u].c = v;
+    else
+        t.Get().cluster[f4 >> 2u].d = v;
+}
 // Cone-axis debug line output (gfxcone_debug.cs.hlsl): packed
 // DebugLineVertex float3s (3 uint words per vertex, the GfxPositions
 // packed-stride pattern — a float3 member array cannot express the 12B
@@ -251,17 +292,16 @@ struct GfxKeptBits { uint kept[GFX_MAX_BATCH_SLOTS * 2]; };
 
 // Draw verdicts (gfxdrawcull: mesh-bound frustum + HZB occlusion, the
 // frozen cull view) + the filter's atomic filtered-offset counter, packed
-// in one small buffer per flight. Verdict words are [0, GFX_MAX_DRAWS);
-// the counter is word GFX_MAX_DRAWS.
-#define GFX_CULL_STATE_COUNTER GFX_MAX_DRAWS
-// Temporary distant-view investigation counters, written by GfxFilter.
-// Indexed after the draw verdicts and the filtered-index allocation counter.
-#define GFX_DIAG_EMPTY       (GFX_MAX_DRAWS + 1)
-#define GFX_DIAG_OVERFLOW    (GFX_MAX_DRAWS + 2)
-#define GFX_DIAG_ALLOCATED   (GFX_MAX_DRAWS + 3)
-#define GFX_DIAG_GATED       (GFX_MAX_DRAWS + 4)
-#define GFX_CULL_STATE_WORDS (GFX_MAX_DRAWS + 5)
-struct GfxCullState { uint v[GFX_CULL_STATE_WORDS]; };
+// in one small buffer per flight. THE WORD LAYOUT IS RUNTIME (the
+// dynamic-capacity cutover): verdict words occupy [0, drawCapacity), the
+// filtered-offset allocation counter sits at word drawCapacity, and the
+// four temporary distant-view investigation counters (written by
+// GfxFilter) follow it — the base rides the pushes as
+// cullStateCounterWord (GfxBatchCullPush zeroes the five words; the
+// filter allocates/diagnoses through it). The declared array bound just
+// keeps the generous-declared pattern consistent (see GFX_MAX_DRAWS).
+#define GFX_CULL_STATE_DIAG_WORDS 5 // counter + empty/overflow/allocated/gated
+struct GfxCullState { uint v[GFX_MAX_DRAWS + GFX_CULL_STATE_DIAG_WORDS]; };
 
 // Static per-mesh cluster range (mirror of C++ gfx::Mesh /
 // ClusterConstants' layout counterpart). Load-time upload.
@@ -675,7 +715,9 @@ struct GfxFilterPush
     GPU_PTR_READ(GfxSkinBoundsTable) skinBounds;
     float4x4 viewProj;
     float3 eye;
-    float pad1;
+    // The skinBounds TABLE's own candidate capacity (the drawBound tail's
+    // runtime offset — see GfxSkinBoundsTable's flat-layout rule).
+    uint skinBoundsCandidateCapacity;
     uint cullFlags;
     uint width;
     uint height;
@@ -695,7 +737,11 @@ struct GfxFilterPush
     // written as indexBase + outputOffset (absolute), so draws address the
     // monoblock directly and the index binding never switches buffers.
     uint indexBase;
-    uint pad3;
+    // The cullState counter/diag word base (the RUNTIME draw-capacity
+    // suffix — the retired GFX_CULL_STATE_COUNTER macro died with the
+    // dynamic cutover): the filtered-offset allocation counter is word
+    // cullStateCounterWord, the four diag counters follow it.
+    uint cullStateCounterWord;
     // Draw-level texture-demand inputs (0/empty disables the publisher in
     // the shader; PushAndDispatch zero-gates the whole set on any null
     // BDA — same belt-and-braces rule as the HZB inputs above).
@@ -710,7 +756,7 @@ struct GfxFilterPush
     //               region offset to the BDA; the shader indexes from it
     //               directly)
     //   cullState — draw verdicts (gfxdrawcull) + the filtered-offset
-    //               counter (word GFX_CULL_STATE_COUNTER) this dispatch
+    //               counter (word cullStateCounterWord) this dispatch
     //               allocates through atomically
     GPU_PTR_READ(GfxKeptBits) kept;
     GPU_PTR(GfxCullState) cullState;
@@ -743,7 +789,10 @@ struct GfxBatchCullPush
     GPU_PTR_WRITE(GfxCullState) cullState; // out: offset-counter zero (group 0)
     float4x4 viewProj;   // LIVE view (seed/remainder semantics)
     float3 eye;
-    float pad1;
+    // The skinBounds TABLE's own candidate capacity (the drawBound tail's
+    // runtime offset — see GfxSkinBoundsTable's flat-layout rule; distinct
+    // from candidateCapacity, which is THIS view's kept-ring stride).
+    uint skinBoundsCandidateCapacity;
     uint drawCount;
     uint drawSetMask;    // TemporalView::drawSetMask (seed/remainder bucket gate)
     uint clusterIndexBase; // absolute firstIndex base for seed/remainder commands
@@ -765,7 +814,16 @@ struct GfxBatchCullPush
     // — default 0: skinned clusters cull conservative, sphere+frustum only;
     // Remedy's own shipped call, their HZB covered the cones' win).
     uint skinConeEnabled;
-    uint2 pad3;
+    // Runtime capacity suffixes (the dynamic-capacity cutover — the
+    // retired GFX_CULL_STATE_COUNTER / GFX_MAX_BATCH_SLOTS macros died
+    // with it): cullStateCounterWord is the counter/diag word base
+    // (zeroed by group 0 of this dispatch); candidateCapacity is the
+    // kept-ring parity-region stride in words (= this (view, flight)'s
+    // candidate capacity: region P starts at word keptParity *
+    // candidateCapacity) AND the belt-and-braces bound for candidate-slot
+    // writes.
+    uint cullStateCounterWord;
+    uint candidateCapacity;
 };
 //static_assert(sizeof(GfxBatchCullPush) == 208);
 
@@ -790,7 +848,10 @@ struct GfxSkinBoundsPush
     uint deformedBase;  // 0xFFFFFFFF = none
     uint drawCount;
     uint coneEnabled;   // 0 = degenerate cones (TOURMALINE_SKIN_CONE=0 A/B)
-    uint pad1;
+    // The table's candidate-slot capacity (this flight's allocation): the
+    // belt-and-braces bound for every candidate-slot write, successor of
+    // the retired GFX_MAX_BATCH_SLOTS macro.
+    uint candidateCapacity;
 };
 
 // GfxConeDebug (the cone-axis overlay's GPU leg): one 128-thread workgroup
@@ -813,7 +874,11 @@ struct GfxConeDebugPush
     GPU_PTR_WRITE(GfxConeDebugLines) lines; // out (2 verts per slot)
     uint skinBoundsValid; // 0: every draw reads the static table
     uint drawCount;
-    uint2 pad;
+    // The shared line buffer's candidate-slot capacity (successor of the
+    // retired GFX_MAX_BATCH_SLOTS macro): the belt-and-braces bound for
+    // every candidate-slot write.
+    uint candidateCapacity;
+    uint pad2;
 };
 //static_assert(sizeof(GfxConeDebugPush) == 56);
 
@@ -839,7 +904,9 @@ struct GfxDrawCullPush
     GPU_PTR_READ(GfxSkinBoundsTable) skinBounds; // deformed unions (skinned draws)
     float4x4 viewProj;  // FROZEN view (the gfx view record matrix)
     float3 eye;
-    float pad1;
+    // The skinBounds TABLE's own candidate capacity (the drawBound tail's
+    // runtime offset — see GfxSkinBoundsTable's flat-layout rule).
+    uint skinBoundsCandidateCapacity;
     uint cullFlags;    // GFX_CULL_OCCLUSION | GFX_CULL_HZBSKIPMASKED consumers
     uint drawCount;
     uint width;         // guard-band extent (== HZB target)

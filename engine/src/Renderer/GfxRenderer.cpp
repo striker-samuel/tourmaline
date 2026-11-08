@@ -7,6 +7,7 @@
 #include <Engine/Rendergraph/FrameContext.h>
 
 #include <Engine/Profile/profile.h>
+#include <Engine/Renderer/gfx_dynamic_capacity.h> // the declared draw bound (DumpCullBaseline)
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <Engine/debug_log.h>
@@ -1661,12 +1662,15 @@ static void DumpCullBaseline(smvk::gfx::State& s,
                              uint64_t appFrame) {
     smvk::gfx::View& v = s.views[view];
     const uint32_t drawCount = v.stats.draws;
-    std::vector<uint32_t> words(smvk::gfx::kCullStateWords, 0u);
-    if (drawCount == 0 || drawCount > smvk::gfx::kMaxDraws ||
+    // Runtime cull-state word count (the dynamic cutover — the slice is
+    // drawCapacity + 5 words: verdicts + the counter/diag suffix).
+    const size_t wordCount = smvk::gfx::CullStateWords(s, view, frameIndex);
+    std::vector<uint32_t> words(wordCount, 0u);
+    if (drawCount == 0 || drawCount > smvk::gfx::kDeclaredMaxDraws ||
         v.cullStateBuffers[frameIndex].empty() ||
         !ctx.DownloadDataFromBuffer(v.cullStateBuffers[frameIndex],
                                     words.data(),
-                                    smvk::gfx::kCullStateWords * sizeof(uint32_t))) {
+                                    wordCount * sizeof(uint32_t))) {
         std::fprintf(stderr,
                      "[CullDump] FAILED: verdict readback unavailable "
                      "(drawCount=%u)\n",
@@ -2202,7 +2206,7 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx,
             candidates.size() - groups.size(),
             static_cast<long long>(measureUs));
     }
-    const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
+    const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, rg, frameIndex, slot);
     // NOTE: Release-visible trace (not SMVK_DEBUG_LOG): this is the only
     // per-run visibility into filter load (draws/batches vs
     // kMaxDraws/kMaxBatches) — muted at runtime by the interactive
@@ -2435,11 +2439,14 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
     // Filter outcome counters: one update per candidate batch.
     // A nonzero overflow count proves a capacity drop; empty batches
     // need a second (per-clip-plane) experiment to identify why.
+    // The counter word base is RUNTIME (the dynamic cutover): the draw
+    // capacity of THIS flight slice.
     uint32_t filterDiag[5] = {};
     if (ctx.DownloadDataFromBuffer(v.cullStateBuffers[v.frameIndex],
                                    filterDiag,
                                    sizeof(filterDiag),
-                                   size_t(kCullStateCounterWord) * sizeof(uint32_t))) {
+                                   size_t(CullStateCounterWord(gfx, slot, v.frameIndex)) *
+                                       sizeof(uint32_t))) {
         std::fprintf(stderr,
                      "[GfxAudit] filter slot=%u allocatedIndices=%u empty=%u "
                      "overflow=%u allocatedBatches=%u gated=%u (total=%u/%u)\n",

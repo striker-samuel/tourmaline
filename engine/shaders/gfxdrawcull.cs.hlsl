@@ -38,14 +38,15 @@
 GPU_PUSH(GfxDrawCullPush, pcD);
 
 [numthreads(64, 1, 1)]
-void mainCS(uint3 tid : SV_DispatchThreadID)
+void mainCS(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID)
 {
+    const uint drawIdx = gid.y * (65535u * 64u) + tid.x;
     // Verdicts default to 1 ("visible"): every failure direction below is
     // the conservative keep — a false keep only costs work, a false drop
     // would delete geometry the rasterizer should have drawn.
-    if (tid.x >= pcD.drawCount || tid.x >= GFX_MAX_DRAWS)
+    if (drawIdx >= pcD.drawCount || drawIdx >= GFX_MAX_DRAWS)
         return;
-    GfxDraw d = pcD.draws.Get().draws[tid.x];
+    GfxDraw d = pcD.draws.Get().draws[drawIdx];
 
     uint verdict = 1u;
 
@@ -69,7 +70,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
             GFX_CULL_GUARD_PX * 2.0f / max((float) pcD.height, 1.0f),
             planes);
         float4 bound = useSkinBounds
-            ? pcD.skinBounds.Get().drawBound[tid.x]
+            ? GfxSkinDrawBound(pcD.skinBounds, pcD.skinBoundsCandidateCapacity, drawIdx)
             : pcD.meshBounds.Get().centerRadius[d.misc.x];
         float3 worldC = mul(d.model, float4(bound.xyz, 1.0f)).xyz;
         float worldR = bound.w * GfxMaxBasisScale(d.model);
@@ -112,5 +113,5 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
         }
     }
 
-    pcD.cullState.Get().v[tid.x] = verdict;
+    pcD.cullState.Get().v[drawIdx] = verdict;
 }

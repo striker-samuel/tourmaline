@@ -28,6 +28,7 @@
 
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gfx_dynamic_capacity.h>
 #include <Engine/debug_log.h>
 // Detail diagnostics (winding/cull/spawn/mirror traces) print in debug
 // builds only; PASS/FAIL lines and the final summary always print.
@@ -2721,7 +2722,97 @@ void TestMaterialFamilyPrograms() {
           "gfx.family-wire-twin-identity-gi");
 }
 
+void TestDynamicCapacityPlanning() {
+    using namespace smvk::gfx;
+    size_t c = 42;
+    Check(RoundCapacity(0, 128, c) && c == 0, "gfx.dynamic.zero");
+    Check(RoundCapacity(1, 128, c) && c == 512, "gfx.dynamic.first-page");
+    Check(RoundCapacity(512, 128, c) && c == 512, "gfx.dynamic.page-end");
+    Check(RoundCapacity(513, 128, c) && c == 1024, "gfx.dynamic.page-grow");
+    Check(RoundCapacity(1, 24, c) && c == 8192 &&
+              (c * 24) % kDynamicPageBytes == 0,
+          "gfx.dynamic.non-divisor-stride-page-alignment");
+    Check(!RoundCapacity(1, 0, c), "gfx.dynamic.zero-stride-rejected");
+    Check(!RoundCapacity(SIZE_MAX, 128, c), "gfx.dynamic.overflow-rejected");
+    DynamicCapacity plan{};
+    Check(PlanDynamicCapacity(70000, 270000, 128, 16, plan) &&
+              plan.draws >= 70000 && plan.candidates >= 270000 &&
+              plan.survivors == 65536, "gfx.dynamic.exceeds-old-limits");
+    Check(!PlanDynamicCapacity(SIZE_MAX, 1, 128, 16, plan),
+          "gfx.dynamic.overflow-plan");
+    DynamicBytes bytes{};
+    Check(PlanDynamicBytes(plan, sizeof(Draw), sizeof(Batch), 20u, 20u,
+                           sizeof(ClusterConstants), bytes) &&
+              bytes.draws == size_t(plan.draws) * sizeof(Draw) &&
+              bytes.batches == size_t(plan.candidates) * sizeof(Batch) &&
+              bytes.indirect == size_t(plan.candidates) * 20u &&
+              bytes.temporalCommands == bytes.indirect &&
+              bytes.kept == size_t(plan.candidates) * 2u * sizeof(uint32_t) &&
+              bytes.cullState == (size_t(plan.draws) + 5u) * sizeof(uint32_t) &&
+              bytes.skinBounds == size_t(plan.candidates) * sizeof(ClusterConstants) +
+                                      size_t(plan.draws) * sizeof(glm::vec4) &&
+              bytes.coneDebug == size_t(plan.candidates) * 24u &&
+              bytes.meshBatchList == size_t(plan.candidates) * sizeof(uint32_t),
+          "gfx.dynamic.coupled-byte-budgets");
+    Check(!PlanDynamicBytes(plan, 0, sizeof(Batch), 20u, 20u,
+                            sizeof(ClusterConstants), bytes),
+          "gfx.dynamic.zero-draw-stride-rejected");
+    const DynamicBytes unchanged = bytes;
+    Check(!PlanDynamicBytes(plan, SIZE_MAX, sizeof(Batch), 20u, 20u,
+                            sizeof(ClusterConstants), bytes) &&
+              bytes.draws == unchanged.draws,
+          "gfx.dynamic.byte-overflow-atomic");
+    DispatchGrid grid{};
+    Check(PlanDispatchGrid(0, grid) && grid.x == 0 && grid.y == 0,
+          "gfx.dynamic.dispatch-zero");
+    Check(PlanDispatchGrid(65535, grid) && grid.x == 65535 && grid.y == 1,
+          "gfx.dynamic.dispatch-edge");
+    Check(PlanDispatchGrid(65536, grid) && grid.x == 65535 && grid.y == 2,
+          "gfx.dynamic.dispatch-cross-axis");
+    Check(PlanDispatchGrid(70000, grid) && grid.x == 65535 && grid.y == 2,
+          "gfx.dynamic.dispatch-oversized");
+    Check(PlanDispatchGrid(size_t(65535) * 65535, grid) &&
+              grid.x == 65535 && grid.y == 65535,
+          "gfx.dynamic.dispatch-maximum");
+    Check(!PlanDispatchGrid(size_t(65535) * 65535 + 1, grid) &&
+              grid.x == 0 && grid.y == 0,
+          "gfx.dynamic.dispatch-overflow");
+
+    // ---- The runtime entry point (PlanViewCapacity): the declared
+    //      fail-closed ceilings + the page-rounded plans the grow step
+    //      allocates from. The declared bounds mirror the HLSL arrays
+    //      (GFX_MAX_DRAWS / GFX_MAX_BATCH_SLOTS) — pin all three.
+    Check(kDeclaredMaxDraws == 1u << 20, "gfx.dynamic.declared-draws");
+    Check(kDeclaredMaxCandidates == 1u << 22, "gfx.dynamic.declared-candidates");
+    Check(PlanViewCapacity(70000, 270000, sizeof(Draw), sizeof(Batch), plan) &&
+              plan.draws >= 70000 && plan.candidates >= 270000 &&
+              plan.draws % 4096 == 0 && plan.candidates % 4096 == 0,
+          "gfx.dynamic.view-plan-exceeds-old-limits");
+    Check(PlanViewCapacity(kDeclaredMaxDraws, kDeclaredMaxCandidates,
+                           sizeof(Draw), sizeof(Batch), plan) &&
+              plan.draws == kDeclaredMaxDraws && plan.candidates == kDeclaredMaxCandidates,
+          "gfx.dynamic.view-plan-at-declared-bounds");
+    Check(!PlanViewCapacity(size_t(kDeclaredMaxDraws) + 1, 1,
+                            sizeof(Draw), sizeof(Batch), plan),
+          "gfx.dynamic.view-plan-draws-over-bound-rejected");
+    Check(!PlanViewCapacity(1, size_t(kDeclaredMaxCandidates) + 1,
+                            sizeof(Draw), sizeof(Batch), plan),
+          "gfx.dynamic.view-plan-candidates-over-bound-rejected");
+    // Small frames round to the first page (the minimum every ring
+    // allocates at slot creation).
+    Check(PlanViewCapacity(1, 1, sizeof(Draw), sizeof(Batch), plan) &&
+              plan.draws == 4096 && plan.candidates == 4096,
+          "gfx.dynamic.view-plan-first-page");
+    // The plan never publishes a partial result on rejection.
+    const DynamicCapacity before = plan;
+    Check(!PlanViewCapacity(SIZE_MAX, SIZE_MAX, sizeof(Draw), sizeof(Batch), plan) &&
+              plan.draws == before.draws && plan.candidates == before.candidates,
+          "gfx.dynamic.view-plan-no-partial-on-reject");
+
+}
+
 int main() {
+    TestDynamicCapacityPlanning();
     TestWindingSign();
     TestRegistration();
     TestBatching();

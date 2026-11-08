@@ -6137,11 +6137,13 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
         }
         if (m_pendingReadbackHasGfxKept) {
             // 4 bytes at the counter word (see the member block): the
-            // final kept-entry count of that retired dispatch chain.
+            // final kept-entry count of that retired dispatch chain. The
+            // word offset is the SUBMIT-time capture (a mid-flight
+            // capacity grow moves the runtime suffix).
             dls[n] = {smvk::gfx::CullStateBuffer(gfx, m_pendingReadbackSlot),
                       &m_pendingGfxKept,
                       sizeof(uint32_t),
-                      smvk::gfx::kCullStateCounterWord * sizeof(uint32_t)};
+                      m_pendingGfxKeptWord * sizeof(uint32_t)};
             ++n;
         }
         return {dls.data(), n};
@@ -6340,8 +6342,13 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
             m_pendingGfxDemand.assign(smvk::gfx::TextureMetaCount(gfx), smvk::gfx::kDemandNoReport);
         // GPU-cull kept counter (4 B) rides the same batch (no extra
         // submit): see the member block - the CPU stats cannot see the
-        // GPU-mode cull, so the counter word is the kept number.
+        // GPU-mode cull, so the counter word is the kept number. The word
+        // offset is captured HERE (submit time) — the runtime cull-state
+        // suffix moves with a capacity grow between submit and poll.
         m_pendingReadbackHasGfxKept = gfxKeptActive;
+        if (m_pendingReadbackHasGfxKept && !gfx.views.empty())
+            m_pendingGfxKeptWord =
+                smvk::gfx::CullStateCounterWord(gfx, 0, m_pendingReadbackSlot);
         // DS counters (40 B) ride the same batch (no extra submit): the
         // slice's zero-fill was only STAGED in UpdateForwardPlusLights
         // (ring flush happens at EndAndPresent), so the transfer-queue
@@ -6469,7 +6476,7 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
                     s_auditDls[an++] = {v0.keptBuffers[m_filterAuditSlot],
                                         m_filterAuditKept[reg].data(),
                                         m_filterAuditKept[reg].size() * sizeof(uint32_t),
-                                        reg * smvk::gfx::kMaxBatchSlots * sizeof(uint32_t)};
+                                        reg * m_filterAuditKeptStride};
                 s_auditDls[an++] = {v0.indirectBuffers[m_filterAuditSlot],
                                     m_filterAuditIndirect.data(),
                                     m_filterAuditIndirect.size() * sizeof(uint32_t),
@@ -6490,7 +6497,7 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
                                  m_filterAuditSlot,
                                  m_filterAuditDrawCount,
                                  m_filterAuditBatchCount,
-                                 m_filterAuditVerdicts[smvk::gfx::kCullStateCounterWord]);
+                                 m_filterAuditVerdicts[m_filterAuditCounterWord]);
                     for (uint32_t d = 0; d < m_filterAuditDrawCount; ++d) {
                         uint32_t keptCount[2] = {0, 0};
                         uint32_t clusterCount = 0;
@@ -6603,7 +6610,18 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
                 m_filterAuditSlot = frameSlot;
                 m_filterAuditBatchCount = v0.batchCount;
                 m_filterAuditDrawCount = v0.stats.draws;
-                m_filterAuditVerdicts.assign(smvk::gfx::kCullStateWords, 0u);
+                // Runtime cull-state layout of the audited flight slice
+                // (the dynamic cutover — captured at submit so the poll's
+                // span shape + word indexing stay identical even if a
+                // later frame grows the capacity; the buffers the span
+                // reads are the CURRENT holders of that slot, so a grow
+                // on the submit frame reads the fresh zero-filled rings —
+                // the same one-flight staleness this debug tool accepts).
+                m_filterAuditCounterWord =
+                    smvk::gfx::CullStateCounterWord(gfx, 0, m_filterAuditSlot);
+                m_filterAuditKeptStride =
+                    v0.candidateCapacity[m_filterAuditSlot] * sizeof(uint32_t);
+                m_filterAuditVerdicts.assign(smvk::gfx::CullStateWords(gfx, 0, m_filterAuditSlot), 0u);
                 for (uint32_t reg = 0; reg < 2; ++reg)
                     m_filterAuditKept[reg].assign(v0.batchCount, 0u);
                 m_filterAuditIndirect.assign(size_t(v0.batchCount) * 5, 0u);
@@ -10756,11 +10774,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_VALIDATE");
         return e && std::strcmp(e, "1") == 0;
     }();
-    // Deliberately opt-in until all production pass/material variants match.
-    // Validation remains separate; do not mix CPU readback with GPU raster.
+    // GPU-scene Main/depth is the default for admitted static opaque
+    // sources. Unsupported objects (including GPU-skinned, layered and
+    // masked) retain the proven legacy raster path through canonical
+    // source ownership. Explicit =0 disables the GPU cutover for A/B
+    // diagnosis. Validation remains separate from production raster.
     static const bool s_gpuSceneRaster = [] {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_RASTER");
-        return e && std::strcmp(e, "1") == 0;
+        return !e || std::strcmp(e, "0") != 0;
     }();
     if (s_gpuSceneRaster && m_gpuSceneRasterProgram.shaderCount != 2) {
         try {
@@ -13247,17 +13268,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         smvk::gfx::ConeDebugReady(m_gfxRenderer.State())) {
         const smvk::gfx::State& st = m_gfxRenderer.State();
         const smvk::gfx::View& v = st.views[gfxSlot];
+        // The runtime candidate capacity of this view's current flight
+        // (the dynamic cutover — the retired fixed kMaxBatchSlots bound
+        // died with it).
+        const uint32_t slotCap = smvk::gfx::CandidateCapacity(st, gfxSlot);
         uint64_t candidateTotal = 0;
         for (const smvk::gfx::Draw& d : v.drawConstants) {
             if (d.candidateBase == UINT32_MAX || d.mesh >= st.meshes.size())
                 continue;
             const uint64_t count = st.meshes[d.mesh].clusterCount;
-            if (d.candidateBase + count > smvk::gfx::kMaxBatchSlots)
+            if (d.candidateBase + count > slotCap)
                 continue; // corrupt slot layout: the pass skips it too
             candidateTotal += count;
         }
         coneLineVerts = (uint32_t)std::min<uint64_t>(candidateTotal * 2,
-                                                     (uint64_t)smvk::gfx::kMaxBatchSlots * 2);
+                                                     (uint64_t)slotCap * 2);
     }
 
     // ---------------------------------------------------------------------
@@ -14441,9 +14466,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                               &sceneRasterVsPush,
                               smvk::ShaderStage::All);
             // Bound CPU draw submissions by a small number of indirect
-            // chunks, not by instance count. Reuse the engine's 65,535
-            // command-per-call partition convention.
-            constexpr uint32_t kChunk = smvk::gfx::kMaxDraws;
+            // chunks, not by instance count. 65,535 commands per call is
+            // the engine's partition convention (the retired gfx
+            // kMaxDraws happened to carry it; the dynamic-capacity
+            // cutover made it a plain local).
+            constexpr uint32_t kChunk = 65535;
             for (uint32_t first = 0; first < sceneRasterCommandCount; first += kChunk) {
                 const uint32_t count = std::min(kChunk, sceneRasterCommandCount - first);
                 cmd.DrawIndexedIndirect(
@@ -17478,13 +17505,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
                 if (cascadeShadowSlot[ci] != UINT32_MAX)
                     m_gfxRenderer.UploadShadowList(
-                        *m_context, fb.frameIndex, cascadeShadowSlot[ci]);
+                        *m_context, *m_rendergraph, fb.frameIndex, cascadeShadowSlot[ci]);
             for (uint32_t si = 0; si < spotSlotCount; ++si)
                 if (spotShadowSlot[si] != UINT32_MAX)
-                    m_gfxRenderer.UploadShadowList(*m_context, fb.frameIndex, spotShadowSlot[si]);
+                    m_gfxRenderer.UploadShadowList(
+                        *m_context, *m_rendergraph, fb.frameIndex, spotShadowSlot[si]);
             for (uint32_t fi = 0; fi < pointSlotCount; ++fi)
                 if (pointShadowSlot[fi] != UINT32_MAX)
-                    m_gfxRenderer.UploadShadowList(*m_context, fb.frameIndex, pointShadowSlot[fi]);
+                    m_gfxRenderer.UploadShadowList(
+                        *m_context, *m_rendergraph, fb.frameIndex, pointShadowSlot[fi]);
         }
     }
     const auto rfT4 = bench_clk::now();
@@ -17720,7 +17749,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             if (st.skinBoundsReady && fb.frameIndex < smvk::limits::MaxFramesInFlight &&
                 !st.skinBoundsBuffers[fb.frameIndex].empty()) {
                 // The skinned draws' slot ranges (the pass wrote exactly
-                // these): one covering span download.
+                // these): one covering span download. The bound is the
+                // table's RUNTIME candidate capacity (this flight's
+                // allocation — the dynamic cutover).
+                const uint32_t tableCap = st.skinBoundsCandidateCap[fb.frameIndex];
                 uint64_t minBase = UINT64_MAX, maxEnd = 0, slots = 0;
                 for (const smvk::gfx::Draw& d : v.drawConstants) {
                     if ((d.flags & smvk::gfx::DrawFlagBit_Skinned) == 0)
@@ -17728,7 +17760,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     if (d.candidateBase == UINT32_MAX || d.mesh >= st.meshes.size())
                         continue;
                     const uint64_t count = st.meshes[d.mesh].clusterCount;
-                    if (d.candidateBase + count > smvk::gfx::kMaxBatchSlots)
+                    if (d.candidateBase + count > tableCap)
                         continue;
                     minBase = std::min<uint64_t>(minBase, d.candidateBase);
                     maxEnd = std::max<uint64_t>(maxEnd, d.candidateBase + count);
@@ -17928,14 +17960,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     } else
                         std::fprintf(stderr, "[SkinDump] skinBounds download FAILED\n");
                 }
-                // The drawBound tail: the per-draw deformed unions.
-                std::vector<glm::vec4> tail(smvk::gfx::kMaxDraws);
+                // The drawBound tail: the per-draw deformed unions. The
+                // tail sits AFTER the table's runtime candidate-capacity
+                // cluster entries, sized by the runtime draw capacity
+                // (the dynamic cutover — the retired fixed offsets died
+                // with the fixed table).
+                const uint32_t tailCap = st.skinBoundsDrawCap[fb.frameIndex];
+                std::vector<glm::vec4> tail(tailCap);
                 if (m_context->DownloadDataFromBuffer(st.skinBoundsBuffers[fb.frameIndex],
                                                       tail.data(),
                                                       tail.size() * sizeof(glm::vec4),
-                                                      (size_t)smvk::gfx::kMaxBatchSlots *
+                                                      (size_t)st.skinBoundsCandidateCap[fb.frameIndex] *
                                                           sizeof(smvk::gfx::ClusterConstants))) {
-                    for (uint32_t di = 0; di < v.drawConstants.size() && di < smvk::gfx::kMaxDraws;
+                    for (uint32_t di = 0; di < v.drawConstants.size() && di < tail.size();
                          ++di) {
                         const smvk::gfx::Draw& d = v.drawConstants[di];
                         if ((d.flags & smvk::gfx::DrawFlagBit_Skinned) == 0)
