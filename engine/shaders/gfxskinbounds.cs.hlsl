@@ -74,7 +74,8 @@ groupshared float3 gsUnionMax[128];
 [numthreads(128, 1, 1)]
 void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
 {
-    const uint drawIdx = gid.x;
+    // Flatten the 2D Vulkan-minimum 65535x65535 group grid.
+    const uint drawIdx = gid.y * 65535u + gid.x;
     if (drawIdx >= pcS.drawCount || drawIdx >= GFX_MAX_DRAWS)
         return;
 
