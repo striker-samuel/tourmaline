@@ -180,6 +180,8 @@ struct WorkSelectPush {
     uint64_t choices = 0, counts = 0;
     alignas(16) glm::uvec4 limits{0u};
     glm::uvec4 limits2{0u};
+    glm::vec4 lodEyeBudget{0.0f};
+    glm::vec4 lodProjection{0.0f};
 };
 struct WorkPrefixPush {
     uint64_t counts = 0, offsets = 0;
@@ -189,8 +191,9 @@ struct WorkScatterPush {
     uint64_t choices = 0, offsets = 0, submeshes = 0, output = 0;
     alignas(16) glm::uvec4 limits{0u};
 };
-static_assert(sizeof(WorkSelectPush) == 96);
+static_assert(sizeof(WorkSelectPush) == 128);
 static_assert(offsetof(WorkSelectPush, limits) == 64);
+static_assert(offsetof(WorkSelectPush, lodEyeBudget) == 96);
 static_assert(sizeof(WorkPrefixPush) == 24);
 static_assert(sizeof(WorkScatterPush) == 48);
 static_assert(offsetof(WorkScatterPush, limits) == 32);
