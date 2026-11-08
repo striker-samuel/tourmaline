@@ -88,6 +88,24 @@ struct RasterVsPush {
 static_assert(sizeof(RasterViewData) == 96);
 static_assert(sizeof(RasterVsPush) == 32);
 
+// Same-frame GPU-scene Hi-Z gate. The raster work builder first publishes
+// frustum-visible commands; an occluder depth pass builds the reversed-Z
+// MIN pyramid; this compute pass zeros occluded command instance counts.
+// The view BDA is the same camera-relative RasterViewData as the raster VS.
+struct RasterHizCullPush {
+    uint64_t commands = 0;
+    uint64_t work = 0;
+    uint64_t instances = 0;
+    uint64_t view = 0;
+    uint64_t hiz = 0;
+    uint32_t commandCapacity = 0;
+    uint32_t instanceSlots = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t mips = 0;
+};
+static_assert(sizeof(RasterHizCullPush) == 64);
+
 // Push constants for the independent indirect raster command build kernel.
 struct RasterDrawBuildPush {
     uint64_t indexedGeometry = 0;
