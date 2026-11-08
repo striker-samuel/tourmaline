@@ -170,8 +170,8 @@ int main() {
         CHECK(!owners.BuildGenerationMask(
             std::span<uint32_t>(mask.data(), 3), find));
         CHECK(std::all_of(mask.begin(), mask.begin() + 3,
-                          [](uint32_t generation) { return generation == 0; }) ||
-              mask[2] == 31); // failed mask must never be published
+                          [](uint32_t generation) { return generation == 0; }));
+        // The caller must refuse publication after a failed build.
 
         CHECK(owners.OwnsLegacy({11, 2, 2})); // generation changed
         CHECK(owners.OwnsLegacy({99, 2, 1})); // unknown registration
