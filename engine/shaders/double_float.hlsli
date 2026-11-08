@@ -9,6 +9,7 @@
 // high/low encode an absolute double-precision world position as two
 // float32 terms. 2x float4 guarantees a simple 32-byte CPU/GPU stride.
 // .w is unused, zero-filled padding (not part of the position).
+// GPU_STRUCT_NAME(DoubleFloat3)
 struct DoubleFloat3 {
     float4 high;
     float4 low;
