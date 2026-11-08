@@ -12875,7 +12875,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }();
     if (s_gpuSceneTemporal && m_gpuSceneRasterDrawActive && temporalProgramsReady &&
         m_gfxFilterAvailable && temporalCommands != 0 && temporalSlots != 0 &&
-        temporalCommands <= 1048576u && temporalSlots <= 4194304u) {
+        temporalCommands <= 2u * 1048576u && temporalSlots <= 4194304u) {
         const uint32_t previousFlight = m_gpuSceneRasterLastHistoryFlight;
         gpuHistoryValid =
             previousFlight < smvk::limits::MaxFramesInFlight &&
