@@ -10941,6 +10941,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             {inst->refs.x, inst->refs.y});
                         if (!selectedMesh)
                             return false;
+                        if (selectedMesh->lodCount > 1) {
+                            if (item.mesh >= m_world->lodChains.size())
+                                return false;
+                            const auto& levels = m_world->lodChains[item.mesh].levels;
+                            if (levels.size() != selectedMesh->lodCount)
+                                return false;
+                            for (const auto& level : levels) {
+                                if (!level.boundsKnown ||
+                                    !tour::gpu_scene::RasterSphereContainsLodBounds(
+                                        inst->localSphere, level.boundsMin, level.boundsMax))
+                                    return false;
+                            }
+                        }
                         for (uint32_t level = 0; level < selectedMesh->lodCount; ++level) {
                             if (!(selectedMesh->residentMask & (1u << level)))
                                 continue;
