@@ -155,6 +155,40 @@ static void DeferFreeIndexRegion(ResourceManager& ctx, uint64_t& allocBits) {
     }));
 }
 
+// Lifetime-safe replacement: allocate + register the new external resource
+// FIRST, then retire the previous logical and physical buffers. Caller only
+// invokes this after acquiring the flight's fence.
+static bool ReplaceFlightBuffer(ResourceManager& ctx,
+                                RenderGraph& rg,
+                                smvk::Holder<smvk::BufferHandle>& holder,
+                                smvk::LogicalBufferHandle& logical,
+                                size_t bytes,
+                                const char* name) {
+    if (bytes == 0)
+        bytes = sizeof(uint32_t);
+    auto fresh = ctx.CreateGpuSceneBuffer(bytes, name);
+    if (fresh.empty())
+        return false;
+    auto freshLogical = rg.AddExternalBuffer(fresh, name);
+    if (freshLogical.empty())
+        return false;
+    if (!logical.empty())
+        rg.FreeBuffer(logical);
+    logical = freshLogical;
+    holder = std::move(fresh);
+    return true;
+}
+
+// Split workgroups across the guaranteed Vulkan 65535-wide X dimension.
+// Shader indices are x + y*65535 (one group/draw or batch) or
+// thread.x + thread.y*65535*threadsPerGroup (one thread/draw).
+static std::pair<uint32_t, uint32_t> DispatchGrid(uint32_t items, uint32_t threads) {
+    constexpr uint32_t kMaxX = 65535u;
+    const uint64_t groups = (uint64_t(items) + threads - 1u) / threads;
+    return {uint32_t((std::min)(groups, uint64_t(kMaxX))),
+            uint32_t((groups + kMaxX - 1u) / kMaxX)};
+}
+
 static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
     for (uint32_t f = 0; f < doneFrames; ++f) {
         if (!v.batchLogicals[f].empty())
