@@ -158,9 +158,12 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // flight's mask records its exact generation. A retired/recycled slot
     // or a legacy-owned (including skinned) source emits no GPU work.
     // Validation mode has a null owner pointer and retains its full oracle.
-    if (pcS.counts2.w != 0u &&
-        pcS.ownerGenerations.Get().generations[instanceId] != instanceGen)
-        return;
+    // Explicit control flow, not a logical && expression: validation
+    // leaves the pointer null and must never issue an owner-mask load.
+    if (pcS.counts2.w != 0u) {
+        if (pcS.ownerGenerations.Get().generations[instanceId] != instanceGen)
+            return;
+    }
 
     // Unknown/incomplete mesh bounds: fail OPEN, not invisible.
     bool bypass = true;
