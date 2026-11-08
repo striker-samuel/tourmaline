@@ -11228,6 +11228,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // This is an owned empty Main pass, not a failed admission:
             // avoid rebuilding all CPU GfxFilter draws for an empty view.
             if (gpuSceneRasterMode && selected.Valid() && selected.candidateCount == 0) {
+                m_gpuSceneRasterOwnership.CommitGpuPrepared();
                 m_gpuSceneRasterDrawActive = true;
                 m_gpuSceneRasterDrawCapacity = 0;
                 m_gpuSceneRasterWorkBda = 0;
@@ -11309,7 +11310,69 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                         indirectArgs,
                                                         indirectVerify,
                                                         indirectBuffer);
+                // The admitted generation is a *per-flight* GPU input:
+                // no per-draw CPU work and no draw-order-dependent bitset.
+                // A rejected source or recycled slot has generation zero.
+                bool ownerMaskReady = !gpuSceneRasterMode;
                 if (gpuSceneRasterMode && rasterReady) {
+                    const uint32_t flight = fb.frameIndex;
+                    const size_t slots = m_gpuSceneDatabase.instances.Size();
+                    constexpr size_t kMaskPageRows = 65536u / sizeof(uint32_t);
+                    const size_t pages = (slots + kMaskPageRows - 1) / kMaskPageRows;
+                    const size_t requiredCapacity = pages * kMaskPageRows;
+                    auto* generations = static_cast<uint32_t*>(
+                        smvk::FrameArena().Allocate(
+                            slots * sizeof(uint32_t), alignof(uint32_t)));
+                    ownerMaskReady = generations &&
+                        m_gpuSceneRasterOwnership.BuildGenerationMask(
+                            std::span<uint32_t>(generations, slots),
+                            [this](tour::gpu_scene::SourceKey key) {
+                                return m_gpuSceneSync.Find(key);
+                            });
+                    if (ownerMaskReady &&
+                        (m_gpuSceneRasterOwnerMaskBuffers[flight].empty() ||
+                         m_gpuSceneRasterOwnerMaskCapacity[flight] < requiredCapacity)) {
+                        auto next = m_context->CreateGpuSceneBuffer(
+                            requiredCapacity * sizeof(uint32_t),
+                            "GPU scene raster owner generations");
+                        if (next.empty())
+                            ownerMaskReady = false;
+                        else {
+                            m_gpuSceneRasterOwnerMaskBuffers[flight] = std::move(next);
+                            m_gpuSceneRasterOwnerMaskCapacity[flight] = requiredCapacity;
+                        }
+                    }
+                    if (ownerMaskReady) {
+                        const auto maskHandle =
+                            smvk::BufferHandle(m_gpuSceneRasterOwnerMaskBuffers[flight]);
+                        const uint64_t maskBda =
+                            m_context->GetBufferDeviceAddress(maskHandle);
+                        ownerMaskReady = maskBda != 0 && !maskHandle.empty();
+                        if (ownerMaskReady &&
+                            m_gpuSceneRasterOwnerMaskLogicalBacking[flight] != maskHandle) {
+                            if (!m_gpuSceneRasterOwnerMaskLogical[flight].empty())
+                                m_rendergraph->FreeBuffer(
+                                    m_gpuSceneRasterOwnerMaskLogical[flight]);
+                            m_gpuSceneRasterOwnerMaskLogical[flight] =
+                                m_rendergraph->AddExternalBuffer(
+                                    maskHandle, "GpuSceneOwnerGenerations");
+                            m_gpuSceneRasterOwnerMaskLogicalBacking[flight] = maskHandle;
+                        }
+                        ownerMaskReady = ownerMaskReady &&
+                            !m_gpuSceneRasterOwnerMaskLogical[flight].empty();
+                        if (ownerMaskReady) {
+                            m_context->UploadDataToBuffer(
+                                maskHandle,
+                                generations,
+                                slots * sizeof(uint32_t),
+                                smvk::PipelineStageBit_Compute,
+                                smvk::AccessFlags::ShaderRead);
+                            gpuPush.ownerGenerations = maskBda;
+                            gpuPush.counts2.w = 1u;
+                        }
+                    }
+                }
+                if (gpuSceneRasterMode && rasterReady && ownerMaskReady) {
                     // Per-flight buffer ownership is in CandidateValidator;
                     // only the rendergraph logical references live here.
                     const uint32_t flight = fb.frameIndex;
@@ -11388,6 +11451,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     write.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
                     pass.AddBufferHint(m_gpuSceneRasterIndirectLogical[fb.frameIndex], write);
                     pass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], write);
+                    smvk::BufferSyncRequest ownerRead{};
+                    ownerRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                    ownerRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+                    pass.AddBufferHint(
+                        m_gpuSceneRasterOwnerMaskLogical[fb.frameIndex], ownerRead);
                 }
                 // ShaderProgram copies must be mutable for BindComputePipeline.
                 auto program = m_gpuSceneCullProgram;
