@@ -249,6 +249,21 @@ void CheckSubmeshWorkExpansion() {
     CHECK(ReferenceExpandWork(db, visible).empty());
 }
 
+void CheckRasterPsoBins() {
+    const IndexedGeometry geometry{36u, 72u, -5, 0u};
+    const auto front = MakeRasterBinnedCommand(geometry, 7u, 0u, 0u);
+    const auto noCull = MakeRasterBinnedCommand(geometry, 8u, 1u, 1u);
+    const auto excludedFront = MakeRasterBinnedCommand(geometry, 7u, 0u, 1u);
+    const auto excludedNoCull = MakeRasterBinnedCommand(geometry, 8u, 1u, 0u);
+    CHECK(front.indexCount == 36u && front.instanceCount == 1u &&
+          front.firstIndex == 72u && front.vertexOffset == -5 &&
+          front.firstInstance == 7u);
+    CHECK(noCull.instanceCount == 1u && noCull.firstInstance == 8u);
+    CHECK(excludedFront.indexCount == 0u && excludedFront.instanceCount == 0u);
+    CHECK(excludedNoCull.indexCount == 0u && excludedNoCull.instanceCount == 0u);
+    CHECK(MakeRasterBinnedCommand(geometry, 9u, 2u, 0u).instanceCount == 0u);
+}
+
 void CheckProjectedErrorWorkSelection() {
     RenderDatabase db{};
     const std::array<Submesh, 3> subs{{Submesh{10u, 0u, 0u, 0u},
@@ -355,6 +370,7 @@ int main() {
     CheckIndirectAndAuthoritativeView();
     CheckSubmeshWorkExpansion();
     CheckProjectedErrorWorkSelection();
+    CheckRasterPsoBins();
     CheckLegacyRebasing();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
