@@ -455,7 +455,7 @@ void ForwardPlusRenderer::AppendGpuScenePrepass(
                 0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
             cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
                               sizeof(vertexPush), &vertexPush, smvk::ShaderStage::All);
-            constexpr uint32_t kChunk = smvk::gfx::kMaxDraws;
+            constexpr uint32_t kChunk = 65535u;
             for (uint32_t first = 0; first < commandCount; first += kChunk) {
                 const uint32_t n = std::min(kChunk, commandCount - first);
                 cmd.DrawIndexedIndirect(
