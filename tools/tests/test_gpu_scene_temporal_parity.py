@@ -33,6 +33,18 @@ class WitnessTests(unittest.TestCase):
         self.assertEqual(mod.witness_count("[GfxFilter] dispatch ok\n"), 0)
 
 
+class RunConfigWarningTests(unittest.TestCase):
+    def test_typo_warning_invalidates_capture(self):
+        log = ("[GpuSceneTemporal] engaged: commands=3502\\n"
+               "[RunConfig] unknown TOURMALINE_* var (typo?): "
+               "TOURMALINE_CULL_FLAGS\\n")
+        self.assertTrue(mod.has_unknown_runconfig_pin(log))
+
+    def test_clean_log_does_not_invalidate_capture(self):
+        self.assertFalse(mod.has_unknown_runconfig_pin(
+            "[GpuSceneTemporal] engaged: commands=3502 hiz=12\\n"))
+
+
 class LegPinTests(unittest.TestCase):
     def test_on_legs_carry_no_extra_pins(self):
         self.assertEqual(mod.leg_pins("on-a", {}, "0x20b"), {})
