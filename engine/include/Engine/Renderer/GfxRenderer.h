@@ -528,6 +528,12 @@ struct GfxRenderer : public smvk::IFrameRenderer {
         cullView_ = viewIndex;
         cullEye_ = eye;
     }
+    // Main-view only: omit GPU-owned static opaque nodes from the
+    // legacy filtered batch/seed/remainder chain. Shadow views still
+    // consume every caster until GPU-scene per-light passes exist.
+    void SetGpuRasterOwnership(std::function<bool(NodeId)> owns) {
+        gpuRasterOwnsNode_ = std::move(owns);
+    }
     void ClearCullOverride() {
         cullOverride_ = false;
     }
@@ -959,6 +965,7 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     std::vector<std::vector<uint32_t>> lodMeshMap_;
     // Debug culling-freeze override (see SetCullOverride). Read once per
     // AppendPasses for the FilterMainView call only.
+    std::function<bool(NodeId)> gpuRasterOwnsNode_{};
     bool cullOverride_ = false;
     uint32_t cullView_ = UINT32_MAX;
     glm::vec3 cullEye_{0.0f};

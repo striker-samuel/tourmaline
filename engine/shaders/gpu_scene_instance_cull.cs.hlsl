@@ -30,6 +30,9 @@ struct GpuScenePassedRanges {
 struct GpuSceneCullVerdicts {
     GpuSceneCullVerdict values[GPU_SCENE_MAX_CANDIDATES];
 };
+struct GpuSceneOwnerGenerations {
+    uint generations[GPU_SCENE_MAX_ROW_SLOTS];
+};
 struct GpuSceneLeaves {
     GpuSceneLeafRow rows[GPU_SCENE_MAX_ROW_SLOTS];
 };
@@ -56,7 +59,8 @@ struct GpuSceneInstanceCullPush {
     GPU_PTR_READ(GpuSceneCullView) view;
     GPU_PTR_WRITE(GpuSceneCullVerdicts) verdicts;
     uint4 counts; // x rangeCount, y candidateCount, z memberSlots, w instanceSlots
-    uint4 counts2; // x leafSlots, y meshSlots, z viewValid (0=passthrough), w spare
+    uint4 counts2; // x leafSlots, y meshSlots, z viewValid (0=passthrough), w owner-mask enabled
+    GPU_PTR_READ(GpuSceneOwnerGenerations) ownerGenerations; // null in CPU oracle mode
 };
 GPU_PUSH(GpuSceneInstanceCullPush, pcS);
 
@@ -149,6 +153,17 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (instance.identity.y != 1u ||
         instance.identity.x != instanceGen)
         return;
+
+    // Production GPU Main only: a slot is admitted if and only if this
+    // flight's mask records its exact generation. A retired/recycled slot
+    // or a legacy-owned (including skinned) source emits no GPU work.
+    // Validation mode has a null owner pointer and retains its full oracle.
+    // Explicit control flow, not a logical && expression: validation
+    // leaves the pointer null and must never issue an owner-mask load.
+    if (pcS.counts2.w != 0u) {
+        if (pcS.ownerGenerations.Get().generations[instanceId] != instanceGen)
+            return;
+    }
 
     // Unknown/incomplete mesh bounds: fail OPEN, not invisible.
     bool bypass = true;

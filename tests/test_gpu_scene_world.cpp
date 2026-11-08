@@ -5,6 +5,7 @@
 #include <Engine/Renderer/gpu_scene_pages.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
+#include <Engine/Renderer/gpu_scene_raster_ownership.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Scene/scene.h>
@@ -123,6 +124,9 @@ int main() {
         WorldSynchronizer sync{};
         const auto first = sync.Synchronize(world, snapshot, 1);
         CHECK(first.topologyReconciled && first.geometryRefreshed);
+        CHECK(!sync.SourceForNode(0).registration);
+        CHECK(sync.SourceForNode(UINT32_MAX).slot == InvalidIndex);
+
         const auto unchanged = sync.Synchronize(world, snapshot, 1);
         CHECK(!unchanged.topologyReconciled && !unchanged.geometryRefreshed);
         const auto geometryOnly = sync.Synchronize(world, snapshot, 2);
@@ -132,6 +136,74 @@ int main() {
         ++world.gpuSceneTopologyRevision;
         const auto topology = sync.Synchronize(world, snapshot, 2);
         CHECK(topology.topologyReconciled);
+    }
+    // Canonical static-source ownership, independent of drawItems sort order.
+    // Admission never commits ownership until the GPU work is prepared.
+    {
+        RasterOwnershipEntry entries[] = {
+            {{22, 5, 1}, false},
+            {{11, 2, 1}, true},
+            {{11, 8, 1}, true},
+        };
+        CanonicalRasterOwnership owners;
+        CHECK(owners.Publish(entries));
+        CHECK(owners.Valid() && owners.Size() == 3);
+        CHECK(owners.OwnsLegacy({11, 2, 1}));
+        owners.CommitGpuPrepared();
+        CHECK(owners.OwnsGpu({11, 2, 1}));
+        CHECK(owners.OwnsGpu({11, 8, 1}));
+        CHECK(owners.OwnsLegacy({22, 5, 1}));
+        // The GPU mask is indexed by *persistent instance slot*, not
+        // draw-order. Only compatible rows carry their exact generation.
+        std::array<uint32_t, 9> mask{};
+        const auto find = [](SourceKey key) -> Handle<Instance> {
+            if (key == SourceKey{11, 2, 1}) return {7, 19};
+            if (key == SourceKey{11, 8, 1}) return {2, 31};
+            if (key == SourceKey{22, 5, 1}) return {4, 9};
+            return {};
+        };
+        CHECK(owners.BuildGenerationMask(mask, find));
+        CHECK(mask[7] == 19 && mask[2] == 31);
+        CHECK(mask[4] == 0 && mask[0] == 0);
+        mask[7] = 100;
+        CHECK(owners.BuildGenerationMask(mask, find) && mask[7] == 19);
+        CHECK(!owners.BuildGenerationMask(
+            std::span<uint32_t>(mask.data(), 3), find));
+        CHECK(std::all_of(mask.begin(), mask.begin() + 3,
+                          [](uint32_t generation) { return generation == 0; }));
+        // The caller must refuse publication after a failed build.
+
+        CHECK(owners.OwnsLegacy({11, 2, 2})); // generation changed
+        CHECK(owners.OwnsLegacy({99, 2, 1})); // unknown registration
+        owners.BeginFrame(); // publication / pipeline failed on next flight
+        CHECK(!owners.GpuActive() && owners.OwnsLegacy({11, 2, 1}));
+        owners.CommitGpuPrepared();
+        CHECK(owners.OwnsGpu({11, 2, 1}));
+        // A dirty topology publication takes ownership back immediately.
+        RasterOwnershipEntry next[] = {
+            {{11, 2, 2}, true},
+            {{22, 5, 1}, false},
+        };
+        CHECK(owners.Publish(next));
+        CHECK(owners.OwnsLegacy({11, 2, 2})); // until next GPU commit
+        owners.CommitGpuPrepared();
+        CHECK(owners.OwnsGpu({11, 2, 2}));
+        CHECK(owners.OwnsLegacy({11, 2, 1}));
+        CHECK(owners.OwnsLegacy({22, 5, 1}));
+        RasterOwnershipEntry duplicates[] = {
+            {{33, 1, 1}, true}, {{33, 1, 1}, false},
+        };
+        CHECK(!owners.Publish(duplicates));
+        owners.CommitGpuPrepared();
+        CHECK(!owners.GpuActive() && owners.OwnsLegacy({33, 1, 1}));
+        CHECK(!owners.BuildGenerationMask(mask, find));
+        CHECK(std::all_of(mask.begin(), mask.end(),
+                          [](uint32_t generation) { return generation == 0; }));
+        RasterOwnershipEntry invalid[] = {{{0, 1, 1}, true}};
+        CHECK(!owners.Publish(invalid));
+        CHECK(owners.OwnsLegacy({0, 1, 1}));
+        owners.Reset();
+        CHECK(!owners.Valid() && owners.Size() == 0);
     }
     RenderDatabase db{};
     SceneRegistry bridge{};
@@ -194,22 +266,27 @@ int main() {
     const auto current = bridge.Find(reloaded.instance);
     const auto meshKey = bridge.FindMesh(reloaded.mesh);
     CHECK(!InstanceDrawReady(db, current));
+    CHECK(!RasterIndexedInstanceReady(db, current));
     const LevelSource missingBounds{0.0f, 7u, true, false};
     CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&missingBounds, 1), false, db));
     CHECK(!InstanceDrawReady(db, current));
+    CHECK(RasterIndexedInstanceReady(db, current)); // bounds conservatively bypassed
     const LevelSource readyLevel{0.0f, 7u, true, true};
     CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&readyLevel, 1), true, db));
     CHECK(InstanceDrawReady(db, current));
+    CHECK(RasterIndexedInstanceReady(db, current));
     auto corrupted = *db.instances.Get(current);
     corrupted.refs.y += 1; // stale mesh generation
     CHECK(db.instances.Update(current, corrupted));
     CHECK(!InstanceDrawReady(db, current));
+    CHECK(!RasterIndexedInstanceReady(db, current));
     corrupted.refs.y = meshKey.generation;
     CHECK(db.instances.Update(current, corrupted));
     CHECK(InstanceDrawReady(db, current));
     const LevelSource evicted{0.0f, InvalidIndex, false, true};
     CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&evicted, 1), true, db));
     CHECK(!InstanceDrawReady(db, current));
+    CHECK(!RasterIndexedInstanceReady(db, current));
 
     bridge.Clear(db);
     CHECK(db.instances.LiveCount() == 0 && db.meshes.LiveCount() == 0);

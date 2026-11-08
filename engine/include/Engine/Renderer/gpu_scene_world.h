@@ -525,6 +525,12 @@ class WorldSynchronizer {
     [[nodiscard]] SceneRegistry::InstanceId Find(SourceKey k) const {
         return registry_.Find(k);
     }
+    // Canonical cluster-local source identity for a merged World node.
+    // Only valid for the current topology revision; callers must never
+    // persist the merged NodeId itself as an ownership key.
+    [[nodiscard]] SourceKey SourceForNode(NodeId node) const noexcept {
+        return node < nodeKeyCount_ ? nodeKeys_[node] : SourceKey{};
+    }
 
   private:
     uint32_t PublishGeometry(World& world, RenderDatabase& db, const GeometryLookup& geometryLookup) {

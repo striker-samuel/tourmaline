@@ -53,6 +53,7 @@
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
+#include <Engine/Renderer/gpu_scene_raster_ownership.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/ray_tracing_debug.h>
@@ -2390,6 +2391,36 @@ class WorldRenderer : public IRenderer {
         m_gpuSceneVerdictLogicalBacking{};
     std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
         m_gpuSceneVerdictLogical{};
+    // Canonical source-key admission table (AppArena-owned records). The
+    // mixed renderer will use this same mapping for complementary GPU and
+    // legacy submission. Until those submission masks are connected, the
+    // existing whole-world opt-in guard remains authoritative.
+    tour::gpu_scene::CanonicalRasterOwnership m_gpuSceneRasterOwnership;
+    tour::gpu_scene::RasterOwnershipEntry* m_gpuSceneRasterEntries = nullptr;
+    size_t m_gpuSceneRasterEntryCapacity = 0;
+    // One immutable generation mask per acquired flight. A zero entry is
+    // legacy-owned; other entries are admitted instance generations. Its
+    // BDA is an extra compute input, never a second draw source.
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskBuffers{};
+    std::array<size_t, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskCapacity{};
+    std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskLogicalBacking{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskLogical{};
+    // Reuse unchanged flight snapshots: transform dirties update instance
+    // rows, not source-to-raster ownership. Only topology/geometry changes
+    // rebuild the generation array, so steady-state mask uploads are O(0).
+    std::array<const smvk::World*, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskWorld{};
+    std::array<uint64_t, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskTopologyRev{};
+    std::array<uint64_t, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterOwnerMaskGeometryRev{};
+
+    uint32_t m_gpuSceneRasterCompatibleCount = 0;
+    uint32_t m_gpuSceneRasterLegacyCount = 0;
     // Prototype production cutover: only all-supported static/opaque scenes
     // may substitute their Main draws. Unsupported content uses GfxFilter.
     const smvk::World* m_gpuSceneRasterEligibilityWorld = nullptr;

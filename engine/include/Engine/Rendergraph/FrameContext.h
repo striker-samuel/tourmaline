@@ -47,6 +47,13 @@ struct AppFrameContext : public smvk::FrameContext {
     // T3: the GfxRenderer seeded depth this frame (prepass must Load the
     // seed instead of Clearing). Set by main after gfx AppendPasses.
     bool seedDepthPrimed = false;
+    // Canonical GPU raster owner for Main and prepass only. Empty when the
+    // opt-in GPU raster did not prepare this flight. A skinned source remains
+    // on the existing GPU-skinned legacy path.
+    std::function<bool(NodeId)> gpuRasterOwnsNode{};
+    // GPU raster depth (and optional thin G-buffer) has already been
+    // appended and cleared the targets; complementary legacy prepass Loads.
+    bool gpuSceneDepthPrimed = false;
     // Error-driven LOD (see Engine/Asset/mesh_optimizer.h): selection
     // inputs shared by every consumer this frame (prepass, main, gfx
     // filter). World::LodIndexForNode keys its halfrate parity cache on
