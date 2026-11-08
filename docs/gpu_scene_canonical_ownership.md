@@ -1,61 +1,94 @@
-# Phase 2: canonical static-object raster ownership (draft)
+# Phase 2: canonical GPU/legacy raster ownership
 
-This is an incremental step after merged PR #275, **not** a completed mixed
-GPU/CPU rendering cutover. The live renderer still uses #275's whole-scene
-eligibility and `TOURMALINE_GPU_SCENE_RASTER=1` opt-in.
+## Status
 
-## Canonical identity
+The production **mixed static-opaque GPU + legacy raster handoff is now wired**
+behind the unchanged `TOURMALINE_GPU_SCENE_RASTER=1` opt-in. This document
+records the implementation contract and outstanding verification. The PR
+must stay draft until Vulkan scene parity and its compiler/tests pass.
 
-A static object is identified by the source cluster's registration, local
-node slot and node generation (`gpu_scene::SourceKey`). Neither a transient
-`World::drawItems` array index nor a merged scene node ID may be used as an
-owner key. `CanonicalRasterOwnership` is a fail-closed CPU contract:
+This is *Main and Forward+ depth/G-buffer ownership*, not GPU shadows,
+motion-vector cutover, or full GPU-scene material/skinning parity. Shadow
+casters and motion-vector rendering still use their existing paths. GPU
+skinning is already supported in Tourmaline; skinned objects deliberately
+remain on the GPU-skinned legacy Main/prepass path.
 
-- The caller publishes a complete, sorted source snapshot in durable storage
-  (AppArena is the intended owner of the underlying span).
-- Duplicate/invalid source keys make the entire publication invalid.
-- Per-source compatibility is *admission*, not proof of rendering ownership.
-- Each frame begins legacy-owned. Only a successful GPU preparation for the
-  required graphics passes may commit eligible entries to GPU ownership.
-- Unknown/stale generation keys, incompatible entries, invalid publication or
-  GPU preparation failure remain legacy-owned.
+## Source identity and admission
 
-The table is a non-owning view: callers **must** keep its storage alive until
-the next publication/reset and must never mutate entries while queried.
+Static renderable identities are cluster registration + cluster-local node
+slot + generation (`SourceKey`), not transient merged `NodeId` or sorted
+`World::drawItems` indices. `WorldSynchronizer::SourceForNode` provides
+the mapping. Compatibility records live in AppArena and are republished
+on scene/topology/geometry revisions; dirty global transforms use the
+existing `WorldSynchronizer` journal. Duplicate/invalid source identities
+fail the entire raster admission closed.
 
-## Why this PR cannot yet activate mixed draw submission
+Only single-surface, static opaque, single-LOD, indexed-resident objects
+with the supported default material path qualify. Skinned, masked,
+transparent, layered, lightmapped, project-lit and dither-closeup subtrees
+remain legacy-owned. Unknown conservative bounds alone do not disqualify
+a physically resident mesh: GPU instance/leaf culling fails open in that
+case. Unsupported objects stay on the original GfxFilter/direct paths.
 
-#275's GPU culling/work-expansion stream currently processes the entire
-GPU-scene database, while GfxFilter and the Forward+ prepass are suppressed
-at the *whole-scene* boundary. Merely omitting CPU direct draws for entries
-in an ownership table would duplicate or drop renderables: both the GPU
-candidate stream and legacy filtered ranges must be masked by the SAME
-immutable per-flight ownership snapshot.
+## Exactly-once Main and depth
 
-The remaining integration must land atomically, with:
+Every acquired flight builds an *immutable* GPU owner mask indexed by
+persistent instance slot, holding either the exact live generation or 0
+for legacy ownership. The GPU instance cull reads the additional BDA
+only in raster mode and refuses non-matching generations **before**
+visible verdict publication. Validation mode uses a disabled mask and
+retains the full CPU/GPU oracle.
 
-1. Source-key-derived admission tags in persistent GPU instance rows,
-   including stable generation and dirty-journal publication.
-2. A GPU cull/work filter that emits work **only** for admitted and
-   GPU-owned source instances. Old flight snapshots remain immutable.
-3. A legacy filter/batch builder and direct-draw predicate that emit only
-   legacy-owned sources, including fallback-only and occluder depth paths.
-4. A prepass/G-buffer layout that composes both sets without duplicate
-   clears; material incompatibility stays in legacy.
-5. A transactional frame gate: if either GPU preparation or required
-   pass pipeline fails, reclaim **all** objects for legacy before any draw.
-6. Renderer-level mixed-scene regression and Vulkan visual parity tests.
+On the CPU, one `CanonicalRasterOwnership` snapshot supplies the
+complementary decision to:
 
-**Do not remove the whole-world guard or enable mixed mode using this
-contract alone.** Default and opt-in behavior are unchanged until all six
-conditions are implemented and verified.
+- GfxFilter's Main-view batch/temporal seed and remainder producer.
+- The direct opaque Main fallback.
+- The Forward+ legacy depth and thin G-buffer writer.
 
-## Separate legacy GfxFilter capacity follow-up
+GPU indexed depth clears the target once (or Loads a GfxFilter seed).
+Legacy depth then Loads both depth and G-buffer and draws only
+legacy-owned objects. If the GPU depth variant is missing, legacy depth
+draws the full scene rather than leaving an uninitialized gap. The
+Northlight split is disabled while mixed GPU raster is active; legacy
+filter compute can still cull its own subset.
 
-GitHub Issues are disabled. Track dynamic GfxFilter capacity work after #278:
-replace kMaxDraws=65535 and kMaxBatchSlots=262144 FATAL limits with
-per-view/per-flight growable buffer-device-address, count, and capacity.
-Update dependent draw, candidate, indirect, kept-bit, GPU skinning bounds,
-seed/remainder buffers, HLSL offsets, and dispatch indexing together.
-The separate kMaxBatches=65536 filtered-index survivor ring needs its own
-capacity treatment. Do not gate Phase 2 ownership on this work.
+All ownership commits happen **after** required GPU compute/raster
+buffers, mask upload and RenderGraph dependencies are prepared. Any
+failure leaves legacy ownership for every source and suppresses
+unmasked GPU work. Empty coarse-frustum selections commit ownership
+without creating GPU draws (no candidate is on-screen).
+
+## Flight and memory lifetime
+
+The mask is per acquired flight, not mutated while its GPU work is in
+flight. Rows are allocated in FrameArena for immediate transfer into a
+retire-safe ResourceManager Holder. GPU buffers are 64 KiB capacity-
+page-rounded and go through #278's VMA-pool creation path. A resize
+rebinds the RenderGraph's external logical buffer and retires the old
+physical buffer through the engine's existing deferred-destroy path.
+The compute pass declares an explicit read dependency on the mask.
+
+The CPU compatibility snapshot is AppArena-backed and sorted in place
+once per topology/geometry refresh. Its storage is not mutated between
+publication and command recording. A new acquired frame starts legacy-
+owned; only a successful GPU work preparation commits admission.
+
+## Validation gates before merge
+
+- [ ] Windows/MSVC and Linux/Clang compilation, shader cook and C++ tests
+- [ ] GPU/CPU validator parity across multi-flight source retire/reuse
+- [ ] Raster opt-in screenshot parity: static-only, then static + skinned,
+      masked/transparent, layered/lightmap/project-lit and mixed LOD scenes
+- [ ] Forward+ thin G-buffer parity, shadow map and motion-vector continuity
+- [ ] Vulkan validation: no new VUIDs or device faults
+- [ ] Large-scene frame-time, memory/command-budget and visual profiling
+
+## Separate capacity work (not a Phase 2 blocker)
+
+GitHub Issues are disabled for the repository. Track dynamic GfxFilter
+`kMaxDraws=65535` and `kMaxBatchSlots=262144` as a follow-up: change
+dependent buffers, shaders, skinning bounds and temporal arrays together
+to per-flight growable BDA/count/capacity, with multidimensional/chunked
+dispatch for device workgroup limits. The separate `kMaxBatches=65536`
+filtered-index survivor ring requires its own capacity policy.
