@@ -199,6 +199,11 @@ static_assert(sizeof(HzbSpdPush) == 104);
     return true;
 }
 
+[[nodiscard]] inline uint64_t HizAddress(
+    const HizResources& hz, smvk::ResourceManager& ctx) {
+    return hz.buffer.empty() ? 0u : ctx.GetBufferDeviceAddress(hz.buffer);
+}
+
 // A reusable graph edge for any consumer building a reversed-Z pyramid.
 // Mip zero reads depth; later mips only read/write the buffer.
 inline void AddHizBuildHints(smvk::RenderPass& pass,
