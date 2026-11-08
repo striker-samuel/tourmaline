@@ -10756,11 +10756,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_VALIDATE");
         return e && std::strcmp(e, "1") == 0;
     }();
-    // Deliberately opt-in until all production pass/material variants match.
-    // Validation remains separate; do not mix CPU readback with GPU raster.
+    // GPU-scene raster is the default for compatible static-opaque sources.
+    // Incompatible layered, masked, skinned, lightmapped or project-lit
+    // content stays on the existing legacy/GPU-skinned raster path. The
+    // diagnostic CPU readback remains independently opt-in. Explicit
+    // TOURMALINE_GPU_SCENE_RASTER=0 disables the new path for A/B bisects.
     static const bool s_gpuSceneRaster = [] {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_RASTER");
-        return e && std::strcmp(e, "1") == 0;
+        return !e || std::strcmp(e, "0") != 0;
     }();
     if (s_gpuSceneRaster && m_gpuSceneRasterProgram.shaderCount != 2) {
         try {
@@ -11619,7 +11622,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneRasterDrawActive != m_gpuSceneRasterPreviouslyActive) {
         std::fprintf(stderr,
                      "[GpuSceneRaster] %s admittedStatic=%u legacySources=%u"
-                     " candidates/maxCommands=%u (opt-in indexed Main)\n",
+                     " candidates/maxCommands=%u (default indexed Main)\n",
                      !m_gpuSceneRasterDrawActive ? "fallback"
                      : m_gpuSceneRasterLegacyCount ? "mixed" : "active",
                      m_gpuSceneRasterDrawActive ? m_gpuSceneRasterCompatibleCount : 0u,
