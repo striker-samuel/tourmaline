@@ -223,4 +223,27 @@ inline void AddHizBuildHints(smvk::RenderPass& pass,
         pass.AddImageHint(depth, req);
     }
 }
+// Optional pass shells used by GfxFilter and GPU-scene. The caller chooses
+// a shader program and records it; visibility owns only dependencies.
+inline smvk::RenderPass& AddHizMipPass(
+    smvk::RenderGraph& rg, const HizResources& hz, uint32_t dstMip,
+    smvk::LogicalImageViewHandle depth, const char* passName) {
+    smvk::RenderPass& pass = rg.AddComputePass(passName);
+    AddHizBuildHints(pass, hz.logical, depth, dstMip == 0u);
+    return pass;
+}
+inline smvk::RenderPass& AddHizSpdPass(
+    smvk::RenderGraph& rg, const HizResources& hz,
+    smvk::LogicalBufferHandle counter,
+    smvk::LogicalImageViewHandle depth, const char* passName) {
+    smvk::RenderPass& pass = rg.AddComputePass(passName);
+    AddHizBuildHints(pass, hz.logical, depth, true);
+    smvk::BufferSyncRequest counterRW{};
+    counterRW.barrierMasks.accessMask =
+        smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+    counterRW.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+    pass.AddBufferHint(counter, counterRW);
+    return pass;
+}
+
 } // namespace tour::visibility
