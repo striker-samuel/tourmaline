@@ -10766,6 +10766,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 .stage = smvk::ShaderStage::Fragment};
                 m_gpuSceneRasterProgram = {.shaders = {vs, fs}, .shaderCount = 2};
                 m_gpuSceneRasterDepthProgram = {.shaders = {vs}, .shaderCount = 1};
+                if (m_gpuSceneRasterGbufferFsModule.empty())
+                    m_gpuSceneRasterGbufferFsModule = m_context->CreateShaderModule(
+                        smvk::shaders::Read(
+                            "content/shaders/gpu_scene_gbuffer.frag.hlsl.spv"),
+                        "gpuSceneRasterGbufferFS");
+                if (!m_gpuSceneRasterGbufferFsModule.empty()) {
+                    smvk::Shader gbFs{.module = m_gpuSceneRasterGbufferFsModule,
+                                      .entryPoint = "mainPS",
+                                      .stage = smvk::ShaderStage::Fragment};
+                    m_gpuSceneRasterGbufferProgram =
+                        {.shaders = {vs, gbFs}, .shaderCount = 2};
+                }
             }
         } catch (...) {
             static bool logged = false;
@@ -12796,8 +12808,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // writer; until the GPU material-ID variant is wired, use the
             // legacy prepass for those frames instead of stale G-buffer data.
             if (m_gpuSceneRasterDrawActive &&
-                m_gpuSceneRasterDepthProgram.shaderCount == 1 &&
-                !fc.ssrGbufferWanted) {
+                (fc.ssrGbufferWanted
+                     ? m_gpuSceneRasterGbufferProgram.shaderCount == 2
+                     : m_gpuSceneRasterDepthProgram.shaderCount == 1)) {
                 const uint32_t flight = fb.frameIndex;
                 const tour::gpu_scene::RasterVsPush tail{
                     m_gpuSceneRasterWorkBda,
@@ -12806,7 +12819,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneDatabase.instances.Size(),
                     m_gpuSceneRasterDrawCapacity};
                 m_fpRenderer.AppendGpuScenePrepass(
-                    fc, m_gpuSceneRasterDepthProgram, m_gpuSceneRasterIndirect,
+                    fc, fc.ssrGbufferWanted
+                            ? m_gpuSceneRasterGbufferProgram
+                            : m_gpuSceneRasterDepthProgram,
+                    m_gpuSceneRasterIndirect,
                     m_gpuSceneRasterIndirectLogical[flight],
                     m_gpuSceneRasterWorkLogical[flight],
                     m_gpuSceneRasterDrawCapacity, tail);
