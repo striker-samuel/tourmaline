@@ -2013,38 +2013,55 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx,
                 drawSet = smvk::gfx::DrawSetBit_Masked;
             }
             // SKINNED draws (the Northlight compute path): the flag is
-            // set ONLY when the frame carries a valid deformed buffer (the
-            // renderer's skinning driver filled gfx.skinDeformedBda - the
-            // deformed heap exists + the skinning pass ran); a skinned
-            // mesh WITHOUT animation data keeps the static bind-pose
-            // fetches (no deformed heap, no swap).
-            if ((gfx.skinDeformedBda != 0) && world.GetMesh(worldMesh) &&
-                world.GetMesh(worldMesh)->skinned && !std::getenv("TOURMALINE_KD_NOSKIN")) {
-                drawFlags |= smvk::gfx::DrawFlagBit_Skinned;
-                if (std::getenv("TOURMALINE_KD")) {
-                    static uint32_t s_c = 0;
-                    if (s_c++ < 6)
-                        std::fprintf(stderr,
-                                     "[KD] skinned draw pushed node=%u worldMesh=%u gfxMesh=%u "
-                                     "flags=0x%x drawSet=0x%x meshElig=%d\n",
-                                     (unsigned)item.node,
-                                     worldMesh,
-                                     gfxMesh,
-                                     (unsigned)drawFlags,
-                                     (unsigned)drawSet,
-                                     (int)smvk::gfx::MeshDrawEligible(drawSet, drawFlags));
+            // set ONLY when the frame carries a valid deformed buffer
+            // (the renderer's skinning driver filled gfx.skinDeformedBda -
+            // the deformed heap exists + the skinning pass ran) AND the
+            // SELECTED LOD's mesh admits it: the draw's vertex ids index
+            // the SELECTED sibling's heap range, so the base mesh's
+            // skinned flag says nothing about the sibling's coverage.
+            // The admission contract (the review fix): a draw is skinned
+            // only when the selected StaticMesh carries skinned=true -
+            // which Cluster::EnsureSkinnedGpuData maintains as "this mesh
+            // has a COMPLETE skin stream inside the deformed span" (a
+            // size-mismatched stream clears the flag loudly; a stream-less
+            // LOD sibling never had it). Flagging on the base mesh flagged
+            // LOD-selected draws whose vertices sit OUTSIDE the span -
+            // (vi - deformedBase)*5 then read other meshes' deformed words
+            // or past the buffer: isolated triangles at garbage positions.
+            if (gfx.skinDeformedBda != 0 && !std::getenv("TOURMALINE_KD_NOSKIN")) {
+                const smvk::StaticMesh* selMesh =
+                    world.LodChainLength(worldMesh) > 1
+                        ? world.GetLodMesh(worldMesh, lodIdx)
+                        : world.GetMesh(worldMesh);
+                if (selMesh && selMesh->skinned) {
+                    drawFlags |= smvk::gfx::DrawFlagBit_Skinned;
+                    if (std::getenv("TOURMALINE_KD")) {
+                        static uint32_t s_c = 0;
+                        if (s_c++ < 6)
+                            std::fprintf(stderr,
+                                         "[KD] skinned draw pushed node=%u worldMesh=%u lod=%u "
+                                         "gfxMesh=%u flags=0x%x drawSet=0x%x meshElig=%d\n",
+                                         (unsigned)item.node,
+                                         worldMesh,
+                                         lodIdx,
+                                         gfxMesh,
+                                         (unsigned)drawFlags,
+                                         (unsigned)drawSet,
+                                         (int)smvk::gfx::MeshDrawEligible(drawSet, drawFlags));
+                    }
+                } else if (std::getenv("TOURMALINE_KD")) {
+                    static uint32_t s_c2 = 0;
+                    if (s_c2++ < 6)
+                        std::fprintf(
+                            stderr,
+                            "[KD] skinned mesh NOT flagged node=%u worldMesh=%u lod=%u "
+                            "selSkinned=%d bda=%llu\n",
+                            (unsigned)item.node,
+                            worldMesh,
+                            lodIdx,
+                            selMesh ? int(selMesh->skinned) : -1,
+                            (unsigned long long)gfx.skinDeformedBda);
                 }
-            } else if (std::getenv("TOURMALINE_KD") && world.GetMesh(worldMesh) &&
-                       world.GetMesh(worldMesh)->skinned) {
-                static uint32_t s_c2 = 0;
-                if (s_c2++ < 6)
-                    std::fprintf(
-                        stderr,
-                        "[KD] skinned mesh NOT flagged node=%u worldMesh=%u bda=%llu skinned=%d\n",
-                        (unsigned)item.node,
-                        worldMesh,
-                        (unsigned long long)gfx.skinDeformedBda,
-                        (int)world.GetMesh(worldMesh)->skinned);
             }
             // Lightmap chunk rides the draw: resolved from the SELECTED LOD
             // sibling, whose own texCoord2 addresses its own atlas rects.

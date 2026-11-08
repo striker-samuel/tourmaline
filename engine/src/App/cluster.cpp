@@ -344,9 +344,18 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
     skinnedGpuValid_ = true; // one shot (a rebuild re-Ensures via SetMeshSkinStream)
 
     // Gather the per-mesh ranges: the stream (skinStreams_) + the heap
-    // base (meshAllocations_, recorded by every upload path). The vertex
-    // count comes from the mesh's geometry (the stream must parallel it;
-    // a mismatched stream clamps to the geometry count).
+    // base (meshAllocations_, recorded by every upload path). STRICT
+    // INVARIANT (the review fix): the stream must parallel the mesh's
+    // geometry EXACTLY - every vertex of a skinned mesh needs its
+    // deformed word written by the skinning pass, and the draw shaders
+    // assume exactly that for anything flagged GFX_DRAW_SKINNED. The old
+    // silent min() clamp let a short stream leave the mesh's tail
+    // vertices unwritten while the draw still fetched them as skinned -
+    // stale deformed words, isolated triangles at garbage positions. A
+    // mismatched stream drops the range LOUDLY and clears the mesh's
+    // skinned flag, so the draw-side admission (the selected StaticMesh's
+    // flag - see FilterMainView) can never mark it: the mesh renders its
+    // bind pose instead of spiking.
     skinnedRanges_.clear();
     skinnedRanges_.reserve(skinStreams_.size());
     std::vector<smvk::PackedSkinInfluences> streamData;
@@ -354,14 +363,31 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
     uint32_t maxEnd = 0;
     for (auto& [poolIdx, stream] : skinStreams_) {
         auto it = meshAllocations_.find(poolIdx);
-        if (it == meshAllocations_.end() || !it->second)
-            continue; // no heap range (offline clusters call this never)
-        const StaticMesh* m = staticMeshes.get(ClusterStaticMeshHandle::Mint(poolIdx));
+        if (it == meshAllocations_.end() || !it->second) {
+            // No heap range (offline clusters call this never): a stream
+            // without an allocation writes nothing - the flag must not
+            // survive either (the admission contract above).
+            if (StaticMesh* m = staticMeshes.get(ClusterStaticMeshHandle::Mint(poolIdx)))
+                m->skinned = false;
+            continue;
+        }
+        StaticMesh* m = staticMeshes.get(ClusterStaticMeshHandle::Mint(poolIdx));
         if (!m)
             continue;
+        if (stream.size() != m->geometry.vertexCount) {
+            std::fprintf(stderr,
+                         "[Skin Error] mesh=%u skin stream=%zu vertices=%u - the stream must "
+                         "cover the mesh exactly; dropping the range (bind-pose render, "
+                         "never partially-skinned fetches)\n",
+                         poolIdx,
+                         stream.size(),
+                         m->geometry.vertexCount);
+            m->skinned = false; // the draw-side admission reads THIS flag
+            continue;
+        }
         SkinnedMeshRange r{};
         r.mesh = ClusterStaticMeshHandle::Mint(poolIdx);
-        r.vertexCount = std::min(uint32_t(stream.size()), m->geometry.vertexCount);
+        r.vertexCount = m->geometry.vertexCount;
         r.heapVertexBase = uint32_t(it->second->vertexBase);
         r.skinBase = uint32_t(streamData.size());
         if (r.vertexCount == 0)
