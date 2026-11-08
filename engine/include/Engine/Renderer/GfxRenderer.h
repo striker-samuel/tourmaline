@@ -989,10 +989,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     int cullDumpFrame_ = -1;    // TOURMALINE_CULL_DUMP (1-based app frame)
     bool cullDumpDone_ = false; // one shot per process
     uint32_t lastSlot_ = UINT32_MAX;
-    // True only when the committed GPU-scene ownership predicate skipped
-    // at least one source in THIS main-view draw traversal. Never infer
-    // this from a merely installed callback: raster-OFF also installs it.
-    bool gpuOwnedMainSources_ = false;
     bool seededThisFrame_ = false;
     bool remainderPending_ = false;
     smvk::ShaderModuleHandle mainFrag_{};
