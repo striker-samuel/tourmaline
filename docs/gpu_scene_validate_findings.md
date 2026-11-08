@@ -1,8 +1,10 @@
 # GPU-scene validation lane: all-zero GPU verdicts on master (device fault pre-#275)
 
-Status: FIX CANDIDATE / GPU REVERIFICATION PENDING (found 2026-11-08).
+Status: ROOT CAUSE FOUND + FIXED + GPU-VERIFIED on this branch (found and
+fixed 2026-11-08; the eligible-scene raster-parity gate below remains open).
 Tracking note — the repository has issues disabled, so this document is the
-record. Remove it when the lane is fixed and re-verified on a real GPU.
+record. Remove it when the last open gate (an actually eligible
+static-opaque scene under `TOURMALINE_GPU_SCENE_RASTER=1`) is covered.
 
 ## Summary
 
@@ -106,7 +108,50 @@ fields (`push.ranges`, `push.verdicts`, `push.view`, table BDAs) pass the
 nonzero checks in `Prepare`, yet nothing lands in `f.verdicts` two flights
 later.
 
-## Candidate fix on this draft branch (2026-11-08)
+## Root cause (confirmed on GPU 2026-11-08): the InstanceCullGpuPush ABI drifted 8 bytes
+
+Instrumented bisection on the RTX 5070 Ti (instrumentation since removed):
+
+1. The pass recording func executes; the dispatch is recorded with the
+   correct verdict BDA, and the later readback reads that exact same
+   address. Not a graph/registration/ordering problem.
+2. An unconditional magic write at the top of `mainCS` LANDS in the
+   readback — the kernel runs and the BDA is good.
+3. Dumping the shader's own view of its push block showed `counts.y == 0`
+   while the CPU pushed 1, and `counts2.y == 1` (correct) — an 8-byte
+   shift on `counts` only.
+
+`spirv-dis` on `gpu_scene_instance_cull.cs.hlsl.spv` is authoritative: the
+`[[vk::push_constant]] ConstantBuffer<GpuSceneInstanceCullPush>` block packs
+the seven `vk::BufferPointer`s at 0..48 and then `counts` at **56**,
+`counts2` at **72** (DXC packs a following `uint4` at the next 8-byte
+boundary — it does NOT round up to 16). The C++ mirror
+`InstanceCullGpuPush` had `alignas(16)` on `counts`, placing it at 64 with
+8 bytes of padding the shader never sees. Result: the kernel's
+`counts.x/y` read the CPU padding (zeros) — `candidateCount` was 0 — so
+every invocation took the bounds-check early-return BEFORE the unconditional
+verdict header write, and the entire compact/work/indirect chain starved on
+all-zero verdicts. (The pre-#275 device fault is consistent with the same
+class: that era's ABI drift pointed the kernel at garbage BDAs instead.)
+
+This also explains why the graph-registration patch below changed nothing:
+it was a plausible-discipline fix, not the root cause.
+
+Audit of every GPU-scene kernel push on this branch
+(`spirv-dis` offsets vs the C++ mirrors): `InstanceCullGpuPush` was the ONLY
+mismatched mirror — every other push either uses plain `uint32`s after the
+pointers (tight both sides) or an EVEN pointer run before a `uint4` (the
+16-aligned and tight layouts coincide at 32/64).
+
+## Fix (this branch)
+
+`engine/include/Engine/Renderer/gpu_scene_candidates.h`:
+`InstanceCullGpuPush` now packs tight — `counts` at 56, `counts2` at 72,
+`sizeof == 88` — matching the SPIR-V block exactly, with static_asserts
+pinning the offsets and a comment recording the DXC packing rule so the
+next mirror does not repeat the drift.
+
+## Earlier candidate on this draft branch (2026-11-08, kept)
 
 The BDA-only GPU-scene verdict buffer previously had **no render-graph
 write declaration** on the validation-only pass: the existing graph hints
@@ -117,9 +162,9 @@ device address, so the graph could not track its shader-write stage/access.
 The patch registers the real per-flight verdict buffer as an external logical
 buffer, updates that registration when the physical buffer is replaced,
 and declares a Compute/ShaderWrite hint on `GpuSceneValidate`. If graph
-registration fails, validation is not marked dispatched. This is a
-**candidate synchronization/dependency fix**, not yet confirmed as the
-root cause of the reported all-zero readback.
+registration fails, validation is not marked dispatched. This was NOT the
+root cause of the all-zero readback (see above) but is kept as correct
+graph-discipline for a BDA write.
 
 The CPU validation readback also explicitly counts all-zero verdicts. The
 GPU kernel must write a sentinel invalid slot (`InvalidIndex`) even for a
@@ -143,5 +188,21 @@ valid visible, culled, rejected and all-zero cases.
 6. Only after these gates pass, remove this tracking note, record the
    evidence in the PR and mark it ready for review.
 
-Until hardware verification proves the verdict path, keep this PR draft
-and do not promote GPU-driven Main to default.
+### Acceptance results (RTX 5070 Ti, driver 617.42, 2026-11-08, this branch)
+
+- C++ suites: `gpu_scene_*` 6/6 + `architecture` + `text_integrity` green.
+- Sample project (`VALIDATE=1`, bench 130):
+  `compared=1 mismatches=0`; compact/work/indirect all agree (1/1).
+- Single-Sponza (`VALIDATE=1`, bench 260, two validator samples):
+  `compared=103 mismatches=0 total=0/206`; compact-visible 72, work 72,
+  indirect groups agree — the GPU cull now matches the CPU oracle exactly
+  (72/103 visible). No unwritten verdicts, no device loss.
+- Mixed `RASTER=1` + `VALIDATE=1` (Sponza, bench 128, capture 48):
+  `mismatches=0`, frame renders, no fault (~9.2 ms vs 8.8 ms baseline —
+  the documented diagnostic-readback stall).
+- Release builds run without the Vulkan validation layer (it is
+  NDEBUG-gated); the layer-enabled pass of gate 2 is still open, as is
+  gate 5's actually-eligible static-opaque scene (Sponza keeps the raster
+  lane in its conservative legacy fallback: cooked LOD chains + masked
+  materials). Until those are covered, keep this PR draft and do not
+  promote GPU-driven Main to default.
