@@ -18,6 +18,7 @@
 #include "gpu_scene.hlsli"
 
 #define GS_RASTER_MAX_WORK 1048576u
+#define GS_RASTER_MAX_COMMANDS (2u * GS_RASTER_MAX_WORK)
 #define GS_RASTER_MAX_INSTANCES 4194304u
 
 struct RasterIndirectCommand {
@@ -27,7 +28,7 @@ struct RasterIndirectCommand {
     int vertexOffset;
     uint firstInstance;
 };
-struct RasterCommands { RasterIndirectCommand rows[GS_RASTER_MAX_WORK]; };
+struct RasterCommands { RasterIndirectCommand rows[GS_RASTER_MAX_COMMANDS]; };
 struct RasterWorkRow { uint4 identity; uint4 detail; };
 struct RasterWork { RasterWorkRow rows[GS_RASTER_MAX_WORK]; };
 struct RasterInstances { GpuSceneInstanceRow rows[GS_RASTER_MAX_INSTANCES]; };
@@ -61,7 +62,7 @@ GPU_PUSH(RasterHizPush, pcH);
 [numthreads(64, 1, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID) {
     const uint i = tid.x;
-    if (i >= pcH.commandCapacity || i >= GS_RASTER_MAX_WORK ||
+    if (i >= pcH.commandCapacity || i >= GS_RASTER_MAX_COMMANDS ||
         pcH.reserved == 0u)
         return; // HZB culling disabled; still build the pyramid/history.
     RasterIndirectCommand cmd = pcH.commands.Get().rows[i];
