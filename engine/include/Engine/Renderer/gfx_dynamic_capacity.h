@@ -79,7 +79,8 @@ struct DynamicBytes {
                                                  size_t stride,
                                                  size_t& bytes) noexcept {
     bytes = 0;
-    if (stride && count > std::numeric_limits<size_t>::max() / stride)
+    if ((count != 0 && stride == 0) ||
+        (stride && count > std::numeric_limits<size_t>::max() / stride))
         return false;
     bytes = count * stride;
     return true;
@@ -94,6 +95,8 @@ struct DynamicBytes {
                                                      DynamicBytes& out) noexcept {
     DynamicBytes plan{};
     size_t tail = 0;
+    if (size_t(cap.draws) > std::numeric_limits<size_t>::max() - 5u)
+        return false;
     if (!CheckedBytes(cap.draws, drawStride, plan.draws) ||
         !CheckedBytes(cap.candidates, batchStride, plan.batches) ||
         !CheckedBytes(cap.candidates, indirectStride, plan.indirect) ||
