@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <limits>
 
-namespace smvk::gfx {
+namespace tour::gfx {
 
 struct DynamicCapacity {
     uint32_t draws = 0;
@@ -58,4 +58,4 @@ inline constexpr size_t kDynamicPageBytes = 64u * 1024u;
     return true;
 }
 
-} // namespace smvk::gfx
+} // namespace tour::gfx
