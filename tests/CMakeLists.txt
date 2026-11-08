@@ -1574,3 +1574,17 @@ target_link_libraries(SceneMemoryBindingsTests PRIVATE engine)
 set_target_properties(SceneMemoryBindingsTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME scene_memory_bindings_tests COMMAND SceneMemoryBindingsTests)
+
+# CPU-only ABI contract: compare annotated C++ POD layouts to DXC SPIR-V.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+find_program(TOURMALINE_SPIRV_DIS NAMES spirv-dis spirv-dis.exe
+    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+if(Python3_Interpreter_FOUND AND DXC AND TOURMALINE_SPIRV_DIS)
+    add_test(NAME gpu_struct_layout_tests
+        COMMAND "${Python3_EXECUTABLE}" "${TOURMALINE_SOURCE_DIR}/tools/check_gpu_struct_layout.py"
+            --cxx "${CMAKE_CXX_COMPILER}"
+            --dxc "${DXC}"
+            --spirv-dis "${TOURMALINE_SPIRV_DIS}")
+else()
+    message(WARNING "GPU struct layout tests disabled: Python3, DXC and spirv-dis are required")
+endif()
