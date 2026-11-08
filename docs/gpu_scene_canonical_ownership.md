@@ -49,3 +49,13 @@ The remaining integration must land atomically, with:
 **Do not remove the whole-world guard or enable mixed mode using this
 contract alone.** Default and opt-in behavior are unchanged until all six
 conditions are implemented and verified.
+
+## Separate legacy GfxFilter capacity follow-up
+
+GitHub Issues are disabled. Track dynamic GfxFilter capacity work after #278:
+replace kMaxDraws=65535 and kMaxBatchSlots=262144 FATAL limits with
+per-view/per-flight growable buffer-device-address, count, and capacity.
+Update dependent draw, candidate, indirect, kept-bit, GPU skinning bounds,
+seed/remainder buffers, HLSL offsets, and dispatch indexing together.
+The separate kMaxBatches=65536 filtered-index survivor ring needs its own
+capacity treatment. Do not gate Phase 2 ownership on this work.

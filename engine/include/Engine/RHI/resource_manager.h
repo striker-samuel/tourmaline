@@ -123,6 +123,9 @@ class ResourceManager {
     Holder<BufferHandle> CreateBuffer(size_t size,
                                       BufferType bufferType,
                                       const char* debugName = "Buffer");
+    // One contiguous GPU-scene table buffer, backed by size-class VMA
+    // pools when possible. Preserve existing device-address ABI.
+    Holder<BufferHandle> CreateGpuSceneBuffer(size_t size, const char* debugName);
     Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code,
                                                   const char* debugName = "ShaderModule");
     Holder<DescriptorPoolHandle> CreateDescriptorPool(
