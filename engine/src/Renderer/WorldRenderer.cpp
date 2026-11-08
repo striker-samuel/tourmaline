@@ -11328,26 +11328,38 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     constexpr size_t kMaskPageRows = 65536u / sizeof(uint32_t);
                     const size_t pages = (slots + kMaskPageRows - 1) / kMaskPageRows;
                     const size_t requiredCapacity = pages * kMaskPageRows;
-                    auto* generations = static_cast<uint32_t*>(
-                        smvk::FrameArena().Allocate(
-                            slots * sizeof(uint32_t), alignof(uint32_t)));
-                    ownerMaskReady = generations &&
-                        m_gpuSceneRasterOwnership.BuildGenerationMask(
-                            std::span<uint32_t>(generations, slots),
-                            [this](tour::gpu_scene::SourceKey key) {
-                                return m_gpuSceneSync.Find(key);
-                            });
-                    if (ownerMaskReady &&
-                        (m_gpuSceneRasterOwnerMaskBuffers[flight].empty() ||
-                         m_gpuSceneRasterOwnerMaskCapacity[flight] < requiredCapacity)) {
-                        auto next = m_context->CreateGpuSceneBuffer(
-                            requiredCapacity * sizeof(uint32_t),
-                            "GPU scene raster owner generations");
-                        if (next.empty())
-                            ownerMaskReady = false;
-                        else {
-                            m_gpuSceneRasterOwnerMaskBuffers[flight] = std::move(next);
-                            m_gpuSceneRasterOwnerMaskCapacity[flight] = requiredCapacity;
+                    const bool changed =
+                        m_gpuSceneRasterOwnerMaskWorld[flight] != m_world ||
+                        m_gpuSceneRasterOwnerMaskTopologyRev[flight] !=
+                            m_world->gpuSceneTopologyRevision ||
+                        m_gpuSceneRasterOwnerMaskGeometryRev[flight] !=
+                            m_gpuSceneGeometryRevision ||
+                        m_gpuSceneRasterOwnerMaskBuffers[flight].empty() ||
+                        m_gpuSceneRasterOwnerMaskCapacity[flight] < requiredCapacity;
+                    uint32_t* generations = nullptr;
+                    ownerMaskReady = slots != 0;
+                    if (changed && ownerMaskReady) {
+                        generations = static_cast<uint32_t*>(
+                            smvk::FrameArena().Allocate(
+                                slots * sizeof(uint32_t), alignof(uint32_t)));
+                        ownerMaskReady = generations &&
+                            m_gpuSceneRasterOwnership.BuildGenerationMask(
+                                std::span<uint32_t>(generations, slots),
+                                [this](tour::gpu_scene::SourceKey key) {
+                                    return m_gpuSceneSync.Find(key);
+                                });
+                        if (ownerMaskReady &&
+                            (m_gpuSceneRasterOwnerMaskBuffers[flight].empty() ||
+                             m_gpuSceneRasterOwnerMaskCapacity[flight] < requiredCapacity)) {
+                            auto next = m_context->CreateGpuSceneBuffer(
+                                requiredCapacity * sizeof(uint32_t),
+                                "GPU scene raster owner generations");
+                            if (next.empty())
+                                ownerMaskReady = false;
+                            else {
+                                m_gpuSceneRasterOwnerMaskBuffers[flight] = std::move(next);
+                                m_gpuSceneRasterOwnerMaskCapacity[flight] = requiredCapacity;
+                            }
                         }
                     }
                     if (ownerMaskReady) {
@@ -11357,7 +11369,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             m_context->GetBufferDeviceAddress(maskHandle);
                         ownerMaskReady = maskBda != 0 && !maskHandle.empty();
                         if (ownerMaskReady &&
-                            m_gpuSceneRasterOwnerMaskLogicalBacking[flight] != maskHandle) {
+                            (m_gpuSceneRasterOwnerMaskLogicalBacking[flight] != maskHandle ||
+                             m_gpuSceneRasterOwnerMaskLogical[flight].empty())) {
                             if (!m_gpuSceneRasterOwnerMaskLogical[flight].empty())
                                 m_rendergraph->FreeBuffer(
                                     m_gpuSceneRasterOwnerMaskLogical[flight]);
@@ -11369,12 +11382,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         ownerMaskReady = ownerMaskReady &&
                             !m_gpuSceneRasterOwnerMaskLogical[flight].empty();
                         if (ownerMaskReady) {
-                            m_context->UploadDataToBuffer(
-                                maskHandle,
-                                generations,
-                                slots * sizeof(uint32_t),
-                                smvk::PipelineStageBit_Compute,
-                                smvk::AccessFlags::ShaderRead);
+                            if (changed) {
+                                m_context->UploadDataToBuffer(
+                                    maskHandle,
+                                    generations,
+                                    slots * sizeof(uint32_t),
+                                    smvk::PipelineStageBit_Compute,
+                                    smvk::AccessFlags::ShaderRead);
+                                m_gpuSceneRasterOwnerMaskWorld[flight] = m_world;
+                                m_gpuSceneRasterOwnerMaskTopologyRev[flight] =
+                                    m_world->gpuSceneTopologyRevision;
+                                m_gpuSceneRasterOwnerMaskGeometryRev[flight] =
+                                    m_gpuSceneGeometryRevision;
+                            }
                             gpuPush.ownerGenerations = maskBda;
                             gpuPush.counts2.w = 1u;
                         }
