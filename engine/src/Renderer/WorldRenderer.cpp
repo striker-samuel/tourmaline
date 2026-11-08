@@ -12981,7 +12981,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     if (gpuTemporalReady && !gfxFilterOn) {
         gpuTemporalReady = m_gfxRenderer.PrepareGpuSceneHiz(
             *m_context, *m_rendergraph, m_renderViews.Get(mainRenderView),
-            m_cameraPositioner.cameraPosition_, renderExtent.width, renderExtent.height);
+            m_cameraPositioner.cameraPosition_, temporalFlight,
+            renderExtent.width, renderExtent.height);
     }
     if (gpuTemporalReady &&
         (m_gfxRenderer.LastSlot() == UINT32_MAX || cullingFrozen))
