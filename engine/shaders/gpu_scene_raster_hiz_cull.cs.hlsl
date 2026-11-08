@@ -23,6 +23,7 @@ struct RasterCommands { RasterIndirectCommand rows[GS_RASTER_MAX_WORK]; };
 struct RasterWorkRow { uint4 identity; uint4 detail; };
 struct RasterWork { RasterWorkRow rows[GS_RASTER_MAX_WORK]; };
 struct RasterInstances { GpuSceneInstanceRow rows[GS_RASTER_MAX_INSTANCES]; };
+struct RasterHistory { uint generations[GS_RASTER_MAX_INSTANCES]; };
 struct RasterViewData {
     float4x4 relativeViewProjection;
     DoubleFloat3 origin;
@@ -33,11 +34,15 @@ struct RasterHizPush {
     GPU_PTR_READ(RasterInstances) instances;
     GPU_PTR_READ(RasterViewData) view;
     GPU_PTR_READ(HzbBuffer) hiz;
+    GPU_PTR_READ(RasterHistory) previous;
     uint commandCapacity;
     uint instanceSlots;
     uint width;
     uint height;
     uint mips;
+    uint historySlots;
+    uint historyValid;
+    uint reserved;
 };
 GPU_PUSH(RasterHizPush, pcH);
 
@@ -58,6 +63,13 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         return; // VS already guards stale work; never occlusion-kill it here.
     const GpuSceneInstanceRow row = pcH.instances.Get().rows[work.identity.x];
     if (row.identity.y != 1u || row.identity.x != work.identity.y)
+        return;
+    // A previous-visible seed is drawn INTO this pyramid. Never test
+    // such a command against its own depth; only the remainder can be
+    // occluded by seed geometry. Invalid history fails open.
+    if (pcH.historyValid != 0u &&
+        work.identity.x < min(pcH.historySlots, GS_RASTER_MAX_INSTANCES) &&
+        pcH.previous.Get().generations[work.identity.x] == work.identity.y)
         return;
     const GpuSceneInstance inst = row.value;
 
