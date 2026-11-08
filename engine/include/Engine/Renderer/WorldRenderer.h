@@ -2440,6 +2440,39 @@ class WorldRenderer : public IRenderer {
         m_gpuSceneRasterWorkLogicalBacking{};
     std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
         m_gpuSceneRasterWorkLogical{};
+    // GPU-scene temporal visibility, separate from GfxFilter's CPU seed.
+    // Per-flight command rings contain CURRENT work, partitioned by the
+    // LAST flight's persistent instance (slot,generation) visibility map.
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterSeedModule{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterHizCullModule{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterHistoryModule{};
+    smvk::ShaderProgram m_gpuSceneRasterSeedProgram{};
+    smvk::ShaderProgram m_gpuSceneRasterHizCullProgram{};
+    smvk::ShaderProgram m_gpuSceneRasterHistoryClearProgram{};
+    smvk::ShaderProgram m_gpuSceneRasterHistoryCommitProgram{};
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterSeedBuffers{};
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterRemainderBuffers{};
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterHistoryBuffers{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterSeedLogicals{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterRemainderLogicals{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterHistoryLogicals{};
+    std::array<uint32_t, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterTemporalCommandCapacity{};
+    std::array<uint32_t, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneRasterTemporalHistoryCapacity{};
+    uint32_t m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
+    const smvk::World* m_gpuSceneRasterHistoryWorld = nullptr;
+    uint64_t m_gpuSceneRasterHistoryTopologyRevision = ~uint64_t(0);
+    uint64_t m_gpuSceneRasterHistoryGeometryRevision = ~uint64_t(0);
+    uint32_t m_gpuSceneRasterHistoryWidth = 0;
+    uint32_t m_gpuSceneRasterHistoryHeight = 0;
+
     // GPU-produced compute dispatch arguments plus an indirect work consumer.
     // No indexed graphics draws are changed by this validation-only chain.
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 2> m_gpuSceneIndirectModules{};
