@@ -1146,25 +1146,9 @@ void PushAndDispatchHiz(State& s,
         }
     }
     HzbPush push{};
-    push.hzb = addr;
-    push.dstMip = dstMip;
-    push.dstWidth = dw;
-    push.dstHeight = dh;
-    push.dstOffset = hz.mipOffsets[dstMip];
-    push.depthTextureIndex = depthBindlessIndex;
-    if (dstMip == 0) {
-        push.srcMip = kHizSrcDepth;
-        push.srcWidth = hz.width;
-        push.srcHeight = hz.height;
-        push.srcOffset = 0;
-    } else {
-        uint32_t sw = 0, sh = 0;
-        HzbMipDims(hz.width, hz.height, dstMip - 1, sw, sh);
-        push.srcMip = dstMip - 1;
-        push.srcWidth = sw;
-        push.srcHeight = sh;
-        push.srcOffset = hz.mipOffsets[dstMip - 1];
-    }
+    if (!tour::visibility::MakeHizMipPush(hz, addr, dstMip,
+                                         depthBindlessIndex, push))
+        return;
 
     // DEBUG: Log HZB dispatch parameters
     static uint64_t s_hizDispatchCount = 0;
@@ -1273,15 +1257,9 @@ void PushAndDispatchHizSpd(State& s,
     const uint32_t groupY = (hz.height + 63u) / 64u;
 
     HzbSpdPush push{};
-    push.hzb = addr;
-    push.counter = counterAddr;
-    push.width = hz.width;
-    push.height = hz.height;
-    push.mipCount = hz.mipCount;
-    push.depthTextureIndex = depthBindlessIndex;
-    for (uint32_t k = 0; k < kHizMaxMips; ++k)
-        push.mipOffsets[k] = hz.mipOffsets[k];
-    push.groupCount = groupX * groupY;
+    if (!tour::visibility::MakeHizSpdPush(hz, addr, counterAddr,
+                                          depthBindlessIndex, push))
+        return;
 
     static uint64_t s_spdDispatchCount = 0;
     if ((s_spdDispatchCount++ % 60) == 0) {
