@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <set>
@@ -248,6 +249,7 @@ bool ParseText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& er
     bool sawVersion = false, sawProject = false, sawEntry = false;
     bool sawDependenciesLine = false; // per open [pak] section
     std::set<std::string> bakeSeen;
+    std::set<std::string> importSeen;
     std::vector<DependsNote> dependsNotes;
     RecipePak current; // the open [pak] section (pushed on the next open)
     bool inPak = false;
@@ -439,6 +441,93 @@ bool ParseText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& er
                     out.bakeCubemaps = on;
                 else
                     out.bakeSdf = on;
+            }
+        } else if (directive == "import") {
+            // Recipe-level derivation settings for every geometry family
+            // the plan packs (like 'bake sdf', the family-wide knobs never
+            // live in a [pak] block). The build's import-freshness stage
+            // enforces THESE settings, so a recipe-pinned 'lods off'
+            // artifact stays fresh instead of being silently re-derived
+            // with the default chain.
+            if (inPak)
+                return Fail(lineNo,
+                             "import",
+                             "'import' is recipe-level only (the derivation"
+                             " settings belong to the geometry family, not"
+                             " to a pak)",
+                             err);
+            const std::vector<std::string> toks = SplitTokens(rest);
+            if (toks.size() != 2)
+                return Fail(lineNo,
+                             "import",
+                             "'import lods <on|off>' | 'import lod-ratios"
+                             " <r,r,...>' | 'import lod-error <f>' take two"
+                             " words",
+                             err);
+            if (!importSeen.insert(toks[0]).second)
+                return Fail(lineNo,
+                             "import",
+                             "duplicate import line for '" + toks[0] + "'",
+                             err);
+            if (toks[0] == "lods") {
+                if (toks[1] != "on" && toks[1] != "off")
+                    return Fail(lineNo,
+                                 "import",
+                                 "'import lods' takes 'on' or 'off' (a"
+                                 " non-zero level pin is not a derivation"
+                                 " setting; strip the chain with 'off')",
+                                 err);
+                out.importLods = toks[1] == "on";
+            } else if (toks[0] == "lod-ratios") {
+                // Coarse-last ratios vs LOD0 (DeriveConfig::lodRatios):
+                // 1..15 entries, each within (0, 1].
+                std::vector<float> ratios;
+                size_t pos = 0;
+                bool bad = toks[1].empty();
+                while (!bad) {
+                    const size_t comma = toks[1].find(',', pos);
+                    const std::string tok =
+                        toks[1].substr(pos, comma == std::string::npos
+                                                ? std::string::npos
+                                                : comma - pos);
+                    char* end = nullptr;
+                    const float r = std::strtof(tok.c_str(), &end);
+                    if (tok.empty() || end == tok.c_str() ||
+                        (end && *end != '\0') || !(r > 0.0f && r <= 1.0f))
+                        bad = true;
+                    else
+                        ratios.push_back(r);
+                    if (comma == std::string::npos)
+                        break;
+                    pos = comma + 1;
+                }
+                if (bad || ratios.empty() || ratios.size() > 15)
+                    return Fail(lineNo,
+                                 "import",
+                                 "'import lod-ratios' takes 1..15 comma"
+                                 " separated ratios in (0, 1] (found '" +
+                                     toks[1] + "')",
+                                 err);
+                out.importLodRatios = std::move(ratios);
+            } else if (toks[0] == "lod-error") {
+                // Relative meshopt_simplify budget (fraction of extents).
+                char* end = nullptr;
+                const float e = std::strtof(toks[1].c_str(), &end);
+                if (toks[1].empty() || end == toks[1].c_str() ||
+                    (end && *end != '\0') || !(e > 0.0f && e <= 1.0f))
+                    return Fail(lineNo,
+                                 "import",
+                                 "'import lod-error' takes a float in"
+                                 " (0, 1] (found '" + toks[1] + "')",
+                                 err);
+                out.importLodError = e;
+            } else {
+                return Fail(lineNo,
+                             "import",
+                             "unknown import setting '" + toks[0] +
+                                 "' (only lods, lod-ratios and lod-error"
+                                 " exist)",
+                             err);
             }
         } else if (directive == "materialChannel") {
             if (inPak || !out.materialPacking.source.empty())

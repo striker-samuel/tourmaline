@@ -128,6 +128,12 @@ struct BuildPlan {
     bool bakeGi = false;
     bool bakeCubemaps = false;
     bool bakeSdf = false;
+    // The recipe's geometry-import (derivation) settings, enforced by the
+    // build's import-freshness stage: a recipe-pinned no-LOD artifact
+    // stays fresh instead of being re-derived with the default chain.
+    bool importLods = true;
+    std::vector<float> importLodRatios{0.75f, 0.5f, 0.3f, 0.15f};
+    float importLodError = 0.01f;
     // TOPOLOGICAL order: dependencies first, so mounting/packing in
     // plan order is always correct. Authored order is the deterministic
     // tiebreak (RES-03: same inputs -> same order, every time).
@@ -138,7 +144,9 @@ struct BuildPlan {
     bool operator==(const BuildPlan& o) const {
         return materialPacking == o.materialPacking && projectName == o.projectName &&
                entryScene == o.entryScene && entryPak == o.entryPak && bakeGi == o.bakeGi &&
-               bakeCubemaps == o.bakeCubemaps && bakeSdf == o.bakeSdf && paks == o.paks;
+               bakeCubemaps == o.bakeCubemaps && bakeSdf == o.bakeSdf &&
+               importLods == o.importLods && importLodRatios == o.importLodRatios &&
+               importLodError == o.importLodError && paks == o.paks;
     }
 };
 

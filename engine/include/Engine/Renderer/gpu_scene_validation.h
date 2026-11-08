@@ -292,6 +292,14 @@ static_assert(sizeof(SceneIndirectVerifyPush) == 32);
     return {(workCount + 63u) / 64u, 1u, 1u};
 }
 
+// A shader invocation always writes a verdict header, including rejected
+// candidates (slot=InvalidIndex). An all-zero tuple therefore indicates an
+// unwritten/incorrectly addressed output, not an ordinary invisible object.
+[[nodiscard]] inline bool IsUnwrittenCullVerdict(const InstanceCullVerdict& value) noexcept {
+    return value.value.x == 0u && value.value.y == 0u &&
+           value.value.z == 0u && value.value.w == 0u;
+}
+
 class CandidateValidator {
   public:
     static constexpr uint32_t Flights = smvk::limits::MaxFramesInFlight;
@@ -320,6 +328,18 @@ class CandidateValidator {
             f.indirectPrepared = false;
             return;
         }
+        // Zero is not a legal verdict from the shader: even invalid
+        // candidates initialize slot=InvalidIndex. Distinguish an unwritten
+        // output from an ordinary visibility mismatch.
+        const size_t zeroVerdicts = std::count_if(
+            readback.begin(), readback.end(), [](const InstanceCullVerdict& v) {
+                return IsUnwrittenCullVerdict(v);
+            });
+        if (zeroVerdicts != 0)
+            std::fprintf(stderr,
+                         "[GpuSceneValidate] unwritten/zero verdicts=%zu/%zu; "
+                         "check compute dispatch, BDA, and graph write dependencies\n",
+                         zeroVerdicts, readback.size());
         uint64_t wrong = 0;
         for (size_t i = 0; i < readback.size(); ++i) {
             const auto& a = readback[i].value;
@@ -812,6 +832,13 @@ class CandidateValidator {
         return flight < Flights && !flight_[flight].workOutput.empty()
                    ? ctx.GetBufferDeviceAddress(flight_[flight].workOutput)
                    : 0;
+    }
+
+    // Register the actual verdict allocation as a render-graph compute output.
+    // BDA accesses are otherwise invisible to render-graph dependency tracking.
+    [[nodiscard]] smvk::BufferHandle VerdictBuffer(uint32_t flight) const {
+        return flight < Flights ? smvk::BufferHandle(flight_[flight].verdicts)
+                                : smvk::BufferHandle{};
     }
 
     [[nodiscard]] smvk::BufferHandle RasterWorkBuffer(uint32_t flight) const {
