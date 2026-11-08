@@ -114,7 +114,7 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx, uint slotIdx)
     if (wantOcc && skinned)
         wantOcc = false;
     const float4 bound = useSkinBounds
-        ? pcF.skinBounds.Get().cluster[slotIdx].b
+        ? LoadSkinCluster(pcF.skinBounds, slotIdx).b
         : pcF.clusters.Get().cluster[clusterIdx].b;
 
     BoundProjection p = ProjectBound(
@@ -198,7 +198,7 @@ void PublishDrawDemand(uint drawIdx)
     {
         GfxHzbCtx ctx = FilterHzbCtx();
         const BoundProjection p = ProjectBound(
-            useSkinBounds ? pcF.skinBounds.Get().drawBound[drawIdx]
+            useSkinBounds ? LoadSkinDrawBound(pcF.skinBounds, pcF.candidateCapacity, drawIdx)
                           : pcF.meshBounds.Get().centerRadius[d.misc.x],
             d.model, ctx);
         if (p.testable)
@@ -361,8 +361,9 @@ bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2)
 }
 
 [numthreads(GFX_THREADS_PER_CLUSTER, 1, 1)]
-void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
+void mainCS(uint tid : SV_GroupThreadID, uint3 group : SV_GroupID)
 {
+    const uint gid = group.x + group.y * 65535u;
     if (tid == 0)
     {
         gLocalCount = 0;
@@ -461,7 +462,7 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
         bool fits = hasTriangles;
         if (hasTriangles)
         {
-            InterlockedAdd(pcF.cullState.Get().v[GFX_CULL_STATE_COUNTER],
+            InterlockedAdd(pcF.cullState.Get().v[pcF.drawCapacity],
                 gLocalCount, outBase);
             // Subtract instead of adding first: a wrapped uint allocation
             // must never be mistaken for a valid range.
@@ -471,13 +472,13 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
         // Distinguish actual triangle rejection from ring exhaustion and
         // verdict-gated work. One atomic per batch, not per triangle.
         if (!slotKept || !drawOk || gClusterCull != 0u)
-            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_GATED], 1u);
+            InterlockedAdd(pcF.cullState.Get().v[(pcF.drawCapacity + 4u)], 1u);
         else if (!hasTriangles)
-            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_EMPTY], 1u);
+            InterlockedAdd(pcF.cullState.Get().v[(pcF.drawCapacity + 1u)], 1u);
         else if (!fits)
-            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_OVERFLOW], 1u);
+            InterlockedAdd(pcF.cullState.Get().v[(pcF.drawCapacity + 2u)], 1u);
         else
-            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_ALLOCATED], 1u);
+            InterlockedAdd(pcF.cullState.Get().v[(pcF.drawCapacity + 3u)], 1u);
         if (fits)
         {
             gOutBase = outBase;
