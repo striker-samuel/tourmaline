@@ -12505,7 +12505,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // (seed + HZB + dispatch + remainder). The filtered main view has no
     // runtime off switch anymore. When off, gfxSlot stays invalid and
     // every consumer falls back to direct draws.
-    const bool gfxFilterOn = m_passes.gfxFilter && m_gfxFilterAvailable;
+    // GPU-scene raster owns eligible opaque draws; do not also build the
+    // O(drawItems) GfxFilter batches, temporal seeds, or filter compute chain.
+    // If GPU-scene admission failed, retain the original GfxFilter path.
+    const bool gfxFilterOn = m_passes.gfxFilter && m_gfxFilterAvailable &&
+                             !m_gpuSceneRasterDrawActive;
     if (gfxFilterOn) {
         if (m_freezeCullingView && !m_frozenViewValid) {
             m_frozenViewProj = frameData.viewProj;
