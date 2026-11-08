@@ -1,6 +1,6 @@
 # GPU-scene validation lane: all-zero GPU verdicts on master (device fault pre-#275)
 
-Status: OPEN BUG (found 2026-11-08, post-#275 renderer verification pass).
+Status: FIX CANDIDATE / GPU REVERIFICATION PENDING (found 2026-11-08).
 Tracking note — the repository has issues disabled, so this document is the
 record. Remove it when the lane is fixed and re-verified on a real GPU.
 
@@ -105,3 +105,43 @@ in `InstanceCullGpuPush`) and the `GpuSceneValidate` compute dispatch in
 fields (`push.ranges`, `push.verdicts`, `push.view`, table BDAs) pass the
 nonzero checks in `Prepare`, yet nothing lands in `f.verdicts` two flights
 later.
+
+## Candidate fix on this draft branch (2026-11-08)
+
+The BDA-only GPU-scene verdict buffer previously had **no render-graph
+write declaration** on the validation-only pass: the existing graph hints
+covered GPU raster indirect/work buffers only when full-scene raster was
+active. The compute dispatch referenced the verdict allocation through a raw
+device address, so the graph could not track its shader-write stage/access.
+
+The patch registers the real per-flight verdict buffer as an external logical
+buffer, updates that registration when the physical buffer is replaced,
+and declares a Compute/ShaderWrite hint on `GpuSceneValidate`. If graph
+registration fails, validation is not marked dispatched. This is a
+**candidate synchronization/dependency fix**, not yet confirmed as the
+root cause of the reported all-zero readback.
+
+The CPU validation readback also explicitly counts all-zero verdicts. The
+GPU kernel must write a sentinel invalid slot (`InvalidIndex`) even for a
+rejected candidate, so an all-zero tuple means an unwritten/misaddressed
+slot, not an invisible instance. CPU-only regression assertions cover
+valid visible, culled, rejected and all-zero cases.
+
+### GPU acceptance checks
+
+1. Compile shaders and the renderer, and run the GPU-scene C++ tests.
+2. Run both version-matched repros above on the RTX 5070 Ti with Vulkan
+   validation enabled and `TOURMALINE_GPU_SCENE_VALIDATE=1`.
+3. Require **zero unwritten verdicts and zero CPU/GPU mismatches** in both
+   the single-instance sample and Sponza, across multiple flight reuses.
+4. Require matching compact-visible counts, expanded-work counts and
+   indirect-dispatch groups. Confirm the absence of device loss and
+   validation-layer errors.
+5. Repeat under `TOURMALINE_GPU_SCENE_RASTER=1` separately, including
+   an actually eligible static-opaque scene; verify visual parity and
+   that the opt-in does not hide a failing compute path behind legacy.
+6. Only after these gates pass, remove this tracking note, record the
+   evidence in the PR and mark it ready for review.
+
+Until hardware verification proves the verdict path, keep this PR draft
+and do not promote GPU-driven Main to default.
