@@ -19,6 +19,7 @@
 
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/renderer.h>
+#include <Engine/Renderer/gpu_scene_raster.h>
 
 namespace engine {
 struct AppFrameContext;
@@ -85,6 +86,16 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
     // instances) keep their depth coverage, preserving the 1x Main
     // read-only contract.
     void AppendPrepass(smvk::FrameContext& fc, bool fallbackOnly = false);
+    // Opt-in fully static-opaque depth: GPU-generated indexed commands
+    // replace the CPU drawItems prepass. Not valid with the thin G-buffer;
+    // callers must retain AppendPrepass when fc.ssrGbufferWanted.
+    void AppendGpuScenePrepass(smvk::FrameContext& fc,
+                               smvk::ShaderProgram rasterDepth,
+                               smvk::BufferHandle indirect,
+                               smvk::LogicalBufferHandle indirectLogical,
+                               smvk::LogicalBufferHandle workLogical,
+                               uint32_t commandCount,
+                               const tour::gpu_scene::RasterVsPush& vertexPush);
     // lightCountOverride: UINT32_MAX (default) = cull fc.fpLightCount
     // lights; any other value limits the light leg (the deferred-shadow
     // pipeline passes 0 — its shading consumes the DS lists, but the decal
