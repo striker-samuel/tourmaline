@@ -10895,8 +10895,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 const auto key = m_gpuSceneSync.SourceForNode(item.node);
                 const auto instance = m_gpuSceneSync.Find(key);
                 const auto* mesh = m_world->GetMesh(item.mesh);
-                const uint32_t gfxId = m_gfxRenderer.GfxMeshForLod(item.mesh, 0);
-                tour::gpu_scene::IndexedGeometry geometry{};
                 const bool compatible =
                     key.registration != 0 && bool(instance) &&
                     tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase, instance) &&
@@ -10932,8 +10930,31 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // registered LOD. RasterIndexedInstanceReady requires
                     // complete union bounds for multi-LOD chains; retain
                     // the static-only, material and stream gates above.
-                    gfxId != UINT32_MAX &&
-                    tour::gpu_scene::ResolveIndexedGeometry(gfxTables, gfxId, geometry);
+                    // Every resident sibling must ALSO have a contiguous
+                    // indexed range. A nonzero geometryId alone is not a
+                    // proof that the indexed command can draw that LOD.
+                    [&]() {
+                        const auto* inst = m_gpuSceneDatabase.instances.Get(instance);
+                        if (!inst)
+                            return false;
+                        const auto* selectedMesh = m_gpuSceneDatabase.meshes.Get(
+                            {inst->refs.x, inst->refs.y});
+                        if (!selectedMesh)
+                            return false;
+                        for (uint32_t level = 0; level < selectedMesh->lodCount; ++level) {
+                            if (!(selectedMesh->residentMask & (1u << level)))
+                                continue;
+                            const auto& lod = m_gpuSceneDatabase.lods.Rows()[
+                                selectedMesh->firstLod + level];
+                            const auto& sub = m_gpuSceneDatabase.submeshes.Rows()[
+                                lod.value.firstSubmesh];
+                            tour::gpu_scene::IndexedGeometry geometry{};
+                            if (!tour::gpu_scene::ResolveIndexedGeometry(
+                                    gfxTables, sub.value.geometryId, geometry))
+                                return false;
+                        }
+                        return true;
+                    }();
                 m_gpuSceneRasterEntries[i] = {key, compatible};
                 compatibleCount += compatible ? 1u : 0u;
             }
