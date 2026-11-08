@@ -68,7 +68,8 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
     // path and the tile-cull min/max over complete depth. Frustum
     // culling below only removes off-screen nodes, so on-screen fallback
     // geometry is still covered.
-    const bool seeded = fc.seedDepthPrimed;
+    const bool seeded = fc.seedDepthPrimed || fc.gpuSceneDepthPrimed;
+    const auto gpuRasterOwnsNode = fc.gpuRasterOwnsNode;
     // Depth is opaque-only (solid + MASK cutout). AlphaMode::Blend
     // transparent is excluded in both modes (dithered and blended) so it
     // never pollutes depth-driven passes (SSAO, HZB, Forward+ tile
@@ -107,7 +108,8 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
     const smvk::LogicalImageViewHandle gbufferView =
         gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{};
     const smvk::AttachmentLoadOp gbufferLoad =
-        fallbackOnly ? smvk::AttachmentLoadOp::Load : smvk::AttachmentLoadOp::Clear;
+        (fallbackOnly || fc.gpuSceneDepthPrimed)
+            ? smvk::AttachmentLoadOp::Load : smvk::AttachmentLoadOp::Clear;
 
     // ---- CPU frustum culling for the prepass ----
     // Static nodes: single ::tour::frustumCullBVH walk over the World's cached
@@ -169,6 +171,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
              hasMainView,
              fallbackOnly,
              lodFilterable,
+             gpuRasterOwnsNode,
              gbufferOn,
              ditherEye,
              skinBda,
@@ -206,6 +209,8 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                     boundMaskedCull = cull;
                 };
                 auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+                    if (gpuRasterOwnsNode && gpuRasterOwnsNode(item.node))
+                        return; // depth/G-buffer already written by GPU scene
                     // Dither-on-closeup (Scene::ditherCloseup; per frame, per
                     // draw): Hidden draws drop out of the depth entirely (the
                     // CPU cull — no leg sees them this frame); Fade draws join
