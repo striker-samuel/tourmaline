@@ -52,8 +52,8 @@ groupshared uint gsFirstKept; // min kept cluster index (0xFFFFFFFF = none)
 [numthreads(128, 1, 1)]
 void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
 {
-    const uint drawIdx = gid.x;
-    const bool drawValid = drawIdx < pcB.drawCount && drawIdx < GFX_MAX_DRAWS;
+    const uint drawIdx = gid.x + gid.y * 65535u;
+    const bool drawValid = drawIdx < pcB.drawCount;
     GfxDraw d;
     d.model = float4x4(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     d.misc = uint4(0, 0, 0, 0);
@@ -95,7 +95,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
             // (skinBoundsValid = 0 — no skinned cluster existed that frame).
             const bool skinned0 = (d.misc.y & GFX_DRAW_SKINNED) != 0;
             float4 mb = (skinned0 && pcB.skinBoundsValid != 0u)
-                ? pcB.skinBounds.Get().drawBound[drawIdx]
+                ? LoadSkinDrawBound(pcB.skinBounds, pcB.capacities.x, drawIdx)
                 : pcB.meshBounds.Get().centerRadius[d.misc.x];
             float3 worldC = mul(d.model, float4(mb.xyz, 1.0f)).xyz;
             gsDrawVisible = GfxSphereInPlanes(gsPlanes, worldC, mb.w * gsBasis);
@@ -105,13 +105,13 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         // always runs before the filter — the rendergraph orders them).
         if (drawIdx == 0)
         {
-            pcB.cullState.Get().v[GFX_CULL_STATE_COUNTER] = 0u;
+            pcB.cullState.Get().v[pcB.capacities.y] = 0u;
             // Reset diagnostic counters before GfxFilter; the rendergraph
             // orders this pass ahead of all filter workgroups.
-            pcB.cullState.Get().v[GFX_DIAG_EMPTY] = 0u;
-            pcB.cullState.Get().v[GFX_DIAG_OVERFLOW] = 0u;
-            pcB.cullState.Get().v[GFX_DIAG_ALLOCATED] = 0u;
-            pcB.cullState.Get().v[GFX_DIAG_GATED] = 0u;
+            pcB.cullState.Get().v[(pcB.capacities.y + 1u)] = 0u;
+            pcB.cullState.Get().v[(pcB.capacities.y + 2u)] = 0u;
+            pcB.cullState.Get().v[(pcB.capacities.y + 3u)] = 0u;
+            pcB.cullState.Get().v[(pcB.capacities.y + 4u)] = 0u;
         }
     }
     GroupMemoryBarrierWithGroupSync();
@@ -124,19 +124,19 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     // (no skinned cluster this frame) leaves every draw on the static table.
     const bool skinned = (d.misc.y & GFX_DRAW_SKINNED) != 0;
     const bool useSkinBounds = skinned && pcB.skinBoundsValid != 0u;
-    const uint keptOff = pcB.keptParity * GFX_MAX_BATCH_SLOTS;
-    const uint prevOff = (1u - pcB.keptParity) * GFX_MAX_BATCH_SLOTS;
+    const uint keptOff = pcB.keptParity * pcB.capacities.x;
+    const uint prevOff = (1u - pcB.keptParity) * pcB.capacities.x;
     const uint maskOk = (d.misc.z & pcB.drawSetMask) != 0u ? 1u : 0u;
 
     for (uint ci = gtid.x; ci < me.clusterCount; ci += 128u)
     {
         const uint slot = base + ci;
-        if (base == 0xFFFFFFFFu || slot >= GFX_MAX_BATCH_SLOTS)
+        if (base == 0xFFFFFFFFu || slot >= pcB.capacities.x)
             continue; // dropped draw / candidate cap: no slot to write
 
         GfxClusterData c;
         if (useSkinBounds)
-            c = pcB.skinBounds.Get().cluster[slot];
+            c = LoadSkinCluster(pcB.skinBounds, slot);
         else
             c = pcB.clusters.Get().cluster[me.clusterStart + ci];
 
@@ -208,7 +208,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         && gsFirstKept < me.clusterCount)
     {
         const uint slot = base + gsFirstKept;
-        if (slot < GFX_MAX_BATCH_SLOTS)
+        if (slot < pcB.capacities.x)
             pcB.batches.Get().batch[slot].w = GFX_BATCH_DEMAND;
     }
 }
