@@ -325,7 +325,8 @@ class CandidateValidator {
         // output from an ordinary visibility mismatch.
         const size_t zeroVerdicts = std::count_if(
             readback.begin(), readback.end(), [](const InstanceCullVerdict& v) {
-                return v.value == glm::uvec4(0u);
+                return v.value.x == 0u && v.value.y == 0u &&
+                       v.value.z == 0u && v.value.w == 0u;
             });
         if (zeroVerdicts != 0)
             std::fprintf(stderr,
