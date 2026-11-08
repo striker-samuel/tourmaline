@@ -173,7 +173,7 @@ static_assert(sizeof(HzbSpdPush) == 104);
     // policy remains unchanged in this refactor.
     if (uint64_t(HzbTotalFloats(w, h)) > kHizShaderMaxFloats) {
         std::fprintf(stderr,
-                     "[VisibilityHiz] %ux%u pyramid exceeds shader float cap %u\\n",
+                     "[VisibilityHiz] %ux%u pyramid exceeds shader float cap %u\n",
                      w, h, kHizShaderMaxFloats);
     }
     const size_t bytes = size_t(HzbTotalFloats(w, h)) * sizeof(float);
