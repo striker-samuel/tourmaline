@@ -84,6 +84,68 @@ struct HzbPush {
 };
 static_assert(sizeof(HzbPush) == 48);
 
+// AMD SPD single-dispatch contract. The same mip buffer layout is used
+// by SPD and the per-mip fallback (byte-identical under finite inputs).
+struct HzbSpdPush {
+    uint64_t hzb = 0;
+    uint64_t counter = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t mipCount = 0;
+    uint32_t depthTextureIndex = UINT32_MAX;
+    uint32_t mipOffsets[kHizMaxMips] = {};
+    uint32_t groupCount = 0;
+    uint32_t pad = 0;
+};
+static_assert(sizeof(HzbSpdPush) == 104);
+
+// Pure CPU ABI helpers: no render graph, GfxFilter state or command buffer.
+// False means the requested level cannot be built; callers must not
+// dispatch a shader with invalid BDA / dimensions.
+[[nodiscard]] inline bool MakeHizMipPush(
+    const HizResources& hz, uint64_t address, uint32_t dstMip,
+    uint32_t depthTextureIndex, HzbPush& out) noexcept {
+    out = {};
+    if (!address || !hz.width || !hz.height ||
+        dstMip >= hz.mipCount || hz.mipCount > kHizMaxMips)
+        return false;
+    out.hzb = address;
+    out.dstMip = dstMip;
+    HzbMipDims(hz.width, hz.height, dstMip, out.dstWidth, out.dstHeight);
+    out.dstOffset = hz.mipOffsets[dstMip];
+    out.depthTextureIndex = depthTextureIndex;
+    if (dstMip == 0u) {
+        out.srcMip = kHizSrcDepth;
+        out.srcWidth = hz.width;
+        out.srcHeight = hz.height;
+    } else {
+        out.srcMip = dstMip - 1u;
+        HzbMipDims(hz.width, hz.height, dstMip - 1u,
+                   out.srcWidth, out.srcHeight);
+        out.srcOffset = hz.mipOffsets[dstMip - 1u];
+    }
+    return true;
+}
+[[nodiscard]] inline bool MakeHizSpdPush(
+    const HizResources& hz, uint64_t address, uint64_t counter,
+    uint32_t depthTextureIndex, HzbSpdPush& out) noexcept {
+    out = {};
+    if (!address || !counter || !hz.width || !hz.height ||
+        !hz.mipCount || hz.mipCount > kHizMaxMips)
+        return false;
+    out.hzb = address;
+    out.counter = counter;
+    out.width = hz.width;
+    out.height = hz.height;
+    out.mipCount = hz.mipCount;
+    out.depthTextureIndex = depthTextureIndex;
+    for (uint32_t k = 0; k < kHizMaxMips; ++k)
+        out.mipOffsets[k] = hz.mipOffsets[k];
+    out.groupCount = ((hz.width + 63u) / 64u) *
+                     ((hz.height + 63u) / 64u);
+    return true;
+}
+
 // Build/replace the acquired flight slice. New storage is initialized to
 // far depth (0.0 in reversed-Z), so uninitialized memory cannot over-cull.
 // On failure, mipCount is zero and both consumers must fail open.
