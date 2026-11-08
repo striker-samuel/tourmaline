@@ -10859,6 +10859,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::uninitialized_value_construct_n(m_gpuSceneRasterEntries, total);
                 m_gpuSceneRasterEntryCapacity = total;
             }
+            // Reuse the AppArena allocation across revisions; only the
+            // occupied prefix is a published snapshot. Do not clear or
+            // destroy it while a current-frame submission can query it.
             bool allCompatible = total != 0 &&
                 m_gpuSceneDatabase.instances.LiveCount() == total;
             const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
@@ -10900,6 +10903,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::span<tour::gpu_scene::RasterOwnershipEntry>(
                     m_gpuSceneRasterEntries, total));
             m_gpuSceneRasterEligible = allCompatible && snapshotValid;
+            // Mixed ownership is recorded, but *not* submitted until GPU
+            // candidate work and every legacy Main/depth path share the
+            // same per-flight mask. In particular, GPU-skinned objects may
+            // not be double-drawn or removed from their existing pipeline.
         }
     } else {
         m_gpuSceneRasterEligible = false;
