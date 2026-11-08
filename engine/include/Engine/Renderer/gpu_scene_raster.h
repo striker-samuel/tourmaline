@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <type_traits>
 
 namespace tour::gpu_scene {
@@ -87,6 +88,17 @@ struct RasterVsPush {
 };
 static_assert(sizeof(RasterViewData) == 96);
 static_assert(sizeof(RasterVsPush) == 32);
+
+// CPU reference for the GPU seed shader. A work-slot index is NOT a
+// visibility identity; only the persistent instance (slot,generation)
+// from the current work row may match the previous survivor snapshot.
+[[nodiscard]] inline bool RasterTemporalSeedMember(
+    std::span<const uint32_t> previousGenerations,
+    InstanceReference instance) noexcept {
+    return instance.generation != 0u &&
+        instance.slot < previousGenerations.size() &&
+        previousGenerations[instance.slot] == instance.generation;
+}
 
 // GPU-created temporal commands preserve ALL per-work-slot identities.
 // The seed is prev-visible intersect current-frustum-visible, and the
