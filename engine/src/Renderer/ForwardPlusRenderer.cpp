@@ -413,7 +413,12 @@ void ForwardPlusRenderer::AppendGpuScenePrepass(
     uint32_t commandCount,
     const tour::gpu_scene::RasterVsPush& vertexPush) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
-    if (!fp || rasterDepth.shaderCount != 1 || fc.ssrGbufferWanted)
+    if (!fp || (rasterDepth.shaderCount != 1 && rasterDepth.shaderCount != 2))
+        return;
+    const bool gbufferOn = fc.ssrGbufferWanted && rasterDepth.shaderCount == 2 &&
+                           !fc.gbufferView.empty() && !fc.gbuffer2View.empty();
+    // A requested G-buffer must not silently render depth alone.
+    if (fc.ssrGbufferWanted && !gbufferOn)
         return;
     smvk::ResourceManager& ctx = *fc.ctx;
     smvk::RenderGraph& rg = *fc.rg;
@@ -424,7 +429,11 @@ void ForwardPlusRenderer::AppendGpuScenePrepass(
         rg, fc.depthView, {fc.extent.width, fc.extent.height},
         "GpuSceneDepth",
         fc.seedDepthPrimed ? smvk::AttachmentLoadOp::Load
-                           : smvk::AttachmentLoadOp::Clear);
+                           : smvk::AttachmentLoadOp::Clear,
+        gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
+        smvk::AttachmentLoadOp::Clear,
+        gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
+        smvk::AttachmentLoadOp::Clear);
     if (commandCount > 0) {
         smvk::BufferSyncRequest indirectRead{};
         indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
