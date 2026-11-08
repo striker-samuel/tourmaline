@@ -10928,8 +10928,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // raster until the GPU-scene lit variant is implemented.
                     mesh->lmChunk == UINT32_MAX &&
                     mesh->lightmapBase == UINT32_MAX &&
-                    (item.mesh >= m_world->lodChains.size() ||
-                     m_world->lodChains[item.mesh].levels.size() == 1) &&
+                    // The GPU work selector resolves the finest resident
+                    // registered LOD. RasterIndexedInstanceReady requires
+                    // complete union bounds for multi-LOD chains; retain
+                    // the static-only, material and stream gates above.
                     gfxId != UINT32_MAX &&
                     tour::gpu_scene::ResolveIndexedGeometry(gfxTables, gfxId, geometry);
                 m_gpuSceneRasterEntries[i] = {key, compatible};
