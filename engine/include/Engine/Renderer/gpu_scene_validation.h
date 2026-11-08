@@ -854,8 +854,13 @@ class CandidateValidator {
         if (!f.workPrepared || f.workCandidates == 0 ||
             f.workCandidates > (f.validate ? 32768u : 1048576u))
             return false;
-        const uint64_t maxCommands = uint64_t(f.workCandidates) * (f.validate ? 16u : 1u);
-        if (maxCommands > 1048576u || maxCommands > UINT32_MAX)
+        const uint64_t workCapacity =
+            uint64_t(f.workCandidates) * (f.validate ? 16u : 1u);
+        // Two fixed pipeline-class ranges: back-cull and double-sided.
+        // Each class preserves work[i] as firstInstance, so the temporal
+        // history/Hi-Z consumers retain persistent instance identity.
+        const uint64_t maxCommands = 2u * workCapacity;
+        if (workCapacity > 1048576u || maxCommands > UINT32_MAX)
             return false;
         if (!Ensure(ctx, f.rasterCommands, f.rasterSize,
                     size_t(maxCommands) * sizeof(RasterIndirectCommand),
@@ -867,7 +872,7 @@ class CandidateValidator {
         if (!work || !offsets || !output)
             return false;
         push = {work, offsets, geometryAddress, output, f.workCandidates,
-                geometryCount, uint32_t(maxCommands), 0};
+                geometryCount, uint32_t(maxCommands), uint32_t(workCapacity)};
         commands = f.rasterCommands;
         return true;
     }
