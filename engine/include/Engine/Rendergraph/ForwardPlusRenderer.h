@@ -91,7 +91,7 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
     // program when !fc.ssrGbufferWanted, or the material-aware GPU-scene
     // VS+G-buffer FS program when the thin receiver attachments are used.
     // Missing shader variants must fall back to AppendPrepass.
-    void AppendGpuScenePrepass(smvk::FrameContext& fc,
+    [[nodiscard]] bool AppendGpuScenePrepass(smvk::FrameContext& fc,
                                smvk::ShaderProgram rasterDepth,
                                smvk::BufferHandle indirect,
                                smvk::LogicalBufferHandle indirectLogical,
