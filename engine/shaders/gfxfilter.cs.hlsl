@@ -434,26 +434,43 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
             pcF.indices.Get().idx[baseIndex + 0],
             pcF.indices.Get().idx[baseIndex + 1],
             pcF.indices.Get().idx[baseIndex + 2]);
-        float4x4 model = pcF.draws.Get().draws[header.y].model;
-        // Per-triangle cull flags: the view's flags, minus the backface
-        // test for DOUBLE-SIDED draws (GFX_DRAW_DOUBLESIDED — the
-        // rasterizer draws both faces, so the filtered list must keep
-        // them; the faces the rasterizer now draws would otherwise be
-        // dropped here exactly once each).
+        const GfxDraw draw = pcF.draws.Get().draws[header.y];
+        // This indexed filter only has the BIND-POSE position heap. The
+        // raster VS fetches DEFORMED positions for skinned draws, so
+        // backface/frustum/small-primitive decisions made on the bind
+        // pose can reject triangles visible in the animated pose.
+        // Retain index-degenerate rejection, but leave pose-dependent
+        // triangle culling to the rasterizer (the earlier skinBounds
+        // stages already test deformed cluster bounds). The mesh-shader
+        // path fetches deformed positions directly and remains unchanged.
         uint triCullFlags = pcF.cullFlags;
-        if ((pcF.draws.Get().draws[header.y].misc.y & GFX_DRAW_DOUBLESIDED) != 0)
+        if ((draw.misc.y & GFX_DRAW_SKINNED) != 0)
+            triCullFlags &= ~(uint) (GFX_CULL_BACKFACE | GFX_CULL_FRUSTUM | GFX_CULL_SMALLPRIM);
+        // A double-sided material renders both windings; its filter must
+        // not reject backfaces even for static geometry.
+        if ((draw.misc.y & GFX_DRAW_DOUBLESIDED) != 0)
             triCullFlags &= ~(uint) GFX_CULL_BACKFACE;
-        float4 clip[3];
-        [unroll]
-        for (int k = 0; k < 3; ++k)
+
+        float4 clip[3] = {
+            float4(0.0f, 0.0f, 0.0f, 1.0f),
+            float4(0.0f, 0.0f, 0.0f, 1.0f),
+            float4(0.0f, 0.0f, 0.0f, 1.0f)
+        };
+        // No need to read/project bind-pose vertices when only the
+        // index-degenerate test remains active.
+        if ((triCullFlags & (GFX_CULL_BACKFACE | GFX_CULL_FRUSTUM | GFX_CULL_SMALLPRIM)) != 0)
         {
-            uint vi = (k == 0) ? tri.x : ((k == 1) ? tri.y : tri.z);
-            uint wbase = vi * 3;
-            float3 p = float3(
-                asfloat(pcF.positions.Get().words[wbase + 0]),
-                asfloat(pcF.positions.Get().words[wbase + 1]),
-                asfloat(pcF.positions.Get().words[wbase + 2]));
-            clip[k] = mul(pcF.viewProj, mul(model, float4(p, 1.0f)));
+            [unroll]
+            for (int k = 0; k < 3; ++k)
+            {
+                uint vi = (k == 0) ? tri.x : ((k == 1) ? tri.y : tri.z);
+                uint wbase = vi * 3;
+                float3 p = float3(
+                    asfloat(pcF.positions.Get().words[wbase + 0]),
+                    asfloat(pcF.positions.Get().words[wbase + 1]),
+                    asfloat(pcF.positions.Get().words[wbase + 2]));
+                clip[k] = mul(pcF.viewProj, mul(draw.model, float4(p, 1.0f)));
+            }
         }
         cull = CullTriangle(tri, clip[0], clip[1], clip[2], triCullFlags)
             || (gClusterCull != 0);
