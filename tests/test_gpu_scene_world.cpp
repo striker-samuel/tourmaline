@@ -3,6 +3,7 @@
 // Headless contracts for the GPUIR World -> GPU scene bridge.
 #include <Engine/Renderer/gpu_scene_instancing.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
+#include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Scene/scene.h>
 #include <cstdio>
@@ -39,6 +40,29 @@ int main() {
               cmd.firstInstance == 12345);
         const RasterGroup empty{4, 0, 0, 0};
         CHECK(MakeRasterCommand(geo, empty).instanceCount == 0);
+    }
+    // A Gfx mesh registration is only legal for one indexed command when
+    // its cooked cluster index intervals are contiguous and in order.
+    {
+        smvk::gfx::State gfx{};
+        gfx.meshes.emplace_back(smvk::gfx::Mesh{0, 2});
+        smvk::gfx::Cluster first{};
+        first.mesh = 0;
+        first.indexOffset = 0;
+        first.triCount = 2;
+        smvk::gfx::Cluster second{};
+        second.mesh = 0;
+        second.indexOffset = 6;
+        second.triCount = 3;
+        gfx.clusters.push_back(first);
+        gfx.clusters.push_back(second);
+        IndexedGeometry indexed{};
+        CHECK(ResolveIndexedGeometry(gfx, 0, indexed));
+        CHECK(indexed.indexCount == 15 && indexed.vertexOffset == 0);
+        CHECK(!ResolveIndexedGeometry(gfx, 1, indexed));
+        gfx.clusters[1].indexOffset = 7; // not a contiguous index interval
+        CHECK(!ResolveIndexedGeometry(gfx, 0, indexed));
+        CHECK(indexed.indexCount == 0);
     }
     // Geometry-only revisions must not revisit CPU drawItems or reconcile
     // the complete instance registry. The empty World tests the control
