@@ -4,6 +4,7 @@
 #include <Engine/Renderer/gpu_scene_instancing.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
+#include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Scene/scene.h>
 #include <cstdio>
@@ -30,6 +31,23 @@ int g_failures = 0;
 using namespace tour::gpu_scene;
 
 int main() {
+    // Every compute invocation writes a verdict header, even when it
+    // rejects an invalid leaf/member. Zero-filled readback is not a valid
+    // visibility verdict; the slot is either unwritten or misaddressed.
+    {
+        InstanceCullVerdict empty{};
+        empty.value = glm::uvec4(0u);
+        CHECK(IsUnwrittenCullVerdict(empty));
+        InstanceCullVerdict invalid{};
+        invalid.value = glm::uvec4(InvalidIndex, 0u, 0u, 0u);
+        CHECK(!IsUnwrittenCullVerdict(invalid));
+        InstanceCullVerdict visible{};
+        visible.value = glm::uvec4(0u, 1u, 1u, 0u);
+        CHECK(!IsUnwrittenCullVerdict(visible));
+        InstanceCullVerdict culled{};
+        culled.value = glm::uvec4(0u, 1u, 0u, 0u);
+        CHECK(!IsUnwrittenCullVerdict(culled));
+    }
     // GPU-generated indexed draw commands must exactly match Vulkan's ABI.
     {
         const IndexedGeometry geo{231, 400, -12, 0};
