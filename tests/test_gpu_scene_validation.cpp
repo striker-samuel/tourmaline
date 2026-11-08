@@ -215,6 +215,14 @@ void CheckSubmeshWorkExpansion() {
     CHECK(work[0].detail.x == 0u);
     CHECK(work[1].detail.y == subs[1].slot);
     CHECK(work[1].detail.w == 302u);
+    CHECK(work[0].detail.z == 0u); // back-cull raster class
+    instance.refs.w |= InstanceFlagDoubleSided;
+    CHECK(db.instances.Update(id, instance));
+    work = ReferenceExpandWork(db, visible);
+    CHECK(work.size() == 2u && work[0].detail.z == 1u &&
+          work[1].detail.z == 1u); // two-sided material class
+    instance.refs.w &= ~InstanceFlagDoubleSided;
+    CHECK(db.instances.Update(id, instance));
 
     // Unregistered submeshes are excluded without a hole in the output.
     CHECK(db.submeshes.Update(subs[0], Submesh{}));
