@@ -10885,10 +10885,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     item.materialInstance == 0 &&
                     m_world->MaterialUserData(item.material) == 0 &&
                     !m_gfxRenderer.MaterialProjectFamily(item.material) &&
+                    !m_gfxRenderer.MaterialLayered(item.material) &&
                     item.node < m_world->scene.globalTransform.size() &&
                     (item.node >= m_world->scene.ditherCloseup.size() ||
                      m_world->scene.ditherCloseup[item.node] == 0) &&
                     mesh && !mesh->skinned && mesh->geometry.surfaces.size() == 1 &&
+                    // Packed vertex lightmaps use a different shader path;
+                    // leave those objects with the legacy filtered/direct
+                    // raster until the GPU-scene lit variant is implemented.
+                    mesh->lmChunk == UINT32_MAX &&
+                    mesh->lightmapBase == UINT32_MAX &&
                     (item.mesh >= m_world->lodChains.size() ||
                      m_world->lodChains[item.mesh].levels.size() == 1) &&
                     gfxId != UINT32_MAX &&
@@ -11586,9 +11592,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     if (s_gpuSceneRaster &&
         m_gpuSceneRasterDrawActive != m_gpuSceneRasterPreviouslyActive) {
         std::fprintf(stderr,
-                     "[GpuSceneRaster] %s candidates/maxCommands=%u"
-                     " (Main indexed GPU work; legacy fallback on ineligible frames)\n",
-                     m_gpuSceneRasterDrawActive ? "active" : "fallback",
+                     "[GpuSceneRaster] %s admittedStatic=%u legacySources=%u"
+                     " candidates/maxCommands=%u (opt-in indexed Main)\n",
+                     !m_gpuSceneRasterDrawActive ? "fallback"
+                     : m_gpuSceneRasterLegacyCount ? "mixed" : "active",
+                     m_gpuSceneRasterDrawActive ? m_gpuSceneRasterCompatibleCount : 0u,
+                     m_gpuSceneRasterDrawActive ? m_gpuSceneRasterLegacyCount : 0u,
                      m_gpuSceneRasterDrawActive ? m_gpuSceneRasterDrawCapacity : 0u);
         m_gpuSceneRasterPreviouslyActive = m_gpuSceneRasterDrawActive;
     }
