@@ -28,6 +28,7 @@
 
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gfx_dynamic_capacity.h>
 #include <Engine/debug_log.h>
 // Detail diagnostics (winding/cull/spawn/mirror traces) print in debug
 // builds only; PASS/FAIL lines and the final summary always print.
@@ -2721,7 +2722,33 @@ void TestMaterialFamilyPrograms() {
           "gfx.family-wire-twin-identity-gi");
 }
 
+void TestDynamicCapacity() {
+    using namespace smvk::gfx;
+    GrowableCapacity cap{};
+    Check(GrowGfxCapacities(0, 0, 0, 0, 112, 16, cap) &&
+              cap.draws == 0 && cap.candidates == 0,
+          "gfx.capacity.zero");
+    Check(GrowGfxCapacities(1, 1, 0, 0, 112, 16, cap) &&
+              cap.draws == 585 && cap.candidates == 4096,
+          "gfx.capacity.first-page");
+    Check(GrowGfxCapacities(65536, 262145, cap.draws, cap.candidates,
+                            112, 16, cap) &&
+              cap.draws >= 65536 && cap.candidates >= 262145,
+          "gfx.capacity.past-legacy-constants");
+    const auto grown = cap;
+    Check(GrowGfxCapacities(10, 100, cap.draws, cap.candidates,
+                            112, 16, cap) &&
+              cap.draws == grown.draws &&
+              cap.candidates == grown.candidates,
+          "gfx.capacity.no-shrink");
+    uint32_t bytes = 0;
+    Check(!GrowCapacity(UINT32_MAX, 0, UINT32_MAX, bytes),
+          "gfx.capacity.overflow-rejected");
+    Check(!GrowCapacity(1, 0, 0, bytes), "gfx.capacity.zero-stride-rejected");
+}
+
 int main() {
+    TestDynamicCapacity();
     TestWindingSign();
     TestRegistration();
     TestBatching();
