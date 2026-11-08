@@ -13325,7 +13325,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 temporalCommands, temporalSlots,
                 uint32_t(m_gpuSceneDatabase.meshes.Size()),
                 hz.width, hz.height, hz.mipCount, previousHistorySlots,
-                gpuHistoryValid ? 1u : 0u, 0u};
+                gpuHistoryValid ? 1u : 0u,
+                (uint32_t(m_gfxRenderer.config.cullFlags) &
+                 uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion)) != 0u ? 1u : 0u};
             auto& gate = m_rendergraph->AddComputePass("GpuSceneHizCull");
             smvk::BufferSyncRequest indirectRW{};
             indirectRW.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
