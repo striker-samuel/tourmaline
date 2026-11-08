@@ -10862,8 +10862,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // Reuse the AppArena allocation across revisions; only the
             // occupied prefix is a published snapshot. Do not clear or
             // destroy it while a current-frame submission can query it.
-            bool allCompatible = total != 0 &&
-                m_gpuSceneDatabase.instances.LiveCount() == total;
+            uint32_t compatibleCount = 0;
             const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
             constexpr uint32_t requiredFlags =
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
@@ -10895,14 +10894,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     gfxId != UINT32_MAX &&
                     tour::gpu_scene::ResolveIndexedGeometry(gfxTables, gfxId, geometry);
                 m_gpuSceneRasterEntries[i] = {key, compatible};
-                allCompatible &= compatible;
+                compatibleCount += compatible ? 1u : 0u;
             }
             // Publish sorts and rejects duplicate source keys: two draw
             // records for one source must not silently share ownership.
             const bool snapshotValid = m_gpuSceneRasterOwnership.Publish(
                 std::span<tour::gpu_scene::RasterOwnershipEntry>(
                     m_gpuSceneRasterEntries, total));
-            m_gpuSceneRasterEligible = allCompatible && snapshotValid;
+            m_gpuSceneRasterCompatibleCount = snapshotValid ? compatibleCount : 0u;
+            m_gpuSceneRasterLegacyCount =
+                uint32_t(total) - m_gpuSceneRasterCompatibleCount;
+            m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
             // Mixed ownership is recorded, but *not* submitted until GPU
             // candidate work and every legacy Main/depth path share the
             // same per-flight mask. In particular, GPU-skinned objects may
@@ -10910,6 +10912,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     } else {
         m_gpuSceneRasterEligible = false;
+        m_gpuSceneRasterCompatibleCount = 0;
+        m_gpuSceneRasterLegacyCount = m_world
+            ? uint32_t(m_world->drawItems.size()) : 0u;
         m_gpuSceneRasterOwnership.Reset();
         // Transient publication failures must not keep stale eligibility.
         m_gpuSceneRasterEligibilityWorld = nullptr;
