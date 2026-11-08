@@ -214,8 +214,15 @@ static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
 
 static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
     for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
-        v.batchBuffers[f] = ctx.CreateBuffer(kBatchBufferBytes, BufferType_Storage, "gfx batches");
-        v.drawBuffers[f] = ctx.CreateBuffer(kDrawBufferBytes, BufferType_Storage, "gfx draws");
+        uint32_t drawCap = 0, candidateCap = 0;
+        if (!GrowCapacity(1, 0, sizeof(Draw), drawCap) ||
+            !GrowCapacity(1, 0, sizeof(Batch), candidateCap))
+            return false;
+        v.flightCapacity[f] = {drawCap, candidateCap};
+        v.batchBuffers[f] = ctx.CreateGpuSceneBuffer(
+            size_t(candidateCap) * sizeof(Batch), "gfx batches");
+        v.drawBuffers[f] = ctx.CreateGpuSceneBuffer(
+            size_t(drawCap) * sizeof(Draw), "gfx draws");
         // Filtered-index scratch is a persistent region in the static index
         // monoblock (not a VkBuffer): draws address it absolutely, so the
         // index binding never switches. One region per flight slice.
@@ -231,16 +238,18 @@ static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
         // would need explicit queue-ownership transfers every frame.
         // Usage flags cover INDIRECT_BUFFER_BIT regardless (see
         // bufferTypeToUsageFlags).
-        v.indirectBuffers[f] = ctx.CreateBuffer(kIndirectBytes, BufferType_Storage, "gfx indirect");
+        v.indirectBuffers[f] = ctx.CreateGpuSceneBuffer(
+            size_t(candidateCap) * sizeof(SeedCommand), "gfx indirect");
         // GPU cull chain state (kept-bit parity ring + verdict/counter
         // words). Zero-filled at creation so the first frames seed nothing
         // (prev-kept = 0 -> empty seed, remainder = all kept — the same
         // arming behavior InvalidateHistory gives); every
         // candidate slot gets a definitive 0/1 write per frame afterwards,
         // so no per-frame clearing upload exists.
-        v.keptBuffers[f] = ctx.CreateBuffer(kKeptBytes, BufferType_Storage, "gfx keptBits");
-        v.cullStateBuffers[f] =
-            ctx.CreateBuffer(kCullStateBytes, BufferType_Storage, "gfx cullState");
+        v.keptBuffers[f] = ctx.CreateGpuSceneBuffer(
+            size_t(candidateCap) * 2u * sizeof(uint32_t), "gfx keptBits");
+        v.cullStateBuffers[f] = ctx.CreateGpuSceneBuffer(
+            size_t(drawCap + 5u) * sizeof(uint32_t), "gfx cullState");
         if (v.batchBuffers[f].empty() || v.drawBuffers[f].empty() || v.indirectBuffers[f].empty() ||
             v.keptBuffers[f].empty() || v.cullStateBuffers[f].empty()) {
             RollbackSlotBuffers(rg, v, f);
@@ -248,18 +257,20 @@ static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
         }
         // Creation zero-fill (the kept ring is 2MB — one shared static fill).
         static std::vector<uint8_t> s_zeroFill;
-        if (s_zeroFill.size() < kKeptBytes)
-            s_zeroFill.assign(kKeptBytes, 0);
+        const size_t keptBytes = size_t(candidateCap) * 2u * sizeof(uint32_t);
+        const size_t stateBytes = size_t(drawCap + 5u) * sizeof(uint32_t);
+        if (s_zeroFill.size() < (std::max)(keptBytes, stateBytes))
+            s_zeroFill.assign((std::max)(keptBytes, stateBytes), 0);
         ctx.UploadDataToBuffer(v.keptBuffers[f],
                                s_zeroFill.data(),
-                               kKeptBytes,
+                               keptBytes,
                                PipelineStage(PipelineStageBit_Compute),
                                AccessFlags::ShaderRead | AccessFlags::ShaderWrite,
                                0,
                                0);
         ctx.UploadDataToBuffer(v.cullStateBuffers[f],
                                s_zeroFill.data(),
-                               kCullStateBytes,
+                               stateBytes,
                                PipelineStage(PipelineStageBit_Compute),
                                AccessFlags::ShaderRead | AccessFlags::ShaderWrite,
                                0,
