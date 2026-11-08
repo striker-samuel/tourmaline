@@ -53,8 +53,9 @@ GPU_PUSH(RasterHizPush, pcH);
 [numthreads(64, 1, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID) {
     const uint i = tid.x;
-    if (i >= pcH.commandCapacity || i >= GS_RASTER_MAX_WORK)
-        return;
+    if (i >= pcH.commandCapacity || i >= GS_RASTER_MAX_WORK ||
+        pcH.reserved == 0u)
+        return; // HZB culling disabled; still build the pyramid/history.
     RasterIndirectCommand cmd = pcH.commands.Get().rows[i];
     if (cmd.indexCount == 0u || cmd.instanceCount == 0u ||
         cmd.firstInstance >= GS_RASTER_MAX_WORK ||
