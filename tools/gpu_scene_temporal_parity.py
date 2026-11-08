@@ -22,7 +22,7 @@ Legs (each a tools/tourcapture.py run + pixel_compare):
   1. determinism: temporal ON twice -> must be pixel-identical (the
      noise floor that makes every later comparison meaningful)
   2. temporal parity: ON vs TOURMALINE_GPU_SCENE_TEMPORAL=0 -> identical
-  3. Hi-Z parity (default on): ON vs TOURMALINE_CULL_FLAGS with the HZB
+  3. Hi-Z parity (default on): ON vs TOURMALINE_CULLFLAGS with the HZB
      occlusion bit (0x40) cleared -> identical (bit 0x40 gates BOTH the
      gpu-scene instance gate and GfxFilter's cluster-level HZB test, so
      this leg proves neither over-culls; the default --hiz-off-flags
@@ -64,7 +64,7 @@ HZB_OCCLUSION_BIT = 0x40
 # (observed as the GfxFilter dispatch default 0x24b; see the docstring).
 DEFAULT_HIZ_OFF_FLAGS = 0x20B
 TEMPORAL_OFF_PIN = "TOURMALINE_GPU_SCENE_TEMPORAL=0"
-CULL_FLAGS_NAME = "TOURMALINE_CULL_FLAGS"
+CULL_FLAGS_NAME = "TOURMALINE_CULLFLAGS"
 
 
 def witness_count(app_log_text: str) -> int:
@@ -187,7 +187,7 @@ def parser():
                    help="the determinism floor itself must stay under this many differing "
                         "pixels or the gate fails outright (default %(default)s)")
     p.add_argument("--hiz-off-flags", default=f"{DEFAULT_HIZ_OFF_FLAGS:#x}",
-                   help="TOURMALINE_CULL_FLAGS value for the Hi-Z-off leg "
+                   help="TOURMALINE_CULLFLAGS value for the Hi-Z-off leg "
                         "(default %(default)s: engine default with bit 0x40 clear)")
     p.add_argument("--output", required=True, type=Path, help="gate output directory")
     p.add_argument("--overwrite", action="store_true",
