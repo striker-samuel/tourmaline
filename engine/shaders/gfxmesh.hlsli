@@ -43,8 +43,12 @@
 // (GfxDraw.misc2.w = lightmapBase - meshVertexBase, 0xFFFFFFFF = none).
 struct GfxShadingHeap { uint words[GFX_MAX_VERTICES * 4]; };
 struct GfxLightmapHeap { uint words[GFX_MAX_VERTICES * 2]; };
-// Compacted eligible batch indices for one variant dispatch.
-struct GfxMeshBatchList { uint batch[GFX_MAX_BATCHES * 2]; };
+// Compacted eligible batch indices for one variant dispatch. Declared at
+// the candidate-slot capacity (the runtime mesh batch list buffer is
+// candidate-sized — grown with the dynamic cutover; the old
+// GFX_MAX_BATCHES * 2 declaration under-sized the fixed buffer it
+// backed).
+struct GfxMeshBatchList { uint batch[GFX_MAX_BATCH_SLOTS]; };
 // DEFORMED vertex heap: 5 words per vertex [pos3 asuint, packed normal,
 // packed tangent], fetched at (vi - params.deformedBase) * 5 by skinned
 // draws (GFX_DRAW_SKINNED) and by the cull chain's GfxSkinBounds pass.

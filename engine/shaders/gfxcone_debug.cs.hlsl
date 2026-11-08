@@ -69,8 +69,8 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     for (uint ci = gtid.x; ci < me.clusterCount; ci += 128u)
     {
         const uint slot = base + ci;
-        if (base == 0xFFFFFFFFu || slot >= GFX_MAX_BATCH_SLOTS)
-            continue; // dropped draw / candidate cap: no slot to write
+        if (base == 0xFFFFFFFFu || slot >= pcG.candidateCapacity)
+            continue; // dropped draw / belt-and-braces capacity guard
 
         // The cone: struct ternaries are not HLSL — spelled out. The
         // `skinned` fold above picked the table.

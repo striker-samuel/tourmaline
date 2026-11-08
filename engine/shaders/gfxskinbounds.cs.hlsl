@@ -98,8 +98,8 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     for (uint ci = gtid.x; ci < me.clusterCount; ci += 128u)
     {
         const uint slot = base + ci;
-        if (base == 0xFFFFFFFFu || slot >= GFX_MAX_BATCH_SLOTS)
-            continue; // dropped draw / candidate cap: no slot to write
+        if (base == 0xFFFFFFFFu || slot >= pcS.candidateCapacity)
+            continue; // dropped draw / belt-and-braces capacity guard
 
         const GfxClusterData c = pcS.clusters.Get().cluster[me.clusterStart + ci];
         const uint idxOff = c.a.x;
@@ -261,10 +261,13 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         // draw, invalid mesh): the definitive keep-sphere, the same
         // convention FinishMesh's NaN guard uses (radius 1e30 keeps every
         // test; such draws issue no batches anyway).
+        // The tail write goes through the flat-view helper (the runtime
+        // candidate capacity is its offset — see GfxSkinBoundsTable).
         if (mn.x <= mx.x && mn.y <= mx.y && mn.z <= mx.z)
-            pcS.skinBounds.Get().drawBound[drawIdx] =
-                float4((mn + mx) * 0.5f, length((mx - mn) * 0.5f));
+            GfxSkinSetDrawBound(pcS.skinBounds, pcS.candidateCapacity, drawIdx,
+                float4((mn + mx) * 0.5f, length((mx - mn) * 0.5f)));
         else
-            pcS.skinBounds.Get().drawBound[drawIdx] = float4(0.0f, 0.0f, 0.0f, 1e30f);
+            GfxSkinSetDrawBound(pcS.skinBounds, pcS.candidateCapacity, drawIdx,
+                float4(0.0f, 0.0f, 0.0f, 1e30f));
     }
 }

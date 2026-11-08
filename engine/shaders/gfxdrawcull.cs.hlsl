@@ -70,7 +70,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID)
             GFX_CULL_GUARD_PX * 2.0f / max((float) pcD.height, 1.0f),
             planes);
         float4 bound = useSkinBounds
-            ? pcD.skinBounds.Get().drawBound[drawIdx]
+            ? GfxSkinDrawBound(pcD.skinBounds, pcD.skinBoundsCandidateCapacity, drawIdx)
             : pcD.meshBounds.Get().centerRadius[d.misc.x];
         float3 worldC = mul(d.model, float4(bound.xyz, 1.0f)).xyz;
         float worldR = bound.w * GfxMaxBasisScale(d.model);

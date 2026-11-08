@@ -74,39 +74,61 @@ void GfxProbeReport() {
 }
 } // namespace
 
-static constexpr size_t kBatchBufferBytes = kMaxBatchSlots * sizeof(Batch);
-static constexpr size_t kDrawBufferBytes = kMaxDraws * sizeof(Draw);
-// The filtered ring stays sized by SURVIVORS (kMaxBatches): candidate
-// slots allocate their filtered ranges through the filter's atomic counter,
-// clamped at this capacity (the GPU twin of the old CPU cap + warning).
+// THE DYNAMIC-CAPACITY CUTOVER (docs/gfx_dynamic_capacity_gpu_default.md):
+// the per-(view, flight) draw/candidate rings are sized by RUNTIME
+// capacities (page-planned, grow-only — see GrowViewCapacity below), not
+// the historical fixed constants. The helpers keep every stride next to
+// its buffer; the SURVIVOR-CAPPED allocations stay compile-time (the
+// separately-budgeted static heap: the filtered ring, the vis-cluster
+// mirror and the shadow indirect list — kMaxBatches, unchanged).
 static constexpr size_t kFilteredBytes = kMaxBatches * kMaxClusterTris * 3 * sizeof(uint32_t);
-static constexpr size_t kIndirectBytes = kMaxBatchSlots * 20; // VkDrawIndexedIndirectCommand
 static constexpr size_t kVisClusterBytes = kMaxBatches * sizeof(VisibleCluster);
-static constexpr size_t kVisDrawBytes = kMaxDraws * sizeof(Draw);
-// Temporal seed/remainder command arrays: candidate-slot capacity (one
-// positional command per candidate).
-static constexpr size_t kSeedIndirectBytes = kMaxBatchSlots * sizeof(SeedCommand);
 // Shadow-list indirect arrays: survivor-capped (the CPU shadow path emits
 // only surviving commands, kMaxBatches — no candidate positional layout).
 static constexpr size_t kShadowIndirectBytes = kMaxBatches * sizeof(SeedCommand);
-// GPU cull chain per-(view, flight) buffers: the kept-bit ring (two parity
-// regions inside one buffer — the frame with parity P writes region P and
-// reads 1-P, written smvk::limits::MaxFramesInFlight frames earlier, flight-fenced
-// complete) and the cullState words (draw verdicts + the filter's atomic
-// filtered-offset counter).
-static constexpr size_t kKeptBytes = kMaxBatchSlots * 2 * sizeof(uint32_t);
-static constexpr size_t kCullStateBytes = kCullStateWords * sizeof(uint32_t);
-// Deformed cluster bounds (GfxSkinBounds output, the GfxSkinBoundsTable): one
-// GfxClusterData per candidate slot + the per-draw deformed union-bound tail
-// (one vec4 per draw index), indexed exactly like the batch cull's candidate
-// slots so multi-instance skinned draws stay independent.
-static constexpr size_t kSkinBoundsBytes =
-    kMaxBatchSlots * sizeof(ClusterConstants) + kMaxDraws * sizeof(glm::vec4);
-// Cone-axis debug lines (GfxConeDebug output): two packed DebugLineVertex
-// float3s (12B) per candidate slot — the dense candidate-space prefix, so
-// [0, 2*candidateTotal) is exactly the written range. Lazily allocated
-// once (the overlay's UI toggle arms it) and reused every debug frame.
-static constexpr size_t kConeDebugLinesBytes = kMaxBatchSlots * 2 * 12;
+// Runtime-sized allocation helpers (strides pinned by the C++/HLSL
+// static_asserts; capacities are page multiples of these).
+static size_t DrawRingBytes(uint32_t drawCapacity) {
+    return size_t(drawCapacity) * sizeof(Draw);
+}
+static size_t CandidateBatchBytes(uint32_t candidateCapacity) {
+    return size_t(candidateCapacity) * sizeof(Batch);
+}
+static size_t IndirectCmdBytes(uint32_t candidateCapacity) {
+    return size_t(candidateCapacity) * 20u; // VkDrawIndexedIndirectCommand
+}
+static size_t KeptRingBytes(uint32_t candidateCapacity) {
+    return 2u * size_t(candidateCapacity) * sizeof(uint32_t); // two parity regions
+}
+static size_t CullStateWordsOf(uint32_t drawCapacity) {
+    return size_t(drawCapacity) + 5u; // verdicts + counter + 4 diag words
+}
+static size_t CullStateBytes(uint32_t drawCapacity) {
+    return CullStateWordsOf(drawCapacity) * sizeof(uint32_t);
+}
+static size_t SeedIndirectBytes(uint32_t candidateCapacity) {
+    return size_t(candidateCapacity) * sizeof(SeedCommand);
+}
+static size_t SkinBoundsBytes(uint32_t candidateCapacity, uint32_t drawCapacity) {
+    return size_t(candidateCapacity) * sizeof(ClusterConstants) +
+           size_t(drawCapacity) * sizeof(glm::vec4);
+}
+static size_t ConeDebugLinesBytes(uint32_t candidateCapacity) {
+    return size_t(candidateCapacity) * 2u * 12u; // two packed float3 verts per slot
+}
+static size_t MeshBatchListBytes(uint32_t candidateCapacity) {
+    return size_t(candidateCapacity) * sizeof(uint32_t);
+}
+// First-page capacity for a stride (the minimum allocation every ring
+// starts at — BeginView claims slots before the frame's counts exist, so
+// the logicals are always live and the first FinalizeView grows to the
+// frame's exact need).
+static uint32_t PageMinCapacity(size_t stride) {
+    size_t cap = 0;
+    if (!RoundCapacity(1, stride, cap) || cap > std::numeric_limits<uint32_t>::max())
+        std::abort(); // stride > 64 KiB page: a static_assert-class bug
+    return uint32_t(cap);
+}
 
 static_assert(sizeof(smvk::StaticHeapArena::AllocId) == sizeof(uint64_t),
               "the arena token must fit the opaque uint64_t region fields in gfx_filter.h");
@@ -190,13 +212,74 @@ static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
     // Holders release their buffers automatically on scope exit.
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic-capacity grow-rebind (the cutover's ONE allocation primitive)
+// ---------------------------------------------------------------------------
+
+// Grow-rebind one ring: create the replacement at the new size, register
+// its rendergraph logical, drop the old alias, reassign the Holder. The
+// OLD physical buffer retires on the graphics timeline (the Holder
+// release routes through smvk::destroy's deferred DestroyBufferNow —
+// smvk::destroy is retire-ordered precisely because buffers are
+// referenced by in-flight draws/indirect args), and this frame's passes —
+// recorded AFTER FinalizeView, the only grow site — pick up the new
+// logical. False ONLY on allocation failure (the caller decides the
+// policy; the grow sites treat it as fatal — there is no safe
+// continuation on a too-small ring).
+static bool RebindBuffer(ResourceManager& ctx,
+                         RenderGraph& rg,
+                         Holder<BufferHandle>& buffer,
+                         LogicalBufferHandle& logical,
+                         size_t bytes,
+                         const char* name) {
+    Holder<BufferHandle> fresh = ctx.CreateBuffer(bytes, BufferType_Storage, name);
+    if (fresh.empty())
+        return false;
+    const LogicalBufferHandle freshLogical = rg.AddExternalBuffer(fresh, name);
+    if (freshLogical.empty())
+        return false; // fresh retires via its Holder on scope exit
+    if (!logical.empty())
+        rg.FreeBuffer(logical); // past frames already executed; drop the alias
+    logical = freshLogical;
+    buffer = std::move(fresh); // the old physical retires deferred
+    return true;
+}
+
+// Creation zero-fill for GPU-counter-class buffers (the repo convention:
+// DEVICE_LOCAL fresh allocations recycle freed pages, so a counter that
+// starts from garbage MMU-faults or corrupts the cull chain). The fill
+// buffer grows to the largest size ever requested (growth is rare).
+static void ZeroFillBuffer(ResourceManager& ctx, BufferHandle handle, size_t bytes) {
+    if (bytes == 0)
+        return;
+    static std::vector<uint8_t> s_zeroFill;
+    if (s_zeroFill.size() < bytes)
+        s_zeroFill.assign(bytes, 0);
+    ctx.UploadDataToBuffer(handle,
+                           s_zeroFill.data(),
+                           bytes,
+                           PipelineStage(PipelineStageBit_Compute),
+                           AccessFlags::ShaderRead | AccessFlags::ShaderWrite,
+                           0,
+                           0);
+}
+
 static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
     for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
-        v.batchBuffers[f] = ctx.CreateBuffer(kBatchBufferBytes, BufferType_Storage, "gfx batches");
-        v.drawBuffers[f] = ctx.CreateBuffer(kDrawBufferBytes, BufferType_Storage, "gfx draws");
+        // First-page initial capacities (BeginView claims the slot before
+        // the frame's counts exist; the first FinalizeView grows every
+        // ring to the frame's exact need — see GrowViewCapacity).
+        v.drawCapacity[f] = PageMinCapacity(sizeof(Draw));
+        v.candidateCapacity[f] = PageMinCapacity(sizeof(Batch));
+        v.batchBuffers[f] =
+            ctx.CreateBuffer(CandidateBatchBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx batches");
+        v.drawBuffers[f] =
+            ctx.CreateBuffer(DrawRingBytes(v.drawCapacity[f]), BufferType_Storage, "gfx draws");
         // Filtered-index scratch is a persistent region in the static index
         // monoblock (not a VkBuffer): draws address it absolutely, so the
         // index binding never switches. One region per flight slice.
+        // SURVIVOR-CAPPED (kMaxBatches — the separately-budgeted static
+        // heap; the dynamic cutover deliberately does not grow it).
         if (!AllocIndexRegion((uint32_t)(kFilteredBytes / sizeof(uint32_t)),
                               v.filteredBase[f],
                               v.filteredAllocBits[f])) {
@@ -209,39 +292,26 @@ static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
         // would need explicit queue-ownership transfers every frame.
         // Usage flags cover INDIRECT_BUFFER_BIT regardless (see
         // bufferTypeToUsageFlags).
-        v.indirectBuffers[f] = ctx.CreateBuffer(kIndirectBytes, BufferType_Storage, "gfx indirect");
+        v.indirectBuffers[f] =
+            ctx.CreateBuffer(IndirectCmdBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx indirect");
         // GPU cull chain state (kept-bit parity ring + verdict/counter
         // words). Zero-filled at creation so the first frames seed nothing
         // (prev-kept = 0 -> empty seed, remainder = all kept — the same
         // arming behavior InvalidateHistory gives); every
         // candidate slot gets a definitive 0/1 write per frame afterwards,
         // so no per-frame clearing upload exists.
-        v.keptBuffers[f] = ctx.CreateBuffer(kKeptBytes, BufferType_Storage, "gfx keptBits");
+        v.keptBuffers[f] =
+            ctx.CreateBuffer(KeptRingBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx keptBits");
         v.cullStateBuffers[f] =
-            ctx.CreateBuffer(kCullStateBytes, BufferType_Storage, "gfx cullState");
+            ctx.CreateBuffer(CullStateBytes(v.drawCapacity[f]), BufferType_Storage, "gfx cullState");
         if (v.batchBuffers[f].empty() || v.drawBuffers[f].empty() || v.indirectBuffers[f].empty() ||
             v.keptBuffers[f].empty() || v.cullStateBuffers[f].empty()) {
             RollbackSlotBuffers(rg, v, f);
             return false;
         }
-        // Creation zero-fill (the kept ring is 2MB — one shared static fill).
-        static std::vector<uint8_t> s_zeroFill;
-        if (s_zeroFill.size() < kKeptBytes)
-            s_zeroFill.assign(kKeptBytes, 0);
-        ctx.UploadDataToBuffer(v.keptBuffers[f],
-                               s_zeroFill.data(),
-                               kKeptBytes,
-                               PipelineStage(PipelineStageBit_Compute),
-                               AccessFlags::ShaderRead | AccessFlags::ShaderWrite,
-                               0,
-                               0);
-        ctx.UploadDataToBuffer(v.cullStateBuffers[f],
-                               s_zeroFill.data(),
-                               kCullStateBytes,
-                               PipelineStage(PipelineStageBit_Compute),
-                               AccessFlags::ShaderRead | AccessFlags::ShaderWrite,
-                               0,
-                               0);
+        // Creation zero-fill (the kept ring + the cullState words).
+        ZeroFillBuffer(ctx, v.keptBuffers[f], KeptRingBytes(v.candidateCapacity[f]));
+        ZeroFillBuffer(ctx, v.cullStateBuffers[f], CullStateBytes(v.drawCapacity[f]));
         v.batchLogicals[f] = rg.AddExternalBuffer(v.batchBuffers[f], "gfx batches");
         v.drawLogicals[f] = rg.AddExternalBuffer(v.drawBuffers[f], "gfx draws");
         v.indirectLogicals[f] = rg.AddExternalBuffer(v.indirectBuffers[f], "gfx indirect");
@@ -255,6 +325,148 @@ static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
         }
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// THE DYNAMIC-CAPACITY GROW STEP (the cutover's runtime leg). FinalizeView
+// calls this per (view, flight) with the frame's EXACT counts, after
+// BuildBatches, before any upload or pass recording: plan through
+// tour::gfx::PlanViewCapacity and grow every coupled ring that is too
+// small (logical rebind included). Grow-only — a smaller frame leaves the
+// tail unused; shrinking would churn allocations and zero-fills for zero
+// steady-state benefit.
+//
+// Contract (docs/gfx_dynamic_capacity_gpu_default.md):
+//   - A count beyond a DECLARED bound (tour::gfx::kDeclaredMaxDraws /
+//     kDeclaredMaxCandidates) or an allocation failure is a LOUD FATAL:
+//     no silent drop, no partial-frame fallback. The retired fixed-cap
+//     fatals (kMaxDraws / kMaxBatchSlots) are this check's ancestors; the
+//     ceilings moved, the fail-closed posture did not.
+//   - The SURVIVOR ring (filtered index region, vis-cluster mirror,
+//     shadow indirect) stays kMaxBatches-capped and separate.
+//   - A grown kept ring restarts zeroed (creation zero-fill): this
+//     frame's prev-kept region reads 0 -> empty seed + full remainder —
+//     one conservative frame, the same arming InvalidateHistory gives.
+// ---------------------------------------------------------------------------
+
+// Monotone shared wants (the state-level tables are lazily created; the
+// want tracks the high-water requirement so a fresh table starts big
+// enough for the frame that armed it).
+static void UpdateSharedCapacityWants(State& s, uint32_t f, uint32_t draws, uint32_t candidates) {
+    s.skinBoundsCandidateWant[f] = std::max(s.skinBoundsCandidateWant[f], candidates);
+    s.skinBoundsDrawWant[f] = std::max(s.skinBoundsDrawWant[f], draws);
+    s.meshBatchListWant[f] = std::max(s.meshBatchListWant[f], candidates);
+    s.coneDebugWant = std::max(s.coneDebugWant, candidates);
+}
+
+[[noreturn]] static void FatalCapacity(const char* what, uint32_t view, uint32_t f,
+                                       uint64_t need, const char* limit) {
+    std::fprintf(stderr,
+                 "[GfxFilter] FATAL: %s (view %u, flight %u, need %llu, %s). "
+                 "No geometry is dropped or alternate path used.\n",
+                 what,
+                 view,
+                 f,
+                 (unsigned long long)need,
+                 limit);
+    std::fflush(stderr);
+    std::abort();
+}
+
+static void GrowViewCapacity(State& s,
+                             ResourceManager& ctx,
+                             RenderGraph& rg,
+                             uint32_t view,
+                             uint32_t f,
+                             uint32_t needDraws,
+                             uint32_t needCandidates) {
+    View& v = s.views[view];
+    TemporalView& t = Temporal(s, view);
+    // The plan: page-rounded, overflow-checked, bounded by the declared
+    // shader arrays (the fail-closed ceilings).
+    DynamicCapacity plan{};
+    if (!PlanViewCapacity(needDraws, needCandidates, sizeof(Draw), sizeof(Batch), plan))
+        FatalCapacity("frame exceeds a declared draw/candidate capacity", view, f,
+                      std::max<uint64_t>(needDraws, needCandidates),
+                      "declared bounds: gfx_dynamic_capacity.h");
+    UpdateSharedCapacityWants(s, f, plan.draws, plan.candidates);
+
+    // ---- The view's own rings ----
+    const bool growDraws = plan.draws > v.drawCapacity[f];
+    const bool growCandidates = plan.candidates > v.candidateCapacity[f];
+    if (growDraws) {
+        if (!RebindBuffer(ctx, rg, v.drawBuffers[f], v.drawLogicals[f],
+                          DrawRingBytes(plan.draws), "gfx draws"))
+            FatalCapacity("draw-ring grow allocation failed", view, f, plan.draws, "");
+        v.drawCapacity[f] = plan.draws;
+    }
+    if (growCandidates) {
+        if (!RebindBuffer(ctx, rg, v.batchBuffers[f], v.batchLogicals[f],
+                          CandidateBatchBytes(plan.candidates), "gfx batches") ||
+            !RebindBuffer(ctx, rg, v.indirectBuffers[f], v.indirectLogicals[f],
+                          IndirectCmdBytes(plan.candidates), "gfx indirect") ||
+            !RebindBuffer(ctx, rg, v.keptBuffers[f], v.keptLogicals[f],
+                          KeptRingBytes(plan.candidates), "gfx keptBits"))
+            FatalCapacity("candidate-ring grow allocation failed", view, f, plan.candidates, "");
+        v.candidateCapacity[f] = plan.candidates;
+        // Fresh kept ring: zero both parity regions (the GPU-counter
+        // convention + the one-frame conservative re-arm above).
+        ZeroFillBuffer(ctx, v.keptBuffers[f], KeptRingBytes(plan.candidates));
+    }
+    if (growDraws) {
+        // The cullState words follow the draw capacity (verdicts + the
+        // runtime counter/diag suffix); fresh = zero-filled.
+        if (!RebindBuffer(ctx, rg, v.cullStateBuffers[f], v.cullStateLogicals[f],
+                          CullStateBytes(plan.draws), "gfx cullState"))
+            FatalCapacity("cullState grow allocation failed", view, f, plan.draws, "");
+        ZeroFillBuffer(ctx, v.cullStateBuffers[f], CullStateBytes(plan.draws));
+    }
+
+    // ---- The temporal sidecar's rings (visDraw grows with the draws;
+    //      the seed/remainder command arrays with the candidates) ----
+    if (plan.draws > t.visDrawCapacity[f]) {
+        if (!RebindBuffer(ctx, rg, t.visDrawBuffers[f], t.visDrawLogicals[f],
+                          DrawRingBytes(plan.draws), "gfx visibleDraws"))
+            FatalCapacity("visDraw grow allocation failed", view, f, plan.draws, "");
+        t.visDrawCapacity[f] = plan.draws;
+    }
+    if (plan.candidates > t.seedIndirectCapacity[f]) {
+        if (!RebindBuffer(ctx, rg, t.seedIndirectBuffers[f], t.seedIndirectLogicals[f],
+                          SeedIndirectBytes(plan.candidates), "gfx seedIndirect") ||
+            !RebindBuffer(ctx, rg, t.remainderIndirectBuffers[f], t.remainderIndirectLogicals[f],
+                          SeedIndirectBytes(plan.candidates), "gfx remainderIndirect"))
+            FatalCapacity("seed/remainder indirect grow allocation failed", view, f,
+                          plan.candidates, "");
+        t.seedIndirectCapacity[f] = plan.candidates;
+    }
+
+    // ---- The state-level shared tables (grow ONLY allocated ones; the
+    //      lazily created ones size from the *Want fields at their
+    //      Ensure sites, which run after FinalizeView in the frame) ----
+    if (!s.skinBoundsBuffers[f].empty() &&
+        (s.skinBoundsCandidateWant[f] > s.skinBoundsCandidateCap[f] ||
+         s.skinBoundsDrawWant[f] > s.skinBoundsDrawCap[f])) {
+        if (!RebindBuffer(ctx, rg, s.skinBoundsBuffers[f], s.skinBoundsLogicals[f],
+                          SkinBoundsBytes(s.skinBoundsCandidateWant[f], s.skinBoundsDrawWant[f]),
+                          "gfx skinBounds"))
+            FatalCapacity("skinBounds grow allocation failed", view, f,
+                          s.skinBoundsCandidateWant[f], "");
+        s.skinBoundsCandidateCap[f] = s.skinBoundsCandidateWant[f];
+        s.skinBoundsDrawCap[f] = s.skinBoundsDrawWant[f];
+    }
+    if (!s.meshBatchLists[f].empty() && s.meshBatchListWant[f] > s.meshBatchListCap[f]) {
+        if (!RebindBuffer(ctx, rg, s.meshBatchLists[f], s.meshBatchListLogicals[f],
+                          MeshBatchListBytes(s.meshBatchListWant[f]), "gfx mesh batch list"))
+            FatalCapacity("mesh batch list grow allocation failed", view, f,
+                          s.meshBatchListWant[f], "");
+        s.meshBatchListCap[f] = s.meshBatchListWant[f];
+    }
+    if (!s.coneDebugLines.empty() && s.coneDebugWant > s.coneDebugCap) {
+        if (!RebindBuffer(ctx, rg, s.coneDebugLines, s.coneDebugLinesLogical,
+                          ConeDebugLinesBytes(s.coneDebugWant), "gfx coneDebug lines"))
+            FatalCapacity("coneDebug line grow allocation failed", view, f, s.coneDebugWant, "");
+        s.coneDebugCap = s.coneDebugWant;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -359,10 +571,26 @@ bool EnsureSkinBounds(State& s, ResourceManager& ctx, RenderGraph& rg) {
     }
     for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
         if (s.skinBoundsBuffers[f].empty()) {
-            s.skinBoundsBuffers[f] =
-                ctx.CreateBuffer(kSkinBoundsBytes, BufferType_Storage, "gfx skinBounds");
+            // The dynamic cutover: size from the high-water WANT (the
+            // frames since the last Ensure already declared their need
+            // through FinalizeView — this path runs on the FIRST skinned
+            // frame, AFTER that frame's FinalizeView, so a fresh table
+            // starts big enough for the frame that armed it; the minimum
+            // page covers a never-finalized session). GrowViewCapacity
+            // grows it further from here.
+            size_t candCap = 0, drawCap = 0;
+            if (!RoundCapacity(
+                    std::max<size_t>(s.skinBoundsCandidateWant[f], 1u), sizeof(ClusterConstants), candCap) ||
+                !RoundCapacity(std::max<size_t>(s.skinBoundsDrawWant[f], 1u),
+                               sizeof(glm::vec4),
+                               drawCap))
+                return false;
+            s.skinBoundsBuffers[f] = ctx.CreateBuffer(
+                SkinBoundsBytes(uint32_t(candCap), uint32_t(drawCap)), BufferType_Storage, "gfx skinBounds");
             if (s.skinBoundsBuffers[f].empty())
                 return false;
+            s.skinBoundsCandidateCap[f] = uint32_t(candCap);
+            s.skinBoundsDrawCap[f] = uint32_t(drawCap);
         }
         if (s.skinBoundsLogicals[f].empty()) {
             s.skinBoundsLogicals[f] =
@@ -434,17 +662,23 @@ static void RollbackTemporalBuffers(RenderGraph& rg, TemporalView& t, uint32_t d
 
 static bool CreateTemporalBuffers(ResourceManager& ctx, RenderGraph& rg, TemporalView& t) {
     for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+        // First-page initial capacities (the first FinalizeView grows to
+        // the frame's exact need); visCluster stays SURVIVOR-CAPPED
+        // (kMaxBatches — the snapshot holds survivors, separately
+        // budgeted, unchanged by the dynamic cutover).
+        t.visDrawCapacity[f] = PageMinCapacity(sizeof(Draw));
+        t.seedIndirectCapacity[f] = PageMinCapacity(sizeof(SeedCommand));
         t.visClusterBuffers[f] =
             ctx.CreateBuffer(kVisClusterBytes, BufferType_Storage, "gfx visibleClusters");
         t.visDrawBuffers[f] =
-            ctx.CreateBuffer(kVisDrawBytes, BufferType_Storage, "gfx visibleDraws");
+            ctx.CreateBuffer(DrawRingBytes(t.visDrawCapacity[f]), BufferType_Storage, "gfx visibleDraws");
         // Storage, NOT Indirect (same queue-sharing argument as the filter
         // indirect buffers in CreateSlotBuffers); INDIRECT usage is covered
         // by the type's flags regardless (see bufferTypeToUsageFlags).
         t.seedIndirectBuffers[f] =
-            ctx.CreateBuffer(kSeedIndirectBytes, BufferType_Storage, "gfx seedIndirect");
+            ctx.CreateBuffer(SeedIndirectBytes(t.seedIndirectCapacity[f]), BufferType_Storage, "gfx seedIndirect");
         t.remainderIndirectBuffers[f] =
-            ctx.CreateBuffer(kSeedIndirectBytes, BufferType_Storage, "gfx remainderIndirect");
+            ctx.CreateBuffer(SeedIndirectBytes(t.seedIndirectCapacity[f]), BufferType_Storage, "gfx remainderIndirect");
         if (t.visClusterBuffers[f].empty() || t.visDrawBuffers[f].empty() ||
             t.seedIndirectBuffers[f].empty() || t.remainderIndirectBuffers[f].empty()) {
             RollbackTemporalBuffers(rg, t, f);
@@ -539,6 +773,12 @@ void Destroy(State& s, RenderGraph& rg) {
             rg.FreeBuffer(s.skinBoundsLogicals[f]);
         s.skinBoundsLogicals[f] = {};
         s.skinBoundsBuffers[f] = {};
+        // Dynamic-capacity state dies with the tables (a fresh Ensure
+        // sizes from zero again).
+        s.skinBoundsCandidateCap[f] = 0;
+        s.skinBoundsDrawCap[f] = 0;
+        s.skinBoundsCandidateWant[f] = 0;
+        s.skinBoundsDrawWant[f] = 0;
     }
     s.skinBoundsReady = false;
     // The cone-debug line buffer's logical (same Holder/logical split; the
@@ -548,6 +788,8 @@ void Destroy(State& s, RenderGraph& rg) {
     s.coneDebugLinesLogical = {};
     s.coneDebugLines = {};
     s.coneDebug = false;
+    s.coneDebugCap = 0;
+    s.coneDebugWant = 0;
     for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
         if (!s.meshParamsLogicals[f].empty())
             rg.FreeBuffer(s.meshParamsLogicals[f]);
@@ -557,6 +799,8 @@ void Destroy(State& s, RenderGraph& rg) {
         s.meshParamsBuffers[f] = {};
         s.meshBatchListLogicals[f] = {};
         s.meshBatchLists[f] = {};
+        s.meshBatchListCap[f] = 0;
+        s.meshBatchListWant[f] = 0;
     }
     s.indexHeapLogical = {};
     s.clusterLogical = {};
@@ -2076,13 +2320,17 @@ void PushDraw(State& s,
     assert(view < s.viewCount);
     assert(mesh < s.meshes.size());
     View& v = s.views[view];
-    if (v.draws.size() >= kMaxDraws) {
+    // The declared-bound ceiling (the dynamic cutover's fail-closed limit —
+    // the retired kMaxDraws fatal's successor): the draw ring itself grows
+    // at FinalizeView, but a count past the DECLARED shader array can never
+    // be served. Fatal, never a silent drop.
+    if (v.draws.size() >= kDeclaredMaxDraws) {
         std::fprintf(stderr,
-                     "[GfxFilter] FATAL: view %u exceeded the engine draw limit "
-                     "(kMaxDraws=%u per view). No geometry is dropped or alternate path "
+                     "[GfxFilter] FATAL: view %u exceeded the declared draw limit "
+                     "(kDeclaredMaxDraws=%u per view). No geometry is dropped or alternate path "
                      "used.\n",
                      view,
-                     kMaxDraws);
+                     kDeclaredMaxDraws);
         std::fflush(stderr);
         std::abort();
     }
@@ -2239,8 +2487,12 @@ static bool EnsureShadowBuffers(ResourceManager& ctx, RenderGraph& rg, ShadowVie
     if (sv.buffersReady)
         return true;
     for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+        // First-page initial draw capacity (the dynamic cutover —
+        // UploadShadowList grows the ring to each frame's exact count;
+        // the indirect ring stays SURVIVOR-CAPPED at kMaxBatches).
+        sv.drawCapacity[f] = PageMinCapacity(sizeof(Draw));
         sv.drawBuffers[f] =
-            ctx.CreateBuffer(kDrawBufferBytes, BufferType_Storage, "gfx shadow draws");
+            ctx.CreateBuffer(DrawRingBytes(sv.drawCapacity[f]), BufferType_Storage, "gfx shadow draws");
         sv.indirectBuffers[f] =
             ctx.CreateBuffer(kShadowIndirectBytes, BufferType_Storage, "gfx shadow indirect");
         if (sv.drawBuffers[f].empty() || sv.indirectBuffers[f].empty())
@@ -2307,13 +2559,17 @@ void PushShadowDraw(State& s,
     assert(sview < s.shadowViewCount);
     assert(mesh < s.meshes.size());
     ShadowView& sv = s.shadowViews[sview];
-    if (sv.draws.size() >= kMaxDraws) {
+    // The declared-bound ceiling (the retired kMaxDraws fatal's successor —
+    // see PushDraw): the shadow draw ring grows at UploadShadowList, but a
+    // count past the DECLARED shader array can never be served. Fatal,
+    // never a silent drop.
+    if (sv.draws.size() >= kDeclaredMaxDraws) {
         std::fprintf(stderr,
-                     "[GfxFilter] FATAL: shadow view %u exceeded the engine draw limit "
-                     "(kMaxDraws=%u per view). No geometry is dropped or alternate path "
+                     "[GfxFilter] FATAL: shadow view %u exceeded the declared draw limit "
+                     "(kDeclaredMaxDraws=%u per view). No geometry is dropped or alternate path "
                      "used.\n",
                      sview,
-                     kMaxDraws);
+                     kDeclaredMaxDraws);
         std::fflush(stderr);
         std::abort();
     }
@@ -2423,11 +2679,39 @@ void BuildShadowList(State& s, uint32_t sview) {
     SMVK_PROFILE_TAG("clustersCulled", sv.stats.clustersCulled);
 }
 
-void UploadShadowList(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t sview) {
+void UploadShadowList(State& s,
+                      ResourceManager& ctx,
+                      RenderGraph& rg,
+                      uint32_t frameIndex,
+                      uint32_t sview) {
     assert(sview < s.shadowViewCount);
     assert(frameIndex < smvk::limits::MaxFramesInFlight);
     ShadowView& sv = s.shadowViews[sview];
     sv.frameIndex = frameIndex;
+    // THE DYNAMIC-CAPACITY CUTOVER (shadow leg): grow this (view, flight)'s
+    // draw ring to the frame's exact count, page-planned and grow-only,
+    // before the upload. The plan is bounded fail-closed by the declared
+    // shader arrays; an allocation failure is fatal (the same no-silent-
+    // drop contract as GrowViewCapacity). The indirect ring stays
+    // SURVIVOR-CAPPED (kMaxBatches — the CPU shadow path emits only
+    // surviving commands; BuildShadowList's emit cap enforces it).
+    {
+        DynamicCapacity plan{};
+        if (!PlanViewCapacity(sv.drawConstants.size(),
+                              0,
+                              sizeof(Draw),
+                              sizeof(Batch),
+                              plan))
+            FatalCapacity("shadow list exceeds the declared draw capacity", sview, frameIndex,
+                          sv.drawConstants.size(), "declared bounds: gfx_dynamic_capacity.h");
+        if (plan.draws > sv.drawCapacity[frameIndex]) {
+            if (!RebindBuffer(ctx, rg, sv.drawBuffers[frameIndex], sv.drawLogicals[frameIndex],
+                              DrawRingBytes(plan.draws), "gfx shadow draws"))
+                FatalCapacity("shadow draw-ring grow allocation failed", sview, frameIndex,
+                              plan.draws, "");
+            sv.drawCapacity[frameIndex] = plan.draws;
+        }
+    }
     // TMP-DIAG (grid32 shadow DEVICE_LOST hunt, remove later): validate every
     // built command/range against the ring bounds BEFORE the upload, and
     // trace list churn (the fault is camera-motion dependent — a static
@@ -2438,8 +2722,8 @@ void UploadShadowList(State& s, ResourceManager& ctx, uint32_t frameIndex, uint3
         const uint64_t diagFrame = s_diagFrames++;
         const uint32_t indexLo = s.clusterIndexBase;
         const uint32_t indexHi = s.clusterIndexBase + (uint32_t)s.filterIndices.size();
-        if (sv.drawConstants.size() != sv.draws.size() || sv.draws.size() > kMaxDraws ||
-            sv.commands.size() > kMaxBatches) {
+        if (sv.drawConstants.size() != sv.draws.size() ||
+            sv.draws.size() > kDeclaredMaxDraws || sv.commands.size() > kMaxBatches) {
             std::fprintf(stderr,
                          "[TMP-DIAG] shadow ring BAD frame=%llu sview=%u draws=%zu/%zu "
                          "constants=%zu cmds=%zu (caps %u/%u)\n",
@@ -2449,7 +2733,7 @@ void UploadShadowList(State& s, ResourceManager& ctx, uint32_t frameIndex, uint3
                          sv.drawConstants.size(),
                          sv.drawConstants.size(),
                          sv.commands.size(),
-                         kMaxDraws,
+                         kDeclaredMaxDraws,
                          kMaxBatches);
         }
         for (uint32_t k = 0; k < (uint32_t)sv.commands.size(); ++k) {
@@ -2572,7 +2856,11 @@ LogicalBufferHandle ShadowIndirectLogical(const State& s, uint32_t sview) {
     return s.shadowViews[sview].indirectLogicals[s.shadowViews[sview].frameIndex];
 }
 
-Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
+Stats FinalizeView(State& s,
+                   ResourceManager& ctx,
+                   RenderGraph& rg,
+                   uint32_t frameIndex,
+                   uint32_t view) {
     assert(view < s.viewCount);
     assert(frameIndex < smvk::limits::MaxFramesInFlight);
     View& v = s.views[view];
@@ -2616,6 +2904,21 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 	}
 #endif
 
+    // THE DYNAMIC-CAPACITY CUTOVER STEP: plan this (view, flight)'s rings
+    // from the frame's EXACT counts (BuildBatches just produced them) and
+    // grow + rebind everything that is too small, BEFORE the upload below
+    // and before AppendPasses records a single pass against the logicals.
+    // Grow-only, page-planned, fail-closed at the declared bounds (see
+    // GrowViewCapacity). v.batchCount IS the candidate total (the build
+    // expands every (draw x cluster) slot — verdicts are GPU-side).
+    GrowViewCapacity(s,
+                     ctx,
+                     rg,
+                     view,
+                     frameIndex,
+                     (uint32_t)v.drawConstants.size(),
+                     v.batchCount);
+
     // The ONLY per-frame CPU upload is the draws ring slice (the candidate
     // layout is pure arithmetic; gfxbatchcull — recorded later this frame —
     // writes the batch array, the filter indirect statics and the
@@ -2647,7 +2950,10 @@ void BuildBatches(State& s, uint32_t view) {
     // computed; gfxbatchcull (recorded later this frame) runs the sphere
     // + cone tests on the GPU and writes the batch array, the indirect
     // statics and the temporal seed/remainder commands.
-    constexpr uint32_t cap = kMaxBatchSlots;
+    // (The dynamic-capacity cutover removed the fixed candidate cap + its
+    // fatal here: the candidate count is unbounded CPU-side, and
+    // FinalizeView's GrowViewCapacity plans the rings to the exact total
+    // — bounded fail-closed by tour::gfx::kDeclaredMaxCandidates.)
 
     // Sort draws by (drawSet, material, lightmap lobe class) — stable, so
     // submission order is kept within a class. Bucket-major (opaque first)
@@ -2733,20 +3039,11 @@ void BuildBatches(State& s, uint32_t view) {
             cmdLobes = d.lmChunk;
             rangeStart = batchSlot;
         }
-        // Candidate-slot base + (bucket, material) range walk.
-        // Validate the entire draw BEFORE assigning a candidate base:
-        // no partial mesh may enter the fixed-budget GPU workload.
-        if (mesh.clusterCount > cap - batchSlot) {
-            std::fprintf(stderr,
-                         "[GfxFilter] FATAL: view %u exceeded the engine candidate limit "
-                         "(kMaxBatchSlots=%u; current=%u, requested=%u).\n",
-                         view,
-                         cap,
-                         batchSlot,
-                         mesh.clusterCount);
-            std::fflush(stderr);
-            std::abort();
-        }
+        // Candidate-slot base + (bucket, material) range walk. The base is
+        // always valid (the rings grow to the exact candidate total at
+        // FinalizeView — the retired fixed-budget fatal died with the
+        // dynamic cutover; the 0xFFFFFFFF sentinel stays a belt-and-braces
+        // marker the GPU guards on).
         v.drawConstants[sorted].candidateBase = batchSlot;
         if (d.drawSet != cullRangeSet || d.material != cullRangeMaterial) {
             pushCullRange(batchSlot);
@@ -2994,9 +3291,18 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
             assert(false && "filter chain buffers missing");
             return;
         }
-        push.kept = keptBda + (uint64_t)KeptParity(s) * kMaxBatchSlots * sizeof(uint32_t);
+        // The kept region base carries the parity offset computed against
+        // the RUNTIME candidate capacity (the dynamic cutover — the
+        // retired kMaxBatchSlots stride died with the fixed ring).
+        push.kept = keptBda +
+                    (uint64_t)KeptParity(s) * v.candidateCapacity[f] * sizeof(uint32_t);
         push.cullState = stateBda;
         push.keptParity = KeptParity(s);
+        // The counter/diag word base = this (view, flight)'s draw capacity.
+        push.cullStateCounterWord = v.drawCapacity[f];
+        // The skinBounds table's own capacity (the drawBound tail offset —
+        // the table is State-level, sized by its own allocation).
+        push.skinBoundsCandidateCapacity = s.skinBoundsCandidateCap[f];
     }
 
     // DEBUG: Log filter dispatch HZB parameters
@@ -3058,7 +3364,7 @@ void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ct
     if (s.skinBoundsProgram.shaderCount == 0 || s.skinBoundsModule.empty())
         return;
     const uint32_t drawCount = (uint32_t)v.drawConstants.size();
-    if (drawCount == 0 || drawCount > kMaxDraws)
+    if (drawCount == 0 || drawCount > kDeclaredMaxDraws)
         return;
     const uint32_t f = v.frameIndex;
     SkinBoundsPush push{};
@@ -3072,6 +3378,8 @@ void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ct
     push.skinBounds = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
     push.deformedBase = s.skinDeformedBase;
     push.drawCount = drawCount;
+    // The table's candidate-slot capacity (this flight's allocation).
+    push.candidateCapacity = s.skinBoundsCandidateCap[f];
     // The cone rebuild ALWAYS runs (the honest cones feed the cone-axis
     // overlay + the SkinDump cross-check + the TOURMALINE_SKIN_CONE=1
     // consumer lever in gfxbatchcull; the conservative default lives on
@@ -3119,10 +3427,19 @@ void SetConeDebug(State& s, ResourceManager& ctx, RenderGraph& rg, bool enable) 
             s.coneDebugProgram = {.shaders = {cs}, .shaderCount = 1};
         }
         if (s.coneDebugLines.empty()) {
-            s.coneDebugLines =
-                ctx.CreateBuffer(kConeDebugLinesBytes, BufferType_Storage, "gfx coneDebug lines");
+            // The dynamic cutover: sized from the high-water want (the
+            // minimum page before the first FinalizeView), grown by
+            // GrowViewCapacity from here. The candidate slot space is a
+            // dense prefix, so [0, 2*candidateTotal) stays exactly the
+            // written range whatever the capacity.
+            size_t cap = 0;
+            if (!RoundCapacity(std::max<size_t>(s.coneDebugWant, 1u), 2u * 12u, cap))
+                return;
+            s.coneDebugLines = ctx.CreateBuffer(
+                ConeDebugLinesBytes(uint32_t(cap)), BufferType_Storage, "gfx coneDebug lines");
             if (s.coneDebugLines.empty())
                 return;
+            s.coneDebugCap = uint32_t(cap);
         }
         if (s.coneDebugLinesLogical.empty()) {
             s.coneDebugLinesLogical = rg.AddExternalBuffer(s.coneDebugLines, "gfx coneDebug lines");
@@ -3167,7 +3484,7 @@ void PushAndDispatchConeDebug(State& s, CommandBuffer& cmd, ResourceManager& ctx
     assert(view < s.views.size());
     View& v = s.views[view];
     const uint32_t drawCount = (uint32_t)v.drawConstants.size();
-    if (drawCount == 0 || drawCount > kMaxDraws)
+    if (drawCount == 0 || drawCount > kDeclaredMaxDraws)
         return;
     const uint32_t f = v.frameIndex;
     ConeDebugPush push{};
@@ -3193,6 +3510,8 @@ void PushAndDispatchConeDebug(State& s, CommandBuffer& cmd, ResourceManager& ctx
         return;
     }
     push.drawCount = drawCount;
+    // The shared line buffer's candidate-slot capacity.
+    push.candidateCapacity = s.coneDebugCap;
     cmd.BindComputePipeline(s.coneDebugProgram);
     cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
     // One 128-thread workgroup per draw (the GfxBatchCull dispatch shape).
@@ -3259,7 +3578,7 @@ void PushAndDispatchBatchCull(State& s, CommandBuffer& cmd, ResourceManager& ctx
         return; // chain incomplete: skip (indirects stay pre-zeroed)
     }
     const uint32_t drawCount = (uint32_t)v.drawConstants.size();
-    if (drawCount == 0 || drawCount > kMaxDraws)
+    if (drawCount == 0 || drawCount > kDeclaredMaxDraws)
         return;
     const uint32_t f = v.frameIndex;
     BatchCullPush push{};
@@ -3298,6 +3617,13 @@ void PushAndDispatchBatchCull(State& s, CommandBuffer& cmd, ResourceManager& ctx
         push.drawSetMask = s.temporals[view].drawSetMask;
     push.clusterIndexBase = s.clusterIndexBase;
     push.keptParity = KeptParity(s);
+    // The runtime capacity suffixes (the dynamic cutover): the cullState
+    // counter/diag word base + the kept-ring parity stride / candidate
+    // bound, plus the skinBounds TABLE's own capacity (the drawBound tail
+    // offset — the table is State-level, sized by its own allocation).
+    push.cullStateCounterWord = v.drawCapacity[f];
+    push.candidateCapacity = v.candidateCapacity[f];
+    push.skinBoundsCandidateCapacity = s.skinBoundsCandidateCap[f];
     push.width = v.width;
     push.height = v.height;
     // Deformed bounds for the skinned draws (GfxSkinBounds output). Only
@@ -3365,7 +3691,7 @@ void PushAndDispatchDrawCull(State& s, CommandBuffer& cmd, ResourceManager& ctx,
         return; // chain incomplete: skip (verdicts stay zero)
     }
     const uint32_t drawCount = (uint32_t)v.drawConstants.size();
-    if (drawCount == 0 || drawCount > kMaxDraws)
+    if (drawCount == 0 || drawCount > kDeclaredMaxDraws)
         return;
     const uint32_t f = v.frameIndex;
     DrawCullPush push{};
@@ -3388,6 +3714,8 @@ void PushAndDispatchDrawCull(State& s, CommandBuffer& cmd, ResourceManager& ctx,
     push.drawCount = drawCount;
     push.width = v.width;
     push.height = v.height;
+    // The skinBounds table's own capacity (the drawBound tail offset).
+    push.skinBoundsCandidateCapacity = s.skinBoundsCandidateCap[f];
     if (view < s.temporals.size()) {
         const TemporalView& t = s.temporals[view];
         const HizResources& hz = t.hiz[v.frameIndex];
@@ -3446,11 +3774,19 @@ bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg) {
         if (s.meshBatchLists[f].empty()) {
             // Candidate-slot capacity (records every eligible candidate
             // slot — dropped slots gate out through the MS's
-            // indexCount == 0 check).
+            // indexCount == 0 check). The dynamic cutover: sized from the
+            // high-water want (the minimum page before the first
+            // FinalizeView), grown by GrowViewCapacity from here.
+            size_t cap = 0;
+            if (!RoundCapacity(std::max<size_t>(s.meshBatchListWant[f], 1u),
+                               sizeof(uint32_t),
+                               cap))
+                return false;
             s.meshBatchLists[f] = ctx.CreateBuffer(
-                kMaxBatchSlots * sizeof(uint32_t), BufferType_Storage, "gfx mesh batch list");
+                MeshBatchListBytes(uint32_t(cap)), BufferType_Storage, "gfx mesh batch list");
             if (s.meshBatchLists[f].empty())
                 return false;
+            s.meshBatchListCap[f] = uint32_t(cap);
             s.meshBatchListLogicals[f] =
                 rg.AddExternalBuffer(s.meshBatchLists[f], "gfx mesh batch list");
             if (s.meshBatchListLogicals[f].empty()) {

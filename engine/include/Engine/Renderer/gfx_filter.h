@@ -150,46 +150,30 @@ static constexpr uint32_t kMaxClusterTris = 128;
 // slice per flight (kMaxBatches * kMaxClusterTris * 3 uints = 96MB at 64k)
 // inside the 512MB static index monoblock — keep monoblock sizing in sync
 // (see AllocateStaticVertexFmt in engine/src/Renderer/mesh.cpp).
+//
+// THE SURVIVOR RING STAYS SEPARATELY BUDGETED (the dynamic-capacity
+// cutover's contract, docs/gfx_dynamic_capacity_gpu_default.md): draws and
+// candidate slots are runtime page-planned capacities (tour::gfx::
+// PlanViewCapacity; the declared fail-closed ceilings live in
+// gfx_dynamic_capacity.h), but the filtered-index survivor ring keeps this
+// compile-time cap — growing it means growing the static index monoblock,
+// an independent budget decision. The filter's atomic allocation clamps
+// survivors here (the GPU twin of the old CPU cap + warning).
 static constexpr uint32_t kMaxBatches = 65536; // surviving (draw x cluster) per view
-// GPU-cull candidate capacity: per (draw x cluster) candidate slot (the
-// batch array, the indirect array, the seed/remainder command arrays and
-// the kept-bit ring are pre-sized by this; survivors stay bounded by
-// kMaxBatches through the filter's atomic ring clamp). ~2.9k draws x the
-// pushed meshes' full cluster lists at Bistro scale (~100k) with 2.5x
-// headroom. Cheap buffers only — the filtered ring stays kMaxBatches.
-static constexpr uint32_t kMaxBatchSlots = 262144;
-// Draws pushed per view. 65535 (near 64k, vs the old 4k Bistro budget): grid32-scale
-// instanced scenes (1024 Sponzas = 105k meshes, ~10-30k visible draws in a
-// fly-through, more from overhead vantages) silently dropped whole
-// instances past 4k. Sized to kMaxBatches: the filtered-index survivor
-// ring stays the REAL per-view geometry ceiling (see kMaxBatches + the
-// monoblock note above). These limits are ENGINE-GLOBAL compile-time
-// constants, not per-content authored values: content authors nothing
-// here, and exceeding a limit is a fatal contract violation, never a
-// silent drop or a fallback. Memory cost: one Draw ring slice per (view,
-// flight) at kMaxDraws * sizeof(Draw) ~= 7 MB, the cullState verdict
-// words (kMaxDraws + 5 uints ~= 256 KB) and the skin-bounds drawBound
-// tail (kMaxDraws * 16 B = 1 MB). HLSL mirror: gfxfilter.hlsli
-// GFX_MAX_DRAWS (GfxDraws, GfxCullState, drawBound tail) — keep both in
-// lockstep. Note: the per-draw cull dispatches run one workgroup per draw
-// (Dispatch(drawCount,1,1)). 65535 is the Vulkan 1.3 minimum guaranteed
-// maxComputeWorkGroupCount[0]. Workloads beyond a limit are unsupported
-// until the ENGINE CONSTANT moves; never silently drop draws.
-static constexpr uint32_t kMaxDraws =
-    65535; // engine fixed per-view limit; Vulkan 1.3 minimum dispatch X
 // Sized for LOD chains: every cooked sibling registers its own gfx mesh
 // (~3x the LOD0-only count), so headroom over the pre-LOD 4k budget.
 static constexpr uint32_t kMaxMeshes = 8192;
 static constexpr uint32_t kMaxViews = 64; // mirrors kMaxRenderViews
-// Draw verdict words, the filtered-index allocation counter, and temporary
-// per-batch diagnostic counters (empty, overflow, allocated, gated).
-// HLSL mirror: gfxfilter.hlsli GFX_CULL_STATE_WORDS.
-static constexpr uint32_t kCullStateCounterWord = kMaxDraws;
-static constexpr uint32_t kCullStateDiagEmptyWord = kMaxDraws + 1;
-static constexpr uint32_t kCullStateDiagOverflowWord = kMaxDraws + 2;
-static constexpr uint32_t kCullStateDiagAllocatedWord = kMaxDraws + 3;
-static constexpr uint32_t kCullStateDiagGatedWord = kMaxDraws + 4;
-static constexpr uint32_t kCullStateWords = kMaxDraws + 5;
+// (The retired fixed draw/candidate caps — kMaxDraws=65535 /
+// kMaxBatchSlots=262144 — and the compile-time cull-state word indices
+// died with the dynamic-capacity cutover: per-(view, flight) draw and
+// candidate capacities are runtime state (View::drawCapacity /
+// View::candidateCapacity, page-planned grow-only by FinalizeView), and
+// the cullState counter/diag words sit at the RUNTIME suffix
+// (View::drawCapacity + 0..4) carried to the shaders through the push
+// (BatchCullPush::cullStateCounterWord / FilterPush::cullStateCounterWord)
+// — never a compile-time macro. The fail-closed ceilings survive as
+// tour::gfx::kDeclaredMaxDraws / kDeclaredMaxCandidates.)
 
 // GPU cluster entry (4x uvec4). Must match HLSL GfxClusterData (64 bytes):
 // (indexOffset, triCount, 0, 0) + (boundCenter.xyz, boundRadius) for the
@@ -312,10 +296,12 @@ struct FilterPush {
     uint64_t indirect = 0;
     // Deformed per-cluster bounds + per-draw deformed union tail
     // (GfxSkinBounds output, one GfxSkinBoundsTable per flight — the
-    // kMaxBatchSlots cluster entries + the kMaxDraws drawBound tail in ONE
-    // buffer, so the one BDA addresses both regions). Skinned draws cull
-    // against THIS table instead of the static bind-pose clusters[] - the
-    // pose can move a cluster clean out of its bind-pose sphere and the
+    // candidate-capacity cluster entries + the draw-capacity drawBound
+    // tail in ONE buffer, so the one BDA addresses both regions; both
+    // capacities are runtime state since the dynamic cutover). Skinned
+    // draws cull against THIS table instead of the static bind-pose
+    // clusters[] - the pose can move a cluster clean out of its
+    // bind-pose sphere and the
     // static test would drop it; the draw-level fast rejects + the demand
     // publisher read the drawBound tail instead of the static mesh unions.
     // skinBoundsValid = 0 (no skinned cluster this frame) leaves every draw
@@ -323,7 +309,10 @@ struct FilterPush {
     uint64_t skinBounds = 0;
     glm::mat4 viewProj{};
     glm::vec3 eye{0.0f};
-    float pad1 = 0.0f;
+    // The skinBounds TABLE's own candidate capacity (the drawBound tail's
+    // runtime offset — see the HLSL GfxSkinBoundsTable's flat-layout rule;
+    // filled from State::skinBoundsCandidateCap[frameIndex]).
+    uint32_t skinBoundsCandidateCapacity = 0;
     uint32_t cullFlags = 0;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -342,7 +331,13 @@ struct FilterPush {
     // firstIndex = indexBase + outputOffset so draws address the monoblock
     // absolutely and the index binding never switches buffers.
     uint32_t indexBase = 0;
-    uint32_t pad3 = 0;
+    // The cullState counter/diag word base (the RUNTIME draw-capacity
+    // suffix — the retired compile-time GFX_CULL_STATE_COUNTER macro died
+    // with the dynamic-capacity cutover): the filtered-offset allocation
+    // counter is word cullStateCounterWord, the four diag counters
+    // (empty/overflow/allocated/gated) follow it. Set by PushAndDispatch
+    // from this (view, flight)'s View::drawCapacity.
+    uint32_t cullStateCounterWord = 0;
     // Draw-level texture-demand inputs (PushAndDispatch zero-gates
     // textureMetaCount when ANY of these BDAs is null — a null BDA
     // dereference is an MMU fault and takes the whole device down; same
@@ -357,7 +352,7 @@ struct FilterPush {
     // GPU cull chain inputs (always the kept-bit region + cullState):
     //   kept      — this frame's kept-bit region (gfxbatchcull verdicts)
     //   cullState — draw verdicts (gfxdrawcull) + the filtered-offset
-    //               counter (word kCullStateCounterWord) this dispatch
+    //               counter (word cullStateCounterWord) this dispatch
     //               allocates through atomically
     uint64_t kept = 0;
     uint64_t cullState = 0;
@@ -380,7 +375,10 @@ struct BatchCullPush {
     uint64_t cullState = 0;  // out: offset-counter zero (group 0)
     glm::mat4 viewProj{};    // LIVE view
     glm::vec3 eye{0.0f};
-    float pad1 = 0.0f;
+    // The skinBounds TABLE's own candidate capacity (the drawBound tail's
+    // runtime offset — distinct from candidateCapacity below, which is
+    // THIS view's kept-ring stride / slot bound).
+    uint32_t skinBoundsCandidateCapacity = 0;
     uint32_t drawCount = 0;
     uint32_t drawSetMask = DrawSetMask_All; // TemporalView bucket gate
     uint32_t clusterIndexBase = 0;          // absolute seed firstIndex base
@@ -389,8 +387,9 @@ struct BatchCullPush {
     uint32_t height = 0;
     // Deformed per-cluster bounds + per-draw deformed union tail
     // (GfxSkinBounds output, one GfxSkinBoundsTable per flight — the
-    // kMaxBatchSlots cluster entries + the kMaxDraws drawBound tail in ONE
-    // buffer, so the one BDA addresses both regions). Skinned draws
+    // candidate-capacity cluster entries + the draw-capacity drawBound
+    // tail in ONE buffer, so the one BDA addresses both regions; runtime
+    // capacities since the dynamic cutover). Skinned draws
     // (GFX_DRAW_SKINNED) cull against THIS table instead of the static
     // bind-pose clusters[] - the pose can move a cluster clean out of its
     // bind-pose sphere and the static test would drop it, punching an
@@ -408,7 +407,18 @@ struct BatchCullPush {
     // measured but SHIPPED DISABLED, their HZB covered the win; this engine's
     // HZB covers the static geometry the same way).
     uint32_t skinConeEnabled = 0;
-    uint32_t pad3[2] = {};
+    // Runtime capacity suffixes (the dynamic-capacity cutover — the retired
+    // compile-time GFX_CULL_STATE_COUNTER / GFX_MAX_BATCH_SLOTS macros died
+    // with it):
+    //   cullStateCounterWord — the counter/diag word base (see
+    //       FilterPush::cullStateCounterWord), zeroed by group 0 below.
+    //   candidateCapacity — the kept-ring parity region stride in uint32
+    //       words (= this (view, flight)'s candidate capacity: region P
+    //       starts at word keptParity * candidateCapacity) AND the
+    //       belt-and-braces bound for every candidate-slot write (the CPU
+    //       build already guarantees base + clusterCount <= capacity).
+    uint32_t cullStateCounterWord = 0;
+    uint32_t candidateCapacity = 0;
 };
 static_assert(sizeof(BatchCullPush) == 208);
 
@@ -432,7 +442,10 @@ struct SkinBoundsPush {
     // isolates the cone rebuild from the sphere rebuild in one headless
     // run) — the pre-rebuild behavior.
     uint32_t coneEnabled = 1;
-    uint32_t pad1 = 0;
+    // The skinBounds table's candidate-slot capacity (this flight's
+    // allocation): the belt-and-braces bound for every candidate-slot
+    // write, successor of the retired GFX_MAX_BATCH_SLOTS macro.
+    uint32_t candidateCapacity = 0;
 };
 static_assert(sizeof(SkinBoundsPush) == 64);
 
@@ -454,7 +467,11 @@ struct ConeDebugPush {
     uint64_t lines = 0;           // out (2 packed verts per candidate slot)
     uint32_t skinBoundsValid = 0; // 0: every draw reads the static table
     uint32_t drawCount = 0;
-    uint32_t pad2[2] = {};
+    // The shared line buffer's candidate-slot capacity (successor of the
+    // retired GFX_MAX_BATCH_SLOTS macro): the belt-and-braces bound for
+    // every candidate-slot write.
+    uint32_t candidateCapacity = 0;
+    uint32_t pad2 = 0;
 };
 static_assert(sizeof(ConeDebugPush) == 56);
 
@@ -476,7 +493,9 @@ struct DrawCullPush {
     uint64_t skinBounds = 0; // deformed unions (skinned draws; the table tail)
     glm::mat4 viewProj{};    // FROZEN view
     glm::vec3 eye{0.0f};
-    float pad1 = 0.0f;
+    // The skinBounds TABLE's own candidate capacity (the drawBound tail's
+    // runtime offset — see the HLSL GfxSkinBoundsTable's flat-layout rule).
+    uint32_t skinBoundsCandidateCapacity = 0;
     uint32_t cullFlags = 0; // GFX_CULL_OCCLUSION / GFX_CULL_HZBSKIPMASKED
     uint32_t drawCount = 0;
     uint32_t width = 0; // guard-band extent (== HZB target)
@@ -782,7 +801,8 @@ struct View {
     //          is enough because the parity alternates between the
     //          flight's consecutive users.
     //   cullState — draw-cull verdict words + the filter's atomic
-    //          filtered-offset counter (word kCullStateCounterWord).
+    //          filtered-offset counter (word drawCapacity, the runtime
+    //          suffix carried through the pushes since the cutover).
     smvk::Holder<smvk::BufferHandle> keptBuffers[smvk::limits::MaxFramesInFlight];
     smvk::Holder<smvk::BufferHandle> cullStateBuffers[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle keptLogicals[smvk::limits::MaxFramesInFlight]{};
@@ -796,6 +816,18 @@ struct View {
     // stays VMA-free, see the static_assert in gfx_filter.cpp).
     uint32_t filteredBase[smvk::limits::MaxFramesInFlight] = {};
     uint64_t filteredAllocBits[smvk::limits::MaxFramesInFlight] = {};
+    // RUNTIME per-(view, flight) capacities (the dynamic-capacity cutover,
+    // docs/gfx_dynamic_capacity_gpu_default.md): every ring above is sized
+    // by these — page-planned from the frame's exact counts (tour::gfx::
+    // PlanViewCapacity) at FinalizeView, GROW-ONLY (a smaller frame just
+    // leaves the tail unused; a resize churns allocations + zero-fills).
+    // The cullState slice's counter/diag words sit at the RUNTIME suffix
+    // drawCapacity + 0..4 (carried to the shaders through the pushes —
+    // never a compile-time macro), and the kept ring's parity regions
+    // stride by candidateCapacity words. Fail-closed ceilings:
+    // tour::gfx::kDeclaredMaxDraws / kDeclaredMaxCandidates.
+    uint32_t drawCapacity[smvk::limits::MaxFramesInFlight] = {};
+    uint32_t candidateCapacity[smvk::limits::MaxFramesInFlight] = {};
 };
 
 // GPU mirror of one surviving (cluster, draw) pair ("visible meshlet").
@@ -1079,6 +1111,14 @@ struct TemporalView {
     uint32_t remainderOpaqueCommands = 0;
     smvk::Holder<smvk::BufferHandle> remainderIndirectBuffers[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle remainderIndirectLogicals[smvk::limits::MaxFramesInFlight]{};
+    // RUNTIME per-(view, flight) capacities (the dynamic cutover): the
+    // visDraw ring grows with the draw capacity, the seed/remainder
+    // indirect rings with the candidate capacity (positional commands —
+    // one per candidate slot, GPU-written by gfxbatchcull). visCluster
+    // stays survivor-capped (kMaxBatches — the snapshot holds survivors).
+    // Grow-only, page-planned at FinalizeView alongside the View rings.
+    uint32_t visDrawCapacity[smvk::limits::MaxFramesInFlight] = {};
+    uint32_t seedIndirectCapacity[smvk::limits::MaxFramesInFlight] = {};
 };
 
 // ---------------------------------------------------------------------------
@@ -1124,6 +1164,11 @@ struct ShadowView {
     smvk::Holder<smvk::BufferHandle> indirectBuffers[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle drawLogicals[smvk::limits::MaxFramesInFlight]{};
     smvk::LogicalBufferHandle indirectLogicals[smvk::limits::MaxFramesInFlight]{};
+    // Runtime per-(view, flight) draw capacity (the dynamic cutover —
+    // grow-only, page-planned at UploadShadowList before the upload; the
+    // indirect ring stays survivor-capped at kMaxBatches, the CPU shadow
+    // path emits only surviving commands).
+    uint32_t drawCapacity[smvk::limits::MaxFramesInFlight] = {};
     bool buffersReady = false;
 };
 
@@ -1204,15 +1249,27 @@ struct State {
     // normals — see FitDeformedCone) and the per-draw deformed union bound
     // from the frame's deformed heap (the static clusters[] stays bind-pose)
     // BEFORE the batch cull reads it - so the cull sees the ANIMATED
-    // silhouette. One GfxSkinBoundsTable per flight: the kMaxBatchSlots
-    // GfxClusterData candidate slots + the kMaxDraws drawBound tail (one
-    // buffer, one BDA). Lazily created on the first frame a deformed buffer
+    // silhouette. One GfxSkinBoundsTable per flight: the runtime
+    // candidate-capacity GfxClusterData slots + the draw-capacity drawBound
+    // tail (one buffer, one BDA — sized by skinBounds*Want/Want since the
+    // dynamic cutover). Lazily created on the first frame a deformed buffer
     // exists.
     smvk::Holder<smvk::ShaderModuleHandle> skinBoundsModule;
     smvk::ShaderProgram skinBoundsProgram{};
     smvk::Holder<smvk::BufferHandle> skinBoundsBuffers[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle skinBoundsLogicals[smvk::limits::MaxFramesInFlight]{};
     bool skinBoundsReady = false;
+    // Runtime skinBounds table capacities (the dynamic cutover — the table
+    // is STATE-level: one per flight, shared across views, indexed by the
+    // candidate space exactly as the fixed table was). *Cap = the
+    // allocated capacity (0 = never allocated; EnsureSkinBounds sizes a
+    // fresh table from *Want); *Want = the latest frames' requirement
+    // (monotone high-water across FinalizeView calls, so a lazily created
+    // table starts big enough for the frame that armed it).
+    uint32_t skinBoundsCandidateCap[smvk::limits::MaxFramesInFlight] = {};
+    uint32_t skinBoundsDrawCap[smvk::limits::MaxFramesInFlight] = {};
+    uint32_t skinBoundsCandidateWant[smvk::limits::MaxFramesInFlight] = {};
+    uint32_t skinBoundsDrawWant[smvk::limits::MaxFramesInFlight] = {};
     // GfxConeDebug (the cone-axis overlay's GPU leg): writes two packed
     // DebugLineVertex float3s per candidate slot — the ACTUAL cull cones
     // (baked bind-pose for static draws, this frame's deformed cones for
@@ -1226,6 +1283,12 @@ struct State {
     smvk::Holder<smvk::BufferHandle> coneDebugLines;
     smvk::LogicalBufferHandle coneDebugLinesLogical{};
     bool coneDebug = false; // the UI toggle's armed state
+    // Runtime line-buffer capacity (the dynamic cutover — ONE shared
+    // buffer, candidate-slot strided): cap = allocated capacity,
+    // want = the monotone high-water requirement (SetConeDebug sizes a
+    // fresh buffer from it; FinalizeView grows an armed one).
+    uint32_t coneDebugCap = 0;
+    uint32_t coneDebugWant = 0;
     // The STATIC heap BDAs for the VS legs' skinned fetch (the same heaps
     // every draw path reads - the RHI globals from vulkan_impl.h, stashed
     // once at EnsureMeshParams so the record sites' fills never reach for
@@ -1265,9 +1328,13 @@ struct State {
     smvk::LogicalBufferHandle meshParamsLogicals[smvk::limits::MaxFramesInFlight]{};
     // Compacted eligible batch indices, rewritten per mesh dispatch set
     // (one upload per frame covering all variant spans; dispatches slice
-    // it via the listBDA base). kMaxBatches uints per flight.
+    // it via the listBDA base). Candidate-slot capacity per flight (the
+    // dynamic cutover — grows with the candidate capacity; the retired
+    // fixed sizing was kMaxBatchSlots).
     smvk::Holder<smvk::BufferHandle> meshBatchLists[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle meshBatchListLogicals[smvk::limits::MaxFramesInFlight]{};
+    uint32_t meshBatchListCap[smvk::limits::MaxFramesInFlight] = {};
+    uint32_t meshBatchListWant[smvk::limits::MaxFramesInFlight] = {};
     std::vector<View> views;
     std::vector<TemporalView> temporals; // parallel to views (same slot)
     uint32_t viewCount = 0;
@@ -1507,8 +1574,18 @@ void BuildBatches(State& s, uint32_t view);
 // Sorts draws by material, expands every (draw x cluster) candidate,
 // uploads the draws ring slice into the frameIndex slot (everything else
 // is GPU-written by the cull chain). Returns exact counters
-// (trianglesProcessed counts emitted triangles).
-Stats FinalizeView(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
+// (trianglesProcessed counts emitted triangles). The DYNAMIC-CAPACITY
+// CUTOVER step lives here (after BuildBatches, before the upload): the
+// frame's exact draw/candidate counts go through tour::gfx::
+// PlanViewCapacity and the coupled per-(view, flight) rings GROW
+// (logical rebind included) to the planned capacities — exceeding a
+// declared bound is fatal (the fail-closed contract), never a silent
+// drop.
+Stats FinalizeView(State& s,
+                   smvk::ResourceManager& ctx,
+                   smvk::RenderGraph& rg,
+                   uint32_t frameIndex,
+                   uint32_t view);
 
 // ---- Temporal visibility (T1 state, T3/T5 consumers) ----
 // Accessor (resizes the sidecar on demand so hand-built unit-test Views
@@ -1617,10 +1694,17 @@ void PushShadowDraw(State& s,
 // safe to run one view per worker thread.
 void BuildShadowList(State& s, uint32_t sview);
 // Uploads the built lists into the frameIndex ring slice (draws as VS
-// shader reads, commands as draw-indirect reads). Main thread only: the
-// global buffer sync-state tables are sharded by handle, not by thread,
-// so concurrent uploads on same-shard buffers would race.
-void UploadShadowList(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex, uint32_t sview);
+// shader reads, commands as draw-indirect reads), GROWING the draw ring
+// to the frame's exact count first (the dynamic-capacity cutover —
+// page-planned, grow-only; the indirect ring stays survivor-capped).
+// Main thread only: the global buffer sync-state tables are sharded by
+// handle, not by thread, so concurrent uploads on same-shard buffers
+// would race.
+void UploadShadowList(State& s,
+                      smvk::ResourceManager& ctx,
+                      smvk::RenderGraph& rg,
+                      uint32_t frameIndex,
+                      uint32_t sview);
 // Accessors (frame slice resolved from the view's frameIndex, stamped by
 // BuildShadowList).
 [[nodiscard]] const std::vector<SeedRange>& ShadowRanges(const State& s, uint32_t sview);
@@ -1741,16 +1825,45 @@ bool UploadTextureMeta(State& s,
     return s.demandBuffers[frameIndex];
 }
 // GPU cull-state slice for the readback consumer (empty handle when the
-// GPU cull never ran): word kCullStateCounterWord holds that dispatch
-// chain's final KEPT-entry count (the filter's atomic filtered-offset
-// counter - zeroed by the batch-cull dispatch, accumulated per kept
-// entry), i.e. the GPU-side cull survivor count the CPU stats cannot see.
-// MAIN view (views[0] - the filter's view 0; shadow legs keep their own).
+// GPU cull never ran): word CullStateCounterWord(s, view, frameIndex)
+// holds that dispatch chain's final KEPT-entry count (the filter's
+// atomic filtered-offset counter - zeroed by the batch-cull dispatch,
+// accumulated per kept entry), i.e. the GPU-side cull survivor count the
+// CPU stats cannot see. MAIN view (views[0] - the filter's view 0; shadow
+// legs keep their own).
 [[nodiscard]] inline smvk::BufferHandle CullStateBuffer(const State& s, uint32_t frameIndex) {
     assert(frameIndex < smvk::limits::MaxFramesInFlight);
     if (s.views.empty())
         return smvk::BufferHandle{};
     return s.views[0].cullStateBuffers[frameIndex];
+}
+// RUNTIME cull-state word layout (the dynamic-capacity cutover — the
+// retired compile-time kCullState* constants' successors): verdict words
+// occupy [0, drawCapacity), the filtered-offset allocation counter sits
+// at word drawCapacity, the four diag counters (empty/overflow/
+// allocated/gated) follow it, and the slice spans drawCapacity + 5 words
+// in total. Per (view, flight) — the readback consumers must capture the
+// value that accompanied their SUBMITTED download (a later grow moves
+// the suffix; the poll-side span only needs the stable dest + size).
+[[nodiscard]] inline uint32_t CullStateCounterWord(const State& s,
+                                                   uint32_t view,
+                                                   uint32_t frameIndex) {
+    assert(view < s.views.size());
+    assert(frameIndex < smvk::limits::MaxFramesInFlight);
+    return s.views[view].drawCapacity[frameIndex];
+}
+[[nodiscard]] inline uint32_t CullStateWords(const State& s, uint32_t view, uint32_t frameIndex) {
+    return CullStateCounterWord(s, view, frameIndex) + 5u;
+}
+// Current-flight capacity accessors (the dispatch/push fill sites and
+// the audits read these; drawCapacity doubles as the counter word base).
+[[nodiscard]] inline uint32_t DrawCapacity(const State& s, uint32_t view) {
+    assert(view < s.views.size());
+    return s.views[view].drawCapacity[s.views[view].frameIndex];
+}
+[[nodiscard]] inline uint32_t CandidateCapacity(const State& s, uint32_t view) {
+    assert(view < s.views.size());
+    return s.views[view].candidateCapacity[s.views[view].frameIndex];
 }
 // Live slot count in the uploaded meta table (bounds the consumer's
 // download + forward range; 0 = demand source inactive — the shader's

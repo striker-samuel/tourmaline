@@ -2778,6 +2778,37 @@ void TestDynamicCapacityPlanning() {
               grid.x == 0 && grid.y == 0,
           "gfx.dynamic.dispatch-overflow");
 
+    // ---- The runtime entry point (PlanViewCapacity): the declared
+    //      fail-closed ceilings + the page-rounded plans the grow step
+    //      allocates from. The declared bounds mirror the HLSL arrays
+    //      (GFX_MAX_DRAWS / GFX_MAX_BATCH_SLOTS) — pin all three.
+    Check(kDeclaredMaxDraws == 1u << 20, "gfx.dynamic.declared-draws");
+    Check(kDeclaredMaxCandidates == 1u << 22, "gfx.dynamic.declared-candidates");
+    Check(PlanViewCapacity(70000, 270000, sizeof(Draw), sizeof(Batch), plan) &&
+              plan.draws >= 70000 && plan.candidates >= 270000 &&
+              plan.draws % 4096 == 0 && plan.candidates % 4096 == 0,
+          "gfx.dynamic.view-plan-exceeds-old-limits");
+    Check(PlanViewCapacity(kDeclaredMaxDraws, kDeclaredMaxCandidates,
+                           sizeof(Draw), sizeof(Batch), plan) &&
+              plan.draws == kDeclaredMaxDraws && plan.candidates == kDeclaredMaxCandidates,
+          "gfx.dynamic.view-plan-at-declared-bounds");
+    Check(!PlanViewCapacity(size_t(kDeclaredMaxDraws) + 1, 1,
+                            sizeof(Draw), sizeof(Batch), plan),
+          "gfx.dynamic.view-plan-draws-over-bound-rejected");
+    Check(!PlanViewCapacity(1, size_t(kDeclaredMaxCandidates) + 1,
+                            sizeof(Draw), sizeof(Batch), plan),
+          "gfx.dynamic.view-plan-candidates-over-bound-rejected");
+    // Small frames round to the first page (the minimum every ring
+    // allocates at slot creation).
+    Check(PlanViewCapacity(1, 1, sizeof(Draw), sizeof(Batch), plan) &&
+              plan.draws == 4096 && plan.candidates == 4096,
+          "gfx.dynamic.view-plan-first-page");
+    // The plan never publishes a partial result on rejection.
+    const DynamicCapacity before = plan;
+    Check(!PlanViewCapacity(SIZE_MAX, SIZE_MAX, sizeof(Draw), sizeof(Batch), plan) &&
+              plan.draws == before.draws && plan.candidates == before.candidates,
+          "gfx.dynamic.view-plan-no-partial-on-reject");
+
 }
 
 int main() {

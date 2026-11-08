@@ -21,6 +21,18 @@ struct DynamicCapacity {
 
 inline constexpr size_t kDynamicPageBytes = 64u * 1024u;
 
+// DECLARED shader-array bounds (the BDA-pointer generous-declared
+// pattern): the fixed HLSL arrays behind every GPU_PTR (vk::BufferPointer
+// needs complete fixed-size types) are declared at these sizes, so the
+// RUNTIME capacity must never exceed them or a shader load falls outside
+// its declared array. They are therefore also the fail-closed CPU
+// ceilings — the successor contract of the retired fixed caps
+// (kMaxDraws=65535 / kMaxBatchSlots=262144): a scene needing more is a
+// loud fatal, never a silent drop. HLSL mirrors: GFX_MAX_DRAWS /
+// GFX_MAX_BATCH_SLOTS (gfxfilter.hlsli) — keep all three in lockstep.
+inline constexpr uint32_t kDeclaredMaxDraws = 1u << 20;      // 1,048,576 draws per view
+inline constexpr uint32_t kDeclaredMaxCandidates = 1u << 22; // 4,194,304 candidate slots per view
+
 [[nodiscard]] inline constexpr bool RoundCapacity(size_t entries,
                                                   size_t bytesPerEntry,
                                                   size_t& capacity) noexcept {
@@ -59,6 +71,22 @@ inline constexpr size_t kDynamicPageBytes = 64u * 1024u;
     // enlarge the static heap when allocating cheap candidate scratch.
     result.survivors = 65536u;
     return true;
+}
+
+// The RUNTIME entry point of the dynamic-capacity cutover: one coupled
+// (view, flight) plan from the frame's exact counts, page-rounded,
+// overflow-checked AND bounded by the declared shader arrays. Pure CPU
+// so the boundary cases run headless (test_gfxfilter). False = the frame
+// exceeds a declared bound or overflows — a fatal contract violation at
+// the caller, never a silent drop.
+[[nodiscard]] inline constexpr bool PlanViewCapacity(size_t drawCount,
+                                                     size_t candidateCount,
+                                                     size_t drawBytes,
+                                                     size_t candidateBytes,
+                                                     DynamicCapacity& result) noexcept {
+    if (drawCount > kDeclaredMaxDraws || candidateCount > kDeclaredMaxCandidates)
+        return false;
+    return PlanDynamicCapacity(drawCount, candidateCount, drawBytes, candidateBytes, result);
 }
 
 // Checked byte budget for the coupled per-view/per-flight allocations.

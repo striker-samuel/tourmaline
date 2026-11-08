@@ -96,7 +96,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
             // (skinBoundsValid = 0 — no skinned cluster existed that frame).
             const bool skinned0 = (d.misc.y & GFX_DRAW_SKINNED) != 0;
             float4 mb = (skinned0 && pcB.skinBoundsValid != 0u)
-                ? pcB.skinBounds.Get().drawBound[drawIdx]
+                ? GfxSkinDrawBound(pcB.skinBounds, pcB.skinBoundsCandidateCapacity, drawIdx)
                 : pcB.meshBounds.Get().centerRadius[d.misc.x];
             float3 worldC = mul(d.model, float4(mb.xyz, 1.0f)).xyz;
             gsDrawVisible = GfxSphereInPlanes(gsPlanes, worldC, mb.w * gsBasis);
@@ -104,15 +104,18 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         // The filter's filtered-offset counter is allocated atomically
         // downstream; group 0 zeroes it once per frame here (GfxBatchCull
         // always runs before the filter — the rendergraph orders them).
+        // The counter/diag word base is RUNTIME (cullStateCounterWord =
+        // this (view, flight)'s draw capacity — the dynamic cutover; the
+        // four diag words follow the counter).
         if (drawIdx == 0)
         {
-            pcB.cullState.Get().v[GFX_CULL_STATE_COUNTER] = 0u;
+            pcB.cullState.Get().v[pcB.cullStateCounterWord + 0u] = 0u;
             // Reset diagnostic counters before GfxFilter; the rendergraph
             // orders this pass ahead of all filter workgroups.
-            pcB.cullState.Get().v[GFX_DIAG_EMPTY] = 0u;
-            pcB.cullState.Get().v[GFX_DIAG_OVERFLOW] = 0u;
-            pcB.cullState.Get().v[GFX_DIAG_ALLOCATED] = 0u;
-            pcB.cullState.Get().v[GFX_DIAG_GATED] = 0u;
+            pcB.cullState.Get().v[pcB.cullStateCounterWord + 1u] = 0u;
+            pcB.cullState.Get().v[pcB.cullStateCounterWord + 2u] = 0u;
+            pcB.cullState.Get().v[pcB.cullStateCounterWord + 3u] = 0u;
+            pcB.cullState.Get().v[pcB.cullStateCounterWord + 4u] = 0u;
         }
     }
     GroupMemoryBarrierWithGroupSync();
@@ -125,15 +128,19 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     // (no skinned cluster this frame) leaves every draw on the static table.
     const bool skinned = (d.misc.y & GFX_DRAW_SKINNED) != 0;
     const bool useSkinBounds = skinned && pcB.skinBoundsValid != 0u;
-    const uint keptOff = pcB.keptParity * GFX_MAX_BATCH_SLOTS;
-    const uint prevOff = (1u - pcB.keptParity) * GFX_MAX_BATCH_SLOTS;
+    // The kept ring's parity regions stride by the RUNTIME candidate
+    // capacity (the dynamic cutover — the retired GFX_MAX_BATCH_SLOTS
+    // stride died with the fixed ring): region P starts at word
+    // keptParity * candidateCapacity.
+    const uint keptOff = pcB.keptParity * pcB.candidateCapacity;
+    const uint prevOff = (1u - pcB.keptParity) * pcB.candidateCapacity;
     const uint maskOk = (d.misc.z & pcB.drawSetMask) != 0u ? 1u : 0u;
 
     for (uint ci = gtid.x; ci < me.clusterCount; ci += 128u)
     {
         const uint slot = base + ci;
-        if (base == 0xFFFFFFFFu || slot >= GFX_MAX_BATCH_SLOTS)
-            continue; // dropped draw / candidate cap: no slot to write
+        if (base == 0xFFFFFFFFu || slot >= pcB.candidateCapacity)
+            continue; // dropped draw / belt-and-braces capacity guard
 
         GfxClusterData c;
         if (useSkinBounds)
@@ -209,7 +216,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         && gsFirstKept < me.clusterCount)
     {
         const uint slot = base + gsFirstKept;
-        if (slot < GFX_MAX_BATCH_SLOTS)
+        if (slot < pcB.candidateCapacity)
             pcB.batches.Get().batch[slot].w = GFX_BATCH_DEMAND;
     }
 }

@@ -198,8 +198,9 @@ void PublishDrawDemand(uint drawIdx)
     {
         GfxHzbCtx ctx = FilterHzbCtx();
         const BoundProjection p = ProjectBound(
-            useSkinBounds ? pcF.skinBounds.Get().drawBound[drawIdx]
-                          : pcF.meshBounds.Get().centerRadius[d.misc.x],
+            useSkinBounds
+                ? GfxSkinDrawBound(pcF.skinBounds, pcF.skinBoundsCandidateCapacity, drawIdx)
+                : pcF.meshBounds.Get().centerRadius[d.misc.x],
             d.model, ctx);
         if (p.testable)
         {
@@ -461,7 +462,10 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
         bool fits = hasTriangles;
         if (hasTriangles)
         {
-            InterlockedAdd(pcF.cullState.Get().v[GFX_CULL_STATE_COUNTER],
+            // The counter word base is RUNTIME (cullStateCounterWord =
+            // this (view, flight)'s draw capacity — the dynamic cutover;
+            // the retired GFX_CULL_STATE_COUNTER macro died with it).
+            InterlockedAdd(pcF.cullState.Get().v[pcF.cullStateCounterWord],
                 gLocalCount, outBase);
             // Subtract instead of adding first: a wrapped uint allocation
             // must never be mistaken for a valid range.
@@ -470,14 +474,17 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
         }
         // Distinguish actual triangle rejection from ring exhaustion and
         // verdict-gated work. One atomic per batch, not per triangle.
+        // (The diag words sit right after the counter word, in the
+        // consumer's order: +1 empty, +2 overflow, +3 allocated, +4
+        // gated — see the GfxAudit readback.)
         if (!slotKept || !drawOk || gClusterCull != 0u)
-            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_GATED], 1u);
+            InterlockedAdd(pcF.cullState.Get().v[pcF.cullStateCounterWord + 4u], 1u);
         else if (!hasTriangles)
-            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_EMPTY], 1u);
+            InterlockedAdd(pcF.cullState.Get().v[pcF.cullStateCounterWord + 1u], 1u);
         else if (!fits)
-            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_OVERFLOW], 1u);
+            InterlockedAdd(pcF.cullState.Get().v[pcF.cullStateCounterWord + 2u], 1u);
         else
-            InterlockedAdd(pcF.cullState.Get().v[GFX_DIAG_ALLOCATED], 1u);
+            InterlockedAdd(pcF.cullState.Get().v[pcF.cullStateCounterWord + 3u], 1u);
         if (fits)
         {
             gOutBase = outBase;
