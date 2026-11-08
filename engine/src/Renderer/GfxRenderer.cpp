@@ -1033,12 +1033,18 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
             smvk::gfx::PushAndDispatchBatchCull(self->gfx, cmd, *ctx, slot);
         });
     }
-    // Seed depth over the GPU-written temporal commands. Always
-    // armed — the kept-bit parity rings self-arm (creation zeroes:
-    // the first frames seed nothing, remainder = all kept) and no
-    // CPU rotation exists. firstInstance = CURRENT draw index (the
-    // batch cull writes it against this frame's draws).
-    if (seedOpaqueProgram.shaderCount != 0 && seedMaskedProgram.shaderCount != 0 &&
+    // Main-view temporal depth has exactly ONE owner. When GPU-scene
+    // raster is active its seed/Hi-Z/depth chain controls the shared
+    // depth target; GfxFilter's independent seed and T5 remainder would
+    // write competing depth (notably through masked cutout cards).
+    // Still build the legacy GfxFilter work/visibility lists for its
+    // non-GPU-owned draws and shadow views; only omit this Main seed/
+    // remainder PAIR. The legacy-only frame retains the original path.
+    // FrameContext publishes this callback only for committed GPU raster,
+    // never merely because the GPU-scene feature is configured.
+    const bool gpuSceneOwnsMainDepth = bool(fc.gpuRasterOwnsNode);
+    if (!gpuSceneOwnsMainDepth &&
+        seedOpaqueProgram.shaderCount != 0 && seedMaskedProgram.shaderCount != 0 &&
         !std::getenv("TOURMALINE_KD_NOSEED")) {
         const auto& ranges = smvk::gfx::SeedRanges(gfx, slot);
         if (!ranges.empty()) {
