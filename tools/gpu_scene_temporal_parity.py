@@ -68,6 +68,11 @@ TEMPORAL_OFF_PIN = "TOURMALINE_GPU_SCENE_TEMPORAL=0"
 CULL_FLAGS_NAME = "TOURMALINE_CULLFLAGS"
 
 
+def has_unknown_runconfig_pin(app_log_text: str) -> bool:
+    """Unknown TOURMALINE env switches invalidate any parity claim."""
+    return UNKNOWN_RUNCONFIG_PIN in app_log_text
+
+
 def witness_count(app_log_text: str) -> int:
     """Occurrences of the engagement witness in an app log (0 = absent)."""
     return app_log_text.count(WITNESS)
@@ -243,7 +248,7 @@ def main(argv=None):
         # The parity gate must never certify an OFF leg whose switch
         # RunConfig silently ignored. Treat *any* unknown TOURMALINE knob
         # as an invalid capture rather than merely accepting equal pixels.
-        if UNKNOWN_RUNCONFIG_PIN in app_log:
+        if has_unknown_runconfig_pin(app_log):
             print(f"gpu_scene_temporal_parity: leg {leg} used an unknown "
                   f"TOURMALINE_* environment variable; see {leg_dir / 'app.log'}",
                   file=sys.stderr)
