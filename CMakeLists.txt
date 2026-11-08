@@ -618,6 +618,7 @@ if(TOURMALINE_IS_TOP_LEVEL)
               ${CMAKE_BINARY_DIR}/content/paks
       VERBATIM)
   endif()
+  add_subdirectory(tools/pager_bench) # standalone synthetic CPU/disk/Vulkan hardware baseline
   add_subdirectory(editor)
   # (tools/gi_baker moved into the shared game-host block above: embedded
   # game projects need the GiBaker stage tool for 'bake gi' recipes.)
