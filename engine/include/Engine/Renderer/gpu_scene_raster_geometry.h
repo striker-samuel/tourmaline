@@ -26,22 +26,34 @@
 
 namespace tour::gpu_scene {
 
+// The static GfxFilter geometry tables this publisher reads: a narrow
+// pointer+count VIEW, never the whole gfx::State. Engine-facing headers do not
+// carry RHI implementation state (the R8 boundary guard in
+// tests/test_architecture.cpp); the WorldRenderer narrows its live state here.
+struct IndexedGeometryTables {
+    const tour::gfx::Mesh* meshes = nullptr;
+    uint32_t meshCount = 0;
+    const tour::gfx::Cluster* clusters = nullptr;
+    uint32_t clusterCount = 0;
+    uint32_t indexBase = 0; // absolute firstIndex base of the index heap
+};
+
 // Returns false rather than guessing at a possibly discontinuous index range.
-[[nodiscard]] inline bool ResolveIndexedGeometry(const smvk::gfx::State& gfx,
+[[nodiscard]] inline bool ResolveIndexedGeometry(const IndexedGeometryTables& tables,
                                                  uint32_t meshIndex,
                                                  IndexedGeometry& out) noexcept {
     out = {};
-    if (meshIndex >= gfx.meshes.size())
+    if (meshIndex >= tables.meshCount)
         return false;
-    const smvk::gfx::Mesh& mesh = gfx.meshes[meshIndex];
+    const tour::gfx::Mesh& mesh = tables.meshes[meshIndex];
     if (mesh.clusterCount == 0 ||
-        mesh.clusterStart > gfx.clusters.size() ||
-        mesh.clusterCount > gfx.clusters.size() - mesh.clusterStart)
+        mesh.clusterStart > tables.clusterCount ||
+        mesh.clusterCount > tables.clusterCount - mesh.clusterStart)
         return false;
     uint64_t first = 0;
     uint64_t next = 0;
     for (uint32_t i = 0; i < mesh.clusterCount; ++i) {
-        const auto& cluster = gfx.clusters[mesh.clusterStart + i];
+        const auto& cluster = tables.clusters[mesh.clusterStart + i];
         if (cluster.mesh != meshIndex || cluster.triCount == 0)
             return false;
         if (i == 0) {
@@ -54,7 +66,7 @@ namespace tour::gpu_scene {
         if (next > std::numeric_limits<uint32_t>::max())
             return false;
     }
-    const uint64_t absolute = uint64_t(smvk::gfx::ClusterIndexBase(gfx)) + first;
+    const uint64_t absolute = uint64_t(tables.indexBase) + first;
     if (absolute > std::numeric_limits<uint32_t>::max())
         return false;
     out.indexCount = uint32_t(next - first);
@@ -73,12 +85,12 @@ class IndexedGeometryPublisher {
     // Invoke only after acquiring the flight's fence. ResourceManager Holder
     // replacement uses deferred GPU retirement, as in GPU-scene Uploader.
     [[nodiscard]] bool Publish(smvk::ResourceManager& ctx,
-                               const smvk::gfx::State& gfx,
+                               const IndexedGeometryTables& tables,
                                uint64_t geometryRevision,
                                uint32_t flight) {
-        if (flight >= Flights || gfx.meshes.size() > kMaxRasterDrawGroups)
+        if (flight >= Flights || tables.meshCount > kMaxRasterDrawGroups)
             return false;
-        const uint32_t count = uint32_t(gfx.meshes.size());
+        const uint32_t count = tables.meshCount;
         if (count == 0) {
             counts_[flight] = 0;
             revisions_[flight] = geometryRevision;
@@ -95,7 +107,7 @@ class IndexedGeometryPublisher {
                                         alignof(IndexedGeometry)));
         std::uninitialized_value_construct_n(rows, count);
         for (uint32_t i = 0; i < count; ++i)
-            (void)ResolveIndexedGeometry(gfx, i, rows[i]);
+            (void)ResolveIndexedGeometry(tables, i, rows[i]);
 
         if (buffers_[flight].empty() || capacity_[flight] < count) {
             size_t next = std::max<size_t>(16, capacity_[flight]);

@@ -9992,6 +9992,21 @@ void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
     std::cerr << "[VFS] loose mounts: content/ (0)"
               << (m_projectRoot.empty() ? "" : " + project root (-10)") << "\n";
 }
+// Narrow GfxFilter's static geometry state into the pointer+count view the
+// GPU-scene indexed-geometry publisher consumes. The narrowing lives HERE, in
+// engine implementation code, so the public header carries no RHI/gfx::State
+// exposure (the R8 boundary guard in tests/test_architecture.cpp).
+static tour::gpu_scene::IndexedGeometryTables
+GpuSceneIndexedTables(const tour::gfx::State& gfx) {
+    tour::gpu_scene::IndexedGeometryTables tables;
+    tables.meshes = gfx.meshes.data();
+    tables.meshCount = uint32_t(gfx.meshes.size());
+    tables.clusters = gfx.clusters.data();
+    tables.clusterCount = uint32_t(gfx.clusters.size());
+    tables.indexBase = gfx.clusterIndexBase;
+    return tables;
+}
+
 void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     SMVK_PROFILE_FUNCTION();
     SMVK_PROFILE_TAG("frameIndex", fb.frameIndex);
@@ -10783,7 +10798,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             static bool logged = false;
             if (!logged) {
                 std::fprintf(stderr,
-                             "[GpuSceneRaster] raster shaders unavailable; legacy path retained\\n");
+                             "[GpuSceneRaster] raster shaders unavailable; legacy path retained\n");
                 logged = true;
             }
         }
@@ -10811,7 +10826,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // so never substitute it for indexCount/firstIndex/vertexOffset.
         if (m_gpuSceneDatabaseReady && m_gfxFilterAvailable)
             m_gpuSceneDatabaseReady = m_gpuSceneIndexedGeometry.Publish(
-                *m_context, m_gfxRenderer.State(),
+                *m_context, GpuSceneIndexedTables(m_gfxRenderer.State()),
                 m_gpuSceneGeometryRevision, fb.frameIndex);
         if (m_gpuSceneDatabaseReady)
             m_gpuSceneDatabaseReady = m_gpuSceneRasterView.Publish(
@@ -10836,7 +10851,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_gpuSceneRasterEligible =
                 !m_world->drawItems.empty() &&
                 m_gpuSceneDatabase.instances.LiveCount() == m_world->drawItems.size();
-            const auto& gfxState = m_gfxRenderer.State();
+            const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
             constexpr uint32_t requiredFlags =
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                 smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
@@ -10860,7 +10875,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         (item.mesh < m_world->lodChains.size() &&
                          m_world->lodChains[item.mesh].levels.size() != 1) ||
                         gfxId == UINT32_MAX ||
-                        !tour::gpu_scene::ResolveIndexedGeometry(gfxState, gfxId, geometry)) {
+                        !tour::gpu_scene::ResolveIndexedGeometry(gfxTables, gfxId, geometry)) {
                         m_gpuSceneRasterEligible = false;
                         break;
                     }
@@ -11109,7 +11124,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 static bool logged = false;
                 if (!logged) {
                     std::fprintf(stderr,
-                                 "[GpuSceneRaster] parallel work scan unavailable; fallback\\n");
+                                 "[GpuSceneRaster] parallel work scan unavailable; fallback\n");
                     logged = true;
                 }
             }
@@ -11435,7 +11450,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneRasterDrawActive != m_gpuSceneRasterPreviouslyActive) {
         std::fprintf(stderr,
                      "[GpuSceneRaster] %s candidates/maxCommands=%u"
-                     " (Main indexed GPU work; legacy fallback on ineligible frames)\\n",
+                     " (Main indexed GPU work; legacy fallback on ineligible frames)\n",
                      m_gpuSceneRasterDrawActive ? "active" : "fallback",
                      m_gpuSceneRasterDrawActive ? m_gpuSceneRasterDrawCapacity : 0u);
         m_gpuSceneRasterPreviouslyActive = m_gpuSceneRasterDrawActive;
