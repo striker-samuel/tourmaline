@@ -238,6 +238,7 @@ struct GfxRenderer : public smvk::IFrameRenderer {
                                           smvk::RenderGraph& rg,
                                           const smvk::RenderView& view,
                                           const glm::vec3& eye,
+                                          uint32_t flight,
                                           uint32_t width,
                                           uint32_t height);
     // SPD-vs-per-mip culling HZB verification (TOURMALINE_HIZ_SPD_VERIFY):
