@@ -44,7 +44,7 @@ int main() {
     // the complete instance registry. The empty World tests the control
     // path without requiring Vulkan or a cooked cluster.
     {
-        World world{};
+        smvk::World world{};
         RenderDatabase snapshot{};
         WorldSynchronizer sync{};
         const auto first = sync.Synchronize(world, snapshot, 1);
