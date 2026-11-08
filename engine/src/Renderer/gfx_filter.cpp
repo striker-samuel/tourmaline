@@ -469,15 +469,20 @@ static bool CreateTemporalBuffers(ResourceManager& ctx, RenderGraph& rg, Tempora
     for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
         t.visClusterBuffers[f] =
             ctx.CreateBuffer(kVisClusterBytes, BufferType_Storage, "gfx visibleClusters");
+        uint32_t dc = 0, cc = 0;
+        if (!GrowCapacity(1, 0, sizeof(Draw), dc) ||
+            !GrowCapacity(1, 0, sizeof(SeedCommand), cc))
+            return false;
+        t.flightCapacity[f] = {dc, cc};
         t.visDrawBuffers[f] =
-            ctx.CreateBuffer(kVisDrawBytes, BufferType_Storage, "gfx visibleDraws");
+            ctx.CreateGpuSceneBuffer(size_t(dc) * sizeof(Draw), "gfx visibleDraws");
         // Storage, NOT Indirect (same queue-sharing argument as the filter
         // indirect buffers in CreateSlotBuffers); INDIRECT usage is covered
         // by the type's flags regardless (see bufferTypeToUsageFlags).
         t.seedIndirectBuffers[f] =
-            ctx.CreateBuffer(kSeedIndirectBytes, BufferType_Storage, "gfx seedIndirect");
+            ctx.CreateGpuSceneBuffer(size_t(cc) * sizeof(SeedCommand), "gfx seedIndirect");
         t.remainderIndirectBuffers[f] =
-            ctx.CreateBuffer(kSeedIndirectBytes, BufferType_Storage, "gfx remainderIndirect");
+            ctx.CreateGpuSceneBuffer(size_t(cc) * sizeof(SeedCommand), "gfx remainderIndirect");
         if (t.visClusterBuffers[f].empty() || t.visDrawBuffers[f].empty() ||
             t.seedIndirectBuffers[f].empty() || t.remainderIndirectBuffers[f].empty()) {
             RollbackTemporalBuffers(rg, t, f);
