@@ -46,8 +46,8 @@ GPU_PUSH(GfxConeDebugPush, pcG);
 [numthreads(128, 1, 1)]
 void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
 {
-    const uint drawIdx = gid.x;
-    if (drawIdx >= pcG.drawCount || drawIdx >= GFX_MAX_DRAWS)
+    const uint drawIdx = gid.x + gid.y * 65535u;
+    if (drawIdx >= pcG.drawCount)
         return;
 
     const GfxDraw d = pcG.draws.Get().draws[drawIdx];
@@ -68,14 +68,14 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     for (uint ci = gtid.x; ci < me.clusterCount; ci += 128u)
     {
         const uint slot = base + ci;
-        if (base == 0xFFFFFFFFu || slot >= GFX_MAX_BATCH_SLOTS)
+        if (base == 0xFFFFFFFFu || slot >= pcG.candidateCapacity)
             continue; // dropped draw / candidate cap: no slot to write
 
         // The cone: struct ternaries are not HLSL — spelled out. The
         // `skinned` fold above picked the table.
         GfxClusterData c;
         if (skinned)
-            c = pcG.skinBounds.Get().cluster[slot];
+            c = LoadSkinCluster(pcG.skinBounds, slot);
         else
             c = pcG.clusters.Get().cluster[me.clusterStart + ci];
 
