@@ -176,6 +176,21 @@ static_assert(sizeof(RasterWorkDrawBuildPush) == 48);
 static_assert(offsetof(RasterIndirectCommand, firstInstance) == 16);
 static_assert(std::is_trivially_copyable_v<RasterIndirectCommand>);
 
+// CPU oracle for the fixed two-bin GPU indirect builder. A command slot
+// belongs to exactly one bin; firstInstance always denotes the ORIGINAL
+// work index, not the PSO-sorted command index.
+[[nodiscard]] inline RasterIndirectCommand MakeRasterBinnedCommand(
+    const IndexedGeometry& geometry,
+    uint32_t workIndex,
+    uint32_t rasterClass,
+    uint32_t bin) noexcept {
+    if (rasterClass >= kRasterPipelineClassCount || rasterClass != bin ||
+        geometry.indexCount == 0u)
+        return {};
+    return RasterIndirectCommand{geometry.indexCount, 1u, geometry.firstIndex,
+                                 geometry.vertexOffset, workIndex};
+}
+
 [[nodiscard]] inline RasterIndirectCommand MakeRasterCommand(const IndexedGeometry& geometry,
                                                              const RasterGroup& group) noexcept {
     return RasterIndirectCommand{geometry.indexCount,
