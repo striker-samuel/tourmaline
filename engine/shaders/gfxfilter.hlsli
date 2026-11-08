@@ -772,7 +772,7 @@ struct GfxBatchCullPush
     GPU_PTR_WRITE(GfxCullState) cullState; // out: offset-counter zero (group 0)
     float4x4 viewProj;   // LIVE view (seed/remainder semantics)
     float3 eye;
-    uint dispatchUnused;
+    uint skinCandidateCapacity;
     uint drawCount;
     uint drawSetMask;    // TemporalView::drawSetMask (seed/remainder bucket gate)
     uint clusterIndexBase; // absolute firstIndex base for seed/remainder commands
@@ -842,8 +842,8 @@ struct GfxConeDebugPush
     GPU_PTR_WRITE(GfxConeDebugLines) lines; // out (2 verts per slot)
     uint skinBoundsValid; // 0: every draw reads the static table
     uint drawCount;
-    uint candidateCapacity;
-    uint pad;
+    uint candidateCapacity; // deformed bounds table's cluster-to-tail offset
+    uint candidateListCapacity;
 };
 //static_assert(sizeof(GfxConeDebugPush) == 56);
 
