@@ -154,6 +154,28 @@ int main() {
         const auto topology = sync.Synchronize(world, snapshot, 2);
         CHECK(topology.topologyReconciled);
     }
+    // Temporal GPU-scene seed is keyed by persistent slot + generation,
+    // not by work slot, draw order or last frame's geometry ID.
+    {
+        std::array<uint32_t, 5> previous{{0u, 10u, 22u, 0u, 31u}};
+        CHECK(RasterTemporalSeedMember(previous, {1u, 10u}));
+        CHECK(RasterTemporalSeedMember(previous, {2u, 22u}));
+        CHECK(!RasterTemporalSeedMember(previous, {2u, 23u}));
+        CHECK(!RasterTemporalSeedMember(previous, {0u, 0u}));
+        CHECK(!RasterTemporalSeedMember(previous, {3u, 1u}));
+        CHECK(!RasterTemporalSeedMember(previous, {5u, 31u}));
+        CHECK(!RasterTemporalSeedMember(previous, {UINT32_MAX, 31u}));
+        // Work reordering may change indirect firstInstance, but never
+        // the identity used for seed/remainder membership.
+        std::array<InstanceReference, 3> ordered{{
+            {2u, 22u}, {1u, 10u}, {4u, 31u}}};
+        std::array<InstanceReference, 3> shuffled{{
+            ordered[2], ordered[0], ordered[1]}};
+        for (const auto& id : shuffled)
+            CHECK(RasterTemporalSeedMember(previous, id));
+        // No previous frame: bootstrap with a full remainder, no seed.
+        CHECK(!RasterTemporalSeedMember({}, {1u, 10u}));
+    }
     // Canonical static-source ownership, independent of drawItems sort order.
     // Admission never commits ownership until the GPU work is prepared.
     {
