@@ -11409,6 +11409,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
     }
+    if (s_gpuSceneRaster &&
+        m_gpuSceneRasterDrawActive != m_gpuSceneRasterPreviouslyActive) {
+        std::fprintf(stderr,
+                     "[GpuSceneRaster] %s candidates/maxCommands=%u"
+                     " (Main indexed GPU work; legacy fallback on ineligible frames)\\n",
+                     m_gpuSceneRasterDrawActive ? "active" : "fallback",
+                     m_gpuSceneRasterDrawActive ? m_gpuSceneRasterDrawCapacity : 0u);
+        m_gpuSceneRasterPreviouslyActive = m_gpuSceneRasterDrawActive;
+    }
     const uint64_t renderViewsAddress = m_renderViews.DeviceAddress(*m_context, fb.frameIndex);
 
     // Optional production-frame GPU vegetation consumer. It shares the
