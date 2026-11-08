@@ -74,8 +74,8 @@ groupshared float3 gsUnionMax[128];
 [numthreads(128, 1, 1)]
 void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
 {
-    const uint drawIdx = gid.x;
-    if (drawIdx >= pcS.drawCount || drawIdx >= GFX_MAX_DRAWS)
+    const uint drawIdx = gid.x + gid.y * 65535u;
+    if (drawIdx >= pcS.drawCount)
         return;
 
     const GfxDraw d = pcS.draws.Get().draws[drawIdx];
@@ -97,7 +97,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     for (uint ci = gtid.x; ci < me.clusterCount; ci += 128u)
     {
         const uint slot = base + ci;
-        if (base == 0xFFFFFFFFu || slot >= GFX_MAX_BATCH_SLOTS)
+        if (base == 0xFFFFFFFFu || slot >= pcS.candidateCapacity)
             continue; // dropped draw / candidate cap: no slot to write
 
         const GfxClusterData c = pcS.clusters.Get().cluster[me.clusterStart + ci];
@@ -231,7 +231,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
                 o.d = float4(0.0f, 0.0f, 0.0f, 0.0f);
             }
         }
-        pcS.skinBounds.Get().cluster[slot] = o;
+        StoreSkinCluster(pcS.skinBounds, slot, o);
 
         // Fold this cluster's rebuilt sphere into the thread's union box.
         boxMin = min(boxMin, o.b.xyz - o.b.w);
@@ -261,9 +261,10 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         // convention FinishMesh's NaN guard uses (radius 1e30 keeps every
         // test; such draws issue no batches anyway).
         if (mn.x <= mx.x && mn.y <= mx.y && mn.z <= mx.z)
-            pcS.skinBounds.Get().drawBound[drawIdx] =
-                float4((mn + mx) * 0.5f, length((mx - mn) * 0.5f));
+            StoreSkinDrawBound(pcS.skinBounds, pcS.candidateCapacity, drawIdx,
+                                   float4((mn + mx) * 0.5f, length((mx - mn) * 0.5f)));
         else
-            pcS.skinBounds.Get().drawBound[drawIdx] = float4(0.0f, 0.0f, 0.0f, 1e30f);
+            StoreSkinDrawBound(pcS.skinBounds, pcS.candidateCapacity, drawIdx,
+                                   float4(0.0f, 0.0f, 0.0f, 1e30f));
     }
 }
