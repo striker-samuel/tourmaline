@@ -89,20 +89,22 @@ def leg_pins(leg, extra_env, hiz_off_flags):
     return pins
 
 
-def evaluate(legs, noise_margin=8, noise_cap=64):
+def evaluate(legs, noise_margin=8, noise_cap=64, require_bit_exact=False):
     """Pass/fail verdicts from finished leg records (pure, unit-tested).
 
     legs maps leg name -> {"pixels": <capture png path>, "witness": int,
     "status": str}. Returns (verdict dict, ok bool).
 
-    The GPU-scene indexed lane is not bit-deterministic (atomically
-    scattered command order resolves depth-equal fragments differently
-    per run - thin-edge z-fight pixels; the legacy path was bit-exact).
-    Parity is therefore judged RELATIVE to the lane's own noise floor:
+    The GPU-scene indexed lane has shown a small nondeterministic pixel
+    floor in captures. Its verdict and work scatter kernels currently use
+    ordered prefix scans (not atomic output allocation), so depth-equal
+    draw order is a hypothesis, not a confirmed cause.
+    By default parity is judged relative to the lane's own noise floor:
     the determinism leg (on-a vs on-b) measures it, and the temporal /
     Hi-Z legs must stay within floor + noise_margin. A floor above
     noise_cap fails outright - that is a determinism regression, not
-    noise.
+    noise. The opt-in require_bit_exact mode disallows every difference,
+    independent of noise_cap and noise_margin.
     """
     def pixels(name):
         return legs[name]["pixels"]
@@ -127,29 +129,34 @@ def evaluate(legs, noise_margin=8, noise_cap=64):
     determinism = pixel_compare.compare(pixels("on-a"), pixels("on-b"))
     comparisons["determinism"] = determinism
     floor = determinism["differing_pixels"]
-    check("determinism", floor <= noise_cap,
+    determinism_ok = floor == 0 if require_bit_exact else floor <= noise_cap
+    check("determinism", determinism_ok,
           f"noise floor {floor}/{determinism['sampled_pixels']} differing "
-          f"(cap {noise_cap})")
-    ok = ok and floor <= noise_cap
+          + ("(bit exact required)" if require_bit_exact else f"(cap {noise_cap})"))
+    ok = ok and determinism_ok
     for name, (left, right) in {
         "temporal-parity": ("on-a", "temporal-off"),
     }.items():
         comparison = pixel_compare.compare(pixels(left), pixels(right))
         comparisons[name] = comparison
-        within = comparison["differing_pixels"] <= floor + noise_margin
+        within = (comparison["differing_pixels"] == 0 if require_bit_exact
+                  else comparison["differing_pixels"] <= floor + noise_margin)
         check(name, within,
               f"{comparison['differing_pixels']}/{comparison['sampled_pixels']} differing "
-              f"(floor {floor} + margin {noise_margin})")
+              + ("(bit exact required)" if require_bit_exact
+               else f"(floor {floor} + margin {noise_margin})"))
         ok = ok and within
     if "hiz-off" in legs:
         check("witness-hiz-off", legs["hiz-off"]["witness"] > 0,
               f"engagement witness x{legs['hiz-off']['witness']} in hiz-off log")
         comparison = pixel_compare.compare(pixels("on-a"), pixels("hiz-off"))
         comparisons["hiz-parity"] = comparison
-        within = comparison["differing_pixels"] <= floor + noise_margin
+        within = (comparison["differing_pixels"] == 0 if require_bit_exact
+                  else comparison["differing_pixels"] <= floor + noise_margin)
         check("hiz-parity", within,
               f"{comparison['differing_pixels']}/{comparison['sampled_pixels']} differing "
-              f"(floor {floor} + margin {noise_margin})")
+              + ("(bit exact required)" if require_bit_exact
+                 else f"(floor {floor} + margin {noise_margin})"))
         ok = ok and within
     ok = ok and all(entry["pass"] for entry in verdict.values())
     return verdict, ok
@@ -171,8 +178,11 @@ def parser():
     p.add_argument("--skip-hiz", action="store_true", help="skip the Hi-Z parity leg")
     p.add_argument("--noise-margin", type=int, default=8,
                    help="parity legs may exceed the measured determinism floor by this many "
-                        "differing pixels (default %(default)s; the indexed lane's atomic "
-                        "command order is not bit-deterministic)")
+                        "differing pixels (default %(default)s; ignored under "
+                        "--require-bit-exact)")
+    p.add_argument("--require-bit-exact", action="store_true",
+                   help="require zero differing pixels in every ON/ON and parity "
+                        "comparison; opt-in for golden captures and determinism fixes")
     p.add_argument("--noise-cap", type=int, default=64,
                    help="the determinism floor itself must stay under this many differing "
                         "pixels or the gate fails outright (default %(default)s)")
@@ -235,8 +245,11 @@ def main(argv=None):
             "status": report.get("status", "unknown"),
             "pins": report.get("provenance", {}).get("pins", {}),
         }
-    verdict, ok = evaluate(records, noise_margin=args.noise_margin, noise_cap=args.noise_cap)
+    verdict, ok = evaluate(records, noise_margin=args.noise_margin,
+                           noise_cap=args.noise_cap,
+                           require_bit_exact=args.require_bit_exact)
     result = {"schema_version": 1, "tool": "gpu_scene_temporal_parity",
+              "require_bit_exact": args.require_bit_exact,
               "legs": records, "checks": verdict,
               "status": "passed" if ok else "failed"}
     (output_dir / "parity.json").write_text(json.dumps(result, indent=2) + "\n",
