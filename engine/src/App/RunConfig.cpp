@@ -932,6 +932,18 @@ void RunConfig::WarnUnknown() {
         "TOURMALINE_SHADER_RELOAD",
         "TOURMALINE_SHADER_RELOAD_SRC",
         "TOURMALINE_SHADER_SWAP",
+        // GPU-scene / skinning debug pins (the KD diagnostic family, the
+        // raster/temporal A-B switches, the validate bridge, the deformed
+        // heap dump) - one-shot static latches read directly at their
+        // sites, documented diagnostic knobs rather than RunConfig state.
+        "TOURMALINE_GPU_SCENE_RASTER",
+        "TOURMALINE_GPU_SCENE_TEMPORAL",
+        "TOURMALINE_GPU_SCENE_VALIDATE",
+        "TOURMALINE_KD",
+        "TOURMALINE_KD_NOMESH",
+        "TOURMALINE_KD_NOSEED",
+        "TOURMALINE_KD_NOSKIN",
+        "TOURMALINE_SKINBOUNDS_DUMP",
         // Stale doc-only (AGENTS.md): warn to guide migration, not error.
         "TOURMALINE_TRANSPARENCY",
     };
