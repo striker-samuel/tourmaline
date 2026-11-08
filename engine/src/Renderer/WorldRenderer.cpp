@@ -14487,6 +14487,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         mainPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], vertexRead);
     }
     const bool sceneRasterActive = m_gpuSceneRasterDrawActive;
+    const bool sceneRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0;
     const smvk::BufferHandle sceneRasterCommands = m_gpuSceneRasterIndirect;
     const uint32_t sceneRasterCommandCount = m_gpuSceneRasterDrawCapacity;
     const tour::gpu_scene::RasterVsPush sceneRasterVsPush{
@@ -14501,6 +14502,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                useMsaa,
                                gfxSlot,
                                sceneRasterActive,
+                               sceneRasterTwoSided,
                                sceneRasterCommands,
                                sceneRasterCommandCount,
                                sceneRasterVsPush,
@@ -14936,13 +14938,32 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // kMaxDraws happened to carry it; the dynamic-capacity
             // cutover made it a plain local).
             constexpr uint32_t kChunk = 65535;
-            for (uint32_t first = 0; first < sceneRasterCommandCount; first += kChunk) {
-                const uint32_t count = std::min(kChunk, sceneRasterCommandCount - first);
-                cmd.DrawIndexedIndirect(sceneRasterCommands,
-                                        uint64_t(first) *
-                                            sizeof(tour::gpu_scene::RasterIndirectCommand),
-                                        count,
-                                        sizeof(tour::gpu_scene::RasterIndirectCommand));
+            // Two fixed contiguous PSO-class ranges; firstInstance stays
+            // the original work index, independent of command order.
+            const uint32_t binStride = sceneRasterCommandCount / 2u;
+            const auto drawBin = [&](uint32_t bin) {
+                const uint32_t base = bin * binStride;
+                for (uint32_t first = 0; first < binStride; first += kChunk) {
+                    const uint32_t count = std::min(kChunk, binStride - first);
+                    cmd.DrawIndexedIndirect(
+                        sceneRasterCommands,
+                        uint64_t(base + first) *
+                            sizeof(tour::gpu_scene::RasterIndirectCommand),
+                        count,
+                        sizeof(tour::gpu_scene::RasterIndirectCommand));
+                }
+            };
+            drawBin(0u);
+            if (sceneRasterTwoSided) {
+                // One extra PSO bind for the entire class, never per object.
+                cmd.BindRenderPipeline(m_gpuSceneRasterProgram,
+                                       smvk::VertexLayoutId::Static,
+                                       opaqueDepth,
+                                       noStencil,
+                                       smvk::BlendSettings::Opaque(),
+                                       msaaSettings,
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                drawBin(1u);
             }
         }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----
