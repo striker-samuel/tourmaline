@@ -381,7 +381,7 @@ struct BatchCullPush {
     uint64_t cullState = 0;  // out: offset-counter zero (group 0)
     glm::mat4 viewProj{};    // LIVE view
     glm::vec3 eye{0.0f};
-    float pad1 = 0.0f;
+    uint32_t skinCandidateCapacity = 0;
     uint32_t drawCount = 0;
     uint32_t drawSetMask = DrawSetMask_All; // TemporalView bucket gate
     uint32_t clusterIndexBase = 0;          // absolute seed firstIndex base
@@ -456,7 +456,7 @@ struct ConeDebugPush {
     uint32_t skinBoundsValid = 0; // 0: every draw reads the static table
     uint32_t drawCount = 0;
     uint32_t candidateCapacity = 0;
-    uint32_t pad2 = 0;
+    uint32_t candidateListCapacity = 0;
 };
 static_assert(sizeof(ConeDebugPush) == 56);
 
