@@ -11,7 +11,7 @@
 
 version 1
 
-node -name "bells" -type source -sound "content/audio/bells.wav" -gain 0.5 -loop on
+node -name "bells" -type source -sound "content/audio/bells.wav" -gain 0.25 -loop on
 node -name "tone" -type lpf -cutoff 2000 -order 2
 node -name "chimes" -type gain -gain 0.0
 node -name "master" -type gain -gain 1.0
@@ -25,7 +25,7 @@ connect -from "master" -to "output"
 param -name "chimes" -node "chimes" -field gain
 param -name "tone" -node "tone" -field cutoff
 
-# The default cue (first): the bells fade in over four seconds.
+# The default cue (first): the bells fade in over four seconds. Scene autoplay is disabled to avoid a second voice.
 cue -name "calm"
 start -node "bells" -t 0
 ramp -param "chimes" -t 0 -value 0.0

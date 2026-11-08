@@ -142,8 +142,8 @@ class ProjectGame final : public app::GameBehaviour {
         std::printf("[GameProject] audio graph: forest instance live"
                     " (calm cue, chimes ramps 0 -> 0.6 over 4 s)\n");
     }
-    // The gameplay surface: a slow parameter pulse over the exposed
-    // "chimes" envelope, then ONE authored crossfade into the storm
+    // The gameplay surface: the authored calm cue owns its fade-in,
+    // followed by ONE crossfade into the storm
     // cue at the ten-second mark (the AnimatorCrossFade analog — the
     // old cue's sources + automation ramp out as the storm's ramp in
     // over two seconds).
@@ -151,8 +151,7 @@ class ProjectGame final : public app::GameBehaviour {
         if (!m_forest)
             return;
         m_audioTime += dt;
-        const float chimes = 0.6f + 0.15f * std::sin(m_audioTime * 1.3f);
-        m_forest.set("chimes", chimes);
+        // Let the authored cue automation control the chimes gain.
         if (!m_storm && m_audioTime >= 10.0f) {
             m_storm = true;
             m_forest.crossFade(project::audiocues::forest_storm.cue, 2.0f);
