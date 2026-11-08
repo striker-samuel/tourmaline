@@ -1796,6 +1796,8 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx,
         smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
             smvk::IteratorFlagBit_StaticVertexFmt,
         [&](const smvk::World::RenderItem& item) {
+            if (gpuRasterOwnsNode_ && gpuRasterOwnsNode_(item.node))
+                return; // exactly complementary to GPU-scene instance-cull mask
             if (dumpGates)
                 ++s_gates.items;
             if (item.material == smvk::World::kInvalidIndex) {
