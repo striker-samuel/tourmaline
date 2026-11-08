@@ -28,6 +28,7 @@
 
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gfx_dynamic_capacity.h>
 #include <Engine/debug_log.h>
 // Detail diagnostics (winding/cull/spawn/mirror traces) print in debug
 // builds only; PASS/FAIL lines and the final summary always print.
@@ -2721,7 +2722,25 @@ void TestMaterialFamilyPrograms() {
           "gfx.family-wire-twin-identity-gi");
 }
 
+void TestDynamicCapacityPlanning() {
+    using namespace smvk::gfx;
+    size_t c = 42;
+    Check(RoundCapacity(0, 128, c) && c == 0, "gfx.dynamic.zero");
+    Check(RoundCapacity(1, 128, c) && c == 512, "gfx.dynamic.first-page");
+    Check(RoundCapacity(512, 128, c) && c == 512, "gfx.dynamic.page-end");
+    Check(RoundCapacity(513, 128, c) && c == 1024, "gfx.dynamic.page-grow");
+    Check(!RoundCapacity(1, 0, c), "gfx.dynamic.zero-stride-rejected");
+    Check(!RoundCapacity(SIZE_MAX, 128, c), "gfx.dynamic.overflow-rejected");
+    DynamicCapacity plan{};
+    Check(PlanDynamicCapacity(70000, 270000, 128, 16, plan) &&
+              plan.draws >= 70000 && plan.candidates >= 270000 &&
+              plan.survivors == 65536, "gfx.dynamic.exceeds-old-limits");
+    Check(!PlanDynamicCapacity(SIZE_MAX, 1, 128, 16, plan),
+          "gfx.dynamic.overflow-plan");
+}
+
 int main() {
+    TestDynamicCapacityPlanning();
     TestWindingSign();
     TestRegistration();
     TestBatching();
