@@ -9,6 +9,7 @@
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Scene/scene.h>
+#include <array>
 #include <cstdio>
 #include <span>
 #include <vector>
@@ -55,6 +56,22 @@ int main() {
         CHECK(TablePageLayout<LeafMember>::Capacity(2049, cap) && cap == 4096);
         CHECK(!TablePageLayout<Instance>::Capacity(SIZE_MAX, cap));
         CHECK(!TablePageLayout<Leaf>::Bytes(SIZE_MAX, bytes));
+    }
+    // Streamed-LOD admission must fail closed when a geometry-only
+    // metadata update expands an AABB beyond the cached instance sphere.
+    {
+        const glm::vec4 sphere(0.0f, 0.0f, 0.0f, 2.0f);
+        CHECK(RasterSphereContainsLodBounds(
+            sphere, glm::vec3(-1.0f), glm::vec3(1.0f)));
+        CHECK(!RasterSphereContainsLodBounds(
+            sphere, glm::vec3(-2.0f), glm::vec3(2.0f)));
+        CHECK(!RasterSphereContainsLodBounds(
+            sphere, glm::vec3(2.0f), glm::vec3(3.0f)));
+        CHECK(!RasterSphereContainsLodBounds(
+            sphere, glm::vec3(1.0f), glm::vec3(-1.0f)));
+        CHECK(!RasterSphereContainsLodBounds(
+            glm::vec4(0.0f, 0.0f, 0.0f, -1.0f),
+            glm::vec3(-1.0f), glm::vec3(1.0f)));
     }
     // Every compute invocation writes a verdict header, even when it
     // rejects an invalid leaf/member. Zero-filled readback is not a valid
@@ -275,6 +292,44 @@ int main() {
     CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&readyLevel, 1), true, db));
     CHECK(InstanceDrawReady(db, current));
     CHECK(RasterIndexedInstanceReady(db, current));
+
+    // Multi-LOD raster admission: the GPU selector chooses the finest
+    // registered resident sibling. The source's conservative bounds must
+    // cover ALL cooked levels, including nonresident ones.
+    const std::array<LevelSource, 3> levels{{
+        {0.0f, 7u, true, true},
+        {1.0f, 8u, true, true},
+        {2.0f, InvalidIndex, false, true},
+    }};
+    CHECK(bridge.PublishMesh(reloaded.mesh, levels, true, db));
+    CHECK(RasterIndexedInstanceReady(db, current));
+    // LOD0 eviction is allowed: the GPU selector falls back to LOD1.
+    auto fallbackLevels = levels;
+    fallbackLevels[0] = {0.0f, InvalidIndex, false, true};
+    CHECK(bridge.PublishMesh(reloaded.mesh, fallbackLevels, true, db));
+    CHECK(RasterIndexedInstanceReady(db, current));
+    // Unknown bounds invalidate the union sphere: never GPU-own a
+    // multi-LOD mesh while any sibling can escape the published bounds.
+    auto unknownBounds = levels;
+    unknownBounds[2] = {2.0f, InvalidIndex, false, false};
+    CHECK(bridge.PublishMesh(reloaded.mesh, unknownBounds, false, db));
+    CHECK(!RasterIndexedInstanceReady(db, current));
+    // A resident level with no registered filterable geometry is not
+    // safe to draw, even when another LOD is usable.
+    auto missingGeometry = levels;
+    missingGeometry[1] = {1.0f, InvalidIndex, true, true};
+    CHECK(bridge.PublishMesh(reloaded.mesh, missingGeometry, true, db));
+    CHECK(!RasterIndexedInstanceReady(db, current));
+    // No resident geometry must never result in GPU ownership.
+    auto noResidency = levels;
+    noResidency[0].resident = false;
+    noResidency[1].resident = false;
+    CHECK(bridge.PublishMesh(reloaded.mesh, noResidency, true, db));
+    CHECK(!RasterIndexedInstanceReady(db, current));
+    // Restore the original single-LOD fixture for generation checks.
+    CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&readyLevel, 1), true, db));
+    CHECK(RasterIndexedInstanceReady(db, current));
+
     auto corrupted = *db.instances.Get(current);
     corrupted.refs.y += 1; // stale mesh generation
     CHECK(db.instances.Update(current, corrupted));

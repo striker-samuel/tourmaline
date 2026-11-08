@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <span>
@@ -37,6 +38,30 @@ struct IndexedGeometryTables {
     uint32_t clusterCount = 0;
     uint32_t indexBase = 0; // absolute firstIndex base of the index heap
 };
+
+// Admission guard for streamed LOD metadata. The persistent instance sphere
+// is built during topology reconciliation, but geometry-only updates can
+// publish newer LOD bounds without rebuilding that sphere. Before allowing
+// GPU-scene to own a multi-LOD draw, verify the published sphere contains
+// the current AABB of EVERY LOD (resident or deferred). A failed check
+// routes the mesh back through the legacy path instead of risking a cull
+// from stale bounds.
+[[nodiscard]] inline bool RasterSphereContainsLodBounds(
+    glm::vec4 sphere, glm::vec3 boundsMin, glm::vec3 boundsMax) noexcept {
+    if (!std::isfinite(sphere.x) || !std::isfinite(sphere.y) ||
+        !std::isfinite(sphere.z) || !std::isfinite(sphere.w) ||
+        sphere.w < 0.0f)
+        return false;
+    const glm::dvec3 center(sphere);
+    const glm::dvec3 lo(boundsMin), hi(boundsMax);
+    const glm::dvec3 distance = glm::max(glm::abs(lo - center),
+                                          glm::abs(hi - center));
+    // Invalid AABBs/NaNs also fail closed.
+    if (!(lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z))
+        return false;
+    return glm::dot(distance, distance) <=
+           double(sphere.w) * double(sphere.w);
+}
 
 // Returns false rather than guessing at a possibly discontinuous index range.
 [[nodiscard]] inline bool ResolveIndexedGeometry(const IndexedGeometryTables& tables,
