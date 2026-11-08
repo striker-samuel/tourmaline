@@ -13323,7 +13323,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                    m_gpuSceneRasterWorkLogical[temporalFlight],
                                                    temporalCommands,
                                                    seedVsPush,
-                                                   /*hizOccluder=*/true);
+                                                   /*hizOccluder=*/true,
+                                                   m_gpuSceneRasterDoubleSidedCount != 0);
             if (!seedRecorded)
                 gpuTemporalReady = false;
             // Prime MAIN depth/G-buffer with the same prev-visible seed.
@@ -13340,7 +13341,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                        m_gpuSceneRasterSeedLogicals[temporalFlight],
                                                        m_gpuSceneRasterWorkLogical[temporalFlight],
                                                        temporalCommands,
-                                                       seedVsPush);
+                                                       seedVsPush,
+                                                       /*hizOccluder=*/false,
+                                                       m_gpuSceneRasterDoubleSidedCount != 0);
                 if (!primed)
                     gpuTemporalReady = false;
                 else
@@ -13480,7 +13483,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     logical,
                     m_gpuSceneRasterWorkLogical[flight],
                     m_gpuSceneRasterDrawCapacity,
-                    tail);
+                    tail,
+                    /*hizOccluder=*/false,
+                    m_gpuSceneRasterDoubleSidedCount != 0);
                 gpuDepthPrimed = remainderPrimed;
                 fc.gpuSceneDepthPrimed = gpuDepthPrimed;
             }
