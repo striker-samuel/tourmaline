@@ -2421,6 +2421,7 @@ class WorldRenderer : public IRenderer {
     std::array<uint64_t, smvk::limits::MaxFramesInFlight> m_gpuSceneRasterOwnerMaskGeometryRev{};
 
     uint32_t m_gpuSceneRasterCompatibleCount = 0;
+    uint32_t m_gpuSceneRasterDoubleSidedCount = 0;
     uint32_t m_gpuSceneRasterLegacyCount = 0;
     // Prototype production cutover: only all-supported static/opaque scenes
     // may substitute their Main draws. Unsupported content uses GfxFilter.

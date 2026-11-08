@@ -120,7 +120,9 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
             continue;
         selected.identity = uint4(verdict.x, verdict.y, lodIndex,
                                   lod.value.firstSubmesh);
-        selected.range = uint4(lod.value.submeshCount, workCount, 0u, 0u);
+        selected.range = uint4(lod.value.submeshCount, workCount,
+                               (inst.value.refs.w & GPU_SCENE_INSTANCE_DOUBLE_SIDED) != 0u
+                                    ? 1u : 0u, 0u);
         selectedWork = workCount;
         found = true;
     }

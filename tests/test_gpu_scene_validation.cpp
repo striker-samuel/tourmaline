@@ -215,6 +215,14 @@ void CheckSubmeshWorkExpansion() {
     CHECK(work[0].detail.x == 0u);
     CHECK(work[1].detail.y == subs[1].slot);
     CHECK(work[1].detail.w == 302u);
+    CHECK(work[0].detail.z == 0u); // back-cull raster class
+    instance.refs.w |= InstanceFlagDoubleSided;
+    CHECK(db.instances.Update(id, instance));
+    work = ReferenceExpandWork(db, visible);
+    CHECK(work.size() == 2u && work[0].detail.z == 1u &&
+          work[1].detail.z == 1u); // two-sided material class
+    instance.refs.w &= ~InstanceFlagDoubleSided;
+    CHECK(db.instances.Update(id, instance));
 
     // Unregistered submeshes are excluded without a hole in the output.
     CHECK(db.submeshes.Update(subs[0], Submesh{}));
@@ -239,6 +247,21 @@ void CheckSubmeshWorkExpansion() {
     visible[0].value.z = 1u;
     CHECK(db.meshes.Erase(mesh));
     CHECK(ReferenceExpandWork(db, visible).empty());
+}
+
+void CheckRasterPsoBins() {
+    const IndexedGeometry geometry{36u, 72u, -5, 0u};
+    const auto front = MakeRasterBinnedCommand(geometry, 7u, 0u, 0u);
+    const auto noCull = MakeRasterBinnedCommand(geometry, 8u, 1u, 1u);
+    const auto excludedFront = MakeRasterBinnedCommand(geometry, 7u, 0u, 1u);
+    const auto excludedNoCull = MakeRasterBinnedCommand(geometry, 8u, 1u, 0u);
+    CHECK(front.indexCount == 36u && front.instanceCount == 1u &&
+          front.firstIndex == 72u && front.vertexOffset == -5 &&
+          front.firstInstance == 7u);
+    CHECK(noCull.instanceCount == 1u && noCull.firstInstance == 8u);
+    CHECK(excludedFront.indexCount == 0u && excludedFront.instanceCount == 0u);
+    CHECK(excludedNoCull.indexCount == 0u && excludedNoCull.instanceCount == 0u);
+    CHECK(MakeRasterBinnedCommand(geometry, 9u, 2u, 0u).instanceCount == 0u);
 }
 
 void CheckProjectedErrorWorkSelection() {
@@ -347,6 +370,7 @@ int main() {
     CheckIndirectAndAuthoritativeView();
     CheckSubmeshWorkExpansion();
     CheckProjectedErrorWorkSelection();
+    CheckRasterPsoBins();
     CheckLegacyRebasing();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -98,7 +98,8 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
                                smvk::LogicalBufferHandle workLogical,
                                uint32_t commandCount,
                                const tour::gpu_scene::RasterVsPush& vertexPush,
-                               bool hizOccluder = false);
+                               bool hizOccluder = false,
+                               bool hasDoubleSided = false);
     // lightCountOverride: UINT32_MAX (default) = cull fc.fpLightCount
     // lights; any other value limits the light leg (the deferred-shadow
     // pipeline passes 0 — its shading consumes the DS lists, but the decal

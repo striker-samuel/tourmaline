@@ -15,6 +15,7 @@
 #include "gpu_platform.hlsli"
 
 #define GS_RASTER_MAX_WORK     1048576u
+#define GS_RASTER_MAX_COMMANDS (2u * GS_RASTER_MAX_WORK)
 #define GS_RASTER_MAX_GEO      65535u
 #define GS_RASTER_MAX_CANDIDATES 1048576u
 #define GS_INVALID            0xffffffffu
@@ -36,7 +37,7 @@ struct RasterIndirectCmd {
 struct WorkBuffer { SceneSubmeshWork rows[GS_RASTER_MAX_WORK]; };
 struct OffsetBuffer { uint values[GS_RASTER_MAX_CANDIDATES + 1u]; };
 struct GeometryBuffer { RasterIndexedGeometry rows[GS_RASTER_MAX_GEO]; };
-struct IndirectBuffer { RasterIndirectCmd rows[GS_RASTER_MAX_WORK]; };
+struct IndirectBuffer { RasterIndirectCmd rows[GS_RASTER_MAX_COMMANDS]; };
 
 struct RasterWorkDrawBuildPush {
     GPU_PTR_READ(WorkBuffer) work;
@@ -46,14 +47,14 @@ struct RasterWorkDrawBuildPush {
     uint candidateCount;
     uint geometryCount;
     uint commandCapacity;
-    uint reserved;
+    uint binStride; // number of work slots per raster class
 };
 GPU_PUSH(RasterWorkDrawBuildPush, pc);
 
 [numthreads(64, 1, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID) {
     const uint i = tid.x;
-    if (i >= pc.commandCapacity || i >= GS_RASTER_MAX_WORK)
+    if (i >= pc.commandCapacity || i >= GS_RASTER_MAX_COMMANDS)
         return;
     RasterIndirectCmd command;
     command.indexCount = 0;
@@ -64,12 +65,18 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
 
     // This offset is the GPU-computed total work count. Never trust a value
     // outside the reserved command range, including an overflowed prefix.
-    if (pc.candidateCount <= GS_RASTER_MAX_CANDIDATES) {
+    const uint stride = pc.binStride;
+    if (stride != 0u && stride <= GS_RASTER_MAX_WORK &&
+        pc.commandCapacity == 2u * stride &&
+        pc.candidateCount <= GS_RASTER_MAX_CANDIDATES) {
+        const uint bin = i / stride;
+        const uint workIndex = i % stride;
         const uint count = pc.workOffsets.Get().values[pc.candidateCount];
-        if (count <= pc.commandCapacity && i < count) {
-            const SceneSubmeshWork work = pc.work.Get().rows[i];
+        if (count <= stride && workIndex < count) {
+            const SceneSubmeshWork work = pc.work.Get().rows[workIndex];
             const uint geometry = work.identity.z;
             if (work.identity.x != GS_INVALID && work.identity.y != 0u &&
+                work.detail.z == bin &&
                 geometry < pc.geometryCount && geometry < GS_RASTER_MAX_GEO) {
                 const RasterIndexedGeometry indexed =
                     pc.indexedGeometry.Get().rows[geometry];
@@ -78,7 +85,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                     command.instanceCount = 1u;
                     command.firstIndex = indexed.firstIndex;
                     command.vertexOffset = indexed.vertexOffset;
-                    command.firstInstance = i;
+                    command.firstInstance = workIndex;
                 }
             }
         }

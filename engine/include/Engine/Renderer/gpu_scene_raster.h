@@ -19,6 +19,11 @@
 namespace tour::gpu_scene {
 
 inline constexpr uint32_t kMaxRasterDrawGroups = 65535;
+// Fixed PSO bins keep one indirect submission per class, independent of
+// material or draw count. Bin zero backface-culls; bin one renders both sides.
+inline constexpr uint32_t kRasterPipelineClassCount = 2;
+inline constexpr uint32_t kRasterPipelineDoubleSided = 1;
+
 
 // Immutable, GPU-addressable indexed-geometry descriptor. One per compatible
 // raster geometry registration; managed separately from per-frame visibility.
@@ -65,7 +70,7 @@ struct RasterWorkDrawBuildPush {
     uint32_t candidateCount = 0;
     uint32_t geometryCount = 0;
     uint32_t commandCapacity = 0;
-    uint32_t reserved = 0;
+    uint32_t reserved = 0; // per-class command stride (work capacity)
 };
 
 // Static-opaque raster VS input: world position is rebased against this
@@ -170,6 +175,21 @@ static_assert(sizeof(RasterDrawBuildPush) == 32);
 static_assert(sizeof(RasterWorkDrawBuildPush) == 48);
 static_assert(offsetof(RasterIndirectCommand, firstInstance) == 16);
 static_assert(std::is_trivially_copyable_v<RasterIndirectCommand>);
+
+// CPU oracle for the fixed two-bin GPU indirect builder. A command slot
+// belongs to exactly one bin; firstInstance always denotes the ORIGINAL
+// work index, not the PSO-sorted command index.
+[[nodiscard]] inline RasterIndirectCommand MakeRasterBinnedCommand(
+    const IndexedGeometry& geometry,
+    uint32_t workIndex,
+    uint32_t rasterClass,
+    uint32_t bin) noexcept {
+    if (rasterClass >= kRasterPipelineClassCount || rasterClass != bin ||
+        geometry.indexCount == 0u)
+        return {};
+    return RasterIndirectCommand{geometry.indexCount, 1u, geometry.firstIndex,
+                                 geometry.vertexOffset, workIndex};
+}
 
 [[nodiscard]] inline RasterIndirectCommand MakeRasterCommand(const IndexedGeometry& geometry,
                                                              const RasterGroup& group) noexcept {

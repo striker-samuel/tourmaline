@@ -34,6 +34,8 @@ struct GpuSceneSubmesh {
     uint passMask;
 };
 
+// Additional GPU raster classification in Instance.refs.w.
+#define GPU_SCENE_INSTANCE_DOUBLE_SIDED (1u << 12)
 // GPU_STRUCT_NAME(GpuSceneInstance)
 struct GpuSceneInstance {
     DoubleFloat3 worldPosition;

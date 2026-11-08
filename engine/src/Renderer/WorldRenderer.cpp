@@ -10896,6 +10896,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // occupied prefix is a published snapshot. Do not clear or
             // destroy it while a current-frame submission can query it.
             uint32_t compatibleCount = 0;
+            uint32_t doubleSidedCount = 0;
             const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
             constexpr uint32_t requiredFlags =
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
@@ -10914,16 +10915,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     (item.flags & forbiddenFlags) == 0 &&
                     item.material != smvk::World::kInvalidIndex && item.materialInstance == 0 &&
                     m_world->MaterialUserData(item.material) == 0 &&
-                    // Double-sided materials stay LEGACY-owned: the
-                    // GPU-scene raster leg is one Cull-Back pipeline over
-                    // the whole command list (no per-material raster
-                    // split yet); the legacy filtered/direct legs carry
-                    // the material's Cull None + the filter's backface
-                    // sparing (DrawFlagBit_DoubleSided).
-                    ![&]() {
-                        const smvk::Material* m = m_world->GetMaterial(item.material);
-                        return m && m->doubleSided;
-                    }() &&
                     !m_gfxRenderer.MaterialProjectFamily(item.material) &&
                     !m_gfxRenderer.MaterialLayered(item.material) &&
                     item.node < m_world->scene.globalTransform.size() &&
@@ -10980,12 +10971,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     }();
                 m_gpuSceneRasterEntries[i] = {key, compatible};
                 compatibleCount += compatible ? 1u : 0u;
+                // GPU work carries this per-instance flag, and the
+                // indirect builder emits the work in exactly one fixed PSO
+                // class. Count only admitted sources, never legacy ones.
+                if (compatible) {
+                    const smvk::Material* m = m_world->GetMaterial(item.material);
+                    doubleSidedCount += m && m->doubleSided ? 1u : 0u;
+                }
             }
             // Publish sorts and rejects duplicate source keys: two draw
             // records for one source must not silently share ownership.
             const bool snapshotValid = m_gpuSceneRasterOwnership.Publish(
                 std::span<tour::gpu_scene::RasterOwnershipEntry>(m_gpuSceneRasterEntries, total));
             m_gpuSceneRasterCompatibleCount = snapshotValid ? compatibleCount : 0u;
+            m_gpuSceneRasterDoubleSidedCount = snapshotValid ? doubleSidedCount : 0u;
             m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount;
             m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
             // Mixed ownership is recorded, but *not* submitted until GPU
@@ -10996,6 +10995,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     } else {
         m_gpuSceneRasterEligible = false;
         m_gpuSceneRasterCompatibleCount = 0;
+        m_gpuSceneRasterDoubleSidedCount = 0;
         m_gpuSceneRasterLegacyCount = m_world ? uint32_t(m_world->drawItems.size()) : 0u;
         m_gpuSceneRasterOwnership.Reset();
         // Transient publication failures must not keep stale eligibility.
@@ -12875,7 +12875,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }();
     if (s_gpuSceneTemporal && m_gpuSceneRasterDrawActive && temporalProgramsReady &&
         m_gfxFilterAvailable && temporalCommands != 0 && temporalSlots != 0 &&
-        temporalCommands <= 1048576u && temporalSlots <= 4194304u) {
+        temporalCommands <= 2u * 1048576u && temporalSlots <= 4194304u) {
         const uint32_t previousFlight = m_gpuSceneRasterLastHistoryFlight;
         gpuHistoryValid =
             previousFlight < smvk::limits::MaxFramesInFlight &&
@@ -13323,7 +13323,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                    m_gpuSceneRasterWorkLogical[temporalFlight],
                                                    temporalCommands,
                                                    seedVsPush,
-                                                   /*hizOccluder=*/true);
+                                                   /*hizOccluder=*/true,
+                                                   m_gpuSceneRasterDoubleSidedCount != 0);
             if (!seedRecorded)
                 gpuTemporalReady = false;
             // Prime MAIN depth/G-buffer with the same prev-visible seed.
@@ -13340,7 +13341,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                        m_gpuSceneRasterSeedLogicals[temporalFlight],
                                                        m_gpuSceneRasterWorkLogical[temporalFlight],
                                                        temporalCommands,
-                                                       seedVsPush);
+                                                       seedVsPush,
+                                                       /*hizOccluder=*/false,
+                                                       m_gpuSceneRasterDoubleSidedCount != 0);
                 if (!primed)
                     gpuTemporalReady = false;
                 else
@@ -13480,7 +13483,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     logical,
                     m_gpuSceneRasterWorkLogical[flight],
                     m_gpuSceneRasterDrawCapacity,
-                    tail);
+                    tail,
+                    /*hizOccluder=*/false,
+                    m_gpuSceneRasterDoubleSidedCount != 0);
                 gpuDepthPrimed = remainderPrimed;
                 fc.gpuSceneDepthPrimed = gpuDepthPrimed;
             }
@@ -14487,6 +14492,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         mainPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], vertexRead);
     }
     const bool sceneRasterActive = m_gpuSceneRasterDrawActive;
+    const bool sceneRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0;
     const smvk::BufferHandle sceneRasterCommands = m_gpuSceneRasterIndirect;
     const uint32_t sceneRasterCommandCount = m_gpuSceneRasterDrawCapacity;
     const tour::gpu_scene::RasterVsPush sceneRasterVsPush{
@@ -14501,6 +14507,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                useMsaa,
                                gfxSlot,
                                sceneRasterActive,
+                               sceneRasterTwoSided,
                                sceneRasterCommands,
                                sceneRasterCommandCount,
                                sceneRasterVsPush,
@@ -14936,13 +14943,32 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // kMaxDraws happened to carry it; the dynamic-capacity
             // cutover made it a plain local).
             constexpr uint32_t kChunk = 65535;
-            for (uint32_t first = 0; first < sceneRasterCommandCount; first += kChunk) {
-                const uint32_t count = std::min(kChunk, sceneRasterCommandCount - first);
-                cmd.DrawIndexedIndirect(sceneRasterCommands,
-                                        uint64_t(first) *
-                                            sizeof(tour::gpu_scene::RasterIndirectCommand),
-                                        count,
-                                        sizeof(tour::gpu_scene::RasterIndirectCommand));
+            // Two fixed contiguous PSO-class ranges; firstInstance stays
+            // the original work index, independent of command order.
+            const uint32_t binStride = sceneRasterCommandCount / 2u;
+            const auto drawBin = [&](uint32_t bin) {
+                const uint32_t base = bin * binStride;
+                for (uint32_t first = 0; first < binStride; first += kChunk) {
+                    const uint32_t count = std::min(kChunk, binStride - first);
+                    cmd.DrawIndexedIndirect(
+                        sceneRasterCommands,
+                        uint64_t(base + first) *
+                            sizeof(tour::gpu_scene::RasterIndirectCommand),
+                        count,
+                        sizeof(tour::gpu_scene::RasterIndirectCommand));
+                }
+            };
+            drawBin(0u);
+            if (sceneRasterTwoSided) {
+                // One extra PSO bind for the entire class, never per object.
+                cmd.BindRenderPipeline(m_gpuSceneRasterProgram,
+                                       smvk::VertexLayoutId::Static,
+                                       opaqueDepth,
+                                       noStencil,
+                                       smvk::BlendSettings::Opaque(),
+                                       msaaSettings,
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                drawBin(1u);
             }
         }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----

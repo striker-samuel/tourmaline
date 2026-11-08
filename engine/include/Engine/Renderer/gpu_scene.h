@@ -51,6 +51,10 @@ inline constexpr uint32_t LodFlagBoundsKnown = 1u << 1;
 inline constexpr uint32_t LodFlagFilterable = 1u << 2;
 // GPU instance culling must require this flag on the referenced mesh.
 inline constexpr uint32_t MeshFlagCompleteBounds = 1u << 0;
+// Extra GPU-scene raster classification bit in Instance.refs.w; World
+// iterator flags currently occupy bits 0..11. Never encode this on a
+// shared Mesh/Lod row: instances of one mesh can use distinct materials.
+inline constexpr uint32_t InstanceFlagDoubleSided = 1u << 12;
 
 GPU_STRUCT_NAME(GpuSceneLod)
 struct alignas(16) Lod {
