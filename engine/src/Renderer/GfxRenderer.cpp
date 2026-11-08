@@ -1389,6 +1389,7 @@ bool GfxRenderer::PrepareGpuSceneHiz(smvk::ResourceManager& ctx,
                                      smvk::RenderGraph& rg,
                                      const smvk::RenderView& view,
                                      const glm::vec3& eye,
+                                     uint32_t flight,
                                      uint32_t width,
                                      uint32_t height) {
     lastSlot_ = UINT32_MAX;
@@ -1397,6 +1398,9 @@ bool GfxRenderer::PrepareGpuSceneHiz(smvk::ResourceManager& ctx,
         gfx, ctx, rg, view, eye, config.cullFlags, width, height);
     if (slot == UINT32_MAX)
         return false;
+    // BeginView has no flight argument; FinalizeView normally stamps it
+    // for GfxFilter. The GPU-only path skips FinalizeView entirely.
+    gfx.views[slot].frameIndex = flight;
     if (!smvk::gfx::EnsureHiz(gfx, ctx, rg, slot, width, height))
         return false;
     lastSlot_ = slot;
