@@ -13,7 +13,9 @@ struct Offsets { uint values[GS_MAX_CANDIDATES + 1u]; };
 struct Submeshes { GpuSceneSubmeshRow rows[GS_MAX_ROWS]; };
 struct WorkRow { uint4 identity; uint4 detail; };
 // identity: instance slot, instance generation, registered geometry, material.
-// detail: selected LOD index, persistent submesh slot, pipeline group, pass mask.
+// detail: selected LOD index, persistent submesh slot, raster class, pass mask.
+// raster class 0 = backface culling, 1 = double-sided/no culling.
+// This remains passive until the matching PSO-bin dispatch is wired.
 struct WorkOutput { WorkRow rows[GS_MAX_WORK]; };
 struct Push {
     GPU_PTR_READ(Choices) choices;
@@ -43,7 +45,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         work.identity = uint4(choice.identity.x, choice.identity.y,
                               sub.value.geometryId, sub.value.materialId);
         work.detail = uint4(choice.identity.z, subSlot,
-                            sub.value.pipelineGroup, sub.value.passMask);
+                            choice.range.z, sub.value.passMask);
         pcW.output.Get().rows[outputSlot++] = work;
     }
 }
