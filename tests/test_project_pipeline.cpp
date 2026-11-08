@@ -920,6 +920,73 @@ void TestRecipeParsing() {
     }
 }
 
+// The import (derivation) settings surface: 'import lods off|on' strips or
+// derives the LOD chain (single-level chains are the GPU-driven raster
+// eligibility shape), 'import lod-ratios'/'import lod-error' shape the
+// chain. Recipe-level only — never inside a [pak] block.
+void TestRecipeImportSettings() {
+    // The header carries the import settings; the [pak] block follows.
+    const std::string header = "recipe 1\n"
+                               "project P\n"
+                               "entry content/scenes/s.tour\n"
+                               "\n";
+    const std::string pak = "[pak world]\n"
+                            "output w.pak\n"
+                            "scene content/scenes/s.tour\n";
+    {
+        smvk::project::ProjectRecipe r;
+        smvk::project::RecipeDiagnostic d;
+        Check(smvk::project::ParseProjectRecipeText(header + "import lods off\n" + pak, r, d) &&
+                  !r.importLods && r.importLodRatios.size() == 4 && r.importLodError == 0.01f,
+              "recipe.import.lods-off-keeps-defaults");
+    }
+    {
+        smvk::project::ProjectRecipe r;
+        smvk::project::RecipeDiagnostic d;
+        Check(smvk::project::ParseProjectRecipeText(header + "import lods on\n" + pak, r, d) &&
+                  r.importLods,
+              "recipe.import.lods-on");
+    }
+    {
+        smvk::project::ProjectRecipe r;
+        smvk::project::RecipeDiagnostic d;
+        Check(smvk::project::ParseProjectRecipeText(header + "import lod-ratios 0.8,0.4\n" + pak,
+                                                    r, d) &&
+                  r.importLods && r.importLodRatios.size() == 2 && r.importLodRatios[0] == 0.8f &&
+                  r.importLodRatios[1] == 0.4f,
+              "recipe.import.lod-ratios");
+    }
+    {
+        smvk::project::ProjectRecipe r;
+        smvk::project::RecipeDiagnostic d;
+        Check(smvk::project::ParseProjectRecipeText(header + "import lod-error 0.02\n" + pak, r,
+                                                    d) &&
+                  r.importLodError == 0.02f,
+              "recipe.import.lod-error");
+    }
+    struct Bad {
+        const char* name;
+        std::string text;
+    };
+    const Bad bad[] = {
+        {"level-pin", header + "import lods level 2\n" + pak},
+        {"ratio-out-of-range", header + "import lod-ratios 1.5\n" + pak},
+        {"ratio-zero", header + "import lod-ratios 0.5,0\n" + pak},
+        {"ratio-empty", header + "import lod-ratios\n" + pak},
+        {"error-zero", header + "import lod-error 0\n" + pak},
+        {"error-not-a-number", header + "import lod-error abc\n" + pak},
+        {"duplicate", header + "import lods off\nimport lods on\n" + pak},
+        {"unknown-setting", header + "import meshlets off\n" + pak},
+        {"in-pak", header + pak + "import lods off\n"},
+    };
+    for (const Bad& b : bad) {
+        smvk::project::ProjectRecipe r;
+        smvk::project::RecipeDiagnostic d;
+        Check(!smvk::project::ParseProjectRecipeText(b.text, r, d) && d.directive == "import",
+              (std::string("recipe.import.reject.") + b.name).c_str());
+    }
+}
+
 // Material packing is a project-recipe policy, not scene data.
 // Table-driven fixtures make new packed layouts/sources easy to add.
 void TestMaterialPackingPolicies() {
@@ -4541,6 +4608,7 @@ int main(int argc, char** argv) {
     TestShaderAssets();
     TestAudioGraphAssets();
     TestRecipeParsing();
+    TestRecipeImportSettings();
     TestMaterialPackingPolicies();
     TestMaterialChannelComposition();
     TestRecipeGlob();

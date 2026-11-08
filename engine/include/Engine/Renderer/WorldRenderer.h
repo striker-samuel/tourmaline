@@ -2383,6 +2383,13 @@ class WorldRenderer : public IRenderer {
     smvk::ShaderProgram m_gpuSceneRasterDepthProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterGbufferFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterGbufferProgram{};
+    // The validation-only verdict target is a BDA write. Register its
+    // per-flight physical buffer with the rendergraph so compute writes are
+    // represented in graph synchronization and not just a raw device address.
+    std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneVerdictLogicalBacking{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneVerdictLogical{};
     // Prototype production cutover: only all-supported static/opaque scenes
     // may substitute their Main draws. Unsupported content uses GfxFilter.
     const smvk::World* m_gpuSceneRasterEligibilityWorld = nullptr;

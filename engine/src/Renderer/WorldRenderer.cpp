@@ -11312,8 +11312,40 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         }
                     }
                 }
+                // The validation verdict is a BDA-only shader output.
+                // Without a logical graph reference this compute pass has no
+                // declared write on its validation-only path. Keep the logical
+                // tied to the flight's actual physical buffer after realloc.
+                bool verdictGraphReady = true;
+                if (s_gpuSceneValidate) {
+                    const uint32_t flight = fb.frameIndex;
+                    const auto verdictHandle = m_gpuSceneValidator.VerdictBuffer(flight);
+                    verdictGraphReady = !verdictHandle.empty();
+                    if (verdictGraphReady &&
+                        m_gpuSceneVerdictLogicalBacking[flight] != verdictHandle) {
+                        if (!m_gpuSceneVerdictLogical[flight].empty())
+                            m_rendergraph->FreeBuffer(m_gpuSceneVerdictLogical[flight]);
+                        m_gpuSceneVerdictLogical[flight] =
+                            m_rendergraph->AddExternalBuffer(verdictHandle,
+                                                              "GpuSceneCullVerdicts");
+                        m_gpuSceneVerdictLogicalBacking[flight] = verdictHandle;
+                    }
+                    verdictGraphReady = verdictGraphReady &&
+                                        !m_gpuSceneVerdictLogical[flight].empty();
+                    if (!verdictGraphReady)
+                        std::fprintf(stderr,
+                                     "[GpuSceneValidate] verdict graph registration failed; "
+                                     "validation dispatch suppressed\n");
+                }
+                if (verdictGraphReady) {
                 auto& pass = m_rendergraph->AddComputePass(
                     gpuSceneRasterMode ? "GpuSceneRasterBuild" : "GpuSceneValidate");
+                if (s_gpuSceneValidate) {
+                    smvk::BufferSyncRequest verdictWrite{};
+                    verdictWrite.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                    verdictWrite.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+                    pass.AddBufferHint(m_gpuSceneVerdictLogical[fb.frameIndex], verdictWrite);
+                }
                 if (m_gpuSceneRasterDrawActive) {
                     smvk::BufferSyncRequest write{};
                     write.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
@@ -11439,6 +11471,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     cmd.DispatchIndirect(indirectBuffer, 0);
                 });
                 m_gpuSceneValidator.MarkDispatched(fb.frameIndex);
+                }
             } else if (selected.status != tour::gpu_scene::CandidateStatus::Ok) {
                 std::fprintf(stderr,
                              "[GpuSceneValidate] skipped coarse selection status=%u\n",
