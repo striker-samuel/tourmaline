@@ -12852,7 +12852,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneRasterHizCullProgram.shaderCount == 1 &&
         m_gpuSceneRasterHistoryClearProgram.shaderCount == 1 &&
         m_gpuSceneRasterHistoryCommitProgram.shaderCount == 1;
-    if (m_gpuSceneRasterDrawActive && temporalProgramsReady &&
+    // Debug A/B: isolate temporal seed/Hi-Z without disabling GPU-scene
+    // indexed geometry, ownership or work generation.
+    static const bool s_gpuSceneTemporal = [] {
+        const char* e = std::getenv("TOURMALINE_GPU_SCENE_TEMPORAL");
+        return !e || std::strcmp(e, "0") != 0;
+    }();
+    if (s_gpuSceneTemporal && m_gpuSceneRasterDrawActive && temporalProgramsReady &&
         m_gfxFilterAvailable && temporalCommands != 0 && temporalSlots != 0 &&
         temporalCommands <= 1048576u && temporalSlots <= 4194304u) {
         const uint32_t previousFlight = m_gpuSceneRasterLastHistoryFlight;
