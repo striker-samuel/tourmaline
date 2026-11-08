@@ -1185,6 +1185,9 @@ void TestHizLayout() {
     // Neutral visibility is the source of truth; the former gfx API remains
     // byte/layout-compatible for existing callers during migration.
     static_assert(std::is_same_v<HizResources, tour::visibility::HizResources>);
+    static_assert(std::is_base_of_v<tour::visibility::HizViewResources, TemporalView>);
+    Check(std::size(tour::visibility::HizViewResources{}.hiz) ==
+              smvk::limits::MaxFramesInFlight, "visibility.hiz.flight-count");
     static_assert(std::is_same_v<HzbPush, tour::visibility::HzbPush>);
     static_assert(sizeof(tour::visibility::HzbPush) == 48);
     Check(tour::visibility::HzbMipCount(1920, 1080) == 12,
