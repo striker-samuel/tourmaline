@@ -454,7 +454,7 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
         [rasterDepth, scenePush, indirect, commandCount, vertexPush](
             smvk::CommandBuffer& cmd) mutable {
             if (!commandCount)
-                return false; // the pass still clears depth for empty views
+                return; // the pass still clears depth for empty views
             cmd.BindStaticVertexFmt();
             cmd.BindRenderPipeline(
                 rasterDepth, smvk::VertexLayoutId::Static,
