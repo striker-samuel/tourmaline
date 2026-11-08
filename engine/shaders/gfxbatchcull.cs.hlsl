@@ -95,7 +95,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
             // (skinBoundsValid = 0 — no skinned cluster existed that frame).
             const bool skinned0 = (d.misc.y & GFX_DRAW_SKINNED) != 0;
             float4 mb = (skinned0 && pcB.skinBoundsValid != 0u)
-                ? LoadSkinDrawBound(pcB.skinBounds, pcB.capacities.x, drawIdx)
+                ? LoadSkinDrawBound(pcB.skinBounds, pcB.skinCandidateCapacity, drawIdx)
                 : pcB.meshBounds.Get().centerRadius[d.misc.x];
             float3 worldC = mul(d.model, float4(mb.xyz, 1.0f)).xyz;
             gsDrawVisible = GfxSphereInPlanes(gsPlanes, worldC, mb.w * gsBasis);
