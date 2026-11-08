@@ -88,6 +88,33 @@ struct RasterVsPush {
 static_assert(sizeof(RasterViewData) == 96);
 static_assert(sizeof(RasterVsPush) == 32);
 
+// GPU-created temporal commands preserve ALL per-work-slot identities.
+// The seed is prev-visible intersect current-frustum-visible, and the
+// remainder is its exact complement. Neither list is built on the CPU.
+struct RasterSeedPush {
+    uint64_t commands = 0;
+    uint64_t work = 0;
+    uint64_t previous = 0;
+    uint64_t seed = 0;
+    uint64_t remainder = 0;
+    uint32_t commandCapacity = 0;
+    uint32_t instanceSlots = 0;
+    uint32_t historySlots = 0;
+    uint32_t historyValid = 0;
+};
+static_assert(sizeof(RasterSeedPush) == 56);
+
+struct RasterHistoryPush {
+    uint64_t commands = 0;
+    uint64_t work = 0;
+    uint64_t history = 0;
+    uint32_t commandCapacity = 0;
+    uint32_t instanceSlots = 0;
+    uint32_t historySlots = 0;
+    uint32_t reserved = 0;
+};
+static_assert(sizeof(RasterHistoryPush) == 40);
+
 // Same-frame GPU-scene Hi-Z gate. The raster work builder first publishes
 // frustum-visible commands; an occluder depth pass builds the reversed-Z
 // MIN pyramid; this compute pass zeros occluded command instance counts.
