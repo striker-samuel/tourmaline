@@ -342,22 +342,10 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                     }
                     if (!meshDesc)
                         return;
-                    // Direct-path skin tail (default.vert.hlsl's 208..240 overlay):
-                    // a skinned draw swaps the bind-pose vertex inputs for the
-                    // frame's deformed words. Always pushed (zeroed on non-skinned
-                    // draws) so a stale tail never leaks into the next draw.
-                    DepthSkinTail skinTail{};
-                    if (meshDesc->skinned && skinValid) {
-                        skinTail.skinned = 1u;
-                        skinTail.deformedBase = skinBase;
-                        skinTail.vsDeformed = skinBda;
-                    }
-                    cmd.PushConstants(kDepthSkinTailOffset,
-                                      sizeof(DepthSkinTail),
-                                      &skinTail,
-                                      smvk::ShaderStage::All);
-                    IRenderer::PushConstants objectPC{};
-                    std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+                    // Pipeline selection FIRST (both phase ensures full-push
+                    // depthPC over [0, sizeof(PushConstants)) on a rebind —
+                    // any partial overlay pushed before them would be
+                    // clobbered with depthPC's tail bytes).
                     if (maskedPhase) {
                         smvk::CullMode cull = smvk::CullMode::None;
                         if (const smvk::Material* mat = world->GetMaterial(item.material))
@@ -371,6 +359,30 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                             cull = mat->pipeline.raster.cullMode;
                         ensureSolidPipeline(cull);
                     }
+                    // Direct-path skin tail (default.vert.hlsl's 208..240 overlay):
+                    // a skinned draw swaps the bind-pose vertex inputs for the
+                    // frame's deformed words. Always pushed (zeroed on non-skinned
+                    // draws) so a stale tail never leaks into the next draw.
+                    // ORDERING CONTRACT: this partial push MUST follow the
+                    // phase ensures above (the clobber rule in the comment
+                    // above; the prepass regressed exactly this way — a
+                    // skinned caster's tail was overwritten on the rebind,
+                    // leaving bind-pose depth the animated Main then
+                    // depth-rejected against). The padEnd_/materialId/model
+                    // partial pushes below are per-draw overlays on their
+                    // own offsets and follow the same rule.
+                    DepthSkinTail skinTail{};
+                    if (meshDesc->skinned && skinValid) {
+                        skinTail.skinned = 1u;
+                        skinTail.deformedBase = skinBase;
+                        skinTail.vsDeformed = skinBda;
+                    }
+                    cmd.PushConstants(kDepthSkinTailOffset,
+                                      sizeof(DepthSkinTail),
+                                      &skinTail,
+                                      smvk::ShaderStage::All);
+                    IRenderer::PushConstants objectPC{};
+                    std::copy_n(glm::value_ptr(model), 16, objectPC.model);
                     // Per-draw dither-on-closeup flag (padEnd_[0] — the partial
                     // push range persists across draws, so EVERY draw pushes its
                     // word: 0 or 1, never a stale Fade flag leaking into the next
