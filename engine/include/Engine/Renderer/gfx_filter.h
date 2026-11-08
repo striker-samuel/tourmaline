@@ -50,6 +50,7 @@
 #include <Engine/Memory/pool.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/renderview.h>
+#include <Engine/Renderer/visibility_hiz.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
@@ -851,26 +852,15 @@ static_assert(sizeof(VisibleCluster) == 8);
 // layout (BDA style, no storage images / samplers needed). Mip 0 mirrors
 // the depth texture 1:1; mip k dims are max(1, ceil(dim / 2^k)) - i.e.
 // repeated dst = max((src + 1u) >> 1, 1u), clamped 2x2 covers odd edges.
-static constexpr uint32_t kHizMaxMips = 16;
-struct HizResources {
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t mipCount = 0;
-    uint32_t mipOffsets[kHizMaxMips] = {}; // float offsets into buffer
-    smvk::Holder<smvk::BufferHandle> buffer;
-    smvk::LogicalBufferHandle logical{};
-};
-// Pure-CPU HZB layout (headless-testable). Mip dims clamp at 1x1; count
-// stops when both dims are 1 (capped at kHizMaxMips).
-uint32_t HzbMipCount(uint32_t w, uint32_t h);
-void HzbMipDims(uint32_t w, uint32_t h, uint32_t mip, uint32_t& outW, uint32_t& outH);
-uint32_t HzbMipOffsetFloats(uint32_t w, uint32_t h, uint32_t mip);
-uint32_t HzbTotalFloats(uint32_t w, uint32_t h);
-// Conservative 2x2 reduction for reversed-Z (MIN: one sky pixel poisons
-// the texel to 0 -> keep; see hzb.hlsli derivation).
-inline float HzbReduce2x2(float a, float b, float c, float d) {
-    return std::min(std::min(a, b), std::min(c, d));
-}
+// Backwards-compatible names: the storage and mip layout are now owned
+// by the renderer-neutral visibility subsystem, not by gfx::State.
+inline constexpr uint32_t kHizMaxMips = tour::visibility::kHizMaxMips;
+using HizResources = tour::visibility::HizResources;
+using tour::visibility::HzbMipCount;
+using tour::visibility::HzbMipDims;
+using tour::visibility::HzbMipOffsetFloats;
+using tour::visibility::HzbTotalFloats;
+using tour::visibility::HzbReduce2x2;
 
 // Per-cluster screen-space footprint (T4). Pure-CPU mirror of the filter
 // CS math (same formulas, same conservatism); the shader duplicates them
@@ -910,20 +900,8 @@ bool HzbOccluded(const float* hzb,
 
 // Compute push. Must match HLSL HzbPush in hzb.hlsli (48 bytes).
 // srcMip = kHizSrcDepth copies mip 0 from the depth texture instead.
-static constexpr uint32_t kHizSrcDepth = 0xFFFFFFFFu;
-struct HzbPush {
-    uint64_t hzb = 0;
-    uint32_t srcMip = kHizSrcDepth;
-    uint32_t dstMip = 0;
-    uint32_t srcWidth = 0;
-    uint32_t srcHeight = 0;
-    uint32_t dstWidth = 0;
-    uint32_t dstHeight = 0;
-    uint32_t srcOffset = 0; // floats (ignored for depth source)
-    uint32_t dstOffset = 0; // floats
-    uint32_t depthTextureIndex = UINT32_MAX;
-    uint32_t pad = 0;
-};
+inline constexpr uint32_t kHizSrcDepth = tour::visibility::kHizSrcDepth;
+using HzbPush = tour::visibility::HzbPush;
 static_assert(sizeof(HzbPush) == 48);
 
 // Single-dispatch SPD HZB build (hzb_spd.cs.hlsl): one 256-lane
