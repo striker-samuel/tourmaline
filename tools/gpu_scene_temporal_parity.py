@@ -99,7 +99,7 @@ def evaluate(legs, noise_margin=8, noise_cap=64, require_bit_exact=False):
     floor in captures. Its verdict and work scatter kernels currently use
     ordered prefix scans (not atomic output allocation), so depth-equal
     draw order is a hypothesis, not a confirmed cause.
-    Parity is therefore judged RELATIVE to the lane's own noise floor:
+    By default, Parity is therefore judged RELATIVE to the lane's own noise floor:
     the determinism leg (on-a vs on-b) measures it, and the temporal /
     Hi-Z legs must stay within floor + noise_margin. A floor above
     noise_cap fails outright - that is a determinism regression, not
@@ -142,7 +142,7 @@ def evaluate(legs, noise_margin=8, noise_cap=64, require_bit_exact=False):
                   else comparison["differing_pixels"] <= floor + noise_margin)
         check(name, within,
               f"{comparison['differing_pixels']}/{comparison['sampled_pixels']} differing "
-              ("(bit exact required)" if require_bit_exact
+              + ("(bit exact required)" if require_bit_exact
                else f"(floor {floor} + margin {noise_margin})"))
         ok = ok and within
     if "hiz-off" in legs:
@@ -150,10 +150,12 @@ def evaluate(legs, noise_margin=8, noise_cap=64, require_bit_exact=False):
               f"engagement witness x{legs['hiz-off']['witness']} in hiz-off log")
         comparison = pixel_compare.compare(pixels("on-a"), pixels("hiz-off"))
         comparisons["hiz-parity"] = comparison
-        within = comparison["differing_pixels"] <= floor + noise_margin
+        within = (comparison["differing_pixels"] == 0 if require_bit_exact
+                  else comparison["differing_pixels"] <= floor + noise_margin)
         check("hiz-parity", within,
               f"{comparison['differing_pixels']}/{comparison['sampled_pixels']} differing "
-              f"(floor {floor} + margin {noise_margin})")
+              + ("(bit exact required)" if require_bit_exact
+                 else f"(floor {floor} + margin {noise_margin})"))
         ok = ok and within
     ok = ok and all(entry["pass"] for entry in verdict.values())
     return verdict, ok
@@ -175,8 +177,8 @@ def parser():
     p.add_argument("--skip-hiz", action="store_true", help="skip the Hi-Z parity leg")
     p.add_argument("--noise-margin", type=int, default=8,
                    help="parity legs may exceed the measured determinism floor by this many "
-                        "differing pixels (default %(default)s; the indexed lane's atomic "
-                        "command order is not bit-deterministic)")
+                        "differing pixels (default %(default)s; ignored under "
+                        "--require-bit-exact)")
     p.add_argument("--require-bit-exact", action="store_true",
                    help="require zero differing pixels in every ON/ON and parity "
                         "comparison; opt-in for golden captures and determinism fixes")
