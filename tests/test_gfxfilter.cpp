@@ -20,6 +20,7 @@
 #include <map>
 #include <numeric>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <glm/glm.hpp>
