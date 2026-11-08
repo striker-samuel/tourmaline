@@ -337,6 +337,15 @@ bool RefreshPlanImports(const Project& project,
                 families.insert(asset.path);
     }
     std::set<std::string> reimported;
+    // The recipe's derivation settings (defaults when the recipe is
+    // silent). The freshness check and the re-import both use THESE: the
+    // old hardcoded defaults silently re-derived every no-LOD artifact
+    // with the full default chain on every build, so a recipe could never
+    // ship single-level LOD chains.
+    smvk::assets::DeriveConfig importSettings;
+    importSettings.lods = plan.importLods;
+    importSettings.lodRatios = plan.importLodRatios;
+    importSettings.lodTargetError = plan.importLodError;
     for (const std::string& artifact : families) {
         const fs::path artifactAbs = projectRoot / fs::path(artifact);
         // The family's source (a mesh source format — .gltf/.glb/.obj):
@@ -354,12 +363,12 @@ bool RefreshPlanImports(const Project& project,
         for (const fs::path& srcAbs : candidates) {
             if (!fs::is_regular_file(srcAbs, ec))
                 continue;
-            if (smvk::assets::MeshArtifactStale(srcAbs, GeometryImportSettings{}) ||
+            if (smvk::assets::MeshArtifactStale(srcAbs, importSettings) ||
                 !RecipePackingMatches(srcAbs, plan.materialPacking)) {
                 ImportRequest req;
                 req.project = project;
                 req.source = srcAbs;
-                req.settings = GeometryImportSettings{};
+                req.settings = importSettings;
                 req.materialPacking = plan.materialPacking;
                 req.materialPackingExplicit = true;
                 req.force = true;

@@ -154,6 +154,16 @@ struct ProjectRecipe {
     bool bakeGi = false;
     bool bakeCubemaps = false;
     bool bakeSdf = false;
+    // Geometry-import (derivation) settings for every family the plan
+    // packs — the recipe-level expression of the import CLI's LOD knobs.
+    // 'import lods off' strips LOD derivations entirely: every mesh cooks
+    // as a single-level chain (the shape the GPU-driven raster
+    // eligibility gate requires). 'import lod-ratios'/'import lod-error'
+    // shape the chain while lods derive. Defaults are DeriveConfig's own,
+    // so recipes without import lines behave exactly as before.
+    bool importLods = true;
+    std::vector<float> importLodRatios{0.75f, 0.5f, 0.3f, 0.15f};
+    float importLodError = 0.01f;
     MaterialPackingRule materialPacking;
     std::vector<RecipePak> paks; // authored order
 

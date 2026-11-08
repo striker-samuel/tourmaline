@@ -270,6 +270,9 @@ bool ResolveRecipe(const Project& project,
     out.bakeGi = recipe.bakeGi;
     out.bakeCubemaps = recipe.bakeCubemaps;
     out.bakeSdf = recipe.bakeSdf;
+    out.importLods = recipe.importLods;
+    out.importLodRatios = recipe.importLodRatios;
+    out.importLodError = recipe.importLodError;
 
     // ---- 1) the entry scene is owned by exactly one pak --------------
     // (the parser already verified ownership exists; a hand-built
