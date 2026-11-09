@@ -12233,6 +12233,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 m_gpuSceneMeshletClassCountsLogical[fb.frameIndex], write);
                         if (m_gpuSceneTaskMeshActive) {
                             pass.AddBufferHint(taskPlan.groupLogical, write);
+                            pass.AddBufferHint(taskPlan.offsetLogical, write);
                             pass.AddBufferHint(taskPlan.indirectLogical, write);
                         }
                         smvk::BufferSyncRequest ownerRead{};
@@ -14297,6 +14298,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                               m_gpuSceneTaskMeshPlan.indirectHandle,
                               m_gpuSceneTaskMeshPlan.indirectLogical,
                               m_gpuSceneTaskMeshPlan.groupLogical,
+                              m_gpuSceneTaskMeshPlan.offsetLogical,
                               m_gpuSceneRasterWorkLogical[flight],
                               m_gpuSceneTaskMeshPlan.graphics,
                               m_gpuSceneRasterDoubleSidedCount != 0,
@@ -15341,6 +15343,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         taskRead.barrierMasks.stageMask =
             smvk::PipelineStageBit_Task | smvk::PipelineStageBit_Mesh;
         mainPass.AddBufferHint(m_gpuSceneTaskMeshPlan.groupLogical, taskRead);
+        mainPass.AddBufferHint(m_gpuSceneTaskMeshPlan.offsetLogical, taskRead);
         mainPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], taskRead);
     } else if (m_gpuSceneRasterDrawActive && m_gpuSceneRasterDrawCapacity > 0) {
         smvk::BufferSyncRequest indirectRead{};
