@@ -85,4 +85,31 @@ private:
 
 using RasterPsoBudget = RasterPsoBudgetT<>;
 
+// Snapshot-friendly, tightly packed regions. CPU upper bounds determine
+// capacity, while GPU counts determine how many entries actually get drawn.
+// Return false if the declared work ceiling cannot hold all source bounds;
+// callers must retain legacy rendering rather than silently truncate.
+struct RasterPsoRegions {
+    RasterPsoBudget::Counts offsets{};
+    RasterPsoBudget::Counts capacities{};
+    uint32_t totalCapacity = 0;
+
+    [[nodiscard]] static bool Build(RasterPsoBudget::Counts bounds,
+                                    uint32_t workCeiling,
+                                    RasterPsoRegions& out) noexcept {
+        RasterPsoRegions next{};
+        uint64_t total = 0;
+        for (uint32_t i = 0; i < RasterPsoBudget::ClassCount; ++i) {
+            if (total > workCeiling || bounds[i] > workCeiling - total)
+                return false;
+            next.offsets[i] = static_cast<uint32_t>(total);
+            next.capacities[i] = bounds[i];
+            total += bounds[i];
+        }
+        next.totalCapacity = static_cast<uint32_t>(total);
+        out = next;
+        return true;
+    }
+};
+
 } // namespace tour::gpu_scene
