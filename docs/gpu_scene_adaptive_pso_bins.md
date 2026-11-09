@@ -33,29 +33,55 @@ and Hi-Z stages also iterate the expanded command capacity.
   Report overflows through GPU diagnostics and keep the existing legacy
   fallback for sources that cannot be conservatively accounted for.
 
-## Staging / remaining integration work
+## Status of this draft
 
-This branch introduces a standalone conservative CPU bound helper, its
-device-free test, and an opt-in GPU append shader. **It does not switch the
-runtime to the new shader.** A subsequent renderer integration patch must:
+Completed on the PR branch:
 
-1. Wire source lifecycle updates from World/streamed tile publication to
-   the budget helper, including all submesh and material-class variants.
-2. Extend the per-flight raster work allocation contract to expose
-   per-class capacities/offsets and retain generation-safe snapshots.
-3. Initialize four GPU counter entries each frame and bind the append
-   shader rather than the fixed-stride draw builder.
-4. Dispatch the append shader over the *GPU-produced* work capacity,
-   preserving GPU work-count bounds and execution barriers.
-5. Use GPU-side counter buffer offsets for four indirect-count submissions;
-   ensure all four graphics PSOs are bound with the correct draw range.
-6. Adapt temporal seed/history/Hi-Z kernels to the compact command layout
-   and current per-class counts without reading stale commands.
-7. Verify overflow signaling, work order, indexed geometry residency,
-   Vulkan memory barriers, renderer parity and GPU frame-time measurements.
+- Brought in current master (including the new geometry alias contract).
+- SceneRegistry incrementally accounts for each live source's raster
+  classification during reconciliation, using stable cluster/node/generation
+  identity; updates, reclassification, removals, and Reset are covered.
+- Current GPU-scene publication has exactly one submesh per selected LOD.
+  Therefore each potentially emitted instance contributes *one* conservative
+  command to its PSO class, regardless of current geometry residency.
+  The general per-LOD maxima helper remains available for future multi-
+  submesh publication; the registry accounting **must be updated** before
+  removing the one-submesh publication restriction.
+- Budget overflow is surfaced in `SyncStats::psoBudgetOk`; an unsuccessful
+  count update must prevent activation of the compact raster path.
+- CPU region-layout helper checks the sum of all four capacities against
+  the published GPU work ceiling without mutation on failure.
+- Experimental wave-aggregated append shader resolves geometry through the
+  same revision-local alias mapping as master, and has checked per-bin CAS
+  reservations plus overflow flags.
+- Host push-constant/counter ABI definitions and headless tests cover
+  generation reuse, changes between classes, and capacity overflow.
 
-Do not enable the append shader before steps 1-7 are completed. The
-original fixed-stride raster path remains unchanged in this draft.
+**Not yet enabled:** the live renderer still uses the fixed four-stride
+builder. The append shader is experimental and not submitted by Vulkan.
+
+### Remaining integration work
+
+1. Snapshot the CPU per-class capacity with each acquired/retired flight's
+   scene database publication (a current registry count must not size an
+   older in-flight scene buffer).
+2. Allocate four disjoint regions and reset per-flight GPU counters;
+   build/dispatch the append compute pipeline with the new alias/geometry
+   descriptor addresses and correct compute→indirect graphics barriers.
+3. Issue four `vkCmdDrawIndexedIndirectCount` calls with the current-frame
+   GPU counts and class-specific graphics PSOs. Count-buffer usage,
+   offsets, per-bin capacity and Vulkan synchronization must be validated.
+4. Update temporal seed/history/Hi-Z/depth passes to traverse the
+   compact class ranges; they currently iterate fixed 4× work slots.
+5. Establish a fail-safe admission path for unsupported scene sources and
+   CPU budget overflow. The GPU overflow diagnostic alone is **not** an
+   acceptable runtime fallback: no draw may silently disappear when a bin
+   exceeds its capacity, including in the same frame.
+6. Compile the new HLSL shader through the project's DXC toolchain and run
+   Vulkan validation, parity screenshots and memory/performance benchmarks.
+
+Do not enable the append shader until 1–6 are complete, including a
+same-frame no-drop guarantee. Current master remains runtime-compatible.
 
 ## Performance verification
 
