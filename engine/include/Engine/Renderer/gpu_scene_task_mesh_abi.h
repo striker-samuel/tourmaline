@@ -16,10 +16,10 @@ struct TaskMeshGpuGroup {
 };
 struct TaskMeshGpuParams {
     uint64_t groups, work, clusters, instances, cullView, rasterView;
-    uint64_t geometry, aliases, indices, positions, shading;
+    uint64_t geometry, aliases, indices, positions, shading, taskOffsets;
     uint32_t workCount, instanceCount, clusterCount, geometryCount;
     uint32_t aliasCount, indexBase, indexWordCapacity, vertexCapacity;
-    uint32_t viewValid, coneEnabled, reserved0, reserved1;
+    uint32_t viewValid, coneEnabled, workCapacity, reserved1;
 };
 struct TaskMeshGpuPush {
     uint64_t params;
@@ -34,9 +34,9 @@ struct TaskMeshIndirectCommand {
     uint32_t groupCountZ;
 };
 static_assert(sizeof(TaskMeshGpuGroup)==16);
-static_assert(sizeof(TaskMeshGpuParams)==136);
+static_assert(sizeof(TaskMeshGpuParams)==144);
 static_assert(offsetof(TaskMeshGpuParams, shading)==80);
-static_assert(offsetof(TaskMeshGpuParams, workCount)==88);
+static_assert(offsetof(TaskMeshGpuParams, workCount)==96);
 static_assert(sizeof(TaskMeshGpuPush)==24);
 static_assert(sizeof(TaskMeshIndirectCommand)==12);
 static_assert(std::is_trivially_copyable_v<TaskMeshGpuParams>);
