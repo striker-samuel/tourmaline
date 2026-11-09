@@ -19,6 +19,8 @@ struct Push {
     uint commandCapacity;
     uint reserved0;
     uint reserved1;
+    uint reserved2;
+    uint reserved3;
     uint4 binOffsets;
     uint4 binCapacities;
 };
