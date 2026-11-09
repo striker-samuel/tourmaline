@@ -48,6 +48,7 @@
 #include <Engine/Placement/placement_stream_provider.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/Renderer/DebugDraw.h>
+#include <Engine/Renderer/DebugDrawChannel.h>
 #include <Engine/Renderer/ShapeScene.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/geometry_streamer.h>
@@ -2570,6 +2571,16 @@ class WorldRenderer : public IRenderer {
     // dependency; the list is discarded/rebuilt while drawing is enabled.
     void SetDebugDrawSource(std::function<void(tour::DebugDrawList&)> fn) {
         m_debugDrawSource = std::move(fn);
+    }
+    // Experimental bridge: the host can own a reusable CPU producer channel
+    // without depending on WorldRenderer. Passing nullptr disconnects it.
+    // The shared ownership keeps the channel alive through render callbacks;
+    // the source's own captured objects must still outlive their use.
+    void BindDebugDrawChannel(std::shared_ptr<tour::DebugDrawChannel> channel) {
+        SetDebugDrawSource(
+            channel ? [channel = std::move(channel)](tour::DebugDrawList& draw) {
+                channel->CollectInto(draw);
+            } : std::function<void(tour::DebugDrawList&)>{});
     }
     // Retained world-space spline and point-cloud instances. Updates retain
     // their handles until explicitly removed or the renderer is destroyed.

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/Renderer/DebugDraw.h>
+#include <Engine/Renderer/DebugDrawChannel.h>
 #include <Engine/Renderer/ShapeDebugDraw.h>
 
 #include <cmath>
@@ -21,6 +22,29 @@ int checks = 0, failures = 0;
     } while (0)
 
 int main() {
+    // The producer channel can be used without a WorldRenderer or GPU.
+    {
+        tour::DebugDrawChannel channel;
+        tour::DebugDrawList captured;
+        int invocations = 0;
+        CHECK(!channel.HasSource());
+        channel.CollectInto(captured);
+        CHECK(captured.Empty());
+        channel.SetSource([&](tour::DebugDrawList& dst) {
+            ++invocations;
+            dst.Line({0, 0, 0}, {1, 0, 0}, {1, 0, 0},
+                     tour::DebugDepthMode::Always);
+        });
+        CHECK(channel.HasSource());
+        channel.CollectInto(captured);
+        CHECK(invocations == 1);
+        CHECK(captured.Size() == 1);
+        CHECK(captured.Lines()[0].depth == tour::DebugDepthMode::Always);
+        channel.ClearSource();
+        CHECK(!channel.HasSource());
+        channel.CollectInto(captured);
+        CHECK(invocations == 1);
+    }
     tour::DebugDrawList draw;
     const glm::vec3 green(0, 1, 0);
     const glm::vec3 yellow(1, 1, 0);
