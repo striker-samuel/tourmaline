@@ -33,6 +33,7 @@ struct WorkBuffer { SceneSubmeshWork rows[GS_MAX_WORK]; };
 struct OffsetBuffer { uint values[GS_MAX_CANDIDATES + 1u]; };
 struct GeometryBuffer { IndexedGeometry rows[GS_MAX_GEO]; };
 struct IndirectBuffer { RasterIndirectCmd rows[GS_MAX_WORK]; };
+struct AliasBuffer { uint slots[GS_MAX_GEO]; };
 struct ClassCounters {
     uint counts[4];
     uint overflow[4];
@@ -44,10 +45,15 @@ struct PsoAppendPush {
     GPU_PTR_READ(GeometryBuffer) geometry;
     GPU_PTR_WRITE(IndirectBuffer) indirect;
     GPU_PTR(ClassCounters) counters;
+    GPU_PTR_READ(AliasBuffer) aliases;
     uint candidateCount;
     uint geometryCount;
     uint workCapacity;
     uint commandCapacity;
+    uint aliasCount;
+    uint padding0;
+    uint padding1;
+    uint padding2;
     uint4 binOffsets;
     uint4 binCapacities;
 };
@@ -72,8 +78,15 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     IndexedGeometry g = (IndexedGeometry)0;
     if (inRange)
         w = pc.work.Get().rows[i];
-    const uint geometryIndex = w.identity.z;
-    const bool hasGeometry = inRange && geometryIndex < pc.geometryCount &&
+    // Work identities carry revision-local registrations; master now
+    // resolves those through a per-flight mapping to persistent descriptors.
+    const uint transientId = w.identity.z;
+    const bool hasAlias = inRange && transientId < pc.aliasCount &&
+                          transientId < GS_MAX_GEO;
+    uint geometryIndex = GS_INVALID;
+    if (hasAlias)
+        geometryIndex = pc.aliases.Get().slots[transientId];
+    const bool hasGeometry = hasAlias && geometryIndex < pc.geometryCount &&
                              geometryIndex < GS_MAX_GEO;
     if (hasGeometry)
         g = pc.geometry.Get().rows[geometryIndex];
