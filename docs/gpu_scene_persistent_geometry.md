@@ -72,3 +72,42 @@ fallback. It is safe to merge without silently switching GPU geometry.
 revisions, eviction/re-residency tombstones, mesh-generation reuse and
 transactional failure on invalid LOD spans. Hardware GPU publication and
 renderer end-to-end cutover are not claimed by these headless tests.
+
+## Stage 2: authoritative indexed raster consumer (follow-up PR)
+
+The live `WorldRenderer` now synchronizes `PersistentGeometryRegistry`
+from the same GPU-scene database used by `WorldSynchronizer`, after
+database publication and on the acquired frame flight. It publishes stable
+indexed geometry descriptors and a *per-flight* transient registration →
+persistent descriptor mapping.
+
+The indexed command-build compute shader consumes the transient ID in
+`SceneSubmeshWork.identity.z` only as an index into this validated,
+flight-local mapping. The resulting descriptor lookup is a persistent
+slot; any unregistered or invalid entry writes an empty indirect command.
+This avoids exposing the current revision-local GfxFilter registration
+numbers as descriptor addresses.
+
+The admission loop checks that **each resident LOD** has a mapped
+descriptor with exactly the same indexed range as the current registered
+physical payload before giving GPU Scene ownership of an object. A
+missing or mismatched mapping leaves that object legacy-owned. Persistent
+descriptor publication failure disables GPU scene rendering for the frame.
+The existing per-instance generation check remains authoritative in the
+raster vertex fetch, and the descriptor mapping is captured separately
+on each acquired flight.
+
+**Not yet done:** the physical index heap is still the GfxFilter cluster
+heap, and the temporary work identity still contains revision-local
+registration IDs. GeometryStreamer must expose the underlying index/vertex
+draw range directly, with a stable residency identity, before this
+compatibility mapping can be deleted.
+
+The 65,535 geometry-slot cap remains fail-closed. No unsafe slot recycling
+is added here: generational GPU work references and a recorded per-flight
+retirement fence are required before implementing reclamation.
+
+Device validation remains required. In particular, test multiple frames
+in flight with LOD promotion/eviction, re-registration, missed residency,
+masked foliage and no GPU scene ownership on a failed indexed publication.
+A headless test cannot replace these Vulkan captures.

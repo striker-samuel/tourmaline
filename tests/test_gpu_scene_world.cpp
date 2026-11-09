@@ -161,10 +161,15 @@ int main() {
         const uint32_t stable = registry.Find(key);
         CHECK(stable != InvalidIndex);
         CHECK(registry.FromTransient(0u) == stable);
+        CHECK(registry.TransientAliases().size() == 2u);
+        CHECK(registry.TransientAliases()[0] == stable);
+        CHECK(registry.TransientAliases()[1] == InvalidIndex);
         CHECK(registry.Descriptors()[stable].firstIndex == 20u);
         const uint64_t originalRevision = registry.Revision();
+        const uint64_t originalAliasRevision = registry.AliasRevision();
         CHECK(registry.Synchronize(db, tables));
-        CHECK(registry.Revision() == originalRevision); // no redundant uploads
+        CHECK(registry.Revision() == originalRevision);
+        CHECK(registry.AliasRevision() == originalAliasRevision); // no redundant uploads
 
         // GfxFilter re-registers this same logical LOD under a new
         // transient ID. The persistent key and descriptor slot survive.
@@ -174,6 +179,8 @@ int main() {
         CHECK(registry.Find(key) == stable);
         CHECK(registry.FromTransient(1u) == stable);
         CHECK(registry.FromTransient(0u) == InvalidIndex);
+        CHECK(registry.AliasRevision() > originalAliasRevision);
+        CHECK(registry.TransientAliases()[1] == stable);
         CHECK(registry.Descriptors()[stable].firstIndex == 26u);
 
         // Physical eviction clears the GPU descriptor instead of leaving
