@@ -290,17 +290,6 @@ class SceneRegistry {
                     changed_.push_back(handle);
                     ++stats.created;
                 }
-                    const uint32_t klass =
-                        ((r.flags & InstanceFlagDoubleSided) != 0u ? 1u : 0u) |
-                        ((r.flags & InstanceFlagMasked) != 0u ? 2u : 0u);
-                    RasterPsoBudget::Counts contribution{};
-                    // The published mesh ABI currently emits at most one
-                    // submesh per selected LOD; count even nonresident meshes
-                    // to conservatively include later geometry promotion.
-                    contribution[klass] = 1u;
-                    stats.psoBudgetOk &=
-                        psoBudget_.Upsert(r.instance, contribution);
-                }
             } else {
                 const Instance* old = db.instances.Get(it->second);
                 if (old && std::memcmp(old, &data, sizeof(data)) != 0 &&
@@ -308,6 +297,16 @@ class SceneRegistry {
                     changed_.push_back(it->second);
                     ++stats.updated;
                 }
+            }
+            if (instances_.contains(r.instance)) {
+                const uint32_t klass =
+                    ((r.flags & InstanceFlagDoubleSided) != 0u ? 1u : 0u) |
+                    ((r.flags & InstanceFlagMasked) != 0u ? 2u : 0u);
+                RasterPsoBudget::Counts contribution{};
+                // Current publication has at most one submesh per selected
+                // LOD. Count even unloaded geometry for future promotion.
+                contribution[klass] = 1u;
+                stats.psoBudgetOk &= psoBudget_.Upsert(r.instance, contribution);
             }
         }
         for (auto it = instances_.begin(); it != instances_.end();) {
