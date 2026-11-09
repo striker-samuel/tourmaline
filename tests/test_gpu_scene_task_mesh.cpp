@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #include <Engine/Renderer/gpu_scene_task_mesh.h>
+#include <Engine/Renderer/gpu_scene_task_mesh_abi.h>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
