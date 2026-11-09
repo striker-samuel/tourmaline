@@ -100,6 +100,11 @@ ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
 
     float alphaCutoff = mat.params.x;
     float baseAlpha = mat.diffuse.a;
+#ifdef GPU_SCENE_MASKED_DEPTH
+    // Main's masked lit path multiplies COLOR_0.a into coverage. The
+    // GPU-scene depth pass must make the identical decision at UV0.
+    baseAlpha *= IN.color.a;
+#endif
 
     int baseColorIdx = mat.tex.x;
     if (baseColorIdx >= 0)
