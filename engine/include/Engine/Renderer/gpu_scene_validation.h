@@ -868,7 +868,7 @@ class CandidateValidator {
         // Cap the expanded four-bin output at the existing shader array bound.
         // A rejected expansion can be retried with one lane (legacy indexed
         // submesh draws) without leaking a partial command buffer.
-        if (meshletLanes == 0u || meshletLanes > 32u)
+        if (meshletLanes == 0u || meshletLanes > kRasterMeshletMaxLanes)
             return false;
         const uint64_t commandStride = workCapacity * meshletLanes;
         const uint64_t maxCommands = uint64_t(kRasterPipelineClassCount) * commandStride;
