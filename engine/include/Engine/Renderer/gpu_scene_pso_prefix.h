@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace tour::gpu_scene {
