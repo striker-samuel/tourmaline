@@ -1843,6 +1843,8 @@ NodeHandle World::AddNode(const glm::mat4& localFrame, NodeHandle parent) {
     scene.nodeGeneration[size_t(node)] = tour::scene::kNodeSlotAliveBit | generation;
     const NodeHandle handle = MakeNodeHandle(scene, NodeId(node));
     gameNodes_.insert(handle);
+    if (!gpuSceneGameNodeRegistration)
+        gpuSceneGameNodeRegistration = nextGpuSceneClusterId++;
     (void)tour::scene::SetLocalTransform(scene, handle, localFrame);
     // Root-level nodes carry the frame as their global directly; a
     // parented node recomposes through the ordinary recalc below.
