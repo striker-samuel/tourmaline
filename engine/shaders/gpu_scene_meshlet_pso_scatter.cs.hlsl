@@ -40,7 +40,10 @@ void mainCS(uint3 gid: SV_GroupID,uint3 lane: SV_GroupThreadID) {
     const uint i=gid.x*256u+lane.x;
     const bool inRange=total<=pc.candidateCapacity && i<total &&
                        i<MAX_CANDIDATES;
-    const Candidate c=inRange?pc.candidates.Get().rows[i]:(Candidate)0;
+    // Struct-typed conditional results are rejected by DXC (numeric-only
+    // ternaries); declare-then-assign, the #301 scatter kernel's pattern.
+    Candidate c=(Candidate)0;
+    if(inRange) c=pc.candidates.Get().rows[i];
     const uint cls=inRange?c.meta.x:0xffffffffu;
     const bool valid=cls<CLASSES && c.draw.y!=0u;
     const uint wave=lane.x/WaveGetLaneCount();
