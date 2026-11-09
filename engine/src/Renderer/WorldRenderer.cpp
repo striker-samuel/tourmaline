@@ -14287,7 +14287,22 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // device-read per-class counts (the temporal seed lane
                 // never runs compact v1, so this is always the full list).
                 const bool remainderPrimed =
-                    m_gpuSceneMeshletCompactActive
+                    m_gpuSceneTaskMeshActive
+                        ? m_fpRenderer.AppendGpuSceneTaskPrepass(
+                              fc,
+                              m_gpuSceneTaskDepthProgram,
+                              m_gpuSceneTaskGbufferProgram,
+                              m_gpuSceneTaskMaskedDepthProgram,
+                              m_gpuSceneTaskMaskedGbufferProgram,
+                              m_gpuSceneTaskMeshPlan.indirectHandle,
+                              m_gpuSceneTaskMeshPlan.indirectLogical,
+                              m_gpuSceneTaskMeshPlan.groupLogical,
+                              m_gpuSceneRasterWorkLogical[flight],
+                              m_gpuSceneTaskMeshPlan.graphics,
+                              m_gpuSceneRasterDoubleSidedCount != 0,
+                              m_gpuSceneRasterMaskedBackCount != 0,
+                              m_gpuSceneRasterMaskedDoubleSidedCount != 0)
+                        : m_gpuSceneMeshletCompactActive
                         ? m_fpRenderer.AppendGpuSceneCompactPrepass(
                               fc,
                               fc.ssrGbufferWanted ? m_gpuSceneRasterGbufferProgram
@@ -15316,7 +15331,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // The GPU-generated raster command buffer is written by compute and
     // consumed by DrawIndexedIndirect; the work rows are vertex BDA input.
     // These are distinct pipeline stages and need explicit graph edges.
-    if (m_gpuSceneRasterDrawActive && m_gpuSceneRasterDrawCapacity > 0) {
+    if (m_gpuSceneTaskMeshActive && m_gpuSceneRasterDrawActive) {
+        smvk::BufferSyncRequest indirectRead{};
+        indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
+        indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
+        mainPass.AddBufferHint(m_gpuSceneTaskMeshPlan.indirectLogical, indirectRead);
+        smvk::BufferSyncRequest taskRead{};
+        taskRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+        taskRead.barrierMasks.stageMask =
+            smvk::PipelineStageBit_Task | smvk::PipelineStageBit_Mesh;
+        mainPass.AddBufferHint(m_gpuSceneTaskMeshPlan.groupLogical, taskRead);
+        mainPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], taskRead);
+    } else if (m_gpuSceneRasterDrawActive && m_gpuSceneRasterDrawCapacity > 0) {
         smvk::BufferSyncRequest indirectRead{};
         indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
         indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
@@ -15332,6 +15358,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         mainPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], vertexRead);
     }
     const bool sceneRasterActive = m_gpuSceneRasterDrawActive;
+    const bool sceneTaskActive = m_gpuSceneTaskMeshActive;
+    const auto sceneTaskPlan = m_gpuSceneTaskMeshPlan;
     const bool sceneRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0;
     const bool sceneRasterMasked = m_gpuSceneRasterMaskedBackCount != 0;
     const bool sceneRasterMaskedTwoSided = m_gpuSceneRasterMaskedDoubleSidedCount != 0;
@@ -15349,6 +15377,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                useMsaa,
                                gfxSlot,
                                sceneRasterActive,
+                               sceneTaskActive,
+                               sceneTaskPlan,
                                sceneRasterTwoSided,
                                sceneRasterMasked,
                                sceneRasterMaskedTwoSided,
@@ -15767,7 +15797,42 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // persistent instance; zero-count commands do not rasterize.
         // This path replaces the GfxFilter Main leg only when the
         // eligibility gate proved every World draw belongs to it.
-        if (sceneRasterActive && sceneRasterCommandCount > 0) {
+        if (sceneRasterActive && sceneTaskActive) {
+            const auto drawTaskBin = [&](uint32_t cls,
+                                         smvk::ShaderProgram& program,
+                                         smvk::CullMode cull,
+                                         const smvk::MSAASettings& msaa) {
+                cmd.BindRenderPipeline(program,
+                                       smvk::VertexLayoutId::Empty,
+                                       opaqueDepth, noStencil,
+                                       smvk::BlendSettings::Opaque(),
+                                       msaa,
+                                       smvk::RasterSettings{.cullMode = cull});
+                cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+                auto push = sceneTaskPlan.graphics;
+                push.rasterClass = cls;
+                cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
+                cmd.DrawMeshTasksIndirect(
+                    sceneTaskPlan.indirectHandle,
+                    uint64_t(cls) * sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
+                    1u, sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
+            };
+            drawTaskBin(0u, m_gpuSceneTaskMainProgram, smvk::CullMode::Back, msaaSettings);
+            if (sceneRasterTwoSided)
+                drawTaskBin(1u, m_gpuSceneTaskMainProgram,
+                            smvk::CullMode::None, msaaSettings);
+            const bool taskA2c = useMsaa && m_msaaAlphaToCoverage &&
+                m_gpuSceneTaskMaskedA2cProgram.shaderCount == 3;
+            auto& masked = taskA2c ? m_gpuSceneTaskMaskedA2cProgram
+                                   : m_gpuSceneTaskMainProgram;
+            const auto taskMsaa = taskA2c ? smvk::MSAASettings::Count2A2C()
+                                          : msaaSettings;
+            if (sceneRasterMasked)
+                drawTaskBin(2u, masked, smvk::CullMode::Back, taskMsaa);
+            if (sceneRasterMaskedTwoSided)
+                drawTaskBin(3u, masked, smvk::CullMode::None, taskMsaa);
+        }
+        if (sceneRasterActive && sceneRasterCommandCount > 0 && !sceneTaskActive) {
             cmd.BindStaticVertexFmt();
             cmd.BindRenderPipeline(m_gpuSceneRasterProgram,
                                    smvk::VertexLayoutId::Static,
