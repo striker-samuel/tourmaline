@@ -7,20 +7,22 @@
 #include "gpu_platform.hlsli"
 
 #define PSO_MAX_BLOCKS 4096u
+#define PSO_MAX_WORK 1048576u
+#define PSO_MAX_CANDIDATES 1048576u
 #define PSO_CLASSES 4u
 
 struct BlockTotals { uint values[PSO_MAX_BLOCKS * PSO_CLASSES]; };
 struct ClassCounts { uint counts[4]; uint overflow[4]; };
+struct WorkOffsets { uint values[PSO_MAX_CANDIDATES + 1u]; };
 struct Push {
     GPU_PTR_READ(BlockTotals) blockCounts;
     GPU_PTR_WRITE(BlockTotals) blockBases;
     GPU_PTR_WRITE(ClassCounts) classCounts;
+    GPU_PTR_READ(WorkOffsets) workOffsets;
     uint blockCount;
     uint commandCapacity;
-    uint reserved0;
-    uint reserved1;
-    uint reserved2;
-    uint reserved3;
+    uint candidateCount;
+    uint workCapacity;
     uint4 binOffsets;
     uint4 binCapacities;
 };
@@ -41,7 +43,11 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     }
     const uint offset = pc.binOffsets[cls];
     const uint capacity = pc.binCapacities[cls];
-    const bool validLayout = pc.blockCount <= PSO_MAX_BLOCKS &&
+    const bool validWork = pc.candidateCount <= PSO_MAX_CANDIDATES &&
+                           pc.workCapacity <= PSO_MAX_WORK &&
+                           pc.blockCount == (pc.workCapacity + 255u) / 256u &&
+                           pc.workOffsets.Get().values[pc.candidateCount] <= pc.workCapacity;
+    const bool validLayout = validWork && pc.blockCount <= PSO_MAX_BLOCKS &&
                              offset <= pc.commandCapacity &&
                              capacity <= pc.commandCapacity - offset;
     // Only valid layouts / sufficient capacity may be submitted. The host
