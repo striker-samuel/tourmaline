@@ -13,7 +13,6 @@
 #define GS_MAX_GEO 65535u
 #define GS_MAX_CANDIDATES 1048576u
 #define GS_MAX_ROWS 4194304u
-#define GS_MESHLET_LANES 32u
 #define GS_INVALID 0xffffffffu
 
 struct SceneSubmeshWork { uint4 identity; uint4 detail; };
@@ -64,6 +63,8 @@ struct RasterMeshletPush {
     uint clusterCount;
     uint indexBase;
     uint instanceSlots;
+    uint meshletLanes;
+    uint cullViewValid;
 };
 GPU_PUSH(RasterMeshletPush, pc);
 
@@ -100,15 +101,16 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     pc.indirect.Get().rows[i] = cmd; // full initialization on every path
     const uint stride = pc.binStride;
     if (stride == 0u || stride > GS_MAX_WORK ||
-        (stride % GS_MESHLET_LANES) != 0u ||
+        pc.meshletLanes == 0u || pc.meshletLanes > 1024u ||
+        (stride % pc.meshletLanes) != 0u ||
         pc.commandCapacity != 4u * stride ||
         pc.candidateCount > GS_MAX_CANDIDATES)
         return;
     const uint bin = i / stride;
-    const uint slot = (i % stride) / GS_MESHLET_LANES;
-    const uint lane = (i % stride) % GS_MESHLET_LANES;
+    const uint slot = (i % stride) / pc.meshletLanes;
+    const uint lane = (i % stride) % pc.meshletLanes;
     const uint count = pc.workOffsets.Get().values[pc.candidateCount];
-    if (count > stride / GS_MESHLET_LANES || slot >= count)
+    if (count > stride / pc.meshletLanes || slot >= count)
         return;
     const SceneSubmeshWork work = pc.work.Get().rows[slot];
     const uint transientId = work.identity.z;
@@ -126,7 +128,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // No partial meshlet draw set: a mesh above the lane budget is still
     // rendered whole (lane zero), not truncated.
     const bool fullDraw = mesh.clusterCount == 0u ||
-                          mesh.clusterCount > GS_MESHLET_LANES ||
+                          mesh.clusterCount > pc.meshletLanes ||
                           mesh.clusterStart > pc.clusterCount ||
                           mesh.clusterCount > pc.clusterCount - mesh.clusterStart;
     if (fullDraw) {
@@ -155,7 +157,8 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (work.identity.x >= min(pc.instanceSlots, GS_MAX_ROWS)) return;
     const GpuSceneInstanceRow row = pc.instances.Get().rows[work.identity.x];
     if (row.identity.y != 1u || row.identity.x != work.identity.y) return;
-    if (!ClusterVisible(cluster.b, row.value, pc.cullView.Get()))
+    if (pc.cullViewValid != 0u &&
+        !ClusterVisible(cluster.b, row.value, pc.cullView.Get()))
         return;
     cmd.indexCount = triangles;
     cmd.instanceCount = 1u;
