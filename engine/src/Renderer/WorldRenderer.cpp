@@ -11677,6 +11677,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     meshletPush.instanceSlots = uint32_t(m_gpuSceneDatabase.instances.Size());
                     meshletPush.meshletLanes = meshletLanes;
                     meshletPush.cullViewValid = gpuPush.counts2.z;
+                    meshletPush.coneEnabled =
+                        (uint32_t(m_gfxRenderer.config.cullFlags) &
+                         uint32_t(smvk::gfx::CullFlagBit_Backface)) != 0u ? 1u : 0u;
                 }
                 tour::gpu_scene::SceneIndirectArgsPush indirectArgs{};
                 tour::gpu_scene::SceneIndirectVerifyPush indirectVerify{};
