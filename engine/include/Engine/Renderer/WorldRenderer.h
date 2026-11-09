@@ -2384,6 +2384,10 @@ class WorldRenderer : public IRenderer {
     std::array<smvk::ShaderProgram, 3> m_gpuSceneWorkScanPrograms{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterBuildModule{};
     smvk::ShaderProgram m_gpuSceneRasterBuildProgram{};
+    // Primary meshlet-indexed GPU Scene raster builder. Fails back to the
+    // existing whole-submesh builder when its shader/buffers are unavailable.
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterMeshletBuildModule{};
+    smvk::ShaderProgram m_gpuSceneRasterMeshletBuildProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterVsModule{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterProgram{};
