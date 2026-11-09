@@ -74,6 +74,9 @@ struct RasterWorkDrawBuildPush {
     uint32_t geometryCount = 0;
     uint32_t commandCapacity = 0;
     uint32_t reserved = 0; // per-class command stride (work capacity)
+    uint64_t geometryAliases = 0; // revision-local ID -> stable descriptor slot
+    uint32_t aliasCount = 0;
+    uint32_t padding = 0;
 };
 
 // Static-opaque raster VS input: world position is rebased against this
@@ -175,7 +178,7 @@ static_assert(sizeof(RasterGroup) == 16 && alignof(RasterGroup) == 16);
 static_assert(sizeof(RasterIndirectCommand) == 20);
 static_assert(sizeof(InstanceReference) == 8);
 static_assert(sizeof(RasterDrawBuildPush) == 32);
-static_assert(sizeof(RasterWorkDrawBuildPush) == 48);
+static_assert(sizeof(RasterWorkDrawBuildPush) == 64);
 static_assert(offsetof(RasterIndirectCommand, firstInstance) == 16);
 static_assert(std::is_trivially_copyable_v<RasterIndirectCommand>);
 
