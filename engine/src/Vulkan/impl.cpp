@@ -14991,6 +14991,34 @@ void smvk::CommandBuffer::DrawIndexedIndirect(BufferHandle buffer,
         }
     }
 }
+void smvk::CommandBuffer::DrawIndexedIndirectCount(BufferHandle buffer,
+                                                   uint64_t offset,
+                                                   BufferHandle countBuffer,
+                                                   uint64_t countOffset,
+                                                   uint32_t maxCount,
+                                                   uint32_t stride) {
+    VulkanResourceManager& vulkanCtx =
+        *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
+    const Buffer* desc = vulkanCtx.buffers_.get(buffer);
+    const Buffer* countDesc = vulkanCtx.buffers_.get(countBuffer);
+    assert(desc != nullptr && desc->vkBuffer != VK_NULL_HANDLE);
+    assert(countDesc != nullptr && countDesc->vkBuffer != VK_NULL_HANDLE);
+#ifndef NDEBUG
+    assert(!boundIndexBuffer_.empty() &&
+           "DrawIndexedIndirectCount with no index buffer bound (stale binding across passes?)");
+#endif
+    VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque_);
+    // Vulkan 1.2 core (the engine's 1.3 target): the device clamps the
+    // effective draw count to maxCount, so a corrupt count word can never
+    // read commands beyond the reserved range.
+    vkCmdDrawIndexedIndirectCount(cmd,
+                                  desc->vkBuffer,
+                                  static_cast<VkDeviceSize>(offset),
+                                  countDesc->vkBuffer,
+                                  static_cast<VkDeviceSize>(countOffset),
+                                  maxCount,
+                                  stride);
+}
 void smvk::CommandBuffer::BindComputePipeline(ShaderProgram& shaderProgram) {
     assert(graph_ != nullptr);
     assert(renderPass_ != nullptr);

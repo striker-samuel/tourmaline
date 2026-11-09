@@ -72,6 +72,20 @@ struct CommandBuffer final {
                              uint32_t drawCount,
                              uint32_t stride);
 
+    // Indirect-COUNT indexed draws (Vulkan 1.2 core, drawIndirectCount):
+    // drawCount is read from countBuffer[countOffset] BY THE DEVICE — the
+    // GPU-produced survivor count (the compacted meshlet PSO bins' exact
+    // classCounts), never a CPU readback. maxCount clamps a corrupt count
+    // to the reserved range. Same VkDrawIndexedIndirectCommand stride
+    // contract as DrawIndexedIndirect; both buffers carry INDIRECT usage
+    // (Storage buffers get it by the resource manager's convention).
+    void DrawIndexedIndirectCount(BufferHandle buffer,
+                                  uint64_t offset,
+                                  BufferHandle countBuffer,
+                                  uint64_t countOffset,
+                                  uint32_t maxCount,
+                                  uint32_t stride);
+
     // Mesh-task draw (VK_EXT_mesh_shader): launches groupCountX/Y/Z
     // task-shader workgroups (or mesh workgroups directly when the
     // pipeline has no task stage). Requires SupportsMeshShaders() —

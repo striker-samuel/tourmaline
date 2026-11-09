@@ -9,6 +9,9 @@
 
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/gpu_scene_candidates.h>
+#include <Engine/Renderer/gpu_scene_meshlet_compact_abi.h>
+#include <Engine/Renderer/gpu_scene_meshlet_prefix.h>
+#include <Engine/Renderer/gpu_scene_pso_prefix.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/renderview.h>
 
@@ -889,6 +892,208 @@ class CandidateValidator {
                    : 0;
     }
 
+    // ---- Compact-meshlet publication (dense candidates -> #301 PSO
+    // compaction -> indirect-count command bins). The candidate stream is
+    // one record per ACTUAL work/cluster pair (plus one whole-submesh
+    // fallback for oversized/unknown registrations) — never a fixed
+    // PSO x lane reservation. firstInstance stays the ORIGINAL work slot,
+    // so the unmodified gpu_scene_raster VS (work[SV_InstanceID]) and the
+    // temporal identity contract both hold.
+    struct MeshletCompactPlan {
+        // Stage pushes, in dispatch order.
+        MeshletCandidateCountPush count{};
+        ParallelWorkBlockPush scanBlock{};
+        ParallelWorkGroupPush scanGroups{};
+        ParallelWorkAddPush scanAdd{};
+        MeshletCandidateScatterPush scatter{};
+        MeshletPsoCountPush psoCount{};
+        PsoPrefixScanPush psoScan{}; // the unchanged #301 kernel
+        MeshletPsoScatterPush psoScatter{};
+        // Consumer state.
+        smvk::BufferHandle commands{};    // 20B VkDrawIndexedIndirectCommand rows
+        smvk::BufferHandle classCounts{}; // 4 exact GPU counts + 4 overflow words
+        uint32_t candidateCapacity = 0;   // CPU-proved dense candidate bound
+        uint32_t commandCapacity = 0;     // reserved commands (sum of bins)
+        uint32_t workCapacity = 0;        // work-row scan extent
+        uint32_t psoBlocks = 0;           // ceil(candidateCapacity / 256)
+        uint32_t scanBlocks = 0;          // ceil(workCapacity / 256)
+        uint32_t binOffsets[4] = {};
+        uint32_t binCapacities[4] = {};
+    };
+
+    // worstMeshlets = max over the flight's registered meshes of
+    // min(clusterCount, 1024) — computed CPU-side from the gfx mesh table.
+    // A workCapacity*worstMeshlets bound above kMeshletCandidateLimit
+    // declines (the caller falls back to the four-bin whole-submesh path):
+    // the dense stream is capacity-gated by design, and the conservative
+    // bound makes a GPU overflow IMPOSSIBLE by construction (the overflow
+    // words are diagnostics, never a partial-render gate).
+    [[nodiscard]] bool PrepareMeshletCompact(smvk::ResourceManager& ctx,
+                                             uint32_t flight,
+                                             uint32_t worstMeshlets,
+                                             uint64_t meshesAddress,
+                                             uint32_t meshCount,
+                                             uint64_t clustersAddress,
+                                             uint32_t clusterCount,
+                                             uint32_t clusterIndexBase,
+                                             uint64_t geometryAddress,
+                                             uint32_t geometryCount,
+                                             uint64_t aliasAddress,
+                                             uint32_t aliasCount,
+                                             uint64_t instancesAddress,
+                                             uint32_t instanceCount,
+                                             uint64_t viewAddress,
+                                             uint32_t coneEnabled,
+                                             MeshletCompactPlan& plan) {
+        if (flight >= Flights || worstMeshlets == 0 || worstMeshlets > 1024u ||
+            !meshesAddress || !clustersAddress || !geometryAddress || !aliasAddress ||
+            !instancesAddress || !viewAddress || clusterIndexBase == 0xffffffffu)
+            return false;
+        auto& f = flight_[flight];
+        // The validate fixtures reserve 16 work rows per candidate and are
+        // not meshlet-mapped; the dense stream is a production path.
+        if (f.validate || !f.workPrepared || f.workCandidates == 0 ||
+            f.workCandidates > kMeshletCandidateLimit)
+            return false;
+        // The scan extent is the work buffer's row capacity: every row
+        // (live or the zero padding beyond the GPU live count) gets a
+        // definitive count write, so meshletOffsets[workCapacity] is the
+        // exact GPU candidate total.
+        const uint32_t extent = f.workCandidates;
+        const uint64_t bound = uint64_t(extent) * uint64_t(worstMeshlets);
+        if (bound == 0 || bound > kMeshletCandidateLimit)
+            return false;
+        const uint32_t candidateCapacity = uint32_t(bound);
+        // Four disjoint per-class command bins, each sized to the worst
+        // case (all candidates in one class). The indirect-count consumer
+        // reads only up to the exact GPU count, never the reservation.
+        uint32_t binOffsets[4] = {};
+        uint32_t binCapacities[4] = {};
+        for (uint32_t c = 0; c < 4; ++c) {
+            binOffsets[c] = c * candidateCapacity;
+            binCapacities[c] = candidateCapacity;
+        }
+        const uint32_t commandCapacity = 4u * candidateCapacity;
+        const uint32_t scanBlocks = (extent + 255u) / 256u;
+        const uint32_t psoBlocks = (candidateCapacity + 255u) / 256u;
+        if (scanBlocks == 0 || scanBlocks > 4096u || psoBlocks == 0 || psoBlocks > 4096u)
+            return false;
+        if (!Ensure(ctx, f.meshletCounts, f.meshletCountsSize,
+                    size_t(extent) * sizeof(uint32_t), "scene meshlet counts") ||
+            !Ensure(ctx, f.meshletOffsets, f.meshletOffsetsSize,
+                    size_t(extent + 1u) * sizeof(uint32_t), "scene meshlet offsets") ||
+            !Ensure(ctx, f.meshletBlockSums, f.meshletBlockSumsSize,
+                    size_t(scanBlocks) * sizeof(uint32_t), "scene meshlet block sums") ||
+            !Ensure(ctx, f.meshletBlockBases, f.meshletBlockBasesSize,
+                    size_t(scanBlocks) * sizeof(uint32_t), "scene meshlet block bases") ||
+            !Ensure(ctx, f.meshletCandidates, f.meshletCandidatesSize,
+                    size_t(candidateCapacity) * sizeof(CompactMeshletCandidate),
+                    "scene meshlet candidates") ||
+            !Ensure(ctx, f.meshletPsoBlocks, f.meshletPsoBlocksSize,
+                    size_t(psoBlocks) * 4u * sizeof(uint32_t), "scene meshlet PSO blocks") ||
+            !Ensure(ctx, f.meshletPsoBases, f.meshletPsoBasesSize,
+                    size_t(psoBlocks) * 4u * sizeof(uint32_t), "scene meshlet PSO bases") ||
+            !Ensure(ctx, f.meshletClassCounts, f.meshletClassCountsSize,
+                    8u * sizeof(uint32_t), "scene meshlet PSO class counts") ||
+            !Ensure(ctx, f.meshletCommands, f.meshletCommandsSize,
+                    size_t(commandCapacity) * sizeof(RasterIndirectCommand),
+                    "scene meshlet compact commands"))
+            return false;
+        const uint64_t work = ctx.GetBufferDeviceAddress(f.workOutput);
+        const uint64_t sceneOffsets = ctx.GetBufferDeviceAddress(f.workOffsets);
+        const uint64_t counts = ctx.GetBufferDeviceAddress(f.meshletCounts);
+        const uint64_t offsets = ctx.GetBufferDeviceAddress(f.meshletOffsets);
+        const uint64_t sums = ctx.GetBufferDeviceAddress(f.meshletBlockSums);
+        const uint64_t bases = ctx.GetBufferDeviceAddress(f.meshletBlockBases);
+        const uint64_t candidates = ctx.GetBufferDeviceAddress(f.meshletCandidates);
+        const uint64_t psoBlocksBda = ctx.GetBufferDeviceAddress(f.meshletPsoBlocks);
+        const uint64_t psoBasesBda = ctx.GetBufferDeviceAddress(f.meshletPsoBases);
+        const uint64_t classCounts = ctx.GetBufferDeviceAddress(f.meshletClassCounts);
+        const uint64_t commands = ctx.GetBufferDeviceAddress(f.meshletCommands);
+        if (!work || !sceneOffsets || !counts || !offsets || !sums || !bases ||
+            !candidates || !psoBlocksBda || !psoBasesBda || !classCounts || !commands)
+            return false;
+        f.meshletCandidateCapacity = candidateCapacity;
+        f.meshletCommandCapacity = commandCapacity;
+        plan = {};
+        plan.count = {};
+        plan.count.work = work;
+        plan.count.workOffsets = sceneOffsets;
+        plan.count.meshes = meshesAddress;
+        plan.count.geometry = geometryAddress;
+        plan.count.aliases = aliasAddress;
+        plan.count.counts = counts;
+        plan.count.selectedCount = f.candidateCount;
+        plan.count.workCapacity = extent;
+        plan.count.meshCount = meshCount;
+        plan.count.geometryCount = geometryCount;
+        plan.count.aliasCount = aliasCount;
+        plan.scanBlock = {counts, offsets, sums, extent, scanBlocks};
+        plan.scanGroups = {sums, bases, scanBlocks, 0u};
+        plan.scanAdd = {offsets, sums, bases, extent, scanBlocks};
+        plan.scatter = {};
+        plan.scatter.work = work;
+        plan.scatter.sceneWorkOffsets = sceneOffsets;
+        plan.scatter.meshletOffsets = offsets;
+        plan.scatter.meshes = meshesAddress;
+        plan.scatter.geometry = geometryAddress;
+        plan.scatter.aliases = aliasAddress;
+        plan.scatter.clusters = clustersAddress;
+        plan.scatter.instances = instancesAddress;
+        plan.scatter.view = viewAddress;
+        plan.scatter.candidates = candidates;
+        plan.scatter.sceneCandidateCount = f.candidateCount;
+        plan.scatter.workCapacity = extent;
+        plan.scatter.meshCount = meshCount;
+        plan.scatter.geometryCount = geometryCount;
+        plan.scatter.aliasCount = aliasCount;
+        plan.scatter.clusterCount = clusterCount;
+        plan.scatter.instanceCount = instanceCount;
+        plan.scatter.candidateCapacity = candidateCapacity;
+        plan.scatter.indexBase = clusterIndexBase;
+        plan.scatter.viewValid = 1u;
+        plan.scatter.coneEnabled = coneEnabled;
+        plan.psoCount = {candidates, offsets, psoBlocksBda, extent, candidateCapacity,
+                         psoBlocks, 0u};
+        // The #301 scan, unchanged: workOffsets = the meshlet offsets (the
+        // total lives at index candidateCount = the work extent), and
+        // workCapacity = the candidate capacity that total is checked
+        // against. Its internal consistency checks hold verbatim.
+        plan.psoScan = {};
+        plan.psoScan.blockCounts = psoBlocksBda;
+        plan.psoScan.blockBases = psoBasesBda;
+        plan.psoScan.classCounts = classCounts;
+        plan.psoScan.workOffsets = offsets;
+        plan.psoScan.blockCount = psoBlocks;
+        plan.psoScan.commandCapacity = commandCapacity;
+        plan.psoScan.candidateCount = extent;
+        plan.psoScan.workCapacity = candidateCapacity;
+        std::copy_n(binOffsets, 4, plan.psoScan.binOffsets);
+        std::copy_n(binCapacities, 4, plan.psoScan.binCapacities);
+        plan.psoScatter = {};
+        plan.psoScatter.candidates = candidates;
+        plan.psoScatter.meshletOffsets = offsets;
+        plan.psoScatter.blockBases = psoBasesBda;
+        plan.psoScatter.classCounts = classCounts;
+        plan.psoScatter.commands = commands;
+        plan.psoScatter.workCapacity = extent;
+        plan.psoScatter.candidateCapacity = candidateCapacity;
+        plan.psoScatter.blockCount = psoBlocks;
+        plan.psoScatter.commandCapacity = commandCapacity;
+        std::copy_n(binOffsets, 4, plan.psoScatter.binOffsets);
+        std::copy_n(binCapacities, 4, plan.psoScatter.binCapacities);
+        plan.commands = f.meshletCommands;
+        plan.classCounts = f.meshletClassCounts;
+        plan.candidateCapacity = candidateCapacity;
+        plan.commandCapacity = commandCapacity;
+        plan.workCapacity = extent;
+        plan.psoBlocks = psoBlocks;
+        plan.scanBlocks = scanBlocks;
+        std::copy_n(binOffsets, 4, plan.binOffsets);
+        std::copy_n(binCapacities, 4, plan.binCapacities);
+        return true;
+    }
+
     // Register the actual verdict allocation as a render-graph compute output.
     // BDA accesses are otherwise invisible to render-graph dependency tracking.
     [[nodiscard]] smvk::BufferHandle VerdictBuffer(uint32_t flight) const {
@@ -945,6 +1150,21 @@ class CandidateValidator {
         smvk::Holder<smvk::BufferHandle> indirectArgs{}, indirectVerified{};
         smvk::Holder<smvk::BufferHandle> rasterCommands{};
         size_t rasterSize = 0;
+        // Compact-meshlet chain (production only; the validate fixtures
+        // stay on the four-bin path). All capacities CPU-proved per flight.
+        smvk::Holder<smvk::BufferHandle> meshletCounts{}, meshletOffsets{};
+        smvk::Holder<smvk::BufferHandle> meshletBlockSums{}, meshletBlockBases{};
+        smvk::Holder<smvk::BufferHandle> meshletCandidates{};
+        smvk::Holder<smvk::BufferHandle> meshletPsoBlocks{}, meshletPsoBases{};
+        smvk::Holder<smvk::BufferHandle> meshletClassCounts{};
+        smvk::Holder<smvk::BufferHandle> meshletCommands{};
+        size_t meshletCountsSize = 0, meshletOffsetsSize = 0;
+        size_t meshletBlockSumsSize = 0, meshletBlockBasesSize = 0;
+        size_t meshletCandidatesSize = 0;
+        size_t meshletPsoBlocksSize = 0, meshletPsoBasesSize = 0;
+        size_t meshletClassCountsSize = 0, meshletCommandsSize = 0;
+        uint32_t meshletCandidateCapacity = 0;
+        uint32_t meshletCommandCapacity = 0;
         size_t indirectVerifiedSize = 0;
         uint32_t indirectCapacity = 0;
         bool indirectPrepared = false;

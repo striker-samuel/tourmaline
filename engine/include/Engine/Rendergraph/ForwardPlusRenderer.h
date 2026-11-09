@@ -104,6 +104,28 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
                                smvk::ShaderProgram maskedGbuffer,
                                bool hasMasked,
                                bool hasMaskedDoubleSided);
+    // Compact-meshlet twin: four bins at binOffsets, each drawn with the
+    // EXACT GPU survivor count read by the device (DrawIndexedIndirectCount
+    // against classCounts[bin]) — the reserved tail beyond the count is
+    // never read. commandCount is the total reserved capacity (layout
+    // validation only); the logical hints must cover BOTH the command
+    // buffer and the device-read count buffer.
+    [[nodiscard]] bool AppendGpuSceneCompactPrepass(smvk::FrameContext& fc,
+                                                    smvk::ShaderProgram rasterDepth,
+                                                    smvk::BufferHandle indirect,
+                                                    smvk::LogicalBufferHandle indirectLogical,
+                                                    smvk::LogicalBufferHandle countLogical,
+                                                    smvk::BufferHandle countBuffer,
+                                                    smvk::LogicalBufferHandle workLogical,
+                                                    const uint32_t binOffsets[4],
+                                                    const uint32_t binCapacities[4],
+                                                    uint32_t commandCount,
+                                                    const tour::gpu_scene::RasterVsPush& vertexPush,
+                                                    bool hasDoubleSided,
+                                                    smvk::ShaderProgram maskedDepth,
+                                                    smvk::ShaderProgram maskedGbuffer,
+                                                    bool hasMasked,
+                                                    bool hasMaskedDoubleSided);
     // lightCountOverride: UINT32_MAX (default) = cull fc.fpLightCount
     // lights; any other value limits the light leg (the deferred-shadow
     // pipeline passes 0 — its shading consumes the DS lists, but the decal

@@ -2385,6 +2385,32 @@ class WorldRenderer : public IRenderer {
     std::array<smvk::ShaderProgram, 3> m_gpuSceneWorkScanPrograms{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterBuildModule{};
     smvk::ShaderProgram m_gpuSceneRasterBuildProgram{};
+    // Compact-meshlet chain (dense candidates -> #301 PSO compaction ->
+    // indirect-count bins). Four dedicated kernels + the unchanged #301
+    // scan; the three-stage work scan programs are REUSED over the
+    // meshlet counts.
+    std::array<smvk::Holder<smvk::ShaderModuleHandle>, 4> m_gpuSceneMeshletModules{};
+    std::array<smvk::ShaderProgram, 4> m_gpuSceneMeshletPrograms{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuScenePsoScanModule{};
+    smvk::ShaderProgram m_gpuScenePsoScanProgram{};
+    // Per-frame compact publication state (the frame's meshlet plan; set
+    // when the dense path engages, else the four-bin path runs).
+    bool m_gpuSceneMeshletCompactActive = false;
+    smvk::BufferHandle m_gpuSceneMeshletCommands{};
+    smvk::BufferHandle m_gpuSceneMeshletClassCounts{};
+    uint32_t m_gpuSceneMeshletCandidateCapacity = 0;
+    uint32_t m_gpuSceneMeshletBinOffsets[4] = {};
+    uint32_t m_gpuSceneMeshletBinCapacities[4] = {};
+    // The classCounts buffer is DEVICE-read by the indirect-count draws:
+    // it needs a rendergraph logical like the command buffer itself.
+    std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneMeshletClassCountsBacking{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneMeshletClassCountsLogical{};
+    // Per-flight cull-view upload (origin + 6 relative frustum planes) for
+    // the candidate scatter's conservative sphere/cone tests.
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneMeshletViewBuffers{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterVsModule{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterProgram{};

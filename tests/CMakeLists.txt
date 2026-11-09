@@ -1609,3 +1609,10 @@ target_link_libraries(GpuScenePsoPrefixTests PRIVATE engine)
 set_target_properties(GpuScenePsoPrefixTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_pso_prefix_tests COMMAND GpuScenePsoPrefixTests)
+
+# CPU oracle: dense meshlet expansion -> #301 PSO compaction transactional plan.
+add_executable(GpuSceneMeshletPrefixTests test_gpu_scene_meshlet_prefix.cpp)
+target_link_libraries(GpuSceneMeshletPrefixTests PRIVATE engine)
+set_target_properties(GpuSceneMeshletPrefixTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_meshlet_prefix_tests COMMAND GpuSceneMeshletPrefixTests)
