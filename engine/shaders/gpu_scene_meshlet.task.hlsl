@@ -9,6 +9,12 @@
 
 GPU_PUSH(GsTaskMeshPush, pc);
 groupshared uint gsScan[GS_TASK_THREADS];
+// The task payload is a groupshared object: DXC's SPIR-V backend maps a
+// groupshared variable handed to DispatchMesh() to
+// TaskPayloadWorkgroupEXT (the `in payload` parameter form only works on
+// the DXIL path and rejects the DispatchMesh argument here). The mesh
+// stage reads the same object through its `in payload` parameter.
+groupshared GsTaskPayload gsPayload;
 
 bool SphereVisible(float4 sphere, GpuSceneInstance inst, GsView view) {
     if (!all(isfinite(sphere)) || sphere.w <= 0.0f) return true;
@@ -46,8 +52,7 @@ bool ConeCulled(GsCluster c, GpuSceneInstance inst, GsView view) {
 [shader("amplification")]
 [numthreads(32,1,1)]
 void mainAS(uint3 groupId : SV_GroupID,
-            uint3 threadId : SV_GroupThreadID,
-            out payload GsTaskPayload payload) {
+            uint3 threadId : SV_GroupThreadID) {
     const uint lane=threadId.x;
     const uint groupIndex=groupId.x+groupId.y*pc.taskGridX;
     const GsTaskMeshParams p=pc.params.Get();
@@ -110,13 +115,13 @@ void mainAS(uint3 groupId : SV_GroupID,
     const uint rank=gsScan[lane]-(keep?1u:0u);
     const uint survivorCount=gsScan[GS_TASK_THREADS-1u];
     if (lane==0u) {
-        payload.workSlot=group.workSlot;
-        payload.surviving=survivorCount;
+        gsPayload.workSlot=group.workSlot;
+        gsPayload.surviving=survivorCount;
     }
     if (keep)
-        payload.clusterIds[rank]=clusterId;
+        gsPayload.clusterIds[rank]=clusterId;
 
     GroupMemoryBarrierWithGroupSync();
     // DispatchMesh must be executed uniformly by the entire task group.
-    DispatchMesh(survivorCount,1u,1u,payload);
+    DispatchMesh(survivorCount,1u,1u,gsPayload);
 }
