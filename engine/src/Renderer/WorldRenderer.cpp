@@ -11756,6 +11756,135 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         m_gpuScenePersistentGeometry.AliasCount(fb.frameIndex),
                         rasterPush,
                         rasterCommands);
+                // Task/mesh cutover is all-or-indexed for this revision.
+                // Do not let the task shader silently drop a submesh whose
+                // topology or streams cannot be validated before ownership.
+                tour::gpu_scene::TaskMeshDispatchPlan taskPlan{};
+                bool taskReady = false;
+                if (s_gpuSceneTaskMesh && gpuSceneRasterMode && workReady &&
+                    rasterReady && m_gfxFilterAvailable &&
+                    smvk::SupportsMeshShaders() &&
+                    m_gpuSceneTaskMainProgram.shaderCount == 3 &&
+                    m_gpuSceneTaskDepthProgram.shaderCount == 2 &&
+                    (!m_gpuSceneRasterMaskedBackCount &&
+                     !m_gpuSceneRasterMaskedDoubleSidedCount ||
+                     (m_gpuSceneTaskMaskedDepthProgram.shaderCount == 3 &&
+                      m_gpuSceneTaskMaskedGbufferProgram.shaderCount == 3)) &&
+                    (!fc.ssrGbufferWanted || m_gpuSceneTaskGbufferProgram.shaderCount == 3) &&
+                    std::all_of(m_gpuSceneTaskComputePrograms.begin(),
+                                m_gpuSceneTaskComputePrograms.end(),
+                                [](const smvk::ShaderProgram& p) { return p.shaderCount == 1; })) {
+                    const auto& gfx = m_gfxRenderer.State();
+                    constexpr uint32_t kTaskIndexWords = 65536u * 128u * 3u;
+                    constexpr uint32_t kTaskVertexLimit = 44739242u;
+                    const uint64_t vertexCap64 =
+                        smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
+                    const uint64_t indexCap64 =
+                        smvk::staticVertexFmtHeap.m_staticIndexBlock.Capacity() /
+                        sizeof(uint32_t);
+                    const uint32_t vertexCap =
+                        uint32_t(std::min<uint64_t>(vertexCap64, kTaskVertexLimit));
+                    const uint32_t indexCap =
+                        uint32_t(std::min<uint64_t>(indexCap64, kTaskIndexWords));
+                    bool topologyValid = !gfx.meshes.empty() &&
+                        !gfx.clusters.empty() && !gfx.filterIndices.empty() &&
+                        gfx.clusterIndexBase < indexCap &&
+                        gfx.filterIndices.size() <=
+                            size_t(indexCap - gfx.clusterIndexBase) &&
+                        vertexCap != 0u;
+                    uint32_t worstMeshlets = 0u;
+                    if (topologyValid) {
+                        const auto tables = GpuSceneIndexedTables(gfx);
+                        for (uint32_t meshIndex = 0; meshIndex < gfx.meshes.size(); ++meshIndex) {
+                            const auto& mesh = gfx.meshes[meshIndex];
+                            tour::gpu_scene::IndexedGeometry checked{};
+                            if (!tour::gpu_scene::ResolveIndexedGeometry(
+                                    tables, meshIndex, checked)) {
+                                topologyValid = false;
+                                break;
+                            }
+                            worstMeshlets = std::max(worstMeshlets, mesh.clusterCount);
+                            for (uint32_t c = 0u; c < mesh.clusterCount; ++c) {
+                                const auto& cluster = gfx.clusters[mesh.clusterStart + c];
+                                const uint64_t indexEnd = uint64_t(cluster.indexOffset) +
+                                    uint64_t(cluster.triCount) * 3u;
+                                if (cluster.triCount > 64u ||
+                                    indexEnd > gfx.filterIndices.size()) {
+                                    topologyValid = false;
+                                    break;
+                                }
+                                for (uint64_t j = cluster.indexOffset; j < indexEnd; ++j) {
+                                    if (gfx.filterIndices[size_t(j)] >= vertexCap) {
+                                        topologyValid = false;
+                                        break;
+                                    }
+                                }
+                                if (!topologyValid) break;
+                            }
+                            if (!topologyValid) break;
+                        }
+                    }
+                    if (topologyValid) {
+                        auto& viewBuffer=m_gpuSceneMeshletViewBuffers[fb.frameIndex];
+                        const auto origin=glm::dvec3(m_cameraPositioner.cameraPosition_);
+                        const auto frustum=tour::gpu_scene::LegacyRelativeFrustum(
+                            m_renderViews.Get(mainRenderView), origin);
+                        if (frustum.Valid()) {
+                            if (viewBuffer.empty())
+                                viewBuffer=m_context->CreateBuffer(
+                                    sizeof(tour::gpu_scene::MeshletCullViewData),
+                                    smvk::BufferType_Storage,
+                                    "GPU scene task mesh cull view");
+                            if (!viewBuffer.empty()) {
+                                tour::gpu_scene::MeshletCullViewData viewData{};
+                                viewData.origin=tour::math::SplitDoubleFloat(origin);
+                                for (uint32_t p=0u;p<6u;++p)
+                                    viewData.planes[p]=glm::vec4(frustum.planes[p]);
+                                m_context->UploadDataToBuffer(
+                                    viewBuffer, &viewData, sizeof(viewData),
+                                    smvk::PipelineStageBit_Task,
+                                    smvk::AccessFlags::ShaderRead);
+                                tour::gpu_scene::TaskMeshInputs inputs{};
+                                inputs.work=rasterPush.work;
+                                inputs.sceneOffsets=rasterPush.workOffsets;
+                                inputs.meshes=m_context->GetBufferDeviceAddress(gfx.meshesBuffer);
+                                inputs.aliases=m_gpuScenePersistentGeometry.AliasAddress(
+                                    *m_context, fb.frameIndex);
+                                inputs.geometry=m_gpuScenePersistentGeometry.DeviceAddress(
+                                    *m_context, fb.frameIndex);
+                                inputs.clusters=m_context->GetBufferDeviceAddress(gfx.clusterBuffer);
+                                inputs.instances=m_gpuSceneUploader.DeviceAddresses(
+                                    *m_context, fb.frameIndex).instances;
+                                inputs.cullView=m_context->GetBufferDeviceAddress(viewBuffer);
+                                inputs.rasterView=m_gpuSceneRasterView.DeviceAddress(
+                                    *m_context, fb.frameIndex);
+                                inputs.indices=m_context->GetBufferDeviceAddress(
+                                    smvk::staticVertexFmtHeap.m_staticIndexBuffer);
+                                inputs.positions=m_context->GetBufferDeviceAddress(
+                                    smvk::staticVertexFmtHeap.m_staticVertexPosBuffer);
+                                inputs.shading=m_context->GetBufferDeviceAddress(
+                                    smvk::staticVertexFmtHeap.m_staticVertexShadingBuffer);
+                                inputs.sceneCandidateCount=rasterPush.candidateCount;
+                                inputs.workCapacity=rasterPush.binStride;
+                                inputs.meshCount=uint32_t(gfx.meshes.size());
+                                inputs.aliasCount=m_gpuScenePersistentGeometry.AliasCount(
+                                    fb.frameIndex);
+                                inputs.geometryCount=m_gpuScenePersistentGeometry.Count(
+                                    fb.frameIndex);
+                                inputs.clusterCount=uint32_t(gfx.clusters.size());
+                                inputs.instanceCount=uint32_t(m_gpuSceneDatabase.instances.Size());
+                                inputs.indexBase=gfx.clusterIndexBase;
+                                inputs.indexWordCapacity=indexCap;
+                                inputs.vertexCapacity=vertexCap;
+                                inputs.worstMeshlets=worstMeshlets;
+                                inputs.coneEnabled=m_wireframe ? 0u : 1u;
+                                taskReady=m_gpuSceneTaskMeshRuntime.Prepare(
+                                    *m_context, *m_rendergraph, fb.frameIndex,
+                                    inputs, taskPlan);
+                            }
+                        }
+                    }
+                }
                 tour::gpu_scene::SceneIndirectArgsPush indirectArgs{};
                 tour::gpu_scene::SceneIndirectVerifyPush indirectVerify{};
                 smvk::BufferHandle indirectBuffer{};
