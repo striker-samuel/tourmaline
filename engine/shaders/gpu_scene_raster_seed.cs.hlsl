@@ -6,7 +6,7 @@
 #include "gpu_platform.hlsli"
 
 #define GS_MAX_WORK 1048576u
-#define GS_MAX_COMMANDS (2u * GS_MAX_WORK)
+#define GS_MAX_COMMANDS (4u * GS_MAX_WORK)
 #define GS_MAX_INSTANCES 4194304u
 struct RasterIndirectCmd { uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset; uint firstInstance; };
 struct RasterCmds { RasterIndirectCmd rows[GS_MAX_COMMANDS]; };
@@ -26,7 +26,7 @@ struct RasterSeedPush {
     uint historyValid;
 };
 GPU_PUSH(RasterSeedPush, pc);
-[numthreads(64, 1, 1)]
+[numthreads(128, 1, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID) {
     const uint i = tid.x;
     if (i >= pc.commandCapacity || i >= GS_MAX_COMMANDS) return;

@@ -19,10 +19,13 @@
 namespace tour::gpu_scene {
 
 inline constexpr uint32_t kMaxRasterDrawGroups = 65535;
-// Fixed PSO bins keep one indirect submission per class, independent of
-// material or draw count. Bin zero backface-culls; bin one renders both sides.
-inline constexpr uint32_t kRasterPipelineClassCount = 2;
+// Four fixed PSO classes: bit 0 = double-sided, bit 1 = alpha-mask.
+// Each class occupies one contiguous indirect range; each work record
+// selects exactly one class, preserving its original firstInstance slot.
+inline constexpr uint32_t kRasterPipelineClassCount = 4;
 inline constexpr uint32_t kRasterPipelineDoubleSided = 1;
+inline constexpr uint32_t kRasterPipelineMasked = 2;
+inline constexpr uint32_t kRasterPipelineMaskedDoubleSided = 3;
 
 
 // Immutable, GPU-addressable indexed-geometry descriptor. One per compatible
@@ -176,7 +179,7 @@ static_assert(sizeof(RasterWorkDrawBuildPush) == 48);
 static_assert(offsetof(RasterIndirectCommand, firstInstance) == 16);
 static_assert(std::is_trivially_copyable_v<RasterIndirectCommand>);
 
-// CPU oracle for the fixed two-bin GPU indirect builder. A command slot
+// CPU oracle for the fixed four-bin GPU indirect builder. A command slot
 // belongs to exactly one bin; firstInstance always denotes the ORIGINAL
 // work index, not the PSO-sorted command index.
 [[nodiscard]] inline RasterIndirectCommand MakeRasterBinnedCommand(

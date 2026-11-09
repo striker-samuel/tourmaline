@@ -10796,7 +10796,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_RASTER");
         return !e || std::strcmp(e, "0") != 0;
     }();
-    if (s_gpuSceneRaster && m_gpuSceneRasterProgram.shaderCount != 2) {
+    if (s_gpuSceneRaster &&
+        (m_gpuSceneRasterProgram.shaderCount != 2 ||
+         m_gpuSceneRasterMaskedDepthProgram.shaderCount != 2 ||
+         m_gpuSceneRasterMaskedGbufferProgram.shaderCount != 2)) {
         try {
             if (m_gpuSceneRasterVsModule.empty())
                 m_gpuSceneRasterVsModule = m_context->CreateShaderModule(
@@ -10824,6 +10827,49 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                       .entryPoint = "mainPS",
                                       .stage = smvk::ShaderStage::Fragment};
                     m_gpuSceneRasterGbufferProgram = {.shaders = {vs, gbFs}, .shaderCount = 2};
+                }
+                if (m_gpuSceneRasterMaskedDepthFsModule.empty())
+                    m_gpuSceneRasterMaskedDepthFsModule = m_context->CreateShaderModule(
+                        smvk::shaders::Read(
+                            "content/shaders/gpu_scene_masked_depth.frag.hlsl.spv"),
+                        "gpuSceneRasterMaskedDepthFS");
+                if (m_gpuSceneRasterMaskedGbufferFsModule.empty())
+                    m_gpuSceneRasterMaskedGbufferFsModule = m_context->CreateShaderModule(
+                        smvk::shaders::Read(
+                            "content/shaders/gpu_scene_gbuffer_masked.frag.hlsl.spv"),
+                        "gpuSceneRasterMaskedGbufferFS");
+                if (!m_gpuSceneRasterMaskedDepthFsModule.empty()) {
+                    smvk::Shader maskFs{.module = m_gpuSceneRasterMaskedDepthFsModule,
+                                        .entryPoint = "mainPS",
+                                        .stage = smvk::ShaderStage::Fragment};
+                    m_gpuSceneRasterMaskedDepthProgram =
+                        {.shaders = {vs, maskFs}, .shaderCount = 2};
+                }
+                if (!m_gpuSceneRasterMaskedGbufferFsModule.empty()) {
+                    smvk::Shader gbMaskedFs{.module = m_gpuSceneRasterMaskedGbufferFsModule,
+                                           .entryPoint = "mainPS",
+                                           .stage = smvk::ShaderStage::Fragment};
+                    m_gpuSceneRasterMaskedGbufferProgram =
+                        {.shaders = {vs, gbMaskedFs}, .shaderCount = 2};
+                }
+                // Optional A2C Main variant: preserves the masked material
+                // coverage contract under TOURMALINE_A2C and 2x MSAA.
+                try {
+                    if (m_gpuSceneRasterMaskedA2cFsModule.empty())
+                        m_gpuSceneRasterMaskedA2cFsModule = m_context->CreateShaderModule(
+                            smvk::shaders::Read(
+                                "content/shaders/gpu_scene_masked_a2c.frag.hlsl.spv"),
+                            "gpuSceneRasterMaskedA2CFS");
+                    if (!m_gpuSceneRasterMaskedA2cFsModule.empty()) {
+                        smvk::Shader a2cFs{
+                            .module = m_gpuSceneRasterMaskedA2cFsModule,
+                            .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+                        m_gpuSceneRasterMaskedA2cProgram =
+                            {.shaders = {vs, a2cFs}, .shaderCount = 2};
+                    }
+                } catch (...) {
+                    // Same nonfatal policy as the legacy default_lit_a2c
+                    // twin: keep the alpha-discard raster variant.
                 }
             }
         } catch (...) {
@@ -10897,12 +10943,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // destroy it while a current-frame submission can query it.
             uint32_t compatibleCount = 0;
             uint32_t doubleSidedCount = 0;
+            uint32_t maskedBackCount = 0;
+            uint32_t maskedDoubleSidedCount = 0;
             const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
             constexpr uint32_t requiredFlags =
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                 smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
             constexpr uint32_t forbiddenFlags =
-                smvk::IteratorFlagBit_Masked | smvk::IteratorFlagBit_Transparent;
+                smvk::IteratorFlagBit_Transparent;
             // KD tally (parallel to the chain below, never replacing it):
             // count the FIRST rejecting gate group per item - 1 sync,
             // 2 db-ready, 3 flags, 4 material, 5 node/mesh, 6 lod/geometry,
@@ -10922,7 +10970,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase, instance) &&
                     (item.flags & requiredFlags) == requiredFlags &&
                     (item.flags & forbiddenFlags) == 0 &&
-                    item.material != smvk::World::kInvalidIndex && item.materialInstance == 0 &&
+                    item.material != smvk::World::kInvalidIndex &&
+                    m_world->GetMaterial(item.material) != nullptr &&
+                    item.materialInstance == 0 &&
                     m_world->MaterialUserData(item.material) == 0 &&
                     !m_gfxRenderer.MaterialProjectFamily(item.material) &&
                     !m_gfxRenderer.MaterialLayered(item.material) &&
@@ -10993,7 +11043,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // class. Count only admitted sources, never legacy ones.
                 if (compatible) {
                     const smvk::Material* m = m_world->GetMaterial(item.material);
-                    doubleSidedCount += m && m->doubleSided ? 1u : 0u;
+                    const bool masked =
+                        (item.flags & smvk::IteratorFlagBit_Masked) != 0;
+                    const bool twoSided = m && m->doubleSided;
+                    doubleSidedCount += !masked && twoSided ? 1u : 0u;
+                    maskedBackCount += masked && !twoSided ? 1u : 0u;
+                    maskedDoubleSidedCount += masked && twoSided ? 1u : 0u;
                 }
                 // KD tally: the mirror tracks the NEW chain (double-sided
                 // is admitted + binned above, no longer a group-4 reject).
@@ -11043,6 +11098,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::span<tour::gpu_scene::RasterOwnershipEntry>(m_gpuSceneRasterEntries, total));
             m_gpuSceneRasterCompatibleCount = snapshotValid ? compatibleCount : 0u;
             m_gpuSceneRasterDoubleSidedCount = snapshotValid ? doubleSidedCount : 0u;
+            m_gpuSceneRasterMaskedBackCount = snapshotValid ? maskedBackCount : 0u;
+            m_gpuSceneRasterMaskedDoubleSidedCount =
+                snapshotValid ? maskedDoubleSidedCount : 0u;
             m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount;
             m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
             if (s_kdElig)
@@ -11071,6 +11129,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneRasterEligible = false;
         m_gpuSceneRasterCompatibleCount = 0;
         m_gpuSceneRasterDoubleSidedCount = 0;
+        m_gpuSceneRasterMaskedBackCount = 0;
+        m_gpuSceneRasterMaskedDoubleSidedCount = 0;
         m_gpuSceneRasterLegacyCount = m_world ? uint32_t(m_world->drawItems.size()) : 0u;
         m_gpuSceneRasterOwnership.Reset();
         // Transient publication failures must not keep stale eligibility.
@@ -11211,7 +11271,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // Sampling once per 120 frames bounds the debug CPU oracle/readback.
     const bool gpuSceneRasterMode =
         s_gpuSceneRaster && !s_gpuSceneValidate && m_gpuSceneRasterEligible &&
-        m_gpuSceneRasterProgram.shaderCount == 2 && !ShaderLodActive() && !m_wireframe &&
+        m_gpuSceneRasterProgram.shaderCount == 2 &&
+        ((m_gpuSceneRasterMaskedBackCount + m_gpuSceneRasterMaskedDoubleSidedCount) == 0 ||
+         (m_gpuSceneRasterMaskedDepthProgram.shaderCount == 2 &&
+          m_gpuSceneRasterMaskedGbufferProgram.shaderCount == 2)) &&
+        !ShaderLodActive() && !m_wireframe &&
         m_debugView == ViewMode::Lit && GetActiveGIVariant() == engine::GIVariant::None;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
     // downstream only names its own conditions - this names every reason
@@ -11802,7 +11866,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             cmd.BindComputePipeline(rasterProgram);
                             cmd.PushConstants(
                                 0, sizeof(rasterPush), &rasterPush, smvk::ShaderStage::Compute);
-                            cmd.Dispatch((rasterPush.commandCapacity + 63u) / 64u, 1, 1);
+                            cmd.Dispatch((rasterPush.commandCapacity + 127u) / 128u, 1, 1);
                         }
                         if (!indirectReady)
                             return;
@@ -12988,7 +13052,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     if (s_gpuSceneTemporal && m_gpuSceneRasterDrawActive && temporalProgramsReady &&
         m_gfxFilterAvailable && temporalCommands != 0 && temporalSlots != 0 &&
-        temporalCommands <= 2u * 1048576u && temporalSlots <= 4194304u) {
+        temporalCommands <= 4u * 1048576u && temporalSlots <= 4194304u) {
         const uint32_t previousFlight = m_gpuSceneRasterLastHistoryFlight;
         gpuHistoryValid =
             previousFlight < smvk::limits::MaxFramesInFlight &&
@@ -13172,7 +13236,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             pass.SetRecordingFunc([program, seedPush](smvk::CommandBuffer& cmd) mutable {
                 cmd.BindComputePipeline(program);
                 cmd.PushConstants(0, sizeof(seedPush), &seedPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((seedPush.commandCapacity + 63u) / 64u, 1, 1);
+                cmd.Dispatch((seedPush.commandCapacity + 127u) / 128u, 1, 1);
             });
         }
     }
@@ -13319,7 +13383,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // culling reading an uninitialized dedicated Hi-Z depth target.
     if (gpuTemporalReady &&
         (m_gpuSceneRasterDepthProgram.shaderCount != 1 || fc.hizDepthView.empty() ||
-         (fc.ssrGbufferWanted && m_gpuSceneRasterGbufferProgram.shaderCount != 2))) {
+         (fc.ssrGbufferWanted && m_gpuSceneRasterGbufferProgram.shaderCount != 2) ||
+          ((m_gpuSceneRasterMaskedBackCount + m_gpuSceneRasterMaskedDoubleSidedCount) != 0 &&
+           (m_gpuSceneRasterMaskedDepthProgram.shaderCount != 2 ||
+            (fc.ssrGbufferWanted &&
+             m_gpuSceneRasterMaskedGbufferProgram.shaderCount != 2))))) {
         gpuTemporalReady = false;
         m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
     }
@@ -13437,7 +13505,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                    temporalCommands,
                                                    seedVsPush,
                                                    /*hizOccluder=*/true,
-                                                   m_gpuSceneRasterDoubleSidedCount != 0);
+                                                   m_gpuSceneRasterDoubleSidedCount != 0,
+                                                   m_gpuSceneRasterMaskedDepthProgram,
+                                                   m_gpuSceneRasterMaskedGbufferProgram,
+                                                   m_gpuSceneRasterMaskedBackCount != 0,
+                                                   m_gpuSceneRasterMaskedDoubleSidedCount != 0);
             if (!seedRecorded)
                 gpuTemporalReady = false;
             // Prime MAIN depth/G-buffer with the same prev-visible seed.
@@ -13456,7 +13528,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                        temporalCommands,
                                                        seedVsPush,
                                                        /*hizOccluder=*/false,
-                                                       m_gpuSceneRasterDoubleSidedCount != 0);
+                                                       m_gpuSceneRasterDoubleSidedCount != 0,
+                                                       m_gpuSceneRasterMaskedDepthProgram,
+                                                       m_gpuSceneRasterMaskedGbufferProgram,
+                                                       m_gpuSceneRasterMaskedBackCount != 0,
+                                                       m_gpuSceneRasterMaskedDoubleSidedCount != 0);
                 if (!primed)
                     gpuTemporalReady = false;
                 else
@@ -13530,7 +13606,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             gate.SetRecordingFunc([hizProgram, hizPush](smvk::CommandBuffer& cmd) mutable {
                 cmd.BindComputePipeline(hizProgram);
                 cmd.PushConstants(0, sizeof(hizPush), &hizPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((hizPush.commandCapacity + 63u) / 64u, 1, 1);
+                cmd.Dispatch((hizPush.commandCapacity + 127u) / 128u, 1, 1);
             });
             // Publish only actually surviving GPU work, never stale work
             // slots or CPU draw IDs. A strict shader barrier separates
@@ -13561,12 +13637,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 clearPush.mode = 0u;
                 cmd.BindComputePipeline(historyProgram);
                 cmd.PushConstants(0, sizeof(clearPush), &clearPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((historyPush.historySlots + 63u) / 64u, 1, 1);
+                cmd.Dispatch((historyPush.historySlots + 127u) / 128u, 1, 1);
                 cmd.EmitGlobalMemoryBarrier();
                 tour::gpu_scene::RasterHistoryPush commitPush = historyPush;
                 commitPush.mode = 1u;
                 cmd.PushConstants(0, sizeof(commitPush), &commitPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((historyPush.commandCapacity + 63u) / 64u, 1, 1);
+                cmd.Dispatch((historyPush.commandCapacity + 127u) / 128u, 1, 1);
             });
             m_gpuSceneRasterLastHistoryFlight = temporalFlight;
             m_gpuSceneRasterHistoryWorld = m_world;
@@ -13618,7 +13694,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneRasterDrawCapacity,
                     tail,
                     /*hizOccluder=*/false,
-                    m_gpuSceneRasterDoubleSidedCount != 0);
+                    m_gpuSceneRasterDoubleSidedCount != 0,
+                    m_gpuSceneRasterMaskedDepthProgram,
+                    m_gpuSceneRasterMaskedGbufferProgram,
+                    m_gpuSceneRasterMaskedBackCount != 0,
+                    m_gpuSceneRasterMaskedDoubleSidedCount != 0);
                 gpuDepthPrimed = remainderPrimed;
                 fc.gpuSceneDepthPrimed = gpuDepthPrimed;
             }
@@ -14626,6 +14706,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     const bool sceneRasterActive = m_gpuSceneRasterDrawActive;
     const bool sceneRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0;
+    const bool sceneRasterMasked = m_gpuSceneRasterMaskedBackCount != 0;
+    const bool sceneRasterMaskedTwoSided = m_gpuSceneRasterMaskedDoubleSidedCount != 0;
     const smvk::BufferHandle sceneRasterCommands = m_gpuSceneRasterIndirect;
     const uint32_t sceneRasterCommandCount = m_gpuSceneRasterDrawCapacity;
     const tour::gpu_scene::RasterVsPush sceneRasterVsPush{
@@ -14641,6 +14723,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                gfxSlot,
                                sceneRasterActive,
                                sceneRasterTwoSided,
+                               sceneRasterMasked,
+                               sceneRasterMaskedTwoSided,
                                sceneRasterCommands,
                                sceneRasterCommandCount,
                                sceneRasterVsPush,
@@ -15078,7 +15162,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             constexpr uint32_t kChunk = 65535;
             // Two fixed contiguous PSO-class ranges; firstInstance stays
             // the original work index, independent of command order.
-            const uint32_t binStride = sceneRasterCommandCount / 2u;
+            const uint32_t binStride =
+                sceneRasterCommandCount / tour::gpu_scene::kRasterPipelineClassCount;
             const auto drawBin = [&](uint32_t bin) {
                 const uint32_t base = bin * binStride;
                 for (uint32_t first = 0; first < binStride; first += kChunk) {
@@ -15101,6 +15186,31 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        msaaSettings,
                                        smvk::RasterSettings{.cullMode = smvk::CullMode::None});
                 drawBin(1u);
+            }
+            // The lit FS already applies the material's baseColor texture
+            // alpha cutoff, using the flat per-work material ID at location 7.
+            const bool sceneMaskedA2c =
+                useMsaa && m_msaaAlphaToCoverage &&
+                m_gpuSceneRasterMaskedA2cProgram.shaderCount == 2;
+            auto& sceneMaskedProgram =
+                sceneMaskedA2c ? m_gpuSceneRasterMaskedA2cProgram : m_gpuSceneRasterProgram;
+            const auto sceneMaskedMsaa =
+                sceneMaskedA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
+            if (sceneRasterMasked) {
+                cmd.BindRenderPipeline(sceneMaskedProgram,
+                                       smvk::VertexLayoutId::Static,
+                                       opaqueDepth, noStencil,
+                                       smvk::BlendSettings::Opaque(), sceneMaskedMsaa,
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+                drawBin(2u);
+            }
+            if (sceneRasterMaskedTwoSided) {
+                cmd.BindRenderPipeline(sceneMaskedProgram,
+                                       smvk::VertexLayoutId::Static,
+                                       opaqueDepth, noStencil,
+                                       smvk::BlendSettings::Opaque(), sceneMaskedMsaa,
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                drawBin(3u);
             }
         }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----

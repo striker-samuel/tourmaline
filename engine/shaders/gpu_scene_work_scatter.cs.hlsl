@@ -14,8 +14,8 @@ struct Submeshes { GpuSceneSubmeshRow rows[GS_MAX_ROWS]; };
 struct WorkRow { uint4 identity; uint4 detail; };
 // identity: instance slot, instance generation, registered geometry, material.
 // detail: selected LOD index, persistent submesh slot, raster class, pass mask.
-// raster class 0 = backface culling, 1 = double-sided/no culling.
-// This remains passive until the matching PSO-bin dispatch is wired.
+// raster classes: 0 opaque/back, 1 opaque/two-sided,
+// 2 masked/back, 3 masked/two-sided. One bin per work slot.
 struct WorkOutput { WorkRow rows[GS_MAX_WORK]; };
 struct Push {
     GPU_PTR_READ(Choices) choices;

@@ -55,6 +55,9 @@ inline constexpr uint32_t MeshFlagCompleteBounds = 1u << 0;
 // iterator flags currently occupy bits 0..11. Never encode this on a
 // shared Mesh/Lod row: instances of one mesh can use distinct materials.
 inline constexpr uint32_t InstanceFlagDoubleSided = 1u << 12;
+// World::IteratorFlagBit_Masked = 1u << 10; preserve the source's
+// material alpha-mode classification on the persistent instance.
+inline constexpr uint32_t InstanceFlagMasked = 1u << 10;
 
 GPU_STRUCT_NAME(GpuSceneLod)
 struct alignas(16) Lod {

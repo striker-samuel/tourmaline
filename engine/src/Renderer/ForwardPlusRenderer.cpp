@@ -456,7 +456,11 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
     uint32_t commandCount,
     const tour::gpu_scene::RasterVsPush& vertexPush,
     bool hizOccluder,
-    bool hasDoubleSided) {
+    bool hasDoubleSided,
+    smvk::ShaderProgram maskedDepth,
+    smvk::ShaderProgram maskedGbuffer,
+    bool hasMasked,
+    bool hasMaskedDoubleSided) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || (rasterDepth.shaderCount != 1 && rasterDepth.shaderCount != 2))
         return false;
@@ -470,6 +474,12 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
                            !fc.gbufferView.empty() && !fc.gbuffer2View.empty();
     // A requested G-buffer must not silently render depth alone.
     if (!hizOccluder && fc.ssrGbufferWanted && !gbufferOn)
+        return false;
+    // Masked depth always needs a fragment shader, even on the dedicated
+    // Hi-Z seed target. Every color/depth path must agree on alpha holes.
+    if ((hasMasked || hasMaskedDoubleSided) &&
+        (maskedDepth.shaderCount != 2 ||
+         (gbufferOn && maskedGbuffer.shaderCount != 2)))
         return false;
     smvk::ResourceManager& ctx = *fc.ctx;
     smvk::RenderGraph& rg = *fc.rg;
@@ -502,7 +512,9 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
     }
     const IRenderer::PushConstants scenePush = fc.pc;
     pass.SetRecordingFunc(
-        [rasterDepth, scenePush, indirect, commandCount, vertexPush, hasDoubleSided](
+        [rasterDepth, maskedDepth, maskedGbuffer, gbufferOn,
+         scenePush, indirect, commandCount, vertexPush,
+         hasDoubleSided, hasMasked, hasMaskedDoubleSided](
             smvk::CommandBuffer& cmd) mutable {
             if (!commandCount)
                 return; // the pass still clears depth for empty views
@@ -524,7 +536,8 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
             // ranges. One back-cull PSO and, only when needed, one CullNone
             // PSO handle all draws in this prepass/seed.
             constexpr uint32_t kChunk = 65535u;
-            const uint32_t stride = commandCount / 2u;
+            const uint32_t stride =
+                commandCount / tour::gpu_scene::kRasterPipelineClassCount;
             const auto drawBin = [&](uint32_t bin) {
                 const uint32_t base = bin * stride;
                 for (uint32_t first = 0; first < stride; first += kChunk) {
@@ -548,6 +561,35 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
                     smvk::MSAASettings{},
                     smvk::RasterSettings{.cullMode = smvk::CullMode::None});
                 drawBin(1u);
+            }
+            // Masked bins use the same alpha factor/texture/cutoff as
+            // legacy shadow_rev/gbuffer_masked and Main gfxmesh_lit.
+            // One PSO per class; never a per-material bind.
+            smvk::ShaderProgram maskedProgram =
+                gbufferOn ? maskedGbuffer : maskedDepth;
+            if (hasMasked) {
+                cmd.BindRenderPipeline(
+                    maskedProgram, smvk::VertexLayoutId::Static,
+                    smvk::DepthSettings{
+                        .depthFunc = smvk::CompareOp::GreaterEqual,
+                        .writeEnable = true,
+                        .depthTestEnable = true},
+                    smvk::StencilSettings{}, smvk::BlendSettings{},
+                    smvk::MSAASettings{},
+                    smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+                drawBin(2u);
+            }
+            if (hasMaskedDoubleSided) {
+                cmd.BindRenderPipeline(
+                    maskedProgram, smvk::VertexLayoutId::Static,
+                    smvk::DepthSettings{
+                        .depthFunc = smvk::CompareOp::GreaterEqual,
+                        .writeEnable = true,
+                        .depthTestEnable = true},
+                    smvk::StencilSettings{}, smvk::BlendSettings{},
+                    smvk::MSAASettings{},
+                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                drawBin(3u);
             }
         });
     return true;

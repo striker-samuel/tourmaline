@@ -15,7 +15,7 @@
 #include "gpu_platform.hlsli"
 
 #define GS_RASTER_MAX_WORK     1048576u
-#define GS_RASTER_MAX_COMMANDS (2u * GS_RASTER_MAX_WORK)
+#define GS_RASTER_MAX_COMMANDS (4u * GS_RASTER_MAX_WORK)
 #define GS_RASTER_MAX_GEO      65535u
 #define GS_RASTER_MAX_CANDIDATES 1048576u
 #define GS_INVALID            0xffffffffu
@@ -51,7 +51,7 @@ struct RasterWorkDrawBuildPush {
 };
 GPU_PUSH(RasterWorkDrawBuildPush, pc);
 
-[numthreads(64, 1, 1)]
+[numthreads(128, 1, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID) {
     const uint i = tid.x;
     if (i >= pc.commandCapacity || i >= GS_RASTER_MAX_COMMANDS)
@@ -67,7 +67,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // outside the reserved command range, including an overflowed prefix.
     const uint stride = pc.binStride;
     if (stride != 0u && stride <= GS_RASTER_MAX_WORK &&
-        pc.commandCapacity == 2u * stride &&
+        pc.commandCapacity == 4u * stride &&
         pc.candidateCount <= GS_RASTER_MAX_CANDIDATES) {
         const uint bin = i / stride;
         const uint workIndex = i % stride;
