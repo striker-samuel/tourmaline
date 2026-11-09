@@ -70,7 +70,10 @@ set_target_properties(EditorGameSessionTests PROPERTIES
 add_test(NAME editor_game_session_tests COMMAND EditorGameSessionTests)
 
 # The public C runtime header really compiles as C11 and links to
-# Tourmaline's existing C++ project session / catalog gate.
+# Tourmaline's existing C++ project session / catalog gate. LOCAL-ONLY:
+# the included project_c.h belongs to the untracked samples/04_project_game
+# (see the root CMakeLists EXISTS note) - fresh clones skip this test.
+if(EXISTS "${CMAKE_SOURCE_DIR}/samples/04_project_game/project/project_c.h")
 add_executable(RuntimeCTests test_runtime_c.c)
 set_target_properties(RuntimeCTests PROPERTIES
     LINKER_LANGUAGE CXX
@@ -79,6 +82,7 @@ set_target_properties(RuntimeCTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 target_link_libraries(RuntimeCTests PRIVATE tourmaline_apphost)
 add_test(NAME runtime_c_tests COMMAND RuntimeCTests)
+endif()
 
 # Headless editor bake progress parser and live-file tee regression.
 add_executable(EditorBakeFeedbackTests test_editor_bake_feedback.cpp)
@@ -1209,7 +1213,9 @@ add_test(NAME shader_hot_reload_tests COMMAND ShaderHotReloadTests)
 add_dependencies(ProjectPipelineTests Cook GiBaker Pak)
 
 # The BUNDLED-PROJECT END-TO-END ACCEPTANCE GATE (CPU-only): the
-# checked-in samples/04_project_game content driven through the
+# LOCAL-ONLY samples/04_project_game content (untracked + git-ignored,
+# kept on the author's machine — see the root CMakeLists EXISTS note;
+# fresh clones skip this gate) driven through the
 # CONTRIBUTOR flow — Project.exe build (the real CLI + the real
 # subprocess stage adapter: Cook/GiBaker/Pak spawn exactly as on a
 # contributor's machine) cooks + publishes the content-addressed paks
@@ -1219,8 +1225,9 @@ add_dependencies(ProjectPipelineTests Cook GiBaker Pak)
 # runtime fold (the compiled-catalog contract GameProject.exe checks at
 # boot), every VFS-servable [ids] row reading its bytes, and a scene
 # load through the public clusterLoader seam. The GameProject EXE
-# itself compiles in every top-level configure (CI build verification
-# covers that leg); its GPU launch stays dev-side (golden_capture).
+# itself compiles in every top-level configure where the sample exists
+# (its GPU launch stays dev-side, golden_capture).
+if(EXISTS "${CMAKE_SOURCE_DIR}/samples/04_project_game/project/project.tourproj")
 add_executable(ProjectE2eTests test_project_e2e.cpp
 	../app/src/ProjectRuntime.cpp
 	../app/src/ProjectScenes.cpp
@@ -1251,10 +1258,11 @@ add_test(NAME project_e2e_tests COMMAND ProjectE2eTests)
 # Project.exe (the CLI under test) + the stage tools it spawns are
 # build prerequisites, not runtime finds.
 add_dependencies(ProjectE2eTests Project Cook GiBaker Pak)
+tourmaline_stage_sdl3(ProjectE2eTests)
+endif()
 
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 tourmaline_stage_sdl3(AssetTests)
-tourmaline_stage_sdl3(ProjectE2eTests)
 tourmaline_stage_sdl3(SpirvReflectionTests)
 tourmaline_stage_sdl3(GfxFilterTests)
 tourmaline_stage_sdl3(ExposureTests)

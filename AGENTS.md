@@ -827,8 +827,9 @@ material. The seam + transport + instances above are the family-neutral
 base; this is the family layer.
 
 - **The authoring shape**: a project owns ONE hook file
-  (`lit_hooks_project.hlsli` + its `effects/` includes — see
-  `samples/04_project_game/project/content/shaders`) plus THREE-LINE
+  (`lit_hooks_project.hlsli` + its `effects/` includes — see the
+  LOCAL-ONLY sample `samples/04_project_game/project/content/shaders`;
+  untracked + git-ignored, root CMakeLists EXISTS note) plus THREE-LINE
   entry wrappers (`project_lit.frag.hlsl` / `project_lit_a2c.frag.hlsl`
   / `gfxmesh_project_lit.frag.hlsl`) over the engine's extracted glue:
   `engine/shaders/lit_dependencies.hlsli` (the 7 shared includes) +
@@ -864,7 +865,8 @@ base; this is the family layer.
   (`World::FarShadingAt` returns default{}) — the cheap vertex-lit FS
   never runs the hooks — so the effect survives to the farthest cooked
   LOD (the documented v1 cost).
-- **The demo** (`samples/04_project_game`): the `ProjectLitDemo` element
+- **The demo** (LOCAL-ONLY `samples/04_project_game`, untracked +
+  git-ignored): the `ProjectLitDemo` element
   (composed with the audio runtime — RunPakApp has ONE extraElement
   slot) pulses the damage + wetness bits through `SetMaterialUserData`
   on the scene's first opaque material. Headless A/B:
@@ -955,7 +957,9 @@ BUILD VERIFICATION does; the Tests workflow runs the suite — the five
 GPU-window tests excluded on hosted runners: no display / Vulkan ICD).
 
 `project_e2e_tests` is the BUNDLED-PROJECT ACCEPTANCE GATE: the
-checked-in samples/04_project_game project copied to a temp dir, cooked
+LOCAL-ONLY samples/04_project_game project (untracked + git-ignored;
+EXISTS-guarded in tests/CMakeLists — active only where the sample is
+kept, absent from fresh clones and CI) copied to a temp dir, cooked
 and published through the real `Project.exe build` CLI (the subprocess
 stage adapter — Cook/GiBaker/Pak spawn as on a contributor's machine),
 then the deployment halves headless: DeployCheck over every published

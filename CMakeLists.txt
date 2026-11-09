@@ -626,10 +626,17 @@ if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(samples/01_triangle)
   add_subdirectory(samples/02_blur)
   add_subdirectory(samples/03_fuzz) # the target-recreate/deferred-destroy hard fuzzer (see its .cpp header)
-  add_subdirectory(samples/04_project_game) # the content-as-code sample (the generated project.h + the on-demand pak cook)
+  # LOCAL-ONLY sample (untracked + git-ignored: gone from the repo, kept
+  # on the author's machine; fresh clones skip it entirely).
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/samples/04_project_game/CMakeLists.txt")
+    add_subdirectory(samples/04_project_game) # the content-as-code sample (the generated project.h + the on-demand pak cook)
+  endif()
   add_subdirectory(samples/05_grass) # one-million-blade GPU instancing stress sample
   include(CTest)
-  add_subdirectory(samples/05_asteroids) # SpriteSet and native GameUI demo over Sponza
+  # LOCAL-ONLY sample (untracked + git-ignored; see the 04 note above).
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/samples/05_asteroids/CMakeLists.txt")
+    add_subdirectory(samples/05_asteroids) # SpriteSet and native GameUI demo over Sponza
+  endif()
   if(BUILD_TESTING)
     add_subdirectory(tests)
   endif()

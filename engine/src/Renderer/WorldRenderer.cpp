@@ -1659,7 +1659,7 @@ bool WorldRenderer::onAttach() {
     // PROJECT-LIT FAMILY (docs/shader_library_design.md Phase B):
     // the project-authored lit FS twins (project_lit.*.spv — the
     // project's lit_hooks_project.hlsli compiled against the shared
-    // body; see samples/04_project_game). Best-effort: an
+    // body; see the local-only samples/04_project_game). Best-effort: an
     // engine-only deployment has NO family modules and every
     // material simply stays StandardLit (quiet — the expected
     // state); a project family with MISSING VARIANTS is the anomaly

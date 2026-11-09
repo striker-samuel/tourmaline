@@ -349,4 +349,4 @@ regression pins).
   bus), `audiograph.*` in project_pipeline_tests, `room.*` in asset
   tests (the v20 section), `room *` + `volume *` pins in
   scene_table_tests + tour_tests, the sample's compile-time pins
-  (`samples/04_project_game`), and `project_e2e_tests`.
+  (`samples/04_project_game`, local-only), and `project_e2e_tests`.

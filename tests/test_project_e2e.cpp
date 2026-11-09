@@ -4,10 +4,11 @@
 // project_e2e_tests: THE BUNDLED-PROJECT ACCEPTANCE GATE (CPU-only).
 //
 // The gap this test closes: nothing else in the suite builds the
-// CHECKED-IN sample content end to end. test_project_pipeline's
+// bundled sample content end to end. test_project_pipeline's
 // executor battery cooks SYNTHETIC fixtures; pak_host forges paks by
 // hand. This test drives the real contributor flow over
-// samples/04_project_game's checked-in sources:
+// samples/04_project_game's sources (LOCAL-ONLY sample: untracked +
+// git-ignored; the target is EXISTS-guarded in tests/CMakeLists):
 //
 //   1. COPY the sample project tree to a temp dir (a project dir is
 //      SELF-CONTAINED — the copy IS the deployment test's subject).
@@ -188,7 +189,7 @@ int main(int argc, char** argv) {
         g_argv0 = argv[0];
     }
 
-    // ---- 0) locate the checked-in sample + the CLI tool beside us ----
+    // ---- 0) locate the local-only sample + the CLI tool beside us ----
     const fs::path root = FindRepoRoot();
     Check(!root.empty(), "e2e.repo-root-found");
     const fs::path sample = root / "samples/04_project_game/project";

@@ -12,7 +12,8 @@ message(STATUS "APP_DIR = ${APP_DIR}")
 # viewer's own layer (CLI parsing, pak preload/path resolution, world
 # loading + scene prep, the viewer host wiring/lifecycle; see
 # src/Host.h). App.exe is its thin main; PROJECT EXES (the content-as-
-# code sample, samples/04_project_game — and any game built by
+# code sample, samples/04_project_game - local-only, untracked + git-
+# ignored - and any game built by
 # tourmaline_attach_project) link the same host and drive it with their
 # own PakAppConfig (mount the project's paks, load the entry scene by
 # identity from the generated project.h).

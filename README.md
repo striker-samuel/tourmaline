@@ -97,7 +97,7 @@ static_assert(project::Contains(project::textures::stone));
 const auto scene = project::EntryScene;    // typed, stable asset key
 ```
 
-For a complete, compilable example with multi-pak textures and scene-authored audio, see [`samples/04_project_game`](samples/04_project_game). `ProjectScenes` provides ID-based scene replace/additive-load/remove operations; the application host maps those keys to published pak content.
+For a complete, compilable example with multi-pak textures and scene-authored audio, see the local-only sample `samples/04_project_game` (untracked + git-ignored; absent from fresh clones). `ProjectScenes` provides ID-based scene replace/additive-load/remove operations; the application host maps those keys to published pak content.
 
 ## Getting started
 
@@ -232,7 +232,7 @@ The `demo_content` target invokes `tools/fetch_demo_content.ps1` (Windows) or `t
 
 ### Other entry points (after the platform setup above)
 
-**Cook and run the checked-in game sample.** `samples/04_project_game` is a small C++ game with its own source assets and recipe; it does not require the Sponza release. From the **repository root**, with the matching build directory configured, run:
+**Cook and run the game sample (local-only).** `samples/04_project_game` is a small C++ game with its own source assets and recipe; it does not require the Sponza release. NOTE: this sample is untracked + git-ignored (kept on the author's machine; fresh clones skip it and its build targets). From the **repository root**, with the matching build directory configured, run:
 
 ```bash
 # Substitute out/build/x64-Release for Windows or out/build/linux-Release for Linux.

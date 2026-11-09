@@ -593,7 +593,8 @@ inline constexpr const char* kGfxMeshFsPath = "content/shaders/gfxmesh_lit.frag.
 // THE PROJECT-LIT FAMILY (docs/shader_library_design.md Phase B): the
 // project-authored lit FS namespace — the project's
 // lit_hooks_project.hlsli compiled against the SAME shared lit body
-// (see samples/04_project_game/project/content/shaders). These are
+// (see the local-only samples/04_project_game/project/content/shaders).
+// These are
 // NOT engine build outputs (never in engine-shaders.pak): a project
 // compiles them through compile_shaders + tourmaline_project_lit_variants
 // and serves them through the shader library's dev tree or a project

@@ -110,7 +110,7 @@ int Kill(smvk::World* world, Enemy* enemy) {
 **Typed keys vs handles** (`project.h` + `entity_handle.h`): a KEY
 names WHICH ASSET (`SoundKey`/`MeshKey`/... — immutable, shared); a
 HANDLE names WHICH RUNTIME INSTANCE (World-owned, generational). The
-dogfood: `samples/04_project_game` — the `BellTower` audio source in
+dogfood: `samples/04_project_game` (local-only sample) — the `BellTower` audio source in
 `game.tour` rings the shared pak's `bells.wav` (looping, spatialized)
 on scene load; run `GameProject.exe` after `GameProject_paks`.
 

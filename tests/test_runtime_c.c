@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 // Compile this file with a C compiler: no C++ or std::string_view leaks.
+// LOCAL-ONLY dependency: the included project_c.h belongs to the
+// untracked samples/04_project_game (EXISTS-guarded in tests/CMakeLists).
 #include "../samples/04_project_game/project/project_c.h"
 #include <RuntimeC.h>
 #include <assert.h>
