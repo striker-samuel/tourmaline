@@ -5,6 +5,7 @@
 #include <Engine/Renderer/gpu_scene_pages.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
+#include <Engine/Renderer/gpu_scene_raster_meshlets.h>
 #include <Engine/Renderer/gpu_scene_raster_ownership.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>
@@ -100,6 +101,33 @@ int main() {
               cmd.firstInstance == 12345);
         const RasterGroup empty{4, 0, 0, 0};
         CHECK(MakeRasterCommand(geo, empty).instanceCount == 0);
+    }
+    // Per-cluster indexed commands retain their GPU work slot; an invalid
+    // mesh registration never produces a command referencing a foreign mesh.
+    {
+        tour::gfx::Cluster cluster{};
+        cluster.mesh = 7u;
+        cluster.indexOffset = 12u;
+        cluster.triCount = 2u;
+        cluster.boundCenter = glm::vec3(1.0f, 2.0f, 3.0f);
+        cluster.boundRadius = 4.0f;
+        RasterMeshlet candidate{};
+        CHECK(ResolveRasterMeshlet(cluster, 7u, 100u, 42u, false, candidate));
+        CHECK(candidate.firstIndex == 112u && candidate.indexCount == 6u);
+        CHECK(candidate.workSlot == 42u && candidate.flags == 0u);
+        CHECK(candidate.sphere.w == 4.0f);
+        const auto visible = RasterMeshletCommand(candidate, true);
+        CHECK(visible.indexCount == 6u && visible.instanceCount == 1u &&
+              visible.firstIndex == 112u && visible.firstInstance == 42u);
+        const auto culled = RasterMeshletCommand(candidate, false);
+        CHECK(culled.indexCount == 0u && culled.instanceCount == 0u);
+        CHECK(!ResolveRasterMeshlet(cluster, 8u, 100u, 42u, false, candidate));
+        CHECK(candidate.indexCount == 0u);
+        cluster.triCount = 0u;
+        CHECK(!ResolveRasterMeshlet(cluster, 7u, 100u, 42u, false, candidate));
+        cluster.triCount = 2u;
+        CHECK(ResolveRasterMeshlet(cluster, 7u, 100u, 42u, true, candidate));
+        CHECK(candidate.flags == 1u);
     }
     // A Gfx mesh registration is only legal for one indexed command when
     // its cooked cluster index intervals are contiguous and in order.
