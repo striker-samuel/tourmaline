@@ -7,10 +7,12 @@ compaction **for mesh-shader-eligible geometry** with task-stage meshlet
 visibility and mesh-stage triangle emission. Retain the indexed indirect
 renderer for fallback geometry and as a parity baseline.
 
-This first change adds only a deterministic CPU reference for forming
-task workgroups. It does **not** enable a graphics pipeline, new shader,
-or Vulkan draw call. Do not enable this path before the GPU work producer,
-task/mesh shaders, ABI checks, and per-pass parity are implemented.
+The branch now contains experimental GPU task-group count/scatter, indirect
+mesh-task argument generation, task-stage visibility and mesh-stage vertex
+pulling shaders, plus a deterministic CPU workgroup oracle. **None of these
+new shaders is wired into WorldRenderer or Vulkan draw submission yet.**
+Do not enable task/mesh raster ownership before ABI validation, shader
+compilation, RHI/pipeline integration, topology validation and raster parity.
 
 ## Proposed dispatch model
 
@@ -23,17 +25,23 @@ After GPU instance culling, LOD selection, and submesh work generation:
 2. Partition supported per-work meshlet ranges of arbitrary valid size
    into chunks of at most 32 meshlets. Each chunk carries original **work slot**, first cluster,
    cluster count, and raster PSO class.
-3. Produce a dense task-group stream separated into the existing four
-   raster classes. A GPU producer must do this without a CPU per-instance
-   readback. Use a count/prefix/scatter scheme over actual groups, not
-   a fixed 1M x N-task reservation.
-4. Dispatch task groups through device-supported
-   DrawMeshTasksIndirectEXT dimensions. One task group reads up to 32
+3. Produce dense task-group records using
+   `gpu_scene_task_group_count.cs.hlsl`, the existing three-stage work
+   prefix scan, then `gpu_scene_task_group_scatter.cs.hlsl`. The initial
+   GPU implementation has ONE shared task-group stream, not PSO-compacted
+   ranges. It submits four raster-class passes and the task shader rejects
+   groups whose class differs (correct but up to 4x task-stage overhead).
+   Per-class task grouping is a follow-up optimization.
+4. Generate four 12-byte `VkDrawMeshTasksIndirectCommandEXT` commands
+   using `gpu_scene_task_dispatch.cs.hlsl`, with device-supported x/y
+   dimensions and a matching flattened group ID in the task shader.
+   One task group reads up to 32
    clusters, validates persistent instance slot + generation and geometry
    residency, and runs conservative camera-relative sphere/frustum and
    optional cone culling. Its workgroup payload contains surviving cluster
    IDs and original work-slot identity.
-5. EmitMeshTasks(survivors, 1, 1) and let each mesh workgroup decode one
+5. `DispatchMesh(survivors, 1, 1, payload)` in the HLSL amplification
+   shader, then let each mesh workgroup decode one
    cluster, pull shared vertices/indices, transform into the relative view,
    and emit triangles with the existing fragment-shader varying ABI.
 6. Keep masked/double-sided PSO distinctions and separate indexed fallback.
@@ -45,7 +53,14 @@ After GPU instance culling, LOD selection, and submesh work generation:
 - Task shader culling eliminates mesh shader invocations for rejected
   clusters, **not** the initial task-stage scheduling cost.
 - A task shader does not dynamically create global Vulkan draw commands.
-  The task-work dispatch still needs GPU-generated indirect args.
+  The dedicated compute dispatch-args shader generates them beforehand.
+- Local compaction uses a 32-lane shared-memory inclusive scan, which
+  produces stable exclusive ranks without global atomic append. All
+  lanes execute DispatchMesh uniformly.
+- The mesh shader currently emits three vertices per triangle, matching
+  the existing GfxFilter mesh-shader strategy. Indexed metadata/vertex IDs
+  must be validated **before** assigning ownership (shader checks alone
+  are not a complete fallback or bounds proof).
 - A task group must never cross a material/PSO or instance work boundary.
 - The old indexed-compact path's 1,024-meshlet-per-registration gate is
   not a limit for task work: a 4,096-meshlet submesh requires 128 task
@@ -60,6 +75,23 @@ After GPU instance culling, LOD selection, and submesh work generation:
   paths and validate all four PSO classes, both depth and Main.
 - Temporal seed/remainder and HZB history require an explicit correctness
   contract before routing ownership to this path.
+
+## Remaining runtime integration
+
+- Implement and validate `GsTaskMeshParams` C++/SPIR-V ABI and per-flight
+  BDA allocation/publication with render-graph dependencies.
+- Route only validated static submeshes to task/mesh ownership; retain the
+  complete indexed fallback for all others. An unsafe cluster must not
+  be dropped mid-submesh.
+- Create task + mesh graphics pipeline variants and expose/use
+  `vkCmdDrawMeshTasksIndirectEXT` through the Vulkan RHI. Bind each
+  of the four raster classes with its matching fragment/depth pipeline.
+- Publish the task-dispatch x dimension in `GsTaskMeshPush.taskGridX`,
+  and ensure dispatch dimensions do not exceed device limits. Four PSO
+  bins currently traverse the same list and reject mismatched classes.
+- Run DXC/SPIR-V compilation, CTest, and pixel parity on sample/Sponza
+  including depth, masked/double-sided, view-freeze and temporal behavior.
+  No runtime or GPU validation is claimed in this draft.
 
 ## Initial reference tests
 
