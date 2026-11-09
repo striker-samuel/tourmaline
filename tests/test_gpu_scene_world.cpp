@@ -390,6 +390,8 @@ int main() {
     auto stats = bridge.Reconcile(list, db);
     CHECK(stats.created == 2 && stats.meshesCreated == 1);
     CHECK(db.instances.LiveCount() == 2 && db.meshes.LiveCount() == 1);
+    CHECK(stats.psoBudgetOk);
+    CHECK((bridge.PsoWorkUpperBounds() == RasterPsoBudget::Counts{2, 0, 0, 0}));
     const auto ida = bridge.Find(a.instance), idb = bridge.Find(b.instance);
     CHECK(ida && idb && ida != idb);
 
@@ -398,6 +400,21 @@ int main() {
     stats = bridge.Reconcile(list, db);
     CHECK(stats.created == 0 && stats.retired == 0 && stats.updated == 0);
     CHECK(bridge.Find(a.instance) == ida && bridge.Find(b.instance) == idb);
+    CHECK((bridge.PsoWorkUpperBounds() == RasterPsoBudget::Counts{2, 0, 0, 0}));
+
+    // Material/PSO reclassification is incremental, including both raster
+    // flags on a shared mesh instance. Repeated publication is idempotent.
+    list[0].flags = InstanceFlagMasked | InstanceFlagDoubleSided;
+    stats = bridge.Reconcile(list, db);
+    CHECK(stats.updated == 1 && stats.psoBudgetOk);
+    CHECK((bridge.PsoWorkUpperBounds() == RasterPsoBudget::Counts{1, 0, 0, 1}));
+    stats = bridge.Reconcile(list, db);
+    CHECK(stats.updated == 0 && stats.psoBudgetOk);
+    CHECK((bridge.PsoWorkUpperBounds() == RasterPsoBudget::Counts{1, 0, 0, 1}));
+    list[0].flags = 0;
+    stats = bridge.Reconcile(list, db);
+    CHECK(stats.updated == 1 && stats.psoBudgetOk);
+    CHECK((bridge.PsoWorkUpperBounds() == RasterPsoBudget::Counts{2, 0, 0, 0}));
 
     // Only changed global transform creates an upload. The change is
     // coalesced with the original insert until the flight is published.
@@ -416,6 +433,7 @@ int main() {
     stats = bridge.Reconcile(std::span<const SourceRecord>(&b, 1), db);
     CHECK(stats.retired == 1 && stats.meshesRetired == 0);
     CHECK(!db.instances.Contains(ida) && db.instances.Contains(idb));
+    CHECK((bridge.PsoWorkUpperBounds() == RasterPsoBudget::Counts{1, 0, 0, 0}));
 
     // A new incarnation cannot alias the old GPU handle, even if its
     // cluster-local slot and (12-bit) node generation look identical.
@@ -426,6 +444,7 @@ int main() {
     CHECK(stats.created == 1);
     auto fresh = bridge.Find(reloaded.instance);
     CHECK(fresh && fresh != ida && !db.instances.Contains(ida));
+    CHECK((bridge.PsoWorkUpperBounds() == RasterPsoBudget::Counts{2, 0, 0, 0}));
 
     // A new mesh incarnation is separately allocated and the last
     // reference to an old mesh causes its tombstone to be published.
