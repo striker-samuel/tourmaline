@@ -11868,7 +11868,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 inputs.shading=m_context->GetBufferDeviceAddress(
                                     smvk::staticVertexFmtHeap.m_staticVertexShadingBuffer);
                                 inputs.sceneCandidateCount=rasterPush.candidateCount;
-                                inputs.workCapacity=rasterPush.binStride;
+                                inputs.workCapacity=rasterPush.reserved; // C++ mirror: reserved = bin stride
                                 inputs.meshCount=uint32_t(gfx.meshes.size());
                                 inputs.aliasCount=m_gpuScenePersistentGeometry.AliasCount(
                                     fb.frameIndex);
