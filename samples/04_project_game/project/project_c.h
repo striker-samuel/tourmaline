@@ -4,19 +4,17 @@
 #include <Engine/Asset/catalog_c.h>
 
 #define TOUR_PROJECT_ID UINT64_C(0xa100902e)
-#define TOUR_PROJECT_GENERATION UINT64_C(10)
-#define TOUR_PROJECT_GENERATED_AT UINT64_C(1793967263)
-#define TOUR_PROJECT_CATALOG_FINGERPRINT UINT64_C(0x284380f03692325e)
+#define TOUR_PROJECT_GENERATION UINT64_C(11)
+#define TOUR_PROJECT_GENERATED_AT UINT64_C(1794256536)
+#define TOUR_PROJECT_CATALOG_FINGERPRINT UINT64_C(0xa6951a76365c891d)
 #define TOUR_PROJECT_ENTRY_SCENE UINT64_C(0x1000)
 static const char tour_project_name[] = "GameProject";
 
 #define TOUR_PROJECT_SCENE_game UINT64_C(0x1000)
 #define TOUR_PROJECT_TEXTURE_stone UINT64_C(0x2000)
-#define TOUR_PROJECT_MESH_game_2 UINT64_C(0x3001)
+#define TOUR_PROJECT_MESH_game UINT64_C(0x3000)
 #define TOUR_PROJECT_SOUND_bells UINT64_C(0x4000)
 #define TOUR_PROJECT_AUDIOGRAPH_forest UINT64_C(0x7000)
-
-#define TOUR_PROJECT_RETIRED_game UINT64_C(0x3000)
 
 static const tour_c_audio_cue tour_project_cue_forest_calm = {UINT64_C(0x7000), UINT32_C(0)};
 static const tour_c_audio_cue tour_project_cue_forest_storm = {UINT64_C(0x7000), UINT32_C(1)};
@@ -25,16 +23,18 @@ static const tour_c_audio_cue tour_project_cue_forest_storm = {UINT64_C(0x7000),
 static const tour_c_asset_desc tour_project_assets[] = {
     {UINT64_C(0x1000), TOUR_C_KIND_SCENE, "content/scenes/game.tour", ""},
     {UINT64_C(0x2000), TOUR_C_KIND_TEXTURE, "content/models/game/shared/stone.png", ""},
-    {UINT64_C(0x3001), TOUR_C_KIND_MESH, "content/models/game/game.geometry", ""},
+    {UINT64_C(0x3000), TOUR_C_KIND_MESH, "content/models/game/game.geometry", ""},
     {UINT64_C(0x4000), TOUR_C_KIND_SOUND, "content/audio/bells.wav", ""},
     {UINT64_C(0x7000), TOUR_C_KIND_AUDIOGRAPH, "content/audio/forest.audiograph", ""},
 };
 
-static const tour_c_catalog tour_project_catalog = {TOUR_C_CATALOG_ABI_VERSION,
-                                                    tour_project_assets,
-                                                    5u,
-                                                    TOUR_PROJECT_CATALOG_FINGERPRINT,
-                                                    TOUR_PROJECT_ENTRY_SCENE};
+static const tour_c_catalog tour_project_catalog = {
+    TOUR_C_CATALOG_ABI_VERSION,
+    tour_project_assets,
+    5u,
+    TOUR_PROJECT_CATALOG_FINGERPRINT,
+    TOUR_PROJECT_ENTRY_SCENE
+};
 
 // Pak names/files are deployment selection, not identity.
 static const tour_c_package tour_project_paks[] = {

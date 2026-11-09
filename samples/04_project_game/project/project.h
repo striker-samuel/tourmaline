@@ -27,109 +27,40 @@ using Id = std::uint64_t;
 // are a different thing entirely - Engine/Scene/entity_handle.h).
 // Implicit Id() conversion keeps the raw-id call sites
 // working; the types make cross-kind misuse a compile error.
-struct SceneKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
-struct TextureKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
-struct MeshKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
-struct SoundKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
-// PROJECT-AUTHORED shader assets (the 0x5xxx range - compiled .spv the project OWNS, distinct from
-// the ENGINE-NATIVE set engine-shaders.pak carries).
-struct ShaderKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
+struct SceneKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct TextureKey { Id id = 0; constexpr operator Id() const { return id; } };
+// LUTs are project textures under luts/: they share the stable
+// texture catalog identity, but have their own typed key.
+struct LutKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct MeshKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct SoundKey { Id id = 0; constexpr operator Id() const { return id; } };
+// PROJECT-AUTHORED shader assets (the 0x5xxx range - compiled .spv the project OWNS, distinct from the ENGINE-NATIVE set engine-shaders.pak carries).
+struct ShaderKey { Id id = 0; constexpr operator Id() const { return id; } };
 // GI bake SETS (the 0x6xxx range - a .givolumemanifest:
 // a baked lighting set of one or more GI volumes, loadable
 // through AssetManager::LoadGI - the runtime can blend two
 // resident sets, see docs/content_as_code.md).
-struct GiKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
+struct GiKey { Id id = 0; constexpr operator Id() const { return id; } };
 // AUTHORED AUDIO GRAPHS (the 0x7xxx range - a .audiograph:
 // the audio system's node-graph + cue asset,
 // docs/audio_graph.md - loadable through the audio facade
 // into a runtime AudioInstance handle).
-struct SpriteSetKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
-struct StateMachineKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
-struct NavMeshKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
-struct ShapeKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
-struct AudioGraphKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
+struct SpriteSetKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct StateMachineKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct NavMeshKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct ShapeKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct AudioGraphKey { Id id = 0; constexpr operator Id() const { return id; } };
 // ONE CUE of an authored audio graph: the (graph id, cue
 // ordinal) pair (the ordinal indexes the authored file's
 // cue list - project::audiocues::* below). A different
 // thing from a KEY: this names WHICH CUE, the graph key
 // names WHICH ASSET.
-struct AudioCueKey {
-    Id graph = 0;
-    std::uint32_t cue = 0;
-    constexpr operator bool() const {
-        return graph != 0;
-    }
-};
+struct AudioCueKey { Id graph = 0; std::uint32_t cue = 0; constexpr operator bool() const { return graph != 0; } };
 // (SkeletonKey / AnimationClipKey arrive with their catalog
 // buckets - the .anim asset identity kinds; the HANDLE types
 // they pair with are already in entity_handle.h.)
-struct SkeletonKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
-struct AnimationClipKey {
-    Id id = 0;
-    constexpr operator Id() const {
-        return id;
-    }
-};
+struct SkeletonKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct AnimationClipKey { Id id = 0; constexpr operator Id() const { return id; } };
 
 inline constexpr Id ProjectId = 0xa100902eULL;
 inline constexpr std::string_view Name = "GameProject";
@@ -143,49 +74,58 @@ inline constexpr std::string_view Name = "GameProject";
 // paks, entry scene) - a texture repixel keeps it; the EOF
 // metadata at the bottom of this file carries the new file
 // hash instead.
-inline constexpr std::uint64_t Generation = 10ULL;
-inline constexpr std::uint64_t GeneratedAt = 1793967263ULL;
-inline constexpr std::string_view ContentHash = "b829ad750b0e2cec";
+inline constexpr std::uint64_t Generation = 11ULL;
+inline constexpr std::uint64_t GeneratedAt = 1794256536ULL;
+inline constexpr std::string_view ContentHash = "709f775b1ee35529";
 
 namespace scenes {
-inline constexpr SceneKey game{0x1000ULL};
+    inline constexpr SceneKey game{0x1000ULL};
 }
 
 namespace textures {
-inline constexpr TextureKey stone{0x2000ULL};
+    inline constexpr TextureKey stone{0x2000ULL};
+}
+
+namespace luts {
 }
 
 namespace meshes {
-inline constexpr MeshKey game_2{0x3001ULL};
+    inline constexpr MeshKey game{0x3000ULL};
 }
 
 namespace sounds {
-inline constexpr SoundKey bells{0x4000ULL};
+    inline constexpr SoundKey bells{0x4000ULL};
 }
 
-namespace shaders {}
+namespace shaders {
+}
 
-namespace gi {}
+namespace gi {
+}
 
 namespace audiographs {
-inline constexpr AudioGraphKey forest{0x7000ULL};
+    inline constexpr AudioGraphKey forest{0x7000ULL};
 }
 
-namespace spritesets {}
+namespace spritesets {
+}
 
-namespace statemachines {}
+namespace statemachines {
+}
 
-namespace navmeshes {}
+namespace navmeshes {
+}
 
-namespace shapes {}
+namespace shapes {
+}
 
 // The authored audio-graph CUES (docs/audio_graph.md):
 // each constant bundles (graph id, cue ordinal) - the
 // ordinal indexes the authored file's cue list. Feed
 // these to the audio facade's PlayCue/CrossFade.
 namespace audiocues {
-inline constexpr AudioCueKey forest_calm{0x7000ULL, 0u};
-inline constexpr AudioCueKey forest_storm{0x7000ULL, 1u};
+    inline constexpr AudioCueKey forest_calm {0x7000ULL, 0u};
+    inline constexpr AudioCueKey forest_storm{0x7000ULL, 1u};
 } // namespace audiocues
 
 // Runtime packages (plan/mount order).
@@ -196,25 +136,25 @@ struct Pak {
 
 inline constexpr std::array Paks = {
     Pak{"shared", "shared.pak"},
-    Pak{"world", "game.pak"},
+    Pak{"world",  "game.pak"},
 };
 
 // The asset KIND enum - the values are an ABI (the runtime's
 // catalog-fingerprint fold + the .tapp validation agree on
 // these bytes; zero is Nil, real kinds start at one).
 enum class AssetKind : std::uint8_t {
-    Nil = 0,
-    Scene = 1,
-    Texture = 2,
-    Mesh = 3,
-    Sound = 4,
-    Shader = 5,
-    Gi = 6,
-    AudioGraph = 7,
-    SpriteSet = 8,
+    Nil          = 0,
+    Scene        = 1,
+    Texture      = 2,
+    Mesh         = 3,
+    Sound        = 4,
+    Shader       = 5,
+    Gi           = 6,
+    AudioGraph   = 7,
+    SpriteSet    = 8,
     StateMachine = 9,
-    NavMesh = 10,
-    Shape = 11,
+    NavMesh      = 10,
+    Shape        = 11,
 };
 
 // The FLAT TYPED CATALOG: plain compile-time POD records -
@@ -233,11 +173,11 @@ struct AssetDesc {
 };
 
 inline constexpr std::array Assets = {
-    AssetDesc{scenes::game, AssetKind::Scene, "content/scenes/game.tour", ""},
-    AssetDesc{textures::stone, AssetKind::Texture, "content/models/game/shared/stone.png", ""},
-    AssetDesc{meshes::game_2, AssetKind::Mesh, "content/models/game/game.geometry", ""},
-    AssetDesc{sounds::bells, AssetKind::Sound, "content/audio/bells.wav", ""},
-    AssetDesc{audiographs::forest, AssetKind::AudioGraph, "content/audio/forest.audiograph", ""},
+    AssetDesc{scenes::game,        AssetKind::Scene,      "content/scenes/game.tour",             ""},
+    AssetDesc{textures::stone,     AssetKind::Texture,    "content/models/game/shared/stone.png", ""},
+    AssetDesc{meshes::game,        AssetKind::Mesh,       "content/models/game/game.geometry",    ""},
+    AssetDesc{sounds::bells,       AssetKind::Sound,      "content/audio/bells.wav",              ""},
+    AssetDesc{audiographs::forest, AssetKind::AudioGraph, "content/audio/forest.audiograph",      ""},
 };
 
 // The SYMBOL-NAME table (compile-time query metadata; the
@@ -247,7 +187,7 @@ inline constexpr std::array Assets = {
 inline constexpr std::array AssetSymbols = {
     std::string_view("game"),
     std::string_view("stone"),
-    std::string_view("game_2"),
+    std::string_view("game"),
     std::string_view("bells"),
     std::string_view("forest"),
 };
@@ -259,7 +199,7 @@ inline constexpr std::array AssetSymbols = {
 // rows; ProjectRuntime::AttachCompiledCatalog compares them,
 // so a compiled game and its deployed content can never
 // silently disagree.
-inline constexpr std::uint64_t CatalogFingerprint = 0x284380f03692325eULL;
+inline constexpr std::uint64_t CatalogFingerprint = 0xa6951a76365c891dULL;
 
 // Compile-time lookup over the flat table (a constexpr
 // linear walk - the tables are tiny and the query is
@@ -281,106 +221,83 @@ constexpr bool Contains(Id id) {
     return false;
 }
 
-// RETIRED assets (tombstones): the historical identities,
-// typed keys with their values PRESERVED (stable API
-// compatibility); never in the active namespaces, never
-// reused. A runtime load of a retired id fails (the
-// compiled catalog carries no row for it).
-namespace retired {
-inline constexpr MeshKey game{0x3000ULL};
-}
-
-inline constexpr std::array RetiredIds = {
-    0x3000ULL,
-};
-// The compile-time active-membership queries: retired
-// ids are OUT of the active catalog even if a stale
-// compiled row ever names one.
-constexpr bool IsRetired(Id id) {
-    for (Id r : RetiredIds)
-        if (r == id)
-            return true;
-    return false;
-}
-constexpr bool IsActive(Id id) {
-    return Contains(id) && !IsRetired(id);
-}
+// No retired assets (the tombstone table is empty).
+inline constexpr std::array<Id, 0> RetiredIds = {};
+constexpr bool IsRetired(Id) { return false; }
+constexpr bool IsActive(Id id) { return Contains(id); }
 
 // The catalog carrier + the compile-time query binding.
 struct AssetCatalog {
-    static constexpr auto Rows() {
-        return Assets;
-    }
-    static constexpr auto Symbols() {
-        return AssetSymbols;
-    }
+    static constexpr auto Rows() { return Assets; }
+    static constexpr auto Symbols() { return AssetSymbols; }
 };
-template <
-    typename Key,
+template<typename Key,
     ::project_pipeline::query::FixedString Pattern,
-    ::project_pipeline::query::MatchField Field = ::project_pipeline::query::MatchField::Symbol>
+    ::project_pipeline::query::MatchField Field
+        = ::project_pipeline::query::MatchField::Symbol>
 consteval auto MatchAssets() {
-    return ::project_pipeline::query::MatchAssetsImpl<Key, Pattern, Field, AssetCatalog>();
+    return ::project_pipeline::query::MatchAssetsImpl<
+        Key, Pattern, Field, AssetCatalog>();
 }
 
 } // namespace project
 
 // The kind traits (MatchAssets' typed filter).
-template <> struct project_pipeline::query::AssetTraits<project::SceneKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::Scene;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::SceneKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::Scene; }
 };
-template <> struct project_pipeline::query::AssetTraits<project::TextureKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::Texture;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::TextureKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::Texture; }
 };
-template <> struct project_pipeline::query::AssetTraits<project::MeshKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::Mesh;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::MeshKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::Mesh; }
 };
-template <> struct project_pipeline::query::AssetTraits<project::SoundKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::Sound;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::SoundKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::Sound; }
 };
-template <> struct project_pipeline::query::AssetTraits<project::ShaderKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::Shader;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::ShaderKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::Shader; }
 };
-template <> struct project_pipeline::query::AssetTraits<project::GiKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::Gi;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::GiKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::Gi; }
 };
-template <> struct project_pipeline::query::AssetTraits<project::AudioGraphKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::AudioGraph;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::AudioGraphKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::AudioGraph; }
 };
 
-template <> struct project_pipeline::query::AssetTraits<project::SpriteSetKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::SpriteSet;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::SpriteSetKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::SpriteSet; }
 };
-template <> struct project_pipeline::query::AssetTraits<project::StateMachineKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::StateMachine;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::StateMachineKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::StateMachine; }
 };
-template <> struct project_pipeline::query::AssetTraits<project::NavMeshKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::NavMesh;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::NavMeshKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::NavMesh; }
 };
-template <> struct project_pipeline::query::AssetTraits<project::ShapeKey> {
-    static constexpr bool Matches(project::AssetKind k) {
-        return k == project::AssetKind::Shape;
-    }
+template<>
+struct project_pipeline::query::AssetTraits<project::ShapeKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::Shape; }
 };
 
 // Optional build-generated local shader reflection catalog.
@@ -398,26 +315,26 @@ template <> struct project_pipeline::query::AssetTraits<project::ShapeKey> {
 // only what mtime+size say moved. An unknown version reads
 // as absent (a fresh scan, never a stale-cache reuse).
 //
-// generator generation=10 timestamp=1793967263
-// catalog hash=b829ad750b0e2cec
+// generator generation=11 timestamp=1794256536
+// catalog hash=709f775b1ee35529
 //
 // [assets]
 // asset 0x1000 path="content/scenes/game.tour" pak="world"
-//   mtime_s=1793701544 size=757 hash=fnv1a64:b7b17d694f5a47b5
+//   mtime_s=1794255182 size=850 hash=fnv1a64:55364a9f54647ee5
 // asset 0x2000 path="content/models/game/shared/stone.png" pak="shared"
-//   mtime_s=1793447799 size=73 hash=fnv1a64:c602ab332a5e2cb5
-// asset 0x3001 path="content/models/game/game.geometry" pak="world"
-//   mtime_s=1793967263 size=7582 hash=fnv1a64:5a338ff3a16333c6
+//   mtime_s=1794255182 size=73 hash=fnv1a64:c602ab332a5e2cb5
+// asset 0x3000 path="content/models/game/game.geometry" pak="world"
+//   mtime_s=1794256536 size=8799 hash=fnv1a64:b366b9e51bb15160
 // asset 0x4000 path="content/audio/bells.wav" pak="shared"
-//   mtime_s=1793452759 size=57644 hash=fnv1a64:72f371a17d324d66
+//   mtime_s=1794255182 size=384044 hash=fnv1a64:d88bc55f9707fc73
 // asset 0x7000 path="content/audio/forest.audiograph" pak="shared"
-//   mtime_s=1793623253 size=1550 hash=fnv1a64:611f86fe650f7eff
+//   mtime_s=1794255182 size=1642 hash=fnv1a64:8c44802aff122764
 //
 // [paks]
-// pak file="shared-84eb45c16e76f776.pak"
-//   mtime_s=1793701499 size=59734 hash=fnv1a64:84eb45c16e76f776 state=verified
-// pak file="game-0be231047c5eb76d.pak"
-//   mtime_s=1793701499 size=10236 hash=fnv1a64:0be231047c5eb76d state=stale
+// pak file=""
+//   mtime_s=-1 size=0 state=missing
+// pak file=""
+//   mtime_s=-1 size=0 state=missing
 //
 // TOURMALINE-METADATA-END 1
 // =====================================================================
