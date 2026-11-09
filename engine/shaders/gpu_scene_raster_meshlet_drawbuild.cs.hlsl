@@ -65,6 +65,7 @@ struct RasterMeshletPush {
     uint instanceSlots;
     uint meshletLanes;
     uint cullViewValid;
+    uint coneEnabled;
 };
 GPU_PUSH(RasterMeshletPush, pc);
 
@@ -90,6 +91,33 @@ bool ClusterVisible(float4 sphere, GpuSceneInstance inst, CullView view) {
         if (d < -(radius + slack)) return false;
     }
     return true;
+}
+
+// Mirror gfxfilter.hlsli's cofactor cone transform, but rebase the apex
+// around the GPU-scene view origin first. Degenerate or invalid cones keep.
+bool MeshletConeCulled(GfxClusterData c, GpuSceneInstance inst, CullView view) {
+    if (!all(isfinite(c.c)) || !all(isfinite(c.d)) ||
+        c.c.w >= 1.0f || c.c.w < -1.0f)
+        return false;
+    const float3 x = inst.basisX.xyz;
+    const float3 y = inst.basisY.xyz;
+    const float3 z = inst.basisZ.xyz;
+    const float3 coX = cross(y, z);
+    const float3 coY = cross(z, x);
+    const float3 coZ = cross(x, y);
+    const float det = dot(x, coX);
+    if (!isfinite(det) || abs(det) < 1e-12f)
+        return false;
+    const float3 axis = (coX * c.d.x + coY * c.d.y + coZ * c.d.z) / det;
+    const float axisLen2 = dot(axis, axis);
+    if (!isfinite(axisLen2) || axisLen2 < 1e-12f)
+        return false;
+    const float3 apex = DoubleFloatRelative(inst.worldPosition, view.origin)
+                        + x * c.c.x + y * c.c.y + z * c.c.z;
+    const float apexLen2 = dot(apex, apex);
+    if (!all(isfinite(apex)) || !isfinite(apexLen2) || apexLen2 < 1e-12f)
+        return false;
+    return dot(apex * rsqrt(apexLen2), axis * rsqrt(axisLen2)) >= c.c.w;
 }
 
 [numthreads(128, 1, 1)]
@@ -157,9 +185,15 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (work.identity.x >= min(pc.instanceSlots, GS_MAX_ROWS)) return;
     const GpuSceneInstanceRow row = pc.instances.Get().rows[work.identity.x];
     if (row.identity.y != 1u || row.identity.x != work.identity.y) return;
-    if (pc.cullViewValid != 0u &&
-        !ClusterVisible(cluster.b, row.value, pc.cullView.Get()))
-        return;
+    if (pc.cullViewValid != 0u) {
+        const CullView view = pc.cullView.Get();
+        if (!ClusterVisible(cluster.b, row.value, view))
+            return;
+        // Do not cone-cull two-sided surfaces (including masked cards).
+        if (pc.coneEnabled != 0u && (work.detail.z & 1u) == 0u &&
+            MeshletConeCulled(cluster, row.value, view))
+            return;
+    }
     cmd.indexCount = triangles;
     cmd.instanceCount = 1u;
     cmd.firstIndex = first;
