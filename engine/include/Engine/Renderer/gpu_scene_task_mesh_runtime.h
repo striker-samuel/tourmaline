@@ -78,6 +78,15 @@ public:
     };
     std::array<Flight, Flights> flights{};
 
+    void Destroy(smvk::RenderGraph& rg) {
+        for (auto& f : flights) {
+            if (!f.groupsLogical.empty()) rg.FreeBuffer(f.groupsLogical);
+            if (!f.indirectLogical.empty()) rg.FreeBuffer(f.indirectLogical);
+            if (!f.offsetsLogical.empty()) rg.FreeBuffer(f.offsetsLogical);
+            f = Flight{};
+        }
+    }
+
     [[nodiscard]] bool Prepare(smvk::ResourceManager& ctx,
                                smvk::RenderGraph& rg,
                                uint32_t flight,
