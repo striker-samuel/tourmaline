@@ -56,6 +56,7 @@
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_raster_ownership.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
+#include <Engine/Renderer/gpu_scene_task_mesh_runtime.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/Renderer/renderview.h>
@@ -2393,6 +2394,22 @@ class WorldRenderer : public IRenderer {
     std::array<smvk::ShaderProgram, 4> m_gpuSceneMeshletPrograms{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuScenePsoScanModule{};
     smvk::ShaderProgram m_gpuScenePsoScanProgram{};
+    // Opt-in GPU Scene task/amplification + mesh raster path.
+    // CPU admission keeps the indexed renderer as an all-scene fallback:
+    // no partial submesh ownership or double draws.
+    tour::gpu_scene::TaskMeshRuntime m_gpuSceneTaskMeshRuntime{};
+    std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneTaskComputeModules{};
+    std::array<smvk::ShaderProgram, 3> m_gpuSceneTaskComputePrograms{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskAsModule{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskMsModule{};
+    smvk::ShaderProgram m_gpuSceneTaskMainProgram{};
+    smvk::ShaderProgram m_gpuSceneTaskDepthProgram{};
+    smvk::ShaderProgram m_gpuSceneTaskGbufferProgram{};
+    smvk::ShaderProgram m_gpuSceneTaskMaskedDepthProgram{};
+    smvk::ShaderProgram m_gpuSceneTaskMaskedGbufferProgram{};
+    smvk::ShaderProgram m_gpuSceneTaskMaskedA2cProgram{};
+    bool m_gpuSceneTaskMeshActive = false;
+    tour::gpu_scene::TaskMeshDispatchPlan m_gpuSceneTaskMeshPlan{};
     // Per-frame compact publication state (the frame's meshlet plan; set
     // when the dense path engages, else the four-bin path runs).
     bool m_gpuSceneMeshletCompactActive = false;
