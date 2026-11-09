@@ -25,6 +25,8 @@ struct Push {
     uint candidateCapacity;
     uint blockCount;
     uint commandCapacity;
+    uint pad0;
+    uint pad1;
     uint4 binOffsets;
     uint4 binCapacities;
 };
