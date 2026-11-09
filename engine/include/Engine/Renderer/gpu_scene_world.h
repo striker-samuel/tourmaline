@@ -9,6 +9,7 @@
 #include <Engine/App/world.h>
 #include <Engine/Memory/arena.h>
 #include <Engine/Renderer/gpu_scene_leaf.h>
+#include <Engine/Renderer/gpu_scene_pso_budget.h>
 #include <Engine/Renderer/gpu_scene_upload.h>
 
 #include <algorithm>
@@ -67,6 +68,7 @@ struct SyncStats {
     bool leafPublicationOk = true;
     bool topologyReconciled = false;
     bool geometryRefreshed = false;
+    bool psoBudgetOk = true;
     uint32_t geometryMeshesVisited = 0;
 };
 
@@ -120,6 +122,9 @@ class SceneRegistry {
     [[nodiscard]] uint32_t LiveCount() const {
         return static_cast<uint32_t>(instances_.size());
     }
+    [[nodiscard]] RasterPsoBudget::Counts PsoWorkUpperBounds() const noexcept {
+        return psoBudget_.UpperBounds();
+    }
     // Return delta batches in the order "retire old identities, upsert
     // live identities"; the same slot may reappear with a new generation.
     struct Deltas {
@@ -141,6 +146,7 @@ class SceneRegistry {
             EraseMesh(kv.second, db);
         instances_.clear();
         meshes_.clear();
+        psoBudget_.Clear();
     }
 
     [[nodiscard]] Handle<Mesh> FindMesh(SourceKey key) const {
@@ -284,6 +290,17 @@ class SceneRegistry {
                     changed_.push_back(handle);
                     ++stats.created;
                 }
+                    const uint32_t klass =
+                        ((r.flags & InstanceFlagDoubleSided) != 0u ? 1u : 0u) |
+                        ((r.flags & InstanceFlagMasked) != 0u ? 2u : 0u);
+                    RasterPsoBudget::Counts contribution{};
+                    // The published mesh ABI currently emits at most one
+                    // submesh per selected LOD; count even nonresident meshes
+                    // to conservatively include later geometry promotion.
+                    contribution[klass] = 1u;
+                    stats.psoBudgetOk &=
+                        psoBudget_.Upsert(r.instance, contribution);
+                }
             } else {
                 const Instance* old = db.instances.Get(it->second);
                 if (old && std::memcmp(old, &data, sizeof(data)) != 0 &&
@@ -295,6 +312,7 @@ class SceneRegistry {
         }
         for (auto it = instances_.begin(); it != instances_.end();) {
             if (!seen.contains(it->first)) {
+                (void)psoBudget_.Erase(it->first);
                 retired_.push_back(it->second);
                 (void)db.instances.Erase(it->second);
                 it = instances_.erase(it);
@@ -328,6 +346,7 @@ class SceneRegistry {
         (void)db.meshes.Erase(state.id);
         state.count = 0;
     }
+    RasterPsoBudgetT<SourceKey, SourceKeyHash> psoBudget_;
     std::vector<InstanceId> changed_;
     std::vector<InstanceId> retired_;
     std::unordered_map<SourceKey, InstanceId, SourceKeyHash> instances_;
