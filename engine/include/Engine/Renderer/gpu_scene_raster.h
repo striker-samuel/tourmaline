@@ -192,8 +192,16 @@ struct RasterHizCullPush {
     uint32_t historySlots = 0;
     uint32_t historyValid = 0;
     uint32_t reserved = 0;
+    // Optional per-meshlet Hi-Z: recover the cluster from the command
+    // lane and original revision-local work geometry registration.
+    uint64_t gfxMeshes = 0;
+    uint64_t gfxClusters = 0;
+    uint32_t meshletLanes = 1;
+    uint32_t gfxMeshCount = 0;
+    uint32_t gfxClusterCount = 0;
+    uint32_t meshletActive = 0;
 };
-static_assert(sizeof(RasterHizCullPush) == 104);
+static_assert(sizeof(RasterHizCullPush) == 136);
 
 // Push constants for the independent indirect raster command build kernel.
 struct RasterDrawBuildPush {
