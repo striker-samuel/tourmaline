@@ -11866,7 +11866,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             cmd.BindComputePipeline(rasterProgram);
                             cmd.PushConstants(
                                 0, sizeof(rasterPush), &rasterPush, smvk::ShaderStage::Compute);
-                            cmd.Dispatch((rasterPush.commandCapacity + 63u) / 64u, 1, 1);
+                            cmd.Dispatch((rasterPush.commandCapacity + 127u) / 128u, 1, 1);
                         }
                         if (!indirectReady)
                             return;
@@ -13236,7 +13236,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             pass.SetRecordingFunc([program, seedPush](smvk::CommandBuffer& cmd) mutable {
                 cmd.BindComputePipeline(program);
                 cmd.PushConstants(0, sizeof(seedPush), &seedPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((seedPush.commandCapacity + 63u) / 64u, 1, 1);
+                cmd.Dispatch((seedPush.commandCapacity + 127u) / 128u, 1, 1);
             });
         }
     }
@@ -13606,7 +13606,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             gate.SetRecordingFunc([hizProgram, hizPush](smvk::CommandBuffer& cmd) mutable {
                 cmd.BindComputePipeline(hizProgram);
                 cmd.PushConstants(0, sizeof(hizPush), &hizPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((hizPush.commandCapacity + 63u) / 64u, 1, 1);
+                cmd.Dispatch((hizPush.commandCapacity + 127u) / 128u, 1, 1);
             });
             // Publish only actually surviving GPU work, never stale work
             // slots or CPU draw IDs. A strict shader barrier separates
@@ -13637,12 +13637,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 clearPush.mode = 0u;
                 cmd.BindComputePipeline(historyProgram);
                 cmd.PushConstants(0, sizeof(clearPush), &clearPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((historyPush.historySlots + 63u) / 64u, 1, 1);
+                cmd.Dispatch((historyPush.historySlots + 127u) / 128u, 1, 1);
                 cmd.EmitGlobalMemoryBarrier();
                 tour::gpu_scene::RasterHistoryPush commitPush = historyPush;
                 commitPush.mode = 1u;
                 cmd.PushConstants(0, sizeof(commitPush), &commitPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((historyPush.commandCapacity + 63u) / 64u, 1, 1);
+                cmd.Dispatch((historyPush.commandCapacity + 127u) / 128u, 1, 1);
             });
             m_gpuSceneRasterLastHistoryFlight = temporalFlight;
             m_gpuSceneRasterHistoryWorld = m_world;
