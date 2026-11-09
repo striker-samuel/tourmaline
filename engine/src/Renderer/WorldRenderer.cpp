@@ -10796,7 +10796,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_RASTER");
         return !e || std::strcmp(e, "0") != 0;
     }();
-    if (s_gpuSceneRaster && m_gpuSceneRasterProgram.shaderCount != 2) {
+    if (s_gpuSceneRaster &&
+        (m_gpuSceneRasterProgram.shaderCount != 2 ||
+         m_gpuSceneRasterMaskedDepthProgram.shaderCount != 2 ||
+         m_gpuSceneRasterMaskedGbufferProgram.shaderCount != 2)) {
         try {
             if (m_gpuSceneRasterVsModule.empty())
                 m_gpuSceneRasterVsModule = m_context->CreateShaderModule(
@@ -10824,6 +10827,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                       .entryPoint = "mainPS",
                                       .stage = smvk::ShaderStage::Fragment};
                     m_gpuSceneRasterGbufferProgram = {.shaders = {vs, gbFs}, .shaderCount = 2};
+                }
+                if (m_gpuSceneRasterMaskedDepthFsModule.empty())
+                    m_gpuSceneRasterMaskedDepthFsModule = m_context->CreateShaderModule(
+                        smvk::shaders::Read(
+                            "content/shaders/gpu_scene_masked_depth.frag.hlsl.spv"),
+                        "gpuSceneRasterMaskedDepthFS");
+                if (m_gpuSceneRasterMaskedGbufferFsModule.empty())
+                    m_gpuSceneRasterMaskedGbufferFsModule = m_context->CreateShaderModule(
+                        smvk::shaders::Read(
+                            "content/shaders/gpu_scene_gbuffer_masked.frag.hlsl.spv"),
+                        "gpuSceneRasterMaskedGbufferFS");
+                if (!m_gpuSceneRasterMaskedDepthFsModule.empty()) {
+                    smvk::Shader maskFs{.module = m_gpuSceneRasterMaskedDepthFsModule,
+                                        .entryPoint = "mainPS",
+                                        .stage = smvk::ShaderStage::Fragment};
+                    m_gpuSceneRasterMaskedDepthProgram =
+                        {.shaders = {vs, maskFs}, .shaderCount = 2};
+                }
+                if (!m_gpuSceneRasterMaskedGbufferFsModule.empty()) {
+                    smvk::Shader gbMaskedFs{.module = m_gpuSceneRasterMaskedGbufferFsModule,
+                                           .entryPoint = "mainPS",
+                                           .stage = smvk::ShaderStage::Fragment};
+                    m_gpuSceneRasterMaskedGbufferProgram =
+                        {.shaders = {vs, gbMaskedFs}, .shaderCount = 2};
                 }
             }
         } catch (...) {
@@ -10897,12 +10924,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // destroy it while a current-frame submission can query it.
             uint32_t compatibleCount = 0;
             uint32_t doubleSidedCount = 0;
+            uint32_t maskedBackCount = 0;
+            uint32_t maskedDoubleSidedCount = 0;
             const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
             constexpr uint32_t requiredFlags =
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                 smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
             constexpr uint32_t forbiddenFlags =
-                smvk::IteratorFlagBit_Masked | smvk::IteratorFlagBit_Transparent;
+                smvk::IteratorFlagBit_Transparent;
             // KD tally (parallel to the chain below, never replacing it):
             // count the FIRST rejecting gate group per item - 1 sync,
             // 2 db-ready, 3 flags, 4 material, 5 node/mesh, 6 lod/geometry,
@@ -10922,7 +10951,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase, instance) &&
                     (item.flags & requiredFlags) == requiredFlags &&
                     (item.flags & forbiddenFlags) == 0 &&
-                    item.material != smvk::World::kInvalidIndex && item.materialInstance == 0 &&
+                    item.material != smvk::World::kInvalidIndex &&
+                    m_world->GetMaterial(item.material) != nullptr &&
+                    item.materialInstance == 0 &&
                     m_world->MaterialUserData(item.material) == 0 &&
                     !m_gfxRenderer.MaterialProjectFamily(item.material) &&
                     !m_gfxRenderer.MaterialLayered(item.material) &&
@@ -10993,7 +11024,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // class. Count only admitted sources, never legacy ones.
                 if (compatible) {
                     const smvk::Material* m = m_world->GetMaterial(item.material);
-                    doubleSidedCount += m && m->doubleSided ? 1u : 0u;
+                    const bool masked =
+                        (item.flags & smvk::IteratorFlagBit_Masked) != 0;
+                    const bool twoSided = m && m->doubleSided;
+                    doubleSidedCount += !masked && twoSided ? 1u : 0u;
+                    maskedBackCount += masked && !twoSided ? 1u : 0u;
+                    maskedDoubleSidedCount += masked && twoSided ? 1u : 0u;
                 }
                 // KD tally: the mirror tracks the NEW chain (double-sided
                 // is admitted + binned above, no longer a group-4 reject).
@@ -11043,6 +11079,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::span<tour::gpu_scene::RasterOwnershipEntry>(m_gpuSceneRasterEntries, total));
             m_gpuSceneRasterCompatibleCount = snapshotValid ? compatibleCount : 0u;
             m_gpuSceneRasterDoubleSidedCount = snapshotValid ? doubleSidedCount : 0u;
+            m_gpuSceneRasterMaskedBackCount = snapshotValid ? maskedBackCount : 0u;
+            m_gpuSceneRasterMaskedDoubleSidedCount =
+                snapshotValid ? maskedDoubleSidedCount : 0u;
             m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount;
             m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
             if (s_kdElig)
@@ -11071,6 +11110,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneRasterEligible = false;
         m_gpuSceneRasterCompatibleCount = 0;
         m_gpuSceneRasterDoubleSidedCount = 0;
+        m_gpuSceneRasterMaskedBackCount = 0;
+        m_gpuSceneRasterMaskedDoubleSidedCount = 0;
         m_gpuSceneRasterLegacyCount = m_world ? uint32_t(m_world->drawItems.size()) : 0u;
         m_gpuSceneRasterOwnership.Reset();
         // Transient publication failures must not keep stale eligibility.
