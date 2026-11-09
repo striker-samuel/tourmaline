@@ -79,6 +79,36 @@ struct RasterWorkDrawBuildPush {
     uint32_t padding = 0;
 };
 
+// Experimental compact PSO append ABI, matching
+// gpu_scene_raster_pso_append.cs.hlsl. This is not yet submitted by Vulkan.
+// Four packed per-class GPU counters are also the indirect-count source.
+struct RasterPsoAppendCounters {
+    uint32_t counts[4] = {};
+    uint32_t overflow[4] = {};
+};
+struct RasterPsoAppendPush {
+    uint64_t work = 0;
+    uint64_t workOffsets = 0;
+    uint64_t geometry = 0;
+    uint64_t indirect = 0;
+    uint64_t counters = 0;
+    uint64_t aliases = 0;
+    uint32_t candidateCount = 0;
+    uint32_t geometryCount = 0;
+    uint32_t workCapacity = 0;
+    uint32_t commandCapacity = 0;
+    uint32_t aliasCount = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+    uint32_t binOffsets[4] = {};
+    uint32_t binCapacities[4] = {};
+};
+static_assert(sizeof(RasterPsoAppendCounters) == 32);
+static_assert(sizeof(RasterPsoAppendPush) == 112);
+static_assert(offsetof(RasterPsoAppendPush, binOffsets) == 80);
+static_assert(offsetof(RasterPsoAppendPush, binCapacities) == 96);
+
 // Static-opaque raster VS input: world position is rebased against this
 // double-float origin before the relative VP is evaluated. The lit fragment
 // still uses float world positions like the legacy raster shaders.
