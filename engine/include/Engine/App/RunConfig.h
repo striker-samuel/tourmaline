@@ -261,7 +261,7 @@ struct RunConfig {
     // verdicts + the filter's aggregate stats for the pinned camera. The
     // perf harness's "cull" mode records/compares these as tracked
     // baselines — the correctness gate for changes to the GPU-driven
-    // renderer (the gfx cull chain, HZB, the GPU-scene stack). -1 = off.
+    // renderer (the gfx cull chain, HZB, the filtered draw path). -1 = off.
     int cullDump = -1;
 
     // ---- editor ----

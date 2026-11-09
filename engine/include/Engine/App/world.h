@@ -313,14 +313,10 @@ struct World {
     const SceneRegion* RegionForNode(NodeId node) const {
         return regions.RegionOf(scene, node);
     }
-    // Monotonic per-World owner registration identity; never use a
-    // recycled Cluster* address as the permanent GPU scene key.
-    uint64_t gpuSceneTopologyRevision = 0;
-    uint64_t nextGpuSceneClusterId = 1;
-    // Gameplay nodes share the same monotonically allocated registration namespace
-    // as Cluster owners, but use World node slots/generations for identity.
-    uint64_t gpuSceneGameNodeRegistration = 0;
-    std::unordered_map<const Cluster*, uint64_t> gpuSceneClusterIds;
+    // Monotonic cluster-topology invalidation counter: bumps on cluster
+    // topology edits (scene-instance add/remove, resolve rebuilds). The
+    // static SDF republish key.
+    uint64_t sceneTopologyRevision = 0;
 
     bool clustersDirty_ = false; // pending cluster scene merge
     mutable bool dirtyCull = true;

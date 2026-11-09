@@ -1,10 +1,9 @@
 # Instanced indirect draw promotion: measurement baseline
 
-The GPU scene DB already owns persistent mesh, LOD, submesh, instance and
-generational identity rows. The gfx filter separately builds frame-local draw
-requests, batches, and GPU-written indirect commands. **Measure before promoting
-repeated single-instance commands to instanced indirect draws.** This PR does
-not implement instanced draws or change the GPU scene DB.
+The gfx filter builds frame-local draw requests, batches, and GPU-written
+indirect commands. **Measure before promoting repeated single-instance
+commands to instanced indirect draws.** This PR does not implement
+instanced draws.
 
 ## Reproducible candidate census
 
@@ -50,23 +49,13 @@ infer FPS improvements or quote a command reduction as measured from this log.
 4. Test an A/B instanced command generator against the baseline; retain
    instancing only if CPU/GPU frame timings improve without regressions.
 
-## GPU scene DB fit
-
-Keep `gpu_scene::Instance` and `gpu_scene::Handle<Instance>` slot +
-generation as the durable identity. Leaf members already refer to these
-generational IDs; do not replace them with transient draw indices. The
-aggregation/compaction outputs should be **per-frame**, per-flight
-visible-instance references and indirect commands derived from current
-valid DB rows; preserve generation validation, mesh residency/complete
-bounds, per-instance LOD/culling, material/pipeline/skin variants, and
-the current direct fallback for nonfilterable objects. Reusing DB identities
-avoids a second authoritative instance registry, and keeps updates and
-destruction independent of the draw-command layout.
+## Instancing layout notes
 
 A practical future layout is a visible-instance index buffer sorted by
 compatible mesh/material/LOD state, plus an indirect command buffer with
 `instanceCount` and `firstInstance` selecting each compacted range.
-Shaders then use the instance index to fetch the correct DB row; be careful
-about Vulkan `InstanceIndex` / `SV_InstanceID` first-instance semantics.
-The current gfx filter fetches frame-local draw constants by draw index;
-its shader contract must be migrated before enabling real instancing.
+Shaders then use the instance index to fetch the correct per-instance
+state; be careful about Vulkan `InstanceIndex` / `SV_InstanceID`
+first-instance semantics. The current gfx filter fetches frame-local
+draw constants by draw index; its shader contract must be migrated
+before enabling real instancing.

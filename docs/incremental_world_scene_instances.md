@@ -48,7 +48,7 @@ the GPU upload/residency provider that produces WorldSceneResourceMap.
 Do not switch the bridge over until those dependencies exist.
 
 Static BVH cooking/consumption, eviction hysteresis, asynchronous IO,
-GPU scene direct instance publication, lightmap/LOD parity, and removal of
+lightmap/LOD parity, and removal of
 retainedClusters/assetRefs are also open migration gates. No CPU/GPU perf
 claim is made by this PR.
 
@@ -59,7 +59,7 @@ supported CMake preset. Then:
 
 ```sh
 ctest --test-dir <build-dir> -N
-ctest --test-dir <build-dir> --output-on-failure -R "world_scene_instance_tests|world_map_tests|scene_tile_provider_tests|scene_table_tests|gpu_scene"
+ctest --test-dir <build-dir> --output-on-failure -R "world_scene_instance_tests|world_map_tests|scene_tile_provider_tests|scene_table_tests"
 ctest --test-dir <build-dir> --output-on-failure
 ```
 

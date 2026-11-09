@@ -51,11 +51,6 @@ struct PSIn
     // G-buffer consumer (the SSR/SSGI traces) marches reflections off
     // inverted normals — "broken cloth normals, one side of the scene".
     bool isFrontFace : SV_IsFrontFace;
-#ifdef GPU_SCENE_GBUFFER
-    // Raster work fetch forwards the world material through location 7;
-    // unlike the legacy direct draw, no per-item CPU material push exists.
-    [[vk::location(7)]] nointerpolation uint materialId : TEXCOORD5;
-#endif
 };
 
 struct PSOut
@@ -79,11 +74,7 @@ float2 OctEncodeNormal(float3 n)
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
-#ifdef GPU_SCENE_GBUFFER
-    const uint materialId = IN.materialId;
-#else
     const uint materialId = pc.materialId;
-#endif
     MaterialValues mat = pc.bMats.Get().mats[materialId];
     // glTF metallicRoughness: the params are FACTORS, the final values
     // are factor x texture (G=roughness, B=metallic — the same tap the

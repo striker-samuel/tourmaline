@@ -2,7 +2,8 @@
 
 Status: **Migration in progress — NOT a completed cluster replacement.**
 Base: the existing WorldPartition, SMP8 paged pak container, RegionRegistry,
-ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
+ContentRegistry/AssetStore (the former persistent GPU-scene work #224/#229
+was removed with the GPU-scene system).
 
 ## One active runtime World, multiple authored Maps
 
@@ -144,7 +145,7 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
 - [ ] Replace `EnsureDynamicCluster` with persistent world-owned runtime
   entity spawning and explicit promotion rules.
 
-### Epoch 6 — GPU scene publication and spatial traversal
+### Epoch 6 — instance publication and spatial traversal
 - [ ] Publish per-instance create/change/retire deltas with generation checks.
 - [ ] Traverse cooked tile-local BVHs and a coarse tile index to produce
   visible-instance streams directly, without O(total scene nodes)
@@ -174,7 +175,7 @@ Configure with the repository's normal supported CMake preset. Build the
 engine, app, tools, editor and test targets. Run:
 
 ```sh
-ctest --test-dir <build-dir> --output-on-failure -R "scene_tile_provider_tests|world_map_tests|world_partition_tests|world_entity_tests|scene_table_tests|content_registry_tests|gpu_scene|streaming_tests|asset_tests"
+ctest --test-dir <build-dir> --output-on-failure -R "scene_tile_provider_tests|world_map_tests|world_partition_tests|world_entity_tests|scene_table_tests|content_registry_tests|streaming_tests|asset_tests"
 ctest --test-dir <build-dir> --output-on-failure
 ```
 
@@ -220,5 +221,5 @@ a compatibility ProjectScenes bridge plus a new direct World hierarchy
 Map adapter. **The direct streaming seam exists, but the production
 resource/asset pipeline cutover is still incomplete.** Cook-time static
 BVHs, full independent GPU asset ownership, async IO, visibility-driven
-GPU scene and performance acceptance remain unimplemented. Tests are prescribed but
+publication and performance acceptance remain unimplemented. Tests are prescribed but
 not run in this environment. Keep this PR draft.

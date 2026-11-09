@@ -248,7 +248,8 @@ struct Scene {
     // MarkAllRootsChanged + recalculateGlobalTransforms after a bulk rewrite.
     // A World-level mesh/visibility binding change additionally requires
     // ResolveAndFixup_clusters (rebuild drawItems + topology revision).
-    // Direct writes to globalTransform bypass the GPU publication journal.
+    // Direct writes to globalTransform bypass SetLocalTransform's change
+    // tracking.
     tour::mem::ArenaFlatArray<mat4> localTransform;  // indexed by node
     tour::mem::ArenaFlatArray<mat4> globalTransform; // indexed by node
     // CPU-authoritative transforms, independent of the legacy float-facing ABI.
@@ -256,12 +257,6 @@ struct Scene {
     std::vector<glm::mat4> localTransformFloatShadow;
 
     std::vector<NodeId> changedAtThisFrame[MAX_NODE_LEVEL];
-    // Final global-transform writes, consumed by the GPU scene after
-    // recalculation has cleared changedAtThisFrame. Single reader.
-    std::vector<NodeId> gpuSceneGlobalChanges;
-    // One pending bit per node, preventing unbounded journal growth if
-    // multiple recalculations occur before the renderer consumes changes.
-    std::vector<uint8_t> gpuSceneGlobalQueued;
 
     tour::mem::ArenaFlatArray<Hierarchy> hierarchy;
 
@@ -540,7 +535,7 @@ void RetireNodeSlot(Scene& scene, NodeId node);
 int addNode(Scene& scene, int parent, int level, bool autoName = true);
 
 // Generation-checked scene transform mutation. The setter marks affected
-// descendants for the GPU-scene journal via the existing recalc path.
+// descendants for recalculation via the existing recalc path.
 // Returns false for a retired/stale handle without writing the new slot.
 bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::mat4& transform);
 bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::dmat4& transform);

@@ -49,8 +49,8 @@ The bridge above is NOT the final single-scene architecture. In particular:
 - Remove entity mirror nodes. Audio, mesh entities, animators, and physics
   bindings should refer directly to generation-checked world node identities.
 - Publish incremental creation, retirement, transform and mesh-binding
-  changes to the persistent GPU scene instead of relying on cluster source
-  identity and full topology reconciliation.
+  changes to the renderer's GPU-side draw state instead of relying on
+  cluster source identity and full topology reconciliation.
 - Teach editor reimport/prefab overlay/save/undo to distinguish document
   ownership from region ownership, and provide an explicit cross-region
   transfer operation.

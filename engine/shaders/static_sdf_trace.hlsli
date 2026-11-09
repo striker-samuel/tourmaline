@@ -36,7 +36,8 @@ struct StaticSdfSampleWords
     uint words[STATIC_SDF_MAX_SAMPLE_WORDS];
 };
 
-// 32-byte scene descriptor uploaded by StaticSdfGpuScene. A single
+// 32-byte scene descriptor uploaded by the static SDF uploader
+// (StaticSdfGpuScene — the SDF system's own class). A single
 // pointer in the SSR push fits Vulkan's guaranteed 128-byte limit.
 struct StaticSdfSceneHeader
 {

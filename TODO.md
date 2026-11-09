@@ -17,27 +17,17 @@
 
 ### P0 — production correctness and architecture cutover
 
-- [ ] **GPU-scene physical geometry ownership (PARTIAL; #294/#295).**
-  Stable generation/LOD-indexed descriptor identities, per-flight publication,
-  transient-ID aliasing, and live raster-command handoff **LANDED**. Replace
-  GfxFilter's cluster-ordered physical index heap with GeometryStreamer-native
-  indexed/vertex allocation metadata; eliminate transient work IDs only after
-  consumers use stable geometry identities end to end. Implement generation-aware
-  slot reuse with flight-fenced retirement (current cap: 65,535 non-recyclable
-  geometry slots, fail-closed). Validate eviction, re-registration, multiple
-  flights, and streaming on Vulkan. See
-  `docs/gpu_scene_persistent_geometry.md`.
-- [ ] **GPU-scene raster/culling parity (PARTIAL; #280, #282–#293, #299).**
-  Eligible static GPU-scene raster is default ON (#280); dynamic GfxFilter
-  draw/candidate capacities LANDED. GPU projected-error resident LOD selection
-  (#286), double-sided indexed bins (#287), eligible alpha-masked bins (#292),
-  temporal seed/remainder + Hi-Z, and final-visibility kept-bit history (#299)
-  LANDED. Still prove hardware image correctness across masked A2C, shadows,
-  G-buffer, multi-flight/temporal transitions, sparse LOD residency, hysteresis,
-  motion stability, material revisions, and mixed legacy/GPU ownership.
-  #299 reports 117/117 ctests and pinned static-camera capture parity; that
-  does not close the wider device/scene matrix. Keep GfxFilter/legacy fallback
-  for unsupported and failed-admission sources.
+- [ ] **GfxFilter raster/culling hardware parity (PARTIAL; #280, #282–#293, #299).**
+  Dynamic GfxFilter draw/candidate capacities LANDED (#280). GPU
+  projected-error resident LOD selection (#286), double-sided indexed
+  bins (#287), alpha-masked bins (#292), temporal seed/remainder + Hi-Z,
+  and final-visibility kept-bit history (#299) LANDED. Still prove
+  hardware image correctness across masked A2C, shadows, G-buffer,
+  multi-flight/temporal transitions, sparse LOD residency, hysteresis,
+  motion stability, and material revisions. #299 reports 117/117 ctests
+  and pinned static-camera capture parity; that does not close the wider
+  device/scene matrix. Keep the direct fallback leg for unsupported
+  sources.
 - [ ] **Production Map and World asset pipeline (PARTIAL; #231/#232/#272).**
   Authored Map identity, SMP8 packaging, scene tile providers, world-owned direct
   scene instances, leases, and the **default direct** `MapSceneStreaming`
@@ -53,8 +43,8 @@
 - [ ] **Distant packed-grid sky-only output (#234; regression status
   UNVERIFIED on current master).** Reproduce near/far cases on Vulkan with
   synchronized *complete* indirect-command and counter readback, determine
-  whether the regression remains after newer GPU-scene default/admission and
-  GfxFilter capacity changes, fix only the confirmed cause, then rerun
+  whether the regression remains after the GfxFilter capacity changes and
+  the GPU-scene removal, fix only the confirmed cause, then rerun
   visually valid `TOURMALINE_MESH=0`/mesh and grid/grid32 captures.
   Historical sky-plus-sliver timings are not full-scene benchmarks.
   See `docs/renderer/gfxfilter_far_view_investigation.md`.
@@ -67,13 +57,6 @@
 
 ### P1 — incomplete integration and design work
 
-- [ ] **GPU-scene compact PSO submissions (#296, OPEN DRAFT).**
-  Four-bin fixed indirect ranges remain the live implementation. PR #296
-  introduces adaptive per-source budget accounting and experimental wave append,
-  **not** an enabled renderer cutover. Integrate per-flight budget snapshots,
-  compact allocations, barriers, count-buffer indirect submissions,
-  temporal/depth/Hi-Z consumers, no-drop overflow fallback, DXC/Vulkan checks,
-  and frame-time/image parity before enabling.
 - [ ] **Scene mutation journaling (#182).** Complete remaining direct
   local/global transform caller classification/migration and deterministic +
   randomized CPU/GPU parity for reparent, remove/reuse, transform, visibility
@@ -87,7 +70,7 @@
 - [ ] **Tile/scene world-cutover acceptance (#231/#232/#272).**
   Exercise real Map cook/load/reload/corrupt-page, rapid movement/Map switch,
   delayed callback cancellation, shared physical resources, gameplay and
-  non-render component lifetimes, LOD/shadow/GPU-scene deltas, GPU fences,
+  non-render component lifetimes, LOD/shadow publication deltas, GPU fences,
   CPU/GPU upload/page/memory budgets and before/after performance fixtures.
   Do not infer these from headless API tests alone.
 - [ ] **Editor and content workflows (#153, #157, #187, #188, #193).**
@@ -137,20 +120,14 @@
   whole-renderer orchestration extraction not complete.
 - [x] **#272 default direct Map adapter:** replaces default Cluster-backed
   `ProjectScenes` bridge; does not imply Cluster-free asset loading.
-- [x] **#280 eligible GPU-scene raster default and dynamic GfxFilter
-  capacity:** older opt-in/fixed draw-limit assumptions superseded.
+- [x] **#280 dynamic GfxFilter draw/candidate capacity:** older
+  opt-in/fixed draw-limit assumptions superseded.
 - [x] **#285 dedicated animation pak kind:** new cooks use `Anim` rather than
   texture-kind clip assets; legacy wrapped clips remain readable. Catalog
   clip/skeleton typed keys are a distinct follow-up.
-- [x] **#286/#287/#292 GPU-scene eligible LOD, double-sided and masked raster
-  support:** older blanket “always legacy-owned” statements superseded,
-  subject to current material/skinning/other admission restrictions.
-- [x] **#294/#295 persistent indexed geometry identities and live raster
-  handoff:** physical heap cutover, alias retirement and slot recycling remain
-  open above.
-- [x] **#297 gameplay-owned mesh-node GPU-scene synchronization:** landed
-  with headless tests; legacy full-world Cluster resolves still need separate
-  ownership migration.
+- [x] **#286/#287/#292 GfxFilter resident LOD, double-sided and masked
+  raster support:** older blanket “always legacy-owned” statements superseded,
+  subject to current material/skinning eligibility rules.
 - [x] **#299 final temporal kept-bit visibility history:** merged with
   reported static-scene pinned capture parity; retain broader temporal
   hardware acceptance above.
@@ -620,9 +597,7 @@ the GPU filter's per-triangle backface stage spares flagged draws
 (DrawFlagBit_DoubleSided on the draw ring, both the indexed and mesh
 legs), the F+ prepass/motion solid phases follow the material raster
 per item (ensureSolidPipeline twins), the mesh-shader spans dispatch
-the span material's raster, and the GPU-scene admission gate keeps
-double-sided materials LEGACY-owned (its single Cull-Back command
-list has no per-material split yet). The seed/remainder opaque depth
+the span material's raster. The seed/remainder opaque depth
 stays Cull Back by design (temporal-reuse depth: missing backface
 depth only relaxes HZB occlusion — the conservative direction). Still
 open from the original entry: the shadow-depth policy for two-sided
@@ -972,10 +947,10 @@ long-term work elsewhere in this TODO is not duplicated here.
   with production cooked-scene dependency loading, asynchronous
   IO/decode, budgeted publication, retry/hysteresis and GPU-fence-safe
   retirement; validate shared assets across tiles/paks.
-- [ ] Deliver GPU-scene deltas and tile-local spatial traversal instead
-  of whole-scene draw-item scans; validate multiple views, skinning,
-  LODs, shadows, the packed-grid draw cap and the large-grid performance
-  target. Coordinate with #224.
+- [ ] Deliver tile-local spatial traversal and incremental draw
+  publication instead of whole-scene draw-item scans; validate multiple
+  views, skinning, LODs, shadows, the packed-grid draw cap and the
+  large-grid performance target.
 - [ ] Add automatic apphost Map discovery/selection, Map editing UI,
   full cutover/removal of legacy cluster paths and end-to-end tests.
   See `docs/world_tile_streaming_epochs.md` and
@@ -997,7 +972,7 @@ long-term work elsewhere in this TODO is not duplicated here.
   provider needed to switch the production map bridge.
 - [ ] Publish non-render component lifetime/bindings (animation,
   audio, physics, GI/schema) and implement bake/lightmap/LOD parity,
-  direct GPU scene updates, static BVH reuse and safe delayed releases.
+  incremental GPU-side publication, static BVH reuse and safe delayed releases.
 - [ ] Finish the legacy-Cluster coexistence/cutover, including
   incremental Cluster append/remove, entity ownership and eventual
   dynamic-Cluster retirement; do not remove fail-closed protections

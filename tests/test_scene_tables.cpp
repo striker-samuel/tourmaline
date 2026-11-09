@@ -276,7 +276,6 @@ int main() {
         Check(recalculateGlobalTransformsDynamic(s), "mutation: dynamic recalc");
         Check(Near(s.globalTransform[0][3].x, 3.0f) && Near(s.globalTransform[2][3].x, 7.0f),
               "mutation: both dynamic roots updated");
-        Check(s.gpuSceneGlobalChanges.size() == 2, "mutation: GPU journal contains both roots");
         glm::mat4 invalid = moved0;
         invalid[0][0] = std::numeric_limits<float>::quiet_NaN();
         Check(!tour::scene::SetLocalTransform(s, root0, invalid) &&

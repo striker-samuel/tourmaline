@@ -58,7 +58,7 @@
 
 namespace editor {
 // Dock windows own their placement and tabs. RenderFrame consumes the
-// last completed "Viewport" client rectangle for its GPU scene pass.
+// last completed "Viewport" client rectangle for its main-world raster pass.
 
 // Coalesced drag helpers (member functions for world access).
 void EditorApp::DrawBrushPresetControls(bool scatter) {

@@ -9,12 +9,12 @@ DXC and spirv-dis (SPIRV-Tools) are available. No graphics device is needed.
 
 ## Annotations
 
-Place GPU_STRUCT_NAME(GpuSceneMesh) immediately before the C++ struct
+Place GPU_STRUCT_NAME(Identifier) immediately before the C++ struct
 declaration and include Engine/Renderer/gpu_struct_name.h. The macro is
 empty and does not change layout. The C++ type may have another name.
 
-In HLSL, place // GPU_STRUCT_NAME(GpuSceneMesh) immediately before
-the corresponding struct GpuSceneMesh declaration.
+In HLSL, place // GPU_STRUCT_NAME(Identifier) immediately before
+the corresponding struct declaration.
 
 Each shader identifier must occur exactly once in each language.
 Unpaired structs are failures rather than silently skipped.

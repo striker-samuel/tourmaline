@@ -77,7 +77,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     // after a topology edit or an 8 m camera-cell move.
     const bool eyeFinite = std::isfinite(cameraWorldPos.x) && std::isfinite(cameraWorldPos.y) &&
                            std::isfinite(cameraWorldPos.z);
-    if (m_world == &world && m_worldRevision == world.gpuSceneTopologyRevision &&
+    if (m_world == &world && m_worldRevision == world.sceneTopologyRevision &&
         m_cachedEyeValid && eyeFinite && glm::distance(m_cachedEye, cameraWorldPos) < 8.0f)
         return Ready();
 
@@ -216,7 +216,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         if (instanceBuffer.empty() || sampleBuffer.empty() || headerBuffer.empty()) {
             Clear();
             m_world = &world;
-            m_worldRevision = world.gpuSceneTopologyRevision;
+            m_worldRevision = world.sceneTopologyRevision;
             m_cachedEye = cameraWorldPos;
             m_cachedEyeValid = eyeFinite;
             return false;
@@ -239,7 +239,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         if (gpuHeader.instancesAddress == 0 || gpuHeader.samplesAddress == 0) {
             Clear();
             m_world = &world;
-            m_worldRevision = world.gpuSceneTopologyRevision;
+            m_worldRevision = world.sceneTopologyRevision;
             m_cachedEye = cameraWorldPos;
             m_cachedEyeValid = eyeFinite;
             return false;
@@ -257,7 +257,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     m_instanceCount = uint32_t(instances.size());
     ++m_generation;
     m_world = &world;
-    m_worldRevision = world.gpuSceneTopologyRevision;
+    m_worldRevision = world.sceneTopologyRevision;
     m_cachedEye = cameraWorldPos;
     m_cachedEyeValid = eyeFinite;
     if (m_instanceCount)

@@ -935,13 +935,10 @@ void RunConfig::WarnUnknown() {
         "TOURMALINE_SHADER_RELOAD",
         "TOURMALINE_SHADER_RELOAD_SRC",
         "TOURMALINE_SHADER_SWAP",
-        // GPU-scene / skinning debug pins (the KD diagnostic family, the
-        // raster/temporal A-B switches, the validate bridge, the deformed
-        // heap dump) - one-shot static latches read directly at their
-        // sites, documented diagnostic knobs rather than RunConfig state.
-        "TOURMALINE_GPU_SCENE_RASTER",
-        "TOURMALINE_GPU_SCENE_TEMPORAL",
-        "TOURMALINE_GPU_SCENE_VALIDATE",
+        // Skinning / GfxFilter debug pins (the KD diagnostic family and
+        // the deformed-bounds heap dump) - one-shot static latches read
+        // directly at their sites, documented diagnostic knobs rather
+        // than RunConfig state.
         "TOURMALINE_KD",
         "TOURMALINE_KD_NOMESH",
         "TOURMALINE_KD_NOSEED",

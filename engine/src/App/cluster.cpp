@@ -548,8 +548,9 @@ bool smvk::Cluster::SampleAnimationPose(float dt) {
                     glm::scale(glm::mat4(1.0f), S);
             break;
         }
-        // A scene mutation must pass through the journal-producing API;
-        // direct localTransform writes can leave GPU-scene mirrors stale.
+        // A scene mutation must pass through SetLocalTransform; direct
+        // localTransform writes leave the derived global transforms
+        // (and every per-frame consumer of them) stale.
         if (!tour::scene::SetLocalTransform(scene, MakeNodeHandle(scene, t.joint), local))
             return false;
     }

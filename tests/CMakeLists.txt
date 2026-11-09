@@ -1326,14 +1326,6 @@ if(TARGET vulkan_headers_iface)
     target_link_libraries(WorldFieldsGpuTests PRIVATE vulkan_headers_iface)
 endif()
 
-# GPU-scene high/low position transport and precision-safe rebasing.
-# Headless: no renderer or Vulkan device required at runtime.
-add_executable(DoubleFloatTests test_doublefloat.cpp)
-target_link_libraries(DoubleFloatTests PRIVATE engine)
-set_target_properties(DoubleFloatTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-add_test(NAME doublefloat_tests COMMAND DoubleFloatTests)
-
 # GPU-less contracts for opt-in vertex pulling; no renderer or RHI required.
 add_executable(VertexPullTests test_vertex_pull.cpp)
 target_include_directories(VertexPullTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
@@ -1346,27 +1338,12 @@ target_include_directories(LightmapPullTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/
 set_target_properties(LightmapPullTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME lightmap_pull_tests COMMAND LightmapPullTests)
 
-# GPUIR-style persistent GPU scene tables: pure CPU record/journal
-# tests with byte-for-byte fake GPU mirrors (no Vulkan device).
-add_executable(GpuSceneDatabaseTests test_gpu_scene.cpp)
-target_link_libraries(GpuSceneDatabaseTests PRIVATE engine)
-set_target_properties(GpuSceneDatabaseTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-add_test(NAME gpu_scene_database_tests COMMAND GpuSceneDatabaseTests)
-
 # Shared spatial volume trigger semantics (headless).
 add_executable(TriggerVolumeTests test_trigger_volume.cpp)
 target_link_libraries(TriggerVolumeTests PRIVATE engine)
 set_target_properties(TriggerVolumeTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME trigger_volume_tests COMMAND TriggerVolumeTests)
-
-# GPUIR GPU Scene v2: stable World identity / transform-change bridge.
-add_executable(GpuSceneWorldTests test_gpu_scene_world.cpp)
-target_link_libraries(GpuSceneWorldTests PRIVATE engine)
-set_target_properties(GpuSceneWorldTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-add_test(NAME gpu_scene_world_tests COMMAND GpuSceneWorldTests)
 
 # Agent tooling unit tests (tools/perf_harness.py's stdlib-only suite).
 # Registered through ctest so a broken harness (e.g. the literal-\n syntax
@@ -1460,34 +1437,6 @@ set_target_properties(GameUiTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME game_ui_tests COMMAND GameUiTests)
 
-# GPU-scene mesh/LOD/submesh metadata: streaming and contiguous-span contracts.
-add_executable(GpuSceneLodTests test_gpu_scene_lod.cpp)
-target_link_libraries(GpuSceneLodTests PRIVATE engine)
-set_target_properties(GpuSceneLodTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-add_test(NAME gpu_scene_lod_tests COMMAND GpuSceneLodTests)
-
-# GPUIR-style persistent spatial leaf IDs, membership and safe bounds.
-add_executable(GpuSceneLeafTests test_gpu_scene_leaves.cpp)
-target_link_libraries(GpuSceneLeafTests PRIVATE engine)
-set_target_properties(GpuSceneLeafTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-add_test(NAME gpu_scene_leaf_tests COMMAND GpuSceneLeafTests)
-
-# CPU-only GPUIR coarse leaf selection and reference instance culling.
-add_executable(GpuSceneCandidatesTests test_gpu_scene_candidates.cpp)
-target_link_libraries(GpuSceneCandidatesTests PRIVATE engine)
-set_target_properties(GpuSceneCandidatesTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-add_test(NAME gpu_scene_candidates_tests COMMAND GpuSceneCandidatesTests)
-
-# Opt-in GPU scene instance-culling view + reference verdict parity.
-add_executable(GpuSceneValidationTests test_gpu_scene_validation.cpp)
-target_link_libraries(GpuSceneValidationTests PRIVATE engine)
-set_target_properties(GpuSceneValidationTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-add_test(NAME gpu_scene_validation_tests COMMAND GpuSceneValidationTests)
-
 # Native agent-facing tooling library: no renderer/device required.
 add_executable(ToolingApiTests test_tooling_api.cpp)
 target_link_libraries(ToolingApiTests PRIVATE tourmaline::tooling)
@@ -1574,38 +1523,3 @@ target_link_libraries(SceneMemoryBindingsTests PRIVATE engine)
 set_target_properties(SceneMemoryBindingsTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME scene_memory_bindings_tests COMMAND SceneMemoryBindingsTests)
-
-# CPU-only ABI contract: compare annotated C++ POD layouts to DXC SPIR-V.
-find_package(Python3 COMPONENTS Interpreter QUIET)
-find_program(TOURMALINE_SPIRV_DIS NAMES spirv-dis spirv-dis.exe
-    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
-if(Python3_Interpreter_FOUND AND DXC AND TOURMALINE_SPIRV_DIS)
-    add_test(NAME gpu_struct_layout_tests
-        COMMAND "${Python3_EXECUTABLE}" "${TOURMALINE_SOURCE_DIR}/tools/check_gpu_struct_layout.py"
-            --cxx "${CMAKE_CXX_COMPILER}"
-            --dxc "${DXC}"
-            --spirv-dis "${TOURMALINE_SPIRV_DIS}")
-else()
-    message(WARNING "GPU struct layout tests disabled: Python3, DXC and spirv-dis are required")
-endif()
-
-# Verify the standard and opt-in debug empty-command ABI in independent builds.
-foreach(_suffix IN ITEMS normal sentinel)
-    add_executable(GpuSceneEmptySentinel_${_suffix} test_gpu_scene_empty_sentinel.cpp)
-    target_link_libraries(GpuSceneEmptySentinel_${_suffix} PRIVATE engine)
-    if(_suffix STREQUAL "sentinel")
-        target_compile_definitions(GpuSceneEmptySentinel_${_suffix} PRIVATE
-            GS_RASTER_DEBUG_EMPTY_COMMAND_SENTINEL=1)
-    endif()
-    set_target_properties(GpuSceneEmptySentinel_${_suffix} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-    add_test(NAME gpu_scene_empty_sentinel_${_suffix}
-        COMMAND GpuSceneEmptySentinel_${_suffix})
-endforeach()
-
-# CPU oracle: atomics-free 4-class GPU PSO count/prefix/scatter contract.
-add_executable(GpuScenePsoPrefixTests test_gpu_scene_pso_prefix.cpp)
-target_link_libraries(GpuScenePsoPrefixTests PRIVATE engine)
-set_target_properties(GpuScenePsoPrefixTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-add_test(NAME gpu_scene_pso_prefix_tests COMMAND GpuScenePsoPrefixTests)

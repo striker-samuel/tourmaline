@@ -231,16 +231,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
                          smvk::LogicalImageViewHandle depthLogical,
                          uint32_t depthBindlessIndex,
                          const char* passName = "GfxHiz");
-    // GPU-scene-only frames still need a flight-safe HZB slot, without
-    // spending CPU time expanding any GfxFilter draws or seed lists.
-    // Called only when the regular GfxFilter AppendPasses was skipped.
-    [[nodiscard]] bool PrepareGpuSceneHiz(smvk::ResourceManager& ctx,
-                                          smvk::RenderGraph& rg,
-                                          const smvk::RenderView& view,
-                                          const glm::vec3& eye,
-                                          uint32_t flight,
-                                          uint32_t width,
-                                          uint32_t height);
     // SPD-vs-per-mip culling HZB verification (TOURMALINE_HIZ_SPD_VERIFY):
     // AppendHizPasses arms this when the frame recorded BOTH the per-mip
     // live pyramid and the SPD shadow; the host consumes it post-Execute
@@ -539,12 +529,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
         cullOverride_ = true;
         cullView_ = viewIndex;
         cullEye_ = eye;
-    }
-    // Main-view only: omit GPU-owned static opaque nodes from the
-    // legacy filtered batch/seed/remainder chain. Shadow views still
-    // consume every caster until GPU-scene per-light passes exist.
-    void SetGpuRasterOwnership(std::function<bool(NodeId)> owns) {
-        gpuRasterOwnsNode_ = std::move(owns);
     }
     void ClearCullOverride() {
         cullOverride_ = false;
@@ -992,7 +976,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     std::vector<std::vector<uint32_t>> lodMeshMap_;
     // Debug culling-freeze override (see SetCullOverride). Read once per
     // AppendPasses for the FilterMainView call only.
-    std::function<bool(NodeId)> gpuRasterOwnsNode_{};
     bool cullOverride_ = false;
     uint32_t cullView_ = UINT32_MAX;
     glm::vec3 cullEye_{0.0f};

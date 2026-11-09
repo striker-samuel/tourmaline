@@ -485,7 +485,7 @@ propose splitting them again.
 | Frame renderer | `engine/Renderer/WorldRenderer.h` | `Configure(passes, run)` (parse-once `RunConfig`); `IFrameRenderer::AppendPasses(AppFrameContext)` |
 | Run config | `engine/App/RunConfig.h+.cpp` | `Parse()` once in `main`, `Log()`, `WarnUnknown()`; new knobs go here first |
 | Rendergraph | `engine/Rendergraph/*.h`, impl in `engine/src/Vulkan/impl.cpp` | `Add*Hints` barrier discipline; `RendergraphContractTests` |
-| GPU scene | `engine/App/world.h+cluster.h`, `engine/Scene/scene.h` | `ResolveAndFixup_clusters` rebuilds `drawItems/flagLists/lodChains` |
+| Scene tables | `engine/App/world.h+cluster.h`, `engine/Scene/scene.h` | `ResolveAndFixup_clusters` rebuilds `drawItems/flagLists/lodChains` |
 | Tour | `engine/Asset/tour.h+.cpp`, `editor/src/editor_commands.cpp` | `CmdToTour`/`TourToCmd`/`ApplyTourToCluster`/`ReplayTourDoc`; `TestTourFuzz` |
 | Memory | `engine/Memory/memory.h+linear_vector.h` | `FrameVector` = FrameScratch (reset/frame); `UploadInFlightVector` = monotonic (never reset while live); `ProcessVector` = process (ThreadPool ring) |
 | GPU-driven filter | `engine/Renderer/gfx_filter.h` | filtered main view ALWAYS ON (no runtime off; the direct leg stays as the unfilterable/LOD-far fallback); `m_useGfxMesh`/`GpuCullEnabled` stay setup-time; `MeshDrawEligible` truth table in contract tests |

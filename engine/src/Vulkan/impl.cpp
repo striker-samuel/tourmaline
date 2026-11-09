@@ -3883,13 +3883,6 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
         vkDestroySampler(device_, m_defaultShadowSampler, nullptr);
     }
     memset(defaultDescriptorSets_, 0, sizeof(defaultDescriptorSets_));
-    //
-    // GPU-scene holders retire before ResourceManager teardown, and all
-    // deferred buffer destroys were drained above. Release pools only
-    // after their allocations, before destroying the VMA allocator.
-    for (VmaPool pool : m_gpuScenePools)
-        if (pool != VK_NULL_HANDLE)
-            vmaDestroyPool(m_allocator, pool);
     vmaDestroyAllocator(m_allocator);
 };
 
@@ -8365,8 +8358,7 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
     VkDeviceSize size,
     BufferType bufferType,
     const char* debugName,
-    VmaAllocationCreateFlags vmaAllocFlags,
-    bool gpuScenePool) {
+    VmaAllocationCreateFlags vmaAllocFlags) {
     Buffer desc{};
     VkBufferCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     ci.size = size;
@@ -8415,41 +8407,6 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
         aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
     }
 
-    // GPU-scene tables use 64 KiB row pages in ONE contiguous BDA buffer.
-    // Group their VMA allocations into separate TLSF bins, sized to hold
-    // several buffers of the bin's maximum size. Do not use the linear
-    // pool algorithm: flight-buffer replacement/free order is arbitrary.
-    // Larger (>16 MiB) tables use ordinary VMA to avoid a huge fixed block.
-    if (gpuScenePool && bufferType == BufferType_Storage && size != 0) {
-        constexpr VkDeviceSize MiB = 1024ull * 1024ull;
-        constexpr VkDeviceSize limits[] = {1 * MiB, 4 * MiB, 16 * MiB};
-        constexpr VkDeviceSize blocks[] = {4 * MiB, 16 * MiB, 64 * MiB};
-        for (uint32_t bin = 0; bin < 3; ++bin) {
-            if (size > limits[bin])
-                continue;
-            uint32_t memoryTypeIndex = UINT32_MAX;
-            if (vmaFindMemoryTypeIndexForBufferInfo(
-                    m_allocator, &ci, &aci, &memoryTypeIndex) != VK_SUCCESS)
-                break;
-            if (m_gpuScenePools[bin] == VK_NULL_HANDLE) {
-                VmaPoolCreateInfo pci{};
-                pci.memoryTypeIndex = memoryTypeIndex;
-                pci.blockSize = blocks[bin];
-                // Lazy pool creation: no committed pages until a buffer
-                // actually requests this bin. Failure falls back to the
-                // normal VMA allocator rather than dropping the frame.
-                VmaPool created = VK_NULL_HANDLE;
-                if (vmaCreatePool(m_allocator, &pci, &created) != VK_SUCCESS)
-                    break;
-                m_gpuScenePools[bin] = created;
-                m_gpuScenePoolMemoryTypes[bin] = memoryTypeIndex;
-            }
-            if (m_gpuScenePoolMemoryTypes[bin] == memoryTypeIndex)
-                aci.pool = m_gpuScenePools[bin];
-            break;
-        }
-    }
-
     // Allocation ledger: capture the EXACT committed bytes (the out-info
     // vmaCreateBuffer already writes) + the creation type + the
     // arena-owned name (buffers now name-track like images - see
@@ -8457,14 +8414,6 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
     VmaAllocationInfo ledgerInfo{};
     VkResult allocationResult =
         vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vkBuffer, &desc.vma_alloc, &ledgerInfo);
-    if (allocationResult != VK_SUCCESS && aci.pool != VK_NULL_HANDLE) {
-        // A pool may be unable to grow its fixed-size block on a memory-
-        // constrained device. Do not make GPU scene allocation LESS robust
-        // than the ordinary RHI path: retry through VMA's default allocator.
-        aci.pool = VK_NULL_HANDLE;
-        allocationResult =
-            vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vkBuffer, &desc.vma_alloc, &ledgerInfo);
-    }
     VK_CHECK(allocationResult);
     desc.allocBytes = ledgerInfo.size;
     desc.type = bufferType;

@@ -59,11 +59,11 @@ full-radius coverage.
 revision on edits.
 
 The integration is intentionally feature-off until configured, and
-the stock GfxFilter and GPU-scene diagnostic paths are unchanged.
+the stock GfxFilter diagnostic paths are unchanged.
 The new Main renderer consumption is diagnostic-unlit only. Its visible scratch
 is separated by frame in flight. Complete
 lit-material binding, motion-vector/prepass/shadow submissions,
-authoritative double-world camera transforms, GPU-scene LOD
+authoritative double-world camera transforms, GfxFilter LOD
 transitions and streaming budgets remain future work.
 
 ## Validation before treating it as a benchmark

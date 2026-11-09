@@ -1,21 +1,20 @@
-# GfxFilter dynamic capacities and GPU-scene default
+# GfxFilter dynamic capacities and the main-world GPU default
 
-## Default GPU-scene raster
+## The main-world GPU default
 
-GPU-scene Main/depth is **enabled by default** for the canonical
-source-admitted static opaque subset delivered by #276. The existing
-legacy GfxFilter and GPU-skinned pipeline handles all incompatible
-objects. `TOURMALINE_GPU_SCENE_RASTER=0` explicitly opts out for
-debugging/A-B parity. GPU-scene validation mode remains separate.
-No other per-pass admission, shadow, material or motion-vector behavior
-is changed in this stage.
+GfxFilter is now the **unconditional main-world filtering/raster path**:
+the GPU-scene raster experiment has been removed in full (see
+docs/renderer/remove_gpuscene_migration.md), so there is no separate
+GPU-scene lane and no raster opt-out. The filtered main view is always
+on, with the direct leg remaining as the unfilterable/LOD-far fallback.
+The dynamic-capacity GPU default documented here is GfxFilter's own.
 
 ## Legacy dynamic-capacity contract
 
 The old CPU candidate fatal was triggered by a hardcoded 262,144
 `kMaxBatchSlots` workload and the 65,535 `kMaxDraws` draw limit;
 survivors have a separate `kMaxBatches=65536` fixed index-monoblock
-budget. **The coordinated cutover above is LANDED**: the runtime rings
+budget. **The coordinated capacity cutover is LANDED**: the runtime rings
 are page-planned per (view, flight), the HLSL consumes runtime capacity
 fields through the pushes, and the fixed caps' fail-closed successors
 are the declared shader-array bounds. The survivor ring stays
@@ -78,14 +77,15 @@ are RUNTIME-capacity allocations:
 
 ## Hardware verification (RTX 5070 Ti, 2026-11-08)
 
-- **Sponza (static, LODs, shadows)**: GPU-scene default vs
-  `TOURMALINE_GPU_SCENE_RASTER=0` legacy — **0.00% differing pixels**.
+- **Sponza (static, LODs, shadows)**: the cutover A/B parity gate —
+  **0.00% differing pixels** (the retired GPU-scene-vs-legacy A/B the
+  original change was gated on).
 - **SponzaGrid32 (1024 instances)**: the default camera pushes 25,411
   draws and **1,041,498 candidate slots — 4x the retired 262,144 cap**
   (a fatal on master) — and renders cleanly through the grown rings;
   the cull-baseline JSON readback (runtime-sized) lands.
-- **Knight (skeleton + attached walk clip, animated)**: GPU-scene
-  default vs legacy — **0.00% differing pixels**, 96 frames, the full
+- **Knight (skeleton + attached walk clip, animated)**: the cutover
+  A/B parity gate — **0.00% differing pixels**, 96 frames, the full
   skinning -> GfxSkinBounds -> batch/draw cull chain on the dynamic
   table (fresh-cooked project; the pre-SMP8 knight.pak is stale).
 - **Sponza x10 (GI + shadows)**: clean 96-frame run with the shadow
@@ -100,28 +100,12 @@ are RUNTIME-capacity allocations:
 - Full ctest suite (116/116, knight_anim designed-skip) + the text
   integrity suite green.
 
-## Later renderer work
-
-These are independent of dynamic GfxFilter capacity and must be
-reviewed separately:
-
-- **Layered materials on GPU-scene raster.** Publish material layers
-  and all required FS/Forward+/G-buffer variants with screenshot
-  parity; until then layered objects use the legacy material pipeline.
-- **Remove the per-flight owner-generation mask.** Replace it with
-  canonical membership in GPU-scene instance rows / generation-stable
-  compaction or source-slot journals. Maintain exactly-once Main/depth
-  submissions, O(dirty) updates and fail-closed source retirement.
-  Do not simply remove the shader mask test while the instance-cull
-  candidate stream includes legacy-owned objects.
-
 ## Verification
 
-The default change required real GPU static-only and mixed skinned,
-masked, lightmapped and LOD screenshot parity, plus Vulkan validation
-(see "Hardware verification" above — static, instanced/LOD and skinned
-are green; layered materials stay on the legacy pipeline by the later-
-work gate below). The dynamic-capacity helper has headless boundary
-tests; the runtime cutover is hardware-verified through the runs above.
-The shadow SURVIVOR ring (kMaxBatches) remains the separately-budgeted
-open item.
+The dynamic-capacity cutover was gated by real GPU static-only and
+mixed skinned, masked, lightmapped and LOD screenshot parity, plus
+Vulkan validation (see "Hardware verification" above — static,
+instanced/LOD and skinned are green). The dynamic-capacity helper has
+headless boundary tests; the runtime cutover is hardware-verified
+through the runs above. The shadow SURVIVOR ring (kMaxBatches) remains
+the separately-budgeted open item.

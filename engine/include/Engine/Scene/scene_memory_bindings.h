@@ -34,8 +34,6 @@ enum class Semantic : uint32_t {
     Lightmap,
     DitherCloseup,
     CastsVolumetricShadow,
-    GpuSceneGlobalChanges,
-    GpuSceneGlobalQueued,
     MeshRows,
     MaterialRows,
     LightRows,
@@ -160,10 +158,6 @@ inline constexpr uint32_t InvalidHierarchyLink = 0xFFFFFFFFu;
         return MakeView(semantic, scene.ditherCloseup, ScalarFormat::UInt8);
     case Semantic::CastsVolumetricShadow:
         return MakeView(semantic, scene.castsVolumetricShadow, ScalarFormat::UInt8);
-    case Semantic::GpuSceneGlobalChanges:
-        return MakeView(semantic, scene.gpuSceneGlobalChanges, ScalarFormat::UInt32);
-    case Semantic::GpuSceneGlobalQueued:
-        return MakeView(semantic, scene.gpuSceneGlobalQueued, ScalarFormat::UInt8);
     case Semantic::MeshRows:
         return MakeView(semantic, scene.tables.meshes);
     case Semantic::MaterialRows:
@@ -245,7 +239,6 @@ struct Layout {
     case Semantic::Lightmap:
     case Semantic::DitherCloseup:
     case Semantic::CastsVolumetricShadow:
-    case Semantic::GpuSceneGlobalQueued:
         info.nodeIndexed = true;
         break;
     default:
@@ -268,8 +261,6 @@ inline constexpr auto AllSemantics = std::to_array<Semantic>({Semantic::LocalTra
                                                               Semantic::Lightmap,
                                                               Semantic::DitherCloseup,
                                                               Semantic::CastsVolumetricShadow,
-                                                              Semantic::GpuSceneGlobalChanges,
-                                                              Semantic::GpuSceneGlobalQueued,
                                                               Semantic::MeshRows,
                                                               Semantic::MaterialRows,
                                                               Semantic::LightRows,
