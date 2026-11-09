@@ -11,6 +11,7 @@
 // owned by the scene registry; do not publish a budget from a newer scene
 // revision alongside an older GPU-scene work snapshot.
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <unordered_map>
