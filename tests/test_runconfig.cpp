@@ -192,6 +192,24 @@ int main() {
     UnsetVar("TOURMALINE_GEOMETRY_BUDGET_MB");
     UnsetVar("TOURMALINE_GEOMETRY_EVICT_IDLE");
 
+    // Gfx temporal seed-split kill pin: exact "0" kills (the disocclusion
+    // diagnostic), anything else keeps the split (histories default on).
+    SetVar("TOURMALINE_GFX_SEED_HISTORY", "0");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(c.seedHistoryKilled, "runconfig.parse-seed-history-kill");
+    }
+    SetVar("TOURMALINE_GFX_SEED_HISTORY", "1");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(!c.seedHistoryKilled, "runconfig.parse-seed-history-on");
+    }
+    UnsetVar("TOURMALINE_GFX_SEED_HISTORY");
+    {
+        engine::RunConfig c = engine::RunConfig::Parse();
+        Check(!c.seedHistoryKilled, "runconfig.parse-seed-history-default-on");
+    }
+
     // Invalid pins warn (stderr) and leave the authored scene winning.
     SetVar("TOURMALINE_AA", "bogus");
     SetVar("TOURMALINE_SSR", "maybe");

@@ -203,6 +203,13 @@ struct RunConfig {
     bool meshSet = false; // renderer-level pin (WorldRenderer.cpp:909)
     bool mesh = true;
     bool streamingKilled = false; // STREAMING=0 full-resident
+    // seedHistoryKilled: GFX_SEED_HISTORY=0 disables the gfx chain's
+    // temporal seed/remainder split — every frustum-kept slot draws in the
+    // seed depth pass. The disocclusion diagnostic: if an over-cull
+    // artifact disappears under it, the temporal history classification
+    // (prev-kept bits) is implicated. Unset = the split runs on the
+    // filter's final-visibility history.
+    bool seedHistoryKilled = false;
     // ---- geometry LOD streaming (geometry_streamer.h; the serializer
     // reads the env DIRECTLY at cluster load - the gate must decide at
     // parse time what defers - this field only carries the log/known-
