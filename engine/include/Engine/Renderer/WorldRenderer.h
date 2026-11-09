@@ -2392,6 +2392,8 @@ class WorldRenderer : public IRenderer {
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterMaskedGbufferFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterMaskedDepthProgram{};
     smvk::ShaderProgram m_gpuSceneRasterMaskedGbufferProgram{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterMaskedA2cFsModule{};
+    smvk::ShaderProgram m_gpuSceneRasterMaskedA2cProgram{};
     // The validation-only verdict target is a BDA write. Register its
     // per-flight physical buffer with the rendergraph so compute writes are
     // represented in graph synchronization and not just a raw device address.
