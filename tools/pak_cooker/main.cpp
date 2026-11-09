@@ -91,7 +91,6 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/navmesh.h> // ParseAudioGraphText (the --content audiograph gate)
 #include <Engine/Asset/pak.h>
-#include <Engine/WorldPartition/env_tile_pak.h>
 #include <Engine/Asset/sdf.h> // the --content SDF validation gate
 #include <Engine/Asset/shape_asset.h>
 #include <Engine/Asset/spriteset.h>
@@ -108,6 +107,7 @@
 #include <Engine/Utils/shader_library.h> // DetectBytecode (the --shaders pack gate)
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/Vfs/vfs.h>
+#include <Engine/WorldPartition/env_tile_pak.h>
 #include <Engine/WorldPartition/map_text.h>
 #include <Engine/WorldPartition/map_tile_pak.h>
 #include <artifact_cache/artifact_cache.h>
@@ -380,6 +380,15 @@ std::vector<std::string> BakeStems(const Args& args) {
     for (const std::string& art : args.inVfsList)
         push(art);
     push(args.inVfs); // tour-reference identity (set in main)
+    // The tour's OWN stem: GiBaker --regular-out names the manifest for
+    // the scene id, whose default IS the tour stem. Without this row a
+    // tour-stem-named regular bake silently missed its own pak whenever
+    // the tour stem differed from the pak and artifact stems (the
+    // sponza atrium only ever worked because sponza ~= Sponza through
+    // Windows case-insensitivity; the grid's SponzaGrid/sponza_grid/
+    // Sponza trio matched NOTHING and the pak published with no
+    // regmanifest, no error anywhere - issue #291).
+    push(args.tour);
     if (stems.empty())
         stems.push_back("pak");
     return stems;
@@ -2857,18 +2866,17 @@ int Run(const PakArgs& c) {
         const auto extent = engine::worldpartition::ComputeEnvGridExtent(
             scene, engine::worldpartition::EnvGridBounds{glm::vec3(0), glm::vec3(0)});
         engine::worldpartition::WorldEnvTiles baked;
-        if (!baked.Build(scene, extent.gridMin, extent.dimX, extent.dimZ,
-                         extent.yMin, extent.yMax) ||
+        if (!baked.Build(
+                scene, extent.gridMin, extent.dimX, extent.dimZ, extent.yMin, extent.yMax) ||
             !tour::envcook::AddEnvTiles(
                 writer, tour::envcook::SceneWorldId(sceneNames[i]), baked)) {
-            tool::err() << "Environment page cook failed for scene '"
-                        << sceneNames[i] << "'" << std::endl;
+            tool::err() << "Environment page cook failed for scene '" << sceneNames[i] << "'"
+                        << std::endl;
             return 1;
         }
-        tool::out() << "Cooked exact environment candidate pages for scene '"
-                    << sceneNames[i] << "' (" << baked.DimX() << "x"
-                    << baked.DimZ() << " subcells, " << baked.RecordCount()
-                    << " immutable looks/shapes)\n";
+        tool::out() << "Cooked exact environment candidate pages for scene '" << sceneNames[i]
+                    << "' (" << baked.DimX() << "x" << baked.DimZ() << " subcells, "
+                    << baked.RecordCount() << " immutable looks/shapes)\n";
     }
 
     // Optional Map placement pages share this pak with local Scene assets.

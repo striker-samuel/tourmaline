@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +25,49 @@
 #include <sstream>
 #include <system_error>
 #include <vector>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+#else
+#include <signal.h>
+#include <unistd.h>
+#endif
+
+namespace {
+
+// Build-lock liveness (issue #291): the lock's owner.pid names the
+// builder; a PROVABLY DEAD owner is auto-recovered, anything ambiguous
+// (live PID, missing/corrupt row) keeps the original fail-closed
+// behavior. Platform note: a PID that was recycled to an unrelated
+// process reads as ALIVE - the conservative direction (fail closed).
+unsigned long long CurrentPid() {
+#if defined(_WIN32)
+    return static_cast<unsigned long long>(GetCurrentProcessId());
+#else
+    return static_cast<unsigned long long>(getpid());
+#endif
+}
+
+bool ProcessAlive(unsigned long long pid) {
+    if (pid == 0)
+        return false;
+#if defined(_WIN32)
+    const HANDLE process =
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (!process)
+        return false; // no such process (or access denied - treat dead)
+    DWORD exitCode = 0;
+    const bool exited = !GetExitCodeProcess(process, &exitCode) || exitCode != STILL_ACTIVE;
+    CloseHandle(process);
+    return !exited;
+#else
+    return kill(static_cast<pid_t>(pid), 0) == 0 || errno != ESRCH;
+#endif
+}
+
+} // namespace
 
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/cluster_serializer.h>
@@ -499,13 +543,18 @@ bool ExecuteBuildPlan(const Project& project,
     // not merely the final manifest rename, to prevent mixed generations.
     // The lock intentionally fails closed after a hard crash: recovery is
     // an explicit operator action after verifying no other builder runs.
+    // The ONE self-healing case (issue #291): the lock carries its
+    // builder's PID in owner.pid, and a PROVABLY DEAD owner (the killed
+    // build - no such process) is auto-recovered; a live PID, or a
+    // missing/corrupt PID row (the hard-crash case), keeps the original
+    // fail-closed behavior.
     struct ProjectBuildLock {
         fs::path directory;
         ~ProjectBuildLock() {
             if (directory.empty())
                 return;
             std::error_code ignored;
-            fs::remove(directory, ignored);
+            fs::remove_all(directory, ignored);
         }
     } buildLock;
     {
@@ -518,10 +567,45 @@ bool ExecuteBuildPlan(const Project& project,
         }
         const fs::path lockDir = derived / ".build.lock";
         if (!fs::create_directory(lockDir, lockEc)) {
-            err = "project build already active or stale .build.lock; "
-                  "verify no builder is running before manual recovery: " +
-                  lockDir.generic_string();
-            return false;
+            // Stale-lock triage: a dead-PID owner is provably not running
+            // (this IS the "verify no builder is running" the message
+            // demands); anything ambiguous keeps failing closed.
+            const fs::path pidPath = lockDir / "owner.pid";
+            std::error_code readEc;
+            std::string pidText;
+            if (fs::exists(pidPath, readEc) && fs::is_regular_file(pidPath, readEc)) {
+                std::ifstream pidIn(pidPath);
+                std::getline(pidIn, pidText);
+            }
+            unsigned long long ownerPid = 0;
+            const bool havePid =
+                !pidText.empty() &&
+                (std::from_chars(pidText.data(), pidText.data() + pidText.size(), ownerPid).ec ==
+                 std::errc{});
+            bool recovered = false;
+            if (havePid && ownerPid != 0 && !ProcessAlive(ownerPid)) {
+                std::error_code rmEc;
+                fs::remove_all(lockDir, rmEc);
+                if (!rmEc && fs::create_directory(lockDir, lockEc)) {
+                    recovered = true;
+                    std::fprintf(stderr,
+                                 "[build] recovered stale .build.lock (owner PID %llu is not "
+                                 "running)\n",
+                                 ownerPid);
+                }
+            }
+            if (!recovered) {
+                err = "project build already active or stale .build.lock; "
+                      "verify no builder is running before manual recovery: " +
+                      lockDir.generic_string();
+                return false;
+            }
+        }
+        {
+            // Record THIS builder so the next triage can prove us dead.
+            const fs::path pidPath = lockDir / "owner.pid";
+            std::ofstream pidOut(pidPath, std::ios::trunc);
+            pidOut << CurrentPid() << "\n";
         }
         buildLock.directory = lockDir;
     }
