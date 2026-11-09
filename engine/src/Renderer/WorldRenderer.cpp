@@ -15192,7 +15192,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             const bool sceneMaskedA2c =
                 useMsaa && m_msaaAlphaToCoverage &&
                 m_gpuSceneRasterMaskedA2cProgram.shaderCount == 2;
-            const auto& sceneMaskedProgram =
+            auto& sceneMaskedProgram =
                 sceneMaskedA2c ? m_gpuSceneRasterMaskedA2cProgram : m_gpuSceneRasterProgram;
             const auto sceneMaskedMsaa =
                 sceneMaskedA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
