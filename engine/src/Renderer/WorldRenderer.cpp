@@ -11627,7 +11627,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     !meshletState.meshesBuffer.empty() &&
                     !meshletState.clusterBuffer.empty() &&
                     !meshletState.meshesLogical.empty() &&
-                    !meshletState.clusterLogical.empty();
+                    !meshletState.clusterLogical.empty() &&
+                    !meshletState.meshes.empty() &&
+                    !meshletState.clusters.empty() &&
+                    meshletState.meshes.size() <= 65535u &&
+                    meshletState.clusters.size() <= 4194304u &&
+                    m_gpuSceneDatabase.instances.Size() <= 4194304u &&
+                    m_context->GetBufferDeviceAddress(meshletState.meshesBuffer) != 0u &&
+                    m_context->GetBufferDeviceAddress(meshletState.clusterBuffer) != 0u;
                 const bool meshletBuild =
                     sGpuSceneMeshlets && gpuSceneRasterMode && meshletBuffersReady &&
                     m_gpuSceneRasterMeshletBuildProgram.shaderCount == 1 &&
