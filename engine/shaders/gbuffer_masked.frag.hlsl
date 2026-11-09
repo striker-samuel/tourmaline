@@ -30,6 +30,9 @@ struct PSIn
     // is inside-out for the cloth backs and the SSR/SSGI traces march
     // reflections off inverted normals.
     bool isFrontFace : SV_IsFrontFace;
+#ifdef GPU_SCENE_GBUFFER
+    [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
+#endif
 };
 
 struct PSOut
@@ -65,7 +68,12 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
             discard;
     }
 
-    MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
+#ifdef GPU_SCENE_GBUFFER
+    const uint materialId = IN.meshMaterial;
+#else
+    const uint materialId = pc.materialId;
+#endif
+    MaterialValues mat = pc.bMats.Get().mats[materialId];
 
     // Alpha test (mirrors shadow_body.hlsli line-for-line — the leaf
     // SHAPES live in the baseColor texture's alpha, NOT the factor):
@@ -123,6 +131,6 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         f0Chroma = saturate(f0Chroma * baseTexel2);
     }
     OUT.gbuffer2 = float4(f0Chroma,
-        saturate(float(pc.materialId) / 255.0f));
+        saturate(float(materialId) / 255.0f));
     return OUT;
 }
