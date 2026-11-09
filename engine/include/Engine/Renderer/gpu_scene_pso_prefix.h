@@ -18,6 +18,32 @@ inline constexpr uint32_t kPsoPrefixGroup = 256;
 inline constexpr uint32_t kPsoPrefixMaxWork = 1'048'576;
 inline constexpr uint32_t kPsoPrefixInvalid = 0xffffffffu;
 
+// HLSL push constants for the three standalone kernels. Kept <= 128 bytes
+// (the Vulkan guaranteed minimum push-constant size) and byte-for-byte
+// matched to gpu_scene_pso_prefix_{count,scan,scatter}.cs.hlsl.
+struct PsoPrefixCountPush {
+    uint64_t work, workOffsets, geometry, aliases, blockCounts;
+    uint32_t candidateCount, workCapacity, geometryCount, aliasCount;
+    uint32_t blockCount, reserved0;
+};
+struct PsoPrefixScanPush {
+    uint64_t blockCounts, blockBases, classCounts;
+    uint32_t blockCount, commandCapacity, reserved0, reserved1;
+    uint32_t binOffsets[4], binCapacities[4];
+};
+struct PsoPrefixScatterPush {
+    uint64_t work, workOffsets, geometry, aliases, blockBases;
+    uint64_t classCounts, indirect;
+    uint32_t candidateCount, workCapacity, geometryCount, aliasCount;
+    uint32_t blockCount, commandCapacity, reserved0, reserved1;
+    uint32_t binOffsets[4], binCapacities[4];
+};
+static_assert(sizeof(PsoPrefixCountPush) == 64);
+static_assert(sizeof(PsoPrefixScanPush) == 72);
+static_assert(sizeof(PsoPrefixScatterPush) == 120);
+static_assert(offsetof(PsoPrefixScatterPush, binOffsets) == 88);
+static_assert(offsetof(PsoPrefixScatterPush, binCapacities) == 104);
+
 struct PsoPrefixPlan {
     using Counts = std::array<uint32_t, kPsoPrefixClasses>;
     Counts counts{};
