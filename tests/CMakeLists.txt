@@ -1602,3 +1602,10 @@ foreach(_suffix IN ITEMS normal sentinel)
     add_test(NAME gpu_scene_empty_sentinel_${_suffix}
         COMMAND GpuSceneEmptySentinel_${_suffix})
 endforeach()
+
+# CPU oracle: atomics-free 4-class GPU PSO count/prefix/scatter contract.
+add_executable(GpuScenePsoPrefixTests test_gpu_scene_pso_prefix.cpp)
+target_link_libraries(GpuScenePsoPrefixTests PRIVATE engine)
+set_target_properties(GpuScenePsoPrefixTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_pso_prefix_tests COMMAND GpuScenePsoPrefixTests)
