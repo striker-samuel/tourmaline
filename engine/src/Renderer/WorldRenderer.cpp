@@ -2884,6 +2884,9 @@ void WorldRenderer::onDetach() {
     // static-index-monoblock virtual regions (cluster + filtered ring).
     // Must run while the rendergraph and the static heap are alive;
     // otherwise the regions leak and VMA asserts at heap teardown.
+    m_gpuSceneTaskMeshRuntime.Destroy(*m_rendergraph);
+    m_gpuSceneTaskMeshActive = false;
+    m_gpuSceneTaskMeshPlan = {};
     m_gfxRenderer.Destroy(*m_rendergraph);
     m_selectionLineBuffer = {};
     m_debugDrawGpuLines.clear();
