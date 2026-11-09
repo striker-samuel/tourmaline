@@ -48,6 +48,7 @@ struct GsShading { uint word[GS_MAX_VERTICES * 4u]; };
 // This struct is a GPU-addressable parameter buffer, NOT push constants.
 // Both shader stages receive a short push containing its BDA, group slice
 // and raster class. Do not change its member order without an ABI check.
+struct GsTaskOffsets { uint values[GS_MAX_WORK + 1u]; };
 struct GsTaskMeshParams {
     GPU_PTR_READ(GsTaskGroups) groups;
     GPU_PTR_READ(GsWork) work;
@@ -60,6 +61,7 @@ struct GsTaskMeshParams {
     GPU_PTR_READ(GsIndices) indices;
     GPU_PTR_READ(GsPositions) positions;
     GPU_PTR_READ(GsShading) shading;
+    GPU_PTR_READ(GsTaskOffsets) taskOffsets;
     uint workCount;
     uint instanceCount;
     uint clusterCount;
@@ -70,7 +72,7 @@ struct GsTaskMeshParams {
     uint vertexCapacity;
     uint viewValid;
     uint coneEnabled;
-    uint reserved0;
+    uint workCapacity;
     uint reserved1;
 };
 struct GsTaskMeshPush {
