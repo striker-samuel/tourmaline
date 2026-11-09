@@ -1,4 +1,170 @@
-# TODO — merged-as-draft follow-up work
+# TODO — active engineering backlog and historical audit log
+
+> **Current as of 2026-11-09 (`master`, through PR #299).** The checklists in
+> **Current priorities** below are the actionable backlog. The dated PR audit
+> entries and migrated `todo.txt` below are retained for provenance, **not**
+> independently authoritative current-state checklists. A merged PR establishes
+> code landing, **not** completion of its native, GPU, or integration gates.
+>
+> Read status carefully: **LANDED** means implemented in master, **PARTIAL**
+> means foundational code exists but the production contract is incomplete,
+> **VALIDATION** means code exists but acceptance evidence is missing, and
+> **SUPERSEDED** means a newer implementation or decision replaces the old
+> instruction. Do not turn an old validation gap back into an implementation
+> task without checking the linked newer PR.
+
+## Current priorities — reconciled 2026-11-09
+
+### P0 — production correctness and architecture cutover
+
+- [ ] **GPU-scene physical geometry ownership (PARTIAL; #294/#295).**
+  Stable generation/LOD-indexed descriptor identities, per-flight publication,
+  transient-ID aliasing, and live raster-command handoff **LANDED**. Replace
+  GfxFilter's cluster-ordered physical index heap with GeometryStreamer-native
+  indexed/vertex allocation metadata; eliminate transient work IDs only after
+  consumers use stable geometry identities end to end. Implement generation-aware
+  slot reuse with flight-fenced retirement (current cap: 65,535 non-recyclable
+  geometry slots, fail-closed). Validate eviction, re-registration, multiple
+  flights, and streaming on Vulkan. See
+  `docs/gpu_scene_persistent_geometry.md`.
+- [ ] **GPU-scene raster/culling parity (PARTIAL; #280, #282–#293, #299).**
+  Eligible static GPU-scene raster is default ON (#280); dynamic GfxFilter
+  draw/candidate capacities LANDED. GPU projected-error resident LOD selection
+  (#286), double-sided indexed bins (#287), eligible alpha-masked bins (#292),
+  temporal seed/remainder + Hi-Z, and final-visibility kept-bit history (#299)
+  LANDED. Still prove hardware image correctness across masked A2C, shadows,
+  G-buffer, multi-flight/temporal transitions, sparse LOD residency, hysteresis,
+  motion stability, material revisions, and mixed legacy/GPU ownership.
+  #299 reports 117/117 ctests and pinned static-camera capture parity; that
+  does not close the wider device/scene matrix. Keep GfxFilter/legacy fallback
+  for unsupported and failed-admission sources.
+- [ ] **Production Map and World asset pipeline (PARTIAL; #231/#232/#272).**
+  Authored Map identity, SMP8 packaging, scene tile providers, world-owned direct
+  scene instances, leases, and the **default direct** `MapSceneStreaming`
+  adapter LANDED. #272 supersedes the old claim that the default adapter still
+  calls `ProjectScenes::LoadClusterFromPak`. Complete host cooked-scene
+  decoding/resource-component resolver, independent physical asset pools and
+  GPU-resident bindings, async IO/decode, dependency/byte/upload budgets,
+  predictive prefetch/hysteresis, cancellation-safe completion, transactional
+  activation/retirement and GPU-fence-safe release. The opt-in legacy adapter
+  remains for compatibility. See `docs/world_tile_streaming_epochs.md`,
+  `docs/map_streaming_integrator.md` and
+  `docs/incremental_world_scene_instances.md`.
+- [ ] **Distant packed-grid sky-only output (#234; regression status
+  UNVERIFIED on current master).** Reproduce near/far cases on Vulkan with
+  synchronized *complete* indirect-command and counter readback, determine
+  whether the regression remains after newer GPU-scene default/admission and
+  GfxFilter capacity changes, fix only the confirmed cause, then rerun
+  visually valid `TOURMALINE_MESH=0`/mesh and grid/grid32 captures.
+  Historical sky-plus-sliver timings are not full-scene benchmarks.
+  See `docs/renderer/gfxfilter_far_view_investigation.md`.
+- [ ] **Cooked static mesh BVHs and spatial integrity (#231/#232).**
+  Cook/serialize/reuse multi-LOD scene/static mesh BVHs with conservative
+  transforms/cross-cell bounds and deterministic recooks; validate malformed
+  leaves, finite transforms, CRC/endian/alignment, tall objects and shared
+  asset lifetimes across tile/pak unload. Existing placement codecs and lease
+  unit tests do not establish production acceptance.
+
+### P1 — incomplete integration and design work
+
+- [ ] **GPU-scene compact PSO submissions (#296, OPEN DRAFT).**
+  Four-bin fixed indirect ranges remain the live implementation. PR #296
+  introduces adaptive per-source budget accounting and experimental wave append,
+  **not** an enabled renderer cutover. Integrate per-flight budget snapshots,
+  compact allocations, barriers, count-buffer indirect submissions,
+  temporal/depth/Hi-Z consumers, no-drop overflow fallback, DXC/Vulkan checks,
+  and frame-time/image parity before enabling.
+- [ ] **Scene mutation journaling (#182).** Complete remaining direct
+  local/global transform caller classification/migration and deterministic +
+  randomized CPU/GPU parity for reparent, remove/reuse, transform, visibility
+  and binding mutations. The checked setter/animation migration are LANDED.
+- [ ] **WorldRenderer and public RHI boundary (#191, #298 OPEN DRAFT).**
+  #191's config/pass-descriptor extraction is **merged**, not unmerged.
+  Finish orchestration extraction, public API/interface ownership, renderer/RHI
+  seam and migration gates described in the legacy namespace audit. #298
+  prototypes CPU debug-draw producer decoupling, but does **not** move the GPU
+  debug-draw consumer; keep this distinction until merged and validated.
+- [ ] **Tile/scene world-cutover acceptance (#231/#232/#272).**
+  Exercise real Map cook/load/reload/corrupt-page, rapid movement/Map switch,
+  delayed callback cancellation, shared physical resources, gameplay and
+  non-render component lifetimes, LOD/shadow/GPU-scene deltas, GPU fences,
+  CPU/GPU upload/page/memory budgets and before/after performance fixtures.
+  Do not infer these from headless API tests alone.
+- [ ] **Editor and content workflows (#153, #157, #187, #188, #193).**
+  Complete Map editing, prefab stable authoring undo/reimport/identity migration,
+  direct World editor integration, and runtime session/docking interaction
+  validation (moved/floating viewport, DPI, selection, save/revert/failed-open,
+  keyboard focus). The #193 F1/F2 issue remains unverified.
+- [ ] **Build publication and tooling (#186/#189/#190/#201).**
+  Automate release/installer publishing; test real TLS gateway; validate
+  publication receipts/locks and interruption recovery on Linux and Windows,
+  noting power-loss durability is not fsync-guaranteed. Receipt generation and
+  operational recovery instructions **already LANDED** in #190. Define
+  golden-sequence baseline policy and perform multi-machine aggregation.
+- [ ] **Particle/placement feature tail (#137/#141/#199; legacy PR07).**
+  Soft-depth dust fading, terrain-following emission and dense-alpha ordering;
+  particle typed-graph/editor workflow, material-aware PBR mesh-particle draw
+  and prototype UI; placement shadow-view policy, optional HZB/LOD and
+  placement perf/golden acceptance. Treat these as separate scoped workstreams.
+
+### P2 — hardware validation and deferred quality
+
+- [ ] Validate real tablet pen input (#177), VRR on supported monitor (#194),
+  TLAS/BLAS inspector on Vulkan (#145), editor solar/day-night lifecycle (#139),
+  HDR distortion/heat shimmer (#136), thin-surface rear lighting (#140),
+  terrain NaN-hole and cooked object-height shadow quality (#152/#227),
+  world-map/viewport live visual behavior (#153/#159/#193), and MSAA coverage
+  silhouettes (#198). Separate code defects found from mere missing GPU runs.
+- [ ] Revisit legacy deferred items **only with a current reproducer**:
+  pak overflow guards, missing barrier diagnostics, bindless fail-closed,
+  nullable gfx LOD filter callback, transient graph reuse, skinned filter
+  diagnostics, two-sided shadow policies, Forward+ optimizations, per-draw
+  animation palettes, audio upgrades, and namespace/API cleanup.
+
+### Completed or superseded — do not re-open without new evidence
+
+- [x] **GPU snapshot #142/#148:** scoped/legacy PNG/raw matrix including
+  >256 MiB staging split and pinned camera parity validated 2026-11-04.
+  The duplicate #148 “GPU validation still open” paragraph below was removed.
+- [x] **#151 shader diagnostics default:** unsafe tree-wide Release define
+  reverted in `438cd288`; Debug-auto plus explicit opt-in remains intentional.
+  Target-scoped Release Editor diagnostics is a *new design task*, not
+  restoration of the reverted global define.
+- [x] **#190 immutable publication receipts and documented recovery
+  procedure:** landed; acceptance tests, platform durability and real
+  interruption behavior still open above.
+- [x] **#191 WorldRenderer configuration/descriptor extraction:** merged;
+  whole-renderer orchestration extraction not complete.
+- [x] **#272 default direct Map adapter:** replaces default Cluster-backed
+  `ProjectScenes` bridge; does not imply Cluster-free asset loading.
+- [x] **#280 eligible GPU-scene raster default and dynamic GfxFilter
+  capacity:** older opt-in/fixed draw-limit assumptions superseded.
+- [x] **#285 dedicated animation pak kind:** new cooks use `Anim` rather than
+  texture-kind clip assets; legacy wrapped clips remain readable. Catalog
+  clip/skeleton typed keys are a distinct follow-up.
+- [x] **#286/#287/#292 GPU-scene eligible LOD, double-sided and masked raster
+  support:** older blanket “always legacy-owned” statements superseded,
+  subject to current material/skinning/other admission restrictions.
+- [x] **#294/#295 persistent indexed geometry identities and live raster
+  handoff:** physical heap cutover, alias retirement and slot recycling remain
+  open above.
+- [x] **#297 gameplay-owned mesh-node GPU-scene synchronization:** landed
+  with headless tests; legacy full-world Cluster resolves still need separate
+  ownership migration.
+- [x] **#299 final temporal kept-bit visibility history:** merged with
+  reported static-scene pinned capture parity; retain broader temporal
+  hardware acceptance above.
+
+---
+
+## Historical merged-as-draft audits (2026-11-04 to 2026-11-06)
+
+The sections below are an **audit trail at their stated commit/date**, not
+the current priority ordering. Older “remaining” and “not implemented”
+claims can be superseded by the dated 2026-11-09 status above. Preserve
+historical failure diagnoses, test evidence and engineering decisions rather
+than blindly deleting them.
+
 
 PRs #136–#142 and #145/#148/#151/#152/#153/#157/#159 were merged
 while still drafts (owner request, 2026-11-04).
@@ -85,18 +251,6 @@ items below are the remaining author-declared gaps.
   no-scan claim verified) is still open.
 - Counts are CPU build CANDIDATES only — Vulkan may further reject
   geometry; GPU AS memory/compaction/build timings are not reported.
-
-## #148 — Scoped snapshot single-batch readback + raw output
-- (Resolves the #142 aggregated-readback TODO item above.)
-- GPU validation still open: real 15/16/30-frame recordings at 1080p
-  and 4K in both `scoped` and `legacy` capture modes, PNG and raw
-  formats, including the 4K >256 MiB staging split path.
-- The 4K batch split during export (staging-limit respect) is untested
-  against real output.
-- (Merge note: the branch never compiled — the RHI call was declared
-  only on the private VulkanResourceManager; the public
-  `ResourceManager::RecordSnapshotImageCopy` facade + forwarding impl
-  were added in the merge.)
 
 ## #151 — Zero-off-state tile diagnostics
 - Author never built or GPU-tested; the merge gate compiled both the
@@ -277,10 +431,12 @@ TOURMALINE_SHADER_SWAP=20 frame-safety pin — 0.00% differing pixels),
   but #181's own implementation lacked it; the failing assertion only
   passed once this PR landed.)
 
-## #190 — [Audit 09] transactional publication (partial)
+## #190 — [Audit 09] transactional publication (partial; status corrected)
 - STATUS: unique staging, publish lock, corrupted-dedup refusal,
-  multi-manifest safe cleanup and regression tests committed.
-  **Provenance receipt and crash recovery remain.**
+  multi-manifest safe cleanup, **immutable provenance receipts and operational
+  crash-recovery instructions** committed. Remaining: execution of
+  Linux/Windows ProjectPipelineTests and interruption/recovery validation;
+  power-loss fsync durability is not guaranteed. See PR #190.
 - (Merge note: `executor.pak-args` still asserted the pre-isolation
   `.staging` path; publication now stages under
   `.staging/build-<nonce>/` so the test pins the contract instead,
@@ -423,10 +579,11 @@ TOURMALINE_SHADER_SWAP=20 frame-safety pin — 0.00% differing pixels),
   window on a real machine (the harness output + result.json shape are
   covered by the unit tests).
 
-## Audit series still open (drafts)
-- #184 [Audit 03] double-precision transforms (docs-only, unstarted).
-- #191 [Audit 10] WorldRenderer decomposition (partial implementation
-  on the branch, not merged).
+## Audit-series snapshot (historical; superseded by newer merges)
+- #184 [Audit 03] double-precision transforms was docs-only/unstarted
+  at this snapshot; confirm present status before scheduling.
+- #191 [Audit 10] WorldRenderer configuration/descriptor decomposition
+  **MERGED**; the remaining extraction is tracked in Current priorities.
 
 ## Legacy engineering backlog (migrated from `todo.txt`)
 
