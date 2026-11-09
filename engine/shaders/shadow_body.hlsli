@@ -40,6 +40,9 @@ struct ShadowPSIn
     // see default_lit_body.hlsli's note; the sequential assignment made
     // this one land on 5/6 depending on the stripped members).
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
+#ifdef GPU_SCENE_MASKED_DEPTH
+    [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
+#endif
 };
 
 #if defined(SHADOW_NORMAL_Z)
@@ -89,7 +92,11 @@ ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
     OUT.outDepth = (d >= 0.0f && d <= 1.0f) ? d : 0.0f;
 #endif
 
+#ifdef GPU_SCENE_MASKED_DEPTH
+    MaterialValues mat = pc.bMats.Get().mats[IN.meshMaterial];
+#else
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
+#endif
 
     float alphaCutoff = mat.params.x;
     float baseAlpha = mat.diffuse.a;
