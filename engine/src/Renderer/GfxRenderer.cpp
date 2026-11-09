@@ -2199,43 +2199,43 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx,
             static_cast<long long>(measureUs));
     }
     const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, rg, frameIndex, slot);
-    // NOTE: Release-visible trace (not SMVK_DEBUG_LOG): this is the only
-    // per-run visibility into filter load (draws/batches vs
-    // kMaxDraws/kMaxBatches) — muted at runtime by the interactive
-    // EDITOR (SMVK_TRACE_LOG; the App/bench flows keep it).
-    if ((frameCounter_++ % 300) == 0) {
-        SMVK_TRACE_LOG(
-            "[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
-            stats.draws,
-            stats.commands,
-            stats.trianglesProcessed,
-            stats.clustersCulled,
-            stats.clustersProcessed);
-        // Temporal dashboard: prev* holds LAST frame's snapshot here (this
-        // frame's rotation runs later in AppendPasses), so the seed /
-        // remainder / HZB figures describe what the temporal loop did.
-        const smvk::gfx::TemporalView& ht = smvk::gfx::Temporal(gfx, slot);
-        const smvk::gfx::HizResources& hh = ht.hiz[frameIndex];
-        SMVK_DEBUG_LOG(
-            "[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
-            stats.draws,
-            stats.commands,
-            stats.trianglesProcessed,
-            stats.clustersCulled,
-            stats.clustersProcessed);
-        SMVK_DEBUG_LOG("[GfxFilter] hist: valid=%d prev=%u seed=%u/%u rem=%u/%u hiz=%umips %ux%u "
-                       "minContrib=%.2f\n",
-                       ht.historyValid ? 1 : 0,
-                       ht.prevBatchCount,
-                       (unsigned)ht.seedCommands.size(),
-                       (unsigned)ht.seedRanges.size(),
-                       (unsigned)ht.remainderCommands.size(),
-                       (unsigned)ht.remainderRanges.size(),
-                       hh.mipCount,
-                       hh.width,
-                       hh.height,
-                       ht.minimumContribution);
-    }
+    // Stats dashboard muted (was: the every-300-frame "[GfxFilter] view/"
+    // "[GfxFilter] hist:" trace lines). frameCounter_ still counts here -
+    // the INSTANCE_METRICS census and the CULL_DUMP gate key on it.
+    ++frameCounter_;
+    // if ((frameCounter_++ % 300) == 0) {
+    //     SMVK_TRACE_LOG(
+    //         "[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
+    //         stats.draws,
+    //         stats.commands,
+    //         stats.trianglesProcessed,
+    //         stats.clustersCulled,
+    //         stats.clustersProcessed);
+    //     // Temporal dashboard: prev* holds LAST frame's snapshot here (this
+    //     // frame's rotation runs later in AppendPasses), so the seed /
+    //     // remainder / HZB figures describe what the temporal loop did.
+    //     const smvk::gfx::TemporalView& ht = smvk::gfx::Temporal(gfx, slot);
+    //     const smvk::gfx::HizResources& hh = ht.hiz[frameIndex];
+    //     SMVK_DEBUG_LOG(
+    //         "[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
+    //         stats.draws,
+    //         stats.commands,
+    //         stats.trianglesProcessed,
+    //         stats.clustersCulled,
+    //         stats.clustersProcessed);
+    //     SMVK_DEBUG_LOG("[GfxFilter] hist: valid=%d prev=%u seed=%u/%u rem=%u/%u hiz=%umips %ux%u "
+    //                    "minContrib=%.2f\n",
+    //                    ht.historyValid ? 1 : 0,
+    //                    ht.prevBatchCount,
+    //                    (unsigned)ht.seedCommands.size(),
+    //                    (unsigned)ht.seedRanges.size(),
+    //                    (unsigned)ht.remainderCommands.size(),
+    //                    (unsigned)ht.remainderRanges.size(),
+    //                    hh.mipCount,
+    //                    hh.width,
+    //                    hh.height,
+    //                    ht.minimumContribution);
+    // }
     // CULL BASELINE DUMP (TOURMALINE_CULL_DUMP, one shot; frameCounter_
     // was just incremented, so it holds the 1-based app frame). The >=
     // comparison tolerates a pin that names an already-passed frame.

@@ -63,13 +63,16 @@ struct GfxProbeScope {
 void GfxProbeReport() {
     if (++g_probe.frames % 240 != 0)
         return;
-    const double n = 240.0;
-    SMVK_TRACE_LOG("[GfxProbe] avg/frame: batches %.3f seedrem %.3f snap %.3f uploads %.3f ms\n",
-                   g_probe.batches / n,
-                   g_probe.seedRem / n,
-                   g_probe.snap / n,
-                   g_probe.uploads / n);
-    std::fflush(stderr);
+    // Dashboard muted (was: the every-240-frame Release-visible
+    // "[GfxProbe] avg/frame: ..." trace line). The accumulators still
+    // reset so the timing scopes stay zero-cost bounded state.
+    // const double n = 240.0;
+    // SMVK_TRACE_LOG("[GfxProbe] avg/frame: batches %.3f seedrem %.3f snap %.3f uploads %.3f ms\n",
+    //                g_probe.batches / n,
+    //                g_probe.seedRem / n,
+    //                g_probe.snap / n,
+    //                g_probe.uploads / n);
+    // std::fflush(stderr);
     g_probe.batches = g_probe.seedRem = g_probe.snap = g_probe.uploads = 0.0;
 }
 } // namespace
@@ -2971,18 +2974,18 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
     push.width = v.width;
     push.height = v.height;
     push.batchCount = v.batchCount;
-    // TEMP-DIAG (Release-visible): dispatch sanity for the white-speck hunt.
-    // (Moved AFTER the assignments above so the flags print the real value.)
-    {
-        static uint64_t s_dispatches = 0;
-        if ((s_dispatches++ % 300) == 0)
-            SMVK_TRACE_LOG("[GfxFilter] dispatch ok: view=%u batches=%u "
-                           "flags=0x%x slice=%u\n",
-                           view,
-                           v.batchCount,
-                           push.cullFlags,
-                           f);
-    }
+    // Dispatch sanity dashboard muted (was: the every-300-dispatch
+    // Release-visible "[GfxFilter] dispatch ok" trace line).
+    // {
+    //     static uint64_t s_dispatches = 0;
+    //     if ((s_dispatches++ % 300) == 0)
+    //         SMVK_TRACE_LOG("[GfxFilter] dispatch ok: view=%u batches=%u "
+    //                        "flags=0x%x slice=%u\n",
+    //                        view,
+    //                        v.batchCount,
+    //                        push.cullFlags,
+    //                        f);
+    // }
     // T4 occlusion/contribution inputs (0/empty disables the tests in the
     // shader; the null-BDA guard above already covers the buffer set).
     // Current flight's HZB slice (same rule as every other ringed buffer).

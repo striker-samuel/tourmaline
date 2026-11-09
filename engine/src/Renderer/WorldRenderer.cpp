@@ -6040,19 +6040,21 @@ void WorldRenderer::AdaptExposureFromBins(
     }
     meter.lastTotal = total;
     m_exposureSamples = total;
-    {
-        static uint64_t s_expDlTick = 0, s_expZeroTick = 0;
-        const uint64_t tick = s_expDlTick++;
-        if (tick < 5 || tick % 600 == 0 || (total == 0 && s_expZeroTick++ < 30)) {
-            SMVK_TRACE_LOG(
-                "[exposure] download tick=%llu slice=%u total=%u target=%.6f adapted=%.6f\n",
-                (unsigned long long)tick,
-                m_exposureFrame,
-                total,
-                m_exposureTarget,
-                m_exposureAdapted);
-        }
-    }
+    // Exposure dashboard muted (was: the Release-visible
+    // "[exposure] download tick=..." trace line).
+    // {
+    //     static uint64_t s_expDlTick = 0, s_expZeroTick = 0;
+    //     const uint64_t tick = s_expDlTick++;
+    //     if (tick < 5 || tick % 600 == 0 || (total == 0 && s_expZeroTick++ < 30)) {
+    //         SMVK_TRACE_LOG(
+    //             "[exposure] download tick=%llu slice=%u total=%u target=%.6f adapted=%.6f\n",
+    //             (unsigned long long)tick,
+    //             m_exposureFrame,
+    //             total,
+    //             m_exposureTarget,
+    //             m_exposureAdapted);
+    //     }
+    // }
     if (total == 0)
         return;
     if (const float lum = meter.PercentileLuminance(); lum > 0.0f) {
@@ -6175,20 +6177,17 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
                     ++reported;
                 }
                 m_gfxDemandReported = reported;
-                // Tick-counter throttle (not the frame-parity gates: polls
-                // land 1-2 frames after the submit tick, so a frame-parity
-                // gate on the poll frame misaligns with every submit
-                // cadence - the first 5 + every 64th always land in a
-                // 74-frame bench).
-                static uint64_t s_gfxDemandTick = 0;
-                const uint64_t dTick = s_gfxDemandTick++;
-                if (dTick < 5 || dTick % 64 == 0) {
-                    std::fprintf(stderr,
-                                 "[gfxDemand] tick=%llu slice=%u reported=%u (async)\n",
-                                 (unsigned long long)m_frameCounter,
-                                 m_pendingReadbackSlot,
-                                 reported);
-                }
+                // Demand dashboard muted (was: the Release-visible
+                // "[gfxDemand] tick=... reported=... (async)" trace line).
+                // static uint64_t s_gfxDemandTick = 0;
+                // const uint64_t dTick = s_gfxDemandTick++;
+                // if (dTick < 5 || dTick % 64 == 0) {
+                //     std::fprintf(stderr,
+                //                  "[gfxDemand] tick=%llu slice=%u reported=%u (async)\n",
+                //                  (unsigned long long)m_frameCounter,
+                //                  m_pendingReadbackSlot,
+                //                  reported);
+                // }
             }
             // Deferred-shadow counters (retired slice, ~a few frames old):
             // overlay slots + throttled telemetry. Saturation of the
@@ -16152,24 +16151,25 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                meter.ShadersValid() && !sceneHdrView.empty() &&
                                sceneHdrBindless != UINT32_MAX && renderExtent.width != 0 &&
                                renderExtent.height != 0 && ExposureMeteringActive();
-        // One-run diagnostic (throttled): WHY the meter is quiet.
-        {
-            static uint64_t s_expRecTick = 0;
-            const uint64_t tick = s_expRecTick++;
-            if (!meterGate && (tick < 5 || tick % 600 == 0)) {
-                SMVK_TRACE_LOG("[exposure] record SKIP tick=%llu pass=%d auto=%d valid=%d "
-                               "shaders=%d hdr=%d,%u %ux%u\n",
-                               (unsigned long long)tick,
-                               m_passes.exposure ? 1 : 0,
-                               m_autoExposureEnabled ? 1 : 0,
-                               meter.Valid() ? 1 : 0,
-                               meter.ShadersValid() ? 1 : 0,
-                               !sceneHdrView.empty() ? 1 : 0,
-                               sceneHdrBindless,
-                               renderExtent.width,
-                               renderExtent.height);
-            }
-        }
+        // One-run diagnostic muted (was: the throttled Release-visible
+        // "[exposure] record SKIP ..." trace line explaining a quiet meter).
+        // {
+        //     static uint64_t s_expRecTick = 0;
+        //     const uint64_t tick = s_expRecTick++;
+        //     if (!meterGate && (tick < 5 || tick % 600 == 0)) {
+        //         SMVK_TRACE_LOG("[exposure] record SKIP tick=%llu pass=%d auto=%d valid=%d "
+        //                        "shaders=%d hdr=%d,%u %ux%u\n",
+        //                        (unsigned long long)tick,
+        //                        m_passes.exposure ? 1 : 0,
+        //                        m_autoExposureEnabled ? 1 : 0,
+        //                        meter.Valid() ? 1 : 0,
+        //                        meter.ShadersValid() ? 1 : 0,
+        //                        !sceneHdrView.empty() ? 1 : 0,
+        //                        sceneHdrBindless,
+        //                        renderExtent.width,
+        //                        renderExtent.height);
+        //     }
+        // }
         // Combined GPU->CPU readback tick (histogram + texture-streaming
         // feedback, one shared submit + wait on feedback frames). Runs
         // even when the exposure meter itself is gated off so feedback
@@ -16207,22 +16207,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             const uint32_t dy =
                 smvk::ExposureMeter::DispatchYFor(renderExtent, meter.desc.sampleStep);
             if (expPush.histogramAddress != 0 && dx != 0 && dy != 0) {
-                {
-                    static uint64_t s_expGoTick = 0;
-                    const uint64_t tick = s_expGoTick++;
-                    if (tick < 5 || tick % 600 == 0) {
-                        SMVK_TRACE_LOG("[exposure] record GO tick=%llu slice=%u bda=0x%llx dx=%u "
-                                       "dy=%u hdrIdx=%u %ux%u\n",
-                                       (unsigned long long)tick,
-                                       fb.frameIndex,
-                                       (unsigned long long)expPush.histogramAddress,
-                                       dx,
-                                       dy,
-                                       expPush.hdrTextureIndex,
-                                       renderExtent.width,
-                                       renderExtent.height);
-                    }
-                }
+                // Record dashboard muted (was: the throttled Release-visible
+                // "[exposure] record GO tick=..." trace line).
+                // {
+                //     static uint64_t s_expGoTick = 0;
+                //     const uint64_t tick = s_expGoTick++;
+                //     if (tick < 5 || tick % 600 == 0) {
+                //         SMVK_TRACE_LOG("[exposure] record GO tick=%llu slice=%u bda=0x%llx dx=%u "
+                //                        "dy=%u hdrIdx=%u %ux%u\n",
+                //                        (unsigned long long)tick,
+                //                        fb.frameIndex,
+                //                        (unsigned long long)expPush.histogramAddress,
+                //                        dx,
+                //                        dy,
+                //                        expPush.hdrTextureIndex,
+                //                        renderExtent.width,
+                //                        renderExtent.height);
+                //     }
+                // }
                 smvk::ShaderProgram histProg = meter.histogramProgram;
                 smvk::RenderPass& histPass = meter.AddHistogramPass(
                     *m_rendergraph, sceneHdrView, expPush, fb.frameIndex, "ExposureHistogram");
