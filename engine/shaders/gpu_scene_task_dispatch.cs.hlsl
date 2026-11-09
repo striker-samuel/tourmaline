@@ -29,8 +29,10 @@ void mainCS(uint3 id:SV_DispatchThreadID) {
         pc.maxX!=0u && pc.maxY!=0u) {
         const uint total=pc.taskOffsets.Get().values[pc.workCapacity];
         if (total<=pc.taskGroupCapacity && total<=GS_MAX_TASK_GROUPS) {
-            x=min(total,pc.maxX);
-            y=x==0u?0u:(total/x+(total%x!=0u?1u:0u));
+            // Fixed x is also the task shader's pushed taskGridX.
+            // Padded task workgroups are safely rejected in mainAS.
+            x=total==0u?0u:pc.maxX;
+            y=total==0u?0u:(total/x+(total%x!=0u?1u:0u));
             if (y>pc.maxY) { x=0u;y=0u; }
         }
     }
