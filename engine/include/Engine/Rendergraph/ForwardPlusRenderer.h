@@ -126,6 +126,23 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
                                                     smvk::ShaderProgram maskedGbuffer,
                                                     bool hasMasked,
                                                     bool hasMaskedDoubleSided);
+    // GPU Scene task+mesh prepass: one GPU-generated indirect mesh-task
+    // dispatch per PSO class. Task stage performs local meshlet visibility
+    // and forwards surviving cluster IDs to mesh stage.
+    [[nodiscard]] bool AppendGpuSceneTaskPrepass(
+        smvk::FrameContext& fc,
+        smvk::ShaderProgram taskDepth,
+        smvk::ShaderProgram taskGbuffer,
+        smvk::ShaderProgram maskedDepth,
+        smvk::ShaderProgram maskedGbuffer,
+        smvk::BufferHandle indirect,
+        smvk::LogicalBufferHandle indirectLogical,
+        smvk::LogicalBufferHandle groupsLogical,
+        smvk::LogicalBufferHandle workLogical,
+        const tour::gpu_scene::TaskMeshGpuPush& tail,
+        bool hasDoubleSided,
+        bool hasMasked,
+        bool hasMaskedDoubleSided);
     // lightCountOverride: UINT32_MAX (default) = cull fc.fpLightCount
     // lights; any other value limits the light leg (the deferred-shadow
     // pipeline passes 0 — its shading consumes the DS lists, but the decal
