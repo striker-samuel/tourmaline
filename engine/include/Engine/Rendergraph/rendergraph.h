@@ -92,6 +92,14 @@ struct CommandBuffer final {
     // the mesh-shader gfx filter path gates on it and keeps the
     // compute+indexed CPU fallback otherwise.
     void DrawMeshTasks(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ);
+    // VK_EXT_mesh_shader: dispatch task/mesh workgroups from GPU-generated
+    // VkDrawMeshTasksIndirectCommandEXT (3 uint32 words, 12-byte stride).
+    // Caller must declare compute-write -> draw-indirect-read dependencies.
+    void DrawMeshTasksIndirect(BufferHandle buffer,
+                               uint64_t offset,
+                               uint32_t drawCount,
+                               uint32_t stride);
+
 
     void BindComputePipeline(ShaderProgram& shaderProgram);
 
