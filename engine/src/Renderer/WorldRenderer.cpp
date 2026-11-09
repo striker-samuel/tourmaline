@@ -11622,7 +11622,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // rather than silently dropping their tail clusters.
                 static const bool sGpuSceneMeshlets = [] {
                     const char* env = std::getenv("TOURMALINE_GPU_SCENE_MESHLETS");
-                    return !env || std::strcmp(env, "0") != 0;
+                    // Draft meshlet expansion scales by reserved lanes, not
+                    // visible commands. Keep this disabled until the #301
+                    // prefix-compacted indirect-count consumer is wired.
+                    return env && std::strcmp(env, "1") == 0;
                 }();
                 const auto& meshletState = m_gfxRenderer.State();
                 const bool meshletBuffersReady =
