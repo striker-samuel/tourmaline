@@ -74,6 +74,10 @@ struct GsTaskMeshParams {
     uint reserved1;
 };
 struct GsTaskMeshPush {
+    // Preserve the fragment shader's 192-byte scene push constants.
+    float4x4 _scenePad0;
+    float4x4 _scenePad1;
+    float4x4 _scenePad2;
     GPU_PTR_READ(GsTaskMeshParams) params;
     uint groupBase;
     uint groupCount;
