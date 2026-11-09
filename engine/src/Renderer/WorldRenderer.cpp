@@ -11770,7 +11770,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                      !m_gpuSceneRasterMaskedDoubleSidedCount ||
                      (m_gpuSceneTaskMaskedDepthProgram.shaderCount == 3 &&
                       m_gpuSceneTaskMaskedGbufferProgram.shaderCount == 3)) &&
-                    (!fc.ssrGbufferWanted || m_gpuSceneTaskGbufferProgram.shaderCount == 3) &&
+                    m_gpuSceneTaskGbufferProgram.shaderCount == 3 &&
                     std::all_of(m_gpuSceneTaskComputePrograms.begin(),
                                 m_gpuSceneTaskComputePrograms.end(),
                                 [](const smvk::ShaderProgram& p) { return p.shaderCount == 1; })) {
