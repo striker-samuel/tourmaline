@@ -857,10 +857,10 @@ class CandidateValidator {
             return false;
         const uint64_t workCapacity =
             uint64_t(f.workCandidates) * (f.validate ? 16u : 1u);
-        // Two fixed pipeline-class ranges: back-cull and double-sided.
-        // Each class preserves work[i] as firstInstance, so the temporal
+        // Four fixed pipeline-class ranges (opaque/masked x back/two-sided).
+        // Each class preserves work[i] as firstInstance so temporal
         // history/Hi-Z consumers retain persistent instance identity.
-        const uint64_t maxCommands = 2u * workCapacity;
+        const uint64_t maxCommands = uint64_t(kRasterPipelineClassCount) * workCapacity;
         if (workCapacity > 1048576u || maxCommands > UINT32_MAX)
             return false;
         if (!Ensure(ctx, f.rasterCommands, f.rasterSize,
