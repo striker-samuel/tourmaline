@@ -2363,6 +2363,8 @@ class WorldRenderer : public IRenderer {
     tour::gpu_scene::WorldSynchronizer m_gpuSceneSync;
     tour::gpu_scene::Uploader m_gpuSceneUploader;
     tour::gpu_scene::IndexedGeometryPublisher m_gpuSceneIndexedGeometry;
+    tour::gpu_scene::PersistentGeometryRegistry m_gpuScenePersistentRegistry;
+    tour::gpu_scene::PersistentIndexedGeometryPublisher m_gpuScenePersistentGeometry;
     tour::gpu_scene::RasterViewPublisher m_gpuSceneRasterView;
     // Feature-gated CPU/GPU instance visibility parity only. Separate
     // per-flight buffers, never used to create production draw commands.

@@ -132,6 +132,91 @@ int main() {
         CHECK(!ResolveIndexedGeometry(tables, 0, indexed));
         CHECK(indexed.indexCount == 0);
     }
+    // Indexed geometry is keyed by persistent mesh slot + generation + LOD,
+    // not by a transient filter mesh number. Re-registration must not
+    // renumber the descriptor, and retirement must tombstone its draw range.
+    {
+        RenderDatabase db{};
+        const auto sub = db.submeshes.Insert(
+            Submesh{0u, InvalidIndex, InvalidIndex, 0u});
+        const auto lod = db.lods.Insert(
+            Lod{sub.slot, 1u, 0.0f, LodFlagResident | LodFlagFilterable});
+        const auto mesh = db.meshes.Insert(
+            Mesh{lod.slot, 1u, 1u, MeshFlagCompleteBounds});
+        CHECK(bool(sub) && bool(lod) && bool(mesh));
+        std::array<tour::gfx::Mesh, 2> gfxMeshes{
+            tour::gfx::Mesh{0, 1}, tour::gfx::Mesh{1, 1}};
+        std::array<tour::gfx::Cluster, 2> clusters{};
+        clusters[0].mesh = 0;
+        clusters[0].indexOffset = 0;
+        clusters[0].triCount = 2;
+        clusters[1].mesh = 1;
+        clusters[1].indexOffset = 6;
+        clusters[1].triCount = 2;
+        IndexedGeometryTables tables{
+            gfxMeshes.data(), 2u, clusters.data(), 2u, 20u};
+        PersistentGeometryRegistry registry{};
+        CHECK(registry.Synchronize(db, tables));
+        const PersistentGeometryKey key{mesh.slot, mesh.generation, 0u};
+        const uint32_t stable = registry.Find(key);
+        CHECK(stable != InvalidIndex);
+        CHECK(registry.FromTransient(0u) == stable);
+        CHECK(registry.TransientAliases().size() == 2u);
+        CHECK(registry.TransientAliases()[0] == stable);
+        CHECK(registry.TransientAliases()[1] == InvalidIndex);
+        CHECK(registry.Descriptors()[stable].firstIndex == 20u);
+        const uint64_t originalRevision = registry.Revision();
+        const uint64_t originalAliasRevision = registry.AliasRevision();
+        CHECK(registry.Synchronize(db, tables));
+        CHECK(registry.Revision() == originalRevision);
+        CHECK(registry.AliasRevision() == originalAliasRevision); // no redundant uploads
+
+        // GfxFilter re-registers this same logical LOD under a new
+        // transient ID. The persistent key and descriptor slot survive.
+        CHECK(db.submeshes.Update(sub,
+            Submesh{1u, InvalidIndex, InvalidIndex, 0u}));
+        CHECK(registry.Synchronize(db, tables));
+        CHECK(registry.Find(key) == stable);
+        CHECK(registry.FromTransient(1u) == stable);
+        CHECK(registry.FromTransient(0u) == InvalidIndex);
+        CHECK(registry.AliasRevision() > originalAliasRevision);
+        CHECK(registry.TransientAliases()[1] == stable);
+        CHECK(registry.Descriptors()[stable].firstIndex == 26u);
+
+        // Physical eviction clears the GPU descriptor instead of leaving
+        // stale index offsets accessible to the next indirect work build.
+        CHECK(db.lods.Update(lod, Lod{sub.slot, 1u, 0.0f, 0u}));
+        CHECK(registry.Synchronize(db, tables));
+        CHECK(registry.Find(key) == stable);
+        CHECK(registry.Descriptors()[stable].indexCount == 0u);
+        CHECK(registry.FromTransient(1u) == InvalidIndex);
+
+        // Re-residency reuses the same identity, but a retired mesh
+        // generation must NEVER inherit that descriptor slot.
+        CHECK(db.lods.Update(lod, Lod{sub.slot, 1u, 0.0f,
+                                        LodFlagResident | LodFlagFilterable}));
+        CHECK(registry.Synchronize(db, tables));
+        CHECK(registry.Find(key) == stable);
+        CHECK(registry.Descriptors()[stable].indexCount == 6u);
+        CHECK(db.meshes.Erase(mesh));
+        const auto recycled = db.meshes.Insert(
+            Mesh{lod.slot, 1u, 1u, MeshFlagCompleteBounds});
+        CHECK(recycled.slot == mesh.slot && recycled.generation != mesh.generation);
+        CHECK(registry.Synchronize(db, tables));
+        CHECK(registry.Descriptors()[stable].indexCount == 0u);
+        const auto newer = registry.Find(
+            {recycled.slot, recycled.generation, 0u});
+        CHECK(newer != InvalidIndex && newer != stable);
+        CHECK(registry.Descriptors()[newer].indexCount == 6u);
+
+        // A malformed published chain must fail closed without mutating
+        // the last committed geometry descriptors.
+        const auto beforeFailure = registry.Revision();
+        CHECK(db.meshes.Update(recycled, Mesh{UINT32_MAX, 1u, 1u, 0u}));
+        CHECK(!registry.Synchronize(db, tables));
+        CHECK(registry.Revision() == beforeFailure);
+        CHECK(registry.Descriptors()[newer].indexCount == 6u);
+    }
     // Geometry-only revisions must not revisit CPU drawItems or reconcile
     // the complete instance registry. The empty World tests the control
     // path without requiring Vulkan or a cooked cluster.
@@ -153,6 +238,54 @@ int main() {
         ++world.gpuSceneTopologyRevision;
         const auto topology = sync.Synchronize(world, snapshot, 2);
         CHECK(topology.topologyReconciled);
+    }
+    // Gameplay-owned nodes are not in clusterMergedNodes, but must be
+    // reconciled into GPU Scene using stable World-owned identities.
+    // The fixture uses the resolved World mesh row directly; gameplay's
+    // AssetManager-backed SetMesh path writes the same Scene mesh row.
+    {
+        smvk::World world{};
+        auto owned = std::make_unique<smvk::Cluster>(nullptr);
+        owned->SetOfflineMode(true);
+        const int authored = addNode(owned->scene, -1, 0);
+        const auto mesh = owned->staticMeshes.create(smvk::StaticMesh{});
+        CHECK(SetMesh(owned->scene, uint32_t(authored), mesh.index()));
+        world.RegisterCluster(std::move(owned));
+        world.ResolveAndFixup_clusters();
+        CHECK(!world.meshLocations.empty());
+        const uint32_t worldMesh = 0;
+        const NodeHandle first = world.AddNode();
+        const NodeHandle second = world.AddNode();
+        CHECK(world.IsGameNode(first) && world.IsGameNode(second));
+        CHECK(SetMesh(world.scene, NodeHandleSlot(first), worldMesh));
+        CHECK(SetMesh(world.scene, NodeHandleSlot(second), worldMesh));
+        world.RefreshRuntimeSceneCaches();
+        RenderDatabase snapshot{};
+        WorldSynchronizer sync{};
+        const auto spawned = sync.Synchronize(world, snapshot);
+        CHECK(spawned.created == 3 && spawned.meshesCreated == 1);
+        const SourceKey key1 = sync.SourceForNode(NodeHandleSlot(first));
+        const SourceKey key2 = sync.SourceForNode(NodeHandleSlot(second));
+        const SourceKey authoredKey = sync.SourceForNode(uint32_t(authored));
+        CHECK(key1.registration != 0 && key1.registration != authoredKey.registration);
+        CHECK(key1.registration == key2.registration && key1.slot != key2.slot);
+        CHECK(key1.generation == NodeGenerationOf(world.scene, NodeHandleSlot(first)));
+        CHECK(sync.Find(key1) && sync.Find(key2));
+        const auto steady = sync.Synchronize(world, snapshot);
+        CHECK(!steady.topologyReconciled && steady.created == 0);
+        CHECK(world.RemoveNode(first));
+        const auto removed = sync.Synchronize(world, snapshot);
+        CHECK(removed.retired == 1 && removed.meshesRetired == 0);
+        CHECK(!sync.Find(key1) && sync.Find(key2));
+        const NodeHandle replacement = world.AddNode();
+        CHECK(world.IsGameNode(replacement));
+        CHECK(SetMesh(world.scene, NodeHandleSlot(replacement), worldMesh));
+        world.RefreshRuntimeSceneCaches();
+        const auto respawned = sync.Synchronize(world, snapshot);
+        const SourceKey replacementKey = sync.SourceForNode(NodeHandleSlot(replacement));
+        CHECK(respawned.created == 1 && respawned.meshesCreated == 0);
+        CHECK(replacementKey != key1 && replacementKey.registration == key2.registration);
+        CHECK(sync.Find(replacementKey) && !sync.Find(key1));
     }
     // Temporal GPU-scene seed is keyed by persistent slot + generation,
     // not by work slot, draw order or last frame's geometry ID.

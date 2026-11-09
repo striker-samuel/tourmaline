@@ -38,6 +38,7 @@ struct WorkBuffer { SceneSubmeshWork rows[GS_RASTER_MAX_WORK]; };
 struct OffsetBuffer { uint values[GS_RASTER_MAX_CANDIDATES + 1u]; };
 struct GeometryBuffer { RasterIndexedGeometry rows[GS_RASTER_MAX_GEO]; };
 struct IndirectBuffer { RasterIndirectCmd rows[GS_RASTER_MAX_COMMANDS]; };
+struct AliasBuffer { uint slots[GS_RASTER_MAX_GEO]; };
 
 struct RasterWorkDrawBuildPush {
     GPU_PTR_READ(WorkBuffer) work;
@@ -48,6 +49,9 @@ struct RasterWorkDrawBuildPush {
     uint geometryCount;
     uint commandCapacity;
     uint binStride; // number of work slots per raster class
+    GPU_PTR_READ(AliasBuffer) aliases;
+    uint aliasCount;
+    uint padding;
 };
 GPU_PUSH(RasterWorkDrawBuildPush, pc);
 
@@ -74,18 +78,21 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         const uint count = pc.workOffsets.Get().values[pc.candidateCount];
         if (count <= stride && workIndex < count) {
             const SceneSubmeshWork work = pc.work.Get().rows[workIndex];
-            const uint geometry = work.identity.z;
+            const uint transientId = work.identity.z;
             if (work.identity.x != GS_INVALID && work.identity.y != 0u &&
                 work.detail.z == bin &&
-                geometry < pc.geometryCount && geometry < GS_RASTER_MAX_GEO) {
-                const RasterIndexedGeometry indexed =
-                    pc.indexedGeometry.Get().rows[geometry];
-                if (indexed.indexCount != 0u) {
+                transientId < pc.aliasCount && transientId < GS_RASTER_MAX_GEO) {
+                const uint geometry = pc.aliases.Get().slots[transientId];
+                if (geometry < pc.geometryCount && geometry < GS_RASTER_MAX_GEO) {
+                    const RasterIndexedGeometry indexed =
+                        pc.indexedGeometry.Get().rows[geometry];
+                    if (indexed.indexCount != 0u) {
                     command.indexCount = indexed.indexCount;
                     command.instanceCount = 1u;
                     command.firstIndex = indexed.firstIndex;
                     command.vertexOffset = indexed.vertexOffset;
                     command.firstInstance = workIndex;
+                    }
                 }
             }
         }

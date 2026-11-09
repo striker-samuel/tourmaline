@@ -317,6 +317,9 @@ struct World {
     // recycled Cluster* address as the permanent GPU scene key.
     uint64_t gpuSceneTopologyRevision = 0;
     uint64_t nextGpuSceneClusterId = 1;
+    // Gameplay nodes share the same monotonically allocated registration namespace
+    // as Cluster owners, but use World node slots/generations for identity.
+    uint64_t gpuSceneGameNodeRegistration = 0;
     std::unordered_map<const Cluster*, uint64_t> gpuSceneClusterIds;
 
     bool clustersDirty_ = false; // pending cluster scene merge

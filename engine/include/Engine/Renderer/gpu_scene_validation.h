@@ -846,10 +846,13 @@ class CandidateValidator {
                                              uint32_t flight,
                                              uint64_t geometryAddress,
                                              uint32_t geometryCount,
+                                             uint64_t aliasAddress,
+                                             uint32_t aliasCount,
                                              RasterWorkDrawBuildPush& push,
                                              smvk::BufferHandle& commands) {
         if (flight >= Flights || !geometryAddress || geometryCount == 0 ||
-            geometryCount > kMaxRasterDrawGroups)
+            geometryCount > kMaxRasterDrawGroups || !aliasAddress ||
+            aliasCount == 0 || aliasCount > kMaxRasterDrawGroups)
             return false;
         auto& f = flight_[flight];
         if (!f.workPrepared || f.workCandidates == 0 ||
@@ -873,7 +876,8 @@ class CandidateValidator {
         if (!work || !offsets || !output)
             return false;
         push = {work, offsets, geometryAddress, output, f.workCandidates,
-                geometryCount, uint32_t(maxCommands), uint32_t(workCapacity)};
+                geometryCount, uint32_t(maxCommands), uint32_t(workCapacity),
+                aliasAddress, aliasCount, 0u};
         commands = f.rasterCommands;
         return true;
     }
