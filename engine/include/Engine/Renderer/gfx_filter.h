@@ -24,12 +24,16 @@
 //   with ZERO mid-pipeline CPU readbacks:
 //     GfxBatchCull  — one workgroup per draw: mesh-bound fast discard
 //                     (frustum, LIVE view) -> per-cluster sphere +
-//                     world-space normal-cone -> kept bits (parity ring) +
-//                     temporal seed/remainder commands (prev-kept region,
-//                     GPU-resident: seed = kept && prevKept, remainder =
-//                     kept && !prevKept — slot-stable identity, both drift
-//                     directions conservative) + the batch array + the
-//                     filter's indirect statics
+//                     world-space normal-cone -> kept bits (parity ring;
+//                     the PRE-OCCLUSION geometric verdict — the filter
+//                     refines them to final visibility later in the
+//                     frame) + temporal seed/remainder commands
+//                     (prev-kept region, GPU-resident: seed = kept &&
+//                     prevKept, remainder = kept && !prevKept, where
+//                     prevKept is FINAL visibility two frames back —
+//                     slot-stable identity, both drift directions
+//                     conservative) + the batch array + the filter's
+//                     indirect statics
 //     GfxSeedDepth  — prev-kept intersection into depth (T3)
 //     GfxHiz        — the MIN-reduced pyramid (T2)
 //     GfxDrawCull   — one thread per draw: mesh-bound frustum (FROZEN
@@ -38,7 +42,10 @@
 //                     (T4); surviving groups allocate filtered-index
 //                     ranges through an atomic counter (clamped at the
 //                     ring capacity); verdict-dropped slots exit before
-//                     any projection work
+//                     any projection work; the final-visibility
+//                     refinement of each slot's kept-bit history word
+//                     (the temporal split's input) happens here — after
+//                     every occlusion decision has landed
 //     GfxRemainderDepth — the disocclusion leg (T5)
 //   Main          — the mesh-shader leg (its indexCount==0 gate keeps
 //                     exact mesh/indexed parity) + indexed ranges
@@ -359,7 +366,12 @@ struct FilterPush {
     uint32_t textureMetaCount = 0; // live slot count (atomic range bound)
     float mipBias = 0.0f;          // mirrors TextureStreamerConfig::mipBias
     // GPU cull chain inputs (always the kept-bit region + cullState):
-    //   kept      — this frame's kept-bit region (gfxbatchcull verdicts)
+    //   kept      — this frame's kept-bit region. gfxbatchcull seeds it
+    //               with the pre-occlusion geometric verdict; the filter
+    //               READS it for the slot gate and then WRITES the
+    //               final-visibility refinement (survivor count) into the
+    //               same word — the temporal split consumes the refined
+    //               bit two frames later.
     //   cullState — draw verdicts (gfxdrawcull) + the filtered-offset
     //               counter (word cullStateCounterWord) this dispatch
     //               allocates through atomically
@@ -369,8 +381,9 @@ struct FilterPush {
 static_assert(sizeof(FilterPush) == 256);
 
 // GfxBatchCull push (first compute pass of the frame). Must match HLSL
-// GfxBatchCullPush in gfxfilter.hlsli (208 bytes). One 128-thread
-// workgroup per material-sorted draw; LIVE view (seed/remainder semantics).
+// GfxBatchCullPush in gfxfilter.hlsli (212 payload bytes; C++ sizeof 216
+// through uint64 tail padding). One 128-thread workgroup per
+// material-sorted draw; LIVE view (seed/remainder semantics).
 struct BatchCullPush {
     uint64_t draws = 0;      // this frame's draws (misc2.z = slot base)
     uint64_t meshes = 0;     // static per-mesh cluster ranges
@@ -428,8 +441,15 @@ struct BatchCullPush {
     //       build already guarantees base + clusterCount <= capacity).
     uint32_t cullStateCounterWord = 0;
     uint32_t candidateCapacity = 0;
+    // Temporal seed/remainder split gate (TOURMALINE_GFX_SEED_HISTORY):
+    // 1 (default) = the temporal split runs (seed = kept && prev-final);
+    // 0 = the diagnostic kill — every kept slot seeds, nothing rides the
+    // remainder lane. The disocclusion A/B lever. (Byte offset 208 — the
+    // HLSL mirror packs to 212; the C++ sizeof rounds to 216 through the
+    // struct's uint64 tail padding, which never leaves the host.)
+    uint32_t seedHistory = 1;
 };
-static_assert(sizeof(BatchCullPush) == 208);
+static_assert(sizeof(BatchCullPush) == 216);
 
 // GfxSkinBounds push (runs between the skinning pass and GfxBatchCull).
 // Must match HLSL GfxSkinBoundsPush in gfxfilter.hlsli (64 bytes). One
@@ -808,7 +828,13 @@ struct View {
     //          fence guarantees that writer is complete; creation zeroes
     //          it so the first frames seed nothing). One buffer per flight
     //          is enough because the parity alternates between the
-    //          flight's consecutive users.
+    //          flight's consecutive users. Each region write is
+    //          two-stage within the frame, rendergraph-ordered:
+    //          gfxbatchcull stores the pre-occlusion geometric verdict,
+    //          and the filter (the slot's exclusive command owner)
+    //          overwrites it with the FINAL-visibility verdict — so the
+    //          temporal split's prevKept means "finally visible two
+    //          frames ago", never "frustum-visible two frames ago".
     //   cullState — draw-cull verdict words + the filter's atomic
     //          filtered-offset counter (word drawCapacity, the runtime
     //          suffix carried through the pushes since the cutover).
@@ -1159,6 +1185,11 @@ struct State {
     // link stays GPU-resident through the kept-bit parity rings on the
     // views).
     uint32_t frameCounter = 0; // BeginFrame ++; keptParity source
+    // TOURMALINE_GFX_SEED_HISTORY=0 (the disocclusion diagnostic): kill
+    // the temporal seed/remainder split — every kept slot seeds. Set once
+    // from the RunConfig snapshot via GfxRenderer::SetSeedHistoryKilled;
+    // rides BatchCullPush::seedHistory.
+    bool seedHistoryKilled = false;
     smvk::Holder<smvk::ShaderModuleHandle> batchCullModule;
     smvk::ShaderProgram batchCullProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> drawCullModule;

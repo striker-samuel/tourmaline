@@ -256,7 +256,12 @@ struct GfxIndirect { GfxIndirectCmd cmds[GFX_MAX_BATCH_SLOTS]; };
 // GfxHiz -> gfxdrawcull -> gfxfilter all run GPU-side with zero mid-pipeline
 // CPU readbacks. The temporal link (seed = prev-kept AND curr-kept,
 // remainder = curr-kept AND NOT prev-kept) stays GPU-resident through the
-// kept-bit parity ring.
+// kept-bit parity ring. "kept" in that link is FINAL visibility: the ring
+// bit is seeded by gfxbatchcull with the pre-occlusion geometric verdict
+// (sphere/frustum/cone) and REFINED by gfxfilter at the end of the frame to
+// the survivor verdict (draw-bound HZB, whole-cluster HZB, per-triangle
+// culling all applied) — a frustum-kept but occluded cluster must not be
+// classified as previously visible by the temporal split.
 // ---------------------------------------------------------------------------
 
 // GPU-written seed/remainder command arrays (VkDrawIndexedIndirectCommand
@@ -282,7 +287,11 @@ struct GfxSeedCmds { GfxSeedCmd cmd[GFX_MAX_BATCH_SLOTS]; };
 // by the same
 // flight's previous user (the flight fence guarantees that write is
 // complete; the current frame cannot race a concurrent one because the
-// parity regions alternate per flight use).
+// parity regions alternate per flight use). Region P's per-frame write is
+// TWO-STAGE within the frame, rendergraph-ordered: gfxbatchcull stores the
+// pre-occlusion geometric verdict, and gfxfilter (the exclusive per-slot
+// owner of the command write) overwrites it with the final-visibility
+// verdict — the same word, same frame, strictly later pass.
 //
 // The prev-kept identity is SLOT-STABLE (not key-stable like the CPU
 // temporal path): candidate slots are (draw-major, mesh clusters), so a
@@ -294,6 +303,10 @@ struct GfxSeedCmds { GfxSeedCmd cmd[GFX_MAX_BATCH_SLOTS]; };
 // and a stale-dropped slot misses the seed and the remainder pass draws
 // it the same frame (no holes). This is the standard GPU-driven temporal
 // reuse trade (slot-stable instance reuse), the price of zero readbacks.
+// Slots beyond a frame's batchCount (the capacity tail) keep the
+// geometric verdict — batchcull's write covers every candidate slot, the
+// filter's refinement covers batchCount; the tail reads back stale
+// conservative bits under churn, same as before.
 struct GfxKeptBits { uint kept[GFX_MAX_BATCH_SLOTS * 2]; };
 
 // Draw verdicts (gfxdrawcull: mesh-bound frustum + HZB occlusion, the
@@ -760,11 +773,16 @@ struct GfxFilterPush
     // Cull chain inputs (always the kept-bit region + cullState):
     //   kept      — this frame's kept region base (the CPU adds the parity
     //               region offset to the BDA; the shader indexes from it
-    //               directly)
+    //               directly). READ for the slot gate, then WRITTEN at the
+    //               end of the exclusive tid==0 block: the filter refines
+    //               each slot's history bit from the pre-occlusion
+    //               geometric verdict to FINAL visibility (survivor
+    //               count) — the temporal seed/remainder split consumes
+    //               the refined bit two frames later.
     //   cullState — draw verdicts (gfxdrawcull) + the filtered-offset
     //               counter (word cullStateCounterWord) this dispatch
     //               allocates through atomically
-    GPU_PTR_READ(GfxKeptBits) kept;
+    GPU_PTR(GfxKeptBits) kept;
     GPU_PTR(GfxCullState) cullState;
 };
 //static_assert(sizeof(GfxFilterPush) == 256);
@@ -830,8 +848,13 @@ struct GfxBatchCullPush
     // writes.
     uint cullStateCounterWord;
     uint candidateCapacity;
+    // Temporal seed/remainder split gate (TOURMALINE_GFX_SEED_HISTORY):
+    // 1 (default) = the temporal split runs (seed = kept && prev-final);
+    // 0 = the diagnostic kill — every kept slot seeds, nothing rides the
+    // remainder lane. The disocclusion A/B lever.
+    uint seedHistory;
 };
-//static_assert(sizeof(GfxBatchCullPush) == 208);
+//static_assert(sizeof(GfxBatchCullPush) == 212); // payload; C++ sizeof 216 (tail pad)
 
 // GfxSkinBounds: one 128-thread workgroup per draw (the GfxBatchCull dispatch
 // shape); threads stride the draw's clusters and rebuild each SKINNED

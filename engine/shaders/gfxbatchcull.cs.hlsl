@@ -15,11 +15,21 @@
 //      rejection (GfxConeCulled — the C++ CullCluster port; skipped for
 //      degenerate cones).
 //   3. temporal verdicts, all GPU-resident (zero CPU readbacks): the
-//      kept-bit parity ring holds the previous frame chain's verdicts
-//      (written smvk::limits::MaxFramesInFlight (2) frames ago — flight-fenced complete).
+//      kept-bit parity ring holds the previous frame chain's FINAL
+//      verdicts (written smvk::limits::MaxFramesInFlight (2) frames ago —
+//      flight-fenced complete). This pass seeds each slot's word with the
+//      PRE-OCCLUSION geometric verdict; the filter (later this frame,
+//      same rendergraph order) refines it to final visibility — so the
+//      prevKept read below is "finally visible two frames ago", never
+//      "frustum-visible two frames ago". A frustum-kept but occluded
+//      cluster therefore lands in the remainder (disocclusion lane), not
+//      the seed (trusted-visible lane).
 //        seed      = kept && prevKept  (reused visible set)
 //        remainder = kept && !prevKept (disocclusions: drawn the same
 //                                       frame — no one-frame holes)
+//      TOURMALINE_GFX_SEED_HISTORY=0 disables the split (every kept slot
+//      seeds): the disocclusion diagnostic — if an artifact disappears
+//      under it, the temporal history classification is implicated.
 //      Slot-stable identity: conservative under layout churn (a stale
 //      match only adds seed depth; a stale miss falls to the remainder
 //      pass the same frame).
@@ -172,15 +182,22 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         if (kept)
             InterlockedMin(gsFirstKept, ci);
 
-        // Temporal verdicts against the GPU-resident prev-kept ring.
+        // Temporal verdicts against the GPU-resident prev-kept ring. The
+        // effective prev bit folds the diagnostic kill
+        // (TOURMALINE_GFX_SEED_HISTORY=0 -> everything kept seeds: the
+        // disocclusion A/B lever).
         const uint keptV = kept ? 1u : 0u;
         const uint prevKept = pcB.kept.Get().kept[prevOff + slot] != 0u ? 1u : 0u;
-        const uint seedV = (keptV != 0u && prevKept != 0u && maskOk != 0u) ? 1u : 0u;
-        const uint remV = (keptV != 0u && prevKept == 0u && maskOk != 0u) ? 1u : 0u;
+        const uint prevEff = pcB.seedHistory == 0u ? 1u : prevKept;
+        const uint seedV = (keptV != 0u && prevEff != 0u && maskOk != 0u) ? 1u : 0u;
+        const uint remV = (keptV != 0u && prevEff == 0u && maskOk != 0u) ? 1u : 0u;
 
         // Every candidate slot gets a definitive write every frame — no
         // clearing, no stale content (the parity region's previous writer
         // was smvk::limits::MaxFramesInFlight (2) frames ago and is fence-complete).
+        // This store is the INITIAL (pre-occlusion) verdict; the filter
+        // refines it to final visibility later this frame — the next
+        // reader (the batch cull two frames out) consumes the refined bit.
         pcB.kept.Get().kept[keptOff + slot] = keptV;
         pcB.batches.Get().batch[slot] =
             uint4(me.clusterStart + ci, drawIdx, 0u, 0u);

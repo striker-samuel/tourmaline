@@ -564,6 +564,17 @@ struct GfxRenderer : public smvk::IFrameRenderer {
         cullDumpFrame_ = frame;
     }
 
+    // TOURMALINE_GFX_SEED_HISTORY=0 (RunConfig::seedHistoryKilled, applied
+    // once at Configure): kill the gfx temporal seed/remainder split —
+    // every frustum-kept slot draws in the seed depth pass. The
+    // disocclusion diagnostic: if an over-cull artifact disappears under
+    // it, the temporal history classification is implicated; the default
+    // split consumes the filter's FINAL-visibility history (not the
+    // pre-occlusion frustum verdict).
+    void SetSeedHistoryKilled(bool killed) {
+        gfx.seedHistoryKilled = killed;
+    }
+
     smvk::RenderPass& AddFilterPass(smvk::RenderGraph& rg, uint32_t slot);
 
     // Consume side (caller has bound FilteredProgram() with its own PSO).

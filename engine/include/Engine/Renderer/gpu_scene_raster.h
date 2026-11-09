@@ -182,6 +182,18 @@ static_assert(sizeof(RasterWorkDrawBuildPush) == 64);
 static_assert(offsetof(RasterIndirectCommand, firstInstance) == 16);
 static_assert(std::is_trivially_copyable_v<RasterIndirectCommand>);
 
+// Match the opt-in HLSL debug permutation; never poison indexCount or
+// instanceCount. Both must remain zero to keep empty commands harmless.
+[[nodiscard]] inline RasterIndirectCommand EmptyRasterIndirectCommand() noexcept {
+    RasterIndirectCommand command{};
+#if defined(GS_RASTER_DEBUG_EMPTY_COMMAND_SENTINEL) && GS_RASTER_DEBUG_EMPTY_COMMAND_SENTINEL
+    command.firstIndex = 0xDEADBEEFu;
+    command.vertexOffset = 0x7BADBEEF;
+    command.firstInstance = 0xDEADBEEFu;
+#endif
+    return command;
+}
+
 // CPU oracle for the fixed four-bin GPU indirect builder. A command slot
 // belongs to exactly one bin; firstInstance always denotes the ORIGINAL
 // work index, not the PSO-sorted command index.
@@ -192,7 +204,7 @@ static_assert(std::is_trivially_copyable_v<RasterIndirectCommand>);
     uint32_t bin) noexcept {
     if (rasterClass >= kRasterPipelineClassCount || rasterClass != bin ||
         geometry.indexCount == 0u)
-        return {};
+        return EmptyRasterIndirectCommand();
     return RasterIndirectCommand{geometry.indexCount, 1u, geometry.firstIndex,
                                  geometry.vertexOffset, workIndex};
 }

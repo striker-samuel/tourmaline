@@ -599,6 +599,8 @@ RunConfig RunConfig::Parse() {
     }
     if ((v = Get("TOURMALINE_STREAMING")) != nullptr)
         c.streamingKilled = std::atoi(v) == 0;
+    if ((v = Get("TOURMALINE_GFX_SEED_HISTORY")) != nullptr)
+        c.seedHistoryKilled = std::atoi(v) == 0;
 
     // Capture / audit (WorldRenderer.cpp:853..8817, :11045).
     c.audit = ToInt(Get("TOURMALINE_AUDIT"), -1);
@@ -853,6 +855,7 @@ void RunConfig::WarnUnknown() {
         "TOURMALINE_GI_POINTS",
         "TOURMALINE_GI_OCCLUDE",
         "TOURMALINE_STREAMING",
+        "TOURMALINE_GFX_SEED_HISTORY",
         "TOURMALINE_LIGHTMAP",
         "TOURMALINE_GI_VOLUMES",
         "TOURMALINE_HITCH_LOG",
