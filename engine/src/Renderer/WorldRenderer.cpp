@@ -10852,6 +10852,25 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneRasterMaskedGbufferProgram =
                         {.shaders = {vs, gbMaskedFs}, .shaderCount = 2};
                 }
+                // Optional A2C Main variant: preserves the masked material
+                // coverage contract under TOURMALINE_A2C and 2x MSAA.
+                try {
+                    if (m_gpuSceneRasterMaskedA2cFsModule.empty())
+                        m_gpuSceneRasterMaskedA2cFsModule = m_context->CreateShaderModule(
+                            smvk::shaders::Read(
+                                "content/shaders/gpu_scene_masked_a2c.frag.hlsl.spv"),
+                            "gpuSceneRasterMaskedA2CFS");
+                    if (!m_gpuSceneRasterMaskedA2cFsModule.empty()) {
+                        smvk::Shader a2cFs{
+                            .module = m_gpuSceneRasterMaskedA2cFsModule,
+                            .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+                        m_gpuSceneRasterMaskedA2cProgram =
+                            {.shaders = {vs, a2cFs}, .shaderCount = 2};
+                    }
+                } catch (...) {
+                    // Same nonfatal policy as the legacy default_lit_a2c
+                    // twin: keep the alpha-discard raster variant.
+                }
             }
         } catch (...) {
             static bool logged = false;
@@ -15170,19 +15189,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
             // The lit FS already applies the material's baseColor texture
             // alpha cutoff, using the flat per-work material ID at location 7.
+            const bool sceneMaskedA2c =
+                useMsaa && m_msaaAlphaToCoverage &&
+                m_gpuSceneRasterMaskedA2cProgram.shaderCount == 2;
+            const auto& sceneMaskedProgram =
+                sceneMaskedA2c ? m_gpuSceneRasterMaskedA2cProgram : m_gpuSceneRasterProgram;
+            const auto sceneMaskedMsaa =
+                sceneMaskedA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
             if (sceneRasterMasked) {
-                cmd.BindRenderPipeline(m_gpuSceneRasterProgram,
+                cmd.BindRenderPipeline(sceneMaskedProgram,
                                        smvk::VertexLayoutId::Static,
                                        opaqueDepth, noStencil,
-                                       smvk::BlendSettings::Opaque(), msaaSettings,
+                                       smvk::BlendSettings::Opaque(), sceneMaskedMsaa,
                                        smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
                 drawBin(2u);
             }
             if (sceneRasterMaskedTwoSided) {
-                cmd.BindRenderPipeline(m_gpuSceneRasterProgram,
+                cmd.BindRenderPipeline(sceneMaskedProgram,
                                        smvk::VertexLayoutId::Static,
                                        opaqueDepth, noStencil,
-                                       smvk::BlendSettings::Opaque(), msaaSettings,
+                                       smvk::BlendSettings::Opaque(), sceneMaskedMsaa,
                                        smvk::RasterSettings{.cullMode = smvk::CullMode::None});
                 drawBin(3u);
             }
