@@ -29,20 +29,25 @@ struct PsoPrefixCountPush {
 struct PsoPrefixScanPush {
     uint64_t blockCounts, blockBases, classCounts;
     uint32_t blockCount, commandCapacity, reserved0, reserved1;
-    uint32_t binOffsets[4], binCapacities[4];
+    uint32_t reserved2, reserved3;
+    alignas(16) uint32_t binOffsets[4];
+    alignas(16) uint32_t binCapacities[4];
 };
 struct PsoPrefixScatterPush {
     uint64_t work, workOffsets, geometry, aliases, blockBases;
     uint64_t classCounts, indirect;
     uint32_t candidateCount, workCapacity, geometryCount, aliasCount;
     uint32_t blockCount, commandCapacity, reserved0, reserved1;
-    uint32_t binOffsets[4], binCapacities[4];
+    uint32_t reserved2, reserved3;
+    alignas(16) uint32_t binOffsets[4];
+    alignas(16) uint32_t binCapacities[4];
 };
 static_assert(sizeof(PsoPrefixCountPush) == 64);
-static_assert(sizeof(PsoPrefixScanPush) == 72);
-static_assert(sizeof(PsoPrefixScatterPush) == 120);
-static_assert(offsetof(PsoPrefixScatterPush, binOffsets) == 88);
-static_assert(offsetof(PsoPrefixScatterPush, binCapacities) == 104);
+static_assert(sizeof(PsoPrefixScanPush) == 80);
+static_assert(sizeof(PsoPrefixScatterPush) == 128);
+static_assert(offsetof(PsoPrefixScanPush, binOffsets) == 48);
+static_assert(offsetof(PsoPrefixScatterPush, binOffsets) == 96);
+static_assert(offsetof(PsoPrefixScatterPush, binCapacities) == 112);
 
 struct PsoPrefixPlan {
     using Counts = std::array<uint32_t, kPsoPrefixClasses>;
