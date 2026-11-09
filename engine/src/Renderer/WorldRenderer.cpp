@@ -11463,6 +11463,25 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
         }
+        if (m_gpuSceneRasterMeshletBuildProgram.shaderCount == 0) {
+            try {
+                auto bytes = smvk::shaders::Read(
+                    "content/shaders/gpu_scene_raster_meshlet_drawbuild.cs.hlsl.spv");
+                m_gpuSceneRasterMeshletBuildModule = m_context->CreateShaderModule(
+                    std::move(bytes), "gpuSceneRasterMeshletBuildCS");
+                if (!m_gpuSceneRasterMeshletBuildModule.empty()) {
+                    smvk::Shader cs{
+                        .module = m_gpuSceneRasterMeshletBuildModule,
+                        .entryPoint = "mainCS",
+                        .stage = smvk::ShaderStage::Compute};
+                    m_gpuSceneRasterMeshletBuildProgram = {
+                        .shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                // Keep the established whole-submesh builder available when
+                // this optional GPU-driven meshlet permutation is missing.
+            }
+        }
         // GPU-scene temporal seed and Hi-Z: optional until their complete
         // compute + rendergraph chain is ready. Missing modules fail open
         // to the existing unculled GPU-scene depth/Main path.
@@ -11594,10 +11613,39 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneValidator.PrepareParallelWorkPrefix(
                         *m_context, fb.frameIndex, workBlock, workGroups, workAdd);
                 const bool workReady = workPrepared && (!gpuSceneRasterMode || parallelScanReady);
+                // Meshlets are the primary raster work unit. Each current
+                // work record expands into its registered clusters; command
+                // capacity determines how many meshlets fit per work slot.
+                // Oversized registrations retain their complete indexed draw
+                // rather than silently dropping their tail clusters.
+                static const bool sGpuSceneMeshlets = [] {
+                    const char* env = std::getenv("TOURMALINE_GPU_SCENE_MESHLETS");
+                    return !env || std::strcmp(env, "0") != 0;
+                }();
+                const auto& meshletState = m_gfxRenderer.State();
+                const bool meshletBuffersReady =
+                    !meshletState.meshesBuffer.empty() &&
+                    !meshletState.clusterBuffer.empty() &&
+                    !meshletState.meshesLogical.empty() &&
+                    !meshletState.clusterLogical.empty();
+                const bool meshletBuild =
+                    sGpuSceneMeshlets && gpuSceneRasterMode && meshletBuffersReady &&
+                    m_gpuSceneRasterMeshletBuildProgram.shaderCount == 1 &&
+                    gpuPush.view != 0u;
+                uint32_t meshletLanes = 1u;
+                if (meshletBuild) {
+                    uint32_t largest = 1u;
+                    for (const auto& mesh : meshletState.meshes)
+                        largest = std::max(largest, mesh.clusterCount);
+                    meshletLanes = std::max(1u, std::min(
+                        {largest, tour::gpu_scene::kRasterMeshletMaxLanes,
+                         1048576u / std::max(1u, selected.candidateCount)}));
+                }
                 tour::gpu_scene::RasterWorkDrawBuildPush rasterPush{};
                 smvk::BufferHandle rasterCommands{};
                 const bool rasterReady =
-                    workReady && m_gpuSceneRasterBuildProgram.shaderCount == 1 &&
+                    workReady && (meshletBuild ||
+                                  m_gpuSceneRasterBuildProgram.shaderCount == 1) &&
                     m_gpuSceneValidator.PrepareRasterCommands(
                         *m_context,
                         fb.frameIndex,
@@ -11606,7 +11654,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         m_gpuScenePersistentGeometry.AliasAddress(*m_context, fb.frameIndex),
                         m_gpuScenePersistentGeometry.AliasCount(fb.frameIndex),
                         rasterPush,
-                        rasterCommands);
+                        rasterCommands,
+                        meshletLanes);
+                tour::gpu_scene::RasterMeshletWorkDrawBuildPush meshletPush{};
+                if (meshletBuild && rasterReady) {
+                    meshletPush.raster = rasterPush;
+                    meshletPush.meshes =
+                        m_context->GetBufferDeviceAddress(meshletState.meshesBuffer);
+                    meshletPush.clusters =
+                        m_context->GetBufferDeviceAddress(meshletState.clusterBuffer);
+                    meshletPush.instances = gpuPush.instances;
+                    meshletPush.cullView = gpuPush.view;
+                    meshletPush.meshCount = uint32_t(meshletState.meshes.size());
+                    meshletPush.clusterCount = uint32_t(meshletState.clusters.size());
+                    meshletPush.indexBase = meshletState.clusterIndexBase;
+                    meshletPush.instanceSlots = uint32_t(m_gpuSceneDatabase.instances.Size());
+                    meshletPush.meshletLanes = meshletLanes;
+                    meshletPush.cullViewValid = gpuPush.counts2.z;
+                }
                 tour::gpu_scene::SceneIndirectArgsPush indirectArgs{};
                 tour::gpu_scene::SceneIndirectVerifyPush indirectVerify{};
                 smvk::BufferHandle indirectBuffer{};
@@ -11778,6 +11843,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         write.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
                         pass.AddBufferHint(m_gpuSceneRasterIndirectLogical[fb.frameIndex], write);
                         pass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], write);
+                        if (meshletBuild) {
+                            smvk::BufferSyncRequest meshletRead{};
+                            meshletRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                            meshletRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+                            pass.AddBufferHint(meshletState.meshesLogical, meshletRead);
+                            pass.AddBufferHint(meshletState.clusterLogical, meshletRead);
+                        }
                         smvk::BufferSyncRequest ownerRead{};
                         ownerRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
                         ownerRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
@@ -11789,7 +11861,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     auto compactPrograms = m_gpuSceneCompactPrograms;
                     auto workPrograms = m_gpuSceneWorkPrograms;
                     auto workScanPrograms = m_gpuSceneWorkScanPrograms;
-                    auto rasterProgram = m_gpuSceneRasterBuildProgram;
+                    auto rasterProgram = meshletBuild
+                        ? m_gpuSceneRasterMeshletBuildProgram
+                        : m_gpuSceneRasterBuildProgram;
                     auto indirectPrograms = m_gpuSceneIndirectPrograms;
                     const uint32_t groups = (selected.candidateCount + 63u) / 64u;
                     pass.SetRecordingFunc([program,
@@ -11809,6 +11883,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                            workGroups,
                                            workAdd,
                                            rasterPush,
+                                           meshletPush,
+                                           meshletBuild,
                                            rasterCommands,
                                            indirectArgs,
                                            indirectVerify,
@@ -11883,8 +11959,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             // CPU readback, and all 20 command bytes are GPU-written.
                             cmd.EmitGlobalMemoryBarrier();
                             cmd.BindComputePipeline(rasterProgram);
-                            cmd.PushConstants(
-                                0, sizeof(rasterPush), &rasterPush, smvk::ShaderStage::Compute);
+                            if (meshletBuild)
+                                cmd.PushConstants(0, sizeof(meshletPush), &meshletPush,
+                                                  smvk::ShaderStage::Compute);
+                            else
+                                cmd.PushConstants(0, sizeof(rasterPush), &rasterPush,
+                                                  smvk::ShaderStage::Compute);
                             cmd.Dispatch((rasterPush.commandCapacity + 127u) / 128u, 1, 1);
                         }
                         if (!indirectReady)
