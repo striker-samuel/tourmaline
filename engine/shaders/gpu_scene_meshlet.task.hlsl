@@ -49,17 +49,18 @@ void mainAS(uint3 groupId : SV_GroupID,
             uint3 threadId : SV_GroupThreadID,
             out payload GsTaskPayload payload) {
     const uint lane=threadId.x;
+    const uint groupIndex=groupId.x+groupId.y*pc.taskGridX;
     const GsTaskMeshParams p=pc.params.Get();
 
     GsTaskGroup group=(GsTaskGroup)0;
     GsWorkRow work=(GsWorkRow)0;
     GpuSceneInstance inst=(GpuSceneInstance)0;
-    bool valid=groupId.x<pc.groupCount &&
-        pc.groupBase<=GS_MAX_TASK_GROUPS &&
-        groupId.x<GS_MAX_TASK_GROUPS-pc.groupBase;
+    bool valid=pc.taskGridX!=0u && groupId.x<pc.taskGridX &&
+        groupIndex<pc.groupCount && pc.groupBase<=GS_MAX_TASK_GROUPS &&
+        groupIndex<GS_MAX_TASK_GROUPS-pc.groupBase;
 
     if (valid) {
-        group=p.groups.Get().rows[pc.groupBase+groupId.x];
+        group=p.groups.Get().rows[pc.groupBase+groupIndex];
         valid=group.workSlot<p.workCount && group.workSlot<GS_MAX_WORK &&
             group.clusterCount>0u && group.clusterCount<=GS_TASK_THREADS &&
             group.rasterClass==pc.rasterClass &&
