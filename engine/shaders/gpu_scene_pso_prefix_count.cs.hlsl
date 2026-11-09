@@ -70,11 +70,11 @@ void mainCS(uint3 gid : SV_GroupID, uint3 lane : SV_GroupThreadID) {
 
     const uint waveSize = WaveGetLaneCount();
     const uint wave = lane.x / waveSize;
-    if (WaveIsFirstLane()) {
-        [unroll]
-        for (uint c = 0u; c < PSO_CLASSES; ++c)
-            waveCounts[c * PSO_GROUP + wave] =
-                WaveActiveCountBits(valid && cls == c);
+    [unroll]
+    for (uint c = 0u; c < PSO_CLASSES; ++c) {
+        const uint countInWave = WaveActiveCountBits(valid && cls == c);
+        if (WaveIsFirstLane())
+            waveCounts[c * PSO_GROUP + wave] = countInWave;
     }
     GroupMemoryBarrierWithGroupSync();
     if (lane.x < PSO_CLASSES) {
