@@ -11637,9 +11637,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     uint32_t largest = 1u;
                     for (const auto& mesh : meshletState.meshes)
                         largest = std::max(largest, mesh.clusterCount);
-                    meshletLanes = std::max(1u, std::min(
-                        {largest, tour::gpu_scene::kRasterMeshletMaxLanes,
-                         1048576u / std::max(1u, selected.candidateCount)}));
+                    meshletLanes = tour::gpu_scene::RasterMeshletLaneCount(
+                        selected.candidateCount, largest);
                 }
                 tour::gpu_scene::RasterWorkDrawBuildPush rasterPush{};
                 smvk::BufferHandle rasterCommands{};
