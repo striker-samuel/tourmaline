@@ -189,6 +189,8 @@ class PersistentGeometryRegistry {
                     return false;
             }
         }
+        if (nextAliases != transientAliases_)
+            ++aliasRevision_;
         if (nextRows.size() != rows_.size() ||
             !std::equal(nextRows.begin(),
                         nextRows.end(),
@@ -221,12 +223,19 @@ class PersistentGeometryRegistry {
     [[nodiscard]] uint64_t Revision() const noexcept {
         return revision_;
     }
+    [[nodiscard]] uint64_t AliasRevision() const noexcept {
+        return aliasRevision_;
+    }
+    [[nodiscard]] std::span<const uint32_t> TransientAliases() const noexcept {
+        return transientAliases_;
+    }
 
   private:
     std::unordered_map<PersistentGeometryKey, uint32_t, PersistentGeometryKeyHash> ids_;
     std::vector<IndexedGeometry> rows_;
     std::vector<uint32_t> transientAliases_;
     uint64_t revision_ = 1;
+    uint64_t aliasRevision_ = 1;
 };
 
 // Per-acquired-flight GPU snapshot of the stable descriptor slots.
@@ -241,13 +250,16 @@ class PersistentIndexedGeometryPublisher {
         if (flight >= Flights)
             return false;
         const auto rows = registry.Descriptors();
-        if (rows.empty()) {
+        const auto aliases = registry.TransientAliases();
+        if (rows.empty() || aliases.empty()) {
             counts_[flight] = 0;
-            revisions_[flight] = registry.Revision();
+            aliasCounts_[flight] = 0;
             return true;
         }
-        if (revisions_[flight] == registry.Revision() && counts_[flight] == rows.size() &&
-            !buffers_[flight].empty())
+        if (revisions_[flight] == registry.Revision() &&
+            aliasRevisions_[flight] == registry.AliasRevision() && counts_[flight] == rows.size() &&
+            aliasCounts_[flight] == aliases.size() && !buffers_[flight].empty() &&
+            !aliasBuffers_[flight].empty())
             return true;
         if (capacity_[flight] < rows.size() || buffers_[flight].empty()) {
             size_t count = std::max<size_t>(16, capacity_[flight]);
@@ -261,13 +273,32 @@ class PersistentIndexedGeometryPublisher {
             buffers_[flight] = std::move(next); // Holder retires old physical buffer
             capacity_[flight] = uint32_t(count);
         }
+        if (aliasCapacity_[flight] < aliases.size() || aliasBuffers_[flight].empty()) {
+            size_t count = std::max<size_t>(16, aliasCapacity_[flight]);
+            while (count < aliases.size())
+                count *= 2;
+            auto next = ctx.CreateBuffer(count * sizeof(uint32_t),
+                                         smvk::BufferType_Storage,
+                                         "GPU scene transient geometry alias map");
+            if (next.empty())
+                return false;
+            aliasBuffers_[flight] = std::move(next);
+            aliasCapacity_[flight] = uint32_t(count);
+        }
+        ctx.UploadDataToBuffer(aliasBuffers_[flight],
+                               aliases.data(),
+                               aliases.size_bytes(),
+                               smvk::PipelineStage(smvk::PipelineStageBit_Compute),
+                               smvk::AccessFlags::ShaderRead);
         ctx.UploadDataToBuffer(buffers_[flight],
                                rows.data(),
                                rows.size_bytes(),
                                smvk::PipelineStage(smvk::PipelineStageBit_Compute),
                                smvk::AccessFlags::ShaderRead);
         counts_[flight] = static_cast<uint32_t>(rows.size());
+        aliasCounts_[flight] = static_cast<uint32_t>(aliases.size());
         revisions_[flight] = registry.Revision();
+        aliasRevisions_[flight] = registry.AliasRevision();
         return true;
     }
     [[nodiscard]] uint64_t DeviceAddress(const smvk::ResourceManager& ctx, uint32_t flight) const {
@@ -278,12 +309,24 @@ class PersistentIndexedGeometryPublisher {
     [[nodiscard]] uint32_t Count(uint32_t flight) const noexcept {
         return flight < Flights ? counts_[flight] : 0u;
     }
+    [[nodiscard]] uint32_t AliasCount(uint32_t flight) const noexcept {
+        return flight < Flights ? aliasCounts_[flight] : 0u;
+    }
+    [[nodiscard]] uint64_t AliasAddress(const smvk::ResourceManager& ctx, uint32_t flight) const {
+        if (flight >= Flights || !aliasCounts_[flight] || aliasBuffers_[flight].empty())
+            return 0;
+        return ctx.GetBufferDeviceAddress(aliasBuffers_[flight]);
+    }
 
   private:
     std::array<smvk::Holder<smvk::BufferHandle>, Flights> buffers_{};
+    std::array<smvk::Holder<smvk::BufferHandle>, Flights> aliasBuffers_{};
     std::array<uint32_t, Flights> capacity_{};
+    std::array<uint32_t, Flights> aliasCapacity_{};
     std::array<uint32_t, Flights> counts_{};
+    std::array<uint32_t, Flights> aliasCounts_{};
     std::array<uint64_t, Flights> revisions_{};
+    std::array<uint64_t, Flights> aliasRevisions_{};
 };
 
 class IndexedGeometryPublisher {
