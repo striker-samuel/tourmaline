@@ -221,7 +221,19 @@ void CheckSubmeshWorkExpansion() {
     work = ReferenceExpandWork(db, visible);
     CHECK(work.size() == 2u && work[0].detail.z == 1u &&
           work[1].detail.z == 1u); // two-sided material class
+    // The mask bit is independent of the cull-mode bit and belongs to the
+    // INSTANCE, never the shared mesh or geometry registration.
+    instance.refs.w |= InstanceFlagMasked;
+    CHECK(db.instances.Update(id, instance));
+    work = ReferenceExpandWork(db, visible);
+    CHECK(work.size() == 2u && work[0].detail.z == 3u &&
+          work[1].detail.z == 3u);
     instance.refs.w &= ~InstanceFlagDoubleSided;
+    CHECK(db.instances.Update(id, instance));
+    work = ReferenceExpandWork(db, visible);
+    CHECK(work.size() == 2u && work[0].detail.z == 2u &&
+          work[1].detail.z == 2u);
+    instance.refs.w &= ~InstanceFlagMasked;
     CHECK(db.instances.Update(id, instance));
 
     // Unregistered submeshes are excluded without a hole in the output.
@@ -250,18 +262,32 @@ void CheckSubmeshWorkExpansion() {
 }
 
 void CheckRasterPsoBins() {
+    static_assert(kRasterPipelineClassCount == 4u);
+    static_assert(kRasterPipelineDoubleSided == 1u);
+    static_assert(kRasterPipelineMasked == 2u);
+    static_assert(kRasterPipelineMaskedDoubleSided == 3u);
     const IndexedGeometry geometry{36u, 72u, -5, 0u};
-    const auto front = MakeRasterBinnedCommand(geometry, 7u, 0u, 0u);
-    const auto noCull = MakeRasterBinnedCommand(geometry, 8u, 1u, 1u);
-    const auto excludedFront = MakeRasterBinnedCommand(geometry, 7u, 0u, 1u);
-    const auto excludedNoCull = MakeRasterBinnedCommand(geometry, 8u, 1u, 0u);
-    CHECK(front.indexCount == 36u && front.instanceCount == 1u &&
-          front.firstIndex == 72u && front.vertexOffset == -5 &&
-          front.firstInstance == 7u);
-    CHECK(noCull.instanceCount == 1u && noCull.firstInstance == 8u);
-    CHECK(excludedFront.indexCount == 0u && excludedFront.instanceCount == 0u);
-    CHECK(excludedNoCull.indexCount == 0u && excludedNoCull.instanceCount == 0u);
-    CHECK(MakeRasterBinnedCommand(geometry, 9u, 2u, 0u).instanceCount == 0u);
+    const uint32_t slots[] = {7u, 8u, 9u, 10u};
+    // Each work slot produces exactly one valid command across four bins.
+    // The command's firstInstance is ALWAYS the original work slot and
+    // cannot be interpreted as its command-buffer offset after binning.
+    for (uint32_t cls = 0; cls < kRasterPipelineClassCount; ++cls) {
+        uint32_t admitted = 0;
+        for (uint32_t bin = 0; bin < kRasterPipelineClassCount; ++bin) {
+            const auto cmd = MakeRasterBinnedCommand(geometry, slots[cls], cls, bin);
+            if (bin == cls) {
+                CHECK(cmd.indexCount == 36u && cmd.instanceCount == 1u &&
+                      cmd.firstIndex == 72u && cmd.vertexOffset == -5 &&
+                      cmd.firstInstance == slots[cls]);
+                ++admitted;
+            } else {
+                CHECK(cmd.indexCount == 0u && cmd.instanceCount == 0u);
+            }
+        }
+        CHECK(admitted == 1u);
+    }
+    CHECK(MakeRasterBinnedCommand(geometry, 11u, 4u, 0u).instanceCount == 0u);
+    CHECK(MakeRasterBinnedCommand(IndexedGeometry{}, 12u, 2u, 2u).instanceCount == 0u);
 }
 
 void CheckProjectedErrorWorkSelection() {
