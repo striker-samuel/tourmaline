@@ -102,6 +102,16 @@ int main() {
         const RasterGroup empty{4, 0, 0, 0};
         CHECK(MakeRasterCommand(geo, empty).instanceCount == 0);
     }
+    // Meshlet-first expansion chooses as many cluster lanes as the bounded
+    // 1M-per-bin indirect ring permits, without truncating oversized meshes.
+    {
+        CHECK(RasterMeshletLaneCount(1u, 50u) == 50u);
+        CHECK(RasterMeshletLaneCount(1u, 2048u) == 1024u);
+        CHECK(RasterMeshletLaneCount(1024u, 64u) == 64u);
+        CHECK(RasterMeshletLaneCount(65536u, 64u) == 16u);
+        CHECK(RasterMeshletLaneCount(1048576u, 64u) == 1u);
+        CHECK(RasterMeshletLaneCount(0u, 64u) == 1u);
+    }
     // Per-cluster indexed commands retain their GPU work slot; an invalid
     // mesh registration never produces a command referencing a foreign mesh.
     {
