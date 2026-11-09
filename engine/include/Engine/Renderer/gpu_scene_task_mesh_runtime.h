@@ -98,7 +98,12 @@ public:
             !in.shading || !in.workCapacity || !in.worstMeshlets ||
             !in.meshCount || !in.aliasCount || !in.geometryCount ||
             !in.instanceCount || !in.indexWordCapacity || !in.vertexCapacity ||
-            in.workCapacity > 1048576u)
+            in.workCapacity > 1048576u || in.sceneCandidateCount > 1048576u ||
+            in.meshCount > 65535u || in.aliasCount > 65535u ||
+            in.geometryCount > 65535u || in.clusterCount > 4194304u ||
+            in.instanceCount > 4194304u ||
+            in.indexWordCapacity > 65536u * 128u * 3u ||
+            in.vertexCapacity > 44739242u)
             return false;
         const uint64_t groupsPerWork =
             (uint64_t(in.worstMeshlets) + 31u) / 32u;
