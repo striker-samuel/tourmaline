@@ -66,6 +66,14 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     command.firstIndex = 0;
     command.vertexOffset = 0;
     command.firstInstance = 0;
+#if defined(GS_RASTER_DEBUG_EMPTY_COMMAND_SENTINEL) && GS_RASTER_DEBUG_EMPTY_COMMAND_SENTINEL
+    // Poison *unused* fields only. instanceCount and indexCount remain zero:
+    // even a mistakenly submitted empty command must not fetch geometry.
+    // This is a shader permutation, never enabled in production by default.
+    command.firstIndex = 0xDEADBEEFu;
+    command.vertexOffset = int(0x7BADBEEFu);
+    command.firstInstance = 0xDEADBEEFu;
+#endif
 
     // This offset is the GPU-computed total work count. Never trust a value
     // outside the reserved command range, including an overflowed prefix.
