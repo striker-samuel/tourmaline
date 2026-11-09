@@ -34,6 +34,12 @@ struct RasterWork { RasterWorkRow rows[GS_RASTER_MAX_WORK]; };
 struct RasterInstances { GpuSceneInstanceRow rows[GS_RASTER_MAX_INSTANCES]; };
 struct RasterMeshes { GpuSceneMeshRow rows[GS_RASTER_MAX_INSTANCES]; };
 struct RasterHistory { uint generations[GS_RASTER_MAX_INSTANCES]; };
+// GfxFilter static mesh/cluster tables are revision-local. The command
+// builder validates them; temporal Hi-Z uses the same flight's registration.
+struct GfxMeshEntry { uint clusterStart; uint clusterCount; };
+struct GfxMeshes { GfxMeshEntry rows[65535u]; };
+struct GfxClusterData { uint4 a; float4 b; float4 c; float4 d; };
+struct GfxClusters { GfxClusterData rows[GS_RASTER_MAX_INSTANCES]; };
 struct RasterViewData {
     float4x4 relativeViewProjection;
     DoubleFloat3 origin;
@@ -56,6 +62,12 @@ struct RasterHizPush {
     uint historySlots;
     uint historyValid;
     uint reserved;
+    GPU_PTR_READ(GfxMeshes) gfxMeshes;
+    GPU_PTR_READ(GfxClusters) gfxClusters;
+    uint meshletLanes;
+    uint gfxMeshCount;
+    uint gfxClusterCount;
+    uint meshletActive;
 };
 GPU_PUSH(RasterHizPush, pcH);
 
@@ -126,7 +138,34 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // Meshes with incomplete bounds remain visible. For valid bounds,
     // the test is conservative: a projected union sphere is rejected only
     // if its nearest possible depth is behind EVERY covered Hi-Z texel.
-    const BoundProjection p = ProjectBound(inst.localSphere, model, ctx);
+    // Submesh fallback commands use the conservative all-LOD sphere.
+    // Primary meshlet commands use their own local cluster sphere instead.
+    // Invalid registration/candidate metadata cannot prove occlusion.
+    float4 localSphere = inst.localSphere;
+    if (pcH.meshletActive != 0u) {
+        if (pcH.meshletLanes == 0u ||
+            pcH.commandCapacity % 4u != 0u ||
+            pcH.commandCapacity / 4u < pcH.meshletLanes)
+            return;
+        const uint binStride = pcH.commandCapacity / 4u;
+        const uint lane = (i % binStride) % pcH.meshletLanes;
+        const uint transientId = work.identity.z;
+        if (transientId >= min(pcH.gfxMeshCount, 65535u))
+            return;
+        const GfxMeshEntry mesh = pcH.gfxMeshes.Get().rows[transientId];
+        if (mesh.clusterCount != 0u &&
+            mesh.clusterCount <= pcH.meshletLanes) {
+            if (lane >= mesh.clusterCount ||
+                mesh.clusterStart >= min(pcH.gfxClusterCount, GS_RASTER_MAX_INSTANCES) ||
+                lane >= min(pcH.gfxClusterCount, GS_RASTER_MAX_INSTANCES) -
+                        mesh.clusterStart)
+                return;
+            localSphere = pcH.gfxClusters.Get().rows[mesh.clusterStart + lane].b;
+            if (!all(isfinite(localSphere)) || localSphere.w <= 0.0f)
+                return; // missing cluster bounds keep
+        }
+    }
+    const BoundProjection p = ProjectBound(localSphere, model, ctx);
     if (p.testable && p.onTarget && BoundHzbOccluded(p, ctx)) {
         cmd.instanceCount = 0u;
         pcH.commands.Get().rows[i] = cmd;
