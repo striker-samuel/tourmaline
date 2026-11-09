@@ -138,6 +138,7 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
         smvk::BufferHandle indirect,
         smvk::LogicalBufferHandle indirectLogical,
         smvk::LogicalBufferHandle groupsLogical,
+        smvk::LogicalBufferHandle offsetsLogical,
         smvk::LogicalBufferHandle workLogical,
         const tour::gpu_scene::TaskMeshGpuPush& tail,
         bool hasDoubleSided,
