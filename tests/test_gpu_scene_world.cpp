@@ -239,6 +239,54 @@ int main() {
         const auto topology = sync.Synchronize(world, snapshot, 2);
         CHECK(topology.topologyReconciled);
     }
+    // Gameplay-owned nodes are not in clusterMergedNodes, but must be
+    // reconciled into GPU Scene using stable World-owned identities.
+    // The fixture uses the resolved World mesh row directly; gameplay's
+    // AssetManager-backed SetMesh path writes the same Scene mesh row.
+    {
+        smvk::World world{};
+        auto owned = std::make_unique<smvk::Cluster>(nullptr);
+        owned->SetOfflineMode(true);
+        const int authored = addNode(owned->scene, -1, 0);
+        const auto mesh = owned->staticMeshes.create(smvk::StaticMesh{});
+        CHECK(SetMesh(owned->scene, uint32_t(authored), mesh.index()));
+        world.RegisterCluster(std::move(owned));
+        world.ResolveAndFixup_clusters();
+        CHECK(!world.meshLocations.empty());
+        const uint32_t worldMesh = 0;
+        const NodeHandle first = world.AddNode();
+        const NodeHandle second = world.AddNode();
+        CHECK(world.IsGameNode(first) && world.IsGameNode(second));
+        CHECK(SetMesh(world.scene, NodeHandleSlot(first), worldMesh));
+        CHECK(SetMesh(world.scene, NodeHandleSlot(second), worldMesh));
+        world.RefreshRuntimeSceneCaches();
+        RenderDatabase snapshot{};
+        WorldSynchronizer sync{};
+        const auto spawned = sync.Synchronize(world, snapshot);
+        CHECK(spawned.created == 3 && spawned.meshesCreated == 1);
+        const SourceKey key1 = sync.SourceForNode(NodeHandleSlot(first));
+        const SourceKey key2 = sync.SourceForNode(NodeHandleSlot(second));
+        const SourceKey authoredKey = sync.SourceForNode(uint32_t(authored));
+        CHECK(key1.registration != 0 && key1.registration != authoredKey.registration);
+        CHECK(key1.registration == key2.registration && key1.slot != key2.slot);
+        CHECK(key1.generation == NodeGenerationOf(world.scene, NodeHandleSlot(first)));
+        CHECK(sync.Find(key1) && sync.Find(key2));
+        const auto steady = sync.Synchronize(world, snapshot);
+        CHECK(!steady.topologyReconciled && steady.created == 0);
+        CHECK(world.RemoveNode(first));
+        const auto removed = sync.Synchronize(world, snapshot);
+        CHECK(removed.retired == 1 && removed.meshesRetired == 0);
+        CHECK(!sync.Find(key1) && sync.Find(key2));
+        const NodeHandle replacement = world.AddNode();
+        CHECK(world.IsGameNode(replacement));
+        CHECK(SetMesh(world.scene, NodeHandleSlot(replacement), worldMesh));
+        world.RefreshRuntimeSceneCaches();
+        const auto respawned = sync.Synchronize(world, snapshot);
+        const SourceKey replacementKey = sync.SourceForNode(NodeHandleSlot(replacement));
+        CHECK(respawned.created == 1 && respawned.meshesCreated == 0);
+        CHECK(replacementKey != key1 && replacementKey.registration == key2.registration);
+        CHECK(sync.Find(replacementKey) && !sync.Find(key1));
+    }
     // Temporal GPU-scene seed is keyed by persistent slot + generation,
     // not by work slot, draw order or last frame's geometry ID.
     {
