@@ -2388,6 +2388,10 @@ class WorldRenderer : public IRenderer {
     smvk::ShaderProgram m_gpuSceneRasterDepthProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterGbufferFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterGbufferProgram{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterMaskedDepthFsModule{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterMaskedGbufferFsModule{};
+    smvk::ShaderProgram m_gpuSceneRasterMaskedDepthProgram{};
+    smvk::ShaderProgram m_gpuSceneRasterMaskedGbufferProgram{};
     // The validation-only verdict target is a BDA write. Register its
     // per-flight physical buffer with the rendergraph so compute writes are
     // represented in graph synchronization and not just a raw device address.
@@ -2422,6 +2426,8 @@ class WorldRenderer : public IRenderer {
 
     uint32_t m_gpuSceneRasterCompatibleCount = 0;
     uint32_t m_gpuSceneRasterDoubleSidedCount = 0;
+    uint32_t m_gpuSceneRasterMaskedBackCount = 0;
+    uint32_t m_gpuSceneRasterMaskedDoubleSidedCount = 0;
     uint32_t m_gpuSceneRasterLegacyCount = 0;
     // Prototype production cutover: only all-supported static/opaque scenes
     // may substitute their Main draws. Unsupported content uses GfxFilter.
