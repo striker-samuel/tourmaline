@@ -1368,6 +1368,15 @@ set_target_properties(GpuSceneWorldTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_world_tests COMMAND GpuSceneWorldTests)
 
+# Conservative CPU raster-PSO budget bookkeeping for the adaptive-bin
+# groundwork (docs/gpu_scene_adaptive_pso_bins.md). Pure CPU accounting;
+# no Vulkan device, no shader dispatch.
+add_executable(GpuScenePsoBudgetTests test_gpu_scene_pso_budget.cpp)
+target_link_libraries(GpuScenePsoBudgetTests PRIVATE engine)
+set_target_properties(GpuScenePsoBudgetTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_pso_budget_tests COMMAND GpuScenePsoBudgetTests)
+
 # Agent tooling unit tests (tools/perf_harness.py's stdlib-only suite).
 # Registered through ctest so a broken harness (e.g. the literal-\n syntax
 # error PR #24 shipped) fails CI like any C++ test would. The harness tests
