@@ -25,7 +25,7 @@ struct Push {
     uint mode; // 0 = clear this flight's snapshot, 1 = commit survivors
 };
 GPU_PUSH(Push, pc);
-[numthreads(64, 1, 1)]
+[numthreads(128, 1, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (pc.mode == 0u) {
         if (tid.x < pc.historySlots && tid.x < GS_MAX_INSTANCES)
