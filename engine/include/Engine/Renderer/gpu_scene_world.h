@@ -576,6 +576,11 @@ class WorldSynchronizer {
     [[nodiscard]] SceneRegistry::InstanceId Find(SourceKey k) const {
         return registry_.Find(k);
     }
+    // The renderer must snapshot this together with the matching flight's
+    // published GPU-scene rows; it is not an immediate GPU draw count.
+    [[nodiscard]] RasterPsoBudget::Counts PsoWorkUpperBounds() const noexcept {
+        return registry_.PsoWorkUpperBounds();
+    }
     // Canonical cluster-local source identity for a merged World node.
     // Only valid for the current topology revision; callers must never
     // persist the merged NodeId itself as an ownership key.
