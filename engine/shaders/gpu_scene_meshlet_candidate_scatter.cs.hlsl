@@ -129,14 +129,13 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         const Cluster c=pc.clusters.Get().rows[clusterId];
         if (c.a.y==0u || c.a.y>0x55555555u ||
             c.a.x>INVALID-pc.indexBase) {
-            // Invalid meshlet metadata: render the entire submesh from
-            // lane zero so no triangle is silently dropped.
-            if (lane!=0u) return;
+            // Invalid meshlet metadata: fail open with a whole-submesh
+            // draw. This may duplicate valid clusters but never loses a
+            // triangle. Publication should validate metadata beforehand.
             clusterId=INVALID;
         } else {
             const uint f=c.a.x+pc.indexBase,n=c.a.y*3u;
             if (f<g.first||n>g.count||f-g.first>g.count-n) {
-                if (lane!=0u) return;
                 clusterId=INVALID;
             } else {
                 if (pc.viewValid!=0u) {
