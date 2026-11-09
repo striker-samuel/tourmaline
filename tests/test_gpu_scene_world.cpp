@@ -132,6 +132,84 @@ int main() {
         CHECK(!ResolveIndexedGeometry(tables, 0, indexed));
         CHECK(indexed.indexCount == 0);
     }
+    // Indexed geometry is keyed by persistent mesh slot + generation + LOD,
+    // not by a transient filter mesh number. Re-registration must not
+    // renumber the descriptor, and retirement must tombstone its draw range.
+    {
+        RenderDatabase db{};
+        const auto sub = db.submeshes.Insert(
+            Submesh{0u, InvalidIndex, InvalidIndex, 0u});
+        const auto lod = db.lods.Insert(
+            Lod{sub.slot, 1u, 0.0f, LodFlagResident | LodFlagFilterable});
+        const auto mesh = db.meshes.Insert(
+            Mesh{lod.slot, 1u, 1u, MeshFlagCompleteBounds});
+        CHECK(bool(sub) && bool(lod) && bool(mesh));
+        std::array<tour::gfx::Mesh, 2> gfxMeshes{
+            tour::gfx::Mesh{0, 1}, tour::gfx::Mesh{1, 1}};
+        std::array<tour::gfx::Cluster, 2> clusters{};
+        clusters[0].mesh = 0;
+        clusters[0].indexOffset = 0;
+        clusters[0].triCount = 2;
+        clusters[1].mesh = 1;
+        clusters[1].indexOffset = 6;
+        clusters[1].triCount = 2;
+        IndexedGeometryTables tables{
+            gfxMeshes.data(), 2u, clusters.data(), 2u, 20u};
+        PersistentGeometryRegistry registry{};
+        CHECK(registry.Synchronize(db, tables));
+        const PersistentGeometryKey key{mesh.slot, mesh.generation, 0u};
+        const uint32_t stable = registry.Find(key);
+        CHECK(stable != InvalidIndex);
+        CHECK(registry.FromTransient(0u) == stable);
+        CHECK(registry.Descriptors()[stable].firstIndex == 20u);
+        const uint64_t originalRevision = registry.Revision();
+        CHECK(registry.Synchronize(db, tables));
+        CHECK(registry.Revision() == originalRevision); // no redundant uploads
+
+        // GfxFilter re-registers this same logical LOD under a new
+        // transient ID. The persistent key and descriptor slot survive.
+        CHECK(db.submeshes.Update(sub,
+            Submesh{1u, InvalidIndex, InvalidIndex, 0u}));
+        CHECK(registry.Synchronize(db, tables));
+        CHECK(registry.Find(key) == stable);
+        CHECK(registry.FromTransient(1u) == stable);
+        CHECK(registry.FromTransient(0u) == InvalidIndex);
+        CHECK(registry.Descriptors()[stable].firstIndex == 26u);
+
+        // Physical eviction clears the GPU descriptor instead of leaving
+        // stale index offsets accessible to the next indirect work build.
+        CHECK(db.lods.Update(lod, Lod{sub.slot, 1u, 0.0f, 0u}));
+        CHECK(registry.Synchronize(db, tables));
+        CHECK(registry.Find(key) == stable);
+        CHECK(registry.Descriptors()[stable].indexCount == 0u);
+        CHECK(registry.FromTransient(1u) == InvalidIndex);
+
+        // Re-residency reuses the same identity, but a retired mesh
+        // generation must NEVER inherit that descriptor slot.
+        CHECK(db.lods.Update(lod, Lod{sub.slot, 1u, 0.0f,
+                                        LodFlagResident | LodFlagFilterable}));
+        CHECK(registry.Synchronize(db, tables));
+        CHECK(registry.Find(key) == stable);
+        CHECK(registry.Descriptors()[stable].indexCount == 6u);
+        CHECK(db.meshes.Erase(mesh));
+        const auto recycled = db.meshes.Insert(
+            Mesh{lod.slot, 1u, 1u, MeshFlagCompleteBounds});
+        CHECK(recycled.slot == mesh.slot && recycled.generation != mesh.generation);
+        CHECK(registry.Synchronize(db, tables));
+        CHECK(registry.Descriptors()[stable].indexCount == 0u);
+        const auto newer = registry.Find(
+            {recycled.slot, recycled.generation, 0u});
+        CHECK(newer != InvalidIndex && newer != stable);
+        CHECK(registry.Descriptors()[newer].indexCount == 6u);
+
+        // A malformed published chain must fail closed without mutating
+        // the last committed geometry descriptors.
+        const auto beforeFailure = registry.Revision();
+        CHECK(db.meshes.Update(recycled, Mesh{UINT32_MAX, 1u, 1u, 0u}));
+        CHECK(!registry.Synchronize(db, tables));
+        CHECK(registry.Revision() == beforeFailure);
+        CHECK(registry.Descriptors()[newer].indexCount == 6u);
+    }
     // Geometry-only revisions must not revisit CPU drawItems or reconcile
     // the complete instance registry. The empty World tests the control
     // path without requiring Vulkan or a cooked cluster.
