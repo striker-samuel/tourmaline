@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
 #include <span>
 #include <type_traits>
 
@@ -82,6 +83,16 @@ struct RasterWorkDrawBuildPush {
 // Optional meshlet draw builder: the 64-byte prefix is identical to
 // RasterWorkDrawBuildPush, so indexed fallback retains its ABI.
 inline constexpr uint32_t kRasterMeshletMaxLanes = 1024u;
+// Fixed indirect buffers are bounded by the existing 1M work slots per
+// raster class. Prefer individual meshlets whenever there is command room;
+// an oversized registration is rendered whole in lane zero.
+[[nodiscard]] inline uint32_t RasterMeshletLaneCount(
+    uint32_t candidateCount, uint32_t maxClusters) noexcept {
+    if (candidateCount == 0u || maxClusters == 0u)
+        return 1u;
+    const uint32_t budget = 1048576u / candidateCount;
+    return std::max(1u, std::min({maxClusters, kRasterMeshletMaxLanes, budget}));
+}
 struct RasterMeshletWorkDrawBuildPush {
     RasterWorkDrawBuildPush raster{};
     uint64_t meshes = 0;     // gfx::MeshEntry[] (transient registered IDs)
