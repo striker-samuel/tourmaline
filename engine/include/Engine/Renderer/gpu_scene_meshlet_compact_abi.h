@@ -8,6 +8,9 @@
 #include <cstdint>
 #include <type_traits>
 
+#include <Engine/Core/double_float.h>
+#include <glm/glm.hpp>
+
 namespace tour::gpu_scene {
 struct alignas(16) CompactMeshletCandidate {
     uint32_t firstIndex = 0;
@@ -58,4 +61,13 @@ static_assert(sizeof(MeshletPsoCountPush) == 40);
 static_assert(sizeof(MeshletPsoScatterPush) == 96);
 static_assert(offsetof(MeshletPsoScatterPush, binOffsets) == 64);
 static_assert(offsetof(MeshletPsoScatterPush, binCapacities) == 80);
+// C++ mirror of the candidate scatter's View buffer input (the HLSL
+// DoubleFloat3 origin + six origin-relative frustum planes, 128 bytes).
+// The planes come from LegacyRelativeFrustum: w already folds the origin,
+// so distances evaluate against DoubleFloatRelative positions directly.
+struct alignas(16) MeshletCullViewData {
+    tour::math::DoubleFloat3 origin{};
+    glm::vec4 planes[6]{};
+};
+static_assert(sizeof(MeshletCullViewData) == 128);
 } // namespace tour::gpu_scene

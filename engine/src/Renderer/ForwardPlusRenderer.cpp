@@ -595,6 +595,147 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
     return true;
 }
 
+bool ForwardPlusRenderer::AppendGpuSceneCompactPrepass(
+    smvk::FrameContext& base,
+    smvk::ShaderProgram rasterDepth,
+    smvk::BufferHandle indirect,
+    smvk::LogicalBufferHandle indirectLogical,
+    smvk::LogicalBufferHandle countLogical,
+    smvk::BufferHandle countBuffer,
+    smvk::LogicalBufferHandle workLogical,
+    const uint32_t binOffsets[4],
+    const uint32_t binCapacities[4],
+    uint32_t commandCount,
+    const tour::gpu_scene::RasterVsPush& vertexPush,
+    bool hasDoubleSided,
+    smvk::ShaderProgram maskedDepth,
+    smvk::ShaderProgram maskedGbuffer,
+    bool hasMasked,
+    bool hasMaskedDoubleSided) {
+    AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+    if (!fp || (rasterDepth.shaderCount != 1 && rasterDepth.shaderCount != 2))
+        return false;
+    // The compact twin only serves the Main depth/G-buffer lane; the
+    // temporal Hi-Z seed lane never runs compact (v1 cutover).
+    const bool gbufferOn = fc.ssrGbufferWanted && rasterDepth.shaderCount == 2 &&
+                           !fc.gbufferView.empty() && !fc.gbuffer2View.empty();
+    if (fc.ssrGbufferWanted && !gbufferOn)
+        return false;
+    if ((hasMasked || hasMaskedDoubleSided) &&
+        (maskedDepth.shaderCount != 2 ||
+         (gbufferOn && maskedGbuffer.shaderCount != 2)))
+        return false;
+    if (commandCount == 0 || countBuffer.empty() || countLogical.empty())
+        return false;
+    smvk::ResourceManager& ctx = *fc.ctx;
+    smvk::RenderGraph& rg = *fc.rg;
+    fp->Ensure(ctx, rg, {fc.extent.width, fc.extent.height}, desc, fc.depthViewHandle);
+    if (!fp->Valid())
+        return false;
+    auto& pass = fp->AddDepthPrepass(
+        rg, fc.depthView,
+        {fc.extent.width, fc.extent.height},
+        "GpuSceneDepth",
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
+                               : smvk::AttachmentLoadOp::Clear,
+        gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
+                               : smvk::AttachmentLoadOp::Clear,
+        gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
+                               : smvk::AttachmentLoadOp::Clear);
+    {
+        smvk::BufferSyncRequest indirectRead{};
+        indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
+        indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
+        pass.AddBufferHint(indirectLogical, indirectRead);
+        // The draw COUNT is device-read too: the classCounts word at
+        // bin*4 feeds vkCmdDrawIndexedIndirectCount's countBuffer.
+        pass.AddBufferHint(countLogical, indirectRead);
+        smvk::BufferSyncRequest workRead{};
+        workRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+        workRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+        pass.AddBufferHint(workLogical, workRead);
+    }
+    const IRenderer::PushConstants scenePush = fc.pc;
+    const uint32_t offsets[4] = {binOffsets[0], binOffsets[1], binOffsets[2], binOffsets[3]};
+    const uint32_t capacities[4] = {binCapacities[0], binCapacities[1],
+                                    binCapacities[2], binCapacities[3]};
+    pass.SetRecordingFunc(
+        [rasterDepth, maskedDepth, maskedGbuffer, gbufferOn,
+         scenePush, indirect, countBuffer, vertexPush, offsets, capacities,
+         hasDoubleSided, hasMasked, hasMaskedDoubleSided](
+            smvk::CommandBuffer& cmd) mutable {
+            cmd.BindStaticVertexFmt();
+            cmd.BindRenderPipeline(
+                rasterDepth, smvk::VertexLayoutId::Static,
+                smvk::DepthSettings{
+                    .depthFunc = smvk::CompareOp::GreaterEqual,
+                    .writeEnable = true,
+                    .depthTestEnable = true},
+                smvk::StencilSettings{}, smvk::BlendSettings{},
+                smvk::MSAASettings{},
+                smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+            cmd.PushConstants(
+                0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
+            cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
+                              sizeof(vertexPush), &vertexPush, smvk::ShaderStage::All);
+            // Compact bins: the device reads the exact per-class survivor
+            // count from classCounts[bin]; the reserved tail beyond it is
+            // never submitted. firstInstance stays the original work slot.
+            const auto drawBin = [&](uint32_t bin) {
+                cmd.DrawIndexedIndirectCount(
+                    indirect,
+                    uint64_t(offsets[bin]) *
+                        sizeof(tour::gpu_scene::RasterIndirectCommand),
+                    countBuffer,
+                    uint64_t(bin) * sizeof(uint32_t),
+                    capacities[bin],
+                    sizeof(tour::gpu_scene::RasterIndirectCommand));
+            };
+            drawBin(0u);
+            if (hasDoubleSided) {
+                cmd.BindRenderPipeline(
+                    rasterDepth, smvk::VertexLayoutId::Static,
+                    smvk::DepthSettings{
+                        .depthFunc = smvk::CompareOp::GreaterEqual,
+                        .writeEnable = true,
+                        .depthTestEnable = true},
+                    smvk::StencilSettings{}, smvk::BlendSettings{},
+                    smvk::MSAASettings{},
+                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                drawBin(1u);
+            }
+            smvk::ShaderProgram maskedProgram =
+                gbufferOn ? maskedGbuffer : maskedDepth;
+            if (hasMasked) {
+                cmd.BindRenderPipeline(
+                    maskedProgram, smvk::VertexLayoutId::Static,
+                    smvk::DepthSettings{
+                        .depthFunc = smvk::CompareOp::GreaterEqual,
+                        .writeEnable = true,
+                        .depthTestEnable = true},
+                    smvk::StencilSettings{}, smvk::BlendSettings{},
+                    smvk::MSAASettings{},
+                    smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+                drawBin(2u);
+            }
+            if (hasMaskedDoubleSided) {
+                cmd.BindRenderPipeline(
+                    maskedProgram, smvk::VertexLayoutId::Static,
+                    smvk::DepthSettings{
+                        .depthFunc = smvk::CompareOp::GreaterEqual,
+                        .writeEnable = true,
+                        .depthTestEnable = true},
+                    smvk::StencilSettings{}, smvk::BlendSettings{},
+                    smvk::MSAASettings{},
+                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                drawBin(3u);
+            }
+        });
+    return true;
+}
+
 void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp)
