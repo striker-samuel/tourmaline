@@ -849,7 +849,8 @@ class CandidateValidator {
                                              uint64_t aliasAddress,
                                              uint32_t aliasCount,
                                              RasterWorkDrawBuildPush& push,
-                                             smvk::BufferHandle& commands) {
+                                             smvk::BufferHandle& commands,
+                                             uint32_t meshletLanes = 1u) {
         if (flight >= Flights || !geometryAddress || geometryCount == 0 ||
             geometryCount > kMaxRasterDrawGroups || !aliasAddress ||
             aliasCount == 0 || aliasCount > kMaxRasterDrawGroups)
@@ -863,8 +864,16 @@ class CandidateValidator {
         // Four fixed pipeline-class ranges (opaque/masked x back/two-sided).
         // Each class preserves work[i] as firstInstance so temporal
         // history/Hi-Z consumers retain persistent instance identity.
-        const uint64_t maxCommands = uint64_t(kRasterPipelineClassCount) * workCapacity;
-        if (workCapacity > 1048576u || maxCommands > UINT32_MAX)
+        // A meshlet command lane still references the ORIGINAL work slot.
+        // Cap the expanded four-bin output at the existing shader array bound.
+        // A rejected expansion can be retried with one lane (legacy indexed
+        // submesh draws) without leaking a partial command buffer.
+        if (meshletLanes == 0u || meshletLanes > 32u)
+            return false;
+        const uint64_t commandStride = workCapacity * meshletLanes;
+        const uint64_t maxCommands = uint64_t(kRasterPipelineClassCount) * commandStride;
+        if (workCapacity > 1048576u || commandStride > 1048576u ||
+            maxCommands > UINT32_MAX)
             return false;
         if (!Ensure(ctx, f.rasterCommands, f.rasterSize,
                     size_t(maxCommands) * sizeof(RasterIndirectCommand),
@@ -876,7 +885,7 @@ class CandidateValidator {
         if (!work || !offsets || !output)
             return false;
         push = {work, offsets, geometryAddress, output, f.workCandidates,
-                geometryCount, uint32_t(maxCommands), uint32_t(workCapacity),
+                geometryCount, uint32_t(maxCommands), uint32_t(commandStride),
                 aliasAddress, aliasCount, 0u};
         commands = f.rasterCommands;
         return true;
