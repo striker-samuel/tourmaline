@@ -227,6 +227,19 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 -fspv-target-env=vulkan1.3   # bump to vulkan1.4 when you move SDK/driver
                 -fvk-use-dx-layout           # packing contract: C++ mirrors assume DX layout (PushConstants tail, placement/sma pushes)
             )
+            # Mesh/task shaders: the Vulkan device is created with
+            # VK_EXT_mesh_shader, so the modules must carry MeshShadingEXT
+            # (TaskEXT/MeshEXT entry points, TaskPayloadWorkgroupEXT), not
+            # the NV flavour DXC emits by default. Passing any
+            # -fspv-extension restricts the permitted set to the listed
+            # extensions, so the BDA / bindless extensions these shaders
+            # already use are listed beside it.
+            if (_STAGE STREQUAL "as" OR _STAGE STREQUAL "ms")
+                list(APPEND _COMMON
+                    -fspv-extension=SPV_EXT_mesh_shader
+                    -fspv-extension=SPV_EXT_descriptor_indexing
+                    -fspv-extension=SPV_KHR_physical_storage_buffer)
+            endif()
             if (CMAKE_BUILD_TYPE MATCHES "Debug")
                 # NOTE: do NOT use -fspv-debug=vulkan-with-source here. DXC
                 # 1.9.5399 emits DebugLine/DebugLexicalBlock column ends past

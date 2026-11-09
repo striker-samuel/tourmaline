@@ -1616,3 +1616,11 @@ target_link_libraries(GpuSceneMeshletPrefixTests PRIVATE engine)
 set_target_properties(GpuSceneMeshletPrefixTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_meshlet_prefix_tests COMMAND GpuSceneMeshletPrefixTests)
+
+
+# CPU oracle: GPU Scene task-stage meshlet ranges and indexed fallback ownership.
+add_executable(GpuSceneTaskMeshTests test_gpu_scene_task_mesh.cpp)
+target_link_libraries(GpuSceneTaskMeshTests PRIVATE engine)
+set_target_properties(GpuSceneTaskMeshTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_task_mesh_tests COMMAND GpuSceneTaskMeshTests)

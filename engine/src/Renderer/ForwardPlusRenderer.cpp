@@ -736,6 +736,99 @@ bool ForwardPlusRenderer::AppendGpuSceneCompactPrepass(
     return true;
 }
 
+bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(
+    smvk::FrameContext& base,
+    smvk::ShaderProgram taskDepth,
+    smvk::ShaderProgram taskGbuffer,
+    smvk::ShaderProgram maskedDepth,
+    smvk::ShaderProgram maskedGbuffer,
+    smvk::BufferHandle indirect,
+    smvk::LogicalBufferHandle indirectLogical,
+    smvk::LogicalBufferHandle groupsLogical,
+    smvk::LogicalBufferHandle offsetsLogical,
+    smvk::LogicalBufferHandle workLogical,
+    const tour::gpu_scene::TaskMeshGpuPush& tail,
+    bool hasDoubleSided,
+    bool hasMasked,
+    bool hasMaskedDoubleSided) {
+    AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+    if (!fp || taskDepth.shaderCount != 2 || indirect.empty() ||
+        indirectLogical.empty() || groupsLogical.empty() || offsetsLogical.empty() ||
+        workLogical.empty())
+        return false;
+    const bool gbufferOn = fc.ssrGbufferWanted;
+    if (gbufferOn && (taskGbuffer.shaderCount != 3 ||
+                      fc.gbufferView.empty() || fc.gbuffer2View.empty()))
+        return false;
+    if ((hasMasked || hasMaskedDoubleSided) &&
+        (maskedDepth.shaderCount != 3 ||
+         (gbufferOn && maskedGbuffer.shaderCount != 3)))
+        return false;
+    smvk::ResourceManager& ctx = *fc.ctx;
+    smvk::RenderGraph& rg = *fc.rg;
+    fp->Ensure(ctx, rg, {fc.extent.width, fc.extent.height}, desc, fc.depthViewHandle);
+    if (!fp->Valid())
+        return false;
+    auto& pass = fp->AddDepthPrepass(
+        rg, fc.depthView, {fc.extent.width, fc.extent.height},
+        "GpuSceneTaskMeshDepth",
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
+                               : smvk::AttachmentLoadOp::Clear,
+        gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
+                               : smvk::AttachmentLoadOp::Clear,
+        gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
+                               : smvk::AttachmentLoadOp::Clear);
+    smvk::BufferSyncRequest indirectRead{};
+    indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
+    indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
+    pass.AddBufferHint(indirectLogical, indirectRead);
+    smvk::BufferSyncRequest shaderRead{};
+    shaderRead.barrierMasks.stageMask =
+        smvk::PipelineStageBit_Task | smvk::PipelineStageBit_Mesh;
+    shaderRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+    pass.AddBufferHint(groupsLogical, shaderRead);
+    pass.AddBufferHint(offsetsLogical, shaderRead);
+    pass.AddBufferHint(workLogical, shaderRead);
+    const IRenderer::PushConstants scenePush = fc.pc;
+    pass.SetRecordingFunc(
+        [taskDepth, taskGbuffer, maskedDepth, maskedGbuffer, gbufferOn,
+         scenePush, indirect, tail,
+         hasDoubleSided, hasMasked, hasMaskedDoubleSided](
+            smvk::CommandBuffer& cmd) mutable {
+            const auto depth = smvk::DepthSettings{
+                .depthFunc = smvk::CompareOp::GreaterEqual,
+                .writeEnable = true, .depthTestEnable = true};
+            const auto drawBin = [&](uint32_t cls,
+                                     smvk::ShaderProgram& program,
+                                     smvk::CullMode cull) {
+                cmd.BindRenderPipeline(
+                    program, smvk::VertexLayoutId::Empty, depth,
+                    smvk::StencilSettings{}, smvk::BlendSettings{},
+                    smvk::MSAASettings{}, smvk::RasterSettings{.cullMode = cull});
+                cmd.PushConstants(
+                    0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
+                auto push = tail;
+                push.rasterClass = cls;
+                cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
+                cmd.DrawMeshTasksIndirect(
+                    indirect, uint64_t(cls)*sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
+                    1u, sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
+            };
+            auto unmasked = gbufferOn ? taskGbuffer : taskDepth;
+            auto masked = gbufferOn ? maskedGbuffer : maskedDepth;
+            drawBin(0u, unmasked, smvk::CullMode::Back);
+            if (hasDoubleSided)
+                drawBin(1u, unmasked, smvk::CullMode::None);
+            if (hasMasked)
+                drawBin(2u, masked, smvk::CullMode::Back);
+            if (hasMaskedDoubleSided)
+                drawBin(3u, masked, smvk::CullMode::None);
+        });
+    return true;
+}
+
 void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp)
