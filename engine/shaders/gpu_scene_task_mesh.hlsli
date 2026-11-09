@@ -78,7 +78,7 @@ struct GsTaskMeshPush {
     uint groupBase;
     uint groupCount;
     uint rasterClass;
-    uint reserved;
+    uint taskGridX; // x dimension of indirect task dispatch (for 2D flattening)
 };
 
 // Workgroup-local payload. Each mesh workgroup reads its own compact slot.
