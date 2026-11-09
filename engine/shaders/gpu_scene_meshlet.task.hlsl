@@ -55,8 +55,11 @@ void mainAS(uint3 groupId : SV_GroupID,
     GsTaskGroup group=(GsTaskGroup)0;
     GsWorkRow work=(GsWorkRow)0;
     GpuSceneInstance inst=(GpuSceneInstance)0;
+    const uint liveGroups=(p.workCapacity<=GS_MAX_WORK)
+        ? p.taskOffsets.Get().values[p.workCapacity] : 0u;
     bool valid=pc.taskGridX!=0u && groupId.x<pc.taskGridX &&
-        groupIndex<pc.groupCount && pc.groupBase<=GS_MAX_TASK_GROUPS &&
+        groupIndex<pc.groupCount && groupIndex<liveGroups &&
+        liveGroups<=GS_MAX_TASK_GROUPS && pc.groupBase<=GS_MAX_TASK_GROUPS &&
         groupIndex<GS_MAX_TASK_GROUPS-pc.groupBase;
 
     if (valid) {
