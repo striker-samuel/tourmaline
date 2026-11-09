@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #include <Engine/Renderer/gpu_scene_meshlet_prefix.h>
+#include <Engine/Renderer/gpu_scene_meshlet_compact_abi.h>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
