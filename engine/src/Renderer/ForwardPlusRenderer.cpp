@@ -745,6 +745,7 @@ bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(
     smvk::BufferHandle indirect,
     smvk::LogicalBufferHandle indirectLogical,
     smvk::LogicalBufferHandle groupsLogical,
+    smvk::LogicalBufferHandle offsetsLogical,
     smvk::LogicalBufferHandle workLogical,
     const tour::gpu_scene::TaskMeshGpuPush& tail,
     bool hasDoubleSided,
@@ -752,7 +753,8 @@ bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(
     bool hasMaskedDoubleSided) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || taskDepth.shaderCount != 2 || indirect.empty() ||
-        indirectLogical.empty() || groupsLogical.empty() || workLogical.empty())
+        indirectLogical.empty() || groupsLogical.empty() || offsetsLogical.empty() ||
+        workLogical.empty())
         return false;
     const bool gbufferOn = fc.ssrGbufferWanted;
     if (gbufferOn && (taskGbuffer.shaderCount != 3 ||
@@ -787,6 +789,7 @@ bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(
         smvk::PipelineStageBit_Task | smvk::PipelineStageBit_Mesh;
     shaderRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
     pass.AddBufferHint(groupsLogical, shaderRead);
+    pass.AddBufferHint(offsetsLogical, shaderRead);
     pass.AddBufferHint(workLogical, shaderRead);
     const IRenderer::PushConstants scenePush = fc.pc;
     pass.SetRecordingFunc(
