@@ -12,15 +12,16 @@
 // unrelated index data. Geometry changes invalidate all flight snapshots.
 
 #include <Engine/Memory/arena.h>
-#include <Engine/Renderer/gpu_scene_raster.h>
-#include <Engine/Renderer/gpu_scene.h>
-#include <Engine/Renderer/gfx_filter.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gpu_scene.h>
+#include <Engine/Renderer/gpu_scene_raster.h>
+#include <Engine/Renderer/gpu_scene_upload.h> // RenderDatabase (Database<MaxFramesInFlight>) for Synchronize
 
 #include <algorithm>
 #include <array>
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <span>
@@ -49,21 +50,19 @@ struct IndexedGeometryTables {
 // the current AABB of EVERY LOD (resident or deferred). A failed check
 // routes the mesh back through the legacy path instead of risking a cull
 // from stale bounds.
-[[nodiscard]] inline bool RasterSphereContainsLodBounds(
-    glm::vec4 sphere, glm::vec3 boundsMin, glm::vec3 boundsMax) noexcept {
-    if (!std::isfinite(sphere.x) || !std::isfinite(sphere.y) ||
-        !std::isfinite(sphere.z) || !std::isfinite(sphere.w) ||
-        sphere.w < 0.0f)
+[[nodiscard]] inline bool RasterSphereContainsLodBounds(glm::vec4 sphere,
+                                                        glm::vec3 boundsMin,
+                                                        glm::vec3 boundsMax) noexcept {
+    if (!std::isfinite(sphere.x) || !std::isfinite(sphere.y) || !std::isfinite(sphere.z) ||
+        !std::isfinite(sphere.w) || sphere.w < 0.0f)
         return false;
     const glm::dvec3 center(sphere);
     const glm::dvec3 lo(boundsMin), hi(boundsMax);
-    const glm::dvec3 distance = glm::max(glm::abs(lo - center),
-                                          glm::abs(hi - center));
+    const glm::dvec3 distance = glm::max(glm::abs(lo - center), glm::abs(hi - center));
     // Invalid AABBs/NaNs also fail closed.
     if (!(lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z))
         return false;
-    return glm::dot(distance, distance) <=
-           double(sphere.w) * double(sphere.w);
+    return glm::dot(distance, distance) <= double(sphere.w) * double(sphere.w);
 }
 
 // Returns false rather than guessing at a possibly discontinuous index range.
@@ -74,8 +73,7 @@ struct IndexedGeometryTables {
     if (meshIndex >= tables.meshCount)
         return false;
     const tour::gfx::Mesh& mesh = tables.meshes[meshIndex];
-    if (mesh.clusterCount == 0 ||
-        mesh.clusterStart > tables.clusterCount ||
+    if (mesh.clusterCount == 0 || mesh.clusterStart > tables.clusterCount ||
         mesh.clusterCount > tables.clusterCount - mesh.clusterStart)
         return false;
     uint64_t first = 0;
@@ -134,10 +132,8 @@ struct PersistentGeometryKeyHash {
 // flight-fenced recycling. Exhaustion fails closed to legacy rendering.
 class PersistentGeometryRegistry {
   public:
-    [[nodiscard]] bool Synchronize(const RenderDatabase& db,
-                                   const IndexedGeometryTables& source) {
-        if ((source.meshCount && !source.meshes) ||
-            (source.clusterCount && !source.clusters))
+    [[nodiscard]] bool Synchronize(const RenderDatabase& db, const IndexedGeometryTables& source) {
+        if ((source.meshCount && !source.meshes) || (source.clusterCount && !source.clusters))
             return false;
         auto nextKeys = ids_;
         auto nextRows = rows_;
@@ -153,19 +149,16 @@ class PersistentGeometryRegistry {
             if (meshRow.identity.y != 1u)
                 continue;
             const Mesh& mesh = meshRow.value;
-            if (mesh.lodCount > 16u ||
-                mesh.firstLod > lods.size() ||
+            if (mesh.lodCount > 16u || mesh.firstLod > lods.size() ||
                 mesh.lodCount > lods.size() - mesh.firstLod)
                 return false;
             for (uint32_t level = 0; level < mesh.lodCount; ++level) {
                 const auto& lodRow = lods[mesh.firstLod + level];
-                if (lodRow.identity.y != 1u ||
-                    lodRow.value.submeshCount != 1u ||
+                if (lodRow.identity.y != 1u || lodRow.value.submeshCount != 1u ||
                     lodRow.value.firstSubmesh >= submeshes.size())
                     continue; // not a rasterizable LOD
                 const auto& subRow = submeshes[lodRow.value.firstSubmesh];
-                if (subRow.identity.y != 1u ||
-                    (lodRow.value.flags & LodFlagResident) == 0u ||
+                if (subRow.identity.y != 1u || (lodRow.value.flags & LodFlagResident) == 0u ||
                     subRow.value.geometryId == InvalidIndex)
                     continue;
                 IndexedGeometry descriptor{};
@@ -197,10 +190,12 @@ class PersistentGeometryRegistry {
             }
         }
         if (nextRows.size() != rows_.size() ||
-            !std::equal(nextRows.begin(), nextRows.end(), rows_.begin(), rows_.end(),
+            !std::equal(nextRows.begin(),
+                        nextRows.end(),
+                        rows_.begin(),
+                        rows_.end(),
                         [](const IndexedGeometry& a, const IndexedGeometry& b) {
-                            return a.indexCount == b.indexCount &&
-                                   a.firstIndex == b.firstIndex &&
+                            return a.indexCount == b.indexCount && a.firstIndex == b.firstIndex &&
                                    a.vertexOffset == b.vertexOffset && a.flags == b.flags;
                         })) {
             ++revision_;
@@ -223,7 +218,9 @@ class PersistentGeometryRegistry {
     [[nodiscard]] std::span<const IndexedGeometry> Descriptors() const noexcept {
         return rows_;
     }
-    [[nodiscard]] uint64_t Revision() const noexcept { return revision_; }
+    [[nodiscard]] uint64_t Revision() const noexcept {
+        return revision_;
+    }
 
   private:
     std::unordered_map<PersistentGeometryKey, uint32_t, PersistentGeometryKeyHash> ids_;
@@ -249,8 +246,8 @@ class PersistentIndexedGeometryPublisher {
             revisions_[flight] = registry.Revision();
             return true;
         }
-        if (revisions_[flight] == registry.Revision() &&
-            counts_[flight] == rows.size() && !buffers_[flight].empty())
+        if (revisions_[flight] == registry.Revision() && counts_[flight] == rows.size() &&
+            !buffers_[flight].empty())
             return true;
         if (capacity_[flight] < rows.size() || buffers_[flight].empty()) {
             size_t count = std::max<size_t>(16, capacity_[flight]);
@@ -264,7 +261,8 @@ class PersistentIndexedGeometryPublisher {
             buffers_[flight] = std::move(next); // Holder retires old physical buffer
             capacity_[flight] = uint32_t(count);
         }
-        ctx.UploadDataToBuffer(buffers_[flight], rows.data(),
+        ctx.UploadDataToBuffer(buffers_[flight],
+                               rows.data(),
                                rows.size_bytes(),
                                smvk::PipelineStage(smvk::PipelineStageBit_Compute),
                                smvk::AccessFlags::ShaderRead);
@@ -272,8 +270,7 @@ class PersistentIndexedGeometryPublisher {
         revisions_[flight] = registry.Revision();
         return true;
     }
-    [[nodiscard]] uint64_t DeviceAddress(const smvk::ResourceManager& ctx,
-                                         uint32_t flight) const {
+    [[nodiscard]] uint64_t DeviceAddress(const smvk::ResourceManager& ctx, uint32_t flight) const {
         if (flight >= Flights || !counts_[flight] || buffers_[flight].empty())
             return 0;
         return ctx.GetBufferDeviceAddress(buffers_[flight]);
@@ -316,9 +313,8 @@ class IndexedGeometryPublisher {
 
         // Build complete immutable geometry snapshot in FrameArena, never
         // heap-backed std::vector scratch. It is uploaded before frame reset.
-        auto* rows = static_cast<IndexedGeometry*>(
-            smvk::FrameArena().Allocate(size_t(count) * sizeof(IndexedGeometry),
-                                        alignof(IndexedGeometry)));
+        auto* rows = static_cast<IndexedGeometry*>(smvk::FrameArena().Allocate(
+            size_t(count) * sizeof(IndexedGeometry), alignof(IndexedGeometry)));
         std::uninitialized_value_construct_n(rows, count);
         for (uint32_t i = 0; i < count; ++i)
             (void)ResolveIndexedGeometry(tables, i, rows[i]);
@@ -348,8 +344,7 @@ class IndexedGeometryPublisher {
         return true;
     }
 
-    [[nodiscard]] uint64_t DeviceAddress(const smvk::ResourceManager& ctx,
-                                         uint32_t flight) const {
+    [[nodiscard]] uint64_t DeviceAddress(const smvk::ResourceManager& ctx, uint32_t flight) const {
         if (flight >= Flights || buffers_[flight].empty() || counts_[flight] == 0)
             return 0;
         return ctx.GetBufferDeviceAddress(buffers_[flight]);
@@ -384,26 +379,26 @@ class RasterViewPublisher {
         if (flight >= Flights)
             return false;
         if (buffers_[flight].empty()) {
-            buffers_[flight] = ctx.CreateBuffer(
-                sizeof(RasterViewData), smvk::BufferType_Storage,
-                "GPU scene camera-relative raster view");
+            buffers_[flight] = ctx.CreateBuffer(sizeof(RasterViewData),
+                                                smvk::BufferType_Storage,
+                                                "GPU scene camera-relative raster view");
             if (buffers_[flight].empty())
                 return false;
         }
         glm::dmat4 translated(1.0);
         translated[3] = glm::dvec4(cameraWorld, 1.0);
         RasterViewData view{};
-        view.relativeViewProjection =
-            glm::mat4(glm::dmat4(worldViewProjection) * translated);
+        view.relativeViewProjection = glm::mat4(glm::dmat4(worldViewProjection) * translated);
         view.origin = tour::math::SplitDoubleFloat(cameraWorld);
-        ctx.UploadDataToBuffer(buffers_[flight], &view, sizeof(view),
+        ctx.UploadDataToBuffer(buffers_[flight],
+                               &view,
+                               sizeof(view),
                                smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
                                smvk::AccessFlags::ShaderRead);
         return true;
     }
 
-    [[nodiscard]] uint64_t DeviceAddress(const smvk::ResourceManager& ctx,
-                                         uint32_t flight) const {
+    [[nodiscard]] uint64_t DeviceAddress(const smvk::ResourceManager& ctx, uint32_t flight) const {
         if (flight >= Flights || buffers_[flight].empty())
             return 0;
         return ctx.GetBufferDeviceAddress(buffers_[flight]);
