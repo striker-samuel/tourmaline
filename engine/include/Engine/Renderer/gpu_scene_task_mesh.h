@@ -40,24 +40,24 @@ struct TaskMeshletPlan {
             const uint32_t cls = rasterClasses[i];
             const bool valid = cls < kRasterPipelineClassCount &&
                 !range.indexedFallback && range.clusterCount != 0u &&
-                range.clusterCount <= 1024u &&
                 range.firstCluster <=
                     std::numeric_limits<uint32_t>::max() - range.clusterCount;
             if (!valid) {
                 next.indexedFallbackWork.push_back(uint32_t(i));
                 continue;
             }
-            const uint32_t count =
-                (range.clusterCount + kTaskMeshletGroupSize - 1u) /
+            const uint64_t count =
+                (uint64_t(range.clusterCount) + kTaskMeshletGroupSize - 1u) /
                 kTaskMeshletGroupSize;
             groups += count;
             if (groups > maxGroups)
                 return false;
-            for (uint32_t begin = 0; begin < range.clusterCount;
+            for (uint64_t begin = 0; begin < range.clusterCount;
                  begin += kTaskMeshletGroupSize) {
                 next.classes[cls].push_back({
-                    uint32_t(i), range.firstCluster + begin,
-                    std::min(kTaskMeshletGroupSize, range.clusterCount - begin),
+                    uint32_t(i), uint32_t(uint64_t(range.firstCluster) + begin),
+                    uint32_t(std::min<uint64_t>(kTaskMeshletGroupSize,
+                                                uint64_t(range.clusterCount) - begin)),
                     cls
                 });
             }
