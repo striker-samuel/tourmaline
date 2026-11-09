@@ -27,9 +27,8 @@ struct PsoPrefixCountPush {
     uint32_t blockCount, reserved0;
 };
 struct PsoPrefixScanPush {
-    uint64_t blockCounts, blockBases, classCounts;
-    uint32_t blockCount, commandCapacity, reserved0, reserved1;
-    uint32_t reserved2, reserved3;
+    uint64_t blockCounts, blockBases, classCounts, workOffsets;
+    uint32_t blockCount, commandCapacity, candidateCount, workCapacity;
     alignas(16) uint32_t binOffsets[4];
     alignas(16) uint32_t binCapacities[4];
 };
