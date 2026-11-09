@@ -565,7 +565,7 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
             // Masked bins use the same alpha factor/texture/cutoff as
             // legacy shadow_rev/gbuffer_masked and Main gfxmesh_lit.
             // One PSO per class; never a per-material bind.
-            const smvk::ShaderProgram maskedProgram =
+            smvk::ShaderProgram maskedProgram =
                 gbufferOn ? maskedGbuffer : maskedDepth;
             if (hasMasked) {
                 cmd.BindRenderPipeline(
