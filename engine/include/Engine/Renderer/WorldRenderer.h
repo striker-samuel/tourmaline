@@ -2448,6 +2448,8 @@ class WorldRenderer : public IRenderer {
     smvk::BufferHandle m_gpuSceneRasterIndirect{};
     uint64_t m_gpuSceneRasterWorkBda = 0;
     uint32_t m_gpuSceneRasterDrawCapacity = 0;
+    bool m_gpuSceneRasterMeshletActive = false;
+    uint32_t m_gpuSceneRasterMeshletLanes = 1;
     std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
         m_gpuSceneRasterLogicalBacking{};
     std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
