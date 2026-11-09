@@ -11154,6 +11154,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneRasterEligibilityWorld = nullptr;
     }
     m_gpuSceneRasterDrawActive = false;
+    m_gpuSceneRasterMeshletActive = false;
+    m_gpuSceneRasterMeshletLanes = 1u;
     // Probe residency for this frame's eye (throttled inside; the
     // FP upload below reads the rebuilt rows - see m_cubemapRows).
     UpdateCubemapStreaming(m_cameraPositioner.cameraPosition_);
@@ -11806,6 +11808,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             m_gpuSceneRasterIndirect = rasterCommands;
                             m_gpuSceneRasterWorkBda = workBda;
                             m_gpuSceneRasterDrawCapacity = rasterPush.commandCapacity;
+                            m_gpuSceneRasterMeshletActive = meshletBuild;
+                            m_gpuSceneRasterMeshletLanes = meshletLanes;
                         }
                     }
                 }
@@ -13694,7 +13698,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 (uint32_t(m_gfxRenderer.config.cullFlags) &
                  uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion)) != 0u
                     ? 1u
-                    : 0u};
+                    : 0u,
+                m_gpuSceneRasterMeshletActive
+                    ? m_context->GetBufferDeviceAddress(m_gfxRenderer.State().meshesBuffer) : 0u,
+                m_gpuSceneRasterMeshletActive
+                    ? m_context->GetBufferDeviceAddress(m_gfxRenderer.State().clusterBuffer) : 0u,
+                m_gpuSceneRasterMeshletLanes,
+                m_gpuSceneRasterMeshletActive
+                    ? uint32_t(m_gfxRenderer.State().meshes.size()) : 0u,
+                m_gpuSceneRasterMeshletActive
+                    ? uint32_t(m_gfxRenderer.State().clusters.size()) : 0u,
+                m_gpuSceneRasterMeshletActive ? 1u : 0u};
             auto& gate = m_rendergraph->AddComputePass("GpuSceneHizCull");
             smvk::BufferSyncRequest indirectRW{};
             indirectRW.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
@@ -13707,6 +13721,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             hizRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
             gate.AddBufferHint(hz.logical, hizRead);
             gate.AddBufferHint(m_gpuSceneRasterWorkLogical[temporalFlight], hizRead);
+            if (m_gpuSceneRasterMeshletActive) {
+                gate.AddBufferHint(m_gfxRenderer.State().meshesLogical, hizRead);
+                gate.AddBufferHint(m_gfxRenderer.State().clusterLogical, hizRead);
+            }
             if (gpuHistoryValid)
                 gate.AddBufferHint(
                     m_gpuSceneRasterHistoryLogicals[m_gpuSceneRasterLastHistoryFlight], hizRead);
