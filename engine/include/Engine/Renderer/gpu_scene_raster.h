@@ -105,8 +105,9 @@ struct RasterMeshletWorkDrawBuildPush {
     uint32_t instanceSlots = 0;
     uint32_t meshletLanes = 1;
     uint32_t cullViewValid = 0;
+    uint32_t coneEnabled = 0;
 };
-static_assert(sizeof(RasterMeshletWorkDrawBuildPush) == 120);
+static_assert(sizeof(RasterMeshletWorkDrawBuildPush) == 128);
 static_assert(offsetof(RasterMeshletWorkDrawBuildPush, meshes) == 64);
 
 // Static-opaque raster VS input: world position is rebased against this
