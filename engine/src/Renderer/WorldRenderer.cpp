@@ -10902,12 +10902,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // Resolve real indexed geometry ranges alongside the GPU-scene tables.
         // geometryId in Submesh is only a revision-local Gfx mesh registration,
         // so never substitute it for indexCount/firstIndex/vertexOffset.
-        if (m_gpuSceneDatabaseReady && m_gfxFilterAvailable)
+        // Persistent slot authority is independent of GfxFilter's current
+        // registration numbering. This bridge still resolves physical index
+        // ranges from its compatibility heap until GeometryStreamer exports
+        // the native indexed descriptor metadata.
+        if (m_gpuSceneDatabaseReady && m_gfxFilterAvailable) {
+            const auto tables = GpuSceneIndexedTables(m_gfxRenderer.State());
             m_gpuSceneDatabaseReady =
-                m_gpuSceneIndexedGeometry.Publish(*m_context,
-                                                  GpuSceneIndexedTables(m_gfxRenderer.State()),
-                                                  m_gpuSceneGeometryRevision,
-                                                  fb.frameIndex);
+                m_gpuScenePersistentRegistry.Synchronize(m_gpuSceneDatabase, tables) &&
+                m_gpuScenePersistentGeometry.Publish(
+                    *m_context, m_gpuScenePersistentRegistry, fb.frameIndex);
+        }
         if (m_gpuSceneDatabaseReady)
             m_gpuSceneDatabaseReady =
                 m_gpuSceneRasterView.Publish(*m_context,
@@ -11030,8 +11035,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             const auto& sub =
                                 m_gpuSceneDatabase.submeshes.Rows()[lod.value.firstSubmesh];
                             tour::gpu_scene::IndexedGeometry geometry{};
-                            if (!tour::gpu_scene::ResolveIndexedGeometry(
-                                    gfxTables, sub.value.geometryId, geometry))
+                            const uint32_t id =
+                                m_gpuScenePersistentRegistry.FromTransient(sub.value.geometryId);
+                            const auto descriptors =
+                                m_gpuScenePersistentRegistry.Descriptors();
+                            if (id == tour::gpu_scene::InvalidIndex || id >= descriptors.size() ||
+                                !tour::gpu_scene::ResolveIndexedGeometry(
+                                    gfxTables, sub.value.geometryId, geometry) ||
+                                descriptors[id].indexCount != geometry.indexCount ||
+                                descriptors[id].firstIndex != geometry.firstIndex ||
+                                descriptors[id].vertexOffset != geometry.vertexOffset)
                                 return false;
                         }
                         return true;
@@ -11584,8 +11597,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneValidator.PrepareRasterCommands(
                         *m_context,
                         fb.frameIndex,
-                        m_gpuSceneIndexedGeometry.DeviceAddress(*m_context, fb.frameIndex),
-                        m_gpuSceneIndexedGeometry.Count(fb.frameIndex),
+                        m_gpuScenePersistentGeometry.DeviceAddress(*m_context, fb.frameIndex),
+                        m_gpuScenePersistentGeometry.Count(fb.frameIndex),
+                        m_gpuScenePersistentGeometry.AliasAddress(*m_context, fb.frameIndex),
+                        m_gpuScenePersistentGeometry.AliasCount(fb.frameIndex),
                         rasterPush,
                         rasterCommands);
                 tour::gpu_scene::SceneIndirectArgsPush indirectArgs{};
