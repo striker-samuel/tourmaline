@@ -1,48 +1,66 @@
-# GPU Scene: per-meshlet visibility (staged integration)
+# GPU Scene: meshlet-first visibility
 
-This change introduces the GPU Scene **indexed meshlet command ABI** and a
-conservative **per-meshlet frustum** compute kernel. It is a foundation, **not
-a runtime cutover**: the current GPU Scene raster builder still issues
-whole-submesh indexed indirect commands. No default renderer behavior changes.
+## Status
 
-## Input and command contract
+**Wired into GPU Scene raster, pending integrator validation.** The GPU
+Scene indirect command builder now prefers the existing GfxFilter cluster
+(meshlet) geometry and emits an indexed command per visible meshlet. The
+existing whole-submesh draw builder is a conservative fallback if required GPU
+resources or the new shader are unavailable. Use
+`TOURMALINE_GPU_SCENE_MESHLETS=0` to force whole-submesh GPU Scene draws.
 
-- Source clusters are the existing `gfx::Cluster` registrations, whose
-  triangle ranges address the cluster-ordered index heap. No second meshlet
-  cooker is required.
-- `ResolveRasterMeshlet` generates `(firstIndex, indexCount, workSlot)`
-  records only for valid clusters. It cannot point at a different mesh.
-- The compute kernel validates live instance slot/generation before emitting a
-  draw. Every candidate writes a complete 20-byte indexed-indirect command.
-- A visible cluster keeps `firstInstance = workSlot`, so the existing
-  GPU Scene indexed VS can resolve the correct material and transform.
-- Bounding spheres are interpreted in cluster-local coordinates, transformed
-  by the live instance basis and rebased from DoubleFloat against the
-  visibility view origin before six-plane frustum testing.
-- Invalid/missing/unbounded spheres and invalid view inputs fail **open**.
-  Invalid instance identities or broken work references fail **closed**.
+This is indexed GPU-driven rendering using cluster-ordered indices, **not**
+Vulkan task/mesh-shader dispatch. It reuses the current `gpu_scene_raster.vert`
+VS, so each generated command keeps `firstInstance = original work slot`.
 
-## Remaining work before enabling
+## Pipeline
 
-1. Publish a flight-safe, generation/revision-validated candidate stream from
-   persistent indexed geometry descriptors and the GPU-produced work records.
-   The current command builder expands one draw per submesh; it must instead
-   expand one candidate per cluster, with capacity and overflow checks.
-2. Build the meshlet culling view from the same relative planes/origin as the
-   existing GPU Scene instance visibility path and dispatch the kernel in the
-   render graph. Add explicit upload/read and indirect read barriers.
-3. Allocate and group commands by the same four pipeline classes used by
-   raster Main/depth. Preserve work-slot identity and masked/double-sided
-   admission. Keep legacy/submesh fallback on publication failure.
-4. Integrate the cluster results with the temporal seed/remainder, Hi-Z
-   occluder, Main, G-buffer/depth and visibility history passes. A cluster
-   must not be culled against its own seed depth.
-5. Add conservative cone backface culling (including mirrored/nonuniform
-   affine transforms) and per-meshlet Hi-Z culling, with masked/double-sided
-   and non-finite fail-open behavior.
-6. Run shader compilation, C++ tests, GPU parity (static, skinned fallback,
-   masked and streamed LOD), Vulkan validation, and performance captures.
+1. CPU coarse spatial selection and GPU instance frustum verdict.
+2. GPU compact/LOD/submesh work selection (existing path).
+3. **Meshlet-first indirect command builder** reads the current GfxFilter
+   mesh/cluster tables, the persistent GPU-scene instance table, and the
+   same camera-relative culling view as instance visibility.
+4. Per-meshlet sphere/frustum and optional backface-cone tests reject
+   individual clusters. Invalid/nonfinite cluster bounds or degenerate
+   transforms conservatively keep work. Double-sided surfaces skip the cone.
+5. The existing four fixed PSO bins feed depth, occluder, temporal seed,
+   remainder, Main and G-buffer passes. Work identity does not change.
+6. The temporal Hi-Z command gate now uses each surviving meshlet's local
+   sphere, rather than an instance-wide sphere, when the new builder is active.
+   The existing seed/history self-occlusion precautions remain in effect.
 
-Until those steps land, this branch does **not** enable per-meshlet visibility
-in production. The new shader is not wired into the engine shader manifest or
-the renderer's pipeline/dispatch path.
+## Capacity and fallback
+
+The existing four-bin indirect command ring reserves at most 1,048,576
+commands per class. Meshlet lanes per work slot are computed from the
+current candidate count, the registered maximum cluster count, and an upper
+limit of 1,024 lanes per work slot.
+
+If a mesh has more clusters than its reserved lane count, lane zero emits
+its **entire** indexed submesh and the other lanes remain empty. This is
+intentionally correct but less granular under heavy candidate loads.
+Missing shaders/GPU tables or over-capacity input selects the existing
+whole-submesh builder; GPU Scene admission and legacy mixed-scene fallback
+remain unchanged. No cluster tail may be truncated.
+
+Meshlet commands are not compacted. Excess empty indirect draws and
+per-command raster/compute overhead may outweigh per-cluster savings.
+The integrator should benchmark the large-scene and high-cluster-count
+cases before keeping this default.
+
+## Integrator checks
+
+- DXC compile and C++ build (both Windows/MSVC and Linux/GCC); check HLSL
+  push constant packing, BDA layouts and the shader package manifest.
+- CTest `GpuSceneWorldTests` and GPU Scene temporal/hardware parity suites.
+- Visual parity for static, mirrored/nonuniform scale, double-sided, masked,
+  streamed LOD, legacy-skinned fallback, mixed GPU/legacy ownership.
+- Vulkan validation, synchronization across geometry-revision changes and
+  per-flight buffers, GPU crash/device-lost testing.
+- Hi-Z and temporal seed/remainder disocclusion parity; check there is
+  no self-occlusion or double drawing after meshlet expansion.
+- Profile GPU frame time, command count and transient buffer memory under
+  Sponza and replicated Sponza; compare
+  `TOURMALINE_GPU_SCENE_MESHLETS=0` against enabled.
+
+No runtime or GPU validation was run in the authoring environment.
