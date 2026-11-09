@@ -95,6 +95,32 @@ def leg_pins(leg, extra_env, hiz_off_flags):
     return pins
 
 
+def validated_shared_pins(raw_pins, skip_hiz, hiz_off_flags):
+    """Reject pins that could make an ON/OFF parity comparison vacuous."""
+    pins = {}
+    for raw in raw_pins:
+        if "=" not in raw:
+            raise ValueError(f"invalid --env {raw!r}; expected NAME=VALUE")
+        name, value = raw.split("=", 1)
+        if not name.startswith("TOURMALINE_") or not value:
+            raise ValueError(f"invalid --env {raw!r}; expected TOURMALINE_NAME=VALUE")
+        if name in pins:
+            raise ValueError(f"duplicate --env pin {name}")
+        if name == "TOURMALINE_GPU_SCENE_TEMPORAL":
+            raise ValueError("temporal enable/disable is controlled by the parity gate")
+        if name == CULL_FLAGS_NAME and not skip_hiz:
+            raise ValueError("TOURMALINE_CULLFLAGS conflicts with the Hi-Z comparison; "
+                             "use --skip-hiz to supply custom cull flags")
+        pins[name] = value
+    try:
+        off_flags = int(hiz_off_flags, 0)
+    except ValueError as exc:
+        raise ValueError("--hiz-off-flags must be an integer such as 0x20b") from exc
+    if not skip_hiz and (off_flags < 0 or off_flags & HZB_OCCLUSION_BIT):
+        raise ValueError("--hiz-off-flags must be nonnegative with Hi-Z bit 0x40 clear")
+    return pins
+
+
 def evaluate(legs, noise_margin=8, noise_cap=64, require_bit_exact=False):
     """Pass/fail verdicts from finished leg records (pure, unit-tested).
 
@@ -217,6 +243,11 @@ def main(argv=None):
         print("gpu_scene_temporal_parity: output exists and is not empty; use --overwrite",
               file=sys.stderr)
         return 2
+    try:
+        shared_pins = validated_shared_pins(args.env, args.skip_hiz, args.hiz_off_flags)
+    except ValueError as exc:
+        print(f"gpu_scene_temporal_parity: {exc}", file=sys.stderr)
+        return 2
     legs = ["on-a", "on-b", "temporal-off"] + ([] if args.skip_hiz else ["hiz-off"])
     records = {}
     for leg in legs:
@@ -226,14 +257,18 @@ def main(argv=None):
                     "--capture-frame", str(args.capture_frame),
                     "--output", str(leg_dir), "--timeout", str(args.timeout),
                     "--json"]
-        for name, value in leg_pins(leg, {}, args.hiz_off_flags).items():
-            argv_leg += ["--env", f"{name}={value}"]
+        pins = dict(shared_pins)
         for name, value in (("TOURMALINE_CAM_POS", args.camera_pos),
                             ("TOURMALINE_CAM_FWD", args.camera_fwd)):
             if value:
-                argv_leg += ["--env", f"{name}={value}"]
-        for pin in args.env:
-            argv_leg += ["--env", pin]
+                if name in pins:
+                    print(f"gpu_scene_temporal_parity: duplicate camera pin {name}",
+                          file=sys.stderr)
+                    return 2
+                pins[name] = value
+        pins = leg_pins(leg, pins, args.hiz_off_flags)
+        for name, value in pins.items():
+            argv_leg += ["--env", f"{name}={value}"]
         if args.overwrite:
             argv_leg += ["--overwrite"]
         proc = subprocess.run(argv_leg, capture_output=True, text=True)

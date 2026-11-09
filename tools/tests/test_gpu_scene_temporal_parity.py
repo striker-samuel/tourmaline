@@ -78,6 +78,39 @@ class LegPinTests(unittest.TestCase):
             mod.leg_pins("on-c", {}, "0x20b")
 
 
+class SharedPinValidationTests(unittest.TestCase):
+    def test_shared_rng_seed_allowed(self):
+        self.assertEqual(
+            mod.validated_shared_pins(["TOURMALINE_RNG_SEED=123=456"], False, "0x20b"),
+            {"TOURMALINE_RNG_SEED": "123=456"})
+
+    def test_temporal_override_rejected_even_when_enabled(self):
+        for value in ("0", "1"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                mod.validated_shared_pins(
+                    [f"TOURMALINE_GPU_SCENE_TEMPORAL={value}"], False, "0x20b")
+
+    def test_hiz_override_rejected_when_comparing_hiz(self):
+        with self.assertRaises(ValueError):
+            mod.validated_shared_pins(["TOURMALINE_CULLFLAGS=0x20b"], False, "0x20b")
+        self.assertEqual(
+            mod.validated_shared_pins(["TOURMALINE_CULLFLAGS=0x20b"], True, "0x20b"),
+            {"TOURMALINE_CULLFLAGS": "0x20b"})
+
+    def test_hiz_off_value_must_disable_occlusion(self):
+        for flags in ("0x24b", "invalid", "-1"):
+            with self.subTest(flags=flags), self.assertRaises(ValueError):
+                mod.validated_shared_pins([], False, flags)
+        self.assertEqual(mod.validated_shared_pins([], False, "0x20b"), {})
+
+    def test_malformed_and_duplicate_pins_rejected(self):
+        for pins in (["RNG_SEED=1"], ["TOURMALINE_RNG_SEED"],
+                     ["TOURMALINE_RNG_SEED="],
+                     ["TOURMALINE_RNG_SEED=1", "TOURMALINE_RNG_SEED=2"]):
+            with self.subTest(pins=pins), self.assertRaises(ValueError):
+                mod.validated_shared_pins(pins, False, "0x20b")
+
+
 class EvaluateTests(unittest.TestCase):
     @staticmethod
     def leg(status="captured", witness=1, pixels="x.png"):
