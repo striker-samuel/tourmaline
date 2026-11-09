@@ -17,10 +17,11 @@ task/mesh shaders, ABI checks, and per-pass parity are implemented.
 After GPU instance culling, LOD selection, and submesh work generation:
 
 1. Resolve the per-flight geometry alias and meshlet range. Route absent,
-   oversized, stale, unsupported or malformed registrations to indexed
-   fallback; never turn incomplete geometry into an empty mesh task.
-2. Partition supported per-work meshlet ranges into chunks of at most 32
-   meshlets. Each chunk carries original **work slot**, first cluster,
+   stale, unsupported or malformed registrations to indexed fallback;
+   never turn incomplete geometry into an empty mesh task. A submesh with
+   more than 1,024 meshlets is valid and is split across task groups.
+2. Partition supported per-work meshlet ranges of arbitrary valid size
+   into chunks of at most 32 meshlets. Each chunk carries original **work slot**, first cluster,
    cluster count, and raster PSO class.
 3. Produce a dense task-group stream separated into the existing four
    raster classes. A GPU producer must do this without a CPU per-instance
@@ -46,6 +47,10 @@ After GPU instance culling, LOD selection, and submesh work generation:
 - A task shader does not dynamically create global Vulkan draw commands.
   The task-work dispatch still needs GPU-generated indirect args.
 - A task group must never cross a material/PSO or instance work boundary.
+- The old indexed-compact path's 1,024-meshlet-per-registration gate is
+  not a limit for task work: a 4,096-meshlet submesh requires 128 task
+  groups. Enforce a total task-group capacity and check 64-bit prefix
+  arithmetic instead of dropping large valid registrations.
 - Mesh output limits are device-specific; split or fall back if a cluster
   cannot fit the configured mesh shader's vertex/primitive outputs.
 - The existing gfxfilter.mesh.hlsl is a useful varying/vertex-pulling
@@ -58,7 +63,7 @@ After GPU instance culling, LOD selection, and submesh work generation:
 
 ## Initial reference tests
 
-The CPU oracle in gpu_scene_task_mesh.h tests 32/33 boundaries,
+The CPU oracle in gpu_scene_task_mesh.h tests 32/33/1,025/4,096 boundaries,
 class separation, original work-slot identity, whole-submesh fallback,
 and all-or-nothing overflow. It deliberately does not claim that the
 proposed GPU path is implemented or fast.
