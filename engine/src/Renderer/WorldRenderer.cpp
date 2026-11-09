@@ -61,6 +61,7 @@
 #include <gltf_import/gltf.h>
 
 #include <Engine/Renderer/GfxRenderer.h>
+#include <Engine/Renderer/static_vertex_heap.h>
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Utils/LutIo.h>
 
@@ -10885,6 +10886,98 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
     }
+    // Explicit experimental cutover. The indexed renderer remains the
+    // default and wins automatically when any dependency is unavailable.
+    static const bool s_gpuSceneTaskMesh = [] {
+        const char* env = std::getenv("TOURMALINE_GPU_SCENE_TASK_MESH");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    if (s_gpuSceneTaskMesh && smvk::SupportsMeshShaders()) {
+        const char* const taskComputePaths[3] = {
+            "content/shaders/gpu_scene_task_group_count.cs.hlsl.spv",
+            "content/shaders/gpu_scene_task_group_scatter.cs.hlsl.spv",
+            "content/shaders/gpu_scene_task_dispatch.cs.hlsl.spv",
+        };
+        for (uint32_t i = 0; i < 3u; ++i) {
+            if (m_gpuSceneTaskComputePrograms[i].shaderCount == 1) continue;
+            try {
+                m_gpuSceneTaskComputeModules[i] = m_context->CreateShaderModule(
+                    smvk::shaders::Read(taskComputePaths[i]), "GpuSceneTaskCompute");
+                if (!m_gpuSceneTaskComputeModules[i].empty()) {
+                    smvk::Shader cs{.module = m_gpuSceneTaskComputeModules[i],
+                                    .entryPoint = "mainCS",
+                                    .stage = smvk::ShaderStage::Compute};
+                    m_gpuSceneTaskComputePrograms[i] = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                static bool warned = false;
+                if (!warned) {
+                    std::fprintf(stderr,
+                        "[GpuSceneTaskMesh] compute SPIR-V unavailable; indexed fallback\n");
+                    warned = true;
+                }
+            }
+        }
+        if (m_gpuSceneTaskMainProgram.shaderCount != 3) {
+            try {
+                if (m_gpuSceneTaskAsModule.empty())
+                    m_gpuSceneTaskAsModule = m_context->CreateShaderModule(
+                        smvk::shaders::Read("content/shaders/gpu_scene_meshlet.task.hlsl.spv"),
+                        "GpuSceneTaskAS");
+                if (m_gpuSceneTaskMsModule.empty())
+                    m_gpuSceneTaskMsModule = m_context->CreateShaderModule(
+                        smvk::shaders::Read("content/shaders/gpu_scene_meshlet.mesh.hlsl.spv"),
+                        "GpuSceneTaskMS");
+                if (!m_gpuSceneTaskAsModule.empty() && !m_gpuSceneTaskMsModule.empty()) {
+                    smvk::Shader as{.module = m_gpuSceneTaskAsModule, .entryPoint = "mainAS",
+                                    .stage = smvk::ShaderStage::Task};
+                    smvk::Shader ms{.module = m_gpuSceneTaskMsModule, .entryPoint = "mainMS",
+                                    .stage = smvk::ShaderStage::Mesh};
+                    m_gpuSceneTaskDepthProgram = {.shaders = {as, ms}, .shaderCount = 2};
+                    if (!m_gpuSceneRasterFsModule.empty()) {
+                        smvk::Shader fs{.module = m_gpuSceneRasterFsModule,
+                                        .entryPoint = "mainPS",
+                                        .stage = smvk::ShaderStage::Fragment};
+                        m_gpuSceneTaskMainProgram = {.shaders = {as, ms, fs}, .shaderCount = 3};
+                    }
+                    if (!m_gpuSceneRasterGbufferFsModule.empty()) {
+                        smvk::Shader fs{.module = m_gpuSceneRasterGbufferFsModule,
+                                        .entryPoint = "mainPS",
+                                        .stage = smvk::ShaderStage::Fragment};
+                        m_gpuSceneTaskGbufferProgram = {.shaders = {as, ms, fs}, .shaderCount = 3};
+                    }
+                    if (!m_gpuSceneRasterMaskedDepthFsModule.empty()) {
+                        smvk::Shader fs{.module = m_gpuSceneRasterMaskedDepthFsModule,
+                                        .entryPoint = "mainPS",
+                                        .stage = smvk::ShaderStage::Fragment};
+                        m_gpuSceneTaskMaskedDepthProgram =
+                            {.shaders = {as, ms, fs}, .shaderCount = 3};
+                    }
+                    if (!m_gpuSceneRasterMaskedGbufferFsModule.empty()) {
+                        smvk::Shader fs{.module = m_gpuSceneRasterMaskedGbufferFsModule,
+                                        .entryPoint = "mainPS",
+                                        .stage = smvk::ShaderStage::Fragment};
+                        m_gpuSceneTaskMaskedGbufferProgram =
+                            {.shaders = {as, ms, fs}, .shaderCount = 3};
+                    }
+                    if (!m_gpuSceneRasterMaskedA2cFsModule.empty()) {
+                        smvk::Shader fs{.module = m_gpuSceneRasterMaskedA2cFsModule,
+                                        .entryPoint = "mainPS",
+                                        .stage = smvk::ShaderStage::Fragment};
+                        m_gpuSceneTaskMaskedA2cProgram =
+                            {.shaders = {as, ms, fs}, .shaderCount = 3};
+                    }
+                }
+            } catch (...) {
+                static bool warned = false;
+                if (!warned) {
+                    std::fprintf(stderr,
+                        "[GpuSceneTaskMesh] task/mesh SPIR-V unavailable; indexed fallback\n");
+                    warned = true;
+                }
+            }
+        }
+    }
     if (s_gpuSceneValidate || s_gpuSceneRaster)
         m_gpuSceneValidator.BeginFlight(*m_context, fb.frameIndex);
     m_gpuSceneDatabaseReady = false;
@@ -11154,6 +11247,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneRasterEligibilityWorld = nullptr;
     }
     m_gpuSceneRasterDrawActive = false;
+    m_gpuSceneTaskMeshActive = false;
+    m_gpuSceneTaskMeshPlan = {};
     // Probe residency for this frame's eye (throttled inside; the
     // FP upload below reads the rebuilt rows - see m_cubemapRows).
     UpdateCubemapStreaming(m_cameraPositioner.cameraPosition_);
