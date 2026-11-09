@@ -14,7 +14,12 @@
 //     pre-culls per (draw x cluster) with sphere + normal-cone tests, so the
 //     GPU only sees surviving clusters (GPU cull mode: gfxbatchcull wrote
 //     the batch list; this shader re-gates on the kept/draw verdicts and
-//     skips the projection work for dropped slots).
+//     skips the projection work for dropped slots). The filter is also the
+//     FINAL writer of each slot's kept-bit history word: after the
+//     occlusion/triangle verdicts it refines the parity-region bit
+//     gfxbatchcull seeded (pre-occlusion frustum) to final visibility —
+//     the temporal seed/remainder split consumes that refined history
+//     (see the kept write at the bottom of the exclusive tid==0 block).
 //   - Frustum test runs in CLIP space (-w<=x<=w, -w<=y<=w, 0<=z<=w, Vulkan
 //     zero-to-one depth) instead of divided NDC 0..1 space. This is exact
 //     under the engine's reversed infinite-Z projection (GreaterEqual,
@@ -380,7 +385,10 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     // sphere + cone) and the draw cull's per-draw verdict (FROZEN view +
     // HZB draw-bound occlusion). Either 0 -> the whole group exits before
     // any projection work: gfxbatchcull already wrote the slot's indirect
-    // statics (indexCount 0), so nothing is left to do.
+    // statics (indexCount 0), so nothing is left to do. NOTE: the kept
+    // word read here is the PRE-OCCLUSION geometric verdict — this frame's
+    // occlusion decisions happen in/after this dispatch, and the history
+    // word is refined to final visibility at the end of this block.
     bool slotKept = true;
     bool drawOk = true;
     if (gid < pcF.batchCount)
@@ -506,6 +514,26 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
             gOutBase = 0xFFFFFFFFu; // dropped (empty or ring cap): no writes
             pcF.indirect.Get().cmds[gid].indexCount = 0;
         }
+        // Temporal history refinement: this slot's word in THIS frame's
+        // kept parity region currently holds gfxbatchcull's geometric
+        // verdict (sphere/frustum/cone — pre-occlusion). The temporal
+        // seed/remainder split reads it two frames from now, so refine it
+        // to FINAL visibility here, after every occlusion decision that
+        // touched the slot: draw-bound frustum/HZB (drawOk), whole-cluster
+        // HZB (gClusterCull), per-triangle culling (gLocalCount). A
+        // frustum-kept but fully occluded cluster must not re-enter the
+        // seed set as "previously visible" — that misclassification is
+        // the disocclusion over-cull candidate this write closes.
+        // Ring-cap exhaustion (gLocalCount > 0 but !fits) keeps the bit
+        // set: conservative in the historical direction — a false seed
+        // only costs seed depth work, never drops geometry. Race-free by
+        // construction: this workgroup owns slot gid exclusively (the
+        // slotKept read above is the same word), gfxbatchcull (the
+        // previous writer) is rendergraph-ordered ahead of this dispatch,
+        // and the next reader is the batch cull of the frame
+        // smvk::limits::MaxFramesInFlight later on this flight —
+        // flight-fenced complete, the same ring discipline as before.
+        pcF.kept.Get().kept[gid] = (gLocalCount != 0u) ? 1u : 0u;
     }
 
     // AllMemory covers BOTH the groupshared gOutBase read below and the

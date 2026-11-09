@@ -2954,12 +2954,18 @@ RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view) {
     // covers the compute write here and the index/vertex reads downstream.
     pass.AddBufferHint(s.indexHeapLogical, computeRW);
     pass.AddBufferHint(v.indirectLogicals[f], computeRW);
-    // Cull chain verdicts: the kept-bit region (gfxbatchcull, earlier
-    // this frame) + the draw verdicts / filtered-offset counter
-    // (gfxdrawcull earlier this frame; the counter is read-modify-write
-    // through the allocation atomics, so RW — compute stage only, the
-    // indirect consumption hints below stay as they are).
-    pass.AddBufferHint(v.keptLogicals[f], computeRead);
+    // Cull chain verdicts: the kept-bit region (gfxbatchcull wrote the
+    // pre-occlusion geometric verdict earlier this frame; the filter READS
+    // it for the slot gate and then WRITES the final-visibility refinement
+    // into the same word — per-slot exclusive ownership, so RW; compute
+    // stage only, the indirect consumption hints below stay as they are)
+    // + the draw verdicts / filtered-offset counter (gfxdrawcull earlier
+    // this frame; the counter is read-modify-write through the allocation
+    // atomics, so RW too).
+    BufferSyncRequest keptRW{};
+    keptRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+    keptRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+    pass.AddBufferHint(v.keptLogicals[f], keptRW);
     BufferSyncRequest stateRW{};
     stateRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
     stateRW.barrierMasks.stageMask = PipelineStageBit_Compute;
@@ -3482,6 +3488,11 @@ void PushAndDispatchBatchCull(State& s, CommandBuffer& cmd, ResourceManager& ctx
         return e && std::strcmp(e, "1") == 0;
     }();
     push.skinConeEnabled = s_skinConeOn ? 1u : 0u;
+    // Temporal seed/remainder split gate (TOURMALINE_GFX_SEED_HISTORY=0
+    // kills the split — the disocclusion diagnostic; every kept slot
+    // seeds). Default 1 = the temporal split runs on the refined
+    // final-visibility history.
+    push.seedHistory = s.seedHistoryKilled ? 0u : 1u;
     cmd.BindComputePipeline(s.batchCullProgram);
     cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
     // One 128-thread workgroup per material-sorted draw.

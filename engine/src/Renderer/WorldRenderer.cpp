@@ -499,6 +499,10 @@ void WorldRenderer::ApplyRunConfig(const RunConfig& run) {
     m_texstreamMipBias = run.texstreamMipBias;
     // GPU-cull baseline dump frame (the harness "cull" mode's input).
     m_gfxRenderer.SetCullDumpFrame(run.cullDump);
+    // Gfx temporal seed/remainder split kill (TOURMALINE_GFX_SEED_HISTORY=0,
+    // the disocclusion diagnostic): every frustum-kept slot seeds. Default
+    // (unset/1): the split runs on the filter's final-visibility history.
+    m_gfxRenderer.SetSeedHistoryKilled(run.seedHistoryKilled);
     // Texture filtering default for headless A/B
     // (trilinear | 2x | 4x | 8x | 16x). The ImGui combo stays live after;
     // applied every RenderFrame.
