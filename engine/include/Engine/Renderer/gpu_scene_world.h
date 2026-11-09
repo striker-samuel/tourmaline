@@ -380,6 +380,19 @@ class WorldSynchronizer {
                     nodeKeys_[merged] = {owner->second, local, gen};
                 }
             }
+            // Direct gameplay nodes are World-owned, not Cluster-local. Give them
+            // a distinct registration allocated from the same namespace as
+            // Cluster registrations; the generational node handle prevents ABA
+            // when a removed gameplay slot is reused. The mesh below still
+            // resolves through its actual Cluster-backed resource owner.
+            for (NodeHandle handle : world.gameNodes_) {
+                if (!world.IsGameNode(handle))
+                    continue;
+                const uint32_t slot = NodeHandleSlot(handle);
+                if (slot < nodeKeyCount_ && !nodeKeys_[slot].registration)
+                    nodeKeys_[slot] = {world.gpuSceneGameNodeRegistration, slot,
+                                       NodeGenerationOf(world.scene, slot)};
+            }
             // The source-record list is only consumed by Reconcile below.
             // Allocate it from the current FrameArena; no persistent heap vector.
             const size_t maxRecords = world.drawItems.size();
