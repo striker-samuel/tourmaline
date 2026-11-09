@@ -13649,7 +13649,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                          temporalCommands,
                          temporalSlots);
     }
-    if (s_gpuSceneTemporal && !m_gpuSceneMeshletCompactActive && m_gpuSceneRasterDrawActive &&
+    if (s_gpuSceneTemporal && !m_gpuSceneMeshletCompactActive &&
+        !m_gpuSceneTaskMeshActive && m_gpuSceneRasterDrawActive &&
         temporalProgramsReady &&
         m_gfxFilterAvailable && temporalCommands != 0 && temporalSlots != 0 &&
         temporalCommands <= 4u * 1048576u && temporalSlots <= 4194304u) {
