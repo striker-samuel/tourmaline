@@ -885,7 +885,6 @@ void World::UnloadCluster(Cluster& cluster) {
         return;
     for (auto it = clusters.begin(); it != clusters.end(); ++it) {
         if (it->get() == &cluster) {
-            gpuSceneClusterIds.erase(&cluster);
             // SHARED-ASSET PARKING: live external refs keep the
             // cluster's resource rows alive (an asset holder — app::
             // AssetStore — retained them). Detach instead of destroy:
@@ -1058,7 +1057,7 @@ uint64_t World::InstantiateSceneHierarchy(const Scene& source,
     InvalidateStaticBvh();
     flagLists.clear();
     dirtyCull = true;
-    ++gpuSceneTopologyRevision;
+    ++sceneTopologyRevision;
     return instance;
 }
 
@@ -1096,7 +1095,7 @@ bool World::RetireSceneHierarchy(uint64_t instanceId) {
     InvalidateStaticBvh();
     flagLists.clear();
     dirtyCull = true;
-    ++gpuSceneTopologyRevision;
+    ++sceneTopologyRevision;
     return true;
 }
 
@@ -1106,7 +1105,6 @@ void World::RegisterCluster(std::unique_ptr<Cluster> cluster) {
         throw std::logic_error(
             "cannot register content Cluster during direct World instance lifetime");
     cluster->world = this;
-    gpuSceneClusterIds[cluster.get()] = nextGpuSceneClusterId++;
     clusters.push_back(std::move(cluster));
 }
 
@@ -1119,7 +1117,6 @@ std::unique_ptr<Cluster> World::UnregisterCluster(Cluster& cluster) {
         return nullptr;
     for (auto it = clusters.begin(); it != clusters.end(); ++it) {
         if (it->get() == &cluster) {
-            gpuSceneClusterIds.erase(&cluster);
             std::unique_ptr<Cluster> detached = std::move(*it);
             clusters.erase(it);
             detached->world = nullptr;
@@ -1843,8 +1840,6 @@ NodeHandle World::AddNode(const glm::mat4& localFrame, NodeHandle parent) {
     scene.nodeGeneration[size_t(node)] = tour::scene::kNodeSlotAliveBit | generation;
     const NodeHandle handle = MakeNodeHandle(scene, NodeId(node));
     gameNodes_.insert(handle);
-    if (!gpuSceneGameNodeRegistration)
-        gpuSceneGameNodeRegistration = nextGpuSceneClusterId++;
     (void)tour::scene::SetLocalTransform(scene, handle, localFrame);
     // Root-level nodes carry the frame as their global directly; a
     // parented node recomposes through the ordinary recalc below.
@@ -2018,7 +2013,7 @@ void World::RefreshRuntimeSceneCaches() {
     // carries the static-cull section and nothing diverged since the
     // cook, else the ordinary rebuild (see RefreshStaticBvh).
     RefreshStaticBvh();
-    ++gpuSceneTopologyRevision; // authored/runtime topology or binding remap
+    ++sceneTopologyRevision; // authored/runtime topology or binding remap
     dirtyCull = true;
 }
 

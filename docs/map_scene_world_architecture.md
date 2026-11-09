@@ -11,8 +11,8 @@ prefab, reusable building, or other contained hierarchy. It is not a world
 partition, pak, map, or global spatial index.
 
 `tour::World` (the renderer's `m_world`) remains the **single active runtime
-simulation/rendering host**. It owns active scene instances, GPU scene state
-and dynamic entities. Many authored Maps can exist on disk/in the project,
+simulation/rendering host**. It owns active scene instances and dynamic
+entities. Many authored Maps can exist on disk/in the project,
 but **exactly one Map is active in the runtime at a time**. A Map may place
 many local Scenes; each Scene asset may be reused by many placements.
 
@@ -118,5 +118,5 @@ The separate authored Map editor/persistence UI has not been implemented.
   independently cooked local Scenes. (Map placement-page build is wired.)
 - Serialize tile placement manifest plus spatial BVH pages into SMP8.
 - Replace the synchronous legacy ProjectScenes bridge with budgeted
-  asynchronous IO + incremental World and GPU-scene publication.
+  asynchronous IO + incremental World publication.
 - Preserve standalone scene/prefab compatibility across the cutover.

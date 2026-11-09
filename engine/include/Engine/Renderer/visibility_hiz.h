@@ -3,8 +3,8 @@
 #pragma once
 
 // Renderer-neutral reversed-Z hierarchical depth-pyramid storage contract.
-// Both the GfxFilter cluster culler and the GPU-scene instance culler consume
-// this format: mip 0 is full-resolution depth and higher mips MIN-reduce.
+// The GfxFilter cluster culler consumes this format: mip 0 is
+// full-resolution depth and higher mips MIN-reduce.
 // Ownership, layout, and flight-buffer allocation do not depend on gfx::State.
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -233,7 +233,7 @@ inline void AddHizBuildHints(smvk::RenderPass& pass,
         pass.AddImageHint(depth, req);
     }
 }
-// Optional pass shells used by GfxFilter and GPU-scene. The caller chooses
+// Optional pass shells used by GfxFilter. The caller chooses
 // a shader program and records it; visibility owns only dependencies.
 inline smvk::RenderPass& AddHizMipPass(
     smvk::RenderGraph& rg, const HizResources& hz, uint32_t dstMip,

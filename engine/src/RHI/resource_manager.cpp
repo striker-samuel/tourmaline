@@ -182,12 +182,6 @@ Holder<BufferHandle> ResourceManager::CreateBuffer(size_t size,
     BufferHandle raw = h.release();
     return Holder<BufferHandle>{this, raw};
 }
-Holder<BufferHandle> ResourceManager::CreateGpuSceneBuffer(size_t size, const char* debugName) {
-    auto h = impl_->vulkan.CreateBuffer(
-        static_cast<VkDeviceSize>(size), BufferType_Storage, debugName, 0, true);
-    BufferHandle raw = h.release();
-    return Holder<BufferHandle>{this, raw};
-}
 Holder<ShaderModuleHandle> ResourceManager::CreateShaderModule(std::vector<char> code,
                                                                const char* debugName) {
     auto h = impl_->vulkan.CreateShaderModule(std::move(code), debugName);

@@ -107,7 +107,7 @@ inline Json WorldState(const tour::World& world,
     const auto& graph = world.scene;
     Json state = {
         {"scope", "engine-scene-graph-v1"},
-        {"topology_revision", world.gpuSceneTopologyRevision},
+        {"topology_revision", world.sceneTopologyRevision},
         {"camera", {{"position_f32", Vec3(cameraPosition)}, {"forward_f32", Vec3(cameraForward)}}},
         {"scene",
          {{"default_camera_node", graph.defaultCameraNode},
@@ -278,12 +278,6 @@ inline Json WorldState(const tour::World& world,
     // Generational slot metadata and free-list order matter for the
     // determinism of the NEXT Spawn/Destroy operation. Raw pointers,
     // transient GPU handles and arbitrary gameplay objects are omitted.
-    const auto ownerId = [&world](const tour::Cluster* owner) -> uint64_t {
-        if (!owner)
-            return 0;
-        const auto it = world.gpuSceneClusterIds.find(owner);
-        return it == world.gpuSceneClusterIds.end() ? 0 : it->second;
-    };
     Json entities = {{"audio", Json::array()},
                      {"meshes", Json::array()},
                      {"material_instances", Json::array()},
@@ -293,12 +287,10 @@ inline Json WorldState(const tour::World& world,
                      {"material_instance_free", world.materialInstanceFree},
                      {"animator_free", world.animatorFree},
                      {"material_user_data", world.materialUserData},
-                     {"material_shader_family", world.materialShaderFamily},
-                     {"next_gpu_scene_cluster_id", world.nextGpuSceneClusterId}};
+                     {"material_shader_family", world.materialShaderFamily}};
     for (const auto& entity : world.audioEntities) {
         entities["audio"].push_back({{"alive", entity.alive},
                                      {"generation", entity.generation},
-                                     {"owner_cluster_id", ownerId(entity.owner)},
                                      {"cluster_node", entity.clusterNode},
                                      {"merged_node", entity.mergedNode}});
     }
@@ -306,8 +298,6 @@ inline Json WorldState(const tour::World& world,
         entities["meshes"].push_back(
             {{"alive", entity.alive},
              {"generation", entity.generation},
-             {"transform_owner_cluster_id", ownerId(entity.transformOwner)},
-             {"mesh_owner_cluster_id", ownerId(entity.meshOwner)},
              {"cluster_node", entity.clusterNode},
              {"merged_node", entity.mergedNode},
              {"mesh_uri",
@@ -319,7 +309,6 @@ inline Json WorldState(const tour::World& world,
         entities["material_instances"].push_back(
             {{"alive", instance.alive},
              {"generation", instance.generation},
-             {"owner_cluster_id", ownerId(instance.baseOwner)},
              {"base_material_uri",
               instance.baseOwner ? OwnedUri(instance.baseOwner->GetMaterialUri(instance.base))
                                  : ""},
@@ -355,7 +344,6 @@ inline Json WorldState(const tour::World& world,
                                          {"paused", playback.paused},
                                          {"playing", playback.playing},
                                          {"mesh_handle", playback.mesh.value},
-                                         {"target_cluster_id", ownerId(playback.target)},
                                          {"rest_locals", std::move(rest)},
                                          {"joint_locals", std::move(joints)}});
     }

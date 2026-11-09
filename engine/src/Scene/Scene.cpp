@@ -66,8 +66,6 @@ void Scene::ReserveNodeSlots(size_t slots) {
     hidden.reserve(slots);
     metadata.reserve(slots);
     rowsForNode.reserve(slots);
-    gpuSceneGlobalQueued.reserve(slots);
-    gpuSceneGlobalChanges.reserve(slots);
 }
 
 void Scene::ResetForResolve() {
@@ -108,10 +106,6 @@ void Scene::ResetForResolve() {
     fresh.metadata.clear();
     fresh.rowsForNode = std::move(rowsForNode);
     fresh.rowsForNode.clear();
-    fresh.gpuSceneGlobalQueued = std::move(gpuSceneGlobalQueued);
-    fresh.gpuSceneGlobalQueued.clear();
-    fresh.gpuSceneGlobalChanges = std::move(gpuSceneGlobalChanges);
-    fresh.gpuSceneGlobalChanges.clear();
     *this = std::move(fresh);
 }
 
@@ -481,18 +475,6 @@ int findNodeByName(const Scene& scene, const std::string& name) {
 bool mat4IsIdentity(const glm::mat4& m);
 void fprintfMat4(FILE* f, const glm::mat4& m);
 
-// CPU version of global transform update []
-// Defer one notification per node until the renderer consumes the journal.
-// This bounds pending entries even in long-running headless worlds.
-static void QueueGpuSceneGlobalChange(Scene& scene, uint32_t node) {
-    if (scene.gpuSceneGlobalQueued.size() <= node)
-        scene.gpuSceneGlobalQueued.resize(size_t(node) + 1, 0);
-    if (scene.gpuSceneGlobalQueued[node])
-        return;
-    scene.gpuSceneGlobalQueued[node] = 1;
-    scene.gpuSceneGlobalChanges.push_back(node);
-}
-
 static void PrepareDoubleTransforms(Scene& scene) {
     const size_t count = scene.localTransform.size();
     const size_t oldLocal = scene.localTransformDouble.size();
@@ -561,7 +543,6 @@ bool recalculateGlobalTransforms(Scene& scene) {
         if (!IsLiveSlot(scene, uint32_t(c)))
             continue;
         ComposeDoubleTransform(scene, c);
-        QueueGpuSceneGlobalChange(scene, uint32_t(c));
         wasUpdated = true;
     }
     scene.changedAtThisFrame[0].clear();
@@ -577,7 +558,6 @@ bool recalculateGlobalTransforms(Scene& scene) {
             // showed up as an identity/horizontal sun: az=0/el=0).
             (void)p;
             ComposeDoubleTransform(scene, c);
-            QueueGpuSceneGlobalChange(scene, uint32_t(c));
         }
         wasUpdated |= !scene.changedAtThisFrame[i].empty();
         scene.changedAtThisFrame[i].clear();
@@ -597,7 +577,7 @@ bool recalculateGlobalTransformsDynamic(Scene& scene) {
 
     bool wasUpdated = false;
     // Dynamic scenes may have MULTIPLE level-zero roots. Processing only
-    // the first one silently dropped the other roots' GPU notifications.
+    // the first one silently dropped the other roots' transform updates.
     for (int c : scene.changedAtThisFrame[0]) {
         if (c < 0 || !IsLiveSlot(scene, uint32_t(c)))
             continue;
@@ -606,7 +586,6 @@ bool recalculateGlobalTransformsDynamic(Scene& scene) {
         if (isStatic)
             continue;
         ComposeDoubleTransform(scene, c);
-        QueueGpuSceneGlobalChange(scene, uint32_t(c));
         wasUpdated = true;
     }
     scene.changedAtThisFrame[0].clear();
@@ -622,7 +601,6 @@ bool recalculateGlobalTransformsDynamic(Scene& scene) {
             const int p = scene.hierarchy[c].parent;
             (void)p;
             ComposeDoubleTransform(scene, c);
-            QueueGpuSceneGlobalChange(scene, uint32_t(c));
             wasUpdated = true;
         }
         scene.changedAtThisFrame[i].clear();

@@ -7,8 +7,7 @@
 // House test convention (AGENTS.md): the CHECK macro ALWAYS evaluates its
 // condition, in every build flavor. This file originally used CHECK(),
 // whose NDEBUG no-op makes Release runs vacuous - and any side effect
-// inside an assert (see test_gpu_scene_candidates.cpp:
-// assert(leaves.Flush(db))) was silently skipped, crashing the run.
+// inside an assert was silently skipped, crashing the run.
 #define CHECK(cond)                                                                                \
     do {                                                                                           \
         ++g_checks;                                                                                \

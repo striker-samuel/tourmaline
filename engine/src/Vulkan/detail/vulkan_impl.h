@@ -912,8 +912,7 @@ struct VulkanResourceManager final /*: public IResourceManager*/ {
     Holder<BufferHandle> CreateBuffer(VkDeviceSize size,
                                       BufferType bufferType,
                                       const char* debugName = "Buffer",
-                                      VmaAllocationCreateFlags vmaAllocFlags = 0,
-                                      bool gpuScenePool = false);
+                                      VmaAllocationCreateFlags vmaAllocFlags = 0);
     // KHR_acceleration_structure + KHR_ray_query, optional.
     [[nodiscard]] bool SupportsRayQueries() const;
     [[nodiscard]] bool SupportsOpacityMicromaps() const;
@@ -1105,12 +1104,6 @@ struct VulkanResourceManager final /*: public IResourceManager*/ {
     // (never freed individually — LinearPtr runs the dtor only).
     mem::LinearPtr<VulkanCore> core_;
     VmaAllocator m_allocator;
-    // Lazy device-local VMA pools for GPU-scene table buffers. Each
-    // storage table remains a single contiguous buffer-device-address
-    // array; the VMA blocks are never exposed as shader pages.
-    std::array<VmaPool, 3> m_gpuScenePools{};
-    std::array<uint32_t, 3> m_gpuScenePoolMemoryTypes{
-        UINT32_MAX, UINT32_MAX, UINT32_MAX};
     Submitter* m_submitter = nullptr;
     Submitter* m_transferSubmitter = nullptr;
     // Async-compute submitter for EVSM prefiltering. Aliased to the

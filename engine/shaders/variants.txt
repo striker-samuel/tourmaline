@@ -29,4 +29,3 @@ default_pbr_debug.frag.hlsl|.diffuse|PBR_MODE=2
 default_pbr_debug.frag.hlsl|.rough|PBR_MODE=3
 default_pbr_debug.frag.hlsl|.metal|PBR_MODE=4
 default_pbr_debug.frag.hlsl|.f0|PBR_MODE=5
-gpu_scene_raster_work_drawbuild.cs.hlsl|.sentinel|GS_RASTER_DEBUG_EMPTY_COMMAND_SENTINEL=1

@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
-#include <Engine/Scene/gpu_scene_memory_bindings.h>
 #include <Engine/Scene/scene_memory_bindings.h>
 #include <cassert>
 #include <cstdint>
@@ -125,22 +124,5 @@ int main() {
     assert(copied.localTransform[child][3].x == 7.0f);
     assert(DetachExternal(bound, Semantic::LocalTransform));
 
-    // GPU tables describe their independently published per-flight addresses.
-    tour::gpu_scene::RenderDatabase gpuDb;
-    const auto meshId = gpuDb.meshes.Insert(tour::gpu_scene::Mesh{});
-    assert(meshId);
-    tour::gpu_scene::Addresses gpuAddresses{};
-    gpuAddresses.meshes = 0x1000u; // fabricated device address for metadata test
-    const auto gpuViews = GetGpuViews(gpuDb, gpuAddresses, 1);
-    assert(gpuViews.size() == 6);
-    assert(gpuViews[0].semantic == GpuSemantic::Mesh);
-    assert(gpuViews[0].count == 1);
-    assert(gpuViews[0].stride == sizeof(tour::gpu_scene::Row<tour::gpu_scene::Mesh>));
-    assert(gpuViews[0].generationOffset ==
-           offsetof(tour::gpu_scene::Row<tour::gpu_scene::Mesh>, identity));
-    assert(gpuViews[0].aliveOffset == gpuViews[0].generationOffset + 4);
-    assert(gpuViews[0].Published());
-    assert(gpuViews[0].flight == 1);
-    assert(!gpuViews[1].Published());
     return 0;
 }

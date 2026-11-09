@@ -92,7 +92,7 @@ Performance numbers cannot catch a cull chain that silently **drops visible geom
 # Record once (commit the baseline like scenarios.json):
 python tools/perf_harness.py cull --scenario sponza-atrium --exe out/build/x64-Release/Benchmark.exe --update
 
-# Verify after any gfx cull chain / HZB / GPU-scene change:
+# Verify after any gfx cull chain / HZB change:
 python tools/perf_harness.py cull --scenario sponza-atrium --exe out/build/x64-Release/Benchmark.exe
 ```
 

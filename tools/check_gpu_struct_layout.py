@@ -16,14 +16,12 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-CPP_FILES = [
-    ROOT / "engine/include/Engine/Core/double_float.h",
-    ROOT / "engine/include/Engine/Renderer/gpu_scene.h",
-]
-HLSL_FILES = [
-    ROOT / "engine/shaders/double_float.hlsli",
-    ROOT / "engine/shaders/gpu_scene.hlsli",
-]
+# No engine header/shader pair carries a GPU_STRUCT_NAME annotation since
+# the GPU-scene removal; the defaults stay empty and the checker remains
+# available for explicit --cpp/--hlsl inputs (tools/tests/
+# test_gpu_struct_layout.py exercises the core with synthetic fixtures).
+CPP_FILES = []
+HLSL_FILES = []
 ANNOTATION = re.compile(r"(?:^|\n)\s*(?://\s*)?GPU_STRUCT_NAME\((\w+)\)\s*\n\s*struct\s+(?:alignas\(\d+\)\s+)?(\w+)\s*\{", re.M)
 MEMBER = re.compile(r"^\s*(?:(?:const|volatile)\s+)?[\w:<> ,]+\s+(\w+)\s*(?:\{[^;]*\}|=[^;]*)?;\s*(?://.*)?$")
 SPV_MEMBER = re.compile(r'OpMemberName\s+(%\S+)\s+(\d+)\s+"([^"]+)"')

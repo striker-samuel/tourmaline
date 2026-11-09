@@ -1033,18 +1033,7 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
             smvk::gfx::PushAndDispatchBatchCull(self->gfx, cmd, *ctx, slot);
         });
     }
-    // Main-view temporal depth has exactly ONE owner. When GPU-scene
-    // raster is active its seed/Hi-Z/depth chain controls the shared
-    // depth target; GfxFilter's independent seed and T5 remainder would
-    // write competing depth (notably through masked cutout cards).
-    // Still build the legacy GfxFilter work/visibility lists for its
-    // non-GPU-owned draws and shadow views; only omit this Main seed/
-    // remainder PAIR. The legacy-only frame retains the original path.
-    // FrameContext publishes this callback only for committed GPU raster,
-    // never merely because the GPU-scene feature is configured.
-    const bool gpuSceneOwnsMainDepth = bool(fc.gpuRasterOwnsNode);
-    if (!gpuSceneOwnsMainDepth &&
-        seedOpaqueProgram.shaderCount != 0 && seedMaskedProgram.shaderCount != 0 &&
+    if (seedOpaqueProgram.shaderCount != 0 && seedMaskedProgram.shaderCount != 0 &&
         !std::getenv("TOURMALINE_KD_NOSEED")) {
         const auto& ranges = smvk::gfx::SeedRanges(gfx, slot);
         if (!ranges.empty()) {
@@ -1389,28 +1378,6 @@ void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
         });
         gfx.hizSpdVerifyArmed = true;
     }
-}
-
-bool GfxRenderer::PrepareGpuSceneHiz(smvk::ResourceManager& ctx,
-                                     smvk::RenderGraph& rg,
-                                     const smvk::RenderView& view,
-                                     const glm::vec3& eye,
-                                     uint32_t flight,
-                                     uint32_t width,
-                                     uint32_t height) {
-    lastSlot_ = UINT32_MAX;
-    smvk::gfx::BeginFrame(gfx);
-    const uint32_t slot = smvk::gfx::BeginView(
-        gfx, ctx, rg, view, eye, config.cullFlags, width, height);
-    if (slot == UINT32_MAX)
-        return false;
-    // BeginView has no flight argument; FinalizeView normally stamps it
-    // for GfxFilter. The GPU-only path skips FinalizeView entirely.
-    gfx.views[slot].frameIndex = flight;
-    if (!smvk::gfx::EnsureHiz(gfx, ctx, rg, slot, width, height))
-        return false;
-    lastSlot_ = slot;
-    return true;
 }
 
 void GfxRenderer::VerifyHizSpd(smvk::ResourceManager& ctx) {
@@ -1839,8 +1806,6 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx,
         smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
             smvk::IteratorFlagBit_StaticVertexFmt,
         [&](const smvk::World::RenderItem& item) {
-            if (gpuRasterOwnsNode_ && gpuRasterOwnsNode_(item.node))
-                return; // exactly complementary to GPU-scene instance-cull mask
             if (dumpGates)
                 ++s_gates.items;
             if (item.material == smvk::World::kInvalidIndex) {
@@ -2216,7 +2181,7 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx,
     // draws warrant promotion to instanced indirect commands. This samples
     // BEFORE GPU occlusion; it is an upper bound, never a visible-instance
     // count or an estimate of actual command savings after GPU culling.
-    // No GPU scene DB rows, generations, or draw buffers are modified.
+    // No GPU draw state is modified.
     if (std::getenv("TOURMALINE_INSTANCE_METRICS") && (frameCounter_ % 300) == 0) {
         const auto measureStart = std::chrono::steady_clock::now();
         const auto& candidates = gfx.views[slot].draws;
