@@ -2,16 +2,57 @@
 
 ## Status
 
-**Wired into GPU Scene raster, pending integrator validation.** The GPU
+**Wired experimentally, but disabled by default after a measured severe regression.** The GPU
 Scene indirect command builder now prefers the existing GfxFilter cluster
 (meshlet) geometry and emits an indexed command per visible meshlet. The
 existing whole-submesh draw builder is a conservative fallback if required GPU
 resources or the new shader are unavailable. Use
-`TOURMALINE_GPU_SCENE_MESHLETS=0` to force whole-submesh GPU Scene draws.
+`TOURMALINE_GPU_SCENE_MESHLETS=1` only for explicitly measured meshlet
+experiments; unset it or set `0` for the fast whole-submesh GPU Scene path.
 
 This is indexed GPU-driven rendering using cluster-ordered indices, **not**
 Vulkan task/mesh-shader dispatch. It reuses the current `gpu_scene_raster.vert`
 VS, so each generated command keeps `firstInstance = original work slot`.
+
+## Blocking grid-overlook A/B result (2026-11-09)
+
+All six ON and six OFF logs independently report GPU Scene active with
+`admittedStatic=1751` and `legacySources=0`. KD reports
+`rasterActive=1` in both variants with the temporal path engaged.
+
+| Configuration | Reserved commands | Median frame time |
+|---|---:|---:|
+| Meshlets ON | 3,158,804 | 21.93 ms |
+| Meshlets OFF | 7,004 | 2.51 ms |
+
+Meshlet expansion is **8.74x slower** on this scenario. The 3,158,804
+value is reserved command capacity, not the number of visible meshlets.
+Fixed-size draw-build, seed, Hi-Z and history kernels dispatch across
+this capacity regardless of survivor count. DO NOT MERGE OR DEFAULT-ENABLE
+the existing meshlet implementation.
+
+## Required redesign based on merged #301
+
+The atomics-free PSO prefix shaders from #301 exist on master as
+`gpu_scene_pso_prefix_count/scan/scatter.cs.hlsl`. Their own documentation
+states they are *not* yet connected to the runtime, and that the
+`vkCmdDrawIndexedIndirectCount` consumer and temporal pipeline conversion
+remain to be implemented.
+
+1. Derive exact current-frame meshlet candidates per GPU work item without
+   multiplying the four PSO bins by a fixed meshlet lane reservation.
+2. Run meshlet-frustum/cone verdicts and GPU prefix count/scan/scatter,
+   producing dense surviving command arrays and GPU class counts.
+3. Allocate bounded per-flight compact arrays with conservative capacity;
+   detect overflow without submitting truncated geometry and preserve an
+   all-or-nothing fallback.
+4. Use `vkCmdDrawIndexedIndirectCount` per PSO class and migrate seed,
+   Hi-Z, remainder and history to compact command counts. Instance identity
+   can remain the work-slot pair, but the temporal execution should not scan
+   reserved capacities.
+5. Re-test the exact grid-overlook A/B, verify active GPU Scene in both
+   runs and profile GPU compute/draw counters. Only reconsider default
+   enablement after parity *and* improved GPU frame times.
 
 ## Pipeline
 
