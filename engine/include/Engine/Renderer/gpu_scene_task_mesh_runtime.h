@@ -60,6 +60,7 @@ struct TaskMeshDispatchPlan {
     smvk::BufferHandle indirectHandle{};
     smvk::LogicalBufferHandle indirectLogical{};
     smvk::LogicalBufferHandle groupLogical{};
+    smvk::LogicalBufferHandle offsetLogical{};
 };
 
 class TaskMeshRuntime {
@@ -72,8 +73,8 @@ public:
         smvk::Holder<smvk::BufferHandle> groups, indirect, params;
         size_t countsBytes = 0, offsetsBytes = 0, sumsBytes = 0;
         size_t basesBytes = 0, groupsBytes = 0, indirectBytes = 0, paramsBytes = 0;
-        smvk::LogicalBufferHandle groupsLogical{}, indirectLogical{};
-        smvk::BufferHandle groupsBacking{}, indirectBacking{};
+        smvk::LogicalBufferHandle groupsLogical{}, indirectLogical{}, offsetsLogical{};
+        smvk::BufferHandle groupsBacking{}, indirectBacking{}, offsetsBacking{};
     };
     std::array<Flight, Flights> flights{};
 
@@ -136,15 +137,22 @@ public:
             if (!f.groupsLogical.empty())
                 rg.FreeBuffer(f.groupsLogical);
             f.groupsLogical = rg.AddExternalBuffer(f.groups, "GpuSceneTaskMeshGroups");
-            f.groupsBacking = f.groups;
+            f.groupsBacking = smvk::BufferHandle(f.groups);
         }
         if (f.indirectBacking != smvk::BufferHandle(f.indirect)) {
             if (!f.indirectLogical.empty())
                 rg.FreeBuffer(f.indirectLogical);
             f.indirectLogical = rg.AddExternalBuffer(f.indirect, "GpuSceneTaskMeshIndirect");
-            f.indirectBacking = f.indirect;
+            f.indirectBacking = smvk::BufferHandle(f.indirect);
         }
-        if (f.groupsLogical.empty() || f.indirectLogical.empty())
+        if (f.offsetsBacking != smvk::BufferHandle(f.offsets)) {
+            if (!f.offsetsLogical.empty())
+                rg.FreeBuffer(f.offsetsLogical);
+            f.offsetsLogical = rg.AddExternalBuffer(f.offsets, "GpuSceneTaskMeshOffsets");
+            f.offsetsBacking = smvk::BufferHandle(f.offsets);
+        }
+        if (f.groupsLogical.empty() || f.indirectLogical.empty() ||
+            f.offsetsLogical.empty())
             return false;
 
         TaskMeshGpuParams p{
@@ -179,6 +187,7 @@ public:
         next.indirectHandle = f.indirect;
         next.indirectLogical = f.indirectLogical;
         next.groupLogical = f.groupsLogical;
+        next.offsetLogical = f.offsetsLogical;
         out = next;
         return true;
     }
