@@ -9,7 +9,8 @@ renderer for fallback geometry and as a parity baseline.
 
 The branch now contains experimental GPU task-group count/scatter, indirect
 mesh-task argument generation, task-stage visibility and mesh-stage vertex
-pulling shaders, plus a deterministic CPU workgroup oracle. **None of these
+pulling shaders, a Vulkan RHI indirect mesh-task command, checked C++ ABI
+mirrors, plus a deterministic CPU workgroup oracle. **None of these
 new shaders is wired into WorldRenderer or Vulkan draw submission yet.**
 Do not enable task/mesh raster ownership before ABI validation, shader
 compilation, RHI/pipeline integration, topology validation and raster parity.
@@ -78,14 +79,16 @@ After GPU instance culling, LOD selection, and submesh work generation:
 
 ## Remaining runtime integration
 
-- Implement and validate `GsTaskMeshParams` C++/SPIR-V ABI and per-flight
-  BDA allocation/publication with render-graph dependencies.
+- The C++ mirror `gpu_scene_task_mesh_abi.h` now checks structure sizes
+  and offsets. **SPIR-V reflection remains required**, as do per-flight
+  BDA allocation/publication and render-graph dependencies.
 - Route only validated static submeshes to task/mesh ownership; retain the
   complete indexed fallback for all others. An unsafe cluster must not
   be dropped mid-submesh.
-- Create task + mesh graphics pipeline variants and expose/use
-  `vkCmdDrawMeshTasksIndirectEXT` through the Vulkan RHI. Bind each
-  of the four raster classes with its matching fragment/depth pipeline.
+- `CommandBuffer::DrawMeshTasksIndirect` now records
+  `vkCmdDrawMeshTasksIndirectEXT` through the RHI. **WorldRenderer does
+  not call it yet**: task+mesh graphics pipeline construction, bindings,
+  per-class dispatch, and depth/fragment parity remain to be wired.
 - Publish the task-dispatch x dimension in `GsTaskMeshPush.taskGridX`,
   and ensure dispatch dimensions do not exceed device limits. Four PSO
   bins currently traverse the same list and reject mismatched classes.
