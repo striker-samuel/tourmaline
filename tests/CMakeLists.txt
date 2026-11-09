@@ -1588,3 +1588,17 @@ if(Python3_Interpreter_FOUND AND DXC AND TOURMALINE_SPIRV_DIS)
 else()
     message(WARNING "GPU struct layout tests disabled: Python3, DXC and spirv-dis are required")
 endif()
+
+# Verify the standard and opt-in debug empty-command ABI in independent builds.
+foreach(_suffix IN ITEMS normal sentinel)
+    add_executable(GpuSceneEmptySentinel_${_suffix} test_gpu_scene_empty_sentinel.cpp)
+    target_link_libraries(GpuSceneEmptySentinel_${_suffix} PRIVATE engine)
+    if(_suffix STREQUAL "sentinel")
+        target_compile_definitions(GpuSceneEmptySentinel_${_suffix} PRIVATE
+            GS_RASTER_DEBUG_EMPTY_COMMAND_SENTINEL=1)
+    endif()
+    set_target_properties(GpuSceneEmptySentinel_${_suffix} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+    add_test(NAME gpu_scene_empty_sentinel_${_suffix}
+        COMMAND GpuSceneEmptySentinel_${_suffix})
+endforeach()
