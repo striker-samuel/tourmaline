@@ -1112,45 +1112,10 @@ void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd,
                                    uint64_t renderViewsAddr,
                                    uint32_t renderViewIndex,
                                    const IRenderer::PushConstants& shadowPC) {
-    // TMP-DIAG (grid32 shadow DEVICE_LOST hunt, remove later): phase bisection
-    // knobs. TOURMALINE_SD_SKIP=opq skips the opaque indirect seed draw,
-    // =mask skips the masked cutout ranges, comma-combinable. Whichever
-    // removal stops the crash names the faulting phase.
-    static const char* skipEnv = std::getenv("TOURMALINE_SD_SKIP");
-    const bool skipOpaque = skipEnv && std::strstr(skipEnv, "opq") != nullptr;
-    const bool skipMasked = skipEnv && std::strstr(skipEnv, "mask") != nullptr;
     const std::vector<smvk::gfx::SeedRange>& ranges = smvk::gfx::ShadowRanges(gfx, sview);
     const uint32_t opaqueCount = smvk::gfx::ShadowOpaqueCommands(gfx, sview);
     const smvk::BufferHandle indirectBuf = smvk::gfx::ShadowIndirectBuffer(gfx, sview);
     const uint64_t drawsAddr = ctx.GetBufferDeviceAddress(smvk::gfx::ShadowDrawBuffer(gfx, sview));
-    // TMP-DIAG (TOURMALINE_KD, once): what the shadow seed actually
-    // records — the skin tail state + the skinned-flagged draws in the
-    // shadow view's ring (bind-pose shadows hunt). Remove later.
-    {
-        static bool noted = false;
-        const char* kdEnv = std::getenv("TOURMALINE_KD");
-        if (!noted && kdEnv && *kdEnv && *kdEnv != '0') {
-            noted = true;
-            uint32_t skinnedDraws = 0, drawTotal = 0;
-            const std::vector<smvk::gfx::Draw>& sdc = smvk::gfx::ShadowDrawConstants(gfx, sview);
-            for (const smvk::gfx::Draw& d : sdc) {
-                ++drawTotal;
-                if (d.flags & smvk::gfx::DrawFlagBit_Skinned)
-                    ++skinnedDraws;
-            }
-            std::fprintf(stderr,
-                         "[KD] shadowSeed sview=%u ranges=%zu opaque=%u draws=%u skinnedDraws=%u "
-                         "vsDeformed=%llu base=%u flagsValid=%d\n",
-                         sview,
-                         ranges.size(),
-                         opaqueCount,
-                         drawTotal,
-                         skinnedDraws,
-                         (unsigned long long)gfx.skinDeformedBda,
-                         gfx.skinDeformedBase,
-                         (gfx.skinDeformedBda != 0 && gfx.skinDeformedBase != UINT32_MAX) ? 1 : 0);
-        }
-    }
     cmd.BindStaticVertexFmt();
     // Shadow atlas is normal-Z (clear 1.0, LessEqual) — unlike the seed
     // path's reversed-Z GreaterEqual. No index bind: commands address the
@@ -1158,7 +1123,7 @@ void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd,
     // BindStaticVertexFmt is correct for every draw below).
     // Phase 1: opaque casters (VS-only, FRONT-culled like the direct path —
     // back faces only, the shadow anti-acne classic).
-    if (opaqueCount > 0 && !skipOpaque) { // TMP-DIAG: TOURMALINE_SD_SKIP=opq
+    if (opaqueCount > 0) {
         cmd.BindRenderPipeline(shadowSeedOpaqueProgram,
                                smvk::VertexLayoutId::Static,
                                smvk::DepthSettings{.depthFunc = smvk::CompareOp::LessEqual,
@@ -1180,8 +1145,6 @@ void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd,
     // leaf-shaped shadows). Cull follows the material raster, matching
     // the main view (cutout has no backface depth anywhere).
     for (const smvk::gfx::SeedRange& r : ranges) {
-        if (skipMasked) // TMP-DIAG: TOURMALINE_SD_SKIP=mask
-            break;
         if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
             continue;
         if (r.material == UINT32_MAX)
