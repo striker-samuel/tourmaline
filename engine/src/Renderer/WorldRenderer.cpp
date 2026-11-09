@@ -14687,6 +14687,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     const bool sceneRasterActive = m_gpuSceneRasterDrawActive;
     const bool sceneRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0;
+    const bool sceneRasterMasked = m_gpuSceneRasterMaskedBackCount != 0;
+    const bool sceneRasterMaskedTwoSided = m_gpuSceneRasterMaskedDoubleSidedCount != 0;
     const smvk::BufferHandle sceneRasterCommands = m_gpuSceneRasterIndirect;
     const uint32_t sceneRasterCommandCount = m_gpuSceneRasterDrawCapacity;
     const tour::gpu_scene::RasterVsPush sceneRasterVsPush{
@@ -14702,6 +14704,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                gfxSlot,
                                sceneRasterActive,
                                sceneRasterTwoSided,
+                               sceneRasterMasked,
+                               sceneRasterMaskedTwoSided,
                                sceneRasterCommands,
                                sceneRasterCommandCount,
                                sceneRasterVsPush,
@@ -15139,7 +15143,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             constexpr uint32_t kChunk = 65535;
             // Two fixed contiguous PSO-class ranges; firstInstance stays
             // the original work index, independent of command order.
-            const uint32_t binStride = sceneRasterCommandCount / 2u;
+            const uint32_t binStride =
+                sceneRasterCommandCount / tour::gpu_scene::kRasterPipelineClassCount;
             const auto drawBin = [&](uint32_t bin) {
                 const uint32_t base = bin * binStride;
                 for (uint32_t first = 0; first < binStride; first += kChunk) {
@@ -15162,6 +15167,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        msaaSettings,
                                        smvk::RasterSettings{.cullMode = smvk::CullMode::None});
                 drawBin(1u);
+            }
+            // The lit FS already applies the material's baseColor texture
+            // alpha cutoff, using the flat per-work material ID at location 7.
+            if (sceneRasterMasked) {
+                cmd.BindRenderPipeline(m_gpuSceneRasterProgram,
+                                       smvk::VertexLayoutId::Static,
+                                       opaqueDepth, noStencil,
+                                       smvk::BlendSettings::Opaque(), msaaSettings,
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+                drawBin(2u);
+            }
+            if (sceneRasterMaskedTwoSided) {
+                cmd.BindRenderPipeline(m_gpuSceneRasterProgram,
+                                       smvk::VertexLayoutId::Static,
+                                       opaqueDepth, noStencil,
+                                       smvk::BlendSettings::Opaque(), msaaSettings,
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                drawBin(3u);
             }
         }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----
