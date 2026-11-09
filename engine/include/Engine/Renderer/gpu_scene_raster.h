@@ -79,6 +79,23 @@ struct RasterWorkDrawBuildPush {
     uint32_t padding = 0;
 };
 
+// Optional meshlet draw builder: the 64-byte prefix is identical to
+// RasterWorkDrawBuildPush, so indexed fallback retains its ABI.
+inline constexpr uint32_t kRasterMeshletLanes = 32u;
+struct RasterMeshletWorkDrawBuildPush {
+    RasterWorkDrawBuildPush raster{};
+    uint64_t meshes = 0;     // gfx::MeshEntry[] (transient registered IDs)
+    uint64_t clusters = 0;   // gfx::ClusterConstants[] (64-byte bound records)
+    uint64_t instances = 0;  // persistent GPU-scene instance table
+    uint64_t cullView = 0;   // origin-relative instance-cull view
+    uint32_t meshCount = 0;
+    uint32_t clusterCount = 0;
+    uint32_t indexBase = 0;  // cluster-ordered heap index base
+    uint32_t instanceSlots = 0;
+};
+static_assert(sizeof(RasterMeshletWorkDrawBuildPush) == 112);
+static_assert(offsetof(RasterMeshletWorkDrawBuildPush, meshes) == 64);
+
 // Static-opaque raster VS input: world position is rebased against this
 // double-float origin before the relative VP is evaluated. The lit fragment
 // still uses float world positions like the legacy raster shaders.
