@@ -4,10 +4,12 @@
 // CPU reference for the proposed GPU Scene task -> mesh raster work mapping.
 // This is a headless oracle, not a Vulkan draw consumer.
 #include <Engine/Renderer/gpu_scene_meshlet_prefix.h>
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace tour::gpu_scene {
