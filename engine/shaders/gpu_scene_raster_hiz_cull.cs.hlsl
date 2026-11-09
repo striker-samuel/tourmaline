@@ -18,7 +18,7 @@
 #include "gpu_scene.hlsli"
 
 #define GS_RASTER_MAX_WORK 1048576u
-#define GS_RASTER_MAX_COMMANDS (2u * GS_RASTER_MAX_WORK)
+#define GS_RASTER_MAX_COMMANDS (4u * GS_RASTER_MAX_WORK)
 #define GS_RASTER_MAX_INSTANCES 4194304u
 
 struct RasterIndirectCommand {
@@ -72,6 +72,11 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         return;
 
     const RasterWorkRow work = pcH.work.Get().rows[cmd.firstInstance];
+    // Masked cards contain cutout holes. Until per-texel coverage-aware
+    // cluster occlusion lands, never reject the masked draw from Hi-Z;
+    // this fails open without changing opaque occlusion behavior.
+    if ((work.detail.z & 2u) != 0u)
+        return;
     if (work.identity.x >= min(pcH.instanceSlots, GS_RASTER_MAX_INSTANCES) ||
         work.identity.y == 0u)
         return; // VS already guards stale work; never occlusion-kill it here.
