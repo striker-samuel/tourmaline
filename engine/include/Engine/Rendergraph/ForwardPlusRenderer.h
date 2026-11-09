@@ -20,6 +20,7 @@
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/renderer.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
+#include <Engine/Renderer/gpu_scene_task_mesh_abi.h>
 
 namespace engine {
 struct AppFrameContext;
