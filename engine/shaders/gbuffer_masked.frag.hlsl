@@ -31,6 +31,7 @@ struct PSIn
     // reflections off inverted normals.
     bool isFrontFace : SV_IsFrontFace;
 #ifdef GPU_SCENE_GBUFFER
+    [[vk::location(0)]] float4 color : COLOR0;
     [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
 #endif
 };
@@ -81,6 +82,9 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // screen-door keep test — holes write neither depth nor G-buffer.
     const float alphaCutoff = mat.params.x;
     float baseAlpha = mat.diffuse.a;
+#ifdef GPU_SCENE_GBUFFER
+    baseAlpha *= IN.color.a;
+#endif
     const int baseColorIdx = mat.tex.x;
     if (baseColorIdx >= 0)
     {
