@@ -11252,7 +11252,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // Sampling once per 120 frames bounds the debug CPU oracle/readback.
     const bool gpuSceneRasterMode =
         s_gpuSceneRaster && !s_gpuSceneValidate && m_gpuSceneRasterEligible &&
-        m_gpuSceneRasterProgram.shaderCount == 2 && !ShaderLodActive() && !m_wireframe &&
+        m_gpuSceneRasterProgram.shaderCount == 2 &&
+        ((m_gpuSceneRasterMaskedBackCount + m_gpuSceneRasterMaskedDoubleSidedCount) == 0 ||
+         (m_gpuSceneRasterMaskedDepthProgram.shaderCount == 2 &&
+          m_gpuSceneRasterMaskedGbufferProgram.shaderCount == 2)) &&
+        !ShaderLodActive() && !m_wireframe &&
         m_debugView == ViewMode::Lit && GetActiveGIVariant() == engine::GIVariant::None;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
     // downstream only names its own conditions - this names every reason
@@ -13029,7 +13033,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     if (s_gpuSceneTemporal && m_gpuSceneRasterDrawActive && temporalProgramsReady &&
         m_gfxFilterAvailable && temporalCommands != 0 && temporalSlots != 0 &&
-        temporalCommands <= 2u * 1048576u && temporalSlots <= 4194304u) {
+        temporalCommands <= 4u * 1048576u && temporalSlots <= 4194304u) {
         const uint32_t previousFlight = m_gpuSceneRasterLastHistoryFlight;
         gpuHistoryValid =
             previousFlight < smvk::limits::MaxFramesInFlight &&
@@ -13360,7 +13364,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // culling reading an uninitialized dedicated Hi-Z depth target.
     if (gpuTemporalReady &&
         (m_gpuSceneRasterDepthProgram.shaderCount != 1 || fc.hizDepthView.empty() ||
-         (fc.ssrGbufferWanted && m_gpuSceneRasterGbufferProgram.shaderCount != 2))) {
+         (fc.ssrGbufferWanted && m_gpuSceneRasterGbufferProgram.shaderCount != 2) ||
+          ((m_gpuSceneRasterMaskedBackCount + m_gpuSceneRasterMaskedDoubleSidedCount) != 0 &&
+           (m_gpuSceneRasterMaskedDepthProgram.shaderCount != 2 ||
+            (fc.ssrGbufferWanted &&
+             m_gpuSceneRasterMaskedGbufferProgram.shaderCount != 2))))) {
         gpuTemporalReady = false;
         m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
     }
@@ -13478,7 +13486,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                    temporalCommands,
                                                    seedVsPush,
                                                    /*hizOccluder=*/true,
-                                                   m_gpuSceneRasterDoubleSidedCount != 0);
+                                                   m_gpuSceneRasterDoubleSidedCount != 0,
+                                                   m_gpuSceneRasterMaskedDepthProgram,
+                                                   m_gpuSceneRasterMaskedGbufferProgram,
+                                                   m_gpuSceneRasterMaskedBackCount != 0,
+                                                   m_gpuSceneRasterMaskedDoubleSidedCount != 0);
             if (!seedRecorded)
                 gpuTemporalReady = false;
             // Prime MAIN depth/G-buffer with the same prev-visible seed.
@@ -13497,7 +13509,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                        temporalCommands,
                                                        seedVsPush,
                                                        /*hizOccluder=*/false,
-                                                       m_gpuSceneRasterDoubleSidedCount != 0);
+                                                       m_gpuSceneRasterDoubleSidedCount != 0,
+                                                       m_gpuSceneRasterMaskedDepthProgram,
+                                                       m_gpuSceneRasterMaskedGbufferProgram,
+                                                       m_gpuSceneRasterMaskedBackCount != 0,
+                                                       m_gpuSceneRasterMaskedDoubleSidedCount != 0);
                 if (!primed)
                     gpuTemporalReady = false;
                 else
@@ -13659,7 +13675,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneRasterDrawCapacity,
                     tail,
                     /*hizOccluder=*/false,
-                    m_gpuSceneRasterDoubleSidedCount != 0);
+                    m_gpuSceneRasterDoubleSidedCount != 0,
+                    m_gpuSceneRasterMaskedDepthProgram,
+                    m_gpuSceneRasterMaskedGbufferProgram,
+                    m_gpuSceneRasterMaskedBackCount != 0,
+                    m_gpuSceneRasterMaskedDoubleSidedCount != 0);
                 gpuDepthPrimed = remainderPrimed;
                 fc.gpuSceneDepthPrimed = gpuDepthPrimed;
             }
