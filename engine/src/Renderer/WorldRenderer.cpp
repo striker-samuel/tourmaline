@@ -11915,7 +11915,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gpuSceneMeshletCompactActive = false;
                 tour::gpu_scene::CandidateValidator::MeshletCompactPlan meshletPlan{};
                 bool meshletCompactReady = false;
-                if (s_gpuSceneMeshlets && gpuSceneRasterMode && workReady && rasterReady &&
+                if (!taskReady && s_gpuSceneMeshlets && gpuSceneRasterMode && workReady && rasterReady &&
                     m_gfxFilterAvailable &&
                     m_gpuSceneMeshletPrograms[0].shaderCount == 1 &&
                     m_gpuSceneMeshletPrograms[1].shaderCount == 1 &&
@@ -12128,6 +12128,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             m_gpuSceneRasterWorkBda = workBda;
                             m_gpuSceneRasterDrawCapacity = frameCommandCapacity;
                             m_gpuSceneMeshletCompactActive = meshletCompactReady;
+                            m_gpuSceneTaskMeshActive = taskReady;
+                            m_gpuSceneTaskMeshPlan = taskReady ? taskPlan
+                                                                : tour::gpu_scene::TaskMeshDispatchPlan{};
                             if (meshletCompactReady) {
                                 static uint32_t s_meshletEngagedLog = 0;
                                 if (s_meshletEngagedLog++ < 3)
@@ -12228,6 +12231,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         if (m_gpuSceneMeshletCompactActive)
                             pass.AddBufferHint(
                                 m_gpuSceneMeshletClassCountsLogical[fb.frameIndex], write);
+                        if (m_gpuSceneTaskMeshActive) {
+                            pass.AddBufferHint(taskPlan.groupLogical, write);
+                            pass.AddBufferHint(taskPlan.indirectLogical, write);
+                        }
                         smvk::BufferSyncRequest ownerRead{};
                         ownerRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
                         ownerRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
@@ -12243,6 +12250,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     auto indirectPrograms = m_gpuSceneIndirectPrograms;
                     auto meshletPrograms = m_gpuSceneMeshletPrograms;
                     auto psoScanProgram = m_gpuScenePsoScanProgram;
+                    auto taskPrograms = m_gpuSceneTaskComputePrograms;
                     const uint32_t groups = (selected.candidateCount + 63u) / 64u;
                     pass.SetRecordingFunc([program,
                                            compactPrograms,
@@ -12252,6 +12260,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                            indirectPrograms,
                                            meshletPrograms,
                                            psoScanProgram,
+                                           taskPrograms,
+                                           taskReady,
+                                           taskPlan,
                                            gpuPush,
                                            countPush,
                                            prefixPush,
@@ -12334,7 +12345,47 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         cmd.PushConstants(
                             0, sizeof(workScatter), &workScatter, smvk::ShaderStage::Compute);
                         cmd.Dispatch(groups, 1, 1);
-                        if (meshletCompactReady) {
+                        if (taskReady) {
+                            // GPU task-work producer:
+                            // count -> block scan -> block-base scan ->
+                            // global add -> scatter -> indirect command build.
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(taskPrograms[0]);
+                            cmd.PushConstants(
+                                0, sizeof(taskPlan.count), &taskPlan.count,
+                                smvk::ShaderStage::Compute);
+                            cmd.Dispatch((taskPlan.workCapacity + 255u) / 256u, 1, 1);
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(workScanPrograms[0]);
+                            cmd.PushConstants(
+                                0, sizeof(taskPlan.scanBlock), &taskPlan.scanBlock,
+                                smvk::ShaderStage::Compute);
+                            cmd.Dispatch((taskPlan.workCapacity + 255u) / 256u, 1, 1);
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(workScanPrograms[1]);
+                            cmd.PushConstants(
+                                0, sizeof(taskPlan.scanGroups), &taskPlan.scanGroups,
+                                smvk::ShaderStage::Compute);
+                            cmd.Dispatch(1, 1, 1);
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(workScanPrograms[2]);
+                            cmd.PushConstants(
+                                0, sizeof(taskPlan.scanAdd), &taskPlan.scanAdd,
+                                smvk::ShaderStage::Compute);
+                            cmd.Dispatch((taskPlan.workCapacity + 255u) / 256u, 1, 1);
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(taskPrograms[1]);
+                            cmd.PushConstants(
+                                0, sizeof(taskPlan.scatter), &taskPlan.scatter,
+                                smvk::ShaderStage::Compute);
+                            cmd.Dispatch((taskPlan.taskGroupCapacity + 127u) / 128u, 1, 1);
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(taskPrograms[2]);
+                            cmd.PushConstants(
+                                0, sizeof(taskPlan.indirect), &taskPlan.indirect,
+                                smvk::ShaderStage::Compute);
+                            cmd.Dispatch(1, 1, 1);
+                        } else if (meshletCompactReady) {
                             // Dense meshlet chain: per-work candidate counts
                             // -> the SAME three-stage work scan (over the
                             // meshlet counts, extent = work capacity) ->
