@@ -13,12 +13,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <unordered_map>
 
 namespace tour::gpu_scene {
 
-class RasterPsoBudget {
+template <typename SourceId = uint64_t, typename SourceHash = std::hash<SourceId>>
+class RasterPsoBudgetT {
 public:
     static constexpr uint32_t ClassCount = 4;
     using Counts = std::array<uint32_t, ClassCount>;
@@ -26,7 +28,7 @@ public:
     // The caller supplies a stable identity (including source generation).
     // Re-publishing an existing source replaces its contribution, making
     // streamed tile updates / material changes idempotent.
-    [[nodiscard]] bool Upsert(uint64_t source, Counts worstCasePerLod) {
+    [[nodiscard]] bool Upsert(const SourceId& source, Counts worstCasePerLod) {
         const auto it = sources_.find(source);
         const Counts previous = it == sources_.end() ? Counts{} : it->second;
         Counts next{};
@@ -45,7 +47,7 @@ public:
         return true;
     }
 
-    [[nodiscard]] bool Erase(uint64_t source) {
+    [[nodiscard]] bool Erase(const SourceId& source) {
         const auto it = sources_.find(source);
         if (it == sources_.end())
             return false;
@@ -77,8 +79,10 @@ public:
     }
 
 private:
-    std::unordered_map<uint64_t, Counts> sources_;
+    std::unordered_map<SourceId, Counts, SourceHash> sources_;
     Counts totals_{};
 };
+
+using RasterPsoBudget = RasterPsoBudgetT<>;
 
 } // namespace tour::gpu_scene
