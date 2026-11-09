@@ -14922,6 +14922,23 @@ void smvk::CommandBuffer::DrawMeshTasks(uint32_t groupCountX,
     vkCmdDrawMeshTasksEXT(
         reinterpret_cast<VkCommandBuffer>(cmdOpaque_), groupCountX, groupCountY, groupCountZ);
 }
+void smvk::CommandBuffer::DrawMeshTasksIndirect(BufferHandle buffer,
+                                                uint64_t offset,
+                                                uint32_t drawCount,
+                                                uint32_t stride) {
+    assert(vkCmdDrawMeshTasksIndirectEXT != nullptr &&
+           "DrawMeshTasksIndirect requires VK_EXT_mesh_shader");
+    assert(stride >= sizeof(VkDrawMeshTasksIndirectCommandEXT) &&
+           stride % alignof(uint32_t) == 0u);
+    assert(offset % alignof(uint32_t) == 0u);
+    VulkanResourceManager& vulkanCtx =
+        *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
+    const Buffer* desc = vulkanCtx.buffers_.get(buffer);
+    assert(desc != nullptr && desc->vkBuffer != VK_NULL_HANDLE);
+    vkCmdDrawMeshTasksIndirectEXT(
+        reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+        desc->vkBuffer, static_cast<VkDeviceSize>(offset), drawCount, stride);
+}
 void smvk::CommandBuffer::BindIndexBuffer(BufferHandle buffer, uint64_t offset) {
     // Manual index rebind: see BindVertexBuffer.
     graphicsBound_ = false;
