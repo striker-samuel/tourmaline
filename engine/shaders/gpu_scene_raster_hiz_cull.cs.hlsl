@@ -59,7 +59,7 @@ struct RasterHizPush {
 };
 GPU_PUSH(RasterHizPush, pcH);
 
-[numthreads(64, 1, 1)]
+[numthreads(128, 1, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID) {
     const uint i = tid.x;
     if (i >= pcH.commandCapacity || i >= GS_RASTER_MAX_COMMANDS ||
