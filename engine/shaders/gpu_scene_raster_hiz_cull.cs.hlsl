@@ -36,10 +36,13 @@ struct RasterMeshes { GpuSceneMeshRow rows[GS_RASTER_MAX_INSTANCES]; };
 struct RasterHistory { uint generations[GS_RASTER_MAX_INSTANCES]; };
 // GfxFilter static mesh/cluster tables are revision-local. The command
 // builder validates them; temporal Hi-Z uses the same flight's registration.
-struct GfxMeshEntry { uint clusterStart; uint clusterCount; };
-struct GfxMeshes { GfxMeshEntry rows[65535u]; };
-struct GfxClusterData { uint4 a; float4 b; float4 c; float4 d; };
-struct GfxClusters { GfxClusterData rows[GS_RASTER_MAX_INSTANCES]; };
+// Locally declared table views (renamed Raster* — this file includes
+// gfxfilter.hlsli for the BoundProjection/Hzb helpers, and gfxfilter.hlsli
+// owns the GfxMeshEntry/GfxClusterData spellings with its OWN bounds).
+struct RasterGfxMeshEntry { uint clusterStart; uint clusterCount; };
+struct RasterGfxMeshes { RasterGfxMeshEntry rows[65535u]; };
+struct RasterGfxClusterData { uint4 a; float4 b; float4 c; float4 d; };
+struct RasterGfxClusters { RasterGfxClusterData rows[GS_RASTER_MAX_INSTANCES]; };
 struct RasterViewData {
     float4x4 relativeViewProjection;
     DoubleFloat3 origin;
@@ -62,8 +65,8 @@ struct RasterHizPush {
     uint historySlots;
     uint historyValid;
     uint reserved;
-    GPU_PTR_READ(GfxMeshes) gfxMeshes;
-    GPU_PTR_READ(GfxClusters) gfxClusters;
+    GPU_PTR_READ(RasterGfxMeshes) gfxMeshes;
+    GPU_PTR_READ(RasterGfxClusters) gfxClusters;
     uint meshletLanes;
     uint gfxMeshCount;
     uint gfxClusterCount;
@@ -152,7 +155,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         const uint transientId = work.identity.z;
         if (transientId >= min(pcH.gfxMeshCount, 65535u))
             return;
-        const GfxMeshEntry mesh = pcH.gfxMeshes.Get().rows[transientId];
+        const RasterGfxMeshEntry mesh = pcH.gfxMeshes.Get().rows[transientId];
         if (mesh.clusterCount != 0u &&
             mesh.clusterCount <= pcH.meshletLanes) {
             if (lane >= mesh.clusterCount ||
