@@ -61,6 +61,34 @@ Scene MakeScene(uint32_t count) {
 
 int main() {
     {
+        // Offline builds must retain stable ids/transforms without allocating
+        // transient names or GPU publication events.
+        Scene s;
+        s.namesStripped = true;
+        s.skipGpuSceneChangeJournal = true;
+        const int root = addNode(s, -1, 0);
+        const int child = addNode(s, root, 1);
+        setNodeName(s, child, "author-only");
+        Check(s.nodeNames.empty(), "offline scene omits auto and explicit names");
+        Check(getNodeName(s, child).empty() && findNodeByName(s, "author-only") == -1,
+              "offline name lookup fails closed");
+        s.localTransform[child] =
+            glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 2.0f, 1.0f));
+        markAsChanged(s, root);
+        markAsChanged(s, child);
+        recalculateGlobalTransforms(s);
+        Check(Near(s.globalTransform[child][3].x, 3.0f),
+              "offline transforms still finalized");
+        Check(s.gpuSceneGlobalChanges.empty() && s.gpuSceneGlobalQueued.empty(),
+              "offline scene omits GPU change journal");
+        Scene editor;
+        const int authored = addNode(editor, -1, 0);
+        setNodeName(editor, authored, "author-only");
+        Check(getNodeName(editor, authored) == "author-only" &&
+                  findNodeByName(editor, "author-only") == authored,
+              "default editor naming remains active");
+    }
+    {
         const SceneRenderSettings defaults{};
         Check(!defaults.autoExposure, "render-settings.auto-exposure-default-off");
         Scene s;
