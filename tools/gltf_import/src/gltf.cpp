@@ -3126,6 +3126,8 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
     std::map<std::string, MeshAssetCacheEntry> meshAssetCache;
     size_t successfulReferences = 0;
     size_t createdReferenceNodes = 0;
+    size_t geometryCacheHits = 0;
+    size_t geometryCacheMisses = 0;
     bool preallocatedFlatScene = false;
     // HOST-AWARE path utils: vfs::BaseDir/FileName are VFS-RELATIVE
     // utilities — vfs::Normalize REJECTS drive-letter absolutes (C:/...)
@@ -3347,6 +3349,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             bool meshLoaded = false;
             const auto cachedAsset = meshAssetCache.find(modelSource);
             if (cachedAsset != meshAssetCache.end()) {
+                ++geometryCacheHits;
                 cachedMesh = &cachedAsset->second;
                 meshLoaded = true;
                 resolved = cachedMesh->resolved;
@@ -3453,6 +3456,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                                 modelSource,
                                 MeshAssetCacheEntry{std::move(parsedAsset), {}, resolved, baseDir});
                             cachedMesh = &inserted.first->second;
+                            ++geometryCacheMisses;
                         }
                     }
                     if (!meshLoaded) {
@@ -3819,7 +3823,8 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             std::cout << "[References] bound " << successfulReferences
                       << " reference(s), " << meshAssetCache.size()
                       << " distinct geometry artifact(s), " << createdReferenceNodes
-                      << " imported nodes\n";
+                      << " imported nodes, geometry cache " << geometryCacheHits
+                      << " hit(s)/" << geometryCacheMisses << " load(s)\n";
         RebuildStaticCache(cluster.scene);
         markAsChanged(cluster.scene, 0);
         recalculateGlobalTransforms(cluster.scene);
