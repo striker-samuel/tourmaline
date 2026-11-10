@@ -3061,7 +3061,8 @@ size_t BuildFromMeshAsset(
         smvk::ClusterMaterialHandle mh = materialFor(inst.materialGuid);
         if (!mh.empty())
             SetMaterial(scene, n, mh.index());
-        markAsChanged(scene, int(n));
+        // Already marked when the mapped node was created above; mesh/material
+        // associations do not change its local transform.
     }
     for (const auto& l : asset.lights) {
         if (l.node == 0 || l.node >= asset.nodes.size())
@@ -3119,8 +3120,15 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
         smvk::assets::AssetManifest manifest;
         std::string resolved;
         std::string baseDir;
+        bool manifestLoaded = false;
+        std::shared_ptr<GltfToSceneImporter::TextureSource> textureSource;
     };
     std::map<std::string, MeshAssetCacheEntry> meshAssetCache;
+    size_t successfulReferences = 0;
+    size_t createdReferenceNodes = 0;
+    size_t geometryCacheHits = 0;
+    size_t geometryCacheMisses = 0;
+    bool preallocatedFlatScene = false;
     // HOST-AWARE path utils: vfs::BaseDir/FileName are VFS-RELATIVE
     // utilities — vfs::Normalize REJECTS drive-letter absolutes (C:/...)
     // by design, so calling them on a resolved HOST path returns EMPTY
@@ -3334,16 +3342,18 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // ".geometry" (the data blob's name; ".mesh" is the higher
             // placeable asset's now) — legacy ".mesh" sources still
             // resolve here.
-            smvk::assets::MeshAsset meshAsset;
-            smvk::assets::AssetManifest meshManifest;
+            // Bind to the cached artifact IN PLACE. Copying a MeshAsset on each
+            // cache hit copies every geometry stream, defeating the parse cache.
+            smvk::assets::MeshAsset parsedAsset;
+            MeshAssetCacheEntry* cachedMesh = nullptr;
             bool meshLoaded = false;
             const auto cachedAsset = meshAssetCache.find(modelSource);
             if (cachedAsset != meshAssetCache.end()) {
-                meshAsset = cachedAsset->second.asset;
-                meshManifest = cachedAsset->second.manifest;
+                ++geometryCacheHits;
+                cachedMesh = &cachedAsset->second;
                 meshLoaded = true;
-                resolved = cachedAsset->second.resolved;
-                baseDir = cachedAsset->second.baseDir;
+                resolved = cachedMesh->resolved;
+                baseDir = cachedMesh->baseDir;
                 ok = true;
             } else {
                 const size_t dotGeo = modelSource.rfind(".geometry");
@@ -3437,14 +3447,16 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                     if (meshBytes && !meshBytes->empty()) {
                         std::string meshErr;
                         if (smvk::assets::LoadMeshAssetBytes(
-                                meshBytes->data(), meshBytes->size(), meshAsset, meshErr)) {
+                                meshBytes->data(), meshBytes->size(), parsedAsset, meshErr)) {
                             meshLoaded = true;
                             resolved = meshResolved;
                             baseDir = baseDirOf(meshResolved);
                             ok = true;
-                            meshAssetCache.emplace(
+                            auto inserted = meshAssetCache.emplace(
                                 modelSource,
-                                MeshAssetCacheEntry{meshAsset, meshManifest, resolved, baseDir});
+                                MeshAssetCacheEntry{std::move(parsedAsset), {}, resolved, baseDir});
+                            cachedMesh = &inserted.first->second;
+                            ++geometryCacheMisses;
                         }
                     }
                     if (!meshLoaded) {
@@ -3507,6 +3519,30 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // a direct source import exactly, so editor and cook
             // builds are identical by construction.
             const bool isRoot = r.root;
+            // Flat offline grids use identical source hierarchies. Preallocate
+            // the scene's node streams once rather than repeatedly growing
+            // independent arrays for every reference. Leave command-created
+            // nodes to normal capacity growth.
+            if (!preallocatedFlatScene && cluster.IsOfflineMode() && cur.depth == 0 &&
+                meshLoaded && cachedMesh && doc.references.size() >= 1024) {
+                preallocatedFlatScene = true;
+                const bool sameSource = std::all_of(
+                    doc.references.begin(), doc.references.end(), [&](const auto& ref) {
+                        return ref.source == modelSource;
+                    });
+                if (sameSource && !cachedMesh->asset.nodes.empty()) {
+                    const size_t perRef = cachedMesh->asset.nodes.size(); // + placeholder - root
+                    const size_t count = doc.references.size();
+                    const size_t maxSlots = size_t(::tour::scene::kNodeSlotCountMax - 1);
+                    if (count <= maxSlots / perRef) {
+                        const size_t wanted = cluster.scene.hierarchy.size() + count * perRef;
+                        if (wanted < ::tour::scene::kNodeSlotCountMax &&
+                            (!cluster.scene.nodeSlotBudget ||
+                             wanted <= cluster.scene.nodeSlotBudget))
+                            cluster.scene.ReserveNodeCapacity(wanted);
+                    }
+                }
+            }
             // Placeholder group node under the recorded parent (level-space
             // parent resolved to owner space above). Root references
             // anchor at the scene root instead (ph stays 0 — the
@@ -3547,9 +3583,12 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // the resolution head). A build failure is a LOUD skip.
             bool builtFromMesh = false;
             if (meshLoaded) {
+                assert(cachedMesh);
+                const smvk::assets::MeshAsset& meshAsset = cachedMesh->asset;
+                smvk::assets::AssetManifest& meshManifest = cachedMesh->manifest;
                 // The manifest (the .material file table) sits beside
                 // the sibling glTF: <stem>.gltf.meta.
-                {
+                if (!cachedMesh->manifestLoaded) {
                     std::string stem = fileNameOf(resolved);
                     // Strip the data-blob extension (".geometry"; the
                     // legacy ".mesh" too) to the derivation stem.
@@ -3578,6 +3617,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                         smvk::assets::LoadAssetManifestText(
                             std::string(metaBytes->begin(), metaBytes->end()), meshManifest, merr);
                     }
+                    cachedMesh->manifestLoaded = true;
                 }
                 // readSibling: .material files beside the .mesh (host
                 // or vfs); the texture source mirrors the importer's.
@@ -3596,11 +3636,16 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                     return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
                                                 std::istreambuf_iterator<char>());
                 };
-                std::shared_ptr<GltfToSceneImporter::TextureSource> texSrc;
-                if (vfs)
-                    texSrc = std::make_shared<VfsTextureSource>(vfs, baseDir);
-                else
-                    texSrc = std::make_shared<HostTextureSource>(std::filesystem::path(baseDir));
+                // Source reader is immutable and shared across placements.
+                // Avoid constructing N identical texture-source adapters.
+                if (!cachedMesh->textureSource) {
+                    if (vfs)
+                        cachedMesh->textureSource = std::make_shared<VfsTextureSource>(vfs, baseDir);
+                    else
+                        cachedMesh->textureSource =
+                            std::make_shared<HostTextureSource>(std::filesystem::path(baseDir));
+                }
+                const auto& texSrc = cachedMesh->textureSource;
                 // MESH BASE URI: the tour's RECORDED source when it is
                 // relative (the reference identity — matches the
                 // positional artifact path's URIs exactly), else the
@@ -3627,9 +3672,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                                                         resolved);
                 if (built > 0) {
                     builtFromMesh = true;
-                    std::cerr << "[References] built '" << resolved
-                              << "' from the .geometry artifact (" << built
-                              << " nodes, preprocessed)\n";
+                    createdReferenceNodes += built;
                 }
             }
             if (!builtFromMesh) {
@@ -3707,7 +3750,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // 'outer:inner:name'. Runs AFTER the source tour's replay: its
             // verify-names and its own wide overrides matched the
             // un-prefixed names.
-            if (!isRoot) {
+            if (!isRoot && !cluster.scene.namesStripped) {
                 const std::string ns =
                     cur.nsPrefix + (r.nameSpace.empty() ? name : r.nameSpace) + ":";
                 std::vector<uint32_t> stack;
@@ -3733,11 +3776,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                 // filter visibility per frame, so toggling is instant).
             }
             ++applied;
-            std::cout << "[References] inlined '" << resolved << "' "
-                      << (isRoot ? "as the scene source (root)"
-                                 : ("under node " + std::to_string(parentNode) + " (placeholder " +
-                                    std::to_string(ph) + ")"))
-                      << "\n";
+            ++successfulReferences;
             // Nesting: follow further references with the subtree's
             // offset. .tour sources carry their own doc; .gltf sources
             // use the sibling <stem>.tour (existing behavior — its
@@ -3780,6 +3819,12 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
         }
     }
     if (applied != 0) {
+        if (successfulReferences > 1)
+            std::cout << "[References] bound " << successfulReferences
+                      << " reference(s), " << meshAssetCache.size()
+                      << " distinct geometry artifact(s), " << createdReferenceNodes
+                      << " imported nodes, geometry cache " << geometryCacheHits
+                      << " hit(s)/" << geometryCacheMisses << " load(s)\n";
         RebuildStaticCache(cluster.scene);
         markAsChanged(cluster.scene, 0);
         recalculateGlobalTransforms(cluster.scene);

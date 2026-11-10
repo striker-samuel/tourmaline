@@ -39,6 +39,12 @@ void Scene::ReserveNodeSlots(size_t slots) {
     if (hierarchy.size() > slots)
         CrashNodeBudget("budget smaller than existing scene", hierarchy.size(), slots);
     nodeSlotBudget = slots;
+    ReserveNodeCapacity(slots);
+}
+
+void Scene::ReserveNodeCapacity(size_t slots) {
+    if (slots < hierarchy.size() || slots >= kNodeSlotCountMax)
+        CrashNodeBudget("invalid scene capacity", slots, kNodeSlotCountMax - 1);
     // The three arena-flat node streams use the process linear allocation
     // already established by InitMemory(), not independent per-scene arenas.
     // These are bound before the first allocation and remain valid until
@@ -262,7 +268,7 @@ int addNode(Scene& scene, int parent, int level, bool autoName) {
     // autoName=false (the cooked-blob parse): no synthesized names - the
     // blob's own name sections are the only source (see addNode's header
     // comment).
-    if (autoName)
+    if (autoName && !scene.namesStripped)
         setNodeName(scene, node, "node" + std::to_string(node), /*dedupe=*/false);
     return node;
 }
@@ -479,6 +485,8 @@ void ClearSubtreeStatic(Scene& scene, int node) {
 }
 
 int findNodeByName(const Scene& scene, const std::string& name) {
+    if (scene.namesStripped)
+        return -1;
     // Extremely simple linear search without any hierarchy reference
     // To support DFS/BFS searches separate traversal routines are needed
 
@@ -499,6 +507,8 @@ void fprintfMat4(FILE* f, const glm::mat4& m);
 // Defer one notification per node until the renderer consumes the journal.
 // This bounds pending entries even in long-running headless worlds.
 static void QueueGpuSceneGlobalChange(Scene& scene, uint32_t node) {
+    if (scene.skipGpuSceneChangeJournal)
+        return;
     if (scene.gpuSceneGlobalQueued.size() <= node)
         scene.gpuSceneGlobalQueued.resize(size_t(node) + 1, 0);
     if (scene.gpuSceneGlobalQueued[node])
