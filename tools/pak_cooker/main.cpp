@@ -1975,6 +1975,10 @@ int Run(const PakArgs& c) {
         {
             auto cluster = std::make_unique<smvk::Cluster>(nullptr);
             cluster->SetOfflineMode(true);
+            // Names are authoring-only and absent from pak blobs. Only omit
+            // them for name-independent tours: commands/overrides can use
+            // names for verification, renaming or regex addressing.
+            cluster->scene.namesStripped = tour.commands.empty() && tour.overrides.empty();
             addNode(cluster->scene, -1, 0); // empty scene root
             if (!tour.references.empty()) {
                 const std::string ownerBase = smvk::vfs::BaseDir(tour.references[0].source);
@@ -2194,6 +2198,8 @@ int Run(const PakArgs& c) {
             // are minted cook ids.
             auto cluster = std::make_unique<smvk::Cluster>(nullptr);
             cluster->SetOfflineMode(true);
+            // Direct artifact assembly has no .tour name-addressed replay.
+            cluster->scene.namesStripped = true;
             addNode(cluster->scene, -1, 0); // empty scene root (editor parity)
             const std::string baseDir = smvk::vfs::BaseDir(artPath);
             auto texSrc = std::make_shared<VfsTextureSource>(&vfs, baseDir);
