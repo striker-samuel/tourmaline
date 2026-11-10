@@ -77,10 +77,10 @@ struct SceneLight {
     // Units match the runtime shaders (see Renderer/light.h):
     // directional = lux, point/spot = candela.
     float intensity = 0.0f;
-    float range = 0.0f;          // cutoff distance in meters; 0 = infinite
-    float innerConeAngle = 0.0f; // radians, spot only
-    float outerConeAngle = 0.0f; // radians, spot only
-    uint32_t flags = 0;          // kSceneLightFlag_*
+    float range = 0.0f;               // cutoff distance in meters; 0 = infinite
+    float innerConeAngle = 0.0f;      // radians, spot only
+    float outerConeAngle = 0.0f;      // radians, spot only
+    uint32_t flags = 0;               // kSceneLightFlag_*
     uint32_t layerMask = 0xffffffffu; // direct-light linking channels
     // Spot COOKIE (gobo; see the spot shading path): a texture asset ref
     // (a .texture file path or a plain image URI — the cluster pool
@@ -806,11 +806,16 @@ inline std::string getNodeName(const Scene& scene, int node) {
 
 // Preserve the append-only name pool; a rejected empty rename leaves the
 // existing name intact instead of creating an unnamed node.
-inline void setNodeName(Scene& scene, int node, const std::string& name) {
+// `dedupe` (default true) runs the sibling-uniqueness pass; import/instancing
+// paths that mint already-unique names (addNode auto-names, .geometry node
+// names, reference placeholders) pass false to avoid the O(siblings) scan —
+// the scan made every name assignment in an instanced scene O(N), i.e.
+// O(N^2) over the cook.
+inline void setNodeName(Scene& scene, int node, const std::string& name, bool dedupe = true) {
     assert(!name.empty() && "every scene node must have a name");
     if (name.empty() || node < 0 || size_t(node) >= scene.hierarchy.size())
         return;
-    const std::string unique = UniqueSiblingNodeName(scene, node, name);
+    const std::string unique = dedupe ? UniqueSiblingNodeName(scene, node, name) : name;
     uint32_t stringID = (uint32_t)scene.nodeNames.size();
     scene.nodeNames.push_back(unique);
     SetNodeNameIndex(scene, NodeId(node), stringID);

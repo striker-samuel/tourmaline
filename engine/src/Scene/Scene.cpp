@@ -263,7 +263,7 @@ int addNode(Scene& scene, int parent, int level, bool autoName) {
     // blob's own name sections are the only source (see addNode's header
     // comment).
     if (autoName)
-        setNodeName(scene, node, "node" + std::to_string(node));
+        setNodeName(scene, node, "node" + std::to_string(node), /*dedupe=*/false);
     return node;
 }
 

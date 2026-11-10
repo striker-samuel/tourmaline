@@ -2990,7 +2990,7 @@ size_t BuildFromMeshAsset(
         if (i < asset.locals.size())
             scene.localTransform[size_t(n)] = asset.locals[i];
         if (i < asset.names.size() && !asset.names[i].empty())
-            setNodeName(scene, n, asset.names[i]);
+            setNodeName(scene, n, asset.names[i], /*dedupe=*/false);
         // Global resolution is lazy (changedAtThisFrame): mark EVERY
         // mapped node, not just the instanced ones below. Unmarked
         // ancestors keep identity globals, so no-tour bakes read the
@@ -3000,8 +3000,15 @@ size_t BuildFromMeshAsset(
         markAsChanged(scene, n);
     }
     for (size_t i = 1; i < asset.nodes.size(); ++i) {
-        if (i < asset.staticRoot.size() && asset.staticRoot[i])
-            MarkSubtreeStatic(scene, mapped[i]);
+        if (i < asset.staticRoot.size() && asset.staticRoot[i]) {
+            // Flag-only: the static cache rebuild is O(hierarchy) and runs
+            // once at the end of ApplySceneReferences (per-instance
+            // MarkSubtreeStatic made an instanced scene's static marking
+            // O(N^2)).
+            if (scene.staticRoot.size() != scene.hierarchy.size())
+                scene.staticRoot.assign(scene.hierarchy.size(), 0);
+            scene.staticRoot[size_t(mapped[i])] = 1;
+        }
         if (i < asset.noLightmap.size() && asset.noLightmap[i])
             MarkNoLightmap(scene, mapped[i]);
     }
@@ -3512,7 +3519,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                 r.name.empty() ? std::filesystem::path(resolved).stem().string() : r.name;
             if (!isRoot) {
                 ph = addNode(cluster.scene, parentNode, level);
-                setNodeName(cluster.scene, ph, "REF " + name);
+                setNodeName(cluster.scene, ph, "REF " + name, /*dedupe=*/false);
                 if (r.hasTranslate || r.hasRotate || r.hasScale) {
                     // Each occurrence gets its OWN placeholder frame. The
                     // referenced scene's local transforms remain unchanged.
@@ -3712,7 +3719,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                     stack.pop_back();
                     const std::string nm = getNodeName(cluster.scene, int(v));
                     if (!nm.empty())
-                        setNodeName(cluster.scene, int(v), ns + nm);
+                        setNodeName(cluster.scene, int(v), ns + nm, /*dedupe=*/false);
                     for (int ch = cluster.scene.hierarchy[v].firstChild; ch >= 0;
                          ch = cluster.scene.hierarchy[size_t(ch)].nextSibling)
                         stack.push_back(uint32_t(ch));
