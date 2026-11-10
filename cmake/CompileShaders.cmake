@@ -120,11 +120,7 @@ function(_detect_hlsl_stage_and_entry SHADER OUT_STAGE OUT_ENTRY OUT_PROFILE)
 endfunction()
 
 function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
-  # A list passed to COMMAND: empty when explicitly disabled.
-  set(_SPIRV_VALIDATE_COMMAND)
-  if(TOURMALINE_VALIDATE_SPIRV)
-    set(_SPIRV_VALIDATE_COMMAND COMMAND "${TOURMALINE_SPIRV_VAL}" --target-env vulkan1.3)
-  endif()
+  # Validation commands below include the OUTPUT path in their list.
   set(options)
   set(oneValueArgs OUTPUT_HEADER RUNTIME_ROOT)
   set(multiValueArgs INCLUDE_DIRS VARIANTS HEADER_DIRS)
@@ -239,6 +235,11 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
     foreach(SHADER ${SHADERS})
         get_filename_component(FILE_NAME "${SHADER}" NAME)
         set(OUTPUT_FILE "${BINARY_DIR}/${FILE_NAME}.spv")
+        set(_SPIRV_VALIDATE_OUTPUT_COMMAND)
+        if(TOURMALINE_VALIDATE_SPIRV)
+            set(_SPIRV_VALIDATE_OUTPUT_COMMAND
+                COMMAND "${TOURMALINE_SPIRV_VAL}" --target-env vulkan1.3 "${OUTPUT_FILE}")
+        endif()
 
         if (FILE_NAME MATCHES "\\.hlsl$")
             # --- HLSL via DXC → SPIR-V ---
@@ -321,7 +322,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 OUTPUT "${OUTPUT_FILE}"
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "? DXC: ${FILE_NAME} [${_PROFILE}]"
                 COMMAND "${DXC}" -T "${_PROFILE}" ${_ENTRY_FLAGS} ${_COMMON} -Fo "${OUTPUT_FILE}" "${SHADER}"
-                ${_SPIRV_VALIDATE_COMMAND} "${OUTPUT_FILE}"
+                ${_SPIRV_VALIDATE_OUTPUT_COMMAND}
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "? DXC OK: ${FILE_NAME}"
                 DEPENDS "${SHADER}" ${SHADER_HEADERS}
                 COMMENT "Compiling HLSL ${FILE_NAME}  SPIR-V (Vulkan 1.3)"
@@ -329,11 +330,16 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
             )
             if (DS_VIZ_ON AND FILE_NAME MATCHES "^deferredshadow_phase[23]\\.cs\\.hlsl$")
                 set(_DS_VIZ_FILE "${BINARY_DIR}/${FILE_NAME}.viz.spv")
+                set(_SPIRV_VALIDATE_VIZ_COMMAND)
+                if(TOURMALINE_VALIDATE_SPIRV)
+                    set(_SPIRV_VALIDATE_VIZ_COMMAND
+                        COMMAND "${TOURMALINE_SPIRV_VAL}" --target-env vulkan1.3 "${_DS_VIZ_FILE}")
+                endif()
                 add_custom_command(
                     OUTPUT "${_DS_VIZ_FILE}"
                     COMMAND "${DXC}" -T "${_PROFILE}" ${_ENTRY_FLAGS} ${_COMMON}
                             -DDS_DEBUG_VIZ=1 -Fo "${_DS_VIZ_FILE}" "${SHADER}"
-                    ${_SPIRV_VALIDATE_COMMAND} "${_DS_VIZ_FILE}"
+                    ${_SPIRV_VALIDATE_VIZ_COMMAND}
                     DEPENDS "${SHADER}" ${SHADER_HEADERS}
                     COMMENT "Compiling deferred-shadow diagnostic variant ${FILE_NAME}"
                     VERBATIM
@@ -404,6 +410,11 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                     continue()
                 endif()
                 set(_VARIANT_OUTPUT "${BINARY_DIR}/${FILE_NAME}${_VSUFFIX}.spv")
+                set(_SPIRV_VALIDATE_VARIANT_COMMAND)
+                if(TOURMALINE_VALIDATE_SPIRV)
+                    set(_SPIRV_VALIDATE_VARIANT_COMMAND
+                        COMMAND "${TOURMALINE_SPIRV_VAL}" --target-env vulkan1.3 "${_VARIANT_OUTPUT}")
+                endif()
                 set(_VARIANT_FLAGS "")
                 math(EXPR _VLAST "${_VLEN} - 1")
                 foreach(_VI RANGE 2 ${_VLAST})
@@ -414,7 +425,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                     OUTPUT "${_VARIANT_OUTPUT}"
                     COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "⏳ DXC: ${FILE_NAME}${_VSUFFIX} [${_PROFILE}]"
                     COMMAND "${DXC}" -T "${_PROFILE}" ${_ENTRY_FLAGS} ${_COMMON} ${_VARIANT_FLAGS} -Fo "${_VARIANT_OUTPUT}" "${SHADER}"
-                ${_SPIRV_VALIDATE_COMMAND} "${_VARIANT_OUTPUT}"
+                ${_SPIRV_VALIDATE_VARIANT_COMMAND}
                     COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "✅ DXC OK: ${FILE_NAME}${_VSUFFIX}"
                     DEPENDS "${SHADER}" ${SHADER_HEADERS}
                     COMMENT "Compiling HLSL ${FILE_NAME}${_VSUFFIX} → SPIR-V (Vulkan 1.3)"
@@ -435,7 +446,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 OUTPUT "${OUTPUT_FILE}"
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "⏳ glslc: ${FILE_NAME}"
                 COMMAND "${GLSLC}" ${_GLSLC_FLAGS} -o "${OUTPUT_FILE}" "${SHADER}"
-                ${_SPIRV_VALIDATE_COMMAND} "${OUTPUT_FILE}"
+                ${_SPIRV_VALIDATE_OUTPUT_COMMAND}
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "✅ glslc OK: ${FILE_NAME}"
                 DEPENDS "${SHADER}" ${SHADER_HEADERS}
                 COMMENT "Compiling GLSL ${FILE_NAME} → SPIR-V (Vulkan 1.3)"
