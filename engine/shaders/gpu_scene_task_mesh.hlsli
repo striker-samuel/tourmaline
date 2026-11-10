@@ -28,7 +28,7 @@ struct GsTaskGroup {
 struct GsTaskGroups { GsTaskGroup rows[GS_MAX_TASK_GROUPS]; };
 struct GsWorkRow { uint4 identity; uint4 detail; };
 struct GsWork { GsWorkRow rows[GS_MAX_WORK]; };
-struct GsCluster { uint4 a; float4 b; float4 c; float4 d; };
+struct GsCluster { uint4 a; float4 b; float4 c; float4 d; uint4 e; };
 struct GsClusters { GsCluster rows[GS_MAX_CLUSTERS]; };
 struct GsInstances { GpuSceneInstanceRow rows[GS_MAX_INSTANCES]; };
 struct GsView {
@@ -45,6 +45,12 @@ struct GsAliases { uint slots[GS_MAX_GEO]; };
 struct GsIndices { uint index[GS_MAX_INDEX_WORDS]; };
 struct GsPositions { uint word[GS_MAX_VERTICES * 3u]; };
 struct GsShading { uint word[GS_MAX_VERTICES * 4u]; };
+// Indexed-meshlet streams (mesh shader): each cluster's unique local vertex
+// window (global vertex ids, lifted) and its local triangle ids (3 packed u8
+// ids per uint, one uint per triangle). Sized by the same vertex/index caps
+// as the position/indices heaps (the unique window is a subset of each).
+struct GsMeshletVerts { uint id[GS_MAX_VERTICES]; };
+struct GsMeshletTris { uint tri[GS_MAX_INDEX_WORDS / 3u]; };
 
 // This struct is a GPU-addressable parameter buffer, NOT push constants.
 // Both shader stages receive a short push containing its BDA, group slice
@@ -80,6 +86,8 @@ struct GsTaskMeshParams {
     uint hizHeight;
     uint hizMips;
     uint hizValid; // 1 = run the meshlet occlusion test
+    GPU_PTR_READ(GsMeshletVerts) meshletVertices; // indexed-meshlet unique vertex windows
+    GPU_PTR_READ(GsMeshletTris) meshletTriangles; // indexed-meshlet local triangle ids (3 u8/uint)
 };
 struct GsTaskMeshPush {
     // Preserve the fragment shader's 192-byte scene push constants.

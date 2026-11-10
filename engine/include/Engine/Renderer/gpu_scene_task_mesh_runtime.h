@@ -47,6 +47,8 @@ struct TaskMeshInputs {
     uint32_t coneEnabled = 1;
     uint64_t hiz = 0; // reversed-Z MIN Hi-Z BDA (meshlet occlusion)
     uint32_t hizWidth = 0, hizHeight = 0, hizMips = 0, hizValid = 0;
+    uint64_t meshletVertices = 0;  // indexed-meshlet unique vertex windows
+    uint64_t meshletTriangles = 0; // indexed-meshlet local triangle ids
 };
 struct TaskMeshDispatchPlan {
     TaskMeshGroupCountPush count{};
@@ -204,7 +206,9 @@ class TaskMeshRuntime {
                             in.hizWidth,
                             in.hizHeight,
                             in.hizMips,
-                            in.hizValid};
+                            in.hizValid,
+                            in.meshletVertices,
+                            in.meshletTriangles};
         ctx.UploadDataToBuffer(
             f.params,
             &p,

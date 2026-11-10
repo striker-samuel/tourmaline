@@ -64,7 +64,7 @@ struct GfxIndices   { uint idx[GFX_MAX_FILTERED]; };   // cluster-ordered global
 // c = (coneApex.xyz, coneCutoff), d = (coneAxis.xyz, pad). The cone tail
 // feeds the cull chain's world-space normal-cone test (gfxbatchcull;
 // C++ CullCluster mirrors the same math as the tested CPU reference).
-struct GfxClusterData { uint4 a; float4 b; float4 c; float4 d; };
+struct GfxClusterData { uint4 a; float4 b; float4 c; float4 d; uint4 e; };
 struct GfxClusters  { GfxClusterData cluster[GFX_MAX_CLUSTERS]; };
 // GfxSkinBounds output table (gfxskinbounds.cs.hlsl): the per-candidate-slot
 // deformed cluster entries (region 1 — one GfxClusterData per (draw x

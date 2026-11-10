@@ -22,6 +22,8 @@ struct TaskMeshGpuParams {
     uint32_t viewValid, coneEnabled, workCapacity, reserved1;
     uint64_t hiz; // reversed-Z MIN Hi-Z (meshlet occlusion), 0 = disabled
     uint32_t hizWidth, hizHeight, hizMips, hizValid;
+    uint64_t meshletVertices;  // indexed-meshlet unique vertex windows (0 = none)
+    uint64_t meshletTriangles; // indexed-meshlet local triangle ids (3 u8/uint)
 };
 struct TaskMeshGpuPush {
     uint64_t params;
@@ -36,11 +38,12 @@ struct TaskMeshIndirectCommand {
     uint32_t groupCountZ;
 };
 static_assert(sizeof(TaskMeshGpuGroup) == 16);
-static_assert(sizeof(TaskMeshGpuParams) == 168);
+static_assert(sizeof(TaskMeshGpuParams) == 184);
 static_assert(offsetof(TaskMeshGpuParams, shading) == 80);
 static_assert(offsetof(TaskMeshGpuParams, workCount) == 96);
 static_assert(offsetof(TaskMeshGpuParams, hiz) == 144);
 static_assert(offsetof(TaskMeshGpuParams, hizValid) == 164);
+static_assert(offsetof(TaskMeshGpuParams, meshletVertices) == 168);
 static_assert(sizeof(TaskMeshGpuPush) == 24);
 static_assert(sizeof(TaskMeshIndirectCommand) == 12);
 static_assert(std::is_trivially_copyable_v<TaskMeshGpuParams>);

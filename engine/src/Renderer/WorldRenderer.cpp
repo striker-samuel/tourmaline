@@ -11907,6 +11907,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                     smvk::staticVertexFmtHeap.m_staticVertexPosBuffer);
                                 inputs.shading = m_context->GetBufferDeviceAddress(
                                     smvk::staticVertexFmtHeap.m_staticVertexShadingBuffer);
+                                inputs.meshletVertices = gfx.meshletVertexBuffer.empty()
+                                                             ? 0u
+                                                             : m_context->GetBufferDeviceAddress(
+                                                                   gfx.meshletVertexBuffer);
+                                inputs.meshletTriangles = gfx.meshletTriangleBuffer.empty()
+                                                              ? 0u
+                                                              : m_context->GetBufferDeviceAddress(
+                                                                    gfx.meshletTriangleBuffer);
                                 inputs.sceneCandidateCount = rasterPush.candidateCount;
                                 inputs.workCapacity =
                                     rasterPush.reserved; // C++ mirror: reserved = bin stride

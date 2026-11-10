@@ -3,8 +3,8 @@
 
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Profile/profile.h>
-#include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gfx_dynamic_capacity.h>
+#include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <Engine/debug_log.h>
@@ -35,7 +35,8 @@ using namespace ::smvk;
 static void DispatchDrawGroups(CommandBuffer& cmd, uint32_t groups) {
     DispatchGrid grid{};
     if (!PlanDispatchGrid(groups, grid)) {
-        std::fprintf(stderr, "[GfxFilter] FATAL: dispatch requires too many workgroups (%u)\n", groups);
+        std::fprintf(
+            stderr, "[GfxFilter] FATAL: dispatch requires too many workgroups (%u)\n", groups);
         std::abort();
     }
     if (grid.x != 0)
@@ -271,8 +272,8 @@ static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
         // ring to the frame's exact need — see GrowViewCapacity).
         v.drawCapacity[f] = PageMinCapacity(sizeof(Draw));
         v.candidateCapacity[f] = PageMinCapacity(sizeof(Batch));
-        v.batchBuffers[f] =
-            ctx.CreateBuffer(CandidateBatchBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx batches");
+        v.batchBuffers[f] = ctx.CreateBuffer(
+            CandidateBatchBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx batches");
         v.drawBuffers[f] =
             ctx.CreateBuffer(DrawRingBytes(v.drawCapacity[f]), BufferType_Storage, "gfx draws");
         // Filtered-index scratch is a persistent region in the static index
@@ -292,18 +293,18 @@ static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
         // would need explicit queue-ownership transfers every frame.
         // Usage flags cover INDIRECT_BUFFER_BIT regardless (see
         // bufferTypeToUsageFlags).
-        v.indirectBuffers[f] =
-            ctx.CreateBuffer(IndirectCmdBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx indirect");
+        v.indirectBuffers[f] = ctx.CreateBuffer(
+            IndirectCmdBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx indirect");
         // GPU cull chain state (kept-bit parity ring + verdict/counter
         // words). Zero-filled at creation so the first frames seed nothing
         // (prev-kept = 0 -> empty seed, remainder = all kept — the same
         // arming behavior InvalidateHistory gives); every
         // candidate slot gets a definitive 0/1 write per frame afterwards,
         // so no per-frame clearing upload exists.
-        v.keptBuffers[f] =
-            ctx.CreateBuffer(KeptRingBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx keptBits");
-        v.cullStateBuffers[f] =
-            ctx.CreateBuffer(CullStateBytes(v.drawCapacity[f]), BufferType_Storage, "gfx cullState");
+        v.keptBuffers[f] = ctx.CreateBuffer(
+            KeptRingBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx keptBits");
+        v.cullStateBuffers[f] = ctx.CreateBuffer(
+            CullStateBytes(v.drawCapacity[f]), BufferType_Storage, "gfx cullState");
         if (v.batchBuffers[f].empty() || v.drawBuffers[f].empty() || v.indirectBuffers[f].empty() ||
             v.keptBuffers[f].empty() || v.cullStateBuffers[f].empty()) {
             RollbackSlotBuffers(rg, v, f);
@@ -359,8 +360,11 @@ static void UpdateSharedCapacityWants(State& s, uint32_t f, uint32_t draws, uint
     s.coneDebugWant = std::max(s.coneDebugWant, candidates);
 }
 
-[[noreturn]] static void FatalCapacity(const char* what, uint32_t view, uint32_t f,
-                                       uint64_t need, const char* limit) {
+[[noreturn]] static void FatalCapacity(const char* what,
+                                       uint32_t view,
+                                       uint32_t f,
+                                       uint64_t need,
+                                       const char* limit) {
     std::fprintf(stderr,
                  "[GfxFilter] FATAL: %s (view %u, flight %u, need %llu, %s). "
                  "No geometry is dropped or alternate path used.\n",
@@ -386,7 +390,9 @@ static void GrowViewCapacity(State& s,
     // shader arrays (the fail-closed ceilings).
     DynamicCapacity plan{};
     if (!PlanViewCapacity(needDraws, needCandidates, sizeof(Draw), sizeof(Batch), plan))
-        FatalCapacity("frame exceeds a declared draw/candidate capacity", view, f,
+        FatalCapacity("frame exceeds a declared draw/candidate capacity",
+                      view,
+                      f,
                       std::max<uint64_t>(needDraws, needCandidates),
                       "declared bounds: gfx_dynamic_capacity.h");
     UpdateSharedCapacityWants(s, f, plan.draws, plan.candidates);
@@ -395,18 +401,34 @@ static void GrowViewCapacity(State& s,
     const bool growDraws = plan.draws > v.drawCapacity[f];
     const bool growCandidates = plan.candidates > v.candidateCapacity[f];
     if (growDraws) {
-        if (!RebindBuffer(ctx, rg, v.drawBuffers[f], v.drawLogicals[f],
-                          DrawRingBytes(plan.draws), "gfx draws"))
+        if (!RebindBuffer(ctx,
+                          rg,
+                          v.drawBuffers[f],
+                          v.drawLogicals[f],
+                          DrawRingBytes(plan.draws),
+                          "gfx draws"))
             FatalCapacity("draw-ring grow allocation failed", view, f, plan.draws, "");
         v.drawCapacity[f] = plan.draws;
     }
     if (growCandidates) {
-        if (!RebindBuffer(ctx, rg, v.batchBuffers[f], v.batchLogicals[f],
-                          CandidateBatchBytes(plan.candidates), "gfx batches") ||
-            !RebindBuffer(ctx, rg, v.indirectBuffers[f], v.indirectLogicals[f],
-                          IndirectCmdBytes(plan.candidates), "gfx indirect") ||
-            !RebindBuffer(ctx, rg, v.keptBuffers[f], v.keptLogicals[f],
-                          KeptRingBytes(plan.candidates), "gfx keptBits"))
+        if (!RebindBuffer(ctx,
+                          rg,
+                          v.batchBuffers[f],
+                          v.batchLogicals[f],
+                          CandidateBatchBytes(plan.candidates),
+                          "gfx batches") ||
+            !RebindBuffer(ctx,
+                          rg,
+                          v.indirectBuffers[f],
+                          v.indirectLogicals[f],
+                          IndirectCmdBytes(plan.candidates),
+                          "gfx indirect") ||
+            !RebindBuffer(ctx,
+                          rg,
+                          v.keptBuffers[f],
+                          v.keptLogicals[f],
+                          KeptRingBytes(plan.candidates),
+                          "gfx keptBits"))
             FatalCapacity("candidate-ring grow allocation failed", view, f, plan.candidates, "");
         v.candidateCapacity[f] = plan.candidates;
         // Fresh kept ring: zero both parity regions (the GPU-counter
@@ -416,8 +438,12 @@ static void GrowViewCapacity(State& s,
     if (growDraws) {
         // The cullState words follow the draw capacity (verdicts + the
         // runtime counter/diag suffix); fresh = zero-filled.
-        if (!RebindBuffer(ctx, rg, v.cullStateBuffers[f], v.cullStateLogicals[f],
-                          CullStateBytes(plan.draws), "gfx cullState"))
+        if (!RebindBuffer(ctx,
+                          rg,
+                          v.cullStateBuffers[f],
+                          v.cullStateLogicals[f],
+                          CullStateBytes(plan.draws),
+                          "gfx cullState"))
             FatalCapacity("cullState grow allocation failed", view, f, plan.draws, "");
         ZeroFillBuffer(ctx, v.cullStateBuffers[f], CullStateBytes(plan.draws));
     }
@@ -425,18 +451,30 @@ static void GrowViewCapacity(State& s,
     // ---- The temporal sidecar's rings (visDraw grows with the draws;
     //      the seed/remainder command arrays with the candidates) ----
     if (plan.draws > t.visDrawCapacity[f]) {
-        if (!RebindBuffer(ctx, rg, t.visDrawBuffers[f], t.visDrawLogicals[f],
-                          DrawRingBytes(plan.draws), "gfx visibleDraws"))
+        if (!RebindBuffer(ctx,
+                          rg,
+                          t.visDrawBuffers[f],
+                          t.visDrawLogicals[f],
+                          DrawRingBytes(plan.draws),
+                          "gfx visibleDraws"))
             FatalCapacity("visDraw grow allocation failed", view, f, plan.draws, "");
         t.visDrawCapacity[f] = plan.draws;
     }
     if (plan.candidates > t.seedIndirectCapacity[f]) {
-        if (!RebindBuffer(ctx, rg, t.seedIndirectBuffers[f], t.seedIndirectLogicals[f],
-                          SeedIndirectBytes(plan.candidates), "gfx seedIndirect") ||
-            !RebindBuffer(ctx, rg, t.remainderIndirectBuffers[f], t.remainderIndirectLogicals[f],
-                          SeedIndirectBytes(plan.candidates), "gfx remainderIndirect"))
-            FatalCapacity("seed/remainder indirect grow allocation failed", view, f,
-                          plan.candidates, "");
+        if (!RebindBuffer(ctx,
+                          rg,
+                          t.seedIndirectBuffers[f],
+                          t.seedIndirectLogicals[f],
+                          SeedIndirectBytes(plan.candidates),
+                          "gfx seedIndirect") ||
+            !RebindBuffer(ctx,
+                          rg,
+                          t.remainderIndirectBuffers[f],
+                          t.remainderIndirectLogicals[f],
+                          SeedIndirectBytes(plan.candidates),
+                          "gfx remainderIndirect"))
+            FatalCapacity(
+                "seed/remainder indirect grow allocation failed", view, f, plan.candidates, "");
         t.seedIndirectCapacity[f] = plan.candidates;
     }
 
@@ -446,24 +484,35 @@ static void GrowViewCapacity(State& s,
     if (!s.skinBoundsBuffers[f].empty() &&
         (s.skinBoundsCandidateWant[f] > s.skinBoundsCandidateCap[f] ||
          s.skinBoundsDrawWant[f] > s.skinBoundsDrawCap[f])) {
-        if (!RebindBuffer(ctx, rg, s.skinBoundsBuffers[f], s.skinBoundsLogicals[f],
+        if (!RebindBuffer(ctx,
+                          rg,
+                          s.skinBoundsBuffers[f],
+                          s.skinBoundsLogicals[f],
                           SkinBoundsBytes(s.skinBoundsCandidateWant[f], s.skinBoundsDrawWant[f]),
                           "gfx skinBounds"))
-            FatalCapacity("skinBounds grow allocation failed", view, f,
-                          s.skinBoundsCandidateWant[f], "");
+            FatalCapacity(
+                "skinBounds grow allocation failed", view, f, s.skinBoundsCandidateWant[f], "");
         s.skinBoundsCandidateCap[f] = s.skinBoundsCandidateWant[f];
         s.skinBoundsDrawCap[f] = s.skinBoundsDrawWant[f];
     }
     if (!s.meshBatchLists[f].empty() && s.meshBatchListWant[f] > s.meshBatchListCap[f]) {
-        if (!RebindBuffer(ctx, rg, s.meshBatchLists[f], s.meshBatchListLogicals[f],
-                          MeshBatchListBytes(s.meshBatchListWant[f]), "gfx mesh batch list"))
-            FatalCapacity("mesh batch list grow allocation failed", view, f,
-                          s.meshBatchListWant[f], "");
+        if (!RebindBuffer(ctx,
+                          rg,
+                          s.meshBatchLists[f],
+                          s.meshBatchListLogicals[f],
+                          MeshBatchListBytes(s.meshBatchListWant[f]),
+                          "gfx mesh batch list"))
+            FatalCapacity(
+                "mesh batch list grow allocation failed", view, f, s.meshBatchListWant[f], "");
         s.meshBatchListCap[f] = s.meshBatchListWant[f];
     }
     if (!s.coneDebugLines.empty() && s.coneDebugWant > s.coneDebugCap) {
-        if (!RebindBuffer(ctx, rg, s.coneDebugLines, s.coneDebugLinesLogical,
-                          ConeDebugLinesBytes(s.coneDebugWant), "gfx coneDebug lines"))
+        if (!RebindBuffer(ctx,
+                          rg,
+                          s.coneDebugLines,
+                          s.coneDebugLinesLogical,
+                          ConeDebugLinesBytes(s.coneDebugWant),
+                          "gfx coneDebug lines"))
             FatalCapacity("coneDebug line grow allocation failed", view, f, s.coneDebugWant, "");
         s.coneDebugCap = s.coneDebugWant;
     }
@@ -579,14 +628,16 @@ bool EnsureSkinBounds(State& s, ResourceManager& ctx, RenderGraph& rg) {
             // page covers a never-finalized session). GrowViewCapacity
             // grows it further from here.
             size_t candCap = 0, drawCap = 0;
-            if (!RoundCapacity(
-                    std::max<size_t>(s.skinBoundsCandidateWant[f], 1u), sizeof(ClusterConstants), candCap) ||
-                !RoundCapacity(std::max<size_t>(s.skinBoundsDrawWant[f], 1u),
-                               sizeof(glm::vec4),
-                               drawCap))
+            if (!RoundCapacity(std::max<size_t>(s.skinBoundsCandidateWant[f], 1u),
+                               sizeof(ClusterConstants),
+                               candCap) ||
+                !RoundCapacity(
+                    std::max<size_t>(s.skinBoundsDrawWant[f], 1u), sizeof(glm::vec4), drawCap))
                 return false;
-            s.skinBoundsBuffers[f] = ctx.CreateBuffer(
-                SkinBoundsBytes(uint32_t(candCap), uint32_t(drawCap)), BufferType_Storage, "gfx skinBounds");
+            s.skinBoundsBuffers[f] =
+                ctx.CreateBuffer(SkinBoundsBytes(uint32_t(candCap), uint32_t(drawCap)),
+                                 BufferType_Storage,
+                                 "gfx skinBounds");
             if (s.skinBoundsBuffers[f].empty())
                 return false;
             s.skinBoundsCandidateCap[f] = uint32_t(candCap);
@@ -670,15 +721,17 @@ static bool CreateTemporalBuffers(ResourceManager& ctx, RenderGraph& rg, Tempora
         t.seedIndirectCapacity[f] = PageMinCapacity(sizeof(SeedCommand));
         t.visClusterBuffers[f] =
             ctx.CreateBuffer(kVisClusterBytes, BufferType_Storage, "gfx visibleClusters");
-        t.visDrawBuffers[f] =
-            ctx.CreateBuffer(DrawRingBytes(t.visDrawCapacity[f]), BufferType_Storage, "gfx visibleDraws");
+        t.visDrawBuffers[f] = ctx.CreateBuffer(
+            DrawRingBytes(t.visDrawCapacity[f]), BufferType_Storage, "gfx visibleDraws");
         // Storage, NOT Indirect (same queue-sharing argument as the filter
         // indirect buffers in CreateSlotBuffers); INDIRECT usage is covered
         // by the type's flags regardless (see bufferTypeToUsageFlags).
-        t.seedIndirectBuffers[f] =
-            ctx.CreateBuffer(SeedIndirectBytes(t.seedIndirectCapacity[f]), BufferType_Storage, "gfx seedIndirect");
+        t.seedIndirectBuffers[f] = ctx.CreateBuffer(
+            SeedIndirectBytes(t.seedIndirectCapacity[f]), BufferType_Storage, "gfx seedIndirect");
         t.remainderIndirectBuffers[f] =
-            ctx.CreateBuffer(SeedIndirectBytes(t.seedIndirectCapacity[f]), BufferType_Storage, "gfx remainderIndirect");
+            ctx.CreateBuffer(SeedIndirectBytes(t.seedIndirectCapacity[f]),
+                             BufferType_Storage,
+                             "gfx remainderIndirect");
         if (t.visClusterBuffers[f].empty() || t.visDrawBuffers[f].empty() ||
             t.seedIndirectBuffers[f].empty() || t.remainderIndirectBuffers[f].empty()) {
             RollbackTemporalBuffers(rg, t, f);
@@ -975,8 +1028,7 @@ bool HzbOccluded(const float* hzb,
 }
 
 // SPD completion-ring layout is shared with all visibility builders.
-static constexpr uint32_t kHizSpdCounterSliceBytes =
-    tour::visibility::kHizSpdCounterSliceBytes;
+static constexpr uint32_t kHizSpdCounterSliceBytes = tour::visibility::kHizSpdCounterSliceBytes;
 
 bool EnsureHiz(State& s,
                ResourceManager& ctx,
@@ -1044,8 +1096,7 @@ bool EnsureHiz(State& s,
 uint64_t HizAddress(State& s, ResourceManager& ctx, uint32_t view) {
     if (view >= s.temporals.size() || view >= s.views.size())
         return 0;
-    return tour::visibility::HizAddress(
-        s.temporals[view].hiz[s.views[view].frameIndex], ctx);
+    return tour::visibility::HizAddress(s.temporals[view].hiz[s.views[view].frameIndex], ctx);
 }
 
 RenderPass& AddHizPass(State& s,
@@ -1147,8 +1198,7 @@ void PushAndDispatchHiz(State& s,
         }
     }
     HzbPush push{};
-    if (!tour::visibility::MakeHizMipPush(hz, addr, dstMip,
-                                         depthBindlessIndex, push))
+    if (!tour::visibility::MakeHizMipPush(hz, addr, dstMip, depthBindlessIndex, push))
         return;
 
     // DEBUG: Log HZB dispatch parameters
@@ -1194,8 +1244,7 @@ RenderPass& AddHizSpdPass(State& s,
     SMVK_PROFILE_TAG("shadow", shadow ? 1 : 0);
 
     RenderPass& pass = tour::visibility::AddHizSpdPass(
-        rg, hz, t.hizSpdCounterLogical, depthLogical,
-        passName ? passName : "GfxHizSpd");
+        rg, hz, t.hizSpdCounterLogical, depthLogical, passName ? passName : "GfxHizSpd");
 
     return pass;
 }
@@ -1251,8 +1300,7 @@ void PushAndDispatchHizSpd(State& s,
     const uint32_t groupY = (hz.height + 63u) / 64u;
 
     HzbSpdPush push{};
-    if (!tour::visibility::MakeHizSpdPush(hz, addr, counterAddr,
-                                          depthBindlessIndex, push))
+    if (!tour::visibility::MakeHizSpdPush(hz, addr, counterAddr, depthBindlessIndex, push))
         return;
 
     static uint64_t s_spdDispatchCount = 0;
@@ -1363,6 +1411,9 @@ static void AppendCluster(State& s,
                           uint32_t mesh,
                           const uint32_t* globalIds,
                           uint32_t triCount,
+                          const uint32_t* window,
+                          uint32_t vertexCount,
+                          const uint8_t* localTris,
                           const glm::vec3& center,
                           float radius,
                           const glm::vec3& apex,
@@ -1372,12 +1423,28 @@ static void AppendCluster(State& s,
     cl.mesh = mesh;
     cl.indexOffset = (uint32_t)s.filterIndices.size();
     cl.triCount = triCount;
+    cl.vertexOffset = (uint32_t)s.meshletVertices.size();
+    cl.vertexCount = vertexCount;
+    cl.triangleOffset = (uint32_t)s.meshletTriangles.size();
     cl.boundCenter = center;
     cl.boundRadius = radius;
     cl.coneApex = apex;
     cl.coneAxis = axis;
     cl.coneCutoff = cutoff;
     s.filterIndices.insert(s.filterIndices.end(), globalIds, globalIds + triCount * 3);
+    // Indexed-meshlet streams (task/mesh path): the lifted unique vertex
+    // window + local triangle ids (3 packed u8 ids per uint). Null window
+    // marks a non-indexed cluster (the 128-tri fallback chunks), which the
+    // mesh shader never admits.
+    if (vertexCount != 0u && window != nullptr && localTris != nullptr) {
+        s.meshletVertices.insert(s.meshletVertices.end(), window, window + vertexCount);
+        for (uint32_t t = 0; t < triCount; ++t) {
+            const uint32_t a = localTris[t * 3u + 0u];
+            const uint32_t b = localTris[t * 3u + 1u];
+            const uint32_t c = localTris[t * 3u + 2u];
+            s.meshletTriangles.push_back(a | (b << 8u) | (c << 16u));
+        }
+    }
     s.clusters.push_back(cl);
 }
 
@@ -1394,6 +1461,12 @@ static void AppendMeshlet(State& s,
         return;
     std::vector<uint32_t> ids;
     ids.reserve(m.triangleCount * 3);
+    // Lifted unique window (baseVertex + local id) for the indexed-meshlet
+    // stream, alongside the expanded global ids for the filtered path.
+    std::vector<uint32_t> liftedWindow;
+    liftedWindow.reserve(m.vertexCount);
+    for (uint32_t v = 0; v < m.vertexCount; ++v)
+        liftedWindow.push_back(baseVertex + window[v]);
     for (uint32_t t = 0; t < m.triangleCount; ++t) {
         for (uint32_t k = 0; k < 3; ++k) {
             const uint32_t local = localTris[t * 3 + k];
@@ -1406,6 +1479,9 @@ static void AppendMeshlet(State& s,
                   mesh,
                   ids.data(),
                   m.triangleCount,
+                  liftedWindow.data(),
+                  m.vertexCount,
+                  localTris,
                   m.boundCenter,
                   m.boundRadius,
                   m.coneApex,
@@ -1504,6 +1580,9 @@ uint32_t RegisterMeshFromUpload(State& s, const StaticMeshUpload& upload, uint32
                           meshIndex,
                           ids.data(),
                           count,
+                          nullptr,
+                          0u,
+                          nullptr,
                           center,
                           glm::length(mx - center),
                           center,
@@ -1545,10 +1624,18 @@ uint32_t RegisterMeshFromCooked(State& s, const CookedMeshlets& cooked, uint32_t
         }
         if (!valid)
             continue;
+        // Lifted unique vertex window for the indexed-meshlet stream.
+        std::vector<uint32_t> liftedWindow;
+        liftedWindow.reserve(m.vertexCount);
+        for (uint32_t v = 0; v < m.vertexCount; ++v)
+            liftedWindow.push_back(baseVertex + window[v]);
         AppendCluster(s,
                       meshIndex,
                       globalIds.data(),
                       m.triangleCount,
+                      liftedWindow.data(),
+                      m.vertexCount,
+                      localTris,
                       m.boundCenter,
                       m.boundRadius,
                       m.coneApex,
@@ -1562,6 +1649,8 @@ uint32_t RegisterMeshFromCooked(State& s, const CookedMeshlets& cooked, uint32_t
 
 void ResetStaticRegistrations(State& s) {
     s.filterIndices.clear();
+    s.meshletVertices.clear();
+    s.meshletTriangles.clear();
     s.clusters.clear();
     s.meshes.clear();
     s.meshBounds.clear();
@@ -1618,6 +1707,9 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
     for (size_t i = 0; i < s.clusters.size(); ++i) {
         table[i].indexOffset = s.clusters[i].indexOffset;
         table[i].triCount = s.clusters[i].triCount;
+        table[i].vertexOffset = s.clusters[i].vertexOffset;
+        table[i].vertexCount = s.clusters[i].vertexCount;
+        table[i].triangleOffset = s.clusters[i].triangleOffset;
         table[i].boundCenter = s.clusters[i].boundCenter;
         table[i].boundRadius = s.clusters[i].boundRadius;
         table[i].coneApex = s.clusters[i].coneApex;
@@ -1641,6 +1733,43 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
                            PipelineStage(PipelineStageBit_Compute),
                            AccessFlags::ShaderRead);
     s.clusterLogical = rg.AddExternalBuffer(s.clusterBuffer, "gfx clusters");
+    // Indexed-meshlet streams (task/mesh path): unique vertex windows (global
+    // ids) + local triangle ids (3 packed u8 per uint). Uploaded once with
+    // the cluster table; the gfx-filter path never reads them.
+    if (!s.meshletVertexLogical.empty())
+        rg.FreeBuffer(s.meshletVertexLogical);
+    s.meshletVertexLogical = {};
+    s.meshletVertexBuffer = {};
+    if (!s.meshletTriangleLogical.empty())
+        rg.FreeBuffer(s.meshletTriangleLogical);
+    s.meshletTriangleLogical = {};
+    s.meshletTriangleBuffer = {};
+    if (!s.meshletVertices.empty() && !s.meshletTriangles.empty()) {
+        s.meshletVertexBuffer = ctx.CreateBuffer(s.meshletVertices.size() * sizeof(uint32_t),
+                                                 BufferType_Storage,
+                                                 "gfx meshlet vertices");
+        s.meshletTriangleBuffer = ctx.CreateBuffer(s.meshletTriangles.size() * sizeof(uint32_t),
+                                                   BufferType_Storage,
+                                                   "gfx meshlet triangles");
+        if (!s.meshletVertexBuffer.empty()) {
+            ctx.UploadDataToBuffer(s.meshletVertexBuffer,
+                                   s.meshletVertices.data(),
+                                   s.meshletVertices.size() * sizeof(uint32_t),
+                                   PipelineStage(PipelineStageBit_Mesh),
+                                   AccessFlags::ShaderRead);
+            s.meshletVertexLogical =
+                rg.AddExternalBuffer(s.meshletVertexBuffer, "gfx meshlet vertices");
+        }
+        if (!s.meshletTriangleBuffer.empty()) {
+            ctx.UploadDataToBuffer(s.meshletTriangleBuffer,
+                                   s.meshletTriangles.data(),
+                                   s.meshletTriangles.size() * sizeof(uint32_t),
+                                   PipelineStage(PipelineStageBit_Mesh),
+                                   AccessFlags::ShaderRead);
+            s.meshletTriangleLogical =
+                rg.AddExternalBuffer(s.meshletTriangleBuffer, "gfx meshlet triangles");
+        }
+    }
     // Per-mesh union bounds (static like the cluster table; the designated
     // demand-publisher groups and the GPU cull chain's draw gates read them
     // every dispatch).
@@ -2327,8 +2456,8 @@ static bool EnsureShadowBuffers(ResourceManager& ctx, RenderGraph& rg, ShadowVie
         // UploadShadowList grows the ring to each frame's exact count;
         // the indirect ring stays SURVIVOR-CAPPED at kMaxBatches).
         sv.drawCapacity[f] = PageMinCapacity(sizeof(Draw));
-        sv.drawBuffers[f] =
-            ctx.CreateBuffer(DrawRingBytes(sv.drawCapacity[f]), BufferType_Storage, "gfx shadow draws");
+        sv.drawBuffers[f] = ctx.CreateBuffer(
+            DrawRingBytes(sv.drawCapacity[f]), BufferType_Storage, "gfx shadow draws");
         sv.indirectBuffers[f] =
             ctx.CreateBuffer(kShadowIndirectBytes, BufferType_Storage, "gfx shadow indirect");
         if (sv.drawBuffers[f].empty() || sv.indirectBuffers[f].empty())
@@ -2533,18 +2662,21 @@ void UploadShadowList(State& s,
     // surviving commands; BuildShadowList's emit cap enforces it).
     {
         DynamicCapacity plan{};
-        if (!PlanViewCapacity(sv.drawConstants.size(),
-                              0,
-                              sizeof(Draw),
-                              sizeof(Batch),
-                              plan))
-            FatalCapacity("shadow list exceeds the declared draw capacity", sview, frameIndex,
-                          sv.drawConstants.size(), "declared bounds: gfx_dynamic_capacity.h");
+        if (!PlanViewCapacity(sv.drawConstants.size(), 0, sizeof(Draw), sizeof(Batch), plan))
+            FatalCapacity("shadow list exceeds the declared draw capacity",
+                          sview,
+                          frameIndex,
+                          sv.drawConstants.size(),
+                          "declared bounds: gfx_dynamic_capacity.h");
         if (plan.draws > sv.drawCapacity[frameIndex]) {
-            if (!RebindBuffer(ctx, rg, sv.drawBuffers[frameIndex], sv.drawLogicals[frameIndex],
-                              DrawRingBytes(plan.draws), "gfx shadow draws"))
-                FatalCapacity("shadow draw-ring grow allocation failed", sview, frameIndex,
-                              plan.draws, "");
+            if (!RebindBuffer(ctx,
+                              rg,
+                              sv.drawBuffers[frameIndex],
+                              sv.drawLogicals[frameIndex],
+                              DrawRingBytes(plan.draws),
+                              "gfx shadow draws"))
+                FatalCapacity(
+                    "shadow draw-ring grow allocation failed", sview, frameIndex, plan.draws, "");
             sv.drawCapacity[frameIndex] = plan.draws;
         }
     }
@@ -2558,8 +2690,8 @@ void UploadShadowList(State& s,
         const uint64_t diagFrame = s_diagFrames++;
         const uint32_t indexLo = s.clusterIndexBase;
         const uint32_t indexHi = s.clusterIndexBase + (uint32_t)s.filterIndices.size();
-        if (sv.drawConstants.size() != sv.draws.size() ||
-            sv.draws.size() > kDeclaredMaxDraws || sv.commands.size() > kMaxBatches) {
+        if (sv.drawConstants.size() != sv.draws.size() || sv.draws.size() > kDeclaredMaxDraws ||
+            sv.commands.size() > kMaxBatches) {
             std::fprintf(stderr,
                          "[TMP-DIAG] shadow ring BAD frame=%llu sview=%u draws=%zu/%zu "
                          "constants=%zu cmds=%zu (caps %u/%u)\n",
@@ -2747,13 +2879,7 @@ Stats FinalizeView(State& s,
     // Grow-only, page-planned, fail-closed at the declared bounds (see
     // GrowViewCapacity). v.batchCount IS the candidate total (the build
     // expands every (draw x cluster) slot — verdicts are GPU-side).
-    GrowViewCapacity(s,
-                     ctx,
-                     rg,
-                     view,
-                     frameIndex,
-                     (uint32_t)v.drawConstants.size(),
-                     v.batchCount);
+    GrowViewCapacity(s, ctx, rg, view, frameIndex, (uint32_t)v.drawConstants.size(), v.batchCount);
 
     // The ONLY per-frame CPU upload is the draws ring slice (the candidate
     // layout is pure arithmetic; gfxbatchcull — recorded later this frame —
@@ -3136,8 +3262,7 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
         // The kept region base carries the parity offset computed against
         // the RUNTIME candidate capacity (the dynamic cutover — the
         // retired kMaxBatchSlots stride died with the fixed ring).
-        push.kept = keptBda +
-                    (uint64_t)KeptParity(s) * v.candidateCapacity[f] * sizeof(uint32_t);
+        push.kept = keptBda + (uint64_t)KeptParity(s) * v.candidateCapacity[f] * sizeof(uint32_t);
         push.cullState = stateBda;
         push.keptParity = KeptParity(s);
         // The counter/diag word base = this (view, flight)'s draw capacity.
@@ -3625,9 +3750,7 @@ bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg) {
             // high-water want (the minimum page before the first
             // FinalizeView), grown by GrowViewCapacity from here.
             size_t cap = 0;
-            if (!RoundCapacity(std::max<size_t>(s.meshBatchListWant[f], 1u),
-                               sizeof(uint32_t),
-                               cap))
+            if (!RoundCapacity(std::max<size_t>(s.meshBatchListWant[f], 1u), sizeof(uint32_t), cap))
                 return false;
             s.meshBatchLists[f] = ctx.CreateBuffer(
                 MeshBatchListBytes(uint32_t(cap)), BufferType_Storage, "gfx mesh batch list");

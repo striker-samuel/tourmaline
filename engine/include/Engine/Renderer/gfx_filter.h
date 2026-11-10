@@ -192,23 +192,27 @@ static constexpr uint32_t kMaxViews = 64; // mirrors kMaxRenderViews
 // tour::gfx::kDeclaredMaxDraws / kDeclaredMaxCandidates.)
 
 // GPU cluster entry (4x uvec4). Must match HLSL GfxClusterData (64 bytes):
-// (indexOffset, triCount, 0, 0) + (boundCenter.xyz, boundRadius) for the
-// per-cluster HZB occlusion / contribution tests (T4) +
-// (coneApex.xyz, coneCutoff) + (coneAxis.xyz, pad) for the GPU cull
-// chain's world-space normal-cone test (gfxbatchcull; C++ CullCluster
-// mirrors the same math as the tested CPU reference).
+// Layout: (indexOffset, triCount, vertexOffset, vertexCount) + (boundCenter.xyz,
+// boundRadius) for the per-cluster HZB occlusion / contribution tests (T4) +
+// (coneApex.xyz, coneCutoff) + (coneAxis.xyz, pad) for the GPU cull chain's
+// world-space normal-cone test (gfxbatchcull; C++ CullCluster mirrors the same
+// math as the tested CPU reference) + (triangleOffset, pad, pad, pad) for the
+// mesh-shader indexed-meshlet output (task/mesh path).
 struct ClusterConstants {
     uint32_t indexOffset = 0; // into the cluster-ordered index buffer (uints)
     uint32_t triCount = 0;
-    uint32_t pad0[2] = {};
+    uint32_t vertexOffset = 0; // into the meshlet unique-vertex buffer (uints)
+    uint32_t vertexCount = 0;  // unique local vertices
     glm::vec3 boundCenter{0.0f};
     float boundRadius = 0.0f;
     glm::vec3 coneApex{0.0f};
     float coneCutoff = 1.0f;
     glm::vec3 coneAxis{0.0f, 1.0f, 0.0f};
     float conePad = 0.0f;
+    uint32_t triangleOffset = 0; // into the meshlet local-triangle buffer (uints)
+    uint32_t pad1[3] = {};
 };
-static_assert(sizeof(ClusterConstants) == 64);
+static_assert(sizeof(ClusterConstants) == 80);
 
 // Chart atlas transform: xy = scale, zw = offset, so atlasUv =
 // chartUv * xy + zw. One entry per (mesh chart), concatenated scene-wide
@@ -752,6 +756,13 @@ struct Cluster {
     uint32_t mesh = 0;
     uint32_t indexOffset = 0; // into State::filterIndices (uints)
     uint32_t triCount = 0;
+    // Mesh-shader indexed-meshlet output (task/mesh path): the cluster's
+    // unique local vertex window + its local-triangle range. These ride the
+    // SAME records as the filtered indexOffset/triCount above (both paths
+    // address one cluster record); the gfx-filter path ignores them.
+    uint32_t vertexOffset = 0;   // into State::meshletVertices (uints, global ids)
+    uint32_t vertexCount = 0;    // unique local vertices
+    uint32_t triangleOffset = 0; // into State::meshletTriangles (uints, 3 packed u8 ids)
     glm::vec3 boundCenter{0.0f};
     float boundRadius = 0.0f;
     glm::vec3 coneApex{0.0f};
@@ -885,8 +896,8 @@ using HizResources = tour::visibility::HizResources;
 using tour::visibility::HzbMipCount;
 using tour::visibility::HzbMipDims;
 using tour::visibility::HzbMipOffsetFloats;
-using tour::visibility::HzbTotalFloats;
 using tour::visibility::HzbReduce2x2;
+using tour::visibility::HzbTotalFloats;
 
 // Per-cluster screen-space footprint (T4). Pure-CPU mirror of the filter
 // CS math (same formulas, same conservatism); the shader duplicates them
@@ -1165,6 +1176,12 @@ struct State {
     // VkBuffer as mesh + filtered regions); indexBase is region-relative in
     // Cluster::indexOffset, absolute firstIndex = clusterIndexBase + offset.
     std::vector<uint32_t> filterIndices;
+    // Mesh-shader indexed-meshlet streams (task/mesh path): each cluster's
+    // unique vertex window (global vertex ids) and its local triangle indices
+    // (3 packed u8 ids per uint, one uint per triangle). Built alongside the
+    // filterIndices expansion in RegisterMeshFromCooked and uploaded once.
+    std::vector<uint32_t> meshletVertices;
+    std::vector<uint32_t> meshletTriangles;
     std::vector<Cluster> clusters;
     std::vector<Mesh> meshes;
     uint32_t clusterIndexBase = 0;      // region base in uint32 indices (0 = none)
@@ -1174,6 +1191,10 @@ struct State {
     smvk::LogicalBufferHandle indexHeapLogical{};
     smvk::Holder<smvk::BufferHandle> clusterBuffer;
     smvk::LogicalBufferHandle clusterLogical{};
+    smvk::Holder<smvk::BufferHandle> meshletVertexBuffer;
+    smvk::LogicalBufferHandle meshletVertexLogical{};
+    smvk::Holder<smvk::BufferHandle> meshletTriangleBuffer;
+    smvk::LogicalBufferHandle meshletTriangleLogical{};
     // Static per-mesh cluster ranges (GPU mirror of `meshes`; the GPU cull
     // chain derives each draw group's cluster window from it).
     smvk::Holder<smvk::BufferHandle> meshesBuffer;

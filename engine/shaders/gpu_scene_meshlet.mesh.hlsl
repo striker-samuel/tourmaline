@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 // Mesh-stage consumer for gpu_scene_meshlet.task.hlsl.
-// One mesh workgroup per surviving cluster. The existing filtered geometry
-// index stream contains global vertex indices; the indexed geometry's signed
-// vertexOffset is applied exactly as in vkCmdDrawIndexedIndirect.
-// Conservative v1 emits 3 vertices per triangle (<=64 tris, <=192 verts).
-// The producer MUST validate all cluster index ranges/vertex IDs beforehand.
+// One mesh workgroup per surviving cluster. Indexed-meshlet output: each
+// unique local vertex is emitted once and referenced through local triangle
+// ids (3 packed u8 per uint, one uint per triangle), so a <=64-tri meshlet
+// outputs <=64 vertices instead of 3*64. The producer MUST validate all
+// cluster vertex/triangle ranges beforehand (guards are defense in depth).
 #define GFXMESH_PASS
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
@@ -112,37 +112,34 @@ void mainMS(uint3 gid : SV_GroupID,
         valid=clusterId<p.clusterCount && clusterId<GS_MAX_CLUSTERS;
         if (valid) c=p.clusters.Get().rows[clusterId];
     }
-    // Cluster indexCount and its complete range MUST have been validated
-    // before task ownership. This guard is defense in depth, not fallback.
+    // Indexed-meshlet output: unique local vertices (a.w count at a.z) +
+    // local triangle ids (a.y count at e.x). Range guards are defense in
+    // depth; the producer validates topology before mesh ownership.
+    uint vertexCount=valid?c.a.w:0u;
     uint triCount=valid?c.a.y:0u;
-    if (triCount>GS_MESH_MAX_TRIS ||
-        c.a.x>0xffffffffu-p.indexBase)
+    if (vertexCount>GS_MESH_MAX_VERTS || triCount>GS_MESH_MAX_TRIS ||
+        c.a.z>p.vertexCapacity || vertexCount>p.vertexCapacity-c.a.z ||
+        c.e.x>p.indexWordCapacity/3u || triCount>p.indexWordCapacity/3u-c.e.x) {
+        vertexCount=0u;
         triCount=0u;
-    const uint first=c.a.x+p.indexBase;
-    if (first>p.indexWordCapacity ||
-        triCount> (p.indexWordCapacity-first)/3u ||
-        first<geo.firstIndex ||
-        triCount>geo.indexCount/3u ||
-        first-geo.firstIndex>geo.indexCount-triCount*3u)
-        triCount=0u;
-
-    SetMeshOutputCounts(triCount*3u,triCount);
-    if (triCount==0u) return;
+    }
+    SetMeshOutputCounts(vertexCount,triCount);
+    if (vertexCount==0u || triCount==0u) return;
 
     const GsRasterView view=p.rasterView.Get();
-    // Two triangles per lane. No subgroup-width assumption.
+    const uint vertexBase=c.a.z;
+    const uint triBase=c.e.x;
+    // One unique vertex per lane. The meshlet vertex stream is already
+    // heap-global (lifted at registration); only the geometry's signed
+    // vertexOffset is applied, mirroring vkCmdDrawIndexedIndirect.
+    for (uint v=tid.x;v<vertexCount;v+=GS_MESH_THREADS) {
+        const uint globalId=p.meshletVertices.Get().id[vertexBase+v];
+        const int64_t vertexSigned=(int64_t)globalId+(int64_t)geo.vertexOffset;
+        verts[v]=FetchVertex((uint)vertexSigned,inst,view,p);
+    }
+    // One local triangle per lane (3 packed u8 ids).
     for (uint t=tid.x;t<triCount;t+=GS_MESH_THREADS) {
-        const uint firstVertex=first+t*3u;
-        [unroll] for (uint k=0u;k<3u;++k) {
-            const uint raw=p.indices.Get().index[firstVertex+k];
-            const int64_t vertexSigned=(int64_t)raw+(int64_t)geo.vertexOffset;
-            // Publication guarantees 0 <= vertexSigned < vertexCapacity.
-            // Malformed topology cannot be recovered by dropping single
-            // primitives here: all ranges must be checked on the CPU/GPU
-            // producer before assigning mesh ownership.
-            const uint vertexId=(uint)vertexSigned;
-            verts[t*3u+k]=FetchVertex(vertexId,inst,view,p);
-        }
-        tris[t]=uint3(t*3u,t*3u+1u,t*3u+2u);
+        const uint packed=p.meshletTriangles.Get().tri[triBase+t];
+        tris[t]=uint3(packed&255u,(packed>>8u)&255u,(packed>>16u)&255u);
     }
 }
