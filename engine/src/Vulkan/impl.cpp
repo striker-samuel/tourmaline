@@ -60,6 +60,7 @@
 #include <Engine/RHI/swapchain.h>
 #include <Engine/RHI/vulkan_layer_filter.h>
 #include <Engine/Renderer/mesh.h> // ValidateVertexLayout (pipeline build)
+#include <Engine/Renderer/spirv_validation.h>
 #include <Engine/Rendergraph/dlss.h>
 #include <Engine/Rendergraph/rendergraph.h>
 
@@ -2076,6 +2077,13 @@ inline void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
     VK_CHECK(vkCreateSemaphore(device_, &createInfo, nullptr, &out));
 };
 inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& out) {
+    // Reject malformed/truncated binaries before crossing into the driver.
+    // Semantic validity is checked using spirv-val at shader build time.
+    std::string validationError;
+    if (!smvk::CheckSpirvStructure(std::span<const char>(code.data(), code.size()),
+                                   &validationError)) {
+        throw std::runtime_error("Invalid SPIR-V shader module: " + validationError);
+    }
     VkShaderModuleCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     createInfo.codeSize = code.size();
