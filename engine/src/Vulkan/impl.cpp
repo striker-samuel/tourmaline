@@ -2147,6 +2147,33 @@ size_t g_diskPipelineCacheLastSavedSize = 0;
 uint64_t g_diskPipelineCacheLastSavedHash = 0;
 size_t g_diskPipelineCacheCompilesSinceSave = 0;
 
+// Count successful VkPipeline creation calls, irrespective of the driver
+// cache (whose actual shader compilation/cache-hit behavior is opaque).
+std::atomic<uint64_t> g_graphicsPipelinesCreated{0};
+std::atomic<uint64_t> g_computePipelinesCreated{0};
+
+void PrintPipelineCreationCounts(const char* phase) {
+    const uint64_t graphics = g_graphicsPipelinesCreated.load(std::memory_order_relaxed);
+    const uint64_t compute = g_computePipelinesCreated.load(std::memory_order_relaxed);
+    std::fprintf(stderr,
+                 "[PipelineStats] %s: graphics=%llu compute=%llu total=%llu "
+                 "(new VkPipelines, driver cache hits unknown)\n",
+                 phase, static_cast<unsigned long long>(graphics),
+                 static_cast<unsigned long long>(compute),
+                 static_cast<unsigned long long>(graphics + compute));
+}
+
+void NotePipelineCreated(std::atomic<uint64_t>& counter) {
+    const uint64_t updated = counter.fetch_add(1, std::memory_order_relaxed) + 1;
+    const uint64_t graphics = g_graphicsPipelinesCreated.load(std::memory_order_relaxed);
+    const uint64_t compute = g_computePipelinesCreated.load(std::memory_order_relaxed);
+    const uint64_t total = graphics + compute;
+    // First creation confirms lazy compilation is underway. Thereafter,
+    // print only at coarse milestones to avoid drowning startup logs.
+    if (total == 1 || (total % 64 == 0))
+        PrintPipelineCreationCounts("progress");
+}
+
 // The disk home: always <scratchDir>/pipeline_cache.bin (the dir is
 // created when missing — an unusable dir degrades to cache-off with
 // a log line, never a crash; the load/save sites keep their own
@@ -2201,6 +2228,9 @@ uint64_t PipelineCacheFnv1a64(const uint8_t* data, size_t size) {
 // Device-init hook: create the VkPipelineCache, seeded from the
 // validated disk file when possible.
 void CreateDiskPipelineCache() {
+    g_graphicsPipelinesCreated.store(0, std::memory_order_relaxed);
+    g_computePipelinesCreated.store(0, std::memory_order_relaxed);
+    PrintPipelineCreationCounts("startup");
     const char* path = PipelineCacheFilePath();
     g_diskPipelineCacheDiskEnabled = (path != nullptr);
 
@@ -2332,6 +2362,7 @@ void SaveDiskPipelineCache(bool force) {
 // Teardown hook: final forced save, then destroy the cache object
 // (before vkDestroyDevice).
 void DestroyDiskPipelineCache() {
+    PrintPipelineCreationCounts("shutdown");
     if (g_diskPipelineCache == VK_NULL_HANDLE)
         return;
     {
@@ -2378,6 +2409,7 @@ void static CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPi
             device_, g_diskPipelineCache, 1, &createInfo, nullptr, &pipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create graphics pipeline!");
     }
+    NotePipelineCreated(g_graphicsPipelinesCreated);
 }
 void static CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline) {
     SMVK_PROFILE_RENDER("Pipeline_CreateCompute");
@@ -2386,6 +2418,7 @@ void static CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipe
             device_, g_diskPipelineCache, 1, &createInfo, nullptr, &pipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create graphics pipeline!");
     }
+    NotePipelineCreated(g_computePipelinesCreated);
 }
 void static DestroyGraphicsPipeline(VkPipeline pipeline) {
     vkDestroyPipeline(device_, pipeline, nullptr);
