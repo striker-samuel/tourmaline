@@ -117,6 +117,8 @@ RunConfig RunConfig::Parse() {
         c.camPos = v;
     if ((v = Get("TOURMALINE_CAM_YAW")) != nullptr)
         c.camYawDeg = static_cast<float>(std::strtod(v, nullptr));
+    if ((v = Get("TOURMALINE_FOV")) != nullptr)
+        c.camFovDeg = static_cast<float>(std::strtod(v, nullptr));
 
     // AA pin (validated once here; the snapshot re-applies after every
     // scene seed). Accepts both historical spellings (msaa2x|msaa,
@@ -746,6 +748,8 @@ void RunConfig::Log() const {
         std::fprintf(stderr, " CAM_POS=%s", camPos->c_str());
     if (camFwd)
         std::fprintf(stderr, " CAM_FWD=%s", camFwd->c_str());
+    if (camFovDeg)
+        std::fprintf(stderr, " FOV=%.1f", *camFovDeg);
     if (meshSet && !mesh)
         std::fprintf(stderr, " MESH=0");
     if (wireframe)
@@ -779,6 +783,7 @@ void RunConfig::WarnUnknown() {
         "TOURMALINE_CAM_FWD",
         "TOURMALINE_CAM_YAW",
         "TOURMALINE_CAM_POS",
+        "TOURMALINE_FOV",
         "TOURMALINE_VOLUMETRIC",
         "TOURMALINE_VOLUMETRIC_STEPS",
         "TOURMALINE_VOLUMETRIC_DENSITY",

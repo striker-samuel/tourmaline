@@ -465,6 +465,7 @@ void WorldRenderer::Configure(WorldRendererConfig passes, const RunConfig& run) 
     // every load/rebind). The snapshot never re-reads the environment,
     // so pins are stable for the whole run.
     m_headlessPins = run;
+    m_camFovDegOverride = run.camFovDeg;
     ApplyRunConfig(run);
 }
 void WorldRenderer::ApplyRunConfig(const RunConfig& run) {
@@ -12213,8 +12214,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // seed-writes-the-G-buffer variant (a normal-outputting seed VS +
     // the trivial FS pair on the indirect draws) is the follow-up
     // that re-enables the slim split with SSR on.
-    const bool depthSplit = gfxFilterOn && fc.seedDepthPrimed &&
-                            !m_splitDisabled && !fc.ssrGbufferWanted;
+    const bool depthSplit =
+        gfxFilterOn && fc.seedDepthPrimed && !m_splitDisabled && !fc.ssrGbufferWanted;
     fc.gfxLodFilterable =
         depthSplit
             ? std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)>(
@@ -16213,7 +16214,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 //     static uint64_t s_expGoTick = 0;
                 //     const uint64_t tick = s_expGoTick++;
                 //     if (tick < 5 || tick % 600 == 0) {
-                //         SMVK_TRACE_LOG("[exposure] record GO tick=%llu slice=%u bda=0x%llx dx=%u "
+                //         SMVK_TRACE_LOG("[exposure] record GO tick=%llu slice=%u bda=0x%llx dx=%u
+                //         "
                 //                        "dy=%u hdrIdx=%u %ux%u\n",
                 //                        (unsigned long long)tick,
                 //                        fb.frameIndex,
