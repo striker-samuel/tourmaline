@@ -39,6 +39,12 @@ void Scene::ReserveNodeSlots(size_t slots) {
     if (hierarchy.size() > slots)
         CrashNodeBudget("budget smaller than existing scene", hierarchy.size(), slots);
     nodeSlotBudget = slots;
+    ReserveNodeCapacity(slots);
+}
+
+void Scene::ReserveNodeCapacity(size_t slots) {
+    if (slots < hierarchy.size() || slots >= kNodeSlotCountMax)
+        CrashNodeBudget("invalid scene capacity", slots, kNodeSlotCountMax - 1);
     // The three arena-flat node streams use the process linear allocation
     // already established by InitMemory(), not independent per-scene arenas.
     // These are bound before the first allocation and remain valid until
@@ -501,6 +507,8 @@ void fprintfMat4(FILE* f, const glm::mat4& m);
 // Defer one notification per node until the renderer consumes the journal.
 // This bounds pending entries even in long-running headless worlds.
 static void QueueGpuSceneGlobalChange(Scene& scene, uint32_t node) {
+    if (scene.skipGpuSceneChangeJournal)
+        return;
     if (scene.gpuSceneGlobalQueued.size() <= node)
         scene.gpuSceneGlobalQueued.resize(size_t(node) + 1, 0);
     if (scene.gpuSceneGlobalQueued[node])
