@@ -11922,7 +11922,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 inputs.indexWordCapacity = indexCap;
                                 inputs.vertexCapacity = vertexCap;
                                 inputs.worstMeshlets = worstMeshlets;
-                                inputs.coneEnabled = m_wireframe ? 0u : 1u;
+                                // Diagnostic isolation toggles for the task
+                                // shader's per-meshlet visibility tests (one-shot
+                                // static latches, documented diagnostic knobs):
+                                //   TOURMALINE_TASK_NO_CONE=1  -> skip normal-cone cull
+                                //   TOURMALINE_TASK_NO_HIZ=1   -> skip meshlet Hi-Z occlusion
+                                static const bool s_taskNoCone = [] {
+                                    const char* e = std::getenv("TOURMALINE_TASK_NO_CONE");
+                                    return e && std::strcmp(e, "0") != 0;
+                                }();
+                                static const bool s_taskNoHiz = [] {
+                                    const char* e = std::getenv("TOURMALINE_TASK_NO_HIZ");
+                                    return e && std::strcmp(e, "0") != 0;
+                                }();
+                                inputs.coneEnabled = (m_wireframe || s_taskNoCone) ? 0u : 1u;
                                 // Meshlet-level Hi-Z occlusion: reuse the
                                 // visibility view's reversed-Z MIN pyramid
                                 // (the same buffer the GPU-scene raster Hi-Z
@@ -11951,10 +11964,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                         const bool hizOcclusion =
                                             (uint32_t(m_gfxRenderer.config.cullFlags) &
                                              uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion)) != 0u;
-                                        inputs.hizValid =
-                                            (inputs.hiz != 0u && hz.mipCount != 0u && hizOcclusion)
-                                                ? 1u
-                                                : 0u;
+                                        inputs.hizValid = (!s_taskNoHiz && inputs.hiz != 0u &&
+                                                           hz.mipCount != 0u && hizOcclusion)
+                                                              ? 1u
+                                                              : 0u;
                                     }
                                 }
                                 taskReady = m_gpuSceneTaskMeshRuntime.Prepare(
