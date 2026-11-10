@@ -3528,10 +3528,10 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                 if (sameSource && !cachedMesh->asset.nodes.empty()) {
                     const size_t perRef = cachedMesh->asset.nodes.size(); // + placeholder - root
                     const size_t count = doc.references.size();
-                    const size_t maxSlots = size_t(smvk::tour::scene::kNodeSlotCountMax - 1);
+                    const size_t maxSlots = size_t(::tour::scene::kNodeSlotCountMax - 1);
                     if (count <= maxSlots / perRef) {
                         const size_t wanted = cluster.scene.hierarchy.size() + count * perRef;
-                        if (wanted < smvk::tour::scene::kNodeSlotCountMax &&
+                        if (wanted < ::tour::scene::kNodeSlotCountMax &&
                             (!cluster.scene.nodeSlotBudget ||
                              wanted <= cluster.scene.nodeSlotBudget))
                             cluster.scene.ReserveNodeCapacity(wanted);
