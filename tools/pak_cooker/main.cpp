@@ -1979,6 +1979,7 @@ int Run(const PakArgs& c) {
             // them for name-independent tours: commands/overrides can use
             // names for verification, renaming or regex addressing.
             cluster->scene.namesStripped = tour.commands.empty() && tour.overrides.empty();
+            cluster->scene.skipGpuSceneChangeJournal = true;
             addNode(cluster->scene, -1, 0); // empty scene root
             if (!tour.references.empty()) {
                 const std::string ownerBase = smvk::vfs::BaseDir(tour.references[0].source);
@@ -2200,6 +2201,7 @@ int Run(const PakArgs& c) {
             cluster->SetOfflineMode(true);
             // Direct artifact assembly has no .tour name-addressed replay.
             cluster->scene.namesStripped = true;
+            cluster->scene.skipGpuSceneChangeJournal = true;
             addNode(cluster->scene, -1, 0); // empty scene root (editor parity)
             const std::string baseDir = smvk::vfs::BaseDir(artPath);
             auto texSrc = std::make_shared<VfsTextureSource>(&vfs, baseDir);
@@ -2797,6 +2799,7 @@ int Run(const PakArgs& c) {
         tool::out() << "Registered probe GI '" << probe << "'\n";
     }
 
+    const auto serializeStageStart = std::chrono::steady_clock::now();
     smvk::PakWriter writer;
     writer.SetCompression(args.compress ? smvk::PakCompression::Lz4 : smvk::PakCompression::None,
                           args.lz4Accel);
@@ -3286,7 +3289,16 @@ int Run(const PakArgs& c) {
     for (auto& [vfsPath, bytes] : giBlobs)
         levelSubs.push_back(
             {smvk::PakAssetKind::Texture, vfsPath, std::span<const uint8_t>(bytes)});
+    const auto serializeStageEnd = std::chrono::steady_clock::now();
     std::vector<uint8_t> pak = writer.Finalize();
+    const auto packFinalizeEnd = std::chrono::steady_clock::now();
+    tool::out() << "[CookProfile] assembly/pre-serialization "
+                << std::chrono::duration<double>(serializeStageStart - t0).count()
+                << "s, serializer+content staging "
+                << std::chrono::duration<double>(serializeStageEnd - serializeStageStart).count()
+                << "s, pak finalize "
+                << std::chrono::duration<double>(packFinalizeEnd - serializeStageEnd).count()
+                << "s\n";
 
     {
         std::filesystem::path out(args.outPak);
