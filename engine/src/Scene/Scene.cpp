@@ -120,9 +120,23 @@ std::string UniqueSiblingNodeName(const Scene& scene, int node, const std::strin
         return requested;
     const int parent = scene.hierarchy[size_t(node)].parent;
     auto taken = [&](const std::string& name) {
+        if (parent >= 0) {
+            // Walk the sibling chain under `parent` (O(siblings)), not the
+            // whole hierarchy (O(nodes)) — the old full scan made every name
+            // assignment in an instanced scene O(total nodes), i.e. O(N^2)
+            // over the cook.
+            for (int sib = scene.hierarchy[size_t(parent)].firstChild; sib >= 0;
+                 sib = scene.hierarchy[size_t(sib)].nextSibling) {
+                if (sib != node && getNodeName(scene, sib) == name)
+                    return true;
+            }
+            return false;
+        }
+        // Root nodes (parent == -1) have no firstChild chain: linear scan
+        // over the (rare) roots.
         for (size_t i = 0; i < scene.hierarchy.size(); ++i) {
-            if (i != size_t(node) && IsLiveSlot(scene, uint32_t(i)) &&
-                scene.hierarchy[i].parent == parent && getNodeName(scene, int(i)) == name)
+            if (int(i) != node && IsLiveSlot(scene, uint32_t(i)) &&
+                scene.hierarchy[i].parent == -1 && getNodeName(scene, int(i)) == name)
                 return true;
         }
         return false;
