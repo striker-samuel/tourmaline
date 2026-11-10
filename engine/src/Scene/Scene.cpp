@@ -262,7 +262,7 @@ int addNode(Scene& scene, int parent, int level, bool autoName) {
     // autoName=false (the cooked-blob parse): no synthesized names - the
     // blob's own name sections are the only source (see addNode's header
     // comment).
-    if (autoName)
+    if (autoName && !scene.namesStripped)
         setNodeName(scene, node, "node" + std::to_string(node), /*dedupe=*/false);
     return node;
 }
@@ -479,6 +479,8 @@ void ClearSubtreeStatic(Scene& scene, int node) {
 }
 
 int findNodeByName(const Scene& scene, const std::string& name) {
+    if (scene.namesStripped)
+        return -1;
     // Extremely simple linear search without any hierarchy reference
     // To support DFS/BFS searches separate traversal routines are needed
 
