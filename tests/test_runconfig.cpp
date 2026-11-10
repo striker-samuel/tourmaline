@@ -99,6 +99,7 @@ int main() {
     SetVar("TOURMALINE_MESH", "0");
     SetVar("TOURMALINE_CAPTURE", "48");
     SetVar("TOURMALINE_CAM_YAW", "90.0");
+    SetVar("TOURMALINE_FOV", "70.0");
     SetVar("TOURMALINE_TERRAIN", "1");
     SetVar("TOURMALINE_SSR", "off");
     SetVar("TOURMALINE_AO", "ssao");
@@ -116,6 +117,7 @@ int main() {
         Check(c.meshSet && !c.mesh && c.meshDeviceKilled, "runconfig.parse-mesh-kill");
         Check(c.capture == 48, "runconfig.parse-capture");
         Check(c.camYawDeg.has_value() && *c.camYawDeg == 90.0f, "runconfig.parse-yaw");
+        Check(c.camFovDeg.has_value() && *c.camFovDeg == 70.0f, "runconfig.parse-fov");
         Check(c.terrainPinned && c.terrain, "runconfig.parse-terrain");
         Check(c.ssr.has_value() && *c.ssr == engine::OnOffPin::Off, "runconfig.parse-ssr-pin");
         Check(c.ao.has_value() && *c.ao == engine::AoPin::Ssao, "runconfig.parse-ao-pin");

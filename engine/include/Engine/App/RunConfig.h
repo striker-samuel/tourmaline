@@ -50,6 +50,7 @@ struct RunConfig {
     std::optional<std::string> camFwd; // "x,y,z", wins over yaw
     std::optional<std::string> camPos; // "x,y,z"
     std::optional<float> camYawDeg;
+    std::optional<float> camFovDeg; // vertical FOV degrees (overrides authored)
 
     // ---- antialiasing / filtering ----
     // aa: off|msaa2x|msaa|smaa1x|smaat2x|t2x|msaa2xcustom

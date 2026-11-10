@@ -55,8 +55,8 @@
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_raster_ownership.h>
-#include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_task_mesh_runtime.h>
+#include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/Renderer/renderview.h>
@@ -2561,8 +2561,11 @@ class WorldRenderer : public IRenderer {
             return;
         // The scene's default-camera lens (m_sceneFovYDeg/
         // m_sceneNearClip/m_sceneFarClip, set by the default-camera
-        // framing at load).
-        m_camera.setPerspective(glm::radians(m_sceneFovYDeg),
+        // framing at load), overridden by the TOURMALINE_FOV pin when set.
+        const float fovYDeg = m_camFovDegOverride.has_value()
+                                  ? std::clamp(*m_camFovDegOverride, 1.0f, 179.0f)
+                                  : m_sceneFovYDeg;
+        m_camera.setPerspective(glm::radians(fovYDeg),
                                 float(extent.width) / float(extent.height),
                                 m_sceneNearClip,
                                 kMainViewFarPlane);
@@ -2620,10 +2623,9 @@ class WorldRenderer : public IRenderer {
     // The shared ownership keeps the channel alive through render callbacks;
     // the source's own captured objects must still outlive their use.
     void BindDebugDrawChannel(std::shared_ptr<tour::DebugDrawChannel> channel) {
-        SetDebugDrawSource(
-            channel ? [channel = std::move(channel)](tour::DebugDrawList& draw) {
-                channel->CollectInto(draw);
-            } : std::function<void(tour::DebugDrawList&)>{});
+        SetDebugDrawSource(channel ? [channel = std::move(channel)](
+                                         tour::DebugDrawList& draw) { channel->CollectInto(draw); }
+                                   : std::function<void(tour::DebugDrawList&)>{});
     }
     // Retained world-space spline and point-cloud instances. Updates retain
     // their handles until explicitly removed or the renderer is destroyed.
@@ -2987,6 +2989,10 @@ class WorldRenderer : public IRenderer {
     // UpdateCameraAspect (generic framing leaves these untouched).
     float m_sceneFovYDeg = kCameraFovYDegrees;
     float m_sceneNearClip = default_near_clip;
+    // TOURMALINE_FOV override (degrees): applied over the authored lens
+    // after scene framing (Configure stores it; the framing block applies
+    // it so an explicit pin wins over the authored camera like CAM_POS).
+    std::optional<float> m_camFovDegOverride;
     // Project root for the content VFS (see SetProjectRoot).
     std::string m_projectRoot;
     // --no-vfs (host opt-in, see SetNoVfs): mute the loose VFS discovery

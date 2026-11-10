@@ -466,6 +466,7 @@ void WorldRenderer::Configure(WorldRendererConfig passes, const RunConfig& run) 
     // every load/rebind). The snapshot never re-reads the environment,
     // so pins are stable for the whole run.
     m_headlessPins = run;
+    m_camFovDegOverride = run.camFovDeg;
     ApplyRunConfig(run);
 }
 void WorldRenderer::ApplyRunConfig(const RunConfig& run) {
