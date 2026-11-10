@@ -1201,6 +1201,12 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             const Scene& scene = cluster.scene;
             const auto exportView = tour::scene::BuildStaticExportHierarchy(scene);
             std::vector<uint8_t> blob;
+            // Hierarchy (20 B) + local matrix (64 B) are mandatory for every
+            // live node. Reserve the known lower bound before any PutU32
+            // writes, avoiding repeated large-vector reallocations.
+            const size_t expectedNodes = size_t(LiveNodeCount(scene));
+            if (expectedNodes <= (std::numeric_limits<size_t>::max() - 4) / 84)
+                blob.reserve(4 + expectedNodes * 84);
             // Epoch 6b: the cooked scene stays DENSE (the locked decision —
             // a cooked scene needs no free list). Live slots compact in
             // ASCENDING slot order, which is byte-identical to the pre-6b
@@ -1788,6 +1794,23 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
                     const size_t hash = uri.find('#');
                     return hash == std::string::npos ? uri : uri.substr(0, hash);
                 };
+                // LOD-family local bounds are invariant across instances.
+                // Cache them once rather than iterating the same members
+                // for each static mesh row in an instanced scene.
+                std::unordered_map<std::string, std::pair<glm::vec3, glm::vec3>> familyBounds;
+                familyBounds.reserve(bvhFamilyMembers.size());
+                for (const auto& [family, members] : bvhFamilyMembers) {
+                    glm::vec3 mn(std::numeric_limits<float>::max());
+                    glm::vec3 mx(-std::numeric_limits<float>::max());
+                    for (const std::string& member : members) {
+                        const auto aIt = bvhAabbByUri.find(member);
+                        if (aIt == bvhAabbByUri.end())
+                            continue;
+                        mn = glm::min(mn, aIt->second.mn);
+                        mx = glm::max(mx, aIt->second.mx);
+                    }
+                    familyBounds.emplace(family, std::make_pair(mn, mx));
+                }
                 for (const MeshRow& row : scene.tables.meshes) {
                     if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
                         continue; // the pair table above already failed loudly on these
@@ -1809,18 +1832,11 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
                     // FAMILY-UNION local bounds (the runtime rebuild's
                     // lod-chain union; simplified siblings stay inside the
                     // base hull, the union is belt-and-braces parity).
-                    glm::vec3 lmn(std::numeric_limits<float>::max());
-                    glm::vec3 lmx(-std::numeric_limits<float>::max());
-                    const auto famIt = bvhFamilyMembers.find(familyOf(uri));
-                    if (famIt != bvhFamilyMembers.end()) {
-                        for (const std::string& member : famIt->second) {
-                            const auto aIt = bvhAabbByUri.find(member);
-                            if (aIt == bvhAabbByUri.end())
-                                continue;
-                            lmn = glm::min(lmn, aIt->second.mn);
-                            lmx = glm::max(lmx, aIt->second.mx);
-                        }
-                    }
+                    const auto famIt = familyBounds.find(familyOf(uri));
+                    if (famIt == familyBounds.end())
+                        return fail("static bvh family bounds missing for " + uri);
+                    const glm::vec3& lmn = famIt->second.first;
+                    const glm::vec3& lmx = famIt->second.second;
                     // World AABB: 8 corners under the node's global
                     // transform (conservative under rotation/scale).
                     const glm::mat4& model = scene.globalTransform[row.node];
