@@ -3707,7 +3707,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // 'outer:inner:name'. Runs AFTER the source tour's replay: its
             // verify-names and its own wide overrides matched the
             // un-prefixed names.
-            if (!isRoot) {
+            if (!isRoot && !cluster.scene.namesStripped) {
                 const std::string ns =
                     cur.nsPrefix + (r.nameSpace.empty() ? name : r.nameSpace) + ":";
                 std::vector<uint32_t> stack;
