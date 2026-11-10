@@ -1056,12 +1056,12 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
             f << " -name " << Quote(r.name);
         if (!r.root && !r.asset && !r.nameSpace.empty())
             f << " -namespace " << Quote(r.nameSpace);
-        if (r.hasTranslate || (!sourceVerb && r.hasRotate)) {
+        if (r.hasTranslate || r.hasRotate) {
             f << " -t " << r.translate.x << " " << r.translate.y << " " << r.translate.z;
-            if (!sourceVerb && r.hasRotate)
+            if (r.hasRotate)
                 f << " " << r.rotate.x << " " << r.rotate.y << " " << r.rotate.z;
         }
-        if (!sourceVerb && r.hasScale)
+        if (r.hasScale)
             f << " -s " << r.scale.x << " " << r.scale.y << " " << r.scale.z;
         if (!r.enabled)
             f << " -enabled off";
@@ -1735,6 +1735,27 @@ bool LoadTourFromString(const std::string& text,
                             ParseDouble(v, z);
                         r.translate = glm::vec3(float(x), float(y), float(z));
                         r.hasTranslate = true;
+                        // Optional rotation: the 6-value -t form (x y z rx
+                        // ry rz) the `reference` verb accepts. Consume three
+                        // more numeric tokens when present; a following flag
+                        // (-s/-enabled/...) is never a rotation value.
+                        auto peekNumeric = [&](size_t off, double& out) -> bool {
+                            if (i + 1 + off >= toks.size())
+                                return false;
+                            std::string tk = toks[i + 1 + off];
+                            if (!tk.empty() && tk.back() == ';')
+                                tk.pop_back();
+                            return ParseDouble(tk, out);
+                        };
+                        double rx = 0, ry = 0, rz = 0;
+                        if (peekNumeric(0, rx) && peekNumeric(1, ry) && peekNumeric(2, rz)) {
+                            r.rotate = glm::vec3(float(rx), float(ry), float(rz));
+                            r.hasRotate = true;
+                            std::string dummy;
+                            next(dummy);
+                            next(dummy);
+                            next(dummy);
+                        }
                     }
                 }
                 if (!r.source.empty()) {
