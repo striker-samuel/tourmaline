@@ -3061,7 +3061,8 @@ size_t BuildFromMeshAsset(
         smvk::ClusterMaterialHandle mh = materialFor(inst.materialGuid);
         if (!mh.empty())
             SetMaterial(scene, n, mh.index());
-        markAsChanged(scene, int(n));
+        // Already marked when the mapped node was created above; mesh/material
+        // associations do not change its local transform.
     }
     for (const auto& l : asset.lights) {
         if (l.node == 0 || l.node >= asset.nodes.size())
@@ -3124,6 +3125,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
     std::map<std::string, MeshAssetCacheEntry> meshAssetCache;
     size_t successfulReferences = 0;
     size_t createdReferenceNodes = 0;
+    bool preallocatedFlatScene = false;
     // HOST-AWARE path utils: vfs::BaseDir/FileName are VFS-RELATIVE
     // utilities — vfs::Normalize REJECTS drive-letter absolutes (C:/...)
     // by design, so calling them on a resolved HOST path returns EMPTY
@@ -3512,6 +3514,30 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // a direct source import exactly, so editor and cook
             // builds are identical by construction.
             const bool isRoot = r.root;
+            // Flat offline grids use identical source hierarchies. Preallocate
+            // the scene's node streams once rather than repeatedly growing
+            // independent arrays for every reference. Leave command-created
+            // nodes to normal capacity growth.
+            if (!preallocatedFlatScene && cluster.IsOfflineMode() && cur.depth == 0 &&
+                meshLoaded && cachedMesh && doc.references.size() >= 1024) {
+                preallocatedFlatScene = true;
+                const bool sameSource = std::all_of(
+                    doc.references.begin(), doc.references.end(), [&](const auto& ref) {
+                        return ref.source == modelSource;
+                    });
+                if (sameSource && !cachedMesh->asset.nodes.empty()) {
+                    const size_t perRef = cachedMesh->asset.nodes.size(); // + placeholder - root
+                    const size_t count = doc.references.size();
+                    const size_t maxSlots = size_t(smvk::tour::scene::kNodeSlotCountMax - 1);
+                    if (count <= maxSlots / perRef) {
+                        const size_t wanted = cluster.scene.hierarchy.size() + count * perRef;
+                        if (wanted < smvk::tour::scene::kNodeSlotCountMax &&
+                            (!cluster.scene.nodeSlotBudget ||
+                             wanted <= cluster.scene.nodeSlotBudget))
+                            cluster.scene.ReserveNodeCapacity(wanted);
+                    }
+                }
+            }
             // Placeholder group node under the recorded parent (level-space
             // parent resolved to owner space above). Root references
             // anchor at the scene root instead (ph stays 0 — the
