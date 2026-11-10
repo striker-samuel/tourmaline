@@ -1377,7 +1377,20 @@ enum GpuStageTimer : uint32_t {
     kGpuStageEvsmResolve,   // EVSM per-sample MSAA depth -> moments resolve
     kGpuStageEvsmBlur,      // EVSM async blur stream (the whole C chain)
     kGpuStageAsyncPassBase, // per-pass C-stream pairs start here
-    kGpuStageCount = kGpuStageAsyncPassBase + kGpuAsyncPassMaxTimers
+    // Main-pass GPU-scene draw (task/mesh dispatch OR the indexed raster
+    // leg - mutually exclusive per frame). A BOTTOM_OF_PIPE timestamp pair
+    // around the draw dispatch measures the pure GPU raster cost of the
+    // geometry leg, independent of the CPU cost of recording the commands.
+    kGpuStageMainDraw = kGpuStageAsyncPassBase + kGpuAsyncPassMaxTimers,
+    // GPU-scene temporal cull compute (the Hi-Z instance-cull gate +
+    // visible-history pass). This is the SEPARATE compute culling work that
+    // precedes the draw and is shared by BOTH the indexed and task/mesh
+    // legs (the task shader's own meshlet cull is additional, inside the
+    // draw stage). Measuring it separately keeps the draw-vs-cull split
+    // honest when comparing the indexed leg (cull is external) against the
+    // task/mesh leg (cull is partly inline).
+    kGpuStageSceneCull,
+    kGpuStageCount
 };
 
 enum Bindings {

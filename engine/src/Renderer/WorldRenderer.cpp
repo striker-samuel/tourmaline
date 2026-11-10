@@ -93,7 +93,7 @@ static double s_benchUpdates = 0.0, s_benchPasses = 0.0, s_benchReadbacks = 0.0,
               s_benchExecute = 0.0, s_benchUpdA = 0.0, s_benchUpdB = 0.0, s_benchStream = 0.0,
               s_benchFp = 0.0, s_benchFpGen = 0.0, s_benchFpUp = 0.0, s_benchFpDs = 0.0,
               s_benchPreMain = 0.0, s_benchPostMain = 0.0, s_benchPreA = 0.0, s_benchPreB = 0.0,
-              s_benchPreC = 0.0;
+              s_benchPreC = 0.0, s_benchDrawRecord = 0.0;
 
 // Descriptor defaults, pass sizing and static policy live in a separate
 // compilation fragment. Execution order and resource ownership stay here.
@@ -9547,6 +9547,35 @@ void WorldRenderer::RenderLayerInto(const ElementFrame& frame) {
                         (unsigned long long)drawnTris,
                         trisPerSec * 1e-6);
         }
+        // Indexed (raster) drawn-triangle count (the regular
+        // primitives-generated query wrapping the GPU-scene indexed draws).
+        if (m_swapchain && m_swapchain->PrimitiveCountRegularSupported() &&
+            m_swapchain->PrimitiveCountRegularValid(0u)) {
+            const uint64_t drawnTris = m_swapchain->GetPrimitiveCountRegular(0u);
+            const double trisPerSec =
+                m_gpuMsSmooth > 0.0 ? double(drawnTris) / (m_gpuMsSmooth * 1e-3) : 0.0;
+            std::printf("[perf] indexed drawn tris %llu (%.1fM tris/sec)\n",
+                        (unsigned long long)drawnTris,
+                        trisPerSec * 1e-6);
+        }
+        // Main draw-phase breakdown: the GPU stage timestamp around the
+        // geometry dispatch (pure GPU raster cost - no command-record
+        // time) + the CPU time spent recording those commands (the
+        // steady_clock span around the draw calls inside the Main pass).
+        if (m_stageGpuTimingsSupported && s_benchStageFrames > 0) {
+            const double sn = (double)s_benchStageFrames;
+            const double recN = (double)m_host.GetFrameBudget();
+            std::printf(
+                "[perf] main draw gpu %s | cull gpu %s | record cpu %.4f ms\n",
+                m_stageGpuValid[smvk::kGpuStageMainDraw]
+                    ? (std::to_string(s_benchStageMs[smvk::kGpuStageMainDraw] / sn) + " ms").c_str()
+                    : "(off)",
+                m_stageGpuValid[smvk::kGpuStageSceneCull]
+                    ? (std::to_string(s_benchStageMs[smvk::kGpuStageSceneCull] / sn) + " ms")
+                          .c_str()
+                    : "(off)",
+                s_benchDrawRecord / recN);
+        }
         const double n = (double)m_host.GetFrameBudget(); // this render already accumulated
         std::printf("[perf] phases updates %.3f ms (u/l/m %.3f + stream %.3f + fp %.3f [gen %.3f "
                     "up %.3f ds %.3f]) passes %.3f ms (preA %.3f preB %.3f preC %.3f postMain "
@@ -14263,6 +14292,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneRasterHistoryLogicals[m_gpuSceneRasterLastHistoryFlight], hizRead);
             auto hizProgram = m_gpuSceneRasterHizCullProgram;
             gate.SetRecordingFunc([hizProgram, hizPush](smvk::CommandBuffer& cmd) mutable {
+                cmd.WriteStageTimestamp(smvk::kGpuStageSceneCull, true);
                 cmd.BindComputePipeline(hizProgram);
                 cmd.PushConstants(0, sizeof(hizPush), &hizPush, smvk::ShaderStage::Compute);
                 cmd.Dispatch((hizPush.commandCapacity + 127u) / 128u, 1, 1);
@@ -14302,6 +14332,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 commitPush.mode = 1u;
                 cmd.PushConstants(0, sizeof(commitPush), &commitPush, smvk::ShaderStage::Compute);
                 cmd.Dispatch((historyPush.commandCapacity + 127u) / 128u, 1, 1);
+                cmd.WriteStageTimestamp(smvk::kGpuStageSceneCull, false);
             });
             m_gpuSceneRasterLastHistoryFlight = temporalFlight;
             m_gpuSceneRasterHistoryWorld = m_world;
@@ -15868,6 +15899,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // eligibility gate proved every World draw belongs to it.
         if (sceneRasterActive && sceneTaskActive) {
             cmd.BeginPrimitiveCount(0u);
+            cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, true);
+            const auto drawRecT0 = std::chrono::steady_clock::now();
             const auto drawTaskBin = [&](uint32_t cls,
                                          smvk::ShaderProgram& program,
                                          smvk::CullMode cull,
@@ -15901,6 +15934,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             if (sceneRasterMaskedTwoSided)
                 drawTaskBin(3u, masked, smvk::CullMode::None, taskMsaa);
             cmd.EndPrimitiveCount(0u);
+            cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, false);
+            if (m_host.BenchMeasuring()) {
+                s_benchDrawRecord += std::chrono::duration<double, std::milli>(
+                                         std::chrono::steady_clock::now() - drawRecT0)
+                                         .count();
+            }
         }
         if (sceneRasterActive && sceneRasterCommandCount > 0 && !sceneTaskActive) {
             cmd.BindStaticVertexFmt();
@@ -15952,6 +15991,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                             sizeof(tour::gpu_scene::RasterIndirectCommand));
                 }
             };
+            cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, true);
+            const auto drawRecT0 = std::chrono::steady_clock::now();
+            cmd.BeginPrimitiveCountRegular(0u);
             drawBin(0u);
             if (sceneRasterTwoSided) {
                 // One extra PSO bind for the entire class, never per object.
@@ -15991,6 +16033,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        sceneMaskedMsaa,
                                        smvk::RasterSettings{.cullMode = smvk::CullMode::None});
                 drawBin(3u);
+            }
+            cmd.EndPrimitiveCountRegular(0u);
+            cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, false);
+            if (m_host.BenchMeasuring()) {
+                s_benchDrawRecord += std::chrono::duration<double, std::milli>(
+                                         std::chrono::steady_clock::now() - drawRecT0)
+                                         .count();
             }
         }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----
@@ -16330,6 +16379,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // (deprecated lightmap) lobe-count twin only refines ranges
             // when NO GI variant is active.
             const engine::GIVariant giVar = GetActiveGIVariant();
+            // Only treat the filtered leg as the PRIMARY draw when the
+            // GPU-scene raster is off. When raster is on, this leg draws
+            // only legacy complements and would otherwise overwrite the
+            // indexed/task leg's stage timestamp + primitive-count query
+            // (they share the same slot and run earlier in the pass).
+            const bool gfxPrimary = !sceneRasterActive && !gfxRanges.empty();
+            std::chrono::steady_clock::time_point drawRecT0Gfx{};
+            if (gfxPrimary) {
+                cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, true);
+                drawRecT0Gfx = std::chrono::steady_clock::now();
+                cmd.BeginPrimitiveCountRegular(0u);
+            }
             for (uint32_t ri = 0; ri < (uint32_t)gfxRanges.size(); ++ri) {
                 // Mesh-drawn ranges skip the indexed multi-draw (the
                 // mesh dispatches above covered them; the contract is
@@ -16381,6 +16442,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gfxRenderer.PushViewConstants(
                     cmd, *m_context, gfxSlot, renderViewsAddress, mainRenderView);
                 m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
+            }
+            if (gfxPrimary) {
+                cmd.EndPrimitiveCountRegular(0u);
+                cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, false);
+                if (m_host.BenchMeasuring()) {
+                    s_benchDrawRecord += std::chrono::duration<double, std::milli>(
+                                             std::chrono::steady_clock::now() - drawRecT0Gfx)
+                                             .count();
+                }
             }
         }
         if (!bypassFilter && (!sceneRasterActive || m_gpuSceneRasterLegacyCount != 0)) {
