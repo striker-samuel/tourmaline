@@ -11,7 +11,6 @@
 #include "gfxfilter.hlsli" // GfxHzbCtx / ProjectBound / BoundHzbOccluded (meshlet Hi-Z)
 
 GPU_PUSH(GsTaskMeshPush, pc);
-groupshared uint gsScan[GS_TASK_THREADS];
 // The task payload is a groupshared object: DXC's SPIR-V backend maps a
 // groupshared variable handed to DispatchMesh() to
 // TaskPayloadWorkgroupEXT (the `in payload` parameter form only works on
@@ -138,18 +137,14 @@ void mainAS(uint3 groupId : SV_GroupID,
         }
     }
 
-    // Workgroup-wide exclusive prefix; unlike WavePrefixCountBits this
-    // works on both 32- and 64-lane subgroup hardware. No atomics.
-    gsScan[lane]=keep?1u:0u;
-    GroupMemoryBarrierWithGroupSync();
-    for (uint step=1u;step<GS_TASK_THREADS;step<<=1u) {
-        const uint add=lane>=step?gsScan[lane-step]:0u;
-        GroupMemoryBarrierWithGroupSync();
-        gsScan[lane]+=add;
-        GroupMemoryBarrierWithGroupSync();
-    }
-    const uint rank=gsScan[lane]-(keep?1u:0u);
-    const uint survivorCount=gsScan[GS_TASK_THREADS-1u];
+    // Wave-level exclusive prefix + count: GS_TASK_THREADS is 32, exactly
+    // one NVIDIA warp (and a single wave on RDNA wave32). This replaces the
+    // five-step shared-memory prefix scan (12 workgroup barriers) with
+    // native wave ops, matching the mesh-path compaction in
+    // gfxfilter.mesh.hlsl. The single surviving write uses lane 0, which is
+    // the wave's first lane under that one-wave-per-group contract.
+    const uint rank=WavePrefixCountBits(keep);
+    const uint survivorCount=WaveActiveCountBits(keep);
     if (lane==0u) {
         gsPayload.workSlot=group.workSlot;
         gsPayload.surviving=survivorCount;
@@ -157,6 +152,8 @@ void mainAS(uint3 groupId : SV_GroupID,
     if (keep)
         gsPayload.clusterIds[rank]=clusterId;
 
+    // Payload visibility before DispatchMesh consumes it (the groupshared
+    // payload must be fully written and visible to every lane).
     GroupMemoryBarrierWithGroupSync();
     // DispatchMesh must be executed uniformly by the entire task group.
     DispatchMesh(survivorCount,1u,1u,gsPayload);
