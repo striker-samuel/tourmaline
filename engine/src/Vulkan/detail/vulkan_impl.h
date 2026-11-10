@@ -1109,8 +1109,7 @@ struct VulkanResourceManager final /*: public IResourceManager*/ {
     // storage table remains a single contiguous buffer-device-address
     // array; the VMA blocks are never exposed as shader pages.
     std::array<VmaPool, 3> m_gpuScenePools{};
-    std::array<uint32_t, 3> m_gpuScenePoolMemoryTypes{
-        UINT32_MAX, UINT32_MAX, UINT32_MAX};
+    std::array<uint32_t, 3> m_gpuScenePoolMemoryTypes{UINT32_MAX, UINT32_MAX, UINT32_MAX};
     Submitter* m_submitter = nullptr;
     Submitter* m_transferSubmitter = nullptr;
     // Async-compute submitter for EVSM prefiltering. Aliased to the
@@ -1469,6 +1468,22 @@ class VulkanSwapchain final /*: public ISwapchain*/ {
         return (flight < smvk::limits::MaxFramesInFlight) ? timestampPools_[flight]
                                                           : VkQueryPool(VK_NULL_HANDLE);
     }
+    // Primitive-statistics query pool of a flight (drawn triangle
+    // counts). NULL_HANDLE when unsupported.
+    static constexpr uint32_t kPrimitiveCountSlots = 4;
+    VkQueryPool PrimitiveCountPool(uint32_t flight) const {
+        return (flight < smvk::limits::MaxFramesInFlight) ? primitiveCountPools_[flight]
+                                                          : VkQueryPool(VK_NULL_HANDLE);
+    }
+    bool PrimitiveCountSupported() const {
+        return primitiveCountSupported_;
+    }
+    uint64_t GetLastPrimitiveCount(uint32_t slot) const {
+        return slot < kPrimitiveCountSlots ? lastPrimitiveCounts_[slot] : 0;
+    }
+    bool PrimitiveCountValid(uint32_t slot) const {
+        return slot < kPrimitiveCountSlots ? primitiveCountValid_[slot] : false;
+    }
     // Last vkQueuePresentKHR wall time (ms). Under FIFO VSync the
     // present blocks for the vertical blank — idle wait, not CPU work.
     double GetLastPresentWaitMs() const {
@@ -1596,6 +1611,16 @@ class VulkanSwapchain final /*: public ISwapchain*/ {
     double lastPresentWaitMs_ = 0.0;
     void CreateTimestampPools();
     void DestroyTimestampPools();
+
+    // Primitive-statistics query pools (drawn triangle counts): one
+    // query per slot per flight, read back on frame retire (slot validity
+    // in primitiveCountValid_). Populated alongside the timestamp pools.
+    VkQueryPool primitiveCountPools_[smvk::limits::MaxFramesInFlight]{};
+    bool primitiveCountSupported_ = false;
+    uint64_t lastPrimitiveCounts_[kPrimitiveCountSlots] = {};
+    bool primitiveCountValid_[kPrimitiveCountSlots] = {};
+    void CreatePrimitiveCountPools();
+    void DestroyPrimitiveCountPools();
 
     void CreateSwapchain();
     void CreateImageViews();

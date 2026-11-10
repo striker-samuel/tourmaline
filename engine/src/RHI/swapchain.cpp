@@ -168,6 +168,15 @@ bool Swapchain::GetGpuStageTimings(double* outMs, bool* outValid, uint32_t count
 double Swapchain::GetPresentWaitMs() const {
     return impl_->vulkan->GetLastPresentWaitMs();
 }
+bool Swapchain::PrimitiveCountSupported() const {
+    return impl_->vulkan->PrimitiveCountSupported();
+}
+uint64_t Swapchain::GetPrimitiveCount(uint32_t slot) const {
+    return impl_->vulkan->GetLastPrimitiveCount(slot);
+}
+bool Swapchain::PrimitiveCountValid(uint32_t slot) const {
+    return impl_->vulkan->PrimitiveCountValid(slot);
+}
 Swapchain::Impl* Swapchain::GetImpl() {
     return impl_.get();
 }

@@ -8428,8 +8428,8 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
             if (size > limits[bin])
                 continue;
             uint32_t memoryTypeIndex = UINT32_MAX;
-            if (vmaFindMemoryTypeIndexForBufferInfo(
-                    m_allocator, &ci, &aci, &memoryTypeIndex) != VK_SUCCESS)
+            if (vmaFindMemoryTypeIndexForBufferInfo(m_allocator, &ci, &aci, &memoryTypeIndex) !=
+                VK_SUCCESS)
                 break;
             if (m_gpuScenePools[bin] == VK_NULL_HANDLE) {
                 VmaPoolCreateInfo pci{};
@@ -10469,6 +10469,7 @@ smvk::detail::vulkan::VulkanSwapchain::VulkanSwapchain(
     QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
     InitFrameCommands(indices.graphicsFamily.value());
     CreateTimestampPools();
+    CreatePrimitiveCountPools();
 }
 
 void smvk::detail::vulkan::VulkanSwapchain::InitFrameCommands(uint32_t graphicsFamily) {
@@ -10492,6 +10493,7 @@ smvk::detail::vulkan::VulkanSwapchain::~VulkanSwapchain() {
 
     vkDeviceWaitIdle(device_);
     DestroyTimestampPools();
+    DestroyPrimitiveCountPools();
     for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; i++) {
         vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
         // this freeds all the commands too
@@ -10763,6 +10765,34 @@ void smvk::detail::vulkan::VulkanSwapchain::DestroyTimestampPools() {
         timestampWritten_[i] = false;
     }
     gpuTimingValid_ = false;
+}
+void smvk::detail::vulkan::VulkanSwapchain::CreatePrimitiveCountPools() {
+    DestroyPrimitiveCountPools();
+    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    info.queryType = VK_QUERY_TYPE_MESH_PRIMITIVES_GENERATED_EXT;
+    info.queryCount = kPrimitiveCountSlots;
+    primitiveCountSupported_ = true;
+    for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; ++i) {
+        if (vkCreateQueryPool(device_, &info, nullptr, &primitiveCountPools_[i]) != VK_SUCCESS) {
+            primitiveCountPools_[i] = VK_NULL_HANDLE;
+            primitiveCountSupported_ = false;
+        }
+    }
+    for (uint32_t s = 0; s < kPrimitiveCountSlots; ++s) {
+        lastPrimitiveCounts_[s] = 0;
+        primitiveCountValid_[s] = false;
+    }
+}
+void smvk::detail::vulkan::VulkanSwapchain::DestroyPrimitiveCountPools() {
+    for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; ++i) {
+        if (primitiveCountPools_[i] != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(device_, primitiveCountPools_[i], nullptr);
+            primitiveCountPools_[i] = VK_NULL_HANDLE;
+        }
+    }
+    primitiveCountSupported_ = false;
+    for (uint32_t s = 0; s < kPrimitiveCountSlots; ++s)
+        primitiveCountValid_[s] = false;
 }
 void smvk::detail::vulkan::VulkanSwapchain::CreateImageViews() {
     const uint32_t count = static_cast<uint32_t>(images_.size());
@@ -11226,6 +11256,28 @@ smvk::VulkanFrameBuffer smvk::detail::vulkan::VulkanSwapchain::AcquireFramebuffe
             if (sr == VK_SUCCESS && st[1] > st[0]) {
                 lastStageGpuMs_[s] = double(st[1] - st[0]) * double(timestampPeriod_) / 1e6;
                 stageTimingValid_[s] = true;
+            }
+        }
+    }
+
+    // Primitive-statistics (drawn triangle) readback: the same retired
+    // frame whose timestamps were pulled above. Each slot is read with
+    // VK_QUERY_RESULT_64_BIT (non-blocking; the fence wait guarantees
+    // completion). An unavailable result leaves the previous value.
+    if (primitiveCountSupported_ && primitiveCountPools_[currentFrame_] != VK_NULL_HANDLE) {
+        for (uint32_t s = 0; s < kPrimitiveCountSlots; ++s) {
+            uint64_t count = 0;
+            const VkResult pr = vkGetQueryPoolResults(device_,
+                                                      primitiveCountPools_[currentFrame_],
+                                                      s,
+                                                      1,
+                                                      sizeof(count),
+                                                      &count,
+                                                      sizeof(uint64_t),
+                                                      VK_QUERY_RESULT_64_BIT);
+            if (pr == VK_SUCCESS) {
+                lastPrimitiveCounts_[s] = count;
+                primitiveCountValid_[s] = true;
             }
         }
     }
@@ -13710,6 +13762,10 @@ struct StageTimerCtx {
     VkQueryPool pool = VK_NULL_HANDLE;
     bool supported = false;
 };
+struct PrimitiveCountCtx {
+    VkQueryPool pool = VK_NULL_HANDLE;
+    bool supported = false;
+};
 void smvk::RenderGraph::Execute(Framebuffer& fb) {
     // The flight this Execute records for: every pass's CommandBuffer binds
     // defaultDescriptorSets_[flightSlot_] (see BindRenderPipeline /
@@ -13802,6 +13858,16 @@ void smvk::RenderGraph::Execute(Framebuffer& fb) {
         }
     }
     void* const stageTimerCtxPtr = stageTimerCtx.supported ? &stageTimerCtx : nullptr;
+
+    PrimitiveCountCtx primitiveCountCtx{};
+    if (fb.swapchain) {
+        auto* pcSwap = static_cast<VulkanSwapchain*>(fb.swapchain->GetVulkanOpaque());
+        if (pcSwap && pcSwap->PrimitiveCountSupported()) {
+            primitiveCountCtx.pool = pcSwap->PrimitiveCountPool(fb.frameIndex);
+            primitiveCountCtx.supported = primitiveCountCtx.pool != VK_NULL_HANDLE;
+        }
+    }
+    void* const primitiveCountCtxPtr = primitiveCountCtx.supported ? &primitiveCountCtx : nullptr;
 
     // One GPU context per command buffer: every pass scope below (and any
     // GPU event emitted inside a recording lambda) writes its timestamp
@@ -14509,7 +14575,11 @@ void smvk::RenderGraph::Execute(Framebuffer& fb) {
             // Barriers above already transitioned hinted images/buffers.
             // Async-marked passes land in the compute-queue CB (true
             // async, split mode); the rest stay on the graphics CBs.
-            CommandBuffer cb{reinterpret_cast<void*>(dstCmd), *this, pass, stageTimerCtxPtr};
+            CommandBuffer cb{reinterpret_cast<void*>(dstCmd),
+                             *this,
+                             pass,
+                             stageTimerCtxPtr,
+                             primitiveCountCtxPtr};
             if (pass.recordingFunction_)
                 pass.recordingFunction_(cb);
 #if defined(TOURMALINE_NSIGHT_MARKERS)
@@ -14632,7 +14702,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb) {
             rect.layerCount = 1;
             vkCmdClearAttachments(dstCmd, 1, &clear, 1, &rect);
         }
-        CommandBuffer cb{reinterpret_cast<void*>(dstCmd), *this, pass, stageTimerCtxPtr};
+        CommandBuffer cb{
+            reinterpret_cast<void*>(dstCmd), *this, pass, stageTimerCtxPtr, primitiveCountCtxPtr};
         if (pass.recordingFunction_)
             pass.recordingFunction_(cb);
         vkCmdEndRendering(dstCmd);
@@ -14689,9 +14760,10 @@ void smvk::RenderGraph::Execute(Framebuffer& fb) {
 smvk::CommandBuffer::CommandBuffer(void* cmdOpaque,
                                    smvk::RenderGraph& graph,
                                    smvk::RenderPass& pass,
-                                   void* stageTimerOpaque)
+                                   void* stageTimerOpaque,
+                                   void* primitiveCountOpaque)
     : cmdOpaque_(cmdOpaque), graph_(&graph), renderPass_(&pass),
-      stageTimerOpaque_(stageTimerOpaque) {}
+      stageTimerOpaque_(stageTimerOpaque), primitiveCountOpaque_(primitiveCountOpaque) {}
 void smvk::CommandBuffer::WriteStageTimestamp(uint32_t stageTimer, bool begin) {
     if (stageTimerOpaque_ == nullptr || stageTimer >= kGpuStageCount)
         return;
@@ -14705,6 +14777,28 @@ void smvk::CommandBuffer::WriteStageTimestamp(uint32_t stageTimer, bool begin) {
                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                         ctx->pool,
                         2 + 2 * stageTimer + (begin ? 0 : 1));
+}
+void smvk::CommandBuffer::BeginPrimitiveCount(uint32_t slot) {
+    if (primitiveCountOpaque_ == nullptr)
+        return;
+    auto* ctx = static_cast<PrimitiveCountCtx*>(primitiveCountOpaque_);
+    if (!ctx || !ctx->supported || ctx->pool == VK_NULL_HANDLE ||
+        slot >= VulkanSwapchain::kPrimitiveCountSlots)
+        return;
+    // Reset then begin: the query is reset in-stream so each frame's
+    // begin/end is a self-contained measurement (no cross-frame reset).
+    VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque_);
+    vkCmdResetQueryPool(cmd, ctx->pool, slot, 1);
+    vkCmdBeginQuery(cmd, ctx->pool, slot, 0);
+}
+void smvk::CommandBuffer::EndPrimitiveCount(uint32_t slot) {
+    if (primitiveCountOpaque_ == nullptr)
+        return;
+    auto* ctx = static_cast<PrimitiveCountCtx*>(primitiveCountOpaque_);
+    if (!ctx || !ctx->supported || ctx->pool == VK_NULL_HANDLE ||
+        slot >= VulkanSwapchain::kPrimitiveCountSlots)
+        return;
+    vkCmdEndQuery(reinterpret_cast<VkCommandBuffer>(cmdOpaque_), ctx->pool, slot);
 }
 void smvk::CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram,
                                              VertexLayoutId vertexFormat,
@@ -14928,16 +15022,17 @@ void smvk::CommandBuffer::DrawMeshTasksIndirect(BufferHandle buffer,
                                                 uint32_t stride) {
     assert(vkCmdDrawMeshTasksIndirectEXT != nullptr &&
            "DrawMeshTasksIndirect requires VK_EXT_mesh_shader");
-    assert(stride >= sizeof(VkDrawMeshTasksIndirectCommandEXT) &&
-           stride % alignof(uint32_t) == 0u);
+    assert(stride >= sizeof(VkDrawMeshTasksIndirectCommandEXT) && stride % alignof(uint32_t) == 0u);
     assert(offset % alignof(uint32_t) == 0u);
     VulkanResourceManager& vulkanCtx =
         *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
     const Buffer* desc = vulkanCtx.buffers_.get(buffer);
     assert(desc != nullptr && desc->vkBuffer != VK_NULL_HANDLE);
-    vkCmdDrawMeshTasksIndirectEXT(
-        reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
-        desc->vkBuffer, static_cast<VkDeviceSize>(offset), drawCount, stride);
+    vkCmdDrawMeshTasksIndirectEXT(reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+                                  desc->vkBuffer,
+                                  static_cast<VkDeviceSize>(offset),
+                                  drawCount,
+                                  stride);
 }
 void smvk::CommandBuffer::BindIndexBuffer(BufferHandle buffer, uint64_t offset) {
     // Manual index rebind: see BindVertexBuffer.

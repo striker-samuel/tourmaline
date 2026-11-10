@@ -95,6 +95,16 @@ class Swapchain {
     // wait rather than CPU work.
     double GetPresentWaitMs() const;
 
+    // Drawn-triangle counts from the primitive-statistics query slots
+    // (CommandBuffer::BeginPrimitiveCount / EndPrimitiveCount). The count
+    // is the total primitives generated between the begin/end, read back
+    // when the frame retires. Valid[] is false until a slot has run +
+    // retired at least once. Supported is false when the device lacks the
+    // primitives-generated query.
+    bool PrimitiveCountSupported() const;
+    uint64_t GetPrimitiveCount(uint32_t slot) const;
+    bool PrimitiveCountValid(uint32_t slot) const;
+
     // Exposed for compatibility – preferred via GetExtent/GetImageCount
     uint32_t framesInFlight() const;
     int GetWindowWidth() const;

@@ -9534,6 +9534,18 @@ void WorldRenderer::RenderLayerInto(const ElementFrame& frame) {
                     m_gpuTimingValid ? (std::to_string(m_gpuMsSmooth) + " ms").c_str()
                                      : "(warming up)",
                     m_swapchain ? smvk::ToString(m_swapchain->GetActivePresentMode()) : "?");
+        // Task/mesh drawn-triangle count (the primitive-statistics query
+        // wrapping the GPU-scene task dispatch). Valid once the first
+        // retired frame has carried the query.
+        if (m_swapchain && m_swapchain->PrimitiveCountSupported() &&
+            m_swapchain->PrimitiveCountValid(0u)) {
+            const uint64_t drawnTris = m_swapchain->GetPrimitiveCount(0u);
+            const double trisPerSec =
+                m_gpuMsSmooth > 0.0 ? double(drawnTris) / (m_gpuMsSmooth * 1e-3) : 0.0;
+            std::printf("[perf] task/mesh drawn tris %llu (%.1fM tris/sec)\n",
+                        (unsigned long long)drawnTris,
+                        trisPerSec * 1e-6);
+        }
         const double n = (double)m_host.GetFrameBudget(); // this render already accumulated
         std::printf("[perf] phases updates %.3f ms (u/l/m %.3f + stream %.3f + fp %.3f [gen %.3f "
                     "up %.3f ds %.3f]) passes %.3f ms (preA %.3f preB %.3f preC %.3f postMain "
@@ -15811,6 +15823,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // This path replaces the GfxFilter Main leg only when the
         // eligibility gate proved every World draw belongs to it.
         if (sceneRasterActive && sceneTaskActive) {
+            cmd.BeginPrimitiveCount(0u);
             const auto drawTaskBin = [&](uint32_t cls,
                                          smvk::ShaderProgram& program,
                                          smvk::CullMode cull,
@@ -15843,6 +15856,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 drawTaskBin(2u, masked, smvk::CullMode::Back, taskMsaa);
             if (sceneRasterMaskedTwoSided)
                 drawTaskBin(3u, masked, smvk::CullMode::None, taskMsaa);
+            cmd.EndPrimitiveCount(0u);
         }
         if (sceneRasterActive && sceneRasterCommandCount > 0 && !sceneTaskActive) {
             cmd.BindStaticVertexFmt();
