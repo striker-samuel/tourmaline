@@ -6,8 +6,8 @@
 #include <Engine/Renderer/gpu_scene_task_mesh_abi.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Rendergraph/rendergraph.h>
-#include <array>
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -45,6 +45,8 @@ struct TaskMeshInputs {
     uint32_t indexWordCapacity = 0, vertexCapacity = 0;
     uint32_t worstMeshlets = 0;
     uint32_t coneEnabled = 1;
+    uint64_t hiz = 0; // reversed-Z MIN Hi-Z BDA (meshlet occlusion)
+    uint32_t hizWidth = 0, hizHeight = 0, hizMips = 0, hizValid = 0;
 };
 struct TaskMeshDispatchPlan {
     TaskMeshGroupCountPush count{};
@@ -64,7 +66,7 @@ struct TaskMeshDispatchPlan {
 };
 
 class TaskMeshRuntime {
-public:
+  public:
     static constexpr uint32_t Flights = smvk::limits::MaxFramesInFlight;
     static constexpr uint32_t MaxTaskGroups = 1048576u;
     static constexpr uint32_t TaskGridX = 1024u;
@@ -80,9 +82,12 @@ public:
 
     void Destroy(smvk::RenderGraph& rg) {
         for (auto& f : flights) {
-            if (!f.groupsLogical.empty()) rg.FreeBuffer(f.groupsLogical);
-            if (!f.indirectLogical.empty()) rg.FreeBuffer(f.indirectLogical);
-            if (!f.offsetsLogical.empty()) rg.FreeBuffer(f.offsetsLogical);
+            if (!f.groupsLogical.empty())
+                rg.FreeBuffer(f.groupsLogical);
+            if (!f.indirectLogical.empty())
+                rg.FreeBuffer(f.indirectLogical);
+            if (!f.offsetsLogical.empty())
+                rg.FreeBuffer(f.offsetsLogical);
             f = Flight{};
         }
     }
@@ -92,21 +97,17 @@ public:
                                uint32_t flight,
                                const TaskMeshInputs& in,
                                TaskMeshDispatchPlan& out) {
-        if (flight >= Flights || !in.work || !in.sceneOffsets || !in.meshes ||
-            !in.aliases || !in.geometry || !in.clusters || !in.instances ||
-            !in.cullView || !in.rasterView || !in.indices || !in.positions ||
-            !in.shading || !in.workCapacity || !in.worstMeshlets ||
-            !in.meshCount || !in.aliasCount || !in.geometryCount ||
-            !in.instanceCount || !in.indexWordCapacity || !in.vertexCapacity ||
-            in.workCapacity > 1048576u || in.sceneCandidateCount > 1048576u ||
-            in.meshCount > 65535u || in.aliasCount > 65535u ||
+        if (flight >= Flights || !in.work || !in.sceneOffsets || !in.meshes || !in.aliases ||
+            !in.geometry || !in.clusters || !in.instances || !in.cullView || !in.rasterView ||
+            !in.indices || !in.positions || !in.shading || !in.workCapacity || !in.worstMeshlets ||
+            !in.meshCount || !in.aliasCount || !in.geometryCount || !in.instanceCount ||
+            !in.indexWordCapacity || !in.vertexCapacity || in.workCapacity > 1048576u ||
+            in.sceneCandidateCount > 1048576u || in.meshCount > 65535u || in.aliasCount > 65535u ||
             in.geometryCount > 65535u || in.clusterCount > 4194304u ||
-            in.instanceCount > 4194304u ||
-            in.indexWordCapacity > 65536u * 128u * 3u ||
+            in.instanceCount > 4194304u || in.indexWordCapacity > 65536u * 128u * 3u ||
             in.vertexCapacity > 44739242u)
             return false;
-        const uint64_t groupsPerWork =
-            (uint64_t(in.worstMeshlets) + 31u) / 32u;
+        const uint64_t groupsPerWork = (uint64_t(in.worstMeshlets) + 31u) / 32u;
         const uint64_t upperBound = uint64_t(in.workCapacity) * groupsPerWork;
         if (upperBound == 0 || upperBound > MaxTaskGroups)
             return false;
@@ -114,7 +115,8 @@ public:
         const uint32_t blocks = (in.workCapacity + 255u) / 256u;
         Flight& f = flights[flight];
         const auto ensure = [&](smvk::Holder<smvk::BufferHandle>& h,
-                                size_t& capacity, size_t bytes,
+                                size_t& capacity,
+                                size_t bytes,
                                 const char* name) -> bool {
             if (!h.empty() && capacity >= bytes)
                 return true;
@@ -126,15 +128,21 @@ public:
             return true;
         };
         if (!ensure(f.counts, f.countsBytes, size_t(in.workCapacity) * 4u, "Task mesh counts") ||
-            !ensure(f.offsets, f.offsetsBytes, size_t(in.workCapacity + 1u) * 4u, "Task mesh offsets") ||
+            !ensure(f.offsets,
+                    f.offsetsBytes,
+                    size_t(in.workCapacity + 1u) * 4u,
+                    "Task mesh offsets") ||
             !ensure(f.blockSums, f.sumsBytes, size_t(blocks) * 4u, "Task mesh block sums") ||
             !ensure(f.blockBases, f.basesBytes, size_t(blocks) * 4u, "Task mesh block bases") ||
-            !ensure(f.groups, f.groupsBytes, size_t(groupCapacity) * sizeof(TaskMeshGpuGroup),
+            !ensure(f.groups,
+                    f.groupsBytes,
+                    size_t(groupCapacity) * sizeof(TaskMeshGpuGroup),
                     "Task mesh groups") ||
-            !ensure(f.indirect, f.indirectBytes, 4u * sizeof(TaskMeshIndirectCommand),
+            !ensure(f.indirect,
+                    f.indirectBytes,
+                    4u * sizeof(TaskMeshIndirectCommand),
                     "Task mesh indirect") ||
-            !ensure(f.params, f.paramsBytes, sizeof(TaskMeshGpuParams),
-                    "Task mesh parameters"))
+            !ensure(f.params, f.paramsBytes, sizeof(TaskMeshGpuParams), "Task mesh parameters"))
             return false;
 
         const uint64_t counts = ctx.GetBufferDeviceAddress(f.counts);
@@ -165,35 +173,71 @@ public:
             f.offsetsLogical = rg.AddExternalBuffer(f.offsets, "GpuSceneTaskMeshOffsets");
             f.offsetsBacking = smvk::BufferHandle(f.offsets);
         }
-        if (f.groupsLogical.empty() || f.indirectLogical.empty() ||
-            f.offsetsLogical.empty())
+        if (f.groupsLogical.empty() || f.indirectLogical.empty() || f.offsetsLogical.empty())
             return false;
 
-        TaskMeshGpuParams p{
-            groups, in.work, in.clusters, in.instances, in.cullView,
-            in.rasterView, in.geometry, in.aliases, in.indices,
-            in.positions, in.shading, offsets,
-            in.workCapacity, in.instanceCount, in.clusterCount, in.geometryCount,
-            in.aliasCount, in.indexBase, in.indexWordCapacity, in.vertexCapacity,
-            1u, in.coneEnabled, in.workCapacity, 0u
-        };
-        ctx.UploadDataToBuffer(f.params, &p, sizeof(p),
-            smvk::PipelineStage(smvk::PipelineStageBit_Task |
-                                smvk::PipelineStageBit_Mesh),
+        TaskMeshGpuParams p{groups,
+                            in.work,
+                            in.clusters,
+                            in.instances,
+                            in.cullView,
+                            in.rasterView,
+                            in.geometry,
+                            in.aliases,
+                            in.indices,
+                            in.positions,
+                            in.shading,
+                            offsets,
+                            in.workCapacity,
+                            in.instanceCount,
+                            in.clusterCount,
+                            in.geometryCount,
+                            in.aliasCount,
+                            in.indexBase,
+                            in.indexWordCapacity,
+                            in.vertexCapacity,
+                            1u,
+                            in.coneEnabled,
+                            in.workCapacity,
+                            0u,
+                            in.hiz,
+                            in.hizWidth,
+                            in.hizHeight,
+                            in.hizMips,
+                            in.hizValid};
+        ctx.UploadDataToBuffer(
+            f.params,
+            &p,
+            sizeof(p),
+            smvk::PipelineStage(smvk::PipelineStageBit_Task | smvk::PipelineStageBit_Mesh),
             smvk::AccessFlags::ShaderRead);
 
         TaskMeshDispatchPlan next{};
-        next.count = {in.work, in.sceneOffsets, in.meshes, in.aliases, in.geometry,
-                      counts, in.sceneCandidateCount, in.workCapacity,
-                      in.meshCount, in.aliasCount, in.geometryCount, in.clusterCount};
+        next.count = {in.work,
+                      in.sceneOffsets,
+                      in.meshes,
+                      in.aliases,
+                      in.geometry,
+                      counts,
+                      in.sceneCandidateCount,
+                      in.workCapacity,
+                      in.meshCount,
+                      in.aliasCount,
+                      in.geometryCount,
+                      in.clusterCount};
         next.scanBlock = {counts, offsets, sums, in.workCapacity, blocks};
         next.scanGroups = {sums, bases, blocks, 0u};
         next.scanAdd = {offsets, sums, bases, in.workCapacity, blocks};
-        next.scatter = {in.work, offsets, in.sceneOffsets, in.meshes, groups,
-                        in.sceneCandidateCount, in.workCapacity, groupCapacity,
+        next.scatter = {in.work,
+                        offsets,
+                        in.sceneOffsets,
+                        in.meshes,
+                        groups,
+                        in.sceneCandidateCount,
+                        in.workCapacity,
+                        groupCapacity,
                         in.meshCount};
-        next.indirect = {offsets, indirect, in.workCapacity, groupCapacity,
-                         TaskGridX, 1024u};
+        next.indirect = {offsets, indirect, in.workCapacity, groupCapacity, TaskGridX, 1024u};
         next.graphics = {params, 0u, groupCapacity, 0u, TaskGridX};
         next.workCapacity = in.workCapacity;
         next.taskGroupCapacity = groupCapacity;

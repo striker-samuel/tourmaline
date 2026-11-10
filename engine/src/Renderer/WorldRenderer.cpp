@@ -11894,6 +11894,40 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 inputs.vertexCapacity = vertexCap;
                                 inputs.worstMeshlets = worstMeshlets;
                                 inputs.coneEnabled = m_wireframe ? 0u : 1u;
+                                // Meshlet-level Hi-Z occlusion: reuse the
+                                // visibility view's reversed-Z MIN pyramid
+                                // (the same buffer the GPU-scene raster Hi-Z
+                                // gate reads). The task shader runs after the
+                                // HZB build, so it reads the current frame's
+                                // pyramid; when the buffer is unallocated (or
+                                // occlusion is cull-flag-disabled) the test
+                                // falls back to frustum + cone only.
+                                {
+                                    const uint32_t hizSlot = m_gfxRenderer.LastSlot();
+                                    // The gfx visibility view is set up during
+                                    // render-pass recording (later in the
+                                    // frame); on the first frame LastSlot() is
+                                    // still UINT32_MAX and there is no HZB yet.
+                                    const bool hizReady =
+                                        hizSlot != UINT32_MAX &&
+                                        hizSlot < m_gfxRenderer.gfx.temporals.size() &&
+                                        hizSlot < m_gfxRenderer.gfx.views.size();
+                                    if (hizReady) {
+                                        const auto& hz = smvk::gfx::Hiz(m_gfxRenderer.gfx, hizSlot);
+                                        inputs.hiz = smvk::gfx::HizAddress(
+                                            m_gfxRenderer.gfx, *m_context, hizSlot);
+                                        inputs.hizWidth = hz.width;
+                                        inputs.hizHeight = hz.height;
+                                        inputs.hizMips = hz.mipCount;
+                                        const bool hizOcclusion =
+                                            (uint32_t(m_gfxRenderer.config.cullFlags) &
+                                             uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion)) != 0u;
+                                        inputs.hizValid =
+                                            (inputs.hiz != 0u && hz.mipCount != 0u && hizOcclusion)
+                                                ? 1u
+                                                : 0u;
+                                    }
+                                }
                                 taskReady = m_gpuSceneTaskMeshRuntime.Prepare(
                                     *m_context, *m_rendergraph, fb.frameIndex, inputs, taskPlan);
                             }
@@ -15368,6 +15402,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         mainPass.AddBufferHint(m_gpuSceneTaskMeshPlan.groupLogical, taskRead);
         mainPass.AddBufferHint(m_gpuSceneTaskMeshPlan.offsetLogical, taskRead);
         mainPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], taskRead);
+        // Meshlet-level Hi-Z occlusion: the task shader samples the
+        // reversed-Z MIN pyramid the gfx HZB passes wrote earlier this
+        // frame (compute write -> task/mesh read edge).
+        if (const uint32_t hzSlot = m_gfxRenderer.LastSlot();
+            hzSlot != UINT32_MAX && hzSlot < m_gfxRenderer.gfx.temporals.size()) {
+            const auto& hz = smvk::gfx::Hiz(m_gfxRenderer.gfx, hzSlot);
+            if (!hz.logical.empty())
+                mainPass.AddBufferHint(hz.logical, taskRead);
+        }
     } else if (m_gpuSceneRasterDrawActive && m_gpuSceneRasterDrawCapacity > 0) {
         smvk::BufferSyncRequest indirectRead{};
         indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;

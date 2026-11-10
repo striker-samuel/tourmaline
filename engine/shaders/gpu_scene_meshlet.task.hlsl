@@ -5,7 +5,10 @@
 // The producer MUST route invalid topology to indexed fallback; the
 // task shader only performs conservative visibility rejection.
 // No global atomic append, no per-frame dense meshlet candidate stream.
+#define GPU_SCENE_RASTER_HIZCULL_PASS // common.hlsli: declare MaterialsBuffer, skip the scene pc
+#include "common.hlsli"
 #include "gpu_scene_task_mesh.hlsli"
+#include "gfxfilter.hlsli" // GfxHzbCtx / ProjectBound / BoundHzbOccluded (meshlet Hi-Z)
 
 GPU_PUSH(GsTaskMeshPush, pc);
 groupshared uint gsScan[GS_TASK_THREADS];
@@ -47,6 +50,37 @@ bool ConeCulled(GsCluster c, GpuSceneInstance inst, GsView view) {
     const float al=dot(axis,axis),pl=dot(apex,apex);
     if (!isfinite(al)||!isfinite(pl)||al<1e-12f||pl<1e-12f) return false;
     return dot(axis*rsqrt(al),apex*rsqrt(pl))>=c.c.w;
+}
+
+// Meshlet-level reversed-Z MIN Hi-Z occlusion: project the cluster bound
+// sphere (object space, xyz center / w radius) by the instance model and
+// reject it when its nearest depth sits behind every covered Hi-Z texel.
+// Mirrors the gfx filter's per-cluster ClusterOccluded, applied at meshlet
+// granularity (the missing piece vs Niagara's task-shader occlusion).
+bool MeshletOccluded(float4 bound, GpuSceneInstance inst, GsTaskMeshParams p) {
+    if (!all(isfinite(bound)) || bound.w <= 0.0f || p.hizMips == 0u ||
+        p.hizWidth == 0u || p.hizHeight == 0u)
+        return false;
+    const GsRasterView rv = p.rasterView.Get();
+    const float3 originRelative =
+        DoubleFloatRelative(inst.worldPosition, rv.origin);
+    const float3 x = inst.basisX.xyz;
+    const float3 y = inst.basisY.xyz;
+    const float3 z = inst.basisZ.xyz;
+    const float4x4 model = float4x4(
+        x.x, y.x, z.x, originRelative.x,
+        x.y, y.y, z.y, originRelative.y,
+        x.z, y.z, z.z, originRelative.z,
+        0.0f, 0.0f, 0.0f, 1.0f);
+    GfxHzbCtx ctx;
+    ctx.viewProj = rv.relativeViewProjection;
+    ctx.eye = float3(0.0f, 0.0f, 0.0f);
+    ctx.width = p.hizWidth;
+    ctx.height = p.hizHeight;
+    ctx.mips = p.hizMips;
+    ctx.hzb = p.hiz;
+    const BoundProjection bp = ProjectBound(bound, model, ctx);
+    return bp.testable && bp.onTarget && BoundHzbOccluded(bp, ctx);
 }
 
 [shader("amplification")]
@@ -99,6 +133,8 @@ void mainAS(uint3 groupId : SV_GroupID,
             if (keep && p.coneEnabled!=0u &&
                 (group.rasterClass&1u)==0u)
                 keep=!ConeCulled(c,inst,view);
+            if (keep && p.hizValid!=0u)
+                keep=!MeshletOccluded(c.b,inst,p);
         }
     }
 

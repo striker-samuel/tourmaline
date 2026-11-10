@@ -5,6 +5,7 @@
 // WorldRenderer. The producer must prove topology and stream residency first.
 #include "gpu_platform.hlsli"
 #include "gpu_scene.hlsli"
+#include "hzb.hlsli"
 
 #define GS_TASK_THREADS 32u
 #define GS_MESH_THREADS 32u
@@ -74,6 +75,11 @@ struct GsTaskMeshParams {
     uint coneEnabled;
     uint workCapacity;
     uint reserved1;
+    GPU_PTR_READ(HzbBuffer) hiz; // reversed-Z MIN Hi-Z (meshlet occlusion), null = disabled
+    uint hizWidth;
+    uint hizHeight;
+    uint hizMips;
+    uint hizValid; // 1 = run the meshlet occlusion test
 };
 struct GsTaskMeshPush {
     // Preserve the fragment shader's 192-byte scene push constants.
