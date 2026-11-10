@@ -295,6 +295,11 @@ struct Scene {
     // nameForNode + uuidForNode — see NodeMetadata in scene_tables.h).
     std::vector<NodeMetadata> metadata;
 
+    // Cook-only optimization: the pak serializer does not persist node names.
+    // Enabled only for name-independent assembly; editor and name-addressed
+    // .tour replay keep the default false and retain authoring semantics.
+    // Transient build policy, never serialized.
+    bool namesStripped = false;
     std::vector<std::string> nodeNames;
     std::vector<std::string> materialNames;
     // The scene's WORLD-FIELD GI binding (tour giAsset kind World): the
@@ -798,6 +803,8 @@ int findNodeByName(const Scene& scene, const std::string& name);
 // replace it. Like Maya, a collision is resolved by a numeric suffix.
 std::string UniqueSiblingNodeName(const Scene& scene, int node, const std::string& requested);
 inline std::string getNodeName(const Scene& scene, int node) {
+    if (scene.namesStripped)
+        return {};
     if (node < 0 || size_t(node) >= scene.hierarchy.size())
         return {};
     const uint32_t strID = GetNodeNameIndex(scene, NodeId(node));
@@ -812,6 +819,8 @@ inline std::string getNodeName(const Scene& scene, int node) {
 // the scan made every name assignment in an instanced scene O(N), i.e.
 // O(N^2) over the cook.
 inline void setNodeName(Scene& scene, int node, const std::string& name, bool dedupe = true) {
+    if (scene.namesStripped)
+        return;
     assert(!name.empty() && "every scene node must have a name");
     if (name.empty() || node < 0 || size_t(node) >= scene.hierarchy.size())
         return;
