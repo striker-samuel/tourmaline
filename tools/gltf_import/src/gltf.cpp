@@ -2717,42 +2717,58 @@ size_t BuildFromMeshAsset(
     const std::shared_ptr<GltfToSceneImporter::TextureSource>& textureSource,
     bool autoKtx,
     GltfArtifactCache* artifactCache,
-    const std::function<std::optional<std::vector<uint8_t>>(const std::string&)>& readSibling) {
-    // 1) Geometry uploads (base blobs + LOD sibling blobs, AoS via the
-    // inverse pack — UploadStaticMesh handles cook + GPU + streaming).
-    auto makeUpload = [](const smvk::assets::MeshAsset::Geometry& g) {
-        smvk::StaticMeshUpload up{};
-        up.vertices.resize(g.positions.size());
-        // Uncharted blobs carry NO lightmap stream (count-gated on disk);
-        // the unpack uses an all-uncharted record for those (the inverse
-        // pack's sentinel round-trips to chartId 0xFFFFFFFF anyway).
-        const smvk::PackedVertexLightmap lmNone{};
-        for (size_t v = 0; v < g.positions.size(); ++v)
-            smvk::UnpackStaticVertex(g.positions[v],
-                                     g.shading[v],
-                                     !g.lightmap.empty() ? g.lightmap[v] : lmNone,
-                                     up.vertices[v]);
-        up.indices = g.indices;
-        up.aabbMin = g.aabbMin;
-        up.aabbMax = g.aabbMax;
-        // The skin stream (the Northlight data path): the BASE blobs
-        // carry it (the .geometry's trailing skin section); the upload
-        // rides it to the retained upload (the pak serializer's source).
-        up.skin = g.skin;
-        return up;
-    };
-    std::vector<smvk::StaticMeshUpload> uploads;
-    uploads.reserve(asset.geometry.size());
-    for (const auto& g : asset.geometry)
-        uploads.push_back(makeUpload(g));
-    for (const auto& chain : asset.lodChains)
-        for (const auto& s : chain)
-            uploads.push_back(makeUpload(s.geo));
-    if (uploads.empty())
-        return 0;
-    std::vector<smvk::ClusterStaticMeshHandle> handles = cluster.UploadStaticMeshes(uploads);
-    if (handles.size() != uploads.size())
-        return 0;
+    const std::function<std::optional<std::vector<uint8_t>>(const std::string&)>& readSibling,
+    std::map<std::string, BuiltMeshCacheEntry>* reuseCache,
+    const std::string& cacheKey) {
+    // Per-source reuse (see BuiltMeshCacheEntry): the geometry uploads +
+    // materials are GLOBAL to the cluster; only the node hierarchy +
+    // bindings below differ per reference. An instanced scene (N `source`
+    // lines naming one .geometry) reuses the first build instead of
+    // re-uploading the geometry N times.
+    std::vector<smvk::ClusterStaticMeshHandle> handles;
+    std::unordered_map<std::string, smvk::ClusterMaterialHandle> matOf;
+    const bool reused = reuseCache && reuseCache->find(cacheKey) != reuseCache->end();
+    if (reused) {
+        const BuiltMeshCacheEntry& entry = reuseCache->find(cacheKey)->second;
+        handles = entry.handles;
+        matOf = entry.matOf;
+    } else {
+        // 1) Geometry uploads (base blobs + LOD sibling blobs, AoS via the
+        // inverse pack — UploadStaticMesh handles cook + GPU + streaming).
+        auto makeUpload = [](const smvk::assets::MeshAsset::Geometry& g) {
+            smvk::StaticMeshUpload up{};
+            up.vertices.resize(g.positions.size());
+            // Uncharted blobs carry NO lightmap stream (count-gated on disk);
+            // the unpack uses an all-uncharted record for those (the inverse
+            // pack's sentinel round-trips to chartId 0xFFFFFFFF anyway).
+            const smvk::PackedVertexLightmap lmNone{};
+            for (size_t v = 0; v < g.positions.size(); ++v)
+                smvk::UnpackStaticVertex(g.positions[v],
+                                         g.shading[v],
+                                         !g.lightmap.empty() ? g.lightmap[v] : lmNone,
+                                         up.vertices[v]);
+            up.indices = g.indices;
+            up.aabbMin = g.aabbMin;
+            up.aabbMax = g.aabbMax;
+            // The skin stream (the Northlight data path): the BASE blobs
+            // carry it (the .geometry's trailing skin section); the upload
+            // rides it to the retained upload (the pak serializer's source).
+            up.skin = g.skin;
+            return up;
+        };
+        std::vector<smvk::StaticMeshUpload> uploads;
+        uploads.reserve(asset.geometry.size());
+        for (const auto& g : asset.geometry)
+            uploads.push_back(makeUpload(g));
+        for (const auto& chain : asset.lodChains)
+            for (const auto& s : chain)
+                uploads.push_back(makeUpload(s.geo));
+        if (uploads.empty())
+            return 0;
+        handles = cluster.UploadStaticMeshes(uploads);
+        if (handles.size() != uploads.size())
+            return 0;
+    }
 
     // 2) Texture loader (loadTextureForImage's mirror, URI-driven from
     // the .material refs; the identity dedupes shared images).
@@ -2829,7 +2845,6 @@ size_t BuildFromMeshAsset(
     // 3) Materials in FIRST-USE order over the node-sorted instances
     // (matches the import's creation order; tour material indices stay
     // stable). GUID -> the manifest entry -> the .material sibling.
-    std::unordered_map<std::string, smvk::ClusterMaterialHandle> matOf;
     auto materialFor = [&](const std::string& guid) -> smvk::ClusterMaterialHandle {
         if (guid.empty())
             return {};
@@ -2900,8 +2915,13 @@ size_t BuildFromMeshAsset(
 
     // 4) Registry: URIs (the derivation's fragments, re-based on the
     // .mesh path so cooks address identically) + meshlets + LOD chains.
+    // GLOBAL per source: registered once on the first build, reused after.
     std::vector<smvk::ClusterStaticMeshHandle> baseHandles;
-    {
+    if (reused) {
+        baseHandles.assign(handles.begin(),
+                           handles.begin() +
+                               std::min<size_t>(asset.geometry.size(), handles.size()));
+    } else {
         size_t up = 0;
         for (size_t gi = 0; gi < asset.geometry.size(); ++gi) {
             const smvk::ClusterStaticMeshHandle h = handles[up++];
@@ -3050,6 +3070,10 @@ size_t BuildFromMeshAsset(
         if (!h.empty())
             SetCamera(scene, uint32_t(mapped[c.node]), h.index());
     }
+    // Publish the reusable build AFTER the bindings ran (matOf is filled
+    // lazily by materialFor during the instance-binding loop above).
+    if (reuseCache && !reused)
+        (*reuseCache)[cacheKey] = BuiltMeshCacheEntry{std::move(handles), std::move(matOf)};
     return asset.nodes.size() - 1;
 }
 
@@ -3076,6 +3100,20 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
         if (outIssues)
             outIssues->push_back(msg);
     };
+    // Per-source build reuse: identical `source` lines (an instanced scene)
+    // build the .geometry once and share its uploads/materials across every
+    // reference — the node hierarchy + instance bindings still differ.
+    std::map<std::string, BuiltMeshCacheEntry> builtMeshCache;
+    // Per-source .geometry PARSE cache (the read + LoadMeshAssetBytes are
+    // ALSO per-reference in an instanced scene): the parsed asset + manifest
+    // + canonical path are reused across the N `source` lines.
+    struct MeshAssetCacheEntry {
+        smvk::assets::MeshAsset asset;
+        smvk::assets::AssetManifest manifest;
+        std::string resolved;
+        std::string baseDir;
+    };
+    std::map<std::string, MeshAssetCacheEntry> meshAssetCache;
     // HOST-AWARE path utils: vfs::BaseDir/FileName are VFS-RELATIVE
     // utilities — vfs::Normalize REJECTS drive-letter absolutes (C:/...)
     // by design, so calling them on a resolved HOST path returns EMPTY
@@ -3292,7 +3330,15 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             smvk::assets::MeshAsset meshAsset;
             smvk::assets::AssetManifest meshManifest;
             bool meshLoaded = false;
-            {
+            const auto cachedAsset = meshAssetCache.find(modelSource);
+            if (cachedAsset != meshAssetCache.end()) {
+                meshAsset = cachedAsset->second.asset;
+                meshManifest = cachedAsset->second.manifest;
+                meshLoaded = true;
+                resolved = cachedAsset->second.resolved;
+                baseDir = cachedAsset->second.baseDir;
+                ok = true;
+            } else {
                 const size_t dotGeo = modelSource.rfind(".geometry");
                 const size_t dotMesh = modelSource.rfind(".mesh");
                 const bool isGeometry =
@@ -3389,6 +3435,9 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                             resolved = meshResolved;
                             baseDir = baseDirOf(meshResolved);
                             ok = true;
+                            meshAssetCache.emplace(
+                                modelSource,
+                                MeshAssetCacheEntry{meshAsset, meshManifest, resolved, baseDir});
                         }
                     }
                     if (!meshLoaded) {
@@ -3566,7 +3615,9 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                                                         texSrc,
                                                         autoKtx,
                                                         artifactCache,
-                                                        readSibling);
+                                                        readSibling,
+                                                        &builtMeshCache,
+                                                        resolved);
                 if (built > 0) {
                     builtFromMesh = true;
                     std::cerr << "[References] built '" << resolved

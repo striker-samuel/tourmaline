@@ -119,6 +119,7 @@ std::string TextureConversionHash(const void* data, size_t size, bool srgb);
 #include <gltf_import/asset_export.h>
 
 #include <functional>
+#include <map>
 
 // (moved: the TextureStreamer is ENGINE-OWNED and lives in tour; the
 // smvk using-declaration keeps the smvk::TextureStreamer* spellings in
@@ -504,6 +505,17 @@ struct VfsTextureSource final : GltfToSceneImporter::TextureSource {
 // vfs — the caller's resolution). Returns the node count built
 // (0 = failure; the caller reports, never falls back).
 // ---------------------------------------------------------------------------
+// Per-source build reuse. The geometry uploads + URI/meshlet/LOD registry +
+// materials are GLOBAL to a cluster (one per UNIQUE resolved source); only
+// the node hierarchy + instance bindings differ per reference. An instanced
+// scene (N `source` lines naming one .geometry) reuses the first build's
+// uploads instead of re-uploading the geometry N times — turning the cook
+// from O(N * full-geometry-build) into O(N * node-instantiation).
+struct BuiltMeshCacheEntry {
+    std::vector<smvk::ClusterStaticMeshHandle> handles;                 // base + LOD, upload order
+    std::unordered_map<std::string, smvk::ClusterMaterialHandle> matOf; // guid -> material
+};
+
 size_t BuildFromMeshAsset(
     smvk::Cluster& cluster,
     smvk::TextureStreamer* streamer,
@@ -514,7 +526,9 @@ size_t BuildFromMeshAsset(
     const std::shared_ptr<GltfToSceneImporter::TextureSource>& textureSource,
     bool autoKtx,
     GltfArtifactCache* artifactCache,
-    const std::function<std::optional<std::vector<uint8_t>>(const std::string&)>& readSibling);
+    const std::function<std::optional<std::vector<uint8_t>>(const std::string&)>& readSibling,
+    std::map<std::string, BuiltMeshCacheEntry>* reuseCache = nullptr,
+    const std::string& cacheKey = std::string());
 
 // ---------------------------------------------------------------------------
 // Clarisse-style nested SCENE REFERENCES.
