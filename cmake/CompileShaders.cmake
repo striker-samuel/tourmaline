@@ -39,6 +39,23 @@ else()
   message(STATUS "[Shaders] GLSLC = ${GLSLC}")
 endif()
 
+# Validate every emitted SPIR-V module independently of DXC's internal
+# validation, before it becomes a build output consumed by Vulkan.
+# Set -DTOURMALINE_VALIDATE_SPIRV=OFF only for toolchain bring-up.
+option(TOURMALINE_VALIDATE_SPIRV "Validate compiled Vulkan SPIR-V with spirv-val" ON)
+if(TOURMALINE_VALIDATE_SPIRV)
+  set(_SPIRV_VAL_HINTS)
+  if(DEFINED ENV{VULKAN_SDK})
+    list(APPEND _SPIRV_VAL_HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+  endif()
+  find_program(TOURMALINE_SPIRV_VAL NAMES spirv-val spirv-val.exe HINTS ${_SPIRV_VAL_HINTS})
+  if(NOT TOURMALINE_SPIRV_VAL)
+    message(FATAL_ERROR "[Shaders] spirv-val not found. Install SPIRV-Tools (Vulkan SDK), "
+      "or explicitly configure -DTOURMALINE_VALIDATE_SPIRV=OFF.")
+  endif()
+  message(STATUS "[Shaders] SPIR-V validation = ${TOURMALINE_SPIRV_VAL}")
+endif()
+
 # Helper: map filename to stage + entry for HLSL
 function(_detect_hlsl_stage_and_entry SHADER OUT_STAGE OUT_ENTRY OUT_PROFILE)
     get_filename_component(_name "${SHADER}" NAME)
@@ -103,6 +120,11 @@ function(_detect_hlsl_stage_and_entry SHADER OUT_STAGE OUT_ENTRY OUT_PROFILE)
 endfunction()
 
 function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
+  # A list passed to COMMAND: empty when explicitly disabled.
+  set(_SPIRV_VALIDATE_COMMAND)
+  if(TOURMALINE_VALIDATE_SPIRV)
+    set(_SPIRV_VALIDATE_COMMAND COMMAND "${TOURMALINE_SPIRV_VAL}" --target-env vulkan1.3)
+  endif()
   set(options)
   set(oneValueArgs OUTPUT_HEADER RUNTIME_ROOT)
   set(multiValueArgs INCLUDE_DIRS VARIANTS HEADER_DIRS)
@@ -286,6 +308,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 OUTPUT "${OUTPUT_FILE}"
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "? DXC: ${FILE_NAME} [${_PROFILE}]"
                 COMMAND "${DXC}" -T "${_PROFILE}" ${_ENTRY_FLAGS} ${_COMMON} -Fo "${OUTPUT_FILE}" "${SHADER}"
+                ${_SPIRV_VALIDATE_COMMAND} "${OUTPUT_FILE}"
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "? DXC OK: ${FILE_NAME}"
                 DEPENDS "${SHADER}" ${SHADER_HEADERS}
                 COMMENT "Compiling HLSL ${FILE_NAME}  SPIR-V (Vulkan 1.3)"
@@ -297,6 +320,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                     OUTPUT "${_DS_VIZ_FILE}"
                     COMMAND "${DXC}" -T "${_PROFILE}" ${_ENTRY_FLAGS} ${_COMMON}
                             -DDS_DEBUG_VIZ=1 -Fo "${_DS_VIZ_FILE}" "${SHADER}"
+                    ${_SPIRV_VALIDATE_COMMAND} "${_DS_VIZ_FILE}"
                     DEPENDS "${SHADER}" ${SHADER_HEADERS}
                     COMMENT "Compiling deferred-shadow diagnostic variant ${FILE_NAME}"
                     VERBATIM
@@ -377,6 +401,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                     OUTPUT "${_VARIANT_OUTPUT}"
                     COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "⏳ DXC: ${FILE_NAME}${_VSUFFIX} [${_PROFILE}]"
                     COMMAND "${DXC}" -T "${_PROFILE}" ${_ENTRY_FLAGS} ${_COMMON} ${_VARIANT_FLAGS} -Fo "${_VARIANT_OUTPUT}" "${SHADER}"
+                ${_SPIRV_VALIDATE_COMMAND} "${_VARIANT_OUTPUT}"
                     COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "✅ DXC OK: ${FILE_NAME}${_VSUFFIX}"
                     DEPENDS "${SHADER}" ${SHADER_HEADERS}
                     COMMENT "Compiling HLSL ${FILE_NAME}${_VSUFFIX} → SPIR-V (Vulkan 1.3)"
@@ -397,6 +422,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 OUTPUT "${OUTPUT_FILE}"
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "⏳ glslc: ${FILE_NAME}"
                 COMMAND "${GLSLC}" ${_GLSLC_FLAGS} -o "${OUTPUT_FILE}" "${SHADER}"
+                ${_SPIRV_VALIDATE_COMMAND} "${OUTPUT_FILE}"
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "✅ glslc OK: ${FILE_NAME}"
                 DEPENDS "${SHADER}" ${SHADER_HEADERS}
                 COMMENT "Compiling GLSL ${FILE_NAME} → SPIR-V (Vulkan 1.3)"
