@@ -32,7 +32,8 @@ inline bool CheckSpirvStructure(std::span<const char> code, std::string* error =
         return fail("invalid SPIR-V magic");
     // Vulkan 1.3 accepts SPIR-V up to 1.6; reject future/invalid headers.
     const uint32_t version = word(1);
-    if ((version & 0xff00ffffu) != 0x00010000u || ((version >> 16) & 0xffu) > 6)
+    if ((version & 0xff0000ffu) != 0 || ((version >> 16) & 0xffu) != 1 ||
+        ((version >> 8) & 0xffu) > 6)
         return fail("unsupported SPIR-V version");
     if (word(3) == 0)
         return fail("SPIR-V ID bound must not be zero");
