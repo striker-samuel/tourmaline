@@ -2828,6 +2828,40 @@ bool smvk::VulkanCore::Init() {
                     },
             };
             computeDerivativesFeatures.pNext = &deviceFeatures13;
+            // Primitive-count queries (VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT,
+            // the vertex-shader indexed path's drawn-triangle counter): probe
+            // the extension + feature and enable both when present. The mesh
+            // shader's own MESH_PRIMITIVES_GENERATED_EXT is separate.
+            bool enablePrimitivesGenQuery = false;
+            {
+                uint32_t pgqCount = 0;
+                vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &pgqCount, nullptr);
+                std::vector<VkExtensionProperties> pgqExts(pgqCount);
+                vkEnumerateDeviceExtensionProperties(
+                    physicalDevice_, nullptr, &pgqCount, pgqExts.data());
+                const bool pgqPresent =
+                    std::any_of(pgqExts.begin(), pgqExts.end(), [](const auto& e) {
+                        return std::strcmp(e.extensionName,
+                                           VK_EXT_PRIMITIVES_GENERATED_QUERY_EXTENSION_NAME) == 0;
+                    });
+                if (pgqPresent) {
+                    VkPhysicalDevicePrimitivesGeneratedQueryFeaturesEXT supportedPgq{
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVES_GENERATED_QUERY_FEATURES_EXT,
+                        nullptr};
+                    VkPhysicalDeviceFeatures2 supported2{
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedPgq};
+                    vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported2);
+                    enablePrimitivesGenQuery = supportedPgq.primitivesGeneratedQuery == VK_TRUE;
+                }
+            }
+            VkPhysicalDevicePrimitivesGeneratedQueryFeaturesEXT primitivesGenFeatures{};
+            if (enablePrimitivesGenQuery) {
+                primitivesGenFeatures.sType =
+                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVES_GENERATED_QUERY_FEATURES_EXT;
+                primitivesGenFeatures.primitivesGeneratedQuery = VK_TRUE;
+                primitivesGenFeatures.pNext = computeDerivativesFeatures.pNext;
+                computeDerivativesFeatures.pNext = &primitivesGenFeatures;
+            }
             if (enableRayQueries) {
                 rtRayFeatures.pNext = feats2.pNext;
                 rtAsFeatures.pNext = &rtRayFeatures;
@@ -3049,6 +3083,8 @@ bool smvk::VulkanCore::Init() {
                 enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
             if (enableMeshShader)
                 enabledExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+            if (enablePrimitivesGenQuery)
+                enabledExtensions.push_back(VK_EXT_PRIMITIVES_GENERATED_QUERY_EXTENSION_NAME);
             if (enableRayQueries) {
                 enabledExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
                 enabledExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
@@ -10470,6 +10506,7 @@ smvk::detail::vulkan::VulkanSwapchain::VulkanSwapchain(
     InitFrameCommands(indices.graphicsFamily.value());
     CreateTimestampPools();
     CreatePrimitiveCountPools();
+    CreatePrimitiveCountRegularPools();
 }
 
 void smvk::detail::vulkan::VulkanSwapchain::InitFrameCommands(uint32_t graphicsFamily) {
@@ -10494,6 +10531,7 @@ smvk::detail::vulkan::VulkanSwapchain::~VulkanSwapchain() {
     vkDeviceWaitIdle(device_);
     DestroyTimestampPools();
     DestroyPrimitiveCountPools();
+    DestroyPrimitiveCountRegularPools();
     for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; i++) {
         vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
         // this freeds all the commands too
@@ -10793,6 +10831,35 @@ void smvk::detail::vulkan::VulkanSwapchain::DestroyPrimitiveCountPools() {
     primitiveCountSupported_ = false;
     for (uint32_t s = 0; s < kPrimitiveCountSlots; ++s)
         primitiveCountValid_[s] = false;
+}
+void smvk::detail::vulkan::VulkanSwapchain::CreatePrimitiveCountRegularPools() {
+    DestroyPrimitiveCountRegularPools();
+    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    info.queryType = VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT;
+    info.queryCount = kPrimitiveCountSlots;
+    primitiveCountRegularSupported_ = true;
+    for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; ++i) {
+        if (vkCreateQueryPool(device_, &info, nullptr, &primitiveCountRegularPools_[i]) !=
+            VK_SUCCESS) {
+            primitiveCountRegularPools_[i] = VK_NULL_HANDLE;
+            primitiveCountRegularSupported_ = false;
+        }
+    }
+    for (uint32_t s = 0; s < kPrimitiveCountSlots; ++s) {
+        lastPrimitiveCountsRegular_[s] = 0;
+        primitiveCountValidRegular_[s] = false;
+    }
+}
+void smvk::detail::vulkan::VulkanSwapchain::DestroyPrimitiveCountRegularPools() {
+    for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; ++i) {
+        if (primitiveCountRegularPools_[i] != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(device_, primitiveCountRegularPools_[i], nullptr);
+            primitiveCountRegularPools_[i] = VK_NULL_HANDLE;
+        }
+    }
+    primitiveCountRegularSupported_ = false;
+    for (uint32_t s = 0; s < kPrimitiveCountSlots; ++s)
+        primitiveCountValidRegular_[s] = false;
 }
 void smvk::detail::vulkan::VulkanSwapchain::CreateImageViews() {
     const uint32_t count = static_cast<uint32_t>(images_.size());
@@ -11278,6 +11345,24 @@ smvk::VulkanFrameBuffer smvk::detail::vulkan::VulkanSwapchain::AcquireFramebuffe
             if (pr == VK_SUCCESS) {
                 lastPrimitiveCounts_[s] = count;
                 primitiveCountValid_[s] = true;
+            }
+        }
+    }
+    if (primitiveCountRegularSupported_ &&
+        primitiveCountRegularPools_[currentFrame_] != VK_NULL_HANDLE) {
+        for (uint32_t s = 0; s < kPrimitiveCountSlots; ++s) {
+            uint64_t count = 0;
+            const VkResult pr = vkGetQueryPoolResults(device_,
+                                                      primitiveCountRegularPools_[currentFrame_],
+                                                      s,
+                                                      1,
+                                                      sizeof(count),
+                                                      &count,
+                                                      sizeof(uint64_t),
+                                                      VK_QUERY_RESULT_64_BIT);
+            if (pr == VK_SUCCESS) {
+                lastPrimitiveCountsRegular_[s] = count;
+                primitiveCountValidRegular_[s] = true;
             }
         }
     }
@@ -13763,7 +13848,8 @@ struct StageTimerCtx {
     bool supported = false;
 };
 struct PrimitiveCountCtx {
-    VkQueryPool pool = VK_NULL_HANDLE;
+    VkQueryPool pool = VK_NULL_HANDLE;        // mesh (task/mesh path)
+    VkQueryPool regularPool = VK_NULL_HANDLE; // regular (indexed path)
     bool supported = false;
 };
 void smvk::RenderGraph::Execute(Framebuffer& fb) {
@@ -13865,6 +13951,11 @@ void smvk::RenderGraph::Execute(Framebuffer& fb) {
         if (pcSwap && pcSwap->PrimitiveCountSupported()) {
             primitiveCountCtx.pool = pcSwap->PrimitiveCountPool(fb.frameIndex);
             primitiveCountCtx.supported = primitiveCountCtx.pool != VK_NULL_HANDLE;
+        }
+        if (pcSwap && pcSwap->PrimitiveCountRegularSupported()) {
+            primitiveCountCtx.regularPool = pcSwap->PrimitiveCountRegularPool(fb.frameIndex);
+            primitiveCountCtx.supported =
+                primitiveCountCtx.supported || primitiveCountCtx.regularPool != VK_NULL_HANDLE;
         }
     }
     void* const primitiveCountCtxPtr = primitiveCountCtx.supported ? &primitiveCountCtx : nullptr;
@@ -14799,6 +14890,26 @@ void smvk::CommandBuffer::EndPrimitiveCount(uint32_t slot) {
         slot >= VulkanSwapchain::kPrimitiveCountSlots)
         return;
     vkCmdEndQuery(reinterpret_cast<VkCommandBuffer>(cmdOpaque_), ctx->pool, slot);
+}
+void smvk::CommandBuffer::BeginPrimitiveCountRegular(uint32_t slot) {
+    if (primitiveCountOpaque_ == nullptr)
+        return;
+    auto* ctx = static_cast<PrimitiveCountCtx*>(primitiveCountOpaque_);
+    if (!ctx || !ctx->supported || ctx->regularPool == VK_NULL_HANDLE ||
+        slot >= VulkanSwapchain::kPrimitiveCountSlots)
+        return;
+    VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque_);
+    vkCmdResetQueryPool(cmd, ctx->regularPool, slot, 1);
+    vkCmdBeginQuery(cmd, ctx->regularPool, slot, 0);
+}
+void smvk::CommandBuffer::EndPrimitiveCountRegular(uint32_t slot) {
+    if (primitiveCountOpaque_ == nullptr)
+        return;
+    auto* ctx = static_cast<PrimitiveCountCtx*>(primitiveCountOpaque_);
+    if (!ctx || !ctx->supported || ctx->regularPool == VK_NULL_HANDLE ||
+        slot >= VulkanSwapchain::kPrimitiveCountSlots)
+        return;
+    vkCmdEndQuery(reinterpret_cast<VkCommandBuffer>(cmdOpaque_), ctx->regularPool, slot);
 }
 void smvk::CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram,
                                              VertexLayoutId vertexFormat,

@@ -122,6 +122,13 @@ struct CommandBuffer final {
     void BeginPrimitiveCount(uint32_t slot);
     void EndPrimitiveCount(uint32_t slot);
 
+    // Regular (vertex-shader indexed path) primitives-generated query —
+    // the same contract as Begin/EndPrimitiveCount but against the
+    // VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT pool (Swapchain::
+    // GetPrimitiveCountRegular).
+    void BeginPrimitiveCountRegular(uint32_t slot);
+    void EndPrimitiveCountRegular(uint32_t slot);
+
     // Sets the stencil reference for both faces (dynamic state —
     // pipelines are built with VK_DYNAMIC_STATE_STENCIL_REFERENCE,
     // so the reference never enters the pipeline cache key and no

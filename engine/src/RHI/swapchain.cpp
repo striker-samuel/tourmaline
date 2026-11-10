@@ -177,6 +177,15 @@ uint64_t Swapchain::GetPrimitiveCount(uint32_t slot) const {
 bool Swapchain::PrimitiveCountValid(uint32_t slot) const {
     return impl_->vulkan->PrimitiveCountValid(slot);
 }
+bool Swapchain::PrimitiveCountRegularSupported() const {
+    return impl_->vulkan->PrimitiveCountRegularSupported();
+}
+uint64_t Swapchain::GetPrimitiveCountRegular(uint32_t slot) const {
+    return impl_->vulkan->GetLastPrimitiveCountRegular(slot);
+}
+bool Swapchain::PrimitiveCountRegularValid(uint32_t slot) const {
+    return impl_->vulkan->PrimitiveCountRegularValid(slot);
+}
 Swapchain::Impl* Swapchain::GetImpl() {
     return impl_.get();
 }

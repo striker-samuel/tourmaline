@@ -104,6 +104,10 @@ class Swapchain {
     bool PrimitiveCountSupported() const;
     uint64_t GetPrimitiveCount(uint32_t slot) const;
     bool PrimitiveCountValid(uint32_t slot) const;
+    // Regular (vertex-shader indexed path) primitive count.
+    bool PrimitiveCountRegularSupported() const;
+    uint64_t GetPrimitiveCountRegular(uint32_t slot) const;
+    bool PrimitiveCountRegularValid(uint32_t slot) const;
 
     // Exposed for compatibility – preferred via GetExtent/GetImageCount
     uint32_t framesInFlight() const;

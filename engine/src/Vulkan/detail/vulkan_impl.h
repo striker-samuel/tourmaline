@@ -1484,6 +1484,21 @@ class VulkanSwapchain final /*: public ISwapchain*/ {
     bool PrimitiveCountValid(uint32_t slot) const {
         return slot < kPrimitiveCountSlots ? primitiveCountValid_[slot] : false;
     }
+    // Regular primitives-generated query (the vertex-shader indexed path's
+    // drawn-triangle counter; VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT).
+    VkQueryPool PrimitiveCountRegularPool(uint32_t flight) const {
+        return (flight < smvk::limits::MaxFramesInFlight) ? primitiveCountRegularPools_[flight]
+                                                          : VkQueryPool(VK_NULL_HANDLE);
+    }
+    bool PrimitiveCountRegularSupported() const {
+        return primitiveCountRegularSupported_;
+    }
+    uint64_t GetLastPrimitiveCountRegular(uint32_t slot) const {
+        return slot < kPrimitiveCountSlots ? lastPrimitiveCountsRegular_[slot] : 0;
+    }
+    bool PrimitiveCountRegularValid(uint32_t slot) const {
+        return slot < kPrimitiveCountSlots ? primitiveCountValidRegular_[slot] : false;
+    }
     // Last vkQueuePresentKHR wall time (ms). Under FIFO VSync the
     // present blocks for the vertical blank — idle wait, not CPU work.
     double GetLastPresentWaitMs() const {
@@ -1621,6 +1636,15 @@ class VulkanSwapchain final /*: public ISwapchain*/ {
     bool primitiveCountValid_[kPrimitiveCountSlots] = {};
     void CreatePrimitiveCountPools();
     void DestroyPrimitiveCountPools();
+
+    // Regular (vertex-shader) primitive-count query pools for the indexed
+    // path. Same slot readback contract as the mesh query above.
+    VkQueryPool primitiveCountRegularPools_[smvk::limits::MaxFramesInFlight]{};
+    bool primitiveCountRegularSupported_ = false;
+    uint64_t lastPrimitiveCountsRegular_[kPrimitiveCountSlots] = {};
+    bool primitiveCountValidRegular_[kPrimitiveCountSlots] = {};
+    void CreatePrimitiveCountRegularPools();
+    void DestroyPrimitiveCountRegularPools();
 
     void CreateSwapchain();
     void CreateImageViews();
