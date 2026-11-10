@@ -13,6 +13,7 @@
 #include <string>
 
 #include <Engine/App/RunConfig.h>
+#include <Engine/RHI/vulkan_layer_filter.h>
 
 namespace {
 
@@ -47,6 +48,24 @@ void UnsetVar(const char* n) {
 } // namespace
 
 int main() {
+    // Loader layer filter is deterministic, retains caller filters, and leaves
+    // unrelated layers (notably Khronos validation) enabled.
+    {
+        using namespace smvk::vulkan_layers;
+        Check(kBlockedLayers.size() == 10, "vulkan-layer-filter.count");
+        const std::string filter = BuildLoaderDisableFilter("~explicit~,VK_LAYER_custom");
+        Check(filter.starts_with("~explicit~,VK_LAYER_custom,"),
+              "vulkan-layer-filter.preserves-existing");
+        for (const auto& layer : kBlockedLayers) {
+            Check(filter.find(std::string(layer.name)) != std::string::npos,
+                  "vulkan-layer-filter.blacklisted");
+        }
+        Check(filter.find("VK_LAYER_KHRONOS_validation") == std::string::npos,
+              "vulkan-layer-filter.keeps-validation");
+        Check(BuildLoaderDisableFilter(nullptr).starts_with("VK_LAYER_Twitch_Overlay"),
+              "vulkan-layer-filter.empty");
+    }
+
     // Helpers preserve historical semantics exactly.
     Check(engine::EnvBoolAtoi("1") && engine::EnvBoolAtoi("7") && !engine::EnvBoolAtoi("0") &&
               !engine::EnvBoolAtoi(nullptr),
