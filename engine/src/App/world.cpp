@@ -2881,33 +2881,35 @@ std::vector<uint8_t> World::StaticVisibilityMask(const glm::vec4* planes, int pl
 
 namespace {
 
-// One-time AVX2 probe (leaf 7, EBX[5]; OSXSAVE required for the
-// OS to preserve the wide registers across context switches).
-// Explicit intrinsics compile on MSVC without /arch:AVX2, so the
-// probe gates the code path at runtime instead.
+// AVX2 requires CPU support AND OS-enabled XMM/YMM register state.
+// A CPUID AVX2 bit alone is not sufficient on older operating systems.
 bool CpuHasAvx2() {
     static const bool has = [] {
-        unsigned regs[4];
+        unsigned regs[4]{};
 #ifdef _WIN32
         __cpuid(reinterpret_cast<int*>(regs), 0);
         if (regs[0] < 7)
             return false;
         __cpuid(reinterpret_cast<int*>(regs), 1);
+        const bool avx = (regs[2] & (1u << 28)) != 0;
         const bool osxsave = (regs[2] & (1u << 27)) != 0;
-        if (!osxsave)
+        if (!avx || !osxsave || (_xgetbv(0) & 0x6) != 0x6)
             return false;
         __cpuidex(reinterpret_cast<int*>(regs), 7, 0);
         return (regs[1] & (1u << 5)) != 0;
 #else
-        // GCC: __get_cpuid(count, &a,&b,&c,&d); returns 0 for
-        // unsupported leaves (covers the regs[0] < 7 guard).
-        if (!__get_cpuid_count(7, 0, &regs[0], &regs[1], &regs[2], &regs[3]))
-            return false;
-        unsigned features[4];
+        unsigned features[4]{};
         if (!__get_cpuid(1, &features[0], &features[1], &features[2], &features[3]))
             return false;
+        const bool avx = (features[2] & (1u << 28)) != 0;
         const bool osxsave = (features[2] & (1u << 27)) != 0;
-        if (!osxsave)
+        if (!avx || !osxsave)
+            return false;
+        unsigned xcr0lo = 0, xcr0hi = 0;
+        __asm__ volatile("xgetbv" : "=a"(xcr0lo), "=d"(xcr0hi) : "c"(0));
+        if ((xcr0lo & 0x6) != 0x6)
+            return false;
+        if (!__get_cpuid_count(7, 0, &regs[0], &regs[1], &regs[2], &regs[3]))
             return false;
         return (regs[1] & (1u << 5)) != 0;
 #endif
@@ -2915,33 +2917,61 @@ bool CpuHasAvx2() {
     return has;
 }
 
-// GCC/Clang: the 8-wide AVX2 scan lives in one function with the
-// avx2 target attribute enabled (the runtime probe above gates the
-// call). MSVC compiles the explicit intrinsics without
-// /arch:AVX2, so the split helper stays non-Windows-only.
-#ifndef _WIN32
-__attribute__((target("avx2"))) void Avx2ItemIndices(std::vector<uint32_t>& indices,
-                                                     const std::vector<IteratorFlags>& itemFlags,
-                                                     size_t n,
-                                                     IteratorFlags requiredFlags) {
+// For each 8-bit match mask, the first popcount(mask) lanes hold the
+// original matching lane numbers in ascending order. Initialized once.
+const std::array<std::array<int, 8>, 256>& LaneCompressLut() {
+    static const auto table = [] {
+        std::array<std::array<int, 8>, 256> result{};
+        for (unsigned mask = 0; mask < 256; ++mask) {
+            unsigned n = 0;
+            for (unsigned lane = 0; lane < 8; ++lane)
+                if (mask & (1u << lane))
+                    result[mask][n++] = static_cast<int>(lane);
+        }
+        return result;
+    }();
+    return table;
+}
+
+// Compacts matching indices with an AVX2 permute and one vector store
+// per eight input items. The output has room for n entries; at iteration
+// i, written <= i, so the 8-lane store cannot exceed n.
+#if !defined(_WIN32)
+__attribute__((target("avx2")))
+#endif
+void Avx2ItemIndices(std::vector<uint32_t>& indices,
+                     const std::vector<IteratorFlags>& itemFlags,
+                     size_t n,
+                     IteratorFlags requiredFlags) {
+    const auto& lanes = LaneCompressLut();
+    indices.resize(n);
+    uint32_t* output = indices.data();
+    size_t written = 0;
     const __m256i req = _mm256_set1_epi32(static_cast<int>(requiredFlags));
+    const __m256i offsets = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
     size_t i = 0;
     for (; i + 8 <= n; i += 8) {
-        const __m256i f = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&itemFlags[i]));
-        const __m256i pass = _mm256_cmpeq_epi32(_mm256_and_si256(f, req), req);
-        uint32_t mask = static_cast<uint32_t>(_mm256_movemask_ps(_mm256_castsi256_ps(pass)));
-        while (mask != 0) {
-            const uint32_t bit = std::countr_zero(mask);
-            indices.push_back(static_cast<uint32_t>(i + bit));
-            mask &= mask - 1;
-        }
+        const __m256i flags = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(itemFlags.data() + i));
+        const __m256i pass = _mm256_cmpeq_epi32(_mm256_and_si256(flags, req), req);
+        const unsigned mask = static_cast<unsigned>(
+            _mm256_movemask_ps(_mm256_castsi256_ps(pass)));
+        if (mask == 0)
+            continue;
+        const __m256i selection = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(lanes[mask].data()));
+        const __m256i selected = _mm256_permutevar8x32_epi32(offsets, selection);
+        const __m256i base = _mm256_set1_epi32(static_cast<int>(i));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + written),
+                            _mm256_add_epi32(base, selected));
+        written += std::popcount(mask);
     }
     for (; i < n; ++i) {
         if ((itemFlags[i] & requiredFlags) == requiredFlags)
-            indices.push_back(static_cast<uint32_t>(i));
+            output[written++] = static_cast<uint32_t>(i);
     }
+    indices.resize(written);
 }
-#endif
 
 } // namespace
 
@@ -2951,38 +2981,10 @@ const std::vector<uint32_t>& World::ItemIndicesFor(IteratorFlags requiredFlags) 
 
     std::vector<uint32_t>& indices = flagLists[requiredFlags];
     const size_t n = itemFlags.size();
-    indices.reserve(n);
-
     if (CpuHasAvx2()) {
-        // 8-wide scan of the dense flags column: AND + CMPEQ against
-        // the broadcast mask, movemask compresses the lane results
-        // into a bitmask, then bit-scan emits only the passing
-        // indices. Matches the scalar test exactly: all required bits
-        // set; extra bits ignored.
-        // GCC/Clang: the intrinsics need the avx2 target enabled for
-        // this one function (the probe above gates it at runtime);
-        // MSVC accepts the explicit intrinsics without /arch:AVX2.
-#ifdef _WIN32
-        const __m256i req = _mm256_set1_epi32(static_cast<int>(requiredFlags));
-        size_t i = 0;
-        for (; i + 8 <= n; i += 8) {
-            const __m256i f = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&itemFlags[i]));
-            const __m256i pass = _mm256_cmpeq_epi32(_mm256_and_si256(f, req), req);
-            uint32_t mask = static_cast<uint32_t>(_mm256_movemask_ps(_mm256_castsi256_ps(pass)));
-            while (mask != 0) {
-                const uint32_t bit = std::countr_zero(mask);
-                indices.push_back(static_cast<uint32_t>(i + bit));
-                mask &= mask - 1;
-            }
-        }
-        for (; i < n; ++i) {
-            if ((itemFlags[i] & requiredFlags) == requiredFlags)
-                indices.push_back(static_cast<uint32_t>(i));
-        }
-#else
         Avx2ItemIndices(indices, itemFlags, n, requiredFlags);
-#endif
     } else {
+        indices.reserve(n);
         for (size_t i = 0; i < n; ++i) {
             if ((itemFlags[i] & requiredFlags) == requiredFlags)
                 indices.push_back(static_cast<uint32_t>(i));
