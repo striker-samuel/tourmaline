@@ -3121,6 +3121,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
         std::string resolved;
         std::string baseDir;
         bool manifestLoaded = false;
+        std::shared_ptr<GltfToSceneImporter::TextureSource> textureSource;
     };
     std::map<std::string, MeshAssetCacheEntry> meshAssetCache;
     size_t successfulReferences = 0;
@@ -3631,11 +3632,16 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                     return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
                                                 std::istreambuf_iterator<char>());
                 };
-                std::shared_ptr<GltfToSceneImporter::TextureSource> texSrc;
-                if (vfs)
-                    texSrc = std::make_shared<VfsTextureSource>(vfs, baseDir);
-                else
-                    texSrc = std::make_shared<HostTextureSource>(std::filesystem::path(baseDir));
+                // Source reader is immutable and shared across placements.
+                // Avoid constructing N identical texture-source adapters.
+                if (!cachedMesh->textureSource) {
+                    if (vfs)
+                        cachedMesh->textureSource = std::make_shared<VfsTextureSource>(vfs, baseDir);
+                    else
+                        cachedMesh->textureSource =
+                            std::make_shared<HostTextureSource>(std::filesystem::path(baseDir));
+                }
+                const auto& texSrc = cachedMesh->textureSource;
                 // MESH BASE URI: the tour's RECORDED source when it is
                 // relative (the reference identity — matches the
                 // positional artifact path's URIs exactly), else the
