@@ -15,6 +15,7 @@
 
 #include <Engine/Renderer/dxc_integration.h>
 #include <Engine/Renderer/spirv_reflection.h>
+#include <Engine/Renderer/spirv_validation.h>
 #include <Engine/Rendergraph/bloom.h>
 
 namespace {
@@ -30,6 +31,42 @@ void Check(bool cond, const char* name) {
         ++g_failures;
         std::cout << "FAIL " << name << "\n";
     }
+}
+
+void TestShaderModuleStructureGate() {
+    using smvk::CheckSpirvStructure;
+    auto encode = [](const std::vector<uint32_t>& words) {
+        std::vector<char> bytes(words.size() * sizeof(uint32_t));
+        std::memcpy(bytes.data(), words.data(), bytes.size());
+        return bytes;
+    };
+    const std::vector<uint32_t> minimal = {
+        0x07230203u, 0x00010600u, 0, 2, 0,
+        0x00010000u // OpNop: structurally sound (not a standalone shader)
+    };
+    auto bytes = encode(minimal);
+    std::string error;
+    Check(CheckSpirvStructure(bytes, &error) && error.empty(), "spirv-guard.header-instructions");
+    bytes.pop_back();
+    Check(!CheckSpirvStructure(bytes, &error) && !error.empty(), "spirv-guard.unaligned");
+    bytes = encode(minimal);
+    bytes[0] = 0;
+    Check(!CheckSpirvStructure(bytes), "spirv-guard.magic");
+    auto broken = minimal;
+    broken[1] = 0x00010700u;
+    Check(!CheckSpirvStructure(encode(broken)), "spirv-guard.version");
+    broken = minimal;
+    broken[3] = 0;
+    Check(!CheckSpirvStructure(encode(broken)), "spirv-guard.bound");
+    broken = minimal;
+    broken[4] = 1;
+    Check(!CheckSpirvStructure(encode(broken)), "spirv-guard.schema");
+    broken = minimal;
+    broken[5] = 0; // zero-length instruction
+    Check(!CheckSpirvStructure(encode(broken)), "spirv-guard.zero-wordcount");
+    broken[5] = 0x00020000u; // overruns end of module
+    Check(!CheckSpirvStructure(encode(broken)), "spirv-guard.overrun");
+    Check(!CheckSpirvStructure(std::span<const char>{}), "spirv-guard.empty");
 }
 
 void TestReflectRejectsBadInput() {
@@ -641,6 +678,7 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
 } // namespace
 
 int main() {
+    TestShaderModuleStructureGate();
     TestReflectRejectsBadInput();
     TestMergePushRanges();
     TestValidatePushRanges();
