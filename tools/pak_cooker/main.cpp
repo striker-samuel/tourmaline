@@ -1981,6 +1981,7 @@ int Run(const PakArgs& c) {
             cluster->scene.namesStripped = tour.commands.empty() && tour.overrides.empty();
             cluster->scene.skipGpuSceneChangeJournal = true;
             addNode(cluster->scene, -1, 0); // empty scene root
+            const auto referenceBindStart = std::chrono::steady_clock::now();
             if (!tour.references.empty()) {
                 const std::string ownerBase = smvk::vfs::BaseDir(tour.references[0].source);
                 const size_t applied =
@@ -2005,6 +2006,10 @@ int Run(const PakArgs& c) {
                 tool::out() << "Definition: bound " << applied << " reference subtree(s) ("
                             << tour.references.size() << " top-level)\n";
             }
+            const auto referenceBindEnd = std::chrono::steady_clock::now();
+            tool::out() << "[CookProfile] reference bind "
+                        << std::chrono::duration<double>(referenceBindEnd - referenceBindStart).count()
+                        << "s\n";
             // Texture-asset POOL imports (ordered; see the tour's
             // textureAsset records): replayed BEFORE the material records
             // (a material tex ref or a light cookie naming a .texture must
@@ -2085,10 +2090,14 @@ int Run(const PakArgs& c) {
                             << " material asset(s)\n";
             std::vector<std::string> rwarn;
             std::string rerr;
+            const auto replayStart = std::chrono::steady_clock::now();
             if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn, &rerr)) {
                 tool::err() << "Tour replay failed: " << rerr << std::endl;
                 return 1;
             }
+            tool::out() << "[CookProfile] tour replay "
+                        << std::chrono::duration<double>(std::chrono::steady_clock::now() - replayStart).count()
+                        << "s\n";
             for (auto& w : rwarn)
                 tool::err() << "Tour replay warning: " << w << std::endl;
             tool::out() << "Tour replayed: " << tour.commands.size() << " commands from "
