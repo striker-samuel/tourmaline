@@ -241,6 +241,8 @@ struct Scene {
     // beyond the bound: budget exhaustion is a fatal configuration error.
     size_t nodeSlotBudget = 0;
     void ReserveNodeSlots(size_t slots);
+    // Reserve capacity without imposing a runtime slot budget (offline cook).
+    void ReserveNodeCapacity(size_t slots);
     void ResetForResolve(); // retain preallocated node storage
 
     // Bulk-loader/serializer backing arrays, not a per-frame mutation API.
@@ -262,6 +264,8 @@ struct Scene {
     // One pending bit per node, preventing unbounded journal growth if
     // multiple recalculations occur before the renderer consumes changes.
     std::vector<uint8_t> gpuSceneGlobalQueued;
+    // Offline builds only need final transforms, never a GPU change journal.
+    bool skipGpuSceneChangeJournal = false;
 
     tour::mem::ArenaFlatArray<Hierarchy> hierarchy;
 
