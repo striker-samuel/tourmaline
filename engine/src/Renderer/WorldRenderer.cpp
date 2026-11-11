@@ -499,12 +499,6 @@ void WorldRenderer::ApplyRunConfig(const RunConfig& run) {
     // Texture-streaming mip bias (the scaling study's asset-quality
     // pin; consumed when the streamer is constructed at attach).
     m_texstreamMipBias = run.texstreamMipBias;
-    // GPU-cull baseline dump frame (the harness "cull" mode's input).
-    m_gfxRenderer.SetCullDumpFrame(run.cullDump);
-    // Gfx temporal seed/remainder split kill (TOURMALINE_GFX_SEED_HISTORY=0,
-    // the disocclusion diagnostic): every frustum-kept slot seeds. Default
-    // (unset/1): the split runs on the filter's final-visibility history.
-    m_gfxRenderer.SetSeedHistoryKilled(run.seedHistoryKilled);
     // Texture filtering default for headless A/B
     // (trilinear | 2x | 4x | 8x | 16x). The ImGui combo stays live after;
     // applied every RenderFrame.
@@ -2505,15 +2499,6 @@ bool WorldRenderer::onAttach() {
             return m_world &&
                    m_world->ShaderFamilyOf(materialId) == smvk::MaterialShaderFamily::ProjectLit;
         });
-        // Main-view seed masked phase is reversed-Z: prefer the
-        // conservative shadow_rev module (falls back to the normal-Z
-        // shadow.frag module - perf hint, not correctness).
-        m_gfxRenderer.ConfigureSeedFrag(!m_resources.shadowMaskedFragRevShader.empty()
-                                            ? m_resources.shadowMaskedFragRevShader
-                                            : m_resources.shadowMaskedFragShader);
-        // Shadow-atlas seed masked phase is normal-Z (clear 1.0,
-        // LessEqual): the plain shadow.frag module.
-        m_gfxRenderer.ConfigureShadowSeedFrag(m_resources.shadowMaskedFragShader);
         // Material depth-phase state (cull + alpha-tested) for the range-
         // based depth recorders (seed/remainder/shadow/filtered depth).
         // Resolved lazily at record time so it always sees the live World.
@@ -12007,14 +11992,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 // The first frame can run non-temporal until a valid
                                 // previous pyramid and completed survivor table exist.
                                 static const bool s_taskTemporal = [] {
-                                    const char* env = std::getenv("TOURMALINE_GPU_SCENE_TASK_TEMPORAL");
+                                    const char* env =
+                                        std::getenv("TOURMALINE_GPU_SCENE_TASK_TEMPORAL");
                                     return !env || std::strcmp(env, "0") != 0;
                                 }();
                                 if (s_taskTemporal && m_passes.forwardPlusPrepass &&
                                     m_gpuSceneTaskTemporalClearProgram.shaderCount == 1 &&
                                     inputs.hizValid != 0u &&
                                     m_gpuSceneTaskMeshRuntime.PrepareTemporal(
-                                        *m_context, *m_rendergraph, fb.frameIndex,
+                                        *m_context,
+                                        *m_rendergraph,
+                                        fb.frameIndex,
                                         inputs.clusterCount,
                                         uint64_t(m_gpuSceneGeometryRevision) ^
                                             (uint64_t(m_world->gpuSceneTopologyRevision) << 1u),
@@ -12041,7 +12029,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     taskReady ? taskPlan : tour::gpu_scene::TaskMeshDispatchPlan{};
                 m_gpuSceneTaskTemporalReady = taskReady && temporalTaskPrepared;
                 m_gpuSceneTaskTemporalFrame = m_gpuSceneTaskTemporalReady
-                    ? temporalTaskPlan : tour::gpu_scene::TaskMeshTemporalFrame{};
+                                                  ? temporalTaskPlan
+                                                  : tour::gpu_scene::TaskMeshTemporalFrame{};
                 if (!m_gpuSceneTaskTemporalReady)
                     m_gpuSceneTaskMeshRuntime.InvalidateTemporal();
                 if (taskReady) {
@@ -13146,10 +13135,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     const bool evsmDirOn = EvsmActive() && m_passes.directionalShadows &&
                            m_viewportResources.directionalShadows.Valid();
     const bool evsmSpotOn = EvsmActive() && (spotPassesOn || pointPassesOn);
-    const bool shadowIndirect =
-        !evsmDirOn && !evsmSpotOn &&
-        (m_passes.directionalShadows || spotSlotCount > 0 || pointSlotCount > 0) &&
-        m_passes.gfxFilter && m_gfxFilterAvailable && m_gfxRenderer.EnsureShadowSeeds(*m_context);
+    const bool shadowIndirect = false; // gfx-filter shadow draw-list path retired
     const bool cascadeViewsValid =
         m_passes.directionalShadows && cascadeViewBase != smvk::RenderViewSet::kInvalidIndex;
     const bool spotViewsValid =
@@ -13163,91 +13149,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     std::fill_n(spotShadowSlot, smvk::kMaxSpotShadows, UINT32_MAX);
     std::fill_n(
         pointShadowSlot, smvk::kMaxPointShadowLights * smvk::kPointShadowFaceCount, UINT32_MAX);
-    if (shadowIndirect && (cascadeViewsValid || spotViewsValid || pointViewsValid)) {
-        SMVK_PROFILE_CATEGORY("ShadowListDispatch", Optick::Category::Rendering);
-        BuildShadowDrawCandidates();
-        SMVK_PROFILE_TAG("candidates", m_shadowCandidates.size());
-        // Claim ALL shadow view slots before dispatching any build: the
-        // slot vector must not grow while workers hold element refs
-        // (gfx::ShadowView threading contract).
-        //
-        // Contribution view (mesh-bound fast discard in BuildShadowList):
-        // the main camera's view SWEPT toward the sun
-        // (m_casterContributionView - the indirect-path twin of the direct
-        // fallback's item-level m_shadowContributionCulling). The RAW main
-        // frustum dropped casters outside the camera that still cast INTO
-        // it (oblique sun - shadow pop at the screen edges); the swept
-        // volume only drops casters that cannot reach the view. SPOT views
-        // opt out below (their cone planes are exact; a sun-shaped sweep
-        // would be the wrong geometry for a spot origin).
-        const smvk::RenderView* shadowContributionView = nullptr;
-        if (m_shadowContributionCulling && m_casterContributionViewValid)
-            shadowContributionView = &m_casterContributionView;
-        m_gfxRenderer.BeginShadowFrame();
-        if (cascadeViewsValid)
-            for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
-                cascadeShadowSlot[ci] = m_gfxRenderer.BeginShadowView(
-                    *m_context,
-                    *m_rendergraph,
-                    m_renderViews.Get(cascadeViewBase + ci),
-                    smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
-                    CascadeTileExtent().width,
-                    CascadeTileExtent().height,
-                    shadowContributionView);
-        if (spotViewsValid)
-            for (uint32_t si = 0; si < spotSlotCount; ++si)
-                spotShadowSlot[si] = m_gfxRenderer.BeginShadowView(
-                    *m_context,
-                    *m_rendergraph,
-                    m_renderViews.Get(spotViewBase + si),
-                    smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
-                    m_spotShadowResolution,
-                    m_spotShadowResolution,
-                    nullptr /* spots: cone planes are exact, no contribution cull */);
-        // Point cube faces: same claim pattern, one view per face (face
-        // planes are the exact 90-degree bound - no contribution cull).
-        if (pointViewsValid)
-            for (uint32_t fi = 0; fi < pointSlotCount; ++fi)
-                pointShadowSlot[fi] = m_gfxRenderer.BeginShadowView(
-                    *m_context,
-                    *m_rendergraph,
-                    m_renderViews.Get(pointViewBase + fi),
-                    smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
-                    m_spotShadowResolution,
-                    m_spotShadowResolution,
-                    nullptr);
-        // Cooperative per-view list builds: workers overlap the rest of
-        // the frame's pass recording; futures join before Execute.
-        if (!m_shadowWorkers) {
-            unsigned hw = std::thread::hardware_concurrency();
-            if (hw <= 1)
-                hw = 2;
-            m_shadowWorkers = smvk::mem::MakeProcess<smvk::ThreadPool>(std::min(hw - 1, 8u));
-        }
-        auto enqueueBuild = [this](uint32_t slot) {
-            m_shadowFutures.push_back(m_shadowWorkers->enqueue([this, slot] {
-                SMVK_PROFILE_RENDER("GfxShadowListBuild");
-                for (const smvk::gfx::DrawRequest& cand : m_shadowCandidates)
-                    m_gfxRenderer.PushShadowDraw(slot,
-                                                 cand.mesh,
-                                                 cand.model,
-                                                 cand.material,
-                                                 cand.flags,
-                                                 cand.drawSet,
-                                                 cand.userData);
-                m_gfxRenderer.BuildShadowList(slot);
-            }));
-        };
-        for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
-            if (cascadeShadowSlot[ci] != UINT32_MAX)
-                enqueueBuild(cascadeShadowSlot[ci]);
-        for (uint32_t si = 0; si < spotSlotCount; ++si)
-            if (spotShadowSlot[si] != UINT32_MAX)
-                enqueueBuild(spotShadowSlot[si]);
-        for (uint32_t fi = 0; fi < pointSlotCount; ++fi)
-            if (pointShadowSlot[fi] != UINT32_MAX)
-                enqueueBuild(pointShadowSlot[fi]);
-    }
+    // (retired) gfx-filter shadow draw-list build path removed.
     if (m_passes.directionalShadows) {
         SMVK_PROFILE_CATEGORY("ShadowCascades", Optick::Category::Rendering);
         SMVK_PROFILE_TAG("cascadeCount", NUM_CASCADES);
@@ -13303,47 +13205,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // cascade).
             const bool pcfTsBegin = (ci == 0);
             const bool pcfTsEnd = (ci == NUM_CASCADES - 1) && !spotPassesOn && !pointPassesOn;
-            if (shadowIndirect && cascadeShadowSlot[ci] != UINT32_MAX) {
-                const uint32_t slot = cascadeShadowSlot[ci];
-                m_gfxRenderer.AddShadowConsumeHints(shadowPass, slot);
-                shadowPass.SetRecordingFunc([this,
-                                             slot,
-                                             casterViewIndex,
-                                             cascadePC,
-                                             renderViewsAddress,
-                                             pcfTsBegin,
-                                             pcfTsEnd](smvk::CommandBuffer& cmd) {
+            shadowPass.SetRecordingFunc(
+                [this, cascadePC, casterViewIndex, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd) {
                     if (pcfTsBegin)
                         cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
-                    // GPU context + pass scope come from RenderGraph::Execute
-                    // (pass name "ShadowCascade<ci>" carries the cascade index).
-                    m_gfxRenderer.RecordShadowList(
-                        cmd, *m_context, slot, renderViewsAddress, casterViewIndex, cascadePC);
-                    // Fallback: unregistered casters only (registered ones
-                    // are covered by the indirect command list).
                     RecordShadowCastersDirect(cmd,
                                               m_viewportResources.directionalShadows.program,
                                               cascadePC,
                                               casterViewIndex,
-                                              /*skipFiltered=*/true);
+                                              /*skipFiltered=*/false);
                     if (pcfTsEnd)
                         cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
                 });
-            } else {
-                shadowPass.SetRecordingFunc(
-                    [this, cascadePC, casterViewIndex, pcfTsBegin, pcfTsEnd](
-                        smvk::CommandBuffer& cmd) {
-                        if (pcfTsBegin)
-                            cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
-                        RecordShadowCastersDirect(cmd,
-                                                  m_viewportResources.directionalShadows.program,
-                                                  cascadePC,
-                                                  casterViewIndex,
-                                                  /*skipFiltered=*/false);
-                        if (pcfTsEnd)
-                            cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
-                    });
-            }
             (void)shadowPass;
         }
     }
@@ -13465,31 +13338,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // faces follow the spot tiles).
             const bool pcfTsBegin = (si == 0) && !m_passes.directionalShadows;
             const bool pcfTsEnd = (si == spotCount - 1) && !pointPassesOn;
-            if (shadowIndirect && spotShadowSlot[si] != UINT32_MAX) {
-                const uint32_t slot = spotShadowSlot[si];
-                m_gfxRenderer.AddShadowConsumeHints(spotPass, slot);
-                spotPass.SetRecordingFunc(
-                    [this, slot, casterViewIndex, spotPC, renderViewsAddress, pcfTsBegin, pcfTsEnd](
-                        smvk::CommandBuffer& cmd) {
-                        if (pcfTsBegin)
-                            cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
-                        // GPU context + pass scope come from RenderGraph::Execute
-                        // (pass name "SpotShadow<si>" carries the spot index).
-                        m_gfxRenderer.RecordShadowList(
-                            cmd, *m_context, slot, renderViewsAddress, casterViewIndex, spotPC);
-                        // Fallback: unregistered casters only (registered ones
-                        // are covered by the indirect command list).
-                        RecordShadowCastersDirect(cmd,
-                                                  m_viewportResources.spotShadows.program,
-                                                  spotPC,
-                                                  casterViewIndex,
-                                                  /*skipFiltered=*/true);
-                        if (pcfTsEnd)
-                            cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
-                    });
-            } else {
-                spotPass.SetRecordingFunc([this, spotPC, casterViewIndex, pcfTsBegin, pcfTsEnd](
-                                              smvk::CommandBuffer& cmd) {
+            spotPass.SetRecordingFunc(
+                [this, spotPC, casterViewIndex, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd) {
                     if (pcfTsBegin)
                         cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
                     RecordShadowCastersDirect(cmd,
@@ -13500,7 +13350,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     if (pcfTsEnd)
                         cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
                 });
-            }
             (void)spotPass;
         }
     }
@@ -13591,31 +13440,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // earlier raster shadow pass did, the LAST face closes it.
             const bool pcfTsBegin = (fi == 0) && !m_passes.directionalShadows && !spotPassesOn;
             const bool pcfTsEnd = (fi == faceCount - 1);
-            if (shadowIndirect && pointShadowSlot[fi] != UINT32_MAX) {
-                const uint32_t slot = pointShadowSlot[fi];
-                m_gfxRenderer.AddShadowConsumeHints(facePass, slot);
-                facePass.SetRecordingFunc(
-                    [this, slot, casterViewIndex, facePC, renderViewsAddress, pcfTsBegin, pcfTsEnd](
-                        smvk::CommandBuffer& cmd) {
-                        if (pcfTsBegin)
-                            cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
-                        // GPU context + pass scope come from RenderGraph::Execute
-                        // (pass name "PointShadow<k>F<f>" carries the face).
-                        m_gfxRenderer.RecordShadowList(
-                            cmd, *m_context, slot, renderViewsAddress, casterViewIndex, facePC);
-                        // Fallback: unregistered casters only (registered ones
-                        // are covered by the indirect command list).
-                        RecordShadowCastersDirect(cmd,
-                                                  m_viewportResources.spotShadows.program,
-                                                  facePC,
-                                                  casterViewIndex,
-                                                  /*skipFiltered=*/true);
-                        if (pcfTsEnd)
-                            cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
-                    });
-            } else {
-                facePass.SetRecordingFunc([this, facePC, casterViewIndex, pcfTsBegin, pcfTsEnd](
-                                              smvk::CommandBuffer& cmd) {
+            facePass.SetRecordingFunc(
+                [this, facePC, casterViewIndex, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd) {
                     if (pcfTsBegin)
                         cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
                     RecordShadowCastersDirect(cmd,
@@ -13626,7 +13452,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     if (pcfTsEnd)
                         cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
                 });
-            }
             (void)facePass;
         }
     }
@@ -13898,55 +13723,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     if (!gpuTemporalReady)
         m_gpuSceneRasterLastHistoryFlight = UINT32_MAX;
 
-    const bool gfxFilterOn = m_passes.gfxFilter && m_gfxFilterAvailable &&
-                             (!m_gpuSceneRasterDrawActive || m_gpuSceneRasterLegacyCount != 0);
-    m_gfxRenderer.SetGpuRasterOwnership(fc.gpuRasterOwnsNode);
-    if (gfxFilterOn) {
-        if (m_freezeCullingView && !m_frozenViewValid) {
-            m_frozenViewProj = frameData.viewProj;
-            m_frozenEye = m_cameraPositioner.cameraPosition_;
-            m_frozenExtent = renderExtent;
-            m_frozenViewValid = true;
-        }
-        if (!m_freezeCullingView)
-            m_frozenViewValid = false;
-        cullingFrozen = m_freezeCullingView && m_frozenViewValid &&
-                        m_frozenExtent.width == renderExtent.width &&
-                        m_frozenExtent.height == renderExtent.height;
-        if (m_freezeCullingView && !cullingFrozen) {
-            // Drifted (or capture failed): release rather than cull
-            // against a mismatched pyramid.
-            m_freezeCullingView = false;
-            m_frozenViewValid = false;
-        }
-        m_gfxRenderer.ClearCullOverride();
-        if (cullingFrozen) {
-            // CPU-side only: frustum planes + matrix for FilterMainView.
-            // Allocated after Upload(), so the GPU slab lacks this slot
-            // - nothing dereferences it on GPU (filter push carries the
-            // matrix; seed/VS stay on the live main view).
-            frozenViewIdx = m_renderViews.AllocateCustomView(
-                m_frozenViewProj, {(float)renderExtent.width, (float)renderExtent.height});
-            if (frozenViewIdx != smvk::RenderViewSet::kInvalidIndex)
-                m_gfxRenderer.SetCullOverride(frozenViewIdx, m_frozenEye);
-            else
-                cullingFrozen = false;
-        }
-        m_gfxRenderer.AppendPasses(fc);
-        gfxSlot = m_gfxRenderer.LastSlot();
-    }
+    // The gfx-filter render path is retired: the filter gate is always off,
+    // so gfxSlot stays invalid and the legacy filtered/seed/remainder legs
+    // below never run. The GPU-scene backends schedule Hi-Z through
+    // PrepareGpuSceneHiz.
+    const bool gfxFilterOn = false;
     // For all-GPU scenes, create only the Hi-Z view/pyramid. Mixed scenes
     // already initialized this view through the legacy fallback renderer.
     // Do not build a second, conflicting pyramid for the same eye.
     if ((gpuTemporalReady || m_gpuSceneTaskMeshActive) && !gfxFilterOn) {
-        const bool hizPrepared = m_gfxRenderer.PrepareGpuSceneHiz(
-            *m_context, *m_rendergraph,
-            m_renderViews.Get(mainRenderView),
-            m_cameraPositioner.cameraPosition_, temporalFlight,
-            renderExtent.width, renderExtent.height);
+        const bool hizPrepared =
+            m_gfxRenderer.PrepareGpuSceneHiz(*m_context,
+                                             *m_rendergraph,
+                                             m_renderViews.Get(mainRenderView),
+                                             m_cameraPositioner.cameraPosition_,
+                                             temporalFlight,
+                                             renderExtent.width,
+                                             renderExtent.height);
         // Preparing an HZB for task/mesh MUST NOT turn on indexed-command
         // temporal mode (its seed/remainder command buffers do not exist).
-        if (gpuTemporalReady) gpuTemporalReady = hizPrepared;
+        if (gpuTemporalReady)
+            gpuTemporalReady = hizPrepared;
         if (!hizPrepared && m_gpuSceneTaskTemporalReady) {
             m_gpuSceneTaskTemporalReady = false;
             m_gpuSceneTaskMeshRuntime.InvalidateTemporal();
@@ -14237,9 +14034,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // The SAME seed-depth / Hi-Z / remainder flow now also accepts the
     // task/mesh backend. No gfx-filter candidates or temporal history are
     // allocated: work and exact meshlet identity come from GPU Scene.
-    bool taskTemporalActive = m_gpuSceneTaskMeshActive &&
-                              m_gpuSceneTaskTemporalReady && !depthSplit &&
-                              !gfxFilterOn && !cullingFrozen &&
+    bool taskTemporalActive = m_gpuSceneTaskMeshActive && m_gpuSceneTaskTemporalReady &&
+                              !depthSplit && !gfxFilterOn && !cullingFrozen &&
                               m_gpuSceneTaskTemporalClearProgram.shaderCount == 1;
     if (taskTemporalActive) {
         const auto temporal = m_gpuSceneTaskTemporalFrame;
@@ -14251,27 +14047,32 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         auto clearProgram = m_gpuSceneTaskTemporalClearProgram;
         clear.SetRecordingFunc([clearProgram, temporal](smvk::CommandBuffer& cmd) mutable {
             cmd.BindComputePipeline(clearProgram);
-            cmd.PushConstants(0, sizeof(temporal.clear), &temporal.clear,
-                              smvk::ShaderStage::Compute);
+            cmd.PushConstants(
+                0, sizeof(temporal.clear), &temporal.clear, smvk::ShaderStage::Compute);
             cmd.Dispatch((temporal.capacity + 255u) / 256u, 1u, 1u);
         });
         const uint32_t flight = fb.frameIndex;
         auto seed = m_gpuSceneTaskMeshPlan.graphics;
         seed.temporalPhase = 1u;
-        const auto submit = [&](const tour::gpu_scene::TaskMeshGpuPush& push,
-                                bool toHizDepth) {
-            return m_fpRenderer.AppendGpuSceneTaskPrepass(
-                fc, m_gpuSceneTaskDepthProgram, m_gpuSceneTaskGbufferProgram,
-                m_gpuSceneTaskMaskedDepthProgram, m_gpuSceneTaskMaskedGbufferProgram,
-                m_gpuSceneTaskMeshPlan.indirectHandle,
-                m_gpuSceneTaskMeshPlan.indirectLogical,
-                m_gpuSceneTaskMeshPlan.groupLogical,
-                m_gpuSceneTaskMeshPlan.offsetLogical,
-                m_gpuSceneRasterWorkLogical[flight], push,
-                m_gpuSceneRasterDoubleSidedCount != 0,
-                m_gpuSceneRasterMaskedBackCount != 0,
-                m_gpuSceneRasterMaskedDoubleSidedCount != 0,
-                toHizDepth, temporal.currentLogical, temporal.previousLogical);
+        const auto submit = [&](const tour::gpu_scene::TaskMeshGpuPush& push, bool toHizDepth) {
+            return m_fpRenderer.AppendGpuSceneTaskPrepass(fc,
+                                                          m_gpuSceneTaskDepthProgram,
+                                                          m_gpuSceneTaskGbufferProgram,
+                                                          m_gpuSceneTaskMaskedDepthProgram,
+                                                          m_gpuSceneTaskMaskedGbufferProgram,
+                                                          m_gpuSceneTaskMeshPlan.indirectHandle,
+                                                          m_gpuSceneTaskMeshPlan.indirectLogical,
+                                                          m_gpuSceneTaskMeshPlan.groupLogical,
+                                                          m_gpuSceneTaskMeshPlan.offsetLogical,
+                                                          m_gpuSceneRasterWorkLogical[flight],
+                                                          push,
+                                                          m_gpuSceneRasterDoubleSidedCount != 0,
+                                                          m_gpuSceneRasterMaskedBackCount != 0,
+                                                          m_gpuSceneRasterMaskedDoubleSidedCount !=
+                                                              0,
+                                                          toHizDepth,
+                                                          temporal.currentLogical,
+                                                          temporal.previousLogical);
         };
         const bool seededHiz = submit(seed, true);
         // Seed the FULL depth/G-buffer as well, then append remainder with
@@ -14297,14 +14098,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // HZB over that depth -> filter culls the rest.
         if (!cullingFrozen)
             appendHizPasses();
-        m_gfxRenderer.AppendFilterDispatch(fc);
-        // Depth pass 2: slim direct fallback (Loads the seeded depth)
-        // + the remainder (newly visible clusters, both buckets).
+        // Depth pass 2: slim direct fallback (Loads the seeded depth).
         if (m_passes.forwardPlusPrepass)
             m_fpRenderer.AppendPrepass(fc, /*fallbackOnly=*/true);
-        if (m_gfxRenderer.RemainderPending()) {
-            m_gfxRenderer.AppendRemainderPass(fc);
-        }
     } else {
         // GPU-scene's Northlight equivalent: current-frustum commands
         // are split using LAST frame's (slot,generation) visibility. The
@@ -14514,22 +14310,22 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // device-read per-class counts (the temporal seed lane
                 // never runs compact v1, so this is always the full list).
                 const bool remainderPrimed =
-                    taskTemporalActive ? true :
-                    m_gpuSceneTaskMeshActive ? m_fpRenderer.AppendGpuSceneTaskPrepass(
-                                                   fc,
-                                                   m_gpuSceneTaskDepthProgram,
-                                                   m_gpuSceneTaskGbufferProgram,
-                                                   m_gpuSceneTaskMaskedDepthProgram,
-                                                   m_gpuSceneTaskMaskedGbufferProgram,
-                                                   m_gpuSceneTaskMeshPlan.indirectHandle,
-                                                   m_gpuSceneTaskMeshPlan.indirectLogical,
-                                                   m_gpuSceneTaskMeshPlan.groupLogical,
-                                                   m_gpuSceneTaskMeshPlan.offsetLogical,
-                                                   m_gpuSceneRasterWorkLogical[flight],
-                                                   m_gpuSceneTaskMeshPlan.graphics,
-                                                   m_gpuSceneRasterDoubleSidedCount != 0,
-                                                   m_gpuSceneRasterMaskedBackCount != 0,
-                                                   m_gpuSceneRasterMaskedDoubleSidedCount != 0)
+                    taskTemporalActive         ? true
+                    : m_gpuSceneTaskMeshActive ? m_fpRenderer.AppendGpuSceneTaskPrepass(
+                                                     fc,
+                                                     m_gpuSceneTaskDepthProgram,
+                                                     m_gpuSceneTaskGbufferProgram,
+                                                     m_gpuSceneTaskMaskedDepthProgram,
+                                                     m_gpuSceneTaskMaskedGbufferProgram,
+                                                     m_gpuSceneTaskMeshPlan.indirectHandle,
+                                                     m_gpuSceneTaskMeshPlan.indirectLogical,
+                                                     m_gpuSceneTaskMeshPlan.groupLogical,
+                                                     m_gpuSceneTaskMeshPlan.offsetLogical,
+                                                     m_gpuSceneRasterWorkLogical[flight],
+                                                     m_gpuSceneTaskMeshPlan.graphics,
+                                                     m_gpuSceneRasterDoubleSidedCount != 0,
+                                                     m_gpuSceneRasterMaskedBackCount != 0,
+                                                     m_gpuSceneRasterMaskedDoubleSidedCount != 0)
                     : m_gpuSceneMeshletCompactActive
                         ? m_fpRenderer.AppendGpuSceneCompactPrepass(
                               fc,
@@ -14576,18 +14372,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     fc.gpuRasterOwnsNode = {};
                 m_fpRenderer.AppendPrepass(fc);
                 fc.gpuRasterOwnsNode = ownsGpu;
-            }
-        }
-        if (gfxFilterOn) {
-            // When GPU-scene seeded the pyramid above, legacy draw/cluster
-            // culling consumes the SAME depth rather than rebuilding it
-            // over the completed current frame. Standalone GfxFilter
-            // retains its existing full-prepass path.
-            if (!cullingFrozen && !gpuTemporalReady && !taskTemporalActive)
-                appendHizPasses();
-            m_gfxRenderer.AppendFilterDispatch(fc);
-            if (m_gfxRenderer.RemainderPending()) {
-                m_gfxRenderer.AppendRemainderPass(fc);
             }
         }
     }
@@ -15005,38 +14789,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // come from the draws buffer via SV_InstanceID; materialId
             // is pushed per range for the FS alpha test). Cull follows
             // the material raster so motion coverage matches Main.
-            if (motionFilteredActive) {
-                const auto& motionRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
-                for (uint32_t ri = 0; ri < (uint32_t)motionRanges.size(); ++ri) {
-                    const uint32_t materialId = motionRanges[ri].material;
-                    smvk::CullMode cull = smvk::CullMode::Back;
-                    if (smvk::Material* rmat = m_world->GetMaterial(materialId))
-                        cull = rmat->pipeline.raster.cullMode;
-                    cmd.BindRenderPipeline(m_gfxRenderer.FilteredMotionProgram(),
-                                           smvk::VertexLayoutId::Static,
-                                           motionDepth,
-                                           smvk::StencilSettings{},
-                                           smvk::BlendSettings::Opaque(),
-                                           smvk::MSAASettings::Count1(),
-                                           smvk::RasterSettings{.cullMode = cull});
-                    // Full scene push first (a pipeline must be bound
-                    // before any push), then the per-range materialId
-                    // and the filtered VS tail.
-                    cmd.PushConstants(
-                        0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
-                    cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
-                                      sizeof(materialId),
-                                      &materialId,
-                                      smvk::ShaderStage::All);
-                    m_gfxRenderer.PushMotionViewConstants(cmd,
-                                                          *m_context,
-                                                          gfxSlot,
-                                                          renderViewsAddress,
-                                                          mainRenderView,
-                                                          frameUniformsAddress);
-                    m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
-                }
-            }
+            // (retired) filtered-motion multi-draw leg removed.
             // Phase 1: solid geometry, back-culled like the prepass (the
             // per-item solid ensure inside drawMotionNode switches to the
             // material's raster — Cull None for double-sided — so motion
@@ -16501,11 +16254,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                              m_cameraPositioner.cameraPosition_.x,
                              m_cameraPositioner.cameraPosition_.y,
                              m_cameraPositioner.cameraPosition_.z);
-                // TMP-DIAG: read the MAIN indirect args (the filter
-                // compute's output) at the settled frame - the seed
-                // buffer (depth leg) works, so if these are zero the
-                // filter's arg writes are the dead piece.
-                m_gfxRenderer.DebugReadMainIndirect(*m_context, gfxSlot);
                 for (size_t i = 0; i < gfxRanges.size() && i < 3; ++i)
                     std::fprintf(stderr,
                                  "[maindiag] range[%zu] mat=%u cmds=%u "
@@ -16585,9 +16333,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                   sizeof(matPC.materialId),
                                   &matPC.materialId,
                                   smvk::ShaderStage::All);
-                m_gfxRenderer.PushViewConstants(
-                    cmd, *m_context, gfxSlot, renderViewsAddress, mainRenderView);
-                m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
             }
             if (gfxPrimary) {
                 cmd.EndPrimitiveCountRegular(0u);
@@ -19226,33 +18971,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             .SetRecordingFunc([](smvk::CommandBuffer&) {});
     }
 
-    // Cooperative shadow list builds must land before Execute: the
-    // cascade/spot/point-face pass recording lambdas read the built
-    // ranges at record time. The ring uploads then run on the main
-    // thread (the engine's buffer sync-state tables are sharded by
-    // handle, not by calling thread) and flush with the EndAndPresent
-    // upload batch ahead of every consumer pass.
-    if (!m_shadowFutures.empty()) {
-        SMVK_PROFILE_SCOPE("ShadowListJoin");
-        for (auto& fut : m_shadowFutures)
-            fut.get();
-        m_shadowFutures.clear();
-        {
-            SMVK_PROFILE_SCOPE("ShadowListUpload");
-            for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
-                if (cascadeShadowSlot[ci] != UINT32_MAX)
-                    m_gfxRenderer.UploadShadowList(
-                        *m_context, *m_rendergraph, fb.frameIndex, cascadeShadowSlot[ci]);
-            for (uint32_t si = 0; si < spotSlotCount; ++si)
-                if (spotShadowSlot[si] != UINT32_MAX)
-                    m_gfxRenderer.UploadShadowList(
-                        *m_context, *m_rendergraph, fb.frameIndex, spotShadowSlot[si]);
-            for (uint32_t fi = 0; fi < pointSlotCount; ++fi)
-                if (pointShadowSlot[fi] != UINT32_MAX)
-                    m_gfxRenderer.UploadShadowList(
-                        *m_context, *m_rendergraph, fb.frameIndex, pointShadowSlot[fi]);
-        }
-    }
+    // (retired) cooperative shadow list build/upload path removed — the
+    // gfx-filter shadow draw-list hooks no longer populate m_shadowFutures.
     const auto rfT4 = bench_clk::now();
     // Flush bindless descriptor writes HERE - after every
     // GetOrCreateSampler / Ensure / CreateBindlessImage of this frame
@@ -19836,20 +19556,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // zero-fill); nothing to download here - the histogram compute was
     // just recorded into fb.commandBuffer and submits in EndAndPresent.
 
-    // One-shot indirect audit (debug): downloads this frame's filter
-    // commands + HZB after Execute so the GPU results are final. Stalls
-    // (device-idle wait); button-pressed or TOURMALINE_AUDIT=<frame>.
-    if (m_auditAtFrame >= 0 && m_frameCounter == (uint64_t)m_auditAtFrame) {
-        m_auditAtFrame = -1;
-        m_dumpIndirectAudit = true;
-    }
-    if (m_dumpIndirectAudit) {
-        m_dumpIndirectAudit = false;
-        if (gfxSlot != UINT32_MAX) {
-            m_host.WaitForDeviceIdle();
-            m_gfxRenderer.DumpIndirectAudit(*m_context, gfxSlot);
-        }
-    }
+    // (retired) one-shot indirect audit (filter commands + HZB) removed
+    // with the gfx-filter render path; the HZB dump leg below stays for the
+    // GPU-scene Hi-Z diagnostics.
     if (m_debugDumpHzb) {
         m_debugDumpHzb = false;
         if (gfxSlot != UINT32_MAX) {

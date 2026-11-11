@@ -1794,21 +1794,6 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                                 FP_MAX_DECALS,
                                 FP_MAX_DECALS_PER_TILE,
                                 DecalsActive() ? "" : "  (off)");
-                    const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
-                    // The cull runs in compute; the kept count lands via the
-                    // async counter-word readback (see UpdateReadbacks).
-                    const bool gpuKept = m_gfxKeptValid;
-                    uint32_t kept = gs.clustersProcessed - gs.clustersCulled;
-                    if (gpuKept)
-                        kept = std::min(m_gfxKeptBatches, gs.clustersProcessed);
-                    ImGui::Text("view: %u draws %u cmds %u tris | clusters %u kept %u culled %u%s",
-                                gs.draws,
-                                gs.commands,
-                                gs.trianglesProcessed,
-                                gs.clustersProcessed,
-                                kept,
-                                gs.clustersProcessed - kept,
-                                gpuKept ? " (GPU cull)" : "");
                     ImGui::Text("materials: %u ranges  batches: %u",
                                 (unsigned)m_gfxRenderer.LastMaterialRangeCount(),
                                 (unsigned)m_gfxRenderer.LastBatchCount());
@@ -2227,29 +2212,8 @@ void WorldRenderer::DrawHudOverlay() {
         ImGui::Text("cam %.2f %.2f %.2f", p.x, p.y, p.z);
         ImGui::Text("fwd %.3f %.3f %.3f", fwd.x, fwd.y, fwd.z);
     }
-    // Filter culls (last filtered view; zeros when inactive). GPU mode
-    // (the default with VK_EXT_mesh_shader): the cull runs in COMPUTE
-    // (gfxbatchcull) - the CPU stat only counts candidates, so the kept
-    // number lands via the async counter-word readback (~a few frames
-    // stale) and culled = candidates - kept.
-    {
-        const smvk::gfx::Stats fs = m_gfxRenderer.LastStats();
-        const bool gpuKept = m_gfxKeptValid;
-        uint32_t kept = fs.clustersProcessed - fs.clustersCulled;
-        if (gpuKept)
-            kept = std::min(m_gfxKeptBatches, fs.clustersProcessed);
-        // 6 numeric + 1 string specs = 7 args EXACTLY (a missing arg
-        // reads stack garbage as the %s pointer - an AV in the CRT's
-        // strlen; this exact bug crashed every frame-0 run).
-        ImGui::Text("filter draws %u cmd %u tris %u | cl %u kept %u culled %u%s",
-                    fs.draws,
-                    fs.commands,
-                    fs.trianglesProcessed,
-                    fs.clustersProcessed,
-                    kept,
-                    fs.clustersProcessed - kept,
-                    gpuKept ? " (GPU)" : "");
-    }
+    // (retired) filter culls stat leg removed with the gfx-filter render
+    // path; the LOD decisions below are World-level and remain.
     // LOD decisions this frame (World-level stats: every leg - filter,
     // prepass, shadow, direct, motion - counts once at its first query;
     // far = far-shading draws counted at the Main direct leg).

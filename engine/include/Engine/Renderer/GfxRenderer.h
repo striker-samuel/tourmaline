@@ -177,25 +177,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     smvk::ShaderProgram meshProjectProgramStd{};
     smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsGiStdModules_[4]{};
     smvk::ShaderProgram meshProjectProgramGiStd_[4]{};
-    // Seed-depth programs (T3): draw the previous frame's visible clusters
-    // straight from the cluster-ordered index heap to prime depth.
-    smvk::Holder<smvk::ShaderModuleHandle> seedVsModule;
-    smvk::Holder<smvk::ShaderModuleHandle> seedMaskedVsModule_;
-    smvk::ShaderProgram seedOpaqueProgram{}; // VS-only (gfxseed mainVS)
-    smvk::ShaderProgram seedMaskedProgram{}; // gfxseedmasked mainVS + shadow FS
-    // Shadow-atlas seed programs (gfxshadowseed*.vert.hlsl): cascade/spot
-    // tiles drawn from the CPU-built per-view shadow lists (gfx::ShadowView)
-    // instead of per-item direct recording. Opaque phase is VS-only; the
-    // masked phase pairs with the normal-Z shadow.frag alpha-test FS
-    // (ConfigureShadowSeedFrag; the atlas is clear-1.0 LessEqual, so its
-    // conservative-depth mode differs from the reversed-Z main-view seed
-    // module of ConfigureSeedFrag). The VS clamps clip z
-    // like shadow.vert so casters behind the light near plane squash onto
-    // it (leak-free tiles, direct-path parity).
-    smvk::Holder<smvk::ShaderModuleHandle> shadowSeedVsModule;
-    smvk::Holder<smvk::ShaderModuleHandle> shadowSeedMaskedVsModule;
-    smvk::ShaderProgram shadowSeedOpaqueProgram{}; // VS-only
-    smvk::ShaderProgram shadowSeedMaskedProgram{}; // masked VS + shadow FS
     // Debug views (self-contained: own VS+FS, no Configure needed).
     // Meshlet colors draw every registered cluster direct (bypasses the
     // GPU filter, so HZB-culled meshlets stay visible); cone axes draw
@@ -218,10 +199,10 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     void Destroy(smvk::RenderGraph& rg) override {
         smvk::gfx::Destroy(gfx, rg);
     }
-    // CPU filter + compute pass for the main view, plus (when history is
-    // armed) the seed depth pass from the previous frame's visible set.
-    // The consume side (main opaque loop) stays in main until its push
-    // data moves into the context.
+    // The gfx-filter render path is retired: this IFrameRenderer hook is a
+    // no-op (the GPU-scene backends schedule Hi-Z through
+    // PrepareGpuSceneHiz). Kept to satisfy the pure-virtual IFrameRenderer
+    // contract without resurrecting the filter/seed/remainder chain.
     void AppendPasses(smvk::FrameContext& fc) override;
     // HZB build passes over the prepass depth (call after the Forward+
     // passes so depth is filled; T3 builds from full depth, T5 refreshes).
@@ -253,10 +234,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
         gfx.hizSpdVerifyArmed = false;
     }
     void VerifyHizSpd(smvk::ResourceManager& ctx); // stalls (downloads both pyramids)
-    // Filter compute dispatch (call after AppendHizPasses: the CS reads the
-    // HZB built this frame; dispatching earlier would read last frame's or
-    // uninitialized memory). CPU expansion stays in AppendPasses.
-    void AppendFilterDispatch(smvk::FrameContext& fc);
     [[nodiscard]] float MinContribution() const {
         if (lastSlot_ == UINT32_MAX || lastSlot_ >= gfx.temporals.size())
             return 0.0f;
@@ -273,12 +250,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // True when this frame seeded depth (prepass must Load, not Clear).
     [[nodiscard]] bool SeededThisFrame() const {
         return seededThisFrame_;
-    }
-    // Stats of the last filtered view (zeros when inactive). For the debug UI.
-    [[nodiscard]] smvk::gfx::Stats LastStats() const {
-        if (lastSlot_ == UINT32_MAX || lastSlot_ >= gfx.views.size())
-            return smvk::gfx::Stats{};
-        return gfx.views[lastSlot_].stats;
     }
     [[nodiscard]] uint32_t LastBatchCount() const {
         if (lastSlot_ == UINT32_MAX || lastSlot_ >= gfx.views.size())
@@ -321,15 +292,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // and the scene's module load loop).
     static constexpr uint32_t LitSgVariantLobes(uint32_t variantIndex) {
         return variantIndex == 0 ? 5u : variantIndex == 1 ? 6u : variantIndex == 2 ? 9u : 12u;
-    }
-    void ConfigureSeedFrag(smvk::ShaderModuleHandle seedFrag) {
-        seedFrag_ = seedFrag;
-    }
-    // Normal-Z shadow.frag module for the shadow-atlas seed masked phase
-    // (ConfigureSeedFrag carries the reversed-Z twin for the main-view
-    // seed/prepass programs).
-    void ConfigureShadowSeedFrag(smvk::ShaderModuleHandle shadowSeedFrag) {
-        shadowSeedFrag_ = shadowSeedFrag;
     }
     // A2C lit FS module (default_lit_a2c.frag): pairs with the filtered VS
     // for Masked material ranges in 2x MSAA Main.
@@ -499,84 +461,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     void RegisterWorldMeshes(smvk::World& world);
     void UploadStaticData(smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
 
-    // Per-frame main-view filtering. Iterates Renderable|Opaque|
-    // StaticVertexFmt nodes (same set as the main opaque loop), mesh-level
-    // sphere pre-cull, then cluster expansion with cone culling inside
-    // gfx::FinalizeView. frameIndex is the swapchain frame slot (rings all
-    // mutable buffers, cf. RenderViewSet). Returns the gfx view slot.
-    // `lod` (may be null = LOD0 everywhere): when set, the per-node
-    // World::LodIndexForNode decision selects which registered LOD sibling
-    // is pushed, so every LOD stays in the HZB-culled indirect ranges.
-    // Only LODs whose registration failed fall back to the direct path —
-    // the same cache the main pass reads, so both sides agree per node
-    // per frame.
-    // `lodShaderVertexLit` (shader LODs): when set, instances whose
-    // selected level shades vertex-lit (farthest level of a cooked chain
-    // whose material allows it — see World::UseVertexLitShaderAt) are NOT
-    // pushed — the filtered VS is lit-only, so the Main direct leg draws
-    // them with the vertex-lit program instead. Must mirror the main pass
-    // decision exactly (same halfrate cache).
-    uint32_t FilterMainView(smvk::ResourceManager& ctx,
-                            smvk::RenderGraph& rg,
-                            uint32_t frameIndex,
-                            smvk::World& world,
-                            const smvk::RenderViewSet& views,
-                            uint32_t mainViewIdx,
-                            const glm::vec3& eye,
-                            const smvk::Extent2D& extent,
-                            smvk::gfx::CullFlags flags,
-                            const smvk::LodFrameInputs* lod = nullptr,
-                            bool lodShaderVertexLit = false);
-
-    // Debug culling freeze (set every frame by the owner while active, cleared
-    // otherwise): FilterMainView expands batches against this (view, eye)
-    // instead of the live main view, so the render camera can move freely
-    // while culling decisions stay put. Seed/remainder depth passes always
-    // stay on the live view (they write the live depth buffer); HZB must be
-    // held separately by the owner (skip AppendHizPasses) so the frozen
-    // footprints test against matching depth.
-    void SetCullOverride(uint32_t viewIndex, const glm::vec3& eye) {
-        cullOverride_ = true;
-        cullView_ = viewIndex;
-        cullEye_ = eye;
-    }
-    // Main-view only: omit GPU-owned static opaque nodes from the
-    // legacy filtered batch/seed/remainder chain. Shadow views still
-    // consume every caster until GPU-scene per-light passes exist.
-    void SetGpuRasterOwnership(std::function<bool(NodeId)> owns) {
-        gpuRasterOwnsNode_ = std::move(owns);
-    }
-    void ClearCullOverride() {
-        cullOverride_ = false;
-    }
-
-    // Cull-baseline dump (TOURMALINE_CULL_DUMP=<1-based app frame>, the
-    // SSR_DUMP diagnostic family): at that frame FilterMainView reads the
-    // main view's draw-cull verdict buffer back and writes
-    // exports/cull_dump_<n>.json - the per-draw visible/culled list plus
-    // the filter's aggregate stats for THIS camera. The canonical,
-    // camera-locked record tools/perf_harness.py (mode "cull") compares
-    // against tracked baselines when the GPU-driven renderer changes.
-    // One shot per process; -1 disables. The verdict readback is the
-    // debug one-shot download (accepts one-flight staleness - the pinned
-    // bench camera is static, so the verdicts are identical).
-    void SetCullDumpFrame(int frame) {
-        cullDumpFrame_ = frame;
-    }
-
-    // TOURMALINE_GFX_SEED_HISTORY=0 (RunConfig::seedHistoryKilled, applied
-    // once at Configure): kill the gfx temporal seed/remainder split —
-    // every frustum-kept slot draws in the seed depth pass. The
-    // disocclusion diagnostic: if an over-cull artifact disappears under
-    // it, the temporal history classification is implicated; the default
-    // split consumes the filter's FINAL-visibility history (not the
-    // pre-occlusion frustum verdict).
-    void SetSeedHistoryKilled(bool killed) {
-        gfx.seedHistoryKilled = killed;
-    }
-
-    smvk::RenderPass& AddFilterPass(smvk::RenderGraph& rg, uint32_t slot);
-
     // Consume side (caller has bound FilteredProgram() with its own PSO).
     // PushViewConstants writes the 24B VS tail push once per pass;
     // DrawRange issues one multi-draw over the material's command range.
@@ -643,21 +527,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
                         const glm::mat4& liveViewProj,
                         const smvk::DepthSettings& depth,
                         const smvk::MSAASettings& msaa);
-    void PushViewConstants(smvk::CommandBuffer& cmd,
-                           smvk::ResourceManager& ctx,
-                           uint32_t slot,
-                           uint64_t renderViewsAddr,
-                           uint32_t renderViewIndex);
-    void PushMotionViewConstants(smvk::CommandBuffer& cmd,
-                                 smvk::ResourceManager& ctx,
-                                 uint32_t slot,
-                                 uint64_t renderViewsAddr,
-                                 uint32_t renderViewIndex,
-                                 uint64_t frameUniformsAddr);
-    void DrawRange(smvk::CommandBuffer& cmd,
-                   smvk::ResourceManager& ctx,
-                   uint32_t slot,
-                   uint32_t rangeIdx);
 
     [[nodiscard]] const std::vector<smvk::gfx::MaterialRange>& MaterialRanges(uint32_t slot) const {
         return smvk::gfx::MaterialRanges(gfx, slot);
@@ -864,125 +733,10 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // Stable saturated color per cluster (debug view). mode 0 = hash hue,
     // mode 1 = cone-cutoff heat (red = degenerate/useless cone).
     static void DebugClusterColor(uint32_t cluster, float coneCutoff, int mode, float outRgba[4]);
-    // Seed consume side (caller has bound a seed program with its own PSO).
-    // PushSeedConstants writes the 24B VS tail push (draws BDA +
-    // render-view slab); DrawSeedRange issues one multi-draw over a seed
-    // range's commands (index buffer = cluster-ordered filter indices).
-    // drawsAddr selects the model source: visDraws snapshot (seed) or
-    // current draw constants (remainder).
-    void PushSeedConstants(smvk::CommandBuffer& cmd,
-                           smvk::ResourceManager& ctx,
-                           uint32_t slot,
-                           uint64_t renderViewsAddr,
-                           uint32_t renderViewIndex,
-                           uint64_t drawsAddr);
-    void DrawSeedRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx);
-    void DrawRemainderRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx);
-    // Shared two-phase depth-list recorder (opaque VS-only, then masked
-    // per-material). remainder=false draws the seed list (visDraws
-    // snapshot), true draws the remainder list (current draws).
-    void RecordDepthList(smvk::CommandBuffer& cmd,
-                         smvk::ResourceManager& ctx,
-                         uint32_t slot,
-                         bool remainder,
-                         uint64_t drawsAddr,
-                         uint64_t renderViewsAddr,
-                         uint32_t renderViewIndex,
-                         const IRenderer::PushConstants& depthPC);
-    // Depth pass 2 over the remainder list (call after AppendFilterDispatch
-    // when RemainderPending; Load/Store over seeded depth). The Northlight
-    // depth split uses this pass as the newly-visible (disocclusion/LOD
-    // flip) depth writer for BOTH buckets: the seed covers prev∩curr and
-    // this covers curr−prev, each filterable cluster depthed exactly once
-    // (the masked ranges run the real alpha test with the proven
-    // CPU-command machinery — the indirect alpha-tested draw through the
-    // filter's GPU commands misrasterizes depth, see the white-speck
-    // regression notes in world_renderer's split block).
-    void AppendRemainderPass(smvk::FrameContext& fc);
-    [[nodiscard]] bool RemainderPending() const {
-        return remainderPending_;
-    }
 
-    // ---- CPU-built shadow draw lists (cascade + spot tiles) ---------
-    // One cooperative BuildShadowList per shadow view replaces the
-    // per-item caster loops in the pass recording: the tile pass then
-    // records two indirect phases (opaque multi-draw + per-material
-    // masked ranges) against the cluster-ordered index heap.
-    // Idempotent program creation; masked pairing reuses the alpha-test
-    // FS from ConfigureSeedFrag. Returns true when both are ready.
-    bool EnsureShadowSeeds(smvk::ResourceManager& ctx);
-    [[nodiscard]] bool ShadowSeedsValid() const {
-        return shadowSeedOpaqueProgram.shaderCount == 1 &&
-               shadowSeedMaskedProgram.shaderCount == 2 && !shadowSeedVsModule.empty() &&
-               !shadowSeedMaskedVsModule.empty();
-    }
-    // Per-frame slot claim (main thread; claim all views of the frame
-    // before dispatching any BuildShadowList — see gfx::ShadowView).
-    // contributionView: the main camera's view for the mesh-bound
-    // contribution fast discard in BuildShadowList (null = off).
-    void BeginShadowFrame() {
-        smvk::gfx::BeginShadowFrame(gfx);
-    }
-    uint32_t BeginShadowView(smvk::ResourceManager& ctx,
-                             smvk::RenderGraph& rg,
-                             const smvk::RenderView& renderView,
-                             smvk::gfx::CullFlags cullFlags,
-                             uint32_t width,
-                             uint32_t height,
-                             const smvk::RenderView* contributionView = nullptr) {
-        return smvk::gfx::BeginShadowView(
-            gfx, ctx, rg, renderView, cullFlags, width, height, contributionView);
-    }
-    // Worker-thread side: per-view candidate push + list build (pure CPU;
-    // the engine's sync-state tables are not safe for concurrent uploads).
-    void PushShadowDraw(uint32_t sview,
-                        uint32_t mesh,
-                        const glm::mat4& model,
-                        uint32_t material,
-                        smvk::gfx::DrawFlags flags,
-                        smvk::gfx::DrawSetMask drawSet,
-                        uint32_t userData = 0) {
-        smvk::gfx::PushShadowDraw(gfx, sview, mesh, model, material, flags, drawSet, userData);
-    }
-    void BuildShadowList(uint32_t sview) {
-        smvk::gfx::BuildShadowList(gfx, sview);
-    }
-    // Main thread, after joining the build futures: upload the frame ring
-    // slice (draws as VS reads, commands as draw-indirect reads). The
-    // rendergraph feeds the dynamic-capacity grow-rebind of the draw ring.
-    void UploadShadowList(smvk::ResourceManager& ctx,
-                          smvk::RenderGraph& rg,
-                          uint32_t frameIndex,
-                          uint32_t sview) {
-        smvk::gfx::UploadShadowList(gfx, ctx, rg, frameIndex, sview);
-    }
-    // Consume side: opaque multi-draw + per-material masked ranges over
-    // the view's CPU-built command list. Shadow-atlas depth is normal-Z
-    // (LessEqual), unlike the reversed-Z seed path (GreaterEqual).
-    void RecordShadowList(smvk::CommandBuffer& cmd,
-                          smvk::ResourceManager& ctx,
-                          uint32_t sview,
-                          uint64_t renderViewsAddr,
-                          uint32_t renderViewIndex,
-                          const IRenderer::PushConstants& shadowPC);
-    // Consume-side barriers: cluster-ordered index heap + shadow draws +
-    // shadow indirect as vertex/draw-indirect reads.
-    void AddShadowConsumeHints(smvk::RenderPass& pass, uint32_t sview);
-    [[nodiscard]] const std::vector<smvk::gfx::SeedRange>& ShadowRanges(uint32_t sview) const {
-        return smvk::gfx::ShadowRanges(gfx, sview);
-    }
     // Debug audit: downloads this view's indirect commands + HZB pyramid
-    // and attributes every zero-indexCount batch (GPU kill) against the CPU
-    // mirror (HzbOccluded). CPU-agrees = HZB input/bounds fault;
-    // CPU-disagrees = triangle-stage kill or shader/mirror divergence
-    // (bisect with the backface/frustum/smallprim toggles to split those).
-    // Stalls (fence wait); call after WaitForDeviceIdle, debug-only.
-    void DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot);
     // DEBUG: Download and print HZB buffer contents for inspection.
     void DumpHzb(smvk::ResourceManager& ctx, uint32_t slot);
-    // TMP-DIAG (the distant-view color-kill hunt): read the main pass's
-    // first indirect commands (the filter compute's output).
-    void DebugReadMainIndirect(smvk::ResourceManager& ctx, uint32_t slot);
 
   private:
     // world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).
@@ -990,21 +744,9 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // world mesh idx -> per-LOD gfx mesh idx (lodMeshMap_[w][l], UINT32_MAX
     // = that LOD draws direct; [w][0] always mirrors meshMap_[w]).
     std::vector<std::vector<uint32_t>> lodMeshMap_;
-    // Debug culling-freeze override (see SetCullOverride). Read once per
-    // AppendPasses for the FilterMainView call only.
-    std::function<bool(NodeId)> gpuRasterOwnsNode_{};
-    bool cullOverride_ = false;
-    uint32_t cullView_ = UINT32_MAX;
-    glm::vec3 cullEye_{0.0f};
-    uint64_t frameCounter_ = 0; // throttles the per-frame stats log
-    int cullDumpFrame_ = -1;    // TOURMALINE_CULL_DUMP (1-based app frame)
-    bool cullDumpDone_ = false; // one shot per process
     uint32_t lastSlot_ = UINT32_MAX;
     bool seededThisFrame_ = false;
-    bool remainderPending_ = false;
     smvk::ShaderModuleHandle mainFrag_{};
-    smvk::ShaderModuleHandle seedFrag_{};
-    smvk::ShaderModuleHandle shadowSeedFrag_{};
     // Material -> depth raster state (ConfigureMaterialDepth). Resolved at
     // record time so it always sees the live World/material table.
     std::function<MaterialDepthState(uint32_t)> materialDepth_{};
