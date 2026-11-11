@@ -1081,6 +1081,31 @@ int main() {
             std::cout << "  R9 stale baseline: " << o << "\n";
     }
 
+    // GI-parity regression guard: the legacy direct opaque Main leg must
+    // select the active GI permutation through MainLitProgramFor, never
+    // hardcode the base mainProgram. Hardcoding silently dropped the baked
+    // convex-volume GI (Sponza rendered the sky fallback while the GPU
+    // Scene path evaluated GI_VOLUMES) - a silent visual regression with no
+    // build or validation-layer failure to catch it.
+    {
+        const fs::path wr =
+            fs::path(TOURMALINE_SOURCE_ROOT) / "engine" / "src" / "Renderer" / "WorldRenderer.cpp";
+        const std::string text = ReadText(wr);
+        const size_t pos = text.find("ShaderProgram& baseProg =");
+        bool selectsGi = false;
+        if (pos != std::string::npos) {
+            const size_t semi = text.find(';', pos);
+            const std::string block = text.substr(pos, semi - pos);
+            selectsGi = block.find("MainLitProgramFor") != std::string::npos;
+        }
+        Check(selectsGi,
+              "arch.gi-direct-main-selection (the direct opaque Main leg selects the "
+              "active GI permutation via MainLitProgramFor)");
+        if (!selectsGi)
+            std::cout << "  GI offender: direct Main leg baseProg does not call "
+                         "MainLitProgramFor - the active GI variant would be dropped\n";
+    }
+
     std::cout << "architecture_tests: " << (g_checks - g_failures) << "/" << g_checks
               << " checks passed\n";
     return g_failures == 0 ? 0 : 1;
