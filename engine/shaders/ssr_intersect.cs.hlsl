@@ -103,7 +103,7 @@ SsrGb SsrGbTap(int2 fullPx)
     float4 gb = gbTex.Load(int3(fullPx, 0));
     g.normal = SsrOctDecode(gb.xy);
     g.roughness = gb.z;
-    g.metal = (gb.w >= 0.5f) ? 1.0f : 0.0f;
+    g.metal = saturate(gb.w);
     return g;
 }
 

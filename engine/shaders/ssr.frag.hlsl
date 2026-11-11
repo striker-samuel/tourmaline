@@ -105,14 +105,14 @@ float2 SsrFullNdc(int2 fullPx, float2 invDepthSize)
 // vertex-interpolated surface normal; the depth-derived receiver
 // normal and its per-triangle wireframe artifact are gone by
 // construction), continuous roughness (B — drives the (1-r)^2 gloss
-// fade + the r^2 cone jitter) and the metal flag (A — F0 rise to ~1).
+// fade + the r^2 cone jitter) and continuous metallic (A — F0 blend).
 // Returns the clear sentinel (matte +Z) when unbound — the legacy
 // mirror decodes identically through the roughness/metal fields.
 struct SsrGbuffer
 {
     float3 normal;   // world space, unit
     float roughness; // continuous, 0..1
-    float metal;     // 0 or 1
+    float metal;     // continuous, 0..1
 };
 
 SsrGbuffer SsrGbufferTap(int2 fullPx)
@@ -147,7 +147,7 @@ SsrGbuffer SsrGbufferTap(int2 fullPx)
     float l2 = x * x + y * y + z * z;
     g.normal = (l2 > 1e-24f) ? float3(x, y, z) / sqrt(l2) : g.normal;
     g.roughness = gb.z;
-    g.metal = (gb.w >= 0.5f) ? 1.0f : 0.0f;
+    g.metal = saturate(gb.w);
     return g;
 }
 

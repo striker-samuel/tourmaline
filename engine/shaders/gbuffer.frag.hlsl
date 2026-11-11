@@ -16,7 +16,7 @@
 //         real interpolated normal is smooth by construction)
 //   B   = material roughness (continuous — drives the trace's
 //         (1-r)^2 gloss fade + the r^2 cone jitter)
-//   A   = metallic flag (Fresnel F0 rise to ~1)
+//   A   = continuous metallic (0..1, RGBA8 quantized; used for Fresnel F0)
 // Layer 2 (SV_Target1, the F0-CHROMA layer — the RGBA8 route of the
 // material-id discussion): RGB = the metal F0 tint (baseColorFactor x
 // the baseColor texel — the gold brocade's reflections come out GOLD,
@@ -92,12 +92,12 @@ PSOut mainPS(PSIn IN)
         roughness *= mrSample.g;
         metallic *= mrSample.b;
     }
-    const float metalFlag = (saturate(metallic) >= 0.50f) ? 1.0f : 0.0f;
+    const float metalValue = saturate(metallic);
     float3 n = normalize(IN.normal);
     if (!IN.isFrontFace)
         n = -n; // the lit family's back-face flip (see PSIn)
     OUT.gbuffer = float4(OctEncodeNormal(n),
-        clamp(roughness, 0.04f, 1.0f), metalFlag);
+        clamp(roughness, 0.04f, 1.0f), metalValue);
     // Layer 2 (the F0 chroma — see the header): baseColorFactor x the
     // baseColor texel (the SAME tap the lit path's base color does —
     // the banner's gold is per-texel; the factor alone is a flat gray
