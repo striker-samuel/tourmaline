@@ -182,15 +182,8 @@ bool WorldRenderer::LiveSwapCovers(std::string_view spvPath) {
         return true;
     if (spvPath.starts_with("content/shaders/project_lit"))
         return true;
-    // The GPU-driven legs: the filtered VS, the mesh MS + both mesh
-    // FS families.
+    // The GPU-driven legs: the filtered VS.
     if (spvPath == "content/shaders/gfxfiltered.vert.hlsl.spv")
-        return true;
-    if (spvPath == "content/shaders/gfxfilter.mesh.hlsl.spv")
-        return true;
-    if (spvPath.starts_with("content/shaders/gfxmesh_lit.frag.hlsl"))
-        return true;
-    if (spvPath.starts_with("content/shaders/gfxmesh_project_lit.frag.hlsl"))
         return true;
     return false;
 }
@@ -258,21 +251,16 @@ void WorldRenderer::FeedGfxRendererShaderModules() {
 
 bool WorldRenderer::ReloadLitShaders(const std::vector<std::string>& recompiled) {
     // Classify the changed paths into the consumer sets.
-    bool litSet = false, filteredVs = false, meshMs = false, meshFs = false;
+    bool litSet = false, filteredVs = false;
     for (const std::string& p : recompiled) {
         if (!LiveSwapCovers(p))
             continue;
         if (p == "content/shaders/gfxfiltered.vert.hlsl.spv")
             filteredVs = true;
-        else if (p == "content/shaders/gfxfilter.mesh.hlsl.spv")
-            meshMs = true;
-        else if (p.starts_with("content/shaders/gfxmesh_lit.frag.hlsl") ||
-                 p.starts_with("content/shaders/gfxmesh_project_lit.frag.hlsl"))
-            meshFs = true;
         else
             litSet = true;
     }
-    if (!litSet && !filteredVs && !meshMs && !meshFs)
+    if (!litSet && !filteredVs)
         return false;
     std::vector<smvk::ShaderModuleHandle> retired;
     auto swapModule = [&](smvk::Holder<smvk::ShaderModuleHandle>& member,
@@ -364,7 +352,7 @@ bool WorldRenderer::ReloadLitShaders(const std::vector<std::string>& recompiled)
     // zero every derived twin, then Ensure re-creates the detached
     // modules + re-forges all programs from the CURRENT handles.
     {
-        auto olds = m_gfxRenderer.ReleaseSelfModules({filteredVs, meshMs, meshFs});
+        auto olds = m_gfxRenderer.ReleaseSelfModules({filteredVs});
         retired.insert(retired.end(), olds.begin(), olds.end());
         FeedGfxRendererShaderModules();
         m_gfxRenderer.InvalidateDerivedPrograms();

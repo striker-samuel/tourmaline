@@ -379,17 +379,6 @@ struct FilteredVsPush {
 };
 static_assert(sizeof(FilteredVsPush) == 48);
 
-// ---- Task-less mesh path (gfxfilter.mesh.hlsl + gfxmesh_lit FS twins) ----
-// One mesh workgroup per cluster HALF of a CPU-partitioned batch list
-// (DrawMeshTasks(2 * listCount) per FS variant). Batches are already CPU
-// pre-culled (BuildBatches); the mesh shader runs the per-triangle
-// CullTriangle tests and compacts via wave prefix sums. Eligibility lives
-// on the CPU (RecordMeshMain partitions eligible batches per variant —
-// opaque, variant twin exists; the indexed loop skips
-// exactly those ranges). Masked/motion/seed/shadow stay indexed.
-inline constexpr const char* kGfxMeshMsPath = "content/shaders/gfxfilter.mesh.hlsl.spv";
-inline constexpr const char* kGfxMeshFsPath = "content/shaders/gfxmesh_lit.frag.hlsl.spv";
-
 // THE PROJECT-LIT FAMILY (docs/shader_library_design.md Phase B): the
 // project-authored lit FS namespace — the project's
 // lit_hooks_project.hlsli compiled against the SAME shared lit body
@@ -402,8 +391,6 @@ inline constexpr const char* kGfxMeshFsPath = "content/shaders/gfxmesh_lit.frag.
 // WorldRenderer's family consult).
 inline constexpr const char* kProjectLitFsPath = "content/shaders/project_lit.frag.hlsl.spv";
 inline constexpr const char* kProjectLitA2CFsPath = "content/shaders/project_lit_a2c.frag.hlsl.spv";
-inline constexpr const char* kProjectMeshFsPath =
-    "content/shaders/gfxmesh_project_lit.frag.hlsl.spv";
 
 // Mesh params blob. Must match GfxMeshParamsData in gfxmesh.hlsli
 // (two matrices first for 16-alignment, then 10 BDAs, 4 uints, the
@@ -464,9 +451,8 @@ struct MeshTailPush {
 };
 static_assert(sizeof(MeshTailPush) == 16);
 
-// Draw-side mesh eligibility (the variant/program side is resolved by the
-// caller via MeshProgramFor): opaque draw-set. Exact with
-// nothing on the shader side — the shader trusts its CPU-partitioned list.
+// Draw-side mesh eligibility (the retired gfxfilter.mesh leg's opaque
+// draw-set gate; kept as the contract-test truth table pin): opaque only.
 inline bool MeshDrawEligible(uint32_t drawSet, uint32_t drawFlags) {
     (void)drawFlags;
     if (drawSet != DrawSetBit_Opaque)
@@ -563,9 +549,6 @@ struct View {
     uint32_t batchCount = 0;
     uint32_t frameIndex = 0; // which ring slice this frame's data lives in
     Stats stats{};
-    // Compacted eligible mesh batch indices (capacity retained across
-    // frames: RecordMeshMain rewrites it per mesh dispatch set).
-    std::vector<uint32_t> meshListScratch;
     // Per-view outputs AND inputs, ringed by frame in flight.
     // Everything mutable is per (view, frame): frames overlap (the swapchain
     // only retires the same slot), and uploads flush immediately, so any
@@ -794,12 +777,6 @@ struct State : StaticGeometry {
     // fresh buffer from it; FinalizeView grows an armed one).
     uint32_t coneDebugCap = 0;
     uint32_t coneDebugWant = 0;
-    // The STATIC heap BDAs for the VS legs' skinned fetch (the same heaps
-    // every draw path reads - the RHI globals from vulkan_impl.h, stashed
-    // once at EnsureMeshParams so the record sites' fills never reach for
-    // the globals themselves). 0 = not stashed yet (static fetches).
-    uint64_t vsPosHeapBda = 0;
-    uint64_t vsShadeHeapBda = 0;
     smvk::Holder<smvk::ShaderModuleHandle> filterModule;
     smvk::ShaderProgram filterProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> hizModule;
@@ -823,17 +800,6 @@ struct State : StaticGeometry {
     bool hizSpdVerifyArmed = false;  // this frame built both pyramids
     uint64_t hizSpdVerifyFrames = 0; // running compare stats (report)
     uint64_t hizSpdVerifyMismatches = 0;
-    smvk::Holder<smvk::BufferHandle> meshParamsBuffers[smvk::limits::MaxFramesInFlight];
-    smvk::LogicalBufferHandle meshParamsLogicals[smvk::limits::MaxFramesInFlight]{};
-    // Compacted eligible batch indices, rewritten per mesh dispatch set
-    // (one upload per frame covering all variant spans; dispatches slice
-    // it via the listBDA base). Candidate-slot capacity per flight (the
-    // dynamic cutover — grows with the candidate capacity; the retired
-    // fixed sizing was kMaxBatchSlots).
-    smvk::Holder<smvk::BufferHandle> meshBatchLists[smvk::limits::MaxFramesInFlight];
-    smvk::LogicalBufferHandle meshBatchListLogicals[smvk::limits::MaxFramesInFlight]{};
-    uint32_t meshBatchListCap[smvk::limits::MaxFramesInFlight] = {};
-    uint32_t meshBatchListWant[smvk::limits::MaxFramesInFlight] = {};
     std::vector<View> views;
     std::vector<TemporalView> temporals; // parallel to views (same slot)
     uint32_t viewCount = 0;
@@ -893,44 +859,6 @@ void SetConeDebug(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg, b
     return s.coneDebugLines; // Holder's implicit handle conversion
 }
 bool EnsureShaders(State& s, smvk::ResourceManager& ctx, const char* csPath = kGfxFilterCsPath);
-// Task-less mesh path ring (per-flight 152B params blob + logicals).
-// Best-effort: failure only disables the mesh record (indexed stays).
-bool EnsureMeshParams(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
-// Mesh record: upload params, bind mesh pipeline, push tails,
-// DrawMeshTasks(2*batchCount). The full scene push must already be pushed
-// (same as the indexed leg). Null-BDA guard refuses the dispatch (same
-// MMU-fault rule as PushAndDispatch).
-// Uploads the frame's mesh params blob once (shared BDAs + dims; the
-// per-dispatch list slice rides the tail push, never this buffer).
-// liveViewProj is the LIVE main-view matrix the output projection uses
-// (== the view record's matrix when the culling freeze is off; the two
-// differ while the freeze holds the filter). Returns the params BDA,
-// 0 on null-BDA refuse (indexed covers).
-uint64_t UploadMeshParams(State& s,
-                          smvk::ResourceManager& ctx,
-                          uint32_t view,
-                          uint64_t listBDA,
-                          uint64_t lmXformsAddr,
-                          const glm::mat4& liveViewProj);
-// One variant dispatch: bind mesh pipeline, push tails, DrawMeshTasks.
-// Params must already be uploaded (UploadMeshParams); listBase/listCount
-// slice this dispatch out of the shared compacted list. The raster comes
-// from the span's material pipeline (double-sided materials dispatch
-// CullMode::None — mirrors bindForMaterial for the indexed leg).
-void RecordMeshVariant(State& s,
-                       smvk::CommandBuffer& cmd,
-                       smvk::ResourceManager& ctx,
-                       uint32_t view,
-                       smvk::ShaderProgram& meshProg,
-                       uint64_t paramsBDA,
-                       uint32_t listBase,
-                       uint32_t listCount,
-                       uint64_t renderViewsAddr,
-                       uint32_t renderViewIndex,
-                       uint64_t lmXformsAddr,
-                       const smvk::DepthSettings& depth,
-                       const smvk::MSAASettings& msaa,
-                       const smvk::RasterSettings& raster);
 // Creates shader only; per-(view, frame) buffers are allocated on demand
 // by BeginView (pool) so unused views cost nothing.
 bool Ensure(State& s,
@@ -1168,9 +1096,8 @@ void ClearDemand(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex);
 // swap's inputs) from the State. paramsValid gates the whole swap in
 // the HLSL (a plain pointer compare is illegal on vk::BufferPointer):
 // 1 = the frame carries a live deformed heap (the driver set
-// skinDeformedBda). The bind-pose heap BDAs are eternal (stashed once
-// at EnsureMeshParams); the deformed pair is per-frame (the renderer's
-// skinning driver).
+// skinDeformedBda). The deformed pair is per-frame (the renderer's
+// skinning driver); the bind-pose heaps are the eternal static heaps.
 inline void FillVsSkinTail(FilteredVsPush& tail, const State& s) {
     tail.vsDeformed = s.skinDeformedBda;
     tail.vsDeformedBase = s.skinDeformedBase;

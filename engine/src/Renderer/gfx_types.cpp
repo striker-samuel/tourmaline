@@ -110,9 +110,6 @@ static size_t SkinBoundsBytes(uint32_t candidateCapacity, uint32_t drawCapacity)
 static size_t ConeDebugLinesBytes(uint32_t candidateCapacity) {
     return size_t(candidateCapacity) * 2u * 12u; // two packed float3 verts per slot
 }
-static size_t MeshBatchListBytes(uint32_t candidateCapacity) {
-    return size_t(candidateCapacity) * sizeof(uint32_t);
-}
 // First-page capacity for a stride (the minimum allocation every ring
 // starts at — BeginView claims slots before the frame's counts exist, so
 // the logicals are always live and the first FinalizeView grows to the
@@ -531,18 +528,6 @@ void Destroy(State& s, RenderGraph& rg) {
     s.coneDebug = false;
     s.coneDebugCap = 0;
     s.coneDebugWant = 0;
-    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
-        if (!s.meshParamsLogicals[f].empty())
-            rg.FreeBuffer(s.meshParamsLogicals[f]);
-        if (!s.meshBatchListLogicals[f].empty())
-            rg.FreeBuffer(s.meshBatchListLogicals[f]);
-        s.meshParamsLogicals[f] = {};
-        s.meshParamsBuffers[f] = {};
-        s.meshBatchListLogicals[f] = {};
-        s.meshBatchLists[f] = {};
-        s.meshBatchListCap[f] = 0;
-        s.meshBatchListWant[f] = 0;
-    }
     s.indexHeapLogical = {};
     s.clusterLogical = {};
     s.meshBoundsLogical = {};
@@ -1435,166 +1420,6 @@ void PushAndDispatchConeDebug(State& s, CommandBuffer& cmd, ResourceManager& ctx
     cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
     // One 128-thread workgroup per draw (the GfxBatchCull dispatch shape).
     DispatchDrawGroups(cmd, drawCount);
-}
-
-bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg) {
-    // The VS legs' skinned-fetch inputs (the bind-pose heap BDAs - the
-    // eternal static heaps; stashed here where the RHI globals are
-    // visible so the record sites' fills never reach for them).
-    s.vsPosHeapBda = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexPosBuffer);
-    s.vsShadeHeapBda = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexShadingBuffer);
-    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
-        if (s.meshParamsBuffers[f].empty()) {
-            s.meshParamsBuffers[f] =
-                ctx.CreateBuffer(sizeof(GfxMeshParams), BufferType_Storage, "gfx mesh params");
-            if (s.meshParamsBuffers[f].empty())
-                return false;
-            s.meshParamsLogicals[f] =
-                rg.AddExternalBuffer(s.meshParamsBuffers[f], "gfx mesh params");
-            if (s.meshParamsLogicals[f].empty()) {
-                s.meshParamsBuffers[f] = {};
-                return false;
-            }
-        }
-        if (s.meshBatchLists[f].empty()) {
-            // Candidate-slot capacity (records every eligible candidate
-            // slot — dropped slots gate out through the MS's
-            // indexCount == 0 check). The dynamic cutover: sized from the
-            // high-water want (the minimum page before the first
-            // FinalizeView), grown by GrowViewCapacity from here.
-            size_t cap = 0;
-            if (!RoundCapacity(std::max<size_t>(s.meshBatchListWant[f], 1u), sizeof(uint32_t), cap))
-                return false;
-            s.meshBatchLists[f] = ctx.CreateBuffer(
-                MeshBatchListBytes(uint32_t(cap)), BufferType_Storage, "gfx mesh batch list");
-            if (s.meshBatchLists[f].empty())
-                return false;
-            s.meshBatchListCap[f] = uint32_t(cap);
-            s.meshBatchListLogicals[f] =
-                rg.AddExternalBuffer(s.meshBatchLists[f], "gfx mesh batch list");
-            if (s.meshBatchListLogicals[f].empty()) {
-                s.meshBatchLists[f] = {};
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-uint64_t UploadMeshParams(State& s,
-                          ResourceManager& ctx,
-                          uint32_t view,
-                          uint64_t listBDA,
-                          uint64_t lmXformsAddr,
-                          const glm::mat4& liveViewProj) {
-    assert(view < s.views.size());
-    View& v = s.views[view];
-    const uint32_t f = v.frameIndex;
-    if (s.meshParamsBuffers[f].empty())
-        return 0; // EnsureMeshParams failed: the indexed loop covers the frame
-
-    GfxMeshParams p{};
-    // CULL matrix: the view record's (frozen while the debug freeze holds
-    // the filter). OUTPUT matrix: the live main view (the indexed VS
-    // resolves the same through the render-view slab).
-    p.viewProj = v.viewProj;
-    p.outViewProj = liveViewProj;
-    p.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
-    p.batches = ctx.GetBufferDeviceAddress(v.batchBuffers[f]);
-    p.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
-    p.positions = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexPosBuffer);
-    p.shading = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexShadingBuffer);
-    // The OPTIONAL lightmap stream: fetched via the per-draw additive
-    // delta (GfxDraw.misc2.w). 0 when the stream's buffer has no scene
-    // data at all (lightmaps deprecated — the common case).
-    p.lightmap = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexLightmapBuffer);
-    const uint64_t indexHeapAddr =
-        ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticIndexBuffer);
-    p.indices = indexHeapAddr + (uint64_t)s.clusterIndexBase * sizeof(uint32_t);
-    p.lmXforms = lmXformsAddr;
-    p.batchList = listBDA;
-    p.indirect = ctx.GetBufferDeviceAddress(v.indirectBuffers[f]);
-    p.cullFlags = v.cullFlags;
-    p.width = v.width;
-    p.height = v.height;
-    p.listCount = 0; // unused (slicing rides the tail push)
-    // The DEFORMED heap (the skinning driver set s.skinDeformedBda this
-    // frame; skinned draws - GFX_DRAW_SKINNED - fetch from it, indexed
-    // vi - skinDeformedBase).
-    p.deformed = s.skinDeformedBda;
-    p.deformedBase = s.skinDeformedBase;
-    // Same MMU-fault rule as PushAndDispatch: never publish a null BDA
-    // (the indexed loop draws the frame instead; its commands and the
-    // seed/remainder depth are intact).
-    if (p.draws == 0 || p.batches == 0 || p.clusters == 0 || p.positions == 0 || p.shading == 0 ||
-        p.indices == 0 || p.batchList == 0 || p.indirect == 0) {
-        static uint64_t s_meshNullWarns = 0;
-        if ((s_meshNullWarns++ % 300) == 0)
-            std::fprintf(stderr, "[GfxMesh] refusing dispatch: null BDA\n");
-        return 0;
-    }
-    ctx.UploadDataToBuffer(s.meshParamsBuffers[f],
-                           &p,
-                           sizeof(p),
-                           PipelineStage(PipelineStageBit_Mesh),
-                           AccessFlags::ShaderRead);
-    return ctx.GetBufferDeviceAddress(s.meshParamsBuffers[f]);
-}
-
-// One variant dispatch: bind mesh pipeline, push tails, DrawMeshTasks.
-// Params must already be uploaded (UploadMeshParams); listBase/listCount
-// slice this dispatch out of the shared compacted list.
-void RecordMeshVariant(State& s,
-                       CommandBuffer& cmd,
-                       ResourceManager& ctx,
-                       uint32_t view,
-                       ShaderProgram& meshProg,
-                       uint64_t paramsBDA,
-                       uint32_t listBase,
-                       uint32_t listCount,
-                       uint64_t renderViewsAddr,
-                       uint32_t renderViewIndex,
-                       uint64_t lmXformsAddr,
-                       const DepthSettings& depth,
-                       const MSAASettings& msaa,
-                       const RasterSettings& raster) {
-    assert(view < s.views.size());
-    View& v = s.views[view];
-    if (listCount == 0 || meshProg.shaderCount != 2 || paramsBDA == 0)
-        return;
-    const uint32_t f = v.frameIndex;
-    uint64_t drawsBDA = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
-
-    // Opaque state (mirrors bindForMaterial for standard opaque
-    // materials; the caller resolves the span material's raster —
-    // double-sided materials dispatch CullMode::None; masked draws
-    // never reach this dispatch — see MeshDrawEligible).
-    cmd.BindRenderPipeline(meshProg,
-                           VertexLayoutId::Empty, // no VS stage: vertex input ignored, keep empty
-                           depth,
-                           StencilSettings::DefaultDisabled(),
-                           BlendSettings::Opaque(),
-                           msaa,
-                           raster);
-    FilteredVsPush tail{};
-    tail.draws = drawsBDA;
-    tail.renderViews = renderViewsAddr;
-    tail.renderViewIndex = renderViewIndex;
-    tail.lmXforms = lmXformsAddr;
-    // The VS-skin tail fields (bytes 224..240, the tail's trailing 16B): the
-    // MeshTailPush below re-pushes the SAME bytes (paramsAddress +
-    // listBase/listCount) - the mesh legs never execute a VS, and the mesh
-    // shader reads its deformed pair from the GfxMeshParams blob, so the
-    // overlay is harmless (mutually exclusive legs).
-    FillVsSkinTail(tail, s);
-    cmd.PushConstants(kFilteredVsPushOffset, sizeof(tail), &tail, ShaderStage::All);
-    MeshTailPush ext{};
-    ext.paramsAddress = paramsBDA;
-    ext.listBase = listBase;
-    ext.listCount = listCount;
-    cmd.PushConstants(kMeshTailPushOffset, sizeof(ext), &ext, ShaderStage::All);
-    // One workgroup per cluster half of this variant's list slice.
-    cmd.DrawMeshTasks(listCount * 2, 1, 1);
 }
 
 // ---------------------------------------------------------------------------

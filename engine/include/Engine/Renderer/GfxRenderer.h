@@ -118,8 +118,7 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // never compiles the family leaves every twin at shaderCount 0 and
     // every material on StandardLit — the family pickers fall back to
     // the stock picks and the WorldRenderer's consult reports the
-    // fallback LOUDLY, never a silent effect drop). Same members below
-    // for the mesh leg (gfxmesh_project_lit.*.spv).
+    // fallback LOUDLY, never a silent effect drop).
     smvk::ShaderProgram filteredProjectProgram{};
     smvk::ShaderProgram filteredProjectProgramA2C{};
     smvk::ShaderProgram filteredProjectLitSg_[4]{};
@@ -132,51 +131,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // FS. Missing module leaves shaderCount 0 and wireframe keeps the
     // shaded filtered program.
     smvk::ShaderProgram filteredWireProgram{};
-    // Filtered motion-vector VS (gfxfilteredmotion.vert.hlsl, static
-    // geometry only: prevWorld == model). Pairs with the motion frag
-    // module owned by the viewport MotionVectors; configured lazily via
-    // EnsureFilteredMotion once the motion target exists.
-    smvk::Holder<smvk::ShaderModuleHandle> filteredMotionVsModule;
-    smvk::ShaderProgram filteredMotionProgram{};
-    // Task-less mesh twin (gfxfilter.mesh.hlsl mainMS + the gfxmesh_lit
-    // FS twin, which takes material from a flat varying): the main leg
-    // draws mesh-eligible ranges with one DrawMeshTasks instead of the
-    // indexed multi-draw. Best-effort (EnsureMeshPrograms); the indexed
-    // path stays when the modules fail or the device lacks mesh shaders.
-    smvk::Holder<smvk::ShaderModuleHandle> meshMsModule;
-    smvk::Holder<smvk::ShaderModuleHandle> meshFsModule;
-    smvk::ShaderProgram meshProgram{};
-    // Mesh FS variant twins (same SG/GI permutation scheme as the indexed
-    // leg, but on the mesh FS twin): built only for configured modules;
-    // MeshProgramFor falls back to the generic mesh program per missing
-    // variant, exactly like FilteredLitProgram/FilteredProgramGi.
-    smvk::Holder<smvk::ShaderModuleHandle> meshFsSgModules_[4]{};
-    smvk::ShaderProgram meshLitSg_[4]{};
-    smvk::Holder<smvk::ShaderModuleHandle> meshFsGiModules_[4]{};
-    smvk::ShaderProgram meshProgramGi_[4]{};
-    // Mesh std twins (MAT_STANDARD on the mesh FS twin): MeshProgramFor
-    // picks them for non-layered materials; missing modules fall back to
-    // the monolith twins (fail-safe).
-    smvk::Holder<smvk::ShaderModuleHandle> meshFsStdModule;
-    smvk::ShaderProgram meshProgramStd{};
-    smvk::Holder<smvk::ShaderModuleHandle> meshFsGiStdModules_[4]{};
-    smvk::ShaderProgram meshProgramGiStd_[4]{};
-    // PROJECT-LIT mesh twins (gfxmesh_project_lit.*.spv): best-effort,
-    // loaded in EnsureMeshPrograms. A MISSING family mesh base makes
-    // ProjectLit ranges NOT mesh-eligible (MeshProgramFor returns null)
-    // — the indexed leg then draws them with the family's indexed
-    // program, the design §9 fallback that never loses the effect; the
-    // family never silently renders through a stock mesh FS.
-    smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsModule;
-    smvk::ShaderProgram meshProjectProgram{};
-    smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsSgModules_[4]{};
-    smvk::ShaderProgram meshProjectLitSg_[4]{};
-    smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsGiModules_[4]{};
-    smvk::ShaderProgram meshProjectProgramGi_[4]{};
-    smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsStdModule;
-    smvk::ShaderProgram meshProjectProgramStd{};
-    smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsGiStdModules_[4]{};
-    smvk::ShaderProgram meshProjectProgramGiStd_[4]{};
     // Debug views (self-contained: own VS+FS, no Configure needed).
     // Meshlet colors draw every registered cluster direct (bypasses the
     // GPU filter, so HZB-culled meshlets stay visible); cone axes draw
@@ -384,8 +338,8 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     }
     // ---- the SHADER HOT-RELOAD consumer leg (Utils/shader_hot_reload.h) --
     // Zeros every program twin derived from the configured/self-owned
-    // modules so the next Ensure/EnsureMeshPrograms re-forges them from
-    // the CURRENT module handles (Vulkan modules are immutable — a swap
+    // modules so the next Ensure re-forges them from the CURRENT module
+    // handles (Vulkan modules are immutable — a swap
     // rebuilds programs; the pipelines follow through the per-RenderGraph
     // cache: new handles mint new entries, RenderGraph::RetireShaderModule
     // evicts the stale ones). The Holders are NOT touched here.
@@ -411,31 +365,13 @@ struct GfxRenderer : public smvk::IFrameRenderer {
         filteredProjectProgramStd = smvk::ShaderProgram();
         for (auto& p : filteredProjectProgramGiStd_)
             p = smvk::ShaderProgram();
-        meshProgram = smvk::ShaderProgram();
-        for (auto& p : meshLitSg_)
-            p = smvk::ShaderProgram();
-        for (auto& p : meshProgramGi_)
-            p = smvk::ShaderProgram();
-        meshProgramStd = smvk::ShaderProgram();
-        for (auto& p : meshProgramGiStd_)
-            p = smvk::ShaderProgram();
-        meshProjectProgram = smvk::ShaderProgram();
-        for (auto& p : meshProjectLitSg_)
-            p = smvk::ShaderProgram();
-        for (auto& p : meshProjectProgramGi_)
-            p = smvk::ShaderProgram();
-        meshProjectProgramStd = smvk::ShaderProgram();
-        for (auto& p : meshProjectProgramGiStd_)
-            p = smvk::ShaderProgram();
     }
     // Which self-owned module sets a swap touches (the caller matched the
-    // changed .spv paths): the filtered VS, the mesh MS, the mesh FS set
-    // (base + every twin). Seed/debug/line modules are NOT in the v1
-    // live-swap set (they keep serving their last-known-good modules).
+    // changed .spv paths): the filtered VS. Seed/debug/line modules are
+    // NOT in the v1 live-swap set (they keep serving their last-known-good
+    // modules).
     struct SelfModuleSet {
         bool filteredVs = false;
-        bool meshMs = false;
-        bool meshFs = false; // the mesh FS Holders (base + sg/gi/std/giStd + project twins)
     };
     // DETACHES the selected self-owned module Holders (release, no
     // destroy) and returns the old handles for the caller's retirement
@@ -443,15 +379,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // next Ensure re-creates the modules from the library's fresh bytes.
     [[nodiscard]] std::vector<smvk::ShaderModuleHandle> ReleaseSelfModules(
         const SelfModuleSet& which);
-    // Idempotent filtered-motion program creation (VS + motion frag).
-    // Returns true when the program is ready to bind.
-    bool EnsureFilteredMotion(smvk::ResourceManager& ctx, smvk::ShaderModuleHandle motionFrag);
-    [[nodiscard]] bool FilteredMotionValid() const {
-        return filteredMotionProgram.shaderCount == 2 && !filteredMotionVsModule.empty();
-    }
-    [[nodiscard]] smvk::ShaderProgram& FilteredMotionProgram() {
-        return filteredMotionProgram;
-    }
 
     // Walks world.meshLocations once after scene load/resolve. Meshes with
     // cooked meshlets (pak path) register from those; meshes with retained
@@ -464,70 +391,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // Consume side (caller has bound FilteredProgram() with its own PSO).
     // PushViewConstants writes the 24B VS tail push once per pass;
     // DrawRange issues one multi-draw over the material's command range.
-    // ---- Task-less mesh path (main-leg opaque only) ----
-    // Idempotent mesh program + params-ring creation. Best-effort: never
-    // fails Ensure (the indexed path stays when modules fail to load).
-    void EnsureMeshPrograms(smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
-    [[nodiscard]] bool MeshProgramsValid() const {
-        return meshProgram.shaderCount == 2 && !meshMsModule.empty() && !meshFsModule.empty();
-    }
-    // The family twins' base check (see MeshProgramFor's projectLit
-    // contract): false makes every ProjectLit range indexed-drawn.
-    [[nodiscard]] bool MeshProjectProgramsValid() const {
-        return meshProjectProgram.shaderCount == 2 && !meshProjectFsModule.empty();
-    }
-    // Bitmask of built sg twins for the mesh eligibility predicate.
-    [[nodiscard]] uint32_t MeshSgTwinMask() const {
-        uint32_t m = 0;
-        for (uint32_t li = 0; li < 4; ++li)
-            if (filteredLitSg_[li].shaderCount == 2)
-                m |= (1u << li);
-        return m;
-    }
-    // Mesh program for a range's variant (mirrors the indexed leg's
-    // program selection exactly: GI twin when active, else the sg twin
-    // for the lobe count, else the generic mesh program; the std twins
-    // replace the generic/gi picks for non-layered materials). Null
-    // when the mesh system itself is down (base program invalid).
-    // projectLit picks the FAMILY mesh twins; when the family's mesh
-    // base is missing this returns NULL — the design §9 contract: the
-    // range is not mesh-eligible and the indexed leg draws it with the
-    // family's indexed program (the effect is never silently lost, and
-    // the family never renders through a stock mesh FS).
-    [[nodiscard]] smvk::ShaderProgram* MeshProgramFor(bool giActive,
-                                                      uint32_t giVariant,
-                                                      uint32_t lobeCount,
-                                                      bool layered,
-                                                      bool projectLit = false);
-    // CPU side of the mesh eligibility contract: a mesh twin exists for
-    // the range's variant and every batch's draw is opaque.
-    // The indexed loop skips exactly these ranges; the record partitions
-    // their batches per variant program.
-    [[nodiscard]] bool RangeMeshEligible(uint32_t slot,
-                                         uint32_t rangeIdx,
-                                         bool giActive,
-                                         uint32_t giVariant);
-    // Mesh consume barriers (call alongside AddMainConsumeHints when the
-    // mesh path records): batches/clusters/params ShaderRead@Mesh, draws
-    // merged Vertex|Mesh (indexed ranges in the same pass still read them).
-    void AddMeshConsumeHints(smvk::RenderPass& pass, uint32_t slot);
-    // Record: one DrawMeshTasks per eligible range (same 1:1 shape as
-    // the indexed loop), sharing one compacted batch-index upload. The
-    // full scene push must already be pushed (same as the indexed leg).
-    // liveViewProj is the LIVE main-view matrix (the output projection —
-    // equals the view record's matrix unless the debug culling freeze
-    // holds the filter on a frozen view).
-    void RecordMeshMain(smvk::CommandBuffer& cmd,
-                        smvk::ResourceManager& ctx,
-                        uint32_t slot,
-                        uint64_t renderViewsAddr,
-                        uint32_t renderViewIndex,
-                        bool giActive,
-                        uint32_t giVariant,
-                        const glm::mat4& liveViewProj,
-                        const smvk::DepthSettings& depth,
-                        const smvk::MSAASettings& msaa);
-
     [[nodiscard]] const std::vector<smvk::gfx::MaterialRange>& MaterialRanges(uint32_t slot) const {
         return smvk::gfx::MaterialRanges(gfx, slot);
     }
@@ -689,14 +552,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     [[nodiscard]] smvk::gfx::State& State() {
         return gfx;
     }
-    // Consume-side barriers for the Main pass (filtered ranges + meshlet
-    // debug view): filtered index list (IndexRead), GPU-written indirect
-    // commands, draws ring slice (VS model matrices via BDA), and the
-    // cluster-ordered index heap (debug view bind). Without these the
-    // rendergraph emits NO compute->vertex barrier between the filter CS
-    // and Main's fetches — a same-submit race that flips with any
-    // workload change (MSAA mode, light toggles, camera motion).
-    void AddMainConsumeHints(smvk::RenderPass& pass, uint32_t slot);
     [[nodiscard]] smvk::ShaderProgram& MeshDebugProgram() {
         return meshDebugProgram;
     }
