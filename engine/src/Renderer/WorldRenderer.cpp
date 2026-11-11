@@ -14738,40 +14738,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // ---------------------------------------------------------------------
     if (m_passes.motionVectors && m_viewportResources.motionVectors.Valid()) {
         IRenderer::PushConstants motionPC = pc;
-        // Filtered motion path (option b): static filtered geometry
-        // draws through the HZB-culled indirect list with the
-        // gfxfilteredmotion VS (prevWorld == model). Moved filtered
-        // nodes + non-filtered meshes use the direct fallback below.
-        const bool motionFilteredActive =
-            m_passes.gfxFilter && m_passes.filteredMotion && m_useFilteredMotion &&
-            gfxSlot != UINT32_MAX &&
-            m_gfxRenderer.EnsureFilteredMotion(*m_context,
-                                               m_viewportResources.motionVectors.fragModule);
-        // One-shot diagnostic: tells which gate keeps the filtered
-        // motion path off (pass config, motion toggle, no slot,
-        // program/SPV failure, or an empty material-range list).
-        {
-            static bool motionFilterLogged = false;
-            if (!motionFilterLogged) {
-                motionFilterLogged = true;
-                size_t rangeCount = 0;
-                if (gfxSlot != UINT32_MAX && gfxSlot < m_gfxRenderer.State().views.size())
-                    rangeCount = m_gfxRenderer.MaterialRanges(gfxSlot).size();
-#ifndef NDEBUG
-                std::fprintf(
-                    stderr,
-                    "[Motion] filtered=%d (filterPass=%d motion=%d slot=%u prog=%d ranges=%zu)\n",
-                    motionFilteredActive ? 1 : 0,
-                    m_passes.gfxFilter ? 1 : 0,
-                    m_useFilteredMotion ? 1 : 0,
-                    gfxSlot,
-                    m_gfxRenderer.FilteredMotionValid() ? 1 : 0,
-                    rangeCount);
-#else
-                (void)rangeCount;
-#endif
-            }
-        }
+        // Motion vectors are drawn entirely through the DIRECT path: the
+        // retired filtered-motion multi-draw leg (gfxfilteredmotion VS) was
+        // removed with the gfx-filter renderer. Every node re-rasterizes
+        // with the correct prevModel, so coverage matches Main exactly.
         auto& motionPass = m_viewportResources.motionVectors.AddMotionVectorPass(
             *m_rendergraph,
             m_viewportResources.renderDepth.logicalView,
@@ -14780,8 +14750,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             "MotionVectors");
         motionPass.SetRecordingFunc([this,
                                      motionPC,
-                                     motionFilteredActive,
-                                     gfxSlot,
                                      renderViewsAddress,
                                      mainRenderView,
                                      frameUniformsAddress,
@@ -14832,35 +14800,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
                 boundMotionSolidCull = cull;
             };
-            auto drawMotionNode = [&](const smvk::World::RenderItem& item,
-                                      bool maskedPhase,
-                                      bool ignoreFilter = false) {
+            auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
                 if (item.material == smvk::World::kInvalidIndex)
                     return;
-                // Static filtered nodes are covered by the HZB-culled
-                // indirect draws below: skip them here so they rasterize
-                // once. Moved filtered nodes (model != prev) still need
-                // the direct path for their correct prevModel. Every
-                // registered LOD sibling is in the indirect ranges
-                // (FilterMainView pushes the selected LOD), so only
-                // unregistered LODs take the direct path.
-                // Dithered transparents never enter the filter (opaque-only
-                // push), so their leg passes ignoreFilter to always draw.
-                if (!ignoreFilter && motionFilteredActive &&
-                    m_gfxRenderer.GfxMeshForLod(item.mesh, LodIndexForNode(item.node, item.mesh)) !=
-                        UINT32_MAX) {
-                    const bool prevValid =
-                        !m_cameraCutThisFrame &&
-                        m_prevGlobalTransforms.size() == m_world->scene.globalTransform.size();
-                    if (prevValid) {
-                        const glm::mat4& cur = m_world->scene.globalTransform[item.node];
-                        const glm::mat4& prv = m_prevGlobalTransforms[item.node];
-                        if (std::memcmp(glm::value_ptr(cur), glm::value_ptr(prv), sizeof(cur)) == 0)
-                            return;
-                    } else {
-                        return; // no history: prev == curr, indirect covers it
-                    }
-                }
                 if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
                     return;
                 if (maskedPhase) {
@@ -15003,7 +14945,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                         return;
                                 }
                             }
-                            drawMotionNode(item, false, true);
+                            drawMotionNode(item, false);
                         });
                 };
                 cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
@@ -15018,11 +14960,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 drawDitheredMotion();
             }
         });
-        // Filtered-path consume hints (same barriers as Main): the
-        // filter CS writes the compacted index list + indirect commands
-        // + draws ring that the motion indirect draws read.
-        if (motionFilteredActive)
-            m_gfxRenderer.AddMainConsumeHints(motionPass, gfxSlot);
         (void)motionPass;
     }
 
@@ -15406,13 +15343,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     }
     const glm::mat4 frameViewProj = frameData.viewProj; // debug pushes (value)
-    // Task-less mesh leg (build-time gate): device support + enabled +
-    // programs + opaque state (no wireframe). Execute-time eligibility
-    // is per range (RangeMeshEligible: opaque, variant
-    // twin exists); the indexed loop skips exactly those ranges.
-    const bool meshActiveForFrame =
-        m_passes.gfxMesh && m_useGfxMesh && smvk::SupportsMeshShaders() &&
-        m_gfxRenderer.MeshProgramsValid() && !m_wireframe && gfxSlot != UINT32_MAX;
+    // The task-less gfxfilter.mesh leg was removed with the gfx-filter
+    // renderer: the GPU Scene task/mesh path owns mesh-shader raster now,
+    // and Main draws through the indexed/direct loop unconditionally.
     // Direct-path skin tail (default.vert.hlsl's 208..240 overlay):
     // the direct Main leg pushes it per skinned draw so the direct VS
     // fetches the ANIMATED pose instead of the bind pose.
@@ -15535,7 +15468,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                debugDrawRanges,
                                debugDrawFlight,
                                transparentCullView,
-                               meshActiveForFrame,
                                mainSkinBda,
                                mainSkinBase,
                                mainSkinValid,
@@ -16086,14 +16018,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----
-        // Filtered path: one multi-draw per material over the compacted
-        // index list (model matrices come from the draws buffer via
-        // SV_InstanceID; materialId is pushed per range for the frag).
-        // Meshes the filter skipped (no clusters) still draw direct.
-        // gfxSlot validity IS the filter gate (invalid = the pass config
-        // killed it, setup latched it off, or the frame's filter failed -
-        // the runtime A/B toggle is gone).
-        const bool gfxActive = gfxSlot != UINT32_MAX;
         // Debug views replace the shaded opaque leg:
         //   - The FLAT views (Meshlets F3 / LODs F5) intentionally bypass
         //     the GPU chain and draw EVERY instance direct — HZB-culled
@@ -16347,147 +16271,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     }
                 });
         }
-        if (gfxActive && !bypassFilter) {
-            // Mesh leg first (one DrawMeshTasks per eligible range); the
-            // indexed loop below skips exactly those ranges
-            // (RangeMeshEligible), so nothing draws twice and
-            // nothing drops. The flat debug views bypass (direct draws
-            // above); the shading debug views skip the MESH leg (the
-            // mesh FS twins are lit-only) — the indexed loop below
-            // covers those ranges with the debug FS instead.
-            const bool meshActive = meshActiveForFrame && !bypassFilter && !shadingDbg &&
-                                    !std::getenv("TOURMALINE_KD_NOMESH");
-            if (meshActive) {
-                const engine::GIVariant meshGiVar = GetActiveGIVariant();
-                const bool giActive = meshGiVar != engine::GIVariant::None;
-                // frameViewProj = the LIVE main-view matrix (the output
-                // projection): under the debug culling freeze the view
-                // record's matrix is the frozen CULL one, and the mesh
-                // output must still project through the live view (the
-                // indexed VS does the same through the render-view slab).
-                m_gfxRenderer.RecordMeshMain(cmd,
-                                             *m_context,
-                                             gfxSlot,
-                                             renderViewsAddress,
-                                             mainRenderView,
-                                             giActive,
-                                             uint32_t(meshGiVar),
-                                             frameViewProj,
-                                             opaqueDepth,
-                                             msaaSettings);
-            }
-            const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
-            // TMP-DIAG (the distant-view color-kill hunt, frame-gated):
-            // dump the main pass's filtered-range state + the ring's
-            // first draw constants + the live view pose, so the far
-            // (blank) and near (working) views diff at the exact seam.
-            if (m_frameCounter == 16u) {
-                size_t totalCmds = 0;
-                for (const auto& r : gfxRanges)
-                    totalCmds += r.commandCount;
-                std::fprintf(stderr,
-                             "[maindiag] f=%u ranges=%zu cmds=%zu batchCount=%u "
-                             "viewProj[3]=(%.1f,%.1f,%.1f) eye=(%.1f,%.1f,%.1f)\n",
-                             unsigned(m_frameCounter),
-                             gfxRanges.size(),
-                             totalCmds,
-                             m_gfxRenderer.LastBatchCount(),
-                             frameViewProj[3][0],
-                             frameViewProj[3][1],
-                             frameViewProj[3][2],
-                             m_cameraPositioner.cameraPosition_.x,
-                             m_cameraPositioner.cameraPosition_.y,
-                             m_cameraPositioner.cameraPosition_.z);
-                for (size_t i = 0; i < gfxRanges.size() && i < 3; ++i)
-                    std::fprintf(stderr,
-                                 "[maindiag] range[%zu] mat=%u cmds=%u "
-                                 "firstCmd=%u\n",
-                                 i,
-                                 gfxRanges[i].material,
-                                 gfxRanges[i].commandCount,
-                                 gfxRanges[i].firstCommand);
-                std::fflush(stderr);
-            }
-            // The GI permutation is a per-frame uniform decision (the
-            // loaded GI state - one FS for the whole frame): the .giN
-            // twin carries the GI ambient + the F8 debug views. It takes
-            // priority over the lobe-count refinement - the sgN twins
-            // predate the GI permutations (no -DGI_* in their compiles)
-            // and would compile the GI branches out of the frame. The
-            // (deprecated lightmap) lobe-count twin only refines ranges
-            // when NO GI variant is active.
-            const engine::GIVariant giVar = GetActiveGIVariant();
-            // Only treat the filtered leg as the PRIMARY draw when the
-            // GPU-scene raster is off. When raster is on, this leg draws
-            // only legacy complements and would otherwise overwrite the
-            // indexed/task leg's stage timestamp + primitive-count query
-            // (they share the same slot and run earlier in the pass).
-            const bool gfxPrimary = !sceneRasterActive && !gfxRanges.empty();
-            std::chrono::steady_clock::time_point drawRecT0Gfx{};
-            if (gfxPrimary) {
-                cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, true);
-                drawRecT0Gfx = std::chrono::steady_clock::now();
-                cmd.BeginPrimitiveCountRegular(0u);
-            }
-            for (uint32_t ri = 0; ri < (uint32_t)gfxRanges.size(); ++ri) {
-                // Mesh-drawn ranges skip the indexed multi-draw (the
-                // mesh dispatches above covered them; the contract is
-                // exact - see RecordMeshMain/RangeMeshEligible).
-                if (meshActive &&
-                    m_gfxRenderer.RangeMeshEligible(
-                        gfxSlot, ri, giVar != engine::GIVariant::None, uint32_t(giVar)))
-                    continue;
-                const uint32_t materialId = gfxRanges[ri].material;
-                // Std twin pick per range (non-layered materials bind the
-                // MAT_STANDARD FS - the layered machinery compiled out;
-                // layered keep the monolith). Shading debug views bind
-                // the view's ONE flat FS for every range (no lobe/GI/std
-                // refinement — the debug FS doesn't vary) and keep the
-                // direct-style no-A2C pick (no debug A2C twins exist).
-                const bool rangeLayered = m_gfxRenderer.MaterialLayered(materialId);
-                // ProjectLit ranges pick the family's filtered twins (the
-                // same hook code as the direct leg - design §9; missing
-                // family twins fall back to the stock picks inside the
-                // family pickers, and a family that never loaded was
-                // reported at the consult). A2C: the family's own A2C
-                // twin ONLY - shaderCount 0 keeps Masked family ranges on
-                // the family's discard variant, never the stock A2C
-                // program (whose hooks are the no-ops).
-                const bool rangeProjectLit = m_gfxRenderer.MaterialProjectFamily(materialId);
-                smvk::ShaderProgram& litProg =
-                    shadingDbg ? m_resources.debugPrograms[size_t(*shadingDbgFs)].filtered
-                    : rangeProjectLit
-                        ? (giVar != engine::GIVariant::None
-                               ? m_gfxRenderer.FilteredProjectProgramGi(uint32_t(giVar),
-                                                                        rangeLayered)
-                               : m_gfxRenderer.FilteredProjectLitProgram(gfxRanges[ri].lobeCount,
-                                                                         rangeLayered))
-                    : giVar != engine::GIVariant::None
-                        ? m_gfxRenderer.FilteredProgramGi(uint32_t(giVar), rangeLayered)
-                        : m_gfxRenderer.FilteredLitProgram(gfxRanges[ri].lobeCount, rangeLayered);
-                bindForMaterial(materialId,
-                                litProg,
-                                shadingDbg        ? noA2CProgram
-                                : rangeProjectLit ? m_gfxRenderer.FilteredProjectProgramA2C()
-                                                  : m_gfxRenderer.FilteredProgramA2C(),
-                                opaqueDepth);
-                IRenderer::PushConstants matPC{};
-                matPC.materialId = materialId;
-                cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
-                                  sizeof(matPC.materialId),
-                                  &matPC.materialId,
-                                  smvk::ShaderStage::All);
-            }
-            if (gfxPrimary) {
-                cmd.EndPrimitiveCountRegular(0u);
-                cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, false);
-                if (m_host.BenchMeasuring()) {
-                    s_benchDrawRecord += std::chrono::duration<double, std::milli>(
-                                             std::chrono::steady_clock::now() - drawRecT0Gfx)
-                                             .count();
-                }
-            }
-        }
         if (!bypassFilter && (!sceneRasterActive || m_gpuSceneRasterLegacyCount != 0)) {
             // UINT32_MAX forces a bind check on the first node; an
             // identical state is deduped by the CommandBuffer's
@@ -16554,14 +16337,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     FarSpecPrograms* farSpec = (!vertexLitLevel && !farShading.isDefault())
                                                    ? FarSpecProgramsFor(farShading.quality)
                                                    : nullptr;
-                    // Filtered instances already drew above via indirect
-                    // ranges (FilterMainView pushes the selected LOD sibling).
-                    // Only LODs whose registration failed fall through to the
-                    // direct LOD draw, so each instance rasterizes once.
-                    if (gfxActive && !vertexLitLevel &&
-                        m_gfxRenderer.GfxMeshForLod(
-                            item.mesh, LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
-                        return;
                     // Shading debug views bind the view's direct twin here
                     // (the same flat FS the GPU-driven ranges shade with); the
                     // shader-LOD substitution is Lit-only, so far-level
@@ -17006,20 +16781,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             cmd.Draw(selectionLineVerts, 1, 0, 0);
         }
     });
-    // Filtered-path consume hints: the filter compute writes the
-    // compacted index list + indirect commands in the SAME submit Main
-    // reads them from (vertex index fetch, indirect fetch, VS BDA reads
-    // of the draws ring). Without these the graph emits no compute->
-    // vertex barrier and the fetches race the CS - geometry appears and
-    // vanishes "randomly" whenever workload/timing shifts (MSAA mode,
-    // light toggles). Covers the meshlet debug view too (cluster-ordered
-    // heap bind).
-    if (gfxSlot != UINT32_MAX)
-        m_gfxRenderer.AddMainConsumeHints(mainPass, gfxSlot);
-    // Mesh-shader consume barriers (batches/clusters/params/draws for
-    // the DrawMeshTasks in the record above).
-    if (meshActiveForFrame)
-        m_gfxRenderer.AddMeshConsumeHints(mainPass, gfxSlot);
     // Forward+ tile lists are device-written by the cull pass and
     // device-read here: explicit read hints order cull -> main and emit
     // the compute->fragment buffer barriers. With deferred shadows ON the
