@@ -1118,6 +1118,16 @@ void TestProjectScenes() {
     Check(scenes.SceneCluster(h1) != nullptr && scenes.SceneContentId(h1) == 0x1000,
           "pscenes.instance-row");
     Check(world.lightLocations.size() == 1, "pscenes.world-light-folded");
+    // An imported/additive scene node is also a World node. The runtime
+    // TRS API must not depend on World::AddNode game-node registration.
+    {
+        const NodeHandle imported = MakeNodeHandle(world.scene, NodeId(0));
+        const glm::vec3 moved(7.f, 8.f, 9.f);
+        Check(imported != kNodeInvalidHandle &&
+                  world[imported].SetPosition(moved) &&
+                  glm::distance(glm::vec3(world.scene.localTransform[0][3]), moved) < 1e-4f,
+              "pscenes.imported-world-node-set-position");
+    }
     // Two instances of the SAME scene (two churches): distinct handles,
     // both alive.
     app::SceneHandle h2 = scenes.LoadSceneAdditive(world, nullptr, nullptr, 0x1000, err);
@@ -1596,6 +1606,17 @@ void TestAssetManager() {
         const NodeId gameSlot = NodeHandleSlot(gameNode);
         Check(world.IsGameNode(gameNode) && !FindMesh(world.scene, gameSlot),
               "am.world-addnode-empty");
+        const glm::vec3 testPosition(3.f, 4.f, 5.f);
+        const glm::quat testRotation = glm::angleAxis(glm::radians(90.f), glm::vec3(0.f, 1.f, 0.f));
+        const glm::vec3 testScale(2.f, 3.f, 4.f);
+        Check(world[gameNode].SetPosition(testPosition) &&
+                  world[gameNode].SetRotation(testRotation) &&
+                  world[gameNode].SetScale(testScale) &&
+                  glm::distance(glm::vec3(world.scene.localTransform[gameSlot][3]), testPosition) < 1e-4f,
+              "am.world-node-local-trs-setters");
+        Check(!world[gameNode].SetScale(glm::vec3(std::numeric_limits<float>::infinity())) &&
+                  glm::distance(glm::vec3(world.scene.localTransform[gameSlot][3]), testPosition) < 1e-4f,
+              "am.world-node-rejects-nonfinite-scale");
         Check(world[gameNode].SetMesh(tree) && FindMesh(world.scene, gameSlot) &&
                   FindMesh(world.scene, gameSlot)->mesh == assets.MeshWorldIndex(tree),
               "am.world-setmesh-loaded-handle");
@@ -1615,6 +1636,10 @@ void TestAssetManager() {
               "am.world-remove-mesh-keeps-node");
         Check(world.RemoveNode(gameNode) && !world.IsGameNode(gameNode),
               "am.world-remove-node-invalidates-handle");
+        Check(!world[gameNode].SetPosition(testPosition) &&
+                  !world[gameNode].SetRotation(testRotation) &&
+                  !world[gameNode].SetScale(testScale),
+              "am.world-stale-node-trs-refused");
         // The typed-key spawn lane (the gameplay surface): the loaded
         // handle instances through its CURRENT row - the entity is
         // world-owned, DestroyMesh kills it.

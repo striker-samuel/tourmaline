@@ -29,6 +29,8 @@
 #include <Engine/Rendergraph/terrain_meta.h>
 #include <Engine/Rendergraph/terrain_occlusion.h>
 #include <Engine/Scene/scene.h>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
 #include <cstdio>
 
 namespace tour {
@@ -1812,6 +1814,72 @@ void World::ResolveAndFixup_clusters() {
     // above. The animators' target clusters persist through
     // resolves — their rest poses + cursors stand; the next Update
     // re-flushes the pose onto the rebuilt cluster scene.)
+}
+
+namespace {
+// The TRS convenience API must not silently discard authored skew or
+// perspective. Reject such transforms instead of damaging their contents.
+bool DecomposeNodeTrs(const glm::mat4& frame,
+                      glm::vec3& position,
+                      glm::quat& rotation,
+                      glm::vec3& scale) {
+    for (int col = 0; col < 4; ++col)
+        for (int row = 0; row < 4; ++row)
+            if (!std::isfinite(frame[col][row]))
+                return false;
+    glm::vec3 skew{};
+    glm::vec4 perspective{};
+    if (!glm::decompose(frame, scale, rotation, position, skew, perspective))
+        return false;
+    if (glm::length(skew) > 1e-4f ||
+        glm::length(perspective - glm::vec4(0.f, 0.f, 0.f, 1.f)) > 1e-4f)
+        return false;
+    return std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z) &&
+           std::isfinite(scale.x) && std::isfinite(scale.y) && std::isfinite(scale.z) &&
+           std::isfinite(rotation.x) && std::isfinite(rotation.y) &&
+           std::isfinite(rotation.z) && std::isfinite(rotation.w);
+}
+
+bool FiniteVec3(const glm::vec3& v) {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
+} // namespace
+
+bool World::SetNodePosition(NodeHandle node, const glm::vec3& position) {
+    if (!NodeHandleValid(scene, node) || !FiniteVec3(position))
+        return false;
+    glm::mat4 frame = scene.localTransform[NodeHandleSlot(node)];
+    frame[3] = glm::vec4(position, 1.0f);
+    return tour::scene::SetLocalTransform(scene, node, frame);
+}
+
+bool World::SetNodeRotation(NodeHandle node, const glm::quat& rotation) {
+    const float lengthSq = glm::dot(rotation, rotation);
+    if (!NodeHandleValid(scene, node) || !std::isfinite(lengthSq) || lengthSq < 1e-12f)
+        return false;
+    glm::vec3 position{}, scale{};
+    glm::quat previous{};
+    if (!DecomposeNodeTrs(scene.localTransform[NodeHandleSlot(node)], position, previous, scale))
+        return false;
+    const glm::mat4 frame = glm::translate(glm::mat4(1.0f), position) *
+                            glm::mat4_cast(glm::normalize(rotation)) *
+                            glm::scale(glm::mat4(1.0f), scale);
+    return tour::scene::SetLocalTransform(scene, node, frame);
+}
+
+bool World::SetNodeScale(NodeHandle node, const glm::vec3& scale) {
+    if (!NodeHandleValid(scene, node) || !FiniteVec3(scale))
+        return false;
+    glm::vec3 position{}, previousScale{};
+    glm::quat rotation{};
+    if (!DecomposeNodeTrs(scene.localTransform[NodeHandleSlot(node)],
+                          position, rotation, previousScale))
+        return false;
+    const glm::mat4 frame = glm::translate(glm::mat4(1.0f), position) *
+                            glm::mat4_cast(rotation) *
+                            glm::scale(glm::mat4(1.0f), scale);
+    return tour::scene::SetLocalTransform(scene, node, frame);
 }
 
 NodeHandle World::AddNode(const glm::mat4& localFrame, NodeHandle parent) {

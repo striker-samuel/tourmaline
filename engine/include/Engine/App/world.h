@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include <Engine/App/animator.h>
 #include <Engine/App/cluster.h>
@@ -184,6 +185,14 @@ struct World {
     [[nodiscard]] NodeHandle AddNode(const glm::mat4& localFrame = glm::mat4(1.0f),
                                      NodeHandle parent = kNodeInvalidHandle);
     bool RemoveNode(NodeHandle node);
+    // World-space identity, LOCAL-space TRS mutation. These accept any live
+    // node in World::scene, including loaded/additive scene nodes; they do
+    // not require World::AddNode gameplay ownership. Failed validation or
+    // non-TRS inputs leave the node unchanged.
+    bool SetNodePosition(NodeHandle node, const glm::vec3& position);
+    bool SetNodeRotation(NodeHandle node, const glm::quat& rotation);
+    bool SetNodeScale(NodeHandle node, const glm::vec3& scale);
+
     [[nodiscard]] bool IsGameNode(NodeHandle node) const {
         return gameNodes_.contains(node) && NodeHandleValid(scene, node);
     }
@@ -242,6 +251,15 @@ struct World {
         bool SetLocalTransform(const glm::mat4& frame) const {
             return owner_.IsGameNode(handle_) &&
                    tour::scene::SetLocalTransform(owner_.scene, handle_, frame);
+        }
+        bool SetPosition(const glm::vec3& position) const {
+            return owner_.SetNodePosition(handle_, position);
+        }
+        bool SetRotation(const glm::quat& rotation) const {
+            return owner_.SetNodeRotation(handle_, rotation);
+        }
+        bool SetScale(const glm::vec3& scale) const {
+            return owner_.SetNodeScale(handle_, scale);
         }
         bool SetPhysicsBody(const tour::scene::ScenePhysicsBody& body) const {
             return owner_.IsGameNode(handle_) &&
