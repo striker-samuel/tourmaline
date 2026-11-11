@@ -9662,6 +9662,12 @@ tour::mem::FrameVector<WorldRenderer::TransparentDrawItem> WorldRenderer::Collec
         [&](const smvk::World::RenderItem& item) {
             if (item.material == smvk::World::kInvalidIndex)
                 return;
+            // Skip GPU Scene-owned transparent sources: the sorted BLEND
+            // backend submits them (CollectGpuSceneTransparentDraws), so
+            // this legacy leg must not double-draw them.
+            if (m_gpuSceneRasterOwnership.AlphaModeOf(m_gpuSceneSync.SourceForNode(item.node)) ==
+                tour::gpu_scene::RasterAlphaMode::Blend)
+                return;
             const glm::mat4& model = m_world->scene.globalTransform[item.node];
             // Frustum cull: transparent never enters the gfx filter, so
             // test the conservative LOD union here (keep when either
@@ -9701,6 +9707,63 @@ tour::mem::FrameVector<WorldRenderer::TransparentDrawItem> WorldRenderer::Collec
                   [](const TransparentDrawItem& a, const TransparentDrawItem& b) {
                       return a.dist2 > b.dist2;
                   });
+    }
+    return draws;
+}
+
+tour::mem::FrameVector<WorldRenderer::TransparentDrawItem> WorldRenderer::
+    CollectGpuSceneTransparentDraws(const smvk::RenderView& cullView,
+                                    bool sortBackToFront,
+                                    const glm::vec3& sortCamPos) {
+    tour::mem::FrameVector<TransparentDrawItem> draws{
+        tour::mem::LinearAllocatorSTL<TransparentDrawItem>{&tour::mem::FrameAllocator()}};
+    if (m_hideTransparent || !m_world || m_gpuSceneTransparentSourceCount == 0 ||
+        !m_gpuSceneRasterOwnership.GpuActive())
+        return draws;
+    for (uint32_t s = 0; s < m_gpuSceneTransparentSourceCount; ++s) {
+        const GpuSceneTransparentSource& src = m_gpuSceneTransparentSources[s];
+        if (src.node >= m_world->scene.globalTransform.size())
+            continue;
+        const glm::mat4& model = m_world->scene.globalTransform[src.node];
+        // Frustum cull: conservative LOD-union test, matching the legacy
+        // CollectTransparentDraws path (transparent never enters the GPU
+        // work selector, so cull the LOD union here).
+        {
+            const uint32_t lodIdx = LodIndexForNode(src.node, src.meshId);
+            smvk::StaticMesh* baseDesc = m_world->GetMesh(src.meshId);
+            smvk::StaticMesh* selDesc = m_world->GetLodMesh(src.meshId, lodIdx);
+            if (baseDesc) {
+                glm::vec3 c{0.0f};
+                float r = 0.0f;
+                smvk::MeshBoundsToWorld(
+                    model, baseDesc->geometry.aabbMin, baseDesc->geometry.aabbMax, c, r);
+                bool visible = smvk::RenderViewIntersectsSphere(cullView, c, r);
+                if (!visible && selDesc && selDesc != baseDesc) {
+                    smvk::MeshBoundsToWorld(
+                        model, selDesc->geometry.aabbMin, selDesc->geometry.aabbMax, c, r);
+                    visible = smvk::RenderViewIntersectsSphere(cullView, c, r);
+                }
+                if (!visible)
+                    continue;
+            }
+        }
+        const glm::vec3 center{model[3][0], model[3][1], model[3][2]};
+        const glm::vec3 d = center - sortCamPos;
+        draws.push_back(TransparentDrawItem{
+            .node = src.node,
+            .meshId = src.meshId,
+            .materialId = src.materialId,
+            .dist2 = glm::dot(d, d),
+        });
+    }
+    if (sortBackToFront) {
+        // Deterministic for equal depth: tie-break on the stable source
+        // ordinal so back-to-front order never flaps frame to frame.
+        std::stable_sort(draws.begin(),
+                         draws.end(),
+                         [](const TransparentDrawItem& a, const TransparentDrawItem& b) {
+                             return a.dist2 > b.dist2;
+                         });
     }
     return draws;
 }
@@ -11092,6 +11155,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::uninitialized_value_construct_n(m_gpuSceneRasterEntries, total);
                 m_gpuSceneRasterEntryCapacity = total;
             }
+            // Transparent work list: one source per admitted transparent
+            // draw, allocated from the same AppArena as the ownership
+            // snapshot (revision-scoped, never cleared while a flight can
+            // still read it).
+            if (total > m_gpuSceneTransparentSourceCapacity) {
+                m_gpuSceneTransparentSources = static_cast<GpuSceneTransparentSource*>(
+                    smvk::AppArena().Allocate(total * sizeof(GpuSceneTransparentSource),
+                                              alignof(GpuSceneTransparentSource)));
+                std::uninitialized_value_construct_n(m_gpuSceneTransparentSources, total);
+                m_gpuSceneTransparentSourceCapacity = total;
+            }
+            m_gpuSceneTransparentSourceCount = 0;
             // Reuse the AppArena allocation across revisions; only the
             // occupied prefix is a published snapshot. Do not clear or
             // destroy it while a current-frame submission can query it.
@@ -11222,6 +11297,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gpuSceneRasterEntries[i] = {key, compatible, alphaMode};
                 compatibleCount += compatible ? 1u : 0u;
                 transparentCompatibleCount += transparentCompatible ? 1u : 0u;
+                if (transparentCompatible &&
+                    m_gpuSceneTransparentSourceCount < m_gpuSceneTransparentSourceCapacity) {
+                    m_gpuSceneTransparentSources[m_gpuSceneTransparentSourceCount++] = {
+                        item.node, item.mesh, item.material};
+                }
                 // GPU work carries this per-instance flag, and the
                 // indirect builder emits the work in exactly one fixed PSO
                 // class. Count only admitted sources, never legacy ones.
@@ -11281,10 +11361,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::span<tour::gpu_scene::RasterOwnershipEntry>(m_gpuSceneRasterEntries, total));
             m_gpuSceneRasterCompatibleCount = snapshotValid ? compatibleCount : 0u;
             m_gpuSceneTransparentCompatibleCount = snapshotValid ? transparentCompatibleCount : 0u;
+            if (!snapshotValid)
+                m_gpuSceneTransparentSourceCount = 0;
             m_gpuSceneRasterDoubleSidedCount = snapshotValid ? doubleSidedCount : 0u;
             m_gpuSceneRasterMaskedBackCount = snapshotValid ? maskedBackCount : 0u;
             m_gpuSceneRasterMaskedDoubleSidedCount = snapshotValid ? maskedDoubleSidedCount : 0u;
-            m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount;
+            m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount -
+                                          m_gpuSceneTransparentCompatibleCount;
             m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
             if (s_kdElig)
                 std::fprintf(stderr,
@@ -11312,6 +11395,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneRasterEligible = false;
         m_gpuSceneRasterCompatibleCount = 0;
         m_gpuSceneTransparentCompatibleCount = 0;
+        m_gpuSceneTransparentSourceCount = 0;
         m_gpuSceneRasterDoubleSidedCount = 0;
         m_gpuSceneRasterMaskedBackCount = 0;
         m_gpuSceneRasterMaskedDoubleSidedCount = 0;
@@ -16538,7 +16622,37 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // the SSR PaneMask redraw (CollectTransparentDraws).
         {
             const bool ditheredTransp = (m_transparentMode == smvk::TransparentMode::Dithered);
-            auto draws = CollectTransparentDraws(transparentCullView, !ditheredTransp);
+            // GPU Scene-owned transparents (the sorted BLEND backend) plus
+            // the legacy leftover (non-admitted transparents, empty for a
+            // fully-admitted scene). Both are individually back-to-front;
+            // merge for a correct global order (stable sort preserves the
+            // deterministic equal-depth tie-break).
+            auto draws = CollectGpuSceneTransparentDraws(
+                transparentCullView, !ditheredTransp, m_cameraPositioner.cameraPosition_);
+            auto legacyDraws = CollectTransparentDraws(
+                transparentCullView, !ditheredTransp, m_cameraPositioner.cameraPosition_);
+            if (!legacyDraws.empty()) {
+                draws.insert(draws.end(), legacyDraws.begin(), legacyDraws.end());
+                std::stable_sort(draws.begin(),
+                                 draws.end(),
+                                 [](const TransparentDrawItem& a, const TransparentDrawItem& b) {
+                                     return a.dist2 > b.dist2;
+                                 });
+            }
+            {
+                // One-time coverage report: the sorted BLEND backend must
+                // account for every admitted transparent source exactly once
+                // (legacy leftover = 0 for a fully-admitted scene).
+                static bool s_transparentReported = false;
+                if (!s_transparentReported && !m_hideTransparent) {
+                    s_transparentReported = true;
+                    std::fprintf(stderr,
+                                 "[GpuSceneTransparent] gpu=%u legacy=%u (admitted=%u)\n",
+                                 uint32_t(draws.size()) - uint32_t(legacyDraws.size()),
+                                 uint32_t(legacyDraws.size()),
+                                 m_gpuSceneTransparentCompatibleCount);
+                }
+            }
             const bool lodDbg = (effView == ViewMode::Lods);
 
             // Transparent follows the opaque debug view: the shading

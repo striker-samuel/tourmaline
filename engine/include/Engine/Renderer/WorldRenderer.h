@@ -2458,6 +2458,19 @@ class WorldRenderer : public IRenderer {
     tour::gpu_scene::CanonicalRasterOwnership m_gpuSceneRasterOwnership;
     tour::gpu_scene::RasterOwnershipEntry* m_gpuSceneRasterEntries = nullptr;
     size_t m_gpuSceneRasterEntryCapacity = 0;
+    // Transparent (AlphaMode::Blend) work generated from the canonical
+    // ownership snapshot: one entry per admitted transparent source (node +
+    // mesh + material). The sorted BLEND pass computes per-frame depth and
+    // orders these back-to-front; the legacy transparent leg skips exactly
+    // these sources so every transparent surface is submitted once.
+    struct GpuSceneTransparentSource {
+        NodeId node;
+        uint32_t meshId;
+        uint32_t materialId;
+    };
+    GpuSceneTransparentSource* m_gpuSceneTransparentSources = nullptr;
+    uint32_t m_gpuSceneTransparentSourceCount = 0;
+    size_t m_gpuSceneTransparentSourceCapacity = 0;
     // One immutable generation mask per acquired flight. A zero entry is
     // legacy-owned; other entries are admitted instance generations. Its
     // BDA is an extra compute input, never a second draw source.
@@ -2887,6 +2900,15 @@ class WorldRenderer : public IRenderer {
         const smvk::RenderView& cullView,
         bool sortBackToFront,
         std::optional<glm::vec3> sortCamPos = std::nullopt);
+    // GPU Scene transparent work: the admitted transparent sources (built by
+    // the raster ownership snapshot) frustum-tested against the same cull
+    // view and ordered back-to-front for the sorted BLEND backend. This is
+    // the single submission path for GPU Scene-owned transparent geometry;
+    // CollectTransparentDraws skips exactly these sources.
+    tour::mem::FrameVector<TransparentDrawItem> CollectGpuSceneTransparentDraws(
+        const smvk::RenderView& cullView,
+        bool sortBackToFront,
+        const glm::vec3& sortCamPos);
 
     void ResetLodStats();
     // ---- Shader LODs (per-level shading programs) -------------------
