@@ -137,9 +137,12 @@ void mainAS(uint3 groupId : SV_GroupID,
                 (group.rasterClass&1u)==0u)
                 keep=!ConeCulled(c,inst,view);
             if (keep && temporal) {
-                const bool prior=p.historyValid!=0u &&
-                    MeshletHistoryContains(p.historyPrevious,p.historyCapacity,
-                                           work.identity.x,work.identity.y,clusterId);
+                // Never dereference the previous-history BDA on the first
+                // frame or after topology invalidation (it may be null).
+                bool prior=false;
+                if (p.historyValid!=0u)
+                    prior=MeshletHistoryContains(p.historyPrevious,p.historyCapacity,
+                                                 work.identity.x,work.identity.y,clusterId);
                 if (pc.temporalPhase==1u) {
                     // Only previously visible meshlets seed the depth target.
                     keep=prior;
