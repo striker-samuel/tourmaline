@@ -3,6 +3,7 @@
 #include <Engine/Renderer/gpu_scene_task_mesh.h>
 #include <Engine/Renderer/gpu_scene_task_mesh_abi.h>
 #include <Engine/Renderer/gpu_scene_render_route.h>
+#include <Engine/Renderer/gpu_scene_meshlet_temporal.h>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -89,5 +90,26 @@ int main() {
           RasterBackend::Transparent);
     CHECK(SelectRasterRoute(RasterAlphaMode::Blend, true, {true, true, true, true})
               .opaqueRasterClass == kNoOpaqueRasterClass);
+    // A stable meshlet identity is slot + generation + cluster, never
+    // transient work slot. Seed and remainder are disjoint by construction.
+    constexpr MeshletTemporalKey first{42u, 7u, 120u};
+    constexpr MeshletTemporalKey nextGeneration{42u, 8u, 120u};
+    CHECK(!(first == nextGeneration));
+    CHECK(TemporalMeshletSurvives(MeshletTemporalPhase::Seed,
+                                 true,false,true,false));
+    CHECK(!TemporalMeshletSurvives(MeshletTemporalPhase::Remainder,
+                                  true,false,true,false));
+    CHECK(!TemporalMeshletSurvives(MeshletTemporalPhase::Seed,
+                                  false,false,true,false));
+    CHECK(TemporalMeshletSurvives(MeshletTemporalPhase::Remainder,
+                                 false,false,true,false));
+    CHECK(!TemporalMeshletSurvives(MeshletTemporalPhase::Remainder,
+                                  false,false,true,true));
+    CHECK(TemporalMeshletSurvives(MeshletTemporalPhase::Main,
+                                 true,true,true,true));
+    CHECK(!TemporalMeshletSurvives(MeshletTemporalPhase::Main,
+                                  false,false,true,false));
+    CHECK(TemporalMeshletSurvives(MeshletTemporalPhase::Main,
+                                 false,false,true,false,true));
     return 0;
 }

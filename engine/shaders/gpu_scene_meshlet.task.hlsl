@@ -8,6 +8,7 @@
 #define GPU_SCENE_RASTER_HIZCULL_PASS // common.hlsli: declare MaterialsBuffer, skip the scene pc
 #include "common.hlsli"
 #include "gpu_scene_task_mesh.hlsli"
+#include "gpu_scene_meshlet_temporal.hlsli"
 #include "gfxfilter.hlsli" // GfxHzbCtx / ProjectBound / BoundHzbOccluded (meshlet Hi-Z)
 
 GPU_PUSH(GsTaskMeshPush, pc);
@@ -120,6 +121,9 @@ void mainAS(uint3 groupId : SV_GroupID,
         }
     }
 
+    const bool temporal=pc.temporalPhase>=1u && pc.temporalPhase<=3u &&
+        p.historyCapacity!=0u && p.historyCapacity<=GS_TEMPORAL_HASH_LIMIT &&
+        (p.historyCapacity&(p.historyCapacity-1u))==0u;
     bool keep=false;
     uint clusterId=0u;
     if (valid && lane<group.clusterCount) {
@@ -132,9 +136,32 @@ void mainAS(uint3 groupId : SV_GroupID,
             if (keep && p.coneEnabled!=0u &&
                 (group.rasterClass&1u)==0u)
                 keep=!ConeCulled(c,inst,view);
-            if (keep && p.hizValid!=0u)
+            if (keep && temporal) {
+                const bool prior=p.historyValid!=0u &&
+                    MeshletHistoryContains(p.historyPrevious.Get(),p.historyCapacity,
+                                           work.identity.x,work.identity.y,clusterId);
+                if (pc.temporalPhase==1u) {
+                    // Only previously visible meshlets seed the depth target.
+                    keep=prior;
+                } else if (pc.temporalPhase==2u) {
+                    // Only new/disoccluded meshlets test the seed-only HZB.
+                    keep=!prior;
+                    if (keep && p.hizValid!=0u)
+                        keep=!MeshletOccluded(c.b,inst,p);
+                } else {
+                    // Main consumes the EXACT current-frame survivor set.
+                    // Overflow must fail open rather than drop geometry.
+                    keep=p.historyCurrent.Get().overflow!=0u ||
+                         MeshletHistoryContains(p.historyCurrent.Get(),p.historyCapacity,
+                                                work.identity.x,work.identity.y,clusterId);
+                }
+            } else if(keep && p.hizValid!=0u) {
                 keep=!MeshletOccluded(c.b,inst,p);
+            }
         }
+        if (keep && temporal && pc.temporalPhase<=2u)
+            MeshletHistoryRecord(p.historyCurrent.Get(),p.historyCapacity,
+                                 work.identity.x,work.identity.y,clusterId);
     }
 
     // Wave-level exclusive prefix + count: GS_TASK_THREADS is 32, exactly

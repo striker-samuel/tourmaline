@@ -49,6 +49,10 @@ struct TaskMeshInputs {
     uint32_t hizWidth = 0, hizHeight = 0, hizMips = 0, hizValid = 0;
     uint64_t meshletVertices = 0;  // indexed-meshlet unique vertex windows
     uint64_t meshletTriangles = 0; // indexed-meshlet local triangle ids
+    uint64_t historyPrevious = 0;
+    uint64_t historyCurrent = 0;
+    uint32_t historyCapacity = 0;
+    uint32_t historyValid = 0;
 };
 struct TaskMeshDispatchPlan {
     TaskMeshGroupCountPush count{};
@@ -108,6 +112,11 @@ class TaskMeshRuntime {
             in.geometryCount > 65535u || in.clusterCount > 4194304u ||
             in.instanceCount > 4194304u || in.indexWordCapacity > 65536u * 128u * 3u ||
             in.vertexCapacity > 44739242u)
+            return false;
+        if (in.historyCapacity != 0u &&
+            (in.historyCapacity > 1048576u ||
+             (in.historyCapacity & (in.historyCapacity - 1u)) != 0u ||
+             in.historyCurrent == 0u))
             return false;
         const uint64_t groupsPerWork = (uint64_t(in.worstMeshlets) + 31u) / 32u;
         const uint64_t upperBound = uint64_t(in.workCapacity) * groupsPerWork;
@@ -208,7 +217,11 @@ class TaskMeshRuntime {
                             in.hizMips,
                             in.hizValid,
                             in.meshletVertices,
-                            in.meshletTriangles};
+                            in.meshletTriangles,
+                            in.historyPrevious,
+                            in.historyCurrent,
+                            in.historyCapacity,
+                            in.historyValid};
         ctx.UploadDataToBuffer(
             f.params,
             &p,
@@ -242,7 +255,7 @@ class TaskMeshRuntime {
                         groupCapacity,
                         in.meshCount};
         next.indirect = {offsets, indirect, in.workCapacity, groupCapacity, TaskGridX, 1024u};
-        next.graphics = {params, 0u, groupCapacity, 0u, TaskGridX};
+        next.graphics = {params, 0u, groupCapacity, 0u, TaskGridX, 0u, 0u};
         next.workCapacity = in.workCapacity;
         next.taskGroupCapacity = groupCapacity;
         next.scanBlocks = blocks;

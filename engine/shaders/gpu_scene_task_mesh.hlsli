@@ -52,6 +52,18 @@ struct GsShading { uint word[GS_MAX_VERTICES * 4u]; };
 struct GsMeshletVerts { uint id[GS_MAX_VERTICES]; };
 struct GsMeshletTris { uint tri[GS_MAX_INDEX_WORDS / 3u]; };
 
+// Exact meshlet history key: persistent instance slot + generation + global cluster id.
+// The hash table is a cache, not an authority for topology or residency.
+#define GS_TEMPORAL_HASH_LIMIT 1048576u
+struct GsTemporalEntry { uint state; uint slot; uint generation; uint clusterId; };
+struct GsTemporalHistory {
+    uint overflow;
+    uint reserved0;
+    uint reserved1;
+    uint reserved2;
+    GsTemporalEntry entries[GS_TEMPORAL_HASH_LIMIT];
+};
+
 // This struct is a GPU-addressable parameter buffer, NOT push constants.
 // Both shader stages receive a short push containing its BDA, group slice
 // and raster class. Do not change its member order without an ABI check.
@@ -88,6 +100,10 @@ struct GsTaskMeshParams {
     uint hizValid; // 1 = run the meshlet occlusion test
     GPU_PTR_READ(GsMeshletVerts) meshletVertices; // indexed-meshlet unique vertex windows
     GPU_PTR_READ(GsMeshletTris) meshletTriangles; // indexed-meshlet local triangle ids (3 u8/uint)
+    GPU_PTR_READ(GsTemporalHistory) historyPrevious;
+    GPU_PTR(GsTemporalHistory) historyCurrent;
+    uint historyCapacity;
+    uint historyValid;
 };
 struct GsTaskMeshPush {
     // Preserve the fragment shader's 192-byte scene push constants.
@@ -99,6 +115,8 @@ struct GsTaskMeshPush {
     uint groupCount;
     uint rasterClass;
     uint taskGridX; // x dimension of indirect task dispatch (for 2D flattening)
+    uint temporalPhase; // 0 normal, 1 seed, 2 remainder, 3 Main
+    uint reservedTemporal;
 };
 
 // Workgroup-local payload. Each mesh workgroup reads its own compact slot.
