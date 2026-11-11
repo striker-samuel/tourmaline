@@ -27,6 +27,7 @@
 //     quality scales with steps only.
 
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
@@ -744,7 +745,7 @@ struct VolumetricFog {
             ShaderProgram progCopy = integrateProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -783,7 +784,7 @@ struct VolumetricFog {
             ShaderProgram progCopy = compositeProgram; // copyable (handles only)
             cpass.SetRecordingFunc([progCopy, cpush](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
