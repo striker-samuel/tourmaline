@@ -32,6 +32,7 @@
 // lack a display/ICD); plain local ctest runs it on a real GPU.
 
 #include <algorithm>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -2519,7 +2520,7 @@ int main() {
             draw.SetRecordingFunc([tail, indirectBuf, program](smvk::CommandBuffer& cmd) {
                 cmd.BindStaticVertexFmt();
                 cmd.BindRenderPipeline(*program,
-                                       smvk::VertexLayoutId::Static,
+                                       tour::vertex_layouts::Static,
                                        smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
                                                            .writeEnable = false,
                                                            .depthTestEnable = false},

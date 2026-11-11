@@ -8,6 +8,7 @@
 // Hand-rolled runner (no test framework dependency): each check prints
 // PASS/FAIL, the process exits nonzero on any failure.
 
+#include <Engine/Renderer/vertex_layouts.h>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -3250,10 +3251,10 @@ void TestVertexPack() {
 
     // Packed shading stream: 16 bytes + the separate OPTIONAL lightmap
     // stream (8 bytes, chart data only), fixed member offsets (the Vulkan
-    // attribute tables in mesh.h mirror these: StaticLayout/SkinnedLayout
-    // bind color at 0/uv at 4/normal at 8/tangent at 12; the lightmapped
-    // layout's binding 2 fetches chartUv as RG16_UNorm and chart as
-    // R32_UInt from its own stream).
+    // attribute tables in mesh.h mirror these:
+    // tour::vertex_layouts::Static/tour::vertex_layouts::Skinned bind color at 0/uv at 4/normal at
+    // 8/tangent at 12; the lightmapped layout's binding 2 fetches chartUv as RG16_UNorm and chart
+    // as R32_UInt from its own stream).
     Check(sizeof(PackedVertexShading) == 16, "vpack.sizeof");
     Check(offsetof(PackedVertexShading, color) == 0 && offsetof(PackedVertexShading, uv) == 4 &&
               offsetof(PackedVertexShading, normal) == 8 &&
@@ -3352,13 +3353,13 @@ void TestVertexLayoutShaderAbi() {
     // ---- 1) every registered layout passes the structural validator.
     {
         const std::pair<const VertexLayoutDesc*, const char*> layouts[] = {
-            {&StaticLayout, "Static"},
-            {&StaticLightmappedLayout, "StaticLightmapped"},
-            {&SkinnedLayout, "Skinned"},
-            {&DebugLineLayout, "DebugLine"},
-            {&TerrainFullLayout, "TerrainFull"},
-            {&TerrainReducedLayout, "TerrainLow"},
-            {&TerrainFarLayout, "TerrainFar"},
+            {&tour::vertex_layouts::Static, "Static"},
+            {&tour::vertex_layouts::StaticLightmapped, "StaticLightmapped"},
+            {&tour::vertex_layouts::Skinned, "Skinned"},
+            {&tour::vertex_layouts::DebugLine, "DebugLine"},
+            {&tour::vertex_layouts::TerrainFull, "TerrainFull"},
+            {&tour::vertex_layouts::TerrainReduced, "TerrainLow"},
+            {&tour::vertex_layouts::TerrainFarGrid, "TerrainFar"},
         };
         bool allValid = true;
         for (const auto& [desc, name] : layouts) {
@@ -3369,6 +3370,23 @@ void TestVertexLayoutShaderAbi() {
             }
         }
         Check(allValid, "vabi.layouts.structural");
+    }
+
+    // Application-defined layouts need no enum registration. Independently
+    // constructed descriptions compare by contents, including shader locations.
+    {
+        VertexLayoutDesc custom{
+            .bindings = {
+                {.binding = 0,
+                 .stride = 20,
+                 .attributes = {{.location = 0, .format = Format::RGB32_Float, .offset = 0},
+                                {.location = 1, .format = Format::RG32_Float, .offset = 12}}}}};
+        Check(ValidateVertexLayout(custom), "vabi.custom-layout.valid");
+        VertexLayoutDesc equal = custom;
+        Check(equal == custom, "vabi.custom-layout.value-equality");
+        equal.bindings[0].attributes[1].location = 2;
+        Check(!(equal == custom), "vabi.custom-layout.location-identity");
+        Check(ValidateVertexLayout(VertexLayoutDesc{}), "vabi.empty-layout.valid");
     }
 
     // ---- 2) the validator REJECTS the bad shapes (not vacuously
@@ -3404,19 +3422,19 @@ void TestVertexLayoutShaderAbi() {
     // a same-location attribute with enough components.
     {
         const std::pair<const char*, const VertexLayoutDesc*> pairs[] = {
-            {"content/shaders/default.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/shadow.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/motionvector.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/meshdebug.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/meshparticles_draw.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/placement_instanced.vert.hlsl.spv", &StaticLayout},
-            // The SkinnedLayout must also cover the direct VS's 0..4
+            {"content/shaders/default.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/shadow.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/motionvector.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/meshdebug.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/meshparticles_draw.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/placement_instanced.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            // The Skinned layout must also cover the direct VS's 0..4
             // inputs (the binding-2 skin stream is an additive tail;
             // skinning now rides the deformed heap, not VS locations 5/6).
-            {"content/shaders/default.vert.hlsl.spv", &SkinnedLayout},
-            {"content/shaders/terrain.vert.hlsl.spv", &TerrainFullLayout},
-            {"content/shaders/terrainfar.vert.hlsl.spv", &TerrainFarLayout},
-            {"content/shaders/debugline.vert.hlsl.spv", &DebugLineLayout},
+            {"content/shaders/default.vert.hlsl.spv", &tour::vertex_layouts::Skinned},
+            {"content/shaders/terrain.vert.hlsl.spv", &tour::vertex_layouts::TerrainFull},
+            {"content/shaders/terrainfar.vert.hlsl.spv", &tour::vertex_layouts::TerrainFarGrid},
+            {"content/shaders/debugline.vert.hlsl.spv", &tour::vertex_layouts::DebugLine},
         };
         bool abiOk = true;
         int reflected = 0;

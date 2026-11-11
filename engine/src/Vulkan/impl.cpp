@@ -60,6 +60,7 @@
 #include <Engine/RHI/swapchain.h>
 #include <Engine/RHI/vulkan_layer_filter.h>
 #include <Engine/Renderer/mesh.h> // ValidateVertexLayout (pipeline build)
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Renderer/spirv_validation.h>
 #include <Engine/Rendergraph/dlss.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -14958,7 +14959,7 @@ void smvk::CommandBuffer::EndPrimitiveCountRegular(uint32_t slot) {
     vkCmdEndQuery(reinterpret_cast<VkCommandBuffer>(cmdOpaque_), ctx->regularPool, slot);
 }
 void smvk::CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram,
-                                             VertexLayoutId vertexFormat,
+                                             const VertexLayoutDesc& vertexFormat,
                                              const DepthSettings& depthSettings,
                                              const StencilSettings& stencilSettings,
                                              const BlendSettings& blendSettings,
@@ -14990,21 +14991,13 @@ void smvk::CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram,
         shaderProgram == boundProgram_) {
         currentPipeline_ = graphicsPipeline_;
         currentLayout_ = graphicsLayout_;
-        if (vertexFormat == VertexLayoutId::Static)
+        if (&vertexFormat == &tour::vertex_layouts::Static)
             BindStaticVertexFmt();
         return;
     }
 
-    switch (vertexFormat) {
-    case VertexLayoutId::Static:
+    if (&vertexFormat == &tour::vertex_layouts::Static)
         BindStaticVertexFmt();
-        break;
-    case VertexLayoutId::Empty:
-        break;
-    default:
-        break;
-    }
-    const VertexLayoutDesc& formatDescription = GetVertexLayoutDesc(vertexFormat);
 
     // Attachment formats feed the pipeline cache key. Small fixed
     // storage (passes have few attachments); heap fallback keeps a wide
@@ -15045,7 +15038,7 @@ void smvk::CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram,
         static_cast<RenderGraph::PipelineCacheOpaque*>(graph_->pipelineCacheOpaque_.get());
     auto bundle = cacheOpaque->cache.GetRenderPipeline(
         shaderProgram,
-        formatDescription,
+        vertexFormat,
         colorFormats,
         static_cast<uint32_t>(renderPass_->colorAttachments_.size()),
         depthFormat,

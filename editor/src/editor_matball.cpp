@@ -12,6 +12,7 @@
 // stb_image_write writes the file.
 
 #include "editor_app.h"
+#include <Engine/Renderer/vertex_layouts.h>
 
 #include <algorithm>
 #include <cmath>
@@ -320,7 +321,7 @@ void EditorApp::RecordMatBallPass() {
             smvk::RasterSettings raster{};
             raster.cullMode = smvk::CullMode::None;
             cmd.BindRenderPipeline(progCopy,
-                                   smvk::VertexLayoutId::TerrainFull,
+                                   tour::vertex_layouts::TerrainFull,
                                    smvk::DepthSettings::Disabled(),
                                    smvk::StencilSettings::DefaultDisabled(),
                                    smvk::BlendSettings::Opaque(),

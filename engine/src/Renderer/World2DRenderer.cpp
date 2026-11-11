@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/Renderer/World2DRenderer.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Utils/shader_library.h>
 
 #include <algorithm>
@@ -264,7 +265,7 @@ bool World2DRenderer::AppendPass(smvk::ResourceManager& ctx,
     pass.SetRecordingFunc([runs = std::move(runs), pages = std::move(pages), push, program](
                               smvk::CommandBuffer& cmd) mutable {
         cmd.BindRenderPipeline(program,
-                               smvk::VertexLayoutId::Empty,
+                               tour::vertex_layouts::Empty,
                                smvk::DepthSettings::Disabled(),
                                smvk::StencilSettings::DefaultDisabled(),
                                smvk::BlendSettings::AlphaBlend(),

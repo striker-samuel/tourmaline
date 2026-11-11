@@ -15,6 +15,7 @@
 // The WorldRenderer integration is a separate opt-in consumer.
 
 #include <Engine/Placement/placement_draw.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Rendergraph/placement_pass.h>
@@ -405,7 +406,7 @@ class GrassApp final : public smvk::App {
                                                 .writeEnable = true,
                                                 .depthTestEnable = true};
                 cmd.BindRenderPipeline(m_groundProgram,
-                                       smvk::VertexLayoutId::Static,
+                                       tour::vertex_layouts::Static,
                                        depth,
                                        smvk::StencilSettings{},
                                        smvk::BlendSettings::Opaque(),
@@ -417,7 +418,7 @@ class GrassApp final : public smvk::App {
                                 m_groundSurface.firstIndex,
                                 m_groundSurface.baseVertex);
                 cmd.BindRenderPipeline(m_draw.program,
-                                       smvk::VertexLayoutId::Static,
+                                       tour::vertex_layouts::Static,
                                        smvk::DepthSettings{.depthFunc = smvk::CompareOp::LessEqual,
                                                            .writeEnable = true,
                                                            .depthTestEnable = true},

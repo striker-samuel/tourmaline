@@ -35,6 +35,7 @@
 //   tonemap samples bloom.MipBindless(0) as bloomTexture.
 
 #include <Engine/Rendergraph/ShaderSwap.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/mipchain.h>
 #include <Engine/platform.h>
 
@@ -431,7 +432,7 @@ struct BloomChain {
             RenderPass& pass = AddDownsamplePass(rg, i, srcView, name);
             pass.SetRecordingFunc([downProg, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(downProg,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -471,7 +472,7 @@ struct BloomChain {
             RenderPass& pass = AddUpsamplePass(rg, dst, nullptr);
             pass.SetRecordingFunc([upProg, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(upProg,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Add(), // src ONE + dst ONE

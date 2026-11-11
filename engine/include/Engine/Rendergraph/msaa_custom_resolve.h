@@ -4,6 +4,7 @@
 // Opt-in programmable HDR resolve for the Main 2x multisampled color.
 // The baseline matches hardware AVERAGE; no edge heuristic is enabled.
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <cstdint>
@@ -65,7 +66,7 @@ struct MsaaCustomResolve {
         ShaderProgram prog = program;
         pass.SetRecordingFunc([prog, push](CommandBuffer& cmd) mutable {
             cmd.BindRenderPipeline(prog,
-                                   VertexLayoutId::Empty,
+                                   tour::vertex_layouts::Empty,
                                    DepthSettings::Disabled(),
                                    StencilSettings::DefaultDisabled(),
                                    BlendSettings::Opaque(),

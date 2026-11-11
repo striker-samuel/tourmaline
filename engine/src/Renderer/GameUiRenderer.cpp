@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/Renderer/GameUiRenderer.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Utils/shader_library.h>
 
 #include <algorithm>
@@ -305,7 +306,7 @@ bool GameUiRenderer::AppendPass(smvk::ResourceManager& ctx,
     const auto instanceCount = static_cast<uint32_t>(packed.size());
     pass.SetRecordingFunc([program, push, instanceCount](smvk::CommandBuffer& cmd) mutable {
         cmd.BindRenderPipeline(program,
-                               smvk::VertexLayoutId::Empty,
+                               tour::vertex_layouts::Empty,
                                smvk::DepthSettings::Disabled(),
                                smvk::StencilSettings::DefaultDisabled(),
                                smvk::BlendSettings::AlphaBlend(),

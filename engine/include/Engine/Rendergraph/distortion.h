@@ -6,6 +6,7 @@
 // Run after scene HDR and before bloom/tonemap. Uses a distinct output image,
 // since reading and writing the same attachment would create feedback.
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
@@ -256,7 +257,7 @@ struct Distortion {
         ShaderProgram progCopy = program;
         pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
             cmd.BindRenderPipeline(progCopy,
-                                   VertexLayoutId::Empty,
+                                   tour::vertex_layouts::Empty,
                                    DepthSettings::Disabled(),
                                    StencilSettings::DefaultDisabled(),
                                    BlendSettings::Opaque(),

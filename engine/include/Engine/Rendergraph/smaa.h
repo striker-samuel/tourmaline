@@ -97,6 +97,7 @@
 //                       colors, swapExtent, swapIsSrgb);
 
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Rendergraph/smaa_area_tex.h>
 #include <Engine/Rendergraph/smaa_search_tex.h>
@@ -620,7 +621,7 @@ struct Smaa {
             ShaderProgram progCopy = edgeProgram;
             pass.SetRecordingFunc([progCopy, edgePush](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -657,7 +658,7 @@ struct Smaa {
             ShaderProgram progCopy = weightsProgram;
             pass.SetRecordingFunc([progCopy, weightsPush](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -696,7 +697,7 @@ struct Smaa {
             ShaderProgram progCopy = nbProgram;
             pass.SetRecordingFunc([progCopy, nbPush](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -725,7 +726,7 @@ struct Smaa {
             ShaderProgram progCopy = resolveProgram;
             pass.SetRecordingFunc([progCopy, resolvePush](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),

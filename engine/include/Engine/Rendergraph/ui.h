@@ -25,6 +25,7 @@
 //                                swapIsSrgb);
 
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
@@ -253,7 +254,7 @@ struct UiComposite {
         pass.SetRecordingFunc([progCopy, push, opaqueBlend](CommandBuffer& cmd) mutable {
             cmd.BindRenderPipeline(
                 progCopy,
-                VertexLayoutId::Empty,
+                tour::vertex_layouts::Empty,
                 DepthSettings::Disabled(),
                 StencilSettings::DefaultDisabled(),
                 opaqueBlend ? BlendSettings::Opaque()      // 1:1 copy: src replaces dst

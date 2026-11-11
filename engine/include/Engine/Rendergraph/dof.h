@@ -41,6 +41,7 @@
 //                      frameUniformsAddr, linearSampler, renderExtent, desc);
 
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
@@ -414,7 +415,7 @@ struct DepthOfField {
             ShaderProgram progCopy = lowProgram;
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -447,7 +448,7 @@ struct DepthOfField {
             ShaderProgram progCopy = cocProgram;
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -482,7 +483,7 @@ struct DepthOfField {
             ShaderProgram progCopy = bokehProgram;
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
