@@ -9,6 +9,7 @@
 // ResourceManager::DownloadDataFromImage).
 
 #include "editor_app.h"
+#include <Engine/Renderer/vertex_layouts.h>
 
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/RendererLimits.h>
@@ -177,9 +178,9 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
         // as content (UV-coordinate QA mode).
         smvk::ShaderProgram& prog =
             m_lmExportUv ? FlatUvCoordProgram() : FlatUvProgram(ViewMode::FlatUv1);
-        const smvk::VertexLayoutId fmt =
-            HasDrawItems() ? smvk::VertexLayoutId::Static : smvk::VertexLayoutId::Empty;
-        if (fmt == smvk::VertexLayoutId::Static)
+        const smvk::VertexLayoutDesc& fmt =
+            HasDrawItems() ? tour::vertex_layouts::Static : tour::vertex_layouts::Empty;
+        if (&fmt == &tour::vertex_layouts::Static)
             cmd.BindStaticVertexFmt();
         cmd.BindRenderPipeline(prog,
                                fmt,
@@ -219,7 +220,7 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
         if (!drawWires || m_lmExportLines.empty() || m_lmExportLinesCount == 0)
             return;
         cmd.BindRenderPipeline(m_lineProgram,
-                               smvk::VertexLayoutId::DebugLine,
+                               tour::vertex_layouts::DebugLine,
                                smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                    .writeEnable = false,
                                                    .depthTestEnable = true},
