@@ -107,9 +107,9 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                            gbufferMaskedProgram.shaderCount == 2 && !fc.gbufferView.empty();
     const smvk::LogicalImageViewHandle gbufferView =
         gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{};
-    const smvk::AttachmentLoadOp gbufferLoad =
-        (fallbackOnly || fc.gpuSceneDepthPrimed)
-            ? smvk::AttachmentLoadOp::Load : smvk::AttachmentLoadOp::Clear;
+    const smvk::AttachmentLoadOp gbufferLoad = (fallbackOnly || fc.gpuSceneDepthPrimed)
+                                                   ? smvk::AttachmentLoadOp::Load
+                                                   : smvk::AttachmentLoadOp::Clear;
 
     // ---- CPU frustum culling for the prepass ----
     // Static nodes: single ::tour::frustumCullBVH walk over the World's cached
@@ -447,20 +447,19 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
     }
 }
 
-bool ForwardPlusRenderer::AppendGpuScenePrepass(
-    smvk::FrameContext& base,
-    smvk::ShaderProgram rasterDepth,
-    smvk::BufferHandle indirect,
-    smvk::LogicalBufferHandle indirectLogical,
-    smvk::LogicalBufferHandle workLogical,
-    uint32_t commandCount,
-    const tour::gpu_scene::RasterVsPush& vertexPush,
-    bool hizOccluder,
-    bool hasDoubleSided,
-    smvk::ShaderProgram maskedDepth,
-    smvk::ShaderProgram maskedGbuffer,
-    bool hasMasked,
-    bool hasMaskedDoubleSided) {
+bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
+                                                smvk::ShaderProgram rasterDepth,
+                                                smvk::BufferHandle indirect,
+                                                smvk::LogicalBufferHandle indirectLogical,
+                                                smvk::LogicalBufferHandle workLogical,
+                                                uint32_t commandCount,
+                                                const tour::gpu_scene::RasterVsPush& vertexPush,
+                                                bool hizOccluder,
+                                                bool hasDoubleSided,
+                                                smvk::ShaderProgram maskedDepth,
+                                                smvk::ShaderProgram maskedGbuffer,
+                                                bool hasMasked,
+                                                bool hasMaskedDoubleSided) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || (rasterDepth.shaderCount != 1 && rasterDepth.shaderCount != 2))
         return false;
@@ -469,8 +468,7 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
     // previous-visible subset, not the complete set of current draws.
     if (hizOccluder && (rasterDepth.shaderCount != 1 || fc.hizDepthView.empty()))
         return false;
-    const bool gbufferOn = !hizOccluder && fc.ssrGbufferWanted &&
-                           rasterDepth.shaderCount == 2 &&
+    const bool gbufferOn = !hizOccluder && fc.ssrGbufferWanted && rasterDepth.shaderCount == 2 &&
                            !fc.gbufferView.empty() && !fc.gbuffer2View.empty();
     // A requested G-buffer must not silently render depth alone.
     if (!hizOccluder && fc.ssrGbufferWanted && !gbufferOn)
@@ -478,8 +476,7 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
     // Masked depth always needs a fragment shader, even on the dedicated
     // Hi-Z seed target. Every color/depth path must agree on alpha holes.
     if ((hasMasked || hasMaskedDoubleSided) &&
-        (maskedDepth.shaderCount != 2 ||
-         (gbufferOn && maskedGbuffer.shaderCount != 2)))
+        (maskedDepth.shaderCount != 2 || (gbufferOn && maskedGbuffer.shaderCount != 2)))
         return false;
     smvk::ResourceManager& ctx = *fc.ctx;
     smvk::RenderGraph& rg = *fc.rg;
@@ -487,19 +484,18 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
     if (!fp->Valid())
         return false;
     auto& pass = fp->AddDepthPrepass(
-        rg, hizOccluder ? fc.hizDepthView : fc.depthView,
+        rg,
+        hizOccluder ? fc.hizDepthView : fc.depthView,
         {fc.extent.width, fc.extent.height},
         hizOccluder ? "GpuSceneHizSeed" : "GpuSceneDepth",
-        hizOccluder ? smvk::AttachmentLoadOp::Clear
-                    : ((fc.seedDepthPrimed || fc.gpuSceneDepthPrimed)
-                           ? smvk::AttachmentLoadOp::Load
-                           : smvk::AttachmentLoadOp::Clear),
+        hizOccluder
+            ? smvk::AttachmentLoadOp::Clear
+            : ((fc.seedDepthPrimed || fc.gpuSceneDepthPrimed) ? smvk::AttachmentLoadOp::Load
+                                                              : smvk::AttachmentLoadOp::Clear),
         gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
-        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
-                               : smvk::AttachmentLoadOp::Clear,
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load : smvk::AttachmentLoadOp::Clear,
         gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
-        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
-                               : smvk::AttachmentLoadOp::Clear);
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load : smvk::AttachmentLoadOp::Clear);
     if (commandCount > 0) {
         smvk::BufferSyncRequest indirectRead{};
         indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
@@ -511,87 +507,92 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(
         pass.AddBufferHint(workLogical, workRead);
     }
     const IRenderer::PushConstants scenePush = fc.pc;
-    pass.SetRecordingFunc(
-        [rasterDepth, maskedDepth, maskedGbuffer, gbufferOn,
-         scenePush, indirect, commandCount, vertexPush,
-         hasDoubleSided, hasMasked, hasMaskedDoubleSided](
-            smvk::CommandBuffer& cmd) mutable {
-            if (!commandCount)
-                return; // the pass still clears depth for empty views
-            cmd.BindStaticVertexFmt();
-            cmd.BindRenderPipeline(
-                rasterDepth, smvk::VertexLayoutId::Static,
-                smvk::DepthSettings{
-                    .depthFunc = smvk::CompareOp::GreaterEqual,
-                    .writeEnable = true,
-                    .depthTestEnable = true},
-                smvk::StencilSettings{}, smvk::BlendSettings{},
-                smvk::MSAASettings{},
-                smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-            cmd.PushConstants(
-                0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
-            cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
-                              sizeof(vertexPush), &vertexPush, smvk::ShaderStage::All);
-            // GPU work-to-command build splits commands into fixed class
-            // ranges. One back-cull PSO and, only when needed, one CullNone
-            // PSO handle all draws in this prepass/seed.
-            constexpr uint32_t kChunk = 65535u;
-            const uint32_t stride =
-                commandCount / tour::gpu_scene::kRasterPipelineClassCount;
-            const auto drawBin = [&](uint32_t bin) {
-                const uint32_t base = bin * stride;
-                for (uint32_t first = 0; first < stride; first += kChunk) {
-                    const uint32_t n = std::min(kChunk, stride - first);
-                    cmd.DrawIndexedIndirect(
-                        indirect,
-                        uint64_t(base + first) *
-                            sizeof(tour::gpu_scene::RasterIndirectCommand),
-                        n, sizeof(tour::gpu_scene::RasterIndirectCommand));
-                }
-            };
-            drawBin(0u);
-            if (hasDoubleSided) {
-                cmd.BindRenderPipeline(
-                    rasterDepth, smvk::VertexLayoutId::Static,
-                    smvk::DepthSettings{
-                        .depthFunc = smvk::CompareOp::GreaterEqual,
-                        .writeEnable = true,
-                        .depthTestEnable = true},
-                    smvk::StencilSettings{}, smvk::BlendSettings{},
-                    smvk::MSAASettings{},
-                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                drawBin(1u);
+    pass.SetRecordingFunc([rasterDepth,
+                           maskedDepth,
+                           maskedGbuffer,
+                           gbufferOn,
+                           scenePush,
+                           indirect,
+                           commandCount,
+                           vertexPush,
+                           hasDoubleSided,
+                           hasMasked,
+                           hasMaskedDoubleSided](smvk::CommandBuffer& cmd) mutable {
+        if (!commandCount)
+            return; // the pass still clears depth for empty views
+        cmd.BindStaticVertexFmt();
+        cmd.BindRenderPipeline(rasterDepth,
+                               smvk::VertexLayoutId::Static,
+                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                   .writeEnable = true,
+                                                   .depthTestEnable = true},
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings{},
+                               smvk::MSAASettings{},
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+        cmd.PushConstants(0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
+        cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
+                          sizeof(vertexPush),
+                          &vertexPush,
+                          smvk::ShaderStage::All);
+        // GPU work-to-command build splits commands into fixed class
+        // ranges. One back-cull PSO and, only when needed, one CullNone
+        // PSO handle all draws in this prepass/seed.
+        constexpr uint32_t kChunk = 65535u;
+        const uint32_t stride = commandCount / tour::gpu_scene::kRasterPipelineClassCount;
+        const auto drawBin = [&](uint32_t bin) {
+            const uint32_t base = bin * stride;
+            for (uint32_t first = 0; first < stride; first += kChunk) {
+                const uint32_t n = std::min(kChunk, stride - first);
+                cmd.DrawIndexedIndirect(indirect,
+                                        uint64_t(base + first) *
+                                            sizeof(tour::gpu_scene::RasterIndirectCommand),
+                                        n,
+                                        sizeof(tour::gpu_scene::RasterIndirectCommand));
             }
-            // Masked bins use the same alpha factor/texture/cutoff as
-            // legacy shadow_rev/gbuffer_masked and Main gfxmesh_lit.
-            // One PSO per class; never a per-material bind.
-            smvk::ShaderProgram maskedProgram =
-                gbufferOn ? maskedGbuffer : maskedDepth;
-            if (hasMasked) {
-                cmd.BindRenderPipeline(
-                    maskedProgram, smvk::VertexLayoutId::Static,
-                    smvk::DepthSettings{
-                        .depthFunc = smvk::CompareOp::GreaterEqual,
-                        .writeEnable = true,
-                        .depthTestEnable = true},
-                    smvk::StencilSettings{}, smvk::BlendSettings{},
-                    smvk::MSAASettings{},
-                    smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-                drawBin(2u);
-            }
-            if (hasMaskedDoubleSided) {
-                cmd.BindRenderPipeline(
-                    maskedProgram, smvk::VertexLayoutId::Static,
-                    smvk::DepthSettings{
-                        .depthFunc = smvk::CompareOp::GreaterEqual,
-                        .writeEnable = true,
-                        .depthTestEnable = true},
-                    smvk::StencilSettings{}, smvk::BlendSettings{},
-                    smvk::MSAASettings{},
-                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                drawBin(3u);
-            }
-        });
+        };
+        drawBin(0u);
+        if (hasDoubleSided) {
+            cmd.BindRenderPipeline(rasterDepth,
+                                   smvk::VertexLayoutId::Static,
+                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                       .writeEnable = true,
+                                                       .depthTestEnable = true},
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings{},
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+            drawBin(1u);
+        }
+        // Masked bins use the same alpha factor/texture/cutoff as
+        // legacy shadow_rev/gbuffer_masked and Main gfxmesh_lit.
+        // One PSO per class; never a per-material bind.
+        smvk::ShaderProgram maskedProgram = gbufferOn ? maskedGbuffer : maskedDepth;
+        if (hasMasked) {
+            cmd.BindRenderPipeline(maskedProgram,
+                                   smvk::VertexLayoutId::Static,
+                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                       .writeEnable = true,
+                                                       .depthTestEnable = true},
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings{},
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+            drawBin(2u);
+        }
+        if (hasMaskedDoubleSided) {
+            cmd.BindRenderPipeline(maskedProgram,
+                                   smvk::VertexLayoutId::Static,
+                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                       .writeEnable = true,
+                                                       .depthTestEnable = true},
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings{},
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+            drawBin(3u);
+        }
+    });
     return true;
 }
 
@@ -611,19 +612,23 @@ bool ForwardPlusRenderer::AppendGpuSceneCompactPrepass(
     smvk::ShaderProgram maskedDepth,
     smvk::ShaderProgram maskedGbuffer,
     bool hasMasked,
-    bool hasMaskedDoubleSided) {
+    bool hasMaskedDoubleSided,
+    bool hizOccluder) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || (rasterDepth.shaderCount != 1 && rasterDepth.shaderCount != 2))
         return false;
-    // The compact twin only serves the Main depth/G-buffer lane; the
+    // The occluder-fill lane writes ONLY depth (no G-buffer) into the Hi-Z
+    // source target; it needs the depth-only program + the hizDepth view.
+    if (hizOccluder && (rasterDepth.shaderCount != 1 || fc.hizDepthView.empty()))
+        return false;
+    // The compact twin otherwise serves the Main depth/G-buffer lane; the
     // temporal Hi-Z seed lane never runs compact (v1 cutover).
-    const bool gbufferOn = fc.ssrGbufferWanted && rasterDepth.shaderCount == 2 &&
+    const bool gbufferOn = !hizOccluder && fc.ssrGbufferWanted && rasterDepth.shaderCount == 2 &&
                            !fc.gbufferView.empty() && !fc.gbuffer2View.empty();
-    if (fc.ssrGbufferWanted && !gbufferOn)
+    if (!hizOccluder && fc.ssrGbufferWanted && !gbufferOn)
         return false;
     if ((hasMasked || hasMaskedDoubleSided) &&
-        (maskedDepth.shaderCount != 2 ||
-         (gbufferOn && maskedGbuffer.shaderCount != 2)))
+        (maskedDepth.shaderCount != 2 || (gbufferOn && maskedGbuffer.shaderCount != 2)))
         return false;
     if (commandCount == 0 || countBuffer.empty() || countLogical.empty())
         return false;
@@ -633,17 +638,17 @@ bool ForwardPlusRenderer::AppendGpuSceneCompactPrepass(
     if (!fp->Valid())
         return false;
     auto& pass = fp->AddDepthPrepass(
-        rg, fc.depthView,
+        rg,
+        hizOccluder ? fc.hizDepthView : fc.depthView,
         {fc.extent.width, fc.extent.height},
-        "GpuSceneDepth",
-        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
-                               : smvk::AttachmentLoadOp::Clear,
+        hizOccluder ? "GpuSceneMeshletHizSeed" : "GpuSceneDepth",
+        hizOccluder ? smvk::AttachmentLoadOp::Clear
+                    : (fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
+                                              : smvk::AttachmentLoadOp::Clear),
         gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
-        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
-                               : smvk::AttachmentLoadOp::Clear,
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load : smvk::AttachmentLoadOp::Clear,
         gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
-        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
-                               : smvk::AttachmentLoadOp::Clear);
+        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load : smvk::AttachmentLoadOp::Clear);
     {
         smvk::BufferSyncRequest indirectRead{};
         indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
@@ -659,114 +664,119 @@ bool ForwardPlusRenderer::AppendGpuSceneCompactPrepass(
     }
     const IRenderer::PushConstants scenePush = fc.pc;
     const uint32_t offsets[4] = {binOffsets[0], binOffsets[1], binOffsets[2], binOffsets[3]};
-    const uint32_t capacities[4] = {binCapacities[0], binCapacities[1],
-                                    binCapacities[2], binCapacities[3]};
-    pass.SetRecordingFunc(
-        [rasterDepth, maskedDepth, maskedGbuffer, gbufferOn,
-         scenePush, indirect, countBuffer, vertexPush, offsets, capacities,
-         hasDoubleSided, hasMasked, hasMaskedDoubleSided](
-            smvk::CommandBuffer& cmd) mutable {
-            cmd.BindStaticVertexFmt();
-            cmd.BindRenderPipeline(
-                rasterDepth, smvk::VertexLayoutId::Static,
-                smvk::DepthSettings{
-                    .depthFunc = smvk::CompareOp::GreaterEqual,
-                    .writeEnable = true,
-                    .depthTestEnable = true},
-                smvk::StencilSettings{}, smvk::BlendSettings{},
-                smvk::MSAASettings{},
-                smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-            cmd.PushConstants(
-                0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
-            cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
-                              sizeof(vertexPush), &vertexPush, smvk::ShaderStage::All);
-            // Compact bins: the device reads the exact per-class survivor
-            // count from classCounts[bin]; the reserved tail beyond it is
-            // never submitted. firstInstance stays the original work slot.
-            const auto drawBin = [&](uint32_t bin) {
-                cmd.DrawIndexedIndirectCount(
-                    indirect,
-                    uint64_t(offsets[bin]) *
-                        sizeof(tour::gpu_scene::RasterIndirectCommand),
-                    countBuffer,
-                    uint64_t(bin) * sizeof(uint32_t),
-                    capacities[bin],
-                    sizeof(tour::gpu_scene::RasterIndirectCommand));
-            };
-            drawBin(0u);
-            if (hasDoubleSided) {
-                cmd.BindRenderPipeline(
-                    rasterDepth, smvk::VertexLayoutId::Static,
-                    smvk::DepthSettings{
-                        .depthFunc = smvk::CompareOp::GreaterEqual,
-                        .writeEnable = true,
-                        .depthTestEnable = true},
-                    smvk::StencilSettings{}, smvk::BlendSettings{},
-                    smvk::MSAASettings{},
-                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                drawBin(1u);
-            }
-            smvk::ShaderProgram maskedProgram =
-                gbufferOn ? maskedGbuffer : maskedDepth;
-            if (hasMasked) {
-                cmd.BindRenderPipeline(
-                    maskedProgram, smvk::VertexLayoutId::Static,
-                    smvk::DepthSettings{
-                        .depthFunc = smvk::CompareOp::GreaterEqual,
-                        .writeEnable = true,
-                        .depthTestEnable = true},
-                    smvk::StencilSettings{}, smvk::BlendSettings{},
-                    smvk::MSAASettings{},
-                    smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-                drawBin(2u);
-            }
-            if (hasMaskedDoubleSided) {
-                cmd.BindRenderPipeline(
-                    maskedProgram, smvk::VertexLayoutId::Static,
-                    smvk::DepthSettings{
-                        .depthFunc = smvk::CompareOp::GreaterEqual,
-                        .writeEnable = true,
-                        .depthTestEnable = true},
-                    smvk::StencilSettings{}, smvk::BlendSettings{},
-                    smvk::MSAASettings{},
-                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                drawBin(3u);
-            }
-        });
+    const uint32_t capacities[4] = {
+        binCapacities[0], binCapacities[1], binCapacities[2], binCapacities[3]};
+    pass.SetRecordingFunc([rasterDepth,
+                           maskedDepth,
+                           maskedGbuffer,
+                           gbufferOn,
+                           scenePush,
+                           indirect,
+                           countBuffer,
+                           vertexPush,
+                           offsets,
+                           capacities,
+                           hasDoubleSided,
+                           hasMasked,
+                           hasMaskedDoubleSided](smvk::CommandBuffer& cmd) mutable {
+        cmd.BindStaticVertexFmt();
+        cmd.BindRenderPipeline(rasterDepth,
+                               smvk::VertexLayoutId::Static,
+                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                   .writeEnable = true,
+                                                   .depthTestEnable = true},
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings{},
+                               smvk::MSAASettings{},
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+        cmd.PushConstants(0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
+        cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
+                          sizeof(vertexPush),
+                          &vertexPush,
+                          smvk::ShaderStage::All);
+        // Compact bins: the device reads the exact per-class survivor
+        // count from classCounts[bin]; the reserved tail beyond it is
+        // never submitted. firstInstance stays the original work slot.
+        const auto drawBin = [&](uint32_t bin) {
+            cmd.DrawIndexedIndirectCount(indirect,
+                                         uint64_t(offsets[bin]) *
+                                             sizeof(tour::gpu_scene::RasterIndirectCommand),
+                                         countBuffer,
+                                         uint64_t(bin) * sizeof(uint32_t),
+                                         capacities[bin],
+                                         sizeof(tour::gpu_scene::RasterIndirectCommand));
+        };
+        drawBin(0u);
+        if (hasDoubleSided) {
+            cmd.BindRenderPipeline(rasterDepth,
+                                   smvk::VertexLayoutId::Static,
+                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                       .writeEnable = true,
+                                                       .depthTestEnable = true},
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings{},
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+            drawBin(1u);
+        }
+        smvk::ShaderProgram maskedProgram = gbufferOn ? maskedGbuffer : maskedDepth;
+        if (hasMasked) {
+            cmd.BindRenderPipeline(maskedProgram,
+                                   smvk::VertexLayoutId::Static,
+                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                       .writeEnable = true,
+                                                       .depthTestEnable = true},
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings{},
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+            drawBin(2u);
+        }
+        if (hasMaskedDoubleSided) {
+            cmd.BindRenderPipeline(maskedProgram,
+                                   smvk::VertexLayoutId::Static,
+                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                       .writeEnable = true,
+                                                       .depthTestEnable = true},
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings{},
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+            drawBin(3u);
+        }
+    });
     return true;
 }
 
-bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(
-    smvk::FrameContext& base,
-    smvk::ShaderProgram taskDepth,
-    smvk::ShaderProgram taskGbuffer,
-    smvk::ShaderProgram maskedDepth,
-    smvk::ShaderProgram maskedGbuffer,
-    smvk::BufferHandle indirect,
-    smvk::LogicalBufferHandle indirectLogical,
-    smvk::LogicalBufferHandle groupsLogical,
-    smvk::LogicalBufferHandle offsetsLogical,
-    smvk::LogicalBufferHandle workLogical,
-    const tour::gpu_scene::TaskMeshGpuPush& tail,
-    bool hasDoubleSided,
-    bool hasMasked,
-    bool hasMaskedDoubleSided,
-    bool hizOccluder,
-    smvk::LogicalBufferHandle historyCurrent,
-    smvk::LogicalBufferHandle historyPrevious) {
+bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(smvk::FrameContext& base,
+                                                    smvk::ShaderProgram taskDepth,
+                                                    smvk::ShaderProgram taskGbuffer,
+                                                    smvk::ShaderProgram maskedDepth,
+                                                    smvk::ShaderProgram maskedGbuffer,
+                                                    smvk::BufferHandle indirect,
+                                                    smvk::LogicalBufferHandle indirectLogical,
+                                                    smvk::LogicalBufferHandle groupsLogical,
+                                                    smvk::LogicalBufferHandle offsetsLogical,
+                                                    smvk::LogicalBufferHandle workLogical,
+                                                    const tour::gpu_scene::TaskMeshGpuPush& tail,
+                                                    bool hasDoubleSided,
+                                                    bool hasMasked,
+                                                    bool hasMaskedDoubleSided,
+                                                    bool hizOccluder,
+                                                    smvk::LogicalBufferHandle historyCurrent,
+                                                    smvk::LogicalBufferHandle historyPrevious) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
-    if (!fp || taskDepth.shaderCount != 2 || indirect.empty() ||
-        indirectLogical.empty() || groupsLogical.empty() || offsetsLogical.empty() ||
-        workLogical.empty())
+    if (!fp || taskDepth.shaderCount != 2 || indirect.empty() || indirectLogical.empty() ||
+        groupsLogical.empty() || offsetsLogical.empty() || workLogical.empty())
         return false;
     const bool gbufferOn = !hizOccluder && fc.ssrGbufferWanted;
-    if (hizOccluder && fc.hizDepthView.empty()) return false;
-    if (gbufferOn && (taskGbuffer.shaderCount != 3 ||
-                      fc.gbufferView.empty() || fc.gbuffer2View.empty()))
+    if (hizOccluder && fc.hizDepthView.empty())
+        return false;
+    if (gbufferOn &&
+        (taskGbuffer.shaderCount != 3 || fc.gbufferView.empty() || fc.gbuffer2View.empty()))
         return false;
     if ((hasMasked || hasMaskedDoubleSided) &&
-        (maskedDepth.shaderCount != 3 ||
-         (gbufferOn && maskedGbuffer.shaderCount != 3)))
+        (maskedDepth.shaderCount != 3 || (gbufferOn && maskedGbuffer.shaderCount != 3)))
         return false;
     smvk::ResourceManager& ctx = *fc.ctx;
     smvk::RenderGraph& rg = *fc.rg;
@@ -774,69 +784,79 @@ bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(
     if (!fp->Valid())
         return false;
     const auto depthTarget = hizOccluder ? fc.hizDepthView : fc.depthView;
-    const auto load = !hizOccluder && fc.gpuSceneDepthPrimed
-        ? smvk::AttachmentLoadOp::Load : smvk::AttachmentLoadOp::Clear;
-    auto& pass = fp->AddDepthPrepass(
-        rg, depthTarget, {fc.extent.width, fc.extent.height},
-        hizOccluder ? "GpuSceneTaskTemporalSeed" : "GpuSceneTaskMeshDepth",
-        load,
-        gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
-        load,
-        gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
-        load);
+    const auto load = !hizOccluder && fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
+                                                             : smvk::AttachmentLoadOp::Clear;
+    auto& pass =
+        fp->AddDepthPrepass(rg,
+                            depthTarget,
+                            {fc.extent.width, fc.extent.height},
+                            hizOccluder ? "GpuSceneTaskTemporalSeed" : "GpuSceneTaskMeshDepth",
+                            load,
+                            gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
+                            load,
+                            gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
+                            load);
     smvk::BufferSyncRequest indirectRead{};
     indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
     indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
     pass.AddBufferHint(indirectLogical, indirectRead);
     smvk::BufferSyncRequest shaderRead{};
-    shaderRead.barrierMasks.stageMask =
-        smvk::PipelineStageBit_Task | smvk::PipelineStageBit_Mesh;
+    shaderRead.barrierMasks.stageMask = smvk::PipelineStageBit_Task | smvk::PipelineStageBit_Mesh;
     shaderRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
     pass.AddBufferHint(groupsLogical, shaderRead);
     pass.AddBufferHint(offsetsLogical, shaderRead);
     pass.AddBufferHint(workLogical, shaderRead);
-    if (!historyPrevious.empty()) pass.AddBufferHint(historyPrevious, shaderRead);
+    if (!historyPrevious.empty())
+        pass.AddBufferHint(historyPrevious, shaderRead);
     if (!historyCurrent.empty()) {
         auto visibility = shaderRead;
-        visibility.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead |
-                                             smvk::AccessFlags::ShaderWrite;
+        visibility.barrierMasks.accessMask =
+            smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
         pass.AddBufferHint(historyCurrent, visibility);
     }
     const IRenderer::PushConstants scenePush = fc.pc;
-    pass.SetRecordingFunc(
-        [taskDepth, taskGbuffer, maskedDepth, maskedGbuffer, gbufferOn,
-         scenePush, indirect, tail,
-         hasDoubleSided, hasMasked, hasMaskedDoubleSided](
-            smvk::CommandBuffer& cmd) mutable {
-            const auto depth = smvk::DepthSettings{
-                .depthFunc = smvk::CompareOp::GreaterEqual,
-                .writeEnable = true, .depthTestEnable = true};
-            const auto drawBin = [&](uint32_t cls,
-                                     smvk::ShaderProgram& program,
-                                     smvk::CullMode cull) {
-                cmd.BindRenderPipeline(
-                    program, smvk::VertexLayoutId::Empty, depth,
-                    smvk::StencilSettings{}, smvk::BlendSettings{},
-                    smvk::MSAASettings{}, smvk::RasterSettings{.cullMode = cull});
-                cmd.PushConstants(
-                    0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
-                auto push = tail;
-                push.rasterClass = cls;
-                cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
-                cmd.DrawMeshTasksIndirect(
-                    indirect, uint64_t(cls)*sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
-                    1u, sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
-            };
-            auto unmasked = gbufferOn ? taskGbuffer : taskDepth;
-            auto masked = gbufferOn ? maskedGbuffer : maskedDepth;
-            drawBin(0u, unmasked, smvk::CullMode::Back);
-            if (hasDoubleSided)
-                drawBin(1u, unmasked, smvk::CullMode::None);
-            if (hasMasked)
-                drawBin(2u, masked, smvk::CullMode::Back);
-            if (hasMaskedDoubleSided)
-                drawBin(3u, masked, smvk::CullMode::None);
-        });
+    pass.SetRecordingFunc([taskDepth,
+                           taskGbuffer,
+                           maskedDepth,
+                           maskedGbuffer,
+                           gbufferOn,
+                           scenePush,
+                           indirect,
+                           tail,
+                           hasDoubleSided,
+                           hasMasked,
+                           hasMaskedDoubleSided](smvk::CommandBuffer& cmd) mutable {
+        const auto depth = smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                               .writeEnable = true,
+                                               .depthTestEnable = true};
+        const auto drawBin = [&](uint32_t cls, smvk::ShaderProgram& program, smvk::CullMode cull) {
+            cmd.BindRenderPipeline(program,
+                                   smvk::VertexLayoutId::Empty,
+                                   depth,
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings{},
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.cullMode = cull});
+            cmd.PushConstants(0, sizeof(scenePush), &scenePush, smvk::ShaderStage::All);
+            auto push = tail;
+            push.rasterClass = cls;
+            cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
+            cmd.DrawMeshTasksIndirect(indirect,
+                                      uint64_t(cls) *
+                                          sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
+                                      1u,
+                                      sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
+        };
+        auto unmasked = gbufferOn ? taskGbuffer : taskDepth;
+        auto masked = gbufferOn ? maskedGbuffer : maskedDepth;
+        drawBin(0u, unmasked, smvk::CullMode::Back);
+        if (hasDoubleSided)
+            drawBin(1u, unmasked, smvk::CullMode::None);
+        if (hasMasked)
+            drawBin(2u, masked, smvk::CullMode::Back);
+        if (hasMaskedDoubleSided)
+            drawBin(3u, masked, smvk::CullMode::None);
+    });
     return true;
 }
 

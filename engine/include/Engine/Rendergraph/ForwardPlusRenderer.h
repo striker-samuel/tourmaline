@@ -17,10 +17,10 @@
 // addresses) arrive via AppFrameContext. The main opaque pass still samples
 // the tile lists itself (see ForwardPlus::AddTileReadHints).
 
-#include <Engine/Rendergraph/forwardplus.h>
-#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_task_mesh_abi.h>
+#include <Engine/Rendergraph/forwardplus.h>
+#include <Engine/Rendergraph/renderer.h>
 
 namespace engine {
 struct AppFrameContext;
@@ -93,18 +93,18 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
     // VS+G-buffer FS program when the thin receiver attachments are used.
     // Missing shader variants must fall back to AppendPrepass.
     [[nodiscard]] bool AppendGpuScenePrepass(smvk::FrameContext& fc,
-                               smvk::ShaderProgram rasterDepth,
-                               smvk::BufferHandle indirect,
-                               smvk::LogicalBufferHandle indirectLogical,
-                               smvk::LogicalBufferHandle workLogical,
-                               uint32_t commandCount,
-                               const tour::gpu_scene::RasterVsPush& vertexPush,
-                               bool hizOccluder,
-                               bool hasDoubleSided,
-                               smvk::ShaderProgram maskedDepth,
-                               smvk::ShaderProgram maskedGbuffer,
-                               bool hasMasked,
-                               bool hasMaskedDoubleSided);
+                                             smvk::ShaderProgram rasterDepth,
+                                             smvk::BufferHandle indirect,
+                                             smvk::LogicalBufferHandle indirectLogical,
+                                             smvk::LogicalBufferHandle workLogical,
+                                             uint32_t commandCount,
+                                             const tour::gpu_scene::RasterVsPush& vertexPush,
+                                             bool hizOccluder,
+                                             bool hasDoubleSided,
+                                             smvk::ShaderProgram maskedDepth,
+                                             smvk::ShaderProgram maskedGbuffer,
+                                             bool hasMasked,
+                                             bool hasMaskedDoubleSided);
     // Compact-meshlet twin: four bins at binOffsets, each drawn with the
     // EXACT GPU survivor count read by the device (DrawIndexedIndirectCount
     // against classCounts[bin]) — the reserved tail beyond the count is
@@ -126,28 +126,28 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
                                                     smvk::ShaderProgram maskedDepth,
                                                     smvk::ShaderProgram maskedGbuffer,
                                                     bool hasMasked,
-                                                    bool hasMaskedDoubleSided);
+                                                    bool hasMaskedDoubleSided,
+                                                    bool hizOccluder = false);
     // GPU Scene task+mesh prepass: one GPU-generated indirect mesh-task
     // dispatch per PSO class. Task stage performs local meshlet visibility
     // and forwards surviving cluster IDs to mesh stage.
-    [[nodiscard]] bool AppendGpuSceneTaskPrepass(
-        smvk::FrameContext& fc,
-        smvk::ShaderProgram taskDepth,
-        smvk::ShaderProgram taskGbuffer,
-        smvk::ShaderProgram maskedDepth,
-        smvk::ShaderProgram maskedGbuffer,
-        smvk::BufferHandle indirect,
-        smvk::LogicalBufferHandle indirectLogical,
-        smvk::LogicalBufferHandle groupsLogical,
-        smvk::LogicalBufferHandle offsetsLogical,
-        smvk::LogicalBufferHandle workLogical,
-        const tour::gpu_scene::TaskMeshGpuPush& tail,
-        bool hasDoubleSided,
-        bool hasMasked,
-        bool hasMaskedDoubleSided,
-        bool hizOccluder = false,
-        smvk::LogicalBufferHandle historyCurrent = {},
-        smvk::LogicalBufferHandle historyPrevious = {});
+    [[nodiscard]] bool AppendGpuSceneTaskPrepass(smvk::FrameContext& fc,
+                                                 smvk::ShaderProgram taskDepth,
+                                                 smvk::ShaderProgram taskGbuffer,
+                                                 smvk::ShaderProgram maskedDepth,
+                                                 smvk::ShaderProgram maskedGbuffer,
+                                                 smvk::BufferHandle indirect,
+                                                 smvk::LogicalBufferHandle indirectLogical,
+                                                 smvk::LogicalBufferHandle groupsLogical,
+                                                 smvk::LogicalBufferHandle offsetsLogical,
+                                                 smvk::LogicalBufferHandle workLogical,
+                                                 const tour::gpu_scene::TaskMeshGpuPush& tail,
+                                                 bool hasDoubleSided,
+                                                 bool hasMasked,
+                                                 bool hasMaskedDoubleSided,
+                                                 bool hizOccluder = false,
+                                                 smvk::LogicalBufferHandle historyCurrent = {},
+                                                 smvk::LogicalBufferHandle historyPrevious = {});
     // lightCountOverride: UINT32_MAX (default) = cull fc.fpLightCount
     // lights; any other value limits the light leg (the deferred-shadow
     // pipeline passes 0 — its shading consumes the DS lists, but the decal

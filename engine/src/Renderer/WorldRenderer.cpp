@@ -14545,6 +14545,89 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_gpuSceneRasterHistoryWidth = renderExtent.width;
             m_gpuSceneRasterHistoryHeight = renderExtent.height;
         }
+        // Compact-meshlet fallback Hi-Z occlusion (no mesh shaders): the
+        // compact scatter culls frustum+cone but not Hi-Z. Fill the occluder
+        // depth from the compact commands, build the reversed-Z MIN pyramid,
+        // then zero the occluded meshlet commands (per-instance localSphere,
+        // conservative — never drops visible geometry). Reuses the raster
+        // Hi-Z gate with no temporal remainder/history.
+        if (m_gpuSceneMeshletCompactActive && m_gpuSceneRasterDrawActive) {
+            const uint32_t flight = fb.frameIndex;
+            const tour::gpu_scene::RasterVsPush tail{
+                m_gpuSceneRasterWorkBda,
+                m_gpuSceneUploader.DeviceAddresses(*m_context, flight).instances,
+                m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
+                m_gpuSceneDatabase.instances.Size(),
+                m_gpuSceneRasterDrawCapacity};
+            const bool seededHiz = m_fpRenderer.AppendGpuSceneCompactPrepass(
+                fc,
+                m_gpuSceneRasterDepthProgram,
+                m_gpuSceneRasterIndirect,
+                m_gpuSceneRasterIndirectLogical[flight],
+                m_gpuSceneMeshletClassCountsLogical[flight],
+                m_gpuSceneMeshletClassCounts,
+                m_gpuSceneRasterWorkLogical[flight],
+                m_gpuSceneMeshletBinOffsets,
+                m_gpuSceneMeshletBinCapacities,
+                m_gpuSceneRasterDrawCapacity,
+                tail,
+                m_gpuSceneRasterDoubleSidedCount != 0,
+                m_gpuSceneRasterMaskedDepthProgram,
+                m_gpuSceneRasterMaskedGbufferProgram,
+                m_gpuSceneRasterMaskedBackCount != 0,
+                m_gpuSceneRasterMaskedDoubleSidedCount != 0,
+                /*hizOccluder=*/true);
+            if (seededHiz) {
+                appendHizPasses();
+                const uint32_t hizSlot = m_gfxRenderer.LastSlot();
+                if (hizSlot != UINT32_MAX && hizSlot < m_gfxRenderer.gfx.temporals.size() &&
+                    hizSlot < m_gfxRenderer.gfx.views.size()) {
+                    const auto& hz = smvk::gfx::Hiz(m_gfxRenderer.gfx, hizSlot);
+                    if (hz.mipCount != 0u && hz.width != 0u && hz.height != 0u) {
+                        const tour::gpu_scene::RasterHizCullPush hizPush{
+                            m_context->GetBufferDeviceAddress(m_gpuSceneRasterIndirect),
+                            m_context->GetBufferDeviceAddress(m_gpuSceneRasterIndirect),
+                            m_gpuSceneRasterWorkBda,
+                            m_gpuSceneUploader.DeviceAddresses(*m_context, flight).instances,
+                            m_gpuSceneUploader.DeviceAddresses(*m_context, flight).meshes,
+                            m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
+                            smvk::gfx::HizAddress(m_gfxRenderer.gfx, *m_context, hizSlot),
+                            0u, // previous (no temporal)
+                            m_gpuSceneRasterDrawCapacity,
+                            uint32_t(m_gpuSceneDatabase.instances.Size()),
+                            uint32_t(m_gpuSceneDatabase.meshes.Size()),
+                            hz.width,
+                            hz.height,
+                            hz.mipCount,
+                            0u, // historySlots (no temporal)
+                            0u, // historyValid (no temporal)
+                            (uint32_t(m_gfxRenderer.config.cullFlags) &
+                             uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion)) != 0u
+                                ? 1u
+                                : 0u};
+                        auto& gate = m_rendergraph->AddComputePass("GpuSceneMeshletHizCull");
+                        smvk::BufferSyncRequest indirectRW{};
+                        indirectRW.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                        indirectRW.barrierMasks.accessMask =
+                            smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+                        gate.AddBufferHint(m_gpuSceneRasterIndirectLogical[flight], indirectRW);
+                        smvk::BufferSyncRequest hizRead{};
+                        hizRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                        hizRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+                        gate.AddBufferHint(hz.logical, hizRead);
+                        gate.AddBufferHint(m_gpuSceneRasterWorkLogical[flight], hizRead);
+                        auto hizProgram = m_gpuSceneRasterHizCullProgram;
+                        gate.SetRecordingFunc(
+                            [hizProgram, hizPush](smvk::CommandBuffer& cmd) mutable {
+                                cmd.BindComputePipeline(hizProgram);
+                                cmd.PushConstants(
+                                    0, sizeof(hizPush), &hizPush, smvk::ShaderStage::Compute);
+                                cmd.Dispatch((hizPush.commandCapacity + 127u) / 128u, 1, 1);
+                            });
+                    }
+                }
+            }
+        }
         // The complete (GPU + legacy) depth is assembled AFTER the
         // seed-only occlusion verdict, with no chance of self-culling.
         if (m_passes.forwardPlusPrepass) {
