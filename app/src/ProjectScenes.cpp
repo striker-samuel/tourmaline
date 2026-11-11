@@ -507,6 +507,24 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
     return handle;
 }
 
+SceneNodeRef ProjectScenes::MakeNodeRef(SceneHandle scene, tour::scene::NodeId node) const {
+    const SceneInstance* instance = Instance(scene);
+    if (!instance || !instance->cluster)
+        return {};
+    const auto handle = tour::scene::MakeNodeHandle(instance->cluster->scene, node);
+    if (handle == tour::scene::kNodeInvalidHandle)
+        return {};
+    return SceneNodeRef{scene, handle};
+}
+
+bool ProjectScenes::NodeRefValid(SceneNodeRef ref) const {
+    if (!ref)
+        return false;
+    const SceneInstance* instance = Instance(ref.scene);
+    return instance && instance->cluster &&
+           tour::scene::NodeHandleValid(instance->cluster->scene, ref.node);
+}
+
 bool ProjectScenes::RemoveScene(SceneHandle scene,
                                 tour::World& world,
                                 std::string& err,
