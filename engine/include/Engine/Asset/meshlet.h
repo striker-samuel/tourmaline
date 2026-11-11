@@ -30,15 +30,16 @@ using ::tour::StaticMeshUpload;
 struct CookedMeshlets;
 
 // THE meshlet size limits (kMax constants — the one place the number lives).
-// 64v/124t (the meshoptimizer 64/124 profile): one mesh-shader workgroup
+// 64v/96t (the meshoptimizer "reasonable" profile): one mesh-shader workgroup
 // (64 threads, indexed output — see gpu_scene_task_mesh.hlsli
-// GS_MESH_MAX_VERTS/GS_MESH_MAX_TRIS) covers a WHOLE meshlet. The gfx-filter
-// mesh leg (gfxmesh.hlsli GFX_MESH_MAX_TRIS = 64) no longer covers a whole
-// meshlet and must be gated off for the larger clusters. Everything defaults
-// to these (MeshletConfig, TourCook, the cooker CLI) and
+// GS_MESH_MAX_VERTS/GS_MESH_MAX_TRIS) covers a WHOLE meshlet. For bistro the
+// partitioner is vertex-limited (~41 verts avg, 26% at the 64-vertex cap),
+// so the triangle budget is headroom, not the lever; 96 keeps the mesh-shader
+// primitive array smaller than 124 with no meaningful tri-capping (0.6%).
+// Everything defaults to these (MeshletConfig, TourCook, the cooker CLI) and
 // BuildMeshletsForUpload CLAMPS over-limit configs down to them.
 inline constexpr uint32_t kMeshletMaxVertices = 64;
-inline constexpr uint32_t kMeshletMaxTriangles = 124;
+inline constexpr uint32_t kMeshletMaxTriangles = 96;
 
 struct MeshletConfig {
     bool enabled = false; // off by default; cooker opts in via CLI
