@@ -41,6 +41,7 @@
 // tests (hosted runners lack a display/ICD).
 
 #include <cstdio>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -272,7 +273,7 @@ int main() {
             draw.SetRecordingFunc([cmd, idx, prog](smvk::CommandBuffer& c) {
                 c.BindIndexBuffer(idx, 0);
                 c.BindRenderPipeline(*prog,
-                                     smvk::VertexLayoutId::Empty,
+                                     tour::vertex_layouts::Empty,
                                      smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
                                                          .writeEnable = false,
                                                          .depthTestEnable = false},
