@@ -115,6 +115,7 @@
 //     d <= 1e-6; view distance comes only from invProj unprojection.
 
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
@@ -1426,7 +1427,7 @@ struct ScreenSpaceReflections {
                 ShaderProgram progCopy = separableBlurProgram; // copyable (handles only)
                 pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                     cmd.BindRenderPipeline(progCopy,
-                                           VertexLayoutId::Empty,
+                                           tour::vertex_layouts::Empty,
                                            DepthSettings::Disabled(),
                                            StencilSettings::DefaultDisabled(),
                                            BlendSettings::Opaque(),
@@ -1478,7 +1479,7 @@ struct ScreenSpaceReflections {
             ShaderProgram progCopy = blurProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -1738,7 +1739,7 @@ struct ScreenSpaceReflections {
             ShaderProgram progCopy = copyProgram;
             pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -1838,7 +1839,7 @@ struct ScreenSpaceReflections {
                 contribDbgOn ? composeDbgProgram : composeProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -2109,7 +2110,7 @@ struct ScreenSpaceReflections {
             ShaderProgram progCopy = copyProgram;
             pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -2177,7 +2178,7 @@ struct ScreenSpaceReflections {
             ShaderProgram progCopy = temporalProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -2264,7 +2265,7 @@ struct ScreenSpaceReflections {
                 contribDbgOn ? composeDbgProgram : composeProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -2299,7 +2300,7 @@ struct ScreenSpaceReflections {
             ShaderProgram progCopy = depthHistoryProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       VertexLayoutId::Empty,
+                                       tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
