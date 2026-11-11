@@ -105,6 +105,16 @@ struct SceneHandle {
     friend bool operator==(SceneHandle, SceneHandle) = default;
 };
 
+// Services shared by scene operations. Bind these once when constructing the
+// gameplay-facing scene facade instead of repeating upload dependencies on
+// every load. Dependencies are borrowed and must outlive ProjectScenes.
+struct ProjectSceneRuntimeContext {
+    ProjectRuntime& runtime;
+    smvk::OverlayVfs& contentVfs;
+    smvk::ResourceManager* resources = nullptr;
+    tour::TextureStreamer* textures = nullptr;
+};
+
 class ProjectScenes {
   public:
     // Where a scene id resolves to (the id->scene join's product).
@@ -131,6 +141,13 @@ class ProjectScenes {
                                      std::string& err)>;
 
     explicit ProjectScenes(ProjectRuntime& runtime, smvk::OverlayVfs& contentVfs);
+
+    explicit ProjectScenes(const ProjectSceneRuntimeContext& context)
+        : ProjectScenes(context.runtime, context.contentVfs) {
+        m_boundResources = context.resources;
+        m_boundTextures = context.textures;
+    }
+
 
     // The constructor's adopt-or-open pass: every manifest pak adopted
     // from the host's mounts or preloaded + opened in parallel, then
@@ -182,6 +199,12 @@ class ProjectScenes {
                           tour::TextureStreamer* streamer,
                           uint64_t sceneId,
                           std::string& err);
+    // Convenience overload for a context-bound scene facade. The explicit
+    // service-taking overload remains available to host and GPU-less tests.
+    SceneHandle LoadScene(tour::World& world, uint64_t sceneId, std::string& err) {
+        return LoadScene(world, m_boundResources, m_boundTextures, sceneId, err);
+    }
+
     // ADDITIVE: stacks sceneId on top of whatever the world already
     // carries (the entry scene the apphost loaded, other additive
     // scenes, editor content).
@@ -190,6 +213,10 @@ class ProjectScenes {
                                   tour::TextureStreamer* streamer,
                                   uint64_t sceneId,
                                   std::string& err);
+    SceneHandle LoadSceneAdditive(tour::World& world, uint64_t sceneId, std::string& err) {
+        return LoadSceneAdditive(world, m_boundResources, m_boundTextures, sceneId, err);
+    }
+
     // A prefab is an ordinary cooked .tour SCENE, not a new asset kind.
     // Each call creates a DISTINCT cluster/SceneHandle; the authored
     // transforms and resource references are kept, and the frame is
@@ -201,6 +228,13 @@ class ProjectScenes {
                                   uint64_t sceneId,
                                   const glm::mat4& frame,
                                   std::string& err);
+    SceneHandle InstantiatePrefab(tour::World& world,
+                                  uint64_t sceneId,
+                                  const glm::mat4& frame,
+                                  std::string& err) {
+        return InstantiatePrefab(world, m_boundResources, m_boundTextures, sceneId, frame, err);
+    }
+
     // Absolute placement: always uses the ORIGINAL authored root frame,
     // not the previous pose (avoids cumulative transformation drift).
     // Rebuilds the world fold, main/update thread only.
@@ -296,6 +330,8 @@ class ProjectScenes {
                              std::string& err,
                              const glm::mat4* prefabFrame = nullptr);
 
+    smvk::ResourceManager* m_boundResources = nullptr;
+    tour::TextureStreamer* m_boundTextures = nullptr;
     tour::renderer::ShapeScene* m_shapes = nullptr;
     ProjectRuntime& m_runtime;
     smvk::OverlayVfs& m_vfs;
