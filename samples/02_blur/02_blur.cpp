@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -497,7 +498,7 @@ class BlurApp : public smvk::App {
                     .SetRecordingFunc([this, push](smvk::CommandBuffer& cmd) mutable {
                         cmd.BindRenderPipeline(
                             m_program,
-                            smvk::VertexLayoutId::Empty,
+                            tour::vertex_layouts::Empty,
                             smvk::DepthSettings::Disabled(),
                             smvk::StencilSettings::DefaultDisabled(),
                             smvk::BlendSettings::Opaque(),
@@ -532,7 +533,7 @@ class BlurApp : public smvk::App {
                     .SetRecordingFunc([this, push](smvk::CommandBuffer& cmd) mutable {
                         cmd.BindRenderPipeline(
                             m_program,
-                            smvk::VertexLayoutId::Empty,
+                            tour::vertex_layouts::Empty,
                             smvk::DepthSettings::Disabled(),
                             smvk::StencilSettings::DefaultDisabled(),
                             smvk::BlendSettings::Opaque(),
@@ -567,7 +568,7 @@ class BlurApp : public smvk::App {
                     {swapView}, smvk::AttachmentLoadOp::DontCare, smvk::AttachmentStoreOp::Store)
                 .SetRecordingFunc([this, push](smvk::CommandBuffer& cmd) mutable {
                     cmd.BindRenderPipeline(m_program,
-                                           smvk::VertexLayoutId::Empty,
+                                           tour::vertex_layouts::Empty,
                                            smvk::DepthSettings::Disabled(),
                                            smvk::StencilSettings::DefaultDisabled(),
                                            smvk::BlendSettings::Opaque(),
