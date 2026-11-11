@@ -551,25 +551,6 @@ struct DrawRequest {
 // Cluster / Mesh moved to gpu_scene_static.h (tour::gfx::Cluster /
 // tour::gfx::Mesh) — the render sidecar references them from StaticGeometry.
 
-// One indirect draw over the cluster-ordered index heap (20 bytes, matches
-// VkDrawIndexedIndirectCommand; firstInstance indexes this frame's draws).
-struct SeedCommand {
-    uint32_t indexCount = 0;
-    uint32_t instanceCount = 1;
-    uint32_t firstIndex = 0;    // clusters[c].indexOffset into filterIndices
-    int32_t vertexOffset = 0;   // always 0: indices are heap-global ids
-    uint32_t firstInstance = 0; // draw index into the visDraws snapshot
-};
-static_assert(sizeof(SeedCommand) == 20);
-
-// One seed multi-draw range: same (bucket, material) throughout.
-struct SeedRange {
-    uint32_t drawSet = DrawSetBit_Opaque;
-    uint32_t material = 0;
-    uint32_t firstCommand = 0;
-    uint32_t commandCount = 0;
-};
-
 struct View {
     glm::vec3 eye{0.0f};
     CullFlags cullFlags = CullFlagBit_Degenerate;
@@ -581,20 +562,10 @@ struct View {
     std::vector<MaterialRange> materialRanges;
     uint32_t batchCount = 0;
     uint32_t frameIndex = 0; // which ring slice this frame's data lives in
-    // Version stamp of the batches/drawConstants lists (bumped by BeginView
-    // and BuildBatches). The temporal key cache gates on it: a stale
-    // sorted-key array can never be reused against mutated batches.
-    // Hand-built lists (unit tests) keep 0 and always rebuild.
-    uint64_t batchesSerial = 0;
     Stats stats{};
     // Compacted eligible mesh batch indices (capacity retained across
     // frames: RecordMeshMain rewrites it per mesh dispatch set).
     std::vector<uint32_t> meshListScratch;
-    // GPU-cull mode seed/remainder ranges: positional (bucket, material)
-    // spans over the candidate slot layout (identical for both passes —
-    // the instanceCounts written by gfxbatchcull gate the actual draws).
-    std::vector<SeedRange> cullRanges;
-    uint32_t cullOpaqueCommands = 0;
     // Per-view outputs AND inputs, ringed by frame in flight.
     // Everything mutable is per (view, frame): frames overlap (the swapchain
     // only retires the same slot), and uploads flush immediately, so any
@@ -649,14 +620,6 @@ struct View {
     uint32_t drawCapacity[smvk::limits::MaxFramesInFlight] = {};
     uint32_t candidateCapacity[smvk::limits::MaxFramesInFlight] = {};
 };
-
-// GPU mirror of one surviving (cluster, draw) pair ("visible meshlet").
-// Must match HLSL GfxVisible::vis elements (8 bytes).
-struct VisibleCluster {
-    uint32_t cluster = 0;
-    uint32_t draw = 0;
-};
-static_assert(sizeof(VisibleCluster) == 8);
 
 // Hierarchical-Z store for one view: MIN-reduced depth pyramid (reversed-Z
 // conservative, see hzb.hlsli) in a Storage float buffer with manual mip
@@ -726,221 +689,15 @@ static_assert(sizeof(HzbPush) == 48);
 using HzbSpdPush = tour::visibility::HzbSpdPush;
 static_assert(sizeof(HzbSpdPush) == 104);
 
-// (cluster, model) identity reduced to one u64 sort key: 32-bit bitwise
-// hash of the 16 model-matrix words in the high half, cluster id in the
-// low half. Hashing raw bits is exactly consistent with memcmp equality
-// (-0.0 vs +0.0 and NaN payloads included); MergeKeyMasks verifies key
-// ties with a real compare, so hash collisions cannot change semantics.
-// This replaces the old 72-byte VisKey struct + memcmp comparator: the
-// seed/remainder set ops become one std::sort over u64s and one linear
-// merge instead of two struct sorts plus ~2x batchCount cache-hostile
-// binary searches per frame.
-namespace detail {
-
-struct VisKeyEntry {
-    uint64_t key = 0;
-    uint32_t batch = 0; // ORIGINAL slot in the batch list it was built from
-};
-
-[[nodiscard]] inline uint64_t MakeVisKey(const glm::mat4& model, uint32_t cluster) {
-    uint32_t words[16];
-    std::memcpy(words, &model, sizeof(words));
-    uint32_t h = 0x9e3779b9u;
-    for (const uint32_t w : words)
-        h = (h ^ w) * 0x85ebca6bu;
-    h ^= h >> 16;
-    h *= 0x7feb352du;
-    h ^= h >> 15;
-    h *= 0x846ca68bu;
-    h ^= h >> 16;
-    return (uint64_t(h) << 32) | cluster;
-}
-
-// Linear merge of two key-sorted entry arrays (ascending key) into
-// membership masks indexed by each entry's original batch slot:
-//   outSeed[prev.batch]      = 1 when a bit-identical model matches in curr
-//   outRemainder[curr.batch] = 1 when no bit-identical match exists in prev
-// modelEq(prevBatch, currBatch) resolves key ties (hash collisions) with
-// the exact memcmp semantics — also the seam unit tests use to force
-// worst-case tie groups. O(prev + curr); tie groups are duplicates only.
-template <typename ModelEq>
-void MergeKeyMasks(const VisKeyEntry* prev,
-                   size_t prevCount,
-                   const VisKeyEntry* curr,
-                   size_t currCount,
-                   ModelEq modelEq,
-                   uint8_t* outSeed,
-                   uint8_t* outRemainder) {
-    size_t i = 0, j = 0;
-    while (i < prevCount && j < currCount) {
-        if (prev[i].key < curr[j].key) {
-            outSeed[prev[i++].batch] = 0;
-        } else if (prev[i].key > curr[j].key) {
-            outRemainder[curr[j++].batch] = 1;
-        } else {
-            // Tie group: every entry on both sides shares this key. Each
-            // entry matches iff ANY cross pair has a bit-identical model
-            // (the old binary_search "exists" semantics, duplicates
-            // included).
-            size_t i2 = i;
-            while (i2 < prevCount && prev[i2].key == prev[i].key)
-                ++i2;
-            size_t j2 = j;
-            while (j2 < currCount && curr[j2].key == curr[j].key)
-                ++j2;
-            for (size_t a = i; a < i2; ++a) {
-                bool matched = false;
-                for (size_t b = j; b < j2 && !matched; ++b)
-                    matched = modelEq(prev[a].batch, curr[b].batch);
-                outSeed[prev[a].batch] = matched ? 1 : 0;
-            }
-            for (size_t b = j; b < j2; ++b) {
-                bool matched = false;
-                for (size_t a = i; a < i2 && !matched; ++a)
-                    matched = modelEq(prev[a].batch, curr[b].batch);
-                outRemainder[curr[b].batch] = matched ? 0 : 1;
-            }
-            i = i2;
-            j = j2;
-        }
-    }
-    for (; i < prevCount; ++i)
-        outSeed[prev[i].batch] = 0;
-    for (; j < currCount; ++j)
-        outRemainder[curr[j].batch] = 1;
-}
-
-// One bucket-major emitter input: resolved (cluster, draw, material, set).
-struct EmitEntry {
-    uint32_t cluster = 0;
-    uint32_t draw = 0; // firstInstance: index into the draws array the VS reads
-    uint32_t material = UINT32_MAX;
-    uint32_t drawSet = DrawSetBit_Opaque;
-};
-
-} // namespace detail
-
-// Per-view temporal visibility state (Alan Wake 2 style). Deliberately NOT
-// part of RenderView: that struct is HLSL-mirrored (256 bytes,
-// static_asserted), so history lives in this sidecar, parallel to views.
-// prev* is last frame's surviving set (seed source for T3); curr* is this
-// frame's (rotated into prev* by SnapshotVisible, called per frame in T5).
+// Per-view temporal visibility sidecar (Alan Wake 2 style). Deliberately
+// NOT part of RenderView: that struct is HLSL-mirrored (256 bytes,
+// static_asserted), so history lives here, parallel to views. Only the
+// HZB pyramid + contribution gate remain.
 struct TemporalView : tour::visibility::HizViewResources {
     bool historyValid = false;        // false until one full visibility frame lands
     float minimumContribution = 0.0f; // px-area threshold, T4 (0 = disabled)
     uint32_t drawSetMask = DrawSetMask_All;
     uint32_t width = 0, height = 0; // extent the history was built for
-    // The per-flight live pyramid, SPD counter and verify shadow are
-    // inherited from visibility::HizViewResources. Only the GfxFilter
-    // visibility history and draw lists stay in this renderer sidecar.
-    // CPU snapshot (headless-testable; GPU mirror below is uploaded by
-    // UploadVisible into the frameIndex ring slice).
-    std::vector<Batch> prevBatches;        // surviving (cluster, draw) pairs
-    std::vector<Draw> prevDraws;           // draw constants they index into
-    std::vector<MaterialRange> prevRanges; // material buckets over prevBatches
-    uint32_t prevBatchCount = 0;
-    uint32_t prevDrawCount = 0;
-    // Key-sorted (cluster, model) identities (detail::MakeVisKey).
-    // prevKeys mirrors prevBatches whenever historyValid (stamped by
-    // SnapshotVisible); currKeys is this frame's v.batches scratch, gated
-    // by currKeysSerial == View::batchesSerial so a stale sort can never
-    // be merged against mutated batches (hand-built serial 0 never
-    // matches: the memo only holds stamped serials).
-    std::vector<detail::VisKeyEntry> prevKeys;
-    std::vector<detail::VisKeyEntry> currKeys;
-    uint64_t currKeysSerial = UINT64_MAX; // UINT64_MAX = never built
-    // Per-frame seed/remainder build scratch (capacity retained: the
-    // steady-state rebuild allocates nothing). Masks are indexed by the
-    // ORIGINAL batch slots; emitScratch feeds EmitBucketMajor in the
-    // original batch order so (bucket, material) ranges stay coalesced.
-    std::vector<uint8_t> seedMaskScratch;
-    std::vector<uint8_t> remainderMaskScratch;
-    std::vector<uint32_t> batchMaterialScratch;
-    std::vector<detail::EmitEntry> emitScratch;
-    // UploadVisible compaction scratch (prev batch pairs for the ring slice).
-    std::vector<VisibleCluster> visPairScratch;
-    // GPU mirror, ringed per frame in flight (same rule as View buffers:
-    // frames overlap, uploads flush immediately).
-    smvk::Holder<smvk::BufferHandle> visClusterBuffers[smvk::limits::MaxFramesInFlight];
-    smvk::Holder<smvk::BufferHandle> visDrawBuffers[smvk::limits::MaxFramesInFlight];
-    smvk::LogicalBufferHandle visClusterLogicals[smvk::limits::MaxFramesInFlight]{};
-    smvk::LogicalBufferHandle visDrawLogicals[smvk::limits::MaxFramesInFlight]{};
-    // Seed command list (T3): one indirect draw per prevBatch, reordered
-    // bucket-major (opaque runs first) with per-(bucket, material) ranges.
-    // Consumed by the seed depth pass; rebuilt from the snapshot each frame.
-    std::vector<SeedCommand> seedCommands;
-    std::vector<SeedRange> seedRanges;
-    uint32_t seedOpaqueCommands = 0; // leading commands using the opaque PSO
-    smvk::Holder<smvk::BufferHandle> seedIndirectBuffers[smvk::limits::MaxFramesInFlight];
-    smvk::LogicalBufferHandle seedIndirectLogicals[smvk::limits::MaxFramesInFlight]{};
-    // Remainder command list (T5): currVisible minus prevVisible, keyed by
-    // (cluster, model matrix). Drawn by depth pass 2 after the filter so
-    // newly exposed geometry lands in depth (and the HZB refresh) the same
-    // frame it becomes visible — no one-frame holes.
-    std::vector<SeedCommand> remainderCommands;
-    std::vector<SeedRange> remainderRanges;
-    uint32_t remainderOpaqueCommands = 0;
-    smvk::Holder<smvk::BufferHandle> remainderIndirectBuffers[smvk::limits::MaxFramesInFlight];
-    smvk::LogicalBufferHandle remainderIndirectLogicals[smvk::limits::MaxFramesInFlight]{};
-    // RUNTIME per-(view, flight) capacities (the dynamic cutover): the
-    // visDraw ring grows with the draw capacity, the seed/remainder
-    // indirect rings with the candidate capacity (positional commands —
-    // one per candidate slot, GPU-written by gfxbatchcull). visCluster
-    // stays survivor-capped (kMaxBatches — the snapshot holds survivors).
-    // Grow-only, page-planned at FinalizeView alongside the View rings.
-    uint32_t visDrawCapacity[smvk::limits::MaxFramesInFlight] = {};
-    uint32_t seedIndirectCapacity[smvk::limits::MaxFramesInFlight] = {};
-};
-
-// ---------------------------------------------------------------------------
-// CPU-built shadow draw lists (cascade + spot tiles)
-// ---------------------------------------------------------------------------
-
-// Per-view shadow list: one indirect command per surviving (draw x
-// cluster), bucket-major (opaque first, then per-material masked), same
-// recording shape as the seed/remainder lists — but built from THIS
-// frame's candidates with no temporal state and no GPU filter dispatch.
-// The VS (gfxshadowseed*.vert.hlsl) resolves model matrices from the
-// draws ring slice via BDA and the view-projection from the render-view
-// slab, so the pass recording is one multi-draw per range.
-//
-// Threading contract: PushShadowDraw/BuildShadowList are designed to run
-// one view per worker thread (each view owns its vectors; the mesh/
-// cluster tables are read-only during the build; uploads ride the calling
-// thread's staging shard). Claim ALL views for the frame (BeginShadow*)
-// BEFORE dispatching any build: the slot vector must not grow while
-// workers hold element references inside BuildShadowList.
-struct ShadowView {
-    const smvk::RenderView* renderView = nullptr; // frustum planes (RenderViewSet-owned)
-    // Contribution gate (the main camera's view): non-null when the caller
-    // wants the mesh-bound fast discard to drop casters that cannot
-    // contribute to the main view (m_shadowContributionCulling's indirect
-    // twin — the direct fallback path culls at item level).
-    const smvk::RenderView* contributionView = nullptr;
-    CullFlags cullFlags = CullFlagBit_Frustum;
-    uint32_t width = 0, height = 0;
-    uint32_t frameIndex = 0; // set by BuildShadowList
-    // Per-frame CPU state (capacity retained across frames).
-    std::vector<DrawRequest> draws;
-    std::vector<Draw> drawConstants;        // material-sorted GPU mirror
-    std::vector<uint32_t> drawOrderScratch; // material sort permutation
-    std::vector<SeedCommand> commands;
-    std::vector<SeedRange> ranges;
-    uint32_t opaqueCommands = 0;
-    Stats stats{};
-    // Build scratch (parallel to the emit walk; capacity retained).
-    std::vector<detail::EmitEntry> emitScratch;
-    // Ringed per-frame GPU mirrors (draws BDA + indirect commands).
-    smvk::Holder<smvk::BufferHandle> drawBuffers[smvk::limits::MaxFramesInFlight];
-    smvk::Holder<smvk::BufferHandle> indirectBuffers[smvk::limits::MaxFramesInFlight];
-    smvk::LogicalBufferHandle drawLogicals[smvk::limits::MaxFramesInFlight]{};
-    smvk::LogicalBufferHandle indirectLogicals[smvk::limits::MaxFramesInFlight]{};
-    // Runtime per-(view, flight) draw capacity (the dynamic cutover —
-    // grow-only, page-planned at UploadShadowList before the upload; the
-    // indirect ring stays survivor-capped at kMaxBatches, the CPU shadow
-    // path emits only surviving commands).
-    uint32_t drawCapacity[smvk::limits::MaxFramesInFlight] = {};
-    bool buffersReady = false;
 };
 
 struct State : StaticGeometry {
@@ -950,13 +707,7 @@ struct State : StaticGeometry {
     // (gpu_scene_static.h). This render-side half keeps the per-view
     // cull/draw/mesh/Hi-Z state the GPU-scene backends and GfxRenderer
     // still consume.
-    // GPU cull chain (Northlight style, the only path): the CPU seeds
-    // the draw list + candidate slot layout, then GfxBatchCull ->
-    // GfxSeedDepth -> GfxHiz -> GfxDrawCull -> GfxFilter all run GPU-side
-    // with zero mid-pipeline CPU readbacks (the temporal seed/remainder
-    // link stays GPU-resident through the kept-bit parity rings on the
-    // views).
-    uint32_t frameCounter = 0; // BeginFrame ++; keptParity source
+    uint32_t frameCounter = 0; // BeginFrame ++
     // Draw-level texture-demand source (gfxfilter.cs.hlsl
     // PublishDrawDemand; see the FilterPush tail + the demand API below).
     // meshBounds: per-mesh union bound over the mesh's clusters (xyz
@@ -1072,12 +823,6 @@ struct State : StaticGeometry {
     bool hizSpdVerifyArmed = false;  // this frame built both pyramids
     uint64_t hizSpdVerifyFrames = 0; // running compare stats (report)
     uint64_t hizSpdVerifyMismatches = 0;
-    // Task-less mesh path (main-leg opaque only): mesh module + base-lit
-    // twin program { mesh, gfxmesh_lit FS }. Per-flight params blob +
-    // rendergraph aliases (uploaded per mesh dispatch).
-    smvk::Holder<smvk::ShaderModuleHandle> meshModule;
-    smvk::Holder<smvk::ShaderModuleHandle> meshFsModule;
-    smvk::ShaderProgram meshProgram{};
     smvk::Holder<smvk::BufferHandle> meshParamsBuffers[smvk::limits::MaxFramesInFlight];
     smvk::LogicalBufferHandle meshParamsLogicals[smvk::limits::MaxFramesInFlight]{};
     // Compacted eligible batch indices, rewritten per mesh dispatch set
@@ -1092,9 +837,6 @@ struct State : StaticGeometry {
     std::vector<View> views;
     std::vector<TemporalView> temporals; // parallel to views (same slot)
     uint32_t viewCount = 0;
-    std::vector<ShadowView> shadowViews;
-    uint32_t shadowViewCount = 0;
-    uint64_t nextBatchesSerial = 1; // batchesSerial source (0 = hand-built)
 };
 
 // ---------------------------------------------------------------------------
@@ -1109,18 +851,6 @@ inline constexpr const char* kHizCsPath = "content/shaders/hzb.cs.hlsl.spv";
 inline constexpr const char* kHizSpdCsPath = "content/shaders/hzb_spd.cs.hlsl.min.spv";
 inline constexpr const char* kGfxSkinBoundsCsPath = "content/shaders/gfxskinbounds.cs.hlsl.spv";
 inline constexpr const char* kGfxConeDebugCsPath = "content/shaders/gfxcone_debug.cs.hlsl.spv";
-
-// Mesh-bound fast-discard gate for shadow lists (pure CPU, testable):
-// true = discard the whole draw before the per-cluster meshlet loop.
-//   1. the mesh union bound misses the SHADOW view's frustum, or
-//   2. contributionView set + the bound misses it (a caster outside the
-//      caller's contribution volume - the main view swept toward the sun,
-//      see MakeCasterContributionView - cannot shadow it; the indirect-
-//      path twin of the direct fallback's item-level contribution cull).
-bool CullShadowMeshBound(const glm::vec4& meshBound,
-                         const glm::mat4& model,
-                         const smvk::RenderView& shadowView,
-                         const smvk::RenderView* contributionView);
 
 // ---- GPU cull chain pass shells (caller sets the recording func) ----
 // Deformed cluster bounds: runs between the skinning pass and GfxBatchCull.
@@ -1162,11 +892,6 @@ void SetConeDebug(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg, b
 [[nodiscard]] inline smvk::BufferHandle ConeDebugLinesBuffer(const State& s) {
     return s.coneDebugLines; // Holder's implicit handle conversion
 }
-// GPU-mode seed/remainder ranges (positional candidate spans, bucket-major;
-// identical for both passes — the GPU-written instanceCounts gate draws).
-[[nodiscard]] const std::vector<SeedRange>& CullRanges(const State& s, uint32_t view);
-[[nodiscard]] uint32_t CullOpaqueCommands(const State& s, uint32_t view);
-
 bool EnsureShaders(State& s, smvk::ResourceManager& ctx, const char* csPath = kGfxFilterCsPath);
 // Task-less mesh path ring (per-flight 152B params blob + logicals).
 // Best-effort: failure only disables the mesh record (indexed stays).
@@ -1239,16 +964,6 @@ uint32_t BeginView(State& s,
                    CullFlags cullFlags,
                    uint32_t width,
                    uint32_t height);
-// Pure-CPU cluster test (meshoptimizer perspective cone + sphere vs planes).
-// Exported for unit tests; eye must be the camera world position.
-// The normal-cone (backface) and sphere-vs-frustum parts always run. The
-// cone test runs in world space (apex via model, axis via inverse-transpose)
-// so mirrored / non-uniform instances cull the same side the rasterizer keeps.
-bool CullCluster(const Cluster& c,
-                 const glm::mat4& model,
-                 const glm::mat4& invModel,
-                 const glm::vec3& eye,
-                 const smvk::RenderView& renderView);
 // Cone fit result (the object-space fields feed Cluster's cone tail exactly):
 // degenerate = true keeps the keep-cone (axis 0 -> GfxConeCulled's len2 <
 // 1e-12 keep; the value the cluster fields must hold in that case).
@@ -1282,124 +997,6 @@ DeformedConeFit FitDeformedCone(const glm::vec3* triCorners,
     assert(view < s.temporals.size());
     return s.temporals[view];
 }
-// Drops history (first frame, extent drift, camera teleport, quality
-// change). Buffers are kept; the next frame rebuilds from the full path.
-void InvalidateHistory(State& s, uint32_t view);
-// CPU snapshot of this frame's surviving set into the temporal sidecar
-// (overwrites; pure CPU, headless-testable). T5 calls this per frame after
-// FinalizeView; UploadVisible mirrors it to the GPU ring slice.
-void SnapshotVisible(State& s, uint32_t view);
-// Uploads the snapshot (prevBatches as compact VisibleCluster pairs +
-// prevDraws) into the frameIndex ring slice. No-op when empty/unallocated.
-void UploadVisible(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
-// Builds the seed command list from the snapshot intersected with the
-// current view's batches (same cluster + same transform only — a stale
-// prev-LOD sibling or moved instance would otherwise replay nearer depth
-// that the read-only Main fails against; see BuildSeedCommands). One
-// indirect draw per surviving prevBatch, reordered bucket-major (opaque
-// first) with per-(bucket, material) ranges (pure CPU, headless-testable).
-// Bucket comes from each draw's drawSet (set at PushDraw from the material).
-void BuildSeedCommands(State& s, uint32_t view);
-// Fused steady-state path: one sorted-key merge builds BOTH lists (sorts
-// the current batches' (cluster, model) keys once, merges them against
-// the snapshot's cached prevKeys). Output identical to running the two
-// builders back to back; AppendPasses uses this one (pure CPU,
-// headless-testable).
-void BuildSeedAndRemainder(State& s, uint32_t view);
-// Builds the remainder list: current batches minus the snapshot, keyed by
-// (cluster, model matrix), same bucket-major layout (pure CPU,
-// headless-testable). Must run before SnapshotVisible overwrites prev*.
-void BuildRemainderCommands(State& s, uint32_t view);
-// Uploads the seed commands into the frameIndex ring slice. No-op when
-// empty/unallocated.
-void UploadSeed(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
-// Uploads the remainder commands. No-op when empty/unallocated.
-void UploadRemainder(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
-// Depth-seed pass shell over the render-depth target (caller sets the
-// recording func to PushSeedConstants + DrawSeedRange per range).
-smvk::RenderPass& AddSeedPass(State& s,
-                              smvk::RenderGraph& rg,
-                              uint32_t view,
-                              smvk::LogicalImageViewHandle depthLogical);
-// Depth pass 2 shell (T5): draws the remainder list over seeded depth
-// (Load/Store). Same record pattern with the remainder ranges/buffer.
-smvk::RenderPass& AddRemainderPass(State& s,
-                                   smvk::RenderGraph& rg,
-                                   uint32_t view,
-                                   smvk::LogicalImageViewHandle depthLogical);
-// Consume-side barrier helper for the seed depth pass: cluster-ordered
-// index heap + vis draws + seed indirect as vertex-stage reads.
-void AddSeedConsumeHints(smvk::RenderPass& pass,
-                         smvk::LogicalBufferHandle indexLogical,
-                         smvk::LogicalBufferHandle visDrawLogical,
-                         smvk::LogicalBufferHandle seedIndirectLogical);
-
-// ---- CPU-built shadow draw lists (cascade + spot tiles) --------------
-// Resets the per-frame shadow slot cursor (slots persist; buffers are
-// created lazily by BeginShadowView on first claim of each slot).
-void BeginShadowFrame(State& s);
-// Claims the next shadow slot bound to an allocated RenderView (frustum
-// planes). contributionView: the caster contribution volume for the
-// mesh-bound fast discard — for cascade views the main view swept toward
-// the sun (MakeCasterContributionView), null for spot views (their cone
-// planes are exact; null = no contribution culling). Main
-// thread only: the slot vector grows here, so claim every view of the
-// frame before dispatching BuildShadowList tasks. Returns the slot,
-// UINT32_MAX on failure.
-uint32_t BeginShadowView(State& s,
-                         smvk::ResourceManager& ctx,
-                         smvk::RenderGraph& rg,
-                         const smvk::RenderView& renderView,
-                         CullFlags cullFlags,
-                         uint32_t width,
-                         uint32_t height,
-                         const smvk::RenderView* contributionView = nullptr);
-// Pushes one caster candidate (mesh = REGISTERED gfx mesh index from
-// RegisterMeshFrom*; UINT32_MAX casters stay on the caller's direct
-// fallback). Thread-safe per view: distinct slots only, no shared
-// mutable state besides the read-only mesh/cluster tables.
-void PushShadowDraw(State& s,
-                    uint32_t sview,
-                    uint32_t mesh,
-                    const glm::mat4& model,
-                    uint32_t material,
-                    DrawFlags flags = 0,
-                    DrawSetMask drawSet = DrawSetBit_Opaque,
-                    // The resolved material userdata: copied into the shadow ring for
-                    // record consistency but never read by the depth/shadow legs (the
-                    // hooks are color-only by v1 contract — no coverage parity).
-                    uint32_t userData = 0);
-// Sorts the view's draws by material, expands draw x cluster with the
-// per-cluster sphere test against the RenderView planes (the normal-cone
-// test is deliberately skipped: directional cascade views have no valid
-// eye position), emits bucket-major commands (opaque VS-only phase
-// first, then per-material masked ranges). Pure CPU, no GPU access:
-// safe to run one view per worker thread.
-void BuildShadowList(State& s, uint32_t sview);
-// Uploads the built lists into the frameIndex ring slice (draws as VS
-// shader reads, commands as draw-indirect reads), GROWING the draw ring
-// to the frame's exact count first (the dynamic-capacity cutover —
-// page-planned, grow-only; the indirect ring stays survivor-capped).
-// Main thread only: the global buffer sync-state tables are sharded by
-// handle, not by thread, so concurrent uploads on same-shard buffers
-// would race.
-void UploadShadowList(State& s,
-                      smvk::ResourceManager& ctx,
-                      smvk::RenderGraph& rg,
-                      uint32_t frameIndex,
-                      uint32_t sview);
-// Accessors (frame slice resolved from the view's frameIndex, stamped by
-// BuildShadowList).
-[[nodiscard]] const std::vector<SeedRange>& ShadowRanges(const State& s, uint32_t sview);
-[[nodiscard]] uint32_t ShadowOpaqueCommands(const State& s, uint32_t sview);
-[[nodiscard]] smvk::BufferHandle ShadowDrawBuffer(const State& s, uint32_t sview);
-[[nodiscard]] smvk::BufferHandle ShadowIndirectBuffer(const State& s, uint32_t sview);
-[[nodiscard]] smvk::LogicalBufferHandle ShadowDrawLogical(const State& s, uint32_t sview);
-[[nodiscard]] smvk::LogicalBufferHandle ShadowIndirectLogical(const State& s, uint32_t sview);
-// CPU-side draw-constants mirror (diagnostics; the GPU reads the uploaded
-// ring slice).
-[[nodiscard]] const std::vector<Draw>& ShadowDrawConstants(const State& s, uint32_t sview);
-
 // ---- Hierarchical-Z (T2 build, T4 consumer) ----
 bool EnsureHizShaders(State& s, smvk::ResourceManager& ctx, const char* csPath = kHizCsPath);
 // (Re)creates the view's HZB buffer for w/h (frees the old logical).
@@ -1621,50 +1218,6 @@ inline void FillMotionPrevTail(FilteredMotionPrevTail& tail, const State& s) {
 [[nodiscard]] inline uint32_t FilteredIndexBase(const State& s, uint32_t view) {
     assert(view < s.views.size());
     return s.views[view].filteredBase[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::BufferHandle SeedIndirectBuffer(const State& s, uint32_t view) {
-    assert(view < s.temporals.size());
-    return s.temporals[view].seedIndirectBuffers[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle SeedIndirectLogical(const State& s, uint32_t view) {
-    assert(view < s.temporals.size());
-    return s.temporals[view].seedIndirectLogicals[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::BufferHandle VisDrawBuffer(const State& s, uint32_t view) {
-    assert(view < s.temporals.size());
-    return s.temporals[view].visDrawBuffers[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle VisDrawLogical(const State& s, uint32_t view) {
-    assert(view < s.temporals.size());
-    return s.temporals[view].visDrawLogicals[s.views[view].frameIndex];
-}
-[[nodiscard]] inline const std::vector<SeedRange>& SeedRanges(const State& s, uint32_t view) {
-    // The positional candidate ranges (the GPU-written instanceCounts
-    // gate the actual draws; firstInstance indexes the current draws).
-    // Identical list for seed and remainder.
-    assert(view < s.views.size());
-    return s.views[view].cullRanges;
-}
-[[nodiscard]] inline uint32_t SeedOpaqueCommands(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].cullOpaqueCommands;
-}
-[[nodiscard]] inline smvk::BufferHandle RemainderIndirectBuffer(const State& s, uint32_t view) {
-    assert(view < s.temporals.size());
-    return s.temporals[view].remainderIndirectBuffers[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle RemainderIndirectLogical(const State& s,
-                                                                        uint32_t view) {
-    assert(view < s.temporals.size());
-    return s.temporals[view].remainderIndirectLogicals[s.views[view].frameIndex];
-}
-[[nodiscard]] inline const std::vector<SeedRange>& RemainderRanges(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].cullRanges;
-}
-[[nodiscard]] inline uint32_t RemainderOpaqueCommands(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].cullOpaqueCommands;
 }
 [[nodiscard]] inline smvk::LogicalBufferHandle BatchLogical(const State& s, uint32_t view) {
     assert(view < s.views.size());
