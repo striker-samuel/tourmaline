@@ -11,6 +11,7 @@
 // immutable snapshot after topology/compatibility changes. No allocations,
 // GPU work, or legacy draw submissions occur here. A GPU submission can only
 // take ownership after ALL required GPU resources and pass variants are ready.
+#include <Engine/Renderer/gpu_scene_render_route.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 
 #include <algorithm>
@@ -25,14 +26,13 @@ namespace tour::gpu_scene {
 // bounds: the instance/leaf sphere is their union, so frustum rejection
 // remains conservative even if the selector falls back to a coarser LOD.
 // Single-level meshes retain their historical fail-open bound behavior.
-[[nodiscard]] inline bool RasterIndexedInstanceReady(
-    const RenderDatabase& db, Handle<Instance> id) noexcept {
+[[nodiscard]] inline bool RasterIndexedInstanceReady(const RenderDatabase& db,
+                                                     Handle<Instance> id) noexcept {
     const Instance* instance = db.instances.Get(id);
     if (!instance)
         return false;
     const Mesh* mesh = db.meshes.Get({instance->refs.x, instance->refs.y});
-    if (!mesh || mesh->lodCount == 0 || mesh->lodCount > 16 ||
-        mesh->firstLod >= db.lods.Size() ||
+    if (!mesh || mesh->lodCount == 0 || mesh->lodCount > 16 || mesh->firstLod >= db.lods.Size() ||
         mesh->lodCount > db.lods.Size() - mesh->firstLod ||
         (mesh->lodCount > 1 && !(mesh->flags & MeshFlagCompleteBounds)))
         return false;
@@ -49,8 +49,7 @@ namespace tour::gpu_scene {
             return false;
         if (!resident)
             continue;
-        if (!(lod.value.flags & LodFlagFilterable) ||
-            lod.value.submeshCount != 1 ||
+        if (!(lod.value.flags & LodFlagFilterable) || lod.value.submeshCount != 1 ||
             lod.value.firstSubmesh >= db.submeshes.Size())
             return false;
         const auto& submesh = db.submeshes.Rows()[lod.value.firstSubmesh];
@@ -67,6 +66,12 @@ struct RasterOwnershipEntry {
     SourceKey source{};
     // Compatibility is an admission *candidate*, never an ownership grant.
     bool staticOpaqueCompatible = false;
+    // Alpha-mode classification for the single raster backend. Opaque/Mask
+    // route through the indexed/task-mesh PSO bins; Blend routes through the
+    // dedicated sorted transparent pass when transparentReady is set. The
+    // classification is frozen at snapshot publication alongside the opaque
+    // compatibility bit, so the per-frame route never re-reads the material.
+    RasterAlphaMode alphaMode = RasterAlphaMode::Opaque;
 };
 
 class CanonicalRasterOwnership {
@@ -76,15 +81,13 @@ class CanonicalRasterOwnership {
     // WHOLE publication: a partial ownership map cannot be used safely.
     [[nodiscard]] bool Publish(std::span<RasterOwnershipEntry> entries) {
         Reset();
-        const auto less = [](const RasterOwnershipEntry& a,
-                             const RasterOwnershipEntry& b) {
+        const auto less = [](const RasterOwnershipEntry& a, const RasterOwnershipEntry& b) {
             return std::tie(a.source.registration, a.source.slot, a.source.generation) <
                    std::tie(b.source.registration, b.source.slot, b.source.generation);
         };
         std::sort(entries.begin(), entries.end(), less);
         for (size_t i = 0; i < entries.size(); ++i) {
-            if (!entries[i].source.registration ||
-                entries[i].source.slot == InvalidIndex ||
+            if (!entries[i].source.registration || entries[i].source.slot == InvalidIndex ||
                 (i && entries[i - 1].source == entries[i].source))
                 return false;
         }
@@ -96,17 +99,27 @@ class CanonicalRasterOwnership {
     // Called at each flight boundary BEFORE raster preparation. If compute,
     // geometry publication or graphics setup fails, legacy retains every
     // source, including ones that were GPU-owned on an earlier flight.
-    void BeginFrame() noexcept { gpuPrepared_ = false; }
-    void CommitGpuPrepared() noexcept { gpuPrepared_ = valid_; }
+    void BeginFrame() noexcept {
+        gpuPrepared_ = false;
+    }
+    void CommitGpuPrepared() noexcept {
+        gpuPrepared_ = valid_;
+    }
     void Reset() noexcept {
         entries_ = {};
         valid_ = false;
         gpuPrepared_ = false;
     }
 
-    [[nodiscard]] bool Valid() const noexcept { return valid_; }
-    [[nodiscard]] bool GpuActive() const noexcept { return valid_ && gpuPrepared_; }
-    [[nodiscard]] size_t Size() const noexcept { return entries_.size(); }
+    [[nodiscard]] bool Valid() const noexcept {
+        return valid_;
+    }
+    [[nodiscard]] bool GpuActive() const noexcept {
+        return valid_ && gpuPrepared_;
+    }
+    [[nodiscard]] size_t Size() const noexcept {
+        return entries_.size();
+    }
 
     // Unknown/stale sources ALWAYS remain legacy-owned. This deliberately
     // fails closed when a dirty journal has not yet published a new identity.
@@ -127,6 +140,20 @@ class CanonicalRasterOwnership {
     }
     [[nodiscard]] bool OwnsLegacy(SourceKey source) const noexcept {
         return Owner(source) == RasterOwner::Legacy;
+    }
+    // Alpha-mode of a published source, or Opaque for unknown/stale sources.
+    // The transparent backend uses this to route Blend instances to the
+    // sorted pass instead of the legacy transparent leg (single ownership).
+    [[nodiscard]] RasterAlphaMode AlphaModeOf(SourceKey source) const noexcept {
+        if (!GpuActive() || !source.registration)
+            return RasterAlphaMode::Opaque;
+        const auto less = [](const RasterOwnershipEntry& a, const SourceKey& key) {
+            return std::tie(a.source.registration, a.source.slot, a.source.generation) <
+                   std::tie(key.registration, key.slot, key.generation);
+        };
+        const auto it = std::lower_bound(entries_.begin(), entries_.end(), source, less);
+        return it != entries_.end() && it->source == source ? it->alphaMode
+                                                            : RasterAlphaMode::Opaque;
     }
     // Build a per-flight GPU admission mask indexed by persistent instance
     // slots. A value is the CURRENT generation, or zero for legacy-owned

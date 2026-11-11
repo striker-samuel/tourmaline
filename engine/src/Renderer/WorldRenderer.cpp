@@ -11096,6 +11096,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // occupied prefix is a published snapshot. Do not clear or
             // destroy it while a current-frame submission can query it.
             uint32_t compatibleCount = 0;
+            uint32_t transparentCompatibleCount = 0;
             uint32_t doubleSidedCount = 0;
             uint32_t maskedBackCount = 0;
             uint32_t maskedDoubleSidedCount = 0;
@@ -11104,6 +11105,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                 smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
             constexpr uint32_t forbiddenFlags = smvk::IteratorFlagBit_Transparent;
+            // Transparent (AlphaMode::Blend + dithered) admission: same static/
+            // single-surface/material/LOD gates as opaque, but keyed on the
+            // Transparent bit instead of Opaque. Routes through the dedicated
+            // sorted BLEND backend once transparentReady is set (single
+            // ownership — no legacy transparent leg for these instances).
+            constexpr uint32_t requiredTransparentFlags =
+                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Transparent |
+                smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
             // KD tally (parallel to the chain below, never replacing it):
             // count the FIRST rejecting gate group per item - 1 sync,
             // 2 db-ready, 3 flags, 4 material, 5 node/mesh, 6 lod/geometry,
@@ -11118,11 +11127,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 const auto key = m_gpuSceneSync.SourceForNode(item.node);
                 const auto instance = m_gpuSceneSync.Find(key);
                 const auto* mesh = m_world->GetMesh(item.mesh);
-                const bool compatible =
+                const tour::gpu_scene::RasterAlphaMode alphaMode =
+                    (item.flags & smvk::IteratorFlagBit_Transparent)
+                        ? tour::gpu_scene::RasterAlphaMode::Blend
+                    : (item.flags & smvk::IteratorFlagBit_Masked)
+                        ? tour::gpu_scene::RasterAlphaMode::Mask
+                        : tour::gpu_scene::RasterAlphaMode::Opaque;
+                // Flags-independent eligibility (registration, mesh/material
+                // streams, single-surface, no skin/lightmap/LOD gaps). The
+                // alpha-mode bit is checked separately below so one mesh can
+                // admit opaque + masked + blend instances through the SAME
+                // authoritative source — no double bookkeeping.
+                const bool commonEligible =
                     key.registration != 0 && bool(instance) &&
                     tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase, instance) &&
-                    (item.flags & requiredFlags) == requiredFlags &&
-                    (item.flags & forbiddenFlags) == 0 &&
                     item.material != smvk::World::kInvalidIndex &&
                     m_world->GetMaterial(item.material) != nullptr && item.materialInstance == 0 &&
                     m_world->MaterialUserData(item.material) == 0 &&
@@ -11195,8 +11213,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         }
                         return true;
                     }();
-                m_gpuSceneRasterEntries[i] = {key, compatible};
+                const bool compatible = commonEligible &&
+                                        (item.flags & requiredFlags) == requiredFlags &&
+                                        (item.flags & forbiddenFlags) == 0;
+                const bool transparentCompatible =
+                    commonEligible &&
+                    (item.flags & requiredTransparentFlags) == requiredTransparentFlags;
+                m_gpuSceneRasterEntries[i] = {key, compatible, alphaMode};
                 compatibleCount += compatible ? 1u : 0u;
+                transparentCompatibleCount += transparentCompatible ? 1u : 0u;
                 // GPU work carries this per-instance flag, and the
                 // indirect builder emits the work in exactly one fixed PSO
                 // class. Count only admitted sources, never legacy ones.
@@ -11255,6 +11280,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             const bool snapshotValid = m_gpuSceneRasterOwnership.Publish(
                 std::span<tour::gpu_scene::RasterOwnershipEntry>(m_gpuSceneRasterEntries, total));
             m_gpuSceneRasterCompatibleCount = snapshotValid ? compatibleCount : 0u;
+            m_gpuSceneTransparentCompatibleCount = snapshotValid ? transparentCompatibleCount : 0u;
             m_gpuSceneRasterDoubleSidedCount = snapshotValid ? doubleSidedCount : 0u;
             m_gpuSceneRasterMaskedBackCount = snapshotValid ? maskedBackCount : 0u;
             m_gpuSceneRasterMaskedDoubleSidedCount = snapshotValid ? maskedDoubleSidedCount : 0u;
@@ -11285,6 +11311,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     } else {
         m_gpuSceneRasterEligible = false;
         m_gpuSceneRasterCompatibleCount = 0;
+        m_gpuSceneTransparentCompatibleCount = 0;
         m_gpuSceneRasterDoubleSidedCount = 0;
         m_gpuSceneRasterMaskedBackCount = 0;
         m_gpuSceneRasterMaskedDoubleSidedCount = 0;
@@ -12676,12 +12703,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     if (s_gpuSceneRaster && m_gpuSceneRasterDrawActive != m_gpuSceneRasterPreviouslyActive) {
         std::fprintf(stderr,
-                     "[GpuSceneRaster] %s admittedStatic=%u legacySources=%u"
+                     "[GpuSceneRaster] %s admittedStatic=%u transparent=%u legacySources=%u"
                      " candidates/maxCommands=%u (opt-in indexed Main)\n",
                      !m_gpuSceneRasterDrawActive   ? "fallback"
                      : m_gpuSceneRasterLegacyCount ? "mixed"
                                                    : "active",
                      m_gpuSceneRasterDrawActive ? m_gpuSceneRasterCompatibleCount : 0u,
+                     m_gpuSceneRasterDrawActive ? m_gpuSceneTransparentCompatibleCount : 0u,
                      m_gpuSceneRasterDrawActive ? m_gpuSceneRasterLegacyCount : 0u,
                      m_gpuSceneRasterDrawActive ? m_gpuSceneRasterDrawCapacity : 0u);
         m_gpuSceneRasterPreviouslyActive = m_gpuSceneRasterDrawActive;

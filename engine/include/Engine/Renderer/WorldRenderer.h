@@ -2477,6 +2477,10 @@ class WorldRenderer : public IRenderer {
     std::array<uint64_t, smvk::limits::MaxFramesInFlight> m_gpuSceneRasterOwnerMaskGeometryRev{};
 
     uint32_t m_gpuSceneRasterCompatibleCount = 0;
+    // Transparent (AlphaMode::Blend + dithered) instances admitted through
+    // the same source ownership: single-authority classification for the
+    // sorted BLEND backend (see gpu_scene_render_route.h RasterAlphaMode).
+    uint32_t m_gpuSceneTransparentCompatibleCount = 0;
     uint32_t m_gpuSceneRasterDoubleSidedCount = 0;
     uint32_t m_gpuSceneRasterMaskedBackCount = 0;
     uint32_t m_gpuSceneRasterMaskedDoubleSidedCount = 0;
