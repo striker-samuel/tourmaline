@@ -16614,12 +16614,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         !shadingDbg && !vertexLitLevel && MaterialUsesProjectLit(materialId);
                     const bool useDirectLm =
                         !vertexLitLevel && directLmEligible(item.node, item.mesh);
+                    // The GI-aware pick (ProjectLit family + the GI/std
+                    // twins) is MainLitProgramFor; the direct leg must NOT
+                    // hardcode the base mainProgram or it silently drops the
+                    // baked convex-volume GI the transparent leg already
+                    // honors (Sponza parity bug: GI_VOLUMES vs no-GI define).
                     smvk::ShaderProgram& baseProg =
                         shadingDbg       ? m_resources.debugPrograms[size_t(*shadingDbgFs)].direct
                         : vertexLitLevel ? m_resources.vertexLitProgram
-                        : (farSpec && farSpec->main.shaderCount == 2) ? farSpec->main
-                        : itemProjectLit ? m_resources.mainProjectProgram
-                                         : m_resources.mainProgram;
+                        : (farSpec && farSpec->main.shaderCount == 2)
+                            ? farSpec->main
+                            : MainLitProgramFor(materialId);
                     smvk::ShaderProgram& baseA2c =
                         (shadingDbg || vertexLitLevel)               ? noA2CProgram
                         : (farSpec && farSpec->a2c.shaderCount == 2) ? farSpec->a2c
