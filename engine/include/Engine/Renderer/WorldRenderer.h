@@ -2444,6 +2444,29 @@ class WorldRenderer : public IRenderer {
     smvk::ShaderProgram m_gpuSceneRasterMaskedGbufferProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterMaskedA2cFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterMaskedA2cProgram{};
+    // Batched GPU-scene motion vectors: reuses the indexed raster work/
+    // instance/indirect streams with a motion VS + FS. The previous-frame
+    // transforms + camera-relative view are snapshotted at the end of each
+    // frame and uploaded to per-flight buffers (generation-validated, so a
+    // recycled instance slot never ghosts motion).
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneMotionVsModule{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneMotionFsModule{};
+    smvk::ShaderProgram m_gpuSceneMotionProgram{};
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuScenePrevTransformBuffers{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuScenePrevTransformLogicals{};
+    std::array<size_t, smvk::limits::MaxFramesInFlight> m_gpuScenePrevTransformCapacities{};
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuScenePrevViewBuffers{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuScenePrevViewLogicals{};
+    // CPU snapshot of the previous frame's instance transforms + view.
+    tour::gpu_scene::GpuScenePrevTransform* m_prevGpuSceneTransforms = nullptr;
+    size_t m_prevGpuSceneTransformCapacity = 0;
+    uint32_t m_prevGpuSceneTransformCount = 0;
+    tour::gpu_scene::RasterViewData m_prevGpuSceneViewData{};
+    bool m_prevGpuSceneViewValid = false;
     // The validation-only verdict target is a BDA write. Register its
     // per-flight physical buffer with the rendergraph so compute writes are
     // represented in graph synchronization and not just a raw device address.

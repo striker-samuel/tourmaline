@@ -27,8 +27,10 @@ bool DebugImageDumpArmed() {
         const char* evsm = std::getenv("TOURMALINE_EVSM_DUMP");
         const char* fogTile = std::getenv("TOURMALINE_FOG_TILE_DUMP");
         const char* contact = std::getenv("TOURMALINE_CONTACT_SHADOWS_DUMP");
+        const char* motion = std::getenv("TOURMALINE_MOTION_DUMP");
         return (ssr && std::atoi(ssr) >= 0) || (evsm && std::atoi(evsm) >= 0) ||
-               (fogTile && std::atoi(fogTile) >= 0) || (contact && std::atoi(contact) >= 0);
+               (fogTile && std::atoi(fogTile) >= 0) || (contact && std::atoi(contact) >= 0) ||
+               (motion != nullptr);
     }();
     return armed;
 }

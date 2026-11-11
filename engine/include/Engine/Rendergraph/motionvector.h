@@ -64,6 +64,10 @@ struct MotionVectorTarget {
         ci.extent = {targetExtent.width, targetExtent.height, 1};
         ci.format = d.format;
         ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+        // TransferSrc: the TOURMALINE_MOTION_DUMP one-shot readback (armed
+        // dumps only — the normal path keeps the leanest usage set).
+        if (DebugImageDumpArmed())
+            ci.usage |= ImageUsage::TransferSrc;
         ci.mipLevels = 1;
         ci.arrayLayers = 1;
         ci.name = d.name;

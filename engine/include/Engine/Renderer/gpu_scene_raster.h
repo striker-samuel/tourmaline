@@ -27,7 +27,6 @@ inline constexpr uint32_t kRasterPipelineDoubleSided = 1;
 inline constexpr uint32_t kRasterPipelineMasked = 2;
 inline constexpr uint32_t kRasterPipelineMaskedDoubleSided = 3;
 
-
 // Immutable, GPU-addressable indexed-geometry descriptor. One per compatible
 // raster geometry registration; managed separately from per-frame visibility.
 struct alignas(16) IndexedGeometry {
@@ -73,7 +72,7 @@ struct RasterWorkDrawBuildPush {
     uint32_t candidateCount = 0;
     uint32_t geometryCount = 0;
     uint32_t commandCapacity = 0;
-    uint32_t reserved = 0; // per-class command stride (work capacity)
+    uint32_t reserved = 0;        // per-class command stride (work capacity)
     uint64_t geometryAliases = 0; // revision-local ID -> stable descriptor slot
     uint32_t aliasCount = 0;
     uint32_t padding = 0;
@@ -99,6 +98,39 @@ struct RasterVsPush {
 };
 static_assert(sizeof(RasterViewData) == 96);
 static_assert(sizeof(RasterVsPush) == 32);
+
+// Previous-frame instance transform for the batched motion-vector VS.
+// Indexed by PERSISTENT instance slot; generation matches the instance
+// row's identity.x at snapshot time so a recycled slot never ghosts
+// motion. The translation stays DoubleFloat3 (double-precision high/low)
+// so moving objects retain the same camera-relative precision as the
+// current GPU Scene raster path.
+struct alignas(16) GpuScenePrevTransform {
+    tour::math::DoubleFloat3 worldPosition{};
+    glm::vec4 basisX{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec4 basisY{0.0f, 1.0f, 0.0f, 0.0f};
+    glm::vec4 basisZ{0.0f, 0.0f, 1.0f, 0.0f};
+    uint32_t generation = 0;
+    uint32_t pad[3] = {};
+};
+static_assert(sizeof(GpuScenePrevTransform) == 96);
+
+// Batched motion-vector VS push: the RasterVsPush tail extended with the
+// previous-transform buffer, the previous camera-relative view and a
+// validity flag. Reuses the identical work/instance/indirect streams as the
+// lit raster VS, so the motion pass submits the same visibility set.
+struct RasterMotionVsPush {
+    uint64_t work = 0;
+    uint64_t instances = 0;
+    uint64_t view = 0;
+    uint32_t instanceSlots = 0;
+    uint32_t workSlots = 0;
+    uint64_t prevTransforms = 0; // GpuScenePrevTransform[] by slot
+    uint64_t prevView = 0;       // RasterViewData (previous origin + relative VP)
+    uint32_t prevValid = 0;      // 1 = previous history is usable
+    uint32_t pad = 0;
+};
+static_assert(sizeof(RasterMotionVsPush) == 56);
 
 // CPU reference for the GPU seed shader. A work-slot index is NOT a
 // visibility identity; only the persistent instance (slot,generation)
@@ -197,16 +229,14 @@ static_assert(std::is_trivially_copyable_v<RasterIndirectCommand>);
 // CPU oracle for the fixed four-bin GPU indirect builder. A command slot
 // belongs to exactly one bin; firstInstance always denotes the ORIGINAL
 // work index, not the PSO-sorted command index.
-[[nodiscard]] inline RasterIndirectCommand MakeRasterBinnedCommand(
-    const IndexedGeometry& geometry,
-    uint32_t workIndex,
-    uint32_t rasterClass,
-    uint32_t bin) noexcept {
-    if (rasterClass >= kRasterPipelineClassCount || rasterClass != bin ||
-        geometry.indexCount == 0u)
+[[nodiscard]] inline RasterIndirectCommand MakeRasterBinnedCommand(const IndexedGeometry& geometry,
+                                                                   uint32_t workIndex,
+                                                                   uint32_t rasterClass,
+                                                                   uint32_t bin) noexcept {
+    if (rasterClass >= kRasterPipelineClassCount || rasterClass != bin || geometry.indexCount == 0u)
         return EmptyRasterIndirectCommand();
-    return RasterIndirectCommand{geometry.indexCount, 1u, geometry.firstIndex,
-                                 geometry.vertexOffset, workIndex};
+    return RasterIndirectCommand{
+        geometry.indexCount, 1u, geometry.firstIndex, geometry.vertexOffset, workIndex};
 }
 
 [[nodiscard]] inline RasterIndirectCommand MakeRasterCommand(const IndexedGeometry& geometry,

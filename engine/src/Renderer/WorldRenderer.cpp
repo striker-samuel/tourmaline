@@ -10965,6 +10965,32 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
     }
+    // Batched GPU-scene motion vectors: one motion VS + FS program over the
+    // same indexed raster work/instance/indirect streams. Absent = the
+    // direct motion path stays authoritative (silent fallback).
+    if (s_gpuSceneRaster && m_passes.motionVectors && m_gpuSceneMotionProgram.shaderCount != 2) {
+        try {
+            if (m_gpuSceneMotionVsModule.empty())
+                m_gpuSceneMotionVsModule = m_context->CreateShaderModule(
+                    smvk::shaders::Read("content/shaders/gpu_scene_motion.vert.hlsl.spv"),
+                    "gpuSceneMotionVS");
+            if (m_gpuSceneMotionFsModule.empty())
+                m_gpuSceneMotionFsModule = m_context->CreateShaderModule(
+                    smvk::shaders::Read("content/shaders/gpu_scene_motion.frag.hlsl.spv"),
+                    "gpuSceneMotionFS");
+            if (!m_gpuSceneMotionVsModule.empty() && !m_gpuSceneMotionFsModule.empty()) {
+                smvk::Shader vs{.module = m_gpuSceneMotionVsModule,
+                                .entryPoint = "mainVS",
+                                .stage = smvk::ShaderStage::Vertex};
+                smvk::Shader fs{.module = m_gpuSceneMotionFsModule,
+                                .entryPoint = "mainPS",
+                                .stage = smvk::ShaderStage::Fragment};
+                m_gpuSceneMotionProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+            }
+        } catch (...) {
+            // Silent fallback: the direct motion path still covers the frame.
+        }
+    }
     // Explicit experimental cutover. The indexed renderer remains the
     // default and wins automatically when any dependency is unavailable.
     static const bool s_gpuSceneTaskMesh = [] {
@@ -14726,22 +14752,121 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // ---------------------------------------------------------------------
     if (m_passes.motionVectors && m_viewportResources.motionVectors.Valid()) {
         IRenderer::PushConstants motionPC = pc;
-        // Motion vectors are drawn entirely through the DIRECT path: the
-        // retired filtered-motion multi-draw leg (gfxfilteredmotion VS) was
-        // removed with the gfx-filter renderer. Every node re-rasterizes
-        // with the correct prevModel, so coverage matches Main exactly.
+        // Batched GPU-scene motion: reuse the indexed raster work/instance/
+        // indirect streams with the motion VS, so the admitted opaque+MASK
+        // set submits in four indirect draws instead of a per-node walk.
+        // Skinned/legacy/transparent sources stay on the direct path below.
+        // TOURMALINE_GPU_SCENE_MOTION=0 forces the direct motion path (the
+        // A/B lever for validating the batched leg against the reference).
+        static const bool s_gpuSceneMotion = [] {
+            const char* e = std::getenv("TOURMALINE_GPU_SCENE_MOTION");
+            return !e || std::strcmp(e, "0") != 0;
+        }();
+        bool gpuSceneMotionActive = s_gpuSceneMotion && m_gpuSceneMotionProgram.shaderCount == 2 &&
+                                    m_gpuSceneRasterDrawActive &&
+                                    m_gpuSceneRasterDrawCapacity > 0 && m_prevGpuSceneViewValid &&
+                                    m_prevGpuSceneTransformCount > 0;
+        tour::gpu_scene::RasterMotionVsPush motionVsPush{};
+        smvk::BufferHandle motionCommands{};
+        if (gpuSceneMotionActive) {
+            const uint32_t flight = fb.frameIndex;
+            const uint32_t count = m_prevGpuSceneTransformCount;
+            if (m_gpuScenePrevTransformCapacities[flight] < count ||
+                m_gpuScenePrevTransformBuffers[flight].empty()) {
+                auto buf =
+                    m_context->CreateBuffer(count * sizeof(tour::gpu_scene::GpuScenePrevTransform),
+                                            smvk::BufferType_Storage,
+                                            "GPU scene prev transforms");
+                if (!buf.empty()) {
+                    if (!m_gpuScenePrevTransformLogicals[flight].empty())
+                        m_rendergraph->FreeBuffer(m_gpuScenePrevTransformLogicals[flight]);
+                    m_gpuScenePrevTransformBuffers[flight] = std::move(buf);
+                    m_gpuScenePrevTransformLogicals[flight] = m_rendergraph->AddExternalBuffer(
+                        m_gpuScenePrevTransformBuffers[flight], "GPU scene prev transforms");
+                    m_gpuScenePrevTransformCapacities[flight] = count;
+                }
+            }
+            if (m_gpuScenePrevViewBuffers[flight].empty()) {
+                auto buf = m_context->CreateBuffer(sizeof(tour::gpu_scene::RasterViewData),
+                                                   smvk::BufferType_Storage,
+                                                   "GPU scene prev view");
+                if (!buf.empty()) {
+                    m_gpuScenePrevViewBuffers[flight] = std::move(buf);
+                    m_gpuScenePrevViewLogicals[flight] = m_rendergraph->AddExternalBuffer(
+                        m_gpuScenePrevViewBuffers[flight], "GPU scene prev view");
+                }
+            }
+            gpuSceneMotionActive = !m_gpuScenePrevTransformBuffers[flight].empty() &&
+                                   !m_gpuScenePrevViewBuffers[flight].empty();
+            if (gpuSceneMotionActive) {
+                m_context->UploadDataToBuffer(m_gpuScenePrevTransformBuffers[flight],
+                                              m_prevGpuSceneTransforms,
+                                              count *
+                                                  sizeof(tour::gpu_scene::GpuScenePrevTransform),
+                                              smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
+                                              smvk::AccessFlags::ShaderRead);
+                m_context->UploadDataToBuffer(m_gpuScenePrevViewBuffers[flight],
+                                              &m_prevGpuSceneViewData,
+                                              sizeof(tour::gpu_scene::RasterViewData),
+                                              smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
+                                              smvk::AccessFlags::ShaderRead);
+                motionVsPush = tour::gpu_scene::RasterMotionVsPush{
+                    m_gpuSceneRasterWorkBda,
+                    m_gpuSceneUploader.DeviceAddresses(*m_context, flight).instances,
+                    m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
+                    m_gpuSceneDatabase.instances.Size(),
+                    m_gpuSceneRasterDrawCapacity,
+                    m_context->GetBufferDeviceAddress(m_gpuScenePrevTransformBuffers[flight]),
+                    m_context->GetBufferDeviceAddress(m_gpuScenePrevViewBuffers[flight]),
+                    1u,
+                    0u,
+                };
+                motionCommands = m_gpuSceneRasterIndirect;
+            }
+        }
+        {
+            // One-time report: the batched leg is active once the previous
+            // frame's history is snapshotted (frame 2+), and silent-falls
+            // back to the direct path otherwise (first frame, missing
+            // shaders, or TOURMALINE_GPU_SCENE_MOTION=0).
+            static bool s_motionReported = false;
+            if (!s_motionReported && gpuSceneMotionActive) {
+                s_motionReported = true;
+                std::fprintf(stderr,
+                             "[GpuSceneMotion] active: workSlots=%u prevTransforms=%u\n",
+                             motionVsPush.workSlots,
+                             m_prevGpuSceneTransformCount);
+            }
+        }
         auto& motionPass = m_viewportResources.motionVectors.AddMotionVectorPass(
             *m_rendergraph,
             m_viewportResources.renderDepth.logicalView,
             m_viewportResources.motionVectors.target.logicalView,
             renderExtent,
             "MotionVectors");
+        // The batched leg reads the previous-transform + previous-view
+        // buffers (vertex stage) alongside the shared raster streams.
+        if (gpuSceneMotionActive) {
+            smvk::BufferSyncRequest vertRead{};
+            vertRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+            vertRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+            motionPass.AddBufferHint(m_gpuScenePrevTransformLogicals[fb.frameIndex], vertRead);
+            motionPass.AddBufferHint(m_gpuScenePrevViewLogicals[fb.frameIndex], vertRead);
+        }
         motionPass.SetRecordingFunc([this,
                                      motionPC,
+                                     gpuSceneMotionActive,
+                                     motionVsPush,
+                                     motionCommands,
                                      renderViewsAddress,
                                      mainRenderView,
                                      frameUniformsAddress,
-                                     liveMainCullView](smvk::CommandBuffer& cmd) {
+                                     liveMainCullView,
+                                     motionRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0,
+                                     motionRasterMasked = m_gpuSceneRasterMaskedBackCount != 0,
+                                     motionRasterMaskedTwoSided =
+                                         m_gpuSceneRasterMaskedDoubleSidedCount !=
+                                         0](smvk::CommandBuffer& cmd) {
             // GPU context + pass scope come from RenderGraph::Execute.
             // 1x depth stays read-only in both phases (prepass owns it).
             const smvk::DepthSettings motionDepth{
@@ -14749,6 +14874,56 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 .writeEnable = false,
                 .depthTestEnable = true,
             };
+            // ---- Batched GPU-scene motion: four indirect bins over the
+            // admitted opaque+MASK set, depth-tested read-only against the
+            // prepass. MASK alpha-test rides the FS via the per-instance
+            // material id varying, so no separate masked program is needed.
+            if (gpuSceneMotionActive && !motionCommands.empty()) {
+                cmd.BindStaticVertexFmt();
+                const auto bindMotion = [&](smvk::CullMode cull) {
+                    cmd.BindRenderPipeline(m_gpuSceneMotionProgram,
+                                           smvk::VertexLayoutId::Static,
+                                           motionDepth,
+                                           smvk::StencilSettings{},
+                                           smvk::BlendSettings::Opaque(),
+                                           smvk::MSAASettings::Count1(),
+                                           smvk::RasterSettings{.cullMode = cull});
+                    cmd.PushConstants(
+                        0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
+                    cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
+                                      sizeof(motionVsPush),
+                                      &motionVsPush,
+                                      smvk::ShaderStage::All);
+                };
+                const uint32_t binStride =
+                    motionVsPush.workSlots / tour::gpu_scene::kRasterPipelineClassCount;
+                constexpr uint32_t kChunk = 65535;
+                const auto drawMotionBin = [&](uint32_t bin) {
+                    const uint32_t base = bin * binStride;
+                    for (uint32_t first = 0; first < binStride; first += kChunk) {
+                        const uint32_t count = std::min(kChunk, binStride - first);
+                        cmd.DrawIndexedIndirect(motionCommands,
+                                                uint64_t(base + first) *
+                                                    sizeof(tour::gpu_scene::RasterIndirectCommand),
+                                                count,
+                                                sizeof(tour::gpu_scene::RasterIndirectCommand));
+                    }
+                };
+                bindMotion(smvk::CullMode::Back);
+                drawMotionBin(0u);
+                if (motionRasterTwoSided) {
+                    bindMotion(smvk::CullMode::None);
+                    drawMotionBin(1u);
+                }
+                if (motionRasterMasked) {
+                    bindMotion(smvk::CullMode::Back);
+                    drawMotionBin(2u);
+                }
+                if (motionRasterMaskedTwoSided) {
+                    bindMotion(smvk::CullMode::None);
+                    drawMotionBin(3u);
+                }
+            }
             // Phase 2 masked pipeline: cull follows the material raster so
             // motion coverage matches Main (double-sided materials carry
             // Cull None — the material pipeline's; cutout backface cull
@@ -14790,6 +14965,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             };
             auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
                 if (item.material == smvk::World::kInvalidIndex)
+                    return;
+                // GPU-owned static opaque + MASK sources are submitted by the
+                // batched indirect leg above; skip them here so motion is
+                // drawn exactly once. Skinned/legacy/transparent stay direct.
+                if (gpuSceneMotionActive &&
+                    m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
                     return;
                 if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
                     return;
@@ -19553,6 +19734,67 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     m_prevViewProjValid = true;
     m_prevJitterUV = m_currJitterUV;
     m_prevGlobalTransforms.Assign(m_world->scene.globalTransform);
+    // Batched GPU-scene motion history: snapshot the persistent instance
+    // transforms (double-precision translation + basis + generation) and
+    // the camera-relative view for the next frame's motion VS. The
+    // translation stays DoubleFloat3 so moving objects keep the same
+    // camera-relative precision as the current raster path.
+    if (m_gpuSceneDatabaseReady) {
+        const uint32_t count = m_gpuSceneDatabase.instances.Size();
+        if (count > m_prevGpuSceneTransformCapacity) {
+            m_prevGpuSceneTransforms = static_cast<tour::gpu_scene::GpuScenePrevTransform*>(
+                smvk::AppArena().Allocate(count * sizeof(tour::gpu_scene::GpuScenePrevTransform),
+                                          alignof(tour::gpu_scene::GpuScenePrevTransform)));
+            std::uninitialized_value_construct_n(m_prevGpuSceneTransforms, count);
+            m_prevGpuSceneTransformCapacity = count;
+        }
+        const auto& rows = m_gpuSceneDatabase.instances.Rows();
+        for (uint32_t s = 0; s < count; ++s) {
+            const auto& row = rows[s];
+            if (row.identity.y == 1u) {
+                m_prevGpuSceneTransforms[s].worldPosition = row.value.worldPosition;
+                m_prevGpuSceneTransforms[s].basisX = row.value.basisX;
+                m_prevGpuSceneTransforms[s].basisY = row.value.basisY;
+                m_prevGpuSceneTransforms[s].basisZ = row.value.basisZ;
+                m_prevGpuSceneTransforms[s].generation = row.identity.x;
+            } else {
+                m_prevGpuSceneTransforms[s].generation = 0u; // invalid slot
+            }
+        }
+        m_prevGpuSceneTransformCount = count;
+        // Camera-relative view (same construction as RasterViewPublisher).
+        glm::dmat4 translated(1.0);
+        translated[3] = glm::dvec4(m_cameraPositioner.cameraPosition_, 1.0);
+        m_prevGpuSceneViewData.relativeViewProjection =
+            glm::mat4(glm::dmat4(frameData.viewProj) * translated);
+        m_prevGpuSceneViewData.origin =
+            tour::math::SplitDoubleFloat(glm::dvec3(m_cameraPositioner.cameraPosition_));
+        m_prevGpuSceneViewValid = true;
+    }
+    // One-shot motion-vector validation dump (TOURMALINE_MOTION_DUMP=path):
+    // writes the RG16F motion target to a raw file so the batched and
+    // direct motion paths can be compared byte-for-byte, independent of the
+    // final color. Dev tool, inert unless armed.
+    if (const char* dumpPath = std::getenv("TOURMALINE_MOTION_DUMP")) {
+        const auto& mv = m_viewportResources.motionVectors.target;
+        if (mv.Valid() && mv.extent.width != 0 && mv.extent.height != 0) {
+            const size_t bytes = (size_t)mv.extent.width * mv.extent.height * 4u;
+            std::vector<uint8_t> px(bytes);
+            if (m_context->DownloadDataFromImage(
+                    mv.image, smvk::ImageLayout::ShaderReadOnlyOptimal, px.data(), bytes)) {
+                std::ofstream out(dumpPath, std::ios::binary);
+                out.write(reinterpret_cast<const char*>(px.data()), (std::streamsize)bytes);
+                std::fprintf(stderr,
+                             "[MotionDump] wrote %s (%ux%u, %zu bytes)\n",
+                             dumpPath,
+                             mv.extent.width,
+                             mv.extent.height,
+                             bytes);
+            } else {
+                std::fprintf(stderr, "[MotionDump] readback failed\n");
+            }
+        }
+    }
     // SMAA T2x global toggle: the neighborhood pass wrote
     // history[parity] during Execute (when the T2x chain ran), so the
     // next record blends against this one. A non-T2x record freezes
