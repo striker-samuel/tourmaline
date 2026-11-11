@@ -6,6 +6,7 @@
 #include <Engine/Memory/memory.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/smvk.h>
 // The per-builder hot-reload swap helper (SwapShaderModule): every
 // rendergraph builder includes this header, so the consumer leg's
@@ -34,7 +35,7 @@ struct CommandBuffer final {
                   void* primitiveCountOpaque = nullptr);
     void BindRenderPipeline(
         ShaderProgram& shaderProgram,
-        VertexLayoutId vertexFormat = VertexLayoutId::Empty,
+        const VertexLayoutDesc& vertexFormat = {},
         const DepthSettings& depthSettings = DepthSettings::DepthTest(),
         const StencilSettings& stencilSettings = StencilSettings::DefaultDisabled(),
         const BlendSettings& blendSettings = BlendSettings::Opaque(),
@@ -163,7 +164,7 @@ struct CommandBuffer final {
     void BindStaticVertexFmt();
 
     // Binds an arbitrary RHI buffer as vertex binding N (pos-only debug
-    // streams use binding 0 with VertexLayoutId::DebugLine).
+    // streams use binding 0 with tour::vertex_layouts::DebugLine).
     void BindVertexBuffer(BufferHandle buffer, uint32_t binding = 0, uint64_t offset = 0);
 
     // Access native VkCommandBuffer for integrations like ImGui.
@@ -203,7 +204,7 @@ struct CommandBuffer final {
     // skip the lookup and the vkCmdBind* re-issue entirely.
     bool graphicsBound_ = false;
     ShaderProgram boundProgram_{};
-    VertexLayoutId boundVertexFormat_ = VertexLayoutId::Empty;
+    VertexLayoutDesc boundVertexFormat_{};
     DepthSettings boundDepth_{};
     StencilSettings boundStencil_{};
     BlendSettings boundBlend_{};
