@@ -179,8 +179,8 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
         smvk::ShaderProgram& prog =
             m_lmExportUv ? FlatUvCoordProgram() : FlatUvProgram(ViewMode::FlatUv1);
         const smvk::VertexLayoutDesc& fmt =
-            HasDrawItems() ? tour::vertex_layouts::Static : tour::vertex_layouts::Empty;
-        if (&fmt == &tour::vertex_layouts::Static)
+            HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
+        if (&fmt == &::tour::vertex_layouts::Static)
             cmd.BindStaticVertexFmt();
         cmd.BindRenderPipeline(prog,
                                fmt,
@@ -220,7 +220,7 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
         if (!drawWires || m_lmExportLines.empty() || m_lmExportLinesCount == 0)
             return;
         cmd.BindRenderPipeline(m_lineProgram,
-                               tour::vertex_layouts::DebugLine,
+                               ::tour::vertex_layouts::DebugLine,
                                smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                    .writeEnable = false,
                                                    .depthTestEnable = true},

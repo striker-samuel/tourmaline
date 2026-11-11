@@ -265,7 +265,7 @@ bool World2DRenderer::AppendPass(smvk::ResourceManager& ctx,
     pass.SetRecordingFunc([runs = std::move(runs), pages = std::move(pages), push, program](
                               smvk::CommandBuffer& cmd) mutable {
         cmd.BindRenderPipeline(program,
-                               tour::vertex_layouts::Empty,
+                               ::tour::vertex_layouts::Empty,
                                smvk::DepthSettings::Disabled(),
                                smvk::StencilSettings::DefaultDisabled(),
                                smvk::BlendSettings::AlphaBlend(),

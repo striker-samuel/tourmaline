@@ -440,7 +440,7 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
             continue;
         cmd.BindIndexBuffer(indexBuffers[l], 0);
         cmd.BindRenderPipeline(program,
-                               tour::vertex_layouts::TerrainFull,
+                               ::tour::vertex_layouts::TerrainFull,
                                depth,
                                stencil,
                                blend,
@@ -459,7 +459,7 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
         cmd.BindVertexBuffer(farVertexBuffer, 0, 0);
         cmd.BindIndexBuffer(farIndexBuffer, 0);
         cmd.BindRenderPipeline(farProgram,
-                               tour::vertex_layouts::TerrainFarGrid,
+                               ::tour::vertex_layouts::TerrainFarGrid,
                                depth,
                                stencil,
                                blend,

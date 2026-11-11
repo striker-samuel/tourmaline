@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include <iostream>
 #include <Engine/Renderer/vertex_layouts.h>
+#include <iostream>
 
 #include <Engine/Renderer/dxc_integration.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -127,7 +127,7 @@ class TriangleApp : public smvk::App {
                       smvk::AttachmentStoreOp::Store,
                       smvk::ClearColor(0, 0, 0, 1))
             .SetRecordingFunc([this](smvk::CommandBuffer& cmd) { // recording
-                cmd.BindRenderPipeline(m_program, tour::vertex_layouts::Empty);
+                cmd.BindRenderPipeline(m_program, ::tour::vertex_layouts::Empty);
                 cmd.Draw(3, // vertex count
                          1, // instance count
                          0, // first vertex

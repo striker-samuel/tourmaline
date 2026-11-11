@@ -31,8 +31,8 @@
 // precedent. CI-excluded like world_fields_gpu_tests (hosted runners
 // lack a display/ICD); plain local ctest runs it on a real GPU.
 
-#include <algorithm>
 #include <Engine/Renderer/vertex_layouts.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -2520,7 +2520,7 @@ int main() {
             draw.SetRecordingFunc([tail, indirectBuf, program](smvk::CommandBuffer& cmd) {
                 cmd.BindStaticVertexFmt();
                 cmd.BindRenderPipeline(*program,
-                                       tour::vertex_layouts::Static,
+                                       ::tour::vertex_layouts::Static,
                                        smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
                                                            .writeEnable = false,
                                                            .depthTestEnable = false},

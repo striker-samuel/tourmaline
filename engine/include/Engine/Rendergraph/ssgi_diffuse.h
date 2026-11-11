@@ -872,7 +872,7 @@ struct ScreenSpaceDiffuseGi {
             ShaderProgram progCopy = copyProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -917,7 +917,7 @@ struct ScreenSpaceDiffuseGi {
             ShaderProgram progCopy = blurProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -969,7 +969,7 @@ struct ScreenSpaceDiffuseGi {
             ShaderProgram progCopy = temporalProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -1041,7 +1041,7 @@ struct ScreenSpaceDiffuseGi {
             ShaderProgram progCopy = composeProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -1073,7 +1073,7 @@ struct ScreenSpaceDiffuseGi {
             ShaderProgram progCopy = prevProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),

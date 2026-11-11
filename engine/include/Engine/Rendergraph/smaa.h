@@ -621,7 +621,7 @@ struct Smaa {
             ShaderProgram progCopy = edgeProgram;
             pass.SetRecordingFunc([progCopy, edgePush](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -658,7 +658,7 @@ struct Smaa {
             ShaderProgram progCopy = weightsProgram;
             pass.SetRecordingFunc([progCopy, weightsPush](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -697,7 +697,7 @@ struct Smaa {
             ShaderProgram progCopy = nbProgram;
             pass.SetRecordingFunc([progCopy, nbPush](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -726,7 +726,7 @@ struct Smaa {
             ShaderProgram progCopy = resolveProgram;
             pass.SetRecordingFunc([progCopy, resolvePush](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),

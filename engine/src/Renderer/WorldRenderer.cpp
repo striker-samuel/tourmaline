@@ -8636,7 +8636,7 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
         if (cull == boundShadowMaskedCull)
             return;
         cmd.BindRenderPipeline(m_resources.shadowMaskedProgram,
-                               smvk::VertexLayoutId::Static,
+                               ::tour::vertex_layouts::Static,
                                smvk::DepthSettings{.depthFunc = smvk::CompareOp::LessEqual,
                                                    .writeEnable = true,
                                                    .depthTestEnable = true,
@@ -8758,7 +8758,7 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
     // 2 below keeps material-following cull (foliage
     // has no back face to render).
     cmd.BindRenderPipeline(opaqueProgram,
-                           smvk::VertexLayoutId::Static,
+                           ::tour::vertex_layouts::Static,
                            smvk::DepthSettings{.depthFunc = smvk::CompareOp::LessEqual,
                                                .writeEnable = true,
                                                .depthTestEnable = true,
@@ -8797,7 +8797,7 @@ void WorldRenderer::RecordVolumetricShadowCasters(smvk::CommandBuffer& cmd,
     // by design and the ortho rasterizer clips) - the plan's
     // "CPU-built caster list is acceptable".
     cmd.BindRenderPipeline(opaqueProgram,
-                           smvk::VertexLayoutId::Static,
+                           ::tour::vertex_layouts::Static,
                            smvk::DepthSettings{.depthFunc = smvk::CompareOp::LessEqual,
                                                .writeEnable = true,
                                                .depthTestEnable = true,
@@ -15079,7 +15079,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 cmd.BindStaticVertexFmt();
                 const auto bindMotion = [&](smvk::CullMode cull) {
                     cmd.BindRenderPipeline(m_gpuSceneMotionProgram,
-                                           smvk::VertexLayoutId::Static,
+                                           ::tour::vertex_layouts::Static,
                                            motionDepth,
                                            smvk::StencilSettings{},
                                            smvk::BlendSettings::Opaque(),
@@ -15131,7 +15131,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 if (cull == boundMotionMaskedCull)
                     return;
                 cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
-                                       smvk::VertexLayoutId::Static,
+                                       ::tour::vertex_layouts::Static,
                                        motionDepth,
                                        smvk::StencilSettings{},
                                        smvk::BlendSettings::Opaque(),
@@ -15150,7 +15150,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 if (cull == boundMotionSolidCull)
                     return;
                 cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
-                                       smvk::VertexLayoutId::Static,
+                                       ::tour::vertex_layouts::Static,
                                        motionDepth,
                                        smvk::StencilSettings{},
                                        smvk::BlendSettings::Opaque(),
@@ -15248,7 +15248,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // coverage matches Main exactly; this bind is just the
             // pre-walk state, the first item rebinds through the tracker).
             cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
-                                   smvk::VertexLayoutId::Static,
+                                   ::tour::vertex_layouts::Static,
                                    motionDepth,
                                    smvk::StencilSettings{},
                                    smvk::BlendSettings::Opaque(),
@@ -15315,7 +15315,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         });
                 };
                 cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
-                                       smvk::VertexLayoutId::Static,
+                                       ::tour::vertex_layouts::Static,
                                        motionDepth,
                                        smvk::StencilSettings{},
                                        smvk::BlendSettings::Opaque(),
@@ -16106,7 +16106,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // wireTwinOf swaps the lit/filtered/vertex-lit FS for the flat
             // line FS while P is on (binds the twin, tracks the original).
             cmd.BindRenderPipeline(wireTwinOf(bound),
-                                   smvk::VertexLayoutId::Static,
+                                   ::tour::vertex_layouts::Static,
                                    depth,
                                    noStencil,
                                    blend,
@@ -16126,7 +16126,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // same pass that resolves.
         if (m_passes.skydome && m_skyEnabled && m_skydome.ShadersValid()) {
             cmd.BindRenderPipeline(m_skydome.program,
-                                   smvk::VertexLayoutId::Empty,
+                                   ::tour::vertex_layouts::Empty,
                                    smvk::DepthSettings::Disabled(),
                                    noStencil,
                                    smvk::BlendSettings::Opaque(),
@@ -16165,7 +16165,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             auto& rt = *m_gpuPlacementRuntime;
             cmd.BindStaticVertexFmt();
             cmd.BindRenderPipeline(m_gpuPlacementDraw->program,
-                                   smvk::VertexLayoutId::Static,
+                                   ::tour::vertex_layouts::Static,
                                    opaqueDepth,
                                    noStencil,
                                    smvk::BlendSettings::Opaque(),
@@ -16202,7 +16202,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             auto& mp = m_viewportResources.meshParticles;
             cmd.BindStaticVertexFmt();
             cmd.BindRenderPipeline(m_meshParticleDraw.program,
-                                   smvk::VertexLayoutId::Static,
+                                   ::tour::vertex_layouts::Static,
                                    opaqueDepth,
                                    noStencil,
                                    smvk::BlendSettings::Opaque(),
@@ -16226,7 +16226,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         cmd.BindRenderPipeline(
             // Initial bind: the flat-line twin of main while P is on.
             wireTwinOf(m_resources.mainProgram),
-            smvk::VertexLayoutId::Static,
+            ::tour::vertex_layouts::Static,
             opaqueDepth,
             noStencil,
             smvk::BlendSettings::Opaque(),
@@ -16248,7 +16248,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                          smvk::CullMode cull,
                                          const smvk::MSAASettings& msaa) {
                 cmd.BindRenderPipeline(program,
-                                       smvk::VertexLayoutId::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        opaqueDepth,
                                        noStencil,
                                        smvk::BlendSettings::Opaque(),
@@ -16301,7 +16301,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                         : m_gpuSceneRasterGiPrograms[sceneGiVariant];
             cmd.BindStaticVertexFmt();
             cmd.BindRenderPipeline(sceneIndexedLit,
-                                   smvk::VertexLayoutId::Static,
+                                   ::tour::vertex_layouts::Static,
                                    opaqueDepth,
                                    noStencil,
                                    smvk::BlendSettings::Opaque(),
@@ -16355,7 +16355,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             if (sceneRasterTwoSided) {
                 // One extra PSO bind for the entire class, never per object.
                 cmd.BindRenderPipeline(sceneIndexedLit,
-                                       smvk::VertexLayoutId::Static,
+                                       ::tour::vertex_layouts::Static,
                                        opaqueDepth,
                                        noStencil,
                                        smvk::BlendSettings::Opaque(),
@@ -16379,7 +16379,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 sceneMaskedA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
             if (sceneRasterMasked) {
                 cmd.BindRenderPipeline(sceneMaskedProgram,
-                                       smvk::VertexLayoutId::Static,
+                                       ::tour::vertex_layouts::Static,
                                        opaqueDepth,
                                        noStencil,
                                        smvk::BlendSettings::Opaque(),
@@ -16389,7 +16389,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
             if (sceneRasterMaskedTwoSided) {
                 cmd.BindRenderPipeline(sceneMaskedProgram,
-                                       smvk::VertexLayoutId::Static,
+                                       ::tour::vertex_layouts::Static,
                                        opaqueDepth,
                                        noStencil,
                                        smvk::BlendSettings::Opaque(),
@@ -16521,7 +16521,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         if (meshletDbg && m_gpuSceneTaskDebugProgram.shaderCount != 3) {
             cmd.BindRenderPipeline(
                 m_gfxRenderer.MeshDebugProgram(),
-                smvk::VertexLayoutId::Static,
+                ::tour::vertex_layouts::Static,
                 opaqueDepth,
                 noStencil,
                 smvk::BlendSettings::Opaque(),
@@ -16625,7 +16625,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         if (lodDbg && m_gpuSceneTaskDebugProgram.shaderCount != 3) {
             cmd.BindRenderPipeline(
                 m_gfxRenderer.MeshDebugProgram(),
-                smvk::VertexLayoutId::Static,
+                ::tour::vertex_layouts::Static,
                 opaqueDepth,
                 noStencil,
                 smvk::BlendSettings::Opaque(),
@@ -16895,7 +16895,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     if (d.materialId != boundMaterial) {
                         cmd.BindRenderPipeline(
                             m_gfxRenderer.MeshDebugProgram(),
-                            smvk::VertexLayoutId::Static,
+                            ::tour::vertex_layouts::Static,
                             opaqueDepth,
                             noStencil,
                             smvk::BlendSettings::Opaque(),
@@ -16968,7 +16968,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 raster = mat->pipeline.raster;
                             }
                             cmd.BindRenderPipeline(wireTwinOf(m_resources.vertexLitProgram),
-                                                   smvk::VertexLayoutId::Static,
+                                                   ::tour::vertex_layouts::Static,
                                                    opaqueDepth,
                                                    noStencil,
                                                    opaqueBlend,
@@ -17013,7 +17013,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 raster = mat->pipeline.raster;
                             }
                             cmd.BindRenderPipeline(wireTwinOf(farSpecTrans->main),
-                                                   smvk::VertexLayoutId::Static,
+                                                   ::tour::vertex_layouts::Static,
                                                    opaqueDepth,
                                                    noStencil,
                                                    opaqueBlend,
@@ -17063,7 +17063,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             raster = mat->pipeline.raster;
                         }
                         cmd.BindRenderPipeline(wireTwinOf(*prog),
-                                               smvk::VertexLayoutId::Static,
+                                               ::tour::vertex_layouts::Static,
                                                opaqueDepth,
                                                noStencil,
                                                opaqueBlend,
@@ -17104,7 +17104,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         if (m_debugCones && coneLineVerts > 0 && smvk::gfx::ConeDebugReady(m_gfxRenderer.State()) &&
             m_gfxRenderer.DebugProgramsValid()) {
             cmd.BindRenderPipeline(m_gfxRenderer.LineProgram(),
-                                   smvk::VertexLayoutId::DebugLine,
+                                   ::tour::vertex_layouts::DebugLine,
                                    transparentDepth,
                                    noStencil,
                                    smvk::BlendSettings::Opaque(),
@@ -17137,7 +17137,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 const bool tested = r.depth == tour::DebugDepthMode::Tested;
                 cmd.BindRenderPipeline(
                     m_gfxRenderer.LineProgram(),
-                    smvk::VertexLayoutId::DebugLine,
+                    ::tour::vertex_layouts::DebugLine,
                     tested ? transparentDepth
                            : smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
                                                  .writeEnable = false,
@@ -17163,7 +17163,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // even when the selected mesh is behind other geometry.
         if (selectionLineVerts && !m_selectionLineBuffer.empty()) {
             cmd.BindRenderPipeline(m_gfxRenderer.LineProgram(),
-                                   smvk::VertexLayoutId::DebugLine,
+                                   ::tour::vertex_layouts::DebugLine,
                                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
                                                        .writeEnable = false,
                                                        .depthTestEnable = false},
@@ -17346,7 +17346,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         drawPush.maxParticles = PARTICLE_MAX;
         particlePass.SetRecordingFunc([this, drawPush](smvk::CommandBuffer& cmd) {
             cmd.BindRenderPipeline(m_viewportResources.particles.drawProgram,
-                                   smvk::VertexLayoutId::Empty,
+                                   ::tour::vertex_layouts::Empty,
                                    smvk::DepthSettings{
                                        .depthFunc = smvk::CompareOp::GreaterEqual,
                                        .writeEnable = false,
@@ -17375,7 +17375,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         dustPush.renderMode = 1;
         dustPass.SetRecordingFunc([this, dustPush](smvk::CommandBuffer& cmd) {
             cmd.BindRenderPipeline(m_viewportResources.particles.drawProgram,
-                                   smvk::VertexLayoutId::Empty,
+                                   ::tour::vertex_layouts::Empty,
                                    smvk::DepthSettings{
                                        .depthFunc = smvk::CompareOp::GreaterEqual,
                                        .writeEnable = false,
@@ -18113,7 +18113,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             [progCopy, push](smvk::CommandBuffer& cmd) mutable {
                                 cmd.BindRenderPipeline(
                                     progCopy,
-                                    smvk::VertexLayoutId::Empty,
+                                    ::tour::vertex_layouts::Empty,
                                     smvk::DepthSettings::Disabled(),
                                     smvk::StencilSettings::DefaultDisabled(),
                                     smvk::BlendSettings::Opaque(),
@@ -18206,7 +18206,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                                  smvk::CommandBuffer& cmd) mutable {
                                 cmd.BindRenderPipeline(
                                     progCopy,
-                                    smvk::VertexLayoutId::Empty,
+                                    ::tour::vertex_layouts::Empty,
                                     smvk::DepthSettings::Disabled(),
                                     smvk::StencilSettings::DefaultDisabled(),
                                     smvk::BlendSettings::Opaque(),

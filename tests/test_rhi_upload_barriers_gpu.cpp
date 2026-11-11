@@ -40,8 +40,8 @@
 // swapchain + heap-allocated graph). CI-excluded like the other GPU
 // tests (hosted runners lack a display/ICD).
 
-#include <cstdio>
 #include <Engine/Renderer/vertex_layouts.h>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -273,7 +273,7 @@ int main() {
             draw.SetRecordingFunc([cmd, idx, prog](smvk::CommandBuffer& c) {
                 c.BindIndexBuffer(idx, 0);
                 c.BindRenderPipeline(*prog,
-                                     tour::vertex_layouts::Empty,
+                                     ::tour::vertex_layouts::Empty,
                                      smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
                                                          .writeEnable = false,
                                                          .depthTestEnable = false},

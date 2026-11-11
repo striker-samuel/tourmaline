@@ -25,8 +25,8 @@
 // The app owns GPU buffers and LOD/material resolution. Placement stays
 // World-free; Scene is never touched.
 
-#include <cmath>
 #include <Engine/Renderer/vertex_layouts.h>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -80,7 +80,7 @@ inline constexpr const char* kPlacementUnlitPsPath =
 //
 // Per (tile, proto) draw, inside a color-attachment pass:
 //   cmd.BindStaticVertexFmt();          // the monoblock index binding
-//   cmd.BindRenderPipeline(program, tour::vertex_layouts::Static,
+//   cmd.BindRenderPipeline(program, ::tour::vertex_layouts::Static,
 //       DepthSettings{ .depthFunc = CompareOp::GreaterEqual,
 //                      .writeEnable = true, .depthTestEnable = true },
 //       StencilSettings{}, BlendSettings{}, MSAASettings{},

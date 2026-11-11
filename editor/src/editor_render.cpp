@@ -1123,8 +1123,8 @@ void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd,
             stack.push_back(uint32_t(c));
     }
     const smvk::VertexLayoutDesc& fmt =
-        HasDrawItems() ? tour::vertex_layouts::Static : tour::vertex_layouts::Empty;
-    if (&fmt == &tour::vertex_layouts::Static)
+        HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
+    if (&fmt == &::tour::vertex_layouts::Static)
         cmd.BindStaticVertexFmt();
     cmd.BindRenderPipeline(prog,
                            fmt,
@@ -1342,7 +1342,7 @@ void EditorApp::BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
 			// Wires: depth-tested over the fill (z=1 vs the fill's 0.9999).
 			if (wc > 0) {
 				cmd.BindRenderPipeline(m_lineProgram,
-					tour::vertex_layouts::DebugLine,
+					::tour::vertex_layouts::DebugLine,
 					// Reversed-Z: GreaterEqual = closer-or-equal passes.
 					smvk::DepthSettings{
 						.depthFunc = smvk::CompareOp::GreaterEqual,
@@ -1361,7 +1361,7 @@ void EditorApp::BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
 			// Highlight: face loop (yellow) or vertex cross (cyan), on top.
 			if (hc > 0) {
 				cmd.BindRenderPipeline(m_lineProgram,
-					tour::vertex_layouts::DebugLine,
+					::tour::vertex_layouts::DebugLine,
 					smvk::DepthSettings{
 						.depthFunc = smvk::CompareOp::Always,
 						.writeEnable = false, .depthTestEnable = false },
@@ -1652,7 +1652,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
             if (selectedWireOverlay && m_selected != UINT32_MAX && m_wireProgram.shaderCount == 2) {
                 cmd.BindRenderPipeline(
                     m_wireProgram,
-                    tour::vertex_layouts::Static,
+                    ::tour::vertex_layouts::Static,
                     smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                         .writeEnable = false,
                                         .depthTestEnable = true},
@@ -1672,8 +1672,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
         // StaticLayout (which does not exist on an empty world), so
         // empty passes bind Empty (no draws either way).
         const smvk::VertexLayoutDesc& fmt =
-            HasDrawItems() ? tour::vertex_layouts::Static : tour::vertex_layouts::Empty;
-        if (&fmt == &tour::vertex_layouts::Static)
+            HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
+        if (&fmt == &::tour::vertex_layouts::Static)
             cmd.BindStaticVertexFmt();
         const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::GreaterEqual,
                                         .writeEnable = true,
@@ -1752,7 +1752,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
         // Selection highlight: wireframe overlay over the selected node.
         if (selectedWireOverlay && m_selected != UINT32_MAX && m_wireProgram.shaderCount == 2) {
             cmd.BindRenderPipeline(m_wireProgram,
-                                   tour::vertex_layouts::Static,
+                                   ::tour::vertex_layouts::Static,
                                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                        .writeEnable = false,
                                                        .depthTestEnable = true},
@@ -1842,8 +1842,8 @@ void EditorApp::RecordInsetPass(smvk::LogicalImageViewHandle swapView, uint32_t 
     pass.SetRecordingFunc([this, pc](smvk::CommandBuffer& cmd) {
         smvk::ShaderProgram& prog = InsetProgram();
         const smvk::VertexLayoutDesc& fmt =
-            HasDrawItems() ? tour::vertex_layouts::Static : tour::vertex_layouts::Empty;
-        if (&fmt == &tour::vertex_layouts::Static)
+            HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
+        if (&fmt == &::tour::vertex_layouts::Static)
             cmd.BindStaticVertexFmt();
         const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::GreaterEqual,
                                         .writeEnable = true,
@@ -2076,8 +2076,8 @@ void EditorApp::DrawMeshletNodes(smvk::CommandBuffer& cmd) {
     // same exposure, see PreviewExposure).
     const float meshletColorPreScale = 1.0f / PreviewExposure();
     const smvk::VertexLayoutDesc& fmt =
-        HasDrawItems() ? tour::vertex_layouts::Static : tour::vertex_layouts::Empty;
-    if (&fmt == &tour::vertex_layouts::Static)
+        HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
+    if (&fmt == &::tour::vertex_layouts::Static)
         cmd.BindStaticVertexFmt();
     cmd.BindRenderPipeline(m_meshDebugProgram,
                            fmt,
@@ -3100,7 +3100,7 @@ void EditorApp::RenderWysiwygLayer(smvk::Framebuffer& fb, smvk::Extent2D extent)
                       smvk::ClearColor(0.03f, 0.03f, 0.05f, 1.0f))
             .SetRecordingFunc([this](smvk::CommandBuffer& cmd) {
                 cmd.BindRenderPipeline(m_triangleProgram,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        smvk::DepthSettings::Disabled(),
                                        smvk::StencilSettings::DefaultDisabled(),
                                        smvk::BlendSettings::Opaque(),

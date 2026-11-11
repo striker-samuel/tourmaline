@@ -43,9 +43,9 @@
 //   ... ssgi.OutputView() / OutputBindless() -> the AO-applied scene HDR ...
 
 #include <Engine/Profile/profile.h> // profiler::GpuPassScope (recording funcs)
-#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/gfx_types.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
@@ -1037,7 +1037,7 @@ struct Ssgi {
                 ShaderProgram progCopy = ssaoRawProgram; // copyable (handles only)
                 pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                     cmd.BindRenderPipeline(progCopy,
-                                           tour::vertex_layouts::Empty,
+                                           ::tour::vertex_layouts::Empty,
                                            DepthSettings::Disabled(),
                                            StencilSettings::DefaultDisabled(),
                                            BlendSettings::Opaque(),
@@ -1062,7 +1062,7 @@ struct Ssgi {
                 ShaderProgram progCopy = saoRawProgram; // copyable (handles only)
                 pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                     cmd.BindRenderPipeline(progCopy,
-                                           tour::vertex_layouts::Empty,
+                                           ::tour::vertex_layouts::Empty,
                                            DepthSettings::Disabled(),
                                            StencilSettings::DefaultDisabled(),
                                            BlendSettings::Opaque(),
@@ -1094,7 +1094,7 @@ struct Ssgi {
             ShaderProgram progCopy = blurProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -1173,7 +1173,7 @@ struct Ssgi {
             ShaderProgram progCopy = composeProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),

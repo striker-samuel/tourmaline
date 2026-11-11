@@ -210,7 +210,7 @@ struct PlanarReflections {
         ShaderProgram programCopy = program;
         pass.SetRecordingFunc([programCopy, push](CommandBuffer& cmd) mutable {
             cmd.BindRenderPipeline(programCopy,
-                                   tour::vertex_layouts::Empty,
+                                   ::tour::vertex_layouts::Empty,
                                    DepthSettings::Disabled(),
                                    StencilSettings::DefaultDisabled(),
                                    BlendSettings::Opaque(),

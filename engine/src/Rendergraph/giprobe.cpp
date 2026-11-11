@@ -5,8 +5,8 @@
 // Icosphere build + the standalone instanced pass (own push block, no
 // scene pc).
 
-#include <Engine/Rendergraph/giprobe.h>
 #include <Engine/Renderer/vertex_layouts.h>
+#include <Engine/Rendergraph/giprobe.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
@@ -252,7 +252,7 @@ bool GiProbeVisual::AppendPass(RenderGraph& rg,
             .depthTestEnable = true,
         };
         cmd.BindRenderPipeline(program,
-                               tour::vertex_layouts::TerrainFull,
+                               ::tour::vertex_layouts::TerrainFull,
                                depth,
                                StencilSettings{},
                                BlendSettings::Opaque(),

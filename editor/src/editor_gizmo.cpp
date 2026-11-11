@@ -6,9 +6,9 @@
 // node's LOCAL frame, translate in WORLD axes (noted in the overlay).
 
 #include "editor_app.h"
-#include <Engine/Renderer/vertex_layouts.h>
 #include "editor_gizmo_rotation.h"
 #include "editor_transform_trs.h"
+#include <Engine/Renderer/vertex_layouts.h>
 
 #include <cfloat>
 #include <cmath>
@@ -1026,7 +1026,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
                     if (depthPipeline)
                         cmd.BindRenderPipeline(
                             m_lineProgram,
-                            tour::vertex_layouts::DebugLine,
+                            ::tour::vertex_layouts::DebugLine,
                             // Reversed-Z: GreaterEqual = closer-or-equal passes.
                             smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                 .writeEnable = false,
@@ -1039,7 +1039,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
                     else
                         cmd.BindRenderPipeline(
                             m_lineProgram,
-                            tour::vertex_layouts::DebugLine,
+                            ::tour::vertex_layouts::DebugLine,
                             smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
                                                 .writeEnable = false,
                                                 .depthTestEnable = false},

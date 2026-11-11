@@ -66,7 +66,7 @@ struct MsaaCustomResolve {
         ShaderProgram prog = program;
         pass.SetRecordingFunc([prog, push](CommandBuffer& cmd) mutable {
             cmd.BindRenderPipeline(prog,
-                                   tour::vertex_layouts::Empty,
+                                   ::tour::vertex_layouts::Empty,
                                    DepthSettings::Disabled(),
                                    StencilSettings::DefaultDisabled(),
                                    BlendSettings::Opaque(),

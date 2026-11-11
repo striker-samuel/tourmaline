@@ -466,7 +466,7 @@ struct ScreenSpaceGodRays {
             ShaderProgram progCopy = maskProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -497,7 +497,7 @@ struct ScreenSpaceGodRays {
             ShaderProgram progCopy = radialProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -526,7 +526,7 @@ struct ScreenSpaceGodRays {
             ShaderProgram progCopy = filterProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -564,7 +564,7 @@ struct ScreenSpaceGodRays {
             ShaderProgram progCopy = compositeProgram; // copyable (handles only)
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),

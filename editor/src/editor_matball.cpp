@@ -321,7 +321,7 @@ void EditorApp::RecordMatBallPass() {
             smvk::RasterSettings raster{};
             raster.cullMode = smvk::CullMode::None;
             cmd.BindRenderPipeline(progCopy,
-                                   tour::vertex_layouts::TerrainFull,
+                                   ::tour::vertex_layouts::TerrainFull,
                                    smvk::DepthSettings::Disabled(),
                                    smvk::StencilSettings::DefaultDisabled(),
                                    smvk::BlendSettings::Opaque(),

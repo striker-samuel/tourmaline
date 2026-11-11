@@ -306,7 +306,7 @@ struct Tonemapper {
         ShaderProgram progCopy = program; // ShaderProgram is copyable (handles only)
         pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
             cmd.BindRenderPipeline(progCopy,
-                                   tour::vertex_layouts::Empty,
+                                   ::tour::vertex_layouts::Empty,
                                    DepthSettings::Disabled(),
                                    StencilSettings::DefaultDisabled(),
                                    BlendSettings::Opaque(),

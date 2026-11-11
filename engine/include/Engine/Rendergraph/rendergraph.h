@@ -164,7 +164,7 @@ struct CommandBuffer final {
     void BindStaticVertexFmt();
 
     // Binds an arbitrary RHI buffer as vertex binding N (pos-only debug
-    // streams use binding 0 with tour::vertex_layouts::DebugLine).
+    // streams use binding 0 with ::tour::vertex_layouts::DebugLine).
     void BindVertexBuffer(BufferHandle buffer, uint32_t binding = 0, uint64_t offset = 0);
 
     // Access native VkCommandBuffer for integrations like ImGui.

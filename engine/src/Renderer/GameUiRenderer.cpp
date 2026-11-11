@@ -306,7 +306,7 @@ bool GameUiRenderer::AppendPass(smvk::ResourceManager& ctx,
     const auto instanceCount = static_cast<uint32_t>(packed.size());
     pass.SetRecordingFunc([program, push, instanceCount](smvk::CommandBuffer& cmd) mutable {
         cmd.BindRenderPipeline(program,
-                               tour::vertex_layouts::Empty,
+                               ::tour::vertex_layouts::Empty,
                                smvk::DepthSettings::Disabled(),
                                smvk::StencilSettings::DefaultDisabled(),
                                smvk::BlendSettings::AlphaBlend(),

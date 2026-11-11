@@ -60,8 +60,8 @@
 #include <Engine/RHI/swapchain.h>
 #include <Engine/RHI/vulkan_layer_filter.h>
 #include <Engine/Renderer/mesh.h> // ValidateVertexLayout (pipeline build)
-#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Renderer/spirv_validation.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/dlss.h>
 #include <Engine/Rendergraph/rendergraph.h>
 
@@ -2168,7 +2168,8 @@ void PrintPipelineCreationCounts(const char* phase) {
     std::fprintf(stderr,
                  "[PipelineStats] %s: graphics=%llu compute=%llu total=%llu "
                  "(new VkPipelines, driver cache hits unknown)\n",
-                 phase, static_cast<unsigned long long>(graphics),
+                 phase,
+                 static_cast<unsigned long long>(graphics),
                  static_cast<unsigned long long>(compute),
                  static_cast<unsigned long long>(graphics + compute));
 }
@@ -14991,12 +14992,12 @@ void smvk::CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram,
         shaderProgram == boundProgram_) {
         currentPipeline_ = graphicsPipeline_;
         currentLayout_ = graphicsLayout_;
-        if (&vertexFormat == &tour::vertex_layouts::Static)
+        if (&vertexFormat == &::tour::vertex_layouts::Static)
             BindStaticVertexFmt();
         return;
     }
 
-    if (&vertexFormat == &tour::vertex_layouts::Static)
+    if (&vertexFormat == &::tour::vertex_layouts::Static)
         BindStaticVertexFmt();
 
     // Attachment formats feed the pipeline cache key. Small fixed

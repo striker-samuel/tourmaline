@@ -254,7 +254,7 @@ struct UiComposite {
         pass.SetRecordingFunc([progCopy, push, opaqueBlend](CommandBuffer& cmd) mutable {
             cmd.BindRenderPipeline(
                 progCopy,
-                tour::vertex_layouts::Empty,
+                ::tour::vertex_layouts::Empty,
                 DepthSettings::Disabled(),
                 StencilSettings::DefaultDisabled(),
                 opaqueBlend ? BlendSettings::Opaque()      // 1:1 copy: src replaces dst

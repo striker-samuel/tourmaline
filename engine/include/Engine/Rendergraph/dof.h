@@ -415,7 +415,7 @@ struct DepthOfField {
             ShaderProgram progCopy = lowProgram;
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -448,7 +448,7 @@ struct DepthOfField {
             ShaderProgram progCopy = cocProgram;
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),
@@ -483,7 +483,7 @@ struct DepthOfField {
             ShaderProgram progCopy = bokehProgram;
             pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
                 cmd.BindRenderPipeline(progCopy,
-                                       tour::vertex_layouts::Empty,
+                                       ::tour::vertex_layouts::Empty,
                                        DepthSettings::Disabled(),
                                        StencilSettings::DefaultDisabled(),
                                        BlendSettings::Opaque(),

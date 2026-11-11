@@ -257,7 +257,7 @@ struct Distortion {
         ShaderProgram progCopy = program;
         pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
             cmd.BindRenderPipeline(progCopy,
-                                   tour::vertex_layouts::Empty,
+                                   ::tour::vertex_layouts::Empty,
                                    DepthSettings::Disabled(),
                                    StencilSettings::DefaultDisabled(),
                                    BlendSettings::Opaque(),
