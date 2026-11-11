@@ -51,7 +51,7 @@ def parse_cpp_asserts(path: Path):
     asserts = dict(re.findall(
         r'static_assert\(offsetof\(IRenderer::PushConstants,\s*(\w+)\)\s*==\s*(\d+)', text))
     asserts = {k: int(v) for k, v in asserts.items()}
-    m = re.search(r'static_assert\(sizeof\(IRenderer::PushConstants\)\s*==\s*(\d+)', text)
+    m = re.search(r'static_assert\(\s*sizeof\(IRenderer::PushConstants\)\s*==\s*(\d+)', text)
     total = int(m.group(1)) if m else None
     return total, asserts
 
@@ -67,7 +67,7 @@ def parse_hlsl_fields(path: Path):
     if not m:
         return []
     body = m.group(1)
-    names = re.findall(r"(?:uint|float|float4x4|float3x4|uint4|GPU_PTR\w*\([^)]+\)|vk::BufferPointer<[^>]+>)\s+(\w+)\s*;", body)
+    names = re.findall(r"(?:uint4|uint|float4x4|float3x4|float4|float|GPU_PTR\w*\([^)]+\)|vk::BufferPointer<[^>]+>)\s+(\w+)(?:\s*\[\s*\d+\s*\])?\s*;", body)
     norm = {"bLights": "lightsBuffer", "bMats": "materialsBuffer", "padEnd": "padEnd_"}
     return [norm.get(n, n) for n in names]
 

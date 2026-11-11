@@ -41,7 +41,11 @@ void TestShaderModuleStructureGate() {
         return bytes;
     };
     const std::vector<uint32_t> minimal = {
-        0x07230203u, 0x00010600u, 0, 2, 0,
+        0x07230203u,
+        0x00010600u,
+        0,
+        2,
+        0,
         0x00010000u // OpNop: structurally sound (not a standalone shader)
     };
     auto bytes = encode(minimal);
@@ -384,18 +388,19 @@ void mainCS(uint3 id : SV_DispatchThreadID) {
     Check(smvk::ValidatePushConstants(merged, 256), "spirv.dxc.fits256");
 }
 
-// float3x4 push packing (motionvector prevModel): the DXC SPIR-V declares
-// the member RowMajor stride 12 and lowers mul() to v4 x M, so result[j] =
-// sum_i v[i] * blob[3i+j]. That equals M*v exactly when the blob holds the
-// matrix COLUMNS (glm columns xyz + translation). These checks pin the
-// mapping with hand-built matrices (no glm needed) by emulating the SPV
-// op on the packed blob; a flat 12-float copy fails them (it drops
-// translation and leaks the projection row).
-void TestPushFloat3x4() {
-    auto emulateSpvMul = [](const float* blob12, const float v[4], float out[3]) {
-        for (int j = 0; j < 3; ++j)
-            out[j] = v[0] * blob12[0 + j] + v[1] * blob12[3 + j] + v[2] * blob12[6 + j] +
-                     v[3] * blob12[9 + j];
+// float4[3] push packing (motionvector prevModel): the blob holds THREE
+// float4 ROWS of the affine transform (row r = [m00 m01 m02 tx]; the last
+// row (0,0,0,1) is implied), applied as row dot-products
+// (dot(prevModel[r], v)), so out[r] = sum_k v[k] * blob[r*4+k]. That equals
+// M*v exactly when the blob holds the matrix ROWS. These checks pin the
+// mapping with hand-built matrices by emulating the row-dot transform on
+// the packed blob; a flat 12-float copy fails them (it drops translation
+// and leaks the projection row).
+void TestPushPrevModelRows() {
+    auto emulateRows = [](const float* blob12, const float v[4], float out[3]) {
+        for (int r = 0; r < 3; ++r)
+            out[r] = v[0] * blob12[r * 4 + 0] + v[1] * blob12[r * 4 + 1] +
+                     v[2] * blob12[r * 4 + 2] + v[3] * blob12[r * 4 + 3];
     };
     auto matMul = [](const float* colMajor16, const float v[4], float out[3]) {
         for (int r = 0; r < 3; ++r)
@@ -429,14 +434,15 @@ void TestPushFloat3x4() {
         1,
     };
     float packed[12] = {};
-    smvk::PackPushFloat3x4(kT, packed);
-    Check(packed[0] == 1.0f && packed[4] == 1.0f && packed[8] == 1.0f,
-          "push.f3x4.translation.rotpart");
-    Check(packed[9] == 10.0f && packed[10] == 20.0f && packed[11] == 30.0f,
-          "push.f3x4.translation.kept");
-    // The old flat copy drops translation: dst[9..11] would be (0,0,1).
+    smvk::PackPushPrevModel(kT, packed);
+    // Row-major: diagonal at [0], [5], [10]; translation at [3], [7], [11].
+    Check(packed[0] == 1.0f && packed[5] == 1.0f && packed[10] == 1.0f,
+          "push.prevmodel.rows.rotpart");
+    Check(packed[3] == 10.0f && packed[7] == 20.0f && packed[11] == 30.0f,
+          "push.prevmodel.rows.translation.kept");
+    // A flat 12-float copy drops translation: floats 9..11 are (0,1,0), not (10,20,30).
     Check(!(kT[9] == 10.0f && kT[10] == 20.0f && kT[11] == 30.0f),
-          "push.f3x4.flatcopy.loses.translation");
+          "push.prevmodel.flatcopy.loses.translation");
 
     // Y-90 rotation + translation, several points incl. off-axis.
     const float kR[16] = {
@@ -458,7 +464,7 @@ void TestPushFloat3x4() {
         1,
     };
     float packedR[12] = {};
-    smvk::PackPushFloat3x4(kR, packedR);
+    smvk::PackPushPrevModel(kR, packedR);
     const float kPts[][4] = {
         {1, 2, 3, 1},
         {0, 0, 0, 1},
@@ -469,17 +475,17 @@ void TestPushFloat3x4() {
     for (const auto& p : kPts) {
         float want[3], got[3];
         matMul(kR, p, want);
-        emulateSpvMul(packedR, p, got);
+        emulateRows(packedR, p, got);
         allMatch = allMatch && close(want, got);
     }
-    Check(allMatch, "push.f3x4.spvop.matches.matmul");
+    Check(allMatch, "push.prevmodel.rows.matches.matmul");
     // Spot value: Ry(90) maps (1,2,3) -> (3,2,-1), plus t -> (13,22,29).
     {
         const float p[4] = {1, 2, 3, 1};
         float got[3];
-        emulateSpvMul(packedR, p, got);
+        emulateRows(packedR, p, got);
         const float want[3] = {13, 22, 29};
-        Check(close(want, got), "push.f3x4.spot");
+        Check(close(want, got), "push.prevmodel.rows.spot");
     }
 }
 
@@ -689,7 +695,7 @@ int main() {
     TestSpecializationPayload();
     TestShaderEqualityWithSpec();
     TestDxcRoundTrip();
-    TestPushFloat3x4();
+    TestPushPrevModelRows();
     TestSpdPushContract();
     TestMeshStageContract();
     std::cout << g_checks - g_failures << "/" << g_checks << " checks passed\n";

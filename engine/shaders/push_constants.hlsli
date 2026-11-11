@@ -65,11 +65,14 @@ struct PushConstants
     GPU_PTR_READ(RenderViewBuffer) renderViews;
     uint mainRenderView;
     uint renderViewIndex;
-    // Motion vector pass: last frame's model matrix per draw as float3x4 (192..240).
-	// Last row (0,0,0,1) is implied. 12 floats = 48 bytes. The CPU pack
-	// (world_renderer.cpp) stores matrix COLUMNS (glm columns xyz +
-	// translation), matching the SPV RowMajor/stride-12 v4 x M lowering.
-    float3x4 prevModel;
+    // Motion vector pass: last frame's model matrix per draw (192..240) as
+    // THREE float4 ROWS of the affine transform (row r = [m00 m01 m02 tx],
+    // [m10 m11 m12 ty], [m20 m21 m22 tz]; the last row (0,0,0,1) is implied).
+    // 3 x float4 = 48 bytes. The CPU pack (PackPushPrevModel) stores matrix
+    // ROWS (glm column-major walked row-first), so a plain float4[3] read
+    // avoids SPIR-V's matrix-stride-12 decoration that spirv-val rejects
+    // under the relaxed block-layout rules.
+    float4 prevModel[3];
     // .x: the DIRECT legs' per-draw dither-on-closeup flag (Scene::
     // ditherCloseup — the direct prepass/Main/shadow legs push it per
     // draw, 0/1; default.vert / shadow.vert forward it flat at VS

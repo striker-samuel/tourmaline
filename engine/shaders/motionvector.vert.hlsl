@@ -31,8 +31,15 @@ VSOut mainVS(VSIn IN)
     float4 world = mul(pc.model, float4(IN.position, 1.0));
     OUT.pos = mul(frame.viewProj, world);
 
-    float3 prevWorld3 = mul(pc.prevModel, float4(IN.position, 1.0)).xyz;
-    float4 prevWorld = float4(prevWorld3, 1.0);
+    // prevModel is 3 float4 ROWS of the affine transform (row-major); apply
+    // it as row dot-products instead of a matrix mul (a float4[3] carries no
+    // matrix-stride decoration, which keeps the push constant spirv-val-clean).
+    float4 localPos = float4(IN.position, 1.0);
+    float4 prevWorld = float4(
+        dot(pc.prevModel[0], localPos),
+        dot(pc.prevModel[1], localPos),
+        dot(pc.prevModel[2], localPos),
+        1.0);
     OUT.prevClip = mul(frame.prevViewProj, prevWorld);
 
     // uv passes through for the FS alpha test (MASK cutout).

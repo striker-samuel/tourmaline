@@ -58,13 +58,13 @@ class IRenderer {
         uint64_t renderViews;
         uint32_t mainRenderView;
         uint32_t renderViewIndex;
-        // Motion vector pass: last frame's model as float3x4 (last row
-        // 0,0,0,1 implied). Starts at byte 192, ends at byte 240
-        // (12 floats = 48 bytes; the SPV packs it RowMajor stride 12,
-        // consumed via v4 x M, so the blob holds the matrix COLUMNS —
-        // glm columns xyz + translation, i.e. source floats
-        // {0,1,2, 4,5,6, 8,9,10, 12,13,14}, see the pack loop in
-        // world_renderer.cpp drawMotionNode).
+        // Motion vector pass: last frame's model as three float4 ROWS of
+        // the affine transform (row r = [m00 m01 m02 tx]; the last row
+        // 0,0,0,1 is implied). Starts at byte 192, ends at byte 240
+        // (3 x float4 = 48 bytes; the HLSL reads float4 prevModel[3] and
+        // applies it as row dot-products — no matrix-stride decoration, so
+        // the push constant passes spirv-val's relaxed block-layout rules;
+        // the CPU packs matrix ROWS via PackPushPrevModel).
         float prevModel[12];
         // padEnd_[0]: the DIRECT legs' per-draw dither-on-closeup flag
         // (Scene::ditherCloseup — pushed per draw, 0/1, by the direct
@@ -107,7 +107,7 @@ static_assert(
 static_assert(offsetof(IRenderer::PushConstants, prevModel) == 192,
               "prevModel must start at byte 192");
 static_assert(sizeof(IRenderer::PushConstants::prevModel) == 48,
-              "prevModel must be 12 floats (float3x4)");
+              "prevModel must be 12 floats (float4[3] rows)");
 static_assert(offsetof(IRenderer::PushConstants, model) == 0, "model must start at byte 0");
 static_assert(offsetof(IRenderer::PushConstants, frameUniforms) == 64,
               "frameUniforms mirror drift");

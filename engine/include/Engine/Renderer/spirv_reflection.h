@@ -150,25 +150,23 @@ ShaderStage ExpandPushStagesForLayout(ShaderStage requested,
                                       uint32_t offset,
                                       uint32_t size);
 
-// Packs a 4x4 column-major matrix (glm layout, 16 floats) into an HLSL
-// float3x4 push blob (12 floats). The blob holds the matrix COLUMNS:
-// columns xyz plus translation, i.e. source floats
-// {0,1,2, 4,5,6, 8,9,10, 12,13,14}.
+// Packs a 4x4 column-major matrix (glm layout, 16 floats) into the
+// motion-vector push blob (12 floats) as THREE float4 ROWS of the affine
+// transform (row-major: row 0 = [m00 m01 m02 tx], row 1 = [m10 m11 m12 ty],
+// row 2 = [m20 m21 m22 tz]; the last row (0,0,0,1) is implied). For a
+// column-major src, M[row][col] = src[4*col + row].
 //
-// Why columns, not the first 12 floats: the DXC SPIR-V for float3x4 lands
-// as RowMajor stride 12 consumed via v4 x M (verified in
-// motionvector.vert.hlsl.spv: member offset 208, OpVectorTimesMatrix
-// v4 x mat3v4float), so result[j] = sum_i v[i] * blob[3i+j], which equals
-// M*v exactly when blob[3i+j] = M[j][i] — the columns. A flat 12-float
-// copy instead smuggles the projection row (floats 3,7,11) in and drops
-// translation (12,13,14), leaving every translated object with a
-// translation-free prevWorld (garbage motion vectors). CPU-only.
-inline void PackPushFloat3x4(const float* srcColMajor16, float* dst12) {
+// The HLSL side reads these as a float4[3] and applies the transform as
+// row dot-products (dot(prevModel[row], localPos)) instead of a matrix mul:
+// a float4[3] carries no matrix-stride decoration, so the push constant
+// passes spirv-val's relaxed block-layout rules (a float3x4 would emit
+// stride 12, which spirv-val rejects as misaligned to 16). CPU-only.
+inline void PackPushPrevModel(const float* srcColMajor16, float* dst12) {
     assert(srcColMajor16 && dst12);
-    for (int c = 0; c < 4; ++c) {
-        dst12[3 * c + 0] = srcColMajor16[4 * c + 0];
-        dst12[3 * c + 1] = srcColMajor16[4 * c + 1];
-        dst12[3 * c + 2] = srcColMajor16[4 * c + 2];
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            dst12[row * 4 + col] = srcColMajor16[4 * col + row];
+        }
     }
 }
 

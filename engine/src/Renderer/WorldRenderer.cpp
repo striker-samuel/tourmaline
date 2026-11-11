@@ -38,7 +38,7 @@
 #include <Engine/Memory/arena.h> // per-frame decal scratch
 #include <Engine/Memory/linear_vector.h>
 #include <Engine/Renderer/ray_tracing_debug.h> // (#145) TLAS/BLAS inspector
-#include <Engine/Renderer/spirv_reflection.h>  // PackPushFloat3x4 (prevModel blob)
+#include <Engine/Renderer/spirv_reflection.h>  // PackPushPrevModel (prevModel blob)
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/depth.h>
@@ -15124,10 +15124,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     !m_cameraCutThisFrame &&
                     m_prevGlobalTransforms.size() == m_world->scene.globalTransform.size();
                 const glm::mat4 prevModel = prevValid ? m_prevGlobalTransforms[item.node] : model;
-                // Pack as float3x4 columns (smvk::PackPushFloat3x4): a
+                // Pack as three float4 ROWS (smvk::PackPushPrevModel): a
                 // flat 12-float copy is wrong (drops translation, leaks
                 // the projection row - see the helper's comment).
-                smvk::PackPushFloat3x4(glm::value_ptr(prevModel), objectPC.prevModel);
+                smvk::PackPushPrevModel(glm::value_ptr(prevModel), objectPC.prevModel);
                 objectPC.materialId = item.material; // FS alpha test
                 cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
                                   sizeof(objectPC.materialId),
