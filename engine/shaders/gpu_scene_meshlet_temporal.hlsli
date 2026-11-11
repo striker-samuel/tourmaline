@@ -25,7 +25,7 @@ bool MeshletHistoryContains(GPU_PTR(GsTemporalHistory) history,uint capacity,
     }
     return false;
 }
-void MeshletHistoryRecord(GsTemporalHistory history,uint capacity,
+void MeshletHistoryRecord(GPU_PTR(GsTemporalHistory) history,uint capacity,
                           uint slot,uint gen,uint clusterId) {
     if(capacity==0u || capacity>GS_TEMPORAL_HASH_LIMIT ||
        (capacity&(capacity-1u))!=0u) return;
