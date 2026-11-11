@@ -26,6 +26,7 @@
 // World-free; Scene is never touched.
 
 #include <cmath>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -79,7 +80,7 @@ inline constexpr const char* kPlacementUnlitPsPath =
 //
 // Per (tile, proto) draw, inside a color-attachment pass:
 //   cmd.BindStaticVertexFmt();          // the monoblock index binding
-//   cmd.BindRenderPipeline(program, VertexLayoutId::Static,
+//   cmd.BindRenderPipeline(program, tour::vertex_layouts::Static,
 //       DepthSettings{ .depthFunc = CompareOp::GreaterEqual,
 //                      .writeEnable = true, .depthTestEnable = true },
 //       StencilSettings{}, BlendSettings{}, MSAASettings{},
