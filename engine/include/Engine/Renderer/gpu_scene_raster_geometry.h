@@ -13,9 +13,9 @@
 
 #include <Engine/Memory/arena.h>
 #include <Engine/RHI/resource_manager.h>
-#include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
+#include <Engine/Renderer/gpu_scene_static.h>
 #include <Engine/Renderer/gpu_scene_upload.h> // RenderDatabase (Database<MaxFramesInFlight>) for Synchronize
 
 #include <algorithm>

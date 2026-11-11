@@ -33,7 +33,7 @@
 #include <Engine/Placement/placement_draw.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/WorldRenderer.h> // FrameUniforms + the §1.1 layer-table pack contract
-#include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gpu_scene_static.h>
 #include <Engine/Rendergraph/rendergraph.h>
 
 namespace {

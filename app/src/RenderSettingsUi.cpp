@@ -7,7 +7,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/RendererLimits.h>
 #include <Engine/Renderer/WorldRenderer.h>
-#include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gpu_scene_static.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Rendergraph/volumetric.h>
 #include <algorithm>
@@ -539,8 +539,8 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                 ImGui::TextWrapped("Visual adjustment only: use a colorimeter and an OS "
                                    "display profile for accurate monitor calibration.");
                 ImGui::Checkbox("Show calibration bars", &m_displayTestPattern);
-                ImGui::SliderFloat("Display brightness trim",
-                                   &m_displayBrightness, 0.5f, 1.5f, "%.2f");
+                ImGui::SliderFloat(
+                    "Display brightness trim", &m_displayBrightness, 0.5f, 1.5f, "%.2f");
                 ImGui::SliderFloat("White balance red", &m_displayRedGain, 0.5f, 1.5f, "%.3f");
                 ImGui::SliderFloat("White balance green", &m_displayGreenGain, 0.5f, 1.5f, "%.3f");
                 ImGui::SliderFloat("White balance blue", &m_displayBlueGain, 0.5f, 1.5f, "%.3f");
@@ -1301,8 +1301,8 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                                     snprintf(value, sizeof(value), "%.2f ms", rows[i].ms);
                                 else
                                     snprintf(value, sizeof(value), "off");
-                                const float valueX = labelTop.x + labelWidth - 4.0f -
-                                                     ImGui::CalcTextSize(value).x;
+                                const float valueX =
+                                    labelTop.x + labelWidth - 4.0f - ImGui::CalcTextSize(value).x;
                                 draw->AddText(ImVec2(valueX, labelTop.y + 2.0f),
                                               ImGui::GetColorU32(ImGuiCol_TextDisabled),
                                               value);

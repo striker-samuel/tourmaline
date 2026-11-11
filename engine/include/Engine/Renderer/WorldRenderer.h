@@ -52,9 +52,9 @@
 #include <Engine/Renderer/ShapeScene.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/geometry_streamer.h>
-#include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_raster_ownership.h>
+#include <Engine/Renderer/gpu_scene_static.h>
 #include <Engine/Renderer/gpu_scene_task_mesh_runtime.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>

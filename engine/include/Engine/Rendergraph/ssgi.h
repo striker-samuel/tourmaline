@@ -44,7 +44,7 @@
 
 #include <Engine/Profile/profile.h> // profiler::GpuPassScope (recording funcs)
 #include <Engine/RHI/resource_manager.h>
-#include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gpu_scene_static.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
