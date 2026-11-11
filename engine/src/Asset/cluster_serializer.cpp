@@ -900,6 +900,13 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
                 if (stats && !cooked.meshlets.empty()) {
                     stats->meshesWithMeshlets++;
                     stats->meshletCount += static_cast<uint32_t>(cooked.meshlets.size());
+                    stats->meshletVerts.reserve(stats->meshletVerts.size() +
+                                                cooked.meshlets.size());
+                    stats->meshletTris.reserve(stats->meshletTris.size() + cooked.meshlets.size());
+                    for (const Meshlet& m : cooked.meshlets) {
+                        stats->meshletVerts.push_back(m.vertexCount);
+                        stats->meshletTris.push_back(m.triangleCount);
+                    }
                 }
             }
             // Trailing skin-stream section (the Northlight data path): u32
@@ -1884,8 +1891,9 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
                 PutU32(blob, nodeCount);
                 for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
                     if (slotToDense[s] != UINT32_MAX)
-                        PutU32(blob, s < scene.metadata.size()
-                                         ? scene.metadata[s].lightLayerMask : 0xffffffffu);
+                        PutU32(blob,
+                               s < scene.metadata.size() ? scene.metadata[s].lightLayerMask
+                                                         : 0xffffffffu);
                 if (stats)
                     stats->staticBvhPrims += bvhN;
             }

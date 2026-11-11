@@ -43,6 +43,11 @@ struct ClusterSerializeStats {
     // meshlet section, and the total meshlet count across them.
     uint32_t meshesWithMeshlets = 0;
     uint32_t meshletCount = 0;
+    // Scene-wide meshlet fill distribution (per-meshlet unique vertex and
+    // triangle counts, collected for the cook's fill summary). Not
+    // serialized - a cook-time diagnostic only.
+    std::vector<uint32_t> meshletVerts;
+    std::vector<uint32_t> meshletTris;
     // Static-subtree roots persisted in the Scene blob.
     uint32_t staticRoots = 0;
     // Cooked punctual lights (KHR_lights_punctual) persisted as

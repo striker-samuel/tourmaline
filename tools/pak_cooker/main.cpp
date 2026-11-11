@@ -2007,9 +2007,10 @@ int Run(const PakArgs& c) {
                             << tour.references.size() << " top-level)\n";
             }
             const auto referenceBindEnd = std::chrono::steady_clock::now();
-            tool::out() << "[CookProfile] reference bind "
-                        << std::chrono::duration<double>(referenceBindEnd - referenceBindStart).count()
-                        << "s\n";
+            tool::out()
+                << "[CookProfile] reference bind "
+                << std::chrono::duration<double>(referenceBindEnd - referenceBindStart).count()
+                << "s\n";
             // Texture-asset POOL imports (ordered; see the tour's
             // textureAsset records): replayed BEFORE the material records
             // (a material tex ref or a light cookie naming a .texture must
@@ -2096,7 +2097,9 @@ int Run(const PakArgs& c) {
                 return 1;
             }
             tool::out() << "[CookProfile] tour replay "
-                        << std::chrono::duration<double>(std::chrono::steady_clock::now() - replayStart).count()
+                        << std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                         replayStart)
+                               .count()
                         << "s\n";
             for (auto& w : rwarn)
                 tool::err() << "Tour replay warning: " << w << std::endl;
@@ -3406,6 +3409,42 @@ int Run(const PakArgs& c) {
                 << "/" << stats.meshes << " meshes," << stats.meshletCount << " meshlets"
                 << " compressed=" << writer.CompressedEntryCount() << "/" << writer.EntryCount()
                 << (args.compress ? " (lz4)" : " (raw)") << " in " << secs << "s\n";
+
+    // Meshlet fill distribution (cook-time diagnostic): how the partitioner
+    // actually fills the 64v/124t budget across the whole scene. Percentiles
+    // come from a sorted copy; the percentage-at-limit figures show how often
+    // the vertex/triangle caps bind.
+    if (!stats.meshletVerts.empty()) {
+        auto sorted = stats.meshletVerts;
+        std::sort(sorted.begin(), sorted.end());
+        auto sortedTris = stats.meshletTris;
+        std::sort(sortedTris.begin(), sortedTris.end());
+        auto pick = [](const std::vector<uint32_t>& v, double q) -> uint32_t {
+            return v[static_cast<size_t>(q * (v.size() - 1) + 0.5)];
+        };
+        uint64_t vertSum = 0, triSum = 0;
+        uint32_t atVertLimit = 0, atTriLimit = 0;
+        for (size_t i = 0; i < stats.meshletVerts.size(); ++i) {
+            vertSum += stats.meshletVerts[i];
+            triSum += stats.meshletTris[i];
+            if (stats.meshletVerts[i] >= smvk::kMeshletMaxVertices)
+                ++atVertLimit;
+            if (stats.meshletTris[i] >= smvk::kMeshletMaxTriangles)
+                ++atTriLimit;
+        }
+        const double n = static_cast<double>(stats.meshletVerts.size());
+        tool::out() << "  meshlet fill: n=" << stats.meshletCount
+                    << " verts avg=" << (static_cast<double>(vertSum) / n)
+                    << " med=" << pick(sorted, 0.5) << " p90=" << pick(sorted, 0.90)
+                    << " p99=" << pick(sorted, 0.99) << " max=" << pick(sorted, 1.0)
+                    << " | tris avg=" << (static_cast<double>(triSum) / n)
+                    << " med=" << pick(sortedTris, 0.5) << " p90=" << pick(sortedTris, 0.90)
+                    << " p99=" << pick(sortedTris, 0.99) << " max=" << pick(sortedTris, 1.0)
+                    << " | atVertLimit=" << (100.0 * static_cast<double>(atVertLimit) / n)
+                    << "% atTriLimit=" << (100.0 * static_cast<double>(atTriLimit) / n)
+                    << "% trisPerVert="
+                    << (static_cast<double>(triSum) / static_cast<double>(vertSum)) << "\n";
+    }
 
     // Self-check: re-open the written file through the production reader
     // (header/footer/CRC/TOC validation + payload spot-checks).
