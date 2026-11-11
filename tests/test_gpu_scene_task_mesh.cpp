@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include <Engine/Renderer/gpu_scene_task_mesh.h>
 #include <Engine/Renderer/gpu_scene_task_mesh_abi.h>
+#include <Engine/Renderer/gpu_scene_render_route.h>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -67,5 +68,26 @@ int main() {
     std::array<MeshletRange, 1> huge{{{0u, 0xffffffffu, false}}};
     CHECK(!TaskMeshletPlan::Build(huge, largeClass, 128u, plan));
     CHECK(plan.classes[2].size() == 128u);
+    // Canonical work gets one backend, including fallbacks and BLEND.
+    for (uint32_t cls = 0; cls != 4; ++cls) {
+        const auto alpha = cls >= 2 ? RasterAlphaMode::Mask : RasterAlphaMode::Opaque;
+        const bool twoSided = (cls & 1u) != 0u;
+        const auto mesh = SelectRasterRoute(alpha, twoSided, {true, true, true, true});
+        CHECK(mesh.backend == RasterBackend::TaskMesh);
+        CHECK(mesh.opaqueRasterClass == cls);
+        const auto indexed = SelectRasterRoute(alpha, twoSided, {true, false, true, false});
+        CHECK(indexed.backend == RasterBackend::IndexedFallback);
+        CHECK(indexed.opaqueRasterClass == cls);
+        CHECK(SelectRasterRoute(alpha, twoSided, {false, true, true, true}).backend ==
+              RasterBackend::LegacyCompatibility);
+        CHECK(SelectRasterRoute(alpha, twoSided, {true, false, false, true}).backend ==
+              RasterBackend::LegacyCompatibility);
+    }
+    CHECK(SelectRasterRoute(RasterAlphaMode::Blend, false, {true, true, true, false}).backend ==
+          RasterBackend::LegacyCompatibility);
+    CHECK(SelectRasterRoute(RasterAlphaMode::Blend, true, {true, true, true, true}).backend ==
+          RasterBackend::Transparent);
+    CHECK(SelectRasterRoute(RasterAlphaMode::Blend, true, {true, true, true, true})
+              .opaqueRasterClass == kNoOpaqueRasterClass);
     return 0;
 }
