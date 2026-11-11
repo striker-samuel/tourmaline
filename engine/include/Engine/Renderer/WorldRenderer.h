@@ -2441,6 +2441,9 @@ class WorldRenderer : public IRenderer {
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 4> m_gpuSceneGiFsModules{};
     std::array<smvk::ShaderProgram, 4> m_gpuSceneRasterGiPrograms{};
     std::array<smvk::ShaderProgram, 4> m_gpuSceneTaskGiPrograms{};
+    std::array<smvk::Holder<smvk::ShaderModuleHandle>, 4> m_gpuSceneGiA2cFsModules{};
+    std::array<smvk::ShaderProgram, 4> m_gpuSceneRasterGiA2cPrograms{};
+    std::array<smvk::ShaderProgram, 4> m_gpuSceneTaskGiA2cPrograms{};
     smvk::ShaderProgram m_gpuSceneRasterDepthProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterGbufferFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterGbufferProgram{};

@@ -11566,6 +11566,33 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gpuSceneGiFsModules[gi] =
                     m_context->CreateShaderModule(smvk::shaders::Read(path), "GpuSceneGiFS");
             }
+            if (m_gpuSceneGiA2cFsModules[gi].empty()) {
+                const char* a2cPath = gi == 2u
+                    ? "content/shaders/gfxmesh_lit.frag.hlsl.gi2a2c.spv"
+                    : "content/shaders/gfxmesh_lit.frag.hlsl.gi3a2c.spv";
+                m_gpuSceneGiA2cFsModules[gi] =
+                    m_context->CreateShaderModule(smvk::shaders::Read(a2cPath), "GpuSceneGiA2CFS");
+            }
+            if (!m_gpuSceneGiA2cFsModules[gi].empty()) {
+                smvk::Shader fs{.module = m_gpuSceneGiA2cFsModules[gi],
+                                .entryPoint = "mainPS",
+                                .stage = smvk::ShaderStage::Fragment};
+                if (!m_gpuSceneRasterVsModule.empty() &&
+                    m_gpuSceneRasterGiA2cPrograms[gi].shaderCount != 2) {
+                    smvk::Shader vs{.module = m_gpuSceneRasterVsModule,
+                                    .entryPoint = "mainVS",
+                                    .stage = smvk::ShaderStage::Vertex};
+                    m_gpuSceneRasterGiA2cPrograms[gi] = {.shaders = {vs, fs}, .shaderCount = 2};
+                }
+                if (!m_gpuSceneTaskAsModule.empty() && !m_gpuSceneTaskMsModule.empty() &&
+                    m_gpuSceneTaskGiA2cPrograms[gi].shaderCount != 3) {
+                    smvk::Shader as{.module = m_gpuSceneTaskAsModule,
+                                    .entryPoint = "mainAS", .stage = smvk::ShaderStage::Task};
+                    smvk::Shader ms{.module = m_gpuSceneTaskMsModule,
+                                    .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh};
+                    m_gpuSceneTaskGiA2cPrograms[gi] = {.shaders = {as, ms, fs}, .shaderCount = 3};
+                }
+            }
             if (!m_gpuSceneGiFsModules[gi].empty()) {
                 smvk::Shader fs{.module = m_gpuSceneGiFsModules[gi],
                                 .entryPoint = "mainPS",
@@ -16121,9 +16148,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             if (sceneRasterTwoSided)
                 drawTaskBin(1u, sceneTaskLit, smvk::CullMode::None, msaaSettings);
             const bool taskA2c =
-                sceneGiVariant == 0u && useMsaa && m_msaaAlphaToCoverage &&
-                m_gpuSceneTaskMaskedA2cProgram.shaderCount == 3;
-            auto& masked = taskA2c ? m_gpuSceneTaskMaskedA2cProgram : sceneTaskLit;
+                useMsaa && m_msaaAlphaToCoverage &&
+                (sceneGiVariant == 0u
+                     ? m_gpuSceneTaskMaskedA2cProgram.shaderCount == 3
+                     : m_gpuSceneTaskGiA2cPrograms[sceneGiVariant].shaderCount == 3);
+            auto& masked = taskA2c
+                ? (sceneGiVariant == 0u ? m_gpuSceneTaskMaskedA2cProgram
+                                        : m_gpuSceneTaskGiA2cPrograms[sceneGiVariant])
+                : sceneTaskLit;
             const auto taskMsaa = taskA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
             if (sceneRasterMasked)
                 drawTaskBin(2u, masked, smvk::CullMode::Back, taskMsaa);
@@ -16206,11 +16238,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
             // The lit FS already applies the material's baseColor texture
             // alpha cutoff, using the flat per-work material ID at location 7.
-            const bool sceneMaskedA2c = sceneGiVariant == 0u &&
-                                        useMsaa && m_msaaAlphaToCoverage &&
-                                        m_gpuSceneRasterMaskedA2cProgram.shaderCount == 2;
+            const bool sceneMaskedA2c = useMsaa && m_msaaAlphaToCoverage &&
+                (sceneGiVariant == 0u
+                     ? m_gpuSceneRasterMaskedA2cProgram.shaderCount == 2
+                     : m_gpuSceneRasterGiA2cPrograms[sceneGiVariant].shaderCount == 2);
             auto& sceneMaskedProgram =
-                sceneMaskedA2c ? m_gpuSceneRasterMaskedA2cProgram : sceneIndexedLit;
+                sceneMaskedA2c
+                    ? (sceneGiVariant == 0u ? m_gpuSceneRasterMaskedA2cProgram
+                                            : m_gpuSceneRasterGiA2cPrograms[sceneGiVariant])
+                    : sceneIndexedLit;
             const auto sceneMaskedMsaa =
                 sceneMaskedA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
             if (sceneRasterMasked) {
