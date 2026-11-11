@@ -61,6 +61,7 @@
 #include "ProjectRuntime.h"
 
 #include <Engine/Asset/cluster_serializer.h> // ExternalTextureResolver
+#include <Engine/Scene/scene_node_id.h>
 #include <Engine/Renderer/ShapeScene.h>
 
 #include <cstdint>
