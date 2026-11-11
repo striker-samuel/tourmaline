@@ -13939,13 +13939,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // already initialized this view through the legacy fallback renderer.
     // Do not build a second, conflicting pyramid for the same eye.
     if ((gpuTemporalReady || m_gpuSceneTaskMeshActive) && !gfxFilterOn) {
-        gpuTemporalReady = m_gfxRenderer.PrepareGpuSceneHiz(*m_context,
-                                                            *m_rendergraph,
-                                                            m_renderViews.Get(mainRenderView),
-                                                            m_cameraPositioner.cameraPosition_,
-                                                            temporalFlight,
-                                                            renderExtent.width,
-                                                            renderExtent.height);
+        const bool hizPrepared = m_gfxRenderer.PrepareGpuSceneHiz(
+            *m_context, *m_rendergraph,
+            m_renderViews.Get(mainRenderView),
+            m_cameraPositioner.cameraPosition_, temporalFlight,
+            renderExtent.width, renderExtent.height);
+        // Preparing an HZB for task/mesh MUST NOT turn on indexed-command
+        // temporal mode (its seed/remainder command buffers do not exist).
+        if (gpuTemporalReady) gpuTemporalReady = hizPrepared;
+        if (!hizPrepared && m_gpuSceneTaskTemporalReady) {
+            m_gpuSceneTaskTemporalReady = false;
+            m_gpuSceneTaskMeshRuntime.InvalidateTemporal();
+        }
     }
     if (gpuTemporalReady && (m_gfxRenderer.LastSlot() == UINT32_MAX || cullingFrozen))
         gpuTemporalReady = false;

@@ -154,7 +154,10 @@ class TaskMeshRuntime {
         next.clear = {next.current, capacity, 0u, 0u, 0u};
         if (previousTemporalFlight < Flights && previousTemporalFlight != flight) {
             const auto& previous = temporalFlights[previousTemporalFlight];
-            if (!previous.history.empty() && previous.capacity != 0u) {
+            // The hash probe mapping depends on table capacity. A resize
+            // invalidates the previous cache, never interprets it through
+            // the current frame's different mask.
+            if (!previous.history.empty() && previous.capacity == capacity) {
                 next.previous = ctx.GetBufferDeviceAddress(previous.history);
                 next.previousLogical = previous.logical;
                 next.previousValid = next.previous != 0u ? 1u : 0u;
