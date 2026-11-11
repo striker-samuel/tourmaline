@@ -116,12 +116,12 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         roughness *= mrSample.g;
         metallic *= mrSample.b;
     }
-    const float metalFlag = (saturate(metallic) >= 0.50f) ? 1.0f : 0.0f;
+    const float metalValue = saturate(metallic);
     float3 n = normalize(IN.normal);
     if (!IN.isFrontFace)
         n = -n; // the lit family's back-face flip (see PSIn)
     OUT.gbuffer = float4(OctEncodeNormal(n),
-        clamp(roughness, 0.04f, 1.0f), metalFlag);
+        clamp(roughness, 0.04f, 1.0f), metalValue);
     // Layer 2 (the F0 chroma — see gbuffer.frag.hlsl): baseColorFactor x
     // the baseColor texel (a fresh tap — the alpha fetch above is scoped
     // to the discard gate), A = materialId/255.
