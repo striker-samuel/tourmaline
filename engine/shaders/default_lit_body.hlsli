@@ -1576,66 +1576,6 @@ float envVis = 1.0f;
         // Debug flat colors carry no AO-sensitive lighting: export 0.
         OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);
         OUT.outEnvSpec = float4(0.0f, 0.0f, 0.0f, 0.0f);
-        // TMP-DIAG (GPU Scene GI parity): the volume-input probes run
-        // BEFORE the giSource magenta gate so they read the raw inputs on
-        // every pixel (covered or not).
-        //   5 = fractional world position at a fixed 4-unit scale (the
-        //       absolute coordinate SgGiVolumeWeight tests, wrapped so the
-        //       pattern is interpretable without clipping)
-        //   6 = grayscale max convex-volume weight at IN.worldPos
-        //   7 = color-coded per-tile volume mask (bit0=R, bit1=G, bit2=B)
-        if (giDbgMode == 5u)
-        {
-            OUT.outColor = float4(frac(IN.worldPos * (1.0f / 4.0f)), 1.0f);
-            return OUT;
-        }
-        if (giDbgMode == 6u)
-        {
-            float w = 0.0f;
-            [loop]
-            for (int dv = int(min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX)) - 1;
-                 dv >= 0; --dv)
-            {
-                const GiVolumeGpu dV = frame.giVolumes.Get().volumes[uint(dv)];
-                w = max(w, SgGiVolumeWeight(frame, dV, IN.worldPos));
-            }
-            OUT.outColor = float4(w, w, w, 1.0f);
-            return OUT;
-        }
-        if (giDbgMode == 7u)
-        {
-            const uint mask = SgGiVolumeTileMask(frame, clipPos.xy);
-            OUT.outColor = float4((mask & 1u) ? 1.0f : 0.0f,
-                                  (mask & 2u) ? 1.0f : 0.0f,
-                                  (mask & 4u) ? 1.0f : 0.0f,
-                                  1.0f);
-            return OUT;
-        }
-        // 8 = frame.giVolumesEnabled (red) + giVolumeCount/8 (green): the
-        //     composite's early-return gate + the loaded volume count.
-        if (giDbgMode == 8u)
-        {
-            OUT.outColor = float4(frame.giVolumesEnabled != 0u ? 1.0f : 0.0f,
-                                  float(min(frame.giVolumeCount, 8u)) / 8.0f,
-                                  0.0f,
-                                  1.0f);
-            return OUT;
-        }
-        // 9 = compile-time GI permutation: red = GI_NONE, blue = GI_REGULAR,
-        //     green = GI_VOLUMES. Confirms the selected FS variant per path.
-        if (giDbgMode == 9u)
-        {
-            float3 c = float3(0.0f, 0.0f, 0.0f);
-#if defined(GI_VOLUMES)
-            c = float3(0.0f, 1.0f, 0.0f);
-#elif defined(GI_REGULAR)
-            c = float3(0.0f, 0.0f, 1.0f);
-#elif defined(GI_NONE)
-            c = float3(1.0f, 0.0f, 0.0f);
-#endif
-            OUT.outColor = float4(c, 1.0f);
-            return OUT;
-        }
         if (giSource == 0u)
         {
             OUT.outColor = float4(0.8f, 0.0f, 0.8f, 1.0f);

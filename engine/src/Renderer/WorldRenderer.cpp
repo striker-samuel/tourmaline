@@ -1333,10 +1333,10 @@ bool WorldRenderer::onAttach() {
     // 4 pre-normalization visibility weight sum (wSum).
     if (const char* giDbgEnv = std::getenv("TOURMALINE_GI_DEBUG")) {
         const int mode = std::atoi(giDbgEnv);
-        if (mode >= 0 && mode <= 9)
+        if (mode >= 0 && mode <= 4)
             m_giDebug = mode;
         else
-            std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..8\n";
+            std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..4\n";
     }
     // GI probe spheres for headless runs (the "Probe points" panel
     // checkbox's twin — the 3D instanced visual, Rendergraph/giprobe.h:
@@ -4829,7 +4829,7 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     // the views must survive source isolation. The level byte is
     // retained for the retired octree shader ABI.
     data.giIntensity = m_giIntensity;
-    data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 9)) & 0xffu) |
+    data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 4)) & 0xffu) |
                    (uint32_t(std::clamp(m_giDebugLevel, 0, 7) & 0xff) << 8);
     // The LEGACY .sggi probe-volume frame block — RETIRED (stage 3 of
     // the octree retirement): the loader is deleted, so the whole
