@@ -9,6 +9,7 @@
 // PASS/FAIL, the process exits nonzero on any failure.
 
 #include <algorithm>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -3250,7 +3251,7 @@ void TestVertexPack() {
 
     // Packed shading stream: 16 bytes + the separate OPTIONAL lightmap
     // stream (8 bytes, chart data only), fixed member offsets (the Vulkan
-    // attribute tables in mesh.h mirror these: StaticLayout/SkinnedLayout
+    // attribute tables in mesh.h mirror these: tour::vertex_layouts::Static/tour::vertex_layouts::Skinned
     // bind color at 0/uv at 4/normal at 8/tangent at 12; the lightmapped
     // layout's binding 2 fetches chartUv as RG16_UNorm and chart as
     // R32_UInt from its own stream).
@@ -3352,13 +3353,13 @@ void TestVertexLayoutShaderAbi() {
     // ---- 1) every registered layout passes the structural validator.
     {
         const std::pair<const VertexLayoutDesc*, const char*> layouts[] = {
-            {&StaticLayout, "Static"},
-            {&StaticLightmappedLayout, "StaticLightmapped"},
-            {&SkinnedLayout, "Skinned"},
-            {&DebugLineLayout, "DebugLine"},
-            {&TerrainFullLayout, "TerrainFull"},
-            {&TerrainReducedLayout, "TerrainLow"},
-            {&TerrainFarLayout, "TerrainFar"},
+            {&tour::vertex_layouts::Static, "Static"},
+            {&tour::vertex_layouts::StaticLightmapped, "StaticLightmapped"},
+            {&tour::vertex_layouts::Skinned, "Skinned"},
+            {&tour::vertex_layouts::DebugLine, "DebugLine"},
+            {&tour::vertex_layouts::TerrainFull, "TerrainFull"},
+            {&tour::vertex_layouts::TerrainReduced, "TerrainLow"},
+            {&tour::vertex_layouts::TerrainFarGrid, "TerrainFar"},
         };
         bool allValid = true;
         for (const auto& [desc, name] : layouts) {
@@ -3404,20 +3405,20 @@ void TestVertexLayoutShaderAbi() {
     // a same-location attribute with enough components.
     {
         const std::pair<const char*, const VertexLayoutDesc*> pairs[] = {
-            {"content/shaders/default.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/gfxfiltered.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/shadow.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/motionvector.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/meshdebug.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/meshparticles_draw.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/placement_instanced.vert.hlsl.spv", &StaticLayout},
+            {"content/shaders/default.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/gfxfiltered.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/shadow.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/motionvector.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/meshdebug.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/meshparticles_draw.vert.hlsl.spv", &tour::vertex_layouts::Static},
+            {"content/shaders/placement_instanced.vert.hlsl.spv", &tour::vertex_layouts::Static},
             // The direct VS also carries the SKIN tail (locations 5/6):
             // the skinned layout must cover it.
-            {"content/shaders/default.vert.hlsl.spv", &SkinnedLayout},
-            {"content/shaders/gfxfiltered.vert.hlsl.spv", &SkinnedLayout},
-            {"content/shaders/terrain.vert.hlsl.spv", &TerrainFullLayout},
-            {"content/shaders/terrainfar.vert.hlsl.spv", &TerrainFarLayout},
-            {"content/shaders/debugline.vert.hlsl.spv", &DebugLineLayout},
+            {"content/shaders/default.vert.hlsl.spv", &tour::vertex_layouts::Skinned},
+            {"content/shaders/gfxfiltered.vert.hlsl.spv", &tour::vertex_layouts::Skinned},
+            {"content/shaders/terrain.vert.hlsl.spv", &tour::vertex_layouts::TerrainFull},
+            {"content/shaders/terrainfar.vert.hlsl.spv", &tour::vertex_layouts::TerrainFarGrid},
+            {"content/shaders/debugline.vert.hlsl.spv", &tour::vertex_layouts::DebugLine},
         };
         bool abiOk = true;
         int reflected = 0;
