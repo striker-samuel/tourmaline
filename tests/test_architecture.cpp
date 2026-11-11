@@ -779,7 +779,7 @@ int main() {
             {"Renderer/geometry_streamer.h", 10, 0},
             {"Renderer/texture_streamer.h", 4, 0},
             {"Renderer/mesh.h", 35, 0}, // the data model: Material/StaticMesh/packed-vertex
-                                        // families (VertexLayoutId + the layout table stay smvk::)
+                                        // families (vertex layout descriptions are engine-owned)
             {"Renderer/gpu_scene_static.h",
              1,
              1}, // StaticMeshUpload fwd-becomes-using + namespace gfx = ::tour::gfx
