@@ -54,6 +54,18 @@ struct TaskMeshInputs {
     uint32_t historyCapacity = 0;
     uint32_t historyValid = 0;
 };
+// Clear once before seed; dispatch ceil(capacity / 256) workgroups.
+struct TaskMeshHistoryClearPush {
+    uint64_t current = 0;
+    uint32_t capacity = 0, pad0 = 0, pad1 = 0, pad2 = 0;
+};
+static_assert(sizeof(TaskMeshHistoryClearPush) == 24);
+struct TaskMeshTemporalFrame {
+    uint64_t current = 0, previous = 0;
+    uint32_t capacity = 0, previousValid = 0;
+    smvk::LogicalBufferHandle currentLogical{}, previousLogical{};
+    TaskMeshHistoryClearPush clear{};
+};
 struct TaskMeshDispatchPlan {
     TaskMeshGroupCountPush count{};
     ParallelWorkBlockPush scanBlock{};
@@ -85,8 +97,86 @@ class TaskMeshRuntime {
         smvk::BufferHandle groupsBacking{}, indirectBacking{}, offsetsBacking{};
     };
     std::array<Flight, Flights> flights{};
+    struct TemporalFlight {
+        smvk::Holder<smvk::BufferHandle> history;
+        smvk::LogicalBufferHandle logical{};
+        smvk::BufferHandle backing{};
+        size_t allocatedBytes = 0;
+        uint32_t capacity = 0;
+    };
+    std::array<TemporalFlight, Flights> temporalFlights{};
+    uint32_t previousTemporalFlight = UINT32_MAX;
+    uint64_t temporalRevision = 0;
+
+    // Caller derives revision from source topology AND meshlet geometry.
+    // No readback and no parallel instance database: only exact meshlet keys.
+    // A saturated table sets overflow and Main fails open, never loses geometry.
+    // In-flight handoff must be synchronized in the RenderGraph before reading
+    // previousLogical and before Main reads the current frame's writes.
+    [[nodiscard]] bool PrepareTemporal(smvk::ResourceManager& ctx,
+                                       smvk::RenderGraph& rg,
+                                       uint32_t flight,
+                                       uint32_t expectedMeshlets,
+                                       uint64_t revision,
+                                       TaskMeshTemporalFrame& out) {
+        if (flight >= Flights || expectedMeshlets == 0u) return false;
+        if (revision != temporalRevision) {
+            previousTemporalFlight = UINT32_MAX;
+            temporalRevision = revision;
+        }
+        // Keep target occupancy at or below 50% for the common case.
+        // 1M-entry hard cap is safe: overflow costs culling, not geometry.
+        uint32_t capacity = 256u;
+        const uint64_t target = uint64_t(expectedMeshlets) * 2u;
+        while (uint64_t(capacity) < target && capacity < 1048576u)
+            capacity <<= 1u;
+        TemporalFlight& f = temporalFlights[flight];
+        const size_t bytes = size_t(16u) + size_t(capacity) * 16u;
+        if (f.history.empty() || f.allocatedBytes < bytes) {
+            auto buffer = ctx.CreateBuffer(bytes, smvk::BufferType_Storage,
+                                           "GpuSceneMeshletTemporalHistory");
+            if (buffer.empty()) return false;
+            if (!f.logical.empty()) rg.FreeBuffer(f.logical);
+            f.history = std::move(buffer);
+            f.logical = rg.AddExternalBuffer(f.history, "GpuSceneMeshletTemporalHistory");
+            if (f.logical.empty()) return false;
+            f.backing = smvk::BufferHandle(f.history);
+            f.allocatedBytes = bytes;
+            f.capacity = capacity;
+            if (previousTemporalFlight == flight) previousTemporalFlight = UINT32_MAX;
+        } else {
+            f.capacity = capacity;
+        }
+        TaskMeshTemporalFrame next{};
+        next.current = ctx.GetBufferDeviceAddress(f.history);
+        next.currentLogical = f.logical;
+        next.capacity = capacity;
+        next.clear = {next.current, capacity, 0u, 0u, 0u};
+        if (previousTemporalFlight < Flights && previousTemporalFlight != flight) {
+            const auto& previous = temporalFlights[previousTemporalFlight];
+            if (!previous.history.empty() && previous.capacity != 0u) {
+                next.previous = ctx.GetBufferDeviceAddress(previous.history);
+                next.previousLogical = previous.logical;
+                next.previousValid = next.previous != 0u ? 1u : 0u;
+            }
+        }
+        if (next.current == 0u) return false;
+        out = next;
+        return true;
+    }
+
+    // Call only once seed, remainder and Main passes were all scheduled.
+    void CommitTemporal(uint32_t flight) noexcept {
+        previousTemporalFlight = flight < Flights ? flight : UINT32_MAX;
+    }
+    void InvalidateTemporal() noexcept { previousTemporalFlight = UINT32_MAX; }
 
     void Destroy(smvk::RenderGraph& rg) {
+        for (auto& f : temporalFlights) {
+            if (!f.logical.empty()) rg.FreeBuffer(f.logical);
+            f = TemporalFlight{};
+        }
+        InvalidateTemporal();
         for (auto& f : flights) {
             if (!f.groupsLogical.empty())
                 rg.FreeBuffer(f.groupsLogical);

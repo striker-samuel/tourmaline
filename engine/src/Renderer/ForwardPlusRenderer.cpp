@@ -750,13 +750,17 @@ bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(
     const tour::gpu_scene::TaskMeshGpuPush& tail,
     bool hasDoubleSided,
     bool hasMasked,
-    bool hasMaskedDoubleSided) {
+    bool hasMaskedDoubleSided,
+    bool hizOccluder,
+    smvk::LogicalBufferHandle historyCurrent,
+    smvk::LogicalBufferHandle historyPrevious) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || taskDepth.shaderCount != 2 || indirect.empty() ||
         indirectLogical.empty() || groupsLogical.empty() || offsetsLogical.empty() ||
         workLogical.empty())
         return false;
-    const bool gbufferOn = fc.ssrGbufferWanted;
+    const bool gbufferOn = !hizOccluder && fc.ssrGbufferWanted;
+    if (hizOccluder && fc.hizDepthView.empty()) return false;
     if (gbufferOn && (taskGbuffer.shaderCount != 3 ||
                       fc.gbufferView.empty() || fc.gbuffer2View.empty()))
         return false;
@@ -769,17 +773,17 @@ bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(
     fp->Ensure(ctx, rg, {fc.extent.width, fc.extent.height}, desc, fc.depthViewHandle);
     if (!fp->Valid())
         return false;
+    const auto depthTarget = hizOccluder ? fc.hizDepthView : fc.depthView;
+    const auto load = !hizOccluder && fc.gpuSceneDepthPrimed
+        ? smvk::AttachmentLoadOp::Load : smvk::AttachmentLoadOp::Clear;
     auto& pass = fp->AddDepthPrepass(
-        rg, fc.depthView, {fc.extent.width, fc.extent.height},
-        "GpuSceneTaskMeshDepth",
-        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
-                               : smvk::AttachmentLoadOp::Clear,
+        rg, depthTarget, {fc.extent.width, fc.extent.height},
+        hizOccluder ? "GpuSceneTaskTemporalSeed" : "GpuSceneTaskMeshDepth",
+        load,
         gbufferOn ? fc.gbufferView : smvk::LogicalImageViewHandle{},
-        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
-                               : smvk::AttachmentLoadOp::Clear,
+        load,
         gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
-        fc.gpuSceneDepthPrimed ? smvk::AttachmentLoadOp::Load
-                               : smvk::AttachmentLoadOp::Clear);
+        load);
     smvk::BufferSyncRequest indirectRead{};
     indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
     indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
@@ -791,6 +795,13 @@ bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(
     pass.AddBufferHint(groupsLogical, shaderRead);
     pass.AddBufferHint(offsetsLogical, shaderRead);
     pass.AddBufferHint(workLogical, shaderRead);
+    if (!historyPrevious.empty()) pass.AddBufferHint(historyPrevious, shaderRead);
+    if (!historyCurrent.empty()) {
+        auto visibility = shaderRead;
+        visibility.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead |
+                                             smvk::AccessFlags::ShaderWrite;
+        pass.AddBufferHint(historyCurrent, visibility);
+    }
     const IRenderer::PushConstants scenePush = fc.pc;
     pass.SetRecordingFunc(
         [taskDepth, taskGbuffer, maskedDepth, maskedGbuffer, gbufferOn,
