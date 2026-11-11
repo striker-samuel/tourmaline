@@ -183,7 +183,7 @@ static constexpr uint32_t kMaxViews = 64; // mirrors kMaxRenderViews
 // View::candidateCapacity, page-planned grow-only by FinalizeView), and
 // the cullState counter/diag words sit at the RUNTIME suffix
 // (View::drawCapacity + 0..4) carried to the shaders through the push
-// (BatchCullPush::cullStateCounterWord / FilterPush::cullStateCounterWord)
+// (FilterPush::cullStateCounterWord)
 // — never a compile-time macro. The fail-closed ceilings survive as
 // tour::gfx::kDeclaredMaxDraws / kDeclaredMaxCandidates.)
 
@@ -360,77 +360,6 @@ struct FilterPush {
 };
 static_assert(sizeof(FilterPush) == 256);
 
-// GfxBatchCull push (first compute pass of the frame). Must match HLSL
-// GfxBatchCullPush in gfxfilter.hlsli (212 payload bytes; C++ sizeof 216
-// through uint64 tail padding). One 128-thread workgroup per
-// material-sorted draw; LIVE view (seed/remainder semantics).
-struct BatchCullPush {
-    uint64_t draws = 0;      // this frame's draws (misc2.z = slot base)
-    uint64_t meshes = 0;     // static per-mesh cluster ranges
-    uint64_t clusters = 0;   // static bounds + cones
-    uint64_t meshBounds = 0; // static (draw-level fast-discard gate)
-    uint64_t batches = 0;    // out: candidate slots
-    uint64_t indirect = 0;   // out: filter indirect statics
-    uint64_t seedCmds = 0;   // out: seed commands (instanceCount-gated)
-    uint64_t remCmds = 0;    // out: remainder commands
-    uint64_t kept = 0;       // out (parity region) + in (prev region)
-    uint64_t cullState = 0;  // out: offset-counter zero (group 0)
-    glm::mat4 viewProj{};    // LIVE view
-    glm::vec3 eye{0.0f};
-    // The skinBounds TABLE's own candidate capacity (the drawBound tail's
-    // runtime offset — distinct from candidateCapacity below, which is
-    // THIS view's kept-ring stride / slot bound).
-    uint32_t skinBoundsCandidateCapacity = 0;
-    uint32_t drawCount = 0;
-    uint32_t drawSetMask = DrawSetMask_All; // TemporalView bucket gate
-    uint32_t clusterIndexBase = 0;          // absolute seed firstIndex base
-    uint32_t keptParity = 0;                // 0/1 (prev = 1-parity)
-    uint32_t width = 0;                     // guard-band extent (LIVE view)
-    uint32_t height = 0;
-    // Deformed per-cluster bounds + per-draw deformed union tail
-    // (GfxSkinBounds output, one GfxSkinBoundsTable per flight — the
-    // candidate-capacity cluster entries + the draw-capacity drawBound
-    // tail in ONE buffer, so the one BDA addresses both regions; runtime
-    // capacities since the dynamic cutover). Skinned draws
-    // (GFX_DRAW_SKINNED) cull against THIS table instead of the static
-    // bind-pose clusters[] - the pose can move a cluster clean out of its
-    // bind-pose sphere and the static test would drop it, punching an
-    // animated silhouette hole the seed depth fills with sky; the
-    // draw-level fast discard reads the drawBound tail instead of the
-    // static mesh union (a whole-mesh pose swing outside the bind-pose
-    // union would otherwise drop every slot of the draw). skinBoundsValid =
-    // 0 (no skinned cluster this frame) leaves every draw on the static
-    // tables.
-    uint64_t skinBounds = 0;
-    uint32_t skinBoundsValid = 0;
-    // 1 = the cone test runs for SKINNED clusters too (TOURMALINE_SKIN_CONE=1
-    // — default 0: skinned clusters cull conservative, sphere+frustum only —
-    // Remedy's own shipped call for Alan Wake 2: cone updates built +
-    // measured but SHIPPED DISABLED, their HZB covered the win; this engine's
-    // HZB covers the static geometry the same way).
-    uint32_t skinConeEnabled = 0;
-    // Runtime capacity suffixes (the dynamic-capacity cutover — the retired
-    // compile-time GFX_CULL_STATE_COUNTER / GFX_MAX_BATCH_SLOTS macros died
-    // with it):
-    //   cullStateCounterWord — the counter/diag word base (see
-    //       FilterPush::cullStateCounterWord), zeroed by group 0 below.
-    //   candidateCapacity — the kept-ring parity region stride in uint32
-    //       words (= this (view, flight)'s candidate capacity: region P
-    //       starts at word keptParity * candidateCapacity) AND the
-    //       belt-and-braces bound for every candidate-slot write (the CPU
-    //       build already guarantees base + clusterCount <= capacity).
-    uint32_t cullStateCounterWord = 0;
-    uint32_t candidateCapacity = 0;
-    // Temporal seed/remainder split gate (TOURMALINE_GFX_SEED_HISTORY):
-    // 1 (default) = the temporal split runs (seed = kept && prev-final);
-    // 0 = the diagnostic kill — every kept slot seeds, nothing rides the
-    // remainder lane. The disocclusion A/B lever. (Byte offset 208 — the
-    // HLSL mirror packs to 212; the C++ sizeof rounds to 216 through the
-    // struct's uint64 tail padding, which never leaves the host.)
-    uint32_t seedHistory = 1;
-};
-static_assert(sizeof(BatchCullPush) == 216);
-
 // GfxSkinBounds push (runs between the skinning pass and GfxBatchCull).
 // Must match HLSL GfxSkinBoundsPush in gfxfilter.hlsli (64 bytes). One
 // 128-thread workgroup per draw; threads stride the draw's clusters and
@@ -483,36 +412,6 @@ struct ConeDebugPush {
     uint32_t pad2 = 0;
 };
 static_assert(sizeof(ConeDebugPush) == 56);
-
-// GfxDrawCull push (after GfxHiz, before the filter). Must match HLSL
-// GfxDrawCullPush in gfxfilter.hlsli (144 bytes). One thread per draw;
-// FROZEN view (the gfx view record matrix — the debug culling freeze).
-// Skinned draws test the DEFORMED union bound (skinBounds' drawBound tail)
-// in the frustum fast-reject and SKIP the HZB occlusion test (conservative
-// posture — the fog evidence pinned the visible drops on the lossy filter
-// stages; the occluder-depth HZB is built by the skinned occluder leg);
-// skinBoundsValid = 0 keeps the whole fast-reject skipped for them (the
-// static bind-pose union can swing a whole animated mesh outside itself —
-// skipping only loses the reject).
-struct DrawCullPush {
-    uint64_t draws = 0;
-    uint64_t meshBounds = 0; // static (object-space union bounds)
-    uint64_t cullState = 0;  // out: verdict words [0, drawCount)
-    uint64_t hzb = 0;
-    uint64_t skinBounds = 0; // deformed unions (skinned draws; the table tail)
-    glm::mat4 viewProj{};    // FROZEN view
-    glm::vec3 eye{0.0f};
-    // The skinBounds TABLE's own candidate capacity (the drawBound tail's
-    // runtime offset — see the HLSL GfxSkinBoundsTable's flat-layout rule).
-    uint32_t skinBoundsCandidateCapacity = 0;
-    uint32_t cullFlags = 0; // GFX_CULL_OCCLUSION / GFX_CULL_HZBSKIPMASKED
-    uint32_t drawCount = 0;
-    uint32_t width = 0; // guard-band extent (== HZB target)
-    uint32_t height = 0;
-    uint32_t hizMips = 0;
-    uint32_t skinBoundsValid = 0; // 0: skinned draws keep the blanket skip
-};
-static_assert(sizeof(DrawCullPush) == 144);
 
 // Filtered-path VS tail push (gfxfiltered.vert.hlsl + the shared seed
 // prologue, 40 bytes). Pushed at kFilteredVsPushOffset (the main pass'
@@ -1139,15 +1038,6 @@ struct State : StaticGeometry {
     // link stays GPU-resident through the kept-bit parity rings on the
     // views).
     uint32_t frameCounter = 0; // BeginFrame ++; keptParity source
-    // TOURMALINE_GFX_SEED_HISTORY=0 (the disocclusion diagnostic): kill
-    // the temporal seed/remainder split — every kept slot seeds. Set once
-    // from the RunConfig snapshot via GfxRenderer::SetSeedHistoryKilled;
-    // rides BatchCullPush::seedHistory.
-    bool seedHistoryKilled = false;
-    smvk::Holder<smvk::ShaderModuleHandle> batchCullModule;
-    smvk::ShaderProgram batchCullProgram{};
-    smvk::Holder<smvk::ShaderModuleHandle> drawCullModule;
-    smvk::ShaderProgram drawCullProgram{};
     // Draw-level texture-demand source (gfxfilter.cs.hlsl
     // PublishDrawDemand; see the FilterPush tail + the demand API below).
     // meshBounds: per-mesh union bound over the mesh's clusters (xyz
@@ -1298,8 +1188,6 @@ inline constexpr const char* kHizCsPath = "content/shaders/hzb.cs.hlsl.spv";
 // The .min variant twin (CMake VARIANTS: HZB_REDUCE_MAX=0 — the culling
 // MIN pyramid; the base .spv is the ssgi MAX build).
 inline constexpr const char* kHizSpdCsPath = "content/shaders/hzb_spd.cs.hlsl.min.spv";
-inline constexpr const char* kGfxBatchCullCsPath = "content/shaders/gfxbatchcull.cs.hlsl.spv";
-inline constexpr const char* kGfxDrawCullCsPath = "content/shaders/gfxdrawcull.cs.hlsl.spv";
 inline constexpr const char* kGfxSkinBoundsCsPath = "content/shaders/gfxskinbounds.cs.hlsl.spv";
 inline constexpr const char* kGfxConeDebugCsPath = "content/shaders/gfxcone_debug.cs.hlsl.spv";
 
@@ -1355,21 +1243,6 @@ void SetConeDebug(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg, b
 [[nodiscard]] inline smvk::BufferHandle ConeDebugLinesBuffer(const State& s) {
     return s.coneDebugLines; // Holder's implicit handle conversion
 }
-// First compute pass of the frame (before the seed pass): one workgroup
-// per draw; sphere + cone verdicts, temporal seed/remainder commands,
-// batch array + filter indirect statics, kept bits.
-smvk::RenderPass& AddBatchCullPass(State& s, smvk::RenderGraph& rg, uint32_t view);
-void PushAndDispatchBatchCull(State& s,
-                              smvk::CommandBuffer& cmd,
-                              smvk::ResourceManager& ctx,
-                              uint32_t view);
-// After the HZB passes, before the filter: one thread per draw; mesh-bound
-// frustum (frozen view) + HZB occlusion verdicts.
-smvk::RenderPass& AddDrawCullPass(State& s, smvk::RenderGraph& rg, uint32_t view);
-void PushAndDispatchDrawCull(State& s,
-                             smvk::CommandBuffer& cmd,
-                             smvk::ResourceManager& ctx,
-                             uint32_t view);
 // GPU-mode seed/remainder ranges (positional candidate spans, bucket-major;
 // identical for both passes — the GPU-written instanceCounts gate draws).
 [[nodiscard]] const std::vector<SeedRange>& CullRanges(const State& s, uint32_t view);
@@ -1647,14 +1520,6 @@ void UploadShadowList(State& s,
 
 // ---- Hierarchical-Z (T2 build, T4 consumer) ----
 bool EnsureHizShaders(State& s, smvk::ResourceManager& ctx, const char* csPath = kHizCsPath);
-// Cull chain programs (best effort: failure skips the chain's passes
-// loudly at record time — AppendPasses gates on the programs).
-bool EnsureBatchCullShaders(State& s,
-                            smvk::ResourceManager& ctx,
-                            const char* csPath = kGfxBatchCullCsPath);
-bool EnsureDrawCullShaders(State& s,
-                           smvk::ResourceManager& ctx,
-                           const char* csPath = kGfxDrawCullCsPath);
 // (Re)creates the view's HZB buffer for w/h (frees the old logical).
 // Resets historyValid when the size drifts (stale seed geometry extent).
 // Returns false on zero extent or allocation failure (history invalid).
