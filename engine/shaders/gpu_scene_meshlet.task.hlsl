@@ -120,6 +120,21 @@ void mainAS(uint3 groupId : SV_GroupID,
         }
     }
 
+    // Phase partition uses persistent instance (slot,generation), never
+    // transient work slot or meshlet index. The host MUST provide a
+    // completed visibility snapshot for phases 1/2. On invalid history,
+    // route the frame through phase 0 rather than silently dropping work.
+    if (valid && p.visibilityPhase != 0u) {
+        const uint slot = work.identity.x;
+        const bool inHistory = slot < p.visibilityHistorySlots &&
+                               slot < GS_MAX_INSTANCES;
+        const bool previousVisible = inHistory &&
+            p.visibilityHistory.Get().generations[slot] == work.identity.y;
+        valid = inHistory && (p.visibilityPhase == 1u
+                                  ? previousVisible
+                                  : (p.visibilityPhase == 2u && !previousVisible));
+    }
+
     bool keep=false;
     uint clusterId=0u;
     if (valid && lane<group.clusterCount) {
@@ -132,7 +147,10 @@ void mainAS(uint3 groupId : SV_GroupID,
             if (keep && p.coneEnabled!=0u &&
                 (group.rasterClass&1u)==0u)
                 keep=!ConeCulled(c,inst,view);
-            if (keep && p.hizValid!=0u)
+            // Seed meshlets build the Hi-Z pyramid; testing them against
+            // that same pyramid would self-occlude. Only the remainder
+            // may be tested after seed depth has been rasterized.
+            if (keep && p.hizValid!=0u && p.visibilityPhase!=1u)
                 keep=!MeshletOccluded(c.b,inst,p);
         }
     }

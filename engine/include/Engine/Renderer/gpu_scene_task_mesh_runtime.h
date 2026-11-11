@@ -49,6 +49,9 @@ struct TaskMeshInputs {
     uint32_t hizWidth = 0, hizHeight = 0, hizMips = 0, hizValid = 0;
     uint64_t meshletVertices = 0;  // indexed-meshlet unique vertex windows
     uint64_t meshletTriangles = 0; // indexed-meshlet local triangle ids
+    uint64_t visibilityHistory = 0; // must be from a completed prior submission
+    uint32_t visibilityHistorySlots = 0;
+    uint32_t visibilityPhase = 0; // 0 full; seed/remainder reserved for split passes
 };
 struct TaskMeshDispatchPlan {
     TaskMeshGroupCountPush count{};
@@ -108,6 +111,13 @@ class TaskMeshRuntime {
             in.geometryCount > 65535u || in.clusterCount > 4194304u ||
             in.instanceCount > 4194304u || in.indexWordCapacity > 65536u * 128u * 3u ||
             in.vertexCapacity > 44739242u)
+            return false;
+        // No partial temporal admission. An incomplete/missing history
+        // must select full phase 0, never seed or remainder in isolation.
+        if (in.visibilityPhase > 2u ||
+            (in.visibilityPhase != 0u &&
+             (!in.visibilityHistory || in.visibilityHistorySlots < in.instanceCount ||
+              in.visibilityHistorySlots > 4194304u)))
             return false;
         const uint64_t groupsPerWork = (uint64_t(in.worstMeshlets) + 31u) / 32u;
         const uint64_t upperBound = uint64_t(in.workCapacity) * groupsPerWork;
@@ -208,7 +218,10 @@ class TaskMeshRuntime {
                             in.hizMips,
                             in.hizValid,
                             in.meshletVertices,
-                            in.meshletTriangles};
+                            in.meshletTriangles,
+                            in.visibilityHistory,
+                            in.visibilityHistorySlots,
+                            in.visibilityPhase};
         ctx.UploadDataToBuffer(
             f.params,
             &p,

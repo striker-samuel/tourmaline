@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include <Engine/Renderer/gpu_scene_task_mesh.h>
 #include <Engine/Renderer/gpu_scene_task_mesh_abi.h>
+#include <Engine/Renderer/gpu_scene_task_visibility.h>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -67,5 +68,25 @@ int main() {
     std::array<MeshletRange, 1> huge{{{0u, 0xffffffffu, false}}};
     CHECK(!TaskMeshletPlan::Build(huge, largeClass, 128u, plan));
     CHECK(plan.classes[2].size() == 128u);
+    // Phase 0 draws every valid task group regardless of snapshot state.
+    const std::array<uint32_t, 3> previous{{3u, 0u, 9u}};
+    const std::array<TaskVisibilityIdentity, 4> now{{
+        {0u, 3u}, {1u, 4u}, {2u, 10u}, {0u, 7u}}};
+    for (auto identity : now)
+        CHECK(TaskVisibilityInPhase(identity, previous, TaskVisibilityPhase::Full));
+    CHECK(TaskVisibilityInPhase(now[0], previous, TaskVisibilityPhase::Seed));
+    CHECK(!TaskVisibilityInPhase(now[0], previous, TaskVisibilityPhase::Remainder));
+    CHECK(!TaskVisibilityInPhase(now[1], previous, TaskVisibilityPhase::Seed));
+    CHECK(TaskVisibilityInPhase(now[1], previous, TaskVisibilityPhase::Remainder));
+    CHECK(TaskVisibilityInPhase(now[2], previous, TaskVisibilityPhase::Remainder));
+    CHECK(TaskVisibilityInPhase(now[3], previous, TaskVisibilityPhase::Remainder));
+    CHECK(!TaskVisibilityInPhase({3u, 1u}, previous, TaskVisibilityPhase::Seed));
+    CHECK(!TaskVisibilityInPhase({0u, 0u}, previous, TaskVisibilityPhase::Seed));
+    CHECK(!TaskVisibilityInPhase(now[0], previous, TaskVisibilityPhase::Full, false));
+    for (auto identity : now) {
+        const bool seed = TaskVisibilityInPhase(identity, previous, TaskVisibilityPhase::Seed);
+        const bool remainder = TaskVisibilityInPhase(identity, previous, TaskVisibilityPhase::Remainder);
+        CHECK(seed != remainder); // exact partition, no duplicate draw
+    }
     return 0;
 }
