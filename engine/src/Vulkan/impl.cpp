@@ -58,6 +58,7 @@
 #include <Engine/Profile/aftermath_sdk.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/RHI/swapchain.h>
+#include <Engine/RHI/vulkan_layer_filter.h>
 #include <Engine/Renderer/mesh.h> // ValidateVertexLayout (pipeline build)
 #include <Engine/Rendergraph/dlss.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -12391,6 +12392,10 @@ VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle log
 }
 
 bool tour::App::Initialize() {
+    // Loader implicit overlays load regardless of VkInstanceCreateInfo layer counts.
+    // Filter crash-prone hooks before DLSS/Volk makes any Vulkan loader call.
+    smvk::vulkan_layers::DisableKnownBadLayers();
+
     // NVIDIA Streamline (DLSS) — regular (non-manual) integration: slInit
     // runs before any Vulkan call and volk is pointed at the interposer's
     // vkGetInstanceProcAddr, so instance/device/swapchain/acquire/present
