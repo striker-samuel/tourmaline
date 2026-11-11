@@ -281,85 +281,6 @@ static_assert(sizeof(TextureMeta) == 8);
 // skips it; the min-publication starts from this fill every frame).
 inline constexpr uint32_t kDemandNoReport = 0xFFFFFFFFu;
 
-// Compute push. Must match HLSL GfxFilterPush in gfxfilter.hlsli (256 bytes).
-struct FilterPush {
-    uint64_t positions = 0;
-    uint64_t indices = 0; // cluster-ordered index buffer (owned)
-    uint64_t clusters = 0;
-    uint64_t batches = 0;
-    uint64_t draws = 0;
-    uint64_t filtered = 0;
-    uint64_t indirect = 0;
-    // Deformed per-cluster bounds + per-draw deformed union tail
-    // (GfxSkinBounds output, one GfxSkinBoundsTable per flight — the
-    // candidate-capacity cluster entries + the draw-capacity drawBound
-    // tail in ONE buffer, so the one BDA addresses both regions; both
-    // capacities are runtime state since the dynamic cutover). Skinned
-    // draws cull against THIS table instead of the static bind-pose
-    // clusters[] - the pose can move a cluster clean out of its
-    // bind-pose sphere and the
-    // static test would drop it; the draw-level fast rejects + the demand
-    // publisher read the drawBound tail instead of the static mesh unions.
-    // skinBoundsValid = 0 (no skinned cluster this frame) leaves every draw
-    // on the static tables.
-    uint64_t skinBounds = 0;
-    glm::mat4 viewProj{};
-    glm::vec3 eye{0.0f};
-    // The skinBounds TABLE's own candidate capacity (the drawBound tail's
-    // runtime offset — see the HLSL GfxSkinBoundsTable's flat-layout rule;
-    // filled from State::skinBoundsCandidateCap[frameIndex]).
-    uint32_t skinBoundsCandidateCapacity = 0;
-    uint32_t cullFlags = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t batchCount = 0;
-    // GPU cull chain: kept-bit parity (0/1) for the kept-region lookup.
-    uint32_t keptParity = 0;
-    uint32_t skinBoundsValid = 0;
-    // T4 occlusion/contribution inputs (0/empty disables the tests).
-    uint64_t hzb = 0; // BDA of the MIN-reduced HZB float buffer
-    uint32_t hizWidth = 0;
-    uint32_t hizHeight = 0;
-    uint32_t hizMips = 0;
-    float minContribution = 0.0f; // px^2 footprint threshold (0 = off)
-    // Filtered-output region base (uint32 indices into the static index
-    // monoblock) for this dispatch's flight slice. The CS writes indirect
-    // firstIndex = indexBase + outputOffset so draws address the monoblock
-    // absolutely and the index binding never switches buffers.
-    uint32_t indexBase = 0;
-    // The cullState counter/diag word base (the RUNTIME draw-capacity
-    // suffix — the retired compile-time GFX_CULL_STATE_COUNTER macro died
-    // with the dynamic-capacity cutover): the filtered-offset allocation
-    // counter is word cullStateCounterWord, the four diag counters
-    // (empty/overflow/allocated/gated) follow it. Set by PushAndDispatch
-    // from this (view, flight)'s View::drawCapacity.
-    uint32_t cullStateCounterWord = 0;
-    // Draw-level texture-demand inputs (PushAndDispatch zero-gates
-    // textureMetaCount when ANY of these BDAs is null — a null BDA
-    // dereference is an MMU fault and takes the whole device down; same
-    // belt-and-braces rule as the HZB inputs, and the shader's single
-    // PublishDrawDemand gate).
-    uint64_t meshBounds = 0;       // BDA of the per-mesh union-bound table
-    uint64_t materials = 0;        // BDA of THIS frame's MaterialValues slice
-    uint64_t textureMeta = 0;      // BDA of the per-bindless-slot meta table
-    uint64_t textureDemand = 0;    // BDA of this flight's demand ring slice
-    uint32_t textureMetaCount = 0; // live slot count (atomic range bound)
-    float mipBias = 0.0f;          // mirrors TextureStreamerConfig::mipBias
-    // GPU cull chain inputs (always the kept-bit region + cullState):
-    //   kept      — this frame's kept-bit region. gfxbatchcull seeds it
-    //               with the pre-occlusion geometric verdict; the filter
-    //               READS it for the slot gate and then WRITES the
-    //               final-visibility refinement (survivor count) into the
-    //               same word — the temporal split consumes the refined
-    //               bit two frames later.
-    //   cullState — draw verdicts (gfxdrawcull) + the filtered-offset
-    //               counter (word cullStateCounterWord) this dispatch
-    //               allocates through atomically
-    uint64_t kept = 0;
-    uint64_t cullState = 0;
-};
-static_assert(sizeof(FilterPush) == 256);
-
 // GfxSkinBounds push (runs between the skinning pass and GfxBatchCull).
 // Must match HLSL GfxSkinBoundsPush in gfxfilter.hlsli (64 bytes). One
 // 128-thread workgroup per draw; threads stride the draw's clusters and
@@ -655,7 +576,6 @@ struct View {
     uint32_t width = 0, height = 0;
     glm::mat4 viewProj{1.0f};
     const smvk::RenderView* renderView = nullptr; // frustum planes (owned by RenderViewSet)
-    std::vector<DrawRequest> draws;
     std::vector<Batch> batches;
     std::vector<Draw> drawConstants;
     std::vector<MaterialRange> materialRanges;
@@ -667,10 +587,9 @@ struct View {
     // Hand-built lists (unit tests) keep 0 and always rebuild.
     uint64_t batchesSerial = 0;
     Stats stats{};
-    // Per-frame build scratch (capacity retained across frames: the
-    // steady-state batch build allocates nothing).
-    std::vector<uint32_t> drawOrderScratch; // material sort permutation
-    std::vector<uint32_t> meshListScratch;  // compacted mesh batch indices
+    // Compacted eligible mesh batch indices (capacity retained across
+    // frames: RecordMeshMain rewrites it per mesh dispatch set).
+    std::vector<uint32_t> meshListScratch;
     // GPU-cull mode seed/remainder ranges: positional (bucket, material)
     // spans over the candidate slot layout (identical for both passes —
     // the instanceCounts written by gfxbatchcull gate the actual draws).
@@ -1320,22 +1239,6 @@ uint32_t BeginView(State& s,
                    CullFlags cullFlags,
                    uint32_t width,
                    uint32_t height);
-void PushDraw(State& s,
-              uint32_t view,
-              uint32_t mesh,
-              const glm::mat4& model,
-              uint32_t material,
-              DrawFlags flags = 0,
-              DrawSetMask drawSet = DrawSetBit_Opaque,
-              uint32_t lmChunk = 0xFFFFFFFFu,
-              uint32_t lmChartOffset = 0,
-              uint32_t lmDelta = 0xFFFFFFFFu,
-              // The resolved material userdata (Draw::userData / HLSL misc3.x).
-              // Trailing + defaulted so existing callers (tests, tools) stay
-              // source-compatible; hosts that set it resolve per draw from the
-              // World's material runtime state.
-              uint32_t userData = 0,
-              uint32_t lightLayerMask = 0xffffffffu);
 // Pure-CPU cluster test (meshoptimizer perspective cone + sphere vs planes).
 // Exported for unit tests; eye must be the camera world position.
 // The normal-cone (backface) and sphere-vs-frustum parts always run. The
@@ -1367,27 +1270,6 @@ struct DeformedConeFit {
 DeformedConeFit FitDeformedCone(const glm::vec3* triCorners,
                                 uint32_t triCount,
                                 const glm::vec3& sphereCenter);
-// Pure-CPU batch expansion: sorts draws by material, expands every
-// (draw x cluster) candidate (no pre-cull — gfxbatchcull owns verdicts),
-// fills batches/drawConstants/materialRanges/stats. No GPU upload (called
-// by FinalizeView; unit tests drive it directly on a hand-built View).
-void BuildBatches(State& s, uint32_t view);
-// Sorts draws by material, expands every (draw x cluster) candidate,
-// uploads the draws ring slice into the frameIndex slot (everything else
-// is GPU-written by the cull chain). Returns exact counters
-// (trianglesProcessed counts emitted triangles). The DYNAMIC-CAPACITY
-// CUTOVER step lives here (after BuildBatches, before the upload): the
-// frame's exact draw/candidate counts go through tour::gfx::
-// PlanViewCapacity and the coupled per-(view, flight) rings GROW
-// (logical rebind included) to the planned capacities — exceeding a
-// declared bound is fatal (the fail-closed contract), never a silent
-// drop.
-Stats FinalizeView(State& s,
-                   smvk::ResourceManager& ctx,
-                   smvk::RenderGraph& rg,
-                   uint32_t frameIndex,
-                   uint32_t view);
-
 // ---- Temporal visibility (T1 state, T3/T5 consumers) ----
 // Accessor (resizes the sidecar on demand so hand-built unit-test Views
 // without GPU buffers still work).
@@ -1588,13 +1470,9 @@ uint64_t HizAddress(State& s, smvk::ResourceManager& ctx, uint32_t view);
 // DEBUG: Download and print HZB buffer contents for inspection.
 void DumpHzb(State& s, smvk::ResourceManager& ctx, uint32_t view);
 
-// ---- Pass shells (caller sets the recording func) ----
-smvk::RenderPass& AddFilterPass(State& s, smvk::RenderGraph& rg, uint32_t view);
 void AddConsumeHints(smvk::RenderPass& pass,
                      smvk::LogicalBufferHandle filteredLogical,
                      smvk::LogicalBufferHandle indirectLogical);
-// Recording helper: pushes FilterPush and dispatches batchCount. No-op when empty.
-void PushAndDispatch(State& s, smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx, uint32_t view);
 
 // ---- Draw-level texture demand (designated-publisher source) ----
 // Per-frame demand inputs (app-resolved): THIS frame's materials BDA
