@@ -1333,10 +1333,10 @@ bool WorldRenderer::onAttach() {
     // 4 pre-normalization visibility weight sum (wSum).
     if (const char* giDbgEnv = std::getenv("TOURMALINE_GI_DEBUG")) {
         const int mode = std::atoi(giDbgEnv);
-        if (mode >= 0 && mode <= 4)
+        if (mode >= 0 && mode <= 9)
             m_giDebug = mode;
         else
-            std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..4\n";
+            std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..8\n";
     }
     // GI probe spheres for headless runs (the "Probe points" panel
     // checkbox's twin — the 3D instanced visual, Rendergraph/giprobe.h:
@@ -4829,7 +4829,7 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     // the views must survive source isolation. The level byte is
     // retained for the retired octree shader ABI.
     data.giIntensity = m_giIntensity;
-    data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 4)) & 0xffu) |
+    data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 9)) & 0xffu) |
                    (uint32_t(std::clamp(m_giDebugLevel, 0, 7) & 0xff) << 8);
     // The LEGACY .sggi probe-volume frame block — RETIRED (stage 3 of
     // the octree retirement): the loader is deleted, so the whole
@@ -11560,16 +11560,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const uint32_t gi = gpuSceneGiVariant;
         try {
             if (m_gpuSceneGiFsModules[gi].empty()) {
-                const char* path = gi == 2u
-                    ? "content/shaders/gfxmesh_lit.frag.hlsl.gi2.spv"
-                    : "content/shaders/gfxmesh_lit.frag.hlsl.gi3.spv";
+                const char* path = gi == 2u ? "content/shaders/gfxmesh_lit.frag.hlsl.gi2.spv"
+                                            : "content/shaders/gfxmesh_lit.frag.hlsl.gi3.spv";
                 m_gpuSceneGiFsModules[gi] =
                     m_context->CreateShaderModule(smvk::shaders::Read(path), "GpuSceneGiFS");
             }
             if (m_gpuSceneGiA2cFsModules[gi].empty()) {
-                const char* a2cPath = gi == 2u
-                    ? "content/shaders/gfxmesh_lit.frag.hlsl.gi2a2c.spv"
-                    : "content/shaders/gfxmesh_lit.frag.hlsl.gi3a2c.spv";
+                const char* a2cPath = gi == 2u ? "content/shaders/gfxmesh_lit.frag.hlsl.gi2a2c.spv"
+                                               : "content/shaders/gfxmesh_lit.frag.hlsl.gi3a2c.spv";
                 m_gpuSceneGiA2cFsModules[gi] =
                     m_context->CreateShaderModule(smvk::shaders::Read(a2cPath), "GpuSceneGiA2CFS");
             }
@@ -11587,9 +11585,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 if (!m_gpuSceneTaskAsModule.empty() && !m_gpuSceneTaskMsModule.empty() &&
                     m_gpuSceneTaskGiA2cPrograms[gi].shaderCount != 3) {
                     smvk::Shader as{.module = m_gpuSceneTaskAsModule,
-                                    .entryPoint = "mainAS", .stage = smvk::ShaderStage::Task};
+                                    .entryPoint = "mainAS",
+                                    .stage = smvk::ShaderStage::Task};
                     smvk::Shader ms{.module = m_gpuSceneTaskMsModule,
-                                    .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh};
+                                    .entryPoint = "mainMS",
+                                    .stage = smvk::ShaderStage::Mesh};
                     m_gpuSceneTaskGiA2cPrograms[gi] = {.shaders = {as, ms, fs}, .shaderCount = 3};
                 }
             }
@@ -11607,9 +11607,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 if (!m_gpuSceneTaskAsModule.empty() && !m_gpuSceneTaskMsModule.empty() &&
                     m_gpuSceneTaskGiPrograms[gi].shaderCount != 3) {
                     smvk::Shader as{.module = m_gpuSceneTaskAsModule,
-                                    .entryPoint = "mainAS", .stage = smvk::ShaderStage::Task};
+                                    .entryPoint = "mainAS",
+                                    .stage = smvk::ShaderStage::Task};
                     smvk::Shader ms{.module = m_gpuSceneTaskMsModule,
-                                    .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh};
+                                    .entryPoint = "mainMS",
+                                    .stage = smvk::ShaderStage::Mesh};
                     m_gpuSceneTaskGiPrograms[gi] = {.shaders = {as, ms, fs}, .shaderCount = 3};
                 }
             }
@@ -11619,9 +11621,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     // Indexed GI is sufficient for ownership. A missing task/mesh GI
     // permutation must select indexed fallback, not disable GPU Scene.
-    const bool gpuSceneGiReady = gpuSceneGiVariant == 0u ||
-        ((gpuSceneGiVariant == 2u || gpuSceneGiVariant == 3u) &&
-         m_gpuSceneRasterGiPrograms[gpuSceneGiVariant].shaderCount == 2);
+    const bool gpuSceneGiReady =
+        gpuSceneGiVariant == 0u || ((gpuSceneGiVariant == 2u || gpuSceneGiVariant == 3u) &&
+                                    m_gpuSceneRasterGiPrograms[gpuSceneGiVariant].shaderCount == 2);
 
     // GPU Scene validation (off by default): separate relative-space view
     // built from the existing absolute-world frustum. The production
@@ -11633,8 +11635,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         ((m_gpuSceneRasterMaskedBackCount + m_gpuSceneRasterMaskedDoubleSidedCount) == 0 ||
          (m_gpuSceneRasterMaskedDepthProgram.shaderCount == 2 &&
           m_gpuSceneRasterMaskedGbufferProgram.shaderCount == 2)) &&
-        !ShaderLodActive() && !m_wireframe && m_debugView == ViewMode::Lit &&
-        gpuSceneGiReady;
+        !ShaderLodActive() && !m_wireframe && m_debugView == ViewMode::Lit && gpuSceneGiReady;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
     // downstream only names its own conditions - this names every reason
     // the cutover can sit out, whole-world eligibility and the GI-variant
@@ -16142,8 +16143,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                           1u,
                                           sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
             };
-            auto& sceneTaskLit = sceneGiVariant == 0u
-                ? m_gpuSceneTaskMainProgram : m_gpuSceneTaskGiPrograms[sceneGiVariant];
+            auto& sceneTaskLit = sceneGiVariant == 0u ? m_gpuSceneTaskMainProgram
+                                                      : m_gpuSceneTaskGiPrograms[sceneGiVariant];
             drawTaskBin(0u, sceneTaskLit, smvk::CullMode::Back, msaaSettings);
             if (sceneRasterTwoSided)
                 drawTaskBin(1u, sceneTaskLit, smvk::CullMode::None, msaaSettings);
@@ -16152,10 +16153,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 (sceneGiVariant == 0u
                      ? m_gpuSceneTaskMaskedA2cProgram.shaderCount == 3
                      : m_gpuSceneTaskGiA2cPrograms[sceneGiVariant].shaderCount == 3);
-            auto& masked = taskA2c
-                ? (sceneGiVariant == 0u ? m_gpuSceneTaskMaskedA2cProgram
-                                        : m_gpuSceneTaskGiA2cPrograms[sceneGiVariant])
-                : sceneTaskLit;
+            auto& masked =
+                taskA2c ? (sceneGiVariant == 0u ? m_gpuSceneTaskMaskedA2cProgram
+                                                : m_gpuSceneTaskGiA2cPrograms[sceneGiVariant])
+                        : sceneTaskLit;
             const auto taskMsaa = taskA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
             if (sceneRasterMasked)
                 drawTaskBin(2u, masked, smvk::CullMode::Back, taskMsaa);
@@ -16171,7 +16172,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
         if (sceneRasterActive && sceneRasterCommandCount > 0 && !sceneTaskActive) {
             auto& sceneIndexedLit = sceneGiVariant == 0u
-                ? m_gpuSceneRasterProgram : m_gpuSceneRasterGiPrograms[sceneGiVariant];
+                                        ? m_gpuSceneRasterProgram
+                                        : m_gpuSceneRasterGiPrograms[sceneGiVariant];
             cmd.BindStaticVertexFmt();
             cmd.BindRenderPipeline(sceneIndexedLit,
                                    smvk::VertexLayoutId::Static,
@@ -16238,7 +16240,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
             // The lit FS already applies the material's baseColor texture
             // alpha cutoff, using the flat per-work material ID at location 7.
-            const bool sceneMaskedA2c = useMsaa && m_msaaAlphaToCoverage &&
+            const bool sceneMaskedA2c =
+                useMsaa && m_msaaAlphaToCoverage &&
                 (sceneGiVariant == 0u
                      ? m_gpuSceneRasterMaskedA2cProgram.shaderCount == 2
                      : m_gpuSceneRasterGiA2cPrograms[sceneGiVariant].shaderCount == 2);
