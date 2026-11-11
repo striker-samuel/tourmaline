@@ -57,25 +57,43 @@ The optional [asset repository](docs/asset_repository_manual.md) manages working
 
 Tourmaline separates **authoring**, **content builds**, and **game execution**. Content does not need to be cooked by launching the editor.
 
-```text
-Source assets (glTF / textures / WAV)     Scene edits (.tour / .tourAnim)
-                    \                      /
-                     v                    v
-                     Import / asset database
-                               |
-                  Project.exe + .tourrecipe
-                  (resolve, cook, bake, pack)
-                               |
-                   +-----------+-----------+
-                   |                       |
-            project.h                  .tapp + .pak
-       typed C++ asset IDs       manifest + cooked archives
-                   |                       |
-                   +-----------+-----------+
-                               |
-                   Native C++ game / App host
-                               |
-                      Vulkan renderer
+```mermaid
+flowchart TD
+    A["📦 Source assets<br/>glTF · textures · WAV"]
+    B["🗃️ Import & asset database<br/>Persistent GUIDs · Asset records"]
+    C["✏️ Scene authoring<br/>.tour · .tourAnim"]
+    D["⚙️ Project.exe + .tourrecipe<br/>Resolve · Cook · Bake · Pack"]
+
+    E["project.h<br/>Typed C++ asset IDs"]
+    F[".tapp + .pak<br/>Manifest · Cooked archives"]
+
+    G["🎮 Native C++ game / App host<br/>Application logic · Scene runtime"]
+    H["💎 Vulkan renderer<br/>Fully featured GPU-driven 3D renderer"]
+
+    A --> B --> C --> D
+    D --> E
+    D --> F
+    E --> G
+    F --> G
+    G --> H
+
+    classDef assets fill:#eee8ff,stroke:#a78bfa,color:#49377a,stroke-width:1.5px
+    classDef import fill:#dcfce7,stroke:#86cba2,color:#225c40,stroke-width:1.5px
+    classDef author fill:#ffedd5,stroke:#fdba74,color:#874d22,stroke-width:1.5px
+    classDef build fill:#dbeafe,stroke:#93c5fd,color:#1e4d83,stroke-width:2px
+    classDef output fill:#f1f5f9,stroke:#94a3b8,color:#334155,stroke-width:1.5px
+    classDef runtime fill:#fce7f3,stroke:#f9a8d4,color:#8b315e,stroke-width:1.5px
+    classDef renderer fill:#ede9fe,stroke:#8b5cf6,color:#4c1d95,stroke-width:2px
+
+    class A assets
+    class B import
+    class C author
+    class D build
+    class E,F output
+    class G runtime
+    class H renderer
+
+    linkStyle default stroke:#94a3b8,stroke-width:1.5px
 ```
 
 A checked-in `.tourrecipe` declares entry scenes, package ownership, cross-pak dependencies, and GI/cubemap bake switches. The pipeline resolves those dependencies, validates outputs, and publishes content-addressed pak files with a runtime manifest. Stable content IDs come from the project's asset database and asset GUIDs, rather than being derived from paths.
