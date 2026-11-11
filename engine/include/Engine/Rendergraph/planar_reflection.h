@@ -15,6 +15,7 @@
 // hits, and can show geometry outside the main camera frustum.
 
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Utils/shader_library.h>
@@ -209,7 +210,7 @@ struct PlanarReflections {
         ShaderProgram programCopy = program;
         pass.SetRecordingFunc([programCopy, push](CommandBuffer& cmd) mutable {
             cmd.BindRenderPipeline(programCopy,
-                                   VertexLayoutId::Empty,
+                                   tour::vertex_layouts::Empty,
                                    DepthSettings::Disabled(),
                                    StencilSettings::DefaultDisabled(),
                                    BlendSettings::Opaque(),
