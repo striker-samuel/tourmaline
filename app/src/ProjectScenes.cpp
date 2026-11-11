@@ -242,25 +242,33 @@ SceneHandle ProjectScenes::LoadScene(tour::World& world,
                                      uint64_t sceneId,
                                      std::string& err) {
     err.clear();
-    // REPLACE semantics: every loaded project scene unloads first.
-    // Each removal is a full world resolve (load-time only); the
-    // loads that follow re-fold whatever survives.
-    while (true) {
-        SceneHandle any;
-        for (uint32_t i = 0; i < m_slots.size(); ++i)
-            if (m_slots[i].loaded) {
-                any = SceneHandle{(uint64_t(m_slots[i].generation) << 32) | i};
-                break;
+    // Snapshot only the instances we intend to replace. Loading the new
+    // scene first ensures a failed deserialize, shape setup, or asset lookup
+    // never destroys the currently loaded scenes.
+    std::vector<SceneHandle> previous;
+    for (uint32_t i = 0; i < m_slots.size(); ++i) {
+        if (m_slots[i].loaded) {
+            if (m_slots[i].owner != &world) {
+                err = "cannot replace scenes belonging to a different world";
+                return {};
             }
-        if (!any)
-            break;
-        std::string rerr;
-        if (!RemoveScene(any, world, rerr)) {
-            err = "the replace unload failed: " + rerr;
-            return {};
+            previous.push_back(SceneHandle{(uint64_t(m_slots[i].generation) << 32) | i});
         }
     }
-    return LoadInternal(world, ctx, streamer, sceneId, err);
+    SceneHandle replacement = LoadInternal(world, ctx, streamer, sceneId, err);
+    if (!replacement)
+        return {};
+
+    // Load succeeded. Retire the previously loaded instances; the new
+    // instance is excluded from the snapshot even when slots were reused.
+    for (SceneHandle old : previous) {
+        std::string removeError;
+        if (!RemoveScene(old, world, removeError)) {
+            err = "replacement loaded, but unloading the previous scene failed: " + removeError;
+            return replacement;
+        }
+    }
+    return replacement;
 }
 
 SceneHandle ProjectScenes::InstantiatePrefab(tour::World& world,

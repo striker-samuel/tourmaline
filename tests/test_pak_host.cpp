@@ -1258,6 +1258,40 @@ void TestProjectScenes() {
               "pscenes.replace-unloads-all");
     }
 
+    // Failed additive and replacement loads must preserve existing scene
+    // instances and the world fold. An injected loader failure exercises
+    // the error path without depending on Vulkan or damaged pak files.
+    {
+        app::SceneHandle existing = scenes.FindScene(0x1000);
+        const uint32_t beforeCount = scenes.LoadedSceneCount();
+        const size_t beforeLights = world.lightLocations.size();
+        auto workingLoader = scenes.clusterLoader;
+        scenes.clusterLoader = [](smvk::World&,
+                                  smvk::ResourceManager*,
+                                  const smvk::PakReader&,
+                                  uint32_t,
+                                  smvk::TextureStreamer*,
+                                  std::shared_ptr<const std::vector<uint8_t>>,
+                                  const smvk::ExternalTextureResolver*,
+                                  std::string& loadErr) -> smvk::Cluster* {
+            loadErr = "injected loader failure";
+            return nullptr;
+        };
+        std::string loadErr;
+        auto failedAdditive = scenes.LoadSceneAdditive(world, nullptr, nullptr, 0x1000, loadErr);
+        Check(!failedAdditive && !loadErr.empty() && scenes.IsLoaded(existing) &&
+                  scenes.LoadedSceneCount() == beforeCount &&
+                  world.lightLocations.size() == beforeLights,
+              "pscenes.failed-additive-preserves-world");
+        loadErr.clear();
+        auto failedReplace = scenes.LoadScene(world, nullptr, nullptr, 0x1000, loadErr);
+        Check(!failedReplace && !loadErr.empty() && scenes.IsLoaded(existing) &&
+                  scenes.LoadedSceneCount() == beforeCount &&
+                  world.lightLocations.size() == beforeLights,
+              "pscenes.failed-replace-preserves-world");
+        scenes.clusterLoader = std::move(workingLoader);
+    }
+
     // ---- THE DISCOVERY SESSION (the .tapp-free form) -------------------
     // ProjectRuntime::OpenDiscovered over LEGACY paks (no identity
     // blobs): the paks join as path providers, PakNames reflects them
