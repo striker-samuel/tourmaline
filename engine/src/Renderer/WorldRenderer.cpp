@@ -11590,11 +11590,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // Missing GI is an admission failure, not a shading downgrade.
         }
     }
+    // Indexed GI is sufficient for ownership. A missing task/mesh GI
+    // permutation must select indexed fallback, not disable GPU Scene.
     const bool gpuSceneGiReady = gpuSceneGiVariant == 0u ||
         ((gpuSceneGiVariant == 2u || gpuSceneGiVariant == 3u) &&
-         m_gpuSceneRasterGiPrograms[gpuSceneGiVariant].shaderCount == 2 &&
-         (!s_gpuSceneTaskMesh || !smvk::SupportsMeshShaders() ||
-          m_gpuSceneTaskGiPrograms[gpuSceneGiVariant].shaderCount == 3));
+         m_gpuSceneRasterGiPrograms[gpuSceneGiVariant].shaderCount == 2);
 
     // GPU Scene validation (off by default): separate relative-space view
     // built from the existing absolute-world frustum. The production
@@ -11985,6 +11985,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 if (s_gpuSceneTaskMesh && gpuSceneRasterMode && workReady && rasterReady &&
                     m_gfxFilterAvailable && smvk::SupportsMeshShaders() &&
                     m_gpuSceneTaskMainProgram.shaderCount == 3 &&
+                    (gpuSceneGiVariant == 0u ||
+                     m_gpuSceneTaskGiPrograms[gpuSceneGiVariant].shaderCount == 3) &&
                     m_gpuSceneTaskDepthProgram.shaderCount == 2 &&
                     (!m_gpuSceneRasterMaskedBackCount && !m_gpuSceneRasterMaskedDoubleSidedCount ||
                      (m_gpuSceneTaskMaskedDepthProgram.shaderCount == 3 &&
