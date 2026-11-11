@@ -9,7 +9,7 @@
 // no-partial-render ownership before dispatching.
 #include "gpu_platform.hlsli"
 #define GS_MAX_WORK 1048576u
-#define GS_MAX_TASK_GROUPS 1048576u
+#define GS_MAX_TASK_GROUPS 2097152u
 struct Offsets { uint values[GS_MAX_WORK+1u]; };
 struct Args { uint words[12]; }; // 4 * (x,y,z) tightly packed
 struct Push {

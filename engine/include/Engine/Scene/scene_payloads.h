@@ -111,7 +111,7 @@ struct SceneExportSettings {
     // draw path (the slow + visibly broken fallback).
     bool meshlets = true;
     uint32_t meshletMaxVerts = 64;
-    uint32_t meshletMaxTris = 64;
+    uint32_t meshletMaxTris = 124; // must match kMeshletMaxTriangles (meshlet.h)
     float meshletConeWeight = 0.0f;
     // GI bakes (on-demand Bake GI only — cooks never bake GI): authored
     // convex volumes (the GI volume nodes). (The giWorld flag — the

@@ -11847,7 +11847,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 const auto& cluster = gfx.clusters[mesh.clusterStart + c];
                                 const uint64_t indexEnd =
                                     uint64_t(cluster.indexOffset) + uint64_t(cluster.triCount) * 3u;
-                                if (cluster.triCount > 64u || indexEnd > gfx.filterIndices.size()) {
+                                if (cluster.triCount > smvk::kMeshletMaxTriangles ||
+                                    indexEnd > gfx.filterIndices.size()) {
                                     topologyValid = false;
                                     break;
                                 }

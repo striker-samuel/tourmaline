@@ -70,7 +70,7 @@ struct TaskMeshDispatchPlan {
 class TaskMeshRuntime {
   public:
     static constexpr uint32_t Flights = smvk::limits::MaxFramesInFlight;
-    static constexpr uint32_t MaxTaskGroups = 1048576u;
+    static constexpr uint32_t MaxTaskGroups = 2097152u;
     static constexpr uint32_t TaskGridX = 1024u;
     struct Flight {
         smvk::Holder<smvk::BufferHandle> counts, offsets, blockSums, blockBases;
