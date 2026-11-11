@@ -1118,6 +1118,16 @@ void TestProjectScenes() {
     Check(scenes.SceneCluster(h1) != nullptr && scenes.SceneContentId(h1) == 0x1000,
           "pscenes.instance-row");
     Check(world.lightLocations.size() == 1, "pscenes.world-light-folded");
+    // An imported/additive scene node is also a World node. The runtime
+    // TRS API must not depend on World::AddNode game-node registration.
+    {
+        const NodeHandle imported = MakeNodeHandle(world.scene, NodeId(0));
+        const glm::vec3 moved(7.f, 8.f, 9.f);
+        Check(imported != kNodeInvalidHandle &&
+                  world[imported].SetPosition(moved) &&
+                  glm::distance(glm::vec3(world.scene.localTransform[0][3]), moved) < 1e-4f,
+              "pscenes.imported-world-node-set-position");
+    }
     // Two instances of the SAME scene (two churches): distinct handles,
     // both alive.
     app::SceneHandle h2 = scenes.LoadSceneAdditive(world, nullptr, nullptr, 0x1000, err);
