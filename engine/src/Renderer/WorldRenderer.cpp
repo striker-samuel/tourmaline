@@ -10963,6 +10963,25 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
         }
+        // Optional GPU Scene meshlet visibility hash clear kernel.
+        // The legacy non-temporal task draw remains valid if unavailable.
+        if (m_gpuSceneTaskTemporalClearProgram.shaderCount != 1) {
+            try {
+                if (m_gpuSceneTaskTemporalClearModule.empty())
+                    m_gpuSceneTaskTemporalClearModule = m_context->CreateShaderModule(
+                        smvk::shaders::Read(
+                            "content/shaders/gpu_scene_meshlet_temporal_clear.cs.hlsl.spv"),
+                        "GpuSceneMeshletTemporalClear");
+                if (!m_gpuSceneTaskTemporalClearModule.empty()) {
+                    smvk::Shader cs{.module = m_gpuSceneTaskTemporalClearModule,
+                                    .entryPoint = "mainCS",
+                                    .stage = smvk::ShaderStage::Compute};
+                    m_gpuSceneTaskTemporalClearProgram = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                // Preserve the non-temporal path if the optional shader is absent.
+            }
+        }
         if (m_gpuSceneTaskMainProgram.shaderCount != 3) {
             try {
                 if (m_gpuSceneTaskAsModule.empty())
@@ -11292,6 +11311,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     m_gpuSceneRasterDrawActive = false;
     m_gpuSceneTaskMeshActive = false;
     m_gpuSceneTaskMeshPlan = {};
+    m_gpuSceneTaskTemporalReady = false;
+    m_gpuSceneTaskTemporalFrame = {};
     // Probe residency for this frame's eye (throttled inside; the
     // FP upload below reads the rebuilt rows - see m_cubemapRows).
     UpdateCubemapStreaming(m_cameraPositioner.cameraPosition_);
@@ -11803,6 +11824,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // Do not let the task shader silently drop a submesh whose
                 // topology or streams cannot be validated before ownership.
                 tour::gpu_scene::TaskMeshDispatchPlan taskPlan{};
+                tour::gpu_scene::TaskMeshTemporalFrame temporalTaskPlan{};
+                bool temporalTaskPrepared = false;
                 bool taskReady = false;
                 if (s_gpuSceneTaskMesh && gpuSceneRasterMode && workReady && rasterReady &&
                     m_gfxFilterAvailable && smvk::SupportsMeshShaders() &&
@@ -11979,6 +12002,29 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                               : 0u;
                                     }
                                 }
+                                // Match legacy temporal seed/remainder with one keyed
+                                // meshlet-survivor cache. Never add a second scene DB.
+                                // The first frame can run non-temporal until a valid
+                                // previous pyramid and completed survivor table exist.
+                                static const bool s_taskTemporal = [] {
+                                    const char* env = std::getenv("TOURMALINE_GPU_SCENE_TASK_TEMPORAL");
+                                    return !env || std::strcmp(env, "0") != 0;
+                                }();
+                                if (s_taskTemporal && m_passes.forwardPlusPrepass &&
+                                    m_gpuSceneTaskTemporalClearProgram.shaderCount == 1 &&
+                                    inputs.hizValid != 0u &&
+                                    m_gpuSceneTaskMeshRuntime.PrepareTemporal(
+                                        *m_context, *m_rendergraph, fb.frameIndex,
+                                        inputs.clusterCount,
+                                        uint64_t(m_gpuSceneGeometryRevision) ^
+                                            (uint64_t(m_world->gpuSceneTopologyRevision) << 1u),
+                                        temporalTaskPlan)) {
+                                    temporalTaskPrepared = true;
+                                    inputs.historyPrevious = temporalTaskPlan.previous;
+                                    inputs.historyCurrent = temporalTaskPlan.current;
+                                    inputs.historyCapacity = temporalTaskPlan.capacity;
+                                    inputs.historyValid = temporalTaskPlan.previousValid;
+                                }
                                 taskReady = m_gpuSceneTaskMeshRuntime.Prepare(
                                     *m_context, *m_rendergraph, fb.frameIndex, inputs, taskPlan);
                             }
@@ -11993,6 +12039,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gpuSceneTaskMeshActive = taskReady;
                 m_gpuSceneTaskMeshPlan =
                     taskReady ? taskPlan : tour::gpu_scene::TaskMeshDispatchPlan{};
+                m_gpuSceneTaskTemporalReady = taskReady && temporalTaskPrepared;
+                m_gpuSceneTaskTemporalFrame = m_gpuSceneTaskTemporalReady
+                    ? temporalTaskPlan : tour::gpu_scene::TaskMeshTemporalFrame{};
+                if (!m_gpuSceneTaskTemporalReady)
+                    m_gpuSceneTaskMeshRuntime.InvalidateTemporal();
                 if (taskReady) {
                     static bool s_taskActiveReported = false;
                     if (!s_taskActiveReported) {
@@ -13887,7 +13938,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // For all-GPU scenes, create only the Hi-Z view/pyramid. Mixed scenes
     // already initialized this view through the legacy fallback renderer.
     // Do not build a second, conflicting pyramid for the same eye.
-    if (gpuTemporalReady && !gfxFilterOn) {
+    if ((gpuTemporalReady || m_gpuSceneTaskTemporalReady) && !gfxFilterOn) {
         gpuTemporalReady = m_gfxRenderer.PrepareGpuSceneHiz(*m_context,
                                                             *m_rendergraph,
                                                             m_renderViews.Get(mainRenderView),
@@ -14178,6 +14229,64 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                       m_viewportResources.hizDepth.logicalView,
                                       m_viewportResources.hizDepth.bindlessIndex);
     };
+    // The SAME seed-depth / Hi-Z / remainder flow now also accepts the
+    // task/mesh backend. No gfx-filter candidates or temporal history are
+    // allocated: work and exact meshlet identity come from GPU Scene.
+    bool taskTemporalActive = m_gpuSceneTaskMeshActive &&
+                              m_gpuSceneTaskTemporalReady && !depthSplit &&
+                              !gfxFilterOn && !cullingFrozen &&
+                              m_gpuSceneTaskTemporalClearProgram.shaderCount == 1;
+    if (taskTemporalActive) {
+        const auto temporal = m_gpuSceneTaskTemporalFrame;
+        auto& clear = m_rendergraph->AddComputePass("GpuSceneTaskTemporalClear");
+        smvk::BufferSyncRequest currentWrite{};
+        currentWrite.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+        currentWrite.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+        clear.AddBufferHint(temporal.currentLogical, currentWrite);
+        auto clearProgram = m_gpuSceneTaskTemporalClearProgram;
+        clear.SetRecordingFunc([clearProgram, temporal](smvk::CommandBuffer& cmd) mutable {
+            cmd.BindComputePipeline(clearProgram);
+            cmd.PushConstants(0, sizeof(temporal.clear), &temporal.clear,
+                              smvk::ShaderStage::Compute);
+            cmd.Dispatch((temporal.capacity + 255u) / 256u, 1u, 1u);
+        });
+        const uint32_t flight = fb.frameIndex;
+        auto seed = m_gpuSceneTaskMeshPlan.graphics;
+        seed.temporalPhase = 1u;
+        const auto submit = [&](const tour::gpu_scene::TaskMeshGpuPush& push,
+                                bool toHizDepth) {
+            return m_fpRenderer.AppendGpuSceneTaskPrepass(
+                fc, m_gpuSceneTaskDepthProgram, m_gpuSceneTaskGbufferProgram,
+                m_gpuSceneTaskMaskedDepthProgram, m_gpuSceneTaskMaskedGbufferProgram,
+                m_gpuSceneTaskMeshPlan.indirectHandle,
+                m_gpuSceneTaskMeshPlan.indirectLogical,
+                m_gpuSceneTaskMeshPlan.groupLogical,
+                m_gpuSceneTaskMeshPlan.offsetLogical,
+                m_gpuSceneRasterWorkLogical[flight], push,
+                m_gpuSceneRasterDoubleSidedCount != 0,
+                m_gpuSceneRasterMaskedBackCount != 0,
+                m_gpuSceneRasterMaskedDoubleSidedCount != 0,
+                toHizDepth, temporal.currentLogical, temporal.previousLogical);
+        };
+        const bool seededHiz = submit(seed, true);
+        // Seed the FULL depth/G-buffer as well, then append remainder with
+        // LOAD. Do not run a full prepass before the Hi-Z query: that would
+        // self-occlude every cluster and defeat temporal visibility.
+        const bool seededMain = seededHiz && submit(seed, false);
+        if (seededMain) {
+            fc.gpuSceneDepthPrimed = true;
+            appendHizPasses();
+            auto remainder = m_gpuSceneTaskMeshPlan.graphics;
+            remainder.temporalPhase = 2u;
+            taskTemporalActive = submit(remainder, false);
+        } else {
+            taskTemporalActive = false;
+        }
+        if (taskTemporalActive)
+            m_gpuSceneTaskMeshRuntime.CommitTemporal(flight);
+        else
+            m_gpuSceneTaskMeshRuntime.InvalidateTemporal();
+    }
     if (depthSplit) {
         // Seed (prev-visible occluders, current LOD, alpha-tested) ->
         // HZB over that depth -> filter culls the rest.
@@ -14400,6 +14509,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // device-read per-class counts (the temporal seed lane
                 // never runs compact v1, so this is always the full list).
                 const bool remainderPrimed =
+                    taskTemporalActive ? true :
                     m_gpuSceneTaskMeshActive ? m_fpRenderer.AppendGpuSceneTaskPrepass(
                                                    fc,
                                                    m_gpuSceneTaskDepthProgram,
@@ -14468,7 +14578,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // culling consumes the SAME depth rather than rebuilding it
             // over the completed current frame. Standalone GfxFilter
             // retains its existing full-prepass path.
-            if (!cullingFrozen && !gpuTemporalReady)
+            if (!cullingFrozen && !gpuTemporalReady && !taskTemporalActive)
                 appendHizPasses();
             m_gfxRenderer.AppendFilterDispatch(fc);
             if (m_gfxRenderer.RemainderPending()) {
@@ -15479,8 +15589,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         vertexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
         mainPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], vertexRead);
     }
+    if (taskTemporalActive) {
+        smvk::BufferSyncRequest historyRead{};
+        historyRead.barrierMasks.stageMask = smvk::PipelineStageBit_Task;
+        historyRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+        mainPass.AddBufferHint(m_gpuSceneTaskTemporalFrame.currentLogical, historyRead);
+    }
     const bool sceneRasterActive = m_gpuSceneRasterDrawActive;
     const bool sceneTaskActive = m_gpuSceneTaskMeshActive;
+    const bool sceneTaskTemporalActive = taskTemporalActive;
     const auto sceneTaskPlan = m_gpuSceneTaskMeshPlan;
     const bool sceneRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0;
     const bool sceneRasterMasked = m_gpuSceneRasterMaskedBackCount != 0;
@@ -15500,6 +15617,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                gfxSlot,
                                sceneRasterActive,
                                sceneTaskActive,
+                               sceneTaskTemporalActive,
                                sceneTaskPlan,
                                sceneRasterTwoSided,
                                sceneRasterMasked,
@@ -15937,6 +16055,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
                 auto push = sceneTaskPlan.graphics;
                 push.rasterClass = cls;
+                push.temporalPhase = sceneTaskTemporalActive ? 3u : 0u;
                 cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
                 cmd.DrawMeshTasksIndirect(sceneTaskPlan.indirectHandle,
                                           uint64_t(cls) *

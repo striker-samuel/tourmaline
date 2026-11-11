@@ -2410,6 +2410,10 @@ class WorldRenderer : public IRenderer {
     smvk::ShaderProgram m_gpuSceneTaskMaskedA2cProgram{};
     bool m_gpuSceneTaskMeshActive = false;
     tour::gpu_scene::TaskMeshDispatchPlan m_gpuSceneTaskMeshPlan{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskTemporalClearModule{};
+    smvk::ShaderProgram m_gpuSceneTaskTemporalClearProgram{};
+    tour::gpu_scene::TaskMeshTemporalFrame m_gpuSceneTaskTemporalFrame{};
+    bool m_gpuSceneTaskTemporalReady = false;
     // Per-frame compact publication state (the frame's meshlet plan; set
     // when the dense path engages, else the four-bin path runs).
     bool m_gpuSceneMeshletCompactActive = false;
