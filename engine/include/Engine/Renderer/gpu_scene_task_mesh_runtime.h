@@ -45,7 +45,8 @@ struct TaskMeshInputs {
     uint32_t indexWordCapacity = 0, vertexCapacity = 0;
     uint32_t worstMeshlets = 0;
     uint32_t coneEnabled = 1;
-    uint64_t hiz = 0; // reversed-Z MIN Hi-Z BDA (meshlet occlusion)
+    uint32_t debugMode = 0; // 0 lit, 1 meshlet colors, 2 LOD colors
+    uint64_t hiz = 0;       // reversed-Z MIN Hi-Z BDA (meshlet occlusion)
     uint32_t hizWidth = 0, hizHeight = 0, hizMips = 0, hizValid = 0;
     uint64_t meshletVertices = 0;  // indexed-meshlet unique vertex windows
     uint64_t meshletTriangles = 0; // indexed-meshlet local triangle ids
@@ -119,7 +120,8 @@ class TaskMeshRuntime {
                                        uint32_t expectedMeshlets,
                                        uint64_t revision,
                                        TaskMeshTemporalFrame& out) {
-        if (flight >= Flights || expectedMeshlets == 0u) return false;
+        if (flight >= Flights || expectedMeshlets == 0u)
+            return false;
         if (revision != temporalRevision) {
             previousTemporalFlight = UINT32_MAX;
             temporalRevision = revision;
@@ -133,17 +135,21 @@ class TaskMeshRuntime {
         TemporalFlight& f = temporalFlights[flight];
         const size_t bytes = size_t(16u) + size_t(capacity) * 16u;
         if (f.history.empty() || f.allocatedBytes < bytes) {
-            auto buffer = ctx.CreateBuffer(bytes, smvk::BufferType_Storage,
-                                           "GpuSceneMeshletTemporalHistory");
-            if (buffer.empty()) return false;
-            if (!f.logical.empty()) rg.FreeBuffer(f.logical);
+            auto buffer =
+                ctx.CreateBuffer(bytes, smvk::BufferType_Storage, "GpuSceneMeshletTemporalHistory");
+            if (buffer.empty())
+                return false;
+            if (!f.logical.empty())
+                rg.FreeBuffer(f.logical);
             f.history = std::move(buffer);
             f.logical = rg.AddExternalBuffer(f.history, "GpuSceneMeshletTemporalHistory");
-            if (f.logical.empty()) return false;
+            if (f.logical.empty())
+                return false;
             f.backing = smvk::BufferHandle(f.history);
             f.allocatedBytes = bytes;
             f.capacity = capacity;
-            if (previousTemporalFlight == flight) previousTemporalFlight = UINT32_MAX;
+            if (previousTemporalFlight == flight)
+                previousTemporalFlight = UINT32_MAX;
         } else {
             f.capacity = capacity;
         }
@@ -163,7 +169,8 @@ class TaskMeshRuntime {
                 next.previousValid = next.previous != 0u ? 1u : 0u;
             }
         }
-        if (next.current == 0u) return false;
+        if (next.current == 0u)
+            return false;
         out = next;
         return true;
     }
@@ -172,11 +179,14 @@ class TaskMeshRuntime {
     void CommitTemporal(uint32_t flight) noexcept {
         previousTemporalFlight = flight < Flights ? flight : UINT32_MAX;
     }
-    void InvalidateTemporal() noexcept { previousTemporalFlight = UINT32_MAX; }
+    void InvalidateTemporal() noexcept {
+        previousTemporalFlight = UINT32_MAX;
+    }
 
     void Destroy(smvk::RenderGraph& rg) {
         for (auto& f : temporalFlights) {
-            if (!f.logical.empty()) rg.FreeBuffer(f.logical);
+            if (!f.logical.empty())
+                rg.FreeBuffer(f.logical);
             f = TemporalFlight{};
         }
         InvalidateTemporal();
@@ -208,8 +218,7 @@ class TaskMeshRuntime {
             return false;
         if (in.historyCapacity != 0u &&
             (in.historyCapacity > 1048576u ||
-             (in.historyCapacity & (in.historyCapacity - 1u)) != 0u ||
-             in.historyCurrent == 0u))
+             (in.historyCapacity & (in.historyCapacity - 1u)) != 0u || in.historyCurrent == 0u))
             return false;
         const uint64_t groupsPerWork = (uint64_t(in.worstMeshlets) + 31u) / 32u;
         const uint64_t upperBound = uint64_t(in.workCapacity) * groupsPerWork;
@@ -303,7 +312,7 @@ class TaskMeshRuntime {
                             1u,
                             in.coneEnabled,
                             in.workCapacity,
-                            0u,
+                            in.debugMode,
                             in.hiz,
                             in.hizWidth,
                             in.hizHeight,

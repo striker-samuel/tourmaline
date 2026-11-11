@@ -92,7 +92,7 @@ struct GsTaskMeshParams {
     uint viewValid;
     uint coneEnabled;
     uint workCapacity;
-    uint reserved1;
+    uint debugMode; // 0 = lit, 1 = meshlet colors, 2 = LOD colors
     GPU_PTR_READ(HzbBuffer) hiz; // reversed-Z MIN Hi-Z (meshlet occlusion), null = disabled
     uint hizWidth;
     uint hizHeight;

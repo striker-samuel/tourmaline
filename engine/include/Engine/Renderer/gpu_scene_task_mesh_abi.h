@@ -19,15 +19,15 @@ struct TaskMeshGpuParams {
     uint64_t geometry, aliases, indices, positions, shading, taskOffsets;
     uint32_t workCount, instanceCount, clusterCount, geometryCount;
     uint32_t aliasCount, indexBase, indexWordCapacity, vertexCapacity;
-    uint32_t viewValid, coneEnabled, workCapacity, reserved1;
+    uint32_t viewValid, coneEnabled, workCapacity, debugMode; // 0 lit, 1 meshlets, 2 LODs
     uint64_t hiz; // reversed-Z MIN Hi-Z (meshlet occlusion), 0 = disabled
     uint32_t hizWidth, hizHeight, hizMips, hizValid;
     uint64_t meshletVertices;  // indexed-meshlet unique vertex windows (0 = none)
     uint64_t meshletTriangles; // indexed-meshlet local triangle ids (3 u8/uint)
-    uint64_t historyPrevious; // completed previous-frame keyed meshlet survivors
-    uint64_t historyCurrent;  // cleared current-frame keyed survivor table
-    uint32_t historyCapacity; // power of two, <= 1048576 slots
-    uint32_t historyValid;    // previous history matches scene/geometry revision
+    uint64_t historyPrevious;  // completed previous-frame keyed meshlet survivors
+    uint64_t historyCurrent;   // cleared current-frame keyed survivor table
+    uint32_t historyCapacity;  // power of two, <= 1048576 slots
+    uint32_t historyValid;     // previous history matches scene/geometry revision
 };
 struct TaskMeshGpuPush {
     uint64_t params;

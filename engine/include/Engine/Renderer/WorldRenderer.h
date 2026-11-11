@@ -2408,6 +2408,12 @@ class WorldRenderer : public IRenderer {
     smvk::ShaderProgram m_gpuSceneTaskMaskedDepthProgram{};
     smvk::ShaderProgram m_gpuSceneTaskMaskedGbufferProgram{};
     smvk::ShaderProgram m_gpuSceneTaskMaskedA2cProgram{};
+    // Flat debug twin of the task/mesh Main program: same AS + MS, but the
+    // gfxmesh_debug.frag FS (per-meshlet flat color, no lighting) for the
+    // Meshlets (F3) view, so the debug view renders the real GPU Scene cull
+    // survivors instead of bypassing the chain.
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskDebugFsModule{};
+    smvk::ShaderProgram m_gpuSceneTaskDebugProgram{};
     bool m_gpuSceneTaskMeshActive = false;
     tour::gpu_scene::TaskMeshDispatchPlan m_gpuSceneTaskMeshPlan{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskTemporalClearModule{};

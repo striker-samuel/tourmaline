@@ -11068,6 +11068,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                         .stage = smvk::ShaderStage::Fragment};
                         m_gpuSceneTaskMainProgram = {.shaders = {as, ms, fs}, .shaderCount = 3};
                     }
+                    if (m_gpuSceneTaskDebugProgram.shaderCount != 3) {
+                        try {
+                            if (m_gpuSceneTaskDebugFsModule.empty())
+                                m_gpuSceneTaskDebugFsModule = m_context->CreateShaderModule(
+                                    smvk::shaders::Read(
+                                        "content/shaders/gfxmesh_debug.frag.hlsl.spv"),
+                                    "GpuSceneTaskDebugFS");
+                            if (!m_gpuSceneTaskDebugFsModule.empty()) {
+                                smvk::Shader fs{.module = m_gpuSceneTaskDebugFsModule,
+                                                .entryPoint = "mainPS",
+                                                .stage = smvk::ShaderStage::Fragment};
+                                m_gpuSceneTaskDebugProgram = {.shaders = {as, ms, fs},
+                                                              .shaderCount = 3};
+                            }
+                        } catch (...) {
+                            // Missing debug FS falls back to the lit Main view.
+                        }
+                    }
                     if (!m_gpuSceneRasterGbufferFsModule.empty()) {
                         smvk::Shader fs{.module = m_gpuSceneRasterGbufferFsModule,
                                         .entryPoint = "mainPS",
@@ -11635,7 +11653,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         ((m_gpuSceneRasterMaskedBackCount + m_gpuSceneRasterMaskedDoubleSidedCount) == 0 ||
          (m_gpuSceneRasterMaskedDepthProgram.shaderCount == 2 &&
           m_gpuSceneRasterMaskedGbufferProgram.shaderCount == 2)) &&
-        !ShaderLodActive() && !m_wireframe && m_debugView == ViewMode::Lit && gpuSceneGiReady;
+        !ShaderLodActive() && !m_wireframe &&
+        (m_debugView == ViewMode::Lit || m_debugView == ViewMode::Meshlets ||
+         m_debugView == ViewMode::Lods) &&
+        gpuSceneGiReady;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
     // downstream only names its own conditions - this names every reason
     // the cutover can sit out, whole-world eligibility and the GI-variant
@@ -12171,6 +12192,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 inputs.indexWordCapacity = indexCap;
                                 inputs.vertexCapacity = vertexCap;
                                 inputs.worstMeshlets = worstMeshlets;
+                                // Flat debug views (Meshlets F3) render the
+                                // real GPU Scene cull survivors through the
+                                // meshlet debug color (mesh shader), not the
+                                // legacy direct bypass.
+                                // Flat debug views render the real GPU Scene
+                                // cull survivors through the meshlet debug
+                                // color: 1 meshlet hash (F3), 2 LOD palette
+                                // (F5), 3 cone heat (F3 heat mode).
+                                inputs.debugMode = (m_debugView == ViewMode::Meshlets)
+                                                       ? (m_debugMeshletMode == 1 ? 3u : 1u)
+                                                       : (m_debugView == ViewMode::Lods ? 2u : 0u);
                                 // Diagnostic isolation toggles for the task
                                 // shader's per-meshlet visibility tests (one-shot
                                 // static latches, documented diagnostic knobs):
@@ -16143,8 +16175,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                           1u,
                                           sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
             };
-            auto& sceneTaskLit = sceneGiVariant == 0u ? m_gpuSceneTaskMainProgram
-                                                      : m_gpuSceneTaskGiPrograms[sceneGiVariant];
+            auto& sceneTaskLit =
+                (m_debugView == ViewMode::Meshlets || m_debugView == ViewMode::Lods)
+                    ? m_gpuSceneTaskDebugProgram
+                    : (sceneGiVariant == 0u ? m_gpuSceneTaskMainProgram
+                                            : m_gpuSceneTaskGiPrograms[sceneGiVariant]);
             drawTaskBin(0u, sceneTaskLit, smvk::CullMode::Back, msaaSettings);
             if (sceneRasterTwoSided)
                 drawTaskBin(1u, sceneTaskLit, smvk::CullMode::None, msaaSettings);
@@ -16303,8 +16338,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // Missing programs fall back to Lit so a bad cook never blanks
         // the frame.
         ViewMode effView = m_debugView;
+        // Meshlets (F3) and Lods (F5) render the GPU Scene cull survivors
+        // through the task/mesh debug program (per-meshlet flat color /
+        // per-LOD palette). Missing debug program -> Lit.
         if ((effView == ViewMode::Meshlets || effView == ViewMode::Lods) &&
-            !m_gfxRenderer.DebugProgramsValid())
+            m_gpuSceneTaskDebugProgram.shaderCount != 3)
             effView = ViewMode::Lit;
         if (effView == ViewMode::SsrContribution &&
             m_resources.ssrContributionDebugProgram.shaderCount != 2)
@@ -16321,13 +16359,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
         const bool meshletDbg = (effView == ViewMode::Meshlets);
         const bool lodDbg = (effView == ViewMode::Lods);
-        const bool flatDbg = meshletDbg || lodDbg; // meshDebugProgram path
         const bool shadingDbg = shadingDbgFs.has_value();
         // Direct-only opaque: ONLY the flat views (culled content
         // stays visible by design) + SsrContribution (no opaque leg,
         // see above). The shading views keep the chain exactly like
         // Lit; Cubemap never bypassed.
-        const bool bypassFilter = flatDbg || effView == ViewMode::SsrContribution;
+        // Meshlets (F3) and Lods (F5) ride the GPU Scene chain (surviving
+        // meshlets), so neither bypasses; only SsrContribution does.
+        const bool bypassFilter = effView == ViewMode::SsrContribution;
         // LOD palette (display colors; pre-scaled by dbgGain like meshlets
         // so they survive the HDR -> tonemap path).
         static const float kLodPalette[8][3] = {
@@ -16384,7 +16423,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             cmd.PushConstants(
                 kMeshDebugSkinTailOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
         };
-        if (meshletDbg) {
+        // Meshlets (F3) now rides the GPU Scene task/mesh chain (surviving
+        // meshlets, per-meshlet flat color via the debug program). This
+        // direct "draw every instance" path is the legacy fallback and never
+        // fires while the GPU-scene debug program is loaded (the program
+        // gate above resets the view to Lit when it is missing).
+        if (meshletDbg && m_gpuSceneTaskDebugProgram.shaderCount != 3) {
             cmd.BindRenderPipeline(
                 m_gfxRenderer.MeshDebugProgram(),
                 smvk::VertexLayoutId::Static,
@@ -16483,10 +16527,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     }
                 });
         }
-        // LOD debug view (F5): every opaque instance direct with a flat
-        // color for its SELECTED LOD sibling (green LOD0 -> red LOD3,
-        // magenta beyond). Uses the meshDebugProgram, bypasses the filter.
-        if (lodDbg) {
+        // LOD debug view (F5): now rides the GPU Scene task/mesh chain too
+        // (surviving meshlets colored by their selected LOD). This direct
+        // "draw every instance" path is the legacy fallback, never firing
+        // while the GPU-scene debug program is loaded (the gate above resets
+        // the view to Lit when it is missing).
+        if (lodDbg && m_gpuSceneTaskDebugProgram.shaderCount != 3) {
             cmd.BindRenderPipeline(
                 m_gfxRenderer.MeshDebugProgram(),
                 smvk::VertexLayoutId::Static,

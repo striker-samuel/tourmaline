@@ -73,6 +73,52 @@ GsMeshVertex FetchVertex(uint vertexId,
     return v;
 }
 
+// GPU-Scene-native debug color (debugMode 1 = meshlet hash hue, mirroring
+// GfxRenderer::DebugClusterColor mode 0): stable golden-ratio hash of the
+// GLOBAL cluster id -> HSV hue -> RGB. Authored in display space, so the
+// caller pre-scales by the debug-view gain (1/kDebugViewExposure) to survive
+// the HDR + ACES chain exactly like the direct meshdebug path.
+float3 MeshletDebugColor(uint clusterId) {
+    uint h = clusterId * 2654435761u;
+    h ^= h >> 15u;
+    h *= 2246822519u;
+    h ^= h >> 13u;
+    const float hue = float(h % 1024u) / 1024.0f;
+    const float s = 0.85f;
+    const float v = 0.95f;
+    const float c = v * s;
+    const float hh = hue * 6.0f;
+    const float x = c * (1.0f - abs(fmod(hh, 2.0f) - 1.0f));
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+    if (hh < 1.0f) { r = c; g = x; }
+    else if (hh < 2.0f) { r = x; g = c; }
+    else if (hh < 3.0f) { g = c; b = x; }
+    else if (hh < 4.0f) { g = x; b = c; }
+    else if (hh < 5.0f) { r = x; b = c; }
+    else { r = c; b = x; }
+    const float m = v - c;
+    return float3(r + m, g + m, b + m);
+}
+
+// LOD palette (mirrors world_renderer.cpp kLodPalette): green LOD0 -> yellow
+// LOD1 -> orange LOD2 -> red LOD3 -> magenta LOD4+. Authored display colors.
+float3 LodPaletteColor(uint lod) {
+    if (lod == 0u) return float3(0.20f, 0.90f, 0.30f);
+    if (lod == 1u) return float3(0.95f, 0.85f, 0.20f);
+    if (lod == 2u) return float3(1.00f, 0.55f, 0.15f);
+    if (lod == 3u) return float3(1.00f, 0.20f, 0.20f);
+    return float3(1.00f, 0.20f, 1.00f);
+}
+
+// Cone heat (mirrors GfxRenderer::DebugClusterColor mode 1): cutoff ~1
+// (degenerate/wide, never culls) -> red; tight useful cones -> green/cyan.
+// Reuses the cluster's baked cone metadata (c.c.w = coneCutoff), no extra
+// GPU buffer.
+float3 ConeHeatColor(float cutoff) {
+    const float t = clamp((cutoff + 1.0f) * 0.5f, 0.0f, 1.0f);
+    return float3(t, 1.0f - abs(t - 0.5f), 1.0f - t);
+}
+
 [outputtopology("triangle")]
 [numthreads(32,1,1)]
 void mainMS(uint3 gid : SV_GroupID,
@@ -87,6 +133,10 @@ void mainMS(uint3 gid : SV_GroupID,
     GpuSceneInstance inst=(GpuSceneInstance)0;
     GsCluster c=(GsCluster)0;
     GsIndexedGeometry geo=(GsIndexedGeometry)0;
+    // Debug-view flat color (debugMode 1 = per-meshlet hash hue). Authored in
+    // display space; pre-scaled by 1/kDebugViewExposure so the HDR + ACES
+    // chain reproduces it (the same convention as the direct meshdebug path).
+    float4 dbgColor=float4(0.0f,0.0f,0.0f,1.0f);
     if (valid) {
         work=p.work.Get().rows[task.workSlot];
         valid=work.identity.y!=0u && work.identity.x<p.instanceCount &&
@@ -110,7 +160,15 @@ void mainMS(uint3 gid : SV_GroupID,
     if (valid) {
         const uint clusterId=task.clusterIds[gid.x];
         valid=clusterId<p.clusterCount && clusterId<GS_MAX_CLUSTERS;
-        if (valid) c=p.clusters.Get().rows[clusterId];
+        if (valid) {
+            c=p.clusters.Get().rows[clusterId];
+            if (p.debugMode==1u)
+                dbgColor=float4(MeshletDebugColor(clusterId) * 1000.0f, 1.0f);
+            else if (p.debugMode==2u)
+                dbgColor=float4(LodPaletteColor(work.detail.x) * 1000.0f, 1.0f);
+            else if (p.debugMode==3u)
+                dbgColor=float4(ConeHeatColor(c.c.w) * 1000.0f, 1.0f);
+        }
     }
     // Indexed-meshlet output: unique local vertices (a.w count at a.z) +
     // local triangle ids (a.y count at e.x). Range guards are defense in
@@ -136,6 +194,8 @@ void mainMS(uint3 gid : SV_GroupID,
         const uint globalId=p.meshletVertices.Get().id[vertexBase+v];
         const int64_t vertexSigned=(int64_t)globalId+(int64_t)geo.vertexOffset;
         verts[v]=FetchVertex((uint)vertexSigned,inst,view,p);
+        if (p.debugMode!=0u)
+            verts[v].color=dbgColor;
     }
     // One local triangle per lane (3 packed u8 ids).
     for (uint t=tid.x;t<triCount;t+=GS_MESH_THREADS) {
