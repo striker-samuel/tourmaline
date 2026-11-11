@@ -21,6 +21,7 @@
 //   ... motionVectors.target.logicalView / .bindlessIndex ...
 
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
@@ -131,7 +132,7 @@ struct MotionVectorTarget {
     }
 };
 
-// Default SPVs (StaticLayout VS + motion PS).
+// Default SPVs (tour::vertex_layouts::Static VS + motion PS).
 inline constexpr const char* kMotionVectorVsPath = "content/shaders/motionvector.vert.hlsl.spv";
 inline constexpr const char* kMotionVectorPsPath = "content/shaders/motionvector.frag.hlsl.spv";
 
