@@ -1610,3 +1610,9 @@ target_link_libraries(GpuSceneTaskMeshTests PRIVATE engine)
 set_target_properties(GpuSceneTaskMeshTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_task_mesh_tests COMMAND GpuSceneTaskMeshTests)
+
+# GPUScene HLOD: device-free reference selector and topology contracts.
+add_executable(GpuSceneHlodTests test_gpu_scene_hlod.cpp)
+target_include_directories(GpuSceneHlodTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(GpuSceneHlodTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_hlod_tests COMMAND GpuSceneHlodTests)
