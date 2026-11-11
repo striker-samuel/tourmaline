@@ -8,6 +8,7 @@
 // pipeline phases (one per LOD topology).
 
 #include <Engine/Renderer/Renderer.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/terrain.h>
 #include <Engine/Rendergraph/terrain_blocks.h>
 #include <Engine/Rendergraph/terrain_occlusion.h>
@@ -439,7 +440,7 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
             continue;
         cmd.BindIndexBuffer(indexBuffers[l], 0);
         cmd.BindRenderPipeline(program,
-                               VertexLayoutId::TerrainFull,
+                               tour::vertex_layouts::TerrainFull,
                                depth,
                                stencil,
                                blend,
@@ -458,7 +459,7 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
         cmd.BindVertexBuffer(farVertexBuffer, 0, 0);
         cmd.BindIndexBuffer(farIndexBuffer, 0);
         cmd.BindRenderPipeline(farProgram,
-                               VertexLayoutId::TerrainFarGrid,
+                               tour::vertex_layouts::TerrainFarGrid,
                                depth,
                                stencil,
                                blend,
