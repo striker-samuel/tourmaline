@@ -23,7 +23,7 @@ Scenes are authored through a human-readable `.tour` command format with referen
 
 Tourmaline includes a Vulkan render graph, GPU-driven mesh rendering, clustered Forward+ lighting, animation and audio runtime services, content tooling, and an experimental editor.
 
-The framework is under active development. APIs and asset formats are evolving, and several subsystems remain experimental.
+The framework is under active development. APIs and asset formats are evolving, and several subsystems remain experimental. See [implementation status](docs/implementation_status.md) for source-checked features and integration boundaries.
 
 ## Highlights
 
@@ -33,7 +33,7 @@ The framework is under active development. APIs and asset formats are evolving, 
 - **Authored worlds:** A Maya-inspired, text-based `.tour` scene overlay with references, overrides, editable nodes, and replayable operations. `.tourAnim` provides skeletal clips.
 - **Content as code:** `Project.exe` resolves `.tourrecipe` builds, cooks and verifies multiple `.pak` files, publishes a `.tapp` runtime manifest, and generates a typed, `constexpr` `project.h` catalog of persistent asset IDs.
 - **C++-first runtime:** Scene loading by asset ID, additive scene instances, asset prefetch, typed generational handles for mesh instances/animators/audio emitters, and scene-aware spatial audio. Game code owns the gameplay objects.
-- **Editor and offline tools:** An ImGui scene editor plus command-line import, cooking, GI baking, packaging, asset inspection, and debugging tools. The editor also offers a full-renderer baked-GI view and fallback inspectors for unrecognized files. Jolt Physics is vendored and tested; engine-level rigid-body/collider integration is still in progress.
+- **Editor and offline tools:** An ImGui scene editor plus command-line import, cooking, GI baking, packaging, asset inspection, and debugging tools. The editor also offers a full-renderer baked-GI view and fallback inspectors for unrecognized files. Scene physics-body/collider authoring and serialization exist, but Jolt simulation is not automatically instantiated from authored bodies.
 - **Optional shared asset repository:** Run an offline/local or Windows/Linux NAS-hosted source history service, publish separate immutable asset representations, use verified Maya caches, and inspect advisory consumer read-presence without file locks. See [Asset repository manual](docs/asset_repository_manual.md).
 - **Repeatable benchmarks:** A standalone `Benchmark` target, in-viewer scenario export to a source-controlled catalog, a Python A/B performance harness, and optional NVIDIA Nsight Graphics trace/capture workflows.
 
@@ -252,16 +252,17 @@ python tools/perf_harness.py bench --scenario bistro-ssr-stress --exe out/build/
 
 The example scenario requires `content/paks/bistro.pak` in that build directory; the Sponza demo download does **not** supply Bistro. For a different scene, launch `App`, navigate to a representative view, press **TAB** (and **I** for UI cursor control if needed), then use **Benchmark scenarios → Export for benchmark**. Review and commit `benchmarks/scenarios.json`. See [benchmark scenarios](benchmarks/README.md) and the [agent performance harness](docs/perf_harness.md) for Linux paths, Nsight profiling, and reproducibility limits.
 
-**Build the editor and tools (optional):** from the repository root, run `cmake --build <build-dir> --target Editor EditorLauncher Project`, then start `EditorLauncher` from the build directory (or `Editor --project <project-dir>`). Editor authoring/rendering is experimental.
+**Build the editor and tools (optional):** from the repository root, run `cmake --build <build-dir> --target Editor EditorLauncher Project`, then start `EditorLauncher` from the build directory (or `Editor --project <project-dir>`). The editor **requires** `--project` when launched directly; the launcher handles project selection. Editor rendering/authoring is experimental. [Optional statically linked game callbacks](docs/editor_game_entry.md) do not automatically create a full game simulation viewport.
 
-**Inspect published content without launching Vulkan:** the Python package browser supports SMP8 `.pak` archives and appmanifest v2 `.tapp` files. Its CLI mode requires only Python; the graphical browser additionally needs PyQt6:
+**Inspect published content without launching Vulkan:** the current headless inspection CLI is `tools/tourinfo.py`, which supports SMP8 `.pak` archives and appmanifest v2 `.tapp` files. Metadata queries and deep stored-CRC validation do not require Vulkan or Qt; decoding compressed LZ4 payloads additionally requires Python `lz4`:
 
 ```bash
-python tools/pak_browser.py --cli-dump out/build/linux-Release/content/paks/sponza_10.tapp
-python tools/pak_browser.py --cli-validate out/build/linux-Release/content/paks/sponza_10.tapp
+python tools/tourinfo.py summary out/build/linux-Release/content/paks/sponza_10.tapp --json
+python tools/tourinfo.py assets out/build/linux-Release/content/paks/sponza_10.tapp --jsonl
+python tools/tourinfo.py validate out/build/linux-Release/content/paks/sponza_10.tapp --deep --json
 ```
 
-Use the equivalent Windows build path when applicable. The CLI checks manifest entries, each pak's `#ids` identity table, and (with `--cli-validate`) all stored payload CRCs. See [SMP8 package inspection](docs/pak_vnext.md#inspecting-smp8-paks-and-tapp-manifests).
+Use the equivalent Windows build path when applicable. `validate --deep` walks stored payload CRCs. The older `pak_browser.py --cli-dump` / `--cli-validate` commands are still available, and its optional GUI needs PyQt6. See the [headless CLI manual](docs/agent_cli_tools.md#tourinfo-package-explorer) and [SMP8 inspection](docs/pak_vnext.md#inspecting-smp8-paks-and-tapp-manifests).
 
 **Run tests (optional):** configure a separate build directory with `-DBUILD_TESTING=ON` (the demo recipes above disable tests for a smaller build), then:
 
@@ -290,7 +291,13 @@ Tourmaline is opinionated about its **rendering and content infrastructure**, no
 - **World-owned runtime objects** use typed generational handles, including mesh instances, animators, and audio sources.
 - **Gameplay objects** are ordinary application-owned C++ structures or whatever higher-level architecture the game chooses.
 
-An animator can play, crossfade, pause, resume, and adjust speed on a loaded skeletal clip. Current limitations include one rendered skeletal pose per owning cluster even when multiple animator states exist. Likewise, Jolt is present as a pinned dependency and standalone physics test; full authored rigid-body integration is not yet a finished game feature.
+An animator can play, crossfade, pause, resume, and adjust speed on a loaded skeletal clip. Current limitations include one rendered skeletal pose per owning cluster even when multiple animator states exist. Likewise, Jolt CPU tests exist alongside physics authoring data, but automatic runtime Jolt instantiation, simulation stepping, and collision response are not completed gameplay features.
+
+### Additional native runtime interfaces
+
+The primary game-facing interface remains C++20. A prototype **C11 asset-access ABI** (`app/src/RuntimeC.h`) can open a cooked `.tapp`, attach/validate a generated catalog, and read asset bytes. It does **not** expose C rendering, gameplay ticks, input, or audio. See [C runtime prototype](docs/c_game_runtime.md).
+
+A separate native C++ game repository can embed Tourmaline using `add_subdirectory` and opt into the application host and content tools via `TOURMALINE_ENABLE_GAME_HOST`. The editor and repository samples remain top-level-only; see [`templates/native_game`](templates/native_game).
 
 ## Content and authoring formats
 
@@ -338,6 +345,10 @@ external/   Pinned submodules and fetched third-party dependencies
 
 ## Documentation
 
+- [`docs/implementation_status.md`](docs/implementation_status.md) — source-checked implementation-to-documentation cross-check and limitations.
+- [`docs/agent_cli_tools.md`](docs/agent_cli_tools.md) — current headless package inspection and capture tools.
+- [`docs/c_game_runtime.md`](docs/c_game_runtime.md) — prototype packaged-content C ABI (not a C game runtime).
+- [`docs/editor_game_entry.md`](docs/editor_game_entry.md) — optional editor-linked game callbacks and limitations.
 - [`AGENTS.md`](AGENTS.md) — build/test commands, architecture seams, and development conventions.
 - [`docs/editor_tour_and_context.md`](docs/editor_tour_and_context.md) — `.tour` authoring and replay model.
 - [`docs/project_scenes.md`](docs/project_scenes.md) — ID-based scene loading and asset ownership.
