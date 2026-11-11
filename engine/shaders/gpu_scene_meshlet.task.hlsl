@@ -82,6 +82,28 @@ bool MeshletOccluded(float4 bound, GpuSceneInstance inst, GsTaskMeshParams p) {
     return bp.testable && bp.onTarget && BoundHzbOccluded(bp, ctx);
 }
 
+// Exact binary search over a sorted history snapshot. A cluster ID is not
+// sufficient by itself: different instances of shared geometry may have
+// entirely different visibility. The producer invalidates on geometry
+// republish so recycled cluster IDs never seed stale geometry.
+bool MeshletPreviouslyVisible(uint slot, uint gen, uint clusterId,
+                              GsTaskMeshParams p) {
+    uint lo = 0u;
+    uint hi = min(p.meshletHistoryCount, GS_MAX_MESHLET_HISTORY);
+    while (lo < hi) {
+        const uint mid = lo + ((hi - lo) >> 1u);
+        const uint4 key = p.meshletHistory.Get().rows[mid].identity;
+        const bool less = key.x < slot ||
+            (key.x == slot && (key.y < gen ||
+             (key.y == gen && key.z < clusterId)));
+        if (less) lo = mid + 1u;
+        else hi = mid;
+    }
+    if (lo >= min(p.meshletHistoryCount, GS_MAX_MESHLET_HISTORY)) return false;
+    const uint4 key = p.meshletHistory.Get().rows[lo].identity;
+    return key.x == slot && key.y == gen && key.z == clusterId;
+}
+
 [shader("amplification")]
 [numthreads(32,1,1)]
 void mainAS(uint3 groupId : SV_GroupID,
@@ -124,7 +146,7 @@ void mainAS(uint3 groupId : SV_GroupID,
     // transient work slot or meshlet index. The host MUST provide a
     // completed visibility snapshot for phases 1/2. On invalid history,
     // route the frame through phase 0 rather than silently dropping work.
-    if (valid && p.visibilityPhase != 0u) {
+    if (valid && p.visibilityPhase != 0u && p.visibilityGranularity == 0u) {
         const uint slot = work.identity.x;
         const bool inHistory = slot < p.visibilityHistorySlots &&
                                slot < GS_MAX_INSTANCES;
@@ -140,7 +162,13 @@ void mainAS(uint3 groupId : SV_GroupID,
     if (valid && lane<group.clusterCount) {
         clusterId=group.firstCluster+lane;
         keep=true;
-        if (p.viewValid!=0u) {
+        if (p.visibilityPhase != 0u && p.visibilityGranularity == 1u) {
+            const bool previousVisible = MeshletPreviouslyVisible(
+                work.identity.x, work.identity.y, clusterId, p);
+            keep = (p.visibilityPhase == 1u) ? previousVisible :
+                   (p.visibilityPhase == 2u && !previousVisible);
+        }
+        if (keep && p.viewValid!=0u) {
             const GsView view=p.cullView.Get();
             const GsCluster c=p.clusters.Get().rows[clusterId];
             keep=SphereVisible(c.b,inst,view);

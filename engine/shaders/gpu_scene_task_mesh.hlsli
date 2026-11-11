@@ -16,6 +16,7 @@
 #define GS_MAX_INSTANCES 4194304u
 #define GS_MAX_CLUSTERS 4194304u
 #define GS_MAX_GEO 65535u
+#define GS_MAX_MESHLET_HISTORY 4194304u
 #define GS_MAX_VERTICES 44739242u
 #define GS_MAX_INDEX_WORDS (65536u * 128u * 3u)
 
@@ -33,6 +34,9 @@ struct GsClusters { GsCluster rows[GS_MAX_CLUSTERS]; };
 struct GsInstances { GpuSceneInstanceRow rows[GS_MAX_INSTANCES]; };
 // Same generational snapshot ABI as GPUScene's indexed temporal seed.
 struct GsVisibilityHistory { uint generations[GS_MAX_INSTANCES]; };
+// Sorted lexicographically by (instance slot, instance generation, cluster ID).
+struct GsMeshletHistoryEntry { uint4 identity; };
+struct GsMeshletHistory { GsMeshletHistoryEntry rows[GS_MAX_MESHLET_HISTORY]; };
 struct GsView {
     DoubleFloat3 origin;
     float4 planes[6];
@@ -95,6 +99,9 @@ struct GsTaskMeshParams {
     GPU_PTR_READ(GsVisibilityHistory) visibilityHistory;
     uint visibilityHistorySlots;
     uint visibilityPhase;
+    GPU_PTR_READ(GsMeshletHistory) meshletHistory;
+    uint meshletHistoryCount;
+    uint visibilityGranularity; // 0 = per instance, 1 = per meshlet
 };
 struct GsTaskMeshPush {
     // Preserve the fragment shader's 192-byte scene push constants.

@@ -28,13 +28,26 @@ It must remain draft until the host records the correct seed/remainder passes.
   parameter snapshots and synchronize them against GPU reads.
 
 ## Other limitations
-- History remains instance-granular, **not** meshlet granular.
+- Visibility granularity is selectable by the task/mesh **host API**:
+  `TaskMeshInputs.visibilityGranularity = TaskVisibilityGranularity::Instance`
+  (default) or `TaskVisibilityGranularity::Meshlet`. This is a staged
+  control, not an editor UI switch or an active user-facing runtime toggle.
+- Instance history is a dense `uint generation[instanceSlot]` snapshot.
+- Meshlet history is a sorted/unique `uint4(slot,generation,clusterId,0)`
+  record array. A binary search per meshlet tests exact membership, so
+  shared meshes do not incorrectly share visibility. A cluster ID alone
+  is not stable enough to survive geometry republishing.
+- Meshlet mode requires a GPU producer to publish and validate a complete
+  sorted history before either split pass, and must invalidate it on
+  topology/geometry changes, LOD substitution, and streaming alias changes.
+- Meshlet-level history consumes additional memory and task shader searches;
+  performance is not guaranteed and must be measured.
 - The existing raster history GPU producer only runs in indexed mode.
   Task mesh needs its own compatible history producer, with conservative
   generation invalidation, at the end of the task-path visibility chain.
 - This PR does not reduce the task-count/prefix/scatter overhead.
 - No GPU capture, DXC reflection, or Vulkan parity measurement is claimed.
-- No feature flag is exposed; WorldRenderer continues using mode 0.
+- No editor/console feature flag is exposed; WorldRenderer continues using mode 0. Both controls are staged API options, not yet usable rendering modes.
 
 ## Validation
 `GpuSceneTaskMeshTests` now covers previous-visible seeding, new work,

@@ -4,6 +4,7 @@
 // Flight-safe GPU Scene task/mesh resources. No GPU readback and no
 // 1024-meshlet-per-submesh gate; bounded by the actual 1M task group limit.
 #include <Engine/Renderer/gpu_scene_task_mesh_abi.h>
+#include <Engine/Renderer/gpu_scene_task_visibility.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <algorithm>
@@ -52,6 +53,9 @@ struct TaskMeshInputs {
     uint64_t visibilityHistory = 0; // must be from a completed prior submission
     uint32_t visibilityHistorySlots = 0;
     uint32_t visibilityPhase = 0; // 0 full; seed/remainder reserved for split passes
+    uint64_t meshletHistory = 0; // exact sorted per-(instance,meshlet) snapshot
+    uint32_t meshletHistoryCount = 0;
+    TaskVisibilityGranularity visibilityGranularity = TaskVisibilityGranularity::Instance;
 };
 struct TaskMeshDispatchPlan {
     TaskMeshGroupCountPush count{};
@@ -115,10 +119,20 @@ class TaskMeshRuntime {
         // No partial temporal admission. An incomplete/missing history
         // must select full phase 0, never seed or remainder in isolation.
         if (in.visibilityPhase > 2u ||
-            (in.visibilityPhase != 0u &&
-             (!in.visibilityHistory || in.visibilityHistorySlots < in.instanceCount ||
-              in.visibilityHistorySlots > 4194304u)))
+            (in.visibilityGranularity != TaskVisibilityGranularity::Instance &&
+             in.visibilityGranularity != TaskVisibilityGranularity::Meshlet))
             return false;
+        if (in.visibilityPhase != 0u) {
+            if (in.visibilityGranularity == TaskVisibilityGranularity::Instance) {
+                if (!in.visibilityHistory || in.visibilityHistorySlots < in.instanceCount ||
+                    in.visibilityHistorySlots > 4194304u) return false;
+            } else {
+                // GPU producer must guarantee sorted, unique and flight-safe
+                // entries; metadata alone cannot prove that invariant.
+                if (!in.meshletHistory || in.meshletHistoryCount > 4194304u)
+                    return false;
+            }
+        }
         const uint64_t groupsPerWork = (uint64_t(in.worstMeshlets) + 31u) / 32u;
         const uint64_t upperBound = uint64_t(in.workCapacity) * groupsPerWork;
         if (upperBound == 0 || upperBound > MaxTaskGroups)
@@ -221,7 +235,10 @@ class TaskMeshRuntime {
                             in.meshletTriangles,
                             in.visibilityHistory,
                             in.visibilityHistorySlots,
-                            in.visibilityPhase};
+                            in.visibilityPhase,
+                            in.meshletHistory,
+                            in.meshletHistoryCount,
+                            uint32_t(in.visibilityGranularity)};
         ctx.UploadDataToBuffer(
             f.params,
             &p,

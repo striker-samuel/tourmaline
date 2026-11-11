@@ -88,5 +88,32 @@ int main() {
         const bool remainder = TaskVisibilityInPhase(identity, previous, TaskVisibilityPhase::Remainder);
         CHECK(seed != remainder); // exact partition, no duplicate draw
     }
+    // Meshlet-level history keeps shared-mesh instances independent.
+    const std::array<TaskMeshletHistoryEntry, 3> meshletHistory{{
+        {0u, 3u, 7u, 0u}, {0u, 3u, 9u, 0u}, {2u, 4u, 7u, 0u}}};
+    CHECK(ValidMeshletHistory(meshletHistory));
+    CHECK(TaskMeshletInPhase({0u, 3u}, 7u, meshletHistory, TaskVisibilityPhase::Seed));
+    CHECK(!TaskMeshletInPhase({0u, 3u}, 8u, meshletHistory, TaskVisibilityPhase::Seed));
+    CHECK(TaskMeshletInPhase({0u, 3u}, 8u, meshletHistory, TaskVisibilityPhase::Remainder));
+    CHECK(!TaskMeshletInPhase({2u, 3u}, 7u, meshletHistory, TaskVisibilityPhase::Seed));
+    CHECK(!TaskMeshletInPhase({1u, 3u}, 7u, meshletHistory, TaskVisibilityPhase::Seed));
+    CHECK(!TaskMeshletInPhase({0u, 4u}, 7u, meshletHistory, TaskVisibilityPhase::Seed));
+    CHECK(TaskMeshletInPhase({0u, 4u}, 7u, meshletHistory, TaskVisibilityPhase::Remainder));
+    CHECK(TaskMeshletInPhase({0u, 3u}, 7u, meshletHistory, TaskVisibilityPhase::Full));
+    for (uint32_t meshlet = 0; meshlet < 12; ++meshlet) {
+        const bool seed = TaskMeshletInPhase({0u, 3u}, meshlet, meshletHistory,
+                                              TaskVisibilityPhase::Seed);
+        const bool remainder = TaskMeshletInPhase({0u, 3u}, meshlet, meshletHistory,
+                                                   TaskVisibilityPhase::Remainder);
+        CHECK(seed != remainder);
+    }
+    const std::array<TaskMeshletHistoryEntry, 2> duplicate{{
+        {0u, 3u, 7u, 0u}, {0u, 3u, 7u, 0u}}};
+    const std::array<TaskMeshletHistoryEntry, 2> unsorted{{
+        {0u, 3u, 9u, 0u}, {0u, 3u, 7u, 0u}}};
+    CHECK(!ValidMeshletHistory(duplicate));
+    CHECK(!ValidMeshletHistory(unsorted));
+    CHECK(!TaskMeshletInPhase({0u, 3u}, UINT32_MAX, meshletHistory,
+                              TaskVisibilityPhase::Seed));
     return 0;
 }
