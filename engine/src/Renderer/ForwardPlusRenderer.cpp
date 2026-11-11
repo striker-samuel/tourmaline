@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/Renderer/Renderer.h>
+#include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
 
@@ -195,7 +196,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                     if (cull == boundMaskedCull)
                         return;
                     cmd.BindRenderPipeline(gbufferOn ? gbufferMaskedProgram : prepassMaskedProgram,
-                                           smvk::VertexLayoutId::Static,
+                                           tour::vertex_layouts::Static,
                                            smvk::DepthSettings{
                                                .depthFunc = smvk::CompareOp::GreaterEqual,
                                                .writeEnable = true,
@@ -221,7 +222,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                     if (cull == boundSolidCull)
                         return;
                     cmd.BindRenderPipeline(gbufferOn ? gbufferProgram : fp->depthProgram,
-                                           smvk::VertexLayoutId::Static,
+                                           tour::vertex_layouts::Static,
                                            smvk::DepthSettings{
                                                .depthFunc = smvk::CompareOp::GreaterEqual,
                                                .writeEnable = true,
@@ -522,7 +523,7 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
             return; // the pass still clears depth for empty views
         cmd.BindStaticVertexFmt();
         cmd.BindRenderPipeline(rasterDepth,
-                               smvk::VertexLayoutId::Static,
+                               tour::vertex_layouts::Static,
                                smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                    .writeEnable = true,
                                                    .depthTestEnable = true},
@@ -554,7 +555,7 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
         drawBin(0u);
         if (hasDoubleSided) {
             cmd.BindRenderPipeline(rasterDepth,
-                                   smvk::VertexLayoutId::Static,
+                                   tour::vertex_layouts::Static,
                                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                        .writeEnable = true,
                                                        .depthTestEnable = true},
@@ -570,7 +571,7 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
         smvk::ShaderProgram maskedProgram = gbufferOn ? maskedGbuffer : maskedDepth;
         if (hasMasked) {
             cmd.BindRenderPipeline(maskedProgram,
-                                   smvk::VertexLayoutId::Static,
+                                   tour::vertex_layouts::Static,
                                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                        .writeEnable = true,
                                                        .depthTestEnable = true},
@@ -582,7 +583,7 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
         }
         if (hasMaskedDoubleSided) {
             cmd.BindRenderPipeline(maskedProgram,
-                                   smvk::VertexLayoutId::Static,
+                                   tour::vertex_layouts::Static,
                                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                        .writeEnable = true,
                                                        .depthTestEnable = true},
@@ -681,7 +682,7 @@ bool ForwardPlusRenderer::AppendGpuSceneCompactPrepass(
                            hasMaskedDoubleSided](smvk::CommandBuffer& cmd) mutable {
         cmd.BindStaticVertexFmt();
         cmd.BindRenderPipeline(rasterDepth,
-                               smvk::VertexLayoutId::Static,
+                               tour::vertex_layouts::Static,
                                smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                    .writeEnable = true,
                                                    .depthTestEnable = true},
@@ -709,7 +710,7 @@ bool ForwardPlusRenderer::AppendGpuSceneCompactPrepass(
         drawBin(0u);
         if (hasDoubleSided) {
             cmd.BindRenderPipeline(rasterDepth,
-                                   smvk::VertexLayoutId::Static,
+                                   tour::vertex_layouts::Static,
                                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                        .writeEnable = true,
                                                        .depthTestEnable = true},
@@ -722,7 +723,7 @@ bool ForwardPlusRenderer::AppendGpuSceneCompactPrepass(
         smvk::ShaderProgram maskedProgram = gbufferOn ? maskedGbuffer : maskedDepth;
         if (hasMasked) {
             cmd.BindRenderPipeline(maskedProgram,
-                                   smvk::VertexLayoutId::Static,
+                                   tour::vertex_layouts::Static,
                                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                        .writeEnable = true,
                                                        .depthTestEnable = true},
@@ -734,7 +735,7 @@ bool ForwardPlusRenderer::AppendGpuSceneCompactPrepass(
         }
         if (hasMaskedDoubleSided) {
             cmd.BindRenderPipeline(maskedProgram,
-                                   smvk::VertexLayoutId::Static,
+                                   tour::vertex_layouts::Static,
                                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                                        .writeEnable = true,
                                                        .depthTestEnable = true},
@@ -831,7 +832,7 @@ bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(smvk::FrameContext& base,
                                                .depthTestEnable = true};
         const auto drawBin = [&](uint32_t cls, smvk::ShaderProgram& program, smvk::CullMode cull) {
             cmd.BindRenderPipeline(program,
-                                   smvk::VertexLayoutId::Empty,
+                                   tour::vertex_layouts::Empty,
                                    depth,
                                    smvk::StencilSettings{},
                                    smvk::BlendSettings{},
@@ -1015,7 +1016,7 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
                 };
             };
             cmd.BindRenderPipeline(fp->depthProgram,
-                                   smvk::VertexLayoutId::Static,
+                                   tour::vertex_layouts::Static,
                                    smvk::DepthSettings{
                                        .depthFunc = smvk::CompareOp::GreaterEqual,
                                        .writeEnable = true,
