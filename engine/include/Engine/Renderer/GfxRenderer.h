@@ -13,7 +13,7 @@
 
 #include <Engine/App/world.h>
 #include <Engine/Renderer/Renderer.h>
-#include <Engine/Renderer/gpu_scene_static.h>
+#include <Engine/Renderer/gfx_types.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Rendergraph/renderer.h>
 #include <functional>
@@ -76,7 +76,7 @@ struct MaterialDepthState {
 };
 
 struct GfxRenderer : public smvk::IFrameRenderer {
-    smvk::gfx::StaticGeometry gfx{};
+    smvk::gfx::State gfx{};
     GfxConfig config{};
     smvk::Holder<smvk::ShaderModuleHandle> filteredVsModule;
     smvk::ShaderProgram filteredProgram{};

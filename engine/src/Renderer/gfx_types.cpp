@@ -1,0 +1,3632 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+#include <Engine/Asset/meshlet.h>
+#include <Engine/Profile/profile.h>
+#include <Engine/Renderer/gfx_dynamic_capacity.h>
+#include <Engine/Renderer/gfx_types.h>
+#include <Engine/Renderer/mesh.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
+#include <Engine/debug_log.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <numeric>
+#include <utility>
+
+namespace tour::gfx {
+
+// (migration compat) this TU still spells the smvk RHI names
+// unqualified (Holder/BufferHandle/ShaderProgram/ResourceManager/...),
+// the way the old enclosing-smvk lookup made them resolve; the
+// TU-LOCAL using-directive stands in for it. Deliberately NOT in the
+// header: a public using-directive is R6-gated, and its transitive
+// lookup collides gfx's own Cluster with tour::Cluster for every
+// using-namespace-gfx consumer — the ambiguity that made the header
+// fully qualified instead.
+using namespace ::smvk;
+
+// 2D dispatch flattened in the corresponding HLSL entrypoints.
+static void DispatchDrawGroups(CommandBuffer& cmd, uint32_t groups) {
+    DispatchGrid grid{};
+    if (!PlanDispatchGrid(groups, grid)) {
+        std::fprintf(
+            stderr, "[GfxFilter] FATAL: dispatch requires too many workgroups (%u)\n", groups);
+        std::abort();
+    }
+    if (grid.x != 0)
+        cmd.Dispatch(grid.x, grid.y, 1);
+}
+
+// TMP-PROBE: list-mechanism breakdown for the traversal investigation.
+// Accumulates per-scope ms, prints averages every 240 BeginViews.
+// Remove once the optimization lands.
+namespace {
+struct GfxProbeAccum {
+    double batches = 0.0, seedRem = 0.0, snap = 0.0, uploads = 0.0;
+    int frames = 0;
+};
+GfxProbeAccum g_probe;
+using GfxProbeClock = std::chrono::steady_clock;
+struct GfxProbeScope {
+    GfxProbeClock::time_point t0 = GfxProbeClock::now();
+    double& acc;
+    explicit GfxProbeScope(double& a) : acc(a) {}
+    ~GfxProbeScope() {
+        acc += std::chrono::duration<double, std::milli>(GfxProbeClock::now() - t0).count();
+    }
+};
+void GfxProbeReport() {
+    if (++g_probe.frames % 240 != 0)
+        return;
+    const double n = 240.0;
+    SMVK_TRACE_LOG("[GfxProbe] avg/frame: batches %.3f seedrem %.3f snap %.3f uploads %.3f ms\n",
+                   g_probe.batches / n,
+                   g_probe.seedRem / n,
+                   g_probe.snap / n,
+                   g_probe.uploads / n);
+    std::fflush(stderr);
+    g_probe.batches = g_probe.seedRem = g_probe.snap = g_probe.uploads = 0.0;
+}
+} // namespace
+
+// THE DYNAMIC-CAPACITY CUTOVER (docs/gfx_dynamic_capacity_gpu_default.md):
+// the per-(view, flight) draw/candidate rings are sized by RUNTIME
+// capacities (page-planned, grow-only — see GrowViewCapacity below), not
+// the historical fixed constants. The helpers keep every stride next to
+// its buffer; the SURVIVOR-CAPPED allocations stay compile-time (the
+// separately-budgeted static heap: the filtered ring, the vis-cluster
+// mirror and the shadow indirect list — kMaxBatches, unchanged).
+static constexpr size_t kFilteredBytes = kMaxBatches * kMaxClusterTris * 3 * sizeof(uint32_t);
+static constexpr size_t kVisClusterBytes = kMaxBatches * sizeof(VisibleCluster);
+// Shadow-list indirect arrays: survivor-capped (the CPU shadow path emits
+// only surviving commands, kMaxBatches — no candidate positional layout).
+static constexpr size_t kShadowIndirectBytes = kMaxBatches * sizeof(SeedCommand);
+// Runtime-sized allocation helpers (strides pinned by the C++/HLSL
+// static_asserts; capacities are page multiples of these).
+static size_t DrawRingBytes(uint32_t drawCapacity) {
+    return size_t(drawCapacity) * sizeof(Draw);
+}
+static size_t CandidateBatchBytes(uint32_t candidateCapacity) {
+    return size_t(candidateCapacity) * sizeof(Batch);
+}
+static size_t IndirectCmdBytes(uint32_t candidateCapacity) {
+    return size_t(candidateCapacity) * 20u; // VkDrawIndexedIndirectCommand
+}
+static size_t KeptRingBytes(uint32_t candidateCapacity) {
+    return 2u * size_t(candidateCapacity) * sizeof(uint32_t); // two parity regions
+}
+static size_t CullStateWordsOf(uint32_t drawCapacity) {
+    return size_t(drawCapacity) + 5u; // verdicts + counter + 4 diag words
+}
+static size_t CullStateBytes(uint32_t drawCapacity) {
+    return CullStateWordsOf(drawCapacity) * sizeof(uint32_t);
+}
+static size_t SeedIndirectBytes(uint32_t candidateCapacity) {
+    return size_t(candidateCapacity) * sizeof(SeedCommand);
+}
+static size_t SkinBoundsBytes(uint32_t candidateCapacity, uint32_t drawCapacity) {
+    return size_t(candidateCapacity) * sizeof(ClusterConstants) +
+           size_t(drawCapacity) * sizeof(glm::vec4);
+}
+static size_t ConeDebugLinesBytes(uint32_t candidateCapacity) {
+    return size_t(candidateCapacity) * 2u * 12u; // two packed float3 verts per slot
+}
+static size_t MeshBatchListBytes(uint32_t candidateCapacity) {
+    return size_t(candidateCapacity) * sizeof(uint32_t);
+}
+// First-page capacity for a stride (the minimum allocation every ring
+// starts at — BeginView claims slots before the frame's counts exist, so
+// the logicals are always live and the first FinalizeView grows to the
+// frame's exact need).
+static uint32_t PageMinCapacity(size_t stride) {
+    size_t cap = 0;
+    if (!RoundCapacity(1, stride, cap) || cap > std::numeric_limits<uint32_t>::max())
+        std::abort(); // stride > 64 KiB page: a static_assert-class bug
+    return uint32_t(cap);
+}
+
+static_assert(sizeof(smvk::StaticHeapArena::AllocId) == sizeof(uint64_t),
+              "the arena token must fit the opaque uint64_t region fields in gfx_filter.h");
+
+// Suballocates indexCount uint32 indices from the static index monoblock
+// (one index VkBuffer for mesh + cluster-ordered + filtered regions, so
+// draws use absolute firstIndex and the index binding never switches).
+// False when the reservation is exhausted.
+static bool AllocIndexRegion(uint32_t indexCount,
+                             uint32_t& outBaseIndices,
+                             uint64_t& outAllocBits) {
+    outBaseIndices = 0;
+    outAllocBits = 0;
+    if (indexCount == 0)
+        return true;
+    // The static index monoblock's arena (the VmaVirtualBlock replacement —
+    // see static_vertex_heap.h): the token stays an opaque uint64, so the
+    // per-flight allocBits packing keeps working verbatim.
+    StaticHeapArena& block = staticVertexFmtHeap.m_staticIndexBlock;
+    uint64_t byteOffset = 0;
+    const StaticHeapArena::AllocId alloc =
+        block.Allocate(uint64_t(indexCount) * sizeof(uint32_t), alignof(uint32_t), byteOffset);
+    if (alloc == 0)
+        return false;
+    outBaseIndices = (uint32_t)(byteOffset / sizeof(uint32_t));
+    outAllocBits = (uint64_t)alloc;
+    return true;
+}
+
+static void FreeIndexRegion(uint64_t& allocBits) {
+    if (allocBits == 0)
+        return;
+    staticVertexFmtHeap.m_staticIndexBlock.Free((StaticHeapArena::AllocId)allocBits);
+    allocBits = 0;
+}
+
+// Retire-ordered index-region free (cluster.cpp's
+// DeferFreeStaticMeshRanges discipline): the arena free rides
+// DeferDestroyTask, so the range returns to the free list only after
+// every in-flight frame's reads have retired (margin
+// +MaxFramesInFlight - see VulkanResourceManager::DeferDestroy). The
+// LOAD-TIME UploadStaticData call has nothing in flight, where the
+// deferral is a harmless delay; the GEOMETRY-STREAMING promote path
+// rebuilds these tables BETWEEN frames with live flights, and an
+// in-place free would hand the old region to the new filterIndices
+// upload while an in-flight cull still reads the old table through the
+// old base (garbage draws for a frame - the suballoc-vs-frames-in-
+// flight hazard the mesh heap frees already document).
+static void DeferFreeIndexRegion(ResourceManager& ctx, uint64_t& allocBits) {
+    if (allocBits == 0)
+        return;
+    const uint64_t bits = allocBits;
+    allocBits = 0;
+    StaticHeapArena* block = &staticVertexFmtHeap.m_staticIndexBlock;
+    ctx.DeferDestroyTask(std::packaged_task<void()>([block, bits] {
+        if (bits)
+            block->Free((StaticHeapArena::AllocId)bits);
+    }));
+}
+
+static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
+    for (uint32_t f = 0; f < doneFrames; ++f) {
+        if (!v.batchLogicals[f].empty())
+            rg.FreeBuffer(v.batchLogicals[f]);
+        if (!v.drawLogicals[f].empty())
+            rg.FreeBuffer(v.drawLogicals[f]);
+        if (!v.indirectLogicals[f].empty())
+            rg.FreeBuffer(v.indirectLogicals[f]);
+        if (!v.keptLogicals[f].empty())
+            rg.FreeBuffer(v.keptLogicals[f]);
+        if (!v.cullStateLogicals[f].empty())
+            rg.FreeBuffer(v.cullStateLogicals[f]);
+        v.batchLogicals[f] = {};
+        v.drawLogicals[f] = {};
+        v.indirectLogicals[f] = {};
+        v.keptLogicals[f] = {};
+        v.cullStateLogicals[f] = {};
+        FreeIndexRegion(v.filteredAllocBits[f]);
+        v.filteredBase[f] = 0;
+    }
+    // Holders release their buffers automatically on scope exit.
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic-capacity grow-rebind (the cutover's ONE allocation primitive)
+// ---------------------------------------------------------------------------
+
+// Grow-rebind one ring: create the replacement at the new size, register
+// its rendergraph logical, drop the old alias, reassign the Holder. The
+// OLD physical buffer retires on the graphics timeline (the Holder
+// release routes through smvk::destroy's deferred DestroyBufferNow —
+// smvk::destroy is retire-ordered precisely because buffers are
+// referenced by in-flight draws/indirect args), and this frame's passes —
+// recorded AFTER FinalizeView, the only grow site — pick up the new
+// logical. False ONLY on allocation failure (the caller decides the
+// policy; the grow sites treat it as fatal — there is no safe
+// continuation on a too-small ring).
+static bool RebindBuffer(ResourceManager& ctx,
+                         RenderGraph& rg,
+                         Holder<BufferHandle>& buffer,
+                         LogicalBufferHandle& logical,
+                         size_t bytes,
+                         const char* name) {
+    Holder<BufferHandle> fresh = ctx.CreateBuffer(bytes, BufferType_Storage, name);
+    if (fresh.empty())
+        return false;
+    const LogicalBufferHandle freshLogical = rg.AddExternalBuffer(fresh, name);
+    if (freshLogical.empty())
+        return false; // fresh retires via its Holder on scope exit
+    if (!logical.empty())
+        rg.FreeBuffer(logical); // past frames already executed; drop the alias
+    logical = freshLogical;
+    buffer = std::move(fresh); // the old physical retires deferred
+    return true;
+}
+
+// Creation zero-fill for GPU-counter-class buffers (the repo convention:
+// DEVICE_LOCAL fresh allocations recycle freed pages, so a counter that
+// starts from garbage MMU-faults or corrupts the cull chain). The fill
+// buffer grows to the largest size ever requested (growth is rare).
+static void ZeroFillBuffer(ResourceManager& ctx, BufferHandle handle, size_t bytes) {
+    if (bytes == 0)
+        return;
+    static std::vector<uint8_t> s_zeroFill;
+    if (s_zeroFill.size() < bytes)
+        s_zeroFill.assign(bytes, 0);
+    ctx.UploadDataToBuffer(handle,
+                           s_zeroFill.data(),
+                           bytes,
+                           PipelineStage(PipelineStageBit_Compute),
+                           AccessFlags::ShaderRead | AccessFlags::ShaderWrite,
+                           0,
+                           0);
+}
+
+static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
+    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+        // First-page initial capacities (BeginView claims the slot before
+        // the frame's counts exist; the first FinalizeView grows every
+        // ring to the frame's exact need — see GrowViewCapacity).
+        v.drawCapacity[f] = PageMinCapacity(sizeof(Draw));
+        v.candidateCapacity[f] = PageMinCapacity(sizeof(Batch));
+        v.batchBuffers[f] = ctx.CreateBuffer(
+            CandidateBatchBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx batches");
+        v.drawBuffers[f] =
+            ctx.CreateBuffer(DrawRingBytes(v.drawCapacity[f]), BufferType_Storage, "gfx draws");
+        // Filtered-index scratch is a persistent region in the static index
+        // monoblock (not a VkBuffer): draws address it absolutely, so the
+        // index binding never switches. One region per flight slice.
+        // SURVIVOR-CAPPED (kMaxBatches — the separately-budgeted static
+        // heap; the dynamic cutover deliberately does not grow it).
+        if (!AllocIndexRegion((uint32_t)(kFilteredBytes / sizeof(uint32_t)),
+                              v.filteredBase[f],
+                              v.filteredAllocBits[f])) {
+            RollbackSlotBuffers(rg, v, f);
+            return false;
+        }
+        // Storage, NOT Indirect: per-frame zero-fill uploads run on the
+        // transfer queue while compute/draw run on graphics. Storage gets
+        // CONCURRENT sharing (see CreateBuffer); Indirect is EXCLUSIVE and
+        // would need explicit queue-ownership transfers every frame.
+        // Usage flags cover INDIRECT_BUFFER_BIT regardless (see
+        // bufferTypeToUsageFlags).
+        v.indirectBuffers[f] = ctx.CreateBuffer(
+            IndirectCmdBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx indirect");
+        // GPU cull chain state (kept-bit parity ring + verdict/counter
+        // words). Zero-filled at creation so the first frames seed nothing
+        // (prev-kept = 0 -> empty seed, remainder = all kept — the same
+        // arming behavior InvalidateHistory gives); every
+        // candidate slot gets a definitive 0/1 write per frame afterwards,
+        // so no per-frame clearing upload exists.
+        v.keptBuffers[f] = ctx.CreateBuffer(
+            KeptRingBytes(v.candidateCapacity[f]), BufferType_Storage, "gfx keptBits");
+        v.cullStateBuffers[f] = ctx.CreateBuffer(
+            CullStateBytes(v.drawCapacity[f]), BufferType_Storage, "gfx cullState");
+        if (v.batchBuffers[f].empty() || v.drawBuffers[f].empty() || v.indirectBuffers[f].empty() ||
+            v.keptBuffers[f].empty() || v.cullStateBuffers[f].empty()) {
+            RollbackSlotBuffers(rg, v, f);
+            return false;
+        }
+        // Creation zero-fill (the kept ring + the cullState words).
+        ZeroFillBuffer(ctx, v.keptBuffers[f], KeptRingBytes(v.candidateCapacity[f]));
+        ZeroFillBuffer(ctx, v.cullStateBuffers[f], CullStateBytes(v.drawCapacity[f]));
+        v.batchLogicals[f] = rg.AddExternalBuffer(v.batchBuffers[f], "gfx batches");
+        v.drawLogicals[f] = rg.AddExternalBuffer(v.drawBuffers[f], "gfx draws");
+        v.indirectLogicals[f] = rg.AddExternalBuffer(v.indirectBuffers[f], "gfx indirect");
+        v.keptLogicals[f] = rg.AddExternalBuffer(v.keptBuffers[f], "gfx keptBits");
+        v.cullStateLogicals[f] = rg.AddExternalBuffer(v.cullStateBuffers[f], "gfx cullState");
+        if (v.batchLogicals[f].empty() || v.drawLogicals[f].empty() ||
+            v.indirectLogicals[f].empty() || v.keptLogicals[f].empty() ||
+            v.cullStateLogicals[f].empty()) {
+            RollbackSlotBuffers(rg, v, f + 1);
+            return false;
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// THE DYNAMIC-CAPACITY GROW STEP (the cutover's runtime leg). FinalizeView
+// calls this per (view, flight) with the frame's EXACT counts, after
+// BuildBatches, before any upload or pass recording: plan through
+// tour::gfx::PlanViewCapacity and grow every coupled ring that is too
+// small (logical rebind included). Grow-only — a smaller frame leaves the
+// tail unused; shrinking would churn allocations and zero-fills for zero
+// steady-state benefit.
+//
+// Contract (docs/gfx_dynamic_capacity_gpu_default.md):
+//   - A count beyond a DECLARED bound (tour::gfx::kDeclaredMaxDraws /
+//     kDeclaredMaxCandidates) or an allocation failure is a LOUD FATAL:
+//     no silent drop, no partial-frame fallback. The retired fixed-cap
+//     fatals (kMaxDraws / kMaxBatchSlots) are this check's ancestors; the
+//     ceilings moved, the fail-closed posture did not.
+//   - The SURVIVOR ring (filtered index region, vis-cluster mirror,
+//     shadow indirect) stays kMaxBatches-capped and separate.
+//   - A grown kept ring restarts zeroed (creation zero-fill): this
+//     frame's prev-kept region reads 0 -> empty seed + full remainder —
+//     one conservative frame, the same arming InvalidateHistory gives.
+// ---------------------------------------------------------------------------
+
+// Monotone shared wants (the state-level tables are lazily created; the
+// want tracks the high-water requirement so a fresh table starts big
+// enough for the frame that armed it).
+static void UpdateSharedCapacityWants(State& s, uint32_t f, uint32_t draws, uint32_t candidates) {
+    s.skinBoundsCandidateWant[f] = std::max(s.skinBoundsCandidateWant[f], candidates);
+    s.skinBoundsDrawWant[f] = std::max(s.skinBoundsDrawWant[f], draws);
+    s.meshBatchListWant[f] = std::max(s.meshBatchListWant[f], candidates);
+    s.coneDebugWant = std::max(s.coneDebugWant, candidates);
+}
+
+[[noreturn]] static void FatalCapacity(const char* what,
+                                       uint32_t view,
+                                       uint32_t f,
+                                       uint64_t need,
+                                       const char* limit) {
+    std::fprintf(stderr,
+                 "[GfxFilter] FATAL: %s (view %u, flight %u, need %llu, %s). "
+                 "No geometry is dropped or alternate path used.\n",
+                 what,
+                 view,
+                 f,
+                 (unsigned long long)need,
+                 limit);
+    std::fflush(stderr);
+    std::abort();
+}
+
+static void GrowViewCapacity(State& s,
+                             ResourceManager& ctx,
+                             RenderGraph& rg,
+                             uint32_t view,
+                             uint32_t f,
+                             uint32_t needDraws,
+                             uint32_t needCandidates) {
+    View& v = s.views[view];
+    TemporalView& t = Temporal(s, view);
+    // The plan: page-rounded, overflow-checked, bounded by the declared
+    // shader arrays (the fail-closed ceilings).
+    DynamicCapacity plan{};
+    if (!PlanViewCapacity(needDraws, needCandidates, sizeof(Draw), sizeof(Batch), plan))
+        FatalCapacity("frame exceeds a declared draw/candidate capacity",
+                      view,
+                      f,
+                      std::max<uint64_t>(needDraws, needCandidates),
+                      "declared bounds: gfx_dynamic_capacity.h");
+    UpdateSharedCapacityWants(s, f, plan.draws, plan.candidates);
+
+    // ---- The view's own rings ----
+    const bool growDraws = plan.draws > v.drawCapacity[f];
+    const bool growCandidates = plan.candidates > v.candidateCapacity[f];
+    if (growDraws) {
+        if (!RebindBuffer(ctx,
+                          rg,
+                          v.drawBuffers[f],
+                          v.drawLogicals[f],
+                          DrawRingBytes(plan.draws),
+                          "gfx draws"))
+            FatalCapacity("draw-ring grow allocation failed", view, f, plan.draws, "");
+        v.drawCapacity[f] = plan.draws;
+    }
+    if (growCandidates) {
+        if (!RebindBuffer(ctx,
+                          rg,
+                          v.batchBuffers[f],
+                          v.batchLogicals[f],
+                          CandidateBatchBytes(plan.candidates),
+                          "gfx batches") ||
+            !RebindBuffer(ctx,
+                          rg,
+                          v.indirectBuffers[f],
+                          v.indirectLogicals[f],
+                          IndirectCmdBytes(plan.candidates),
+                          "gfx indirect") ||
+            !RebindBuffer(ctx,
+                          rg,
+                          v.keptBuffers[f],
+                          v.keptLogicals[f],
+                          KeptRingBytes(plan.candidates),
+                          "gfx keptBits"))
+            FatalCapacity("candidate-ring grow allocation failed", view, f, plan.candidates, "");
+        v.candidateCapacity[f] = plan.candidates;
+        // Fresh kept ring: zero both parity regions (the GPU-counter
+        // convention + the one-frame conservative re-arm above).
+        ZeroFillBuffer(ctx, v.keptBuffers[f], KeptRingBytes(plan.candidates));
+    }
+    if (growDraws) {
+        // The cullState words follow the draw capacity (verdicts + the
+        // runtime counter/diag suffix); fresh = zero-filled.
+        if (!RebindBuffer(ctx,
+                          rg,
+                          v.cullStateBuffers[f],
+                          v.cullStateLogicals[f],
+                          CullStateBytes(plan.draws),
+                          "gfx cullState"))
+            FatalCapacity("cullState grow allocation failed", view, f, plan.draws, "");
+        ZeroFillBuffer(ctx, v.cullStateBuffers[f], CullStateBytes(plan.draws));
+    }
+
+    // ---- The temporal sidecar's rings (visDraw grows with the draws;
+    //      the seed/remainder command arrays with the candidates) ----
+    if (plan.draws > t.visDrawCapacity[f]) {
+        if (!RebindBuffer(ctx,
+                          rg,
+                          t.visDrawBuffers[f],
+                          t.visDrawLogicals[f],
+                          DrawRingBytes(plan.draws),
+                          "gfx visibleDraws"))
+            FatalCapacity("visDraw grow allocation failed", view, f, plan.draws, "");
+        t.visDrawCapacity[f] = plan.draws;
+    }
+    if (plan.candidates > t.seedIndirectCapacity[f]) {
+        if (!RebindBuffer(ctx,
+                          rg,
+                          t.seedIndirectBuffers[f],
+                          t.seedIndirectLogicals[f],
+                          SeedIndirectBytes(plan.candidates),
+                          "gfx seedIndirect") ||
+            !RebindBuffer(ctx,
+                          rg,
+                          t.remainderIndirectBuffers[f],
+                          t.remainderIndirectLogicals[f],
+                          SeedIndirectBytes(plan.candidates),
+                          "gfx remainderIndirect"))
+            FatalCapacity(
+                "seed/remainder indirect grow allocation failed", view, f, plan.candidates, "");
+        t.seedIndirectCapacity[f] = plan.candidates;
+    }
+
+    // ---- The state-level shared tables (grow ONLY allocated ones; the
+    //      lazily created ones size from the *Want fields at their
+    //      Ensure sites, which run after FinalizeView in the frame) ----
+    if (!s.skinBoundsBuffers[f].empty() &&
+        (s.skinBoundsCandidateWant[f] > s.skinBoundsCandidateCap[f] ||
+         s.skinBoundsDrawWant[f] > s.skinBoundsDrawCap[f])) {
+        if (!RebindBuffer(ctx,
+                          rg,
+                          s.skinBoundsBuffers[f],
+                          s.skinBoundsLogicals[f],
+                          SkinBoundsBytes(s.skinBoundsCandidateWant[f], s.skinBoundsDrawWant[f]),
+                          "gfx skinBounds"))
+            FatalCapacity(
+                "skinBounds grow allocation failed", view, f, s.skinBoundsCandidateWant[f], "");
+        s.skinBoundsCandidateCap[f] = s.skinBoundsCandidateWant[f];
+        s.skinBoundsDrawCap[f] = s.skinBoundsDrawWant[f];
+    }
+    if (!s.meshBatchLists[f].empty() && s.meshBatchListWant[f] > s.meshBatchListCap[f]) {
+        if (!RebindBuffer(ctx,
+                          rg,
+                          s.meshBatchLists[f],
+                          s.meshBatchListLogicals[f],
+                          MeshBatchListBytes(s.meshBatchListWant[f]),
+                          "gfx mesh batch list"))
+            FatalCapacity(
+                "mesh batch list grow allocation failed", view, f, s.meshBatchListWant[f], "");
+        s.meshBatchListCap[f] = s.meshBatchListWant[f];
+    }
+    if (!s.coneDebugLines.empty() && s.coneDebugWant > s.coneDebugCap) {
+        if (!RebindBuffer(ctx,
+                          rg,
+                          s.coneDebugLines,
+                          s.coneDebugLinesLogical,
+                          ConeDebugLinesBytes(s.coneDebugWant),
+                          "gfx coneDebug lines"))
+            FatalCapacity("coneDebug line grow allocation failed", view, f, s.coneDebugWant, "");
+        s.coneDebugCap = s.coneDebugWant;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
+
+bool EnsureShaders(State& s, ResourceManager& ctx, const char* csPath) {
+    if (s.filterProgram.shaderCount != 0 && !s.filterModule.empty())
+        return true;
+    try {
+        if (s.filterModule.empty())
+            s.filterModule = ctx.CreateShaderModule(
+                smvk::shaders::Read(csPath ? csPath : kGfxFilterCsPath), "gfxFilterCS");
+    } catch (...) {
+        return false;
+    }
+    if (s.filterModule.empty())
+        return false;
+    Shader cs{.module = s.filterModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+    s.filterProgram = {.shaders = {cs}, .shaderCount = 1};
+    return true;
+}
+
+bool Ensure(State& s, ResourceManager& ctx, RenderGraph& rg, const char* csPath) {
+    (void)rg; // per-(view, frame) buffers are pooled on demand by BeginView
+    if (!EnsureShaders(s, ctx, csPath))
+        return false;
+    if (!EnsureHizShaders(s, ctx))
+        return false;
+    // GPU cull chain programs (missing .spv fails the chain's passes
+    // loudly at record time — best effort, never fatal; there is no
+    // fallback path anymore, so a broken install draws holes, not
+    // silently-uncalled geometry).
+    (void)EnsureBatchCullShaders(s, ctx);
+    (void)EnsureDrawCullShaders(s, ctx);
+    // SPD HZB twin (hzb_spd .min): best effort too — a missing module
+    // keeps the per-mip culling build (the A/B switch falls back at
+    // AppendHizPasses record time).
+    (void)EnsureHizSpdShaders(s, ctx);
+    return true;
+}
+
+// Kept-bit parity for the frame being recorded: alternates between a
+// flight's consecutive users (smvk::limits::MaxFramesInFlight frames apart), so the
+// region this frame writes was last written by the previous same-flight
+// user — fence-complete, race-free (the rendergraph never needs to track
+// the cross-frame dependency; the flight submission ordering carries it).
+static uint32_t KeptParity(const State& s) {
+    return (s.frameCounter / smvk::limits::MaxFramesInFlight) % 2u;
+}
+
+bool EnsureBatchCullShaders(State& s, ResourceManager& ctx, const char* csPath) {
+    if (s.batchCullProgram.shaderCount != 0 && !s.batchCullModule.empty())
+        return true;
+    try {
+        if (s.batchCullModule.empty())
+            s.batchCullModule = ctx.CreateShaderModule(
+                smvk::shaders::Read(csPath ? csPath : kGfxBatchCullCsPath), "gfxBatchCullCS");
+    } catch (...) {
+        return false;
+    }
+    if (s.batchCullModule.empty())
+        return false;
+    Shader cs{.module = s.batchCullModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+    s.batchCullProgram = {.shaders = {cs}, .shaderCount = 1};
+    return true;
+}
+
+bool EnsureDrawCullShaders(State& s, ResourceManager& ctx, const char* csPath) {
+    if (s.drawCullProgram.shaderCount != 0 && !s.drawCullModule.empty())
+        return true;
+    try {
+        if (s.drawCullModule.empty())
+            s.drawCullModule = ctx.CreateShaderModule(
+                smvk::shaders::Read(csPath ? csPath : kGfxDrawCullCsPath), "gfxDrawCullCS");
+    } catch (...) {
+        return false;
+    }
+    if (s.drawCullModule.empty())
+        return false;
+    Shader cs{.module = s.drawCullModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+    s.drawCullProgram = {.shaders = {cs}, .shaderCount = 1};
+    return true;
+}
+
+bool EnsureSkinBounds(State& s, ResourceManager& ctx, RenderGraph& rg) {
+    if (s.skinBoundsReady)
+        return true;
+    if (s.skinBoundsProgram.shaderCount == 0 || s.skinBoundsModule.empty()) {
+        try {
+            if (s.skinBoundsModule.empty())
+                s.skinBoundsModule = ctx.CreateShaderModule(
+                    smvk::shaders::Read(kGfxSkinBoundsCsPath), "gfxSkinBoundsCS");
+        } catch (...) {
+            return false;
+        }
+        if (s.skinBoundsModule.empty())
+            return false;
+        Shader cs{
+            .module = s.skinBoundsModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+        s.skinBoundsProgram = {.shaders = {cs}, .shaderCount = 1};
+    }
+    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+        if (s.skinBoundsBuffers[f].empty()) {
+            // The dynamic cutover: size from the high-water WANT (the
+            // frames since the last Ensure already declared their need
+            // through FinalizeView — this path runs on the FIRST skinned
+            // frame, AFTER that frame's FinalizeView, so a fresh table
+            // starts big enough for the frame that armed it; the minimum
+            // page covers a never-finalized session). GrowViewCapacity
+            // grows it further from here.
+            size_t candCap = 0, drawCap = 0;
+            if (!RoundCapacity(std::max<size_t>(s.skinBoundsCandidateWant[f], 1u),
+                               sizeof(ClusterConstants),
+                               candCap) ||
+                !RoundCapacity(
+                    std::max<size_t>(s.skinBoundsDrawWant[f], 1u), sizeof(glm::vec4), drawCap))
+                return false;
+            s.skinBoundsBuffers[f] =
+                ctx.CreateBuffer(SkinBoundsBytes(uint32_t(candCap), uint32_t(drawCap)),
+                                 BufferType_Storage,
+                                 "gfx skinBounds");
+            if (s.skinBoundsBuffers[f].empty())
+                return false;
+            s.skinBoundsCandidateCap[f] = uint32_t(candCap);
+            s.skinBoundsDrawCap[f] = uint32_t(drawCap);
+        }
+        if (s.skinBoundsLogicals[f].empty()) {
+            s.skinBoundsLogicals[f] =
+                rg.AddExternalBuffer(s.skinBoundsBuffers[f], "gfx skinBounds");
+            if (s.skinBoundsLogicals[f].empty())
+                return false;
+        }
+    }
+    s.skinBoundsReady = true;
+    return true;
+}
+
+bool EnsureHizShaders(State& s, ResourceManager& ctx, const char* csPath) {
+    if (s.hizProgram.shaderCount != 0 && !s.hizModule.empty())
+        return true;
+    try {
+        if (s.hizModule.empty())
+            s.hizModule = ctx.CreateShaderModule(smvk::shaders::Read(csPath ? csPath : kHizCsPath),
+                                                 "hizBuildCS");
+    } catch (...) {
+        return false;
+    }
+    if (s.hizModule.empty())
+        return false;
+    Shader cs{.module = s.hizModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+    s.hizProgram = {.shaders = {cs}, .shaderCount = 1};
+    return true;
+}
+
+void SetHizSpd(State& s, bool live, bool verify) {
+    s.hizSpd = live;
+    s.hizSpdVerify = verify;
+}
+
+bool EnsureHizSpdShaders(State& s, ResourceManager& ctx, const char* csPath) {
+    if (s.hizSpdProgram.shaderCount != 0 && !s.hizSpdModule.empty())
+        return true;
+    try {
+        if (s.hizSpdModule.empty())
+            s.hizSpdModule = ctx.CreateShaderModule(
+                smvk::shaders::Read(csPath ? csPath : kHizSpdCsPath), "hizSpdBuildCS");
+    } catch (...) {
+        return false;
+    }
+    if (s.hizSpdModule.empty())
+        return false;
+    Shader cs{.module = s.hizSpdModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+    s.hizSpdProgram = {.shaders = {cs}, .shaderCount = 1};
+    return true;
+}
+
+static void RollbackTemporalBuffers(RenderGraph& rg, TemporalView& t, uint32_t doneFrames) {
+    for (uint32_t f = 0; f < doneFrames; ++f) {
+        if (!t.visClusterLogicals[f].empty())
+            rg.FreeBuffer(t.visClusterLogicals[f]);
+        if (!t.visDrawLogicals[f].empty())
+            rg.FreeBuffer(t.visDrawLogicals[f]);
+        if (!t.seedIndirectLogicals[f].empty())
+            rg.FreeBuffer(t.seedIndirectLogicals[f]);
+        if (!t.remainderIndirectLogicals[f].empty())
+            rg.FreeBuffer(t.remainderIndirectLogicals[f]);
+        t.visClusterLogicals[f] = {};
+        t.visDrawLogicals[f] = {};
+        t.seedIndirectLogicals[f] = {};
+        t.remainderIndirectLogicals[f] = {};
+    }
+    // Holders release their buffers automatically on scope exit.
+}
+
+static bool CreateTemporalBuffers(ResourceManager& ctx, RenderGraph& rg, TemporalView& t) {
+    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+        // First-page initial capacities (the first FinalizeView grows to
+        // the frame's exact need); visCluster stays SURVIVOR-CAPPED
+        // (kMaxBatches — the snapshot holds survivors, separately
+        // budgeted, unchanged by the dynamic cutover).
+        t.visDrawCapacity[f] = PageMinCapacity(sizeof(Draw));
+        t.seedIndirectCapacity[f] = PageMinCapacity(sizeof(SeedCommand));
+        t.visClusterBuffers[f] =
+            ctx.CreateBuffer(kVisClusterBytes, BufferType_Storage, "gfx visibleClusters");
+        t.visDrawBuffers[f] = ctx.CreateBuffer(
+            DrawRingBytes(t.visDrawCapacity[f]), BufferType_Storage, "gfx visibleDraws");
+        // Storage, NOT Indirect (same queue-sharing argument as the filter
+        // indirect buffers in CreateSlotBuffers); INDIRECT usage is covered
+        // by the type's flags regardless (see bufferTypeToUsageFlags).
+        t.seedIndirectBuffers[f] = ctx.CreateBuffer(
+            SeedIndirectBytes(t.seedIndirectCapacity[f]), BufferType_Storage, "gfx seedIndirect");
+        t.remainderIndirectBuffers[f] =
+            ctx.CreateBuffer(SeedIndirectBytes(t.seedIndirectCapacity[f]),
+                             BufferType_Storage,
+                             "gfx remainderIndirect");
+        if (t.visClusterBuffers[f].empty() || t.visDrawBuffers[f].empty() ||
+            t.seedIndirectBuffers[f].empty() || t.remainderIndirectBuffers[f].empty()) {
+            RollbackTemporalBuffers(rg, t, f);
+            return false;
+        }
+        t.visClusterLogicals[f] =
+            rg.AddExternalBuffer(t.visClusterBuffers[f], "gfx visibleClusters");
+        t.visDrawLogicals[f] = rg.AddExternalBuffer(t.visDrawBuffers[f], "gfx visibleDraws");
+        t.seedIndirectLogicals[f] =
+            rg.AddExternalBuffer(t.seedIndirectBuffers[f], "gfx seedIndirect");
+        t.remainderIndirectLogicals[f] =
+            rg.AddExternalBuffer(t.remainderIndirectBuffers[f], "gfx remainderIndirect");
+        if (t.visClusterLogicals[f].empty() || t.visDrawLogicals[f].empty() ||
+            t.seedIndirectLogicals[f].empty() || t.remainderIndirectLogicals[f].empty()) {
+            RollbackTemporalBuffers(rg, t, f + 1);
+            return false;
+        }
+    }
+    return true;
+}
+
+void Destroy(State& s, RenderGraph& rg) {
+    for (auto& v : s.views) {
+        for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+            if (!v.batchLogicals[f].empty())
+                rg.FreeBuffer(v.batchLogicals[f]);
+            if (!v.drawLogicals[f].empty())
+                rg.FreeBuffer(v.drawLogicals[f]);
+            if (!v.indirectLogicals[f].empty())
+                rg.FreeBuffer(v.indirectLogicals[f]);
+            if (!v.keptLogicals[f].empty())
+                rg.FreeBuffer(v.keptLogicals[f]);
+            if (!v.cullStateLogicals[f].empty())
+                rg.FreeBuffer(v.cullStateLogicals[f]);
+            v.keptLogicals[f] = {};
+            v.cullStateLogicals[f] = {};
+            FreeIndexRegion(v.filteredAllocBits[f]);
+            v.filteredBase[f] = 0;
+        }
+    }
+    for (auto& t : s.temporals) {
+        for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+            if (!t.visClusterLogicals[f].empty())
+                rg.FreeBuffer(t.visClusterLogicals[f]);
+            if (!t.visDrawLogicals[f].empty())
+                rg.FreeBuffer(t.visDrawLogicals[f]);
+            if (!t.seedIndirectLogicals[f].empty())
+                rg.FreeBuffer(t.seedIndirectLogicals[f]);
+            if (!t.remainderIndirectLogicals[f].empty())
+                rg.FreeBuffer(t.remainderIndirectLogicals[f]);
+            if (!t.hiz[f].logical.empty())
+                rg.FreeBuffer(t.hiz[f].logical);
+            t.hiz[f].logical = {};
+            t.hiz[f].buffer = {};
+            // The SPD verify shadow (same Holder/logical split) + the
+            // view's counter ring (extent-independent, one logical).
+            if (!t.hizVerify[f].logical.empty())
+                rg.FreeBuffer(t.hizVerify[f].logical);
+            t.hizVerify[f].logical = {};
+            t.hizVerify[f].buffer = {};
+        }
+        if (!t.hizSpdCounterLogical.empty())
+            rg.FreeBuffer(t.hizSpdCounterLogical);
+        t.hizSpdCounterLogical = {};
+        t.hizSpdCounter = {};
+    }
+    for (auto& sv : s.shadowViews) {
+        for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+            if (!sv.drawLogicals[f].empty())
+                rg.FreeBuffer(sv.drawLogicals[f]);
+            if (!sv.indirectLogicals[f].empty())
+                rg.FreeBuffer(sv.indirectLogicals[f]);
+            sv.drawLogicals[f] = {};
+            sv.indirectLogicals[f] = {};
+        }
+        sv.buffersReady = false;
+    }
+    s.temporals.clear();
+    s.shadowViews.clear();
+    s.shadowViewCount = 0;
+    if (!s.indexHeapLogical.empty())
+        rg.FreeBuffer(s.indexHeapLogical);
+    if (!s.clusterLogical.empty())
+        rg.FreeBuffer(s.clusterLogical);
+    if (!s.meshBoundsLogical.empty())
+        rg.FreeBuffer(s.meshBoundsLogical);
+    // The GfxSkinBounds table logicals (the buffers themselves retire via
+    // their Holders; the rendergraph logicals need the explicit free, the
+    // same as every other per-flight external buffer above).
+    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+        if (!s.skinBoundsLogicals[f].empty())
+            rg.FreeBuffer(s.skinBoundsLogicals[f]);
+        s.skinBoundsLogicals[f] = {};
+        s.skinBoundsBuffers[f] = {};
+        // Dynamic-capacity state dies with the tables (a fresh Ensure
+        // sizes from zero again).
+        s.skinBoundsCandidateCap[f] = 0;
+        s.skinBoundsDrawCap[f] = 0;
+        s.skinBoundsCandidateWant[f] = 0;
+        s.skinBoundsDrawWant[f] = 0;
+    }
+    s.skinBoundsReady = false;
+    // The cone-debug line buffer's logical (same Holder/logical split; the
+    // buffer retires via its Holder).
+    if (!s.coneDebugLinesLogical.empty())
+        rg.FreeBuffer(s.coneDebugLinesLogical);
+    s.coneDebugLinesLogical = {};
+    s.coneDebugLines = {};
+    s.coneDebug = false;
+    s.coneDebugCap = 0;
+    s.coneDebugWant = 0;
+    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+        if (!s.meshParamsLogicals[f].empty())
+            rg.FreeBuffer(s.meshParamsLogicals[f]);
+        if (!s.meshBatchListLogicals[f].empty())
+            rg.FreeBuffer(s.meshBatchListLogicals[f]);
+        s.meshParamsLogicals[f] = {};
+        s.meshParamsBuffers[f] = {};
+        s.meshBatchListLogicals[f] = {};
+        s.meshBatchLists[f] = {};
+        s.meshBatchListCap[f] = 0;
+        s.meshBatchListWant[f] = 0;
+    }
+    s.indexHeapLogical = {};
+    s.clusterLogical = {};
+    s.meshBoundsLogical = {};
+    s.meshBoundsBuffer = {};
+    if (!s.meshesLogical.empty())
+        rg.FreeBuffer(s.meshesLogical);
+    s.meshesLogical = {};
+    s.meshesBuffer = {};
+    // Demand source (no rendergraph logicals by design — the retired
+    // feedback-ring pattern: transfer fills + the async readback chain
+    // carry the sync, the rendergraph never tracks these buffers).
+    s.textureMetaBuffer = {};
+    s.textureMetaEpoch = 0;
+    s.textureMetaCount = 0;
+    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f)
+        s.demandBuffers[f] = {};
+    s.demandMaterialsBda = 0;
+    s.demandMipBias = 0.0f;
+    s.views.clear();
+    s.viewCount = 0;
+    FreeIndexRegion(s.clusterIndexAllocBits);
+    s.clusterIndexBase = 0;
+    s.clusterBuffer = {};
+    // (ShaderProgram() - the paren value-init form: GCC 13 ICEs on the
+    // brace temporary; see the NOTE at struct ShaderProgram in smvk.h.)
+    s.filterProgram = ShaderProgram();
+    s.filterModule = {};
+    s.hizProgram = ShaderProgram();
+    s.hizModule = {};
+    s.batchCullProgram = ShaderProgram();
+    s.batchCullModule = {};
+    s.drawCullProgram = ShaderProgram();
+    s.drawCullModule = {};
+    s.frameCounter = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Hierarchical-Z (T2)
+// ---------------------------------------------------------------------------
+
+ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
+                                         float worldRadius,
+                                         const glm::vec3& eye,
+                                         const glm::mat4& viewProj,
+                                         uint32_t width,
+                                         uint32_t height) {
+    ClusterFootprint f{};
+    const glm::vec3 toEye = eye - worldCenter;
+    const float dist = glm::length(toEye);
+    if (dist <= worldRadius || dist < 1e-6f)
+        return f; // eye inside the sphere: cannot be occluded, keep
+    // Clip-space intervals (same math as gfxfilter.cs.hlsl
+    // ClusterOccluded, unguarded — callers add the jitter guard): pinhole
+    // focal lengths (viewProj[0][0] as fx) are only valid for axis-aligned
+    // views (yaw mixes rotation into them and collapses the footprint),
+    // while row lengths are exact under any rotation. Rows use glm
+    // m[col][row]: row r is (m[0][r], m[1][r], m[2][r]).
+    const glm::vec4 clipC = viewProj * glm::vec4(worldCenter, 1.0f);
+    const float xRadius =
+        worldRadius * glm::length(glm::vec3(viewProj[0][0], viewProj[1][0], viewProj[2][0]));
+    const float yRadius =
+        worldRadius * glm::length(glm::vec3(viewProj[0][1], viewProj[1][1], viewProj[2][1]));
+    const float zRadius =
+        worldRadius * glm::length(glm::vec3(viewProj[0][2], viewProj[1][2], viewProj[2][2]));
+    const float wRadius =
+        worldRadius * glm::length(glm::vec3(viewProj[0][3], viewProj[1][3], viewProj[2][3]));
+    const float wMin = clipC.w - wRadius;
+    const float wMax = clipC.w + wRadius;
+    if (!(wMin > 1e-6f) || !(wMax >= wMin))
+        return f; // touches/crosses the camera plane: keep
+    auto interval = [](float nc, float nr, float wLo, float wHi) {
+        const float r0 = (nc - nr) / wLo, r1 = (nc - nr) / wHi;
+        const float r2 = (nc + nr) / wLo, r3 = (nc + nr) / wHi;
+        return std::pair<float, float>{std::min(std::min(r0, r1), std::min(r2, r3)),
+                                       std::max(std::max(r0, r1), std::max(r2, r3))};
+    };
+    const auto ndcX = interval(clipC.x, xRadius, wMin, wMax);
+    const auto ndcY = interval(clipC.y, yRadius, wMin, wMax);
+    const auto ndcZ = interval(clipC.z, zRadius, wMin, wMax);
+    const float dNear = ndcZ.second; // reversed-Z nearest over the sphere
+    if (!(dNear >= 0.0f) || dNear > 1.0f || !std::isfinite(dNear))
+        return f;
+    // Framebuffer y-down == NDC-down post-Y-flip (cf. forwardplus.cs.hlsl).
+    const float w = (float)width, h = (float)height;
+    const float x0 = (ndcX.first * 0.5f + 0.5f) * w;
+    const float x1 = (ndcX.second * 0.5f + 0.5f) * w;
+    const float y0 = (ndcY.first * 0.5f + 0.5f) * h;
+    const float y1 = (ndcY.second * 0.5f + 0.5f) * h;
+    if (!std::isfinite(x0) || !std::isfinite(x1) || !std::isfinite(y0) || !std::isfinite(y1))
+        return f;
+    f.centerX = (x0 + x1) * 0.5f;
+    f.centerY = (y0 + y1) * 0.5f;
+    f.radiusX = std::max((x1 - x0) * 0.5f, 0.0f);
+    f.radiusY = std::max((y1 - y0) * 0.5f, 0.0f);
+    f.nearestDepth = dNear;
+    // Fully off-target footprints stay testable (behindCamera=false) so the
+    // audit tags them offscreen; HzbOccluded keeps them like the frustum
+    // stages would.
+    f.behindCamera = false;
+    return f;
+}
+
+uint32_t HzbMipForRect(float rectW, float rectH, uint32_t mips) {
+    assert(mips > 0);
+    const float m = std::max(rectW, rectH);
+    uint32_t level = 0;
+    float texel = 1.0f;
+    while (texel < m && level + 1 < mips) {
+        texel *= 2.0f;
+        ++level;
+    }
+    return level;
+}
+
+bool HzbOccluded(const float* hzb,
+                 uint32_t w,
+                 uint32_t h,
+                 uint32_t mips,
+                 const ClusterFootprint& f,
+                 float* outBindingStored) {
+    if (outBindingStored)
+        *outBindingStored = -1.0f;
+    if (hzb == nullptr || mips == 0 || w == 0 || h == 0)
+        return false;
+    if (f.behindCamera)
+        return false;
+    const float rectW = f.radiusX * 2.0f;
+    const float rectH = f.radiusY * 2.0f;
+    if (rectW <= 0.0f || rectH <= 0.0f)
+        return false;
+    // Rect missing the target entirely: the frustum stages own this case.
+    if (f.centerX + f.radiusX < 0.0f || f.centerX - f.radiusX > (float)w ||
+        f.centerY + f.radiusY < 0.0f || f.centerY - f.radiusY > (float)h)
+        return false;
+    const uint32_t level = HzbMipForRect(rectW, rectH, mips);
+    uint32_t lw = 0, lh = 0;
+    HzbMipDims(w, h, level, lw, lh);
+    if (lw == 0 || lh == 0)
+        return false;
+    // Conservative cover: the rect can straddle up to 2x2 texels at the
+    // covering mip (texel >= rect, but alignment is arbitrary). Hidden only
+    // if EVERY overlapped texel occludes; any far texel keeps.
+    // Clamp BEFORE the float->uint conversion: a negative edge (rect
+    // hanging off the left/top) would otherwise wrap to a huge index.
+    // Reversed-Z: hidden iff the nearest point is farther (smaller value)
+    // than every overlapped stored closest.
+    const float texelSize = (float)(1u << level);
+    const uint32_t tx0 =
+        std::min((uint32_t)std::max(std::floor((f.centerX - f.radiusX) / texelSize), 0.0f), lw - 1);
+    const uint32_t tx1 =
+        std::min((uint32_t)std::max(std::floor((f.centerX + f.radiusX) / texelSize), 0.0f), lw - 1);
+    const uint32_t ty0 =
+        std::min((uint32_t)std::max(std::floor((f.centerY - f.radiusY) / texelSize), 0.0f), lh - 1);
+    const uint32_t ty1 =
+        std::min((uint32_t)std::max(std::floor((f.centerY + f.radiusY) / texelSize), 0.0f), lh - 1);
+    // Bounded: rect <= texel guarantees at most 2 per axis; cap anyway.
+    float bindingStored = std::numeric_limits<float>::max();
+    bool occluded = true;
+    for (uint32_t ty = ty0; ty <= ty1 && ty < ty0 + 3; ++ty) {
+        for (uint32_t tx = tx0; tx <= tx1 && tx < tx0 + 3; ++tx) {
+            const float stored = hzb[HzbMipOffsetFloats(w, h, level) + ty * lw + tx];
+            bindingStored = std::min(bindingStored, stored);
+            if (f.nearestDepth >= stored) {
+                occluded = false;
+            }
+        }
+    }
+    if (outBindingStored)
+        *outBindingStored = bindingStored;
+    return occluded;
+}
+
+// SPD completion-ring layout is shared with all visibility builders.
+static constexpr uint32_t kHizSpdCounterSliceBytes = tour::visibility::kHizSpdCounterSliceBytes;
+
+bool EnsureHiz(State& s,
+               ResourceManager& ctx,
+               RenderGraph& rg,
+               uint32_t view,
+               uint32_t w,
+               uint32_t h) {
+    TemporalView& t = Temporal(s, view);
+    assert(view < s.views.size());
+    const uint32_t flight = s.views[view].frameIndex;
+    HizResources& hz = t.hiz[flight];
+    if (w == 0 || h == 0) {
+        t.historyValid = false;
+        return false;
+    }
+    // SPD completion-counter ring: extent-independent, one buffer per
+    // view, created lazily while SPD (or its verify) is armed. Creation-
+    // zero-filled per the GPU-counter convention (a recycled garbage
+    // count breaks the last-group test and leaves the tail mips stale);
+    // the shader's last group resets the slice after its bump. Failure
+    // is non-fatal: the ring stays empty and AppendHizPasses falls back
+    // to the per-mip path at record time.
+    if ((s.hizSpd || s.hizSpdVerify) && t.hizSpdCounter.empty()) {
+        const size_t counterBytes =
+            (size_t)kHizSpdCounterSliceBytes * smvk::limits::MaxFramesInFlight;
+        t.hizSpdCounter = ctx.CreateBuffer(counterBytes, BufferType_Storage, "gfx hizSpd counter");
+        if (!t.hizSpdCounter.empty()) {
+            std::vector<uint8_t> zeros(counterBytes, 0);
+            ctx.UploadDataToBuffer(t.hizSpdCounter,
+                                   zeros.data(),
+                                   zeros.size(),
+                                   PipelineStage(PipelineStageBit_Compute),
+                                   AccessFlags::ShaderRead | AccessFlags::ShaderWrite);
+            t.hizSpdCounterLogical = rg.AddExternalBuffer(t.hizSpdCounter, "gfx hizSpd counter");
+            if (t.hizSpdCounterLogical.empty())
+                t.hizSpdCounter = {};
+        }
+    }
+    const uint32_t wantMips = HzbMipCount(w, h);
+    const bool hzOk = hz.width == w && hz.height == h && hz.mipCount == wantMips &&
+                      !hz.buffer.empty() && !hz.logical.empty();
+    // The verify shadow only exists while the switch is on; toggling it
+    // off just orphans the old slice (freed on the next rebuild/destroy).
+    HizResources& hzV = t.hizVerify[flight];
+    const bool verifyOn = s.hizSpdVerify;
+    const bool hzVOk =
+        !verifyOn || (hzV.width == w && hzV.height == h && hzV.mipCount == wantMips &&
+                      !hzV.buffer.empty() && !hzV.logical.empty());
+    if (hzOk && hzVOk)
+        return true; // steady state: keep history
+    if (!hzOk) {
+        // Size drift: rebuild + disarm (stale seed extent).
+        t.historyValid = false;
+        if (!tour::visibility::RebuildHizSlice(ctx, rg, hz, w, h, "gfx hiz"))
+            return false;
+    }
+    if (verifyOn && !hzVOk) {
+        // Shadow failure is non-fatal (verify just stays unarmed — the
+        // record-time gate checks the slice); the live pyramid stands.
+        (void)tour::visibility::RebuildHizSlice(ctx, rg, hzV, w, h, "gfx hizVerify");
+    }
+    return true;
+}
+
+uint64_t HizAddress(State& s, ResourceManager& ctx, uint32_t view) {
+    if (view >= s.temporals.size() || view >= s.views.size())
+        return 0;
+    return tour::visibility::HizAddress(s.temporals[view].hiz[s.views[view].frameIndex], ctx);
+}
+
+RenderPass& AddHizPass(State& s,
+                       RenderGraph& rg,
+                       uint32_t view,
+                       uint32_t dstMip,
+                       LogicalImageViewHandle depthLogical,
+                       const char* passName) {
+    assert(view < s.temporals.size());
+    assert(view < s.views.size());
+    TemporalView& t = s.temporals[view];
+    HizResources& hz = t.hiz[s.views[view].frameIndex];
+
+    SMVK_PROFILE_RENDER("GfxAddHizPass");
+    SMVK_PROFILE_TAG("mip", dstMip);
+    SMVK_PROFILE_TAG("mipCount", hz.mipCount);
+
+    RenderPass& pass = tour::visibility::AddHizMipPass(
+        rg, hz, dstMip, depthLogical, passName ? passName : "GfxHiz");
+
+    // DEBUG: Log HZB pass creation
+    static uint64_t s_hizPassCount = 0;
+    if ((s_hizPassCount++ % 60) == 0) {
+        SMVK_DEBUG_LOG("[GfxHiz] AddHizPass view=%u mip=%u/%u depthValid=%d passName=%s\n",
+                       view,
+                       dstMip,
+                       hz.mipCount,
+                       !depthLogical.empty(),
+                       passName ? passName : "GfxHiz");
+    }
+
+    return pass;
+}
+
+void PushAndDispatchHiz(State& s,
+                        CommandBuffer& cmd,
+                        ResourceManager& ctx,
+                        uint32_t view,
+                        uint32_t dstMip,
+                        uint32_t depthBindlessIndex) {
+    assert(view < s.temporals.size());
+    assert(view < s.views.size());
+    TemporalView& t = s.temporals[view];
+    HizResources& hz = t.hiz[s.views[view].frameIndex];
+    if (dstMip >= hz.mipCount)
+        return;
+
+    SMVK_PROFILE_SCOPE("GfxPushAndDispatchHiz");
+    SMVK_PROFILE_TAG("dstMip", dstMip);
+    SMVK_PROFILE_TAG("mipCount", hz.mipCount);
+
+    uint32_t dw = 0, dh = 0;
+    HzbMipDims(hz.width, hz.height, dstMip, dw, dh);
+    if (dw == 0 || dh == 0)
+        return;
+    const uint64_t addr = ctx.GetBufferDeviceAddress(hz.buffer);
+    // Null-BDA guard (same device-lost lesson as PushAndDispatch): skip the
+    // level instead of faulting; the HZB stays stale and T4 keeps geometry.
+    // Explicit fprintf (not SMVK_DEBUG_LOG): this fires on real faults and
+    // must be visible in Release builds too.
+    if (addr == 0) {
+        static uint64_t s_hizNullWarns = 0;
+        if ((s_hizNullWarns++ % 300) == 0) {
+            std::fprintf(stderr,
+                         "[GfxHiz] refusing dispatch: null HZB address (view %u mip %u).\n",
+                         view,
+                         dstMip);
+        }
+        return;
+    }
+    // Diagnose-only: invalid depth bindless for the mip0 copy reads garbage
+    // (undefined values); garbage-near MIN-reduces upward and over-culls.
+    // Throttled explicit fprintf (Release-visible); no behavior change.
+    if (dstMip == 0 && depthBindlessIndex == UINT32_MAX) {
+        static uint64_t s_hizDepthWarns = 0;
+        if ((s_hizDepthWarns++ % 300) == 0) {
+            std::fprintf(stderr,
+                         "[GfxHiz] mip0 copy with invalid depth bindless (view %u): "
+                         "HZB content undefined, expect over-cull.\n",
+                         view);
+        }
+    }
+    // Diagnose-only: HZB extent vs view extent mismatch misaligns footprint
+    // rows/cols with depth rows (wrong-texel over-cull). Throttled explicit
+    // fprintf (Release-visible).
+    {
+        const View& v = s.views[view];
+        if ((hz.width != v.width || hz.height != v.height) && v.width != 0 && v.height != 0) {
+            static uint64_t s_hizExtentWarns = 0;
+            if ((s_hizExtentWarns++ % 300) == 0) {
+                std::fprintf(stderr,
+                             "[GfxHiz] extent mismatch: hiz %ux%u vs view %ux%u (view %u).\n",
+                             hz.width,
+                             hz.height,
+                             v.width,
+                             v.height,
+                             view);
+            }
+        }
+    }
+    HzbPush push{};
+    if (!tour::visibility::MakeHizMipPush(hz, addr, dstMip, depthBindlessIndex, push))
+        return;
+
+    // DEBUG: Log HZB dispatch parameters
+    static uint64_t s_hizDispatchCount = 0;
+    if ((s_hizDispatchCount++ % 60) == 0) {
+        SMVK_DEBUG_LOG("[GfxHiz] Dispatch view=%u mip=%u/%u dst=%ux%u off=%u srcMip=%u src=%ux%u "
+                       "srcOff=%u depthIdx=%u BDA=0x%llx\n",
+                       view,
+                       dstMip,
+                       hz.mipCount,
+                       dw,
+                       dh,
+                       push.dstOffset,
+                       push.srcMip,
+                       push.srcWidth,
+                       push.srcHeight,
+                       push.srcOffset,
+                       push.depthTextureIndex,
+                       (unsigned long long)addr);
+    }
+
+    cmd.BindComputePipeline(s.hizProgram);
+    cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+    cmd.Dispatch((dw + 7) / 8, (dh + 7) / 8, 1);
+}
+
+RenderPass& AddHizSpdPass(State& s,
+                          RenderGraph& rg,
+                          uint32_t view,
+                          LogicalImageViewHandle depthLogical,
+                          const char* passName,
+                          bool shadow) {
+    assert(view < s.temporals.size());
+    assert(view < s.views.size());
+    TemporalView& t = s.temporals[view];
+    const uint32_t flight = s.views[view].frameIndex;
+    HizResources& hz = shadow ? t.hizVerify[flight] : t.hiz[flight];
+    assert(hz.mipCount != 0 && !hz.logical.empty());
+    assert(!t.hizSpdCounterLogical.empty()); // caller gates on the ring
+
+    SMVK_PROFILE_RENDER("GfxAddHizSpdPass");
+    SMVK_PROFILE_TAG("mipCount", hz.mipCount);
+    SMVK_PROFILE_TAG("shadow", shadow ? 1 : 0);
+
+    RenderPass& pass = tour::visibility::AddHizSpdPass(
+        rg, hz, t.hizSpdCounterLogical, depthLogical, passName ? passName : "GfxHizSpd");
+
+    return pass;
+}
+
+void PushAndDispatchHizSpd(State& s,
+                           CommandBuffer& cmd,
+                           ResourceManager& ctx,
+                           uint32_t view,
+                           uint32_t depthBindlessIndex,
+                           bool shadow) {
+    assert(view < s.temporals.size());
+    assert(view < s.views.size());
+    TemporalView& t = s.temporals[view];
+    const uint32_t flight = s.views[view].frameIndex;
+    HizResources& hz = shadow ? t.hizVerify[flight] : t.hiz[flight];
+    if (hz.mipCount == 0 || hz.width == 0 || hz.height == 0)
+        return;
+    if (t.hizSpdCounter.empty() || t.hizSpdCounterLogical.empty()) {
+        // No counter ring (EnsureHiz allocation failure): refuse the
+        // dispatch — the caller's fallback should have routed per-mip,
+        // this is the belt-and-suspenders guard.
+        static uint64_t s_spdNoCounterWarns = 0;
+        if ((s_spdNoCounterWarns++ % 300) == 0)
+            std::fprintf(
+                stderr, "[GfxHizSpd] refusing dispatch: no counter ring (view %u).\n", view);
+        return;
+    }
+
+    SMVK_PROFILE_SCOPE("GfxPushAndDispatchHizSpd");
+    SMVK_PROFILE_TAG("mipCount", hz.mipCount);
+    SMVK_PROFILE_TAG("shadow", shadow ? 1 : 0);
+
+    const uint64_t addr = ctx.GetBufferDeviceAddress(hz.buffer);
+    // Null-BDA guard (the same device-lost lesson as PushAndDispatchHiz).
+    if (addr == 0) {
+        static uint64_t s_spdNullWarns = 0;
+        if ((s_spdNullWarns++ % 300) == 0)
+            std::fprintf(
+                stderr, "[GfxHizSpd] refusing dispatch: null HZB address (view %u).\n", view);
+        return;
+    }
+    if (depthBindlessIndex == UINT32_MAX) {
+        static uint64_t s_spdDepthWarns = 0;
+        if ((s_spdDepthWarns++ % 300) == 0)
+            std::fprintf(stderr,
+                         "[GfxHizSpd] dispatch with invalid depth bindless (view %u): "
+                         "mip 0 content undefined, expect over-cull.\n",
+                         view);
+    }
+    const uint64_t counterAddr =
+        ctx.GetBufferDeviceAddress(t.hizSpdCounter) + (uint64_t)flight * kHizSpdCounterSliceBytes;
+    const uint32_t groupX = (hz.width + 63u) / 64u;
+    const uint32_t groupY = (hz.height + 63u) / 64u;
+
+    HzbSpdPush push{};
+    if (!tour::visibility::MakeHizSpdPush(hz, addr, counterAddr, depthBindlessIndex, push))
+        return;
+
+    static uint64_t s_spdDispatchCount = 0;
+    if ((s_spdDispatchCount++ % 60) == 0) {
+        SMVK_DEBUG_LOG("[GfxHizSpd] Dispatch view=%u shadow=%d %ux%u mips=%u "
+                       "groups=%ux%u depthIdx=%u BDA=0x%llx counter=0x%llx\n",
+                       view,
+                       shadow ? 1 : 0,
+                       hz.width,
+                       hz.height,
+                       hz.mipCount,
+                       groupX,
+                       groupY,
+                       depthBindlessIndex,
+                       (unsigned long long)addr,
+                       (unsigned long long)counterAddr);
+    }
+
+    cmd.BindComputePipeline(s.hizSpdProgram);
+    cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+    cmd.Dispatch(groupX, groupY, 1);
+}
+
+void VerifyHizSpd(State& s, ResourceManager& ctx, uint32_t view) {
+    if (view >= s.temporals.size() || view >= s.views.size())
+        return;
+    TemporalView& t = s.temporals[view];
+    const uint32_t flight = s.views[view].frameIndex;
+    const HizResources& hz = t.hiz[flight];
+    const HizResources& hzV = t.hizVerify[flight];
+    if (hz.mipCount == 0 || hzV.mipCount == 0 || hz.width != hzV.width || hz.height != hzV.height ||
+        hz.mipCount != hzV.mipCount) {
+        std::fprintf(stderr,
+                     "[GfxHizSpdVerify] pyramids unavailable or "
+                     "drifted - skipped\n");
+        return;
+    }
+    const uint32_t w = hz.width;
+    const uint32_t h = hz.height;
+    const uint32_t mips = hz.mipCount;
+    const size_t floats = (size_t)HzbTotalFloats(w, h);
+    std::vector<float> perMip(floats, 0.0f);
+    std::vector<float> spd(floats, 0.0f);
+    if (!ctx.DownloadDataFromBuffer(hz.buffer, perMip.data(), floats * sizeof(float)) ||
+        !ctx.DownloadDataFromBuffer(hzV.buffer, spd.data(), floats * sizeof(float))) {
+        std::fprintf(stderr, "[GfxHizSpdVerify] download failed - skipped\n");
+        return;
+    }
+    uint64_t mismatches = 0;
+    uint32_t mismatchedMips = 0;
+    uint32_t printed = 0;
+    constexpr uint32_t kPrintLimit = 8;
+    for (uint32_t m = 0; m < mips; ++m) {
+        uint32_t mw = 0, mh = 0;
+        HzbMipDims(w, h, m, mw, mh);
+        const uint32_t off = hz.mipOffsets[m];
+        uint64_t mipMismatch = 0;
+        for (uint32_t y = 0; y < mh; ++y) {
+            for (uint32_t x = 0; x < mw; ++x) {
+                const size_t i = (size_t)off + y * mw + x;
+                if (perMip[i] != spd[i]) {
+                    ++mipMismatch;
+                    if (printed < kPrintLimit) {
+                        ++printed;
+                        std::fprintf(stderr,
+                                     "[GfxHizSpdVerify]   mip %u (%u,%u): per-mip=%.6g spd=%.6g\n",
+                                     m,
+                                     x,
+                                     y,
+                                     perMip[i],
+                                     spd[i]);
+                    }
+                }
+            }
+        }
+        if (mipMismatch != 0) {
+            ++mismatchedMips;
+            mismatches += mipMismatch;
+            std::fprintf(stderr,
+                         "[GfxHizSpdVerify]   mip %u (%ux%u): %llu mismatching texels\n",
+                         m,
+                         mw,
+                         mh,
+                         (unsigned long long)mipMismatch);
+        }
+    }
+    ++s.hizSpdVerifyFrames;
+    s.hizSpdVerifyMismatches += mismatches;
+    std::fprintf(stderr,
+                 "[GfxHizSpdVerify] view %u %ux%u mips=%u: %s"
+                 " (%llu mismatching texels across %u mips; running: %llu over %llu frames)\n",
+                 view,
+                 w,
+                 h,
+                 mips,
+                 mismatches == 0 ? "MATCH" : "MISMATCH",
+                 (unsigned long long)mismatches,
+                 mismatchedMips,
+                 (unsigned long long)s.hizSpdVerifyMismatches,
+                 (unsigned long long)s.hizSpdVerifyFrames);
+}
+
+// Registration (RegisterMeshFromUpload/FromCooked, ResetStaticRegistrations,
+// UploadStaticData + the AppendCluster/FinishMesh helpers) moved to
+// gpu_scene_static.cpp (they operate on tour::gfx::StaticGeometry).
+
+// ---------------------------------------------------------------------------
+// Per-frame views
+// ---------------------------------------------------------------------------
+
+void BeginFrame(State& s) {
+    s.viewCount = 0;
+    // Kept-parity source: one BeginFrame per rendered frame
+    // (FilterMainView), so the parity alternates between a flight's
+    // consecutive users exactly smvk::limits::MaxFramesInFlight frames apart.
+    ++s.frameCounter;
+}
+
+static bool EnsureViewSlots(State& s, ResourceManager& ctx, RenderGraph& rg, uint32_t count) {
+    if (count > kMaxViews)
+        return false;
+    while ((uint32_t)s.views.size() < count) {
+        View slot{};
+        if (!CreateSlotBuffers(ctx, rg, slot))
+            return false;
+        TemporalView temporal{};
+        if (!CreateTemporalBuffers(ctx, rg, temporal)) {
+            // Unwind the view slot we just allocated (all its ring slices).
+            RollbackSlotBuffers(rg, slot, smvk::limits::MaxFramesInFlight);
+            return false;
+        }
+        s.views.push_back(std::move(slot));
+        s.temporals.push_back(std::move(temporal));
+    }
+    return true;
+}
+
+void InvalidateHistory(State& s, uint32_t view) {
+    if (view >= s.temporals.size())
+        return;
+    s.temporals[view].historyValid = false;
+}
+
+// Key-sorted (cluster, model) entries for one batch list (same skips the
+// pre-merge VisKey paths made: invalid draw index, invalid cluster).
+// batch keeps the ORIGINAL list slot so the emit walks below preserve
+// BuildBatches' material grouping (ranges stay coalesced).
+static void BuildVisKeys(const std::vector<Batch>& batches,
+                         const std::vector<Draw>& draws,
+                         uint32_t clusterCount,
+                         std::vector<detail::VisKeyEntry>& out) {
+    out.clear();
+    out.reserve(batches.size());
+    for (uint32_t i = 0; i < (uint32_t)batches.size(); ++i) {
+        const Batch& b = batches[i];
+        if (b.draw >= (uint32_t)draws.size())
+            continue;
+        if (b.cluster >= clusterCount)
+            continue;
+        detail::VisKeyEntry e{};
+        e.key = detail::MakeVisKey(draws[b.draw].model, b.cluster);
+        e.batch = i;
+        out.push_back(e);
+    }
+    std::sort(
+        out.begin(), out.end(), [](const detail::VisKeyEntry& a, const detail::VisKeyEntry& b) {
+            return a.key < b.key;
+        });
+}
+
+void SnapshotVisible(State& s, uint32_t view) {
+    assert(view < s.views.size());
+    GfxProbeScope probeScope(g_probe.snap); // TMP-PROBE
+    TemporalView& t = Temporal(s, view);
+    const View& v = s.views[view];
+
+    SMVK_PROFILE_SCOPE("GfxSnapshotVisible");
+    SMVK_PROFILE_TAG("batches", v.batches.size());
+    SMVK_PROFILE_TAG("draws", v.drawConstants.size());
+
+    t.prevBatches = v.batches;
+    t.prevDraws = v.drawConstants;
+    t.prevRanges = v.materialRanges;
+    t.prevBatchCount = v.batchCount;
+    t.prevDrawCount = (uint32_t)v.drawConstants.size();
+    t.width = v.width;
+    t.height = v.height;
+    // Key-sorted (cluster, model) identities of the new snapshot: reuse
+    // this frame's curr keys when a builder already sorted them (they
+    // index the same batch list prevBatches just copied), else sort.
+    // Swap keeps both vectors' capacity alive across frames.
+    if (t.currKeysSerial == v.batchesSerial) {
+        t.prevKeys.swap(t.currKeys);
+        t.currKeys.clear();
+        t.currKeysSerial = UINT64_MAX;
+    } else {
+        BuildVisKeys(v.batches, v.drawConstants, (uint32_t)s.clusters.size(), t.prevKeys);
+    }
+    // historyValid flips true here; the seed pass (T3) consumes prev* next
+    // frame. First snapshot after InvalidateHistory re-arms history.
+    t.historyValid = true;
+}
+
+void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
+    assert(view < s.views.size());
+    assert(frameIndex < smvk::limits::MaxFramesInFlight);
+    if (view >= s.temporals.size())
+        return;
+    TemporalView& t = s.temporals[view];
+    if (t.visClusterBuffers[frameIndex].empty() || t.visDrawBuffers[frameIndex].empty())
+        return;                                // headless / unallocated: CPU snapshot still stands
+    GfxProbeScope probeScope(g_probe.uploads); // TMP-PROBE
+
+    SMVK_PROFILE_SCOPE("GfxUploadVisible");
+    SMVK_PROFILE_TAG("prevBatchCount", t.prevBatchCount);
+    SMVK_PROFILE_TAG("prevDrawCount", t.prevDrawCount);
+
+    if (t.prevBatchCount > 0) {
+        SMVK_PROFILE_SCOPE("GfxUploadVisClusters");
+        t.visPairScratch.clear();
+        t.visPairScratch.reserve(t.prevBatchCount);
+        for (const Batch& b : t.prevBatches)
+            t.visPairScratch.push_back(VisibleCluster{b.cluster, b.draw});
+        ctx.UploadDataToBuffer(t.visClusterBuffers[frameIndex],
+                               t.visPairScratch.data(),
+                               t.visPairScratch.size() * sizeof(VisibleCluster),
+                               PipelineStage(PipelineStageBit_Compute),
+                               AccessFlags::ShaderRead);
+    }
+    if (!t.prevDraws.empty()) {
+        SMVK_PROFILE_SCOPE("GfxUploadVisDraws");
+        ctx.UploadDataToBuffer(t.visDrawBuffers[frameIndex],
+                               t.prevDraws.data(),
+                               t.prevDraws.size() * sizeof(Draw),
+                               PipelineStage(PipelineStageBit_Compute),
+                               AccessFlags::ShaderRead);
+    }
+}
+
+// Shared bucket-major emitter: opaque commands first (single VS-only
+// multi-draw), then masked (per-material ranges for the alpha-test FS
+// push). Runs coalesce on (bucket, material).
+static void EmitBucketMajor(State& s,
+                            const std::vector<detail::EmitEntry>& entries,
+                            std::vector<SeedCommand>& outCmds,
+                            std::vector<SeedRange>& outRanges,
+                            uint32_t& outOpaque) {
+    outCmds.clear();
+    outRanges.clear();
+    outOpaque = 0;
+    for (uint32_t pass = 0; pass < 2; ++pass) {
+        const uint32_t wantSet = (pass == 0) ? DrawSetBit_Opaque : DrawSetBit_Masked;
+        for (const detail::EmitEntry& e : entries) {
+            if (e.cluster >= (uint32_t)s.clusters.size())
+                continue;
+            const bool masked = (e.drawSet & DrawSetBit_Masked) != 0;
+            if ((wantSet == DrawSetBit_Masked) != masked)
+                continue;
+            const Cluster& c = s.clusters[e.cluster];
+            SeedCommand cmd{};
+            cmd.indexCount = c.triCount * 3;
+            cmd.instanceCount = 1;
+            // Absolute into the static index monoblock (region base + offset).
+            cmd.firstIndex = s.clusterIndexBase + c.indexOffset;
+            cmd.vertexOffset = 0;
+            cmd.firstInstance = e.draw;
+            const uint32_t slot = (uint32_t)outCmds.size();
+            if (slot >= kMaxBatches) {
+                std::fprintf(stderr,
+                             "[GfxFilter] FATAL: seed emitter exceeded the engine batch limit "
+                             "(kMaxBatches=%u).\n",
+                             kMaxBatches);
+                std::fflush(stderr);
+                std::abort();
+            }
+            outCmds.push_back(cmd);
+            if (!outRanges.empty()) {
+                SeedRange& tail = outRanges.back();
+                if (tail.drawSet == wantSet && tail.material == e.material &&
+                    tail.firstCommand + tail.commandCount == slot) {
+                    ++tail.commandCount;
+                    continue;
+                }
+            }
+            SeedRange r{};
+            r.drawSet = wantSet;
+            r.material = e.material;
+            r.firstCommand = slot;
+            r.commandCount = 1;
+            outRanges.push_back(r);
+        }
+        if (pass == 0)
+            outOpaque = (uint32_t)outCmds.size();
+    }
+}
+
+// Material per batch from covering ranges (ranges span batches in order).
+static void ResolveBatchMaterials(const std::vector<MaterialRange>& ranges,
+                                  size_t batchCount,
+                                  std::vector<uint32_t>& out) {
+    out.assign(batchCount, UINT32_MAX);
+    for (const MaterialRange& r : ranges) {
+        for (uint32_t k = 0; k < r.commandCount; ++k) {
+            if (r.firstCommand + k < (uint32_t)out.size())
+                out[r.firstCommand + k] = r.material;
+        }
+    }
+}
+
+// Seed ONLY the intersection of the snapshot with this frame's batches
+// (same cluster, same transform). The prepass Loads seeded depth and
+// draws full current geometry over it (nearest-wins), and 1x Main then
+// tests read-only (GreaterEqual) against that buffer — so any stale
+// seed content that is NEARER than current geometry kills Main pixels
+// (skybox holes for a frame). Stale == LOD flip (sibling clusters have
+// disjoint ids) or moved instance (model differs): both miss the
+// intersection and fall through to the prepass + remainder instead.
+// Same cluster + same model replays bit-identical depth, which can
+// only ever tie (pass) — never poison.
+//
+// One sorted-key merge (detail::MergeKeyMasks) yields membership masks
+// for both outputs; the emit walks keep the ORIGINAL batch order so
+// material grouping (BuildBatches sorts draws by material) leaves the
+// (bucket, material) ranges coalesced exactly as before. All scratch
+// lives in TemporalView: the steady-state rebuild allocates nothing.
+static void BuildBothCommands(State& s, uint32_t view, bool wantSeed, bool wantRemainder) {
+    assert(view < s.views.size());
+    GfxProbeScope probeScope(g_probe.seedRem); // TMP-PROBE
+    TemporalView& t = Temporal(s, view);
+    const View& v = s.views[view];
+
+    if (wantSeed) {
+        t.seedCommands.clear();
+        t.seedRanges.clear();
+        t.seedOpaqueCommands = 0;
+    }
+    if (wantRemainder) {
+        t.remainderCommands.clear();
+        t.remainderRanges.clear();
+        t.remainderOpaqueCommands = 0;
+    }
+    // Same guards as the pre-merge builders.
+    const bool doSeed = wantSeed && t.historyValid && !t.prevBatches.empty();
+    const bool doRemainder = wantRemainder && t.historyValid && !v.batches.empty();
+    if (!doSeed && !doRemainder)
+        return;
+
+    SMVK_PROFILE_RENDER("GfxBuildSeedAndRemainder");
+    SMVK_PROFILE_TAG("currBatches", v.batches.size());
+    SMVK_PROFILE_TAG("prevBatches", t.prevBatches.size());
+
+    // This frame's sorted curr keys: one sort serves both outputs and is
+    // rotated into the snapshot by SnapshotVisible (serial-gated; the
+    // memo never holds hand-built serial 0).
+    if (t.currKeysSerial != v.batchesSerial) {
+        BuildVisKeys(v.batches, v.drawConstants, (uint32_t)s.clusters.size(), t.currKeys);
+        t.currKeysSerial = v.batchesSerial != 0 ? v.batchesSerial : UINT64_MAX;
+    }
+
+    // Membership masks over the ORIGINAL batch lists (zero default:
+    // entries absent from the key arrays — invalid draw/cluster — never
+    // seed and never remainder, like the pre-merge guards).
+    t.seedMaskScratch.assign(t.prevBatches.size(), 0);
+    t.remainderMaskScratch.assign(v.batches.size(), 0);
+    const auto modelEq = [&](uint32_t prevBatch, uint32_t currBatch) {
+        const glm::mat4& prevModel = t.prevDraws[t.prevBatches[prevBatch].draw].model;
+        const glm::mat4& currModel = v.drawConstants[v.batches[currBatch].draw].model;
+        return std::memcmp(&prevModel, &currModel, sizeof(glm::mat4)) == 0;
+    };
+    detail::MergeKeyMasks(t.prevKeys.data(),
+                          t.prevKeys.size(),
+                          t.currKeys.data(),
+                          t.currKeys.size(),
+                          modelEq,
+                          t.seedMaskScratch.data(),
+                          t.remainderMaskScratch.data());
+
+    if (doSeed) {
+        ResolveBatchMaterials(t.prevRanges, t.prevBatches.size(), t.batchMaterialScratch);
+        t.emitScratch.clear();
+        t.emitScratch.reserve(t.prevBatches.size());
+        for (uint32_t i = 0; i < (uint32_t)t.prevBatches.size(); ++i) {
+            if (!t.seedMaskScratch[i])
+                continue; // LOD-flipped or moved since: prepass owns it
+            const Batch& b = t.prevBatches[i];
+            detail::EmitEntry e{};
+            e.cluster = b.cluster;
+            e.draw = b.draw; // into the visDraws snapshot
+            e.material = t.batchMaterialScratch[i];
+            e.drawSet = t.prevDraws[b.draw].drawSet;
+            t.emitScratch.push_back(e);
+        }
+        EmitBucketMajor(s, t.emitScratch, t.seedCommands, t.seedRanges, t.seedOpaqueCommands);
+    }
+    if (doRemainder) {
+        ResolveBatchMaterials(v.materialRanges, v.batches.size(), t.batchMaterialScratch);
+        t.emitScratch.clear();
+        t.emitScratch.reserve(v.batches.size());
+        for (uint32_t i = 0; i < (uint32_t)v.batches.size(); ++i) {
+            if (!t.remainderMaskScratch[i])
+                continue; // seeded already: same cluster, same transform
+            const Batch& b = v.batches[i];
+            detail::EmitEntry e{};
+            e.cluster = b.cluster;
+            e.draw = b.draw; // into the CURRENT draw constants (DrawBuffer)
+            e.material = t.batchMaterialScratch[i];
+            e.drawSet = v.drawConstants[b.draw].drawSet;
+            t.emitScratch.push_back(e);
+        }
+        EmitBucketMajor(
+            s, t.emitScratch, t.remainderCommands, t.remainderRanges, t.remainderOpaqueCommands);
+    }
+}
+
+void BuildSeedCommands(State& s, uint32_t view) {
+    BuildBothCommands(s, view, true, false);
+}
+
+void BuildSeedAndRemainder(State& s, uint32_t view) {
+    BuildBothCommands(s, view, true, true);
+}
+
+void BuildRemainderCommands(State& s, uint32_t view) {
+    BuildBothCommands(s, view, false, true);
+}
+
+void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
+    assert(view < s.views.size());
+    assert(frameIndex < smvk::limits::MaxFramesInFlight);
+    if (view >= s.temporals.size())
+        return;
+    TemporalView& t = s.temporals[view];
+    if (t.seedIndirectBuffers[frameIndex].empty())
+        return;
+    if (t.seedCommands.empty())
+        return;
+    GfxProbeScope probeScope(g_probe.uploads); // TMP-PROBE
+
+    SMVK_PROFILE_SCOPE("GfxUploadSeed");
+    SMVK_PROFILE_TAG("commands", t.seedCommands.size());
+
+    ctx.UploadDataToBuffer(t.seedIndirectBuffers[frameIndex],
+                           t.seedCommands.data(),
+                           t.seedCommands.size() * sizeof(SeedCommand),
+                           PipelineStage(PipelineStageBit_DrawIndirect),
+                           AccessFlags::IndirectCommandRead);
+}
+
+void UploadRemainder(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
+    assert(view < s.views.size());
+    assert(frameIndex < smvk::limits::MaxFramesInFlight);
+    if (view >= s.temporals.size())
+        return;
+    TemporalView& t = s.temporals[view];
+    if (t.remainderIndirectBuffers[frameIndex].empty())
+        return;
+    if (t.remainderCommands.empty())
+        return;
+    GfxProbeScope probeScope(g_probe.uploads); // TMP-PROBE
+
+    SMVK_PROFILE_SCOPE("GfxUploadRemainder");
+    SMVK_PROFILE_TAG("commands", t.remainderCommands.size());
+
+    ctx.UploadDataToBuffer(t.remainderIndirectBuffers[frameIndex],
+                           t.remainderCommands.data(),
+                           t.remainderCommands.size() * sizeof(SeedCommand),
+                           PipelineStage(PipelineStageBit_DrawIndirect),
+                           AccessFlags::IndirectCommandRead);
+}
+
+RenderPass& AddSeedPass(State& s,
+                        RenderGraph& rg,
+                        uint32_t view,
+                        LogicalImageViewHandle depthLogical) {
+    assert(view < s.temporals.size());
+    TemporalView& t = s.temporals[view];
+    const View& v = s.views[view];
+    RenderPass& pass = rg.AddPass("GfxSeedDepth");
+    Extent2D extent{v.width, v.height};
+    pass.SetOffset(0, 0).SetExtent(extent).SetDepth(depthLogical,
+                                                    AttachmentLoadOp::Clear,
+                                                    AttachmentStoreOp::Store,
+                                                    ClearDepthStencil(0.0f, 0));
+    BufferSyncRequest indirectRead{};
+    indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
+    indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
+    pass.AddBufferHint(t.seedIndirectLogicals[v.frameIndex], indirectRead);
+    return pass;
+}
+
+// Depth pass 2 (T5): draws the remainder list over seeded depth
+// (Load/Store). Same consume pattern as the seed pass.
+RenderPass& AddRemainderPass(State& s,
+                             RenderGraph& rg,
+                             uint32_t view,
+                             LogicalImageViewHandle depthLogical) {
+    assert(view < s.temporals.size());
+    TemporalView& t = s.temporals[view];
+    const View& v = s.views[view];
+    RenderPass& pass = rg.AddPass("GfxRemainderDepth");
+    Extent2D extent{v.width, v.height};
+    pass.SetOffset(0, 0).SetExtent(extent).SetDepth(
+        depthLogical, AttachmentLoadOp::Load, AttachmentStoreOp::Store, ClearDepthStencil(0.0f, 0));
+    BufferSyncRequest indirectRead{};
+    indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
+    indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
+    pass.AddBufferHint(t.remainderIndirectLogicals[v.frameIndex], indirectRead);
+    return pass;
+}
+
+void AddSeedConsumeHints(RenderPass& pass,
+                         LogicalBufferHandle indexLogical,
+                         LogicalBufferHandle visDrawLogical,
+                         LogicalBufferHandle seedIndirectLogical) {
+    BufferSyncRequest indexRead{};
+    indexRead.barrierMasks.accessMask = AccessFlags::IndexRead;
+    indexRead.barrierMasks.stageMask = PipelineStageBit_Vertex;
+    pass.AddBufferHint(indexLogical, indexRead);
+    if (!visDrawLogical.empty()) {
+        BufferSyncRequest drawsRead{};
+        drawsRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+        drawsRead.barrierMasks.stageMask = PipelineStageBit_Vertex;
+        pass.AddBufferHint(visDrawLogical, drawsRead);
+    }
+    if (!seedIndirectLogical.empty()) {
+        BufferSyncRequest indirectRead{};
+        indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
+        indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
+        pass.AddBufferHint(seedIndirectLogical, indirectRead);
+    }
+}
+
+uint32_t BeginView(State& s,
+                   ResourceManager& ctx,
+                   RenderGraph& rg,
+                   const RenderView& renderView,
+                   const glm::vec3& eye,
+                   CullFlags cullFlags,
+                   uint32_t width,
+                   uint32_t height) {
+    GfxProbeReport(); // TMP-PROBE: reports previous 240 frames
+    const uint32_t slot = s.viewCount;
+    if (!EnsureViewSlots(s, ctx, rg, slot + 1))
+        return UINT32_MAX;
+    View& v = s.views[slot];
+    v.eye = eye;
+    v.cullFlags = cullFlags;
+    v.width = width;
+    v.height = height;
+    v.viewProj = renderView.m_viewProjectionMatrix;
+    v.renderView = &renderView;
+    v.draws.clear();
+    v.batches.clear();
+    v.drawConstants.clear();
+    v.materialRanges.clear();
+    v.cullRanges.clear();
+    v.cullOpaqueCommands = 0;
+    v.batchCount = 0;
+    v.stats = Stats{};
+    // Fresh stamp: cached curr keys from a previous frame of this slot
+    // are now invalid (the lists were just cleared).
+    v.batchesSerial = s.nextBatchesSerial++;
+    ++s.viewCount;
+    return slot;
+}
+
+void PushDraw(State& s,
+              uint32_t view,
+              uint32_t mesh,
+              const glm::mat4& model,
+              uint32_t material,
+              DrawFlags flags,
+              DrawSetMask drawSet,
+              uint32_t lmChunk,
+              uint32_t lmChartOffset,
+              uint32_t lmDelta,
+              uint32_t userData,
+              uint32_t lightLayerMask) {
+    assert(view < s.viewCount);
+    assert(mesh < s.meshes.size());
+    View& v = s.views[view];
+    // The declared-bound ceiling (the dynamic cutover's fail-closed limit —
+    // the retired kMaxDraws fatal's successor): the draw ring itself grows
+    // at FinalizeView, but a count past the DECLARED shader array can never
+    // be served. Fatal, never a silent drop.
+    if (v.draws.size() >= kDeclaredMaxDraws) {
+        std::fprintf(stderr,
+                     "[GfxFilter] FATAL: view %u exceeded the declared draw limit "
+                     "(kDeclaredMaxDraws=%u per view). No geometry is dropped or alternate path "
+                     "used.\n",
+                     view,
+                     kDeclaredMaxDraws);
+        std::fflush(stderr);
+        std::abort();
+    }
+    DrawRequest d{};
+    d.mesh = mesh;
+    d.material = material;
+    d.model = model;
+    d.flags = flags;
+    d.drawSet = drawSet;
+    d.lmChunk = lmChunk;
+    d.lmChartOffset = lmChartOffset;
+    d.lmDelta = lmDelta;
+    d.userData = userData;
+    d.lightLayerMask = lightLayerMask;
+    v.draws.push_back(d);
+}
+
+static float MaxBasisScale(const glm::mat4& m) {
+    return std::max(
+        {glm::length(glm::vec3(m[0])), glm::length(glm::vec3(m[1])), glm::length(glm::vec3(m[2]))});
+}
+
+// CPU pre-cull port of GeometryFX's cluster test (AddRequest cone check)
+// using meshoptimizer perspective formulas (see meshoptimizer.h:
+// dot(normalize(apex - eye), axis) >= cutoff culls).
+// The cone test runs in world space so mirrored / non-uniform-scale
+// instances agree with the rasterizer (object-space testing flips the
+// answer under negative-determinant transforms).
+bool CullCluster(const Cluster& c,
+                 const glm::mat4& model,
+                 const glm::mat4& invModel,
+                 const glm::vec3& eye,
+                 const RenderView& renderView) {
+    const glm::vec3 worldCenter = glm::vec3(model * glm::vec4(c.boundCenter, 1.0f));
+    const float worldRadius = c.boundRadius * MaxBasisScale(model);
+    if (!RenderViewIntersectsSphere(renderView, worldCenter, worldRadius))
+        return true;
+    const glm::vec3 worldApex = glm::vec3(model * glm::vec4(c.coneApex, 1.0f));
+    // Normal transform (inverse-transpose, direction only, renormalized).
+    const glm::vec3 axisW = glm::vec3(glm::transpose(invModel) * glm::vec4(c.coneAxis, 0.0f));
+    const float axisLen2 = glm::dot(axisW, axisW);
+    if (axisLen2 < 1e-12f)
+        return false; // degenerate cone (e.g. fallback clusters): no cone cull
+    const glm::vec3 worldAxis = axisW / std::sqrt(axisLen2);
+    const glm::vec3 d = worldApex - eye;
+    const float len2 = glm::dot(d, d);
+    if (len2 < 1e-12f)
+        return false; // eye inside the apex: keep (avoids NaN)
+    if (glm::dot(d / std::sqrt(len2), worldAxis) >= c.coneCutoff)
+        return true;
+    return false;
+}
+
+// CPU reference of GfxSkinBounds' cone rebuild (gfxskinbounds.cs.hlsl):
+// the exact math the shader's three per-cluster walks run, on caller-supplied
+// (deformed) triangle corners — meshopt_computeMeshletBounds' cone convention
+// (meshletutils.cpp), the same one the baked static cones follow, so
+// GfxConeCulled consumes either without knowing which fit made it:
+//   axis  = normalize(sum of raw cross products) — area-weighted (any axis
+//           + min-dot cutoff is conservative; only tightness varies)
+//   mindp = min dot(axis, unit face normal) over non-degenerate triangles
+//   degenerate guards: triCount == 0 / axis ~0 / mindp <= 0.1 (cone wider
+//           than ~168 degrees — meshopt's own "isn't useful" cutoff)
+//   maxt  = max(0, dot(center - p0, n) / dot(axis, n)) — the apex lands
+//           behind every face plane by construction (denominator >= mindp
+//           > 0.1 once the guards pass)
+//   cutoff = sqrt(1 - mindp^2) — the 90-degrees-both-sides widening the
+//           perspective camera test requires
+// Exported for the unit tests (test_gfxfilter pins the fit's verdicts
+// against the every-face-plane-negative ground truth).
+DeformedConeFit FitDeformedCone(const glm::vec3* triCorners,
+                                uint32_t triCount,
+                                const glm::vec3& sphereCenter) {
+    DeformedConeFit out{}; // degenerate defaults: the keep-cone
+    if (triCorners == nullptr || triCount == 0)
+        return out;
+    glm::vec3 nsum(0.0f);
+    for (uint32_t t = 0; t < triCount; ++t) {
+        const glm::vec3& p0 = triCorners[t * 3 + 0];
+        const glm::vec3& p1 = triCorners[t * 3 + 1];
+        const glm::vec3& p2 = triCorners[t * 3 + 2];
+        nsum += glm::cross(p1 - p0, p2 - p0);
+    }
+    const float nlen2 = glm::dot(nsum, nsum);
+    if (nlen2 < 1e-12f)
+        return out;
+    const glm::vec3 axis = nsum / std::sqrt(nlen2);
+    float mindp = 1.0f;
+    for (uint32_t t = 0; t < triCount; ++t) {
+        const glm::vec3 n = glm::cross(triCorners[t * 3 + 1] - triCorners[t * 3 + 0],
+                                       triCorners[t * 3 + 2] - triCorners[t * 3 + 0]);
+        const float l2 = glm::dot(n, n);
+        if (l2 < 1e-24f)
+            continue; // zero-area sliver: shades nothing
+        mindp = std::min(mindp, glm::dot(axis, n / std::sqrt(l2)));
+    }
+    if (mindp <= 0.1f)
+        return out;
+    float maxt = 0.0f;
+    for (uint32_t t = 0; t < triCount; ++t) {
+        const glm::vec3 nRaw = glm::cross(triCorners[t * 3 + 1] - triCorners[t * 3 + 0],
+                                          triCorners[t * 3 + 2] - triCorners[t * 3 + 0]);
+        const float l2 = glm::dot(nRaw, nRaw);
+        if (l2 < 1e-24f)
+            continue;
+        const glm::vec3 n = nRaw / std::sqrt(l2);
+        const float dn = glm::dot(axis, n);
+        const float dc = glm::dot(sphereCenter - triCorners[t * 3 + 0], n);
+        maxt = std::max(maxt, dc / dn);
+    }
+    const float m = std::min(mindp, 1.0f);
+    out.coneApex = sphereCenter - axis * maxt;
+    out.coneAxis = axis;
+    out.coneCutoff = std::sqrt(1.0f - m * m);
+    out.degenerate = false;
+    return out;
+}
+
+// Mesh-bound fast-discard gate for shadow lists (pure CPU, headless-
+// testable; the CPU twin of the main view's GPU draw cull): true = the
+// whole draw leaves before the per-cluster meshlet loop. The bound is
+// the per-mesh union sphere (State::meshBounds, object space — the same
+// containment source the demand publisher and GfxDrawCull use; a draw
+// bound that misses means every cluster bound misses too).
+bool CullShadowMeshBound(const glm::vec4& meshBound,
+                         const glm::mat4& model,
+                         const RenderView& shadowView,
+                         const RenderView* contributionView) {
+    const glm::vec3 worldCenter = glm::vec3(model * glm::vec4(glm::vec3(meshBound), 1.0f));
+    const float worldRadius = meshBound.w * MaxBasisScale(model);
+    if (!RenderViewIntersectsSphere(shadowView, worldCenter, worldRadius))
+        return true; // fully outside the shadow view's frustum
+    // Contribution: a caster that cannot touch the main camera's SHADE
+    // volume (the caller passes the main view swept toward the sun - see
+    // MakeCasterContributionView; spot callers pass null, their cone planes
+    // are exact) contributes nothing to it — drop the whole draw. Null
+    // view = contribution culling off.
+    if (contributionView &&
+        !RenderViewIntersectsSphere(*contributionView, worldCenter, worldRadius))
+        return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// CPU-built shadow draw lists (cascade + spot tiles)
+// ---------------------------------------------------------------------------
+
+// Slot buffers for the CPU-built shadow lists: draws ring slice (VS BDA
+// model source) + indirect commands. Storage, NOT Indirect — same
+// cross-queue sharing argument as CreateSlotBuffers (uploads run on the
+// transfer queue, draws on graphics); INDIRECT usage is covered by the
+// buffer type's flags regardless.
+static bool EnsureShadowBuffers(ResourceManager& ctx, RenderGraph& rg, ShadowView& sv) {
+    if (sv.buffersReady)
+        return true;
+    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+        // First-page initial draw capacity (the dynamic cutover —
+        // UploadShadowList grows the ring to each frame's exact count;
+        // the indirect ring stays SURVIVOR-CAPPED at kMaxBatches).
+        sv.drawCapacity[f] = PageMinCapacity(sizeof(Draw));
+        sv.drawBuffers[f] = ctx.CreateBuffer(
+            DrawRingBytes(sv.drawCapacity[f]), BufferType_Storage, "gfx shadow draws");
+        sv.indirectBuffers[f] =
+            ctx.CreateBuffer(kShadowIndirectBytes, BufferType_Storage, "gfx shadow indirect");
+        if (sv.drawBuffers[f].empty() || sv.indirectBuffers[f].empty())
+            return false;
+        sv.drawLogicals[f] = rg.AddExternalBuffer(sv.drawBuffers[f], "gfx shadow draws");
+        sv.indirectLogicals[f] = rg.AddExternalBuffer(sv.indirectBuffers[f], "gfx shadow indirect");
+        if (sv.drawLogicals[f].empty() || sv.indirectLogicals[f].empty())
+            return false;
+    }
+    sv.buffersReady = true;
+    return true;
+}
+
+void BeginShadowFrame(State& s) {
+    s.shadowViewCount = 0;
+}
+
+uint32_t BeginShadowView(State& s,
+                         ResourceManager& ctx,
+                         RenderGraph& rg,
+                         const RenderView& renderView,
+                         CullFlags cullFlags,
+                         uint32_t width,
+                         uint32_t height,
+                         const RenderView* contributionView) {
+    const uint32_t slot = s.shadowViewCount;
+    if (slot >= kMaxViews)
+        return UINT32_MAX;
+    if (s.shadowViews.size() <= slot) {
+        ShadowView fresh{};
+        if (!EnsureShadowBuffers(ctx, rg, fresh))
+            return UINT32_MAX;
+        s.shadowViews.push_back(std::move(fresh));
+    }
+    ShadowView& sv = s.shadowViews[slot];
+    if (!sv.buffersReady && !EnsureShadowBuffers(ctx, rg, sv))
+        return UINT32_MAX;
+    sv.renderView = &renderView;
+    // Contribution gate for the mesh-bound fast discard in BuildShadowList
+    // (claimed on the main thread before any worker build — the same
+    // threading contract as renderView).
+    sv.contributionView = contributionView;
+    sv.cullFlags = cullFlags;
+    sv.width = width;
+    sv.height = height;
+    sv.draws.clear();
+    sv.drawConstants.clear();
+    sv.commands.clear();
+    sv.ranges.clear();
+    sv.opaqueCommands = 0;
+    sv.stats = Stats{};
+    ++s.shadowViewCount;
+    return slot;
+}
+
+void PushShadowDraw(State& s,
+                    uint32_t sview,
+                    uint32_t mesh,
+                    const glm::mat4& model,
+                    uint32_t material,
+                    DrawFlags flags,
+                    DrawSetMask drawSet,
+                    uint32_t userData) {
+    assert(sview < s.shadowViewCount);
+    assert(mesh < s.meshes.size());
+    ShadowView& sv = s.shadowViews[sview];
+    // The declared-bound ceiling (the retired kMaxDraws fatal's successor —
+    // see PushDraw): the shadow draw ring grows at UploadShadowList, but a
+    // count past the DECLARED shader array can never be served. Fatal,
+    // never a silent drop.
+    if (sv.draws.size() >= kDeclaredMaxDraws) {
+        std::fprintf(stderr,
+                     "[GfxFilter] FATAL: shadow view %u exceeded the declared draw limit "
+                     "(kDeclaredMaxDraws=%u per view). No geometry is dropped or alternate path "
+                     "used.\n",
+                     sview,
+                     kDeclaredMaxDraws);
+        std::fflush(stderr);
+        std::abort();
+    }
+    DrawRequest d{};
+    d.mesh = mesh;
+    d.material = material;
+    d.model = model;
+    d.flags = flags;
+    d.drawSet = drawSet;
+    d.userData = userData;
+    sv.draws.push_back(d);
+}
+
+void BuildShadowList(State& s, uint32_t sview) {
+    assert(sview < s.shadowViewCount);
+    ShadowView& sv = s.shadowViews[sview];
+    assert(sv.renderView != nullptr);
+    sv.stats = Stats{};
+    sv.stats.draws = (uint32_t)sv.draws.size();
+
+    SMVK_PROFILE_RENDER("GfxBuildShadowList");
+    SMVK_PROFILE_TAG("draws", sv.draws.size());
+
+    // Material sort (stable): EmitBucketMajor walks the entries in emit
+    // order, so per-(bucket, material) ranges stay coalesced — same
+    // contract as BuildBatches.
+    std::vector<uint32_t>& order = sv.drawOrderScratch;
+    order.resize(sv.draws.size());
+    std::iota(order.begin(), order.end(), 0u);
+    std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+        return sv.draws[a].material < sv.draws[b].material;
+    });
+
+    sv.drawConstants.clear();
+    sv.drawConstants.reserve(sv.draws.size());
+    sv.emitScratch.clear();
+    for (uint32_t sorted = 0; sorted < (uint32_t)order.size(); ++sorted) {
+        const DrawRequest& d = sv.draws[order[sorted]];
+        Draw dc{};
+        dc.model = d.model;
+        dc.mesh = d.mesh;
+        dc.flags = d.flags;
+        dc.drawSet = d.drawSet;
+        dc.lmChunk = d.lmChunk;
+        dc.lmChartOffset = d.lmChartOffset;
+        dc.lmDelta = d.lmDelta;
+        // userdata rides for record consistency; the shadow legs never
+        // read it (color-only hooks — no coverage parity in v1).
+        dc.userData = d.userData;
+        sv.drawConstants.push_back(dc);
+        const Mesh& mesh = s.meshes[d.mesh];
+        const float basisScale = MaxBasisScale(d.model);
+        // Mesh-bound fast discard (Northlight-style draw gate, the CPU
+        // twin of the main view's GPU GfxDrawCull): the whole draw leaves
+        // before the per-cluster meshlet loop when the mesh union bound
+        // misses the shadow view, or (contribution cull) when it cannot
+        // touch the main camera's view at all. One sphere pair per draw
+        // instead of per cluster; the per-cluster sphere test below stays
+        // (meshlet granularity inside surviving draws).
+        if (d.mesh < s.meshBounds.size() &&
+            CullShadowMeshBound(
+                s.meshBounds[d.mesh], d.model, *sv.renderView, sv.contributionView)) {
+            continue;
+        }
+        for (uint32_t ci = 0; ci < mesh.clusterCount; ++ci) {
+            const Cluster& c = s.clusters[mesh.clusterStart + ci];
+            ++sv.stats.clustersProcessed;
+            // Sphere-only cull: the normal-cone stage needs a valid eye
+            // position, which directional cascade views do not have —
+            // the rasterizer's backface cull covers facings instead.
+            const glm::vec3 worldCenter = glm::vec3(d.model * glm::vec4(c.boundCenter, 1.0f));
+            const float worldRadius = c.boundRadius * basisScale;
+            if (!RenderViewIntersectsSphere(*sv.renderView, worldCenter, worldRadius)) {
+                ++sv.stats.clustersCulled;
+                continue;
+            }
+            // Capacity check AFTER the frustum rejection (the #263 review
+            // catch): a full list must still walk — and harmlessly reject —
+            // the rest of the mesh's clusters; only a SURVIVOR that cannot
+            // fit is over budget. Rejected clusters past a full list are
+            // free, so the abort names real emitted workload, not
+            // traversal tail.
+            if (sv.emitScratch.size() >= kMaxBatches) {
+                std::fprintf(stderr,
+                             "[GfxFilter] FATAL: shadow view %u exceeded the engine batch limit "
+                             "(kMaxBatches=%u).\n",
+                             sview,
+                             kMaxBatches);
+                std::fflush(stderr);
+                std::abort();
+            }
+            detail::EmitEntry e{};
+            e.cluster = mesh.clusterStart + ci;
+            e.draw = sorted; // firstInstance indexes the sorted draw constants
+            e.material = d.material;
+            e.drawSet = d.drawSet;
+            sv.emitScratch.push_back(e);
+            sv.stats.trianglesProcessed += c.triCount;
+        }
+    }
+    // Bucket-major emit: opaque commands first (one VS-only multi-draw),
+    // then masked per-material ranges (alpha-test FS push per range).
+    EmitBucketMajor(s, sv.emitScratch, sv.commands, sv.ranges, sv.opaqueCommands);
+    sv.stats.commands = (uint32_t)sv.commands.size();
+    SMVK_PROFILE_TAG("commands", sv.commands.size());
+    SMVK_PROFILE_TAG("clustersProcessed", sv.stats.clustersProcessed);
+    SMVK_PROFILE_TAG("clustersCulled", sv.stats.clustersCulled);
+}
+
+void UploadShadowList(State& s,
+                      ResourceManager& ctx,
+                      RenderGraph& rg,
+                      uint32_t frameIndex,
+                      uint32_t sview) {
+    assert(sview < s.shadowViewCount);
+    assert(frameIndex < smvk::limits::MaxFramesInFlight);
+    ShadowView& sv = s.shadowViews[sview];
+    sv.frameIndex = frameIndex;
+    // THE DYNAMIC-CAPACITY CUTOVER (shadow leg): grow this (view, flight)'s
+    // draw ring to the frame's exact count, page-planned and grow-only,
+    // before the upload. The plan is bounded fail-closed by the declared
+    // shader arrays; an allocation failure is fatal (the same no-silent-
+    // drop contract as GrowViewCapacity). The indirect ring stays
+    // SURVIVOR-CAPPED (kMaxBatches — the CPU shadow path emits only
+    // surviving commands; BuildShadowList's emit cap enforces it).
+    {
+        DynamicCapacity plan{};
+        if (!PlanViewCapacity(sv.drawConstants.size(), 0, sizeof(Draw), sizeof(Batch), plan))
+            FatalCapacity("shadow list exceeds the declared draw capacity",
+                          sview,
+                          frameIndex,
+                          sv.drawConstants.size(),
+                          "declared bounds: gfx_dynamic_capacity.h");
+        if (plan.draws > sv.drawCapacity[frameIndex]) {
+            if (!RebindBuffer(ctx,
+                              rg,
+                              sv.drawBuffers[frameIndex],
+                              sv.drawLogicals[frameIndex],
+                              DrawRingBytes(plan.draws),
+                              "gfx shadow draws"))
+                FatalCapacity(
+                    "shadow draw-ring grow allocation failed", sview, frameIndex, plan.draws, "");
+            sv.drawCapacity[frameIndex] = plan.draws;
+        }
+    }
+    // TMP-DIAG (grid32 shadow DEVICE_LOST hunt, remove later): validate every
+    // built command/range against the ring bounds BEFORE the upload, and
+    // trace list churn (the fault is camera-motion dependent — a static
+    // camera produces identical lists every frame and never crashes).
+    {
+        static uint64_t s_diagFrames = 0;
+        static std::vector<std::pair<uint32_t, uint32_t>> s_lastSizes;
+        const uint64_t diagFrame = s_diagFrames++;
+        const uint32_t indexLo = s.clusterIndexBase;
+        const uint32_t indexHi = s.clusterIndexBase + (uint32_t)s.filterIndices.size();
+        if (sv.drawConstants.size() != sv.draws.size() || sv.draws.size() > kDeclaredMaxDraws ||
+            sv.commands.size() > kMaxBatches) {
+            std::fprintf(stderr,
+                         "[TMP-DIAG] shadow ring BAD frame=%llu sview=%u draws=%zu/%zu "
+                         "constants=%zu cmds=%zu (caps %u/%u)\n",
+                         (unsigned long long)diagFrame,
+                         sview,
+                         sv.draws.size(),
+                         sv.drawConstants.size(),
+                         sv.drawConstants.size(),
+                         sv.commands.size(),
+                         kDeclaredMaxDraws,
+                         kMaxBatches);
+        }
+        for (uint32_t k = 0; k < (uint32_t)sv.commands.size(); ++k) {
+            const SeedCommand& c = sv.commands[k];
+            const bool idxOk = c.indexCount != 0 && (c.indexCount % 3) == 0 &&
+                               c.firstIndex >= indexLo && c.firstIndex <= indexHi &&
+                               c.indexCount <= indexHi - c.firstIndex;
+            const bool instOk = c.firstInstance < sv.drawConstants.size();
+            if (!idxOk || !instOk || c.vertexOffset != 0) {
+                std::fprintf(stderr,
+                             "[TMP-DIAG] shadow cmd BAD frame=%llu sview=%u k=%u/%zu idx=%u "
+                             "first=%u (region %u..%u) inst=%u/%zu draws=%zu\n",
+                             (unsigned long long)diagFrame,
+                             sview,
+                             k,
+                             sv.commands.size(),
+                             c.indexCount,
+                             c.firstIndex,
+                             indexLo,
+                             indexHi,
+                             c.firstInstance,
+                             sv.drawConstants.size(),
+                             sv.draws.size());
+                break;
+            }
+        }
+        for (uint32_t r = 0; r < (uint32_t)sv.ranges.size(); ++r) {
+            const SeedRange& sr = sv.ranges[r];
+            if (sr.firstCommand + sr.commandCount > (uint32_t)sv.commands.size()) {
+                std::fprintf(stderr,
+                             "[TMP-DIAG] shadow range BAD frame=%llu sview=%u r=%u first=%u "
+                             "count=%u cmds=%zu\n",
+                             (unsigned long long)diagFrame,
+                             sview,
+                             r,
+                             sr.firstCommand,
+                             sr.commandCount,
+                             sv.commands.size());
+                break;
+            }
+        }
+        if (sv.opaqueCommands > (uint32_t)sv.commands.size()) {
+            std::fprintf(stderr,
+                         "[TMP-DIAG] shadow opaque BAD frame=%llu sview=%u opaque=%u cmds=%zu\n",
+                         (unsigned long long)diagFrame,
+                         sview,
+                         sv.opaqueCommands,
+                         sv.commands.size());
+        }
+        if (sview >= s_lastSizes.size())
+            s_lastSizes.resize(sview + 1, {UINT32_MAX, UINT32_MAX});
+        const auto sizes =
+            std::make_pair((uint32_t)sv.drawConstants.size(), (uint32_t)sv.commands.size());
+        if (s_lastSizes[sview] != sizes) {
+            s_lastSizes[sview] = sizes;
+            std::fprintf(stderr,
+                         "[TMP-DIAG] shadow list frame=%llu sview=%u draws=%zu cmds=%zu "
+                         "ranges=%zu opaque=%u\n",
+                         (unsigned long long)diagFrame,
+                         sview,
+                         sv.drawConstants.size(),
+                         sv.commands.size(),
+                         sv.ranges.size(),
+                         sv.opaqueCommands);
+        }
+    }
+    // GPU mirrors (main thread; the EndAndPresent flush orders the copies
+    // ahead of every consumer pass — same mechanism as the seed/remainder
+    // uploads).
+    if (!sv.drawConstants.empty()) {
+        SMVK_PROFILE_SCOPE("GfxUploadShadowDraws");
+        ctx.UploadDataToBuffer(sv.drawBuffers[frameIndex],
+                               sv.drawConstants.data(),
+                               sv.drawConstants.size() * sizeof(Draw),
+                               PipelineStage(PipelineStageBit_Vertex),
+                               AccessFlags::ShaderRead);
+    }
+    if (!sv.commands.empty()) {
+        SMVK_PROFILE_SCOPE("GfxUploadShadowCommands");
+        ctx.UploadDataToBuffer(sv.indirectBuffers[frameIndex],
+                               sv.commands.data(),
+                               sv.commands.size() * sizeof(SeedCommand),
+                               PipelineStage(PipelineStageBit_DrawIndirect),
+                               AccessFlags::IndirectCommandRead);
+    }
+}
+
+const std::vector<SeedRange>& ShadowRanges(const State& s, uint32_t sview) {
+    assert(sview < s.shadowViews.size());
+    return s.shadowViews[sview].ranges;
+}
+
+uint32_t ShadowOpaqueCommands(const State& s, uint32_t sview) {
+    assert(sview < s.shadowViews.size());
+    return s.shadowViews[sview].opaqueCommands;
+}
+
+BufferHandle ShadowDrawBuffer(const State& s, uint32_t sview) {
+    assert(sview < s.shadowViews.size());
+    return s.shadowViews[sview].drawBuffers[s.shadowViews[sview].frameIndex];
+}
+
+BufferHandle ShadowIndirectBuffer(const State& s, uint32_t sview) {
+    assert(sview < s.shadowViews.size());
+    return s.shadowViews[sview].indirectBuffers[s.shadowViews[sview].frameIndex];
+}
+
+const std::vector<Draw>& ShadowDrawConstants(const State& s, uint32_t sview) {
+    assert(sview < s.shadowViews.size());
+    return s.shadowViews[sview].drawConstants;
+}
+
+LogicalBufferHandle ShadowDrawLogical(const State& s, uint32_t sview) {
+    assert(sview < s.shadowViews.size());
+    return s.shadowViews[sview].drawLogicals[s.shadowViews[sview].frameIndex];
+}
+
+LogicalBufferHandle ShadowIndirectLogical(const State& s, uint32_t sview) {
+    assert(sview < s.shadowViews.size());
+    return s.shadowViews[sview].indirectLogicals[s.shadowViews[sview].frameIndex];
+}
+
+Stats FinalizeView(State& s,
+                   ResourceManager& ctx,
+                   RenderGraph& rg,
+                   uint32_t frameIndex,
+                   uint32_t view) {
+    assert(view < s.viewCount);
+    assert(frameIndex < smvk::limits::MaxFramesInFlight);
+    View& v = s.views[view];
+    v.frameIndex = frameIndex;
+    v.stats.draws = (uint32_t)v.draws.size();
+
+    SMVK_PROFILE_RENDER("GfxFinalizeView");
+    SMVK_PROFILE_TAG("draws", v.draws.size());
+
+    BuildBatches(s, view);
+
+#if 0 // TMP-DIAG scanlands hunt (disabled): validate batch->cluster references. Remove later.	{
+		static bool kOnce = false;
+		if (!kOnce && std::getenv("TOURMALINE_DUMPBATCH")) {
+			kOnce = true;
+			size_t bad = 0;
+			for (size_t bi = 0; bi < v.batches.size(); ++bi) {
+				const Batch& b = v.batches[bi];
+				if (b.cluster >= (uint32_t)s.clusters.size()
+					|| b.draw >= (uint32_t)v.drawConstants.size()) {
+					std::fprintf(stderr, "[TMP-DIAG] batch OOB bi=%zu cluster=%u/%zu draw=%u/%zu\n",
+						bi, b.cluster, s.clusters.size(), b.draw, v.drawConstants.size());
+					if (++bad > 20) break;
+					continue;
+				}
+				const Cluster& c = s.clusters[b.cluster];
+				auto badf = [](float x) { return !(x == x); };
+				if (c.triCount == 0 || c.triCount > 128
+					|| c.indexOffset + c.triCount * 3u < c.indexOffset
+					|| badf(c.boundCenter.x) || badf(c.boundCenter.y) || badf(c.boundCenter.z)
+					|| badf(c.boundRadius)) {
+					std::fprintf(stderr, "[TMP-DIAG] cluster BAD bi=%zu cl=%u tri=%u off=%u c=(%.2f,%.2f,%.2f) r=%.2f\n",
+						bi, b.cluster, c.triCount, c.indexOffset,
+						c.boundCenter.x, c.boundCenter.y, c.boundCenter.z, c.boundRadius);
+					if (++bad > 20) break;
+				}
+			}
+			std::fprintf(stderr, "[TMP-DIAG] batch scan done batches=%zu clusters=%zu draws=%u\n",
+				v.batches.size(), s.clusters.size(), (uint32_t)v.drawConstants.size());
+		}
+	}
+#endif
+
+    // THE DYNAMIC-CAPACITY CUTOVER STEP: plan this (view, flight)'s rings
+    // from the frame's EXACT counts (BuildBatches just produced them) and
+    // grow + rebind everything that is too small, BEFORE the upload below
+    // and before AppendPasses records a single pass against the logicals.
+    // Grow-only, page-planned, fail-closed at the declared bounds (see
+    // GrowViewCapacity). v.batchCount IS the candidate total (the build
+    // expands every (draw x cluster) slot — verdicts are GPU-side).
+    GrowViewCapacity(s, ctx, rg, view, frameIndex, (uint32_t)v.drawConstants.size(), v.batchCount);
+
+    // The ONLY per-frame CPU upload is the draws ring slice (the candidate
+    // layout is pure arithmetic; gfxbatchcull — recorded later this frame —
+    // writes the batch array, the filter indirect statics and the
+    // seed/remainder commands GPU-side; the filtered-offset counter is
+    // zeroed by gfxbatchcull group 0).
+    if (!v.drawConstants.empty()) {
+        SMVK_PROFILE_SCOPE("GfxUploadDraws");
+        ctx.UploadDataToBuffer(v.drawBuffers[frameIndex],
+                               v.drawConstants.data(),
+                               v.drawConstants.size() * sizeof(Draw),
+                               PipelineStage(PipelineStageBit_Compute),
+                               AccessFlags::ShaderRead);
+    }
+    return v.stats;
+}
+
+void BuildBatches(State& s, uint32_t view) {
+    assert(view < s.views.size());
+    View& v = s.views[view];
+    assert(v.renderView != nullptr);
+
+    GfxProbeScope probeScope(g_probe.batches); // TMP-PROBE
+    SMVK_PROFILE_RENDER("GfxBuildBatches");
+    SMVK_PROFILE_TAG("draws", v.draws.size());
+
+    // CPU SEED step of the chain — no per-cluster tests here at all. The
+    // draw list is material/bucket-sorted, each draw carries its
+    // candidate-slot base, and the (bucket, material) range layout is
+    // computed; gfxbatchcull (recorded later this frame) runs the sphere
+    // + cone tests on the GPU and writes the batch array, the indirect
+    // statics and the temporal seed/remainder commands.
+    // (The dynamic-capacity cutover removed the fixed candidate cap + its
+    // fatal here: the candidate count is unbounded CPU-side, and
+    // FinalizeView's GrowViewCapacity plans the rings to the exact total
+    // — bounded fail-closed by tour::gfx::kDeclaredMaxCandidates.)
+
+    // Sort draws by (drawSet, material, lightmap lobe class) — stable, so
+    // submission order is kept within a class. Bucket-major (opaque first)
+    // so the seed pass's opaque phase is one contiguous command span, and
+    // commands are emitted in this order so each (material, lobeCount)
+    // pair owns one contiguous indirect range (single multi-draw per
+    // material per lobe class). The Main filtered leg binds the matching
+    // lit program once per range: the generic lit FS, or the
+    // SG_LM_LOBE_COUNT-specialized twin when every draw in the range
+    // shares one cooked count (the shader then drops the runtime basis
+    // dispatch and folds the evaluation loops). A material belongs to one
+    // bucket, so (material, lmChunk) spans never straddle a bucket edge —
+    // the legacy grouping is unchanged, only the range ORDER turns
+    // bucket-major (every consumer binds per range, order-independent).
+    std::vector<uint32_t>& order = v.drawOrderScratch;
+    order.resize(v.draws.size());
+    std::iota(order.begin(), order.end(), 0u);
+    std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+        if (v.draws[a].drawSet != v.draws[b].drawSet)
+            return v.draws[a].drawSet < v.draws[b].drawSet;
+        if (v.draws[a].material != v.draws[b].material)
+            return v.draws[a].material < v.draws[b].material;
+        return v.draws[a].lmChunk < v.draws[b].lmChunk;
+    });
+
+    v.drawConstants.reserve(v.draws.size());
+    for (uint32_t sorted = 0; sorted < (uint32_t)order.size(); ++sorted) {
+        const DrawRequest& d = v.draws[order[sorted]];
+        Draw dc{};
+        dc.model = d.model;
+        dc.mesh = d.mesh;
+        dc.flags = d.flags;
+        dc.drawSet = d.drawSet;
+        dc.lmChunk = d.lmChunk;
+        dc.lmChartOffset = d.lmChartOffset;
+        dc.lmDelta = d.lmDelta;
+        dc.material = d.material;
+        // The resolved material userdata (misc3.x -> VS location 9 ->
+        // the lit hooks). Does NOT affect the material sort above:
+        // same-material draws stay batched whatever their values.
+        dc.userData = d.userData;
+        dc.lightLayerMask = d.lightLayerMask;
+        // Filled below with the draw's candidate-slot base.
+        dc.candidateBase = 0;
+        v.drawConstants.push_back(dc);
+    }
+
+    uint32_t batchSlot = 0;
+    uint32_t cmdMaterial = UINT32_MAX;
+    uint32_t cmdLobes = UINT32_MAX;
+    uint32_t rangeStart = 0;
+    // Seed/remainder range build: (bucket, material) spans over
+    // the candidate slots (coalesced across lmChunk — the sort puts the
+    // same-(bucket, material) draws adjacent), opaque-then-masked order.
+    uint32_t cullRangeStart = 0;
+    uint32_t cullRangeSet = DrawSetBit_Opaque;
+    uint32_t cullRangeMaterial = UINT32_MAX;
+    uint32_t cullOpaque = 0;
+    auto pushCullRange = [&](uint32_t endSlot) {
+        if (cullRangeMaterial == UINT32_MAX || endSlot <= cullRangeStart)
+            return;
+        SeedRange r{};
+        r.drawSet = cullRangeSet;
+        r.material = cullRangeMaterial;
+        r.firstCommand = cullRangeStart;
+        r.commandCount = endSlot - cullRangeStart;
+        v.cullRanges.push_back(r);
+    };
+    for (uint32_t sorted = 0; sorted < (uint32_t)order.size(); ++sorted) {
+        const DrawRequest& d = v.draws[order[sorted]];
+        const Mesh& mesh = s.meshes[d.mesh];
+        if (d.material != cmdMaterial || d.lmChunk != cmdLobes) {
+            if (cmdMaterial != UINT32_MAX) {
+                MaterialRange r{};
+                r.material = cmdMaterial;
+                r.firstCommand = rangeStart;
+                r.commandCount = batchSlot - rangeStart;
+                r.lobeCount = cmdLobes;
+                if (r.commandCount > 0)
+                    v.materialRanges.push_back(r);
+            }
+            cmdMaterial = d.material;
+            cmdLobes = d.lmChunk;
+            rangeStart = batchSlot;
+        }
+        // Candidate-slot base + (bucket, material) range walk. The base is
+        // always valid (the rings grow to the exact candidate total at
+        // FinalizeView — the retired fixed-budget fatal died with the
+        // dynamic cutover; the 0xFFFFFFFF sentinel stays a belt-and-braces
+        // marker the GPU guards on).
+        v.drawConstants[sorted].candidateBase = batchSlot;
+        if (d.drawSet != cullRangeSet || d.material != cullRangeMaterial) {
+            pushCullRange(batchSlot);
+            cullRangeSet = d.drawSet;
+            cullRangeMaterial = d.material;
+            cullRangeStart = batchSlot;
+        }
+        if (cullRangeSet == DrawSetBit_Masked && cullOpaque == 0)
+            cullOpaque = batchSlot; // first masked slot (opaque span end)
+        for (uint32_t ci = 0; ci < mesh.clusterCount; ++ci) {
+            const Cluster& c = s.clusters[mesh.clusterStart + ci];
+            ++v.stats.clustersProcessed;
+            Batch b{};
+            b.cluster = mesh.clusterStart + ci;
+            b.draw = sorted;
+            b.outputOffset = 0u; // atomic offsets (GPU compaction)
+            b.flags = 0u;        // demand-publisher flag is gfxbatchcull's (first KEPT slot)
+            v.batches.push_back(b);
+            v.stats.trianglesProcessed += c.triCount;
+            ++batchSlot;
+        }
+    }
+    if (cmdMaterial != UINT32_MAX && batchSlot > rangeStart) {
+        MaterialRange r{};
+        r.material = cmdMaterial;
+        r.firstCommand = rangeStart;
+        r.commandCount = batchSlot - rangeStart;
+        r.lobeCount = cmdLobes;
+        v.materialRanges.push_back(r);
+    }
+    pushCullRange(batchSlot);
+    // No masked draw at all: the whole span is opaque.
+    if (cullOpaque == 0)
+        cullOpaque = batchSlot;
+    v.cullOpaqueCommands = cullOpaque;
+    v.batchCount = batchSlot;
+    // Fresh stamp once the lists are final: the temporal key cache treats
+    // keys built from these batches as valid until the next stamp.
+    v.batchesSerial = s.nextBatchesSerial++;
+    v.stats.draws = (uint32_t)v.draws.size();
+    v.stats.commands = batchSlot;
+    // Aggregate cull telemetry on the GfxBuildBatches scope: per-cluster
+    // events would flood the profiler (10k+ ns-scale events per frame).
+    SMVK_PROFILE_TAG("batches", v.batchCount);
+    SMVK_PROFILE_TAG("clustersProcessed", v.stats.clustersProcessed);
+    SMVK_PROFILE_TAG("clustersCulled", v.stats.clustersCulled);
+    SMVK_PROFILE_TAG("trianglesProcessed", v.stats.trianglesProcessed);
+}
+
+RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view) {
+    assert(view < s.viewCount);
+    View& v = s.views[view];
+    const uint32_t f = v.frameIndex;
+
+    SMVK_PROFILE_RENDER("GfxAddFilterPass");
+    SMVK_PROFILE_TAG("batchCount", v.batchCount);
+
+    RenderPass& pass = rg.AddComputePass("GfxFilter");
+    BufferSyncRequest computeRead{};
+    computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+    computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+    pass.AddBufferHint(s.indexHeapLogical, computeRead);
+    pass.AddBufferHint(s.clusterLogical, computeRead);
+    if (!s.meshBoundsLogical.empty())
+        pass.AddBufferHint(s.meshBoundsLogical, computeRead);
+    pass.AddBufferHint(v.batchLogicals[f], computeRead);
+    pass.AddBufferHint(v.drawLogicals[f], computeRead);
+    BufferSyncRequest computeRW{};
+    computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+    computeRW.barrierMasks.stageMask = PipelineStageBit_Compute | PipelineStageBit_Vertex;
+    // Filtered scratch is a region of the index monoblock: the same logical
+    // covers the compute write here and the index/vertex reads downstream.
+    pass.AddBufferHint(s.indexHeapLogical, computeRW);
+    pass.AddBufferHint(v.indirectLogicals[f], computeRW);
+    // Cull chain verdicts: the kept-bit region (gfxbatchcull wrote the
+    // pre-occlusion geometric verdict earlier this frame; the filter READS
+    // it for the slot gate and then WRITES the final-visibility refinement
+    // into the same word — per-slot exclusive ownership, so RW; compute
+    // stage only, the indirect consumption hints below stay as they are)
+    // + the draw verdicts / filtered-offset counter (gfxdrawcull earlier
+    // this frame; the counter is read-modify-write through the allocation
+    // atomics, so RW too).
+    BufferSyncRequest keptRW{};
+    keptRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+    keptRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+    pass.AddBufferHint(v.keptLogicals[f], keptRW);
+    BufferSyncRequest stateRW{};
+    stateRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+    stateRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+    pass.AddBufferHint(v.cullStateLogicals[f], stateRW);
+    // HZB read (T4 occlusion): built by the HZB passes earlier in the frame.
+    // Current flight's slice (same rule as every other ringed buffer).
+    if (view < s.temporals.size() && view < s.views.size() &&
+        !s.temporals[view].hiz[s.views[view].frameIndex].logical.empty())
+        pass.AddBufferHint(s.temporals[view].hiz[s.views[view].frameIndex].logical, computeRead);
+
+    // DEBUG: Log filter pass HZB binding
+    static uint64_t s_filterPassCount = 0;
+    if ((s_filterPassCount++ % 60) == 0) {
+        const TemporalView& t = s.temporals[view];
+        const HizResources& hz = t.hiz[s.views[view].frameIndex];
+        SMVK_DEBUG_LOG(
+            "[GfxFilter] AddFilterPass view=%u batchCount=%u hasHiz=%d hiz=%ux%u/%u mips\n",
+            view,
+            v.batchCount,
+            !hz.logical.empty(),
+            hz.width,
+            hz.height,
+            hz.mipCount);
+    }
+
+    return pass;
+}
+
+void AddConsumeHints(RenderPass& pass,
+                     LogicalBufferHandle filteredLogical,
+                     LogicalBufferHandle indirectLogical) {
+    BufferSyncRequest indexRead{};
+    indexRead.barrierMasks.accessMask = AccessFlags::IndexRead;
+    indexRead.barrierMasks.stageMask = PipelineStageBit_Vertex;
+    pass.AddBufferHint(filteredLogical, indexRead);
+    BufferSyncRequest indirectRead{};
+    indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
+    indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
+    pass.AddBufferHint(indirectLogical, indirectRead);
+}
+
+void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_t view) {
+    assert(view < s.views.size());
+    View& v = s.views[view];
+    if (v.batchCount == 0)
+        return;
+
+    SMVK_PROFILE_SCOPE("GfxPushAndDispatch");
+    SMVK_PROFILE_TAG("batchCount", v.batchCount);
+
+    const uint32_t f = v.frameIndex;
+    cmd.BindComputePipeline(s.filterProgram);
+    FilterPush push{};
+    push.positions = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexPosBuffer);
+    // Index streams address regions of the static index monoblock: cluster
+    // reads at clusterIndexBase, filtered writes at this flight's slice.
+    const uint64_t indexHeapAddr =
+        ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticIndexBuffer);
+    push.indices = indexHeapAddr + (uint64_t)s.clusterIndexBase * sizeof(uint32_t);
+    push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
+    push.batches = ctx.GetBufferDeviceAddress(v.batchBuffers[f]);
+    push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+    push.filtered = indexHeapAddr + (uint64_t)v.filteredBase[f] * sizeof(uint32_t);
+    push.indirect = ctx.GetBufferDeviceAddress(v.indirectBuffers[f]);
+    push.indexBase = v.filteredBase[f];
+    // A null BDA dereferenced by the filter CS is an MMU fault and takes the
+    // whole device down (Aftermath: compute read at 0xa000). Never dispatch
+    // in that state: the indirect buffers were zero-filled by FinalizeView
+    // (and the chain's statics come from gfxbatchcull), so skipping draws
+    // nothing instead of faulting. Loud + throttled.
+    if (push.positions == 0 || push.indices == 0 || push.clusters == 0 || push.batches == 0 ||
+        push.draws == 0 || push.filtered == 0 || push.indirect == 0) {
+        static uint64_t s_nullBdaWarns = 0;
+        if ((s_nullBdaWarns++ % 300) == 0) {
+            std::fprintf(stderr,
+                         "[GfxFilter] refusing dispatch: null BDA (pos=%llx idx=%llx cl=%llx "
+                         "batch=%llx draw=%llx filt=%llx ind=%llx). Check buffer usage flags.\n",
+                         (unsigned long long)push.positions,
+                         (unsigned long long)push.indices,
+                         (unsigned long long)push.clusters,
+                         (unsigned long long)push.batches,
+                         (unsigned long long)push.draws,
+                         (unsigned long long)push.filtered,
+                         (unsigned long long)push.indirect);
+        }
+        return;
+    }
+    push.viewProj = v.viewProj;
+    push.eye = v.eye;
+    push.cullFlags = v.cullFlags;
+    push.width = v.width;
+    push.height = v.height;
+    push.batchCount = v.batchCount;
+    // TEMP-DIAG (Release-visible): dispatch sanity for the white-speck hunt.
+    // (Moved AFTER the assignments above so the flags print the real value.)
+    {
+        static uint64_t s_dispatches = 0;
+        if ((s_dispatches++ % 300) == 0)
+            SMVK_TRACE_LOG("[GfxFilter] dispatch ok: view=%u batches=%u "
+                           "flags=0x%x slice=%u\n",
+                           view,
+                           v.batchCount,
+                           push.cullFlags,
+                           f);
+    }
+    // T4 occlusion/contribution inputs (0/empty disables the tests in the
+    // shader; the null-BDA guard above already covers the buffer set).
+    // Current flight's HZB slice (same rule as every other ringed buffer).
+    if (view < s.temporals.size() && view < s.views.size()) {
+        const TemporalView& t = s.temporals[view];
+        const HizResources& hz = t.hiz[s.views[view].frameIndex];
+        push.hzb = ctx.GetBufferDeviceAddress(hz.buffer);
+        push.hizWidth = hz.width;
+        push.hizHeight = hz.height;
+        push.hizMips = hz.mipCount;
+        push.minContribution = t.minimumContribution;
+        // Belt and braces: the shader gates on hizMips, so a null address
+        // can never slip through to a dereference (device-lost class).
+        if (push.hzb == 0) {
+            push.hizWidth = push.hizHeight = push.hizMips = 0;
+            push.minContribution = 0.0f;
+        }
+    }
+    // Deformed per-cluster bounds (GfxSkinBounds output): skinned draws
+    // cull against THIS table instead of the static bind-pose clusters[]
+    // (the same animated-silhouette fix the batch cull already uses).
+    if (s.skinBoundsReady && !s.skinBoundsBuffers[f].empty()) {
+        const uint64_t skinBoundsBda = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
+        if (skinBoundsBda != 0) {
+            push.skinBounds = skinBoundsBda;
+            push.skinBoundsValid = 1;
+        }
+    }
+
+    // Draw-level texture-demand inputs (designated-publisher groups;
+    // PublishDrawDemand gates on textureMetaCount). Belt and braces: any
+    // null BDA zero-gates the whole set — a null dereference is an MMU
+    // fault and takes the whole device down (same rule as the HZB guard
+    // above). The demand ring slice is THIS dispatch's flight slice (same
+    // f as batches/draws above); the materials BDA is the app's per-frame
+    // slice resolved in SetDemandInputs.
+    push.meshBounds = ctx.GetBufferDeviceAddress(s.meshBoundsBuffer);
+    push.materials = s.demandMaterialsBda;
+    push.textureMeta = ctx.GetBufferDeviceAddress(s.textureMetaBuffer);
+    push.textureDemand = ctx.GetBufferDeviceAddress(s.demandBuffers[f]);
+    push.textureMetaCount = s.textureMetaCount;
+    push.mipBias = s.demandMipBias;
+    if (push.meshBounds == 0 || push.materials == 0 || push.textureMeta == 0 ||
+        push.textureDemand == 0) {
+        push.textureMetaCount = 0;
+    }
+
+    // Cull chain inputs: the kept-bit region (parity-indexed — the
+    // region gfxbatchcull wrote this frame) and the cullState buffer
+    // (gfxdrawcull's draw verdicts + the atomic filtered-offset counter
+    // gfxbatchcull zeroed). A null pair is a device-lost-class bug, never
+    // a fallback: there is no legacy path anymore, so fail loud and skip
+    // the dispatch (the indirects stay pre-zeroed — holes, not faults).
+    {
+        const uint64_t keptBda = ctx.GetBufferDeviceAddress(v.keptBuffers[f]);
+        const uint64_t stateBda = ctx.GetBufferDeviceAddress(v.cullStateBuffers[f]);
+        if (keptBda == 0 || stateBda == 0) {
+            std::fprintf(
+                stderr, "[GfxFilter] PushAndDispatch: null kept/cullState BDA (view %u)\n", view);
+            assert(false && "filter chain buffers missing");
+            return;
+        }
+        // The kept region base carries the parity offset computed against
+        // the RUNTIME candidate capacity (the dynamic cutover — the
+        // retired kMaxBatchSlots stride died with the fixed ring).
+        push.kept = keptBda + (uint64_t)KeptParity(s) * v.candidateCapacity[f] * sizeof(uint32_t);
+        push.cullState = stateBda;
+        push.keptParity = KeptParity(s);
+        // The counter/diag word base = this (view, flight)'s draw capacity.
+        push.cullStateCounterWord = v.drawCapacity[f];
+        // The skinBounds table's own capacity (the drawBound tail offset —
+        // the table is State-level, sized by its own allocation).
+        push.skinBoundsCandidateCapacity = s.skinBoundsCandidateCap[f];
+    }
+
+    // DEBUG: Log filter dispatch HZB parameters
+    static uint64_t s_filterDispatchCount = 0;
+    if ((s_filterDispatchCount++ % 60) == 0) {
+        SMVK_DEBUG_LOG("[GfxFilter] PushAndDispatch view=%u batchCount=%u cullFlags=0x%x "
+                       "hzb=0x%llx hiz=%ux%u/%u minContrib=%.4f\n",
+                       view,
+                       v.batchCount,
+                       v.cullFlags,
+                       (unsigned long long)push.hzb,
+                       push.hizWidth,
+                       push.hizHeight,
+                       push.hizMips,
+                       push.minContribution);
+    }
+
+    cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+    cmd.Dispatch(v.batchCount, 1, 1);
+}
+
+// ---------------------------------------------------------------------------
+// GPU cull chain (GfxBatchCull + GfxDrawCull)
+// ---------------------------------------------------------------------------
+
+RenderPass& AddSkinBoundsPass(State& s, RenderGraph& rg, uint32_t view) {
+    assert(view < s.viewCount);
+    View& v = s.views[view];
+    const uint32_t f = v.frameIndex;
+    RenderPass& pass = rg.AddComputePass("GfxSkinBounds");
+    BufferSyncRequest computeRead{};
+    computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+    computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+    pass.AddBufferHint(v.drawLogicals[f], computeRead);
+    if (!s.meshesLogical.empty())
+        pass.AddBufferHint(s.meshesLogical, computeRead);
+    pass.AddBufferHint(s.clusterLogical, computeRead);
+    // The cluster-ordered index stream (region of the static monoblock).
+    if (!s.indexHeapLogical.empty())
+        pass.AddBufferHint(s.indexHeapLogical, computeRead);
+    // The output table (GfxSkinBoundsTable: the per-candidate-slot cluster
+    // entries + the per-draw drawBound tail — ONE buffer): written here,
+    // read by GfxBatchCull + GfxDrawCull below (the hint pairs are the
+    // cross-pass ordering edges). The DEFORMED heap is BDA-only (no graph
+    // handle): the skinning pass's trailing ALL_COMMANDS barrier orders
+    // that read, exactly like the draw passes' deformed fetches.
+    BufferSyncRequest computeRW{};
+    computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+    computeRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+    pass.AddBufferHint(s.skinBoundsLogicals[f], computeRW);
+    return pass;
+}
+
+void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_t view) {
+    if (!s.skinBoundsReady)
+        return;
+    assert(view < s.views.size());
+    View& v = s.views[view];
+    if (s.skinBoundsProgram.shaderCount == 0 || s.skinBoundsModule.empty())
+        return;
+    const uint32_t drawCount = (uint32_t)v.drawConstants.size();
+    if (drawCount == 0 || drawCount > kDeclaredMaxDraws)
+        return;
+    const uint32_t f = v.frameIndex;
+    SkinBoundsPush push{};
+    push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+    push.meshes = ctx.GetBufferDeviceAddress(s.meshesBuffer);
+    push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
+    const uint64_t indexHeapAddr =
+        ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticIndexBuffer);
+    push.indices = indexHeapAddr + (uint64_t)s.clusterIndexBase * sizeof(uint32_t);
+    push.deformed = s.skinDeformedBda;
+    push.skinBounds = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
+    push.deformedBase = s.skinDeformedBase;
+    push.drawCount = drawCount;
+    // The table's candidate-slot capacity (this flight's allocation).
+    push.candidateCapacity = s.skinBoundsCandidateCap[f];
+    // The cone rebuild ALWAYS runs (the honest cones feed the cone-axis
+    // overlay + the SkinDump cross-check + the TOURMALINE_SKIN_CONE=1
+    // consumer lever in gfxbatchcull; the conservative default lives on
+    // the CONSUMER side where the cull behavior actually is).
+    push.coneEnabled = 1u;
+    // MMU-fault rule: never dispatch on a null BDA (no fallback; the batch
+    // cull reads the static table for a slot the pass never wrote ... which
+    // is exactly the bind-pose hole this pass exists to fix, so skip loudly).
+    if (push.draws == 0 || push.meshes == 0 || push.clusters == 0 || push.indices == 0 ||
+        push.deformed == 0 || push.skinBounds == 0) {
+        static uint64_t s_nullBdaWarns = 0;
+        if ((s_nullBdaWarns++ % 300) == 0)
+            std::fprintf(stderr, "[GfxSkinBounds] refusing dispatch: null BDA\n");
+        return;
+    }
+    cmd.BindComputePipeline(s.skinBoundsProgram);
+    cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+    DispatchDrawGroups(cmd, drawCount);
+}
+
+// ---------------------------------------------------------------------------
+// Cone-axis debug lines (the overlay's GPU leg)
+// ---------------------------------------------------------------------------
+
+void SetConeDebug(State& s, ResourceManager& ctx, RenderGraph& rg, bool enable) {
+    if (enable == s.coneDebug && !enable)
+        return; // already off
+    if (enable) {
+        // Lazily create the module/program + the shared line buffer (the
+        // candidate-space prefix, pre-sized to the cap — one allocation for
+        // the State's lifetime; the per-frame pass writes exactly the used
+        // slots [0, candidateTotal)).
+        if (s.coneDebugProgram.shaderCount == 0 || s.coneDebugModule.empty()) {
+            try {
+                if (s.coneDebugModule.empty())
+                    s.coneDebugModule = ctx.CreateShaderModule(
+                        smvk::shaders::Read(kGfxConeDebugCsPath), "gfxConeDebugCS");
+            } catch (...) {
+                return; // broken install: the overlay stays dark
+            }
+            if (s.coneDebugModule.empty())
+                return;
+            Shader cs{
+                .module = s.coneDebugModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+            s.coneDebugProgram = {.shaders = {cs}, .shaderCount = 1};
+        }
+        if (s.coneDebugLines.empty()) {
+            // The dynamic cutover: sized from the high-water want (the
+            // minimum page before the first FinalizeView), grown by
+            // GrowViewCapacity from here. The candidate slot space is a
+            // dense prefix, so [0, 2*candidateTotal) stays exactly the
+            // written range whatever the capacity.
+            size_t cap = 0;
+            if (!RoundCapacity(std::max<size_t>(s.coneDebugWant, 1u), 2u * 12u, cap))
+                return;
+            s.coneDebugLines = ctx.CreateBuffer(
+                ConeDebugLinesBytes(uint32_t(cap)), BufferType_Storage, "gfx coneDebug lines");
+            if (s.coneDebugLines.empty())
+                return;
+            s.coneDebugCap = uint32_t(cap);
+        }
+        if (s.coneDebugLinesLogical.empty()) {
+            s.coneDebugLinesLogical = rg.AddExternalBuffer(s.coneDebugLines, "gfx coneDebug lines");
+            if (s.coneDebugLinesLogical.empty()) {
+                s.coneDebugLines = {};
+                return;
+            }
+        }
+    }
+    s.coneDebug = enable;
+}
+
+RenderPass& AddConeDebugPass(State& s, RenderGraph& rg, uint32_t view) {
+    assert(view < s.viewCount);
+    View& v = s.views[view];
+    const uint32_t f = v.frameIndex;
+    RenderPass& pass = rg.AddComputePass("GfxConeDebug");
+    BufferSyncRequest computeRead{};
+    computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+    computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+    pass.AddBufferHint(v.drawLogicals[f], computeRead);
+    if (!s.meshesLogical.empty())
+        pass.AddBufferHint(s.meshesLogical, computeRead);
+    pass.AddBufferHint(s.clusterLogical, computeRead);
+    // The deformed cones (GfxSkinBounds' output, written earlier this frame):
+    // the hint pair is the cross-pass ordering edge.
+    if (s.skinBoundsReady && !s.skinBoundsLogicals[f].empty())
+        pass.AddBufferHint(s.skinBoundsLogicals[f], computeRead);
+    // The line output: compute-write here, vertex-attribute-read by Main's
+    // overlay draw (the stage pair carries the cross-stage transition, the
+    // same pattern AddFilterPass uses for the filtered index monoblock).
+    BufferSyncRequest linesRW{};
+    linesRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+    linesRW.barrierMasks.stageMask = PipelineStageBit_Compute | PipelineStageBit_Vertex;
+    pass.AddBufferHint(s.coneDebugLinesLogical, linesRW);
+    return pass;
+}
+
+void PushAndDispatchConeDebug(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_t view) {
+    if (!ConeDebugReady(s))
+        return;
+    assert(view < s.views.size());
+    View& v = s.views[view];
+    const uint32_t drawCount = (uint32_t)v.drawConstants.size();
+    if (drawCount == 0 || drawCount > kDeclaredMaxDraws)
+        return;
+    const uint32_t f = v.frameIndex;
+    ConeDebugPush push{};
+    push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+    push.meshes = ctx.GetBufferDeviceAddress(s.meshesBuffer);
+    push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
+    push.lines = ctx.GetBufferDeviceAddress(s.coneDebugLines);
+    // The deformed cones (GfxSkinBounds output, written just before this
+    // pass) — the same gate as the batch cull's.
+    if (s.skinBoundsReady && !s.skinBoundsBuffers[f].empty()) {
+        const uint64_t bda = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
+        if (bda != 0) {
+            push.skinBounds = bda;
+            push.skinBoundsValid = 1;
+        }
+    }
+    // MMU-fault rule: never dispatch on a null BDA (skip loudly; the
+    // overlay draws nothing rather than faulting the device).
+    if (push.draws == 0 || push.meshes == 0 || push.clusters == 0 || push.lines == 0) {
+        static uint64_t s_nullBdaWarns = 0;
+        if ((s_nullBdaWarns++ % 300) == 0)
+            std::fprintf(stderr, "[GfxConeDebug] refusing dispatch: null BDA\n");
+        return;
+    }
+    push.drawCount = drawCount;
+    // The shared line buffer's candidate-slot capacity.
+    push.candidateCapacity = s.coneDebugCap;
+    cmd.BindComputePipeline(s.coneDebugProgram);
+    cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+    // One 128-thread workgroup per draw (the GfxBatchCull dispatch shape).
+    DispatchDrawGroups(cmd, drawCount);
+}
+
+RenderPass& AddBatchCullPass(State& s, RenderGraph& rg, uint32_t view) {
+    assert(view < s.viewCount);
+    View& v = s.views[view];
+    const uint32_t f = v.frameIndex;
+    RenderPass& pass = rg.AddComputePass("GfxBatchCull");
+    BufferSyncRequest computeRead{};
+    computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+    computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+    // This frame's draws (FinalizeView upload -> compute read).
+    pass.AddBufferHint(v.drawLogicals[f], computeRead);
+    // Static tables (load-time uploads).
+    pass.AddBufferHint(s.clusterLogical, computeRead);
+    if (!s.meshesLogical.empty())
+        pass.AddBufferHint(s.meshesLogical, computeRead);
+    if (!s.meshBoundsLogical.empty())
+        pass.AddBufferHint(s.meshBoundsLogical, computeRead);
+    // Deformed cluster bounds (GfxSkinBounds output, written just before
+    // this pass): skinned draws read this instead of the static table. The
+    // hint pair is the cross-pass ordering edge.
+    if (s.skinBoundsReady && !s.skinBoundsLogicals[f].empty())
+        pass.AddBufferHint(s.skinBoundsLogicals[f], computeRead);
+    BufferSyncRequest computeRW{};
+    computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+    computeRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+    // The chain's outputs, all consumed later this frame: the batch array
+    // + the filter indirect statics (the filter pass — write here, the
+    // filter's own RW hint takes over), and the seed/remainder command
+    // arrays (the seed/remainder passes' IndirectCommandRead hints — the
+    // compute-write -> draw-indirect-read barriers are the rendergraph's
+    // standard cross-stage transitions, the same ones the CPU uploads used
+    // to make).
+    pass.AddBufferHint(v.batchLogicals[f], computeRW);
+    pass.AddBufferHint(v.indirectLogicals[f], computeRW);
+    if (view < s.temporals.size()) {
+        TemporalView& t = s.temporals[view];
+        pass.AddBufferHint(t.seedIndirectLogicals[f], computeRW);
+        pass.AddBufferHint(t.remainderIndirectLogicals[f], computeRW);
+    }
+    // The kept-bit ring: current parity region write + prev parity region
+    // read (ONE buffer — RW covers both; the prev region's last writer was
+    // smvk::limits::MaxFramesInFlight frames ago, flight-fence complete, so the
+    // rendergraph's own within-frame tracking never sees that dependency —
+    // the submission ordering carries it, like every other ringed buffer).
+    pass.AddBufferHint(v.keptLogicals[f], computeRW);
+    // The cullState buffer: the filtered-offset counter zero (group 0).
+    // gfxdrawcull writes the verdict words in a LATER pass this frame —
+    // the rendergraph sequences the WAW pair by hints.
+    pass.AddBufferHint(v.cullStateLogicals[f], computeRW);
+    return pass;
+}
+
+void PushAndDispatchBatchCull(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_t view) {
+    assert(view < s.views.size());
+    View& v = s.views[view];
+    if (s.batchCullProgram.shaderCount == 0 || s.batchCullModule.empty()) {
+        std::fprintf(
+            stderr, "[GfxBatchCull] missing shader module (view %u) - chain incomplete\n", view);
+        return; // chain incomplete: skip (indirects stay pre-zeroed)
+    }
+    const uint32_t drawCount = (uint32_t)v.drawConstants.size();
+    if (drawCount == 0 || drawCount > kDeclaredMaxDraws)
+        return;
+    const uint32_t f = v.frameIndex;
+    BatchCullPush push{};
+    push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+    push.meshes = ctx.GetBufferDeviceAddress(s.meshesBuffer);
+    push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
+    push.meshBounds = ctx.GetBufferDeviceAddress(s.meshBoundsBuffer);
+    push.batches = ctx.GetBufferDeviceAddress(v.batchBuffers[f]);
+    push.indirect = ctx.GetBufferDeviceAddress(v.indirectBuffers[f]);
+    if (view < s.temporals.size()) {
+        TemporalView& t = s.temporals[view];
+        push.seedCmds = ctx.GetBufferDeviceAddress(t.seedIndirectBuffers[f]);
+        push.remCmds = ctx.GetBufferDeviceAddress(t.remainderIndirectBuffers[f]);
+    }
+    // Full kept-ring BDA: the shader indexes both parity regions itself.
+    push.kept = ctx.GetBufferDeviceAddress(v.keptBuffers[f]);
+    push.cullState = ctx.GetBufferDeviceAddress(v.cullStateBuffers[f]);
+    // Same MMU-fault rule as PushAndDispatch: never dispatch on a null BDA
+    // (no fallback exists — skip loudly; the indirects stay pre-zeroed).
+    if (push.draws == 0 || push.meshes == 0 || push.clusters == 0 || push.meshBounds == 0 ||
+        push.batches == 0 || push.indirect == 0 || push.seedCmds == 0 || push.remCmds == 0 ||
+        push.kept == 0 || push.cullState == 0) {
+        static uint64_t s_nullBdaWarns = 0;
+        if ((s_nullBdaWarns++ % 300) == 0)
+            std::fprintf(stderr, "[GfxBatchCull] refusing dispatch: null BDA\n");
+        return;
+    }
+    // LIVE view (seed/remainder semantics): the gfx view record's matrix,
+    // NOT the culling-freeze override (everything that writes the live
+    // depth buffer stays on the live main view — the freeze contract).
+    push.viewProj = v.viewProj;
+    push.eye = v.eye;
+    push.drawCount = drawCount;
+    push.drawSetMask = DrawSetMask_All;
+    if (view < s.temporals.size())
+        push.drawSetMask = s.temporals[view].drawSetMask;
+    push.clusterIndexBase = s.clusterIndexBase;
+    push.keptParity = KeptParity(s);
+    // The runtime capacity suffixes (the dynamic cutover): the cullState
+    // counter/diag word base + the kept-ring parity stride / candidate
+    // bound, plus the skinBounds TABLE's own capacity (the drawBound tail
+    // offset — the table is State-level, sized by its own allocation).
+    push.cullStateCounterWord = v.drawCapacity[f];
+    push.candidateCapacity = v.candidateCapacity[f];
+    push.skinBoundsCandidateCapacity = s.skinBoundsCandidateCap[f];
+    push.width = v.width;
+    push.height = v.height;
+    // Deformed bounds for the skinned draws (GfxSkinBounds output). Only
+    // live when this frame ran the skinning pass AND the bounds pass
+    // exists - otherwise every draw stays on the static bind-pose table.
+    if (s.skinBoundsReady && !s.skinBoundsBuffers[f].empty()) {
+        const uint64_t bda = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
+        if (bda != 0) {
+            push.skinBounds = bda;
+            push.skinBoundsValid = 1;
+        }
+    }
+    // Skinned-cone A/B lever (TOURMALINE_SKIN_CONE=1): default 0 — skinned
+    // clusters cull CONSERVATIVE (sphere + frustum only), Remedy's own
+    // shipped call; 1 restores the cone test for skinned clusters (the
+    // rebuild itself always runs — the overlay + the SkinDump cross-check
+    // read the honest cones either way).
+    static const bool s_skinConeOn = [] {
+        const char* e = std::getenv("TOURMALINE_SKIN_CONE");
+        return e && std::strcmp(e, "1") == 0;
+    }();
+    push.skinConeEnabled = s_skinConeOn ? 1u : 0u;
+    // Temporal seed/remainder split gate (TOURMALINE_GFX_SEED_HISTORY=0
+    // kills the split — the disocclusion diagnostic; every kept slot
+    // seeds). Default 1 = the temporal split runs on the refined
+    // final-visibility history.
+    push.seedHistory = s.seedHistoryKilled ? 0u : 1u;
+    cmd.BindComputePipeline(s.batchCullProgram);
+    cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+    // One 128-thread workgroup per material-sorted draw.
+    DispatchDrawGroups(cmd, drawCount);
+}
+
+RenderPass& AddDrawCullPass(State& s, RenderGraph& rg, uint32_t view) {
+    assert(view < s.viewCount);
+    View& v = s.views[view];
+    const uint32_t f = v.frameIndex;
+    RenderPass& pass = rg.AddComputePass("GfxDrawCull");
+    BufferSyncRequest computeRead{};
+    computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+    computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+    pass.AddBufferHint(v.drawLogicals[f], computeRead);
+    if (!s.meshBoundsLogical.empty())
+        pass.AddBufferHint(s.meshBoundsLogical, computeRead);
+    // HZB read: the pyramid the GfxHiz passes built earlier this frame
+    // (current flight's slice, same rule as the filter's read).
+    if (view < s.temporals.size() && !s.temporals[view].hiz[v.frameIndex].logical.empty())
+        pass.AddBufferHint(s.temporals[view].hiz[v.frameIndex].logical, computeRead);
+    // Deformed per-draw union bounds (GfxSkinBounds' drawBound tail, written
+    // earlier this frame): skinned draws test this instead of the static
+    // mesh unions. The hint pair is the cross-pass ordering edge.
+    if (s.skinBoundsReady && !s.skinBoundsLogicals[f].empty())
+        pass.AddBufferHint(s.skinBoundsLogicals[f], computeRead);
+    BufferSyncRequest computeRW{};
+    computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+    computeRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+    // Verdict words: gfxbatchcull's counter zero writes the SAME buffer
+    // earlier this frame (WAW by hints; the filter reads the words after
+    // this pass — also by hints).
+    pass.AddBufferHint(v.cullStateLogicals[f], computeRW);
+    return pass;
+}
+
+void PushAndDispatchDrawCull(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_t view) {
+    assert(view < s.views.size());
+    View& v = s.views[view];
+    if (s.drawCullProgram.shaderCount == 0 || s.drawCullModule.empty()) {
+        std::fprintf(
+            stderr, "[GfxDrawCull] missing shader module (view %u) - chain incomplete\n", view);
+        return; // chain incomplete: skip (verdicts stay zero)
+    }
+    const uint32_t drawCount = (uint32_t)v.drawConstants.size();
+    if (drawCount == 0 || drawCount > kDeclaredMaxDraws)
+        return;
+    const uint32_t f = v.frameIndex;
+    DrawCullPush push{};
+    push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+    push.meshBounds = ctx.GetBufferDeviceAddress(s.meshBoundsBuffer);
+    push.cullState = ctx.GetBufferDeviceAddress(v.cullStateBuffers[f]);
+    if (push.draws == 0 || push.meshBounds == 0 || push.cullState == 0) {
+        static uint64_t s_nullBdaWarns = 0;
+        if ((s_nullBdaWarns++ % 300) == 0)
+            std::fprintf(stderr, "[GfxDrawCull] refusing dispatch: null BDA\n");
+        return;
+    }
+    // FROZEN view: the gfx view record's matrix — under the debug culling
+    // freeze this is the HELD view (the filter legs cull against it; the
+    // batch cull above deliberately stays LIVE for the seed/remainder
+    // semantics, matching the legacy split).
+    push.viewProj = v.viewProj;
+    push.eye = v.eye;
+    push.cullFlags = v.cullFlags;
+    push.drawCount = drawCount;
+    push.width = v.width;
+    push.height = v.height;
+    // The skinBounds table's own capacity (the drawBound tail offset).
+    push.skinBoundsCandidateCapacity = s.skinBoundsCandidateCap[f];
+    if (view < s.temporals.size()) {
+        const TemporalView& t = s.temporals[view];
+        const HizResources& hz = t.hiz[v.frameIndex];
+        push.hzb = ctx.GetBufferDeviceAddress(hz.buffer);
+        push.hizMips = hz.mipCount;
+        // Belt and braces: the shader gates on hizMips, so a null address
+        // can never slip through to a dereference (device-lost class).
+        if (push.hzb == 0)
+            push.hizMips = 0;
+    }
+    // Deformed per-draw union bounds (GfxSkinBounds' drawBound tail, written
+    // earlier this frame — the same gate as the batch cull's per-slot table).
+    // Without it skinned draws keep the blanket skip (the shader gates on
+    // skinBoundsValid), never the static bind-pose union.
+    if (s.skinBoundsReady && !s.skinBoundsBuffers[f].empty()) {
+        const uint64_t bda = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
+        if (bda != 0) {
+            push.skinBounds = bda;
+            push.skinBoundsValid = 1;
+        }
+    }
+    cmd.BindComputePipeline(s.drawCullProgram);
+    cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+    DispatchDrawGroups(cmd, (uint32_t)((uint64_t(drawCount) + 63u) / 64u));
+}
+
+const std::vector<SeedRange>& CullRanges(const State& s, uint32_t view) {
+    assert(view < s.views.size());
+    return s.views[view].cullRanges;
+}
+
+uint32_t CullOpaqueCommands(const State& s, uint32_t view) {
+    assert(view < s.views.size());
+    return s.views[view].cullOpaqueCommands;
+}
+
+bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg) {
+    // The VS legs' skinned-fetch inputs (the bind-pose heap BDAs - the
+    // eternal static heaps; stashed here where the RHI globals are
+    // visible so the record sites' fills never reach for them).
+    s.vsPosHeapBda = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexPosBuffer);
+    s.vsShadeHeapBda = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexShadingBuffer);
+    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+        if (s.meshParamsBuffers[f].empty()) {
+            s.meshParamsBuffers[f] =
+                ctx.CreateBuffer(sizeof(GfxMeshParams), BufferType_Storage, "gfx mesh params");
+            if (s.meshParamsBuffers[f].empty())
+                return false;
+            s.meshParamsLogicals[f] =
+                rg.AddExternalBuffer(s.meshParamsBuffers[f], "gfx mesh params");
+            if (s.meshParamsLogicals[f].empty()) {
+                s.meshParamsBuffers[f] = {};
+                return false;
+            }
+        }
+        if (s.meshBatchLists[f].empty()) {
+            // Candidate-slot capacity (records every eligible candidate
+            // slot — dropped slots gate out through the MS's
+            // indexCount == 0 check). The dynamic cutover: sized from the
+            // high-water want (the minimum page before the first
+            // FinalizeView), grown by GrowViewCapacity from here.
+            size_t cap = 0;
+            if (!RoundCapacity(std::max<size_t>(s.meshBatchListWant[f], 1u), sizeof(uint32_t), cap))
+                return false;
+            s.meshBatchLists[f] = ctx.CreateBuffer(
+                MeshBatchListBytes(uint32_t(cap)), BufferType_Storage, "gfx mesh batch list");
+            if (s.meshBatchLists[f].empty())
+                return false;
+            s.meshBatchListCap[f] = uint32_t(cap);
+            s.meshBatchListLogicals[f] =
+                rg.AddExternalBuffer(s.meshBatchLists[f], "gfx mesh batch list");
+            if (s.meshBatchListLogicals[f].empty()) {
+                s.meshBatchLists[f] = {};
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+uint64_t UploadMeshParams(State& s,
+                          ResourceManager& ctx,
+                          uint32_t view,
+                          uint64_t listBDA,
+                          uint64_t lmXformsAddr,
+                          const glm::mat4& liveViewProj) {
+    assert(view < s.views.size());
+    View& v = s.views[view];
+    const uint32_t f = v.frameIndex;
+    if (s.meshParamsBuffers[f].empty())
+        return 0; // EnsureMeshParams failed: the indexed loop covers the frame
+
+    GfxMeshParams p{};
+    // CULL matrix: the view record's (frozen while the debug freeze holds
+    // the filter). OUTPUT matrix: the live main view (the indexed VS
+    // resolves the same through the render-view slab).
+    p.viewProj = v.viewProj;
+    p.outViewProj = liveViewProj;
+    p.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+    p.batches = ctx.GetBufferDeviceAddress(v.batchBuffers[f]);
+    p.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
+    p.positions = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexPosBuffer);
+    p.shading = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexShadingBuffer);
+    // The OPTIONAL lightmap stream: fetched via the per-draw additive
+    // delta (GfxDraw.misc2.w). 0 when the stream's buffer has no scene
+    // data at all (lightmaps deprecated — the common case).
+    p.lightmap = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexLightmapBuffer);
+    const uint64_t indexHeapAddr =
+        ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticIndexBuffer);
+    p.indices = indexHeapAddr + (uint64_t)s.clusterIndexBase * sizeof(uint32_t);
+    p.lmXforms = lmXformsAddr;
+    p.batchList = listBDA;
+    p.indirect = ctx.GetBufferDeviceAddress(v.indirectBuffers[f]);
+    p.cullFlags = v.cullFlags;
+    p.width = v.width;
+    p.height = v.height;
+    p.listCount = 0; // unused (slicing rides the tail push)
+    // The DEFORMED heap (the skinning driver set s.skinDeformedBda this
+    // frame; skinned draws - GFX_DRAW_SKINNED - fetch from it, indexed
+    // vi - skinDeformedBase).
+    p.deformed = s.skinDeformedBda;
+    p.deformedBase = s.skinDeformedBase;
+    // Same MMU-fault rule as PushAndDispatch: never publish a null BDA
+    // (the indexed loop draws the frame instead; its commands and the
+    // seed/remainder depth are intact).
+    if (p.draws == 0 || p.batches == 0 || p.clusters == 0 || p.positions == 0 || p.shading == 0 ||
+        p.indices == 0 || p.batchList == 0 || p.indirect == 0) {
+        static uint64_t s_meshNullWarns = 0;
+        if ((s_meshNullWarns++ % 300) == 0)
+            std::fprintf(stderr, "[GfxMesh] refusing dispatch: null BDA\n");
+        return 0;
+    }
+    ctx.UploadDataToBuffer(s.meshParamsBuffers[f],
+                           &p,
+                           sizeof(p),
+                           PipelineStage(PipelineStageBit_Mesh),
+                           AccessFlags::ShaderRead);
+    return ctx.GetBufferDeviceAddress(s.meshParamsBuffers[f]);
+}
+
+// One variant dispatch: bind mesh pipeline, push tails, DrawMeshTasks.
+// Params must already be uploaded (UploadMeshParams); listBase/listCount
+// slice this dispatch out of the shared compacted list.
+void RecordMeshVariant(State& s,
+                       CommandBuffer& cmd,
+                       ResourceManager& ctx,
+                       uint32_t view,
+                       ShaderProgram& meshProg,
+                       uint64_t paramsBDA,
+                       uint32_t listBase,
+                       uint32_t listCount,
+                       uint64_t renderViewsAddr,
+                       uint32_t renderViewIndex,
+                       uint64_t lmXformsAddr,
+                       const DepthSettings& depth,
+                       const MSAASettings& msaa,
+                       const RasterSettings& raster) {
+    assert(view < s.views.size());
+    View& v = s.views[view];
+    if (listCount == 0 || meshProg.shaderCount != 2 || paramsBDA == 0)
+        return;
+    const uint32_t f = v.frameIndex;
+    uint64_t drawsBDA = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+
+    // Opaque state (mirrors bindForMaterial for standard opaque
+    // materials; the caller resolves the span material's raster —
+    // double-sided materials dispatch CullMode::None; masked draws
+    // never reach this dispatch — see MeshDrawEligible).
+    cmd.BindRenderPipeline(meshProg,
+                           VertexLayoutId::Empty, // no VS stage: vertex input ignored, keep empty
+                           depth,
+                           StencilSettings::DefaultDisabled(),
+                           BlendSettings::Opaque(),
+                           msaa,
+                           raster);
+    FilteredVsPush tail{};
+    tail.draws = drawsBDA;
+    tail.renderViews = renderViewsAddr;
+    tail.renderViewIndex = renderViewIndex;
+    tail.lmXforms = lmXformsAddr;
+    // The VS-skin tail fields (bytes 224..240, the tail's trailing 16B): the
+    // MeshTailPush below re-pushes the SAME bytes (paramsAddress +
+    // listBase/listCount) - the mesh legs never execute a VS, and the mesh
+    // shader reads its deformed pair from the GfxMeshParams blob, so the
+    // overlay is harmless (mutually exclusive legs).
+    FillVsSkinTail(tail, s);
+    cmd.PushConstants(kFilteredVsPushOffset, sizeof(tail), &tail, ShaderStage::All);
+    MeshTailPush ext{};
+    ext.paramsAddress = paramsBDA;
+    ext.listBase = listBase;
+    ext.listCount = listCount;
+    cmd.PushConstants(kMeshTailPushOffset, sizeof(ext), &ext, ShaderStage::All);
+    // One workgroup per cluster half of this variant's list slice.
+    cmd.DrawMeshTasks(listCount * 2, 1, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Draw-level texture demand (designated-publisher source)
+// ---------------------------------------------------------------------------
+
+void SetDemandInputs(State& s, ResourceManager& ctx, uint64_t materialsBda, float mipBias) {
+    s.demandMaterialsBda = materialsBda;
+    s.demandMipBias = mipBias;
+    if (!s.demandBuffers[0].empty())
+        return; // ring already created (per-State lifetime, like the pools)
+    // Pre-fill the whole ring with the no-report sentinel so the first
+    // consume before any GPU write observes "no demand", not garbage
+    // (mirror of the retired fragment-feedback ring's creation).
+    static std::vector<uint32_t> s_init;
+    if (s_init.empty())
+        s_init.assign(smvk::limits::MaxTextures, kDemandNoReport);
+    for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+        s.demandBuffers[f] =
+            ctx.CreateBuffer(static_cast<uint64_t>(smvk::limits::MaxTextures) * sizeof(uint32_t),
+                             BufferType_Storage,
+                             "gfx texture demand");
+        if (s.demandBuffers[f].empty())
+            return; // partial ring is safe: empty handles gate the dispatch
+        ctx.UploadDataToBuffer(s.demandBuffers[f],
+                               s_init.data(),
+                               s_init.size() * sizeof(uint32_t),
+                               PipelineStage(PipelineStageBit_Compute),
+                               AccessFlags::ShaderRead | AccessFlags::ShaderWrite,
+                               0,
+                               0);
+    }
+}
+
+bool UploadTextureMeta(State& s,
+                       ResourceManager& ctx,
+                       uint64_t epoch,
+                       const TextureMeta* meta,
+                       size_t count) {
+    // count == 0 (no streamed textures at all): the publisher is gated
+    // off, but the epoch is absorbed so this stops re-attempting.
+    if (meta == nullptr || count == 0 || count > smvk::limits::MaxTextures) {
+        s.textureMetaCount = 0;
+        s.textureMetaEpoch = epoch;
+        return true;
+    }
+    if (s.textureMetaEpoch == epoch && !s.textureMetaBuffer.empty())
+        return true; // unchanged (register/unregister only — slots are
+    // stable across retargets, so retargets never re-upload)
+    s.textureMetaBuffer = ctx.CreateBuffer(
+        static_cast<uint64_t>(count) * sizeof(TextureMeta), BufferType_Storage, "gfx texture meta");
+    if (s.textureMetaBuffer.empty())
+        return false; // retry next frame (epoch stays stale)
+    ctx.UploadDataToBuffer(s.textureMetaBuffer,
+                           meta,
+                           count * sizeof(TextureMeta),
+                           PipelineStage(PipelineStageBit_Compute),
+                           AccessFlags::ShaderRead);
+    s.textureMetaEpoch = epoch;
+    s.textureMetaCount = static_cast<uint32_t>(count);
+    return true;
+}
+
+void ClearDemand(State& s, ResourceManager& ctx, uint32_t frameIndex) {
+    if (frameIndex >= smvk::limits::MaxFramesInFlight || s.demandBuffers[frameIndex].empty())
+        return;
+    // No-report fill of the whole slice (buffers always hold smvk::limits::MaxTextures
+    // slots; clearing the full slice keeps the upload size constant — the
+    // retired fragment-feedback ring's pattern). The transfer chain orders
+    // this fill after the in-flight readback copy (download-before-clear),
+    // and the frame's filter writes wait the chain (the same ordering every
+    // other per-frame upload relies on), so a stale min can never pin a
+    // texture sharp forever after the camera moves away.
+    static std::vector<uint32_t> s_clear;
+    if (s_clear.empty())
+        s_clear.assign(smvk::limits::MaxTextures, kDemandNoReport);
+    ctx.UploadDataToBuffer(s.demandBuffers[frameIndex],
+                           s_clear.data(),
+                           s_clear.size() * sizeof(uint32_t),
+                           PipelineStage(PipelineStageBit_Compute),
+                           AccessFlags::ShaderRead | AccessFlags::ShaderWrite,
+                           0,
+                           0);
+}
+
+// DEBUG: Download and inspect HZB buffer contents (current flight's
+// slice, same rule as every other ringed buffer).
+void DumpHzb(State& s, ResourceManager& ctx, uint32_t view) {
+    if (view >= s.temporals.size() || view >= s.views.size())
+        return;
+    const TemporalView& t = s.temporals[view];
+    const HizResources& hz = t.hiz[s.views[view].frameIndex];
+    if (hz.mipCount == 0 || hz.width == 0 || hz.height == 0 || hz.buffer.empty()) {
+        SMVK_DEBUG_LOG("[GfxHiz] DumpHzb: no HZB buffer (view %u)\n", view);
+        return;
+    }
+    std::vector<float> hzb(HzbTotalFloats(hz.width, hz.height), 0.0f);
+    if (!ctx.DownloadDataFromBuffer(hz.buffer, hzb.data(), hzb.size() * sizeof(float))) {
+        SMVK_DEBUG_LOG("[GfxHiz] DumpHzb: download failed (view %u)\n", view);
+        return;
+    }
+    SMVK_DEBUG_LOG("[GfxHiz] DumpHzb view=%u %ux%u mips=%u totalFloats=%zu\n",
+                   view,
+                   hz.width,
+                   hz.height,
+                   hz.mipCount,
+                   hzb.size());
+    for (uint32_t m = 0; m < hz.mipCount; ++m) {
+        uint32_t mw = 0, mh = 0;
+        HzbMipDims(hz.width, hz.height, m, mw, mh);
+        uint32_t off = hz.mipOffsets[m];
+        float minV = std::numeric_limits<float>::infinity();
+        float maxV = -std::numeric_limits<float>::infinity();
+        uint32_t nanCount = 0, infCount = 0, zeroCount = 0;
+        for (uint32_t y = 0; y < mh; ++y) {
+            for (uint32_t x = 0; x < mw; ++x) {
+                float v = hzb[off + y * mw + x];
+                if (std::isnan(v))
+                    ++nanCount;
+                else if (std::isinf(v))
+                    ++infCount;
+                else {
+                    minV = std::min(minV, v);
+                    maxV = std::max(maxV, v);
+                    if (v == 0.0f)
+                        ++zeroCount;
+                }
+            }
+        }
+        SMVK_DEBUG_LOG("  mip%u: %ux%u off=%u range=[%.6f, %.6f] zeros=%u nan=%u inf=%u\n",
+                       m,
+                       mw,
+                       mh,
+                       off,
+                       minV,
+                       maxV,
+                       zeroCount,
+                       nanCount,
+                       infCount);
+        // Print first few values for mip 0
+        if (m == 0 && mw * mh > 0) {
+            SMVK_DEBUG_LOG("    sample: ");
+            for (uint32_t i = 0; i < std::min<uint32_t>(16, mw * mh); ++i) {
+                SMVK_DEBUG_LOG("%.4f ", hzb[off + i]);
+            }
+            SMVK_DEBUG_LOG("\n");
+        }
+    }
+}
+
+} // namespace tour::gfx
