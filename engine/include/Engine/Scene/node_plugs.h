@@ -58,10 +58,14 @@ inline bool operator!=(const Value& a, const Value& b) {
     return !(a == b);
 }
 
+// Authoring metadata only: the wire Value kinds remain unchanged for
+// compatibility with existing graph serialization and evaluation.
+enum class Semantic : uint8_t { Default, Integer, Enumeration, AssetReference };
 struct Descriptor {
     std::string_view path;
     Kind kind;
     std::string_view nodeType;
+    Semantic semantic = Semantic::Default;
 };
 // This table is the source of truth for plugs that have an actual
 // scene-table read/write implementation. Do not advertise stubs here.
@@ -72,9 +76,9 @@ inline constexpr Descriptor kDescriptors[] = {
     {"node.noLightmap", Kind::Boolean, "transform"},
     {"node.ditherCloseup", Kind::Boolean, "transform"},
     {"node.volumetricShadow", Kind::Boolean, "transform"},
-    {"node.material", Kind::Number, "transform"},
+    {"node.material", Kind::Number, "transform", Semantic::AssetReference},
     {"gi.spacing", Kind::Number, "giVolume"},
-    {"gi.priority", Kind::Number, "giVolume"},
+    {"gi.priority", Kind::Number, "giVolume", Semantic::Integer},
     {"gi.insideFade", Kind::Number, "giVolume"},
     {"gi.outsideFade", Kind::Number, "giVolume"},
     {"cubemap.radius", Kind::Number, "cubemap"},
@@ -84,12 +88,12 @@ inline constexpr Descriptor kDescriptors[] = {
     {"audio.minDistance", Kind::Number, "audioSource"},
     {"audio.maxDistance", Kind::Number, "audioSource"},
     {"audioRoom.enabled", Kind::Boolean, "audioRoom"},
-    {"audioRoom.priority", Kind::Number, "audioRoom"},
+    {"audioRoom.priority", Kind::Number, "audioRoom", Semantic::Integer},
     {"audioRoom.wet", Kind::Number, "audioRoom"},
     {"audioRoom.rt60", Kind::Number, "audioRoom"},
     {"audioRoom.damping", Kind::Number, "audioRoom"},
-    {"physics.motion", Kind::Number, "physicsBody"},
-    {"physics.shape", Kind::Number, "physicsBody"},
+    {"physics.motion", Kind::Number, "physicsBody", Semantic::Enumeration},
+    {"physics.shape", Kind::Number, "physicsBody", Semantic::Enumeration},
     {"physics.mass", Kind::Number, "physicsBody"},
     {"physics.friction", Kind::Number, "physicsBody"},
     {"physics.restitution", Kind::Number, "physicsBody"},
