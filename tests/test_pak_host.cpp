@@ -1579,6 +1579,17 @@ void TestAssetManager() {
         const NodeId gameSlot = NodeHandleSlot(gameNode);
         Check(world.IsGameNode(gameNode) && !FindMesh(world.scene, gameSlot),
               "am.world-addnode-empty");
+        const glm::vec3 testPosition(3.f, 4.f, 5.f);
+        const glm::quat testRotation = glm::angleAxis(glm::radians(90.f), glm::vec3(0.f, 1.f, 0.f));
+        const glm::vec3 testScale(2.f, 3.f, 4.f);
+        Check(world[gameNode].SetPosition(testPosition) &&
+                  world[gameNode].SetRotation(testRotation) &&
+                  world[gameNode].SetScale(testScale) &&
+                  glm::distance(glm::vec3(world.scene.localTransform[gameSlot][3]), testPosition) < 1e-4f,
+              "am.world-node-local-trs-setters");
+        Check(!world[gameNode].SetScale(glm::vec3(std::numeric_limits<float>::infinity())) &&
+                  glm::distance(glm::vec3(world.scene.localTransform[gameSlot][3]), testPosition) < 1e-4f,
+              "am.world-node-rejects-nonfinite-scale");
         Check(world[gameNode].SetMesh(tree) && FindMesh(world.scene, gameSlot) &&
                   FindMesh(world.scene, gameSlot)->mesh == assets.MeshWorldIndex(tree),
               "am.world-setmesh-loaded-handle");
@@ -1598,6 +1609,10 @@ void TestAssetManager() {
               "am.world-remove-mesh-keeps-node");
         Check(world.RemoveNode(gameNode) && !world.IsGameNode(gameNode),
               "am.world-remove-node-invalidates-handle");
+        Check(!world[gameNode].SetPosition(testPosition) &&
+                  !world[gameNode].SetRotation(testRotation) &&
+                  !world[gameNode].SetScale(testScale),
+              "am.world-stale-node-trs-refused");
         // The typed-key spawn lane (the gameplay surface): the loaded
         // handle instances through its CURRENT row - the entity is
         // world-owned, DestroyMesh kills it.
