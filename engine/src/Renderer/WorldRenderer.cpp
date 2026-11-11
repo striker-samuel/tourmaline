@@ -13938,7 +13938,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // For all-GPU scenes, create only the Hi-Z view/pyramid. Mixed scenes
     // already initialized this view through the legacy fallback renderer.
     // Do not build a second, conflicting pyramid for the same eye.
-    if ((gpuTemporalReady || m_gpuSceneTaskTemporalReady) && !gfxFilterOn) {
+    if ((gpuTemporalReady || m_gpuSceneTaskMeshActive) && !gfxFilterOn) {
         gpuTemporalReady = m_gfxRenderer.PrepareGpuSceneHiz(*m_context,
                                                             *m_rendergraph,
                                                             m_renderViews.Get(mainRenderView),
