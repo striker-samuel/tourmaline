@@ -105,6 +105,18 @@ struct SceneHandle {
     friend bool operator==(SceneHandle, SceneHandle) = default;
 };
 
+// A node reference with an explicit owning project-scene instance.
+// SceneHandle prevents cross-instance mixups, while NodeHandle detects
+// retirement and reuse inside the source cluster's scene.
+struct SceneNodeRef {
+    SceneHandle scene{};
+    tour::scene::NodeHandle node = tour::scene::kNodeInvalidHandle;
+    [[nodiscard]] explicit operator bool() const {
+        return bool(scene) && node != tour::scene::kNodeInvalidHandle;
+    }
+    friend bool operator==(SceneNodeRef, SceneNodeRef) = default;
+};
+
 class ProjectScenes {
   public:
     // Where a scene id resolves to (the id->scene join's product).
@@ -231,6 +243,11 @@ class ProjectScenes {
     // DEAD after RemoveScene — the world owned it, the unload erased
     // it). Lets scene-aware layers (audio) reach the owning cluster.
     [[nodiscard]] tour::Cluster* SceneCluster(SceneHandle scene) const;
+
+    // Convert a transient SOURCE-cluster node index to a durable,
+    // scene-owned handle. Indices from the merged World scene are not valid.
+    [[nodiscard]] SceneNodeRef MakeNodeRef(SceneHandle scene, tour::scene::NodeId node) const;
+    [[nodiscard]] bool NodeRefValid(SceneNodeRef ref) const;
 
     // ---- ownership-aware prefetch ----
     // Warms the asset's pak (the background preload + open — the
