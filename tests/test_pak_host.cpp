@@ -1125,6 +1125,15 @@ void TestProjectScenes() {
               world.lightLocations.size() == 2,
           "pscenes.second-instance");
 
+    // Node handles are scoped to their additive scene instance, even when
+    // the source scenes use identical node slot indices.
+    const auto nodeA = scenes.MakeNodeRef(h1, 0);
+    const auto nodeB = scenes.MakeNodeRef(h2, 0);
+    Check(bool(nodeA) && bool(nodeB) && nodeA != nodeB &&
+              scenes.NodeRefValid(nodeA) && scenes.NodeRefValid(nodeB),
+          "pscenes.additive-node-owner-scoped");
+    Check(!scenes.MakeNodeRef(h1, UINT32_MAX), "pscenes.node-ref-invalid-index");
+
     // ---- Prefabs are independent scene instances (no new asset kind) --
     // Each .tour scene occurrence gets its own cluster root/frame.
     {
@@ -1174,6 +1183,8 @@ void TestProjectScenes() {
         std::vector<uint64_t> released;
         std::string rErr;
         Check(scenes.RemoveScene(h1, world, rErr, &released) && rErr.empty(), "pscenes.remove");
+        Check(!scenes.NodeRefValid(nodeA) && scenes.NodeRefValid(nodeB),
+              "pscenes.node-ref-unload-invalidates-only-owner");
         Check(!scenes.IsLoaded(h1) && scenes.LoadedSceneCount() == 1 &&
                   world.lightLocations.size() == 1,
               "pscenes.removed-folds-away");
