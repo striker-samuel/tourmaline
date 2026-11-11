@@ -213,8 +213,8 @@ class SharedArchive(Archive):
                     (asset_id, revision, entry["sha256"], entry["size"],
                      path, entry["revision"], entry["captured_at"]))
 
-    def scan(self):
-        result = super().scan()
+    def scan(self, verify=False):
+        result = super().scan(verify=verify)
         self.reconcile_identity()
         return result
 
@@ -299,9 +299,7 @@ class SharedArchive(Archive):
                 os.fsync(out.fileno())
             sha = digest.hexdigest()
             blob = self.blob(self.archive, sha)
-            blob.parent.mkdir(parents=True, exist_ok=True)
-            if not blob.exists():
-                os.replace(temp, blob)
+            self.install_blob(temp, blob, sha)
             product_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
                 "tourmaline-product:" + asset_id + ":" + representation + ":" + variant))
             publish_id = str(uuid.uuid4())
