@@ -11840,13 +11840,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         gfx.filterIndices.size() <= size_t(indexCap - gfx.clusterIndexBase) &&
                         vertexCap != 0u;
                     uint32_t worstMeshlets = 0u;
-                    if (topologyValid) {
+                    // One-time LOUD report when the opt-in task/mesh path
+                    // validates out: a stale over-limit pak (cooked before the
+                    // 64/96 settle) or a discontinuous cluster stream fails
+                    // CLOSED here, and the silent indexed fallback made that
+                    // impossible to see from the perf output alone.
+                    const char* topoFailReason = nullptr;
+                    uint32_t topoFailMesh = 0u, topoFailCluster = 0u;
+                    if (!topologyValid) {
+                        topoFailReason = "empty cluster/index topology or index base over capacity";
+                    } else {
                         const auto tables = GpuSceneIndexedTables(gfx);
                         for (uint32_t meshIndex = 0; meshIndex < gfx.meshes.size(); ++meshIndex) {
                             const auto& mesh = gfx.meshes[meshIndex];
                             tour::gpu_scene::IndexedGeometry checked{};
                             if (!tour::gpu_scene::ResolveIndexedGeometry(
                                     tables, meshIndex, checked)) {
+                                topoFailReason = "discontinuous/mis-attributed cluster stream";
+                                topoFailMesh = meshIndex;
                                 topologyValid = false;
                                 break;
                             }
@@ -11857,11 +11868,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                     uint64_t(cluster.indexOffset) + uint64_t(cluster.triCount) * 3u;
                                 if (cluster.triCount > smvk::kMeshletMaxTriangles ||
                                     indexEnd > gfx.filterIndices.size()) {
+                                    topoFailReason =
+                                        "cluster triCount over the mesh-shader workgroup cap "
+                                        "(stale over-limit pak? recook at 64/96)";
+                                    topoFailMesh = meshIndex;
+                                    topoFailCluster = c;
                                     topologyValid = false;
                                     break;
                                 }
                                 for (uint64_t j = cluster.indexOffset; j < indexEnd; ++j) {
                                     if (gfx.filterIndices[size_t(j)] >= vertexCap) {
+                                        topoFailReason =
+                                            "cluster index over the static vertex capacity";
+                                        topoFailMesh = meshIndex;
+                                        topoFailCluster = c;
                                         topologyValid = false;
                                         break;
                                     }
@@ -11871,6 +11891,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             }
                             if (!topologyValid)
                                 break;
+                        }
+                    }
+                    if (!topologyValid) {
+                        static bool s_taskTopoFailReported = false;
+                        if (!s_taskTopoFailReported) {
+                            s_taskTopoFailReported = true;
+                            std::fprintf(stderr,
+                                         "[GpuSceneTaskMesh] topology rejected (indexed fallback): "
+                                         "%s (mesh=%u cluster=%u)\n",
+                                         topoFailReason,
+                                         topoFailMesh,
+                                         topoFailCluster);
                         }
                     }
                     if (topologyValid) {
