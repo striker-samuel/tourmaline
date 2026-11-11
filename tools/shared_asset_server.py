@@ -34,8 +34,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Tourmaline shared NAS asset repository")
     parser.add_argument("--config", required=True)
     sub = parser.add_subparsers(dest="command")
-    for cmd in ("serve", "scan", "sources", "products", "status", "consumers"):
+    for cmd in ("serve", "sources", "products", "status", "consumers"):
         sub.add_parser(cmd)
+    scan = sub.add_parser("scan")
+    scan.add_argument("--verify", action="store_true",
+                      help="rehash all source files even when size and mtime match")
     versions = sub.add_parser("versions")
     versions.add_argument("source_asset_id")
     publish = sub.add_parser("publish")
@@ -122,7 +125,7 @@ def main(argv=None):
         except KeyboardInterrupt:
             return 0
     elif action == "scan":
-        print(json.dumps(store.scan(), indent=2))
+        print(json.dumps(store.scan(verify=args.verify), indent=2))
     elif action == "sources":
         print(json.dumps(store.sources(), indent=2))
     elif action == "versions":
