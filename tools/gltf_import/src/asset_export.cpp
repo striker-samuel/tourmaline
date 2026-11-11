@@ -1515,17 +1515,98 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
         // computed BEFORE the guid ask, then the guid asks with it.
         m.name = materialName(mi);
         m.guid = guidFor(AssetKind::Material, mi, m.name);
-        m.info.baseColorFactor = glm::vec4(float(gm.pbrMetallicRoughness.baseColorFactor[0]),
-                                           float(gm.pbrMetallicRoughness.baseColorFactor[1]),
-                                           float(gm.pbrMetallicRoughness.baseColorFactor[2]),
-                                           float(gm.pbrMetallicRoughness.baseColorFactor[3]));
-        m.info.metallicFactor = float(gm.pbrMetallicRoughness.metallicFactor);
-        m.info.roughnessFactor = float(gm.pbrMetallicRoughness.roughnessFactor);
+        // The .material record must carry the SAME effective PBR values the
+        // runtime importer derives (gltf.cpp ExtractMaterial): the raw core
+        // block is NOT authoritative for spec-gloss / transmission /
+        // spec-default materials. Convert here so the cooked record matches
+        // the live cluster material (Bistro: 234 KHR_materials_pbrSpecular-
+        // Glossiness materials that would otherwise bake in as metallic=1).
+        std::vector<double> baseColorFactor = gm.pbrMetallicRoughness.baseColorFactor;
+        double metallicFactor = gm.pbrMetallicRoughness.metallicFactor;
+        double roughnessFactor = gm.pbrMetallicRoughness.roughnessFactor;
+        int baseColorTexIndex = gm.pbrMetallicRoughness.baseColorTexture.index;
+        const int metallicRoughnessTexIndex =
+            gm.pbrMetallicRoughness.metallicRoughnessTexture.index;
+        std::string alphaMode = gm.alphaMode;
+        bool doubleSided = gm.doubleSided;
+        // KHR_materials_pbrSpecularGlossiness fallback (FBX2glTF assets):
+        // diffuseTexture/diffuseFactor -> baseColor; glossinessFactor ->
+        // roughness (metallic forced dielectric). The specularGlossiness-
+        // Texture is intentionally skipped — its pixels are a specular
+        // COLOR, not an ORM packing.
+        if (auto it = gm.extensions.find("KHR_materials_pbrSpecularGlossiness");
+            it != gm.extensions.end() && it->second.IsObject()) {
+            const auto& obj = it->second.Get<tinygltf::Value::Object>();
+            int diffuseIdx = -1;
+            if (auto f = obj.find("diffuseTexture"); f != obj.end() && f->second.IsObject()) {
+                const auto& t = f->second.Get<tinygltf::Value::Object>();
+                if (auto fi = t.find("index"); fi != t.end() && fi->second.IsNumber())
+                    diffuseIdx = static_cast<int>(fi->second.GetNumberAsDouble());
+            }
+            if (baseColorTexIndex < 0)
+                baseColorTexIndex = diffuseIdx;
+            if (auto f = obj.find("diffuseFactor"); f != obj.end() && f->second.IsArray()) {
+                const auto& arr = f->second.Get<tinygltf::Value::Array>();
+                // tinygltf defaults baseColorFactor to [1,1,1,1]; a "white"
+                // core factor can never distinguish omitted from authored,
+                // so only apply the diffuse color when no PBR color exists.
+                const bool coreFactorDefault =
+                    baseColorFactor.size() < 4 ||
+                    (baseColorFactor[0] == 1.0 && baseColorFactor[1] == 1.0 &&
+                     baseColorFactor[2] == 1.0 && baseColorFactor[3] == 1.0);
+                const bool hasPbrColor = baseColorTexIndex >= 0 || !coreFactorDefault;
+                if (!hasPbrColor && arr.size() >= 3) {
+                    for (int k = 0; k < 3 && k < int(arr.size()); ++k)
+                        if (arr[k].IsNumber())
+                            baseColorFactor[k] = arr[k].GetNumberAsDouble();
+                    if (arr.size() >= 4 && arr[3].IsNumber())
+                        baseColorFactor[3] = arr[3].GetNumberAsDouble();
+                }
+            }
+            if (metallicFactor == 1.0 && roughnessFactor == 1.0) {
+                metallicFactor = 0.0;
+                if (auto f = obj.find("glossinessFactor"); f != obj.end() && f->second.IsNumber()) {
+                    const double gloss = f->second.GetNumberAsDouble();
+                    roughnessFactor = std::clamp(1.0 - gloss, 0.05, 1.0);
+                } else {
+                    roughnessFactor = 0.6;
+                }
+            }
+        }
+        // KHR_materials_transmission -> BLEND glass (the engine has no
+        // transmission path). Metallic forced dielectric; alpha derives
+        // from (1 - transmissionFactor); double-sided so panes read from
+        // both sides.
+        if (auto it = gm.extensions.find("KHR_materials_transmission");
+            it != gm.extensions.end() && it->second.IsObject()) {
+            const auto& obj = it->second.Get<tinygltf::Value::Object>();
+            double transmissionFactor = 0.0;
+            if (auto f = obj.find("transmissionFactor"); f != obj.end() && f->second.IsNumber())
+                transmissionFactor = f->second.GetNumberAsDouble();
+            if (transmissionFactor > 0.001) {
+                alphaMode = "BLEND";
+                metallicFactor = 0.0;
+                if (baseColorFactor.size() >= 4 && baseColorFactor[3] >= 0.999)
+                    baseColorFactor[3] = std::clamp(1.0 - transmissionFactor, 0.05, 1.0);
+                doubleSided = true;
+            }
+        }
+        // Untouched core PBR block (no MR texture, spec-default
+        // metallic=1/roughness=1): the spec default prints every such mesh
+        // as metal. Force dielectric, mirroring ExtractMaterial's final gate.
+        if (metallicRoughnessTexIndex < 0 && metallicFactor == 1.0 && roughnessFactor == 1.0)
+            metallicFactor = 0.0;
+        m.info.baseColorFactor = glm::vec4(float(baseColorFactor[0]),
+                                           float(baseColorFactor[1]),
+                                           float(baseColorFactor[2]),
+                                           float(baseColorFactor[3]));
+        m.info.metallicFactor = float(metallicFactor);
+        m.info.roughnessFactor = float(roughnessFactor);
         m.info.emissiveFactor = glm::vec3(
             float(gm.emissiveFactor[0]), float(gm.emissiveFactor[1]), float(gm.emissiveFactor[2]));
-        m.info.alphaMode = (gm.alphaMode == "MASK")    ? smvk::AlphaMode::Mask
-                           : (gm.alphaMode == "BLEND") ? smvk::AlphaMode::Blend
-                                                       : smvk::AlphaMode::Opaque;
+        m.info.alphaMode = (alphaMode == "MASK")    ? smvk::AlphaMode::Mask
+                           : (alphaMode == "BLEND") ? smvk::AlphaMode::Blend
+                                                    : smvk::AlphaMode::Opaque;
         // Derive the shading model like the direct glTF import does: MASK
         // -> Masked (the lit FS's cutout gates on ShadingModel::Masked; a
         // lost flag killed the alpha test and masked foliage rendered
@@ -1535,7 +1616,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                                   ? smvk::ShadingModel::Masked
                                   : smvk::ShadingModel::DefaultLit;
         m.info.alphaCutoff = float(gm.alphaCutoff);
-        m.info.doubleSided = gm.doubleSided;
+        m.info.doubleSided = doubleSided;
         auto texRef = [&](int texIndex, bool srgb) {
             MaterialAsset::TexRef r;
             r.srgb = srgb;
@@ -1547,8 +1628,8 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
             r.path = model.images[size_t(img)].uri;
             return r;
         };
-        m.baseColor = texRef(gm.pbrMetallicRoughness.baseColorTexture.index, true);
-        m.metallicRoughness = texRef(gm.pbrMetallicRoughness.metallicRoughnessTexture.index, false);
+        m.baseColor = texRef(baseColorTexIndex, true);
+        m.metallicRoughness = texRef(metallicRoughnessTexIndex, false);
         m.normalTex = texRef(gm.normalTexture.index, false);
         m.occlusion = texRef(gm.occlusionTexture.index, false);
         m.emissiveTex = texRef(gm.emissiveTexture.index, true);

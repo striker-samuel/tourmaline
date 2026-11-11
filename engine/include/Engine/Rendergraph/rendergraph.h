@@ -30,7 +30,8 @@ struct CommandBuffer final {
     CommandBuffer(void* cmdOpaque,
                   RenderGraph& graph,
                   RenderPass& pass,
-                  void* stageTimerOpaque = nullptr);
+                  void* stageTimerOpaque = nullptr,
+                  void* primitiveCountOpaque = nullptr);
     void BindRenderPipeline(
         ShaderProgram& shaderProgram,
         VertexLayoutId vertexFormat = VertexLayoutId::Empty,
@@ -91,6 +92,15 @@ struct CommandBuffer final {
     // timestamp support (the impl context is null).
     void WriteStageTimestamp(uint32_t stageTimer, bool begin);
 
+    // Primitive-statistics query (drawn triangle count) around a mesh/
+    // task dispatch. Begin fires the reset + query start before the
+    // draw calls, End fires the query stop after them; the swapchain
+    // reads back the total primitives (triangles) generated between the
+    // two (Swapchain::GetPrimitiveCount). No-op when the device/frame
+    // lacks the query support (the impl context is null).
+    void BeginPrimitiveCount(uint32_t slot);
+    void EndPrimitiveCount(uint32_t slot);
+
     // Sets the stencil reference for both faces (dynamic state —
     // pipelines are built with VK_DYNAMIC_STATE_STENCIL_REFERENCE,
     // so the reference never enters the pipeline cache key and no
@@ -141,6 +151,10 @@ struct CommandBuffer final {
     // support flag), or null when the frame lacks timestamps —
     // WriteStageTimestamp no-ops then.
     void* stageTimerOpaque_ = nullptr;
+    // Primitive-statistics context (impl-side PrimitiveCountCtx: pool +
+    // support flag), or null when the frame lacks the query — the
+    // Begin/EndPrimitiveCount methods no-op then.
+    void* primitiveCountOpaque_ = nullptr;
 #ifndef NDEBUG
     // Debug-only: last index buffer bound on this command buffer.
     // DrawIndexed* wrappers assert it is set, catching leaked/stale
