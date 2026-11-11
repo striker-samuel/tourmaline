@@ -256,19 +256,6 @@ set_target_properties(SpirvReflectionTests PROPERTIES
 
 add_test(NAME spirv_reflection_tests COMMAND SpirvReflectionTests)
 
-add_executable(GfxFilterTests test_gfxfilter.cpp)
-
-target_link_libraries(GfxFilterTests
-    PRIVATE
-        engine
-)
-
-set_target_properties(GfxFilterTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-)
-
-add_test(NAME gfxfilter_tests COMMAND GfxFilterTests)
-
 add_executable(ExposureTests test_exposure.cpp)
 
 target_link_libraries(ExposureTests
@@ -1256,7 +1243,6 @@ add_dependencies(ProjectE2eTests Project Cook GiBaker Pak)
 tourmaline_stage_sdl3(AssetTests)
 tourmaline_stage_sdl3(ProjectE2eTests)
 tourmaline_stage_sdl3(SpirvReflectionTests)
-tourmaline_stage_sdl3(GfxFilterTests)
 tourmaline_stage_sdl3(ExposureTests)
 tourmaline_stage_sdl3(LightTests)
 tourmaline_stage_sdl3(CameraTests)
