@@ -1125,6 +1125,23 @@ void TestProjectScenes() {
               world.lightLocations.size() == 2,
           "pscenes.second-instance");
 
+    // The bound-context API preserves additive semantics without asking
+    // gameplay call sites to pass upload services repeatedly. Use the
+    // same GPU-less loader seam as the explicit call-path tests.
+    {
+        app::ProjectSceneRuntimeContext context{rt, vfs, nullptr, nullptr};
+        app::ProjectScenes boundScenes(context);
+        boundScenes.clusterLoader = scenes.clusterLoader;
+        auto added = boundScenes.LoadSceneAdditive(world, 0x1000, err);
+        Check(bool(added) && boundScenes.IsLoaded(added) &&
+                  boundScenes.LoadedSceneCount() == 1 &&
+                  world.lightLocations.size() == 3,
+              "pscenes.context-additive");
+        Check(boundScenes.RemoveScene(added, world, err) &&
+                  world.lightLocations.size() == 2,
+              "pscenes.context-additive-cleanup");
+    }
+
     // ---- Prefabs are independent scene instances (no new asset kind) --
     // Each .tour scene occurrence gets its own cluster root/frame.
     {
