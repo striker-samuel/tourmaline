@@ -3372,6 +3372,26 @@ void TestVertexLayoutShaderAbi() {
         Check(allValid, "vabi.layouts.structural");
     }
 
+    // Application-defined layouts need no enum registration. Independently
+    // constructed descriptions compare by contents, including shader locations.
+    {
+        VertexLayoutDesc custom{
+            .bindings = {{.binding = 0,
+                          .stride = 20,
+                          .attributes = {{.location = 0,
+                                          .format = Format::RGB32_Float,
+                                          .offset = 0},
+                                         {.location = 1,
+                                          .format = Format::RG32_Float,
+                                          .offset = 12}}}}};
+        Check(ValidateVertexLayout(custom), "vabi.custom-layout.valid");
+        VertexLayoutDesc equal = custom;
+        Check(equal == custom, "vabi.custom-layout.value-equality");
+        equal.bindings[0].attributes[1].location = 2;
+        Check(!(equal == custom), "vabi.custom-layout.location-identity");
+        Check(ValidateVertexLayout(VertexLayoutDesc{}), "vabi.empty-layout.valid");
+    }
+
     // ---- 2) the validator REJECTS the bad shapes (not vacuously
     // passing): duplicate locations, attribute overruns, unaligned
     // offsets, unusable formats.
