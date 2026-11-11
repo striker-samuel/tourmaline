@@ -3405,16 +3405,15 @@ void TestVertexLayoutShaderAbi() {
     {
         const std::pair<const char*, const VertexLayoutDesc*> pairs[] = {
             {"content/shaders/default.vert.hlsl.spv", &StaticLayout},
-            {"content/shaders/gfxfiltered.vert.hlsl.spv", &StaticLayout},
             {"content/shaders/shadow.vert.hlsl.spv", &StaticLayout},
             {"content/shaders/motionvector.vert.hlsl.spv", &StaticLayout},
             {"content/shaders/meshdebug.vert.hlsl.spv", &StaticLayout},
             {"content/shaders/meshparticles_draw.vert.hlsl.spv", &StaticLayout},
             {"content/shaders/placement_instanced.vert.hlsl.spv", &StaticLayout},
-            // The direct VS also carries the SKIN tail (locations 5/6):
-            // the skinned layout must cover it.
+            // The SkinnedLayout must also cover the direct VS's 0..4
+            // inputs (the binding-2 skin stream is an additive tail;
+            // skinning now rides the deformed heap, not VS locations 5/6).
             {"content/shaders/default.vert.hlsl.spv", &SkinnedLayout},
-            {"content/shaders/gfxfiltered.vert.hlsl.spv", &SkinnedLayout},
             {"content/shaders/terrain.vert.hlsl.spv", &TerrainFullLayout},
             {"content/shaders/terrainfar.vert.hlsl.spv", &TerrainFarLayout},
             {"content/shaders/debugline.vert.hlsl.spv", &DebugLineLayout},

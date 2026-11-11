@@ -301,10 +301,8 @@ void TestLiveSwapCoverage() {
               WorldRenderer::LiveSwapCovers("content/shaders/project_lit_a2c.frag.hlsl.spv") &&
               WorldRenderer::LiveSwapCovers("content/shaders/project_lit.frag.hlsl.gi2.spv"),
           "swap.cover-project-family");
-    // The GPU-driven legs: the filtered VS, the mesh MS + both mesh FS
-    // families (stock + project twins, every variant).
-    Check(WorldRenderer::LiveSwapCovers("content/shaders/gfxfiltered.vert.hlsl.spv"),
-          "swap.cover-filtered-vs");
+    // The GPU-driven legs: the mesh MS + both mesh FS families (stock +
+    // project twins, every variant).
     Check(WorldRenderer::LiveSwapCovers("content/shaders/gpu_scene_meshlet.mesh.hlsl.spv"),
           "swap.cover-mesh-ms");
     Check(WorldRenderer::LiveSwapCovers("content/shaders/gfxmesh_lit.frag.hlsl.spv") &&
@@ -317,14 +315,13 @@ void TestLiveSwapCoverage() {
     // (ReloadBuilderShaders, which runs unconditionally on every
     // recompiled change set — the builders also consume lit modules
     // like default.vert, so the legs are not path-gated against each
-    // other). The gfx compute chain (gfxfilter/gfxbatchcull/hzb) keeps
-    // its last-known-good — the one remaining documented gap.
+    // other). The HZB compute chain keeps its last-known-good — the one
+    // remaining documented gap.
     Check(!WorldRenderer::LiveSwapCovers("content/shaders/default_unlit.frag.hlsl.spv"),
           "swap.cover-excludes-debug-fs");
     Check(!WorldRenderer::LiveSwapCovers("content/shaders/shadow.frag.hlsl.spv"),
           "swap.cover-excludes-shadow");
-    Check(!WorldRenderer::LiveSwapCovers("content/shaders/gfxfilter.cs.hlsl.spv") &&
-              !WorldRenderer::LiveSwapCovers("content/shaders/hzb_spd.cs.hlsl.min.spv"),
+    Check(!WorldRenderer::LiveSwapCovers("content/shaders/hzb_spd.cs.hlsl.min.spv"),
           "swap.cover-excludes-compute-chain");
     Check(!WorldRenderer::LiveSwapCovers("content/shaders/tonemap.frag.hlsl.spv") &&
               !WorldRenderer::LiveSwapCovers("content/shaders/bloom_down.frag.hlsl.spv") &&

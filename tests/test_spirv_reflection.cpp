@@ -624,8 +624,8 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
 
 // Mesh/task stage reflection: a mesh entry point must reflect the Mesh
 // stage bit (ToRhiStages mapping), with push ranges intact. Guards the
-// gfxfilter.mesh.hlsl contract (push layout + stage masks the pipeline
-// builder consumes). Skipped gracefully when DXC is unavailable.
+// gpu_scene_meshlet.mesh.hlsl contract (push layout + stage masks the
+// pipeline builder consumes). Skipped gracefully when DXC is unavailable.
 void TestMeshStageContract() {
     static constexpr const char* kSrc = R"(
 struct MeshPush { uint a; uint b; float c; uint d; };
