@@ -780,9 +780,9 @@ int main() {
             {"Renderer/texture_streamer.h", 4, 0},
             {"Renderer/mesh.h", 35, 0}, // the data model: Material/StaticMesh/packed-vertex
                                         // families (VertexLayoutId + the layout table stay smvk::)
-            {"Renderer/gfx_filter.h",
+            {"Renderer/gpu_scene_static.h",
              1,
-             1}, // gfx's StaticMeshUpload fwd-becomes-using + namespace gfx = ::tour::gfx
+             1}, // StaticMeshUpload fwd-becomes-using + namespace gfx = ::tour::gfx
         };
         // using ::tour::X / using namespace ::tour (the per-name and
         // the namespace-directive import), and the namespace ALIAS
