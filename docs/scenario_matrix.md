@@ -27,3 +27,25 @@ HTTP does not encrypt bearer tokens: use only on a trusted LAN, or put an HTTPS 
 Keep identical scenario catalogs, cooked assets, and source revisions across machines. For GPU correctness comparisons, use the same scenario pins and reviewed baseline before comparing hardware differences.
 
 CPU tests: python -m unittest discover -s tools/tests -v
+
+## Reproducibility metadata
+
+Each `record.json` also contains an `environment` object, collected once per
+setup and copied into its scenario records. It includes OS name/release/kernel
+version and Windows major/minor/build, CPU processor identifier, Windows
+`Win32_VideoController` adapter names and installed driver versions,
+optional NVIDIA-SMI GPU name/driver/VBIOS, DXC executable path, version text
+and SHA-256, plus build type and Tourmaline shader CMake flags when available.
+The probe uses Python's standard library, PowerShell/CIM on Windows and
+`nvidia-smi` when installed. A missing utility produces null/empty fields,
+not a failed benchmark. Hardware serial and PNP instance IDs are not collected.
+
+For nonstandard DXC installations, specify `"dxc": "C:/path/to/dxc.exe"`
+in a setup. Otherwise the probe tries `VULKAN_SDK`, vendored DXC and PATH.
+This is *observed local tool metadata*; supply the actual compiler executable
+used by the build if different. An environment record does not prove which
+compiler produced every existing SPIR-V file.
+
+The collector receives this metadata when `--collector` is enabled. Inspect
+records before uploading them outside a trusted network, as machine and
+software configuration information may be sensitive.

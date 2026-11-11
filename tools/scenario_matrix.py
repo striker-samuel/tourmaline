@@ -12,6 +12,7 @@ import sys
 import urllib.request
 import uuid
 
+
 ROOT = Path(__file__).resolve().parents[1]
 IDENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MODES = ("cull", "snapshot", "bench")
@@ -60,6 +61,8 @@ def load_matrix(path):
             raise ValueError("invalid workdir")
         if s.get("mode", "cull") not in MODES:
             raise ValueError("invalid mode")
+        if "dxc" in s and (not isinstance(s["dxc"], str) or not s["dxc"]):
+            raise ValueError("dxc must be a nonempty executable path")
         pins = s.get("env", {})
         if not isinstance(pins, dict) or any(
             not isinstance(k, str) or not re.fullmatch(r"TOURMALINE_[A-Z0-9_]+", k)
@@ -69,7 +72,7 @@ def load_matrix(path):
     return data
 
 
-def make_record(machine, setup, scenario, mode, run_id, code_id, result, rc):
+def make_record(machine, setup, scenario, mode, run_id, code_id, result, rc, environment=None):
     status = "pass" if rc == 0 and result.get("ok") is True else (
         "mismatch" if mode == "cull" and rc == 2 else "error")
     if mode == "cull" and status == "pass" and result.get("cull_status") != "match":
@@ -78,7 +81,8 @@ def make_record(machine, setup, scenario, mode, run_id, code_id, result, rc):
             "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
             "machine": machine, "platform": platform.platform(),
             "setup": setup, "scenario": scenario, "mode": mode, "code_id": code_id,
-            "status": status, "exit_code": rc, "result": result}
+            "status": status, "exit_code": rc, "result": result,
+            "environment": environment}
 
 
 def upload(origin, token, record):
@@ -100,11 +104,14 @@ def run(args):
         raise ValueError("machine needs a safe short identifier")
     sys.path.insert(0, str(ROOT / "tools"))
     from perf_harness import select_scenario
+    from experiment_environment import collect_environment
     for name in matrix["scenarios"]:
         select_scenario(args.catalog, name)
     failures = 0
     for setup in matrix["setups"]:
         mode = setup.get("mode", args.mode)
+        # Probe once per setup: a failed probe never turns a good benchmark red.
+        environment = collect_environment(Path(setup["exe"]).resolve(), setup.get("dxc"))
         for scenario in matrix["scenarios"]:
             run_id = str(uuid.uuid4())
             destination = args.output.resolve() / args.machine / setup["name"] / scenario / run_id
@@ -137,7 +144,7 @@ def run(args):
             except (OSError, ValueError):
                 result = {"ok": False, "error": "harness produced no valid result"}
             record = make_record(args.machine, setup["name"], scenario, mode, run_id,
-                                 args.code_id, result, rc)
+                                 args.code_id, result, rc, environment)
             (destination / "record.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
             if args.collector:
                 try:
@@ -149,6 +156,12 @@ def run(args):
                               "status": record["status"], "record": str(destination / "record.json")}), flush=True)
             if record["status"] != "pass":
                 failures += 1
+    if args.export_parquet:
+        from export_experiments import export_records
+        count = export_records(args.output.resolve() / args.machine,
+                               args.export_parquet, "parquet")
+        print(json.dumps({"parquet_export": str(args.export_parquet),
+                          "records": count}), flush=True)
     return 2 if failures else 0
 
 
@@ -163,6 +176,8 @@ def main(argv=None):
     parser.add_argument("--baseline-dir", type=Path)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--export-parquet", type=Path,
+                        help="Optional analytics export (requires extended dependencies)")
     parser.add_argument("--collector")
     parser.add_argument("--token", default=os.environ.get("TOURMALINE_RECORD_TOKEN", ""))
     args = parser.parse_args(argv)
@@ -170,7 +185,7 @@ def main(argv=None):
         parser.error("repeat and timeout must be positive")
     try:
         return run(args)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, RuntimeError) as exc:
         parser.error(str(exc))
 
 
