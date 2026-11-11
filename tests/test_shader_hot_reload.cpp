@@ -305,7 +305,7 @@ void TestLiveSwapCoverage() {
     // families (stock + project twins, every variant).
     Check(WorldRenderer::LiveSwapCovers("content/shaders/gfxfiltered.vert.hlsl.spv"),
           "swap.cover-filtered-vs");
-    Check(WorldRenderer::LiveSwapCovers("content/shaders/gfxfilter.mesh.hlsl.spv"),
+    Check(WorldRenderer::LiveSwapCovers("content/shaders/gpu_scene_meshlet.mesh.hlsl.spv"),
           "swap.cover-mesh-ms");
     Check(WorldRenderer::LiveSwapCovers("content/shaders/gfxmesh_lit.frag.hlsl.spv") &&
               WorldRenderer::LiveSwapCovers("content/shaders/gfxmesh_lit.frag.hlsl.sg9.spv"),

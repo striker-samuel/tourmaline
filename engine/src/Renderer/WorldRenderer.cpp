@@ -182,8 +182,15 @@ bool WorldRenderer::LiveSwapCovers(std::string_view spvPath) {
         return true;
     if (spvPath.starts_with("content/shaders/project_lit"))
         return true;
-    // The GPU-driven legs: the filtered VS.
+    // The GPU-driven legs: the filtered VS, the task/mesh mesh MS, and both
+    // mesh FS families (stock + project twins, every .sg/.gi/.std variant).
     if (spvPath == "content/shaders/gfxfiltered.vert.hlsl.spv")
+        return true;
+    if (spvPath == "content/shaders/gpu_scene_meshlet.mesh.hlsl.spv")
+        return true;
+    if (spvPath.starts_with("content/shaders/gfxmesh_lit"))
+        return true;
+    if (spvPath.starts_with("content/shaders/gfxmesh_project_lit"))
         return true;
     return false;
 }
